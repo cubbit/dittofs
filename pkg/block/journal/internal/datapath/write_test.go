@@ -20,8 +20,9 @@ import (
 
 // onDisk is a record read back from a segment file.
 type onDisk struct {
-	Header format.RecordHeader
-	Body   format.RecordBody
+	Segment core.SegmentID
+	Header  format.RecordHeader
+	Body    format.RecordBody
 }
 
 // readRecords decodes every record of every segment the seam now serves, in
@@ -66,7 +67,7 @@ func readRecords(t *testing.T, seam *kit.Seam) []onDisk {
 			if err != nil {
 				t.Fatalf("VerifyRecordBody in %s: %v", name, err)
 			}
-			out = append(out, onDisk{Header: r.Header, Body: body})
+			out = append(out, onDisk{Segment: id, Header: r.Header, Body: body})
 		}
 		_ = f.Close()
 	}

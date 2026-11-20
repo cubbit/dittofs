@@ -156,3 +156,43 @@ func (r Record) Bytes() []byte {
 
 	return append(b, make([]byte, (8-len(b)%8)%8)...)
 }
+
+// RecordHeader is the fields of a record header ParseRecordHeader reads: the
+// ones a check needs to name a record it found in a segment's bytes.
+type RecordHeader struct {
+	Kind         uint8
+	Segment      uint64
+	FileID       [16]byte
+	Offset       uint64 // file offset
+	Length       uint64
+	Seq          uint64
+	Version      Version
+	Tag          uint32
+	RecordOffset uint32
+}
+
+// ParseRecordHeader reads the 96-byte header at the start of b, which must be
+// exactly RecordHeaderSize bytes. It reports false for bytes that are not a
+// header of the journal named by identity: another magic, or a checksum that
+// is not the seeded CRC32C of the first 92 bytes. It checks nothing else, so a
+// header that verifies but sits at the wrong place reads back as it is.
+func ParseRecordHeader(b []byte, identity [16]byte) (RecordHeader, bool) {
+	if len(b) != RecordHeaderSize || string(b[0:4]) != "DJR1" ||
+		binary.LittleEndian.Uint32(b[92:96]) != seededCRC32C(identity, b[0:92]) {
+		return RecordHeader{}, false
+	}
+
+	h := RecordHeader{
+		Kind:         b[4],
+		Segment:      binary.LittleEndian.Uint64(b[8:16]),
+		Offset:       binary.LittleEndian.Uint64(b[32:40]),
+		Length:       binary.LittleEndian.Uint64(b[40:48]),
+		Seq:          binary.LittleEndian.Uint64(b[48:56]),
+		Version:      Version{Epoch: binary.LittleEndian.Uint64(b[56:64]), Counter: binary.LittleEndian.Uint64(b[64:72])},
+		Tag:          binary.LittleEndian.Uint32(b[72:76]),
+		RecordOffset: binary.LittleEndian.Uint32(b[88:92]),
+	}
+	copy(h.FileID[:], b[16:32])
+
+	return h, true
+}

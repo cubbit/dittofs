@@ -431,22 +431,18 @@ func rollParked(t *testing.T, d *driven) (parked, journal.SegmentID) {
 
 		select {
 		case <-held.Reached():
-			v, ok := versionAt(t, d.f, id, off)
-			if !ok {
-				t.Fatalf("precondition: the rolling write at %d is not in the index while its seal is parked, so the model cannot be told its version", off)
+			// Only the piece in the sealed segment is placed yet, and an
+			// unreserved write publishes none until every piece is
+			// appended, so it is read from the disk.
+			v, first, _, ok := diskWrite(t, d.f, name, seg)
+			if !ok || first.Off != off {
+				t.Fatalf("precondition: the rolling write at %d has no record in segment %d while its seal is parked", off, seg)
 			}
 
-			// Only the piece in the sealed segment is placed yet; the rest
-			// of the write, if any, is its second piece.
-			w := pieced{id: id, pieces: []journal.Extent{entryAt(t, d.f, id, off, d.label).Extent}}
-			if w.pieces[0].Off != off {
-				t.Fatalf("precondition: %s: the rolling write at %d is placed from %d", d.label, off, w.pieces[0].Off)
-			}
-
-			if pe := w.pieces[0].Off + w.pieces[0].Len; pe < off+size {
+			// The rest of the write, if any, is its second piece.
+			w := pieced{id: id, pieces: []journal.Extent{first}}
+			if pe := first.Off + first.Len; pe < off+size {
 				w.pieces = append(w.pieces, journal.Extent{Off: pe, Len: off + size - pe})
-			} else {
-				w.pieces[0].Len = size
 			}
 
 			mirror := func() { d.mirrorWrite(0, 0, off, p, wrote{v, nil}) }
@@ -468,6 +464,38 @@ func rollParked(t *testing.T, d *driven) (parked, journal.SegmentID) {
 
 	t.Fatalf("records of %d bytes never rolled a segment of %d", size, journaltest.FixtureSegmentCap)
 	return parked{}, 0
+}
+
+// diskWrite is the last write record in segment seg's live bytes: the version
+// it carries, the file extent it covers and the offset it ends at. An
+// unreserved write names its pieces in the index only once every piece is
+// appended, so a write parked inside its roll's seal is on disk and not in the
+// index, and the disk is where its version and its first piece's extent are
+// read.
+func diskWrite(t *testing.T, f *journaltest.Fixture, name string, seg journal.SegmentID) (v journal.Version, ext journal.Extent, end int64, ok bool) {
+	t.Helper()
+
+	// The last one wins: the record a parked write appended is the newest in
+	// its segment, and every earlier write record there is published.
+	b := liveBytes(t, f, name)
+	identity := journalIdentity(t, f)
+	for pos := int64(0); pos+raw.RecordHeaderSize <= int64(len(b)); pos += 8 {
+		if string(b[pos:pos+4]) != "DJR1" {
+			continue
+		}
+
+		h, ok2 := raw.ParseRecordHeader(b[pos:pos+raw.RecordHeaderSize], identity)
+		if !ok2 || h.Kind != 1 || h.Segment != uint64(seg) || int64(h.RecordOffset) != pos {
+			continue
+		}
+
+		length := int64(h.Length)
+		v = journal.Version{Epoch: h.Version.Epoch, Counter: h.Version.Counter}
+		ext = journal.Extent{Off: int64(h.Offset), Len: length}
+		end, ok = pos+raw.RecordHeaderSize+(8+length+7)/8*8, true
+	}
+
+	return v, ext, end, ok
 }
 
 // versionAt returns the version of the held entry of file id covering off,
@@ -551,8 +579,14 @@ func indexedEnd(t *testing.T, where string, f *journaltest.Fixture, seg journal.
 		}
 	}
 
+	// A write still appending its pieces has none of them in the index, so
+	// the records on disk bound the end too.
+	if _, _, dend, ok := diskWrite(t, f, segmentName(seg), seg); ok {
+		end = max(end, dend)
+	}
+
 	if end == 0 {
-		t.Fatalf("%s: the index places no record in segment %d", where, seg)
+		t.Fatalf("%s: neither the index nor the disk places a record in segment %d", where, seg)
 	}
 
 	return end

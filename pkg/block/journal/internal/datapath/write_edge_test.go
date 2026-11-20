@@ -6,10 +6,12 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
@@ -348,9 +350,9 @@ func TestWriteAt_ThreePiecesAcrossTwoRolls(t *testing.T) {
 	}
 }
 
-// A later piece that fails returns no version; the pieces already published
-// stay held at the write's version and the failed one leaves nothing the
-// index names.
+// A later piece that fails to append returns no version and publishes
+// nothing: the first piece's record stays on disk, counted against the share
+// and unnamed by the index, so no read serves bytes of a write that was refused.
 func TestWriteAt_LaterPieceFails(t *testing.T) {
 	var armed atomic.Bool
 	var c *Core
@@ -358,19 +360,20 @@ func TestWriteAt_LaterPieceFails(t *testing.T) {
 	boom := errors.New("injected write failure")
 	f := testFile(12)
 	c, seam = newTestCore(t, func(o *coreOptions) {
-		o.accountSpy = func(index.HeldDelta) {
-			// Piece 1 is published: every segment after its own fails to
-			// take a write, so the next piece's record cannot land.
+		o.afterAppend = func() {
+			// Piece 1 is in its segment and not yet published: every segment
+			// after its own fails to take a write, so the next piece's record
+			// cannot land.
 			if !armed.Load() {
 				return
 			}
 			armed.Store(false)
-			p, ok := c.Index().Lookup(f, 0)
+			seg, ok := c.Streams().For(f).OpenSegment()
 			if !ok {
-				return
+				panic("the stream has no open segment after an append")
 			}
 			var rules []kit.Rule
-			for id := p.Record.Segment + 1; id <= p.Record.Segment+8; id++ {
+			for id := seg + 1; id <= seg+8; id++ {
 				rules = append(rules, kit.Failing(kit.OpWrite, format.SegmentName(id), 0, boom))
 			}
 			if err := seam.Schedule(rules...); err != nil {
@@ -388,26 +391,141 @@ func TestWriteAt_LaterPieceFails(t *testing.T) {
 	if v != (core.Version{}) {
 		t.Fatalf("a failed write returned version %v", v)
 	}
-	p1, ok := c.Index().Lookup(f, 0)
-	if !ok || p1.Version == (core.Version{}) {
-		t.Fatalf("piece 1 is not held: %+v, %v", p1, ok)
+	if p, ok := c.Index().Lookup(f, 0); ok {
+		t.Fatalf("the index names %+v of a write that failed on its later piece, want nothing", p)
 	}
-	end := p1.Extent.Off + p1.Extent.Len
-	if end >= int64(len(payload)) {
-		t.Fatal("piece 1 covers the whole write")
+	if h, _, _ := c.heldBytes(); h != 0 {
+		t.Fatalf("held = %d after a refused write, want 0", h)
 	}
-	if _, ok := c.Index().Lookup(f, end); ok {
-		t.Fatal("the index holds a piece past piece 1")
+	if got := c.WrittenBytes(); got != 0 {
+		t.Fatalf("WrittenBytes = %d after a refused write, want 0: none of it was published", got)
 	}
-	if h, _, _ := c.heldBytes(); h != p1.Extent.Len {
-		t.Fatalf("held = %d, want piece 1's %d", h, p1.Extent.Len)
+	recs := fileWrites(t, seam, f)
+	if len(recs) != 1 || recs[0].Header.Extent.Off != 0 {
+		t.Fatalf("records of the file on disk = %d, want piece 1's alone at offset 0", len(recs))
 	}
-	if c.WrittenBytes() != uint64(p1.Extent.Len) {
-		t.Fatalf("WrittenBytes = %d, want %d", c.WrittenBytes(), p1.Extent.Len)
+	if c.liveness.Held(recs[0].Segment) {
+		t.Fatalf("segment %d still reads as held after the write was refused, want the dead record's hold released", recs[0].Segment)
 	}
-	for _, r := range fileWrites(t, seam, f) {
-		if r.Header.Extent.Off != 0 || r.Header.Version != p1.Version {
-			t.Fatalf("a record besides piece 1 reached disk: %+v", r.Header)
+	if err := seam.Schedule(); err != nil {
+		t.Fatalf("the seam refused to clear its faults: %v", err)
+	}
+	if _, err := c.WriteAt(context.Background(), s, f, 0, []byte("retry"), 2); err != nil {
+		t.Fatalf("the retry after the refused write: %v", err)
+	}
+}
+
+// A reserved write whose later piece fails to append keeps the pieces it
+// already published and returns no version, so its holder reserves again for
+// what they do not cover; an unreserved write in the same shape publishes
+// nothing (TestWriteAt_LaterPieceFails).
+func TestWriteReserved_LaterPieceFailsKeepsThePublishedPieces(t *testing.T) {
+	var armed atomic.Bool
+	var c *Core
+	var seam *kit.Seam
+	boom := errors.New("injected write failure")
+	f := testFile(13)
+	c, seam = newTestCore(t, func(o *coreOptions) {
+		o.afterAppend = func() {
+			if !armed.Load() {
+				return
+			}
+			armed.Store(false)
+			seg, ok := c.Streams().For(f).OpenSegment()
+			if !ok {
+				panic("the stream has no open segment after an append")
+			}
+			var rules []kit.Rule
+			for id := seg + 1; id <= seg+8; id++ {
+				rules = append(rules, kit.Failing(kit.OpWrite, format.SegmentName(id), 0, boom))
+			}
+			if err := seam.Schedule(rules...); err != nil {
+				panic(err)
+			}
 		}
+	})
+	s := mustShare(t, c, 1)
+	payload := make([]byte, 2*testSegmentCap)
+	r := reserve(t, c, s, capacity.WriteCharge(int64(len(payload)), testSegmentCap), 1)
+	defer r.Release()
+	armed.Store(true)
+	v, err := c.WriteReserved(context.Background(), s, r, f, 0, payload, 1)
+	if !errors.Is(err, boom) {
+		t.Fatalf("WriteReserved = %v, want the injected failure", err)
+	}
+	if v != (core.Version{}) {
+		t.Fatalf("a failed write returned version %v", v)
+	}
+	p1, ok := c.Index().Lookup(f, 0)
+	if !ok {
+		t.Fatal("the index names nothing of a reserved write whose first piece was published, want that piece held")
+	}
+	if end := p1.Extent.Off + p1.Extent.Len; end >= int64(len(payload)) {
+		t.Fatalf("piece 1 covers %d of %d bytes, want the write cut short", end, len(payload))
+	}
+}
+
+// A segment holding a piece of an unreserved write that is appended and not yet
+// published stays held: the roll that sealed it left no index entry naming the
+// piece, so without a hold on the piece's segment a retirement pass that ran
+// then would unlink it under the entry the publish adds. The hold ends with the
+// publish, and with a refusal of the write.
+func TestWriteAt_UnpublishedPieceKeepsItsSealedSegment(t *testing.T) {
+	var c *Core
+	var seam *kit.Seam
+	f := testFile(14)
+	var appended atomic.Int64
+	atRoll := make(chan struct{})
+	resume := make(chan struct{})
+	var resumeOnce sync.Once
+	release := func() { resumeOnce.Do(func() { close(resume) }) }
+	c, seam = newTestCore(t, func(o *coreOptions) {
+		o.afterAppend = func() {
+			if appended.Add(1) != 2 {
+				return
+			}
+			// The second piece's roll sealed the first piece's segment, and
+			// nothing is published.
+			close(atRoll)
+			<-resume
+		}
+	})
+	// A failed check must not leave the write parked: the core's close, which
+	// runs after this, waits on it.
+	t.Cleanup(release)
+	s := mustShare(t, c, 1)
+
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := c.WriteAt(context.Background(), s, f, 0, make([]byte, 2*testSegmentCap), 1)
+		wrote <- err
+	}()
+	waitIn(t, 30*time.Second, "the write's second piece to append", func() bool {
+		select {
+		case <-atRoll:
+			return true
+		default:
+			return false
+		}
+	})
+
+	recs := fileWrites(t, seam, f)
+	if len(recs) == 0 {
+		t.Fatal("no record of the write is on disk after its roll")
+	}
+	first := recs[0].Segment
+	if _, ok := c.Index().Lookup(f, 0); ok {
+		t.Fatal("the index names the write before its last piece is appended, want nothing published")
+	}
+	if !c.liveness.Held(first) {
+		t.Fatalf("segment %d reads as holding nothing while a piece of an unpublished write sits in it, want it held", first)
+	}
+
+	release()
+	if err := <-wrote; err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	if !c.liveness.Held(first) {
+		t.Fatalf("segment %d reads as holding nothing after its piece was published, want its bytes held", first)
 	}
 }

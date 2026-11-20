@@ -808,6 +808,38 @@ func (t *Tracker) releaseHold(h endedHold) {
 	t.lowerCount(h.seg, st, &st.holds)
 }
 
+// Pin keeps seg held for one record appended to it that no index entry names
+// yet, until the Unpin that pairs it. The index counts a record's bytes only
+// once it is published, and a write publishes its pieces after the last one
+// is appended, so without the pin a piece in a segment the write's roll sealed
+// reads as nothing held and the segment can be retired under it.
+//
+// decision: the pin is what keeps isHeld's rule true for a write publishing
+// into a sealed segment: nothing adds extents to a segment retirement is
+// judging, because the extents it will add are already counted here. A
+// pin is raised before the write's next append, which is what can seal the
+// segment, so the count never trails the seal. Overturned by a publish that
+// names a record the write did not pin.
+func (t *Tracker) Pin(seg core.SegmentID) {
+	st := t.entryIfLive(seg)
+	if st == nil {
+		return
+	}
+	st.pins.Add(1)
+}
+
+// Unpin releases the pin of one record: the record is published and the
+// index counts it, or the write was refused and the record is dead weight the
+// segment may now drop. The last release on a segment holding nothing else
+// fires the candidate.
+func (t *Tracker) Unpin(seg core.SegmentID) {
+	st := t.stateOf(seg)
+	if st == nil {
+		return
+	}
+	t.lowerCount(seg, st, &st.pins)
+}
+
 // isHeld reports whether seg holds anything once its state is known: the
 // index's bytes beside the state's records and flags. A segment with no
 // state holds only what the index counts.
@@ -829,7 +861,7 @@ func (t *Tracker) isHeld(seg core.SegmentID, st *segState) bool {
 	if b.Held > 0 || b.Retained > 0 {
 		return true
 	}
-	return st != nil && (st.live.Load() > 0 || st.deferred.Load() > 0 || st.holds.Load() > 0)
+	return st != nil && (st.live.Load() > 0 || st.deferred.Load() > 0 || st.holds.Load() > 0 || st.pins.Load() > 0)
 }
 
 // stateOf returns the segment's state, or nil when none was made yet.
@@ -888,6 +920,11 @@ type segState struct {
 	// while no path re-appends an ended segment's records, so it reads
 	// zero; Held consults it for the day one does.
 	holds atomic.Int64
+	// pins counts the records appended to the segment that no index entry
+	// names yet: a write publishes its pieces only after the last one is
+	// appended, so a piece sits in a segment its roll already sealed with
+	// nothing the index counts. Pin raises it and Unpin lowers it.
+	pins atomic.Int64
 	// files are the files the segment's registered records named. Entries
 	// are never removed; the state leaves the tracker with the segment, and
 	// SegmentRetired reads them when its caller carried no list.
