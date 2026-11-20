@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -747,12 +746,21 @@ func (f *Fixture) Reinit() journal.JournalID {
 	f.t.Helper()
 	f.journalOnly("Reinit")
 
-	if err := os.RemoveAll(f.Dir); err != nil {
-		f.t.Fatalf("fixture: remove the journal: %v", err)
+	// Removed through the seam, which would otherwise still serve the files
+	// it tracks under their old names.
+	names, err := f.Seam.List()
+	if err != nil {
+		f.t.Fatalf("fixture: list the journal: %v", err)
 	}
 
-	if err := os.Mkdir(f.Dir, 0o700); err != nil {
-		f.t.Fatalf("fixture: make the journal directory: %v", err)
+	for _, name := range names {
+		if err := f.Seam.Remove(name); err != nil {
+			f.t.Fatalf("fixture: remove the journal: %v", err)
+		}
+	}
+
+	if err := f.Seam.SyncDir(); err != nil {
+		f.t.Fatalf("fixture: remove the journal: %v", err)
 	}
 
 	id, err := journal.Init(f.t.Context(), f.Dir, fixtureInstall, f.journalOptions()...)

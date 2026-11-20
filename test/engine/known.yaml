@@ -9,13 +9,6 @@
   category: feature
   reason: 'the start''s re-application over the recovered journal: a write synced before its Commit survives the crash whole, its size committed at 24 and its bytes read back; the mtime it read at the write does not — the re-application carries the time of its own replay, not the record''s, so the committed mtime reads the wall clock, want the write''s. The row waits on the start''s replay carrying each record''s staged mtime.'
   issue: '#4210'
-- test: TestRFC8A_AttachAfterDeviceLoss
-  message: 'fixture: journal init: rename'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the fixture''s Reinit under the crash seam (Fixture.Reinit in engine/enginetest/fixture.go): a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the fixture''s journal re-initialisation, where the seam''s rename of the format file fails. Whether the seam or the fixture''s removal of the directory under it causes this is not settled.'
-  issue: '#4206'
 - test: TestRFC8A_RecoveryReappliesInVersionOrder
   message: 'committed size 4096 after the restart, want 12288'
   status: fail
