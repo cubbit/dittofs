@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -959,6 +961,144 @@ func TestCheckUndecodableRow(t *testing.T) {
 			t.Errorf("a store error reads as a refusal: %v wraps %v", err, refusal)
 		}
 	}
+}
+
+// limitSettings is a section whose CheckTx reads a store record that is not
+// a setting, a netgroup whose version stands for a limit, as RFC 18's
+// identity range check reads the store.
+type limitSettings struct {
+	Max   uint64 `json:"max"   class:"live"`
+	Other uint64 `json:"other" class:"live"`
+}
+
+// Validate refuses the largest maximum, which no limit reaches.
+func (l limitSettings) Validate() error {
+	if l.Max == math.MaxUint64 {
+		return fmt.Errorf("max must be below %d, got %d", uint64(math.MaxUint64), l.Max)
+	}
+
+	return nil
+}
+
+// limitGroup is the netgroup whose version limitSection's CheckTx reads.
+const limitGroup = "limits"
+
+// errPastLimit is limitSection's CheckTx refusal, wrapping ErrInvalid as the
+// CheckTx contract asks.
+var errPastLimit = fmt.Errorf("past the stored limit: %w", settings.ErrInvalid)
+
+// limitSection refuses, for test.limit.max only, a maximum past the version
+// of the netgroup limitGroup, read through the write's transaction. Its
+// default maximum is past any such version, so the delete of a stored
+// maximum leaves a value its CheckTx refuses.
+func limitSection() settings.Section {
+	return settings.Of(
+		"test.limit",
+		settings.At(entity.ScopeInstallation),
+		limitSettings{Max: math.MaxUint64 - 1},
+		settings.CheckTx(func(tx entity.ControlPlaneTx, w settings.Write, v limitSettings) error {
+			if w.Key != "test.limit.max" {
+				return nil
+			}
+
+			g, _, err := tx.Netgroup(limitGroup)
+			if err != nil {
+				return err
+			}
+
+			if v.Max > g.Version {
+				return errPastLimit
+			}
+
+			return nil
+		}),
+	)
+}
+
+// netgroup stores the netgroup name through the store's own write and
+// returns its version.
+func (s store) netgroup(t *testing.T, name string) uint64 {
+	t.Helper()
+
+	g, _, err := s.cp.Netgroup(ctx, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := s.cp.PutNetgroup(ctx, entity.Netgroup{Name: name}, g.Version)
+	if err != nil {
+		t.Fatalf("put netgroup %s: %v", name, err)
+	}
+
+	return v
+}
+
+// A section's CheckTx runs on the effective value, reading the store
+// through the write's transaction, and its refusal comes back as it is; a
+// key it does not guard, and a section with no CheckTx, pass.
+func TestCheckTxRuns(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+
+	tb := append(table(), limitSection())
+	limit := s.netgroup(t, limitGroup)
+
+	put := func(key string, v uint64) error {
+		return s.check(tb, entity.RoleOperator,
+			settings.Put(setting(installation, key, strconv.FormatUint(v, 10))))
+	}
+
+	err := put("test.limit.max", limit+1)
+	if err != errPastLimit { //nolint:errorlint // the refusal must come back as it is
+		t.Errorf("past the limit: err = %v, want the CheckTx's own error", err)
+	}
+
+	passed(t, "at the limit", put("test.limit.max", limit))
+
+	s.put(t, installation, "test.limit.max", strconv.FormatUint(limit+1, 10))
+	passed(t, "a key CheckTx does not guard", put("test.limit.other", 1))
+
+	err = s.check(tb, entity.RoleOperator, settings.Delete(installation, "test.limit.max"))
+	if err != errPastLimit { //nolint:errorlint // the refusal must come back as it is
+		t.Errorf(
+			"delete leaving the default past the limit: err = %v, want the CheckTx's own error",
+			err,
+		)
+	}
+
+	passed(t, "a section with no CheckTx", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "identity.mode", `"x"`))))
+}
+
+// A write an earlier gate refuses comes back with that gate's error, never
+// the CheckTx's, and a write every gate passes is accepted.
+func TestCheckTxAfterEarlierGates(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := settings.Table{limitSection()}
+
+	s.netgroup(t, limitGroup)
+
+	for _, c := range []struct {
+		name  string
+		role  entity.APIRole
+		value string
+		want  error
+	}{
+		{"the role", entity.RoleViewer, "18446744073709551614", settings.ErrForbidden},
+		{"the decode", entity.RoleOperator, `"18446744073709551614"`, settings.ErrInvalid},
+		{"Validate", entity.RoleOperator, "18446744073709551615", settings.ErrInvalid},
+	} {
+		err := s.check(tb, c.role, settings.Put(setting(installation, "test.limit.max", c.value)))
+		if !errors.Is(err, c.want) || errors.Is(err, errPastLimit) {
+			t.Errorf("%s: err = %v, want %v and not the CheckTx's", c.name, err, c.want)
+		}
+	}
+
+	passed(t, "every gate passed", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.limit.max", "1"))))
 }
 
 // issuerSettings is an override section with a required key.

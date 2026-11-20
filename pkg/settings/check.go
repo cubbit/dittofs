@@ -121,6 +121,12 @@ func (t Table) Check(
 		return refuse(w.Scope, sec.prefix, err.Error(), ErrInvalid)
 	}
 
+	if sec.checkTx != nil {
+		if err := sec.checkTx(tx, w, effective); err != nil {
+			return err
+		}
+	}
+
 	// ponytail: a rule across components, a value one component's setting
 	// must keep against another's, is not built: each section checks only
 	// its own settings, and a section's CheckTx reads what else it needs.
