@@ -77,6 +77,7 @@ func Run(t *testing.T, open Opener) {
 		{"MarkedPrincipalReads", testMarkedPrincipalReads},
 		{"ContinueDeleteEnds", testContinueDeleteEnds},
 		{"DeletedUserLeavesNoSecret", testDeletedUserLeavesNoSecret},
+		{"RepointedNTHashSurvivesItsPredecessor", testRepointedNTHashSurvivesItsPredecessor},
 		{"Shares", testShares},
 		{"SetShareState", testSetShareState},
 		{"GrantVersions", testGrantVersions},

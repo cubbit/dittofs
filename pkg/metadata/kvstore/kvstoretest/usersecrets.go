@@ -78,3 +78,58 @@ func testDeletedUserLeavesNoSecret(t *testing.T, kvo Opener) {
 		}
 	}
 }
+
+// A user re-pointed from one sealed NT hash to another keeps the second
+// while a batch drops only the first, and loses it only to the batch that
+// drops it: zeroing by ownership alone would leave the second unreferenced.
+func testRepointedNTHashSurvivesItsPredecessor(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	p, err := secrets.New(cp, providerKeys(t))
+	must(t, err)
+	// The first sorts before the second, so a one-secret batch drops it alone.
+	first, second := entity.SecretRef{0: 1}, entity.SecretRef{0: 2}
+	u := user("alice")
+	u.NTHash = first
+	gen, err := cp.PutUser(ctx, u, 0, entity.Alloc{})
+	must(t, err)
+	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: "nt_hash"}
+	for _, ref := range []entity.SecretRef{first, second} {
+		sec, err := p.Seal(ctx, secrets.Protocol, entity.SecretNTHash, owner, ref, ref[:], secrets.Meta{})
+		must(t, err)
+		must(t, cp.PutSecret(ctx, sec, 0))
+	}
+	u.NTHash = second
+	gen, err = cp.PutUser(ctx, u, gen, entity.Alloc{})
+	must(t, err)
+
+	next, dropped, done, err := cp.DropNTHashes(ctx, entity.SecretRef{}, 1)
+	must(t, err)
+	if next != first || dropped != 1 || done {
+		t.Fatalf("first batch: next %x, dropped %d, done %v; want %x, 1, false", next, dropped, done, first)
+	}
+	got, found, err := cp.User(ctx, u.Principal)
+	must(t, err)
+	if !found || got.NTHash != second || got.Generation != gen {
+		t.Errorf("after the first batch: found %v, NTHash %x, generation %d; want true, %x, %d", found, got.NTHash, got.Generation, second, gen)
+	}
+	if _, err := cp.Secret(ctx, first, 1); !merrs.IsNotFoundError(err) {
+		t.Errorf("first after the first batch: error %v, want not found", err)
+	}
+	if _, err := cp.Secret(ctx, second, 1); err != nil {
+		t.Errorf("second after the first batch: %v", err)
+	}
+
+	for !done {
+		next, _, done, err = cp.DropNTHashes(ctx, next, 1)
+		must(t, err)
+	}
+	got, found, err = cp.User(ctx, u.Principal)
+	must(t, err)
+	if !found || got.NTHash != (entity.SecretRef{}) || got.Generation <= gen {
+		t.Errorf("after the deletion: found %v, NTHash %x, generation %d; want true, zero, above %d", found, got.NTHash, got.Generation, gen)
+	}
+	if _, err := cp.Secret(ctx, second, 1); !merrs.IsNotFoundError(err) {
+		t.Errorf("second after the deletion: error %v, want not found", err)
+	}
+}
