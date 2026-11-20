@@ -1916,6 +1916,16 @@ func (s *Stream) watchIdle(c core.Clock) {
 func (s *Stream) idleDueLocked(now time.Duration, threshold int64) (due bool, wait time.Duration) {
 	// The candidate: a live stream with an open segment holding more than
 	// the threshold beyond its last catalogued point.
+	//
+	// decision: a segment at or under the threshold never seals idle, even
+	// one holding only header-only records. At the defaults the whole
+	// headroom (65,536 records at 224 bytes, about 14 MiB) is below the
+	// 16 MiB threshold, so a headroom segment a journal at its limit rolled
+	// its removals into stays active: repack cannot reach it unless a pass
+	// seals it, and the headroom its records drew is not credited back until
+	// content writes resume and fill it. Overturned by a bounded journal at its
+	// limit under removals whose headroom segments stay active; RFC 1
+	// section 9's open question "Repack seals for capacity" owns the rule.
 	if s.closed || s.id == 0 || s.sealState != sealOpen ||
 		s.next-format.SegmentHeaderSize <= threshold {
 		return false, -1

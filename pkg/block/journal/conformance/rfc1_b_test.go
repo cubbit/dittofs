@@ -1360,7 +1360,10 @@ func TestRFC1B_RecordsWithoutBytesAtTheLimit(t *testing.T) {
 func TestRFC1B_RepackAtTheLimitRecoversTheHeadroom(t *testing.T) {
 	// A removal that rolls at the limit lands in a headroom spare, a segment
 	// holding header-only records alone: the idle-seal threshold sits below
-	// what the drain appends, so that segment seals idle with the others.
+	// what the drain appends, so that segment seals idle with the others. At
+	// the defaults such a segment never seals idle — the whole headroom is
+	// below the 16 MiB threshold — so this threshold is what lets the row
+	// reach repack at all, not a stand-in for the default behaviour.
 	f := journaltest.NewWith(t, func(s *journal.Settings) { s.IdleSealBytes = 4096 })
 	fillUntilRefused(t, f, []int{0, 1}, 0, 256<<10)
 	full := headroom(t, f)

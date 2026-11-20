@@ -577,10 +577,20 @@ func looksSegmental(name string) bool {
 // the core's own sizing, never less than one segment per stream. The repack
 // reserve keeps at least one segment's cap, the most live payload one segment
 // can hold.
+//
+// decision: the open does not check the maximum against what these targets
+// reserve. The headroom and the reserve fill before any content spare, so
+// (streams + 1) x cap stands ahead of the first content spare and the open's
+// footprint is (2 x streams + 1) x cap — 8.25 GiB at the default 16 streams
+// of 256 MiB; a maximum near that floor leaves content little or no spare to
+// roll into. No production caller sets MaxBytes yet, and the first that does
+// should validate it against (2 x streams + 1) x cap at open. The headroom's
+// target is at least one segment, as HeadroomSpares never answers less for a
+// stream count resolveDefaults has given its default.
 func buildTargets(s core.Settings) segment.Targets {
 	return segment.Targets{
 		Content:  s.SpareTarget,
-		Headroom: max(datapath.HeadroomSpares(s.HeadroomRecords, s.Streams, core.SegmentCapOf(s)), 1),
+		Headroom: datapath.HeadroomSpares(s.HeadroomRecords, s.Streams, core.SegmentCapOf(s)),
 		Reserve:  1,
 	}
 }

@@ -36,8 +36,8 @@ and it was checked against a real tmpfs on Linux. A RAM disk formatted with a di
 passes the check, so name the real device. The mount options are empty on macOS.
 
 Free space: a 16-stream journal makes about 8.25 GiB of spares when it opens (16 content, 16
-headroom, one per stream, and one reserve, each a 256 MiB segment), and J2 and J3 open one per count, so each
-needs that much free on the device besides the bytes it writes.
+headroom, one per stream, and one reserve, each a 256 MiB segment), and J2 and J3 open one per
+count, so each needs that much free on the device besides the bytes it writes.
 
 Notes on what a row measures:
 
