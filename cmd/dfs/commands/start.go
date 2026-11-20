@@ -70,6 +70,15 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	}
 	// The v1 check reads nothing of the bootstrap, so it runs before the
 	// bootstrap's own checks: over a v1 directory it is the first refusal.
+	//
+	// decision: it still runs after MustLoad, which needs --config's path,
+	// and before InitLogger, so a v1 bootstrap that this version's load
+	// refuses gets that config error, not the v1 refusal, and the check's
+	// permission warning goes to the default handler, as text on stderr,
+	// not to the configured log. Both are safe, as nothing is opened yet.
+	// Overturned if operators upgrading from v1 report the config error as
+	// unhelpful: then the check moves before MustLoad, deriving the path
+	// from the flag alone.
 	if err := refuseV1(filepath.Join(filepath.Dir(configPath), "controlplane.db"), v1Databases()); err != nil {
 		return err
 	}
