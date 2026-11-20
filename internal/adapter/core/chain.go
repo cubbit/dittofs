@@ -10,23 +10,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
-// endedCtx is a request's context with its deadline passed: Admit under it
-// tries once and, where it would wait, answers its error at once, and Lookup
-// tries its copy's reservation once, answering ErrDelay of DelayResources
-// (§4.7). It keeps the request's values, its trace ID and span among them.
-type endedCtx struct{ context.Context }
-
-// closedDone is the done channel of every endedCtx.
-var closedDone = func() chan struct{} {
-	c := make(chan struct{})
-	close(c)
-	return c
-}()
-
-func (endedCtx) Deadline() (time.Time, bool) { return time.Time{}, true }
-func (endedCtx) Done() <-chan struct{}       { return closedDone }
-func (endedCtx) Err() error                  { return context.DeadlineExceeded }
-
 // entry is one chain member as the walk reaches it.
 type entry struct {
 	off       int

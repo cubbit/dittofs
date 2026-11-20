@@ -374,8 +374,15 @@ func TestTheCompoundRowAndItsMembers(t *testing.T) {
 	if _, _, err := c.Decode(args[:3], 1); !errors.Is(err, errMember) {
 		t.Errorf("a compound with 3 bytes of arguments: %v", err)
 	}
-	if _, _, err := c.Decode([]byte{0x00, 0x10, 0x00, 0x01}, 1); !errors.Is(err, errMember) {
+	// A count of maxBody+1 and an empty tag: 8 bytes, so it is the count that
+	// refuses, not the arguments' length.
+	if _, _, err := c.Decode([]byte{0x00, 0x10, 0x00, 0x01, 0, 0, 0, 0}, 1); !errors.Is(err, errMember) {
 		t.Errorf("a compound counting more members than a record has bytes: %v", err)
+	}
+	// Its count, then a tag length of 2 with one tag byte left: the slice runs
+	// on in args, so a tag read past its arguments would decode.
+	if _, _, err := c.Decode(args[:9], 1); !errors.Is(err, errMember) {
+		t.Errorf("a compound whose tag runs past its arguments: %v", err)
 	}
 	if _, _, err := members[OpPutFH].Decode([]byte{0xff, 0xff, 0xff, 0xff, 'x'}, 1); !errors.Is(err, errMember) {
 		t.Errorf("a member whose length is past every record: %v", err)
@@ -383,7 +390,10 @@ func TestTheCompoundRowAndItsMembers(t *testing.T) {
 	if _, _, err := readOp(args[4:7]); !errors.Is(err, errMember) {
 		t.Errorf("ReadOp of a code that runs past the record: %v", err)
 	}
-	short := args[4+4 : 4+4+5] // the PutFH member's length and one byte of its two
+	// The PutFH member's arguments follow the compound's own n bytes and its
+	// 4-byte code: their length, 2, and one byte of the two. The slice runs on
+	// in args, so a member that read past its length would decode.
+	short := args[n+4 : n+4+5]
 	if _, _, err := members[OpPutFH].Decode(short, 1); !errors.Is(err, errMember) {
 		t.Errorf("a member whose arguments run past the record: %v", err)
 	}

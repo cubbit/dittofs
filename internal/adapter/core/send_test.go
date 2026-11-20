@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
@@ -16,6 +18,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
 // errSealFails is the refusal sealFails's Wrap answers once armed.
@@ -159,5 +164,110 @@ func TestANotifyNamingTheLeastOrGreatestKeyGoesAheadOfItsRecord(t *testing.T) {
 				t.Errorf("records %v: want %s ahead of %s, the record holding the reply it names", got, w.notify, w.named)
 			}
 		}
+	})
+}
+
+// A Notify naming a held request goes ahead of whichever of its replies is
+// queued when the Notify comes, its interim and later its final: core keys
+// both by the request's HoldCodec key, which a callback's before names (RFC
+// 20 sections 4.6, 4.7 and 6.2). A Create the service delays once is held,
+// its interim joined with the PutFH's reply before it in one record, and is
+// answered alone at its re-drive. Each waits behind an Echo whose reply holds
+// the writer, the client reading nothing, when its Notify comes; each
+// Notify's message is checked only to come before that reply, the one order
+// the writer keeps.
+func TestANotifyGoesAheadOfAHeldRequestsInterimAndFinal(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		svc := memory.New(t)
+		root, _, err := svc.Root(t.Context(), svc.Admin(), vfs.ShareRef{Name: svc.Store.Share.Name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		faults := vfstest.Faults(svc)
+		d := adapter.Deps{VFS: faults, Budgets: b}
+		l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(d).WithCall(svc.Admin())}
+		srv, err := core.NewServer(d, settings.DefaultNFS(), l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clk := newManualClock()
+		core.SetServerClock(srv, clk)
+		core.Serving(srv)
+		_, peer := servedConn(t, srv, &l)
+		c := testproto.NewClient(peer)
+		for _, m := range []testproto.Msg{
+			{Op: testproto.OpNegotiate, Version: 2, ID: 1},
+			{Op: testproto.OpSession, Version: 2, ID: 2, Session: 7},
+			{Op: testproto.OpTree, Version: 2, ID: 3, Session: 7, Tree: 1},
+		} {
+			if err := c.Send(m); err != nil {
+				t.Fatal(err)
+			}
+			if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != testproto.StatusOK {
+				t.Fatalf("setting the connection up: %+v (%v)", rs, err)
+			}
+		}
+		send := func(msgs ...testproto.Msg) {
+			t.Helper()
+			if err := c.Send(msgs...); err != nil {
+				t.Fatal(err)
+			}
+			synctest.Wait()
+		}
+		// records reads n records, each named by its replies: the held
+		// Create's interim and final by its message ID, which they carry
+		// keyed, so the bare ID 12 is only ever the Notify's message.
+		records := func(n int) []string {
+			t.Helper()
+			var got []string
+			for range n {
+				rs, err := c.Recv()
+				if err != nil {
+					t.Fatalf("after %v: %v", got, err)
+				}
+				var names []string
+				for _, r := range rs {
+					switch {
+					case r.ID == keyOf(12) && r.Interim:
+						names = append(names, "interim 12")
+					case r.ID == keyOf(12):
+						names = append(names, "final 12")
+					case r.ID == 12:
+						names = append(names, "notify 12")
+					default:
+						names = append(names, fmt.Sprint(r.ID))
+					}
+				}
+				got = append(got, strings.Join(names, " "))
+			}
+			return got
+		}
+		ahead := func(got []string, named string) {
+			t.Helper()
+			if n, r := slices.Index(got, "notify 12"), slices.Index(got, named); n < 0 || r < 0 || n > r {
+				t.Errorf("records %v: want the Notify's message for 12 ahead of %q", got, named)
+			}
+		}
+		echo := func(id uint64) testproto.Msg {
+			return testproto.Msg{Op: testproto.OpEcho, Version: 2, ID: id, Session: 7, Payload: []byte("e")}
+		}
+		notify := func(id uint64) testproto.Msg {
+			return testproto.Msg{Op: testproto.OpNotify, Version: 2, ID: id, Session: 7, Target: 12}
+		}
+		faults.Fail(vfs.OpCreate, vfs.ErrDelay)
+		send(echo(10))
+		send(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 11, Session: 7, Tree: 1, Handle: root},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 12, Session: inherited, Tree: 1, Name: "f", Related: true},
+		)
+		send(notify(13))
+		ahead(records(4), "11 interim 12")
+		send(echo(20))
+		clk.Advance(10 * time.Millisecond) // the held Create's re-drive, which succeeds
+		synctest.Wait()
+		send(notify(21))
+		ahead(records(4), "final 12")
 	})
 }
