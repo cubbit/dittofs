@@ -108,12 +108,15 @@ suites:
           - go test -tags=journal_plant_split -timeout=2m -run=^TestFuzzFindsPlantedSplit$ ./pkg/block/journal/internal/index/
           - go test -tags=journal_plant_split,journal_conformance -timeout=10m -run=^TestModelDataPathFindsPlantedSupersession$ ./pkg/block/journal/conformance/
           - go test -tags=journal_plant_truncate,journal_conformance,journal_model -timeout=10m -run=^TestModelManySeedsFindsPlantedTruncate$ ./pkg/block/journal/conformance/
-      # The journal's allocation checks, which the race detector makes unmeasurable and the race
-      # leg of journal-conformance skips as known: the counted calls of RFC 1 §9.7, running
-      # without -race, where allocation counting works, with the flat-Stats check, whose rig
-      # builds 10^5 extents under the profiler's heap check, which it passed once the fixture
-      # stopped keeping the closed journal's core reachable at that check, and the same cost
-      # check over the figures a reopened journal serves.
+      # The journal's allocation checks, which the race detector makes unmeasurable, so the race
+      # leg of journal-conformance excludes them with -skip and this cell enforces them instead:
+      # the counted calls of RFC 1 §9.7, running without -race, where allocation counting works,
+      # with the flat-Stats check, whose rig builds 10^5 extents under the profiler's heap check,
+      # which it passed once the fixture stopped keeping the closed journal's core reachable at
+      # that check, and the same cost check over the figures a reopened journal serves. The two
+      # lists stay identical: a test a change adds to this cell's -run is added to the raced
+      # cell's -skip in the same change, or the raced run goes red on a skip no known row grades,
+      # while a name reaching only -skip would silently lose its enforcement.
       journal-conformance-norace:
         cmd: go test -timeout=5m -tags=journal_conformance -run=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat|TestStatsAfterOpenWalksNoLock) ./pkg/block/journal/conformance/
         tier: pr
@@ -129,7 +132,7 @@ suites:
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:
     format: go-json
-    cmd: go test -race -tags=journal_conformance -timeout=30m -artifacts -outputdir={out} ./pkg/block/journal/conformance/...
+    cmd: go test -race -tags=journal_conformance -skip=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat|TestStatsAfterOpenWalksNoLock) -timeout=30m -artifacts -outputdir={out} ./pkg/block/journal/conformance/...
     known: test/journal/known.yaml
     tier: pr
   # The reference model over many seeds, each seed a fresh random timeline of the same
