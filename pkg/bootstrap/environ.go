@@ -115,7 +115,7 @@ func (e retiredKey) coversVariable(name string) bool {
 
 // retiredEnvRule is the rule of a retired name: an environment-only name's
 // own, or the entry whose key the name spells as its variable, the longest
-// such entry winning. The value is never read.
+// such entry winning. No value is printed or kept.
 func retiredEnvRule(name string) (string, bool) {
 	if rule, ok := retiredEnvNames[name]; ok {
 		return rule, true
@@ -147,8 +147,8 @@ const (
 	// envKey is a declared key's variable, read as the key itself.
 	envKey envClass = iota
 
-	// envPass is an allowed or a provisional name: it passes, its value
-	// unread.
+	// envPass is an allowed or a provisional name, or a service link: it
+	// passes, no value kept.
 	envPass
 
 	// envSetting is an Appendix B setting's variable, refused as a
@@ -164,14 +164,15 @@ const (
 	envUnknown
 )
 
-// classifyEnv concludes what the scan reads in one name, and the rule that
-// refuses it when it refuses. The declared variables come first, so a key
-// wins over an allowed prefix; then the allowed names, so a tool's export
-// passes; then the provisional names; then the settings, so a setting
-// overridden from the host refuses as one, before the v1 table, so a setting
-// whose family is a v1 family still names the setting; then the table; then
-// the unknown, with the closest declared variable named.
-func classifyEnv(name string, declared map[string]bool) (envClass, string) {
+// classifyEnv concludes what the scan reads in one name holding value, and
+// the rule that refuses it when it refuses. The declared variables come
+// first, so a key wins over an allowed prefix; then the allowed names, so a
+// tool's export passes; then the provisional names; then a service link, so
+// the kubelet's variables pass; then the settings, so a setting overridden
+// from the host refuses as one, before the v1 table, so a setting whose
+// family is a v1 family still names the setting; then the table; then the
+// unknown, with the closest declared variable named.
+func classifyEnv(name, value string, declared map[string]bool) (envClass, string) {
 	if declared[name] {
 		return envKey, ""
 	}
@@ -181,6 +182,21 @@ func classifyEnv(name string, declared map[string]bool) (envClass, string) {
 	}
 
 	if slices.Contains(provisionalEnvNames, name) {
+		return envPass, ""
+	}
+
+	// decision: a pair whose name is one of a service link's forms and whose
+	// value has that form's shape is ignored, because the kubelet writes it
+	// into every pod and no operator can remove it. The value decides, never
+	// the name alone: a retired variable such as DITTOFS_METRICS_PORT is also
+	// a link's name, and holding a plain number it still refuses, so the
+	// start never reads a second source of configuration under a link's name.
+	// It follows the declared and allowed names, so a key's variable is still
+	// read as the key. Withdraw it if the kubelet's variables stop sharing
+	// this prefix, or if anything but the declared-key lookup reads a
+	// DITTOFS_ name (load.go, the env[s.envName()] read), since a link
+	// passed here would then be read as configuration.
+	if serviceLink(name, value) {
 		return envPass, ""
 	}
 
@@ -266,7 +282,8 @@ func closestEnvName(name string) string {
 // scanEnv refuses every one of the start's names that reads as no key and
 // no allowed tool: a setting's line, a retired key's rule, or the unknown's
 // closest declared variable (RFC 13 Appendix C, "Names read outside the
-// file"). No value is read, and the lines join the file's in one report.
+// file"). No value is printed or kept; one is read only to tell a service link by
+// its shape. The lines join the file's in one report.
 func scanEnv(env map[string]string, rep *report) {
 	names := make([]string, 0, len(env))
 
@@ -279,7 +296,7 @@ func scanEnv(env map[string]string, rep *report) {
 	slices.Sort(names)
 
 	for _, name := range names {
-		class, rule := classifyEnv(name, declaredEnv)
+		class, rule := classifyEnv(name, env[name], declaredEnv)
 
 		if class >= envSetting {
 			rep.add(whereEnvironment, name, rule)
