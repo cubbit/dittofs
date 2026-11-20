@@ -2554,12 +2554,13 @@ func TestRFC28C_UnidentifiedDirectory(t *testing.T) {
 // recorded it opens empty and serves; and that with a segment taken it is
 // still refused, the segment reported.
 //
-// decision: the row's crash is what leaves the identity unrecorded; the
-// fixture, which is that caller, closes cleanly instead, since the open finds
-// the format file either way and a crash would drop only unsynced records,
-// of which there are none.
+// decision: the state the crash leaves is built without one: NewBare runs
+// Init and opens nothing, so the directory holds only the format file Init
+// wrote, no spare made and no record ever acknowledged — where a fixture
+// that opened would leave finished spares behind, segment files whose
+// slots are zero and must not count as the check's segments.
 func TestRFC28C_InterruptedInit(t *testing.T) {
-	f := journaltest.New(t)
+	f := journaltest.NewBare(t)
 	wantIdentityError(t, f.TryReopenAs(journal.JournalID{}), f.ID(), journaltest.FixtureInstall, false)
 
 	if err := f.TryReopenAs(f.ID()); err != nil {
