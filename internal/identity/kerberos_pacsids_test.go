@@ -108,7 +108,7 @@ func sidStrings(ss []pid.SID) []string {
 // The acceptance row: a PAC carrying alice's SID, Finance, S-1-5-32-544, a
 // SID of the installation's domain, one of another domain and a deny-only
 // Payroll gives SIDs alice then Finance, DenyOnly Payroll, and three drops,
-// one per reason (R31, R32, R33).
+// one per reason.
 func TestKerberosPACSIDs(t *testing.T) {
 	p := pacSIDsServer(t)
 	id := p.signedIn(t, identitytest.LogonInfo{
@@ -133,7 +133,7 @@ func TestKerberosPACSIDs(t *testing.T) {
 // or does not: a SID of the installation's own domain naming a local group
 // with a share grant gives no grant; a universal group of a second domain is
 // dropped and the sign-in succeeds. Catches an unfiltered PAC granting a
-// local group (R32).
+// local group.
 func TestKerberosPACSIDsOfOtherDomainsGrantNothing(t *testing.T) {
 	p := pacSIDsServer(t)
 	localSID := p.own + "-1700"
@@ -155,7 +155,7 @@ func TestKerberosPACSIDsOfOtherDomainsGrantNothing(t *testing.T) {
 // counted once under its own reason, while everyone, authenticated users and
 // network are kept; a SID the store holds as a user is dropped as user.
 // Catches a well-known SID dropped as other_domain, a reason that depends on
-// which rule ran first, and a user's SID taken for a group (R32).
+// which rule ran first, and a user's SID taken for a group.
 func TestKerberosPACSIDsWellKnownAndUsers(t *testing.T) {
 	p := pacSIDsServer(t)
 	p.user(t, entity.User{Principal: entity.NewUser(), Name: "bob", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "1600"}, sidID(pacDomain + "-1600")}}, 0)
@@ -178,7 +178,7 @@ func TestKerberosPACSIDsWellKnownAndUsers(t *testing.T) {
 // clear is absent; a deny-only group with that bit clear is in DenyOnly, and
 // a share whose only grant names it refuses alice. Catches a decoder reading
 // the memberships alone, and a deny dropped as disabled or folded into the
-// groups (R31, R33).
+// groups.
 func TestKerberosPACSIDsGroupsAndDenies(t *testing.T) {
 	p := pacSIDsServer(t)
 	extra := p.group(t, "Extra", pacDomain+"-2003")
@@ -212,8 +212,45 @@ func TestKerberosPACSIDsGroupsAndDenies(t *testing.T) {
 	}
 }
 
+// The PAC's user SID is not filtered, so a PAC whose logon domain is the
+// installation's own, naming a local group with a share grant as alice's
+// SID, or is under S-1-5-32 or a well-known authority, is refused
+// ErrLogonFailure. Catches the user SID carrying a local group's grant.
+func TestKerberosPACSIDsRefuseALocalLogonDomain(t *testing.T) {
+	p := pacSIDsServer(t)
+	p.group(t, "Local", p.own+"-1700")
+	for _, l := range []identitytest.LogonInfo{
+		{DomainSID: p.own, UserRID: 1700},
+		{DomainSID: "S-1-5-32", UserRID: 544},
+		{DomainSID: "S-1-5", UserRID: 18},
+	} {
+		res, oc, err := p.signIn(l)
+		refused(t, l.DomainSID+" as the logon domain", res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
+	}
+}
+
+// Resource groups are read only when UserFlags says they are populated: with
+// the bit clear, the same resource group is absent from the SIDs. Catches
+// resource groups read whatever UserFlags says.
+func TestKerberosPACSIDsResourceGroupsNeedTheirFlag(t *testing.T) {
+	p := pacSIDsServer(t)
+	for _, c := range []struct {
+		clear bool
+		want  []string
+	}{
+		{false, []string{pacDomain + "-1105", pacDomain + "-2004"}},
+		{true, []string{pacDomain + "-1105"}},
+	} {
+		id := p.signedIn(t, identitytest.LogonInfo{ResourceDomain: pacDomain, ResourceFlagClear: c.clear,
+			ResourceGroups: []identitytest.GroupRID{{RID: 2004, Attributes: enabled}}})
+		if got := sidStrings(id.Evidence.SIDs); !slices.Equal(got, c.want) {
+			t.Errorf("resource flag clear %v: SIDs = %v, want %v", c.clear, got, c.want)
+		}
+	}
+}
+
 // The sid index failing while a PAC's SIDs are filtered fails the sign-in
-// ErrUnavailable, never keeping or dropping the SID unread (D8).
+// ErrUnavailable, never keeping or dropping the SID unread.
 func TestKerberosPACSIDsStoreFault(t *testing.T) {
 	p := pacSIDsServer(t)
 	p.fail(t, kvtest.OpGet, "PX‖03*") // the sid index's rows
@@ -222,7 +259,7 @@ func TestKerberosPACSIDsStoreFault(t *testing.T) {
 }
 
 // A PAC never enables a principal: alice disabled in the store is refused
-// whatever her PAC carries (R34).
+// whatever her PAC carries.
 func TestKerberosPACSIDsDisabledUser(t *testing.T) {
 	k := kerberosServer(t)
 	k.user(t, entity.User{Principal: entity.NewUser(), Name: "alice", Disabled: true, IDs: append(fileIDs("1500"), krbID("alice@TEST.REALM"))}, 0)

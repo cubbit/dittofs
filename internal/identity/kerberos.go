@@ -332,7 +332,10 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 	if logon != nil {
 		// The PAC supplies groups only: the record was read above, and
 		// nothing in the PAC enables a principal or changes its record.
-		if ev.SIDs, ev.DenyOnly, err = s.pacSIDs(ctx, logon); err != nil {
+		switch ev.SIDs, ev.DenyOnly, err = s.pacSIDs(ctx, logon); {
+		case errors.Is(err, vfserr.ErrLogonFailure):
+			return identity.SignInResult{}, outcomeLogonFailure, err
+		case err != nil:
 			return identity.SignInResult{}, outcomeUnavailable, err
 		}
 	}

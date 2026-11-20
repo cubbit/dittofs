@@ -210,6 +210,10 @@ const (
 	seGroupUseForDenyOnly = 0x00000010
 )
 
+// logonResourceGroups is the UserFlags bit saying the logon information's
+// resource groups are populated (MS-PAC 2.5).
+const logonResourceGroups = 0x00000200
+
 // pacDroppedSpec counts the SIDs a PAC carried that its evidence does not,
 // by reason (RFC 18 §3.4, §9.2).
 var pacDroppedSpec = metrics.Spec{
@@ -224,12 +228,24 @@ var wellKnownKept = map[string]bool{"S-1-1-0": true, "S-1-5-11": true, "S-1-5-2"
 
 // pacSIDs is the evidence's SIDs and deny-only SIDs from v, a verified PAC's
 // logon information: its user's SID first, then its group memberships, extra
-// SIDs and resource groups, in that order, each filtered. Only the user's
-// SID is unfiltered: its binding to the record is checked apart. A store
-// fault reading the installation or a SID is ErrUnavailable.
+// SIDs and resource groups, these only when UserFlags says they are
+// populated, in that order, each filtered. Only the user's SID is
+// unfiltered: its binding to the record is checked apart, so a PAC whose
+// logon domain is not a domain's, under S-1-5-21, or is the installation's
+// own, where the user's SID would name a builtin, well-known or local
+// principal, is refused ErrLogonFailure. A store fault reading the
+// installation or a SID is ErrUnavailable.
 func (s *Server) pacSIDs(ctx context.Context, v *pac.KerbValidationInfo) (sids, deny []identity.SID, err error) {
 	d := v.LogonDomainID
 	logon := rpcSID(d.Revision, d.IdentifierAuthority, d.SubAuthority)
+	in, err := s.deps.Store.Installation(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: installation: %w", vfserr.ErrUnavailable, err)
+	}
+	own, logonBin := kvstore.DomainSID(in.ID), sidBytes(logon)
+	if !ntSID(logon, 21) || bytes.Equal(logonBin, own) {
+		return nil, nil, logonFailure("a PAC whose logon domain is not a domain's, or is the installation's")
+	}
 	sids = []identity.SID{withRID(logon, v.UserID)}
 	type member struct {
 		sid   identity.SID
@@ -242,21 +258,13 @@ func (s *Server) pacSIDs(ctx context.Context, v *pac.KerbValidationInfo) (sids, 
 	for _, e := range v.ExtraSIDs {
 		all = append(all, member{rpcSID(e.SID.Revision, e.SID.IdentifierAuthority, e.SID.SubAuthority), e.Attributes})
 	}
-	if v.ResourceGroupDomainSID.SubAuthorityCount > 0 {
+	if v.UserFlags&logonResourceGroups != 0 && v.ResourceGroupDomainSID.SubAuthorityCount > 0 {
 		r := v.ResourceGroupDomainSID
 		res := rpcSID(r.Revision, r.IdentifierAuthority, r.SubAuthority)
 		for _, g := range v.ResourceGroupIDs {
 			all = append(all, member{withRID(res, g.RelativeID), g.Attributes})
 		}
 	}
-	if len(all) == 0 {
-		return sids, nil, nil
-	}
-	in, err := s.deps.Store.Installation(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: installation: %w", vfserr.ErrUnavailable, err)
-	}
-	own, logonBin := kvstore.DomainSID(in.ID), sidBytes(logon)
 	for _, m := range all {
 		// decision: a SID's deny-only bit is read before its enabled bit:
 		// Windows writes a deny-only group with SE_GROUP_ENABLED clear, so

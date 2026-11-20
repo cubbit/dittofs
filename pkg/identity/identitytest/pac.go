@@ -50,6 +50,9 @@ type LogonInfo struct {
 	ExtraSIDs      []SIDAttrs
 	ResourceDomain string // the resource groups' domain SID; none
 	ResourceGroups []GroupRID
+	// ResourceFlagClear leaves UserFlags' resource-groups bit clear, though
+	// ResourceDomain and ResourceGroups are written.
+	ResourceFlagClear bool
 }
 
 // PACOpts is what a PAC carries. Every zero field takes the default its
@@ -244,7 +247,7 @@ func (l LogonInfo) marshal() []byte {
 	if len(l.ExtraSIDs) > 0 {
 		flags |= 0x20 // D: ExtraSids populated
 	}
-	if l.ResourceDomain != "" {
+	if l.ResourceDomain != "" && !l.ResourceFlagClear {
 		flags |= 0x200 // H: ResourceGroupIds populated
 	}
 	w.u32(flags)
