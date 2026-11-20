@@ -884,6 +884,7 @@ func (f *Fixture) start() {
 	f.Opens = opens
 	d.VersionBlock = f.block
 	open := d.Open
+	crashed := f.crashed
 	// decision: the refuse and fake-journal branches answer without the
 	// composed opener, as fault injection: rows that run them test the fake,
 	// not the shipped opener. Every other open goes through it.
@@ -906,7 +907,7 @@ func (f *Fixture) start() {
 			_ = j.Close()
 			return nil, err
 		}
-		return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
+		return wrapJournal(j, crashed, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
 	}
 	d.Existence = fencedExistence{Existence: d.Existence, crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate, commitGate: &f.commitGate}
 	d.Content = fencedContent{Content: d.Content, crashed: f.crashed}
