@@ -66,9 +66,10 @@ func (s *Server) mintMachine(ctx context.Context, name, linked string) (entity.P
 //
 // decision: a machine minted without a PAC is linked by its first verified
 // PAC, the one write a Kerberos sign-in makes to a record it did not mint.
-// Without it R39 refuses the machine's every PAC-bearing ticket, and nothing
-// else writes a machine's link, so it would be locked out for good. Its
-// ceiling: whoever first presents a verified PAC under the machine's name
+// Without it the check binding a PAC to its record refuses the machine's
+// every PAC-bearing ticket, and nothing else writes a machine's link, so it
+// would be locked out for good.
+// Its ceiling: whoever first presents a verified PAC under the machine's name
 // claims the record, so a computer account deleted and recreated under the
 // name before that first sign-in inherits the machine. It is bounded to
 // machine records, to a row linked for no SID and to the window before the

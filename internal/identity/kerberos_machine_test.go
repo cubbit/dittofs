@@ -76,7 +76,7 @@ func (k *kerberos) machines(t *testing.T) float64 {
 // identity_mints_total{kind="machine"}; each one's second sign-in binds the
 // same principal and writes nothing. Catches a machine name refused as an
 // unknown user, a record minted with more than its name, and a write on a
-// sign-in that mints nothing (R40, R41, R43, R23).
+// sign-in that mints nothing.
 func TestKerberosMachineMintedOnFirstSignIn(t *testing.T) {
 	k := kerberosServer(t)
 	for _, c := range []string{"host/build01.test.realm", "nfs/build01", "BUILD01$"} {
@@ -106,7 +106,7 @@ func TestKerberosMachineMintedOnFirstSignIn(t *testing.T) {
 // RFC 18 §10's "PAC" clause: a machine minted from a ticket with a PAC is
 // linked for its PAC's user SID in the mint's one batch, raising the
 // principals generation once, and signs in again, bound. Catches a machine
-// mint that loses its SID, left to a second write (R41).
+// mint that loses its SID, left to a second write.
 func TestKerberosMachineMintedWithAPAC(t *testing.T) {
 	k := kerberosServer(t)
 	const c, name = "host/build03.test.realm", "host/build03.test.realm@TEST.REALM"
@@ -129,7 +129,7 @@ func TestKerberosMachineMintedWithAPAC(t *testing.T) {
 // S-1-5-21-7-7-7-1105: bound to the same principal, the row's Linked that
 // SID and no key added; a later PAC carrying …-1106 is refused and the link
 // kept. Catches a machine locked out once it presents a PAC, and a link
-// every PAC rewrites (R41, R39, R23).
+// every PAC rewrites.
 func TestKerberosMachineLinkedByItsFirstPAC(t *testing.T) {
 	k := kerberosServer(t)
 	const c, name = "host/build02", "host/build02@TEST.REALM"
@@ -200,7 +200,7 @@ func signInPair(t *testing.T, b *both, steps ...func() (entity.Principal, string
 // Two first PAC-bearing sign-ins of host/build02, minted PAC-less, carrying
 // …-1105 and …-1106, held before the link's write and released together:
 // one is bound and the row linked for its SID, the other refused. Catches a
-// link written unconditionally, which the second would overwrite (R39).
+// link written unconditionally, which the second would overwrite.
 func TestKerberosMachineLinkRace(t *testing.T) {
 	k := kerberosServer(t)
 	const c, name = "host/build02", "host/build02@TEST.REALM"
@@ -236,7 +236,7 @@ func TestKerberosMachineLinkRace(t *testing.T) {
 
 // Two first sign-ins of one machine, held before the mint's Create and
 // released together, mint one record and are both bound to it. Catches a
-// plan that does not look the row up again on its re-run (R42).
+// plan that does not look the row up again on its re-run.
 func TestKerberosMachineMintRace(t *testing.T) {
 	k := kerberosServer(t)
 	const c = "host/build04"
@@ -267,7 +267,7 @@ func TestKerberosMachineMintRace(t *testing.T) {
 // writes nothing, and an existing user's sign-in writes nothing; a machine's
 // mint failing in the store is ErrUnavailable and writes nothing. Catches a
 // user minted on sight, a write on a successful sign-in, and a failed mint
-// leaving part of its batch (R17, R23).
+// leaving part of its batch.
 func TestKerberosMachineMintWritesNothingElse(t *testing.T) {
 	k := kerberosServer(t)
 	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
