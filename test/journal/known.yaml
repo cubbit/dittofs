@@ -232,14 +232,6 @@
   issue: '#3379'
   message: 'stub: Offload'
 
-- test: TestRFC1B_ReadOnlyStopsTheDrain
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens, a Sync answers the read-only refusal, Stats names the read-only state and WriteAt and Release are refused; the failed file''s second Sync then answers nil, acknowledging a sync on a read-only journal. Needs every Sync on a read-only journal refused. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
-  issue: '#3395'
-  message: 'a Sync of the failed write returned <nil>, want ErrJournalReadOnly at once'
-
 - test: TestRFC1B_ReclaimNotStarved
   status: fail
   fix: planned

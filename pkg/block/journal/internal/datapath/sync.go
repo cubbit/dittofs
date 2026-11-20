@@ -33,7 +33,23 @@ func (c *Core) Sync(ctx context.Context, s *Share, ids ...core.FileID) ([]core.S
 			return nil, err
 		}
 	}
-	return c.dur.Sync(ctx, ids...)
+	marks, err := c.dur.Sync(ctx, ids...)
+	// decision: a read-only journal acknowledges no Sync (RFC 1 §5.4, and
+	// §3.1's "on a journal turned read-only Sync fails with
+	// ErrJournalReadOnly"), so every one answers the read-only refusal, a
+	// Sync naming only files synced before the transition or no file at all
+	// included, though such a Sync issues no sync and its marks would be
+	// true. The refusal is asked after the layer's Sync, not before, so a
+	// failed window's report still reaches the first Sync of each file it
+	// names as a SyncError, which wraps the same refusal. Overturned if a
+	// caller is seen to need the marks of files a read-only journal had
+	// already synced, which would answer those with their marks.
+	if err == nil {
+		if err = c.dur.Admit(); err != nil {
+			return nil, err
+		}
+	}
+	return marks, err
 }
 
 // latestRecord returns the whole place of the file's newest record the index

@@ -87,7 +87,6 @@ var stubClass = regexp.MustCompile(`^stub: ([A-Za-z_.]+)`)
 // the test fails on it.
 var testOwner = map[string]string{
 	"TestRFC1A_SinceYieldsOver":             "#4863",
-	"TestRFC1B_ReadOnlyStopsTheDrain":       "#3395",
 	"TestRFC1C_LossSurvivesRestart":         "#4862",
 	"TestRFC28A_AZeroSlotIsNotTheEnd":       "#3596",
 	"TestRFC28A_FooterIsNotAuthoritative":   "#3395",
