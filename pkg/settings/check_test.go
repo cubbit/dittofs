@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/cubbit/dittofs/internal/bytesize"
 	"github.com/cubbit/dittofs/internal/prof"
 	adaptersettings "github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -633,4 +634,400 @@ func TestCheckRepairDelete(t *testing.T) {
 		settings.ErrUnknownKey,
 		"",
 	)
+}
+
+// The sections the value tests declare, each in a table of its own.
+type (
+	refSettings struct {
+		valid
+		Lo         uint32           `json:"lo"         class:"live"`
+		Credential entity.SecretRef `json:"credential" class:"live"`
+	}
+	tokenSettings struct {
+		Token string `json:"token" class:"live"`
+	}
+	cacheSettings struct {
+		valid
+		Size bytesize.ByteSize `json:"size" class:"live"`
+	}
+)
+
+// Validate prints the token it refuses, as a Validate breaking Of's contract
+// would.
+func (s tokenSettings) Validate() error {
+	if s.Token != "" {
+		return fmt.Errorf("bad token %q", s.Token)
+	}
+
+	return nil
+}
+
+// newerSchema is one past the newest settings schema this binary reads.
+var newerSchema = settings.Versions()[entity.FormatSettings].Max + 1
+
+// A put of a schema newer than this binary reads is refused whole, the
+// current one passing beside it; a stored row of a newer schema in the
+// section, at the installation or at the node scope, refuses a put and a
+// delete the same, while a current one passes; the put's own schema is
+// judged before the role, a stored row's after it; a schema 0 put passes.
+func TestCheckNewerSchema(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := table()
+
+	newerPut := setting(installation, "test.port.port", "1")
+	newerPut.Schema = newerSchema
+
+	refused(t, "newer put", s.check(tb, entity.RoleOperator, settings.Put(newerPut)),
+		settings.ErrNewerSchema,
+		"setting (installation): test.port.port: schema 2 is newer than this node reads, up to 1")
+	refused(t, "viewer's newer put", s.check(tb, entity.RoleViewer, settings.Put(newerPut)),
+		settings.ErrNewerSchema,
+		"setting (installation): test.port.port: schema 2 is newer than this node reads, up to 1")
+	passed(t, "current put", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.port.port", "1"))))
+
+	zero := setting(installation, "test.port.port", "1")
+	zero.Schema = 0
+	passed(t, "schema 0 put", s.check(tb, entity.RoleOperator, settings.Put(zero)))
+
+	s.raw(t, installation, "test.port.host",
+		rowValue(`"h"`, 1, settings.Versions()[entity.FormatSettings].Max))
+	passed(t, "put beside a current row", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.port.port", "1"))))
+
+	s.raw(t, installation, "test.port.host", rowValue(`"h"`, 1, newerSchema))
+
+	const line = "setting (installation): test.port.host: " +
+		"schema 2 is newer than this node reads, up to 1"
+
+	refused(t, "put beside a newer row", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.port.port", "1"))), settings.ErrNewerSchema, line)
+	refused(t, "node put beside a newer installation row", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(nodeA, "test.port.port", "1"))), settings.ErrNewerSchema, line)
+	refused(t, "delete beside a newer row", s.check(tb, entity.RoleOperator,
+		settings.Delete(installation, "test.port.port")), settings.ErrNewerSchema, line)
+	refused(t, "viewer beside a newer row", s.check(tb, entity.RoleViewer,
+		settings.Put(setting(installation, "test.port.port", "1"))), settings.ErrForbidden, "")
+
+	n := open(t)
+	n.raw(t, nodeA, "test.port.host", rowValue(`"h"`, 1, newerSchema))
+
+	refused(t, "node put beside a newer node row", n.check(tb, entity.RoleOperator,
+		settings.Put(setting(nodeA, "test.port.port", "1"))), settings.ErrNewerSchema,
+		"setting ("+scopeName(nodeA)+"): test.port.host: "+
+			"schema 2 is newer than this node reads, up to 1")
+	passed(t, "installation put, the node row outside its chain", n.check(tb,
+		entity.RoleOperator, settings.Put(setting(installation, "test.port.port", "1"))))
+}
+
+// A write may replace or delete its own row of a newer schema, since that
+// reads none of the row's fields (RFC 13 §2.3); the same key's row at a
+// wider scope of the chain, newer, still refuses it.
+func TestCheckNewerSchemaOwnRow(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := table()
+
+	s.raw(t, installation, "test.port.port", rowValue("1", 1, newerSchema))
+
+	passed(t, "own row put", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.port.port", "2"))))
+	passed(t, "own row delete", s.check(tb, entity.RoleOperator,
+		settings.Delete(installation, "test.port.port")))
+	refused(t, "same key at the wider scope", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(nodeA, "test.port.port", "2"))), settings.ErrNewerSchema,
+		"setting (installation): test.port.port: schema 2 is newer than this node reads, up to 1")
+
+	s.raw(t, installation, "test.port.host", rowValue(`"h"`, 1, newerSchema))
+
+	refused(t, "sibling", s.check(tb, entity.RoleOperator,
+		settings.Delete(installation, "test.port.port")), settings.ErrNewerSchema,
+		"setting (installation): test.port.host: schema 2 is newer than this node reads, up to 1")
+}
+
+// A required key left unset, by a put while none is stored or by the delete
+// of its only row, is refused naming the key.
+func TestCheckRequiredKey(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := settings.Table{
+		settings.Of(
+			"test.oidc",
+			settings.At(entity.ScopeInstallation),
+			oidcSettings{},
+			settings.Required("Issuer"),
+		),
+	}
+
+	const line = "setting (installation): test.oidc.issuer: required and has no value"
+
+	audience := settings.Put(setting(installation, "test.oidc.audience", `"a"`))
+
+	refused(t, "put with no issuer", s.check(tb, entity.RoleOperator, audience),
+		settings.ErrRequired, line)
+
+	s.put(t, installation, "test.oidc.issuer", `"https://idp"`)
+
+	passed(t, "put with the issuer stored", s.check(tb, entity.RoleOperator, audience))
+	refused(t, "delete of the issuer", s.check(tb, entity.RoleOperator,
+		settings.Delete(installation, "test.oidc.issuer")), settings.ErrRequired, line)
+}
+
+// A value the section's Validate refuses comes back as Validate words it,
+// with the value it refused, matchable as ErrInvalid; the value below it
+// passes, and Check stores nothing.
+func TestCheckValidateRefuses(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := table()
+
+	refused(t, "70000", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.port.port", "70000"))), settings.ErrInvalid,
+		"setting (installation): test.port: port must be at most 65535, got 70000")
+	passed(t, "65535", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.port.port", "65535"))))
+
+	for row, err := range s.cp.Settings(ctx, installation) {
+		t.Errorf("Check stored %s (err %v)", row.Key, err)
+	}
+}
+
+// A refused write of a key no section declares never prints its value; a
+// refused value of a declared field that holds no secret prints it.
+func TestCheckMarkerNotEchoed(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := table()
+
+	const marker = "MARKER-7f3c"
+
+	err := s.check(tb, entity.RoleAdmin,
+		settings.Put(setting(installation, "identity.secret", `"`+marker+`"`)))
+	refused(t, "undeclared key", err, settings.ErrUnknownKey, "")
+
+	if err != nil && strings.Contains(err.Error(), marker) {
+		t.Errorf("refusal of an undeclared key prints its value: %q", err.Error())
+	}
+
+	err = s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.port.port", "70000")))
+	if err == nil || !strings.Contains(err.Error(), "got 70000") {
+		t.Errorf("refused port: err = %v, want the value printed", err)
+	}
+}
+
+// A put that sets a reference field is refused, printing its key and never
+// its value; another field of the section, and the reference's delete, pass.
+func TestCheckReferenceRefused(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := settings.Table{
+		settings.Of(
+			"test.ref",
+			settings.At(entity.ScopeInstallation),
+			refSettings{},
+			settings.SecretRef("Credential", entity.SecretPassword),
+		),
+	}
+
+	ref := "[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]"
+
+	refused(t, "reference put", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.ref.credential", ref))), settings.ErrSecretRef,
+		"setting (installation): test.ref.credential: "+
+			"a reference is set by the secrets API, not by value")
+	passed(t, "other field", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.ref.lo", "1"))))
+	passed(t, "reference delete", s.check(tb, entity.RoleOperator,
+		settings.Delete(installation, "test.ref.credential")))
+}
+
+// A plaintext typed into a reference field never reaches a Validate that
+// prints it, and the decode's refusal of one prints it neither.
+func TestCheckReferenceBeforeValidate(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := settings.Table{
+		settings.Of(
+			"test.token",
+			settings.At(entity.ScopeInstallation),
+			tokenSettings{},
+			settings.SecretRef("Token", entity.SecretPassword),
+		),
+		settings.Of(
+			"test.ref",
+			settings.At(entity.ScopeInstallation),
+			refSettings{},
+			settings.SecretRef("Credential", entity.SecretPassword),
+		),
+	}
+
+	err := s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.token.token", `"MARKER-1"`)))
+	refused(t, "string reference", err, settings.ErrSecretRef, "")
+
+	if err != nil && strings.Contains(err.Error(), "MARKER-1") {
+		t.Errorf("string reference refusal prints the plaintext: %q", err.Error())
+	}
+
+	err = s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "test.ref.credential", `"MARKER-2"`)))
+	refused(t, "typed reference", err, settings.ErrInvalid, "")
+
+	if err != nil && strings.Contains(err.Error(), "MARKER-2") {
+		t.Errorf("typed reference refusal prints the plaintext: %q", err.Error())
+	}
+}
+
+// A refused value of the wrong type, and a refused size, are printed as
+// written, with no decoder's own text in the line.
+func TestCheckRefusedValuePrinted(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+
+	tb := append(table(), settings.Of(
+		"test.cache",
+		settings.At(entity.ScopeInstallation),
+		cacheSettings{},
+	))
+
+	for _, c := range []struct {
+		key, value, line string
+	}{
+		{
+			"test.port.port", `"abc"`,
+			`setting (installation): test.port.port: must be a number, got "abc"`,
+		},
+		{
+			"test.cache.size", `"1.5GB"`,
+			`setting (installation): test.cache.size: must be a whole number, got "1.5GB"`,
+		},
+	} {
+		err := s.check(tb, entity.RoleOperator, settings.Put(setting(installation, c.key, c.value)))
+		refused(t, c.key, err, settings.ErrInvalid, c.line)
+
+		for _, text := range []string{"cannot unmarshal", "json:", "strconv"} {
+			if err != nil && strings.Contains(err.Error(), text) {
+				t.Errorf("%s: refusal holds decoder text %q: %q", c.key, text, err.Error())
+			}
+		}
+	}
+}
+
+// A stored row Check cannot decode fails the write, never passes it, and
+// its bytes are never printed; the error is the store's, not a refusal, so
+// it wraps none of Check's ten refusals.
+func TestCheckUndecodableRow(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+
+	s.raw(t, installation, "test.port.host", []byte("\xffMARKER"))
+
+	err := s.check(table(), entity.RoleOperator,
+		settings.Put(setting(installation, "test.port.port", "1")))
+	if err == nil {
+		t.Fatal("put beside an undecodable row passed")
+	}
+
+	if strings.Contains(err.Error(), "MARKER") || strings.Contains(err.Error(), "\xff") {
+		t.Errorf("error prints the row's bytes: %q", err.Error())
+	}
+
+	for _, refusal := range []error{
+		settings.ErrUnknownKey,
+		settings.ErrWrongScope,
+		settings.ErrNewerSchema,
+		settings.ErrForbidden,
+		settings.ErrRequired,
+		settings.ErrInvalid,
+		settings.ErrBound,
+		settings.ErrSecretRef,
+		settings.ErrFormatVersion,
+		settings.ErrUnproven,
+	} {
+		if errors.Is(err, refusal) {
+			t.Errorf("a store error reads as a refusal: %v wraps %v", err, refusal)
+		}
+	}
+}
+
+// issuerSettings is an override section with a required key.
+type issuerSettings struct {
+	valid
+	Issuer string `json:"issuer" class:"live"`
+}
+
+// A node row of a field OverrideOnly does not name changes no value, so a
+// bad one stored around Check never refuses the node's write, as the node's
+// read skips it.
+func TestCheckOverrideOnlyRowSkipped(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+
+	s.raw(t, nodeA, "test.port.host", rowValue("1", 1, 1))
+
+	passed(t, "node port beside a skipped node host", s.check(table(), entity.RoleOperator,
+		settings.Put(setting(nodeA, "test.port.port", "1"))))
+}
+
+// A delete drops only its own scope's row: the installation's row of the
+// same key stays in the value the delete leaves.
+func TestCheckDeleteKeepsWiderRow(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := settings.Table{
+		settings.Of(
+			"test.issuer",
+			settings.Override(entity.ScopeInstallation, entity.ScopeNode),
+			issuerSettings{},
+			settings.Required("Issuer"),
+		),
+	}
+
+	s.put(t, installation, "test.issuer.issuer", `"https://wide"`)
+	s.put(t, nodeA, "test.issuer.issuer", `"https://node"`)
+
+	passed(t, "node override delete", s.check(tb, entity.RoleOperator,
+		settings.Delete(nodeA, "test.issuer.issuer")))
+}
+
+// A per-journal refusal names the key as written, the journal's ID in it:
+// a value the decode refuses, and a required key a delete leaves unset.
+func TestCheckThingInLines(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	key := "journal." + journalID + ".spare_target"
+	tb := settings.Table{
+		settings.Of(
+			"journal",
+			settings.PerThing(entity.ScopeNode, "journal"),
+			journalSettings{},
+			settings.Required("SpareTarget"),
+		),
+	}
+
+	passed(t, "put of the required key", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(nodeA, key, "1"))))
+	refused(
+		t,
+		"decode",
+		s.check(tb, entity.RoleOperator, settings.Put(setting(nodeA, key, `"abc"`))),
+		settings.ErrInvalid,
+		"setting ("+scopeName(nodeA)+"): "+key+`: must be a number, got "abc"`,
+	)
+	refused(t, "required", s.check(tb, entity.RoleOperator, settings.Delete(nodeA, key)),
+		settings.ErrRequired, "setting ("+scopeName(nodeA)+"): "+key+": required and has no value")
 }

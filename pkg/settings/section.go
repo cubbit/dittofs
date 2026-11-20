@@ -83,6 +83,9 @@ type Section struct {
 	secretRefs   map[string]entity.SecretKind
 	overrideOnly []string
 	checkTx      func(entity.ControlPlaneTx, Write, any) error
+	// decodeAny is decode for T, so Check builds a value of a type it only
+	// knows at run time.
+	decodeAny func(*Section, any, entity.SettingScope, []entity.Setting) (any, error)
 }
 
 // field is one key of a section and its binding class.
@@ -177,6 +180,14 @@ func Of[T interface{ Validate() error }](
 		scope:     scope,
 		def:       clone(def),
 		writeRole: entity.RoleOperator,
+		decodeAny: func(
+			sec *Section,
+			base any,
+			scope entity.SettingScope,
+			rows []entity.Setting,
+		) (any, error) {
+			return decode(sec, base.(T), scope, rows)
+		},
 	}
 
 	byPath := make(map[string]string) // a setting field's index path to its key
