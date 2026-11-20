@@ -88,6 +88,11 @@ func TestRefuseDir(t *testing.T) {
 			nil,
 		},
 		{"missing", dirState{}, nil},
+		{
+			"a file",
+			dirState{exists: true, notDir: true, mode: 0o600, owner: node, ownerSet: true},
+			[]string{"is not a directory"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -160,6 +165,57 @@ func TestReadRule(t *testing.T) {
 
 			if got := readRule(tc.err); got != tc.want {
 				t.Errorf("readRule(%v): got %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// The runtime directory that exists is checked harder than the state one,
+// since the socket in it has to be trusted (RFC 13 Appendix C): the node's
+// user must own it, and group or others must not write it. Root's is not
+// let in, and the platform that records no owner reads no bits.
+func TestRefuseRuntime(t *testing.T) {
+	t.Parallel()
+
+	const node = 1001
+
+	for _, tc := range []struct {
+		name string
+		dir  dirState
+		want []string
+	}{
+		{"the node user's 0700", dirState{exists: true, mode: 0o700, owner: node, ownerSet: true}, nil},
+		{"the node user's 0755", dirState{exists: true, mode: 0o755, owner: node, ownerSet: true}, nil},
+		{
+			"root's",
+			dirState{exists: true, mode: 0o700, owner: 0, ownerSet: true},
+			[]string{"is owned by another user"},
+		},
+		{
+			"writable by the group",
+			dirState{exists: true, mode: 0o770, owner: node, ownerSet: true},
+			[]string{"is writable by group or others"},
+		},
+		{
+			"writable by others",
+			dirState{exists: true, mode: 0o707, owner: node, ownerSet: true},
+			[]string{"is writable by group or others"},
+		},
+		{
+			"another user's and 0777",
+			dirState{exists: true, mode: 0o777, owner: 1000, ownerSet: true},
+			[]string{"is owned by another user", "is writable by group or others"},
+		},
+		{"no owner recorded", dirState{exists: true, mode: 0o777}, nil},
+		{"a link", dirState{exists: true, symlink: true, owner: node, ownerSet: true}, []string{"is a symlink"}},
+		{"a file", dirState{exists: true, notDir: true, owner: node, ownerSet: true}, []string{"is not a directory"}},
+		{"missing", dirState{}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := refuseRuntime(tc.dir, node); !slices.Equal(got, tc.want) {
+				t.Errorf("refuseRuntime(%+v): got %q, want %q", tc.dir, got, tc.want)
 			}
 		})
 	}

@@ -1,7 +1,6 @@
 package bootstrap
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -236,12 +235,7 @@ func TestRefusesRelativeRuntimeDirectory(t *testing.T) {
 
 			_, loadErr := Load("", environ)
 			dir, makeErr := MakeRuntimeDir(environ)
-			valErr := handBuilt().validate(
-				context.Background(),
-				environ,
-				distinctKeys(),
-				processUser(),
-			)
+			valErr := factsErr(handBuilt(), environ, processUser())
 
 			if !tc.refused {
 				if loadErr != nil {
@@ -306,12 +300,7 @@ func TestValidateReadsNothingAtRelativeRuntimeDir(t *testing.T) {
 			}
 
 			environ := []string{"STATE_DIRECTORY=" + t.TempDir(), tc.variable + "=" + tc.value}
-			err := handBuilt().validate(
-				context.Background(),
-				environ,
-				distinctKeys(),
-				processUser(),
-			)
+			err := factsErr(handBuilt(), environ, processUser())
 
 			want := "environment: " + tc.variable + ": must be an absolute path"
 			if err == nil || err.Error() != want {

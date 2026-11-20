@@ -75,33 +75,6 @@ func localKeys(b *Bootstrap, protocol, storage string) *Bootstrap {
 	return b
 }
 
-// stubKey is a provider that holds only an ID and has no key to close.
-type stubKey struct {
-	keyprovider.KeyProvider
-
-	id string
-}
-
-func (s stubKey) CurrentMasterKeyID() string {
-	return s.id
-}
-
-func (s stubKey) Close() error {
-	return nil
-}
-
-// distinctKeys is a loader that hands each load a key ID of its own and
-// unwraps nothing, for the rows that are about no key file.
-func distinctKeys() providerLoader {
-	n := 0
-
-	return func(context.Context, keyprovider.Config, string) (keyprovider.KeyProvider, error) {
-		n++
-
-		return stubKey{id: "id-" + strconv.Itoa(n)}, nil
-	}
-}
-
 // withStateDir names a state directory of its own after environ, so a
 // row never checks the directory of the host that runs it. The first
 // entry of a name wins, so a row naming its own keeps it.
@@ -109,6 +82,34 @@ func withStateDir(t *testing.T, environ []string) []string {
 	t.Helper()
 
 	return append(append([]string(nil), environ...), "STATE_DIRECTORY="+t.TempDir())
+}
+
+// factsErr runs the checks that read no key file, the directories the
+// environ argument names included, and returns their report as an error, nil
+// when they passed.
+func factsErr(b *Bootstrap, environ []string, node uint32) error {
+	var rep report
+
+	b.validateFacts(&rep)
+	b.validateDirs(lookupDirs(environ), node, &rep)
+
+	if len(rep) == 0 {
+		return nil
+	}
+
+	return rep.err()
+}
+
+// facts is factsErr after a state directory of its own, as the report's
+// text, empty when it passed.
+func facts(t *testing.T, b *Bootstrap, environ []string) string {
+	t.Helper()
+
+	if err := factsErr(b, withStateDir(t, environ), processUser()); err != nil {
+		return err.Error()
+	}
+
+	return ""
 }
 
 // show validates b with the loader given and returns the report as text,
@@ -200,7 +201,7 @@ func TestValidateRoles(t *testing.T) {
 			b := handBuilt()
 			b.Node.Roles = tc.roles
 
-			if got := show(t, b, nil, distinctKeys()); got != tc.want {
+			if got := facts(t, b, nil); got != tc.want {
 				t.Errorf("roles %v:\ngot:\n%s\nwant:\n%s", tc.roles, got, tc.want)
 			}
 		})
@@ -212,7 +213,10 @@ func TestValidateRoles(t *testing.T) {
 func TestValidateKeysNamed(t *testing.T) {
 	t.Parallel()
 
-	const storage = "  storage:\n    kind: local\n    local:\n      file: /k/storage.key\n"
+	files := keyFiles(t)
+	local := func(role, file string) string {
+		return "  " + role + ":\n    kind: local\n    local:\n      file: " + file + "\n"
+	}
 
 	for _, tc := range []struct {
 		name    string
@@ -221,12 +225,12 @@ func TestValidateKeysNamed(t *testing.T) {
 	}{
 		{
 			"protocol's kind unset",
-			"journals:\n  - path: /j/1\nkeys:\n" + storage,
+			"journals:\n  - path: /j/1\nkeys:\n" + local("storage", files[1]),
 			[]string{"P: keys.protocol.kind: required"},
 		},
 		{
 			"storage's kind unset",
-			"journals:\n  - path: /j/1\nkeys:\n  protocol:\n    kind: kmip\n",
+			"journals:\n  - path: /j/1\nkeys:\n" + local("protocol", files[0]),
 			[]string{"P: keys.storage.kind: required"},
 		},
 		{
@@ -236,16 +240,17 @@ func TestValidateKeysNamed(t *testing.T) {
 		},
 		{
 			"a local key with no file",
-			"journals:\n  - path: /j/1\nkeys:\n  protocol:\n    kind: local\n" + storage,
+			"journals:\n  - path: /j/1\nkeys:\n  protocol:\n    kind: local\n" +
+				local("storage", files[1]),
 			[]string{"P: keys.protocol.local.file: required with local"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			b, path := loadsFile(t, tc.content, nil)
+			b, path := loadsFile(t, tc.content, passphraseEnviron)
 
-			got := show(t, b, nil, distinctKeys())
+			got := showReal(t, b, passphraseEnviron)
 
 			if want := wantReport(path, tc.want...); got != want {
 				t.Errorf("keys named:\ngot:\n%s\nwant:\n%s", got, want)
@@ -432,7 +437,7 @@ func TestValidateCertificate(t *testing.T) {
 
 			b, path := loadsFile(t, tc.yaml+fileBase, nil)
 
-			got := show(t, b, nil, distinctKeys())
+			got := facts(t, b, nil)
 
 			if want := wantReport(path, tc.want...); got != want {
 				t.Errorf("certificate:\ngot:\n%s\nwant:\n%s", got, want)
@@ -470,7 +475,7 @@ func TestValidateCertificateHostName(t *testing.T) {
 	const want = "environment: api.tls.cert_file: " + off + "\n" +
 		"environment: api.tls.key_file: " + off
 
-	if got := show(t, b, nil, distinctKeys()); got != want {
+	if got := facts(t, b, nil); got != want {
 		t.Errorf("a host name:\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }
@@ -509,7 +514,7 @@ func TestValidateRequired(t *testing.T) {
 			b := handBuilt()
 			tc.set(b)
 
-			if got := show(t, b, nil, distinctKeys()); got != tc.want {
+			if got := facts(t, b, nil); got != tc.want {
 				t.Errorf("%s:\ngot:\n%s\nwant:\n%s", tc.name, got, tc.want)
 			}
 		})
@@ -545,7 +550,7 @@ func TestValidateOneReport(t *testing.T) {
 		"environment: journals: required\n" +
 		"environment: node.roles: both roles are needed, \"protocol\" is missing"
 
-	if got := show(t, b, nil, distinctKeys()); got != want {
+	if got := facts(t, b, nil); got != want {
 		t.Errorf("one report:\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }
@@ -570,7 +575,7 @@ func TestValidateSocketPastLimit(t *testing.T) {
 	want := "environment: api.socket: longer than " + strconv.Itoa(socketLimit) +
 		" bytes, the socket address limit"
 
-	if got := show(t, &loaded.Bootstrap, environ, distinctKeys()); got != want {
+	if got := facts(t, &loaded.Bootstrap, environ); got != want {
 		t.Errorf("a default socket past the limit:\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }
@@ -583,12 +588,12 @@ func TestValidateRefusesUnnamedStateDir(t *testing.T) {
 
 	b := handBuilt()
 
-	err := b.validate(context.Background(), nil, distinctKeys(), processUser())
+	err := factsErr(b, nil, processUser())
 	if err == nil || err.Error() != "environment: HOME: is not set" {
 		t.Errorf("no variable names the state directory: got %v, want HOME is not set", err)
 	}
 
-	err = b.validate(context.Background(), []string{"HOME=/h"}, distinctKeys(), processUser())
+	err = factsErr(b, []string{"HOME=/h"}, processUser())
 	if err != nil {
 		t.Errorf("HOME names the state directory: got %v, want no refusal", err)
 	}
@@ -678,7 +683,7 @@ func TestValidateWhere(t *testing.T) {
 		t.Fatalf("load with no default file: %v", err)
 	}
 
-	err = loaded.validate(context.Background(), environ, distinctKeys(), processUser())
+	err = factsErr(&loaded.Bootstrap, environ, processUser())
 	if err == nil || !strings.HasPrefix(err.Error(), "environment: journals: required") {
 		t.Errorf("no default file: got %v, want lines of the environment", err)
 	}
@@ -700,7 +705,7 @@ func TestValidateWhere(t *testing.T) {
 		t.Fatalf("load with the default file: %v", err)
 	}
 
-	err = loaded.validate(context.Background(), environ, distinctKeys(), processUser())
+	err = factsErr(&loaded.Bootstrap, environ, processUser())
 	if err == nil || !strings.HasPrefix(err.Error(), file+": journals: required") {
 		t.Errorf("an existing default file: got %v, want lines of %s", err, file)
 	}
@@ -714,7 +719,7 @@ func TestValidateWhere(t *testing.T) {
 		t.Fatalf("load with an empty default file: %v", err)
 	}
 
-	err = loaded.validate(context.Background(), environ, distinctKeys(), processUser())
+	err = factsErr(&loaded.Bootstrap, environ, processUser())
 	if err == nil || !strings.HasPrefix(err.Error(), file+": journals: required") {
 		t.Errorf("an empty default file: got %v, want lines of %s", err, file)
 	}
@@ -756,7 +761,7 @@ func TestValidateSocketLimitEdge(t *testing.T) {
 				t.Fatalf("default socket: %d bytes, want %d", got, tc.size)
 			}
 
-			if got := show(t, &loaded.Bootstrap, environ, distinctKeys()); got != tc.want {
+			if got := facts(t, &loaded.Bootstrap, environ); got != tc.want {
 				t.Errorf("socket of %d bytes:\ngot:\n%s\nwant:\n%s", tc.size, got, tc.want)
 			}
 		})
@@ -768,9 +773,7 @@ func TestValidateSocketLimitEdge(t *testing.T) {
 func TestValidateRelativeStateDir(t *testing.T) {
 	t.Parallel()
 
-	err := handBuilt().validate(
-		context.Background(), []string{"STATE_DIRECTORY=rel"}, distinctKeys(), processUser(),
-	)
+	err := factsErr(handBuilt(), []string{"STATE_DIRECTORY=rel"}, processUser())
 
 	const want = "environment: STATE_DIRECTORY: must be an absolute path"
 	if err == nil || err.Error() != want {
@@ -785,7 +788,7 @@ func TestValidateUnreadableStateDir(t *testing.T) {
 
 	environ := []string{"STATE_DIRECTORY=/s\x00x"}
 
-	err := handBuilt().validate(context.Background(), environ, distinctKeys(), processUser())
+	err := factsErr(handBuilt(), environ, processUser())
 
 	const want = "environment: STATE_DIRECTORY: cannot be read"
 	if err == nil || err.Error() != want {
@@ -800,12 +803,7 @@ func TestValidateUnreadableRuntimeDir(t *testing.T) {
 
 	environ := []string{"RUNTIME_DIRECTORY=/r\x00x"}
 
-	err := handBuilt().validate(
-		context.Background(),
-		withStateDir(t, environ),
-		distinctKeys(),
-		processUser(),
-	)
+	err := factsErr(handBuilt(), withStateDir(t, environ), processUser())
 
 	const want = "environment: RUNTIME_DIRECTORY: cannot be read"
 	if err == nil || err.Error() != want {
@@ -826,51 +824,62 @@ func TestValidateCertificateNoPort(t *testing.T) {
 	const want = "environment: api.tls.cert_file: " + off + "\n" +
 		"environment: api.tls.key_file: " + off
 
-	if got := show(t, b, nil, distinctKeys()); got != want {
+	if got := facts(t, b, nil); got != want {
 		t.Errorf("an address with no port:\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }
 
 // A key that does not load is refused at the key that names where it came
-// from, with the phrase of its error and no text of the provider's own.
+// from, with the phrase of its error and no text of the provider's own. The
+// local file is a real one, written corrupt.
 func TestValidateKeyLoadFailure(t *testing.T) {
 	t.Parallel()
 
+	files := keyFiles(t)
+	corrupt := filepath.Join(t.TempDir(), "corrupt.key")
+
+	if err := os.WriteFile(corrupt, []byte("not a key file"), 0o600); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+
+	b := localKeys(handBuilt(), corrupt, files[1])
+
+	const want = "environment: keys.protocol.local.file: the key file is corrupt"
+
+	if got := showReal(t, b, passphraseEnviron); got != want {
+		t.Errorf("key load failure:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A kmip key with no endpoint does not load either, and is refused at the
+// endpoint key of each role, through the real provider.
+func TestValidateKmipNoEndpoint(t *testing.T) {
+	t.Parallel()
+
+	const want = "environment: keys.protocol.kmip.endpoint: the key does not load\n" +
+		"environment: keys.storage.kmip.endpoint: the key does not load"
+
+	if got := showReal(t, handBuilt(), passphraseEnviron); got != want {
+		t.Errorf("kmip with no endpoint:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A load error is turned into a fixed phrase by its sentinel, and any other
+// error, a provider's own text included, into one that names none of it.
+func TestLoadRule(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
-		name string
-		set  func(*Bootstrap)
 		err  error
 		want string
 	}{
-		{
-			"a kmip key", func(*Bootstrap) {
-			}, errors.New("keyprovider: dial 10.9.9.9: refused"),
-			"environment: keys.protocol.kmip.endpoint: the key does not load\n" +
-				"environment: keys.storage.kmip.endpoint: the key does not load",
-		},
-		{
-			"a corrupt local file", func(b *Bootstrap) {
-				localKeys(b, "/k/p.key", "/k/s.key")
-			}, keyprovider.ErrKeyFileCorrupt,
-			"environment: keys.protocol.local.file: the key file is corrupt\n" +
-				"environment: keys.storage.local.file: the key file is corrupt",
-		},
+		{keyprovider.ErrPassphraseMissing, "the passphrase is unset"},
+		{keyprovider.ErrUnwrapFailed, "the key file does not unwrap"},
+		{keyprovider.ErrKeyFileCorrupt, "the key file is corrupt"},
+		{errors.New("keyprovider: dial 10.9.9.9: refused"), "the key does not load"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			b := handBuilt()
-			tc.set(b)
-
-			load := func(
-				context.Context, keyprovider.Config, string,
-			) (keyprovider.KeyProvider, error) {
-				return nil, tc.err
-			}
-
-			if got := show(t, b, nil, load); got != tc.want {
-				t.Errorf("key load failure:\ngot:\n%s\nwant:\n%s", got, tc.want)
-			}
-		})
+		if got := loadRule(tc.err); got != tc.want {
+			t.Errorf("loadRule(%v): got %q, want %q", tc.err, got, tc.want)
+		}
 	}
 }

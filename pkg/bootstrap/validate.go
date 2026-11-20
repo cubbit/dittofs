@@ -50,10 +50,7 @@ func (b *Bootstrap) validate(
 ) error {
 	var rep report
 
-	b.validateRoles(&rep)
-	b.validateRequired(&rep)
-	b.validateCertificate(&rep)
-	b.validateSocket(&rep)
+	b.validateFacts(&rep)
 	b.validateKeys(ctx, environ, load, &rep)
 	b.validateDirs(lookupDirs(environ), node, &rep)
 
@@ -62,6 +59,15 @@ func (b *Bootstrap) validate(
 	}
 
 	return rep.err()
+}
+
+// validateFacts runs the checks that read nothing but the bootstrap: the
+// roles, the required keys, the certificate and the socket path.
+func (b *Bootstrap) validateFacts(rep *report) {
+	b.validateRoles(rep)
+	b.validateRequired(rep)
+	b.validateCertificate(rep)
+	b.validateSocket(rep)
 }
 
 // whereOf is the <where> of a refusal of a key nobody set: the file the
@@ -270,13 +276,10 @@ func loadRule(err error) string {
 // validateDirs refuses the two directories when another user could replace
 // what sits in them: the state directory a symlink, owned by neither the
 // node's user nor root, or writable by others; the runtime directory a
-// symlink, and either one a path that is not absolute. A directory that is
+// symlink or not owned by the node's user or writable by group or others
+// (RFC 13 Appendix C: whoever can write it can unlink dfs.sock and bind its
+// own), and either one a path that is not absolute. A directory that is
 // missing passes, nothing is created here.
-//
-// decision: the runtime directory's owner and writers are not read here. The
-// service manager hands over a directory it made, and who may write it is
-// the control plane's rule for its group subdirectory; refusing on those
-// bits would refuse a node the service started correctly.
 func (b *Bootstrap) validateDirs(d resolvedDirs, node uint32, rep *report) {
 	switch {
 	case d.stateRefused:
@@ -295,9 +298,9 @@ func (b *Bootstrap) validateDirs(d resolvedDirs, node uint32, rep *report) {
 		rep.add(whereEnvironment, d.stateVar, rule)
 	}
 
-	// A state directory the host cannot read has no runtime directory
-	// under it to read either.
-	if state.readErr != nil {
+	// A state directory the host cannot read, or that is no directory, has
+	// no runtime directory under it to read either.
+	if state.readErr != nil || state.notDir {
 		return
 	}
 
@@ -307,11 +310,8 @@ func (b *Bootstrap) validateDirs(d resolvedDirs, node uint32, rep *report) {
 		return
 	}
 
-	switch f := dirFacts(d.runtime); {
-	case f.readErr != nil:
-		rep.add(whereEnvironment, d.runtimeVar, readRule(f.readErr))
-	case f.exists && f.symlink:
-		rep.add(whereEnvironment, d.runtimeVar, "is a symlink")
+	for _, rule := range refuseRuntime(dirFacts(d.runtime), node) {
+		rep.add(whereEnvironment, d.runtimeVar, rule)
 	}
 }
 
@@ -319,7 +319,11 @@ func (b *Bootstrap) validateDirs(d resolvedDirs, node uint32, rep *report) {
 type dirState struct {
 	exists  bool
 	symlink bool
-	mode    fs.FileMode
+
+	// notDir is set for a path that exists and is neither a directory nor
+	// a symlink, a regular file for one.
+	notDir bool
+	mode   fs.FileMode
 
 	// readErr is why the host could not report on the path, other than
 	// the path being absent.
@@ -345,6 +349,7 @@ func dirFacts(path string) dirState {
 	f := dirState{
 		exists:  true,
 		symlink: fi.Mode()&fs.ModeSymlink != 0,
+		notDir:  !fi.IsDir() && fi.Mode()&fs.ModeSymlink == 0,
 		mode:    fi.Mode().Perm(),
 	}
 
@@ -365,6 +370,8 @@ func refuseDir(f dirState, node uint32) []string {
 		return nil
 	case f.symlink:
 		return []string{"is a symlink"}
+	case f.notDir:
+		return []string{"is not a directory"}
 	}
 
 	var rules []string
@@ -375,6 +382,37 @@ func refuseDir(f dirState, node uint32) []string {
 
 	if f.ownerSet && f.owner != 0 && f.owner != node {
 		rules = append(rules, "is owned by another user")
+	}
+
+	return rules
+}
+
+// refuseRuntime names the refusals of a runtime directory, checked harder
+// than the state one since the socket in it has to be trusted: a symlink, a
+// path that is not a directory, an owner that is not the node's user (root
+// is not let in), a write bit of group or others. A missing directory names
+// nothing, and where the platform records no owner its mode bits are not
+// read, as in refuseDir.
+func refuseRuntime(f dirState, node uint32) []string {
+	switch {
+	case f.readErr != nil:
+		return []string{readRule(f.readErr)}
+	case !f.exists:
+		return nil
+	case f.symlink:
+		return []string{"is a symlink"}
+	case f.notDir:
+		return []string{"is not a directory"}
+	}
+
+	var rules []string
+
+	if f.ownerSet && f.owner != node {
+		rules = append(rules, "is owned by another user")
+	}
+
+	if f.ownerSet && f.mode&0o022 != 0 {
+		rules = append(rules, "is writable by group or others")
 	}
 
 	return rules

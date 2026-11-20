@@ -141,8 +141,10 @@ func firstEntry(v string) string {
 // returned as the manager set it and never created here;
 // $XDG_RUNTIME_DIR/dittofs and, with neither variable set, the run/
 // directory under the state directory are made at 0700 when they are
-// missing. A symlink on the path refuses: another user could replace the
-// directory the management socket binds in. So does a relative path, which
+// missing. One that exists is checked as Validate checks a runtime directory:
+// a symlink, a path that is not a directory, an owner other than the node's
+// user and a write bit of group or others refuse, since another user could
+// replace the directory the management socket binds in. So does a relative path, which
 // depends on the directory the process started from. Every refusal is a line
 // of the load's report, <where>: <key>: <rule>, naming the variable.
 //
@@ -160,11 +162,17 @@ func MakeRuntimeDir(environ []string) (string, error) {
 		return "", refuseOne(d.runtimeVar, "must be an absolute path")
 	}
 
+	// A state directory no variable names is the temp directory's, where
+	// another user could have made dittofs first: refused, as Validate does.
+	if d.stateTemp {
+		return "", refuseOne(d.stateVar, "is not set")
+	}
+
 	if d.runtimeManaged {
 		return d.runtime, nil
 	}
 
-	if err := makeDir(d.runtime, d.runtimeVar); err != nil {
+	if err := makeDir(d.runtime, d.runtimeVar, processUser()); err != nil {
 		return "", err
 	}
 
@@ -183,20 +191,25 @@ func refuseOne(key, rule string) error {
 
 // makeDir makes dir at 0700 when it is missing, the missing parents at the
 // same mode, the state directory included when the fallback hangs under a
-// state directory no start made yet. A symlink already on the path refuses
-// rather than being followed. A refusal names variable, the one that chose
-// dir, and never the path: the host's own error text holds it.
-func makeDir(dir, variable string) error {
-	fi, err := os.Lstat(dir)
-	switch {
-	case err == nil:
-		if fi.Mode()&fs.ModeSymlink != 0 {
-			return refuseOne(variable, "is a symlink")
+// state directory no start made yet. A directory already on the path is
+// checked as Validate checks a runtime directory (refuseRuntime) rather than
+// used. A refusal names variable, the one that chose dir, and never the
+// path: the host's own error text holds it.
+func makeDir(dir, variable string, node uint32) error {
+	f := dirFacts(dir)
+
+	if rules := refuseRuntime(f, node); len(rules) > 0 {
+		var rep report
+
+		for _, rule := range rules {
+			rep.add(whereEnvironment, variable, rule)
 		}
 
+		return rep.err()
+	}
+
+	if f.exists {
 		return nil
-	case !errors.Is(err, fs.ErrNotExist):
-		return refuseOne(variable, readRule(err))
 	}
 
 	if err := os.MkdirAll(dir, 0o0700); err != nil {

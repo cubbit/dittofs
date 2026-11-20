@@ -3,7 +3,6 @@
 package bootstrap
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,7 +40,7 @@ func validateWith(t *testing.T, environ []string) string {
 func validateAs(t *testing.T, environ []string, node uint32) string {
 	t.Helper()
 
-	err := handBuilt().validate(context.Background(), environ, distinctKeys(), node)
+	err := factsErr(handBuilt(), environ, node)
 	if err == nil {
 		return ""
 	}
@@ -92,6 +91,121 @@ func TestStateDirChecks(t *testing.T) {
 	}
 }
 
+// A regular file where a state or runtime directory belongs is refused, by
+// Validate and by MakeRuntimeDir, with its own phrase.
+func TestFileInPlaceOfDirectory(t *testing.T) {
+	t.Parallel()
+
+	file := filepath.Join(t.TempDir(), "file")
+
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		environ  []string
+		variable string
+	}{
+		{"the state directory", []string{"STATE_DIRECTORY=" + file}, "STATE_DIRECTORY"},
+		{"the runtime directory", []string{"RUNTIME_DIRECTORY=" + file}, "RUNTIME_DIRECTORY"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			want := "environment: " + tc.variable + ": is not a directory"
+
+			if got := validateWith(t, tc.environ); got != want {
+				t.Errorf("Validate:\ngot:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+
+	// MakeRuntimeDir reads $XDG_RUNTIME_DIR/dittofs, so the file sits there.
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "dittofs"), nil, 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	environ := []string{"STATE_DIRECTORY=" + t.TempDir(), "XDG_RUNTIME_DIR=" + home}
+
+	_, err := MakeRuntimeDir(environ)
+
+	const want = "environment: XDG_RUNTIME_DIR: is not a directory"
+	if err == nil || err.Error() != want {
+		t.Errorf("MakeRuntimeDir: got %v, want %q", err, want)
+	}
+}
+
+// A runtime directory that exists is refused when group or others can write
+// it, by Validate and by MakeRuntimeDir; one the node's user owns at 0700
+// passes both, and a runtime directory of another user is refused (RFC 13
+// Appendix C).
+func TestRuntimeDirOwnerAndMode(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		mode os.FileMode
+		want string
+	}{
+		{"0700", 0o700, ""},
+		{"0755", 0o755, ""},
+		{"0775", 0o775, "environment: XDG_RUNTIME_DIR: is writable by group or others"},
+		{"0777", 0o777, "environment: XDG_RUNTIME_DIR: is writable by group or others"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			home := t.TempDir()
+			dir := filepath.Join(home, "dittofs")
+
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatalf("make directory: %v", err)
+			}
+
+			if err := os.Chmod(dir, tc.mode); err != nil {
+				t.Fatalf("chmod directory: %v", err)
+			}
+
+			environ := []string{"STATE_DIRECTORY=" + t.TempDir(), "XDG_RUNTIME_DIR=" + home}
+
+			if got := validateWith(t, environ); got != tc.want {
+				t.Errorf("Validate:\ngot:\n%s\nwant:\n%s", got, tc.want)
+			}
+
+			_, err := MakeRuntimeDir(environ)
+
+			if got := errText(err); got != tc.want {
+				t.Errorf("MakeRuntimeDir:\ngot:\n%s\nwant:\n%s", got, tc.want)
+			}
+		})
+	}
+
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, "dittofs"), 0o700); err != nil {
+		t.Fatalf("make directory: %v", err)
+	}
+
+	// Root's state directory is let in whoever the node's user is.
+	environ := []string{"STATE_DIRECTORY=/", "XDG_RUNTIME_DIR=" + home}
+
+	const want = "environment: XDG_RUNTIME_DIR: is owned by another user"
+
+	if got := validateAs(t, environ, processUser()+1); got != want {
+		t.Errorf("another user's runtime directory:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// errText is an error's text, empty for nil.
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	return err.Error()
+}
+
 // dirOwner reads the owner, not the group, of the facts a unix host gives.
 func TestDirOwnerReadsUid(t *testing.T) {
 	t.Parallel()
@@ -136,14 +250,14 @@ func TestStateDirOwner(t *testing.T) {
 		t.Errorf("the node user's own directory:\ngot:\n%s\nwant no refusal", got)
 	}
 
-	if got := validateAs(t, []string{"STATE_DIRECTORY=/"}, owner+1); got != "" {
+	if got := validateAs(t, []string{"STATE_DIRECTORY=/", "RUNTIME_DIRECTORY=/no/such/run"}, owner+1); got != "" {
 		t.Errorf("the root of the file system:\ngot:\n%s\nwant no refusal", got)
 	}
 }
 
-// The runtime directory is refused for a link only, the one the service
-// manager names and the one under the state directory alike; its owner and
-// writers are not read here, and Validate makes nothing.
+// The runtime directory is refused for a link, the one the service manager
+// names and the one under the state directory alike, and for a write bit of
+// group or others; Validate makes nothing.
 func TestRuntimeDirChecks(t *testing.T) {
 	t.Parallel()
 
@@ -180,9 +294,9 @@ func TestRuntimeDirChecks(t *testing.T) {
 			"environment: STATE_DIRECTORY: is a symlink",
 		},
 		{
-			"group writable, as the service manager makes it",
+			"group writable",
 			[]string{"STATE_DIRECTORY=" + state, "RUNTIME_DIRECTORY=" + groupWritable},
-			"",
+			"environment: RUNTIME_DIRECTORY: is writable by group or others",
 		},
 		{"a plain one", []string{"STATE_DIRECTORY=" + state, "RUNTIME_DIRECTORY=" + plain}, ""},
 		{"a missing one", []string{"STATE_DIRECTORY=" + state}, ""},
@@ -221,4 +335,17 @@ func listTree(t *testing.T, dir string) []string {
 	}
 
 	return names
+}
+
+// MakeRuntimeDir refuses a state directory no variable names and no home
+// gives, as Validate does. Not parallel: it clears the process's HOME.
+func TestMakeRuntimeDirRefusesUnnamedStateDir(t *testing.T) {
+	t.Setenv("HOME", "")
+
+	_, err := MakeRuntimeDir(nil)
+
+	const want = "environment: HOME: is not set"
+	if err == nil || err.Error() != want {
+		t.Errorf("no variable names the state directory: got %v, want %q", err, want)
+	}
 }
