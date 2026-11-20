@@ -17,16 +17,14 @@ import (
 const (
 	// Exactly what one warm WriteAt spent when TestCounted_AllocationsPerCall
 	// measured it here; the proof test fails anything added above this.
-	maxWriteAllocs = 11.0
+	maxWriteAllocs = 10.0
 	// Exactly what one ReadAt of held bytes spent when
 	// TestCounted_AllocationsPerCall measured it here.
 	maxReadAllocs = 7.0
-	// The Stats pin reads 15: the journal's own reporting grew two
-	// allocations over the earlier pin of 13 before this branch began — a
-	// fresh checkout of the base line measures the same 15 — and the pin
-	// names what the real path spends, not a budget. Any allocation added
-	// past it fails the check the same way.
-	maxStatsAllocs = 15.0
+	// Exactly what one Stats spends now that it reads maintained counters
+	// and takes none of the locks a write takes; any allocation added past it
+	// fails the check the same way.
+	maxStatsAllocs = 13.0
 )
 
 // allocRig is the fixture the allocation checks measure against, with the
