@@ -269,10 +269,20 @@ func (r *Retirer) Retire(id core.SegmentID, reason Reason) (Retirement, error) {
 		class, recycle = r.cfg.Pool.wantRecycle()
 	}
 
+	var ret Retirement
 	if recycle {
-		return r.recycle(id, class)
+		ret, err = r.recycle(id, class)
+	} else {
+		ret, err = r.unlink(id, st)
 	}
-	return r.unlink(id, st)
+	// A retirement that completed leaves the queue whoever ran it: an id a
+	// repack retired directly while the worker held it queued would read as
+	// a recycle still to come, stalling the pool's refill for a spare that
+	// never lands.
+	if err == nil {
+		r.dropQueued(id)
+	}
+	return ret, err
 }
 
 // reasonState is the state the reason names. The pairs are exactly two, and
@@ -728,16 +738,22 @@ func (r *Retirer) pass() {
 		r.mu.Lock()
 		stopped := r.stoppedLocked()
 		delete(r.claimBlocked, id)
+		_, listed := r.queued[id]
 		r.mu.Unlock()
 		if stopped {
 			// The rest of the queue is dropped with the retirer: epic 9
 			// re-hands every not-held segment at the next open.
 			break
 		}
+		if !listed {
+			// A direct Retire already completed this one and dropped it; a
+			// second run would only count a double retire.
+			continue
+		}
 		_, err := r.Retire(id, reasons[i])
 		switch {
 		case err == nil:
-			r.dropQueued(id)
+			// Retire dropped the id itself.
 		case errors.Is(err, ErrNotInSet), errors.Is(err, ErrWrongState), errors.Is(err, ErrWrongReason):
 			// ErrNotInSet is the ledger's own double retire, which it
 			// already counted and logged at Warn; the other two are a bug

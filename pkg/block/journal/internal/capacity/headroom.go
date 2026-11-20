@@ -148,11 +148,11 @@ type Headroom struct {
 	// decision: what the ledger drew comes back only through Credit, when a
 	// retirement takes the segment that holds the records, and at the limit
 	// only repack retires: the credit is worth what repack retires there. A
-	// repack at the limit can today leave a segment standing for records the
-	// liveness tracker still counts, or have its carry refused naming the
-	// spare limit while the retirement queue holds an id the pass already
-	// retired. Overturned by a bounded journal held at its limit under
-	// removals whose headroom recovers through repack alone.
+	// repack at the limit leaves a segment standing for records the liveness
+	// tracker still counts, such as an unsettled removal's, so the headroom
+	// those records drew comes back only once they settle and a later pass
+	// retires the segment. Overturned by a journal held at its limit whose
+	// unsettled removals keep its headroom below half for good.
 	drawn atomic.Int64
 	// bySeg is, per segment, the record bytes of drawn records that
 	// appended into it: what Credit returns to drawn once the segment is

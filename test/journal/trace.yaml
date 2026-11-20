@@ -98,7 +98,7 @@ rfc1 / 9.4 / B / "named refusal":
 rfc1 / 9.4 / B / "share limit":
   tests: [TestRFC1B_ShareLimit]
 rfc1 / 9.4 / B / "repack at capacity":
-  tests: [TestRFC1B_RepackAtCapacity, TestRepackAtCapacityJournalLevel, TestRepackUnitsRunOnePerReserve]
+  tests: [TestRFC1B_RepackAtCapacity, TestRepackAtCapacityJournalLevel, TestRepackUnitsRunOnePerReserve, TestRFC1B_RepackAtTheLimitRecoversTheHeadroom]
 rfc1 / 9.4 / B / "descriptors":
   tests: [TestRFC1B_Descriptors]
 rfc1 / 9.4 / B / "coalescing":
