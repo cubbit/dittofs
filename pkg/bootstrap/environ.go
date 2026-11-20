@@ -193,7 +193,9 @@ func classifyEnv(name, value string, declared map[string]bool) (envClass, string
 	// start never reads a second source of configuration under a link's name.
 	// It follows the declared and allowed names, so a key's variable is still
 	// read as the key. Withdraw it if the kubelet's variables stop sharing
-	// this prefix.
+	// this prefix, or if anything but the declared-key lookup reads a
+	// DITTOFS_ name (load.go, the env[s.envName()] read), since a link
+	// passed here would then be read as configuration.
 	if serviceLink(name, value) {
 		return envPass, ""
 	}

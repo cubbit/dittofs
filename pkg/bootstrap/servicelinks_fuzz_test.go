@@ -19,7 +19,11 @@ type oracleForm struct {
 // oracleForms is the name half of the shapes, as patterns, each with its
 // independent value judge. The fuzz target holds serviceLink against
 // them: a pair is accepted exactly when the name fits a form and the
-// value fits that same form.
+// value fits that same form. The patterns are a copy of serviceLinkForms',
+// so this oracle does not judge the name side: that side is guarded by
+// kubeletEnv, the names the kubelet writes, in TestServiceLinksOfACRPass,
+// and by TestServiceLinkShapes, which breaks a name letter by letter. The
+// fuzz target guards the values and the coupling of a value to its form.
 var oracleForms = []oracleForm{
 	{regexp.MustCompile(`^DITTOFS_([A-Z0-9_]*_)?SERVICE_HOST$`), oracleIP},
 	{regexp.MustCompile(`^DITTOFS_([A-Z0-9_]*_)?PORT_[0-9]+_(TCP|UDP|SCTP)_ADDR$`), oracleIP},

@@ -22,7 +22,9 @@ type linkPort struct {
 // runs in the operator's namespace. Every name starts with the pod's own
 // prefix, so the mangled name is the variable name's first part. The
 // headless service has no address, so no variable is written for it and
-// it is absent.
+// it is absent. The list is written by hand: the operator is its own Go
+// module, so its constants cannot be imported here. Update it when the
+// operator adds a Service or a port.
 var kubeletServices = []struct {
 	name  string
 	ports []linkPort
@@ -59,8 +61,9 @@ var kubeletServices = []struct {
 
 // kubeletEnv writes the environment of one service the way the kubelet
 // does: the name upper cased with a hyphen as an underscore, then the
-// host, the first port's number and link, and per port its named service
-// port and the protocol, link, port and address of its numbered form.
+// host, the first port's number and link, and per port the protocol, link,
+// port and address of its numbered form, plus its named service port when
+// the port has a name (the kubelet writes none for an unnamed one).
 func kubeletEnv(service, ip string, ports []linkPort) map[string]string {
 	prefix := kubeletName(service)
 
@@ -73,7 +76,10 @@ func kubeletEnv(service, ip string, ports []linkPort) map[string]string {
 	for _, p := range ports {
 		form := prefix + "_PORT_" + strconv.Itoa(p.port) + "_" + strings.ToUpper(p.proto)
 
-		env[prefix+"_SERVICE_PORT_"+kubeletName(p.name)] = strconv.Itoa(p.port)
+		if p.name != "" {
+			env[prefix+"_SERVICE_PORT_"+kubeletName(p.name)] = strconv.Itoa(p.port)
+		}
+
 		env[form] = kubeletLink(ip, p)
 		env[form+"_PROTO"] = p.proto
 		env[form+"_PORT"] = strconv.Itoa(p.port)
@@ -127,6 +133,41 @@ func TestServiceLinksOfACRPass(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A service with one unnamed port gets the three variables of a service
+// and the four of its numbered form, and no named service port: every one
+// of them passes.
+func TestServiceLinksOfAnUnnamedPortPass(t *testing.T) {
+	t.Parallel()
+
+	env := kubeletEnv("dittofs-solo", "10.96.0.12", []linkPort{{"", 80, "tcp"}})
+
+	if len(env) != 7 {
+		t.Fatalf("the set of an unnamed port: got %d variables, want 7", len(env))
+	}
+
+	for name, value := range env {
+		if !serviceLink(name, value) {
+			t.Errorf("serviceLink(%q, %q): got false, want true", name, value)
+		}
+	}
+}
+
+// No declared key's variable has the name of a service link form, whatever
+// the value: the declared names are read as keys first, but a key whose
+// variable also parses as a link would pass the scan on a link's shape
+// alone if that order ever changed (RFC 13 Appendix C).
+func TestNoDeclaredNameIsAServiceLinkName(t *testing.T) {
+	t.Parallel()
+
+	for name := range declaredEnv {
+		for _, form := range serviceLinkForms {
+			if form.name.MatchString(name) {
+				t.Errorf("declared name %q fits the service link form %v", name, form.name)
+			}
+		}
 	}
 }
 
@@ -192,6 +233,8 @@ var serviceLinkRows = []struct {
 	{"DITTOFS_API_SERVICE_HOST", "localhost", false},
 	{"DITTOFS_API_SERVICE_HOST", "::ffff:10.0.0.5", false},
 	{"DITTOFS_API_SERVICE_HOST", "fe80::1%eth0", false},
+	// An octet with a leading zero is no address for netip.ParseAddr.
+	{"DITTOFS_API_SERVICE_HOST", "10.096.0.1", false},
 	{"DITTOFS_API_SERVICE_HOST", " 10.0.0.5", false},
 	{"DITTOFS_API_SERVICE_HOST", "10.0.0.5 ", false},
 	// Only the shape is checked: the loopback and unspecified addresses and

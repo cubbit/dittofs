@@ -84,7 +84,9 @@ func serviceLink(name, value string) bool {
 // isKubeletIP reports whether v is the address a service link holds as
 // the kubelet writes it: an IPv4 address, or a plain IPv6 one, no
 // brackets, no port, no zone and no IPv4 mapped onto IPv6. Cluster
-// addresses are none of the last two.
+// addresses are none of the last two. An octet with a
+// leading zero fails netip.ParseAddr, so it is refused: only the canonical
+// spelling passes.
 func isKubeletIP(v string) bool {
 	addr, err := netip.ParseAddr(v)
 	if err != nil {
