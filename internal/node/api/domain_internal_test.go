@@ -3,20 +3,26 @@ package api
 import (
 	"bytes"
 	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity"
+	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	pkgidentity "github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -439,6 +445,55 @@ func TestAccountHolds(t *testing.T) {
 		err := accountHolds(tc.join, tc.realm, tc.ok, tc.names)
 		if (err != nil) != tc.refused {
 			t.Errorf("%s: accountHolds = %v, want refused %v", tc.name, err, tc.refused)
+		}
+	}
+}
+
+// A write refused before its step clears the body it read, and what it
+// decoded, when the body carries a credential or a secret: a join refused
+// for its Idempotency-Key, whose body holds the administrator's password,
+// and a keytab put refused for a precondition it does not carry, whose body
+// holds the keytab.
+func TestRefusedWriteClearsItsBody(t *testing.T) {
+	s := newServer(Deps{Store: ntlmStore(t), Metrics: metrics.New("test", "test"), Logger: slog.New(slog.DiscardHandler), Ready: func() string { return "ready" },
+		Authenticate: func(*http.Request) (auth.Caller, error) {
+			return auth.Caller{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: entity.NewPrincipalID()}, Role: entity.RoleAdmin}, nil
+		}}, routes)
+	var seen []any
+	s.seen = func(v any) { seen = append(seen, v) }
+	for _, tc := range []struct {
+		name, method, path, body, header string
+		decoded                          func(any) []byte
+	}{
+		{"a join carrying an Idempotency-Key", http.MethodPost, "/api/v1/installation:join-domain",
+			`{"spec":{"mode":"offline","account":"DFS$"},"credential":{"password":"czNjcmV0"}}`, "Idempotency-Key", nil},
+		{"a keytab put carrying no precondition", http.MethodPut, "/api/v1/installation/keytab", `{"spec":{"value":"czNjcmV0"}}`, "",
+			func(v any) []byte { return v.(*apiv1.Credential).Spec.Value }},
+	} {
+		seen = nil
+		r := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		if tc.header != "" {
+			r.Header.Set(tc.header, "k")
+		}
+		w := httptest.NewRecorder()
+		s.api.Handler.ServeHTTP(w, r)
+		if w.Code < 400 {
+			t.Fatalf("%s: answered %d %s, want refused", tc.name, w.Code, w.Body)
+		}
+		if len(seen) == 0 {
+			t.Fatalf("%s: the write read no body", tc.name)
+		}
+		if body := seen[0].([]byte); len(body) != len(tc.body) || !bytes.Equal(body, make([]byte, len(body))) {
+			t.Errorf("%s: the body after the refusal %q, want %d bytes zeroed", tc.name, body, len(tc.body))
+		}
+		if tc.decoded == nil {
+			continue
+		}
+		if len(seen) < 2 {
+			t.Fatalf("%s: the write decoded no body", tc.name)
+		}
+		if v := tc.decoded(seen[1]); len(v) != len("s3cret") || !bytes.Equal(v, make([]byte, len(v))) {
+			t.Errorf("%s: the decoded value after the refusal %q, want s3cret's 6 bytes zeroed", tc.name, v)
 		}
 	}
 }

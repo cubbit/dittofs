@@ -150,6 +150,11 @@ type Server struct {
 	// answers rather than holding Stop until its wait has passed.
 	quit chan struct{}
 
+	// seen, nil but in a test, is handed each write's body as read, then
+	// its decoded body, so a test can see each cleared once the write
+	// returns.
+	seen func(any)
+
 	tracer             trace.Tracer
 	requests           *prometheus.CounterVec
 	seconds            *prometheus.HistogramVec

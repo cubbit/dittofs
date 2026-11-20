@@ -130,6 +130,12 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			}
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
+		if s.seen != nil {
+			s.seen(body)
+		}
+		if rt.keyless || w.secret != nil {
+			defer clear(body) // it holds a credential or a secret's value, on every path out
+		}
 		if err != nil {
 			return answer{}, &fieldError{detail: err.Error()}
 		}
@@ -142,17 +148,14 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		}
 		rq := request[B]{ID: id, Sub: sub, Query: r.URL.Query()}
 		prepared := false
-		if rt.keyless {
-			// The credential the body decodes is prepare's from the call on,
-			// which clears it; a refusal before it clears it here.
+		if rt.keyless || w.secret != nil {
+			// The credential or secret the body decodes is prepare's from the
+			// call on, which clears it; a refusal before it clears it here.
 			defer func() {
 				if !prepared {
 					wipe(reflect.ValueOf(&rq.Body).Elem())
 				}
 			}()
-		}
-		if w.secret != nil {
-			defer clear(body) // it holds the secret's value, encoded
 		}
 		rq.d = s.d
 		rq.own = func(ctx context.Context, target entity.ResourceRef, change []byte, fn func(entity.ControlPlaneTx) error) error {
@@ -165,6 +168,9 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			return nil
 		}
 		err = decode(bytes.NewReader(body), &rq.Body)
+		if s.seen != nil {
+			s.seen(&rq.Body)
+		}
 		if rt.keyless {
 			clear(body) // it holds a credential, which no digest reads on a keyless row
 		}
