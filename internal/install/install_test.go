@@ -543,6 +543,57 @@ func TestPasswordReference(t *testing.T) {
 
 func ptr(s string) *string { return &s }
 
+// A first-password file is read to RFC 23 §5.4's 4 KiB, its trailing newline
+// counted: a file of exactly 4 KiB gives its password, newline dropped, and
+// a file a byte longer refuses the step, naming the file and the limit,
+// before anything is written: the store and the journal directories are as
+// they were, the store is not initialised, and nothing is printed.
+func TestPasswordFileLimit(t *testing.T) {
+	const limit = 4 << 10
+	p := func(n int) string { return strings.Repeat("p", n) }
+	for _, tc := range []struct {
+		name, file string
+		want       string // the password, empty for a refusal
+	}{
+		{name: "4 KiB", file: p(limit), want: p(limit)},
+		{name: "4 KiB ending in LF", file: p(limit-1) + "\n", want: p(limit - 1)},
+		{name: "4 KiB and a byte", file: p(limit + 1)},
+		{name: "4 KiB and an LF", file: p(limit) + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFix(t)
+			d := f.deps()
+			d.PasswordFile = filepath.Join(t.TempDir(), "admin-password")
+			if err := os.WriteFile(d.PasswordFile, []byte(tc.file), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before := f.snapshot()
+			err := install.Run(t.Context(), d)
+			if tc.want == "" {
+				if !errors.Is(err, install.ErrPassword) || !strings.Contains(err.Error(), d.PasswordFile) || !strings.Contains(err.Error(), "longer than 4096 bytes") {
+					t.Fatalf("Run with a %d-byte file: got %v, want ErrPassword naming the file and the limit", len(tc.file), err)
+				}
+				if after := f.snapshot(); !maps.Equal(before, after) {
+					t.Errorf("the refused run changed the store or a journal directory: %d entries before, %d after", len(before), len(after))
+				}
+				if _, err := kvstore.Open(t.Context(), f.db); !errors.Is(err, kvstore.ErrNotInitialised) {
+					t.Errorf("store after the refusal: open got %v, want it not initialised", err)
+				}
+				if f.out.Len() != 0 {
+					t.Errorf("output of the refused run: %q, want nothing", f.out.String())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Run with a %d-byte file: %v", len(tc.file), err)
+			}
+			if err := f.verify(f.admin().Principal, tc.want); err != nil {
+				t.Errorf("sign-in with the file's %d-byte password: %v, want it accepted", len(tc.want), err)
+			}
+		})
+	}
+}
+
 // With no reference the password is 24 random bytes, encoded, printed once
 // to the step's writer and nowhere in its log; it signs in, and marks the
 // account must-change.

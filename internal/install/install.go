@@ -37,12 +37,17 @@ const AdminName = "admin"
 // generatedLen is how many random bytes a generated first password holds.
 const generatedLen = 24
 
+// maxPasswordFile is the most bytes a first-password file may hold, its
+// trailing newline counted.
+const maxPasswordFile = 4 << 10
+
 var (
 	// ErrInstalled refuses a run over an installation already finished.
 	ErrInstalled = errors.New("install: the installation is already initialised; to recover the administrator's password, run dfs reset-admin")
 	// ErrForeignJournal refuses a journal directory of another installation.
 	ErrForeignJournal = errors.New("install: journal directory belongs to another installation")
-	// ErrPassword refuses a first-password reference that gives no password.
+	// ErrPassword refuses a first-password reference that gives no password,
+	// or a file longer than one may be.
 	ErrPassword = errors.New("install: the administrator's password reference gives no password")
 )
 
@@ -365,17 +370,27 @@ func (s sealer) Seal(ctx context.Context, kind entity.SecretKind, owner entity.S
 
 // firstPassword reads the administrator's first password from the file or
 // the environment variable named, at most one of them, or generates one when
-// neither is. A file is read whole, one trailing LF or CRLF dropped. A
-// reference that gives no password, missing or empty, refuses, naming it,
-// and never falls back to a generated one.
+// neither is. A file is read whole, one trailing LF or CRLF dropped, and one
+// longer than maxPasswordFile bytes refuses, read no further than one byte
+// past it. A reference that gives no password, missing or empty, refuses,
+// naming it, and never falls back to a generated one.
 func firstPassword(file, env string) (password []byte, generated bool, err error) {
 	switch {
 	case file != "" && env != "":
 		return nil, false, fmt.Errorf("%w: both a file and an environment variable are named; name one", ErrPassword)
 	case file != "":
-		b, err := os.ReadFile(file)
+		f, err := os.Open(file)
 		if err != nil {
 			return nil, false, fmt.Errorf("%w: file %s: %w", ErrPassword, file, err)
+		}
+		defer func() { _ = f.Close() }() // read only, so a close loses nothing
+		b, err := io.ReadAll(io.LimitReader(f, maxPasswordFile+1))
+		if err != nil {
+			return nil, false, fmt.Errorf("%w: file %s: %w", ErrPassword, file, err)
+		}
+		if len(b) > maxPasswordFile {
+			clear(b)
+			return nil, false, fmt.Errorf("%w: file %s is longer than %d bytes", ErrPassword, file, maxPasswordFile)
 		}
 		if t, ok := bytes.CutSuffix(b, []byte("\r\n")); ok {
 			b = t

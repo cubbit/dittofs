@@ -198,8 +198,8 @@ func startRights(rows []route) map[apiv1.OpKind]auth.Right {
 		}
 	}
 	// The NT-hash deletion is started only by identity.ntlm's admin-only
-	// write, so its cancel asks the same right.
-	m[apiv1.OpNTHashDelete] = auth.Installation
+	// write, so its cancel asks that write's right.
+	m[apiv1.OpNTHashDelete] = ntlmRight
 	return m
 }
 

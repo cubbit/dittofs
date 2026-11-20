@@ -1192,8 +1192,12 @@ for turning NTLM back on is this one, and RFC 18 §3.5 points here:
 - The settings route enforces all three, reading `NTLMOff` and the running
   index tracked in the write's own transaction, since a section's validator
   reads no operation. A provisioning apply ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file))
-  writes `identity.ntlm` through the same check, as the API would. A write
-  that starts a deletion answers as a call that starts
+  writes `identity.ntlm` through the same check, as the API would. Only an
+  admin writes `identity.ntlm`: the write takes the installation right, as
+  the keytab's writes do, not the operator's right over settings, since it
+  decides whether NTLM sign-in is accepted at all and turning it off starts
+  the irreversible deletion of every NT hash, so an operator's write is
+  refused `403`. A write that starts a deletion answers as a call that starts
   an operation does (§4.6), `202` with the operation's `Location`, and the
   operation's target is the installation; one that starts none answers as a
   setting's write does.
@@ -1772,7 +1776,9 @@ second store.
 - **The first password.** The step takes the password from a reference — an
   environment variable or a file on the host, as a provisioning file names a
   secret — or, if none is given, generates 24 random bytes, encodes them, and
-  prints them once to the step's own standard output, never to a log.
+  prints them once to the step's own standard output, never to a log. A file
+  may hold at most 4 KiB, its trailing newline counted; a longer one is
+  refused before the step writes anything.
 - **It must be changed.** A generated password marks the account
   **must-change**. Until it changes, a sign-in returns a token that permits only
   `POST /auth/password` and sign-out; every other call is refused `403`
