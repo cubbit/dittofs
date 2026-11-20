@@ -152,22 +152,28 @@ func (c controlTx) draw(counter byte, lo, hi uint32, reserved bool, spell func(u
 	return entity.ProtocolID{}, &merrs.StoreError{Code: merrs.ErrNoSpace, Message: "no ID left to allocate in the range"}
 }
 
-// domainSID is rid under the installation's domain SID, S-1-5-21-a-b-c, a, b
-// and c the installation ID's first twelve bytes as three little-endian
-// 32-bit numbers: derived from the ID each time, never stored.
-func domainSID(install [16]byte, rid uint32) entity.ProtocolID {
+// DomainSID is the installation's domain SID, S-1-5-21-a-b-c, in binary
+// form: a, b and c the installation ID's first twelve bytes as three
+// little-endian 32-bit numbers, derived from the ID each time, never stored.
+func DomainSID(install [16]byte) []byte {
 	var b bytes.Buffer
 	sids.EncodeSID(&b, &sids.SID{
 		Revision:            1,
-		SubAuthorityCount:   5,
+		SubAuthorityCount:   4,
 		IdentifierAuthority: [6]byte{5: 5},
 		SubAuthorities: []uint32{21,
 			binary.LittleEndian.Uint32(install[0:4]),
 			binary.LittleEndian.Uint32(install[4:8]),
-			binary.LittleEndian.Uint32(install[8:12]),
-			rid},
+			binary.LittleEndian.Uint32(install[8:12])},
 	})
-	return entity.ProtocolID{Scheme: entity.SchemeSID, Value: b.String()}
+	return b.Bytes()
+}
+
+// domainSID is rid under the installation's domain SID.
+func domainSID(install [16]byte, rid uint32) entity.ProtocolID {
+	b := binary.LittleEndian.AppendUint32(DomainSID(install), rid)
+	b[1]++ // the sub-authority count
+	return entity.ProtocolID{Scheme: entity.SchemeSID, Value: string(b)}
 }
 
 // fileSpellings refuses a user holding one of a uid and a SID without the

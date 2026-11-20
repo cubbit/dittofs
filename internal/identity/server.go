@@ -181,27 +181,28 @@ type Server struct {
 	slotTaken func()
 	// awaiting is a test's pause in a pass-through call just before it waits
 	// for its answer, its bound or its caller's hang-up; nil in production.
-	awaiting  func()
-	tracer    trace.Tracer
-	logger    *slog.Logger
-	refusals  *prometheus.CounterVec   // by reason
-	mints     *prometheus.CounterVec   // by kind
-	unnamed   *prometheus.CounterVec   // by kind
-	remapped  *prometheus.CounterVec   // by kind
-	skipped   *prometheus.CounterVec   // by reason
-	unmapped  *prometheus.CounterVec   // by scheme
-	hashing   chan struct{}            // the password verifications' slots, GOMAXPROCS of them
-	dummy     []byte                   // the hash a password is verified against for an account that cannot sign in
-	dummyNT   [16]byte                 // the NT hash an NTLMv2 response is verified against for a user that cannot sign in
-	dummyUser entity.Principal         // the user principal, held by no record, a sign-in reads for a name no user holds
-	dummyRef  entity.SecretRef         // the reference, held by no record, a sign-in resolves for a user with no NT hash to resolve
-	ntHashed  func(nt [16]byte)        // a test's view of each NT hash a sign-in computed its proof with; nil in production
-	verified  func(phc []byte)         // a test's view of each hash VerifyPassword verified against; nil in production
-	holds     holds                    // the joins' administrator credentials
-	throttle  *throttle                // the logon failures per name and client address
-	replay    *replayCache             // the Kerberos authenticators seen within the clock skew
-	signIns   *prometheus.CounterVec   // by protocol, mechanism and outcome
-	signInSec *prometheus.HistogramVec // by mechanism
+	awaiting   func()
+	tracer     trace.Tracer
+	logger     *slog.Logger
+	refusals   *prometheus.CounterVec   // by reason
+	mints      *prometheus.CounterVec   // by kind
+	unnamed    *prometheus.CounterVec   // by kind
+	remapped   *prometheus.CounterVec   // by kind
+	skipped    *prometheus.CounterVec   // by reason
+	pacDropped *prometheus.CounterVec   // by reason
+	unmapped   *prometheus.CounterVec   // by scheme
+	hashing    chan struct{}            // the password verifications' slots, GOMAXPROCS of them
+	dummy      []byte                   // the hash a password is verified against for an account that cannot sign in
+	dummyNT    [16]byte                 // the NT hash an NTLMv2 response is verified against for a user that cannot sign in
+	dummyUser  entity.Principal         // the user principal, held by no record, a sign-in reads for a name no user holds
+	dummyRef   entity.SecretRef         // the reference, held by no record, a sign-in resolves for a user with no NT hash to resolve
+	ntHashed   func(nt [16]byte)        // a test's view of each NT hash a sign-in computed its proof with; nil in production
+	verified   func(phc []byte)         // a test's view of each hash VerifyPassword verified against; nil in production
+	holds      holds                    // the joins' administrator credentials
+	throttle   *throttle                // the logon failures per name and client address
+	replay     *replayCache             // the Kerberos authenticators seen within the clock skew
+	signIns    *prometheus.CounterVec   // by protocol, mechanism and outcome
+	signInSec  *prometheus.HistogramVec // by mechanism
 
 	slots     chan struct{}      // the pass-through's, channelSlots of them
 	chMu      sync.Mutex         // held across the channel's set-up
@@ -275,6 +276,7 @@ func New(d Deps) (*Server, error) {
 	s.unnamed = counter(d.Metrics, unnamedSpec)
 	s.remapped = counter(d.Metrics, remappedSpec)
 	s.skipped = counter(d.Metrics, skippedSpec)
+	s.pacDropped = counter(d.Metrics, pacDroppedSpec)
 	s.unmapped = counter(d.Metrics, unmappedSpec)
 	s.mismatches = counter(d.Metrics, mismatchesSpec)
 	s.signIns = counter(d.Metrics, signInsSpec)
