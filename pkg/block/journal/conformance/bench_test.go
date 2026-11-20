@@ -3,7 +3,9 @@
 package conformance
 
 import (
+	"cmp"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -30,29 +32,67 @@ import (
 // benchmarks skip, and the suite's own guard fails the cell.
 const benchDirEnv = "DITTOFS_BENCH_DIR"
 
-// The burst sizes, in total bytes over all writers. A burst with a sync after
-// each write is smaller, since its cost is the sync's, not the bytes'.
-//
-// ponytail: fixed here, so a nightly cannot scale them. Upgrade to one
-// environment knob read by jbBurstBytes when a nightly needs smaller or
-// larger bursts from the same bodies.
-const (
-	// ponytail: the streamed burst is half a segment, so a first iteration
-	// on the one stream never rolls and no write waits on a spare; a run of
-	// more than one iteration (-benchtime=Nx) rolls and the wait's spin
-	// shows in allocs/op. Upgrade to a wait for the pool before each roll
-	// when a run needs more than one iteration per journal.
-	jbBurstStreamed = 128 << 20
-	jbBurstSynced   = 16 << 20
-	jbWriters       = 16
-	// jbMixedStream is the streaming file of the mixed case: half a segment,
-	// so the one stream never rolls beside the small writer's records.
-	jbMixedStream = 128 << 20
-	// jbLookups is how many point lookups one iteration of J3 times.
-	jbLookups = 100_000
-	// jbWarmBytes is the file J3's warm read reads, a block at a time.
-	jbWarmBytes = 64 << 20
+// benchScaleEnv picks the sizes of every body: unset or "full" is the full
+// sizes, "small" the few-minute ones of the nightly data run. One set of
+// bodies runs at either, so the two never drift apart.
+const benchScaleEnv = "DITTOFS_BENCH_SCALE"
+
+// jbScale is the sizes one run of the bodies uses.
+type jbScale struct {
+	// burstStreamed and burstSynced are the bytes of a burst over all writers.
+	// A burst with a sync after each write is smaller, since its cost is the
+	// sync's, not the bytes'.
+	burstStreamed, burstSynced int64
+	// mixedStream is the streaming file of the mixed case.
+	mixedStream int64
+	// lookups is how many point lookups one iteration of J3 times, and
+	// extents the sizes of the index it looks in.
+	lookups int
+	extents [2]int
+	// warmBytes is the file J3's warm read reads, a block at a time.
+	warmBytes int64
+	// blocks are the block sizes of J1's rows, and scalingBlock the block of
+	// J2 and its twin.
+	blocks       []string
+	scalingBlock int
+}
+
+var (
+	jbFull = jbScale{
+		// ponytail: the full streamed burst is half a segment, so a first iteration
+		// on the one stream never rolls and no write waits on a spare; a run of more
+		// than one iteration (-benchtime=Nx) rolls and the wait's spin shows in
+		// allocs/op. Upgrade to a wait for the pool before each roll when a run needs
+		// more than one iteration per journal.
+		burstStreamed: 128 << 20, burstSynced: 16 << 20, mixedStream: 128 << 20,
+		lookups: 100_000, extents: [2]int{1_000, 1_000_000}, warmBytes: 64 << 20,
+		blocks: []string{"4k", "64k", "256k", "1m"}, scalingBlock: 1 << 20,
+	}
+	// jbSmall keeps every row and its twin, at blocks of 4 to 64 KiB.
+	jbSmall = jbScale{
+		burstStreamed: 8 << 20, burstSynced: 1 << 20, mixedStream: 8 << 20,
+		lookups: 10_000, extents: [2]int{1_000, 10_000}, warmBytes: 8 << 20,
+		blocks: []string{"4k", "64k"}, scalingBlock: 64 << 10,
+	}
 )
+
+// jbSizes reads the knob and fails b on a value it doesn't know, so a typo
+// never runs a size nobody asked for.
+func jbSizes(b *testing.B) jbScale {
+	b.Helper()
+
+	switch v := os.Getenv(benchScaleEnv); v {
+	case "", "full":
+		return jbFull
+	case "small":
+		return jbSmall
+	default:
+		b.Fatalf("bench: %s=%q, want full or small", benchScaleEnv, v)
+		return jbScale{}
+	}
+}
+
+const jbWriters = 16
 
 var jbInstall = journal.InstallationID{'j', 'b', 'e', 'n', 'c', 'h'}
 
@@ -105,6 +145,7 @@ func jbPrintBox(b *testing.B, dir string) {
 	fmt.Printf("sync-bound: %v\n", journal.SyncBound)
 	fmt.Printf("segment-cap-bytes: %d\n", journaltest.SegmentCap)
 	fmt.Printf("writers: %d\n", jbWriters)
+	fmt.Printf("scale: %s\n", cmp.Or(os.Getenv(benchScaleEnv), "full"))
 	jbBoxDone = true
 }
 
@@ -367,17 +408,18 @@ var jbBlocks = []struct {
 
 // jbForEachMode runs body once per block size and sync pattern, as a
 // sub-benchmark of b, the patterns being the rows J1's setup names.
-func jbForEachMode(b *testing.B, sizes []string, patterns []string, body func(b *testing.B, spec jbSpec)) {
+func jbForEachMode(b *testing.B, patterns []string, body func(b *testing.B, spec jbSpec)) {
+	sc := jbSizes(b)
 	for _, blk := range jbBlocks {
-		if !slices.Contains(sizes, blk.name) {
+		if !slices.Contains(sc.blocks, blk.name) {
 			continue
 		}
 		for _, pat := range patterns {
 			b.Run(blk.name+"-"+pat, func(b *testing.B) {
-				spec := jbSpec{writers: jbWriters, block: blk.bytes, span: jbBurstStreamed / jbWriters}
+				spec := jbSpec{writers: jbWriters, block: blk.bytes, span: sc.burstStreamed / jbWriters}
 				if pat == "sync" {
 					spec.syncEach = true
-					spec.span = jbBurstSynced / jbWriters
+					spec.span = sc.burstSynced / jbWriters
 				}
 				body(b, spec)
 			})
@@ -385,33 +427,31 @@ func jbForEachMode(b *testing.B, sizes []string, patterns []string, body func(b 
 	}
 }
 
-var (
-	jbAllSizes = []string{"4k", "64k", "256k", "1m"}
-	jbPatterns = []string{"nosync", "sync"}
-)
+var jbPatterns = []string{"nosync", "sync"}
 
 // J1: the write path, 16 writers on the one append stream.
 func BenchmarkJ1_WriteSequential(b *testing.B) {
-	jbForEachMode(b, jbAllSizes, jbPatterns, func(b *testing.B, spec jbSpec) {
+	jbForEachMode(b, jbPatterns, func(b *testing.B, spec jbSpec) {
 		jbBurst(b, jbJournal{b, jbOpen(b, 1)}, spec)
 	})
 }
 
 func BenchmarkJ1_WriteRandom(b *testing.B) {
-	jbForEachMode(b, jbAllSizes, jbPatterns, func(b *testing.B, spec jbSpec) {
+	jbForEachMode(b, jbPatterns, func(b *testing.B, spec jbSpec) {
 		spec.random = true
 		jbBurst(b, jbJournal{b, jbOpen(b, 1)}, spec)
 	})
 }
 
 // J1's mixed case: one writer syncing every 4 KiB beside one stream writing a
-// 128 MiB file in 1 MiB blocks, synced at its end, on the one stream. The
+// file in 1 MiB blocks (128 MiB at the full sizes), synced at its end, on the one stream. The
 // metric is the p99 of the small writer's write and sync together.
 func BenchmarkJ1_MixedDurability(b *testing.B) {
 	b.ReportAllocs()
 
 	sink := jbJournal{b, jbOpen(b, 1)}
-	b.SetBytes(jbMixedStream)
+	stream := jbSizes(b).mixedStream
+	b.SetBytes(stream)
 
 	var small []time.Duration
 	b.ResetTimer()
@@ -422,8 +462,8 @@ func BenchmarkJ1_MixedDurability(b *testing.B) {
 			if w == 0 {
 				defer done.Store(true)
 				p := make([]byte, 1<<20)
-				for off := int64(0); off < jbMixedStream; off += int64(len(p)) {
-					if _, err := sink.write(0, int64(iter)*jbMixedStream+off, p); err != nil {
+				for off := int64(0); off < stream; off += int64(len(p)) {
+					if _, err := sink.write(0, int64(iter)*stream+off, p); err != nil {
 						return err
 					}
 				}
@@ -452,8 +492,9 @@ func BenchmarkJ1_MixedDurability(b *testing.B) {
 // J2: write scaling, the same bytes spread over n files written concurrently,
 // each synced at its end, on the journal's default streams.
 func jbScaling(b *testing.B, n int) {
+	sc := jbSizes(b)
 	jbBurst(b, jbJournal{b, jbOpen(b, 16)}, jbSpec{
-		writers: n, block: 1 << 20, span: jbBurstStreamed / int64(n), syncEnd: true,
+		writers: n, block: sc.scalingBlock, span: sc.burstStreamed / int64(n), syncEnd: true,
 	})
 }
 
@@ -478,6 +519,7 @@ const (
 func jbPointLookup(b *testing.B, n int) {
 	b.ReportAllocs()
 
+	lookups := jbSizes(b).lookups
 	h := jbOpen(b, 16)
 	id := journaltest.File(0)
 	sink := jbJournal{b, h}
@@ -493,7 +535,7 @@ func jbPointLookup(b *testing.B, n int) {
 	var spent time.Duration
 	for range b.N {
 		start := time.Now()
-		for range jbLookups {
+		for range lookups {
 			off := int64(rng.IntN(n)) * jbPointStride
 			if _, missing, _, _, err := h.ReadAt(b.Context(), id, off, p); err != nil || len(missing) != 0 {
 				b.Fatalf("bench: lookup at %d: missing %v, err %v", off, missing, err)
@@ -503,12 +545,15 @@ func jbPointLookup(b *testing.B, n int) {
 	}
 	b.StopTimer()
 
-	b.ReportMetric(float64(spent)/float64(b.N*jbLookups), "ns/lookup")
+	b.ReportMetric(float64(spent)/float64(b.N*lookups), "ns/lookup")
 }
 
 func BenchmarkJ3_PointLookup(b *testing.B) {
-	b.Run("extents=1e3", func(b *testing.B) { jbPointLookup(b, 1_000) })
-	b.Run("extents=1e6", func(b *testing.B) { jbPointLookup(b, 1_000_000) })
+	// Each size is named by its own power of ten, so a figure's key says
+	// which index it looked in at either scale.
+	for _, n := range jbSizes(b).extents {
+		b.Run(fmt.Sprintf("extents=1e%d", int(math.Round(math.Log10(float64(n))))), func(b *testing.B) { jbPointLookup(b, n) })
+	}
 }
 
 // J3's warm read: one stream reading a held file 1 MiB at a time, after one
@@ -516,24 +561,26 @@ func BenchmarkJ3_PointLookup(b *testing.B) {
 func BenchmarkJ3_WarmRead1m(b *testing.B) {
 	b.ReportAllocs()
 
+	warm := jbSizes(b).warmBytes
+
 	h := jbOpen(b, 16)
 	id := journaltest.File(0)
 	sink := jbJournal{b, h}
 	p := make([]byte, 1<<20)
-	for off := int64(0); off < jbWarmBytes; off += int64(len(p)) {
+	for off := int64(0); off < warm; off += int64(len(p)) {
 		if _, err := sink.write(0, off, p); err != nil {
 			b.Fatalf("bench: fill the file at %d: %v", off, err)
 		}
 	}
 	readAll := func() {
-		for off := int64(0); off < jbWarmBytes; off += int64(len(p)) {
+		for off := int64(0); off < warm; off += int64(len(p)) {
 			if _, missing, _, _, err := h.ReadAt(b.Context(), id, off, p); err != nil || len(missing) != 0 {
 				b.Fatalf("bench: read at %d: missing %v, err %v", off, missing, err)
 			}
 		}
 	}
 	readAll()
-	b.SetBytes(jbWarmBytes)
+	b.SetBytes(warm)
 
 	b.ResetTimer()
 	for range b.N {
@@ -547,7 +594,7 @@ func BenchmarkJ3_WarmRead1m(b *testing.B) {
 // BenchmarkRawSequential is the twin of J1's sequential rows, with the same
 // block sizes and sync patterns.
 func BenchmarkRawSequential(b *testing.B) {
-	jbForEachMode(b, jbAllSizes, jbPatterns, func(b *testing.B, spec jbSpec) {
+	jbForEachMode(b, jbPatterns, func(b *testing.B, spec jbSpec) {
 		jbBurst(b, jbOpenRaw(b, spec.writers), spec)
 	})
 }
@@ -556,19 +603,20 @@ func BenchmarkRawSequential(b *testing.B) {
 // sizes and sync patterns: its 4 KiB row with a sync per write is the device's
 // own fsync rate.
 func BenchmarkRawRandom(b *testing.B) {
-	jbForEachMode(b, jbAllSizes, jbPatterns, func(b *testing.B, spec jbSpec) {
+	jbForEachMode(b, jbPatterns, func(b *testing.B, spec jbSpec) {
 		spec.random = true
 		jbBurst(b, jbOpenRaw(b, spec.writers), spec)
 	})
 }
 
-// BenchmarkRawScaling is the twin of J2: the same bytes over n files of 1 MiB
+// BenchmarkRawScaling is the twin of J2: the same bytes over n files of J2's
 // blocks, each synced at its end, as a sub-benchmark per file count.
 func BenchmarkRawScaling(b *testing.B) {
 	for _, n := range []int{1, 4, 16, 64} {
 		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			sc := jbSizes(b)
 			jbBurst(b, jbOpenRaw(b, n), jbSpec{
-				writers: n, block: 1 << 20, span: jbBurstStreamed / int64(n), syncEnd: true,
+				writers: n, block: sc.scalingBlock, span: sc.burstStreamed / int64(n), syncEnd: true,
 			})
 		})
 	}

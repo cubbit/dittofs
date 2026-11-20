@@ -91,10 +91,11 @@ func TestConformanceRunsBadgerS3(t *testing.T) {
 // the performance night on a host quiet for it, then every scenario, the long
 // ones in a cell of their own. No scenario runs anywhere else, and no pull
 // request sends a cell there. The night stops itself before dt's limit, which
-// kills it with no cleanup and no post.
+// kills it with no cleanup and no post. The journal's small-size bench cell runs after
+// the night, on the same host.
 func TestDedicatedHost(t *testing.T) {
 	r := repo(t)
-	want := map[string][]string{"merge": {"system"}, "nightly": {"perf-night", "system", "system/dedicated"}}
+	want := map[string][]string{"merge": {"system"}, "nightly": {"perf-night", "journal-bench-data", "system", "system/dedicated"}}
 	for _, tier := range []string{"pr", "merge", "nightly"} {
 		cells, err := Plan("../../..", r, tier, nil)
 		if err != nil {
