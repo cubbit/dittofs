@@ -543,6 +543,15 @@ func TestChmodMerge(t *testing.T) {
 	if es := (ACL{Entries: []ACE{named}}).WithMode(0o640, alice, false).Entries[0]; es.Mask&bitRights != ReadData {
 		t.Errorf("chmod 640 left the named user %x", es.Mask&bitRights)
 	}
+	// An allow naming the owner counts in the owner class and is no mask
+	// (RFC 19 §4.2, §4.3), so a chmod 770 still grants the group its bits.
+	solo := ACL{Entries: []ACE{allowOf(ModeRights(7, false), alice)}}.WithMode(0o770, alice, false)
+	if m := solo.Mode(alice); m != 0o770 {
+		t.Errorf("chmod 770 of an allow naming the owner: Mode = %o", m)
+	}
+	if len(solo.Entries) != 2 || solo.Entries[1] != allowOf(ModeRights(7, false), OwnerGroup) {
+		t.Errorf("chmod 770 of an allow naming the owner appended no GROUP@ allow: %+v", solo.Entries)
+	}
 }
 
 func TestACLValid(t *testing.T) {
