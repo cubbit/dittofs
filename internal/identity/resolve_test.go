@@ -35,16 +35,17 @@ import (
 // resolving is a server over the in-memory store, read through a fault
 // wrapper over a pass-through counter, with its metrics and spans recorded.
 type resolving struct {
-	srv   *identity.Server
-	st    *kvstore.Store
-	cp    kvstore.ControlPlane
-	fault *kvtest.FaultKV
-	reads *kv.Counting // what reached the store
-	reg   *metrics.Registry
-	spans *tracetest.SpanRecorder
-	tp    *sdktrace.TracerProvider
-	logs  *bytes.Buffer  // what the server logged, one JSON record a line
-	clock *sim.TestClock // the server's, where the fixture keeps it
+	srv    *identity.Server
+	st     *kvstore.Store
+	cp     kvstore.ControlPlane
+	fault  *kvtest.FaultKV
+	reads  *kv.Counting // what reached the store
+	reg    *metrics.Registry
+	spans  *tracetest.SpanRecorder
+	tp     *sdktrace.TracerProvider
+	logs   *bytes.Buffer  // what the server logged, one JSON record a line
+	clock  *sim.TestClock // the server's, where the fixture keeps it
+	logons *logonRecorder // the server's logon events, where the fixture keeps them
 }
 
 func newResolving(t *testing.T) *resolving {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -111,7 +112,8 @@ func TestVerifyPasswordWithoutSecrets(t *testing.T) {
 const alicePassword = "Password"
 
 // signing is a naming fixture whose server resolves secrets through the real
-// provider, over real key files and the same fault-wrapped store.
+// provider, over real key files and the same fault-wrapped store, records
+// its logon events, metrics and spans, and logs at Debug.
 func signing(t *testing.T) (*resolving, *secrets.Provider) {
 	t.Helper()
 	r := naming(t)
@@ -120,7 +122,11 @@ func signing(t *testing.T) (*resolving, *secrets.Provider) {
 		t.Fatal(err)
 	}
 	r.clock = sim.NewTestClock(time.Unix(0, 0))
-	if r.srv, err = identity.New(identity.Deps{Store: r.st, Clock: r.clock, Secrets: p}); err != nil {
+	r.logons = &logonRecorder{}
+	r.logs.Reset()
+	debug := slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	if r.srv, err = identity.New(identity.Deps{Store: r.st, Clock: r.clock, Secrets: p, Metrics: r.reg,
+		Tracer: r.tp.Tracer("test"), Logger: debug, Logons: r.logons}); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if err := r.srv.Apply(state(1)); err != nil {

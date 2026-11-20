@@ -407,7 +407,7 @@ func TestSignInOutage(t *testing.T) {
 	t.Run("no secret provider", func(t *testing.T) {
 		r, p := ntlmServer(t, "NAS01")
 		r.ntlmUser(t, p, "alice", "1500", alicePassword)
-		s, err := identity.New(identity.Deps{Store: r.st, Clock: sim.NewTestClock(time.Unix(0, 0))})
+		s, err := identity.New(identity.Deps{Store: r.st, Clock: sim.NewTestClock(time.Unix(0, 0)), Logons: r.logons})
 		if err != nil {
 			t.Fatal(err)
 		}
