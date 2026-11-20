@@ -302,7 +302,7 @@ cluster is several over one replicated store.
 ```go
 func run(ctx context.Context) error {
 	boot := config.LoadBootstrap()               // the host's file or environment
-	if err := node.Preflight(ctx, boot.Store, boot.V1Root(), boot.Devices(), systemClock{}); err != nil {
+	if err := node.Preflight(ctx, boot.Store, boot.Devices(), systemClock{}); err != nil {
 		return err                               // nothing was opened: the start check refused
 	}
 	n, err := node.New(node.Config{Bootstrap: boot, KV: kv.Open(boot.Store),
@@ -473,11 +473,11 @@ func (n *Node) Stop(ctx context.Context) error  // §2.2's stop: the components 
 // Preflight is the start check the host runs before it opens the metadata
 // store's KV. Over the store directory and the journal devices the bootstrap
 // names — **(cluster)**: a cluster node's store has no directory — and a
-// pre-journal (v1) layout on a device or at the configured pre-journal root,
-// it refuses naming what it found, and creates nothing. A first start meets
+// pre-journal (v1) layout on a device, in the store directory's parent or in
+// that parent's `blocks`, it refuses naming what it found, and creates nothing. A first start meets
 // two of its refusals most often: a store never initialised, and a bootstrap
 // with no journal device.
-func Preflight(ctx context.Context, storeDir string, v1dir string, devices []string, clock Clock, opts ...journal.Option) error
+func Preflight(ctx context.Context, storeDir string, devices []string, clock Clock, opts ...journal.Option) error
 
 // Config is what the host supplies and the node cannot build.
 type Config struct {
