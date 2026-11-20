@@ -2795,4 +2795,12 @@ func TestPoolHeadroomShortCountsTheSparesAnOpenBorrowed(t *testing.T) {
 	if got := p.HeadroomShort(); got != 0 {
 		t.Fatalf("after the refill settled the pool reads %d short, want 0: the refill makes the spare an open borrowed", got)
 	}
+	// An ordinary take of a headroom spare after the borrow was made again is
+	// the pool running, not the open's debt.
+	if _, err := p.Take(segment.Headroom); err != nil {
+		t.Fatalf("a headroom take after the settle: %v", err)
+	}
+	if got := p.HeadroomShort(); got != 0 {
+		t.Fatalf("after an ordinary headroom take the pool reads %d short, want 0: the borrow was already made again", got)
+	}
 }

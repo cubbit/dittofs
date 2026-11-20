@@ -759,7 +759,8 @@ func (p *Pool) ReadyContent() int {
 
 // BorrowHeadroom records that an open's re-appends took n headroom spares,
 // which the refill, or a retirement's recycle, makes again: HeadroomShort
-// reports at most this many until it has. It is called once, before Start.
+// reports at most this many, and the count only falls as the headroom
+// refills. It is called once, before Start.
 func (p *Pool) BorrowHeadroom(n int) { p.borrowed.Store(int64(n)) }
 
 // HeadroomShort is how many of the spares an open borrowed from the headroom
@@ -847,7 +848,16 @@ func (p *Pool) Check() error {
 
 // mirrorReady stores class c's ready count where Counters reads it; the
 // caller holds mu.
-func (p *Pool) mirrorReady(c Class) { p.readyN[c].Store(int64(len(p.ready[c]))) }
+func (p *Pool) mirrorReady(c Class) {
+	p.readyN[c].Store(int64(len(p.ready[c])))
+	if c == Headroom {
+		// The borrowed cap only falls: once the headroom stands at its
+		// target the borrow is made again, and a later take of a headroom
+		// spare is the ordinary running of the pool, never the open's debt.
+		short := p.t.Headroom - len(p.ready[Headroom]) - int(p.holdTaken.Load())
+		p.borrowed.Store(min(p.borrowed.Load(), int64(max(short, 0))))
+	}
+}
 
 // Counters returns the pool's maintained counters: atomic loads, taking no
 // lock, the counts read as maintained state, no walk of any class. The fields
