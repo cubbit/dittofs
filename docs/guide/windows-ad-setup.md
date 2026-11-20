@@ -262,7 +262,7 @@ New-ADComputer -Name DITTOFS `
 Don't set a `dNSHostName`/SPN on it — the host already owns `HOST/vm2…` via its
 own computer account, and this account is only a NETLOGON client identity.
 (Alternatively, skip this step and let DittoFS create + rotate the account itself
-with `online_join` — see [configuration.md](configuration.md#12-kerberos-configuration).)
+with `online_join`.)
 
 **Step 2 — add the machine account to the server config** (under `kerberos:`):
 

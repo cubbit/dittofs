@@ -31,7 +31,9 @@ var frozenExports = []string{
 	"func Load(configPath string, environ []string) (*Bootstrap, error)",
 	"func MustLoad(configPath string, environ []string) (*Bootstrap, error)",
 	"func LoadWithSources(configPath string, environ []string) (*Loaded, error)",
-	"type Loaded struct{Bootstrap Bootstrap; Source map[string]Source}",
+	"func ConfigPath(flag string, environ []string) string",
+	"type Loaded struct{Bootstrap Bootstrap; Source map[string]Source; File string; " +
+		"StateDir string; StateVar string; RuntimeDir string; RuntimeVar string}",
 	"type Source string",
 	"type Bootstrap struct{Logging LoggingConfig; " +
 		"Node struct{ID entity.NodeID; Roles []string}; " +

@@ -554,9 +554,6 @@ Permission levels: `none`, `read`, `read-write`, `admin`.
 
 Resolution order: user explicit permission → group permission → share default.
 
-For the full user management reference (LDAP/AD idmap, password hash format, per-share
-defaults), see [./configuration.md#9-user-management](./configuration.md#9-user-management).
-
 ---
 
 ## Testing SMB Operations

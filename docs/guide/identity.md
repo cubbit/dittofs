@@ -608,7 +608,6 @@ authenticating to DittoFS over **Kerberos** — the server side is fully proven
 (such as an IP) falls back to **NTLM**, which
 is now supported for AD domain users via **NETLOGON pass-through** — configure a
 machine account (`kerberos.machine_account`, see
-[configuration.md](configuration.md#12-kerberos-configuration) and
 [windows-ad-setup.md](windows-ad-setup.md)). For Kerberos acceptance testing,
 domain-join is still the path with no extra server dependency.
 
@@ -688,5 +687,4 @@ icacls \\<dittofs-smb-ip>\<share>\<file>     # CLI equivalent of the Security ta
   Both **offline** (pre-created computer account + supplied secret) and **online
   `net ads join`** (DittoFS creates the computer object over LDAPS and rotates
   the password) are supported. See
-  [configuration.md](configuration.md#12-kerberos-configuration) and
   [windows-ad-setup.md](windows-ad-setup.md).

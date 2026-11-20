@@ -56,8 +56,7 @@ absorbs writes, and hands them to an async syncer that offloads them to the bloc
   means no configured ceiling.
 - DittoFS speaks the **S3 API**, so [Cubbit DS3](https://www.cubbit.io/) (a DittoFS sponsor),
   MinIO, Ceph RGW, GCS (set `force_path_style: false`), Backblaze B2, Wasabi, DigitalOcean
-  Spaces, Alibaba OSS, Oracle OCI, Storj, etc. all work —
-  see the provider tables in [Configuration § Block Store](configuration.md#6-block-store-configuration).
+  Spaces, Alibaba OSS, Oracle OCI, Storj, etc. all work.
 - Dedup happens automatically across files in a share; identical content is stored once.
 - Pick a **commit acknowledgement** per share (`journal` or `block-store`; see the
   [durability guide](durability.md)) — it sets how far a write must land before an NFS
