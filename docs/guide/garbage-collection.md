@@ -77,7 +77,7 @@ pins its blocks until the snapshot is deleted. See [Snapshots](snapshots.md).
 
 ## Trash (recycle bin)
 
-If a share has the [trash](configuration.md#8-shares-exports) feature enabled
+If a share has the trash feature enabled
 (`trash_enabled`, **off by default**), deleting a file **moves it to `#recycle`**
 rather than removing it — its blocks stay referenced and are **not** GC-eligible.
 Blocks are reclaimed only after the file leaves the trash:
