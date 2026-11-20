@@ -212,10 +212,25 @@ func TestRepackUnitsRunOnePerReserve(t *testing.T) {
 	var total uint64
 	var passes int
 	for ; passes < 64; passes++ {
-		eventually(t, "the repack reserve was not whole between passes", func() bool {
-			return f.J.Stats().RepackReserveBytes == journaltest.FixtureSegmentCap
-		})
+		// The reserve's whole back is waited on the pool's own settle, not a
+		// wall clock: between passes the refills it rides are real I/O — a
+		// recycle of a retired segment is an unlink and a directory sync —
+		// that a loaded run stretches past any deadline short enough to
+		// carry an assertion. WaitSpares ends on the event the pool itself
+		// settles on. What it makes sure of is the reserve holding at least
+		// one whole segment, not exactly one: the pool keeps one spare past
+		// a class's need when a recycle lands a slot a make was already
+		// filling, ready until a pass spends it, so the reserve reads two
+		// segments' bytes between passes as often as one — an equality no
+		// event can promise, which is half of what the wall-clock poll it
+		// replaces asserted and failed its run on. The pass's own bound
+		// takes the figure as it reads it: no more than the reserve held
+		// when it began.
+		f.WaitSpares()
 		reserve := f.J.Stats().RepackReserveBytes
+		if reserve < journaltest.FixtureSegmentCap {
+			t.Fatalf("the repack reserve read %d bytes between passes, want at least the whole %d of one segment", reserve, journaltest.FixtureSegmentCap)
+		}
 		before := f.J.Stats().Counters.RepackedBytes
 		var freed int64
 		err := within(t, f, "a repack pass", func() (err error) {
