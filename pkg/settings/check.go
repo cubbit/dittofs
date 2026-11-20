@@ -69,16 +69,16 @@ func (t Table) Check(
 		return refuse(w.Scope, strconv.Quote(w.Key), "unknown key", ErrUnknownKey)
 	}
 
+	if !sec.declares(declared) && w.put != nil {
+		return refuse(w.Scope, strconv.Quote(w.Key),
+			"unknown key; did you mean "+sec.nearest(w.Key, thing)+"?", ErrUnknownKey)
+	}
+
 	if err := sec.checkScope(w, declared); err != nil {
 		return err
 	}
 
 	if !sec.declares(declared) {
-		if w.put != nil {
-			return refuse(w.Scope, strconv.Quote(w.Key),
-				"unknown key; did you mean "+sec.nearest(w.Key, thing)+"?", ErrUnknownKey)
-		}
-
 		// decision: a delete of a key the section does not declare, under
 		// its prefix, passes for an admin only, whatever the section's write
 		// role, so a section a newer binary's key left refused can be
@@ -102,6 +102,14 @@ func (t Table) Check(
 
 	if rank(caller) < rank(sec.writeRole) {
 		return refuse(w.Scope, w.Key, "written by "+writers(sec.writeRole), ErrForbidden)
+	}
+
+	// decision: a delete of a per-thing key with no thing names no row of any
+	// thing, so no required key or Validate judges it; refusing it would leave
+	// such a row unremovable. Withdraw once a per-thing section stores a key
+	// with no thing.
+	if sec.scope.form == formPerThing && thing == "" {
+		return nil
 	}
 
 	effective, err := sec.after(tx, w, declared, thing)
