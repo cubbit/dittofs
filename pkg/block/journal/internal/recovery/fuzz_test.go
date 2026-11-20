@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -210,6 +211,36 @@ func FuzzOpen(f *testing.F) {
 			}
 			if h.Kind <= format.KindUnmark && h.Kind != format.KindCloneTarget && !indexed[int64(off)] && !corrupt[int64(off)] {
 				t.Fatalf("record %d at %d verifies but is neither indexed nor dropped as corrupt (corrupt %+v)", i, off, st.Tails.Corrupt)
+			}
+		}
+	})
+}
+
+// FuzzTakenSegment runs the refused open's segment judgment over arbitrary
+// slot bytes: whatever the file holds, TakenSegment answers true only over
+// bytes that decode as a segment header — a header that verifies, or a
+// foreign journal's that verifies under the identity it names — and never
+// panics. Only the bytes the read returns are judged, so the independent
+// decode judges the same short prefix the seam answered with.
+func FuzzTakenSegment(f *testing.F) {
+	valid := raw.SegmentHeader{Identity: journalID, ID: 2}.Bytes()
+	f.Add(valid)                                  // a verifying header
+	f.Add(make([]byte, format.SegmentHeaderSize)) // a finished spare's zero slot
+	f.Add(valid[:10])                             // a short file
+	f.Add(bytes.Repeat([]byte{0xff}, 17))         // a garbage slot
+	name := format.SegmentName(2)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := newRig(t)
+		r.write(name, data)
+
+		if TakenSegment(context.Background(), r.runDeps(), []string{name}) {
+			hdr := data
+			if len(hdr) > format.SegmentHeaderSize {
+				hdr = hdr[:format.SegmentHeaderSize]
+			}
+			_, derr := format.DecodeSegmentHeader(hdr, core.JournalID{})
+			if derr != nil && !errors.Is(derr, format.ErrForeign) {
+				t.Fatalf("TakenSegment answered true over %d bytes that decode to err %v, want true only over a header that verifies or names a foreign journal", len(data), derr)
 			}
 		}
 	})
