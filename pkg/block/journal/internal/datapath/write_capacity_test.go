@@ -754,7 +754,7 @@ func TestWriteAt_SpareThenRetrySucceeds(t *testing.T) {
 // TestWriteAt_ThirdPieceFailsReturnsGrant faults the record write of the
 // third piece of a large write at the seam and checks the failed write
 // returns its grant: ReservedBytes returns to zero, the share's settled
-// bytes count only the pieces that landed, and the pool holds none of the
+// bytes count the pieces that landed and none is published, and the pool holds none of the
 // spares the take reserved for the write's remaining pieces.
 func TestWriteAt_ThirdPieceFailsReturnsGrant(t *testing.T) {
 	var armed atomic.Bool
@@ -781,22 +781,18 @@ func TestWriteAt_ThirdPieceFailsReturnsGrant(t *testing.T) {
 			// have not yet taken: the pool owes them to this write, taken
 			// ahead of every unreserved one.
 			flightHeld.Store(c.pool.Counters().Held)
-			p, ok := c.Index().Lookup(f, 4096)
+			// The second piece is appended and nothing is published yet: the
+			// stream's open segment is the one that piece sits in.
+			seg, ok := c.Streams().For(f).OpenSegment()
 			if !ok {
-				// The second piece's own publish has not run yet: look
-				// up the first piece and fault everything above its
-				// segment — the second and third pieces'.
-				p, ok = c.Index().Lookup(f, 0)
-				if !ok {
-					return
-				}
+				return
 			}
 			armed.Store(false)
 			var rules []kit.Rule
 			// The second piece sits in the segment the first rolled to;
 			// the third rolls to the next one. Fault from the segment
 			// after the piece we faulted on: the third piece's write.
-			for id := p.Record.Segment + 1; id <= p.Record.Segment+8; id++ {
+			for id := seg + 1; id <= seg+8; id++ {
 				rules = append(rules, kit.Failing(kit.OpWrite, format.SegmentName(id), 0, boom))
 			}
 			if err := seam.Schedule(rules...); err != nil {
@@ -821,30 +817,15 @@ func TestWriteAt_ThirdPieceFailsReturnsGrant(t *testing.T) {
 	if got := c.ReservedBytes(); got != 0 {
 		t.Fatalf("ReservedBytes = %d after the failed write, want 0", got)
 	}
-	// The pieces that landed are the share's; the failed piece is nowhere.
-	// The share's bytes count record bytes, the index's held bytes the
-	// payload of the pieces it holds — the landed part of the write, and
-	// nothing of the failed piece.
+	// The pieces that landed are the share's, on disk and counted, and none
+	// of them is published: the failed write holds nothing in the index.
 	if got := c.set.ShareBytes(1); got <= 0 || got >= 3*testSegmentCap {
 		t.Fatalf("the share's settled bytes = %d, want only the pieces that landed", got)
 	}
-	var published int64
-	for off := int64(0); published < 3*testSegmentCap; {
-		p, ok := c.Index().Lookup(f, off)
-		if !ok {
-			break
-		}
-		published += p.Extent.Len
-		off += p.Extent.Len
+	if h, _, _ := c.heldBytes(); h != 0 {
+		t.Fatalf("the index holds %d bytes of the failed write, want none", h)
 	}
-	if h, _, _ := c.heldBytes(); h != published {
-		t.Fatalf("the index holds %d bytes, want the %d of the pieces that landed", h, published)
-	}
-	if published >= 3*testSegmentCap {
-		t.Fatal("the failed write was published whole")
-	}
-	// The fault bit on the third piece: exactly two pieces landed, both
-	// whole segments' worth or less.
+	// The fault bit on the third piece: exactly two pieces landed.
 	if got := pieces.Load(); got != 2 {
 		t.Fatalf("%d pieces landed before the failure, want exactly 2", got)
 	}

@@ -57,12 +57,16 @@ import (
 // ahead of the capacity admission and the draw, so checking a file's tag and
 // claiming it are one step: two first writes of one new FileID through two
 // handles cannot both pass the check. The domain is the only one held across
-// the record write, and publishing follows the write: the index never names
+// the record write, and publishing follows the write of every piece: the index never names
 // a record that is not yet in its segment. Publishing never waits on a sync.
 //
-// Any error returns the zero version. A write that fails part-way leaves the
-// pieces it already published held; the error says the write as a whole did
-// not complete, and the grant's unused bytes and spares return with it.
+// Any error returns the zero version. An unreserved write whose later piece
+// fails to append publishes none of its pieces, so the index holds nothing of
+// it; a reserved write keeps the pieces it already published. The error says
+// the write as a whole did not complete, and the grant's unused bytes and
+// spares return with it. A publish the index refuses part-way leaves an
+// unreserved write held in part too, which the decision at that publish
+// records.
 func (c *Core) WriteAt(ctx context.Context, s *Share, id core.FileID, off int64, p []byte, mtime int64) (core.Version, error) {
 	exit, err := beginCall(ctx, s)
 	if err != nil {
@@ -166,11 +170,12 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	if c.beforeAppend != nil {
 		c.beforeAppend()
 	}
-	var done int64
+	var done, published int64
+	var placed []piece
 	for done < int64(len(p)) {
 		seq, err := c.counters.NextSeq()
 		if err != nil {
-			return core.Version{}, done, err
+			return core.Version{}, published, err
 		}
 		rest := p[done:]
 		pl, err := stream.AppendRoll(format.RecordHeader{
@@ -182,51 +187,39 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			Tag:     s.Tag,
 		}, format.RecordBody{Payload: rest, MTime: mtime}, roll)
 		if err != nil {
-			// decision: a write that fails on a later piece returns no
-			// version, yet the pieces it already published stay held under
-			// the version it drew, so reads serve bytes the caller has no
-			// version to record. The capacity admission keeps its own
-			// refusals — a write past the share's, the journal's, the
-			// index's or the version limit, and one whose spares the pool
-			// refused — off this path: they answer after the version is
-			// drawn, at the admission, before a byte is appended. An
-			// unreserved roll they no longer cover is the
-			// exception: the grant fits the write to its stream's roomless
-			// state and holds only the spares the pieces its split sized
-			// need, so a roll whose room something else spent — the idle
-			// sealer sealing the active segment, a durability re-append or
-			// loss record that never passed the admission, another
-			// same-stream writer whose own spares-holding grant reserved the
-			// room this one claimed — draws a piece beyond the split, and the
-			// hold serves it only while a spare of its own is left: past that
-			// the roll runs unreserved and meets the pool's refusal here,
-			// after the version was drawn and possibly after an earlier piece
-			// published. The direction fails closed — the write that drew the
-			// piece is refused rather than admitted past a limit — and the
-			// window stays open for the unreserved write alone: a reserved
-			// write's interleaved roll is replaced while its hold is short of
-			// what the reservation still needs (the Replace below), so only the
-			// unreserved piece's displaced room is left, and closing it needs
-			// the room a stream promises between a take and an append, which no
-			// interleaving caller can. The reserved path's own ceiling is a
-			// spare the pool cannot make: a full device's ENOSPC still refuses
-			// a reserved write here, as RFC 1 §6's ponytail records.
-			// The remaining cases after that are failures of the medium
-			// itself, which no reservation can predict. Returning the drawn
-			// version with the error would overturn this only together with
-			// three more changes: WriteAt would report the extent it
-			// published (the done this loop already computes) beside the
-			// version, through Handle.WriteAt and Reservation.WriteAt; the
-			// engine would need a way to record a partially published write,
-			// which it drops with the error today; and the model would need a
-			// rule for a refused write that publishes pieces. Until then the
-			// zero version on every error stays, as WriteAt's doc says.
-			return core.Version{}, done, err
+			// decision: an unreserved write that fails on a later piece
+			// publishes nothing and returns no version: the pieces it already
+			// appended stay on disk and counted as the share's, unnamed by the
+			// index, and the grant's unused bytes return with it. A reserved
+			// write publishes each piece as it lands and keeps the ones a
+			// refusal leaves behind, which RFC 1 §6 specifies for it, so its
+			// holder reserves again for what they do not cover. The window a
+			// later piece can fail in is an unreserved roll the grant no
+			// longer covers: the grant fits the write to its stream's roomless
+			// state and holds only the spares the pieces its split sized need,
+			// so a roll whose room
+			// something else spent — the idle sealer sealing the active
+			// segment, a durability re-append or loss record that never passed
+			// the admission, another same-stream writer whose own
+			// spares-holding grant reserved the room this one claimed — draws a
+			// piece beyond the split, and the hold serves it only while a spare
+			// of its own is left: past that the roll runs unreserved and meets
+			// the pool's refusal here. The direction fails closed: the write
+			// that drew the piece is refused rather than admitted past a limit.
+			// A reserved write's interleaved roll is replaced while its hold is
+			// short of what the reservation still needs (the Replace below); its
+			// own ceiling is a spare the pool cannot make, where a full device's
+			// ENOSPC still refuses it here. The remaining cases are failures of
+			// the medium itself, which no reservation can predict. Overturned
+			// by a stream that promises the room between a take and an append,
+			// which no interleaving caller can, or by a write contract that
+			// reports the extent a refused write held.
+			return core.Version{}, published, err
 		}
 		if pl.N <= 0 {
 			// A stream that places nothing and reports no error would have
 			// this loop append the same rest forever.
-			return core.Version{}, done, fmt.Errorf("datapath: the stream placed no byte of a %d-byte piece of file %v at offset %d", len(rest), id, off+done)
+			return core.Version{}, published, fmt.Errorf("datapath: the stream placed no byte of a %d-byte piece of file %v at offset %d", len(rest), id, off+done)
 		}
 		// The record is in its segment and counted as the share's: its
 		// own record size — the header, body and padding it occupies —
@@ -253,73 +246,110 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		if c.afterAppend != nil {
 			c.afterAppend()
 		}
-		// decision: the index may still refuse a publish after its record
-		// is in the segment. The tag check above refuses a file another
-		// share owns before a version is drawn, and the file's tag cannot
-		// change while this call holds the file's append domain — only the
-		// claim that publishes under this same domain writes a tag, and it
-		// holds the domain from its check to its publish — so a tag refusal
-		// here needs another tag to claim the file inside WriteRetain
-		// itself, without the domain: no path does that today, and a path
-		// that did would be the fault shape the rival mark exists for,
-		// reached only by a bug. The entry bound, likewise, is checked
-		// inside the admission's section above — Take's CheckWrite, its
-		// held-entry test and its pending count — so a refusal here needs the
-		// window between that check and this publish, which a concurrent
-		// write's own admission can pass in: each admission names the entries
-		// its pieces will add and holds them as pending until they publish.
-		// The caller gets the error and the record stays on disk, never
-		// published by this run. What is left here is the window no pre-check
-		// closes, and a refusal in it is overturn evidence for a bound the
-		// admission reserves as its own.
-		hd, claimed, err := c.index.WriteRetainClaim(s.Tag, id, index.Placed{
-			Extent:  core.Extent{Off: off + done, Len: pl.N},
-			Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
-			Version: v,
-			At:      c.clock.Now(),
-		}, seq)
-		if err != nil {
-			return core.Version{}, done, err
+		pc := piece{pl: pl, seq: seq, off: off + done}
+		done += pl.N
+		if res == nil {
+			placed = append(placed, pc)
+			continue
 		}
-		c.Account(hd)
-		// The piece's index entry is the bound's now: the figure that held it
-		// — a reservation's held entries, or a plain grant's pending ones —
-		// hands over what the index admitted, so a write beside this one finds
-		// it spent only once the index holds it — the safe order, for the
-		// count and both held figures never all miss it.
-		grant.Claimed(claimed)
-		// decision: the index exports no write that skips retaining what it
-		// supersedes, so a piece whose record a sync already covered lifts
-		// here, straight after the publish, rather than leaving the content
-		// retained until the durability worker's pass. The lift is per record
-		// extent: it drops only what this piece's own record superseded, so a
-		// durable piece never drops what a sibling piece of the same version,
-		// not yet durable, still has to hold. The index's error from the lift
-		// is unreachable today, because the function it runs returns nil; it
-		// is ignored, and the worker lifts again after this write releases the
-		// file's append domain and logs a failure. Its delta is accounted
-		// before the error is looked at. Overturned by an index write that
-		// takes a durable flag per piece.
-		//
-		// ponytail: Durable scans every stream's ledger forward under that
-		// stream's mutex, once per published piece, and a ledger holds up to
-		// one sync bound of writes, so the cost grows with concurrent small
-		// writes. Upgrade to a scan from the end of each ledger, or one stream,
-		// inside Durable when a profile of small concurrent writes shows it.
-		if c.dur.Durable(pl.Loc) {
-			lh, lifted, _ := c.index.LiftSuperseded(id, v, core.Extent{Off: off + done, Len: pl.N})
-			c.Account(lh)
-			// Every segment this publish's own lift emptied is offered with
-			// the causality record its retirement waits durable on — the
-			// same shaped report the removal path makes — so the offer needs
-			// no tick scan to find it.
-			for _, seg := range lifted {
-				if !c.liveness.Held(seg) {
-					c.retiring.Emptied(seg, pl.Loc)
-				}
+		if err := c.publishPiece(s, id, v, grant, pc); err != nil {
+			return core.Version{}, published, err
+		}
+		published += pl.N
+	}
+	// An unreserved write publishes its pieces only once every one of them is
+	// in its segment: a roll refused part-way leaves the records it appended
+	// on disk and counted, never named by the index, rather than a write held
+	// in part under a version the caller never receives. A reserved write
+	// publishes each piece as it lands, for a refusal on its roll keeps the
+	// pieces already published and spends its version.
+	for _, pc := range placed {
+		if err := c.publishPiece(s, id, v, grant, pc); err != nil {
+			return core.Version{}, published, err
+		}
+		published += pc.pl.N
+	}
+	return v, published, nil
+}
+
+// publishPiece names one appended piece in the index under the write's
+// version and hands the entry it took to the grant. An error leaves the
+// piece's record on disk, counted and unpublished.
+func (c *Core) publishPiece(s *Share, id core.FileID, v core.Version, grant *capacity.Grant, pc piece) error {
+	pl, seq := pc.pl, pc.seq
+	// decision: the index may still refuse a publish after its record
+	// is in the segment. The tag check above refuses a file another
+	// share owns before a version is drawn, and the file's tag cannot
+	// change while this call holds the file's append domain — only the
+	// claim that publishes under this same domain writes a tag, and it
+	// holds the domain from its check to its publish — so a tag refusal
+	// here needs another tag to claim the file inside WriteRetain
+	// itself, without the domain: no path does that today, and a path
+	// that did would be the fault shape the rival mark exists for,
+	// reached only by a bug. The entry bound, likewise, is checked
+	// inside the admission's section above — Take's CheckWrite, its
+	// held-entry test and its pending count — so a refusal here needs the
+	// window between that check and this publish, which a concurrent
+	// write's own admission can pass in: each admission names the entries
+	// its pieces will add and holds them as pending until they publish.
+	// The caller gets the error and the record stays on disk, never
+	// published by this run. What is left here is the window no pre-check
+	// closes, and a refusal in it is overturn evidence for a bound the
+	// admission reserves as its own.
+	hd, claimed, err := c.index.WriteRetainClaim(s.Tag, id, index.Placed{
+		Extent:  core.Extent{Off: pc.off, Len: pl.N},
+		Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
+		Version: v,
+		At:      c.clock.Now(),
+	}, seq)
+	if err != nil {
+		return err
+	}
+	c.Account(hd)
+	// The piece's index entry is the bound's now: the figure that held it
+	// — a reservation's held entries, or a plain grant's pending ones —
+	// hands over what the index admitted, so a write beside this one finds
+	// it spent only once the index holds it — the safe order, for the
+	// count and both held figures never all miss it.
+	grant.Claimed(claimed)
+	// decision: the index exports no write that skips retaining what it
+	// supersedes, so a piece whose record a sync already covered lifts
+	// here, straight after the publish, rather than leaving the content
+	// retained until the durability worker's pass. The lift is per record
+	// extent: it drops only what this piece's own record superseded, so a
+	// durable piece never drops what a sibling piece of the same version,
+	// not yet durable, still has to hold. The index's error from the lift
+	// is unreachable today, because the function it runs returns nil; it
+	// is ignored, and the worker lifts again after this write releases the
+	// file's append domain and logs a failure. Its delta is accounted
+	// before the error is looked at. Overturned by an index write that
+	// takes a durable flag per piece.
+	//
+	// ponytail: Durable scans every stream's ledger forward under that
+	// stream's mutex, once per published piece, and a ledger holds up to
+	// one sync bound of writes, so the cost grows with concurrent small
+	// writes. Upgrade to a scan from the end of each ledger, or one stream,
+	// inside Durable when a profile of small concurrent writes shows it.
+	if c.dur.Durable(pl.Loc) {
+		lh, lifted, _ := c.index.LiftSuperseded(id, v, core.Extent{Off: pc.off, Len: pl.N})
+		c.Account(lh)
+		// Every segment this publish's own lift emptied is offered with
+		// the causality record its retirement waits durable on — the
+		// same shaped report the removal path makes — so the offer needs
+		// no tick scan to find it.
+		for _, seg := range lifted {
+			if !c.liveness.Held(seg) {
+				c.retiring.Emptied(seg, pl.Loc)
 			}
 		}
-		done += pl.N
 	}
-	return v, done, nil
+	return nil
+}
+
+// piece is one appended record of a write waiting to be published: where the
+// stream placed it, the sequence number it carries and the file offset it covers.
+type piece struct {
+	pl  segment.Placed
+	seq core.Seq
+	off int64
 }

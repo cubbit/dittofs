@@ -290,18 +290,23 @@ func TestWriteAt_SyncCompletesBetweenAppendAndPublish(t *testing.T) {
 // index places it and the padded length of its record on disk.
 func pieceLoc(t *testing.T, c *Core, seam *kit.Seam, f core.FileID, off int64) segment.Location {
 	t.Helper()
-	p, ok := c.Index().Lookup(f, off)
-	if !ok {
-		t.Fatalf("no held piece of %v at %d", f, off)
-	}
+	r := pieceRecord(t, seam, f, off)
+	return segment.Location{Segment: r.Segment, Off: r.Header.Offset, Len: r.Header.Size()}
+}
+
+// pieceRecord is the record on disk of f's write that covers off. It reads the
+// segments, not the index: a write publishes its pieces only once every one
+// is appended, so a piece in flight is on disk and not yet held.
+func pieceRecord(t *testing.T, seam *kit.Seam, f core.FileID, off int64) onDisk {
+	t.Helper()
 	recs := fileWrites(t, seam, f)
 	i := slices.IndexFunc(recs, func(r onDisk) bool {
-		return r.Header.Offset == int64(p.Record.Offset) && r.Header.Extent.Off == p.Extent.Off
+		return r.Header.Extent.Off <= off && off < r.Header.Extent.Off+r.Header.Extent.Len
 	})
 	if i < 0 {
-		t.Fatalf("no record on disk for piece %+v", p)
+		t.Fatalf("no record on disk of %v covers offset %d", f, off)
 	}
-	return segment.Location{Segment: p.Record.Segment, Off: recs[i].Header.Offset, Len: recs[i].Header.Size()}
+	return recs[i]
 }
 
 // retainedIn is the retained bytes of f inside [lo, hi).
@@ -409,7 +414,7 @@ func TestWriteAt_EveryPieceReachesTheLedger(t *testing.T) {
 	}()
 
 	// The second piece's append rolls and so seals the first segment: the
-	// write waits on that sync with only the first piece published.
+	// write waits on that sync with only the first piece appended.
 	eventually(t, "the first segment's seal to wait", func() bool { return h1.Waiting() > 0 })
 	loc1 := pieceLoc(t, c, seam, f, 0)
 	if loc1.Segment != 1 {
@@ -418,11 +423,11 @@ func TestWriteAt_EveryPieceReachesTheLedger(t *testing.T) {
 	if c.Durability().Durable(loc1) {
 		t.Fatalf("piece 1 %+v is durable while its segment's sync is held", loc1)
 	}
-	p1, _ := c.Index().Lookup(f, 0)
+	p1Len := pieceRecord(t, seam, f, 0).Header.Extent.Len
 	h1.Release()
 
 	eventually(t, "the second segment's seal to wait", func() bool { return h2.Waiting() > 0 })
-	loc2 := pieceLoc(t, c, seam, f, p1.Extent.Len)
+	loc2 := pieceLoc(t, c, seam, f, p1Len)
 	if loc2.Segment != 2 {
 		t.Fatalf("the second piece is in segment %d, want 2", loc2.Segment)
 	}
