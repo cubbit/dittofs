@@ -96,6 +96,48 @@ func TestListingResumesFromKey(t *testing.T) {
 	}
 }
 
+// A node's connections page in the order of their Since, then Remote's text,
+// then Protocol, the key a cursor resumes after, so connections accepted in
+// the same instant are each read once and none is skipped (RFC 23 §4.2):
+// across pages of one, the connection accepted a second earlier from the
+// highest address leads, then the four accepted together, a remote that
+// prefixes another's before it and one remote's NFS connection before its
+// SMB one. The rows are the API's input, what the node hands it, as a
+// Caller is: real clients cannot be accepted in the same instant on cue.
+func TestTheConnectionsPageBySinceRemoteAndProtocol(t *testing.T) {
+	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	rows := []apiv1.Connection{
+		{Protocol: "smb", Remote: "10.0.0.2:700", Since: at},
+		{Protocol: "smb", Remote: "10.0.0.1:900", Since: at},
+		{Protocol: "nfs", Remote: "10.0.0.1:900", Since: at},
+		{Protocol: "smb", Remote: "10.0.0.1:90", Since: at},
+		{Protocol: "nfs", Remote: "10.0.0.9:1", Since: at.Add(-time.Second)},
+	}
+	s := serve(t, as(entity.RoleViewer, false), func(d *api.Deps) {
+		d.Connections = func() []apiv1.Connection { return slices.Clone(rows) }
+	})
+	path := "/api/v1/nodes/" + uuid.UUID(testNode).String() + "/connections?limit=1"
+	var got []string
+	for next := ""; len(got) < 10; {
+		r := s.do(t, http.MethodGet, path+next, "")
+		var p apiv1.Page[apiv1.Connection]
+		if err := json.Unmarshal(r.body, &p); r.status != http.StatusOK || err != nil {
+			t.Fatalf("GET %s%s: answered %d %s", path, next, r.status, r.body)
+		}
+		for _, c := range p.Items {
+			got = append(got, c.Protocol+" "+c.Remote)
+		}
+		if p.Next == "" {
+			break
+		}
+		next = "&after=" + url.QueryEscape(p.Next)
+	}
+	want := []string{"nfs 10.0.0.9:1", "smb 10.0.0.1:90", "nfs 10.0.0.1:900", "smb 10.0.0.1:900", "smb 10.0.0.2:700"}
+	if !slices.Equal(got, want) {
+		t.Errorf("connections paged one at a time: %q, want %q", got, want)
+	}
+}
+
 // ?limit= is 100 when absent and from 1 to 1,000; next is set only when an
 // item follows the page.
 func TestListingLimit(t *testing.T) {

@@ -1012,7 +1012,9 @@ type Adapter interface {
 
 	// Connections lists the connections open now, for the API's client
 	// list. It is read from core's connection registry, never written by
-	// protocol code.
+	// protocol code. A connection is listed from its accept, before its
+	// first byte is read, until its teardown ends, before its socket is
+	// closed.
 	Connections() iter.Seq[ConnInfo]
 }
 
