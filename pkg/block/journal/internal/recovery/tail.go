@@ -260,13 +260,16 @@ func classifyTails(rd *reader, identity core.JournalID, named, unverified map[co
 				tornSlot = true
 			}
 		}
-		// decision: a record whose header verifies and whose payload rots is
-		// reported by no open phase, here included: the open never reads a
-		// content payload, so the scan indexes the record and the read that
-		// serves its extent catches the rot, through the corrupt path that
-		// raises the loss event and drops it. The ceiling is a rotted payload
-		// that stays unreported until something reads it. Overturned only if
-		// the open is ever ruled to verify live payloads at rebuild.
+		// decision: only the newest segment of each stream has its
+		// sync-proven payloads read at open (the kinds pass's fold,
+		// confineRotten), so a record those reads find rotten reaches this
+		// loop as a drop the fold proved synced and the corrupt arm takes
+		// below; a record ending past the synced-through belongs to the
+		// tail proof instead. Every other segment's payload is read by no
+		// open phase, so its rot is caught by the read that serves the
+		// record's extent, through the corrupt path that raises the loss
+		// event and drops it, and stays unreported until something reads
+		// it.
 		if damaged {
 			out.Damaged = append(out.Damaged, id)
 		}
