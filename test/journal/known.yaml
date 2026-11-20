@@ -650,7 +650,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and runs the spare, retire and recycle legs; the check then stops at the stub call it reaches. Needs MarkOffloaded, which the offload epic writes.'
+  reason: 'The journal opens and the check stops at the stub call its setup reaches when it releases the filled segment''s records. Needs MarkOffloaded, which the offload epic writes.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
@@ -658,7 +658,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and runs the spare, retire and recycle legs; the check then stops at the stub call it reaches. Needs MarkOffloaded, which the offload epic writes.'
+  reason: 'The journal opens and the check stops at the stub call its setup reaches when it releases the filled segment''s records. Needs MarkOffloaded, which the offload epic writes.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
@@ -666,7 +666,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and runs the spare, retire and recycle legs; the check then stops at the stub call it reaches. Needs MarkOffloaded, which the offload epic writes.'
+  reason: 'The journal opens and the check stops at the stub call its setup reaches when it releases the filled segment''s records. Needs MarkOffloaded, which the offload epic writes.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
