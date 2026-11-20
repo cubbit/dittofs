@@ -231,7 +231,7 @@ func statsSnapshot() *journal.Stats {
 		MaxBytes: 101, UsedBytes: 102, ReservedBytes: 103, HeldBytes: 104, DirtyBytes: 105,
 		OldestDirty: startish.Add(-37 * time.Second),
 		Files:       106, ExtentCount: 107, DropRanges: 108,
-		Segments: 109, Sealed: 110, Spares: 111,
+		Segments: 109, Sealed: 110, Spares: 111, HeadroomSparesShort: 301,
 		UnreclaimedBytes: 112, UnreclaimedEndedBytes: 113,
 		HeadroomBytes: 114, RepackReserveBytes: 115,
 		PinnedSegments: 116, OpenDescriptors: 117, DescriptorLimit: 118,

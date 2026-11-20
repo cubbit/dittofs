@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -28,9 +29,9 @@ type copyInput struct {
 
 // copier writes whole records, keeping their numbers, into a spare the draw
 // closure hands back — the pool's repack reserve through the emptying, the
-// spares the spares phase adopted through the re-append; never a share's
-// limit, never a content or headroom spare, which the classes never lend —
-// and seals the target.
+// spares the spares phase adopted, the headroom's behind the reserve's, or one
+// the phase made, through the re-append; never a share's limit, never a
+// content spare — and seals the target.
 //
 // decision: the tail's re-appends and the emptying's copies share this one
 // copier, whose target is sealed, so a second crash never reads a copy back
@@ -65,10 +66,10 @@ type copier struct {
 //
 // A target whose write or sync fails is a failed segment — ended in the
 // ledger the seal writer holds, never sealed, nothing of it proved — and the
-// same records go once more into another spare of the reserve. A second
-// refusal in a row, or no spare ready and none to be made, returns the
-// error — the refusal the failing attempt answered with, where one ran, the
-// spare refusal where none did — and leaves the source in place, for the
+// same records go once more into another spare, drawn as the phase's draw
+// orders them. A second refusal in a row, or a draw that finds no spare and
+// cannot make one, returns the error — the refusal the failing attempt
+// answered with, where one ran, the draw's own where none did — and leaves the source in place, for the
 // caller ends no source before its copy holds.
 func (c *copier) copy(ctx context.Context, recs []copyInput) (target core.SegmentID, at []int64, err error) {
 	if len(recs) == 0 {
@@ -116,8 +117,8 @@ func (c *copier) copy(ctx context.Context, recs []copyInput) (target core.Segmen
 	// crash whose tails measure past one cap wedges the open until the
 	// operator's marks move, and the wedged open is the honest answer until
 	// one changes it. The cap is also not the only ceiling: the count of
-	// reserve spares is the second, refusing the same way below when no
-	// spare is ready and none can be made. Overturned by an open whose
+	// spares the draw can reach is the second, refusing below only when none
+	// is adopted and a make fails. Overturned by an open whose
 	// re-append set measures past one cap, which then needs the packing
 	// loop that seals a full target and draws another.
 	need := end + format.SealMarkerSize + int64(len(recs))*format.CatalogEntrySize + format.TrailerSize
@@ -133,11 +134,10 @@ func (c *copier) copy(ctx context.Context, recs []copyInput) (target core.Segmen
 		if err := ctx.Err(); err != nil {
 			return 0, nil, err
 		}
-		// decision: a draw's error is returned as the pool answered it and
-		// never as an open refusal: a spare the reserve lacks is a state of
-		// the pool a retry may find changed, where the refusals of this open
-		// are the ones that repeat identically on the same directory. Withdrawn
-		// if a reserve that can never refill is ruled a refusal of the open.
+		// decision: a draw's error is returned as the draw answered it and
+		// never as an open refusal: it is a make the device refused, which
+		// the operator's freeing of space changes, where the refusals of this
+		// open are the ones that repeat identically on the same directory.
 		id, derr := c.draw()
 		if derr != nil {
 			if refused != nil {
@@ -238,8 +238,8 @@ func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodi
 
 // runReappend is the SpanOpenReappend phase of the open: the records the
 // tail's proof classed lost by the device, and every record it handed over
-// whole off a failed window, are written back by the copier into a spare of
-// the repack reserve; the payload records among them are repointed to the
+// whole off a failed window, are written back by the copier into a spare, the
+// repack reserve's first; the payload records among them are repointed to the
 // copy, so the open serves their extents from the bytes just written rather
 // than the placement the device lost; and every record's source segment is
 // ended, so the cutting phase truncates it without a marker and the emptying
@@ -252,11 +252,26 @@ func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodi
 // on disk to hand the same record over again, and the second open must not
 // spend a second spare re-writing what the first already sealed.
 //
-// The phase draws on the repack reserve alone — the spare the spares phase
-// adopted for that class — and consults no share's figures and no journal
-// limit, so a journal opened at its maximum still re-appends: the repack
-// reserve, never a share's limit, is the pool's own byte, and the running
-// journal's refill returns it after the open.
+// The phase draws on the repack reserve — the spares the spares phase adopted
+// for that class — and consults no share's figures and no journal limit, so a
+// journal opened at its maximum still re-appends: the repack reserve, never a
+// share's limit, is the pool's own byte, and the running journal's refill
+// returns it after the open.
+//
+// decision: a directory whose adopted spares hold no repack reserve one — a
+// crash on a nearly full device, or after header-only rolls took the headroom
+// and a repack the reserve before the refill — re-appends into a headroom
+// spare, the fallback RFC 1 §6 gives the open's reconcile record when its own
+// spare is gone, and into a spare the phase makes when the directory holds
+// none. The pool is not built yet, so a refused open would make no spare and
+// every retry would adopt the same set and refuse the same way. The headroom
+// borrows are counted in Stats.HeadroomSparesShort until the pool has made
+// them again; the RFC's bound is one spare for the reconcile record, and this
+// phase draws at most two, one per attempt of the copy's retry. A content
+// spare is never borrowed, for a content roll's pool is the writes'. A make
+// that fails is the device's own refusal, which a retry finds changed only
+// when the operator frees space. Overturned by an open that must leave the
+// headroom whole, which would have to make its spares before this phase.
 //
 // The phase keeps the proof's state untouched: st.Proof still names the
 // records it handed over and the segments whose sync failed, the answers the
@@ -321,16 +336,38 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 		return nil
 	}
 
-	// The repack reserve the spares phase adopted, drawn front-first: the one
-	// class a re-appending open may take from, the running journal's repack
-	// rolls' own.
-	reserve := reserveSpares(st)
+	// The repack reserve the spares phase adopted, drawn front-first, and
+	// the headroom's spares behind it: the classes a re-appending open may
+	// take from, the running journal's repack rolls' own first. With none
+	// left the phase makes one, the pool being not yet built to do it.
+	reserve, headroom := reappendSpares(st)
+	var maker *segment.Maker
 	c := &copier{deps: deps, identity: expect, draw: func() (core.SegmentID, error) {
-		if len(reserve) == 0 {
-			return 0, &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
+		if len(reserve) > 0 {
+			id := reserve[0]
+			reserve = reserve[1:]
+			return id, nil
 		}
-		id := reserve[0]
-		reserve = reserve[1:]
+		if len(headroom) > 0 {
+			id := headroom[0]
+			headroom = headroom[1:]
+			st.Spares.Borrowed++
+			return id, nil
+		}
+		if maker == nil {
+			// The maker's own ledger is throwaway, as the copier's: the
+			// maximum it reserves against is out of reach, for the repack
+			// reserve is outside every limit and the device's own refusal
+			// is the one that stops a make.
+			maker = segment.NewMaker(deps.FS, segment.NewSet(deps.SegmentCap, deps.Log), math.MaxInt64, st.Attached.MaxID, deps.Log)
+		}
+		id, err := maker.Make()
+		if err != nil {
+			return 0, err
+		}
+		// The made spare's name stands in the directory, so the seed the
+		// pool's maker resumes from rises past it.
+		st.Attached.MaxID = max(st.Attached.MaxID, id)
 		return id, nil
 	}}
 	recs := make([]copyInput, len(pending))
@@ -464,15 +501,17 @@ func sealedFate(st *State, id core.SegmentID) bool {
 	return false
 }
 
-// reserveSpares names the spares the open may draw its re-appends from, in
-// the take order the pool's own reserve answers in: the ids the spares phase
-// adopted into the repack reserve, ascending.
-func reserveSpares(st *State) []core.SegmentID {
-	var out []core.SegmentID
+// reappendSpares names the spares the open may draw its re-appends from: the
+// ids the spares phase adopted into the repack reserve, ascending, and those
+// it adopted into the headroom, ascending. The content class is in neither.
+func reappendSpares(st *State) (reserve, headroom []core.SegmentID) {
 	for _, a := range st.Spares.Adopted {
-		if a.Class == segment.Reserve {
-			out = append(out, a.ID)
+		switch a.Class {
+		case segment.Reserve:
+			reserve = append(reserve, a.ID)
+		case segment.Headroom:
+			headroom = append(headroom, a.ID)
 		}
 	}
-	return out
+	return reserve, headroom
 }

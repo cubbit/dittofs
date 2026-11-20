@@ -123,6 +123,8 @@ type PoolCounters struct {
 	// SpareRefusals is how many rolls the pool refused naming `spare`: each
 	// counted once by the roll that drew the pool's final answer.
 	SpareRefusals int64
+	// HeadroomSparesShort is HeadroomShort at the read.
+	HeadroomSparesShort int64
 }
 
 // Pool is the spare pool: the spares of the three classes the Maker made,
@@ -155,14 +157,17 @@ type Pool struct {
 	held atomic.Int64
 	// readyN mirrors len(ready) per class, stored under mu at every change, so
 	// Counters reads it without the lock.
-	readyN     [Reserve + 1]atomic.Int64
-	pending    int              // the largest ask of a refused Hold the refill has not yet made up, a level not a sum; guarded by mu
-	incoming   [Reserve + 1]int // recycles in flight, reserved per class; guarded by mu
-	holdTaken  int              // the open's held takes: segments on disk the open did not re-adopt, standing in the headroom the pool must not re-fill; guarded by mu
-	started    bool             // guarded by mu
-	stopped    bool             // guarded by mu
-	deviceFull bool             // guarded by mu
-	retirer    *Retirer         // the source of recycled spares, nil when none; guarded by mu
+	readyN    [Reserve + 1]atomic.Int64
+	pending   int              // the largest ask of a refused Hold the refill has not yet made up, a level not a sum; guarded by mu
+	incoming  [Reserve + 1]int // recycles in flight, reserved per class; guarded by mu
+	holdTaken atomic.Int64     // the open's held takes: segments on disk the open did not re-adopt, standing in the headroom the pool must not re-fill; written under mu, read without it by HeadroomShort
+	// borrowed is the headroom spares an open's re-appends took, which the
+	// refill makes again: the most HeadroomShort reports, set once before Start.
+	borrowed   atomic.Int64
+	started    bool     // guarded by mu
+	stopped    bool     // guarded by mu
+	deviceFull bool     // guarded by mu
+	retirer    *Retirer // the source of recycled spares, nil when none; guarded by mu
 
 	// parked counts the WaitSpares calls sitting on the settle condition,
 	// for the test that sequences an event against a wait it must confirm is
@@ -252,7 +257,7 @@ func (p *Pool) SetRecorder(rec *lockorder.Recorder) {
 // can now fill.
 func (p *Pool) HoldTaken(n int) {
 	p.mu.Lock()
-	p.holdTaken = n
+	p.holdTaken.Store(int64(n))
 	p.mu.Unlock()
 
 	p.Kick()
@@ -668,7 +673,7 @@ func (p *Pool) wantRecycle() (Class, bool) {
 		return 0, false
 	}
 	switch {
-	case len(p.ready[Headroom])+p.incoming[Headroom]+p.holdTaken < p.t.Headroom:
+	case len(p.ready[Headroom])+p.incoming[Headroom]+int(p.holdTaken.Load()) < p.t.Headroom:
 		// The open's held takes count here as the refill counts them: a
 		// reserved slot a held take occupies is a slot the recycle would
 		// double-fill.
@@ -752,6 +757,22 @@ func (p *Pool) ReadyContent() int {
 	return max(len(p.ready[Content])-int(p.held.Load()), 0)
 }
 
+// BorrowHeadroom records that an open's re-appends took n headroom spares,
+// which the refill, or a retirement's recycle, makes again: HeadroomShort
+// reports at most this many, and the count only falls as the headroom
+// refills. It is called once, before Start.
+func (p *Pool) BorrowHeadroom(n int) { p.borrowed.Store(int64(n)) }
+
+// HeadroomShort is how many of the spares an open borrowed from the headroom
+// are still to make again: the headroom's shortfall against its target, read
+// from the maintained counts without a lock, capped at what the open took. It
+// reads zero for a pool whose open borrowed none, however short the headroom
+// runs afterwards, and for one the refill has restored.
+func (p *Pool) HeadroomShort() int {
+	short := p.t.Headroom - int(p.readyN[Headroom].Load()) - int(p.holdTaken.Load())
+	return int(max(min(int64(short), p.borrowed.Load()), 0))
+}
+
 // DeviceFull reports whether a make has failed with ENOSPC and no spare has
 // been made since — "making a spare failed with ENOSPC" being the state a
 // roll that finds no full-size retired segment to hand answers ENOSPC with,
@@ -827,7 +848,16 @@ func (p *Pool) Check() error {
 
 // mirrorReady stores class c's ready count where Counters reads it; the
 // caller holds mu.
-func (p *Pool) mirrorReady(c Class) { p.readyN[c].Store(int64(len(p.ready[c]))) }
+func (p *Pool) mirrorReady(c Class) {
+	p.readyN[c].Store(int64(len(p.ready[c])))
+	if c == Headroom {
+		// The borrowed cap only falls: once the headroom stands at its
+		// target the borrow is made again, and a later take of a headroom
+		// spare is the ordinary running of the pool, never the open's debt.
+		short := p.t.Headroom - len(p.ready[Headroom]) - int(p.holdTaken.Load())
+		p.borrowed.Store(min(p.borrowed.Load(), int64(max(short, 0))))
+	}
+}
 
 // Counters returns the pool's maintained counters: atomic loads, taking no
 // lock, the counts read as maintained state, no walk of any class. The fields
@@ -835,11 +865,12 @@ func (p *Pool) mirrorReady(c Class) { p.readyN[c].Store(int64(len(p.ready[c]))) 
 // other.
 func (p *Pool) Counters() PoolCounters {
 	return PoolCounters{
-		Spares:             p.readyN[Content].Load(),
-		HeadroomBytes:      p.readyN[Headroom].Load() * p.m.set.cap,
-		RepackReserveBytes: p.readyN[Reserve].Load() * p.m.set.cap,
-		Held:               p.held.Load(),
-		SpareRefusals:      p.spareRefusals.Load(),
+		Spares:              p.readyN[Content].Load(),
+		HeadroomBytes:       p.readyN[Headroom].Load() * p.m.set.cap,
+		RepackReserveBytes:  p.readyN[Reserve].Load() * p.m.set.cap,
+		Held:                p.held.Load(),
+		SpareRefusals:       p.spareRefusals.Load(),
+		HeadroomSparesShort: int64(p.HeadroomShort()),
 	}
 }
 
@@ -1090,7 +1121,7 @@ func (p *Pool) recyclingLocked() int {
 // moved. The caller holds mu.
 func (p *Pool) readyShortLocked() bool {
 	switch {
-	case len(p.ready[Headroom])+p.holdTaken < p.t.Headroom:
+	case len(p.ready[Headroom])+int(p.holdTaken.Load()) < p.t.Headroom:
 		// The held takes count exactly as the refill's own headroom gate
 		// counts them: a wait answers by the accounting the pool fills to,
 		// never by ready spares the holds already stand in.
@@ -1110,7 +1141,7 @@ func (p *Pool) shortAtLocked() int64 {
 	// The held takes count in the same headroom term the wait's own shortness
 	// reads, so a refusal's missing number never counts a headroom the
 	// holds already fill.
-	if d := p.t.Headroom - len(p.ready[Headroom]) - p.holdTaken; d > 0 {
+	if d := p.t.Headroom - len(p.ready[Headroom]) - int(p.holdTaken.Load()); d > 0 {
 		missing += int64(d)
 	}
 	if d := p.t.Reserve - len(p.ready[Reserve]); d > 0 {
@@ -1208,7 +1239,7 @@ func (p *Pool) refill() bool {
 		// refusals show content rolls refused while a reserve was filling.
 		var c Class
 		switch {
-		case len(p.ready[Headroom])+p.incoming[Headroom]+p.holdTaken < p.t.Headroom:
+		case len(p.ready[Headroom])+p.incoming[Headroom]+int(p.holdTaken.Load()) < p.t.Headroom:
 			// The open's held takes count toward the headroom's target:
 			// they stand on disk as segments, held for their unproven
 			// predecessors, and a spare made over them would double-fill

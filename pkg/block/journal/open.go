@@ -533,7 +533,8 @@ func continueFrom(st recovery.State, deps datapath.Deps) (datapath.Deps, datapat
 	return deps, datapath.State{
 		Index: st.Rebuilt.Index, Counters: st.Rebuilt.Counters, Set: st.Assembled.Set,
 		Open: &datapath.OpenState{Live: st.Assembled.Live, Forgets: st.Assembled.Forgets,
-			Unsynced: st.Assembled.Unsynced, Dirty: dirtySeed(st.Rebuilt.Index), Spares: spares},
+			Unsynced: st.Assembled.Unsynced, Dirty: dirtySeed(st.Rebuilt.Index), Spares: spares,
+			BorrowedHeadroom: st.Spares.Borrowed},
 	}
 }
 
