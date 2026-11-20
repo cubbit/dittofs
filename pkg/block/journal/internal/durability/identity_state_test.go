@@ -39,7 +39,10 @@ func TestANewIdentityAtAUsedPathOwnsItsLossState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FailedFor of A: %v", err)
 	}
-	if len(got) != 2 || !slices.Contains(got, seqW) || !slices.Contains(got, seqH) {
+	has := func(seq core.Seq) bool {
+		return slices.ContainsFunc(got, func(f Failed) bool { return f.Seq == seq })
+	}
+	if len(got) != 2 || !has(seqW) || !has(seqH) {
 		t.Fatalf("the precondition failed: A's FailedFor = %v, want the two seqs %d and %d", got, seqW, seqH)
 	}
 	if g := rA.d.Stats().LossGeneration; g != 1 {

@@ -500,7 +500,7 @@ func TestReopenAssembled_TheFailedListRaisesTheCounter(t *testing.T) {
 			t.Fatalf("read the directory's failed list: %v", err)
 		}
 		failed = make([]uint64, 0, len(seqs))
-		for _, s := range seqs {
+		for _, s := range failedSeqsOf(seqs) {
 			failed = append(failed, uint64(s))
 		}
 		return len(failed) == 3
@@ -1299,4 +1299,13 @@ func TestReopenAssembled_ARefusedWriteLeavesItsRecordsToTheScan(t *testing.T) {
 	if held <= 4096 || held >= 4096+size {
 		t.Fatalf("held bytes after the reopen = %d, want the first write's 4096 and the refused write's first piece, under %d", held, 4096+size)
 	}
+}
+
+// failedSeqsOf reads just the sequence numbers of a FailedFor answer.
+func failedSeqsOf(fs []durability.Failed) []core.Seq {
+	out := make([]core.Seq, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, f.Seq)
+	}
+	return out
 }
