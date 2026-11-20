@@ -612,11 +612,9 @@ the call travels primary → that node → the client's connection.
   as the client not answering, and the recall is revoked at its deadline
   ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)).
 - The client's back channel is **down** when the node its record names is lost,
-  or that node reports the channel's connection gone. The service has no call
-  for an adapter to report it, a row of the RFC 20 plan's deferral ledger;
-  until it has one, a single node never marks the channel down, so a dropped
-  back-channel connection leaves delegations offered and each recall runs to
-  its revoke deadline. The record carries that
+  or that node reports the channel's connection gone, through the service's
+  `ChannelDown` ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks)), a single node
+  included. The record carries that
   state, so whichever node answers the client's next `SEQUENCE` **MUST** set
   `SEQ4_STATUS_CB_PATH_DOWN` in it, and no delegation is offered to the client
   ([RFC 14 §5.4](rfc-14-open-state.md#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays))
@@ -2845,7 +2843,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §3.2 reply cache | pynfs `nfs4.1` session and `SEQUENCE` replay tests; then kill the gateway node with a `REMOVE` in flight and assert the client sees `NFS4ERR_NOENT` on retry and recovers its session with no grace. | a session assumed durable, or a grace started on gateway node loss |
 | §3.3 trunking | `EXCHANGE_ID` on two nodes: same `so_major_id` and scope, different `so_minor_id`; `BIND_CONN_TO_SESSION` across nodes is `NFS4ERR_BADSESSION`. | one scope per node, or a session bound across nodes |
 | §3.4 callback routing | Hold a delegation, kill the client's gateway node, reconnect through another, conflict from a second client. Assert `CB_RECALL` arrives on the new connection. | callbacks registered once at first `Connect` |
-| §3.4 path down | Once the RFC 20 plan's ledger row for the back channel's down state lands (§3.4): block the back channel; assert `SEQ4_STATUS_CB_PATH_DOWN` and no delegation offered. | |
+| §3.4 path down | Block the back channel; assert `SEQ4_STATUS_CB_PATH_DOWN` and no delegation offered; re-bind it and assert a delegation is offered again. | |
 | §4.2 v4.0 owners | pynfs `nfs4.0` open-owner and lock replay tests; then move the client to another node mid-sequence and assert the next sequenced `OPEN` is accepted. Kill the client's gateway node with a `CLOSE` in flight whose reply is lost; assert the retransmission through the node that took the address over is answered with the first result, the owner's next `OPEN` accepted, and no `NFS4ERR_BAD_SEQID`. Open with a new owner and, before `OPEN_CONFIRM`, send `READ` and `CLOSE` under it through another node; assert both refused and `OPEN_CONFIRM` then accepted. | seqids or confirmation held in the gateway node |
 | §3.5 confirm | `SETCLIENTID` on P1, `SETCLIENTID_CONFIRM` on P2: assert `NFS4ERR_STALE_CLIENTID`; repeat both on P2 and assert confirmed. `SETCLIENTID` on P1 then the confirm on P1 from another principal: assert `NFS4ERR_CLID_INUSE`, and the confirm from the first principal then accepted. A client holding a lock reboots and sends `EXCHANGE_ID` with a new verifier but no `CREATE_SESSION`: assert its old client ID still holds the lock. `EXCHANGE_ID` for a confirmed owner from another principal: assert `NFS4ERR_CLID_INUSE`. Collect 10^4 confirm verifiers for one client ID and verifier: assert no two equal. | a confirm value derived from the client ID and verifier, or a client ID that acts before it is confirmed |
 | §3.5 `CREATE_SESSION` sequence | Send `CREATE_SESSION`, drop the reply, move the address to P2 and resend it: assert the first reply and one session. Send one with `csa_sequence` two ahead: assert `NFS4ERR_SEQ_MISORDERED`. Restart the node between a `CREATE_SESSION` and its replay; assert the replay answered from the record. | `CREATE_SESSION`'s sequence held in one node's memory |

@@ -720,10 +720,11 @@ type Service interface {
 // TestState and FreeState, which go to the shard their StateRef names.
 type Clients interface {
 	Propose(ctx context.Context, c Call, info ClientInfo) (Proposal, error) // a two-step client's first call: RFC 14 §2.9's Client.Pending, held by this node's filesystem; changes no state
-	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, uint64, error) // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB's first authenticated SESSION_SETUP on each node (never a null or guest one), which lists that node in Reach.Sessions and returns its entry's Gen, again at each new node epoch, after which the adapter sends Disconnect with Last and that Gen if the node then holds no session of the client (RFC 14 §2.1), an NLM host's first call; for NFSv4.1, again on another node to re-register the back channel: the latest wins (RFC 14 Rebind); an SMB break never follows it (§3.2)
+	Connect(ctx context.Context, c Call, info ClientInfo, cb Callbacks) (ClientID, uint64, error) // SETCLIENTID_CONFIRM, the confirming CREATE_SESSION, SMB's first authenticated SESSION_SETUP on each node (never a null or guest one), which lists that node in Reach.Sessions and returns its entry's Gen, again at each new node epoch, after which the adapter sends Disconnect with Last and that Gen if the node then holds no session of the client (RFC 14 §2.1), an NLM host's first call; for NFSv4.1, again to re-register the back channel, on another node or this one: the latest wins and Reach.Down is cleared (RFC 14 Rebind); an SMB break never follows it (§3.2)
 	AddSession(ctx context.Context, c Call, cl ClientID, prev, next []byte) (ClientRecord, error) // records this node's session and writes next as the record's adapter bytes if they still equal prev; otherwise writes nothing and returns the current record (RFC 14 §2.1)
 	Record(ctx context.Context, c Call, cl ClientID) (ClientRecord, error) // the record as written, its adapter bytes included; changes nothing
 	Renew(ctx context.Context, c Call, cl ClientID) (ClientStatus, error)
+	ChannelDown(ctx context.Context, c Call, cl ClientID) error // the node holding cl's back channel, when that connection goes: sets RFC 14 §4.1's Reach.Down if the record's Reach.Callback names this node, and changes nothing otherwise; cl is offered no grant until a Connect re-registers the channel (§3.2); StateError StaleClient once the record is released
 	Disconnect(ctx context.Context, c Call, cl ClientID, s SessionRef, end SessionEnd) (uint64, error) // ends one session: SMB LOGOFF, a failed re-authentication's teardown or the last channel's end; NFSv4.1 DESTROY_SESSION, whose session names no open, with Last only. Last removes this node's Reach.Sessions entry in the same step, only at end.Gen, and otherwise returns the entry's newer Gen, on which the adapter decides again; StateError StaleClient once the record is released, which the adapter counts as success; its closes reach Sink.Closed (RFC 14 §2.1, §11.1)
 	Destroy(ctx context.Context, c Call, cl ClientID) error                   // DESTROY_CLIENTID; StateError ClientBusy while held state remains, revoked references not counted
 	ReclaimComplete(ctx context.Context, c Call, cl ClientID, shown []GraceRef) error // the instances ClientStatus.Reclaim showed it; ends only those
@@ -1050,6 +1051,17 @@ latest wins, and a recall in flight is retried through it. Without the record,
 every recall after the client moved would go out through a path the client no
 longer listens on and end in revocation.
 
+**A lost back channel is marked down.** When the connection holding a
+client's back channel goes, the adapter of the node holding it **MUST** call
+`ChannelDown`, which sets the record's `Reach.Down`
+([RFC 14 §4.1](rfc-14-open-state.md#4.1%20A%20client%20lease)) only while
+`Reach.Callback` still names that node, so a report racing a rebind through
+another node leaves the newer path up. While it is set the client is offered no
+grant ([RFC 14 §5.4](rfc-14-open-state.md#5.4%20How%20a%20grant%20is%20obtained%2C%20and%20where%20it%20pays)).
+A `Connect` that re-registers the back channel **MUST** clear it, through
+RFC 14's `Rebind`, on the node that marked it down as on any other, a single
+node included.
+
 **Only the client's own principal moves its path.** The filesystem **MUST** refuse
 with `StateError` `ClientInUse` an NFSv4 `Connect` that would move an existing
 client's callback path for a caller whose authenticated principal is neither
@@ -1252,6 +1264,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | --- | --- | --- | --- |
 | `Propose` | `openstate.Clients.Propose`, which looks the (protocol, name) up through the table, never the store's `metadata.Clients`: an existing client's ID, or `ErrClientInUse` for another principal ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | — | lease owner; it holds the `Client.Pending` proposal in memory, so the confirm must reach the same node |
 | `Connect`, `AddSession`, `Renew`, `Destroy` | `openstate.Clients.Connect` (and `Rebind`), `AddSession`, `Renew`, `Destroy` | — | lease owner, which keeps the callback registry |
+| `ChannelDown` | `openstate.Clients.ChannelDown`, where the record's `Reach.Callback` names the calling node | — | lease owner |
 | `Disconnect` | `openstate.Clients.Disconnect` | — | each primary holding the client's state, through `Peers.ClientState`, then the lease owner, whose step, which unlists the node, runs only once every primary has acknowledged ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
 | `ReclaimComplete`, `ReleaseLockOwner`, `HostRestarted` | `Recovery.ReclaimComplete`, `Locks.ReleaseLockOwner`; `openstate.Clients.Connect` under a new NSM state for `HostRestarted` | — | lease owner, then each primary holding the client's state, through `Peers.ClientState` |
 | `TestState`, `FreeState` | `Recovery.TestState`; `Recovery.FreeState`, which also frees a lock state holding no locks | — | the primary of the `StateRef`'s shard; `TestState`'s other refs through `Peers.ClientState` |
@@ -2705,6 +2718,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V41 | The gateway forwards and decides nothing; `Serve` fences and dedups before the filesystem runs anything. | Multi-node tier, over the network `Transport` on 127.0.0.1, each node configured over memory backends: each method's effect lands in the local filesystem when the router says local and in the remote one otherwise, under the caller's `Identity`, and its answer is the one a direct call there gives, with no other change to the target's state; a handle the router cannot place lands in the local one. A call carrying a stale shard epoch, a fenced node epoch or a hop of one is refused by `Serve` and reaches no filesystem, sent over the transport or routed to the local path by a stale cache; a duplicate send applies once. |
 | V42 | A `Seek` from at or past the size is `ErrPastEnd`, for data and for a hole; from below it, data with none after answers the size. | Into a file of data, a hole and data, and into one ending in a hole, `Seek` for data and for a hole from inside each run: the next run's offset, or the size when none is before the end; from the size and from past it, `ErrPastEnd` for both. |
 | §3.2 | A callback path moves; notifications honour traverse; a break that times out leaves its opens usable. | A recursive watch reports nothing below a directory its holder cannot traverse; an SMB lease whose break times out leaves its open usable for the holder's next write. |
+| §3.2 | A lost back channel is offered no grant until it is re-registered, on one node too. | An NFSv4.1 client holding a read delegation has its back channel's connection drop: after `ChannelDown`, `Record` shows `Reach.Down` set and its next open is offered no delegation; its next `Connect` on the same node clears it, as `Record` shows, and the open after that is offered one. A `ChannelDown` from a node the record no longer names changes nothing. |
 | §3.2 | A removed or moved share ends its state with `RevokedShare`. | With a waiting lock and an outstanding watch on a share, remove it, then repeat with a move naming an address: `vfstest.Callbacks` keeps `RevokedShare` naming it, with `Addr` set for the move; the share's opens and deny modes are gone; the removal's step 3 waits for a create admitted before the mark. |
 | §4.6 | A privileged handle is privileged for every request through it. | A backup-intent handle sets owner, group and DACL on a file whose DACL excludes the caller, as `robocopy /B /SECFIX` does; without backup intent each is refused; a rename through a handle opened with `DELETE` succeeds without delete-child. |
 | §5.3 | A delete on close runs at the last close, through the marking open. | A backup-intent open with delete on close of a file whose DACL excludes its caller, and an EA set through it, succeed; with the parent made immutable before the close, the deferred unlink is refused, counted in `vfs_deferred_unlink_refusals_total`, and the file keeps its name. |

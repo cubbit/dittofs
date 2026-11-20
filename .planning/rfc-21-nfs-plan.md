@@ -1133,7 +1133,8 @@ follows the RFC as written.
    `Connect` re-registering a back channel clears `Reach.Down`, as RFC 21 §3.4 has a re-bind do,
    through `Rebind` on one node too. RFC 21 §3.4's sentence on the missing call and its interim are
    removed. The amendment overturns that `decision:`, which E10 rewrites when it adds both after
-   S2b, with a row that a delegation is offered again after the re-bind.
+   S2b, with a row that a delegation is offered again after the re-bind. Proposed as RFC text
+   in commit `docs(rfc-17): ChannelDown, and Connect clears a downed back channel`.
 3. **A3. RFC 17 §4.9: the minimums skipped for NLM, `MNT` and `EXPORT`** (#5090 2.3). RFC 17 §4.9 says
    NFSv3 `MNT` and the NLM calls meet step 2 "as RFC 21 §6.3 and §6.1 decide", and the service can
    already tell each without a new field: `Call.Protocol` names NLM apart from NFSv3
