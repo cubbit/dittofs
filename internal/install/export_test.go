@@ -28,3 +28,10 @@ func CrashAfter(d Deps, n int, seen *[]string) Deps {
 		return nil
 	})
 }
+
+// ResetAfter returns d with hook run once each write of the reset commits,
+// naming it; an error it returns stops ResetAdmin with that error.
+func ResetAfter(d ResetDeps, hook func(write string) error) ResetDeps {
+	d.after = hook
+	return d
+}
