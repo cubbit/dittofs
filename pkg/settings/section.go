@@ -76,6 +76,7 @@ type Section struct {
 	prefix       string
 	typ          reflect.Type
 	scope        Scope
+	def          any
 	fields       []field
 	writeRole    entity.APIRole
 	required     []string
@@ -174,6 +175,7 @@ func Of[T interface{ Validate() error }](
 		prefix:    prefix,
 		typ:       typ,
 		scope:     scope,
+		def:       clone(def),
 		writeRole: entity.RoleOperator,
 	}
 
