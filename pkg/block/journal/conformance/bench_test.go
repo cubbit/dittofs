@@ -17,6 +17,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/conformance/benchdir"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
@@ -46,8 +47,9 @@ const (
 	jbBurstStreamed = 128 << 20
 	jbBurstSynced   = 16 << 20
 	jbWriters       = 16
-	// jbMixedStream is the streaming file of the mixed case.
-	jbMixedStream = 256 << 20
+	// jbMixedStream is the streaming file of the mixed case: half a segment,
+	// so the one stream never rolls beside the small writer's records.
+	jbMixedStream = 128 << 20
 	// jbLookups is how many point lookups one iteration of J3 times.
 	jbLookups = 100_000
 	// jbWarmBytes is the file J3's warm read reads, a block at a time.
@@ -94,9 +96,7 @@ func jbPrintBox(dir, fsName string) {
 		fmt.Printf("bench-dir: %s\n", dir)
 		fmt.Printf("filesystem: %s\n", fsName)
 		fmt.Printf("sync-bound: %v\n", journal.SyncBound)
-		// The format's own cap: the suite never overrides it, and the
-		// journal exports no value to read it from.
-		fmt.Printf("segment-cap-bytes: %d\n", 256<<20)
+		fmt.Printf("segment-cap-bytes: %d\n", core.SegmentCap)
 		fmt.Printf("writers: %d\n", jbWriters)
 	})
 }
@@ -355,7 +355,7 @@ func BenchmarkJ1_WriteRandom(b *testing.B) {
 }
 
 // J1's mixed case: one writer syncing every 4 KiB beside one stream writing a
-// 256 MiB file in 1 MiB blocks, synced at its end, on the one stream. The
+// 128 MiB file in 1 MiB blocks, synced at its end, on the one stream. The
 // metric is the p99 of the small writer's write and sync together.
 func BenchmarkJ1_MixedDurability(b *testing.B) {
 	b.ReportAllocs()
@@ -423,7 +423,7 @@ const (
 // block of lookups since one is below the timer's resolution. It is an upper
 // bound of the index's own lookup: it includes the pread of the extent's
 // bytes from the segment and the copy into the caller's buffer, and the
-// public API gives no way to time the index alone, so RFC 1's index-lookup
+// public API gives no way to time the index alone, so the index lookup's
 // target is not judged from it.
 func jbPointLookup(b *testing.B, n int) {
 	b.ReportAllocs()
