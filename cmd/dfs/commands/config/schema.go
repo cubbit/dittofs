@@ -103,6 +103,12 @@ func buildSchema() ([]byte, error) {
 		}
 	}
 
+	// metrics.listen reads a YAML null as not set.
+	if p := schemaProperty(schema, "metrics", "listen"); p != nil {
+		p.Type = ""
+		p.OneOf = []*jsonschema.Schema{{Type: "string"}, {Type: "null"}}
+	}
+
 	schemaJSON, err := json.MarshalIndent(schema, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate schema: %w", err)

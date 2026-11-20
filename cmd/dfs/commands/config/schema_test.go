@@ -186,6 +186,30 @@ func TestSchemaTypes(t *testing.T) {
 	}
 }
 
+// metrics.listen reads a YAML null as not set (RFC 13 Appendix C), so the
+// schema takes a string or a null there.
+func TestSchemaMetricsListenTakesNull(t *testing.T) {
+	t.Parallel()
+
+	p := property(printedSchema(t), "metrics.listen")
+	if p == nil {
+		t.Fatal("metrics.listen: no property")
+	}
+
+	var got []string
+
+	options, _ := p["oneOf"].([]any)
+	for _, o := range options {
+		m, _ := o.(map[string]any)
+		typ, _ := m["type"].(string)
+		got = append(got, typ)
+	}
+
+	if want := []string{"string", "null"}; !slices.Equal(got, want) {
+		t.Errorf("metrics.listen: oneOf types %q, want %q", got, want)
+	}
+}
+
 // stringList converts a decoded JSON list to strings.
 func stringList(v any) []string {
 	list, _ := v.([]any)
