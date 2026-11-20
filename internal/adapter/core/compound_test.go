@@ -708,6 +708,7 @@ func TestACompoundTimesItsWait(t *testing.T) {
 		// A quarter of 64 KiB clears a small class's charge, so the compound
 		// is not refused past the ceiling; five holds then fill the rest.
 		s := newServed(t, 64<<10, adapter.Deps{Metrics: m})
+		synctest.Wait() // the set-up's replies are released
 		before, _ := scrape(t, m)
 		var free []func()
 		for range 5 {
