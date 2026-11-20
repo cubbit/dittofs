@@ -69,11 +69,11 @@ S2 for `Spell`, `Find` and resolution (S6a), its E5 for Kerberos (S6b); RFC 17's
 `feat/storage-v2`, with its plan's piece 13, the held clone wait, reaching the branch with the next
 sync (#4239); RFC 13's settings (#4059).
 
-**Proposed RFC amendments, open until agreed** (§6.1; the plan follows the RFCs as written until
-then): A1, RFC 20's compound runner asking a `READ`'s hook again just before it runs (#5090 1.4);
-A2, an RFC 17 call marking a back channel down, and `Connect` clearing it (#5090 1.5); A3, RFC 17's
+**RFC amendments, agreed** (§6.1): A1 to A3 in #5166, A4 in #5196. A1, RFC 20's compound
+runner asking a `READ`'s hook again just before it runs (#5090 1.4); A2, an RFC 17 call marking a back channel down, and `Connect` clearing it (#5090 1.5); A3, RFC 17's
 admission exempting NLM's lock calls, `MNT` and `EXPORT` from the minimums by `Call.Protocol` and
-entry method (#5090 2.3). The cookie verifier needs none (D16).
+entry method (#5090 2.3); A4, RFC 20 §2.5 placing the folders §4.1 builds beyond it, and NFS v3,
+MOUNT, NLM and NSM served as one unit. The cookie verifier needs none (D16).
 **Pending Marco:** who records RFC 21 §14's six `nfs_*` series and RFC 21 §11.7's three
 `adapter_*` series NFS alone produces (§6.1, point 4; #5090 (a)).
 **Settled with the user:** D10, D11 and D12 (§4.2), and the layout (§4.1), which RFC 20 §2.5
@@ -411,8 +411,8 @@ test runs, and NFS's scaffold answers every procedure over loopback through `cor
 - **S2 NFS test foundations in CI** (after E2 and S0). NFS's handler harness runs an NFSv3 row and
   an NFSv4 compound member on `memory.New`, golden files load from knfsd's captures, and `pkg/vfs`
   answers `NoGrace`. Unblocks every middle epic.
-- **🔀 S2b amendments A1 to A3 agreed** (outside: the RFC 20 and RFC 17 pull requests §6.1
-  proposes). Unblocks E8's runner change (A1), E10's service half of A2 and its path down, and E4's
+- **🔀 S2b amendments A1 to A3 agreed** (met: #5166 merged them into RFC 20 and RFC 17).
+  Unblocks E8's runner change (A1), E10's service half of A2 and its path down, and E4's
   service half of A3, through which E4's `MNT` and `EXPORT` and E11's NLM lock calls on a
   Kerberos-only share.
 - **🔀 S3 an NFSv3 mount over loopback** (after E3 and E4). The scripted client sends `NULL`, `MNT`
