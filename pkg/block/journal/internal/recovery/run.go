@@ -32,7 +32,7 @@ type Deps struct {
 	// layer's FailedFor answers it before any layer of the open is built —
 	// not a call the rebuild makes back into that layer; nil is no failed
 	// list.
-	Failed []core.Seq
+	Failed []durability.Failed
 
 	// ExtentLimit is the index entry bound the rebuilt index carries into
 	// the journal's later writes. Zero is no bound. A rebuild over the bound

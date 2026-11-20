@@ -1,6 +1,7 @@
 package durability
 
 import (
+	"cmp"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -72,7 +73,7 @@ type dirState struct {
 	// domains.
 	mu     sync.Mutex
 	gen    uint64
-	failed []core.Seq
+	failed []failedWord
 
 	// pieces holds every (dropped seq, extent) a Lose or a Place on the
 	// directory has taken, each with the claim that took it — a Place's
@@ -383,20 +384,57 @@ func (s *dirState) load() uint64 {
 	return s.gen
 }
 
+// Failed is one failed list entry in the answer an open reads: the dropped
+// sequence number itself, and whether the failure's report still stands to
+// be honoured — the reporting instance lives on, its ring readable, or a
+// reader reached the event its failing Lose published. An open that owes
+// the record this entry names plans it reported while Reported holds, and
+// publishes it itself while it does not.
+type Failed struct {
+	Seq core.Seq
+	// Reported says the failing instance's report was published where a
+	// reader could take it: the instance is live, its ring readable by
+	// whoever asks, or a reader reached the event its failing Lose
+	// pushed — the reach, per loss, not the moment.
+	Reported bool
+}
+
+// failedWord is one failed list entry as the registry keeps it: the dropped
+// sequence number whose loss record could not be appended, the Durability
+// whose Lose could not append it, and the event number that Lose published
+// — zero when it published none of its own, a reported loss whose report
+// rode one of the window's other events. A read-only journal's refusal
+// names a nil reporter: its failure reached the writer by the refusal every
+// Sync of the file returns, not by a ring event, so its report stands
+// whatever became of any ring.
+type failedWord struct {
+	seq core.Seq
+	d   *Durability
+	ev  uint64
+}
+
 // addFailed records a dropped sequence number whose loss record could not be
-// appended. A number is recorded once.
-func (s *dirState) addFailed(seq core.Seq) {
+// appended, with the instance that could not append it and the event its
+// failing Lose published. A number is recorded once: a later retry's own
+// failure keeps the first's word, which errs on the re-reporting side, for
+// a live retry's own ring answers for it whatever the entry says.
+func (s *dirState) addFailed(seq core.Seq, d *Durability, ev uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !slices.Contains(s.failed, seq) {
-		s.failed = append(s.failed, seq)
+	for _, f := range s.failed {
+		if f.seq == seq {
+			return
+		}
 	}
+	s.failed = append(s.failed, failedWord{seq: seq, d: d, ev: ev})
 }
 
 // FailedFor returns the failed list of the journal the open names by dir
-// and id: the sequence numbers an earlier read-only journal of the same
-// identity could not write the loss record for, kept for the life of the
-// process. A journal whose identity failed nothing answers nil; a journal
+// and id: the sequence numbers whose loss record an earlier journal of the
+// same identity, in this process, could not append, kept with the word on
+// whether the failing report still stands — honoured by the planner that
+// owes the record only while the reporter lives or a reader reached the
+// event. A journal whose identity failed nothing answers nil; a journal
 // Init'd anew at a path an older identity used asks its own empty answer.
 // A path that names no directory answers the error of resolving it.
 //
@@ -406,19 +444,39 @@ func (s *dirState) addFailed(seq core.Seq) {
 // a directory with a failed record in the window its process lost receives
 // it, and the pieces the previous instance took answer for its loss
 // records. Overturned by an open that asks a layer it built.
-func FailedFor(dir string, id core.JournalID) ([]core.Seq, error) {
+func FailedFor(dir string, id core.JournalID) ([]Failed, error) {
 	st, err := stateFor(dir, id)
 	if err != nil {
 		return nil, err
 	}
-	return st.failedSeqs(), nil
+	return st.failedWords(), nil
 }
 
-// failedSeqs returns a sorted copy of the failed list.
+// failedWords returns the failed list in seq order, its Reported word
+// answered per entry.
+func (s *dirState) failedWords() []Failed {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Failed, 0, len(s.failed))
+	for _, f := range s.failed {
+		// A nil reporter's report stands on its own: the refusal that
+		// told the writer lost nothing the ring could fail to carry.
+		standalone := f.d == nil
+		out = append(out, Failed{Seq: f.seq,
+			Reported: standalone || !f.d.claimsDead() || f.d.claimServed(f.ev)})
+	}
+	slices.SortFunc(out, func(a, b Failed) int { return cmp.Compare(a.Seq, b.Seq) })
+	return out
+}
+
+// failedSeqs returns a sorted copy of the failed list's sequence numbers.
 func (s *dirState) failedSeqs() []core.Seq {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := slices.Clone(s.failed)
+	out := make([]core.Seq, 0, len(s.failed))
+	for _, f := range s.failed {
+		out = append(out, f.seq)
+	}
 	slices.Sort(out)
 	return out
 }

@@ -32,8 +32,8 @@ func TestFailedForAnswersBeforeAnyDurabilityIsBuilt(t *testing.T) {
 		t.Fatalf("FailedFor: %v", err)
 	}
 	for _, seq := range []core.Seq{seqW, seqH} {
-		if !slices.Contains(got, seq) {
-			t.Errorf("FailedFor = %v, missing seq %d", got, seq)
+		if !slices.ContainsFunc(got, func(f Failed) bool { return f.Seq == seq }) {
+			t.Errorf("FailedFor = %+v, missing seq %d", got, seq)
 		}
 	}
 	if other, err := FailedFor(t.TempDir(), rigIdentity); err != nil || len(other) != 0 {

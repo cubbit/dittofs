@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
@@ -48,6 +49,13 @@ type ReadOnlyDrop struct {
 	// version and share tag, with the reason a failed sync window takes.
 	Ev      core.LossEvent
 	Dropped core.Seq
+
+	// Reported says the failing instance's report of this loss still
+	// stands — it lives, its ring readable, or a reader reached the event
+	// its failing Lose published — so the planner that re-appends the
+	// record honours the suppression while it holds, and re-publishes the
+	// loss while nothing at all answered for it.
+	Reported bool
 
 	// Segments holds every segment still holding the record. Filled by the
 	// feed.
@@ -194,6 +202,13 @@ type kindState struct {
 	// read-only journal failed earlier in this process.
 	failed map[core.Seq]bool
 
+	// failedReported holds, per failed seq, the registry's word on whether
+	// the failing instance's report still stands — it lives, its ring
+	// readable, or a reader reached the event its failing Lose published —
+	// so the planner that owes the record honours the report while it
+	// stands and re-publishes the loss while nothing answered for it.
+	failedReported map[core.Seq]bool
+
 	// pieces holds the (dropped, extent) pairs already delivered, so two
 	// identical loss records — a copy carried forward — report one loss.
 	pieces map[lossPiece]bool
@@ -251,19 +266,21 @@ type lossPiece struct {
 // no file, refuses the open naming its segment and its offset. A body that
 // fails its checksum never reached the pass: a lost loss record errs toward
 // fetching the extent again.
-func decodeAsides(rd *reader, identity core.JournalID, failed []core.Seq, scs []segmentScan) (kindState, error) {
+func decodeAsides(rd *reader, identity core.JournalID, failed []durability.Failed, scs []segmentScan) (kindState, error) {
 	ks := kindState{
-		whole:       map[core.Seq]bool{},
-		superseded:  map[core.Seq]supersededLoss{},
-		forget:      map[core.ShareTag]core.Seq{},
-		failed:      map[core.Seq]bool{},
-		pieces:      map[lossPiece]bool{},
-		confined:    map[index.RecordAt]bool{},
-		copies:      map[copyKey][]index.RecordAt{},
-		kindResults: kindResults{WithheldAt: map[index.RecordAt]bool{}},
+		whole:          map[core.Seq]bool{},
+		superseded:     map[core.Seq]supersededLoss{},
+		forget:         map[core.ShareTag]core.Seq{},
+		failed:         map[core.Seq]bool{},
+		failedReported: map[core.Seq]bool{},
+		pieces:         map[lossPiece]bool{},
+		confined:       map[index.RecordAt]bool{},
+		copies:         map[copyKey][]index.RecordAt{},
+		kindResults:    kindResults{WithheldAt: map[index.RecordAt]bool{}},
 	}
-	for _, seq := range failed {
-		ks.failed[seq] = true
+	for _, f := range failed {
+		ks.failed[f.Seq] = true
+		ks.failedReported[f.Seq] = f.Reported
 	}
 
 	var (
@@ -1115,6 +1132,7 @@ func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 					Reason:  core.LossFailedWindow,
 				},
 				Dropped:  seq,
+				Reported: ks.failedReported[seq],
 				Segments: []core.SegmentID{rec.Segment},
 			})
 			f.drops[seq] = len(ks.ReadOnlyDrops) - 1

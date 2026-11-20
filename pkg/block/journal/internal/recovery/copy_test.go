@@ -397,7 +397,7 @@ func TestFailedListRecordsNeverReappended(t *testing.T) {
 
 	spare := core.SegmentID(9)
 	d := r.reserveDeps(spare)
-	d.Failed = []core.Seq{100}
+	d.Failed = failedWords([]core.Seq{100})
 	st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
 	if err != nil {
 		t.Fatalf("Run over a withheld record's tail: %v", err)

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 )
 
 // TestTheLossRingLivesPerInstanceAndItsDedupPerDirectory catches a reopen
@@ -232,4 +233,80 @@ func TestATakeoverOfADeadUnreadClaimRepublishes(t *testing.T) {
 			t.Fatalf("the stopped instance's ring = %+v, want its one event: the second Lose published nothing", got)
 		}
 	})
+}
+
+// TestAFailureAReporterOnlyTheRingCouldCarryRepublishesOnceClosed holds the
+// failed list's word: a failing loss whose report reached nobody but the
+// ring — a corrupt record's loss record refused against a closed device —
+// keeps the failing instance and its event, so the report is honoured while
+// either lives and the loss re-published once neither does: the open that
+// re-appends the record the failure owed publishes it itself, through the
+// failed leg's failed-window reason the planner carries. A report a reader
+// took away keeps its suppression however the instance ended.
+func TestAFailureAReporterOnlyTheRingCouldCarryRepublishesOnceClosed(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	// The storage closed while the instance is still live, as a crash
+	// beneath the journal: the Lose is refused back — not by the
+	// read-only refusal, which tells its writer — and its event goes
+	// into a ring nobody reads.
+	e.shutdown()
+	l := loss(31)
+	if _, err := e.d.Lose(ctx, l); err == nil {
+		t.Fatalf("the live instance's Lose over closed storage: succeeded, want the refused append")
+	}
+	e.d.Stop()
+
+	// The word the reopen's planner reads: the report reached nothing.
+	fs, err := durability.FailedFor(e.dir, core.JournalID{})
+	if err != nil || len(fs) != 1 || fs[0].Seq != l.Seq {
+		t.Fatalf("FailedFor = %+v, %v, want the one refused record's entry", fs, err)
+	}
+	if fs[0].Reported {
+		t.Fatalf("the stopped instance's unread report still credited its failure: the closed ring answered for nothing")
+	}
+	reopen := e.newDurability()
+	// The failed leg's plan: reported the word says not, so the Lose
+	// publishes the loss instead of holding it back. The reason is the
+	// planner's own row — the failed-window reason the failed leg carries,
+	// not the corrupt reason the original drop took.
+	failleg := loss(31)
+	failleg.Reason = core.LossFailedWindow
+	ev, err := reopen.Lose(ctx, failleg)
+	if err == nil {
+		t.Fatalf("the reopen's append over closed storage: succeeded, want the refused append")
+	}
+	if ev == (core.LossEvent{}) {
+		t.Fatalf("the re-appended record's loss stayed suppressed: a failure only an unread ring carried is re-published")
+	}
+	if got := reopen.Stats().Losses; len(got) != 1 || got[0].Reason != core.LossFailedWindow {
+		t.Fatalf("the reopen's ring = %+v, want the one re-published loss of the failed leg's own reason", got)
+	}
+
+	// A report a reader reached keeps its suppression: the same failure,
+	// read out of the ring before the close, holds the re-append back.
+	// buildEnv, not newEnv: one watch a test file, and this one already
+	// started its own.
+	e2 := buildEnv(t)
+	e2.shutdown()
+	l2 := loss(32)
+	if _, err := e2.d.Lose(ctx, l2); err == nil {
+		t.Fatalf("the live instance's Lose over closed storage: succeeded, want the refused append")
+	}
+	if got := e2.d.Stats().Losses; len(got) != 1 {
+		t.Fatalf("the instance's ring = %+v, want the one refused record's event", got)
+	}
+	e2.d.Stop()
+	fs2, err := durability.FailedFor(e2.dir, core.JournalID{})
+	if err != nil || len(fs2) != 1 || !fs2[0].Reported {
+		t.Fatalf("FailedFor = %+v, %v, want the entry of a report a reader took away", fs2, err)
+	}
+	reopen2 := e2.newDurability()
+	// The plan the word drives: reported, so the re-append holds the
+	// event back.
+	l2.Reported = true
+	ev2, err2 := reopen2.Lose(ctx, l2)
+	if err2 == nil || ev2 != (core.LossEvent{}) {
+		t.Fatalf("Lose of a served report = %+v, %v, want the zero event over the refused append: the reached report keeps its event suppressed while the owed record is still re-appended", ev2, err2)
+	}
 }

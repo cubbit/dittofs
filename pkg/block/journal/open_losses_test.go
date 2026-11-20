@@ -910,7 +910,7 @@ func TestFailedRecordsTakeTheReserveFirst(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the directory's failed list: %v", err)
 		}
-		failed = seqs
+		failed = failedSeqsOf(seqs)
 		return len(failed) == 3
 	})
 	f.seam.SetFault(nil)
@@ -1003,7 +1003,7 @@ func TestASharedPieceIsCountedOnceAcrossTheLegs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the directory's failed list: %v", err)
 		}
-		failed = seqs
+		failed = failedSeqsOf(seqs)
 		return len(failed) == 1
 	})
 	f.seam.SetFault(nil)
@@ -1052,7 +1052,7 @@ func TestASharedPieceIsCountedOnceAcrossTheLegs(t *testing.T) {
 	if n := len(f.lossRecords(t)); n != 1 {
 		t.Fatalf("%d loss records on disk, want the shared piece's one: the failed leg drew the whole reserve and the overlapping drop deferred", n)
 	}
-	if l, lerr := durability.FailedFor(f.dir, f.id); lerr != nil || len(l) != 1 || l[0] != shared {
+	if l, lerr := durability.FailedFor(f.dir, f.id); lerr != nil || len(l) != 1 || l[0].Seq != shared {
 		t.Fatalf("the serving open left %v on the directory's failed list (err %v), want the same one failed seq", l, lerr)
 	}
 	if defss, derr := durability.DeferredFor(f.dir, f.id); derr != nil || len(defss) != 1 {
@@ -1132,7 +1132,7 @@ func TestAPastReserveFailedPieceItsCorruptTwinRepeats(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the directory's failed list: %v", err)
 		}
-		failed = seqs
+		failed = failedSeqsOf(seqs)
 		return len(failed) == 2
 	})
 	f.seam.SetFault(nil)

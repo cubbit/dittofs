@@ -296,39 +296,41 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// superseded loss ever covers a whole dropped record.
 	if recErr != nil {
 		if l.Reason != core.LossSuperseded {
-			d.dir.addFailed(l.Seq)
-			// decision: the piece a failure took is handed back with it,
-			// but only when the record never placed and the instance still
-			// lives: the registry's pieces name losses whose record may be
-			// on disk — a record placed but not synced sits in its segment,
-			// a crash may keep it, and a reopen's Place of it publishes no
-			// second event only while the piece stays taken — so releasing
-			// it here would let the next open report the same loss record
-			// as new (see the release doc's own rule). A stopped instance
-			// keeps its claim instead, marked unplaced: it owns no record,
-			// so it names nothing and bars no other taker, and the open that
-			// takes it over learns — the takeover is the word — how far a
-			// reader reached the report the dead ring held, so the record is
-			// appended again either way, and the loss republished when
-			// nothing at all answered for it. Overturned by a caller that
-			// appends the record itself instead of retrying the loss, which
-			// would make the taken piece the dedup that stops a second
-			// attempt. A kept piece is marked unsynced, so the open's pass
-			// can tell it from one a durable record holds and append the
-			// record it is still owed. A piece retaken from an earlier
-			// unsynced record stays held too: that record is still on disk,
-			// so a failed retry frees nothing.
-			// decision: a live instance's failed append still releases
-			// under the pre-existing rule, and a loss so released whose
-			// instance then closes with its ring unread surfaces in no
-			// in-process ring until a process restart re-detects the loss:
-			// the branch's own invariant — Reported honoured only while
-			// the reporter is live or served — is knowingly violated in
-			// that corner, and the pre-branch code held the same silence.
-			// The general fix is for the failed-list entries to record the
-			// reporter and its event, so the planner sets Reported from
-			// live-or-served; build it when a loss a live instance failed
-			// to record is ever answered nowhere before the close.
+			// A failure the read-only refusal turned back — like a
+			// reported loss re-appending a record its window failed —
+			// reached its writer by that refusal rather than by any
+			// ring, so the entry names no reporter: the report stands
+			// however every ring ended, none was its medium. Any other
+			// failure published its own event on the way, and its word
+			// is the failing instance and that event: honoured while
+			// either lives, re-published once neither does.
+			if refused || l.Reported {
+				d.dir.addFailed(l.Seq, nil, 0)
+			} else {
+				d.dir.addFailed(l.Seq, d, ev.SeqNum)
+			}
+			// decision: the piece a failure took is handed back with it
+			// when the record never placed and the instance still lives,
+			// for the failed list the same failure appended carries the
+			// word alongside the number — the reporter itself, and the
+			// event its failing Lose published — so the planner that owes
+			// the record honours the report only while the reporter lives
+			// or a reader reached that event, and a loss a closed unread
+			// ring never answered is re-published at the next open. A
+			// stopped instance keeps its claim instead, marked unplaced:
+			// it owns no record, so it names nothing and bars no other
+			// taker, and the open that takes it over learns — the takeover
+			// is the word — how far a reader reached the report the dead
+			// ring held, so the record is appended again either way, and
+			// the loss republished when nothing at all answered for it.
+			// Overturned by a caller that appends the record itself
+			// instead of retrying the loss, which would make the taken
+			// piece the dedup that stops a second attempt. A kept piece is
+			// marked unsynced, so the open's pass can tell it from one a
+			// durable record holds and append the record it is still owed.
+			// A piece retaken from an earlier unsynced record stays held
+			// too: that record is still on disk, so a failed retry frees
+			// nothing.
 			if at == (segment.Location{}) && !retaken {
 				if !d.claimsDead() {
 					d.dir.release(k)
