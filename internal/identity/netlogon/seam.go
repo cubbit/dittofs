@@ -118,10 +118,13 @@ func (s Status) Error() string {
 // Is makes a Status match ErrRejected.
 func (s Status) Is(target error) bool { return target == ErrRejected }
 
-// The NTSTATUS values a controller refuses with (MS-ERREF 2.3.1).
+// The NTSTATUS values a controller answers with (MS-ERREF 2.3.1). Two refuse
+// a channel, StatusAccessDenied and StatusNoTrustSAMAccount, and
+// StatusNoLogonServers is the controller unable to answer, an availability
+// failure; the rest refuse a logon because of its credential or account.
 const (
 	StatusAccessDenied            Status = 0xC0000022 // a channel's password refused
-	StatusNoLogonServers          Status = 0xC000005E
+	StatusNoLogonServers          Status = 0xC000005E // no controller can answer
 	StatusNoSuchUser              Status = 0xC0000064
 	StatusWrongPassword           Status = 0xC000006A
 	StatusLogonFailure            Status = 0xC000006D
@@ -137,4 +140,7 @@ const (
 	StatusNologonServerTrust      Status = 0xC000019A // a server trust account's logon
 	StatusPasswordMustChange      Status = 0xC0000224
 	StatusAccountLockedOut        Status = 0xC0000234
+	StatusSmartcardLogonRequired  Status = 0xC00002FA // a password logon to an account that requires a smart card
+	StatusAuthFirewallFailed      Status = 0xC0000413 // an authentication policy refuses the account
+	StatusNTLMBlocked             Status = 0xC0000418 // the domain's policy refuses NTLM
 )

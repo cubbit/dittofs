@@ -396,6 +396,26 @@ func TestPassThroughDisabledAndDeleted(t *testing.T) {
 	}
 }
 
+// A controller refusing a logon for its account's policy, MS-APDS 3.1.5's
+// smart card required, authentication policy and NTLM blocked, answers
+// logon_failure, never unavailable.
+func TestPassThroughPolicyRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"STATUS_SMARTCARD_LOGON_REQUIRED", netlogon.StatusSmartcardLogonRequired},
+		{"STATUS_AUTHENTICATION_FIREWALL_FAILED", netlogon.StatusAuthFirewallFailed},
+		{"STATUS_NTLM_BLOCKED", netlogon.StatusNTLMBlocked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newPassThrough(t, sim.Rule{Op: "logon", Key: "alice", Count: 1, Action: sim.FaultAction{Err: tc.err}})
+			res, oc, err := fx.signIn(ntlmStep(string(alicePW), "alice", "CORP", true))
+			refused(t, tc.name, res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
+		})
+	}
+}
+
 // A controller that cannot be asked, or that answers an NTSTATUS other than
 // a credential's, answers unavailable ten times without counting on the
 // throttle, so the right password then signs in.
