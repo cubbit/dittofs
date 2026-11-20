@@ -181,7 +181,7 @@ suites:
       # The bench pattern's quotes rule out the flow style shellcheck's and engine-bench's
       # single-quoted lines use, so the entry takes the literal block the shellcheck one does.
       - sh: |
-          test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$JOURNAL_BENCH_COUNT" || n=$JOURNAL_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "JOURNAL_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -tags=journal_conformance,journal_bench -run ^$ -bench '^BenchmarkJ[123]_' ./pkg/block/journal/conformance/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s
+          test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$JOURNAL_BENCH_COUNT" || n=$JOURNAL_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "JOURNAL_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -tags=journal_conformance,journal_bench -run ^$ -bench '^BenchmarkJ[123]_' ./pkg/block/journal/conformance/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; test $s -ne 0 || grep -q '^BenchmarkJ' {out}/bench.txt || { echo "no BenchmarkJ benchmark ran" >&2; exit 2; }; exit $s
     tier: manual
     timeout: { test: 300m, cell: 310m }
   # The engine's conformance checks, behind their own tag for the same reason: they run
