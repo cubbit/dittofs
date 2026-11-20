@@ -182,7 +182,7 @@ type Capacity struct {
 	// read takes no lock; the same holds for reservedTagged and refused.
 	// The two gauges are separate atomics that every writer moves under mu and
 	// a stats read loads one after the other, so no bound between them is
-	// promised: the one it keeps, never negative, holds whatever order they
+	// promised: the one bound promised, ReservedBytes >= 0, holds whatever order they
 	// move in, since a release returns only what its reservation took.
 	reserved atomic.Int64
 
