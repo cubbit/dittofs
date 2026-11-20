@@ -426,16 +426,22 @@ func deviceSync(t *testing.T, f *journaltest.Fixture, name string) {
 }
 
 // killHeld ends the process while the calls stopped at h are in flight, and
-// opens the journal again.
+// opens the journal again. A hold named in also releases between the death
+// and the write-hold's own release: what it parked fails as a dead process's
+// call, so nothing it freed reaches the directory, while the reopen below is
+// free to make what its own work needs.
 //
 // decision: the seam's abandon runs first, so a held call, once released,
 // fails as a dead process's; the hold is released second, so the call
 // returns; the fixture's kill runs last, repeating the seam's abandon with
 // nothing left to close, and opens the journal on what the process left.
-func killHeld(t *testing.T, f *journaltest.Fixture, h *kit.Hold) {
+func killHeld(t *testing.T, f *journaltest.Fixture, h *kit.Hold, also ...*kit.Hold) {
 	t.Helper()
 
 	f.Seam.Abandon()
+	for _, spare := range also {
+		spare.Release()
+	}
 	h.Release()
 	f.Kill()
 }
@@ -577,6 +583,18 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 	// could have been open at the crash, and the outcome is the same.
 	k := journaltest.NewUnwatched(t)
 	u = writeUnproven(t, k)
+	// The pool's makes are withheld at the seam until the process dies. The
+	// journal's spare wake retries the parked window when the spare it waited
+	// for lands, and a landing before the kill is one this leg must not
+	// deliver: a retry that finds the seam abandoned reads the failed segment
+	// through a dead view, fails the window whole for it, and hands the
+	// reopened journal a failed list naming the very records this leg is to
+	// find alive. With no spare landing, no wake runs — the killed journal's
+	// window stands as the leg froze it. The writes' own rolls are settled
+	// first, so nothing a roll kicked is still mid-make when the withhold
+	// goes up: a make already past its create would land beside it.
+	k.WaitSpares()
+	made := k.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	k.FailNext(kit.OpSync, u.name, 1)
 	held := k.Seam.Hold(t, kit.OpWrite, "*.seg")
 	synced := make(chan error, 1)
@@ -589,7 +607,11 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 		stub(t, "Sync", err)
 		t.Fatalf("Sync returned (%v) without writing the window's resolution", err)
 	}
-	killHeld(t, k, held)
+	// The kill ends the process and reopens on what it left, and the
+	// withhold gives out only past the death: between them the dead journal
+	// hands over nothing — its calls fail on the abandoned view — while the
+	// reopen must be free to make the spare its own re-append will take.
+	killHeld(t, k, held, made)
 	// A call the process died in: nothing can answer it — the journal is
 	// dead and its waiters died with it — so the leg waits on nothing and
 	// asserts nothing on its return, the leak of its parked Sync being the

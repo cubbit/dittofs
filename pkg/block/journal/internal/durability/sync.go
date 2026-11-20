@@ -849,6 +849,24 @@ func (d *Durability) Start(streams *segment.Streams) {
 	}
 }
 
+// SpareLanded wakes every stream's worker: a record a pass could not
+// re-append because the roll was refused for a spare the pool can make has
+// its next try when the spare is there, rather than at the next tick of the
+// sync bound the arm set — a tick that is a backstop, not a deadline, for the
+// re-append is owed as soon as a spare can be had. The wake is a scheduling
+// hint from the pool's spare landing, so a stream nothing parks does its
+// checks and idles again. It never blocks, not even on a worker a stopped
+// layer is joining: a wake's send is dropped exactly as Track's is.
+func (d *Durability) SpareLanded() {
+	ws := d.workers.Load()
+	if ws == nil {
+		return
+	}
+	for _, st := range *ws {
+		st.wake()
+	}
+}
+
 // Durable reports whether the record at the location is durable: its segment
 // has been synced through the record's end. A location in a pending window
 // of a failed segment reports false, however far a sync reached.

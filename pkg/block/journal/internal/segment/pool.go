@@ -194,6 +194,10 @@ type Pool struct {
 	// take, served by the headroom, is no refusal.
 	spareRefusals atomic.Int64
 
+	// onSpare is the wake registered by OnSpare, called with no lock held
+	// after every spare the pool lands while it runs. Nil until registered.
+	onSpare func()
+
 	kick chan struct{}
 	done chan struct{}
 	stop sync.Once
@@ -227,6 +231,38 @@ func NewPool(m *Maker, t Targets, readOnly func() error, log *slog.Logger) *Pool
 	// takes no second lock of the capacity domain.
 	p.settled = sync.NewCond(&p.mu)
 	return p
+}
+
+// OnSpare registers the wake to run after every spare the pool lands while it
+// runs — one the refill made, one a recycle landed — and after a hold's
+// Close frees its spares, which become takeable with no landing of their
+// own — so a caller that parked on the spare shortage, holding a demand the
+// pool itself will serve, retries when the spare it waited for is there
+// rather than on its own tick alone. The tick a caller of its own arms
+// stays its backstop, so the wake is what keeps the retry prompt, but it is
+// a scheduling hint, not a promise: a wake may find no spare the caller can
+// take — the spare landed in another class — and the caller refuses again
+// and waits for the next landing or its own tick. The wake runs with no
+// pool lock held and must not block; it is registered once, whenever the
+// pool runs, and a second registration panics.
+func (p *Pool) OnSpare(f func()) {
+	p.mu.Lock()
+	if p.onSpare != nil {
+		p.mu.Unlock()
+		panic("segment: a pool takes one spare wake, not a second")
+	}
+	p.onSpare = f
+	p.mu.Unlock()
+}
+
+// wakeSpare runs the registered spare wake, if any. The caller holds no lock.
+func (p *Pool) wakeSpare() {
+	p.mu.Lock()
+	f := p.onSpare
+	p.mu.Unlock()
+	if f != nil {
+		f()
+	}
 }
 
 // SetRecorder installs the lock-order recorder the pool's mutex reports to,
@@ -617,6 +653,12 @@ func (h *Hold) Left() int {
 // Close returns the hold's left spares to unreserved takes. It is idempotent,
 // and safe after the pool's Stop, which leaves them accounted and on disk
 // for the next open to re-adopt.
+//
+// The return fires the spare wake: the spares it frees need no landing to
+// become takeable — the unreserved take reads them past held — and a caller
+// parked on the shortage, a worker whose re-append a hold's spares refused,
+// retries at once rather than at its own tick, which a clock-driven test
+// never advances.
 func (h *Hold) Close() {
 	h.p.mu.Lock()
 	if h.closed {
@@ -627,6 +669,8 @@ func (h *Hold) Close() {
 	h.p.held.Add(-int64(h.left))
 	h.left = 0
 	h.p.mu.Unlock()
+
+	h.p.wakeSpare()
 }
 
 // wantRecycle reserves a slot for a recycled spare in the first class short of
@@ -710,6 +754,8 @@ func (p *Pool) recycled(id core.SegmentID, c Class) {
 	p.settles++
 	p.settled.Broadcast()
 	p.mu.Unlock()
+	// A recycled spare serves a parked caller as a made one does.
+	p.wakeSpare()
 }
 
 // recycleFailed gives a recycle's reservation back: the class the recycle
@@ -1322,6 +1368,9 @@ func (p *Pool) refill() bool {
 		}
 		p.deviceFull = false
 		p.mu.Unlock()
+		// A landed spare is what a parked caller of OnSpare waits for: the
+		// wake runs outside mu, so it sees the spare it names.
+		p.wakeSpare()
 	}
 }
 
