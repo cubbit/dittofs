@@ -625,6 +625,12 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	}
 	c.contentTarget = targets.Content
 	c.pool = segment.NewPool(maker, targets, d.Admit, deps.Log)
+	// The second new spare in a row whose directory sync the device refused
+	// makes the journal read-only, RFC 1 §5.4's refused-segment rule applied
+	// to the spare a stream would take: Enter keeps the state and names the
+	// device's refusal in it, and the pool's own read-only check — the Admit
+	// above — stops it making any further spare to meet the same refusal.
+	c.pool.SetReadOnlyEnter(d.Enter)
 	// A spare the pool lands wakes the durability workers, so a failed
 	// window whose re-append a pass could not roll for want of a spare is
 	// retried when the spare is there rather than at the worker's next

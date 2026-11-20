@@ -164,10 +164,22 @@ type Pool struct {
 	// borrowed is the headroom spares an open's re-appends took, which the
 	// refill makes again: the most HeadroomShort reports, set once before Start.
 	borrowed   atomic.Int64
-	started    bool     // guarded by mu
-	stopped    bool     // guarded by mu
-	deviceFull bool     // guarded by mu
-	retirer    *Retirer // the source of recycled spares, nil when none; guarded by mu
+	started    bool // guarded by mu
+	stopped    bool // guarded by mu
+	deviceFull bool // guarded by mu
+	// dirSyncRefused counts makes of a new spare, in a row, whose directory
+	// sync the device refused — a refused segment for RFC 1 §5.4's read-only
+	// rule, whose second in a row enters the read-only state through
+	// enterReadOnly, so a device refusing its directory syncs is named by the
+	// journal's read-only condition rather than met once per kick forever. A
+	// made spare brings it back to zero, and so does a make failing any other
+	// step, which names a different refusal. Guarded by mu.
+	dirSyncRefused int
+	// enterReadOnly enters the journal's read-only state, wired by the core
+	// the pool serves; nil keeps the count and calls nothing. Set once
+	// between construction and Start.
+	enterReadOnly func(error)
+	retirer       *Retirer // the source of recycled spares, nil when none; guarded by mu
 
 	// parked counts the WaitSpares calls sitting on the settle condition,
 	// for the test that sequences an event against a wait it must confirm is
@@ -278,6 +290,19 @@ func (p *Pool) wakeSpare() {
 // the mutex a plain one.
 func (p *Pool) SetRecorder(rec *lockorder.Recorder) {
 	p.mu.Init(lockorder.Capacity, rec)
+}
+
+// SetReadOnlyEnter wires the journal's read-only entry, which the pool calls
+// on the second make of a new spare in a row whose directory sync the device
+// refused — the refused-segment rule of RFC 1 §5.4 — with the refusal that
+// met it, so the journal's read-only condition names the device instead of
+// the pool meeting the refusal once per kick forever. It is a setter rather
+// than a construction parameter to leave NewPool's signature alone for the
+// tests that build a pool with no journal to enter; it runs between
+// construction and Start, and nil or never set keeps the count without
+// calling anything.
+func (p *Pool) SetReadOnlyEnter(enter func(error)) {
+	p.enterReadOnly = enter
 }
 
 // HoldTaken sets the count of the open's held takes: segments on disk this
@@ -1377,7 +1402,25 @@ func (p *Pool) refill() bool {
 			if errors.Is(err, syscall.ENOSPC) {
 				p.deviceFull = true
 			}
+			// The refused-segment row of §5.4: a device answering EROFS to
+			// a make enters the read-only state through the storage the
+			// journal wraps, but a device refusing only its directory syncs
+			// would meet each make the same way for as long as takes kick
+			// them, so the second of them in a row enters the state with the
+			// refusal that met it, which the journal's read-only condition
+			// then names. A make failing any other step breaks the row: an
+			// ENOSPC'd allocation above all is the full-device state this
+			// pass already keeps, never a segment the device refused.
+			if errors.Is(err, ErrDirSyncRefused) {
+				p.dirSyncRefused++
+			} else {
+				p.dirSyncRefused = 0
+			}
+			enter := p.dirSyncRefused == 2 && p.enterReadOnly != nil
 			p.mu.Unlock()
+			if enter {
+				p.enterReadOnly(err)
+			}
 
 			// The journal maximum's own refusal is the pool working as
 			// configured; anything else is a fault to name.
@@ -1398,6 +1441,7 @@ func (p *Pool) refill() bool {
 			p.settleDemandLocked()
 		}
 		p.deviceFull = false
+		p.dirSyncRefused = 0
 		p.mu.Unlock()
 		// A landed spare is what a parked caller of OnSpare waits for: the
 		// wake runs outside mu, so it sees the spare it names.
