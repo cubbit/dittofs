@@ -8,11 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +19,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/benchdir"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
@@ -549,132 +547,19 @@ func benchBase(b *testing.B) string {
 var boxOnce sync.Once
 
 // printBox prints, before the first result line, what each result is
-// recorded with: the commit, the memory, the device holding dir and its
-// filesystem with the mount options, the kernel, and the device's own fsync
-// latency. They are key: value lines, which benchstat reads as the
+// recorded with, as key: value lines, which benchstat reads as the
 // configuration of the results below them; go test prints the CPU, the
 // operating system and the architecture the same way.
 func printBox(b *testing.B, dir string) {
 	b.Helper()
 	boxOnce.Do(func() {
-		source, fstype, options := mountOf(dir)
+		box, err := benchdir.Describe(dir)
+		if err != nil {
+			b.Fatalf("bench: %v", err)
+		}
 
-		fmt.Printf("commit: %s\n", gitCommit())
-		fmt.Printf("memory: %s\n", memTotal())
-		fmt.Printf("device: %s\n", source)
-		fmt.Printf("filesystem: %s\n", fstype)
-		fmt.Printf("mount-options: %s\n", options)
-		fmt.Printf("kernel: %s %s\n", runtime.GOOS, readTrim("/proc/sys/kernel/osrelease"))
-		fmt.Printf("device-raw: %s\n", fsyncProbe(b, dir))
+		box.Print(os.Stdout)
 	})
-}
-
-// fsyncProbe is the device's own figure for the run: the p50 and p99 of 64
-// writes of 4 KiB each followed by an fsync, on a file in dir.
-func fsyncProbe(b *testing.B, dir string) string {
-	b.Helper()
-
-	f, err := os.CreateTemp(dir, "fsync-probe-")
-	if err != nil {
-		b.Fatalf("bench: fsync probe: %v", err)
-	}
-
-	defer func() {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
-	}()
-
-	buf := make([]byte, 4096)
-
-	var took []time.Duration
-
-	for range 64 {
-		start := time.Now()
-
-		if _, err := f.Write(buf); err != nil {
-			b.Fatalf("bench: fsync probe write: %v", err)
-		}
-
-		if err := f.Sync(); err != nil {
-			b.Fatalf("bench: fsync probe sync: %v", err)
-		}
-
-		took = append(took, time.Since(start))
-	}
-
-	return fmt.Sprintf("write-4KiB-fsync p50=%v p99=%v", percentile(took, 50), percentile(took, 99))
-}
-
-// mountOf is the source, filesystem type and mount options of the mount
-// holding dir, from /proc/self/mountinfo: the longest mount point that
-// prefixes it.
-func mountOf(dir string) (source, fstype, options string) {
-	abs, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return "unknown", "unknown", "unknown"
-	}
-
-	data, err := os.ReadFile("/proc/self/mountinfo")
-	if err != nil {
-		return "unknown", "unknown", "unknown"
-	}
-
-	best := ""
-	source, fstype, options = "unknown", "unknown", "unknown"
-
-	for line := range strings.Lines(string(data)) {
-		pre, post, ok := strings.Cut(line, " - ")
-
-		fields, tail := strings.Fields(pre), strings.Fields(post)
-		if !ok || len(fields) < 6 || len(tail) < 2 {
-			continue
-		}
-
-		point := fields[4]
-
-		inside := abs == point || strings.HasPrefix(abs, strings.TrimSuffix(point, "/")+"/")
-		if inside && len(point) > len(best) {
-			best, source, fstype, options = point, tail[1], tail[0], fields[5]
-		}
-	}
-
-	return source, fstype, options
-}
-
-// gitCommit is the checkout's HEAD, with "-dirty" after it when the tree has changes, or "unknown" outside a checkout.
-func gitCommit() string {
-	out, err := exec.Command("git", "describe", "--always", "--dirty").Output()
-	if err != nil {
-		return "unknown"
-	}
-
-	return strings.TrimSpace(string(out))
-}
-
-// memTotal is the box's memory, as /proc/meminfo's MemTotal line gives it.
-func memTotal() string {
-	data, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return "unknown"
-	}
-
-	for line := range strings.Lines(string(data)) {
-		if v, ok := strings.CutPrefix(line, "MemTotal:"); ok {
-			return strings.Join(strings.Fields(v), " ")
-		}
-	}
-
-	return "unknown"
-}
-
-// readTrim is the file's content without surrounding space, or "unknown".
-func readTrim(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "unknown"
-	}
-
-	return strings.TrimSpace(string(data))
 }
 
 // percentile is the p-th percentile of took, nearest rank; zero when empty.

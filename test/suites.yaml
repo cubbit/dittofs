@@ -30,7 +30,7 @@ suites:
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
       # going red. None of these tags excludes another.
-      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,journal_model,journal_soak,journal_bench,engine_conformance,engine_soak,engine_bench,adapter_conformance ./...
+      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,journal_plant_truncate,journal_model,journal_soak,journal_bench,engine_conformance,engine_soak,engine_bench,adapter_conformance ./...
       # The adapters run on every platform a node does, and their socket code differs by
       # platform, so they are vetted for Windows and macOS beside the host's own.
       - { sh: 'for os in windows darwin; do GOOS=$os go vet ./pkg/adapter/... ./pkg/resources/... ./internal/adapter/... || exit 1; done' }
@@ -100,13 +100,14 @@ suites:
         cmd:
           - go test -timeout=5m ./pkg/block/journal/internal/index/ ./pkg/block/journal/internal/durability/ ./pkg/block/journal/internal/format/ ./internal/prof/
           - go test -timeout=5m -run=^(TestReadOfALargeRecordAllocatesFlat|TestRFC1D_StatsCostIsFlat)$ ./pkg/block/journal/internal/datapath/
-      # The index built with a bug planted in its split, which the model fuzz and the model's
-      # data-path run must both find. The planted build breaks the package's other tests by
-      # design, so only these tests run.
+      # The index built with a bug planted in its split and the truncate marker with one planted
+      # past its size, which the model fuzz and the model's runs must find. The planted builds
+      # break the packages' other tests by design, so only these tests run.
       journal-plant:
         cmd:
           - go test -tags=journal_plant_split -timeout=2m -run=^TestFuzzFindsPlantedSplit$ ./pkg/block/journal/internal/index/
           - go test -tags=journal_plant_split,journal_conformance -timeout=10m -run=^TestModelDataPathFindsPlantedSupersession$ ./pkg/block/journal/conformance/
+          - go test -tags=journal_plant_truncate,journal_conformance,journal_model -timeout=10m -run=^TestModelManySeedsFindsPlantedTruncate$ ./pkg/block/journal/conformance/
       # The journal's allocation checks, which the race detector makes unmeasurable and the race
       # leg of journal-conformance skips as known: the counted calls of RFC 1 §9.7, running
       # without -race, where allocation counting works, with the flat-Stats check, whose rig
@@ -143,6 +144,14 @@ suites:
     cmd: go test -tags=journal_conformance,journal_model -run ^TestModelManySeeds$ -timeout=110m -artifacts -outputdir={out} ./pkg/block/journal/conformance/
     env:
       DITTOFS_MODEL_SEEDS: "100"
+      # The base turns over every night: the day's count of days times the seed count
+      # gives each night its own block of seeds, one no other night's block overlaps,
+      # while a rerun the same night draws the same ones
+      # and a failure's line names the number its rerun needs. The registry's
+      # own {out}/{base} substitution reaches no run date, so the value is this
+      # spelled word the test itself resolves - the smallest change until a
+      # date-valued key lands in the harness.
+      DITTOFS_MODEL_SEED_BASE: "night"
     tier: nightly
     # The cell limit sits above the seeded run: the registry's default 60m cell would kill
     # it mid-seed, red for the wrong reason.
@@ -165,14 +174,18 @@ suites:
   # RFC 1's J1 to J3, the journal's write path, scaling and point lookups, written to
   # {out}/bench.txt for benchstat. Interpretable only beside the raw figures of the same
   # device, so run by hand with DITTOFS_BENCH_DIR on it, gating nothing, as engine-bench:
-  # JOURNAL_BENCH_COUNT=1 in the environment takes one count. No -race: it changes the
-  # latency they measure. No -timeout either: go test applies none to benchmarks, so the
+  # JOURNAL_BENCH_COUNT=1 in the environment takes one count. The pattern takes the raw
+  # twins (BenchmarkRaw*) with the J rows, since a J row is read only as a fraction of its
+  # twin. A directory on a RAM-backed filesystem fails the benchmark on its own check, so
+  # that refusal exits 1 (b.Fatalf in the rows), deliberately unlike the unset-variable
+  # guard's 2. No -race: it changes the latency they measure. No -timeout either: go test applies none to benchmarks, so the
   # cell's limit is the guard — engine-bench's, the same headroom, not the registry's
   # default 60m, which a real run's counts could outlive.
   # decision: format exit, not go-json: go test -json sends no pass event for a passing
   # benchmark, which a go-json cell grades as failed.
-  # decision: manual until a reference runner exists, the ledger row the journal plan
-  # carries — a nightly figure compares only against the same host's, and no host is one yet.
+  # decision: manual until a daily run exists, the ledger row the journal plan carries. The
+  # reference box is the dedicated host, and a figure compares only against that host's own;
+  # the daily run waits for a window on it, or a provisioned runner, as the ledger row says.
   # decision: no known: file — a benchmark that refuses to run is a finding to fix; its
   # b.Fatalf line is in bench.txt. A flake goes to quarantine, with an issue and an
   # expiry date, never to a known list.
@@ -181,7 +194,7 @@ suites:
       # The bench pattern's quotes rule out the flow style shellcheck's and engine-bench's
       # single-quoted lines use, so the entry takes the literal block the shellcheck one does.
       - sh: |
-          test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$JOURNAL_BENCH_COUNT" || n=$JOURNAL_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "JOURNAL_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -tags=journal_conformance,journal_bench -run ^$ -bench '^BenchmarkJ[123]_' ./pkg/block/journal/conformance/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; test $s -ne 0 || grep -q '^BenchmarkJ' {out}/bench.txt || { echo "no BenchmarkJ benchmark ran" >&2; exit 2; }; exit $s
+          test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$JOURNAL_BENCH_COUNT" || n=$JOURNAL_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "JOURNAL_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -tags=journal_conformance,journal_bench -run ^$ -bench '^Benchmark(J[123]_|Raw)' ./pkg/block/journal/conformance/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; test $s -ne 0 || grep -q '^BenchmarkJ' {out}/bench.txt || { echo "no BenchmarkJ benchmark ran" >&2; exit 2; }; exit $s
     tier: manual
     timeout: { test: 300m, cell: 310m }
   # The engine's conformance checks, behind their own tag for the same reason: they run

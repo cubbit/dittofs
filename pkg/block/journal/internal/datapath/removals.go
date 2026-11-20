@@ -25,14 +25,21 @@ import (
 // limit or the journal's maximum; what can refuse it is the headroom, the
 // version limit and, when the truncate splits a held extent, the index's cap.
 func (c *Core) Truncate(ctx context.Context, s *Share, id core.FileID, size int64) (core.Version, error) {
+	// A truncate's header names the new size and writes length 0; its
+	// marker runs from that size to the end of the file.
+	marker := toEnd(size)
+	if plantTruncateBug {
+		// The planted bug the journal_plant_truncate build carries: the
+		// marker reaches one byte past the size, so the byte at the size
+		// stays held after the truncate.
+		marker = toEnd(size + 1)
+	}
 	r := removal{
 		class:  capacity.Truncate,
 		change: core.ChangeTruncate,
 		kind:   format.KindTruncate,
-		// A truncate's header names the new size and writes length 0; its
-		// marker runs from that size to the end of the file.
 		header: core.Extent{Off: size},
-		marker: toEnd(size),
+		marker: marker,
 	}
 	if size < 0 {
 		r.bad = core.ErrInvalidExtent

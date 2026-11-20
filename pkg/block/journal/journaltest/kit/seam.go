@@ -80,9 +80,21 @@ type Seam struct {
 	open     map[*seamFile]struct{}
 	calls    map[string]int
 	callsFor map[[2]string]int
-	stashed  int
-	holds    []*Hold
-	crashes  uint64 // Crash and Abandon calls so far; a call that waited across one fails
+
+	// callsForOrder is the insertion order of callsFor's keys, oldest
+	// first, bounded by callsForCap: the per-name records the seam keeps
+	// are what an hours-long soak's churn would grow past the profiler's
+	// heap slack, since every retired-and-remade segment is a name the
+	// journal retires and another one it mints. The cap evicts the
+	// oldest-inserted name whatever it touched last - insertion order, not
+	// touch order, so a name counted recently can go while one long
+	// untouched stays - so a count an existing check asserts is lost only
+	// past the cap itself, 16,384 names churned between the counting and
+	// the reading.
+	callsForOrder [][2]string
+	stashed       int
+	holds         []*Hold
+	crashes       uint64 // Crash and Abandon calls so far; a call that waited across one fails
 
 	// moves counts every call's start and end, and inFlight the calls
 	// started and not ended, held ones included: what Activity reads.
@@ -345,10 +357,34 @@ func (s *Seam) enter(op, name string, epoch uint64) (action, error) {
 	return a, nil
 }
 
+// callsForCap is how many per-name call records the seam keeps: a bound the
+// short checks never come near and an hours-long soak's churn fills, so the
+// rig holds a flat footprint of its own bookkeeping — small enough that the
+// capped map rides below the profiler's own heap slack beside the journal
+// it measures.
+//
+// ponytail: eviction is insertion order alone, so a long-forgotten name's
+// record can be dropped before a more recently counted one that was
+// inserted earlier; no check reads a count that old across that much churn,
+// and an LRU of touch order is the upgrade if one ever does.
+const callsForCap = 1 << 14
+
 // count records one call of op on name; the caller holds mu.
 func (s *Seam) count(op, name string) {
 	s.calls[op]++
-	s.callsFor[[2]string{op, name}]++
+	k := [2]string{op, name}
+	if _, ok := s.callsFor[k]; !ok {
+		s.callsForOrder = append(s.callsForOrder, k)
+		if len(s.callsForOrder) > callsForCap {
+			delete(s.callsFor, s.callsForOrder[0])
+			// The reslice drops the head from the window's view only: the
+			// backing array's own head stays until the next growth copies
+			// the live window into a fresh one, which bounds the array near
+			// twice the cap, so the order slice's memory is bounded too.
+			s.callsForOrder = s.callsForOrder[1:]
+		}
+	}
+	s.callsFor[k]++
 }
 
 // call marks a call started, and returns what marks it ended.
