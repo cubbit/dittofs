@@ -336,8 +336,8 @@ Start the DittoFS server in the foreground with the specified configuration.
 
 The server runs until it receives SIGINT or SIGTERM, then stops and exits
 zero once every part stopped. A start that fails for its own reason exits
-non-zero, even when a signal arrived while it failed. Run it under a process supervisor (systemd,
-Docker) to keep it in the background.
+non-zero, even when a signal arrived while it failed. Run it under a
+process supervisor (systemd, Docker) to keep it in the background.
 
 ```
 dfs start [flags]
