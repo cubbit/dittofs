@@ -2804,3 +2804,37 @@ func TestPoolHeadroomShortCountsTheSparesAnOpenBorrowed(t *testing.T) {
 		t.Fatalf("after an ordinary headroom take the pool reads %d short, want 0: the borrow was already made again", got)
 	}
 }
+
+// TestPoolCheckAfterAMakeLandsPastStop: a make parked at its create while Stop
+// marks the pool stopped still lands its spare in the ready list, and the
+// ready count Counters serves says so. Check walks the list against the count
+// and Counters reports the spare, so a stopped-pool landing that forgets the
+// count fails both.
+func TestPoolCheckAfterAMakeLandsPastStop(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	h := seam.Hold(t, kit.OpCreate, "*")
+	p.Start()
+	<-h.Reached()
+
+	stopped := make(chan struct{})
+	go func() { p.Stop(); close(stopped) }()
+	// Stop marks the pool stopped before it joins the parked make, and a Hold
+	// answers ErrClosed from that mark on: the landing below is past it.
+	for range poolAttempts {
+		if _, err := p.Hold(1); errors.Is(err, core.ErrClosed) {
+			break
+		}
+		runtime.Gosched()
+	}
+	h.Release()
+	<-stopped
+
+	if err := p.Check(); err != nil {
+		t.Fatalf("after a make landed past Stop: %v", err)
+	}
+	if c := p.Counters(); c.Spares != 1 {
+		t.Fatalf("after a make landed past Stop Counters.Spares = %d, want the 1 spare the make landed", c.Spares)
+	}
+}
