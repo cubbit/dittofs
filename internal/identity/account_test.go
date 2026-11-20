@@ -218,6 +218,54 @@ func TestVerifyPassword(t *testing.T) {
 	}
 }
 
+// A user whose deletion has run to its end, and one marked deleted whose
+// batches have not run, are each refused by VerifyPassword with the right
+// password and by Account, as an API token issued before the deletion
+// reaches it: ErrLogonFailure.
+func TestDeletedUserSignsInNowhere(t *testing.T) {
+	r, p := signing(t)
+	ctx := context.Background()
+	gone := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1500")}
+	r.withPassword(t, &gone, alicePassword, p)
+	goneGen := r.user(t, gone, 0)
+	marked := entity.User{Principal: entity.NewUser(), Name: "bob", IDs: fileIDs("1501")}
+	r.withPassword(t, &marked, alicePassword, p)
+	markedGen := r.user(t, marked, 0)
+	for _, u := range []entity.User{gone, marked} {
+		if err := r.srv.VerifyPassword(ctx, u.Principal, []byte(alicePassword)); err != nil {
+			t.Fatalf("VerifyPassword(%s) before the deletion = %v, want nil", u.Name, err)
+		}
+	}
+
+	if err := r.cp.DeleteUser(ctx, gone.Principal, goneGen); err != nil {
+		t.Fatal(err)
+	}
+	for done := false; !done; {
+		var err error
+		if done, err = r.st.Nodes().ContinueDelete(ctx, gone.Principal); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.cp.DeleteUser(ctx, marked.Principal, markedGen); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct {
+		name string
+		u    entity.User
+	}{
+		{"deleted", gone},
+		{"marked deleted", marked},
+	} {
+		if err := r.srv.VerifyPassword(ctx, c.u.Principal, []byte(alicePassword)); !errors.Is(err, vfserr.ErrLogonFailure) {
+			t.Errorf("VerifyPassword(%s user, the right password) = %v, want ErrLogonFailure", c.name, err)
+		}
+		if u, err := r.srv.Account(ctx, c.u.Principal); !errors.Is(err, vfserr.ErrLogonFailure) {
+			t.Errorf("Account(%s user) = %+v, %v; want ErrLogonFailure", c.name, u, err)
+		}
+	}
+}
+
 // A stored hash that is not an argon2id PHC string is ErrUnavailable, never
 // a wrong password.
 func TestVerifyPasswordCorruptHash(t *testing.T) {
