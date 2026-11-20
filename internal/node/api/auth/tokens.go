@@ -136,6 +136,18 @@ func (t *Tokens) Format(f fmt.State, _ rune) { _, _ = fmt.Fprint(f, t.String()) 
 // LogValue hands slog String.
 func (t *Tokens) LogValue() slog.Value { return slog.StringValue(t.String()) }
 
+// Close clears the bytes of every version held and forgets them, so the raw
+// keys do not outlive the storage key that wraps them; an issue or verify
+// after it reads the versions again.
+func (t *Tokens) Close() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, k := range t.held {
+		clear(k.Value)
+	}
+	t.held, t.tried = nil, time.Time{}
+}
+
 // refresh re-reads every held version of the signing key at once.
 func (t *Tokens) refresh(ctx context.Context) error {
 	t.mu.Lock()

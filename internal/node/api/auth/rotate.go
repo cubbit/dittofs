@@ -42,15 +42,17 @@ type Writer interface {
 // commits nothing, until pruneWait has passed at the node's clock; then the
 // operation ends, pruning every version below the new one in the
 // transaction that ends it. A target other than the installation, and an
-// installation that names no signing key, fail the operation: neither
-// changes on a retry.
+// installation that names no signing key, or no longer names the one tk
+// took at build, read in the switch's write and in the end's, fail the
+// operation: none changes on a retry.
 //
 // A switch whose cursor was not committed runs again and seals one more
 // version. That is safe: the cursor names the last switch, whose store time
 // is past every token an earlier version signed.
 //
 // decision: the prune calls tx.PruneSecret, not the provider's Prune, so it
-// skips the floor of the versions node statuses report. The retention is
+// skips the floor of the versions node statuses report, and the provider's
+// kind and owner check, which the switch's seal already made on this key. The retention is
 // time-based: no token an old version signed verifies once its 15 min have
 // passed, so nothing still needs the version, wherever it is held.
 //
@@ -61,8 +63,10 @@ type Writer interface {
 // window and has such a token refused before it expires; a node that has
 // not yet re-read refuses a token the new version signed for up to a
 // second; and a node down across the whole wait keeps nothing it needs.
-// Ceiling: a second node. Upgrade: wait for every node's status to report
-// the new version before the 15 min start.
+// Ceiling: a second node, where signing must also wait until every node's
+// status reports the new version, since a node that has not re-read refuses
+// a new-version token. Upgrade: wait for every node's status to report the
+// new version before signing with it and before the 15 min start.
 func RotationStep(store Writer, s Sealer, tk *Tokens, node entity.NodeID) step.Step {
 	return func(ctx context.Context, op entity.Operation) (step.StepResult, error) {
 		inst := tk.owner.Record.ID
@@ -87,6 +91,9 @@ func RotationStep(store Writer, s Sealer, tk *Tokens, node entity.NodeID) step.S
 		}
 		ref := tk.ref
 		return step.StepResult{Done: true, Next: op.Step, End: func(tx entity.ControlPlaneTx) error {
+			if err := stillNames(tx, ref); err != nil {
+				return err
+			}
 			return tx.PruneSecret(ref, c.Version)
 		}}, nil
 	}
@@ -95,6 +102,14 @@ func RotationStep(store Writer, s Sealer, tk *Tokens, node entity.NodeID) step.S
 // switchKey seals the key's next version, commits it as the current one,
 // audited as op's account on node, and refreshes the verifier, answering
 // the cursor that records the switch.
+//
+// decision: a switch whose commit lands but whose cursor the runner never
+// writes runs again on the next turn, sealing one more version and auditing
+// a second set. That is safe: the newest version signs, and the prune keeps
+// every version from the last switch on. Adopting the version already
+// written, as the machine password's rotation does, needs the switch's
+// version recorded in the store, which nothing records. Overturned once the
+// installation records the rotation it last switched to.
 func switchKey(ctx context.Context, store Writer, s Sealer, tk *Tokens, node entity.NodeID, op entity.Operation) (step.StepResult, error) {
 	sealed, err := SealSigningKey(ctx, s, [16]byte(tk.owner.Record.ID), tk.ref)
 	if err != nil {
@@ -102,6 +117,9 @@ func switchKey(ctx context.Context, store Writer, s Sealer, tk *Tokens, node ent
 	}
 	var at time.Time
 	err = store.Write(ctx, entity.WriteMeta{Audit: switchAudit(op, node)}, func(tx entity.ControlPlaneTx) error {
+		if err := stillNames(tx, tk.ref); err != nil {
+			return err
+		}
 		at = tx.Now()
 		return tx.PutSecret(sealed, sealed.Version-1)
 	})
@@ -116,15 +134,32 @@ func switchKey(ctx context.Context, store Writer, s Sealer, tk *Tokens, node ent
 	return step.StepResult{Next: next}, nil
 }
 
+// stillNames refuses, failing the operation, unless the installation read
+// through tx, tracked, still names ref as its signing key: the reference the
+// tokens took when the node was built. A rotation that seals or prunes
+// another key's versions would leave the key that signs unrotated, its
+// switch audited as set.
+func stillNames(tx entity.ControlPlaneTx, ref entity.SecretRef) error {
+	in, err := tx.Installation()
+	if err != nil {
+		return err
+	}
+	if in.SigningKey != ref {
+		return fmt.Errorf("%w: the installation names signing key %x, not %x, the one this node signs with", step.ErrStepFailed, in.SigningKey, ref)
+	}
+	return nil
+}
+
 // switchAudit is the record of the switch: the signing key set, as a secret
-// is recorded, never its value, as op's account on node.
+// is recorded, never its value, as op's account on node, its outcome the
+// operation's ID, so a switch run twice is matched to its operation.
 func switchAudit(op entity.Operation, node entity.NodeID) *entity.AuditRecord {
 	return &entity.AuditRecord{
 		Actor:   op.Account,
 		Node:    node,
 		Target:  op.Target,
 		Change:  []byte(`{"signing_key":"set"}`),
-		Outcome: []byte("applied"),
+		Outcome: []byte(entity.ShareID(op.ID).String()),
 	}
 }
 

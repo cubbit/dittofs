@@ -351,7 +351,7 @@ func commitAdmin(ctx context.Context, d Deps, st *kvstore.Store, inst [16]byte, 
 // ponytail: the role is fixed to storage, as both secrets sealed here are
 // storage-role kinds. A caller sealing a protocol-role kind, the reset's NT
 // hash, needs a kind-to-role lookup exported by pkg/secrets, which would
-// also remove this adapter and the two like it.
+// also remove this adapter and the three like it.
 type sealer struct{ p *secrets.Provider }
 
 func (s sealer) Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte) (entity.Secret, error) {

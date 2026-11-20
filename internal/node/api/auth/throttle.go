@@ -197,7 +197,7 @@ func (e *throttled) RetryAfter() time.Duration { return e.wait }
 // count, and a write whose reads are tracked.
 type signInStore interface {
 	SignInFailures(ctx context.Context, k entity.SignInKey) (entity.SignInFailures, bool, error)
-	Write(ctx context.Context, meta entity.WriteMeta, fn func(entity.ControlPlaneTx) error) error
+	Writer
 }
 
 // Clock is the node's clock.

@@ -179,7 +179,7 @@ func installed(t *testing.T, dir string) string {
 // the environment the child inherits, and returns its path.
 func storageKeyFile(t *testing.T, dir string) string {
 	t.Helper()
-	const passphrase = "dfs start test passphrase"
+	const passphrase = "dfs commands test passphrase"
 	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
 	b, err := keyprovider.GenerateKeyFile(passphrase)
 	if err != nil {

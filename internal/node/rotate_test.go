@@ -118,8 +118,8 @@ func TestRotationKeepsTheOldVersionUntilItsTokensExpire(t *testing.T) {
 			switched = append(switched, a)
 		}
 	}
-	if len(switched) != 1 || switched[0].Actor != op.Account || switched[0].Node != h.NodeID() {
-		t.Errorf("the installation's audit records of the switch: %+v, want one, its actor the operation's account %v, on node %v", switched, op.Account, h.NodeID())
+	if len(switched) != 1 || switched[0].Actor != op.Account || switched[0].Node != h.NodeID() || string(switched[0].Outcome) != entity.ShareID(op.ID).String() {
+		t.Errorf("the installation's audit records of the switch: %+v, want one, its actor the operation's account %v, on node %v, its outcome the operation %v", switched, op.Account, h.NodeID(), op.ID)
 	}
 	for name, raw := range map[string]string{"signed before the switch": before, "issued an hour ahead": ahead} {
 		if _, err := tk.Verify(ctx, raw); err != nil {
@@ -298,5 +298,45 @@ func TestRotationFailsWithNoSigningKey(t *testing.T) {
 	h.Node().RunnerTurn(t.Context())
 	if got := operation(t, h, op.ID); got.State != entity.OpFailed || !strings.Contains(string(got.Error), "names no signing key") {
 		t.Errorf("rotation with no signing key: state %v, error %s; want failed, naming the missing key", got.State, got.Error)
+	}
+}
+
+// A rotation fails, writing nothing of the key, once the installation names
+// another signing key than the one the node was built with: at the switch,
+// before it seals, or at the end, before it prunes.
+func TestRotationRefusesARepointedKey(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		switchd bool // repointed after the switch, before the end
+	}{
+		{"before the switch", false},
+		{"between the switch and the end", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := nodetest.New(t)
+			op, ref := startRotation(t, h)
+			if tc.switchd {
+				h.Node().RunnerTurn(t.Context())
+			}
+			err := h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+				return tx.SetSigningKey(entity.SecretRef(uuid.New()))
+			})
+			if err != nil {
+				t.Fatalf("repoint the installation's signing key: %v", err)
+			}
+			h.Clock().Advance(pruneAfter)
+			h.Node().RunnerTurn(t.Context())
+			got := operation(t, h, op.ID)
+			if got.State != entity.OpFailed || !strings.Contains(string(got.Error), "not "+fmt.Sprintf("%x", ref)) {
+				t.Errorf("rotation with the key repointed %s: state %v, error %s; want failed, naming the key it was built with", tc.name, got.State, got.Error)
+			}
+			want := uint64(1)
+			if tc.switchd {
+				want = 2
+			}
+			if cur, stored := held(t, h, ref, 1); cur != want || !stored {
+				t.Errorf("the key repointed %s: current version %d, version 1 stored %v; want %d, and 1 still stored", tc.name, cur, stored, want)
+			}
+		})
 	}
 }

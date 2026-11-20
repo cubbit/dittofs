@@ -99,8 +99,8 @@ type Node struct {
 	// keys.storage names; Stop closes it.
 	storageKey keyprovider.KeyProvider
 	// tokens issues and verifies access tokens over the installation's
-	// signing key. Only the rotation uses them yet: sign-in hands them to the
-	// API.
+	// signing key. Only the rotation uses them yet; sign-in will hand them to
+	// the API. Stop clears the versions they hold.
 	tokens *auth.Tokens
 	// ending, when set, is called by step 3 of each share removal once its
 	// bound is set on the clock, before it waits on anything.
@@ -109,16 +109,16 @@ type Node struct {
 
 // New resolves the adapters' addresses, refusing an adapters.listen it
 // cannot bind, opens the metadata store over cfg.KV, refusing a KV that
-// holds no installation or one this binary does not read, opens the storage
-// key keys.storage names, refusing a bootstrap that names none and dialling
-// a KMIP server when it names one there, then builds the secret provider and
-// the access tokens over it, open
+// holds no installation or one this binary does not read, and opens the
+// storage key keys.storage names, refusing a bootstrap that names none and
+// dialling a KMIP server when it names one there. It then builds open
 // state, the engine and the filesystem, each empty from its own Deps, the
-// budgets and their series, the operation runner with the steps of the
-// kinds this node drives, the watchdog, the adapters' one Deps, the sidecar
-// runner and a slot per protocol, and the API over the store's control
-// plane and node view, the runner's progress, the health evaluator, the
-// slots' connections and the writer's wait. It starts nothing: no journal,
+// budgets and their series, the secret provider and the access tokens over
+// the storage key, the operation runner with the steps of the kinds this
+// node drives, the watchdog, the adapters' one Deps, the sidecar runner and
+// a slot per protocol, and the API over the store's control plane and node
+// view, the runner's progress, the health evaluator, the slots' connections
+// and the writer's wait. It starts nothing: no journal,
 // goroutine or listener exists until Start, but for the socket an unset
 // adapters.listen opens and closes at once to learn whether tcp6 does.
 //
@@ -218,6 +218,12 @@ func build(cfg Config, in apiInputs) (_ *Node, err error) {
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		return nil, fmt.Errorf("node: metadata store: %w", err)
 	}
+	// decision: the storage key opens under no context a signal can cut,
+	// since New takes none and Config may not grow one. A KMIP key's open is
+	// bounded instead: two round trips for the current key and two for each
+	// retired one, each at most kmip.timeout, 5 s unless set, so a signal
+	// during New waits out at most that before dfs start stops. Overturned
+	// when New takes the start's context.
 	if n.storageKey, err = keyprovider.NewProvider(context.Background(), cfg.Bootstrap.Keys.Storage.Provider()); err != nil {
 		return nil, fmt.Errorf("node: the storage key: %w", err)
 	}

@@ -18,8 +18,13 @@ func rotate(tx entity.ControlPlaneTx) error {
 	return tx.PutSecret(cur, cur.Version-1)
 }
 
-// putCredential is named like the credential write, which may put a
-// secret, but drops one, which only the rotation may.
-func putCredential(tx entity.ControlPlaneTx, ref entity.SecretRef) error {
+// dropKey drops a secret's versions, which only the rotation may.
+func dropKey(tx entity.ControlPlaneTx, ref entity.SecretRef) error {
 	return tx.PruneSecret(ref, 1)
+}
+
+// repoint names another secret as the signing key, which writes the key
+// without its field, its kind or a put.
+func repoint(tx entity.ControlPlaneTx, ref entity.SecretRef) error {
+	return tx.SetSigningKey(ref)
 }
