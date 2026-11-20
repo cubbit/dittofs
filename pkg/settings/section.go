@@ -86,12 +86,18 @@ type Section struct {
 	// decodeAny is decode for T, so Check and Read build a value of a type
 	// they only know at run time.
 	decodeAny func(*Section, any, entity.SettingScope, []entity.Setting) (any, error)
+	// formatVersion is the declared key that holds the block format version,
+	// named by the FormatVersion option; "" names none.
+	formatVersion string
 }
 
-// field is one key of a section and its binding class.
+// field is one key of a section: its binding class, whether it names how to
+// reach a remote store's content, and the field's path in the section's type.
 type field struct {
 	key   string
 	class Class
+	store bool
+	index []int
 }
 
 // Option is one of Of's options.
@@ -113,6 +119,7 @@ const (
 	optOverrideOnly
 	optCheckTx
 	optSecretRef
+	optFormatVersion
 )
 
 // classes are the class tag's spellings, RFC 13 §5's words as written.
@@ -136,6 +143,19 @@ var classes = map[string]Class{
 // field is a Go field name, resolved as Go's selector resolves it, the
 // shallowest field of that name, so a typo fails the table's first test
 // instead of leaving a key unchecked.
+//
+// Each field that names how to reach a remote store's content (an endpoint,
+// bucket, prefix or credential reference) carries, beside its class tag, a
+// location:"store" tag, and Check refuses its change until the store's
+// capability check can prove the claim at the new location (RFC 13 §5.2). Of
+// panics naming the field and the value on a location tag of any other
+// spelling, since json would read it as if it were absent and its gate would
+// stay off. FormatVersion(field) names the field whose key holds the block
+// format version; the field must be an integer, an int or a uint of any width
+// and never a pointer, or Of panics naming the field and its kind. Of panics
+// on a FormatVersion name that is no setting field and on two FormatVersion
+// options in one section: either would leave its gate silent, and a
+// declaration error must fail the table's first test.
 //
 // T's Validate may print the value it refuses, as RFC 13 §6's "got 70000"
 // does, but never the value of a field declared with SecretRef, which may
@@ -235,6 +255,11 @@ func Of[T interface{ Validate() error }](
 					sf.Name, spelling)
 			}
 
+			located, locatedTag := sf.Tag.Lookup("location")
+			if locatedTag && located != "store" {
+				refuse("field %s has location %q, not store", sf.Name, located)
+			}
+
 			key := prefix + "." + name
 			if first, dup := byKey[key]; dup {
 				refuse("fields %s and %s share the key %s", first, sf.Name, key)
@@ -245,12 +270,14 @@ func Of[T interface{ Validate() error }](
 			sec.fields = append(sec.fields, field{
 				key:   key,
 				class: class,
+				store: locatedTag,
+				index: at,
 			})
 		}
 	}
 	walk(typ, nil)
 
-	keyOf := func(option, goName string) string {
+	keyOf := func(option, goName string) (string, reflect.Type) {
 		sf, found := typ.FieldByName(goName)
 
 		key, ok := byPath[fmt.Sprint(sf.Index)]
@@ -258,7 +285,7 @@ func Of[T interface{ Validate() error }](
 			refuse("%s names %s, which is no setting field", option, goName)
 		}
 
-		return key
+		return key, sf.Type
 	}
 
 	for _, o := range opts {
@@ -271,7 +298,8 @@ func Of[T interface{ Validate() error }](
 			sec.writeRole = o.role
 		case optRequired:
 			for _, f := range o.fields {
-				sec.required = append(sec.required, keyOf("Required", f))
+				key, _ := keyOf("Required", f)
+				sec.required = append(sec.required, key)
 			}
 		case optOverrideOnly:
 			if scope.form != formOverride {
@@ -279,7 +307,8 @@ func Of[T interface{ Validate() error }](
 			}
 
 			for _, f := range o.fields {
-				sec.overrideOnly = append(sec.overrideOnly, keyOf("OverrideOnly", f))
+				key, _ := keyOf("OverrideOnly", f)
+				sec.overrideOnly = append(sec.overrideOnly, key)
 			}
 		case optCheckTx:
 			if o.checkType != typ {
@@ -292,7 +321,24 @@ func Of[T interface{ Validate() error }](
 				sec.secretRefs = make(map[string]entity.SecretKind)
 			}
 
-			sec.secretRefs[keyOf("SecretRef", o.fields[0])] = o.secret
+			key, _ := keyOf("SecretRef", o.fields[0])
+			sec.secretRefs[key] = o.secret
+		case optFormatVersion:
+			key, ftype := keyOf("FormatVersion", o.fields[0])
+
+			switch ftype.Kind() {
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+				reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			default:
+				refuse("FormatVersion field %s is %v, not an integer", o.fields[0], ftype)
+			}
+
+			if sec.formatVersion != "" {
+				refuse("FormatVersion names both %s and %s",
+					byKey[sec.formatVersion], o.fields[0])
+			}
+
+			sec.formatVersion = key
 		}
 	}
 
@@ -354,6 +400,17 @@ func SecretRef(field string, kind entity.SecretKind) Option {
 		kind:   optSecretRef,
 		fields: []string{field},
 		secret: kind,
+	}
+}
+
+// FormatVersion names the field whose key holds the block format version,
+// which Check refuses past this node's range (RFC 13 §5.4). The field is a Go
+// field name of the section's type, not a json key, an integer kind: an int
+// or a uint of any width, never a pointer.
+func FormatVersion(field string) Option {
+	return Option{
+		kind:   optFormatVersion,
+		fields: []string{field},
 	}
 }
 
