@@ -77,7 +77,10 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	for _, j := range cfg.Journals {
 		devices = append(devices, j.Path)
 	}
-	if err := node.Preflight(ctx, cfg.Metadata.Badger.Path, cfg.Blockstore.Journal.Path, devices, clock); err != nil {
+
+	v1Root := v1ProbeRoot(cfg.Metadata.Badger.Path, devices)
+
+	if err := node.Preflight(ctx, cfg.Metadata.Badger.Path, v1Root, devices, clock); err != nil {
 		return fmt.Errorf("the start check: %w", err)
 	}
 	// The tracing provider is built after the start's refusals, so a refused
@@ -146,4 +149,36 @@ func stopped(err error) error {
 		return fmt.Errorf("stopping the node: %w", err)
 	}
 	return nil
+}
+
+// v1ProbeRoot is the one extra root the start check reads for a pre-journal
+// (v1) layout, beside the devices: `blocks` in the store directory's parent.
+//
+// decision: v1 kept its data under `<state dir>/blocks` unless its
+// blockstore.journal.path said otherwise, and v2's store defaults to
+// `<state dir>/metadata`, so for a store in its default place that is v1's
+// default root: a layout there refuses a start before anything opens. The
+// key is gone, so the root is derived from the store's path, and it is v1's
+// default root only while the store sits beside it. The check takes one
+// extra root, so the store directory's parent itself and a custom v1 root
+// stay unprobed until the start check takes more than one.
+// Without an absolute store path with a parent below the root (a store at
+// /x would probe /blocks), the first device stands in, probed twice with no
+// effect, and "" is left for no device at all, which the check refuses
+// before it probes: an empty root would be read as the working directory.
+func v1ProbeRoot(store string, devices []string) string {
+	if store != "" {
+		p := filepath.Clean(store)
+		parent := filepath.Dir(p)
+
+		if filepath.IsAbs(p) && filepath.Dir(parent) != parent {
+			return filepath.Join(parent, "blocks")
+		}
+	}
+
+	if len(devices) > 0 {
+		return devices[0]
+	}
+
+	return ""
 }

@@ -50,8 +50,17 @@ const childBound = 60 * time.Second
 // streams, piped back.
 func startChild(t *testing.T, config string) (*exec.Cmd, io.Reader) {
 	t.Helper()
+	return startChildIn(t, config, "")
+}
+
+// startChildIn is startChild run in the working directory dir (the test's
+// own when empty), with env added after the process's, so it wins.
+func startChildIn(t *testing.T, config, dir string, env ...string) (*exec.Cmd, io.Reader) {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestStartChild$")
+	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), childEnv+"=start\n--config\n"+config, "XDG_STATE_HOME="+t.TempDir())
+	cmd.Env = append(cmd.Env, env...)
 	r, w := io.Pipe()
 	cmd.Stdout, cmd.Stderr = w, w
 	if err := cmd.Start(); err != nil {
@@ -113,10 +122,7 @@ metrics:
   listen: '127.0.0.1:0'
 adapters:
   listen: ['127.0.0.1']
-blockstore:
-  journal:
-    path: '%s'
-`, filepath.Join(dir, "blocks"))
+`)
 	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
 		t.Fatal(err)
@@ -231,6 +237,97 @@ func TestStartRefusesV1Database(t *testing.T) {
 	}
 	if strings.Contains(out, "dfs init") {
 		t.Errorf("dfs start beside v1's database: the refusal advises running dfs init (%s), which over a v1 deployment's directory is the advice that destroys data", out)
+	}
+}
+
+// writeV1Layout makes a pre-journal (v1) layout under root: a share's journal
+// directory holding a file.
+func writeV1Layout(t *testing.T, root string) {
+	t.Helper()
+
+	dir := filepath.Join(root, "shares", "s", "journal")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "x"), []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// dfs start looks for a pre-journal (v1) layout on each journal device and in
+// `blocks` beside the store directory, v1's default root: a layout there
+// refuses naming it. The working directory and a state directory unrelated to
+// the store are not read, so a start over no installation answers its own
+// verdict and not a v1 one.
+//
+// The store directory's own parent is not read either, because the start
+// check takes one extra root; there is no row for that gap, so a check that
+// probes the parent does not break a test.
+func TestStartProbesV1Layouts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// at says where the v1 layout is: a key of the roots below.
+		at      string
+		refused bool
+	}{
+		{"on a device", "device", true},
+		{"in blocks beside the store", "blocks", true},
+		{"in the working directory", "cwd", false},
+		{"in an unrelated state directory", "state", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			roots := map[string]string{
+				"device": filepath.Join(dir, "device"),
+				"blocks": filepath.Join(dir, "blocks"),
+				"cwd":    filepath.Join(dir, "cwd"),
+				"state":  filepath.Join(dir, "state", "dittofs", "blocks"),
+			}
+
+			for _, d := range []string{roots["device"], roots["cwd"], filepath.Join(dir, "state")} {
+				if err := os.Mkdir(d, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			writeV1Layout(t, roots[tc.at])
+
+			config := bootstrapFile{
+				store:   filepath.Join(dir, "store"),
+				journal: roots["device"],
+				node:    nodeUUID,
+			}.write(t, dir)
+
+			cmd, r := startChildIn(
+				t, config, roots["cwd"], "XDG_STATE_HOME="+filepath.Join(dir, "state"),
+			)
+			b, _ := io.ReadAll(r)
+			out, code := string(b), cmd.ProcessState.ExitCode()
+
+			if code == 0 {
+				t.Fatalf("dfs start: exit 0, output:\n%s\nwant a refusal", out)
+			}
+
+			v1 := strings.Contains(out, "the node's journals are in v1 state")
+			if v1 != tc.refused {
+				t.Errorf(
+					"dfs start with a v1 layout %s: v1 refusal %v, want %v; output:\n%s",
+					tc.name, v1, tc.refused, out,
+				)
+			}
+
+			named := filepath.Join(roots[tc.at], "shares", "s", "journal")
+			if tc.refused && !strings.Contains(out, named) {
+				t.Errorf("dfs start: the refusal does not name %s:\n%s", named, out)
+			}
+
+			const verdict = "the start check: the node is not initialised"
+			if !tc.refused && !strings.Contains(out, verdict) {
+				t.Errorf("dfs start: want the not-initialised verdict, output:\n%s", out)
+			}
+		})
 	}
 }
 

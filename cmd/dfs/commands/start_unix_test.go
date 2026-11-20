@@ -156,3 +156,34 @@ func TestStartRefusesNoJournalDevice(t *testing.T) {
 		})
 	}
 }
+
+// The extra root of the start check is `blocks` beside the store directory
+// when the store's path is absolute and its parent is below the root of the
+// filesystem, and otherwise the first device, or none without a device: never
+// an empty or relative root, which the check would read from the working
+// directory, and never the filesystem's own `/blocks`.
+func TestV1ProbeRoot(t *testing.T) {
+	devices := []string{"/dev/one", "/dev/two"}
+
+	for _, tc := range []struct {
+		name    string
+		store   string
+		devices []string
+		want    string
+	}{
+		{"its default place", "/state/dittofs/metadata", devices, "/state/dittofs/blocks"},
+		{"a store path not clean", "/data/x/../meta/", devices, "/data/blocks"},
+		{"a store one level below the root", "/x", devices, "/dev/one"},
+		{"a store at the root", "/", devices, "/dev/one"},
+		{"a relative store", "meta/store", devices, "/dev/one"},
+		{"no store path", "", devices, "/dev/one"},
+		{"no store path and no device", "", nil, ""},
+		{"a relative store and no device", "meta", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := v1ProbeRoot(tc.store, tc.devices); got != tc.want {
+				t.Errorf("v1ProbeRoot(%q, %q): got %q, want %q", tc.store, tc.devices, got, tc.want)
+			}
+		})
+	}
+}

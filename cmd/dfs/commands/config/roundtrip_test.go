@@ -13,7 +13,6 @@ import (
 // loudly, which is the point: the schema must track the real YAML namespace.
 var expectedTopLevelYAMLKeys = []string{
 	"logging",
-	"blockstore",
 	"node",
 	"metadata",
 	"journals",

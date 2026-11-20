@@ -38,7 +38,6 @@ const (
 	kindSizeMiB                // a size, a whole number of MiB of at least 1MiB
 	kindDays                   // a duration, a whole number of days
 	kindDuration               // a duration
-	kindLegacyPath             // blockstore.journal.path, read as before
 )
 
 // keySpec is one key of RFC 13 Appendix C: its name, how it is written, its
@@ -73,8 +72,8 @@ func roleKeys(role string) []keySpec {
 	}
 }
 
-// keySpecs are RFC 13 Appendix C's keys, in its table's order, then the v1
-// key the bootstrap still reads. A "did you mean" tie goes to the first.
+// keySpecs are RFC 13 Appendix C's keys, in its table's order. A "did you
+// mean" tie goes to the first.
 var keySpecs = slices.Concat(
 	[]keySpec{
 		{key: "node.id", kind: kindUUID, def: entity.NodeID{}},
@@ -111,9 +110,6 @@ var keySpecs = slices.Concat(
 	},
 	roleKeys("protocol"),
 	roleKeys("storage"),
-	[]keySpec{
-		{key: "blockstore.journal.path", kind: kindLegacyPath, def: ""},
-	},
 )
 
 // specByKey indexes keySpecs; blocks holds every prefix of a declared key,
@@ -429,7 +425,7 @@ func (c check) count(i int) bool {
 // of strings, and returns the value in its field's type.
 func (s *keySpec) check(v any, c check) (any, bool) {
 	switch s.kind {
-	case kindString, kindLegacyPath:
+	case kindString:
 		return v, true
 	case kindEnum:
 		return v, c.enum(s, v.(string))

@@ -45,11 +45,9 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
-// The clean path prints a bare "Validation: OK" with no warnings section, and
-// the summary of the keys that stay.
+// The clean path prints a bare "Validation: OK" with no warnings section.
 func TestConfigValidate_NoWarningsBareOK(t *testing.T) {
-	journal := filepath.Join(t.TempDir(), "blocks")
-	out, err := runValidateCapture(t, writeConfig(t, minimalConfig("blockstore:\n  journal:\n    path: '"+journal+"'\n")))
+	out, err := runValidateCapture(t, writeConfig(t, minimalConfig("")))
 	if err != nil {
 		t.Fatalf("runConfigValidate returned error: %v\noutput:\n%s", err, out)
 	}
@@ -58,8 +56,5 @@ func TestConfigValidate_NoWarningsBareOK(t *testing.T) {
 	}
 	if strings.Contains(out, "Warnings:") {
 		t.Errorf("clean config must not print a Warnings section, got:\n%s", out)
-	}
-	if !strings.Contains(out, "Journal path:    "+journal) {
-		t.Errorf("summary lacks the journal path %s, got:\n%s", journal, out)
 	}
 }
