@@ -282,6 +282,7 @@ func TestKerberosSignInRecordsEachAttempt(t *testing.T) {
 	}{
 		{"alice over SMB", "smb", "ok", "alice@TEST.REALM", k.as("alice"), nil},
 		{"alice over NFS", "nfs", "ok", "alice@TEST.REALM", nfs(k.as("alice")), nil},
+		{"an NFS ticket over SMB", "smb", "ok", "alice@TEST.REALM", func() pid.SignInStep { s := nfs(k.as("alice")); s.Transport = pid.TransportSMB; return s }(), nil},
 		{"unknown bob", "smb", "logon_failure", "bob@TEST.REALM", k.as("bob"), nil},
 		{"disabled carol", "smb", "disabled", "carol@TEST.REALM", k.as("carol"), nil},
 		{"a truncated AP-REQ", "smb", "invalid", "", func() pid.SignInStep { s := k.as("alice"); s.Kerberos = s.Kerberos[:20]; return s }(), nil},
@@ -314,7 +315,7 @@ func TestKerberosSignInRecordsEachAttempt(t *testing.T) {
 		}
 		text := fmt.Sprintf("%+v", e)
 		for _, secret := range [][]byte{c.step.Kerberos, res.Keys.Session, res.Keys.APRep} {
-			if len(secret) > 0 && (bytes.Contains([]byte(text), secret) || bytes.Contains([]byte(text), []byte(fmt.Sprint(secret)))) {
+			if len(secret) > 0 && (bytes.Contains([]byte(text), secret) || bytes.Contains([]byte(text), []byte(fmt.Sprint(secret)))) { //nolint:staticcheck // the decimal form of a key printed with %v
 				t.Errorf("%s: the logon event %s carries a ticket or key", c.name, text)
 			}
 		}
@@ -373,7 +374,7 @@ func TestKerberosSignInChecksTransitedRealms(t *testing.T) {
 // Kerberos failures count under the user part with NTLM's: 9 for unknown
 // bob@TEST.REALM and one NTLM failure as CORP\bob refuse bob's valid ticket
 // throttled, before any store read. Tickets that do not decrypt name no one
-// and count nothing, so the eleventh failure for bob after twenty of them is
+// and count nothing, so the eleventh failure for dave after twenty of them is
 // the first refused. Catches a Kerberos failure the throttle misses, one
 // counted under no name or under the full name, and the throttle asked after
 // the store.
