@@ -129,25 +129,44 @@ type Headroom struct {
 	// Refund nor a Credit has returned. Every check and move of it runs
 	// under mu; it is an atomic only so Stats reads it without mu.
 	//
-	// decision: drawn lives in memory and every open starts it at zero, the
-	// headroom whole. On disk nothing tells a record drawn at the limit from
-	// the same kind appended below it, so an open cannot recount the draws
-	// the segments it adopted still hold; the pool remakes the headroom's
-	// spares at every open, so the storage the ledger stands for is whole
-	// again too. The open's own records count against the open reserve in
-	// the recovery pass itself, not here. Overturned by a format that marks
-	// a drawn record on disk.
+	// decision: drawn lives in memory and every open starts it at zero, so a
+	// restart gives back the whole drawing side. That departs from RFC 1
+	// section 6, which promises only the open reserve whole at the next open:
+	// on disk nothing tells a record drawn at the limit from the same kind
+	// appended below it, so an open cannot recount the draws the segments it
+	// adopted still hold. Those records still sit in their segments, and the
+	// pool remakes the headroom's spares at the open asking only the
+	// read-only check, never the maximum. The ceiling: a journal at its limit
+	// that is restarted while repack cannot retire those segments can append
+	// up to another headroom's worth of header-only records past its maximum
+	// per restart, about 13 MiB at the defaults, without bound across
+	// restarts. The open's own records count against the open reserve in the
+	// recovery pass itself, not here. Overturned by a footprint seen above
+	// the maximum after restarts, or by a ruling that the drawing side
+	// persists across an open.
+	//
+	// decision: what the ledger drew comes back only through Credit, when a
+	// retirement takes the segment that holds the records, and at the limit
+	// only repack retires: the credit is worth what repack retires there. A
+	// repack at the limit can today leave a segment standing for records the
+	// liveness tracker still counts, or have its carry refused naming the
+	// spare limit while the retirement queue holds an id the pass already
+	// retired. Overturned by a bounded journal held at its limit under
+	// removals whose headroom recovers through repack alone.
 	drawn atomic.Int64
 	// bySeg is, per segment, the record bytes of drawn records that
 	// appended into it: what Credit returns to drawn once the segment is
 	// retired. Guarded by mu.
 	//
 	// ponytail: a draw whose segment is retired between its append and
-	// its Drawn call stays in the ledger, the safe side: it is never
-	// credited, never credited twice. No segment is retired before its
-	// appended records are registered, which follows Drawn on every path.
-	// Upgrade by naming the segment at the admission if a path ever retires
-	// under an unregistered record.
+	// its Drawn call stays in the ledger until the next open, the safe
+	// side: it is never credited, never credited twice, and its entry names
+	// a segment that is gone. The removal and forget paths register the
+	// record before the segment can be retired, but the sealer's marker does
+	// not: SealOpen leaves the segment Sealed before the sealer calls Drawn,
+	// so a retirement tick in that gap leaves one record's charge stuck.
+	// Upgrade by naming the segment at the admission if that charge ever
+	// shows in the gauge.
 	bySeg map[core.SegmentID]int64
 	// draws is the headroom_draws counter, records appended while the
 	// journal was at its limit. An atomic, so Stats reads it without mu.
@@ -294,10 +313,12 @@ func (h *Headroom) Drawn(d Draw, seg core.SegmentID) {
 // Credit returns to the headroom the draws that appended into seg, once seg
 // is retired, unlinked or recycled: the space those records took is free
 // again (RFC 1 section 6, the headroom refills as segments are unlinked).
-// The open reserve is refilled first without a second figure: no record
-// appended while the journal serves takes the ledger into the reserve, so
-// what an open drew there is the first the credit makes up. The segment's
-// entry is taken whole, so a second Credit of seg returns nothing.
+// The RFC's rule that regained headroom goes to the open reserve first holds
+// trivially here: the reserve is never drawn in this ledger, for no record
+// appended while the journal serves draws it, the open's own records count
+// against it in the recovery pass, and the ledger starts empty at each open.
+// The segment's entry is taken whole, so a second Credit of seg returns
+// nothing.
 func (h *Headroom) Credit(seg core.SegmentID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
