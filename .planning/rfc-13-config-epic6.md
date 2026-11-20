@@ -11,7 +11,7 @@ secret in configuration) and §8 (`config_generation_behind`);
 on every address but loopback) and §5.4 (the first password); RFC 23's plan, its D13 and its
 deferral-ledger rows that name this epic; RFC 13's plan, its D7 and its deferral-ledger rows.
 **Track:** the team.
-**Epic 6 estimate: 9 subtasks, 18 man-days.**
+**Epic 6 estimate: 9 subtasks, 18.25 man-days.**
 **Depends on:** E5, whose wired node and API these rows run against: the one table (T5.1),
 reconcile (T5.2, T5.3), the write path (T5.4) and the port rule (T5.7); E2's loaded bootstrap, node
 identity (T2.2), launchers off the refused names (T2.6) and version gate (T2.8); E3's `Check` and
@@ -40,12 +40,12 @@ generated.
 - "§6 refused" and "§6 one validator" pass over every setting the table declares (T6.4);
 - "§7 no secret out" passes over a full test run, and fails when a canary leaks (T6.5);
 - "§5 propagation" and "§5.5 dead node" pass as far as one node goes (T6.6);
-- `docker compose up` run twice over the same volumes serves the second time, and the image's
-  `HEALTHCHECK` is healthy on its first start after `init` (T6.7);
+- `docker compose up` run twice over the same volumes serves the second time (T6.7);
 - `bench/ditto/night.sh`, `scripts/setup-dittofs-demo.sh` and
   `test/e2e/testdata/nlm/nlm_axis_interop.sh` initialise through `dfs init` (T6.8);
-- the three Dockerfiles and the unit file never initialise on their own, and
-  `docs/guide/install.md` names `init` then `start` (T6.9).
+- the three Dockerfiles and the unit file never initialise on their own, the image's
+  `HEALTHCHECK` is healthy on its first start after `init`, and `docs/guide/install.md` names
+  `init` then `start` (T6.9).
 
 ### 1.1 In scope
 
@@ -78,12 +78,11 @@ images and the packages.
 - **E4**, epic 4, secrets: `Secret` records, sealing.
 - **E5**, epic 5, **the integration epic**: the node's one table, reconcile and the write path.
 - **E6**, this epic.
-- **S1**, the configuration surface frozen: E1 has merged.
 - **S4**, outside RFC 13's plan: RFC 23's `dfs init` exists (its epic 5).
 - **D7**, **D9** and **D13** with a plan named are that plan's decisions: RFC 13's D7 (the bootstrap
   file, and the launchers off the refused names), RFC 13's D9 (a store location's change is
   refused), RFC 23's D13 (`dfs`'s commands, the image's probes and the certificate). **D1** to
-  **D5** without a plan named are this epic's own (§4). **O1** and **O8** are RFC 13's plan's open
+  **D6** without a plan named are this epic's own (§4). **O1** and **O8** are RFC 13's plan's open
   points on deferred scope and on the guides' owners.
 
 ## 2. How the general rules apply
@@ -96,7 +95,7 @@ title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the rows are the epic's tests. Each runs on the layer that consumes the data: `dfs init` and `dfs start` as the commands run (T6.1, T6.2), `nodetest`'s node and the API over its listener with a real sign-in (T6.3 to T6.6), and the launchers' shared helper under `sh` beside a built `dfs` (T6.7, T6.8). Doubles are the three kinds the file allows: the injected clock and `kvtest`'s fault wrapper |
 | rule 2, fuzz every decoder of untrusted bytes | none | no new decoder: the `node-id` parser's fuzz target is E2's T2.2, and the marker file is never parsed, only tested for existence |
-| rule 3, observability follows RFC 25 | T6.5, T6.6 | the epic adds no series. T6.6 reads `config_generation_behind` and `format_active_version`; T6.5 scrapes `/metrics` for canaries |
+| rule 3, observability follows RFC 25 | T6.5, T6.6 | the epic adds no series. T6.6 reads the `config_generation_behind` health condition and the `format_active_version` series; T6.5 scrapes `/metrics` for canaries |
 | rule 4, profiling | T6.1 to T6.6 | every test under `prof.Watch` (`nodetest.Watch()`); the launcher helper's test (T6.7) runs a process, so the leak check does not apply to it |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | a refusal is proven by the API's answer and the store's raw keys, a live change by the component running the value, a certificate by a client that trusts only it |
 | rule 6, known failures shrink | none | no suite this epic touches keeps a `known.yaml`; the new launcher test lands green |
@@ -104,7 +103,7 @@ title and not copied.
 | rule 8, real dependencies for properties of those dependencies | all | Badger and real journal directories under `t.TempDir()`, a real key file, the built `dfs` binary and a real `openssl` for the launcher helper |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T6.1, T6.7, T6.8 | a `decision:` marker at the option (D1: why it exists and what withdraws it), at the helper's trust of the generated certificate (D4) and at the compose stack's published loopback ports |
 | rule 10, a test must be able to fail | all | each test names the bug it catches in §6 |
-| rule 11, a symbol is exported only if RFC 13's interfaces use it | T6.1 | one export, `install.Empty`, called by `cmd/dfs/commands` (D1); the rows add none |
+| rule 11, a symbol is exported only if RFC 13's interfaces use it | T6.1 | one export, `install.Empty`, called by `cmd/dfs/commands` (D1); the rows add none: T6.4's invalid values are a table in `internal/node`'s own test file, and T6.3's caller lives in `nodetest`, a test package already exported for tests |
 | rule 12, each subtask creates only what it declares | all | the option lands with the rows that call it (T6.1 with T6.2); the helper lands with its first launcher (T6.7) |
 
 ## 3. Requirements and invariants
@@ -128,7 +127,7 @@ set for it.
 | R10 | A `node-id` the step writes is the 24 bytes of RFC 28 §2.1's layout, equal to the committed golden vector; a 23- or 25-byte copy, another magic and a bad checksum each fail to parse | test row | RFC 13 §9; RFC 28 §2.1 | T6.2 |
 | R11 | A recorded device replaced by an empty directory: a start writes nothing into it, its re-initialisation's `Init` then succeeds, after which the step writes its copy | test row | RFC 13 §9; RFC 28 §3.4 | T6.2 |
 | R12 | With every copy deleted and a new identity named in the host's file, a start writes no copy and refuses the journals' shares as not recorded, never as the store lost. The clause's later half, a recovery import recording them, is RFC 26's | MUST | RFC 13 §2.2, §9 | T6.2 |
-| R13 | An initialisation interrupted and run again finishes with one identity, and a start then serves; the rerun refuses only a finished installation | MUST | RFC 13 §2.2; RFC 23 §5.4 | T6.2 |
+| R13 | An initialisation interrupted and run again finishes with one identity, and a start then serves; the rerun refuses only a finished installation. RFC 23's epic 5 tests each interruption point inside `internal/install`; this row runs one through the commands | MUST | RFC 13 §2.2; RFC 23 §5.4 | T6.2 |
 
 **Bound settings (RFC 13 §5.1, §9 "bound", "share binding")**
 
@@ -136,7 +135,7 @@ set for it.
 | --- | --- | --- | --- | --- |
 | R14 | The control plane refuses a change to a bound setting while the namespace, store or share it is scoped to holds content | MUST | RFC 13 §5.1 | T6.3 |
 | R15 | For every bound setting the node's table declares, but the chain's encryption and a remote store's bucket, prefix and credential reference, the refusal holds for a put and for a delete of an override | test row | RFC 13 §9; RFC 13's plan, epic 6 | T6.3 |
-| R16 | After a refusal the content is still readable | test row | RFC 13 §9 | T6.3 |
+| R16 | After a refusal the content is still readable. While the data path is cut (§9), "readable" is the scope's records and the store's raw keys unchanged; the bytes are read back once RFC 20's cutover lets a share hold them | test row | RFC 13 §9 | T6.3 |
 | R17 | The same change with no content behind the scope is accepted | test row | RFC 13 §9 | T6.3 |
 | R18 | A share's binding to its namespace does not change while the share holds content, except by a re-home. RFC 23's share routes build the refusal; this epic runs the row | MUST NOT | RFC 13 §5.1, §9 | T6.3 |
 | R19 | The content in these rows is written through a share | invariant | RFC 13's plan, epic 6 | T6.3 |
@@ -161,8 +160,8 @@ set for it.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R25 | A live setting written through the API runs on the node within 5 s of its commit, and a node whose position stays behind longer reports `config_generation_behind`, naming the records | MUST | RFC 13 §5, §8, §9 | T6.6 |
-| R26 | On a single node, a binary upgraded without a raise keeps writing the old active versions, and the old binary still starts on the store | MUST | RFC 13 §5.5, §9 | T6.6 |
-| R27 | A node refuses to start when an active version lies outside the range it registers, naming the format and both versions | MUST | RFC 13 §5.5 | T6.6 |
+| R26 | On a single node, a binary upgraded without a raise keeps writing the old active versions, and the old binary still starts on the store: no start raises an active version (D6) | MUST | RFC 13 §5.5, §9 | T6.6 |
+| R27 | Withdrawn: a node refusing an active version outside its range is RFC 13 §9's "§5.5 version gate", which E2's T2.8 tests through `Register`, not this epic's rows | MUST | RFC 13 §5.5 | none |
 
 **Launchers (RFC 13's plan, D7, epic 6)**
 
@@ -173,7 +172,7 @@ set for it.
 | R30 | The marker is the launcher's, never read by `dfs`, and lives in a volume other than the store's | invariant | RFC 13's plan, epic 6 | T6.7 |
 | R31 | A store volume lost with the marker still in place refuses the start rather than initialising again | invariant | RFC 13 §2.2; RFC 13's plan, epic 6 | T6.7 |
 | R32 | A marker volume lost with the store still in place stops the launcher with "installation exists, marker missing", rather than leaving `docker compose up` waiting | MUST | RFC 13's plan, epic 6 | T6.7 |
-| R33 | `docker compose up` run twice over the same volumes serves on the second start | test row | RFC 13's plan, epic 6 and §6.1 | T6.7 |
+| R33 | `docker compose up` run twice over the same volumes serves on the second start | test row | RFC 13's plan, epic 6 and its §6.1 | T6.7 |
 | R34 | A launcher gives the first password by reference to a file, never by `DITTOFS_ADMIN_INITIAL_PASSWORD` | MUST NOT | RFC 13's plan, D7; RFC 23 §5.4 | T6.7, T6.8 |
 
 **Images and packages (RFC 13 §2.2; RFC 13's plan, epic 6, O8)**
@@ -181,9 +180,9 @@ set for it.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R35 | `Dockerfile`, `Dockerfile.goreleaser` and `Dockerfile.prebuilt` never initialise on their own: their entrypoint stays `dfs` and their `CMD` stays `dfs start`, so a store volume that is unbound, mistyped or mounted late refuses the start | MUST NOT | RFC 13 §2.2 | T6.9 |
-| R36 | For the images, initialisation is `docker run … init` with the first password by reference to a file the operator mounts, then `docker run … start`, both mounting the same five volumes the images declare, since an `init` without them writes anonymous volumes that `--rm` deletes | invariant | RFC 13's plan, epic 6; RFC 23 §5.4 | T6.9 |
+| R36 | For the images, initialisation is `docker run … init --config /config/config.yaml` with the first password by reference to a file the operator mounts, then `docker run … start --config /config/config.yaml` (an argument replaces the image's whole `CMD`, its `--config` with it), both mounting the same five volumes the images declare, since an `init` without them writes anonymous volumes that `--rm` deletes | invariant | RFC 13's plan, epic 6; RFC 23 §5.4 | T6.9 |
 | R37 | The password file is read whole, one trailing LF or CRLF dropped; an empty file, or one missing, refuses the step, naming the path, and never falls back to a generated password. RFC 23's epic 5 builds and tests it; this epic documents it | MUST | RFC 23 §5.4; RFC 23's plan, epic 5 | T6.9 |
-| R38 | `scripts/packaging/dfs.service` keeps `dfs start`, and initialisation is an explicit step before the unit is enabled | invariant | RFC 13's plan, epic 6 | T6.9 |
+| R38 | The unit file (`packaging/dfs.service` on `feat/storage-v2`, `scripts/packaging/dfs.service` on `develop`) keeps `dfs start`, and initialisation is an explicit step before the unit is enabled | invariant | RFC 13's plan, epic 6 | T6.9 |
 | R39 | `docs/guide/install.md` names both steps, for the images and for the packages before the unit is enabled; it adds the two steps and does not rewrite the guide | invariant | RFC 13's plan, epic 6, O8 | T6.9 |
 
 **Transport (RFC 13 §2.2; RFC 23 §5.3)**
@@ -195,7 +194,7 @@ set for it.
 | R42 | The repository's launchers generate a self-signed pair at run time, once per installation, into the installation's data volume, never into the working tree or a `Dockerfile` step | invariant | RFC 13's plan, epic 6; RFC 23's plan, D13 | T6.7, T6.8 |
 | R43 | The launchers trust that certificate with curl's or `dfsctl`'s `--cacert`, never `-k` or `--tls-skip-verify`, since `docker/bootstrap.sh`'s first call sends the admin password | MUST NOT | RFC 13's plan, epic 6 | T6.7, T6.8 |
 | R44 | The certificate names the host; the image's `HEALTHCHECK` probe alone does not verify it, since it reads one word and sends nothing | invariant | RFC 23 §2.5; RFC 23's plan, D13 | T6.7 |
-| R45 | The built image's `HEALTHCHECK` on `https://localhost:8080/health/live` reports healthy on its first start after `docker run … init`, with the certificate and key it starts with; no `dt` suite builds the image, so `docker compose up` on `docker-compose.yml` checks it | test row | RFC 13's plan, epic 6 and §6.1 | T6.7 |
+| R45 | The built image's `HEALTHCHECK` on `https://localhost:8080/health/live` reports healthy on its first start after `docker run … init`, with the certificate and key it starts with. Compose's `healthcheck:` on the `dittofs` service replaces the image's, so `docker compose up` cannot show it: a `docker run … start` of the built image, read with `docker inspect --format '{{.State.Health.Status}}'`, checks it until a `dt` suite builds the image | test row | RFC 13's plan, epic 6 and its §6.1 | T6.9 |
 
 ## 4. Decisions this epic takes
 
@@ -210,8 +209,8 @@ set for it.
   starts as usual; if no it starts as without the flag, so the flag never rewrites anything. A
   generated password is printed once to standard output, as `dfs init` does. A `decision:` marker
   at the flag states that it is for development and tests, that it is off by default, and what
-  withdraws it: a deployment that needs it in production, which RFC 13 §2.2 forbids. The layout
-  line in RFC 13's plan is corrected in this document's pull request (§9).
+  withdraws it: a deployment that needs it in production, which RFC 13 §2.2 forbids. This
+  document's pull request moves the layout line in RFC 13's plan, §4.1, to `cmd/dfs/commands`.
 - **D2, the rows live with the layer that consumes them.** "§2.2 explicit initialisation" runs the
   real `init` and `start` commands over directories under `t.TempDir()` (`cmd/dfs/commands`), since
   its clauses are about what the commands create and refuse. The other rows run on `nodetest`'s node
@@ -229,20 +228,33 @@ set for it.
   the test names the bound keys the loop skips (the chain's encryption and the store location) and
   why.
 - **D4, one shared helper for the launchers, and the certificate is trusted by file.**
-  `scripts/lib/dfs-install.sh` holds the marker test, the `dfs init` call with the password file,
-  the "installation exists, marker missing" refusal and the certificate generation (`openssl`,
-  a key and a self-signed certificate naming the host and `localhost` in its subject alternative
-  names, written with mode `0600` into the data directory). The host scripts source it; the
-  compose stack mounts it into its `init` service. Five copies of the logic would drift, and
-  the helper is the one thing a test can run. Trust is by `--cacert` on `curl` and `dfsctl`, never
-  by skipping verification. Overturned if a launcher must run where `openssl` is absent, then by
-  a `dfs` subcommand that generates the pair.
-- **D5, the first password of a launcher is a file in the installation's data directory.** A
-  launcher that previously exported `DITTOFS_ADMIN_INITIAL_PASSWORD` writes the same value (its
-  development default, or one it generates) to a file with mode `0600` beside the marker's
-  volume, passes `--admin-password-file`, and reads the file again for its own sign-in. The
-  compose stack keeps its development default (`dittofs-compose-dev-password`), which the file
-  holds; `docker/bootstrap.sh` signs in with it over TLS under `--cacert`.
+  `scripts/lib/dfs-install.sh` holds two functions: one generates the pair once (`openssl`, a
+  key and a self-signed certificate naming the host and `localhost` in its subject alternative
+  names, the key with mode `0600`), skipping when both files exist; the other holds the marker
+  test, the `dfs init` call with the password file and the "installation exists, marker missing"
+  refusal. The host scripts source it. The compose stack runs the first in a one-shot `certs`
+  service on a pinned image that ships `openssl`, since the `dittofs` image (`alpine` with
+  `ca-certificates` and `tzdata` only) has none, and the second in a one-shot `init` service on the
+  `dittofs` image, whose `busybox` `sh` runs it. Five copies of the logic would drift, and the
+  helper is the one thing a test can run. Trust is by `--cacert` on `curl` and `dfsctl`, never by
+  skipping verification. Overturned if a host launcher must run where `openssl` is absent, then
+  by a `dfs` subcommand that generates the pair.
+- **D5, where each launcher file lives.** The store is the metadata volume (`/data/metadata` in
+  the images) and the journals'; the marker lives in neither. For the compose stack: the marker in
+  a volume of its own, `dittofs-init`; the first password's file, the certificate and the key in
+  the state volume, `/data/state`, which the images already declare and v2 leaves to the host's
+  files. For a host script: the same split under its work directory, `init/` for the marker and
+  `state/` for the rest, beside the store's `metadata/` and `journal/`. The password file has mode
+  `0600` and holds what the launcher exported before (its development default, or one it
+  generates); the launcher passes it with `--admin-password-file` and reads it again for its own
+  sign-in over TLS under `--cacert`. The compose stack keeps `dittofs-compose-dev-password`.
+- **D6, the dead node row on one node is "no start raises a version".** RFC 13 §9's single-node
+  sentence wants an older binary to start on a store a newer one opened. Each format has one
+  version today, so no older range exists to build, and `pkg/bootstrap`'s `register` over another
+  range is unexported. The row asserts what makes the sentence hold: after `dfs init` and several
+  starts, every active version equals the one `dfs init` wrote, and a restart serves. A node built
+  over an older range joins the row when a format gains a second version, with RFC 13's plan's
+  ledger row for the raise call.
 
 ## 5. Target tree
 
@@ -259,10 +271,10 @@ internal/node/
   rows_validation_test.go        T6.4  "§6 refused", "§6 one validator"
   rows_secrets_test.go           T6.5  "§7 no secret out"
   rows_propagation_test.go       T6.6  "§5 propagation", "§5.5 dead node"
-scripts/lib/dfs-install.sh       T6.7  marker, init, refusal, certificate
+scripts/lib/dfs-install.sh       T6.7  the pair once; marker, init, refusal
 test/launchers/
-  install_test.go                T6.7  the helper under sh beside a built dfs
-docker-compose.yml               T6.7  init service, certificate, marker volume
+  install_test.go                T6.7  the helper beside a built dfs; the TLS flag scan
+docker-compose.yml               T6.7  certs and init services, marker volume
 docker/bootstrap.sh              T6.7  v2 routes, TLS under --cacert
 docker/config.yaml               T6.7  v2 bootstrap
 bench/ditto/night.sh             T6.8
@@ -323,29 +335,33 @@ docs/guide/install.md            T6.9  the two steps
     writes its copy (R11);
   - every copy deleted and a new identity in the file: no copy written, the shares refused as not
     recorded, never as the store lost (R12);
-  - `init` killed after each of its writes and run again finishes with one identity, and `start`
-    serves (R13).
+  - `init` stopped partway and run again finishes with one identity, and `start` serves (R13).
 - **Tests:** each clause above, asserting the command's error text and the files' bytes (a start
   that wrote a copy beside an unrecorded journal, or generated an identity on its own, fails the
-  byte comparison); the kill points reuse RFC 23's epic 5 install hook through the command's
-  `Deps`, and R13 asserts only the end state, since epic 5 owns the per-write cases.
+  byte comparison). R13 needs no hook: the second journal directory holds a stray file, so `init`
+  initialises the store and the first journal and then refuses the second, whose `Init` refuses a
+  directory holding an entry; the file is removed and `init` run again (catches a rerun that
+  re-mints the installation ID or a second identity). Each write's own interruption point stays
+  with RFC 23's epic 5 (`internal/install`'s `TestCrashAfterEachWriteThenRerun`), whose hook is
+  unexported.
 - **Rules:** rule 8 (real journals, real files); rule 10.
 
 ### T6.3 "§5.1 bound" and "§5.1 share binding"
 
 **Subtask T6.3 estimate: 2.25 man-days.**
 
-- **Track:** the team. **Depends on:** E5's T5.4; T6.2's helpers.
+- **Track:** the team. **Depends on:** E5's T5.4.
 - **Covers:** R14 to R19.
 - **Deliverables:** `nodetest` gains a known first password and a signed-in `apiv1/client` caller
   (D2); `internal/node/rows_bound_test.go`.
 - **Acceptance criteria:**
   - For every bound setting the table declares but the two groups §1.2 excludes, written through the
     API with content behind its scope: a put and a delete of an override are refused with the
-    refusal's key and rule, the raw keys hold no new row, and the content reads back unchanged.
+    refusal's key and rule, the raw keys hold no new row, and the scope's records read back
+    unchanged (R16).
   - The same two writes with no content are accepted.
   - A share with content rebound to another namespace is refused; with none, accepted.
-  - Content is written through a share, as far as the node lets a share hold it (§9).
+  - Content is a share bound to the namespace, as far as the node lets a share hold it (§9).
   - The test also runs the bound, next-write and live sections it declares (D3).
 - **Tests:** per bound key, the two refusals and the accepted case on a scope with no content (a
   check that reads "no content" for every scope fails the refused half; one that reads "content"
@@ -360,20 +376,22 @@ docs/guide/install.md            T6.9  the two steps
 
 - **Track:** the team. **Depends on:** T6.3's caller; E5's T5.2.
 - **Covers:** R20, R21.
-- **Deliverables:** `internal/node/rows_validation_test.go`: for every key of every section the
-  table declares, an out-of-range value and a wrong-typed one, derived from the section's own
-  declared type and its `Validate` bounds; a fixture set of invalid records per section, held
-  beside the section's package as an exported test list the row ranges over.
+- **Deliverables:** `internal/node/rows_validation_test.go`: a table, in that test file, of an
+  out-of-range value and a wrong-typed one for every key of every section the node's table
+  declares, which is the row's fixture set; and `refused(section, key, value) error`, the row's
+  check, which a test can call on its own.
 - **Acceptance criteria:**
   - Each value is refused through the API and by the section's `Validate` and decode, naming the
     field, and the effective value is unchanged (the default or the earlier value, never a clamp).
   - For every record in the fixture set, the API's error and the component's are equal.
-  - A section the table gains is covered with no edit to the test.
-- **Tests:** the loop, and one section declared by the test with a validator that clamps (the
-  test must fail on it: catches a component running a default). Fixture sets and a key a section
-  forgot to list are checked against the declared keys, so a key with no invalid value fails the
-  row rather than being skipped.
-- **Rules:** rule 10.
+  - A key the node's table declares that the fixture table lacks fails the row, so a section that
+    joins the table without its invalid values cannot pass by being skipped; the plan that declares
+    a section adds its rows here.
+- **Tests:** the loop; `refused` called on one section declared by the test whose validator
+  clamps, asserting that it returns an error (catches a check that cannot see a component running
+  a default); the missing-key case on a test section with one key left out of the table (catches a
+  skipped key).
+- **Rules:** rule 10; rule 11 (the table stays in a test file).
 
 ### T6.5 "§7 no secret out"
 
@@ -396,83 +414,91 @@ docs/guide/install.md            T6.9  the two steps
   scan searches for the key the node actually holds.
 - **Rules:** rule 3 (the scrape); rule 8 (the key file is real).
 
-### T6.6 "§5 propagation" and "§5.5 dead node", one node
+### T6.6 "§5 propagation" and "§5.5 dead node"'s single-node part
 
-**Subtask T6.6 estimate: 1.5 man-days.**
+**Subtask T6.6 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T6.3's caller; E5's T5.3; E2's T2.8.
-- **Covers:** R25, R26, R27.
+- **Covers:** R25, R26.
 - **Deliverables:** `internal/node/rows_propagation_test.go`.
 - **Acceptance criteria:**
   - A live setting written through the API runs in its component within 5 s of the commit on the
-    injected clock, and the same on a store that offers no watch (Badger has none).
+    injected clock, on Badger, which offers no watch.
   - With the node's reads frozen through `kvtest`'s fault wrapper, `config_generation_behind` names
     the node's records after 5 s, and clears when the reads return.
-  - A node built with a wider range than the store's active versions keeps those versions; a node
-    built with the older range then starts on the same store.
-  - A store whose active version lies outside the node's range refuses the start, naming the
-    format and both versions.
-- **Tests:** the first and second cases at 4 s (still behind, no condition) and past 5 s; the third
-  and fourth against a store where the test writes an active version above the older range (catches
-  a gate that compares nothing, and one that raises at open).
+  - After `dfs init` and three restarts, every active version, read from the store and from the
+    `format_active_version` series, equals what `dfs init` wrote, and the last restart serves (D6).
+- **Tests:** the first two at 4 s (still behind, no condition) and past 5 s (catches a node that
+  never polls, and a condition that never fires); the third through `Restart` (catches a start that
+  raises a version at open).
 - **Rules:** rule 3; rule 8 (`kvtest`'s fault wrapper over Badger).
 
 ### T6.7 The compose stack on `dfs init`
 
-**Subtask T6.7 estimate: 3.5 man-days.**
+**Subtask T6.7 estimate: 3.75 man-days.**
 
 - **Track:** the team. **Depends on:** T6.1; E2's T2.6; E5.
-- **Covers:** R28 to R34 (for this stack), R40, R42 to R45.
+- **Covers:** R28 to R34 (for this stack), R40, R42, R43, R44.
 - **Deliverables:**
   - `scripts/lib/dfs-install.sh` (D4) and `test/launchers/install_test.go`;
-  - `docker-compose.yml`: a one-shot `init` service on the `dittofs` image, running the helper, with
-    the marker on a volume of its own and the certificate and key written to the data volume; the
-    `dittofs` service waits for it to complete; the password file (D5); the published ports stay on
-    the loopback;
+  - `docker-compose.yml`: a one-shot `certs` service on a pinned image with `openssl`, and a
+    one-shot `init` service on the `dittofs` image, both running the helper; the marker on its own
+    volume, the password file, the certificate and the key in the state volume (D5); the
+    `dittofs` service waits for both to complete; its own `healthcheck:` on `/health/ready` stays,
+    for `bootstrap`; the published ports stay on the loopback;
   - `docker/config.yaml` in v2's bootstrap layout (`metadata.badger.path`, `journals`, `node.id`
     unset, `api.listen` on `0.0.0.0:8080` and `api.tls`);
   - `docker/bootstrap.sh` on v2's routes (stores, namespaces, shares), signing in over TLS with
     `--cacert` and keeping its "already exists is success" behaviour;
   - the `decision:` markers of rule 9.
 - **Acceptance criteria:**
-  - `docker compose up` on a clean checkout initialises, serves, and the image's `HEALTHCHECK`
-    reports healthy on that first start (R45); run again over the same volumes, the second start
-    skips `dfs init` and serves (R33).
+  - `docker compose up` on a clean checkout initialises and serves; run again over the same
+    volumes, the second start skips `dfs init` and serves (R33).
   - Deleting the store volume with the marker in place leaves the `dittofs` service refusing to
     start, with `init` not rerun (R31); deleting the marker volume with the store in place makes
     `init` stop with "installation exists, marker missing" (R32).
-  - No `-k` or `--tls-skip-verify` in any file the stack holds; the certificate and key are in the
-    data volume and not in the working tree (`git status` clean after `up`).
-  - The helper's test passes under `sh`: marker absent runs `dfs init` and writes the marker only on
-    exit 0; an `init` that fails writes none and the rerun resumes; a finished installation with no
-    marker stops with the refusal text; a marker with no installation lets `start` refuse.
-- **Tests:** the helper's four cases beside a built `dfs`, skipping with the variable named when
-  `openssl` is absent (a helper that writes the marker before `init` returns, or one that reruns
-  `init` over a finished installation without the refusal, fails); the two compose runs are checked
-  by hand (R33, R45), as RFC 13's plan's ledger says until a suite builds the image.
+  - The certificate and key are in the state volume and not in the working tree (`git status`
+    clean after `up`).
+  - The helper's test passes: marker absent runs `dfs init` and writes the marker only on exit 0;
+    an `init` that fails writes none and the rerun resumes; a finished installation with no marker
+    stops with the refusal text; a marker with no installation lets `start` refuse; the pair is
+    generated once, its key mode `0600`, its subject alternative names holding the host name and
+    `localhost`, and a second call leaves both files byte-equal.
+  - No file of the five launchers, the helper or `docker-compose.yml` passes `-k`, `--insecure`
+    or `--tls-skip-verify` on a call that sends a credential.
+- **Tests:** the helper's cases beside a built `dfs`, the pair read back with `openssl x509`,
+  skipping with the variable named when `openssl` is absent (a helper that writes the marker
+  before `init` returns, reruns `init` over a finished installation without the refusal, or makes
+  a new pair on each run, fails); a scan of those files for the three flags, the probes' own
+  `--no-check-certificate` excepted by line (catches a launcher that sends the password unverified,
+  R43); the two compose runs and the volume deletions are checked by hand (R31 to R33), as RFC 13's
+  plan's §6.1 says until a suite builds the image.
 - **Rules:** rule 7; rule 8.
 
 ### T6.8 The other three launchers on `dfs init`
 
-**Subtask T6.8 estimate: 2.25 man-days.**
+**Subtask T6.8 estimate: 2.5 man-days.**
 
 - **Track:** the team. **Depends on:** T6.7.
 - **Covers:** R28, R29, R34, R40, R42, R43 (for these launchers).
 - **Deliverables:** `bench/ditto/night.sh`, `scripts/setup-dittofs-demo.sh` and
   `test/e2e/testdata/nlm/nlm_axis_interop.sh`, each sourcing the helper, writing a v2 bootstrap
   (replacing the v1 `controlplane` and `database` layouts they write today), initialising with the
-  password file, starting with `dfs start`, and signing in with `--cacert`. The demo script's unit
-  runs `dfs start` after the script has initialised once, with its marker in the script's state
-  directory.
+  password file, starting with `dfs start`, waiting on `/health/ready` over `https`, signing in
+  with `--cacert`, and provisioning on v2's routes. The demo script's unit runs `dfs start` after
+  the script has initialised once, with its marker in the script's `init/` directory (D5).
 - **Acceptance criteria:**
   - Each script starts a server that serves, from a clean directory, and a second run over the same
     directory skips `dfs init` and serves.
   - None sets `DITTOFS_ADMIN_INITIAL_PASSWORD` or a name E2's drift test refuses.
-  - `night.sh`'s provisioning (a block store and a share) uses the v2 routes through `curl
-    --cacert` where `dfsctl` lacks the command, and names in a comment which (§9).
-- **Tests:** E2's drift test stays green; a run of each script by hand, which RFC 13's plan's
-  ledger leaves to this epic as no suite runs them; the NLM script is run by its e2e test where the
-  host has the client it needs, else skipped naming the variable.
+  - Each script's provisioning (`night.sh`'s block store and share, the demo's metadata store,
+    block store and share, the NLM script's share) and readiness wait use v2: `dfsctl` where it has
+    the command, else `curl --cacert` against the routes, with a comment naming which (§9). The NLM
+    script's `http://127.0.0.1:$API/health` becomes `/health/ready`; its loopback API stays plain,
+    as RFC 23 §5.3 allows.
+- **Tests:** E2's drift test stays green; T6.7's flag scan covers these scripts; a run of each
+  script by hand, as no suite runs them; the NLM script is run by its e2e test where the host has
+  the client it needs, else skipped naming the variable.
 - **Rules:** rule 7.
 
 ### T6.9 The images, the unit and the install guide
@@ -480,88 +506,106 @@ docs/guide/install.md            T6.9  the two steps
 **Subtask T6.9 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T6.7.
-- **Covers:** R35 to R39, R40, R41.
+- **Covers:** R35 to R39, R40, R41, R45.
 - **Deliverables:** `test/launchers/images_test.go`, which reads `Dockerfile`,
-  `Dockerfile.goreleaser`, `Dockerfile.prebuilt` and the unit file and asserts what R35, R38 and
-  R41 say; `docs/guide/install.md` gains the two steps for the images (R36, R37, with the five
-  volumes and a mounted password file and a mounted certificate and key) and for the packages
-  before the unit is enabled, in its Docker and package sections, with no other rewrite (R39).
+  `Dockerfile.goreleaser`, `Dockerfile.prebuilt` and `packaging/dfs.service`, the paths on
+  `feat/storage-v2` where the work lands, and asserts what R35, R38 and R41 say;
+  `docs/guide/install.md` gains the two steps for the images (R36, R37: `init --config` then
+  `start --config`, the five volumes, a mounted password file, a mounted certificate and key) and
+  for the packages before the unit is enabled, in its Docker and package sections (R39). The
+  guide's sentences that tell a user to set `DITTOFS_ADMIN_INITIAL_PASSWORD` are E2's T2.6's to
+  correct, since its drift test scans `docs/guide/`; this subtask adds the steps that replace them.
 - **Acceptance criteria:**
   - Each Dockerfile's entrypoint is `["/app/dfs"]`, its `CMD` begins `start`, it declares the five
     volumes, its `HEALTHCHECK` probes `/health/live` over `https`, and no Dockerfile copies a
     certificate or key or runs `dfs init`.
   - The unit's `ExecStart` is `dfs start`.
-  - The guide's `docker run … init` and `docker run … start` examples mount the same five volumes
-    and name the password file; the packages' text puts `dfs init` before `systemctl enable`.
+  - The guide's `docker run … init` and `docker run … start` examples pass `--config`, mount the
+    same five volumes and name the password file; the APT, YUM and Arch text puts `dfs init` before
+    `systemctl enable --now dfs` (Scoop has no unit).
+  - A `docker run … start` of the built image after `docker run … init`, with a mounted pair,
+    reads `healthy` from `docker inspect --format '{{.State.Health.Status}}'` (R45).
 - **Tests:** the file assertions (a Dockerfile `CMD ["init"]`, a `COPY` of a `.pem`, a fourth
-  volume or a unit running `init` fails them). The guide's text is checked by review.
+  volume or a unit running `init` fails them). R45 and the guide's text are checked by hand and by
+  review, until a `dt` suite builds the image.
 - **Rules:** rule 12.
 
 ## 7. Order of work
 
 ```mermaid
 flowchart TD
-  S4(["S4 RFC 23's dfs init"]) --> T6_1["T6.1 Initialise-if-empty"]
-  E5(["E5 wired node and API"]) --> T6_3["T6.3 Bound rows"]
+  S4(["S4 RFC 23's dfs init"]):::sync --> T6_1["T6.1 Initialise-if-empty"]
   T6_1 --> T6_2["T6.2 Explicit initialisation"]
-  T6_2 --> T6_3
+  E5(["E5 wired node and API"]):::sync --> T6_3["T6.3 Bound rows"]
   T6_3 --> T6_4["T6.4 Validation rows"] & T6_5["T6.5 No secret out"] & T6_6["T6.6 Propagation, dead node"]
-  T6_1 --> T6_7["T6.7 Compose stack"]
+  T6_2 & T6_4 & T6_5 & T6_6 --> C1(["after T6.2 and T6.6: RFC 13 §9's single-node rows pass"]):::sync
+  T6_1 & E5 --> T6_7["T6.7 Compose stack"]
+  T26(["E2's T2.6 launchers off v1 names"]):::sync --> T6_7
   T6_7 --> T6_8["T6.8 Other launchers"] & T6_9["T6.9 Images, unit, guide"]
-  T6_2 --> C1(["after T6.6: RFC 13 §9's single-node rows pass"]):::sync
   T6_7 --> C2(["after T6.7: compose serves twice"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-Checkpoint after T6.6: every single-node row of RFC 13 §9 passes in `unit`. Checkpoint after T6.7:
-`docker compose up` serves, twice, and the shared helper is proven for the other launchers.
+Checkpoint after T6.2 and T6.6: every single-node row of RFC 13 §9 passes in `unit`. Checkpoint
+after T6.7: `docker compose up` serves, twice, and the shared helper is proven for the other
+launchers.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T6.1, T6.2 | 4 | E5 | the option and the first row that calls it |
-| 2 | T6.3, T6.4, T6.5, T6.6 | 7 | PR 1 | the rows that run on the API, sharing the harness's caller |
-| 3 | T6.7, T6.8, T6.9 | 7 | T6.1; E2's T2.6 | the launchers and the images' steps, sharing the helper and the certificate |
+| 1 | T6.1, T6.2 | 4 | S4; E2's T2.2 | the option and the first row that calls it |
+| 2 | T6.3, T6.4, T6.5, T6.6 | 6.75 | E5 | the rows that run on the API, sharing the harness's caller |
+| 3 | T6.7, T6.8, T6.9 | 7.5 | PR 1 (T6.1); E2's T2.6; E5 | the launchers and the images' steps, sharing the helper and the certificate |
 
-A suggestion only: one pull request per subtask works as well. PR 3 does not wait for PR 2 and
-can open in parallel with it.
+A suggestion only: one pull request per subtask works as well. PR 1 and PR 2 share no code and can
+be open at once; PR 3 waits for PR 1's option only.
 
 ## 9. Open points
 
 Pending the user's answer, each written in its recommended form above:
 
-- **The estimate.** 18 man-days in 9 subtasks, against RFC 13's plan's 10 in 5. The plan counted
-  the rows as one subtask each and the launchers as one; this document sizes the option (T6.1), the
-  initialisation row's twelve clauses (T6.2), the shared harness caller (T6.3), the compose stack's
-  v2 rewrite, which touches the stack's configuration, its provisioning script (on v1 routes today)
-  and a certificate (T6.7), and the other launchers (T6.8). Least certain: T6.7, whose size depends
-  on how much of `docker/bootstrap.sh`'s v1 provisioning RFC 23's routes still serve, and T6.2.
-- **"Content written through a share" (R19).** On `feat/storage-v2` the data path is cut: a
-  read or write of file content answers `block.ErrNoContentStore` (`CLAUDE.md`, architecture
-  rule 4), and `holdsContent` answers "holds content" for every scope until E5's T5.4. E5's D6 then
-  reads a namespace as holding content for its whole life and a share scope as an error. So the
-  rows' "no content, accepted" half is reachable only for a store with no namespace naming it, and
-  "content written through a share" means a share bound to the namespace, not bytes. Recommended:
-  T6.3 uses that, names it in a `decision:` marker, and gains real bytes when the RFC 20 plan's
-  cutover lands. A reading that needs real bytes now would block this epic on that cutover.
+- **The estimate.** 18.25 man-days in 9 subtasks, against RFC 13's plan's 10 in 5. The plan
+  counted the rows as one subtask each and the launchers as one; this document sizes the option
+  (T6.1), the initialisation row's twelve clauses (T6.2), the shared harness caller (T6.3), the
+  compose stack's v2 rewrite, which touches the stack's configuration, its provisioning script (on
+  v1 routes today), a certificate and the launcher tests (T6.7), and the other three launchers'
+  v2 provisioning (T6.8). Least certain: T6.7, whose size depends on how much of
+  `docker/bootstrap.sh`'s provisioning RFC 23's routes serve, and T6.8, on `dfsctl`'s commands.
+- **"Content written through a share" (R16, R19).** On `feat/storage-v2` the data path is cut: a
+  read or write of file content answers `block.ErrNoContentStore` (`CLAUDE.md` on that branch,
+  architecture rule 4), and `holdsContent` answers "holds content" for every scope until E5's
+  T5.4. E5's D6 then reads a namespace as holding content for its whole life and a share scope as
+  an error. So the rows' "no content, accepted" half is reachable only for a store with no
+  namespace naming it, and "content written through a share" means a share bound to the namespace,
+  not bytes. Recommended: T6.3 uses that, names it in a `decision:` marker, and gains real bytes
+  when the RFC 20 plan's cutover lands. A reading that needs real bytes now would block this epic
+  on that cutover.
 - **The table declares no bound setting today (D3).** Recommended: the loop plus the test's own
   section. The alternative, requiring at least one declared bound key, fails the epic until
   another plan declares one.
-- **The launchers' CLI (T6.8).** `night.sh` provisions with `dfsctl store block add`, a v1
-  command; `dfsctl` on `feat/storage-v2` has no store command yet (RFC 23's epic 6). Recommended:
-  `curl --cacert` against the routes until the CLI lands.
+- **The launchers' CLI (T6.8).** `night.sh` and the demo script provision with v1 `dfsctl store`
+  commands; `dfsctl` on `feat/storage-v2` has no store command yet (RFC 23's epic 6).
+  Recommended: `curl --cacert` against the routes until the CLI lands.
 - **Where the launcher tests run.** `test/launchers` must be in the `unit` suite's packages and
   needs `openssl` and a `go build` of `dfs`; confirm against `test/suites.yaml` when T6.7 starts.
 
-Further points:
+Further points, each changed in this document's pull request:
 
-- **RFC 13's plan's §4.1 layout** lists initialise-if-empty under `pkg/bootstrap` (D1); corrected
-  in this document's pull request.
-- **The unit file's path.** The plan's epic 6 text names `scripts/packaging/dfs.service`; the
-  file is `packaging/dfs.service` on `feat/storage-v2` and `scripts/packaging/dfs.service` on
-  `develop` (R38 names the `develop` path; the work happens on `feat/storage-v2`).
+- **RFC 13's plan, §4.1** lists initialise-if-empty under `pkg/bootstrap`; it moves to
+  `cmd/dfs/commands` (D1).
+- **RFC 13's plan, epic 6 and its §6.1 row on the image's `HEALTHCHECK`** say `docker compose up`
+  checks the image's probe; Compose's own `healthcheck:` replaces it, so they now name a
+  `docker run` of the image read with `docker inspect` (R45).
+- **RFC 13's plan, epic 6** names `scripts/packaging/dfs.service`; the file is
+  `packaging/dfs.service` on `feat/storage-v2`, where the work lands, and the text names both.
+
+Not changed here:
+
 - **The launchers still carry v1 names** on `feat/storage-v2` (`DITTOFS_CONTROLPLANE_SECRET`,
   `DITTOFS_ADMIN_INITIAL_PASSWORD`, v1 configuration layouts), because E2's T2.6 has not landed;
   until it does, none of them starts a server (RFC 13's plan, D7). T6.7 and T6.8 start after it.
+- **RFC 23's plan's ledger row** "the bootstrap's key names for the API's TLS certificate and key"
+  is stale: `api.tls.cert_file` and `api.tls.key_file` exist in `pkg/bootstrap` on
+  `feat/storage-v2`. That row is RFC 23's plan's to close.
 - **No GitHub issue for this epic exists** (`rfc-13-epic-6` has none).
