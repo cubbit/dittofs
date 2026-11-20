@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"math"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -123,6 +124,9 @@ func generate(dir string, files []string) ([]byte, error) {
 	if len(g.errs) == 0 {
 		g.cycles()
 	}
+	if len(g.errs) == 0 {
+		g.bounds()
+	}
 	if len(g.errs) > 0 {
 		return nil, errors.Join(g.errs...)
 	}
@@ -160,8 +164,14 @@ func readTag(lit *ast.BasicLit) (tag, error) {
 				return t, fmt.Errorf("%s=%q is not a count above zero", key, val)
 			}
 			if key == "max" {
+				if uint64(n) > math.MaxUint32 {
+					return t, fmt.Errorf("max=%q is past an XDR length, at most 4294967295", val)
+				}
 				t.max = n
 			} else {
+				if uint64(n) > math.MaxUint32 {
+					return t, fmt.Errorf("since=%q is past a minor version, at most 4294967295", val)
+				}
 				t.since = n
 			}
 		case "union":
@@ -314,6 +324,102 @@ func (g *gen) xdrType(e ast.Expr, max int) (t *xtype, took bool, err error) {
 		}
 	}
 	return nil, false, fmt.Errorf("a type XDR's codec does not know: %s", types.ExprString(e))
+}
+
+// bounds refuses a struct whose largest encoding, every field counted as in
+// the newest version and nested maxima multiplied, passes 2^31-1 bytes. core
+// adds a reply's MaxWire to its header's length and chain padding and sums a
+// compound's members' bounds, so each bound under 2^31 keeps every such sum
+// inside an int. Each refusal names the innermost field that passes the bound,
+// once.
+func (g *gen) bounds() {
+	const over = uint64(math.MaxInt32) + 1                    // every sum and product saturates here
+	add := func(a, b uint64) uint64 { return min(a+b, over) } // one side at most over: no wrap
+	mul := func(a, b uint64) uint64 {
+		if a != 0 && b > over/a {
+			return over
+		}
+		return a * b
+	}
+	memo := map[string]uint64{}
+	var size func(t *xtype) uint64
+	str := func(s *strct) uint64 {
+		if n, ok := memo[s.name]; ok {
+			return n
+		}
+		n := uint64(0)
+		for i, f := range s.fields {
+			switch {
+			case s.union && i == 0:
+			case s.union:
+				n = max(n, size(f.t))
+			default:
+				n = add(n, size(f.t))
+			}
+		}
+		if s.union {
+			n = add(4, n)
+		}
+		memo[s.name] = n
+		return n
+	}
+	size = func(t *xtype) uint64 {
+		switch t.kind {
+		case kUint32, kBool:
+			return 4
+		case kUint64, kInt64:
+			return 8
+		case kFixed:
+			return uint64(pad4(t.n))
+		case kVector:
+			return mul(uint64(t.n), size(t.elem))
+		case kOpaque, kString:
+			return add(4, uint64(pad4(t.n)))
+		case kArray:
+			return add(4, mul(uint64(t.n), size(t.elem)))
+		case kOptional:
+			return add(4, size(t.elem))
+		case kArm:
+			return size(t.elem)
+		case kStruct:
+			return str(g.byName[t.name])
+		case kVoid:
+			return 0
+		}
+		panic(fmt.Sprintf("gen: bounds has no size for kind %d", t.kind))
+	}
+	// held reports whether t holds a struct that passes the bound itself, so
+	// the field holding it is not the innermost.
+	held := func(t *xtype) bool {
+		for ; t != nil; t = t.elem {
+			if t.kind == kStruct && str(g.byName[t.name]) >= over {
+				return true
+			}
+		}
+		return false
+	}
+	for _, s := range g.structs {
+		if str(s) < over {
+			continue
+		}
+		n := uint64(0)
+		for i, f := range s.fields {
+			if s.union && i == 0 {
+				continue
+			}
+			if s.union {
+				n = add(4, size(f.t))
+			} else {
+				n = add(n, size(f.t))
+			}
+			if n >= over {
+				if !held(f.t) {
+					g.errorf(f.pos, "%s.%s: a largest encoding past 2147483647 bytes, which MaxWire cannot bound: lower a max", s.name, f.name)
+				}
+				break
+			}
+		}
+	}
 }
 
 // cycles refuses a type that holds itself.

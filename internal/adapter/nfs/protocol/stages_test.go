@@ -632,6 +632,32 @@ func TestReplyLenBoundsEncode(t *testing.T) {
 	}
 }
 
+// Whatever header Decode returns, a call cut short among them, and whatever
+// status answers it, Encode writes no more than ReplyLen reserved (RFC 20
+// section 4.7), as core answers each; it catches an overrun only, not a
+// reservation larger than it need be: fuzzed over the call's bytes and the
+// status, seeded with a NULL answered PROG_MISMATCH, an AUTH_SYS
+// call answered AUTH_BADCRED and a COMPOUND answered an NFS error.
+func FuzzReplyLenBoundsEncode(f *testing.F) {
+	f.Add(call(progNFS, 3), uint32(statusProgMismatch))
+	f.Add(nullCall(progNFS, 3, 0, wire.AuthSys, authSys("host", 1000, 1000, 4, 24), wire.AuthNone, nil, nil), uint32(statusAuthCred))
+	f.Add(compoundCall(0, "abcde"), uint32(10021))
+	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
+	f.Fuzz(func(t *testing.T, body []byte, st uint32) {
+		h, _ := s.Decode(&resources.Buf{B: body}, 0)
+		if h == nil {
+			return
+		}
+		out := &resources.Buf{}
+		if err := s.Encode(h, core.Status(st), out); err != nil {
+			return
+		}
+		if bound := s.ReplyLen(h); len(out.B) > bound {
+			t.Errorf("status %#x writes %d bytes, past ReplyLen %d", st, len(out.B), bound)
+		}
+	})
+}
+
 // The header stage's decode, its credential check and its encode of an
 // AUTH_SYS call allocate nothing, and Route allocates once: the call's own
 // request.
