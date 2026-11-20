@@ -168,6 +168,13 @@ func NewBare(tb testing.TB) *Fixture {
 	return f
 }
 
+// NewUnwatchedWith is NewUnwatched with set applied to the journal's settings
+// before Init.
+func NewUnwatchedWith(tb testing.TB, set func(*journal.Settings)) *Fixture {
+	tb.Helper()
+	return newFixture(tb, nil, false, FixtureSegmentCap, set)
+}
+
 // newFixture is New with fault set on the seam before the journal is
 // initialised, the profiler only when watch is set, segments of segCap
 // bytes, set, when not nil, applied to the settings, and opts added before
