@@ -876,7 +876,10 @@ controller.
   row is linked for (§4.2), since a local user's or root's own SID is in the
   installation's domain, which no PAC carries; a row linked for no SID binds no
   ticket that carries a PAC. Its client name and authentication time **MUST**
-  equal the ticket's. A mismatch fails `ErrLogonFailure`, logs both principals,
+  equal the ticket's. A mismatch fails `ErrLogonFailure`, logs the selected
+  record's principal ID and, when one holds the PAC's SID, that principal's ID
+  (never a name,
+  [RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)),
   and binds nothing. A name reused in the directory after its first holder was
   deleted is then refused rather than bound to the wrong person, whether the
   name selects a directory record or a `krb` row.
