@@ -995,6 +995,21 @@ func (d *Durability) pushRingLocked(ev core.LossEvent) core.LossEvent {
 // ring served: the losses it held were answered, so the piece claims its
 // Loses hold in the registry's pieces survive the instance. A read of an
 // empty ring serves nothing, and the claims stay mortal.
+//
+// decision: a genuine client read of the ring — the Stats Part a poll
+// consumes, the engine's loss drain — marks the losses served and keeps
+// the piece claims alive past their instance, and the per-write/commit
+// generation and read-only readers reach here no longer: the journal's
+// LossGeneration and ReadOnlyState accessors serve them alone. The
+// internal figure readers that still build a Part — an engine's shares
+// discovery and sweeps, a per-refusal reserve figure, the repack ladder's
+// figures, the journal-full note — mark the served too: they run at
+// maintenance frequency, and the error's direction is fail-safe, for a
+// claim held too long only suppresses a re-report, it never publishes
+// anything twice. Overturned by a production case where a figure read
+// precedes a crash and a loss a client would have relayed on went
+// un-republished at the reopen: those readers then take accessors of
+// their own figures too.
 func (d *Durability) lossesLocked() []core.LossEvent {
 	if d.count > 0 {
 		d.served.Store(true)
