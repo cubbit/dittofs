@@ -492,7 +492,11 @@ the tightening row is in the deferral ledger.
   cannot apply away from `Init`. Keep it one shell line if a probe helper exists; otherwise an
   internal/prof-style helper. A test asserts the refusal (point the guard at a tmpfs-shaped
   mount on a host that has one, or assert the helper's classification on a table of
-  (filesystem string → verdict) rows — the per-OS table is data, test the table).
+  (filesystem string → verdict) rows — the per-OS table is data, test the table). The table
+  carries darwin rows too — APFS and HFS+ accepted, tmpfs refused — because a manual run on a
+  developer Mac is a supported use of this suite (PR2's entry carries no `needs:`); verify on
+  the dev host (darwin) that `DITTOFS_BENCH_DIR` on an ordinary APFS directory is accepted,
+  not refused.
 - [ ] **Step 2: the raw baseline, on the same filesystem.** `BenchmarkRawSequential`,
   `BenchmarkRawRandom4k`, `BenchmarkRawFsync4k` writing directly through `os` + `Sync` on
   `DITTOFS_BENCH_DIR`, with the same block size, queue depth and sync pattern J1–J3 use (RFC 1
@@ -508,22 +512,31 @@ the tightening row is in the deferral ledger.
 - [ ] **Step 4: J2 and J3.** `BenchmarkJ2_WriteScaling{1|4|16|64}` concurrent files; J3:
   `BenchmarkJ3_PointLookup` with the index at 10³ and 10⁶ extents (the suite's index-rig exists
   for the counted checks — reuse), `BenchmarkJ3_WarmRead1m`.
-- [ ] **Step 5: run on the real device.** With `DITTOFS_BENCH_DIR` on the reference device the
-  team names (the user is the team here — **ask which machine before running**; if none is
-  available, land the suite and the empty results file, and the run happens when one is), run
-  `JOURNAL_BENCH_COUNT=10` and `benchstat` over the two runs' `bench.txt` outputs on the same
-  machine (never cross-machine). Record in `docs/internals/journal-bench-results.md`, per
-  RFC 29 §4.10 and the index's "Recording results" rule: the commit it was measured on, the box,
-  each row's queue depth, the device's raw figures, filesystem, mount options and the sync bound —
-  and the keep-or-change decision for each of the three proposed constants J1–J3 exercise
+- [ ] **Step 5: run on the real device.** The reference box is **the dedicated host** — the box
+  whose night already runs `perf-night` (~1 h 30 m) and the `system` scenarios (the registry's
+  `host:dedicated`; settled 2026-11-20). With `DITTOFS_BENCH_DIR` on it — by hand, in a window
+  outside its nightly work — run `JOURNAL_BENCH_COUNT=10` and `benchstat` over the two runs'
+  `bench.txt` outputs on the same machine (never cross-machine). If the box isn't reachable when
+  this PR lands, keep designed fallback: land the suite and the empty results file, and the run
+  happens in the first window; do not fake numbers. The same suite also runs by hand on a
+  developer Mac (Step 1's table accepts ordinary APFS): a desktop run compares only against that
+  same Mac's earlier figures — a Mac's absolute values are `F_FULLFSYNC` figures and feed no
+  decision. Record in `docs/internals/journal-bench-results.md` **per box** — each recorded run
+  names its box ("the dedicated host", "Davide's MacBook") under its own heading, and the file
+  states once, at the top: benchstat compares only two runs of one box, never across boxen, and
+  only the dedicated host's figures feed the keep-or-change decisions — per RFC 29 §4.10 and the
+  index's "Recording results" rule: the commit it was measured on, the box, each row's queue
+  depth, the device's raw figures, filesystem, mount options and the sync bound — and the
+  keep-or-change decision for each of the three proposed constants J1–J3 exercise
   (**segment cap, sync bound, idle seal** — note today's values from
   `pkg/block/journal/internal/core/config.go` and `handle.go`, and the fixture's
   `IdleSealBytes = SegmentCap/16` convention, alongside the measured evidence for keeping or
   changing each). Replace the RFC's proposed targets in the file's table with the measured ones
   alongside, not instead of the RFC. A `docs:` commit; hand the file path to the user afterwards.
 - [ ] **Step 6: tests of the suite itself.** `dt run journal-bench` with the variable unset
-  exits 2 naming the variable; the RAM refusal's classification test is green; on no real device
-  available, mark Step 5's half **open in the PR description**, do not fake numbers.
+  exits 2 naming the variable; the RAM refusal's classification test is green (on darwin too,
+  per Step 1); on no real device available, mark Step 5's half **open in the PR description**,
+  do not fake numbers.
 - [ ] **Step 7: commit(s)** — `test(journal): J1 to J3 with the raw baseline and the refusal`,
   then the `docs:` results commit.
 
@@ -531,9 +544,80 @@ the tightening row is in the deferral ledger.
 
 ---
 
+## PR 6 — T12.9 the nightly data cell [#5054]
+
+**Branch:** `journal/epic12-bench-data` (from `journal/epic12-bench`)
+**Title:** `test(journal): J1–J3's nightly figures, collected on the dedicated host by metrics: go-bench (T12.9) [#5054]`
+**Issue:** [#5054](https://github.com/cubbit/dittofs/issues/5054) (sub-issue of #3395). The design
+of record is the issue **plus** llucian-iws's comment on it — read both before starting; the
+issue's body predates the comment.
+
+### Task 9 (T12.9): the journal-bench-data suite
+
+**Files:**
+- Create: the `journal-bench-data` entry in `test/suites.yaml`
+- Modify: `.github/workflows/tests.yml` — a `job:` or plan-select term so the nightly cell is
+  never dropped silently from the plan (the reach check of #5032, implemented for PR #5032,
+  covers pr and merge cells only)
+- Modify: `pkg/block/journal/conformance/bench_test.go` — the size knob (Step 1), not new bodies
+
+**Interfaces:**
+- Consumes: PR4's J1–J3 bodies (the `journal_bench` tag; **no new tag**), the `metrics: go-bench`
+  reader (#5059, merged on feat/storage-v2: literal `-procs` suffix, per-package keys, FAIL
+  lines), the dedicated host (`needs: [linux, host:dedicated]`, the box of PR4 Step 5).
+- Produces: every night's figures in each run's `results.json` (`extra.metrics`, keyed
+  `NAME UNIT`, the median of a `-count` run) via `dt history`, never grading a run; `bench.txt`
+  and cpu/mutex/block/heap profiles in `{out}`, riding the tests.yml artifact upload.
+
+**Steps:**
+
+- [ ] **Step 1: the size knob, not a second body set.** The J1–J3 benchmarks take their sizes
+  from an environment knob (default: the full RFC §9.6 sizes, so the manual suite is unchanged;
+  the nightly cell sets 4–64 KiB and `-count=3 -benchtime=1x`, a fixed few-minute budget). One
+  set of bodies, two knobs — never two diverging benchmark sets.
+- [ ] **Step 2: the suite entry.** `tier: nightly`, `blocking: false` (never posts to the
+  develop-status issue; a `b.Fatalf` fails the cell, never the nightly; a slow run fails
+  nothing — RFC 1 §9.7 stays intact: no timing is ever judged in CI), `format: exit` (as
+  journal-bench's decision: go test sends no pass event for a passing benchmark, which go-json
+  grades failed), `metrics: go-bench`, `needs: [linux, host:dedicated]` — the dedicated host,
+  **not** shared runners, whose busy-neighbour noise the throughput gate's own registry comment
+  admits; one fixed box makes the absolute figures mean something and trend-compares beside
+  perf-night's own medians. A `tests:` shape — one test per bench group, each writing
+  `{out}/{test}.txt` — because the go-bench reader reads per named test and a command-list
+  suite returns before it. Cell timeout with journal-bench's headroom reasoning. pprof through
+  go test's own flags with `-outputdir={out}` into the run dir.
+- [ ] **Step 3: the metadata file.** The cell writes, beside the figures: the toolchain (the
+  commit is already in dt's summary — don't duplicate it), the filesystem and mount options of
+  the bench directory, and a short raw-device probe — RFC 1 §9.6's "records the device's raw
+  figures" in miniature.
+- [ ] **Step 4: tests.yml's plan select.** The term that keeps the cell in the nightly plan, and
+  a check that the workflow's placement actually carries a `host:dedicated` nightly cell.
+- [ ] **Step 5: verify, manually, anywhere.** `dt run journal-bench-data` on the dev Mac (the
+  few-minute small sizes make this local run cheap): the metrics land in summary.json's
+  `extra.metrics` (benchstat-shape keys), `bench.txt` and the profiles land in `{out}`,
+  `blocking: false` reports without gating, and an unset-variable or refusing benchmark fails
+  the cell only.
+- [ ] **Step 6: the registry entry's decision lines.** `decision:` the figures are collected,
+  never checked — a regression is a finding, and the check would need a ruling naming a counted
+  bound. `decision:` the nightly schedule fires on develop only, so the stream starts when
+  storage-v2 reaches develop; empty until then is the design, not a bug.
+  `decision:` GitHub keeps artifacts 90 days by default; revisit (`retention-days`, or offloading
+  older runs) the first time a trend longer than that is wanted — not before.
+- [ ] **Step 7: commits** — the `docs:` commit carrying this section first (the plan file rides
+  this branch), then `test(journal): the nightly data cell, scaled and placed on the dedicated
+  host`.
+
+**PR 6 close-out:** whole-PR review → `/llm-council` → open the PR. **Reviewer requested:
+llucian-iws only** (assign-reviewers.yml adds one maintainer automatically). The PR description
+carries two notes: the Radu window ask — the cell runs beside his perf-night on the dedicated
+host, and the box is his to confirm — and the develop-schedule caveat above.
+
+---
+
 ## PR 5 — T12.2 burn down what 7a and 9a leave
 
-**Branch:** `journal/epic12-burndown` (from `journal/epic12-bench`, itself rebased by then)
+**Branch:** `journal/epic12-burndown` (from the stack's bench-side tip — `journal/epic12-bench-data`
+once PR 6 lands, else `journal/epic12-bench` — itself rebased by then)
 **Title:** `test(journal): the suite green for RFC 1 without 7b and 9b (T12.2) [#3395]`
 **Timing:** only after #4846 and #4993 have merged and PR1–PR4 have been retargeted and merged.
 
@@ -577,8 +661,11 @@ the tightening row is in the deferral ledger.
 
 ## Open points (raise with the user, never decide alone)
 
-- The reference box for J1–J3: who runs the manual benchmarks and on which machine (epic's own
-  open point). Asked at task 3/7 execution time.
+- The reference box for J1–J3 — **settled 2026-11-20**: the dedicated host (the box whose night
+  runs `perf-night` and the `system` scenarios, the registry's `host:dedicated`), for PR4's manual
+  full-size run and PR6's nightly cell alike; a developer Mac runs the same manual suite locally,
+  its figures comparing only within that one box. The window on the dedicated host is Radu's to
+  confirm — carried as a PR-description note, not a blocker.
 - T12.2's real size at PR5 start (epic's placeholder).
 - Rows on the stack tip that carry a 9a issue as owner: re-run the classifier fresh at Task 1;
   if 9a is still not merged when PR1 is made, confirm with the user that PR1 rides on the 9a
