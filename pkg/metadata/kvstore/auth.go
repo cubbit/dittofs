@@ -13,18 +13,27 @@ import (
 const writeRights = entity.WriteData | entity.AppendData | entity.WriteNamedAttrs | entity.DeleteChild |
 	entity.WriteAttributes | entity.Delete | entity.WriteACL | entity.WriteOwner
 
-// The rights the mode decides, by the bit that grants them; the rest are
-// always granted or the owner's. A write bit grants write attributes to
-// whoever it applies to, as the mapped GENERIC_WRITE set needs at open; what
-// a non-owner may then set through it is mayChange's.
+// The rights the mode decides, by the bit that grants them; the rest a file
+// with no stored ACL grants to anyone (alwaysRight), a stored ACL deciding
+// read the ACL and synchronize as any other, or are the owner's. A write bit
+// grants write attributes to whoever it applies to, as the mapped
+// GENERIC_WRITE set needs at open; what a non-owner may then set through it
+// is mayChange's.
 const (
 	readRights  = entity.ReadData | entity.ReadNamedAttrs
 	writeBits   = entity.WriteData | entity.AppendData | entity.WriteNamedAttrs | entity.DeleteChild | entity.WriteAttributes
 	alwaysRight = entity.ReadAttributes | entity.ReadACL | entity.Synchronize
 	ownerRights = entity.WriteAttributes | entity.WriteACL | entity.WriteOwner
-	// An owner keeps the right to change attributes and the ACL whatever an
-	// ACL says, so no ACL locks its owner out of repairing it.
-	ownerImplicit = entity.WriteAttributes | entity.WriteACL
+	// An owner keeps the right to read and change the ACL whatever an ACL
+	// says, so no ACL locks its owner out of repairing it (RFC 19 §3.1, step
+	// 5).
+	//
+	// decision: the owner keeps write attributes under a stored ACL too,
+	// though step 5 grants it only on a file with none: mayChange asks write
+	// attributes of every owner change, a chmod or chgrp included, where §3.1
+	// asks write the ACL, so withdrawing it would refuse the owner's chmod.
+	// Withdraw it once mayChange asks each attribute's own right.
+	ownerImplicit = entity.ReadACL | entity.WriteAttributes | entity.WriteACL
 )
 
 // Authorize answers whether the caller may do want to the file: the share
@@ -248,9 +257,9 @@ func flagsAllow(f entity.File, want entity.AccessMask) error {
 // privilege, ownership or an entry; any other bit outside the entry rights is
 // never given.
 //
-// ponytail: reads the ACL key on each check that the always-granted rights
-// do not answer, so a lookup costs one read more than its entry and file.
-// Carry a has-ACL bit in the file record if path walks show it.
+// ponytail: reads the ACL key on each check that read attributes alone does
+// not answer, so a lookup costs one read more than its entry and file. Carry
+// a has-ACL bit in the file record if path walks show it.
 func allows(r kv.Reader, id entity.Identity, f entity.File, want entity.AccessMask) (bool, error) {
 	if want&^(entity.EntryRights|entity.SystemSecurity) != 0 || want&entity.SystemSecurity != 0 && !id.Admin {
 		return false, nil
@@ -261,7 +270,14 @@ func allows(r kv.Reader, id entity.Identity, f entity.File, want entity.AccessMa
 		// executable, as root's execute does.
 		return want&entity.Execute == 0 || f.IsDir() || f.Mode&0o111 != 0, nil
 	}
-	want &^= alwaysRight
+	// decision: read attributes is granted before the ACL is read, though RFC
+	// 19 §3.1's walk decides it under a stored ACL: internal/vfs reads a
+	// file's record as the caller, asking read attributes, to act on it (an
+	// open, I/O through an open, a lock, a create), so a stored ACL refusing
+	// it would refuse those. Withdraw this once internal/vfs reads the record
+	// against the share grant alone and asks read attributes only for the
+	// attributes it returns.
+	want &^= entity.ReadAttributes
 	if want == 0 {
 		return true, nil
 	}
