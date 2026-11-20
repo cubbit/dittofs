@@ -745,24 +745,128 @@ func overwriteTwice(
 	}
 }
 
-// RFC 8 §15.2's "scoped repack": share A at its limit with unreclaimed bytes in
-// segments shared with B's data, and emptier segments of B elsewhere: A's write
-// is served after the repack of A's scope, and B's emptier segments stay.
+// RFC 8 §15.2's "scoped repack": share A at its limit with unreclaimed bytes
+// in segments shared with B's data, and emptier segments of B elsewhere: A's
+// write is served after the repack of A's scope, and B's emptier segments
+// stay.
+//
+// The layout the scenario names is built, not hoped for, and it holds against
+// the journal's own background retirement, which takes any segment the index
+// holds nothing live in, whatever share its dead bytes belong to: every
+// segment holding B's dead bytes also holds B's live data — a superseding
+// phase over all but the first chunk leaves each one holding live bytes — so
+// only a relief's own pass can lower B's figure, never the background
+// reclamation. B's records go in first and end with oversized writes that
+// leave the stream's active segment too full for one of A's chunks, so A's
+// records roll on and no segment holding B's bytes takes one of A's —
+// a share-scoped pass never selects a segment without its share's records. A
+// writes the same partial-supersede shape as B, so its dead bytes sit in
+// segments the pass can select and free for the write below. The setup fills
+// whole segments and rolls the stream for each phase, and every roll takes a
+// spare from the pool, which remakes its spares in real time: the pool is
+// sized for every roll the setup and the write below can draw, since a roll
+// that finds it empty is refused as capacity — and a spare refusal the
+// engine relieves with a journal-wide repack, defeating the scoping this row
+// asserts.
 func TestRFC8A_CapacityScopedRepack(t *testing.T) {
-	f := enginetest.New(t)
-	limitedSecond(t, f, 8*mib)
+	// pool is the spare segments every open keeps: enough for every roll
+	// the setup draws — its writes fill a dozen segments — with margin for
+	// the pool's own making to lag the rolls under load, and the spare the
+	// write below rolls onto. A starved pool would let a spare refusal run
+	// the journal-wide relief and hollow out the figures this row reads:
+	// the pool rides far above the demand, and the settle loop below still
+	// waits for it to be whole again before the write runs.
+	const pool = 20
+
+	f := enginetest.New(t, enginetest.WithSegmentCap(2*mib), enginetest.WithSpares(pool))
+	limitedSecond(t, f, 5*mib)
 
 	_, fb := f.File("b")
 	fa := secondFile(t, f, "a")
 
-	overwriteTwice(t, f, f.Share.ID, fb, 2)
-	overwriteTwice(t, f, f.Second.ID, fa, 4)
-	f.Clock.Advance(time.Minute)
+	// A phase writes its n 512 KiB chunks from the first on: a superseding
+	// phase that starts one chunk in leaves that chunk of the phase before
+	// live, beside the dead bytes it supersedes, in the same segments.
+	const chunk = 512 << 10
+	phase := func(sh entity.ShareID, id entity.FileID, first, n int, c byte) {
+		t.Helper()
+		for i := first; i < first+n; i++ {
+			if _, err := f.E.Write(
+				t.Context(),
+				sh,
+				id,
+				int64(i*chunk),
+				bytes.Repeat([]byte{c}, chunk),
+				engine.WriteOpts{Done: func() {}},
+			); err != nil {
+				t.Fatalf("write %d of %c: %v", i, c, err)
+			}
+		}
+	}
 
-	mustSecond(t, f, fa, 4*mib, mib, 'c')
+	// B: a seeding phase that covers the first chunk and one that supersedes
+	// all but it, then two fillers, each too big for the room any B-filled
+	// segment can have left, so the segment the second one leaves active
+	// has too little room for A's first chunk and A's records roll on from
+	// B's.
+	phase(f.Share.ID, fb, 0, 4, 'a')
+	phase(f.Share.ID, fb, 1, 3, 'b')
+	for i, c := range []byte{'y', 'z'} {
+		if _, err := f.E.Write(
+			t.Context(), f.Share.ID, fb, 4*mib+int64(i)*3*mib/2,
+			bytes.Repeat([]byte{c}, 3*mib/2), engine.WriteOpts{Done: func() {}},
+		); err != nil {
+			t.Fatalf("write B's filler %c: %v", c, err)
+		}
+	}
 
-	if unreclaimed(f, f.Share.ID) == 0 {
-		t.Error("B's unreclaimed bytes are gone: the repack was journal-wide")
+	// A: the same two phases over one range, whose superseded bytes the
+	// syncs below turn into the dead bytes in A's own segments its pass
+	// can free.
+	phase(f.Second.ID, fa, 0, 4, 'a')
+	phase(f.Second.ID, fa, 1, 3, 'b')
+
+	// The syncs the moves fire end both shares' windows, whose superseded
+	// bytes land in the figures only once the sync timers — armed by the
+	// journal's workers some time after the writes answer — have fired. The
+	// clock moves, in steps the sync bound dwarfs, until both shares'
+	// figures and the spare pool have settled: two rounds of moves apart
+	// read the same bytes beyond zero and a whole pool, so the write below
+	// finds a spare for its roll every time. A synced release the moves
+	// land inside the write itself is a figure that rises after this loop
+	// — a legal arrival the assertion below tolerates — never one it must
+	// wait for: nothing may lower B's figure but a pass that runs inside
+	// the write, whose scoping is what the row asserts.
+	var wasB, wasA, wasSpares int64
+	for deadline := time.Now().Add(bound); ; time.Sleep(10 * time.Millisecond) {
+		f.Clock.Advance(5 * time.Second)
+		nowB, nowA := unreclaimed(f, f.Share.ID), unreclaimed(f, f.Second.ID)
+		nowSpares := int64(f.E.Stats().Journals[f.Dir].Stats.Spares)
+		if nowB > 0 && nowA > 0 && nowB == wasB && nowA == wasA && nowSpares == wasSpares &&
+			nowSpares == pool {
+			break
+		}
+		wasB, wasA, wasSpares = nowB, nowA, nowSpares
+		if time.Now().After(deadline) {
+			t.Fatalf("the sync accounting both shares' superseded bytes: not within %v", bound)
+		}
+	}
+
+	// A is at its limit — live data, dead bytes and this write together
+	// cross it — and this write alone triggers the relief.
+	before := unreclaimed(f, f.Share.ID)
+	mustSecond(t, f, fa, 2*mib, 2*mib, 'c')
+
+	// No run of the relief may lower B's figure: only a pass frees dead
+	// bytes, a pass scoped to A cannot reach any segment without A's
+	// records, and every one of B's holds both its dead bytes and its live
+	// data. The journal's own background retirement is out of the candidates
+	// the same way: it takes only what the index holds nothing live in. A
+	// journal-wide pass is how B's segments, the leanest of the candidates,
+	// would be freed first.
+	if got := unreclaimed(f, f.Share.ID); got < before {
+		t.Errorf("B's unreclaimed bytes after the write: %d, want no less than the %d it had before: the relief swept B's dead segments, the repack was journal-wide",
+			got, before)
 	}
 }
 

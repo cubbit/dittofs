@@ -625,6 +625,11 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	}
 	c.contentTarget = targets.Content
 	c.pool = segment.NewPool(maker, targets, d.Admit, deps.Log)
+	// A spare the pool lands wakes the durability workers, so a failed
+	// window whose re-append a pass could not roll for want of a spare is
+	// retried when the spare is there rather than at the worker's next
+	// tick: a waiter on that window parks on the tick alone otherwise.
+	c.pool.OnSpare(d.SpareLanded)
 	c.cache = segment.NewDescriptors(fs, format.SegmentName, budget)
 	if c.rec != nil {
 		c.pool.SetRecorder(c.rec)

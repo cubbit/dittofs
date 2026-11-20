@@ -341,6 +341,71 @@ func TestReappendOfARecordThatCannotBeAppendedIsRetriedByTheNextPass(t *testing.
 	}
 }
 
+// TestAWindowRefusedForASpareIsReappendedWhenTheSpareLands covers the parked
+// window downstream of a failed sync whose re-append the pass could not
+// roll: every spare the pool would make is held at the seam, so the roll is
+// refused for the spare shortage and the window parks, its Sync with it.
+// The spare landing alone answers: the make the hold releases lands the
+// spare, the pool's OnSpare wake runs the pass that re-appends on it, and
+// the Sync returns though no tick of the sync bound moved — a tick a
+// clock-driven test never advances, and a wait the tick would have owned.
+func TestAWindowRefusedForASpareIsReappendedWhenTheSpareLands(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRig(t, 1)
+	// The hold goes up before the first take: the rig has readied its two
+	// content spares and its refill pass is done, so no make is past its
+	// create, and every make the test's takes kick parks at the held one —
+	// no spare can land until the hold is released.
+	made := r.seam.Hold(t, kit.OpCreate, "*.spare.tmp")
+	f := file(1)
+	a := r.appendKind(t, f, format.KindDelete, format.RecordBody{})
+
+	// Drain the content class: its takes fall short — the make they kick is
+	// parked at the seam — and the first short-refusal ends the drain, the
+	// state the re-append's roll will find.
+	for {
+		_, err := r.pool.Take(segment.Content)
+		var short *core.NoSpaceError
+		if errors.As(err, &short) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Take of a content spare: %v", err)
+		}
+	}
+	select {
+	case <-made.Reached():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pool's spare make never reached the seam")
+	}
+
+	// A record of the failed segment parks in its window: the worker takes
+	// it, its re-append is refused for want of a content spare, and the Sync
+	// of the header-only record — never failed, only re-appended — waits.
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(a.Segment), 1, errors.New("sync boom"))); err != nil {
+		t.Fatal(err)
+	}
+	sync := r.syncAsync(context.Background(), f)
+	mustBlock(t, "the Sync over the parked window", sync)
+
+	// The spare lands and the window resolves on it, without the clock's tick.
+	made.Release()
+	if err := mustReturn(t, "the Sync over the parked window", sync); err != nil {
+		var se *core.SyncError
+		if errors.As(err, &se) {
+			t.Fatalf("Sync answered the failure of segment %d, want nil: the record re-appended", se.Segment)
+		}
+		t.Fatalf("Sync over the re-appended window = %v, want nil", err)
+	}
+	eventually(t, "the re-appended record to read durable", func() bool { return r.d.Durable(a) })
+	if got, want := r.d.Stats().ReappendedBytes, uint64(a.Len); got != want {
+		t.Errorf("ReappendedBytes = %d, want %d", got, want)
+	}
+	if ws := r.windowsOf(0); len(ws) != 0 {
+		t.Errorf("windows = %+v after the spare landed, want none", ws)
+	}
+}
+
 // TestAWindowFailedAcrossTwoPassesRaisesTheGenerationOnce covers a window
 // whose records are failed in two passes: the first fails A, whose re-read
 // does not verify, and stops at a record the stream refuses, which strands B

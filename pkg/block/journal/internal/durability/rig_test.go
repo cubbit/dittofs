@@ -189,6 +189,9 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// The core's own wiring (pool.OnSpare(d.SpareLanded)): the rig runs the
+	// pool the production one does, so its passes answer a spare landing.
+	pool.OnSpare(d.SpareLanded)
 	sinks := map[uint32]segment.Sink{}
 	streams := segment.NewStreams(n, rigIdentity, set, pool, cache, func(no uint32) segment.Sink {
 		s := d.Sink(no)

@@ -63,9 +63,11 @@ func (st *stream) oldestLocked() (seen time.Duration, ok bool) {
 // A hold waiting on a retry (an owed claim, a record to re-append, or one
 // whose new place has not completed), or a window with a record not yet
 // re-appended, arms a tick one sync bound away when no record's deadline comes
-// sooner, so the worker retries at each tick of the bound with nothing else to
-// wake it. A read-only journal retries
-// nothing, so its holds and windows arm none.
+// sooner, so the worker retries at each tick of the bound. A spare the pool
+// lands wakes the workers beside the tick (SpareLanded), so a window refused
+// for want of a spare does not wait the bound for the spare, but the tick
+// covers every other retry and stays the backstop. A read-only journal
+// retries nothing, so its holds and windows arm none.
 func (d *Durability) arm(st *stream) <-chan struct{} {
 	st.mu.Lock()
 	seen, ok := st.oldestLocked()

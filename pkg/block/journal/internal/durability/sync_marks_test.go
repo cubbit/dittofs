@@ -539,16 +539,21 @@ func TestSyncReturnsNoMarkForRecordsInSealedOrRetiredSegments(t *testing.T) {
 // TestSyncReturnsNoMarkForARecordCorruptDropsMidWait covers: a record Corrupt
 // drops while a Sync waits on it leaves no mark, since the stream no longer
 // holds it; the Sync the corrupt read interrupted returns nil, its record's
-// loss being the reader's to report, and a later Sync marks what it makes
-// durable again.
+// loss being the reader's to report, and a later Sync marks the new record
+// once a sync covers it.
+//
+// The record the later Sync names is indexed and the rig's Latest wired, as
+// production wires them, so the mark holds on every schedule; the companion
+// test below explains the schedule it once rested on and pins it.
 func TestSyncReturnsNoMarkForARecordCorruptDropsMidWait(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	cr := newCorruptRig(t, nil)
+	cr.setLatest()
 	f := file(1)
 	w := cr.write(t, f, 0, "aaaa")
 	hold := cr.seam.HoldFirst(t, kit.OpSync, format.SegmentName(w.loc.Segment))
 	syncing := cr.syncMarksAsync(context.Background(), f)
-	<-hold.Reached()
+	awaitGate(t, "the held sync", hold.Reached())
 
 	cr.corrupt(t, w.c)
 	hold.Release()
@@ -561,7 +566,7 @@ func TestSyncReturnsNoMarkForARecordCorruptDropsMidWait(t *testing.T) {
 	}
 
 	g := file(2)
-	v := cr.appendWrite(t, g, 0, "gggg")
+	v := cr.write(t, g, 0, "gggg")
 	marks, err := cr.d.Sync(context.Background(), g)
 	if err != nil {
 		t.Fatalf("the Sync after the drop = %v, want nil", err)
@@ -569,7 +574,73 @@ func TestSyncReturnsNoMarkForARecordCorruptDropsMidWait(t *testing.T) {
 	if len(marks) != 1 {
 		t.Fatalf("the Sync after the drop returned %d marks, want the new record's: %+v", len(marks), marks)
 	}
-	cr.wantMark(t, "the mark after the drop", marks[0], v)
+	cr.wantMark(t, "the mark after the drop", marks[0], v.loc)
+}
+
+// TestSyncMarksARecordTheLossSyncCoveredBeforeTheCallTookTargets pins the
+// schedule a corrupt drop makes reachable, exercising it on demand rather than
+// by chance: the worker parks before the drain pass that appends the drop's
+// loss record and syncs the segment, so the record the test appends meanwhile
+// is covered by that sync and completed — gone from the ledger — before the
+// Sync takes its targets. The mark then comes only from the index fallback,
+// over the record the index holds and the Latest the rig wires as the
+// datapath does, and it names a sync that truly covered the record — never a
+// proofless one.
+func TestSyncMarksARecordTheLossSyncCoveredBeforeTheCallTookTargets(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var armed atomic.Bool
+	hook, reached, release := gate(t)
+	cr := newCorruptRig(t, func(cr *corruptRig) {
+		// Installed before the layer starts, as every test hook is, so the
+		// worker never races the field it reads each pass.
+		cr.d.afterHolds = func() {
+			if armed.CompareAndSwap(true, false) {
+				hook()
+			}
+		}
+	})
+	// Registered after the rig's own cleanups, so a failing test reports
+	// before the layer's Stop tries to join the parked worker.
+	t.Cleanup(release)
+	cr.setLatest()
+	f := file(1)
+	w := cr.write(t, f, 0, "aaaa")
+	hold := cr.seam.HoldFirst(t, kit.OpSync, format.SegmentName(w.loc.Segment))
+	syncing := cr.syncMarksAsync(context.Background(), f)
+	awaitGate(t, "the held sync", hold.Reached())
+
+	cr.corrupt(t, w.c)
+	// Armed before the release, so the pass it parks — the first after the
+	// held sync returns, before that pass reaches the drain step — is the
+	// one that would append the loss record.
+	armed.Store(true)
+	hold.Release()
+	answered := mustSyncReturn(t, "Sync", syncing)
+	if answered.err != nil {
+		t.Fatalf("Sync = %v, want nil: the dropped record's loss is the read's to report", answered.err)
+	}
+
+	// The worker is parked before its drain step, so the record this appends
+	// is in the segment before the loss record's sync starts.
+	g := file(2)
+	v := cr.write(t, g, 0, "gggg")
+	awaitGate(t, "the worker's pause before the drain", reached)
+	release()
+
+	// The released pass appends the loss record and syncs the segment, which
+	// covers the new record, so the completion drops it from the ledger.
+	eventually(t, "the loss record's sync to complete the record", func() bool {
+		return !cr.inLedger(v.loc)
+	})
+
+	marks, err := cr.d.Sync(context.Background(), g)
+	if err != nil {
+		t.Fatalf("the Sync over the record the loss record's sync covered = %v, want nil", err)
+	}
+	if len(marks) != 1 {
+		t.Fatalf("the Sync over the record the loss record's sync covered returned %d marks, want the record's: %+v", len(marks), marks)
+	}
+	cr.wantMark(t, "the mark of the record the loss record's sync covered", marks[0], v.loc)
 }
 
 // TestSyncReturnsNoMarkWhenTheIndexFallbacksCoveringOffsetWasSwept covers the
