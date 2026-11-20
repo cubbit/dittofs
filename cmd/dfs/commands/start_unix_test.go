@@ -71,16 +71,20 @@ func TestStartServesUntilSIGTERM(t *testing.T) {
 	}
 }
 
-// A SIGTERM before the node is ready, while Start runs, stops it and exits
-// zero.
+// endedOnSignal is the record dfs logs when the termination signal, not a
+// failure of the start's own, ended Start.
+const endedOnSignal = "dfs: the start ended on a termination signal"
+
+// A SIGTERM before the node is ready, while Start runs, ends the start on the
+// signal, stops it and exits zero.
 func TestStartSIGTERMWhileStarting(t *testing.T) {
 	cmd, _, log, rest := listening(t)
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("SIGTERM: %v", err)
 	}
 	tail := <-rest
-	if code := cmd.ProcessState.ExitCode(); code != 0 || !strings.Contains(tail, stopping) {
-		t.Fatalf("dfs start on SIGTERM while starting: exit %d, want 0 after logging %q:\n%s%s", code, stopping, log, tail)
+	if code := cmd.ProcessState.ExitCode(); code != 0 || !strings.Contains(tail, endedOnSignal) || !strings.Contains(tail, stopping) {
+		t.Fatalf("dfs start on SIGTERM while starting: exit %d, want 0 after logging %q and %q:\n%s%s", code, endedOnSignal, stopping, log, tail)
 	}
 }
 

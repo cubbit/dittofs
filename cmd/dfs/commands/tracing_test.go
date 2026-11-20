@@ -132,8 +132,7 @@ func TestDevTracingShutsDownWithinItsBound(t *testing.T) {
 
 // A bad endpoint refuses the start, naming the tracing provider.
 func TestStartRefusesABadOTLPEndpoint(t *testing.T) {
-	t.Setenv("DITTOFS_OTLP_ENDPOINT", "localhost:4318")
-	code, out := runChild(t, installed(t, t.TempDir()))
+	code, out := runChild(t, installed(t, t.TempDir()), "DITTOFS_OTLP_ENDPOINT=localhost:4318")
 	if code == 0 || !strings.Contains(out, "Error: building the tracing provider: the OTLP endpoint") {
 		t.Fatalf("dfs start over localhost:4318 as the OTLP endpoint: exit %d, output:\n%s\nwant non-zero naming the tracing provider", code, out)
 	}

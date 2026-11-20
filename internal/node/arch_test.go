@@ -270,34 +270,48 @@ func nodeImporters(root string) ([]string, error) {
 	return bad, err
 }
 
-// startFiles are the files of dfs start's run, and startAllowed what of this
-// module they may import: the node, the bootstrap, Badger and the metrics
+// startPackage is dfs start's package, and startAllowed what of this module
+// its files may import: the node, the bootstrap, Badger and the metrics
 // registry. The command reads the bootstrap and opens the KV and the
 // registry, and the node builds every component. start.go is the one file of
 // them that imports the node, so nodeImporters names only it.
+//
+// decision: every non-test file of the package is held to startAllowed, a new
+// one included, but those of startExempt: init.go is dfs init's, which builds
+// an installation and so imports the installer and the key provider, and
+// root.go wires the subcommands, the config command's package among them.
+// Neither runs in dfs start. Overturned if one of them must serve dfs start,
+// and then by moving that code into a file the rule holds.
+const startPackage = "cmd/dfs/commands"
+
 var (
-	startFiles   = []string{"cmd/dfs/commands/clock.go", "cmd/dfs/commands/kv.go", "cmd/dfs/commands/preflight.go", "cmd/dfs/commands/start.go"}
 	startAllowed = []string{"internal/node", "pkg/bootstrap", "pkg/metadata/kv/badgerkv", "pkg/metrics"}
+	startExempt  = []string{"cmd/dfs/commands/init.go", "cmd/dfs/commands/root.go"}
 )
 
-// startImports returns each import of this module by one of startFiles
-// outside startAllowed, and each of startFiles missing under root, so that a
-// file renamed away cannot leave the rule passing over nothing.
+// startImports returns each import of this module by a non-test file of
+// startPackage outside startExempt that startAllowed does not name, and
+// start.go and each of startExempt missing under root, so that a file
+// renamed away can leave the rule neither passing over nothing nor exempting
+// a name a new file could take.
 func startImports(root string) ([]string, error) {
 	var bad []string
 	seen := map[string]bool{}
 	err := walkImports(root, false, func(file string, imports []string) {
-		if !slices.Contains(startFiles, file) {
+		if path.Dir(file) != startPackage {
 			return
 		}
 		seen[file] = true
+		if slices.Contains(startExempt, file) {
+			return
+		}
 		for _, imp := range imports {
 			if rel, ok := strings.CutPrefix(imp, module); ok && !slices.Contains(startAllowed, rel) {
 				bad = append(bad, file+" imports "+imp)
 			}
 		}
 	})
-	for _, f := range startFiles {
+	for _, f := range append([]string{startPackage + "/start.go"}, startExempt...) {
 		if !seen[f] {
 			bad = append(bad, f+" is missing")
 		}
@@ -421,9 +435,12 @@ func TestImportRules(t *testing.T) {
 				"internal/node/nodetest2/harness.go imports the node",
 			}},
 		{"what dfs start imports", startImports, "start-imports",
-			[]string{"cmd/dfs/commands/kv.go imports " + module + "pkg/metadata/kvstore"}},
+			[]string{
+				"cmd/dfs/commands/kv.go imports " + module + "pkg/metadata/kvstore",
+				"cmd/dfs/commands/records.go imports " + module + "pkg/metadata/kvstore",
+			}},
 		{"a file of dfs start renamed away", startImports, "start-imports-missing",
-			[]string{"cmd/dfs/commands/preflight.go is missing"}},
+			[]string{"cmd/dfs/commands/root.go is missing", "cmd/dfs/commands/start.go is missing"}},
 		{"who imports enginewire", enginewireImporters, "enginewire-importers",
 			[]string{"pkg/vfs/vfs.go imports enginewire"}},
 		{"the CLI's closure", cliClosure, "cli-closure",

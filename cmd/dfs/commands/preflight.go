@@ -18,15 +18,24 @@ func v1Databases() []string {
 // over a v1 deployment's data directory, where it would open a new, empty
 // metadata store beside v1's configuration and serve none of it. It reads,
 // opens and migrates nothing: this version never reads v1's database, and a
-// file at one of paths only stops the start, naming it, as does a path it
-// cannot check.
-func refuseV1(paths ...string) error {
-	for _, p := range paths {
+// file at beside or at one of fixed only stops the start, naming it. A path
+// it cannot check stops the start too, but for a fixed path it cannot search.
+func refuseV1(beside string, fixed []string) error {
+	for i, p := range append([]string{beside}, fixed...) {
 		_, err := os.Stat(p)
 		switch {
 		case err == nil:
 			return fmt.Errorf("refusing to start: %s is v1's control-plane database, which this version does not read; move it away to start", p)
-		case !errors.Is(err, fs.ErrNotExist):
+		case errors.Is(err, fs.ErrNotExist):
+		case i > 0 && errors.Is(err, fs.ErrPermission):
+			// decision: a fixed /data path the server's user may not search is
+			// skipped, not refused: the operator did not name it, and refusing
+			// would keep every host whose /data is closed to that user from
+			// starting over a valid installation. The path beside the bootstrap,
+			// which the operator chose, still fails closed on any error.
+			// Overturned if v1 ever ran as a user other than the one starting
+			// this version over the same /data.
+		default:
 			return fmt.Errorf("refusing to start: checking for v1's control-plane database at %s: %w", p, err)
 		}
 	}

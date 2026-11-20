@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -47,11 +48,16 @@ func TestStartChild(t *testing.T) {
 const childBound = 60 * time.Second
 
 // startChild runs dfs start over the bootstrap at config, its output, both
-// streams, piped back.
-func startChild(t *testing.T, config string) (*exec.Cmd, io.Reader) {
+// streams, piped back. The child inherits no DITTOFS_ variable from the
+// host, whose logging or endpoints would change what the tests read: it gets
+// the storage key's passphrase and the env the test hands it.
+func startChild(t *testing.T, config string, env ...string) (*exec.Cmd, io.Reader) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestStartChild$")
-	cmd.Env = append(os.Environ(), childEnv+"=start\n--config\n"+config, "XDG_STATE_HOME="+t.TempDir())
+	host := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "DITTOFS_") })
+	cmd.Env = append(host, childEnv+"=start\n--config\n"+config, "XDG_STATE_HOME="+t.TempDir(),
+		"DITTOFS_ENCRYPTION_PASSPHRASE="+storagePassphrase)
+	cmd.Env = append(cmd.Env, env...)
 	r, w := io.Pipe()
 	cmd.Stdout, cmd.Stderr = w, w
 	if err := cmd.Start(); err != nil {
@@ -68,9 +74,9 @@ func startChild(t *testing.T, config string) (*exec.Cmd, io.Reader) {
 
 // runChild runs dfs start over config to its end, returning its exit code
 // and its output.
-func runChild(t *testing.T, config string) (int, string) {
+func runChild(t *testing.T, config string, env ...string) (int, string) {
 	t.Helper()
-	cmd, out := startChild(t, config)
+	cmd, out := startChild(t, config, env...)
 	b, _ := io.ReadAll(out)
 	return cmd.ProcessState.ExitCode(), string(b)
 }
@@ -175,13 +181,16 @@ func installed(t *testing.T, dir string) string {
 	return bootstrapFile{store: store, journal: dev, node: nodeUUID, key: storageKeyFile(t, dir)}.write(t, dir)
 }
 
+// storagePassphrase wraps the storage key the tests write; startChild hands
+// it to every child.
+const storagePassphrase = "dfs commands test passphrase"
+
 // storageKeyFile writes a storage key file under dir, its passphrase set in
-// the environment the child inherits, and returns its path.
+// this process's environment for the commands run in it, and returns its path.
 func storageKeyFile(t *testing.T, dir string) string {
 	t.Helper()
-	const passphrase = "dfs commands test passphrase"
-	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
-	b, err := keyprovider.GenerateKeyFile(passphrase)
+	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", storagePassphrase)
+	b, err := keyprovider.GenerateKeyFile(storagePassphrase)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,28 +218,44 @@ func TestStartNoInstallation(t *testing.T) {
 }
 
 // Beside v1's controlplane.db, over the store the layout leaves — empty, or
-// holding whatever it left — dfs start refuses naming the database: the
-// config's own checks and the v1 refusal run before the start check, so an
-// operator is never told to run dfs init into a v1 deployment's directory.
+// holding whatever it left — dfs start refuses naming the database: the v1
+// refusal runs first, before the configuration's own checks and the start
+// check, so a v1 deployment's partial bootstrap is refused as v1 rather than
+// for a missing key, and an operator is never told to run dfs init into a v1
+// deployment's directory.
 func TestStartRefusesV1Database(t *testing.T) {
-	dir := t.TempDir()
-	store := filepath.Join(dir, "store")
-	if err := os.Mkdir(store, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	v1 := filepath.Join(dir, "controlplane.db")
-	if err := os.WriteFile(v1, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	code, out := runChild(t, bootstrapFile{store: store, journal: filepath.Join(dir, "device"), node: nodeUUID}.write(t, dir))
-	if code == 0 || !strings.Contains(out, "refusing to start: "+v1+" is v1's control-plane database") {
-		t.Fatalf("dfs start beside %s: exit %d, output:\n%s\nwant non-zero naming it", v1, code, out)
-	}
-	if entries, err := os.ReadDir(store); err != nil || len(entries) != 0 {
-		t.Errorf("store directory %s after the refusal: %d entries (%v), want none: nothing opened", store, len(entries), err)
-	}
-	if strings.Contains(out, "dfs init") {
-		t.Errorf("dfs start beside v1's database: the refusal advises running dfs init (%s), which over a v1 deployment's directory is the advice that destroys data", out)
+	for _, tc := range []struct {
+		name string
+		b    func(store, dir string) bootstrapFile
+	}{
+		{"a full bootstrap", func(store, dir string) bootstrapFile {
+			return bootstrapFile{store: store, journal: filepath.Join(dir, "device"), node: nodeUUID}
+		}},
+		{"a bootstrap naming no store or node", func(_, dir string) bootstrapFile {
+			return bootstrapFile{journal: filepath.Join(dir, "device")}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store := filepath.Join(dir, "store")
+			if err := os.Mkdir(store, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			v1 := filepath.Join(dir, "controlplane.db")
+			if err := os.WriteFile(v1, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			code, out := runChild(t, tc.b(store, dir).write(t, dir))
+			if code == 0 || !strings.Contains(out, "Error: refusing to start: "+v1+" is v1's control-plane database") {
+				t.Fatalf("dfs start beside %s over %s: exit %d, output:\n%s\nwant non-zero naming it", v1, tc.name, code, out)
+			}
+			if entries, err := os.ReadDir(store); err != nil || len(entries) != 0 {
+				t.Errorf("store directory %s after the refusal: %d entries (%v), want none: nothing opened", store, len(entries), err)
+			}
+			if strings.Contains(out, "dfs init") {
+				t.Errorf("dfs start beside v1's database: the refusal advises running dfs init (%s), which over a v1 deployment's directory is the advice that destroys data", out)
+			}
+		})
 	}
 }
 
@@ -278,8 +303,9 @@ func TestStartRefusesTheStore(t *testing.T) {
 	}
 }
 
-// refuseV1 refuses a database at any of its paths, naming it, and a path it
-// cannot check, and passes when none is there.
+// refuseV1 refuses a database beside the bootstrap or at a fixed path,
+// naming it, and the path beside the bootstrap when it cannot check it; it
+// skips a fixed path it may not search, and passes when none is there.
 func TestRefuseV1(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.db")
@@ -288,17 +314,18 @@ func TestRefuseV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name  string
-		paths []string
-		want  string // the refusal's prefix; empty is no refusal
+		name   string
+		beside string
+		fixed  []string
+		want   string // the refusal's prefix; empty is no refusal
 	}{
-		{"none there", []string{missing, filepath.Join(dir, "also-missing.db")}, ""},
-		{"the first there", []string{present, missing}, "refusing to start: " + present + " is v1's"},
-		{"the second there", []string{missing, present}, "refusing to start: " + present + " is v1's"},
+		{"none there", missing, []string{filepath.Join(dir, "also-missing.db")}, ""},
+		{"beside the bootstrap", present, []string{missing}, "refusing to start: " + present + " is v1's"},
+		{"at a fixed path", missing, []string{missing, present}, "refusing to start: " + present + " is v1's"},
 	} {
-		err := refuseV1(tc.paths...)
+		err := refuseV1(tc.beside, tc.fixed)
 		if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.HasPrefix(err.Error(), tc.want)) {
-			t.Errorf("%s: refuseV1(%q) = %v, want %q", tc.name, tc.paths, err, tc.want)
+			t.Errorf("%s: refuseV1(%q, %q) = %v, want %q", tc.name, tc.beside, tc.fixed, err, tc.want)
 		}
 	}
 
@@ -312,8 +339,14 @@ func TestRefuseV1(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
 	p := filepath.Join(locked, "controlplane.db")
-	if err := refuseV1(p); err == nil || !strings.HasPrefix(err.Error(), "refusing to start: checking for v1's control-plane database at "+p) {
-		t.Errorf("refuseV1 under an unreadable directory = %v, want the check refused, not passed", err)
+	if err := refuseV1(p, nil); err == nil || !strings.HasPrefix(err.Error(), "refusing to start: checking for v1's control-plane database at "+p) {
+		t.Errorf("refuseV1 beside the bootstrap under an unsearchable directory = %v, want the check refused, not passed", err)
+	}
+	if err := refuseV1(missing, []string{p}); err != nil {
+		t.Errorf("refuseV1 at a fixed path under an unsearchable directory = %v, want it skipped", err)
+	}
+	if err := refuseV1(missing, []string{p, present}); err == nil || !strings.HasPrefix(err.Error(), "refusing to start: "+present+" is v1's") {
+		t.Errorf("refuseV1 at a fixed path after an unsearchable one = %v, want %s refused: the skip goes on to the next path", err, present)
 	}
 }
 
@@ -321,7 +354,8 @@ func TestRefuseV1(t *testing.T) {
 // reason but a signal names its step, a signal exits zero once every part
 // stopped, and a stop that failed or missed its bound names the stop step.
 func TestAnswer(t *testing.T) {
-	startErr := errors.New("node: start step engine: context canceled")
+	startErr := fmt.Errorf("node: start step engine: %w", context.Canceled)
+	bindErr := errors.New("node: start step listeners: listen tcp 127.0.0.1:1: bind: address already in use")
 	stopErr := errors.New("node: stop engine: not stopped within 30s")
 	for _, tc := range []struct {
 		name      string
@@ -333,6 +367,7 @@ func TestAnswer(t *testing.T) {
 		{"stopped on a signal", nil, true, nil, ""},
 		{"a start the signal ended", startErr, true, nil, ""},
 		{"a start that failed", startErr, false, nil, "starting the node: " + startErr.Error()},
+		{"a start that failed for its own reason under a signal", bindErr, true, nil, "starting the node: " + bindErr.Error()},
 		{"a stop that missed its bound", nil, true, stopErr, "stopping the node: " + stopErr.Error()},
 		{"both", startErr, false, stopErr, "starting the node: " + startErr.Error() + "\nstopping the node: " + stopErr.Error()},
 	} {

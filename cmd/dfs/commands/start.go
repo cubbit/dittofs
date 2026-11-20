@@ -40,8 +40,8 @@ Examples:
 	}
 }
 
-// runStart reads the bootstrap, runs the start check over the store and
-// journals it finds, refuses v1's control-plane database, opens the metadata
+// runStart reads the bootstrap, refuses v1's control-plane database, runs the
+// start check over the store and journals it finds, opens the metadata
 // store's KV, builds and starts the node, and stops it on SIGINT or SIGTERM.
 // Each error names the step that failed.
 func runStart(cmd *cobra.Command, _ []string) error {
@@ -59,18 +59,24 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if configPath == "" {
+		// decision: v1's XDG default database, $XDG_CONFIG_HOME/dittofs/controlplane.db,
+		// is probed only without --config, as the file beside the default
+		// bootstrap; a --config elsewhere probes beside that file and at the
+		// fixed /data paths only. Overturned by a v1 deployment that kept its
+		// database at the XDG default while its bootstrap moved elsewhere.
+		configPath = bootstrap.GetDefaultConfigPath()
+	}
+	// The v1 check reads nothing of the bootstrap, so it runs before the
+	// bootstrap's own checks: over a v1 directory it is the first refusal.
+	if err := refuseV1(filepath.Join(filepath.Dir(configPath), "controlplane.db"), v1Databases()); err != nil {
+		return err
+	}
 	if err := bootstrap.InitLogger(cfg); err != nil {
 		return err
 	}
-	if configPath == "" {
-		configPath = bootstrap.GetDefaultConfigPath()
-	}
 	clock := newSystemClock()
 	if err := checkKV(cfg); err != nil {
-		return err
-	}
-	v1 := append([]string{filepath.Join(filepath.Dir(configPath), "controlplane.db")}, v1Databases()...)
-	if err := refuseV1(v1...); err != nil {
 		return err
 	}
 	devices := make([]string, 0, len(cfg.Journals))
@@ -115,7 +121,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	}
 	signalled := ctx.Err() != nil && base.Err() == nil
 	if signalled {
-		if startErr != nil {
+		if errors.Is(startErr, context.Canceled) {
 			slog.Info("dfs: the start ended on a termination signal", "err", startErr)
 		}
 		slog.Info("dfs: stopping on a termination signal")
@@ -127,12 +133,20 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	return answer(startErr, signalled, stopErr)
 }
 
+// endedBySignal reports whether a termination signal, not a failure of its
+// own, ended the start: a signal arrived and Start succeeded or returned the
+// signal's cancellation. A start that failed for its own reason while a signal
+// arrived did not end on it.
+func endedBySignal(startErr error, signalled bool) bool {
+	return signalled && (startErr == nil || errors.Is(startErr, context.Canceled))
+}
+
 // answer is the command's error once the node stopped: a Start that failed
 // for any reason but a termination signal, naming its step, joined with
 // Stop's; otherwise Stop's alone, so a signal exits zero once every part
 // stopped.
 func answer(startErr error, signalled bool, stopErr error) error {
-	if startErr != nil && !signalled {
+	if startErr != nil && !endedBySignal(startErr, signalled) {
 		return errors.Join(fmt.Errorf("starting the node: %w", startErr), stopped(stopErr))
 	}
 	return stopped(stopErr)
