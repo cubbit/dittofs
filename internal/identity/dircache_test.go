@@ -1173,3 +1173,81 @@ func TestDirectoryCacheSIDsOwnsItsKeys(t *testing.T) {
 		}
 	})
 }
+
+// Forty lookups over overlapping SID sets, started together while the SID
+// searches are held a second, every fifth leaving early: every lookup
+// returns, each that stays is answered for its whole set in order, and no
+// SID is left registered to a query once all have landed.
+func TestDirectoryCacheSIDsOverlapUnderLoad(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newDirEnv(t)
+		const users, lookups = 8, 40
+		for i := range users {
+			e.d.AddUser(t, fmt.Sprintf("u%d", i), nil)
+		}
+		c := e.cache(t)
+		var sids [][]byte
+		for i := range users {
+			a, _, err := lookup(c, fmt.Sprintf("u%d", i), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sids = append(sids, a.SID)
+		}
+		e.fail(t, sim.Rule{Op: "search", Key: "(|*", Action: sim.FaultAction{Delay: time.Second}})
+		type result struct {
+			i   int
+			got []directory.Answer
+			err error
+		}
+		set := func(i int) [][]byte { return [][]byte{sids[i%users], sids[(i+1)%users], sids[(i+3)%users]} }
+		res := make(chan result, lookups)
+		cancels := make([]context.CancelFunc, lookups)
+		for i := range lookups {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancels[i] = cancel
+			go func() {
+				got, err := c.LookupSIDs(ctx, set(i), 0)
+				res <- result{i, got, err}
+			}()
+		}
+		synctest.Wait()
+		for i := 0; i < lookups; i += 5 {
+			cancels[i]()
+		}
+		for n, steps := 0, 0; n < lookups; {
+			select {
+			case r := <-res:
+				n++
+				if r.i%5 == 0 {
+					if r.err != nil && !errors.Is(r.err, vfserr.ErrUnavailable) {
+						t.Errorf("lookup %d, left early = %v, want an answer or ErrUnavailable", r.i, r.err)
+					}
+					continue
+				}
+				if r.err != nil || len(r.got) != 3 {
+					t.Errorf("lookup %d = %d answers, %v; want 3", r.i, len(r.got), r.err)
+					continue
+				}
+				for j, a := range r.got {
+					if want := set(r.i)[j]; string(a.SID) != string(want) {
+						t.Errorf("lookup %d answer %d holds SID %x, want %x", r.i, j, a.SID, want)
+					}
+				}
+			default:
+				if steps++; steps > 30 {
+					t.Fatalf("%d of %d lookups returned after %d held seconds", n, lookups, steps-1)
+				}
+				synctest.Wait()
+				e.clock.Advance(time.Second)
+			}
+		}
+		synctest.Wait()
+		if got := c.Asking(); got != 0 {
+			t.Errorf("SIDs registered to a query in flight after every lookup returned %d, want 0", got)
+		}
+		for _, cancel := range cancels {
+			cancel()
+		}
+	})
+}
