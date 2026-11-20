@@ -3,6 +3,7 @@ package journal
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"syscall"
 	"testing"
 
@@ -92,6 +93,19 @@ func reopenDeferralJournal(t *testing.T, seam *kit.Seam, dir string, id JournalI
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	// Every journal the fixture opens is closed before its directory goes,
+	// the crashed ones too: a journal left running keeps its pool, idle
+	// sealer and retirement workers writing spares and unlinks into the
+	// directory while the temporary directory's own cleanup deletes it, which
+	// fails that cleanup with "directory not empty". The cleanup runs ahead of
+	// the directory's because the directory was made first. A crash closed
+	// the journal's files, so its Close answers the files' closure, which is
+	// the answer a dead journal owes.
+	t.Cleanup(func() {
+		if err := j.Close(); err != nil && !errors.Is(err, ErrClosed) && !errors.Is(err, fs.ErrClosed) {
+			t.Logf("closing a deferral journal: %v", err)
+		}
+	})
 	if err := j.SetVersionLimit(Version{Counter: 1 << 40}); err != nil {
 		t.Fatalf("SetVersionLimit: %v", err)
 	}
@@ -100,8 +114,10 @@ func reopenDeferralJournal(t *testing.T, seam *kit.Seam, dir string, id JournalI
 
 // crashDeferralJournal crashes the seam under j — the power loss the kit
 // models, dropping what no sync covered — and leaves the journal object
-// dead: its files closed by the crash, its Close never to run again, as the
-// fixture's own crash leaves the journal it abandons.
+// dead: its files closed by the crash, as the fixture's own crash leaves the
+// journal it abandons. Its Close still runs, from the cleanup the reopen
+// registered, to join the workers the dead journal left behind; the files'
+// closure is the answer it gives.
 func crashDeferralJournal(t *testing.T, seam *kit.Seam, j *Journal) {
 	t.Helper()
 	if err := seam.Crash(); err != nil {

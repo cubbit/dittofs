@@ -100,9 +100,19 @@ func seededJournal(t *testing.T) *assembledJournal {
 // view. The caller passes set to narrow a setting, such as the extent bound
 // of a reopen under a lower limit.
 func (f *assembledJournal) opts(set func(*Settings)) []Option {
-	// The harness's own settings beside the small cap: two streams, two
-	// content spares and the fixture's headroom, so a settled pool is a
-	// handful of small files rather than the defaults' dozens.
+	return []Option{
+		WithClock(kit.NewStopwatchClock()),
+		WithSettings(f.settings(set)),
+		WithMountProbe(platformtest.SuitableGather(f.dir)),
+		WithStorage(f.seam.FS()),
+	}
+}
+
+// settings returns the settings every open of the harness resolves: the
+// small cap, two streams, two content spares and the fixture's headroom, so a
+// settled pool is a handful of small files rather than the defaults' dozens.
+// The caller passes set to narrow a setting.
+func (f *assembledJournal) settings(set func(*Settings)) Settings {
 	s := openSettings()
 	s.Streams = 2
 	s.SpareTarget = 2
@@ -110,11 +120,29 @@ func (f *assembledJournal) opts(set func(*Settings)) []Option {
 	if set != nil {
 		set(&s)
 	}
-	return []Option{
-		WithClock(kit.NewStopwatchClock()),
-		WithSettings(s),
-		WithMountProbe(platformtest.SuitableGather(f.dir)),
-		WithStorage(f.seam.FS()),
+	return s
+}
+
+// plantSparePool makes, through the seam, every spare the pool of the
+// harness's settings keeps ready — the headroom, the repack reserve and the
+// content class — with ids above last, the directory a settled journal leaves
+// behind. An open over a directory with no spares starts a pool that makes
+// them in its own background, so which of them exist by the time a failed
+// open has closed the pool, and so which classes the next open adopts, is
+// the scheduler's: a re-appending open draws only from an adopted reserve
+// spare, and a directory holding no more spares than the headroom target
+// adopts none. Planting them before the open fixes the directory the open
+// reads.
+func plantSparePool(t *testing.T, f *assembledJournal, last core.SegmentID) {
+	t.Helper()
+	s := f.settings(nil)
+	targets := buildTargets(s)
+	set := segment.NewSet(core.SegmentCapOf(s), nil)
+	m := segment.NewMaker(f.seam.FS(), set, 1<<40, last, nil)
+	for range targets.Headroom + targets.Reserve + targets.Content {
+		if _, err := m.Make(); err != nil {
+			t.Fatalf("plant a spare of the settled pool: %v", err)
+		}
 	}
 }
 

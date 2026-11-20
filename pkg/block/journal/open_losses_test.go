@@ -1241,6 +1241,7 @@ func TestAFailedOpenUnlinksNothing(t *testing.T) {
 	offs := plantSealedAt(t, f.seam, f.id, 950, drop)
 	f.rotHeader(t, format.SegmentName(950), int64(offs[0]))
 	name := format.SegmentName(950)
+	plantSparePool(t, f, 950)
 
 	// The device refuses the loss record's own sync — the second "*.seg"
 	// sync the open makes, for the tail proof's sync of the rotted segment
