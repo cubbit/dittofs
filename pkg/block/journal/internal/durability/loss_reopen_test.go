@@ -110,7 +110,9 @@ func TestTheLossRingLivesPerInstanceAndItsDedupPerDirectory(t *testing.T) {
 // reported, the credit that dead report still wrongly carries, and the take
 // that overtakes the retired claim clears it: the reopen publishes the loss
 // into its own ring, raising nothing, for the dead instance's raise already
-// counted the generation. The retired claim names nothing — the pass plans
+// counted the generation — the Raise the take sets even when the caller
+// brought neither, the re-detected deferral's shape, whose first take
+// raised the piece. The retired claim names nothing — the pass plans
 // the record as unnamed — while a piece whose report a reader took away
 // keeps its suppression: the claim holds as far as the reader reached, and
 // the reported Lose answers the zero event the credit always meant.
@@ -132,7 +134,7 @@ func TestATakeoverOfADeadUnreadClaimRepublishes(t *testing.T) {
 
 		reopen := e.newDurability()
 		if reopen.Named(l.Seq, l.Extent) {
-			t.Fatalf("Named answers the dead instance's retired claim: the pass would plan no record for the piece its report never answered")
+			t.Fatalf("Named answers the dead instance's kept failed claim: the pass would plan no record for the piece its report never answered")
 		}
 		l.Reported = true
 		ev, err := reopen.Lose(ctx, l)
@@ -147,6 +149,35 @@ func TestATakeoverOfADeadUnreadClaimRepublishes(t *testing.T) {
 		}
 		if got := reopen.Generation(); got != 0 {
 			t.Fatalf("the republished loss raised the generation to %d, want 0: the takeover keeps the raise the dead instance already made", got)
+		}
+	})
+
+	t.Run("a re-plan the caller raised nothing for raises nothing new", func(t *testing.T) {
+		e := newEnv(t)
+		e.shutdown()
+		e.d.Stop()
+		// Neither Reported nor Raised: the re-detected deferred loss's
+		// shape, whose Lose arrives with no flag because its first take
+		// already did the raising the rule would do again over the same
+		// drop.
+		l := loss(13)
+		if _, err := e.d.Lose(ctx, l); err == nil {
+			t.Fatalf("the dead instance's Lose over closed streams: succeeded, want the refused append")
+		}
+		if got := e.d.Generation(); got != 1 {
+			t.Fatalf("the dead instance's own take raised the generation to %d, want 1", got)
+		}
+
+		reopen := e.newDurability()
+		ev, err := reopen.Lose(ctx, l)
+		if err == nil {
+			t.Fatalf("the reopen's append over closed streams: succeeded, want the refused append")
+		}
+		if ev == (core.LossEvent{}) {
+			t.Fatalf("the takeover published nothing for a loss no reader was told of")
+		}
+		if got := reopen.Generation(); got != 1 {
+			t.Fatalf("the republished loss raised the generation to %d, want the 1 its piece's first take already counted", got)
 		}
 	})
 
