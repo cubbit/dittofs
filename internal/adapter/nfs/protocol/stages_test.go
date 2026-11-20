@@ -29,7 +29,7 @@ func tables() (Tables, *core.ErrorTable) {
 // stageOf is a stage serving the range, with fresh tables.
 func stageOf(v settings.VersionRange) *stage {
 	t, errs := tables()
-	return &stage{served: newServed(v), tables: t, errs: errs}
+	return &stage{served: newServed(v, t), errs: errs}
 }
 
 // authSys is an AUTH_SYS credential body: a stamp, a name, a uid, a gid and
@@ -177,7 +177,8 @@ func reply(t *testing.T, s *stage, h core.Header, st core.Status, want []byte) {
 // A call to each served pair of a range routes to its table, at its version; a
 // version the range does not serve is refused with no table and answered
 // PROG_MISMATCH with its program's own lowest and highest served; a program with
-// none served is refused PROG_UNAVAIL.
+// none served is refused PROG_UNAVAIL. A pair whose table is nil is not served,
+// though its range names it (RFC 20 section 4.8).
 func TestTheServedRanges(t *testing.T) {
 	type routed struct {
 		name  string
@@ -201,6 +202,7 @@ func TestTheServedRanges(t *testing.T) {
 	const unknown = 100099
 	for _, c := range []struct {
 		min, max    string
+		drop        func(*Tables) // sets the tables left nil
 		served      []routed
 		mismatch    []mismatch
 		unavailable []uint32
@@ -235,6 +237,14 @@ func TestTheServedRanges(t *testing.T) {
 			unavailable: []uint32{unknown},
 		},
 		{
+			min: "3", max: "4.2", drop: func(t *Tables) { t.V3, t.Mount = nil, nil },
+			served: []routed{nfs4, compound, nlm4, nsm1},
+			mismatch: []mismatch{
+				{"NFS v3, its table nil", call(progNFS, 3), 4, 4},
+			},
+			unavailable: []uint32{progMount, unknown},
+		},
+		{
 			min: "4.1", max: "4.1",
 			served: []routed{nfs4, compound},
 			mismatch: []mismatch{
@@ -244,15 +254,23 @@ func TestTheServedRanges(t *testing.T) {
 			unavailable: []uint32{progMount, progNLM, progNSM, unknown},
 		},
 	} {
-		t.Run(c.min+" to "+c.max, func(t *testing.T) {
-			s := stageOf(settings.VersionRange{Min: c.min, Max: c.max})
+		name := c.min + " to " + c.max
+		if c.drop != nil {
+			name += ", some tables nil"
+		}
+		t.Run(name, func(t *testing.T) {
+			tb, errs := tables()
+			if c.drop != nil {
+				c.drop(&tb)
+			}
+			s := &stage{served: newServed(settings.VersionRange{Min: c.min, Max: c.max}, tb), errs: errs}
 			for _, r := range c.served {
 				h, err := decode(t, s, r.body)
 				if err != nil {
 					t.Fatalf("%s: %v", r.name, err)
 				}
 				table, req, err := s.Route(h, nil)
-				if err != nil || table != r.table(s.tables) {
+				if err != nil || table != r.table(tb) {
 					t.Errorf("%s: %p, %v; want its table", r.name, table, err)
 					continue
 				}
@@ -289,6 +307,28 @@ func TestTheServedRanges(t *testing.T) {
 				reply(t, s, h, status(s, err), golden(t, "accept-prog-unavail"))
 			}
 		})
+	}
+}
+
+// A range ranks its versions by reading their names, as settings lists them:
+// version 3 first, then version 4's minor versions in order. A name of no
+// such form, or a range naming one, serves nothing; and with version 4's table
+// nil no minor version is served.
+func TestTheVersionOrder(t *testing.T) {
+	for vers, want := range map[string]int{"3": 0, "4.0": 1, "4.1": 2, "4.2": 3, "4.10": 11, "2": -1, "4": -1, "4.01": -1, "4.-1": -1, "5.0": -1} {
+		if got := rank(vers); got != want {
+			t.Errorf("rank(%q) = %d, want %d", vers, got, want)
+		}
+	}
+	for _, v := range []settings.VersionRange{{Min: "2", Max: "4.2"}, {Min: "3", Max: "5.0"}} {
+		if s := stageOf(v); s.served.has(progNFS) || s.served.has(progMount) {
+			t.Errorf("%s to %s serves NFS or MOUNT, want nothing", v.Min, v.Max)
+		}
+	}
+	tb, _ := tables()
+	tb.V4 = nil
+	if s := newServed(settings.VersionRange{Min: "3", Max: "4.2"}, tb); s.minor(1) {
+		t.Error("minor version 1 served with version 4's table nil")
 	}
 }
 
@@ -332,7 +372,7 @@ func TestTheMinorVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	table, _, err := s.Route(h, nil)
-	if !errors.Is(err, core.ErrVersion) || table != s.tables.V4 {
+	if !errors.Is(err, core.ErrVersion) || table != s.served.table(progNFS, versNFS4) {
 		t.Fatalf("minor 2: %p, %v; want the version 4 table and ErrVersion", table, err)
 	}
 	out := &resources.Buf{}
@@ -371,7 +411,7 @@ func TestTheMinorVersions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if table, _, err := s41.Route(h, nil); !errors.Is(err, core.ErrVersion) || table != s41.tables.V4 {
+		if table, _, err := s41.Route(h, nil); !errors.Is(err, core.ErrVersion) || table != s41.served.table(progNFS, versNFS4) {
 			t.Errorf("minor %d under 4.1 to 4.1: %p, %v; want the version 4 table and ErrVersion", minor, table, err)
 		}
 	}

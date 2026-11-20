@@ -25,11 +25,12 @@ const (
 
 // New builds the NFS adapter, configured: it validates s, refusing a TLS mode
 // other than off until StartTLS among the rest, so no certificate file is
-// loaded; refuses Deps missing a required field, naming every one missing;
-// builds every table whatever s's range, since each connection's router
-// serves its own (RFC 20 section 4.8); and opens nothing. Start binds the one
-// TCP listener on s.Port. No listener reads UDP: core has no datagram
-// listener, and NLM and NSM over UDP wait for it (RFC 21 section 2.2).
+// loaded; refuses Deps missing VFS or Budgets, naming each missing, core
+// refusing a nil Budgets.Conns itself; builds every table whatever s's range,
+// since each connection's router serves its own (RFC 20 section 4.8); and
+// opens nothing. Start binds the one TCP listener on s.Port. No listener reads
+// UDP: core has no datagram listener, and NLM and NSM over UDP wait for it
+// (RFC 21 section 2.2).
 func New(d adapter.Deps, s settings.NFS) (*core.Server, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err

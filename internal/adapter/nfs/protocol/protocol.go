@@ -25,7 +25,7 @@ type Protocol struct {
 }
 
 // New is the protocol over t, which holds every table its router may return;
-// which of them a connection serves is that connection's settings' range.
+// a connection serves each pair its settings' range names whose table t holds.
 func New(t Tables) *Protocol {
 	return &Protocol{tables: t, errs: newErrors()}
 }
@@ -33,20 +33,21 @@ func New(t Tables) *Protocol {
 // Framer is the record marking every connection reads and writes.
 func (p *Protocol) Framer() core.Framer { return framer{} }
 
-// NewConn builds one connection's stages: its served set from the range of the
-// settings it was accepted with (RFC 20 section 4.8), which are a settings.NFS,
-// since nfs.New hands core one and Reconfigure refuses any other type. With a
-// nil c, NewServer's check at configure, it reads no setting and serves
-// nothing. The stages it does not build take core's defaults.
+// NewConn builds one connection's stages: its served set from the protocol's
+// tables and the range of the settings it was accepted with (RFC 20 section
+// 4.8), which are a settings.NFS, since nfs.New hands core one and Reconfigure
+// refuses any other type. With a nil c, NewServer's check at configure, it
+// reads no setting and serves nothing. The stages it does not build take
+// core's defaults.
 func (p *Protocol) NewConn(c *core.Conn) core.Stages {
-	s := &stage{tables: p.tables, errs: p.errs, conn: c}
+	s := &stage{errs: p.errs, conn: c}
 	if c != nil {
-		s.served = newServed(c.Settings().(settings.NFS).Versions)
+		s.served = newServed(c.Settings().(settings.NFS).Versions, p.tables)
 	}
 	return core.Stages{Header: s, Router: s, Errors: p.errs, Protocol: "nfs3"}
 }
 
-// Tables is every table New was given, a nil one being a program with none.
+// Tables is every non-nil table New was given.
 func (p *Protocol) Tables() []*core.OpTable {
 	var ts []*core.OpTable
 	for _, t := range []*core.OpTable{p.tables.V3, p.tables.V4, p.tables.Mount, p.tables.NLM, p.tables.NSM} {

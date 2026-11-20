@@ -72,12 +72,11 @@ func (h header) compound() bool {
 	return ok
 }
 
-// stage is one connection's header stage and router: the served set, the
+// stage is one connection's header stage and router: the served set with its
 // tables, the stages' error table, the connection a reply goes through, and
 // whether a call on it has been routed yet.
 type stage struct {
 	served      served
-	tables      Tables
 	errs        *core.ErrorTable
 	conn        *core.Conn
 	established atomic.Bool
@@ -198,20 +197,8 @@ func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.R
 	if !s.served.has(prog) {
 		return nil, nil, errProgUnavail
 	}
-	var table *core.OpTable
-	switch {
-	case prog == progNFS && vers == versNFS3:
-		table = s.tables.V3
-	case prog == progNFS && vers == versNFS4:
-		table = s.tables.V4
-	case prog == progMount:
-		table = s.tables.Mount
-	case prog == progNLM:
-		table = s.tables.NLM
-	case prog == progNSM:
-		table = s.tables.NSM
-	}
-	if table == nil || !s.served.serves(prog, vers) {
+	table := s.served.table(prog, vers)
+	if table == nil {
 		return nil, nil, core.ErrVersion
 	}
 	if minor, ok := c.MinorVersion(); ok && !s.served.minor(core.Version(minor)) {
