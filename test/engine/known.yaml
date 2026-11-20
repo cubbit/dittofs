@@ -95,20 +95,6 @@
   reason: 'The same settled answer as its retry-later sibling for the destination''s share: the destination''s journal limit refusal reads an ended-unreclaimed figure of zero once the refusal''s two repack passes have cycled the share''s live bytes, and answers no space where the row wants the retry-later that outlives the refusal. The row waits on the same two things the sibling''s entry names, filed apart as its issue and #4873.'
   issue: '#4892'
 
-- test: TestRFC8A_CapacityRacingRefusals
-  message: 'the share limit has nothing left to free'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two things, filed apart: the engine''s settled answer composing RFC 8 section 10.2''s dirty-bytes disjunct (the live dirty bytes with the store put-healthy that keep retry-later), filed as the entry''s issue; and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker, filed under #4873.'
-  issue: '#4892'
-- test: TestRFC8A_CapacityNothingLeftToFree
-  message: 'the share limit has nothing left to free'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two things, filed apart: the engine''s settled answer composing RFC 8 section 10.2''s dirty-bytes disjunct (the live dirty bytes with the store put-healthy that keep retry-later), filed as the entry''s issue; and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker, filed under #4873.'
-  issue: '#4892'
 - test: TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved
   message: 'the refused write is still parked on the seal''s sync: the capacity answer waited on the caller''s own fsync'
   status: fail
@@ -117,13 +103,6 @@
   reason: 'What the row demonstrates, on its own bounded assertion now: the refusal over an unresolved window parks the refused write on the share seal''s caller-side fsync — the seal runs in the refusal''s own goroutine and syncs the records of the segment it closes, which the row''s held sync stops. What it waits on: the RFC 8 / RFC 28 ruling the PR text carries — whether the seal may place its marker without a caller-side sync, which the named-predecessor recovery refusal over an unsynced marker stands against, or whether the durability layer learns to seal off the caller''s goroutine. Once ruled, the refusal answers ErrDelay under a tenth of the caller''s bound and the entry leaves.'
   issue: '#4873'
 
-- test: TestRFC8A_CapacityRepackReserveServesAThirdShare
-  message: 'the share limit has nothing left to free'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two things, filed apart: the engine''s settled answer composing RFC 8 section 10.2''s dirty-bytes disjunct (the live dirty bytes with the store put-healthy that keep retry-later), filed as the entry''s issue; and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker, filed under #4873.'
-  issue: '#4892'
 - test: TestV26/journal/a_clone_of_a_lost_run_reads_lost_there
   message: 'the destination over the source''s lost run: <nil>, want ErrLost'
   status: fail
