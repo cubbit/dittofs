@@ -644,11 +644,11 @@ func recycleCrashed(t *testing.T, d *driven) string {
 		done <- err
 	}()
 	p := parked{held: rename, done: done}
-	waitAtHold(t, p, "the repack")
+	waitAtHold(t, p, "Repack")
 
 	// The next sync of a segment file after the rename is the zeroing's.
 	p.held = holdNext(d.tb, d.f, kit.OpSync, "*.seg", p.held)
-	waitAtHold(t, p, "the repack")
+	waitAtHold(t, p, "Repack")
 	r := retirement(t, d.f, name, files)
 	if !r.recycled {
 		t.Fatalf("precondition: the segment was unlinked with the pool empty, want it recycled")
@@ -876,14 +876,14 @@ var syncPoints = []struct {
 		// The copies may not fit the destination's active segment, so the
 		// repack can roll, and a refill's directory sync then reaches the
 		// hold before the unlink's.
-		waitAtHold(t, p, "the repack")
+		waitAtHold(t, p, "Repack")
 		for n := 0; d.f.Seam.CallsFor(kit.OpRemove, name) == removes; n++ {
 			if n == maxRefillSyncs {
 				t.Fatalf("precondition: the segment was not unlinked within %d directory syncs of the repack", n)
 			}
 
 			p.held = holdNext(d.tb, d.f, kit.OpSyncDir, "*", p.held)
-			waitAtHold(t, p, "the repack")
+			waitAtHold(t, p, "Repack")
 		}
 		return p
 	}},
@@ -1119,7 +1119,7 @@ var syncPoints = []struct {
 			done <- err
 		}()
 		p := parked{held: rename, done: done, holds: []*kit.Hold{spares}}
-		waitAtHold(t, p, "the repack")
+		waitAtHold(t, p, "Repack")
 		p.held = holdNext(d.tb, d.f, kit.OpSyncDir, "*", p.held)
 		p.check = func() string {
 			if d.f.Seam.CallsFor(kit.OpRename, name) != 1 {
@@ -1219,14 +1219,14 @@ var syncPoints = []struct {
 			}
 			return ""
 		}}
-		waitAtHold(t, p, "the repack")
+		waitAtHold(t, p, "Repack")
 		for n := 0; d.f.Seam.CallsFor(kit.OpRemove, name) == removes; n++ {
 			if n == maxRefillSyncs {
 				t.Fatalf("precondition: the failed segment was not unlinked within %d directory syncs of the repack", n)
 			}
 
 			p.held = holdNext(d.tb, d.f, kit.OpSyncDir, "*", p.held)
-			waitAtHold(t, p, "the repack")
+			waitAtHold(t, p, "Repack")
 		}
 		return p
 	}},

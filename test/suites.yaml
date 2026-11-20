@@ -94,10 +94,12 @@ suites:
         # retry turns the run red and posts to the develop-status issue. The throughput gate
         # measures on a shared runner, where a busy neighbour can trip it; it fails no pull request.
         tier: nightly
-      # The journal index's allocation and memory checks and the profiler's heap checks, which
-      # skip under -race.
+      # The journal's allocation and memory checks — the index's, the data path's, durability's
+      # and the record codec's — and the profiler's heap checks, which skip under -race.
       journal-index:
-        cmd: go test -timeout=5m ./pkg/block/journal/internal/index/ ./internal/prof/
+        cmd:
+          - go test -timeout=5m ./pkg/block/journal/internal/index/ ./pkg/block/journal/internal/durability/ ./pkg/block/journal/internal/format/ ./internal/prof/
+          - go test -timeout=5m -run=^(TestReadOfALargeRecordAllocatesFlat|TestRFC1D_StatsCostIsFlat)$ ./pkg/block/journal/internal/datapath/
       # The index built with a bug planted in its split, which the model fuzz and the model's
       # data-path run must both find. The planted build breaks the package's other tests by
       # design, so only these tests run.
