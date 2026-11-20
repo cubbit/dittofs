@@ -293,6 +293,15 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 	// Corrupt returns counts the loss the generation was raised for, without
 	// waiting for the worker to record it. The worker's Lose counts nothing
 	// for a loss marked Counted.
+	//
+	// decision: a Corrupt drop raises the generation before its count and its
+	// event: the raise is made outside lmu (takeCorrupt, or above), the count
+	// in this later lmu section, and the event by the worker. Only after
+	// Corrupt returns are the raise and the count paired; the event still lags,
+	// published by the worker, so a snapshot may show a raise with no event
+	// yet. Overturned when a consumer pairs a snapshot's generation with its
+	// events or counters, such as a replica taking its loss point from the loss
+	// events behind a rise.
 	d.lmu.Lock()
 	for i := range job.losses {
 		if job.losses[i].Offloaded {
