@@ -510,22 +510,6 @@
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
-- test: TestRFC28B_SegmentReclaimable
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Segments keeps the row of a retired damaged segment, marked retired, until close (RFC 1 section 4.4), and this check expects the repacked segment gone from the list: the RFC and the check disagree for a segment repack emptied before retiring it. Waits on the RFC owner, not on a call.'
-  issue: '#3395'
-  message: 'is still among the journal'
-
-- test: TestRFC28C_BadCopyDoesNotMaskAGoodOne
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check''s own assertion fails where it expects damage reported: the segment holds a copy that does not verify and is not reported damaged. Needs the damaged report for a record whose re-read fails where the catalog can name it.'
-  issue: '#3395'
-  message: 'holds a copy that does not verify and is not reported damaged'
-
 - test: TestRFC28C_SyncedDamageIsNotATornTail
   status: fail
   fix: planned
@@ -726,14 +710,6 @@
   issue: '#3596'
   message: 'stub: Restamp'
 
-
-- test: TestDamage_LostWrites/failed_unlink
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The precondition fails: a sync that fails with nothing unsynced does not report the segment failed through Inspect().Segments(). Open: whether such a Sync reaches the device at all; no 9b call is involved.'
-  issue: '#3395'
-  message: 'is not reported failed after its sync failed'
 
 - test: TestDamage_BitFlip/record_header/magic
   status: fail
@@ -1055,14 +1031,6 @@
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
-- test: TestEdge_ZeroLengthWrite
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; WriteAt answers an empty write with no error and the zero version, neither refusing it with ErrZeroLength nor drawing a version. Needs WriteAt for an empty payload.'
-  issue: '#3395'
-  message: 'an empty write at 0 drew version {0 0}, not above the write before it'
-
 - test: TestEdge_RecordsWithoutBytesAtMaximum
   status: fail
   fix: planned
@@ -1222,14 +1190,6 @@
   reason: 'The journal opens; the check fails on a stub call. Needs retained extents kept by repack and released once their hold goes.'
   issue: '#3379'
   message: 'stub: Hold'
-
-- test: TestRFC1A_SyncedLossMasksSuperseded
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Open: the synced corrupt loss masking what it superseded is built (Durability.Corrupt), the fixture cannot open a journal.'
-  issue: '#3395'
-  message: 'the extent whose superseding record rotted: missing = []'
 
 - test: TestEdge_FilesystemENOSPCIsNotErrNoSpace
   status: skip

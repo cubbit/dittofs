@@ -1225,9 +1225,11 @@ var syncPoints = []struct {
 		a := d.writeSynced(0, 0, 0, 64<<10)
 		seg := entryAt(t, d.f, a.id, 0).Location.Segment
 		name := segmentName(seg)
-		// A sync that fails with nothing unsynced ends the segment and
-		// changes nothing the model holds, whether the journal returns the
-		// failure or not, so its result is not applied to the model.
+		// A sync naming a file with nothing unsynced issues no sync, so the
+		// failure is armed against a sync that has a record to cover: the
+		// write is unsynced, and the sync's result, a failed window or a
+		// re-append, is applied to the model.
+		d.write(0, 0, 64<<10, pattern("failed_unlink", 4096))
 		d.f.FailNext(kit.OpSync, name, 1)
 		_, err := d.f.Share(0).Sync(t.Context(), a.id)
 		stub(t, "Sync", err)
@@ -1235,6 +1237,7 @@ var syncPoints = []struct {
 		if err != nil && !errors.As(err, &se) {
 			t.Fatalf("sync after a failed sync: %v", err)
 		}
+		d.mirrorSync(0, []journal.FileID{a.id}, err)
 
 		if !ownedSegment(t, d.f, seg).Failed {
 			t.Fatalf("precondition: segment %d is not reported failed after its sync failed", seg)
