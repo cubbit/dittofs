@@ -2,6 +2,7 @@ package datapath
 
 import (
 	"math/rand/v2"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,5 +49,55 @@ func TestOldestDirtyMatchesAScan(t *testing.T) {
 		case want != nil && got != want.Unix():
 			t.Fatalf("step %d: oldest = %d, want %d", step, got, want.Unix())
 		}
+	}
+}
+
+// After several writers dirty, move and clean files at once, the stored
+// oldest equals a scan of the dirty set. It guards quiescent agreement only:
+// apply publishes the minimum under the list's mutex, so there is no window
+// between computing it and storing it for a test to land a second apply in,
+// and a stale store would show here only by chance. The sequential test above
+// pins every step and is the one that fails when the publish is dropped; this
+// one is here to give the race detector concurrent apply calls.
+func TestOldestDirtyQuiescentAfterConcurrentApply(t *testing.T) {
+	const writers, perWriter, rounds = 4, 40, 60
+	base := int64(1_000_000)
+	var l dirtyList
+	var wg sync.WaitGroup
+	for w := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rng := rand.New(rand.NewPCG(uint64(w), 7))
+			listed := map[int]bool{}
+			for range rounds {
+				i := rng.IntN(perWriter)
+				id := benchFile(w*perWriter + i)
+				ts := time.Unix(base+int64(w)*1000+int64(rng.IntN(perWriter)), 0)
+				switch {
+				case listed[i] && rng.IntN(2) == 0:
+					l.apply(index.HeldDelta{Tag: 1, File: id, Dirty: index.BecameClean})
+					delete(listed, i)
+				case listed[i]:
+					l.apply(index.HeldDelta{Tag: 1, File: id, OldestDirty: ts})
+				default:
+					l.apply(index.HeldDelta{Tag: 1, File: id, Dirty: index.BecameDirty, OldestDirty: ts})
+					listed[i] = true
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	want := int64(noOldest)
+	for _, e := range l.m {
+		if k := e.oldest.Unix(); want == noOldest || k < want {
+			want = k
+		}
+	}
+	if got := l.oldest.Load() ^ noOldest; got != want {
+		t.Fatalf("quiescent oldest = %d, want %d (a scan of %d dirty files)", got, want, len(l.m))
 	}
 }

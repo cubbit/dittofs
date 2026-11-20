@@ -88,7 +88,11 @@ type Stats struct {
 // retire or a forget that lands between the set's two reads (it lowers the
 // bytes before the overhead) can read the figure low as well. Nothing
 // retires a segment the index still holds yet, so production cannot reach
-// that case; the clamp is the guard for when it can.
+// that case; the clamp is the guard for when it can. No bound RFC 1 section 3.7
+// states involves the retained, overhead or per-tag byte reads, so their order
+// moves only this clamped figure, by one operation in flight. While held is at
+// most used, which only the release-then-retire case above breaks, held plus
+// unreclaimed is at most used whatever that order is.
 //
 // ponytail: the figure ignores footer entries, segment headers and trailers,
 // which the set does not count, and the header and padding of every record on
@@ -105,7 +109,16 @@ type Stats struct {
 func (c *Core) Stats() Stats {
 	var s Stats
 	s.MaxBytes = c.maxBytes
+	// The reservation is read before the set's per-share figures and must stay
+	// so: a write moves its record into the set's figures before it releases
+	// its reservation, so this order finds the record in one of the two.
+	if c.statsStep != nil {
+		c.statsStep("reserved:before")
+	}
 	reserved, reservedBy := c.cap.ReservedBytes(), c.cap.ReservedByTag()
+	if c.statsStep != nil {
+		c.statsStep("reserved:after")
+	}
 	for range 4 {
 		s.DirtyBytes = c.dirty.Load()
 		if c.betweenHeldReads != nil {
@@ -152,8 +165,14 @@ func (c *Core) Stats() Stats {
 
 	// One entry per tag with an open handle or a record on disk, tag 0 (the
 	// journal's own records) excepted.
+	if c.statsStep != nil {
+		c.statsStep("set:before")
+	}
 	figs := c.shareFigures()
 	used, over := c.set.TagFigures()
+	if c.statsStep != nil {
+		c.statsStep("set:after")
+	}
 	s.Shares = make(map[core.ShareTag]ShareStats)
 	if p := c.registry.Load(); p != nil {
 		for _, h := range *p {

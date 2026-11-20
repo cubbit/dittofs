@@ -180,6 +180,10 @@ type Capacity struct {
 	// not yet filled — the ReservedBytes gauge (RFC 1 §3.7). It moves under mu
 	// with the admission checks that read it, and is an atomic so a stats
 	// read takes no lock; the same holds for reservedTagged and refused.
+	// The two gauges are separate atomics that every writer moves under mu and
+	// a stats read loads one after the other, so no bound between them is
+	// promised: the one bound promised, ReservedBytes >= 0, holds whatever order they
+	// move in, since a release returns only what its reservation took.
 	reserved atomic.Int64
 
 	// reservedTagged is reserved broken down by share tag, so a refusal

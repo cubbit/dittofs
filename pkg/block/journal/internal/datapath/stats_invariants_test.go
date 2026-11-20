@@ -528,3 +528,69 @@ func TestRFC1D_UnreclaimedClampsAStaleHeldFigure(t *testing.T) {
 	}
 	wantUnreclaimed(t, c, "with the set below held", 1, 0)
 }
+
+// TestRFC1D_StatsCountsAWriteLandingBetweenTheReads parks a write after its
+// reservation is taken and before its record is appended, then lands the whole
+// write at each point around the reservation read and the set's read. A record
+// must be in at least one of the two figures wherever the write lands: a Stats
+// that reads the set before the reservation sees neither the uncounted record
+// nor the released reservation. The points wrap the reads themselves, so they
+// follow the reads wherever the code puts them.
+func TestRFC1D_StatsCountsAWriteLandingBetweenTheReads(t *testing.T) {
+	const payload = 4096
+	for _, point := range []string{"reserved:before", "reserved:after", "set:before", "set:after"} {
+		t.Run(point, func(t *testing.T) {
+			const backstop = 30 * time.Second
+			parked, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var werr error
+			var parkOnce, landOnce sync.Once
+			var landed bool
+			var c *Core
+			c, _ = newTestCore(t, func(o *coreOptions) {
+				o.beforeAppend = func() { parkOnce.Do(func() { close(parked); <-release }) }
+				o.statsStep = func(p string) {
+					if p != point {
+						return
+					}
+					landOnce.Do(func() {
+						landed = true
+						close(release)
+						select {
+						case <-done:
+						case <-time.After(backstop):
+							t.Errorf("the write did not finish when landed at %s", point)
+						}
+					})
+				}
+			})
+			s := mustShare(t, c, 1)
+			go func() {
+				defer close(done)
+				_, werr = c.WriteAt(context.Background(), s, testFile(1), 0, make([]byte, payload), 1)
+			}()
+			select {
+			case <-parked:
+			case <-done:
+				t.Fatalf("the write finished without reaching beforeAppend: %v", werr)
+			case <-time.After(backstop):
+				t.Fatal("the write never reached beforeAppend")
+			}
+			st := c.Stats()
+			select {
+			case <-done:
+			case <-time.After(backstop):
+				t.Fatalf("the write never finished after Stats returned at %s", point)
+			}
+			if !landed {
+				t.Fatalf("Stats never reached point %s", point)
+			}
+			if werr != nil {
+				t.Fatalf("WriteAt: %v", werr)
+			}
+			ss := st.Shares[1]
+			if ss.ReservedBytes+ss.UsedBytes < payload {
+				t.Fatalf("a write landed at %s: share 1 ReservedBytes %d + UsedBytes %d < %d: the record is in neither", point, ss.ReservedBytes, ss.UsedBytes, payload)
+			}
+		})
+	}
+}

@@ -930,6 +930,10 @@ func (s *Set) TagFigures() (bytes, overhead map[core.ShareTag]int64) {
 	// operation in flight. That holds for additions only: a retirement or a
 	// forget lowers the bytes before the overhead, so a read between the two
 	// steps can show the figure low, which the caller's clamp at zero catches.
+	// No bound RFC 1 section 3.7 states involves the overhead or the per-tag
+	// bytes, so the order of the two reads moves only the clamped unreclaimed
+	// figure, by one operation in flight. An overhead is only ever raised with
+	// its record's bytes, so it is never negative in either order.
 	overhead = s.over.Snapshot()
 	return s.tags.Snapshot(), overhead
 }
