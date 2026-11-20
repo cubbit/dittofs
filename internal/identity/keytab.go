@@ -55,6 +55,26 @@ func buildRing(versions []secrets.Version, log *slog.Logger) keyRing {
 	return ring
 }
 
+// AppliedKeytab is the number of the keytab's current version in force and
+// the name of each key its versions in force hold, zero and none while no
+// keytab is in force. A version that does not parse fails the call, since
+// the API's check of a join against it cannot then see its names.
+func (s *Server) AppliedKeytab() (uint64, []identity.KeytabName, error) {
+	st := s.state.Load()
+	if st == nil || len(st.Keytab) == 0 {
+		return 0, nil, nil
+	}
+	var names []identity.KeytabName
+	for _, v := range st.Keytab {
+		n, err := identity.KeytabNames(v.Value)
+		if err != nil {
+			return 0, nil, err
+		}
+		names = append(names, n...)
+	}
+	return st.Keytab[0].Number, names, nil
+}
+
 // key is the ring's key for a service name, compared with ASCII letters
 // folded, in realm, under kvno and etype.
 func (r keyRing) key(name, realm string, kvno uint32, etype int32) (types.EncryptionKey, bool) {

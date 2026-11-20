@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // directory is identity's directory as the API asks it before a write. A
@@ -27,9 +28,12 @@ type directory interface {
 
 // joins holds an online join's administrator credential in memory under the
 // operation it is handed to, until the join's step takes it or release is
-// called; release zeroes the password.
+// called; release zeroes the password. AppliedKeytab is the number of the
+// keytab's current version identity has applied and the name of each key
+// its versions in force hold, zero and none while it holds no keytab.
 type joins interface {
 	HoldJoinCredential(id entity.OperationID, cred identity.JoinCredential) (release func())
+	AppliedKeytab() (uint64, []identity.KeytabName, error)
 }
 
 // opStart is an installation action's pre-write step's result: the
@@ -237,10 +241,17 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 		if err != nil {
 			return opStart{}, err
 		}
+		keytab, err := keytabOf(rq.d, p.Account)
+		if err != nil {
+			return opStart{}, err
+		}
 		id := entity.OperationID(entity.NewShareID())
 		owned = true
 		check := func(tx entity.ControlPlaneTx, in entity.Installation) error {
-			if err := notRotating(tx, in); err != nil || p.OU == "" {
+			if err := notRotating(tx, in); err != nil {
+				return err
+			}
+			if err := keytab(tx); err != nil || p.OU == "" {
 				return err
 			}
 			s, ok, err := tx.Setting(installation, directoryBase)
@@ -264,6 +275,10 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 		case rq.d.Sealer == nil:
 			return opStart{}, errNoSealer
 		}
+		keytab, err := keytabOf(rq.d, p.Account)
+		if err != nil {
+			return opStart{}, err
+		}
 		owned = true
 		ref, err := handOver(ctx, rq, cred.Password)
 		if err != nil {
@@ -273,6 +288,9 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 		b, err := json.Marshal(p)
 		return opStart{params: b, check: func(tx entity.ControlPlaneTx, in entity.Installation) error {
 			if err := notRotating(tx, in); err != nil {
+				return err
+			}
+			if err := keytab(tx); err != nil {
 				return err
 			}
 			cur, ok, err := tx.Secret(in.MachinePassword, 0)
@@ -293,6 +311,61 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 		}}, err
 	}
 	return opStart{}, &fieldError{field: "spec.mode", detail: "a join is online or offline"}
+}
+
+// keytabOf is a join's check of the stored keytab against account, the
+// computer account the join names: it refuses the start, 409 naming
+// spec.account, while the keytab holds a key for account, in the realm
+// identity.directory.realm records, or in every realm when none is
+// recorded, as a keytab's put refuses one for a joined account's name. The
+// keytab's names are those of the version identity has applied, asked
+// before the write; the write reads the keytab's setting and current
+// version tracked, and refuses 503 when that is not the version identity
+// applied, so a keytab put since is not missed. An account of "" checks
+// nothing.
+//
+// decision: a join is checked against the account it names only. An online
+// join naming none takes identity's default name, which the API does not
+// know, and the service names a rotation refreshes, and a later write of
+// identity.directory.realm, are checked against no stored keytab, since the
+// API cannot open a sealed keytab inside those writes. A key such a gap
+// lets through for one of the joined account's names is dropped from
+// identity's ring and logged at Apply, so no sign-in is verified with it. Overturned when identity checks the
+// stored keytab against the account's names in those writes itself.
+func keytabOf(d Deps, account string) (func(entity.ControlPlaneTx) error, error) {
+	if account == "" {
+		return func(entity.ControlPlaneTx) error { return nil }, nil
+	}
+	ver, names, err := d.Joins.AppliedKeytab()
+	if err != nil {
+		return nil, err
+	}
+	return func(tx entity.ControlPlaneTx) error {
+		s, ok, err := tx.Setting(installation, keytabKey)
+		if err != nil || !ok {
+			return err
+		}
+		ref, err := refFrom(s.Value)
+		if err != nil {
+			return err
+		}
+		cur, ok, err := tx.Secret(ref, 0)
+		if err != nil {
+			return err
+		}
+		if !ok || cur.Version != ver {
+			return &refusal{code: apiv1.CodeUnavailable, detail: "the keytab changed while the join was checked; retry"}
+		}
+		realm, rok, err := tx.Setting(installation, directoryRealm)
+		if err != nil {
+			return err
+		}
+		n, held, err := accountKey(entity.MachineJoin{Joined: true, Account: account}, realm, rok, names)
+		if err != nil || !held {
+			return err
+		}
+		return &componentError{field: "spec.account", detail: "the keytab holds a key for " + n.Name + "@" + n.Realm + ", the account this join derives keys for", err: vfserr.ErrExist}
+	}, nil
 }
 
 // notRotating refuses a join's start while a rotation runs.

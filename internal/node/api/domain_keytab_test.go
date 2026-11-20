@@ -20,6 +20,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/secrets"
 )
 
 // opNamed is the operation of kind the store holds, failing when there is
@@ -465,5 +466,48 @@ func TestKeytabDelete(t *testing.T) {
 	audits := s.audits(t)
 	if last := audits[len(audits)-1]; last.Target.Kind != entity.ResourceInstallation || !bytes.Equal(last.Target.ID, in.ID[:]) {
 		t.Errorf("the refusal's audit %+v, want it naming the installation %x", last.Target, in.ID)
+	}
+}
+
+// A join naming an account the stored keytab holds a key for is refused 409
+// naming spec.account, online and offline, starting no operation, once
+// identity has applied that keytab; before, it is refused 503, since the
+// names checked are those of the version identity applied. A join naming
+// another account starts.
+func TestJoinRefusedForAnAccountTheKeytabHolds(t *testing.T) {
+	d := serveDomain(t, true)
+	kt := keytabOf(t, "dfs$", etypeID.AES256_CTS_HMAC_SHA1_96)
+	ref := entity.SecretRef(uuid.New())
+	sealed, err := d.seal.Seal(t.Context(), entity.SecretKeytab, entity.SecretOwner{Scope: installation, Key: "identity.keytab"}, ref, slices.Clone(kt), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.store.PutSecret(t.Context(), sealed, 0); err != nil {
+		t.Fatal(err)
+	}
+	d.putSetting(t, installation, "identity.keytab", strconv.Quote(uuid.UUID(ref).String()))
+
+	if r := d.do(t, http.MethodPost, joinPath, offlineJoin("DFS$", "pw-1")); r.status != http.StatusServiceUnavailable {
+		t.Errorf("a join before identity applied the keytab: answered %d %s, want 503", r.status, r.body)
+	}
+	st := d.state
+	st.Keytab = []secrets.Version{{Number: sealed.Version, Value: kt}}
+	if err := d.ids.Apply(st); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, body string }{
+		{"offline", offlineJoin("DFS$", "pw-2")},
+		{"online", onlineJoin(`,"account":"DFS$"`, "Administrator", "pw-3")},
+	} {
+		r := d.do(t, http.MethodPost, joinPath, tc.body)
+		if r.status != http.StatusConflict || r.problem(t).Field != "spec.account" {
+			t.Errorf("an %s join of DFS$: answered %d %s, want 409 naming spec.account", tc.name, r.status, r.body)
+		}
+	}
+	if ops := d.operations(t); len(ops) != 0 {
+		t.Fatalf("operations: %+v, want none", ops)
+	}
+	if r := d.do(t, http.MethodPost, joinPath, offlineJoin("NAS$", "pw-4")); r.status != http.StatusAccepted {
+		t.Errorf("a join of NAS$: answered %d %s, want 202", r.status, r.body)
 	}
 }

@@ -261,13 +261,22 @@ var keytabs = secretSetting{scope: func([16]byte) entity.SettingScope { return i
 // compared with ASCII letters folded, realms ignoring the case of ASCII
 // letters, as identity matches a ticket to the account's names.
 func accountHolds(j entity.MachineJoin, realm entity.Setting, ok bool, names []identity.KeytabName) error {
+	n, held, err := accountKey(j, realm, ok, names)
+	if err != nil || !held {
+		return err
+	}
+	return &fieldError{field: "spec.value", detail: "holds a key for " + n.Name + "@" + n.Realm + ", a name of the computer account the domain join derives keys for"}
+}
+
+// accountKey is the first of names accountHolds refuses, false for none.
+func accountKey(j entity.MachineJoin, realm entity.Setting, ok bool, names []identity.KeytabName) (identity.KeytabName, bool, error) {
 	if !j.Joined {
-		return nil
+		return identity.KeytabName{}, false, nil
 	}
 	var r string
 	if ok {
 		if err := json.Unmarshal(realm.Value, &r); err != nil {
-			return err
+			return identity.KeytabName{}, false, err
 		}
 	}
 	for _, n := range names {
@@ -275,10 +284,10 @@ func accountHolds(j entity.MachineJoin, realm entity.Setting, ok bool, names []i
 			continue
 		}
 		if equalFoldASCII(n.Name, j.Account) || slices.ContainsFunc(j.Names, func(m string) bool { return equalFoldASCII(n.Name, m) }) {
-			return &fieldError{field: "spec.value", detail: "holds a key for " + n.Name + "@" + n.Realm + ", a name of the computer account the domain join derives keys for"}
+			return n, true, nil
 		}
 	}
-	return nil
+	return identity.KeytabName{}, false, nil
 }
 
 // equalFoldASCII reports whether a and b are equal with ASCII letters

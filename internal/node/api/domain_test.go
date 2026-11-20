@@ -45,6 +45,7 @@ import (
 type heldJoins struct {
 	next interface {
 		HoldJoinCredential(entity.OperationID, pid.JoinCredential) func()
+		AppliedKeytab() (uint64, []pid.KeytabName, error)
 	}
 	mu    sync.Mutex
 	holds []*held
@@ -68,6 +69,8 @@ func (h *heldJoins) HoldJoinCredential(id entity.OperationID, cred pid.JoinCrede
 		release()
 	}
 }
+
+func (h *heldJoins) AppliedKeytab() (uint64, []pid.KeytabName, error) { return h.next.AppliedKeytab() }
 
 func (h *heldJoins) taken() []held {
 	h.mu.Lock()
@@ -130,6 +133,10 @@ type domain struct {
 	dir   *identitytest.Directory
 	fault *switched
 	clock *sim.TestClock
+	// seal is the secret provider the API seals with, and state the State
+	// identity was applied, which a test applies again with its edits.
+	seal  sealing
+	state identity.State
 }
 
 // switched is the directory's fault, the schedule last stored, none letting
@@ -188,7 +195,8 @@ func serveDomainAs(t *testing.T, seal bool, authenticate func(*http.Request) (au
 	rec := directory.Record{Schema: directory.SchemaAD, Address: "ldaps://dc.ad.example", Base: "DC=ad,DC=example",
 		BindName: name, BindCredential: ref, Realm: "AD.EXAMPLE", NetBIOSDomain: "AD"}
 	settings := identity.Settings{IDRange: entity.DefaultIDRange, NTLM: true, NetBIOSName: "DITTOFS", DirectoryStaleGrace: 15 * time.Minute}
-	if err := d.ids.Apply(identity.State{Settings: settings, Directory: &rec}); err != nil {
+	d.seal, d.state = p, identity.State{Settings: settings, Directory: &rec}
+	if err := d.ids.Apply(d.state); err != nil {
 		t.Fatal(err)
 	}
 	d.joins = &heldJoins{next: d.ids}
