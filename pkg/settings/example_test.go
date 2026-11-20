@@ -80,8 +80,8 @@ func ExampleOf_options() {
 }
 
 // The node's read and the API's write check. Compiled, never run: a changed
-// signature of Read, Check or HoldsContent, or a Change without its Class,
-// fails the build.
+// signature of Read, Check or HoldsContent, or a Change without its Class
+// or its Scope, fails the build.
 func ExampleRead() {
 	table := settings.Table{
 		settings.Of(
@@ -100,7 +100,7 @@ func ExampleRead() {
 	}
 
 	for _, ch := range settings.Diff(nil, snap) {
-		if ch.Class == settings.Restart {
+		if ch.Class == settings.Restart && ch.Scope.Kind == entity.ScopeNode {
 			return
 		}
 	}

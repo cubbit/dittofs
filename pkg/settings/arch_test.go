@@ -44,7 +44,8 @@ var frozenExports = []string{
 	"func Read(ctx context.Context, r entity.SettingsReader, " +
 		"table Table, node entity.NodeID) (*Snapshot, map[string]error, error)",
 	"func Get[T any](snap *Snapshot, section string, node entity.NodeID) (T, error)",
-	"type Change struct{Section string; Key string; Class Class}",
+	"type Change struct{Section string; Key string; Class Class; " +
+		"Scope entity.SettingScope}",
 	"func Diff(prev *Snapshot, cur *Snapshot) []Change",
 	"type Write struct{Scope entity.SettingScope; Key string}",
 	"func Put(s entity.Setting) Write",
