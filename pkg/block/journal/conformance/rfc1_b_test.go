@@ -1358,7 +1358,10 @@ func TestRFC1B_RecordsWithoutBytesAtTheLimit(t *testing.T) {
 // headroom their records drew. The deletes are left unsettled, so repack must
 // carry their records rather than drop them.
 func TestRFC1B_RepackAtTheLimitRecoversTheHeadroom(t *testing.T) {
-	f := journaltest.New(t)
+	// A removal that rolls at the limit lands in a headroom spare, a segment
+	// holding header-only records alone: the idle-seal threshold sits below
+	// what the drain appends, so that segment seals idle with the others.
+	f := journaltest.NewWith(t, func(s *journal.Settings) { s.IdleSealBytes = 4096 })
 	fillUntilRefused(t, f, []int{0, 1}, 0, 256<<10)
 	full := headroom(t, f)
 	drain, h0 := journaltest.File(50), f.Share(0)

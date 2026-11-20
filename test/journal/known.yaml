@@ -510,7 +510,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs segment headers with a predecessor, recovery by scan and the loss ring.'
   issue: '#3596'
-  message: 'reopen after the cut: journal: open refused at recovery: segment 3: a named predecessor''s missing end at [525168,525364) that names no record'
+  message: 'reopen after the cut: journal: open refused at recovery: segment 4: a named predecessor''s missing end at [525168,525364) that names no record'
 
 - test: TestRFC28C_BitsSurviveRestart
   status: fail
@@ -574,7 +574,7 @@
   category: feature
   reason: 'The journal opens; the check fails on a stub call. Needs the data path and recovery by scan.'
   issue: '#3596'
-  message: 'fixture: crash: journal: open refused at recovery: segment 4: a refused range at [65688,65792) that names no record'
+  message: 'fixture: crash: journal: open refused at recovery: segment 5: a refused range at [65688,65792) that names no record'
 
 - test: TestRFC28C_SparesAreReAdopted
   status: fail
