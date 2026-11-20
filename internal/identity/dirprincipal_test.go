@@ -465,8 +465,9 @@ func TestByKerberosNameReachesTheEntry(t *testing.T) {
 }
 
 // The krb link's SID is asked fresh only: a cached answer is never used
-// while the directory fails, a missing entry and a machine account's name,
-// ending in $, are ErrUnknownPrincipal, and a
+// while the directory fails, a missing entry, a machine account's name,
+// ending in $, and a computer entry under a name with no $ are
+// ErrUnknownPrincipal, and a
 // realm other than the directory's, in any case, the zero SID. Nothing is
 // minted.
 func TestKerberosLinkSIDIsFreshOnly(t *testing.T) {
@@ -498,6 +499,11 @@ func TestKerberosLinkSIDIsFreshOnly(t *testing.T) {
 	e.d.AddUser(t, "build01$", nil) // a computer account, whose SID no user is linked to
 	if got, err := e.s.KerberosLinkSID(ctx, "build01$@CORP.EXAMPLE"); !errors.Is(err, vfserr.ErrUnknownPrincipal) {
 		t.Errorf("KerberosLinkSID(build01$) = %s, %v; want ErrUnknownPrincipal", sid.FormatSID(&got), err)
+	}
+	e.d.AddUser(t, "build02", map[string][][]byte{"objectClass": {
+		[]byte("top"), []byte("person"), []byte("organizationalPerson"), []byte("user"), []byte("computer")}})
+	if got, err := e.s.KerberosLinkSID(ctx, "build02@CORP.EXAMPLE"); !errors.Is(err, vfserr.ErrUnknownPrincipal) {
+		t.Errorf("KerberosLinkSID(build02), a computer entry under a name with no $, = %s, %v; want ErrUnknownPrincipal", sid.FormatSID(&got), err)
 	}
 	for _, name := range []string{"alice@OTHER.REALM", "alice@corp.example"} {
 		got, err := e.s.KerberosLinkSID(ctx, name)
