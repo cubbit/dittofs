@@ -8,27 +8,29 @@ server, and Appendix C's reference profile for NFS;
 §5.3's sentences that name it, §11.3's declaration and §12's rows L3 and L50 for it;
 [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §4.3's `NoGrace` kind;
 [RFC 21](../docs/internals/rfcs/rfc-21-nfs.md) §2.1's programs, for the capture areas, and §11.5's
-`NoGrace` row, for the service's half. Every citation is `origin/feat/storage-v2`'s text. Cited,
-not owned: [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.11 (test doubles); the
-`test/pcap-corpus` README's layout.
+`NoGrace` row, for the service's half. Every citation is `develop`'s text, which holds the RFC 21
+implementation plan's amendments A1 to A4 and reaches `feat/storage-v2` with the cherry-pick of RFC
+changes. RFC 20 §2.5's `adaptertest/nfsharness/`, NFS's handler harness, is this epic's too.
+Cited, not owned: [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.11 (test doubles);
+the `test/pcap-corpus` README's layout.
 **Track:** the team.
-**Epic 2 estimate: 3 subtasks, 6 man-days.**
-**Depends on:** **S1**, E1's request state and members' table, which NFS's runner cases hand a
-member; **S0**, the pieces the RFC 22 implementation plan's epic 2 builds for both adapters:
-`vfstest.Mutations` keeping each call's reference and answer, the protocol-neutral handler runner
-(D2) that reads the one-call rule from it, `adaptertest/golden`, which cuts the captures into golden
-files, and the import test's call-site and file-size rules. T2.1 needs neither.
+**Epic 2 estimate: 3 subtasks, 7.5 man-days.**
+**Depends on:** **S1**, E1's request state and members' table, which `nfsharness` hands a member;
+**S0**, the RFC 22 implementation plan's epic 2: the three pieces it builds for both adapters,
+`vfstest.Mutations` keeping each call's reference and answer, `adaptertest/golden`, which cuts the
+captures into golden files, and the import test's call-site and file-size rules; and its SMB
+handler harness, whose runner T2.2 lifts into `adaptertest` (D2). T2.1 needs neither.
 **Blocks:** every middle epic through S2: E3, E4, E5, E7, E11 and E12 directly, and through them the
-rest. Every handler epic tests on the shared runner; E3, E4 and E5 take vectors from the captures; E8, E9,
-E11 and E16 answer and test reclaims on `NoGrace`.
+rest. Every handler epic tests on `nfsharness`; E3, E4 and E5 take vectors from the captures; E8,
+E9, E11 and E16 answer and test reclaims on `NoGrace`.
 
 ---
 
 ## 1. Goal
 
-Epic 2 gives NFS's tests what they stand on beyond S0's shared pieces: the shared handler runner
-proven on one NFS procedure and one member of a `COMPOUND`, against the real service in memory; the
-Linux server's
+Epic 2 gives NFS's tests what they stand on beyond S0's shared pieces: NFS's handler harness, a thin
+wrapper over the protocol-neutral runner this epic lifts out of SMB's harness, proven on one NFS
+procedure and one member of a `COMPOUND` against the real service in memory; the Linux server's
 captures of every program area, cut into golden files; and the one service answer every NFSv4
 reclaim row needs, `NoGrace`. No red suite is registered: `unit` and `e2e` keep no known failures,
 and the `pynfs`, `cthon04` and `nfstest` suites stay off until the cutover.
@@ -38,10 +40,11 @@ and the `pynfs`, `cthon04` and `nfstest` suites stay off until the cutover.
 - `memory.New` answers a reclaim from a client with nothing left to reclaim
   `&vfs.StateError{Kind: vfs.StateNoGrace}`, and one from a client still owing reclaims elsewhere
   `NoReclaim`, as RFC 14 §4.2 divides them;
-- the shared runner in `adaptertest` runs request bytes through an NFSv3 row and through one member
-  of the NFSv4 members' table, with a request state the test builds and the member's result head,
-  against `memory.New`, errors injected through `vfstest.Faults`, and fails a test on a second
-  mutating call or on a missing one;
+- the handler runner lives in `adaptertest`, naming no protocol, and SMB's harness calls it;
+- `adaptertest/nfsharness`, over that runner, runs request bytes through an NFSv3 row and through
+  one member of the NFSv4 members' table, with a request state the test builds and the member's
+  result head, against `memory.New`, errors injected through `vfstest.Faults`, and fails a test on
+  a second mutating call or on a missing one;
 - `test/pcap-corpus` holds knfsd's captures of NFSv3 with MOUNT, NLM with NSM, NFSv4.0, NFSv4.1 and
   NFSv4.2, each reproducible from its `CAPTURE.md`, and their messages cut into golden files that a
   test loads.
@@ -49,19 +52,20 @@ and the `pynfs`, `cthon04` and `nfstest` suites stay off until the cutover.
 ### 1.1 In scope
 
 `pkg/openstate`'s `ErrNoGrace` and its check, `pkg/vfs`'s `StateNoGrace`, `internal/vfs`'s mapping,
-and the tests of each; NFS's two cases on the shared runner; the recording script for MOUNT, NLM
+and the tests of each; the runner lifted out of SMB's harness into `adaptertest`, and
+`adaptertest/nfsharness` over it with NFS's two cases; the recording script for MOUNT, NLM
 with NSM and NFSv4.2, the traces kept from the knfsd nfstest baseline for NFSv3, NFSv4.0 and
 NFSv4.1, the five capture directories and the golden files cut from them, which the existing
 `TestParseCaptured` loads.
 
 ### 1.2 Out of scope
 
-- S0's shared pieces, the handler runner among them: the RFC 22 implementation plan's epic 2. If
-  this epic starts before they land, T2.2 and T2.3 wait, or build the piece they need at that
-  epic's figure (§9).
+- S0's three shared pieces and SMB's handler harness itself: the RFC 22 implementation plan's
+  epic 2. This epic lifts only the harness's runner (D2). If this epic starts before they land,
+  T2.2 and T2.3 wait, or build the piece they need at that epic's figure (§9).
 - Any protocol's mapping of `NoGrace` to a status: `NFS4ERR_NO_GRACE` in E8 and E9, `NLM4_DENIED`
   in E11, as RFC 21 §11.5 has it.
-- Handler tests themselves, and the vectors of each procedure: each handler epic, on the shared runner.
+- Handler tests themselves, and the vectors of each procedure: each handler epic, on `nfsharness`.
 - Captures of `RPCSEC_GSS` exchanges, which need a KDC: E13. The diff scripts that compare DittoFS
   with these captures: E14.
 - The scripted client and loopback rows: E3.
@@ -77,7 +81,7 @@ NFSv4.1, the five capture directories and the golden files cut from them, which 
 - **E11**, NLM, NSM and the datagram path. **E12**, the NFSv4.2 operations. **E13**, RPCSEC_GSS.
 - **E14**, the capture diffs against knfsd. **E16**, E2E green, with the restart rows.
 - **S0**, the shared test pieces, built by the RFC 22 implementation plan's epic 2 for both
-  adapters.
+  adapters, with SMB's handler harness, whose runner T2.2 lifts.
 - **S1**, the NFS surface frozen, after E1.
 - **S2**, NFS's test foundations in CI, after this epic and S0: what every middle epic starts from.
 
@@ -98,8 +102,8 @@ cited by number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T2.2, T2.3 | the real filesystem in memory for the service's answers; knfsd's own bytes for golden files, never vectors the codec under test made |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1 | D5's `decision:` marker at its code site; `openstate`'s comments on `admit` and `ErrNoReclaim` rewritten to name `ErrNoGrace` |
 | rule 10, a test must be able to fail | all | NFS's runner cases fail on a second or a missing mutating call; `NoGrace`'s tests fail with the check removed; `TestParseCaptured` fails on a file of another program |
-| rule 11, a symbol is exported only if an interface uses it | T2.1 | `openstate.ErrNoGrace` and `vfs.StateNoGrace` are exported, for the adapters' rows; the runner's exports are S0's |
-| rule 12, each subtask creates only what it declares | all | no NFS harness package: NFS's cases go on S0's runner, whose next consumers are E3's and E4's handler tests; the golden files with E3's, E4's and E5's vectors |
+| rule 11, a symbol is exported only if an interface uses it | T2.1, T2.2 | `openstate.ErrNoGrace` and `vfs.StateNoGrace` are exported, for the adapters' rows; the lifted runner's exports, for SMB's harness and `nfsharness`; `nfsharness`'s, for every NFS handler epic's tests |
+| rule 12, each subtask creates only what it declares | all | `nfsharness` holds only what NFS adds to the runner, the request state and a member's head, and arrives with its two cases, whose next consumers are E3's and E4's handler tests; the golden files with E3's, E4's and E5's vectors |
 | rule 13, translate, never decide | T2.1, T2.2 | the service decides `NoGrace`, so no handler splits a reclaim's refusal by grace (RFC 21 §11.5); the runner enforces the one-call rule on every handler test |
 | rule 14, nothing deferred is lost | T2.3 | the `RPCSEC_GSS` captures are E13's, named in its expected content, and the diff scripts E14's, as §1.2 names; a `CLONE` the recording filesystem cannot make is recorded as a gap (§9) |
 
@@ -137,8 +141,7 @@ subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R15 | Golden vectors come from the specifications' examples or from captures of the reference server, never only from the codec under test | MUST | RFC 20 §5.4 | T2.3 |
-| R16 | Withdrawn: RFC 20 Appendix C, which names the Linux kernel NFS server as the reference, is a non-normative profile; D1 adopts it as a decision | withdrawn | RFC 20 Appendix C | none |
-| R17 | Every program and version served has captures to take vectors from: NFSv3, MOUNT v3, NLM v4, NSM v1, NFSv4.0, NFSv4.1 and the NFSv4.2 subset | MUST | RFC 21 §2.1; RFC 20 §5.4 | T2.3 |
+| R16 | Every program and version served has captures to take vectors from: NFSv3, MOUNT v3, NLM v4, NSM v1, NFSv4.0, NFSv4.1 and the NFSv4.2 subset | MUST | RFC 21 §2.1; RFC 20 §5.4 | T2.3 |
 
 Not obligations of this epic: RFC 14 §8's order of the shard list's write before the answer that
 grants a client its first state there, which open state already keeps; RFC 20 §7.2's assertions on
@@ -164,21 +167,23 @@ the service's state after a request, which each handler test makes through `memo
   the kernel server. The files are committed, so every test reads them without either. Prior
   art: RFC 20 Appendix C; the corpus's `nfsv4-acl/` recipe; the `nfs-knfsd-baseline` workflow,
   which runs knfsd on a dispatched runner. No marker: the README records it.
-- **D2. One handler runner for both adapters, in `adaptertest`.** S0's runner decodes a row's
-  arguments with its `Decode`, then runs `Bound`, `Resolve`, `Call` and `Encode` on a
-  `*core.Request` its caller builds, and maps an error through the table's `Errors`, with no socket
-  and no header. That request is the one hook a protocol needs: SMB's caller decodes `smb/wire`'s
-  header into it and NFS's sets `protocol.State`, so nothing in the runner names a protocol; where
-  the table is a members' table, the runner writes `EncodeResult`'s head before the member's
-  `Encode`, as `core`'s compound runner does. It is tested on `testproto`'s rows, whose compound
-  holds `PutFH` and `Echo`, and NFS adds only its two cases (T2.2). What `core` does around a row
-  (the needs and version checks, the drain, the reservation) is `core`'s, tested over `testproto`,
-  and each epic's loopback rows test the wiring. Prior art: RFC 20 §7.2's `runGolden` example. No
-  marker.
+- **D2. One handler runner, lifted out of SMB's harness, and `nfsharness` a thin wrapper over it.**
+  S0's SMB handler harness (the RFC 22 implementation plan's T2.1) holds a runner that decodes a
+  row's arguments with its `Decode`, runs `Bound`, `Resolve`, `Call` and `Encode` on a
+  `*core.Request` its caller builds, maps an error through the table's `Errors` and reads the
+  one-call rule from `vfstest.Mutations`, with no socket. Only the request names SMB: SMB's caller
+  decodes `smb/wire`'s header into it. T2.2 lifts that runner into `adaptertest`, naming no
+  protocol, and SMB's harness calls it, its own tests unchanged. `adaptertest/nfsharness`, NFS's
+  handler harness as RFC 20 §2.5 names it, wraps it with what NFS adds: a request carrying
+  `protocol.State`, and for a member the members' table's `EncodeResult` head before the member's
+  `Encode`, as `core`'s compound runner writes it. So the one-call rule and its exemptions (D3)
+  have one copy, not one per adapter to drift apart. What `core` does around a row (the needs and
+  version checks, the drain, the reservation) is `core`'s, tested over `testproto`, and each
+  epic's loopback rows test the wiring. Prior art: RFC 20 §7.2's `runGolden` example. No marker.
 - **D3. The exemption rule lives with the runner and `vfstest.Mutations`, once.** Which calls a
   request may make beyond its one is a function of the record S0 keeps (each call's reference and
-  answer), so it is S0's, beside the record; NFS keeps no copy of it.
-- **D4. A member runs with the state its test builds.** NFS's case hands a member the
+  answer), so it lives with that record and the lifted runner; `nfsharness` keeps no copy of it.
+- **D4. A member runs with the state its test builds.** `nfsharness` hands a member the
   `protocol.State` the test sets up, a current filehandle say, rather than running the members
   before it, so a member's test needs no other operation's handler; the loopback rows of each epic
   run whole compounds. Prior art: none found. No marker.
@@ -205,10 +210,13 @@ internal/vfs/
   clients_test.go              T2.1  the mapping's row
 pkg/vfs/vfstest/memory/
   memory_test.go               T2.1  a reclaim answered NoGrace on memory.New
+internal/adapter/adaptertest/
+  handler.go                   T2.2  the runner lifted out of SMB's harness, which now calls it
+  nfsharness/nfsharness.go     T2.2  the request with protocol.State, a member's EncodeResult head
 internal/adapter/nfs/ops/v4/
-  harness_test.go              T2.2  an NFSv4 member on S0's runner
+  harness_test.go              T2.2  an NFSv4 member on nfsharness
 internal/adapter/nfs/protocol/
-  harness_test.go              T2.2  an NFSv3 row on S0's runner, its structs generated in row_types_test.go
+  harness_test.go              T2.2  an NFSv3 row on nfsharness, its structs generated in row_types_test.go
 test/nfs-mount/nfstest/
   baseline-knfsd.sh, run.sh    T2.3  keep the traces when asked
 test/pcap-corpus/
@@ -263,17 +271,26 @@ internal/adapter/nfs/wire/
 - **Rules:** rule 9: `admit`'s and `ErrNoReclaim`'s comments name the new split, and D5's
   `decision:` marker.
 
-### T2.2 NFS's cases on the shared handler runner
+### T2.2 The runner lifted into `adaptertest`, and `nfsharness` over it
 
-**Subtask T2.2 estimate: 1 man-days.**
+**Subtask T2.2 estimate: 2.5 man-days.**
 
 - **Track:** the team. **Depends on:** S1, S0.
 - **Covers:** R9, R10, R11, R12, R13, R14.
-- **Deliverables:** two cases on S0's runner (D2): an NFSv3 test row in `nfs/protocol`, its structs
-  generated in the package's existing `row_types_test.go`, and an NFSv4 test member in
-  `nfs/ops/v4`, run with a `protocol.State` the case builds, each against `memory.New` with
-  `vfstest.Faults` over it. Consumed by E3's and E4's handler tests, which follow the cases' shape.
+- **Deliverables:**
+  - The runner of S0's SMB harness lifted into `adaptertest` (D2): row and request in, reply bytes
+    and the one-call verdict out, its exemptions read from `vfstest.Mutations` (D3); SMB's harness
+    reduced to decoding `smb/wire`'s header into the request and calling it. Consumed by SMB's
+    harness and `nfsharness`.
+  - `adaptertest/nfsharness`: a row run with a request the test builds, carrying a
+    `protocol.State`, and a member of the NFSv4 members' table run with its `EncodeResult` head
+    written first. Consumed by every NFS handler epic's tests, E3's and E4's first.
+  - Its two cases: an NFSv3 test row in `nfs/protocol`, its structs generated in the package's
+    existing `row_types_test.go`, and an NFSv4 test member in `nfs/ops/v4`, run with a
+    `protocol.State` the case builds, each against `memory.New` with `vfstest.Faults` over it.
 - **Acceptance criteria:**
+  - SMB's harness's own tests pass unchanged on the lifted runner, and the runner's package
+    imports no `internal/adapter/smb` or `internal/adapter/nfs` package.
   - The row and the member, each making one mutating call, pass; with a second call each fails,
     naming both calls; with none where one is due, each fails, naming the missing one.
   - A fault injected on the row's service method answers the status the table maps it to.
@@ -283,16 +300,18 @@ internal/adapter/nfs/wire/
 - **Tests:** the two cases above, each failing as its criterion says when the row is changed to
   break it, run in a top-level test whose runner calls `adaptertest.CheckLeaks` first and none in
   parallel (catch a second or a missing mutating call, R12, an exemption by operation, R13, a
-  member's head dropped, R14, a fault answered unmapped, R10, R11). `vfstest.Faults` (kind 3) and
-  `memory.New` (kind 2) are the only collaborators.
-- **Rules:** rule 4: the runner's leak check, called once; rule 12: no NFS harness package.
+  member's head dropped, R14, a fault answered unmapped, R10, R11); SMB's harness's tests, rerun on
+  the lifted runner (catch a lift that changes what the runner answers or exempts, R12, R13).
+  `vfstest.Faults` (kind 3) and `memory.New` (kind 2) are the only collaborators.
+- **Rules:** rule 4: the runner's leak check, called once; rule 12: `nfsharness` holds only what
+  NFS adds to the runner.
 
 ### T2.3 knfsd's captures, cut into golden files
 
 **Subtask T2.3 estimate: 2.25 man-days.**
 
 - **Track:** the team. **Depends on:** S0.
-- **Covers:** R15, R17.
+- **Covers:** R15, R16.
 - **Deliverables:**
   - `baseline-knfsd.sh` and `run.sh` keep nfstest's traces when asked, instead of `--rmtraces`;
     the traces of one baseline run give `nfs3/` (the `cache` module on NFSv3), `nfs40/` and
@@ -319,14 +338,17 @@ internal/adapter/nfs/wire/
   - `CAPTURE.md` names the kernel, the filesystem, the client's mount options and every command
     run, so the capture can be made again.
   - Every program and version of the area has at least one call and its reply cut: MOUNT and
-    NFSv3 in `nfs3/`, NLM and NSM in `nlm/`, NFSv4 and the callback program in `nfs41/`; every cut
-    call parses with `wire.ParseCall`, naming one of the area's programs and versions, and every
-    reply carries its call's transaction ID.
+    NFSv3 in `nfs3/`, NLM and NSM in `nlm/`, a `COMPOUND` of minor version 0 in `nfs40/`, NFSv4 of
+    minor version 1 and the callback program in `nfs41/`, and a `COMPOUND` of minor version 2 in
+    `nfs42/`; every cut call parses with `wire.ParseCall`, naming one of the area's programs and
+    versions, minor version included, and every reply carries its call's transaction ID. A golden
+    file's `<what>` starts with its area's directory name, so the test knows its area.
   - No capture holds a credential other than `AUTH_SYS` or `AUTH_NONE`.
 - **Tests:** `wire_test.go`'s `TestParseCaptured`, at the golden files the epics after this read,
   looping over every `knfsd-*` file: each parses as above, each call's credential `AUTH_SYS` or
-  `AUTH_NONE` (catches a file cut from the wrong message or the wrong area, R17). No test double:
-  knfsd's bytes are the reference (R15).
+  `AUTH_NONE` (catches a file cut from the wrong message or the wrong area, R16), and it fails for
+  each of the five areas no call file names (catches an empty area, or one whose calls were all cut
+  into another's, R16). No test double: knfsd's bytes are the reference (R15).
 - **Rules:** rule 7 and rule 8: the Linux server's bytes, never `develop`'s adapter's.
 
 ## 7. Order of work
@@ -336,7 +358,7 @@ flowchart TD
   S1(["S1 NFS surface frozen"]):::sync
   S0(["S0 shared test pieces"]):::sync
   T2_1["T2.1 The service's NoGrace"]
-  S1 & S0 --> T2_2["T2.2 NFS's cases on the shared handler runner"]
+  S1 & S0 --> T2_2["T2.2 The runner lifted, nfsharness over it"]
   S0 --> T2_3["T2.3 knfsd's captures, cut into golden files"]
   T2_1 & T2_2 & T2_3 --> S2(["S2 NFS test foundations in CI"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -351,19 +373,18 @@ service's answers and needs neither S0 nor S1. Checkpoint at the end: S2.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T2.1 | 2.75 | — | a service change, reviewed by open state's owners apart from the adapter's tests |
-| 2 | T2.2 | 1 | S0, S1 | NFS's two cases on the shared runner, which prove it fails for NFS |
+| 2 | T2.2 | 2.5 | S0, S1 | the runner lifted out of SMB's harness and `nfsharness` over it, with the two cases that prove it fails for NFS |
 | 3 | T2.3 | 2.25 | S0 | the captures and their golden files, mostly binary and recipe |
 
 A suggestion only: one pull request per subtask works as well. The three can be open at once.
 
 ## 9. Open points
 
-1. **If S0 is late, or lands its runner shaped for SMB.** T2.2 and T2.3 wait for it, or build the
-   piece they need, the runner of D2 with the exemption rule of D3 or `adaptertest/golden`, at
-   that piece's figure in the RFC 22 implementation plan, which then moves here; who builds it if
-   both plans start at once is undecided on the programme's issue, #3119. A runner that landed
-   inside SMB's harness is lifted into `adaptertest` by T2.2, its `*core.Request` argument being
-   the one hook SMB's header step needs.
+1. **If S0 is late.** T2.2 and T2.3 wait for it, or build the piece they need, the runner of D2
+   with the exemption rule of D3 in `adaptertest` or `adaptertest/golden`, at that piece's figure
+   in the RFC 22 implementation plan, which then moves here, and SMB's harness is built over the
+   runner rather than lifted from; who builds it if both plans start at once is undecided on the
+   programme's issue, #3119.
 2. **The recording host.** T2.3 needs a Linux host with the kernel NFS server, root, `tshark` and a
    loop device for XFS, or a dispatched runner as the `nfs-knfsd-baseline` workflow uses; NSM's
    `SM_NOTIFY` needs the server's statd restarted, which `CAPTURE.md` records. Where a step cannot

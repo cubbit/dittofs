@@ -7,9 +7,10 @@ fault status, §11.7's request span, and §12's N26 for the operation codes;
 [RFC 20](../docs/internals/rfcs/rfc-20-adapters.md) §4.2's needs row, §4.3's compound cap, §4.7's
 `Request.State`, `Op`, `Invocation`, `OpTable` and `NewOpTable` as a compound row uses them, §4.8's
 NFSv4 row and its `New` example, §5.4's rule that a command without a vector fails its suite, and
-§10.1's `protocol` label. Every RFC 20 and RFC 21 citation is `origin/feat/storage-v2`'s text,
-but for RFC 21 §3.1's and §11.5's sentences on the compound cap of 128, which this document's pull
-request adds to `develop`'s RFC 21 and which reach `feat/storage-v2` with its cherry-pick.
+§10.1's `protocol` label. Every RFC 20 and RFC 21 citation is `develop`'s text, which holds
+amendment A1 and, once this document's pull request merges, RFC 21 §3.1's and §11.5's sentences on
+the compound cap of 128 and §2.3's on the session's reply budget, which it adds; they reach
+`feat/storage-v2` with the cherry-pick of RFC changes.
 Cited, not owned: RFC 8881 and RFC 7530 for the bytes and status values; RFC 20 §2.5's layout of
 `ops/`.
 **Track:** the team.
@@ -91,8 +92,8 @@ hand-written golden vectors of this epic's two rows.
 - **E6**, the NFSv4 ACL attributes. **E8**, clients and sessions, which owns `SEQUENCE`.
 - **E9**, opens, stateids and locks. **E10**, delegations and the back channel.
 - **E12**, the NFSv4.2 operations.
-- **A1**, a proposed amendment to RFC 20 §4.3 and §4.7, open with the RFC's author (#5166): the
-  compound runner asks a member's `Bound` hook again just before the member runs.
+- **A1**, an amendment to RFC 20 §4.3 and §4.7, agreed in #5166: the compound runner asks a
+  member's `Bound` hook again just before the member runs.
 - **S1**, the NFS surface frozen: this epic's exports compile, with its loopback rows, and stop
   changing.
 
@@ -105,7 +106,7 @@ cited by number and title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the state and the tables are tested as pure values and through `core`'s real pipeline over loopback, on `vfstest.Null` where a server needs a service, since nothing here calls one; no test double |
 | rule 2, fuzz tests where relevant | T1.3 | the `COMPOUND` row's decoder and `ILLEGAL`'s read a peer's bytes: T1.3's `FuzzCompound` holds the first to the header parse as an independent decoder, and `FuzzCodec` round-trips every struct the generator wrote for `ops/v4`, seeded with the vectors (R22) |
-| rule 3, observability follows RFC 25 and RFC 20 §10 | T1.2, T1.3 | no recorder in NFS code; the NFSv4 table is labelled `nfs4` and its rows named `COMPOUND` and `ILLEGAL`, which `core` turns into RFC 21 §11.7's span names, as `core`'s `TestEachMemberHasASpan` checks for any compound row, and, lower-cased, the `op` label, checked over loopback (R20) |
+| rule 3, observability follows RFC 25 and RFC 20 §10 | T1.2, T1.3 | no recorder in NFS code; the NFSv4 table is labelled `nfs4` and its rows named `COMPOUND` and `ILLEGAL`, which `core` turns into RFC 21 §11.7's span names, as `core`'s `TestEachMemberHasASpan` checks for any compound row, and, lower-cased, the `op` label, checked over loopback (R21) |
 | rule 4, profiling: leaks, allocations and contention | T1.1, T1.3 | the router still allocates once per call, a `COMPOUND`'s state included (D3); every loopback test ends with `adaptertest.CheckLeaks`; no registry, table or timer here, so no mutex profile |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T1.1, T1.3 | the cap and `ILLEGAL` are asserted on the reply bytes a client reads over loopback; the state's filehandle on the `Request.Level` `core`'s needs check reads |
 | rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover, and nothing here is listed in a `known.yaml` |
@@ -130,7 +131,7 @@ tests can cite them.
 | R1 | The router sets `Request.State` for an NFSv4 `COMPOUND`: NFS's session, as the reply budget its `SEQUENCE` resolved (R4), and current filehandle, which `core` carries from member to member and never reads | MUST | RFC 20 §4.7 (`Request`) | T1.1 |
 | R2 | The state holds the current filehandle, which an operation's needs column is checked against through the request's `Level` | MUST | RFC 20 §4.2 (needs), §4.7 (`Needs`, `NeedsFH`, `ErrNoFH`) | T1.1 |
 | R3 | The state holds the NFSv4.1 current stateid, so it is resolved inside the compound: the one the previous operation returned. This epic holds it; E9 resolves it | MUST | RFC 21 §5.2 | T1.1 |
-| R4 | The state holds the reply budget of the session the compound's own `SEQUENCE` resolved, which a `READ`'s or `READ_PLUS`'s `Bound` hook reads to keep the reply within `ca_maxresponsesize`. This epic holds it; E8 sets it, and E5 and E12 read it | MUST | RFC 21 §2.3; RFC 20 §4.7 (`Invocation.Bound`) | T1.1 |
+| R4 | The state holds the reply budget the compound's own `SEQUENCE` copies from its session, which a `READ`'s or `READ_PLUS`'s `Bound` hook reads to keep the reply within `ca_maxresponsesize`. This epic holds it; E8 sets it, and E5 and E12 read it | MUST | RFC 21 §2.3; RFC 20 §4.7 (`Invocation.Bound`) | T1.1 |
 | R5 | The minor version is the client's choice per `COMPOUND`: nothing remembers one per client or per connection | MUST NOT | RFC 21 §2.1 | T1.1, T1.3 |
 
 **The `COMPOUND` row and the members' table**
@@ -146,18 +147,18 @@ tests can cite them.
 | R12 | The compound row carries `MaxMembers`, and its members' table a `ReadOp` and an `EncodeResult`; the table holding it maps `ErrTooLong` and `ErrReplyTooBig` in rows naming neither operations nor versions | MUST | RFC 20 §4.7 (`Op.MaxMembers`, `NewOpTable`) | T1.2 |
 | R13 | A `COMPOUND` past the compound cap of 128 operations is refused before any of its operations runs: `ErrTooLong`, answered `NFS4ERR_TOO_MANY_OPS`, and `NFS4ERR_RESOURCE` over NFSv4.0, which has no such status | MUST | RFC 20 §4.3; RFC 21 §11.5 (`ErrTooLong`, the compound cap) | T1.2, T1.3 |
 | R14 | `ErrReplyTooBig` is answered `NFS4ERR_REP_TOO_BIG`, and `NFS4ERR_RESOURCE` over NFSv4.0 | MUST | RFC 21 §11.5 (`ErrReplyTooBig`) | T1.2 |
-| R15 | An operation code the minor version does not define, an NFSv4.1 code sent under NFSv4.0 included, reaches the `ILLEGAL` row and is answered `NFS4ERR_OP_ILLEGAL` | MUST | RFC 21 §11.5 (`core`'s own refusals) | T1.2, T1.3 |
+| R15 | An operation code the minor version does not define, an NFSv4.1 code sent under NFSv4.0 included, is answered `NFS4ERR_OP_ILLEGAL` | MUST | RFC 21 §11.5 (`core`'s own refusals) | T1.2, T1.3 |
 | R16 | A `COMPOUND` whose minor version is outside the range is answered `NFS4ERR_MINOR_VERS_MISMATCH`, its tag echoed, no results, no operation run; the row RFC 20's scaffold built keeps answering it once it moves to this epic's table, which the scaffold's loopback test of a minor version 3 already asserts (T1.2 names it) | MUST | RFC 21 §2.1, §11.5 (`ErrVersion`) | T1.2 |
 | R17 | The operation-code mapping is total and pure: every code reaches one row or the `ILLEGAL` row, never a default | invariant | RFC 21 §11, §12 (N26) | T1.2 |
 | R18 | The fault status is `NFS4ERR_SERVERFAULT` in NFSv4's table and in its members' table | MUST | RFC 21 §11.5 (the fault status) | T1.2 |
-| R21 | An operation the minor version defines and the adapter does not serve is `ErrNotSupported`, answered `NFS4ERR_NOTSUPP` in the members' table, and a procedure NFSv4's table lacks `PROC_UNAVAIL` | MUST | RFC 21 §11.5 (`core`'s own refusals) | T1.2, T1.3 |
+| R19 | An operation the minor version defines and the adapter does not serve is `ErrNotSupported`, answered `NFS4ERR_NOTSUPP` in the members' table, and a procedure NFSv4's table lacks `PROC_UNAVAIL` | MUST | RFC 21 §11.5 (`core`'s own refusals) | T1.2, T1.3 |
 
 **Tests, vectors and names**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R19 | A row added to an NFS table without a golden vector in the protocol's suite fails the suite; vectors come from the specifications or the reference captures, never only from the codec under test | MUST | RFC 20 §5.4 | T1.3 |
-| R20 | A `COMPOUND`'s request records under the `nfs4` label, its span `adapter.nfs4.COMPOUND` with one child per operation named by its row; no label names a share, a client or a file | MUST | RFC 21 §11.7; RFC 20 §10.1 (`protocol`, `op`) | T1.2, T1.3 |
+| R20 | A row added to an NFS table without a golden vector in the protocol's suite fails the suite; vectors come from the specifications or the reference captures, never only from the codec under test | MUST | RFC 20 §5.4 | T1.3 |
+| R21 | A `COMPOUND`'s request records under the `nfs4` label, its span `adapter.nfs4.COMPOUND` with one child per operation named by its row; no label names a share, a client or a file | MUST | RFC 21 §11.7; RFC 20 §10.1 (`protocol`, `op`) | T1.2, T1.3 |
 | R22 | Every decoder of a peer's bytes is fuzzed: no panic, every read inside the buffer, and a decoded value that matches an independent decoder or re-encodes to bytes that decode to the same value | MUST | RFC 20 §5.4; RFC 21 §11.6 | T1.3 |
 
 Not obligations of this epic: RFC 21 §11's sentence that the `Identity` and `r.Call` are built by
@@ -190,7 +191,9 @@ and E8 for the session's); §2.3's clamp of a `READ` (E5) and a session's budget
   `RESTOREFH` copy the pair whole, stateid included (from memory, the same section). Changing a
   field after S1 costs every NFSv4 epic's handlers. The state has no session field, as the user
   decided: E8 pays one registry lookup, under its lock, per member that needs the session, and no
-  placeholder type is declared ahead of its epic. This reads RFC 20 §4.7's comment that
+  placeholder type is declared ahead of its epic. RFC 21 §2.3, as this document's pull request
+  amends it, says the same: the hook reads the budget the compound's own `SEQUENCE` copies from its
+  session into `Request.State`, not the session. This reads RFC 20 §4.7's comment that
   `Request.State` holds "NFS's session" as the session's budget; RFC 20 is left as it is, since the
   comment describes rather than binds, and the RFC 21 implementation plan's §1.3 says the same.
   A `decision:` marker at `State`.
@@ -223,7 +226,7 @@ and E8 for the session's); §2.3's clamp of a `READ` (E5) and a session's budget
   writes `OP_ILLEGAL` for a code no minor version defines, the 0 `core` passes for a member whose
   code it could not read among them, so a result never names an operation that does not exist. A code
   a minor version defines and no row holds yet is `ErrNotSupported`, answered `NFS4ERR_NOTSUPP`
-  (R21), also under a minor version that lacks the code, until the operation's own row lands with
+  (R19), also under a minor version that lacks the code, until the operation's own row lands with
   its `Versions` (E5, E8, E12). Prior art: knfsd turns an out-of-range code into
   `OP_ILLEGAL` with its minor-version range check (from memory). A `decision:` marker at
   `ReadOp`.
@@ -327,7 +330,7 @@ internal/adapter/nfs/
 **Subtask T1.2 estimate: 1.5 man-days.**
 
 - **Track:** the team. **Depends on:** none.
-- **Covers:** R6, R7, R8, R9, R10, R11, R12, R13, R14, R15, R16, R17, R18, R20, R21.
+- **Covers:** R6, R7, R8, R9, R10, R11, R12, R13, R14, R15, R16, R17, R18, R19, R21.
 - **Deliverables:** the package `internal/adapter/nfs/ops/v4`:
   ```go
   type Handlers struct{ VFS vfs.Service }
@@ -349,7 +352,7 @@ internal/adapter/nfs/
   `nfs.go` builds `V4` as `v4.Table(&v4.Handlers{VFS: d.VFS})` and drops its two NFSv4 constants.
   Consumed by `nfs.go`, T1.3, and every NFSv4 epic's rows (E5, E6, E8, E9, E10, E12).
 - **Acceptance criteria:**
-  - `core.NewOpTable` accepts both tables (R12) and `core.NewServer` both labels and names (R20).
+  - `core.NewOpTable` accepts both tables (R12) and `core.NewServer` both labels and names (R21).
   - Every operation code maps to a row or to `ILLEGAL` (R17); codes 0, 1, 2, 76 and 2^32−1 reach
     `ILLEGAL`; 3 to 75 their own code.
   - `ErrTooLong` and `ErrReplyTooBig` map to the NFSv4.0 status at minor version 0 and to the
@@ -357,7 +360,7 @@ internal/adapter/nfs/
 - **Tests:** new cases of `nfs_test.go`'s `TestEachTableMapsCoresRefusals`, at the tables `core`
   maps through, extended to a minor version and to the members' table: each row by error and minor
   version (catches a 4.0 row that does not win, R13, R14, a `GARBAGE_ARGS` in the members' table,
-  R11, a fault other than `NFS4ERR_SERVERFAULT`, R18, a missing `NFS4ERR_NOTSUPP`, R21, and
+  R11, a fault other than `NFS4ERR_SERVERFAULT`, R18, a missing `NFS4ERR_NOTSUPP`, R19, and
   `ErrVersion` not answered `NFS4ERR_OP_ILLEGAL`, R15). In `v4_test.go`: at `ReadOp`, a property
   test that every 32-bit code reads as itself or as `OP_ILLEGAL` and every defined one as itself
   (catches a default, R17); at `EncodeResult`, `OP_ILLEGAL` written for an `NFS4ERR_OP_ILLEGAL`
@@ -385,12 +388,13 @@ internal/adapter/nfs/
   - Over loopback through `core`, in `TestEachRefusalIsAnswered`: a `COMPOUND` of no operation
     answered `NFS4_OK` with its tag and no result; one counting two members whose first is code
     9999 followed by eight bytes, answered `NFS4ERR_OP_ILLEGAL` as its only result, under
-    `OP_ILLEGAL`, its tag echoed; one of 129 operations answered `NFS4ERR_TOO_MANY_OPS` at minor
-    version 1 and `NFS4ERR_RESOURCE` at 0, one after the other on the connection, with its tag and
-    no result; one whose count runs past its bytes answered `NFS4ERR_BADXDR` there; one naming
-    `READ`, code 25, which no row holds yet, answered `NFS4ERR_NOTSUPP`; one cut after its minor
-    version, before its count, answered `GARBAGE_ARGS` by the `COMPOUND` row's decoder. Each counts
-    under `nfs4`.
+    `OP_ILLEGAL`, its tag echoed; the same counting 128 operations, the cap itself, answered at its
+    first member, `NFS4ERR_OP_ILLEGAL`, not `NFS4ERR_TOO_MANY_OPS`; one of 129 operations answered
+    `NFS4ERR_TOO_MANY_OPS` at minor version 1 and `NFS4ERR_RESOURCE` at 0, one after the other on
+    the connection, with its tag and no result; one whose count runs past its bytes answered
+    `NFS4ERR_BADXDR` there; one naming `READ`, code 25, which no row holds yet, answered
+    `NFS4ERR_NOTSUPP`; one cut after its minor version, before its count, answered `GARBAGE_ARGS`
+    by the `COMPOUND` row's decoder. Each counts under `nfs4`.
   - A row no golden file reaches fails the check, naming it.
   - `FuzzCompound`: for any call `wire.ParseCall` accepts, the row's decoder takes no more than the
     arguments and, where it decodes, the tag `EncodeHead` echoes is `wire.Call.Tag`'s, and the
@@ -399,12 +403,12 @@ internal/adapter/nfs/
     bytes and re-encodes to bytes that decode to the same value.
 - **Tests:** the loopback cases above, against their hand-written reply files, in a test that
   already starts with `adaptertest.CheckLeaks` (catch a tag dropped from a refusal, R8, a head
-  rewritten at another size, R9, a cap answered per minor version wrongly, R13, an undefined code
-  answered `NFS4ERR_NOTSUPP` or `GARBAGE_ARGS`, R15, R11, a defined code with no row answered the
-  fault, R21, a version remembered from the call before, R5, and a refusal counted under `nfs3`,
-  R20); the vector check run once against a table built in the test with a row no file reaches
-  (catches a check that passes vacuously, R19); the two fuzz targets, seeded with every golden file
-  (R22). No test double: `vfstest.Null` is the service `New` needs.
+  rewritten at another size, R9, a cap of 127 or 129, or answered per minor version wrongly, R13,
+  an undefined code answered `NFS4ERR_NOTSUPP` or `GARBAGE_ARGS`, R15, R11, a defined code with
+  no row answered the fault, R19, a version remembered from the call before, R5, and a refusal
+  counted under `nfs3`, R21); the vector check run once against a table built in the test with a
+  row no file reaches (catches a check that passes vacuously, R20); the two fuzz targets, seeded
+  with every golden file (R22). No test double: `vfstest.Null` is the service `New` needs.
 - **Rules:** rule 2 and rule 8: the fuzz targets and the vectors by hand from the RFCs; rule 9's
   `decision:` markers for D8 and D9.
 
@@ -432,12 +436,9 @@ A suggestion only: one pull request per subtask works as well, T1.1 and T1.2 at 
 
 ## 9. Open points
 
-1. **A defined code with no row** is answered `NFS4ERR_NOTSUPP`, also under a minor version
-   lacking it, where RFC 21 §11.5 wants `NFS4ERR_OP_ILLEGAL`, until its own row lands (D6); the
-   epics adding the last rows (E5's and E12's `NFS4ERR_NOTSUPP` rows) close the gap, and each epic
-   adding an NFSv4.1 or NFSv4.2 code's row (E5, E8, E12) owns a wire row that the code is answered
-   `NFS4ERR_OP_ILLEGAL` under an earlier minor version. Those epics' outlines do not name the row
-   yet; E16's totality test checks the end state.
-2. **A1** ([#5166](https://github.com/cubbit/dittofs/issues/5166)) decides whether a
-   `READ`'s hook can read `MaxReply` at all; the field is here either way, and is read only by E5
-   and E8 once A1 is agreed.
+None. A defined code with no row is answered `NFS4ERR_NOTSUPP`, also under a minor version lacking
+it, until its own row lands (D6); each epic adding an NFSv4.1 or NFSv4.2 code's row (E5, E8, E12)
+owns the wire row that the code is answered `NFS4ERR_OP_ILLEGAL` under an earlier minor version, as
+§1.2 says, and E16's totality test checks the end state. A1, agreed in
+[#5166](https://github.com/cubbit/dittofs/issues/5166), lets a `READ`'s hook read `MaxReply`; E5
+and E8 read it.
