@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strconv"
 	"testing"
 	"time"
 
@@ -56,6 +57,15 @@ type (
 	remoteCredential struct {
 		valid
 		Credential entity.SecretRef `json:"credential" class:"restart" location:"store"`
+	}
+	blockFormat struct {
+		valid
+		Version uint32 `json:"version" class:"next write"`
+		Other   uint32 `json:"other"   class:"live"`
+	}
+	blockFormatLong struct {
+		valid
+		Version int64 `json:"version" class:"next write"`
 	}
 	orderPort struct {
 		Port uint32 `json:"port" class:"bound"`
@@ -830,4 +840,199 @@ func TestStoreLocationAndBoundOrder(t *testing.T) {
 	refused(t, "the same bucket with no content", err, settings.ErrUnproven,
 		`setting (installation): test.bucket.bucket: `+
 			`store location change not provable yet, got "b2" (RFC 13 §5.2)`)
+}
+
+// A block format version past this node's range is refused, so a rolling
+// upgrade cannot leave blocks on nodes that cannot parse them, while the
+// range's own ceiling and any version below its floor pass, as the section's
+// own Validate judges those, and an integer field of the other width is
+// guarded the same way (RFC 13 §5.4).
+func TestFormatVersionGate(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	r := settings.Versions()[entity.FormatBlock]
+	above := strconv.FormatUint(uint64(r.Max)+1, 10)
+	at := strconv.FormatUint(uint64(r.Max), 10)
+
+	floor := r.Min
+	if floor > 0 {
+		floor--
+	}
+
+	below := strconv.FormatUint(uint64(floor), 10)
+
+	key := "test.block.version"
+	long := "test.block.long.version"
+	line := func(k string) string {
+		return fmt.Sprintf(
+			"setting (installation): %s: "+
+				"block format version %s is past this node's range, up to %d (RFC 13 §5.4)",
+			k, above, r.Max,
+		)
+	}
+
+	s := open(t)
+	tb := settings.Table{
+		settings.Of(
+			"test.block",
+			settings.At(entity.ScopeInstallation),
+			blockFormat{Version: r.Max},
+			settings.FormatVersion("Version"),
+		),
+		settings.Of(
+			"test.block.long",
+			settings.At(entity.ScopeInstallation),
+			blockFormatLong{Version: int64(r.Max)},
+			settings.FormatVersion("Version"),
+		),
+	}
+
+	_, err := s.attemptPut(
+		tb,
+		entity.RoleOperator,
+		setting(installation, key, above),
+		holdsContent,
+		nil,
+	)
+	refused(t, "a version past the range", err, settings.ErrFormatVersion, line(key))
+
+	if got := rowsStored(t, s, installation); len(got) != 0 {
+		t.Errorf("the refused version: rows = %v, want none", got)
+	}
+
+	_, err = s.attemptPut(
+		tb,
+		entity.RoleOperator,
+		setting(installation, key, at),
+		holdsContent,
+		nil,
+	)
+	passed(t, "the range's own ceiling", err)
+
+	if got, want := rowsStored(t, s, installation),
+		map[string]string{key: at}; !maps.Equal(got, want) {
+		t.Errorf("the ceiling: rows = %v, want %v", got, want)
+	}
+
+	_, err = s.attemptPut(
+		tb,
+		entity.RoleOperator,
+		setting(installation, key, below),
+		holdsContent,
+		nil,
+	)
+	passed(t, "a version below the range's floor", err)
+
+	if got, want := rowsStored(t, s, installation),
+		map[string]string{key: below}; !maps.Equal(got, want) {
+		t.Errorf("the stored row: rows = %v, want the accepted version only %v", got, want)
+	}
+
+	_, err = s.attemptPut(
+		tb,
+		entity.RoleOperator,
+		setting(installation, long, above),
+		holdsContent,
+		nil,
+	)
+	refused(t, "an int64 field's version past the range", err, settings.ErrFormatVersion,
+		line(long))
+
+	_, err = s.attemptPut(
+		tb,
+		entity.RoleOperator,
+		setting(installation, long, at),
+		holdsContent,
+		nil,
+	)
+	passed(t, "the int64 field's own ceiling", err)
+}
+
+// The format version gate runs only on the key it marks and only on a put:
+// the same number on another key of the section passes, and the version key's
+// delete passes, since a delete sets nothing, even when a wider row at the
+// installation holds a version above this node's range, written by a node
+// with a wider one or around Check.
+func TestFormatVersionOtherKeys(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	max := settings.Versions()[entity.FormatBlock].Max
+	above := strconv.FormatUint(uint64(max)+1, 10)
+	at := strconv.FormatUint(uint64(max), 10)
+
+	s := open(t)
+	tb := settings.Table{
+		settings.Of(
+			"test.block",
+			settings.At(entity.ScopeInstallation),
+			blockFormat{Version: max},
+			settings.FormatVersion("Version"),
+		),
+		settings.Of(
+			"test.node",
+			settings.Override(entity.ScopeInstallation, entity.ScopeNode),
+			blockFormat{Version: max},
+			settings.FormatVersion("Version"),
+		),
+	}
+
+	_, err := s.attemptPut(
+		tb,
+		entity.RoleOperator,
+		setting(installation, "test.block.other", above),
+		holdsContent,
+		nil,
+	)
+	passed(t, "another key with the same number", err)
+
+	s.put(t, installation, "test.block.version", at)
+	passed(t, "the version key's delete",
+		s.storedDelete(tb, entity.RoleOperator, installation, "test.block.version", holdsContent))
+
+	want := map[string]string{"test.block.other": above}
+	if got := rowsStored(t, s, installation); !maps.Equal(got, want) {
+		t.Errorf("rows = %v, want %v", got, want)
+	}
+
+	node := "test.node.version"
+	s.raw(t, installation, node, rowValue(above, 1,
+		settings.Versions()[entity.FormatSettings].Max))
+	s.put(t, nodeA, node, at)
+
+	passed(t, "the node delete under a wider installation row",
+		s.storedDelete(tb, entity.RoleOperator, nodeA, node, holdsContent))
+}
+
+// The format version key's own row is never read by the gate, so a put can
+// rewrite it over what a newer binary left: a row of a newer schema, or bytes
+// nothing decodes (check.go's own-row rule, RFC 13 §2.3), while the version
+// the put writes is still judged against this node's range.
+func TestFormatVersionOwnNewerRow(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	max := settings.Versions()[entity.FormatBlock].Max
+	at := strconv.FormatUint(uint64(max), 10)
+	current := settings.Versions()[entity.FormatSettings].Max
+
+	s := open(t)
+	tb := settings.Table{
+		settings.Of(
+			"test.block",
+			settings.At(entity.ScopeInstallation),
+			blockFormat{Version: max},
+			settings.FormatVersion("Version"),
+		),
+	}
+
+	key := "test.block.version"
+
+	s.raw(t, installation, key, rowValue(at, 1, current+1))
+	passed(t, "a put over the own newer row",
+		s.checkBuilt(tb, entity.RoleOperator,
+			settings.Put(setting(installation, key, at)), holdsContent))
+
+	s.raw(t, installation, key, rowValue(`v`, 1, current))
+	passed(t, "a put over the own undecodable row",
+		s.checkBuilt(tb, entity.RoleOperator,
+			settings.Put(setting(installation, key, at)), holdsContent))
 }

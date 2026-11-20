@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -78,7 +79,34 @@ func (sec *Section) gates(
 		}
 	}
 
+	if w.put != nil && sec.formatVersion == declared {
+		max := Versions()[entity.FormatBlock].Max
+
+		if n := pastRange(reflect.ValueOf(effective).FieldByIndex(f.index), max); n != "" {
+			return refuse(w.Scope, w.Key, fmt.Sprintf(
+				"block format version %s is past this node's range, up to %d (RFC 13 §5.4)",
+				n, max), ErrFormatVersion)
+		}
+	}
+
 	return nil
+}
+
+// pastRange is the format version v holds, printed as a refusal prints it,
+// when the version sits above the range max; "" when it does not.
+func pastRange(v reflect.Value, max uint32) string {
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if v.Int() > int64(max) {
+			return strconv.FormatInt(v.Int(), 10)
+		}
+	default:
+		if v.Uint() > uint64(max) {
+			return strconv.FormatUint(v.Uint(), 10)
+		}
+	}
+
+	return ""
 }
 
 // beforeOf reads the field as it stands before w, through tx: the section's
