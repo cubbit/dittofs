@@ -1121,7 +1121,8 @@ follows the RFC as written.
    budget a member before it put in `r.State`, as an NFSv4.1 session's `SEQUENCE` does, or report no
    byte, which refuses that member there, after the members before it ran. A count is only ever
    lowered, and the compound's reservation is not grown." §4.7's `Invocation.Bound` comment names
-   the third ask. E8 makes `core`'s change after S2b.
+   the third ask. E8 makes `core`'s change after S2b. Proposed as RFC text in commit
+   `docs(rfc-20): the compound runner asks each member's bound before it runs`.
 2. **A2. RFC 17 §3.1: a call that marks a back channel down, and `Connect` clearing it** (#5090 1.5).
    RFC 21 §3.4 says the service has no call for it; open state has `ChannelDown`, but on one node
    nothing clears `Reach.Down` again: only `Rebind` does (`pkg/openstate/clients.go`), and
