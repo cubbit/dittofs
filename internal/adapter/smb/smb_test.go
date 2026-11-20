@@ -266,7 +266,11 @@ func TestAMalformedHeaderIsAnsweredAndTheConnectionKept(t *testing.T) {
 
 // A CANCEL, sync and then async, is answered nothing, and the connection
 // stays: the next record read is the reply to a NEGOTIATE sent after them,
-// and nothing follows it (MS-SMB2 3.3.5.16).
+// and nothing follows it (MS-SMB2 3.3.5.16). The check after Stop, that the
+// connection closes with nothing after that reply, is what catches an
+// answered CANCEL: replies need not come back in their requests' order, and
+// a CANCEL's mostly comes after the NEGOTIATE's, so the first record's check
+// alone passes such a server in most runs.
 func TestACancelIsAnsweredNothing(t *testing.T) {
 	d := newDeps(t)
 	adaptertest.CheckLeaks(t, d.Budgets)

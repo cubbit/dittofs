@@ -330,8 +330,8 @@ func (g *gen) xdrType(e ast.Expr, max int) (t *xtype, took bool, err error) {
 // the newest version and nested maxima multiplied, passes 2^31-1 bytes. core
 // adds a reply's MaxWire to its header's length and chain padding and sums a
 // compound's members' bounds, so each bound under 2^31 keeps every such sum
-// inside an int. Each refusal names the innermost field that passes the bound,
-// once.
+// inside a 64-bit int. Each refusal names the innermost field that passes the
+// bound, once.
 func (g *gen) bounds() {
 	const over = uint64(math.MaxInt32) + 1                    // every sum and product saturates here
 	add := func(a, b uint64) uint64 { return min(a+b, over) } // one side at most over: no wrap

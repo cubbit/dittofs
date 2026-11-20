@@ -189,15 +189,17 @@ func (d *Decoder) Uint16s(n, limit int) []uint16 {
 // STATUS_INVALID_PARAMETER, and it is kept apart from U+FFFD, which a client
 // may send, by writing it as WTF-8: the three bytes UTF-8 would give its code
 // point, which no valid UTF-8 holds, so the handler's check is
-// utf8.ValidString. The epic 6 plan's §9 proposes RFC 22 §16 state this;
-// withdraw it for what §16 settles.
+// utf8.ValidString, as RFC 22 §16 has a UTF-16 string decode. Withdraw it if
+// §16 changes.
 func (d *Decoder) UTF16(b []byte) string {
 	if len(b)%2 != 0 {
 		d.fail(errUTF16)
 		return ""
 	}
+	// One byte a code unit, what an ASCII name takes, the common one; any
+	// other grows the builder as it is written.
 	var s strings.Builder
-	s.Grow(len(b) / 2 * 3)
+	s.Grow(len(b) / 2)
 	for i := 0; i < len(b); i += 2 {
 		r := rune(binary.LittleEndian.Uint16(b[i:]))
 		if !utf16.IsSurrogate(r) {
@@ -268,6 +270,18 @@ func (d *Decoder) Link(region []byte, at int) ([]byte, int) {
 		return nil, len(region)
 	}
 	return region[at : at+step : at+step], at + step
+}
+
+// Links is how many members Link walks in region, one whose step it refuses
+// among them: what a linked chain's slice is made to hold before its members
+// are decoded.
+func Links(region []byte) int {
+	var d Decoder
+	n := 0
+	for at := 0; at < len(region) && d.Err == nil; n++ {
+		_, at = d.Link(region, at)
+	}
+	return n
 }
 
 // Chain returns where a counted chain of n members begins, at offset off,
