@@ -694,13 +694,11 @@ func TestRFC8A_UnsuitableJournalAtStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Each poll moves the clock by the retry's interval: the engine's other
+	// timers share the clock, so no pending count says the retry's is armed.
 	f.RefuseOpens(false)
-	eventually(t, "the retry's timer is set", func() bool {
-		return f.Clock.Pending() == 1
-	})
-	f.Clock.Advance(30 * time.Second)
-
 	eventually(t, "the share attaches", func() bool {
+		f.Clock.Advance(30 * time.Second)
 		return f.E.Stats().Shares[f.Share.ID].Refused == nil
 	})
 
