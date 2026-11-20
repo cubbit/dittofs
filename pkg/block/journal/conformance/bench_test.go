@@ -191,17 +191,21 @@ func jbOpen(b *testing.B, streams int) *journal.Handle {
 
 	// Open returns while the pool is still making its spares, and a write
 	// that rolls first is refused: poll the real condition, the content
-	// spares and the headroom and repack reserve at their full size, so no
-	// pool work competes with the timed region.
+	// spares and the repack reserve ready, so no pool work competes with the
+	// timed region. Stats names no ready headroom spare, but the pool makes
+	// the headroom's before either of the others, and a fresh journal's
+	// footprint is its spares alone: the streams' content spares, the
+	// headroom's one and the reserve's one at the default settings.
 	deadline := time.Now().Add(30 * time.Minute)
+	want := int64(streams+2) * journaltest.SegmentCap
 	for {
 		st := j.Stats()
-		if st.Spares >= streams && st.HeadroomBytes >= journaltest.SegmentCap && st.RepackReserveBytes >= journaltest.SegmentCap {
+		if st.Spares >= streams && st.RepackReserveBytes >= journaltest.SegmentCap && st.UsedBytes >= want {
 			break
 		}
 		if time.Now().After(deadline) {
-			b.Fatalf("bench: the pool made %d of %d spares, headroom %d and reserve %d of %d bytes",
-				st.Spares, streams, st.HeadroomBytes, st.RepackReserveBytes, int64(journaltest.SegmentCap))
+			b.Fatalf("bench: the pool made %d of %d spares and reserve %d of %d bytes, footprint %d of %d",
+				st.Spares, streams, st.RepackReserveBytes, int64(journaltest.SegmentCap), st.UsedBytes, want)
 		}
 		time.Sleep(time.Millisecond)
 	}

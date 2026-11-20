@@ -285,9 +285,7 @@ func (h *Headroom) Refund(d Draw) {
 		return
 	}
 	h.mu.Lock()
-	if h.drawn.Add(-RecordCharge) < 0 {
-		h.drawn.Store(0)
-	}
+	h.drawn.Store(max(h.drawn.Load()-RecordCharge, 0))
 	h.mu.Unlock()
 }
 

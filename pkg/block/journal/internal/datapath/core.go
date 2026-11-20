@@ -610,8 +610,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// throttles no content write — the journal fails open, holding no
 	// headroom to measure — because zero reaches here only from a test core
 	// that names none: the open resolves the setting's default, never below
-	// one record, and passes the figure here. Withdraw once a zero HeadroomRecords can reach this from a caller
-	// that names a setting, rather than only a wiring that names none.
+	// one record, and passes the figure here.
 	targets := deps.Targets
 	if o.contentSpares != 0 {
 		targets.Content = o.contentSpares
