@@ -79,16 +79,6 @@ var allowedEnvPrefixes = []string{
 	"DITTOFS_PREPUSH_",
 }
 
-// retiredEnvNames are names no key ever had, refused under a rule of their
-// own: DITTOFS_CONTROLPLANE_SECRET was a v1 alias of a key, and
-// DITTOFS_ADMIN_INITIAL_PASSWORD was read by the start itself, so without its
-// entry the admin family's rule would read it.
-var retiredEnvNames = map[string]string{
-	"DITTOFS_ADMIN_INITIAL_PASSWORD": "no longer read; pass dfs init --admin-password-env <name> " +
-		"or --admin-password-file",
-	"DITTOFS_CONTROLPLANE_SECRET": dropout,
-}
-
 // declaredEnv is the set of the declared keys' variables.
 var declaredEnv = func() map[string]bool {
 	names := make(map[string]bool, len(keySpecs))
