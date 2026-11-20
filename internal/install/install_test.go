@@ -484,3 +484,39 @@ func TestBareAdministrator(t *testing.T) {
 		t.Errorf("share %v (%v): want none, so no grant", s, err)
 	}
 }
+
+// An installation is finished by its signing key, not by an account named
+// admin: once the administrator is renamed, or deleted, a rerun still
+// refuses and mints no second one.
+func TestRerunAfterTheAdminChanged(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(cp kvstore.ControlPlane, u entity.User) error
+	}{
+		{"renamed", func(cp kvstore.ControlPlane, u entity.User) error {
+			u.Name = "root"
+			_, err := cp.PutUser(context.Background(), u, u.Generation, entity.Alloc{})
+			return err
+		}},
+		{"deleted", func(cp kvstore.ControlPlane, u entity.User) error {
+			return cp.DeleteUser(context.Background(), u.Principal, u.Generation)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFix(t)
+			if err := install.Run(t.Context(), f.deps()); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if err := tc.change(f.store().ControlPlane(), f.admin()); err != nil {
+				t.Fatalf("change the administrator: %v", err)
+			}
+			before := f.users()
+			if err := install.Run(t.Context(), f.deps()); !errors.Is(err, install.ErrInstalled) {
+				t.Fatalf("rerun: got %v, want ErrInstalled", err)
+			}
+			if after := f.users(); len(after) != len(before) {
+				t.Errorf("users after the rerun: %v, want %v", after, before)
+			}
+		})
+	}
+}
