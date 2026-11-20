@@ -341,7 +341,7 @@ What goes: 35 of the 92 shell scripts under `test/` and `.github/scripts/`, abou
   Makefiles and `flake.nix`'s `dfs-posix`.
 
 What stays, because it isn't an entry point:
-- the 42 scenarios, `setup.sh` and `lib/report.sh`;
+- the 42 scenarios, `setup.sh`, `lib/report.sh` and `lib/slack.sh`;
 - the tests and tools written in shell: the two crash rigs, the NLM interop driver
   and `pcap-diff.sh`;
 - the three entrypoints of the KDC and AD-DC service containers;
@@ -1482,7 +1482,11 @@ doesn't take the lock itself, so `setup.sh` stays the lock's only owner. The sui
 channel from a run through `dt`, which reports its results itself; its own runs, such as the
 scenario cron on the dedicated host, keep their messages. The dedicated host's nightly is a `dt`
 run too, and its `perf-night` cell posts the night's figure: its `env` gives `SLACK_DIR` the bot's
-directory (§4.10).
+directory (§4.10). Both post through one library, `test/scenarios/lib/slack.sh`, to the same
+channel. The scenarios keep their own threads; any other notifier posts each result as a reply in
+its thread of the day, whose parent comes with the day's first result (the date in Europe/Berlin).
+A result that changes the notifier's state, a new failure or flag or the recovery from them, shows
+in the channel too; one that repeats the state stays in the thread.
 
 **Metrics.** `metrics` reads numbers, not results: `fio-json` takes bandwidth, IOPS and latency
 per job from fio's JSON, and fails a job whose `error` field is non-zero, a failed verify
@@ -1952,7 +1956,9 @@ a percentage.
 - **Comparisons** run on the dedicated host, as the `perf-night` suite, first in its nightly run:
   `bench/ditto/night.sh` measures DittoFS against Samba over SMB, point by point, and flags a
   point, an area or the night's figure that falls below its 7-day median by more than its noise
-  band, which a calibration week's repeats set. Slack gets the night by the scenarios' rules. The
+  band, which a calibration week's repeats set. Slack gets each night in the day's thread (§4.6): a
+  night with a new flag or failure shows in the channel too, and so does the first night with
+  neither after it. The
   night ends five minutes before `dt`'s limit (`STOP_AFTER`), so one that overruns still cleans
   up and posts: `dt` kills at its limit with no cleanup. The
   cell fails when a step fails or times out, or the night can't be scored, and so reaches the

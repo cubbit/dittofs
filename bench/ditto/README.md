@@ -27,7 +27,7 @@ On each target, every step in its own time box:
 
 The checkout under `/srv/perf` only starts the night. Its `night.sh` fetches `develop` and the
 branch the checkout is on, extracts that branch as fetched under `/var/tmp/dittofs-perf/harness/`,
-and hands over to the `night.sh` there: the scripts, the mailbox jobs and the scenarios' reporting
+and hands over to the `night.sh` there: the scripts, the mailbox jobs and the Slack library
 all come from the fetched branch, so a merged change reaches the next night with nobody updating
 the host. The checkout has to stay on a branch, `develop` once this is merged. The night then
 builds `dfs` from the fetched `develop`, and records both commits, the host's state and each NVMe
@@ -74,20 +74,20 @@ and one for the figure, each repeat's areas and figure computed as a night's are
 or the figure is flagged when it falls below its own 7-day median by more than its band. After a
 change to the scoring, delete `band.json`, and the next night sets it again.
 
-Slack gets the night by the scenarios' rules, through their reporting
-(`test/scenarios/lib/report.sh`): the same bot, the same channel. The bot's token and channel are
-`slack-token` and `slack-channel` in `/etc/dittofs-perf` (`SLACK_DIR`), root's, the directory 0700
-and the files 0600.
+Slack gets every night through the scenarios' Slack library (`test/scenarios/lib/slack.sh`): the
+same bot, the same channel. The bot's token and channel are `slack-token` and `slack-channel` in
+`/etc/dittofs-perf` (`SLACK_DIR`), root's, the directory 0700 and the files 0600.
 
-- A quiet night posts nothing. It is still recorded, in its directory and `trend.csv`.
-- The first night with a new flag or failure (one the 7 nights before did not have) posts its
-  summary: the figure, the sub-scores with their points in MiB/s, the worst point, the new flags
-  and failures and the develop commits since the last night. `slack-ts` beside the nights keeps
-  that message.
-- While that alert is open, a night with another new flag or failure replies in its thread, and
-  a night that repeats the same ones posts nothing.
-- The first night with no flag and no failure replies in the thread, shown in the channel too,
-  and closes the alert.
+- Each night posts its summary as a reply in the day's thread: the figure, the sub-scores with
+  their points in MiB/s, the worst point, the flags and failures and the develop commits since the
+  last night. The thread's parent, "Nightly performance, <date>" (the date in Europe/Berlin when
+  the night posts), comes with the day's first reply; `slack-day` beside the nights keeps it.
+- A night with a new flag or failure (one the 7 nights before did not have) shows in the channel
+  too, and opens an alert: `alert-open` beside the nights.
+- The first night with no flag and no failure after it shows in the channel too, headed "nothing
+  flagged or failing any more", and closes the alert.
+- Any other night stays in the thread: one that repeats flags or failures already seen, and a
+  quiet one with no alert open.
 
 Smoke runs and calibration nights never post.
 

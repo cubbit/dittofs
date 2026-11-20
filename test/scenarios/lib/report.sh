@@ -14,9 +14,9 @@
 # Runs: a run of several scenarios adds one row to CACHE/runs.tsv: when it started (epoch seconds),
 # how many failed and how many ran. Its summary charts the failures of the last 30 days from it.
 #
-# Slack: with a bot token (scope chat:write) in SLACK_DIR/slack-token and a channel ID in
-# SLACK_DIR/slack-channel. SLACK_DIR is ~/.config/dittofs-scenarios, outside the cache, so no
-# container sees them:
+# Slack, through slack.sh: with a bot token (scope chat:write) in SLACK_DIR/slack-token and a
+# channel ID in SLACK_DIR/slack-channel. SLACK_DIR is ~/.config/dittofs-scenarios, outside the
+# cache, so no container sees them:
 #   - a scenario's first failure is a message; a later failure at a different check replies in its
 #     thread, and the pass that ends it replies there and shows in the channel too;
 #   - its first slow pass is a message, and the pass back at normal speed replies in its thread;
@@ -26,6 +26,8 @@
 # is no hostname command).
 
 SLACK_DIR="${SLACK_DIR:-$HOME/.config/dittofs-scenarios}"
+# shellcheck source-path=SCRIPTDIR source=slack.sh
+. "$HERE/lib/slack.sh"
 TIMES="$CACHE/times"
 RUNS="$CACHE/runs.tsv"
 COMMIT="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -127,28 +129,6 @@ chart() {
                 out = out (s in failed ? bar[1 + int((failed[s] - fewest) * 7 / (most > fewest ? most - fewest : 1))] : " ")
             printf "%d\t%d\t%d\t%d\t%s\n", fewest, most, first, int((now - first) / 43200) + 1, out
         }' "$RUNS"
-}
-
-# slack TEXT [THREAD] [BROADCAST]: posts TEXT and prints the new message's ts. The first line is the
-# message, the rest a colored attachment: red failing, yellow slow, green passing. With THREAD it is
-# a reply there; BROADCAST=yes shows the reply in the channel too. Does nothing without a token and
-# a channel. The token goes to curl on stdin, never on the command line.
-slack() {
-    test -s "$SLACK_DIR/slack-token" && test -s "$SLACK_DIR/slack-channel" || return 0
-    local TEXT COLOR TITLE DETAILS BODY
-    case "$1" in :x:*) COLOR="#E01E5A" ;; :warning:*) COLOR="#ECB22E" ;; *) COLOR="#2EB67D" ;; esac
-    # &, < and > are escaped for Slack, then the text becomes a JSON string.
-    TEXT="$(printf '%s' "$1" | tr -d '\000-\011\013-\037' | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
-    TEXT="${TEXT//\\/\\\\}"
-    TEXT="${TEXT//\"/\\\"}"
-    TEXT="${TEXT//$'\n'/\\n}"
-    TITLE="${TEXT%%\\n*}"
-    DETAILS="${TEXT#*\\n}"
-    BODY="{\"channel\":\"$(cat "$SLACK_DIR/slack-channel")\",\"text\":\"$TITLE\",\"attachments\":[{\"color\":\"$COLOR\",\"text\":\"$DETAILS\",\"mrkdwn_in\":[\"text\"]}]${2:+,\"thread_ts\":\"$2\"}"
-    test "${3:-no}" = no || BODY="$BODY,\"reply_broadcast\":true"
-    printf 'header = "Authorization: Bearer %s"\n' "$(cat "$SLACK_DIR/slack-token")" |
-        curl -sf -K - -H 'Content-Type: application/json; charset=utf-8' -d "$BODY}" "${SLACK_API:-https://slack.com/api}/chat.postMessage" |
-        grep -oE '"ts": *"[0-9]+\.[0-9]+"' | head -1 | grep -oE '[0-9]+\.[0-9]+' || true
 }
 
 # report SCENARIO RESULT: reports a run whose log is CACHE/run/run.log. RESULT is pass or fail; a
