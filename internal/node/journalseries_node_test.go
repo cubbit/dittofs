@@ -301,7 +301,11 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 		// then read: the read drops the extent as corrupt with its offloaded
 		// bit unset, and the counter has risen by the time the read returns.
 		flipPayloadByte(t, seam, payload)
-		_, _ = h.Node().Engine().Read(t.Context(), sh.ID, file.ID, 0, make([]byte, len(payload)))
+		got := make([]byte, len(payload))
+		n, rerr := h.Node().Engine().Read(t.Context(), sh.ID, file.ID, 0, got)
+		if rerr == nil && n == len(payload) && bytes.Equal(got, payload) {
+			t.Fatal("the read returned the original bytes after one was flipped: it did not verify the record")
+		}
 		after := jscrape(t, h)
 		dataLoss := func(m map[string]map[string]float64) float64 {
 			for labels, v := range m["dittofs_journal_corrupt_extents_total"] {
