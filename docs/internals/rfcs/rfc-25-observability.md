@@ -361,7 +361,11 @@ are three kinds of allowed label, and a list of forbidden ones.
    are summed into `_other`, which only ever adds, and the node raises
    `metrics_label_capped` naming the metric (§3.9). When an entity is removed, the
    component that created its series deletes them, freeing its place. An entity label
-   takes the object's name, not an internal ID. A share re-homed into a namespace of its
+   takes the object's name, not an internal ID, with one exception: a journal has
+   no name, only its identity, so the `journal` label is that identity as 32
+   lower-case hex digits, the value its conditions name (§3.9). The `share` label of §2.5's
+   gauges takes the share's ID until the engine's share bindings carry the share's
+   name. A share re-homed into a namespace of its
    own ([RFC 27](rfc-27-namespace-migration.md)) makes `namespace` grow with shares, so
    on namespace-labelled metrics ([RFC 9 §10](rfc-9-gc.md#10.%20Observability)) the cap is
    the bound that holds.

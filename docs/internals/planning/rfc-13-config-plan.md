@@ -405,8 +405,9 @@ flowchart TD
 ### 4.1 Directory layout
 
 ```text
-pkg/bootstrap/              renamed from pkg/config: Bootstrap, Load, refused keys,          E1, E2, E6
-                            node identity, initialise-if-empty (E6)
+pkg/bootstrap/              renamed from pkg/config: Bootstrap, Load, refused keys,          E1, E2
+                            node identity
+cmd/dfs/commands/           dfs start's initialise-if-empty flag, over internal/install     E6
 pkg/settings/               sections, table, snapshot, Get, Check, Diff, versions, metrics   E1, E3, E2 (versions)
 pkg/secrets/                Provider: Seal, Resolve, Prune, Delete; envelope                 E1, E4
 pkg/keyprovider/            moved from pkg/block/middleware/encryption/keyprovider           E1
@@ -576,12 +577,12 @@ closed. The MVP (#4053) has no remote store, so it loses nothing. Each code site
 `decision:` note naming the rule and its overturn: both pieces built.
 
 The refusal sits at both places a change can enter:
-- **The endpoint, bucket, prefix and credential reference, at `Check`.** This goes past RFC 13 §5.1
+- **The endpoint, bucket, prefix and credential reference, at `Check`,** the fields a section's `location:"store"` struct tag marks. This goes past RFC 13 §5.1
   for the bucket and the prefix, which it refuses only while content exists: here they are refused
   with no content too, since a store with none can be deleted and created again. RFC 13 §4.2 lists the
   credential reference with the location, and §5.2 proves a new credential the same way, so
   repointing the reference at a freshly sealed `remote credential` is a change like any other. A
-  store location's first value, written when the store is created, is no change and passes; a
+  store location's first value, written when the store is created, has no row at any scope before it, whatever the field's default, and passes. A default here is no old location to prove, since RFC 13 §4.2 makes these fields required with no default; a
   later put, or a delete that changes the effective value, is refused.
 - **The credential, at `Seal`.** `Seal` reads the kind off the stored record, never the caller's: a
   record already there with the `remote credential` kind refuses a new version, and a reseal under
@@ -834,9 +835,12 @@ var Settings = settings.Table{
 // not guard (RFC 13 §6; RFC 18's plan's E2 refusing an identity.id_range at or below the ID counters'
 // marks); FormatVersion, the field whose key holds the block format version, which Check refuses
 // past this node's range (RFC 13 §5.4; epic 3's D6, the one option added after epic 1's freeze).
-// Of panics on a missing or unknown class, a field with no explicit json name (its key is the
+// A field's `location:"store"` tag, beside its `class` tag, marks an endpoint, bucket, prefix or
+// credential reference, which Check refuses to change (D9); no option and no export is added for it.
+// Of panics on a missing or unknown class, an unknown `location` value, a FormatVersion field that is
+// not an integer, a field with no explicit json name (its key is the
 // field's Go name, not a lower-case setting key), a duplicate field name, or a Required,
-// SecretRef or FormatVersion name that is not a field of T, so a typo fails the table's first
+// SecretRef, OverrideOnly or FormatVersion name that is not a field of T, so a typo fails the table's first
 // test instead of making a restart or bound key live.
 func Of[T interface{ Validate() error }](prefix string, scope Scope, def T, opts ...Option) Section
 ```
@@ -880,38 +884,38 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, h
 	if rank(caller) < rank(sec.writeRole) { // an explicit rank, never the names; an empty or unknown role ranks lowest, and Of panics on an unknown WriteRole
 		return ErrForbidden // admin-only sections, identity.directory among them, its first value included (RFC 13 Appendix B, A1)
 	}
-	s, err := sec.decodeAfter(tx, w) // a put's row, or what a delete leaves
+	eff, err := sec.decodeAfter(tx, w) // the effective value after the write: a put's row, or what a delete leaves
 	if err != nil {
 		// strict decode, keys matched exactly as declared, over the defaults and the wider row,
 		// required keys; the refusal prints no undeclared key's value and no decoder's own text
 		// (epic 3's R31)
 		return err
 	}
-	if err := sec.checkSecretRefs(tx, s); err != nil {
+	if err := sec.checkSecretRefs(tx, eff); err != nil {
 		// D10: a reference to a secret of another kind or owner, or to none. Before Validate, so a
 		// plaintext typed into a reference never reaches a Validate that prints it (epic 3's T3.5).
 		return err
 	}
-	if err := sec.validate(s); err != nil {
+	if err := sec.validate(eff); err != nil {
 		// the section's own Validate, which prints no SecretRef field's value (epic 3's R31); it
 		// may print another field's value, as RFC 13 §6's "got 70000" does
 		return err
 	}
-	if err := sec.checkTx(tx, w, s); err != nil { // the section's CheckTx, if any: RFC 18's plan's E2 refuses an id_range here
+	if err := sec.checkTx(tx, w, eff); err != nil { // the section's CheckTx, if any: RFC 18's plan's E2 refuses an id_range here
 		return err
 	}
 	if sec.class(key) == Bound && sec.isChange(tx, w) { // a put rewriting the same value is no change (RFC 13 §5.1)
 		// holds is E1's frozen func(scope); the route builds it inside Write as a closure over the
 		// write's tx, so its read is tracked and conflicts with the first content write (epic 3)
-		has, err := holds(s.Scope)
+		has, err := holds(w.Scope)
 		if err != nil {
 			return err // a store error, not a refusal: config_bound_refusals_total does not count it
 		}
 		if has {
-			return refuseBound(s) // RFC 13 §5.1
+			return refuseBound(w) // RFC 13 §5.1
 		}
 	}
-	if storeLocation(s.Key) && sec.isChange(tx, w) { // endpoint, bucket, prefix and credential reference; a first value is no change
+	if sec.isStoreLocation(key) && sec.isChange(tx, w) { // a field marked by the `location` tag; a first value, with no row at any scope, is no change
 		// decision: D9. Refused until the capability check finds the claim
 		// (RFC 13 §5.2); withdraw when both are built.
 		return ErrUnproven
@@ -1384,8 +1388,9 @@ Outside those rows, the built image's `HEALTHCHECK` on `https://localhost:8080/h
 unverified, since RFC 23's plan's epic 4 serves the API over TLS on every address but loopback
 (`docker-compose.yml`'s probes `/health/ready`), reports healthy
 on its first start after `docker run … init`, with the certificate and key it starts with (RFC 23's plan's D13
-and its §6.1 row naming this epic). No `dt` suite builds the image, so it is checked by
-`docker compose up` on `docker-compose.yml` until a suite does (§6.1).
+and its §6.1 row naming this epic). No `dt` suite builds the image, so it is checked by a
+`docker run … start` of the built image, read with `docker inspect`, until a suite does (§6.1):
+`docker-compose.yml`'s own `healthcheck:` replaces the image's, so `docker compose up` cannot show it.
 
 **Expected content:**
 - Initialise-if-empty, a development and test option, off by default (RFC 13 §2.2), landing with its
@@ -1418,7 +1423,7 @@ and its §6.1 row naming this epic). No `dt` suite builds the image, so it is ch
   never initialise on their own: their entrypoint stays `dfs` and their `CMD` stays `dfs start`, so
   a store volume that is unbound, mistyped or mounted late refuses the start rather than minting a
   new installation (RFC 13 §2.2). Initialisation is an explicit step for them, as it is for
-  `packaging/dfs.service`, which keeps `dfs start`: `docker run … init`, with the first password
+  the unit file (`packaging/dfs.service` on `feat/storage-v2`, `scripts/packaging/dfs.service` on `develop`), which keeps `dfs start`: `docker run … init`, with the first password
   given by reference to a file the operator mounts (RFC 23 §5.4), since D7 refuses
   `DITTOFS_ADMIN_INITIAL_PASSWORD`, then `docker run … start`, both mounting the same volumes, the
   five the images declare (`Dockerfile`'s `VOLUME`), since an `init` without them writes anonymous
@@ -1527,6 +1532,8 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | `DITTOFS_ENCRYPTION_PASSPHRASE` in the process environment, readable in `/proc/<pid>/environ`, and no check of the bootstrap's and key files' mode or owner (§4.3's `ponytail:`) | `keyprovider`'s local provider reads it today; neither is new here | unowned | a deployment needs the passphrase out of the environment, or a key file is found readable by another user |
 | The image's `HEALTHCHECK` on its first start after `init`, in a `dt` suite (epic 6's **Done when:**), on unverified `https`: the image's `/health/live`, `docker-compose.yml`'s `/health/ready` | no suite builds the image | unowned | a suite builds the image |
 | The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate checks the active versions only and gains the namespace comparison when the key exists, and epic 3's unit test declares one of its own until then | RFC 4 | a plan of RFC 4 declares the key |
+| "§5.1 bound"'s "no content, accepted" half at a namespace and a share scope (epic 5's D6; epic 6's R17) | a namespace holds content for its whole life and a share scope answers an error, since no read in the transaction says what either holds | unowned | the drain is readable in the transaction (D6's own withdrawal), or a share-scope bound setting is declared |
+| "§5.5 dead node"'s single-node sentence as written, an older binary starting on a store a newer one opened (epic 6's D6) | each format has one version, so no older range exists to build | unowned | a format gains a second version, beside the `raise-format` row |
 | the settings table's adapters' rows, which RFC 20's plan's deferral ledger gave this plan | the adapters' section type is RFC 20's T7.6's | RFC 20 plan, its T7.6 | that subtask |
 
 ## 7. RFC coverage

@@ -64,7 +64,7 @@ epic.
 - The node's table, reconcile, the API's settings routes and `HoldsContent`'s implementation: E5.
   The route builds `holds` inside `Write` as a closure over the write's `tx`, so E1's frozen
   signature, `func(scope entity.SettingScope) (bool, error)`, stays without a `tx` parameter (the
-  plan's sketch calls `holds(s.Scope)`), and the closure makes it a
+  plan's sketch calls `holds(w.Scope)`), and the closure makes it a
   tracked point
   read through the write's transaction, so the first content write conflicts with a bound change
   (T3.6).
@@ -125,7 +125,7 @@ title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T3.1, T3.4, T3.9 | the generation raise, the scan through `Nodes` and the conflict of a tracked read on Badger under `t.TempDir()` |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T3.1, T3.4, T3.5, T3.6 | D9's and D11's `decision:` notes at `Check`, the repair delete's at `lookup` and the skipped row's at `Read`; the `ponytail:` markers of the one-scan reconcile, the one `CFGGEN` key and the rule across components |
 | rule 10, a test must be able to fail | all | each gate has a test feeding the refused write and one feeding the write that passes beside it |
-| rule 11, a symbol is exported only if RFC 13's interfaces use it | all | nothing beyond E1's frozen surface is exported but `Of`'s `FormatVersion` option (D6), added to E1's export pin as it lands; `entity.ErrBadRow` (D2) is outside E1's three packages |
+| rule 11, a symbol is exported only if RFC 13's interfaces use it | all | nothing beyond E1's frozen surface is exported but `Of`'s `FormatVersion` option (D6) and `(Table).WithMetrics` (T3.9), each added to E1's export pin as it lands; `entity.ErrBadRow` (D2) is outside E1's three packages |
 | rule 12, each subtask creates only what it declares | all | the record's sizes land with the decode through the shared parser epic 2's T2.1 creates, the series with T3.9, the gates each with its subtask |
 
 ## 3. Requirements and invariants
@@ -150,7 +150,7 @@ Every obligation RFC 13, RFC 16 and RFC 23 place on this epic, and those RFC 13'
 | R7 | A setting has a default or is required; a snapshot or a write that leaves a required key unset is refused | MUST | RFC 13 §4.2 | T3.2, T3.4, T3.5 |
 | R8 | Every field of a section declares its class: live, restart, next write or bound; one left unclassified panics at `Of` | MUST | RFC 13 §5 | T3.2 |
 | R9 | The sections Appendix B gives to `admin` alone (`identity.oidc`, `api.oidc_role_map`, `api.password_sign_in`, `identity.directory`, `audit.retention`, `api.session_lifetime`, `api.token_max_lifetime`) are written by `admin` only, first value included; roles compare by an explicit rank, an empty or unknown one ranking lowest | MUST | RFC 13 Appendix B; RFC 23 §5.2; RFC 13's plan, A1 | T3.2, T3.5 |
-| R10 | `Of` panics on a field without a class tag, on a class that is not one of the four (`class:"restar"`), on a field with no explicit `json` name, on two fields that share a name after flattening, and on a `Required`, `SecretRef`, `OverrideOnly` or `FormatVersion` name that is no field and on `OverrideOnly` outside an `Override` scope (E1's D9; the plan's `Of` sketch), and on an unknown write role; `Table` panics on two sections declaring the same prefix and on a section whose prefix consumes a field key another section generates, as an `identity` section's field `oidc` beside an `identity.oidc` section, which the longest-prefix match would make unreachable; a key belongs to the longest section prefix on a dot boundary | invariant | RFC 13's plan, epic 3; E1's D9 for the class tag and the field names | T3.2, T3.6 (`FormatVersion`) |
+| R10 | `Of` panics on a field without a class tag, on a class that is not one of the four (`class:"restar"`), on a field with no explicit `json` name, on two fields that share a name after flattening, and on a `Required`, `SecretRef`, `OverrideOnly` or `FormatVersion` name that is no field, on a `FormatVersion` field that is not an integer, on an unknown `location` tag value and on `OverrideOnly` outside an `Override` scope (E1's D9; the plan's `Of` sketch), and on an unknown write role; `Table` panics on two sections declaring the same prefix and on a section whose prefix consumes a field key another section generates, as an `identity` section's field `oidc` beside an `identity.oidc` section, which the longest-prefix match would make unreachable; a key belongs to the longest section prefix on a dot boundary | invariant | RFC 13's plan, epic 3; E1's D9 for the class tag and the field names | T3.2, T3.6 (`FormatVersion`, `location`) |
 
 **Decoding a value**
 
@@ -320,7 +320,7 @@ leaves the `decision:` note only.
   `Check`, keeping the signature S1 freezes, runs the gate on the key that option marks, reading
   the version from the `Write` it is handed and refusing with E1's frozen `ErrFormatVersion`. As
   the plan's epic 3 content says, the gate runs on the key RFC 4's plan declares, this option
-  being how. It is this epic's one exception to E1's freeze: T3.6 adds the option to E1's
+  being how. It is one of this epic's two exceptions to E1's freeze (T3.9's `WithMetrics` is the other): T3.6 adds the option to E1's
   `pkg/settings` export pin with the option itself. E1's doc names it in its rule 11 row, its `Of`
   options and T1.7's caller list since #4773, the component's plan's section as its first caller. No
   section uses it until that plan declares the field, so T3.6's unit test declares a section of
@@ -604,7 +604,7 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
 - **Deliverables:** the bound refusal on `holds`, for a put and for a delete, a put of the same
   value and a delete that leaves the same effective value passing, values compared decoded and
   not by bytes, since a row keeps what the operator wrote (R21, R22); D9's refusal of a
-  store location's change, its first value passing, with its `decision:` note; the block format
+  store location's change, its first value passing, on the fields a `location:"store"` struct tag marks (beside `class`, no export), with its `decision:` note; the block format
   version past this node's range refused (D6): `Of`'s `FormatVersion` option added with the gate
   and to E1's `pkg/settings` export pin, and `Check` refusing with E1's frozen `ErrFormatVersion`
   on the key it marks; D11's `decision:` note, which says that a rollback before the raise meets
@@ -629,8 +629,9 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   deleted, changing what the effective value leaves, refused as its put is (D9's delete path),
   while a delete that leaves the same bucket passes; a block format version one past the range
   refused and the newest one accepted, on a section the test declares with `Of`'s `FormatVersion`
-  option (D6), written through `Check`; `Of` with a `FormatVersion` name that is no field
-  panics, naming it (R10).
+  option (D6), written through `Check`; `Of` with a `FormatVersion` name that is no field,
+  with a `FormatVersion` field that is not an integer, or with a `location` tag value other
+  than `store` panics, naming it (R10).
 
 ### T3.7 Secret references
 
@@ -687,7 +688,10 @@ pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and 
   23's node's, D5): `reason` is a name of E1's closed error list, `component` the declared section
   prefix the key's `lookup` found, and an unknown key, which has none, one fixed value, never the
   caller's key or a part of D4's printed line, so a write of an unknown key creates no series (RFC
-  25 §2.4); `BenchmarkReconcileScan`: `Read`, through `Nodes`, and `Diff` at 10⁴ shares'
+  25 §2.4); the series reach a registry through one export, `func (Table) WithMetrics(*metrics.Registry) Table`,
+  which returns a copy of the table whose sections carry the two series, so `Read` and `Check` find them with no
+  global, no registry lookup and no value in a context (RFC 25 §8's rule, which `pkg/settings` follows by analogy), a table never given it counting nothing, and
+  T3.9 adds it to E1's `pkg/settings` export pin with the export itself; `BenchmarkReconcileScan`: `Read`, through `Nodes`, and `Diff` at 10⁴ shares'
   settings on Badger under `t.TempDir()`, in the `manual` tier with `ReportAllocs` (D3), the
   fixture seeded before `b.ResetTimer()`. Rows are stored per key, so the fixture states its
   rows: the share's index modulo 5 gives 0 to 4 share-scope sections, from typed structs the
