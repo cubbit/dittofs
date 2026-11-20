@@ -247,7 +247,9 @@ them.
   init`'s logic; `cmd/dfs` and `nodetest` both call it, so every harness installation, and so
   every signed-in caller, comes from a real initialisation. It sits outside `internal/node` because
   it imports the store and the journal, which the API's import rule forbids under that tree; for
-  identity it imports `pkg/identity` (`NewHashes`) only. A crash point per instance, set from
+  identity it imports `pkg/identity` (`NewHashes`) only, and of the node's tree only
+  `internal/node/api/auth`, for `SealSigningKey` (T5.3), which an arch test pins. A crash point
+  per instance, set from
   `export_test.go`, stops it after any write. No marker.
 - **D7, an installation is finished when its signing key is set.** The step's last `Write` commits
   the administrator, its password secret and `Installation.SigningKey` together; a rerun that finds
