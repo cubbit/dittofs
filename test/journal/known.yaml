@@ -464,20 +464,6 @@
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
-- test: TestRFC1D_StatsCostIsFlat
-  status: skip
-  fix: wontfix
-  category: env
-  reason: 'Counts allocations, which -race changes; runs in the unit.options.journal-conformance-norace job instead, which enforces RFC 1 9.7''s counted-allocation checks.'
-  message: 'the race detector changes allocation counts'
-
-- test: TestStatsAfterOpenWalksNoLock
-  status: skip
-  fix: wontfix
-  category: env
-  reason: 'Counts allocations, which -race changes; runs in the unit.options.journal-conformance-norace job instead, which enforces RFC 1 9.7''s counted-allocation checks.'
-  message: 'the race detector changes allocation counts'
-
 - test: TestRFC1D_VerificationReports
   status: fail
   fix: planned
@@ -1238,17 +1224,3 @@
   reason: 'The roll path answers a full device with the spare limit alone: no take reads the pool''s device-full state, so the check''s bounded retry would spend every attempt on a retryable refusal. Withdraws when a write on a full device answers the device''s error.'
   issue: '#3395'
   message: 'a content write on a full device answers the spare limit: no take reads the pool''s device-full state yet'
-
-- test: TestCounted_AllocationsPerCall
-  status: skip
-  fix: wontfix
-  category: env
-  reason: 'Counts allocations, which -race changes; runs in the unit.options.journal-conformance-norace job instead, which enforces RFC 1 9.7''s counted-allocation checks.'
-  message: 'the race detector changes allocation counts'
-
-- test: TestCounted_AllocationsPerCallFailsWithOneAdded
-  status: skip
-  fix: wontfix
-  category: env
-  reason: 'Counts allocations, which -race changes; runs in the unit.options.journal-conformance-norace job instead, which enforces RFC 1 9.7''s counted-allocation checks.'
-  message: 'the race detector changes allocation counts'
