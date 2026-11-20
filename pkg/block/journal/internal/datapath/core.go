@@ -140,10 +140,10 @@ type coreOptions struct {
 	shareStepSpy func(step int)
 	// betweenHeldReads runs in Stats between its dirty and held reads.
 	betweenHeldReads func()
-	// statsStep runs in Stats after the reservation figures are read, before
-	// the set's counters and after the set's per-tag figures, told which (1,
-	// 2, 3).
-	statsStep func(step int)
+	// statsStep runs in Stats around the reservation read and around the
+	// read of the set's per-share figures, told the point: "reserved:before",
+	// "reserved:after", "set:before" or "set:after".
+	statsStep func(point string)
 	// tracer is the Tracer the core's Deps carry; nil means no tracing.
 	tracer core.Tracer
 	// state is the State newCore continues from; the zero State builds fresh.
@@ -284,12 +284,12 @@ type Core struct {
 	// decision: it is nil outside tests, for the same reason stepSpy is.
 	betweenHeldReads func()
 
-	// statsStep is a test seam that stands at three points of Stats' reads,
-	// so a test can land a whole write between the reservation read and the
-	// set's reads.
+	// statsStep is a test seam that stands before and after each of Stats'
+	// two reads that a write's landing can fall between, so a test can land a
+	// whole write at each, whatever order the reads are in.
 	//
 	// decision: it is nil outside tests, for the same reason stepSpy is.
-	statsStep func(step int)
+	statsStep func(point string)
 
 	// rec is the recorder the core's locks report to, the one removals'
 	// wait assertion consults. Nil in production, where every consult

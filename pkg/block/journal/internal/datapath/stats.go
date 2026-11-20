@@ -109,9 +109,15 @@ type Stats struct {
 func (c *Core) Stats() Stats {
 	var s Stats
 	s.MaxBytes = c.maxBytes
+	// The reservation is read before the set's per-share figures and must stay
+	// so: a write moves its record into the set's figures before it releases
+	// its reservation, so this order finds the record in one of the two.
+	if c.statsStep != nil {
+		c.statsStep("reserved:before")
+	}
 	reserved, reservedBy := c.cap.ReservedBytes(), c.cap.ReservedByTag()
 	if c.statsStep != nil {
-		c.statsStep(1)
+		c.statsStep("reserved:after")
 	}
 	for range 4 {
 		s.DirtyBytes = c.dirty.Load()
@@ -124,9 +130,6 @@ func (c *Core) Stats() Stats {
 	}
 	s.OldestDirty = c.oldestDirty()
 
-	if c.statsStep != nil {
-		c.statsStep(2)
-	}
 	sc := c.set.Counters()
 	s.UsedBytes, s.Segments, s.Sealed = sc.UsedBytes, int(sc.Segments), int(sc.Sealed)
 
@@ -162,10 +165,13 @@ func (c *Core) Stats() Stats {
 
 	// One entry per tag with an open handle or a record on disk, tag 0 (the
 	// journal's own records) excepted.
+	if c.statsStep != nil {
+		c.statsStep("set:before")
+	}
 	figs := c.shareFigures()
 	used, over := c.set.TagFigures()
 	if c.statsStep != nil {
-		c.statsStep(3)
+		c.statsStep("set:after")
 	}
 	s.Shares = make(map[core.ShareTag]ShareStats)
 	if p := c.registry.Load(); p != nil {
