@@ -15,23 +15,32 @@ DITTOFS_BENCH_DIR=<a directory on the device under test> \
 ```
 
 Run it by hand, outside the dedicated host's nightly work. The suite's `bench.txt` carries the
-box lines the run prints (commit, directory, filesystem, sync bound, segment cap, writers) and
-the raw twins `BenchmarkRawSequential`, `BenchmarkRawRandom4k`, `BenchmarkRawFsync4k` and
-`BenchmarkRawScaling`, which write the same bytes through `os` and `Sync` with the same block
-size, writers and sync pattern as the row they twin (16 writers for J1's twins, n files for
-`RawScaling`'s J2); read each J row as a fraction of its twin. Run it twice, then
-`benchstat first/bench.txt second/bench.txt`.
+box lines the run prints (commit, memory, device, filesystem, mount options, kernel, the device's
+own 4 KiB write-and-fsync p50 and p99, then the directory, sync bound, segment cap and writers)
+and the raw twins `BenchmarkRawSequential`, `BenchmarkRawRandom` and `BenchmarkRawScaling`, which
+write the same bytes through `os` with the same block size, writers and sync pattern as the row
+they twin (16 writers for J1's twins, n files for `RawScaling`'s J2). A raw file is given its
+full span, zero-filled and synced, before the timer starts, as the journal's segments are
+preallocated, and is flushed with `fdatasync` on Linux and `F_FULLFSYNC` on macOS, as the
+journal flushes. Read each J row as a fraction of its twin of the same name. Run it twice, then
+`benchstat first/bench.txt second/bench.txt`. Two runs from two commits differ in the `commit:`
+line, which benchstat may treat as a configuration split; `-ignore commit` (or `-col commit`) may
+pair them. That is unverified: benchstat was not available where this was written.
 
 The suite refuses a directory on a RAM-backed filesystem (`tmpfs`, `ramfs`) and exits non-zero
-before measuring. Record by hand what the run cannot read: the device, the mount options
-(`findmnt -no OPTIONS <dir>` on Linux) and the device's own sync figure. A RAM disk formatted
-with a disk filesystem passes the check, so name the real device.
+before measuring. A RAM disk formatted with a disk filesystem passes the check, so name the real
+device. The mount options are empty on macOS.
+
+Free space: a 16-stream journal makes about 4.5 GiB of spares when it opens (16 content, one
+headroom and one reserve, each a 256 MiB segment), and J2 and J3 open one per count, so each
+needs that much free on the device besides the bytes it writes.
 
 Notes on what a row measures:
 
 - `p99-write-µs` is the 99th percentile of one `WriteAt` call, sync excluded. The call includes
   the copy of the payload, which the journal cannot report apart, so the figure is an upper
-  bound for RFC 1's "excluding sync and copy".
+  bound for RFC 1's "excluding sync and copy". It drops attempts refused for want of a spare,
+  so it can understate when a roll happens inside the burst.
 - `BenchmarkJ3_PointLookup` times a block of 100,000 `ReadAt` calls of one 64-byte extent each
   and reports `ns/lookup`. It is an upper bound: it includes the pread syscall and the copy
   into the caller's buffer, and the public API cannot time the index alone. RFC 1's
@@ -39,8 +48,28 @@ Notes on what a row measures:
   as a measured target from it.
 - Sizes are the suite's fixed bursts: 128 MiB over all writers without a sync after each write,
   16 MiB with one; J2 spreads 128 MiB over its files; the mixed case streams one 128 MiB file.
+  Each is under one segment, so a one-iteration run never rolls.
+- A journal is opened with its content spares, headroom and repack reserve at full size before
+  the timer starts.
 
-## Constants these rows exercise
+## What the suite does not yet measure (open)
+
+RFC 1 §9.6's method asks for more than these rows give. Each item below is OPEN, owned by the
+deferral table of the epic 12 plan, and comes back when a reference-box run exists:
+
+- Write-cache exhaustion: reporting the rate after the device's write cache is full. Bursts are
+  short, so a run reports the burst's rate with a warm cache.
+- More data than the journal holds, so rolls and refusals are timed into the latency.
+- Submission and completion latency reported apart.
+- Create and overwrite reported apart. The random rows overwrite within a burst and the
+  sequential rows create.
+- The 256 MiB mixed stream. The mixed case streams 128 MiB, so the one stream never rolls beside
+  the small writer.
+
+The keep-or-change decisions for the segment cap, the sync bound and the idle seal wait for rows
+that exercise them. The rows here write less than a segment and never wait out the idle-seal age,
+so no figure of this suite bears on any of the three, and the tables below stay empty on those
+rows.
 
 Today's values, from `pkg/block/journal/internal/core/limits.go` and `config.go`:
 
@@ -65,9 +94,8 @@ Reference box. Not yet run: the first run lands in the first window outside its 
 
 | Row | Queue depth | Raw twin | Result | RFC 1's proposed target | Measured target |
 | --- | --- | --- | --- | --- | --- |
-| J1 sequential, 4 KiB to 1 MiB | 16 | `RawSequential` | | ≥ 95% of the filesystem at ≥ 256 KiB | |
-| J1 random 4 KiB, no sync | 16 | `RawRandom4k` | | none | |
-| J1 random 4 KiB, sync per write | 16 | `RawFsync4k` | | ≥ 90% of its IOPS | |
+| J1 sequential, 4 KiB to 1 MiB, each sync pattern | 16 | `RawSequential`, same name | | ≥ 95% of the filesystem at ≥ 256 KiB | |
+| J1 random, 4 KiB to 1 MiB, each sync pattern | 16 | `RawRandom`, same name | | ≥ 90% of its IOPS at 4 KiB with a sync per write | |
 | J1 `WriteAt` p99 | 16 | | | ≤ 20 µs | |
 | J1 mixed durability | 2 (one stream) | | | none | |
 | J2 write scaling, 1, 4, 16, 64 files, each synced at its end | 1 to 64 | `RawScaling` (same files, 1 MiB blocks, sync at end) | | within 5% of the filesystem, flat to 64 | |

@@ -106,6 +106,15 @@ disagreement is raised to the user, not silently resolved.
   **epic 9b**. The `test/engine/known.yaml` re-point → **RFC 8's T10.3**.
 - The daily benchmark run → a deferral row already in PR #4762's plan §6 ("a reference runner
   exists" is the trigger); verify it is on the base at execution, add nothing if it isn't merged yet.
+- RFC 1 §9.6's method items the J1 to J3 suite does not yet measure (PR 4 builds the rows, the
+  raw twins and the results file, and records these as OPEN in
+  `docs/internals/journal-bench-results.md`) → **epic 12 follow-up, unowned until the user
+  names a task**; trigger for every row below: a reference-box run of the suite exists. Each
+  row is its own item: write-cache exhaustion (the rate after the cache is full); more data than
+  the journal holds, rolls and refusals timed into latency; submission against completion
+  latency; create against overwrite reported apart; the 256 MiB mixed stream, which the suite
+  halves to stay under one segment. The keep-or-change decisions for the segment cap, sync
+  bound and idle seal wait with them, on rows that exercise those constants.
 - Tightening the heap watch's 16 MiB slack, or per-test thresholds where they land → the T12.8
   calibration (above, Task 4) found that default ≈15× above the worst measured per-test delta,
   so it stays a coarse detector that catches large leaks only; **the harness track** owns it,
