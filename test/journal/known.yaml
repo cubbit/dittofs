@@ -64,14 +64,6 @@
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
-- test: TestRFC1A_SinceYieldsOver
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens and Since yields Over before the crash; the reopen after a crash before any Settle yields nothing where the removal''s marker is wanted, so the open does not recover the removal markers (RFC 1 9.4 ''removals survive''). The reopen half (R72) is owed by #4863.'
-  issue: '#4863'
-  message: 'after a crash before any Settle: Since(F, 0) = map[]'
-
 - test: TestRFC1A_NoZeroFill
   status: fail
   fix: planned
