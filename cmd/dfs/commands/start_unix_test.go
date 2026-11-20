@@ -98,6 +98,21 @@ func TestStartSIGTERMDuringTheStartCheck(t *testing.T) {
 	}
 }
 
+// A start check that refuses the store for its own reason, here an
+// uninitialised node, exits non-zero naming it though a SIGTERM arrived once
+// the check returned: the signal did not end it.
+func TestStartCheckRefusingUnderSIGTERMExitsNonZero(t *testing.T) {
+	dir := t.TempDir()
+	b := bootstrapFile{store: filepath.Join(dir, "missing"), journal: filepath.Join(dir, "device"), node: nodeUUID}
+	code, out := runChild(t, b.write(t, dir), signalAtEnv+"="+stagePreflightReturned)
+	if code == 0 || !strings.Contains(out, "Error: the start check: the node is not initialised") {
+		t.Fatalf("dfs start with its check refusing under a SIGTERM: exit %d, output:\n%s\nwant non-zero naming the check's refusal", code, out)
+	}
+	if strings.Contains(out, endedOnSignal) {
+		t.Errorf("dfs start with its check refusing under a SIGTERM logged %q, want the refusal not called the signal's:\n%s", endedOnSignal, out)
+	}
+}
+
 // A start that fails for its own reason, its API's port already taken, exits
 // non-zero naming the failure though a SIGTERM arrived before the command
 // answered: the signal did not end it. The child signals itself once Start

@@ -25,8 +25,8 @@ func newStartCmd() *cobra.Command {
 
 The server runs until it receives SIGINT or SIGTERM, then stops and exits
 zero once every part stopped. A start that fails for its own reason exits
-non-zero, even when a signal arrived while it failed. Run it under a process supervisor (systemd,
-Docker) to keep it in the background.
+non-zero, even when a signal arrived while it failed. Run it under a
+process supervisor (systemd, Docker) to keep it in the background.
 
 Examples:
   # Start with the default configuration
@@ -97,9 +97,12 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		devices = append(devices, j.Path)
 	}
 	stage(base, stagePreflight, ctx)
-	if err := node.Preflight(ctx, cfg.Metadata.Badger.Path, cfg.Blockstore.Journal.Path, devices, clock); err != nil {
+	err = node.Preflight(ctx, cfg.Metadata.Badger.Path, cfg.Blockstore.Journal.Path, devices, clock)
+	stage(base, stagePreflightReturned, ctx)
+	if err != nil {
 		// A check the signal cancelled ends the start on the signal: nothing
-		// is open yet, so the command exits zero as a stopped start does.
+		// is open yet, so the command exits zero as a stopped start does. A
+		// refusal of the check's own exits non-zero under a signal too.
 		if ctx.Err() != nil && base.Err() == nil && onlyCanceled(err) {
 			slog.Info("dfs: the start ended on a termination signal", "err", err)
 			return nil
@@ -164,13 +167,14 @@ func runStart(cmd *cobra.Command, _ []string) error {
 // sets none.
 type stageKey struct{}
 
-// The stages a stageKey hook is called at: before the start check, before
-// Start, and once Start returned, before the command reads whether a signal
-// arrived.
+// The stages a stageKey hook is called at: before the start check and once
+// it returned, and before Start and once it returned, each "returned" stage
+// before the command reads whether a signal arrived.
 const (
-	stagePreflight     = "preflight"
-	stageStart         = "start"
-	stageStartReturned = "start-returned"
+	stagePreflight         = "preflight"
+	stagePreflightReturned = "preflight-returned"
+	stageStart             = "start"
+	stageStartReturned     = "start-returned"
 )
 
 // stage runs base's stageKey hook, if any, at name.
