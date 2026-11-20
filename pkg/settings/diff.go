@@ -273,7 +273,79 @@ func fieldsOf(v any) (map[string]json.RawMessage, bool) {
 }
 
 // Keep is the receiver with section's values taken from prev, so a refused
-// section keeps what it last ran.
+// section keeps what it last ran, and the rest from the receiver; a nil
+// receiver holds nothing else. With a nil prev, or one that holds no value
+// of section, the result holds none either, so Get on it is an error and
+// never the defaults (RFC 13 §6). Neither snapshot is changed: prev is what
+// the running components still read. The whole section is swapped, so in a
+// section with one value per instance or per thing every instance and thing
+// prev holds takes prev's value; one prev does not hold keeps the receiver's
+// outcome, a refusal staying a refusal, since prev's base would hand it the
+// defaults.
 func (s *Snapshot) Keep(section string, prev *Snapshot) *Snapshot {
-	panic(unbuilt("Keep"))
+	out := &Snapshot{
+		sections: make(map[string]*entry),
+	}
+
+	var cur *entry
+
+	switch {
+	case s != nil:
+		out.node = s.node
+		maps.Copy(out.sections, s.sections)
+		cur = s.sections[section]
+	case prev != nil:
+		out.node = prev.node
+	}
+
+	delete(out.sections, section)
+
+	if prev != nil {
+		if e, ok := prev.sections[section]; ok {
+			out.sections[section] = keepEntry(e, cur)
+		}
+	}
+
+	return out
+}
+
+// keepEntry is prev's entry with every instance and thing of cur that prev
+// does not hold added as cur has it; prev's own entry is not changed.
+func keepEntry(prev, cur *entry) *entry {
+	if cur == nil {
+		return prev
+	}
+
+	e := *prev
+	e.instances = merged(prev.instances, cur.instances)
+	e.things = merged(prev.things, cur.things)
+
+	return &e
+}
+
+// merged is a copy of prev with every key of cur that prev lacks; prev as it
+// is when cur adds none.
+func merged[K comparable](prev, cur map[K]outcome) map[K]outcome {
+	var out map[K]outcome
+
+	for k, got := range cur {
+		if _, ok := prev[k]; ok {
+			continue
+		}
+
+		if out == nil {
+			out = maps.Clone(prev)
+			if out == nil {
+				out = make(map[K]outcome, len(cur))
+			}
+		}
+
+		out[k] = got
+	}
+
+	if out == nil {
+		return prev
+	}
+
+	return out
 }
