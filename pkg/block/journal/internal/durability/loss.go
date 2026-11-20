@@ -51,9 +51,12 @@ type Loss struct {
 	// reported it when its window failed, so the open that appends the
 	// record the failed append owed publishes no new event for it. Lose
 	// appends the record and keeps the causality registration its placement
-	// files, but the ring holds nothing and the zero event answers. A
-	// reported loss also takes back a piece a placed but unsynced record of
-	// an earlier Lose holds, to append the record that one never synced.
+	// files, but the ring holds nothing and the zero event answers. The
+	// credit holds only while the report's own answer stands: a take that
+	// overtakes a dead, unread claim clears it and publishes the loss here,
+	// keeping a raise the caller says was already made. A reported loss
+	// also takes back a piece a placed but unsynced record of an earlier
+	// Lose holds, to append the record that one never synced.
 	Reported bool
 
 	// Deferred appends no record: the copy that retires the dropped
@@ -157,11 +160,11 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 
 	// The piece is taken in the directory's state, shared with every other
 	// Durability on it: one already named by a Place, or by the Lose of this
-	// instance, of one still live, or of one whose ring a reader was
-	// served, is reported by whichever call took it, never again. The Lose
-	// of an instance stopped with its ring unread died with it, and this
-	// take takes the piece over, so the loss is reported here as this
-	// instance's.
+	// instance, of one still live, or of one whose loss's event a reader
+	// took away, is reported by whichever call took it, never again. The
+	// Lose of an instance stopped before any reader reached its loss's
+	// event retired with it, and this take takes the piece over, so the
+	// loss is reported here as this instance's.
 	//
 	// A reported loss takes back a piece a placed but unsynced record holds:
 	// the take stopped its second event, not the record it is still owed.
@@ -171,13 +174,22 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// failure of the append hands that debt back, never releasing the
 	// piece as though nothing named the loss.
 	retaken := false
-	if took, debt := d.dir.take(k, d); !took {
+	if took, takeover, debt := d.dir.take(k, d); !took {
 		if !l.Reported || !d.dir.retakeUnsynced(k) {
 			return core.LossEvent{}, nil
 		}
 		retaken = true
 	} else {
 		retaken = debt
+		if takeover && l.Reported {
+			// The claim this take overtook belonged to an instance that
+			// stopped before any reader reached the event its loss
+			// published: the report Reported credits answered nothing, so
+			// this call publishes the loss itself. Raised stays set, for
+			// the overtake instance already raised the generation, and a
+			// second raise would count again a loss no reader was told of.
+			l.Reported = false
+		}
 	}
 
 	var at segment.Location
@@ -303,10 +315,11 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// decision: a drop whose record could not be appended is never undone.
 	// The journal stops holding what it cannot produce, and a loss only errs
 	// toward fetching the extent again, so the caller's drop stands, the
-	// event is published — unless the caller already reported the failure,
-	// when the suppression above holds no event for the ring and the zero
-	// event answers — and the sequence number joins the directory's
-	// failed list for the next open to name. A deferred loss is not on that
+	// event is published — unless the caller already reported the failure
+	// and the take took no dead claim over, in which case the suppression
+	// above holds no event for the ring and the zero event answers — and
+	// the sequence number joins the directory's failed list for the next
+	// open to name. A deferred loss is not on that
 	// list: its record is owed to the copy that retires the segment.
 	//
 	// decision: a superseded loss whose record is refused stays off the
@@ -318,22 +331,30 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	if recErr != nil {
 		if l.Reason != core.LossSuperseded {
 			d.dir.addFailed(l.Seq)
-			// decision: the piece a failure took is handed back with it, but
-			// only when the record never placed: the registry's pieces name
-			// losses whose record may be on disk — a record placed but not
-			// synced sits in its segment, a crash may keep it, and a reopen's
-			// Place of it publishes no second event only while the piece
-			// stays taken — so releasing it here would let the next open
-			// report the same loss record as new (see the release doc's own
-			// rule). Overturned by a caller that appends the record itself
-			// instead of retrying the loss, which would make the taken piece
-			// the dedup that stops a second attempt. A kept piece is marked
-			// unsynced, so the open's pass can tell it from one a durable
-			// record holds and append the record it is still owed. A piece
-			// retaken from an earlier unsynced record stays held too: that
-			// record is still on disk, so a failed retry frees nothing.
+			// decision: the piece a failure took is handed back with it,
+			// but only when the record never placed and the instance still
+			// lives: the registry's pieces name losses whose record may be
+			// on disk — a record placed but not synced sits in its segment,
+			// a crash may keep it, and a reopen's Place of it publishes no
+			// second event only while the piece stays taken — so releasing
+			// it here would let the next open report the same loss record
+			// as new (see the release doc's own rule). A stopped instance
+			// keeps its claim instead: the piece stays taken, but the claim
+			// retires with the instance, and the open that takes it over
+			// learns — the takeover is the word — that the report the dead
+			// ring held answered nothing, so the record is appended again
+			// and the loss republished. Overturned by a caller that appends
+			// the record itself instead of retrying the loss, which would
+			// make the taken piece the dedup that stops a second attempt.
+			// A kept piece is marked unsynced, so the open's pass can tell
+			// it from one a durable record holds and append the record it is
+			// still owed. A piece retaken from an earlier unsynced record
+			// stays held too: that record is still on disk, so a failed
+			// retry frees nothing.
 			if at == (segment.Location{}) && !retaken {
-				d.dir.release(k)
+				if !d.claimsDead() {
+					d.dir.release(k)
+				}
 			} else {
 				d.dir.holdUnsynced(k)
 			}
@@ -488,11 +509,12 @@ func (d *Durability) EndDeferral(seg core.SegmentID, l Loss) bool {
 // counts nothing: the counters are of drops this run made, and the record
 // is already on disk. A piece (seq and ev.Extent) already taken — by a
 // Place of whichever open, by the Lose of this instance, of a still live
-// one, or of one whose ring a reader was served, all of which answer for
-// the piece — publishes nothing, so a later open does not report the same
-// loss record as new, while another piece of the same record is placed on
-// its own. The Lose of an instance stopped with its ring unread died with
-// it, and the Place takes the piece over: the record the disk names is
+// one, or of one whose loss's event a reader took away, all of which
+// answer for the piece — publishes nothing, so a later open does not
+// report the same loss record as new, while another piece of the same
+// record is placed on its own. The Lose of an instance stopped before any
+// reader reached its loss's event retired with it, and the Place takes
+// the piece over: the record the disk names is
 // published here, into this instance's own fresh ring, as found at open —
 // the ruling that makes the found-at-open ring serve a reopen in one
 // process — after which the Place claim that replaced it answers every

@@ -1124,15 +1124,17 @@ func (d *Durability) Stats() Part {
 // when Stop returns. A second call is a no-op.
 func (d *Durability) Stop() {
 	d.stop.Do(func() {
-		// The instance's unread claims in the registry's pieces die here,
-		// whatever the caller's kind of close — a clean journal Close
-		// drains into this Stop, and so does the crash fixture's close of
-		// a dead journal — for past this point no reader reaches the ring
-		// they went to. A reader that already took its events away was
-		// answered by them, and the claims of the reads it served stay;
-		// the queued Corrupt losses the drain below takes carry claims
-		// born dead when no reader saw them, and a later open takes those
-		// pieces over, which is what its own fresh ring is for.
+		// The instance's unread claims in the registry's pieces retire
+		// here, whatever the caller's kind of close — a clean journal
+		// Close drains into this Stop, and so does the crash fixture's
+		// close of a dead journal — for past this point no reader reaches
+		// the ring they went to. A reader that already reached an event
+		// answered it, and the claims of the reads it served stay; the
+		// queued Corrupt losses the drain below takes carry claims born
+		// dead when no reader saw them, and a later open takes those
+		// pieces over — the takeover clearing the Reported the dead
+		// report still credited — and republishes the losses into the
+		// open's own fresh ring, which is what that ring is for.
 		d.dead.Store(true)
 		d.mu.Lock()
 		d.stopped = true

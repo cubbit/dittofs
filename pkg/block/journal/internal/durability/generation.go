@@ -210,37 +210,40 @@ func (s *dirState) takeoverLocked(k piece, c claim) {
 
 // take records that the piece k was reported on the journal by d, reporting
 // false when a claim that still holds — a Place's, the Lose of d itself,
-// of an instance still live, or of one whose ring a reader was served —
-// already had it. The call that took the piece is the one that reports it:
-// a later call says only that the piece was named before, and never that
-// its record is on disk. The Lose of an instance stopped with its ring
-// unread is taken over, for its claim died with it: the loss it took is
-// this take's to report. The take also answers whether the claim it
-// overtook held an unsynced record — a debt the caller's own append now
-// pays, so a failure of that append re-holds the piece, never releasing it
-// as though nothing named the loss.
-func (s *dirState) take(k piece, d *Durability) (took, unsyncedDebt bool) {
+// of an instance still live, or of one whose loss's event a reader took
+// away — already had it. The call that took the piece is the one that
+// reports it: a later call says only that the piece was named before, and
+// never that its record is on disk. The Lose of an instance stopped before
+// any reader reached its loss's event is taken over, for its claim retired
+// with it: the loss it took is this take's to report, and takeover reports
+// the same, so the caller learns the only report the loss had answered
+// nothing. The take also answers whether the claim it overtook held an
+// unsynced record — a debt the caller's own append now pays, so a failure
+// of that append re-holds the piece, never releasing it as though nothing
+// named the loss.
+func (s *dirState) take(k piece, d *Durability) (took, takeover, unsyncedDebt bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.heldLocked(k, d) {
-		return false, false
+		return false, false, false
 	}
+	c, had := s.pieces[k]
 	_, unsyncedDebt = s.unsynced[k]
 	s.takeoverLocked(k, claim{d: d})
-	return true, unsyncedDebt
+	return true, had && !c.placed, unsyncedDebt
 }
 
 // takePiece takes the piece of the loss record an open's Place found on
 // disk (dropped over ext), reporting false when a claim that still holds
 // already had it. The call that took the piece is the one that publishes;
 // a later one says only that the piece was named before, and never that
-// its record is on disk. The Lose of an instance stopped with its ring
-// unread is taken over as a Place's — no reader was ever answered for it,
-// so the record the open found is placed anew, found at open — and the
-// claim that replaces it never dies, answering every later open. The
-// unsynced hold the dead claim carried stays: the record it named never
-// landed durable, so the open's pass still owes the append, which clears
-// the hold when its own Lose retakes the piece.
+// its record is on disk. The Lose of an instance stopped before any reader
+// reached its loss's event is taken over as a Place's — no reader was ever
+// answered for that loss, so the record the open found is placed anew,
+// found at open — and the claim that replaces it never dies, answering
+// every later open. The unsynced hold the dead claim carried stays: the
+// record it named never landed durable, so the open's pass still owes the
+// append, which clears the hold when its own Lose retakes the piece.
 func (s *dirState) takePiece(d *Durability, dropped core.Seq, ext core.Extent) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,25 +255,34 @@ func (s *dirState) takePiece(d *Durability, dropped core.Seq, ext core.Extent) b
 	return true
 }
 
-// named reports whether a Lose or a Place of this journal identity already
-// took the piece k: a loss whose record landed or was deferred, or a loss
-// record found on disk — whichever instance took the piece, a stopped one
-// included, for the piece stays taken: an open that takes a dead claim
-// over only replaces it, in place, and the entry itself leaves on release
-// alone. The open's pass consults it apart from its own take, to know
-// which losses no record is owed for.
+// named reports whether a Lose or a Place of this journal identity took the
+// piece k and still answers for it: a loss whose record landed or is
+// deferred holds its claim while its instance lives or a reader reached
+// its event, and a Place's claim never retires. A claim of an instance
+// that stopped before any reader reached its loss's event answers for
+// nothing — the piece stays taken, but the open's pass plans it as
+// unnamed, and the take that follows takes the claim over and republishes
+// the loss it names. A deferred loss answers the same rule: a deferring
+// instance that stopped unread leaves the copy the registry's deferral
+// still drives — the copy that retires the segment writes its record —
+// while the pass that re-plans the piece appends a record of its own,
+// two records naming one piece, answered once by the next open's
+// placement. The open's pass consults named apart from its own take, to
+// know which losses no record is owed for.
 func (s *dirState) named(k piece) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.pieces[k]
-	return ok
+	c, ok := s.pieces[k]
+	return ok && (c.placed || !c.d.claimsDead() || c.d.claimServed(c.ev))
 }
 
-// release hands back a piece a take claimed: the loss record it names never
-// landed, and the next open owes that record — the failed list the same
-// failure appended holds the claim it retries under. Pieces of losses whose
-// record is on disk are never released: the take is what stops a second
-// record for them.
+// release hands back a piece a live take claimed: the loss record it names
+// never landed, and the next open owes that record — the failed list the
+// same failure appended holds the claim it retries under. A stopped
+// instance never releases: its claim retires on its own, and keeping it
+// is what carries the report it never answered to the open that takes
+// the piece over. Pieces of losses whose record is on disk are never
+// released: the take is what stops a second record for them.
 func (s *dirState) release(k piece) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
