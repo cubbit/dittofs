@@ -95,4 +95,17 @@ func TestThingKeyRoundTrip(t *testing.T) {
 		t.Errorf("splitThing(%q) = %q, %q, %v; want %q, journal.spare_target, true",
 			key, thing, declared, ok, thingID)
 	}
+
+	// An adapter's key already carries the adapter: its round trip gives
+	// the key back as written, the protocol named once.
+	const adapter = "adapters.smb.pending_timeout"
+
+	thing, declared, ok = splitThing("adapters", adapter)
+	if !ok {
+		t.Fatalf("splitThing(%q) does not split", adapter)
+	}
+
+	if key := thingKey("adapters", declared, thing); key != adapter {
+		t.Errorf("thingKey(splitThing(%q)) = %q, want it back", adapter, key)
+	}
 }

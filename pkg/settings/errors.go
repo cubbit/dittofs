@@ -1,9 +1,6 @@
 package settings
 
-import (
-	"errors"
-	"fmt"
-)
+import "errors"
 
 // The refusals Check returns, each matchable with errors.Is.
 var (
@@ -27,13 +24,3 @@ var (
 	// the capability check and the claim are built.
 	ErrUnproven = errors.New("settings: store location change not provable yet (RFC 13 §5.2)")
 )
-
-// unbuilt is the error of a function whose body is not built yet; the message
-// names the work that fills it. A stub that returns no error panics with it.
-func unbuilt(name string) error {
-	return fmt.Errorf(
-		"settings: %s is filled by configuration epic 3: %w",
-		name,
-		errors.ErrUnsupported,
-	)
-}
