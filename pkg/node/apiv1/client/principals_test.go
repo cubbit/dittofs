@@ -39,8 +39,8 @@ func TestPrincipalAccessors(t *testing.T) {
 		}
 		names = append(names, it.Spec.Name)
 	}
-	if !slices.Equal(names, []string{"alice"}) {
-		t.Errorf("Users().List: %v, want alice alone", names)
+	if !slices.Equal(names, []string{"admin", "alice"}) {
+		t.Errorf("Users().List: %v, want the installation's admin and alice alone", names)
 	}
 
 	g, err := c.Groups().Create(ctx, apiv1.GroupSpec{Name: "staff"})

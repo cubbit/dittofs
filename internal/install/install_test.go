@@ -315,11 +315,19 @@ func (f *fix) snapshot() map[string]string {
 	return m
 }
 
-// A run over a finished installation refuses and changes nothing.
+// A run over a finished installation refuses and changes nothing, even with
+// a journal directory emptied since, which it neither initialises again nor
+// records.
 func TestSecondRunRefused(t *testing.T) {
 	f := newFix(t)
 	if err := install.Run(t.Context(), f.deps()); err != nil {
 		t.Fatalf("Run: %v", err)
+	}
+	if err := os.RemoveAll(f.dir(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(f.dir(1), 0o700); err != nil {
+		t.Fatal(err)
 	}
 	before := f.snapshot()
 	f.out.Reset()

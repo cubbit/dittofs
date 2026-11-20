@@ -130,8 +130,8 @@ func TestUserCreate(t *testing.T) {
 			t.Errorf("POST /users naming %s: answered %d %s, want %d", tc.name, r.status, r.body, tc.code)
 		}
 	}
-	if n := s.userCount(t); n != 2 {
-		t.Errorf("users stored after the refusals: %d, want alice and bob alone", n)
+	if n := s.userCount(t); n != 3 {
+		t.Errorf("users stored after the refusals: %d, want the installation's administrator, alice and bob alone", n)
 	}
 }
 
