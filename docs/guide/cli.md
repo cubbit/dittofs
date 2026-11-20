@@ -286,8 +286,21 @@ Global flags:
 
 Reset the administrator's credentials
 
-Reset the credentials of the installation's administrator, on the host
-that holds its metadata store, for when no administrator can sign in.
+Reset the credentials of an administrator, on the host that holds the
+installation's metadata store, for when no administrator can sign in.
+
+The node must be stopped: while a node holds the store, the reset refuses and
+changes nothing. It resets an existing, enabled account with role admin, and
+refuses any other. It sets a new generated password, printed once to
+standard output and never to the log, that must be changed at the first
+sign-in; refuses every credential issued before it; clears the account's
+sign-in failure count and every source's; and records the reset in the audit,
+naming this host.
+
+An account with a uid gets an NT hash of the new password while NTLM is on,
+and an NT hash of the old password is overwritten otherwise. Both are sealed
+under keys.protocol: the reset refuses such an account when the bootstrap
+does not set it.
 
 ```
 dfs reset-admin [flags]
@@ -296,8 +309,17 @@ dfs reset-admin [flags]
 **Examples:**
 
 ```bash
-# Reset the administrator of the installation the default configuration names
+# Reset the administrator "admin"
 dfs reset-admin
+
+# Reset another administrator
+dfs reset-admin --name ops
+```
+
+Flags:
+
+```
+      --name string   the administrator account to reset (default "admin")
 ```
 
 Global flags:

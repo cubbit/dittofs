@@ -1,7 +1,9 @@
-// Package install is the initialisation step, dfs init's logic: it creates
-// an installation's metadata store, initialises each journal directory,
-// writes the node's identity beside each, records the journals, and commits
-// the bootstrap administrator with the signing key.
+// Package install is what dfs runs over the host's own store, outside the
+// API: the initialisation step, dfs init's logic, which creates an
+// installation's metadata store, initialises each journal directory, writes
+// the node's identity beside each, records the journals, and commits the
+// bootstrap administrator with the signing key; and the break-glass reset,
+// dfs reset-admin's, which resets an administrator's password.
 package install
 
 import (
@@ -69,9 +71,19 @@ type Deps struct {
 	// Logger records each step; nil logs nothing. It never sees a password.
 	Logger *slog.Logger
 
-	// after runs once each write has committed, naming it; a test's hook,
-	// nil in production.
-	after func(write string) error
+	after hook
+}
+
+// hook runs once each write has committed, naming it; a test's hook, nil in
+// production. An error it returns stops the run with that error.
+type hook func(write string) error
+
+// done runs h, if it is set, after write committed.
+func (h hook) done(write string) error {
+	if h == nil {
+		return nil
+	}
+	return h(write)
 }
 
 // Run runs the initialisation step: the store's Init, with a minted
@@ -131,7 +143,7 @@ func Run(ctx context.Context, d Deps) error {
 	// is the way back. Printing first would show a password that a failed
 	// commit never stored. Overturned if the step can hand the password over
 	// inside the commit, which no output stream allows.
-	if _, err := fmt.Fprintf(d.Out, "The administrator %q's generated password, shown once; it must be changed at the first sign-in:\n%s\n", AdminName, password); err != nil {
+	if err := printPassword(d.Out, AdminName, password); err != nil {
 		return fmt.Errorf("install: the installation is initialised but the generated password could not be printed; reset it with dfs reset-admin: %w", err)
 	}
 	return nil
@@ -156,13 +168,7 @@ func (d Deps) check() error {
 	return nil
 }
 
-// done runs the test's hook, if one is set, after write committed.
-func (d Deps) done(write string) error {
-	if d.after == nil {
-		return nil
-	}
-	return d.after(write)
-}
+func (d Deps) done(write string) error { return d.after.done(write) }
 
 // initStore opens the store, first initialising it with a minted
 // installation ID when it holds none, and returns it with the installation's
@@ -310,8 +316,7 @@ func commitAdmin(ctx context.Context, d Deps, st *kvstore.Store, inst [16]byte, 
 	if err != nil {
 		return fmt.Errorf("install: the administrator's password: %w", err)
 	}
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(admin.Principal.ID[:])}, Key: "password"}
-	pw, err := s.Seal(ctx, entity.SecretPassword, owner, admin.Password, h.Password)
+	pw, err := s.Seal(ctx, entity.SecretPassword, userSecretOwner(admin, "password"), admin.Password, h.Password)
 	if err != nil {
 		return fmt.Errorf("install: seal the administrator's password: %w", err)
 	}
@@ -349,9 +354,9 @@ func commitAdmin(ctx context.Context, d Deps, st *kvstore.Store, inst [16]byte, 
 // signing key are sealed under.
 //
 // ponytail: the role is fixed to storage, as both secrets sealed here are
-// storage-role kinds. A caller sealing a protocol-role kind, the reset's NT
-// hash, needs a kind-to-role lookup exported by pkg/secrets, which would
-// also remove this adapter and the three like it.
+// storage-role kinds; the reset, which also seals an NT hash, names each
+// role at its call instead. A kind-to-role lookup exported by pkg/secrets
+// would remove this adapter and the three like it.
 type sealer struct{ p *secrets.Provider }
 
 func (s sealer) Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte) (entity.Secret, error) {
@@ -394,8 +399,25 @@ func firstPassword(file, env string) (password []byte, generated bool, err error
 		}
 		return []byte(v), false, nil
 	}
+	return generatePassword(), true, nil
+}
+
+// generatePassword is generatedLen random bytes, base64url-encoded.
+func generatePassword() []byte {
 	raw := make([]byte, generatedLen)
 	_, _ = rand.Read(raw) // crypto/rand.Read never fails
 	defer clear(raw)
-	return []byte(base64.RawURLEncoding.EncodeToString(raw)), true, nil
+	return []byte(base64.RawURLEncoding.EncodeToString(raw))
+}
+
+// printPassword prints the generated password of the account name to w, the
+// one thing a run prints.
+func printPassword(w io.Writer, name string, password []byte) error {
+	_, err := fmt.Fprintf(w, "The administrator %q's generated password, shown once; it must be changed at the first sign-in:\n%s\n", name, password)
+	return err
+}
+
+// userSecretOwner is the owner of u's secret under key, as the API names it.
+func userSecretOwner(u entity.User, key string) entity.SecretOwner {
+	return entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: key}
 }

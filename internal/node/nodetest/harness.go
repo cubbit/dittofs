@@ -173,6 +173,15 @@ func (h *Harness) Metrics() *metrics.Registry { return h.cfg.Metrics }
 // NodeID is the node's identity, which its records are kept under.
 func (h *Harness) NodeID() entity.NodeID { return nodeID }
 
+// StoreDir is Badger's directory, empty for an in-memory harness: what a
+// bootstrap names for a command run over the harness's installation, as dfs
+// reset-admin is.
+func (h *Harness) StoreDir() string { return h.dir }
+
+// StorageKeyFile is the storage key file the harness's bootstrap names,
+// opened with the passphrase New sets.
+func (h *Harness) StorageKeyFile() string { return h.cfg.Bootstrap.Keys.Storage.Local.File }
+
 // Store is a metadata store over the node's KV, for a test to write records
 // and read them back, as another node's would.
 func (h *Harness) Store() *kvstore.Store { return h.store }

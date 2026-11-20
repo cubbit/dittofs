@@ -7,8 +7,8 @@ var ErrCrash = errors.New("install test: stopped at the crash point")
 
 // After returns d with hook run once each write commits, naming it; an error
 // it returns stops Run with that error.
-func After(d Deps, hook func(write string) error) Deps {
-	d.after = hook
+func After(d Deps, h func(write string) error) Deps {
+	d.after = h
 	return d
 }
 
@@ -27,4 +27,11 @@ func CrashAfter(d Deps, n int, seen *[]string) Deps {
 		}
 		return nil
 	})
+}
+
+// ResetAfter returns d with hook run once each write of the reset commits,
+// naming it; an error it returns stops ResetAdmin with that error.
+func ResetAfter(d ResetDeps, h func(write string) error) ResetDeps {
+	d.after = h
+	return d
 }

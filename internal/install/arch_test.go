@@ -10,9 +10,10 @@ import (
 	"testing"
 )
 
-// The initialisation step reaches the node's tree for the signing key's seal
-// alone: auth is its one import under internal/node, so the node's import
-// rules keep holding for what it builds.
+// The package reaches the node's tree only for auth: the initialisation
+// step's signing-key seal and the reset's ResetAccount. auth is its one
+// import under internal/node, so the node's import rules keep holding for
+// what it builds.
 func TestImportsUnderTheNode(t *testing.T) {
 	const node = "github.com/cubbit/dittofs/internal/node"
 	entries, err := os.ReadDir(".")
