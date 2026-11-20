@@ -381,8 +381,8 @@ would leave one less is refused, as one whose operation after a `READ` has a
 bound near the cap is
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
 In an NFSv4.1 session the hook also lowers the room it is handed by what the
-session's `ca_maxresponsesize` falls short of the cap, read from the session
-the compound's own `SEQUENCE` resolved into `Request.State` (§3.1), so the
+session's `ca_maxresponsesize` falls short of the cap, a budget the compound's
+own `SEQUENCE` copies from its session into `Request.State` (§3.1), so the
 reply stays within that budget too.
 
 > decision: a `READDIR`'s `maxcount`, and a `LISTXATTRS`'s `lxa_maxcount`
