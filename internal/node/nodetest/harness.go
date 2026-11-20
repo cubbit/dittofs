@@ -5,6 +5,7 @@ package nodetest
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,11 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/install"
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -27,10 +30,10 @@ import (
 // start is when every harness's clock starts.
 var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-var (
-	install = [16]byte{'n', 'o', 'd', 'e', 't', 'e', 's', 't'}
-	nodeID  = entity.NodeID{'n', 'o', 'd', 'e'}
-)
+var nodeID = entity.NodeID{'n', 'o', 'd', 'e'}
+
+// passphrase opens the harness's storage key file.
+const passphrase = "nodetest passphrase"
 
 // Harness is one node built over its own installation.
 type Harness struct {
@@ -66,10 +69,12 @@ func WithNew(f func(node.Config) (*node.Node, error)) Option {
 	return func(o *options) { o.newNode = f }
 }
 
-// New initialises an installation, the metadata store and one journal under
-// t.TempDir(), records the journal for the node's one device, and builds a
-// node over them, its API, metrics listener and adapters on loopback. Every
-// KV the harness opens is closed when the test ends.
+// New initialises an installation under t.TempDir() through install.Run, as
+// dfs init does: the metadata store, one journal device and the
+// administrator, its password generated and discarded. It then builds a node
+// over them, its API, metrics listener and adapters on loopback. Every KV the
+// harness opens is closed when the test ends. It sets the key file's
+// passphrase in the environment, so a test using it cannot run in parallel.
 func New(t testing.TB, opts ...Option) *Harness {
 	t.Helper()
 	o := options{newNode: node.New}
@@ -89,11 +94,6 @@ func New(t testing.TB, opts ...Option) *Harness {
 	if err := os.Mkdir(dev, 0o700); err != nil {
 		t.Fatalf("nodetest: device directory: %v", err)
 	}
-	jid, err := journal.Init(ctx, dev, install, journal.WithClock(h.clock), journaltest.SuitableMount())
-	if err != nil {
-		t.Fatalf("nodetest: journal init: %v", err)
-	}
-
 	b := bootstrap.Bootstrap{Journals: []bootstrap.Journal{{Path: dev}}}
 	b.Node.ID = nodeID
 	b.API.Listen = []string{"127.0.0.1:0"}
@@ -106,15 +106,41 @@ func New(t testing.TB, opts ...Option) *Harness {
 		Journal:   []journal.Option{journaltest.SuitableMount()},
 	}
 	h.openKV(t)
-	if err := kvstore.Init(ctx, h.cfg.KV, install); err != nil {
-		t.Fatalf("nodetest: store init: %v", err)
+	err := install.Run(ctx, install.Deps{
+		Bootstrap:  &h.cfg.Bootstrap,
+		KV:         h.cfg.KV,
+		StorageKey: storageKey(t, root),
+		Journal:    []journal.Option{journal.WithClock(h.clock), journaltest.SuitableMount()},
+		Out:        io.Discard,
+		Logger:     h.cfg.Logger,
+	})
+	if err != nil {
+		t.Fatalf("nodetest: install: %v", err)
 	}
 	h.openStore(t)
-	if err := h.store.RecordJournal(ctx, jid, nodeID, entity.JournalDir(dev)); err != nil {
-		t.Fatalf("nodetest: record the journal: %v", err)
-	}
 	h.build(t)
 	return h
+}
+
+// storageKey writes a storage key file under dir and opens it, closed when
+// the test ends.
+func storageKey(t testing.TB, dir string) keyprovider.KeyProvider {
+	t.Helper()
+	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
+	b, err := keyprovider.GenerateKeyFile(passphrase)
+	if err != nil {
+		t.Fatalf("nodetest: generate the storage key: %v", err)
+	}
+	path := filepath.Join(dir, "storage.key")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatalf("nodetest: write the storage key: %v", err)
+	}
+	kp, err := keyprovider.NewProvider(t.Context(), keyprovider.Config{Kind: keyprovider.KindLocal, File: path})
+	if err != nil {
+		t.Fatalf("nodetest: open the storage key: %v", err)
+	}
+	t.Cleanup(func() { _ = kp.Close() })
+	return kp
 }
 
 // Restart stops the node and builds a new one over a new KV on the same
