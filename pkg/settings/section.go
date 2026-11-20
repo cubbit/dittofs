@@ -142,6 +142,10 @@ var classes = map[string]Class{
 // hold a plaintext typed in place of a reference (RFC 13 §6 and §7): Read
 // prints Validate's refusals and runs no reference check of its own.
 //
+// A refusal from Validate prints under the section's key, the prefix or the
+// prefix and the thing, so its text names the field and not the section, or
+// the section shows twice.
+//
 // Only an embedded struct value is flattened. An embedded pointer
 // is read as a field, so it needs its own json name and class, where json
 // would flatten it: a nil default has no fields to read defaults from, and

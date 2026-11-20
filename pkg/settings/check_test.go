@@ -371,6 +371,11 @@ func TestCheckUnknownKeyNoSection(t *testing.T) {
 		err := s.check(tb, role, settings.Put(setting(installation, "identity.newer", "1")))
 		refused(t, "undeclared put by "+role.String(), err, settings.ErrUnknownKey, "")
 	}
+
+	// An undeclared key put at a scope its section lacks is unknown first.
+	err := s.check(tb, entity.RoleOperator, settings.Put(setting(nodeA, "identity.mod", "1")))
+	refused(t, "undeclared put per node", err, settings.ErrUnknownKey,
+		"setting ("+scopeName(nodeA)+`): "identity.mod": unknown key; did you mean identity.mode?`)
 }
 
 // A hand-built Write, made by neither Put nor Delete, is refused naming its
@@ -1170,4 +1175,105 @@ func TestCheckThingInLines(t *testing.T) {
 	)
 	refused(t, "required", s.check(tb, entity.RoleOperator, settings.Delete(nodeA, key)),
 		settings.ErrRequired, "setting ("+scopeName(nodeA)+"): "+key+": required and has no value")
+}
+
+// A thing holding a control character is no thing: its key is unknown and
+// printed escaped, so it cannot forge a line.
+func TestCheckThingWithControlChar(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := settings.Table{
+		settings.Of("journal", settings.PerThing(entity.ScopeNode, "journal"), journalSettings{}),
+	}
+
+	key := "journal.x\n<forged line>\n.spare_target"
+	err := s.check(tb, entity.RoleOperator, settings.Put(setting(nodeA, key, "1")))
+	refused(t, "control char thing", err, settings.ErrUnknownKey,
+		"setting ("+scopeName(nodeA)+`): "journal.x\n<forged line>\n.spare_target": `+
+			"unknown key; did you mean journal.<journal>.spare_target?")
+
+	if err != nil && strings.Contains(err.Error(), "\n<forged") {
+		t.Errorf("err = %q prints the line break raw", err)
+	}
+}
+
+// A delete of a per-thing key with no thing makes up no row: it passes for
+// an admin on a section that requires a key, and judges nothing.
+func TestCheckDeleteNoThing(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := settings.Table{
+		settings.Of(
+			"journal",
+			settings.PerThing(entity.ScopeNode, "journal"),
+			journalSettings{},
+			settings.Required("SpareTarget"),
+		),
+	}
+
+	err := s.check(tb, entity.RoleAdmin, settings.Delete(nodeA, "journal.spare_target"))
+	if err != nil {
+		t.Errorf("delete with no thing: err = %v, want nil", err)
+	}
+}
+
+// failSettings is a section whose Validate refuses a value over ten.
+type failSettings struct {
+	SpareTarget uint32 `json:"spare_target" class:"live"`
+}
+
+func (f failSettings) Validate() error {
+	if f.SpareTarget > 10 {
+		return fmt.Errorf("spare_target must be at most 10, got %d", f.SpareTarget)
+	}
+
+	return nil
+}
+
+// A Validate refusal in a per-thing section names the thing, as the decode
+// and required refusals do.
+func TestCheckValidateNamesThing(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := settings.Table{
+		settings.Of("journal", settings.PerThing(entity.ScopeNode, "journal"), failSettings{}),
+	}
+
+	key := "journal." + journalID + ".spare_target"
+	refused(t, "validate", s.check(tb, entity.RoleOperator, settings.Put(setting(nodeA, key, "11"))),
+		settings.ErrInvalid,
+		"setting ("+scopeName(nodeA)+"): journal."+journalID+": spare_target must be at most 10, got 11")
+}
+
+// spanSettings is a section whose low end may not pass its high end.
+type spanSettings struct {
+	Lo uint32 `json:"lo" class:"live"`
+	Hi uint32 `json:"hi" class:"live"`
+}
+
+func (s spanSettings) Validate() error {
+	if s.Lo > s.Hi {
+		return fmt.Errorf("lo %d above hi %d", s.Lo, s.Hi)
+	}
+
+	return nil
+}
+
+// A node write is judged on the installation's value with its own row on top.
+func TestCheckNodeWriteOverInstallation(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := settings.Table{settings.Of("span",
+		settings.Override(entity.ScopeInstallation, entity.ScopeNode), spanSettings{Hi: 100})}
+
+	s.put(t, installation, "span.lo", "50")
+
+	err := s.check(tb, entity.RoleOperator, settings.Put(setting(nodeA, "span.hi", "20")))
+	if !errors.Is(err, settings.ErrInvalid) {
+		t.Errorf("node hi 20 under installation lo 50: err = %v, want ErrInvalid", err)
+	}
 }
