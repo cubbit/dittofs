@@ -277,7 +277,7 @@ func accountKey(j entity.MachineJoin, realm entity.Setting, ok bool, names []ide
 	var r string
 	if ok {
 		if err := json.Unmarshal(realm.Value, &r); err != nil {
-			return identity.KeytabName{}, false, err
+			return identity.KeytabName{}, false, &componentError{field: directoryRealm, detail: "the stored realm is not a JSON string", err: vfserr.ErrCorrupt}
 		}
 	}
 	for _, n := range names {

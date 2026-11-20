@@ -594,3 +594,32 @@ func TestJoinRefusedForEachSpellingOfTheAccount(t *testing.T) {
 		t.Errorf("operations: %+v, want none", ops)
 	}
 }
+
+// A stored identity.directory.realm that is no JSON string answers 500
+// corrupt naming it, to a keytab's put and to a join naming an account,
+// rather than an unclassified error.
+func TestNonStringRealmAnswersCorrupt(t *testing.T) {
+	d := serveDomain(t, true)
+	d.putSetting(t, installation, "identity.directory.realm", `5`)
+	if err := d.store.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		return tx.SetMachineJoin(entity.MachineJoin{Joined: true, Account: "DFS$"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	kt := keytabOf(t, "cifs/nas.ad.example", etypeID.AES256_CTS_HMAC_SHA1_96)
+	r := d.do(t, http.MethodPut, keytabPath, putKeytab(kt), "If-None-Match", "*")
+	if p := r.problem(t); r.status != http.StatusInternalServerError || p.Code != "corrupt" || p.Field != "identity.directory.realm" {
+		t.Errorf("a keytab put under a numeric realm: answered %d %s, want 500 corrupt naming identity.directory.realm", r.status, r.body)
+	}
+	ref, ver := d.storeKeytab(t, kt)
+	st := d.state
+	st.Settings.Keytab = ref
+	st.Keytab = []secrets.Version{{Number: ver, Value: kt}}
+	if err := d.ids.Apply(st); err != nil {
+		t.Fatal(err)
+	}
+	r = d.do(t, http.MethodPost, joinPath, offlineJoin("NAS$", "pw"))
+	if p := r.problem(t); r.status != http.StatusInternalServerError || p.Code != "corrupt" || p.Field != "identity.directory.realm" {
+		t.Errorf("a join under a numeric realm: answered %d %s, want 500 corrupt naming identity.directory.realm", r.status, r.body)
+	}
+}
