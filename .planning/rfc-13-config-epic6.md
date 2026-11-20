@@ -136,7 +136,7 @@ set for it.
 | R14 | The control plane refuses a change to a bound setting while the namespace, store or share it is scoped to holds content | MUST | RFC 13 §5.1 | T6.3 |
 | R15 | For every bound setting the node's table declares, but the chain's encryption and a remote store's bucket, prefix and credential reference, the refusal holds for a put and for a delete of an override | test row | RFC 13 §9; RFC 13's plan, epic 6 | T6.3 |
 | R16 | After a refusal the content is still readable. While the data path is cut (§9), "readable" is the scope's records and the store's raw keys unchanged; the bytes are read back once RFC 20's cutover lets a share hold them | test row | RFC 13 §9 | T6.3 |
-| R17 | The same change with no content behind the scope is accepted | test row | RFC 13 §9 | T6.3 |
+| R17 | The same change with no content behind the scope is accepted. Only a remote store with no namespace naming it reads as holding no content (E5's D6: a namespace holds content for its whole life, and a share scope answers an error), so this half runs at store scope | test row | RFC 13 §9 | T6.3 |
 | R18 | A share's binding to its namespace does not change while the share holds content, except by a re-home. RFC 23's share routes build the refusal; this epic runs the row | MUST NOT | RFC 13 §5.1, §9 | T6.3 |
 | R19 | The content in these rows is written through a share | invariant | RFC 13's plan, epic 6 | T6.3 |
 
@@ -359,15 +359,18 @@ docs/guide/install.md            T6.9  the two steps
     API with content behind its scope: a put and a delete of an override are refused with the
     refusal's key and rule, the raw keys hold no new row, and the scope's records read back
     unchanged (R16).
-  - The same two writes with no content are accepted.
-  - A share with content rebound to another namespace is refused; with none, accepted.
+  - The same two writes on a store that no namespace names are accepted (R17); at namespace and
+    share scope only the refused half runs.
+  - A share with content rebound to another namespace is refused, as RFC 13 §9's row asks; the
+    share routes refuse every rebind but a re-home (`patchShare`), so no accepted half is run.
   - Content is a share bound to the namespace, as far as the node lets a share hold it (§9).
-  - The test also runs the bound, next-write and live sections it declares (D3).
-- **Tests:** per bound key, the two refusals and the accepted case on a scope with no content (a
+  - The test also runs the sections it declares (D3), one of them at store scope with a bound
+    key that is not a store location, so the accepted half has a key to run on.
+- **Tests:** per bound key, the two refusals, and the accepted case on a store with no namespace (a
   check that reads "no content" for every scope fails the refused half; one that reads "content"
   for every scope fails the accepted half, which `holdsContent` does today); a delete of an
-  override refused where a put is (catches a check wired to puts only); the share rebind (catches
-  the share routes not checking the binding).
+  override refused where a put is (catches a check wired to puts only); the share rebind refused
+  (catches the share routes not checking the binding).
 - **Rules:** rule 5 (the API's answer and the raw keys); rule 8.
 
 ### T6.4 "§6 refused" and "§6 one validator"
@@ -378,8 +381,9 @@ docs/guide/install.md            T6.9  the two steps
 - **Covers:** R20, R21.
 - **Deliverables:** `internal/node/rows_validation_test.go`: a table, in that test file, of an
   out-of-range value and a wrong-typed one for every key of every section the node's table
-  declares, which is the row's fixture set; and `refused(section, key, value) error`, the row's
-  check, which a test can call on its own.
+  declares, which is the row's fixture set, a key whose type admits every value (a bool) holding
+  an explicit "none" entry with its reason in place of the out-of-range value; and
+  `refused(section, key, value) error`, the row's check, which a test can call on its own.
 - **Acceptance criteria:**
   - Each value is refused through the API and by the section's `Validate` and decode, naming the
     field, and the effective value is unchanged (the default or the earlier value, never a clamp).
@@ -400,10 +404,13 @@ docs/guide/install.md            T6.9  the two steps
 - **Track:** the team. **Depends on:** T6.3's caller; E4's `Seal` and E5's T5.6.
 - **Covers:** R22, R23, R24.
 - **Deliverables:** `internal/node/rows_secrets_test.go`: one node run seeded with four canaries
-  (the store credential, the TLS key's bytes, a user's password, the API's signing key), exercising
-  every secret-bearing write the API has, then scanning, as bytes, every response the caller
-  reads, every export route, the logger's whole output, a `/metrics` scrape, `dfs config show`'s
-  output over the harness's bootstrap, and the audit records read through the API.
+  (the store credential, the TLS key, a user's password, the API's signing key), exercising every
+  secret-bearing write the API has, then scanning, as bytes, every response the caller reads, the
+  logger's whole output, a `/metrics` scrape, `dfs config show`'s output over the harness's
+  bootstrap, and the audit records read through the API. The TLS key canary is a real PEM key the
+  test generates with its certificate and names in the bootstrap's `api.tls`: the node loads the
+  pair at start and, bound on loopback only, serves without TLS, so the key is sought in what the
+  node prints, never in a handshake.
 - **Acceptance criteria:**
   - No scanned byte sequence contains a canary or a base64 or hex form of it.
   - Planting a canary in each scanned place makes the check fail (one case per place).
@@ -420,7 +427,9 @@ docs/guide/install.md            T6.9  the two steps
 
 - **Track:** the team. **Depends on:** T6.3's caller; E5's T5.3; E2's T2.8.
 - **Covers:** R25, R26.
-- **Deliverables:** `internal/node/rows_propagation_test.go`.
+- **Deliverables:** `internal/node/rows_propagation_test.go`, freezing reads through the
+  package's `faulted` harness helper (`reconcile_test.go`), which wraps the node's KV in
+  `kvtest.NewFaultKV` through `nodetest.WithNew`.
 - **Acceptance criteria:**
   - A live setting written through the API runs in its component within 5 s of the commit on the
     injected clock, on Badger, which offers no watch.
@@ -429,8 +438,8 @@ docs/guide/install.md            T6.9  the two steps
   - After `dfs init` and three restarts, every active version, read from the store and from the
     `format_active_version` series, equals what `dfs init` wrote, and the last restart serves (D6).
 - **Tests:** the first two at 4 s (still behind, no condition) and past 5 s (catches a node that
-  never polls, and a condition that never fires); the third through `Restart` (catches a start that
-  raises a version at open).
+  never polls, and a condition that never fires); the third through `Restart`, a guard against a
+  later change that raises a version at open, since no code raises one today (D6).
 - **Rules:** rule 3; rule 8 (`kvtest`'s fault wrapper over Badger).
 
 ### T6.7 The compose stack on `dfs init`
@@ -587,6 +596,9 @@ Pending the user's answer, each written in its recommended form above:
 - **The launchers' CLI (T6.8).** `night.sh` and the demo script provision with v1 `dfsctl store`
   commands; `dfsctl` on `feat/storage-v2` has no store command yet (RFC 23's epic 6).
   Recommended: `curl --cacert` against the routes until the CLI lands.
+- **The first password's size (R37).** Open PR #5242, on `feat/storage-v2`, caps the password file
+  at 4 KiB, its trailing newline counted, and states the limit in RFC 23 §5.4 and RFC 13
+  Appendix B. Once that text reaches `develop`, R37 and T6.9's guide text name the limit.
 - **Where the launcher tests run.** `test/launchers` must be in the `unit` suite's packages and
   needs `openssl` and a `go build` of `dfs`; confirm against `test/suites.yaml` when T6.7 starts.
 
