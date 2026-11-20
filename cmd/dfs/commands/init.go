@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cubbit/dittofs/internal/install"
-	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 )
@@ -55,6 +54,14 @@ func runInit(cmd *cobra.Command, _ []string) (err error) {
 	file, _ := cmd.Flags().GetString("admin-password-file")
 	env, _ := cmd.Flags().GetString("admin-password-env")
 	ctx := cmd.Context()
+	// A flag given an empty value, as "$UNSET" expands to, names no
+	// reference; it is refused rather than read as no flag, which would
+	// generate a password.
+	for _, flag := range []string{"admin-password-file", "admin-password-env"} {
+		if v, _ := cmd.Flags().GetString(flag); cmd.Flags().Changed(flag) && v == "" {
+			return fmt.Errorf("%w: --%s is empty", install.ErrPassword, flag)
+		}
+	}
 
 	cfg, err := bootstrap.MustLoad(configPath, os.Environ())
 	if err != nil {
@@ -84,7 +91,7 @@ func runInit(cmd *cobra.Command, _ []string) (err error) {
 		Bootstrap:    cfg,
 		KV:           kv,
 		StorageKey:   key,
-		Journal:      []journal.Option{journal.WithClock(clock)},
+		Clock:        clock,
 		PasswordFile: file,
 		PasswordEnv:  env,
 		Out:          cmd.OutOrStdout(),

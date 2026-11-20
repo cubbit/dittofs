@@ -110,7 +110,8 @@ func New(t testing.TB, opts ...Option) *Harness {
 		Bootstrap:  &h.cfg.Bootstrap,
 		KV:         h.cfg.KV,
 		StorageKey: storageKey(t, root),
-		Journal:    []journal.Option{journal.WithClock(h.clock), journaltest.SuitableMount()},
+		Clock:      h.clock,
+		Journal:    []journal.Option{journaltest.SuitableMount()},
 		Out:        io.Discard,
 		Logger:     h.cfg.Logger,
 	})

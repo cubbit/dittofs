@@ -44,7 +44,8 @@ func initConfig(t *testing.T, dir string) string {
 }
 
 // dfs init hands its password flags to the initialisation step: an empty
-// file refuses, naming it, and naming both flags is refused.
+// file refuses, naming it; a flag given an empty value refuses, naming the
+// flag, rather than generating a password; and naming both flags is refused.
 func TestInitPasswordFlags(t *testing.T) {
 	dir := t.TempDir()
 	config := initConfig(t, dir)
@@ -54,6 +55,11 @@ func TestInitPasswordFlags(t *testing.T) {
 	}
 	if _, err := runDfs("init", "--config", config, "--admin-password-file", empty); !errors.Is(err, install.ErrPassword) || !strings.Contains(err.Error(), empty) {
 		t.Errorf("dfs init --admin-password-file %s: got %v, want ErrPassword naming the file", empty, err)
+	}
+	for _, flag := range []string{"--admin-password-file", "--admin-password-env"} {
+		if out, err := runDfs("init", "--config", config, flag, ""); !errors.Is(err, install.ErrPassword) || !strings.Contains(err.Error(), flag) || out != "" {
+			t.Errorf("dfs init %s \"\": got %q, %v; want ErrPassword naming the flag, nothing printed", flag, out, err)
+		}
 	}
 	if _, err := runDfs("init", "--config", config, "--admin-password-file", empty, "--admin-password-env", "X"); err == nil ||
 		!strings.Contains(err.Error(), "admin-password-env") {
