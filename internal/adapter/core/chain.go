@@ -778,6 +778,8 @@ const chainPadding = 7
 // record past its room, uncharged, as a request alone sends such a reply.
 func (c *chain) join() (*resources.Buf, error) {
 	if len(c.held) == 1 {
+		// One reply needs no join: it is the record as the member holds it,
+		// its own charge carrying it to the writer unchanged.
 		return c.held[0].reply, nil
 	}
 	n := 0

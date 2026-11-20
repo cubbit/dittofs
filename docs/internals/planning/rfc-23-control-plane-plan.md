@@ -973,7 +973,7 @@ func (n *Node) applySMB(ctx context.Context, s adaptersettings.SMB) error {
 	if n.smb != nil && n.smbPort == s.Port {
 		return n.smb.Reconfigure(ctx, s)
 	}
-	nu, err := smb.New(adapter.Deps{VFS: n.fs, Budgets: n.budgets, Metrics: n.cfg.Metrics, Tracer: n.tracer, Logger: n.cfg.Logger}, s)
+	nu, err := smb.New(adapter.Deps{VFS: n.fs, Budgets: n.budgets, Metrics: n.cfg.Metrics, Tracer: n.tracer, SampleRatio: n.sampleRatio, Logger: n.cfg.Logger}, s)
 	if err != nil {
 		return err // the old one keeps serving
 	}
