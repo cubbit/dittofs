@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -69,18 +70,54 @@ func TestStartServesUntilSIGTERM(t *testing.T) {
 	if code := cmd.ProcessState.ExitCode(); code != 0 || !strings.Contains(tail, stopping) {
 		t.Fatalf("dfs start on SIGTERM: exit %d, want 0 after logging %q:\n%s%s", code, stopping, log, tail)
 	}
+	if strings.Contains(tail, endedOnSignal) {
+		t.Errorf("dfs start on SIGTERM after ready logged %q, want it only for a start the signal ended:\n%s%s", endedOnSignal, log, tail)
+	}
 }
 
-// A SIGTERM before the node is ready, while Start runs, stops it and exits
-// zero.
+// endedOnSignal is the record dfs logs when the termination signal, not a
+// failure of the start's own, ended Start.
+const endedOnSignal = "dfs: the start ended on a termination signal"
+
+// A SIGTERM before the node is ready, while Start runs, ends the start on the
+// signal, stops it and exits zero.
+//
+// No hook pauses Start, so the signal lands in the window between the
+// listeners' record, which listening waits for, and ready: about 0.7 s on
+// macOS. The record assertion pins the signal inside that window, so a host
+// on which the start reaches ready first fails this test red, never passes
+// it vacuously.
 func TestStartSIGTERMWhileStarting(t *testing.T) {
 	cmd, _, log, rest := listening(t)
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("SIGTERM: %v", err)
 	}
 	tail := <-rest
-	if code := cmd.ProcessState.ExitCode(); code != 0 || !strings.Contains(tail, stopping) {
-		t.Fatalf("dfs start on SIGTERM while starting: exit %d, want 0 after logging %q:\n%s%s", code, stopping, log, tail)
+	if code := cmd.ProcessState.ExitCode(); code != 0 || !strings.Contains(tail, endedOnSignal) || !strings.Contains(tail, stopping) {
+		t.Fatalf("dfs start on SIGTERM while starting: exit %d, want 0 after logging %q and %q:\n%s%s", code, endedOnSignal, stopping, log, tail)
+	}
+}
+
+// A start that fails for its own reason, its API's port already taken, exits
+// non-zero naming the failure though a SIGTERM arrived before the command
+// answered: the signal did not end it. The child signals itself once Start
+// returned, so the signal lands at no timing.
+func TestStartFailingUnderSIGTERMExitsNonZero(t *testing.T) {
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = taken.Close() })
+	dir := t.TempDir()
+	b := installation(t, dir)
+	b.api = taken.Addr().String()
+	code, out := runChild(t, b.write(t, dir), signalAfterStartEnv+"=1")
+	if code == 0 || !strings.Contains(out, "dfs: stopping on a termination signal") ||
+		!strings.Contains(out, "Error: starting the node: node: start step listeners:") {
+		t.Fatalf("dfs start with its API port taken under a SIGTERM: exit %d, output:\n%s\nwant non-zero naming the listeners' failure after logging the signal", code, out)
+	}
+	if strings.Contains(out, endedOnSignal) {
+		t.Errorf("dfs start with its API port taken under a SIGTERM logged %q, want the failure not called the signal's:\n%s", endedOnSignal, out)
 	}
 }
 
