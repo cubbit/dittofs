@@ -33,6 +33,7 @@ func Run(t *testing.T, open Opener) {
 		{"Xattrs", testXattrs},
 		{"ImmutableAndAppendOnly", testImmutableAndAppendOnly},
 		{"StoredACLDecides", testStoredACLDecides},
+		{"ModeMinorRights", testModeMinorRights},
 		{"WellKnownPrincipals", testWellKnownPrincipals},
 		{"Inheritance", testInheritance},
 		{"DeleteThroughParent", testDeleteThroughParent},
