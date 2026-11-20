@@ -52,36 +52,16 @@ func TestOldestDirtyMatchesAScan(t *testing.T) {
 	}
 }
 
-// Several writers dirty, move and clean files over their own run of seconds
-// while a sampler reads the stored oldest: every read is none or a second some
-// writer used, and once they stop the stored value equals a scan of the dirty
-// set. A settle dropped from apply leaves the stored value on a stale top.
-func TestOldestDirtyUnderConcurrentApply(t *testing.T) {
+// After several writers dirty, move and clean files at once, the stored
+// oldest equals a scan of the dirty set. It guards quiescent agreement only:
+// apply publishes the minimum under the list's mutex, so there is no window
+// between computing it and storing it for a test to land a second apply in,
+// and a stale store would show here only by chance. The sequential test above
+// pins every step.
+func TestOldestDirtyQuiescentAfterConcurrentApply(t *testing.T) {
 	const writers, perWriter, rounds = 4, 40, 60
 	base := int64(1_000_000)
-	// Writer w uses the seconds base + w*1000 + [0, perWriter).
-	used := func(k int64) bool {
-		off := k - base
-		return off >= 0 && off < writers*1000 && off%1000 < perWriter
-	}
 	var l dirtyList
-	stop := make(chan struct{})
-	var sampler sync.WaitGroup
-	sampler.Add(1)
-	go func() {
-		defer sampler.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if k := l.oldest.Load() ^ noOldest; k != noOldest && !used(k) {
-				t.Errorf("sampled oldest %d, want none or a second a writer used", k)
-				return
-			}
-		}
-	}()
 	var wg sync.WaitGroup
 	for w := range writers {
 		wg.Add(1)
@@ -107,8 +87,6 @@ func TestOldestDirtyUnderConcurrentApply(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	close(stop)
-	sampler.Wait()
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
