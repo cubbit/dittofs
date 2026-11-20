@@ -23,8 +23,9 @@ const (
 
 // openOwners maps each issue a known failure may carry to what it names. The
 // test runs with no network and no second source of truth, so this set is
-// itself what enforces the open-owner rule: it holds exactly the open epics,
-// and a row carrying any other issue fails on it.
+// itself what enforces the open-owner rule: it holds the open epics and the
+// dedicated issues that still owe a known failure, and a row carrying any
+// other issue fails on it.
 //
 // decision: the change that lands 7b or 9b removes that epic's issue here and
 // clears its rows from known.yaml in the same change — nothing else fires
@@ -36,6 +37,11 @@ var openOwners = map[string]string{
 	"#3596": "epic 7b",
 	"#3379": "epic 9b",
 	"#3395": "epic 12 (T12.2)",
+	"#4859": "the open's loss records for synced damage",
+	"#4860": "the record-less take's return to the pool",
+	"#4861": "the identity refusal and error",
+	"#4862": "the same-process reopen's loss record",
+	"#4863": "the open's removal markers",
 }
 
 // openOwnerList names each open owner with its issue, so a failure that
@@ -80,26 +86,26 @@ var stubClass = regexp.MustCompile(`^stub: ([A-Za-z_.]+)`)
 // rows. The ceiling is that a new row has no entry until someone adds it, and
 // the test fails on it.
 var testOwner = map[string]string{
-	"TestRFC1A_SinceYieldsOver":                               "#3395",
+	"TestRFC1A_SinceYieldsOver":                               "#4863",
 	"TestRFC1A_SyncedLossMasksSuperseded":                     "#3395",
 	"TestRFC1B_HeadroomIsAllocated":                           "#3395",
 	"TestRFC1B_ReadOnlyProbe":                                 "#3395",
 	"TestRFC1B_ReadOnlyStopsTheDrain":                         "#3395",
 	"TestRFC1B_RecordsWithoutBytesAtTheLimit":                 "#3395",
 	"TestRFC1C_IncrementalReport":                             "#3395",
-	"TestRFC1C_LossSurvivesRestart":                           "#3395",
+	"TestRFC1C_LossSurvivesRestart":                           "#4862",
 	"TestRFC1D_MetricsAreReachable":                           "#3395",
 	"TestRFC28A_AZeroSlotIsNotTheEnd":                         "#3596",
 	"TestRFC28A_FooterIsNotAuthoritative":                     "#3395",
 	"TestRFC28B_SegmentReclaimable":                           "#3395",
 	"TestRFC28C_BadCopyDoesNotMaskAGoodOne":                   "#3395",
-	"TestRFC28C_SyncedDamageIsNotATornTail":                   "#3395",
-	"TestRFC28C_SparesAreReAdopted":                           "#3395",
+	"TestRFC28C_SyncedDamageIsNotATornTail":                   "#4859",
+	"TestRFC28C_SparesAreReAdopted":                           "#4860",
 	"TestRFC28C_SpareIsWholeOrAbsent/durable_temporary_entry": "#3395",
 	"TestRFC28C_RetiredSegmentsAreRecycled":                   "#3395",
 	"TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead":        "#3395",
-	"TestRFC28C_JournalGone":                                  "#3395",
-	"TestRFC28C_InterruptedInit":                              "#3395",
+	"TestRFC28C_JournalGone":                                  "#4861",
+	"TestRFC28C_InterruptedInit":                              "#4861",
 	"TestDamage_LostWrites/failed_unlink":                     "#3395",
 	"TestEdge_ZeroLengthWrite":                                "#3395",
 	"TestEdge_RecordsWithoutBytesAtMaximum":                   "#3395",
