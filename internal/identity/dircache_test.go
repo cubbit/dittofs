@@ -1098,3 +1098,46 @@ func TestDirectoryCacheSIDsShareOneQueryPerSID(t *testing.T) {
 		})
 	}
 }
+
+// A lookup fails ambiguous only when its own query holds the SID two entries
+// hold: with a twin holding carol's SID, {carol, alice} fails ambiguous, and
+// {alice, bob}, which joined its query for alice, asks alice again in a query
+// of its own and is answered for both.
+func TestDirectoryCacheSIDsAmbiguityStaysWithItsLookup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e, c, sid := sidEnv(t)
+		e.d.AddUser(t, "twin", map[string][][]byte{"objectSid": {sid["carol"]}})
+		// The first SID batch search waits a second, so the second lookup
+		// joins it for alice.
+		e.fail(t, sim.Rule{Op: "search", Key: "(|*", Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+		first := make(chan error, 1)
+		go func() {
+			_, err := c.LookupSIDs(context.Background(), [][]byte{sid["carol"], sid["alice"]}, 15*time.Minute)
+			first <- err
+		}()
+		synctest.Wait()
+		second := make(chan error, 1)
+		var got []directory.Answer
+		go func() {
+			var err error
+			got, err = c.LookupSIDs(context.Background(), [][]byte{sid["alice"], sid["bob"]}, 15*time.Minute)
+			second <- err
+		}()
+		synctest.Wait()
+		e.clock.Advance(time.Second)
+		if err := <-first; !errors.Is(err, directory.ErrAmbiguous) {
+			t.Errorf("LookupSIDs(carol, alice) with a twin holding carol's SID = %v, want ErrAmbiguous", err)
+		}
+		if err := <-second; err != nil || len(got) != 2 {
+			t.Fatalf("LookupSIDs(alice, bob), joined to the ambiguous query for alice = %d answers, %v; want 2", len(got), err)
+		}
+		for i, n := range []string{"alice", "bob"} {
+			if string(got[i].SID) != string(sid[n]) {
+				t.Errorf("LookupSIDs(alice, bob) answer %d holds SID %x, want %s's %x", i, got[i].SID, n, sid[n])
+			}
+		}
+		if got := e.resultsOf(t, "sid")["ambiguous"]; got != 1 {
+			t.Errorf("SID lookups counted ambiguous %v, want 1", got)
+		}
+	})
+}

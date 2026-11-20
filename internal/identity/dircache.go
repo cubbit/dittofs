@@ -343,9 +343,11 @@ func (q *sidQuery) wait(ctx context.Context) error {
 // holds left out. A SID whose query fails is answered as a failed lookup is:
 // from a positive entry within the TTL plus grace, counted stale; any other
 // such SID fails the whole lookup ErrUnavailable, counted refused, so a
-// caller never takes a set with holes for a whole one. A query in which two
-// entries hold one SID fails every lookup waiting on it ErrUnavailable,
-// counted ambiguous once, never served stale.
+// caller never takes a set with holes for a whole one. A query of its own in
+// which two entries hold one SID fails the lookup ErrUnavailable, counted
+// ambiguous once, never served stale; a lookup that joined such a query asks
+// its SIDs again in a query of its own, so another lookup's ambiguous SID
+// refuses none of its own.
 //
 // decision: only tests call lookupSIDs today. It is the cache's path for a
 // whole set of SIDs at once, which a Kerberos ticket's PAC carries and SID
@@ -404,9 +406,30 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 		// stops waiting leaves it to the others; the client's timeout bounds it.
 		go c.querySIDs(context.WithoutCancel(ctx), f)
 	}
-	for _, s := range asked {
+	own := map[*sidQuery]bool{}
+	for _, f := range mine {
+		own[f] = true
+	}
+	for i := 0; i < len(asked); i++ {
+		s := asked[i]
 		f := from[string(s)]
 		err := f.wait(ctx)
+		if errors.Is(err, directory.ErrAmbiguous) && !own[f] {
+			// A joined query's ambiguity is the SID its opener asked, which
+			// may not be one of this lookup's: this lookup's SIDs it held are
+			// asked again in a query of this lookup's own, unregistered.
+			r := &sidQuery{done: make(chan struct{})}
+			for _, t := range asked[i:] {
+				if from[string(t)] == f {
+					r.batch = append(r.batch, t)
+					from[string(t)] = r
+				}
+			}
+			own[r] = true
+			go c.querySIDs(context.WithoutCancel(ctx), r)
+			i--
+			continue
+		}
 		if errors.Is(err, directory.ErrAmbiguous) {
 			c.lookups.WithLabelValues(q, "ambiguous").Inc()
 			return nil, err
@@ -469,12 +492,16 @@ func (c *dirCache) querySIDs(ctx context.Context, f *sidQuery) {
 	c.landSIDs(f, got, err)
 }
 
-// landSIDs sets f's result and releases its SIDs, after their entries are
-// stored, so a later lookup finds each SID's entry rather than f gone.
+// landSIDs sets f's result and releases the SIDs registered to it, after
+// their entries are stored, so a later lookup finds each SID's entry rather
+// than f gone. A query asked again after a joined one's ambiguity is
+// registered to no SID, so it releases none.
 func (c *dirCache) landSIDs(f *sidQuery, got map[string]*dirEntry, err error) {
 	c.mu.Lock()
 	for _, s := range f.batch {
-		delete(c.asking, string(s))
+		if c.asking[string(s)] == f {
+			delete(c.asking, string(s))
+		}
 	}
 	c.mu.Unlock()
 	f.got, f.err = got, err
