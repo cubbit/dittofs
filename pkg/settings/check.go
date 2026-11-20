@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -95,11 +96,163 @@ func (t Table) Check(
 		}
 	}
 
+	if w.put != nil && w.put.Schema > maxSchema() {
+		return newer(w.Scope, w.Key, w.put.Schema)
+	}
+
 	if rank(caller) < rank(sec.writeRole) {
 		return refuse(w.Scope, w.Key, "written by "+writers(sec.writeRole), ErrForbidden)
 	}
 
+	effective, err := sec.after(tx, w, declared, thing)
+	if err != nil {
+		return err
+	}
+
+	// A plaintext typed into a reference field never reaches a Validate that
+	// prints it: the write is refused before Validate runs, and its value is
+	// never printed.
+	if _, ref := sec.secretRefs[declared]; ref && w.put != nil {
+		return refuse(w.Scope, w.Key,
+			"a reference is set by the secrets API, not by value", ErrSecretRef)
+	}
+
+	if err := effective.(interface{ Validate() error }).Validate(); err != nil {
+		return refuse(w.Scope, sec.prefix, err.Error(), ErrInvalid)
+	}
+
+	// ponytail: a rule across components, a value one component's setting
+	// must keep against another's, is not built: each section checks only
+	// its own settings, and a section's CheckTx reads what else it needs.
+	// Upgrade to a check that judges both sections in one write once a rule
+	// across components is declared.
 	return nil
+}
+
+// maxSchema is the newest settings schema this binary reads.
+func maxSchema() uint32 {
+	return Versions()[entity.FormatSettings].Max
+}
+
+// newer refuses a write over a row of schema, newer than this binary reads,
+// at scope and key.
+func newer(scope entity.SettingScope, key string, schema uint32) error {
+	return refuse(scope, key, fmt.Sprintf("schema %d is newer than this node reads, up to %d",
+		schema, maxSchema()), ErrNewerSchema)
+}
+
+// after is the section's effective value once w is applied, for thing in a
+// per-thing section, declared being w's key as the section declares it: the
+// defaults, then each scope of w's chain overlaid, widest first, then the
+// required keys. It reads each declared field at each scope of the chain
+// through tx, one tracked point read each, so a concurrent write of any row
+// it judged makes the write retry; a put's row takes the place of the stored
+// one, and a delete drops it; any other stored row of a newer schema refuses
+// the write. A delete of a key the section does not declare reads
+// that row too, and never judges its schema, so a newer binary's row stays
+// removable.
+func (sec *Section) after(
+	tx entity.ControlPlaneTx,
+	w Write,
+	declared, thing string,
+) (any, error) {
+	value := sec.def
+	set := make(map[string]bool, len(sec.fields))
+
+	for _, scope := range sec.chain(w.Scope) {
+		var rows []entity.Setting
+
+		for _, f := range sec.fields {
+			key := sec.written(f.key, thing)
+
+			row, found, err := tx.Setting(scope, key)
+			if err != nil {
+				return nil, fmt.Errorf("settings: read %s at %s: %w", key, scope.Kind, err)
+			}
+
+			// The write's own row is replaced or removed, never read for
+			// its fields, so its schema is not judged (RFC 13 §2.3); every
+			// other row of the chain is read, and a newer one refuses.
+			if scope == w.Scope && key == w.Key {
+				found = w.put != nil
+				if found {
+					row = *w.put
+				}
+			} else if found && row.Schema > maxSchema() {
+				return nil, newer(scope, key, row.Schema)
+			}
+
+			if !found {
+				continue
+			}
+
+			// decision: a narrower row of a field OverrideOnly does not name
+			// is skipped, as the node's read skips it, never refused: Check
+			// refuses writing one, so only a store written around Check
+			// holds one, and it changes no value.
+			if scope.Kind == sec.scope.narrow && len(sec.overrideOnly) > 0 &&
+				!slices.Contains(sec.overrideOnly, f.key) {
+				continue
+			}
+
+			row.Key = f.key
+			rows = append(rows, row)
+			set[f.key] = true
+		}
+
+		decoded, err := sec.decodeAny(sec, value, scope, rows)
+		if err != nil {
+			return nil, sec.inThing(err, thing)
+		}
+
+		value = decoded
+	}
+
+	if w.deletes && !sec.declares(declared) {
+		if _, _, err := tx.Setting(w.Scope, w.Key); err != nil {
+			return nil, fmt.Errorf("settings: read %q at %s: %w", w.Key, w.Scope.Kind, err)
+		}
+	}
+
+	var missing []error
+
+	for _, key := range sec.required {
+		if !set[key] {
+			missing = append(missing, refuse(w.Scope, sec.written(key, thing),
+				"required and has no value", ErrRequired))
+		}
+	}
+
+	if len(missing) > 0 {
+		return nil, errors.Join(missing...)
+	}
+
+	return value, nil
+}
+
+// chain is the scopes whose rows make the effective value at scope, widest
+// first: the wide scope, then scope itself when it is the narrow one of an
+// Override. The wide scope of every Override RFC 13 declares is the
+// installation, which has no ID.
+func (sec *Section) chain(scope entity.SettingScope) []entity.SettingScope {
+	if sec.scope.form == formOverride && scope.Kind == sec.scope.narrow {
+		return []entity.SettingScope{
+			{Kind: sec.scope.wide},
+			scope,
+		}
+	}
+
+	return []entity.SettingScope{scope}
+}
+
+// inThing writes a decode refusal's key for thing, as the write names it.
+func (sec *Section) inThing(err error, thing string) error {
+	var r *refusal
+	if errors.As(err, &r) && thing != "" {
+		r.key = sec.written(r.key, thing)
+	}
+
+	return err
 }
 
 // refuse is a refusal of the write at scope, printed as RFC 13 §6's line.
