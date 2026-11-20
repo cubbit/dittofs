@@ -76,8 +76,8 @@ admission exempting NLM's lock calls, `MNT` and `EXPORT` from the minimums by `C
 entry method (#5090 2.3). The cookie verifier needs none (D16).
 **Pending Marco:** who records RFC 21 §14's six `nfs_*` series and RFC 21 §11.7's three
 `adapter_*` series NFS alone produces (§6.1, point 4; #5090 (a)).
-**Settled with the user:** D10, D11 and D12 (§4.2), and the layout (§4.1), which RFC 20 §2.5 does
-not fully place (§6.2, point 8).
+**Settled with the user:** D10, D11 and D12 (§4.2), and the layout (§4.1), which RFC 20 §2.5
+places by amendment A4 (§6.2, point 8).
 
 ## 1. Introduction
 
@@ -533,10 +533,9 @@ pkg/vfs/, internal/vfs/       E2: StateNoGrace; after S2b, E10: A2's ChannelDown
 test/pcap-corpus/nfs*/        E2: knfsd captures per program area, beside nfsv4-acl/ (D6); E14's scripts
 ```
 
-`adaptertest/nfsclient/`, `adaptertest/nfsharness/`, `rpcclient/`, `ops/cb/` and
-`protocol/replay.go` are not in RFC 20 §2.5,
-nor are the shared files an `ops/` package may hold beside its operations (`attrs.go` for `fattr3`
-and `fattr4`, `types.go` for body types two procedures share); §6.2, point 8 lists them.
+`adaptertest/nfsclient/`, `adaptertest/nfsharness/`, `rpcclient/`, `ops/cb/` and the shared files
+an `ops/` package may hold beside its operations (`attrs.go` for `fattr3` and `fattr4`, `types.go`
+for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2, point 8 lists them.
 
 ### 4.2 Decisions
 
@@ -1194,9 +1193,11 @@ follows the RFC as written.
    pynfs entries are a floor.
 7. **RFC 21's (cluster) parts** (§6.6). Built where they are adapter code; tested and finished with
    the cluster stage.
-8. **Layout beyond RFC 20 §2.5** (RFC 20 §2.5; RFC 20's plan, §4). `adaptertest/nfsclient/`,
-   `nfs/rpcclient/`, `ops/cb/`, `protocol/replay.go` and an `ops/` package's shared `attrs.go` and
-   `types.go`, settled with the user.
+8. **Layout beyond RFC 20 §2.5, now in it** (RFC 20 §2.5). `adaptertest/nfsclient/` and
+   `nfsharness/`, `nfs/rpcclient/`, `ops/cb/` and an `ops/` package's shared `attrs.go` and
+   `types.go` are in RFC 20 §2.5's tree, amendment A4; `protocol/replay.go` is §2.5's "replay"
+   stage. RFC 20 §4.8 and RFC 21 §2.1 also state that NFS v3, MOUNT, NLM and NSM are one unit,
+   served together or not at all.
 
 ### 6.3 Risks
 

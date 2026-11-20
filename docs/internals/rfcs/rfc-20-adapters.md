@@ -551,14 +551,15 @@ internal/adapter/
     errors.go               ErrorTable and its totality check (§4.5)
   translate/                ACL, access-mask, time and attribute translation: neutral types only
   gss/                      the wire side of authentication: Kerberos, NTLM and SPNEGO mechanisms, exchanges, per-request Identity (§4.4); test initiators. Secrets and directories are internal/identity's (RFC 18 §2.7)
-  adaptertest/              import test; the leak check and a test server's Budgets; testproto/, the test-only protocol `core` is proven on (§7); golden/, golden-vector and capture helpers
+  adaptertest/              import test; the leak check and a test server's Budgets; testproto/, the test-only protocol `core` is proven on (§7); golden/, golden-vector and capture helpers; per protocol, its scripted client (nfsclient/, smbclient/; §8.2) and NFS's handler harness (nfsharness/)
   nfs/  smb/                one shape for both protocols:
     nfs.go | smb.go         New: builds the stages, handler sets and operation tables; returns *core.Server
     wire/                   the protocol's one codec, shared by every command (§5): record framing, the hand-written RPC or SMB2 header codec, the generated codecs' runtime, the generator (wire/gen/) and its output for shared body types; no file per command
     protocol/               the Protocol and its stages (§4.7): framer, header, router, security, flow, replay, session registry
     ops/                    the operation tables, one subpackage per table (§4.8): Handlers, table, errors; one file per operation, <cmd>.go, holding its request and reply structs and its handler; one generated codec_gen.go per package
-                              nfs: v3/ v4/ mount/ nlm/ nsm/   smb: one table for every dialect, ioctl/ one file per control code
+                              nfs: v3/ v4/ mount/ nlm/ nsm/, and cb/: the callback program's structs, no Handlers and no table served   smb: one table for every dialect, ioctl/ one file per control code
     callbacks.go            Callbacks (§3.3)
+    rpcclient/              nfs only: the calls the server makes on a connection it dials or by datagram, through Deps.DialClient (NLM's GRANTED, SM_NOTIFY, the port mapper's GETPORT)
   smb/dcerpc/               DCE/RPC over IPC$ pipes: NDR codecs, srvsvc, lsarpc; imports no SMB package (§3.1)
 internal/sidecar/           the runner the node drives (§3.5); mdns/ wsd/ portmap/ rpcbind/: one package each
 ```
@@ -566,7 +567,11 @@ internal/sidecar/           the runner the node drives (§3.5); mdns/ wsd/ portm
 **Files are small.** One wire operation per file, `ops/<cmd>.go`: its request
 and reply structs, tagged for the codec, and its handler, and nothing else;
 nothing in it reads or writes a byte. Its row is one line of its table, its
-error rows are in the one error table, and it has no codec file of its own. A
+error rows are in the one error table, and it has no codec file of its own.
+Beside its operations, an `ops/` package may hold two shared files and no
+others: `attrs.go`, the attribute structs its operations share (NFS's `fattr3`
+and `fattr4`), and `types.go`, the body types two of its operations share. A
+type two packages share is `wire`'s. A
 non-test file **SHOULD** stay under 500 lines. The import test of §7.1 will
 also list every adapter file over 800 lines, against a checked-in allowlist
 that may only shrink, so the rule does not drift the first week someone is in
@@ -3369,9 +3374,11 @@ negotiated.
   version outside the connection's range `PROG_MISMATCH`, naming the range's
   lowest and highest served; an NFSv4 `COMPOUND` whose minor version is outside
   it gets `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run: the Router refuses it with
-  `ErrVersion` and the version 4 table, and the reply carries its tag. NFSv3's
-  table is served only when `"3"` is in range, MOUNT, NLM and NSM with it, so a
-  range of only 4.x serves none of the three.
+  `ErrVersion` and the version 4 table, and the reply carries its tag. Version 3
+  is one unit: a range holding `"3"` serves NFS v3, MOUNT v3, NLM v4 and NSM v1
+  together, and a range of only 4.x serves none of the four. `New` builds all
+  four tables, so no connection serves a part of the unit, and `New` refuses to
+  build an NFS server missing one of them.
 - **SMB.** One table; `NEGOTIATE` picks the highest dialect the client offers
   inside `Conn.Settings()`'s `Dialects`, and a dialect outside it is never
   negotiated.
