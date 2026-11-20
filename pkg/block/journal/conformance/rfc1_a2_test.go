@@ -1882,6 +1882,11 @@ func TestRFC1A_SyncedLossMasksSuperseded(t *testing.T) {
 		overwrite := distinct(20+k, size)
 		write(t, h, id, 0, overwrite)
 		syncFile(t, h, id)
+		// A later synced record of the same stream proves the overwrite
+		// synced: without one the corrupt last record would be a torn tail,
+		// which is dropped with no loss.
+		write(t, h, id, size, distinct(40+k, size))
+		syncFile(t, h, id)
 
 		corrupt(t, f, id, overwrite)
 		// The older record stays on disk: no repack is run.

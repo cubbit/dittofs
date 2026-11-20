@@ -86,7 +86,6 @@ var stubClass = regexp.MustCompile(`^stub: ([A-Za-z_.]+)`)
 // rows. The ceiling is that a new row has no entry until someone adds it, and
 // the test fails on it.
 var testOwner = map[string]string{
-	"TestRFC1A_SyncedLossMasksSuperseded":                     "#3395",
 	"TestRFC1B_HeadroomIsAllocated":                           "#3395",
 	"TestRFC1B_ReadOnlyProbe":                                 "#3395",
 	"TestRFC1B_ReadOnlyStopsTheDrain":                         "#3395",
@@ -95,13 +94,9 @@ var testOwner = map[string]string{
 	"TestRFC1D_MetricsAreReachable":                           "#3395",
 	"TestRFC28A_AZeroSlotIsNotTheEnd":                         "#3596",
 	"TestRFC28A_FooterIsNotAuthoritative":                     "#3395",
-	"TestRFC28B_SegmentReclaimable":                           "#3395",
-	"TestRFC28C_BadCopyDoesNotMaskAGoodOne":                   "#3395",
 	"TestRFC28C_SpareIsWholeOrAbsent/durable_temporary_entry": "#3395",
 	"TestRFC28C_RetiredSegmentsAreRecycled":                   "#3395",
 	"TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead":        "#3395",
-	"TestDamage_LostWrites/failed_unlink":                     "#3395",
-	"TestEdge_ZeroLengthWrite":                                "#3395",
 	"TestEdge_RecordsWithoutBytesAtMaximum":                   "#3395",
 	"TestEdge_FilesystemENOSPCIsNotErrNoSpace":                "#3395",
 }

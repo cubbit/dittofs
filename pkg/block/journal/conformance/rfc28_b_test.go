@@ -103,8 +103,12 @@ func TestRFC28B_SegmentReclaimable(t *testing.T) {
 	}
 
 	for _, s := range f.J.Inspect().Segments() {
-		if s.ID == seg {
-			t.Fatalf("segment %d is still among the journal's after its retirement: %+v", seg, s)
+		// A damaged segment retired before it emptied keeps its row under its
+		// old id until the journal closes, marked retired, with no storage and
+		// no held bytes (RFC 1 section 4.4); a repack's retirement is covered
+		// as an open's is.
+		if s.ID == seg && (!s.Retired || s.Allocated != 0 || s.HeldBytes != 0) {
+			t.Fatalf("segment %d is still among the journal's after its retirement, and not as a retired row with no storage: %+v", seg, s)
 		}
 	}
 
