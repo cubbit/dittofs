@@ -12,6 +12,7 @@ type Config struct {
 	Clock     any
 	Metrics   any
 	Logger    any
+	Tracer    any
 	Journal   any
 }
 

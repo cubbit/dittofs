@@ -22,7 +22,7 @@ import (
 
 // configFields are the fields of Config: what the host supplies and the node
 // cannot build.
-var configFields = []string{"Bootstrap", "KV", "Clock", "Metrics", "Logger", "Journal"}
+var configFields = []string{"Bootstrap", "KV", "Clock", "Metrics", "Logger", "Tracer", "Journal"}
 
 // nodeExports returns the violations of the node's surface in the package
 // whose sources are in dir: an exported package-level declaration other than
@@ -147,7 +147,7 @@ func TestNodeExports(t *testing.T) {
 		{"extra-method", []string{"extra export: Node.Pause"}},
 		{"embedded", []string{"embedded field in Node"}},
 		{"exported-field", []string{"exported field: Node.State"}},
-		{"config-field", []string{"Config fields Bootstrap,KV,Clock,Metrics,Logger,Journal,Fault"}},
+		{"config-field", []string{"Config fields Bootstrap,KV,Clock,Metrics,Logger,Tracer,Journal,Fault"}},
 		{"generic", []string{"unresolved receiver of Open"}},
 	} {
 		dir := tc.dir

@@ -250,7 +250,7 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 		caughtUp(t, h)
 		before := jscrape(t, h)
 
-		if err := jwrite(t, h, sh.ID, files[0].ID, 0, pattern("sync", 4096)); err != nil {
+		if err := writeSpared(t, h, sh.ID, files[0].ID, 0, pattern("sync", 4096)); err != nil {
 			t.Fatal(err)
 		}
 		if err := jcommit(t, h, sh.ID, files[0].ID); err != nil {
@@ -370,7 +370,7 @@ func TestJournalSeriesShareWorstN(t *testing.T) {
 	for i, sh := range shares {
 		file := shFiles[i]
 		for chunk := range i + 1 {
-			if err := jwrite(t, h, sh.ID, file.ID, int64(chunk)*(1<<16), pattern(fmt.Sprint("w", i, chunk), 1<<16)); err != nil {
+			if err := writeSpared(t, h, sh.ID, file.ID, int64(chunk)*(1<<16), pattern(fmt.Sprint("w", i, chunk), 1<<16)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -427,7 +427,7 @@ func TestJournalSeriesUnattachedTagCoversTheSum(t *testing.T) {
 	started(t, h)
 	g.took(t)
 	caughtUp(t, h)
-	if err := jwrite(t, h, sh.ID, file.ID, 0, pattern("detached", 128<<10)); err != nil {
+	if err := writeSpared(t, h, sh.ID, file.ID, 0, pattern("detached", 128<<10)); err != nil {
 		t.Fatal(err)
 	}
 	if err := jcommit(t, h, sh.ID, file.ID); err != nil {
@@ -505,7 +505,7 @@ func TestJournalSeriesClosedJournalAbsent(t *testing.T) {
 	sh := addShare(t, h2)
 	file := createFiles(t, h2, sh, 1)[0]
 	caughtUp(t, h2)
-	if err := jwrite(t, h2, sh.ID, file.ID, 0, pattern("closed", 4096)); err != nil {
+	if err := writeSpared(t, h2, sh.ID, file.ID, 0, pattern("closed", 4096)); err != nil {
 		t.Fatal(err)
 	}
 	if err := jcommit(t, h2, sh.ID, file.ID); err != nil {
@@ -530,7 +530,7 @@ func TestJournalSeriesLabelAllowList(t *testing.T) {
 	sh := addShare(t, h)
 	file := createFiles(t, h, sh, 1)[0]
 	caughtUp(t, h)
-	if err := jwrite(t, h, sh.ID, file.ID, 0, pattern("labels", 4096)); err != nil {
+	if err := writeSpared(t, h, sh.ID, file.ID, 0, pattern("labels", 4096)); err != nil {
 		t.Fatal(err)
 	}
 	if err := jcommit(t, h, sh.ID, file.ID); err != nil {

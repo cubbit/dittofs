@@ -108,8 +108,8 @@ func listenPort(addr string) uint16 {
 // adapterDeps is the one Deps the node hands every adapter it builds (RFC 20
 // §3.4): the filesystem, the node's budgets, registry and logger, and its
 // watchdog, which each accept loop registers with. Every other field is
-// zero: the node is handed no tracer, so SampleRatio samples none (RFC 25
-// §8.1).
+// zero: the node hands its adapters no tracer (`Config.Tracer` is the
+// journals'), so SampleRatio samples none (RFC 25 §8.1).
 //
 // decision: an accept loop reports idle every 10 s on the runtime's clock,
 // as Deps hands an adapter no clock (RFC 20 §3.4), while the watchdog reads
