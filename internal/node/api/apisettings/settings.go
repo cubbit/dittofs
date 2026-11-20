@@ -1,6 +1,6 @@
-// Package apisettings is the management API's own settings section: how long
-// a sign-in's session and a service account's API token may last, and how
-// long the audit is kept.
+// Package apisettings is the management API's own settings, two sections: the
+// api section, how long a sign-in's session and a service account's API token
+// may last, and the audit section, how long the audit is kept.
 package apisettings
 
 import (
@@ -19,21 +19,34 @@ const (
 	minAuditRetentionText = "90 days"
 )
 
-// Settings is the section, each field under its installation-wide key.
+// Settings is the api section, each field under api.<json name>.
 type Settings struct {
-	SessionLifetime  time.Duration // api.session_lifetime: a session expires this long after its sign-in
-	TokenMaxLifetime time.Duration // api.token_max_lifetime: the latest an API token may expire after its creation
-	AuditRetention   time.Duration // audit.retention: how long an audit record is kept
+	// SessionLifetime is how long a session lasts after its sign-in.
+	SessionLifetime time.Duration `json:"session_lifetime" class:"live"`
+	// TokenMaxLifetime is the latest an API token may expire after its
+	// creation.
+	TokenMaxLifetime time.Duration `json:"token_max_lifetime" class:"live"`
 }
 
-// Defaults returns the section's defaults: a working day's session, a year's
-// API token and a year and a quarter's audit.
+// Audit is the audit section, each field under audit.<json name>.
+type Audit struct {
+	// Retention is how long an audit record is kept.
+	Retention time.Duration `json:"retention" class:"live"`
+}
+
+// Defaults returns the api section's defaults: a working day's session and a
+// year's API token.
 func Defaults() Settings {
-	return Settings{SessionLifetime: 12 * time.Hour, TokenMaxLifetime: 365 * day, AuditRetention: 400 * day}
+	return Settings{SessionLifetime: 12 * time.Hour, TokenMaxLifetime: 365 * day}
 }
 
-// Validate refuses a lifetime that is not positive and an audit.retention
-// under 90 days, naming the key and the rule; it never clamps or defaults.
+// AuditDefaults returns the audit section's default: a year and a quarter.
+func AuditDefaults() Audit {
+	return Audit{Retention: 400 * day}
+}
+
+// Validate refuses a lifetime that is not positive, naming the key; it never
+// clamps or defaults.
 func (s Settings) Validate() error {
 	var errs []error
 	for _, f := range []struct {
@@ -44,8 +57,14 @@ func (s Settings) Validate() error {
 			errs = append(errs, fmt.Errorf("settings: %s: %s is not positive", f.key, f.v))
 		}
 	}
-	if s.AuditRetention < minAuditRetention {
-		errs = append(errs, fmt.Errorf("settings: audit.retention: %s is under %s", s.AuditRetention, minAuditRetentionText))
-	}
 	return errors.Join(errs...)
+}
+
+// Validate refuses an audit.retention under 90 days, naming the key and the
+// floor; it never clamps or defaults.
+func (a Audit) Validate() error {
+	if a.Retention < minAuditRetention {
+		return fmt.Errorf("settings: audit.retention: %s is under %s", a.Retention, minAuditRetentionText)
+	}
+	return nil
 }

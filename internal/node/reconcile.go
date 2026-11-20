@@ -18,6 +18,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/settings"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -36,6 +37,8 @@ const (
 // reconciler is reconcile's state: the running set and the counters the
 // node has acted on, and the wake a write on this node sends.
 type reconciler struct {
+	// table is the node's settings table, which the settings walk reads by.
+	table settings.Table
 	// wake has one slot, so a wake sent while a pass runs is kept and runs
 	// one more pass after it.
 	wake chan struct{}
@@ -154,8 +157,8 @@ func (r *reconciler) notGone(refusals []refusal) []refusal {
 	})
 }
 
-func newReconciler() reconciler {
-	return reconciler{wake: make(chan struct{}, 1), moved: make(chan struct{}),
+func newReconciler(table settings.Table) reconciler {
+	return reconciler{table: table, wake: make(chan struct{}, 1), moved: make(chan struct{}),
 		running: map[entity.ShareID]entity.Share{}, gone: map[entity.ShareID]bool{}}
 }
 
