@@ -250,7 +250,7 @@ func settingRoutes() []route {
 					}
 					var gen uint64
 					st := entity.Setting{Scope: sc.scope(rq.ID), Key: rq.Sub, Value: v}
-					err := ntlmWrite(tx, rq.start, st.Scope, st.Key, func() (err error) {
+					err := ntlmWrite(ctx, tx, rq.start, st.Scope, st.Key, func() (err error) {
 						gen, err = putSetting(ctx, rq.d, tx, st, rq.Expect)
 						return err
 					})
@@ -259,7 +259,7 @@ func settingRoutes() []route {
 			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, serve: write(tagsOf(w), nil,
 				func(ctx context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
 					scope := sc.scope(rq.ID)
-					return none{}, rq.ID, ntlmWrite(tx, rq.start, scope, rq.Sub, func() error {
+					return none{}, rq.ID, ntlmWrite(ctx, tx, rq.start, scope, rq.Sub, func() error {
 						return deleteSetting(ctx, rq.d, tx, scope, rq.Sub, rq.Expect)
 					})
 				})},

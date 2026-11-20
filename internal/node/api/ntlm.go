@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 
+	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
@@ -22,11 +24,20 @@ func ntlmOn(s entity.Setting, ok bool) bool {
 // ntlmWrite runs write, a write of key at scope inside tx, and, for the
 // installation's identity.ntlm, the rule after it, reading whether NTLM was
 // and is on from the record before and after, starting through start the
-// NT-hash deletion the rule says the write starts. A write of any other key
+// NT-hash deletion the rule says the write starts. That write is refused 403
+// to a caller not holding the installation right. A write of any other key
 // runs alone.
-func ntlmWrite(tx entity.ControlPlaneTx, start func(apiv1.OpKind, entity.ResourceRef) error, scope entity.SettingScope, key string, write func() error) error {
+func ntlmWrite(ctx context.Context, tx entity.ControlPlaneTx, start func(apiv1.OpKind, entity.ResourceRef) error, scope entity.SettingScope, key string, write func() error) error {
 	if scope.Kind != entity.ScopeInstallation || key != ntlmKey {
 		return write()
+	}
+	// decision: identity.ntlm takes the installation right, an admin's, as
+	// the keytab's writes do, rather than the operator's right over
+	// settings: it decides whether NTLM sign-in is accepted at all, and
+	// turning it off starts the irreversible deletion of every NT hash.
+	// Overturned if the role table gives sign-in settings to an operator.
+	if c, _ := auth.CallerFrom(ctx); !holds(c, auth.Installation) {
+		return &refusal{code: apiv1.CodeForbidden, detail: "only an admin writes " + ntlmKey}
 	}
 	old, had, err := tx.Setting(scope, key)
 	if err != nil {

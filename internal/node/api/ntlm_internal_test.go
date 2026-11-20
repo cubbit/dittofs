@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -161,7 +163,7 @@ func TestNTLMWrite(t *testing.T) {
 	scope := entity.SettingScope{Kind: entity.ScopeInstallation}
 	run := func(cp kvstore.ControlPlane, scope entity.SettingScope, key string, write func(tx entity.ControlPlaneTx) error) error {
 		return cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-			return ntlmWrite(tx, func(k apiv1.OpKind, target entity.ResourceRef) error {
+			return ntlmWrite(asAdmin(t), tx, func(k apiv1.OpKind, target entity.ResourceRef) error {
 				_, err := start(t.Context(), tx, k, target, opStart{})
 				return err
 			}, scope, key, func() error { return write(tx) })
@@ -258,9 +260,15 @@ func TestNTLMWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := fresh.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-		return ntlmWrite(tx, func(apiv1.OpKind, entity.ResourceRef) error { return nil }, scope, ntlmKey, func() error { return nil })
+		return ntlmWrite(asAdmin(t), tx, func(apiv1.OpKind, entity.ResourceRef) error { return nil }, scope, ntlmKey, func() error { return nil })
 	})
 	if p, _ := problemOf(err); p.Code != apiv1.CodeOperationRunning {
 		t.Errorf("a write leaving no record with NTLM off and no deletion completed: %v, want 409 operation_running", err)
 	}
+}
+
+// asAdmin is the test's context carrying an admin caller, who holds the
+// installation right identity.ntlm's writes take.
+func asAdmin(t *testing.T) context.Context {
+	return auth.With(t.Context(), auth.Caller{Role: entity.RoleAdmin})
 }

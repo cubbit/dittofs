@@ -829,3 +829,36 @@ func TestInstallationRead(t *testing.T) {
 		t.Errorf("answer %s names the machine password", r.body)
 	}
 }
+
+// An operator, who holds the right over settings, may not write the
+// installation's identity.ntlm, which only an admin writes: a put and a
+// delete are each refused 403 forbidden, leaving the record as it was and
+// starting no operation.
+func TestNTLMSettingRefusedToAnOperator(t *testing.T) {
+	s := serve(t, as(entity.RoleOperator, false))
+	scope := entity.SettingScope{Kind: entity.ScopeInstallation}
+	gen := s.putSetting(t, scope, "identity.ntlm", "true")
+	tag := strconv.Quote(strconv.FormatUint(gen, 10))
+	for _, tc := range []struct{ method, body string }{
+		{http.MethodPut, `{"spec":{"value":false}}`},
+		{http.MethodDelete, ""},
+	} {
+		r := s.do(t, tc.method, "/api/v1/settings/identity.ntlm", tc.body, "If-Match", tag, "Idempotency-Key", "ntlm-"+tc.method)
+		if r.status != http.StatusForbidden || r.problem(t).Code != apiv1.CodeForbidden {
+			t.Errorf("an operator's %s of identity.ntlm: answered %d %s, want 403 forbidden", tc.method, r.status, r.body)
+		}
+	}
+	var got []entity.Setting
+	for st, err := range s.store.Settings(t.Context(), scope) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, st)
+	}
+	if len(got) != 1 || got[0].Generation != gen || string(got[0].Value) != "true" {
+		t.Errorf("installation settings after the refusals: %+v, want identity.ntlm true at %d alone", got, gen)
+	}
+	if ops := s.operations(t); len(ops) != 0 {
+		t.Errorf("operations: %+v, want none", ops)
+	}
+}
