@@ -58,10 +58,12 @@ func deadlineArmed(t *testing.T, clk *manualClock) {
 }
 
 // capturing is a protocol that keeps every connection it is handed, so a
-// loopback test reaches the connections whose pipelines the drain counts.
+// loopback test reaches the connections whose pipelines the drain counts, and
+// counts the calls with a nil one.
 type capturing struct {
 	core.Protocol
 	mu    sync.Mutex
+	nils  int
 	conns []*core.Conn
 }
 
@@ -70,11 +72,13 @@ func newCapturing(p core.Protocol) *capturing { return &capturing{Protocol: p} }
 func (p *capturing) NewConn(c *core.Conn) core.Stages {
 	// NewServer's own check wires a nil connection once, at configured (the
 	// listener's NewConn(nil) it probes); a capture is an accepted connection.
-	if c != nil {
-		p.mu.Lock()
+	p.mu.Lock()
+	if c == nil {
+		p.nils++
+	} else {
 		p.conns = append(p.conns, c)
-		p.mu.Unlock()
 	}
+	p.mu.Unlock()
 	return p.Protocol.NewConn(c)
 }
 
@@ -83,6 +87,13 @@ func (p *capturing) list() []*core.Conn {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.conns
+}
+
+// probes is how many times NewConn was called with a nil connection.
+func (p *capturing) probes() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.nils
 }
 
 // pipelineRuns is what runs on a connection's pipeline, 0 where the

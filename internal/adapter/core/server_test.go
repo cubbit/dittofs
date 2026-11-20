@@ -174,6 +174,54 @@ func TestNewServerRefusesMalformedListeners(t *testing.T) {
 	}
 }
 
+// NewServer calls each listener's NewConn once with a nil Conn, at
+// configured, and nothing calls it with one again: not Start, and not the
+// accept of a connection, whose stages are one call with its own Conn (RFC 20
+// section 4.7, Protocol.NewConn and NewServer). A probe made twice, one made
+// again later, or a connection wired twice fails here.
+func TestNewServerCallsEachListenersNewConnOnceWithANilConn(t *testing.T) {
+	deps := newDeps()
+	adaptertest.CheckLeaks(t, deps.Budgets)
+	// One protocol under both listeners, so its tables are listed once.
+	shared := testproto.New(deps).Bare()
+	ps := []*capturing{newCapturing(shared), newCapturing(shared)}
+	srv, err := core.NewServer(deps, on("127.0.0.1"), tcp(ps[0], 0, "a"), tcp(ps[1], 0, "b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	for i, p := range ps {
+		if n := p.probes(); n != 1 {
+			t.Errorf("NewServer called listener %d's NewConn %d times with a nil Conn, want once", i, n)
+		}
+	}
+
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	nc, err := net.Dial("tcp", srv.Addrs()[key("a")][0].String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = nc.Close() })
+	// The reply is the connection's stages built: its NewConn has returned.
+	c := testproto.NewClient(nc)
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("hi")}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].ID != 1 {
+		t.Fatalf("the Echo is answered %+v (%v)", rs, err)
+	}
+	if n := len(ps[0].list()); n != 1 {
+		t.Errorf("one accepted connection called NewConn %d times with its Conn, want once", n)
+	}
+	for i, p := range ps {
+		if n := p.probes(); n != 1 {
+			t.Errorf("after Start and an accept, listener %d's NewConn was called %d times with a nil Conn, want NewServer's one", i, n)
+		}
+	}
+}
+
 // Start binds every listener on each address, on its family alone: two
 // listeners on 127.0.0.1 and ::1 are four sockets, each service reported
 // under its Socket at each address with the port bound there.
