@@ -53,10 +53,10 @@ func Rows() []Row {
 	var out []Row
 	for _, rt := range append(slices.Clone(routes), testRows...) {
 		id := TestID
-		if rt.verb != "" {
+		if rt.verb != "" && rt.hasID() {
 			id += ":" + rt.verb
 		}
-		out = append(out, Row{rt.method, strings.Replace(rt.pattern, "{id}", id, 1), rt.right == auth.Public})
+		out = append(out, Row{rt.method, strings.Replace(rt.muxPattern(), "{id}", id, 1), rt.right == auth.Public})
 	}
 	return out
 }
@@ -68,6 +68,7 @@ func Rows() []Row {
 // make, a read failing with an error no row of the problem table names, and
 // one failing unavailable with a wait of its own.
 var testRows = []route{
+	switchRow,
 	{method: http.MethodGet, pattern: "/api/v1/things/{id}", kind: entity.ResourceShare, right: auth.View, serve: read(func(ctx context.Context, _ Deps, rq request[none]) (map[string]string, error) {
 		c, _ := auth.CallerFrom(ctx)
 		return map[string]string{"id": entity.ShareID(rq.ID).String(), "role": c.Role.String()}, nil
@@ -113,6 +114,31 @@ var testRows = []route{
 	{method: http.MethodGet, pattern: "/api/v1/wait", kind: entity.ResourceInstallation, right: auth.View, serve: read(func(context.Context, Deps, request[none]) (none, error) {
 		return none{}, waiting{}
 	})},
+}
+
+// switchRow is a write that may start an operation: a PUT of a knob whose
+// value "start" starts the kind its row declares, and "other" one it does not.
+var switchRow = route{method: http.MethodPut, pattern: "/api/v1/switches/{id}", kind: entity.ResourceSetting, right: auth.Stores, mayStart: apiv1.OpShareDelete,
+	serve: write(knobs, nil, func(ctx context.Context, rq request[knob], _ struct{}, tx entity.ControlPlaneTx) (knob, [16]byte, error) {
+		k, id, err := putKnob(ctx, rq, struct{}{}, tx)
+		ref := entity.ResourceRef{Kind: entity.ResourceSetting, ID: rq.ID[:]}
+		switch {
+		case err != nil:
+		case rq.Body.Spec.Value == "start":
+			err = rq.start(apiv1.OpShareDelete, ref)
+		case rq.Body.Spec.Value == "other":
+			err = rq.start(apiv1.OpUserDelete, ref)
+		}
+		return k, id, err
+	})}
+
+// SwitchDoc is the OpenAPI document of the switch row alone.
+func SwitchDoc() ([]byte, error) {
+	doc, err := openAPI([]route{switchRow})
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(doc)
 }
 
 // UnnamedError is the text of the error GET /api/v1/fail fails with.

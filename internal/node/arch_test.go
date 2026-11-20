@@ -4,6 +4,7 @@ import (
 	"errors"
 	"go/ast"
 	gobuild "go/build"
+	"go/constant"
 	"go/importer"
 	"go/parser"
 	"go/token"
@@ -462,27 +463,35 @@ func TestImportRules(t *testing.T) {
 // certificate with, the settings table's package, which imports only the
 // entity package and whose table the node hands in, and the secret
 // provider's refusals, apart from the provider, which the node hands in
-// behind an interface the API declares; nodetest, which imports Badger, is not allowed. Everything
+// behind an interface the API declares, the names onlyNames admits of
+// identity's package, and the SID's encoding, which the domain's routes
+// store, apart from identity's server, also handed in behind interfaces the
+// API declares; nodetest, which imports Badger, is not allowed. Everything
 // else it reaches through an interface it declares or a value the node hands
 // it.
 func componentAllowed(rel string) bool {
 	switch rel {
 	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1",
 		"pkg/metadata/errors", "pkg/metadata/kv", "pkg/vfs/vfserr", "internal/tlsconfig",
-		"pkg/settings", "pkg/secrets/secreterr":
+		"pkg/settings", "pkg/secrets/secreterr", "pkg/auth/sid":
 		return true
 	}
 	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
 }
 
-// errorsOnly are the allowed packages that also declare a store's interface
-// and an implementation of it, of which a file may use only the error values,
-// the names starting Err.
-var errorsOnly = []string{"pkg/metadata/kv"}
+// onlyNames are the allowed packages of which a file may use only some
+// names: KV, which also declares a store's interface and an implementation
+// of it, only its error values, the names starting Err; and identity's
+// package, whose server and calls the node hands in behind interfaces, only
+// the join credential the API hands identity and the keytab's names.
+var onlyNames = map[string]func(name string) bool{
+	"pkg/metadata/kv": func(n string) bool { return strings.HasPrefix(n, "Err") },
+	"pkg/identity":    func(n string) bool { return n == "JoinCredential" || n == "KeytabNames" || n == "KeytabName" },
+}
 
-// nonErrorUses returns each name f uses from the package it imports as imp
-// that is not an error value: every name, under a dot import.
-func nonErrorUses(f *ast.File, imp *ast.ImportSpec, p string) []string {
+// otherUses returns each name f uses from the package it imports as imp
+// that admit does not admit: every name, under a dot import.
+func otherUses(f *ast.File, imp *ast.ImportSpec, p string, admit func(string) bool) []string {
 	name := path.Base(p)
 	if imp.Name != nil {
 		name = imp.Name.Name
@@ -493,7 +502,7 @@ func nonErrorUses(f *ast.File, imp *ast.ImportSpec, p string) []string {
 	var bad []string
 	ast.Inspect(f, func(n ast.Node) bool {
 		if sel, ok := n.(*ast.SelectorExpr); ok {
-			if x, ok := sel.X.(*ast.Ident); ok && x.Name == name && !strings.HasPrefix(sel.Sel.Name, "Err") {
+			if x, ok := sel.X.(*ast.Ident); ok && x.Name == name && !admit(sel.Sel.Name) {
 				bad = append(bad, p+"."+sel.Sel.Name)
 			}
 		}
@@ -541,8 +550,8 @@ func componentImports(root string) ([]string, error) {
 			p, _ := strconv.Unquote(imp.Path.Value)
 			rel, inModule := strings.CutPrefix(p, module)
 			std := !strings.Contains(strings.Split(p, "/")[0], ".")
-			if inModule && slices.Contains(errorsOnly, rel) {
-				for _, u := range nonErrorUses(f, imp, p) {
+			if admit, ok := onlyNames[rel]; inModule && ok {
+				for _, u := range otherUses(f, imp, p, admit) {
 					bad = append(bad, filepath.ToSlash(r)+" uses "+u)
 				}
 				continue
@@ -567,7 +576,9 @@ func TestNoComponentImports(t *testing.T) {
 	}{
 		{".", nil},
 		{"testdata/arch/component-import", []string{
+			"api/allowed.go imports github.com/cubbit/dittofs/internal/identity",
 			"api/allowed.go imports github.com/dgraph-io/badger/v4",
+			"api/identity.go uses github.com/cubbit/dittofs/pkg/identity.CheckKeytab",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.KV",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.Counting",
 			"api/server.go imports github.com/cubbit/dittofs/pkg/block/engine",
@@ -926,23 +937,43 @@ func writeCalls(dir, path string) ([]string, error) {
 // rotation step, its one writer after the installation's first version.
 var signingKeyFiles = []string{"auth/rotate.go", "auth/tokens.go"}
 
-// credentialFile and credentialWrite name the API's one function outside
-// signingKeyFiles that may write a secret version: the top-level
-// putCredential of res_secrets.go, a remote store's credential, which the
-// store refuses to write under the signing key's kind or owner.
+// credentialWrites are the API's functions outside signingKeyFiles that may
+// write a secret version, each by its file, its receiver's type ("" for
+// none) and its name: secretSetting.put, which writes a remote store's
+// credential and the identity keytab, and handOver, an offline join's
+// machine password. The store refuses each under the signing key's kind or
+// owner, and every secretSetting literal is checked to name a constant kind
+// other than the signing key's.
 //
-// decision: the exemption names the function rather than checking the
+// decision: the exemption names the functions rather than checking the
 // written secret's kind and owner, which the type checker cannot see: the
-// credential reaches PutSecret as a parameter, sealed in another function
-// and handed over by the write adapter. So it is scoped to that one
-// declaration: a method, a closure at package level or a function of the
-// same name in another file is checked. Overturned once a secret write
-// takes its kind and owner as constants a check can read, or a second
-// function must write a secret.
-const (
-	credentialFile  = "res_secrets.go"
-	credentialWrite = "putCredential"
-)
+// secret reaches PutSecret as a value, sealed in another function. So it is
+// scoped to those declarations: a closure at package level, a method on
+// another type, or a function of the same name in another file is checked.
+// Overturned once a secret write takes its kind and owner as constants a
+// check can read.
+var credentialWrites = []struct{ file, recv, name string }{
+	{"res_secrets.go", "secretSetting", "put"},
+	{"res_domain.go", "", "handOver"},
+}
+
+// isCredentialWrite reports whether fd, declared in file, is one of
+// credentialWrites.
+func isCredentialWrite(file string, fd *ast.FuncDecl) bool {
+	recv := ""
+	if fd.Recv != nil && len(fd.Recv.List) == 1 {
+		t := fd.Recv.List[0].Type
+		if s, ok := t.(*ast.StarExpr); ok {
+			t = s.X
+		}
+		if id, ok := t.(*ast.Ident); ok {
+			recv = id.Name
+		}
+	}
+	return slices.ContainsFunc(credentialWrites, func(w struct{ file, recv, name string }) bool {
+		return w.file == filepath.Base(file) && w.recv == recv && w.name == fd.Name.Name
+	})
+}
 
 // signingKeyReaches type-checks the package in dir, as import path path, an
 // API package, and returns each identifier outside signingKeyFiles that
@@ -950,8 +981,7 @@ const (
 // which names the key's reference; a use of entity.SecretKey, the key's
 // kind; and a call of a PutSecret, PruneSecret or SetSigningKey method,
 // which writes or drops a version of any secret or names another secret as
-// the key, but a PutSecret in the top-level credentialWrite of
-// credentialFile. Every
+// the key, but a PutSecret in one of credentialWrites. Every
 // way to write the key needs one of these, so a route writing it is caught
 // whatever it is named; one reaching the reference through another package's
 // function, which none of the API's imports has, is not.
@@ -991,8 +1021,11 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 		}
 		for _, d := range f.Decls {
 			fd, ok := d.(*ast.FuncDecl)
-			exempt := ok && fd.Recv == nil && fd.Name.Name == credentialWrite && filepath.Base(file) == credentialFile && sub == ""
+			exempt := ok && sub == "" && isCredentialWrite(file, fd)
 			ast.Inspect(d, func(n ast.Node) bool {
+				if lit, ok := n.(*ast.CompositeLit); ok && sub == "" && !secretKindAllowed(info, lit, kind) {
+					bad = append(bad, file+":"+strconv.Itoa(fset.Position(lit.Pos()).Line)+" builds a secretSetting whose kind is SecretKey or no constant")
+				}
 				id, ok := n.(*ast.Ident)
 				if !ok {
 					return true
@@ -1018,6 +1051,26 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 	return bad, nil
 }
 
+// secretKindAllowed reports whether lit, when it builds a secretSetting,
+// whose put credentialWrites exempts, sets its kind to a constant other than
+// key's value, the signing key's kind; a literal of any other type is
+// allowed. A kind left unset is the zero kind, which is no secret's.
+func secretKindAllowed(info *types.Info, lit *ast.CompositeLit, key types.Object) bool {
+	named, ok := info.Types[lit].Type.(*types.Named)
+	if !ok || named.Obj().Name() != "secretSetting" {
+		return true
+	}
+	for _, el := range lit.Elts {
+		kv, ok := el.(*ast.KeyValueExpr)
+		if k, isID := kv.Key.(*ast.Ident); !ok || !isID || k.Name != "kind" {
+			continue
+		}
+		v := info.Types[kv.Value].Value
+		return v != nil && !constant.Compare(v, token.EQL, key.(*types.Const).Val())
+	}
+	return true
+}
+
 // isMethod reports whether o is a method.
 func isMethod(o types.Object) bool {
 	fn, ok := o.(*types.Func)
@@ -1030,7 +1083,10 @@ func isMethod(o types.Object) bool {
 // PutSecret, dropping it through PruneSecret and repointing it is caught at
 // each, and so is a PutSecret outside the credential write's own
 // declaration: in a function of its name in another file, in a method of
-// its name, and in a closure at package level after it.
+// its name, and in a closure at package level after it; so is a handOver
+// method in the offline join's file, a secretSetting.put in another file,
+// and a secretSetting literal whose kind is the signing key's or no
+// constant.
 func TestNoRouteWritesTheSigningKey(t *testing.T) {
 	var dirs []string
 	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
@@ -1055,8 +1111,13 @@ func TestNoRouteWritesTheSigningKey(t *testing.T) {
 		t.Fatalf("the planted route: %v", err)
 	}
 	want := []string{
-		"res_secrets.go:13 calls PutSecret",
-		"res_secrets.go:20 calls PutSecret",
+		"res_domain.go:14 calls PutSecret",
+		"res_secrets.go:14 calls PutSecret",
+		"res_secrets.go:21 calls PutSecret",
+		"res_secrets.go:26 calls PutSecret",
+		"res_secrets.go:32 builds a secretSetting whose kind is SecretKey or no constant",
+		"res_secrets.go:32 uses entity.SecretKey",
+		"res_secrets.go:33 builds a secretSetting whose kind is SecretKey or no constant",
 		"routes.go:12 uses Installation.SigningKey",
 		"routes.go:16 uses entity.SecretKey",
 		"routes.go:18 calls PutSecret",
@@ -1070,7 +1131,7 @@ func TestNoRouteWritesTheSigningKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the credential write's name in another file: %v", err)
 	}
-	if want := []string{"res_stores.go:8 calls PutSecret"}; !slices.Equal(got, want) {
+	if want := []string{"res_stores.go:16 calls PutSecret", "res_stores.go:8 calls PutSecret"}; !slices.Equal(got, want) {
 		t.Errorf("the credential write's name in another file: reaches %q, want %q", got, want)
 	}
 }

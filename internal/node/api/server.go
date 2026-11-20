@@ -113,6 +113,15 @@ type Deps struct {
 	// interface, must not be handed in: it is not nil here, and its Seal
 	// would be called.
 	Sealer sealer
+	// Directory is identity's directory, asked the user SID a Kerberos name
+	// links for before the write that stores it; nil, a write giving a user
+	// a new Kerberos name answers 503.
+	Directory directory
+	// Joins is identity's hold of an online join's administrator credential,
+	// in memory under the operation it is handed to; nil, join-domain,
+	// online or offline, resolve-principal, test-directory and
+	// rotate-machine-password answer 503.
+	Joins joins
 }
 
 // controlPlane is the metadata store's control plane as the API reaches it:
@@ -140,6 +149,11 @@ type Server struct {
 	// quit closes once the API listener shuts down, so a parked poll
 	// answers rather than holding Stop until its wait has passed.
 	quit chan struct{}
+
+	// seen, nil but in a test, is handed each write's body as read, then
+	// its decoded body, so a test can see each cleared once the write
+	// returns.
+	seen func(any)
 
 	tracer             trace.Tracer
 	requests           *prometheus.CounterVec
@@ -196,7 +210,7 @@ func newServer(d Deps, rows []route) *Server {
 	api.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { s.handle(w, r, nil) })
 	groups := map[string][]route{}
 	for _, rt := range rows {
-		key := rt.method + " " + rt.pattern
+		key := rt.method + " " + rt.muxPattern()
 		groups[key] = append(groups[key], rt)
 	}
 	for key, g := range groups {

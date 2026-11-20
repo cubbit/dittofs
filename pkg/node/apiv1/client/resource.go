@@ -85,15 +85,7 @@ func (r Resource[S, T]) Delete(ctx context.Context, id, etag string, opts ...Cal
 // Action runs verb on the resource id names, with body, nil for none, and
 // with If-Match when etag is set, as an action that changes the spec needs.
 func (r Resource[S, T]) Action(ctx context.Context, id, verb string, body any, etag string, opts ...CallOption) (Result[S, T], error) {
-	rp, err := r.c.write(ctx, http.MethodPost, r.at(id)+":"+verb, body, etag, opts)
-	if err != nil {
-		return Result[S, T]{}, err
-	}
-	if op, err := accepted(rp); op != nil || err != nil {
-		return Result[S, T]{Operation: op}, err
-	}
-	t, err := tagged[S, T](rp, nil)
-	return Result[S, T]{Resource: &t}, err
+	return result[S, T](r.c.write(ctx, http.MethodPost, r.at(id)+":"+verb, body, etag, opts))
 }
 
 // Get reads the resource of the parent id names.
@@ -137,6 +129,19 @@ func accepted(rp reply) (*apiv1.Operation, error) {
 	}
 	var op apiv1.Operation
 	return &op, json.Unmarshal(rp.body, &op)
+}
+
+// result decodes rp as the operation it started, when it is a 202, or as
+// the resource it changed.
+func result[S, T any](rp reply, err error) (Result[S, T], error) {
+	if err != nil {
+		return Result[S, T]{}, err
+	}
+	if op, err := accepted(rp); op != nil || err != nil {
+		return Result[S, T]{Operation: op}, err
+	}
+	t, err := tagged[S, T](rp, nil)
+	return Result[S, T]{Resource: &t}, err
 }
 
 // tagged decodes rp as a resource with its ETag, ignoring any field this

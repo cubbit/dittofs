@@ -3,6 +3,7 @@ package identity_test
 import (
 	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,6 +74,41 @@ func TestCheckKeytab(t *testing.T) {
 	}
 }
 
+// KeytabNames names each key's service and realm, and refuses what
+// CheckKeytab refuses.
+func TestKeytabNames(t *testing.T) {
+	names, err := identity.KeytabNames(keytabOf(t, etypeID.AES128_CTS_HMAC_SHA1_96, etypeID.AES256_CTS_HMAC_SHA1_96))
+	want := identity.KeytabName{Name: "cifs/nas.corp.example", Realm: "CORP.EXAMPLE"}
+	if err != nil || len(names) != 2 || names[0] != want || names[1] != want {
+		t.Errorf("KeytabNames = %q, %v; want %v twice", names, err, want)
+	}
+	if _, err := identity.KeytabNames(keytabOf(t, etypeID.RC4_HMAC)); !errors.Is(err, vfserr.ErrInvalid) {
+		t.Errorf("KeytabNames of an RC4 keytab = %v, want vfserr.ErrInvalid", err)
+	}
+	eight := "a/b/c/d/e/f/g/h"
+	if names, err := identity.KeytabNames(keytabNamed(t, eight)); err != nil || len(names) != 1 || names[0].Name != eight {
+		t.Errorf("KeytabNames of a principal of 8 components = %q, %v; want %s", names, err, eight)
+	}
+	if _, err := identity.KeytabNames(keytabNamed(t, eight+"/i")); !errors.Is(err, vfserr.ErrInvalid) {
+		t.Errorf("KeytabNames of a principal of 9 components = %v, want vfserr.ErrInvalid", err)
+	}
+}
+
+// keytabNamed is a keytab of one AES256 key for name, its components split
+// at "/".
+func keytabNamed(t testing.TB, name string) []byte {
+	t.Helper()
+	kt := keytab.New()
+	if err := kt.AddEntry(name, "CORP.EXAMPLE", "pw", time.Unix(1, 0), 1, etypeID.AES256_CTS_HMAC_SHA1_96); err != nil {
+		t.Fatal(err)
+	}
+	b, err := kt.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 // FuzzCheckKeytab holds CheckKeytab to gokrb5's decoder: no panic, and a
 // keytab it accepts decodes there to at least one entry, every one an AES
 // key.
@@ -81,6 +117,7 @@ func FuzzCheckKeytab(f *testing.F) {
 	f.Add(keytabOf(f, etypeID.AES128_CTS_HMAC_SHA1_96, etypeID.RC4_HMAC))
 	f.Add(withHole(keytabOf(f, etypeID.AES128_CTS_HMAC_SHA1_96), 4))
 	f.Add([]byte{5, 2, 0, 0, 0, 0})
+	f.Add(keytabNamed(f, "a/b/c/d/e/f/g/h/i")) // over the component cap
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if identity.CheckKeytab(b) != nil {
 			return
@@ -91,6 +128,15 @@ func FuzzCheckKeytab(f *testing.F) {
 		}
 		if len(kt.Entries) == 0 {
 			t.Fatalf("CheckKeytab accepted %x, gokrb5 decodes no entry", b)
+		}
+		names, err := identity.KeytabNames(b)
+		if err != nil || len(names) != len(kt.Entries) {
+			t.Fatalf("KeytabNames(%x) = %q, %v; gokrb5 decodes %d entries", b, names, err, len(kt.Entries))
+		}
+		for i, e := range kt.Entries {
+			if want := (identity.KeytabName{Name: strings.Join(e.Principal.Components, "/"), Realm: e.Principal.Realm}); names[i] != want {
+				t.Fatalf("KeytabNames(%x)[%d] = %q, gokrb5 decodes %q", b, i, names[i], want)
+			}
 		}
 		for _, e := range kt.Entries {
 			if et := e.Key.KeyType; et != etypeID.AES128_CTS_HMAC_SHA1_96 && et != etypeID.AES256_CTS_HMAC_SHA1_96 {

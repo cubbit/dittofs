@@ -188,6 +188,10 @@ type ControlPlaneTx interface {
 	NamespaceNamed(ns NamespaceID) (bool, error)
 	PutNamespace(n Namespace, expect uint64) (uint64, error)
 	DeleteNamespace(id NamespaceID, expect uint64) error
+	// Holder is the user or machine whose record holds the spelling id,
+	// tracked over the spelling's row and the record; false when none does
+	// or a group does.
+	Holder(id ProtocolID) (User, bool, error)
 	Session(id [16]byte) (Session, bool, error)
 	// SessionByRefresh finds the session a refresh hash was issued to,
 	// whether it is the session's current hash or one it replaced.

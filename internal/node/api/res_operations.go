@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"iter"
-	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -187,20 +186,20 @@ func running(ctx context.Context, d Deps, state entity.OpState, after []byte) it
 	}
 }
 
-// unrowedStarts is the right that may start each kind of operation no row
-// starts, which a cancel of one asks of its caller. A kind a row starts asks
-// its row's right; any other, Installation.
-var unrowedStarts = map[apiv1.OpKind]auth.Right{apiv1.OpNTHashDelete: auth.Stores}
-
-// startRights is the right that may start each kind of operation: each
-// row's that starts one, and unrowedStarts for the rest.
+// startRights is the right that may start each kind of operation: the
+// right of each row that starts one, or may.
 func startRights(rows []route) map[apiv1.OpKind]auth.Right {
-	m := maps.Clone(unrowedStarts)
+	m := map[apiv1.OpKind]auth.Right{}
 	for _, rt := range rows {
-		if rt.starts != "" {
-			m[rt.starts] = rt.right
+		for _, k := range []apiv1.OpKind{rt.starts, rt.mayStart} {
+			if k != "" {
+				m[k] = rt.right
+			}
 		}
 	}
+	// The NT-hash deletion is started only by identity.ntlm's admin-only
+	// write, so its cancel asks the same right.
+	m[apiv1.OpNTHashDelete] = auth.Installation
 	return m
 }
 

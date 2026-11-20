@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"iter"
 	"net/http"
 	"net/url"
@@ -26,10 +27,53 @@ func (c *Client) ExportPolicies() Singleton[apiv1.ExportPolicySpec] {
 	return Singleton[apiv1.ExportPolicySpec]{c: c, path: "/api/v1/shares", sub: "/export-policy"}
 }
 
-// Users is the users. A delete starts an operation. No route serves its
-// Action yet.
-func (c *Client) Users() Resource[apiv1.UserSpec, struct{}] {
-	return Resource[apiv1.UserSpec, struct{}]{c: c, path: "/api/v1/users"}
+// InstallationAction runs verb on the installation, POST
+// /api/v1/installation:verb, with body, nil for none, and returns the
+// operation it started. join-domain refuses an Idempotency-Key, so it is
+// called with WithoutIdempotencyKey.
+func (c *Client) InstallationAction(ctx context.Context, verb string, body any, opts ...CallOption) (*apiv1.Operation, error) {
+	rp, err := c.write(ctx, http.MethodPost, "/api/v1/installation:"+verb, body, "", opts)
+	if err != nil {
+		return nil, err
+	}
+	op, err := accepted(rp)
+	if op == nil && err == nil {
+		err = fmt.Errorf("installation:%s answered %d, not an operation", verb, rp.status)
+	}
+	return op, err
+}
+
+// Users is the users. A delete starts an operation, and so does a create,
+// put or patch naming a Kerberos name a machine holds, which moves the name
+// and starts the machine's deletion. No route serves its Action yet.
+func (c *Client) Users() UserResource {
+	return UserResource{Resource[apiv1.UserSpec, struct{}]{c: c, path: "/api/v1/users"}}
+}
+
+// UserResource is the users, whose create, put or patch may start an
+// operation, as moving a machine's Kerberos name starts the machine's
+// deletion.
+type UserResource struct {
+	Resource[apiv1.UserSpec, struct{}]
+}
+
+// Create creates a user of spec, returning the operation it started, or the
+// user.
+func (r UserResource) Create(ctx context.Context, spec apiv1.UserSpec, opts ...CallOption) (Result[apiv1.UserSpec, struct{}], error) {
+	return result[apiv1.UserSpec, struct{}](r.c.write(ctx, http.MethodPost, r.path, map[string]any{"spec": spec}, "", opts))
+}
+
+// Put replaces the spec of the user id names, whose tag is etag, returning
+// the operation it started, or the user.
+func (r UserResource) Put(ctx context.Context, id string, spec apiv1.UserSpec, etag string) (Result[apiv1.UserSpec, struct{}], error) {
+	return result[apiv1.UserSpec, struct{}](r.c.write(ctx, http.MethodPut, r.at(id), map[string]any{"spec": spec}, etag, nil))
+}
+
+// Patch merges patch, a JSON merge patch of the user's body, into the user
+// id names, whose tag is etag, returning the operation it started, or the
+// user.
+func (r UserResource) Patch(ctx context.Context, id string, patch any, etag string) (Result[apiv1.UserSpec, struct{}], error) {
+	return result[apiv1.UserSpec, struct{}](r.c.write(ctx, http.MethodPatch, r.at(id), patch, etag, nil))
 }
 
 // Groups is the groups. A delete starts an operation. No route serves its
@@ -160,11 +204,24 @@ const (
 // Settings is the settings at scope, each named by its key: the
 // installation's, id unused, or those of the node, namespace, remote store
 // or share id names. Get, Put and Delete are GET, PUT and DELETE of
-// .../settings/{key}; no route serves List, Create or Patch.
-func (c *Client) Settings(scope Scope, id string) Resource[apiv1.SettingSpec, apiv1.SettingStatus] {
+// .../settings/{key}; no route serves List, Create or Patch. A Put or a
+// Delete may start an operation, which it returns.
+func (c *Client) Settings(scope Scope, id string) SettingResource {
 	path := "/api/v1/settings"
 	if scope != ScopeInstallation {
 		path = "/api/v1/" + string(scope) + "/" + url.PathEscape(id) + "/settings"
 	}
-	return Resource[apiv1.SettingSpec, apiv1.SettingStatus]{c: c, path: path}
+	return SettingResource{Resource[apiv1.SettingSpec, apiv1.SettingStatus]{c: c, path: path}}
+}
+
+// SettingResource is the settings at one scope, whose write may start an
+// operation, as turning identity.ntlm off starts the NT hashes' deletion.
+type SettingResource struct {
+	Resource[apiv1.SettingSpec, apiv1.SettingStatus]
+}
+
+// Put sets the setting key names, whose tag is etag, or, with etag "*",
+// creates it, returning the operation it started, or the setting.
+func (r SettingResource) Put(ctx context.Context, key string, spec apiv1.SettingSpec, etag string) (Result[apiv1.SettingSpec, apiv1.SettingStatus], error) {
+	return result[apiv1.SettingSpec, apiv1.SettingStatus](r.c.write(ctx, http.MethodPut, r.at(key), map[string]any{"spec": spec}, etag, nil))
 }

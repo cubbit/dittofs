@@ -2,12 +2,14 @@ package identity_test
 
 import (
 	"bytes"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/secrets"
 )
 
@@ -98,6 +100,9 @@ func TestApplyDropsNonAESVersion(t *testing.T) {
 	}
 	if _, ok := s.KeyOf(svc, realm, 1, etypeID.AES128_CTS_HMAC_SHA1_96); !ok {
 		t.Error("the AES128 key of the all-AES version not found")
+	}
+	if _, ver, names := s.AppliedKeytab(); ver != 2 || !slices.Equal(names, []identity.KeytabName{{Name: svc, Realm: realm}}) {
+		t.Errorf("AppliedKeytab = version %d names %v, want version 2 and the all-AES version's one name, the dropped version's skipped", ver, names)
 	}
 }
 

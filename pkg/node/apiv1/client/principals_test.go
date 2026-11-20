@@ -2,12 +2,16 @@ package client_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 )
 
 // Each principal accessor reaches its routes: a user created, read,
@@ -21,17 +25,22 @@ func TestPrincipalAccessors(t *testing.T) {
 	c := dial(t, s.url, clock)
 	ctx := t.Context()
 
-	u, err := c.Users().Create(ctx, apiv1.UserSpec{Name: "alice"})
-	if err != nil || u.ID == "" || u.Spec.UID == nil || u.ETag == "" {
-		t.Fatalf("Users().Create: %+v err %v, want alice with an allocated uid and an ETag", u, err)
+	created, err := userResult(c.Users().Create(ctx, apiv1.UserSpec{Name: "alice"}))
+	if err != nil || created.Resource == nil || created.Operation != nil {
+		t.Fatalf("Users().Create: %+v err %v, want alice and no operation", created, err)
+	}
+	u := *created.Resource
+	if u.ID == "" || u.Spec.UID == nil || u.ETag == "" {
+		t.Fatalf("Users().Create: %+v, want alice with an allocated uid and an ETag", u)
 	}
 	if got, err := c.Users().Get(ctx, u.ID); err != nil || got.Spec.Name != "alice" || got.ETag != u.ETag {
 		t.Errorf("Users().Get: %+v err %v, want alice under ETag %s", got, err, u.ETag)
 	}
-	patched, err := c.Users().Patch(ctx, u.ID, map[string]any{"spec": map[string]any{"disabled": true}}, u.ETag)
-	if err != nil || !patched.Spec.Disabled {
-		t.Fatalf("Users().Patch disabled: %+v err %v, want her disabled", patched, err)
+	pr, err := userResult(c.Users().Patch(ctx, u.ID, map[string]any{"spec": map[string]any{"disabled": true}}, u.ETag))
+	if err != nil || pr.Resource == nil || !pr.Resource.Spec.Disabled {
+		t.Fatalf("Users().Patch disabled: %+v err %v, want her disabled", pr, err)
 	}
+	patched := *pr.Resource
 	var names []string
 	for it, err := range c.Users().List(ctx, nil) {
 		if err != nil {
@@ -149,4 +158,85 @@ func TestPrincipalAccessors(t *testing.T) {
 		t.Fatalf("Users().Delete: operation %+v err %v, want a user.delete", op, err)
 	}
 	checkKeys(t, s.front)
+}
+
+// A user write naming a Kerberos name a machine holds answers the
+// machine's deletion: Create, Put and Patch each return that operation, not
+// a user decoded from it.
+func TestUserWriteMovingAMachineNameReturnsTheOperation(t *testing.T) {
+	s := serve(t, admin())
+	c := dial(t, s.url, newClock())
+	ctx := t.Context()
+	machine := func(name string) {
+		t.Helper()
+		m := entity.User{Principal: entity.Principal{Kind: entity.PrincipalMachine, ID: entity.NewPrincipalID()},
+			IDs: entity.ProtocolIDs{{Scheme: entity.SchemeKerberos, Value: name}}}
+		if _, err := s.store.PutUser(ctx, m, 0, entity.Alloc{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	moved := func(call string, res userWrite, err error) {
+		t.Helper()
+		if err != nil || res.Resource != nil || res.Operation == nil || res.Operation.Kind != apiv1.OpUserDelete {
+			t.Fatalf("%s moving a machine's name: %+v err %v, want the machine's user.delete and no user", call, res, err)
+		}
+	}
+
+	machine("host/a@AD.EXAMPLE")
+	res, err := userResult(c.Users().Create(ctx, apiv1.UserSpec{Name: "alice", Kerberos: "host/a@AD.EXAMPLE"}))
+	moved("Users().Create", res, err)
+
+	bob, err := userResult(c.Users().Create(ctx, apiv1.UserSpec{Name: "bob"}))
+	if err != nil || bob.Resource == nil {
+		t.Fatalf("Users().Create bob: %+v err %v", bob, err)
+	}
+	machine("host/b@AD.EXAMPLE")
+	sp := bob.Resource.Spec
+	sp.Kerberos = "host/b@AD.EXAMPLE"
+	res, err = userResult(c.Users().Put(ctx, bob.Resource.ID, sp, bob.Resource.ETag))
+	moved("Users().Put", res, err)
+
+	b, err := c.Users().Get(ctx, bob.Resource.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine("host/c@AD.EXAMPLE")
+	res, err = userResult(c.Users().Patch(ctx, b.ID, map[string]any{"spec": map[string]any{"kerberos": "host/c@AD.EXAMPLE"}}, b.ETag))
+	moved("Users().Patch", res, err)
+}
+
+// userWrite is what a user write returns.
+type userWrite = client.Result[apiv1.UserSpec, struct{}]
+
+// userResult is a user write's answer as a Result, the answer taken as any
+// so the tests compile, and fail on their assertions, against a client
+// whose user writes return the bare user instead.
+func userResult(res any, err error) (userWrite, error) {
+	switch r := res.(type) {
+	case userWrite:
+		return r, err
+	case client.Tagged[apiv1.UserSpec, struct{}]:
+		return userWrite{Resource: &r}, err
+	}
+	return userWrite{}, fmt.Errorf("a user write returned %T", res)
+}
+
+// InstallationAction reaches the installation's actions: resolve-principal
+// naming nothing, and join-domain of no mode sent with no Idempotency-Key as
+// it requires, each answer 400 naming its field.
+func TestInstallationAction(t *testing.T) {
+	s := serve(t, admin())
+	c := dial(t, s.url, newClock())
+	join := map[string]any{"spec": map[string]any{"mode": "sideways"}, "credential": map[string]any{"password": "cHc="}}
+	for _, tc := range []struct {
+		verb, field string
+		body        any
+		opts        []client.CallOption
+	}{{"resolve-principal", "name", map[string]any{}, nil}, {"join-domain", "spec.mode", join, []client.CallOption{client.WithoutIdempotencyKey()}}} {
+		op, err := c.InstallationAction(t.Context(), tc.verb, tc.body, tc.opts...)
+		var p *apiv1.Problem
+		if !errors.As(err, &p) || p.Status != http.StatusBadRequest || p.Field != tc.field {
+			t.Errorf("InstallationAction(%s): operation %+v err %v, want 400 naming %s", tc.verb, op, err, tc.field)
+		}
+	}
 }

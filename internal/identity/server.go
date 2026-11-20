@@ -120,6 +120,9 @@ type State struct {
 	// keys is the ring Apply builds from Keytab; whatever the caller
 	// passes is replaced.
 	keys keyRing
+	// keytabNames is the name of each key of the versions keys holds,
+	// read at Apply; whatever the caller passes is replaced.
+	keytabNames []identity.KeytabName
 	// Machine is the machine password's versions in force, opened, current
 	// first. While Join.Joined, Apply derives each one's keys for the names
 	// in Join.Names, but for a version marked HandedOver.
@@ -312,7 +315,7 @@ func (s *Server) Apply(st State) error {
 	if err := st.validate(); err != nil {
 		return err
 	}
-	st.keys = buildRing(st.Keytab, s.logger)
+	st.keys, st.keytabNames = buildRing(st.Keytab, s.logger)
 	st.machine = buildMachineRing(&st, s.logger)
 	st.dropped = st.keys.dropMachineNames(&st.machine)
 	s.mu.Lock()

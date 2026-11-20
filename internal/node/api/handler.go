@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -40,6 +41,14 @@ type request[B any] struct {
 	Expect uint64
 	Query  url.Values // a write's query, holding only parameters its row takes
 	d      Deps       // the serving server's, which every adapter sets, for a handler and a pre-write step
+	// own commits fn in a Write of its own, before the write's, audited as
+	// the request arrived with target, change and an applied outcome, for a
+	// pre-write step whose change must commit first; set by the write adapter.
+	own func(ctx context.Context, target entity.ResourceRef, change []byte, fn func(entity.ControlPlaneTx) error) error
+	// start writes, in the write's transaction, an operation of kind on
+	// target, which the write then answers 202 with, for a handler whose
+	// write starts one only sometimes; set by the write adapter inside it.
+	start func(kind apiv1.OpKind, target entity.ResourceRef) error
 }
 
 // none is the body of a request that carries none.
@@ -120,7 +129,11 @@ func call[B any](h func(context.Context, request[B]) (answer, error)) adapter {
 // maxBody bytes of it.
 func decodeRequest[B any](r *http.Request, id [16]byte) (request[B], error) {
 	rq := request[B]{ID: id}
-	return rq, decode(http.MaxBytesReader(nil, r.Body, maxBody), &rq.Body)
+	b, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
+	if err != nil {
+		return rq, &fieldError{detail: err.Error()}
+	}
+	return rq, decode(b, &rq.Body)
 }
 
 // jsonOr is 200 with v, or err.
@@ -223,11 +236,13 @@ func retryAfter(err error, status int, retryable bool) time.Duration {
 }
 
 // pick returns the row of rows r names, its verb cut from the path's {id} at
-// the first colon, and the ID left; nil when none is named.
+// the first colon, and the ID left; nil when none is named. A row with no
+// {id} is served at a pattern of its own, so it is the one row its pattern
+// names.
 func pick(rows []route, r *http.Request) (*route, string) {
 	id, verb, _ := strings.Cut(r.PathValue("id"), ":")
 	for i := range rows {
-		if rows[i].verb == verb {
+		if rows[i].verb == verb || !rows[i].hasID() {
 			return &rows[i], id
 		}
 	}
@@ -238,7 +253,8 @@ func pick(rows []route, r *http.Request) (*route, string) {
 // does not admit, parses the path's ID and runs the row's adapter. With no
 // Authenticate, every caller is refused 401. A refusal of an authenticated
 // caller here, before the adapter, is audited against the row's kind and
-// the path's ID when it parses; the write adapter audits its own.
+// the path's ID when it parses, or, on an installation row, whose path
+// names none, the installation's ID; the write adapter audits its own.
 //
 // decision: a path no row names is refused unaudited. It names no resource,
 // and the store refuses an audit record whose target has no kind, so its
@@ -262,10 +278,16 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 			rec := s.auditOf(ctx, r)
 			rec.Target.Kind = rt.kind
 			// Named as the row's adapter names it, so an applied and a
-			// refused write of one record share a target.
+			// refused write of one record share a target: an installation
+			// row's path names no ID, so the installation's is read.
 			sid, perr := entity.ParseShareID(rawID)
-			if hasID := rt.hasID(); (hasID && perr == nil) || (!hasID && rt.target != nil) {
+			switch hasID := rt.hasID(); {
+			case (hasID && perr == nil) || (!hasID && rt.target != nil):
 				rec.Target.ID = rt.ref(sid, r.PathValue("sub"))
+			case !hasID && rt.kind == entity.ResourceInstallation && s.d.Store != nil:
+				if in, err := s.d.Store.Installation(ctx); err == nil {
+					rec.Target.ID = in.ID[:]
+				}
 			}
 			s.refuse(ctx, rec, err)
 		}

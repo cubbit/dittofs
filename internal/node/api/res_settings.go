@@ -183,11 +183,13 @@ func scopeOf(k entity.ScopeKind) func([16]byte) entity.SettingScope {
 }
 
 // ownKeys are the keys only a resource's own route writes, each with the
-// route that does: a store is created with its endpoint, and its
-// credential's reference is written with the secret it names.
+// route that does: a store is created with its endpoint, and a store's
+// credential's and the keytab's references are each written with the secret
+// they name, after their route's checks.
 var ownKeys = map[string]string{
 	storeEndpoint:   "POST /api/v1/stores",
 	storeCredential: "PUT /api/v1/stores/{id}/credential",
+	keytabKey:       "PUT /api/v1/installation/keytab",
 }
 
 // maxSettingKey is the longest setting key a route takes.
@@ -198,12 +200,23 @@ const maxSettingKey = 255
 // A put states the value; a delete removes the record, so the wider
 // scope's value or the default is effective. Every write is judged by the
 // settings table, and refused 404 for a record of a scope that does not
-// exist, and 400 for a key only a resource's own route writes. A
+// exist, and 400 for a key only a resource's own route writes. A write of
+// the installation's identity.ntlm also runs the rule for turning NTLM back
+// on, and answers 202 with the NT-hash deletion it starts. A
 // share-scoped setting of a share being removed is refused stale by the
 // store.
 func settingRoutes() []route {
 	var out []route
 	for _, sc := range settingScopes {
+		// An installation setting's put may start the NT-hash deletion,
+		// which identity.ntlm's rule starts; a delete turns NTLM on, which
+		// starts none.
+		var may apiv1.OpKind
+		var desc string
+		if sc.path == "/api/v1/settings" {
+			may = apiv1.OpNTHashDelete
+			desc = "A write of " + ntlmKey + " takes the admin role, whatever x-dittofs-role names for every other key."
+		}
 		// The key is the audit target, which an index key holds, so it is
 		// bounded before any record is written for it.
 		target := func(id [16]byte, key string) ([]byte, error) {
@@ -231,18 +244,26 @@ func settingRoutes() []route {
 		path := sc.path + "/{sub}"
 		out = append(out,
 			route{method: http.MethodGet, pattern: path, kind: entity.ResourceSetting, right: auth.View, target: target, sub: subSetting, serve: watch(settingRead(sc.scope))},
-			route{method: http.MethodPut, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, serve: write(w, nil,
+			route{method: http.MethodPut, pattern: path, kind: entity.ResourceSetting, right: sc.right, mayStart: may, target: target, sub: subSetting, desc: desc, serve: write(w, nil,
 				func(ctx context.Context, rq request[settingDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Setting, [16]byte, error) {
 					v := rq.Body.Spec.Value
 					if len(v) == 0 || string(v) == "null" {
 						return apiv1.Setting{}, rq.ID, &fieldError{field: "spec.value", detail: "a put states the value; a DELETE resets the setting to its default"}
 					}
-					gen, err := putSetting(ctx, rq.d, tx, entity.Setting{Scope: sc.scope(rq.ID), Key: rq.Sub, Value: v}, rq.Expect)
+					var gen uint64
+					st := entity.Setting{Scope: sc.scope(rq.ID), Key: rq.Sub, Value: v}
+					err := ntlmWrite(ctx, tx, rq.start, st.Scope, st.Key, func() (err error) {
+						gen, err = putSetting(ctx, rq.d, tx, st, rq.Expect)
+						return err
+					})
 					return apiv1.Setting{ID: rq.Sub, Generation: gen, Spec: apiv1.SettingSpec{Value: v}}, rq.ID, err
 				})},
-			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, serve: write(tagsOf(w), nil,
+			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, desc: desc, serve: write(tagsOf(w), nil,
 				func(ctx context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
-					return none{}, rq.ID, deleteSetting(ctx, rq.d, tx, sc.scope(rq.ID), rq.Sub, rq.Expect)
+					scope := sc.scope(rq.ID)
+					return none{}, rq.ID, ntlmWrite(ctx, tx, rq.start, scope, rq.Sub, func() error {
+						return deleteSetting(ctx, rq.d, tx, scope, rq.Sub, rq.Expect)
+					})
 				})},
 		)
 	}

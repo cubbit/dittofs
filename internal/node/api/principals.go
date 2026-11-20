@@ -124,7 +124,7 @@ func principalIn(tx entity.ControlPlaneTx, id entity.PrincipalID) (entity.Princi
 // tagsOf is w for a write that carries no body: a delete, whose record,
 // tag and hidden records w reads.
 func tagsOf[B any](w writing[B]) writing[none] {
-	return writing[none]{kind: w.kind, raises: w.raises, hidden: w.hidden, read: func(tx entity.ControlPlaneTx, id [16]byte, sub string) (none, uint64, bool, error) {
+	return writing[none]{kind: w.kind, raises: w.raises, hidden: w.hidden, self: w.self, read: func(tx entity.ControlPlaneTx, id [16]byte, sub string) (none, uint64, bool, error) {
 		_, tag, ok, err := w.read(tx, id, sub)
 		return none{}, tag, ok, err
 	}}

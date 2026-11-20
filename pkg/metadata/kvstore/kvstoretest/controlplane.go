@@ -920,6 +920,89 @@ func testKrbLinkedSID(t *testing.T, kvo Opener) {
 	}
 }
 
+// Holder answers the user or machine whose record holds a spelling, its
+// linked SID with it, both from the view and inside a write; a group's
+// spelling, one nobody holds and a marked machine's answer none.
+func testSpellingHolder(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	alice := user("alice", uid("1000"), krbAs("alice@AD.EXAMPLE", "S-1-5-21-1-2-3-1104"))
+	must(t, errOf(cp.PutUser(ctx, alice, 0, entity.Alloc{})))
+	m := entity.User{Principal: entity.Principal{Kind: entity.PrincipalMachine, ID: entity.NewPrincipalID()}, IDs: entity.ProtocolIDs{krbAs("host/build01@AD.EXAMPLE", "S-1-5-21-1-2-3-1199")}}
+	must(t, errOf(cp.PutUser(ctx, m, 0, entity.Alloc{})))
+	g := group("staff")
+	must(t, errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
+	inTx := func(id entity.ProtocolID) (u entity.User, ok bool) {
+		must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) (err error) {
+			u, ok, err = tx.Holder(id)
+			return err
+		}))
+		return u, ok
+	}
+	for _, c := range []struct {
+		name string
+		id   entity.ProtocolID
+		want entity.User
+		ok   bool
+	}{
+		{"a user's krb", krbAs("alice@AD.EXAMPLE", ""), alice, true},
+		{"a user's uid", uid("1000"), alice, true},
+		{"a machine's krb", krbAs("host/build01@AD.EXAMPLE", ""), m, true},
+		{"a group's gid", g.IDs[0], entity.User{}, false},
+		{"nobody's", krbAs("carol@AD.EXAMPLE", ""), entity.User{}, false},
+	} {
+		got, ok, err := cp.Holder(ctx, c.id)
+		must(t, err)
+		txGot, txOK := inTx(c.id)
+		for _, side := range []struct {
+			how string
+			u   entity.User
+			ok  bool
+		}{{"view", got, ok}, {"write", txGot, txOK}} {
+			if side.ok != c.ok || side.u.Principal != c.want.Principal || !slices.Equal(side.u.IDs, c.want.IDs) {
+				t.Errorf("%s, from the %s: Holder = %v %v %v, want %v %v holding %v", c.name, side.how, side.u.Principal, side.u.IDs, side.ok, c.want.Principal, c.ok, c.want.IDs)
+			}
+		}
+	}
+	mGen, _, err := cp.User(ctx, m.Principal)
+	must(t, err)
+	must(t, cp.DeleteUser(ctx, m.Principal, mGen.Generation))
+	if _, ok, err := cp.Holder(ctx, krbAs("host/build01@AD.EXAMPLE", "")); err != nil || ok {
+		t.Errorf("a marked machine's krb: Holder = %v %v, want none", ok, err)
+	}
+}
+
+// Holder is read tracked in a write, over the spelling's row and the
+// record: a concurrent PutUser claiming the spelling that commits first
+// makes the write run again and see its holder.
+func testHolderInWrite(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
+		t.Run(b.name, func(t *testing.T) {
+			s, h := heldStore(t, b)
+			cp := s.ControlPlane()
+			carol := user("carol", krbAs("carol@AD.EXAMPLE", ""))
+			var seen entity.User
+			var held bool
+			outer, inner := race(h,
+				func() error {
+					return cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+						var err error
+						if seen, held, err = tx.Holder(krbAs("carol@AD.EXAMPLE", "")); err != nil {
+							return err
+						}
+						return errOf(tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0))
+					})
+				},
+				func() error { return errOf(cp.PutUser(ctx, carol, 0, entity.Alloc{})) })
+			must(t, inner)
+			must(t, outer)
+			if !held || seen.Principal != carol.Principal {
+				t.Errorf("Holder read by the attempt that committed: %v held %v, want carol %v", seen.Principal, held, carol.Principal)
+			}
+		})
+	}
+}
+
 // krbAs is the krb spelling name, linked for the binary form of the SID
 // linked spells, or for none when it is empty.
 func krbAs(name, linked string) entity.ProtocolID {

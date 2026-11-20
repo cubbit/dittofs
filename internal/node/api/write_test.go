@@ -32,6 +32,7 @@ import (
 // onDisk is a control plane over Badger on disk under t.TempDir(), behind a
 // FaultKV the test may fault, and the KV beneath it, to read raw.
 type onDisk struct {
+	st    *kvstore.Store
 	cp    kvstore.ControlPlane
 	fault *kvtest.FaultKV
 	raw   kv.KV
@@ -56,7 +57,7 @@ func newOnDisk(t *testing.T) *onDisk {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &onDisk{cp: st.ControlPlane(), fault: f, raw: db}
+	return &onDisk{st: st, cp: st.ControlPlane(), fault: f, raw: db}
 }
 
 func (o *onDisk) use(d *api.Deps) { d.Store = o.cp }
