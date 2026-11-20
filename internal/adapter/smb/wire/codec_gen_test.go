@@ -91,6 +91,9 @@ func (x *CreateRequest) decodeSMB2(d *wire.Decoder, v uint32) {
 	x.Name = d.UTF16(d.At(lNameOffset, lNameLength, 1024, 1))
 	{
 		region := d.At(lCreateContextsOffset, lCreateContextsLength, 4096, 8)
+		if n := wire.Links(region); n > 0 {
+			x.Contexts = make([]CreateContext, 0, n)
+		}
 		for at := 0; at < len(region) && d.Err == nil; {
 			var m []byte
 			m, at = d.Link(region, at)
@@ -146,7 +149,7 @@ func (*CreateRequest) MaxWire(v uint32) int {
 	n := 56
 	n += 1024
 	n += 4103
-	return n
+	return max(n, 57)
 }
 
 func (x *CreateRequest) IsZero() bool {

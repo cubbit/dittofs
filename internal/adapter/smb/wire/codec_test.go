@@ -290,6 +290,46 @@ func TestCodecUTF16Names(t *testing.T) {
 	}
 }
 
+// A name's string is reserved at one byte a code unit, what an ASCII name
+// takes: a 512-character one costs its 512 bytes, not three times them. A name
+// of any other character grows past it, as TestCodecUTF16Names decodes.
+func TestCodecUTF16ReservesAnASCIIName(t *testing.T) {
+	b := named(t, bytes.Repeat([]byte{'a', 0}, 512))
+	var r CreateRequest
+	if _, err := r.DecodeWire(b, 0x311); err != nil || r.Name != strings.Repeat("a", 512) {
+		t.Fatalf("decoded a name of %d bytes: %v", len(r.Name), err)
+	}
+	if prof.RaceEnabled {
+		t.Skip("the allocation count says nothing under the detector")
+	}
+	if n := allocated(func() {
+		r = CreateRequest{}
+		_, _ = r.DecodeWire(b, 0x311)
+	}); n != 512 {
+		t.Errorf("decoding a 512-character ASCII name allocates %d bytes, want its 512", n)
+	}
+}
+
+// A CREATE's create contexts are decoded into a slice made once, at their
+// count: three cost one allocation, not the three of an append growing from
+// none.
+func TestCodecCreateContextsAreMadeOnce(t *testing.T) {
+	b := patched(golden(t, "create-contexts"), 110, 0, 0) // no name, which allocates its own
+	var r CreateRequest
+	if _, err := r.DecodeWire(b, 0x311); err != nil || len(r.Contexts) != 3 {
+		t.Fatalf("decoded %d create contexts: %v", len(r.Contexts), err)
+	}
+	if prof.RaceEnabled {
+		t.Skip("the allocation count says nothing under the detector")
+	}
+	if n := testing.AllocsPerRun(100, func() {
+		r = CreateRequest{}
+		_, _ = r.DecodeWire(b, 0x311)
+	}); n != 1 {
+		t.Errorf("decoding three create contexts allocates %v times, want 1", n)
+	}
+}
+
 // A byte field decodes as a slice of the record, never a copy: a WRITE's 1 MiB
 // of data costs less than 4 KiB (RFC 20 section 5.3).
 func TestCodecByteFieldIsASliceOfTheRecord(t *testing.T) {

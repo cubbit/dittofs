@@ -23,7 +23,8 @@
 //     carries;
 //   - align=N on a field with an offset: the multiple its offset must be;
 //   - utf16 on a string: UTF-16LE;
-//   - chain on a []T with offset and count: each member at the next multiple
+//   - chain on a []T with offset, count and an align that is a multiple of
+//     8, as the decoder asks the offset be: each member at the next multiple
 //     of 8 (negotiate contexts); chain=L on a []T with offset and len: each
 //     found from the one before by its first field, a blank uint32 named L
 //     (create contexts);
@@ -35,7 +36,8 @@
 //     no arm of their own, whose bytes past its max refuse the message;
 //   - exact on an arm: its data is refused unless its struct takes every byte
 //     of it (MS-SMB2 3.3.5.9's create contexts);
-//   - since=D: on the wire from dialect D on;
+//   - since=D: on the wire from dialect D on, one RFC 22 serves, written as
+//     hex: 0x210, 0x300, 0x302 or 0x311;
 //   - if=L:V on a chain: on the wire only when L, a []uint16 field before it,
 //     holds V (a NEGOTIATE request's negotiate contexts, there when its
 //     Dialects hold 0x0311).

@@ -30,13 +30,19 @@ func TestGenerateRefuses(t *testing.T) {
 		def    = "X []byte `smb2:\"len=L,max=4,default\"`\n"
 		arm    = "type T struct{ A uint32 }\n"
 		chain  = "_ uint32 `smb2:\"name=O\"`\n_ uint16 `smb2:\"name=C\"`\n_ uint16 `smb2:\"name=N\"`\n"
+		// counted is a counted chain's layout fields, 6 bytes.
+		counted = "_ uint32 `smb2:\"name=O\"`\n_ uint16 `smb2:\"name=C\"`\n"
+		past    = ": a largest encoding past 2147483647 bytes"
 	)
 	for _, c := range []struct{ src, want string }{
 		{"type S struct {\n" + layout + "B []byte `smb2:\"len=L\"`\n}", "S.B: a variable-length field with no maximum"},
 		{"type S struct {\n" + layout + "N string `smb2:\"len=L,utf16\"`\n}", "S.N: a variable-length field with no maximum"},
 		{"type S struct { A uint32 `smb2:\"min=1\"` }", `S.A: a tag it does not know, "min"`},
 		{"type S struct { A uint32 `smb2:\"max=4\"` }", `S.A: a tag it cannot honour on this field's type, "max"`},
-		{"type S struct { A uint32 `smb2:\"since=x\"` }", "S.A: tag since=x is not a number of at least 0"},
+		{"type S struct { A uint32 `smb2:\"since=x\"` }", "S.A: tag since=x is not a dialect served"},
+		{"type S struct { A uint32 `smb2:\"since=0311\"` }", "S.A: tag since=0311 is not a dialect served"},
+		{"type S struct { A uint32 `smb2:\"since=785\"` }", "S.A: tag since=785 is not a dialect served"},
+		{"type S struct { A uint32 `smb2:\"since=0x202\"` }", "S.A: tag since=0x202 is not a dialect served"},
 		{"type S struct {\n" + layout + "N int\n}", "S.N: a type it cannot encode, int"},
 		{"type S struct {\n" + layout + "M map[string]uint32\n}", "S.M: a type it cannot encode"},
 		{"type S struct {\n" + layout + "A []uint32\n}", "S.A: an array or slice it cannot encode"},
@@ -62,6 +68,8 @@ func TestGenerateRefuses(t *testing.T) {
 		{"type S struct {\n" + layout + "C []T `smb2:\"offset=L,len=L,max=4,chain\"`\n}\n" + arm, "S.C: a counted chain takes count, not len"},
 		{"type S struct {\n" + layout + "C []T `smb2:\"offset=L,count=L,max=4,chain=N\"`\n}\n" + arm, "S.C: a linked chain takes len, not count"},
 		{"type S struct {\n" + layout + "C []T `smb2:\"offset=L,len=L,max=4,chain=N\"`\n}\n" + arm, "S.C: a linked chain's member T does not begin with a blank uint32 named N"},
+		{"type S struct {\n" + counted + "M []T `smb2:\"offset=O,count=C,max=2,align=2,chain\"`\n}\n" + arm, "S.M: a counted chain aligned to 2, not a multiple of 8"},
+		{"type S struct {\n" + counted + "M []T `smb2:\"offset=O,count=C,max=2,chain\"`\n}\n" + arm, "S.M: a counted chain aligned to 1, not a multiple of 8"},
 		{"type S struct {\n" + layout + "A T `smb2:\"len=L\"`\n}\n" + arm, "S.A: a struct field that is no union's arm: it has no case"},
 		{"type S struct {\n" + union + "A S `smb2:\"len=L,case=1\"`\n" + def + "}", "S.A: a type that holds itself, so no maximum"},
 		{"type S struct {\n" + layout + "A T `smb2:\"len=L,case=1\"`\n" + def + "}\n" + arm, "S.A: an arm with no union discriminant"},
@@ -77,9 +85,21 @@ func TestGenerateRefuses(t *testing.T) {
 		{"type S struct {\n" + union + "A T8 `smb2:\"len=L,case=1\"`\n" + def + "}\ntype T8 struct{ A uint64 }", "S.A: an arm whose maximum 8 exceeds its union's default 4"},
 		{"type S struct {\n" + layout + "B []byte `smb2:\"len=L,max=4\"`\nA uint32\n}", "S.A: a fixed field after a variable one"},
 		{"type S struct {\n" + layout + "_ uint16 `smb2:\"name=U\"`\nB []byte `smb2:\"len=L,max=4\"`\n}", "S._: a layout field no field uses"},
-		{"type S struct {\n" + chain + "D []uint16 `smb2:\"count=N,max=4\"`\nM []T `smb2:\"offset=O,count=C,max=2,chain,if=D\"`\n}\n" + arm, "S.M: tag if=D is not L:V, a field and the uint16 it may hold"},
-		{"type S struct {\n" + chain + "B []byte `smb2:\"len=N,max=4\"`\nM []T `smb2:\"offset=O,count=C,max=2,chain,if=B:0x311\"`\n}\n" + arm, "S.M: if=B names no []uint16 field before it"},
-		{"type S struct {\n" + chain + "M []T `smb2:\"offset=O,count=C,max=2,chain,if=D:0x311\"`\nD []uint16 `smb2:\"count=N,max=4\"`\n}\n" + arm, "S.M: if=D names no []uint16 field before it"},
+		{"type S struct {\n" + chain + "D []uint16 `smb2:\"count=N,max=4\"`\nM []T `smb2:\"offset=O,count=C,max=2,align=8,chain,if=D\"`\n}\n" + arm, "S.M: tag if=D is not L:V, a field and the uint16 it may hold"},
+		{"type S struct {\n" + chain + "B []byte `smb2:\"len=N,max=4\"`\nM []T `smb2:\"offset=O,count=C,max=2,align=8,chain,if=B:0x311\"`\n}\n" + arm, "S.M: if=B names no []uint16 field before it"},
+		{"type S struct {\n" + chain + "M []T `smb2:\"offset=O,count=C,max=2,align=8,chain,if=D:0x311\"`\nD []uint16 `smb2:\"count=N,max=4\"`\n}\n" + arm, "S.M: if=D names no []uint16 field before it"},
+		// A largest encoding past 2^31-1 bytes: 8 + 7 + 2147483633 with the
+		// padding its align may need; 2 + 2*1073741823; 8 + 2147483640 for a
+		// linked chain, its maximum alone; 13 + 65536*(7 + 65540) for a
+		// counted one, each member padded to 8; 13 + 134217728*(7 + 9), a
+		// member's 4 bytes filled to its StructureSize of 9; and 4 +
+		// 2147483644 for a union, named at the default whose tags bound it.
+		{"type S struct {\n_ uint32 `smb2:\"name=O\"`\n_ uint32 `smb2:\"name=L\"`\nB []byte `smb2:\"offset=O,len=L,max=2147483633,align=8\"`\n}", "S.B" + past},
+		{"type S struct {\n_ uint16 `smb2:\"name=N\"`\nA []uint16 `smb2:\"count=N,max=1073741823\"`\n}", "S.A" + past},
+		{"type S struct {\n_ uint32 `smb2:\"name=O\"`\n_ uint32 `smb2:\"name=L\"`\nC []T `smb2:\"offset=O,len=L,max=2147483640,chain=N\"`\n}\ntype T struct {\n_ uint32 `smb2:\"name=N\"`\n}", "S.C" + past},
+		{"type S struct {\n" + counted + "A []T `smb2:\"offset=O,count=C,max=65536,align=8,chain\"`\n}\ntype T struct {\n_ uint32 `smb2:\"name=L\"`\nB []byte `smb2:\"len=L,max=65536\"`\n}", "S.A" + past},
+		{"type S struct {\n" + counted + "A []T `smb2:\"offset=O,count=C,max=134217728,align=8,chain\"`\n}\ntype T struct {\n_ uint16 `smb2:\"size=9\"`\n_ uint16 `smb2:\"name=L\"`\nB []byte `smb2:\"len=L,max=0\"`\n}", "S.A" + past},
+		{"type S struct {\n" + union + "A T `smb2:\"len=L,case=1\"`\nX []byte `smb2:\"len=L,max=2147483644,default\"`\n}\n" + arm, "S.X" + past},
 	} {
 		t.Run(c.want, func(t *testing.T) {
 			src, err := generateFrom(t, c.src)
@@ -100,7 +120,7 @@ func TestGenerateRefuses(t *testing.T) {
 func TestCountsBoundMembersAtTheirLeast(t *testing.T) {
 	out, err := generateFrom(t, "type S struct {\n"+
 		"_ uint32 `smb2:\"name=O\"`\n_ uint16 `smb2:\"name=C\"`\n"+
-		"A []E `smb2:\"offset=O,count=C,max=2,chain\"`\n}\n"+
+		"A []E `smb2:\"offset=O,count=C,max=2,align=8,chain\"`\n}\n"+
 		"type E struct {\nX uint64\nY uint32 `smb2:\"since=0x311\"`\nZ [8]byte\n"+
 		"_ uint16 `smb2:\"name=L\"`\nB []byte `smb2:\"len=L,max=4\"`\n}")
 	if err != nil {
@@ -111,6 +131,64 @@ func TestCountsBoundMembersAtTheirLeast(t *testing.T) {
 	}
 }
 
+// The largest encoding 2^31-1 bytes allows is taken, a byte field of
+// 2147483643 bytes after its 4-byte length, and one byte more is refused. A
+// struct past it is refused once, at its innermost field and that field's
+// place, not again at the struct whose counted chain or union holds it,
+// however far the maxima multiply: a U, T's member, takes 2^34 bytes with
+// its padding, and T's 2^30 of them 2^64, which saturates rather than
+// wrapping to 13 bytes, so S, which holds T, is not refused as past the bound
+// itself.
+func TestTheLargestBound(t *testing.T) {
+	const length = "type S struct {\n_ uint32 `smb2:\"name=L\"`\n"
+	if _, err := generateFrom(t, length+"B []byte `smb2:\"len=L,max=2147483643\"`\n}"); err != nil {
+		t.Errorf("a byte field of 2147483643 bytes refused: %v", err)
+	}
+	if _, err := generateFrom(t, length+"B []byte `smb2:\"len=L,max=2147483644\"`\n}"); err == nil || !strings.Contains(err.Error(), "S.B: a largest encoding past 2147483647 bytes") {
+		t.Errorf("a byte field of 2147483644 bytes refused with %v, want its largest encoding refused", err)
+	}
+	_, err := generateFrom(t, "type S struct {\n_ uint32 `smb2:\"name=O\"`\n_ uint16 `smb2:\"name=C\"`\n"+
+		"A []T `smb2:\"offset=O,count=C,max=2,align=8,chain\"`\n}\n"+
+		"type T struct {\n_ uint32 `smb2:\"name=L\"`\nB []byte `smb2:\"len=L,max=2147483647\"`\n}")
+	if err == nil || strings.Count(err.Error(), "a largest encoding") != 1 || !strings.Contains(err.Error(), "in.go:10:1: T.B: ") {
+		t.Errorf("refused with %v, want one refusal, at T.B on line 10", err)
+	}
+	const counted = "_ uint32 `smb2:\"name=O\"`\n_ uint16 `smb2:\"name=C\"`\n"
+	_, err = generateFrom(t, "type S struct {\n"+counted+"A []T `smb2:\"offset=O,count=C,max=107374183,align=8,chain\"`\n}\n"+
+		"type T struct {\n"+counted+"A []U `smb2:\"offset=O,count=C,max=1073741824,align=8,chain\"`\n}\n"+
+		"type U struct {\n"+counted+"P [12]byte\nA []V `smb2:\"offset=O,count=C,max=1073741822,align=8,chain\"`\n}\n"+
+		"type V struct{ P [9]byte }")
+	if err == nil || strings.Count(err.Error(), "a largest encoding") != 1 || !strings.Contains(err.Error(), "U.A: ") {
+		t.Errorf("refused with %v, want one refusal, at U.A", err)
+	}
+	// An arm, T, past the bound by its own union's padding is refused at
+	// that union's default, and not again at S's, whose region holds it.
+	_, err = generateFrom(t, "type S struct {\nD uint16 `smb2:\"union\"`\n_ uint16 `smb2:\"name=L\"`\n"+
+		"A T `smb2:\"len=L,case=1\"`\nX []byte `smb2:\"len=L,max=4096,default\"`\n}\n"+
+		"type T struct {\nD uint16 `smb2:\"union\"`\n_ uint16 `smb2:\"name=O\"`\n_ uint16 `smb2:\"name=L\"`\n"+
+		"X []byte `smb2:\"offset=O,len=L,max=4,align=2147483647,default\"`\n}")
+	if err == nil || strings.Count(err.Error(), "a largest encoding") != 1 || !strings.Contains(err.Error(), "T.X: ") {
+		t.Errorf("refused with %v, want one refusal, at T.X", err)
+	}
+}
+
+// MaxWire counts the byte an odd StructureSize takes past the fixed part,
+// which Fill writes whatever the fields on the wire take: a size of 9 whose
+// since-field is off the wire before 3.0 encodes 9 bytes there, though its
+// fields take 8.
+func TestMaxWireCountsTheFillByte(t *testing.T) {
+	out, err := generateFrom(t, "type S struct {\n"+
+		"_ uint16 `smb2:\"size=9\"`\n_ uint16 `smb2:\"name=L\"`\nX uint32\n"+
+		"B []byte `smb2:\"len=L,max=4,since=0x300\"`\n}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "func (*S) MaxWire(v uint32) int {\n\tn := 8\n\tif v >= 0x300 {\n\t\tn += 4\n\t}\n\treturn max(n, 9)\n}"
+	if !bytes.Contains(out, []byte(want)) {
+		t.Errorf("no\n%s\nin:\n%s", want, out)
+	}
+}
+
 // A struct another holds, as a union's arm or a chain's member, gets no
 // DecodeWire or EncodeWire, whose offsets would count from a header it does
 // not follow; the struct holding it does.
@@ -118,7 +196,7 @@ func TestOnlyAStructNoneHoldsIsDecodedAlone(t *testing.T) {
 	out, err := generateFrom(t, "type S struct {\n"+
 		"D uint16 `smb2:\"union\"`\n_ uint16 `smb2:\"name=L\"`\n_ uint32 `smb2:\"name=O\"`\n_ uint16 `smb2:\"name=C\"`\n"+
 		"A A `smb2:\"len=L,case=1\"`\nX []byte `smb2:\"len=L,max=4,default\"`\n"+
-		"M []M `smb2:\"offset=O,count=C,max=2,chain\"`\n}\n"+
+		"M []M `smb2:\"offset=O,count=C,max=2,align=8,chain\"`\n}\n"+
 		"type A struct{ V uint32 }\ntype M struct{ V uint32 }")
 	if err != nil {
 		t.Fatal(err)

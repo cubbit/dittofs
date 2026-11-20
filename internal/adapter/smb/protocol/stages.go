@@ -203,7 +203,12 @@ type router struct {
 // negotiates or keeps a session or a tree yet, so none has either, and a row
 // that needs more than nothing meets its check only once the pipeline's row
 // checks land. Withdrawn once NEGOTIATE fixes a dialect and a request's
-// session and tree are resolved here.
+// session and tree are resolved here. A CANCEL is refused here, ErrCancel,
+// which the table maps to a row with no reply, so every CANCEL counts in
+// adapter_refusals_total{protocol="smb",stage="route"} until CANCEL gets its
+// own row. A CANCEL inside a compound ends the chain there, as any refusal
+// with no reply does: the members before it are answered, and the members
+// after it neither run nor are answered, a case MS-SMB2 leaves undefined.
 func (r *router) Route(h core.Header, _ *core.Request) (*core.OpTable, *core.Request, error) {
 	// A CANCEL is answered nothing (MS-SMB2 3.3.5.16).
 	if h.Op() == wire.CommandCancel {

@@ -18,9 +18,9 @@ import (
 // gives way.
 //
 // decision: a byte field is appended to out, never lent as a segment of its
-// own through (*Buf).Attach (RFC 20 section 5.3): no signature of section 4.7
-// carries a second segment yet, and epic 6's section 9 leaves the encoder's
-// half to the first READ. Overturned when section 4.7 or 6.8 names the call.
+// own through (*Buf).Attach, which RFC 20 section 5.3 keeps for a reply field
+// holding a resources.Buf, a READ's data: resources.Buf has no Attach yet,
+// and no struct holds one. Overturned with the first READ reply.
 func (g *gen) emit(pkg string, files []string) ([]byte, error) {
 	var b bytes.Buffer
 	std := "" // the standard library's imports: slices for an if= gate
@@ -197,8 +197,13 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 		case f.kind == kUint16s:
 			fmt.Fprintf(b, "x.%s = d.Uint16s(l%s, %d)\n", f.name, f.count, f.max)
 		case f.kind == kChain && f.link != "":
+			// The members are counted first, by the steps Link walks, so the
+			// slice is made once.
 			fmt.Fprintf(b, `{
 	region := %s
+	if n := wire.Links(region); n > 0 {
+		x.%s = make([]%s, 0, n)
+	}
 	for at := 0; at < len(region) && d.Err == nil; {
 		var m []byte
 		m, at = d.Link(region, at)
@@ -209,7 +214,7 @@ func (g *gen) decode(b *bytes.Buffer, s *strct) {
 		x.%s = append(x.%s, el)
 	}
 }
-`, region(f, strconv.Itoa(f.max)), f.typ, f.name, f.name)
+`, region(f, strconv.Itoa(f.max)), f.name, f.typ, f.typ, f.name, f.name)
 		case f.kind == kChain:
 			fmt.Fprintf(b, `if at := d.Chain(l%s, l%s, %d, %d); at >= 0 {
 	x.%s = make([]%s, l%s)
@@ -400,7 +405,14 @@ func (g *gen) maxWire(b *bytes.Buffer, s *strct) {
 		end := gate(&rest, f, false)
 		fmt.Fprintf(&rest, "n += %s\n%s", n, end)
 	}
-	fmt.Fprintf(b, "\nfunc (*%s) MaxWire(v uint32) int {\nn := %d\n%sreturn n\n}\n", s.name, fixed, rest.String())
+	// An odd StructureSize that counts the variable part's first byte is
+	// filled to whole however few bytes the fields on the wire at v take, a
+	// since-gated one left out (Encoder.Fill).
+	ret := "n"
+	if odd := carried(s); odd > 0 {
+		ret = fmt.Sprintf("max(n, %d)", odd)
+	}
+	fmt.Fprintf(b, "\nfunc (*%s) MaxWire(v uint32) int {\nn := %d\n%sreturn %s\n}\n", s.name, fixed, rest.String(), ret)
 }
 
 // isZero writes IsZero: every named field at its zero value.

@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"math"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -35,6 +36,11 @@ const (
 )
 
 var widths = map[string]int{"uint8": 1, "uint16": 2, "uint32": 4, "uint64": 8}
+
+// dialects are the dialects a since= may name, written as hex: those RFC 22
+// section 3.1 serves. 2.0.2 is refused, so a field on the wire from it is on
+// the wire in every dialect served and takes no since.
+var dialects = []string{"0x210", "0x300", "0x302", "0x311"}
 
 // allowed is the tags each kind of field may carry.
 var allowed = map[kind][]string{
@@ -199,6 +205,9 @@ func generate(dir string, files []string) ([]byte, error) {
 	for _, s := range g.structs {
 		g.check(s)
 	}
+	if len(g.errs) == 0 {
+		g.bounds()
+	}
 	if len(g.errs) > 0 {
 		return nil, errors.Join(g.errs...)
 	}
@@ -302,8 +311,11 @@ func (g *gen) field(st string, f *ast.Field) *field {
 		case "exact":
 			fl.exact = true
 		case "since":
-			fl.from = num(0)
-			fl.since = v
+			if !slices.Contains(dialects, v) {
+				g.errorf(fl.pos, where, "tag since=%s is not a dialect served, one of %s", v, strings.Join(dialects, " "))
+			}
+			n, _ := strconv.ParseUint(strings.TrimPrefix(v, "0x"), 16, 16)
+			fl.from, fl.since = int(n), v
 		case "if":
 			l, val, _ := strings.Cut(v, ":")
 			if _, err := strconv.ParseUint(val, 0, 16); l == "" || err != nil {
@@ -481,6 +493,10 @@ func (g *gen) checkChain(f *field, bad func(string, ...any)) {
 		bad("a counted chain takes count, not len")
 	case f.link != "" && (f.length == "" || f.count != ""):
 		bad("a linked chain takes len, not count")
+	case f.link == "" && f.align%8 != 0:
+		// Its offset is written at its align, and its decoder refuses one
+		// that is not a multiple of 8, where each member begins.
+		bad("a counted chain aligned to %d, not a multiple of 8", f.align)
 	case f.link != "":
 		m := g.byName[f.typ]
 		if len(m.fields) == 0 || m.fields[0].name != "_" || m.fields[0].n != 4 || m.fields[0].label != f.link {
@@ -532,6 +548,91 @@ func (g *gen) structMax(s *strct, seen map[string]bool) int {
 		}
 	}
 	return n
+}
+
+// bounds refuses a struct whose largest encoding, counted as MaxWire counts
+// it at the newest dialect, every field on the wire and nested maxima
+// multiplied, passes 2^31-1 bytes. core adds a reply's MaxWire to its
+// header's length and chain padding, so each bound under 2^31 keeps every
+// such sum inside a 64-bit int. Each refusal names the innermost field that passes
+// the bound, once. It runs once check refuses nothing, so no struct holds
+// itself.
+func (g *gen) bounds() {
+	const over = uint64(math.MaxInt32) + 1                    // every sum and product saturates here
+	add := func(a, b uint64) uint64 { return min(a+b, over) } // one side at most over: no wrap
+	mul := func(a, b uint64) uint64 {
+		if a != 0 && b > over/a {
+			return over
+		}
+		return a * b
+	}
+	memo := map[string]uint64{}
+	var str func(s *strct) uint64
+	// part is what MaxWire adds for f, a field of s: a union's region once,
+	// at its first arm, its default's padding and the greatest of its arms.
+	part := func(s *strct, f *field) uint64 {
+		if _, arms := s.disc(); f.kind == kArm || f.def {
+			if f != arms[0] {
+				return 0
+			}
+			def := arms[len(arms)-1]
+			n := uint64(def.max)
+			for _, a := range arms[:len(arms)-1] {
+				n = max(n, str(g.byName[a.typ]))
+			}
+			return add(uint64(def.align-1), n)
+		}
+		switch f.kind {
+		case kInt, kFixed:
+			return uint64(f.n)
+		case kBytes, kString:
+			return add(uint64(f.align-1), uint64(f.max))
+		case kUint16s:
+			return mul(2, uint64(f.max))
+		case kChain:
+			if f.link != "" {
+				return add(uint64(f.align-1), uint64(f.max))
+			}
+			return add(uint64(f.align-1), mul(uint64(f.max), add(7, str(g.byName[f.typ]))))
+		}
+		panic(fmt.Sprintf("gen: bounds has no size for kind %d", f.kind))
+	}
+	str = func(s *strct) uint64 {
+		if n, ok := memo[s.name]; ok {
+			return n
+		}
+		n := uint64(0)
+		for _, f := range s.fields {
+			n = add(n, part(s, f))
+		}
+		n = max(n, uint64(carried(s)))
+		memo[s.name] = n
+		return n
+	}
+	for _, s := range g.structs {
+		if str(s) < over {
+			continue
+		}
+		n := uint64(0)
+		for _, f := range s.fields {
+			if n = add(n, part(s, f)); n < over {
+				continue
+			}
+			// A counted chain's member or a union's arm that passes the bound
+			// is refused itself, so the field holding it is not the
+			// innermost. A union's region past it by its own tags is named at
+			// its default, whose max and align bound it.
+			at, inner := f, f.kind == kChain && f.link == "" && str(g.byName[f.typ]) >= over
+			if _, arms := s.disc(); f.kind == kArm || f.def {
+				at = arms[len(arms)-1]
+				inner = slices.ContainsFunc(arms, func(a *field) bool { return a.kind == kArm && str(g.byName[a.typ]) >= over })
+			}
+			if !inner {
+				g.errorf(at.pos, s.name+"."+at.name, "a largest encoding past %d bytes, which MaxWire cannot bound: lower a max", math.MaxInt32)
+			}
+			break
+		}
+	}
 }
 
 // holds reports whether s holds the struct named name through an arm or a
