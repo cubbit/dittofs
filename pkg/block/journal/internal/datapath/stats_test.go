@@ -275,6 +275,7 @@ var statsUnserved = map[string]string{
 	"Counters.SpareRefusals":     "needs a roll with no spare ready; the pool's tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
 	"Counters.SegmentReopens":    "needs a closed descriptor reopened; the descriptor tests drive it; no core fixture drives it here, so the Core.Stats mapping of it is unchecked",
 	"RepackReserveBytes":         "the test core's pool targets no repack reserve",
+	"HeadroomSparesShort":        "zero once the pool has settled, which every scenario waits for; the pool's own test drives the nonzero reading, so the Core.Stats mapping of it is unchecked",
 	"ReservedBytes":              "a reservation is open only inside a write, which only the beforeWrote seam stands inside; TestRFC1D_StatsReservedCoversARecordNotYetCounted drives it, outside these scenarios",
 }
 

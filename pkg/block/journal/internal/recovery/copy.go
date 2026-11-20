@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -252,11 +253,25 @@ func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodi
 // on disk to hand the same record over again, and the second open must not
 // spend a second spare re-writing what the first already sealed.
 //
-// The phase draws on the repack reserve alone — the spare the spares phase
-// adopted for that class — and consults no share's figures and no journal
-// limit, so a journal opened at its maximum still re-appends: the repack
-// reserve, never a share's limit, is the pool's own byte, and the running
-// journal's refill returns it after the open.
+// The phase draws on the repack reserve — the spares the spares phase adopted
+// for that class — and consults no share's figures and no journal limit, so a
+// journal opened at its maximum still re-appends: the repack reserve, never a
+// share's limit, is the pool's own byte, and the running journal's refill
+// returns it after the open.
+//
+// decision: a directory whose adopted spares hold no repack reserve one — a
+// crash on a nearly full device, or after a repack took the reserve spare and
+// before its refill — re-appends into a headroom spare instead, as the open's
+// reconcile record takes one when its own is gone, and the open still serves
+// with the headroom a spare short (Stats.HeadroomSparesShort) until the
+// refill or a retirement makes it again. The refusal this replaces never
+// cleared on a retry: the phase runs before the pool starts, so a refused
+// open makes no spare, and every retry adopts the same set. A content spare
+// is never borrowed, for a content roll's pool is the writes'. A directory
+// with no spare at all is refused as a full device, which the operator
+// frees; nothing is made here, for the pool does not exist yet. Overturned
+// by an open that must leave the headroom whole, which would have to make
+// a spare before this phase.
 //
 // The phase keeps the proof's state untouched: st.Proof still names the
 // records it handed over and the segments whose sync failed, the answers the
@@ -321,13 +336,13 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 		return nil
 	}
 
-	// The repack reserve the spares phase adopted, drawn front-first: the one
-	// class a re-appending open may take from, the running journal's repack
-	// rolls' own.
-	reserve := reserveSpares(st)
+	// The repack reserve the spares phase adopted, drawn front-first, and
+	// the headroom's spares behind it: the classes a re-appending open may
+	// take from, the running journal's repack rolls' own first.
+	reserve := reappendSpares(st)
 	c := &copier{deps: deps, identity: expect, draw: func() (core.SegmentID, error) {
 		if len(reserve) == 0 {
-			return 0, &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
+			return 0, fmt.Errorf("recovery: a record to re-append and no spare segment in the directory to copy it into; free space on the journal's device, then reopen: %w", syscall.ENOSPC)
 		}
 		id := reserve[0]
 		reserve = reserve[1:]
@@ -464,14 +479,17 @@ func sealedFate(st *State, id core.SegmentID) bool {
 	return false
 }
 
-// reserveSpares names the spares the open may draw its re-appends from, in
-// the take order the pool's own reserve answers in: the ids the spares phase
-// adopted into the repack reserve, ascending.
-func reserveSpares(st *State) []core.SegmentID {
+// reappendSpares names the spares the open may draw its re-appends from: the
+// ids the spares phase adopted into the repack reserve, ascending, then those
+// it adopted into the headroom, ascending. The content class is not among
+// them.
+func reappendSpares(st *State) []core.SegmentID {
 	var out []core.SegmentID
-	for _, a := range st.Spares.Adopted {
-		if a.Class == segment.Reserve {
-			out = append(out, a.ID)
+	for _, class := range []segment.Class{segment.Reserve, segment.Headroom} {
+		for _, a := range st.Spares.Adopted {
+			if a.Class == class {
+				out = append(out, a.ID)
+			}
 		}
 	}
 	return out

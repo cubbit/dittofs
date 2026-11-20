@@ -35,7 +35,7 @@ type Stats struct {
 	OldestDirty                                               time.Time
 	Files                                                     int
 	ExtentCount                                               int64
-	DropRanges, Segments, Sealed, Spares                      int
+	DropRanges, Segments, Sealed, Spares, HeadroomSparesShort int
 	UnreclaimedBytes, HeadroomBytes, RepackReserveBytes       int64
 	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
 	// take no further append; see the journal package's Stats.
@@ -127,6 +127,7 @@ func (c *Core) Stats() Stats {
 
 	pc := c.pool.Counters()
 	s.Spares, s.HeadroomBytes, s.RepackReserveBytes = int(pc.Spares), pc.HeadroomBytes, pc.RepackReserveBytes
+	s.HeadroomSparesShort = c.pool.HeadroomShort()
 	ds := c.cache.Stats()
 	s.OpenDescriptors, s.DescriptorLimit = ds.Open, ds.Limit
 

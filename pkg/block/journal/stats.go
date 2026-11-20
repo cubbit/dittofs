@@ -56,7 +56,7 @@ func statsFrom(c datapath.Stats) Stats {
 		MaxBytes: c.MaxBytes, UsedBytes: c.UsedBytes, ReservedBytes: c.ReservedBytes,
 		HeldBytes: c.HeldBytes, DirtyBytes: c.DirtyBytes, OldestDirty: c.OldestDirty,
 		Files: c.Files, ExtentCount: c.ExtentCount, DropRanges: c.DropRanges,
-		Segments: c.Segments, Sealed: c.Sealed, Spares: c.Spares, UnreclaimedBytes: c.UnreclaimedBytes,
+		Segments: c.Segments, Sealed: c.Sealed, Spares: c.Spares, HeadroomSparesShort: c.HeadroomSparesShort, UnreclaimedBytes: c.UnreclaimedBytes,
 		HeadroomBytes: c.HeadroomBytes, RepackReserveBytes: c.RepackReserveBytes,
 		UnreclaimedEndedBytes: c.UnreclaimedEndedBytes,
 		PinnedSegments:        c.PinnedSegments, OpenDescriptors: c.OpenDescriptors, DescriptorLimit: c.DescriptorLimit,
@@ -102,10 +102,10 @@ func statsFrom(c datapath.Stats) Stats {
 // Every map and slice in a Stats belongs to the caller: Stats returns copies
 // and never keeps them.
 //
-// decision: Stats carries no SuspectSegments or HeadroomSparesShort, and
+// decision: Stats carries no SuspectSegments, and
 // Counters no descriptor_overruns or descriptor_open_failures, though RFC 1
 // sections 3.7 and 3.9 list them: nothing maintains a source for any of them
-// yet. A zero would claim nothing is suspect or short, so each is left out
+// yet. A zero would claim nothing is suspect, so each is left out
 // until its source lands, which overturns this for that field.
 type Stats struct {
 	// MaxBytes is the configured capacity. Kind: gauge.
@@ -151,6 +151,13 @@ type Stats struct {
 	// segment cap. The headroom, repack reserve and reconcile spares are not
 	// counted here. Kind: gauge.
 	Spares int
+
+	// HeadroomSparesShort is how many spares the headroom lacks against its
+	// target: an open that found no repack reserve spare to re-append into
+	// took the headroom's, and the refill, or a retirement's recycle, makes it
+	// again. Zero once every one is made; on a full device it stays above zero
+	// until a retirement frees the space. Kind: gauge.
+	HeadroomSparesShort int
 
 	// UnreclaimedBytes is the storage in segments not yet unlinked that backs
 	// no held or retained extent and no live record: what repack can recover.

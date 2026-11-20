@@ -2750,3 +2750,44 @@ func TestSetRenameSpareRefusals(t *testing.T) {
 		}
 	}
 }
+
+// TestPoolHeadroomShortCountsTheHeadroomSparesLacking: the gauge reads the
+// headroom target less the ready headroom spares and the held takes standing
+// in it, and the pool's own refill brings it back to zero once started — the
+// state an open leaves after it borrowed a headroom spare for its re-appends.
+func TestPoolHeadroomShortCountsTheHeadroomSparesLacking(t *testing.T) {
+	_, set2, m2 := maker(t, 0, noMax)
+	id, err := m2.Make()
+	if err != nil {
+		t.Fatalf("the directory's spare: %v", err)
+	}
+	if err := set2.Take(id); err != nil {
+		t.Fatalf("the directory's ledger: Take %d: %v", id, err)
+	}
+
+	_, _, m := maker(t, 4, noMax)
+	p := segment.NewPool(m, segment.Targets{Headroom: 2}, nil, nil)
+	if got := p.HeadroomShort(); got != 2 {
+		t.Fatalf("a pool holding no spare reads %d headroom spares short, want 2", got)
+	}
+	if err := p.Adopt(id, segment.Headroom); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if got := p.HeadroomShort(); got != 1 {
+		t.Fatalf("after one headroom adoption of two the pool reads %d short, want 1", got)
+	}
+	p.HoldTaken(1)
+	if got := p.HeadroomShort(); got != 0 {
+		t.Fatalf("with a held take standing in the headroom's second slot the pool reads %d short, want 0", got)
+	}
+	p.HoldTaken(0)
+
+	p.Start()
+	t.Cleanup(p.Stop)
+	if err := p.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("the refill's settle: %v", err)
+	}
+	if got := p.HeadroomShort(); got != 0 {
+		t.Fatalf("after the refill settled the pool reads %d headroom spares short, want 0: the refill makes the spare an open borrowed", got)
+	}
+}

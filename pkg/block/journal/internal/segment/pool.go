@@ -156,6 +156,7 @@ type Pool struct {
 	// readyN mirrors len(ready) per class, stored under mu at every change, so
 	// Counters reads it without the lock.
 	readyN     [Reserve + 1]atomic.Int64
+	holdTakenN atomic.Int64     // holdTaken, stored with it, so HeadroomShort reads without mu
 	pending    int              // the largest ask of a refused Hold the refill has not yet made up, a level not a sum; guarded by mu
 	incoming   [Reserve + 1]int // recycles in flight, reserved per class; guarded by mu
 	holdTaken  int              // the open's held takes: segments on disk the open did not re-adopt, standing in the headroom the pool must not re-fill; guarded by mu
@@ -253,6 +254,7 @@ func (p *Pool) SetRecorder(rec *lockorder.Recorder) {
 func (p *Pool) HoldTaken(n int) {
 	p.mu.Lock()
 	p.holdTaken = n
+	p.holdTakenN.Store(int64(n))
 	p.mu.Unlock()
 
 	p.Kick()
@@ -750,6 +752,15 @@ func (p *Pool) ReadyContent() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return max(len(p.ready[Content])-int(p.held.Load()), 0)
+}
+
+// HeadroomShort is how many headroom spares the pool lacks, read from the
+// maintained counts and taking no lock: the target less
+// the ready ones and the held takes standing in it, never below zero. An open
+// that borrowed a headroom spare for its re-appends leaves it above zero until
+// the refill, or a retirement's recycle, makes the spare again.
+func (p *Pool) HeadroomShort() int {
+	return max(p.t.Headroom-int(p.readyN[Headroom].Load())-int(p.holdTakenN.Load()), 0)
 }
 
 // DeviceFull reports whether a make has failed with ENOSPC and no spare has

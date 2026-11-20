@@ -481,3 +481,55 @@ func TestSyncMarksAfterASealedCopySkip(t *testing.T) {
 		t.Errorf("SyncMarks after the skipped re-append = %+v, want %+v: B's stream is credited with the sealed copy the first open wrote", got, want)
 	}
 }
+
+// TestReappendBorrowsAHeadroomSpareWhenNoReserveOneWasAdopted holds the open's
+// fallback: a directory whose adopted spares hold no repack reserve one still
+// re-appends, into the headroom's spare, where it once refused on every
+// retry because the phase runs before the pool starts and a reopen adopts the
+// same set. A content spare is never borrowed, and a directory with no spare
+// at all is refused as a full device, which the operator frees.
+func TestReappendBorrowsAHeadroomSpareWhenNoReserveOneWasAdopted(t *testing.T) {
+	spare := core.SegmentID(9)
+	t.Run("a headroom spare takes the copy", func(t *testing.T) {
+		r, good, bAt := deviceLostB(t)
+		want := reappendOf(t, 2, bAt, good)
+		r.write(format.SegmentName(spare), make([]byte, testCap))
+		d := r.runDeps()
+		d.SpareTargets = segment.Targets{Headroom: 1} // the one spare adopted is the headroom's, the reserve has none
+
+		st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
+		if err != nil {
+			t.Fatalf("Run with only a headroom spare adopted: %v, want the re-append borrowed into it", err)
+		}
+		wantTheCopy(t, r, st, 0x8100, want, format.SegmentHeaderSize, spare)
+		if len(st.Spares.Adopted) != 0 {
+			t.Errorf("spares: the borrowed headroom spare left adoptions %v, want none: it is a data segment now", st.Spares.Adopted)
+		}
+	})
+	for _, leg := range []struct {
+		name    string
+		targets segment.Targets
+		planted []core.SegmentID
+	}{
+		{"a content spare is never borrowed", segment.Targets{}, []core.SegmentID{spare}},
+		{"no spare at all is a full device", segment.Targets{Headroom: 1}, nil},
+	} {
+		t.Run(leg.name, func(t *testing.T) {
+			r, _, _ := deviceLostB(t)
+			for _, id := range leg.planted {
+				r.write(format.SegmentName(id), make([]byte, testCap))
+			}
+			d := r.runDeps()
+			d.SpareTargets = leg.targets
+			before := r.fileBytes(format.SegmentName(2))
+
+			_, err := Run(context.Background(), d, core.Version{}, journalID, nil)
+			if !errors.Is(err, syscall.ENOSPC) || errors.Is(err, core.ErrNoSpace) {
+				t.Fatalf("Run answered %v, want a full device (ENOSPC), never the journal's own spare refusal that retries", err)
+			}
+			if after := r.fileBytes(format.SegmentName(2)); !slices.Equal(after, before) {
+				t.Errorf("the refused open changed the source's bytes: no source is touched before its copy")
+			}
+		})
+	}
+}

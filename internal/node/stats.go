@@ -338,6 +338,7 @@ var journalGauges = []gaugeSpec{
 	{"Segments", "segments", "Segments in total.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Segments) }},
 	{"Sealed", "sealed", "Sealed segments.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Sealed) }},
 	{"Spares", "spares", "Content spare segments the pool holds, ready for a stream to take.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Spares) }},
+	{"HeadroomSparesShort", "headroom_spares_short", "Spares the headroom lacks against its target, until the refill or a retirement makes them again.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.HeadroomSparesShort) }},
 	{"UnreclaimedBytes", "unreclaimed_bytes", "Storage in segments not yet unlinked that backs no held or retained extent and no live record: what repack can recover.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.UnreclaimedBytes) }},
 	// decision: UnreclaimedEndedBytes reads zero until Repack seals — the
 	// journal's own ponytail names the unmaintained counter — and a zero
@@ -452,11 +453,10 @@ var journalExcluded = map[string]exclusion{
 	// decision: the stream a mark belongs to is the label on each
 	// sync_mark series, not a series of its own.
 	"SyncMark.Stream": {reason: "the stream itself is the stream label on each sync_mark series"},
-	// decision: HeadroomSparesShort and the descriptor counters are absent
-	// from journal.Stats — nothing maintains a source for any of them — and
-	// a zero would claim nothing is short or overrun. Each series lands
-	// with its source (RFC 1 §3.9's table holds their names).
-	"HeadroomSparesShort":             {absent: true, reason: "absent from journal.Stats; nothing maintains a source yet"},
+	// decision: the descriptor counters are absent from journal.Counters —
+	// nothing maintains a source for either — and a zero would claim nothing
+	// is overrun. Each series lands with its source (RFC 1 §3.9's table holds
+	// their names).
 	"Counters.DescriptorOverruns":     {absent: true, reason: "absent from journal.Counters; nothing maintains a source yet"},
 	"Counters.DescriptorOpenFailures": {absent: true, reason: "absent from journal.Counters; nothing maintains a source yet"},
 
