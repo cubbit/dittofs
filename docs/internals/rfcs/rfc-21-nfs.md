@@ -2245,6 +2245,20 @@ and through any gateway node that holds the client's address, and an NFSv4.1
 retry on any connection of its session, which lives at one gateway node
 ([RFC 11 §5.1](rfc-11-ownership.md#5.1%20Gateways%20forward%20to%20the%20primary)).
 
+A gateway node keeps a **duplicate-request cache** for NFSv3 and NFSv4.0: NFS's
+`Replay` stage
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60))
+holds a bounded set of replies in the node's memory, keyed by the NFSv3 or
+NFSv4.0 row's retry identity above, and answers a retransmission the reply its
+first send was given instead of running it again. So a retransmitted `REMOVE`
+or `CREATE` on a hard mount gets its first result, never `NOENT` or `EXIST`.
+The service's dedup is not widened to cover it: that table still covers only a
+forwarded call
+([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)). Like
+NFSv4.1's reply cache (§3.2) the cache is not durable, so a retransmission
+that reaches another gateway node, or this one after a restart, or arrives
+after its entry was evicted, runs again.
+
 > decision: an NFSv4.1 retry after its session was lost is a new request. The
 > session — its slot table and replay cache — lives at the gateway node and dies
 > with it: the client finds the session gone, creates a new one, and resends
@@ -2979,14 +2993,6 @@ client, owner, file or principal label.
    question 4.
 4. **Session trunking across nodes** (§3.3) would need slots held at a shared
    place; nothing asks for it yet.
-5. **A duplicate-request cache for NFSv3 and NFSv4.0.** The adapter keeps none
-   yet (the RFC 20 plan's deferral ledger holds it), and
-   [RFC 20 §11](rfc-20-adapters.md#11.%20Open%20questions) keeps one for
-   parity (its question 2). The service's dedup covers only a
-   forwarded call ([RFC 17 §4.7](rfc-17-vfs.md#4.7%20Callable%20across%20the%20network)).
-   This RFC decides whether the service's dedup should cover a single node too,
-   so a retransmitted `REMOVE` or `CREATE` is answered its first result without
-   an adapter cache.
 
 ## Appendix A — prior art
 
