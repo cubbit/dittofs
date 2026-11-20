@@ -75,8 +75,8 @@ The loader and its refusals; the environment scan and its allowed names; the nod
 - The control plane's refusal to advance a namespace's block format version (RFC 13 §5.4): E3.
 - The other launchers on `dfs init` (Compose, `docker/`, the bench and demo scripts): E6.
 - The start steps that call `NodeID`, `WriteMissingNodeIDs` (step 1) and the version gate (step 3), and `dfs
-  init` itself: RFC 23's T3.10 and T5.4; the call of `Bootstrap.Validate`: RFC 23's T3.10 or T4.3,
-  whichever its owner picks.
+  init` itself: RFC 23's T3.10 and T5.4; the call of `Bootstrap.Validate` in the start: no RFC 23 task carries it yet (T3.9 and
+  T3.10 merged without it), so it needs one.
 - The Kubernetes operator, a module of its own that still sets v1's names: RFC 23's O4.
 
 ### 1.3 Names used here
@@ -499,7 +499,7 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   `Validate`'s `environ` and not from the process (D9), and their current key IDs compared; certificate and key when
   an `api.listen` or `metrics.listen` address is not loopback; the two directories resolved from
   `environ`, the existing state directory and the existing runtime directory checked (R34); `MakeRuntimeDir`, which makes the runtime fallback with
-  mode `0700` and which `dfs start` calls after its refusals and before the store opens, never `Validate`; RFC 23's T4.3 binds `dfs.sock` in it.
+  mode `0700` and which `dfs start` calls after its refusals and before the socket binds, never `Validate`; RFC 23's T4.3 binds `dfs.sock` in it.
 - **Acceptance criteria:** each refusal is a line of T2.1's report, not a separate error.
 - **Tests:** `roles: [storage]` and `roles: [protocol, protocol]` each refuse (the second catches a
   comparison that dedups a repeated role); one role's key missing refuses; two roles naming one key
@@ -559,7 +559,7 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
 - **Covers:** R27, R28.
 - **Deliverables:** `show` as a rendering of `LoadWithSources`' `Loaded` (D13), each value with its
   source and a credential by its path; `validate`
-  running `Load` then `Bootstrap.Validate`, the two calls the start makes, and starting nothing; `schema` generated from `Bootstrap`'s fields. `edit` still
+  running `Load` then `Bootstrap.Validate`, the two calls the start will make, and starting nothing; `schema` generated from `Bootstrap`'s fields. `edit` still
   validates nothing (§1.2) and opens the file the start reads, `--config`, else `DITTOFS_CONFIG`, else the default, through `ConfigPath`. `docs/guide/configuration.md` rewritten for the bootstrap, Appendix C's keys and
   the refusal shape, with a section for each later epic to add (D11); `docs/guide/cli.md`
   regenerated.
