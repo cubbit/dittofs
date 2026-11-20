@@ -1,7 +1,8 @@
 package node_test
 
 import (
-	"slices"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,20 +17,31 @@ import (
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
+// pruneAfter is how long after the switch the rotation prunes: an access
+// token's 15 min and the two seconds' margin for a node re-reading late.
+const pruneAfter = 15*time.Minute + 2*time.Second
+
 // startRotation records a pending rotation of the installation's signing
-// key, as the rotate route does, and returns it with the key's reference.
+// key, started by an account, as the rotate route does, and returns it with
+// the key's reference.
 func startRotation(t *testing.T, h *nodetest.Harness) (entity.Operation, entity.SecretRef) {
 	t.Helper()
 	in, err := h.Store().Installation(t.Context())
 	if err != nil {
 		t.Fatalf("read the installation: %v", err)
 	}
+	return rotation(t, h, entity.ResourceRef{Kind: entity.ResourceInstallation, ID: in.ID[:]}), in.SigningKey
+}
+
+// rotation records a pending rotation of target, started by an account.
+func rotation(t *testing.T, h *nodetest.Harness, target entity.ResourceRef) entity.Operation {
+	t.Helper()
 	op := entity.Operation{ID: entity.OperationID(uuid.New()), Kind: string(apiv1.OpRotateSigningKey),
-		Target: entity.ResourceRef{Kind: entity.ResourceInstallation, ID: in.ID[:]}, State: entity.OpPending}
+		Target: target, Account: entity.NewUser(), State: entity.OpPending}
 	if _, err := h.Store().ControlPlane().PutOperation(t.Context(), op, 0); err != nil {
 		t.Fatalf("create the rotation: %v", err)
 	}
-	return op, in.SigningKey
+	return op
 }
 
 // operation reads op back from the store.
@@ -68,11 +80,13 @@ func kid(t *testing.T, raw string) string {
 	return k
 }
 
-// A rotation switches signing to a new version at its first turn and
-// refreshes the verifier there, so a token signed before it still verifies
-// and the next is signed with the new version. Once an access token's 15 min
-// have passed, a turn ends the operation and prunes the old version, and the
-// token signed before the switch is refused.
+// A rotation switches signing to a new version at its first turn, audited
+// as the operation's account on the node, and refreshes the verifier there,
+// so a token signed before it still verifies and the next is signed with the
+// new version. Once an access token's 15 min and the margin have passed, a
+// turn ends the operation and prunes the old version: a token it signed is
+// refused, one issued an hour ahead and so not expired among them, for its
+// version is no longer held.
 func TestRotationKeepsTheOldVersionUntilItsTokensExpire(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	n, ctx := h.Node(), t.Context()
@@ -81,6 +95,10 @@ func TestRotationKeepsTheOldVersionUntilItsTokensExpire(t *testing.T) {
 	before, err := tk.Issue(ctx, user, session, h.Clock().Now())
 	if err != nil {
 		t.Fatalf("issue a token before the rotation: %v", err)
+	}
+	ahead, err := tk.Issue(ctx, user, session, h.Clock().Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("issue a token an hour ahead before the rotation: %v", err)
 	}
 	op, ref := startRotation(t, h)
 
@@ -91,18 +109,22 @@ func TestRotationKeepsTheOldVersionUntilItsTokensExpire(t *testing.T) {
 	if cur, stored := held(t, h, ref, 1); cur != 2 || !stored {
 		t.Fatalf("after the switch: current version %d, version 1 stored %v; want 2, and 1 still stored", cur, stored)
 	}
-	var switched []string
+	var switched []entity.AuditRecord
 	for a, err := range h.Store().ControlPlane().AuditRecords(ctx, entity.AuditFilter{Target: &op.Target}, nil) {
 		if err != nil {
 			t.Fatalf("list the installation's audit records: %v", err)
 		}
-		switched = append(switched, string(a.Change))
+		if string(a.Change) == `{"signing_key":"set"}` {
+			switched = append(switched, a)
+		}
 	}
-	if want := `{"signing_key":{"new":2,"old":1}}`; !slices.Contains(switched, want) {
-		t.Errorf("the installation's audit records after the switch: changes %q, want one %s", switched, want)
+	if len(switched) != 1 || switched[0].Actor != op.Account || switched[0].Node != h.NodeID() {
+		t.Errorf("the installation's audit records of the switch: %+v, want one, its actor the operation's account %v, on node %v", switched, op.Account, h.NodeID())
 	}
-	if _, err := tk.Verify(ctx, before); err != nil {
-		t.Fatalf("token signed before the switch, verified after it: %v, want verified", err)
+	for name, raw := range map[string]string{"signed before the switch": before, "issued an hour ahead": ahead} {
+		if _, err := tk.Verify(ctx, raw); err != nil {
+			t.Fatalf("token %s, verified after the switch: %v, want verified", name, err)
+		}
 	}
 	after, err := tk.Issue(ctx, user, session, h.Clock().Now())
 	if err != nil {
@@ -112,10 +134,10 @@ func TestRotationKeepsTheOldVersionUntilItsTokensExpire(t *testing.T) {
 		t.Errorf("token issued at the switch, the clock unmoved: kid %q, want \"2\", the verifier refreshed at the switch", got)
 	}
 
-	h.Clock().Advance(15 * time.Minute)
+	h.Clock().Advance(pruneAfter)
 	n.RunnerTurn(ctx)
 	if got := operation(t, h, op.ID); got.State != entity.OpSucceeded {
-		t.Fatalf("rotation 15 min after the switch: state %v, want succeeded", got.State)
+		t.Fatalf("rotation 15 min 2 s after the switch: state %v, want succeeded", got.State)
 	}
 	if cur, stored := held(t, h, ref, 1); cur != 2 || stored {
 		t.Errorf("after the prune: current version %d, version 1 stored %v; want 2, and 1 gone", cur, stored)
@@ -123,10 +145,21 @@ func TestRotationKeepsTheOldVersionUntilItsTokensExpire(t *testing.T) {
 	if _, err := tk.Verify(ctx, before); err == nil {
 		t.Errorf("token signed before the switch, verified after the prune: verified, want refused")
 	}
+	const notHeld = "version 1 of the signing key is not held"
+	if _, err := tk.Verify(ctx, ahead); err == nil || !strings.Contains(err.Error(), notHeld) {
+		t.Errorf("unexpired token of version 1, verified after the prune: %v, want refused with %q", err, notHeld)
+	}
+	fresh, err := tk.Issue(ctx, user, session, h.Clock().Now())
+	if err != nil {
+		t.Fatalf("issue a token after the prune: %v", err)
+	}
+	if _, err := tk.Verify(ctx, fresh); err != nil {
+		t.Errorf("token of version 2 issued after the prune, verified: %v, want verified", err)
+	}
 }
 
 // The operation's progress, read through the API, names the switch at the
-// first turn and the prune at the turn 15 min later.
+// first turn and the prune at the turn 15 min 2 s later.
 func TestRotationProgressReadsThroughTheAPI(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(admin)))
 	op, _ := startRotation(t, h)
@@ -156,16 +189,16 @@ func TestRotationProgressReadsThroughTheAPI(t *testing.T) {
 		t.Errorf("GET %s after the first turn: state %s, progress %+v; want running, phase switched, 1 done", path, got.State, got.Progress)
 	}
 
-	h.Clock().Advance(15 * time.Minute)
-	wait("15 min later")
+	h.Clock().Advance(pruneAfter)
+	wait("15 min 2 s later")
 	getJSON(t, addr, path, &got)
 	if got.State != apiv1.OpState(entity.OpSucceeded.String()) || got.Progress.Phase != "pruned" || got.Progress.Done != 2 {
-		t.Errorf("GET %s 15 min after the switch: state %s, progress %+v; want succeeded, phase pruned, 2 done", path, got.State, got.Progress)
+		t.Errorf("GET %s 15 min 2 s after the switch: state %s, progress %+v; want succeeded, phase pruned, 2 done", path, got.State, got.Progress)
 	}
 }
 
-// Every turn between the switch and the 15 min commits nothing; the turn at
-// the 15 min commits the operation's end, once.
+// Every turn between the switch and the 15 min and margin commits nothing;
+// the turn at them commits the operation's end, once.
 func TestRotationWaitCommitsNothing(t *testing.T) {
 	var counting *kv.Counting
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
@@ -179,26 +212,26 @@ func TestRotationWaitCommitsNothing(t *testing.T) {
 	counting.TakeUpdates()
 	counting.Take()
 
-	for _, at := range []time.Duration{time.Second, time.Minute, 15*time.Minute - time.Second} {
+	for _, at := range []time.Duration{time.Second, time.Minute, 15 * time.Minute, pruneAfter - time.Second} {
 		h.Clock().Advance(at - h.Clock().Elapsed())
 		n.RunnerTurn(ctx)
 	}
 	if u, c := counting.TakeUpdates(), counting.Take(); u.Updates != 0 || c.Sets+c.Deletes != 0 {
-		t.Errorf("turns at 1 s, 1 min and 14 min 59 s after the switch: %d updates, %d keys set and %d deleted; want none", u.Updates, c.Sets, c.Deletes)
+		t.Errorf("turns at 1 s, 1 min, 15 min and 15 min 1 s after the switch: %d updates, %d keys set and %d deleted; want none", u.Updates, c.Sets, c.Deletes)
 	}
 	if got := operation(t, h, op.ID); got.State != entity.OpRunning {
-		t.Errorf("rotation 14 min 59 s after the switch: state %v, want running", got.State)
+		t.Errorf("rotation 15 min 1 s after the switch: state %v, want running", got.State)
 	}
 
-	h.Clock().Advance(15*time.Minute - h.Clock().Elapsed())
+	h.Clock().Advance(pruneAfter - h.Clock().Elapsed())
 	n.RunnerTurn(ctx)
 	if u := counting.TakeUpdates(); u.Updates != 1 {
-		t.Errorf("turn at 15 min after the switch: %d updates, want 1, the operation's end", u.Updates)
+		t.Errorf("turn at 15 min 2 s after the switch: %d updates, want 1, the operation's end", u.Updates)
 	}
 }
 
 // A node restarted between the switch and the prune resumes at the prune:
-// it seals no further version, and prunes the old one 15 min after the
+// it seals no further version, and prunes the old one 15 min 2 s after the
 // switch.
 func TestRotationResumesAtThePruneAfterARestart(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
@@ -210,12 +243,60 @@ func TestRotationResumesAtThePruneAfterARestart(t *testing.T) {
 	if cur, stored := held(t, h, ref, 1); cur != 2 || !stored {
 		t.Fatalf("a turn after the restart, before the 15 min: current version %d, version 1 stored %v; want 2, and 1 still stored", cur, stored)
 	}
-	h.Clock().Advance(15 * time.Minute)
+	h.Clock().Advance(pruneAfter)
 	h.Node().RunnerTurn(t.Context())
 	if got := operation(t, h, op.ID); got.State != entity.OpSucceeded {
 		t.Fatalf("rotation 15 min after the switch, across a restart: state %v, want succeeded", got.State)
 	}
 	if cur, stored := held(t, h, ref, 1); cur != 2 || stored {
 		t.Errorf("after the prune, across a restart: current version %d, version 1 stored %v; want 2, and 1 gone", cur, stored)
+	}
+}
+
+// A rotation whose target is not the installation, by kind or by ID, fails
+// at its first turn naming the target, and seals nothing.
+func TestRotationRefusesAnotherTarget(t *testing.T) {
+	h := nodetest.New(t)
+	in, err := h.Store().Installation(t.Context())
+	if err != nil {
+		t.Fatalf("read the installation: %v", err)
+	}
+	other := uuid.New()
+	for _, tc := range []struct {
+		name   string
+		target entity.ResourceRef
+	}{
+		{"another kind", entity.ResourceRef{Kind: entity.ResourceShare, ID: in.ID[:]}},
+		{"another installation", entity.ResourceRef{Kind: entity.ResourceInstallation, ID: other[:]}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			op := rotation(t, h, tc.target)
+			h.Node().RunnerTurn(t.Context())
+			got := operation(t, h, op.ID)
+			if want := fmt.Sprintf("%x", tc.target.ID); got.State != entity.OpFailed || !strings.Contains(string(got.Error), want) {
+				t.Errorf("rotation of %s: state %v, error %s; want failed, naming %s", tc.target, got.State, got.Error, want)
+			}
+			if cur, _ := held(t, h, in.SigningKey, 1); cur != 1 {
+				t.Errorf("signing key after the rotation of %s: current version %d, want 1", tc.target, cur)
+			}
+		})
+	}
+}
+
+// A rotation over an installation that names no signing key fails, naming
+// it, rather than retry at every turn.
+func TestRotationFailsWithNoSigningKey(t *testing.T) {
+	h := nodetest.New(t)
+	err := h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		return tx.SetSigningKey(entity.SecretRef{})
+	})
+	if err != nil {
+		t.Fatalf("clear the installation's signing key: %v", err)
+	}
+	h.Restart(t)
+	op, _ := startRotation(t, h)
+	h.Node().RunnerTurn(t.Context())
+	if got := operation(t, h, op.ID); got.State != entity.OpFailed || !strings.Contains(string(got.Error), "names no signing key") {
+		t.Errorf("rotation with no signing key: state %v, error %s; want failed, naming the missing key", got.State, got.Error)
 	}
 }

@@ -33,6 +33,16 @@ func TestNewStartsNothing(t *testing.T) {
 	}
 }
 
+// Stop closes the storage key, and answers its Close's error.
+func TestStopClosesTheStorageKey(t *testing.T) {
+	h := nodetest.New(t)
+	boom := errors.New("the storage key did not close")
+	h.Node().FailStorageKeyClose(boom)
+	if err := h.Node().Stop(t.Context()); !errors.Is(err, boom) {
+		t.Fatalf("Stop with a storage key whose Close fails: got %v, want %v", err, boom)
+	}
+}
+
 // New over a KV holding no installation refuses, and closes the KV it was
 // handed: the watch finds nothing of it left open.
 func TestNewRefusesAKVWithNoInstallation(t *testing.T) {
