@@ -106,6 +106,10 @@ disagreement is raised to the user, not silently resolved.
   **epic 9b**. The `test/engine/known.yaml` re-point → **RFC 8's T10.3**.
 - The daily benchmark run → a deferral row already in PR #4762's plan §6 ("a reference runner
   exists" is the trigger); verify it is on the base at execution, add nothing if it isn't merged yet.
+- Tightening the heap watch's 16 MiB slack, or per-test thresholds where they land → the T12.8
+  calibration (above, Task 4) found that default ≈15× above the worst measured per-test delta,
+  so it stays a coarse detector that catches large leaks only; **the harness track** owns it,
+  when a watch must catch a smaller leak or a calibration on new hardware shows different deltas.
 
 ---
 
@@ -343,6 +347,20 @@ execution plan is a new file). Then: whole-PR review round → `/llm-council` �
   *while another test's watch is not active* must not fail the other test (the `overlapped`
   machinery). Run `go test ./internal/prof/`.
 - [ ] **Step 4: commit** — `test(journal): per-test heap baselines calibrated from ten runs`.
+
+**T12.8 outcome (calibrated 2026-11-19, one darwin/arm64 macOS 27.0.1 host, GOTOOLCHAIN=go1.26.10):**
+zero-diff — the 16 MiB default `HeapSlack` was shown wrong in neither direction, so no explicit
+value landed. Race leg: the six watch-bearing tests ×10 (3:26 wall) plus the full suite twice
+(3:58, 4:32), identical failure sets, zero prof failures; the only red is `TestModel`'s
+pre-existing known failure, stable in all ten. Norace heap leg ×10: worst per-test live-heap
+delta +1,126,656 B (~1.07 MiB, `TestRFC1D_StatsCostIsFlat`, the 10⁵-extent rig; the norace
+trio's others stay at ~578 KiB and ~51 KiB). Reproduce with
+`go test -race -tags=journal_conformance -count=10 -timeout=6h ./pkg/block/journal/conformance/`
+and a one-off per-watch delta log in `prof`'s cleanup (instrument locally, never commit it).
+`TestModel` itself dies at corpus step 1 on the `Offload` stub, so its delta must be
+re-measured under later PRs' data path before treating the default as generous there.
+The default stays ≈15× above that worst delta — a coarse detector for large leaks only;
+the tightening row is in the deferral ledger.
 
 **PR 2 close-out:** whole-PR review → `/llm-council` → open the PR.
 
