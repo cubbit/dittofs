@@ -819,3 +819,46 @@ func testPruneSecretSeesTheTxsOwnPut(t *testing.T, kvo Opener) {
 		})
 	}
 }
+
+// The transaction that prunes finds its own deletes: the versions the
+// prune dropped read gone inside the same write, and the current one is
+// still there. The prune's audit names the dropped versions only because
+// of this, so the property runs on every backend.
+func testWriteSeesItsOwnPrune(t *testing.T, kvo Opener) {
+	prof.Watch(t, prof.Options{})
+
+	s, _ := newStore(t, kvo)
+
+	cp := s.ControlPlane()
+	id := newSecretRef()
+	putVersions(t, cp, id, 3)
+
+	var gone []uint64
+
+	if err := cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		if err := tx.PruneSecret(id, 3); err != nil {
+			return err
+		}
+
+		for n := uint64(3); n >= 1; n-- {
+			_, ok, err := tx.Secret(id, n)
+			if err != nil {
+				return err
+			}
+
+			if !ok {
+				gone = append(gone, n)
+			}
+		}
+
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !slices.Equal(gone, []uint64{2, 1}) {
+		t.Errorf("versions gone inside the prune's write: got %v, want [2 1]", gone)
+	}
+
+	wantHeld(t, heldVersions(t, cp, id, 3), "3=v3")
+}
