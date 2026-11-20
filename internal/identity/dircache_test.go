@@ -793,6 +793,9 @@ func TestDirectoryCacheSIDsStaleGrace(t *testing.T) {
 		if got, err := c.LookupSIDs(ctx, [][]byte{sid["alice"], unknown}, 15*time.Minute); !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
 			t.Errorf("LookupSIDs(alice, unknown) with the directory down = %d answers, %v; want none, ErrUnavailable", len(got), err)
 		}
+		if got := e.resultsOf(t, "sid"); got["stale"] != 0 || got["refused"] != 1 {
+			t.Errorf("SID lookups counted stale %v, refused %v; want 0 and 1: a refused set serves nothing stale", got["stale"], got["refused"])
+		}
 	})
 	t.Run("past the grace", func(t *testing.T) {
 		e, c, sid := sidEnv(t)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/secrets"
@@ -109,6 +110,7 @@ func TestDirectoryCredentialUnresolvedDialsNothing(t *testing.T) {
 // through dial and logging at debug into logs (nil: nowhere).
 func sealedServer(t *testing.T, clock *sim.TestClock, dial directory.Dialer, logs io.Writer) (*identity.Server, func(n byte, pw []byte) entity.SecretRef) {
 	t.Helper()
+	prof.Watch(t, prof.Options{})
 	st, _ := dirStore(t)
 	p := protocolSecrets(t, st)
 	if logs == nil {

@@ -333,6 +333,7 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 	const q = "sid"
 	held := map[string]*dirEntry{}
 	var miss [][]byte
+	stale := 0
 	now := c.clock.Now()
 	for _, s := range sids {
 		if _, ok := held[string(s)]; ok || len(s) == 0 {
@@ -360,13 +361,17 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 				continue
 			}
 			if held[string(s)].servable(c.clock.Now(), grace) {
-				c.lookups.WithLabelValues(q, "stale").Inc()
+				stale++
 				continue
 			}
 			c.lookups.WithLabelValues(q, "refused").Inc()
 			c.out.refuse()
 			return nil, err
 		}
+	}
+	// Counted only now the set is answered: a refused set served nothing stale.
+	if stale > 0 {
+		c.lookups.WithLabelValues(q, "stale").Add(float64(stale))
 	}
 	var out []directory.Answer
 	for _, s := range sids {
