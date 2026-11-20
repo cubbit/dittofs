@@ -3,7 +3,6 @@ package identity
 import (
 	"container/list"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
@@ -118,6 +117,7 @@ type dirCache struct {
 
 	mu      sync.Mutex
 	entries map[dirKey]*list.Element // of *dirEntry
+	asking  map[string]*sidQuery     // the SID queries in flight, by SID
 	recent  *list.List               // most recently used first
 	sid     []byte                   // the domain SID, once read
 }
@@ -141,6 +141,7 @@ func newDirCache(c *directory.Client, d Deps) *dirCache {
 		evicted: counter(d.Metrics, dirEvictionsSpec).WithLabelValues(),
 		slots:   make(chan struct{}, dirInFlight),
 		entries: map[dirKey]*list.Element{},
+		asking:  map[string]*sidQuery{},
 		recent:  list.New(),
 	}
 }
@@ -313,15 +314,37 @@ func await(ctx context.Context, ch <-chan singleflight.Result) singleflight.Resu
 	}
 }
 
+// sidQuery is one SID batch query, shared by every concurrent lookup that
+// asks one of its SIDs: done closes once got, an entry per SID, or err is set.
+type sidQuery struct {
+	batch [][]byte
+	done  chan struct{}
+	got   map[string]*dirEntry
+	err   error
+}
+
+// wait is q's result, or ErrUnavailable once ctx ends first; q runs on for
+// the lookups still waiting.
+func (q *sidQuery) wait(ctx context.Context) error {
+	select {
+	case <-q.done:
+		return q.err
+	case <-ctx.Done():
+		return fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())
+	}
+}
+
 // lookupSIDs answers "who holds this SID" for each of sids: from fresh
-// entries where held, the rest asked of the directory directory.SIDBatch at a
-// time, one query per batch, so a ticket's 1 024 SIDs cost 16 queries rather
-// than one each. It returns the answers found, in the order of sids, a SID no
-// entry holds left out. A batch that fails is answered as a failed lookup
-// is: each of its SIDs from a positive entry within the TTL plus grace,
-// counted stale; any other SID fails the whole lookup ErrUnavailable, counted
-// refused, so a caller never takes a set with holes for a whole one. A batch
-// in which two entries hold one SID fails the whole lookup ErrUnavailable,
+// entries where held, each other SID from the query already asking it, if
+// one is in flight, and the rest asked of the directory directory.SIDBatch at
+// a time, one query per batch, so a ticket's 1 024 SIDs cost 16 queries rather
+// than one each, and concurrent lookups whose sets overlap ask a shared SID
+// once. It returns the answers found, in the order of sids, a SID no entry
+// holds left out. A SID whose query fails is answered as a failed lookup is:
+// from a positive entry within the TTL plus grace, counted stale; any other
+// such SID fails the whole lookup ErrUnavailable, counted refused, so a
+// caller never takes a set with holes for a whole one. A query in which two
+// entries hold one SID fails every lookup waiting on it ErrUnavailable,
 // counted ambiguous once, never served stale.
 //
 // decision: only tests call lookupSIDs today. It is the cache's path for a
@@ -332,42 +355,75 @@ func await(ctx context.Context, ch <-chan singleflight.Result) singleflight.Resu
 func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Duration) ([]directory.Answer, error) {
 	const q = "sid"
 	held := map[string]*dirEntry{}
-	var miss [][]byte
-	stale := 0
+	from := map[string]*sidQuery{} // each SID not fresh, and the query answering it
+	var asked, miss [][]byte
+	fresh, stale := 0, 0
 	now := c.clock.Now()
+	// The entries and the queries in flight are read, and this lookup's own
+	// queries registered, under one hold of mu, so a SID is either fresh,
+	// asked by a query in flight, or asked by a query of this lookup's.
+	c.mu.Lock()
 	for _, s := range sids {
 		if _, ok := held[string(s)]; ok || len(s) == 0 {
 			continue
 		}
-		e := c.get(dirKey{by: directory.BySID, value: string(s)})
+		e := c.getLocked(dirKey{by: directory.BySID, value: string(s)})
 		held[string(s)] = e
 		if e != nil && e.fresh(now) {
-			c.lookups.WithLabelValues(q, "fresh").Inc()
+			fresh++
+			continue
+		}
+		asked = append(asked, s)
+		if f := c.asking[string(s)]; f != nil {
+			from[string(s)] = f
 		} else {
 			miss = append(miss, s)
 		}
 	}
+	var mine []*sidQuery
 	for batch := range slices.Chunk(miss, directory.SIDBatch) {
-		got, err := c.querySIDs(ctx, batch)
+		f := &sidQuery{batch: batch, done: make(chan struct{})}
+		for _, s := range batch {
+			c.asking[string(s)] = f
+			from[string(s)] = f
+		}
+		mine = append(mine, f)
+	}
+	c.mu.Unlock()
+	if fresh > 0 {
+		c.lookups.WithLabelValues(q, "fresh").Add(float64(fresh))
+	}
+	// This lookup's queries start before it waits on any, and none waits on
+	// another, so two lookups waiting on each other's queries both finish.
+	for _, f := range mine {
+		if c.out.skip(c.clock.Now()) {
+			c.landSIDs(f, nil, errDirUnreachable)
+			continue
+		}
+		// A query runs without the opener's cancellation, so a caller that
+		// stops waiting leaves it to the others; the client's timeout bounds it.
+		go c.querySIDs(context.WithoutCancel(ctx), f)
+	}
+	for _, s := range asked {
+		f := from[string(s)]
+		err := f.wait(ctx)
 		if errors.Is(err, directory.ErrAmbiguous) {
 			c.lookups.WithLabelValues(q, "ambiguous").Inc()
 			return nil, err
 		}
-		for _, s := range batch {
-			if err == nil {
-				n := got[string(s)]
-				held[string(s)] = n
-				c.answered(q, n.found)
-				continue
-			}
-			if held[string(s)].servable(c.clock.Now(), grace) {
-				stale++
-				continue
-			}
-			c.lookups.WithLabelValues(q, "refused").Inc()
-			c.out.refuse()
-			return nil, err
+		if err == nil {
+			n := f.got[string(s)]
+			held[string(s)] = n
+			c.answered(q, n.found)
+			continue
 		}
+		if held[string(s)].servable(c.clock.Now(), grace) {
+			stale++
+			continue
+		}
+		c.lookups.WithLabelValues(q, "refused").Inc()
+		c.out.refuse()
+		return nil, err
 	}
 	// Counted only now the set is answered: a refused set served nothing stale.
 	if stale > 0 {
@@ -383,56 +439,46 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 	return out, nil
 }
 
-// querySIDs asks the directory who holds each SID of batch in one query, in
-// a slot of its own, and stores an entry for each, "no such entry" for a SID
-// none holds. Its failure raises the outage, and its answer, ambiguous or
-// not, clears it.
-//
-// ponytail: concurrent lookups share a query only when they ask the same
-// batch, as one user's repeated sign-ins do; two tickets whose SID sets
-// overlap ask the shared SIDs twice. Share per SID when a sign-in burst's
-// query count shows the overlap.
-func (c *dirCache) querySIDs(ctx context.Context, batch [][]byte) (map[string]*dirEntry, error) {
-	if c.out.skip(c.clock.Now()) {
-		return nil, errDirUnreachable
-	}
-	// Each SID is prefixed with its length, so two batches share a key only
-	// when they hold the same SIDs in the same order.
-	key := []byte("sids:")
-	for _, s := range batch {
-		key = binary.AppendUvarint(key, uint64(len(s)))
-		key = append(key, s...)
-	}
-	ch := c.flight.DoChan(string(key), func() (any, error) {
-		got := map[string]*dirEntry{}
-		err := c.run(context.WithoutCancel(ctx), "sid", func(ctx context.Context) error {
-			start := c.clock.Now()
-			found, err := c.client.LookupSIDs(ctx, batch)
-			c.settle(start, err, dirKey{by: directory.BySID, value: string(batch[0])}, "sid")
-			if err != nil {
-				return err
+// querySIDs asks the directory who holds each SID of f's batch in one query,
+// in a slot of its own, stores an entry for each, "no such entry" for a SID
+// none holds, and lands f. Its failure raises the outage, and its answer,
+// ambiguous or not, clears it.
+func (c *dirCache) querySIDs(ctx context.Context, f *sidQuery) {
+	got := map[string]*dirEntry{}
+	err := c.run(ctx, "sid", func(ctx context.Context) error {
+		start := c.clock.Now()
+		found, err := c.client.LookupSIDs(ctx, f.batch)
+		c.settle(start, err, dirKey{by: directory.BySID, value: string(f.batch[0])}, "sid")
+		if err != nil {
+			return err
+		}
+		now := c.clock.Now()
+		for _, s := range f.batch {
+			got[string(s)] = &dirEntry{key: dirKey{by: directory.BySID, value: string(s)}, at: now}
+		}
+		for _, a := range found {
+			if e := got[string(a.SID)]; e != nil {
+				e.ans, e.found = a, true
 			}
-			now := c.clock.Now()
-			for _, s := range batch {
-				got[string(s)] = &dirEntry{key: dirKey{by: directory.BySID, value: string(s)}, at: now}
-			}
-			for _, a := range found {
-				if e := got[string(a.SID)]; e != nil {
-					e.ans, e.found = a, true
-				}
-			}
-			for _, e := range got {
-				c.put(e)
-			}
-			return nil
-		})
-		return got, err
+		}
+		for _, e := range got {
+			c.put(e)
+		}
+		return nil
 	})
-	r := await(ctx, ch)
-	if r.Err != nil {
-		return nil, r.Err
+	c.landSIDs(f, got, err)
+}
+
+// landSIDs sets f's result and releases its SIDs, after their entries are
+// stored, so a later lookup finds each SID's entry rather than f gone.
+func (c *dirCache) landSIDs(f *sidQuery, got map[string]*dirEntry, err error) {
+	c.mu.Lock()
+	for _, s := range f.batch {
+		delete(c.asking, string(s))
 	}
-	return r.Val.(map[string]*dirEntry), nil
+	c.mu.Unlock()
+	f.got, f.err = got, err
+	close(f.done)
 }
 
 // groups is user's closure, asked of the directory in a slot of its own and
@@ -534,6 +580,11 @@ func (c *dirCache) probe(k dirKey, q string) {
 func (c *dirCache) get(k dirKey) *dirEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.getLocked(k)
+}
+
+// getLocked is get under mu, held by the caller.
+func (c *dirCache) getLocked(k dirKey) *dirEntry {
 	el, ok := c.entries[k]
 	if !ok {
 		return nil

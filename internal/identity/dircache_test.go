@@ -984,3 +984,117 @@ func TestDirectoryCacheFollowsApply(t *testing.T) {
 	apply(func(st *identity.State) { st.Settings.DirectoryStaleGrace = 15 * time.Minute })
 	ask("grace 15 minutes, within it", 3, true)
 }
+
+// sidTerms is the SIDs the SID batch searches sent so far asked, each batch's
+// terms counted: a SID asked by two searches counts twice.
+func (e *dirEnv) sidTerms() int {
+	n := 0
+	for _, q := range e.f.Queries() {
+		if strings.HasPrefix(q.Filter, "(|") {
+			n += strings.Count(q.Filter, "(objectSid=")
+		}
+	}
+	return n
+}
+
+// Concurrent lookups whose SID sets overlap, {alice, bob} and {bob, carol},
+// share one query per SID (RFC 18 §5.2): bob is asked once, by the query the
+// first lookup opened, and the second asks only carol. When the shared query
+// fails, the second lookup's bob is answered as a failed query is: served
+// stale within the grace, refused with no entry to serve.
+func TestDirectoryCacheSIDsShareOneQueryPerSID(t *testing.T) {
+	t.Run("answered", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			e, c, sid := sidEnv(t)
+			// The first SID batch search waits a second, so the second lookup
+			// asks while it is in flight.
+			e.fail(t, sim.Rule{Op: "search", Key: "(|*", Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+			sets := [][]string{{"alice", "bob"}, {"bob", "carol"}}
+			type result struct {
+				got []directory.Answer
+				err error
+			}
+			res := make([]chan result, len(sets))
+			for i, names := range sets {
+				res[i] = make(chan result, 1)
+				go func() {
+					got, err := c.LookupSIDs(context.Background(), [][]byte{sid[names[0]], sid[names[1]]}, 0)
+					res[i] <- result{got, err}
+				}()
+				synctest.Wait()
+			}
+			e.clock.Advance(time.Second)
+			for i, names := range sets {
+				r := <-res[i]
+				if r.err != nil || len(r.got) != 2 {
+					t.Fatalf("LookupSIDs(%v) = %d answers, %v; want 2", names, len(r.got), r.err)
+				}
+				for j, a := range r.got {
+					if string(a.SID) != string(sid[names[j]]) {
+						t.Errorf("LookupSIDs(%v) answer %d holds SID %x, want %s's %x", names, j, a.SID, names[j], sid[names[j]])
+					}
+				}
+			}
+			if got := e.sidTerms(); got != 3 {
+				t.Errorf("SIDs asked by the batch searches %d, want 3: bob asked once", got)
+			}
+			e.wantQueries(t, 5, "three names and two SID batches")
+		})
+	})
+	for _, tc := range []struct {
+		name      string
+		warm      bool // every SID looked up, and expired, before the overlap
+		wantErr   bool
+		wantStale float64
+	}{
+		{"failed, served stale", true, false, 3},
+		{"failed, refused", false, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				e, c, sid := sidEnv(t)
+				if tc.warm {
+					if got, err := c.LookupSIDs(context.Background(), [][]byte{sid["alice"], sid["bob"], sid["carol"]}, 0); err != nil || len(got) != 3 {
+						t.Fatalf("LookupSIDs(alice, bob, carol) = %d answers, %v; want 3", len(got), err)
+					}
+					e.clock.Advance(6 * time.Minute) // past the TTL, within the grace
+				}
+				// The first SID batch search, {alice, bob}, is held until the
+				// query timeout and fails; carol's is answered.
+				e.fail(t, sim.Rule{Op: "search", Key: "(|*", Count: 1, Action: sim.FaultAction{Err: identitytest.ErrHold}})
+				first := make(chan error, 1)
+				go func() {
+					_, err := c.LookupSIDs(context.Background(), [][]byte{sid["alice"], sid["bob"]}, 15*time.Minute)
+					first <- err
+				}()
+				synctest.Wait()
+				second := make(chan error, 1)
+				var got []directory.Answer
+				go func() {
+					var err error
+					got, err = c.LookupSIDs(context.Background(), [][]byte{sid["bob"], sid["carol"]}, 15*time.Minute)
+					second <- err
+				}()
+				synctest.Wait()
+				e.clock.Advance(5 * time.Second)
+				if err := <-first; (err != nil) != tc.wantErr {
+					t.Errorf("LookupSIDs(alice, bob) with its query failed = %v, want an error %v", err, tc.wantErr)
+				}
+				err := <-second
+				if tc.wantErr {
+					if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+						t.Errorf("LookupSIDs(bob, carol) with the shared query failed and bob never answered = %d answers, %v; want none, ErrUnavailable", len(got), err)
+					}
+				} else if err != nil || len(got) != 2 {
+					t.Errorf("LookupSIDs(bob, carol) with the shared query failed = %d answers, %v; want bob stale and carol", len(got), err)
+				}
+				if got := e.resultsOf(t, "sid")["stale"]; got != tc.wantStale {
+					t.Errorf("SID lookups counted stale %v, want %v", got, tc.wantStale)
+				}
+				if got, want := e.sidTerms(), map[bool]int{true: 6, false: 3}[tc.warm]; got != want {
+					t.Errorf("SIDs asked by the batch searches %d, want %d: bob asked once by the overlap", got, want)
+				}
+			})
+		})
+	}
+}
