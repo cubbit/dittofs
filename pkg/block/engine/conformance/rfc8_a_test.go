@@ -165,6 +165,9 @@ func TestRFC8A_StableWriteLazyExistence(t *testing.T) {
 	ctx := t.Context()
 	h, id := f.File("a")
 	p := []byte("appended, then committed")
+	// The store stamps the create from the wall clock and keeps the later of a
+	// file's mtime and a write's, so the write is stamped after the create.
+	f.Clock.Jump(f.Committed(h).Modify.Sub(f.Clock.Now()) + time.Second)
 	at := f.Clock.Now()
 
 	f.FS.Counts.Take()

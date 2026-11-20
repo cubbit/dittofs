@@ -2,13 +2,6 @@
 # naming the epic expected to turn it green. A test that starts to pass fails the run: remove
 # its entry in the change that turned it green, a journal change included. Each entry's
 # message is the failure it is known by: a test failing for any other reason is unexpected.
-- test: TestRFC8A_StableWriteLazyExistence
-  message: 'after the crash: committed size 24, mtime'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the start''s re-application over the recovered journal: a write synced before its Commit survives the crash whole, its size committed at 24 and its bytes read back; the mtime it read at the write does not — the re-application carries the time of its own replay, not the record''s, so the committed mtime reads the wall clock, want the write''s. The row waits on the start''s replay carrying each record''s staged mtime.'
-  issue: '#4210'
 - test: TestRFC8A_RecoveryReappliesInVersionOrder
   message: 'committed size 4096 after the restart, want 12288'
   status: fail
