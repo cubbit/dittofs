@@ -1,6 +1,7 @@
 package node_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -281,17 +282,38 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 		}
 	})
 	t.Run("corrupt extent, data loss", func(t *testing.T) {
-		// The drive would be: write, commit, restart, flip a payload byte
-		// behind the open journal's back through the storage seam, read —
-		// the read drops the extent as corrupt with its bit unset and the
-		// counter rises. The journal's own conformance leg of the same
-		// shape is red today (its known failure, the same issue that owns
-		// the reachability check this node leg answers): a flipped byte's
-		// visibility to the open that holds the record is not
-		// deterministic, and the node drove it green only when the drop
-		// landed on the read's verify, red when the open's walk took it
-		// without the count. Unskips with the conformance leg it rides on.
-		t.Skip("the corrupt-extent drop is not deterministically reachable while its known conformance leg stays red: the journal sees a flipped byte's record on the read's verify only sometimes, and when the open's walk takes it the corrupt counter does not rise; the series is exported and unskips with the conformance leg it rides on")
+		h, seam := seamed(t, 8<<20)
+		started(t, h)
+		sh := addShare(t, h)
+		file := createFiles(t, h, sh, 1)[0]
+		caughtUp(t, h)
+		payload := pattern("corrupt", 4096)
+		if err := jwrite(t, h, sh.ID, file.ID, 0, payload); err != nil {
+			t.Fatal(err)
+		}
+		if err := jcommit(t, h, sh.ID, file.ID); err != nil {
+			t.Fatal(err)
+		}
+		caughtUp(t, h)
+		before := jscrape(t, h)
+
+		// Flip a payload byte behind the journal's back, through the seam,
+		// then read: the read drops the extent as corrupt with its offloaded
+		// bit unset, and the counter has risen by the time the read returns.
+		flipPayloadByte(t, seam, payload)
+		_, _ = h.Node().Engine().Read(t.Context(), sh.ID, file.ID, 0, make([]byte, len(payload)))
+		after := jscrape(t, h)
+		dataLoss := func(m map[string]map[string]float64) float64 {
+			for labels, v := range m["dittofs_journal_corrupt_extents_total"] {
+				if strings.Contains(labels, "outcome=data_loss,") {
+					return v
+				}
+			}
+			return 0
+		}
+		if got := dataLoss(after) - dataLoss(before); got < 1 {
+			t.Errorf("dittofs_journal_corrupt_extents_total{outcome=data_loss} moved by %v over a read of a corrupt dirty extent, want it to rise", got)
+		}
 	})
 	t.Run("corrupt extent, repairable", func(t *testing.T) {
 		t.Skip("needs the offload pass that marks an extent offloaded, which the node never runs: the synced-side share of this counter reaches a node test with the syncer and offload work")
@@ -743,6 +765,50 @@ func newestID(t *testing.T, seam *kit.Seam) uint64 {
 		newest = max(newest, id)
 	}
 	return newest
+}
+
+// flipPayloadByte inverts one byte of the first segment in the journal's
+// directory that holds payload, through the seam, and syncs the file.
+func flipPayloadByte(t *testing.T, seam *kit.Seam, payload []byte) {
+	t.Helper()
+	names, err := seam.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".seg") {
+			continue
+		}
+		f, err := seam.Open(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size, err := f.Size()
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, size)
+		_, err = f.ReadAt(buf, 0)
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatal(err)
+		}
+		at := bytes.Index(buf, payload)
+		if at >= 0 {
+			if _, err := f.WriteAt([]byte{buf[at] ^ 0xff}, int64(at)); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Sync(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if at >= 0 {
+			return
+		}
+	}
+	t.Fatal("the payload is in no segment of the journal's directory")
 }
 
 // plant writes a durable file under name in the journal's directory, through
