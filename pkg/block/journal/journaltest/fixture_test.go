@@ -231,3 +231,73 @@ func TestAwaitSparesFailsTheTestOnASettlingShortPool(t *testing.T) {
 		t.Fatalf("a pool that settled short was reported as %q, want the fixture's own failure naming it", r.fatal)
 	}
 }
+
+// TestFixtureHandsOpenTheMarksItsSyncsRecorded pins that the marks the
+// fixture's Sync records reach Open on Crash and on Reopen: a correct mark
+// lets both open, and a recorded mark past the stream's synced tail makes the
+// next open refuse the range it names. Each leg syncs into a fresh fixture,
+// so the mark names the newest segment of its stream, the one whose tail an
+// open checks against it.
+func TestFixtureHandsOpenTheMarksItsSyncsRecorded(t *testing.T) {
+	synced := func(t *testing.T) *Fixture {
+		t.Helper()
+		f := NewUnwatched(t)
+		id := File(0)
+		if _, err := f.Share(0).WriteAt(t.Context(), id, 0, []byte(strings.Repeat("a", 4096)), 1); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+
+		marks, err := f.Sync(0, id)
+		if err != nil || len(marks) == 0 {
+			t.Fatalf("Sync returned %d marks and %v, want the stream's mark and no error", len(marks), err)
+		}
+		if len(f.Marks) != len(marks) || f.Marks[0] != marks[0] {
+			t.Fatalf("the fixture recorded marks %+v, want the %+v its Sync returned", f.Marks, marks)
+		}
+		return f
+	}
+
+	t.Run("correct", func(t *testing.T) {
+		f := synced(t)
+		if err := f.TryCrash(); err != nil {
+			t.Fatalf("an open after a crash with the correct marks recorded: %v, want nil", err)
+		}
+
+		// A later sync of the same stream replaces its recorded mark.
+		if _, err := f.Share(0).WriteAt(t.Context(), File(0), 4096, []byte("b"), 1); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		marks, err := f.Sync(0, File(0))
+		if err != nil || len(marks) != 1 {
+			t.Fatalf("the second Sync returned marks %+v and %v, want one mark and no error", marks, err)
+		}
+		if len(f.Marks) != 1 || f.Marks[0] != marks[0] {
+			t.Fatalf("after a second sync the fixture recorded %+v, want only the newer mark %+v", f.Marks, marks[0])
+		}
+		if err := f.TryReopen(); err != nil {
+			t.Fatalf("a reopen with the correct marks recorded: %v, want nil", err)
+		}
+	})
+
+	// A mark past what the stream synced: the tail it names holds no record.
+	for _, reopen := range []string{"crash", "reopen"} {
+		t.Run("wrong_"+reopen, func(t *testing.T) {
+			f := synced(t)
+			f.Marks[0].Through += 4096
+			f.Marks[0].Offset += 4096
+
+			var err error
+			if reopen == "crash" {
+				err = f.TryCrash()
+			} else {
+				err = f.TryReopen()
+			}
+			if !errors.Is(err, journal.ErrOpenRefused) {
+				t.Fatalf("an open after a %s with a mark past the synced tail returned %v, want ErrOpenRefused", reopen, err)
+			}
+			if want := fmt.Sprintf("segment %d: a refused range at", f.Marks[0].Segment); !strings.Contains(err.Error(), want) {
+				t.Fatalf("the refusal is %q, want it to name a range of the mark's segment, %q", err, want)
+			}
+		})
+	}
+}

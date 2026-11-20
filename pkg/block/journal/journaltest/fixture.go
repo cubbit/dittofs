@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -80,7 +81,8 @@ type Fixture struct {
 	Dir string
 
 	// Marks is what every open hands Open as the sync marks the caller
-	// recorded durably; nil records none.
+	// recorded durably; nil records none. The fixture's Sync records into
+	// it; a test may also set it to hand Open marks of its own.
 	Marks []journal.SyncMark
 
 	tb      testing.TB
@@ -355,6 +357,25 @@ func (f *Fixture) Detach(i int) error {
 // off the test's goroutine.
 func (f *Fixture) attach(i int) (*journal.Handle, error) {
 	return f.J.Share(Tag(i), 0, f.floor)
+}
+
+// Sync syncs files ids through share i's handle and records the marks it
+// returns in Marks, as a caller records them durably: per stream, the one
+// with the highest sequence number replaces any older one. Crash, Kill and
+// Reopen hand the recorded marks to Open, which checks the scanned tails
+// against them. A failed sync returns no marks, so it records none.
+func (f *Fixture) Sync(i int, ids ...journal.FileID) ([]journal.SyncMark, error) {
+	marks, err := f.Share(i).Sync(f.tb.Context(), ids...)
+	for _, m := range marks {
+		at := slices.IndexFunc(f.Marks, func(r journal.SyncMark) bool { return r.Stream == m.Stream })
+		switch {
+		case at < 0:
+			f.Marks = append(f.Marks, m)
+		case m.Sequence > f.Marks[at].Sequence:
+			f.Marks[at] = m
+		}
+	}
+	return marks, err
 }
 
 // Floor returns the floor the journal open now was opened with: every
