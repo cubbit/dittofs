@@ -426,7 +426,7 @@ func crossNamespace(err error) bool {
 // of it by name, a lock and a close, and a lock on the source's extent, each
 // answer at once; a read or a write inside the destination's extent, and a
 // write inside the source's, meet the clone's registrations and answer
-// DelayClone at once, there being no held wait (WithHold) yet. Over the fake
+// DelayClone at once, as none carries a hold (WithHold). Over the fake
 // journal alone, as the journal stops at the first write.
 func TestARunningCloneHoldsNoLockOfItsFiles(t *testing.T) {
 	c := compose(t, enginetest.WithFakeJournal())

@@ -28,12 +28,16 @@ import (
 // verified bytes it read and whether they reach the file's end. The engine
 // may answer n bytes and then the error for the chunk after them; both are
 // answered, and the bytes that failed are never padded.
-func (fs *Filesystem) Read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, dst []byte) (int, bool, error) {
-	ctx, done, err := fs.enter(ctx)
-	if err != nil {
-		return 0, false, err
-	}
-	defer done()
+func (fs *Filesystem) Read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, dst []byte) (n int, eof bool, err error) {
+	err = fs.held(ctx, []entity.FileID{fileOf(ref.Handle)}, func(ctx context.Context) error {
+		n, eof, err = fs.read(ctx, c, ref, off, dst)
+		return err
+	})
+	return n, eof, err
+}
+
+// read is one attempt of Read, run again by held.
+func (fs *Filesystem) read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, dst []byte) (int, bool, error) {
 	_, f, unlock, release, err := fs.io(ctx, c, ref, vfs.OpRead, off, int64(len(dst)), false)
 	if err != nil {
 		return 0, false, err
@@ -58,12 +62,16 @@ func (fs *Filesystem) Read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off
 // the sync, and a client does not consult a stable reply's verifier, so the
 // write is answered ErrDelay (DelayCommit) for the client to resend, never
 // as stable.
-func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, src []byte, st vfs.Stability) (vfs.WriteResult, error) {
-	ctx, done, err := fs.enter(ctx)
-	if err != nil {
-		return vfs.WriteResult{}, err
-	}
-	defer done()
+func (fs *Filesystem) Write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, src []byte, st vfs.Stability) (wr vfs.WriteResult, err error) {
+	err = fs.held(ctx, []entity.FileID{fileOf(ref.Handle)}, func(ctx context.Context) error {
+		wr, err = fs.write(ctx, c, ref, off, src, st)
+		return err
+	})
+	return wr, err
+}
+
+// write is one attempt of Write, run again by held.
+func (fs *Filesystem) write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, src []byte, st vfs.Stability) (vfs.WriteResult, error) {
 	a, f, unlock, release, err := fs.io(ctx, c, ref, vfs.OpWrite, off, int64(len(src)), true)
 	if err != nil {
 		return vfs.WriteResult{}, err
@@ -231,12 +239,16 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 // checked and ordered as a write is, and answers its WCC; an append-only file
 // refuses any, ErrPerm, as one never appends. A hole of no byte, like a
 // write of none, returns once judged and changes nothing.
-func (fs *Filesystem) Deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off, length int64) (vfs.WCC, error) {
-	ctx, done, err := fs.enter(ctx)
-	if err != nil {
-		return vfs.WCC{}, err
-	}
-	defer done()
+func (fs *Filesystem) Deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off, length int64) (w vfs.WCC, err error) {
+	err = fs.held(ctx, []entity.FileID{fileOf(ref.Handle)}, func(ctx context.Context) error {
+		w, err = fs.deallocate(ctx, c, ref, off, length)
+		return err
+	})
+	return w, err
+}
+
+// deallocate is one attempt of Deallocate, run again by held.
+func (fs *Filesystem) deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off, length int64) (vfs.WCC, error) {
 	a, f, unlock, release, err := fs.io(ctx, c, ref, vfs.OpDeallocate, off, length, true)
 	if err != nil {
 		return vfs.WCC{}, err
@@ -261,12 +273,16 @@ func (fs *Filesystem) Deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRe
 // file's size when it finds none before the end, which an adapter reads as
 // end of file. From an offset at or past the size, judged against the size
 // read under the file's admission lock, it answers ErrPastEnd.
-func (fs *Filesystem) Seek(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, what vfs.SeekWhat) (int64, error) {
-	ctx, done, err := fs.enter(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer done()
+func (fs *Filesystem) Seek(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, what vfs.SeekWhat) (at int64, err error) {
+	err = fs.held(ctx, []entity.FileID{fileOf(ref.Handle)}, func(ctx context.Context) error {
+		at, err = fs.seek(ctx, c, ref, off, what)
+		return err
+	})
+	return at, err
+}
+
+// seek is one attempt of Seek, run again by held.
+func (fs *Filesystem) seek(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off int64, what vfs.SeekWhat) (int64, error) {
 	_, f, unlock, release, err := fs.io(ctx, c, ref, vfs.OpSeek, off, 0, false)
 	if err != nil {
 		return 0, err

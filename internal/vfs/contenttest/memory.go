@@ -330,6 +330,10 @@ func finish(ops []op) {
 	}
 }
 
+// AwaitClones answers nil at once: Memory's Clone and Copy run whole under
+// its lock, so no clone is ever running when another call can look.
+func (m *Memory) AwaitClones(context.Context, entity.FileID) error { return nil }
+
 func (m *Memory) LossSeq(s entity.ShareID, f entity.FileID) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()

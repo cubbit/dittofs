@@ -58,8 +58,8 @@ var _ Content = (*FaultContent)(nil)
 // unchanged, but for the faults a test sets: On runs one as a call arrives,
 // to fail it, hold it or act at that moment, After runs one once inner has
 // answered. A fault stays set until replaced or cleared, so it fires on
-// every call of its method. LossSeq, which can fail no way, always passes
-// through. Its methods are safe for concurrent use.
+// every call of its method. LossSeq, which can fail no way, and AwaitClones,
+// which changes nothing, always pass through. Its methods are safe for concurrent use.
 //
 // Every Content method is written out here and none is embedded, so a
 // method added to Content fails to compile until it is wrapped.
@@ -158,6 +158,10 @@ func (f *FaultContent) CommitExistence(ctx context.Context, s entity.ShareID, fl
 	}
 	defer f.done(ctx, c)
 	return f.inner.CommitExistence(ctx, s, fl)
+}
+
+func (f *FaultContent) AwaitClones(ctx context.Context, fl entity.FileID) error {
+	return f.inner.AwaitClones(ctx, fl)
 }
 
 func (f *FaultContent) LossSeq(s entity.ShareID, fl entity.FileID) uint64 {

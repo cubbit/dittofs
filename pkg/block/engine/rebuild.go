@@ -43,10 +43,10 @@ func (e *Engine) rebuildRun(o *opened, db *binding, dst entity.FileID, spec jour
 		db:   db,
 		src:  entity.FileID(spec.Src.Bytes()),
 		dst:  dst,
-		rs:   &reg{Extent: entity.Extent{Offset: spec.SrcOff, Length: spec.Len}},
 		spec: spec,
 		done: make(chan struct{}),
 	}
+	c.rs = &reg{Extent: entity.Extent{Offset: spec.SrcOff, Length: spec.Len}, run: c}
 	c.rd = &reg{Extent: entity.Extent{Offset: spec.DstOff, Length: spec.Len}, dst: true, run: c} // a retry of the clone joins it
 	c.req = cloneRequest{srcShare: entity.ShareID(spec.SrcShare), dstShare: db.share.ID, src: c.src, dst: dst,
 		ext: vfserr.Extent{SrcOff: spec.SrcOff, DstOff: spec.DstOff, Len: spec.Len}}
