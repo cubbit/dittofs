@@ -342,8 +342,8 @@ What goes: 35 of the 92 shell scripts under `test/` and `.github/scripts/`, abou
 
 What stays, because it isn't an entry point:
 - the 42 scenarios, `setup.sh`, `lib/report.sh` and `lib/slack.sh`;
-- the tests and tools written in shell: the two crash rigs, the NLM interop driver
-  and `pcap-diff.sh`;
+- the tests and tools written in shell: the two crash rigs, the NLM interop driver,
+  `pcap-diff.sh` and `test/scenarios/lib/slack_test.sh`;
 - the three entrypoints of the KDC and AD-DC service containers;
 - the repository checks lint runs: `required-tests.sh`, `new-package-tests.sh`,
   `commit-type-matches-diff.sh` and `no-ai-attribution.sh`;
@@ -1957,8 +1957,8 @@ a percentage.
   `bench/ditto/night.sh` measures DittoFS against Samba over SMB, point by point, and flags a
   point, an area or the night's figure that falls below its 7-day median by more than its noise
   band, which a calibration week's repeats set. Slack gets each night in the day's thread (§4.6): a
-  night with a new flag or failure shows in the channel too, and so does the first night with
-  neither after it. The
+  night with a new flag or failure, or with any while no alert is open, shows in the channel too,
+  and so does the first night with neither after it. The
   night ends five minutes before `dt`'s limit (`STOP_AFTER`), so one that overruns still cleans
   up and posts: `dt` kills at its limit with no cleanup. The
   cell fails when a step fails or times out, or the night can't be scored, and so reaches the

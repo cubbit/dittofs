@@ -82,12 +82,12 @@ same bot, the same channel. The bot's token and channel are `slack-token` and `s
   their points in MiB/s, the worst point, the flags and failures and the develop commits since the
   last night. The thread's parent, "Nightly performance, <date>" (the date in Europe/Berlin when
   the night posts), comes with the day's first reply; `slack-day` beside the nights keeps it.
-- A night with a new flag or failure (one the 7 nights before did not have) shows in the channel
-  too, and opens an alert: `alert-open` beside the nights.
+- A night with a new flag or failure (one the 7 nights before did not have), or with any while no
+  alert is open, shows in the channel too, and opens an alert: `alert-open` beside the nights.
 - The first night with no flag and no failure after it shows in the channel too, headed "nothing
   flagged or failing any more", and closes the alert.
-- Any other night stays in the thread: one that repeats flags or failures already seen, and a
-  quiet one with no alert open.
+- Any other night stays in the thread: one that repeats flags or failures while the alert is
+  open, and a quiet one with no alert open.
 
 Smoke runs and calibration nights never post.
 

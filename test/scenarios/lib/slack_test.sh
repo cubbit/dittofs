@@ -18,9 +18,11 @@ ok()   { echo "ok: $1"; }
 fail() { FAILURES=$((FAILURES + 1)); echo "FAIL: $1"; }
 
 # The fake API: it appends each chat.postMessage body to TMP/posts, one line each, and answers with
-# ts <n>.000000, the post's number.
+# ts <n>.000000, n the posts it has taken. While TMP/refuse exists, it refuses the next post, as
+# Slack does with ok false, and removes TMP/refuse.
 cat >"$TMP/fake.py" <<'EOF'
 import http.server
+import os
 import sys
 
 posts = open(sys.argv[1], "a")
@@ -30,11 +32,16 @@ count = 0
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         global count
-        count += 1
-        posts.write(self.rfile.read(int(self.headers["Content-Length"])).decode() + "\n")
-        posts.flush()
+        body = self.rfile.read(int(self.headers["Content-Length"])).decode()
         self.send_response(200)
         self.end_headers()
+        if os.path.exists(sys.argv[2]):
+            os.remove(sys.argv[2])
+            self.wfile.write(b'{"ok":false,"error":"refused"}')
+            return
+        count += 1
+        posts.write(body + "\n")
+        posts.flush()
         self.wfile.write(b'{"ok":true,"ts":"%d.000000"}' % count)
 
     def log_message(self, *args):
@@ -47,7 +54,7 @@ server.serve_forever()
 EOF
 touch "$TMP/posts"
 mkfifo "$TMP/port"
-python3 "$TMP/fake.py" "$TMP/posts" >"$TMP/port" &
+python3 "$TMP/fake.py" "$TMP/posts" "$TMP/refuse" >"$TMP/port" &
 FAKE=$!
 read -r PORT <"$TMP/port"
 test -n "$PORT" || { echo "FAIL: the fake API did not start"; exit 1; }
@@ -154,7 +161,28 @@ check "a quiet night with no alert open stays in the thread" \
     ":calendar: *Nightly performance, 2026-11-23* | top | not
 2026-11-23 summary | $PARENT | not"
 
-if (unset SLACK_DIR && night 2026-11-24 new); then
+PARENT="$(next_ts)"
+night 2026-11-24 same
+take brief
+check "flags or failures already seen, back after a clear night, show in the channel too" \
+    ":calendar: *Nightly performance, 2026-11-24* | top | not
+2026-11-24 summary | $PARENT | broadcast"
+
+# A day's parent that fails to post: the night's reply goes at the top, the day is not kept, and the
+# next post that day tries the parent again.
+touch "$TMP/refuse"
+night 2026-11-25 clear
+take brief
+check "a night whose parent fails to post replies at the top" \
+    ":white_check_mark: *Nightly performance: nothing flagged or failing any more* | top | broadcast"
+PARENT="$(next_ts)"
+night 2026-11-25 clear
+take brief
+check "and the next post that day posts the parent and replies in it" \
+    ":calendar: *Nightly performance, 2026-11-25* | top | not
+2026-11-25 summary | $PARENT | not"
+
+if (unset SLACK_DIR && night 2026-11-26 new); then
     take
     check "without SLACK_DIR a night posts nothing" ""
 else

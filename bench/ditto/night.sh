@@ -12,9 +12,9 @@
 # one order on odd repeats, the other on even ones, swapped from one date to the next.
 # score.py then compares the two targets point by point and writes the summary. Slack gets it
 # through the scenarios' Slack library (test/scenarios/lib/slack.sh), same bot, same channel, as a
-# reply in the day's thread: a night with a new flag or failure shows in the channel too, and so
-# does the first night with no flag and no failure after it; any other night stays in the thread.
-# See post.
+# reply in the day's thread: a night with a new flag or failure, or with any while no alert is open,
+# shows in the channel too, and so does the first night with no flag and no failure after it; any
+# other night stays in the thread. See post.
 #
 #   night.sh              as root, from cron at 18:45 (setup.sh writes the cron file)
 #   SMOKE=yes night.sh    one short point of each kind, a few minutes; never posts
@@ -282,13 +282,18 @@ files() {
 
 # post NIGHT: posts NIGHT's summary by the rules above, in the thread of the day that slack-day,
 # beside the nights, keeps. score.py's NIGHT/alert says new, same or clear; alert-open, beside the
-# nights, stays from a night with a new flag or failure to the next night with neither.
+# nights, stays from a night with a new flag or failure, or with any while no alert is open, to the
+# next night with neither.
 post() {
     local work="${1%/*}" text broadcast=no
     text="$(cat "$1/slack.txt")"
     case "$(cat "$1/alert" 2>/dev/null)" in
     new)
         broadcast=yes
+        touch "$work/alert-open"
+        ;;
+    same)
+        test -e "$work/alert-open" || broadcast=yes
         touch "$work/alert-open"
         ;;
     clear)
