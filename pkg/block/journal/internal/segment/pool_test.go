@@ -2822,11 +2822,18 @@ func TestPoolCheckAfterAMakeLandsPastStop(t *testing.T) {
 	go func() { p.Stop(); close(stopped) }()
 	// Stop marks the pool stopped before it joins the parked make, and a Hold
 	// answers ErrClosed from that mark on: the landing below is past it.
+	closed := false
 	for range poolAttempts {
 		if _, err := p.Hold(1); errors.Is(err, core.ErrClosed) {
+			closed = true
 			break
 		}
 		runtime.Gosched()
+	}
+	if !closed {
+		h.Release()
+		<-stopped
+		t.Fatal("Stop never marked the pool stopped: the landing below would not be past it")
 	}
 	h.Release()
 	<-stopped
