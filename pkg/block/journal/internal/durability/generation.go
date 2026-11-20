@@ -229,9 +229,10 @@ func (s *dirState) takePiece(d *Durability, dropped core.Seq, ext core.Extent) b
 // named reports whether a Lose or a Place of this journal identity already
 // took the piece k: a loss whose record landed or was deferred, or a loss
 // record found on disk — whichever instance took the piece, a stopped one
-// included, for its entry stays until an open takes it over. The open's
-// pass consults it apart from its own take, to know which losses no record
-// is owed for.
+// included, for the piece stays taken: an open that takes a dead claim
+// over only replaces it, in place, and the entry itself leaves on release
+// alone. The open's pass consults it apart from its own take, to know
+// which losses no record is owed for.
 func (s *dirState) named(k piece) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
