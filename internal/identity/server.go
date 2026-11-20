@@ -193,6 +193,7 @@ type Server struct {
 	verified  func(phc []byte)         // a test's view of each hash VerifyPassword verified against; nil in production
 	holds     holds                    // the joins' administrator credentials
 	throttle  *throttle                // the logon failures per name and client address
+	replay    *replayCache             // the Kerberos authenticators seen within the clock skew
 	signIns   *prometheus.CounterVec   // by protocol, mechanism and outcome
 	signInSec *prometheus.HistogramVec // by mechanism
 
@@ -273,6 +274,7 @@ func New(d Deps) (*Server, error) {
 	s.signIns = counter(d.Metrics, signInsSpec)
 	s.signInSec = histogram(d.Metrics, signInSecondsSpec)
 	s.throttle = newThrottle(throttleBound, counter(d.Metrics, evictionsSpec).WithLabelValues())
+	s.replay = newReplayCache(replayBound, replayShare)
 	return s, nil
 }
 
@@ -433,11 +435,11 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 // Stop drops every in-memory table, the applied State, the held join
-// credentials and the logon throttle among them, so a restart needs an Apply
-// before its Start, ends every call to a domain controller in flight, stops
-// the rotation's schedule, closes the node's secure channel, and closes its
-// directory client once the questions running on it return. It closes nothing
-// it was handed.
+// credentials, the logon throttle and the replay cache among them, so a
+// restart needs an Apply before its Start, ends every call to a domain
+// controller in flight, stops the rotation's schedule, closes the node's
+// secure channel, and closes its directory client once the questions running
+// on it return. It closes nothing it was handed.
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -449,6 +451,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 	s.dropHolds()
 	s.throttle.drop()
+	s.replay.drop()
 	s.closeChannel()
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/asn1tools"
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/iana/addrtype"
+	"github.com/jcmturner/gokrb5/v8/iana/adtype"
 	"github.com/jcmturner/gokrb5/v8/iana/asnAppTag"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/iana/keyusage"
@@ -84,10 +85,13 @@ func (r *Realm) Keytab() []byte {
 // TicketOpts is what an AP-REQ carries. Every zero field takes the default
 // its comment names.
 type TicketOpts struct {
-	Client  string // the ticket's client name, components split on "/"; "alice"
-	Service string // the ticket's service name, as written
-	KeyOf   string // the service name whose key encrypts the ticket; Service
-	Etype   int32  // the ticket's encryption type; AES256
+	Client string // the ticket's client name, components split on "/"; "alice"
+	// ClientRealm is the client's realm, in the ticket and the
+	// authenticator; the realm's own name.
+	ClientRealm string
+	Service     string // the ticket's service name, as written
+	KeyOf       string // the service name whose key encrypts the ticket; Service
+	Etype       int32  // the ticket's encryption type; AES256
 	// Key encrypts the ticket instead of the realm's key of KeyOf, so a test
 	// can issue a ticket under a key derived elsewhere; its type is Etype's.
 	Key   []byte
@@ -105,6 +109,10 @@ type TicketOpts struct {
 	Addresses  []netip.Addr
 	NetBIOS    string // a NetBIOS address the ticket lists after Addresses; none
 	Flags      []int  // the ticket flags set, as gokrb5's iana/flags numbers them; none
+	// PAC is the bytes of a PAC the ticket carries, in an AD-WIN2K-PAC
+	// element inside an AD-IF-RELEVANT one, as a domain controller places
+	// it (MS-PAC 3.1.5); none.
+	PAC []byte
 }
 
 // Ticket is an AP-REQ carrying a ticket under o, its authenticator encrypted
@@ -124,6 +132,9 @@ func (r *Realm) Ticket(o TicketOpts) []byte {
 	}
 	if o.Session.KeyType == 0 {
 		o.Session = mustKey(etypeID.AES256_CTS_HMAC_SHA1_96)
+	}
+	if o.ClientRealm == "" {
+		o.ClientRealm = r.Name
 	}
 	if o.AuthClient == "" {
 		o.AuthClient = o.Client
@@ -145,12 +156,19 @@ func (r *Realm) Ticket(o TicketOpts) []byte {
 	etp := messages.EncTicketPart{
 		Flags:     tf,
 		Key:       o.Session,
-		CRealm:    r.Name,
+		CRealm:    o.ClientRealm,
 		CName:     principal(o.Client),
 		AuthTime:  o.Now,
 		StartTime: o.Start,
 		EndTime:   o.End,
 		CAddr:     caddr,
+	}
+	if o.PAC != nil {
+		inner, err := asn1.Marshal(types.AuthorizationData{{ADType: adtype.ADWin2KPAC, ADData: o.PAC}})
+		if err != nil {
+			panic(err)
+		}
+		etp.AuthorizationData = types.AuthorizationData{{ADType: adtype.ADIfRelevant, ADData: inner}}
 	}
 	b, err := asn1.Marshal(etp)
 	if err != nil {
@@ -170,7 +188,7 @@ func (r *Realm) Ticket(o TicketOpts) []byte {
 	tkt := messages.Ticket{TktVNO: 5, Realm: r.Name, SName: principal(o.Service), EncPart: enc}
 	auth := types.Authenticator{
 		AVNO:   5,
-		CRealm: r.Name,
+		CRealm: o.ClientRealm,
 		CName:  principal(o.AuthClient),
 		Cusec:  o.Cusec,
 		CTime:  o.AuthTime,

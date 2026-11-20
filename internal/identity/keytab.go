@@ -72,3 +72,17 @@ func foldASCII(s string) string {
 	}
 	return string(b)
 }
+
+// holdsKeys reports whether st holds any service key, imported or derived.
+func (st *State) holdsKeys() bool { return len(st.keys) > 0 || len(st.machine.keys) > 0 }
+
+// keytabRealm reports whether realm, compared as the KDC spells it, is the
+// realm of a service key st holds.
+func (st *State) keytabRealm(realm string) bool {
+	for k := range st.keys {
+		if k.realm == realm {
+			return true
+		}
+	}
+	return len(st.machine.keys) > 0 && st.machine.realm == realm
+}
