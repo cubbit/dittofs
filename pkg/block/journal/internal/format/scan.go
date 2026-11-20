@@ -162,10 +162,10 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 // wherever they are handed out: by this walk's callers' own body reads, and
 // at open for the newest segment of each stream, whose sync-proven payloads
 // the kinds pass reads once after the walk (recovery/kinds.go); every other
-// segment's stay unread until its reader reaches them. Overturned the day the format rules
-// that the scan itself verifies every live payload at open; until then, a
-// header-only walk that re-read its bodies would pay exactly the body I/O
-// this function exists to skip.
+// segment's stay unread until its reader reaches them. Overturned the day
+// the format rules that the scan itself verifies every live payload at
+// open; until then, a header-only walk that re-read its bodies would pay
+// exactly the body I/O this function exists to skip.
 func ScanSegmentHeaders(r io.ReaderAt, size int64, identity core.JournalID, segment core.SegmentID) (Scan, error) {
 	return scan(r, size, identity, segment, true)
 }
