@@ -305,21 +305,35 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 			// second event only while the piece stays taken — so releasing
 			// it here would let the next open report the same loss record
 			// as new (see the release doc's own rule). A stopped instance
-			// keeps its claim instead: the piece stays taken, but the claim
-			// retires with the instance, and the open that takes it over
-			// learns — the takeover is the word — that the report the dead
-			// ring held answered nothing, so the record is appended again
-			// and the loss republished. Overturned by a caller that appends
-			// the record itself instead of retrying the loss, which would
-			// make the taken piece the dedup that stops a second attempt.
-			// A kept piece is marked unsynced, so the open's pass can tell
-			// it from one a durable record holds and append the record it is
-			// still owed. A piece retaken from an earlier unsynced record
-			// stays held too: that record is still on disk, so a failed
-			// retry frees nothing.
+			// keeps its claim instead, marked unplaced: it owns no record,
+			// so it names nothing and bars no other taker, and the open that
+			// takes it over learns — the takeover is the word — how far a
+			// reader reached the report the dead ring held, so the record is
+			// appended again either way, and the loss republished when
+			// nothing at all answered for it. Overturned by a caller that
+			// appends the record itself instead of retrying the loss, which
+			// would make the taken piece the dedup that stops a second
+			// attempt. A kept piece is marked unsynced, so the open's pass
+			// can tell it from one a durable record holds and append the
+			// record it is still owed. A piece retaken from an earlier
+			// unsynced record stays held too: that record is still on disk,
+			// so a failed retry frees nothing.
+			// decision: a live instance's failed append still releases
+			// under the pre-existing rule, and a loss so released whose
+			// instance then closes with its ring unread surfaces in no
+			// in-process ring until a process restart re-detects the loss:
+			// the branch's own invariant — Reported honoured only while
+			// the reporter is live or served — is knowingly violated in
+			// that corner, and the pre-branch code held the same silence.
+			// The general fix is for the failed-list entries to record the
+			// reporter and its event, so the planner sets Reported from
+			// live-or-served; build it when a loss a live instance failed
+			// to record is ever answered nowhere before the close.
 			if at == (segment.Location{}) && !retaken {
 				if !d.claimsDead() {
 					d.dir.release(k)
+				} else {
+					d.dir.markUnplaced(k, d)
 				}
 			} else {
 				d.dir.holdUnsynced(k)

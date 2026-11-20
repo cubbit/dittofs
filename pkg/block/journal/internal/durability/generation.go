@@ -145,6 +145,13 @@ type claim struct {
 	// placed marks a Place's claim, which names no instance: the record on
 	// disk backs it forever.
 	placed bool
+	// unplaced marks a kept claim whose record never landed: the append
+	// that would own one failed while the instance was already stopping,
+	// so the record is still owed. It names nothing and bars no taker —
+	// the next open plans the piece as unnamed — and serves the takeover
+	// alone: the word that the dead instance published the loss, and the
+	// reach of its ring decides whether the takeover republishes.
+	unplaced bool
 	// ev is the event number the claim's Lose published into its instance's
 	// ring, so it is the claim's word for how far a reader must have
 	// reached for the loss to count as answered. Zero when the loss
@@ -176,7 +183,18 @@ type claim struct {
 // section 3.8 to a restart-only reading.
 func (s *dirState) heldLocked(k piece, d *Durability) bool {
 	c, ok := s.pieces[k]
-	return ok && (c.placed || c.d == d || !c.d.claimsDead() || c.d.claimServed(c.ev))
+	if !ok {
+		return false
+	}
+	// An unplaced claim bars no other taker: the record it names never
+	// landed, so the piece is still owed, and the claim's word is read by
+	// the takeover that follows, never by the hold. The claim's own
+	// instance still holds against its own later Lose, which answers the
+	// zero event its earlier take published.
+	if c.d != d && c.unplaced {
+		return false
+	}
+	return c.placed || !c.d.claimsDead() || c.d.claimServed(c.ev)
 }
 
 // setClaimEvent records that the claim d holds on k published ev into d's
@@ -188,6 +206,19 @@ func (s *dirState) setClaimEvent(k piece, d *Durability, ev uint64) {
 	defer s.mu.Unlock()
 	if c, ok := s.pieces[k]; ok && c.d == d && !c.placed {
 		c.ev = ev
+		s.pieces[k] = c
+	}
+}
+
+// markUnplaced marks the kept claim of d on k as owning no record: the
+// append that would own one failed while the instance was already stopping,
+// so the next open still owes the record. The claim stays — the takeover's
+// word — but names nothing and bars no taker.
+func (s *dirState) markUnplaced(k piece, d *Durability) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.pieces[k]; ok && c.d == d && !c.placed {
+		c.unplaced = true
 		s.pieces[k] = c
 	}
 }
@@ -217,7 +248,12 @@ func (s *dirState) takeoverLocked(k piece, c claim) {
 // any reader reached its loss's event is taken over, for its claim retired
 // with it: the loss it took is this take's to report, and takeover reports
 // the same, so the caller learns the only report the loss had answered
-// nothing. The take also answers whether the claim it overtook held an
+// nothing. An unplaced claim — a kept failed one, whose record never
+// landed, so it bars the take for nobody — is taken over the same way,
+// and its takeover reports the reach of the dead ring alone: a reader
+// that reached the event leaves the suppression its report already
+// carried standing, while the record the claim never owned is still owed.
+// The take also answers whether the claim it overtook held an
 // unsynced record — a debt the caller's own append now pays, so a failure
 // of that append re-holds the piece, never releasing it as though nothing
 // named the loss.
@@ -230,7 +266,11 @@ func (s *dirState) take(k piece, d *Durability) (took, takeover, unsyncedDebt bo
 	c, had := s.pieces[k]
 	_, unsyncedDebt = s.unsynced[k]
 	s.takeoverLocked(k, claim{d: d})
-	return true, had && !c.placed, unsyncedDebt
+	// A claim that reaches the take published its loss unread: only a
+	// kept unplaced claim sits here with its ring still served, and that
+	// one's word is the suppression the caller's Reported already
+	// carries.
+	return true, had && !c.placed && !c.d.claimServed(c.ev), unsyncedDebt
 }
 
 // takePiece takes the piece of the loss record an open's Place found on
@@ -258,22 +298,26 @@ func (s *dirState) takePiece(d *Durability, dropped core.Seq, ext core.Extent) b
 // named reports whether a Lose or a Place of this journal identity took the
 // piece k and still answers for it: a loss whose record landed or is
 // deferred holds its claim while its instance lives or a reader reached
-// its event, and a Place's claim never retires. A claim of an instance
+// its event, and a Place's claim never retires. A kept failed claim — one
+// whose record never landed, marked unplaced — answers for nothing
+// however far its ring was read, for it owns no record at all: the piece
+// is still owed, and the pass plans its record. A claim of an instance
 // that stopped before any reader reached its loss's event answers for
 // nothing — the piece stays taken, but the open's pass plans it as
 // unnamed, and the take that follows takes the claim over and republishes
 // the loss it names. A deferred loss answers the same rule: a deferring
 // instance that stopped unread leaves the copy the registry's deferral
 // still drives — the copy that retires the segment writes its record —
-// while the pass that re-plans the piece appends a record of its own,
-// two records naming one piece, answered once by the next open's
-// placement. The open's pass consults named apart from its own take, to
-// know which losses no record is owed for.
+// while the pass that re-plans the piece appends a record of its own when
+// it holds the reserve, two records naming one piece, answered once by the
+// next open's placement; a re-plan past the reserve defers again, and the
+// registry keeps one entry per piece. The open's pass consults named apart
+// from its own take, to know which losses no record is owed for.
 func (s *dirState) named(k piece) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.pieces[k]
-	return ok && (c.placed || !c.d.claimsDead() || c.d.claimServed(c.ev))
+	return ok && !c.unplaced && (c.placed || !c.d.claimsDead() || c.d.claimServed(c.ev))
 }
 
 // release hands back a piece a live take claimed: the loss record it names

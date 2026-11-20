@@ -111,11 +111,11 @@ func TestTheLossRingLivesPerInstanceAndItsDedupPerDirectory(t *testing.T) {
 // that overtakes the retired claim clears it: the reopen publishes the loss
 // into its own ring, raising nothing, for the dead instance's raise already
 // counted the generation — the Raise the take sets even when the caller
-// brought neither, the re-detected deferral's shape, whose first take
-// raised the piece. The retired claim names nothing — the pass plans
-// the record as unnamed — while a piece whose report a reader took away
-// keeps its suppression: the claim holds as far as the reader reached, and
-// the reported Lose answers the zero event the credit always meant.
+// brought neither, the re-detected deferral's shape, whose first take raised
+// the piece. The kept failed claim names nothing — the pass plans the record
+// as unnamed — while a piece whose report a reader reached keeps its
+// suppression: the takeover does not clear a credit its reader already
+// took, and the pass still appends the record the claim never owned.
 func TestATakeoverOfADeadUnreadClaimRepublishes(t *testing.T) {
 	ctx := context.Background()
 
@@ -198,16 +198,16 @@ func TestATakeoverOfADeadUnreadClaimRepublishes(t *testing.T) {
 		}
 
 		reopen := e.newDurability()
-		if !reopen.Named(l.Seq, l.Extent) {
-			t.Fatalf("Named answers nothing for a claim whose event a reader reached: the report was answered and the piece stays named")
+		if reopen.Named(l.Seq, l.Extent) {
+			t.Fatalf("Named answers a kept failed claim that owns no record: the pass must plan the record the claim still owes however far the ring was read")
 		}
 		l.Reported = true
 		ev, err := reopen.Lose(ctx, l)
-		if err != nil || ev != (core.LossEvent{}) {
-			t.Fatalf("Lose of a served report = %+v, %v, want the zero event and nil: the takeover does not clear a credit its reader already took", ev, err)
+		if err == nil || ev != (core.LossEvent{}) {
+			t.Fatalf("Lose of a served report = %+v, %v, want the zero event over the refused append: the takeover does not clear a credit its reader already took, and the take proceeds so the record the claim owes is still appended", ev, err)
 		}
 		if got := reopen.Stats().Losses; len(got) != 0 {
-			t.Fatalf("the reopen's ring = %+v, want none: a served claim holds the piece and its suppression", got)
+			t.Fatalf("the reopen's ring = %+v, want none: a served report keeps its suppression while the owed record is appended", got)
 		}
 	})
 }
