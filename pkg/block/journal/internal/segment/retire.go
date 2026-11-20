@@ -695,6 +695,15 @@ func (r *Retirer) pass() {
 	// early return buys.
 	if r.cfg.ReadOnly != nil {
 		if err := r.cfg.ReadOnly(); err != nil {
+			// A spare wait parked behind a queued recycle before the switch
+			// is woken here, to read the pool again and see no recycle to
+			// wait for: the switch itself wakes none.
+			r.mu.Lock()
+			queued := len(r.full) > 0
+			r.mu.Unlock()
+			if queued && r.cfg.Pool != nil {
+				r.cfg.Pool.Kick()
+			}
 			return
 		}
 	}
