@@ -112,17 +112,17 @@ func TestStartWritesNoNodeIDCopyBesideAnUnrecordedJournal(t *testing.T) {
 			}
 			replace(t, dev)
 
-			// The engine refuses the device at its own step; only step 1,
-			// which writes the copies, must have run.
-			err := h.Node().Start(t.Context())
-			if err != nil && strings.Contains(err.Error(), "start step refuse:") {
-				t.Fatalf("Start over the replaced device: %v, want step 1 to complete", err)
+			// With no share bound, the engine opens no journal and refuses
+			// nothing, so the start completes: step 1, which writes the
+			// copies, ran to its end.
+			if err := h.Node().Start(t.Context()); err != nil {
+				t.Fatalf("Start over the replaced device: %v, want it to complete", err)
 			}
 			if err := h.Node().Stop(t.Context()); err != nil {
 				t.Fatalf("Stop: %v", err)
 			}
 
-			_, err = os.Stat(filepath.Join(dev, journal.NodeIDFileName))
+			_, err := os.Stat(filepath.Join(dev, journal.NodeIDFileName))
 			if !errors.Is(err, fs.ErrNotExist) {
 				t.Errorf("the node-id copy in the replaced device: stat %v, want none written", err)
 			}
