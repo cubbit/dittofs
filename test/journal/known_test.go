@@ -92,7 +92,6 @@ var testOwner = map[string]string{
 	"TestRFC1B_ReadOnlyStopsTheDrain":          "#3395",
 	"TestRFC1B_RecordsWithoutBytesAtTheLimit":  "#3395",
 	"TestRFC1C_LossSurvivesRestart":            "#4862",
-	"TestRFC1D_MetricsAreReachable":            "#3395",
 	"TestRFC28A_AZeroSlotIsNotTheEnd":          "#3596",
 	"TestRFC28A_FooterIsNotAuthoritative":      "#3395",
 	"TestRFC28C_SyncedDamageIsNotATornTail":    "#4859",
