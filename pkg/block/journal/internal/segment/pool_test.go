@@ -2824,9 +2824,13 @@ func TestPoolCheckAfterAMakeLandsPastStop(t *testing.T) {
 	// answers ErrClosed from that mark on: the landing below is past it.
 	closed := false
 	for range poolAttempts {
-		if _, err := p.Hold(1); errors.Is(err, core.ErrClosed) {
+		hold, err := p.Hold(1)
+		if errors.Is(err, core.ErrClosed) {
 			closed = true
 			break
+		}
+		if err == nil {
+			hold.Close()
 		}
 		runtime.Gosched()
 	}

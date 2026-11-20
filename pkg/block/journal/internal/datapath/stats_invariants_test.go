@@ -576,7 +576,11 @@ func TestRFC1D_StatsCountsAWriteLandingBetweenTheReads(t *testing.T) {
 				t.Fatal("the write never reached beforeAppend")
 			}
 			st := c.Stats()
-			<-done
+			select {
+			case <-done:
+			case <-time.After(backstop):
+				t.Fatalf("the write never finished after Stats returned at %s", point)
+			}
 			if !landed {
 				t.Fatalf("Stats never reached point %s", point)
 			}

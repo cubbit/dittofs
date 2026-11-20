@@ -57,7 +57,8 @@ func TestOldestDirtyMatchesAScan(t *testing.T) {
 // apply publishes the minimum under the list's mutex, so there is no window
 // between computing it and storing it for a test to land a second apply in,
 // and a stale store would show here only by chance. The sequential test above
-// pins every step.
+// pins every step and is the one that fails when the publish is dropped; this
+// one is here to give the race detector concurrent apply calls.
 func TestOldestDirtyQuiescentAfterConcurrentApply(t *testing.T) {
 	const writers, perWriter, rounds = 4, 40, 60
 	base := int64(1_000_000)
