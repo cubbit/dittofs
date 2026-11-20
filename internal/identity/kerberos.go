@@ -301,24 +301,14 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 			return identity.SignInResult{}, outcomeUnavailable, err
 		}
 	}
-	if logon != nil {
-		// decision: a ticket whose PAC verifies and holds logon information
-		// is refused ErrUnavailable, uncounted on the throttle, in every
-		// realm, since nothing yet checks the PAC's user SID against the
-		// record its name maps to (RFC 18 §3.4). Binding it by name would
-		// admit a recreated account under a deleted one's name, and a local
-		// user's or root's SID, in the installation's domain, is one no PAC
-		// carries. Overturned by the PAC's user SID bound to the record.
-		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: kerberos: the PAC's user SID is not bound to a record yet", vfserr.ErrUnavailable)
-	}
-	if st.Directory != nil && strings.EqualFold(enc.CRealm, st.Directory.Realm) {
+	if logon == nil && st.Directory != nil && strings.EqualFold(enc.CRealm, st.Directory.Realm) && st.Directory.PACRequired() {
 		// RFC 18 §3.4: in the directory's realm, its name in any case, a
 		// ticket without a PAC, or whose PAC holds no logon information, is
-		// refused before any mapping, so a domain account cannot reach a
-		// principal by its name alone.
-		return identity.SignInResult{}, outcomeNoPAC, logonFailure("a ticket without a PAC in the directory's realm")
+		// refused before any mapping while the record requires a PAC, so a
+		// domain account cannot reach a principal by its name alone.
+		return identity.SignInResult{}, outcomeNoPAC, logonFailure("no PAC in the directory's realm")
 	}
-	p, err := s.kerberosPrincipal(ctx, st, name, enc.CName, enc.CRealm)
+	p, row, err := s.kerberosPrincipal(ctx, st, name, enc.CName, enc.CRealm)
 	switch {
 	case errors.Is(err, vfserr.ErrUnknownPrincipal):
 		// decision: an unknown user principal is refused, not made anonymous.
@@ -332,7 +322,8 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 	case err != nil:
 		return identity.SignInResult{}, outcomeUnavailable, err
 	}
-	switch _, err := s.Account(ctx, p); {
+	u, err := s.Account(ctx, p)
+	switch {
 	case errors.Is(err, errDisabled):
 		return identity.SignInResult{}, outcomeDisabled, err
 	case errors.Is(err, vfserr.ErrLogonFailure):
@@ -341,6 +332,14 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 		return identity.SignInResult{}, outcomeUnavailable, err
 	}
 	ev := identity.Evidence{Name: name, Principal: p, Expires: enc.EndTime, SIDs: sids, DenyOnly: denyOnly}
+	if logon != nil {
+		switch err := s.bindPAC(ctx, step.Client, u, row, name, logon); {
+		case errors.Is(err, vfserr.ErrLogonFailure):
+			return identity.SignInResult{}, outcomeLogonFailure, err
+		case err != nil:
+			return identity.SignInResult{}, outcomeUnavailable, err
+		}
+	}
 	return identity.SignInResult{
 		Identity: identity.Identity{
 			Proof:      identity.ProofTicket,
@@ -354,48 +353,87 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 
 // kerberosPrincipal maps a ticket's client name, cname in realm and name as
 // user@realm, by RFC 18 §4.2, stopping at the first step that answers: (1)
-// the krb row for name; (2) in a keytab realm other than the directory's,
-// the local user named by the name, compared as user names are, unless it
-// is a directory principal or has no uid; (3) the directory's entry under
-// the name, minted on first sign-in; (4) ErrUnknownPrincipal. A name with a
-// service part matches neither step 2 nor 3, and every realm is compared
-// case and all. A store or directory fault is ErrUnavailable.
-//
-// decision: the directory's realm always skips step 2, as RFC 18 §4.2 has it
-// where a PAC is required, the default: a PAC-less ticket there is how a
-// domain account named like a local user would reach it (§3.4). The
-// directory record carries no require_pac yet, so no deployment can turn the
-// requirement off. Overturned when require_pac is read, which then runs step
-// 2 there while it is false.
-func (s *Server) kerberosPrincipal(ctx context.Context, st *State, name string, cname types.PrincipalName, realm string) (entity.Principal, error) {
+// the krb row for name, reported by row; (2) in a keytab realm, but in the
+// directory's while its record requires a PAC, the local user named by the
+// name, compared as user names are, unless it is a directory principal or
+// has no uid; (3) the directory's entry under the name, minted on first
+// sign-in; (4) ErrUnknownPrincipal. A name with a service part matches
+// neither step 2 nor 3, and every realm is compared case and all. A store or
+// directory fault is ErrUnavailable.
+func (s *Server) kerberosPrincipal(ctx context.Context, st *State, name string, cname types.PrincipalName, realm string) (p entity.Principal, row bool, err error) {
 	user := cname.PrincipalNameString()
 	pr := s.deps.Store.Principals()
-	p, err := pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: name})
+	p, err = pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: name})
 	switch {
 	case err == nil:
-		return p, nil
+		return p, true, nil
 	case !merrs.IsNotFoundError(err):
-		return entity.Principal{}, fmt.Errorf("%w: krb row: %w", vfserr.ErrUnavailable, err)
+		return entity.Principal{}, false, fmt.Errorf("%w: krb row: %w", vfserr.ErrUnavailable, err)
 	case strings.Contains(user, "/"):
-		return entity.Principal{}, vfserr.ErrUnknownPrincipal
+		return entity.Principal{}, false, vfserr.ErrUnknownPrincipal
 	}
-	if st.keytabRealm(realm) && (st.Directory == nil || realm != st.Directory.Realm) {
+	// A PAC-less ticket in the directory's realm is how a domain account
+	// named like a local user would reach it (RFC 18 §3.4), so step 2 runs
+	// there only where a PAC-less ticket is accepted at all.
+	pacRequired := st.Directory != nil && strings.EqualFold(realm, st.Directory.Realm) && st.Directory.PACRequired()
+	if st.keytabRealm(realm) && !pacRequired {
 		p, err := pr.ByName(ctx, entity.PrincipalUser, user)
 		if err == nil {
 			var u entity.User
 			if u, err = pr.User(ctx, p); err == nil && has(u.IDs, entity.SchemeUID) && !has(u.IDs, entity.SchemeDir) {
-				return p, nil
+				return p, false, nil
 			}
 		}
 		if err != nil && !merrs.IsNotFoundError(err) {
-			return entity.Principal{}, fmt.Errorf("%w: local user: %w", vfserr.ErrUnavailable, err)
+			return entity.Principal{}, false, fmt.Errorf("%w: local user: %w", vfserr.ErrUnavailable, err)
 		}
 	}
 	p, err = s.byKerberosName(ctx, st, user, realm, true)
 	if err != nil && !errors.Is(err, vfserr.ErrUnknownPrincipal) && !errors.Is(err, vfserr.ErrUnavailable) {
 		err = fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
 	}
-	return p, err
+	return p, false, err
+}
+
+// bindPAC checks a verified PAC's user SID against u, the record §4.2
+// selected for the ticket's client name: the SID the name's krb row is
+// linked for when step 1 selected it (row), otherwise the record's sid
+// spelling. A record or row holding no SID binds no PAC. A mismatch is
+// ErrLogonFailure and is logged naming the record's principal and the one
+// the store holds under the PAC's SID, if any; a store fault reading that
+// one is ErrUnavailable.
+//
+// decision: the mismatch's log line names both principals by principal ID,
+// never by the ticket's name or the PAC's SID: RFC 25 §5.4 keeps a person's
+// identifiers out of log lines, and a principal ID is an operational one.
+// The PAC's SID held by no principal is logged as none. Overturned when RFC
+// 25's logon stream, whose records may carry names and SIDs, replaces log
+// lines for logon events.
+func (s *Server) bindPAC(ctx context.Context, client netip.Addr, u entity.User, row bool, name string, logon *pac.KerbValidationInfo) error {
+	d := logon.LogonDomainID
+	user := withRID(rpcSID(d.Revision, d.IdentifierAuthority, d.SubAuthority), logon.UserID)
+	want := ""
+	for _, id := range u.IDs {
+		if row && id.Scheme == entity.SchemeKerberos && id.Value == name {
+			want = id.Linked
+		} else if !row && id.Scheme == entity.SchemeSID {
+			want = id.Value
+		}
+	}
+	if want != "" && want == string(sidBytes(user)) {
+		return nil
+	}
+	holder, ok, err := bySID(ctx, s.deps.Store.Principals(), user)
+	if err != nil {
+		return err
+	}
+	other := "none"
+	if ok {
+		other = holder.ID.String()
+	}
+	s.logger.WarnContext(ctx, "identity: a PAC's user SID is not the one its record is bound to",
+		"principal", u.Principal.ID.String(), "pac_principal", other, "client", client.String())
+	return logonFailure("the PAC's user SID is not the record's")
 }
 
 // pacOf is the raw bytes of the PAC a ticket's authorization data carries in

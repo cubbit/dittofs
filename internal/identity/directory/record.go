@@ -52,7 +52,21 @@ type Record struct {
 	// DNS service records.
 	DCAddress string `json:"dc_address" class:"live"`
 	DNSServer string `json:"dns_server" class:"live"`
+	// RequirePAC is whether a Kerberos ticket in Realm must carry a PAC;
+	// read it through PACRequired.
+	//
+	// decision: the field is a pointer, nil reading as true, so a record
+	// with no require_pac row, and one built without the field, requires
+	// the PAC: a missing row read as false would let a PAC-less ticket in
+	// the directory's realm reach a same-named local user, failing open.
+	// Overturned if the settings read ever hands every record its default
+	// whole, which would let a plain bool defaulting to true stand.
+	RequirePAC *bool `json:"require_pac" class:"live"`
 }
+
+// PACRequired reports whether a Kerberos ticket in the record's realm must
+// carry a PAC: true unless RequirePAC is set false.
+func (r Record) PACRequired() bool { return r.RequirePAC == nil || *r.RequirePAC }
 
 // IsAD reports whether the record names an Active Directory, the schema an
 // empty Schema reads as.
