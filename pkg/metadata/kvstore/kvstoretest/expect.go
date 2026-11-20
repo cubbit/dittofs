@@ -2,6 +2,7 @@ package kvstoretest
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -47,7 +48,8 @@ func versionedKinds(t *testing.T, s *kvstore.Store) []versioned {
 				return 0
 			},
 			func(e uint64) error { return cp.DeleteShare(ctx, sh.ID, entity.SnapshotsRefuse, e) }},
-		{"setting",
+		{
+			"setting",
 			func(e uint64) (uint64, error) { return cp.PutSetting(ctx, entity.Setting{Scope: inst, Key: "k"}, e) },
 			func() uint64 {
 				for got, err := range cp.Settings(ctx, inst) {
@@ -56,7 +58,10 @@ func versionedKinds(t *testing.T, s *kvstore.Store) []versioned {
 				}
 				return 0
 			},
-			nil},
+			func(e uint64) error {
+				return cp.DeleteSetting(ctx, inst, "k", e)
+			},
+		},
 		{"netgroup",
 			func(e uint64) (uint64, error) { return cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab"}, e) },
 			func() uint64 { return netgroupVersion(t, s, "lab") },
@@ -177,12 +182,14 @@ func testExpectRace(t *testing.T, kvo Opener) {
 	}
 }
 
-// A user or group deleted and created again under the same principal takes a
-// generation it never had, so a write from a read of the deleted record is
+// A user, group or setting deleted and created again under the same key takes
+// a generation it never had, so a write from a read of the deleted record is
 // refused rather than applied to the new one.
 func testRecreatedPrincipalRefusesOldGeneration(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
-	for _, k := range versionedKinds(t, s)[:2] {
+	for _, k := range slices.DeleteFunc(versionedKinds(t, s), func(k versioned) bool {
+		return k.name != "user" && k.name != "group" && k.name != "setting"
+	}) {
 		t.Run(k.name, func(t *testing.T) {
 			must(t, errOf(k.put(0)))
 			deleted := k.gen()
@@ -196,8 +203,8 @@ func testRecreatedPrincipalRefusesOldGeneration(t *testing.T, kvo Opener) {
 	}
 }
 
-// A grant's delete and a share's setting name the share, and are stale once
-// it is being removed.
+// A grant's delete and a share's setting, written or deleted, name the
+// share, and are stale once it is being removed.
 func testWritesToRemovedShare(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
@@ -206,11 +213,24 @@ func testWritesToRemovedShare(t *testing.T, kvo Opener) {
 	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0)))
 	v := grantVersion(t, cp, sh.ID, u.Principal)
+
+	scope := entity.SettingScope{Kind: entity.ScopeShare, ID: sh.ID}
+
+	sg, err := cp.PutSetting(ctx, entity.Setting{Scope: scope, Key: "k"}, 0)
+	if err != nil {
+		t.Fatalf("setting put while the share lives: %v", err)
+	}
+
 	must(t, cp.DeleteShare(ctx, sh.ID, entity.SnapshotsRefuse, 1))
+
 	if err := cp.DeleteGrant(ctx, sh.ID, u.Principal, v); !errors.Is(err, entity.ErrStale) {
 		t.Errorf("grant deleted on a share being removed: %v, want %v", err, entity.ErrStale)
 	}
-	scope := entity.SettingScope{Kind: entity.ScopeShare, ID: sh.ID}
+
+	if err := cp.DeleteSetting(ctx, scope, "k", sg); !errors.Is(err, entity.ErrStale) {
+		t.Errorf("setting deleted on a share being removed: %v, want %v", err, entity.ErrStale)
+	}
+
 	if _, err := cp.PutSetting(ctx, entity.Setting{Scope: scope, Key: "k"}, 0); !errors.Is(err, entity.ErrStale) {
 		t.Errorf("setting put on a share being removed: %v, want %v", err, entity.ErrStale)
 	}

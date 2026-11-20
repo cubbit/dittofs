@@ -2,7 +2,6 @@ package kvstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"iter"
 
@@ -10,6 +9,7 @@ import (
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/settings"
 )
 
 // Netgroups lists netgroups in name order, resuming after the name after.
@@ -97,10 +97,30 @@ func (c ControlPlane) Settings(ctx context.Context, scope entity.SettingScope) i
 	})
 }
 
+// raiseCfgGen raises the one settings generation every write of a setting or
+// a secret moves in its own transaction, and every node polls to re-read
+// settings, so each such write costs every node one reconcile walk.
+//
+// ponytail: one generation for every settings and secret write. This helper
+// serves the setting writes: the secret write, the principal removal and the
+// share removal raise the counter directly until the secrets work unifies
+// them. Upgrade to a generation per section, or secrets off CFGGEN with
+// their own counter, when the commit rate of the secret-write benchmark
+// under this contention falls under half the rate of the same run without
+// the raise.
+func raiseCfgGen(tx kv.Txn) (uint64, error) {
+	return raise(tx, cfgGenKey)
+}
+
 // PutSetting writes one setting, the generation expect names or zero for a
 // new one, raising its generation and the settings generation every node
 // polls, in one transaction. A share's setting is refused while the share is
-// being removed, and once it is gone.
+// being removed, and once it is gone. A row of a schema above the binary's
+// registered one is refused whole, its stored row and the settings generation
+// unchanged, since a record this store wrote would be a record every node of
+// this binary's version refuses whole (RFC 13 §2.3). The generation never
+// repeats a value a removed row already held, or a writer that read the row
+// before its removal matches the tag back and overwrites the new row.
 func (c ControlPlane) PutSetting(ctx context.Context, s entity.Setting, expect uint64) (uint64, error) {
 	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutSetting(s, expect) })
 }
@@ -108,6 +128,10 @@ func (c ControlPlane) PutSetting(ctx context.Context, s entity.Setting, expect u
 func (c controlTx) PutSetting(s entity.Setting, expect uint64) (uint64, error) {
 	if s.Scope.Kind.String() == "" || (s.Scope.Kind == entity.ScopeInstallation) != (s.Scope.ID == [16]byte{}) || s.Key == "" {
 		return 0, merrs.NewInvalidArgumentError("a setting needs a key and a scope, with an ID below installation scope")
+	}
+
+	if s.Schema > settings.Versions()[entity.FormatSettings].Max {
+		return 0, fmt.Errorf("put setting %s: %w", s.Key, settings.ErrNewerSchema)
 	}
 	if s.Scope.Kind == entity.ScopeShare {
 		if err := liveShare(c.tx, entity.ShareID(s.Scope.ID)); err != nil {
@@ -128,36 +152,71 @@ func (c controlTx) PutSetting(s entity.Setting, expect uint64) (uint64, error) {
 	if err := expected(old.Generation, expect); err != nil {
 		return 0, err
 	}
-	s.Generation = old.Generation + 1
-	if s.Position, err = raise(c.tx, cfgGenKey); err != nil {
+
+	if s.Position, err = raiseCfgGen(c.tx); err != nil {
 		return 0, err
 	}
+
+	// Position, the settings generation this write raises, never repeats, so
+	// a row created again after a delete never hands out a generation a
+	// writer before the delete already holds.
+	s.Generation = max(old.Generation+1, s.Position)
+
 	return s.Generation, c.tx.Set(key, encodeSetting(s))
 }
 
 // DeleteSetting removes the setting at scope whose generation expect names,
 // so the wider scope's value is effective, raising the settings generation
-// as a put does.
+// as a put does. A key or scope a put refuses is refused the same. A
+// share's setting is refused while the share is being removed, and once it
+// is gone, as its put is. Deleting one that is not there, expect zero,
+// changes nothing: an absent row has no tag, so any other expect names a tag
+// that is not there, and no write moved for any node to re-read.
 func (c ControlPlane) DeleteSetting(
 	ctx context.Context,
 	scope entity.SettingScope,
 	key string,
 	expect uint64,
 ) error {
-	return unbuilt("DeleteSetting", 3)
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error {
+		return tx.DeleteSetting(scope, key, expect)
+	})
 }
 
 func (c controlTx) DeleteSetting(scope entity.SettingScope, key string, expect uint64) error {
-	return unbuilt("DeleteSetting", 3)
-}
+	if scope.Kind.String() == "" || (scope.Kind == entity.ScopeInstallation) != (scope.ID == [16]byte{}) || key == "" {
+		return merrs.NewInvalidArgumentError("a setting needs a key and a scope, with an ID below installation scope")
+	}
 
-// unbuilt is the error of a method whose body is not built yet; the message
-// names the work that fills it.
-func unbuilt(method string, epic int) error {
-	return fmt.Errorf(
-		"kvstore: %s is filled by configuration epic %d: %w",
-		method,
-		epic,
-		errors.ErrUnsupported,
-	)
+	if scope.Kind == entity.ScopeShare {
+		if err := liveShare(c.tx, entity.ShareID(scope.ID)); err != nil {
+			return err
+		}
+	}
+
+	k := settingKey(scope, key)
+
+	b, ok, err := get(c.tx, k)
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		return expected(0, expect)
+	}
+
+	old, err := decodeSetting(scope, key, b)
+	if err != nil {
+		return err
+	}
+
+	if err := expected(old.Generation, expect); err != nil {
+		return err
+	}
+
+	if _, err := raiseCfgGen(c.tx); err != nil {
+		return err
+	}
+
+	return c.tx.Delete(k)
 }
