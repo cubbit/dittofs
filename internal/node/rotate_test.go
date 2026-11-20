@@ -274,10 +274,10 @@ func TestRotationRefusesAnotherTarget(t *testing.T) {
 			h.Node().RunnerTurn(t.Context())
 			got := operation(t, h, op.ID)
 			if want := fmt.Sprintf("%x", tc.target.ID); got.State != entity.OpFailed || !strings.Contains(string(got.Error), want) {
-				t.Errorf("rotation of %s: state %v, error %s; want failed, naming %s", tc.target, got.State, got.Error, want)
+				t.Errorf("rotation of %s: state %v, error %s; want failed, naming %s", tc.name, got.State, got.Error, want)
 			}
 			if cur, _ := held(t, h, in.SigningKey, 1); cur != 1 {
-				t.Errorf("signing key after the rotation of %s: current version %d, want 1", tc.target, cur)
+				t.Errorf("signing key after the rotation of %s: current version %d, want 1", tc.name, cur)
 			}
 		})
 	}
