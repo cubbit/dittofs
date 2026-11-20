@@ -69,11 +69,12 @@ S2 for `Spell`, `Find` and resolution (S6a), its E5 for Kerberos (S6b); RFC 17's
 `feat/storage-v2`, with its plan's piece 13, the held clone wait, reaching the branch with the next
 sync (#4239); RFC 13's settings (#4059).
 
-**RFC amendments, agreed** (§6.1): A1 to A3 in #5166, A4 in #5196. A1, RFC 20's compound
-runner asking a `READ`'s hook again just before it runs (#5090 1.4); A2, an RFC 17 call marking a back channel down, and `Connect` clearing it (#5090 1.5); A3, RFC 17's
-admission exempting NLM's lock calls, `MNT` and `EXPORT` from the minimums by `Call.Protocol` and
-entry method (#5090 2.3); A4, RFC 20 §2.5 placing the folders §4.1 builds beyond it, and NFS v3,
-MOUNT, NLM and NSM served as one unit. The cookie verifier needs none (D16).
+**RFC amendments, agreed** (§6.1): A1 to A3 in #5166, A4 in #5196. A1, RFC 20's compound runner
+asking a `READ`'s hook again just before it runs (#5090 1.4); A2, an RFC 17 call marking a back
+channel down, and `Connect` clearing it (#5090 1.5); A3, RFC 17's admission exempting NLM's lock
+calls, `MNT` and `EXPORT` from the minimums by `Call.Protocol` and entry method (#5090 2.3); A4, RFC
+20 §2.5 placing the folders §4.1 builds beyond it, and NFS v3, MOUNT, NLM and NSM served as one
+unit. The cookie verifier needs none (D16).
 **Pending Marco:** who records RFC 21 §14's six `nfs_*` series and RFC 21 §11.7's three
 `adapter_*` series NFS alone produces (§6.1, point 4; #5090 (a)).
 **Settled with the user:** D10, D11 and D12 (§4.2), and the layout (§4.1), which RFC 20 §2.5
