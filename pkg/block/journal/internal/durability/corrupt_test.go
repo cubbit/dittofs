@@ -678,12 +678,15 @@ func TestCorruptRecordInPendingWindowMarksFile(t *testing.T) {
 	f, g := fw.c.File, gw.c.File
 
 	cr.corrupt(t, fw.c)
-	// The worker is still parked: the report comes from Corrupt's mark.
+	// The worker is still parked: the report comes from Corrupt's mark, and
+	// the failure it owes is answered without waiting the parked job's
+	// record out — a failure ends the call as it always did.
 	wantSyncError(t, mustReturn(t, "first Sync", cr.syncAsync(context.Background(), f)), fw.loc.Segment, f)
-	cr.wantNilSync(t, f)
 
 	release()
 	cr.awaitResolved(t)
+	// The corrupt job's record has landed: the later Sync answers nil, the
+	// window's report told once and never marked again.
 	cr.wantNilSync(t, f)
 	wantSyncError(t, mustReturn(t, "Sync of g", cr.syncAsync(context.Background(), g)), gw.loc.Segment, g)
 
@@ -944,8 +947,11 @@ func TestCorruptAfterWorkerFailedRecordDoesNothing(t *testing.T) {
 }
 
 // TestCorruptAppendsNothingAndReturnsBeforeSeal covers the read's side: with
-// every write held at the seam, Corrupt returns, the generation is up, and a
-// Sync of the file returns, while the loss record waits for the worker.
+// every write held at the seam, Corrupt returns before the seal, the
+// generation is up, and the worker's loss-record append is the one write the
+// hold parks. The Sync that names the file waits that queued job out — its
+// durable answer covers the corrupt read's debt — so it returns only once
+// the hold lets the worker append and sync the loss record.
 func TestCorruptAppendsNothingAndReturnsBeforeSeal(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	cr := newCorruptRig(t, nil)
@@ -966,13 +972,15 @@ func TestCorruptAppendsNothingAndReturnsBeforeSeal(t *testing.T) {
 	if got := cr.d.Generation(); got != before+1 {
 		t.Fatalf("the generation is %d when Corrupt returned, want %d", got, before+1)
 	}
-	if err := mustReturn(t, "Sync", cr.syncAsync(context.Background(), f)); err != nil {
-		t.Fatalf("Sync = %v while the worker is held", err)
+	syncing := cr.syncAsync(context.Background(), f)
+	mustBlock(t, "Sync", syncing)
+	hold.Release()
+	if err := mustReturn(t, "Sync", syncing); err != nil {
+		t.Fatalf("Sync = %v once the loss record was appended and synced", err)
 	}
 	if got := cr.seam.Calls(kit.OpWrite); got > writes+1 {
 		t.Fatalf("%d writes reached the seam, want at most the worker's one", got-writes)
 	}
-	hold.Release()
 	cr.awaitRecord(t, w.c.Seq)
 }
 

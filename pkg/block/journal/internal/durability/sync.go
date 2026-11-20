@@ -705,6 +705,13 @@ type stream struct {
 
 	// corrupt are the corrupt records' losses Corrupt handed to the worker.
 	corrupt []corruptJob
+	// corruptFiles counts, per file, the corrupt jobs queued or running on
+	// this stream whose loss records are not appended and synced yet. A
+	// Sync naming the file waits the count out, so its durable answer covers
+	// the drops the reads of a caller's goroutine already handed over. A
+	// job's count leaves its file once the job's Lose returned, its append
+	// and sync inside, and the waiter wakes on the notify that step makes.
+	corruptFiles map[core.FileID]int
 	// owed holds, per failed segment whose window is not taken yet, the files
 	// Corrupt took a record of out of the ledger: the window takeWindow makes
 	// for the segment marks them, so they are told as if it had failed them.
@@ -741,17 +748,18 @@ type stream struct {
 
 func newStream(d *Durability, no uint32) *stream {
 	return &stream{
-		d:       d,
-		no:      no,
-		live:    map[core.SegmentID]struct{}{},
-		synced:  map[core.SegmentID]int64{},
-		failed:  map[core.SegmentID]error{},
-		ending:  map[core.SegmentID]struct{}{},
-		counted: map[core.SegmentID]struct{}{},
-		lost:    map[segment.Location]lostRecord{},
-		moved:   map[segment.Location]segment.Location{},
-		kick:    make(chan struct{}, 1),
-		buckets: make([]atomic.Uint64, len(SyncDurationBounds)+1),
+		d:            d,
+		no:           no,
+		live:         map[core.SegmentID]struct{}{},
+		synced:       map[core.SegmentID]int64{},
+		failed:       map[core.SegmentID]error{},
+		ending:       map[core.SegmentID]struct{}{},
+		counted:      map[core.SegmentID]struct{}{},
+		lost:         map[segment.Location]lostRecord{},
+		moved:        map[segment.Location]segment.Location{},
+		corruptFiles: map[core.FileID]int{},
+		kick:         make(chan struct{}, 1),
+		buckets:      make([]atomic.Uint64, len(SyncDurationBounds)+1),
 	}
 }
 
@@ -1273,6 +1281,14 @@ func (st *stream) inWindowLocked(loc segment.Location) bool {
 // holds the append domain of none of the files it names: it would wait on the
 // worker while the worker waits on it, and every other file of the stream
 // would stop completing too.
+//
+// The wait also covers the corrupt jobs a read of a named file queued before
+// the call: the worker appends and syncs each job's loss records inside the
+// job, so the durability the call waits out includes the loss records owed
+// for the drops those reads already made — a fresh process would owe them
+// at its open, and a caller that crashed between the read and this call
+// loses the record to the crash. The wait parks on the pending-job count
+// alone; it issues no sync of its own for it.
 //
 // Syncs are issued by the stream's worker, never by the caller's goroutine,
 // so a cancelled caller is not stuck in the syscall.
@@ -1819,6 +1835,14 @@ func (st *stream) check(ids []core.FileID, targets []target, cs []cand, failFast
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.resolveCandsLocked(cs)
+	// A corrupt job still owed for a named file parks the call: the worker
+	// appends and syncs the loss records the job owes inside it, so the
+	// durable answer may not run ahead of the drops this call's files'
+	// reads already queued. The wait leads no sync of its own — the job's
+	// record syncs on the worker that runs it, never by the waiter.
+	if st.owesCorruptLocked(ids) {
+		pending = true
+	}
 	var owed *owedFailure
 	if failFast {
 		owed = st.takeMarksLocked(ids)
