@@ -289,6 +289,21 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 	}
 	unlock()
 
+	// The counters move here, on the caller's goroutine, so a Stats call after
+	// Corrupt returns counts the loss the generation was raised for, without
+	// waiting for the worker to record it. The worker's Lose counts nothing
+	// for a loss marked Counted.
+	d.lmu.Lock()
+	for i := range job.losses {
+		if job.losses[i].Offloaded {
+			d.corruptRepairable++
+		} else {
+			d.corruptDataLoss++
+		}
+		job.losses[i].Counted = true
+	}
+	d.lmu.Unlock()
+
 	d.queueCorrupt(st, job)
 	return dropped
 }

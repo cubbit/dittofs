@@ -238,6 +238,26 @@ func TestCorruptDirtyVsOffloaded(t *testing.T) {
 	}
 }
 
+// TestCorruptCountsTheLossWhenCorruptReturns covers the counters' share of the
+// loss invariant: a Stats call that follows Corrupt, with the worker not yet
+// having recorded the loss, already counts the dropped dirty extent.
+func TestCorruptCountsTheLossWhenCorruptReturns(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr := newCorruptRig(t, nil)
+	w := cr.write(t, file(1), 0, "aaaa")
+	before := cr.d.Generation()
+
+	cr.corrupt(t, w.c)
+
+	if got := cr.d.Generation(); got != before+1 {
+		t.Fatalf("the generation is %d when Corrupt returned, want %d", got, before+1)
+	}
+	p := cr.d.Stats()
+	if p.CorruptDataLoss != 1 || p.CorruptRepairable != 0 {
+		t.Fatalf("counters = %d data loss, %d repairable right after Corrupt, want 1 and 0", p.CorruptDataLoss, p.CorruptRepairable)
+	}
+}
+
 // TestCorruptNeighbourStillReads covers confinement: another record of the
 // same segment is untouched.
 func TestCorruptNeighbourStillReads(t *testing.T) {
