@@ -1921,7 +1921,7 @@ func TestACorruptReadOfAMovedPlaceIsNotCountedDamagedThroughUseCopy(t *testing.T
 	if err != nil || out.Kind != CorruptUseCopy || out.Copy != r.orig {
 		t.Fatalf("Corrupt = %+v, %v, want UseCopy at %+v", out, err, r.orig)
 	}
-	if n, rows := cr.d.damagedReport(); n != 0 || len(rows) != 0 {
+	if n, rows := cr.d.DamagedReport(); n != 0 || len(rows) != 0 {
 		t.Errorf("damaged = %d, %+v, want no segment counted damaged for a moved place", n, rows)
 	}
 }

@@ -478,6 +478,20 @@ type Durability struct {
 	done chan struct{}
 	stop sync.Once
 	wg   sync.WaitGroup
+
+	// dead marks an instance whose unread piece claims die: set as Stop
+	// begins, before the workers join, for past that point no reader can
+	// reach the ring any more. A claim one of its Loses took in the
+	// registry's pieces then answered nothing — unless the served flag below
+	// says a reader had already taken its events away — so a later open of
+	// the journal takes the piece over and re-reports the loss it named.
+	dead atomic.Bool
+
+	// served says a reader took a non-empty copy of this instance's ring
+	// away before it stopped: the losses it held were answered, and the
+	// claims their pieces hold survive the instance, for a re-report could
+	// only duplicate what that reader received.
+	served atomic.Bool
 }
 
 // New returns a Durability. A nil Clock, Domains, Index, Counters or MarkLoss is a
@@ -977,8 +991,14 @@ func (d *Durability) pushRingLocked(ev core.LossEvent) core.LossEvent {
 }
 
 // lossesLocked returns a copy of this instance's ring, oldest first, the
-// caller holding lmu.
+// caller holding lmu. A read that takes events away marks the instance's
+// ring served: the losses it held were answered, so the piece claims its
+// Loses hold in the registry's pieces survive the instance. A read of an
+// empty ring serves nothing, and the claims stay mortal.
 func (d *Durability) lossesLocked() []core.LossEvent {
+	if d.count > 0 {
+		d.served.Store(true)
+	}
 	out := make([]core.LossEvent, d.count)
 	for i := range out {
 		out[i] = d.ring[(d.head+i)%core.LossRingSize]
@@ -1043,7 +1063,7 @@ func (d *Durability) Stats() Part {
 	p.StaleExtents = d.stale
 	p.SupersededExtents = d.superseded
 	d.lmu.Unlock()
-	p.DamagedSegments, p.Segments = d.damagedReport()
+	p.DamagedSegments, p.Segments = d.DamagedReport()
 	return p
 }
 
@@ -1052,6 +1072,16 @@ func (d *Durability) Stats() Part {
 // when Stop returns. A second call is a no-op.
 func (d *Durability) Stop() {
 	d.stop.Do(func() {
+		// The instance's unread claims in the registry's pieces die here,
+		// whatever the caller's kind of close — a clean journal Close
+		// drains into this Stop, and so does the crash fixture's close of
+		// a dead journal — for past this point no reader reaches the ring
+		// they went to. A reader that already took its events away was
+		// answered by them, and the claims of the reads it served stay;
+		// the queued Corrupt losses the drain below takes carry claims
+		// born dead when no reader saw them, and a later open takes those
+		// pieces over, which is what its own fresh ring is for.
+		d.dead.Store(true)
 		d.mu.Lock()
 		d.stopped = true
 		d.mu.Unlock()
@@ -1073,6 +1103,15 @@ func (d *Durability) Stop() {
 	})
 	d.wg.Wait()
 }
+
+// claimsDead reports whether this instance has begun stopping, so no reader
+// reaches its ring from this point on.
+func (d *Durability) claimsDead() bool { return d.dead.Load() }
+
+// ringServed reports whether a reader took this instance's events away from
+// its ring while it ran: the losses they name were answered, so the piece
+// claims its Loses hold survive the instance.
+func (d *Durability) ringServed() bool { return d.served.Load() }
 
 // target is the last unsynced record of one file in one segment of a stream.
 // seq is the record's sequence number, which a re-append keeps, so the marks a

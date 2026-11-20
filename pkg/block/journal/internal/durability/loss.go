@@ -131,18 +131,28 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	}
 
 	// The piece is taken in the directory's state, shared with every other
-	// Durability on it: one already named by an earlier open's Lose or Place
-	// is reported by whichever call took it, never again.
+	// Durability on it: one already named by a Place, or by the Lose of this
+	// instance, of one still live, or of one whose ring a reader was
+	// served, is reported by whichever call took it, never again. The Lose
+	// of an instance stopped with its ring unread died with it, and this
+	// take takes the piece over, so the loss is reported here as this
+	// instance's.
 	//
 	// A reported loss takes back a piece a placed but unsynced record holds:
 	// the take stopped its second event, not the record it is still owed.
 	k := piece{l.Seq, l.Extent}
+	// retaken says the piece stays held whatever this call's append does:
+	// the unsynced record whose debt this append pays held it, and a
+	// failure of the append hands that debt back, never releasing the
+	// piece as though nothing named the loss.
 	retaken := false
-	if !d.dir.take(k) {
+	if took, debt := d.dir.take(k, d); !took {
 		if !l.Reported || !d.dir.retakeUnsynced(k) {
 			return core.LossEvent{}, nil
 		}
 		retaken = true
+	} else {
+		retaken = debt
 	}
 
 	var at segment.Location
@@ -429,15 +439,19 @@ func (d *Durability) EndDeferral(seg core.SegmentID, l Loss) bool {
 // Place publishes ev, a loss record found at open, for the dropped record
 // seq, to this instance's ring. It appends nothing, raises nothing and
 // counts nothing: the counters are of drops this run made, and the record
-// is already on disk. A piece (seq and ev.Extent) already taken by a Lose
-// or a Place of the same journal identity — through whichever Durability, the previous
-// open's included — publishes nothing, so a later open does not report the
-// same loss record as new, while another piece of the same record is
-// placed on its own; the piece is the directory's, the published events
-// this ring's, which the later open starts empty. The event's Synced is
-// kept as the caller set it.
+// is already on disk. A piece (seq and ev.Extent) already taken — by a
+// Place of whichever open, by the Lose of this instance, of a still live
+// one, or of one whose ring a reader was served, all of which answer for
+// the piece — publishes nothing, so a later open does not report the same
+// loss record as new, while another piece of the same record is placed on
+// its own. The Lose of an instance stopped with its ring unread died with
+// it, and the Place takes the piece over: the record the disk names is
+// published here, into this instance's own fresh ring, as found at open —
+// the ruling that makes the found-at-open ring serve a reopen in one
+// process — after which the Place claim that replaced it answers every
+// later open. The event's Synced is kept as the caller set it.
 func (d *Durability) Place(ev core.LossEvent, dropped core.Seq) {
-	if !d.dir.takePiece(dropped, ev.Extent) {
+	if !d.dir.takePiece(d, dropped, ev.Extent) {
 		return
 	}
 	ev.AtOpen = true

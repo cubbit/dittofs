@@ -360,14 +360,6 @@
   issue: '#3395'
   message: 'segment 3 was not sealed once idle within 2s'
 
-- test: TestRFC1C_LossSurvivesRestart
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens and reads the loss record back from disk, but an in-process reopen places it into no ring: the piece it names was taken by the running journal that appended the record, and the registry answers it named. Needs the ruling on RFC 1 3.8: whether the found-at-open ring serves an in-process reopen, or only a restart, which wipes the registry. The ruling and the reopen half (R72) are owed by #4862.'
-  issue: '#4862'
-  message: '0 loss events after the reopen, want the one found at open'
-
 - test: TestRFC1C_Monotonicity
   status: fail
   fix: planned
