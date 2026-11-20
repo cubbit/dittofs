@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"iter"
 	"net/http"
 	"net/url"
@@ -24,6 +25,22 @@ func (c *Client) CreateShare(ctx context.Context, s apiv1.NewShare) (Tagged[apiv
 // ExportPolicies is each share's export policy, named by the share's ID.
 func (c *Client) ExportPolicies() Singleton[apiv1.ExportPolicySpec] {
 	return Singleton[apiv1.ExportPolicySpec]{c: c, path: "/api/v1/shares", sub: "/export-policy"}
+}
+
+// InstallationAction runs verb on the installation, POST
+// /api/v1/installation:verb, with body, nil for none, and returns the
+// operation it started. join-domain refuses an Idempotency-Key, so it is
+// called with WithoutIdempotencyKey.
+func (c *Client) InstallationAction(ctx context.Context, verb string, body any, opts ...CallOption) (*apiv1.Operation, error) {
+	rp, err := c.write(ctx, http.MethodPost, "/api/v1/installation:"+verb, body, "", opts)
+	if err != nil {
+		return nil, err
+	}
+	op, err := accepted(rp)
+	if op == nil && err == nil {
+		err = fmt.Errorf("installation:%s answered %d, not an operation", verb, rp.status)
+	}
+	return op, err
 }
 
 // Users is the users. A delete starts an operation, and so does a create,

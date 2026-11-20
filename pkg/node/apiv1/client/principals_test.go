@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -218,4 +219,24 @@ func userResult(res any, err error) (userWrite, error) {
 		return userWrite{Resource: &r}, err
 	}
 	return userWrite{}, fmt.Errorf("a user write returned %T", res)
+}
+
+// InstallationAction reaches the installation's actions: resolve-principal
+// naming nothing, and join-domain of no mode sent with no Idempotency-Key as
+// it requires, each answer 400 naming its field.
+func TestInstallationAction(t *testing.T) {
+	s := serve(t, admin())
+	c := dial(t, s.url, newClock())
+	join := map[string]any{"spec": map[string]any{"mode": "sideways"}, "credential": map[string]any{"password": "cHc="}}
+	for _, tc := range []struct {
+		verb, field string
+		body        any
+		opts        []client.CallOption
+	}{{"resolve-principal", "name", map[string]any{}, nil}, {"join-domain", "spec.mode", join, []client.CallOption{client.WithoutIdempotencyKey()}}} {
+		op, err := c.InstallationAction(t.Context(), tc.verb, tc.body, tc.opts...)
+		var p *apiv1.Problem
+		if !errors.As(err, &p) || p.Status != http.StatusBadRequest || p.Field != tc.field {
+			t.Errorf("InstallationAction(%s): operation %+v err %v, want 400 naming %s", tc.verb, op, err, tc.field)
+		}
+	}
 }
