@@ -929,6 +929,8 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    3 bits and the low 5 bits of the shard's grace instance the stateid was
    minted under (§5.4) in its high 5 bits; bytes 1–3 the shard number, big-endian; bytes 4–11 the
    record's 64 random bits. Nothing else fits without giving up random bits.
+   A layout, which [RFC 14 §2.6](rfc-14-open-state.md#2.6%20Layout) reserves,
+   takes a tag when it is built.
 
    **A miss says whether state was lost.** The adapter passes the grace-instance
    bits with the lookup, and a stateid whose index entry is gone is answered
@@ -2583,7 +2585,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrDeletePending` | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrState` (`OldState`) — a stateid seqid older than the state's ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) | `NFS4ERR_OLD_STATEID` | — |
 | `ErrPastEnd` — a `SEEK` from an offset at or past the file's end (RFC 7862 §15.11.3) | `NFS4ERR_NXIO` | — (NFSv3 has no `SEEK`) |
-| `ErrUnknownPrincipal`: a `who`, `owner` or `owner_group` a set names that no principal holds | `NFS4ERR_BADOWNER` (§11.3, [RFC 18 §4.5](rfc-18-identity.md#4.5%20NFSv4%20owner%20strings)); a principal `Spell` cannot spell is never an error, and is shown as §11.3 and RFC 18 §4.5 say | not set yet: RFC 21's plan sets the NFSv3 status of a `sattr3` naming a `uid` or `gid` no principal holds ([RFC 18 §4.3](rfc-18-identity.md#4.3%20uid%20and%20gid) covers only a credential's uid and gids and a principal `Spell` cannot spell, shown as 65534); NLM never names an owner |
+| `ErrUnknownPrincipal`: a `who`, `owner` or `owner_group` a set names that no principal holds | `NFS4ERR_BADOWNER` (§11.3, [RFC 18 §4.5](rfc-18-identity.md#4.5%20NFSv4%20owner%20strings)); a principal `Spell` cannot spell is never an error, and is shown as §11.3 and RFC 18 §4.5 say | `NFS3ERR_INVAL` for a `sattr3` naming a `uid` or `gid` no principal holds, since NFSv3 has no `BADOWNER` (RFC 21's plan, D4; [RFC 18 §4.3](rfc-18-identity.md#4.3%20uid%20and%20gid) covers only a credential's uid and gids and a principal `Spell` cannot spell, shown as 65534); NLM never names an owner |
 | `ErrLogonFailure` | never met by an operation: only an `RPCSEC_GSS` context's creation signs in (§10, §11.1), and it runs no operation; the fault, `NFS4ERR_SERVERFAULT`, should one arrive | likewise: `NFS3ERR_SERVERFAULT`; NLM: `SYSTEM_ERR` |
 | `ErrState` (`AdapterVersion`) | never met: a node writes only an `Adapter` version every node of the installation reads ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); the fault, as for `ErrLogonFailure` | as `ErrLogonFailure` |
 | `ErrState` (`NoRecall`) | never met: it answers an acknowledgement, with no recall in flight, of a grant that covers opens, a lease or an oplock ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)); a delegation covers none, so an unasked `DELEGRETURN` is a return; the fault, as for `ErrLogonFailure` | as `ErrLogonFailure` |
