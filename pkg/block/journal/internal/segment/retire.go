@@ -153,6 +153,9 @@ type Retirer struct {
 	stop       sync.Once
 	wg         sync.WaitGroup
 	retryEvery time.Duration // the ticker of the retry pass; a test shortens it
+	// passHook is the instance's test hook, run by the worker at the end of
+	// every pass; nil in production.
+	passHook func()
 }
 
 // NewRetirer returns the executor over c's dependencies. A nil Set, Cache,
@@ -695,6 +698,9 @@ func (r *Retirer) worker() {
 // the rest — the queue as a whole is dropped at Stop, and the part the pass
 // still owed is no different.
 func (r *Retirer) pass() {
+	if r.passHook != nil {
+		defer r.passHook()
+	}
 	// This check is a shortcut, not the gate: R89's gate itself is the one at
 	// the start of Retire, which every queued id below passes through, and
 	// whose refusal leaves the id right where the pass put it back. Skipping
@@ -745,6 +751,13 @@ func (r *Retirer) pass() {
 			// re-hands every not-held segment at the next open.
 			break
 		}
+		// decision: the skip is best-effort. A direct Retire that completes
+		// between the listed read above and the ClaimRetirement below still
+		// leaves this pass one ErrNotInSet, counted as a double retire; only
+		// one side retires and the storage moves once, so the count is the
+		// whole cost. Closing the window would mean holding mu across a ledger
+		// call, which the leaf-mutex decision forbids. Overturned if
+		// DoubleRetires is ever alerted on.
 		if !listed {
 			// A direct Retire already completed this one and dropped it; a
 			// second run would only count a double retire.
@@ -800,16 +813,18 @@ func (r *Retirer) markClaimBlocked(id core.SegmentID) {
 // dropQueued forgets a queued id: its retirement is done, or the queue is
 // wrong to carry it further.
 //
-// The pool is kicked, after the unlock, when this drop emptied the full-size
-// set: a pool that held its refill for the recycle makes the slot the recycle
-// did not fill.
+// The pool is kicked, after the unlock, when this drop left no full-size id a
+// spare wait would park behind: with the set empty, a pool that held its
+// refill for the recycle makes the slot the recycle did not fill; with every
+// id left refused for another path's claim, a wait parked behind the dropped
+// one reads the pool again and answers.
 func (r *Retirer) dropQueued(id core.SegmentID) {
 	r.mu.Lock()
 	delete(r.queued, id)
 	_, wasFull := r.full[id]
 	delete(r.full, id)
 	delete(r.claimBlocked, id)
-	emptied := wasFull && len(r.full) == 0
+	emptied := wasFull && len(r.full) <= len(r.claimBlocked)
 	r.mu.Unlock()
 
 	if emptied && r.cfg.Pool != nil {

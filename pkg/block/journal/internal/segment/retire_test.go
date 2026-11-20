@@ -2814,8 +2814,9 @@ func questionInFlight() bool {
 // the repack's own claim, leaves no recycle behind it in the queue. At the
 // journal's maximum the carry's next reserve take is then refilled by a made
 // spare, where a stale queued recycle would stall the refill and answer the
-// carry's wait with the spare limit; and the worker's later pass counts no
-// double retire for the id the repack already retired.
+// carry's wait with the spare limit; and a later pass of the idle worker
+// counts no double retire for the id the repack already retired (a pass
+// already past its skip when the direct retirement lands still may).
 func TestRetireDirectRetirementLeavesNoQueuedRecycle(t *testing.T) {
 	seam := newSeam(t)
 	set := segment.NewSet(segCap, nil)
@@ -2852,22 +2853,35 @@ func TestRetireDirectRetirementLeavesNoQueuedRecycle(t *testing.T) {
 	}
 
 	// Only kicks run the worker's passes: the retry ticker never fires within
-	// the test, so the queue's state between passes is the test's to read.
+	// the test, and the pass hook delivers each finished pass, so the worker is
+	// idle whenever the test has seen every kick's pass end.
 	segment.RetryEveryForTest(r, time.Hour)
+	passes := make(chan struct{}, 8)
+	r.SetPassHook(func() { passes <- struct{}{} })
+	awaitPass := func(what string) {
+		t.Helper()
+		select {
+		case <-passes:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("the worker never finished %s", what)
+		}
+	}
 	r.Start()
+	awaitPass("the pass Start's kick runs")
 
 	// The repack holds the source's claim while the worker's pass reaches the
-	// queued id, which the pass marks refused for that claim.
+	// queued id, which the pass marks refused for that claim. Once that pass
+	// has ended with no kick pending, no pass runs until the test kicks one.
 	if !set.Claim(src) {
 		t.Fatalf("the repack's claim on the source was refused")
 	}
 	r.Enqueue(src, segment.NotHeld)
-	deadline := time.Now().Add(30 * time.Second)
-	for _, _, blocked := r.QueueForTest(); blocked != 1; _, _, blocked = r.QueueForTest() {
-		if time.Now().After(deadline) {
-			t.Fatalf("the worker's pass never marked the queued source refused for the repack's claim")
-		}
-		runtime.Gosched()
+	awaitPass("the pass over the claimed source")
+	if _, _, blocked := r.QueueForTest(); blocked != 1 {
+		t.Fatalf("the pass over the claimed source left %d claim-refused ids, want 1", blocked)
+	}
+	if r.KickPendingForTest() {
+		t.Fatalf("a kick is still pending after the pass over the claimed source")
 	}
 
 	// The repack releases its claim and retires the source itself. The pool
@@ -2898,7 +2912,8 @@ func TestRetireDirectRetirementLeavesNoQueuedRecycle(t *testing.T) {
 	}
 
 	// The worker's next pass finds the id gone from its queue and leaves the
-	// ledger's double-retire count alone. The carry's segment, sealed early
+	// ledger's double-retire count alone: the worker is idle here, so the
+	// best-effort skip has no window to miss. The carry's segment, sealed early
 	// and queued behind the source's listing, is the barrier: the pass reaches
 	// it only after the source's listing.
 	if err := set.Seal(next, false); err != nil {
