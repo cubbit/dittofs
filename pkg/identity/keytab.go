@@ -78,9 +78,14 @@ func KeytabNames(b []byte) ([]KeytabName, error) {
 
 var errShort = errors.New("entry ends early")
 
+// maxComponents bounds a key's principal, in components: a service name has
+// two or three, so a larger count only sizes an allocation.
+const maxComponents = 8
+
 // entry reads one entry, its principal, timestamp, key version number and
-// key, and returns its principal and the key's encryption type. Every length is a signed 16-bit field
-// and a negative one is refused.
+// key, and returns its principal and the key's encryption type. Every length
+// is a signed 16-bit field and a negative one is refused, and so is a
+// principal of more than maxComponents components.
 func entry(e []byte) (KeytabName, uint16, error) {
 	p := 0
 	u16 := func() (int, error) {
@@ -104,6 +109,9 @@ func entry(e []byte) (KeytabName, uint16, error) {
 	comps, err := u16()
 	if err != nil {
 		return KeytabName{}, 0, err
+	}
+	if comps > maxComponents {
+		return KeytabName{}, 0, fmt.Errorf("a principal of %d components, more than %d", comps, maxComponents)
 	}
 	var realm string
 	var parts []string

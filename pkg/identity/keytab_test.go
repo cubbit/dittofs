@@ -85,6 +85,28 @@ func TestKeytabNames(t *testing.T) {
 	if _, err := identity.KeytabNames(keytabOf(t, etypeID.RC4_HMAC)); !errors.Is(err, vfserr.ErrInvalid) {
 		t.Errorf("KeytabNames of an RC4 keytab = %v, want vfserr.ErrInvalid", err)
 	}
+	eight := "a/b/c/d/e/f/g/h"
+	if names, err := identity.KeytabNames(keytabNamed(t, eight)); err != nil || len(names) != 1 || names[0].Name != eight {
+		t.Errorf("KeytabNames of a principal of 8 components = %q, %v; want %s", names, err, eight)
+	}
+	if _, err := identity.KeytabNames(keytabNamed(t, eight+"/i")); !errors.Is(err, vfserr.ErrInvalid) {
+		t.Errorf("KeytabNames of a principal of 9 components = %v, want vfserr.ErrInvalid", err)
+	}
+}
+
+// keytabNamed is a keytab of one AES256 key for name, its components split
+// at "/".
+func keytabNamed(t testing.TB, name string) []byte {
+	t.Helper()
+	kt := keytab.New()
+	if err := kt.AddEntry(name, "CORP.EXAMPLE", "pw", time.Unix(1, 0), 1, etypeID.AES256_CTS_HMAC_SHA1_96); err != nil {
+		t.Fatal(err)
+	}
+	b, err := kt.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // FuzzCheckKeytab holds CheckKeytab to gokrb5's decoder: no panic, and a
@@ -95,6 +117,7 @@ func FuzzCheckKeytab(f *testing.F) {
 	f.Add(keytabOf(f, etypeID.AES128_CTS_HMAC_SHA1_96, etypeID.RC4_HMAC))
 	f.Add(withHole(keytabOf(f, etypeID.AES128_CTS_HMAC_SHA1_96), 4))
 	f.Add([]byte{5, 2, 0, 0, 0, 0})
+	f.Add(keytabNamed(f, "a/b/c/d/e/f/g/h/i")) // over the component cap
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if identity.CheckKeytab(b) != nil {
 			return
