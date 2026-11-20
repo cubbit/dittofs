@@ -37,6 +37,22 @@ func (s protocolSealer) Seal(ctx context.Context, kind entity.SecretKind, owner 
 	return s.p.Seal(ctx, secrets.Protocol, kind, owner, ref, value, secrets.Meta{HandedOver: handedOver})
 }
 
+// sealThen is a sealer that runs then once, after its first seal and before
+// returning it, so a test can write a version between a seal and its write.
+type sealThen struct {
+	next sealer
+	then func()
+}
+
+func (s *sealThen) Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte, handedOver bool) (entity.Secret, error) {
+	out, err := s.next.Seal(ctx, kind, owner, ref, value, handedOver)
+	if f := s.then; f != nil {
+		s.then = nil
+		f()
+	}
+	return out, err
+}
+
 // joinEnv is a control plane over an in-memory Badger, with a real
 // protocol-role secret provider and identity's join hold as Deps, the
 // write a pre-write step commits of its own going straight to the store.
@@ -512,5 +528,33 @@ func TestWithKerberosRefusesALinkForAnotherName(t *testing.T) {
 		if p, _ := problemOf(err); p.Code != apiv1.CodeUnavailable || ids != nil {
 			t.Errorf("a link %+v for alice@AD.EXAMPLE: spellings %v, %v; want 503 unavailable and none", link, ids, err)
 		}
+	}
+}
+
+// Two offline joins seal the machine password's next version at once: the
+// one whose write comes second is refused 409 operation_running, as its
+// request carries no If-Match whose precondition could fail, and the
+// version the first wrote stays current.
+func TestOfflineJoinsSealingAtOnce(t *testing.T) {
+	e := newJoinEnv(t)
+	e.offline(t, []byte("pw-0")) // the machine password's reference, at version 1
+	var second error
+	race := e
+	race.d.Sealer = &sealThen{next: e.d.Sealer, then: func() {
+		_, second = prepareJoin(t.Context(), e.request(apiv1.JoinDomainSpec{Mode: apiv1.JoinOffline, Account: "DFS$"}, "", []byte("pw-2")))
+	}}
+	_, err := prepareJoin(t.Context(), race.request(apiv1.JoinDomainSpec{Mode: apiv1.JoinOffline, Account: "DFS$"}, "", []byte("pw-1")))
+	if second != nil {
+		t.Fatalf("the join sealing second, written first: %v, want written", second)
+	}
+	if p, _ := problemOf(err); p.Status != http.StatusConflict || p.Code != apiv1.CodeOperationRunning {
+		t.Errorf("the join written second: %+v (%v), want 409 operation_running", p, err)
+	}
+	in, err := e.cp.Installation(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur, err := e.cp.Secret(t.Context(), in.MachinePassword, 0); err != nil || cur.Version != 2 {
+		t.Errorf("the machine password: version %d (%v), want 2, the first written", cur.Version, err)
 	}
 }

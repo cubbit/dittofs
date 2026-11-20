@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -380,7 +381,8 @@ func notRotating(tx entity.ControlPlaneTx, in entity.Installation) error {
 // own, audited as a set of the reference, naming a new reference on the
 // installation when it names none yet. That write is refused 409
 // operation_running while a join or a rotation runs, read tracked in it, so
-// no version a running one did not take becomes current under it. It
+// no version a running one did not take becomes current under it, and when
+// another join's hand-over wrote the version this one sealed first. It
 // returns the version written, unsealed fields only.
 func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte) (entity.Secret, error) {
 	defer clear(password)
@@ -414,7 +416,12 @@ func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte
 		default:
 			return &refusal{code: apiv1.CodeOperationRunning, detail: "another join named the machine password since this one read it"}
 		}
-		return tx.PutSecret(sealed, sealed.Version-1)
+		if err := tx.PutSecret(sealed, sealed.Version-1); !errors.Is(err, entity.ErrGenerationMismatch) {
+			return err
+		}
+		// Another join's version, sealed at once, was written first; the
+		// request carries no If-Match, so its precondition did not fail.
+		return &refusal{code: apiv1.CodeOperationRunning, detail: "another join wrote the machine password since this one sealed it"}
 	})
 	return entity.Secret{ID: sealed.ID, Version: sealed.Version}, err
 }
