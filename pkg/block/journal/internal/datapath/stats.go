@@ -127,7 +127,7 @@ func (c *Core) Stats() Stats {
 
 	pc := c.pool.Counters()
 	s.Spares, s.HeadroomBytes, s.RepackReserveBytes = int(pc.Spares), pc.HeadroomBytes, pc.RepackReserveBytes
-	s.HeadroomSparesShort = c.pool.HeadroomShort()
+	s.HeadroomSparesShort = int(pc.HeadroomSparesShort)
 	ds := c.cache.Stats()
 	s.OpenDescriptors, s.DescriptorLimit = ds.Open, ds.Limit
 

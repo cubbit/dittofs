@@ -152,11 +152,13 @@ type Stats struct {
 	// counted here. Kind: gauge.
 	Spares int
 
-	// HeadroomSparesShort is how many spares the headroom lacks against its
-	// target: an open that found no repack reserve spare to re-append into
-	// took the headroom's, and the refill, or a retirement's recycle, makes it
-	// again. Zero once every one is made; on a full device it stays above zero
-	// until a retirement frees the space. Kind: gauge.
+	// HeadroomSparesShort is how many of the headroom spares an open's
+	// re-appends borrowed are still to be made again: the open took one when
+	// the directory held no repack reserve spare, and the refill, or a
+	// retirement's recycle, makes it again. Zero once every one is made, and
+	// zero for an open that borrowed none, whatever the headroom holds later;
+	// on a full device it stays above zero until a retirement frees the
+	// space. Kind: gauge.
 	HeadroomSparesShort int
 
 	// UnreclaimedBytes is the storage in segments not yet unlinked that backs

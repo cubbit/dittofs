@@ -338,7 +338,7 @@ var journalGauges = []gaugeSpec{
 	{"Segments", "segments", "Segments in total.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Segments) }},
 	{"Sealed", "sealed", "Sealed segments.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Sealed) }},
 	{"Spares", "spares", "Content spare segments the pool holds, ready for a stream to take.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.Spares) }},
-	{"HeadroomSparesShort", "headroom_spares_short", "Spares the headroom lacks against its target, until the refill or a retirement makes them again.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.HeadroomSparesShort) }},
+	{"HeadroomSparesShort", "headroom_spares_short", "Headroom spares an open borrowed for its re-appends and the pool has not made again.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.HeadroomSparesShort) }},
 	{"UnreclaimedBytes", "unreclaimed_bytes", "Storage in segments not yet unlinked that backs no held or retained extent and no live record: what repack can recover.", func(s *journal.Stats, _ time.Time) float64 { return float64(s.UnreclaimedBytes) }},
 	// decision: UnreclaimedEndedBytes reads zero until Repack seals — the
 	// journal's own ponytail names the unmaintained counter — and a zero

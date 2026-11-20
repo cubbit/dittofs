@@ -198,6 +198,10 @@ type Spares struct {
 	Held []core.SegmentID
 	// Unlinked holds each id the phase unlinked, ascending by id.
 	Unlinked []core.SegmentID
+	// Borrowed counts the headroom spares the re-append phase drew for its
+	// copies: the headroom is that many short until the pool makes them
+	// again.
+	Borrowed int
 }
 
 // AdoptedSpare is one re-adopted spare: the id the allocator may take again,

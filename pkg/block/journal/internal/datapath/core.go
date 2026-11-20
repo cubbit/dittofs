@@ -113,6 +113,9 @@ type OpenState struct {
 	// pool draws it from: the pool adopts them before it starts, so its
 	// refill counts them and makes no spare in their place.
 	Spares []AdoptedSpare
+	// BorrowedHeadroom is how many headroom spares the open's re-appends
+	// took, which the pool reports short until it has made them again.
+	BorrowedHeadroom int
 }
 
 // AdoptedSpare is one spare the open re-adopted and the class it fills.
@@ -627,6 +630,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 				return nil, err
 			}
 		}
+		c.pool.BorrowHeadroom(state.Open.BorrowedHeadroom)
 	}
 
 	// The admission every appending call asks once: its injected facts are

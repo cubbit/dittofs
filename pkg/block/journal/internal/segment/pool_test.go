@@ -2751,11 +2751,12 @@ func TestSetRenameSpareRefusals(t *testing.T) {
 	}
 }
 
-// TestPoolHeadroomShortCountsTheHeadroomSparesLacking: the gauge reads the
-// headroom target less the ready headroom spares and the held takes standing
-// in it, and the pool's own refill brings it back to zero once started — the
-// state an open leaves after it borrowed a headroom spare for its re-appends.
-func TestPoolHeadroomShortCountsTheHeadroomSparesLacking(t *testing.T) {
+// TestPoolHeadroomShortCountsTheSparesAnOpenBorrowed: the gauge is the
+// headroom's shortfall against its target capped at the spares an open
+// borrowed for its re-appends, so a pool whose open borrowed none reads zero
+// however empty its headroom, a held take stands in the headroom, and the
+// pool's own refill brings the borrowed spare back and the gauge to zero.
+func TestPoolHeadroomShortCountsTheSparesAnOpenBorrowed(t *testing.T) {
 	_, set2, m2 := maker(t, 0, noMax)
 	id, err := m2.Make()
 	if err != nil {
@@ -2766,19 +2767,23 @@ func TestPoolHeadroomShortCountsTheHeadroomSparesLacking(t *testing.T) {
 	}
 
 	_, _, m := maker(t, 4, noMax)
-	p := segment.NewPool(m, segment.Targets{Headroom: 2}, nil, nil)
-	if got := p.HeadroomShort(); got != 2 {
-		t.Fatalf("a pool holding no spare reads %d headroom spares short, want 2", got)
-	}
+	p := segment.NewPool(m, segment.Targets{Headroom: 3}, nil, nil)
 	if err := p.Adopt(id, segment.Headroom); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
-	if got := p.HeadroomShort(); got != 1 {
-		t.Fatalf("after one headroom adoption of two the pool reads %d short, want 1", got)
+	if got := p.Counters().HeadroomSparesShort; got != 0 {
+		t.Fatalf("a pool whose open borrowed nothing reads %d short with its headroom two spares under target, want 0", got)
 	}
-	p.HoldTaken(1)
+	p.BorrowHeadroom(1)
+	if got := p.HeadroomShort(); got != 1 {
+		t.Fatalf("after the open borrowed one spare the pool reads %d short, want 1: the shortfall of 2 is capped at what was borrowed", got)
+	}
+	if got := p.Counters().HeadroomSparesShort; got != 1 {
+		t.Fatalf("Counters reads %d short, want 1: the same reading", got)
+	}
+	p.HoldTaken(2)
 	if got := p.HeadroomShort(); got != 0 {
-		t.Fatalf("with a held take standing in the headroom's second slot the pool reads %d short, want 0", got)
+		t.Fatalf("with two held takes standing in the headroom the pool reads %d short, want 0", got)
 	}
 	p.HoldTaken(0)
 
@@ -2788,6 +2793,6 @@ func TestPoolHeadroomShortCountsTheHeadroomSparesLacking(t *testing.T) {
 		t.Fatalf("the refill's settle: %v", err)
 	}
 	if got := p.HeadroomShort(); got != 0 {
-		t.Fatalf("after the refill settled the pool reads %d headroom spares short, want 0: the refill makes the spare an open borrowed", got)
+		t.Fatalf("after the refill settled the pool reads %d short, want 0: the refill makes the spare an open borrowed", got)
 	}
 }
