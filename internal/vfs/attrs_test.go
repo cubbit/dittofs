@@ -163,7 +163,7 @@ func TestEveryChangesWCCIsReadInOneHold(t *testing.T) {
 			return s.SetAttr(ctx, admin, t, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o600)})
 		},
 		"SetACL": func(t vfs.Target) (vfs.WCC, error) {
-			return s.SetACL(ctx, admin, t, entity.ACLFromMode(0o640))
+			return s.SetACL(ctx, admin, t, entity.ACLFromMode(0o640, false))
 		},
 		"SetXattr":    func(t vfs.Target) (vfs.WCC, error) { return s.SetXattr(ctx, admin, t, x, vfs.XattrEither) },
 		"RemoveXattr": func(t vfs.Target) (vfs.WCC, error) { return s.RemoveXattr(ctx, admin, t, x.Name) },
@@ -327,7 +327,7 @@ func TestAccessAndThePseudoFilesystem(t *testing.T) {
 	if _, err := s.SetAttr(ctx, bob, vfs.Target{H: root}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o777)}); !errors.Is(err, vfs.ErrReadOnly) {
 		t.Errorf("SetAttr in the pseudo-root: %v, want ErrReadOnly", err)
 	}
-	if acl, err := s.GetACL(ctx, bob, root); err != nil || acl.Mode() != 0o555 {
+	if acl, err := s.GetACL(ctx, bob, root); err != nil || acl.Mode(entity.Principal{}) != 0o555 {
 		t.Errorf("GetACL in the pseudo-root: %v, %v", acl, err)
 	}
 }
@@ -347,7 +347,7 @@ func TestEveryAttributesCallIsAdmitted(t *testing.T) {
 		"GetAttr":     func() error { _, err := s.GetAttr(ctx, c, h); return err },
 		"SetAttr":     func() error { _, err := s.SetAttr(ctx, c, tg, size(0)); return err },
 		"GetACL":      func() error { _, err := s.GetACL(ctx, c, h); return err },
-		"SetACL":      func() error { _, err := s.SetACL(ctx, c, tg, entity.ACLFromMode(0o600)); return err },
+		"SetACL":      func() error { _, err := s.SetACL(ctx, c, tg, entity.ACLFromMode(0o600, false)); return err },
 		"Xattrs":      func() error { _, err := s.Xattrs(ctx, c, h); return err },
 		"SetXattr":    func() error { _, err := s.SetXattr(ctx, c, tg, entity.Xattr{Name: []byte("a")}, 0); return err },
 		"RemoveXattr": func() error { _, err := s.RemoveXattr(ctx, c, tg, []byte("a")); return err },
@@ -531,7 +531,7 @@ func TestATruncatesSetIDClearKeepsTheACL(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o6754)
-	acl := entity.ACLFromMode(0o754)
+	acl := entity.ACLFromMode(0o754, false)
 	acl.Entries = append(acl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteData | entity.WriteAttributes, Who: s.bob.Principal})
 	_, err := s.SetACL(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Target{H: h}, acl)
 	s.must(t, err)
@@ -545,8 +545,10 @@ func TestATruncatesSetIDClearKeepsTheACL(t *testing.T) {
 	if !reflect.DeepEqual(before, after) {
 		t.Errorf("bob's truncate rewrote the ACL:\n before %+v\n after  %+v", before, after)
 	}
-	if m := s.record(t, h).Mode; m != 0o754 {
-		t.Errorf("bob's truncate left mode %o, want 754", m)
+	// The ACL's mode has bob's read and write in the group class (RFC 19
+	// §4.2).
+	if m := s.record(t, h).Mode; m != 0o774 {
+		t.Errorf("bob's truncate left mode %o, want 774", m)
 	}
 }
 

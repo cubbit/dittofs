@@ -241,7 +241,7 @@ func (n Namespace) Create(ctx context.Context, id entity.Identity, dir entity.Ha
 			return err
 		}
 		if inherited {
-			f.Mode = f.Mode&^0o777 | acl.Mode()
+			f.Mode = f.Mode&^0o777 | acl.Mode(f.Owner)
 			if err := tx.Set(aclKey(share, f.ID), encodeACL(acl)); err != nil {
 				return err
 			}

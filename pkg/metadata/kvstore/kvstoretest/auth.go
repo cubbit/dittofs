@@ -188,6 +188,53 @@ func testModeMinorRights(t *testing.T, kvo Opener) {
 	}
 }
 
+// RFC 19 §4.1: what a file shows is what is evaluated. On a file with no
+// stored ACL and on one storing the ACL the first shows, file or directory,
+// each caller is granted the same of every right a mode bit grants on a
+// directory: its class's bits' set, delete a child on a directory alone,
+// the owner's implicit rights to the owner (§3.1, step 5), and read
+// attributes to every caller.
+func testModeGrantsWhatItShows(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	staff := f.group("staff")
+	callers := []struct {
+		name  string
+		id    entity.Identity
+		shift uint
+	}{
+		{"the owner", f.member("alice", entity.Principal{}, staff), 6},
+		{"a group member", f.member("bob", entity.Principal{}, staff), 3},
+		{"another user", f.member("carol", entity.Principal{}), 0},
+	}
+	alice := callers[0].id
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	// Each class holds each single bit in one of these.
+	for _, mode := range []uint32{0o000, 0o124, 0o241, 0o412, 0o604, 0o753} {
+		for _, typ := range []entity.FileType{entity.Regular, entity.Directory} {
+			dir := typ == entity.Directory
+			nf := kvstore.NewFile{Type: typ, Mode: mode, Attrs: entity.Attrs{}.WithGroup(staff)}
+			name := fmt.Sprintf("%03o-%v", mode, typ)
+			h, _ := f.create(alice, pub, name, nf)
+			shown, err := files.ACL(ctx, f.admin, h)
+			must(t, err)
+			stored, _ := f.create(alice, pub, name+"-acl", nf)
+			must(t, errOf(files.SetACL(ctx, alice, stored, shown)))
+			for _, c := range callers {
+				want := entity.ModeRights(mode>>c.shift&7, dir) | entity.ReadAttributes
+				if c.shift == 6 {
+					want |= entity.ReadACL | entity.WriteAttributes
+				}
+				for kind, file := range map[string]entity.Handle{"no stored ACL": h, "its ACL stored": stored} {
+					if got, err := files.Granted(ctx, c.id, file, nil, entity.ModeRights(7, true)); err != nil || got != want {
+						t.Errorf("%s on a %03o %v with %s: granted %#x, %v; want %#x", c.name, mode, typ, kind, got, err, want)
+					}
+				}
+			}
+		}
+	}
+}
+
 // RFC 7 §12.1's share grant row: a removed grant refuses the next call on
 // a handle the caller already holds.
 func testRevokedGrantRefusesNextCall(t *testing.T, kvo Opener) {
