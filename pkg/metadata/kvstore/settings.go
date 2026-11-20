@@ -10,6 +10,7 @@ import (
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/settings"
 )
 
 // Netgroups lists netgroups in name order, resuming after the name after.
@@ -115,7 +116,10 @@ func raiseCfgGen(tx kv.Txn) (uint64, error) {
 // PutSetting writes one setting, the generation expect names or zero for a
 // new one, raising its generation and the settings generation every node
 // polls, in one transaction. A share's setting is refused while the share is
-// being removed, and once it is gone. The generation never repeats a value a
+// being removed, and once it is gone. A row of a schema above the binary's
+// registered one is refused whole, its stored row and the settings generation
+// unchanged, since a record this store wrote would be a record every node
+// of this binary's version refuses whole (RFC 13 §2.3). The generation never repeats a value a
 // removed row already held, or a writer that read the row before its removal
 // matches the tag back and overwrites the new row.
 func (c ControlPlane) PutSetting(ctx context.Context, s entity.Setting, expect uint64) (uint64, error) {
@@ -125,6 +129,10 @@ func (c ControlPlane) PutSetting(ctx context.Context, s entity.Setting, expect u
 func (c controlTx) PutSetting(s entity.Setting, expect uint64) (uint64, error) {
 	if s.Scope.Kind.String() == "" || (s.Scope.Kind == entity.ScopeInstallation) != (s.Scope.ID == [16]byte{}) || s.Key == "" {
 		return 0, merrs.NewInvalidArgumentError("a setting needs a key and a scope, with an ID below installation scope")
+	}
+
+	if s.Schema > settings.Versions()[entity.FormatSettings].Max {
+		return 0, fmt.Errorf("put setting %s: %w", s.Key, settings.ErrNewerSchema)
 	}
 	if s.Scope.Kind == entity.ScopeShare {
 		if err := liveShare(c.tx, entity.ShareID(s.Scope.ID)); err != nil {
