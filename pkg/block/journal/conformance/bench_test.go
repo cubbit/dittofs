@@ -14,9 +14,8 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/conformance/benchdir"
-	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/benchdir"
 )
 
 // The benchmarks of the journal's write and read paths, run on a real
@@ -93,7 +92,7 @@ func jbPrintBox(b *testing.B, dir string) {
 		box.Print(os.Stdout)
 		fmt.Printf("bench-dir: %s\n", dir)
 		fmt.Printf("sync-bound: %v\n", journal.SyncBound)
-		fmt.Printf("segment-cap-bytes: %d\n", core.SegmentCap)
+		fmt.Printf("segment-cap-bytes: %d\n", journaltest.SegmentCap)
 		fmt.Printf("writers: %d\n", jbWriters)
 	})
 }
@@ -145,12 +144,12 @@ func jbOpen(b *testing.B, streams int) *journal.Handle {
 	deadline := time.Now().Add(30 * time.Minute)
 	for {
 		st := j.Stats()
-		if st.Spares >= streams && st.HeadroomBytes >= core.SegmentCap && st.RepackReserveBytes >= core.SegmentCap {
+		if st.Spares >= streams && st.HeadroomBytes >= journaltest.SegmentCap && st.RepackReserveBytes >= journaltest.SegmentCap {
 			break
 		}
 		if time.Now().After(deadline) {
 			b.Fatalf("bench: the pool made %d of %d spares, headroom %d and reserve %d of %d bytes",
-				st.Spares, streams, st.HeadroomBytes, st.RepackReserveBytes, int64(core.SegmentCap))
+				st.Spares, streams, st.HeadroomBytes, st.RepackReserveBytes, int64(journaltest.SegmentCap))
 		}
 		time.Sleep(time.Millisecond)
 	}

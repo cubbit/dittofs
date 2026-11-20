@@ -1,21 +1,18 @@
 package benchdir
 
-import (
-	"testing"
+import "testing"
 
-	"golang.org/x/sys/unix"
-)
-
+// The magics are the kernel's, written out so a changed constant fails here.
 func TestNameOfMagic(t *testing.T) {
 	for _, tc := range []struct {
 		magic uint32
 		want  string
 	}{
-		{unix.TMPFS_MAGIC, "tmpfs"},
-		{unix.RAMFS_MAGIC, "ramfs"},
-		{unix.EXT4_SUPER_MAGIC, "ext4"},
-		{unix.XFS_SUPER_MAGIC, "xfs"},
-		{unix.BTRFS_SUPER_MAGIC, "btrfs"},
+		{0x01021994, "tmpfs"},
+		{0x858458f6, "ramfs"},
+		{0xef53, "ext4"},
+		{0x58465342, "xfs"},
+		{0x9123683e, "btrfs"},
 		{0x1234, "0x1234"},
 	} {
 		if got := nameOfMagic(tc.magic); got != tc.want {

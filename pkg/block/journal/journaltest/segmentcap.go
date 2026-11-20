@@ -13,3 +13,8 @@ import (
 func SetSegmentCap(s *journal.Settings, n int64) {
 	core.SetSegmentCap(s, n)
 }
+
+// SegmentCap is the format's segment size, in bytes: what a journal opened
+// without SetSegmentCap gives every segment. It only labels a run and sizes
+// a wait; it sets nothing.
+const SegmentCap = core.SegmentCap

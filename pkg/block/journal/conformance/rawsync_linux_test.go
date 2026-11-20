@@ -4,10 +4,9 @@ package conformance
 
 import (
 	"os"
-
-	"golang.org/x/sys/unix"
+	"syscall"
 )
 
 // jbFlush makes f's data durable the way the journal's segments are
 // flushed on Linux, with fdatasync.
-func jbFlush(f *os.File) error { return unix.Fdatasync(int(f.Fd())) }
+func jbFlush(f *os.File) error { return syscall.Fdatasync(int(f.Fd())) }
