@@ -160,6 +160,12 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	if res == nil {
 		// An unreserved write may hold its pieces back, so the stream pins
 		// the segment of each one inside its append.
+		//
+		// ponytail: every unreserved write, a one-piece write included, pays
+		// one pin and one release, which locks the segment's state once; the
+		// stream cannot tell before an append whether more pieces follow.
+		// Upgrade to a lock-free release when a profile of small writes shows
+		// it.
 		roll.Pin = c.liveness
 	}
 	// A reserved write's roll is replaced only while the reservation's hold has
@@ -234,15 +240,17 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			// write contract that reports the extent a refused write held.
 			return core.Version{}, published, err
 		}
+		// The stream pinned an unreserved piece's segment inside the append, so
+		// the piece joins placed before anything can return and the deferred
+		// release finds it.
+		pc := piece{pl: pl, seq: seq, off: off + done}
+		if res == nil {
+			placed = append(placed, pc)
+		}
 		if pl.N <= 0 {
 			// A stream that places nothing and reports no error would have
 			// this loop append the same rest forever.
 			return core.Version{}, published, fmt.Errorf("datapath: the stream placed no byte of a %d-byte piece of file %v at offset %d", len(rest), id, off+done)
-		}
-		pc := piece{pl: pl, seq: seq, off: off + done}
-		if res == nil {
-			// The stream pinned the piece's segment inside the append.
-			placed = append(placed, pc)
 		}
 		// The record is in its segment and counted as the share's: its
 		// own record size — the header, body and padding it occupies —
