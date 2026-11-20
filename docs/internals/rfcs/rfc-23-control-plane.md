@@ -488,6 +488,7 @@ type Config struct {
 	Fault     Fault            // RFC 8 §2.1
 	Metrics   *metrics.Registry
 	Logger    *slog.Logger
+	Tracer    trace.Tracer     // RFC 25 §8.1: the host's tracer, nil when tracing is off; each journal the engine opens starts its spans below it
 }
 
 // Records is the node's view of the control-plane store; not RFC 16's
@@ -519,6 +520,13 @@ API, forms no cycle with it.
 > function would add a boundary and gain nothing. Overturned if the check
 > ever needs a second caller, and then by moving it beside that caller, not by
 > exporting more of the node.
+
+> decision: `Config` carries the host's `Tracer`, and only the journals the
+> engine opens take it. The host builds the tracing provider, from the
+> environment while no tracing setting exists, and the node builds no provider
+> of its own. Overturned once the node reads tracing settings
+> ([RFC 25 §8.1](rfc-25-observability.md)): it then builds the provider from
+> them, hands the tracer to every component, and the field goes.
 
 ### 2.2 Start and stop
 
