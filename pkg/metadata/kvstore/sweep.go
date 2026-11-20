@@ -98,7 +98,11 @@ func (n Nodes) Sweep(ctx context.Context, auditRetention time.Duration) (Swept, 
 // SweepRowUndecodable reports that err is a Sweep stopped by an expiry row,
 // the record it names, or an audit record, that does not decode: every later
 // Sweep stops on it the same way until it is repaired.
-func SweepRowUndecodable(err error) bool {
+func SweepRowUndecodable(err error) bool { return Undecodable(err) }
+
+// Undecodable reports that err is a record or key the store read and could
+// not decode, which a call meeting it again stops on the same way.
+func Undecodable(err error) bool {
 	return errors.Is(err, errMalformed) || errors.Is(err, codec.ErrTruncated) ||
 		errors.Is(err, codec.ErrTrailing) || errors.Is(err, codec.ErrVersion)
 }
