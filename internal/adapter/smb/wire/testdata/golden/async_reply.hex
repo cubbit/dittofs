@@ -1,11 +1,14 @@
 # The header of the reply to async_request.hex, answered STATUS_NOT_SUPPORTED
 # (MS-ERREF 2.3.1) with no credits, written by hand from MS-SMB2 3.3.4.4: the
 # request's header with Status set, NextCommand 0, SERVER_TO_REDIR alone in
-# Flags, and, for a request with an async ID, that ID kept at its offset, no
-# ASYNC_COMMAND - a reply in the async form is the hold stage's, with the
-# AsyncId it chose - and CreditResponse 0. SIGNED and the signature are
-# cleared: a reply is signed, when it is, after it is encoded. Multi-byte
-# fields are little-endian (MS-SMB2 2.2).
+# Flags, no ASYNC_COMMAND - a reply in the async form is the hold stage's,
+# with the AsyncId it chose - and CreditResponse 0, the grant handed. With no
+# ASYNC_COMMAND the reply is in the sync form (MS-SMB2 2.2.1), and its
+# Reserved and TreeId are 0, not the request's AsyncId bytes: the sync form's
+# TreeId names the tree connect a command runs under (MS-SMB2 2.2.1.2), and an
+# AsyncId is a value the server creates (MS-SMB2 2.2.1.1). SIGNED and the
+# signature are cleared: a reply is signed, when it is, after it is encoded.
+# Multi-byte fields are little-endian (MS-SMB2 2.2).
 fe 53 4d 42                 # [0,4)   ProtocolId 0xFE 'S' 'M' 'B'
 40 00                       # [4,6)   StructureSize 64
 01 00                       # [6,8)   CreditCharge 1, the request's (MS-SMB2 3.3.4.1)
@@ -15,7 +18,7 @@ bb 00 00 c0                 # [8,12)  Status 0xC00000BB, STATUS_NOT_SUPPORTED
 01 00 00 00                 # [16,20) Flags 0x00000001, SERVER_TO_REDIR: no request bit echoed
 00 00 00 00                 # [20,24) NextCommand 0
 31 32 33 34 35 36 37 38     # [24,32) MessageId, the request's
-41 42 43 44 45 46 47 48     # [32,36) Reserved, [36,40) TreeId: the request's AsyncId bytes, copied
+00 00 00 00 00 00 00 00     # [32,36) Reserved 0, [36,40) TreeId 0: the request names no tree connect
 21 22 23 24 25 26 27 28     # [40,48) SessionId, the request's
 00 00 00 00 00 00 00 00     # [48,64) Signature: not signed
 00 00 00 00 00 00 00 00

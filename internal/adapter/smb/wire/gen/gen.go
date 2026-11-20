@@ -466,16 +466,46 @@ func (g *gen) check(s *strct) {
 		return
 	}
 	def := arms[len(arms)-1]
+	// Each case and known value is a case of the switch emit writes, and Go
+	// refuses a duplicate case: 1 and 0x1 are one integer, so values are
+	// compared as the discriminant reads them.
+	taken := map[string]*field{}
+	for _, a := range arms {
+		if a.def {
+			continue
+		}
+		v := caseValue(d, a.cas)
+		if b := taken[v]; b != nil {
+			g.errorf(a.pos, s.name+"."+a.name, "a second arm for case %q, which %s takes as %q", a.cas, b.name, b.cas)
+			continue
+		}
+		taken[v] = a
+	}
 	for _, k := range def.known {
 		if d.kind == kInt {
 			if _, err := strconv.ParseUint(k, 0, 8*d.n); err != nil {
 				g.errorf(def.pos, s.name+"."+def.name, "a known value its integer discriminant cannot hold, %q", k)
 			}
 		}
-		if slices.ContainsFunc(arms, func(a *field) bool { return a.cas == k }) {
+		v := caseValue(d, k)
+		switch b := taken[v]; {
+		case b == def:
+			g.errorf(def.pos, s.name+"."+def.name, "a known value given twice, %q", k)
+		case b != nil:
 			g.errorf(def.pos, s.name+"."+def.name, "a known value an arm takes, %q", k)
+		default:
+			taken[v] = def
 		}
 	}
+}
+
+// caseValue is v as d's switch compares it: an integer discriminant's value
+// as a number, so 1 and 0x1 are one, a []byte one's as written.
+func caseValue(d *field, v string) string {
+	if n, err := strconv.ParseUint(v, 0, 64); err == nil && d.kind == kInt {
+		return strconv.FormatUint(n, 10)
+	}
+	return v
 }
 
 // arm reports whether f is an arm of its struct's union, which share one
