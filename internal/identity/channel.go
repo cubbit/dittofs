@@ -84,7 +84,8 @@ func (c *nodeChannel) close() {
 // call that runs past its bound keeps its slot until the call underneath
 // returns, so a controller that stops answering is sent no more than
 // channelSlots calls. A refusal is the controller's, matching
-// netlogon.ErrRejected; any other failure is ErrUnavailable alone.
+// netlogon.ErrRejected; a call its caller hangs up on answers ctx's error;
+// any other failure is ErrUnavailable alone.
 //
 // ponytail: pass-through reaches only the one directory's domain; RFC 18
 // §5.1's ponytail says when to follow trusts.
@@ -148,8 +149,20 @@ func (s *Server) logon(ctx context.Context, r netlogon.LogonRequest) (netlogon.R
 		}
 		done <- answer{reply, err}
 	}()
+	if s.awaiting != nil {
+		s.awaiting()
+	}
 	select {
 	case a := <-done:
+		// decision: a failed call whose caller has hung up answers the
+		// caller's error, whichever of the answer and the hang-up the select
+		// saw first, because the set-up's errors and a closed connection's
+		// keep no trace of the hang-up, and a hang-up must never read as the
+		// controller's ErrUnavailable. Overturned if a controller fault that
+		// coincides with a hang-up must still be reported as one.
+		if a.err != nil && ctx.Err() != nil {
+			return netlogon.Reply{}, ctx.Err()
+		}
 		return a.reply, a.err
 	case <-bound:
 		endSetUp(errBound)

@@ -413,6 +413,53 @@ func TestChannelLeave(t *testing.T) {
 	}
 }
 
+// A logon its caller hangs up on answers context.Canceled wherever the
+// hang-up lands: in the dial or the bind, which fail with the context's error
+// wrapped, or in the call, where a real channel fails with its closed
+// connection's error, modelled here as the controller failing just before
+// the hang-up. The call's answer and the hang-up are both ready when it looks,
+// and a select picks among ready cases at random, so each landing runs
+// hangUps times: an answer that drops the context's error on one of the two
+// passes them all with odds 2^-hangUps.
+func TestChannelHangUpLanding(t *testing.T) {
+	const hangUps = 32
+	hold := sim.FaultAction{Err: identitytest.ErrHold}
+	for _, tc := range []struct {
+		name string
+		rule sim.Rule
+		held bool // whether the hang-up lands while the controller holds the step
+	}{
+		{"dial", sim.Rule{Op: "dial", Key: dc1, Count: hangUps, Action: hold}, true},
+		{"bind", sim.Rule{Op: "channel", Key: "*", Count: hangUps, Action: hold}, true},
+		{"call", sim.Rule{Op: "logon", Key: "alice", Action: sim.FaultAction{Err: errDown}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newChannelServer(t, tc.rule)
+			fx.apply(t, dc1, 2, ver(2, 2, pw2, false))
+			for i := range hangUps {
+				gate := make(chan struct{})
+				fx.s.OnAwaitAnswer(func() { <-gate })
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan error, 1)
+				go func() { done <- fx.logon(ctx, "alice", alicePW) }()
+				if tc.held {
+					wait(t, "the held "+tc.name, func() bool { return fx.f.Holding() == 1 })
+					cancel()
+				}
+				wait(t, "the call's own answer", func() bool { return fx.s.PassThroughs() == 0 })
+				cancel()
+				close(gate)
+				if err := recv(t, done, "the hung-up logon"); !errors.Is(err, context.Canceled) {
+					t.Fatalf("hang-up %d in the %s: logon %v, want context.Canceled", i, tc.name, err)
+				}
+			}
+			if tc.held && unhealthy(fx.s) {
+				t.Errorf("hung up in the %s: machine_account_unhealthy raised", tc.name)
+			}
+		})
+	}
+}
+
 // A set-up its caller hangs up on raises no condition, and a call its caller
 // hangs up on leaves the channel to the others.
 func TestChannelCallerHangsUp(t *testing.T) {
