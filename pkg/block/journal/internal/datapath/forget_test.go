@@ -521,8 +521,17 @@ func TestForgetConnectionDropsOnceNoneRemains(t *testing.T) {
 	if state, serr := c.set.State(segs[len(segs)-1]); serr == nil && state == segment.Active {
 		t.Fatalf("the stream's active segment still holds the tag's third piece")
 	}
-	if err := c.Forget(context.Background(), forgetTag); err != nil {
-		t.Fatalf("Forget: %v", err)
+	// The record draws on the reserved headroom, which rolls and retirements
+	// hand back on their own workers: a forget that runs before a refund
+	// lands is refused by the headroom alone and changes nothing, so the
+	// poll retries only that refusal and fails the first other one.
+	var ferr error
+	if !settledWithin(func() bool {
+		ferr = c.Forget(context.Background(), forgetTag)
+		var ns *core.NoSpaceError
+		return !errors.As(ferr, &ns) || ns.Limit != core.LimitHeadroom
+	}) || ferr != nil {
+		t.Fatalf("Forget: %v", ferr)
 	}
 
 	// Every snapshot segment retires; the bounded wait is the worker's own
@@ -561,11 +570,21 @@ func TestForgetConnectionDropsOnceNoneRemains(t *testing.T) {
 		t.Fatalf("seal the forget record's segment: %v", err)
 	}
 	c.headroom.Drawn(draw)
-	if _, err := c.Repack(context.Background(), testSegmentCap, reclaim.Scope{Segments: []core.SegmentID{zero}}); err != nil {
-		t.Fatalf("the pass over the forget record's segment: %v", err)
-	}
-	if _, err := c.set.State(zero); err == nil {
-		t.Fatalf("the forget record's segment stayed in the set after the pass that dropped it")
+	// The pass counts its copies against the repack reserve, which the
+	// retirements above are still handing back on their workers: a pass that
+	// runs before the refund lands declines the unit without an error, as the
+	// reclaim worker's own looping caller handles by running the next pass,
+	// so poll with a fresh pass until the segment leaves the set.
+	if !settledWithin(func() bool {
+		if _, err := c.set.State(zero); err != nil {
+			return true
+		}
+		if _, err := c.Repack(context.Background(), testSegmentCap, reclaim.Scope{Segments: []core.SegmentID{zero}}); err != nil {
+			t.Fatalf("a pass over the forget record's segment: %v", err)
+		}
+		return false
+	}) {
+		t.Fatalf("the forget record's segment did not leave the set within %v of the passes that dropped it", forgetDeadline)
 	}
 }
 
