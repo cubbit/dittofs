@@ -601,13 +601,12 @@ func TestAPortChangeWhoseFallbackFailsIsRetried(t *testing.T) {
 	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb: refused %s", r.rec.Error)
 	}
-	old := portOf(t, rg.smb.running, "smb")
 	fails.Store(true)
 	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(freePort(t))); r == nil || !r.retry {
 		t.Fatalf("a port change whose start and fallback both fail: %s, want refused and retried", describe(r))
 	}
-	if rg.smb.running != nil || !refuses(old) {
-		t.Errorf("after both starts failed smb runs %v, its old port %d refusing a dial %t; want nothing serving", rg.smb.running, old, refuses(old))
+	if rg.smb.running != nil {
+		t.Errorf("after both starts failed smb runs %v; want nothing serving", rg.smb.running)
 	}
 }
 

@@ -2,6 +2,7 @@ package adaptertest
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -94,5 +95,22 @@ func TestCheckLeaksPassesACleanTest(t *testing.T) {
 func TestBudgetsHeldSkipsAnUnsetBudget(t *testing.T) {
 	if err := budgetsHeld(&resources.Budgets{}); err != nil {
 		t.Fatalf("budgetsHeld reports a Budgets with no budget set: %v", err)
+	}
+}
+
+// A connection the limit still counts fails budgetsHeld, by its count, and
+// one given back does not.
+func TestBudgetsHeldNamesAConnectionStillCounted(t *testing.T) {
+	b := &resources.Budgets{Conns: resources.NewConnLimit(4)}
+	addr := netip.MustParseAddr("127.0.0.1")
+	if err := b.Conns.Take(addr); err != nil {
+		t.Fatal(err)
+	}
+	if err := budgetsHeld(b); err == nil || !strings.Contains(err.Error(), "still counts 1 connections") {
+		t.Errorf("with one connection counted, budgetsHeld reports %v; want the count named", err)
+	}
+	b.Conns.Release(addr)
+	if err := budgetsHeld(b); err != nil {
+		t.Errorf("with the connection given back, budgetsHeld reports %v", err)
 	}
 }
