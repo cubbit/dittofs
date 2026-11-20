@@ -2,7 +2,6 @@ package kvstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"iter"
 
@@ -118,10 +117,10 @@ func raiseCfgGen(tx kv.Txn) (uint64, error) {
 // polls, in one transaction. A share's setting is refused while the share is
 // being removed, and once it is gone. A row of a schema above the binary's
 // registered one is refused whole, its stored row and the settings generation
-// unchanged, since a record this store wrote would be a record every node
-// of this binary's version refuses whole (RFC 13 §2.3). The generation never repeats a value a
-// removed row already held, or a writer that read the row before its removal
-// matches the tag back and overwrites the new row.
+// unchanged, since a record this store wrote would be a record every node of
+// this binary's version refuses whole (RFC 13 §2.3). The generation never
+// repeats a value a removed row already held, or a writer that read the row
+// before its removal matches the tag back and overwrites the new row.
 func (c ControlPlane) PutSetting(ctx context.Context, s entity.Setting, expect uint64) (uint64, error) {
 	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutSetting(s, expect) })
 }
@@ -170,10 +169,9 @@ func (c controlTx) PutSetting(s entity.Setting, expect uint64) (uint64, error) {
 // so the wider scope's value is effective, raising the settings generation
 // as a put does. A key or scope a put refuses is refused the same. A
 // share's setting is refused while the share is being removed, and once it
-// is gone, as its put is. Deleting one that is not
-// there, expect zero, changes nothing: an absent row has no tag, so any
-// other expect names a tag that is not there, and no write moved for any
-// node to re-read.
+// is gone, as its put is. Deleting one that is not there, expect zero,
+// changes nothing: an absent row has no tag, so any other expect names a tag
+// that is not there, and no write moved for any node to re-read.
 func (c ControlPlane) DeleteSetting(
 	ctx context.Context,
 	scope entity.SettingScope,
@@ -221,15 +219,4 @@ func (c controlTx) DeleteSetting(scope entity.SettingScope, key string, expect u
 	}
 
 	return c.tx.Delete(k)
-}
-
-// unbuilt is the error of a method whose body is not built yet; the message
-// names the work that fills it.
-func unbuilt(method string, epic int) error {
-	return fmt.Errorf(
-		"kvstore: %s is filled by configuration epic %d: %w",
-		method,
-		epic,
-		errors.ErrUnsupported,
-	)
 }

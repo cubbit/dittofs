@@ -2,6 +2,7 @@ package kvstoretest
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -181,12 +182,14 @@ func testExpectRace(t *testing.T, kvo Opener) {
 	}
 }
 
-// A user or group deleted and created again under the same principal takes a
-// generation it never had, so a write from a read of the deleted record is
+// A user, group or setting deleted and created again under the same key takes
+// a generation it never had, so a write from a read of the deleted record is
 // refused rather than applied to the new one.
 func testRecreatedPrincipalRefusesOldGeneration(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
-	for _, k := range versionedKinds(t, s)[:2] {
+	for _, k := range slices.DeleteFunc(versionedKinds(t, s), func(k versioned) bool {
+		return k.name != "user" && k.name != "group" && k.name != "setting"
+	}) {
 		t.Run(k.name, func(t *testing.T) {
 			must(t, errOf(k.put(0)))
 			deleted := k.gen()
