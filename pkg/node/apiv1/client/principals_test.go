@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -23,7 +24,7 @@ func TestPrincipalAccessors(t *testing.T) {
 	c := dial(t, s.url, clock)
 	ctx := t.Context()
 
-	created, err := c.Users().Create(ctx, apiv1.UserSpec{Name: "alice"})
+	created, err := userResult(c.Users().Create(ctx, apiv1.UserSpec{Name: "alice"}))
 	if err != nil || created.Resource == nil || created.Operation != nil {
 		t.Fatalf("Users().Create: %+v err %v, want alice and no operation", created, err)
 	}
@@ -34,7 +35,7 @@ func TestPrincipalAccessors(t *testing.T) {
 	if got, err := c.Users().Get(ctx, u.ID); err != nil || got.Spec.Name != "alice" || got.ETag != u.ETag {
 		t.Errorf("Users().Get: %+v err %v, want alice under ETag %s", got, err, u.ETag)
 	}
-	pr, err := c.Users().Patch(ctx, u.ID, map[string]any{"spec": map[string]any{"disabled": true}}, u.ETag)
+	pr, err := userResult(c.Users().Patch(ctx, u.ID, map[string]any{"spec": map[string]any{"disabled": true}}, u.ETag))
 	if err != nil || pr.Resource == nil || !pr.Resource.Spec.Disabled {
 		t.Fatalf("Users().Patch disabled: %+v err %v, want her disabled", pr, err)
 	}
@@ -173,7 +174,7 @@ func TestUserWriteMovingAMachineNameReturnsTheOperation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	moved := func(call string, res client.Result[apiv1.UserSpec, struct{}], err error) {
+	moved := func(call string, res userWrite, err error) {
 		t.Helper()
 		if err != nil || res.Resource != nil || res.Operation == nil || res.Operation.Kind != apiv1.OpUserDelete {
 			t.Fatalf("%s moving a machine's name: %+v err %v, want the machine's user.delete and no user", call, res, err)
@@ -181,17 +182,17 @@ func TestUserWriteMovingAMachineNameReturnsTheOperation(t *testing.T) {
 	}
 
 	machine("host/a@AD.EXAMPLE")
-	res, err := c.Users().Create(ctx, apiv1.UserSpec{Name: "alice", Kerberos: "host/a@AD.EXAMPLE"})
+	res, err := userResult(c.Users().Create(ctx, apiv1.UserSpec{Name: "alice", Kerberos: "host/a@AD.EXAMPLE"}))
 	moved("Users().Create", res, err)
 
-	bob, err := c.Users().Create(ctx, apiv1.UserSpec{Name: "bob"})
+	bob, err := userResult(c.Users().Create(ctx, apiv1.UserSpec{Name: "bob"}))
 	if err != nil || bob.Resource == nil {
 		t.Fatalf("Users().Create bob: %+v err %v", bob, err)
 	}
 	machine("host/b@AD.EXAMPLE")
 	sp := bob.Resource.Spec
 	sp.Kerberos = "host/b@AD.EXAMPLE"
-	res, err = c.Users().Put(ctx, bob.Resource.ID, sp, bob.Resource.ETag)
+	res, err = userResult(c.Users().Put(ctx, bob.Resource.ID, sp, bob.Resource.ETag))
 	moved("Users().Put", res, err)
 
 	b, err := c.Users().Get(ctx, bob.Resource.ID)
@@ -199,6 +200,22 @@ func TestUserWriteMovingAMachineNameReturnsTheOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	machine("host/c@AD.EXAMPLE")
-	res, err = c.Users().Patch(ctx, b.ID, map[string]any{"spec": map[string]any{"kerberos": "host/c@AD.EXAMPLE"}}, b.ETag)
+	res, err = userResult(c.Users().Patch(ctx, b.ID, map[string]any{"spec": map[string]any{"kerberos": "host/c@AD.EXAMPLE"}}, b.ETag))
 	moved("Users().Patch", res, err)
+}
+
+// userWrite is what a user write returns.
+type userWrite = client.Result[apiv1.UserSpec, struct{}]
+
+// userResult is a user write's answer as a Result, the answer taken as any
+// so the tests compile, and fail on their assertions, against a client
+// whose user writes return the bare user instead.
+func userResult(res any, err error) (userWrite, error) {
+	switch r := res.(type) {
+	case userWrite:
+		return r, err
+	case client.Tagged[apiv1.UserSpec, struct{}]:
+		return userWrite{Resource: &r}, err
+	}
+	return userWrite{}, fmt.Errorf("a user write returned %T", res)
 }
