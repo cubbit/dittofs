@@ -69,11 +69,14 @@ func TestOpenWiresTheHeadroom(t *testing.T) {
 	}
 }
 
-// TestRestartFindsTheHeadroomWhole checks, through Stats, that the headroom
-// a journal drew at its maximum is whole again after a restart: the open
-// counts no draw of the process before it, and the pool makes the headroom's
-// spares again, so HeadroomBytes reads what a journal that never drew reads.
-func TestRestartFindsTheHeadroomWhole(t *testing.T) {
+// TestRestartResetsTheHeadroomPin pins the headroom ledger's restart
+// decision rather than guarding a change: the ledger starts empty at every
+// open, so HeadroomBytes after a restart reads what a journal that never
+// drew reads, whatever the process before it drew at its maximum. Nothing
+// seeds the ledger at open, so it cannot fail as the code stands; it fails
+// once the drawing side is made to persist across an open, which is when it
+// must be rewritten with that decision.
+func TestRestartResetsTheHeadroomPin(t *testing.T) {
 	f := journaltest.New(t)
 	whole := f.J.Stats().HeadroomBytes
 	h, id := f.Share(0), journaltest.File(0)
