@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,15 +40,15 @@ func signingKeyOwner(installation [16]byte) entity.SecretOwner {
 	}
 }
 
-// sealer seals a value as the next version of ref under the role of its kind.
-type sealer interface {
+// Sealer seals a value as the next version of ref under the role of its kind.
+type Sealer interface {
 	Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte) (entity.Secret, error)
 }
 
 // SealSigningKey seals a fresh random key as the next version of ref, owned
 // by installation's signing_key. The caller commits it with PutSecret, and
 // for a first version SetSigningKey, in its own Write.
-func SealSigningKey(ctx context.Context, s sealer, installation [16]byte, ref entity.SecretRef) (entity.Secret, error) {
+func SealSigningKey(ctx context.Context, s Sealer, installation [16]byte, ref entity.SecretRef) (entity.Secret, error) {
 	key := make([]byte, signingKeyLen)
 	_, _ = rand.Read(key) // crypto/rand.Read never fails
 	defer clear(key)
@@ -71,9 +72,20 @@ func (k KeyVersion) Format(f fmt.State, _ rune) { _, _ = fmt.Fprint(f, k.String(
 // LogValue hands slog the version alone.
 func (k KeyVersion) LogValue() slog.Value { return slog.Uint64Value(k.Version) }
 
-// keyVersions opens every version of ref still held, current first, checked
+// keyVersionView is what a KeyVersion marshals as: its number alone.
+type keyVersionView struct {
+	Version uint64 `json:"version" yaml:"version"`
+}
+
+// MarshalJSON writes the version, never the value.
+func (k KeyVersion) MarshalJSON() ([]byte, error) { return json.Marshal(keyVersionView{k.Version}) }
+
+// MarshalYAML writes the version, never the value.
+func (k KeyVersion) MarshalYAML() (any, error) { return keyVersionView{k.Version}, nil }
+
+// KeyVersions opens every version of ref still held, current first, checked
 // against kind and owner.
-type keyVersions interface {
+type KeyVersions interface {
 	Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]KeyVersion, error)
 }
 
@@ -89,10 +101,10 @@ type keyVersions interface {
 // second while tokens are in use. Upgrade: re-read on the node's settings
 // generation, which every secret write raises.
 type Tokens struct {
-	keys  keyVersions
+	keys  KeyVersions
 	owner entity.SecretOwner
 	ref   entity.SecretRef
-	clk   clock
+	clk   Clock
 
 	mu     sync.Mutex
 	held   []KeyVersion // current first
@@ -103,7 +115,7 @@ type Tokens struct {
 // NewTokens returns the tokens of the signing key ref, owned by
 // installation's signing_key, opened through keys. Nothing is read until
 // the first issue or verify.
-func NewTokens(keys keyVersions, installation [16]byte, ref entity.SecretRef, clk clock) *Tokens {
+func NewTokens(keys KeyVersions, installation [16]byte, ref entity.SecretRef, clk Clock) *Tokens {
 	return &Tokens{keys: keys, owner: signingKeyOwner(installation), ref: ref, clk: clk}
 }
 

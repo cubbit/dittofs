@@ -219,11 +219,7 @@ func (n *Node) Stop(ctx context.Context) error {
 	if l.stepped != nil {
 		l.stepped("stop store")
 	}
-	err := n.cfg.KV.Close()
-	if n.storageKey != nil {
-		err = errors.Join(err, n.storageKey.Close())
-	}
-	return err
+	return errors.Join(n.cfg.KV.Close(), n.storageKey.Close())
 }
 
 // halt stops the parts from keep on, in reverse start order. Each that stops

@@ -19,6 +19,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
 
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -357,7 +358,7 @@ func TestSigningKeySecret(t *testing.T) {
 // failing is the real versions source, failing every read with err while it
 // is set.
 type failing struct {
-	keyVersions
+	KeyVersions
 	err error
 }
 
@@ -365,7 +366,7 @@ func (f *failing) Versions(ctx context.Context, kind entity.SecretKind, owner en
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.keyVersions.Versions(ctx, kind, owner, ref)
+	return f.KeyVersions.Versions(ctx, kind, owner, ref)
 }
 
 // A store that cannot be read is returned as itself, never as a refused
@@ -375,7 +376,7 @@ func TestTokenReadFailure(t *testing.T) {
 	f := newKeyFix(t)
 	raw := f.issue(f.tokens())
 	boom := errors.New("store unavailable")
-	src := &failing{keyVersions: f.prov, err: boom}
+	src := &failing{KeyVersions: f.prov, err: boom}
 	tk := NewTokens(src, f.inst, f.ref, f.clk)
 
 	if _, err := tk.Verify(t.Context(), raw); !errors.Is(err, boom) || errors.Is(err, errToken) {
@@ -441,8 +442,8 @@ func TestTokenStaleNodeCatchesUp(t *testing.T) {
 	}
 }
 
-// No fmt verb or slog prints a byte of the signing key, held in a key
-// version or in tokens.
+// No fmt verb, slog, JSON or YAML prints a byte of the signing key, held in
+// a key version or in tokens; JSON and YAML print a version's number alone.
 func TestSigningKeyNotPrinted(t *testing.T) {
 	f := newKeyFix(t)
 	tk := f.tokens()
@@ -458,6 +459,21 @@ func TestSigningKeyNotPrinted(t *testing.T) {
 	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%x", "%q"} {
 		out = append(out, fmt.Sprintf(verb, k), fmt.Sprintf(verb, tk), fmt.Sprintf(verb, []KeyVersion{k}), fmt.Sprintf(verb, struct{ T *Tokens }{tk}))
 	}
+	js, err := json.Marshal(k)
+	if err != nil {
+		t.Fatalf("json.Marshal of a key version: %v", err)
+	}
+	if want := fmt.Sprintf(`{"version":%d}`, k.Version); string(js) != want {
+		t.Errorf("json.Marshal of a key version: %s, want %s, its number alone", js, want)
+	}
+	ys, err := yaml.Marshal(k)
+	if err != nil {
+		t.Fatalf("yaml.Marshal of a key version: %v", err)
+	}
+	if want := fmt.Sprintf("version: %d\n", k.Version); string(ys) != want {
+		t.Errorf("yaml.Marshal of a key version: %q, want %q, its number alone", ys, want)
+	}
+	out = append(out, string(js), string(ys))
 	for _, o := range out {
 		for _, enc := range []string{string(k.Value), hex.EncodeToString(k.Value), base64.StdEncoding.EncodeToString(k.Value),
 			strings.Trim(fmt.Sprintf("%d", k.Value), "[]")} {

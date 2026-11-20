@@ -200,8 +200,8 @@ type signInStore interface {
 	Write(ctx context.Context, meta entity.WriteMeta, fn func(entity.ControlPlaneTx) error) error
 }
 
-// clock is the node's clock.
-type clock interface{ Now() time.Time }
+// Clock is the node's clock.
+type Clock interface{ Now() time.Time }
 
 // counted is an attempt reserve let through, with the nonce of the source
 // count it raised, which its settle or takeback applies to.
@@ -226,7 +226,7 @@ type counted struct {
 // back, makes the check's Retry-After that much longer than store time owes.
 // Upgrade when the store offers a Now readable outside a write: both
 // decisions then take store time.
-func reserve(ctx context.Context, st signInStore, clk clock, a attempt) (counted, error) {
+func reserve(ctx context.Context, st signInStore, clk Clock, a attempt) (counted, error) {
 	var read counts
 	for k := range read {
 		key, ok := a.key(kind(k))
