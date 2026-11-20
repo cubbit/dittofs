@@ -849,10 +849,9 @@ func TestWriteAt_ThirdPieceFailsReturnsGrant(t *testing.T) {
 // failed is the medium, not a limit.
 //
 // decision: this drives the ENOSPC where the record write itself meets
-// it. The shape where making the segment fails no longer reaches WriteAt
-// through the one admission: a write that would need a spare the pool
-// cannot serve is refused by the pool before any byte moves, and a write
-// the pool served writes into segments the maker already created whole.
+// it. The shape where the pool cannot serve a spare is the next test: on a
+// full device the admission's hold refuses with the device's ENOSPC, and
+// with a spare limit when the device has room.
 func TestEdge_FilesystemENOSPCIsNotErrNoSpace(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
@@ -1569,5 +1568,49 @@ func TestFillRefusedBelowHalfHeadroom(t *testing.T) {
 	}
 	if got := c.ReservedBytes(); got != 0 {
 		t.Fatalf("ReservedBytes = %d after the refusal, want 0", got)
+	}
+}
+
+// TestWriteAt_FullDeviceHoldAnswersENOSPC drains the pool of spares with
+// every make failing ENOSPC, then writes: the admission's hold meets the
+// full device and the write answers the device's ENOSPC, never a
+// NoSpaceError, and counts no reservation refusal.
+func TestWriteAt_FullDeviceHoldAnswersENOSPC(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	ctx := context.Background()
+	if _, err := c.WriteAt(ctx, s, f, 0, []byte("w"), 1); err != nil {
+		t.Fatalf("the warm-up write: %v", err)
+	}
+	if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	big := make([]byte, roomAfter(0)+2)
+	off := int64(1)
+	var err error
+	for range 1000 {
+		if _, err = c.WriteAt(ctx, s, f, off, big, 1); err == nil {
+			off += int64(len(big))
+			continue
+		}
+		var ns *core.NoSpaceError
+		if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
+			break
+		}
+		// The spare refusal stands until a make has failed ENOSPC.
+		waitIn(t, 5*time.Second, "the pool to report a full device", c.pool.DeviceFull)
+	}
+	beforeRefused := c.ReservationRefused()
+	_, err = c.WriteAt(ctx, s, f, off, big, 1)
+	if !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("the write on a full device = %v, want the device's ENOSPC", err)
+	}
+	var ns *core.NoSpaceError
+	if errors.As(err, &ns) || errors.Is(err, core.ErrNoSpace) {
+		t.Fatalf("the write on a full device = %v, want no NoSpaceError and no ErrNoSpace", err)
+	}
+	if got := c.ReservationRefused(); got != beforeRefused {
+		t.Fatalf("ReservationRefused rose to %d, want the %d it was", got, beforeRefused)
 	}
 }
