@@ -2,6 +2,7 @@ package kvstoretest
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -314,6 +315,21 @@ func testChmodStoresTheMergedMode(t *testing.T, kvo Opener) {
 	must(t, errOf(files.SetACL(ctx, alice, moved, entity.ACL{Entries: []entity.ACE{{Type: entity.ACEAllow, Mask: entity.ReadData, Who: bob.Principal}}})))
 	if got, err := files.SetAttrs(ctx, f.admin, moved, entity.Attrs{}.WithOwner(bob.Principal)); err != nil || got.Mode != 0o400 || stored(moved) != 0o400 {
 		t.Errorf("chown to bob of a file whose ACL allows bob read: %o, stored %o, %v; want 400", got.Mode, stored(moved), err)
+	}
+
+	// A chown and a chmod in one set merge for the new owner: bob's allow
+	// is in the owner class, so chmod 400 leaves it whole and stores 400.
+	both, _ := f.create(alice, pub, "both", regular(0o600))
+	must(t, errOf(files.SetACL(ctx, alice, both, entity.ACL{Entries: []entity.ACE{{Type: entity.ACEAllow, Mask: entity.ReadData, Who: bob.Principal}}})))
+	if got, err := files.SetAttrs(ctx, f.admin, both, entity.Attrs{}.WithOwner(bob.Principal).WithMode(0o400)); err != nil || got.Mode != 0o400 || stored(both) != 0o400 {
+		t.Errorf("chown to bob and chmod 400 in one set: %o, stored %o, %v; want 400", got.Mode, stored(both), err)
+	}
+	acl, err := files.ACL(ctx, f.admin, both)
+	must(t, err)
+	if !slices.ContainsFunc(acl.Entries, func(e entity.ACE) bool {
+		return e.Type == entity.ACEAllow && e.Who == bob.Principal && e.Mask == entity.ReadData
+	}) {
+		t.Errorf("chown to bob and chmod 400 in one set left %+v; want bob's allow of read whole", acl.Entries)
 	}
 }
 
