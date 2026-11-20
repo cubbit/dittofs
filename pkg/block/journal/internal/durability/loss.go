@@ -252,6 +252,13 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 		})
 	}
 	d.lmu.Unlock()
+	if !l.Reported {
+		// The claim this call took or kept records the event its loss
+		// published — the number the push assigned it — so the reader's
+		// reach retires the claim on its own loss alone. A reported loss
+		// publishes no event of its own, and its claim keeps the zero.
+		d.dir.setClaimEvent(k, d, ev.SeqNum)
+	}
 
 	// decision: a drop whose record could not be appended is never undone.
 	// The journal stops holding what it cannot produce, and a loss only errs
