@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	identitysrv "github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/vfs/contenttest"
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -275,9 +276,16 @@ func TestDrainJoinsEveryAdmittedCall(t *testing.T) {
 }
 
 // Before Start, from the moment Drain begins and after Stop, every call is
-// refused ErrUnavailable before its body runs; while serving, none is.
+// refused ErrUnavailable before its body runs; while serving, none is. The
+// filesystem holds an identity server, since without one the Principals
+// area's bodies answer ErrUnavailable too.
 func TestACallOutsideServingIsUnavailable(t *testing.T) {
-	f := newFixture(t, nil)
+	store := kvstoretest.NewFS(t, memKV)
+	srv, err := identitysrv.New(identitysrv.Deps{Store: store.Store, Clock: sim.NewTestClock(time.Unix(0, 0))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFixtureOver(t, Deps{Auth: srv, Names: srv}, store)
 	refused := func(when string) {
 		for m, errs := range callAll(f) {
 			for _, err := range errs {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"time"
+	"unsafe"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
@@ -189,3 +190,24 @@ var (
 // OnScheduled has the rotation's schedule call f after each check, once its
 // next tick is armed.
 func (s *Server) OnScheduled(f func()) { s.scheduled = f }
+
+// ThrottleKey is the logon throttle's key for user, as presented, signing in
+// from client.
+func ThrottleKey(user string, client netip.Addr) [32]byte { return throttleKeyOf(user, client) }
+
+// ThrottleFootprint is the bytes the logon throttle's table holds: each
+// pair's key and its record.
+func (s *Server) ThrottleFootprint() int {
+	t := s.throttle
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := 0
+	for k := range t.pairs {
+		n += len(k) + int(unsafe.Sizeof(throttlePair{}))
+	}
+	return n
+}
+
+// BoundThrottle gives s an empty logon throttle holding at most bound pairs,
+// its evictions counted where they were.
+func (s *Server) BoundThrottle(bound int) { s.throttle = newThrottle(bound, s.throttle.evictions) }

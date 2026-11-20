@@ -682,7 +682,7 @@ fresh sign-in.
   `CORP\alice` and `alice@CORP.EXAMPLE` count as one whichever source each
   routes to (§3.5), every further attempt from that pair **MUST** fail
   `ErrLogonFailure` before its credential is checked, until the window has
-  passed with fewer. A UPN whose prefix is not the account's `sAMAccountName`
+  passed with fewer, unless §7.3 evicts the pair from a full table. A UPN whose prefix is not the account's `sAMAccountName`
   (`alice.smith@` for `asmith`) counts apart, so such an account has two
   counts, each still under the domain's own lockout. The answer is the ordinary logon failure, so it tells a
   guesser nothing, and no account is locked: a local account is never locked by
@@ -2169,17 +2169,25 @@ connection-state pool, and past its share:
 | caller cache | the least recently used entry is evicted, counted |
 | directory cache | the least recently used entry is evicted; an evicted entry is a miss, never "not found" |
 | replay cache | holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone; a sign-in that would need one more fails `ErrUnavailable`. One ticket client, by its client name and realm, holds at most a sixty-fourth of the entries, so a holder of one valid ticket cannot fill the cache for everyone: past its share it alone fails `ErrUnavailable` |
-| logon throttle | the oldest pair is evicted, counted |
+| logon throttle | one client address, the unit a pair is keyed by (an IPv4 address, an IPv6 /64), holds at most a sixty-fourth of the pairs, those with an attempt in flight included. A new pair from an address at its share evicts that address's least recently settled pair below its limit, counted, or else its first to reach the limit once that pair's window has passed; when neither can go, the new pair fails `ErrLogonFailure`, outcome `throttled`, for that address alone. A new pair from an address under its share, when the table is full, evicts the table's least recently settled pair below its limit, from any address, counted; only when no settled pair is below its limit does it evict the table's least recently admitted pair, whatever its count and even with an attempt in flight, counted |
 | directory lookups a `Claimed` caller triggers | at most 100 a minute per client address; past it the call is refused with a retryable error, never mapped to anonymous |
 | records a `Claimed` caller's lookup mints (§5.5) | at most 100 a minute per node, whatever the client; past it the call is refused with a retryable error, never mapped to anonymous, and nothing is written |
 
 GSS contexts are the NFS adapter's table, bounded where RFC 21 keeps them
 ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)).
 
-> ponytail: a full throttle evicts its oldest pair, which frees a guesser who
-> can fill it — but one who can fill it can more cheaply rotate addresses, which
-> §3.1's ponytail already concedes. Refuse new pairs while every pair is at its
-> limit when the logon stream shows a spray that eviction let through.
+> ponytail: the per-address share keeps one address from freeing a pair it
+> throttled, or from filling the table, and a full table evicts pairs below
+> their limit first, so names sent one attempt each evict one another. A
+> throttled pair is freed only once every pair in the table is throttled or
+> has an attempt in flight: 65 536 pairs at 10 failures each, 655 360 failures
+> within one window, spread over at least 64 address units, or as many
+> attempts held in flight at once. That frees one pair, the oldest; an evicted
+> pair with an attempt in flight may have 10 more in flight. An address whose whole share
+> is throttled refuses new pairs for everyone behind it, a NAT gateway's users
+> among them. Charge the table to RFC 24's pool, or key the share on more than
+> the address, when the logon stream shows a spray across that many addresses,
+> or a gateway's users refused that way.
 
 > ponytail: the per-address lookup cap and the per-node mint cap are constants.
 > Make them settings when a legitimate client, or a first-day migration of

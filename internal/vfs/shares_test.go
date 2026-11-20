@@ -525,8 +525,8 @@ func TestStatFSAndQuotaReportTheShares(t *testing.T) {
 	}
 }
 
-// Snapshots and MoveTarget answer none, after admission; without Deps.Names
-// the Principals area refuses every call.
+// Snapshots and MoveTarget answer none, after admission; without Deps.Auth
+// and Deps.Names the Principals area refuses every call ErrUnavailable.
 func TestTheStubsAnswerTheirPlaceholders(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
@@ -546,9 +546,9 @@ func TestTheStubsAnswerTheirPlaceholders(t *testing.T) {
 	_, e1 := s.SignIn(ctx, vfs.SignInStep{})
 	_, e2 := s.Spell(ctx, s.fs.Admin.Principal, vfs.SchemeUID)
 	_, e3 := s.Find(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Spelling{})
-	for _, err := range []error{e1, e2, e3} {
-		if !errors.Is(err, vfs.ErrAccess) {
-			t.Errorf("a Principals call answered %v", err)
+	for i, err := range []error{e1, e2, e3} {
+		if !errors.Is(err, vfs.ErrUnavailable) {
+			t.Errorf("Principals call %d (SignIn, Spell, Find) answered %v, want ErrUnavailable", i, err)
 		}
 	}
 }
@@ -582,7 +582,7 @@ func TestSpellAndFindPassThroughToNames(t *testing.T) {
 
 	// Each answer is the identity server's own for the same call.
 	wantSp, wantErr := srv.Spell(ctx, s.fs.Admin.Principal, vfs.SchemeUserName)
-	if sp, got := s.Spell(ctx, s.fs.Admin.Principal, vfs.SchemeUserName); sp.Text != wantSp.Text || !errors.Is(got, wantErr) || errors.Is(got, errUnsigned) {
+	if sp, got := s.Spell(ctx, s.fs.Admin.Principal, vfs.SchemeUserName); sp.Text != wantSp.Text || !errors.Is(got, wantErr) || errors.Is(got, errNoIdentity) {
 		t.Errorf("Spell answered %+v, %v; want the identity server's %+v, %v", sp, got, wantSp, wantErr)
 	}
 	want, err := srv.Find(ctx, vfs.Spelling{Scheme: vfs.SchemeUID, Num: 100}, identity.FindOpts{})
@@ -597,12 +597,29 @@ func TestSpellAndFindPassThroughToNames(t *testing.T) {
 	} {
 		names.got = nil
 		c := vfs.Call{Identity: vfs.Identity{Proof: tc.proof, Evidence: vfs.Evidence{Principal: s.fs.Admin.Principal}, Client: inLab}}
-		if p, got := s.Find(ctx, c, vfs.Spelling{Scheme: vfs.SchemeUID, Num: 100}); p != want || !errors.Is(got, err) || errors.Is(got, errUnsigned) {
+		if p, got := s.Find(ctx, c, vfs.Spelling{Scheme: vfs.SchemeUID, Num: 100}); p != want || !errors.Is(got, err) || errors.Is(got, errNoIdentity) {
 			t.Errorf("Find at proof %d answered %v, %v; want the identity server's %v, %v", tc.proof, p, got, want, err)
 		}
 		if len(names.got) != 1 || names.got[0].Mint != tc.mint {
 			t.Errorf("Find at proof %d reached identity with %+v, want one call with Mint %v", tc.proof, names.got, tc.mint)
 		}
+	}
+}
+
+// SignIn reaches Deps.Auth and answers what it answers: a step naming no
+// user is the identity server's own ErrInvalid, not errNoIdentity.
+func TestSignInPassesThroughToAuth(t *testing.T) {
+	store := kvstoretest.NewFS(t, memKV)
+	srv, err := identitysrv.New(identitysrv.Deps{Store: store.Store, Clock: sim.NewTestClock(time.Unix(0, 0))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := startShares(t, newFixtureOver(t, Deps{Auth: srv}, store), nil)
+	ctx := t.Context()
+	step := vfs.SignInStep{NTLM: &identity.NTLMAuthenticate{}, Client: inLab}
+	_, want := srv.SignIn(ctx, step)
+	if _, got := s.SignIn(ctx, step); got == nil || want == nil || got.Error() != want.Error() || !errors.Is(got, vfs.ErrInvalid) {
+		t.Errorf("SignIn of a step naming no user = %v, want the identity server's %v", got, want)
 	}
 }
 

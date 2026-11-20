@@ -344,16 +344,22 @@ func (fs *Filesystem) pseudoOnly(ctx context.Context, h vfs.Handle, err error) e
 	return err
 }
 
-// errUnsigned is the Principals area's answer until an identity component
-// signs callers in, and Spell's and Find's while the filesystem is built
-// without Deps.Names.
-//
-// ponytail: SignIn answers ErrAccess, as no authenticator is held. Delegate
-// it to Deps.Auth once sign-in is routed through it.
-var errUnsigned = fmt.Errorf("vfs: no identity component signs in or spells principals: %w", vfs.ErrAccess)
+// errNoIdentity is the Principals area's answer while the filesystem is
+// built without the Deps field the call passes through to: ErrUnavailable,
+// one of the errors RFC 18 §3.1 allows SignIn, so it fails closed.
+var errNoIdentity = fmt.Errorf("vfs: no identity component signs in or spells principals: %w", vfs.ErrUnavailable)
 
+// SignIn passes through to Deps.Auth, its answer unchanged.
 func (fs *Filesystem) SignIn(ctx context.Context, step vfs.SignInStep) (vfs.SignInResult, error) {
-	return vfs.SignInResult{}, fs.unsigned(ctx)
+	ctx, done, err := fs.enter(ctx)
+	if err != nil {
+		return vfs.SignInResult{}, err
+	}
+	defer done()
+	if fs.auth == nil {
+		return vfs.SignInResult{}, errNoIdentity
+	}
+	return fs.auth.SignIn(ctx, step)
 }
 
 // Spell passes through to Deps.Names.
@@ -364,7 +370,7 @@ func (fs *Filesystem) Spell(ctx context.Context, p vfs.Principal, as vfs.Scheme)
 	}
 	defer done()
 	if fs.names == nil {
-		return vfs.Spelling{}, errUnsigned
+		return vfs.Spelling{}, errNoIdentity
 	}
 	return fs.names.Spell(ctx, p, as)
 }
@@ -378,18 +384,7 @@ func (fs *Filesystem) Find(ctx context.Context, c vfs.Call, sp vfs.Spelling) (vf
 	}
 	defer done()
 	if fs.names == nil {
-		return vfs.Principal{}, errUnsigned
+		return vfs.Principal{}, errNoIdentity
 	}
 	return fs.names.Find(ctx, sp, identity.FindOpts{Mint: c.Identity.Proof >= vfs.ProofSecret})
-}
-
-// unsigned is the body of a Principals call: not admitted, as it acts on no
-// share, but refused outside serving like any call.
-func (fs *Filesystem) unsigned(ctx context.Context) error {
-	_, done, err := fs.enter(ctx)
-	if err != nil {
-		return err
-	}
-	done()
-	return errUnsigned
 }
