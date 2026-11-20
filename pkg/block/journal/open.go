@@ -307,9 +307,9 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// renames it to its own <id>.seg name at make time — and RFC 28
 		// §3.4 says only that "the error also says whether the directory
 		// holds any segment", undefined against spares.
-		// TestRFC28C_InterruptedInit and TestRFC28C_JournalGone pin the
-		// taken-only reading: a segment counts once a stream took it —
-		// taken exactly when its header verifies. The ceiling: an open
+		// TestRFC28C_JournalGone pins the taken-only reading: a segment
+		// counts once a stream took it — taken exactly when its header
+		// verifies. The ceiling: an open
 		// refused before recovery can read no more than slot bytes, so a
 		// header a sync never reached reads as a spare and answers false.
 		return nil, &IdentityError{Found: ff.Identity, Installation: ff.Installation,
