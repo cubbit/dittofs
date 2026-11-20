@@ -32,8 +32,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 
-// switchFaults fails every call of an op while the test has it set: a fault
-// injector for the domain controller's wrapper.
+// switchFaults fails every call of an op while the test has it set, or of
+// an op on one key when set as op:key: a fault injector for the domain
+// controller's wrapper.
 type switchFaults struct {
 	mu sync.Mutex
 	m  map[string]error
@@ -45,9 +46,12 @@ func (f *switchFaults) set(op string, err error) {
 	f.m[op] = err
 }
 
-func (f *switchFaults) At(op string, _ []byte) (time.Duration, int, error) {
+func (f *switchFaults) At(op string, key []byte) (time.Duration, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.m[op+":"+string(key)]; err != nil {
+		return 0, 0, err
+	}
 	return 0, 0, f.m[op]
 }
 
@@ -132,6 +136,25 @@ func rotKeys(t *testing.T) map[secrets.Role]keyprovider.KeyProvider {
 
 func newRotation(t *testing.T) *rotFixture {
 	t.Helper()
+	fx := newMachine(t)
+	fx.d.StageComputer(t, identitytest.StagedComputer{Name: "NAS", Password: []byte(pw2), EncTypes: 0x18,
+		SPNs: []string{"HOST/NAS", "HOST/nas.corp.example"}})
+	fx.in.MachinePassword = entity.SecretRef(uuid.New())
+	fx.seal(t, pw2, secrets.Meta{KeyVersion: 1}, func(tx entity.ControlPlaneTx) error {
+		j := entity.MachineJoin{Joined: true, Account: "NAS$", Names: []string{"cifs/NAS.corp.example", "host/nas.corp.example"}}
+		j.LastRotation.At, j.LastRotation.Confirmed = tx.Now(), tx.Now()
+		j.LastRotation.Tag, j.LastRotation.Read, j.LastRotation.Version = 1, 1, 1
+		return tx.SetMachineJoin(j)
+	})
+	fx.restart(t, fx.p)
+	return fx
+}
+
+// newMachine is a server over the in-memory store, behind kvtest's fault
+// wrapper, and the real secret provider, not joined, with a domain whose
+// controllers are dc1 and dc2, on a clock at mt0.
+func newMachine(t *testing.T) *rotFixture {
+	t.Helper()
 	prof.Watch(t, prof.Options{})
 	ctx := context.Background()
 	clock := sim.NewTestClock(mt0)
@@ -165,8 +188,6 @@ func newRotation(t *testing.T) *rotFixture {
 		faults: &switchFaults{m: map[string]error{}},
 	}
 	fx.d = identitytest.NewDomainController("CORP", machineRealm, "DC=corp,DC=example", dc1, dc2)
-	fx.d.StageComputer(t, identitytest.StagedComputer{Name: "NAS", Password: []byte(pw2), EncTypes: 0x18,
-		SPNs: []string{"HOST/NAS", "HOST/nas.corp.example"}})
 	fx.d.AddUser(t, "alice", alicePW)
 	fx.d.AddUser(t, "svc", []byte(bindPW))
 
@@ -181,19 +202,12 @@ func newRotation(t *testing.T) *rotFixture {
 	}
 
 	noPAC := false // a ticket the derived keys verify signs in without one
-	fx.rec = directory.Record{Address: "ldaps://dc1.corp.example", Realm: machineRealm, NetBIOSDomain: "CORP", RequirePAC: &noPAC,
+	fx.rec = directory.Record{Address: "ldaps://dc1.corp.example", Base: "DC=corp,DC=example", Realm: machineRealm, NetBIOSDomain: "CORP", RequirePAC: &noPAC,
 		BindName: "CN=svc,CN=Users,DC=corp,DC=example", BindCredential: bindRef, DCAddress: dc1}
 
 	if fx.in, err = st.Installation(ctx); err != nil {
 		t.Fatal(err)
 	}
-	fx.in.MachinePassword = entity.SecretRef(uuid.New())
-	fx.seal(t, pw2, secrets.Meta{KeyVersion: 1}, func(tx entity.ControlPlaneTx) error {
-		j := entity.MachineJoin{Joined: true, Account: "NAS$", Names: []string{"cifs/NAS.corp.example", "host/nas.corp.example"}}
-		j.LastRotation.At, j.LastRotation.Confirmed = tx.Now(), tx.Now()
-		j.LastRotation.Tag, j.LastRotation.Read, j.LastRotation.Version = 1, 1, 1
-		return tx.SetMachineJoin(j)
-	})
 	fx.restart(t, p)
 	return fx
 }
@@ -247,8 +261,15 @@ func (fx *rotFixture) restart(t *testing.T, secrets identity.SecretProvider) {
 // versions are the machine password's versions in the store, current first.
 func (fx *rotFixture) versions(t *testing.T) []secrets.Version {
 	t.Helper()
+	in, err := fx.store.Installation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.MachinePassword == (entity.SecretRef{}) {
+		return nil
+	}
 	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceInstallation, ID: fx.in.ID[:]}, Key: "machine_password"}
-	vs, err := fx.p.Versions(context.Background(), secrets.Protocol, entity.SecretMachinePassword, owner, fx.in.MachinePassword)
+	vs, err := fx.p.Versions(context.Background(), secrets.Protocol, entity.SecretMachinePassword, owner, in.MachinePassword)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,6 +285,24 @@ func (fx *rotFixture) join(t *testing.T) entity.MachineJoin {
 	return in.Join
 }
 
+// netbiosName is identity.netbios_name as the store holds it, if set.
+func (fx *rotFixture) netbiosName(t *testing.T) (string, bool) {
+	t.Helper()
+	for s, err := range fx.cp.Settings(context.Background(), entity.SettingScope{Kind: entity.ScopeInstallation}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Key == "identity.netbios_name" {
+			var name string
+			if err := json.Unmarshal(s.Value, &name); err != nil {
+				t.Fatal(err)
+			}
+			return name, true
+		}
+	}
+	return "", false
+}
+
 // reconcile applies the store's State, as the node's reconcile does.
 func (fx *rotFixture) reconcile(t *testing.T) {
 	t.Helper()
@@ -272,6 +311,9 @@ func (fx *rotFixture) reconcile(t *testing.T) {
 	st.Directory = &rec
 	st.Machine = fx.versions(t)
 	st.Join = fx.join(t)
+	if name, ok := fx.netbiosName(t); ok {
+		st.Settings.NetBIOSName = name
+	}
 	if err := fx.s.Apply(st); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -284,6 +326,9 @@ func (fx *rotFixture) op() *entity.Operation {
 }
 
 func (fx *rotFixture) phase(op *entity.Operation) string {
+	if op.Kind == string(apiv1.OpJoinDomain) {
+		return fx.s.JoinProgress(context.Background(), *op).Phase
+	}
 	return fx.s.RotateProgress(context.Background(), *op).Phase
 }
 
@@ -298,7 +343,11 @@ func (fx *rotFixture) turn(t *testing.T, op *entity.Operation) (done bool, faile
 	if !fx.hold {
 		fx.reconcile(t)
 	}
-	res, err := step.Run(context.Background(), fx.s.RotateStep, *op)
+	run := fx.s.RotateStep
+	if op.Kind == string(apiv1.OpJoinDomain) {
+		run = fx.s.JoinStep
+	}
+	res, err := step.Run(context.Background(), run, *op)
 	if _, fails := step.Failure(err); fails {
 		op.State = entity.OpFailed
 		fx.reconcile(t)
