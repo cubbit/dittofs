@@ -16,7 +16,9 @@ DITTOFS_BENCH_DIR=<a directory on the device under test> \
 
 Run it by hand, outside the dedicated host's nightly work. The suite's `bench.txt` carries the
 box lines the run prints (commit, memory, device, filesystem, mount options, kernel, the device's
-own 4 KiB write-and-fsync p50 and p99, then the directory, sync bound, segment cap and writers)
+own figure, the p50 and p99 of 64 overwrites of 4 KiB in a prefilled, synced span, each flushed as
+the twins are, so a floor beside them and with 64 samples a p99 that is the maximum, then the
+directory, sync bound, segment cap and writers)
 and the raw twins `BenchmarkRawSequential`, `BenchmarkRawRandom` and `BenchmarkRawScaling`, which
 write the same bytes through `os` with the same block size, writers and sync pattern as the row
 they twin (16 writers for J1's twins, n files for `RawScaling`'s J2). A raw file is given its
@@ -51,6 +53,8 @@ Notes on what a row measures:
 - Sizes are the suite's fixed bursts: 128 MiB over all writers without a sync after each write,
   16 MiB with one; J2 spreads 128 MiB over its files; the mixed case streams one 128 MiB file.
   Each is under one segment, so a one-iteration run never rolls.
+- The mixed-durability row has no raw twin and no target: it is judged on its own, by its
+  `p99-sync-write-µs` against the same box's earlier runs.
 - A journal is opened with its content spares, headroom and repack reserve at full size before
   the timer starts.
 
@@ -75,6 +79,8 @@ That run is the precondition for any keep-or-change decision below:
 - Submission and completion latency reported apart.
 - Create and overwrite reported apart. The random rows overwrite within a burst and the
   sequential rows create.
+- The index sizes between the endpoints: J3 covers only 10^3 and 10^6 extents of RFC 1's range,
+  so the range in between is not measured.
 - The 256 MiB mixed stream. The mixed case streams 128 MiB, so the one stream never rolls beside
   the small writer.
 
