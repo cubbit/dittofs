@@ -402,6 +402,17 @@ func awaitRead(t *testing.T, reached <-chan kvstore.Counters) kvstore.Counters {
 	}
 }
 
+// awaitWait waits for reconcile's loop to set its next wait, once the pass
+// before it ended.
+func awaitWait(t *testing.T, waited <-chan struct{}, after string) {
+	t.Helper()
+	select {
+	case <-waited:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("reconcile set no wait after %s within 10 s", after)
+	}
+}
+
 // A pass frozen after reading a settings change holds the settings position
 // back: config_generation_lag_seconds grows on the clock from that read, and
 // config_generation_behind, naming the settings counter, is raised in the
@@ -478,16 +489,32 @@ func TestStatusRaisesBehindOnAFrozenApply(t *testing.T) {
 // config_generation_behind is raised once it passes 5 s.
 func TestStatusLagCountsFromTheFirstRead(t *testing.T) {
 	reached := make(chan kvstore.Counters, 64)
+	// waited has a signal for each wait reconcile's loop sets on the clock.
+	// A pass drops those before its read, so the first signal after a read
+	// is that pass's own.
+	waited := make(chan struct{}, 64)
 	var fk *kvtest.FaultKV
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		fk = kvtest.NewFaultKV(cfg.KV)
 		cfg.KV = fk
-		return node.NewPausing(func(c kvstore.Counters) {
+		n, err := node.NewPausing(func(c kvstore.Counters) {
+			for len(waited) > 0 {
+				<-waited
+			}
 			select {
 			case reached <- c:
 			default:
 			}
 		})(cfg)
+		if err == nil {
+			n.OnReconcileWait(func() {
+				select {
+				case waited <- struct{}{}:
+				default:
+				}
+			})
+		}
+		return n, err
 	}))
 	ch := watchStatus(h)
 	started(t, h)
@@ -502,6 +529,9 @@ func TestStatusLagCountsFromTheFirstRead(t *testing.T) {
 	if c := awaitRead(t, reached); c.Settings != want {
 		t.Fatalf("first pass after the change read settings %d, want %d", c.Settings, want)
 	}
+	// The status turns do not wait on reconcile, so the clock moves only
+	// once the failed pass has set its backoff on it.
+	awaitWait(t, waited, "the failed pass")
 	for lag := 1.0; lag <= 7; lag++ {
 		tr := nextTurn(t, h, ch)
 		if got := series(t, h, "dittofs_config_generation_lag_seconds", "settings"); got != lag {
@@ -511,6 +541,7 @@ func TestStatusLagCountsFromTheFirstRead(t *testing.T) {
 			t.Fatalf("config_generation_behind of settings at a lag of %v s: raised %v, want raised only past 5 s", lag, raised)
 		}
 	}
+	awaitWait(t, waited, "a retried pass")
 	if got := series(t, h, "dittofs_node_reconcile_errors_total", "shares"); got < 2 {
 		t.Errorf("share reconcile errors over seven turns of failing passes: got %v, want the passes retried", got)
 	}
