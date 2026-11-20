@@ -1569,7 +1569,7 @@ func TestRFC28C_SpareIsWholeOrAbsent(t *testing.T) {
 		// The spare's rename is held after its sync; the retirement of the
 		// full segment, whichever way it goes, syncs the directory and so
 		// makes the temporary name's entry durable.
-		g := journaltest.NewUnwatched(t)
+		g := journaltest.NewWith(t, roomySpares)
 		held := g.Seam.Hold(t, kit.OpRename, "*.spare.tmp")
 		recs, seg := fillSegment(t, g, 0, 0, size)
 		other := writeSynced(t, g, 1, 1, 0, size)
@@ -1728,7 +1728,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	// Below target: recycled by a rename, then the slots zeroed and synced,
 	// the old records' bytes still between them. Both streams roll, so the
 	// pool is empty and the recycled segment is the next take.
-	f := journaltest.New(t)
+	f := journaltest.NewWith(t, roomySpares)
 	held := f.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	recs, seg := fillSegment(t, f, 0, 0, size)
 	others, _ := fillSegment(t, f, 1, 1, size)
@@ -1932,6 +1932,13 @@ type recycled struct {
 	other  rec   // a record of file 1 on the other stream
 }
 
+// roomySpares is the spare target of a check that parks spare-making and then
+// takes a spare for each stream's lazily taken first segment and for each
+// stream's roll: the pool's own guarantee is one roll per stream, which does
+// not cover the first segment, and a take with the pool empty is refused at
+// once.
+func roomySpares(s *journal.Settings) { s.SpareTarget = 4 }
+
 // recycledSegment fills both streams' first segments with spare-making
 // parked, so the pool is empty, retires the first of them so it is recycled,
 // with the zeroing writes after its rename dropped, rolls file 0's stream
@@ -2100,7 +2107,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 	// A clean reopen, then, on a journal of its own, a crash: the clean
 	// close may seal the segment and truncate the old life away, so the
 	// crash leg starts from a fresh recycle.
-	f := journaltest.New(t)
+	f := journaltest.NewWith(t, roomySpares)
 	rc := recycledSegment(t, f)
 	recs := []rec{rc.first}
 	for n := range 3 {
@@ -2115,7 +2122,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 		t.Fatalf("recovery read %d segments by catalog with the recycled segment %d unsealed; its old life's trailer is no catalog", r.CatalogSegments, rc.id)
 	}
 
-	g := journaltest.NewUnwatched(t)
+	g := journaltest.NewUnwatchedWith(t, roomySpares)
 	rc = recycledSegment(t, g)
 	recs = []rec{rc.first}
 	for n := range 3 {
@@ -2133,7 +2140,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 
 	// A failed append into the recycled segment while a later one
 	// completes, after a record was synced there.
-	h := journaltest.NewUnwatched(t)
+	h := journaltest.NewUnwatchedWith(t, roomySpares)
 	rc = recycledSegment(t, h)
 	hh, id := h.Share(0), journaltest.File(2)
 	off := rc.first.extent.Off + size
@@ -2193,7 +2200,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 
 	// A crash keeping a later append and losing an earlier one: the earlier
 	// write is dropped at the seam, the later made durable by the device.
-	k := journaltest.NewUnwatched(t)
+	k := journaltest.NewUnwatchedWith(t, roomySpares)
 	rc = recycledSegment(t, k)
 	off = rc.first.extent.Off + size
 	schedule(t, k, kit.Dropping(kit.OpWrite, rc.name, 1))

@@ -356,9 +356,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The check stops in its setup: its second write''s segment stays unsealed past the idle-seal age, so the offload the row means to check is never reached. Idle sealing is built code, so the segment a check leaves idle is a defect in it; the report''s own legs wait on the offload epics.'
-  issue: '#3395'
-  message: 'segment 3 was not sealed once idle within 2s'
+  reason: 'The journal seals both writes idle and the check then stops at the stub call it reaches. Needs Offload with the incremental report, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: Offload'
 
 - test: TestRFC1C_LossSurvivesRestart
   status: fail
@@ -636,25 +636,25 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The check stops at its first write: with the spare''s rename held, the write is refused by the spare limit for want of a spare the journal never made, instead of waiting for the one mid-rename, before any of the row''s recovery or repack legs runs. The spare pool is built code, so a take that refuses a write rather than waiting is a defect in it.'
-  issue: '#3395'
-  message: 'write 65536 bytes at 0: journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
+  reason: 'The journal opens and runs the spare, retire and recycle legs; the check then stops at the stub call it reaches. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_RetiredSegmentsAreRecycled
   status: fail
   fix: planned
   category: feature
-  reason: 'The check stops at its first write: with spare-making held, the journal never makes one, and the write is refused by the spare limit with 1 segments missing, before any recycle leg runs. The spare pool is built code, so the take that refuses a write rather than waiting for the spare it is owed is a defect in it.'
-  issue: '#3395'
-  message: 'write 65536 bytes at 0: journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
+  reason: 'The journal opens and runs the spare, retire and recycle legs; the check then stops at the stub call it reaches. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead
   status: fail
   fix: planned
   category: feature
-  reason: 'The check stops in its recycled-segment setup: with spare-making held, the journal never makes one, and the first write is refused by the spare limit with 1 segments missing, before any catalog leg runs. The spare pool is built code, so the take that refuses a write rather than waiting for the spare it is owed is a defect in it.'
-  issue: '#3395'
-  message: 'write 65536 bytes at 0: journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
+  reason: 'The journal opens and runs the spare, retire and recycle legs; the check then stops at the stub call it reaches. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_StaleExtent
   status: fail
