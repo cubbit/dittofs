@@ -157,6 +157,13 @@ func (c *dirCache) LookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 	return c.lookupSIDs(ctx, sids, grace)
 }
 
+// Asking is the number of SIDs a query in flight is registered to.
+func (c *dirCache) Asking() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.asking)
+}
+
 // Waiting is the number of queries waiting for one of the 64 slots.
 func (c *dirCache) Waiting() int { return int(c.waiting.Load()) }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -989,4 +990,270 @@ func TestDirectoryCacheFollowsApply(t *testing.T) {
 	ask("grace zero, past the TTL", 3, false)
 	apply(func(st *identity.State) { st.Settings.DirectoryStaleGrace = 15 * time.Minute })
 	ask("grace 15 minutes, within it", 3, true)
+}
+
+// sidTerms is the SIDs the SID batch searches sent so far asked, each batch's
+// terms counted: a SID asked by two searches counts twice.
+func (e *dirEnv) sidTerms() int {
+	n := 0
+	for _, q := range e.f.Queries() {
+		if strings.HasPrefix(q.Filter, "(|") {
+			n += strings.Count(q.Filter, "(objectSid=")
+		}
+	}
+	return n
+}
+
+// Concurrent lookups whose SID sets overlap, {alice, bob} and {bob, carol},
+// share one query per SID (RFC 18 §5.2): bob is asked once, by the query the
+// first lookup opened, and the second asks only carol. When the shared query
+// fails, the second lookup's bob is answered as a failed query is: served
+// stale within the grace, refused with no entry to serve.
+func TestDirectoryCacheSIDsShareOneQueryPerSID(t *testing.T) {
+	t.Run("answered", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			e, c, sid := sidEnv(t)
+			// The first SID batch search waits a second, so the second lookup
+			// asks while it is in flight.
+			e.fail(t, sim.Rule{Op: "search", Key: "(|*", Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+			sets := [][]string{{"alice", "bob"}, {"bob", "carol"}}
+			type result struct {
+				got []directory.Answer
+				err error
+			}
+			res := make([]chan result, len(sets))
+			for i, names := range sets {
+				res[i] = make(chan result, 1)
+				go func() {
+					got, err := c.LookupSIDs(context.Background(), [][]byte{sid[names[0]], sid[names[1]]}, 0)
+					res[i] <- result{got, err}
+				}()
+				synctest.Wait()
+			}
+			e.clock.Advance(time.Second)
+			for i, names := range sets {
+				r := <-res[i]
+				if r.err != nil || len(r.got) != 2 {
+					t.Fatalf("LookupSIDs(%v) = %d answers, %v; want 2", names, len(r.got), r.err)
+				}
+				for j, a := range r.got {
+					if string(a.SID) != string(sid[names[j]]) {
+						t.Errorf("LookupSIDs(%v) answer %d holds SID %x, want %s's %x", names, j, a.SID, names[j], sid[names[j]])
+					}
+				}
+			}
+			if got := e.sidTerms(); got != 3 {
+				t.Errorf("SIDs asked by the batch searches %d, want 3: bob asked once", got)
+			}
+			e.wantQueries(t, 5, "three names and two SID batches")
+		})
+	})
+	for _, tc := range []struct {
+		name      string
+		warm      bool // every SID looked up, and expired, before the overlap
+		wantErr   bool
+		wantStale float64
+	}{
+		{"failed, served stale", true, false, 3},
+		{"failed, refused", false, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				e, c, sid := sidEnv(t)
+				if tc.warm {
+					if got, err := c.LookupSIDs(context.Background(), [][]byte{sid["alice"], sid["bob"], sid["carol"]}, 0); err != nil || len(got) != 3 {
+						t.Fatalf("LookupSIDs(alice, bob, carol) = %d answers, %v; want 3", len(got), err)
+					}
+					e.clock.Advance(6 * time.Minute) // past the TTL, within the grace
+				}
+				// The first SID batch search, {alice, bob}, is held until the
+				// query timeout and fails; carol's is answered.
+				e.fail(t, sim.Rule{Op: "search", Key: "(|*", Count: 1, Action: sim.FaultAction{Err: identitytest.ErrHold}})
+				first := make(chan error, 1)
+				go func() {
+					_, err := c.LookupSIDs(context.Background(), [][]byte{sid["alice"], sid["bob"]}, 15*time.Minute)
+					first <- err
+				}()
+				synctest.Wait()
+				second := make(chan error, 1)
+				var got []directory.Answer
+				go func() {
+					var err error
+					got, err = c.LookupSIDs(context.Background(), [][]byte{sid["bob"], sid["carol"]}, 15*time.Minute)
+					second <- err
+				}()
+				synctest.Wait()
+				e.clock.Advance(5 * time.Second)
+				if err := <-first; (err != nil) != tc.wantErr {
+					t.Errorf("LookupSIDs(alice, bob) with its query failed = %v, want an error %v", err, tc.wantErr)
+				}
+				err := <-second
+				if tc.wantErr {
+					if !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+						t.Errorf("LookupSIDs(bob, carol) with the shared query failed and bob never answered = %d answers, %v; want none, ErrUnavailable", len(got), err)
+					}
+				} else if err != nil || len(got) != 2 {
+					t.Errorf("LookupSIDs(bob, carol) with the shared query failed = %d answers, %v; want bob stale and carol", len(got), err)
+				}
+				if got := e.resultsOf(t, "sid")["stale"]; got != tc.wantStale {
+					t.Errorf("SID lookups counted stale %v, want %v", got, tc.wantStale)
+				}
+				if got, want := e.sidTerms(), map[bool]int{true: 6, false: 3}[tc.warm]; got != want {
+					t.Errorf("SIDs asked by the batch searches %d, want %d: bob asked once by the overlap", got, want)
+				}
+			})
+		})
+	}
+}
+
+// A lookup fails ambiguous only when its own query holds the SID two entries
+// hold: with a twin holding carol's SID, {carol, alice} fails ambiguous, and
+// {alice, bob}, which joined its query for alice, asks alice again in a query
+// of its own and is answered for both.
+func TestDirectoryCacheSIDsAmbiguityStaysWithItsLookup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e, c, sid := sidEnv(t)
+		e.d.AddUser(t, "twin", map[string][][]byte{"objectSid": {sid["carol"]}})
+		// The first SID batch search waits a second, so the second lookup
+		// joins it for alice.
+		e.fail(t, sim.Rule{Op: "search", Key: "(|*", Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+		first := make(chan error, 1)
+		go func() {
+			_, err := c.LookupSIDs(context.Background(), [][]byte{sid["carol"], sid["alice"]}, 15*time.Minute)
+			first <- err
+		}()
+		synctest.Wait()
+		second := make(chan error, 1)
+		var got []directory.Answer
+		go func() {
+			var err error
+			got, err = c.LookupSIDs(context.Background(), [][]byte{sid["alice"], sid["bob"]}, 15*time.Minute)
+			second <- err
+		}()
+		synctest.Wait()
+		e.clock.Advance(time.Second)
+		if err := <-first; !errors.Is(err, directory.ErrAmbiguous) {
+			t.Errorf("LookupSIDs(carol, alice) with a twin holding carol's SID = %v, want ErrAmbiguous", err)
+		}
+		if err := <-second; err != nil || len(got) != 2 {
+			t.Fatalf("LookupSIDs(alice, bob), joined to the ambiguous query for alice = %d answers, %v; want 2", len(got), err)
+		}
+		for i, n := range []string{"alice", "bob"} {
+			if string(got[i].SID) != string(sid[n]) {
+				t.Errorf("LookupSIDs(alice, bob) answer %d holds SID %x, want %s's %x", i, got[i].SID, n, sid[n])
+			}
+		}
+		if got := e.resultsOf(t, "sid")["ambiguous"]; got != 1 {
+			t.Errorf("SID lookups counted ambiguous %v, want 1", got)
+		}
+	})
+}
+
+// The cache owns the SIDs it asks: a caller that leaves while its query is in
+// flight and then reuses its buffer changes neither the query's SIDs nor
+// what the cache holds, and the next lookup of the SID is answered.
+func TestDirectoryCacheSIDsOwnsItsKeys(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e, c, sid := sidEnv(t)
+		e.fail(t, sim.Rule{Op: "search", Key: "(|*", Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+		buf := slices.Clone(sid["alice"])
+		ctx, cancel := context.WithCancel(context.Background())
+		left := make(chan error, 1)
+		go func() {
+			_, err := c.LookupSIDs(ctx, [][]byte{buf}, 15*time.Minute)
+			left <- err
+		}()
+		synctest.Wait()
+		cancel()
+		if err := <-left; !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Fatalf("LookupSIDs(alice) by a caller that left = %v, want ErrUnavailable", err)
+		}
+		clear(buf)
+		e.clock.Advance(time.Second)
+		synctest.Wait()
+		if got := c.Asking(); got != 0 {
+			t.Fatalf("SIDs registered to a query in flight after it landed %d, want 0", got)
+		}
+		if got, err := c.LookupSIDs(context.Background(), [][]byte{sid["alice"]}, 15*time.Minute); err != nil || len(got) != 1 || string(got[0].SID) != string(sid["alice"]) {
+			t.Errorf("LookupSIDs(alice) after the caller reused its buffer = %d answers, %v; want alice", len(got), err)
+		}
+	})
+}
+
+// Forty lookups over overlapping SID sets, started together while the SID
+// searches are held a second, every fifth leaving early: every lookup
+// returns, each that stays is answered for its whole set in order, and no
+// SID is left registered to a query once all have landed.
+func TestDirectoryCacheSIDsOverlapUnderLoad(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newDirEnv(t)
+		const users, lookups = 8, 40
+		for i := range users {
+			e.d.AddUser(t, fmt.Sprintf("u%d", i), nil)
+		}
+		c := e.cache(t)
+		var sids [][]byte
+		for i := range users {
+			a, _, err := lookup(c, fmt.Sprintf("u%d", i), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sids = append(sids, a.SID)
+		}
+		e.fail(t, sim.Rule{Op: "search", Key: "(|*", Action: sim.FaultAction{Delay: time.Second}})
+		type result struct {
+			i   int
+			got []directory.Answer
+			err error
+		}
+		set := func(i int) [][]byte { return [][]byte{sids[i%users], sids[(i+1)%users], sids[(i+3)%users]} }
+		res := make(chan result, lookups)
+		cancels := make([]context.CancelFunc, lookups)
+		for i := range lookups {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancels[i] = cancel
+			go func() {
+				got, err := c.LookupSIDs(ctx, set(i), 0)
+				res <- result{i, got, err}
+			}()
+		}
+		synctest.Wait()
+		for i := 0; i < lookups; i += 5 {
+			cancels[i]()
+		}
+		for n, steps := 0, 0; n < lookups; {
+			select {
+			case r := <-res:
+				n++
+				if r.i%5 == 0 {
+					if r.err != nil && !errors.Is(r.err, vfserr.ErrUnavailable) {
+						t.Errorf("lookup %d, left early = %v, want an answer or ErrUnavailable", r.i, r.err)
+					}
+					continue
+				}
+				if r.err != nil || len(r.got) != 3 {
+					t.Errorf("lookup %d = %d answers, %v; want 3", r.i, len(r.got), r.err)
+					continue
+				}
+				for j, a := range r.got {
+					if want := set(r.i)[j]; string(a.SID) != string(want) {
+						t.Errorf("lookup %d answer %d holds SID %x, want %x", r.i, j, a.SID, want)
+					}
+				}
+			default:
+				if steps++; steps > 30 {
+					t.Fatalf("%d of %d lookups returned after %d held seconds", n, lookups, steps-1)
+				}
+				synctest.Wait()
+				e.clock.Advance(time.Second)
+			}
+		}
+		synctest.Wait()
+		if got := c.Asking(); got != 0 {
+			t.Errorf("SIDs registered to a query in flight after every lookup returned %d, want 0", got)
+		}
+		for _, cancel := range cancels {
+			cancel()
+		}
+	})
 }
