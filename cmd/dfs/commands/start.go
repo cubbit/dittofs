@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -23,8 +24,9 @@ func newStartCmd() *cobra.Command {
 		Long: `Start the DittoFS server in the foreground with the specified configuration.
 
 The server runs until it receives SIGINT or SIGTERM, then stops and exits
-zero once every part stopped. Run it under a process supervisor (systemd,
-Docker) to keep it in the background.
+zero once every part stopped. A start that fails for its own reason exits
+non-zero, even when a signal arrived while it failed. Run it under a
+process supervisor (systemd, Docker) to keep it in the background.
 
 Examples:
   # Start with the default configuration
@@ -60,15 +62,26 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if configPath == "" {
-		// decision: v1's XDG default database, $XDG_CONFIG_HOME/dittofs/controlplane.db,
-		// is probed only without --config, as the file beside the default
-		// bootstrap; a --config elsewhere probes beside that file and at the
-		// fixed /data paths only. Overturned by a v1 deployment that kept its
-		// database at the XDG default while its bootstrap moved elsewhere.
-		configPath = bootstrap.GetDefaultConfigPath()
+		// decision: the v1 check probes beside the bootstrap MustLoad read:
+		// --config's, else DITTOFS_CONFIG's, else the default. So v1's XDG
+		// default database, $XDG_CONFIG_HOME/dittofs/controlplane.db, is probed
+		// only when neither names a file; a bootstrap named elsewhere probes
+		// beside that file and at the fixed /data paths only. Overturned by a
+		// v1 deployment that kept its database at the XDG default while its
+		// bootstrap moved elsewhere.
+		configPath = cmp.Or(os.Getenv("DITTOFS_CONFIG"), bootstrap.GetDefaultConfigPath())
 	}
 	// The v1 check reads nothing of the bootstrap, so it runs before the
 	// bootstrap's own checks: over a v1 directory it is the first refusal.
+	//
+	// decision: it still runs after MustLoad, which needs --config's path,
+	// and before InitLogger, so a v1 bootstrap that this version's load
+	// refuses gets that config error, not the v1 refusal, and the check's
+	// permission warning goes to the default handler, as text on stderr,
+	// not to the configured log. Both are safe, as nothing is opened yet.
+	// Overturned if operators upgrading from v1 report the config error as
+	// unhelpful: then the check moves before MustLoad, deriving the path
+	// from the flag alone.
 	if err := refuseV1(filepath.Join(filepath.Dir(configPath), "controlplane.db"), v1Databases()); err != nil {
 		return err
 	}
@@ -83,7 +96,17 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	for _, j := range cfg.Journals {
 		devices = append(devices, j.Path)
 	}
-	if err := node.Preflight(ctx, cfg.Metadata.Badger.Path, cfg.Blockstore.Journal.Path, devices, clock); err != nil {
+	stage(base, stagePreflight, ctx)
+	err = node.Preflight(ctx, cfg.Metadata.Badger.Path, cfg.Blockstore.Journal.Path, devices, clock)
+	stage(base, stagePreflightReturned, ctx)
+	if err != nil {
+		// A check the signal cancelled ends the start on the signal: nothing
+		// is open yet, so the command exits zero as a stopped start does. A
+		// refusal of the check's own exits non-zero under a signal too.
+		if ctx.Err() != nil && base.Err() == nil && onlyCanceled(err) {
+			slog.Info("dfs: the start ended on a termination signal", "err", err)
+			return nil
+		}
 		return fmt.Errorf("the start check: %w", err)
 	}
 	// The tracing provider is built after the start's refusals, so a refused
@@ -115,13 +138,12 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("building the node: %w", err)
 	}
 
+	stage(base, stageStart, ctx)
 	startErr := n.Start(ctx)
 	if startErr == nil {
 		<-ctx.Done()
 	}
-	if f, ok := base.Value(startReturnedKey{}).(func(context.Context)); ok {
-		f(ctx)
-	}
+	stage(base, stageStartReturned, ctx)
 	signalled := ctx.Err() != nil && base.Err() == nil
 	// ended decides both the record below and the exit code, so the tests
 	// that read the record read the value the exit code is answered from.
@@ -139,11 +161,28 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	return answer(startErr, ended, stopErr)
 }
 
-// startReturnedKey keys a hook in the command's context that runs once Start
-// returned, given the signal context, before the command reads whether a
-// signal arrived: a test delivers a signal there to reach a start that failed
-// for its own reason under a signal. Production sets none.
-type startReturnedKey struct{}
+// stageKey keys a hook in the command's context that runs at each stage of
+// runStart, given the stage and the signal context: a test delivers a signal
+// there, so it lands at a known stage rather than at a timing. Production
+// sets none.
+type stageKey struct{}
+
+// The stages a stageKey hook is called at: before the start check and once
+// it returned, and before Start and once it returned, each "returned" stage
+// before the command reads whether a signal arrived.
+const (
+	stagePreflight         = "preflight"
+	stagePreflightReturned = "preflight-returned"
+	stageStart             = "start"
+	stageStartReturned     = "start-returned"
+)
+
+// stage runs base's stageKey hook, if any, at name.
+func stage(base context.Context, name string, signal context.Context) {
+	if f, ok := base.Value(stageKey{}).(func(string, context.Context)); ok {
+		f(name, signal)
+	}
+}
 
 // endedBySignal reports whether a termination signal, not a failure of its
 // own, ended a start that failed: a signal arrived and every error Start
