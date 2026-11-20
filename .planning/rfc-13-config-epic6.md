@@ -445,7 +445,7 @@ docs/guide/install.md            T6.9  the two steps
 
 ### T6.6 "§5 propagation" and "§5.5 dead node"'s single-node part
 
-**Subtask T6.6 estimate: 1 man-day.**
+**Subtask T6.6 estimate: 1 man-days.**
 
 - **Track:** the team. **Depends on:** T6.2's caller; E5's T5.3; E2's T2.8.
 - **Covers:** R25, R26.
