@@ -5,7 +5,6 @@ import (
 	"encoding"
 	"encoding/json"
 	"errors"
-	"io"
 	"reflect"
 	"slices"
 	"strconv"
@@ -27,11 +26,14 @@ func (e *fieldError) Unwrap() error { return vfserr.ErrInvalid }
 // match a key to a field ignoring case and keep the last of a repeated key,
 // so a client's {"Name":…} beside {"name":…} would change nothing it can
 // see. An empty body is the empty request: v keeps its zero value.
-func decode(r io.Reader, v any) error {
-	b, err := io.ReadAll(r)
-	if err != nil {
-		return &fieldError{detail: err.Error()}
-	}
+//
+// decision: decode reads b in place, so a caller clearing b clears the one
+// copy it holds of a credential; clearing is best effort past that, since
+// checkKeys turns values into strings and encoding/json may copy what it
+// decodes, neither of which can be cleared. Overturned if a secret must
+// never outlive the request in memory, which needs a decoder that copies
+// nothing.
+func decode(b []byte, v any) error {
 	if len(bytes.TrimSpace(b)) == 0 {
 		return nil
 	}

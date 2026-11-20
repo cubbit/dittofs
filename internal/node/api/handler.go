@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -128,7 +129,11 @@ func call[B any](h func(context.Context, request[B]) (answer, error)) adapter {
 // maxBody bytes of it.
 func decodeRequest[B any](r *http.Request, id [16]byte) (request[B], error) {
 	rq := request[B]{ID: id}
-	return rq, decode(http.MaxBytesReader(nil, r.Body, maxBody), &rq.Body)
+	b, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
+	if err != nil {
+		return rq, &fieldError{detail: err.Error()}
+	}
+	return rq, decode(b, &rq.Body)
 }
 
 // jsonOr is 200 with v, or err.

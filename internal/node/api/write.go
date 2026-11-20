@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/hkdf"
@@ -167,7 +166,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			s.audits.WithLabelValues("applied").Inc()
 			return nil
 		}
-		err = decode(bytes.NewReader(body), &rq.Body)
+		err = decode(body, &rq.Body)
 		if s.seen != nil {
 			s.seen(&rq.Body)
 		}
@@ -262,7 +261,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 					return err
 				}
 				rq.Body = *new(B)
-				if err := decode(bytes.NewReader(b), &rq.Body); err != nil {
+				if err := decode(b, &rq.Body); err != nil {
 					return err
 				}
 			}

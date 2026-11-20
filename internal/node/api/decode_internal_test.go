@@ -53,7 +53,7 @@ func TestDecodeIsStrict(t *testing.T) {
 		{`{"name":`, "", false},
 	} {
 		var s sample
-		err := decode(strings.NewReader(tc.body), &s)
+		err := decode([]byte(tc.body), &s)
 		if tc.ok {
 			if err != nil {
 				t.Errorf("%s: refused %v, want accepted", tc.body, err)
@@ -114,7 +114,7 @@ func TestDecodeWrongTypeInJSONTerms(t *testing.T) {
 	} {
 		var s sample
 		var f *fieldError
-		if err := decode(strings.NewReader(tc.body), &s); !errors.As(err, &f) || f.detail != tc.detail {
+		if err := decode([]byte(tc.body), &s); !errors.As(err, &f) || f.detail != tc.detail {
 			t.Errorf("%s: got %v, want detail %q", tc.body, err, tc.detail)
 		}
 	}
@@ -142,7 +142,7 @@ func FuzzDecode(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
 		var got sample
-		err := decode(bytes.NewReader(b), &got)
+		err := decode(b, &got)
 		if err != nil {
 			var fe *fieldError
 			if !errors.As(err, &fe) {
@@ -161,7 +161,7 @@ func FuzzDecode(f *testing.F) {
 			t.Fatal(err)
 		}
 		var again sample
-		if err := decode(bytes.NewReader(out), &again); err != nil || !reflect.DeepEqual(again, got) {
+		if err := decode(out, &again); err != nil || !reflect.DeepEqual(again, got) {
 			t.Fatalf("re-encoded %s decodes to %+v (%v), want %+v", out, again, err, got)
 		}
 	})
@@ -273,7 +273,7 @@ func TestMergePatchNullResetsToDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	var s sample
-	if err := decode(bytes.NewReader(out), &s); err != nil {
+	if err := decode(out, &s); err != nil {
 		t.Fatal(err)
 	}
 	if s.Size != 0 || s.Name != "a" || !reflect.DeepEqual(s.Tags, []string{"y"}) {
@@ -284,7 +284,7 @@ func TestMergePatchNullResetsToDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	var f *fieldError
-	if err := decode(bytes.NewReader(out), &s); !errors.As(err, &f) || f.field != "Name" {
+	if err := decode(out, &s); !errors.As(err, &f) || f.field != "Name" {
 		t.Errorf("patch {\"Name\":\"new\"} over {\"name\":\"old\"}: decoding %s got %v, want refused naming Name", out, err)
 	}
 }
