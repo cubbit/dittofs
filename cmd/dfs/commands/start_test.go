@@ -507,6 +507,21 @@ func TestStartProbesV1Layouts(t *testing.T) {
 				}
 			}
 
+			// Without a v1 layout the start goes on to open the journal in
+			// roots["device"], under the platform's own check, so a host whose
+			// mount that check refuses skips the row, as installation does.
+			if !tc.refused {
+				scratch := filepath.Join(dir, "scratch")
+				if err := os.Mkdir(scratch, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := journal.Init(t.Context(), scratch, [16]byte{1}); errors.Is(err, journal.ErrUnsuitableStorage) {
+					t.Skipf("the journal's platform check refuses the mount holding %s (%v); set TMPDIR to a directory on a suitable mount", dir, err)
+				} else if err != nil {
+					t.Fatalf("journal init on the scratch directory: %v", err)
+				}
+			}
+
 			writeV1Layout(t, roots[tc.at])
 
 			file := bootstrapFile{
