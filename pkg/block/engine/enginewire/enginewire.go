@@ -91,14 +91,16 @@ func noTrace(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, fu
 // supplied it, so an untraced or unlogged journal passes neither option and
 // the journal's nil-guarded emitters pay nothing.
 func journalOptions(p Params, expect journal.JournalID) []journal.Option {
-	opts := append([]journal.Option{journal.WithClock(p.Clock)}, p.Journal...)
+	opts := []journal.Option{journal.WithClock(p.Clock)}
 	if p.Tracer != nil {
 		opts = append(opts, journal.WithTracer(journalTracer(p.Tracer, expect)))
 	}
 	if p.Logger != nil {
 		opts = append(opts, journal.WithLogger(p.Logger.With("journal", hex.EncodeToString(expect[:]))))
 	}
-	return opts
+	// The caller's own options come last, so one it names itself, a logger or
+	// a tracer, replaces the one derived from the node's.
+	return append(opts, p.Journal...)
 }
 
 // journalTracer adapts the host's OpenTelemetry tracer to the journal's own
