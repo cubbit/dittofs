@@ -43,6 +43,10 @@ type Loss struct {
 	// and publishes it but raises nothing.
 	Raised bool
 
+	// Counted says the caller already moved the corrupt counters for this
+	// loss, so Lose counts nothing for it.
+	Counted bool
+
 	// Marked says the caller already left the marker of a synced loss, so
 	// Lose leaves none.
 	Marked bool
@@ -279,6 +283,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 		d.dir.raise()
 	}
 	switch {
+	case l.Counted:
 	case l.Reason == core.LossCorrupt && !l.Offloaded:
 		d.corruptDataLoss++
 	case l.Reason == core.LossCorrupt:
