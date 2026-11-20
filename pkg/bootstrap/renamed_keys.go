@@ -107,6 +107,16 @@ var retiredAliases = map[string]string{
 	"blockstore.local": "blockstore.journal",
 }
 
+// retiredEnvNames are names no key ever had, refused under a rule of their
+// own: DITTOFS_CONTROLPLANE_SECRET was a v1 alias of a key, and
+// DITTOFS_ADMIN_INITIAL_PASSWORD was read by the start itself, so without its
+// entry the admin family's rule would read it.
+var retiredEnvNames = map[string]string{
+	"DITTOFS_ADMIN_INITIAL_PASSWORD": "no longer read; pass dfs init --admin-password-env <name> " +
+		"or --admin-password-file",
+	"DITTOFS_CONTROLPLANE_SECRET": dropout,
+}
+
 // retiredRule is the rule of a key of the v1 table, matched exactly as
 // written: a key in another case is an unknown key, never a retired one.
 // The longest entry that covers the key wins.

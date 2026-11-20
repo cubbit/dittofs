@@ -102,7 +102,7 @@ start_dittofs() {
     local data="$DATA/dittofs"
     mkdir -p "$data"
     cat >"$RUN/config.yaml" <<EOF
-logging: { level: INFO, format: text, output: stdout }
+logging: { level: info, format: text, output: stdout }
 controlplane:
   port: $PORT_API
   jwt: { secret: "$(secret)$(secret)" }
@@ -115,11 +115,13 @@ EOF
     # The first start creates the NFS and SMB adapters on their default ports, which another server
     # on the host may hold. So it runs in a network namespace of its own (setup_boot), where the
     # stores, the user, the share and the adapters are set up, and the measured server is the second
-    # start. The admin password goes through the environment only, not as an argument (of env either).
-    DITTOFS_ADMIN_INITIAL_PASSWORD="$(secret)"
-    export DITTOFS_ADMIN_INITIAL_PASSWORD
+    # start. The admin password goes through the environment only, under the script's own name, not as
+    # an argument (of env either). dfs start no longer reads it, and this launcher starts no usable
+    # server until it runs dfs init, which sets the first one.
+    NIGHT_ADMIN_PASSWORD="$(secret)"
+    export NIGHT_ADMIN_PASSWORD
     dfs_env unshare --net "$HERE/night.sh" setup_boot "$data" >>"$RES/dfs-setup.log" 2>&1 9<&-
-    unset DITTOFS_ADMIN_INITIAL_PASSWORD
+    unset NIGHT_ADMIN_PASSWORD
     env HOME="$RUN" XDG_CONFIG_HOME="$RUN/config" XDG_STATE_HOME="$RUN/state" \
         setsid "$WORK/build/bin/dfs" start --config "$RUN/config.yaml" >>"$RES/dfs.log" 2>&1 </dev/null 9<&- &
     echo "$!" >"$RUN/pid"
@@ -142,7 +144,7 @@ setup_boot() {
     DFS=$!
     trap 'kill "$STUB" "$DFS" 2>/dev/null; wait' EXIT
     for _ in $(seq 60); do
-        printf '%s\n' "$DITTOFS_ADMIN_INITIAL_PASSWORD" | dfsctl login --server "$api" --username admin >/dev/null 2>&1 && break
+        printf '%s\n' "$NIGHT_ADMIN_PASSWORD" | dfsctl login --server "$api" --username admin >/dev/null 2>&1 && break
         sleep 0.5
     done
     dfsctl adapter edit nfs --enabled false
@@ -150,7 +152,7 @@ setup_boot() {
     dfsctl store block add --name s3 --type s3 --config "{\"endpoint\":\"http://127.0.0.1:$PORT_DEAD\",\"bucket\":\"perf\",\"access_key_id\":\"perf\",\"secret_access_key\":\"unreachable\",\"allow_private_endpoint\":true}"
     # dfsctl takes a new user's password only as an argument, or twice at a prompt that a pipe can't
     # answer, so the user comes from the API. The passwords are hex, so they need no JSON escaping.
-    token="$(printf 'data = "{\\"username\\":\\"admin\\",\\"password\\":\\"%s\\"}"\n' "$DITTOFS_ADMIN_INITIAL_PASSWORD" |
+    token="$(printf 'data = "{\\"username\\":\\"admin\\",\\"password\\":\\"%s\\"}"\n' "$NIGHT_ADMIN_PASSWORD" |
         curl -sf -K - -H 'Content-Type: application/json' "$api/api/v1/auth/login" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
     printf 'header = "Authorization: Bearer %s"\ndata = "{\\"username\\":\\"%s\\",\\"password\\":\\"%s\\",\\"uid\\":%s,\\"gid\\":%s,\\"role\\":\\"user\\"}"\n' \
         "$token" "$PERF_USER" "$PASSWORD" "$(id -u "$PERF_USER")" "$(id -g "$PERF_USER")" |
