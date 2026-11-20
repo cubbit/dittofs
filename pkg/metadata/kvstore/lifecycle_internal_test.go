@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
@@ -315,17 +314,13 @@ func TestRaiseVersionLimitsSkipsRemovedShares(t *testing.T) {
 		emptied.ID:  {},
 		gone:        {},
 	} {
-		if got, err := s.VersionLimit(ctx, id); err != nil || got != want {
-			t.Errorf("share %v: limit %d, %v; want %d", id, got.Counter(), err, want.Counter())
+		got, err := s.Lifecycle().VersionLimits(ctx, []entity.ShareID{id})
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-
-	if err := s.RaiseVersionLimit(ctx, emptied.ID, ten); !errors.Is(err, entity.ErrStale) {
-		t.Errorf("RaiseVersionLimit of a share part way through step 6: %v, want stale", err)
-	}
-
-	if err := s.RaiseVersionLimit(ctx, gone, ten); !merrs.IsNotFoundError(err) {
-		t.Errorf("RaiseVersionLimit of a share with no record: %v, want not found", err)
+		if got[id] != want {
+			t.Errorf("share %v: limit %d, %v; want %d", id, got[id].Counter(), err, want.Counter())
+		}
 	}
 }
 

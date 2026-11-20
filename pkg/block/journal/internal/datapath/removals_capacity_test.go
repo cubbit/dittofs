@@ -191,6 +191,54 @@ func TestRemovalRefusedByTheIndexDrawsNoVersion(t *testing.T) {
 	}
 }
 
+// TestRefusedReleaseCountsOneIndexRefusal checks that a release record
+// refused at the removal ceiling counts as one refusal naming the index, so
+// index_refusals covers releases that split a held extent as it does
+// content writes and splitting removals. The release is driven through
+// remove's own admission — the headroom's, the index's pre-check — readonly,
+// which is what the journal's own Release will call: the refusal returns
+// before any release is applied, so nothing beyond the admission runs.
+func TestRefusedReleaseCountsOneIndexRefusal(t *testing.T) {
+	ctx := context.Background()
+	const limit = 80
+	const ceiling = limit + limit/8
+	c, seam := newTestCore(t, func(o *coreOptions) { o.extentLimit = limit })
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	mustWrite(t, c, s, f, 0, make([]byte, 3*4096))
+	// Lift the count to the ceiling through removals that ask no admission
+	// of their own, as the refused removal's test above pads it.
+	other := testFile(2)
+	for k := int64(0); len(c.Index().FileEntries(other)) < ceiling; k++ {
+		at := index.RecordAt{Segment: core.SegmentID(1 + k/16), Offset: uint32(k%16) * 8}
+		if _, _, err := c.Index().ApplyRemoval(s.Tag, other, core.ChangeDeallocate, core.Extent{Off: k * 8, Len: 8}, ver(uint64(k)+1), core.Seq(uint64(k)+1), at, nil); err != nil {
+			t.Fatalf("padding the count: %v", err)
+		}
+	}
+	// The release's spec, as the removal call the journal's Release will
+	// make: the class draws the headroom's reserve for a release record,
+	// and the index pre-checks its extent for a split.
+	spec := removal{
+		class:  capacity.Release,
+		kind:   format.KindRelease,
+		header: core.Extent{Off: 4096, Len: 4096},
+		marker: core.Extent{Off: 4096, Len: 4096},
+	}
+	spec.bad = shapeError(spec.marker)
+	next, writes := c.counters.NextVersion(), seam.Calls(kit.OpWrite)
+	_, err := c.remove(ctx, s, f, spec)
+	_ = refused(t, err, core.LimitIndex)
+	if got := c.Index().Refused(); got != 1 {
+		t.Fatalf("index_refusals = %d after the refused release, want 1", got)
+	}
+	if got := c.counters.NextVersion(); got != next {
+		t.Fatalf("the refused release drew a version: next is %v, was %v", got, next)
+	}
+	if got := seam.Calls(kit.OpWrite); got != writes {
+		t.Fatalf("the refused release made %d record writes", got-writes)
+	}
+}
+
 // TestRemovalAppliesPastTheBoundWhenItsPreCheckWonTheRace parks a removal
 // after its pre-check but before its record is written, raises the index's
 // count past the removal ceiling from another file meanwhile, and releases
