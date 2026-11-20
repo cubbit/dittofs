@@ -769,7 +769,10 @@ func TestDirectoryCacheSIDsFailWhole(t *testing.T) {
 		if got := e.resultsOf(t, "sid"); got["ambiguous"] != 1 || got["stale"] != 0 {
 			t.Errorf("SID lookups counted ambiguous %v, stale %v; want 1 and 0", got["ambiguous"], got["stale"])
 		}
-		mustFind(t, c, "bob") // no outage raised: an unrelated lookup still queries
+		// No outage raised: a user no entry holds yet is still asked, where a
+		// raised outage would refuse it unsent.
+		e.d.AddUser(t, "dave", nil)
+		mustFind(t, c, "dave")
 	})
 }
 
