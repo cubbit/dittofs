@@ -455,7 +455,7 @@ There is no test-foundations epic (see the header).
 **Done when:**, or split into halves each epic names ("NTLM MIC" and "NTLM domain" between epics 4
 and 7, "logon throttle" between epic 4, for its local user, and epic 7, for the domain controller's
 count, "NTLM off" between epics 8 and 9, "root" between epic 6 and the deferred NFS side). The
-NETLOGON wire rows RFC 18 §10's "Where the in-memory ones stand in" names, "rogue domain controller" and "NETLOGON wire", run
+NETLOGON wire rows RFC 18 §10's "Where the in-memory ones stand in" names, "rogue domain controller", "zeroed secure channel reply" and "NETLOGON wire", run
 in `integration/ad-dc` only (D11). The Tier 2 rows run through the SMB adapter, so they land in the E2E green epic; Tier
 1 rows that need several middle epics land in the integration epic. Two Tier 2 rows need no adapter,
 and the integration epic runs them in-process against identity: "admin needs proof" (its Kerberos
@@ -902,9 +902,10 @@ answers LDAP requests as a directory does, parsing and evaluating RFC 4515 filte
 queries" fails on a bad escape. The in-memory domain controller stands in above the NETLOGON client:
 it takes the pass-through logon, the account's creation, the password set and the probe whether a
 password is accepted, and answers with their results. Below it, the server-credential check, the
-retry only before the request was sent, the AES-only negotiation and the sealed channel are the
-client's own code, which a double there would replace, so their rows, "rogue domain controller"
-and "NETLOGON wire", run only against a real domain controller in `integration/ad-dc`, through a
+secure channel's challenge and credential refusals, the retry only before the request was sent,
+the AES-only negotiation and the sealed channel are the client's own code, which a double there
+would replace, so their rows, "rogue domain controller", "zeroed secure channel reply" and
+"NETLOGON wire", run only against a real domain controller in `integration/ad-dc`, through a
 fault wrapper around the client's connection to it that tears the connection or changes a reply's
 bytes on cue. A second domain's controller would not do for "rogue domain controller": it refuses
 the client's credential before the client checks the server's. What each suite holds to real AD is RFC 18 §10's "Where the in-memory ones stand in". A domain controller that
@@ -1491,8 +1492,8 @@ the keytab derived from it.
   "logon throttle" (the domain controller's count), "derived keytab", "online join", "offline join"
   and "machine account health" pass, and "derived keytab" also in `integration/ad-dc`, since the
   in-memory domain controller agrees with whatever salt and key version number are written;
-- the NETLOGON wire rows "rogue domain controller" and "NETLOGON wire" pass in `integration/ad-dc`
-  only, through the fault wrapper around the client's connection (D11);
+- the NETLOGON wire rows "rogue domain controller", "zeroed secure channel reply" and "NETLOGON
+  wire" pass in `integration/ad-dc` only, through the fault wrapper around the client's connection (D11);
 - the NETLOGON reply decoder's fuzz target (rule 2) runs in `unit`;
 - the domain controller's suite passes in `unit` and in `integration/ad-dc`;
 - the §1.4 scenario assigned to epic 7 passes in `integration/ad-dc`.

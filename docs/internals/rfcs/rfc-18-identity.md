@@ -395,7 +395,10 @@ Giving an API-only account a file spelling — any scheme but `oidc` — makes i
 file user, and allocates the file spellings it still lacks in the same
 transaction. A machine principal is never given one: a machine that needs file
 access is linked to a user instead, by moving its `krb` spelling to that user
-(§4.2), and its next sign-in binds to the user (§3.1).
+(§4.2), and its next sign-in binds to the user (§3.1). The move deletes the
+machine record: the write that moves the spelling marks the machine deleted and
+starts its deletion
+([RFC 23 §3.5](rfc-23-control-plane.md#3.5%20Users%2C%20groups%2C%20grants%20and%20netgroups)).
 
 *Example.* The bootstrap administrator `admin` and a CI account `deployer` can
 create shares and grants, but cannot mount one.
@@ -563,8 +566,11 @@ only the store's value types (`entity`), the SID codec, `vfserr`, and
 holds the value
 types (`Identity`, `ProofKind`, `Protection`, `Claims`, `Evidence`, `Keys`,
 `SignInStep`, `SignInResult`, `Caller`, `Spelling`, `Scheme`, `SID`,
-`NTLMAuthenticate`), the interfaces of §3.1, §4.1, §6.1 and §8.1, and
-`NewHashes`. Its errors, `ErrLogonFailure` and `ErrUnknownPrincipal`, are
+`NTLMAuthenticate`, `KeytabName`), the interfaces of §3.1, §4.1, §6.1 and §8.1,
+`NewHashes`, and the keytab import's checks the management API runs before it
+seals a keytab (§3.3): `CheckKeytab`, and `KeytabNames`, the name and realm of
+each key, which refuses what `CheckKeytab` refuses.
+Its errors, `ErrLogonFailure` and `ErrUnknownPrincipal`, are
 `vfserr`'s ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). Its test helpers are `identitytest`: an in-memory directory and
 domain controller, each held by its conformance suite to the real one
 ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The server is `internal/identity`,
@@ -682,7 +688,7 @@ fresh sign-in.
   `CORP\alice` and `alice@CORP.EXAMPLE` count as one whichever source each
   routes to (§3.5), every further attempt from that pair **MUST** fail
   `ErrLogonFailure` before its credential is checked, until the window has
-  passed with fewer. A UPN whose prefix is not the account's `sAMAccountName`
+  passed with fewer, unless §7.3 evicts the pair from a full table. A UPN whose prefix is not the account's `sAMAccountName`
   (`alice.smith@` for `asmith`) counts apart, so such an account has two
   counts, each still under the domain's own lockout. The answer is the ordinary logon failure, so it tells a
   guesser nothing, and no account is locked: a local account is never locked by
@@ -944,11 +950,12 @@ machine password.
 
 Its set-up **MUST** also refuse a `NetrServerReqChallenge` server challenge
 that is missing, not 8 bytes, or one byte repeated, all zero among them, before
-computing the session key from it, and an all-zero server credential even where
-the one it computed is all zero too: under AES-CFB8 with a zero IV only a
-repeated-byte challenge has an all-zero credential (MS-NRPC 3.1.4.4.1). The
-flags `NetrServerAuthenticate3` negotiated are checked for AES before the server
-credential, so a controller without AES is reported as such.
+computing the session key from it, and an all-zero server credential, a defence
+in depth: no challenge the check above admits computes an all-zero credential,
+since under AES-CFB8 with a zero IV only a repeated-byte challenge has one
+(MS-NRPC 3.1.4.4.1). The flags `NetrServerAuthenticate3` negotiated are checked
+for AES before the server credential, so a controller without AES is reported as
+such.
 
 The CHALLENGE's `MsvAvNbComputerName` **MUST** be `identity.netbios_name`, the
 joined account's NetBIOS name, which identity hands the adapter's `gss`: a
@@ -2190,17 +2197,25 @@ connection-state pool, and past its share:
 | caller cache | the least recently used entry is evicted, counted |
 | directory cache | the least recently used entry is evicted, counted; an evicted entry is a miss, never "not found" |
 | replay cache | holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone; a sign-in that would need one more fails `ErrUnavailable`. One ticket client, by its client name and realm, holds at most a sixty-fourth of the entries, so a holder of one valid ticket cannot fill the cache for everyone: past its share it alone fails `ErrUnavailable` |
-| logon throttle | the oldest pair is evicted, counted |
+| logon throttle | one client address, the unit a pair is keyed by (an IPv4 address, an IPv6 /64), holds at most a sixty-fourth of the pairs, those with an attempt in flight included. A new pair from an address at its share evicts that address's least recently settled pair below its limit, counted, or else its first to reach the limit once that pair's window has passed; when neither can go, the new pair fails `ErrLogonFailure`, outcome `throttled`, for that address alone. A new pair from an address under its share, when the table is full, evicts the table's least recently settled pair below its limit, from any address, counted; only when no settled pair is below its limit does it evict the table's least recently admitted pair, whatever its count and even with an attempt in flight, counted |
 | directory lookups a `Claimed` caller triggers | at most 100 a minute per client address; past it the call is refused with a retryable error, never mapped to anonymous |
 | records a `Claimed` caller's lookup mints (§5.5) | at most 100 a minute per node, whatever the client; past it the call is refused with a retryable error, never mapped to anonymous, and nothing is written |
 
 GSS contexts are the NFS adapter's table, bounded where RFC 21 keeps them
 ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)).
 
-> ponytail: a full throttle evicts its oldest pair, which frees a guesser who
-> can fill it — but one who can fill it can more cheaply rotate addresses, which
-> §3.1's ponytail already concedes. Refuse new pairs while every pair is at its
-> limit when the logon stream shows a spray that eviction let through.
+> ponytail: the per-address share keeps one address from freeing a pair it
+> throttled, or from filling the table, and a full table evicts pairs below
+> their limit first, so names sent one attempt each evict one another. A
+> throttled pair is freed only once every pair in the table is throttled or
+> has an attempt in flight: 65 536 pairs at 10 failures each, 655 360 failures
+> within one window, spread over at least 64 address units, or as many
+> attempts held in flight at once. That frees one pair, the oldest; an evicted
+> pair with an attempt in flight may have 10 more in flight. An address whose whole share
+> is throttled refuses new pairs for everyone behind it, a NAT gateway's users
+> among them. Charge the table to RFC 24's pool, or key the share on more than
+> the address, when the logon stream shows a spray across that many addresses,
+> or a gateway's users refused that way.
 
 > ponytail: the per-address lookup cap and the per-node mint cap are constants.
 > Make them settings when a legitimate client, or a first-day migration of
@@ -2541,18 +2556,19 @@ API's sign-in is tested against the real identity server, called directly
 
 **Where the in-memory ones stand in.** The in-memory directory parses and
 evaluates RFC 4515 filters, and its suite holds it to the real one on exact
-queries, the escaping of an LDAP filter's special characters, an ambiguous
-name, `LDAP_MATCHING_RULE_BIT_AND` on `groupType`'s security bit, `tokenGroups`, paging, range retrieval,
-and an account disabled by `userAccountControl` or `accountExpires`. The
-in-memory domain controller stands in above the NETLOGON client, answering its
-calls with their results, so the rows that check the client's own wire
-behaviour — "rogue domain controller", "zeroed secure channel reply" and "NETLOGON wire": the server-credential
-check, the challenge and credential refusals, a retry only before the request was sent, the AES-only negotiation and
-the sealed channel — run only against a real domain controller, through a fault
-wrapper around the client's connection to it. Its suite holds it to the real one on pass-through, the
-bad-password count rising by one per wrong password and reset by a success, a
-computer account's creation and the refusal of an existing one,
-`msDS-KeyVersionNumber` rising by one on a password set,
+queries, the escaping of an LDAP filter's special characters, an ambiguous name,
+`LDAP_MATCHING_RULE_BIT_AND` on `groupType`'s security bit, `tokenGroups`,
+paging, range retrieval, and an account disabled by `userAccountControl` or
+`accountExpires`. The in-memory domain controller stands in above the NETLOGON
+client, answering its calls with their results, so the rows that check the
+client's own wire behaviour — "rogue domain controller", "zeroed secure channel
+reply" and "NETLOGON wire": the server-credential check, the challenge and
+credential refusals, a retry only before the request was sent, the AES-only
+negotiation and the sealed channel — run only against a real domain controller,
+through a fault wrapper around the client's connection to it. Its suite holds it
+to the real one on pass-through, the bad-password count rising by one per wrong
+password and reset by a success, a computer account's creation and the refusal
+of an existing one, `msDS-KeyVersionNumber` rising by one on a password set,
 `msDS-SupportedEncryptionTypes` as written, and the three answers of the probe
 whether a password is accepted. A controller that has not yet replicated a
 change is the in-memory one's alone, since one real controller cannot show it.
