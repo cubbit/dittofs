@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -86,6 +85,12 @@ type Bootstrap struct {
 		Protocol WrappingKey `mapstructure:"protocol" yaml:"protocol"`
 		Storage  WrappingKey `mapstructure:"storage"  yaml:"storage"`
 	} `mapstructure:"keys" yaml:"keys"`
+
+	// where is the file this bootstrap was read from, empty when no file
+	// was read: the <where> refusals of an unset key name when they come
+	// from the file, else the environment. Load fills it; a bootstrap built
+	// by hand reports the environment.
+	where string
 }
 
 // LoggingConfig controls logging behavior.
@@ -189,7 +194,17 @@ func LoadWithSources(configPath string, environ []string) (*Loaded, error) {
 		leaves = readFile(path, named, &rep)
 	}
 
-	values := chooseValues(path, leaves, env, &rep)
+	dirs := lookupDirs(environ)
+
+	if dirs.stateRefused {
+		rep.add(whereEnvironment, dirs.stateVar, "must be an absolute path")
+	}
+
+	if dirs.runtimeRefused {
+		rep.add(whereEnvironment, dirs.runtimeVar, "must be an absolute path")
+	}
+
+	values := chooseValues(path, leaves, env, dirs, &rep)
 	scanEnv(env, &rep)
 	relate(values, &rep)
 
@@ -197,7 +212,16 @@ func LoadWithSources(configPath string, environ []string) (*Loaded, error) {
 		return nil, rep.err()
 	}
 
-	return assemble(values)
+	loaded, err := assemble(values)
+	if err != nil {
+		return nil, err
+	}
+
+	if leaves != nil {
+		loaded.where = path
+	}
+
+	return loaded, nil
 }
 
 // GetDefaultConfigPath returns the default configuration file path, from the
@@ -473,18 +497,20 @@ type chosen struct {
 
 // chooseValues takes each declared key's value from its variable, else the
 // file, else its default, checking every value a source gives, the file's
-// included when a variable replaces it.
+// included when a variable replaces it. The three directory defaults come
+// from the directories the environment named.
 func chooseValues(
 	path string,
 	leaves map[string]*yaml.Node,
 	env map[string]string,
+	dirs resolvedDirs,
 	rep *report,
 ) map[string]*chosen {
 	values := make(map[string]*chosen, len(keySpecs))
 
 	for i := range keySpecs {
 		s := &keySpecs[i]
-		c := &chosen{spec: s, value: s.defaultValue(), source: sourceDefault, passed: true}
+		c := &chosen{spec: s, value: s.defaultValue(dirs), source: sourceDefault, passed: true}
 
 		if n, ok := leaves[s.key]; ok && (!s.nullUnset || !isNull(n)) {
 			v, ok := s.fromNode(n, path, rep)
@@ -629,6 +655,13 @@ func sameDir(a, b string) bool {
 
 // assemble builds the bootstrap from the chosen values.
 func assemble(values map[string]*chosen) (*Loaded, error) {
+	// The store directory's default is the badger store's: another backend
+	// leaves the key unset, as a file that names no badger path does.
+	if p := values["metadata.badger.path"]; p.source == sourceDefault &&
+		values["metadata.backend"].value != "badger" {
+		p.value = ""
+	}
+
 	tree := map[string]any{}
 	sources := make(map[string]Source, len(values))
 
@@ -718,43 +751,6 @@ func oneLine(s string) string {
 	}
 
 	return s
-}
-
-// getStateDir returns the state directory path for runtime data (logs, PID files).
-//
-// On Windows, uses %LOCALAPPDATA%\dittofs.
-// On Unix, uses XDG_STATE_HOME/dittofs or ~/.local/state/dittofs.
-func getStateDir() string {
-	if runtime.GOOS == "windows" {
-		localAppData := os.Getenv("LOCALAPPDATA")
-		if localAppData != "" {
-			return filepath.Join(localAppData, "dittofs")
-		}
-
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, "AppData", "Local", "dittofs")
-		}
-
-		return filepath.Join(os.TempDir(), "dittofs")
-	}
-
-	stateDir := os.Getenv("XDG_STATE_HOME")
-	if stateDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return filepath.Join(os.TempDir(), "dittofs")
-		}
-
-		stateDir = filepath.Join(home, ".local", "state")
-	}
-
-	return filepath.Join(stateDir, "dittofs")
-}
-
-// getDefaultLogPath returns the default log file path.
-func getDefaultLogPath() string {
-	return filepath.Join(getStateDir(), "dittofs.log")
 }
 
 // InitLogger initializes the structured logger from a LoggingConfig,
