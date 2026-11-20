@@ -936,23 +936,42 @@ func writeCalls(dir, path string) ([]string, error) {
 // rotation step, its one writer after the installation's first version.
 var signingKeyFiles = []string{"auth/rotate.go", "auth/tokens.go"}
 
-// credentialFile and credentialWrite name the API's one function outside
-// signingKeyFiles that may write a secret version: the top-level
-// putCredential of res_secrets.go, a remote store's credential, which the
-// store refuses to write under the signing key's kind or owner.
+// credentialWrites are the API's functions outside signingKeyFiles that may
+// write a secret version, each by its file, its receiver's type ("" for
+// none) and its name: secretSetting.put, which writes a remote store's
+// credential and the identity keytab, and handOver, an offline join's
+// machine password. The store refuses each under the signing key's kind or
+// owner.
 //
-// decision: the exemption names the function rather than checking the
+// decision: the exemption names the functions rather than checking the
 // written secret's kind and owner, which the type checker cannot see: the
-// credential reaches PutSecret as a parameter, sealed in another function
-// and handed over by the write adapter. So it is scoped to that one
-// declaration: a method, a closure at package level or a function of the
-// same name in another file is checked. Overturned once a secret write
-// takes its kind and owner as constants a check can read, or a second
-// function must write a secret.
-const (
-	credentialFile  = "res_secrets.go"
-	credentialWrite = "putCredential"
-)
+// secret reaches PutSecret as a value, sealed in another function. So it is
+// scoped to those declarations: a closure at package level, a method on
+// another type, or a function of the same name in another file is checked.
+// Overturned once a secret write takes its kind and owner as constants a
+// check can read.
+var credentialWrites = []struct{ file, recv, name string }{
+	{"res_secrets.go", "secretSetting", "put"},
+	{"res_domain.go", "", "handOver"},
+}
+
+// isCredentialWrite reports whether fd, declared in file, is one of
+// credentialWrites.
+func isCredentialWrite(file string, fd *ast.FuncDecl) bool {
+	recv := ""
+	if fd.Recv != nil && len(fd.Recv.List) == 1 {
+		t := fd.Recv.List[0].Type
+		if s, ok := t.(*ast.StarExpr); ok {
+			t = s.X
+		}
+		if id, ok := t.(*ast.Ident); ok {
+			recv = id.Name
+		}
+	}
+	return slices.ContainsFunc(credentialWrites, func(w struct{ file, recv, name string }) bool {
+		return w.file == filepath.Base(file) && w.recv == recv && w.name == fd.Name.Name
+	})
+}
 
 // signingKeyReaches type-checks the package in dir, as import path path, an
 // API package, and returns each identifier outside signingKeyFiles that
@@ -960,8 +979,7 @@ const (
 // which names the key's reference; a use of entity.SecretKey, the key's
 // kind; and a call of a PutSecret, PruneSecret or SetSigningKey method,
 // which writes or drops a version of any secret or names another secret as
-// the key, but a PutSecret in the top-level credentialWrite of
-// credentialFile. Every
+// the key, but a PutSecret in one of credentialWrites. Every
 // way to write the key needs one of these, so a route writing it is caught
 // whatever it is named; one reaching the reference through another package's
 // function, which none of the API's imports has, is not.
@@ -1001,7 +1019,7 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 		}
 		for _, d := range f.Decls {
 			fd, ok := d.(*ast.FuncDecl)
-			exempt := ok && fd.Recv == nil && fd.Name.Name == credentialWrite && filepath.Base(file) == credentialFile && sub == ""
+			exempt := ok && sub == "" && isCredentialWrite(file, fd)
 			ast.Inspect(d, func(n ast.Node) bool {
 				id, ok := n.(*ast.Ident)
 				if !ok {
@@ -1065,8 +1083,9 @@ func TestNoRouteWritesTheSigningKey(t *testing.T) {
 		t.Fatalf("the planted route: %v", err)
 	}
 	want := []string{
-		"res_secrets.go:13 calls PutSecret",
-		"res_secrets.go:20 calls PutSecret",
+		"res_secrets.go:14 calls PutSecret",
+		"res_secrets.go:21 calls PutSecret",
+		"res_secrets.go:26 calls PutSecret",
 		"routes.go:12 uses Installation.SigningKey",
 		"routes.go:16 uses entity.SecretKey",
 		"routes.go:18 calls PutSecret",
