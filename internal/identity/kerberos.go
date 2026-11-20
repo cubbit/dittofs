@@ -328,11 +328,19 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 	case err != nil:
 		return identity.SignInResult{}, outcomeUnavailable, err
 	}
+	ev := identity.Evidence{Name: name, Principal: p, Expires: enc.EndTime}
+	if logon != nil {
+		// The PAC supplies groups only: the record was read above, and
+		// nothing in the PAC enables a principal or changes its record.
+		if ev.SIDs, ev.DenyOnly, err = s.pacSIDs(ctx, logon); err != nil {
+			return identity.SignInResult{}, outcomeUnavailable, err
+		}
+	}
 	return identity.SignInResult{
 		Identity: identity.Identity{
 			Proof:      identity.ProofTicket,
 			Protection: identity.ProtectionNone,
-			Evidence:   identity.Evidence{Name: name, Principal: p, Expires: enc.EndTime},
+			Evidence:   ev,
 			Client:     step.Client,
 		},
 		Keys: t.keys,
