@@ -880,9 +880,11 @@ controller.
   record's principal ID and, when one holds the PAC's SID, that principal's ID
   (never a name,
   [RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)),
-  and binds nothing. A name reused in the directory after its first holder was
-  deleted is then refused rather than bound to the wrong person, whether the
-  name selects a directory record or a `krb` row.
+  and binds nothing. A client name or authentication-time mismatch is checked
+  before §4.2's mapping, so no record is selected yet: it logs the client's
+  address and no principal ID. A name reused in the directory after its first
+  holder was deleted is then refused rather than bound to the wrong person,
+  whether the name selects a directory record or a `krb` row.
 - The evidence's `SIDs` are the user SID and the group SIDs the PAC lists — its
   memberships, extra SIDs and resource groups — excluding any whose attributes
   mark them disabled. A SID in the installation's own domain (§4.4), in the
