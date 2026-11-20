@@ -1004,9 +1004,9 @@ a failed sync window ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)) �
 then synced; one that verified at neither read is dropped by
 [§3.3](#3.3%20Torn%20and%20corrupt%20records), and one whose first read fails with an I/O error is held by its rule for a
 read that fails ([§3.3](#A%20read%20that%20fails%20is%20not%20a%20record%20that%20does%20not%20verify)). Once its tail is proven, the segment is sealed after its last verifying
-record, unless its sync failed ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), recovery ends it instead (a torn header above, a torn slot in [§3.3](#3.3%20Torn%20and%20corrupt%20records)), or it holds an unread record. The re-appends draw on the repack reserve ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)) — with none adopted, on a headroom spare, then on one the open makes, never on a content spare — never on a share's
+record, unless its sync failed ([RFC 1 §5.3](rfc-1-journal.md#5.3%20A%20failed%20sync)), recovery ends it instead (a torn header above, a torn slot in [§3.3](#3.3%20Torn%20and%20corrupt%20records)), or it holds an unread record. The re-appends draw on the repack reserve ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), never on a share's
 limit, so a journal opened at its maximum after the process was killed still
-opens. The cost, with the sync and 32-byte read that prove a seal marker no
+opens. A directory that holds no reserve spare draws a headroom spare, then one the open makes, and never a content spare. The cost, with the sync and 32-byte read that prove a seal marker no
 successor names ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), is one sync and one read of the writes past the last proven
 sync point per stream — at most one sync bound's worth, besides the segments recovery
 ends ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) — and it makes "verified at open" mean "on the device"; in the
