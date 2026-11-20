@@ -3,11 +3,13 @@ package install
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,9 +23,14 @@ import (
 	"github.com/cubbit/dittofs/pkg/secrets"
 )
 
-// ErrNotResettable refuses a reset of an account that is missing, disabled
-// or not an administrator.
-var ErrNotResettable = errors.New("install: the account cannot be reset")
+var (
+	// ErrNotResettable refuses a reset of an account that is missing,
+	// disabled, not an administrator, or a directory principal.
+	ErrNotResettable = errors.New("install: the account cannot be reset")
+	// ErrNoProtocolKey refuses a reset that must seal an NT hash when the
+	// bootstrap names no protocol key.
+	ErrNoProtocolKey = errors.New("keys.protocol is not set: this account's NT hash is sealed under it; set it or turn NTLM off")
+)
 
 // ntlmKey is the installation-scope setting that turns NTLM sign-in on.
 const ntlmKey = "identity.ntlm"
@@ -36,7 +43,7 @@ type ResetDeps struct {
 	// a node holds the store.
 	KV kv.KV
 	// StorageKey seals the password hash; ProtocolKey the NT hash, and may be
-	// nil when the account gets none.
+	// nil when the account has and gets none.
 	StorageKey, ProtocolKey keyprovider.KeyProvider
 	// Name is the account to reset.
 	Name string
@@ -49,24 +56,33 @@ type ResetDeps struct {
 	// Logger records each step; nil logs nothing. It never sees a password.
 	Logger *slog.Logger
 
-	// after runs once each write has committed, naming it; a test's hook,
-	// nil in production.
-	after func(write string) error
+	after hook
 }
 
-// ResetAdmin resets the administrator named d.Name: in one Write it sets a
-// new generated password, its NT hash when the account gets one, prunes
-// both secrets' old versions, marks the account must-change, raises its
-// not-before past the write's store time, resets the account's sign-in
-// count and records an audit record naming the host and the command. It
-// then clears every source's sign-in count, in bounded batches, and only
-// then prints the password to d.Out.
+func (d ResetDeps) done(write string) error { return d.after.done(write) }
+
+// ResetAdmin resets the administrator named d.Name. It refuses an account
+// that is not resettable, seals the new secrets, and clears every source's
+// sign-in count, in bounded batches, before it changes the account: a
+// failure up to there leaves the account as it was. Then one Write sets the
+// new generated password, its NT hash when the account gets one or drops the
+// one it had, prunes the secrets' old versions, marks the account
+// must-change, raises its not-before past the write's store time, resets the
+// account's sign-in count and records an audit record naming the host and
+// the command. The password is printed to d.Out after that Write commits.
 //
 // decision: the break-glass reset bypasses the API, because the API is what
 // is locked. It needs the host's bootstrap and the store's credential, and
 // an attacker holding those already holds everything. Withdraw it if a
 // deployment must prove that no change bypasses the API, and replace it with
 // a second admin account kept sealed.
+//
+// decision: the account and the NTLM setting are read once, before the
+// Write, and not again inside it. The store's exclusive open, Badger's
+// directory lock, keeps a node and another reset out while this one runs,
+// and the Write's expected generation refuses an account changed since the
+// read. Overturned by a shared backend such as FoundationDB, where the API
+// on another host can change the setting between the read and the Write.
 func ResetAdmin(ctx context.Context, d ResetDeps) error {
 	switch {
 	case d.KV == nil:
@@ -75,8 +91,6 @@ func ResetAdmin(ctx context.Context, d ResetDeps) error {
 		return errors.New("install: ResetDeps.StorageKey is nil")
 	case d.Out == nil:
 		return errors.New("install: ResetDeps.Out is nil, and the generated password must be printed")
-	case d.Name == "":
-		return fmt.Errorf("%w: no account named", ErrNotResettable)
 	}
 	log := d.Logger
 	if log == nil {
@@ -98,7 +112,7 @@ func ResetAdmin(ctx context.Context, d ResetDeps) error {
 	if err != nil {
 		return err
 	}
-	password, _, _ := firstPassword("", "") // with no reference it always generates
+	password := generatePassword()
 	defer clear(password)
 	h, err := identity.NewHashes(u, password, ntlm)
 	if err != nil {
@@ -115,24 +129,50 @@ func ResetAdmin(ctx context.Context, d ResetDeps) error {
 	}
 	next := u
 	next.MustChange = true
-	pwRef := orNew(u.Password)
-	pwOwner := userSecretOwner(u, "password")
-	pw, err := p.Seal(ctx, secrets.Storage, entity.SecretPassword, pwOwner, pwRef, h.Password, secrets.Meta{})
+	next.Password = orNew(u.Password)
+	pw, err := p.Seal(ctx, secrets.Storage, entity.SecretPassword, userSecretOwner(u, "password"), next.Password, h.Password, secrets.Meta{})
 	if err != nil {
 		return fmt.Errorf("install: seal the account %q's password: %w", d.Name, err)
 	}
-	next.Password = pwRef
+	// The NT hash is the new password's when NewHashes derives one, and
+	// otherwise none: the one the account had is the old password's.
+	ntValue := h.NTHash
+	if ntValue == nil && u.NTHash != (entity.SecretRef{}) {
+		// ponytail: the store has no whole-secret delete, so the old NT hash
+		// is overwritten by a version of random bytes, its own versions
+		// pruned below it, and the account names it no more; the orphaned
+		// reference is dropped by the next NT-hash deletion. Upgrade to that
+		// delete once the store offers one.
+		ntValue = make([]byte, 16)
+		_, _ = rand.Read(ntValue) // crypto/rand.Read never fails
+	}
+	ntRef := orNew(u.NTHash)
 	var nt entity.Secret
-	ntOwner := userSecretOwner(u, "nt_hash")
-	if h.NTHash != nil {
+	if ntValue != nil {
+		if d.ProtocolKey == nil {
+			return fmt.Errorf("install: the account %q: %w", d.Name, ErrNoProtocolKey)
+		}
 		// decision: the role is named here, protocol for the NT hash, since
 		// pkg/secrets exports no kind-to-role lookup; Seal refuses a role its
 		// kind is not sealed under, so a drift fails closed. Overturned once
 		// pkg/secrets exports its table.
-		next.NTHash = orNew(u.NTHash)
-		if nt, err = p.Seal(ctx, secrets.Protocol, entity.SecretNTHash, ntOwner, next.NTHash, h.NTHash, secrets.Meta{}); err != nil {
+		if nt, err = p.Seal(ctx, secrets.Protocol, entity.SecretNTHash, userSecretOwner(u, "nt_hash"), ntRef, ntValue, secrets.Meta{}); err != nil {
 			return fmt.Errorf("install: seal the account %q's NT hash: %w", d.Name, err)
 		}
+	}
+	if h.NTHash != nil {
+		next.NTHash = ntRef
+	} else {
+		next.NTHash = entity.SecretRef{}
+	}
+
+	for more := true; more; {
+		if more, err = cp.ClearSourceSignIns(ctx); err != nil {
+			return fmt.Errorf("install: clear the sources' sign-in counts; the account %q is unchanged: %w", d.Name, err)
+		}
+	}
+	if err := d.done("sources"); err != nil {
+		return err
 	}
 
 	req, _ := json.Marshal(struct { // strings always encode
@@ -140,59 +180,43 @@ func ResetAdmin(ctx context.Context, d ResetDeps) error {
 		Name    string `json:"name"`
 		Host    string `json:"host"`
 	}{"dfs reset-admin", d.Name, d.Host})
-	change, _ := json.Marshal(map[string]any{"password": "set", "must_change": true, "not_before": "raised"}) // fixed values always encode
-	// The actor is the host, not an account: the principal stays zero and
-	// the name and credential carry the host.
 	audit := &entity.AuditRecord{
 		ActorName:  d.Host,
-		Credential: "host:" + d.Host,
+		Credential: entity.HostCredential + d.Host,
 		Node:       d.Node,
 		Request:    req,
 		Target:     entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])},
-		Change:     change,
 		Outcome:    []byte("applied"),
 	}
 	err = cp.Write(ctx, entity.WriteMeta{Audit: audit}, func(tx entity.ControlPlaneTx) error {
-		cur, found, err := tx.User(u.Principal)
-		if err != nil {
-			return err
-		}
-		// The account is read again tracked: a change since the first read
-		// refuses, as the record the hashes were derived for is not current.
-		if err := resettable(d.Name, cur, found); err != nil {
-			return err
-		}
-		if cur.Generation != u.Generation {
-			return fmt.Errorf("install: the account %q changed during the reset; run dfs reset-admin again", d.Name)
-		}
-		if now, err := ntlmIn(tx); err != nil {
-			return err
-		} else if now != ntlm {
-			return errors.New("install: the NTLM setting changed during the reset; run dfs reset-admin again")
-		}
 		if err := tx.PutSecret(pw, pw.Version-1); err != nil {
 			return err
 		}
-		if err := p.Prune(ctx, tx, entity.SecretPassword, pwOwner, pwRef); err != nil {
+		if err := p.Prune(ctx, tx, pw.Kind, pw.Owner, pw.ID); err != nil {
 			return err
 		}
-		if h.NTHash != nil {
+		if ntValue != nil {
 			if err := tx.PutSecret(nt, nt.Version-1); err != nil {
 				return err
 			}
-			if err := p.Prune(ctx, tx, entity.SecretNTHash, ntOwner, next.NTHash); err != nil {
+			if err := p.Prune(ctx, tx, nt.Kind, nt.Owner, nt.ID); err != nil {
 				return err
 			}
 		}
 		// Not-before is kept in whole seconds, so it is raised to the second
 		// after the write's store time: every credential issued before the
 		// reset is earlier than it, and one issued since is raised to it.
-		next.NotBefore = later(cur.NotBefore, tx.Now().Truncate(time.Second).Add(time.Second))
-		gen, err := tx.PutUser(next, cur.Generation, entity.Alloc{})
+		n := next
+		n.NotBefore = later(u.NotBefore, tx.Now().Truncate(time.Second).Add(time.Second))
+		gen, err := tx.PutUser(n, u.Generation, entity.Alloc{})
 		if err != nil {
 			return err
 		}
-		audit.Before, audit.After = cur.Generation, gen
+		change, err := resetChange(u, n, ntValue != nil)
+		if err != nil {
+			return err
+		}
+		audit.Before, audit.After, audit.Change = u.Generation, gen, change
 		return auth.ResetAccount(tx, u.Principal)
 	})
 	if err != nil {
@@ -202,28 +226,39 @@ func ResetAdmin(ctx context.Context, d ResetDeps) error {
 	if err := d.done("account"); err != nil {
 		return err
 	}
-	for more := true; more; {
-		if more, err = cp.ClearSourceSignIns(ctx); err != nil {
-			return fmt.Errorf("install: the account %q is reset but the sources' sign-in counts were not cleared, and its password was not printed; run dfs reset-admin again: %w", d.Name, err)
-		}
-	}
-	if err := d.done("sources"); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(d.Out, "The administrator %q's generated password, shown once; it must be changed at the first sign-in:\n%s\n", d.Name, password); err != nil {
+	if err := printPassword(d.Out, d.Name, password); err != nil {
 		return fmt.Errorf("install: the account %q is reset but its generated password could not be printed; run dfs reset-admin again: %w", d.Name, err)
 	}
 	return nil
 }
 
-// resettable refuses an account that is missing, disabled or not an
-// administrator, naming why.
+// resetChange is the reset's audit change in the API's form: a secret field
+// as "set", a removed reference as its old value and null, and every other
+// field changed as its old and new values.
+func resetChange(old, new entity.User, ntSealed bool) ([]byte, error) {
+	c := map[string]any{"password": "set"}
+	switch {
+	case new.NTHash != (entity.SecretRef{}):
+		c["nt_hash"] = "set"
+	case ntSealed:
+		c["nt_hash"] = [2]any{uuid.UUID(old.NTHash).String(), nil}
+	}
+	if old.MustChange != new.MustChange {
+		c["must_change"] = [2]any{old.MustChange, new.MustChange}
+	}
+	c["not_before"] = [2]any{old.NotBefore, new.NotBefore}
+	return json.Marshal(c)
+}
+
+// resettable refuses an account that is missing, disabled, not an
+// administrator or a directory principal, naming why.
 //
 // decision: the reset creates and re-enables nothing, as RFC 23 §5.4's
-// "nothing else" says: it resets only an existing, enabled admin. The API's
-// last_admin rule keeps one enabled admin, so an installation whose admin
-// was deleted or renamed still has one to name with --name. Overturned if an
-// installation can reach no enabled admin through the API.
+// "nothing else" says: it resets only an existing, enabled admin with a
+// local password. The API's last_admin rule keeps one enabled admin, so an
+// installation whose admin was deleted or renamed still has one to name with
+// --name. Overturned if an installation can reach no enabled admin through
+// the API.
 func resettable(name string, u entity.User, found bool) error {
 	switch {
 	case !found || u.Deleted:
@@ -232,12 +267,14 @@ func resettable(name string, u entity.User, found bool) error {
 		return fmt.Errorf("%w: the account %q is disabled", ErrNotResettable, name)
 	case u.Role != entity.RoleAdmin:
 		return fmt.Errorf("%w: the account %q has role %s, not admin", ErrNotResettable, name, u.Role)
+	case slices.ContainsFunc(u.IDs, func(id entity.ProtocolID) bool { return id.Scheme == entity.SchemeDir }):
+		return fmt.Errorf("%w: the account %q is a directory principal, with no local password", ErrNotResettable, name)
 	}
 	return nil
 }
 
 // ntlmSetting reads identity.ntlm at installation scope, on when no row
-// sets it, with the generation the reset's write is conditional on.
+// sets it, as the identity section's default is.
 //
 // ponytail: the row is decoded here, its default copied from the identity
 // section, since the settings table's read is unbuilt. Upgrade to that read
@@ -247,33 +284,16 @@ func ntlmSetting(ctx context.Context, cp kvstore.ControlPlane) (identity.NTLMSet
 		if err != nil {
 			return identity.NTLMSetting{}, fmt.Errorf("install: read the settings: %w", err)
 		}
-		if s.Key == ntlmKey {
-			return decodeNTLM(s)
+		if s.Key != ntlmKey {
+			continue
 		}
+		var on bool
+		if err := json.Unmarshal(s.Value, &on); err != nil {
+			return identity.NTLMSetting{}, fmt.Errorf("install: the setting %s: %w", ntlmKey, err)
+		}
+		return identity.NTLMSetting{On: on, Generation: s.Generation}, nil
 	}
 	return identity.NTLMSetting{On: true}, nil
-}
-
-// ntlmIn is ntlmSetting read tracked inside tx.
-func ntlmIn(tx entity.ControlPlaneTx) (identity.NTLMSetting, error) {
-	s, ok, err := tx.Setting(entity.SettingScope{Kind: entity.ScopeInstallation}, ntlmKey)
-	if err != nil || !ok {
-		return identity.NTLMSetting{On: true}, err
-	}
-	return decodeNTLM(s)
-}
-
-func decodeNTLM(s entity.Setting) (identity.NTLMSetting, error) {
-	var on bool
-	if err := json.Unmarshal(s.Value, &on); err != nil {
-		return identity.NTLMSetting{}, fmt.Errorf("install: the setting %s: %w", ntlmKey, err)
-	}
-	return identity.NTLMSetting{On: on, Generation: s.Generation}, nil
-}
-
-// userSecretOwner is the owner of u's secret under key, as the API names it.
-func userSecretOwner(u entity.User, key string) entity.SecretOwner {
-	return entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: key}
 }
 
 // orNew is ref, or a fresh reference when ref is zero.
@@ -289,12 +309,4 @@ func later(a, b time.Time) time.Time {
 		return a
 	}
 	return b
-}
-
-// done runs the test's hook, if one is set, after write committed.
-func (d ResetDeps) done(write string) error {
-	if d.after == nil {
-		return nil
-	}
-	return d.after(write)
 }

@@ -28,6 +28,11 @@ sign-in; refuses every credential issued before it; clears the account's
 sign-in failure count and every source's; and records the reset in the audit,
 naming this host.
 
+An account with a uid gets an NT hash of the new password while NTLM is on,
+and an NT hash of the old password is overwritten otherwise. Both are sealed
+under keys.protocol: the reset refuses such an account when the bootstrap
+does not set it.
+
 Examples:
   # Reset the administrator "admin"
   dfs reset-admin
@@ -71,8 +76,8 @@ func runResetAdmin(cmd *cobra.Command, _ []string) (err error) {
 		return fmt.Errorf("opening the storage key: %w", err)
 	}
 	defer func() { err = errors.Join(err, storage.Close()) }()
-	// The protocol key seals the NT hash, which only an account with a file
-	// spelling gets while NTLM is on; a bootstrap naming none refuses then.
+	// The protocol key seals the NT hash; the reset refuses an account
+	// whose NT hash it must seal when the bootstrap names none.
 	var protocol keyprovider.KeyProvider
 	if cfg.Keys.Protocol.Kind != "" {
 		if protocol, err = keyprovider.NewProvider(ctx, cfg.Keys.Protocol.Provider()); err != nil {

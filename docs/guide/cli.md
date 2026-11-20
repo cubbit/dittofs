@@ -297,6 +297,11 @@ sign-in; refuses every credential issued before it; clears the account's
 sign-in failure count and every source's; and records the reset in the audit,
 naming this host.
 
+An account with a uid gets an NT hash of the new password while NTLM is on,
+and an NT hash of the old password is overwritten otherwise. Both are sealed
+under keys.protocol: the reset refuses such an account when the bootstrap
+does not set it.
+
 ```
 dfs reset-admin [flags]
 ```
