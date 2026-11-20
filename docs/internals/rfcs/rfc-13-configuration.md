@@ -1339,7 +1339,7 @@ host's file, so a value valid in one place is valid in all:
 | management API paging and waits: page size; `?wait` cap | RFC 23 §4.2, §4.6 | — | fixed | 100 by default, at most 1 000; 60 s |
 | API calls one node runs at once, the next answered `503` | RFC 23 §4.3 | — | fixed | 64 |
 | sign-in throttle: attempts counted before waits begin, per account and source address together, per source address, and per account across all sources; the wait; how long a pair's count is kept after its last counted attempt; how long a source's count is kept after its last settled failure | RFC 23 §5.3 | — | fixed | 5; 5; 100; 1 s, doubling to 5 min; 24 h; 15 min |
-| generated first password; a first-password file's size | RFC 23 §5.4 | none | fixed | 24 random bytes; at most 4 KiB, its trailing newline counted |
+| generated first password; a first-password file's size | RFC 23 §5.4 | — | fixed | 24 random bytes; at most 4 KiB, its trailing newline counted |
 | `metrics.top_shares`: shares exported with a `share` label per per-share gauge, the worst by it | RFC 25 §2.5 | installation | live | 20 |
 | `events.retention`, `events.max_bytes`: the event spool's age and size bounds, past which the oldest file is deleted | RFC 25 §4.6 | node | live | proposed: 7 days; 4 GiB |
 | `tracing.endpoint`: the trace collector, an `https` or `http` URL (RFC 25 §6.3's decision); none turns tracing off, and any other value is refused at validation ([§6](#6.%20Validation)) | RFC 25 §6.3, §8.1 | node | restart: the root builds the provider and hands each component its tracer once, so a wrong collector is cut off only by a restart (RFC 25 §6.3's decision) | none: tracing off |
