@@ -280,6 +280,10 @@ type Stream struct {
 	// tail runs. Neither may block: both run holding appendMu.
 	rollTakeHook func()
 	rollWaitHook func()
+	// pinnedHook runs as AppendRoll returns, after its drain count has gone
+	// and with its record pinned, holding no lock: the point a seal can first
+	// drain the segment.
+	pinnedHook func()
 
 	// decision: every field below is guarded by appendMu, the segment append
 	// domain of RFC 1 §8.2 — next, count, entries, the tracker, the active
@@ -481,8 +485,15 @@ type Roll struct {
 }
 
 // Pinner keeps a segment held for a record the index does not count yet. Pin
-// runs under the stream's append lock and takes no lock above the stream's
-// own rank.
+// runs under the stream's append lock.
+//
+// decision: Pin may take the tracker's table lock, a plain mutex under the
+// stream's append lock that the lock-order recorder never sees, so nothing
+// checks that it stays a leaf: it takes no other lock while held. The first
+// pin on a new segment also copies the tracker's segment table, O(segments)
+// once per segment, under the append lock. Overturned by a table lock that
+// ever waits on a stream, or by a segment count at which that copy shows in
+// an append's latency.
 type Pinner interface {
 	Pin(seg core.SegmentID)
 	Unpin(seg core.SegmentID)
@@ -744,6 +755,10 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 	// roll arms its gate and the next turn reserves, so the flag is hoisted
 	// out of the loop rather than read where the reservation is made.
 	rolled := false
+	if s.pinnedHook != nil {
+		// Deferred ahead of the drain's own leave, so it runs once that has.
+		defer s.pinnedHook()
+	}
 	for {
 		// appendParkHook is a test hook at the loop's top, past the head
 		// checks and with the lock dropped: the one place an append that

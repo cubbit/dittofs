@@ -819,8 +819,11 @@ func (p *passFixture) requireGap(t *testing.T, when string, want int64) {
 func (p *passFixture) requireGapOf(t *testing.T, tag core.ShareTag, when string, want int64) {
 	t.Helper()
 	// The set counts a record inside the append and the share's figure takes
-	// it a moment later, and a retirement lowers the set before the figure:
-	// a read between the two sees a gap that closes on its own. The check
+	// it a moment later, so a read while the pass's own copy append is
+	// between the two sees a gap that closes on its own; the retire worker's
+	// removal of a copy's segment lowers the set before the figure in the
+	// same way. The pass and the worker run on their own goroutines, so a
+	// read from the test can land in either gap. The check
 	// polls the real condition, with one generous backstop, so a figure that
 	// really missed or over-took bytes never converges and fails here.
 	deadline := time.Now().Add(30 * time.Second)

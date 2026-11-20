@@ -183,7 +183,6 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		c.beforeAppend()
 	}
 	var done, published int64
-	pubFrom := 0 // the pieces of placed before it are published
 	// ponytail: the first four pieces of an unreserved write wait in this
 	// array, so the common write allocates nothing for them; a write of more
 	// pieces grows the slice on the heap. Upgrade to a pooled slice when a
@@ -277,16 +276,10 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		if c.afterAppend != nil {
 			c.afterAppend()
 		}
-		last := done+pl.N == int64(len(p))
 		done += pl.N
-		// An unreserved write with more pieces to append holds its pieces
-		// back, and a single piece that covers the write publishes at once,
-		// as a write always did.
-		if res == nil && (!last || len(placed) != 1) {
-			continue
-		}
+		// An unreserved write holds every piece back until the last is in.
 		if res == nil {
-			pubFrom = 1
+			continue
 		}
 		if err := c.publishPiece(s, id, v, grant, pc); err != nil {
 			return core.Version{}, published, err
@@ -299,7 +292,7 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	// in part under a version the caller never receives. A reserved write
 	// publishes each piece as it lands, for a refusal on its roll keeps the
 	// pieces already published and spends its version.
-	for _, pc := range placed[pubFrom:] {
+	for _, pc := range placed {
 		if err := c.publishPiece(s, id, v, grant, pc); err != nil {
 			return core.Version{}, published, err
 		}
