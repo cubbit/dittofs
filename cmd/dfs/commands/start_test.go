@@ -29,11 +29,10 @@ import (
 // holds, one per line, as the dfs binary's main would.
 const childEnv = "DFS_START_CHILD_ARGS"
 
-// signalAfterStartEnv, when set, makes the child send itself SIGTERM once
-// Start returned and wait for the signal to land, before dfs start reads
-// whether a signal arrived: a start that failed for its own reason then ends
-// under a signal, at no particular timing.
-const signalAfterStartEnv = "DFS_START_CHILD_SIGTERM_AFTER_START"
+// signalAtEnv, when set to one of runStart's stages, makes the child send
+// itself SIGTERM at that stage and wait for the signal to land before it goes
+// on: the signal lands at a known stage, at no particular timing.
+const signalAtEnv = "DFS_START_CHILD_SIGTERM_AT"
 
 // TestStartChild is the child process the start tests run: dfs itself.
 func TestStartChild(t *testing.T) {
@@ -44,8 +43,11 @@ func TestStartChild(t *testing.T) {
 	root := NewRoot()
 	root.SetArgs(strings.Split(args, "\n"))
 	ctx := context.Background()
-	if os.Getenv(signalAfterStartEnv) != "" {
-		ctx = context.WithValue(ctx, startReturnedKey{}, func(signal context.Context) {
+	if at := os.Getenv(signalAtEnv); at != "" {
+		ctx = context.WithValue(ctx, stageKey{}, func(name string, signal context.Context) {
+			if name != at {
+				return
+			}
 			self, err := os.FindProcess(os.Getpid())
 			if err == nil {
 				err = self.Signal(syscall.SIGTERM)
