@@ -278,7 +278,8 @@ func TestRFC1C_StaleFill(t *testing.T) {
 func TestRFC1C_IncrementalReport(t *testing.T) {
 	f := journaltest.New(t)
 	h, id := f.Share(0), journaltest.File(0)
-	const size = 32 << 10
+	// Each write passes the idle seal threshold, so its segment seals once idle.
+	const size = 96 << 10
 
 	// Two writes sealed into different segments, so the offer spans at least
 	// two blocks of the upload, the unit a report is made in: a journal that
