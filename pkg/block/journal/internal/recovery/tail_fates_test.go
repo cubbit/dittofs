@@ -607,3 +607,29 @@ func TestATrailerProvenPredecessorReleasesItsTake(t *testing.T) {
 	// there, the early seal of the record the segment whole held.
 	wantCutLeft(t, r, st2, 1, before[format.SegmentName(1)])
 }
+
+// TestASealedNewestSegmentConfinesRotPastTheSyncedThrough pins the fold's
+// sealed arm: the synced-through no header named proves a record of a
+// sealed segment whole — the marker proves the whole records area — so a
+// payload rotten past the synced-through is confined as a synced corrupt
+// drop at the open's own read, never left to a torn-tail cut over bytes
+// the seal answered for.
+func TestASealedNewestSegmentConfinesRotPastTheSyncedThrough(t *testing.T) {
+	seg := buildSeg(2, tailRec(200, 0x4100), tailRec(201, 0x8100))
+	seg[format.SegmentHeaderSize+format.RecordHeaderSize+8+2] ^= 0xff // A's payload; no header names a sync
+	seg = append(seg, raw.SealMarker{Identity: journalID, Segment: 2, Offset: uint64(len(seg))}.Bytes()...)
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, seg)
+	st := runTails(t, r)
+
+	if got := planted(st); got != 1 {
+		t.Errorf("the index holds %d entries, want 1: the sealed segment's B attaches and its rotted A is confined as corrupt", got)
+	}
+	wantFate(t, st, 2, fateSealed, 0)
+	if got := st.Tails.Corrupt; len(got) != 1 || got[0].Segment != 2 ||
+		got[0].Drop.Header.Extent.Off != 0x4100 || !got[0].Drop.Synced {
+		t.Errorf("Corrupt got %+v, want the one synced corrupt drop of A at 0x4100 in segment 2: the seal, not a header's synced-through, proved A's bytes whole", got)
+	}
+}
