@@ -278,9 +278,10 @@ func nodeImporters(root string) ([]string, error) {
 //
 // decision: every non-test file of the package is held to startAllowed, a new
 // one included, but those of startExempt: init.go is dfs init's, which builds
-// an installation and so imports the installer and the key provider, and
+// an installation and so imports the installer and the key provider,
+// reset_admin.go is dfs reset-admin's, which imports the same two, and
 // root.go wires the subcommands, the config command's package among them.
-// Neither runs in dfs start, so a held file may not call a function either
+// None runs in dfs start, so a held file may not call a function any of them
 // declares, whatever that function imports. The ceiling: only calls are
 // flagged, not a variable, type or method an exempt file declares, since the
 // start reads root.go's build variables; a method value or a func-typed
@@ -290,7 +291,7 @@ const startPackage = "cmd/dfs/commands"
 
 var (
 	startAllowed = []string{"internal/node", "pkg/bootstrap", "pkg/metadata/kv/badgerkv", "pkg/metrics"}
-	startExempt  = []string{"cmd/dfs/commands/init.go", "cmd/dfs/commands/root.go"}
+	startExempt  = []string{"cmd/dfs/commands/init.go", "cmd/dfs/commands/reset_admin.go", "cmd/dfs/commands/root.go"}
 )
 
 // startImports returns each import of this module by a non-test file of
