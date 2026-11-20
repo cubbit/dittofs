@@ -49,9 +49,9 @@ func writeStatsOf(s journal.Stats) writeStats {
 // did: no record reaches a segment, no count the stats keep moves, the version
 // counter included, and Since yields no change wherever the empty write falls.
 //
-// decision: the format refuses a zero length only for Deallocate and
-// CloneTarget; a zero-length write is accepted, draws no version and returns
-// the zero Version, so ErrZeroLength is not an outcome of a write.
+// The format refuses a zero length only for Deallocate and CloneTarget; a
+// zero-length write is accepted, draws no version and returns the zero
+// Version, so ErrZeroLength is not an outcome of a write.
 func TestEdge_ZeroLengthWrite(t *testing.T) {
 	f := journaltest.New(t)
 
