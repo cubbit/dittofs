@@ -14,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/sidecar"
+	"github.com/cubbit/dittofs/internal/tlsconfig"
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/block/engine"
@@ -291,25 +292,24 @@ func build(cfg Config, in apiInputs) (_ *Node, err error) {
 		[]uint16{listenPort(cfg.Bootstrap.API.Listen[0]), listenPort(cfg.Bootstrap.Metrics.Listen)}, cfg.Clock, n.drains)
 	n.health.Add(&adapterConditions{n})
 	n.life.ready.Store(readyStarting)
-	// decision: the API is handed neither the bootstrap's api.tls
-	// certificate and key nor its api.socket path, though the bootstrap
-	// names them and the API serves TLS on every address but loopback; nor
-	// a signing key or tracer, and in production no Authenticate, as the API
-	// takes neither the access tokens the node builds nor the signing key's
-	// value, and Config's tracer is the journals', not the API's: the API's
-	// own tracer is RFC 23's own wiring, fed from Config once it lands. So a
-	// start on an address but loopback is refused for want of a certificate
-	// even when api.tls names one, no local socket is served, every call but
-	// a public row's answers 401, every POST and DELETE, which must carry an
-	// Idempotency-Key, answers 503 or 428, and the API's spans go to the
-	// no-op tracer. Fill each from the bootstrap, the secret store, sign-in
-	// and the host's tracer as they land.
+	// decision: the API is handed no signing key or tracer, and in
+	// production no Authenticate, as the API takes neither the access tokens
+	// the node builds nor the signing key's value, and Config's tracer is the
+	// journals', not the API's: the API's own tracer is RFC 23's own wiring,
+	// fed from Config once it lands. So every call but a public row's answers
+	// 401, every POST and DELETE, which must carry an Idempotency-Key,
+	// answers 503 or 428, and the API's spans go to the no-op tracer. Fill
+	// each from the secret store, sign-in and the host's tracer as they land.
+	// An empty api.socket serves no local socket: the bootstrap gives it no
+	// default path yet.
 	n.api = api.New(api.Deps{
 		Ready:        n.readiness,
 		Served:       n.life.served.Load,
 		Live:         n.watchdog.Live,
 		Addr:         cfg.Bootstrap.API.Listen[0],
 		MetricsAddr:  cfg.Bootstrap.Metrics.Listen,
+		TLS:          tlsconfig.Config{CertFile: cfg.Bootstrap.API.TLS.CertFile, KeyFile: cfg.Bootstrap.API.TLS.KeyFile},
+		Socket:       cfg.Bootstrap.API.Socket,
 		Metrics:      cfg.Metrics,
 		Logger:       cfg.Logger,
 		Authenticate: in.authenticate,
