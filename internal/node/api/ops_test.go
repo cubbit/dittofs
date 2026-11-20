@@ -169,12 +169,13 @@ func TestCancel(t *testing.T) {
 	}
 	role.Store(uint32(entity.RoleOperator))
 	// The test row :sweep starts share.delete for operator; no row starts a
-	// signing key's rotation, which asks for admin; the installation
-	// settings put, an operator's, may start the NT-hash deletion.
+	// signing key's rotation, which asks for admin; the NT-hash deletion is
+	// started only by identity.ntlm's admin-only write, so it asks for admin
+	// too, though the settings row that may start it is an operator's.
 	for _, tc := range []struct {
 		kind apiv1.OpKind
 		want int
-	}{{apiv1.OpShareDelete, http.StatusConflict}, {apiv1.OpRotateSigningKey, http.StatusForbidden}, {apiv1.OpNTHashDelete, http.StatusConflict}} {
+	}{{apiv1.OpShareDelete, http.StatusConflict}, {apiv1.OpRotateSigningKey, http.StatusForbidden}, {apiv1.OpNTHashDelete, http.StatusForbidden}} {
 		if r := cancel(ids[tc.kind]); r.status != tc.want {
 			t.Errorf("operator cancelling %s: answered %d %s, want %d", tc.kind, r.status, r.body, tc.want)
 		}
