@@ -440,14 +440,6 @@
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
-- test: TestRFC1D_MetricsAreReachable
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Stats serves the counters, but CorruptExtentsDataLoss stays zero after a dirty extent was read corrupt, so the leg the row wants — the corrupt-read loss a public read reaches — never moves. The data path is built, so the loss figure its corrupt read leaves out is a defect in it. The node-level journal series test''s corrupt-extent data_loss leg rides this same known red and skips until this turns green.'
-  issue: '#3395'
-  message: 'CorruptExtentsDataLoss is zero after a dirty extent was read corrupt'
-
 - test: TestRFC1D_NamedInequalitiesHold
   status: fail
   fix: planned
