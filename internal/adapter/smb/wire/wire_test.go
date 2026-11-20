@@ -330,8 +330,9 @@ func TestAReplyEchoesOnlyTheBitsItCarries(t *testing.T) {
 // A reply takes no request flag but the ones it echoes: of the CANCEL's
 // ASYNC_COMMAND nothing is written, since a reply in the async form is the
 // hold stage's, with the AsyncId it chose (MS-SMB2 3.3.4.4) - and the
-// CANCEL is never answered anyway (3.3.5.16). The request's bytes at the
-// async ID's offset ride through as the copy's, not as the reply's ID.
+// CANCEL is never answered anyway (3.3.5.16). The reply is in the sync form,
+// and its Reserved and TreeId are 0 where the request's AsyncId sat: the
+// async form names no tree connect (MS-SMB2 2.2.1.2).
 func TestAppendReplyTakesNoAsyncForm(t *testing.T) {
 	h, err := DecodeHeader(readGolden(t, "async_request"), 0)
 	if err != nil {

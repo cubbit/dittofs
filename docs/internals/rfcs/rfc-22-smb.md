@@ -2755,7 +2755,10 @@ built; the totality test fails until they have rows.
 of the request's flags it keeps only `SMB2_FLAGS_RELATED_OPERATIONS`,
 `SMB2_FLAGS_PRIORITY_MASK`, `SMB2_FLAGS_DFS_OPERATIONS` and
 `SMB2_FLAGS_REPLAY_OPERATION`. The reply to a request the server puts off
-takes the async form, with the async ID the server chose.
+takes the async form, with the async ID the server chose. Any other reply takes
+the sync form (MS-SMB2 3.3.4.4, 3.3.5.2), with `Reserved` and `TreeId` zero for a
+request that arrived in the async form, whose async ID's bytes name no tree
+connect.
 
 **A status's body.** A reply whose status is not success is MS-SMB2 2.2.2's
 error response, which the header codec writes after the header, and a command's

@@ -27,6 +27,7 @@ func TestGenerateRefuses(t *testing.T) {
 	const (
 		layout = "_ uint16 `smb2:\"name=L\"`\n"
 		union  = "D uint16 `smb2:\"union\"`\n_ uint16 `smb2:\"name=L\"`\n"
+		bytesU = "_ uint16 `smb2:\"name=N\"`\n_ uint16 `smb2:\"name=L\"`\nD []byte `smb2:\"len=N,max=4,union\"`\n"
 		def    = "X []byte `smb2:\"len=L,max=4,default\"`\n"
 		arm    = "type T struct{ A uint32 }\n"
 		chain  = "_ uint32 `smb2:\"name=O\"`\n_ uint16 `smb2:\"name=C\"`\n_ uint16 `smb2:\"name=N\"`\n"
@@ -80,6 +81,13 @@ func TestGenerateRefuses(t *testing.T) {
 		{"type S struct {\n" + layout + "B []byte `smb2:\"len=L,max=4,known=1\"`\n}", "S.B: known on no default arm"},
 		{"type S struct {\n" + union + "X []byte `smb2:\"len=L,max=4,default,known=x\"`\n}", `S.X: a known value its integer discriminant cannot hold, "x"`},
 		{"type S struct {\n" + union + "A T `smb2:\"len=L,case=1\"`\nX []byte `smb2:\"len=L,max=4,default,known=1\"`\n}\n" + arm, `S.X: a known value an arm takes, "1"`},
+		// Two equal case values, which Go refuses as a duplicate case: an
+		// integer's as numbers, named at the second arm's line; a []byte's as
+		// written.
+		{"type S struct {\n" + union + "A T `smb2:\"len=L,case=1\"`\nB T `smb2:\"len=L,case=0x1\"`\n" + def + "}\n" + arm, `in.go:7:1: S.B: a second arm for case "0x1", which A takes as "1"`},
+		{"type S struct {\n" + bytesU + "A T `smb2:\"len=L,case=AB\"`\nB T `smb2:\"len=L,case=AB\"`\n" + def + "}\n" + arm, `S.B: a second arm for case "AB", which A takes as "AB"`},
+		{"type S struct {\n" + union + "A T `smb2:\"len=L,case=1\"`\nX []byte `smb2:\"len=L,max=4,default,known=0x1\"`\n}\n" + arm, `S.X: a known value an arm takes, "0x1"`},
+		{"type S struct {\n" + union + "X []byte `smb2:\"len=L,max=4,default,known=1|0x1\"`\n}", `S.X: a known value given twice, "0x1"`},
 		{"type S struct {\n" + union + "E uint16 `smb2:\"union\"`\n" + def + "}", "S.E: a second union discriminant"},
 		{"type S struct { _ uint16 `smb2:\"union\"` }", "S._: a union's discriminant is a named field"},
 		{"type S struct {\n" + union + "A T8 `smb2:\"len=L,case=1\"`\n" + def + "}\ntype T8 struct{ A uint64 }", "S.A: an arm whose maximum 8 exceeds its union's default 4"},
@@ -206,6 +214,24 @@ func TestOnlyAStructNoneHoldsIsDecodedAlone(t *testing.T) {
 			if has := bytes.Contains(out, []byte("func (x *"+typ+") "+method+"(")); has != (typ == "S") {
 				t.Errorf("%s.%s generated: %v", typ, method, has)
 			}
+		}
+	}
+}
+
+// A []byte discriminant's cases are compared as written, as its switch
+// compares strings: "1" and "01" are two names, each with its own arm, where
+// an integer discriminant would refuse them as one value.
+func TestABytesUnionComparesItsCasesAsWritten(t *testing.T) {
+	out, err := generateFrom(t, "type S struct {\n"+
+		"_ uint16 `smb2:\"name=N\"`\n_ uint16 `smb2:\"name=L\"`\nD []byte `smb2:\"len=N,max=4,union\"`\n"+
+		"A T `smb2:\"len=L,case=1\"`\nB T `smb2:\"len=L,case=01\"`\nX []byte `smb2:\"len=L,max=4,default\"`\n}\n"+
+		"type T struct{ A uint32 }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"case \"1\":", "case \"01\":"} {
+		if !bytes.Contains(out, []byte(want)) {
+			t.Errorf("no %q in:\n%s", want, out)
 		}
 	}
 }

@@ -161,11 +161,11 @@ func DecodeHeader(msg []byte, off int) (*Header, error) {
 // REPLAY_OPERATION - and not ASYNC_COMMAND, whose reply form belongs to the
 // stage that puts a request off with the AsyncId it chose. So it carries
 // req's command, credit charge (MS-SMB2 3.3.4.1), bits of its flags, message
-// ID, async ID or Reserved and tree ID, and session; the sync form's
-// Reserved and tree ID ride through as copied, where v1 zeroed the
-// Reserved: the capture's replies back the echo. SIGNED is cleared and
-// the signature is zero: a reply is signed, when it is, after it is encoded.
-// Its StructureSize is 64, whatever req's.
+// ID and session, and a sync-form request's Reserved and tree ID, which ride
+// through as copied, where v1 zeroed the Reserved: the capture's replies back
+// the echo. An async-form request's reply has Reserved and TreeId 0. SIGNED
+// is cleared and the signature is zero: a reply is signed, when it is, after
+// it is encoded. Its StructureSize is 64, whatever req's.
 func AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte {
 	// Read the flags before the append: the append copies the header and the
 	// writes below go over those bytes, so the flags are read from the
@@ -181,6 +181,16 @@ func AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte 
 	binary.LittleEndian.PutUint32(r[offFlags:], FlagServerToRedir|flags&replyFlags)
 	binary.LittleEndian.PutUint32(r[offNextCommand:], 0)
 	clear(r[offSignature:])
+	// An async-form request's reply is in the sync form, and its Reserved
+	// and TreeId are 0: the request has neither, its 8 bytes there being an
+	// AsyncId, a value the server creates (MS-SMB2 2.2.1.1), while the sync
+	// form's TreeId names the tree connect the command runs under (MS-SMB2
+	// 2.2.1.2). Only a nonconforming request gets here: a client sends the
+	// async form for a CANCEL alone (MS-SMB2 2.2.1), and a CANCEL is
+	// answered nothing (MS-SMB2 3.3.5.16).
+	if flags&FlagAsyncCommand != 0 {
+		clear(r[offAsyncID:offSessionID])
+	}
 
 	return out
 }
