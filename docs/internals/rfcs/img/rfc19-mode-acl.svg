@@ -56,7 +56,7 @@
   <text x="300" y="238" class="s">with no stored ACL, chmod changes only Mode</text>
 
   <rect x="24" y="258" width="852" height="236" rx="6" class="am"/>
-  <text x="40" y="280" class="h">chmod 750 release, which holds a stored ACL (§8 step 7)</text>
+  <text x="40" y="280" class="h">chmod 750 release, which holds a stored ACL (§6 step 7)</text>
   <text x="40" y="304" class="z">BEFORE</text>
   <text x="40" y="324" class="mp">1 deny  bob       waNT  fd</text>
   <text x="40" y="342" class="mp">2 allow alice     full  fd</text>

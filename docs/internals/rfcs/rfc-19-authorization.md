@@ -828,9 +828,15 @@ to grant what an allow appended at the end would.
     the limit leaves whole is left as it is.
   - Deny, audit and alarm entries are left untouched.
   - `Mode` becomes the merged ACL's `Mode(o)`, which equals the requested bits
-    unless a deny withholds some or named entries grant less than the requested
-    group bits; the stored `Mode` shows what is granted, never more. A merge that
-    would exceed §2.8's limit fails `ErrInvalid` and changes nothing.
+    unless a deny withholds some, named entries grant less than the requested
+    group bits, or the requested other bits hold one the owner or group bits
+    lack, as in 0604. The merge writes no deny, so such a bit can reach the owner
+    or group class too, and the stored `Mode` then holds more than was asked: an
+    ACL from 0600 set to 0604 becomes allow `OWNER@` `R(rw-)` and allow
+    `EVERYONE@` `R(r--)`, whose `Mode(o)` is 0644, so the group can read, where
+    §4.1's ACL for 0604 refuses it. Either way the stored `Mode` shows what is
+    granted, never more. A merge that would exceed §2.8's limit fails
+    `ErrInvalid` and changes nothing.
 - **A `chmod` of a file with no stored ACL** changes `Mode` and stores no ACL.
 - **Setting an ACL** stores it and stores `Mode` as its `Mode(o)` for the owner
   the file has after the set, with the special bits kept, in one transaction.
