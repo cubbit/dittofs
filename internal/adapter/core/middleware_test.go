@@ -75,19 +75,22 @@ type stopFunc func() bool
 
 func (f stopFunc) Stop() bool { return f() }
 
+// Advance moves now on by d and fires, on the caller's goroutine, each timer
+// it reaches, the earliest first, as a clock fires them.
 func (c *manualClock) Advance(d time.Duration) {
 	c.mu.Lock()
 	c.now = c.now.Add(d)
-	var due []func()
+	var due []manualTimer
 	for id, tm := range c.timers {
 		if !tm.at.After(c.now) {
-			due = append(due, tm.f)
+			due = append(due, tm)
 			delete(c.timers, id)
 		}
 	}
 	c.mu.Unlock()
-	for _, f := range due {
-		f()
+	slices.SortFunc(due, func(a, b manualTimer) int { return a.at.Compare(b.at) })
+	for _, tm := range due {
+		tm.f()
 	}
 }
 

@@ -281,9 +281,14 @@ func Join(n int, bufs ...*Buf) *Buf {
 // Recharge moves b's whole charge to a reservation from to: it reserves the
 // charge from to, and only then releases b's old reservation and keeps the
 // new one, so the charge is never absent. Refused, it returns the error and
-// nothing changes. The last Release then returns the charge to to. A holder
-// calls it, and Charge, while no other holder does.
+// nothing changes. A buffer already charged to to keeps its reservation, so
+// a chain's record one member moved is not charged again for the next. The
+// last Release then returns the charge to to. A holder calls it, and Charge,
+// while no other holder does.
 func (b *Buf) Recharge(to *Budget) error {
+	if b.res.b == to {
+		return nil
+	}
 	res, err := to.Reserve(b.res.n)
 	if err != nil {
 		return err

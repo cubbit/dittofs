@@ -2297,29 +2297,37 @@ func fillBut(t *testing.T, s *served, room bool) func() {
 }
 
 // A status still waiting for the connection's one status wait 30 s after it
-// began to wait closes the connection with the status-wait error, at 30 s
-// and not before, wherever it waits. The test holds the status wait: a
-// holder that outlasts the status (RFC 20 §6.4, §10.1).
+// began to wait, by the server's clock, closes the connection with the
+// status-wait error, at 30 s and not before, wherever it waits. The test
+// holds the status wait: a holder that outlasts the status (RFC 20 §6.4,
+// §10.1).
 func TestAStatusWaitingForTheStatusWaitClosesAt30s(t *testing.T) {
 	for _, w := range statusWaiters {
 		t.Run(w.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				s := newChained(t, 1<<20, adapter.Deps{})
+				clk := newManualClock()
+				s := newHeld(t, 1<<20, adapter.Deps{}, clk)
 				give := s.p.HoldStatusWait()
 				defer give()
 				defer fillBut(t, s, w.room)()
-				begin := time.Now()
 				served := start(func() { s.serveBody(w.record(s.f)) })
+				synctest.Wait() // the status waits for the status wait, its deadline armed
+				clk.Advance(30*time.Second - time.Nanosecond)
+				synctest.Wait()
+				select {
+				case err := <-s.closed:
+					t.Fatalf("the connection was closed with %v before 30 s", err)
+				default:
+				}
+				clk.Advance(time.Nanosecond)
+				synctest.Wait()
 				select {
 				case err := <-s.closed:
 					if !errors.Is(err, core.ErrStatusWait) {
 						t.Errorf("the connection was closed with %v, want the status-wait error", err)
 					}
-				case <-time.After(time.Minute):
-					t.Fatal("the status still waits a minute on, want its connection closed at 30 s")
-				}
-				if waited := time.Since(begin); waited != 30*time.Second {
-					t.Errorf("the connection was closed %v after the status began to wait, want 30s", waited)
+				default:
+					t.Fatal("the status still waits at 30 s, want its connection closed")
 				}
 				<-served.done
 			})

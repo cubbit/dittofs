@@ -4141,7 +4141,7 @@ func (p *BufPool) Charge(n int) int64                           // RFC 24 §2.5:
 func Join(n int, bufs ...*Buf) *Buf                             // RFC 24 §2.5: a chain's record (§4.7), an empty buffer with room for n that takes over bufs' reservations: no new charge, no wait
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
-func (b *Buf) Recharge(to *Budget) error                     // RFC 24 §4.3: the whole charge moved to a reservation from to; refused, nothing changes
+func (b *Buf) Recharge(to *Budget) error                     // RFC 24 §4.3: the whole charge moved to a reservation from to, one already from to kept; refused, nothing changes
 func (b *Buf) Charge() int64                                 // RFC 24 §4.3: the whole charge, class capacity and per-request overhead, which the hold floor counts
 func (b *Buf) Attach(seg *Buf)                               // §5.3: ends b's current segment and lends seg as the next one, a READ's data, never copied; what b appends after it starts a new segment
 ```

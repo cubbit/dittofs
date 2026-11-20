@@ -1071,7 +1071,8 @@ counts nothing about holds. This RFC fixes which pool holds the bytes:
   ```go
   // Recharge moves b's whole charge to a reservation from to: it reserves the
   // charge from to, and only then releases b's old reservation and keeps the
-  // new one. Refused, it returns the error and nothing changes.
+  // new one. Refused, it returns the error and nothing changes. A buffer
+  // already charged to to keeps its reservation.
   func (b *Buf) Recharge(to *Budget) error
   // Charge is b's whole charge, its class's capacity and the per-request
   // overhead, which the floor counts.
@@ -1086,6 +1087,17 @@ counts nothing about holds. This RFC fixes which pool holds the bytes:
   never shrinks: the buffer it
   backs is not shrunk by being held, so a 100 KiB write in a transfer-class
   buffer charges the hold pool about 1 MiB.
+
+  A chain's members share one record
+  ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)):
+  the first member held past the floor moves the record's charge to the hold
+  pool, where it stays until the chain ends, and a later member held past the
+  floor is charged nothing more, since `Recharge` keeps a charge already
+  there. Until the chain ends, a later member the floor takes counts that
+  charge on the floor too, and `adapter_hold_pool_bytes`
+  ([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)) drops by it at the
+  answer of each member held past the floor, while the hold budget and
+  `memory_pool_reserved_bytes{pool="hold"}` stay exact.
 - The adapter's per-connection floors in requests and bytes count each held
   request's receive charge, its buffer's class and the per-request overhead
   (`Buf.Charge`), so the bytes a connection holds under its floor are the
