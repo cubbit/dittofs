@@ -55,9 +55,12 @@ func parseAppendixB(text string) ([]appendixRow, error) {
 			in = strings.HasPrefix(line, "## Appendix B")
 			continue
 		}
-		if !in || !strings.HasPrefix(line, "| ") ||
+		if !in || !strings.HasPrefix(line, "|") ||
 			strings.HasPrefix(line, "| Setting |") || strings.HasPrefix(line, "| --- |") {
 			continue
+		}
+		if !strings.HasPrefix(line, "| ") || !strings.HasSuffix(line, " |") {
+			return nil, fmt.Errorf("line %d: a row not padded as \"| cell | … |\"", i+1)
 		}
 		cells := strings.Split(strings.TrimSuffix(strings.TrimPrefix(line, "| "), " |"), " | ")
 		if len(cells) != 5 {
@@ -99,9 +102,12 @@ var wider = map[string]string{
 }
 
 // within reports whether scope narrow lies inside scope wide, a shard counting
-// as a part of a share.
+// as a part of a share, so inside the share scope itself as well.
 func within(narrow, wide string) bool {
 	if narrow == "shard" {
+		if wide == "share" {
+			return true
+		}
 		narrow = "share"
 	}
 	for s := wider[narrow]; s != ""; s = wider[s] {
@@ -228,6 +234,7 @@ func TestScopeFormErr(t *testing.T) {
 		{"node, per journal", "restart", true},
 		{"installation default, shard override (in its shard record)", "live", true},
 		{"installation, node override", "live", true},
+		{"share default, shard override", "live", true},
 		{"—", "fixed", true},
 		{"none", "derived", true},
 		{"—", "bootstrap", true},
@@ -241,6 +248,21 @@ func TestScopeFormErr(t *testing.T) {
 	} {
 		if err := scopeFormErr(tc.scope, tc.class); (err == nil) != tc.ok {
 			t.Errorf("scopeFormErr(%q, %q) = %v, want accepted %v", tc.scope, tc.class, err, tc.ok)
+		}
+	}
+}
+
+// The parse refuses an Appendix B row it would otherwise skip or misread: an
+// unpadded one and one with a wrong cell count.
+func TestParseAppendixBRefusesMalformedRow(t *testing.T) {
+	const head = "## Appendix B\n\n| Setting | Defined in | Scope | Class | Default |\n| --- | --- | --- | --- | --- |\n"
+	for name, row := range map[string]string{
+		"unpadded":   "|`x`|RFC 13|installation|live|1|",
+		"no end pad": "| `x` | RFC 13 | installation | live | 1|",
+		"four cells": "| `x` | RFC 13 | installation | live |",
+	} {
+		if _, err := parseAppendixB(head + row + "\n"); err == nil || !strings.Contains(err.Error(), "line 5") {
+			t.Errorf("%s row %q: error %v, want one naming line 5", name, row, err)
 		}
 	}
 }
