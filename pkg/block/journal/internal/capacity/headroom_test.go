@@ -225,7 +225,7 @@ func TestHeadroomDrawsOnlyAtLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the below-limit admission was refused: %v", err)
 	}
-	h.Drawn(below)
+	h.Drawn(below, 1)
 	if got := h.Draws(); got != 0 {
 		t.Fatalf("a record appended below the limit moved headroom_draws to %d, want 0", got)
 	}
@@ -240,14 +240,14 @@ func TestHeadroomDrawsOnlyAtLimit(t *testing.T) {
 		t.Fatalf("the at-limit truncate admission was refused: %v", err)
 	}
 	f.footprint.Store(0) // the journal leaves the limit between the admission and the landing
-	h.Drawn(mid)
-	h.Drawn(at)
+	h.Drawn(mid, 1)
+	h.Drawn(at, 1)
 	if got := h.Draws(); got != 2 {
 		t.Fatalf("records drawn at the limit moved headroom_draws to %d, want 2", got)
 	}
 
 	below2, _ := h.Admit(Release)
-	h.Drawn(below2)
+	h.Drawn(below2, 1)
 	if got := h.Draws(); got != 2 {
 		t.Fatalf("a record drawn below the limit moved headroom_draws to %d, want 2", got)
 	}
@@ -271,7 +271,7 @@ func TestRepackCopyNeverRefused(t *testing.T) {
 	if !got.Append {
 		t.Fatalf("a repack copy was told not to append")
 	}
-	h.Drawn(got)
+	h.Drawn(got, 1)
 	if h.Draws() != drawsBefore {
 		t.Fatalf("the repack copy moved headroom_draws from %d to %d", drawsBefore, h.Draws())
 	}
@@ -290,7 +290,7 @@ func TestAdmitThenDrawnChargesOneRecord(t *testing.T) {
 		if err != nil {
 			t.Fatalf("draw %d toward the reserve edge failed: %v", i, err)
 		}
-		h.Drawn(d)
+		h.Drawn(d, 1)
 	}
 	// reserve+1 records remain: the next removal is admitted and consumes
 	// the last drawing-side record; the one after is refused.
@@ -298,7 +298,7 @@ func TestAdmitThenDrawnChargesOneRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("with one record over the reserve a removal was refused: %v", err)
 	}
-	h.Drawn(last)
+	h.Drawn(last, 1)
 	if _, err := h.Admit(Release); !errors.Is(err, core.ErrNoSpace) {
 		t.Fatalf("after the reserve-edge record landed, the next removal answered %v, want ErrNoSpace", err)
 	}
@@ -323,7 +323,7 @@ func TestAdmitBelowTheLimit(t *testing.T) {
 		if !got.Append {
 			t.Fatalf("admission %d below the limit was told not to append", i+1)
 		}
-		h.Drawn(got)
+		h.Drawn(got, 1)
 	}
 	if got := h.Draws(); got != 0 {
 		t.Fatalf("records appended below the limit moved headroom_draws to %d, want 0", got)
@@ -335,7 +335,7 @@ func TestAdmitBelowTheLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("draw %d at the limit toward the reserve edge failed: %v", i, err)
 		}
-		h.Drawn(d)
+		h.Drawn(d, 1)
 	}
 	_, err := h.Admit(Release)
 	noSpaceOrFatal(t, err)
@@ -372,7 +372,7 @@ func TestNoRecordsAdmitsEveryClass(t *testing.T) {
 		if err != nil || !d.Append {
 			t.Fatalf("%s with no records = %+v, %v; want admitted", c, d, err)
 		}
-		h.Drawn(d)
+		h.Drawn(d, 1)
 	}
 	if h.Draws() != 0 || h.BelowHalf() {
 		t.Fatalf("draws = %d, below half = %v; want none", h.Draws(), h.BelowHalf())

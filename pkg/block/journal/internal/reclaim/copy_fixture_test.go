@@ -70,7 +70,7 @@ type copyFixture struct {
 	// pass's own.
 	deferred func(core.SegmentID) []reclaim.DeferredLoss
 	admit    func(capacity.RecordClass) (capacity.Draw, error)
-	drawn    func(capacity.Draw)
+	drawn    func(capacity.Draw, core.SegmentID)
 	crashed  bool // set by a test that crashes the seam; read by the cleanup
 	clock    core.Clock
 }

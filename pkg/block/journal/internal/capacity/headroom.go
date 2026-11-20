@@ -125,18 +125,30 @@ type Headroom struct {
 	// section alone. A recorded wrong order under it must be reported,
 	// not exempted.
 	mu lockorder.Mutex
-	// drawn is the record bytes the headroom has admitted and no Refund
-	// has returned. Every check and move of it runs under mu; it is an
-	// atomic only so Stats reads it without mu.
+	// drawn is the record bytes the headroom has admitted and neither a
+	// Refund nor a Credit has returned. Every check and move of it runs
+	// under mu; it is an atomic only so Stats reads it without mu.
 	//
-	// ponytail: drawn only grows until a retirement returns headroom. With
-	// the default 65,536 records, about 30,720 cumulative at-limit draws put
-	// the journal below half, so content writes are refused each time it
-	// returns to the limit, and about 61,440 exhaust it, so every non-Open
-	// record at the limit is refused; drawn lives in memory, so a restart
-	// resets it. Upgrade by crediting it from the retirement path when repack
-	// lands.
+	// decision: drawn lives in memory and every open starts it at zero, the
+	// headroom whole. On disk nothing tells a record drawn at the limit from
+	// the same kind appended below it, so an open cannot recount the draws
+	// the segments it adopted still hold; the pool remakes the headroom's
+	// spares at every open, so the storage the ledger stands for is whole
+	// again too. The open's own records count against the open reserve in
+	// the recovery pass itself, not here. Overturned by a format that marks
+	// a drawn record on disk.
 	drawn atomic.Int64
+	// bySeg is, per segment, the record bytes of drawn records that
+	// appended into it: what Credit returns to drawn once the segment is
+	// retired. Guarded by mu.
+	//
+	// ponytail: a draw whose segment is retired between its append and
+	// its Drawn call stays in the ledger, the safe side: it is never
+	// credited, never credited twice. No segment is retired before its
+	// appended records are registered, which follows Drawn on every path.
+	// Upgrade by naming the segment at the admission if a path ever retires
+	// under an unregistered record.
+	bySeg map[core.SegmentID]int64
 	// draws is the headroom_draws counter, records appended while the
 	// journal was at its limit. An atomic, so Stats reads it without mu.
 	draws atomic.Uint64
@@ -151,6 +163,7 @@ func NewHeadroom(cfg HeadroomConfig) *Headroom {
 	return &Headroom{
 		cfg:     cfg,
 		reserve: OpenReserveRecords(cfg.Records),
+		bySeg:   map[core.SegmentID]int64{},
 	}
 }
 
@@ -262,16 +275,38 @@ func (h *Headroom) Admit(c RecordClass) (Draw, error) {
 	return Draw{Append: true, drew: true}, nil
 }
 
-// Drawn counts one admitted record once it has appended: the headroom_draws
-// counter, raised for every draw that moved the ledger, so the two agree
-// whichever way the footprint moved after the admission. A record that drew
-// nothing — below the limit, a repack copy, an Offloaded never appended —
-// counts nothing.
-func (h *Headroom) Drawn(d Draw) {
+// Drawn counts one admitted record once it has appended into segment seg:
+// the headroom_draws counter, raised for every draw that moved the ledger,
+// so the two agree whichever way the footprint moved after the admission,
+// and the segment's share of the ledger, which its retirement credits back.
+// A record that drew nothing — below the limit, a repack copy, an Offloaded
+// never appended — counts nothing.
+func (h *Headroom) Drawn(d Draw, seg core.SegmentID) {
 	if !d.drew {
 		return
 	}
 	h.draws.Add(1)
+	h.mu.Lock()
+	h.bySeg[seg] += RecordCharge
+	h.mu.Unlock()
+}
+
+// Credit returns to the headroom the draws that appended into seg, once seg
+// is retired, unlinked or recycled: the space those records took is free
+// again (RFC 1 section 6, the headroom refills as segments are unlinked).
+// The open reserve is refilled first without a second figure: no record
+// appended while the journal serves takes the ledger into the reserve, so
+// what an open drew there is the first the credit makes up. The segment's
+// entry is taken whole, so a second Credit of seg returns nothing.
+func (h *Headroom) Credit(seg core.SegmentID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n, ok := h.bySeg[seg]
+	if !ok {
+		return
+	}
+	delete(h.bySeg, seg)
+	h.drawn.Store(max(h.drawn.Load()-n, 0))
 }
 
 // Refund returns one admission's draw when the append it admitted failed:
