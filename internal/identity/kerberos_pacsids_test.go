@@ -48,9 +48,9 @@ func pacSIDsServer(t *testing.T) *pacSIDs {
 	return &pacSIDs{kerberos: k, alice: alice, own: sid.FormatSID(own)}
 }
 
-// signIn signs alice in with a PAC whose logon information is l, under the
-// logon domain and alice's RID unless l names them.
-func (p *pacSIDs) signIn(l identitytest.LogonInfo) (pid.SignInResult, string, error) {
+// alicePAC is the PAC options of a ticket for alice whose logon information
+// is l, under the logon domain and alice's RID unless l names them.
+func (p *pacSIDs) alicePAC(l identitytest.LogonInfo) identitytest.PACOpts {
 	l.Name, l.Domain = "alice", "TEST"
 	if l.DomainSID == "" {
 		l.DomainSID = pacDomain
@@ -58,17 +58,30 @@ func (p *pacSIDs) signIn(l identitytest.LogonInfo) (pid.SignInResult, string, er
 	if l.UserRID == 0 {
 		l.UserRID = 1105
 	}
-	return p.srv.SignInOutcome(context.Background(), p.pacStep(identitytest.PACOpts{Logon: []identitytest.LogonInfo{l}}))
+	return identitytest.PACOpts{Logon: []identitytest.LogonInfo{l}}
 }
 
-// signedIn signs alice in with l and checks it bound her.
+// signIn signs alice in with a PAC whose logon information is l.
+func (p *pacSIDs) signIn(l identitytest.LogonInfo) (pid.SignInResult, string, error) {
+	return p.srv.SignInOutcome(context.Background(), p.pacStep(p.alicePAC(l)))
+}
+
+// signedIn is alice's identity from a ticket whose PAC carries l, its
+// evidence's SIDs those a sign-in takes from the PAC once it verifies.
+//
+// decision: the SIDs are read through PACEvidence, not SignIn, because a
+// sign-in refuses every PAC carrying logon information until its user SID
+// is bound to the record. Overturned by that binding, when SignIn answers.
 func (p *pacSIDs) signedIn(t *testing.T, l identitytest.LogonInfo) pid.Identity {
 	t.Helper()
-	res, oc, err := p.signIn(l)
-	if err != nil || oc != "ok" || res.Identity.Evidence.Principal != p.alice.Principal {
-		t.Fatalf("SignIn = %v, outcome %q, bound %v; want ok, alice", err, oc, res.Identity.Evidence.Principal)
+	o := p.alicePAC(l)
+	o.Service, o.AuthTime = "cifs/nas.test", p.clock.Now()
+	ss, deny, err := p.srv.PACEvidence(context.Background(), p.realm.PAC(o), kerberosKey("cifs/nas.test"), "alice", o.AuthTime)
+	if err != nil {
+		t.Fatalf("PACEvidence = %v; want alice's SIDs", err)
 	}
-	return res.Identity
+	return pid.Identity{Proof: pid.ProofTicket, Client: krbClient,
+		Evidence: pid.Evidence{Name: "alice@TEST.REALM", Principal: p.alice.Principal, SIDs: ss, DenyOnly: deny}}
 }
 
 // dropped is identity_pac_sids_dropped_total{reason}.
@@ -258,12 +271,11 @@ func TestKerberosPACSIDsStoreFault(t *testing.T) {
 	refused(t, "the sid index failing", res, oc, err, vfserr.ErrUnavailable, "unavailable")
 }
 
-// A PAC never enables a principal: alice disabled in the store is refused
-// whatever her PAC carries.
-func TestKerberosPACSIDsDisabledUser(t *testing.T) {
-	k := kerberosServer(t)
-	k.user(t, entity.User{Principal: entity.NewUser(), Name: "alice", Disabled: true, IDs: append(fileIDs("1500"), krbID("alice@TEST.REALM"))}, 0)
-	p := &pacSIDs{kerberos: k}
+// A PAC whose SIDs are accepted still binds no principal while nothing checks
+// its user SID against the record: alice's sign-in is refused ErrUnavailable,
+// uncounted on the throttle. Catches the PAC's SIDs taken as binding alice.
+func TestKerberosPACSIDsBindNoRecordYet(t *testing.T) {
+	p := pacSIDsServer(t)
 	res, oc, err := p.signIn(identitytest.LogonInfo{Groups: []identitytest.GroupRID{{RID: 2001, Attributes: enabled}}})
-	refused(t, "a disabled alice with a PAC", res, oc, err, vfserr.ErrLogonFailure, "disabled")
+	refused(t, "alice with a PAC", res, oc, err, vfserr.ErrUnavailable, "unavailable")
 }

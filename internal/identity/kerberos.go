@@ -289,6 +289,18 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 			return identity.SignInResult{}, outcomeLogonFailure, logonFailure("PAC: %v", err)
 		}
 	}
+	// The PAC supplies groups only: nothing in it enables a principal or
+	// changes its record. Its SIDs are checked before any principal is
+	// selected, so a PAC they refuse reaches no record.
+	var sids, denyOnly []identity.SID
+	if logon != nil {
+		switch sids, denyOnly, err = s.pacSIDs(ctx, logon); {
+		case errors.Is(err, vfserr.ErrLogonFailure):
+			return identity.SignInResult{}, outcomeLogonFailure, err
+		case err != nil:
+			return identity.SignInResult{}, outcomeUnavailable, err
+		}
+	}
 	if logon != nil {
 		// decision: a ticket whose PAC verifies and holds logon information
 		// is refused ErrUnavailable, uncounted on the throttle, in every
@@ -328,17 +340,7 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 	case err != nil:
 		return identity.SignInResult{}, outcomeUnavailable, err
 	}
-	ev := identity.Evidence{Name: name, Principal: p, Expires: enc.EndTime}
-	if logon != nil {
-		// The PAC supplies groups only: the record was read above, and
-		// nothing in the PAC enables a principal or changes its record.
-		switch ev.SIDs, ev.DenyOnly, err = s.pacSIDs(ctx, logon); {
-		case errors.Is(err, vfserr.ErrLogonFailure):
-			return identity.SignInResult{}, outcomeLogonFailure, err
-		case err != nil:
-			return identity.SignInResult{}, outcomeUnavailable, err
-		}
-	}
+	ev := identity.Evidence{Name: name, Principal: p, Expires: enc.EndTime, SIDs: sids, DenyOnly: denyOnly}
 	return identity.SignInResult{
 		Identity: identity.Identity{
 			Proof:      identity.ProofTicket,
