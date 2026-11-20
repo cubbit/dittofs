@@ -6,7 +6,9 @@ package protocol
 import "github.com/cubbit/dittofs/internal/adapter/core"
 
 // Tables are NFS's operation tables, one per served program and version (RFC 20
-// section 4.8). A nil table is a program with nothing served.
+// section 4.8). A nil table's program and version are not served: a program
+// left with none is answered PROG_UNAVAIL, a version of one still served
+// PROG_MISMATCH.
 type Tables struct {
 	V3    *core.OpTable // NFS version 3
 	V4    *core.OpTable // NFS version 4, every minor version served at once
