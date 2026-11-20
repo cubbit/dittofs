@@ -1281,6 +1281,10 @@ type Principals interface {
 	// private group), and NX‖user‖name and NX‖group‖name are separate rows.
 	ByName(ctx context.Context, kind PrincipalKind, name string) (Principal, error)
 	ByProtocolID(ctx context.Context, id ProtocolID) (Principal, error)
+	// Marked is true while a principal marked deleted, its deletion not yet
+	// ended, holds id: only a `dir` spelling, the one row a mark keeps, so a
+	// directory sign-in refuses the name rather than mint it anew (RFC 18 §3.7).
+	Marked(ctx context.Context, id ProtocolID) (bool, error)
 	Groups(ctx context.Context, p Principal) iter.Seq2[Principal, error]
 	// A caller of Grant reads S‖id‖gv before the grants it keys a cache entry on.
 	Grant(ctx context.Context, share ShareID, p Principal) (ShareAccess, bool, error) // false: no grant names p; a stored none is (none, true)
@@ -1423,14 +1427,14 @@ type ControlPlane interface {
 	// the counter value it has reconciled through (NodeStatus), and RFC 23 §2.4
 	// says when that makes a record applied.
 	PutUser(ctx context.Context, u User, expect uint64, a Alloc) error // a applies only to a create (expect zero), as Minter's does; a later put allocates nothing
-	DeleteUser(ctx context.Context, p Principal, expect uint64) error // as DeleteGroup: the first transaction deletes the indexes (NX, PX) and marks the record deleted, bounded batches a restart resumes from that mark drop its grants (through GR), memberships (MR, M) and quota records, and the last transaction deletes the record with every version of the secret it names (SEC‖id‖*, through RFC 13 §7), so no password or NT hash outlives its user; a marked user is admitted nowhere
+	DeleteUser(ctx context.Context, p Principal, expect uint64) error // as DeleteGroup: the first transaction deletes the indexes (NX, and every PX row but the record's `dir` spelling, which reads as not found and refuses a new holder until the record goes with it) and marks the record deleted, bounded batches a restart resumes from that mark drop its grants (through GR), memberships (MR, M) and quota records, and the last transaction deletes the record with every version of the secret it names (SEC‖id‖*, through RFC 13 §7), so no password or NT hash outlives its user; a marked user is admitted nowhere
 	Groups(ctx context.Context, after string) iter.Seq2[Group, error]
 	Group(ctx context.Context, p Principal) (Group, bool, error)      // a group's read by ID; false once marked deleted, or for a principal of another kind
 	GroupNamed(ctx context.Context, name string) (Group, bool, error) // the groups listing's ?name= filter
 	PutGroup(ctx context.Context, g Group, expect uint64, a Alloc) error
 	AddMember(ctx context.Context, m Membership) error
 	RemoveMember(ctx context.Context, m Membership) error
-	DeleteGroup(ctx context.Context, p Principal, expect uint64) error // all its rows: the group, its name and protocol-ID indexes (NX, PX), grants (through GR), memberships both ways (M, MR) and quota records; the first transaction deletes the indexes and marks the group record deleted, bounded batches a restart resumes from that mark drop the rest, and the record goes last; a membership of a marked group grants nothing, and a User.Primary naming one counts as zero
+	DeleteGroup(ctx context.Context, p Principal, expect uint64) error // all its rows: the group, its name and protocol-ID indexes (NX, PX), grants (through GR), memberships both ways (M, MR) and quota records; the first transaction deletes the indexes, the `dir` row aside as `DeleteUser`'s, and marks the group record deleted, bounded batches a restart resumes from that mark drop the rest, and the record goes last; a membership of a marked group grants nothing, and a User.Primary naming one counts as zero
 	Shares(ctx context.Context) iter.Seq2[Share, error]
 	PutShare(ctx context.Context, s Share, expect uint64) error // Name, Path, Root, Config only
 	SetShareState(ctx context.Context, share ShareID, from, to ShareState) error
