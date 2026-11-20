@@ -289,20 +289,22 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 			return identity.SignInResult{}, outcomeLogonFailure, logonFailure("PAC: %v", err)
 		}
 	}
+	if logon != nil {
+		// decision: a ticket whose PAC verifies and holds logon information
+		// is refused ErrUnavailable, uncounted on the throttle, in every
+		// realm, since nothing yet checks the PAC's user SID against the
+		// record its name maps to (RFC 18 §3.4). Binding it by name would
+		// admit a recreated account under a deleted one's name, and a local
+		// user's or root's SID, in the installation's domain, is one no PAC
+		// carries. Overturned by the PAC's user SID bound to the record.
+		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: kerberos: the PAC's user SID is not bound to a record yet", vfserr.ErrUnavailable)
+	}
 	if st.Directory != nil && strings.EqualFold(enc.CRealm, st.Directory.Realm) {
 		// RFC 18 §3.4: in the directory's realm, its name in any case, a
 		// ticket without a PAC, or whose PAC holds no logon information, is
 		// refused before any mapping, so a domain account cannot reach a
 		// principal by its name alone.
-		if logon == nil {
-			return identity.SignInResult{}, outcomeNoPAC, logonFailure("a ticket without a PAC in the directory's realm")
-		}
-		// decision: a ticket of the directory's realm whose PAC verifies is
-		// refused ErrUnavailable, uncounted on the throttle, since nothing yet
-		// checks the PAC's user SID against the record its name maps to;
-		// binding it by name would admit a recreated account under a deleted
-		// one's name. Overturned by the PAC's user SID bound to the record.
-		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: kerberos: the PAC's user SID is not bound to a record yet", vfserr.ErrUnavailable)
+		return identity.SignInResult{}, outcomeNoPAC, logonFailure("a ticket without a PAC in the directory's realm")
 	}
 	p, err := s.kerberosPrincipal(ctx, st, name, enc.CName, enc.CRealm)
 	switch {
