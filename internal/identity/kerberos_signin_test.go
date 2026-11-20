@@ -98,15 +98,17 @@ func (k *kerberos) signInAs(t *testing.T, what string, step pid.SignInStep, want
 // RFC 18 §4.2's steps in order, each case on its own store: step 1's krb row
 // before step 2's local user, step 2 only for a local file user of the
 // name, its realm as the ticket spells it, never for a name with a service
-// part, and an unknown or disabled user refused. Catches step 2 before step
-// 1, a realm folded, a directory principal or an API-only account reached by
-// name, a service name matched as a user, and a disabled user bound.
+// part, which is a machine's and minted, and an unknown or disabled user
+// refused. Catches step 2 before step 1, a realm folded, a directory
+// principal or an API-only account reached by name, a service name matched
+// as a user, and a disabled user bound.
 func TestKerberosSignInMapsTheName(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		users   []entity.User
 		opts    identitytest.TicketOpts
-		bound   string // the user's name the sign-in binds; empty: refused
+		bound   string // the user's name the sign-in binds; empty: refused, or a machine
+		machine bool   // the sign-in binds a machine it mints
 		outcome string
 	}{
 		{name: "a krb row binds its user before a local user of the name",
@@ -135,7 +137,7 @@ func TestKerberosSignInMapsTheName(t *testing.T) {
 			opts:  identitytest.TicketOpts{Client: "alice"}, outcome: "logon_failure"},
 		{name: "a name with a service part",
 			users: []entity.User{{Name: "cifs", IDs: fileIDs("1520")}, {Name: "cifs/alice", IDs: fileIDs("1521")}},
-			opts:  identitytest.TicketOpts{Client: "cifs/alice"}, outcome: "logon_failure"},
+			opts:  identitytest.TicketOpts{Client: "cifs/alice"}, machine: true, outcome: "ok"},
 		{name: "an unknown user",
 			opts: identitytest.TicketOpts{Client: "bob"}, outcome: "logon_failure"},
 		{name: "a disabled user",
@@ -154,6 +156,12 @@ func TestKerberosSignInMapsTheName(t *testing.T) {
 				byName[u.Name] = u.Principal
 			}
 			res, oc, err := k.srv.SignInOutcome(context.Background(), k.step(tc.opts, krbClient))
+			if tc.machine {
+				if p := res.Identity.Evidence.Principal; err != nil || oc != tc.outcome || p.Kind != entity.PrincipalMachine {
+					t.Errorf("SignIn = %v, outcome %q, bound %v; want %q, a machine", err, oc, p, tc.outcome)
+				}
+				return
+			}
 			if tc.bound == "" {
 				refused(t, tc.name, res, oc, err, vfserr.ErrLogonFailure, tc.outcome)
 				return

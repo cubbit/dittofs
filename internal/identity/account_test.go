@@ -126,7 +126,7 @@ func signing(t *testing.T) (*resolving, *secrets.Provider) {
 	r.logs.Reset()
 	debug := slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	if r.srv, err = identity.New(identity.Deps{Store: r.st, Clock: r.clock, Secrets: p, Metrics: r.reg,
-		Tracer: r.tp.Tracer("test"), Logger: debug, Logons: r.logons}); err != nil {
+		Tracer: r.tp.Tracer("test"), Logger: debug, Logons: r.logons, ControlPlane: r.cp}); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if err := r.srv.Apply(state(1)); err != nil {

@@ -51,9 +51,10 @@ type Deps struct {
 	// DomainController opens the domain's controllers; New does not require
 	// it, and while it is nil pass-through answers ErrUnavailable.
 	DomainController netlogon.Dialer
-	// ControlPlane is the store's ControlPlane(), the rotation's and the NT
-	// hashes' deletion's control-plane calls; New does not require it, and
-	// while it is nil either operation fails.
+	// ControlPlane is the store's ControlPlane(), the rotation's, the NT
+	// hashes' deletion's and a machine's link to its first PAC's
+	// control-plane calls; New does not require it, and while it is nil each
+	// of them fails.
 	ControlPlane ControlPlane
 }
 
@@ -216,6 +217,9 @@ type Server struct {
 
 	schedStop func() // ends the rotation's schedule and waits for it, under mu; nil while it does not run
 	scheduled func() // a test's view of each schedule check, its next tick armed; nil in production
+
+	beforeMachineMint func() // a test's pause just before a machine's mint plan returns its batch; nil in production
+	beforeMachineLink func() // a test's pause just before a machine's link is written; nil in production
 }
 
 // Conditions appends identity's conditions: the node's
