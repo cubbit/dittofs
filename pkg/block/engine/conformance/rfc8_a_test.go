@@ -656,14 +656,16 @@ func unsuitableJournal(f *enginetest.Fixture) bool {
 // TestRFC8A_UnsuitableJournalAtStart, adapted to one journal device: a start
 // over a directory the platform refuses succeeds, names the share with its
 // device and the rule, raises journal_unsuitable and changes nothing in the
-// directory; once the check clears and 30 s pass, the share attaches by
-// itself, its content reads back, its shard's incarnation is raised in the
-// start form, the write verifier differs from before the restart and the
-// condition clears. The half left: the second device whose share stays
-// served needs the fixture to run two journal devices, which it adds with
-// the change that composes them.
+// directory; once the check clears and the clock moves on, the share
+// attaches by itself, its content reads back, its shard's incarnation is
+// raised in the start form, the write verifier differs from before the
+// restart and the condition clears. The retry's 30 s interval is not
+// asserted: the row only shows that the share attaches once the clock
+// moves. The half left: the second device whose share stays served needs
+// the fixture to run two journal devices, which it adds with the change
+// that composes them.
 func TestRFC8A_UnsuitableJournalAtStart(t *testing.T) {
-	f := enginetest.New(t)
+	f := enginetest.New(t, enginetest.WithSegmentCap(mib))
 	_, id := f.File("a")
 	v1 := write(t, f, id, 0, []byte("unoffloaded"))
 
@@ -696,8 +698,11 @@ func TestRFC8A_UnsuitableJournalAtStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Each poll moves the clock by the retry's interval: the engine's other
-	// timers share the clock, so no pending count says the retry's is armed.
+	// Each poll moves the clock by the retry's interval. The clock's pending
+	// count is no signal that the retry's timer is armed: it counts every
+	// timer on the shared clock, and that number varies from run to run
+	// under load. The small segment cap keeps each retried open's recovery scan
+	// cheap, so the polls fit the bound under load.
 	f.RefuseOpens(false)
 	eventually(t, "the share attaches", func() bool {
 		f.Clock.Advance(30 * time.Second)
