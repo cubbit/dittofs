@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -101,7 +103,8 @@ func (f *fix) deps() install.Deps {
 		Bootstrap:  f.b,
 		KV:         f.db,
 		StorageKey: f.key,
-		Journal:    f.opts(),
+		Clock:      f.clock,
+		Journal:    []journal.Option{journaltest.SuitableMount()},
 		Out:        &f.out,
 		Logger:     slog.New(slog.NewTextHandler(&f.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
@@ -240,45 +243,159 @@ func TestCrashAfterEachWriteThenRerun(t *testing.T) {
 	}
 }
 
-// A leftover journal directory of another installation is refused by name:
-// its journal is not recorded, and neither its node-id copy is adopted nor
-// one written beside it.
-func TestForeignJournalRefused(t *testing.T) {
+// A leftover directory, holding another installation's journal or a format
+// file that does not read, is refused by name. On a first run the refusal
+// comes before any write, so the store stays uninitialised and the other
+// directory empty; on a rerun the directory is not recorded. Neither run
+// adopts the leftover directory's node-id copy or writes one beside it.
+func TestLeftoverDirectoryRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rerun   bool
+		foreign bool // another installation's journal; else a damaged format file
+	}{
+		{"another installation's journal, first run", false, true},
+		{"another installation's journal, rerun", true, true},
+		{"a damaged format file, first run", false, false},
+		{"a damaged format file, rerun", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFix(t)
+			ctx := t.Context()
+			left := f.dir(1)
+			if tc.rerun {
+				if err := install.Run(ctx, install.CrashAfter(f.deps(), 1, nil)); !errors.Is(err, install.ErrCrash) {
+					t.Fatalf("Run stopped after the store's Init: %v", err)
+				}
+			}
+			var theirs entity.NodeID
+			if tc.foreign {
+				other := uuid.New()
+				if _, err := journal.Init(ctx, left, journal.InstallationID(other), f.opts()...); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				if theirs, err = bootstrap.InitNodeID(ctx, &bootstrap.Bootstrap{Journals: []bootstrap.Journal{{Path: left}}}, other, left); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(filepath.Join(left, "format"), []byte("not a format file"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before := f.snapshot()
+
+			err := install.Run(ctx, f.deps())
+			if err == nil || !strings.Contains(err.Error(), left) || tc.foreign != errors.Is(err, install.ErrForeignJournal) {
+				t.Fatalf("Run over %s: got %v, want a refusal naming it (ErrForeignJournal: %t)", left, err, tc.foreign)
+			}
+			for k, v := range before {
+				if strings.HasPrefix(k, "file:"+left) && f.snapshot()[k] != v {
+					t.Errorf("%s changed in the leftover directory", k)
+				}
+			}
+			if !tc.rerun {
+				if !maps.Equal(f.snapshot(), before) {
+					t.Errorf("the refused first run wrote to the store or a journal directory")
+				}
+				if _, err := kvstore.Open(ctx, f.db); !errors.Is(err, kvstore.ErrNotInitialised) {
+					t.Errorf("store after the refused first run: open got %v, want it not initialised", err)
+				}
+				return
+			}
+			ours, err := bootstrap.NodeID(&bootstrap.Bootstrap{Journals: f.b.Journals[:1]})
+			if err != nil {
+				t.Fatalf("the node's identity in %s: %v", f.dir(0), err)
+			}
+			if tc.foreign && ours == theirs {
+				t.Errorf("node identity in %s: %x, the leftover directory's, want one not adopted from it", f.dir(0), ours)
+			}
+			if rec, err := f.store().Lifecycle().JournalID(ctx, ours, entity.JournalDir(left)); err != nil || rec != ([16]byte{}) {
+				t.Errorf("journal recorded for %s: got %x, %v; want none", left, rec, err)
+			}
+			if us := f.users(); len(us) != 0 {
+				t.Errorf("users after the refusal: %v, want none", us)
+			}
+		})
+	}
+}
+
+// A run missing what it needs is refused before any write: no journal
+// directory, which would finish an installation no rerun could complete,
+// or a nil dependency.
+func TestDepsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(d *install.Deps)
+	}{
+		{"no journal directory", func(d *install.Deps) { d.Bootstrap = &bootstrap.Bootstrap{} }},
+		{"no bootstrap", func(d *install.Deps) { d.Bootstrap = nil }},
+		{"no storage key", func(d *install.Deps) { d.StorageKey = nil }},
+		{"no clock", func(d *install.Deps) { d.Clock = nil }},
+		{"no writer for a generated password", func(d *install.Deps) { d.Out = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFix(t)
+			d := f.deps()
+			tc.change(&d)
+			if err := install.Run(t.Context(), d); err == nil {
+				t.Fatal("Run: nil error, want the refusal")
+			}
+			if _, err := kvstore.Open(t.Context(), f.db); !errors.Is(err, kvstore.ErrNotInitialised) {
+				t.Errorf("store after the refusal: open got %v, want it not initialised", err)
+			}
+		})
+	}
+	f := newFix(t)
+	d := f.deps()
+	d.KV = nil
+	if err := install.Run(t.Context(), d); err == nil {
+		t.Error("Run with no KV: nil error, want the refusal")
+	}
+}
+
+// Another run that finishes the installation between this run's records and
+// its last Write leaves this one refused by the Write's own check: one
+// administrator, and the signing key the other run set.
+func TestConcurrentFinishRefusesTheLastWrite(t *testing.T) {
 	f := newFix(t)
 	ctx := t.Context()
-	foreign := f.dir(1)
-	other := uuid.New()
-	if _, err := journal.Init(ctx, foreign, journal.InstallationID(other), f.opts()...); err != nil {
-		t.Fatal(err)
+	var key entity.SecretRef
+	d := install.After(f.deps(), func(write string) error {
+		if write != "record "+f.dir(1) {
+			return nil
+		}
+		if err := install.Run(ctx, f.deps()); err != nil {
+			return fmt.Errorf("the nested run: %w", err)
+		}
+		in, err := f.store().Installation(ctx)
+		key = in.SigningKey
+		return err
+	})
+	if err := install.Run(ctx, d); !errors.Is(err, install.ErrInstalled) {
+		t.Fatalf("Run with another run finishing first: got %v, want ErrInstalled", err)
 	}
-	theirs, err := bootstrap.InitNodeID(ctx, &bootstrap.Bootstrap{Journals: []bootstrap.Journal{{Path: foreign}}}, other, foreign)
-	if err != nil {
-		t.Fatal(err)
+	f.admin()
+	in, err := f.store().Installation(ctx)
+	if err != nil || key == (entity.SecretRef{}) || in.SigningKey != key {
+		t.Errorf("signing key: got %x, %v; want the nested run's %x", in.SigningKey, err, key)
 	}
-	copyBefore, err := os.ReadFile(filepath.Join(foreign, journal.NodeIDFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
+}
 
-	err = install.Run(ctx, f.deps())
-	if !errors.Is(err, install.ErrForeignJournal) || !strings.Contains(err.Error(), foreign) {
-		t.Fatalf("Run over %s: got %v, want ErrForeignJournal naming it", foreign, err)
+// failingWriter fails every write, as a closed standard output does.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("stdout closed") }
+
+// A generated password that cannot be printed leaves the installation
+// finished, and the refusal says so and names the way back.
+func TestUnprintedPasswordNamesTheReset(t *testing.T) {
+	f := newFix(t)
+	d := f.deps()
+	d.Out = failingWriter{}
+	if err := install.Run(t.Context(), d); err == nil || !strings.Contains(err.Error(), "initialised") || !strings.Contains(err.Error(), "dfs reset-admin") {
+		t.Fatalf("Run printing to a failing writer: got %v, want the installation named finished and dfs reset-admin named", err)
 	}
-	ours, err := bootstrap.NodeID(&bootstrap.Bootstrap{Journals: f.b.Journals[:1]})
-	if err != nil {
-		t.Fatalf("the node's identity in %s: %v", f.dir(0), err)
-	}
-	if ours == theirs {
-		t.Errorf("node identity in %s: %x, the foreign directory's, want one not adopted from it", f.dir(0), ours)
-	}
-	if got, err := os.ReadFile(filepath.Join(foreign, journal.NodeIDFileName)); err != nil || !bytes.Equal(got, copyBefore) {
-		t.Errorf("node-id copy in %s: got %x, %v; want it as it was, %x", foreign, got, err, copyBefore)
-	}
-	if rec, err := f.store().Lifecycle().JournalID(ctx, ours, entity.JournalDir(foreign)); err != nil || rec != ([16]byte{}) {
-		t.Errorf("journal recorded for %s: got %x, %v; want none", foreign, rec, err)
-	}
-	if us := f.users(); len(us) != 0 {
-		t.Errorf("users after the refusal: %v, want none", us)
+	if err := install.Run(t.Context(), f.deps()); !errors.Is(err, install.ErrInstalled) || !strings.Contains(err.Error(), "reset-admin") {
+		t.Errorf("rerun: got %v, want ErrInstalled naming reset-admin", err)
 	}
 }
 
@@ -334,24 +451,12 @@ func TestSecondRunRefused(t *testing.T) {
 	if err := install.Run(t.Context(), f.deps()); !errors.Is(err, install.ErrInstalled) {
 		t.Fatalf("second Run: got %v, want ErrInstalled", err)
 	}
-	if after := f.snapshot(); !mapsEqual(before, after) {
+	if after := f.snapshot(); !maps.Equal(before, after) {
 		t.Errorf("the refused run changed the store or a journal directory: %d entries before, %d after", len(before), len(after))
 	}
 	if f.out.Len() != 0 {
 		t.Errorf("output of the refused run: %q, want nothing", f.out.String())
 	}
-}
-
-func mapsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if w, ok := b[k]; !ok || w != v {
-			return false
-		}
-	}
-	return true
 }
 
 // The first password from a file is read whole, one trailing LF or CRLF
@@ -379,6 +484,8 @@ func TestPasswordReference(t *testing.T) {
 		{name: "variable unset", useEnv: true},
 		{name: "variable empty", env: ptr(""), useEnv: true},
 		{name: "both named", file: ptr("a\n"), env: ptr("b"), useFile: true, useEnv: true},
+		{name: "file not UTF-8", file: ptr("pass\xff\xfe\n"), useFile: true},
+		{name: "variable not UTF-8", env: ptr("pass\xff"), useEnv: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFix(t)
