@@ -1085,8 +1085,7 @@ func TestTheQuarterCloseLineNamesTheAddressOnceAMinute(t *testing.T) {
 // teardown. Two sources are needed because at 2 the quarter is 1, so every
 // refusal from an address holding one would be the quarter's too; here the
 // second address holds none, so the limit's refusal is its own. A count the
-// teardown never releases fails the last dial, which CheckLeaks cannot
-// read.
+// teardown never releases fails the last dial, and CheckLeaks at the end.
 func TestALimitOfOneClosesASecondAddressUntilTheFirstCloses(t *testing.T) {
 	need127_0_0_2(t)
 	m := metrics.New("v", "c")
@@ -1212,13 +1211,11 @@ func TestAChargeRefusedAfterAdmissionGivesItsSlotBack(t *testing.T) {
 
 // A handover the server refuses, with the count admission took beside its
 // charge, gives both back once, in its teardown, before the handover
-// returns. The node's limit stays whole: one connection's slot may be taken
-// again, and a take past the limit after it still refuses. A refusal that
-// releases the count a second time spends the limit instead, and the take
-// past it succeeds.
+// returns: the count reads zero after it. A refusal that keeps its count
+// fails the read; one that releases it a second time is a release past zero,
+// which panics in a test binary (RFC 24 sections 2.5 and 2.7).
 func TestARefusedHandoverReleasesItsCountOnce(t *testing.T) {
 	b := budgets()
-	b.Conns = resources.NewConnLimit(1)
 	adaptertest.CheckLeaks(t, b)
 	srv, l := testServer(t, adapter.Deps{Budgets: b}, settings.DefaultNFS())
 	// The server is stopped, so a socket handed over has its registration
@@ -1245,15 +1242,8 @@ func TestARefusedHandoverReleasesItsCountOnce(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the refused handover's teardown did not end")
 	}
-	// The count is back: one connection's slot may be taken again...
-	if err := b.Conns.Take(remote); err != nil {
-		t.Fatalf("the refused handover kept its count: %v", err)
-	}
-	defer b.Conns.Release(remote)
-	// ...and the take past the limit, from a fresh address whose own quarter
-	// does not refuse it, still refuses at the limit itself.
-	if err := b.Conns.Take(netip.MustParseAddr("127.0.0.5")); err == nil {
-		t.Error("a second take past the limit succeeded: the refused handover released its count twice")
+	if n := b.Conns.InUse(); n != 0 {
+		t.Errorf("the refused handover's teardown leaves the count at %d, want 0", n)
 	}
 }
 

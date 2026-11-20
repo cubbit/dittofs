@@ -681,10 +681,9 @@ func TestSetLimitRefusesUntilFewerThanTheLimitAreOpen(t *testing.T) {
 
 // Many goroutines taking and releasing against a small limit, one address
 // each, a live SetLimit running among them, never pass the limit in play;
-// once they end the full limit can be taken, and one Take past it is
-// refused: nothing they took leaked and nothing went below zero (RFC 24
-// sections 2.5 and 4.4). A field of the count changed outside its mutex
-// fails here on the race detector.
+// once they end the count reads zero: nothing they took leaked and nothing
+// went below zero (RFC 24 sections 2.5 and 4.4). A field of the count
+// changed outside its mutex fails here on the race detector.
 func TestConcurrentTakesNeverPassTheLimit(t *testing.T) {
 	l := NewConnLimit(32)
 	const goroutines = 64
@@ -718,14 +717,8 @@ func TestConcurrentTakesNeverPassTheLimit(t *testing.T) {
 	if n := held.Load(); n != 0 {
 		t.Fatalf("%d connections still held after the rounds, want 0", n)
 	}
-	l.SetLimit(64)
-	for _, addr := range addrs(64) {
-		if err := l.Take(addr); err != nil {
-			t.Fatalf("the full limit cannot be taken after the rounds: %v", err)
-		}
-	}
-	if err := l.Take(netip.MustParseAddr("192.0.2.200")); !errors.Is(err, ErrConnLimit) {
-		t.Fatalf("a Take past the full limit = %v, want ErrConnLimit", err)
+	if n := l.InUse(); n != 0 {
+		t.Fatalf("the count reads %d after the rounds released every take, want 0", n)
 	}
 }
 
