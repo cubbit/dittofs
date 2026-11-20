@@ -176,7 +176,7 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	n := &Node{cfg: cfg, rec: newReconciler(), sweep: newSweeper()}
+	n := &Node{cfg: cfg, rec: newReconciler(newTable()), sweep: newSweeper()}
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		return nil, fmt.Errorf("node: metadata store: %w", err)
 	}
