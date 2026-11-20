@@ -26,10 +26,37 @@ func (c *Client) ExportPolicies() Singleton[apiv1.ExportPolicySpec] {
 	return Singleton[apiv1.ExportPolicySpec]{c: c, path: "/api/v1/shares", sub: "/export-policy"}
 }
 
-// Users is the users. A delete starts an operation. No route serves its
-// Action yet.
-func (c *Client) Users() Resource[apiv1.UserSpec, struct{}] {
-	return Resource[apiv1.UserSpec, struct{}]{c: c, path: "/api/v1/users"}
+// Users is the users. A delete starts an operation, and so does a create,
+// put or patch naming a Kerberos name a machine holds, which moves the name
+// and starts the machine's deletion. No route serves its Action yet.
+func (c *Client) Users() UserResource {
+	return UserResource{Resource[apiv1.UserSpec, struct{}]{c: c, path: "/api/v1/users"}}
+}
+
+// UserResource is the users, whose create, put or patch may start an
+// operation, as moving a machine's Kerberos name starts the machine's
+// deletion.
+type UserResource struct {
+	Resource[apiv1.UserSpec, struct{}]
+}
+
+// Create creates a user of spec, returning the operation it started, or the
+// user.
+func (r UserResource) Create(ctx context.Context, spec apiv1.UserSpec, opts ...CallOption) (Result[apiv1.UserSpec, struct{}], error) {
+	return result[apiv1.UserSpec, struct{}](r.c.write(ctx, http.MethodPost, r.path, map[string]any{"spec": spec}, "", opts))
+}
+
+// Put replaces the spec of the user id names, whose tag is etag, returning
+// the operation it started, or the user.
+func (r UserResource) Put(ctx context.Context, id string, spec apiv1.UserSpec, etag string) (Result[apiv1.UserSpec, struct{}], error) {
+	return result[apiv1.UserSpec, struct{}](r.c.write(ctx, http.MethodPut, r.at(id), map[string]any{"spec": spec}, etag, nil))
+}
+
+// Patch merges patch, a JSON merge patch of the user's body, into the user
+// id names, whose tag is etag, returning the operation it started, or the
+// user.
+func (r UserResource) Patch(ctx context.Context, id string, patch any, etag string) (Result[apiv1.UserSpec, struct{}], error) {
+	return result[apiv1.UserSpec, struct{}](r.c.write(ctx, http.MethodPatch, r.at(id), patch, etag, nil))
 }
 
 // Groups is the groups. A delete starts an operation. No route serves its
@@ -179,13 +206,5 @@ type SettingResource struct {
 // Put sets the setting key names, whose tag is etag, or, with etag "*",
 // creates it, returning the operation it started, or the setting.
 func (r SettingResource) Put(ctx context.Context, key string, spec apiv1.SettingSpec, etag string) (Result[apiv1.SettingSpec, apiv1.SettingStatus], error) {
-	rp, err := r.c.write(ctx, http.MethodPut, r.at(key), map[string]any{"spec": spec}, etag, nil)
-	if err != nil {
-		return Result[apiv1.SettingSpec, apiv1.SettingStatus]{}, err
-	}
-	if op, err := accepted(rp); op != nil || err != nil {
-		return Result[apiv1.SettingSpec, apiv1.SettingStatus]{Operation: op}, err
-	}
-	t, err := tagged[apiv1.SettingSpec, apiv1.SettingStatus](rp, nil)
-	return Result[apiv1.SettingSpec, apiv1.SettingStatus]{Resource: &t}, err
+	return result[apiv1.SettingSpec, apiv1.SettingStatus](r.c.write(ctx, http.MethodPut, r.at(key), map[string]any{"spec": spec}, etag, nil))
 }
