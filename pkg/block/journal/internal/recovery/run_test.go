@@ -652,6 +652,12 @@ func TestTakenSegment_JudgesHeaderSlots(t *testing.T) {
 			want:  false,
 		},
 		{
+			name:  "a full-size garbage slot alone answers nothing",
+			files: map[string][]byte{format.SegmentName(2): bytes.Repeat([]byte{0xff}, format.SegmentHeaderSize)},
+			names: []string{format.SegmentName(2)},
+			want:  false,
+		},
+		{
 			name:  "an empty file answers nothing",
 			files: map[string][]byte{format.SegmentName(2): {}},
 			names: []string{format.SegmentName(2)},
