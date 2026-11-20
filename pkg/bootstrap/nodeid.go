@@ -121,6 +121,11 @@ func WriteMissingNodeIDs(
 	) ([16]byte, error),
 	log *slog.Logger,
 ) error {
+	// The zero identity names no node, so no copy can be written for it.
+	if id == (entity.NodeID{}) {
+		return fmt.Errorf("%w: the node's identity is zero", errNoIdentity)
+	}
+
 	return writeMissingNodeIDs(ctx, b, id, journalID, func(dir string) copyDir {
 		return osDir(dir)
 	}, log)
