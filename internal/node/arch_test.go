@@ -1008,7 +1008,7 @@ func isMethod(o types.Object) bool {
 }
 
 // No package under api reaches the signing key outside the tokens and the
-// rotation step, so no route writes it (RFC 23's R8); a planted route
+// rotation step, so no route writes it (RFC 23 §5.2); a planted route
 // rewriting it through the installation's field, the key's kind and
 // PutSecret, and dropping it through PruneSecret, is caught at each.
 func TestNoRouteWritesTheSigningKey(t *testing.T) {

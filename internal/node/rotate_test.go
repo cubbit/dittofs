@@ -118,8 +118,8 @@ func TestRotationKeepsTheOldVersionUntilItsTokensExpire(t *testing.T) {
 			switched = append(switched, a)
 		}
 	}
-	if len(switched) != 1 || switched[0].Actor != op.Account || switched[0].Node != h.NodeID() {
-		t.Errorf("the installation's audit records of the switch: %+v, want one, its actor the operation's account %v, on node %v", switched, op.Account, h.NodeID())
+	if len(switched) != 1 || switched[0].Actor != op.Account || switched[0].Node != h.NodeID() || string(switched[0].Outcome) != entity.ShareID(op.ID).String() {
+		t.Errorf("the installation's audit records of the switch: %+v, want one, its actor the operation's account %v, on node %v, its outcome the operation %v", switched, op.Account, h.NodeID(), op.ID)
 	}
 	for name, raw := range map[string]string{"signed before the switch": before, "issued an hour ahead": ahead} {
 		if _, err := tk.Verify(ctx, raw); err != nil {

@@ -50,7 +50,8 @@ type Writer interface {
 // is past every token an earlier version signed.
 //
 // decision: the prune calls tx.PruneSecret, not the provider's Prune, so it
-// skips the floor of the versions node statuses report. The retention is
+// skips the floor of the versions node statuses report, and the provider's
+// kind and owner check, which the switch's seal already made on this key. The retention is
 // time-based: no token an old version signed verifies once its 15 min have
 // passed, so nothing still needs the version, wherever it is held.
 //
@@ -61,8 +62,10 @@ type Writer interface {
 // window and has such a token refused before it expires; a node that has
 // not yet re-read refuses a token the new version signed for up to a
 // second; and a node down across the whole wait keeps nothing it needs.
-// Ceiling: a second node. Upgrade: wait for every node's status to report
-// the new version before the 15 min start.
+// Ceiling: a second node, where signing must also wait until every node's
+// status reports the new version, since a node that has not re-read refuses
+// a new-version token. Upgrade: wait for every node's status to report the
+// new version before signing with it and before the 15 min start.
 func RotationStep(store Writer, s Sealer, tk *Tokens, node entity.NodeID) step.Step {
 	return func(ctx context.Context, op entity.Operation) (step.StepResult, error) {
 		inst := tk.owner.Record.ID
@@ -125,14 +128,15 @@ func switchKey(ctx context.Context, store Writer, s Sealer, tk *Tokens, node ent
 }
 
 // switchAudit is the record of the switch: the signing key set, as a secret
-// is recorded, never its value, as op's account on node.
+// is recorded, never its value, as op's account on node, its outcome the
+// operation's ID, so a switch run twice is matched to its operation.
 func switchAudit(op entity.Operation, node entity.NodeID) *entity.AuditRecord {
 	return &entity.AuditRecord{
 		Actor:   op.Account,
 		Node:    node,
 		Target:  op.Target,
 		Change:  []byte(`{"signing_key":"set"}`),
-		Outcome: []byte("applied"),
+		Outcome: []byte(entity.ShareID(op.ID).String()),
 	}
 }
 
