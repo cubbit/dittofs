@@ -802,10 +802,12 @@ func TestStopStepPastItsBound(t *testing.T) {
 	}
 }
 
+var errSecondClose = errors.New("the KV closed a second time")
+
 // A KV close that misses its bound, as a store that can no longer be written
 // retries its flush, is named in Stop's error once the node's clock passes
-// the bound, every part having stopped before it; a later Stop, once the
-// close ended, answers nil and the store is closed.
+// the bound, every part having stopped before it; a later Stop waits on the
+// same close, answering nil once it ended, and the store is closed.
 func TestStopStoreClosePastItsBound(t *testing.T) {
 	var h *nodetest.Harness
 	s := newSteps(t, &h)
@@ -821,7 +823,8 @@ func TestStopStoreClosePastItsBound(t *testing.T) {
 	// The delay waits on a clock of its own, so advancing the node's clock
 	// past the stop bound does not release it.
 	held := sim.NewTestClock(time.Unix(0, 0))
-	sched, err := sim.NewSchedule(1, held, sim.Rule{Op: kvtest.OpClose, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	sched, err := sim.NewSchedule(1, held, sim.Rule{Op: kvtest.OpClose, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Hour}},
+		sim.Rule{Op: kvtest.OpClose, Key: "*", From: 2, Action: sim.FaultAction{Err: errSecondClose}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -841,8 +844,11 @@ func TestStopStoreClosePastItsBound(t *testing.T) {
 		t.Errorf("parts stopped with the store's close held: got %v, want %v", got, stops)
 	}
 
-	held.Advance(time.Hour)
+	// A later Stop waits on the same close rather than closing again: a
+	// second close would answer errSecondClose.
 	go func() { stopped <- h.Node().Stop(t.Context()) }()
+	waitFor(t, s.waits, "store")
+	held.Advance(time.Hour)
 	if err := answered(t, stopped); err != nil {
 		t.Errorf("Stop once the store's close ended: got %v, want nil", err)
 	}
@@ -852,6 +858,7 @@ func TestStopStoreClosePastItsBound(t *testing.T) {
 	if _, _, err := h.Store().Nodes().Node(t.Context(), h.NodeID()); err == nil {
 		t.Error("a read once the second Stop returned: got nil, want the store closed")
 	}
+	f.SetFault(nil)
 }
 
 // The filesystem uses the engine and the zero check's part: a filesystem

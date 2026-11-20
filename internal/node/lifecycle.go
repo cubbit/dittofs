@@ -236,7 +236,9 @@ func (n *Node) Stop(ctx context.Context) error {
 	if !done {
 		return fmt.Errorf("node: stop store: not stopped within %v", stopBound)
 	}
-	if err == nil && l.stepped != nil {
+	if err != nil {
+		err = fmt.Errorf("node: stop store: %w", err)
+	} else if l.stepped != nil {
 		l.stepped("stop store")
 	}
 	return errors.Join(err, n.storageKey.Close())
