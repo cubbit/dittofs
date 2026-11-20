@@ -297,8 +297,9 @@ version.
 
 What is served is the operator's `adapters.nfs.versions` range within this
 table, all of it by default
-([RFC 20 §4.8](rfc-20-adapters.md#4.8%20Several%20versions%20of%20one%20protocol)); a range of
-only 4.x serves no MOUNT, NLM or NSM.
+([RFC 20 §4.8](rfc-20-adapters.md#4.8%20Several%20versions%20of%20one%20protocol)). NFS v3,
+MOUNT v3, NLM v4 and NSM v1 are served together or not at all: a range holding 3
+serves the four, and a range of only 4.x serves none of them.
 
 - A `COMPOUND` whose minor version is outside the `adapters.nfs.versions`
   range, any above 2 among them, **MUST** be answered
