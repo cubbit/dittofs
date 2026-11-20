@@ -384,6 +384,13 @@ func notRotating(tx entity.ControlPlaneTx, in entity.Installation) error {
 // no version a running one did not take becomes current under it, and when
 // another join's hand-over wrote the version this one sealed first. It
 // returns the version written, unsealed fields only.
+//
+// ponytail: a version whose join's operation write is then refused stays,
+// sealed and unused, below the next version written, since PruneSecret cuts
+// every version below one and the versions below a handed-over one may
+// include the password in force and its retained predecessor. Prune the
+// orphans when the store can delete one version, or when the machine
+// password's retention pass drops handed-over versions no join took.
 func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte) (entity.Secret, error) {
 	defer clear(password)
 	in, err := rq.d.Store.Installation(ctx)
