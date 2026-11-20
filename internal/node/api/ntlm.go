@@ -12,6 +12,11 @@ import (
 // ntlmKey is the setting that turns NTLM sign-in on and off.
 const ntlmKey = "identity.ntlm"
 
+// ntlmRight is the right a write of the installation's identity.ntlm asks,
+// and so the right that starts the NT-hash deletion, which only that write
+// starts; a cancel of the deletion asks it too (RFC 23 §4.1).
+const ntlmRight = auth.Installation
+
 // ntlmOn reports whether the installation's identity.ntlm record s, ok
 // false for none, leaves NTLM on, its value decoded as identity decodes it,
 // a JSON bool: none, and a value that is no bool, which the settings table
@@ -40,7 +45,7 @@ func ntlmWrite(ctx context.Context, tx entity.ControlPlaneTx, start func(apiv1.O
 	// settings: it decides whether NTLM sign-in is accepted at all, and
 	// turning it off starts the irreversible deletion of every NT hash.
 	// Overturned if the role table gives sign-in settings to an operator.
-	if c, _ := auth.CallerFrom(ctx); !holds(c, auth.Installation) {
+	if c, _ := auth.CallerFrom(ctx); !holds(c, ntlmRight) {
 		return &refusal{code: apiv1.CodeForbidden, detail: "only an admin writes " + ntlmKey}
 	}
 	old, had, err := tx.Setting(scope, key)

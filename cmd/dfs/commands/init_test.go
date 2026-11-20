@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/install"
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 // initConfig writes a bootstrap under dir naming a store, one journal
@@ -43,6 +46,58 @@ func TestInitPasswordFlags(t *testing.T) {
 	if _, err := runDfs("init", "--config", config, "--admin-password-file", empty, "--admin-password-env", "X"); err == nil ||
 		!strings.Contains(err.Error(), "admin-password-env") {
 		t.Errorf("dfs init with both password flags: got %v, want them refused as exclusive", err)
+	}
+}
+
+// dfs init reads --admin-password-file to RFC 23 §5.4's 4 KiB: a file a
+// byte longer refuses, naming the file, printing nothing and leaving the
+// store not initialised and the journal directory empty; a file of exactly
+// 4 KiB then initialises the installation with its password, printing none.
+// A host whose mount the journal's platform check refuses skips the
+// accepted run.
+func TestInitPasswordFileLimit(t *testing.T) {
+	const limit = 4 << 10
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	file := filepath.Join(dir, "admin-password")
+	if err := os.WriteFile(file, []byte(strings.Repeat("p", limit+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runDfs("init", "--config", config, "--admin-password-file", file)
+	if !errors.Is(err, install.ErrPassword) || !strings.Contains(err.Error(), file) || !strings.Contains(err.Error(), "longer than 4096 bytes") || out != "" {
+		t.Fatalf("dfs init with a %d-byte password file: got %q, %v; want ErrPassword naming the file and the limit, nothing printed", limit+1, out, err)
+	}
+	if ents, err := os.ReadDir(filepath.Join(dir, "device")); err != nil || len(ents) != 0 {
+		t.Errorf("journal directory after the refusal: %d entries, %v; want it empty", len(ents), err)
+	}
+	db, err := badgerkv.Open(badgerkv.Options{Dir: filepath.Join(dir, "store"), NodeID: testNode, Clock: time.Now})
+	if err != nil {
+		t.Fatalf("open the store after the refusal: %v", err)
+	}
+	if _, err := kvstore.Open(t.Context(), db); !errors.Is(err, kvstore.ErrNotInitialised) {
+		t.Errorf("store after the refusal: open got %v, want it not initialised", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	scratch := filepath.Join(dir, "scratch")
+	if err := os.Mkdir(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Init(t.Context(), scratch, [16]byte{1}); errors.Is(err, journal.ErrUnsuitableStorage) {
+		t.Skipf("the journal's platform check refuses the mount holding %s (%v); set TMPDIR to a directory on a suitable mount", dir, err)
+	} else if err != nil {
+		t.Fatalf("journal init on the scratch directory: %v", err)
+	}
+	if err := os.WriteFile(file, []byte(strings.Repeat("p", limit)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runDfs("init", "--config", config, "--admin-password-file", file); err != nil || out != "" {
+		t.Fatalf("dfs init with a %d-byte password file: got %q, %v; want it initialised, nothing printed", limit, out, err)
+	}
+	if _, err := runDfs("init", "--config", config); !errors.Is(err, install.ErrInstalled) {
+		t.Errorf("second dfs init: got %v, want ErrInstalled", err)
 	}
 }
 

@@ -143,10 +143,12 @@ func TestOperationWait(t *testing.T) {
 }
 
 // :cancel answers 409 not_cancellable, naming the operation, for every kind
-// of the closed set; 403 for a caller that may not start its kind, the right
-// of the row that starts it; 404 for an operation that does not exist; 428
-// without an Idempotency-Key, before the operation is read; 400 for a key
-// longer than 255 bytes; each refusal audited.
+// of the closed set; 403 for a caller that may not start its kind, which RFC
+// 23 §4.1's cancel row asks: the right of the row that starts it, or, for the
+// NT-hash deletion, the right identity.ntlm's write asks; 404 for an
+// operation that does not exist; 428 without an Idempotency-Key, before the
+// operation is read; 400 for a key longer than 255 bytes; each refusal
+// audited.
 func TestCancel(t *testing.T) {
 	var role atomic.Uint32
 	role.Store(uint32(entity.RoleAdmin))

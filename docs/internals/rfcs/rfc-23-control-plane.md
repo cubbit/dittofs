@@ -1772,7 +1772,9 @@ second store.
 - **The first password.** The step takes the password from a reference — an
   environment variable or a file on the host, as a provisioning file names a
   secret — or, if none is given, generates 24 random bytes, encodes them, and
-  prints them once to the step's own standard output, never to a log.
+  prints them once to the step's own standard output, never to a log. A file
+  may hold at most 4 KiB, its trailing newline counted; a longer one is
+  refused before the step writes anything.
 - **It must be changed.** A generated password marks the account
   **must-change**. Until it changes, a sign-in returns a token that permits only
   `POST /auth/password` and sign-out; every other call is refused `403`
