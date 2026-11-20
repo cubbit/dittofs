@@ -24,7 +24,7 @@ var frozenExports = []string{
 	"func NodeID(b *Bootstrap) (entity.NodeID, error)",
 	"func WriteMissingNodeIDs(ctx context.Context, b *Bootstrap, id entity.NodeID, " +
 		"journalID func(ctx context.Context, node entity.NodeID, device entity.JournalDir) " +
-		"([16]byte, error)) error",
+		"([16]byte, error), log *slog.Logger) error",
 	"func GetDefaultConfig() *Bootstrap",
 	"func Load(configPath string, environ []string) (*Bootstrap, error)",
 	"func MustLoad(configPath string, environ []string) (*Bootstrap, error)",

@@ -407,6 +407,25 @@ func unreadableCopy(t *testing.T, mk func(t *testing.T, path string), want error
 	}
 }
 
+// The zero identity is refused before any directory is read, so nothing is
+// written beside a journal the store records for it.
+func TestWriteMissingRefusesTheZeroIdentity(t *testing.T) {
+	s := newStore(t)
+	dir, jid := newJournal(t, install)
+	record(t, s, jid, nodeA, dir)
+
+	log, _ := logs()
+	err := WriteMissingNodeIDs(context.Background(), bootstrapOf(entity.NodeID{}, dir),
+		entity.NodeID{}, s.Lifecycle().JournalID, log)
+	if !errors.Is(err, errNoIdentity) {
+		t.Fatalf("WriteMissingNodeIDs with the zero identity: got %v, want %v", err, errNoIdentity)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, nodeIDName)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the copy after the refusal: stat %v, want none written", err)
+	}
+}
+
 func TestWriteMissingWritesBesideARecordedJournal(t *testing.T) {
 	s := newStore(t)
 	d1, j1 := newJournal(t, install)

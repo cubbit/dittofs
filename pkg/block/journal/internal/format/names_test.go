@@ -54,12 +54,14 @@ func TestSegmentNameSortsAsItsIdDoes(t *testing.T) {
 	}
 }
 
-// TestClassifyNameReadsTheFixedFiles pins the two names the journal owns
+// TestClassifyNameReadsTheFixedFiles pins the names the journal knows
 // besides its segments.
 func TestClassifyNameReadsTheFixedFiles(t *testing.T) {
 	for name, want := range map[string]NameKind{
 		FormatFileName: NameFormat,
 		FormatTmpName:  NameFormatTmp,
+		NodeIDFileName: NameNodeID,
+		NodeIDTmpName:  NameNodeIDTmp,
 	} {
 		if kind, id := ClassifyName(name); kind != want || id != 0 {
 			t.Errorf("ClassifyName(%q) = (%v, %d), want (%v, 0)", name, kind, id, want)

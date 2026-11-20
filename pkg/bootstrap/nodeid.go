@@ -24,8 +24,8 @@ import (
 // The node-id file's layout, RFC 28 §2.1: the magic, the node's identity, and
 // the CRC32C of the bytes before it, little-endian, not seeded.
 const (
-	nodeIDName      = "node-id"
-	nodeIDTmpName   = "node-id.tmp"
+	nodeIDName      = journal.NodeIDFileName
+	nodeIDTmpName   = journal.NodeIDTmpName
 	nodeIDMagic     = "DNI1"
 	nodeIDCRCOffset = 20
 	nodeIDSize      = 24
@@ -108,8 +108,8 @@ func InitNodeID(
 }
 
 // WriteMissingNodeIDs writes a missing copy only beside a journal the store records
-// for this node and device, logging each write. journalID answers the journal the
-// store records for a node's device, zero when it records none.
+// for this node and device, logging each write to log. journalID answers the
+// journal the store records for a node's device, zero when it records none.
 func WriteMissingNodeIDs(
 	ctx context.Context,
 	b *Bootstrap,
@@ -119,10 +119,16 @@ func WriteMissingNodeIDs(
 		node entity.NodeID,
 		device entity.JournalDir,
 	) ([16]byte, error),
+	log *slog.Logger,
 ) error {
+	// The zero identity names no node, so no copy can be written for it.
+	if id == (entity.NodeID{}) {
+		return fmt.Errorf("%w: the node's identity is zero", errNoIdentity)
+	}
+
 	return writeMissingNodeIDs(ctx, b, id, journalID, func(dir string) copyDir {
 		return osDir(dir)
-	}, slog.Default())
+	}, log)
 }
 
 func initNodeID(

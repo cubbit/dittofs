@@ -8,10 +8,14 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
-// Names of the journal directory's fixed files.
+// Names of the journal directory's fixed files. The node-id copy and its
+// temporary are the node's, written beside the journal (RFC 28 §2.1); the
+// journal knows them only so that it leaves them alone without reporting them.
 const (
 	FormatFileName = "format"
 	FormatTmpName  = "format.tmp"
+	NodeIDFileName = "node-id"
+	NodeIDTmpName  = "node-id.tmp"
 )
 
 // NameKind is what a file name in the journal's directory is.
@@ -30,6 +34,10 @@ func (k NameKind) String() string {
 		return "format"
 	case NameFormatTmp:
 		return "format.tmp"
+	case NameNodeID:
+		return "node-id"
+	case NameNodeIDTmp:
+		return "node-id.tmp"
 	}
 	return "invalid"
 }
@@ -44,6 +52,8 @@ const (
 	NameSpare                 // <20 digits>.spare.tmp
 	NameFormat                // format
 	NameFormatTmp             // format.tmp
+	NameNodeID                // node-id
+	NameNodeIDTmp             // node-id.tmp
 )
 
 // SegmentName returns the name of segment id's file: its id in twenty
@@ -76,6 +86,10 @@ func ClassifyName(name string) (NameKind, core.SegmentID) {
 		return NameFormat, 0
 	case FormatTmpName:
 		return NameFormatTmp, 0
+	case NodeIDFileName:
+		return NameNodeID, 0
+	case NodeIDTmpName:
+		return NameNodeIDTmp, 0
 	}
 
 	for _, s := range []struct {

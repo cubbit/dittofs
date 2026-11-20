@@ -100,6 +100,9 @@ func attach(ctx context.Context, fsys storage.FS, rd *reader, id core.JournalID,
 		case format.NameFormat, format.NameFormatTmp:
 			// The format file is read by the open itself; a format.tmp is
 			// the last writer's, to be overwritten or cleaned up there.
+		case format.NameNodeID, format.NameNodeIDTmp:
+			// The node's copy of its identity and that copy's temporary:
+			// the node writes and cleans them up, never the journal.
 		case format.NameSpare:
 			// The temporary name a spare is made under. The pass is the
 			// one step that unlinks it, and the id it names still counts,

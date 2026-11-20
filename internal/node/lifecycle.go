@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -272,7 +273,9 @@ func (n *Node) started(name string, stop func(context.Context) error, uses ...st
 // refuse refuses a KV of another installation than the one each device's
 // journal names, and a device whose journal cannot be read, before Start
 // writes to it. A device holding no journal is left to the engine, which
-// refuses it at its own start.
+// refuses it at its own start. Then it writes a missing node-id copy beside
+// each journal the store records for this node and device, and beside no
+// other (RFC 23 §2.2 step 1).
 func (n *Node) refuse(ctx context.Context) error {
 	in, err := n.meta.Installation(ctx)
 	if err != nil {
@@ -294,6 +297,16 @@ func (n *Node) refuse(ctx context.Context) error {
 		default:
 			return fmt.Errorf("the journal in %s: %w", dir, err)
 		}
+	}
+	// decision: a copy that cannot be written refuses the start, though the
+	// copy is redundant with the host file's identity: a device that cannot
+	// take a 24-byte file and its directory's sync is not fit to hold a
+	// journal, and starting would leave that device to fail at the engine's
+	// first write instead. Overturned if a device that refuses only small
+	// writes, such as one at a file-count quota, must still serve.
+	b := &n.cfg.Bootstrap
+	if err := bootstrap.WriteMissingNodeIDs(ctx, b, b.Node.ID, n.meta.Lifecycle().JournalID, n.cfg.Logger); err != nil {
+		return fmt.Errorf("write missing node-id copies: %w", err)
 	}
 	return nil
 }
