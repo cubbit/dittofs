@@ -43,9 +43,13 @@ func startStop(t *testing.T, h *nodetest.Harness) {
 }
 
 // A journal directory whose node-id copy was removed gets it back at the
-// next start, naming the node's identity.
+// next start, naming the node's identity, and the write is logged on the
+// node's logger.
 func TestStartWritesTheMissingNodeIDCopy(t *testing.T) {
-	h, dev := harnessDevice(t, nil)
+	var logged syncBuffer
+	h, dev := harnessDevice(t, func(cfg *node.Config) {
+		cfg.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+	})
 	copyPath := filepath.Join(dev, journal.NodeIDFileName)
 	startStop(t, h)
 	if _, err := os.Stat(copyPath); err != nil {
@@ -55,8 +59,13 @@ func TestStartWritesTheMissingNodeIDCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	before := len(logged.String())
 	h.Restart(t)
 	startStop(t, h)
+
+	if out := logged.String()[before:]; !strings.Contains(out, `msg="node-id copy written" dir=`+dev) {
+		t.Errorf("the node's log across the restart: %q, want the copy's write naming %s", out, dev)
+	}
 
 	b, err := os.ReadFile(copyPath)
 	if err != nil {

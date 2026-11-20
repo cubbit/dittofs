@@ -108,8 +108,8 @@ func InitNodeID(
 }
 
 // WriteMissingNodeIDs writes a missing copy only beside a journal the store records
-// for this node and device, logging each write. journalID answers the journal the
-// store records for a node's device, zero when it records none.
+// for this node and device, logging each write to log. journalID answers the
+// journal the store records for a node's device, zero when it records none.
 func WriteMissingNodeIDs(
 	ctx context.Context,
 	b *Bootstrap,
@@ -119,10 +119,11 @@ func WriteMissingNodeIDs(
 		node entity.NodeID,
 		device entity.JournalDir,
 	) ([16]byte, error),
+	log *slog.Logger,
 ) error {
 	return writeMissingNodeIDs(ctx, b, id, journalID, func(dir string) copyDir {
 		return osDir(dir)
-	}, slog.Default())
+	}, log)
 }
 
 func initNodeID(

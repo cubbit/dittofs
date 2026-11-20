@@ -299,7 +299,7 @@ func (n *Node) refuse(ctx context.Context) error {
 		}
 	}
 	b := &n.cfg.Bootstrap
-	return bootstrap.WriteMissingNodeIDs(ctx, b, b.Node.ID, n.meta.Lifecycle().JournalID)
+	return bootstrap.WriteMissingNodeIDs(ctx, b, b.Node.ID, n.meta.Lifecycle().JournalID, n.cfg.Logger)
 }
 
 // openListeners opens the API and the metrics listeners, and logs the
