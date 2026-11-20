@@ -180,9 +180,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and fills the device; the refused content write comes back as the spare limit''s NoSpaceError, not the filesystem''s ENOSPC, so the check stops before its release, removal, mark and repack legs. The headroom is built, so the error it hands a full device''s write is a defect in it, the same family as the device-ENOSPC row of this file.'
-  issue: '#3395'
-  message: 'want the filesystem''s ENOSPC and no NoSpaceError'
+  reason: 'The journal opens and fills the device; the refused content write now answers the filesystem''s ENOSPC, and the check fails on a stub call at its mark leg. Needs release, removal, mark and repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_IndexBoundRefuses
   status: fail
@@ -1169,10 +1169,3 @@
   issue: '#3379'
   message: 'stub: Hold'
 
-- test: TestEdge_FilesystemENOSPCIsNotErrNoSpace
-  status: skip
-  fix: planned
-  category: feature
-  reason: 'The roll path answers a full device with the spare limit alone: no take reads the pool''s device-full state, so the check''s bounded retry would spend every attempt on a retryable refusal. Withdraws when a write on a full device answers the device''s error.'
-  issue: '#3395'
-  message: 'a content write on a full device answers the spare limit: no take reads the pool''s device-full state yet'

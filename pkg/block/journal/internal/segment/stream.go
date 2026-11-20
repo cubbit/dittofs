@@ -546,8 +546,10 @@ func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 	// The full device, answered as itself rather than as a limit, unless a
 	// full-size retired segment is to hand: that recycle is the spare.
 	var spare *core.NoSpaceError
-	if errors.As(err, &spare) && spare.Limit == core.LimitSpare && s.pool.DeviceFull() && !s.pool.retiredToHand() {
-		return 0, fmt.Errorf("%w: making one failed for lack of device space: %w", ErrNoSegmentForTheRoll, syscall.ENOSPC)
+	if errors.As(err, &spare) && spare.Limit == core.LimitSpare {
+		if full := s.pool.fullDeviceAnswer(); full != nil {
+			return 0, full
+		}
 	}
 	// The journal's own maximum, answered as itself for a roll that carries
 	// a payload and runs under no hold and no repack class of its own: the
