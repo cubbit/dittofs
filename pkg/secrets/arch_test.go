@@ -23,8 +23,8 @@ var frozenExports = []string{
 	"type Provider struct{}",
 	"func (*Provider).Delete(ctx context.Context, kind entity.SecretKind, " +
 		"owner entity.SecretOwner, ref entity.SecretRef) error",
-	"func (*Provider).Prune(ctx context.Context, kind entity.SecretKind, " +
-		"owner entity.SecretOwner, ref entity.SecretRef) error",
+	"func (*Provider).Prune(ctx context.Context, tx entity.ControlPlaneTx, " +
+		"kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) error",
 	"func (*Provider).Resolve(ctx context.Context, role Role, kind entity.SecretKind, " +
 		"owner entity.SecretOwner, ref entity.SecretRef) ([]byte, error)",
 	"func (*Provider).Seal(ctx context.Context, role Role, kind entity.SecretKind, " +
@@ -328,6 +328,8 @@ var frozenStore = map[string]string{
 		"ctx context.Context, s entity.Secret, expect uint64) error",
 	"kvstore.ControlPlane.PruneSecret": "func (kvstore.ControlPlane).PruneSecret(" +
 		"ctx context.Context, id entity.SecretRef, below uint64) error",
+	"kvstore.ControlPlane.RegisteredStatuses": "func (kvstore.ControlPlane).RegisteredStatuses(" +
+		"ctx context.Context) ([]entity.NodeStatus, error)",
 	"entity.ControlPlaneTx.DeleteSetting": "func (entity.ControlPlaneTx).DeleteSetting(" +
 		"scope entity.SettingScope, key string, expect uint64) error",
 	"entity.ControlPlaneTx.Secret": "func (entity.ControlPlaneTx).Secret(" +

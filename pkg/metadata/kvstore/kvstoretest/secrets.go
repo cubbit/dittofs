@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -519,6 +521,301 @@ func testSecretTxReadTracked(t *testing.T, kvo Opener) {
 				return nil
 			})
 			must(t, err)
+		})
+	}
+}
+
+// pruneForms are the two ways to prune: the view's own write, and the
+// transaction form inside the caller's Write.
+var pruneForms = map[string]func(cp kvstore.ControlPlane, id entity.SecretRef, below uint64) error{
+	"view": func(cp kvstore.ControlPlane, id entity.SecretRef, below uint64) error {
+		return cp.PruneSecret(ctx, id, below)
+	},
+	"tx": func(cp kvstore.ControlPlane, id entity.SecretRef, below uint64) error {
+		return cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+			return tx.PruneSecret(id, below)
+		})
+	},
+}
+
+// putVersions puts versions 1 to n of a secret, version v holding the value
+// "v<v>".
+func putVersions(t *testing.T, cp kvstore.ControlPlane, id entity.SecretRef, n uint64) {
+	t.Helper()
+
+	owner := entity.PrincipalID(uuid.New())
+
+	for v := uint64(1); v <= n; v++ {
+		must(t, cp.PutSecret(ctx, secretOf(id, owner, v, "v"+strconv.FormatUint(v, 10)), v-1))
+	}
+}
+
+// heldVersions lists, in order, the versions among 1 to upto that still
+// read, each with its value as put.
+func heldVersions(
+	t *testing.T,
+	cp kvstore.ControlPlane,
+	id entity.SecretRef,
+	upto uint64,
+) []string {
+	t.Helper()
+
+	var held []string
+
+	for v := uint64(1); v <= upto; v++ {
+		s, err := cp.Secret(ctx, id, v)
+		if merrs.IsNotFoundError(err) {
+			continue
+		}
+
+		must(t, err)
+
+		held = append(held, strconv.FormatUint(v, 10)+"="+string(s.Value))
+	}
+
+	return held
+}
+
+func wantHeld(t *testing.T, got []string, want ...string) {
+	t.Helper()
+
+	if !slices.Equal(got, want) {
+		t.Errorf("versions held: got %v, want %v", got, want)
+	}
+}
+
+// A prune deletes every version below the one named and keeps that one and
+// those above it, in both forms.
+func testPruneSecretBelow(t *testing.T, kvo Opener) {
+	for name, prune := range pruneForms {
+		t.Run(name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+
+			s, _ := newStore(t, kvo)
+			cp := s.ControlPlane()
+			id := newSecretRef()
+			putVersions(t, cp, id, 4)
+
+			must(t, prune(cp, id, 3))
+
+			wantHeld(t, heldVersions(t, cp, id, 4), "3=v3", "4=v4")
+		})
+	}
+}
+
+// A prune names a version above the current, or the highest number there
+// is: the current version stays whatever below is.
+func testPruneSecretKeepsCurrent(t *testing.T, kvo Opener) {
+	for name, prune := range pruneForms {
+		for _, below := range []uint64{4, 99, math.MaxUint64} {
+			t.Run(name+"/"+strconv.FormatUint(below, 10), func(t *testing.T) {
+				prof.Watch(t, prof.Options{})
+
+				s, _ := newStore(t, kvo)
+				cp := s.ControlPlane()
+				id := newSecretRef()
+				putVersions(t, cp, id, 3)
+
+				must(t, prune(cp, id, below))
+
+				wantHeld(t, heldVersions(t, cp, id, 3), "3=v3")
+
+				if got := secretValue(t, cp, id, 0); got != "v3" {
+					t.Errorf("current version after the prune: got %q, want %q", got, "v3")
+				}
+			})
+		}
+	}
+}
+
+// A prune below the lowest version drops nothing, and a prune of a secret
+// that is not there is no error and writes nothing.
+func testPruneSecretNothingToDrop(t *testing.T, kvo Opener) {
+	for name, prune := range pruneForms {
+		t.Run(name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+
+			s, _ := newStore(t, kvo)
+			cp := s.ControlPlane()
+			id := newSecretRef()
+			putVersions(t, cp, id, 3)
+
+			for _, below := range []uint64{0, 1} {
+				must(t, prune(cp, id, below))
+
+				wantHeld(t, heldVersions(t, cp, id, 3), "1=v1", "2=v2", "3=v3")
+			}
+
+			absent := newSecretRef()
+
+			must(t, prune(cp, absent, 5))
+
+			if _, err := cp.Secret(ctx, absent, 0); !merrs.IsNotFoundError(err) {
+				t.Errorf("an absent secret after a prune: got %v, want not found", err)
+			}
+		})
+	}
+}
+
+// A prune of five versions below 3 leaves exactly 3, 4 and 5: nothing under
+// the cut stays, so the versions that remain are one run up to the current.
+func testPruneSecretLeavesNoHole(t *testing.T, kvo Opener) {
+	for name, prune := range pruneForms {
+		t.Run(name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+
+			s, _ := newStore(t, kvo)
+			cp := s.ControlPlane()
+			id := newSecretRef()
+			putVersions(t, cp, id, 5)
+
+			must(t, prune(cp, id, 3))
+
+			wantHeld(t, heldVersions(t, cp, id, 5), "3=v3", "4=v4", "5=v5")
+		})
+	}
+}
+
+// A prune raises no settings generation, since nothing resolves a version
+// it removes.
+func testPruneSecretRaisesNothing(t *testing.T, kvo Opener) {
+	for name, prune := range pruneForms {
+		t.Run(name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+
+			s, _ := newStore(t, kvo)
+			cp := s.ControlPlane()
+			id := newSecretRef()
+			putVersions(t, cp, id, 3)
+			g := settingsCounter(t, s)
+
+			must(t, prune(cp, id, 3))
+
+			if got := settingsCounter(t, s); got != g {
+				t.Errorf("settings generation after a prune: got %d, want %d", got, g)
+			}
+		})
+	}
+}
+
+// The transaction form prunes inside the caller's Write: a Write that fails
+// after it, or whose commit fails on its audit record, leaves every version.
+func testPruneSecretInTheCallersWrite(t *testing.T, kvo Opener) {
+	prof.Watch(t, prof.Options{})
+
+	f := kvtest.NewFaultKV(kvo(t))
+	must(t, kvstore.Init(ctx, f, uuid.New()))
+
+	s, err := kvstore.Open(ctx, f)
+	must(t, err)
+
+	cp := s.ControlPlane()
+	id := newSecretRef()
+	putVersions(t, cp, id, 3)
+
+	err = cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		if err := tx.PruneSecret(id, 3); err != nil {
+			return err
+		}
+
+		return errSecretInjected
+	})
+	if !errors.Is(err, errSecretInjected) {
+		t.Fatalf("Write that fails after the prune: got %v, want the injected error", err)
+	}
+
+	wantHeld(t, heldVersions(t, cp, id, 3), "1=v1", "2=v2", "3=v3")
+
+	f.SetFault(failSet{prefix: "AU‖"})
+
+	audited := entity.WriteMeta{
+		Audit: &entity.AuditRecord{
+			Target: entity.ResourceRef{
+				Kind: entity.ResourceSecret,
+				ID:   id[:],
+			},
+			Change: []byte("prune"),
+		},
+	}
+
+	err = cp.Write(ctx, audited, func(tx entity.ControlPlaneTx) error {
+		return tx.PruneSecret(id, 3)
+	})
+
+	f.SetFault(nil)
+
+	if !errors.Is(err, errSecretInjected) {
+		t.Fatalf("Write whose audit record fails: got %v, want the injected error", err)
+	}
+
+	wantHeld(t, heldVersions(t, cp, id, 3), "1=v1", "2=v2", "3=v3")
+}
+
+// A version that commits between a prune's read and its commit makes the
+// Write run again, and the cut is made against the new current version.
+func testPruneSecretReadTracked(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
+		t.Run(b.name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+
+			s, h := heldStore(t, b)
+			cp := s.ControlPlane()
+			id, owner := newSecretRef(), entity.PrincipalID(uuid.New())
+			must(t, cp.PutSecret(ctx, secretOf(id, owner, 1, "v1"), 0))
+
+			attempts := 0
+
+			outer, inner := race(h,
+				func() error {
+					return cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+						attempts++
+
+						if err := tx.PruneSecret(id, 99); err != nil {
+							return err
+						}
+
+						// A guard binds only a transaction that writes, so this
+						// one writes a record of its own besides the prune.
+						return errOf(tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0))
+					})
+				},
+				func() error {
+					return cp.PutSecret(ctx, secretOf(id, owner, 2, "v2"), 1)
+				})
+
+			must(t, inner)
+			must(t, outer)
+
+			if attempts != 2 {
+				t.Errorf("attempts: got %d, want 2", attempts)
+			}
+
+			wantHeld(t, heldVersions(t, cp, id, 2), "2=v2")
+		})
+	}
+}
+
+// A prune sees the version its own transaction put: put the next version
+// and prune in one Write leaves that version, whatever below is.
+func testPruneSecretSeesTheTxsOwnPut(t *testing.T, kvo Opener) {
+	for _, below := range []uint64{2, 99} {
+		t.Run(strconv.FormatUint(below, 10), func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+
+			s, _ := newStore(t, kvo)
+			cp := s.ControlPlane()
+			id, owner := newSecretRef(), entity.PrincipalID(uuid.New())
+			must(t, cp.PutSecret(ctx, secretOf(id, owner, 1, "v1"), 0))
+
+			must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+				if err := tx.PutSecret(secretOf(id, owner, 2, "v2"), 1); err != nil {
+					return err
+				}
+
+				return tx.PruneSecret(id, below)
+			}))
+
+			wantHeld(t, heldVersions(t, cp, id, 2), "2=v2")
 		})
 	}
 }

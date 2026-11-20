@@ -20,6 +20,13 @@ type ControlPlane struct{ s *Store }
 
 func (s *Store) ControlPlane() ControlPlane { return ControlPlane{s} }
 
+// RegisteredStatuses is every registered node's status, in node ID order,
+// read as the node view reads it: a node that has reported none reads as the
+// zero status, and a status whose node has no record is left out.
+func (c ControlPlane) RegisteredStatuses(ctx context.Context) ([]entity.NodeStatus, error) {
+	return c.s.Nodes().RegisteredStatuses(ctx)
+}
+
 // Users lists users in name order, resuming after the name after. It walks the
 // name index, so a user with no name, a machine among them, is not listed:
 // such a record is read by its ID or a protocol ID.

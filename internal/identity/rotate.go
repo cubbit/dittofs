@@ -161,8 +161,8 @@ func problem(status int, code apiv1.Code, detail string) *apiv1.Problem {
 // start refuses a join running on the installation and prunes the versions
 // below the current one once the retention has passed since its confirm. The
 // refusal is one write, so a join started since makes it run again; the prune
-// runs inside it but commits on its own until the provider's Prune takes tx,
-// so a conflict that reruns the write may call it more than once.
+// runs inside it through tx, so a conflict that reruns the write drops its
+// earlier prune with the rest.
 func (r *rotation) start(ctx context.Context, target entity.ResourceRef) error {
 	var pruneErr error
 	err := r.s.deps.ControlPlane.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
@@ -197,11 +197,18 @@ func (r *rotation) start(ctx context.Context, target entity.ResourceRef) error {
 		if !ok || lr.Failed || cur.Version != lr.Version || tx.Now().Before(lr.Confirmed.Add(retention+clockSkew)) {
 			return nil
 		}
-		// ponytail: the provider's Prune is not built yet and answers
-		// errors.ErrUnsupported, so this prunes nothing and the old versions
-		// stay held. Drop the tolerance, pass tx and audit the versions
-		// dropped when the provider fills Prune.
-		if err := r.s.deps.Secrets.Prune(ctx, entity.SecretMachinePassword, machineOwner(in), in.MachinePassword); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+
+		// ponytail: this write records no audit record of the prune yet
+		// (RFC 23 §6). Write one when the rotation's other state changes
+		// are audited. To name the versions pruned, it will read the
+		// versions held below the current one before Prune and again after
+		// it, in this same write, and record only the numbers that are gone,
+		// never a value. That relies on the transaction seeing its own
+		// deletes, which holds on Badger and is not tested on FoundationDB.
+		err = r.s.deps.Secrets.Prune(
+			ctx, tx, entity.SecretMachinePassword, machineOwner(in), in.MachinePassword,
+		)
+		if err != nil {
 			pruneErr = err
 		}
 		return nil

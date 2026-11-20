@@ -160,11 +160,71 @@ func (c controlTx) PutSecret(s entity.Secret, expect uint64) error {
 }
 
 // PruneSecret deletes every version below the one named, never the current
-// one.
+// one, in a write of its own that records no audit and checks no owner.
+// Callers go through Provider.Prune inside an audited Write.
 func (c ControlPlane) PruneSecret(ctx context.Context, id entity.SecretRef, below uint64) error {
-	return unbuilt("PruneSecret", 4)
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error {
+		return tx.PruneSecret(id, below)
+	})
 }
 
+// PruneSecret deletes the versions below the one named in the caller's
+// transaction, and keeps the current one whatever below is. The current
+// version is read tracked, so a seal that commits first makes the write
+// retry and the cut is made again against the new current version.
+//
+// decision: a prune raises no settings generation. RFC 13 §5 and RFC 16's
+// CFGGEN row say every Secret change raises it, but nothing resolves a
+// version that is pruned, so no node has a reason to read again. Withdraw
+// this if RFC 16 says a prune raises it.
+//
+// decision: a pruned version is never resolved, but only while no cache of
+// opened values serves a version below the current one. Withdraw it if one
+// does.
 func (c controlTx) PruneSecret(id entity.SecretRef, below uint64) error {
-	return unbuilt("PruneSecret", 4)
+	if err := c.tx.GuardRange(secretPrefix(id)); err != nil {
+		return err
+	}
+
+	cur, ok, err := secretIn(c.tx, id, 0)
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		return nil
+	}
+
+	below = min(below, cur.Version)
+
+	// The keys are collected first: a key is not deleted during the scan
+	// that yields it.
+	var doomed [][]byte
+
+	prefix := secretPrefix(id)
+
+	for row, err := range c.tx.Scan(prefix, nil) {
+		if err != nil {
+			return err
+		}
+
+		v, err := secretVersion(prefix, row.Key)
+		if err != nil {
+			return err
+		}
+
+		if v >= below {
+			break
+		}
+
+		doomed = append(doomed, slices.Clone(row.Key))
+	}
+
+	for _, key := range doomed {
+		if err := c.tx.Delete(key); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

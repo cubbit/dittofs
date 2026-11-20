@@ -60,7 +60,13 @@ type SecretProvider interface {
 	Resolve(ctx context.Context, role secrets.Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]byte, error)
 	Versions(ctx context.Context, role secrets.Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]secrets.Version, error)
 	Seal(ctx context.Context, role secrets.Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte, m secrets.Meta) (entity.Secret, error)
-	Prune(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) error
+	Prune(
+		ctx context.Context,
+		tx entity.ControlPlaneTx,
+		kind entity.SecretKind,
+		owner entity.SecretOwner,
+		ref entity.SecretRef,
+	) error
 }
 
 var _ SecretProvider = (*secrets.Provider)(nil)
