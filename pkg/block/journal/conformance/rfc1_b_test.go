@@ -1351,6 +1351,78 @@ func TestRFC1B_RecordsWithoutBytesAtTheLimit(t *testing.T) {
 	t.Fatal("content writes went on succeeding on a full device")
 }
 
+// TestRFC1B_RepackAtTheLimitRecoversTheHeadroom checks that a journal held at
+// its maximum, its headroom drawn below half by removals, gets the headroom
+// back through repack alone: repack's carries draw on their own reserve, none
+// refused by the spare limit, and the segments repack retires credit back the
+// headroom their records drew. The deletes are left unsettled, so repack must
+// carry their records rather than drop them.
+func TestRFC1B_RepackAtTheLimitRecoversTheHeadroom(t *testing.T) {
+	f := journaltest.New(t)
+	fillUntilRefused(t, f, []int{0, 1}, 0, 256<<10)
+	full := headroom(t, f)
+	drain, h0 := journaltest.File(50), f.Share(0)
+	var drained journal.Version
+	for i := int64(0); f.J.Stats().HeadroomBytes >= full/2; i++ {
+		if i == 1<<16 {
+			t.Fatalf("HeadroomBytes = %d after %d removals at the limit, still not below half of %d", f.J.Stats().HeadroomBytes, i, full)
+		}
+		v, err := h0.Deallocate(t.Context(), drain, ext(2*i, 1))
+		stub(t, "Deallocate", err)
+		if err != nil {
+			t.Fatalf("a removal at the limit with the headroom above half: %v", err)
+		}
+		drained = v
+	}
+	var deleted [2]journal.Version
+	for k := range 2 {
+		v, err := f.Share(k).Delete(t.Context(), journaltest.File(k))
+		stub(t, "Delete", err)
+		if err != nil {
+			t.Fatalf("delete file %d at the limit: %v", k, err)
+		}
+		deleted[k] = v
+	}
+	h0.Settle(drain, drained)
+	for k := range 2 {
+		syncFile(t, f.Share(k), journaltest.File(k))
+	}
+	syncFile(t, h0, drain)
+
+	// repack runs passes until one frees nothing and reports the total; a
+	// carry refused at the limit fails the check here.
+	repack := func() int64 {
+		var total int64
+		for {
+			freed, err := f.J.Repack(t.Context(), 2*journaltest.FixtureMaxBytes, journal.RepackScope{})
+			stub(t, "Repack", err)
+			if err != nil {
+				t.Fatalf("repack at the limit: %v", err)
+			}
+			if freed == 0 {
+				return total
+			}
+			total += freed
+		}
+	}
+
+	// While the deletes are unsettled their records are live, and the
+	// segments holding them are repacked by carrying them.
+	f.Advance(journaltest.IdleSealAge)
+	eventually(t, "repack at the limit never freed storage", func() bool { return repack() > 0 })
+
+	// Settled, the deletes leave nothing live, and repack retires what is
+	// left of the drawn records' segments.
+	for k := range 2 {
+		f.Share(k).Settle(journaltest.File(k), deleted[k])
+	}
+	f.Advance(journaltest.IdleSealAge)
+	eventually(t, "the headroom never came back to half through repack", func() bool {
+		repack()
+		return f.J.Stats().HeadroomBytes >= full/2
+	})
+}
+
 // TestRFC1B_NoVersionRepeats checks that a version a crash lost is not issued
 // again and that the journal's floor holds after a reopen; that a journal
 // opened with no version limit issues nothing; and that writes and draws are
