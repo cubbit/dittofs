@@ -88,7 +88,11 @@ type Stats struct {
 // retire or a forget that lands between the set's two reads (it lowers the
 // bytes before the overhead) can read the figure low as well. Nothing
 // retires a segment the index still holds yet, so production cannot reach
-// that case; the clamp is the guard for when it can.
+// that case; the clamp is the guard for when it can. The order of the loads
+// breaks no stated bound: the share's held plus unreclaimed bytes stay at most
+// its used bytes whatever order retained, overhead and the set's bytes are read
+// in, because both derive from one read of the set's bytes and the clamp keeps
+// the figure from below zero.
 //
 // ponytail: the figure ignores footer entries, segment headers and trailers,
 // which the set does not count, and the header and padding of every record on
