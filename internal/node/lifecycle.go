@@ -59,6 +59,7 @@ type lifecycle struct {
 	ready    atomic.Value          // the readiness word
 	served   atomic.Bool           // readiness has turned ready once: it never clears
 	stepped  func(step string)
+	store    *part // the KV's close, kept while one runs past its bound
 }
 
 func (l *lifecycle) readiness() string { return l.ready.Load().(string) }
@@ -197,15 +198,16 @@ func (n *Node) Start(ctx context.Context) error {
 
 // Stop turns readiness to draining, then stops what Start started in
 // reverse, each part bounded on the node's clock by its own bound, stopBound
-// for all but the adapters', and closes the metadata store's KV and then
-// the storage key last, clearing the signing key's versions the access
-// tokens hold. A part that misses its bound or whose stop fails
-// leaves open every part it uses, and the store, and the error names it; the
-// parts that do not depend on it still stop. A later Stop waits again for a
-// stop still running, and runs a failed one again. With no Start, Stop
-// closes only the KV and the storage key. A Stop during a Start waits for
-// it: ending Start's context ends a Start that waits. Ending Stop's own
-// context stops nothing sooner.
+// for all but the adapters', and closes the metadata store's KV, bounded by
+// stopBound too, and then the storage key last, clearing the signing key's
+// versions the access tokens hold. A part that misses its bound or whose stop
+// fails leaves open every part it uses, and the store, and the error names
+// it; the parts that do not depend on it still stop. A KV close that misses
+// its bound leaves the storage key open, and the error names the store. A
+// later Stop waits again for a stop still running, and runs a failed one
+// again. With no Start, Stop closes only the KV and the storage key. A Stop
+// during a Start waits for it: ending Start's context ends a Start that
+// waits. Ending Stop's own context stops nothing sooner.
 func (n *Node) Stop(ctx context.Context) error {
 	l := &n.life
 	l.mu.Lock()
@@ -217,11 +219,29 @@ func (n *Node) Stop(ctx context.Context) error {
 	if err := n.halt(ctx, 0); err != nil {
 		return errors.Join(err, errors.New("node: stop store: left open, as a part using it did not stop"))
 	}
+	n.tokens.Close()
+	if l.store == nil {
+		l.store = &part{name: "store", stop: func(context.Context) error { return n.cfg.KV.Close() }}
+	}
 	if l.stepped != nil {
+		l.stepped("wait store")
+	}
+	// decision: a KV close that misses its bound is left running, as nothing
+	// cancels it: a store that cannot be written retries its flush for as
+	// long as it runs. Stop names it and leaves the storage key open, a later
+	// Stop waits again on the same close, and dfs start exits on Stop's error,
+	// which ends it with the process. Overturned if the KV's Close comes to
+	// take a context it honours.
+	done, err := l.store.stopped(ctx, n.cfg.Clock.After(stopBound))
+	if !done {
+		return fmt.Errorf("node: stop store: not stopped within %v", stopBound)
+	}
+	if err != nil {
+		err = fmt.Errorf("node: stop store: %w", err)
+	} else if l.stepped != nil {
 		l.stepped("stop store")
 	}
-	n.tokens.Close()
-	return errors.Join(n.cfg.KV.Close(), n.storageKey.Close())
+	return errors.Join(err, n.storageKey.Close())
 }
 
 // halt stops the parts from keep on, in reverse start order. Each that stops

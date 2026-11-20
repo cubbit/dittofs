@@ -802,6 +802,65 @@ func TestStopStepPastItsBound(t *testing.T) {
 	}
 }
 
+var errSecondClose = errors.New("the KV closed a second time")
+
+// A KV close that misses its bound, as a store that can no longer be written
+// retries its flush, is named in Stop's error once the node's clock passes
+// the bound, every part having stopped before it; a later Stop waits on the
+// same close, answering nil once it ended, and the store is closed.
+func TestStopStoreClosePastItsBound(t *testing.T) {
+	var h *nodetest.Harness
+	s := newSteps(t, &h)
+	var f *kvtest.FaultKV
+	h = nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		f = kvtest.NewFaultKV(cfg.KV)
+		cfg.KV = f
+		return node.NewStepping(s.stepped)(cfg)
+	}))
+	if err := h.Node().Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The delay waits on a clock of its own, so advancing the node's clock
+	// past the stop bound does not release it.
+	held := sim.NewTestClock(time.Unix(0, 0))
+	sched, err := sim.NewSchedule(1, held, sim.Rule{Op: kvtest.OpClose, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Hour}},
+		sim.Rule{Op: kvtest.OpClose, Key: "*", From: 2, Action: sim.FaultAction{Err: errSecondClose}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.SetFault(sched)
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- h.Node().Stop(t.Context()) }()
+	waitFor(t, s.waits, "store")
+	wait(t, "the store's close to be held", func() bool { return held.Pending() == 1 })
+	h.Clock().Advance(30 * time.Second)
+	stopErr := answered(t, stopped)
+	if stopErr == nil || !strings.Contains(stopErr.Error(), "stop store: not stopped within 30s") {
+		t.Errorf("Stop with the store's close held: got %v, want the store named past its bound", stopErr)
+	}
+	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners"}
+	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
+		t.Errorf("parts stopped with the store's close held: got %v, want %v", got, stops)
+	}
+
+	// A later Stop waits on the same close rather than closing again: a
+	// second close would answer errSecondClose.
+	go func() { stopped <- h.Node().Stop(t.Context()) }()
+	waitFor(t, s.waits, "store")
+	held.Advance(time.Hour)
+	if err := answered(t, stopped); err != nil {
+		t.Errorf("Stop once the store's close ended: got %v, want nil", err)
+	}
+	if got := stopsIn(s.reported())[len(stops):]; !slices.Equal(got, []string{"stop store"}) {
+		t.Errorf("parts the second Stop stopped: got %v, want [stop store]", got)
+	}
+	if _, _, err := h.Store().Nodes().Node(t.Context(), h.NodeID()); err == nil {
+		t.Error("a read once the second Stop returned: got nil, want the store closed")
+	}
+	f.SetFault(nil)
+}
+
 // The filesystem uses the engine and the zero check's part: a filesystem
 // whose Drain misses its bound, as a call it admitted is held on a read,
 // leaves both open under it, and the store, while the runner and the

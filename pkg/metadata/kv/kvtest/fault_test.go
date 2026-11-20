@@ -1179,3 +1179,39 @@ func TestFaultSetFaultConcurrent(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// A delay on close holds the inner Close until the clock passes it, the
+// store serving meanwhile; an error on close leaves the inner store open.
+func TestFaultOnClose(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	mem := memStore(t)
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	f := kvtest.NewFaultKV(mem)
+	f.SetFault(schedule(t, clock,
+		sim.Rule{Op: kvtest.OpClose, Key: "*", Count: 1, Action: sim.FaultAction{Err: errInjected}},
+		sim.Rule{Op: kvtest.OpClose, Key: "*", From: 2, Action: sim.FaultAction{Delay: time.Hour}},
+	))
+
+	if err := f.Close(); !errors.Is(err, errInjected) {
+		t.Fatalf("Close with an error on close: got %v, want the injected error", err)
+	}
+	if err := put(t.Context(), mem, outside); err != nil {
+		t.Fatalf("a write after the failed Close: got %v, want the inner store open", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- f.Close() }()
+	armed(t, clock, 1)
+	if err := put(t.Context(), mem, []byte("held")); err != nil {
+		t.Fatalf("a write while Close is held: got %v, want the inner store open", err)
+	}
+
+	clock.Advance(time.Hour)
+	if err := <-done; err != nil {
+		t.Fatalf("Close once its delay passed: %v", err)
+	}
+	if err := put(t.Context(), mem, []byte("closed")); err == nil {
+		t.Fatal("a write after the held Close returned: got nil, want the inner store closed")
+	}
+}
