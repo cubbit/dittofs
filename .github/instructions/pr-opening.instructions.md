@@ -50,7 +50,7 @@ an estimate. A PR that does not name the subtasks it works on counts as work wit
 estimate.
 
 ```text
-Closes: RFC 8 T3.4, T3.5, T3.6, RFC 9 T5.6, T5.7
+Closes: RFC 8 T3.4, T3.5, RFC 23 T3.6
 Part of: RFC 1 T7.2
 ```
 
