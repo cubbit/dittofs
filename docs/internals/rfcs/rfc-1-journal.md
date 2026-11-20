@@ -399,6 +399,7 @@ type SyncMark struct {
     Offset   int64  // the end of the last record that sync covered there, which may lie past Through; never a seal marker, footer or trailer
     Sequence uint64 // that record's sequence number
 }
+ReadFormat(ctx context.Context, dir string) (JournalID, InstallationID, error) // RFC 13 §2.2: the journal and installation a directory's format file names, without opening it; writes nothing
 Restamp(ctx context.Context, dir string, expect JournalID, install InstallationID) error // RFC 28 §3.4
 RebuildFormat(ctx context.Context, dir string, expect JournalID, install InstallationID, gen uint64, acked []SegmentRange) error // RFC 28 §3.4: format unreadable
 AcknowledgeUnreadable(ctx context.Context, dir string, expect JournalID, marks []SyncMark, ranges []SegmentRange) (AckResult, error) // RFC 28 §3.3, when a range fails the open

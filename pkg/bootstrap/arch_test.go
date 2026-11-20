@@ -19,10 +19,12 @@ import (
 var frozenExports = []string{
 	"func GetDefaultConfigPath() string",
 	"func InitLogger(cfg *Bootstrap) error",
-	"func InitNodeID(b *Bootstrap, installation [16]byte, dir string) (entity.NodeID, error)",
+	"func InitNodeID(ctx context.Context, b *Bootstrap, installation [16]byte, dir string) " +
+		"(entity.NodeID, error)",
 	"func NodeID(b *Bootstrap) (entity.NodeID, error)",
-	"func WriteMissingNodeIDs(b *Bootstrap, id entity.NodeID, " +
-		"recorded func(dir string) (bool, error)) error",
+	"func WriteMissingNodeIDs(ctx context.Context, b *Bootstrap, id entity.NodeID, " +
+		"journalID func(ctx context.Context, node entity.NodeID, device entity.JournalDir) " +
+		"([16]byte, error)) error",
 	"func GetDefaultConfig() *Bootstrap",
 	"func Load(configPath string, environ []string) (*Bootstrap, error)",
 	"func MustLoad(configPath string, environ []string) (*Bootstrap, error)",
