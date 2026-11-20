@@ -71,11 +71,12 @@ func modelSeeds(t *testing.T) int {
 
 // modelSeedBase is the first seed the sweep draws: DITTOFS_MODEL_SEED_BASE,
 // unset or "0" for the same draws every run; the UTC day's count of days
-// since 1970 for "night", which the nightly suite sets so every night
-// explores seeds no run has drawn before while a rerun the same night
-// reproduces the same timelines, and a failure's reproduction line names the
-// number it used; or a number, rerunning one sweep's draws exactly. The
-// sweep then draws base..base+n-1.
+// since 1970 times the sweep's seed count for "night", which the nightly
+// suite sets so each night draws its own block of n seeds, one no other
+// night's block overlaps, while a rerun the same night reproduces the same
+// timelines, and a failure's reproduction line names the number it used; or a
+// number, rerunning one sweep's draws exactly. The sweep then draws
+// base..base+n-1.
 func modelSeedBase(t *testing.T) uint64 {
 	t.Helper()
 
@@ -84,7 +85,7 @@ func modelSeedBase(t *testing.T) uint64 {
 		return 0
 	}
 	if s == "night" {
-		return uint64(time.Now().UTC().Unix() / 86400)
+		return uint64(time.Now().UTC().Unix()/86400) * uint64(modelSeeds(t))
 	}
 	n, err := strconv.ParseUint(s, 10, 64)
 	if err != nil {
@@ -98,8 +99,9 @@ func modelSeedBase(t *testing.T) uint64 {
 // modelOpsWithoutOffload names — over the two shares and four files of one
 // journal, comparing after every step. The nightly suite raises n through
 // DITTOFS_MODEL_SEEDS and turns the base over through
-// DITTOFS_MODEL_SEED_BASE=night, so each night explores fresh timelines
-// while a rerun the same night draws the same ones; a failure names the base
+// DITTOFS_MODEL_SEED_BASE=night, so each night draws its own block of n
+// seeds, fresh timelines no other night's block holds, while a rerun the same
+// night draws the same ones; a failure names the base
 // its rerun needs. A failing seed's shrunk sequence is written to the
 // artifact directory, to be committed to testdata/model with the fix.
 func TestModelManySeeds(t *testing.T) {
