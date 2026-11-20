@@ -398,6 +398,12 @@ func TestAuditRead(t *testing.T) {
 	if err := s.store.Write(t.Context(), entity.WriteMeta{Audit: &carol}, func(entity.ControlPlaneTx) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
+	// The break-glass reset's record: no account, its credential naming the
+	// host it ran on.
+	reset := entity.AuditRecord{ActorName: "host-a", Credential: entity.HostCredential + "host-a", Target: entity.ResourceRef{Kind: entity.ResourceUser, ID: alice.Principal.ID[:]}, Outcome: []byte("applied")}
+	if err := s.store.Write(t.Context(), entity.WriteMeta{Audit: &reset}, func(entity.ControlPlaneTx) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
 	caller.Store(&alice)
 	page := func(q string) (p apiv1.Page[apiv1.AuditRecord]) {
 		r := s.do(t, http.MethodGet, "/api/v1/audit"+q, "")
@@ -413,8 +419,11 @@ func TestAuditRead(t *testing.T) {
 		return names
 	}
 	all := page("").Items
-	if len(all) != 4 {
-		t.Fatalf("GET /api/v1/audit: %d records, want 4", len(all))
+	if len(all) != 5 {
+		t.Fatalf("GET /api/v1/audit: %d records, want 5", len(all))
+	}
+	if got, want := all[4].Actor, (apiv1.Principal{Kind: "host", ID: "host-a"}); got != want {
+		t.Errorf("GET /api/v1/audit: the reset's record reads with actor %+v, want %+v, the host", got, want)
 	}
 	if got, want := all[3].Actor, (apiv1.Principal{Kind: "schedule"}); got != want {
 		t.Errorf("GET /api/v1/audit: the schedule's record reads with actor %+v, want %+v, as ?actor=schedule names it", got, want)
@@ -423,12 +432,14 @@ func TestAuditRead(t *testing.T) {
 		q    string
 		want []string
 	}{
-		{"", []string{"alice", "bob", "alice", "carol"}},
+		{"", []string{"alice", "bob", "alice", "carol", "host-a"}},
 		{"?target=" + url.QueryEscape("setting:"+knobs[1]), []string{"bob"}},
 		{"?target=" + url.QueryEscape(all[3].Target.Kind+":"+all[3].Target.ID), []string{"carol"}},
 		{"?actor=" + url.QueryEscape(alice.Principal.String()), []string{"alice", "alice"}},
 		{"?from=" + url.QueryEscape(times[1].Format(time.RFC3339Nano)) + "&to=" + url.QueryEscape(times[2].Format(time.RFC3339Nano)), []string{"bob"}},
-		{"?actor=schedule", []string{"carol"}},
+		// The filter reads the stored actor, which is no account for the
+		// reset as for the schedule.
+		{"?actor=schedule", []string{"carol", "host-a"}},
 	} {
 		if got := read(tc.q); !slices.Equal(got, tc.want) {
 			t.Errorf("GET /api/v1/audit%s: actors %q, want %q", tc.q, got, tc.want)

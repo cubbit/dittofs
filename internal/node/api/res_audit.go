@@ -14,9 +14,19 @@ import (
 
 // auditRecordOf is a on the wire.
 func auditRecordOf(a entity.AuditRecord) apiv1.AuditRecord {
-	return apiv1.AuditRecord{ID: idString(a.ID), Time: a.Time, Actor: principalOf(a.Actor), ActorName: a.ActorName,
+	return apiv1.AuditRecord{ID: idString(a.ID), Time: a.Time, Actor: actorOf(a), ActorName: a.ActorName,
 		Credential: a.Credential, Node: idString(a.Node), Source: a.Source, Request: json.RawMessage(a.Request),
 		Target: refOf(a.Target), Before: a.Before, After: a.After, Change: json.RawMessage(a.Change), Outcome: string(a.Outcome)}
+}
+
+// actorOf is a's actor on the wire: the break-glass reset's, whose actor is
+// no account and whose credential names a host, as the host kind with the
+// host's name; any other as principalOf spells it.
+func actorOf(a entity.AuditRecord) apiv1.Principal {
+	if host, ok := strings.CutPrefix(a.Credential, entity.HostCredential); ok && a.Actor == (entity.Principal{}) {
+		return apiv1.Principal{Kind: apiv1.HostKind, ID: host}
+	}
+	return principalOf(a.Actor)
 }
 
 // auditRow is an audit record and its position, which a cursor resuming

@@ -28,7 +28,8 @@ type Ref struct {
 }
 
 // Principal is an account: its kind and its ID. The schedule, which acts
-// as no account, is the kind ScheduleKind with no ID.
+// as no account, is the kind ScheduleKind with no ID; the break-glass reset
+// acts as the host, the kind HostKind with the host's name as its ID.
 type Principal struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id,omitempty"`
@@ -37,6 +38,10 @@ type Principal struct {
 // ScheduleKind is the schedule's kind, as a read spells an actor and as the
 // audit's actor filter takes it.
 const ScheduleKind = "schedule"
+
+// HostKind is the kind of the break-glass reset's actor, the host it ran on,
+// the host's name its ID, as an audit read spells it.
+const HostKind = "host"
 
 // OpState is where an operation is in its life.
 type OpState string

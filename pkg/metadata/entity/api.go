@@ -66,6 +66,10 @@ func SettingRef(scope SettingScope, key string) ResourceRef {
 
 // AuditRecord is one management action, written in the transaction of the
 // change it records and never rewritten.
+// HostCredential prefixes the Credential of the break-glass reset's audit
+// record, the host's name following it: the one actor that is a host.
+const HostCredential = "host:"
+
 type AuditRecord struct {
 	ID [16]byte // minted by the write that records it
 	// Time is the store time of the transaction that wrote the record,
@@ -76,7 +80,8 @@ type AuditRecord struct {
 	Actor     Principal
 	ActorName string // the account's name as it was when it acted
 	// Credential is the session or API token ID the actor acted under, or
-	// the host for the break-glass reset; empty for the schedule.
+	// host:<name> for the break-glass reset, whose Actor is zero, naming the
+	// host it ran on; empty for the schedule.
 	Credential    string
 	Node          NodeID // the node that took the request
 	Source        string // the client's address
