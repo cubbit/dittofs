@@ -55,8 +55,9 @@ var signInSecondsSpec = metrics.Spec{
 // logon throttle's limit (§3.1), an NTLM response is refused before it is
 // checked, and a ticket once it decrypts, since its client name is read from
 // it. It reads the store, the directory and the secret provider, and writes
-// only the directory principal a Kerberos name's or a pass-through's first
-// sign-in mints (§4.2's step 3).
+// only the principal a Kerberos name's or a pass-through's first sign-in
+// mints, a directory principal (§4.2's step 3) or a machine (§2.4), and the
+// link a machine minted without a PAC takes from its first verified one.
 func (s *Server) SignIn(ctx context.Context, step identity.SignInStep) (identity.SignInResult, error) {
 	res, _, err := s.signIn(ctx, step)
 	return res, err

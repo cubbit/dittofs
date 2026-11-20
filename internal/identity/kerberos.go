@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -290,8 +291,9 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 		}
 	}
 	// The PAC supplies groups only: nothing in it enables a principal or
-	// changes its record. Its SIDs are checked before any principal is
-	// selected, so a PAC they refuse reaches no record.
+	// changes its record but a machine's link, which linkMachine writes
+	// once. Its SIDs are checked before any principal is selected, so a PAC
+	// they refuse reaches no record, and mints or links no machine.
 	var sids, denyOnly []identity.SID
 	if logon != nil {
 		switch sids, denyOnly, err = s.pacSIDs(ctx, logon); {
@@ -309,6 +311,14 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 		return identity.SignInResult{}, outcomeNoPAC, logonFailure("no PAC in the directory's realm")
 	}
 	p, row, err := s.kerberosPrincipal(ctx, st, name, enc.CName, enc.CRealm)
+	if errors.Is(err, vfserr.ErrUnknownPrincipal) && machineName(enc.CName.PrincipalNameString()) {
+		var linked string
+		if logon != nil {
+			linked = string(sidBytes(pacUserSID(logon)))
+		}
+		p, err = s.mintMachine(ctx, name, linked)
+		row = true
+	}
 	switch {
 	case errors.Is(err, vfserr.ErrUnknownPrincipal):
 		// decision: an unknown user principal is refused, not made anonymous.
@@ -319,10 +329,13 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 		// deployment is shown to need cross-realm users with no directory,
 		// and then as a share-scoped option.
 		return identity.SignInResult{}, outcomeLogonFailure, logonFailure("no principal for the ticket's client")
+	case errors.Is(err, vfserr.ErrInvalid):
+		// The store refuses the minted record, the PAC's SID as its link.
+		return identity.SignInResult{}, outcomeLogonFailure, logonFailure("%v", err)
 	case err != nil:
 		return identity.SignInResult{}, outcomeUnavailable, err
 	}
-	u, err := s.Account(ctx, p)
+	u, err := s.kerberosAccount(ctx, p)
 	switch {
 	case errors.Is(err, errDisabled):
 		return identity.SignInResult{}, outcomeDisabled, err
@@ -333,7 +346,16 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 	}
 	ev := identity.Evidence{Name: name, Principal: p, Expires: enc.EndTime, SIDs: sids, DenyOnly: denyOnly}
 	if logon != nil {
-		switch err := s.bindPAC(ctx, step.Client, u, row, name, logon); {
+		var linked string
+		if row && u.Principal.Kind == entity.PrincipalMachine && !slices.ContainsFunc(u.IDs, func(id entity.ProtocolID) bool {
+			return id.Scheme == entity.SchemeKerberos && id.Value == name && id.Linked != ""
+		}) {
+			linked, err = s.linkMachine(ctx, p, name, sidBytes(pacUserSID(logon)))
+		}
+		if err == nil {
+			err = s.bindPAC(ctx, step.Client, u, row, name, linked, logon)
+		}
+		switch {
 		case errors.Is(err, vfserr.ErrLogonFailure):
 			return identity.SignInResult{}, outcomeLogonFailure, err
 		case err != nil:
@@ -357,7 +379,8 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 // directory's while its record requires a PAC, the local user named by the
 // name, compared as user names are, unless it is a directory principal or
 // has no uid; (3) the directory's entry under the name, minted on first
-// sign-in; (4) ErrUnknownPrincipal. A name with a service part matches
+// sign-in; (4) ErrUnknownPrincipal, where the caller mints a machine name
+// (mintMachine). A name with a service part matches
 // neither step 2 nor 3, and every realm is compared case and all. A store or
 // directory fault is ErrUnavailable.
 func (s *Server) kerberosPrincipal(ctx context.Context, st *State, name string, cname types.PrincipalName, realm string) (p entity.Principal, row bool, err error) {
@@ -396,12 +419,13 @@ func (s *Server) kerberosPrincipal(ctx context.Context, st *State, name string, 
 }
 
 // bindPAC checks a verified PAC's user SID against u, the record §4.2
-// selected for the ticket's client name: the SID the name's krb row is
-// linked for when step 1 selected it (row), otherwise the record's sid
-// spelling. A record or row holding no SID binds no PAC. A mismatch is
-// ErrLogonFailure and is logged naming the record's principal and the one
-// the store holds under the PAC's SID, if any; a store fault reading that
-// one is ErrUnavailable.
+// selected for the ticket's client name, and writes nothing: the SID the
+// name's krb row is linked for when step 1 selected it or a machine was
+// minted for it (row), or linked when set, the link linkMachine reports for a
+// machine's row; otherwise the record's sid spelling. A record or row holding
+// no SID binds no PAC. A mismatch is ErrLogonFailure and is logged naming the
+// record's principal and the one the store holds under the PAC's SID, if
+// any; a store fault reading that one is ErrUnavailable.
 //
 // decision: the mismatch's log line names both principals by principal ID,
 // never by the ticket's name or the PAC's SID: RFC 25 §5.4 keeps a person's
@@ -409,9 +433,8 @@ func (s *Server) kerberosPrincipal(ctx context.Context, st *State, name string, 
 // The PAC's SID held by no principal is logged as none. Overturned when RFC
 // 25's logon stream, whose records may carry names and SIDs, replaces log
 // lines for logon events.
-func (s *Server) bindPAC(ctx context.Context, client netip.Addr, u entity.User, row bool, name string, logon *pac.KerbValidationInfo) error {
-	d := logon.LogonDomainID
-	user := withRID(rpcSID(d.Revision, d.IdentifierAuthority, d.SubAuthority), logon.UserID)
+func (s *Server) bindPAC(ctx context.Context, client netip.Addr, u entity.User, row bool, name, linked string, logon *pac.KerbValidationInfo) error {
+	user := pacUserSID(logon)
 	want := ""
 	for _, id := range u.IDs {
 		if row && id.Scheme == entity.SchemeKerberos && id.Value == name {
@@ -419,6 +442,9 @@ func (s *Server) bindPAC(ctx context.Context, client netip.Addr, u entity.User, 
 		} else if !row && id.Scheme == entity.SchemeSID {
 			want = id.Value
 		}
+	}
+	if linked != "" {
+		want = linked
 	}
 	if want != "" && want == string(sidBytes(user)) {
 		return nil
@@ -434,6 +460,12 @@ func (s *Server) bindPAC(ctx context.Context, client netip.Addr, u entity.User, 
 	s.logger.WarnContext(ctx, "identity: a PAC's user SID is not the one its record is bound to",
 		"principal", u.Principal.ID.String(), "pac_principal", other, "client", client.String())
 	return logonFailure("the PAC's user SID is not the record's")
+}
+
+// pacUserSID is the user SID a PAC's logon information carries.
+func pacUserSID(v *pac.KerbValidationInfo) identity.SID {
+	d := v.LogonDomainID
+	return withRID(rpcSID(d.Revision, d.IdentifierAuthority, d.SubAuthority), v.UserID)
 }
 
 // pacOf is the raw bytes of the PAC a ticket's authorization data carries in

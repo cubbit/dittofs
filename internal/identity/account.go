@@ -116,6 +116,14 @@ func (s *Server) Account(ctx context.Context, p entity.Principal) (entity.User, 
 	if p.Kind != entity.PrincipalUser {
 		return entity.User{}, vfserr.ErrLogonFailure
 	}
+	return s.record(ctx, p)
+}
+
+// record is p's current record, read from the store on every call, whatever
+// its kind; ErrLogonFailure if it is deleted or marked deleted, and
+// errDisabled if it is disabled. Each caller refuses the kinds it does not
+// sign in.
+func (s *Server) record(ctx context.Context, p entity.Principal) (entity.User, error) {
 	u, err := s.deps.Store.Principals().User(ctx, p)
 	switch {
 	case merrs.IsNotFoundError(err):

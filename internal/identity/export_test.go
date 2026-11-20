@@ -234,3 +234,10 @@ func (s *Server) BoundReplay(bound, share int) { s.replay = newReplayCache(bound
 
 // ReplayLen is the number of entries s's replay cache holds.
 func (s *Server) ReplayLen() int { return s.replay.Len() }
+
+// OnMachineMint has every machine mint's plan run f just before it returns
+// the batch it would create.
+func (s *Server) OnMachineMint(f func()) { s.beforeMachineMint = f }
+
+// OnMachineLink has every machine link run f just before its write.
+func (s *Server) OnMachineLink(f func()) { s.beforeMachineLink = f }

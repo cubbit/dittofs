@@ -264,7 +264,7 @@ func (s *Server) pacSIDs(ctx context.Context, v *pac.KerbValidationInfo) (sids, 
 			all = append(all, sidMember{withRID(res, g.RelativeID), g.Attributes})
 		}
 	}
-	return s.filterSIDs(ctx, logon, withRID(logon, v.UserID), all)
+	return s.filterSIDs(ctx, logon, pacUserSID(v), all)
 }
 
 // filterSIDs is the evidence's SIDs and deny-only SIDs a signer vouched for
