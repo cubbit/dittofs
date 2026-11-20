@@ -83,6 +83,9 @@ type Section struct {
 	secretRefs   map[string]entity.SecretKind
 	overrideOnly []string
 	checkTx      func(entity.ControlPlaneTx, Write, any) error
+	// decodeAny is decode for T, so Check and Read build a value of a type
+	// they only know at run time.
+	decodeAny func(*Section, any, entity.SettingScope, []entity.Setting) (any, error)
 }
 
 // field is one key of a section and its binding class.
@@ -177,6 +180,14 @@ func Of[T interface{ Validate() error }](
 		scope:     scope,
 		def:       clone(def),
 		writeRole: entity.RoleOperator,
+		decodeAny: func(
+			sec *Section,
+			base any,
+			scope entity.SettingScope,
+			rows []entity.Setting,
+		) (any, error) {
+			return decode(sec, base.(T), scope, rows)
+		},
 	}
 
 	byPath := make(map[string]string) // a setting field's index path to its key
@@ -318,7 +329,9 @@ func OverrideOnly(fields ...string) Option {
 // transaction on the effective value the write leaves, which reads store
 // state beyond settings through tx's tracked reads. It is handed the write so
 // it can return at once for a key it does not guard. Its error is returned as
-// it is.
+// it is, so its author words the refusal: a refusal wraps ErrInvalid, and a
+// store error met while reading wraps none of the errors Check returns, so a
+// failing store is never counted as a refused value.
 func CheckTx[T any](check func(tx entity.ControlPlaneTx, w Write, effective T) error) Option {
 	return Option{
 		kind: optCheckTx,
