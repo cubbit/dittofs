@@ -184,7 +184,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R15 | A realm is compared as the KDC spells it, case and all | MUST | §4.2 | T5.5 |
 | R16 | A name with a service part never matches step 2 or 3 | invariant | §4.2 | T5.5 |
 | R17 | An authenticated user name that maps to no principal is refused `ErrLogonFailure`; a machine name is minted instead | MUST | §3.3, §4.2 | T5.5, T5.9 |
-| R18 | A principal whose record is `Disabled`, or marked deleted, fails sign-in `ErrLogonFailure` with logon outcome `disabled` | MUST | §3.7 | T5.5 |
+| R18 | A principal whose record is `Disabled` fails sign-in `ErrLogonFailure` with logon outcome `disabled`; one marked deleted fails as an unknown name's, outcome `logon_failure` | MUST | §3.7 | T5.5 |
 | R19 | Before it returns, `SignIn` sets `Evidence.Principal` to the principal it mapped, and the evidence's `Expires` to the ticket's end time | MUST | §3.1 | T5.5 |
 | R20 | A re-authentication on a context past `Expires` is admitted, and a successful one replaces the context's evidence, the new `Expires` with it | invariant | §3.8 | T5.5 |
 | R21 | Every error a Kerberos sign-in returns is `ErrLogonFailure`, `ErrInvalid` for a malformed message, or `ErrUnavailable` for a keytab or store fault | MUST | §3.1 | T5.3, T5.5 |
@@ -600,8 +600,8 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   then T5.4's replay insert (D5), then RFC 18 §4.2's step 1, the `krb` row through the store's `Principals` view by the name as
   the ticket spells it, and step 2, a local user by the user part under E2's fold in one of the
   ring's realms, not a directory principal and holding a uid; a name with a service part skipping
-  step 2; step 4 refusing a user name `ErrLogonFailure` (machines are T5.9's); a disabled or
-  deleted record refused with outcome `disabled`; `Evidence{Name, Principal, Expires}`; a
+  step 2; step 4 refusing a user name `ErrLogonFailure` (machines are T5.9's); a disabled
+  record refused with outcome `disabled`, a marked deleted one with `logon_failure`; `Evidence{Name, Principal, Expires}`; a
   re-authentication with `step.Context` past its `Expires` admitted, answered as E4's R17 answers
   one (the session's replacement in place is RFC 22's adapter); one `LogonEvent` per attempt with mechanism `kerberos`, the name as presented, the
   protocol (D15), the outcome, the principal on success and the client address; the Kerberos
