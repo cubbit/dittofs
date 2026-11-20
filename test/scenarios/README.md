@@ -140,10 +140,10 @@ date, the commit and the result. To read one:
 `column -t -s $'\t' /var/tmp/dittofs-scenarios/times/00-smb-nfs-roundtrip-gc-xs.tsv`. A renamed
 scenario starts a new record, unless its file in `times/` is renamed too.
 
-Slack alerts (`lib/report.sh`): put a bot token with the `chat:write` scope in
-`~/.config/dittofs-scenarios/slack-token` and the channel ID in `slack-channel` next to it (both
-mode 0600), and invite the bot to the channel. They stay outside the cache, so no container sees
-them; `SLACK_DIR` points elsewhere (a test run can point it at an empty directory). A scenario's first failure is posted, with the
+Slack alerts (`lib/report.sh`, posting through `lib/slack.sh`): put a bot token with the
+`chat:write` scope in `~/.config/dittofs-scenarios/slack-token` and the channel ID in
+`slack-channel` next to it (both mode 0600), and invite the bot to the channel. They stay outside
+the cache, so no container sees them; `SLACK_DIR` points elsewhere (a test run can point it at an empty directory). A scenario's first failure is posted, with the
 failing command; in its thread go a later failure at a different point and the pass that ends it,
 which also shows in the channel. Repeats of the same failure are not posted. A pass that is slow
 is posted once too: the scenario, or one of its lines, took more than twice its usual time (the

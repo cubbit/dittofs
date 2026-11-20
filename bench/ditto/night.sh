@@ -10,11 +10,11 @@
 #   files    5,000 files of 4 KiB, 64 KiB and 1.75 MiB, created (each fsynced), then read back
 # Each target starts after an fstrim of the data's file system, and the two take turns going first:
 # one order on odd repeats, the other on even ones, swapped from one date to the next.
-# score.py then compares the two targets point by point and writes the summary. Slack gets it by the
-# scenarios' rules, through their reporting (test/scenarios/lib/report.sh), same bot, same channel:
-# a quiet night posts nothing; the first new flag or failure is a message; while that alert is open,
-# a new one replies in its thread and a repeat posts nothing; the night with no flag and no failure
-# replies there, shown in the channel too, and closes it. See post.
+# score.py then compares the two targets point by point and writes the summary. Slack gets it
+# through the scenarios' Slack library (test/scenarios/lib/slack.sh), same bot, same channel, as a
+# reply in the day's thread: a night with a new flag or failure, or with any while no alert is open,
+# shows in the channel too, and so does the first night with no flag and no failure after it; any
+# other night stays in the thread. See post.
 #
 #   night.sh              as root, from cron at 18:45 (setup.sh writes the cron file)
 #   SMOKE=yes night.sh    one short point of each kind, a few minutes; never posts
@@ -23,7 +23,7 @@
 #
 # Run from cron, the checkout's working tree is not what runs. night.sh fetches develop and the branch the checkout
 # is on, then hands over to the night.sh of that branch as fetched, extracted under
-# /var/tmp/dittofs-perf/harness/<commit>: its scripts, the mailbox jobs and the scenarios' reporting
+# /var/tmp/dittofs-perf/harness/<commit>: its scripts, the mailbox jobs and the Slack library
 # all come from there, and dfs is built from develop as fetched. Both commits are recorded. A fetch
 # that fails leaves the last fetched commits.
 #
@@ -280,32 +280,35 @@ files() {
     test "$failed" -eq 0
 }
 
-# post NIGHT: posts NIGHT's summary by the rules above. score.py's NIGHT/alert says new, same or clear,
-# and WORK/slack-ts keeps the open alert's message.
+# post NIGHT: posts NIGHT's summary by the rules above, in the thread of the day that slack-day,
+# beside the nights, keeps. score.py's NIGHT/alert says new, same or clear; alert-open, beside the
+# nights, stays from a night with a new flag or failure, or with any while no alert is open, to the
+# next night with neither.
 post() {
-    local text ts
+    local work="${1%/*}" text broadcast=no
     text="$(cat "$1/slack.txt")"
-    ts="$(cat "$WORK/slack-ts" 2>/dev/null || true)"
-    # shellcheck disable=SC2034 # report.sh reads them
-    HERE="$TREE/test/scenarios" CACHE="$WORK"
-    # shellcheck source-path=SCRIPTDIR source=../../test/scenarios/lib/report.sh
-    . "$TREE/test/scenarios/lib/report.sh"
     case "$(cat "$1/alert" 2>/dev/null)" in
     new)
-        if test -n "$ts"; then
-            slack "$text" "$ts" >/dev/null
-        else
-            ts="$(slack "$text")"
-            test -z "$ts" || echo "$ts" >"$WORK/slack-ts"
-        fi
+        broadcast=yes
+        touch "$work/alert-open"
+        ;;
+    same)
+        test -e "$work/alert-open" || broadcast=yes
+        touch "$work/alert-open"
         ;;
     clear)
-        test -n "$ts" || return 0
-        slack ":white_check_mark: *Nightly performance: nothing flagged or failing any more*
-$text" "$ts" yes >/dev/null
-        rm -f "$WORK/slack-ts"
+        if test -e "$work/alert-open"; then
+            broadcast=yes
+            text=":white_check_mark: *Nightly performance: nothing flagged or failing any more*
+$text"
+            rm "$work/alert-open"
+        fi
         ;;
     esac
+    test -n "${SLACK_DIR:-}" || return 0
+    # shellcheck source-path=SCRIPTDIR source=../../test/scenarios/lib/slack.sh
+    . "$TREE/test/scenarios/lib/slack.sh"
+    slack "$text" "$(slack_day "$work/slack-day" "Nightly performance")" "$broadcast" >/dev/null
 }
 
 case "${1:-}" in
@@ -325,7 +328,7 @@ elif test -z "${HARNESS:-}"; then
     tree="$WORK/harness/$HARNESS"
     if test ! -d "$tree"; then
         mkdir -p "$tree.$$"
-        git -C "$REPO" archive "$HARNESS" bench test/scenarios/lib | tar -x -C "$tree.$$"
+        git -C "$REPO" archive "$HARNESS" bench test/scenarios/lib/slack.sh | tar -x -C "$tree.$$"
         mv -T "$tree.$$" "$tree" 2>/dev/null || rm -rf "$tree.$$"
     fi
     touch "$tree"
