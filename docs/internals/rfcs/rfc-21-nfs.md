@@ -2642,7 +2642,8 @@ status, in a row naming it that wins there; `ErrMoved` to
 row of NFSv4's table naming them in `Ops`; NFSv3, MOUNT and NLM each have a
 table of their own, RFC 20 §4.5), §7.4; `ErrDraining`, and `ErrMoved` for any other
 NFSv4 operation and for NFSv3, MOUNT and NLM, which have no move signal, to no
-reply.
+reply. The compound cap is 128 operations, and an NFSv4.1 session's
+`ca_maxoperations` reports it (§3.1).
 
 **A status names its layer.** Each row's status is one `core.Status` whose two
 high bits name its layer: 0 a program's status, inside an accepted reply whose
