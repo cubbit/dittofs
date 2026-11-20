@@ -257,7 +257,8 @@ var keytabs = secretSetting{scope: func([16]byte) entity.SettingScope { return i
 // accountHolds refuses a keytab holding a key for a name the computer
 // account holds while joined, its own name or one of its service names, in
 // the realm of the directory record's realm setting realm. With ok false,
-// no realm is recorded, so a name is refused in every realm. Names are
+// or the setting empty, no realm is recorded, so a name is refused in every
+// realm. Names are
 // compared with ASCII letters folded, realms ignoring the case of ASCII
 // letters, as identity matches a ticket to the account's names.
 func accountHolds(j entity.MachineJoin, realm entity.Setting, ok bool, names []identity.KeytabName) error {
@@ -280,7 +281,7 @@ func accountKey(j entity.MachineJoin, realm entity.Setting, ok bool, names []ide
 		}
 	}
 	for _, n := range names {
-		if ok && !equalFoldASCII(n.Realm, r) {
+		if r != "" && !equalFoldASCII(n.Realm, r) {
 			continue
 		}
 		if equalFoldASCII(n.Name, j.Account) || slices.ContainsFunc(j.Names, func(m string) bool { return equalFoldASCII(n.Name, m) }) {

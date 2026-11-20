@@ -414,7 +414,8 @@ func TestWithKerberosRefusesAStaleMachineLink(t *testing.T) {
 }
 
 // accountHolds refuses a key for a name the joined account holds in the
-// recorded realm only, and in every realm when no realm is recorded; it
+// recorded realm only, and in every realm when no realm is recorded or the
+// recorded one is empty; it
 // refuses nothing while not joined.
 func TestAccountHolds(t *testing.T) {
 	j := entity.MachineJoin{Joined: true, Account: "DFS$", Names: []string{"HOST/dfs.ad.example"}}
@@ -423,17 +424,19 @@ func TestAccountHolds(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		join    entity.MachineJoin
+		realm   entity.Setting
 		ok      bool
 		names   []pkgidentity.KeytabName
 		refused bool
 	}{
-		{"a held name in the recorded realm", j, true, in("host/dfs.ad.example", "ad.example"), true},
-		{"a held name in another realm", j, true, in("host/dfs.ad.example", "OTHER.EXAMPLE"), false},
-		{"the account's name with no realm recorded", j, false, in("dfs$", "OTHER.EXAMPLE"), true},
-		{"another name with no realm recorded", j, false, in("cifs/nas.ad.example", "AD.EXAMPLE"), false},
-		{"a held name while not joined", entity.MachineJoin{Account: "DFS$"}, false, in("dfs$", "AD.EXAMPLE"), false},
+		{"a held name in the recorded realm", j, realm, true, in("host/dfs.ad.example", "ad.example"), true},
+		{"a held name in another realm", j, realm, true, in("host/dfs.ad.example", "OTHER.EXAMPLE"), false},
+		{"the account's name with no realm recorded", j, realm, false, in("dfs$", "OTHER.EXAMPLE"), true},
+		{"another name with no realm recorded", j, realm, false, in("cifs/nas.ad.example", "AD.EXAMPLE"), false},
+		{"the account's name under an empty realm", j, entity.Setting{Value: []byte(`""`)}, true, in("dfs$", "OTHER.EXAMPLE"), true},
+		{"a held name while not joined", entity.MachineJoin{Account: "DFS$"}, realm, false, in("dfs$", "AD.EXAMPLE"), false},
 	} {
-		err := accountHolds(tc.join, realm, tc.ok, tc.names)
+		err := accountHolds(tc.join, tc.realm, tc.ok, tc.names)
 		if (err != nil) != tc.refused {
 			t.Errorf("%s: accountHolds = %v, want refused %v", tc.name, err, tc.refused)
 		}
