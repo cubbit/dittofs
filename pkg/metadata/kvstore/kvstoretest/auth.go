@@ -103,6 +103,24 @@ func testStoredACLDecides(t *testing.T, kvo Opener) {
 	if e := files.Authorize(ctx, carol, h, nil, entity.WriteData); !isDenied(e) {
 		t.Errorf("a right no entry grants: %v", e)
 	}
+	// The ACL decides read the ACL and synchronize as it decides any right,
+	// though a file with no stored ACL grants them to anyone (RFC 19 §3.1,
+	// step 6).
+	minor := entity.ReadACL | entity.Synchronize
+	m, _ := f.create(f.admin, pub, "minor", regular(0o644))
+	_, e = files.SetACL(ctx, f.admin, m, entity.ACL{Entries: []entity.ACE{
+		{Type: entity.ACEDeny, Mask: minor, Who: bob.Principal},
+		{Type: entity.ACEAllow, Mask: entity.ReadData | minor, Who: entity.Everyone},
+	}})
+	must(t, e)
+	for _, r := range []entity.AccessMask{entity.ReadACL, entity.Synchronize} {
+		if e := files.Authorize(ctx, bob, m, nil, r); !isDenied(e) {
+			t.Errorf("a deny of %#x ahead of the allow: %v", r, e)
+		}
+		if e := files.Authorize(ctx, carol, m, nil, r); e != nil {
+			t.Errorf("the allow of %#x: %v", r, e)
+		}
+	}
 	// RFC 7 §12.1's removal rights: delete on the file, no right on the
 	// directory, is enough.
 	if _, e := ns.Unlink(ctx, carol, pub, []byte("doc")); e != nil {
@@ -280,13 +298,19 @@ func testWellKnownPrincipals(t *testing.T, kvo Opener) {
 		t.Errorf("an inheritable CREATOR OWNER deny was stored effective: %+v", acl.Entries)
 	}
 
+	// The owner reads and writes the ACL whatever its entries say, unless an
+	// owner-rights entry withdraws that (RFC 19 §3.1, step 5).
 	must(t, set(entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.OwnerRights}))
-	if err := files.Authorize(ctx, alice, h, nil, entity.WriteACL); err == nil {
-		t.Error("an owner-rights entry left the owner its implicit write ACL")
+	for _, r := range []entity.AccessMask{entity.ReadACL, entity.WriteACL} {
+		if err := files.Authorize(ctx, alice, h, nil, r); err == nil {
+			t.Errorf("an owner-rights entry left the owner its implicit %#x", r)
+		}
 	}
 	must(t, errOf(files.SetACL(ctx, f.admin, h, entity.ACL{Entries: []entity.ACE{{Type: entity.ACEAllow, Mask: read, Who: entity.Owner}}})))
-	if err := files.Authorize(ctx, alice, h, nil, entity.WriteACL); err != nil {
-		t.Errorf("without owner rights the owner lost its implicit write ACL: %v", err)
+	for _, r := range []entity.AccessMask{entity.ReadACL, entity.WriteACL} {
+		if err := files.Authorize(ctx, alice, h, nil, r); err != nil {
+			t.Errorf("without owner rights the owner lost its implicit %#x: %v", r, err)
+		}
 	}
 }
 
