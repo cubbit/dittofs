@@ -1255,7 +1255,11 @@ serves:
   lists now — protocol, remote address, session, since
   ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) — from that node, not
   from the store, for `viewer`. It is read-only and writes no client or
-  principal record.
+  principal record. Its cursor is the last connection's `since`, then
+  `remote`, then `protocol`, the order its pages are sorted in, so
+  connections accepted in the same instant are each read once. On one node,
+  an ID other than its own is answered `404` `not_found` before any adapter
+  is read.
 
 ### 4.3 Writes
 

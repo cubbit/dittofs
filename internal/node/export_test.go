@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/netip"
 	"testing"
@@ -31,6 +32,14 @@ import (
 // start that must touch nothing. The paths named in skip are left out, with
 // everything under them.
 func HashTree(t *testing.T, root string, skip ...string) string { return hashTree(t, root, skip...) }
+
+// Negotiate sends an SMB2 NEGOTIATE under message ID id on c and returns nil
+// once SMB answers it.
+func Negotiate(c net.Conn, id uint64) error { return negotiate(c, id) }
+
+// Null sends an RPC call to NFS's NULL procedure of version vers under xid on
+// c and returns the accepted reply's accept state and the words after it.
+func Null(c net.Conn, xid, vers uint32) ([]uint32, error) { return null(c, xid, vers) }
 
 // LiveStateBound is how long step 3 of a share's removal waits.
 const LiveStateBound = liveStateBound
