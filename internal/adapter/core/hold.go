@@ -184,6 +184,7 @@ type pending struct {
 	floor   bool       // counted on the floor
 	pool    bool       // its record's charge moved to the hold pool
 	charge  int64      // its record's charge, as counted
+	dropped bool       // Park found the connection closed: its handler's ErrParked is the close's end
 	backoff time.Duration
 	last    error                            // its last attempt's error, whose row holds
 	bound   func(error, time.Time) time.Time // that row's Hold
@@ -583,7 +584,7 @@ type parked struct {
 // its own where it is of the small class, else one taken before its own goes,
 // carrying the interim where one is sent. On a connection already closed it
 // calls cancel at once, done does nothing, and the handler's ErrParked ends
-// the request unsent, as the close's cancel would (endedByClose).
+// the request unsent, as the close's cancel would (finish).
 //
 // decision: the interim of a park whose own reply buffer is the one it keeps
 // goes out in a status's buffer, taken at once where the pool has room, and
@@ -605,6 +606,7 @@ func (p *pipeline) park(pd *pending, cancel func()) (func(error), error) {
 	t := &p.pend
 	t.mu.Lock()
 	if t.closed {
+		pd.dropped = true
 		t.mu.Unlock()
 		pd.mu.Unlock()
 		cancel()

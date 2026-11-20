@@ -303,6 +303,8 @@ func closeReason(err error) reason {
 		return rsnHandshake
 	case errors.Is(err, errIdle):
 		return rsnIdle
+	case errors.Is(err, errStatusWait):
+		return rsnStatusWait
 	case errors.Is(err, errReplyWait):
 		return rsnReplyWait
 	case errors.Is(err, errDrain):

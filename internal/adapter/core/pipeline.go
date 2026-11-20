@@ -918,15 +918,17 @@ func (p *pipeline) resolve(tr *track, r *Request, op *Op, inv Invocation, draini
 // under Final's header. A request whose context the connection's close
 // cancelled is dropped instead: its reservations released, nothing encoded,
 // and its span ended unsent (§3.1, §6.5). Its error is still mapped, unless
-// it is the close's own cancel, which is no error.
+// it is the close's own cancel, or the ErrParked of a handler whose Park the
+// close dropped, which are no error.
 func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op *Op, inv Invocation, reply *resources.Buf, err error, release func(), a answerer, pd *pending) {
 	ctx := tr.ctx
 	var s Status
 	send, notFailure := true, false
 	switch {
-	case p.endedByClose(err):
-		// The close's own cancel is mapped by no row, counted and logged by
-		// none.
+	case p.endedByClose(err), pd != nil && pd.dropped && errors.Is(err, ErrParked):
+		// Mapped by no row, counted and logged by none. An ErrParked with no
+		// Park before it is a handler's bug, mapped below as any error no row
+		// maps, whether or not the connection has closed (§4.5, §4.7).
 	case errors.Is(err, errPanicked):
 		// decision: a recovered panic is answered the fault status without
 		// Map, so it is counted once, as a panic, and never also as an error
@@ -1270,12 +1272,11 @@ func (p *pipeline) end(tr *track, sent bool, s Status, reply int, err error) {
 }
 
 // endedByClose reports whether err is the connection's close ending a wait
-// or a call under its context, or a handler's ErrParked on a closed
-// connection, whose reply Park drops as a close would (§4.7). That is
-// no error: nothing can be sent, and the request is neither counted as a
-// refusal or an error no row maps nor logged at error (§10.1).
+// or a call under its context. That is no error: nothing can be sent, and
+// the request is neither counted as a refusal or an error no row maps nor
+// logged at error (§10.1).
 func (p *pipeline) endedByClose(err error) bool {
-	return p.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, ErrParked))
+	return p.ctx.Err() != nil && errors.Is(err, context.Canceled)
 }
 
 // reservationStage is the stage the request's reply reservation's refusal

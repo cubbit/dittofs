@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	rtmetrics "runtime/metrics"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -231,16 +232,31 @@ func (cl *client) exchange() error {
 	return nil
 }
 
-// allocs is the allocations per record sent, its members together, of 1000 runs of the case on its own
-// server, tracing as tracing says. Each run waits for its request's
-// end on the server before it returns, so the last run's tail is counted:
-// nothing running on its pipeline, and the reply budget, which nothing else
-// holds, back at zero, the writer having released each reply once written.
+// gateRuns is how many times allocs runs a case, past AllocsPerRun's warm-up.
+const gateRuns = 1000
+
+// allocs is the allocations per record sent, its members together, of
+// gateRuns runs of the case on its own server, tracing as tracing says. Each
+// run waits for its request's end on the server before it returns, so the
+// last run's tail is counted: nothing running on its pipeline, and the reply
+// budget, which nothing else holds, back at zero, the writer having released
+// each reply once written. Over the same runs, the warm-up's included, each
+// record starts one goroutine, its request's or its chain's, by the
+// runtime's count of goroutines created, and leaves none running once its
+// request has ended; t fails otherwise (RFC 20 §6.9, §6.10; RFC 24 §6.1).
+//
+// decision: both goroutine counts are the process's, averaged over the runs
+// and rounded down as AllocsPerRun rounds its count, so a goroutine the
+// process starts elsewhere meanwhile, a timer's, or the last run's own still
+// returning, is not charged to a record, and a goroutine a request starts or
+// leaves on fewer than every run passes. Overturned if a request is seen to
+// start or leave one on some runs only.
 func (c pipelineCase) allocs(t *testing.T, b *resources.Budgets, tracing adapter.Deps) float64 {
 	t.Helper()
 	cl := newLoopback(t, c, b, tracing).dial()
 	p := core.ConnPipeline(cl.conn)
-	return testing.AllocsPerRun(1000, func() {
+	before, live := goroutinesStarted(), runtime.NumGoroutine()
+	n := testing.AllocsPerRun(gateRuns, func() {
 		if err := cl.exchange(); err != nil {
 			t.Fatal(err)
 		}
@@ -251,6 +267,21 @@ func (c pipelineCase) allocs(t *testing.T, b *resources.Budgets, tracing adapter
 			runtime.Gosched()
 		}
 	})
+	if g := (goroutinesStarted() - before) / (gateRuns + 1); g != 1 {
+		t.Errorf("%s starts %d goroutines per record, want one: its request's or its chain's", c.name, g)
+	}
+	if g := (runtime.NumGoroutine() - live) / (gateRuns + 1); g > 0 {
+		t.Errorf("%s leaves %d goroutines running per record once its request has ended, want none", c.name, g)
+	}
+	return n
+}
+
+// goroutinesStarted is the runtime's count of the goroutines the process
+// has started.
+func goroutinesStarted() uint64 {
+	s := []rtmetrics.Sample{{Name: "/sched/goroutines-created:goroutines"}}
+	rtmetrics.Read(s)
+	return s[0].Value.Uint64()
 }
 
 // checkedIn is testdata/allocs: each case's allocations per record sent.
@@ -287,7 +318,9 @@ func checkedIn(t *testing.T) map[string]float64 {
 // DelayResources, which both of testproto's tables map to StatusDelay at
 // once, an expected refusal logged at debug, counts what its successful run
 // does at a level that drops every line, so no line is built for it
-// (RFC 20 §10.3).
+// (RFC 20 §10.3). In every run a record starts one goroutine and leaves none
+// running, so a goroutine a request starts, which a heap count may miss, fails
+// here too (RFC 20 §6.10; RFC 24 §6.1).
 func TestPipelineAllocs(t *testing.T) {
 	if prof.RaceEnabled {
 		t.Skip("the race detector changes allocation counts")
