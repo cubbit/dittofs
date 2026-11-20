@@ -282,6 +282,36 @@ func TestDecodeRefusesAHeaderOrNextOutsideTheRecord(t *testing.T) {
 	}
 }
 
+// Decode reads a compound's tag from its arguments only where they are clear
+// (RFC 20 §4.1): under session 0 it reads it, and sealed under a session it
+// reads none, since sealed bytes are no tag. Under a session whose key is 1
+// the seal flips only the low bit of every fourth byte, so the length it
+// hides still fits the arguments, and a Decode that skipped the session's
+// check would read a tag of the sealed bytes.
+func TestDecodeReadsNoTagFromSealedArguments(t *testing.T) {
+	keyed := uint32(1) // the session whose key is 1: sumKey's inverse, by Newton's iteration
+	for range 5 {
+		keyed *= 2 - sumKey*keyed
+	}
+	if keyed*sumKey != 1 {
+		t.Fatalf("session %#x has the key %#x, want 1", keyed, keyed*sumKey)
+	}
+	for _, c := range []struct {
+		name    string
+		session uint32
+		tag     []byte
+	}{
+		{"clear, under session 0", 0, []byte("tag!")},
+		{"sealed, under the session whose key is 1", keyed, nil},
+	} {
+		m := Msg{Op: OpCompound, Version: 1, ID: 1, Session: c.session, Tag: []byte("tag!"), Members: []Msg{{Op: OpEcho, Payload: []byte("e")}}}
+		h, err := headerCodec{}.Decode(&resources.Buf{B: Append(nil, m)[lengthLen:]}, 0)
+		if err != nil || !bytes.Equal(tagOf(h), c.tag) {
+			t.Errorf("%s: Decode read the tag %q (%v), want %q", c.name, tagOf(h), err, c.tag)
+		}
+	}
+}
+
 // A reply's header carries its request's operation, version, IDs, sequence
 // and credits, the reply flag and the status, and Chain points it at the next.
 func TestEncodeAndChainAReply(t *testing.T) {

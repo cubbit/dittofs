@@ -694,13 +694,25 @@ func TestDrainServesByRole(t *testing.T) {
 	})
 }
 
-// A Panic is answered the fault status, and an Echo after it on the same
-// connection is answered.
+// A Panic is answered the fault status, its lines logged with the trace ID
+// Deps.TraceIDs drew for it (RFC 20 §4.2, RFC 25 §5.3), and an Echo after it
+// on the same connection is answered.
 func TestPanicIsAnsweredTheFault(t *testing.T) {
-	s := newSeam(t, testproto.New(adapter.Deps{}).Bare(), 1<<20)
+	logs := &logSink{}
+	s := newSeamWith(t, testproto.New(adapter.Deps{}).Bare(), 1<<20, adapter.Deps{TraceIDs: seeded(5), Logger: logs.logger()})
 	s.serve(testproto.Msg{Op: testproto.OpPanic, Version: 1, ID: 1})
 	if r := s.read(); r.ID != 1 || r.Status != testproto.StatusFault {
 		t.Errorf("a Panic is answered %+v, want the fault status", r)
+	}
+	id := seeded(5)().String()
+	lines := append(logs.at(t, "ERROR"), logs.at(t, "DEBUG")...)
+	if len(lines) != 2 {
+		t.Fatalf("a Panic logged %v, want its error line and its debug line", lines)
+	}
+	for _, rec := range lines {
+		if rec["msg"] != "handler panicked" || rec["trace_id"] != id {
+			t.Errorf("a Panic logged %q with trace ID %v, want the panic's line with %s, the one Deps.TraceIDs drew", rec["msg"], rec["trace_id"], id)
+		}
 	}
 	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2})
 	if r := s.read(); r.ID != 2 || r.Status != testproto.StatusOK {
@@ -1041,7 +1053,9 @@ func TestAnUnmappedErrorIsAnsweredTheFaultAndCounted(t *testing.T) {
 
 // A wait the connection's close ends, for the request's reply reservation
 // or for a replay copy's, is no error: the request counts neither as an error
-// no row maps nor as a refusal, and logs nothing at error (RFC 20 §10.1).
+// no row maps nor as a refusal, at replay_check or at reply_wait, whose
+// refusal is a reservation's ErrDelay at its deadline, and logs nothing at
+// error (RFC 20 §10.1).
 func TestAWaitTheCloseEndsIsNoError(t *testing.T) {
 	setup := []testproto.Msg{
 		{Op: testproto.OpNegotiate, Version: 1, ID: 1},
@@ -1091,6 +1105,7 @@ func TestAWaitTheCloseEndsIsNoError(t *testing.T) {
 				for _, k := range []string{
 					"adapter_unmapped_errors_total{protocol=" + testproto.Name + "}",
 					"adapter_refusals_total{protocol=" + testproto.Name + ",stage=replay_check}",
+					"adapter_refusals_total{protocol=" + testproto.Name + ",stage=reply_wait}",
 				} {
 					if got[k] != 0 {
 						t.Errorf("%s = %v after a wait the close ended, want 0", k, got[k])
@@ -1106,8 +1121,8 @@ func TestAWaitTheCloseEndsIsNoError(t *testing.T) {
 
 // A connection at its cap closed while the next request waits in Admit, and
 // the 64 admitted wait for their reply buffers: none of those waits is an
-// error. Nothing counts as refused or as an error no row maps, and nothing
-// logs at error.
+// error. Nothing counts as refused, at admit or at reply_wait, or as an error
+// no row maps, and nothing logs at error (RFC 20 §10.1).
 func TestAnAdmissionTheCloseEndsIsNoError(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m, logs := metrics.New("v", "c"), &logSink{}
@@ -1134,6 +1149,7 @@ func TestAnAdmissionTheCloseEndsIsNoError(t *testing.T) {
 		for _, k := range []string{
 			"adapter_unmapped_errors_total{protocol=" + testproto.Name + "}",
 			"adapter_refusals_total{protocol=" + testproto.Name + ",stage=admit}",
+			"adapter_refusals_total{protocol=" + testproto.Name + ",stage=reply_wait}",
 		} {
 			if got[k] != 0 {
 				t.Errorf("%s = %v after the close ended the waits, want 0", k, got[k])
@@ -2522,22 +2538,31 @@ func (f faultyWrap) Wrap(h core.Header, reply *resources.Buf) error {
 	return f.Security.Wrap(h, reply)
 }
 
-// A reply that does not go out, dropped by the close after it was encoded or
-// refused by Wrap, is not recorded as sent: its request's span carries no
-// status and no reply bytes (§10.2).
+// A reply that does not go out, dropped by the close after it was encoded,
+// refused by Wrap, or refused by a writer that has stopped while the
+// connection's context is still open, as after a failed write, is not
+// recorded as sent: its request's span ends, carrying no status and no reply
+// bytes (§10.2). A header Decode returns with its error, its next 0, is
+// answered with no Wrap (§5.5), so only the stopped writer drops its
+// refusal.
 func TestAReplyThatDoesNotGoOutIsNotRecordedAsSent(t *testing.T) {
 	echo := testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}
 	for _, tc := range []struct {
-		name    string
-		flow    core.FlowControl
-		msgs    []testproto.Msg
-		wrapErr error // Wrap refuses the reply; else the close drops it
+		name     string
+		flow     core.FlowControl
+		msgs     []testproto.Msg
+		wrapErr  error // Wrap refuses the reply; else the close drops it at Wrap
+		stopped  bool  // the writer has stopped before the request comes; nothing closes
+		header   bool  // the stages' HeaderCodec refuses the header at 0, its next kept
+		requests int   // the request spans that end
 	}{
-		{"a refusal", refusingFlow{&vfs.Delay{Cause: vfs.DelayResources}}, []testproto.Msg{echo}, nil},
-		{"a served request", nil, []testproto.Msg{echo}, nil},
-		{"a compound", nil, []testproto.Msg{{Op: testproto.OpCompound, Version: 1, ID: 1, Members: []testproto.Msg{echo}}}, nil},
-		{"a chain", nil, []testproto.Msg{echo, {Op: testproto.OpEcho, Version: 1, ID: 2}}, nil},
-		{"a reply Wrap refuses", nil, []testproto.Msg{echo}, errors.New("a reply that does not sign")},
+		{"a refusal", refusingFlow{&vfs.Delay{Cause: vfs.DelayResources}}, []testproto.Msg{echo}, nil, false, false, 1},
+		{"a served request", nil, []testproto.Msg{echo}, nil, false, false, 1},
+		{"a compound", nil, []testproto.Msg{{Op: testproto.OpCompound, Version: 1, ID: 1, Members: []testproto.Msg{echo}}}, nil, false, false, 1},
+		{"a chain", nil, []testproto.Msg{echo, {Op: testproto.OpEcho, Version: 1, ID: 2}}, nil, false, false, 2},
+		{"a reply Wrap refuses", nil, []testproto.Msg{echo}, errors.New("a reply that does not sign"), false, false, 1},
+		{"a served request the stopped writer refuses", nil, []testproto.Msg{echo}, nil, true, false, 1},
+		{"a header's refusal, with no Wrap, the stopped writer refuses", nil, []testproto.Msg{echo}, nil, true, true, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -2546,7 +2571,7 @@ func TestAReplyThatDoesNotGoOutIsNotRecordedAsSent(t *testing.T) {
 				var s *seam
 				closing := edited{testproto.New(adapter.Deps{}), func(st *core.Stages) {
 					st.Security = faultyWrap{Security: st.Security, fault: func() error {
-						if tc.wrapErr == nil {
+						if tc.wrapErr == nil && !tc.stopped {
 							s.p.Close()
 						}
 						return tc.wrapErr
@@ -2554,13 +2579,25 @@ func TestAReplyThatDoesNotGoOutIsNotRecordedAsSent(t *testing.T) {
 					if tc.flow != nil {
 						st.Flow = tc.flow
 					}
+					if tc.header {
+						st.Header = &refusesAt{HeaderCodec: st.Header, off: 0}
+					}
 				}}
 				s = newSeamWith(t, closing, 1<<20, adapter.Deps{Tracer: provider.Tracer("test"), SampleRatio: 1})
+				if tc.stopped {
+					s.stop(nil) // the recorder refuses out from here on, as a writer after a failed write
+				}
 				s.serve(tc.msgs...)
 				if err := s.p.Wait(context.Background()); err != nil {
 					t.Fatal(err)
 				}
-				droppedUnsent(t, s, spans)
+				if tc.stopped {
+					// The stopped writer wrote nothing and closed the client's
+					// end, so there is no record to look for.
+					endedUnsent(t, spans, tc.requests)
+					return
+				}
+				droppedUnsent(t, s, spans, tc.requests)
 			})
 		})
 	}
@@ -2588,25 +2625,35 @@ func TestAReplyThatDoesNotGoOutIsNotRecordedAsSent(t *testing.T) {
 			if err := s.p.Wait(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			droppedUnsent(t, s.seam, spans)
+			droppedUnsent(t, s.seam, spans, 1)
 		})
 	})
 }
 
-// droppedUnsent fails t if a reply went out, or if a request span ended with
-// a status or reply bytes.
-func droppedUnsent(t *testing.T, s *seam, spans *tracetest.SpanRecorder) {
+// droppedUnsent fails t if a reply went out, or unless endedUnsent holds.
+func droppedUnsent(t *testing.T, s *seam, spans *tracetest.SpanRecorder, requests int) {
 	t.Helper()
 	if !s.sentNothing() {
 		t.Fatal("a reply went out")
 	}
-	ended := spans.Ended()
-	if len(ended) == 0 {
-		t.Fatal("no span ended")
-	}
-	for _, sd := range ended {
-		if a := sd.Attributes(); !sd.Parent().IsValid() && slices.ContainsFunc(a, func(kv attribute.KeyValue) bool { return kv.Key == "reply_bytes" || kv.Key == "status" }) {
+	endedUnsent(t, spans, requests)
+}
+
+// endedUnsent fails t unless requests request spans, those with no parent,
+// ended, none with a status or reply bytes.
+func endedUnsent(t *testing.T, spans *tracetest.SpanRecorder, requests int) {
+	t.Helper()
+	n := 0
+	for _, sd := range spans.Ended() {
+		if sd.Parent().IsValid() {
+			continue
+		}
+		n++
+		if a := sd.Attributes(); slices.ContainsFunc(a, func(kv attribute.KeyValue) bool { return kv.Key == "reply_bytes" || kv.Key == "status" }) {
 			t.Errorf("the span %s of a dropped reply ended as sent: %v", sd.Name(), a)
 		}
+	}
+	if n != requests {
+		t.Errorf("%d request spans ended, want %d", n, requests)
 	}
 }

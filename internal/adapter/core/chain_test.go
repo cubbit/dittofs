@@ -2557,8 +2557,9 @@ func (t tracingStages) Lookup(ctx context.Context, h core.Header) (*resources.Bu
 
 // A chain's member is tried at flow control and the replay cache under its
 // own context, ended: a stage that traces its work there has its span in
-// the member's trace, a child of the member's request span, as the first
-// member's admission and a request alone's are.
+// the member's trace, a child of the member's request span, and so does a
+// request alone's, admitted under its context and tried at the cache under
+// its ended one (RFC 20 sections 4.7 and 10.2).
 func TestAChainMembersTriesAreInItsTrace(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		spans := tracetest.NewSpanRecorder()
@@ -2571,6 +2572,10 @@ func TestAChainMembersTriesAreInItsTrace(t *testing.T) {
 		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
 			t.Fatalf("the chain is answered %+v, %v: want both Echo in one record", rs, err)
 		}
+		s.serve(echoIn(3, 7))
+		if r := s.recvOne(); r.ID != 3 || r.Status != testproto.StatusOK {
+			t.Fatalf("the Echo alone is answered %+v, want its success", r)
+		}
 		s.finish()
 		var members []sdktrace.ReadOnlySpan
 		children := map[trace.SpanID][]string{}
@@ -2582,14 +2587,14 @@ func TestAChainMembersTriesAreInItsTrace(t *testing.T) {
 				children[sd.Parent().SpanID()] = append(children[sd.Parent().SpanID()], sd.Name())
 			}
 		}
-		if len(members) != 2 {
-			t.Fatalf("%d Echo spans ended, want the chain's two", len(members))
+		if len(members) != 3 {
+			t.Fatalf("%d Echo spans ended, want the chain's two and the request alone's", len(members))
 		}
 		for i, sd := range members {
 			got := children[sd.SpanContext().SpanID()]
 			slices.Sort(got)
 			if !slices.Equal(got, []string{"admit", "lookup"}) {
-				t.Errorf("member %d's span has the stage spans %v under it, want its admit and its lookup", i+1, got)
+				t.Errorf("Echo %d's span has the stage spans %v under it, want its admit and its lookup", i+1, got)
 			}
 		}
 	})

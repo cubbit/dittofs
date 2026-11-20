@@ -4758,7 +4758,8 @@ a healthy node; any increase is a bug, and alerts as one.
 **How they are recorded.** The reader and writer count connections and bytes;
 the pipeline counts refusals by stage and replay hits, and times the stages; the
 compound runner counts, as a shortened read, each member whose `Bound` its room
-lowered (§4.3), which only a `READ`'s or `READ_PLUS`'s hook does; the metrics
+lowered (§4.3), which only a `READ`'s or `READ_PLUS`'s hook does, and a
+compound the drain refuses whole, which runs no member, counts none; the metrics
 middleware (§4.7) marks the call's start and end, between which nothing is timed. Every series a request can touch is
 resolved once per server: a table's per-protocol, per-operation and per-error
 series at `NewServer`, for every table its protocols' `Tables` list and each

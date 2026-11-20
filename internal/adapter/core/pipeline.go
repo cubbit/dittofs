@@ -1029,6 +1029,7 @@ func (p *pipeline) begin(rec *resources.Buf) *track {
 	}
 	tr.req = requestCtx{Context: parent, start: p.sh.clock.Now()}
 	tr.ctx, tr.mark = &tr.req, tr.req.start
+	tr.try.Context = tr.ctx
 	return tr
 }
 
@@ -1132,12 +1133,26 @@ func (c *requestCtx) Value(key any) any {
 }
 
 // ended is the request's context ended, for its first try at the replay
-// cache or at flow control: its one endedCtx, repointed at its context,
-// which a stage, as any call's, keeps no further than its return.
-func (tr *track) ended() context.Context {
-	tr.try.Context = tr.ctx
-	return &tr.try
-}
+// cache or at flow control: its one endedCtx, over its context, which a
+// stage, as any call's, keeps no further than its return.
+func (tr *track) ended() context.Context { return &tr.try }
+
+// endedCtx is a request's context with its deadline passed: Admit under it
+// tries once and, where it would wait, answers its error at once, and Lookup
+// tries its copy's reservation once, answering ErrDelay of DelayResources
+// (§4.7). It keeps the request's values, its trace ID and span among them.
+type endedCtx struct{ context.Context }
+
+// closedDone is the done channel of every endedCtx.
+var closedDone = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
+func (endedCtx) Deadline() (time.Time, bool) { return time.Time{}, true }
+func (endedCtx) Done() <-chan struct{}       { return closedDone }
+func (endedCtx) Err() error                  { return context.DeadlineExceeded }
 
 // series is what the request records into now: its connection's label's
 // before Route, its table's from it.

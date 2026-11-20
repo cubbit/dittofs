@@ -560,6 +560,43 @@ func TestADrainedCompound(t *testing.T) {
 	})
 }
 
+// While draining, a compound the drain refuses whole runs no member and
+// counts none of its shortened Reads (RFC 20 §10.1): a PutFH, two Reads of
+// 768 KiB from a file of 1.5 MiB and an Echo whose role is none, served
+// before the drain, counts its first Read shortened; served again while
+// draining, it is answered nothing and counts no more.
+func TestADrainedCompoundCountsNoShortenedRead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newServed(t, 64<<20, adapter.Deps{Metrics: m})
+		fh, _ := s.file("f", 1536<<10)
+		none := echo
+		none.Role = core.RoleNone
+		members := []testproto.Msg{
+			{Op: testproto.OpPutFH, Handle: fh},
+			{Op: testproto.OpRead, Offset: 0, Count: 768 << 10},
+			{Op: testproto.OpRead, Offset: 768 << 10, Count: 768 << 10},
+			none,
+		}
+		k := "adapter_reads_shortened_total{protocol=" + testproto.Name + "}"
+		s.compound(1, members...)
+		if st, rs := s.results(); st != testproto.StatusOK || len(rs) != 4 {
+			t.Fatalf("the compound served before the drain is answered %d with %v, want all four run", st, rs)
+		}
+		if got, _ := scrape(t, m); got[k] != 1 {
+			t.Fatalf("served before the drain, %s = %v, want its first Read counted", k, got[k])
+		}
+		s.p.Drain()
+		s.compound(2, members...)
+		if !s.sentNothing() {
+			t.Error("the compound the drain refuses whole was answered")
+		}
+		if got, _ := scrape(t, m); got[k] != 1 {
+			t.Errorf("%s = %v after the drain refused the compound whole, want still 1", k, got[k])
+		}
+	})
+}
+
 // A compound still waiting for its reply when the drain begins has not been
 // handed to the service, so it is judged once its reply is reserved, as a
 // request alone is: one the drain does not serve whole is answered nothing
