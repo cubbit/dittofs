@@ -448,3 +448,15 @@ func TestAnAsyncFormsReplyIsGrantedAsAnySynchronousOne(t *testing.T) {
 		t.Errorf("the reply to an async-form request carries flags %#x, want SERVER_TO_REDIR alone", got)
 	}
 }
+
+// The framer's record cap is a message's, 8 MiB and 4 KiB, written from
+// RFC 22 section 3.3 rather than taken from wire, in one fragment, since
+// every Direct TCP header ends its record: a response record, a chain's
+// joined one among them, is held to the same cap (RFC 22 section 3.3, RFC 20
+// section 4.7).
+func TestTheRecordCapIsAMessagesCap(t *testing.T) {
+	const capBytes = 8<<20 + 4<<10
+	if n, frags := (framer{}).MaxRecord(); n != capBytes || frags != 1 {
+		t.Errorf("MaxRecord = %d bytes in %d fragments, want %d bytes in 1", n, frags, capBytes)
+	}
+}

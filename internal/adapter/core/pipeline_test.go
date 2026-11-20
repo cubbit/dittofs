@@ -750,36 +750,42 @@ func TestABadChecksumIsRefusedBeforeAdmit(t *testing.T) {
 // Version 2 on stages with no Hold closes the connection; so does a table
 // Route returns that no listener listed, a compound row's Members among
 // them, and version 1's table returned for a version 2 header, outside its
-// Versions, each a wiring fault naming the table (§4.7). In a bubble, so a
+// Versions, each a wiring fault naming the table, which the connection's
+// close counts under the wiring reason (§4.7, §10.1). In a bubble, so a
 // connection left open fails the test at once.
 func TestTablesTheStagesCannotServeCloseTheConnection(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		// wiring is whether err closes as a wiring fault naming Echo's table,
+		// saying why.
+		wiring := func(err error, why string) bool {
+			return err != nil && core.CloseReason(err) == "wiring" && strings.Contains(err.Error(), "Echo") && strings.Contains(err.Error(), why)
+		}
 		p := testproto.New(adapter.Deps{})
 		s := newSeam(t, edited{p, func(st *core.Stages) { st.Hold = nil }}, 1<<20)
 		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 2, ID: 1})
-		if err := <-s.closed; !errors.Is(err, core.ErrNoHold) {
-			t.Errorf("a holding table on stages with no Hold closed with %v", err)
+		if err := <-s.closed; !errors.Is(err, core.ErrNoHold) || core.CloseReason(err) != "wiring" {
+			t.Errorf("a holding table on stages with no Hold closed with %v, want the wiring fault", err)
 		}
 		s = newSeam(t, edited{p, func(st *core.Stages) { st.Router = unlisted{st.Router} }}, 1<<20)
 		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
-		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "Echo") || !strings.Contains(err.Error(), "no listener's Tables listed") {
-			t.Errorf("a table no listener listed closed with %v, want the fault naming the table", err)
+		if err := <-s.closed; !wiring(err, "no listener's Tables listed") {
+			t.Errorf("a table no listener listed closed with %v, want the wiring fault naming the table", err)
 		}
 		members := p.Tables()[0].Ops[testproto.OpCompound].Members
 		s = newSeam(t, edited{p, func(st *core.Stages) { st.Router = misrouted{st.Router, members} }}, 1<<20)
 		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
-		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "Echo") || !strings.Contains(err.Error(), "no listener's Tables listed") {
-			t.Errorf("a compound row's Members returned by Route closed with %v, want the fault naming the table", err)
+		if err := <-s.closed; !wiring(err, "no listener's Tables listed") {
+			t.Errorf("a compound row's Members returned by Route closed with %v, want the wiring fault naming the table", err)
 		}
 		s = newSeam(t, edited{p, func(st *core.Stages) { st.Router = misrouted{st.Router, p.Tables()[0]} }}, 1<<20)
 		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 2, ID: 1})
-		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "Echo") || !strings.Contains(err.Error(), "do not hold version 2") {
-			t.Errorf("version 1's table for a version 2 header closed with %v, want the fault naming the table", err)
+		if err := <-s.closed; !wiring(err, "do not hold version 2") {
+			t.Errorf("version 1's table for a version 2 header closed with %v, want the wiring fault naming the table", err)
 		}
 		s = newSeam(t, edited{p, func(st *core.Stages) { st.Router = misrouted{st.Router, p.Tables()[1]} }}, 1<<20)
 		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
-		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "Echo") || !strings.Contains(err.Error(), "do not hold version 1") {
-			t.Errorf("version 2's table for a version 1 header closed with %v, want the fault naming the table", err)
+		if err := <-s.closed; !wiring(err, "do not hold version 1") {
+			t.Errorf("version 2's table for a version 1 header closed with %v, want the wiring fault naming the table", err)
 		}
 	})
 }

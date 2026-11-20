@@ -1415,6 +1415,58 @@ func TestAChainSplitsAtTheRecordCap(t *testing.T) {
 	}
 }
 
+// A member answered with a status alone keeps the chain's record within the
+// protocol's record cap as a reply does (§4.7): its status's buffer, its
+// header's ReplyLen, is counted with the replies held, Chain's padding and
+// what Wrap adds. An Echo, then an operation the table lacks, whose refusal's
+// status joins the Echo's reply in one record framed at the cap, and goes
+// out in a record of its own, counted record, framed one byte past it.
+func TestAStatusSplitsAChainAtTheRecordCap(t *testing.T) {
+	limit, _ := testproto.New(adapter.Deps{}).Framer().MaxRecord()
+	// The Echo's reply whose record join frames at the cap: Chain's padding,
+	// the status's ReplyLen and the Echo's, which bounds what Wrap adds, on top.
+	framed := limit - core.ChainPadding - 2*headerLen
+	for _, c := range []struct {
+		name    string
+		reply   int // the Echo's: its header and its payload
+		records int
+	}{
+		{"framed at the cap", framed, 1},
+		{"framed one byte past the cap", framed + 1, 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := metrics.New("v", "c")
+				d := adapter.Deps{Metrics: m}
+				proto := edited{testproto.New(d), func(st *core.Stages) {
+					st.Security = growsWrap{Security: st.Security, codec: st.Header}
+				}}
+				s := newSeamWith(t, proto, 64<<20, d)
+				s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: make([]byte, c.reply-headerLen)}, testproto.Msg{Op: 99, Version: 1, ID: 2})
+				var got []testproto.Reply
+				records := 0
+				for len(got) < 2 {
+					rs, err := s.client.Recv()
+					if err != nil {
+						t.Fatalf("record %d after replies %+v: %v", records+1, got, err)
+					}
+					records++
+					got = append(got, rs...)
+				}
+				if records != c.records || got[0].ID != 1 || got[1].ID != 2 || got[1].Status != testproto.StatusNotSupported {
+					t.Errorf("the chain is answered in %d records, the second reply %d of status %d: want %d, the refusal of 2 second", records, got[1].ID, got[1].Status, c.records)
+				}
+				vals, _ := scrape(t, m)
+				for reason, want := range map[string]float64{"record": float64(c.records - 1), "quarter": 0} {
+					if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=" + reason + "}"; vals[k] != want {
+						t.Errorf("%s = %v, want %v", k, vals[k], want)
+					}
+				}
+			})
+		})
+	}
+}
+
 // wrapsUnder is the stages' Security, recording the operation of the header
 // each Wrap is handed: a pass-through, where which header Wrap gets is what
 // is checked.

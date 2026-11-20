@@ -184,6 +184,36 @@ func testOut(t *testing.T, build newOut) {
 			}
 		})
 	})
+
+	t.Run("before goes ahead of a record whose least or greatest key it is", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			pool := resources.NewBufPool(resources.NewWaitBudget("reply", 1<<30))
+			out, closeOut, peer, _ := build(f)
+			defer closeOut(nil)
+			// A record of the replies keyed 7 to 9 is queued behind the first
+			// message, which holds the writer, when one callback names its
+			// least key and another its greatest. Only their order against
+			// the record is the writer's to keep (RFC 20 section 6.2).
+			for _, m := range []struct {
+				body           string
+				lo, hi, before uint64
+			}{{"first", 0, 0, 0}, {"record", 7, 9, 0}, {"least", 0, 0, 7}, {"greatest", 0, 0, 9}} {
+				if err := out(msg(t, pool, m.body), m.lo, m.hi, m.before); err != nil {
+					t.Fatal(err)
+				}
+				if m.body == "first" {
+					synctest.Wait()
+				}
+			}
+			var got []string
+			for range 4 {
+				got = append(got, read(t, peer))
+			}
+			if at := func(body string) int { return slices.Index(got, body) }; at("least") > at("record") || at("greatest") > at("record") {
+				t.Errorf("sent %v, want both callbacks ahead of the record whose least and greatest keys they name", got)
+			}
+		})
+	})
 }
 
 // recorder is the writer the seam tests run the pipeline on: it queues what
