@@ -42,6 +42,34 @@ PR and `closedByPullRequestsReferences` on the issue read the links.
 Never mention Claude Code or
 AI tooling, and add no `Co-Authored-By` lines for AI.
 
+### Subtasks with no issue
+
+Many subtasks have no GitHub issue yet. A PR that finishes one names it instead, by RFC and
+subtask id, on one line of its own in the body, so the burn-up can credit it and give the PR
+an estimate. A PR that does not name the subtasks it works on counts as work with no
+estimate.
+
+```text
+Closes: RFC 8 T3.4, T3.5, RFC 23 T3.6
+Part of: RFC 1 T7.2
+```
+
+- `Closes:`, with the colon, at the start of the line: the subtasks this PR finishes.
+  `Part of:` the same way names a subtask it finishes only in part. Each keyword appears
+  at most once.
+- `RFC <n>` opens a group; every id after it, up to the next `RFC`, belongs to that RFC.
+- An id is `T<epic>.<n>` exactly as its document writes it: `T3.4`, a split row
+  `T4.2a`, or `T7.2` for epic 7a, since an epic split into parts numbers its
+  subtasks once across them. Never the bare `3.4` or `E3-4`.
+- If an RFC ever has more than one plan, the plan's slug, from its file name
+  `rfc-<n>-<slug>-plan.md`, follows the number: `RFC 8 journal-only-engine T3.4`. With one
+  plan, as every RFC has today, leave it out.
+- One PR may carry both `Closes #<N>` lines and one `Closes:` line.
+- A subtask with an issue that this PR finishes only in part is named `Part of #<N>`, on a
+  line of its own, never on the `Part of:` line.
+- No keyword fires on these lines and nothing links them: GitHub ignores them, only the
+  burn-up reads them.
+
 ## Stack or not
 
 Stack a PR on another one only when they must merge in order: this PR builds on code that
