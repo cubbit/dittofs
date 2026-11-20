@@ -490,16 +490,20 @@ func TestStatusRaisesBehindOnAFrozenApply(t *testing.T) {
 func TestStatusLagCountsFromTheFirstRead(t *testing.T) {
 	reached := make(chan kvstore.Counters, 64)
 	// waited has a signal for each wait reconcile's loop sets on the clock.
-	// A pass drops those before its read, so the first signal after a read
-	// is that pass's own.
+	// A pass drops those after its read, before it acts on it, so the first
+	// signal after a read is that pass's own.
 	waited := make(chan struct{}, 64)
 	var fk *kvtest.FaultKV
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		fk = kvtest.NewFaultKV(cfg.KV)
 		cfg.KV = fk
 		n, err := node.NewPausing(func(c kvstore.Counters) {
-			for len(waited) > 0 {
-				<-waited
+			for drained := false; !drained; {
+				select {
+				case <-waited:
+				default:
+					drained = true
+				}
 			}
 			select {
 			case reached <- c:
