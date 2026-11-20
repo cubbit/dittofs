@@ -325,30 +325,26 @@ func TestDepsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		change func(d *install.Deps)
+		want   string // what the refusal names
 	}{
-		{"no journal directory", func(d *install.Deps) { d.Bootstrap = &bootstrap.Bootstrap{} }},
-		{"no bootstrap", func(d *install.Deps) { d.Bootstrap = nil }},
-		{"no storage key", func(d *install.Deps) { d.StorageKey = nil }},
-		{"no clock", func(d *install.Deps) { d.Clock = nil }},
-		{"no writer for a generated password", func(d *install.Deps) { d.Out = nil }},
+		{"no journal directory", func(d *install.Deps) { d.Bootstrap = &bootstrap.Bootstrap{} }, "no journal directory"},
+		{"no bootstrap", func(d *install.Deps) { d.Bootstrap = nil }, "Bootstrap"},
+		{"no KV", func(d *install.Deps) { d.KV = nil }, "KV"},
+		{"no storage key", func(d *install.Deps) { d.StorageKey = nil }, "StorageKey"},
+		{"no clock", func(d *install.Deps) { d.Clock = nil }, "Clock"},
+		{"no writer for a generated password", func(d *install.Deps) { d.Out = nil }, "Out"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFix(t)
 			d := f.deps()
 			tc.change(&d)
-			if err := install.Run(t.Context(), d); err == nil {
-				t.Fatal("Run: nil error, want the refusal")
+			if err := install.Run(t.Context(), d); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Run: got %v, want a refusal naming %s", err, tc.want)
 			}
 			if _, err := kvstore.Open(t.Context(), f.db); !errors.Is(err, kvstore.ErrNotInitialised) {
 				t.Errorf("store after the refusal: open got %v, want it not initialised", err)
 			}
 		})
-	}
-	f := newFix(t)
-	d := f.deps()
-	d.KV = nil
-	if err := install.Run(t.Context(), d); err == nil {
-		t.Error("Run with no KV: nil error, want the refusal")
 	}
 }
 
