@@ -112,35 +112,41 @@ func covers(pos, c kvstore.Counters) bool {
 func caughtUp(t *testing.T, h *nodetest.Harness) {
 	t.Helper()
 	c := counters(t, h)
-	// The backstop bounds the wait for a pass to end, not the work: a pass
+	// The backstop bounds the wait for progress, not the work: a pass
 	// binding many shares on a loaded host can take far longer than an idle
-	// one, and each pass that ends restarts the backstop. Only a reconcile
-	// that stopped ending passes fails here.
-	last := time.Now()
+	// one, and each move of the positions toward c restarts the backstop. A
+	// pass that ends without such a move, as one whose shares fail does,
+	// does not, so only a reconcile that stopped catching up fails here.
+	last, best := time.Now(), toward(h.Node().Positions(), c)
 	for !covers(h.Node().Positions(), c) {
 		if time.Since(last) > passStall {
-			t.Fatalf("no reconcile pass ended in %v of turns: positions %+v, want them to cover %+v", passStall, h.Node().Positions(), c)
+			t.Fatalf("the positions did not move toward the counters in %v of turns: positions %+v, want them to cover %+v", passStall, h.Node().Positions(), c)
 		}
-		if turn(h) {
-			last = time.Now()
+		turn(h)
+		if got := toward(h.Node().Positions(), c); got > best {
+			last, best = time.Now(), got
 		}
 	}
 }
 
-// passStall is how long caughtUp waits for a reconcile pass to end before it
+// toward is how far pos has come toward c: the sum of each position, capped
+// at c's, that covers counts.
+func toward(pos, c kvstore.Counters) uint64 {
+	return min(pos.Settings, c.Settings) + min(pos.ShareList, c.ShareList) + min(pos.Principals, c.Principals)
+}
+
+// passStall is how long caughtUp waits for the positions to move before it
 // fails: a generous backstop, as a pass ends within a second on an idle host.
 const passStall = 2 * time.Minute
 
 // turn advances the node's clock a second and waits for a pass to end, or a
-// second of real time, reporting whether one ended.
-func turn(h *nodetest.Harness) bool {
+// second of real time.
+func turn(h *nodetest.Harness) {
 	moved := h.Node().Moved()
 	h.Clock().Advance(time.Second)
 	select {
 	case <-moved:
-		return true
 	case <-time.After(time.Second):
-		return false
 	}
 }
 
