@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -63,7 +65,14 @@ func runInit(cmd *cobra.Command, _ []string) (err error) {
 		}
 	}
 
-	cfg, err := bootstrap.MustLoad(configPath, os.Environ())
+	// The variable --admin-password-env names holds the password, not a
+	// setting, so the bootstrap's scan of DITTOFS_ names must not see it.
+	hostEnv := os.Environ()
+	if env != "" {
+		hostEnv = slices.DeleteFunc(hostEnv, func(kv string) bool { return strings.HasPrefix(kv, env+"=") })
+	}
+
+	cfg, err := bootstrap.MustLoad(configPath, hostEnv)
 	if err != nil {
 		return err
 	}
