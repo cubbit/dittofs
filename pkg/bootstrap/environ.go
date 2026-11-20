@@ -39,9 +39,9 @@ var allowedEnvNames = []string{
 	"DITTOFS_BENCH_DIR",
 
 	// decision: the git hooks read their own skip switch, by name and
-	// never as a prefix, so a production name cannot hide under
-	// "DITTOFS_SKIP_". A name the tools no longer read, such as
-	// DITTOFS_SKIP_TLS_VERIFY, which only the plans name, stays refused.
+	// never as a prefix, so a production name cannot hide under the
+	// switches' common prefix. A skip switch the tools no longer read, which
+	// only the plans name, stays refused.
 	"DITTOFS_SKIP_BIGFILE",
 	"DITTOFS_SKIP_BUILD",
 	"DITTOFS_SKIP_COMMITMSG",
@@ -178,8 +178,8 @@ func classifyEnv(name, value string, declared map[string]bool) (envClass, string
 	// decision: a pair whose name is one of a service link's forms and whose
 	// value has that form's shape is ignored, because the kubelet writes it
 	// into every pod and no operator can remove it. The value decides, never
-	// the name alone: a retired variable such as DITTOFS_METRICS_PORT is also
-	// a link's name, and holding a plain number it still refuses, so the
+	// the name alone: a retired variable such as the v1 metrics port's is
+	// also a link's name, and holding a plain number it still refuses, so the
 	// start never reads a second source of configuration under a link's name.
 	// It follows the declared and allowed names, so a key's variable is still
 	// read as the key. Withdraw it if the kubelet's variables stop sharing

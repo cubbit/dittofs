@@ -26,9 +26,6 @@ gc:
   grace_period: 1h       # blocks younger than this are never swept (default 1h)
 ```
 
-(Env vars: `DITTOFS_GC_AUTO_ENABLED`, `DITTOFS_GC_AUTO_INTERVAL`,
-`DITTOFS_GC_GRACE_PERIOD`.)
-
 The **grace period** protects freshly written blocks: a block whose last
 modification is within `grace_period` is never deleted, even if it currently looks
 unreferenced. Keep it comfortably longer than your worst-case metadata-commit

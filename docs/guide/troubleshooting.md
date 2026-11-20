@@ -58,7 +58,7 @@ mount.nfs: Connection refused
    cat ~/.config/dittofs/config.yaml
 
    # Start with debug logging
-   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+   DITTOFS_LOGGING_LEVEL=debug ./dfs start
    ```
 
 ### Connection timeout
@@ -262,7 +262,7 @@ touch: cannot touch 'file.txt': Permission denied
 
 4. **Enable debug logging to see auth context:**
    ```bash
-   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+   DITTOFS_LOGGING_LEVEL=debug ./dfs start
    # Look for lines showing UID/GID in requests
    ```
 
@@ -384,13 +384,13 @@ go tool pprof mem.prof
 
 **Via environment variable:**
 ```bash
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 **Via configuration:**
 ```yaml
 logging:
-  level: DEBUG
+  level: debug
   format: text  # or json
   output: stdout  # or file path
 ```
@@ -429,7 +429,7 @@ pgrep -a dfs
 curl http://localhost:9090/metrics
 
 # Check configuration
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start 2>&1 | grep -i "config"
+DITTOFS_LOGGING_LEVEL=debug ./dfs start 2>&1 | grep -i "config"
 ```
 
 ## Cross-Protocol Issues
@@ -451,7 +451,7 @@ SMB: STATUS_SHARING_VIOLATION or STATUS_LOCK_NOT_GRANTED
 **Diagnosis:**
 ```bash
 # Check active locks and leases via debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 # Look for log entries containing:
 #   "cross_protocol_break" - Break initiated across protocols
 #   "lease_break" - SMB lease being broken
@@ -487,7 +487,7 @@ DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
    ```
 4. Enable debug logging to see the recall flow:
    ```bash
-   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start 2>&1 | grep "delegation"
+   DITTOFS_LOGGING_LEVEL=debug ./dfs start 2>&1 | grep "delegation"
    ```
 
 ### Lease Break Storms
@@ -566,7 +566,7 @@ Rapid grant-break-grant-break cycles visible in logs.
 
 ```bash
 # Enable cross-protocol debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 
 # Key log patterns to search for:
 # "cross_protocol_break" - Break initiated between protocols
@@ -669,7 +669,7 @@ with RPCSEC_GSS configured.
 3. Verify clock synchronization between client and KDC (Kerberos requires clocks within 5 minutes)
 4. Enable debug logging to see the RPCSEC_GSS negotiation:
    ```bash
-   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+   DITTOFS_LOGGING_LEVEL=debug ./dfs start
    ```
 
 ### ACL Issues

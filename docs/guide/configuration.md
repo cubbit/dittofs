@@ -68,7 +68,7 @@ Controls log output behavior:
 
 ```yaml
 logging:
-  level: "INFO"           # DEBUG, INFO, WARN, ERROR
+  level: "info"           # debug, info, warn, error
   format: "text"          # text, json
   output: "stdout"        # stdout, stderr, or file path
 ```
@@ -185,8 +185,7 @@ controlplane:
   # Force the bootstrap "admin" user to set a new password on first login.
   # Default true (secure by default). Set to false for automated/test
   # deployments that provision the admin password out-of-band and don't want
-  # the forced first-login change. (Supplying DITTOFS_ADMIN_INITIAL_PASSWORD
-  # also skips the forced change, since the operator already chose the password.)
+  # the forced first-login change.
   require_initial_password_change: true
 
   # Native TLS (optional). DittoFS only loads these files; it does not issue,
@@ -210,7 +209,6 @@ controlplane:
   # JWT authentication configuration
   jwt:
     # HMAC signing key for JWT tokens (min 32 characters)
-    # Can also be set via DITTOFS_CONTROLPLANE_SECRET environment variable
     secret: "your-secret-key-at-least-32-characters"
     access_token_duration: 15m   # Access token lifetime
     refresh_token_duration: 168h # Refresh token lifetime (7 days)
@@ -227,7 +225,7 @@ controlplane:
 | `write_timeout` | `10s` | Maximum duration to write response |
 | `idle_timeout` | `60s` | Maximum idle time for keep-alive |
 | `drain_stall_timeout` | `5m` | Inactivity bound for `POST /api/v1/system/drain-uploads`. The drain has **no total time cap** — a multi-GiB flush runs as long as it keeps making progress — and is aborted (504) only if no upload completes within this window while bytes are still unsynced (the remote stalled). A drain with nothing left to upload is never aborted: no attempt can conclude, so a flat counter says nothing about liveness. Mirrors rclone's `--timeout` |
-| `require_initial_password_change` | `true` | Force the bootstrap `admin` user to change its password on first login. Set to `false` to opt out (automated/test deployments). Also skipped when `DITTOFS_ADMIN_INITIAL_PASSWORD` is set |
+| `require_initial_password_change` | `true` | Force the bootstrap `admin` user to change its password on first login. Set to `false` to opt out (automated/test deployments). |
 | `pprof` | `false` | Expose Go `/debug/pprof/*` profiling endpoints |
 | `pprof_mutex_rate` | `100` (when `pprof: true`; else `0`) | Mutex contention sampling, 1 per N events. Applied only when `pprof: true`; unset/`0` then falls back to `100`. Without it `/debug/pprof/mutex` is header-only. Disable profiling via `pprof: false`, not by zeroing this |
 | `pprof_block_rate_ns` | `1000000` (when `pprof: true`; else `0`) | Block profiling rate in ns, 1 sample per N ns blocked. Applied only when `pprof: true`; unset/`0` then falls back to `1000000`. Without it `/debug/pprof/block` is header-only. Disable profiling via `pprof: false`, not by zeroing this |
@@ -239,8 +237,6 @@ controlplane:
 | `secret` | (required) | HMAC signing key (min 32 chars) |
 | `access_token_duration` | `15m` | Access token lifetime |
 | `refresh_token_duration` | `168h` | Refresh token lifetime (7 days) |
-
-> **Security Note**: The JWT secret should be kept confidential. Use the `DITTOFS_CONTROLPLANE_SECRET` environment variable in production to avoid storing secrets in config files.
 
 #### TLS and bind address
 
@@ -317,9 +313,6 @@ blockstore:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `path` | string | `<state dir>/blocks` | Root holding every share's state directory. Must be absolute (a leading `~` is expanded). |
-
-Env-var mapping follows the dot-path convention:
-`DITTOFS_BLOCKSTORE_JOURNAL_PATH`.
 
 Point this root — and `metadata.badger.path`, and every `journals` device — at a
 **directory on the volume, never the volume's mount point**: a mount point holds
@@ -409,13 +402,6 @@ gc:
   metadata-commit latency after a successful PUT. The default 1h is
   comfortable for any commit path that completes in seconds.
 
-Env-var mapping (dot-path convention; the top-level `gc` block binds
-directly):
-`DITTOFS_GC_GRACE_PERIOD`,
-`DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`,
-`DITTOFS_GC_AUTO_ENABLED`,
-`DITTOFS_GC_AUTO_INTERVAL`.
-
 See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
 for the full mark-sweep design.
 
@@ -472,10 +458,6 @@ or repairs it.
 The schedule restarts from zero on server start, so a box restarted more
 often than `auto_interval` never completes a scan. Lower the interval on a
 host that reboots frequently.
-
-Env-var mapping:
-`DITTOFS_INTEGRITY_AUTO_ENABLED`,
-`DITTOFS_INTEGRITY_AUTO_INTERVAL`.
 
 #### Recycle bin (trash)
 
@@ -828,9 +810,6 @@ metadata:
     index_cache_mb: 1024   # 0 (default) = auto-size from available RAM
 ```
 
-Environment overrides: `DITTOFS_METADATA_BADGER_BLOCK_CACHE_MB`,
-`DITTOFS_METADATA_BADGER_INDEX_CACHE_MB`.
-
 **Recommended sizing vs. object/metadata count.** As a rule of thumb the block
 cache should hold the hot directory/inode working set. Each cached file/inode is
 on the order of a few hundred bytes of decompressed LSM data, so:
@@ -1089,8 +1068,7 @@ This build serves no file protocol: `dfs start` runs only the control-plane
 REST API and metrics. The adapter, grace, netgroup and client commands and
 their REST routes are removed. Adapter settings already stored in the
 control-plane database are kept for a later release that serves NFS and SMB
-again. These settings never belonged in the server YAML/TOML file and are not
-read from `DITTOFS_ADAPTERS_*` environment variables.
+again. These settings never belonged in the server YAML/TOML file.
 
 ### SMB3 Encryption Configuration
 
@@ -1131,11 +1109,11 @@ kerberos:
   dns_domain: example.com       # defaults to the lowercased realm
 ```
 
-| Key | Env var | Default |
-|---|---|---|
-| `kerberos.realm` | `DITTOFS_KERBEROS_REALM` | `@REALM` of `service_principal` |
-| `kerberos.netbios_domain` | `DITTOFS_KERBEROS_NETBIOS_DOMAIN` | (empty → standalone `WORKGROUP`) |
-| `kerberos.dns_domain` | `DITTOFS_KERBEROS_DNS_DOMAIN` | lowercased `realm` |
+| Key | Default |
+|---|---|
+| `kerberos.realm` | `@REALM` of `service_principal` |
+| `kerberos.netbios_domain` | (empty → standalone `WORKGROUP`) |
+| `kerberos.dns_domain` | lowercased `realm` |
 
 #### Domain-aware SMB
 
@@ -1217,14 +1195,14 @@ kerberos:
       # insecure_skip_verify: false           # lab only; exposes the password to MITM
 ```
 
-| Key | Env var | Default |
-|---|---|---|
-| `kerberos.machine_account.enabled` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ENABLED` | `false` |
-| `kerberos.machine_account.account_name` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ACCOUNT_NAME` | (empty) |
-| `kerberos.machine_account.secret` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET` | (empty; offline path) |
-| `kerberos.machine_account.dc_address` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_DC_ADDRESS` | (empty → DNS SRV discovery) |
-| `kerberos.machine_account.online_join.enabled` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ONLINE_JOIN_ENABLED` | `false` |
-| `kerberos.machine_account.online_join.ldap_url` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ONLINE_JOIN_LDAP_URL` | (empty) |
+| Key | Default |
+|---|---|
+| `kerberos.machine_account.enabled` | `false` |
+| `kerberos.machine_account.account_name` | (empty) |
+| `kerberos.machine_account.secret` | (empty; offline path) |
+| `kerberos.machine_account.dc_address` | (empty → DNS SRV discovery) |
+| `kerberos.machine_account.online_join.enabled` | `false` |
+| `kerberos.machine_account.online_join.ldap_url` | (empty) |
 
 `realm` and `netbios_domain` are **required** for pass-through (the secure
 channel and NTLM `TargetInfo` both need them). The `secret` / `bind_password`
@@ -1246,8 +1224,6 @@ identity:
   # the same Unix UID/GID — required for cross-node identity parity.
   # Foreign (Active Directory / LDAP) domain SIDs are NOT derived this way;
   # they are bound to stable UID/GIDs durably in the control-plane store.
-  #
-  # Env override: DITTOFS_IDENTITY_MACHINE_SID
   machine_sid: "S-1-5-21-1111111111-2222222222-3333333333"
 ```
 
@@ -1272,11 +1248,11 @@ snapshot:
   restore_http_timeout: 30m     # default 30m
 ```
 
-| Key | Env var | Default |
-|---|---|---|
-| `snapshot.scheduler_poll_interval` | `DITTOFS_SNAPSHOT_SCHEDULER_POLL_INTERVAL` | `1m` |
-| `snapshot.scheduler_disabled` | `DITTOFS_SNAPSHOT_SCHEDULER_DISABLED` | `false` |
-| `snapshot.restore_http_timeout` | `DITTOFS_SNAPSHOT_RESTORE_HTTP_TIMEOUT` | `30m` |
+| Key | Default |
+|---|---|
+| `snapshot.scheduler_poll_interval` | `1m` |
+| `snapshot.scheduler_disabled` | `false` |
+| `snapshot.restore_http_timeout` | `30m` |
 
 ### 15. LDAP / Active Directory Identity Provider
 
@@ -1315,26 +1291,26 @@ ldap:
     min_version: "1.2"                    # "1.2" or "1.3"
 ```
 
-| Key | Env var | Default |
-|---|---|---|
-| `ldap.enabled` | `DITTOFS_LDAP_ENABLED` | `false` |
-| `ldap.url` | `DITTOFS_LDAP_URL` | (required when enabled) |
-| `ldap.start_tls` | `DITTOFS_LDAP_START_TLS` | `false` |
-| `ldap.allow_plaintext` | `DITTOFS_LDAP_ALLOW_PLAINTEXT` | `false` |
-| `ldap.base_dn` | `DITTOFS_LDAP_BASE_DN` | (required when enabled) |
-| `ldap.bind_dn` | `DITTOFS_LDAP_BIND_DN` | (required when enabled) |
-| `ldap.bind_password` | `DITTOFS_LDAP_BIND_PASSWORD` | (required when enabled; empty triggers an anonymous bind and is rejected) |
-| `ldap.user_attr` | `DITTOFS_LDAP_USER_ATTR` | `sAMAccountName` |
-| `ldap.realm` | `DITTOFS_LDAP_REALM` | (empty) |
-| `ldap.idmap` | `DITTOFS_LDAP_IDMAP` | `rfc2307` |
-| `ldap.nested_groups` | `DITTOFS_LDAP_NESTED_GROUPS` | `false` |
-| `ldap.max_group_results` | `DITTOFS_LDAP_MAX_GROUP_RESULTS` | `200` |
-| `ldap.timeout` | `DITTOFS_LDAP_TIMEOUT` | `10s` |
-| `ldap.tls.ca_cert_file` | `DITTOFS_LDAP_TLS_CA_CERT_FILE` | (system roots) |
-| `ldap.tls.client_cert_file` | `DITTOFS_LDAP_TLS_CLIENT_CERT_FILE` | (empty) |
-| `ldap.tls.client_key_file` | `DITTOFS_LDAP_TLS_CLIENT_KEY_FILE` | (empty) |
-| `ldap.tls.insecure_skip_verify` | `DITTOFS_LDAP_TLS_INSECURE_SKIP_VERIFY` | `false` |
-| `ldap.tls.min_version` | `DITTOFS_LDAP_TLS_MIN_VERSION` | `1.2` |
+| Key | Default |
+|---|---|
+| `ldap.enabled` | `false` |
+| `ldap.url` | (required when enabled) |
+| `ldap.start_tls` | `false` |
+| `ldap.allow_plaintext` | `false` |
+| `ldap.base_dn` | (required when enabled) |
+| `ldap.bind_dn` | (required when enabled) |
+| `ldap.bind_password` | (required when enabled; empty triggers an anonymous bind and is rejected) |
+| `ldap.user_attr` | `sAMAccountName` |
+| `ldap.realm` | (empty) |
+| `ldap.idmap` | `rfc2307` |
+| `ldap.nested_groups` | `false` |
+| `ldap.max_group_results` | `200` |
+| `ldap.timeout` | `10s` |
+| `ldap.tls.ca_cert_file` | (system roots) |
+| `ldap.tls.client_cert_file` | (empty) |
+| `ldap.tls.client_key_file` | (empty) |
+| `ldap.tls.insecure_skip_verify` | `false` |
+| `ldap.tls.min_version` | `1.2` |
 
 Admin-configured identity links take precedence over the
 directory query: a link for an `ldap` external ID resolves to the mapped local
@@ -1434,29 +1410,6 @@ metrics:
 > bind loopback and scrape via a sidecar; restrict with a firewall/NetworkPolicy;
 > or enable `auth: token` (and/or TLS). Never expose `0.0.0.0` unauthenticated on
 > an untrusted network.
-
-### Environment variable overrides
-
-Every key is overridable with the `DITTOFS_METRICS_*` prefix:
-
-| Variable | Maps to |
-|----------|---------|
-| `DITTOFS_METRICS_ENABLED` | `metrics.enabled` |
-| `DITTOFS_METRICS_HOST` | `metrics.host` |
-| `DITTOFS_METRICS_PORT` | `metrics.port` |
-| `DITTOFS_METRICS_PATH` | `metrics.path` |
-| `DITTOFS_METRICS_AUTH` | `metrics.auth` |
-| `DITTOFS_METRICS_TOKEN_FILE` | `metrics.token_file` |
-| `DITTOFS_METRICS_TLS_CERT_FILE` | `metrics.tls.cert_file` |
-| `DITTOFS_METRICS_TLS_KEY_FILE` | `metrics.tls.key_file` |
-| `DITTOFS_METRICS_TLS_CLIENT_CA` | `metrics.tls.client_ca` |
-| `DITTOFS_METRICS_TLS_MIN_VERSION` | `metrics.tls.min_version` |
-
-```bash
-export DITTOFS_METRICS_ENABLED=true
-export DITTOFS_METRICS_HOST=0.0.0.0
-export DITTOFS_METRICS_PORT=9090
-```
 
 ### Ownership model
 
@@ -1649,63 +1602,15 @@ Override configuration using environment variables with the `DITTOFS_` prefix:
 - Replace dots with underscores
 - Nested paths use underscores
 
-**Special Variables** (not config overrides):
-
-```bash
-# Set the initial admin password on first start (instead of auto-generating one)
-export DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password
-```
-
-> **Note**: `DITTOFS_ADMIN_INITIAL_PASSWORD` is only used during the very first server start when the admin user is created. It has no effect on subsequent starts. When set, the admin account's `MustChangePassword` flag is not enabled.
-
-#### Bootstrap admin password
-
-On the **first** start (when no `admin` user exists yet) the initial admin password is chosen in this precedence:
-
-1. **`DITTOFS_ADMIN_INITIAL_PASSWORD`** (env, plaintext) — sets a known password and also derives the NT hash, so the admin can authenticate over **SMB** as well as the REST/control-plane API.
-2. **`admin.password_hash`** (config, bcrypt `$2a$`/`$2b$`/`$2y$`) — sets a known credential without writing a plaintext secret to disk. No NT hash is derivable from a bcrypt hash, so an admin bootstrapped this way works for the **control-plane/REST API only, not SMB** (use option 1 for SMB). A value that is not a valid bcrypt hash is rejected at startup.
-3. **Auto-generated** — a random password is generated. It is printed once **only when `dfs start` runs with stdout attached to an interactive terminal** (i.e. `dfs start` in a real TTY). Under Docker/systemd/CI where stdout is a pipe, the password is **not written to the log and cannot be recovered** — the log only records that an admin user was created. Recovery via `dfsctl user password admin` is not possible in this state (it requires an authenticated admin session). Options 1 and 2 are consulted **only while bootstrapping a new admin**, so once this first start has created the admin user, setting them and restarting will **not** change the password — you must delete the `admin` row from the `users` table of the control-plane database (not the database itself, which also holds your shares, stores, mounts and other users) and re-bootstrap with option 1 or 2 set. For any non-interactive deployment, set option 1 or 2 before the very first start.
-
-Options 1 and 2 also skip the forced first-login password change (the operator already chose the password). All three apply only on first start; later starts never change an existing admin's password.
-
-```yaml
-admin:
-  username: admin
-  # bcrypt hash, e.g. from `htpasswd -bnBC 10 "" 'my-secure-password' | tr -d ':\n'`
-  password_hash: "$2b$10$..."
-```
-
 **Examples**:
 
 ```bash
 # Logging
-export DITTOFS_LOGGING_LEVEL=DEBUG
+export DITTOFS_LOGGING_LEVEL=debug
 export DITTOFS_LOGGING_FORMAT=json
 
-# Server
-export DITTOFS_SHUTDOWN_TIMEOUT=60s
-
-# Database (Control Plane)
-export DITTOFS_DATABASE_TYPE=sqlite
-export DITTOFS_DATABASE_SQLITE_PATH=/var/lib/dittofs/controlplane.db
-# PostgreSQL
-export DITTOFS_DATABASE_TYPE=postgres
-export DITTOFS_DATABASE_POSTGRES_HOST=localhost
-export DITTOFS_DATABASE_POSTGRES_PORT=5432
-export DITTOFS_DATABASE_POSTGRES_DATABASE=dfs
-export DITTOFS_DATABASE_POSTGRES_USER=dfs
-export DITTOFS_DATABASE_POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-export DITTOFS_DATABASE_POSTGRES_SSLMODE=require
-
-# Control Plane API Server
-export DITTOFS_CONTROLPLANE_PORT=8080
-export DITTOFS_CONTROLPLANE_SECRET=your-secret-key-at-least-32-characters
-export DITTOFS_CONTROLPLANE_PPROF=false
-export DITTOFS_CONTROLPLANE_PPROF_MUTEX_RATE=100
-export DITTOFS_CONTROLPLANE_PPROF_BLOCK_RATE_NS=1000000
-
 # Start server with overrides
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 ## Configuration Precedence
@@ -1717,14 +1622,6 @@ This precedence does not apply to stores managed through `dfsctl`:
 2. **Configuration File** (YAML/TOML)
 3. **Default Values** - Lowest priority
 
-Example:
-
-```bash
-# config.yaml has shutdown_timeout: 30s
-# Override the server shutdown timeout for this process
-DITTOFS_SHUTDOWN_TIMEOUT=60s ./dfs start
-```
-
 ## Configuration Examples
 
 ### Minimal Configuration
@@ -1733,7 +1630,7 @@ Server config file with minimal settings:
 
 ```yaml
 logging:
-  level: INFO
+  level: info
 ```
 
 Then create the share via CLI:
@@ -1748,7 +1645,7 @@ Fast iteration with in-memory stores:
 
 ```yaml
 logging:
-  level: DEBUG
+  level: debug
   format: text
 ```
 
@@ -1762,7 +1659,7 @@ Persistent storage with access control, structured logging, and metrics:
 
 ```yaml
 logging:
-  level: WARN
+  level: warn
   format: json
   output: /var/log/dittofs/server.log
 
@@ -1848,5 +1745,5 @@ cat /path/to/config.yaml
 Start server with debug logging to see loaded configuration:
 
 ```bash
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```

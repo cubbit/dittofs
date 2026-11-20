@@ -67,7 +67,7 @@ sudo launchctl disable system/com.apple.smbd
 
 #### Single binary
 
-Set the ports in `config.yaml` (or via `DITTOFS_*` env vars), then grant the
+Set the ports in `config.yaml`, then grant the
 binary permission to bind low ports.
 
 ```yaml
@@ -79,14 +79,6 @@ adapters:
       port: 111        # enables NFSv3 client auto-discovery
   smb:
     port: 445
-```
-
-```bash
-# Equivalent env vars
-export DITTOFS_ADAPTERS_NFS_PORT=2049
-export DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=true
-export DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=111
-export DITTOFS_ADAPTERS_SMB_PORT=445
 ```
 
 Binding a port below 1024 needs privilege. Either run as root, or — preferred —
@@ -107,10 +99,6 @@ directly. Set the adapter ports to the standard values and publish them 1:1:
 
 ```bash
 docker run -d \
-  -e DITTOFS_ADAPTERS_NFS_PORT=2049 \
-  -e DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=true \
-  -e DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=111 \
-  -e DITTOFS_ADAPTERS_SMB_PORT=445 \
   -p 2049:2049 -p 445:445 -p 111:111/tcp -p 111:111/udp \
   -p 8080:8080 \
   marmos91c/dittofs:latest
@@ -189,11 +177,11 @@ scoop install dfsctl    # client CLI
 ```
 
 When installed via the system package managers, the server runs under systemd as the `dfs`
-service. Set the admin password before the first start with the
-`DITTOFS_ADMIN_INITIAL_PASSWORD` environment variable (see the
-[README](../../README.md#first-run--admin-password)). Under systemd the server's stdout is
-not a terminal, so an auto-generated password would **not** be shown or written to the
-service log — pre-setting it is the only way to know the credential.
+service. Set the admin password before the first start with `dfs init
+--admin-password-env` or `--admin-password-file` (see the
+[README](../../README.md#first-run--admin-password)). If you set neither, `dfs init`
+prints a generated password once to its own standard output, never to the service log, and
+it must be changed at the first sign-in.
 
 ## Docker
 
@@ -204,19 +192,27 @@ Pre-built multi-architecture images (`linux/amd64`, `linux/arm64`) are published
 ```bash
 docker pull marmos91c/dittofs:latest
 
-# Create a config file first
+# Create a config file first, then initialize on the same volumes the server uses,
+# so the admin account and its first password stay after this container is removed.
+# The file must exist and name what init writes: keys.storage, metadata.badger.path
+# (under /data/metadata) and journals (under /data/blocks).
 mkdir -p ~/.config/dittofs
 docker run --rm -v ~/.config/dittofs:/config \
-  marmos91c/dittofs:latest init --config /config/config.yaml
+  -v dittofs-metadata:/data/metadata \
+  -v dittofs-blocks:/data/blocks \
+  -v dittofs-state:/data/state \
+  -v dittofs-cache:/data/cache \
+  -e DFS_ADMIN_PASSWORD=my-secure-password \
+  marmos91c/dittofs:latest init --config /config/config.yaml \
+  --admin-password-env DFS_ADMIN_PASSWORD
 
-# Run the server (set the admin password via env var — you can't read interactive output)
+# Run the server
 docker run -d \
   --name dittofs \
   -p 12049:12049 \
   -p 12445:12445 \
   -p 8080:8080 \
   -p 9090:9090 \
-  -e DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password \
   -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
   -v dittofs-metadata:/data/metadata \
   -v dittofs-blocks:/data/blocks \
@@ -225,15 +221,14 @@ docker run -d \
   marmos91c/dittofs:latest
 
 curl http://localhost:8080/health
-# Always set DITTOFS_ADMIN_INITIAL_PASSWORD (above): the container's stdout is a pipe, so an
-# auto-generated password is NOT printed to `docker logs` and cannot be recovered.
+# Set the admin password at init (above); without one, init prints a generated password
+# once to this terminal, and `dfs reset-admin` on the stopped node sets a new one.
 ```
 
 `dittofs-blocks` carries the journal, which holds the only copy of every byte that has not
 reached the block store yet — never leave it in the container's writable layer. These
-volumes only receive data if the config points at them: set `blockstore.journal.path` to
-`/data/blocks` and `database.sqlite.path` to `/data/state/controlplane.db`, and give the
-metadata store `/data/metadata` when you create it. The container starts with no stores
+volumes only receive data if the config points at them: put the `journals` entries under
+`/data/blocks` and `metadata.badger.path` under `/data/metadata`. The container starts with no stores
 and no shares; create them with `dfsctl` (see the [CLI reference](cli.md)) or use the
 Compose stack below, which does it for you.
 
@@ -297,17 +292,19 @@ Once it is up:
 # NFS (the share exports with root kept as root, so a root mount can write immediately)
 sudo mount -t nfs -o vers=4.1,tcp,port=12049 localhost:/export /mnt/point
 
-# SMB — the admin password is the one the stack was started with
+# SMB, signing in as the admin that dfs init created
 smbclient //localhost/export -p 12445 -U admin
 ```
 
-The stack ships fixed development credentials — the admin password defaults to
-`dittofs-compose-dev-password`, the JWT secret to a fixed string — and exports the share
+The stack does not run `dfs init` yet, so it starts no usable server until the
+installation is initialized: the bootstrap sidecar signs in with `COMPOSE_ADMIN_PASSWORD`
+(default `dittofs-compose-dev-password`), which must be the password `dfs init` set. The
+stack exports the share
 with root kept as root, so a client claiming root over NFS writes as root without a
 password. Every published port is therefore bound to `127.0.0.1`; reaching the stack from
 another host means removing that prefix in `docker-compose.yml`, and an unattended export
 on a shared network is not what these defaults are for. Override
-`DITTOFS_ADMIN_INITIAL_PASSWORD` and `DITTOFS_CONTROLPLANE_SECRET` first. Localstack
+`COMPOSE_ADMIN_PASSWORD` first. Localstack
 publishes no host port at all.
 
 `docker compose down` stops the stack and keeps the volumes; `docker compose down -v`

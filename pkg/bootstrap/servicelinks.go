@@ -66,7 +66,7 @@ var serviceLinkForms = []serviceLinkForm{
 // variables for every service with an address, so a pair that fits a form
 // is treated as a variable the program did not choose, and a name that
 // fits a form with any other value keeps its refusal: a retired name such
-// as DITTOFS_METRICS_PORT cannot hide behind its shape while holding a
+// as the v1 metrics port's cannot hide behind its shape while holding a
 // plain port number. Only the shape is checked, as RFC 13 asks, not the
 // exact value: an IPv6 address in any spelling, the unspecified address,
 // a port number in a name with no range, and a protocol word that

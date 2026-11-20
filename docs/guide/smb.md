@@ -565,7 +565,7 @@ defaults), see [./configuration.md#9-user-management](./configuration.md#9-user-
 
 ```bash
 # Start server with debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 
 # Mount and test (macOS)
 sudo mount_smbfs //testuser:testpass@localhost:12445/export /mnt/smb
