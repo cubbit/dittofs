@@ -132,10 +132,15 @@ var specByKey, blocks = func() (map[string]*keySpec, map[string]bool) {
 	return byKey, prefixes
 }()
 
-// envName is the key's variable: DITTOFS_, then the key in upper case with
-// its dots as underscores.
+// variableOf is a dotted key's variable: DITTOFS_, then the key in upper
+// case with its dots as underscores.
+func variableOf(key string) string {
+	return envPrefix + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
+}
+
+// envName is the key's variable.
 func (s *keySpec) envName() string {
-	return "DITTOFS_" + strings.ToUpper(strings.ReplaceAll(s.key, ".", "_"))
+	return variableOf(s.key)
 }
 
 // defaultValue is the key's value when no source sets it. logging.output's
