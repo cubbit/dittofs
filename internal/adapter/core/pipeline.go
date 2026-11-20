@@ -1480,7 +1480,17 @@ func (p *pipeline) wait(ctx context.Context) error {
 // handler's own goroutine and from the reader: it ends the pipeline's
 // context, which ends every wait a request or a status is in, every hold
 // between attempts and every park (§4.6, §4.7, §6.5).
+//
+// decision: the table of holds is marked closed before the context ends. A
+// handler the cancel releases then reaches Park on a closed table, which
+// calls its cancel at once and makes no call under the park, where marking
+// after the cancel let it park live and run its service call before the
+// close's own cancel reached it. Overturned if a park the close races may
+// keep its call.
 func (p *pipeline) close() {
+	p.pend.mu.Lock()
+	p.pend.closed = true
+	p.pend.mu.Unlock()
 	p.cancel()
 	p.endHolds()
 }
