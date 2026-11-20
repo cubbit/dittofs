@@ -123,11 +123,12 @@ suites:
       # The adapters' allocation gates, which skip under -race.
       adapter-allocs:
         cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/ ./internal/adapter/core/ ./internal/adapter/nfs/protocol/ ./pkg/resources/ ./internal/adapter/nfs/wire/ ./internal/adapter/smb/protocol/ ./internal/adapter/smb/wire/
-      # The architecture rules and the CLI reference check read the whole module, so a change
-      # anywhere can break them, and the OpenAPI document check reads openapi.json, a file that
-      # is no Go package's; with no {packages}, dt run --changed never narrows them away.
+      # The architecture rules, the CLI reference check and the scan for environment names the
+      # start refuses read the whole module, so a change anywhere can break them, and the OpenAPI
+      # document check reads openapi.json, a file that is no Go package's; with no {packages},
+      # dt run --changed never narrows them away.
       whole-tree:
-        cmd: go test -race -timeout=5m -run=^(TestImportRules|TestNodeExports|TestReferenceMatchesCommandTrees|TestImports|TestOpenAPIMatchesRouteTable)$ ./internal/node/ ./internal/node/api/ ./cmd/gendocs/ ./pkg/identity/
+        cmd: go test -race -timeout=5m -run=^(TestImportRules|TestNodeExports|TestReferenceMatchesCommandTrees|TestImports|TestOpenAPIMatchesRouteTable|TestRepositoryNamesNoRefusedVariable)$ ./internal/node/ ./internal/node/api/ ./cmd/gendocs/ ./pkg/identity/ ./pkg/bootstrap/
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:

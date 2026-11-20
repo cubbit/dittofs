@@ -43,25 +43,21 @@ If you built from source, use `./dfs` and `./dfsctl` in the commands below.
 
 ## 2. Initialize and start the server
 
-On first start DittoFS creates an `admin` user. **Choose and pre-set the password before
-that first start** with `DITTOFS_ADMIN_INITIAL_PASSWORD`. This is the recommended path
-for every deployment and the only reliable one for Docker/Kubernetes/CI and systemd:
+`dfs init` creates the installation, and its `admin` user, before the first start. **Choose
+the password before you initialize**, from a file or from an environment variable you name.
+This is the recommended path for every deployment and the only reliable one for
+Docker/Kubernetes/CI and systemd:
 
 ```bash
 # Replace the example with your own password before running this command.
-# A supplied password also skips the forced first-login password change.
-DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password dfs start
+DFS_ADMIN_PASSWORD=my-secure-password dfs init --admin-password-env DFS_ADMIN_PASSWORD
+dfs start
 ```
 
-If you don't pre-set it, a random password is generated — but it is **shown only when you
-run `dfs start` in an interactive terminal**, printed once to that terminal.
-Under Docker/systemd (where stdout is a pipe, not a terminal), the generated password is **never written anywhere and cannot be
-recovered** — the log only notes that one was created. And because the `admin` user now
-exists, setting `DITTOFS_ADMIN_INITIAL_PASSWORD` and restarting will **not** change it (that
-variable is only read while bootstrapping a *new* admin). To recover, delete the `admin` row
-from the `users` table of the control-plane database and start again with the password pre-set;
-the next start re-runs the bootstrap. Do not delete the database itself — it also holds your
-shares, stores, mounts and other users. Simpler: set the password before the very first start.
+If you set neither, a password is generated and printed once to standard output, never to
+the log, and must be changed at the first sign-in. Over a finished installation `dfs init`
+refuses and changes nothing; if no administrator can sign in, stop the node and run
+`dfs reset-admin`.
 
 By default the server listens on these ports:
 
@@ -78,7 +74,7 @@ By default the server listens on these ports:
 dfsctl login --server http://localhost:8080 --username admin
 ```
 
-If you used `DITTOFS_ADMIN_INITIAL_PASSWORD` above, log in with that password and
+If you set the password with `dfs init` above, log in with that password and
 continue to step 4. If you let DittoFS generate the password instead, you **must**
 change it on first login before any other command will work — until you do, the rest
 are rejected with HTTP 403:

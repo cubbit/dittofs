@@ -126,3 +126,29 @@ func TestInitThenAgain(t *testing.T) {
 		t.Errorf("second dfs init: got %q, %v; want nothing printed and ErrInstalled", out, err)
 	}
 }
+
+// dfs init reads the password from the variable --admin-password-env names
+// even when that name starts with DITTOFS_, which the bootstrap's scan
+// would refuse as unknown or retired: the variable holds a password, not a
+// setting. The run initialises the installation and prints no password.
+func TestInitPasswordEnvDittofsName(t *testing.T) {
+	for _, name := range []string{"DITTOFS_ADMIN_INITIAL_PASSWORD", "DITTOFS_ADMIN_PW"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			scratch := filepath.Join(dir, "scratch")
+			if err := os.Mkdir(scratch, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := journal.Init(t.Context(), scratch, [16]byte{1}); errors.Is(err, journal.ErrUnsuitableStorage) {
+				t.Skipf("the journal's platform check refuses the mount holding %s (%v); set TMPDIR to a directory on a suitable mount", dir, err)
+			} else if err != nil {
+				t.Fatalf("journal init on the scratch directory: %v", err)
+			}
+			t.Setenv(name, "a-first-password")
+			config := initConfig(t, dir)
+			if out, err := runDfs("init", "--config", config, "--admin-password-env", name); err != nil || out != "" {
+				t.Fatalf("dfs init --admin-password-env %s: got %q, %v; want it initialised, nothing printed", name, out, err)
+			}
+		})
+	}
+}

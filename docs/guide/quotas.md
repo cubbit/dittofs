@@ -5,8 +5,7 @@ default-user fallback — limiting both **bytes** and **inodes (file count)**. E
 has a **soft** threshold, a **hard** ceiling, and a **grace** window between them.
 
 > Quotas are managed live on a running server via `dfsctl` (or the REST API). There is no
-> config-file or Kubernetes CRD form. The full reference is in
-> [Configuration § Shares](configuration.md#8-shares-exports).
+> config-file or Kubernetes CRD form.
 
 ## Set a quota
 

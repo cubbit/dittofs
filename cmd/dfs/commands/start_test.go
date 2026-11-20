@@ -35,6 +35,24 @@ const childEnv = "DFS_START_CHILD_ARGS"
 // under a signal, at no particular timing.
 const signalAfterStartEnv = "DFS_START_CHILD_SIGTERM_AFTER_START"
 
+// TestMain drops the DITTOFS_ variables the developer's shell exports before
+// any test runs: the start refuses a name it does not know, so a stray one
+// would fail every start test for a reason the test does not name. A test
+// that needs one sets it itself. The child process keeps its environment,
+// which holds what the parent test chose for it.
+func TestMain(m *testing.M) {
+	if os.Getenv(childEnv) == "" {
+		for _, kv := range os.Environ() {
+			name, _, _ := strings.Cut(kv, "=")
+			if strings.HasPrefix(name, "DITTOFS_") {
+				_ = os.Unsetenv(name)
+			}
+		}
+	}
+
+	os.Exit(m.Run())
+}
+
 // TestStartChild is the child process the start tests run: dfs itself.
 func TestStartChild(t *testing.T) {
 	args := os.Getenv(childEnv)
@@ -75,10 +93,37 @@ const childBound = 60 * time.Second
 // the storage key's passphrase and the env the test hands it.
 func startChild(t *testing.T, config string, env ...string) (*exec.Cmd, io.Reader) {
 	t.Helper()
+	return startChildIn(t, config, "", env...)
+}
+
+// runtimeDir is a runtime directory of the child's own, named short because a
+// socket's path is capped at about 104 bytes on some hosts and t.TempDir
+// names its directory after the test. It keeps the child off the host's own
+// runtime directory.
+func runtimeDir(t *testing.T) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("", "dfs")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+
+	return dir
+}
+
+// startChildIn is startChild run in the working directory dir (the test's
+// own when empty), with env added after the process's, so it wins.
+func startChildIn(t *testing.T, config, dir string, env ...string) (*exec.Cmd, io.Reader) {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestStartChild$")
+	cmd.Dir = dir
 	host := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "DITTOFS_") })
 	cmd.Env = append(host, childEnv+"=start\n--config\n"+config, "XDG_STATE_HOME="+t.TempDir(),
-		"DITTOFS_ENCRYPTION_PASSPHRASE="+storagePassphrase)
+		"XDG_RUNTIME_DIR="+runtimeDir(t), "DITTOFS_ENCRYPTION_PASSPHRASE="+storagePassphrase)
 	cmd.Env = append(cmd.Env, env...)
 	r, w := io.Pipe()
 	cmd.Stdout, cmd.Stderr = w, w
@@ -142,10 +187,7 @@ metrics:
   listen: '127.0.0.1:0'
 adapters:
   listen: ['127.0.0.1']
-blockstore:
-  journal:
-    path: '%s'
-`, cmp.Or(b.api, "127.0.0.1:0"), filepath.Join(dir, "blocks"))
+`, cmp.Or(b.api, "127.0.0.1:0"))
 	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
 		t.Fatal(err)
@@ -289,6 +331,123 @@ func TestStartRefusesV1Database(t *testing.T) {
 	}
 }
 
+// writeV1Layout makes a pre-journal (v1) layout under root: a share's journal
+// directory holding a file.
+func writeV1Layout(t *testing.T, root string) {
+	t.Helper()
+
+	dir := filepath.Join(root, "shares", "s", "journal")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "x"), []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// dfs start looks for a pre-journal (v1) layout on each journal device and in
+// `blocks` beside the store directory, v1's default root: a layout there
+// refuses naming it. The working directory and a state directory unrelated to
+// the store are not read, so a start over no installation answers its own
+// verdict and not a v1 one.
+//
+// The store directory's own parent is not read either, because the start
+// check takes one extra root; there is no row for that gap, so a check that
+// probes the parent does not break a test.
+func TestStartProbesV1Layouts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// at says where the v1 layout is: a key of the roots below.
+		at      string
+		refused bool
+
+		// defaultStore leaves metadata.badger.path unset, so the store is the
+		// default one in the state directory the child's environment names.
+		defaultStore bool
+	}{
+		{"on a device", "device", true, false},
+		{"in blocks beside the store", "blocks", true, false},
+		{"in the working directory", "cwd", false, false},
+		{"in an unrelated state directory", "state", false, false},
+		{"in blocks beside the default store", "state", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			roots := map[string]string{
+				"device": filepath.Join(dir, "device"),
+				"blocks": filepath.Join(dir, "blocks"),
+				"cwd":    filepath.Join(dir, "cwd"),
+				"state":  filepath.Join(dir, "state", "dittofs", "blocks"),
+			}
+
+			for _, d := range []string{roots["device"], roots["cwd"], filepath.Join(dir, "state")} {
+				if err := os.Mkdir(d, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// Without a v1 layout the start goes on to open the journal in
+			// roots["device"], under the platform's own check, so a host whose
+			// mount that check refuses skips the row, as installation does.
+			if !tc.refused {
+				scratch := filepath.Join(dir, "scratch")
+				if err := os.Mkdir(scratch, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := journal.Init(t.Context(), scratch, [16]byte{1}); errors.Is(err, journal.ErrUnsuitableStorage) {
+					t.Skipf("the journal's platform check refuses the mount holding %s (%v); set TMPDIR to a directory on a suitable mount", dir, err)
+				} else if err != nil {
+					t.Fatalf("journal init on the scratch directory: %v", err)
+				}
+			}
+
+			writeV1Layout(t, roots[tc.at])
+
+			file := bootstrapFile{
+				store:   filepath.Join(dir, "store"),
+				journal: roots["device"],
+				node:    nodeUUID,
+			}
+
+			if tc.defaultStore {
+				file.store = ""
+			}
+
+			config := file.write(t, dir)
+
+			cmd, r := startChildIn(
+				t, config, roots["cwd"], "XDG_STATE_HOME="+filepath.Join(dir, "state"),
+			)
+			b, _ := io.ReadAll(r)
+			out, code := string(b), cmd.ProcessState.ExitCode()
+
+			if code == 0 {
+				t.Fatalf("dfs start: exit 0, output:\n%s\nwant a refusal", out)
+			}
+
+			v1 := strings.Contains(out, "the node's journals are in v1 state")
+			if v1 != tc.refused {
+				t.Errorf(
+					"dfs start with a v1 layout %s: v1 refusal %v, want %v; output:\n%s",
+					tc.name, v1, tc.refused, out,
+				)
+			}
+
+			named := filepath.Join(roots[tc.at], "shares", "s", "journal")
+			if tc.refused && !strings.Contains(out, named) {
+				t.Errorf("dfs start: the refusal does not name %s:\n%s", named, out)
+			}
+
+			const verdict = "the start check: the node is not initialised"
+			if !tc.refused && !strings.Contains(out, verdict) {
+				t.Errorf("dfs start: want the not-initialised verdict, output:\n%s", out)
+			}
+		})
+	}
+}
+
 // The refusals dfs start answers before anything opens, each naming the
 // piece of the configuration it is: the configuration's own checks, then the
 // start check's verdicts over the storage. Nothing is opened by a refusal.
@@ -306,15 +465,18 @@ func TestStartRefusesTheStore(t *testing.T) {
 				node:    nodeUUID,
 			}
 		}, `metadata.backend "foundationdb" is not one this build opens; it opens badger`},
-		{"no store path", func(dir string) bootstrapFile {
+		{"default store path, nothing installed", func(dir string) bootstrapFile {
 			return bootstrapFile{journal: filepath.Join(dir, "device"), node: nodeUUID}
-		}, "metadata.badger.path is not set"},
+		}, "the start check: the node is not initialised"},
 		{"no node", func(dir string) bootstrapFile {
 			return bootstrapFile{store: filepath.Join(dir, "store"), journal: filepath.Join(dir, "device")}
 		}, "node.id is not set"},
 		{"no store directory", func(dir string) bootstrapFile {
-			return bootstrapFile{store: filepath.Join(dir, "missing"),
-				journal: filepath.Join(dir, "device"), node: nodeUUID}
+			return bootstrapFile{
+				store:   filepath.Join(dir, "missing"),
+				journal: filepath.Join(dir, "device"),
+				node:    nodeUUID,
+			}
 		}, "the start check: the node is not initialised"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -458,8 +620,11 @@ func TestStartRefusesAnEmptyStore(t *testing.T) {
 	}
 	root := NewRoot()
 	root.SetOut(io.Discard)
-	root.SetArgs([]string{"start", "--config", bootstrapFile{store: store,
-		journal: filepath.Join(dir, "device"), node: nodeUUID}.write(t, dir)})
+	root.SetArgs([]string{"start", "--config", bootstrapFile{
+		store:   store,
+		journal: filepath.Join(dir, "device"),
+		node:    nodeUUID,
+	}.write(t, dir)})
 	err := root.Execute()
 	if want := "the start check: the node is not initialised"; err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("dfs start over an empty store directory: %v, want an error starting %q", err, want)

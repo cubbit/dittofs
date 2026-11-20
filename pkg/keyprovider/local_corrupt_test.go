@@ -71,8 +71,8 @@ func TestLocal_DecodeKeyFile_CorruptFields(t *testing.T) {
 			kf := loadKeyFile(t, testPassphrase)
 			tc.mutate(&kf)
 			path := writeMutatedKeyFile(t, kf)
-			t.Setenv(localPassphraseEnv, testPassphrase)
-			_, err := newLocalProvider(Config{Kind: KindLocal, File: path})
+
+			_, err := newLocalProvider(Config{Kind: KindLocal, File: path}, testPassphrase)
 			if !errors.Is(err, ErrKeyFileCorrupt) {
 				t.Fatalf("%s: want ErrKeyFileCorrupt, got %v", tc.name, err)
 			}
@@ -96,8 +96,8 @@ func TestLocal_UnwrapMasterKey_BadBase64(t *testing.T) {
 			kf := loadKeyFile(t, testPassphrase)
 			tc.mutate(&kf)
 			path := writeMutatedKeyFile(t, kf)
-			t.Setenv(localPassphraseEnv, testPassphrase)
-			_, err := newLocalProvider(Config{Kind: KindLocal, File: path})
+
+			_, err := newLocalProvider(Config{Kind: KindLocal, File: path}, testPassphrase)
 			if !errors.Is(err, ErrKeyFileCorrupt) {
 				t.Fatalf("%s: want ErrKeyFileCorrupt, got %v", tc.name, err)
 			}
@@ -108,14 +108,14 @@ func TestLocal_UnwrapMasterKey_BadBase64(t *testing.T) {
 // TestLocal_MissingFileConfig covers the empty-File and missing-file
 // guards in newLocalProvider.
 func TestLocal_MissingFileConfig(t *testing.T) {
-	t.Setenv(localPassphraseEnv, testPassphrase)
-
-	if _, err := newLocalProvider(Config{Kind: KindLocal, File: ""}); !errors.Is(err, ErrInvalidConfig) {
+	_, err := newLocalProvider(Config{Kind: KindLocal, File: ""}, testPassphrase)
+	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("empty File: want ErrInvalidConfig, got %v", err)
 	}
 
 	missing := filepath.Join(t.TempDir(), "does-not-exist.key")
-	_, err := newLocalProvider(Config{Kind: KindLocal, File: missing})
+
+	_, err = newLocalProvider(Config{Kind: KindLocal, File: missing}, testPassphrase)
 	if err == nil {
 		t.Fatal("missing file: want error, got nil")
 	}

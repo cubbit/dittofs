@@ -333,7 +333,7 @@ func TestLoadRefusesValues(t *testing.T) {
 		},
 		{
 			name: "v1 secret", content: "controlplane:\n  jwt:\n    secret: s3cr3t\n",
-			want:   []string{"P: controlplane.jwt.secret: unknown key; did you mean api.socket?"},
+			want:   []string{"P: controlplane.jwt.secret: " + removedKeyRule},
 			absent: []string{"s3cr3t"},
 		},
 		{
@@ -1131,8 +1131,8 @@ func TestLoadMissingDefault(t *testing.T) {
 		t.Fatalf("LoadWithSources with no default file: %v", err)
 	}
 
-	if len(b.Source) != 43 {
-		t.Errorf("sources: got %d keys, want 43", len(b.Source))
+	if len(b.Source) != 42 {
+		t.Errorf("sources: got %d keys, want 42", len(b.Source))
 	}
 
 	for key, src := range b.Source {
@@ -1154,8 +1154,8 @@ func TestLoadEmptyAndNamedFiles(t *testing.T) {
 	}
 
 	b := loads(t, "", nil)
-	if len(b.Source) != 43 {
-		t.Errorf("sources: got %d keys, want 43", len(b.Source))
+	if len(b.Source) != 42 {
+		t.Errorf("sources: got %d keys, want 42", len(b.Source))
 	}
 
 	for key, src := range b.Source {
@@ -1196,8 +1196,8 @@ func TestLoadWithSources(t *testing.T) {
 		}
 	}
 
-	if len(b.Source) != 43 {
-		t.Errorf("sources: got %d keys, want 43", len(b.Source))
+	if len(b.Source) != 42 {
+		t.Errorf("sources: got %d keys, want 42", len(b.Source))
 	}
 
 	bad := writeFile(t, "logging:\n  level: verbose\n")
@@ -1221,8 +1221,7 @@ func TestLoadEveryKey(t *testing.T) {
 		"metrics:\n  listen: \"127.0.0.1:9091\"\n" +
 		"logging:\n  level: debug\n  format: json\n  output: /l/d.log\n" +
 		"  rotation:\n    max_size: \"2MiB\"\n    max_backups: 3\n    max_age: \"48h\"\n" +
-		"    compress: true\n" +
-		"blockstore:\n  journal:\n    path: /b\n"
+		"    compress: true\n"
 
 	local := func(role string) string {
 		return "  " + role + ":\n    kind: local\n    local:\n      file: /" + role +
@@ -1258,7 +1257,6 @@ func TestLoadEveryKey(t *testing.T) {
 				Compress:   true,
 			},
 		}
-		b.Blockstore.Journal.Path = "/b"
 
 		return b
 	}
@@ -1307,7 +1305,7 @@ func TestLoadEveryKey(t *testing.T) {
 			"badger and local",
 			common + "metadata:\n  backend: badger\n  badger:\n    path: /m/badger\n" +
 				"keys:\n" + local("protocol") + local("storage"),
-			badger, 25,
+			badger, 24,
 		},
 		{
 			"foundationdb and kmip",
@@ -1315,7 +1313,7 @@ func TestLoadEveryKey(t *testing.T) {
 				"    cluster_file: /m/fdb.cluster\n    tls:\n      cert_file: /m/fdb.crt\n" +
 				"      key_file: /m/fdb.key\n      ca_file: /m/fdb-ca.crt\n" +
 				"keys:\n" + kmip("protocol") + kmip("storage"),
-			fdb, 38,
+			fdb, 37,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1323,8 +1321,13 @@ func TestLoadEveryKey(t *testing.T) {
 
 			b := loads(t, tc.content, nil)
 
-			if !reflect.DeepEqual(b.Bootstrap, tc.want) {
-				t.Errorf("bootstrap:\ngot  %+v\nwant %+v", b.Bootstrap, tc.want)
+			// The file the bootstrap came from is Validate's to read, not a
+			// key's value.
+			got := b.Bootstrap
+			got.where = ""
+
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("bootstrap:\ngot  %+v\nwant %+v", got, tc.want)
 			}
 
 			files := 0
@@ -1366,38 +1369,26 @@ func TestLoadAliasCycle(t *testing.T) {
 	}
 }
 
-// A relative state directory makes blockstore.journal.path's default
-// relative: the load refuses, naming the variable, and GetDefaultConfig,
-// which has no error to return, panics with the same line. Not parallel: it
-// sets the process's XDG_STATE_HOME, which the state directory still reads.
+// A relative state directory that the environment given names refuses,
+// naming the variable that chose it, whatever key the default reaches.
 func TestLoadRelativeStateDirectory(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", "rel")
+	t.Parallel()
 
 	const want = "environment: XDG_STATE_HOME: must be an absolute path"
 
-	if _, err := Load("", nil); err == nil || err.Error() != want {
+	if _, err := Load("", []string{"XDG_STATE_HOME=rel"}); err == nil || err.Error() != want {
 		t.Errorf("Load with XDG_STATE_HOME=rel: got %v, want %q", err, want)
 	}
-
-	defer func() {
-		if got := recover(); got != "bootstrap: the defaults do not load: "+want {
-			t.Errorf("GetDefaultConfig with XDG_STATE_HOME=rel: panic %v, want the report", got)
-		}
-	}()
-
-	GetDefaultConfig()
 }
 
 // With XDG_STATE_HOME unset, the state directory is HOME's, and a relative
-// HOME is the variable the refusal names. Not parallel: it sets the
-// process's HOME and XDG_STATE_HOME.
+// HOME is the variable the refusal names.
 func TestLoadRelativeHome(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", "")
-	t.Setenv("HOME", "rel")
+	t.Parallel()
 
 	const want = "environment: HOME: must be an absolute path"
 
-	if _, err := Load("", nil); err == nil || err.Error() != want {
+	if _, err := Load("", []string{"HOME=rel"}); err == nil || err.Error() != want {
 		t.Errorf("Load with HOME=rel: got %v, want %q", err, want)
 	}
 }
@@ -1460,6 +1451,122 @@ func TestLoadUnits(t *testing.T) {
 			tc.value+"\"\n", nil)
 		if got := b.Keys.Protocol.KMIP.Timeout; got != tc.want {
 			t.Errorf("kmip.timeout %s: got %v, want %v", tc.value, got, tc.want)
+		}
+	}
+}
+
+// A load carries the file it read, empty when the default file is missing,
+// and the two directories with the variable that chose each, the runtime
+// fallback naming the state directory's variable, as MakeRuntimeDir does.
+func TestLoadedCarriesFileAndDirs(t *testing.T) {
+	t.Parallel()
+
+	file := writeFile(t, "logging:\n  level: warn\n")
+	home := t.TempDir()
+
+	for _, tc := range []struct {
+		name       string
+		path       string
+		environ    []string
+		file       string
+		state      string
+		stateVar   string
+		runtime    string
+		runtimeVar string
+	}{
+		{
+			name:       "a named file, the service manager's directories",
+			path:       file,
+			environ:    []string{"STATE_DIRECTORY=/x/state", "RUNTIME_DIRECTORY=/x/run"},
+			file:       file,
+			state:      "/x/state",
+			stateVar:   "STATE_DIRECTORY",
+			runtime:    "/x/run",
+			runtimeVar: "RUNTIME_DIRECTORY",
+		},
+		{
+			name:       "the default file missing, the home's directories",
+			environ:    []string{"HOME=" + home},
+			state:      filepath.Join(home, ".local", "state", "dittofs"),
+			stateVar:   "HOME",
+			runtime:    filepath.Join(home, ".local", "state", "dittofs", "run"),
+			runtimeVar: "HOME",
+		},
+		{
+			name: "the XDG directories",
+			path: file,
+			environ: []string{
+				"XDG_STATE_HOME=/x/xs",
+				"XDG_RUNTIME_DIR=/x/xr",
+				"HOME=" + home,
+			},
+			file:       file,
+			state:      "/x/xs/dittofs",
+			stateVar:   "XDG_STATE_HOME",
+			runtime:    "/x/xr/dittofs",
+			runtimeVar: "XDG_RUNTIME_DIR",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := LoadWithSources(tc.path, tc.environ)
+			if err != nil {
+				t.Fatalf("LoadWithSources: %v", err)
+			}
+
+			for _, f := range []struct {
+				field     string
+				got, want string
+			}{
+				{"File", got.File, tc.file},
+				{"StateDir", got.StateDir, tc.state},
+				{"StateVar", got.StateVar, tc.stateVar},
+				{"RuntimeDir", got.RuntimeDir, tc.runtime},
+				{"RuntimeVar", got.RuntimeVar, tc.runtimeVar},
+			} {
+				if f.got != f.want {
+					t.Errorf("Loaded.%s: got %q, want %q", f.field, f.got, f.want)
+				}
+			}
+		})
+	}
+}
+
+// ConfigPath names the file the flag names, else DITTOFS_CONFIG's, else the
+// default path from XDG_CONFIG_HOME, else from HOME, else none.
+func TestConfigPath(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		flag    string
+		environ []string
+		want    string
+	}{
+		{
+			"the flag over the variable",
+			"/f/config.yaml",
+			[]string{"DITTOFS_CONFIG=/e/config.yaml", "XDG_CONFIG_HOME=/x", "HOME=/h"},
+			"/f/config.yaml",
+		},
+		{
+			"the variable over the default",
+			"",
+			[]string{"DITTOFS_CONFIG=/e/config.yaml", "XDG_CONFIG_HOME=/x", "HOME=/h"},
+			"/e/config.yaml",
+		},
+		{
+			"the config home over the home",
+			"",
+			[]string{"XDG_CONFIG_HOME=/x", "HOME=/h"},
+			"/x/dittofs/config.yaml",
+		},
+		{"the home", "", []string{"HOME=/h"}, "/h/.config/dittofs/config.yaml"},
+		{"nothing set", "", nil, ""},
+	} {
+		if got := ConfigPath(tc.flag, tc.environ); got != tc.want {
+			t.Errorf("%s: ConfigPath(%q): got %q, want %q", tc.name, tc.flag, got, tc.want)
 		}
 	}
 }

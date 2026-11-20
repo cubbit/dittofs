@@ -33,7 +33,7 @@ There are **two kinds of account**, and #1528 only removes one of them:
 |---|---|---|
 | Who | The **one native DittoFS admin** | AD users (alice, bob, Administrator) |
 | Auth | Local password → `dfsctl login` / dashboard | Kerberos ticket from the domain |
-| Created how | Auto-provisioned at first server start (`DITTOFS_ADMIN_INITIAL_PASSWORD`) | **Never created in DittoFS** |
+| Created how | Created by `dfs init` before the first start (`--admin-password-env`) | **Never created in DittoFS** |
 | Used for | Configure LDAP + create grants (once) | Mount shares |
 
 So the workflow is: **sign in once as the native admin to wire up LDAP and
@@ -112,10 +112,11 @@ kerberos:
   dns_domain: "cubbit.local"
 ```
 
-Start the server (the native admin password is provisioned on first start):
+Initialize the installation, which sets the native admin password, then start the server:
 
 ```powershell
-$env:DITTOFS_ADMIN_INITIAL_PASSWORD = "<choose-a-strong-admin-password>"
+$env:DFS_ADMIN_PASSWORD = "<choose-a-strong-admin-password>"
+dfs init --config C:\dittofs\config.yaml --admin-password-env DFS_ADMIN_PASSWORD
 dfs start --config C:\dittofs\config.yaml
 ```
 
@@ -262,7 +263,7 @@ New-ADComputer -Name DITTOFS `
 Don't set a `dNSHostName`/SPN on it — the host already owns `HOST/vm2…` via its
 own computer account, and this account is only a NETLOGON client identity.
 (Alternatively, skip this step and let DittoFS create + rotate the account itself
-with `online_join` — see [configuration.md](configuration.md#12-kerberos-configuration).)
+with `online_join`.)
 
 **Step 2 — add the machine account to the server config** (under `kerberos:`):
 
@@ -341,7 +342,7 @@ or bob — they mount purely as AD principals.
 
 Check each logon gets the right level: as alice, reading works but writing is
 denied; as bob, both work; as Administrator, full control. In the server debug
-log (`DITTOFS_LOGGING_LEVEL=DEBUG`) each TREE_CONNECT logs the per-session SID
+log (`DITTOFS_LOGGING_LEVEL=debug`) each TREE_CONNECT logs the per-session SID
 match — the decision is derived from that session's own PAC, so two users on one
 workstation never bleed permissions.
 

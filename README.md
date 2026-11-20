@@ -133,25 +133,19 @@ script, use `dfs` and `dfsctl` without the `./` prefix.
 
 ### First run & admin password
 
-On first start, DittoFS creates an `admin` user. **Pre-set the password** via the
-`DITTOFS_ADMIN_INITIAL_PASSWORD` environment variable — this is the recommended path for
-every deployment, and the only reliable one for Docker/Kubernetes/CI and systemd:
+`dfs init` creates the installation, and its `admin` user, before the first start. **Set the
+password** from a file or from an environment variable you name; this is the recommended path
+for every deployment, and the only reliable one for Docker/Kubernetes/CI and systemd:
 
 ```bash
-# Replace the example with your own password before the first start.
-# A supplied password also skips the forced password change on first login.
-DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password ./dfs start
+# Replace the example with your own password before you initialize.
+DFS_ADMIN_PASSWORD=my-secure-password ./dfs init --admin-password-env DFS_ADMIN_PASSWORD
+./dfs start
 ```
 
-If you don't pre-set it, a random password is generated — but it is **shown only when you
-run `./dfs start` in an interactive terminal** (printed once). Under Docker/systemd, where
-stdout is a pipe rather than a terminal, the generated password is **not written to the log and cannot be
-recovered**. Because the `admin` user is created on that first start, setting
-`DITTOFS_ADMIN_INITIAL_PASSWORD` and simply restarting will **not** change it — that variable
-is only read while bootstrapping a *new* admin. To recover, delete the `admin` row from the
-`users` table of the control-plane database and start again with the password pre-set; the next
-start re-runs the bootstrap. Do not delete the database itself — it also holds your shares,
-stores, mounts and other users. So: **set it before the very first start.**
+If you set neither, a password is generated and printed once to standard output, never to the
+log, and must be changed at the first sign-in. Over a finished installation `dfs init` refuses
+and changes nothing; if no administrator can sign in, stop the node and run `./dfs reset-admin`.
 
 ### Serve an NFS share in under a minute
 
@@ -167,9 +161,6 @@ stores, mounts and other users. So: **set it before the very first start.**
 # rejected with HTTP 403:
 #   account "admin" must set a new password before performing other operations;
 #   run 'dfsctl user change-password' (as "admin") to set one
-# This forced change is skipped automatically when you set your own
-# DITTOFS_ADMIN_INITIAL_PASSWORD at first start, and can be disabled entirely
-# via controlplane.require_initial_password_change: false (see docs/guide/configuration.md).
 ./dfsctl user change-password
 
 # 2. Create a user mapped to your host UID (needed for NFS write access)
@@ -226,7 +217,7 @@ DittoFS configuration has **two layers**:
 
 1. **Server config file** (`~/.config/dittofs/config.yaml`) — process-level infrastructure:
    logging, metrics, control-plane API, and the control-plane database. Environment
-   variables with the `DITTOFS_` prefix override any field (e.g. `DITTOFS_LOGGING_LEVEL=DEBUG`).
+   variables with the `DITTOFS_` prefix override any field (e.g. `DITTOFS_LOGGING_LEVEL=debug`).
 2. **Runtime resources** (`dfsctl` / REST API) — stores, shares, adapters, users, groups,
    and permissions. These live in the control-plane database (SQLite by default, PostgreSQL
    for HA), not in the config file.

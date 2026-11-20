@@ -300,8 +300,7 @@ func build(cfg Config, in apiInputs) (_ *Node, err error) {
 	// 401, every POST and DELETE, which must carry an Idempotency-Key,
 	// answers 503 or 428, and the API's spans go to the no-op tracer. Fill
 	// each from the secret store, sign-in and the host's tracer as they land.
-	// An empty api.socket serves no local socket: the bootstrap gives it no
-	// default path yet.
+	// An empty api.socket serves no local socket.
 	n.api = api.New(api.Deps{
 		Ready:        n.readiness,
 		Served:       n.life.served.Load,
