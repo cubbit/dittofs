@@ -2,7 +2,6 @@ package commands
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,37 +9,17 @@ import (
 
 	"github.com/cubbit/dittofs/internal/install"
 	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/keyprovider"
 )
 
 // initConfig writes a bootstrap under dir naming a store, one journal
 // directory and a storage key file, its passphrase set for the test.
 func initConfig(t *testing.T, dir string) string {
 	t.Helper()
-	const passphrase = "dfs init test passphrase"
-	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
-	b, err := keyprovider.GenerateKeyFile(passphrase)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := filepath.Join(dir, "storage.key")
-	if err := os.WriteFile(key, b, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	dev := filepath.Join(dir, "device")
 	if err := os.Mkdir(dev, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := bootstrapFile{store: filepath.Join(dir, "store"), journal: dev, node: nodeUUID}.write(t, dir)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = fmt.Fprintf(f, "keys:\n  storage:\n    kind: local\n    local:\n      file: '%s'\n", key)
-	if err := errors.Join(err, f.Close()); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return bootstrapFile{store: filepath.Join(dir, "store"), journal: dev, node: nodeUUID, key: storageKeyFile(t, dir)}.write(t, dir)
 }
 
 // dfs init hands its password flags to the initialisation step: an empty
