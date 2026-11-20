@@ -33,6 +33,11 @@ func Refusal(dir string) error {
 	if err != nil {
 		return fmt.Errorf("filesystem of %s: %w", dir, err)
 	}
+	return refusalFor(dir, name)
+}
+
+// refusalFor is Refusal's verdict for dir on a filesystem called name.
+func refusalFor(dir, name string) error {
 	if RAMBacked(name) {
 		return fmt.Errorf("%s is on a %s filesystem, which is RAM-backed: fsync is free there and the figures measure no device; name a directory on a real one", dir, name)
 	}

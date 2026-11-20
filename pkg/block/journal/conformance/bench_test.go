@@ -38,7 +38,12 @@ const benchDirEnv = "DITTOFS_BENCH_DIR"
 // environment knob read by jbBurstBytes when a nightly needs smaller or
 // larger bursts from the same bodies.
 const (
-	jbBurstStreamed = 256 << 20
+	// ponytail: the streamed burst is half a segment, so a first iteration
+	// on the one stream never rolls and no write waits on a spare; a run of
+	// more than one iteration (-benchtime=Nx) rolls and the wait's spin
+	// shows in allocs/op. Upgrade to a wait for the pool before each roll
+	// when a run needs more than one iteration per journal.
+	jbBurstStreamed = 128 << 20
 	jbBurstSynced   = 16 << 20
 	jbWriters       = 16
 	// jbMixedStream is the streaming file of the mixed case.
@@ -89,6 +94,8 @@ func jbPrintBox(dir, fsName string) {
 		fmt.Printf("bench-dir: %s\n", dir)
 		fmt.Printf("filesystem: %s\n", fsName)
 		fmt.Printf("sync-bound: %v\n", journal.SyncBound)
+		// The format's own cap: the suite never overrides it, and the
+		// journal exports no value to read it from.
 		fmt.Printf("segment-cap-bytes: %d\n", 256<<20)
 		fmt.Printf("writers: %d\n", jbWriters)
 	})
@@ -412,9 +419,12 @@ const (
 	jbPointStride = 128
 )
 
-// J3: a point lookup over an index of n extents, timed as a block of lookups
-// since one is below the timer's resolution. A lookup is a ReadAt of one
-// extent, so it carries the read of its bytes.
+// J3: a ReadAt of one 64-byte extent over an index of n extents, timed as a
+// block of lookups since one is below the timer's resolution. It is an upper
+// bound of the index's own lookup: it includes the pread of the extent's
+// bytes from the segment and the copy into the caller's buffer, and the
+// public API gives no way to time the index alone, so RFC 1's index-lookup
+// target is not judged from it.
 func jbPointLookup(b *testing.B, n int) {
 	b.ReportAllocs()
 
@@ -490,6 +500,18 @@ func BenchmarkRawSequential(b *testing.B) {
 	jbForEachMode(b, jbAllSizes, []string{"nosync"}, func(b *testing.B, spec jbSpec) {
 		jbBurst(b, jbOpenRaw(b, spec.writers), spec)
 	})
+}
+
+// BenchmarkRawScaling is the twin of J2: the same bytes over n files of 1 MiB
+// blocks, each synced at its end, as a sub-benchmark per file count.
+func BenchmarkRawScaling(b *testing.B) {
+	for _, n := range []int{1, 4, 16, 64} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			jbBurst(b, jbOpenRaw(b, n), jbSpec{
+				writers: n, block: 1 << 20, span: jbBurstStreamed / int64(n), syncEnd: true,
+			})
+		})
+	}
 }
 
 // BenchmarkRawRandom4k is the twin of J1's random 4 KiB row without a sync.
