@@ -372,6 +372,9 @@ func TestRFC8A_RemovalCrashedBetweenBatchesResumes(t *testing.T) {
 		}
 	}
 
+	// The deallocations are pruned first, so the truncate is the only
+	// removal the restarts find.
+	eventually(t, "the deallocations pruned", func() bool { return len(unfinishedOf(t, f)) == 0 })
 	f.HoldBatches()
 
 	if _, err := f.Handle().Truncate(t.Context(), journal.NewFileID(id), 2048); err != nil {

@@ -305,8 +305,8 @@ func (f *Fixture) ReleaseBatches() {
 	}
 }
 
-// WaitBatches returns once n removal batch spans have ended since the last
-// call.
+// WaitBatches returns once n removal batch spans of the running process have
+// ended since the last call or the process's start.
 func (f *Fixture) WaitBatches(n int) {
 	f.t.Helper()
 
@@ -862,6 +862,12 @@ func (f *Fixture) start() {
 	t := f.t
 	t.Helper()
 	ctx := t.Context()
+
+	// WaitBatches counts this process's spans: the stopped one's, a held batch
+	// its stop cancelled among them, are dropped.
+	for len(f.ended) > 0 {
+		<-f.ended
+	}
 
 	f.crashed = new(atomic.Bool)
 	opens, d, err := enginewire.Compose(enginewire.Params{

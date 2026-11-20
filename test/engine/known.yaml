@@ -30,20 +30,6 @@
   category: feature
   reason: 'the start''s re-application over the recovered journal: the usage after recovery is the bytes re-applied, exactly, and a second restart leaves it unchanged. The open recovers the segments and both files re-apply, but the re-applied bytes are not charged to the share''s usage: it reads 0 bytes, want the 8192 re-applied. The row waits on the re-application charging its bytes to the usage.'
   issue: '#4210'
-- test: TestRFC8A_RemovalCrashedBetweenBatchesResumes
-  message: 'want one with cursor 12288'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the removal''s resume at recovery: a removal crashed between two batches resumes at the restart, the extent reads removed before the loop runs and after, and the record is pruned. The open recovers the segments and the row gets past its writes, their sync and the restart, but the rebuilt removals read done at their far cursors: no unfinished removal holds the mid-batch cursor 12288 the resume starts from. The row waits on the open rebuilding a removal''s progress at its cursor.'
-  issue: '#4210'
-- test: TestRFC8A_RemovalDoneNotPrunedIsPrunedAtRestart
-  message: 'after the prune, want none'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the removal''s prune at recovery: a release whose last batch committed and whose prune did not is pruned at the restart, and its index entry goes. The open recovers the segments and the row gets past its writes and the restart, but the release reads unfinished after the prune, wanting none, and the released file still holds its keys. The row waits on the start''s retirement pruning the removals the recovery finds done.'
-  issue: '#4210'
 - test: TestRFC8A_UnsuitableJournalAtStart
   message: 'the retry''s timer is set: not within 10s'
   status: fail
