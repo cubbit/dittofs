@@ -48,8 +48,9 @@ type Deps struct {
 	// DomainController opens the domain's controllers; New does not require
 	// it, and while it is nil pass-through answers ErrUnavailable.
 	DomainController netlogon.Dialer
-	// ControlPlane is the store's ControlPlane(), the rotation's control-plane
-	// calls; New does not require it, and while it is nil a rotation fails.
+	// ControlPlane is the store's ControlPlane(), the rotation's and the NT
+	// hashes' deletion's control-plane calls; New does not require it, and
+	// while it is nil either operation fails.
 	ControlPlane ControlPlane
 }
 
@@ -82,12 +83,14 @@ type Store interface {
 	Installation(ctx context.Context) (entity.Installation, error)
 }
 
-// ControlPlane is the control-plane store's calls the rotation makes: the
-// machine password's sealed version, and the writes that refuse a running
-// join, record a sealed version and record the last rotation.
+// ControlPlane is the control-plane store's calls the rotation and the NT
+// hashes' deletion make: the machine password's sealed version, the writes
+// that refuse a running join, record a sealed version and record the last
+// rotation, and the deletion's batches.
 type ControlPlane interface {
 	Write(ctx context.Context, meta entity.WriteMeta, fn func(entity.ControlPlaneTx) error) error
 	Secret(ctx context.Context, id entity.SecretRef, version uint64) (entity.Secret, error)
+	DropNTHashes(ctx context.Context, after entity.SecretRef, n int) (next entity.SecretRef, dropped int, done bool, err error)
 }
 
 var _ ControlPlane = kvstore.ControlPlane{}
