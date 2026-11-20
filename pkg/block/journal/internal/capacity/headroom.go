@@ -126,7 +126,8 @@ type Headroom struct {
 	// not exempted.
 	mu lockorder.Mutex
 	// drawn is the record bytes the headroom has admitted and no Refund
-	// has returned; guarded by mu.
+	// has returned. Every check and move of it runs under mu; it is an
+	// atomic only so Stats reads it without mu.
 	//
 	// ponytail: drawn only grows until a retirement returns headroom. With
 	// the default 65,536 records, about 30,720 cumulative at-limit draws put
@@ -135,7 +136,7 @@ type Headroom struct {
 	// record at the limit is refused; drawn lives in memory, so a restart
 	// resets it. Upgrade by crediting it from the retirement path when repack
 	// lands.
-	drawn int64
+	drawn atomic.Int64
 	// draws is the headroom_draws counter, records appended while the
 	// journal was at its limit. An atomic, so Stats reads it without mu.
 	draws atomic.Uint64
@@ -230,13 +231,13 @@ func (h *Headroom) Admit(c RecordClass) (Draw, error) {
 	half := size / 2
 
 	h.mu.Lock()
-	free := total - recordsOf(h.drawn)
+	free := total - recordsOf(h.drawn.Load())
 	switch {
 	case free <= h.reserve:
 		// Exhausted for this class: only the open reserve is left, which
 		// an open's own records still draw on, down to nothing.
 		if c == Open && free > 0 {
-			h.drawn += RecordCharge
+			h.drawn.Add(RecordCharge)
 			h.mu.Unlock()
 			return Draw{Append: true, drew: true}, nil
 		}
@@ -256,7 +257,7 @@ func (h *Headroom) Admit(c RecordClass) (Draw, error) {
 			return Draw{Append: false}, nil
 		}
 	}
-	h.drawn += RecordCharge
+	h.drawn.Add(RecordCharge)
 	h.mu.Unlock()
 	return Draw{Append: true, drew: true}, nil
 }
@@ -284,9 +285,8 @@ func (h *Headroom) Refund(d Draw) {
 		return
 	}
 	h.mu.Lock()
-	h.drawn -= RecordCharge
-	if h.drawn < 0 {
-		h.drawn = 0
+	if h.drawn.Add(-RecordCharge) < 0 {
+		h.drawn.Store(0)
 	}
 	h.mu.Unlock()
 }
@@ -317,7 +317,19 @@ func (h *Headroom) Draws() uint64 {
 func (h *Headroom) Spent() int64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.drawn
+	return h.drawn.Load()
+}
+
+// Unused returns the drawing side's unused reservation in bytes: the records
+// not yet drawn, without the open reserve, at RecordCharge each. It is the
+// figure BelowHalf halves, read at or below the limit alike, and zero for a
+// headroom of no records. It names no allocated storage: the headroom's
+// spare segments are counted where the set counts every segment.
+//
+// It takes no lock, so Stats never waits on an admission: a read racing a
+// draw answers the figure before or after it.
+func (h *Headroom) Unused() int64 {
+	return int64(max(h.cfg.Records-recordsOf(h.drawn.Load())-h.reserve, 0)) * RecordCharge
 }
 
 // BelowHalf reports whether the headroom's drawing side has fallen below
@@ -338,7 +350,7 @@ func (h *Headroom) BelowHalf() bool {
 	size := total - h.reserve
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	free := total - recordsOf(h.drawn)
+	free := total - recordsOf(h.drawn.Load())
 	return free-h.reserve < size/2
 }
 

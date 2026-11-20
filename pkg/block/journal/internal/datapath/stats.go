@@ -139,7 +139,8 @@ func (c *Core) Stats() Stats {
 	s.TagConflicts = ix.TagConflicts()
 
 	pc := c.pool.Counters()
-	s.Spares, s.HeadroomBytes, s.RepackReserveBytes = int(pc.Spares), pc.HeadroomBytes, pc.RepackReserveBytes
+	s.Spares, s.RepackReserveBytes = int(pc.Spares), pc.RepackReserveBytes
+	s.HeadroomBytes = c.headroom.Unused()
 	s.HeadroomSparesShort = int(pc.HeadroomSparesShort)
 	ds := c.cache.Stats()
 	s.OpenDescriptors, s.DescriptorLimit = ds.Open, ds.Limit

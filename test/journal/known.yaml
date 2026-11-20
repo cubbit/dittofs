@@ -965,9 +965,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and the records without bytes are taken; the check reads HeadroomDraws from Stats, and Stats is not written yet (T8.13) and reads zero. Needs the stats.'
-  issue: '#3395'
-  message: 'HeadroomDraws did not rise over a truncate at the maximum'
+  reason: 'The journal fills to its maximum and draws the truncate and the delete on its headroom; the check then stops at the stub call it reaches. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestEdge_FillOverHeldDirtyAndAbsent
   status: fail
