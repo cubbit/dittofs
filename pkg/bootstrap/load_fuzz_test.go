@@ -20,6 +20,8 @@ var fuzzSeeds = []string{
 	"- a\n",
 	"logging: debug\n",
 	"logging: [s3cr3t\n",
+	"blockstore:\n  local:\n    \"a\\nb\": 1\n",
+	"journals:\n  - path: \"/a\\nb\"\n  - path: \"/a\\nb\"\n",
 	"logging:\n  level: debug\nlogging:\n  level: warn\n",
 	"loging:\n  level: debug\nmetrics:\n  listen_address: x\n" +
 		"adapters:\n  smb:\n    port: 445\njournals:\n  - path: data/j1\n",

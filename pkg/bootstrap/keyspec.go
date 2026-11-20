@@ -220,15 +220,24 @@ func (s *keySpec) fromNode(n *yaml.Node, path string, rep *report) (any, bool) {
 
 	switch s.kind {
 	case kindBool:
-		var b bool
-		if n.Kind != yaml.ScalarNode || n.ShortTag() != "!!bool" || n.Decode(&b) != nil {
+		if n.Kind != yaml.ScalarNode || n.ShortTag() != "!!bool" {
 			return c.typeRefusal(s, n)
 		}
 
-		return b, true
+		// The scalar's text, as fromEnv reads it: yaml.v3 still resolves
+		// TRUE and True as booleans (RFC 13 Appendix B, "true or false,
+		// and nothing else").
+		if n.Value != "true" && n.Value != "false" {
+			return nil, c.refuse(c.got("must be true or false", n.Value))
+		}
+
+		return n.Value == "true", true
 	case kindCount:
-		var i int
-		if n.Kind != yaml.ScalarNode || n.ShortTag() != "!!int" || n.Decode(&i) != nil {
+		// The scalar's text, as fromEnv reads it: yaml.v3 resolves 010 as
+		// 8 and accepts 0x10 and 1_0, while the variable reads 010 as 10
+		// and refuses the other two.
+		i, err := strconv.Atoi(n.Value)
+		if n.Kind != yaml.ScalarNode || n.ShortTag() != "!!int" || err != nil {
 			return c.typeRefusal(s, n)
 		}
 
@@ -287,10 +296,20 @@ func (s *keySpec) journalsFromNode(n *yaml.Node, c check) (any, bool) {
 			continue
 		}
 
-		path := ""
+		path, seen := "", map[string]bool{}
 
 		for i := 0; i+1 < len(e.Content); i += 2 {
 			name, v := e.Content[i].Value, deref(e.Content[i+1])
+			if seen[name] {
+				c.rep.add(c.where, "journals."+name, "listed twice")
+
+				ok = false
+
+				continue
+			}
+
+			seen[name] = true
+
 			if name != "path" {
 				refuseUndeclared(v, "journals."+name, c.where, c.rep)
 

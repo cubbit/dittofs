@@ -712,7 +712,7 @@ func (r report) err() error {
 
 	lines := make([]string, len(r))
 	for i, f := range r {
-		lines[i] = oneLine(f.where) + ": " + oneLine(f.key) + ": " + f.rule
+		lines[i] = oneLine(f.where) + ": " + oneLine(f.key) + ": " + oneLine(f.rule)
 	}
 
 	return errors.New(strings.Join(lines, "\n"))

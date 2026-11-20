@@ -238,6 +238,18 @@ func TestLoadRefusesValues(t *testing.T) {
 			want: []string{"P: logging.rotation.compress: must be true or false, got a string"},
 		},
 		{
+			name: "upper case TRUE", content: rotation("compress", "TRUE"),
+			want: []string{"P: logging.rotation.compress: must be true or false, got TRUE"},
+		},
+		{
+			name: "hex integer", content: rotation("max_backups", "0x10"),
+			want: []string{"P: logging.rotation.max_backups: must be an integer, got a number"},
+		},
+		{
+			name: "integer with an underscore", content: rotation("max_backups", "1_0"),
+			want: []string{"P: logging.rotation.max_backups: must be an integer, got a number"},
+		},
+		{
 			name: "number for a string", content: "logging:\n  format: 1\n",
 			want: []string{"P: logging.format: must be a string, got a number"},
 		},
@@ -534,6 +546,7 @@ func TestLoadAcceptsEdges(t *testing.T) {
 		{`"720h"`, "max_age", 30},
 		{`"48h0m"`, "max_age", 2},
 		{"0", "max_backups", 0},
+		{"010", "max_backups", 10}, // the variable reads 010 as 10 too
 	} {
 		t.Run(tc.key+" "+tc.value, func(t *testing.T) {
 			t.Parallel()
@@ -614,6 +627,11 @@ func TestLoadRelations(t *testing.T) {
 	}
 
 	runRefusals(t, []refusalRow{
+		{
+			name:    "one entry names path twice",
+			content: "journals:\n  - {path: /d/j1, path: /d/j2}\n",
+			want:    []string{"P: journals.path: listed twice"},
+		},
 		{
 			name: "one path twice", content: "journals:\n  - path: /d/j1\n  - path: /d/j1\n",
 			want: []string{"P: journals: /d/j1 listed twice"},
