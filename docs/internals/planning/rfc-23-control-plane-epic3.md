@@ -15,7 +15,7 @@ its export pin, and `dfs start` over the stub. E2 provides what the node reads a
 counters, the node and node-status records through its node view, the operation record, its
 running index and `Write`, the expiry sweep, and the user's, group's and share's removal past the
 mark. The RFC 13 plan's epic 1 provides `pkg/bootstrap` with RFC 13 §2.2's facts, which only
-T3.9 reads; X1 (that plan's epic 2) provides `WriteMissingNodeIDs`, which only T3.10 calls.
+T3.9 reads; X1 (that plan's epic 2) provides `NodeID`, `WriteMissingNodeIDs` and the version gate, which only T3.10 calls.
 **Blocks:** E4, which adds its routes, TLS and the local socket to the `internal/node/api` this
 epic creates; E5, partly, whose signed-in callers extend the harness; E6, partly, whose tests run
 against the harness's node; E7, which runs every row on the node `New` builds; RFC 20's plan's epic
@@ -99,7 +99,7 @@ the journal's knowledge of `node-id`; the harness; the reconcile benchmark.
 - **S1**, E1 merged: v1 gone, the node's surface frozen.
 - **S2**, this epic's checkpoint: the node starts and reconciles; RFC 20's plan's epic 7 starts.
 - **S3**, adapters serve through the node, outside RFC 23's plan.
-- **X1**, the RFC 13 plan's bootstrap and secrets, its epics 2 and 4; here, its node identity.
+- **X1**, the RFC 13 plan's bootstrap and secrets, its epics 2 and 4; here, its node identity and version gate.
 - **X3**, the RFC 13 plan's epic 5: `apply` filled on `settings.Diff` and `Get`.
 
 ## 2. How the general rules apply
@@ -145,7 +145,7 @@ that subtasks and tests can cite them.
 | R6 | After start only the node starts, changes or stops a component, and only from records; the node closes what it built | invariant | RFC 23 §2.1; CP1 | T3.1, T3.3 |
 | R7 | The node builds no journal: the engine opens each device's journal through the opener `New` passes | invariant | RFC 23 §2.1 | T3.1 |
 | R8 | The engine reaches open state only through the root's adapter of `CloneHold` onto `CloneOpen`, `CloneClose` and `Served`, so the engine imports no open state | MUST | RFC 23 §2.1 (table row 5); RFC 8 §2.6 | T3.1 |
-| R9 | The node exports `New`, `Start` and `Stop` only, and is not restartable: a second `Start` is an error | MUST | RFC 23 §2.1 (its decision) | T3.3 |
+| R9 | The node exports `New`, `Start`, `Stop` and `Preflight` only, and is not restartable: a second `Start` is an error | MUST | RFC 23 §2.1 (its decision) | T3.3 |
 | R10 | The root refuses to add a share whose configuration names no remote block store, with an error naming the share, and reports it refused | MUST | RFC 8 §2.1; RFC 23 §2.4 | T3.5 |
 | R48 | Start refuses a missing or foreign installation as `metadata.Open` reads the format record; a start creates no installation | MUST | RFC 23 §2.2 (step 1); RFC 13 §2.2 | T3.1 |
 | R49 | No package under `internal/node` but `node` itself imports a component's implementation; the allow-list is D3's, which holds data and wire types and not `nodetest` | MUST NOT | RFC 23 CP16; RFC 23 plan §1.3; D3 | T3.2 |
@@ -158,7 +158,7 @@ that subtasks and tests can cite them.
 | R11 | `Start` runs its steps in order, each completing before the next: refuse, open the listeners, register the node, read the records and apply them, start open state and the engine, start the filesystem and join interrupted removals, start the runner, complete the first full reconcile, then reconcile until `Stop`; step 9, the adapters, is RFC 20's plan's epic 7 | MUST | RFC 23 §2.2 | T3.3 |
 | R12 | Once the store is open, step 1 writes a missing `node-id` copy into each journal directory whose `format` names the journal the store records for this node and device, and into no other | MUST | RFC 23 §2.2 (step 1); RFC 13 §2.2 | T3.10 |
 | R13 | From step 2 the health endpoints answer, live and not ready, and the metrics listener is open unless `metrics.listen` is `off` | MUST | RFC 23 §2.2 (step 2), §2.5 | T3.3 |
-| R14 | Step 3 registers the node before the engine's start transactions run; a refused registration stops the node there, with no component started | MUST | RFC 23 §2.2 (step 3) | T3.3 |
+| R14 | Step 3 registers the node, with the binary's version ranges, before the engine's start transactions run; an active version outside them refuses the registration in its transaction, naming the format and both versions; a refused registration stops the node there, with no component started | MUST | RFC 23 §2.2 (step 3); RFC 13 §5.5 | T3.3, T3.10 |
 | R15 | Step 5 starts open state with the built filesystem as its `Sink`, raising the node epoch, then the engine with the whole set of attached shares in one call | MUST | RFC 23 §2.2 (step 5); RFC 16 §3 | T3.3 |
 | R16 | Step 6 starts `*vfs.Filesystem`, then runs step 3 of every removal a crash interrupted, `JoinShare` then `DropShare`, before any adapter serves | MUST | RFC 23 §2.2 (step 6); RFC 16 §2.3.2 | T3.6 |
 | R17 | Step 7 starts the operation runner, which resumes the operations this node holds | MUST | RFC 23 §2.2 (step 7), §4.6 | T3.4 |
@@ -551,7 +551,7 @@ Dockerfile                                 T3.9  HEALTHCHECK on https://localhos
 - **Track:** A. **Depends on:** T3.2, T3.4.
 - **Covers:** R5, R6, R9, R11, R13, R14, R15, R17, R19, R20, R21, R22, R23, R36, R38.
 - **Deliverables:** `Start`: step 1 nothing more than `New` did (T3.10 adds the node identity);
-  step 2 the API and metrics listeners; step 3 `Nodes.RegisterNode` with the bound addresses; step
+  step 2 the API and metrics listeners; step 3 `Nodes.RegisterNode` with the bound addresses (T3.10 adds the version ranges and the gate); step
   4 the counters and records read, then `apply`, whose first call hands the engine RFC 13 Appendix
   B's defaults through `engine.Apply` (X3 later changes their source, not the call); step 5 open
   state started with the filesystem as `Sink` and its admission as `Order`, which raises the node
@@ -762,25 +762,35 @@ Dockerfile                                 T3.9  HEALTHCHECK on https://localhos
   (R1); a `controlplane.db` beside the bootstrap, refused naming it with no store directory created
   (R3); the exit code and message as a function of `Stop`'s error, in process, a step-bound error
   giving non-zero and the step's name (R23; the bound itself is T3.3's, on the injected clock); the
-  architecture rule over a planted violation (R2).
+  architecture rule over a planted violation (R2); two journal directories whose `node-id` copies differ, `dfs start` exits non-zero naming the directories before the store opens (RFC 13 §2.2; T3.10 adds this case, with the `NodeID` call).
 
-### T3.10 The node identity at start
+### T3.10 The node identity and the version gate at start
 
 **Subtask T3.10 estimate: 1 man-days.**
 
-- **Track:** A. **Depends on:** T3.3, and on X1.
-- **Covers:** R12, R46.
-- **Deliverables:** step 1 calling X1's `WriteMissingNodeIDs` with the store's `JournalID`, its one
-  caller; `format.NameNodeID` and `NameNodeIDTmp` in the journal's name classification, so attach
+- **Track:** A. **Depends on:** T3.3, T3.9, and on X1.
+- **Covers:** R12, R14, R46.
+- **Deliverables:** `dfs start` reading the node's identity through X1's `NodeID` before the store
+  opens, its one caller; step 1 calling X1's `WriteMissingNodeIDs` with the store's `JournalID`, its one
+  caller; step 3 registering through X1's version gate, `Register(ctx, store)` over the store `New`
+  opened, its one caller, which writes the binary's ranges and refuses, in the registration's
+  transaction, an active version outside them; `format.NameNodeID` and `NameNodeIDTmp` in the journal's name classification, so attach
   neither logs nor refuses them. Consumed by E5's `dfs init`, which writes the copies.
 - **Acceptance criteria:**
   - A journal directory whose copy was removed gets it back at the next start; one whose journal
     the store does not record does not.
   - A journal directory holding `node-id` and `node-id.tmp` attaches with no unrecognised-file log
     line.
+  - A start over an installation whose active journal format lies past the binary's range stops at
+    step 3, naming the format and both versions, with no component started and the node record as
+    it was.
+  - A store whose `\x00format` lies past `MaxFormat` is refused by `node.New`, naming both versions,
+    before step 3.
 - **Tests:** in `node_test`, on disk: a copy removed, a restart, the copy back (R12); a replaced
   device's empty directory left without one (R12); the journal's attach over a directory holding
-  both files, its log captured through an injected `slog.Handler` (R46).
+  both files, its log captured through an injected `slog.Handler` (R46); the active journal format
+  raised past the binary's range through kvstore, a start refused at step 3, no engine series and the
+  node record unchanged (catches a start that skips the gate or commits the registration first, R14); the store format raised past `MaxFormat` through kvstore, `node.New` refusing naming both versions before step 3, the node record as it was (R14). T3.10 also adds the case of two copies that differ to T3.9's child process tests of `dfs start`, which `node_test` cannot reach.
 
 ### T3.11 The reconcile benchmark
 
@@ -813,7 +823,7 @@ flowchart TD
   T3_5 --> T3_7["T3.7 Node status"]
   T3_3 --> T3_8["T3.8 Sweep"]
   T3_3 --> T3_9["T3.9 dfs start"]
-  T3_3 --> T3_10["T3.10 Node identity at start"]
+  T3_3 & T3_9 --> T3_10["T3.10 Node identity and version gate at start"]
   X1(["X1, outside RFC 23's plan"]):::sync --> T3_10
   T3_5 --> T3_11["T3.11 Reconcile benchmark"]
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -830,7 +840,7 @@ writes the adapter rows.
 | 1 | T3.1, T3.4 | 7 | — | `New`, the harness and the runner with its first kinds: what the RFC 18 plan's and E5's steps wait on |
 | 2 | T3.2, T3.3 | 8 | PR 1 | health, the API package, and start and stop in RFC 23 §2.2's order |
 | 3 | T3.5, T3.6 | 7.5 | PR 2 | reconcile and the share's removal, with `vfs`'s own join deleted beside its owner (D15): S2 |
-| 4 | T3.7, T3.8, T3.9, T3.10, T3.11 | 7.5 | PR 3 | status, sweep, `dfs start`, node identity and the benchmark: a working server |
+| 4 | T3.7, T3.8, T3.9, T3.10, T3.11 | 7.5 | PR 3 | status, sweep, `dfs start`, node identity, version gate and the benchmark: a working server |
 
 A suggestion only: one pull request per subtask works as well.
 

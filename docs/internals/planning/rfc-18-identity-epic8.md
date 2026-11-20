@@ -241,7 +241,7 @@ epic's test holds it.
   which reads no `_test.go` file; `nodetest` imports nothing of identity. Prior art: Go's
   `export_test.go` convention.
 - **D5, in-process rows reach the node's identity and filesystem through `export_test.go`.** The
-  node exports `New`, `Start` and `Stop` only (RFC 23 §2.1's decision), and no adapter serves
+  node exports `New`, `Start`, `Stop` and `Preflight` only (RFC 23 §2.1's decision), and no adapter serves
   before S3. So `internal/node`'s `export_test.go` gives its tests `(*Node).Service() vfs.Service`,
   the value the adapters will be handed, `(*Node).Accounts() identity.APISignIn`, the value the API
   is handed; they compile only into the package's tests, and the export pin reads non-test files.
@@ -396,6 +396,9 @@ test/integration/ad-dc/
   - a keytab of E5's test realm sealed as version 1 of `identity.keytab`: alice's ticket signs in
     through `Service()`; version 2 written and the clock advanced a second: a ticket under version 2
     signs in and node status reports version 2 (catches a keytab read at start only, R5, R10);
+    `State.Keytab`, read through `export_test.go`, holds version 2 before version 1 (catches
+    `Versions` handed on oldest first, which E5's T5.2 ring would resolve to the retired key on a
+    key-version tie, since it takes the first version holding a key);
   - the `identity.directory` record written: `Find` of an unminted directory SID with `Mint`
     mints it (catches `State.Directory` never filled, R5);
   - bob signed in by NTLM, then `identity.ntlm` written off and the clock advanced a second: bob's
@@ -520,7 +523,11 @@ test/integration/ad-dc/
   `installation.resolve-principal` and
   `installation.test-directory` (`pkg/node/apiv1`'s `OpKind` values) as they are, typed by
   `internal/node/step` (E7's D4, D10 here), with no adapter: the runner fails the operation on a
-  step's `*apiv1.Problem` and retries any other error; `api.Deps.Joins` filled from identity (D10).
+  step's `*apiv1.Problem` and retries any other error; `api.Deps.Joins` filled from identity (D10);
+  the runner's failure path writing `Installation.Join.LastRotation.Failed` and `At` for every
+  `rotate-machine-password` operation it ends, a give-up and a cancel included, since the
+  schedule backs off an hour only from `Failed` and has no tracked read of the last ended
+  operation (the `decision:` at E7's schedule's `Failed` branch, T7.13).
   Consumed by T8.7, T8.11.
 - **Acceptance criteria:**
   - None of the four kinds is reported refused in node status for want of a step.
@@ -541,6 +548,10 @@ test/integration/ad-dc/
     rotation failed: `machine_password_rotation_failed` installation-scoped, kept after `Restart`,
     gone once a rotation completes (catches a condition identity raises that the node never reads,
     R13);
+  - a rotation the runner gives up on: `LastRotation.Failed` set and `At` at its end, and the
+    schedule's next rotation an hour after it on the injected clock (catches a rotation ended
+    outside its failure path, which the schedule restarts each minute); a cancelled one the same,
+    once the API cancels an operation of that kind, which today answers `409` `not_cancellable`;
   - an online join whose creating `Write` is refused by a `FaultKV` error on its commit: no
     credential is held under its ID afterwards, and an operation record of that ID then written
     through kvstore's view runs its step to `failed`, naming the missing administrator credential

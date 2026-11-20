@@ -145,7 +145,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T5.1, T5.6, T5.11 | the fixture's Samba domain controller, in `integration/ad-dc`, issues the captured PACs (T5.1, T5.6) and the AP-REQ alice signs in with (T5.11), which `unit` then replays on the injected clock |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T5.2 to T5.9 | RFC 18's `decision:` notes of §2.4 (machines minted on sight, T5.9), §3.3 (AES only, T5.2; an unknown user refused, T5.5) and §3.4 (only the server signature, T5.6); its `ponytail:` notes of §3.3 (the replay cache in memory, T5.4; the skew constant, T5.3); the replay cache's fixed-count `ponytail:` (T5.4); this document's D1 to D12 and D14 to D16 markers at their sites |
 | rule 10, a test must be able to fail | all | every R row is held by a test named in its subtask, each with the bug it catches, or by what is named in its place |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T5.2, T5.3 | `internal/identity` exports `State.Keytab`, which `internal/node` fills (E8's T8.2); nothing outside `internal/node` and identity's tests imports it; `CheckKeytab` in `pkg/identity` is pending an RFC 18 §2.7 amendment (D3); the test realm is `identitytest`'s, the package RFC 18 §2.7 gives test helpers, and imports no `internal/identity` |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T5.2, T5.3 | `internal/identity` exports `State.Keytab`, which `internal/node` fills (E8's T8.2); nothing outside `internal/node` and identity's tests imports it; `CheckKeytab` and `KeytabNames` in `pkg/identity`, which RFC 18 §2.7 lists (D3); the test realm is `identitytest`'s, the package RFC 18 §2.7 gives test helpers, and imports no `internal/identity` |
 | rule 12, each subtask creates only what it declares | all | `State.Keytab` with T5.2, its first reader; `entity.ProtocolID`'s linked SID with T5.8a; the record's `require_pac` with T5.8b; the test realm with T5.3, its first consumer |
 
 ## 3. Requirements and invariants
@@ -158,7 +158,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | The keytab is a `Secret` of kind keytab, loaded only through `Apply`: the versions in force are `State.Keytab`, current first, and a new version takes effect at the `Apply` that delivers it, with no restart | invariant | §2.6, §3.3 | T5.2 |
-| R2 | The keytab holds AES128 and AES256 keys only, and a keytab import holding a DES or RC4 key is refused whole | MUST | §3.3; §10 "AES only" | T5.2; RFC 23 plan epic 4's T4.11 (the import's refusal at its keytab secret route, once D3 settles) |
+| R2 | The keytab holds AES128 and AES256 keys only, and a keytab import holding a DES or RC4 key is refused whole | MUST | §3.3; §10 "AES only" | T5.2; RFC 23 plan epic 4's T4.11 (the import's refusal at its keytab secret route, through `CheckKeytab`, D3) |
 | R3 | Every keytab version `Apply` hands identity is accepted and a version it no longer hands is refused, a restart included, so tickets under the old and the new key are both accepted while the rotation keeps both, and a retired key is refused once the rotation prunes it (R4) | invariant | §3.3, §2.6; RFC 13 §7; §10 "keytab rollover" | T5.2 |
 | R4 | Withdrawn: keeping the previous version for one maximum ticket lifetime, 10 hours plus the clock skew, and removing it then are RFC 23 §3.3's credential rotation, which deletes it with `tx.PruneSecret` inside an audited `Write` (D13). The report that the old key may be revoked at its service is the control plane's (RFC 13 §7), and RFC 23 §3.3 does not name it yet (§9) | — | §3.3; RFC 13 §7; RFC 16 §3 (`tx.PruneSecret`); RFC 23 §3.3 | RFC 23 §3.3's credential rotation; the revocation report pending the RFC 23 §3.3 amendment (§9) |
 
@@ -258,15 +258,16 @@ record are E6's and E8's to drive, on the rule this epic builds.
   parse. Prior art (from memory): Samba loads its keytab into a memory keytab at start and on
   change.
 - **D3, a keytab import is checked by `identity.CheckKeytab(b []byte) error` in `pkg/identity`,
-  pending the user's answer (§9).** RFC 18 §3.3 refuses an import holding a DES or RC4 key
+  settled in review as (a) (§9).** RFC 18 §3.3 refuses an import holding a DES or RC4 key
   whole, but names no place that refuses it, and only `internal/node` may import the server
   (§2.7), so the API's secret route cannot call `internal/identity`. A pure function beside
-  `NewHashes` is reachable from the route and needs an RFC 18 §2.7 amendment. It parses MIT's
+  `NewHashes` is reachable from the route, and RFC 18 §2.7 lists it. It parses MIT's
   keytab format itself rather than through gokrb5, since `pkg/identity` is a leaf whose code
   imports no gokrb5; `FuzzCheckKeytab` holds it to gokrb5's decoder, which `Apply` runs after it on
   each version. Only version 2 is accepted: version 1, the host-byte-order format no current tool
-  writes, is refused. The route's call is RFC 23's plan's epic 4's: its T4.11 keytab secret route calls it
-  in the keytab's pre-write step once this is settled, and until then seals what it is given. A
+  writes, is refused. The route's call is RFC 23's plan's epic 4's: its T4.11 keytab secret route
+  runs it in the keytab's pre-write step, through `KeytabNames`, which refuses what `CheckKeytab`
+  refuses, before the seal, so R2's import refusal is met at the route. A
   `decision:` marker at `CheckKeytab` names the refusal whole, version 1's refusal, and the same
   check `Apply` runs on each version.
 - **D4, a ticket's service name is checked twice.** The ticket's service name, which sits outside
@@ -275,8 +276,11 @@ record are E6's and E8's to drive, on the rule this epic builds.
   ticket presented over NFS is refused. A `decision:` marker at the check. Prior art (from
   memory): MIT's `krb5_rd_req` with a server principal set refuses another name.
 - **D5, the replay cache is a map with an expiry heap, bounded at 1 048 576 entries.** The key
-  is the authenticator's client name and realm, its time and microseconds, and the ticket's
-  service name (RFC 4120 §3.2.3); an entry lives until the authenticator's time plus 5 minutes;
+  is the authenticator's client name and realm and a SHA-256 of the authenticator's ciphertext,
+  as MIT keys its replay cache: the ticket's service name sits outside the encrypted parts, and an
+  AD keytab holds every SPN of the computer account under one AES key, so a key on the service
+  name, folded or not, would let a replay re-addressed to another SPN past the cache, while the
+  ciphertext cannot change without the session key; an entry lives until the authenticator's time plus 5 minutes;
   an insert first drops expired entries from the heap's head, and a full cache refuses
   `ErrUnavailable`. One mutex, no goroutine. The order is: the authenticator decrypts, D9's
   throttle admits the (name, address) pair, then the insert; so a pair flooding failures takes at
@@ -377,7 +381,8 @@ record are E6's and E8's to drive, on the rule this epic builds.
   `TransportSMB` or `TransportNFS`, so a caller that leaves it at its zero value is refused rather
   than skipping R8. `Service` cannot stand in: RFC 18 §3.3 accepts `host/` tickets,
   and `Host` names no transport, so a `host/` ticket over SMB would skip R8, which RFC 22 §4.1
-  forbids. Amends RFC 18 §3.1's `SignInStep` (§9). A `decision:` marker at the check. Prior art:
+  forbids. A step naming no service is refused `ErrInvalid` too. Both amend RFC 18 §3.1's
+  `SignInStep`, an amendment still pending (§9). A `decision:` marker at the check. Prior art:
   none found.
 - **D16, the first verified PAC links a machine minted without one, an exception to R23.** Where a
   PAC-less ticket is accepted (a keytab realm other than the directory's, or `require_pac` false,
@@ -415,7 +420,7 @@ internal/identity/
                        T5.11  alice's captured AP-REQ, its keytab and the time it was made
   testdata/fuzz/       T5.3, T5.6  crashers, if any
 pkg/identity/
-  keytab.go            T5.2   CheckKeytab (D3, pending); KeytabNames and KeytabName, each key's name and realm, which the API's keytab check reads (RFC 23's plan, T4.11)
+  keytab.go            T5.2   CheckKeytab (D3); KeytabNames and KeytabName, each key's name and realm, which the API's keytab check reads (RFC 23's plan, T4.11)
   identitytest/realm.go  T5.3  Realm: test keys, Ticket, PAC, Keytab (D10)
 pkg/metadata/entity/
   control.go           T5.8a  ProtocolID.Linked (D11)
@@ -439,20 +444,17 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
 - **Covers:** none of its own; consumed by T5.6 (the captured PACs) and T5.11 (a ticket the
   fixture's domain controller issues for an AES-only service name), and it holds at the KDC the
   AES-only half of R2 and R6 that T5.11's ticket relies on.
-- **Deliverables:** built, not merged, on the branch `test/ad-dc-kerberos` (321c816bb, 6b541fa1d,
-  b1c51277b), stacked on `test/ad-dc-network-tls` (9207ec946, f86998cd3, 24073d347); E6's T6.1
-  moved both onto `feat/storage-v2`, where they are open as `test/ad-dc-kerberos-v2` (#4421),
-  stacked on `test/ad-dc-network-tls-v2` (#4420). What is left is merging #4421 after #4420,
-  rebased on E7's #4422 if that merges first. The part: the `cifs/` and `nfs/` service names moved
-  off Administrator onto an account of their own, `dittofs-svc`, with
-  `msDS-SupportedEncryptionTypes` `0x18`, so the exported keytab holds no RC4 key (`entrypoint.sh`,
-  `fixture_test.go`'s AES-only subtest); `capture-pacs.sh`, which runs `TestADPACCapture` with
-  `DITTOFS_AD_DC_PAC_OUT` set and writes `tgt.pac` with `krbtgt.keytab` and `service.pac` with
-  `service.keytab`; `docs/guide/identity.md`'s account of the fixture, and its instruction to
-  change the KDC at once when every node reports a new keytab version: RFC 13 §7 starts the
-  old version's retention at the change at the KDC, which the rotation cannot observe (§9), so a
-  KDC changed late can find its key pruned. The fixture's TLS part is
-  E6's and its join part E7's.
+- **Deliverables:** merged on `feat/storage-v2` as #4421 (after #4420), moved there from
+  `test/ad-dc-kerberos` by E6's T6.1; the guide's list of what the suite checks is #4808. The part:
+  the `cifs/` and `nfs/` service names moved off Administrator onto an account of their own,
+  `dittofs-svc`, with `msDS-SupportedEncryptionTypes` `0x18`, so the exported keytab holds no RC4
+  key (`entrypoint.sh`, `fixture_test.go`'s AES-only subtest); `capture-pacs.sh`, which runs
+  `TestADPACCapture` with `DITTOFS_AD_DC_PAC_OUT` set and writes `tgt.pac` with `krbtgt.keytab` and
+  `service.pac` with `service.keytab`; `docs/guide/identity.md`'s account of the fixture, and, once
+  the keytab's rotation exists, its instruction to change the KDC at once when every node reports a
+  new keytab version: RFC 13 §7 starts the old version's retention at the change at the KDC, which
+  the rotation cannot observe (§9), so a KDC changed late can find its key pruned. The fixture's TLS
+  part is E6's and its join part E7's.
 - **Acceptance criteria:**
   - The KDC refuses a service ticket for the imported `cifs/` name under RC4 and issues one under
     AES256; Administrator holds no `cifs/` name.
@@ -475,8 +477,10 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   building D2's ring from it, a version with a key that is not AES contributing none;
   `identity.keytab`, the keytab's secret reference, a key of E2's `identity.Settings` declared
   through `pkg/settings` (§9: RFC 13 Appendix B has no row for it); `pkg/identity.CheckKeytab(b
-  []byte) error`, refusing a keytab that does not parse, holds no key, or holds any key that is
-  not `aes128-cts-hmac-sha1-96` or `aes256-cts-hmac-sha1-96` (D3); RFC 18 §3.3's AES-only
+  []byte) error`, its own parser, refusing a keytab that does not parse as version 2 (a version-1
+  keytab is refused), holds no key, or holds any key that is not `aes128-cts-hmac-sha1-96` or
+  `aes256-cts-hmac-sha1-96`, and `FuzzCheckKeytab` against gokrb5's decoder (D3); RFC 18 §3.3's
+  AES-only
   `decision:`. `New` refuses no `State` or `Deps` for want of a keytab; while the ring holds
   no key (`State.Keytab` is empty, or D2 dropped every version as not AES), T5.5 answers a
   Kerberos step `ErrUnavailable`, as every field added after S1 answers while unset (E1's D4), and a ticket for a name a non-empty ring lacks is
@@ -509,7 +513,8 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   (R6), the service name (D4, R5), the start and end times and the authenticator's time within
   5 minutes of `now` (R7), the authenticator's client equal to the ticket's, and the addresses
   (R8, when `Transport` is SMB (D15), lifted from `develop`'s `ticketAllowsClientIP` without gokrb5's
-  workaround); an unset `Transport` `ErrInvalid` (D15); a parse error
+  workaround); an unset `Transport` `ErrInvalid` (D15), and a step naming no service `ErrInvalid`;
+  a parse error
   `ErrInvalid`, every refusal `ErrLogonFailure`; `Keys.Session` and `Keys.APRep`, the AP-REP
   lifted from `develop`'s `BuildMutualAuth`, with no subkey (R12); RFC 18 §3.3's `ponytail:` on
   the skew constant; D1's and D4's markers; `FuzzAPReq`. Consumed by T5.4, T5.5, T5.6 (the key that
@@ -553,7 +558,8 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
 - **Track:** B. **Depends on:** T5.3.
 - **Covers:** R9, R10, R11.
 - **Deliverables:** `develop`'s `replay.go` lifted and rewritten as D5's cache: keyed on the
-  authenticator's client, time and microseconds and the ticket's service name, each entry kept
+  authenticator's client and a SHA-256 of its ciphertext (D5), each
+  entry kept
   until the authenticator's time plus 5 minutes on the injected clock, bounded at 1 048 576, a
   full cache answering `ErrUnavailable`; a count per ticket client capping each at 16 384, a
   sixty-fourth of the bound, past which that client alone is answered `ErrUnavailable`, its count
@@ -579,7 +585,10 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   that races its original, R9); a cache of bound 8 and share 2: `carol`'s third authenticator
   `ErrUnavailable` while `alice`'s first is accepted, and once `carol`'s first entry passes its
   time plus the skew, her next is accepted (catches a cache with no per-client cap, and a share
-  never released, R11). The flood through `SignIn` is T5.5's test, where the order lives (R11).
+  never released, R11); the same AP-REQ again with its ticket's service name re-spelled
+  `CIFS/NAS.TEST`, which the ring accepts: refused with outcome `replay` (catches a key on the
+  unfolded name, R9, D5); the same AP-REQ re-addressed to `cifs/nas`, which the ring holds under
+  `cifs/nas.test`'s key: refused with outcome `replay` (catches a key on the service name, R9, D5). The flood through `SignIn` is T5.5's test, where the order lives (R11).
 
 ### T5.5 Kerberos sign-in without a PAC
 
@@ -722,9 +731,12 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   write need not wait for the PAC work.
 - **Acceptance criteria:**
   - `Linked` round-trips through the record and the `PX‖krb` row.
-- **Tests:** `kvstoretest`: `Linked` round-trips through `PutUser` and `ByProtocolID`, on a `uid`
-  spelling refused `ErrInvalid` (catches a SID stored on a spelling no binding reads), a malformed
-  SID refused `ErrInvalid` (catches a link no PAC can ever match), on the memory KV and Badger. A
+- **Tests:** `kvstoretest`: `Linked` put, changed and cleared through `PutUser` and read back from
+  the user record, the record sign-in reads it through (D11), while `ByProtocolID` still resolves
+  the `krb` row; no lookup returns the row's own copy, so a kvstore package test reads the row.
+  On a `uid` spelling refused `ErrInvalid` (catches a SID stored on a spelling no binding reads), a
+  malformed SID, or one that is not a domain account's (everyone, a built-in group), refused
+  `ErrInvalid` (catches a link no PAC can ever match), on the memory KV and Badger. A
   move keeping the SID is the writer's rule, held by RFC 23's plan's epic 4's T4.11 (its R44).
 - **Rules:** rule 9 (D11's marker).
 
@@ -870,7 +882,7 @@ domain controller's captured AP-REQ does.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.1 | 2 | #4420 | the fixture's Kerberos part, open on `feat/storage-v2` as #4421 |
+| 1 | T5.1 | 2 | #4420 | the fixture's Kerberos part, merged on `feat/storage-v2` as #4421 |
 | 2 | T5.8a | 0.75 | S1 | the field RFC 23's plan's epic 4's T4.11 writes, ahead of the PAC work |
 | 3 | T5.2, T5.3, T5.4 | 6.25 | E2's T2.4 | the keytab and the AP-REQ's checks, the surface E7 builds on |
 | 4 | T5.5, T5.6, T5.7 | 6.25 | PR 3, PR 1, E4's T4.5, E3's T3.5 | a Kerberos sign-in end to end, with its PAC verified and its SIDs filtered |
@@ -884,15 +896,20 @@ this epic and can open at once.
 The sources are RFC 18 as #4058 merged it (83232b441), whose text in the sections cited here is
 the version this document was written against.
 
-**Pending the user's answer:**
+**Settled in review:**
 
-- **Where a keytab import is refused (D3).** RFC 18 §3.3 refuses an import with a DES or RC4 key
+- **Where a keytab import is refused (D3): (a).** RFC 18 §3.3 refuses an import with a DES or RC4 key
   whole and names no site. Options: (a) `pkg/identity.CheckKeytab(b []byte) error`, a pure
   function the API's secret route calls, with RFC 18 §2.7 amended to list it (`if err :=
   identity.CheckKeytab(v); err != nil { return ErrInvalid }`, answered `400`); (b) `Apply` refuses the `State`, too late
   to refuse the write and, refusing the whole `State`, it would hold a disable back too; (c) an
-  `APISignIn`-like interface method handed to the API. Recommended: (a). Written in place in T5.2.
-  RFC 23's plan's epic 4 calls it from its T4.11 keytab secret route once this is settled.
+  `APISignIn`-like interface method handed to the API. Settled as (a), written in place in T5.2;
+  RFC 18 §2.7 lists `CheckKeytab` and `KeytabNames`. RFC 23's plan's epic 4's T4.11 keytab secret
+  route runs the check before the seal, so R2's import refusal is met there, and so is epic 7's
+  R27, the refusal of a key for a name the computer account holds, read through `KeytabNames`.
+
+**Pending the user's answer:**
+
 - **Who declares `require_pac` (D14).** The RFC 18 plan gives the record to E6, whose T6.3
   declares it with the schema, the realm and the `ad` realm refusal; `require_pac`'s first reader
   is T5.8b. Options: (a) T5.8b adds `RequirePAC` to T6.3's record and waits for T6.3, a cross-track
@@ -923,7 +940,8 @@ the version this document was written against.
   the RFC's.
 - RFC 18 §3.1's `SignInStep` has no transport, so §9.2's `protocol` label and RFC 22 §4.1's
   SMB-only address check have no source; D15 adds `Transport`, which the RFC 21 and RFC 22 plans'
-  adapters set.
+  adapters set, and refuses a step naming no service `ErrInvalid`. T5.3 builds both ahead of the
+  amendment, which is still to be made.
 - RFC 23 §3.3 keeps the old version for the retention RFC 13 §7 names for a keytab (RFC 18
   §3.3's 10 hours plus the skew after the change at the KDC). The rotation cannot observe that
   event, so a rotation that starts the retention at the nodes' report prunes early, and a KDC
@@ -944,10 +962,10 @@ the version this document was written against.
   on the injected clock.
 - The plan's §3.3 has E5 wait on E1 to E4 only. T5.8b also waits on E6's T6.3 (D14) and T5.9 on
   E6's T6.2 (D12).
-- The plan gives E5 the keytab's prune and its revocation report. RFC 23 §3.3's credential
-  rotation keeps and prunes the old version (D13), so T5.10 is removed; the report waits on the
-  RFC 23 §3.3 gap above. E2's D6, merged, still says T5.10 adds `Prune` and `Versions` to
-  `SecretProvider`; E7's T7.12 adds them now, and E2's D6 needs that one-line correction.
+- The plan gives E5 the keytab's prune and its revocation report. RFC 23 §3.3's credential rotation
+  keeps and prunes the old version (D13), so T5.10 is removed; the report waits on the RFC 23 §3.3
+  gap above. E2's D6 now gives `Prune` and `Versions` to E7's T7.12, whose §9 holds the open point
+  on `Prune`'s shape.
 - The plan gives taking `integration/ad-dc` out of the plan job's filter on `feat/storage-v2` to
   whichever of the fixture's three parts lands first. The built part was cut from `develop`,
   where no filter exists, and this epic records the outcome rather than assigning it: E6's T6.1

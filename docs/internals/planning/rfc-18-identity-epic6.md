@@ -196,7 +196,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R20 | §10's "exact queries" row | test row | §10 | T6.5 |
 | R21 | Each user answer carries the account's enabled state, from `userAccountControl` or `accountExpires`, and its e-mail address when the entry has one | invariant | §5.1; §10 "Where the in-memory ones stand in" | T6.5 |
 | R22 | A nested-group closure the directory cannot answer in one query is walked level by level, and one that cannot be finished fails whole | MUST | §5.1, §2.5 | T6.6 |
-| R23 | The in-memory directory stands in only because its conformance suite holds it to the real one on exact queries, the escaping of a filter's special characters, an ambiguous name, `LDAP_MATCHING_RULE_IN_CHAIN`, `tokenGroups`, paging, range retrieval, and an account disabled by `userAccountControl` or `accountExpires`; the suite runs against it in `unit` and against a real directory in `integration/ad-dc` | test row | §2.7; §10 "Where the in-memory ones stand in", "Suites"; RFC 29 §4.11 | T6.4, T6.6 |
+| R23 | The in-memory directory stands in only because its conformance suite holds it to the real one on exact queries, the escaping of a filter's special characters, an ambiguous name, `LDAP_MATCHING_RULE_BIT_AND` on `groupType`'s security bit, `tokenGroups`, paging, range retrieval, and an account disabled by `userAccountControl` or `accountExpires`; the suite runs against it in `unit` and against a real directory in `integration/ad-dc` | test row | §2.7; §10 "Where the in-memory ones stand in", "Suites"; RFC 29 §4.11 | T6.4, T6.6 |
 | R24 | `test-directory` checks that every node reaches the directory the record names, and reports each node's answer; identity gives it the call that reaches the directory and its answer | invariant | RFC 23 §3.5 | T6.5 |
 
 **The cache**
@@ -279,12 +279,12 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   apart from `identity.*` by #4059's `Read`, and E2's `Settings` is that section's struct. A
   second field, `Directory *directory.Record`, nil with no directory, keeps each section one
   struct. Needs an RFC 18 §2.6 amendment. Prior art: none found.
-- **D3, the bind name is a field, and the bind credential a kind of its own, pending the user's
-  answer (§9).** A simple bind needs a name and a password; RFC 13's row names only the
+- **D3, the bind name is a field, pending the user's answer (§9), and the bind credential a kind of
+  its own.** A simple bind needs a name and a password; RFC 13's row names only the
   credential's reference. The record gains `bind_name`, the distinguished name or UPN that binds,
   shown to an operator like the base; the password is a `Secret` of a new kind, `directory
   credential`, sealed under the `protocol` key RFC 13 §7 assigns to identity-provider bind
-  credentials. Needs RFC 13 Appendix B's row and RFC 16's `Secret.Kind` list amended. Prior art:
+  credentials. RFC 16 §2.3's `Secret.Kind` list names it (#4491). Needs RFC 13 Appendix B's row. Prior art:
   sssd's `ldap_default_bind_dn` beside `ldap_default_authtok` (from memory).
 - **D4, TLS is the address's scheme, and nothing turns it off.** `ldaps://host[:port]` dials TLS;
   `ldap://host[:port]` always upgrades with StartTLS before the bind; any other scheme is refused.
@@ -325,12 +325,19 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   and every other lookup is answered from the grace or refused; the probe's answer clears the
   condition. No background loop runs, so `Stop` has nothing to wait for. `decision:` marker at the
   outage branch. Prior art: a circuit breaker's half-open state (from memory).
-- **D10, `tokenGroups` first, `LDAP_MATCHING_RULE_IN_CHAIN` when the bind cannot read it.** An
+- **D10, `tokenGroups` first, a walk of security groups when the bind cannot read it.** An
   `ad` user's closure is one base-scope read of its constructed `tokenGroups`, which includes the
-  primary group `memberOf` omits; a bind account without the right to read it gets an empty
-  attribute, and the client then asks `(member:1.2.840.113556.1.4.1941:=<dn>)` with paging and
-  adds the primary group from `primaryGroupID`. An `rfc2307` directory is walked level by level
-  over `memberUid` and `member`. Prior art: sssd's `ldap_use_tokengroups` with the same fallback
+  primary group `memberOf` omits; more than 1 024 SIDs fail it `ErrUnavailable` before any SID is
+  looked up. A bind account without the right to read it gets an empty attribute, and the client
+  then walks the closure level by level from the user's DN and the DN of the primary group
+  `primaryGroupID` names, asking
+  `(&(objectClass=group)(groupType:1.2.840.113556.1.4.803:=2147483648)(|(member=<dn>)…))` with
+  paging, at most 64 terms to a filter, 64 levels and 1 024 groups. Only security groups are
+  followed, so a distribution group ends its branch and the walk answers what `tokenGroups`
+  would. An unreadable `primaryGroupID` fails the closure `ErrUnavailable`. The SID lookups, the
+  primary group's lookup and the walk run under the domain's `defaultNamingContext`, not the
+  record's base. An `rfc2307` directory is walked level by level over `memberUid` and `member`,
+  under the same bounds. Prior art: sssd's `ldap_use_tokengroups` with the same fallback
   (from memory).
 - **D11, a definite answer is a fresh one.** The cache answers a caller that asks "fresh only"
   from a query or a fresh entry, never a stale one, and fails `ErrUnavailable` otherwise. The
@@ -469,10 +476,13 @@ pkg/settings/
 - **Deliverables:** `directory.Record{Schema, Address, Base, BindName string; BindCredential
   entity.SecretRef; TrustRoots string; Realm, NetBIOSDomain, UserNameAttr, GroupNameAttr string;
   DCAddress, DNSServer string}` with RFC 13 Appendix B's defaults and `Validate`:
-  the address scheme of D4, the trust roots parsed as PEM, an `ad` realm with a lower-case ASCII
-  letter refused, an unknown schema refused, D4's `decision:` marker; the section declared through
-  `settings.Of("identity.directory", installation, …, settings.WriteRole(auth.Admin),
-  settings.SecretRef("bind_credential", "directory credential"))` (D3);
+  the address scheme of D4, the trust roots parsed as PEM (empty trusts the host's roots), an `ad`
+  realm with a lower-case ASCII letter refused, an unknown schema refused, D4's `decision:` marker;
+  the section declared through `settings.Of("identity.directory",
+  settings.At(entity.ScopeInstallation), …, settings.WriteRole(entity.RoleAdmin),
+  settings.SecretRef("BindCredential", entity.SecretDirectoryCredential))` (D3), the reference
+  named by its field; the kind `entity.SecretDirectoryCredential`, added here and sealed under the
+  `protocol` key in `pkg/secrets`' roles;
   `State.Directory *directory.Record` (D2); `Apply` refusing a `State` whose
   `Settings.NetBIOSName` equals `Directory.NetBIOSDomain` with ASCII letters folded, and keeping
   the last applied; `require_pac`, whose first reader is E5's T5.8, is added there. Consumed by
@@ -507,11 +517,15 @@ pkg/settings/
     and the package's own types, so `identitytest` imports `internal/identity/directory` and never
     `internal/identity`; `DialTLS`, lifted
     from v1's `dialAndBind` from history: TLS verified against the record's trust roots, or the
-    system's when it names none, `ServerName` the address's host, StartTLS for `ldap://`, no
-    `InsecureSkipVerify` anywhere;
+    system's when it names none, `ServerName` the address's host, the host resolved through the
+    record's `DNSServer` when it names one, StartTLS for `ldap://`, no `InsecureSkipVerify`
+    anywhere; its `Bind` refusing an empty password before any byte is sent, so no
+    unauthenticated bind leaves (RFC 4513 §5.1.2);
   - `identitytest.Directory`, the in-memory directory (kind 2): entries by DN, a simple bind
-    checked against a stored password, a referral for a search based outside its naming context
-    as a directory answers one, a search over base, one-level or subtree scope with
+    checked against a stored password, no such object (LDAP result 32) for a search based outside
+    its naming context, as Samba answers one, and continuation references to the configuration
+    and DNS partitions for a subtree search of the naming context itself, a search over base,
+    one-level or subtree scope with
     RFC 4515 filters parsed and evaluated by its own parser (equality, presence, substrings, and,
     or, not, `\xx` escapes), so a bad escape matches what a directory would;
   - `identitytest.FaultyDirectory` (kind 3), built on `pkg/sim`'s `Fault` and `Schedule`, around a
@@ -522,12 +536,17 @@ pkg/settings/
     a pass-through record of the queries it sent, for a test whose requirement is a query count;
   - `identitytest.DirectoryConformance(t, open func(t *testing.T) (directory.Conn, Seeder))`, its
     first rows: a value holding `*`, `(`, `)`, `\` and NUL matches only the entry that holds it
-    literally; two entries answering one name both returned; a search based outside the naming
-    context answered by a referral; `userAccountControl`'s disable bit
-    and a past `accountExpires` read back; `objectSid` and `objectGUID` as binary; the root DSE's
+    literally, by equality; substrings matched by initial, any and final pieces, on values holding
+    no NUL, since Samba matches a substring only up to a value's first NUL; two entries answering
+    one name both returned; a search based outside the naming context refused, never an empty
+    answer (Active Directory answers a referral, Samba noSuchObject); a subtree search of the
+    naming context handing back the partitions' continuation references; `userAccountControl`'s
+    disable bit
+    and a past `accountExpires` read back; a bind with an empty password refused; `objectSid` and `objectGUID` as binary; the root DSE's
     `defaultNamingContext`;
   - the suite run in `unit` over the in-memory directory and in `integration/ad-dc` over `DialTLS`
-    to the fixture, its `Seeder` through `samba-tool` there; the cell's LDAP tests, which RFC 23's
+    to the fixture, its `Seeder` adding entries over LDAP as the domain administrator there, not
+    through `samba-tool`; the cell's LDAP tests, which RFC 23's
     plan's epic 1 deletes, written afresh on it.
   Consumed by T6.5 to T6.11, E7's online join (`DialTLS`) and E8; the fault wrapper first by
   T6.6.
@@ -539,9 +558,9 @@ pkg/settings/
   each refused at the handshake, the listener's `Handshake` returning an error and reading no
   application byte, so no bind was sent (catches verification skipped or the host name unchecked,
   R9, R14); a server signed by the record's trust roots accepted. The suite's rows above, run on
-  both implementations, the referral row among them, so `DialTLS` is shown to hand a referral
-  back rather than follow it (R10, R23). No test double but the in-memory directory, held by the
-  suite.
+  both implementations, the continuation-reference row among them, so `DialTLS` is shown to hand
+  a reference back rather than follow it (R10, R23). No test double but the in-memory directory,
+  held by the suite.
 - **Rules:** rule 7 (v1's dialer lifted, its plaintext branch dropped),
   rule 8 (the suite against Samba).
 
@@ -555,9 +574,14 @@ pkg/settings/
   - the client, `Client` in `internal/identity/directory`, built by `NewClient` and called by
     `internal/identity` through its question methods: one `Conn` dialled at its first
     question, never at `New` or `Start`, redialled after a transport error; the bind credential
-    resolved through `Deps.Secrets` at the dial; the domain SID read from the root DSE's
+    resolved through `Deps.Secrets` at the dial, an empty one refused before the dial, so no
+    unauthenticated bind is sent (RFC 4513 §5.1.2); the domain SID read from the root DSE's
     `defaultNamingContext` entry before the first answer, `ErrUnavailable` while an `ad` client
-    cannot read it; a referral in any result refused `ErrUnavailable`, never dialled;
+    cannot read it; a continuation reference (`SearchResultReference`, `Result.Referrals`) handed
+    back and ignored, never followed or refused, and a referral (an `LDAPResult` with code 10)
+    refused `ErrUnavailable`, never dialled, the two being different LDAP messages; every search
+    sent with the domain-scope control (1.2.840.113556.1.4.1339), so a directory that honours it
+    sends no references and one that ignores it is served by the rule before;
   - the questions "who holds this name, SID or entry ID" and "what is this group's SID and gid",
     each one query under a 5-second timeout, values escaped as RFC 4515 requires (`go-ldap`'s
     `EscapeFilter` for text, `\xx` for a SID or GUID); two entries answering refused
@@ -578,14 +602,21 @@ pkg/settings/
   `*`, `(`, `)` and `\` beside the entries they would match unescaped, each resolving to its own
   entry only, and two entries answering one name `ErrUnavailable`, nothing bound (catches an
   unescaped value or the first of two taken, R18, R19, R20); a question based outside the
-  directory's naming context, answered by a referral: `ErrUnavailable`, never "no such entry"
-  (catches a referral read as an empty answer, R10, R14); a disabled bit, a past `accountExpires` and a `mail` read back (R21);
+  directory's naming context, which the in-memory directory answers noSuchObject, as Samba does:
+  `ErrUnavailable`, never "no such entry" (catches a refusal read as an empty answer, R14); the
+  same question's answer turned by the fault wrapper into an `LDAPResult` with code 10 naming
+  another host: `ErrUnavailable`, nothing dialled (catches a referral read as an empty answer or
+  followed, R10, R14); a name's question over the naming context, which the in-memory directory
+  answers with the entry and the partitions' continuation references: the entry answered (catches
+  a continuation reference refused, which would refuse every subtree lookup, R10); a disabled bit, a past `accountExpires` and a `mail` read back (R21);
   `Start` then `Stop` with the fault wrapper holding every dial until its context ends, under the
   leak check: `Start` returns at once (catches an eager dial, which would hang, R12); an `ad` directory without a readable domain object:
   every question `ErrUnavailable`, and an `rfc2307` one without it answering (R13); `Apply` of a
   second record while a question's answer is delayed by the fault wrapper: it ends on the first
   directory's answer, the next question on the second's (R8); the bind password, a `Secret`
-  sealed through #4059's provider, never in a captured log line (R11); the attribute list read
+  sealed through #4059's provider, never in a captured log line (R11); an empty resolved
+  credential: refused before dial, no connection made (catches a named bind sent with no
+  password, which a permissive directory answers as anonymous, R11); the attribute list read
   through `export_test.go` holds no `unicodePwd`, `ntPwdHistory` or `sambaNTPassword` (R15). In
   `integration/ad-dc`, the test call and a user's answer against Samba (R24, R21). R16's timeout
   is checked in T6.7, through the fault wrapper. Doubles: the in-memory directory (kind 2), the
@@ -600,22 +631,29 @@ pkg/settings/
 - **Track:** C. **Depends on:** T6.5.
 - **Covers:** R16, R22, R23.
 - **Deliverables:** the question "what are this principal's groups, nested" as D10 says, each page
-  of an RFC 2696 paged search followed to its end, a `member` value range-retrieved
-  (`member;range=0-1499`, then on), the `member;range=<lo>-<hi|*>` attribute parsed by the client's
+  of an RFC 2696 paged search followed to its end on the connection that answered its first
+  page, restarted once from the first page when that connection is found closed, and a failed
+  later page dropping its connection; a `member` value range-retrieved
+  (`member;range=0-1499`, then on) by the unexported `members`, reached only from tests until a
+  question lists a group's members (a `decision:` marker: no RFC 18 question asks for them), the `member;range=<lo>-<hi|*>` attribute parsed by the client's
   own parser, a range with `lo > hi` or whose next `lo` does not advance past the last `hi` refused
   `ErrUnavailable`, and `FuzzRangeAttr`; a lookup of many SIDs in one OR filter of at most 64 each, with
   D8's `ponytail:`; a closure that cannot be finished, a page or a range that fails, failing whole.
-  `identitytest.Directory` gains the constructed `tokenGroups`, `LDAP_MATCHING_RULE_IN_CHAIN`,
+  `identitytest.Directory` gains the constructed `tokenGroups`, `LDAP_MATCHING_RULE_BIT_AND`,
   paged results with a cookie and range retrieval past a member count the test sets; the suite
   gains a row for each. Consumed by T6.9 and T6.11.
 - **Acceptance criteria:**
   - A closure is returned whole or not at all.
 - **Tests:** in the suite, on both implementations: a user three levels deep in nesting, its
-  `tokenGroups` holding every level and the primary group; the chain rule answering the same
-  groups; a search over 2 500 entries in pages of 1 000 returning every entry once; a group of
-  3 000 members read in ranges (R23). At the client, over the in-memory directory: a bind that
-  cannot read `tokenGroups` gets the same closure through the chain rule and `primaryGroupID`
-  (catches the primary group lost, R22); `identitytest`'s fault wrapper failing the second page:
+  `tokenGroups` holding every level and the primary group; the walk through security groups
+  answering the same groups, a distribution group and a group reached only through it in neither;
+  a search over 2 500 entries in pages of 1 000 returning every entry once; a group of 3 000
+  members read in ranges (R23). At the client, over the in-memory directory: a bind that
+  cannot read `tokenGroups` gets the same closure through the walk and `primaryGroupID`
+  (catches the primary group lost, R22); one that cannot read `primaryGroupID`: `ErrUnavailable`
+  (R22); a record whose base holds none of the user's groups: the whole closure still answered (R22);
+  `tokenGroups` of more than 1 024 SIDs: `ErrUnavailable`, no SID looked up (R16); every page of
+  one search on one connection (R16); `identitytest`'s fault wrapper failing the second page:
   the closure `ErrUnavailable`, never the first page's groups (catches a truncated closure, R22);
   an `rfc2307` user two levels deep through `memberUid` and `member` (R22); the wrapper tearing
   the second range's attribute to `member;range=1500-1499`, and on another run repeating
@@ -937,10 +975,10 @@ much of v1's client survives D4 and D10, and the swap's ordering inside one tran
   RFC 18 §2.6 amended. Alternative: `Settings` gains a `Directory` field the node fills from the
   other section, which makes E2's struct two sections' shape.
 - **The bind name and the credential's kind (D3).** RFC 13 Appendix B's row has no bind name, and
-  RFC 16's `Secret.Kind` list has no kind for the directory's credential. Recommended: a
-  `bind_name` field and a `directory credential` kind, amending both. Alternative: the sealed
-  value holds the name and the password together, which hides from an operator which account
-  binds.
+  RFC 16 §2.3's `Secret.Kind` list names the `directory credential` kind since #4491. Recommended:
+  a `bind_name` field, amending Appendix B's row. Alternative: the
+  `directory credential` secret's sealed value holds the name and the password together, which
+  hides from an operator which account binds.
 - **The swap's one transaction (D5).** RFC 16 §3's `Rename` takes one principal; RFC 18 §5.1
   wants a swap's renames in one transaction. Recommended: `Rename` takes a list, amending RFC 16 §3.
   Alternative: a `Renames` call beside the single one.
@@ -971,9 +1009,9 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
 - RFC 18 §5.1's question table lists `uidNumber` and `gidNumber` among "who holds this", and §9.2
   their `uid` and `gid` labels; both serve only §4.3's claimed uid, deferred, so the client builds
   neither (§1.2).
-- RFC 18 §10's "Where the in-memory ones stand in" holds the in-memory directory to the real one on
-  `LDAP_MATCHING_RULE_IN_CHAIN`, while the RFC never says when a client uses it; D10 uses it when
-  `tokenGroups` cannot be read, which an RFC 18 §5.1 sentence should state.
+- RFC 18 §10's "Where the in-memory ones stand in" held the in-memory directory to the real one on
+  `LDAP_MATCHING_RULE_IN_CHAIN`, which no client question uses since D10 walks security groups
+  when `tokenGroups` cannot be read; §10 now names `LDAP_MATCHING_RULE_BIT_AND` instead.
 - RFC 18 §7.1 serves a directory principal's caller 5 minutes after it was built, which lets a
   caller built from an answer 19 minutes old live to minute 24, past ID9's TTL plus grace; T6.11
   bounds `Fresh` by both, and §7.1 should say so.
@@ -990,6 +1028,17 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
 
 **Other:**
 
+- **T6.5's referral rule, decided on #4734.** T6.4 found that Samba, like Active Directory,
+  returns continuation references to the configuration and DNS partitions on every subtree search
+  of the naming context, and answers a search outside it with noSuchObject rather than a referral,
+  so "a referral in any result refused" would have refused every subtree lookup. Decided: a
+  continuation reference (`SearchResultReference`) is handed back and ignored, a referral (an
+  `LDAPResult` with code 10) is refused `ErrUnavailable`, never dialled, and every search sends the
+  domain-scope control (1.2.840.113556.1.4.1339) to cut the references where the server honours
+  it; a narrower base is not needed. R10 is unchanged. T6.5's referral row comes from the fault
+  wrapper turning a real answer into a code-10 result, and T6.4's suite keeps its two rows from the
+  same finding: a base outside the naming context refused, never answered empty, and substrings
+  matched on values without a NUL.
 - `identitytest` imports `internal/identity/directory` for `Conn`, `Request` and `Entry`. E1's
   import rule forbids importing `internal/identity` outside `internal/node` and its own packages;
   it names the server's package, not the directory's, so the rule needs no change, but T6.4

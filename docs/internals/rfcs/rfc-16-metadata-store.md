@@ -744,6 +744,29 @@ type Setting struct {
 	Generation uint64       // raised by every change (RFC 13 §2.3)
 	Schema     uint32       // the record's schema version; a reader that does not know it refuses the record (RFC 13 §2.3)
 }
+
+// ScopeKind is a setting scope's kind, one byte: installation, node, namespace,
+// remote store or share. Its codes are the `CFG` scope tag of §4.2's enumerated
+// components, never reassigned. It is a type of its own, so a scope's code and a
+// ResourceKind, which give namespace and remote store opposite codes, do not mix
+// without a conversion.
+type ScopeKind uint8
+
+// SettingScope is where a setting is set (RFC 13 §3): the scope's kind and, but
+// for the installation, the ID of the node, namespace, remote store or share.
+type SettingScope struct {
+	Kind ScopeKind
+	ID   [16]byte // the scope's ID (§4.2's identifier); zero for the installation
+}
+
+// SettingKey is one setting's place in `CFG`'s key order: its scope, then its
+// key. It resumes a paged read of every scope's settings (RFC 23 §2.1): a page
+// starts strictly after the key it holds, so a key deleted since still resumes,
+// and the zero value starts at the first.
+type SettingKey struct {
+	Scope SettingScope
+	Key   string
+}
 ```
 
 ```go
@@ -751,16 +774,31 @@ type Setting struct {
 // is envelope-encrypted under a key held outside the KV, so a copy of the
 // store alone reveals nothing. Referenced by SecretRef from User and Setting.
 // Each secret kind is sealed under the wrapping key of the role that needs it
-// (RFC 13 §7); every node holds both keys.
+// (RFC 13 §7); every node holds both keys. A node credential (RFC 15 §4.4) is
+// not a Secret: its private half stays on the node's volume (RFC 30 §4.2).
 type Secret struct {
 	ID    SecretRef
-	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, machine password (RFC 18 §3.5), remote credential, key, node credential (RFC 15 §4.4)
+	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, machine password (RFC 18 §3.5), remote credential, key, directory credential (the directory's bind credential), client secret (an OpenID Connect client's secret)
 	Version uint64   // raised by every rotation; the previous version stays resolvable until every node reports this one, a keytab's and a machine password's for RFC 18 §3.3's retention, the API signing key's until its last token expires (RFC 13 §7)
 	KeyID string     // which wrapping key sealed it: one per role or secret kind
 	Owner SecretOwner // the record or setting key whose field names it; a new version keeps both Kind and Owner, which PutSecret enforces, and pkg/secrets refuses a read whose reference comes from another owner or expects another kind, so a reference cannot be pointed at another holder's secret (RFC 23 §5.2)
 	Value []byte     // sealed
 	KeyVersion uint32 // a machine password's key version number, set when sealed and never changed; zero for every other kind (RFC 18 §3.3, §3.5)
 	HandedOver bool   // a machine password an offline join was handed: derives no Kerberos key and backs no previous-version fallback (RFC 18 §3.5); written with the version, bound into its sealed value's additional data, never changed
+}
+
+// ResourceKind is a record's kind, one byte: the codes of §4.2's enumerated
+// components, never reassigned or renumbered, a new kind taking the next. RFC 23
+// names a resource by the kind's name ("share", "netgroup"), which the API maps
+// to the byte and never stores.
+type ResourceKind uint8
+
+// ResourceRef names one record by its kind and its key. The zero value names
+// none. Each kind uses one ID form, minted or natural, never both. A Secret's
+// additional data seals Kind, which a code that never changes keeps opening.
+type ResourceRef struct {
+	Kind ResourceKind // the record's kind, one byte
+	ID   []byte // the record's key: its minted 16-byte ID (ShareID, PrincipalID, §2.2), else its natural key's components as raw bytes, the variable-length one last: a netgroup's name; a setting's scope tag, its scope ID below the installation, then its key (for an `OPR` or `AUX` target only, since a SecretOwner never names a setting through Record); a grant's ShareID then its Principal; a snapshot's ShareID then its Cut, as `S‖id‖snap‖cut` keys it. §4.2's `OPR` and `AUX` targets write the whole ID as one byte string
 }
 
 // SecretOwner is the one holder a secret belongs to: a record's field (a
@@ -770,13 +808,25 @@ type Secret struct {
 // ID, under the keys "signing_key" and "machine_password") or a setting's key
 // (a keytab, the directory's bind credential, an OpenID Connect client's
 // secret). Encoded with the version, as the Secret's other fields are, and
-// compared whole.
+// compared through its Equal method, the record ID with bytes.Equal. A setting
+// has one owner form: Record never names a setting, and a setting's owner is
+// always its Scope and Key, so no secret is owned two ways.
 type SecretOwner struct {
 	Record ResourceRef  // the record's kind and ID; zero for a setting
 	Scope  SettingScope // the setting's scope; zero for a record
 	Key    string       // the record's field name, or the setting's key
 }
+
+// Equal reports whether o and x name the same owner, comparing every field;
+// ResourceRef.ID is a slice, so it is compared with bytes.Equal.
+func (o SecretOwner) Equal(x SecretOwner) bool
 ```
+
+> decision: a netgroup or a grant recreated under the same natural key has the
+> same `ResourceRef`, so its `AUX` rows join the old one's and a read by target
+> returns both lives, told apart by their times. A minted ID names one life only.
+> The trail follows the name an operator typed. Overturned if a consumer needs one
+> life per target: the `AUX` key then gains the record's creation generation.
 
 Every node holds both wrapping keys; they stay separate so a later split of the
 roles ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)) re-seals
@@ -2141,7 +2191,7 @@ are the prefix's. No separator byte is written.
   block name's first, repeated ahead of the time or bucket, so a contiguous
   range of `b` is one GC partition's keys whatever the partition count
   ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)).
-- **Byte string** — an entry's folded key, an xattr name, an idempotency key (`IK`), an operation or resource kind (`OPR`, `AUX`), a user, group, share
+- **Byte string**: an entry's folded key, an xattr name, an idempotency key (`IK`), an operation kind (`OPR`), a user, group, share
   or netgroup name, a path, a journal directory (`JD`'s `device`), a setting key, a SID, a Kerberos principal, a
   client owner, a backup location's name (`NS‖ns‖bk‖location`, and `NS‖ns‖keyseq‖target`, empty for the namespace's own object), a namespace key ID (up to 255 bytes, [RFC 5](rfc-5-transforms.md)), a master key ID
   (`MKP`'s `masterKeyID`, [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)): each `0x00` byte written as `0x00 0xFF`, then the two-byte
@@ -2182,7 +2232,7 @@ are the prefix's. No separator byte is written.
 | `NS‖ns‖gc‖cursor` | walk: audit 0x01, block walk 0x02, index rebuild 0x03 |
 | `CLO` | `protocol.Kind`'s byte, one per protocol ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): NFSv3 0x01, which holds no client record, NFSv4 0x02, its minor versions one kind, NLM 0x03, SMB 0x04 |
 | `IDS` | kind: client 0x01, open 0x02, lock 0x03, uid 0x04, gid 0x05, RID 0x06, shard 0x07 |
-| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04, `oidc` 0x05; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `XP` tag: idempotency 0x01, operation 0x02, session 0x03, source's sign-in failures 0x04, API token 0x05, pair's sign-in failures 0x06; `SF` tag: account 0x01, source 0x02, account and source 0x03; `AUX` tag: actor 0x01, target 0x02, node 0x03; resource `target` (`OPR`, `AUX`): the resource kind as a string, then its ID as a byte string; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
+| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04, `oidc` 0x05; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `XP` tag: idempotency 0x01, operation 0x02, session 0x03, source's sign-in failures 0x04, API token 0x05, pair's sign-in failures 0x06; `SF` tag: account 0x01, source 0x02, account and source 0x03; `AUX` tag: actor 0x01, target 0x02, node 0x03; resource `target` (`OPR`, `AUX`): its `ResourceKind` byte, installation 0x01, node 0x02, remote store 0x03, namespace 0x04, share 0x05, grant 0x06, quota 0x07, user 0x08, group 0x09, membership 0x0A, netgroup 0x0B, setting 0x0C, secret 0x0D, adapter 0x0E, snapshot 0x0F, snapshot policy 0x10, backup location 0x11, backup 0x12, move 0x13, rehome 0x14, operation 0x15, API token 0x16, session 0x17, then its ID as a byte string; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
 
 This encoding, both tables and every fold rule are part of the store format
 (§4.6): changing any of them is a format bump, and a code once assigned is never

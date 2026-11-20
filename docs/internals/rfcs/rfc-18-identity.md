@@ -395,7 +395,10 @@ Giving an API-only account a file spelling — any scheme but `oidc` — makes i
 file user, and allocates the file spellings it still lacks in the same
 transaction. A machine principal is never given one: a machine that needs file
 access is linked to a user instead, by moving its `krb` spelling to that user
-(§4.2), and its next sign-in binds to the user (§3.1).
+(§4.2), and its next sign-in binds to the user (§3.1). The move deletes the
+machine record: the write that moves the spelling marks the machine deleted and
+starts its deletion
+([RFC 23 §3.5](rfc-23-control-plane.md#3.5%20Users%2C%20groups%2C%20grants%20and%20netgroups)).
 
 *Example.* The bootstrap administrator `admin` and a CI account `deployer` can
 create shares and grants, but cannot mount one.
@@ -563,8 +566,11 @@ only the store's value types (`entity`), the SID codec, `vfserr`, and
 holds the value
 types (`Identity`, `ProofKind`, `Protection`, `Claims`, `Evidence`, `Keys`,
 `SignInStep`, `SignInResult`, `Caller`, `Spelling`, `Scheme`, `SID`,
-`NTLMAuthenticate`), the interfaces of §3.1, §4.1, §6.1 and §8.1, and
-`NewHashes`. Its errors, `ErrLogonFailure` and `ErrUnknownPrincipal`, are
+`NTLMAuthenticate`, `KeytabName`), the interfaces of §3.1, §4.1, §6.1 and §8.1,
+`NewHashes`, and the keytab import's checks the management API runs before it
+seals a keytab (§3.3): `CheckKeytab`, and `KeytabNames`, the name and realm of
+each key, which refuses what `CheckKeytab` refuses.
+Its errors, `ErrLogonFailure` and `ErrUnknownPrincipal`, are
 `vfserr`'s ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). Its test helpers are `identitytest`: an in-memory directory and
 domain controller, each held by its conformance suite to the real one
 ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The server is `internal/identity`,
@@ -819,7 +825,10 @@ that holds the `host/` name; an offline join reports which names it serves
 through them, and a ticket's service name is compared with them
 with ASCII letters folded (§4.6), as Active Directory compares them case-insensitively. A derived key follows its password's version: it is
 applied with it, and kept after it stops being current for the retention
-above. The one exception is a version marked `HandedOver` (RFC 16 §2.3), an
+above. Only the version just below the current one is kept so: an older one is
+removed at once, so a ticket under it is refused inside its 10 hours, the rare
+ticket two rotations old, and a run of rotations never keeps an older password
+usable past one retention. The one exception is a version marked `HandedOver` (RFC 16 §2.3), an
 offline join's (§3.5): no key is derived from it, whichever node applies it and
 after any restart, since the mark is stored with the version. A ticket for one of these names whose key version number no held key
 carries is tried against each held derived key of its encryption type, the
@@ -938,6 +947,21 @@ Before any logon is sent over the secure channel, its set-up **MUST** verify
 the domain controller's server credential (MS-NRPC 3.1.4.1); one that fails
 refuses the channel, so no NTLM response reaches a peer that does not hold the
 machine password.
+
+Its set-up **MUST** also refuse a `NetrServerReqChallenge` server challenge
+that is missing, not 8 bytes, or one byte repeated, all zero among them, before
+computing the session key from it, and an all-zero server credential, a defence
+in depth: no challenge the check above admits computes an all-zero credential,
+since under AES-CFB8 with a zero IV only a repeated-byte challenge has one
+(MS-NRPC 3.1.4.4.1). The flags `NetrServerAuthenticate3` negotiated are checked
+for AES before the server credential, so a controller without AES is reported as
+such.
+
+The CHALLENGE's `MsvAvNbComputerName` **MUST** be `identity.netbios_name`, the
+joined account's NetBIOS name, which identity hands the adapter's `gss`: a
+domain controller may refuse a pass-through whose NTLMv2 response names a
+computer other than the secure channel's account, and Samba does. The adapter
+builds the CHALLENGE and its other AV pairs ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
 
 A local user or group name never holds `@` or `\` (§4.6), so a name with
 either is never local. `identity.netbios_name` **MUST NOT** equal the directory record's NetBIOS
@@ -1069,9 +1093,12 @@ Active Directory Users and Computers has none, and reports which service names t
 names still need an imported key (§3.3), before the secure channel signs in
 with the password; it then rotates the password twice
 (below), because whoever created the account knows it and could derive the
-computer account's service key and forge a PAC with it, and a domain
-controller accepts the previous password as well as the current one, so after
-one rotation the creator could still set up a secure channel as the account.
+computer account's service key and forge a PAC with it, and after one
+rotation the creator could still set up a secure channel as the account: a
+Windows domain controller accepts the previous password at
+`NetrServerAuthenticate3` as well as the current one, Samba does not, and
+either way a controller the first set has not reached still holds the
+handed-over password.
 **The second rotation's confirm proves no third set.** The join reads the
 account's key version number from its pinned controller when it verifies the
 handed-over password, and records it with that step. The second rotation's
@@ -1558,7 +1585,9 @@ seconds cuts such a sign-in off at the connection instead:
 Each user answer carries the account's enabled state and, when the entry has
 one, its e-mail address (its `mail` attribute, for example). A nested-group
 closure the directory cannot answer in one query is walked level by level, and
-one that cannot be finished fails whole (§2.5).
+one that cannot be finished fails whole (§2.5). In Active Directory the walk
+follows security groups only, from the user and its primary group, so it answers
+what the user's `tokenGroups` holds.
 
 - **A record is minted once**, from the first answer, and holds its
   `PrincipalID`, `dir` entry ID, name, SID, uid and gid from then on. Later
@@ -1598,6 +1627,8 @@ one that cannot be finished fails whole (§2.5).
   skipping verification is refused at validation. A referral to any other host
   is not followed, so the bind credential goes nowhere else. The bind
   credential is a `Secret` ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)).
+  An empty bind credential is refused, and no unauthenticated bind is sent
+  (RFC 4513 §5.1.2).
 
 > ponytail: one directory, read directly over LDAP: no forest trusts, no global
 > catalogue, no second directory; NTLM pass-through and SID lookups reach only
@@ -2167,7 +2198,7 @@ connection-state pool, and past its share:
 | Table | Past its share |
 | --- | --- |
 | caller cache | the least recently used entry is evicted, counted |
-| directory cache | the least recently used entry is evicted; an evicted entry is a miss, never "not found" |
+| directory cache | the least recently used entry is evicted, counted; an evicted entry is a miss, never "not found" |
 | replay cache | holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone; a sign-in that would need one more fails `ErrUnavailable`. One ticket client, by its client name and realm, holds at most a sixty-fourth of the entries, so a holder of one valid ticket cannot fill the cache for everyone: past its share it alone fails `ErrUnavailable` |
 | logon throttle | one client address, the unit a pair is keyed by (an IPv4 address, an IPv6 /64), holds at most a sixty-fourth of the pairs, those with an attempt in flight included. A new pair from an address at its share evicts that address's least recently settled pair below its limit, counted, or else its first to reach the limit once that pair's window has passed; when neither can go, the new pair fails `ErrLogonFailure`, outcome `throttled`, for that address alone. A new pair from an address under its share, when the table is full, evicts the table's least recently settled pair below its limit, from any address, counted; only when no settled pair is below its limit does it evict the table's least recently admitted pair, whatever its count and even with an attempt in flight, counted |
 | directory lookups a `Claimed` caller triggers | at most 100 a minute per client address; past it the call is refused with a retryable error, never mapped to anonymous |
@@ -2399,6 +2430,7 @@ alice's still signs in as alice.
 | Calls refused at resolution | `identity_resolution_refusals_total{reason}`: `disabled` (a disabled or deleted principal, §3.7), `group_cap`, `store_unavailable`, `directory_unavailable`, `anonymous_missing`, `ntlm_off`, `lookup_cap` | counter |
 | Directory lookups by result | `identity_directory_lookups_total{question, result}`: `question` = `name`, `sid`, `uid`, `gid`, `groups`, `group`; `result` = `fresh`, `queried`, `not_found`, `stale`, `refused`, `ambiguous` | counter |
 | Directory query latency | `identity_directory_seconds` | histogram (`request`) |
+| Directory cache entries evicted at its bound (§7.3) | `identity_directory_evictions_total` | counter |
 | ID-token verifications by result | `identity_oidc_verifications_total{result}`: `ok`, `invalid`, `unlinked`, `stale`, `unavailable` | counter |
 | Age of the principals generation served | `config_generation_lag_seconds{kind="principals"}`, RFC 13's gauge | gauge |
 
@@ -2487,6 +2519,7 @@ RFC 16's conformance suite's, not repeated here.
 | offline join | 1 | Offline-join an account whose `msDS-SupportedEncryptionTypes` lacks AES, and one without the attribute: both refused. One that advertises it: joined, with the service names it holds reported, and the password the administrator handed over rotated: a ticket under a key derived from it is refused, before the rotations and after them. Stop the join after storing the handed-over password, restart identity over the same store and resume: the version is still marked `HandedOver` and derives no key, the join resumes its rotations, and it is done only once the second is confirmed. Before then, a pass-through sign-in is refused; after it, a controller that refuses the new password is not signed in to with the handed-over one. After the join, the handed-over password sets up no secure channel at the controller, being neither its current nor its previous password. Fail the second closing rotation after its set reached the controller, so the join fails: the installation is not joined, the `Installation` record says so after a restart, both versions it set kept, unconfirmed, and the rest it sealed pruned; an offline join run again after a reset completes, and only then are the kept versions pruned. Between the two closing rotations, set a password at the in-memory controller over a channel the handed-over password authenticates, once before the second rotation reads its tag and once after: the join fails both times, naming the number read, and is not joined. |  a join whose tickets are all refused; a service key its creator still knows; a join left without Kerberos by a crash before its rotation; the handed-over password signing the secure channel; the creator's password still the controller's previous one; a creator's set between the closing rotations passed as a mismatch; a failed join pruning a password the controller holds |
 | machine account health | 1 | Fail the secure channel to every domain controller: `machine_account_unhealthy` raised; restore one: cleared. Fail a rotation, then restore the channel and restart identity: `machine_password_rotation_failed` raised until a rotation completes. Hold a node from reporting the previous version past the rotation's schedule: raised. Make a rotation's pinned controller unreachable for an hour on the injected clock after it set the password: the rotation fails, naming it, raised, and tickets under both the sealed and the previous version still verify. Fail two rotations in a row, then complete one: the second sets the first's sealed version rather than sealing another, at most one unconfirmed version is in force, and the secure channel signs in throughout. Fail a rotation after the controller took its set, then run the next: it probes, finds the version accepted and does not set it again, and the account's key version number rises once. A confirm whose number differs from the tag: the rotation completes, the mismatch reported and counted, the tag unchanged, and a ticket under the controller's number verifies. A confirm at a controller that no longer accepts the sealed version: the rotation fails, naming it. | a failed rotation hidden by a reconnect; a rotation stuck behind a lagging node or a controller that is gone; versions piling up across failed rotations; a re-set that moves the number past its tag; a rotation that never completes on a mismatch |
 | rogue domain controller | 1 | In `integration/ad-dc`, a fault wrapper around the client's connection to the real domain controller changes one byte of the server credential in `NetrServerAuthenticate3`'s reply, which the controller computed after accepting the client's: it fails to verify (MS-NRPC 3.1.4.1), the channel is refused, and no NTLM response is sent. A controller that does not hold the machine password, a second domain's among them, refuses the client's credential first and never reaches this check. | pass-through to whoever answers on the address |
+| zeroed secure channel reply | 1 | In `integration/ad-dc`, through the same fault wrapper: zero the server challenge in `NetrServerReqChallenge`'s reply, and the channel is refused before `NetrServerAuthenticate3` is sent; zero the server credential in `NetrServerAuthenticate3`'s reply, and it is refused. A unit row refuses a challenge of one byte repeated, and a reply whose all-zero server credential equals the one the client computed from such a challenge. | a server challenge or credential the set-up accepts though §3.5 refuses it |
 | NETLOGON wire | 1 | In `integration/ad-dc`, through the same fault wrapper. Drop the connection after a pass-through's `NetrLogonSamLogonEx` with a wrong password was written: `ErrUnavailable`, the request not sent again, and the account's `badPwdCount` up by one; drop it before the request was written: sent once on a new connection. The client's `NetrServerAuthenticate3` offers no RC4, and with the AES flag cleared in the flags the reply negotiates, the channel is refused. Every `NetrLogonSamLogonEx` the wrapper passes carries a Netlogon verifier at the privacy level. | a bad password counted twice toward lockout; a channel negotiated down from AES; a logon sent unsealed |
 | NetBIOS name while joined | 1 | On a joined installation, a settings change to `identity.netbios_name`: refused at validation, the name unchanged. | a CHALLENGE naming an account the installation does not hold |
 | NetBIOS name and domain | 1 | A settings change giving `identity.netbios_name` the directory record's NetBIOS domain, and a directory record whose NetBIOS domain is `identity.netbios_name`, in another case: each refused at validation, naming the other. | one domain routing to both sources |
@@ -2529,18 +2562,19 @@ API's sign-in is tested against the real identity server, called directly
 
 **Where the in-memory ones stand in.** The in-memory directory parses and
 evaluates RFC 4515 filters, and its suite holds it to the real one on exact
-queries, the escaping of an LDAP filter's special characters, an ambiguous
-name, `LDAP_MATCHING_RULE_IN_CHAIN`, `tokenGroups`, paging, range retrieval,
-and an account disabled by `userAccountControl` or `accountExpires`. The
-in-memory domain controller stands in above the NETLOGON client, answering its
-calls with their results, so the rows that check the client's own wire
-behaviour — "rogue domain controller" and "NETLOGON wire": the server-credential
-check, a retry only before the request was sent, the AES-only negotiation and
-the sealed channel — run only against a real domain controller, through a fault
-wrapper around the client's connection to it. Its suite holds it to the real one on pass-through, the
-bad-password count rising by one per wrong password and reset by a success, a
-computer account's creation and the refusal of an existing one,
-`msDS-KeyVersionNumber` rising by one on a password set,
+queries, the escaping of an LDAP filter's special characters, an ambiguous name,
+`LDAP_MATCHING_RULE_BIT_AND` on `groupType`'s security bit, `tokenGroups`,
+paging, range retrieval, and an account disabled by `userAccountControl` or
+`accountExpires`. The in-memory domain controller stands in above the NETLOGON
+client, answering its calls with their results, so the rows that check the
+client's own wire behaviour — "rogue domain controller", "zeroed secure channel
+reply" and "NETLOGON wire": the server-credential check, the challenge and
+credential refusals, a retry only before the request was sent, the AES-only
+negotiation and the sealed channel — run only against a real domain controller,
+through a fault wrapper around the client's connection to it. Its suite holds it
+to the real one on pass-through, the bad-password count rising by one per wrong
+password and reset by a success, a computer account's creation and the refusal
+of an existing one, `msDS-KeyVersionNumber` rising by one on a password set,
 `msDS-SupportedEncryptionTypes` as written, and the three answers of the probe
 whether a password is accepted. A controller that has not yet replicated a
 change is the in-memory one's alone, since one real controller cannot show it.

@@ -70,11 +70,10 @@ the local check against a sealed NT hash; the NTLM-off refusal at sign-in; the t
 - Kerberos's branch of `SignIn`, outcomes `replay` and `no_pac`, and a ticket's `Expires`: E5.
   Until E5, a Kerberos step keeps epic 1's `ErrUnavailable` stub.
 - NEGOTIATE and CHALLENGE, parsing the AUTHENTICATE, SPNEGO and the `mechListMIC`: RFC 20 §4.4's
-  `gss`, built by RFC 22's plan. The CHALLENGE's AV pairs, `MsvAvNbComputerName` from
-  `identity.netbios_name` among them, and so "NTLM domain"'s first clause, the CHALLENGE
-  advertising the installation's name: the RFC 18 plan's deferral ledger row "The CHALLENGE's
-  AV pairs, `MsvAvNbComputerName` from `identity.netbios_name`, and the seam that hands `gss`
-  those names".
+  `gss`, built by RFC 22's plan. The CHALLENGE's AV pairs, and so "NTLM domain"'s first clause,
+  the CHALLENGE advertising the installation's name: the RFC 18 plan's deferral ledger row "The
+  CHALLENGE's AV pairs"; `MsvAvNbComputerName`'s value, `identity.netbios_name`, and the seam that
+  hands `gss` it: E7's T7.11.
 - RFC 18 §3.6's first rule, null and guest sessions set up as anonymous with no key, and §3.8's
   re-authentication as null or guest keeping the first keys: `gss` and RFC 22's session code set
   them up without `SignIn` (RFC 20 §4.4; RFC 22's plan's S4), so nothing here can break them.
@@ -161,7 +160,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R10 | The NTLMv2 proof is compared in constant time, and an unknown name costs the same work as a wrong password (this epic equalises the NTLMv2 computation; the secret's unwrap is D4's open point) | MUST | §3.5 | T4.1, T4.2 |
 | R11 | When `MsvAvFlags` marks a MIC present, the MIC verifies over the exact NEGOTIATE, CHALLENGE and AUTHENTICATE bytes, keyed by the exported session key; a flagged MIC that is missing or zero fails | MUST | §3.5 | T4.1, T4.2 |
 | R12 | The session base key is `HMAC_MD5(NTOWFv2, NTProofStr)`; with `NTLMSSP_NEGOTIATE_KEY_EXCH` the exported session key is the RC4 unwrap of `EncryptedRandomSessionKey` under it, else the base key | invariant | §3.5 | T4.1, T4.2 |
-| R13 | A MIC or key failure, and a message asking for signing without key exchange, is `ErrLogonFailure` | MUST | §3.5 | T4.1, T4.2 |
+| R13 | A MIC failure, and a message asking for signing without key exchange, is `ErrLogonFailure`; a key exchange whose `EncryptedRandomSessionKey` is not 16 bytes is a malformed message, `ErrInvalid` (D3) | MUST | §3.5 | T4.1, T4.2 |
 | R14 | A `Disabled` principal fails sign-in with `ErrLogonFailure`, logon outcome `disabled`; one marked deleted is found by no name (RFC 23 epic 2's R39, R40), so it is a miss: `ErrLogonFailure`, outcome `logon_failure` | MUST | §3.7; RFC 23 epic 2's R39, R40 | T4.2, T4.5 |
 | R15 | While `identity.ntlm` is off, NTLM sign-ins are refused, from the `Apply` that delivers the setting | MUST | §3.5 | T4.2 |
 
@@ -176,9 +175,9 @@ tests can cite them. Sources are RFC 18 unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R18 | Past 10 `ErrLogonFailure` results in 10 minutes for one (name, client address), the name being the user part without its domain or realm, folded as §4.6 folds a name, and the address an IPv6 address's /64 as RFC 23 §5.3 keys a source, every further attempt from that pair fails `ErrLogonFailure` before its credential is checked, until the window has passed with fewer | MUST | §3.1; RFC 23 §5.3 | T4.4 |
+| R18 | Past 10 `ErrLogonFailure` results in 10 minutes for one (name, client address), the name being the user part without its domain or realm, folded as §4.6 folds a name, and the address an IPv6 address's /64 as RFC 23 §5.3 keys a source, every further attempt from that pair fails `ErrLogonFailure` before its credential is checked, until the window has passed with fewer, unless §7.3 evicts the pair from a full table | MUST | §3.1; RFC 23 §5.3 | T4.4 |
 | R19 | No account is locked by failures: the count is per pair, so the same user from an address outside the pair's /64 (or another IPv4 address) still signs in | invariant | §3.1; RFC 23 §5.3 | T4.4 |
-| R20 | Past its share, the throttle evicts its oldest pair, counted | bound | §7.3 | T4.4 |
+| R20 | The throttle holds 65 536 pairs, one client address at most a sixty-fourth of them, those with an attempt in flight included; a new pair past either evicts as §7.3's row says, counted, or, from an address whose whole share is at its limit or in flight, is refused `throttled` | bound | §7.3 | T4.4 |
 | R30 | `Stop` drops the throttle's table, identity's first in-memory table (epic 1's R14 leaves the drop to the first epic that keeps one) | invariant | §2.6 | T4.4 |
 | R21 | §10's "logon throttle" row, its local half: 10 wrong passwords then the right one refused, outcome `throttled`; 10 spread over `alice`, `ALICE`, `CORP\alice` and `alice@CORP.EXAMPLE`, the eleventh refused | test row | §10 | T4.4, T4.5 |
 
@@ -241,10 +240,12 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
     is decided before the proof, so it tells nothing of the password. A store or secret fault,
     `ErrUnavailable` (T4.2), does not count either (D5), so an outage never locks a right
     password out. From a pair the throttle already refuses, it is answered `throttled` like any
-    other attempt.
-  - Every failure once the proof has been computed (the proof, the key exchange, the MIC, a
-    disabled user) is `ErrLogonFailure`, counted by the throttle, so no answer tells a right
-    password from a wrong one.
+    other attempt. A key exchange whose `EncryptedRandomSessionKey` is not 16 bytes is malformed
+    the same way, `ErrInvalid`, and signing asked for without key exchange is `ErrLogonFailure`:
+    both are read from the message beside the response, before the proof is computed.
+  - Every failure once the proof has been computed (the proof, the MIC, a disabled user) is
+    `ErrLogonFailure`, counted by the throttle, so no answer tells a right password from a wrong
+    one.
 
   `decision:` marker at the classification. Prior art: Samba and Windows answer the malformed
   case `STATUS_INVALID_PARAMETER` (`develop`'s comment, checked).
@@ -264,9 +265,19 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   `ErrUnavailable` do not. A pair's key is the SHA-256 of the folded user part beside the unmapped client address
   (`netip.Addr.Unmap`), an IPv6 address cut to its /64 as RFC 23 §5.3 keys its sources, so an
   attacker's 64 KiB name costs 32 bytes, `::ffff:a.b.c.d` is `a.b.c.d`, and one host's /64
-  cannot spread its failures over 2⁶⁴ pairs; a `decision:` marker at the key says so. The table holds 65 536 pairs, about 5 MiB with their times, a fixed count until RFC
-  24's pool can be charged. `decision:` marker for the throttled-attempt rule; RFC 18's §3.1 and
-  §7.3 `ponytail:` notes and a `ponytail:` on the fixed count at the table. Prior art: Samba
+  cannot spread its failures over 2⁶⁴ pairs; a `decision:` marker at the key says so. The table
+  holds 65 536 pairs, one client address unit at most a sixty-fourth of them, fixed counts until
+  RFC 24's pool can be charged; measured, the full table takes 14 MiB with 1 024 pairs per
+  address and 23 MiB with every pair from an address of its own, since each address keeps a
+  record of its share. A new pair evicts as RFC 18 §7.3's row says: from an address at its
+  share, that address's least recently settled pair below its limit, or else its first to reach
+  the limit once that pair's window has passed, or else it is refused `throttled`; from an
+  address under its share into a full table, the table's least recently settled pair below its
+  limit, from any address, or else its least recently admitted pair. So junk names never free a
+  throttled pair while a pair below its limit can go, and one address cannot fill the table; a
+  `decision:` marker at the address's own eviction. `decision:` marker for the throttled-attempt
+  rule; RFC 18's §3.1 and §7.3 `ponytail:` notes and a `ponytail:` on the fixed count at the
+  table. Prior art: Samba
   counts only checked failures toward `bad password` (from memory).
 - **D6, the throttle keys on E2's user part.** The pair's name is E2's
   `entity.PrincipalUserPart` (its D2, T2.1), which strips a `DOMAIN\` prefix and an `@realm`
@@ -349,8 +360,8 @@ internal/vfs/
   - `checkProof(key [16]byte, challenge [8]byte, proof [16]byte, blob []byte) (base [16]byte,
     ok bool)`, from `ValidateNTLMv2Response`, comparing with `hmac.Equal`;
   - `exportedKey(base [16]byte, flags uint32, encrypted []byte) ([16]byte, error)`, from
-    `DeriveSigningKey`, refusing a key exchange whose key is not 16 bytes, where `develop` fell
-    back to the base key, and signing without key exchange;
+    `DeriveSigningKey`, refusing a key exchange whose key is not 16 bytes, `ErrInvalid`, where
+    `develop` fell back to the base key, and signing without key exchange, `ErrLogonFailure`;
   - `checkMIC(key [16]byte, a *identity.NTLMAuthenticate, avFlags uint32) error`, from
     `VerifyAuthMessageMIC`, reading the MIC from `Raw` per D2.
 
@@ -454,9 +465,9 @@ internal/vfs/
   - "NTLM MIC", local half, with the right password: a corrupted MIC, a zeroed flagged one, and
     a flagged MIC on a `Raw` shorter than 88 bytes, each `ErrLogonFailure` (catches `develop`'s
     advisory check, and a right password told apart by its answer, R11, R27);
-  - with the right password, a key exchange carrying a 15-byte key and a message asking for
-    signing without key exchange: `ErrLogonFailure` and zero `Keys` (catches an `exportedKey`
-    error dropped by its caller, R13);
+  - with the right password, a key exchange carrying a 15-byte key: `ErrInvalid`; a message
+    asking for signing without key exchange: `ErrLogonFailure`; each with zero `Keys` (catches an
+    `exportedKey` error dropped by its caller, R13);
   - `Apply` turning `identity.ntlm` off: the vector's sign-in refused; on again, accepted (R15);
   - `Context` set to alice's evidence with SIDs and an `Expires`, signing in as bob: bob's
     principal, no SIDs, zero `Expires` (catches the old evidence kept or merged, R17).
@@ -489,7 +500,7 @@ internal/vfs/
 - **Track:** B. **Depends on:** T4.2.
 - **Covers:** R18, R19, R20, R21, R30.
 - **Deliverables:** `throttle` in
-  `internal/identity`, keyed and sized as D5 says, the oldest pair evicted and counted in
+  `internal/identity`, keyed, sized and evicting as D5 says, each eviction counted in
   `identity_logon_throttle_evictions_total` (the name pending §9); `SignIn` asking it right after
   D3's unclassified step and before the NTLM-off, NTLMv1 and malformed-response refusals (D3),
   and counting each `ErrLogonFailure` but a throttled one, NTLM off and NTLMv1 included, with
@@ -524,7 +535,11 @@ internal/vfs/
     throttled attempts once a minute meanwhile do not delay that (catches throttled attempts
     counted, D5);
   - 65 537 distinct pairs: the first evicted, the eviction count 1, and its address no longer
-    throttled (R20); a user field of 64 KiB is held at its key's size, read through an
+    throttled (R20); a pair at its limit kept while junk names from its address, and from a full
+    table's other addresses, evict pairs below their limit; an address whose whole share is at
+    its limit refused a new pair, while another address signs in; attempts in flight counted
+    against the share (catches a throttled pair freed by junk names, or one address filling the
+    table, R20, D5); a user field of 64 KiB is held at its key's size, read through an
     `export_test.go` accessor of the table's footprint (catches a key holding the name, D5);
   - two addresses in one IPv6 /64: one pair, the eleventh attempt from the second refused
     (catches a key on the whole IPv6 address, D5);

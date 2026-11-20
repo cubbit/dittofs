@@ -455,7 +455,7 @@ There is no test-foundations epic (see the header).
 **Done when:**, or split into halves each epic names ("NTLM MIC" and "NTLM domain" between epics 4
 and 7, "logon throttle" between epic 4, for its local user, and epic 7, for the domain controller's
 count, "NTLM off" between epics 8 and 9, "root" between epic 6 and the deferred NFS side). The
-NETLOGON wire rows RFC 18 §10's "Where the in-memory ones stand in" names, "rogue domain controller" and "NETLOGON wire", run
+NETLOGON wire rows RFC 18 §10's "Where the in-memory ones stand in" names, "rogue domain controller", "zeroed secure channel reply" and "NETLOGON wire", run
 in `integration/ad-dc` only (D11). The Tier 2 rows run through the SMB adapter, so they land in the E2E green epic; Tier
 1 rows that need several middle epics land in the integration epic. Two Tier 2 rows need no adapter,
 and the integration epic runs them in-process against identity: "admin needs proof" (its Kerberos
@@ -836,14 +836,15 @@ operations.
 - **Applied by** epic 7.
 
 **D6. LDAP is v1's provider, lifted into `internal/identity/directory`,** the only package importing
-`go-ldap`. It keeps v1's filter escaping, `LDAP_MATCHING_RULE_IN_CHAIN`, and LDAPS and StartTLS, and
+`go-ldap`. It keeps v1's filter escaping, and LDAPS and StartTLS, and
 drops v1's `InsecureSkipVerify` and `AllowPlaintext`, so both are verified, the online join's LDAP
 connection to its pinned controller included, where v1's join kept an opt-in `InsecureSkipVerify`
 too (RFC 18 §3.5); adds RFC 2696 paging, `tokenGroups` for a user's closure (which includes the primary group
 `memberOf` omits), range retrieval for large `member` values, `objectGUID` as the entry ID, a
 disabled account read from `userAccountControl` or `accountExpires`, and `mail` into `User.Email`
 (RFC 18 §5.1); and refuses an ambiguous answer
-where v1 took the first. It keeps v1's simple bind, a distinguished name and the bind credential,
+where v1 took the first. It drops v1's `LDAP_MATCHING_RULE_IN_CHAIN`: a closure `tokenGroups` cannot
+answer is walked level by level through security groups (epic 6's D10). It keeps v1's simple bind, a distinguished name and the bind credential,
 over the verified TLS; SASL is not used, since a GSSAPI bind over TLS needs a channel-binding token
 `go-ldap` does not send, and a domain controller enforcing LDAP signing and channel binding still
 accepts a simple bind over TLS. The cache's single flight is `x/sync/singleflight`, as v1's.
@@ -901,9 +902,10 @@ answers LDAP requests as a directory does, parsing and evaluating RFC 4515 filte
 queries" fails on a bad escape. The in-memory domain controller stands in above the NETLOGON client:
 it takes the pass-through logon, the account's creation, the password set and the probe whether a
 password is accepted, and answers with their results. Below it, the server-credential check, the
-retry only before the request was sent, the AES-only negotiation and the sealed channel are the
-client's own code, which a double there would replace, so their rows, "rogue domain controller"
-and "NETLOGON wire", run only against a real domain controller in `integration/ad-dc`, through a
+secure channel's challenge and credential refusals, the retry only before the request was sent,
+the AES-only negotiation and the sealed channel are the client's own code, which a double there
+would replace, so their rows, "rogue domain controller", "zeroed secure channel reply" and
+"NETLOGON wire", run only against a real domain controller in `integration/ad-dc`, through a
 fault wrapper around the client's connection to it that tears the connection or changes a reply's
 bytes on cue. A second domain's controller would not do for "rogue domain controller": it refuses
 the client's credential before the client checks the server's. What each suite holds to real AD is RFC 18 §10's "Where the in-memory ones stand in". A domain controller that
@@ -1490,8 +1492,8 @@ the keytab derived from it.
   "logon throttle" (the domain controller's count), "derived keytab", "online join", "offline join"
   and "machine account health" pass, and "derived keytab" also in `integration/ad-dc`, since the
   in-memory domain controller agrees with whatever salt and key version number are written;
-- the NETLOGON wire rows "rogue domain controller" and "NETLOGON wire" pass in `integration/ad-dc`
-  only, through the fault wrapper around the client's connection (D11);
+- the NETLOGON wire rows "rogue domain controller", "zeroed secure channel reply" and "NETLOGON
+  wire" pass in `integration/ad-dc` only, through the fault wrapper around the client's connection (D11);
 - the NETLOGON reply decoder's fuzz target (rule 2) runs in `unit`;
 - the domain controller's suite passes in `unit` and in `integration/ad-dc`;
 - the §1.4 scenario assigned to epic 7 passes in `integration/ad-dc`.
@@ -1575,7 +1577,8 @@ Identity runs inside the node, and the rows that need several middle epics toget
 
 **Expected content:**
 - Identity composed in `node.New` (RFC 23 §2.1), with the keytab, the machine password's versions,
-  the directory record and `identity.ntlm` in each `State`.
+  the directory record and `identity.ntlm` in each `State`; the keytab's versions current first, as
+  E5's key ring assumes, which a test asserts.
 - The `identity.*` section listed in the node's settings table; each setting is declared through
   #4059's `pkg/settings`, with its default and validator, by the first epic that reads it:
   `identity.id_range`, `identity.ntlm` and `identity.netbios_name` in epic 2,
@@ -1630,8 +1633,9 @@ This epic waits for an SMB adapter serving through the node (S3).
   - `Keys` stays RFC 18 §3.1's, whose comment now states `Keys.Session`'s chain (A12), as SMB's
     `FullSessionKey` takes it (MS-SMB2 3.3.5.5.3);
   - two gaps that need an RFC 22 amendment there: the CHALLENGE's AV pairs (§4.1), `MsvAvTimestamp`
-    among them and `MsvAvNbComputerName` equal to `identity.netbios_name` (A2), and the seam that
-    hands `gss` those names, since `vfs.Principals` and `config.SMB` carry none; and `lsarpc`'s
+    among them and `MsvAvNbComputerName` equal to `identity.netbios_name` (A2), that name and the
+    seam that hands `gss` it built by E7's T7.11 since #4625, as `vfs.Principals` and `config.SMB`
+    carry none; and `lsarpc`'s
     `OpenPolicy`, `LookupSids` and `OpenPolicy3` (opnums 6, 15, 130, §5.2), which `develop` serves
     for `smbcacls` and Windows 11.
 
@@ -1736,7 +1740,7 @@ What the plan knowingly does not build. Each row cites the section that defers i
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
-| The CHALLENGE's AV pairs, `MsvAvNbComputerName` from `identity.netbios_name`, and the seam that hands `gss` those names | O3: an RFC 22 amendment | RFC 22 plan (#3911) | its session epic |
+| The CHALLENGE's AV pairs, `MsvAvNbComputerName` among them put in through the seam E7's T7.11 builds | O3: an RFC 22 amendment. `MsvAvNbComputerName`'s value, `identity.netbios_name`, and the seam that hands `gss` it moved to E7's T7.11 on #4625, since Samba refuses a pass-through whose response names another computer | RFC 22 plan (#3911) | its session epic |
 | `lsarpc`'s `OpenPolicy`, `LookupSids` and `OpenPolicy3` (opnums 6, 15, 130) | O3: RFC 22 §5.2 | RFC 22 plan (#3911) | its IPC$ epic |
 | Dropping a tree kept across a guest or anonymous re-authentication, whose new opens on a share with `MinProof` `None` and guest access off are decided for `Anonymous` | O3: an RFC 22 change, RFC 22 §4.1's decision keeps the trees | RFC 22 plan (#3911) | its session epic |
 | RFC 20 §4.5's adapter rows for `ErrLogonFailure` and `ErrUnknownPrincipal`, which `Spell` and `Find` also return | O3, E1: SMB's in RFC 22's table, NFS's in RFC 21's | RFC 22 plan (#3911); RFC 21 plan | each plan's error-mapping epic |
@@ -1755,6 +1759,7 @@ What the plan knowingly does not build. Each row cites the section that defers i
 | "roles grant nothing" | §1.4: RFC 23 §12's row | RFC 23 plan (#4050) | its epic that runs RFC 23 §12 |
 | Listing every user or group record: machines, unnamed users and unnamed groups, which `ControlPlane.Users` and `ControlPlane.Groups` leave out because they walk the name index (RFC 16 §3; RFC 18 §2.4 gives a machine no name, §5.1 leaves a directory group without one) | E2: no RFC asks for it, and no RFC 23 endpoint lists them; T2.3's `UnnamedPrincipals` conformance case pins the subset | RFC 23 plan (#4050) | an RFC 23 endpoint that lists machines, unnamed users or unnamed groups, which brings an RFC 16 §3 amendment for a walk of the `U‖` and `G‖` records |
 | The share gate's flavor and Kerberos-level policy and its netgroup allowlist, deleted by RFC 20's epic 1 (its D23), to be re-derived in `internal/vfs/admit` | §6's RFC 20 rows: no epic of this plan builds them | unowned | their owner is ruled on |
+| The prune rows of E7's T7.12 (R57: the previous version pruned, no longer listed by `Versions`, and reported revocable; none pruned after a failed rotation; the prune's audited `Write` and its failed commit) and T7.15's prune of a failed offline join's kept versions (R36) | #4059's provider's `Prune` is unbuilt; T7.12 tolerates only its stub's error (epic 7's D14) | RFC 13 plan, epic 4 (T4.5, #4652) | T4.5 lands |
 | Local user and group names compared after Unicode normalisation (NFC) (RFC 18 §4.6's `ponytail:`) | the store folds case only (E2), and the store's name check (T2.10: invalid UTF-8, control characters, edge white space, over 255 bytes) normalises nothing: a name is stored as given, so two names equal after normalisation are two names | unowned | an RFC states the rule, or two names that look alike are reported |
 
 ## 7. RFC coverage

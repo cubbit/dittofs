@@ -283,7 +283,9 @@ them.
 - **D7, the node's records and its background calls have their own view.** RFC 16 says
   `NodeStatus` is not `ControlPlane`'s: every node writes its own through the node view, and RFC
   23 §2.1 calls `ControlPlane` the API's write view. So `Store.Nodes()` gives `Nodes`, with
-  `Counters`, `RegisterNode`, `Node`, `PutNodeStatus`, `NodeStatuses`, `List`, and the calls E3
+  `Counters`, `RegisterNode`, `Node`, `PutNodeStatus`, `NodeStatuses`, `List`, `AllSettings`, which
+  pages every scope's settings, 256 to a page like kvstore's other listings, from an `entity.SettingKey`
+  for the reconcile's settings read (RFC 23 §2.1) and so satisfies the `entity.SettingsReader` that the RFC 13 plan's E1 declares for `settings.Read` (no `ControlPlane` method repeats it), and the calls E3
   drives: `Sweep`, `ContinueDelete`, `ContinueRemoval`, `ContinueShardRemoval` and
   `RecordShardRemoval`. This departs from RFC 23 §2.1's `Records` sketch in three ways, each for a
   consumer: `RegisterNode` returns the record it wrote, since the node needs the epoch it raised;
@@ -701,8 +703,14 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   func (n Nodes) PutNodeStatus(ctx context.Context, s entity.NodeStatus) error
   func (n Nodes) NodeStatuses(ctx context.Context, after entity.NodeID) iter.Seq2[entity.NodeStatus, error]
   func (n Nodes) List(ctx context.Context, kind RecordKind, after []byte) iter.Seq2[Record, error]
+  func (n Nodes) AllSettings(ctx context.Context, after entity.SettingKey) iter.Seq2[entity.Setting, error]
   ```
   `RaiseNodeEpoch` raises `N‖node`'s `Epoch` and `idNodeEpoch` goes, with its `ponytail:` (D15).
+  `AllSettings` yields a row that does not decode as a pair whose error wraps `entity.ErrBadRow`,
+  declared beside `entity.SettingsReader`, and goes on; the pair carries the setting's scope and key
+  when the key parses and neither when it does not, and any other error, a store read failing
+  mid-scan, is yielded as it is and not as `ErrBadRow`; the RFC 13 plan's epic 3 relies on all
+  three (its D2). Being built in #4843 (open), for #4812.
   Consumed by E3 (registration at start, the status writer, reconcile's listings), E4 (`applied`,
   the node resource) and the RFC 13 plan (its version gate writes the ranges, its `Prune` reads the
   secret versions).
@@ -713,7 +721,16 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 - **Tests:** at kvstore's conformance suite: the epoch across two starts, read through
   `RaiseNodeEpoch`'s answer and the node record (catches a second epoch, R9, D15); a status round
   trip with every field set, and a listing of two nodes (R10); golden vectors, refusal cases and
-  `FuzzControlPlaneValues` entries for both codecs (R12, R13). R38 is held by the compiler:
+  `FuzzControlPlaneValues` entries for both codecs (R12, R13); `AllSettings` over 300 settings at two scopes,
+  more than one page, every setting once in `CFG`'s key order; a write between the first page and the
+  second, which the second page shows and the first does not (each page is its own transaction, which
+  is why reconcile reads `CFGGEN` around the walk, RFC 23 §2.3); a walk resumed after a deleted key
+  still finding the rest; the zero `entity.SettingKey` starting at the first (catches a cursor that
+  skips or repeats); and a row that does not decode, among valid rows, yielded as a pair whose error
+  wraps `entity.ErrBadRow` while the walk goes on, so one bad row stops only its own section (RFC 13
+  §6, the RFC 13 plan's epic 3 D2), with the scope and key on the pair when the key parses and
+  neither when it does not, and a store read failing mid-scan, through a fault wrapper, yielded as
+  that error and not as `ErrBadRow`. R38 is held by the compiler:
   `ControlPlane` has no write of a status. No double.
 
 ### T2.9 Sessions, API tokens and sign-in counts

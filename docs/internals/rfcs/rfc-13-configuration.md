@@ -97,7 +97,7 @@ Other settings of the same share change differently:
 - the S3 credential is never in configuration at all. The record holds a
   reference to a sealed secret, and rotating the credential changes no record.
 
-![Each host holds only its bootstrap — node identity and roles, how to reach the metadata store, local devices and scratch paths, listen addresses, logging, the memory limit and where its own roles' wrapping keys are — and uses it to reach the control plane in the metadata store, which holds every setting as a record at one of five scopes (installation, node, namespace, remote store, share) with one of four binding classes (live, restart, next write, bound), and secrets only as sealed records referenced by name; an operator writes records through the API or a provisioning file, validated before commit, and each component reads the settings generation every second, runs a live change within 5 s and validates again when built, refusing rather than defaulting an invalid value](img/rfc13-overview.svg)
+![Each host holds only its bootstrap (node identity and roles, how to reach the metadata store, local devices and scratch paths, listen addresses, logging, the memory limit and where its own roles' wrapping keys are) and uses it to reach the control plane in the metadata store, which holds every setting as a record at one of five scopes (installation, node, namespace, remote store, share) with one of four binding classes (live, restart, next write, bound), and secrets only as sealed records referenced by name; an operator writes records through the API or a provisioning file, validated before commit, and each component reads the settings generation every second, runs a live change within 5 s and validates again when built, refusing rather than defaulting an invalid value](img/rfc13-overview.svg)
 
 **The words you need.**
 
@@ -502,7 +502,13 @@ above. [Appendix B](#Appendix%20B%20%E2%80%94%20the%20settings) writes it in one
 
 - *scope* — one value across that scope;
 - *scope*, **per** *thing* — one value for each instance of a thing inside that
-  scope, such as `node, per journal`; the thing is never itself a scope;
+  scope, such as `node, per journal`; the thing is never itself a scope. Each
+  instance's value is its own record. A name that already carries the thing is
+  the key as written: `adapters.<protocol>.<field>` carries the adapter, and
+  its `<protocol>` is the thing's ID. Any other name takes the thing's ID after
+  its first part: `journal.spare_target` for the journal `<id>` is the key
+  `journal.<id>.spare_target`. Either way a bad value refuses that one instance
+  and leaves the others readable;
 - *scope* **default**, *narrower scope* **override** — a value at the wider
   scope that one narrower record **MAY** replace, such as a replica count with
   an installation default and a per-shard value in the shard record. The two are
@@ -777,9 +783,21 @@ both keys in its bootstrap:
 | Wrapping key | Seals | Needed by |
 | --- | --- | --- |
 | `protocol` | NT hashes, keytabs, identity-provider bind credentials, the machine-account password NTLM pass-through signs in with | authentication |
-| `storage` | password hashes, which only the management API's sign-in verifies (RFC 23 §5.3); remote-tier credentials, references to master keys, the management API's token-signing key (RFC 23 §5.3) | the remote tier, the material provider and the management API |
+| `storage` | password hashes, which only the management API's sign-in verifies (RFC 23 §5.3); remote-tier credentials, references to master keys, the management API's token-signing key (RFC 23 §5.3), OpenID Connect client secrets (RFC 23 §5.5) | the remote tier, the material provider and the management API |
 
 A deployment **MAY** split a key further by secret kind.
+
+**A node credential is not a secret of the store.** Its private half is issued
+to the node and kept on its own volume with its identity
+([RFC 30 §4.2](rfc-30-kubernetes.md#4.2%20A%20pod's%20identity%20is%20its%20volume)),
+and never enters the KV, which any node can read
+([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)).
+Sealed under a key every node holds, it would let any node unseal every other
+node's credential and speak on the node channel in its name, which
+[RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)'s bound-to-the-sender rule
+forbids. What a peer verifies a node credential with, and who may write it, is
+open ([§11](#11.%20Open%20questions), question 4): no record of the store holds
+it today, and none may be a row a node writes itself.
 
 > decision: the two keys stay separate although every node holds both, so a
 > later split of the roles ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type))
@@ -819,10 +837,12 @@ type SecretProvider interface {
 	Versions(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef) ([]Version, error)
 	// Prune drops the versions below the lowest one any node reports holding
 	// (§8), never the current one; the rotation's owner calls it once its
-	// retention ends. Prune and Delete check the caller's kind and owner as
-	// Resolve does, so a wrong reference neither destroys another holder's
-	// secret nor cuts its retention short.
-	Prune(ctx context.Context, kind SecretKind, owner SecretOwner, ref SecretRef) error
+	// retention ends. It commits through tx, inside the caller's own Write
+	// beside the audit record naming the versions dropped (RFC 23 §6), so a
+	// prune commits with its audit or not at all. Prune and Delete check the
+	// caller's kind and owner as Resolve does, so a wrong reference neither
+	// destroys another holder's secret nor cuts its retention short.
+	Prune(ctx context.Context, tx ControlPlaneTx, kind SecretKind, owner SecretOwner, ref SecretRef) error
 	// Delete destroys every version of the secret; a later Resolve of ref
 	// fails.
 	Delete(ctx context.Context, kind SecretKind, owner SecretOwner, ref SecretRef) error
@@ -844,6 +864,11 @@ type Version struct {
 	Meta   Meta
 }
 ```
+
+Whatever provider seals, it **MUST** length-prefix each field of the additional
+data `Seal` binds (see `Meta`) and each part of the owner (the record's kind and ID, the scope's tag and
+ID, the key), so two owners whose parts concatenate to the same bytes bind
+differently and a value moved onto the other's reference fails to open.
 
 - **Read never returns a secret.** No API, export, log line or metric carries
   one. An export that must travel with its secrets, a backup that must be
@@ -964,7 +989,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§6](#6.%20Validation) refused | For every setting, feed one value out of range and one of the wrong type, through the API and directly to the component. Assert both refuse, with the field named; assert no component runs a default in its place. |
 | [§6](#6.%20Validation) one validator | Assert the API and the component return the same error for every invalid record in the fixture set. |
 | [§6](#6.%20Validation) unknown field | Misspell one field of each record. Assert refused. |
-| [§7](#7.%20Secrets) role keys | Seal a remote-tier credential and an NT hash. Assert each unseals under its own wrapping key and fails under the other. |
+| [§7](#7.%20Secrets) role keys | Seal a remote-tier credential and an NT hash. Assert each unseals under its own wrapping key and fails under the other, and that every `SecretKind` maps to exactly one key. |
 | [§7](#7.%20Secrets) no secret out | Configure every secret-bearing record; read every API, export and log produced by a full test run. Assert no secret value appears. |
 | [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) explicit initialisation | Start a node against an empty metadata store and empty journal directories: assert it refuses, creating nothing. Initialise: assert the store's Installation record and every journal's `format` file carry one installation ID. Assert every journal directory holds one `node-id`, and that a start with two that differ refuses, naming both. Delete every copy with no identity in the host's file: assert the start refuses, generating none. Start with the store volume unmounted: assert it reports the metadata store lost and creates nothing; with the journal directory emptied and the identity named in the host's file, the journal missing; with the node's identity changed in its bootstrap, the start refused, naming the directories, and every copy unchanged. Truncate one copy and flip a byte of another: assert each refuses the start, naming its directory, and neither is written over. Against a committed golden vector of [RFC 28 §2.1](rfc-28-journal-format.md#2.1%20Layout)'s `node-id` layout, assert a `node-id` written by the step is its 24 bytes, and that a 23- or 25-byte copy, another magic and a bad checksum each fail to parse. Replace a recorded device with an empty directory: assert a start writes nothing into it, and that its re-initialisation's `Init` then succeeds, after which the step writes its copy. Delete every copy and name a new identity in the host's file: assert the start writes no copy, and refuses the journals' shares as not recorded, never the store lost, until a recovery import records them under the new identity and writes their copies, after which a start serves them. Only with initialise-if-empty set does a start on empty storage create an installation. |
 | [§2.5](#2.5%20A%20backup%20location%20is%20its%20own%20record) location deletion | Delete a location record holding one unexpired backup: refused `ErrLocation`, naming it. Expire it; delete again: accepted. Make a second location unreachable for good with one backup there: deletion refused. State it lost, crashing after the lost mark and after the first batch: assert the statement resumes from the mark, the backup reads `lost` in the store, its folder record's census and block count are empty, the statement is in the audit log, deletion is accepted, and a master key only that backup's export named can be destroyed. Leave a third location unreachable for a day without the statement: still refused. |
@@ -1050,6 +1075,19 @@ because the rule stands here alone, or marked not yet applied:
 3. **The settings generation read.** One point read per node per second is
    nothing on one node; whether it stays cheap with many nodes on one replicated
    store, or needs the store's own change feed, is unmeasured **(cluster)**.
+4. **The node credential's verifier.** What a peer verifies a node credential
+   with (the issued certificate or its public key), where that is kept, who may
+   write it and how a revocation reaches the peers are not written down: RFC 16's
+   `Node` holds no such field, §4.2 has no key for one, and
+   [RFC 30 §8](rfc-30-kubernetes.md#8.%20Secrets%20and%20the%20node%20channel)
+   says the operator or a certificate manager issues a certificate bound to the
+   node ID, renews it, and revokes it when the node is decommissioned, but not
+   what a peer verifies it with or how that revocation reaches the peers.
+   Whatever holds it **MUST NOT** be a row any node writes through
+   `RegisterNode`, which would let a node choose the key its own messages verify
+   with, against [RFC 15 §4.4](rfc-15-topology.md#4.4%20Node%20channels)'s
+   bound-to-the-sender rule. It is settled with RFC 15's cluster work
+   **(cluster)**.
 
 ---
 
@@ -1092,10 +1130,16 @@ host's file, so a value valid in one place is valid in all:
   (`30s`, `1h30m`; quoted or not in the host's file); it is never negative, a
   number is whole, `0s` is zero, and a bare number is refused, since it names no
   unit;
-- a size is a number and a unit, decimal `KB` to `TB` or binary `KiB` to `TiB`
-  (`512MiB`), or `B`; in a record it may also be an integer of bytes, but a bare
-  integer in the host's file is refused, since an older file's `max_size: 100`
-  meant megabytes;
+- a size is a whole number and a unit written as it is listed, with no space
+  between them: decimal `KB` to `TB` or binary `KiB` to `TiB` (`512MiB`), or
+  `B`. `1.5GiB`, `4.1GB`, `1Gi`, `10m`, `1g`, `1kb`, `100mib` and `1 MiB` are
+  refused. In a record an integer of bytes, written as a JSON number, is also
+  accepted, exact (the string `"512"` is refused), but a bare integer in the
+  host's file is refused, since an older file's `max_size: 100`
+  meant megabytes; a value past `2^64 - 1` bytes is refused, in a record and in
+  the file (in a record `18446744073709551616` is refused and
+  `18446744073709551615` is the largest accepted, exact; in the file
+  `18446744073709551616B` is refused and `18446744073709551615B` accepted);
 - a boolean is `true` or `false`, and nothing else: `yes`, `on` and `1` are
   refused;
 - a list and a map are JSON's in a record and YAML's in the host's file; in the

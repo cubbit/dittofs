@@ -212,7 +212,7 @@ spells it `merrs.NewInvalidArgumentError`, as RFC 23's plan's epic 2 does (its D
 | R19 | `qualified` spells a local principal `<NetBIOS name>\<name>` from `identity.netbios_name`, and a name in that form maps back by name; a principal minted without a name has no name spelling, so `qualified` answers it unmapped | invariant | §4.1, §4.6 | T2.5 |
 | R20 | Well-known SIDs map to §2.1's well-known principals both ways, and root's and anonymous's uid and gid to root and anonymous | invariant | §2.1, §4.4 | T2.5 |
 | R21 | A SID with no principal behind it is `ErrUnknownPrincipal` from `Find`; `Find` never returns an API-only account | invariant | §2.4, §4.4 | T2.5 |
-| R22 | An unmapped uid, gid or SID is counted in `identity_unmapped_total{scheme}`, labelled by scheme only | invariant | §9.2 | T2.5 |
+| R22 | An unmapped uid, gid or SID is counted in `identity_unmapped_total{scheme}`, labelled by scheme only; narrowed to `Find`'s misses until §9's row on what it counts is settled | invariant | §9.2 | T2.5 |
 | R23 | `FuzzSID` never panics, never allocates past the input's size times a constant, and decode∘encode is the identity on what decodes | test row | §10 Fuzz | T2.5 |
 
 **Accounts**
@@ -354,9 +354,9 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
 - **D9, `Spell` answers a deleted principal `ErrUnknownPrincipal`.** RFC 18 §4.4 shows a deleted
   principal over SMB as the null SID; `Spell` keeps §4.1's contract and the adapter maps the error
   to `S-1-0-0`, as RFC 19 §5.1 passes `ErrUnknownPrincipal` through. RFC 18 §4.4's `decision:`
-  goes at `Spell`. Root has no SID in RFC 18 §2.1 or RFC 22 §16.3's list, so `Spell(root, SID)` is
-  `ErrUnknownPrincipal` until RFC 22 names one (§9). Prior art: Windows shows an unresolvable SID
-  rather than a name (from memory).
+  goes at `Spell`. Root's SID is `S-1-22-1-0`, the Unix-user SID of uid 0, which RFC 22 §16.3's
+  table now names, so `Spell(root, SID)` answers it and `Find` maps it back to root (§9). Prior art:
+  Windows shows an unresolvable SID rather than a name (from memory).
 - **D10, argon2id at m = 19 MiB, t = 2, p = 1, in the PHC string form,** with a 16-byte salt from
   `crypto/rand` and the parameters in the encoded hash, so a later change re-hashes at the next
   password set; `VerifyPassword` parses the string with a decoder of its own, so `pkg/identity`
@@ -566,10 +566,13 @@ internal/identity/
 - **Covers:** R17, R18, R19, R20, R21, R22, R23.
 - **Deliverables:** `Scheme.Stored()` (true for `UID`, `GID`, `SID`, `Krb`, `Dir`, `UserName`,
   `GroupName`; D7); `Spell` and `Find`'s bodies over the store's `Principals` view and the `Records`
-  view's group read RFC 16 §3 names: the stored schemes through `PX‖` and `NX‖`, `qualified` both
-  ways (D11), the well-known SIDs of `pkg/auth/sid/wellknown.go` and root's and anonymous's uid and
-  gid; `ErrUnknownPrincipal` for a miss, any other error unchanged; an API-only account and a
-  machine never found by name; `identity_unmapped_total{scheme}`; RFC 18 §4.4's null-SID
+  view's group read RFC 16 §3 names, which the store did not have yet and this subtask adds
+  (`Records().Group`, with its `kvstoretest` rows): the stored schemes through `PX‖` and `NX‖`,
+  `qualified` both ways (D11), the well-known SIDs of `pkg/auth/sid/wellknown.go`, which gains
+  built-in users `S-1-5-32-545`, network `S-1-5-2` and root's `S-1-22-1-0` (D9), and root's and
+  anonymous's uid and gid; `ErrUnknownPrincipal` for a miss, any other error unchanged; an API-only
+  account and a machine never found by name; `identity_unmapped_total{scheme}`, counting `Find`'s
+  misses only (§9); RFC 18 §4.4's null-SID
   `decision:` at `Spell` (D9); epic 1's stub markers on `Spell` and `Find` removed; `FuzzSID` over
   `sid.DecodeSID`. Consumed by E3's T3.2, which routes `vfs.Service`'s `Spell` and `Find` through
   `vfs.Deps.Names`, by E4 (a local user by name) and by E6 (the directory's schemes).
@@ -580,7 +583,7 @@ internal/identity/
   is `DITTOFS\alice`, after an `Apply` naming `NAS01` it is `NAS01\alice` (catches a name read at
   `New`, R19), and `Find` of `nas01\ALICE` is alice (R19); an `Unnamed` group, written through
   T2.3's `Create`: `qualified` `ErrUnknownPrincipal` (R19); well-known SIDs and uid 0 and 65534 both
-  ways (R20); an unknown domain SID, and an API-only account by name: `ErrUnknownPrincipal` (R21);
+  ways (R20); `Spell(root, SID)` is `S-1-22-1-0` and `Find` of it is root (D9, R20); an unknown domain SID, and an API-only account by name: `ErrUnknownPrincipal` (R21);
   through `kvtest`'s fault wrapper failing the `PX‖` read: the injected error, not
   `ErrUnknownPrincipal` (catches an outage read as "nobody", R18); `identity_unmapped_total` read
   from the registry after an unknown uid: `uid` 1 (R22). `FuzzSID`, seeded with well-known and domain
@@ -864,8 +867,17 @@ store's name check, so `dfs init` and `reset-admin` hold it too (T2.10, R37).
 - **`DeleteUser`'s secrets (R34).** RFC 16 §3 deletes "every version of the secret it names",
   singular, from before `User` held two references; RFC 13 §7 says each `Secret`, the NT hash
   among them. R34 follows RFC 13, and RFC 16 §3's comment needs the plural.
-- **Root's SID (D9).** Neither RFC 18 §2.1 nor RFC 22 §16.3 gives root one (Samba uses
-  `S-1-22-1-0`, from memory); an RFC 22 amendment, or a decision that root has none.
+- **Root's SID (D9).** Settled: RFC 22 §16.3's table now gives root `S-1-22-1-0`, the Unix-user
+  SID of uid 0, and T2.5 spells and finds it.
+- **`Find` and the stored schemes (R17, D11).** RFC 18 §2.2 says `Find` reads only the schemes
+  `Stored()` names; D11 has `Find` map `qualified`, which is not stored, by the name it splits off.
+  D11 holds, as T2.5 builds it: the rows read are the user-name and group-name scheme's, and §2.2's
+  line should say a derived scheme `Find` serves is read through the stored one it derives from.
+- **What `identity_unmapped_total` counts (R22).** RFC 18 §9.2 counts an unmapped uid, gid or SID;
+  T2.5 counts `Find`'s misses only. Resolution's uid and gid lookups (`principals.ByID` in
+  `internal/vfs/admission.go`) and its group-SID lookups (`internal/identity/resolve.go`) read
+  `Principals.ByProtocolID` directly, not through `Find`, so their misses are not counted; either
+  they route through `Find` or §9.2 narrows to `Find`.
 - **`State.Settings`' type (D6).** RFC 18 §2.6 names `config.Identity`, which no plan builds.
 - **The user's uid and gid flags.** The RFC 18 plan's §1.1 table maps `dfsctl user create
   --host-uid` and `--host-gid` to "rebuilt by RFC 23's plan"; RFC 23's plan's epic 6 rebuilds them

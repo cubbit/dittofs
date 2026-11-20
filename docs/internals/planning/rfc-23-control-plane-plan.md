@@ -342,7 +342,7 @@ registers no suite and no group, and changes no `lint-go` tag.
      caller counts what commits (epic 2's D5);
    - the node: `node_reconciled_position`, `node_reconcile_errors_total`, `node_restart_pending`,
      `api_idempotency_records_deleted_total` from the sweep's counts,
-     and the RFC 13 plan's `config_generation_lag_seconds{kind}`, set from the positions it
+     and RFC 13 §8's `config_generation_lag_seconds{kind}`, set from the positions it
      reconciles;
    - the API: the `api_` series but the sweep's, `audit_records_total` once `Write` has committed,
      and one span per call (RFC 23 §11, "Spans");
@@ -388,7 +388,8 @@ registers no suite and no group, and changes no `lint-go` tag.
     the change it guards: not the compiler, not the diff, not a later epic's tests. "Stub bodies are
     never called by production" stays a review rule.
 11. **A symbol is exported only if RFC 23's interface uses it.** The exported surface is:
-    - `internal/node`'s `New`, `Start`, `Stop` and `Config`;
+    - `internal/node`'s `New`, `Start`, `Stop`, `Config` and `Preflight`, the start check the
+      host runs before it opens the store;
     - `pkg/node/apiv1`'s wire types;
     - the client, `pkg/node/apiv1/client`;
     - kvstore's view methods.
@@ -426,7 +427,7 @@ plan (#4058), which estimate it once, in their own epics.
 The skill's estimate for RFC 23's 1,963 lines, as amended, is 5 middle epics (`round(1963 / 400)`), and this plan
 has 5.
 
-**Legend.** ⛔ is a blocker; 🔀 waits on a synchronisation point: E3 and E5 in part (X1, X2), E7 (X3)
+**Legend.** ⛔ is a blocker; 🔀 waits on a synchronisation point: E3 and E5 in part (X1, X2), E4 in part (X1: its T4.3 and its success paths), E7 (X3)
 and E8 (S3). "team" is an epic that belongs to
 no track. "Partly" means the dependent epic starts before the blocker lands and needs it for its
 remaining pieces (§3.3).
@@ -461,7 +462,7 @@ flowchart TD
   X3 --> E7
   E3 & E4 & E5 & E6 --> E7["E7 Integration 🔀"]
   S2 --> S3
-  X1(["X1 the RFC 13 plan's bootstrap and secrets, outside this plan"]):::sync -. "dfs start, dfs init" .-> E3 & E5
+  X1(["X1 the RFC 13 plan's bootstrap and secrets, outside this plan"]):::sync -. "dfs start, dfs init, pkg/secrets, MakeRuntimeDir" .-> E3 & E4 & E5
   X2(["X2 the RFC 18 plan's sign-in interface, outside this plan"]):::sync -. "sign-in, hashes" .-> E5
   S3(["S3 adapters serve through the node, outside this plan"]):::sync --> E8["E8 E2E green 🔀"]:::sync
   E7 -. "server fixture" .-> E8
@@ -486,10 +487,10 @@ flowchart TD
   20's plan's S4 ("`internal/node` exists"), so it unblocks RFC 20's epic 7, which builds the
   adapters through their factories inside this node.
 - **🔀 X1, the RFC 13 plan's bootstrap and secrets.** Outside this plan: #4059's epic 2
-  (`pkg/bootstrap`, the node identity) and epic 4 (`pkg/secrets`). Epic 3 builds its composition,
+  (`pkg/bootstrap`, the node identity, the version gate, `MakeRuntimeDir`) and epic 4 (`pkg/secrets`). Epic 3 builds its composition,
   start and stop and reconcile before it, on a `node.Config` its tests fill in; of epic 3, X1
-  gates only the node identity at start (its T3.10), and `dfs start` reads the bootstrap from the
-  RFC 13 plan's epic 1. Epic 5's `dfs init` and its signing key wait for it.
+  gates only the node identity and the version gate at start (its T3.10), and `dfs start` reads the bootstrap from the
+  RFC 13 plan's epic 1. Epic 4's T4.3 waits for `MakeRuntimeDir`, its T4.11 success paths for `pkg/secrets`, and epic 5's `dfs init` and its signing key wait for it.
 - **🔀 X2, the RFC 18 plan's sign-in interface.** Outside this plan: #4058's epic 2 (`APISignIn`,
   `NewHashes`), served by identity composed in `node.New` (#4058's epic 8's T8.1). Epic 5 builds
   tokens, sessions, roles and throttling before it, over epic 2's records; sign-in, the first
@@ -540,7 +541,8 @@ flowchart TD
 ```text
 cmd/dfs/commands/             init, start, reset-admin (+ config, version, completion)  E1 skeleton, E3, E5
 internal/node/                composition root, one package, one file per concern:      E1 surface, E3
-                              New, Start, Stop, compose, lifecycle, reconcile (the
+                              New, Start, Stop, Preflight (the start check, RFC 1's
+                              journal plan epic 10), compose, lifecycle, reconcile (the
                               loop and addShare, removeShare, apply, unexported, RFC
                               23 §2.1), remotes, node status, the operation runner
                               (D8), the deletions driven past the mark, RFC 23's own
@@ -685,8 +687,8 @@ its epic 7, planned after this plan's S2, the work of putting adapters into the 
 
 `settings.Adapter`'s `Port`, and the rename of `pkg/adapter/config` to `pkg/adapter/settings`,
 landed with RFC 20's epic 2 in #4000 (its D20), on `feat/storage-v2`. A settings generation reaches
-these rows only once X3 has wired `Diff` and `Get` into `apply`. The adapters' section in the one settings table, and that table's `Check` wired into reconcile and the routes, are the RFC 13
-plan's epic 5 (#4059).
+these rows only once X3 has wired `Diff` and `Get` into `apply`. The one settings table and its `Check` wired into reconcile and the routes are the RFC 13
+plan's epic 5 (#4059); the adapters' rows in it are RFC 20's plan's T7.6.
 
 This plan's node leaves that slot to it: reconcile calls the adapter rows that epic 7 writes. This
 plan also takes over the rows of RFC 20's plan's deferral ledger that name RFC 23:
@@ -834,7 +836,7 @@ empty (epics 3 and 5):
 
 ```go
 func start(ctx context.Context, path string) error {
-	boot, err := bootstrap.Load(path) // X1, D6: --config or DITTOFS_CONFIG; v1 keys refused
+	boot, err := bootstrap.Load(path, os.Environ()) // X1, D6: --config or DITTOFS_CONFIG; v1 keys refused
 	if err != nil {
 		return err
 	}
@@ -927,12 +929,19 @@ func (n *Node) apply(ctx context.Context) error {
 		return err // a failed read: the loop backs off, then runs a full pass
 	}
 	n.restartPending(settings.Diff(n.applied, next)) // node_restart_pending
-	st := identity.State{Generation: n.pgen, Settings: settings.Get[identity.Settings](next, n.nodeID)}
-	if err := n.identity.Apply(st); err != nil { // before identity starts, the first one (RFC 18 §2.6)
+	ids, err := settings.Get[identity.Settings](next, identity.Section, n.nodeID) // an error for a held section
+	if err == nil {
+		err = n.identity.Apply(identity.State{Generation: n.pgen, Settings: ids}) // before identity starts, the first one (RFC 18 §2.6)
+	}
+	if err != nil {
 		n.refused(identity.Section, err) // reported with the other refusals (epic 3's D10)
 	}
 	// ... *vfs.Filesystem and the engine, each with its own section
-	n.smbRefused = n.applySMB(ctx, settings.Get[adaptersettings.SMB](next, n.nodeID)) // D12
+	smb, err := settings.Get[adaptersettings.SMB](next, adaptersettings.SectionSMB, n.nodeID)
+	if err == nil {
+		err = n.applySMB(ctx, smb) // D12
+	}
+	n.smbRefused = err
 	if n.smbRefused != nil {
 		// RFC 23 §2.3, §2.4: reported refused; while an adapter serves, not retried until the
 		// settings generation moves, so a lasting port conflict restarts nothing on later ticks.
@@ -947,7 +956,11 @@ func (n *Node) apply(ctx context.Context) error {
 // D12: the loop's retry while nothing serves SMB. n.smbRefused, a Node field beside n.smb,
 // holds the last refusal of SMB's section and is nil once it serves.
 func (n *Node) retrySMB(ctx context.Context) error {
-	n.smbRefused = n.applySMB(ctx, settings.Get[adaptersettings.SMB](n.applied, n.nodeID))
+	smb, err := settings.Get[adaptersettings.SMB](n.applied, adaptersettings.SectionSMB, n.nodeID)
+	if err == nil {
+		err = n.applySMB(ctx, smb)
+	}
+	n.smbRefused = err
 	if n.smbRefused != nil {
 		n.refused(adaptersettings.SectionSMB, n.smbRefused)
 	}
@@ -1685,12 +1698,9 @@ runs RFC 23's e2e rows.
   is the RFC 13 plan's: `pkg/bootstrap` with the refused keys and the node identity, `pkg/settings`
   with its write check, classes and series, and `pkg/secrets`. Epics 1 to 5 keep only the strip of
   `pkg/config`, the node, the API's routes and `dfs init`, and consume the rest.
-- **O12. `dfs init`'s order disagrees with the RFC 1 plan's epic 10.** That epic runs `journal.Init`
-  before `kvstore.Init`, says nothing of `node-id`, and lets a rerun wipe and re-initialise a device
-  whose `format` names an installation with no store. This plan runs `kvstore.Init` first, so no
-  device ever names an installation without a store, the wipe has nothing to act on, and no
-  `node-id` copy a rerun adopts can be wiped. Epic 5 follows this order; the RFC 1 plan's epic 10
-  aligns with it when it is broken down, its journal side (`Init` and the start check) unchanged.
+- **O12. `dfs init`'s order: resolved.** The RFC 1 plan's epic 10 aligned with this plan's order
+  (journal plan, epics 10 to 13 breakdown): the store's `Init` runs first, so no device names an
+  installation without a store, and epic 10's wipe is retired. Epic 10 keeps only the start check.
 
 ### 6.1 Deferral ledger
 
