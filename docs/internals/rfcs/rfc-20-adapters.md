@@ -551,14 +551,15 @@ internal/adapter/
     errors.go               ErrorTable and its totality check (§4.5)
   translate/                ACL, access-mask, time and attribute translation: neutral types only
   gss/                      the wire side of authentication: Kerberos, NTLM and SPNEGO mechanisms, exchanges, per-request Identity (§4.4); test initiators. Secrets and directories are internal/identity's (RFC 18 §2.7)
-  adaptertest/              import test; the leak check and a test server's Budgets; testproto/, the test-only protocol `core` is proven on (§7); golden/, golden-vector and capture helpers
+  adaptertest/              import test; the leak check and a test server's Budgets; testproto/, the test-only protocol `core` is proven on (§7); golden/, golden-vector and capture helpers; per protocol, its scripted client (nfsclient/, smbclient/; §8.2) and NFS's handler harness (nfsharness/)
   nfs/  smb/                one shape for both protocols:
     nfs.go | smb.go         New: builds the stages, handler sets and operation tables; returns *core.Server
     wire/                   the protocol's one codec, shared by every command (§5): record framing, the hand-written RPC or SMB2 header codec, the generated codecs' runtime, the generator (wire/gen/) and its output for shared body types; no file per command
     protocol/               the Protocol and its stages (§4.7): framer, header, router, security, flow, replay, session registry
     ops/                    the operation tables, one subpackage per table (§4.8): Handlers, table, errors; one file per operation, <cmd>.go, holding its request and reply structs and its handler; one generated codec_gen.go per package
-                              nfs: v3/ v4/ mount/ nlm/ nsm/   smb: one table for every dialect, ioctl/ one file per control code
+                              nfs: v3/ v4/ mount/ nlm/ nsm/, and cb/: the callback program's structs, no Handlers and no table served   smb: one table for every dialect, ioctl/ one file per control code
     callbacks.go            Callbacks (§3.3)
+    rpcclient/              nfs only: the calls the server makes on a connection it dials or by datagram, through Deps.DialClient (NLM's GRANTED, SM_NOTIFY, the port mapper's GETPORT)
   smb/dcerpc/               DCE/RPC over IPC$ pipes: NDR codecs, srvsvc, lsarpc; imports no SMB package (§3.1)
 internal/sidecar/           the runner the node drives (§3.5); mdns/ wsd/ portmap/ rpcbind/: one package each
 ```
@@ -566,7 +567,11 @@ internal/sidecar/           the runner the node drives (§3.5); mdns/ wsd/ portm
 **Files are small.** One wire operation per file, `ops/<cmd>.go`: its request
 and reply structs, tagged for the codec, and its handler, and nothing else;
 nothing in it reads or writes a byte. Its row is one line of its table, its
-error rows are in the one error table, and it has no codec file of its own. A
+error rows are in the one error table, and it has no codec file of its own.
+Beside its operations, an `ops/` package may hold two shared files and no
+others: `attrs.go`, the attribute structs its operations share (NFS's `fattr3`
+and `fattr4`), and `types.go`, the body types two of its operations share. A
+type two packages share is `wire`'s. A
 non-test file **SHOULD** stay under 500 lines. The import test of §7.1 will
 also list every adapter file over 800 lines, against a checked-in allowlist
 that may only shrink, so the rule does not drift the first week someone is in
@@ -1781,7 +1786,12 @@ service calls, admitted separately
   before any member runs, against `Framer.MaxRecord` alone, the replies before
   each `READ` counted at their bounds, so such a compound is refused whole, and
   reserves what the clamps leave; one with no `READ` whose bounds pass the cap
-  is refused then too. In an NFSv4.1 session each `READ`'s clamp runs after the
+  is refused then too. Just before a member runs, the runner MUST ask its
+  row's `Bound` hook once more, with the room it was handed; the hook may then
+  lower its count by a budget a member before it put in `r.State`, or report no
+  byte, which refuses that member there, after the members before it ran. A
+  count is only ever lowered, and the compound's reservation is not grown. In
+  an NFSv4.1 session that last ask of each `READ`'s hook comes after the
   compound's `SEQUENCE`, so the NFS row's hook also caps its count at what is
   left of the session's `ca_maxresponsesize`, which that `SEQUENCE` resolved
   ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)), and an operation
@@ -2497,8 +2507,10 @@ type Invocation struct {
 	// (RFC 21 §2.3). Its handler reads the clamped count from its decoded
 	// request: core never reads it. Every other row ignores room and reports
 	// ok. core first calls it with Framer.MaxRecord's bytes less ReplyLen(h),
-	// and a compound's runner again with each member's room (§4.3), so a
-	// count is only ever lowered.
+	// and a compound's runner again with each member's room, before any
+	// member runs, and a third time with that room just before the member
+	// runs, when ok false refuses that member alone, after the members before
+	// it ran (§4.3); so a count is only ever lowered.
 	Bound   func(r *Request, room int) (n int, ok bool)
 	Resolve func(r *Request) error                     // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
@@ -3206,7 +3218,7 @@ var (
 	ErrNoTree         = errors.New("core: no tree")                       // Needs: tree
 	ErrNoFH           = errors.New("core: no current filehandle")         // Needs: NeedsFH
 	ErrTooLong        = errors.New("core: compound past its cap")         // the compound cap (§4.3)
-	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool") // §4.3: or a single-reply compound past its cap that would leave a READ or READ_PLUS less than one byte
+	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool") // §4.3: or a single-reply compound past its cap that would leave a READ or READ_PLUS less than one byte, or a member whose hook's last ask reports no byte
 	ErrExpired        = errors.New("core: credential expired")            // §4.4
 	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
@@ -3362,9 +3374,11 @@ negotiated.
   version outside the connection's range `PROG_MISMATCH`, naming the range's
   lowest and highest served; an NFSv4 `COMPOUND` whose minor version is outside
   it gets `NFS4ERR_MINOR_VERS_MISMATCH`, nothing run: the Router refuses it with
-  `ErrVersion` and the version 4 table, and the reply carries its tag. NFSv3's
-  table is served only when `"3"` is in range, MOUNT, NLM and NSM with it, so a
-  range of only 4.x serves none of the three.
+  `ErrVersion` and the version 4 table, and the reply carries its tag. Version 3
+  is one unit: a range holding `"3"` serves NFS v3, MOUNT v3, NLM v4 and NSM v1
+  together, and a range of only 4.x serves none of the four. `New` builds all
+  four tables, so no connection serves a part of the unit, and `New` refuses to
+  build an NFS server missing one of them.
 - **SMB.** One table; `NEGOTIATE` picks the highest dialect the client offers
   inside `Conn.Settings()`'s `Dialects`, and a dialect outside it is never
   negotiated.
@@ -4281,7 +4295,11 @@ does, both do with ranges that overlap, or one sets an inverted range, as
 `Members`, taking its {1, 1}, hold its names, accepted; one table listed by
 two listeners accepted and checked once; and a table `Route` returns that no
 listener listed, or for a version outside its `OpTable.Versions`, each of
-which closes its connection as `wiring`. The
+which closes its connection as `wiring`. It proves the runner's last ask of a
+member's `Bound` hook (§4.3): a hook that reads a budget an earlier member
+put in `r.State` has its count lowered, never raised, and one that reports no
+byte has its member refused with `ErrReplyTooBig` after the members before it
+ran, with the compound's reservation unchanged. The
 null service of §6.10 serves the allocation gate (`unit/adapter-allocs`), the
 benchmarks, and the tests whose requests never reach the service, as their
 required `Deps.VFS`; nothing asserts on its answers.
