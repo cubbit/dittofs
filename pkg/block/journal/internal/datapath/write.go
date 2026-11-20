@@ -157,6 +157,11 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	if hold := grant.Hold(); hold != nil {
 		roll = segment.Roll{Hold: hold}
 	}
+	if res == nil {
+		// An unreserved write may hold its pieces back, so the stream pins
+		// the segment of each one inside its append.
+		roll.Pin = c.liveness
+	}
 	// A reserved write's roll is replaced only while the reservation's hold has
 	// fallen behind what its still-undrawn bytes need. A hold at or above that
 	// figure has what those bytes' own rolls will take, so a replacement there
@@ -172,6 +177,7 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		c.beforeAppend()
 	}
 	var done, published int64
+	pubFrom := 0 // the pieces of placed before it are published
 	// ponytail: the first four pieces of an unreserved write wait in this
 	// array, so the common write allocates nothing for them; a write of more
 	// pieces grows the slice on the heap. Upgrade to a pooled slice when a
@@ -234,22 +240,8 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			return core.Version{}, published, fmt.Errorf("datapath: the stream placed no byte of a %d-byte piece of file %v at offset %d", len(rest), id, off+done)
 		}
 		pc := piece{pl: pl, seq: seq, off: off + done}
-		// An unreserved write with more pieces to append holds its pieces
-		// back, and a single piece that covers the write publishes at once,
-		// as a write always did. The held-back piece pins its segment before
-		// anything else runs: the roll of the next piece seals it, and the
-		// index counts nothing of the piece yet.
-		//
-		// decision: a segment that left the set between the append and the
-		// pin fails the write, for its retirement unlinked the record the pin
-		// was to keep. A segment still in the set is held from here on, since
-		// a retirement judges Held under its claim. Overturned by an append
-		// that raises the pin itself, inside the stream's lock.
-		deferPublish := res == nil && (len(placed) > 0 || done+pl.N < int64(len(p)))
-		if deferPublish {
-			if !c.liveness.Pin(pl.Loc.Segment) {
-				return core.Version{}, published, fmt.Errorf("datapath: segment %d left the set before the write's piece of file %v in it was held", pl.Loc.Segment, id)
-			}
+		if res == nil {
+			// The stream pinned the piece's segment inside the append.
 			placed = append(placed, pc)
 		}
 		// The record is in its segment and counted as the share's: its
@@ -277,9 +269,16 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		if c.afterAppend != nil {
 			c.afterAppend()
 		}
+		last := done+pl.N == int64(len(p))
 		done += pl.N
-		if deferPublish {
+		// An unreserved write with more pieces to append holds its pieces
+		// back, and a single piece that covers the write publishes at once,
+		// as a write always did.
+		if res == nil && (!last || len(placed) != 1) {
 			continue
+		}
+		if res == nil {
+			pubFrom = 1
 		}
 		if err := c.publishPiece(s, id, v, grant, pc); err != nil {
 			return core.Version{}, published, err
@@ -292,7 +291,7 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	// in part under a version the caller never receives. A reserved write
 	// publishes each piece as it lands, for a refusal on its roll keeps the
 	// pieces already published and spends its version.
-	for _, pc := range placed {
+	for _, pc := range placed[pubFrom:] {
 		if err := c.publishPiece(s, id, v, grant, pc); err != nil {
 			return core.Version{}, published, err
 		}

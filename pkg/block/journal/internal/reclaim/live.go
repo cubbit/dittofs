@@ -814,25 +814,16 @@ func (t *Tracker) releaseHold(h endedHold) {
 // is appended, so without the pin a piece in a segment the write's roll sealed
 // reads as nothing held and the segment can be retired under it.
 //
-// Pin reports false when seg has left the set: its retirement already ran, and
-// took the record the caller meant to keep with it, so the caller fails.
-//
-// decision: the pin is what keeps isHeld's rule true for a write publishing
-// into a sealed segment: nothing adds extents to a segment retirement is
-// judging, because the extents it will add are already counted here. The pin
-// is raised after the append returns, not inside it, so a seal in that gap
-// can leave the count behind the seal for that moment; what closes the gap is
-// the report: a segment already retired answers false, and a segment still in
-// the set is held from the pin on, because a retirement judges Held under its
-// claim. Overturned by a publish that names a record the write did not pin, or
-// by an append that raises the pin inside the stream's lock.
-func (t *Tracker) Pin(seg core.SegmentID) bool {
-	st := t.entryIfLive(seg)
-	if st == nil {
-		return false
-	}
-	st.pins.Add(1)
-	return true
+// decision: the stream calls Pin under its append lock, while the record's
+// append is still in flight and its segment is still Active, so the pin is
+// raised before a seal can complete and before any retirement can judge the
+// segment: the extents the write will publish are counted here first, which is
+// what keeps isHeld's rule true for a write publishing into a sealed segment.
+// Pin therefore asks the set nothing, for the segment is open and a set query
+// would run under the stream's lock against the lock order. Overturned by a
+// publish that names a record the append did not pin.
+func (t *Tracker) Pin(seg core.SegmentID) {
+	t.entry(seg).pins.Add(1)
 }
 
 // Unpin releases the pin of one record: the record is published and the

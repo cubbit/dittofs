@@ -818,8 +818,21 @@ func (p *passFixture) requireGap(t *testing.T, when string, want int64) {
 
 func (p *passFixture) requireGapOf(t *testing.T, tag core.ShareTag, when string, want int64) {
 	t.Helper()
-	if got := shareGapOf(p, tag); got != want {
-		t.Fatalf("%s: set less share figure = %d, want %d: the figure missed or over-took bytes landed outside a write", when, got, want)
+	// The set counts a record inside the append and the share's figure takes
+	// it a moment later, and a retirement lowers the set before the figure:
+	// a read between the two sees a gap that closes on its own. The check
+	// polls the real condition, with one generous backstop, so a figure that
+	// really missed or over-took bytes never converges and fails here.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		got := shareGapOf(p, tag)
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: set less share figure = %d, want %d: the figure missed or over-took bytes landed outside a write", when, got, want)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

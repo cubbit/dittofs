@@ -858,42 +858,29 @@ func TestRegisterForget_ConcurrentRetirementOfSnapshotSegment(t *testing.T) {
 	}
 }
 
-// TestPin_KeepsASegmentHeldAndReportsOneThatLeftTheSet: a pin holds a sealed
-// segment the index counts nothing in, its release fires the candidate once
-// nothing else holds the segment, and a pin of a segment already retired
-// answers false and holds nothing.
-func TestPin_KeepsASegmentHeldAndReportsOneThatLeftTheSet(t *testing.T) {
+// TestPin_KeepsASegmentHeldUntilItsLastRelease: a pin holds a sealed segment
+// the index counts nothing in, and the release of the last pin fires the
+// candidate once nothing else holds the segment.
+func TestPin_KeepsASegmentHeldUntilItsLastRelease(t *testing.T) {
 	f := newFixture(t)
 	var fired []core.SegmentID
 	tr := New(f.ix, func(seg core.SegmentID) { fired = append(fired, seg) })
-	tr.SetMember(func(seg core.SegmentID) bool {
-		_, err := f.set.State(seg)
-		return err == nil
-	})
-	kept, gone := f.takeIn(t), f.takeIn(t)
+	seg := f.takeIn(t)
 
-	if !tr.Pin(kept) {
-		t.Fatal("Pin of a segment in the set = false, want true")
-	}
-	if !tr.Held(kept) {
+	tr.Pin(seg)
+	tr.Pin(seg)
+	if !tr.Held(seg) {
 		t.Fatal("a pinned segment the index counts nothing in reads as not held, want held")
 	}
-	tr.Unpin(kept)
-	if tr.Held(kept) {
+	tr.Unpin(seg)
+	if !tr.Held(seg) || len(fired) != 0 {
+		t.Fatalf("after one of two releases: held %v, candidates %v, want held and none", tr.Held(seg), fired)
+	}
+	tr.Unpin(seg)
+	if tr.Held(seg) {
 		t.Fatal("a segment reads as held after its last pin was released, want not held")
 	}
-	if len(fired) != 1 || fired[0] != kept {
-		t.Fatalf("candidates after the release = %v, want [%d]: the last release crosses to not held", fired, kept)
+	if len(fired) != 1 || fired[0] != seg {
+		t.Fatalf("candidates after the last release = %v, want [%d]: the last release crosses to not held", fired, seg)
 	}
-
-	if err := f.set.Seal(gone, true); err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
-	if _, err := f.set.Retire(gone); err != nil {
-		t.Fatalf("Retire: %v", err)
-	}
-	if tr.Pin(gone) {
-		t.Fatal("Pin of a segment that left the set = true, want false")
-	}
-	tr.Unpin(gone)
 }
