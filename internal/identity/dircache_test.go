@@ -843,12 +843,13 @@ func TestDirectoryCacheSIDBatchKeys(t *testing.T) {
 
 // The SID path keeps the single-key lookup rules (RFC 18 §5.2, §5.3, §5.4,
 // §9.2): a SID a set repeats is one question, answered once; a "no such
-// entry" answer is fresh for 30 seconds; a failed batch serves a positive
-// entry within the TTL plus the grace, each use counted stale, and raises
-// directory_unreachable, degraded, so the next lookup within the probe
-// interval sends no query; a "no such entry" past its 30 seconds is never
-// served stale, nor an entry past the grace, and a refusal makes the
-// condition unhealthy; the first batch the directory answers clears it.
+// entry" answer is fresh for 30 seconds and asked again past them; a failed
+// batch serves a positive entry within the TTL plus the grace, each use
+// counted stale, and raises directory_unreachable, degraded, so the next
+// lookup within the probe interval sends no query; a "no such entry" past its
+// 30 seconds is never served stale, nor an entry past the grace, and a
+// refusal makes the condition unhealthy; the first batch the directory
+// answers clears it.
 func TestDirectoryCacheSIDsKeepLookupRules(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
@@ -863,6 +864,11 @@ func TestDirectoryCacheSIDsKeepLookupRules(t *testing.T) {
 			t.Fatalf("LookupSIDs(unknown) at 29 seconds = %d answers, %v; want none", len(got), err)
 		}
 		e.wantQueries(t, 4, `a "no such entry" 29 seconds old`)
+		e.clock.Advance(2 * time.Second)
+		if got, err := c.LookupSIDs(ctx, [][]byte{unknown}, 15*time.Minute); err != nil || len(got) != 0 {
+			t.Fatalf("LookupSIDs(unknown) at 31 seconds = %d answers, %v; want none", len(got), err)
+		}
+		e.wantQueries(t, 5, `a "no such entry" 31 seconds old, asked again`)
 
 		// Every search fails, the probe loop's single-SID question included.
 		e.fail(t, sim.Rule{Op: "search", Key: "*", Action: sim.FaultAction{Err: errors.New("injected directory fault")}})
@@ -872,7 +878,7 @@ func TestDirectoryCacheSIDsKeepLookupRules(t *testing.T) {
 				t.Fatalf("LookupSIDs(alice) %d with the directory down = %d answers, %v; want her served stale", i, len(got), err)
 			}
 		}
-		e.wantQueries(t, 5, "two lookups within the probe interval")
+		e.wantQueries(t, 6, "two lookups within the probe interval")
 		if got := e.resultsOf(t, "sid")["stale"]; got != 2 {
 			t.Errorf("SID lookups counted stale %v, want 2", got)
 		}
