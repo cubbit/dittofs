@@ -18,8 +18,8 @@ import (
 
 // footprintWatch is a seam fault that passes every call and, as each one
 // arrives, compares the set's lock-free footprint with the bytes the files of
-// the directory occupy. The files are measured first and the footprint read
-// after, so a footprint moved by a concurrent writer can only read higher.
+// the directory occupy. The bytes are the files' sizes, a proxy for what the
+// segments allocate: Allocate sets each file to the cap, so the two agree here.
 // Every call arrives after the one before it completed, so the watch sees the
 // state between each pair of storage steps of a make or a retirement. failOn,
 // when set, names one op the watch fails with EIO the first time it sees it.
