@@ -280,8 +280,12 @@ func nodeImporters(root string) ([]string, error) {
 // one included, but those of startExempt: init.go is dfs init's, which builds
 // an installation and so imports the installer and the key provider, and
 // root.go wires the subcommands, the config command's package among them.
-// Neither runs in dfs start. Overturned if one of them must serve dfs start,
-// and then by moving that code into a file the rule holds.
+// Neither runs in dfs start, so a held file may not call a function either
+// declares, whatever that function imports. The ceiling: only calls are
+// flagged, not a variable, type or method an exempt file declares, since the
+// start reads root.go's build variables; a method value or a func-typed
+// variable declared there would pass. Overturned if one of them must serve
+// dfs start, and then by moving that code into a file the rule holds.
 const startPackage = "cmd/dfs/commands"
 
 var (
@@ -290,10 +294,11 @@ var (
 )
 
 // startImports returns each import of this module by a non-test file of
-// startPackage outside startExempt that startAllowed does not name, and
-// start.go and each of startExempt missing under root, so that a file
-// renamed away can leave the rule neither passing over nothing nor exempting
-// a name a new file could take.
+// startPackage outside startExempt that startAllowed does not name, each call
+// from such a file to a function one of startExempt declares, and start.go
+// and each of startExempt missing under root, so that a file renamed away
+// can leave the rule neither passing over nothing nor exempting a name a new
+// file could take.
 func startImports(root string) ([]string, error) {
 	var bad []string
 	seen := map[string]bool{}
@@ -311,13 +316,58 @@ func startImports(root string) ([]string, error) {
 			}
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
 	for _, f := range append([]string{startPackage + "/start.go"}, startExempt...) {
 		if !seen[f] {
 			bad = append(bad, f+" is missing")
 		}
 	}
+	calls, err := exemptCalls(root)
+	bad = append(bad, calls...)
 	slices.Sort(bad)
 	return bad, err
+}
+
+// exemptCalls returns each call from a non-test file of startPackage under
+// root outside startExempt to a function declared in one of startExempt.
+// The package is type-checked with its type errors ignored, so a planted
+// tree need not compile whole.
+func exemptCalls(root string) ([]string, error) {
+	fset, imp := sourceImporter()
+	files, err := parsePackage(fset, filepath.Join(root, filepath.FromSlash(startPackage)))
+	if err != nil {
+		return nil, err
+	}
+	info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
+	conf := types.Config{Importer: imp, Error: func(error) {}}
+	_, _ = conf.Check(module+startPackage, fset, files, info)
+	rel := func(pos token.Pos) string {
+		return startPackage + "/" + filepath.Base(fset.Position(pos).Filename)
+	}
+	var bad []string
+	for _, f := range files {
+		file := rel(f.Pos())
+		if slices.Contains(startExempt, file) {
+			continue
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			id, ok := ast.Unparen(call.Fun).(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if fn, ok := info.Uses[id].(*types.Func); ok && slices.Contains(startExempt, rel(fn.Pos())) {
+				bad = append(bad, file+" calls "+fn.Name()+", declared in "+rel(fn.Pos()))
+			}
+			return true
+		})
+	}
+	return bad, nil
 }
 
 // enginewireImporters returns each non-test file under root that imports
@@ -438,6 +488,7 @@ func TestImportRules(t *testing.T) {
 			[]string{
 				"cmd/dfs/commands/kv.go imports " + module + "pkg/metadata/kvstore",
 				"cmd/dfs/commands/records.go imports " + module + "pkg/metadata/kvstore",
+				"cmd/dfs/commands/start.go calls initRecords, declared in cmd/dfs/commands/init.go",
 			}},
 		{"a file of dfs start renamed away", startImports, "start-imports-missing",
 			[]string{"cmd/dfs/commands/root.go is missing", "cmd/dfs/commands/start.go is missing"}},
@@ -617,26 +668,9 @@ func TestNoComponentImports(t *testing.T) {
 // source.
 func typeCheck(dir, path string) (*types.Package, []*ast.File, *types.Info, error) {
 	fset, imp := sourceImporter()
-	entries, err := os.ReadDir(dir)
+	files, err := parsePackage(fset, dir)
 	if err != nil {
 		return nil, nil, nil, err
-	}
-	var files []*ast.File
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
-			continue
-		}
-		if ok, err := gobuild.Default.MatchFile(dir, e.Name()); err != nil || !ok {
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			continue
-		}
-		f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, 0)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		files = append(files, f)
 	}
 	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
 	conf := types.Config{Importer: imp}
@@ -645,6 +679,32 @@ func typeCheck(dir, path string) (*types.Package, []*ast.File, *types.Info, erro
 		return nil, nil, nil, err
 	}
 	return pkg, files, info, nil
+}
+
+// parsePackage parses the non-test sources for this host's platform in dir.
+func parsePackage(fset *token.FileSet, dir string) ([]*ast.File, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var files []*ast.File
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		if ok, err := gobuild.Default.MatchFile(dir, e.Name()); err != nil || !ok {
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, 0)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, f)
+	}
+	return files, nil
 }
 
 // sourceImporter is one importer from source for every check, so a package

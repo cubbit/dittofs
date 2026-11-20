@@ -7,3 +7,5 @@ import (
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/metrics"
 )
+
+func run() { initRecords() }
