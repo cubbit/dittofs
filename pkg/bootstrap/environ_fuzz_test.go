@@ -76,13 +76,37 @@ func FuzzEnvironment(f *testing.F) {
 		f.Add(name, "s3cr3t", "DITTOFS_NODE_ID", "x")
 	}
 
+	// Pairs of a service link's form and shape, on both IP families, and
+	// one name repeated with a link first and a plain value after it.
+	f.Add("DITTOFS_API_PORT", "tcp://10.0.0.1:8080", "DITTOFS_NODE_ID", "x")
+	f.Add("DITTOFS_API_PORT", "tcp://[fd00::a]:8080", "DITTOFS_NODE_ID", "x")
+	f.Add("DITTOFS_ADAPTERS_SMB_PORT", "tcp://10.0.0.1:445", "DITTOFS_NODE_ID", "x")
+	f.Add("DITTOFS_METRICS_PORT", "tcp://10.0.0.1:9090", "DITTOFS_METRICS_PORT", "9091")
+	f.Add("DITTOFS_METRICS_PORT", "9091", "DITTOFS_METRICS_PORT", "tcp://10.0.0.1:9090")
+
 	f.Fuzz(func(t *testing.T, name1, value1, name2, value2 string) {
 		// A name holding "=" would be read as a shorter name with a longer
 		// value, which is another input.
 		name1 = strings.ReplaceAll(name1, "=", "_")
 		name2 = strings.ReplaceAll(name2, "=", "_")
 
-		environ := []string{name1 + "=" + value1 + fuzzCanary, name2 + "=" + value2 + fuzzCanary}
+		// A value that is a service link is ignored and cannot leak, and a
+		// canary would break its shape, so the canary goes only on a value
+		// that is not one. The first entry of a name is the one the load
+		// reads.
+		withCanary := func(name, value string) string {
+			if serviceLink(name, value) {
+				return value
+			}
+
+			return value + fuzzCanary
+		}
+
+		v1, v2 := withCanary(name1, value1), withCanary(name2, value2)
+		environ := []string{name1 + "=" + v1, name2 + "=" + v2}
+
+		effective := map[string]string{name2: v2}
+		effective[name1] = v1
 
 		path := filepath.Join(t.TempDir(), "config.yaml")
 		if err := os.WriteFile(path, nil, 0o600); err != nil {
@@ -125,7 +149,12 @@ func FuzzEnvironment(f *testing.F) {
 				}
 			}
 
-			if want := wantEnvLines(name); !slices.Equal(got, want) {
+			want := wantEnvLines(name)
+			if serviceLink(name, effective[name]) {
+				want = nil
+			}
+
+			if !slices.Equal(got, want) {
 				t.Errorf("the lines of %q:\ngot  %q\nwant %q", name, got, want)
 			}
 		}

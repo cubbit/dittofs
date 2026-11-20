@@ -317,9 +317,10 @@ func TestEnvironmentAllowed(t *testing.T) {
 
 // A provisional name passes, its value unread, and sets no key. It passes
 // only because it is on the provisional list: it is no allowed name, sits
-// under no allowed prefix and is no key's variable. It is matched whole, so a
-// name one letter or one word past it is unknown. A report refusing another
-// name of the same environment names neither it nor its value.
+// under no allowed prefix, is no key's variable and has no service link's
+// form. It is matched whole, so a name one letter or one word past it is
+// unknown. A report refusing another name of the same environment names
+// neither it nor its value.
 func TestEnvironmentProvisional(t *testing.T) {
 	t.Parallel()
 
@@ -334,11 +335,14 @@ func TestEnvironmentProvisional(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			if slices.Contains(allowedEnvNames, name) || allowedPrefix(name) || declaredEnv[name] {
+			endpoint := "http://s3cr3t:4318"
+
+			if slices.Contains(allowedEnvNames, name) || allowedPrefix(name) || declaredEnv[name] ||
+				serviceLink(name, endpoint) {
 				t.Errorf("%s passes by a rule other than the provisional list", name)
 			}
 
-			class, rule := classifyEnv(name, declaredEnv)
+			class, rule := classifyEnv(name, endpoint, declaredEnv)
 			if class != envPass || rule != "" {
 				t.Errorf(
 					"classifyEnv(%s): got %d and %q, want %d and no rule",
@@ -350,7 +354,7 @@ func TestEnvironmentProvisional(t *testing.T) {
 			}
 
 			for _, longer := range []string{name + "X", name + "_X"} {
-				if class, _ := classifyEnv(longer, declaredEnv); class != envUnknown {
+				if class, _ := classifyEnv(longer, endpoint, declaredEnv); class != envUnknown {
 					t.Errorf(
 						"classifyEnv(%s): got %d, want %d; a provisional name matched as a prefix",
 						longer,
@@ -360,7 +364,7 @@ func TestEnvironmentProvisional(t *testing.T) {
 				}
 			}
 
-			value := name + "=http://s3cr3t:4318"
+			value := name + "=" + endpoint
 			b := loads(t, "", []string{value})
 
 			for key, source := range b.Source {
@@ -449,16 +453,16 @@ func TestEnvironmentDeclaredWinsOverPrefix(t *testing.T) {
 
 	declared := map[string]bool{"DITTOFS_TEST_FLAG": true}
 
-	if got, _ := classifyEnv("DITTOFS_TEST_FLAG", declared); got != envKey {
+	if got, _ := classifyEnv("DITTOFS_TEST_FLAG", "", declared); got != envKey {
 		t.Errorf("classifyEnv of a declared name: got %v, want %v", got, envKey)
 	}
 
-	if got, _ := classifyEnv("DITTOFS_TEST_FLAG", nil); got != envPass {
+	if got, _ := classifyEnv("DITTOFS_TEST_FLAG", "", nil); got != envPass {
 		t.Errorf("classifyEnv with nothing declared: got %v, want %v", got, envPass)
 	}
 
 	for _, declares := range []map[string]bool{declared, nil} {
-		if got, _ := classifyEnv("DITTOFS_E2E_X", declares); got != envPass {
+		if got, _ := classifyEnv("DITTOFS_E2E_X", "", declares); got != envPass {
 			t.Errorf(
 				"classifyEnv of a name under a prefix: got %v, want %v; the declared set was %v",
 				got, envPass, declares,

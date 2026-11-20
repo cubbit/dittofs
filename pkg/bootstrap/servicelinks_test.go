@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -109,13 +110,7 @@ func TestServiceLinksOfACRPass(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			env := map[string]string{}
-
-			for _, svc := range kubeletServices {
-				for name, value := range kubeletEnv(svc.name, tc.ip, svc.ports) {
-					env[name] = value
-				}
-			}
+			env := kubeletPodEnv(tc.ip)
 
 			// Three variables a service always gets, plus five per port:
 			// the api one makes 8, the metrics one 8, the operator's
@@ -350,5 +345,168 @@ func TestServiceLinkShapes(t *testing.T) {
 				t.Errorf("serviceLink: got %v, want %v", got, row.accept)
 			}
 		})
+	}
+}
+
+// environOf renders a map as the NAME=value entries of an environ.
+func environOf(env map[string]string) []string {
+	out := make([]string, 0, len(env))
+
+	for name, value := range env {
+		out = append(out, name+"="+value)
+	}
+
+	return out
+}
+
+// kubeletPodEnv is the whole set a pod gets for the modelled services, on
+// one IP family.
+func kubeletPodEnv(ip string) map[string]string {
+	env := map[string]string{}
+
+	for _, svc := range kubeletServices {
+		for name, value := range kubeletEnv(svc.name, ip, svc.ports) {
+			env[name] = value
+		}
+	}
+
+	return env
+}
+
+// The whole set of a pod's service links loads over a valid file with an
+// empty report, on both IP families, and no source changes.
+func TestServiceLinksLoadWithNoReport(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		ip   string
+	}{
+		{"ipv4", "10.96.0.11"},
+		{"ipv6", "fd00::a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			plain := loads(t, "", nil)
+			withLinks := loads(t, "", environOf(kubeletPodEnv(tc.ip)))
+
+			if !reflect.DeepEqual(withLinks.Source, plain.Source) {
+				t.Errorf(
+					"sources with the links:\ngot  %v\nwant %v",
+					withLinks.Source,
+					plain.Source,
+				)
+			}
+		})
+	}
+}
+
+// A retired v1 name holding a bare number is no link: it is refused with
+// the table's rule, and the value never reaches the report.
+func TestServiceLinkNameNeedsLinkValue(t *testing.T) {
+	t.Parallel()
+
+	runRefusals(t, []refusalRow{
+		{
+			name: "metrics port", environ: []string{"DITTOFS_METRICS_PORT=9091"},
+			want: []string{
+				"environment: DITTOFS_METRICS_PORT: no longer read; write metrics.listen",
+			},
+		},
+		{
+			name: "control plane port", environ: []string{"DITTOFS_CONTROLPLANE_PORT=8080"},
+			want: []string{
+				"environment: DITTOFS_CONTROLPLANE_PORT: no longer read; write api.listen",
+			},
+		},
+	})
+}
+
+// A misspelled link name holding no link's value is unknown, naming the
+// closest declared variable, and no value is printed.
+func TestServiceLinkMisspelledNameRefuses(t *testing.T) {
+	t.Parallel()
+
+	runRefusals(t, []refusalRow{
+		{
+			name: "nfs port number", environ: []string{"DITTOFS_NFS_PORT=2049"},
+			want: []string{
+				"environment: DITTOFS_NFS_PORT: unknown name; did you mean DITTOFS_NODE_ID?",
+			},
+		},
+		{
+			name: "service port word", environ: []string{"DITTOFS_API_SERVICE_PORT=http"},
+			want: []string{
+				"environment: DITTOFS_API_SERVICE_PORT: unknown name; " +
+					"did you mean DITTOFS_API_SOCKET?",
+			},
+		},
+		{
+			name: "secret as a value", environ: []string{"DITTOFS_NFS_PORT=s3cr3t"},
+			want: []string{
+				"environment: DITTOFS_NFS_PORT: unknown name; did you mean DITTOFS_NODE_ID?",
+			},
+			absent: []string{"s3cr3t"},
+		},
+	})
+}
+
+// Links among refusals: only the refusals are reported, and no link
+// variable stops the scan or hides the next refusal.
+func TestServiceLinkAmongOtherRefusals(t *testing.T) {
+	t.Parallel()
+
+	env := kubeletPodEnv("10.96.0.11")
+	env["DITTOFS_METRICS_PORT"] = "9091"
+	env["DITTOFS_NFS_PORT"] = "2049"
+	env["DITTOFS_ADAPTERS_SMB_PORT"] = "1"
+
+	_, got := loadRefused(t, "", environOf(env))
+
+	want := strings.Join([]string{
+		"environment: DITTOFS_ADAPTERS_SMB_PORT: " + setting,
+		"environment: DITTOFS_METRICS_PORT: no longer read; write metrics.listen",
+		"environment: DITTOFS_NFS_PORT: unknown name; did you mean DITTOFS_NODE_ID?",
+	}, "\n")
+
+	if got != want {
+		t.Errorf("report:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A declared key's variable keeps the class of a key even when its value
+// has a link's shape: the declared names come before the link check.
+func TestServiceLinkDoesNotHideADeclaredName(t *testing.T) {
+	t.Parallel()
+
+	declared := map[string]bool{"DITTOFS_API_PORT": true}
+
+	if got, _ := classifyEnv("DITTOFS_API_PORT", "tcp://10.0.0.5:80", declared); got != envKey {
+		t.Errorf("classifyEnv of a declared name with a link's value: got %v, want %v", got, envKey)
+	}
+
+	if got, _ := classifyEnv("DITTOFS_API_PORT", "tcp://10.0.0.5:80", nil); got != envPass {
+		t.Errorf("classifyEnv of a link with nothing declared: got %v, want %v", got, envPass)
+	}
+
+	// The link check comes before the settings: a setting's variable holding
+	// a link's shape passes, and holding anything else is still a setting.
+	const smb = "DITTOFS_ADAPTERS_SMB_PORT"
+
+	if got, _ := classifyEnv(smb, "tcp://10.0.0.1:445", nil); got != envPass {
+		t.Errorf(
+			"classifyEnv of a setting's name with a link's value: got %v, want %v",
+			got,
+			envPass,
+		)
+	}
+
+	if got, _ := classifyEnv(smb, "1", nil); got != envSetting {
+		t.Errorf(
+			"classifyEnv of a setting's name with a plain value: got %v, want %v",
+			got,
+			envSetting,
+		)
 	}
 }
