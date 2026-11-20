@@ -19,6 +19,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
@@ -595,7 +596,17 @@ func TestPreflight(t *testing.T) {
 			setup: func(t *testing.T, parent string) (string, []string) {
 				dir := filepath.Join(parent, "device")
 				initJournal(t, dir, instA)
-				writeFile(t, filepath.Join(dir, "x.seg"), "a segment the identity answer must name still on the device")
+				// A taken segment the identity answer must name still on
+				// the device: under the header-slot ruling a segment counts
+				// once a stream took it — a header that verifies, and not
+				// a name with junk inside — so the fixture plants a
+				// verifying header at a segment's own name, the shape the
+				// classifier answers NameSegment for.
+				if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%020d.seg", 1)),
+					raw.SegmentHeader{Identity: [16]byte{9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9}, ID: 1}.Bytes(),
+					0o600); err != nil {
+					t.Fatal(err)
+				}
 				return filepath.Join(parent, "store"), []string{dir}
 			},
 			// this row's real assertion is the hash equality around the
