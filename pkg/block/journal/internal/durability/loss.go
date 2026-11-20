@@ -37,9 +37,10 @@ type Loss struct {
 	// AtOpen marks an open's own loss.
 	AtOpen bool
 
-	// Raised says the caller already raised the generation for this loss, as
-	// the read path does before it hands the loss on. Lose then counts and
-	// publishes it but raises nothing.
+	// Raised says the generation was already raised for this loss — by the
+	// caller, as the read path does before it hands the loss on, or by the
+	// first take of the piece a takeover now republishes. Lose then counts
+	// and publishes it but raises nothing.
 	Raised bool
 
 	// Marked says the caller already left the marker of a synced loss, so
@@ -54,7 +55,8 @@ type Loss struct {
 	// files, but the ring holds nothing and the zero event answers. The
 	// credit holds only while the report's own answer stands: a take that
 	// overtakes a dead, unread claim clears it and publishes the loss here,
-	// keeping a raise the caller says was already made. A reported loss
+	// the Raise set the same take, for the piece's first take counted that
+	// generation already. A reported loss
 	// also takes back a piece a placed but unsynced record of an earlier
 	// Lose holds, to append the record that one never synced.
 	Reported bool
@@ -156,14 +158,18 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 		retaken = true
 	} else {
 		retaken = debt
-		if takeover && l.Reported {
+		if takeover {
 			// The claim this take overtook belonged to an instance that
 			// stopped before any reader reached the event its loss
 			// published: the report Reported credits answered nothing, so
-			// this call publishes the loss itself. Raised stays set, for
-			// the instance the take overtook already raised it, and a
-			// second raise would count again a loss no reader was told of.
+			// this call publishes the loss itself. Raised is set whether
+			// or not the caller brought Reported, for the piece's own
+			// first take already raised the generation when the retired
+			// claim's loss took it — the reason and the offloaded bit the
+			// rule raises by are the same drop's — and a second raise
+			// would count again a loss no reader was told of.
 			l.Reported = false
+			l.Raised = true
 		}
 	}
 

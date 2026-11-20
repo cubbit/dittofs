@@ -377,10 +377,18 @@ func (s *dirState) failedSeqs() []core.Seq {
 }
 
 // deferAgainst stores one deferred loss against seg, the segment holding the
-// dropped record its loss record is owed to the copy that retires.
+// dropped record its loss record is owed to the copy that retires. One entry
+// per piece: a loss re-planned after the deferring instance's ring died
+// unread reaches the same piece against the same segment, and the retiring
+// copy writes one record per piece however many passes deferred it.
 func (s *dirState) deferAgainst(seg core.SegmentID, l Loss) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, e := range s.deferred[seg] {
+		if e.Seq == l.Seq && e.Extent == l.Extent {
+			return
+		}
+	}
 	if s.deferred == nil {
 		s.deferred = map[core.SegmentID][]Loss{}
 	}
