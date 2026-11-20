@@ -16,9 +16,10 @@ DITTOFS_BENCH_DIR=<a directory on the device under test> \
 
 Run it by hand, outside the dedicated host's nightly work. The suite's `bench.txt` carries the
 box lines the run prints (commit, directory, filesystem, sync bound, segment cap, writers) and
-the raw twins `BenchmarkRawSequential`, `BenchmarkRawRandom4k`, `BenchmarkRawFsync4k` and `BenchmarkRawScaling`, which
-write the same bytes through `os` and `Sync` with the same block size, 16 writers and sync
-pattern as J1; read each J row as a fraction of its twin. Run it twice, then
+the raw twins `BenchmarkRawSequential`, `BenchmarkRawRandom4k`, `BenchmarkRawFsync4k` and
+`BenchmarkRawScaling`, which write the same bytes through `os` and `Sync` with the same block
+size, writers and sync pattern as the row they twin (16 writers for J1's twins, n files for
+`RawScaling`'s J2); read each J row as a fraction of its twin. Run it twice, then
 `benchstat first/bench.txt second/bench.txt`.
 
 The suite refuses a directory on a RAM-backed filesystem (`tmpfs`, `ramfs`) and exits non-zero
@@ -37,7 +38,7 @@ Notes on what a row measures:
   "point lookup <= 1 µs at 10^6" is therefore not judged from this row, and nothing is filled in
   as a measured target from it.
 - Sizes are the suite's fixed bursts: 128 MiB over all writers without a sync after each write,
-  16 MiB with one; J2 spreads 128 MiB over its files; the mixed case streams one 256 MiB file.
+  16 MiB with one; J2 spreads 128 MiB over its files; the mixed case streams one 128 MiB file.
 
 ## Constants these rows exercise
 
