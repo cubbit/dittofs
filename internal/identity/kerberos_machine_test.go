@@ -333,7 +333,7 @@ func TestKerberosMachineRefusedPACMintsNothing(t *testing.T) {
 			if got := k.machines(t); got != 0 {
 				t.Errorf("identity_mints_total{kind=machine} = %v after the refusal, want 0", got)
 			}
-			res, oc, err = k.srv.SignInOutcome(context.Background(), k.pacAs(m, rid(m, 1108)))
+			_, oc, err = k.srv.SignInOutcome(context.Background(), k.pacAs(m, rid(m, 1108)))
 			if err != nil || oc != "ok" {
 				t.Fatalf("the valid PAC's sign-in = %v, outcome %q; want ok", err, oc)
 			}
