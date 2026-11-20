@@ -14,6 +14,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/messages"
+	"github.com/jcmturner/gokrb5/v8/pac"
 	"github.com/jcmturner/gokrb5/v8/types"
 
 	"github.com/cubbit/dittofs/pkg/identity"
@@ -257,8 +258,9 @@ func (s *Server) signInKerberos(ctx context.Context, step identity.SignInStep, e
 	return res, oc, err
 }
 
-// bindTicket records t's authenticator and binds its client to the
-// principal RFC 18 §4.2 maps it to, refusing a disabled one.
+// bindTicket records t's authenticator, verifies the PAC its ticket carries,
+// and binds its client to the principal RFC 18 §4.2 maps it to, refusing a
+// disabled one.
 func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignInStep, t *ticket, name string, now time.Time) (identity.SignInResult, outcome, error) {
 	switch err := s.replay.insert(t, now); {
 	case errors.Is(err, errReplay):
@@ -267,22 +269,41 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 		return identity.SignInResult{}, outcomeUnavailable, err
 	}
 	enc := &t.req.Ticket.DecryptedEncPart
-	_, ok, err := pacOf(enc.AuthorizationData)
-	switch {
-	case err != nil:
+	raw, ok, err := pacOf(enc.AuthorizationData)
+	if err != nil {
 		return identity.SignInResult{}, outcomeLogonFailure, logonFailure("authorization data: %v", err)
-	case ok:
-		// decision: a ticket carrying a PAC is refused ErrUnavailable, not
-		// ErrLogonFailure, while no PAC is verified: a domain controller puts
-		// a PAC in every ticket, so counting the refusal on the throttle would
-		// lock a domain user out of NTLM too after ten ordinary attempts.
-		// Overturned once the PAC is verified, which refuses only a PAC that
-		// fails verification.
-		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: kerberos: a ticket carrying a PAC, which is not verified yet", vfserr.ErrUnavailable)
-	case st.Directory != nil && strings.EqualFold(enc.CRealm, st.Directory.Realm):
+	}
+	var logon *pac.KerbValidationInfo
+	if ok {
+		if logon, err = verifyPAC(raw, t.key, enc.CName, enc.AuthTime); err != nil {
+			if errors.Is(err, errPACClient) {
+				// decision: the mismatch is logged with the client address
+				// and no name: RFC 25 §5.4 keeps user names out of log
+				// lines, and neither name is bound to a principal yet, nor
+				// is one bound to log it, since binding may mint. The logon
+				// event carries the ticket's name as presented. Overturned
+				// when RFC 25's logon stream, whose records may carry both
+				// names, replaces log lines for logon events.
+				s.logger.WarnContext(ctx, "identity: a PAC's client information differs from its ticket's", "client", step.Client.String())
+			}
+			return identity.SignInResult{}, outcomeLogonFailure, logonFailure("PAC: %v", err)
+		}
+	}
+	if logon != nil {
+		// decision: a ticket whose PAC verifies and holds logon information
+		// is refused ErrUnavailable, uncounted on the throttle, in every
+		// realm, since nothing yet checks the PAC's user SID against the
+		// record its name maps to (RFC 18 §3.4). Binding it by name would
+		// admit a recreated account under a deleted one's name, and a local
+		// user's or root's SID, in the installation's domain, is one no PAC
+		// carries. Overturned by the PAC's user SID bound to the record.
+		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: kerberos: the PAC's user SID is not bound to a record yet", vfserr.ErrUnavailable)
+	}
+	if st.Directory != nil && strings.EqualFold(enc.CRealm, st.Directory.Realm) {
 		// RFC 18 §3.4: in the directory's realm, its name in any case, a
-		// ticket without a PAC is refused before any mapping, so a domain
-		// account cannot reach a principal by its name alone.
+		// ticket without a PAC, or whose PAC holds no logon information, is
+		// refused before any mapping, so a domain account cannot reach a
+		// principal by its name alone.
 		return identity.SignInResult{}, outcomeNoPAC, logonFailure("a ticket without a PAC in the directory's realm")
 	}
 	p, err := s.kerberosPrincipal(ctx, st, name, enc.CName, enc.CRealm)
