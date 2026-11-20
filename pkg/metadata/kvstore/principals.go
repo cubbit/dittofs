@@ -38,20 +38,62 @@ func (p Principals) ByName(ctx context.Context, kind entity.PrincipalKind, name 
 	return out, err
 }
 
+// ByProtocolID finds the principal holding id. A principal marked deleted
+// holds none: its dir spelling's row, the one row its mark keeps, reads as
+// not found.
 func (p Principals) ByProtocolID(ctx context.Context, id entity.ProtocolID) (entity.Principal, error) {
 	var out entity.Principal
 	err := p.s.kv.View(ctx, func(r kv.Reader) error {
-		b, err := r.Get(protocolKey(id))
-		if errors.Is(err, kv.ErrNotFound) {
+		holder, marked, ok, err := protocolRow(r, id)
+		switch {
+		case err != nil:
+			return err
+		case !ok || marked:
 			return merrs.NewNotFoundError(id.Scheme.String()+":"+id.Value, "principal")
 		}
-		if err != nil {
-			return err
-		}
-		out, _, err = decodeProtocolRow(id.Scheme, b) // the row's linked SID unread: see encodeProtocolRow
-		return err
+		out = holder
+		return nil
 	})
 	return out, err
+}
+
+// Marked reports whether a principal marked deleted, its deletion not yet
+// ended, holds id: true only for a dir spelling, the one row a mark keeps.
+func (p Principals) Marked(ctx context.Context, id entity.ProtocolID) (bool, error) {
+	var marked bool
+	err := p.s.kv.View(ctx, func(r kv.Reader) (err error) {
+		_, marked, _, err = protocolRow(r, id)
+		return err
+	})
+	return marked, err
+}
+
+// protocolRow reads id's row: its principal, whether that principal is
+// marked deleted, and whether the row exists.
+//
+// decision: a mark keeps the marked record's dir spelling row, which its
+// deletion's last batch deletes with the record, so the directory entry it
+// names is not minted anew while the deletion runs: a sign-in naming it
+// fails as an unknown name's does. Every other protocol-ID row goes at the
+// mark, free for a new principal at once; a dir spelling is freed when the
+// deletion ends, after which a mint for the entry makes a new principal, as
+// a SID reused after a deletion gets one. Only a dir row is checked against
+// its holder's record, the one read that costs; overturned if another
+// scheme's row must outlive a mark.
+func protocolRow(r kv.Reader, id entity.ProtocolID) (entity.Principal, bool, bool, error) {
+	b, err := r.Get(protocolKey(id))
+	if errors.Is(err, kv.ErrNotFound) {
+		return entity.Principal{}, false, false, nil
+	}
+	if err != nil {
+		return entity.Principal{}, false, false, err
+	}
+	holder, _, err := decodeProtocolRow(id.Scheme, b) // the row's linked SID unread: see encodeProtocolRow
+	if err != nil || id.Scheme != entity.SchemeDir {
+		return holder, false, true, err
+	}
+	ok, err := live(r, holder)
+	return holder, !ok, true, err
 }
 
 // Groups yields every group p is a member of, directly or through nested

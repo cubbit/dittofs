@@ -88,12 +88,9 @@ func (s *Server) signInPassThrough(ctx context.Context, st *State, step identity
 	if err != nil {
 		return identity.SignInResult{}, outcomeLogonFailure, fmt.Errorf("%w: %w", vfserr.ErrLogonFailure, err)
 	}
-	// decision: a principal marked deleted has lost its SID row with its
-	// other indexes, so Find mints the directory entry the reply's SID names
-	// as a new principal, as a Kerberos sign-in's mint does and as RFC 16
-	// has a reused SID get a new principal; the marked record's ID is never
-	// bound again. Refusing instead needs the store to find a marked record
-	// by its SID, which it does not index.
+	// Find mints the entry the reply's SID names; one whose principal is
+	// marked deleted is ErrUnknownPrincipal until its deletion ends, as an
+	// unknown name is (RFC 18 §3.7).
 	p, err := s.Find(ctx, identity.Spelling{Scheme: identity.SchemeSID, SID: rep.User}, identity.FindOpts{Mint: true})
 	switch {
 	case errors.Is(err, vfserr.ErrUnknownPrincipal):

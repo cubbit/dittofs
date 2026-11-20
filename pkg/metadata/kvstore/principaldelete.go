@@ -45,6 +45,7 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 	}
 	var marked bool
 	var secrets []entity.SecretRef
+	var ids entity.ProtocolIDs
 	if p.Kind != entity.PrincipalGroup {
 		u, err := decodeUser(p.ID, b)
 		if err != nil {
@@ -58,13 +59,13 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 			}
 			p = u.Principal
 		}
-		marked, secrets = u.Deleted, []entity.SecretRef{u.Password, u.NTHash}
+		marked, secrets, ids = u.Deleted, []entity.SecretRef{u.Password, u.NTHash}, u.IDs
 	} else {
 		g, err := decodeGroup(p.ID, b)
 		if err != nil {
 			return false, err
 		}
-		marked = g.Deleted
+		marked, ids = g.Deleted, g.IDs
 	}
 	if !marked {
 		return false, merrs.NewInvalidArgumentError(p.String() + " is not being deleted")
@@ -104,7 +105,7 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 	if d.took {
 		return false, nil
 	}
-	return true, deleteRecord(tx, p, secrets...)
+	return true, deleteRecord(tx, p, ids, secrets...)
 }
 
 // batch is what one batch of a deletion may still delete. A take it refuses
@@ -270,8 +271,9 @@ func (b *batch) dropSignInCount(p entity.Principal) error {
 	return ctl.DeleteSignInFailures(k)
 }
 
-// deleteRecord ends p's deletion: its record goes, with every version of
-// each secret a user's names, its password hash and its NT hash.
+// deleteRecord ends p's deletion: its record goes, with the dir spelling
+// row its mark kept and every version of each secret a user's names, its
+// password hash and its NT hash.
 //
 // decision: the secret is deleted by the reference the owner's own record
 // holds, so the owner check secrets make holds by construction, and the
@@ -283,9 +285,16 @@ func (b *batch) dropSignInCount(p entity.Principal) error {
 // ponytail: every version goes in this one transaction, which holds as long
 // as a secret keeps a current version and the few it replaced. Delete the
 // versions in batches if retention ever keeps many.
-func deleteRecord(tx kv.Txn, p entity.Principal, secrets ...entity.SecretRef) error {
+func deleteRecord(tx kv.Txn, p entity.Principal, ids entity.ProtocolIDs, secrets ...entity.SecretRef) error {
 	if _, err := raise(tx, pgenKey); err != nil {
 		return err
+	}
+	for _, id := range ids {
+		if id.Scheme == entity.SchemeDir {
+			if err := tx.Delete(protocolKey(id)); err != nil {
+				return err
+			}
+		}
 	}
 	var versions [][]byte
 	named := false

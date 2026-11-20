@@ -146,7 +146,7 @@ func plainStep(password, user, domain string) pid.SignInStep {
 // RFC 18 §10 "pass-through": alice, passed through, is bound to the
 // principal minted for her SID, her SIDs are her own and Domain Users, her
 // key is the exported one, and a caller resolved from her identity is that
-// principal (R2, R3).
+// principal.
 func TestPassThroughSignsIn(t *testing.T) {
 	fx := newPassThrough(t)
 	res := fx.signedIn(t, "alice in CORP", ntlmStep(string(alicePW), "alice", "CORP", true))
@@ -192,7 +192,7 @@ func (fx *ptFixture) share(t *testing.T, p entity.Principal) entity.ShareID {
 }
 
 // A wrong password raises the controller's count by one, refused
-// logon_failure; a 24-byte response, NTLMv1, raises it by none (R8, R12).
+// logon_failure; a 24-byte response, NTLMv1, raises it by none.
 func TestPassThroughCountsAtTheController(t *testing.T) {
 	fx := newPassThrough(t)
 	res, oc, err := fx.signIn(ntlmStep("wrong", "alice", "CORP", true))
@@ -213,7 +213,7 @@ func TestPassThroughCountsAtTheController(t *testing.T) {
 
 // Replies that are a guest's, by UserFlags or by RID 501, and replies whose
 // session key is zero, 15 bytes or missing, or whose logon domain is
-// another's, are each refused logon_failure (R4, R5, R6).
+// another's, are each refused logon_failure.
 func TestPassThroughChecksTheReply(t *testing.T) {
 	other := *sid.ParseSIDMust("S-1-5-21-8-8-8")
 	for _, tc := range []struct {
@@ -237,7 +237,7 @@ func TestPassThroughChecksTheReply(t *testing.T) {
 }
 
 // "NTLM MIC"'s pass-through half: a corrupted and a zeroed MIC, and signing
-// without key exchange, are refused logon_failure (R7).
+// without key exchange, are refused logon_failure.
 func TestPassThroughMIC(t *testing.T) {
 	fx := newPassThrough(t)
 	corrupt := ntlmStep(string(alicePW), "alice", "CORP", true)
@@ -256,7 +256,7 @@ func TestPassThroughMIC(t *testing.T) {
 }
 
 // With the directory's domain SID unread, pass-through answers
-// ErrUnavailable and sends nothing (R6).
+// ErrUnavailable and sends nothing.
 func TestPassThroughDomainSIDUnread(t *testing.T) {
 	fx := newPassThrough(t)
 	s, err := sim.NewSchedule(1, fx.clock, sim.Rule{Op: "*", Key: "*", Action: sim.FaultAction{Err: errDown}})
@@ -273,8 +273,7 @@ func TestPassThroughDomainSIDUnread(t *testing.T) {
 
 // "NTLM domain"'s pass-through half: the realm as the domain, and a UPN in
 // the realm with no domain, pass through; an alternate suffix, a trailing
-// dot, and any domain while not joined are unknown_domain and send nothing
-// (R1, R15).
+// dot, and any domain while not joined are unknown_domain and send nothing.
 func TestPassThroughDomainTable(t *testing.T) {
 	fx := newPassThrough(t)
 	fx.signedIn(t, `corp.example\alice`, plainStep(string(alicePW), "alice", "corp.example"))
@@ -299,8 +298,7 @@ func TestPassThroughDomainTable(t *testing.T) {
 }
 
 // "logon throttle"'s controller count: ten wrong passwords, then the right
-// one, throttled before it reaches the controller, whose count stays 10
-// (R12).
+// one, throttled before it reaches the controller, whose count stays 10.
 func TestPassThroughThrottled(t *testing.T) {
 	fx := newPassThrough(t)
 	for range 10 {
@@ -316,7 +314,7 @@ func TestPassThroughThrottled(t *testing.T) {
 }
 
 // A deny-only group SID is kept in DenyOnly and S-1-5-32-544 is dropped and
-// counted builtin, through the PAC's filter (R3).
+// counted builtin, through the PAC's filter.
 func TestPassThroughFiltersSIDs(t *testing.T) {
 	fx := newPassThrough(t)
 	payroll := *sid.ParseSIDMust(fx.domain + "-2002")
@@ -358,7 +356,9 @@ func (fx *ptFixture) counter(t *testing.T, reason string) float64 {
 }
 
 // alice's record disabled is refused with outcome disabled; marked deleted,
-// she is never bound to the marked principal again (R14).
+// she is refused logon_failure as an unknown name is, and no principal is
+// minted for her SID while the deletion runs; once it has ended, her next
+// sign-in mints her a new principal.
 func TestPassThroughDisabledAndDeleted(t *testing.T) {
 	fx := newPassThrough(t)
 	ctx := context.Background()
@@ -379,14 +379,24 @@ func TestPassThroughDisabledAndDeleted(t *testing.T) {
 	if err := cp.DeleteUser(ctx, p, gen); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
-	res, _, _ = fx.signIn(ntlmStep(string(alicePW), "alice", "CORP", true))
-	if got := res.Identity.Evidence.Principal; got == p {
-		t.Errorf("alice marked deleted: bound %v, the marked principal", got)
+	res, oc, err = fx.signIn(ntlmStep(string(alicePW), "alice", "CORP", true))
+	refused(t, "alice marked deleted", res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
+	if got, err := fx.s.Find(ctx, pid.Spelling{Scheme: pid.SchemeSID, SID: fx.alice}, pid.FindOpts{}); !errors.Is(err, vfserr.ErrUnknownPrincipal) {
+		t.Errorf("Find of alice's SID after her refused sign-in: %v, %v; want ErrUnknownPrincipal, nothing minted", got, err)
+	}
+
+	for done := false; !done; {
+		if done, err = fx.st.Nodes().ContinueDelete(ctx, p); err != nil {
+			t.Fatalf("ContinueDelete: %v", err)
+		}
+	}
+	if got := fx.signedIn(t, "alice after her deletion ended", ntlmStep(string(alicePW), "alice", "CORP", true)).Identity.Evidence.Principal; got == p {
+		t.Errorf("alice after her deletion ended: bound %v, the deleted principal; want a new one", got)
 	}
 }
 
 // Ten sign-ins the controller holds take every slot; an eleventh, started
-// at 1 s, answers ErrUnavailable at 6 s and nothing is sent for it (R16).
+// at 1 s, answers ErrUnavailable at 6 s and nothing is sent for it.
 func TestPassThroughBounds(t *testing.T) {
 	fx := newPassThrough(t, sim.Rule{Op: "logon", Key: "held*", Action: sim.FaultAction{Err: identitytest.ErrHold}})
 	fx.signedIn(t, "alice, reading the domain SID", ntlmStep(string(alicePW), "alice", "CORP", true))
@@ -425,7 +435,7 @@ func TestPassThroughBounds(t *testing.T) {
 }
 
 // The seam answers identity.netbios_name from the State in force, a new one
-// after Apply, and ErrUnavailable before any (R64).
+// after Apply, and ErrUnavailable before any.
 func TestComputerName(t *testing.T) {
 	s, err := identity.New(identity.Deps{Store: newStore(t), Clock: sim.NewTestClock(mt0)})
 	if err != nil {

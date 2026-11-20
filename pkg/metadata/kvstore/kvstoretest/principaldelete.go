@@ -154,3 +154,56 @@ func testContinueDeleteEnds(t *testing.T, kvo Opener) {
 		t.Errorf("ContinueDelete on an unmarked user: got done %v, %v; want refused", done, err)
 	}
 }
+
+// A marked user's and group's dir spellings are found by no lookup, are
+// reported marked, and refuse a mint of a new principal holding them, until
+// the deletion ends; then neither is marked and a new principal is minted
+// with each.
+func testMarkedDirSpelling(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp, p := s.ControlPlane(), s.Principals()
+	u, g := mintUser("alice"), mintGroup("finance")
+	udir, gdir := entity.ProtocolID{Scheme: entity.SchemeDir, Value: "entry-alice"}, entity.ProtocolID{Scheme: entity.SchemeDir, Value: "entry-finance"}
+	u.User.IDs, g.Group.IDs = entity.ProtocolIDs{udir}, entity.ProtocolIDs{gdir}
+	must(t, s.Minter().Create(ctx, entity.MintBatch{Users: []entity.MintUser{u}, Groups: []entity.MintGroup{g}}))
+	must(t, cp.DeleteUser(ctx, u.User.Principal, userGeneration(t, s, u.User.Principal)))
+	must(t, cp.DeleteGroup(ctx, g.Group.Principal, groupGeneration(t, cp, g.Group.Principal)))
+
+	again := func() entity.MintBatch {
+		u2, g2 := mintUser("alice"), mintGroup("finance")
+		u2.User.IDs, g2.Group.IDs = entity.ProtocolIDs{udir}, entity.ProtocolIDs{gdir}
+		return entity.MintBatch{Users: []entity.MintUser{u2}, Groups: []entity.MintGroup{g2}}
+	}
+	for _, id := range []entity.ProtocolID{udir, gdir} {
+		if _, err := p.ByProtocolID(ctx, id); !merrs.IsNotFoundError(err) {
+			t.Errorf("ByProtocolID(%s) of a marked principal: got %v, want not found", id.Value, err)
+		}
+		if m, err := p.Marked(ctx, id); err != nil || !m {
+			t.Errorf("Marked(%s) while its holder's deletion runs: got %v, %v; want true", id.Value, m, err)
+		}
+		b := again()
+		if id == udir {
+			b.Groups = nil
+		} else {
+			b.Users = nil
+		}
+		if err := s.Minter().Create(ctx, b); !merrs.IsAlreadyExistsError(err) {
+			t.Errorf("minting a new principal with %s while its holder is marked: got %v, want already exists", id.Value, err)
+		}
+	}
+
+	must(t, deleted(s, nil, u.User.Principal))
+	must(t, deleted(s, nil, g.Group.Principal))
+	for _, id := range []entity.ProtocolID{udir, gdir} {
+		if m, err := p.Marked(ctx, id); err != nil || m {
+			t.Errorf("Marked(%s) after the deletion ended: got %v, %v; want false", id.Value, m, err)
+		}
+	}
+	b := again()
+	if err := s.Minter().Create(ctx, b); err != nil {
+		t.Fatalf("minting new principals with the spellings a finished deletion freed: %v", err)
+	}
+	if got, err := p.ByProtocolID(ctx, udir); err != nil || got != b.Users[0].User.Principal {
+		t.Errorf("ByProtocolID(%s) after a new mint: got %v, %v; want %v", udir.Value, got, err, b.Users[0].User.Principal)
+	}
+}
