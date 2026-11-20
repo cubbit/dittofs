@@ -10,9 +10,11 @@ import (
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/types"
 
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	pid "github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -31,12 +33,13 @@ func (k *kerberos) pacStep(o identitytest.PACOpts) pid.SignInStep {
 }
 
 // RFC 18 §10's "PAC" clauses on the signature, at SignIn: a PAC whose server
-// signature verifies under the key that decrypted the ticket is accepted,
+// signature verifies under the key that decrypted the ticket, AES256 or
+// AES128, is accepted,
 // one holding no logon information as no PAC; every other is refused
 // ErrLogonFailure with outcome logon_failure. Catches a corrupted or
 // re-encoded signature accepted, an unkeyed or wrongly typed checksum
-// accepted, the checksum tried against every held key, and a PAC without
-// logon information refused (R25, R26, R28, R29).
+// accepted, the checksum tried against every held key, a PAC without logon
+// information refused, and an AES128 service key's signature refused.
 func TestKerberosSignInVerifiesThePAC(t *testing.T) {
 	logon := []identitytest.LogonInfo{aliceLogon}
 	corrupt := func(o identitytest.PACOpts, at func(b []byte) int) func(k *kerberos) pid.SignInStep {
@@ -57,6 +60,11 @@ func TestKerberosSignInVerifiesThePAC(t *testing.T) {
 	}{
 		{"a PAC signed under the ticket's key", plain(identitytest.PACOpts{Logon: logon}), true},
 		{"a PAC with no logon information, read as none", plain(identitytest.PACOpts{}), true},
+		{"a PAC signed under the ticket's AES128 key", func(k *kerberos) pid.SignInStep {
+			aes128 := int32(etypeID.AES128_CTS_HMAC_SHA1_96)
+			o := identitytest.PACOpts{Service: "cifs/nas.test", Etype: aes128, AuthTime: k.clock.Now(), Logon: logon}
+			return k.step(identitytest.TicketOpts{Client: "alice", Etype: aes128, PAC: k.realm.PAC(o)}, krbClient)
+		}, true},
 		{"a corrupted server signature", corrupt(identitytest.PACOpts{Logon: logon}, serverSignatureAt), false},
 		{"a PAC changed only in padding between buffers", corrupt(identitytest.PACOpts{Logon: logon}, paddingAt), false},
 		{"a server signature of the CRC32 type", plain(identitytest.PACOpts{Logon: logon, ServerType: chksumtype.CRC32}), false},
@@ -85,7 +93,7 @@ func TestKerberosSignInVerifiesThePAC(t *testing.T) {
 // A PAC whose client information names another client, or another
 // authentication time, than its ticket is refused, and the log line saying
 // so carries neither name, which RFC 25 §5.4 keeps out of log lines.
-// Catches the PAC's client information unchecked (R30).
+// Catches the PAC's client information unchecked.
 func TestKerberosSignInChecksThePACClient(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -118,6 +126,52 @@ func TestKerberosSignInChecksThePACClient(t *testing.T) {
 					t.Errorf("logs %s carry the name %s", logs, name)
 				}
 			}
+		})
+	}
+}
+
+// applyDirectory applies the fixture's keytab with a directory record of
+// schema serving realm. No directory is dialed: a sign-in reaching step 3
+// finds it unavailable.
+func (k *kerberos) applyDirectory(t *testing.T, schema, realm string) {
+	t.Helper()
+	st := state(1)
+	st.Settings.NetBIOSName = "NAS01"
+	st.Keytab = []secrets.Version{{Number: 1, Value: k.realm.Keytab()}}
+	st.Directory = &directory.Record{Schema: schema, Address: "ldaps://dc.test.realm", Realm: realm}
+	if err := k.srv.Apply(st); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+}
+
+// In the directory's realm, a ticket with no PAC and one whose verified PAC
+// holds no logon information are refused ErrLogonFailure, counted no_pac,
+// and one whose PAC verifies is refused ErrUnavailable while nothing checks
+// its user SID against the record (RFC 18 §3.4); each would otherwise bind
+// the local alice through her krb row. Catches a directory-realm ticket bound whatever
+// its PAC holds.
+func TestKerberosSignInDirectoryRealmPAC(t *testing.T) {
+	foreign := aliceLogon
+	foreign.DomainSID, foreign.UserRID = "S-1-5-21-9-9-9", 4242
+	for _, c := range []struct {
+		name    string
+		step    func(k *kerberos) pid.SignInStep
+		err     error
+		outcome string
+	}{
+		{"no PAC", func(k *kerberos) pid.SignInStep { return k.as("alice") }, vfserr.ErrLogonFailure, "no_pac"},
+		{"a PAC with no logon information", func(k *kerberos) pid.SignInStep { return k.pacStep(identitytest.PACOpts{}) },
+			vfserr.ErrLogonFailure, "no_pac"},
+		{"a PAC naming a foreign SID", func(k *kerberos) pid.SignInStep {
+			return k.pacStep(identitytest.PACOpts{Logon: []identitytest.LogonInfo{foreign}})
+		}, vfserr.ErrUnavailable, "unavailable"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			k := kerberosServer(t)
+			k.user(t, entity.User{Principal: entity.NewUser(), Name: "alice", IDs: append(fileIDs("1500"), krbID("alice@TEST.REALM"))}, 0)
+			k.applyDirectory(t, directory.SchemaAD, krbRealm)
+			res, oc, err := k.srv.SignInOutcome(context.Background(), c.step(k))
+			refused(t, c.name, res, oc, err, c.err, c.outcome)
 		})
 	}
 }

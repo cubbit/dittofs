@@ -1,13 +1,16 @@
 package identity
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jcmturner/gokrb5/v8/iana/chksumtype"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/pac"
@@ -67,7 +70,7 @@ func userSID(v *pac.KerbValidationInfo) string {
 // TGT's PAC_ATTRIBUTES_INFO and PAC_REQUESTOR and the service ticket's
 // ticket and full checksums passing as types identity does not read, and each
 // decodes to the user SID its capture recorded. Catches a verifier and a
-// builder that agree only with each other (R25).
+// builder that agree only with each other.
 func TestVerifyPACCaptures(t *testing.T) {
 	for _, c := range captures {
 		raw, key := capture(t, c.pac, c.keytab)
@@ -94,7 +97,7 @@ func TestVerifyPACCaptures(t *testing.T) {
 // header included, but for the KDC signature's value, which MS-PAC 2.8.4
 // zeroes before the server signature is computed and which only a domain
 // controller could check. Catches a checksum over a re-encoding, which skips
-// a byte the decoder skips (R25).
+// a byte the decoder skips.
 func TestVerifyPACRefusesEveryFlippedBit(t *testing.T) {
 	raw, key := capture(t, "service.pac", "service.keytab")
 	bufs, err := pacBuffers(raw)
@@ -123,7 +126,7 @@ func TestVerifyPACRefusesEveryFlippedBit(t *testing.T) {
 }
 
 // Of a logon-information buffer repeated with a second user, the first is
-// the one decoded. Catches the last of a type winning (R27).
+// the one decoded. Catches the last of a type winning.
 func TestVerifyPACUsesTheFirstOfAType(t *testing.T) {
 	r := identitytest.NewRealm(testRealm, "cifs/nas.test")
 	user := func(rid uint32) identitytest.LogonInfo {
@@ -152,5 +155,56 @@ func TestPACBuffersRefusesAHugeCount(t *testing.T) {
 	}
 	if n := after.TotalAlloc - before.TotalAlloc; n > 1<<10 {
 		t.Errorf("refusing it allocated %d bytes, want under 1 KiB", n)
+	}
+}
+
+// A KDC signature of an unknown type, and one of a known type cut to its
+// 4-byte type as the PAC's last buffer, are refused as such, before the
+// server signature is checked, never by a panic zeroing past the PAC's end.
+// The short one is also a FuzzPAC seed. Catches the KDC signature's type and
+// length unchecked.
+func TestVerifyPACRefusesAMalformedKDCSignature(t *testing.T) {
+	key := identitytest.NewKey(etypeID.AES256_CTS_HMAC_SHA1_96)
+	srv := identitytest.PACBuffer{Type: identitytest.PACServerSignature, Data: append(le32(chksumtype.HMAC_SHA1_96_AES256), make([]byte, 12)...)}
+	for _, c := range []struct {
+		name string
+		kdc  []byte
+	}{
+		{"an unknown type", append(le32(0x7777), make([]byte, 12)...)},
+		{"a known type cut to 4 bytes", le32(chksumtype.HMAC_SHA1_96_AES256)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			raw := identitytest.EncodePAC([]identitytest.PACBuffer{srv, {Type: identitytest.PACKDCSignature, Data: c.kdc}})
+			defer func() {
+				if p := recover(); p != nil {
+					t.Errorf("verifyPAC panicked: %v; want it refused", p)
+				}
+			}()
+			_, err := verifyPAC(raw, key, captureClient, t0)
+			if err == nil || !strings.Contains(err.Error(), "KDC signature of an unknown type or length") {
+				t.Errorf("verifyPAC = %v; want refused for the KDC signature's type or length", err)
+			}
+		})
+	}
+}
+
+func le32(v int32) []byte { return binary.LittleEndian.AppendUint32(nil, uint32(v)) }
+
+// Walking and verifying each FuzzPAC seed allocates at most a constant times
+// its length. Catches an allocation sized by a count the PAC claims.
+func TestPACAllocationBound(t *testing.T) {
+	key := identitytest.NewKey(etypeID.AES256_CTS_HMAC_SHA1_96)
+	for i, b := range pacSeeds(t) {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		bufs, _ := pacBuffers(b)
+		_, _ = verifyPAC(b, key, captureClient, t0)
+		if ci, ok := bufferOf(bufs, pacClientInfo); ok {
+			_, _, _ = clientInfo(ci.data)
+		}
+		runtime.ReadMemStats(&after)
+		if n, limit := after.TotalAlloc-before.TotalAlloc, uint64(pacAllocBase+pacAllocPerByte*len(b)); n > limit {
+			t.Errorf("seed %d: walking and verifying %d bytes allocated %d, want at most %d", i, len(b), n, limit)
+		}
 	}
 }

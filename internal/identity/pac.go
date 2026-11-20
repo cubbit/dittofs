@@ -102,13 +102,13 @@ var signatureLen = map[int32]int{
 //
 // decision: the PAC's buffers are walked here, never by gokrb5's
 // PACType.Unmarshal and ProcessPACInfoBuffers, which allocate by the buffer
-// count unchecked, refuse a PAC with no logon information, require the KDC
-// signature and do not pin the checksum type. The logon information is
-// decoded by gokrb5 only once the server signature verifies: its NDR decoder
-// allocates by the counts it reads, unbounded, so only a holder of the
-// service key, the KDC, reaches it. Overturned if a PAC is ever read before
-// its signature verifies, or the KDC is not trusted with the decoder's
-// allocations; then a bounded logon-information decoder replaces gokrb5's.
+// count unchecked, refuse a PAC with no logon information and do not pin the
+// checksum type. The logon information is decoded by gokrb5 only once the
+// server signature verifies: its NDR decoder allocates by the counts it
+// reads, unbounded, so only a holder of the service key, the KDC, reaches it.
+// Overturned if a PAC is ever read before its signature verifies, or the KDC
+// is not trusted with the decoder's allocations; then a bounded
+// logon-information decoder replaces gokrb5's.
 func verifyPAC(raw []byte, key types.EncryptionKey, cname types.PrincipalName, authTime time.Time) (*pac.KerbValidationInfo, error) {
 	bufs, err := pacBuffers(raw)
 	if err != nil {

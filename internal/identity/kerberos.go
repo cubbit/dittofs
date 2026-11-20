@@ -14,6 +14,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/messages"
+	"github.com/jcmturner/gokrb5/v8/pac"
 	"github.com/jcmturner/gokrb5/v8/types"
 
 	"github.com/cubbit/dittofs/pkg/identity"
@@ -272,8 +273,9 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 	if err != nil {
 		return identity.SignInResult{}, outcomeLogonFailure, logonFailure("authorization data: %v", err)
 	}
+	var logon *pac.KerbValidationInfo
 	if ok {
-		if _, err := verifyPAC(raw, t.key, enc.CName, enc.AuthTime); err != nil {
+		if logon, err = verifyPAC(raw, t.key, enc.CName, enc.AuthTime); err != nil {
 			if errors.Is(err, errPACClient) {
 				// decision: the mismatch is logged with the client address
 				// and no name: RFC 25 §5.4 keeps user names out of log
@@ -287,11 +289,20 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 			return identity.SignInResult{}, outcomeLogonFailure, logonFailure("PAC: %v", err)
 		}
 	}
-	if !ok && st.Directory != nil && strings.EqualFold(enc.CRealm, st.Directory.Realm) {
+	if st.Directory != nil && strings.EqualFold(enc.CRealm, st.Directory.Realm) {
 		// RFC 18 §3.4: in the directory's realm, its name in any case, a
-		// ticket without a PAC is refused before any mapping, so a domain
-		// account cannot reach a principal by its name alone.
-		return identity.SignInResult{}, outcomeNoPAC, logonFailure("a ticket without a PAC in the directory's realm")
+		// ticket without a PAC, or whose PAC holds no logon information, is
+		// refused before any mapping, so a domain account cannot reach a
+		// principal by its name alone.
+		if logon == nil {
+			return identity.SignInResult{}, outcomeNoPAC, logonFailure("a ticket without a PAC in the directory's realm")
+		}
+		// decision: a ticket of the directory's realm whose PAC verifies is
+		// refused ErrUnavailable, uncounted on the throttle, since nothing yet
+		// checks the PAC's user SID against the record its name maps to;
+		// binding it by name would admit a recreated account under a deleted
+		// one's name. Overturned by the PAC's user SID bound to the record.
+		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: kerberos: the PAC's user SID is not bound to a record yet", vfserr.ErrUnavailable)
 	}
 	p, err := s.kerberosPrincipal(ctx, st, name, enc.CName, enc.CRealm)
 	switch {

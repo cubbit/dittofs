@@ -146,12 +146,14 @@ func pacSeeds(t testing.TB) [][]byte {
 }
 
 // FuzzPAC holds the PAC's walk, its server signature's check and its client
-// information's decode to their invariants: they never panic; they allocate
-// at most a constant times the input's length; the walk keeps only the
-// first buffer of each type; and what it walks, laid out again by the test
-// realm's encoder, walks to the same buffers. The logon information is
-// decoded only under a verified signature, which fuzzed bytes do not carry,
-// so it is not reached here (verifyPAC's decision).
+// information's decode to their invariants: they never panic; the walk
+// keeps only the first buffer of each type; and what it walks, laid out
+// again by the test realm's encoder, walks to the same buffers. Their
+// allocations are bounded over the seeds by TestPACAllocationBound, outside
+// the target, since reading the allocator's statistics stops the program.
+// The logon information is decoded only under a verified signature, which
+// fuzzed bytes do not carry, so it is not reached here (verifyPAC's
+// decision).
 func FuzzPAC(f *testing.F) {
 	for _, s := range pacSeeds(f) {
 		f.Add(s)
@@ -161,16 +163,10 @@ func FuzzPAC(f *testing.F) {
 	key := identitytest.NewKey(etypeID.AES256_CTS_HMAC_SHA1_96)
 	client := types.PrincipalName{NameType: 1, NameString: []string{"alice"}}
 	f.Fuzz(func(t *testing.T, b []byte) {
-		var before, after runtime.MemStats
-		runtime.ReadMemStats(&before)
 		bufs, err := pacBuffers(b)
 		_, _ = verifyPAC(b, key, client, t0)
 		if ci, ok := bufferOf(bufs, pacClientInfo); ok {
 			_, _, _ = clientInfo(ci.data)
-		}
-		runtime.ReadMemStats(&after)
-		if n, limit := after.TotalAlloc-before.TotalAlloc, uint64(pacAllocBase+pacAllocPerByte*len(b)); n > limit {
-			t.Fatalf("walking and verifying %d bytes allocated %d, want at most %d", len(b), n, limit)
 		}
 		if err != nil {
 			return
