@@ -102,11 +102,15 @@ const (
 	modeExec  = Execute
 	modeRWX   = modeRead | modeWrite | modeExec
 
-	// Granted to every class whatever the mode: reading a file's attributes
-	// and ACL is never refused by the mode.
-	alwaysAllowed = ReadAttributes | ReadACL | Synchronize
-	// The owner may change attributes and the ACL whatever its own bits.
-	ownerAllowed = WriteAttributes | WriteACL
+	// Any bit grants its class read attributes, read the ACL and
+	// synchronize (RFC 19 §4.1).
+	anyBit = ReadAttributes | ReadACL | Synchronize
+	// Read attributes is granted to every class whatever the mode, as the
+	// store's check grants it to every caller.
+	alwaysAllowed = ReadAttributes
+	// The owner may read and change the ACL, and change attributes, whatever
+	// its own bits (RFC 19 §3.1, step 5).
+	ownerAllowed = ReadACL | WriteAttributes | WriteACL
 )
 
 // rights is the mask three permission bits imply.
@@ -142,10 +146,26 @@ func bits(m AccessMask) uint32 {
 
 // ACLFromMode is the ACL a file with no stored ACL has. The owner and the
 // owning group each get an allow entry for their bits and a deny entry for
-// the rwx rights those bits withhold, ahead of everyone's allow, so the list
-// grants exactly what the mode does: an owner in a group granted more than
-// the owner still gets only the owner bits.
-func ACLFromMode(mode uint32) ACL {
+// the rwx rights those bits withhold, and, when they hold none, for
+// synchronize, and for the group read the ACL too (the owner's allow keeps
+// it), ahead of everyone's allow, so the list grants exactly what the mode
+// does: an owner in a group granted more than the owner still gets only the
+// owner bits, and a group member whose group has no bit takes nothing from
+// everyone's.
+func ACLFromMode(mode uint32) ACL { return ACL{Entries: modeEntries(mode, alwaysAllowed)} }
+
+// modeEntries is the owner's, the owning group's and everyone's entries for
+// mode, laid out as ACLFromMode has them: each class is granted the rights
+// each of its bits implies, anyBit with any of them, and always whatever
+// they are.
+func modeEntries(mode uint32, always AccessMask) []ACE {
+	grant := func(bits uint32) AccessMask {
+		m := rights(bits) | always
+		if bits&7 != 0 {
+			m |= anyBit
+		}
+		return m
+	}
 	var es []ACE
 	for _, c := range []struct {
 		who   Principal
@@ -155,13 +175,13 @@ func ACLFromMode(mode uint32) ACL {
 		{Owner, mode >> 6, ownerAllowed},
 		{OwnerGroup, mode >> 3, 0},
 	} {
-		r := rights(c.bits)
-		es = append(es, ACE{Type: ACEAllow, Mask: r | alwaysAllowed | c.extra, Who: c.who})
-		if rest := modeRWX &^ r; rest != 0 {
+		allow := grant(c.bits) | c.extra
+		es = append(es, ACE{Type: ACEAllow, Mask: allow, Who: c.who})
+		if rest := (modeRWX | anyBit) &^ allow; rest != 0 {
 			es = append(es, ACE{Type: ACEDeny, Mask: rest, Who: c.who})
 		}
 	}
-	return ACL{Entries: append(es, ACE{Type: ACEAllow, Mask: rights(mode) | alwaysAllowed, Who: Everyone})}
+	return append(es, ACE{Type: ACEAllow, Mask: grant(mode), Who: Everyone})
 }
 
 // Mode is the rwx bits this ACL implies, from its effective entries for the
@@ -200,7 +220,9 @@ func (a ACL) Mode() uint32 {
 // WithMode is chmod's merge into a stored ACL, as RFC 8881 §6.4.1.1 has it,
 // so that the result's Mode is the new mode:
 //   - the effective entries for the owner, the owning group and everyone are
-//     replaced by ones matching the new mode, appended last;
+//     replaced by ones matching the new mode, appended last, which grant
+//     every class read attributes, read the ACL and synchronize whatever its
+//     bits, as a chmod takes none of them away (RFC 19 §4.3);
 //   - every effective allow entry for a named principal is limited to the
 //     rights the new group bits imply, so chmod 600 leaves no named user or
 //     group with access;
@@ -229,7 +251,7 @@ func (a ACL) WithMode(mode uint32) ACL {
 		}
 		out.Entries = append(out.Entries, e)
 	}
-	out.Entries = append(out.Entries, ACLFromMode(mode).Entries...)
+	out.Entries = append(out.Entries, modeEntries(mode, alwaysAllowed|anyBit)...)
 	return out
 }
 

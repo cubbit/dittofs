@@ -1,6 +1,7 @@
 package kvstoretest
 
 import (
+	"fmt"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"slices"
 	"testing"
@@ -104,8 +105,8 @@ func testStoredACLDecides(t *testing.T, kvo Opener) {
 		t.Errorf("a right no entry grants: %v", e)
 	}
 	// The ACL decides read the ACL and synchronize as it decides any right,
-	// though a file with no stored ACL grants them to anyone (RFC 19 §3.1,
-	// step 6).
+	// though a file with no stored ACL grants them through any mode bit (RFC
+	// 19 §3.1, step 6).
 	minor := entity.ReadACL | entity.Synchronize
 	m, _ := f.create(f.admin, pub, "minor", regular(0o644))
 	_, e = files.SetACL(ctx, f.admin, m, entity.ACL{Entries: []entity.ACE{
@@ -125,6 +126,65 @@ func testStoredACLDecides(t *testing.T, kvo Opener) {
 	// directory, is enough.
 	if _, e := ns.Unlink(ctx, carol, pub, []byte("doc")); e != nil {
 		t.Errorf("unlink with delete on the file only: %v", e)
+	}
+}
+
+// RFC 19 §4.1 on a file with no stored ACL: any bit grants its class read
+// the ACL and synchronize, so a caller whose class holds none, as another
+// user on a 0700 file, is refused both; read attributes is granted to every
+// caller, and the owner reads the ACL whatever its bits (§3.1, step 5). The
+// ACL such a file shows, stored on a second file, grants each caller the
+// same through the walk.
+func testModeMinorRights(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	staff := f.group("staff")
+	callers := []struct {
+		name  string
+		id    entity.Identity
+		shift uint
+	}{
+		{"the owner", f.member("alice", entity.Principal{}, staff), 6},
+		{"a group member", f.member("bob", entity.Principal{}, staff), 3},
+		{"another user", f.member("carol", entity.Principal{}), 0},
+	}
+	alice := callers[0].id
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	// Each class with each of its 8 bit values, the other classes holding no
+	// bit or every bit, so a class with none would take a later class's
+	// rights were they not denied to it.
+	var modes []uint32
+	for _, c := range callers {
+		for b := uint32(0); b < 8; b++ {
+			for _, rest := range []uint32{0, 0o777} {
+				if m := rest&^(7<<c.shift) | b<<c.shift; !slices.Contains(modes, m) {
+					modes = append(modes, m)
+				}
+			}
+		}
+	}
+	const asked = entity.ReadAttributes | entity.ReadACL | entity.Synchronize
+	for _, mode := range modes {
+		nf := kvstore.NewFile{Type: entity.Regular, Mode: mode, Attrs: entity.Attrs{}.WithGroup(staff)}
+		h, _ := f.create(alice, pub, fmt.Sprintf("%03o", mode), nf)
+		shown, err := files.ACL(ctx, f.admin, h)
+		must(t, err)
+		stored, _ := f.create(alice, pub, fmt.Sprintf("%03o-acl", mode), nf)
+		must(t, errOf(files.SetACL(ctx, alice, stored, shown)))
+		for _, c := range callers {
+			want := entity.ReadAttributes
+			if mode>>c.shift&7 != 0 {
+				want |= entity.ReadACL | entity.Synchronize
+			}
+			if c.shift == 6 {
+				want |= entity.ReadACL
+			}
+			for name, file := range map[string]entity.Handle{"no stored ACL": h, "its ACL stored": stored} {
+				if got, err := files.Granted(ctx, c.id, file, nil, asked); err != nil || got != want {
+					t.Errorf("%s on a %03o file with %s: granted %#x, %v; want %#x", c.name, mode, name, got, err, want)
+				}
+			}
+		}
 	}
 }
 

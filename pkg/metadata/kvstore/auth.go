@@ -13,20 +13,21 @@ import (
 const writeRights = entity.WriteData | entity.AppendData | entity.WriteNamedAttrs | entity.DeleteChild |
 	entity.WriteAttributes | entity.Delete | entity.WriteACL | entity.WriteOwner
 
-// The rights the mode decides, by the bit that grants them; the rest a file
-// with no stored ACL grants to anyone (alwaysRight), a stored ACL deciding
-// read the ACL and synchronize as any other, or are the owner's. A write bit
-// grants write attributes to whoever it applies to, as the mapped
-// GENERIC_WRITE set needs at open; what a non-owner may then set through it
-// is mayChange's.
+// The rights a file with no stored ACL grants through its mode: any bit
+// grants its class anyBit, read attributes, read the ACL and synchronize
+// (RFC 19 §4.1), and each bit the rest of its own set; ownerRights are the
+// owner's whatever its bits. A write bit grants write attributes to whoever
+// it applies to, as the mapped GENERIC_WRITE set needs at open; what a
+// non-owner may then set through it is mayChange's. allows grants read
+// attributes to every caller ahead of the mode or a stored ACL.
 const (
 	readRights  = entity.ReadData | entity.ReadNamedAttrs
 	writeBits   = entity.WriteData | entity.AppendData | entity.WriteNamedAttrs | entity.DeleteChild | entity.WriteAttributes
-	alwaysRight = entity.ReadAttributes | entity.ReadACL | entity.Synchronize
+	anyBit      = entity.ReadAttributes | entity.ReadACL | entity.Synchronize
 	ownerRights = entity.WriteAttributes | entity.WriteACL | entity.WriteOwner
-	// An owner keeps the right to read and change the ACL whatever an ACL
-	// says, so no ACL locks its owner out of repairing it (RFC 19 §3.1, step
-	// 5).
+	// An owner keeps the right to read and change the ACL whatever its bits
+	// or an ACL say, so neither locks its owner out of repairing it (RFC 19
+	// §3.1, step 5).
 	//
 	// decision: the owner keeps write attributes under a stored ACL too,
 	// though step 5 grants it only on a file with none: mayChange asks write
@@ -270,13 +271,15 @@ func allows(r kv.Reader, id entity.Identity, f entity.File, want entity.AccessMa
 		// executable, as root's execute does.
 		return want&entity.Execute == 0 || f.IsDir() || f.Mode&0o111 != 0, nil
 	}
-	// decision: read attributes is granted before the ACL is read, though RFC
-	// 19 §3.1's walk decides it under a stored ACL: internal/vfs reads a
+	// decision: read attributes is granted to every caller before the ACL is
+	// read, though RFC 19 §3.1's walk decides it under a stored ACL and §4.1
+	// grants it through a mode bit on a file with none: internal/vfs reads a
 	// file's record as the caller, asking read attributes, to act on it (an
-	// open, I/O through an open, a lock, a create), so a stored ACL refusing
-	// it would refuse those. Withdraw this once internal/vfs reads the record
-	// against the share grant alone and asks read attributes only for the
-	// attributes it returns.
+	// open, I/O through an open, a lock, a create), so refusing it to a caller
+	// with no mode bit, or by a stored ACL, would refuse those. The ACL a file
+	// with no stored ACL shows grants it to every class to match. Overturned
+	// if internal/vfs reads the record against the share grant alone and asks
+	// read attributes only for the attributes it returns.
 	want &^= entity.ReadAttributes
 	if want == 0 {
 		return true, nil
@@ -378,7 +381,8 @@ func matches(id entity.Identity, f entity.File, who entity.Principal) bool {
 }
 
 // modeAllows is what the file's mode grants this caller: the owner's bits to
-// its owner, the group's to a member of its group, the others' to the rest.
+// its owner, the group's to a member of its group, the others' to the rest,
+// anyBit with any of them, and ownerRights to the owner whatever its bits.
 func modeAllows(id entity.Identity, f entity.File) entity.AccessMask {
 	shift := uint(0)
 	switch {
@@ -387,8 +391,11 @@ func modeAllows(id entity.Identity, f entity.File) entity.AccessMask {
 	case id.InGroup(f.Group):
 		shift = 3
 	}
-	b := f.Mode >> shift
-	m := alwaysRight
+	b := f.Mode >> shift & 7
+	var m entity.AccessMask
+	if b != 0 {
+		m = anyBit
+	}
 	if b&4 != 0 {
 		m |= readRights
 	}

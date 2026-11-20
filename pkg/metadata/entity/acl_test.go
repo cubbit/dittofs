@@ -13,6 +13,55 @@ func TestACLFromModeImpliesItsMode(t *testing.T) {
 	}
 }
 
+// RFC 19 §4.1: in the ACL a mode implies, any bit grants its class read the
+// ACL and synchronize and a class with none is granted neither, a group
+// member whose group has no bit taking nothing from everyone's allow; read
+// attributes is granted to every class, and the owner reads the ACL whatever
+// its bits (§3.1, step 5).
+func TestACLFromModeMinorRights(t *testing.T) {
+	const asked = modeRWX | ReadAttributes | ReadACL | Synchronize
+	for mode := uint32(0); mode <= 0o777; mode++ {
+		acl := ACLFromMode(mode)
+		for _, c := range []struct {
+			name  string
+			shift uint
+			who   []Principal
+		}{
+			{"the owner, in the group", 6, []Principal{Owner, OwnerGroup, Everyone}},
+			{"a group member", 3, []Principal{OwnerGroup, Everyone}},
+			{"another user", 0, []Principal{Everyone}},
+		} {
+			bits := mode >> c.shift & 7
+			want := rights(bits) | ReadAttributes
+			if bits != 0 {
+				want |= ReadACL | Synchronize
+			}
+			if c.shift == 6 {
+				want |= ReadACL
+			}
+			if got := walk(acl, c.who...) & asked; got != want {
+				t.Errorf("ACLFromMode(%03o) grants %s %#x, want %#x", mode, c.name, got, want)
+			}
+		}
+	}
+}
+
+// walk is what a's effective entries grant a caller they name through who,
+// each right decided by the first entry naming it.
+func walk(a ACL, who ...Principal) AccessMask {
+	var allow, decided AccessMask
+	for _, e := range a.Entries {
+		if !e.Effective() || !slices.Contains(who, e.Who) {
+			continue
+		}
+		if e.Type == ACEAllow {
+			allow |= e.Mask &^ decided
+		}
+		decided |= e.Mask
+	}
+	return allow
+}
+
 func TestModeFirstEntryDecides(t *testing.T) {
 	// A deny for everyone ahead of the owner's allow takes write from all.
 	a := ACL{Entries: []ACE{
@@ -66,6 +115,13 @@ func TestChmodMerge(t *testing.T) {
 	}
 	if !slices.Contains(got.Entries, deny) || !slices.Equal(got.Audit, a.Audit) {
 		t.Error("deny or audit entries changed")
+	}
+	// A chmod takes no minor right away (RFC 19 §4.3): the group and the
+	// others, left with no bit, keep read the ACL and synchronize.
+	for name, who := range map[string][]Principal{"a group member": {OwnerGroup, Everyone}, "another user": {Everyone}} {
+		if g := walk(got, who...); g&(ReadACL|Synchronize) != ReadACL|Synchronize {
+			t.Errorf("chmod 600 left %s %#x", name, g)
+		}
 	}
 	// The group bits bound what a named principal keeps.
 	if es := (ACL{Entries: []ACE{named}}).WithMode(0o640).Entries[0]; es.Mask&modeRWX != modeRead {
