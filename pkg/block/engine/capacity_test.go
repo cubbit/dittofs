@@ -711,3 +711,27 @@ func TestLoopReserveRefusalIsRetriedNotWaited(t *testing.T) {
 			logged.String())
 	}
 }
+
+// A share refusal that names a stale figure logs how stale it is, so an
+// operator reading the refusal line can tell a stale figure from a full share.
+func TestRefusalLogNamesTheStaleFigure(t *testing.T) {
+	var logged lockedBuffer
+
+	u := newUnit(t, func(d *engine.Deps) {
+		d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+	})
+
+	err := &journal.NoSpaceError{Limit: journal.LimitShare, Missing: 1, Unit: journal.UnitBytes, Stale: 4242}
+	if rerr := u.j.Refuse(enginetest.CallWriteAt, err); rerr != nil {
+		t.Fatal(rerr)
+	}
+
+	_, werr := u.e.Write(t.Context(), u.share.ID, entity.NewFileID(), 0, []byte("a"), engine.WriteOpts{Done: func() {}})
+	if !isDelay(werr, vfserr.DelayCapacity) {
+		t.Fatalf("a refused write: %v, want ErrDelay(DelayCapacity)", werr)
+	}
+
+	if got := logged.String(); !strings.Contains(got, "stale=4242") {
+		t.Errorf("the refusal log = %q, want it to carry stale=4242", got)
+	}
+}

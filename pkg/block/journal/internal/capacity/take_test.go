@@ -1952,3 +1952,84 @@ func TestTake_SecondTakeAtTheLastVersionIsRefusedAndCounted(t *testing.T) {
 		t.Fatalf("RefusedCount went %d -> %d, want +1", before, got)
 	}
 }
+
+// TestTake_ShareRefusalNamesAStaleFigure tells the two refusals a share's
+// limit gives apart: a share whose figure matches the set's refuses with no
+// stale bytes, and one whose figure stands high from a record counted twice at
+// the seed refuses naming exactly the record's bytes, so an operator reading
+// the error sees room the share has but its figure does not show.
+func TestTake_ShareRefusalNamesAStaleFigure(t *testing.T) {
+	refusal := func(r *rig, limit int64) *core.NoSpaceError {
+		t.Helper()
+		q := req()
+		q.Payload = landedAsk
+		q.ShareLimit = limit
+		g, err := r.c.Take(context.Background(), q)
+		if err == nil {
+			g.Release()
+			t.Fatalf("Take against limit %d was admitted, want the share's refusal", limit)
+		}
+		var ns *core.NoSpaceError
+		if !errors.As(err, &ns) || ns.Limit != core.LimitShare {
+			t.Fatalf("Take against limit %d = %v, want the share's refusal", limit, err)
+		}
+		return ns
+	}
+
+	t.Run("full", func(t *testing.T) {
+		r := newRig(t, std())
+		r.seed(t, landedAsk)
+		r.seedTally(t)
+		if got := refusal(r, 999).Stale; got != 0 {
+			t.Fatalf("a share full by the set's own figure refused with Stale = %d, want 0", got)
+		}
+	})
+	t.Run("stale", func(t *testing.T) {
+		r := newRig(t, std())
+		r.seed(t, landedAsk)
+		r.seal(t)
+		p := r.append(t, segment.Roll{}, tag1, 404)
+		r.seedTally(t) // the seed's figure already holds the record
+		r.c.Landed(tag1, p.Loc.Len)
+		if got, want := refusal(r, 1999+2*p.Loc.Len).Stale, p.Loc.Len; got != want {
+			t.Fatalf("a share standing high by a record counted twice refused with Stale = %d, want %d", got, want)
+		}
+	})
+}
+
+// TestTake_ShareRefusalStaleFigureLeavesOutHeldCopies checks Stale measures
+// the tally against the set's settled bytes less the repack copies a pass
+// holds out of the tally: a share holding a copy with no drift refuses with
+// Stale 0, and one holding a copy and standing high by a counted-twice record
+// names exactly that record, not the copy's bytes either way.
+func TestTake_ShareRefusalStaleFigureLeavesOutHeldCopies(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		drift int64
+	}{{"no drift", 0}, {"drift", 300}} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newRig(t, std())
+			src := r.seed(t, 1000-segment.RecordBytes(0))
+			r.seal(t)
+			r.seed(t, 600-segment.RecordBytes(0)) // the copy's record, in the set
+			r.c.CopyLanded(src, tag1, 600)
+			r.seedTally(t) // the tally is the 1000 the copy leaves out
+			r.c.Landed(tag1, tt.drift)
+			q := req()
+			q.Payload = landedAsk
+			q.ShareLimit = 999
+			g, err := r.c.Take(context.Background(), q)
+			if err == nil {
+				g.Release()
+				t.Fatal("Take under a limit of 999 was admitted, want the share's refusal")
+			}
+			var ns *core.NoSpaceError
+			if !errors.As(err, &ns) || ns.Limit != core.LimitShare {
+				t.Fatalf("Take = %v, want the share's refusal", err)
+			}
+			if ns.Stale != tt.drift {
+				t.Fatalf("Stale = %d with a held copy of 600 and a drift of %d, want %d", ns.Stale, tt.drift, tt.drift)
+			}
+		})
+	}
+}

@@ -243,9 +243,18 @@ type NoSpaceError struct {
 	Limit   Limit
 	Missing int64
 	Unit    Unit
+	// Stale is set on a LimitShare refusal only: the record bytes the
+	// share's admission figure stood above the set's own settled bytes for
+	// the tag when it refused, which is room the share has but its figure
+	// does not show. Zero means the refusal is a real full share.
+	Stale int64
 }
 
 func (e *NoSpaceError) Error() string {
+	if e.Stale > 0 {
+		return fmt.Sprintf("journal: no space: refused by the %s limit, %d %s missing, and the share's figure stands %d above the set's",
+			e.Limit, e.Missing, e.Unit, e.Stale)
+	}
 	return fmt.Sprintf("journal: no space: refused by the %s limit, %d %s missing",
 		e.Limit, e.Missing, e.Unit)
 }
