@@ -702,6 +702,32 @@ func limitedSecond(t *testing.T, f *enginetest.Fixture, limit int64) {
 	}
 }
 
+// recordBytes is what one write of n bytes counts against a share's limit:
+// its payload and the record's header and padding, as the journal counts
+// them. It is measured on a fixture of its own, stopped before the row
+// builds its own, and read from the share's UsedBytes, since the journal's
+// record format is not this package's to import.
+func recordBytes(t *testing.T, n int) int64 {
+	t.Helper()
+
+	var used int64
+
+	t.Run("record bytes", func(t *testing.T) {
+		f := enginetest.New(t)
+		_, id := f.File("probe")
+		write(t, f, id, 0, make([]byte, n))
+
+		js := f.E.Stats().Journals[f.Dir]
+		used = js.Stats.Shares[attachedTag(js, f.Share.ID)].UsedBytes
+	})
+
+	if used <= int64(n) {
+		t.Fatalf("one write of %d bytes counts %d against the share, want more than its payload", n, used)
+	}
+
+	return used
+}
+
 // unreclaimed is the journal's figures for share id: its unreclaimed bytes,
 // read through the carried snapshot, whose Shares map the entry's TagShares
 // keys by the share's tag.
@@ -874,8 +900,12 @@ func TestRFC8A_CapacityScopedRepack(t *testing.T) {
 // repack held at the journal's storage: the second answers ErrDelay, never
 // ErrNoSpace, and is served once the hold is let go.
 func TestRFC8A_CapacityRacingRefusals(t *testing.T) {
+	// Room for four 1 MiB records: the overwrites fill it, the repack frees
+	// the two superseded ones, and the two racing writes take their place.
+	limit := 4 * recordBytes(t, mib)
+
 	f := enginetest.New(t)
-	limitedSecond(t, f, 4*mib)
+	limitedSecond(t, f, limit)
 
 	fa := secondFile(t, f, "a")
 	overwriteTwice(t, f, f.Second.ID, fa, 2)
@@ -972,8 +1002,11 @@ func TestRFC8A_CapacityNoSpaceWithoutAPass(t *testing.T) {
 // The same with nothing left to free: no space, and the first write's bytes
 // still read back.
 func TestRFC8A_CapacityNothingLeftToFree(t *testing.T) {
+	// Exactly the first write's record: the share is at its limit with it.
+	limit := recordBytes(t, 2*mib)
+
 	f := enginetest.New(t)
-	limitedSecond(t, f, 2*mib)
+	limitedSecond(t, f, limit)
 
 	fa := secondFile(t, f, "a")
 	mustSecond(t, f, fa, 0, 2*mib, 'k')
@@ -1129,8 +1162,11 @@ func TestRFC8A_CapacityIndexBoundServedAfterTheSync(t *testing.T) {
 // One share at its limit with dirty bytes and another share's segments with
 // superseded bytes: the repack frees space for a third share's write.
 func TestRFC8A_CapacityRepackReserveServesAThirdShare(t *testing.T) {
+	// Exactly the dirty write's record: the share is at its limit with it.
+	limit := recordBytes(t, 2*mib)
+
 	f := enginetest.New(t)
-	limitedSecond(t, f, 2*mib)
+	limitedSecond(t, f, limit)
 
 	fa := secondFile(t, f, "a")
 	mustSecond(t, f, fa, 0, 2*mib, 'd')
