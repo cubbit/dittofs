@@ -16,7 +16,7 @@ DITTOFS_BENCH_DIR=<a directory on the device under test> \
 
 Run it by hand, outside the dedicated host's nightly work. The suite's `bench.txt` carries the
 box lines the run prints (commit, directory, filesystem, sync bound, segment cap, writers) and
-the raw twins `BenchmarkRawSequential`, `BenchmarkRawRandom4k` and `BenchmarkRawFsync4k`, which
+the raw twins `BenchmarkRawSequential`, `BenchmarkRawRandom4k`, `BenchmarkRawFsync4k` and `BenchmarkRawScaling`, which
 write the same bytes through `os` and `Sync` with the same block size, 16 writers and sync
 pattern as J1; read each J row as a fraction of its twin. Run it twice, then
 `benchstat first/bench.txt second/bench.txt`.
@@ -32,10 +32,12 @@ Notes on what a row measures:
   the copy of the payload, which the journal cannot report apart, so the figure is an upper
   bound for RFC 1's "excluding sync and copy".
 - `BenchmarkJ3_PointLookup` times a block of 100,000 `ReadAt` calls of one 64-byte extent each
-  and reports `ns/lookup`. A lookup carries the read of its bytes, so it is an upper bound for
-  the index's own lookup.
-- Sizes are the suite's fixed bursts: 256 MiB over all writers without a sync after each write,
-  16 MiB with one; J2 spreads 256 MiB over its files; the mixed case streams one 256 MiB file.
+  and reports `ns/lookup`. It is an upper bound: it includes the pread syscall and the copy
+  into the caller's buffer, and the public API cannot time the index alone. RFC 1's
+  "point lookup <= 1 µs at 10^6" is therefore not judged from this row, and nothing is filled in
+  as a measured target from it.
+- Sizes are the suite's fixed bursts: 128 MiB over all writers without a sync after each write,
+  16 MiB with one; J2 spreads 128 MiB over its files; the mixed case streams one 256 MiB file.
 
 ## Constants these rows exercise
 
@@ -67,8 +69,8 @@ Reference box. Not yet run: the first run lands in the first window outside its 
 | J1 random 4 KiB, sync per write | 16 | `RawFsync4k` | | ≥ 90% of its IOPS | |
 | J1 `WriteAt` p99 | 16 | | | ≤ 20 µs | |
 | J1 mixed durability | 2 (one stream) | | | none | |
-| J2 write scaling, 1, 4, 16, 64 files | 1 to 64 | `RawSequential` | | within 5% of the filesystem, flat to 64 | |
-| J3 point lookup, 10^3 and 10^6 extents | 1 | | | ≤ 1 µs at 10^6 | |
+| J2 write scaling, 1, 4, 16, 64 files, each synced at its end | 1 to 64 | `RawScaling` (same files, 1 MiB blocks, sync at end) | | within 5% of the filesystem, flat to 64 | |
+| J3 `ReadAt` of one 64-byte extent, 10^3 and 10^6 extents (upper bound, includes pread and copy) | 1 | | | ≤ 1 µs at 10^6 (index lookup; not judged from this row) | none: not filled in from this row |
 | J3 warm 1 MiB read | 1 | | | ≥ 2 GB/s | |
 
 Keep-or-change decision for each constant, with the evidence:
