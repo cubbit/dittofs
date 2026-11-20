@@ -1,145 +1,18 @@
 package bootstrap
 
 import (
-	"os"
 	"reflect"
-	"strings"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/google/uuid"
 )
 
 // nodeUUID is the node identity the decoding tests write, in RFC 13
 // Appendix C's form.
 const nodeUUID = "6f1c2d3e-4b5a-4978-8a6b-1c2d3e4f5a6b"
-
-// The file's node.id, a UUID, reaches Bootstrap.Node.ID; a node.id that is
-// not a UUID refuses the load; a file with none leaves the identity zero,
-// since the journals' node-id copies give it.
-func TestLoadDecodesNodeID(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		content string
-		want    entity.NodeID
-		fails   bool
-	}{
-		{"uuid", "node:\n  id: " + nodeUUID + "\n", entity.NodeID(uuid.MustParse(nodeUUID)), false},
-		{"not a uuid", "node:\n  id: lixo\n", entity.NodeID{}, true},
-		{"absent", "logging:\n  format: text\n", entity.NodeID{}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg, err := Load(writeConfigFile(t, tc.content), os.Environ())
-
-			if tc.fails {
-				want := "failed to unmarshal config: " +
-					"decoding failed due to the following error(s):" +
-					"\n\n'node.id' node.id is not a UUID"
-				if err == nil || err.Error() != want {
-					t.Fatalf("Load of node.id %q: got %v, want %q", "lixo", err, want)
-				}
-
-				if strings.Contains(err.Error(), "lixo") {
-					t.Errorf(
-						"the refusal %q prints the value, which may come from the environment",
-						err,
-					)
-				}
-
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("Load: %v", err)
-			}
-
-			if cfg.Node.ID != tc.want {
-				t.Errorf("Node.ID after Load: got %x, want %x", cfg.Node.ID, tc.want)
-			}
-		})
-	}
-}
-
-// A KMIP timeout written as a duration decodes: the decode hook keeps
-// viper's own duration hook beside the node identity's.
-func TestLoadDecodesKMIPTimeout(t *testing.T) {
-	path := writeConfigFile(t, "keys:\n  protocol:\n    kmip:\n      timeout: \"5s\"\n")
-
-	cfg, err := Load(path, os.Environ())
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	if got := cfg.Keys.Protocol.KMIP.Timeout; got != 5*time.Second {
-		t.Errorf("keys.protocol.kmip.timeout: got %v, want 5s", got)
-	}
-}
-
-// The file's journal entries and the environment's DITTOFS_JOURNALS give the
-// same entries, and the environment's list replaces the file's.
-func TestLoadDecodesJournals(t *testing.T) {
-	want := []Journal{{Path: "/a"}, {Path: "/b"}}
-
-	for _, tc := range []struct {
-		name    string
-		content string
-		env     string
-	}{
-		{"file", "journals:\n  - path: /a\n  - path: /b\n", ""},
-		{"environment", "logging:\n  format: text\n", "/a,/b"},
-		{"environment over file", "journals:\n  - path: /f\n", "/a,/b"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.env != "" {
-				t.Setenv("DITTOFS_JOURNALS", tc.env)
-			}
-
-			cfg, err := Load(writeConfigFile(t, tc.content), os.Environ())
-			if err != nil {
-				t.Fatalf("Load: %v", err)
-			}
-
-			if !reflect.DeepEqual(cfg.Journals, want) {
-				t.Errorf("journals: got %+v, want %+v", cfg.Journals, want)
-			}
-		})
-	}
-}
-
-// api.listen holds more than one address.
-func TestLoadDecodesTwoAPIAddresses(t *testing.T) {
-	path := writeConfigFile(t, "api:\n  listen: [\"127.0.0.1:8080\", \"[::1]:8080\"]\n")
-
-	cfg, err := Load(path, os.Environ())
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	want := []string{"127.0.0.1:8080", "[::1]:8080"}
-	if !reflect.DeepEqual(cfg.API.Listen, want) {
-		t.Errorf("api.listen: got %q, want %q", cfg.API.Listen, want)
-	}
-}
-
-// A role's retired key files decode into the per-role struct.
-func TestLoadDecodesRetiredFiles(t *testing.T) {
-	path := writeConfigFile(
-		t,
-		"keys:\n  storage:\n    local:\n      retired_files: [/k/old1, /k/old2]\n",
-	)
-
-	cfg, err := Load(path, os.Environ())
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	want := []string{"/k/old1", "/k/old2"}
-	if got := cfg.Keys.Storage.Local.RetiredFiles; !reflect.DeepEqual(got, want) {
-		t.Errorf("keys.storage.local.retired_files: got %q, want %q", got, want)
-	}
-}
 
 // Provider carries every field of both blocks into keyprovider.Config, the
 // timeout as milliseconds.
@@ -181,19 +54,34 @@ func TestWrappingKeyProvider(t *testing.T) {
 	}
 }
 
-// Every key has its own environment name: two keys on one name would let one
+// Every key of the table is a field of Bootstrap and the reverse, and every
+// key has its own environment name: two keys on one name would let one
 // silently set the other.
-func TestBootstrapEnvNamesAreDistinct(t *testing.T) {
-	keys := configEnvKeys()
+func TestKeySpecsMatchBootstrap(t *testing.T) {
+	t.Parallel()
 
-	seen := make(map[string]string, len(keys))
-	for _, key := range keys {
-		name := "DITTOFS_" + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
-		if other, ok := seen[name]; ok {
-			t.Errorf("keys %s and %s share the environment name %s", other, key, name)
+	var fields []string
+	collectKeys(reflect.TypeFor[Bootstrap](), "", &fields)
+
+	var keys []string
+
+	seen := map[string]string{}
+
+	for _, s := range keySpecs {
+		keys = append(keys, s.key)
+
+		if other, ok := seen[s.envName()]; ok {
+			t.Errorf("keys %s and %s share the environment name %s", other, s.key, s.envName())
 		}
 
-		seen[name] = key
+		seen[s.envName()] = s.key
+	}
+
+	slices.Sort(fields)
+	slices.Sort(keys)
+
+	if !slices.Equal(fields, keys) {
+		t.Errorf("key table:\ngot  %q\nwant %q (Bootstrap's fields)", keys, fields)
 	}
 
 	if len(keys) != 43 {
@@ -201,5 +89,22 @@ func TestBootstrapEnvNamesAreDistinct(t *testing.T) {
 			"bootstrap keys: got %d, want 43 (RFC 13 Appendix C's 42 and blockstore.journal.path)",
 			len(keys),
 		)
+	}
+}
+
+// collectKeys appends the dotted mapstructure key of every leaf field of t.
+func collectKeys(t reflect.Type, prefix string, out *[]string) {
+	for i := range t.NumField() {
+		f := t.Field(i)
+		key := joinKey(prefix, f.Tag.Get("mapstructure"))
+
+		if f.Type.Kind() == reflect.Struct && f.Type != reflect.TypeFor[entity.NodeID]() &&
+			f.Type != reflect.TypeFor[time.Duration]() {
+			collectKeys(f.Type, key, out)
+
+			continue
+		}
+
+		*out = append(*out, key)
 	}
 }

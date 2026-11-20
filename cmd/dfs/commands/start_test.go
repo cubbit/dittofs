@@ -245,8 +245,11 @@ func TestStartRefusesTheStore(t *testing.T) {
 		want string
 	}{
 		{"backend not badger", func(dir string) bootstrapFile {
-			return bootstrapFile{backend: "foundationdb", store: filepath.Join(dir, "store"),
-				journal: filepath.Join(dir, "device"), node: nodeUUID}
+			return bootstrapFile{
+				backend: "foundationdb",
+				journal: filepath.Join(dir, "device"),
+				node:    nodeUUID,
+			}
 		}, `metadata.backend "foundationdb" is not one this build opens; it opens badger`},
 		{"no store path", func(dir string) bootstrapFile {
 			return bootstrapFile{journal: filepath.Join(dir, "device"), node: nodeUUID}

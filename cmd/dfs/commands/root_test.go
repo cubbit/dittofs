@@ -41,7 +41,9 @@ func TestCommandTree(t *testing.T) {
 // --config, and config show's and config schema's --output.
 func TestCommandsReadTheirFlags(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
-	if _, err := runDfs("start", "--config", missing); err == nil || err.Error() != "configuration file not found: "+missing {
+	want := missing + ": -: the file does not exist"
+
+	if _, err := runDfs("start", "--config", missing); err == nil || err.Error() != want {
 		t.Errorf("dfs start --config %s: %v, want the file named missing", missing, err)
 	}
 

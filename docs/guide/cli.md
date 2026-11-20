@@ -327,7 +327,7 @@ dfs start [flags]
 dfs start
 
 # Start with debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG dfs start
+DITTOFS_LOGGING_LEVEL=debug dfs start
 
 # Start with a custom config file
 dfs start --config /etc/dittofs/config.yaml

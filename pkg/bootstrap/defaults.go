@@ -1,61 +1,18 @@
 package bootstrap
 
-import "strings"
-
-// applyDefaults sets default values for any unspecified configuration fields.
+// GetDefaultConfig returns the bootstrap a load with no file and no variable
+// gives: every key at its RFC 13 Appendix C default.
 //
-// Called after loading configuration from file and environment
-// variables to fill in any missing values with sensible defaults.
-//
-// Default Strategy:
-//   - Zero values (0, "", false, nil) are replaced with defaults
-//   - Explicit values are preserved
-func applyDefaults(cfg *Bootstrap) {
-	applyLoggingDefaults(&cfg.Logging)
-	cfg.Blockstore.applyDefaults()
-}
-
-// applyLoggingDefaults sets logging defaults and normalizes values.
-func applyLoggingDefaults(cfg *LoggingConfig) {
-	if cfg.Level == "" {
-		cfg.Level = "INFO"
-	}
-	// Normalize log level to uppercase for consistent internal representation
-	cfg.Level = strings.ToUpper(cfg.Level)
-
-	if cfg.Format == "" {
-		cfg.Format = "text"
-	}
-	if cfg.Output == "" {
-		cfg.Output = getDefaultLogPath()
-	}
-
-	// Log rotation defaults (only meaningful when output is a file path).
-	// Only MaxSize is defaulted here; MaxBackups and MaxAge are left at 0
-	// (meaning "keep all" and "no age limit" respectively in lumberjack)
-	// so that users can explicitly set them to 0 without being overridden.
-	// GetDefaultConfig provides sensible starting values.
-	if cfg.Rotation.MaxSize == 0 {
-		cfg.Rotation.MaxSize = 100 // 100 MB
-	}
-}
-
-// GetDefaultConfig returns a Bootstrap with all default values applied.
-//
-// This is useful for:
-//   - Generating sample configuration files
-//   - Testing
-//   - Documentation
+// It panics when even that load refuses, which a relative XDG_STATE_HOME or
+// HOME does, since the state directory makes blockstore.journal.path's
+// default: it has no error to return, and a zero bootstrap would run with no
+// log level and no listener. No command calls it; a caller that can meet a
+// bad environment calls Load.
 func GetDefaultConfig() *Bootstrap {
-	cfg := &Bootstrap{
-		Logging: LoggingConfig{
-			Rotation: LogRotationConfig{
-				MaxBackups: 5,
-				MaxAge:     30,
-			},
-		},
+	b, err := Load("", nil)
+	if err != nil {
+		panic("bootstrap: the defaults do not load: " + err.Error())
 	}
 
-	applyDefaults(cfg)
-	return cfg
+	return b
 }
