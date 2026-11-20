@@ -1,5 +1,7 @@
 package entity
 
+import "slices"
+
 // ACL is the one access-control list a file has. Audit and alarm entries
 // are kept apart from the ones that grant and deny: they never decide
 // access, they select audit events.
@@ -94,151 +96,160 @@ const (
 	SystemSecurity AccessMask = 0x01000000
 )
 
-// The rights each mode bit implies. Write on a directory is adding and
-// removing entries, so it carries delete-a-child as well.
+// What a mode bit grants (RFC 19 §4.1): any bit grants the minor rights
+// every read, write and execute set carries; beyond them read grants read
+// data, write the write set and execute execute.
 const (
-	modeRead  = ReadData | ReadNamedAttrs
-	modeWrite = WriteData | AppendData | WriteNamedAttrs | DeleteChild
-	modeExec  = Execute
-	modeRWX   = modeRead | modeWrite | modeExec
-
-	// Any bit grants its class read attributes, read the ACL and
-	// synchronize (RFC 19 §4.1).
-	anyBit = ReadAttributes | ReadACL | Synchronize
-	// Read attributes is granted to every class whatever the mode, as the
-	// store's check grants it to every caller.
-	alwaysAllowed = ReadAttributes
-	// The owner may read and change the ACL, and change attributes, whatever
-	// its own bits (RFC 19 §3.1, step 5).
-	ownerAllowed = ReadACL | WriteAttributes | WriteACL
+	minorRights = Synchronize | ReadACL | ReadAttributes | ReadNamedAttrs
+	writeSet    = WriteData | AppendData | WriteNamedAttrs | WriteAttributes
 )
 
-// rights is the mask three permission bits imply.
-func rights(bits uint32) AccessMask {
+// ModeRights is R(bits), the rights three permission bits grant whoever
+// they apply to, owner or not, on a directory when dir (RFC 19 §4.1): the
+// minor rights with any bit, read data for read, the write set for write,
+// with delete a child on a directory, and execute for execute. No bit
+// grants nothing.
+func ModeRights(bits uint32, dir bool) AccessMask {
 	var m AccessMask
 	if bits&4 != 0 {
-		m |= modeRead
+		m |= ReadData
 	}
 	if bits&2 != 0 {
-		m |= modeWrite
+		m |= writeSet
+		if dir {
+			m |= DeleteChild
+		}
 	}
 	if bits&1 != 0 {
-		m |= modeExec
+		m |= Execute
+	}
+	if m != 0 {
+		m |= minorRights
 	}
 	return m
 }
 
-// bits is the three permission bits a mask implies: each bit only when the
-// mask holds every right that bit grants.
+// bits is the three permission bits a granted mask implies (RFC 19 §4.2):
+// read from read data, write from write data, execute from execute.
 func bits(m AccessMask) uint32 {
 	var b uint32
-	if m&modeRead == modeRead {
+	if m&ReadData != 0 {
 		b |= 4
 	}
-	if m&(WriteData|AppendData) == WriteData|AppendData {
+	if m&WriteData != 0 {
 		b |= 2
 	}
-	if m&modeExec == modeExec {
+	if m&Execute != 0 {
 		b |= 1
 	}
 	return b
 }
 
-// ACLFromMode is the ACL a file with no stored ACL has. The owner and the
-// owning group each get an allow entry for their bits and a deny entry for
-// the rwx rights those bits withhold, and, when they hold none, for
-// synchronize, and for the group read the ACL too (the owner's allow keeps
-// it), ahead of everyone's allow, so the list grants exactly what the mode
-// does: an owner in a group granted more than the owner still gets only the
-// owner bits, and a group member whose group has no bit takes nothing from
-// everyone's.
-func ACLFromMode(mode uint32) ACL {
-	// Each class is granted the rights each of its bits implies, anyBit with
-	// any of them, and alwaysAllowed whatever they are.
-	grant := func(bits uint32) AccessMask {
-		m := rights(bits) | alwaysAllowed
-		if bits&7 != 0 {
-			m |= anyBit
-		}
-		return m
-	}
-	var es []ACE
-	for _, c := range []struct {
-		who   Principal
-		bits  uint32
-		extra AccessMask
-	}{
-		{Owner, mode >> 6, ownerAllowed},
-		{OwnerGroup, mode >> 3, 0},
+// ACLFromMode is the ACL a file with no stored ACL is evaluated against and
+// shown as, a directory when dir (RFC 19 §4.1). With u, g and o the rights
+// R the owner, group and other bits grant, it is, in this order and each
+// left out when its mask is empty: deny OWNER@ g|o minus u, allow OWNER@ u,
+// deny GROUP@ o minus g, allow GROUP@ g, allow EVERYONE@ o. A deny appears
+// only where a later class has a bit an earlier one lacks, as in 0604, so
+// the owner gets the owner bits and a group member the group bits, nothing
+// a later class adds. The owner's implicit rights are no entry: the walk
+// grants them (RFC 19 §3.1, step 5).
+func ACLFromMode(mode uint32, dir bool) ACL {
+	u, g, o := ModeRights(mode>>6&7, dir), ModeRights(mode>>3&7, dir), ModeRights(mode&7, dir)
+	var out ACL
+	for _, e := range []ACE{
+		{Type: ACEDeny, Mask: (g | o) &^ u, Who: Owner},
+		{Type: ACEAllow, Mask: u, Who: Owner},
+		{Type: ACEDeny, Mask: o &^ g, Who: OwnerGroup},
+		{Type: ACEAllow, Mask: g, Who: OwnerGroup},
+		{Type: ACEAllow, Mask: o, Who: Everyone},
 	} {
-		allow := grant(c.bits) | c.extra
-		es = append(es, ACE{Type: ACEAllow, Mask: allow, Who: c.who})
-		if rest := (modeRWX | anyBit) &^ allow; rest != 0 {
-			es = append(es, ACE{Type: ACEDeny, Mask: rest, Who: c.who})
+		if e.Mask != 0 {
+			out.Entries = append(out.Entries, e)
 		}
 	}
-	return ACL{Entries: append(es, ACE{Type: ACEAllow, Mask: grant(mode), Who: Everyone})}
+	return out
 }
 
-// Mode is the rwx bits this ACL implies, from its effective entries for the
-// owner, the owning group and everyone. Each right is decided by the first
-// entry that names it for the class: everyone's entries apply to the owner
-// and group classes too. Setuid, setgid and sticky are not in an ACL: the
-// caller keeps them from the File.
-func (a ACL) Mode() uint32 {
-	var allow, decided [3]AccessMask // owner, group, other
-	for _, e := range a.Entries {
-		if !e.Effective() {
-			continue
-		}
-		var classes []int
-		switch e.Who {
-		case Owner:
-			classes = []int{0}
-		case OwnerGroup:
-			classes = []int{1}
-		case Everyone:
-			classes = []int{0, 1, 2}
-		default:
-			continue
-		}
-		for _, c := range classes {
-			fresh := e.Mask &^ decided[c]
-			if e.Type == ACEAllow {
-				allow[c] |= fresh
-			}
-			decided[c] |= fresh
-		}
-	}
-	return bits(allow[0])<<6 | bits(allow[1])<<3 | bits(allow[2])
-}
-
-// WithMode is chmod's merge into a stored ACL, as RFC 8881 §6.4.1.1 has it,
-// so that the result's Mode is the new mode:
-//   - the effective entries for the owner, the owning group and everyone,
-//     allow and deny, are replaced by ACLFromMode's for the new mode,
-//     appended last, so through
-//     them a class the new mode gives no bit holds neither read the ACL nor
-//     synchronize: a chmod adds only what a new bit grants (RFC 19 §4.3);
-//   - every effective allow entry for a named principal is limited to the
-//     rights the new group bits imply, so chmod 600 leaves no named user or
-//     group with access;
-//   - an entry both effective and inheritable is split into an unchanged
-//     inherit-only copy and an effective copy, treated as above;
-//   - inherit-only, audit and alarm entries, and a named principal's deny
-//     entries, are left as they are.
+// Mode is the nine permission bits a implies on a file owner owns (RFC 19
+// §4.2): each class's bits are those of what the walk of the effective
+// entries grants it, the owner's implicit rights left out.
+//   - The owner class is a caller who is owner, in no group.
+//   - The group class is the union over GROUP@ and every named principal an
+//     effective entry names other than owner, each a caller matched by that
+//     principal alone: the mask POSIX ACLs show in the group bits.
+//   - The other class is the union over three strangers: an authenticated
+//     one, an anonymous one and one with an asserted identity.
 //
-// ponytail: the owner's, the group's and everyone's entries are replaced, not
-// limited in place, so a chmod also takes read the ACL and synchronize from a
-// class allow entry that held them when the new mode gives that class no bit,
-// where RFC 19 §4.3's limit keeps the minor rights. Upgrade to limiting those
-// entries in place and appending only what a new bit grants when a class must
-// keep a minor right its stored entry gave it across a chmod.
-func (a ACL) WithMode(mode uint32) ACL {
-	limit := rights(mode >> 3)
-	out := ACL{Flags: a.Flags, Audit: append([]ACE(nil), a.Audit...)}
+// Every caller is matched by EVERYONE@ and NETWORK too. Setuid, setgid and
+// sticky are not in an ACL: the caller keeps them from the File.
+func (a ACL) Mode(owner Principal) uint32 {
+	u := a.grants(Owner, OwnerRights, owner)
+	g := a.grants(OwnerGroup)
 	for _, e := range a.Entries {
-		if !e.Effective() {
+		if e.Effective() && e.Who != owner && e.Who.named() {
+			g |= a.grants(e.Who)
+		}
+	}
+	o := a.grants(AuthenticatedUsers, BuiltinUsers) | a.grants(AnonymousPrincipal) | a.grants()
+	return bits(u)<<6 | bits(g)<<3 | bits(o)
+}
+
+// grants is what the walk (RFC 19 §3.3) of a's effective entries grants a
+// caller matched by EVERYONE@, NETWORK and the principals who, each right
+// decided by the first entry naming it.
+func (a ACL) grants(who ...Principal) AccessMask {
+	var allow, decided AccessMask
+	for _, e := range a.Entries {
+		if !e.Effective() || e.Who != Everyone && e.Who != Network && !slices.Contains(who, e.Who) {
+			continue
+		}
+		if e.Type == ACEAllow {
+			allow |= e.Mask &^ decided
+		}
+		decided |= e.Mask
+	}
+	return allow
+}
+
+// named reports a named principal (RFC 19 §2.3): a user, a group, root or
+// Administrators, each matching only some callers.
+func (p Principal) named() bool {
+	return p.Kind != PrincipalSpecial || p == RootPrincipal || p == Administrators
+}
+
+// everyoneLike reports a principal of RFC 19 §2.3's other class, matching
+// callers whatever their memberships.
+func (p Principal) everyoneLike() bool {
+	return p == Everyone || p == AuthenticatedUsers || p == BuiltinUsers || p == Network || p == AnonymousPrincipal
+}
+
+// WithMode is chmod's merge into a stored ACL on a file owner owns, a
+// directory when dir (RFC 19 §4.3). It moves no entry and writes no deny:
+//   - Every effective allow is limited to the bits mode gives its class
+//     (limited). One both effective and inheritable that the limit narrows
+//     is split in place into an unchanged inherit-only copy and the limited
+//     effective one.
+//   - Inherit-only, deny, audit and alarm entries are left as they are.
+//   - For each class, the bits mode sets that the limited ACL does not
+//     already imply for it are granted, R of those bits, by one allow naming
+//     OWNER@, GROUP@ or EVERYONE@ after every deny (grant). GROUP@ takes none
+//     while an effective named allow not naming owner holds the group class,
+//     whose bits are then the mask.
+//
+// A chmod to the ACL's own mode therefore changes what it grants nobody. The
+// caller stores the result's Mode(owner), and refuses a result that does not
+// Fit.
+func (a ACL) WithMode(mode uint32, owner Principal, dir bool) ACL {
+	out := ACL{Flags: a.Flags, Audit: slices.Clone(a.Audit)}
+	masked := false
+	for _, e := range a.Entries {
+		limited := e.Mask
+		if e.Type == ACEAllow && e.Effective() {
+			masked = masked || e.Who != owner && e.Who.named()
+			limited = e.limited(mode, owner, dir)
+		}
+		if limited == e.Mask {
 			out.Entries = append(out.Entries, e)
 			continue
 		}
@@ -248,16 +259,83 @@ func (a ACL) WithMode(mode uint32) ACL {
 			out.Entries = append(out.Entries, kept)
 			e.Flags &^= ACEFileInherit | ACEDirInherit | ACENoPropagate
 		}
-		switch {
-		case e.Who == Owner || e.Who == OwnerGroup || e.Who == Everyone:
-			continue // replaced below
-		case e.Type == ACEAllow:
-			e.Mask &^= modeRWX &^ limit
-		}
+		e.Mask = limited
 		out.Entries = append(out.Entries, e)
 	}
-	out.Entries = append(out.Entries, ACLFromMode(mode).Entries...)
+	has := out.Mode(owner)
+	for _, c := range []struct {
+		who   Principal
+		shift uint
+	}{{Owner, 6}, {OwnerGroup, 3}, {Everyone, 0}} {
+		if add := mode >> c.shift & 7 &^ (has >> c.shift); add != 0 && (c.who != OwnerGroup || !masked) {
+			out.grant(c.who, ModeRights(add, dir))
+		}
+	}
 	return out
+}
+
+// limited is e's mask limited to the bits mode gives its class on a file
+// owner owns (RFC 19 §4.3): the everyone-like principals the other bits,
+// even one that is owner; OWNER@, owner rights and owner the owner bits;
+// GROUP@ and the other named principals the group bits. It removes only the
+// rights of R a missing bit withholds, never the minor rights, and keeps
+// every other right. A principal of no class matches no caller and keeps
+// its mask.
+func (e ACE) limited(mode uint32, owner Principal, dir bool) AccessMask {
+	var shift uint
+	switch w := e.Who; {
+	case w.everyoneLike():
+		shift = 0
+	case w == Owner || w == OwnerRights || w == owner:
+		shift = 6
+	case w == OwnerGroup || w.named():
+		shift = 3
+	default:
+		return e.Mask
+	}
+	return e.Mask &^ (ModeRights(7, dir) &^ ModeRights(mode>>shift&7, dir) &^ minorRights)
+}
+
+// grant gives who the rights m after every deny (RFC 19 §4.3). It adds them
+// to the last effective allow naming who, neither inheritable nor
+// inherited, that no effective deny follows, which then grants exactly what
+// an allow appended at the end would, so a chmod that narrows and then
+// widens again adds no entry; with no such allow it appends one.
+func (a *ACL) grant(who Principal, m AccessMask) {
+	for i := len(a.Entries) - 1; i >= 0; i-- {
+		e := &a.Entries[i]
+		if !e.Effective() {
+			continue
+		}
+		if e.Type == ACEDeny {
+			break
+		}
+		if e.Who == who && !e.Inheritable() && e.Flags&ACEInherited == 0 {
+			e.Mask |= m
+			return
+		}
+	}
+	a.Entries = append(a.Entries, ACE{Type: ACEAllow, Mask: m, Who: who})
+}
+
+// Fits reports whether each list is within RFC 19 §2.8's limit, counted as
+// a security descriptor spells it: at most 128 entries, an effective and
+// inheritable OWNER@ or GROUP@ entry counting two. The limit's 64 KiB bound
+// is never the one reached first: 128 entries naming the longest SID, 68
+// bytes, spell under 10 KiB.
+func (a ACL) Fits() bool {
+	for _, es := range [][]ACE{a.Entries, a.Audit} {
+		n := len(es)
+		for _, e := range es {
+			if (e.Who == Owner || e.Who == OwnerGroup) && e.Effective() && e.Inheritable() {
+				n++
+			}
+		}
+		if n > 128 {
+			return false
+		}
+	}
+	return true
 }
 
 // Inherit is the ACL a new file, or a new directory when dir, created under a
@@ -270,10 +348,9 @@ func (a ACL) WithMode(mode uint32) ACL {
 //     children; a file-inherit entry passes through it inherit-only.
 //   - In an effective copy CREATOR OWNER and CREATOR GROUP become owner and
 //     group; the copy that propagates keeps them, inherit-only.
-//   - mode then applies as an and, limiting the effective allow entries'
-//     read, write and execute rights as chmod's merge would — the owner's
-//     class to the owner bits, everyone to the other bits, the rest to the
-//     group bits — never adding an entry or a right.
+//   - mode then applies as an and, limiting each effective allow to the
+//     bits mode gives its class as chmod's merge would (limited), never
+//     adding an entry or a right.
 //
 // Audit and alarm entries are inherited by the same rules, unlimited.
 func (a ACL) Inherit(dir bool, owner, group Principal, mode uint32) (ACL, bool) {
@@ -285,17 +362,9 @@ func (a ACL) Inherit(dir bool, owner, group Principal, mode uint32) (ACL, bool) 
 		return ACL{}, false
 	}
 	for i, e := range out.Entries {
-		if !e.Effective() || e.Type != ACEAllow {
-			continue
+		if e.Effective() && e.Type == ACEAllow {
+			out.Entries[i].Mask = e.limited(mode, owner, dir)
 		}
-		limit := rights(mode >> 3)
-		switch e.Who {
-		case Owner:
-			limit = rights(mode >> 6)
-		case Everyone:
-			limit = rights(mode)
-		}
-		out.Entries[i].Mask &^= modeRWX &^ limit
 	}
 	return out, true
 }

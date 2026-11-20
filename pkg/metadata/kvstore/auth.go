@@ -13,17 +13,13 @@ import (
 const writeRights = entity.WriteData | entity.AppendData | entity.WriteNamedAttrs | entity.DeleteChild |
 	entity.WriteAttributes | entity.Delete | entity.WriteACL | entity.WriteOwner
 
-// The rights a file with no stored ACL grants through its mode: any bit
-// grants its class anyBit, read attributes, read the ACL and synchronize
-// (RFC 19 §4.1), and each bit the rest of its own set; ownerRights are the
-// owner's whatever its bits. A write bit grants write attributes to whoever
-// it applies to, as the mapped GENERIC_WRITE set needs at open; what a
-// non-owner may then set through it is mayChange's. allows grants read
+// A file with no stored ACL grants through its mode what its bits grant
+// whoever they apply to (entity.ModeRights, RFC 19 §4.1), and ownerRights to
+// the owner whatever its bits. A write bit grants write attributes to
+// whoever it applies to, as the mapped GENERIC_WRITE set needs at open; what
+// a non-owner may then set through it is mayChange's. allows grants read
 // attributes to every caller ahead of the mode or a stored ACL.
 const (
-	readRights  = entity.ReadData | entity.ReadNamedAttrs
-	writeBits   = entity.WriteData | entity.AppendData | entity.WriteNamedAttrs | entity.DeleteChild | entity.WriteAttributes
-	anyBit      = entity.ReadAttributes | entity.ReadACL | entity.Synchronize
 	ownerRights = entity.WriteAttributes | entity.WriteACL | entity.WriteOwner
 	// An owner keeps the right to read and change the ACL whatever its bits
 	// or an ACL say, so neither locks its owner out of repairing it (RFC 19
@@ -277,8 +273,9 @@ func allows(r kv.Reader, id entity.Identity, f entity.File, want entity.AccessMa
 	// file's record as the caller, asking read attributes, to act on it (an
 	// open, I/O through an open, a lock, a create), so refusing it to a caller
 	// with no mode bit, or by a stored ACL, would refuse those. The ACL a file
-	// with no stored ACL shows grants it to every class to match. Overturned
-	// if internal/vfs reads the record against the share grant alone and asks
+	// with no stored ACL shows is §4.1's, granting it only through a bit, so
+	// this grant to every caller is one that ACL does not show. Overturned if
+	// internal/vfs reads the record against the share grant alone and asks
 	// read attributes only for the attributes it returns.
 	want &^= entity.ReadAttributes
 	if want == 0 {
@@ -380,9 +377,10 @@ func matches(id entity.Identity, f entity.File, who entity.Principal) bool {
 	return id.Principal == who
 }
 
-// modeAllows is what the file's mode grants this caller: the owner's bits to
-// its owner, the group's to a member of its group, the others' to the rest,
-// anyBit with any of them, and ownerRights to the owner whatever its bits.
+// modeAllows is what the file's mode grants this caller: what the owner's
+// bits grant to its owner, the group's to a member of its group, the
+// others' to the rest, so the decision is the walk of the ACL the file shows
+// (RFC 19 §4.1), and ownerRights to the owner whatever its bits.
 func modeAllows(id entity.Identity, f entity.File) entity.AccessMask {
 	shift := uint(0)
 	switch {
@@ -391,20 +389,7 @@ func modeAllows(id entity.Identity, f entity.File) entity.AccessMask {
 	case id.InGroup(f.Group):
 		shift = 3
 	}
-	b := f.Mode >> shift & 7
-	var m entity.AccessMask
-	if b != 0 {
-		m = anyBit
-	}
-	if b&4 != 0 {
-		m |= readRights
-	}
-	if b&2 != 0 {
-		m |= writeBits
-	}
-	if b&1 != 0 {
-		m |= entity.Execute
-	}
+	m := entity.ModeRights(f.Mode>>shift&7, f.IsDir())
 	if id.Principal == f.Owner {
 		m |= ownerRights
 	}

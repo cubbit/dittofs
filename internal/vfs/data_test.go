@@ -677,12 +677,13 @@ func TestAnAppendDataOpenOnlyAppends(t *testing.T) {
 	s.must(t, err)
 	_, err = s.fs.Store.Files().SetAttrs(ctx, s.fs.Admin, h, entity.Attrs{}.WithMode(0o4600))
 	s.must(t, err)
-	acl := entity.ACLFromMode(0o600)
+	acl := entity.ACLFromMode(0o600, false)
 	acl.Entries = append(acl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.AppendData, Who: s.bob.Principal})
 	_, err = s.fs.Store.Files().SetACL(ctx, s.fs.Admin, h, acl)
 	s.must(t, err)
-	if m := s.record(t, h).Mode; m != 0o4600 {
-		t.Fatalf("the file's mode %o, want 4600", m)
+	// The ACL's mode has bob's read in the group class (RFC 19 §4.2).
+	if m := s.record(t, h).Mode; m != 0o4640 {
+		t.Fatalf("the file's mode %o, want 4640", m)
 	}
 	pc := s.smb(t, "bob-pc", s.bob.Principal)
 	ref := s.opener(t, pc, "f", entity.AppendData)
@@ -695,8 +696,8 @@ func TestAnAppendDataOpenOnlyAppends(t *testing.T) {
 	if _, err := s.Write(ctx, pc, ref, 5, []byte("!"), vfs.Unstable); err != nil {
 		t.Errorf("an append through an append-data open: %v", err)
 	}
-	if m := s.record(t, h).Mode; m != 0o600 {
-		t.Errorf("the append left mode %o, want 600", m)
+	if m := s.record(t, h).Mode; m != 0o640 {
+		t.Errorf("the append left mode %o, want 640", m)
 	}
 	buf := make([]byte, 8)
 	if n, _, err := s.Read(ctx, alice, vfs.Anonymous(h), 0, buf); err != nil || string(buf[:n]) != "hello!" {
@@ -721,7 +722,7 @@ func TestAnAnonymousAppendAsksAppendData(t *testing.T) {
 		h := s.file(t, c.name, s.alice.Principal, 0o600)
 		_, err := s.Write(ctx, alice, vfs.Anonymous(h), 0, []byte("hello"), vfs.Unstable)
 		s.must(t, err)
-		acl := entity.ACLFromMode(0o600)
+		acl := entity.ACLFromMode(0o600, false)
 		acl.Entries = append(acl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.AppendData, Who: s.bob.Principal})
 		_, err = files.SetACL(ctx, s.fs.Admin, h, acl)
 		s.must(t, err)

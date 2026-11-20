@@ -687,7 +687,7 @@ lock-then-write on a descriptor opened for read and later reopened.
 
 ## 4. Mode and ACL
 
-![The mode and the ACL derive from each other: the ACL is implied by the mode when none is stored, the mode is re-derived on every ACL set, and chmod merges into a stored ACL. The chmod 750 example narrows the named allows by splitting each into an unchanged inherit-only copy and a limited effective copy, leaves bob's deny untouched and appends one OWNER@ allow for write at the end](img/rfc19-mode-acl.svg)
+![The mode and the ACL derive from each other: the ACL is implied by the mode when none is stored, the mode is re-derived on every ACL set, and chmod merges into a stored ACL. The chmod 750 example narrows builders' allow, the group bits being the mask, by splitting it into an unchanged inherit-only copy and a limited effective copy, leaves alice's allow, which the owner bits keep whole, and bob's deny untouched, and appends nothing, as the owner class already holds rwx](img/rfc19-mode-acl.svg)
 
 RFC 7 requires the two to agree after every transaction
 ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)).
@@ -780,9 +780,9 @@ Only effective entries count, and the owner's implicit rights do not: they are
 not mode bits.
 
 The group class is the union over named principals, not `GROUP@` alone, so that
-the merge — which limits every named allow to the new group bits — is an identity
-on the ACL's own mode. A `cp -p` or `chmod` that sets the mode it just read must
-grant afterwards exactly what was granted before.
+the merge, which limits every named allow not naming `o` to the new group bits,
+is an identity on the ACL's own mode. A `cp -p` or `chmod` that sets the mode it
+just read must grant afterwards exactly what was granted before.
 
 Two identities **MUST** hold, and are checked (§9):
 
@@ -790,33 +790,42 @@ Two identities **MUST** hold, and are checked (§9):
   and every owner `o`;
 - for every ACL `a` and owner `o`, `a.WithMode(a.Mode(o), o)` grants every
   caller of a file owned by `o` exactly what `a` grants — for every `a` whose
-  allows hold write data wherever they hold another right the write bit adds
+  allows hold write data wherever they hold another right the write bit adds,
+  and whose denies holding write data hold every right the write bit adds
   (§10, item 5).
 
 ### 4.3 Setting mode and ACL
 
-`chmod` on a file with a stored ACL never raises an entry and never moves one.
+`chmod` on a file with a stored ACL never moves an entry, and raises one only
+to grant what an allow appended at the end would.
 
 - **A `chmod` of a file with a stored ACL** is the merge `WithMode(m, o)`:
   - **It only limits.** Every effective allow is limited to its class's new
-    bits: `OWNER@` allows to the owner bits; allows naming an everyone-like
-    principal (§2.3) to the other bits; when the ACL has an effective named allow
-    not naming `o`, every named allow **and** every `GROUP@` allow to the group
-    bits — the group bits are the mask, as a POSIX `chmod` sets the mask and
-    leaves the owning group's entry alone; otherwise `GROUP@` allows to the group
-    bits. A limit removes only the rights of `R` (§4.1) a missing bit withholds,
-    never the minor rights every bit grants, and keeps every other right of the
-    entry.
+    bits: `OWNER@` allows, and allows naming owner rights or `o`, which §4.2
+    counts in the owner class, to the owner bits; allows naming an everyone-like
+    principal (§2.3) to the other bits, even one that is `o`; when the ACL has an
+    effective named allow not naming `o`, every such named allow **and** every
+    `GROUP@` allow to the group bits, the group bits being the mask, as a POSIX
+    `chmod` sets the mask and leaves the owning group's entry alone; otherwise
+    `GROUP@` allows to the group bits. An allow naming a principal of no class,
+    such as SYSTEM, matches no caller and is left untouched. A limit removes only
+    the rights of `R` (§4.1) a missing bit withholds, never the minor rights every
+    bit grants, and keeps every other right of the entry.
   - **It adds only what a new bit grants.** For each class, the bits the new mode
     sets that the limited ACL does not already imply for it are granted by one new
     allow — `OWNER@`, `GROUP@` (only when no named allow holds the group class)
     and `EVERYONE@`, each with `R` of those bits — **appended at the end** of the
     access list, after every inherited entry, so it can override no deny. An
     entry it would add with an empty mask is left out. A `chmod` to the file's own
-    mode therefore adds nothing.
+    mode therefore adds nothing. When an effective allow naming the same
+    principal, neither inheritable nor inherited, has no effective deny after it,
+    the rights are added to that allow instead: with only allows after it, it
+    grants exactly what the appended allow would, and a `chmod` that narrows and
+    then widens again adds no entry.
   - An inherit-only entry is left untouched: it governs children. An entry both
-    effective and inheritable is split in place into an inherit-only copy,
-    unchanged, and an effective copy, limited as above.
+    effective and inheritable that the limit narrows is split in place into an
+    inherit-only copy, unchanged, and an effective copy, limited as above; one
+    the limit leaves whole is left as it is.
   - Deny, audit and alarm entries are left untouched.
   - `Mode` becomes the merged ACL's `Mode(o)`, which equals the requested bits
     unless a deny withholds some or named entries grant less than the requested
@@ -827,7 +836,10 @@ Two identities **MUST** hold, and are checked (§9):
   the file has after the set, with the special bits kept, in one transaction.
 - **A request that sets the ACL and the mode together** stores the ACL, and takes
   from the mode only setuid, setgid and sticky.
-- **A `chown` or `chgrp`** changes no entry. `OWNER@` and `GROUP@` follow it.
+- **A `chown` or `chgrp`** changes no entry. `OWNER@` and `GROUP@` follow it. A
+  `chown` of a file with a stored ACL stores `Mode` as the ACL's `Mode(o)` for
+  the new owner, with the special bits kept, as entries naming the old or the
+  new owner change class.
 - The right each of these asks is §3.1's.
 
 ### 4.4 Inheritance
@@ -1058,14 +1070,15 @@ ACL, which `build` holds implicitly as owner (§3.1 step 5); the tool reads thre
 entries, appends one and writes four back, bob's deny first and intact. The same
 tool on `release`, which alice owns, is refused.
 
-**7. alice runs `chmod 750 release` from a Linux box** (§4.3). The named allows
-for alice and `builders` are each split into an inherit-only copy, unchanged, and
-an effective copy limited to the new group bits, `r-x`. bob's deny is untouched.
-The limited ACL implies `r-x` for the owner, and the new owner bits set write, so
-one allow `OWNER@` `R(-w-)` is appended at the end. No `GROUP@` allow is added:
-the `builders` allow holds the group class. `Mode(alice)` is 0750. `builders` can
-no longer add files to `release` itself, and every file created below it still
-inherits modify from the unchanged inherit-only copy.
+**7. alice runs `chmod 750 release` from a Linux box** (§4.3). The named allow
+for `builders` is split into an inherit-only copy, unchanged, and an effective
+copy limited to the new group bits, `r-x`. alice's allow names the owner, so it
+is limited to the owner bits, `rwx`, and stays as it is. bob's deny is untouched.
+The limited ACL implies `rwx` for the owner, so nothing is appended, and no
+`GROUP@` allow is added: the `builders` allow holds the group class.
+`Mode(alice)` is 0750. `builders` can no longer add files to `release` itself,
+and every file created below it still inherits modify from the unchanged
+inherit-only copy.
 
 ## 7. Invariants
 
@@ -1198,7 +1211,10 @@ tests.
    append, write attributes and write extended attributes too. So an allow
    holding append without write data — `allow bob APPEND_DATA` — implies no
    write bit, and `chmod` to the file's own mode strips the append: §4.2's second
-   identity does not hold for it, and is stated without it.
+   identity does not hold for it, and is stated without it. A deny holding write
+   data without the rest of what the write bit adds, ahead of an allow holding all
+   of it, leaves its callers that rest alone, the same partial set, and is left
+   out of the identity too.
 6. **`dacl` and `sacl`.** Whether any client of the reference profile reads or
    sets them is unmeasured. If none does, serving `acl` alone loses no round
    trip, because `acl` leaves the stored flags as they were (RFC 21 §11.3). What it does

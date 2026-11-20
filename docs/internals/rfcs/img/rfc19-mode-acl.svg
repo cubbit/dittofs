@@ -67,14 +67,12 @@
 
   <text x="356" y="304" class="z">AFTER</text>
   <text x="356" y="324" class="mp">1 deny  bob       waNT        fd      untouched</text>
-  <text x="356" y="342" class="mp">2 allow alice     full        fd, io  inherit-only, unchanged</text>
-  <text x="356" y="360" class="mp">  allow alice     R(r-x)              effective, limited</text>
-  <text x="356" y="378" class="mp">3 allow builders  modify      fd, io  inherit-only, unchanged</text>
-  <text x="356" y="396" class="mp">  allow builders  R(r-x)              effective, limited</text>
-  <text x="356" y="414" class="mp">4 allow OWNER@    R(-w-)              appended at the end</text>
-  <text x="356" y="436" class="s">Mode 0750: owner r-x from alice, -w- from OWNER@; group r-x from builders</text>
-  <text x="40" y="462" class="s">The group bits are a mask on the named allows. The merge only narrows the allows that exist; whatever it must add goes in one new</text>
-  <text x="40" y="478" class="s">allow at the end of the list, so no deny before it, explicit or inherited, is overridden. Denies are never touched.</text>
+  <text x="356" y="342" class="mp">2 allow alice     full        fd      owner class, unchanged</text>
+  <text x="356" y="360" class="mp">3 allow builders  modify      fd, io  inherit-only, unchanged</text>
+  <text x="356" y="378" class="mp">  allow builders  R(r-x)              effective, limited</text>
+  <text x="356" y="400" class="s">Mode 0750: owner rwx from alice; group r-x from builders; nothing appended</text>
+  <text x="40" y="446" class="s">The group bits are a mask on the named allows not naming the owner. The merge only narrows the allows that exist;</text>
+  <text x="40" y="462" class="s">whatever it must add, it grants after every deny, explicit or inherited, so none is overridden. Denies are never touched.</text>
 
   <rect x="24" y="508" width="416" height="48" rx="6" class="sv"/>
   <text x="40" y="526" class="h">ACLFromMode(0604): other has more than group</text>

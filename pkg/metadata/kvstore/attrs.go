@@ -101,7 +101,11 @@ func (f Files) SetAttrs(ctx context.Context, id entity.Identity, h entity.Handle
 			}
 			next.Mode = next.Mode&^entity.ModeSticky | file.Mode&entity.ModeSticky
 		}
-		if a.Changes(entity.AttrMode) {
+		// With a stored ACL a chmod merges into it, refused whole past the
+		// entry limit, and the mode stored, as after a chown, is the one the
+		// ACL implies for the file's owner, the special bits kept (RFC 19
+		// §4.3).
+		if a.Changes(entity.AttrMode) || next.Owner != file.Owner {
 			if b, ok, err := get(tx, aclKey(share, file.ID)); err != nil {
 				return err
 			} else if ok {
@@ -109,9 +113,15 @@ func (f Files) SetAttrs(ctx context.Context, id entity.Identity, h entity.Handle
 				if err != nil {
 					return err
 				}
-				if err := tx.Set(aclKey(share, file.ID), encodeACL(acl.WithMode(next.Mode&0o777))); err != nil {
-					return err
+				if a.Changes(entity.AttrMode) {
+					if acl = acl.WithMode(next.Mode&0o777, next.Owner, file.IsDir()); !acl.Fits() {
+						return merrs.NewInvalidArgumentError("the merged ACL would hold more entries than an ACL may")
+					}
+					if err := tx.Set(aclKey(share, file.ID), encodeACL(acl)); err != nil {
+						return err
+					}
 				}
+				next.Mode = next.Mode&^0o777 | acl.Mode(next.Owner)
 			}
 		}
 		changed(tx, &next)
@@ -254,7 +264,7 @@ func (f Files) ACL(ctx context.Context, id entity.Identity, h entity.Handle) (en
 func aclOf(r kv.Reader, f entity.File) (entity.ACL, error) {
 	b, ok, err := get(r, aclKey(f.Share, f.ID))
 	if err != nil || !ok {
-		return entity.ACLFromMode(f.Mode & 0o777), err
+		return entity.ACLFromMode(f.Mode&0o777, f.IsDir()), err
 	}
 	return decodeACL(b)
 }
@@ -280,7 +290,7 @@ func (f Files) SetACL(ctx context.Context, id entity.Identity, h entity.Handle, 
 			return err
 		}
 		was := file.Version
-		file.Mode = file.Mode&^0o777 | acl.Mode()
+		file.Mode = file.Mode&^0o777 | acl.Mode(file.Owner)
 		changed(tx, &file)
 		if err := tx.Set(aclKey(share, file.ID), encodeACL(acl)); err != nil {
 			return err

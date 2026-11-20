@@ -66,7 +66,7 @@ func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
 	carol := f.member("carol", entity.Principal{})
 	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
 	h, _ := f.create(alice, pub, "prog", regular(0o644))
-	acl := entity.ACLFromMode(0o644)
+	acl := entity.ACLFromMode(0o644, false)
 	acl.Entries = append(acl.Entries,
 		entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteACL, Who: bob.Principal},
 		entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteData | entity.WriteAttributes, Who: carol.Principal})
@@ -82,11 +82,13 @@ func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
 	dave := f.member("dave", entity.Principal{}, staff)
 	g, _ := f.create(alice, pub, "grp", regular(0o644))
 	must(t, errOf(files.SetAttrs(ctx, f.admin, g, entity.Attrs{}.WithGroup(staff))))
-	gacl := entity.ACLFromMode(0o644)
+	gacl := entity.ACLFromMode(0o644, false)
 	gacl.Entries = append(gacl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteACL, Who: dave.Principal})
 	must(t, errOf(files.SetACL(ctx, alice, g, gacl)))
-	if got, err := files.SetAttrs(ctx, dave, g, entity.Attrs{}.WithMode(0o2660)); err != nil || got.Mode&0o7777 != 0o660 {
-		t.Errorf("chmod 2660 by a member of the file's group holding write the ACL: %o, %v, want 660 with setgid dropped", got.Mode, err)
+	// The mode stored is the merged ACL's (RFC 19 §4.3): dave's allow makes
+	// the group bits a mask, so no GROUP@ allow takes the new write bit.
+	if got, err := files.SetAttrs(ctx, dave, g, entity.Attrs{}.WithMode(0o2660)); err != nil || got.Mode&0o7777 != 0o640 {
+		t.Errorf("chmod 2660 by a member of the file's group holding write the ACL: %o, %v, want 640 with setgid dropped", got.Mode, err)
 	}
 	// On alice's directories bob, holding write the ACL, keeps a directory's
 	// setuid and setgid, and neither clears nor sets the sticky bit.
@@ -102,7 +104,7 @@ func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
 	} {
 		d, _ := f.create(alice, pub, tc.name, directory(0o777))
 		must(t, errOf(files.SetAttrs(ctx, alice, d, entity.Attrs{}.WithMode(tc.mode))))
-		dacl := entity.ACLFromMode(tc.mode & 0o777)
+		dacl := entity.ACLFromMode(tc.mode&0o777, true)
 		dacl.Entries = append(dacl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteACL, Who: bob.Principal})
 		must(t, errOf(files.SetACL(ctx, alice, d, dacl)))
 		if got, err := files.SetAttrs(ctx, bob, d, entity.Attrs{}.WithMode(tc.set)); err != nil || got.Mode&0o7777 != tc.want {
@@ -136,13 +138,14 @@ func testWriteACLAndClearSetID(t *testing.T, kvo Opener) {
 	erin := f.member("erin", entity.Principal{})
 	suid, _ := f.create(alice, pub, "suid", regular(0o600))
 	must(t, errOf(files.SetAttrs(ctx, alice, suid, entity.Attrs{}.WithMode(0o4600))))
-	sacl := entity.ACLFromMode(0o4600 & 0o777)
+	sacl := entity.ACLFromMode(0o600, false)
 	sacl.Entries = append(sacl.Entries, entity.ACE{Type: entity.ACEAllow, Mask: entity.ReadData | entity.AppendData, Who: erin.Principal})
 	must(t, errOf(files.SetACL(ctx, alice, suid, sacl)))
 	if _, err := files.ClearSetID(ctx, erin, suid, false); !isDenied(err) {
 		t.Errorf("ClearSetID for an overwrite by a caller holding append data alone: %v", err)
 	}
-	if got, err := files.ClearSetID(ctx, erin, suid, true); err != nil || got.Mode&0o7777 != 0o600 {
+	// The ACL's mode has erin's read in the group class (RFC 19 §4.2).
+	if got, err := files.ClearSetID(ctx, erin, suid, true); err != nil || got.Mode&0o7777 != 0o640 {
 		t.Errorf("ClearSetID for an append by a caller holding append data alone: %o, %v", got.Mode, err)
 	}
 }
@@ -241,13 +244,14 @@ func testACLs(t *testing.T, kvo Opener) {
 	h, _ := f.create(alice, pub, "doc", regular(0o640))
 
 	acl, e := files.ACL(ctx, alice, h)
-	if e != nil || acl.Mode() != 0o640 {
-		t.Fatalf("synthesised ACL: mode %o, %v", acl.Mode(), e)
+	if e != nil || acl.Mode(alice.Principal) != 0o640 {
+		t.Fatalf("synthesised ACL: mode %o, %v", acl.Mode(alice.Principal), e)
 	}
-	// Give bob read and write by name: the mode follows the ACL.
+	// Give bob read and write by name: the mode follows the ACL, bob's
+	// rights in its group bits, the mask (RFC 19 §4.2).
 	acl.Entries = append([]entity.ACE{{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteData | entity.AppendData, Who: bob.Principal}}, acl.Entries...)
 	got, e := files.SetACL(ctx, alice, h, acl)
-	if e != nil || got.Mode != 0o640 {
+	if e != nil || got.Mode != 0o660 {
 		t.Fatalf("SetACL: mode %o, %v", got.Mode, e)
 	}
 	if _, e := files.SetACL(ctx, bob, h, acl); e == nil {
@@ -256,13 +260,93 @@ func testACLs(t *testing.T, kvo Opener) {
 	// chmod 600 merges: bob keeps nothing, and the ACL and mode agree.
 	must(t, errOf(files.SetAttrs(ctx, alice, h, entity.Attrs{}.WithMode(0o600))))
 	merged, _ := files.ACL(ctx, alice, h)
-	if merged.Mode() != 0o600 {
-		t.Errorf("merged ACL implies %o", merged.Mode())
+	if merged.Mode(alice.Principal) != 0o600 {
+		t.Errorf("merged ACL implies %o", merged.Mode(alice.Principal))
 	}
 	for _, e := range merged.Entries {
 		if e.Who == bob.Principal && e.Mask&(entity.ReadData|entity.WriteData) != 0 {
 			t.Errorf("bob kept %x after chmod 600", e.Mask)
 		}
+	}
+}
+
+// RFC 19 §4.3: a chmod of a file with a stored ACL stores the merged ACL's
+// mode for the file's owner, the special bits kept, which is the asked mode
+// unless a deny withholds some of it or named entries grant less than the
+// asked group bits; a chown stores the ACL's mode for the new owner.
+func testChmodStoresTheMergedMode(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	alice := f.member("alice", entity.Principal{})
+	bob := f.member("bob", entity.Principal{})
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	r := func(b uint32) entity.AccessMask { return entity.ModeRights(b, false) }
+	stored := func(h entity.Handle) uint32 {
+		t.Helper()
+		got, err := files.Get(ctx, f.admin, h)
+		must(t, err)
+		return got.Mode
+	}
+
+	// A deny of the write set ahead of the class allows withholds write:
+	// chmod 4770 stores 4550.
+	denied, _ := f.create(alice, pub, "denied", regular(0o640))
+	must(t, errOf(files.SetACL(ctx, alice, denied, entity.ACL{Entries: []entity.ACE{
+		{Type: entity.ACEDeny, Mask: entity.WriteData | entity.AppendData | entity.WriteNamedAttrs | entity.WriteAttributes, Who: entity.Everyone},
+		{Type: entity.ACEAllow, Mask: r(7), Who: entity.Owner},
+		{Type: entity.ACEAllow, Mask: r(5), Who: entity.OwnerGroup},
+	}})))
+	if got, err := files.SetAttrs(ctx, alice, denied, entity.Attrs{}.WithMode(0o4770)); err != nil || got.Mode != 0o4550 || stored(denied) != 0o4550 {
+		t.Errorf("chmod 4770 under a deny of write: %o, stored %o, %v; want 4550", got.Mode, stored(denied), err)
+	}
+
+	// bob's read is the group bits' mask: chmod 770 adds no GROUP@ allow
+	// and stores 740.
+	named, _ := f.create(alice, pub, "named", regular(0o600))
+	must(t, errOf(files.SetACL(ctx, alice, named, entity.ACL{Entries: []entity.ACE{{Type: entity.ACEAllow, Mask: entity.ReadData, Who: bob.Principal}}})))
+	if got, err := files.SetAttrs(ctx, alice, named, entity.Attrs{}.WithMode(0o770)); err != nil || got.Mode != 0o740 || stored(named) != 0o740 {
+		t.Errorf("chmod 770 under a named allow of read: %o, stored %o, %v; want 740", got.Mode, stored(named), err)
+	}
+
+	// The same allow on alice's file is in the group class, on bob's in the
+	// owner class.
+	moved, _ := f.create(alice, pub, "moved", regular(0o600))
+	must(t, errOf(files.SetACL(ctx, alice, moved, entity.ACL{Entries: []entity.ACE{{Type: entity.ACEAllow, Mask: entity.ReadData, Who: bob.Principal}}})))
+	if got, err := files.SetAttrs(ctx, f.admin, moved, entity.Attrs{}.WithOwner(bob.Principal)); err != nil || got.Mode != 0o400 || stored(moved) != 0o400 {
+		t.Errorf("chown to bob of a file whose ACL allows bob read: %o, stored %o, %v; want 400", got.Mode, stored(moved), err)
+	}
+}
+
+// RFC 19 §2.8: a chmod whose merge would hold more entries than an ACL may
+// is refused as invalid and changes nothing. 100 effective and inheritable
+// named allows, each split by a chmod that narrows them, would be 200; a
+// chmod that narrows none splits none, and is stored.
+func testChmodPastTheEntryLimit(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	files := f.s.Files()
+	alice := f.member("alice", entity.Principal{})
+	builders := f.group("builders")
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	d, _ := f.create(alice, pub, "big", directory(0o700))
+	var acl entity.ACL
+	for range 100 {
+		acl.Entries = append(acl.Entries, entity.ACE{Type: entity.ACEAllow, Flags: entity.ACEFileInherit | entity.ACEDirInherit,
+			Mask: entity.ModeRights(7, true), Who: builders})
+	}
+	set, err := files.SetACL(ctx, alice, d, acl)
+	must(t, err)
+	before, err := files.ACL(ctx, f.admin, d)
+	must(t, err)
+	if _, err := files.SetAttrs(ctx, alice, d, entity.Attrs{}.WithMode(0o750)); !isCode(err, merrs.ErrInvalidArgument) {
+		t.Errorf("chmod 750 past the limit: %v, want an invalid argument", err)
+	}
+	after, err := files.ACL(ctx, f.admin, d)
+	must(t, err)
+	if got, _ := files.Get(ctx, f.admin, d); !reflect.DeepEqual(before, after) || got.Mode != set.Mode {
+		t.Errorf("a refused chmod changed the ACL, or the mode to %o from %o", got.Mode, set.Mode)
+	}
+	if _, err := files.SetAttrs(ctx, alice, d, entity.Attrs{}.WithMode(set.Mode)); err != nil {
+		t.Errorf("chmod to its own mode, splitting nothing: %v", err)
 	}
 }
 

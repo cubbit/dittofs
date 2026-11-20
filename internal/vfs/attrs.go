@@ -392,7 +392,7 @@ func (fs *Filesystem) GetACL(ctx context.Context, c vfs.Call, h vfs.Handle) (vfs
 		if _, err := fs.pseudoNode(ctx, h); err != nil {
 			return vfs.ACL{}, err
 		}
-		return entity.ACLFromMode(0o555), nil
+		return entity.ACLFromMode(0o555, true), nil
 	}
 	if err := fs.authz.Decide(ctx, a.caller, vfs.OpGetACL, h, nil, nil, entity.ReadACL); err != nil {
 		return vfs.ACL{}, storeErr(err)
