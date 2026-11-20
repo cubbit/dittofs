@@ -171,7 +171,12 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		c.beforeAppend()
 	}
 	var done, published int64
-	var placed []piece
+	// ponytail: the first four pieces of an unreserved write wait in this
+	// array, so the common write allocates nothing for them; a write of more
+	// pieces grows the slice on the heap. Upgrade to a pooled slice when a
+	// profile of writes spanning many segments shows it.
+	var waiting [4]piece
+	placed := waiting[:0]
 	for done < int64(len(p)) {
 		seq, err := c.counters.NextSeq()
 		if err != nil {
