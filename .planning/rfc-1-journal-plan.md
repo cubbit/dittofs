@@ -587,6 +587,8 @@ detailed breakdown also copies §1.5, following the instruction there.
 
 ### Epic 1 — Interfaces ⛔ (≈9 subtasks, team)
 
+**Epic 1 estimate: 9 subtasks, 9.5 man-days.**
+
 Epic 1 creates the packages of §4 marked E1 and declares, with doc comments and stub
 bodies, every symbol and signature of RFC 1 §3–§4 and §7.2. Of the internal interfaces it
 declares only the storage seam, which has callers before any implementation (`WithStorage`
@@ -613,7 +615,21 @@ Candidate subtasks:
 8. The storage seam (`storage.FS`, `storage.File`) and `WithStorage`.
 9. Joint review and freeze.
 
+Subtasks and estimates:
+
+- T1.1 Package skeleton and the import test (go/build, other-platform files, test imports) — 1 man-day.
+- T1.2 Value types, `Version` order and big-endian `Bytes`, `TestVersionBytesOrder` — 0.5 man-days.
+- T1.3 Error set, typed errors, `Limit` taxonomy, `ENOSPC` rule, sentinel test — 1 man-day.
+- T1.4 `Init`, `Open`, `Restamp`, options, `Clock`, `Settings`, private limits, signature test — 1 man-day.
+- T1.5 `Journal`, `Handle` and `Reservation` methods with per-call contracts (refusals, version, headroom, durability, lock domain) — 2 man-days.
+- T1.6 Offload, release, repack and holds API, `Offer` and `RepackScope` — 1 man-day.
+- T1.7 `Stats`, `Counters`, `Histogram`, `Tracer`, logger option, inspection API, §3.7/§3.9 field map — 1.5 man-days.
+- T1.8 Storage seam (`storage.FS`, `storage.File`) and `WithStorage` — 0.5 man-days.
+- T1.9 Symbol-to-RFC map, joint review and freeze (S1) — 1 man-day.
+
 ### Epic 2 — E2E suite and test foundations ⛔ (17 subtasks, team)
+
+**Epic 2 estimate: 29 subtasks, 91 man-days.**
 
 Epic 2 delivers §1.4; its breakdown is
 [rfc-1-journal-epic2.md](rfc-1-journal-epic2.md), which supersedes this section where they
@@ -763,7 +779,41 @@ each tier's dependencies are in the epic's file, §7:
   - `SIGKILL` vs power loss, kept distinct;
   - a long soak with capacity below the data written.
 
+Subtasks and estimates (the first estimate's ids and figures; a subtask over 5 days is split with a letter suffix, whose split rows the epic 2 document groups under one number):
+
+- T2.1 Crash-simulating seam: per-file unsynced log, lost/torn/reordered crash, durable image, stale reads — 4 man-days.
+- T2.2 `Fault`, seeded `Schedule`, holds, `TestClock` with `Advance` and `SetRate` — 3 man-days.
+- T2.3 Profiling harness: goroutines, descriptors, heap, profiles on failure, non-flaky calibration — 2 man-days.
+- T2.4 Reference model with post-crash acceptable states, `Compare`, model fuzz target — 4 man-days.
+- T2.5a Fixture (`journalv2test.New`), segment-cap setting, suite registration, `known.yaml` — 2 man-days.
+- T2.5b RFC 1 Group D (11 checks) and the two clock checks — 4.5 man-days.
+- T2.6 Model-based test: seeds, shrinking, corpus replay, planted divergence — 3 man-days.
+- T2.7a Group A part 1, first 7 checks (no zero-fill through partial release) — 3 man-days.
+- T2.7b Group A part 1, last 7 checks (release in segment through no pin under repack) — 3 man-days.
+- T2.8a Group A part 2, repack and removal family (10 checks) — 4 man-days.
+- T2.8b Group A part 2, sync-window and loss family (10 checks) — 4 man-days.
+- T2.8c Counted checks: syncs per write and mixed durability, driven by holds — 1.5 man-days.
+- T2.9a Group B part 1, capacity and refusals (8 checks) — 3 man-days.
+- T2.9b Group B part 1, headroom, versions, buckets, accounting (7 checks) — 3 man-days.
+- T2.10a Group B part 2, descriptors, coalescing, index bound, pins, windows (7 checks) — 3 man-days.
+- T2.10b Group B part 2, starvation, no deadlock, background join, per-extent drop, aimed repack (6 checks) — 3 man-days.
+- T2.11a Group C, first 9 checks (reseed after repack through attached share) — 3.5 man-days.
+- T2.11b Group C, last 8 checks (unclaimed tags through loss survives restart) — 3.5 man-days.
+- T2.12a Edge cases: extent shape (9 cases) — 3 man-days.
+- T2.12b Edge cases: lifecycle (7 cases) — 2.5 man-days.
+- T2.12c Edge cases: capacity, storage and opening (9 cases) — 3 man-days.
+- T2.13a `journalv2test/raw` encoders, checked field by field against RFC 28 §2 — 2.5 man-days.
+- T2.13b RFC 28 Group A (9 checks) and Group B (1 check) — 4 man-days.
+- T2.13c RFC 28 Group C, first 13 rows — 4.5 man-days.
+- T2.13d RFC 28 Group C, last 9 rows and the refusal halves of 3 split rows — 4.5 man-days.
+- T2.13e Systematic injection: bit flip per region, lost writes at every sync point, torn at every byte, reordered — 4 man-days.
+- T2.13f Edits from outside, one test per row of RFC 28 §4.4's table — 2 man-days.
+- T2.14 Traceability: `trace.yaml` over every row, `trace_test.go` with its three plants — 2 man-days.
+- T2.15 Review of every conformance test against its row, and S2 — 2 man-days.
+
 ### Epic 3 — On-disk format and platform layer ⛔ (≈12 subtasks, A)
+
+**Epic 3 estimate: 12 subtasks, 31 man-days.**
 
 Epic 3 implements RFC 28 §2 and Appendix A as pure, separately testable layers. It also
 declares `internal/format` and `internal/platform`, which epic 1 leaves to it (§1.5,
@@ -819,7 +869,24 @@ known failures:
 Candidate subtasks: one per structure (6), scanner, `format` replace, platform per OS, CoW
 and barrier probes, and the conformance tests above.
 
+Subtasks and estimates, in the first estimate's numbering, which the epic 3 document does not follow (its subtasks split and group the same work differently):
+
+- T3.1 Errors into core, CRC32C and `Seed`, `format` file codec, file names, trace resolution, `journal-fuzz` — 2.5 man-days.
+- T3.2 Segment header and seal marker codecs, `SlotKind` — 1.5 man-days.
+- T3.3 Record header codec and the 14-kind table, `Reach` — 2 man-days.
+- T3.4 Payloads, alignment, record size, payload checksum — 1.5 man-days.
+- T3.5 Catalog entries, trailer, `CheckFooter`, `EntryMatches`, `FooterLen` — 2 man-days.
+- T3.6 Slot scanner: zero gaps, resynchronisation, damage ranges, windowed and allocation-free — 3.5 man-days.
+- T3.7 `format` file atomic replace and read, crash after every step — 1.5 man-days.
+- T3.8 Linux OS storage: `O_EXCL`, `fdatasync`, allocate and zero-fill, `O_DIRECT` aligned reads — 3.5 man-days.
+- T3.9 macOS (`F_FULLFSYNC`, `F_NOCACHE`), Windows (share-delete, flush, no-buffering), other platforms — 4 man-days.
+- T3.10 Admission checks (barriers, CoW, subvolume, flush policy, thin), `ErrUnsafeStorage`, default storage in `Init` and `Open` — 3.5 man-days.
+- T3.11 Loop-device fixtures (ext4, XFS, Btrfs, dm-thin, small fs), platform conformance, `os` leg, `journal-platform` suite — 4.5 man-days.
+- T3.12 Fuzz coverage and review — 1 man-day.
+
 ### Epic 4 — Placement index and versions ⛔ (≈11 subtasks, B)
+
+**Epic 4 estimate: 12 subtasks, 38.5 man-days.**
 
 Epic 4 implements RFC 1 §4 and the version rules of §3.4 and §4.3. It is pure in-memory
 code.
@@ -849,7 +916,24 @@ Fuzz: operation sequences against the reference model. Candidate subtasks: B-tre
 index, span query, retained set, markers, precedence, counters and limit, floor buckets,
 extent bound, drop ranges, per-segment accounting.
 
+Subtasks and estimates, in the first estimate's numbering, which the epic 4 document does not follow (its subtasks split and group the same work differently):
+
+- T4.1 B-tree with packed leaves, lowest-dirty per node, comparison counts, `AllocsPerOp`, J3/J4 benchmarks — 5 man-days.
+- T4.2 `FileIndex`: write with split and narrow, lookup, exact-gap span, `PlanWrite`, `Repoint` — 4 man-days.
+- T4.3 Removal markers, losses, `FillGaps`, `Settle`, `Since`, change version — 3.5 man-days.
+- T4.4 Offloaded bit: dirty walk, `Mark`, `MarkRange` with stale rule, `Unmark`, release check — 3 man-days.
+- T4.5 Retained set: reasons, reinstate, `HeldOrRetained`, repoint — 2.5 man-days.
+- T4.6 Sharded outer map, file lifecycle, tags and claims, tag conflicts, concurrency — 3 man-days.
+- T4.7 Sequence and version counters, version limit, restore — 1.5 man-days.
+- T4.8 Change version and the 4,096 floor buckets — 1.5 man-days.
+- T4.9 Entry bound with the one-eighth allowance, entry reservations — 2.5 man-days.
+- T4.10 Per-segment bytes, drop ranges with merge, `CanDrop`, index-memory check — 3.5 man-days.
+- T4.11 Builder: precedence, duplicates, losses, forget, bits, counters, concurrent and order-free — 5 man-days.
+- T4.12 `FuzzIndexOps` against the model, `FuzzBuilderOrder`, review — 3.5 man-days.
+
 ### Epic 5 — Segments, streams and accounting ⛔ (≈11 subtasks, A)
+
+**Epic 5 estimate: 11 subtasks, 34.75 man-days.**
 
 Epic 5 implements RFC 28 §2.2 and §2.4 (writing side), and RFC 1 §6's segment allocation,
 §7.1's auto-retire mechanism, §7.3, §7.4 and §8.5. Its breakdown is
@@ -885,6 +969,8 @@ and supersedes this section where they differ.
 before S3 need the seal's sync, the headroom and the hand-off of a failed segment.
 
 ### Epic 6 — Durability and loss (9 subtasks, A)
+
+**Epic 6 estimate: 9 subtasks, 42 man-days.**
 
 Epic 6 implements RFC 1 §5 and §3.8.
 
@@ -940,6 +1026,8 @@ Epic 6 implements RFC 1 §5 and §3.8.
 - **Counted check:** the mixed-durability check.
 
 ### Epic 7 — Recovery and identity (≈12 subtasks, A)
+
+**Epic 7a estimate: 15 subtasks, 53.5 man-days** ([rfc-1-journal-epic7a.md](rfc-1-journal-epic7a.md)). Epic 7b is not broken down and not estimated yet.
 
 Split in two. [Epic 7a](rfc-1-journal-epic7a.md) reopens a journal after a clean exit or a
 crash, and is the `Open` the journal-only engine calls; epic 7b is the rest, as epic 7a's §1.2
@@ -1048,6 +1136,8 @@ not gated.
 
 ### Epic 8 — Data path and capacity ⛔ (15 subtasks, B)
 
+**Epic 8 estimate: 15 subtasks, 60.75 man-days.**
+
 Epic 8 assembles epics 4–6 into the public API's core (RFC 1 §3–§3.2, §3.4, §3.6, §3.7,
 §3.10, §6, §8).
 
@@ -1105,6 +1195,8 @@ Metrics: `written_bytes`, `filled_bytes`, `fill_refused`, `reservation_refused`,
 
 ### Epic 9 — Offload, reclamation, holds and tags (≈13 subtasks, B)
 
+**Epic 9a estimate: 12 subtasks, 43.5 man-days** ([rfc-1-journal-epic9a.md](rfc-1-journal-epic9a.md)). Epic 9b is not broken down and not estimated yet.
+
 Split in two. [Epic 9a](rfc-1-journal-epic9a.md) is retirement, `Repack`, `Forget` and
 `Strand`, which the journal-only engine calls; epic 9b is offload, `Release` and snapshot
 holds, as epic 9a's §1.2 names. The scope below is the whole epic.
@@ -1161,6 +1253,8 @@ bounds (64 per offer, 256 journal-wide), settled by measurement.
 
 ### Epic 10 — The start check (4 subtasks, 7.75 man-days, A)
 
+**Epic 10 estimate: 4 subtasks, 7.75 man-days.**
+
 Broken down in [rfc-1-journal-epic10.md](rfc-1-journal-epic10.md). The initialisation step
 (`journal.Init`, `RecordJournal`, the re-run after an interruption) is the RFC 23 plan's epic 5,
 T5.4, which runs the store's `Init` first, so no device ever names an installation without a store
@@ -1186,11 +1280,15 @@ documents says "epic 11", it means that engine work. The journal's exports are e
 
 ### Epic 12 — E2E green 🔀 (8 subtasks, 23 man-days, team)
 
+**Epic 12 estimate: 8 subtasks, 23 man-days.**
+
 Broken down in [rfc-1-journal-epic12.md](rfc-1-journal-epic12.md). State: `test/journal/known.yaml`
 holds 185 entries at `9efa0702f`, after 7a's reopen landed, and `test/engine/known.yaml` another 26. 114 of the journal's fail on a 7b or 9b call and stay listed with a recorded decision. 53 are other rows the reopen no longer masks, which T12.1 classifies by test name: most are 9a's, 7a's or 7b's. J4, J5, J8, the model's `Offload` and `Release` steps and the
 soak's offload load are epic 9b's (§5, epic 9).
 
 ### Epic 13 — The journal's exports (4 subtasks, 14.75 man-days, B)
+
+**Epic 13 estimate: 4 subtasks, 14.75 man-days.**
 
 Broken down in [rfc-1-journal-epic13.md](rfc-1-journal-epic13.md). What RFC 1 §3.9 and §3.7 require and
 nothing else builds: the `journal_` series over the journal's full `Stats`, the adapter from the
