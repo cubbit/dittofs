@@ -309,12 +309,9 @@ func firstPassword(file, env string) (password []byte, generated bool, err error
 		}
 		return b, false, nil
 	case env != "":
-		v, ok := os.LookupEnv(env)
-		if !ok {
-			return nil, false, fmt.Errorf("%w: environment variable %s is unset", ErrPassword, env)
-		}
+		v := os.Getenv(env)
 		if v == "" {
-			return nil, false, fmt.Errorf("%w: environment variable %s is empty", ErrPassword, env)
+			return nil, false, fmt.Errorf("%w: environment variable %s is unset or empty", ErrPassword, env)
 		}
 		return []byte(v), false, nil
 	}
