@@ -15,7 +15,8 @@ import (
 // ErrDirSyncRefused is the sentinel a make's failed directory sync fails
 // with: the device refused to make a finished spare's name durable, the one
 // step of a make a device in this state answers every time, which the pool
-// counts a refused segment for RFC 1 §5.4's read-only rule. Every other
+// counts a refused segment for the read-only rule (the decision at the
+// counter in refill states that rule's ceiling). Every other
 // step of a make fails with its own error alone.
 var ErrDirSyncRefused = errors.New("segment: the directory sync of a new spare failed")
 

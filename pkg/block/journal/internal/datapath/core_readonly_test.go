@@ -3,9 +3,9 @@ package datapath
 import (
 	"context"
 	"errors"
-	"runtime"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
@@ -91,13 +91,15 @@ func TestCore_EROFSTurnsJournalReadOnly(t *testing.T) {
 	}
 }
 
-// TestCore_SecondRefusedSpareDirSyncTurnsJournalReadOnly covers §5.4's
+// TestCore_SecondRefusedSpareDirSyncTurnsJournalReadOnly covers the
 // refused-segment rule reached from the making of spares: an error of the
 // directory sync that is not EROFS names no cause through the seam wrap, so
 // a journal kept making spares once per kick however the device answered.
 // The second new spare in a row whose directory sync the device refused —
-// the second segment §5.4 counts refused — now enters the read-only state
-// with the refusal that met it, so the state names the device.
+// the second segment the rule counts refused — now enters the read-only state
+// with the refusal that met it, so the state names the device. The counting
+// extends the read-only triggers the RFC lists; the decision at the counter
+// in the pool states its ceiling.
 func TestCore_SecondRefusedSpareDirSyncTurnsJournalReadOnly(t *testing.T) {
 	c, seam := newTestCore(t)
 	awaitSettledSpares(t, c, 2*testStreams)
@@ -133,11 +135,18 @@ func TestCore_SecondRefusedSpareDirSyncTurnsJournalReadOnly(t *testing.T) {
 	if _, err := c.pool.Take(segment.Content); err == nil {
 		t.Fatal("a take after the journal turned read-only succeeded, want the spare refusal")
 	}
-	// The read-only pool stops every kicked pass at its own check, before
-	// any storage: a bounded yield, with the kick queued in it, holds the
-	// seam to no further directory sync.
-	for range 1 << 16 {
-		runtime.Gosched()
+	// WaitSpares is parked by the pass the take's kick queued and answered
+	// by that pass's settle, so its return is the event that the kicked
+	// read-only pass finished — the one pass that could have touched storage.
+	// The bound is the test's own: a pass that never settles must fail the
+	// test, not park it forever.
+	settled := make(chan error, 1)
+	go func() { settled <- c.pool.WaitSpares(t.Context()) }()
+	select {
+	case err := <-settled:
+		_ = err // the answer itself is the event: the read-only pool tells a shortage
+	case <-time.After(30 * time.Second):
+		t.Fatal("the kicked read-only pass never settled its pool waits")
 	}
 	if got := seam.Calls(kit.OpSyncDir); got != syncs {
 		t.Fatalf("the read-only pool made %d more spares after its kicked take, want none", got-syncs)

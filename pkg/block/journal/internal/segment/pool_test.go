@@ -684,11 +684,12 @@ func TestPoolDeviceFullOnENOSPC(t *testing.T) {
 	})
 }
 
-// TestPoolSecondRefusedSpareDirSyncEntersReadOnly checks §5.4's
+// TestPoolSecondRefusedSpareDirSyncEntersReadOnly checks the
 // refused-segment rule reached from the making of spares: a new spare whose
 // directory sync the device refused is one refused segment, so the second in
 // a row enters the wired read-only state with the refusal that met it,
 // while one refused alone, and a row broken by a made spare, enter nothing.
+// The decision at the counter in refill states the rule's ceiling.
 func TestPoolSecondRefusedSpareDirSyncEntersReadOnly(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
