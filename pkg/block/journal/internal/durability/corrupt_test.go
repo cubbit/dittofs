@@ -244,8 +244,17 @@ func TestCorruptDirtyVsOffloaded(t *testing.T) {
 // having recorded the loss, already counts the dropped dirty extent.
 func TestCorruptCountsTheLossWhenCorruptReturns(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	cr := newCorruptRig(t, nil)
-	w := cr.write(t, file(1), 0, "aaaa")
+	// The worker is parked before it records the loss, so the Stats below is
+	// read after Corrupt returned and before the worker ran.
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	cr := newCorruptRig(t, func(cr *corruptRig) {
+		cr.d.beforeCorruptLoss = func() { <-release }
+	})
+	t.Cleanup(free)
+	f := file(1)
+	w := cr.write(t, f, 0, "aaaa")
 	before := cr.d.Generation()
 
 	cr.corrupt(t, w.c)
@@ -254,8 +263,18 @@ func TestCorruptCountsTheLossWhenCorruptReturns(t *testing.T) {
 		t.Fatalf("the generation is %d when Corrupt returned, want %d", got, before+1)
 	}
 	p := cr.d.Stats()
+	if len(p.Losses) != 0 {
+		t.Fatalf("Losses = %+v with the worker parked, want none: the worker ran", p.Losses)
+	}
 	if p.CorruptDataLoss != 1 || p.CorruptRepairable != 0 {
 		t.Fatalf("counters = %d data loss, %d repairable right after Corrupt, want 1 and 0", p.CorruptDataLoss, p.CorruptRepairable)
+	}
+
+	free()
+	eventually(t, "the loss event", func() bool { return len(cr.lossesOf(f)) > 0 })
+	p = cr.d.Stats()
+	if p.CorruptDataLoss != 1 || p.CorruptRepairable != 0 {
+		t.Fatalf("counters = %d data loss, %d repairable after the worker recorded the loss, want 1 and 0: counted twice", p.CorruptDataLoss, p.CorruptRepairable)
 	}
 }
 

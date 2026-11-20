@@ -44,7 +44,8 @@ type Loss struct {
 	Raised bool
 
 	// Counted says the caller already moved the corrupt counters for this
-	// loss, so Lose counts nothing for it.
+	// corrupt loss, so Lose counts nothing for it. It is read for a corrupt
+	// loss only.
 	Counted bool
 
 	// Marked says the caller already left the marker of a synced loss, so
@@ -274,16 +275,18 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// stored and is now gone, and anything else can be fetched again. A
 	// failed window raises it once, for the window, through RaiseWindow.
 	//
-	// The raise, the counters and the event are one critical section, so a
-	// Stats call never sees the raised generation without the event that
-	// raised it. The raise stays before the publish: a reader that sees the
-	// event sees its raise.
+	// For a loss made here the raise, the counters and the event are one
+	// critical section, so a Stats call never sees the raised generation
+	// without the event that raised it. The raise stays before the publish: a
+	// reader that sees the event sees its raise. A corrupt drop is the
+	// exception: Corrupt raised and counted before this call (see the decision
+	// in dropCorrupt), and only the event is published here.
 	d.lmu.Lock()
 	if (l.Reason == core.LossCorrupt || l.Reason == core.LossAcknowledged) && !l.Offloaded && !l.Raised {
 		d.dir.raise()
 	}
 	switch {
-	case l.Counted:
+	case l.Counted && l.Reason == core.LossCorrupt:
 	case l.Reason == core.LossCorrupt && !l.Offloaded:
 		d.corruptDataLoss++
 	case l.Reason == core.LossCorrupt:
