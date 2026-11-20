@@ -252,9 +252,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and the journal-sized fill is refused naming the limit it reached, but a Deallocate at the journal''s maximum is then refused by the headroom limit, though a record without payload bytes must draw on the headroom; the check stops before its mark, release and idle-sealing legs. The headroom is built, so the refusal it answers that Deallocate with is a defect in it.'
-  issue: '#3395'
-  message: 'Deallocate at the journal''s maximum: journal: no space: refused by the headroom limit'
+  reason: 'The journal opens, the journal-sized fill is refused naming the limit it reached, and the truncate, deallocate and delete at the journal''s maximum are admitted on the headroom, which keeps a spare per stream to roll into; the check then stops at the stub call it reaches. Needs MarkOffloaded and Release, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_RemovalRecordsDroppedPerExtent
   status: fail
