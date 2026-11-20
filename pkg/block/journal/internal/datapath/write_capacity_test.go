@@ -154,7 +154,7 @@ func drawHeadroom(t *testing.T, c *Core, n int) {
 		if !d.Append {
 			t.Fatalf("headroom admission %d was told not to append", i+1)
 		}
-		c.headroom.Drawn(d)
+		c.headroom.Drawn(d, 0)
 	}
 }
 

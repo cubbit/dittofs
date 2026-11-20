@@ -48,7 +48,7 @@ func admit(t *testing.T, c *Core, k capacity.RecordClass) (capacity.Draw, error)
 	t.Helper()
 	d, err := c.headroom.Admit(k)
 	if err == nil && d.Append {
-		c.headroom.Drawn(d)
+		c.headroom.Drawn(d, 0)
 	}
 	return d, err
 }
@@ -144,7 +144,7 @@ func TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom_Admission(t *testing.T) {
 	if err != nil || d.Append {
 		t.Fatalf("Offloaded below half = %+v, %v; want admitted without an append", d, err)
 	}
-	c.headroom.Drawn(d)
+	c.headroom.Drawn(d, 0)
 	for _, k := range []capacity.RecordClass{capacity.Hold, capacity.Stamp, capacity.CloneTarget} {
 		_, err := admit(t, c, k)
 		_ = refused(t, err, core.LimitHeadroom)

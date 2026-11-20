@@ -1142,6 +1142,7 @@ func (c *Core) Retirer() *segment.Retirer { return c.retirer }
 // first, in the same step, and before the figures drop by the segment's own
 // bytes: a tally between the two stands above the truth, never below it.
 func (c *Core) retiredSegment(id core.SegmentID) {
+	c.headroom.Credit(id)
 	c.dur.Retired(id)
 	c.cap.CopiesTransfer(id)
 	c.cap.RetiredEverySeeded()
