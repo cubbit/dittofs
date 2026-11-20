@@ -468,7 +468,9 @@ it gets back (epic 7, after S4; RFC 20 §3.4, §4.7):
 smbA, err := smb.New(adapter.Deps{
 	VFS:     svc,     // required
 	Budgets: budgets, // required: Receive, Reply, Connection, Hold (RFC 24)
-	Metrics: reg, Tracer: tr, Logger: log, Watch: watchdog.Loop,
+	Metrics: reg, Tracer: tr, Logger: log,
+	SampleRatio: ratio, // §10.2's sampling rate: 0 samples none; the node passes 0 while no tracer is configured
+	Watch: watchdog.Loop,
 }, settings.DefaultSMB())
 if err != nil {
 	return err // invalid settings, or a required Deps field missing
@@ -980,6 +982,7 @@ decision to drop it (its issue closed as not planned).
 | the alert rules for `adapter_unmapped_errors_total` and `adapter_handler_panics_total` (RFC 20 §10.1, RFC 25 §7; epic 7's §9, O5) | the repository holds no alert-rule home | the RFC 25 plan | an alert-rule home exists |
 | `Deps.Retry` and the node's retrier: the field, the failing `Disconnect` it holds, and its stop after the adapters (RFC 20 §3.2, §3.4; RFC 23 §2.2's stop step 2; epic 7's §9, O6) | no caller: only a session registry hands it a `Disconnect` | the RFC 22 plan, with the first session registry that calls it (its T5.2 and T5.4; RFC 21's `DESTROY_SESSION` the NFS half) | on top of epic 7's T7.3, once the pending-`Disconnect` bound is settled (the open point on #4533: RFC 24 §5.1's row, one pending `Disconnect` per client record per adapter) |
 | `adapter_listener_lost`'s address, which RFC 25 §3.9 names beside the adapter and `Health`'s names-only conditions do not carry (RFC 20 §3.4; its amendment giving `Health` a `Lost []netip.AddrPort` is the RFC's, no owner yet; epic 7's §9, O8) | the conflict between RFC 25 §3.9 and RFC 20 §3.4 settles by an RFC pull request | `unowned` | RFC 15's floating addresses |
+| the trace-ID generator's own source (`newTraceID`, `math/rand/v2`'s global per-thread source, shared without a lock) | no hand of `Deps.TraceIDs` names a per-installation source; RFC 20 §10.2 sets the global source as the default, and no owner has defined what an installation-scoped source derives from | `unowned` | an owner defines the source an installation's IDs come from |
 | the conditions' severities (RFC 20 §3.7, RFC 25 §3.9): `adapter_listener_lost` and `adapter_refused` unhealthy, `sidecar_failed` degraded | `health.Condition` carries none (`pkg/health/evaluator.go`'s `ponytail:`; epic 7's §1.2) | the RFC 25 plan | RFC 25's condition registry is built |
 | the settings table's adapters' section and `Check`, wired into reconcile and the settings routes | need `internal/node` and `pkg/settings` | RFC 13's plan (#4059), epic 5 | that epic |
 | concrete sidecars: mDNS, WS-Discovery (`pkg/discovery`), the port mapper, rpcbind registration, with their enabled settings and `Runner.SetEnabled`'s caller, and the port mapper's half of RFC 13 §6's port rule at start | need serving protocols | cutover | stage 7 |

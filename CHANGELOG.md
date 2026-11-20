@@ -65,9 +65,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is shortened to the room the operations beside it leave in one record,
   never below one byte, and counted in `adapter_reads_shortened_total`; a
   compound that would leave a READ no byte, or whose replies pass the cap
-  with nothing to shorten, is refused whole. A status the protocol's error
-  table marks as no failure no longer ends a compound or fails the related
-  requests of a chain after it.
+  with nothing to shorten, is refused whole. A compound reads whether the
+  adapter is draining once, after its reply buffer is reserved and before
+  its first member runs, and a drained compound is answered like one request:
+  `ErrMoved` when the service names a gateway for the share of every
+  filehandle its members name, `ErrDraining` otherwise. A status the
+  protocol's error table marks as no failure no longer ends a compound or
+  fails the related requests of a chain after it.
+
+- **A request's trace ID decides its sampling, once.** A request draws its
+  trace ID from a uniformly random source, the node's `Deps.TraceIDs` or
+  `math/rand/v2`'s global source by default, never from wire data, which a
+  client could steer to force or evade sampling; the pipeline samples by the
+  tracing API's ratio rule before it opens the first span, and an unsampled
+  request, or tracing off altogether, allocates nothing for spans and reads
+  no clock, which the pipeline benchmark asserts.
 
 - **Held requests, and a 30 s deadline on every attempt.** Each request runs
   under a 30 s deadline from its arrival, its waits for reply memory and a
