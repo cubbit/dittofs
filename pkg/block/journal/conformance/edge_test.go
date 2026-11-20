@@ -44,18 +44,14 @@ func writeStatsOf(s journal.Stats) writeStats {
 	return writeStats{s.ExtentCount, s.HeldBytes, s.DirtyBytes, s.NextVersion}
 }
 
-// TestEdge_ZeroLengthWrite checks that an empty write appends nothing, and
-// that its file holds the bytes it did: no record reaches a segment, no count
-// the stats keep moves save the version counter when a nil return draws from
-// it, Since yields no change wherever the empty write falls.
+// TestEdge_ZeroLengthWrite checks that an empty write is accepted, appends
+// nothing and returns the zero Version, and that its file holds the bytes it
+// did: no record reaches a segment, no count the stats keep moves, the version
+// counter included, and Since yields no change wherever the empty write falls.
 //
 // decision: the format refuses a zero length only for Deallocate and
-// CloneTarget. This check accepts a zero-length write returning nil, which
-// draws a version, or ErrZeroLength, and holds the journal to appending
-// nothing under either: the refused outcome leaves every stat where it was,
-// the accepted one moves the counter by exactly the versions it drew, and no
-// bytes move under either. Overturned once the written interface names the
-// write's outcome.
+// CloneTarget; a zero-length write is accepted, draws no version and returns
+// the zero Version, so ErrZeroLength is not an outcome of a write.
 func TestEdge_ZeroLengthWrite(t *testing.T) {
 	f := journaltest.New(t)
 
@@ -67,44 +63,23 @@ func TestEdge_ZeroLengthWrite(t *testing.T) {
 
 		before := writeStatsOf(f.J.Stats())
 		writes := segmentWrites(t, f)
-		// The counter's floor before any empty write: an accepted one moves
-		// NextVersion by exactly the versions it drew, so the rise is
-		// measured on the counter half, whose byte-for-byte floor is not a
-		// Version the journal issued.
-		floor := f.J.Stats().NextVersion.Counter
 
-		drawn := 0
 		for _, off := range []int64{0, 2048} {
-			pre := writeStatsOf(f.J.Stats())
 			got, err := h.WriteAt(t.Context(), id, off, nil, 0)
 			stub(t, "WriteAt", err)
 			if err != nil {
-				if !errors.Is(err, journal.ErrZeroLength) {
-					t.Fatalf("share %d: an empty write at %d returned %v, want nil or ErrZeroLength", k, off, err)
-				}
-				if post := writeStatsOf(f.J.Stats()); post != pre {
-					t.Fatalf("share %d: an empty write refused with ErrZeroLength moved the stats from %+v to %+v", k, pre, post)
-				}
-				continue
+				t.Fatalf("share %d: an empty write at %d returned %v, want nil", k, off, err)
 			}
-			drawn++
-			if got.Compare(v) <= 0 {
-				t.Fatalf("share %d: an empty write at %d drew version %v, not above the write before it (%v)", k, off, got, v)
-			}
-			if got.Compare(pre.nextVersion) < 0 {
-				t.Fatalf("share %d: an empty write at %d drew version %v, below the counter's floor before it (%v)", k, off, got, pre.nextVersion)
+			if got != (journal.Version{}) {
+				t.Fatalf("share %d: an empty write at %d returned version %v, want the zero Version", k, off, got)
 			}
 		}
 
 		if after := segmentWrites(t, f); after != writes {
 			t.Fatalf("share %d: %d write calls reached segments over two empty writes, want none", k, after-writes)
 		}
-		got := writeStatsOf(f.J.Stats())
-		if got.extentCount != before.extentCount || got.dirtyBytes != before.dirtyBytes || got.heldBytes != before.heldBytes {
-			t.Fatalf("share %d: two empty writes moved the stats for %d drawn versions from %+v to %+v", k, drawn, before, got)
-		}
-		if rose := got.nextVersion.Counter - floor; rose != uint64(drawn) {
-			t.Fatalf("share %d: two empty writes drew %d versions but moved the counter by %d", k, drawn, rose)
+		if got := writeStatsOf(f.J.Stats()); got != before {
+			t.Fatalf("share %d: two empty writes moved the stats from %+v to %+v", k, before, got)
 		}
 		if cs := since(t, h, id, v); len(cs) != 0 {
 			t.Fatalf("share %d: two empty writes yielded %+v since the write before them", k, cs)

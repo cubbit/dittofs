@@ -215,16 +215,18 @@ func recordAt(b []byte, from int64, kind byte) int64 {
 	return -1
 }
 
-// wantDamagedOnly fails the test unless the journal reports no loss event
-// and marks segment seg, the one whose sync failed, as damaged.
-func wantDamagedOnly(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID) {
+// wantTornNotReported fails the test unless the journal reports no loss event
+// and does not mark segment seg, the one whose sync failed, as damaged: a
+// copy that does not verify and is not proven synced is torn, and a torn
+// copy is not reported.
+func wantTornNotReported(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID) {
 	t.Helper()
 
 	if losses := f.J.Stats().Losses; len(losses) != 0 {
 		t.Fatalf("a loss was recorded while a copy of the record verifies: %+v", losses)
 	}
-	if !ownedSegment(t, f, seg).Damaged {
-		t.Fatalf("the failed segment %d holds a copy that does not verify and is not reported damaged", seg)
+	if ownedSegment(t, f, seg).Damaged {
+		t.Fatalf("the failed segment %d holds a copy that does not verify and is reported damaged, want it torn and not reported", seg)
 	}
 }
 
@@ -292,7 +294,7 @@ func TestRFC28C_BadCopyDoesNotMaskAGoodOne(t *testing.T) {
 	f.Reopen()
 	wantBytes(t, f.Share(0), id, 0, a.p)
 	wantBytes(t, f.Share(0), kept.id, kept.extent.Off, kept.p)
-	wantDamagedOnly(t, f, loc.Segment)
+	wantTornNotReported(t, f, loc.Segment)
 
 	// The forced leg, on a journal of its own.
 	g := journaltest.NewUnwatched(t)
@@ -346,7 +348,7 @@ func TestRFC28C_BadCopyDoesNotMaskAGoodOne(t *testing.T) {
 		t.Fatalf("Since yields no truncate at 4096; the re-appended copy was not held")
 	}
 
-	wantDamagedOnly(t, g, loc.Segment)
+	wantTornNotReported(t, g, loc.Segment)
 }
 
 // writeRec writes one record of size bytes at off of file i through share s
