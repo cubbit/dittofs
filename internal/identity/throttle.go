@@ -73,7 +73,7 @@ type throttlePair struct {
 	pending uint16 // the attempts reserved and not yet settled
 	key     throttleKey
 	addr    *throttleAddr
-	links   [2]pairLink // in the table's byAge, and in addr's under or full
+	links   [3]pairLink // in the table's byAge, in addr's under or full, and in the table's under
 	at      *pairList   // which of addr's under and full holds the pair; nil while pending
 }
 
@@ -89,6 +89,7 @@ type throttleAddr struct {
 const (
 	linkAge = iota
 	linkAddr
+	linkUnder
 )
 
 // pairList is a list of pairs threaded through each pair's links[i], so
@@ -153,6 +154,7 @@ type throttle struct {
 	pairs map[throttleKey]*throttlePair
 	addrs map[netip.Addr]*throttleAddr
 	byAge pairList // every pair, those in flight among them, least recently admitted first
+	under pairList // every settled pair below its limit, least recently settled first
 	bound int      // the most pairs held, throttleBound but in a test
 	share int      // the most pairs one unit holds, a sixty-fourth of bound
 	// evictions counts the pairs dropped to make room.
@@ -191,7 +193,7 @@ func (t *throttle) reserve(user string, client netip.Addr, now time.Time) (settl
 				return nil, false
 			}
 		} else if len(t.pairs) >= t.bound {
-			t.evict(t.byAge.front)
+			t.evictAny()
 		}
 		a := t.addrs[unit] // looked up again: an eviction may have dropped it
 		if a == nil {
@@ -213,8 +215,12 @@ func (t *throttle) reserve(user string, client netip.Addr, now time.Time) (settl
 	return func(failed bool) { t.settle(p, failed, now) }, true
 }
 
-// unlist takes p out of whichever of its address's under and full holds it.
+// unlist takes p out of whichever of its address's under and full holds it,
+// and out of the table's under with the former.
 func (t *throttle) unlist(p *throttlePair) {
+	if p.at == &p.addr.under {
+		t.under.remove(p, linkUnder)
+	}
 	if p.at != nil {
 		p.at.remove(p, linkAddr)
 		p.at = nil
@@ -246,6 +252,7 @@ func (t *throttle) settle(p *throttlePair, failed bool, now time.Time) {
 	default:
 		p.at = &p.addr.under
 		p.at.push(p, linkAddr)
+		t.under.push(p, linkUnder)
 	}
 }
 
@@ -281,21 +288,32 @@ func (t *throttle) evictOwn(a *throttleAddr, now time.Time) bool {
 	return true
 }
 
-// evict drops p, counted. A full table, its new pair's address under its
-// share, evicts the table's least recently admitted pair, whatever its count
-// and whether or not an attempt of it is in flight.
+// evictAny makes room in a full table for a new pair whose address is under
+// its share, counted: it evicts the table's least recently settled pair below
+// its limit, from any address, and only when none is left its least recently
+// admitted pair, whatever its count and whether or not an attempt of it is in
+// flight.
 //
 // decision: a full table always evicts, so no client fills it to refuse
-// everyone else's new pairs. That frees whichever pair it evicts: a throttled
-// one starts counting again, and one in flight forgets its attempts, so its
-// pair may have 10 more in flight. A throttled pair admits nothing, so it
-// grows older until it is the first evicted; but evicting it takes the table
-// filled by 64 other addresses at their share, and each of those is worth 10
-// guesses of that name on its own: 640 guesses spent to win 10 more. An
-// address under its share evicts one pair per new pair it adds, so keeping a
-// pair out takes a new address every 1 024 new pairs. Overturned if the logon
-// stream shows a spray across that many addresses, which needs the table
-// charged to RFC 24's pool instead of a fixed bound.
+// everyone else's new pairs. Pairs below their limit go first, so junk names
+// sent one attempt each evict one another and never a throttled pair. A
+// throttled pair is freed only once every pair in the table is throttled or
+// in flight: 65 536 pairs at 10 counted failures each, 655 360 failures inside
+// one window, spread over at least 64 address units since each holds a
+// sixty-fourth of the table, or as many attempts held in flight at once. One
+// such eviction frees one pair, the oldest, and evicting a pair in flight
+// forgets its attempts, so its pair may have 10 more in flight. Overturned if the logon stream shows a spray across that
+// many addresses, which needs the table charged to RFC 24's pool instead of a
+// fixed bound.
+func (t *throttle) evictAny() {
+	p := t.under.front
+	if p == nil {
+		p = t.byAge.front
+	}
+	t.evict(p)
+}
+
+// evict drops p, counted.
 func (t *throttle) evict(p *throttlePair) {
 	t.remove(p)
 	t.evictions.Inc()
@@ -319,4 +337,5 @@ func (t *throttle) drop() {
 	t.pairs = map[throttleKey]*throttlePair{}
 	t.addrs = map[netip.Addr]*throttleAddr{}
 	t.byAge = pairList{}
+	t.under = pairList{}
 }

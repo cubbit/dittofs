@@ -343,6 +343,28 @@ func TestThrottleKeepsAPairAtItsLimit(t *testing.T) {
 	}
 }
 
+// A full table evicts a pair below its limit before a throttled one: alice,
+// 10 wrong passwords from A, then 64 /64s inside one /56 each send their
+// share of junk names, one attempt per name, filling a table of 128 past its
+// bound. The junk evicts junk, counted, and alice's right password from A
+// stays throttled. Catches a full table that evicts its least recently
+// admitted pair whatever its count.
+func TestThrottleFullTableKeepsAThrottledPair(t *testing.T) {
+	r, _ := evictionServer(t)
+	r.srv.BoundThrottle(128)
+	r.fails(t, 10, wrong(addrA), vfserr.ErrLogonFailure)
+	for i := range 64 {
+		unit := netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, byte(i), 15: 1})
+		for j := range 2 {
+			r.fails(t, 1, junk(fmt.Sprintf("junk%d", j), unit), vfserr.ErrLogonFailure)
+		}
+	}
+	if got := r.total(t, "identity_logon_throttle_evictions_total"); got != 1 {
+		t.Errorf("evictions after 129 pairs = %v, want 1", got)
+	}
+	r.signsIn(t, "alice from A after the table filled with junk", from(ntlmStep(alicePassword, "alice", "", false), addrA), true)
+}
+
 // An address past its share evicts its own oldest pair below its limit:
 // alice, 9 wrong passwords from A, then 4 junk names from A, its share of 256
 // pairs being 4, and her count starts again. Catches an address evicting its
