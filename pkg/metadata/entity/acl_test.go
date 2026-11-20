@@ -46,6 +46,21 @@ func TestACLFromModeMinorRights(t *testing.T) {
 	}
 }
 
+// RFC 19 §4.2: a chmod to the mode an ACL already implies changes what it
+// grants nobody, so ACLFromMode's ACL for every mode keeps its grants across
+// a chmod to that mode, the minor rights included.
+func TestChmodToItsOwnModeKeepsTheGrants(t *testing.T) {
+	const asked = modeRWX | ReadAttributes | ReadACL | Synchronize
+	for mode := uint32(0); mode <= 0o777; mode++ {
+		acl := ACLFromMode(mode)
+		for _, who := range [][]Principal{{Owner, OwnerGroup, Everyone}, {OwnerGroup, Everyone}, {Everyone}} {
+			if got, want := walk(acl.WithMode(mode), who...)&asked, walk(acl, who...)&asked; got != want {
+				t.Errorf("chmod %03o of its own ACL grants %v %#x, want %#x", mode, who, got, want)
+			}
+		}
+	}
+}
+
 // walk is what a's effective entries grant a caller they name through who,
 // each right decided by the first entry naming it.
 func walk(a ACL, who ...Principal) AccessMask {
@@ -116,11 +131,13 @@ func TestChmodMerge(t *testing.T) {
 	if !slices.Contains(got.Entries, deny) || !slices.Equal(got.Audit, a.Audit) {
 		t.Error("deny or audit entries changed")
 	}
-	// A chmod takes no minor right away (RFC 19 §4.3): the group and the
-	// others, left with no bit, keep read the ACL and synchronize.
+	// A chmod adds only what a new bit grants (RFC 19 §4.3): on an ACL that
+	// grants the group and the others nothing, a chmod to 600 leaves them
+	// neither read the ACL nor synchronize.
+	owned := ACL{Entries: []ACE{{Type: ACEAllow, Mask: ReadData, Who: Owner}}}.WithMode(0o600)
 	for name, who := range map[string][]Principal{"a group member": {OwnerGroup, Everyone}, "another user": {Everyone}} {
-		if g := walk(got, who...); g&(ReadACL|Synchronize) != ReadACL|Synchronize {
-			t.Errorf("chmod 600 left %s %#x", name, g)
+		if g := walk(owned, who...); g&(ReadACL|Synchronize) != 0 {
+			t.Errorf("chmod 600 granted %s %#x", name, g)
 		}
 	}
 	// The group bits bound what a named principal keeps.

@@ -152,15 +152,11 @@ func bits(m AccessMask) uint32 {
 // does: an owner in a group granted more than the owner still gets only the
 // owner bits, and a group member whose group has no bit takes nothing from
 // everyone's.
-func ACLFromMode(mode uint32) ACL { return ACL{Entries: modeEntries(mode, alwaysAllowed)} }
-
-// modeEntries is the owner's, the owning group's and everyone's entries for
-// mode, laid out as ACLFromMode has them: each class is granted the rights
-// each of its bits implies, anyBit with any of them, and always whatever
-// they are.
-func modeEntries(mode uint32, always AccessMask) []ACE {
+func ACLFromMode(mode uint32) ACL {
+	// Each class is granted the rights each of its bits implies, anyBit with
+	// any of them, and alwaysAllowed whatever they are.
 	grant := func(bits uint32) AccessMask {
-		m := rights(bits) | always
+		m := rights(bits) | alwaysAllowed
 		if bits&7 != 0 {
 			m |= anyBit
 		}
@@ -181,7 +177,7 @@ func modeEntries(mode uint32, always AccessMask) []ACE {
 			es = append(es, ACE{Type: ACEDeny, Mask: rest, Who: c.who})
 		}
 	}
-	return append(es, ACE{Type: ACEAllow, Mask: grant(mode), Who: Everyone})
+	return ACL{Entries: append(es, ACE{Type: ACEAllow, Mask: grant(mode), Who: Everyone})}
 }
 
 // Mode is the rwx bits this ACL implies, from its effective entries for the
@@ -219,16 +215,25 @@ func (a ACL) Mode() uint32 {
 
 // WithMode is chmod's merge into a stored ACL, as RFC 8881 §6.4.1.1 has it,
 // so that the result's Mode is the new mode:
-//   - the effective entries for the owner, the owning group and everyone are
-//     replaced by ones matching the new mode, appended last, which grant
-//     every class read attributes, read the ACL and synchronize whatever its
-//     bits, as a chmod takes none of them away (RFC 19 §4.3);
+//   - the effective entries for the owner, the owning group and everyone,
+//     allow and deny, are replaced by ACLFromMode's for the new mode,
+//     appended last, so through
+//     them a class the new mode gives no bit holds neither read the ACL nor
+//     synchronize: a chmod adds only what a new bit grants (RFC 19 §4.3);
 //   - every effective allow entry for a named principal is limited to the
 //     rights the new group bits imply, so chmod 600 leaves no named user or
 //     group with access;
 //   - an entry both effective and inheritable is split into an unchanged
 //     inherit-only copy and an effective copy, treated as above;
-//   - inherit-only, deny, audit and alarm entries are left as they are.
+//   - inherit-only, audit and alarm entries, and a named principal's deny
+//     entries, are left as they are.
+//
+// ponytail: the owner's, the group's and everyone's entries are replaced, not
+// limited in place, so a chmod also takes read the ACL and synchronize from a
+// class allow entry that held them when the new mode gives that class no bit,
+// where RFC 19 §4.3's limit keeps the minor rights. Upgrade to limiting those
+// entries in place and appending only what a new bit grants when a class must
+// keep a minor right its stored entry gave it across a chmod.
 func (a ACL) WithMode(mode uint32) ACL {
 	limit := rights(mode >> 3)
 	out := ACL{Flags: a.Flags, Audit: append([]ACE(nil), a.Audit...)}
@@ -251,7 +256,7 @@ func (a ACL) WithMode(mode uint32) ACL {
 		}
 		out.Entries = append(out.Entries, e)
 	}
-	out.Entries = append(out.Entries, modeEntries(mode, alwaysAllowed|anyBit)...)
+	out.Entries = append(out.Entries, ACLFromMode(mode).Entries...)
 	return out
 }
 
