@@ -814,18 +814,25 @@ func (t *Tracker) releaseHold(h endedHold) {
 // is appended, so without the pin a piece in a segment the write's roll sealed
 // reads as nothing held and the segment can be retired under it.
 //
+// Pin reports false when seg has left the set: its retirement already ran, and
+// took the record the caller meant to keep with it, so the caller fails.
+//
 // decision: the pin is what keeps isHeld's rule true for a write publishing
 // into a sealed segment: nothing adds extents to a segment retirement is
-// judging, because the extents it will add are already counted here. A
-// pin is raised before the write's next append, which is what can seal the
-// segment, so the count never trails the seal. Overturned by a publish that
-// names a record the write did not pin.
-func (t *Tracker) Pin(seg core.SegmentID) {
+// judging, because the extents it will add are already counted here. The pin
+// is raised after the append returns, not inside it, so a seal in that gap
+// can leave the count behind the seal for that moment; what closes the gap is
+// the report: a segment already retired answers false, and a segment still in
+// the set is held from the pin on, because a retirement judges Held under its
+// claim. Overturned by a publish that names a record the write did not pin, or
+// by an append that raises the pin inside the stream's lock.
+func (t *Tracker) Pin(seg core.SegmentID) bool {
 	st := t.entryIfLive(seg)
 	if st == nil {
-		return
+		return false
 	}
 	st.pins.Add(1)
+	return true
 }
 
 // Unpin releases the pin of one record: the record is published and the
@@ -851,7 +858,11 @@ func (t *Tracker) Unpin(seg core.SegmentID) {
 // reads and the segment answers not held while it holds something. The rule
 // holds because a segment is a candidacy only once sealed or ended, and no
 // path appends to a sealed or ended segment: its records and extents only
-// leave. Overturned by a path that adds extents to a segment retirement is
+// leave. One path does add extents to a sealed segment: an unreserved
+// write that publishes its pieces after the last append, whose earlier piece
+// sits in a segment its own roll sealed. It stays inside the rule through
+// pins, which count that piece here before anything can judge the segment.
+// Overturned by a path that adds extents to a segment retirement is
 // already judging — a copy landing there, a re-append outside the file
 // append domain — which needs a guarded or versioned read in its place. A
 // consumer of the candidate must also re-check Held under the claim its own

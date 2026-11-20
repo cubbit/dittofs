@@ -1431,6 +1431,9 @@ func TestRFC28C_SparesAreReAdopted(t *testing.T) {
 	f := journaltest.New(t)
 	awaitSettledSpare(t, f, func() { writeSynced(t, f, 0, 2, 0, journaltest.FixtureSegmentCap) })
 	f.Reopen()
+	// The reopened journal's own pool settles before it is read: a spare it
+	// is still making would be counted by the next open and not by this read.
+	f.WaitSpares()
 	before := poolNow(t, f)
 	f.Crash()
 	wantReadopted(t, f, before)

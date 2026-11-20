@@ -178,11 +178,10 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	// profile of writes spanning many segments shows it.
 	var waiting [4]piece
 	placed := waiting[:0]
-	// Every piece pinned and not yet unpinned is released on the way out, a
-	// refused write's included: its records are dead weight its segments may drop.
-	unpinned := 0
+	// Every piece pinned is released on the way out, a refused write's
+	// included: its records are dead weight its segments may drop.
 	defer func() {
-		for _, pc := range placed[unpinned:] {
+		for _, pc := range placed {
 			c.liveness.Unpin(pc.pl.Loc.Segment)
 		}
 	}()
@@ -205,7 +204,7 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			// nothing and returns no version: the pieces it already appended stay on
 			// disk and counted as the share's, unnamed by the index, and the grant's
 			// unused bytes return with it. A reopen's scan names them, as it does a
-			// piece of any torn write, so the running journal and a restarted one
+			// record it verifies, so the running journal and a restarted one
 			// differ on a refused write until its segment retires. A reserved write
 			// publishes each piece as it lands and keeps the ones a refusal leaves
 			// behind, which RFC 1 §6 specifies for it, so its holder reserves again
@@ -234,6 +233,25 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			// this loop append the same rest forever.
 			return core.Version{}, published, fmt.Errorf("datapath: the stream placed no byte of a %d-byte piece of file %v at offset %d", len(rest), id, off+done)
 		}
+		pc := piece{pl: pl, seq: seq, off: off + done}
+		// An unreserved write with more pieces to append holds its pieces
+		// back, and a single piece that covers the write publishes at once,
+		// as a write always did. The held-back piece pins its segment before
+		// anything else runs: the roll of the next piece seals it, and the
+		// index counts nothing of the piece yet.
+		//
+		// decision: a segment that left the set between the append and the
+		// pin fails the write, for its retirement unlinked the record the pin
+		// was to keep. A segment still in the set is held from here on, since
+		// a retirement judges Held under its claim. Overturned by an append
+		// that raises the pin itself, inside the stream's lock.
+		deferPublish := res == nil && (len(placed) > 0 || done+pl.N < int64(len(p)))
+		if deferPublish {
+			if !c.liveness.Pin(pl.Loc.Segment) {
+				return core.Version{}, published, fmt.Errorf("datapath: segment %d left the set before the write's piece of file %v in it was held", pl.Loc.Segment, id)
+			}
+			placed = append(placed, pc)
+		}
 		// The record is in its segment and counted as the share's: its
 		// own record size — the header, body and padding it occupies —
 		// is what the reservation held for it, and this hands it over,
@@ -259,14 +277,8 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		if c.afterAppend != nil {
 			c.afterAppend()
 		}
-		pc := piece{pl: pl, seq: seq, off: off + done}
 		done += pl.N
-		if res == nil {
-			// The piece's segment stays held until the piece is published:
-			// the roll of the next piece seals it, and the index counts
-			// nothing of the piece yet.
-			c.liveness.Pin(pl.Loc.Segment)
-			placed = append(placed, pc)
+		if deferPublish {
 			continue
 		}
 		if err := c.publishPiece(s, id, v, grant, pc); err != nil {
@@ -280,11 +292,8 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 	// in part under a version the caller never receives. A reserved write
 	// publishes each piece as it lands, for a refusal on its roll keeps the
 	// pieces already published and spends its version.
-	for i, pc := range placed {
-		err := c.publishPiece(s, id, v, grant, pc)
-		c.liveness.Unpin(pc.pl.Loc.Segment)
-		unpinned = i + 1
-		if err != nil {
+	for _, pc := range placed {
+		if err := c.publishPiece(s, id, v, grant, pc); err != nil {
 			return core.Version{}, published, err
 		}
 		published += pc.pl.N
