@@ -688,22 +688,6 @@
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
-- test: TestRFC28C_JournalGone
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; an open with no recorded identity over a directory an earlier open ran in answers segments true where the check wants false: the spares the earlier open left behind still count. Refusing a missing, emptied or replaced journal and the identity error (R69) are owed by #4861.'
-  issue: '#4861'
-  message: ', installation 646974746f6673000000000000000000, segments true, want '
-
-- test: TestRFC28C_InterruptedInit
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The check has two legs. Its first leg, an open with no recorded identity over a directory holding only the format file that Init wrote, needs an Init-only fixture: this check opens its journal first, and the open leaves finished spares behind, so the leg sees a directory that has run and answers segments true where false is wanted; that is the failure today. Its second leg, the reopen with the identity recorded once the journal has served, is not reached. The unidentified-directory half (R69) is owed by #4861.'
-  issue: '#4861'
-  message: ', installation 646974746f6673000000000000000000, segments true, want '
-
 - test: TestRFC28C_FormatFile
   status: fail
   fix: planned

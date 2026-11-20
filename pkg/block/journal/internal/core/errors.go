@@ -286,9 +286,10 @@ func (e *OtherShareError) Is(target error) bool {
 // IdentityError is an Open or Restamp refused because the journal in the
 // directory is not the one expected. Found and Installation are the identity
 // and installation ID the directory's format file holds, and Segments says
-// whether the directory holds any segment, so a caller that expected no
-// journal can tell an interrupted Init, which leaves none, from a journal in
-// use.
+// whether the directory holds a segment a stream took, holding a record's
+// header — an untaken spare is a segment file whose header slot is all
+// zero, and is not one — so a caller that expected no journal can tell an
+// interrupted Init, which leaves none, from a journal in use.
 type IdentityError struct {
 	Found        JournalID
 	Installation InstallationID

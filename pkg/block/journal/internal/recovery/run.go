@@ -534,3 +534,37 @@ func agreeingIdentity(ctx context.Context, deps Deps, rd *reader) core.JournalID
 	}
 	return agree
 }
+
+// TakenSegment reports whether at least one segment file in names holds the
+// header a take wrote. A finished spare answers false: it lives as its own
+// <id>.seg file, its name no different from a taken segment's, and its
+// header slot is all zero. Each slot is read through the open's retry
+// bound like every other read, and only the bytes the read returned are
+// judged: a short, empty or unreadable file, like a garbage or zero slot,
+// is nobody's take. The decode is against the zero identity, so any header
+// that verifies counts, whichever journal it names.
+func TakenSegment(ctx context.Context, deps Deps, names []string) bool {
+	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+		if kind, _ := format.ClassifyName(name); kind != format.NameSegment {
+			continue
+		}
+		b := make([]byte, format.SegmentHeaderSize)
+		n, rerr := rd.ReadAt(name, b, 0)
+		if rerr != nil && !errors.Is(rerr, io.EOF) {
+			continue
+		}
+		b = b[:n]
+		if !anyHeaderByte(b) {
+			continue // a spare nobody took: an all-zero, short or empty slot
+		}
+		if _, derr := format.DecodeSegmentHeader(b, core.JournalID{}); derr == nil || errors.Is(derr, format.ErrForeign) {
+			return true
+		}
+		// damaged, or a version this binary does not read: nobody's take
+	}
+	return false
+}
