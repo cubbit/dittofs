@@ -347,8 +347,8 @@ func krbOf(ids entity.ProtocolIDs) (entity.ProtocolID, bool) {
 // started through start, so the write answers 202 naming it and its audit
 // record's outcome is the operation's ID. A link taken from a machine that
 // no longer holds the name, or whose spelling has changed since, and one
-// asked of the directory for a name a machine has taken since, are refused
-// 503, as a directory that could not answer is.
+// asked of the directory for a name a machine has taken since, or for
+// another name, are refused 503, as a directory that could not answer is.
 func withKerberos(tx entity.ControlPlaneTx, start func(apiv1.OpKind, entity.ResourceRef) error, ids entity.ProtocolIDs, name string, link krbLink) (entity.ProtocolIDs, error) {
 	old, held := krbOf(ids)
 	out := make(entity.ProtocolIDs, 0, len(ids)+1)
@@ -368,6 +368,9 @@ func withKerberos(tx entity.ControlPlaneTx, start func(apiv1.OpKind, entity.Reso
 		return append(out, old), nil
 	}
 	stale := &refusal{code: apiv1.CodeUnavailable, detail: "the user's Kerberos name changed while its link was asked; retry"}
+	if link.id.Value != name {
+		return nil, stale // the step took no link for this name
+	}
 	h, ok, err := tx.Holder(entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: name})
 	if err != nil {
 		return nil, err

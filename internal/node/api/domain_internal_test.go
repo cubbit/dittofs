@@ -497,3 +497,20 @@ func TestRefusedWriteClearsItsBody(t *testing.T) {
 		}
 	}
 }
+
+// withKerberos refuses 503, writing no spelling, a link the step took for
+// another name than the one the spec names, such as none at all.
+func TestWithKerberosRefusesALinkForAnotherName(t *testing.T) {
+	cp := ntlmStore(t)
+	for _, link := range []entity.ProtocolID{{}, {Scheme: entity.SchemeKerberos, Value: "bob@AD.EXAMPLE"}} {
+		var ids entity.ProtocolIDs
+		err := cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+			var err error
+			ids, err = withKerberos(tx, nil, nil, "alice@AD.EXAMPLE", krbLink{id: link})
+			return err
+		})
+		if p, _ := problemOf(err); p.Code != apiv1.CodeUnavailable || ids != nil {
+			t.Errorf("a link %+v for alice@AD.EXAMPLE: spellings %v, %v; want 503 unavailable and none", link, ids, err)
+		}
+	}
+}
