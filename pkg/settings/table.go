@@ -59,3 +59,24 @@ func (x index) lookup(key string) (*Section, bool) {
 		k = k[:dot]
 	}
 }
+
+// resolve returns the section key belongs to and the key as that section
+// declares it. For a per-thing section it also returns the thing's ID, and a
+// key not in the per-thing form declares nothing, so it comes back empty.
+func (x index) resolve(key string) (sec *Section, declared, thing string, found bool) {
+	sec, found = x.lookup(key)
+	if !found {
+		return nil, "", "", false
+	}
+
+	if sec.scope.form != formPerThing {
+		return sec, key, "", true
+	}
+
+	thing, declared, split := splitThing(sec.prefix, key)
+	if !split {
+		return sec, "", "", true
+	}
+
+	return sec, declared, thing, true
+}
