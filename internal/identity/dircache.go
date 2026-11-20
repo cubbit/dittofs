@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"bytes"
 	"container/list"
 	"context"
 	"errors"
@@ -375,6 +376,9 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 			fresh++
 			continue
 		}
+		// The cache keeps its own copy of each SID it asks: a query and its
+		// registration outlive a caller that stops waiting.
+		s = bytes.Clone(s)
 		asked = append(asked, s)
 		if f := c.asking[string(s)]; f != nil {
 			from[string(s)] = f

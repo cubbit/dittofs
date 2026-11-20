@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1138,6 +1139,37 @@ func TestDirectoryCacheSIDsAmbiguityStaysWithItsLookup(t *testing.T) {
 		}
 		if got := e.resultsOf(t, "sid")["ambiguous"]; got != 1 {
 			t.Errorf("SID lookups counted ambiguous %v, want 1", got)
+		}
+	})
+}
+
+// The cache owns the SIDs it asks: a caller that leaves while its query is in
+// flight and then reuses its buffer changes neither the query's SIDs nor
+// what the cache holds, and the next lookup of the SID is answered.
+func TestDirectoryCacheSIDsOwnsItsKeys(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e, c, sid := sidEnv(t)
+		e.fail(t, sim.Rule{Op: "search", Key: "(|*", Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+		buf := slices.Clone(sid["alice"])
+		ctx, cancel := context.WithCancel(context.Background())
+		left := make(chan error, 1)
+		go func() {
+			_, err := c.LookupSIDs(ctx, [][]byte{buf}, 15*time.Minute)
+			left <- err
+		}()
+		synctest.Wait()
+		cancel()
+		if err := <-left; !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Fatalf("LookupSIDs(alice) by a caller that left = %v, want ErrUnavailable", err)
+		}
+		clear(buf)
+		e.clock.Advance(time.Second)
+		synctest.Wait()
+		if got := c.Asking(); got != 0 {
+			t.Fatalf("SIDs registered to a query in flight after it landed %d, want 0", got)
+		}
+		if got, err := c.LookupSIDs(context.Background(), [][]byte{sid["alice"]}, 15*time.Minute); err != nil || len(got) != 1 || string(got[0].SID) != string(sid["alice"]) {
+			t.Errorf("LookupSIDs(alice) after the caller reused its buffer = %d answers, %v; want alice", len(got), err)
 		}
 	})
 }
