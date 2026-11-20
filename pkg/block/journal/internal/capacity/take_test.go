@@ -1952,3 +1952,47 @@ func TestTake_SecondTakeAtTheLastVersionIsRefusedAndCounted(t *testing.T) {
 		t.Fatalf("RefusedCount went %d -> %d, want +1", before, got)
 	}
 }
+
+// TestTake_ShareRefusalNamesAStaleFigure tells the two refusals a share's
+// limit gives apart: a share whose figure matches the set's refuses with no
+// stale bytes, and one whose figure stands high from a record counted twice at
+// the seed refuses naming exactly the record's bytes, so an operator reading
+// the error sees room the share has but its figure does not show.
+func TestTake_ShareRefusalNamesAStaleFigure(t *testing.T) {
+	refusal := func(r *rig, limit int64) *core.NoSpaceError {
+		t.Helper()
+		q := req()
+		q.Payload = landedAsk
+		q.ShareLimit = limit
+		g, err := r.c.Take(context.Background(), q)
+		if err == nil {
+			g.Release()
+			t.Fatalf("Take against limit %d was admitted, want the share's refusal", limit)
+		}
+		var ns *core.NoSpaceError
+		if !errors.As(err, &ns) || ns.Limit != core.LimitShare {
+			t.Fatalf("Take against limit %d = %v, want the share's refusal", limit, err)
+		}
+		return ns
+	}
+
+	t.Run("full", func(t *testing.T) {
+		r := newRig(t, std())
+		r.seed(t, landedAsk)
+		r.seedTally(t)
+		if got := refusal(r, 999).Stale; got != 0 {
+			t.Fatalf("a share full by the set's own figure refused with Stale = %d, want 0", got)
+		}
+	})
+	t.Run("stale", func(t *testing.T) {
+		r := newRig(t, std())
+		r.seed(t, landedAsk)
+		r.seal(t)
+		p := r.append(t, segment.Roll{}, tag1, 404)
+		r.seedTally(t) // the seed's figure already holds the record
+		r.c.Landed(tag1, p.Loc.Len)
+		if got, want := refusal(r, 1999+2*p.Loc.Len).Stale, p.Loc.Len; got != want {
+			t.Fatalf("a share standing high by a record counted twice refused with Stale = %d, want %d", got, want)
+		}
+	})
+}

@@ -723,8 +723,12 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	if r.ShareLimit > 0 {
 		if held := c.shareTally[r.Tag] + c.reservedTagged[r.Tag] + bytes; held > r.ShareLimit {
 			missing := held - r.ShareLimit
+			tally, copies := c.shareTally[r.Tag], c.copyHeld[r.Tag]
 			c.mu.Unlock()
-			return nil, c.refuse(ctx, core.NoSpaceError{Limit: core.LimitShare, Missing: missing, Unit: core.UnitBytes})
+			return nil, c.refuse(ctx, core.NoSpaceError{
+				Limit: core.LimitShare, Missing: missing, Unit: core.UnitBytes,
+				Stale: c.staleFigure(r.Tag, tally, copies),
+			})
 		}
 	}
 	// Journal maximum: the whole segments the bytes beyond the room need
@@ -1347,6 +1351,17 @@ func (c *Capacity) RefusedCount() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.refused
+}
+
+// staleFigure returns how far a share's tally, read with its held repack
+// copies under mu, stands above the set's settled bytes for the tag less those
+// copies, or zero when it does not. The set is read here with no lock held, as
+// every ShareFigures read is, so a record landing between the two reads can
+// move the answer by its bytes either way: the figure only tells a refusal
+// for a stale tally from a full share, and a refusal is a rare path.
+func (c *Capacity) staleFigure(tag core.ShareTag, tally, copies int64) int64 {
+	settled, _ := c.cfg.ShareFigures(tag)
+	return max(0, tally-(settled-copies))
 }
 
 // refuse counts one refusal — the reservation_refused counter and one
