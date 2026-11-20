@@ -436,6 +436,11 @@ a channel is how many requests may be in flight on it at once.
   reply cache: the slots it can charge, at least one; where it cannot charge
   one, `CREATE_SESSION` is answered `NFS4ERR_DELAY`
   ([RFC 24 §4.5](rfc-24-resources.md#4.5%20Sessions%20and%20reply%20caches)).
+- `CREATE_SESSION` grants a `ca_maxoperations` of the lesser of what the
+  client asks and §11.5's compound cap, 128 (RFC 8881 §18.36). A `COMPOUND` on
+  the session longer than what it was granted is refused
+  `NFS4ERR_TOO_MANY_OPS` before any of its operations runs, as one past the
+  cap is ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
 - Under memory pressure the server **MAY** ask the client to use fewer slots (by
   lowering `sr_target_highest_slotid` in its replies; RFC 24 §4.5 says when),
   and **MUST** honour a client that then retires slots. It **MUST NOT** shrink the table
@@ -2643,7 +2648,7 @@ row of NFSv4's table naming them in `Ops`; NFSv3, MOUNT and NLM each have a
 table of their own, RFC 20 §4.5), §7.4; `ErrDraining`, and `ErrMoved` for any other
 NFSv4 operation and for NFSv3, MOUNT and NLM, which have no move signal, to no
 reply. The compound cap is 128 operations, and an NFSv4.1 session's
-`ca_maxoperations` reports it (§3.1).
+`ca_maxoperations` is never above it (§3.1).
 
 **A status names its layer.** Each row's status is one `core.Status` whose two
 high bits name its layer: 0 a program's status, inside an accepted reply whose
