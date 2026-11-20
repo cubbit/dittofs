@@ -97,7 +97,6 @@ var testOwner = map[string]string{
 	"TestRFC28C_SparesAreReAdopted":           "#4860",
 	"TestRFC28C_JournalGone":                  "#4861",
 	"TestRFC28C_InterruptedInit":              "#4861",
-	"TestEdge_RecordsWithoutBytesAtMaximum":   "#3395",
 }
 
 // owner returns the open issue that owns e's failure, and whether any table
