@@ -331,8 +331,6 @@ rfc1 / 9.7 / "syncs per write":
   tests: [TestCounted_SyncsPerWrite]
 rfc1 / 9.7 / "mixed durability":
   tests: [TestCounted_MixedDurability, TestCounted_MixedChoreography]
-  owner: '#3639'
-  reason: 'the check cannot tell a small-writer sync that waits on the stream''s backlog from one that parks a second time, because no backlog above one interval exists inside a window; a seam that grows one mid-window is tracked there'
 rfc1 / 9.7 / "index cost":
   owner: epic 4
   reason: 'the index''s comparison counters'

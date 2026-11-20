@@ -282,16 +282,12 @@ var countedFiles = []int64{64 << 20, 256 << 20}
 // bound carries one.
 const segmentHeaderBytes = 48
 
-// mixedFeeds is how many stream intervals the gate hands one of the small
-// writer's syncs that keeps asking: the first is the interval one sync
-// legitimately waits for — an append landing in flight — and the rest starve
-// nothing: each is flushed by the asking sync itself, so each one past the
-// first is waited-for bytes the row's bound has no room for. The cap exists
-// so a design that keeps asking gives up once the stream stalls, and the
-// window ends. It does not by itself name a waiting design wrong — the
-// starving fake passes this suite, because under the gated feeder it never
-// holds more than one fed interval unflushed, which the decision marker at
-// the check states as its ceiling.
+// mixedFeeds is how many stream intervals one window lands at most: the
+// first is the interval the window holds in flight, the one a sync may
+// legitimately wait for, and the rest are fed to a sync that keeps asking, or
+// handed as the stream's backlog to a sync that waits on the stream without
+// asking. Each one past the first is waited-for bytes the row's bound has no
+// room for, so the cap only ends a window whose design is already caught.
 const mixedFeeds = 3
 
 // mixedErrs carries a stream goroutine's first failure out of its rounds, so
@@ -455,6 +451,28 @@ func (e *fixtureMixedEnv) SyncSmall() error {
 	return err
 }
 
+// HoldNextAppend stops the stream's next interval at its first segment
+// write, at the seam, until release: the only writer then is the stream.
+func (e *fixtureMixedEnv) HoldNextAppend() (<-chan struct{}, func()) {
+	h := e.f.Seam.HoldFirst(e.t, kit.OpWrite, "*.seg")
+	return h.Reached(), h.Release
+}
+
+// Queue does nothing: the journal sees an interval only when its write
+// reaches it.
+func (e *fixtureMixedEnv) Queue() {}
+
+// WaitedTotal sums the seam's per-name waited totals over the segment files:
+// the write bytes successful syncs found unsynced as they arrived at the
+// seam, before the gate parked them.
+func (e *fixtureMixedEnv) WaitedTotal() int64 {
+	var total int64
+	for _, name := range segmentNames(e.t, e.f) {
+		total += e.f.Seam.WaitedBytes(name)
+	}
+	return total
+}
+
 // DurableTotal sums the seam's per-name durable totals over the segment
 // files: the write bytes successful syncs made durable, whatever name the
 // file carried when they landed.
@@ -520,16 +538,16 @@ const catalogEntriesMost = 25 + 6
 // and the padding costs the same split either way: 96 + 8 = 104.
 const splitRecordBytes = int64(104)
 
-// WindowBound is what one measured window may make durable: the checked
-// sync's own record, one fed stream interval — both as record bytes,
-// headers and padding included — the header of a segment a roll just took,
-// which the first sync after the roll flushes beside the records after it,
-// and the seal-time footprint of the segment the roll sealed: its seal
-// marker, its footer entry per record, and its trailer, which the seal's
-// own sync makes durable inside the window. Removing either writer's record
-// from the bound would fail a correct journal: a sync of the stream's active
-// segment that the gate parked and the stream fed — one fed append exactly —
-// is durably flushing that appended record too.
+// WindowBound is what one measured window's syncs may wait for: the checked
+// sync's own record, one stream interval — both as record bytes, headers and
+// padding included — the header of a segment a roll just took, which the
+// first sync after the roll flushes beside the records after it, and the
+// seal-time footprint of the segment the roll sealed: its seal marker, its
+// footer entry per record, and its trailer, which the seal's own sync makes
+// durable inside the window. Removing either writer's record from the bound
+// would fail a correct journal: a sync that waits for the stream's interval
+// in flight to land before it arrives — one append exactly — waits for that
+// record too.
 //
 // The fed interval is counted whole here, plus the extra record the cap
 // costs it when the roll split it: RFC 28 §2.2 splits a write that does not
@@ -578,8 +596,8 @@ func (e *fixtureMixedEnv) DurableFloor() int64 {
 }
 
 // TestCounted_MixedDurability checks that a small writer's Sync, measuring
-// beside a streaming writer, makes at most one sync interval of the stream's
-// appends durable beyond its own record, whatever the streamed file's size:
+// beside a streaming writer, waits for at most one sync interval of the
+// stream's appends beyond its own record, whatever the streamed file's size:
 // the row's bound of RFC 1 §9.7, never growing with the file size, the cost
 // §5.2's ponytail names.
 //
@@ -588,39 +606,23 @@ func (e *fixtureMixedEnv) DurableFloor() int64 {
 // the segment, so the opening interval is durable and nothing of the
 // stream's is left pending — and only then writes the small writer's own
 // record, which stays pending into the measured window: the measured Sync
-// that follows has a record of its own to answer for. With the gate armed
-// around it, the fsyncs it issues on a segment park and are handed fed
-// stream intervals, one per release, before they are freed, so the measure
-// — the difference of the seam's per-name durable totals across the window
-// — reads the bytes the sync chose to flush: its own record, at most one
-// fed interval, and a roll's segment header, seal marker, footer and
-// trailer. A sync that rides exactly one fed interval and stops passes;
-// a sync that parks again is fed a second interval and breaches the bound,
-// so the check catches it on its own. What the check cannot tell apart is
-// narrower: a design that waits on the stream's backlog without ever
-// parking a second time — the starving shape, below the gate's feeder — as
-// the decision marker states.
-//
-// decision: the check cannot tell a small-writer sync that waits on the
-// stream's growing backlog from one that does not, because the gate feeds
-// the stream one interval at a time and only once the asking sync covered
-// the previous one, so no backlog above one interval ever exists inside a
-// measured window for any design, whatever its file size. Letting the
-// stream run ungated instead fails correct journals: a flush waits for every
-// dirty byte of the segment, so a correct sync covers whatever landed during
-// its own wait, and a window in which two intervals landed measures two for
-// a design that did nothing wrong. The deterministic counting this suite is
-// built on and a backlog that grows mid-window are mutually exclusive on
-// this seam. Accepted: the check still proves each measured sync covered
-// no more than its own record, one fed interval and a roll's footprint —
-// the new segment's header and the sealed segment's seal marker, footer
-// and trailer, the terms WindowBound carries — and the choreography test —
-// the same runMixedRounds against fakes of the correct and starving
-// designs — fails each of those when the model drifts.
-// Overturned by a seam that can let the stream append during a small sync
-// while keeping the bytes the sync waited for separately observable, so a
-// window can hold a grown backlog without crediting it to a sync that
-// merely rode along.
+// that follows has a record of its own to answer for. The window opens with
+// one more interval of the stream held in flight at its first segment
+// write, so the measured Sync starts while the stream is appending. With
+// the gate armed around it, the fsyncs it issues on a segment park, and the
+// first is answered by letting the held interval land, each later one by a
+// fed interval, before they are freed. The measure is the difference of the
+// seam's per-name waited totals across the window: the write bytes each
+// sync found unsynced as it arrived at the seam, each byte counted once, so
+// what landed while a sync was parked rides along uncounted. A sync that
+// arrives at once waits for its own record alone; one that parks again
+// waits for the interval it was fed and breaches the bound. A sync that
+// arrives at no fsync while the interval is in flight is waiting on the
+// stream: the protocol then hands it the stream's backlog, one interval per
+// bounded wait, and a design that waits for the whole backlog before it asks
+// arrives with all of it pending, which the bound fails. The choreography
+// test runs the same runMixedRounds against fakes of these designs, the
+// starving one among them.
 //
 // decision: the window skips the bound when the segment name set changed
 // while it was open. What the seam can see is the set of names, not the

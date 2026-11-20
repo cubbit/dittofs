@@ -406,6 +406,13 @@ func (sf *seamFile) Truncate(size int64) error {
 
 func (sf *seamFile) Sync() error {
 	defer sf.seam.call()()
+
+	// What the sync waits for is what is unsynced as it arrives, before a
+	// hold or a fault can stop it, and no sync in flight already waits for.
+	sf.seam.mu.Lock()
+	arrived := sf.node.claimUnsynced()
+	sf.seam.mu.Unlock()
+
 	a, err := sf.enter(OpSync)
 	if err != nil {
 		return err
@@ -416,7 +423,32 @@ func (sf *seamFile) Sync() error {
 		return nil
 	}
 
-	return sf.sync()
+	if err := sf.sync(); err != nil {
+		return err
+	}
+	sf.node.waited += arrived
+	return nil
+}
+
+// claimUnsynced returns the write bytes the node holds that no Sync has
+// covered, a later one still may, and no Sync that arrived before already
+// waits for, and marks them waited for: each byte is waited for once, by the
+// first sync that arrived while it was pending, however many syncs are in
+// flight. The caller holds the seam's mu.
+//
+// ponytail: a sync the fault loses or fails keeps its claim, so a later
+// sync of the same pending bytes does not count them. Release the claim of a
+// sync that made nothing durable if a check ever measures waits across one.
+func (n *node) claimUnsynced() int64 {
+	var total int64
+	for i := range n.undo {
+		c := &n.undo[i]
+		if c.kind == changeWrite && !c.lost && !c.waited {
+			total += int64(len(c.data))
+			c.waited = true
+		}
+	}
+	return total
 }
 
 func (sf *seamFile) Size() (int64, error) {

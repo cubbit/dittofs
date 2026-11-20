@@ -132,6 +132,13 @@ type node struct {
 	// the caller's own — another writer's appends landing in the segment
 	// while the call was in flight — are counted as the caller's wait.
 	madeDurable int64
+
+	// waited is the running total of write bytes its successful Syncs found
+	// unsynced when each call arrived at the seam, before any hold or fault
+	// stopped it, each byte counted by the first sync that arrived for it:
+	// what the syncs waited for, without the bytes that landed while one was
+	// in flight and rode along. WaitedBytes reads it.
+	waited int64
 }
 
 type changeKind int
@@ -153,6 +160,7 @@ type change struct {
 	lost    bool   // a failed Sync covered it, or it was dropped: no Sync ever makes it durable
 	dropped bool   // write: it never reached the device, so no crash keeps it either
 	reorder bool   // write: MarkReorder marked it for Reordered's draw
+	waited  bool   // write: a Sync arrived while it was pending and counts it as waited for
 }
 
 type dirOpKind int
@@ -883,6 +891,27 @@ func (s *Seam) DurableBytes(name string) int64 {
 		return 0
 	}
 	return n.madeDurable
+}
+
+// WaitedBytes returns the running total of write bytes the file's successful
+// Syncs waited for, and 0 for a name the seam does not hold: each sync adds
+// the write bytes that were unsynced, and not lost, when the call arrived at
+// the seam, before a hold or a fault could stop it, and that no sync already
+// in flight had arrived for. A write that lands while the sync is held or
+// parked is made durable by it, and counted by DurableBytes, but not here:
+// the sync did not wait for it. Two syncs in flight together count a byte
+// once, for the first to arrive. Like
+// DurableBytes, the total runs over the syncs, and a caller measures one
+// stretch by the difference across it.
+func (s *Seam) WaitedBytes(name string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n, ok := s.names[name]
+	if !ok {
+		return 0
+	}
+	return n.waited
 }
 
 // Durable returns the bytes a crash now would leave in the file name, and an
