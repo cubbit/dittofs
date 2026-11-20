@@ -160,6 +160,12 @@ func TestRFC8A_RecoveryReappliesInVersionOrder(t *testing.T) {
 	}
 
 	write(t, f, id, 8192, p)
+
+	// Synced, so the crash keeps all three records for the replay.
+	if _, err := f.Handle().Sync(t.Context(), journal.NewFileID(id)); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
 	f.Crash()
 
 	got := f.Committed(h)
@@ -298,6 +304,12 @@ func TestRFC8A_RecoveryUsage(t *testing.T) {
 	}
 
 	write(t, f, id, 0, bytes.Repeat([]byte("a"), 8192))
+
+	// Synced, so the crash keeps the write for the replay to re-apply.
+	if _, err := f.Handle().Sync(t.Context(), journal.NewFileID(id)); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
 	f.Crash()
 
 	got, err := f.FS.Store.Capacity().Usage(t.Context(), f.Share.ID)
@@ -372,6 +384,9 @@ func TestRFC8A_RemovalCrashedBetweenBatchesResumes(t *testing.T) {
 		}
 	}
 
+	// The deallocations are pruned first, so the truncate is the only
+	// removal the restarts find.
+	eventually(t, "the deallocations pruned", func() bool { return len(unfinishedOf(t, f)) == 0 })
 	f.HoldBatches()
 
 	if _, err := f.Handle().Truncate(t.Context(), journal.NewFileID(id), 2048); err != nil {

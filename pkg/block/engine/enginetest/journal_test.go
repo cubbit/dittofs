@@ -3,6 +3,7 @@ package enginetest
 import (
 	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
@@ -12,7 +13,7 @@ import (
 
 // A refused Share hands nothing to opened and answers a nil handle.
 func TestARefusedShareHandsNothingOn(t *testing.T) {
-	h, err := wrapJournal(engine.JournalOf(&journal.Journal{}), func(journal.ShareTag, engine.Handle) {
+	h, err := wrapJournal(engine.JournalOf(&journal.Journal{}), new(atomic.Bool), func(journal.ShareTag, engine.Handle) {
 		t.Error("opened called for a refused Share, want it not called")
 	}).Share(1, 0, journal.Version{})
 	if !errors.Is(err, journal.ErrNotImplemented) || h != nil {
@@ -39,7 +40,7 @@ func TestShareAgreesWithTheJournal(t *testing.T) {
 			return j
 		}},
 		{"journal", func(t *testing.T) engine.Journal {
-			return wrapJournal(engine.JournalOf(journaltest.New(t).J), func(journal.ShareTag, engine.Handle) {})
+			return wrapJournal(engine.JournalOf(journaltest.New(t).J), new(atomic.Bool), func(journal.ShareTag, engine.Handle) {})
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) { shareTwice(t, c.open(t)) })
@@ -149,7 +150,7 @@ func TestSinceYieldsOverAsTheJournalDoes(t *testing.T) {
 			return h
 		}},
 		{"journal", func(t *testing.T) engine.Handle {
-			h, err := wrapJournal(engine.JournalOf(journaltest.New(t).J), func(journal.ShareTag, engine.Handle) {}).
+			h, err := wrapJournal(engine.JournalOf(journaltest.New(t).J), new(atomic.Bool), func(journal.ShareTag, engine.Handle) {}).
 				Share(1, 0, journal.Version{})
 			if err != nil {
 				t.Fatal(err)

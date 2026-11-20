@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -306,8 +305,8 @@ func (f *Fixture) ReleaseBatches() {
 	}
 }
 
-// WaitBatches returns once n removal batch spans have ended since the last
-// call.
+// WaitBatches returns once n removal batch spans of the running process have
+// ended since the last call or the process's start.
 func (f *Fixture) WaitBatches(n int) {
 	f.t.Helper()
 
@@ -747,12 +746,21 @@ func (f *Fixture) Reinit() journal.JournalID {
 	f.t.Helper()
 	f.journalOnly("Reinit")
 
-	if err := os.RemoveAll(f.Dir); err != nil {
-		f.t.Fatalf("fixture: remove the journal: %v", err)
+	// Removed through the seam, which would otherwise still serve the files
+	// it tracks under their old names.
+	names, err := f.Seam.List()
+	if err != nil {
+		f.t.Fatalf("fixture: list the journal: %v", err)
 	}
 
-	if err := os.Mkdir(f.Dir, 0o700); err != nil {
-		f.t.Fatalf("fixture: make the journal directory: %v", err)
+	for _, name := range names {
+		if err := f.Seam.Remove(name); err != nil {
+			f.t.Fatalf("fixture: remove the journal: %v", err)
+		}
+	}
+
+	if err := f.Seam.SyncDir(); err != nil {
+		f.t.Fatalf("fixture: remove the journal: %v", err)
 	}
 
 	id, err := journal.Init(f.t.Context(), f.Dir, fixtureInstall, f.journalOptions()...)
@@ -855,6 +863,12 @@ func (f *Fixture) start() {
 	t.Helper()
 	ctx := t.Context()
 
+	// WaitBatches counts this process's spans: the stopped one's, a held batch
+	// its stop cancelled among them, are dropped.
+	for len(f.ended) > 0 {
+		<-f.ended
+	}
+
 	f.crashed = new(atomic.Bool)
 	opens, d, err := enginewire.Compose(enginewire.Params{
 		Node:    f.Node,
@@ -870,6 +884,7 @@ func (f *Fixture) start() {
 	f.Opens = opens
 	d.VersionBlock = f.block
 	open := d.Open
+	crashed := f.crashed
 	// decision: the refuse and fake-journal branches answer without the
 	// composed opener, as fault injection: rows that run them test the fake,
 	// not the shipped opener. Every other open goes through it.
@@ -892,7 +907,7 @@ func (f *Fixture) start() {
 			_ = j.Close()
 			return nil, err
 		}
-		return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
+		return wrapJournal(j, crashed, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
 	}
 	d.Existence = fencedExistence{Existence: d.Existence, crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate, commitGate: &f.commitGate}
 	d.Content = fencedContent{Content: d.Content, crashed: f.crashed}
