@@ -30,6 +30,8 @@ const (
 	outcomeUnavailable   outcome = "unavailable"
 	outcomeUnknownDomain outcome = "unknown_domain"
 	outcomeThrottled     outcome = "throttled"
+	outcomeReplay        outcome = "replay"
+	outcomeNoPAC         outcome = "no_pac"
 )
 
 // signInsSpec counts sign-in attempts (RFC 18 §9.2).
@@ -47,10 +49,13 @@ var signInSecondsSpec = metrics.Spec{
 	Buckets: metrics.Request,
 }
 
-// SignIn verifies one handshake round under one State: a local user's
-// NTLMv2 response (RFC 18 §3.5), refused before its credential is read once
-// its name and client address are past the logon throttle's limit (§3.1). It
-// reads the store and the secret provider only, and writes nothing.
+// SignIn verifies one handshake round under one State: a Kerberos AP-REQ
+// (RFC 18 §3.3) or a local user's NTLMv2 response (§3.5). Once a name and
+// client address are past the logon throttle's limit (§3.1), an NTLM response
+// is refused before it is checked, and a ticket once it decrypts, since its
+// client name is read from it. It reads the store, the directory and the secret
+// provider, and writes only the directory principal a Kerberos name's first
+// sign-in mints (§4.2's step 3).
 func (s *Server) SignIn(ctx context.Context, step identity.SignInStep) (identity.SignInResult, error) {
 	res, _, err := s.signIn(ctx, step)
 	return res, err
@@ -124,13 +129,14 @@ func (s *Server) signIn(ctx context.Context, step identity.SignInStep) (identity
 			panic(p)
 		}
 	}()
-	res, oc, err = s.signInAttempt(ctx, step)
+	res, oc, err = s.signInAttempt(ctx, step, &ev)
 	return res, oc, err
 }
 
 // signInAttempt is one classified attempt: a Kerberos step's verification, or an
-// NTLM step's throttle and check.
-func (s *Server) signInAttempt(ctx context.Context, step identity.SignInStep) (identity.SignInResult, outcome, error) {
+// NTLM step's throttle and check. A Kerberos step names its client in ev
+// once its ticket decrypts.
+func (s *Server) signInAttempt(ctx context.Context, step identity.SignInStep, ev *LogonEvent) (identity.SignInResult, outcome, error) {
 	// decision: with no logon sink every attempt is refused ErrUnavailable,
 	// before the throttle and the credential, so no sign-in goes unrecorded;
 	// New accepts a Deps without one, so a server built for another call
@@ -141,7 +147,7 @@ func (s *Server) signInAttempt(ctx context.Context, step identity.SignInStep) (i
 	}
 	a := step.NTLM
 	if a == nil {
-		return s.signInKerberos(ctx, step)
+		return s.signInKerberos(ctx, step, ev)
 	}
 	// decision: the throttle is asked before every refusal of the message,
 	// NTLM off, NTLMv1 or LM and a malformed response, and every

@@ -43,6 +43,7 @@ type dirPrincipals struct {
 	fault *switched
 	clock *sim.TestClock
 	reg   *metrics.Registry
+	logon *logonRecorder
 }
 
 // dirStore is a memory KV store initialised with a fresh installation ID.
@@ -114,13 +115,13 @@ func sealBindPassword(t *testing.T, st *kvstore.Store, p *secrets.Provider, n by
 func newDirPrincipals(t *testing.T, st *kvstore.Store, inst uuid.UUID, schema string) *dirPrincipals {
 	t.Helper()
 	e := &dirPrincipals{st: st, inst: inst, d: identitytest.NewDirectory("DC=corp,DC=example"), fault: &switched{},
-		clock: sim.NewTestClock(time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)), reg: metrics.New("test", "test")}
+		clock: sim.NewTestClock(time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)), reg: metrics.New("test", "test"), logon: &logonRecorder{}}
 	e.f = identitytest.NewFaultyDirectory(e.d.Dial, e.fault)
 	name, pw := e.d.Account()
 	p := protocolSecrets(t, st)
 	ref := sealBindPassword(t, st, p, 1, pw)
 	var err error
-	if e.s, err = identity.New(identity.Deps{Store: st, Clock: e.clock, Metrics: e.reg, Secrets: p, Directory: e.f.Dial}); err != nil {
+	if e.s, err = identity.New(identity.Deps{Store: st, Clock: e.clock, Metrics: e.reg, Secrets: p, Directory: e.f.Dial, Logons: e.logon}); err != nil {
 		t.Fatal(err)
 	}
 	rec := directory.Record{Schema: schema, Address: "ldaps://dc.corp.example", Base: "DC=corp,DC=example", BindName: name,

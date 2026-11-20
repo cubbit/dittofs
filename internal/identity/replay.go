@@ -104,6 +104,13 @@ func (c *replayCache) insert(t *ticket, now time.Time) error {
 	return nil
 }
 
+// drop forgets every entry.
+func (c *replayCache) drop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries, c.byExpiry, c.perClient = map[replayKey]struct{}{}, nil, map[string]int{}
+}
+
 // expiryHeap orders entries by expiry, the soonest first.
 type expiryHeap []replayEntry
 

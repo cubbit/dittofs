@@ -1,17 +1,24 @@
 package identity
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 
+	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/iana/addrtype"
+	"github.com/jcmturner/gokrb5/v8/iana/adtype"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/types"
 
 	"github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -139,6 +146,11 @@ func verifyAPReq(st *State, b []byte, svc identity.Service, tr identity.Transpor
 	if types.IsFlagSet(&enc.Flags, flags.Invalid) {
 		return ticket{}, logonFailure("ticket marked invalid")
 	}
+	// RFC 4120 §2.7: a cross-realm ticket whose transited realms the KDC did
+	// not check is refused, since nothing here checks them either.
+	if !types.IsFlagSet(&enc.Flags, flags.TransitedPolicyChecked) && len(enc.Transited.Contents) > 0 {
+		return ticket{}, logonFailure("transited realms not checked")
+	}
 	start := enc.StartTime
 	if start.IsZero() {
 		start = enc.AuthTime
@@ -197,4 +209,178 @@ func addressAllowed(client netip.Addr, caddr types.HostAddresses) bool {
 		}
 	}
 	return !restricted
+}
+
+// signInKerberos verifies step's AP-REQ, throttles the ticket's client name
+// from step.Client, records the authenticator in the replay cache, and binds
+// the name to a principal by RFC 18 §4.2.
+//
+// decision: a ticket refused before its client name is read, one that does
+// not decrypt, and one refused by verifyAPReq's later checks, its times, its
+// addresses or its authenticator, is refused before the throttle and not
+// counted: the throttle keys on a name, and verifyAPReq checks what the KDC
+// issued, never a credential of the user's, which the KDC already checked.
+// A replay is counted, since it reaches the throttle. Overturned if a client
+// is seen sending tickets that fail those checks to probe names.
+func (s *Server) signInKerberos(ctx context.Context, step identity.SignInStep, ev *LogonEvent) (identity.SignInResult, outcome, error) {
+	st := s.state.Load()
+	if st == nil {
+		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: no State applied", vfserr.ErrUnavailable)
+	}
+	if !st.holdsKeys() {
+		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: kerberos: no service key", vfserr.ErrUnavailable)
+	}
+	now := s.deps.Clock.Now()
+	t, err := verifyAPReq(st, step.Kerberos, step.Service, step.Transport, step.Client, now)
+	switch {
+	case errors.Is(err, vfserr.ErrInvalid):
+		return identity.SignInResult{}, outcomeInvalid, err
+	case err != nil:
+		return identity.SignInResult{}, outcomeLogonFailure, err
+	}
+	enc := &t.req.Ticket.DecryptedEncPart
+	ev.Name = enc.CName.PrincipalNameString() + "@" + enc.CRealm
+	// decision: the attempt is throttled under the ticket's client name, read
+	// once the ticket decrypts under the service key, and before its
+	// authenticator enters the replay cache, so a pair past its limit takes
+	// no entry. A ticket that does not decrypt names no one and is refused
+	// above, uncounted. Overturned if the throttle must run before any
+	// decryption, which would leave it no name to key on.
+	settle, ok := s.throttle.reserve(ev.Name, step.Client, now)
+	if !ok {
+		return identity.SignInResult{}, outcomeThrottled, vfserr.ErrLogonFailure
+	}
+	failed := false
+	defer func() { settle(failed) }() // on every return and a panic, so no slot stays reserved
+	res, oc, err := s.bindTicket(ctx, st, step, &t, ev.Name, now)
+	failed = errors.Is(err, vfserr.ErrLogonFailure)
+	return res, oc, err
+}
+
+// bindTicket records t's authenticator and binds its client to the
+// principal RFC 18 §4.2 maps it to, refusing a disabled one.
+func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignInStep, t *ticket, name string, now time.Time) (identity.SignInResult, outcome, error) {
+	switch err := s.replay.insert(t, now); {
+	case errors.Is(err, errReplay):
+		return identity.SignInResult{}, outcomeReplay, err
+	case err != nil:
+		return identity.SignInResult{}, outcomeUnavailable, err
+	}
+	enc := &t.req.Ticket.DecryptedEncPart
+	_, ok, err := pacOf(enc.AuthorizationData)
+	switch {
+	case err != nil:
+		return identity.SignInResult{}, outcomeLogonFailure, logonFailure("authorization data: %v", err)
+	case ok:
+		// decision: a ticket carrying a PAC is refused ErrUnavailable, not
+		// ErrLogonFailure, while no PAC is verified: a domain controller puts
+		// a PAC in every ticket, so counting the refusal on the throttle would
+		// lock a domain user out of NTLM too after ten ordinary attempts.
+		// Overturned once the PAC is verified, which refuses only a PAC that
+		// fails verification.
+		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: kerberos: a ticket carrying a PAC, which is not verified yet", vfserr.ErrUnavailable)
+	case st.Directory != nil && strings.EqualFold(enc.CRealm, st.Directory.Realm):
+		// RFC 18 §3.4: in the directory's realm, its name in any case, a
+		// ticket without a PAC is refused before any mapping, so a domain
+		// account cannot reach a principal by its name alone.
+		return identity.SignInResult{}, outcomeNoPAC, logonFailure("a ticket without a PAC in the directory's realm")
+	}
+	p, err := s.kerberosPrincipal(ctx, st, name, enc.CName, enc.CRealm)
+	switch {
+	case errors.Is(err, vfserr.ErrUnknownPrincipal):
+		// decision: an unknown user principal is refused, not made anonymous.
+		// A Kerberos user the installation has no record of is either a
+		// directory misconfiguration or someone outside the organisation the
+		// KDC trusts; acting as anonymous would hide the first and admit the
+		// second to every share with an everyone grant. Revisit if a
+		// deployment is shown to need cross-realm users with no directory,
+		// and then as a share-scoped option.
+		return identity.SignInResult{}, outcomeLogonFailure, logonFailure("no principal for the ticket's client")
+	case err != nil:
+		return identity.SignInResult{}, outcomeUnavailable, err
+	}
+	switch _, err := s.Account(ctx, p); {
+	case errors.Is(err, errDisabled):
+		return identity.SignInResult{}, outcomeDisabled, err
+	case errors.Is(err, vfserr.ErrLogonFailure):
+		return identity.SignInResult{}, outcomeLogonFailure, err
+	case err != nil:
+		return identity.SignInResult{}, outcomeUnavailable, err
+	}
+	return identity.SignInResult{
+		Identity: identity.Identity{
+			Proof:      identity.ProofTicket,
+			Protection: identity.ProtectionNone,
+			Evidence:   identity.Evidence{Name: name, Principal: p, Expires: enc.EndTime},
+			Client:     step.Client,
+		},
+		Keys: t.keys,
+	}, outcomeOK, nil
+}
+
+// kerberosPrincipal maps a ticket's client name, cname in realm and name as
+// user@realm, by RFC 18 §4.2, stopping at the first step that answers: (1)
+// the krb row for name; (2) in a keytab realm other than the directory's,
+// the local user named by the name, compared as user names are, unless it
+// is a directory principal or has no uid; (3) the directory's entry under
+// the name, minted on first sign-in; (4) ErrUnknownPrincipal. A name with a
+// service part matches neither step 2 nor 3, and every realm is compared
+// case and all. A store or directory fault is ErrUnavailable.
+//
+// decision: the directory's realm always skips step 2, as RFC 18 §4.2 has it
+// where a PAC is required, the default: a PAC-less ticket there is how a
+// domain account named like a local user would reach it (§3.4). The
+// directory record carries no require_pac yet, so no deployment can turn the
+// requirement off. Overturned when require_pac is read, which then runs step
+// 2 there while it is false.
+func (s *Server) kerberosPrincipal(ctx context.Context, st *State, name string, cname types.PrincipalName, realm string) (entity.Principal, error) {
+	user := cname.PrincipalNameString()
+	pr := s.deps.Store.Principals()
+	p, err := pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: name})
+	switch {
+	case err == nil:
+		return p, nil
+	case !merrs.IsNotFoundError(err):
+		return entity.Principal{}, fmt.Errorf("%w: krb row: %w", vfserr.ErrUnavailable, err)
+	case strings.Contains(user, "/"):
+		return entity.Principal{}, vfserr.ErrUnknownPrincipal
+	}
+	if st.keytabRealm(realm) && (st.Directory == nil || realm != st.Directory.Realm) {
+		p, err := pr.ByName(ctx, entity.PrincipalUser, user)
+		if err == nil {
+			var u entity.User
+			if u, err = pr.User(ctx, p); err == nil && has(u.IDs, entity.SchemeUID) && !has(u.IDs, entity.SchemeDir) {
+				return p, nil
+			}
+		}
+		if err != nil && !merrs.IsNotFoundError(err) {
+			return entity.Principal{}, fmt.Errorf("%w: local user: %w", vfserr.ErrUnavailable, err)
+		}
+	}
+	p, err = s.byKerberosName(ctx, st, user, realm, true)
+	if err != nil && !errors.Is(err, vfserr.ErrUnknownPrincipal) && !errors.Is(err, vfserr.ErrUnavailable) {
+		err = fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
+	}
+	return p, err
+}
+
+// pacOf is the raw bytes of the PAC a ticket's authorization data carries in
+// an AD-IF-RELEVANT element (MS-PAC 3.1.5), and whether it carries one. An
+// AD-IF-RELEVANT element that does not decode is an error.
+func pacOf(ad types.AuthorizationData) ([]byte, bool, error) {
+	for _, e := range ad {
+		if e.ADType != adtype.ADIfRelevant {
+			continue
+		}
+		var inner types.AuthorizationData
+		if _, err := asn1.Unmarshal(e.ADData, &inner); err != nil {
+			return nil, false, err
+		}
+		for _, in := range inner {
+			if in.ADType == adtype.ADWin2KPAC {
+				return in.ADData, true, nil
+			}
+		}
+	}
+	return nil, false, nil
 }

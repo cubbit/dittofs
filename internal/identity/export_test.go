@@ -166,7 +166,7 @@ func (s *Server) DirectoryWaiting() int { return s.state.Load().dir.Waiting() }
 // ByKerberosName maps user@realm through the directory, as a Kerberos
 // sign-in's third step does, minting with mint.
 func (s *Server) ByKerberosName(ctx context.Context, user, realm string, mint bool) (entity.Principal, error) {
-	return s.byKerberosName(ctx, user, realm, mint)
+	return s.byKerberosName(ctx, s.state.Load(), user, realm, mint)
 }
 
 // OnNTHash has every NTLM sign-in deliver f the NT hash it computed its
@@ -216,3 +216,10 @@ func (s *Server) ThrottleFootprint() int {
 // BoundThrottle gives s an empty logon throttle holding at most bound pairs,
 // its evictions counted where they were.
 func (s *Server) BoundThrottle(bound int) { s.throttle = newThrottle(bound, s.throttle.evictions) }
+
+// BoundReplay gives s an empty replay cache of bound entries, share of them
+// per ticket client.
+func (s *Server) BoundReplay(bound, share int) { s.replay = newReplayCache(bound, share) }
+
+// ReplayLen is the number of entries s's replay cache holds.
+func (s *Server) ReplayLen() int { return s.replay.Len() }
