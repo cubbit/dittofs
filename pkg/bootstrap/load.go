@@ -35,13 +35,13 @@ type Bootstrap struct {
 	// identity only when every journal directory's node-id copy is lost.
 	Node struct {
 		ID    entity.NodeID `mapstructure:"id"    yaml:"id"`
-		Roles []string      `mapstructure:"roles" yaml:"roles"`
+		Roles []string      `mapstructure:"roles" yaml:"roles" jsonschema:"enum=protocol,enum=storage"` //nolint:lll // a struct tag is one line
 	} `mapstructure:"node" yaml:"node"`
 
 	// Metadata is where the metadata store is and how to reach it. The
 	// store's credential is files, so only their paths are held here.
 	Metadata struct {
-		Backend string `mapstructure:"backend" yaml:"backend"`
+		Backend string `mapstructure:"backend" yaml:"backend" jsonschema:"enum=badger,enum=foundationdb"` //nolint:lll // a struct tag is one line
 		Badger  struct {
 			Path string `mapstructure:"path" yaml:"path"`
 		} `mapstructure:"badger" yaml:"badger"`
@@ -56,7 +56,7 @@ type Bootstrap struct {
 	} `mapstructure:"metadata" yaml:"metadata"`
 
 	// Journals are the node's journal devices, one directory each.
-	Journals []Journal `mapstructure:"journals" yaml:"journals"`
+	Journals []Journal `mapstructure:"journals" yaml:"journals" jsonschema:"required"`
 
 	// Adapters holds the addresses the protocol adapters bind; each
 	// adapter's port is its own setting.
@@ -82,9 +82,9 @@ type Bootstrap struct {
 
 	// Keys names each role's wrapping key for Secret records.
 	Keys struct {
-		Protocol WrappingKey `mapstructure:"protocol" yaml:"protocol"`
-		Storage  WrappingKey `mapstructure:"storage"  yaml:"storage"`
-	} `mapstructure:"keys" yaml:"keys"`
+		Protocol WrappingKey `mapstructure:"protocol" yaml:"protocol" jsonschema:"required"`
+		Storage  WrappingKey `mapstructure:"storage"  yaml:"storage"  jsonschema:"required"`
+	} `mapstructure:"keys" yaml:"keys" jsonschema:"required"`
 
 	// where is the file this bootstrap was read from, empty when no file
 	// was read: the <where> refusals of an unset key name when they come
@@ -96,10 +96,10 @@ type Bootstrap struct {
 // LoggingConfig controls logging behavior.
 type LoggingConfig struct {
 	// Level is the minimum log level: debug, info, warn or error.
-	Level string `mapstructure:"level" yaml:"level"`
+	Level string `mapstructure:"level" yaml:"level" jsonschema:"enum=debug,enum=info,enum=warn,enum=error"` //nolint:lll // a struct tag is one line
 
 	// Format is the log format: text or json.
-	Format string `mapstructure:"format" yaml:"format"`
+	Format string `mapstructure:"format" yaml:"format" jsonschema:"enum=text,enum=json"`
 
 	// Output is where logs go: stdout, stderr, or an absolute file path.
 	Output string `mapstructure:"output" yaml:"output"`
@@ -137,11 +137,25 @@ const (
 )
 
 // Loaded is a loaded bootstrap with the source of each of its keys, by the
-// key's dotted name.
+// key's dotted name, and the file and the two directories it was read with.
 type Loaded struct {
 	Bootstrap
 
 	Source map[string]Source
+
+	// File is the file the bootstrap was read from, empty when no file was
+	// read.
+	File string
+
+	// StateDir and RuntimeDir are the directories the environment named, and
+	// StateVar and RuntimeVar the variables that chose each. A runtime
+	// directory that falls back under the state one names the state
+	// directory's variable; the temp directory no variable named is
+	// "default".
+	StateDir   string
+	StateVar   string
+	RuntimeDir string
+	RuntimeVar string
 }
 
 // whereEnvironment is the <where> of a refusal of a variable.
@@ -179,14 +193,7 @@ func LoadWithSources(configPath string, environ []string) (*Loaded, error) {
 
 	var rep report
 
-	path, named := configPath, configPath != ""
-	if !named {
-		if v := env["DITTOFS_CONFIG"]; v != "" {
-			path, named = v, true
-		} else {
-			path = defaultConfigPath(env)
-		}
-	}
+	path, named := configFile(configPath, env)
 
 	var leaves map[string]*yaml.Node
 
@@ -219,9 +226,47 @@ func LoadWithSources(configPath string, environ []string) (*Loaded, error) {
 
 	if leaves != nil {
 		loaded.where = path
+		loaded.File = path
+	}
+
+	loaded.StateDir, loaded.StateVar = dirs.state, dirs.stateVar
+	loaded.RuntimeDir, loaded.RuntimeVar = dirs.runtime, dirs.runtimeVar
+
+	// The temp directory is the fallback when no variable and no home name
+	// a state directory: the variable the lookup records there named
+	// nothing, so the directory, and a runtime one under it, is the
+	// default's.
+	if dirs.stateTemp {
+		if loaded.RuntimeVar == loaded.StateVar {
+			loaded.RuntimeVar = string(sourceDefault)
+		}
+
+		loaded.StateVar = string(sourceDefault)
 	}
 
 	return loaded, nil
+}
+
+// ConfigPath is the host's file a command reads: flag, else DITTOFS_CONFIG's
+// value in environ, else the default path, "" when no variable names one.
+func ConfigPath(flag string, environ []string) string {
+	path, _ := configFile(flag, environMap(environ))
+
+	return path
+}
+
+// configFile is the host's file and whether a flag or DITTOFS_CONFIG named
+// it: a named file that is missing refuses, a default one loads the defaults.
+func configFile(flag string, env map[string]string) (string, bool) {
+	if flag != "" {
+		return flag, true
+	}
+
+	if v := env["DITTOFS_CONFIG"]; v != "" {
+		return v, true
+	}
+
+	return defaultConfigPath(env), false
 }
 
 // GetDefaultConfigPath returns the default configuration file path, from the

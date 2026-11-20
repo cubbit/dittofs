@@ -8,14 +8,14 @@ import (
 
 // Journal is one journal device: the directory its journal lives in.
 type Journal struct {
-	Path string `mapstructure:"path" yaml:"path"`
+	Path string `mapstructure:"path" yaml:"path" jsonschema:"required"`
 }
 
 // WrappingKey is one role's wrapping key, under the keys RFC 13 Appendix C
 // gives it, nested by provider. It is not keyprovider.Config, whose flat JSON
 // shape is the stored per-remote encryption policy's.
 type WrappingKey struct {
-	Kind  keyprovider.Kind `mapstructure:"kind"  yaml:"kind"`
+	Kind  keyprovider.Kind `mapstructure:"kind"  yaml:"kind"  jsonschema:"required,enum=local,enum=kmip"` //nolint:lll // a struct tag is one line
 	Local struct {
 		File         string   `mapstructure:"file"          yaml:"file"`
 		RetiredFiles []string `mapstructure:"retired_files" yaml:"retired_files"`
