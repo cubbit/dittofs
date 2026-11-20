@@ -1279,7 +1279,7 @@ func TestEdge_FilesystemENOSPCIsNotErrNoSpace(t *testing.T) {
 	// Overturned once a seam point names the refill's failure.
 	var err error
 	for range 2 * journaltest.FixtureMaxBytes / chunk {
-		_, err = tryWrite(t, h, id, at, pattern("over", chunk))
+		_, err = h.WriteAt(t.Context(), id, at, pattern("over", chunk), 0)
 		var ns *journal.NoSpaceError
 		if errors.As(err, &ns) && ns.Limit == journal.LimitSpare {
 			f.Advance(journal.SyncBound)

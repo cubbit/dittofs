@@ -591,9 +591,6 @@ func (h *Hold) Take() (core.SegmentID, error) {
 		// lock before.
 		return h.p.Take(Content)
 	}
-	if err := h.p.fullDeviceAnswer(); err != nil {
-		return 0, err
-	}
 	return 0, &core.NoSpaceError{Limit: core.LimitSpare, Missing: 1, Unit: core.UnitSegments}
 }
 
@@ -784,6 +781,12 @@ func (p *Pool) HeadroomShort() int {
 // for core.ErrNoSpace, or nil when the device has room or a full-size retired
 // segment is to hand, whose recycle is the spare. It takes p.mu and the
 // retirer's lock, so the caller holds neither.
+//
+// decision: the flag stays set after space is freed outside the journal, until
+// a kicked make succeeds, and Hold kicks the refill only in its defer after
+// answering, so the first write after the space returns may get ENOSPC where
+// one retry-later would have served it. Overturned by ENOSPC answers observed
+// while the device has free space.
 func (p *Pool) fullDeviceAnswer() error {
 	if p.DeviceFull() && !p.retiredToHand() {
 		return fmt.Errorf("%w: making one failed for lack of device space: %w", ErrNoSegmentForTheRoll, syscall.ENOSPC)
