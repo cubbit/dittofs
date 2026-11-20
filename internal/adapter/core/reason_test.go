@@ -22,6 +22,7 @@ func TestEveryCoreCloseSentinelMapsPastViolation(t *testing.T) {
 		fmt.Errorf("%w: %w", errAtRead, os.ErrDeadlineExceeded),
 		errHandshake,
 		errIdle,
+		errStatusWait,
 		errReplyWait,
 		errDrain,
 		errRemoved,

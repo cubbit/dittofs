@@ -3,7 +3,9 @@ package core_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"math"
 	"net/netip"
 	"runtime"
@@ -1542,6 +1544,64 @@ func TestAParkOnAClosedConnectionIsDropped(t *testing.T) {
 			t.Errorf("the park on a closed connection made its file (%v) or was answered", s.exists("f"))
 		}
 	})
+}
+
+// A handler that returns ErrParked without calling Park is a bug, an error
+// no row maps: counted and logged at error as one on an open connection,
+// where it is answered the fault status, and on a closed one, where nothing
+// is sent. Only a Park its closed connection dropped makes its handler's
+// ErrParked the close's own end (§4.5, §4.7, §10.1). The Park's first read
+// fails ErrParked, so its handler returns that error before it parks; its
+// chain is held in the wrap of the PutFH's reply until the close, where
+// there is one, has returned.
+func TestErrParkedWithoutParkIsAnErrorNoRowMaps(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		t.Run("closed="+strconv.FormatBool(closed), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				logged := &syncLog{}
+				m := metrics.New("v", "c")
+				w := &heldWrap{open: make(chan struct{})}
+				open := sync.OnceFunc(func() { close(w.open) })
+				defer open()
+				s := newHeld(t, 3*smallCharge, adapter.Deps{Metrics: m, Logger: slog.New(slog.NewJSONHandler(logged, nil))}, newManualClock(), func(st *core.Stages) {
+					w.Security = st.Security
+					st.Security = w
+				})
+				s.faults.Fail(vfs.OpGetAttr, core.ErrParked)
+				w.armed.Store(true)
+				s.serve(s.parkChain(1, "f")...)
+				synctest.Wait() // the chain waits in the PutFH's wrap
+				if closed {
+					s.p.Close()
+				}
+				open()
+				if closed {
+					if !s.sentNothing() {
+						t.Error("the Park on a closed connection was answered")
+					}
+				} else {
+					s.recvOne() // the PutFH's reply, alone
+					if r := s.recvOne(); r.ID != 2 || r.Status != testproto.StatusFault {
+						t.Errorf("the Park is answered %+v, want the fault status", r)
+					}
+				}
+				got, _ := scrape(t, m)
+				if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 1 {
+					t.Errorf("%s = %v, want 1", k, got[k])
+				}
+				var lines []string
+				for _, line := range logged.lines() {
+					var l struct{ Level, Msg, Op, Error string }
+					if json.Unmarshal([]byte(line), &l) == nil && l.Msg == "an error no row maps" {
+						lines = append(lines, l.Level+" "+l.Op+" "+l.Error)
+					}
+				}
+				if want := "ERROR Park " + core.ErrParked.Error(); !slices.Equal(lines, []string{want}) {
+					t.Errorf("the handler's ErrParked logged %q, want one line %q", lines, want)
+				}
+			})
+		})
+	}
 }
 
 // Core calls a park's cancel once, whichever comes first: a client's cancel

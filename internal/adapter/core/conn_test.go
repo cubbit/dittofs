@@ -2156,6 +2156,49 @@ func TestAStatusWithoutAReplyBufferCountsUnderReplyWait(t *testing.T) {
 	})
 }
 
+// A status still waiting for the connection's one status wait at 30 s, by
+// the server's clock, closes its connection under status_wait, and the
+// close's line, a warning, names that reason (§6.4, §10.1, §10.3). The test
+// holds the status wait; the connection is established, so its handshake
+// deadline, also 30 s, is not what closes it. A close that falls through to
+// violation fails here, on the counter and on the line.
+func TestAStatusWithoutTheStatusWaitCountsUnderStatusWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		logged := &syncLog{}
+		m := metrics.New("v", "c")
+		b := budgets()
+		b.Reply = resources.NewWaitBudget("reply", 0)
+		adaptertest.CheckLeaks(t, b)
+		srv, l := testServer(t, adapter.Deps{Metrics: m, Budgets: b, Logger: slog.New(slog.NewJSONHandler(logged, nil))}, settings.DefaultNFS())
+		clk := newManualClock()
+		core.SetServerClock(srv, clk)
+		conn, peer := servedConn(t, srv, &l)
+		conn.Established()
+		defer core.ConnPipeline(conn).HoldStatusWait()()
+		rec := testproto.Append(nil, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		// A refusal under the header it returned, as above.
+		binary.BigEndian.PutUint32(rec[4:], 1<<30)
+		if _, err := peer.Write(rec); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait() // the refusal waits for the status wait, its deadline armed
+		clk.Advance(30 * time.Second)
+		synctest.Wait() // the close, and its teardown
+		waitClosed(t, conn)
+		counted(t, m, "status_wait")
+		var closes []string
+		for _, line := range logged.lines() {
+			var got struct{ Level, Msg, Reason string }
+			if json.Unmarshal([]byte(line), &got) == nil && got.Msg == "a connection closed" {
+				closes = append(closes, got.Level+" "+got.Reason)
+			}
+		}
+		if !slices.Equal(closes, []string{"WARN status_wait"}) {
+			t.Errorf("the close logged %q, want one warning under status_wait", closes)
+		}
+	})
+}
+
 // A socket the connection-state budget refuses is closed at accept and counts
 // under pool, the listener's own label: the gauge never rose for it. Two
 // closes within a minute log one line, warning, and a third after the clock
