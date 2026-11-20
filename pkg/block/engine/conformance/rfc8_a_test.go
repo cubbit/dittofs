@@ -180,7 +180,9 @@ func TestRFC8A_StableWriteLazyExistence(t *testing.T) {
 	}
 
 	// The crash drops every unsynced record: what survives was synced before
-	// Commit answered.
+	// Commit answered. The hour before it makes the replay's own time differ
+	// from the write's, so recovery must keep the mtime the record carries.
+	f.Clock.Advance(time.Hour)
 	f.Crash()
 	if c := f.Committed(h); c.Size != int64(len(p)) || !c.Modify.Equal(at) {
 		t.Errorf("after the crash: committed size %d, mtime %v; want size %d, mtime %v", c.Size, c.Modify, len(p), at)
