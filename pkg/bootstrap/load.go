@@ -190,6 +190,7 @@ func LoadWithSources(configPath string, environ []string) (*Loaded, error) {
 	}
 
 	values := chooseValues(path, leaves, env, &rep)
+	scanEnv(env, &rep)
 	relate(values, &rep)
 
 	if len(rep) > 0 {
