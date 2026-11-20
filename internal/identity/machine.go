@@ -37,7 +37,9 @@ func machineName(user string) bool {
 // checked, but before the sign-in is accepted, so a sign-in can still be
 // refused after minting: the minted record read back failing, gone or
 // disabled, and, when another sign-in's mint took the row first, the PAC's
-// user SID not the one that mint linked. Each leaves a record a ticket for
+// user SID not the one that mint linked, or, when that mint linked none, the
+// link of this PAC's SID failing ErrUnavailable: no control plane to write
+// it, or the write's store fault. Each leaves a record a ticket for
 // the name would have minted anyway, linked only for a SID a verified PAC
 // carried. Overturned if a refusal that a later sign-in of the same machine
 // would not also meet can follow the mint.

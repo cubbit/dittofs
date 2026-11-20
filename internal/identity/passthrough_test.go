@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -382,6 +383,12 @@ func TestPassThroughDisabledAndDeleted(t *testing.T) {
 	}
 	res, oc, err = fx.signIn(ntlmStep(string(alicePW), "alice", "CORP", true))
 	refused(t, "alice marked deleted", res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
+	// The mark check refuses before any mint, so the lookup answers no
+	// principal; a sign-in that reached the mint is refused later, with the
+	// same class and outcome but not this text.
+	if want := "no principal for the reply's user SID"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("alice marked deleted: error %v, want the lookup's refusal %q", err, want)
+	}
 	if got, err := fx.s.Find(ctx, pid.Spelling{Scheme: pid.SchemeSID, SID: fx.alice}, pid.FindOpts{}); !errors.Is(err, vfserr.ErrUnknownPrincipal) {
 		t.Errorf("Find of alice's SID after her refused sign-in: %v, %v; want ErrUnknownPrincipal, nothing minted", got, err)
 	}
