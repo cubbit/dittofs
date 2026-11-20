@@ -200,6 +200,10 @@ func LoadWithSources(configPath string, environ []string) (*Loaded, error) {
 		rep.add(whereEnvironment, dirs.stateVar, "must be an absolute path")
 	}
 
+	if dirs.runtimeRefused {
+		rep.add(whereEnvironment, dirs.runtimeVar, "must be an absolute path")
+	}
+
 	values := chooseValues(path, leaves, env, dirs, &rep)
 	scanEnv(env, &rep)
 	relate(values, &rep)

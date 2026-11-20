@@ -270,7 +270,8 @@ func loadRule(err error) string {
 // validateDirs refuses the two directories when another user could replace
 // what sits in them: the state directory a symlink, owned by neither the
 // node's user nor root, or writable by others; the runtime directory a
-// symlink. A directory that is missing passes, nothing is created here.
+// symlink, and either one a path that is not absolute. A directory that is
+// missing passes, nothing is created here.
 //
 // decision: the runtime directory's owner and writers are not read here. The
 // service manager hands over a directory it made, and who may write it is
@@ -297,6 +298,12 @@ func (b *Bootstrap) validateDirs(d resolvedDirs, node uint32, rep *report) {
 	// A state directory the host cannot read has no runtime directory
 	// under it to read either.
 	if state.readErr != nil {
+		return
+	}
+
+	if d.runtimeRefused {
+		rep.add(whereEnvironment, d.runtimeVar, "must be an absolute path")
+
 		return
 	}
 

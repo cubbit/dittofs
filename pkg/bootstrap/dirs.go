@@ -2,7 +2,6 @@ package bootstrap
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -27,6 +26,11 @@ type resolvedDirs struct {
 	// gave a path that is not absolute. The runtime directory stays empty,
 	// since it hangs under the state one.
 	stateRefused bool
+
+	// runtimeRefused is set when the variable that chose the runtime
+	// directory gave a path that is not absolute: a relative path depends on
+	// the directory the process was started from.
+	runtimeRefused bool
 
 	// stateTemp is set when no variable named the state directory and the
 	// process home is not available either, so the state directory is the
@@ -119,6 +123,8 @@ func lookupDirs(environ []string) resolvedDirs {
 		d.runtime, d.runtimeVar = filepath.Join(d.state, "run"), d.stateVar
 	}
 
+	d.runtimeRefused = !filepath.IsAbs(d.runtime)
+
 	return d
 }
 
@@ -136,7 +142,9 @@ func firstEntry(v string) string {
 // $XDG_RUNTIME_DIR/dittofs and, with neither variable set, the run/
 // directory under the state directory are made at 0700 when they are
 // missing. A symlink on the path refuses: another user could replace the
-// directory the management socket binds in.
+// directory the management socket binds in. So does a relative path, which
+// depends on the directory the process started from. Every refusal is a line
+// of the load's report, <where>: <key>: <rule>, naming the variable.
 //
 // It is the start that calls this, the one place that may create the
 // runtime directory; Validate refuses the directories it finds and creates
@@ -145,40 +153,64 @@ func MakeRuntimeDir(environ []string) (string, error) {
 	d := lookupDirs(environ)
 
 	if d.stateRefused {
-		return "", fmt.Errorf("environment: %s: must be an absolute path", d.stateVar)
+		return "", refuseOne(d.stateVar, "must be an absolute path")
+	}
+
+	if d.runtimeRefused {
+		return "", refuseOne(d.runtimeVar, "must be an absolute path")
 	}
 
 	if d.runtimeManaged {
 		return d.runtime, nil
 	}
 
-	if err := makeDir(d.runtime); err != nil {
+	if err := makeDir(d.runtime, d.runtimeVar); err != nil {
 		return "", err
 	}
 
 	return d.runtime, nil
 }
 
+// refuseOne is one refusal of the environment as an error, in the load's
+// format, <where>: <key>: <rule>.
+func refuseOne(key, rule string) error {
+	var rep report
+
+	rep.add(whereEnvironment, key, rule)
+
+	return rep.err()
+}
+
 // makeDir makes dir at 0700 when it is missing, the missing parents at the
 // same mode, the state directory included when the fallback hangs under a
 // state directory no start made yet. A symlink already on the path refuses
-// rather than being followed.
-func makeDir(dir string) error {
+// rather than being followed. A refusal names variable, the one that chose
+// dir, and never the path: the host's own error text holds it.
+func makeDir(dir, variable string) error {
 	fi, err := os.Lstat(dir)
 	switch {
 	case err == nil:
 		if fi.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("runtime directory %s is a symlink", oneLine(dir))
+			return refuseOne(variable, "is a symlink")
 		}
 
 		return nil
 	case !errors.Is(err, fs.ErrNotExist):
-		return err
+		return refuseOne(variable, readRule(err))
 	}
 
 	if err := os.MkdirAll(dir, 0o0700); err != nil {
-		return fmt.Errorf("make runtime directory %s: %w", oneLine(dir), err)
+		return refuseOne(variable, makeRule(err))
 	}
 
 	return nil
+}
+
+// makeRule names why a directory could not be made with a fixed phrase.
+func makeRule(err error) string {
+	if errors.Is(err, fs.ErrPermission) {
+		return "is not writable"
+	}
+
+	return "cannot be made"
 }

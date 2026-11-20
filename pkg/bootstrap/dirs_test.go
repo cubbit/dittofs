@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,6 +184,143 @@ func TestLoadRefusesRelativeDirectory(t *testing.T) {
 	})
 }
 
+// A variable that names a relative runtime directory refuses, naming the one
+// that chose it, in Load, in Validate and in MakeRuntimeDir, and an absolute
+// one is accepted. A variable a unit sets as a list is read for its first
+// entry, so a relative first entry refuses and a relative later one does not.
+// XDG_RUNTIME_DIR is one path: a colon is part of it.
+func TestRefusesRelativeRuntimeDirectory(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, variable, value string
+		refused               bool
+	}{
+		{"the runtime variable, absolute", "RUNTIME_DIRECTORY", "", false},
+		{"the runtime variable, relative", "RUNTIME_DIRECTORY", "rel", true},
+		{"the runtime variable, relative first entry", "RUNTIME_DIRECTORY", "rel:/r", true},
+		{"the runtime variable, relative second entry", "RUNTIME_DIRECTORY", "/r:rel", false},
+		{"the runtime home, absolute", "XDG_RUNTIME_DIR", "", false},
+		{"the runtime home, relative", "XDG_RUNTIME_DIR", "rel", true},
+		{"the runtime home, relative with a colon", "XDG_RUNTIME_DIR", "rel:/x", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A row with no value takes a directory of its own, so no row
+			// creates anything outside the test's temp directory.
+			value, wantDir := tc.value, tc.value
+			if value == "" {
+				value = t.TempDir()
+				wantDir = value
+			}
+
+			if tc.variable == "XDG_RUNTIME_DIR" {
+				wantDir = filepath.Join(value, "dittofs")
+			}
+
+			if tc.variable == "RUNTIME_DIRECTORY" {
+				wantDir = firstEntry(value)
+			}
+
+			state := t.TempDir()
+			environ := []string{"STATE_DIRECTORY=" + state, tc.variable + "=" + value}
+			want := "environment: " + tc.variable + ": must be an absolute path"
+
+			d := lookupDirs(environ)
+
+			if d.runtimeRefused != tc.refused || d.stateRefused {
+				t.Errorf("lookupDirs with %s=%s: runtime refused %t, want %t",
+					tc.variable, value, d.runtimeRefused, tc.refused)
+			}
+
+			_, loadErr := Load("", environ)
+			dir, makeErr := MakeRuntimeDir(environ)
+			valErr := handBuilt().validate(
+				context.Background(),
+				environ,
+				distinctKeys(),
+				processUser(),
+			)
+
+			if !tc.refused {
+				if loadErr != nil {
+					t.Errorf("Load with %s=%s: %v", tc.variable, value, loadErr)
+				}
+
+				if makeErr != nil || dir != wantDir {
+					t.Errorf("MakeRuntimeDir with %s=%s: got %s and %v, want %s and no error",
+						tc.variable, value, dir, makeErr, wantDir)
+				}
+
+				if valErr != nil && valErr.Error() == want {
+					t.Errorf("Validate with %s=%s: refused: %v", tc.variable, value, valErr)
+				}
+
+				return
+			}
+
+			for _, c := range []struct {
+				name string
+				err  error
+			}{
+				{"Load", loadErr},
+				{"MakeRuntimeDir", makeErr},
+				{"Validate", valErr},
+			} {
+				if c.err == nil || c.err.Error() != want {
+					t.Errorf(
+						"%s with %s=%s: got %v, want %q",
+						c.name,
+						tc.variable,
+						value,
+						c.err,
+						want,
+					)
+				}
+			}
+		})
+	}
+}
+
+// Validate reads nothing at a relative runtime path: one that exists from
+// where the process started, as a symlink, still gives the one refusal of
+// its not being absolute, and no line about what sits at it. It runs in a
+// temp directory it changes into, so it is not parallel.
+func TestValidateReadsNothingAtRelativeRuntimeDir(t *testing.T) {
+	for _, tc := range []struct {
+		name, variable, value, link string
+	}{
+		{"the runtime variable", "RUNTIME_DIRECTORY", "rel", "rel"},
+		{"the runtime home", "XDG_RUNTIME_DIR", "rel", "rel/dittofs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+
+			if err := os.MkdirAll(filepath.Dir(tc.link), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := os.Symlink(t.TempDir(), tc.link); err != nil {
+				t.Fatal(err)
+			}
+
+			environ := []string{"STATE_DIRECTORY=" + t.TempDir(), tc.variable + "=" + tc.value}
+			err := handBuilt().validate(
+				context.Background(),
+				environ,
+				distinctKeys(),
+				processUser(),
+			)
+
+			want := "environment: " + tc.variable + ": must be an absolute path"
+			if err == nil || err.Error() != want {
+				t.Errorf("Validate with %s=%s: got %v, want %q", tc.variable, tc.value, err, want)
+			}
+		})
+	}
+}
+
 // MakeRuntimeDir makes the fallback and the runtime home's dittofs at 0700,
 // returns the service manager's directory untouched, and refuses a symlink
 // on the path and a state directory it cannot resolve.
@@ -258,8 +396,52 @@ func TestMakeRuntimeDir(t *testing.T) {
 	}
 
 	_, err = MakeRuntimeDir([]string{"STATE_DIRECTORY=" + other})
-	if err == nil || !strings.Contains(err.Error(), "is a symlink") {
-		t.Errorf("a symlink on the fallback's path: got %v, want a refusal naming the symlink", err)
+	if err == nil || err.Error() != "environment: STATE_DIRECTORY: is a symlink" {
+		t.Errorf(
+			"a symlink on the fallback's path: got %v, want a refusal naming the variable",
+			err,
+		)
+	}
+
+	home := t.TempDir()
+
+	if err := os.Symlink(home, filepath.Join(home, "dittofs")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = MakeRuntimeDir([]string{"XDG_RUNTIME_DIR=" + home})
+	if err == nil || err.Error() != "environment: XDG_RUNTIME_DIR: is a symlink" {
+		t.Errorf(
+			"a symlink on the runtime home's path: got %v, want a refusal naming the variable",
+			err,
+		)
+	}
+
+	file := filepath.Join(t.TempDir(), "file")
+
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = MakeRuntimeDir([]string{"XDG_RUNTIME_DIR=" + file})
+	if err == nil || err.Error() != "environment: XDG_RUNTIME_DIR: cannot be read" {
+		t.Errorf("a runtime home under a file: got %v, want a refusal naming the variable", err)
+	}
+
+	if os.Geteuid() != 0 {
+		locked := t.TempDir()
+
+		if err := os.Chmod(locked, 0o500); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = MakeRuntimeDir([]string{"XDG_RUNTIME_DIR=" + locked})
+		if err == nil || err.Error() != "environment: XDG_RUNTIME_DIR: is not writable" {
+			t.Errorf(
+				"a runtime home in a locked directory: got %v, want a refusal naming the variable",
+				err,
+			)
+		}
 	}
 
 	_, err = MakeRuntimeDir([]string{"STATE_DIRECTORY=rel"})
