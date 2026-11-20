@@ -212,7 +212,7 @@ can cite them. Sources are RFC 18 unless named.
 | R24 | A derived key follows its password's version: applied with it, kept after it stops being current for 10 hours plus the clock skew, a restart included, then removed; only the version just below the current one is kept so, and an older one is removed at once, so a ticket under it is refused inside its 10 hours and a run of rotations never keeps an older password usable past one retention | MUST | §3.3; §2.6's table | T7.9, T7.10 (the fallback's end) |
 | R25 | A version marked `HandedOver` derives no key, on any node and after any restart | MUST NOT | §3.3; §2.6's table; RFC 16 §2.3 | T7.9 |
 | R26 | A ticket for one of these names whose key version number no held key carries is tried against each held derived key of its encryption type, the current one first | MUST | §3.3 | T7.9 |
-| R27 | An imported key for a name the computer account holds is refused, so no name has two keys | MUST NOT | §3.3; §10 "derived keytab" | T7.9 for the ring; the import's refusal at the secret route is RFC 23's plan's epic 4's T4.11 (#4408) |
+| R27 | An imported key for a name the computer account holds is refused, so no name has two keys | MUST NOT | §3.3; §10 "derived keytab" | T7.9 for the ring; the import's refusal at the secret route is RFC 23's plan's epic 4's T4.11 (#4408), met there through `pkg/identity.KeytabNames` and `Installation.Join.Names` (E5's D3) |
 | R28 | `State`'s `Machine` holds the machine password's versions in force, opened, current first, each with its `KeyVersion` and `HandedOver`; a new version's keys are added at `Apply`, with no restart; no key is derived and no channel set up while the installation is not joined | invariant | §2.6; §3.3 | T7.9, T7.10 |
 
 **The join**
@@ -623,12 +623,14 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 
 **Subtask T7.5 estimate: 0.75 man-days.**
 
-- **Track:** A. **Depends on:** none. E6's T6.5 and T6.9; the kinds' parameter types (§9).
+- **Track:** A. **Depends on:** none. E6's T6.5 and T6.9; the kinds' parameter types (§9), from
+  RFC 23's plan's epic 4's T4.11 (#5091).
 - **Covers:** R58.
 - **Deliverables:** `ResolvePrincipalStep` and `ResolvePrincipalProgress`, `TestDirectoryStep` and
   `TestDirectoryProgress`, D4's shape, each `Progress` returning the zero `apiv1.Progress`, each step
   done in one turn:
-  the first decodes the name or SID from `op.Params`, calls `Find` with `FindOpts.Mint` and answers
+  the first decodes `op.Params` as T4.11's `apiv1.ResolvePrincipalParams`, its `Name` or its
+  `SID`, the name in its qualified `DOMAIN\name` form, and calls `Find` with `FindOpts.Mint` and answers
   the principal's ID as `result`, `ErrUnknownPrincipal` as a `*apiv1.Problem` naming the spelling
   and `ErrUnavailable` retried; the second runs E6's test call and answers this node's result, with
   D9's `ponytail:`. Consumed by E8's T8.6 and RFC 23's plan's epic 4's T4.11.
@@ -977,7 +979,8 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 
 **Subtask T7.14 estimate: 3.5 man-days.**
 
-- **Track:** A. **Depends on:** T7.1, T7.4, T7.12. E6's T6.3; the kinds' parameter types (§9);
+- **Track:** A. **Depends on:** T7.1, T7.4, T7.12. E6's T6.3; the kinds' parameter types (§9),
+  from RFC 23's plan's epic 4's T4.11 (#5091);
   RFC 23's plan's epic 2's T2.4 (`SetMachineJoin`); #4552's `SetMachinePassword`; RFC 23's plan's
   epic 2's D4 (`tx.PutSecret`); its T2.7's tracked `ControlPlaneTx.RunningOperation` (R63, §9).
 - **Covers:** R23, R29, R30, R31, R32, R33, R34, R35, R36, R38, R39, R45, R46, R59, R62, R63.
@@ -1125,7 +1128,7 @@ flowchart TD
   X11(["#4552 SetMachinePassword; RFC 23 plan epic 2 D4: tx PutSecret, PruneSecret"]):::sync --> T7_12 & T7_14
   T7_12 --> T7_13["T7.13 Schedule"]
   T7_1 & T7_4 & T7_12 --> T7_14["T7.14 Online join"]
-  X6(["E6 T6.3; kinds' parameter types"]):::sync --> T7_14
+  X6(["E6 T6.3; kinds' parameter types, RFC 23 epic 4 T4.11 (#5091)"]):::sync --> T7_14
   T7_14 --> T7_15["T7.15 Offline join"]
   T7_7 & T7_11 & T7_15 --> T7_16["T7.16 Against Samba"]
   X7(["E5 T5.11"]):::sync --> T7_16
@@ -1256,9 +1259,10 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
 - RFC 18 §3.5 and RFC 23 §4.6 do not say that a rotation and a join exclude each other; RFC 23
   refuses only a second request of one kind, and the offline join's secret write while either runs.
   R63 refuses each at the other's first turn; RFC 18 §3.5 should state it.
-- RFC 18 §3.3 refuses an imported key for a name the account holds; RFC 23's secret route can check
-  it only once the names are stored (D6), and until then R27's import half is unmet: T7.9's ring
-  skips the key (D8).
+- RFC 18 §3.3 refuses an imported key for a name the account holds; RFC 23's secret route checks
+  it against the names D6 stores, reading the import's names through `pkg/identity.KeytabNames`
+  (E5's D3, settled as (a)), so R27's import half is met at the route; T7.9's ring still skips
+  such a key (D8).
 - The RFC 13 plan's `Prune` commits `PruneSecret` on its own, outside any `Write`, while RFC 23
   §3.3's credential-rotation bullet deletes a rotated credential's old version when the retention
   passes and §6 audits every action in the transaction that applies it. RFC 13 §7's `Prune` now

@@ -145,7 +145,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T5.1, T5.6, T5.11 | the fixture's Samba domain controller, in `integration/ad-dc`, issues the captured PACs (T5.1, T5.6) and the AP-REQ alice signs in with (T5.11), which `unit` then replays on the injected clock |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T5.2 to T5.9 | RFC 18's `decision:` notes of §2.4 (machines minted on sight, T5.9), §3.3 (AES only, T5.2; an unknown user refused, T5.5) and §3.4 (only the server signature, T5.6); its `ponytail:` notes of §3.3 (the replay cache in memory, T5.4; the skew constant, T5.3); the replay cache's fixed-count `ponytail:` (T5.4); this document's D1 to D12 and D14 to D16 markers at their sites |
 | rule 10, a test must be able to fail | all | every R row is held by a test named in its subtask, each with the bug it catches, or by what is named in its place |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T5.2, T5.3 | `internal/identity` exports `State.Keytab`, which `internal/node` fills (E8's T8.2); nothing outside `internal/node` and identity's tests imports it; `CheckKeytab` in `pkg/identity` is pending an RFC 18 §2.7 amendment (D3); the test realm is `identitytest`'s, the package RFC 18 §2.7 gives test helpers, and imports no `internal/identity` |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T5.2, T5.3 | `internal/identity` exports `State.Keytab`, which `internal/node` fills (E8's T8.2); nothing outside `internal/node` and identity's tests imports it; `CheckKeytab` and `KeytabNames` in `pkg/identity`, which RFC 18 §2.7 lists (D3); the test realm is `identitytest`'s, the package RFC 18 §2.7 gives test helpers, and imports no `internal/identity` |
 | rule 12, each subtask creates only what it declares | all | `State.Keytab` with T5.2, its first reader; `entity.ProtocolID`'s linked SID with T5.8a; the record's `require_pac` with T5.8b; the test realm with T5.3, its first consumer |
 
 ## 3. Requirements and invariants
@@ -158,7 +158,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | The keytab is a `Secret` of kind keytab, loaded only through `Apply`: the versions in force are `State.Keytab`, current first, and a new version takes effect at the `Apply` that delivers it, with no restart | invariant | §2.6, §3.3 | T5.2 |
-| R2 | The keytab holds AES128 and AES256 keys only, and a keytab import holding a DES or RC4 key is refused whole | MUST | §3.3; §10 "AES only" | T5.2; RFC 23 plan epic 4's T4.11 (the import's refusal at its keytab secret route, once D3 settles) |
+| R2 | The keytab holds AES128 and AES256 keys only, and a keytab import holding a DES or RC4 key is refused whole | MUST | §3.3; §10 "AES only" | T5.2; RFC 23 plan epic 4's T4.11 (the import's refusal at its keytab secret route, through `CheckKeytab`, D3) |
 | R3 | Every keytab version `Apply` hands identity is accepted and a version it no longer hands is refused, a restart included, so tickets under the old and the new key are both accepted while the rotation keeps both, and a retired key is refused once the rotation prunes it (R4) | invariant | §3.3, §2.6; RFC 13 §7; §10 "keytab rollover" | T5.2 |
 | R4 | Withdrawn: keeping the previous version for one maximum ticket lifetime, 10 hours plus the clock skew, and removing it then are RFC 23 §3.3's credential rotation, which deletes it with `tx.PruneSecret` inside an audited `Write` (D13). The report that the old key may be revoked at its service is the control plane's (RFC 13 §7), and RFC 23 §3.3 does not name it yet (§9) | — | §3.3; RFC 13 §7; RFC 16 §3 (`tx.PruneSecret`); RFC 23 §3.3 | RFC 23 §3.3's credential rotation; the revocation report pending the RFC 23 §3.3 amendment (§9) |
 
@@ -258,15 +258,16 @@ record are E6's and E8's to drive, on the rule this epic builds.
   parse. Prior art (from memory): Samba loads its keytab into a memory keytab at start and on
   change.
 - **D3, a keytab import is checked by `identity.CheckKeytab(b []byte) error` in `pkg/identity`,
-  pending the user's answer (§9).** RFC 18 §3.3 refuses an import holding a DES or RC4 key
+  settled in review as (a) (§9).** RFC 18 §3.3 refuses an import holding a DES or RC4 key
   whole, but names no place that refuses it, and only `internal/node` may import the server
   (§2.7), so the API's secret route cannot call `internal/identity`. A pure function beside
-  `NewHashes` is reachable from the route and needs an RFC 18 §2.7 amendment. It parses MIT's
+  `NewHashes` is reachable from the route, and RFC 18 §2.7 lists it. It parses MIT's
   keytab format itself rather than through gokrb5, since `pkg/identity` is a leaf whose code
   imports no gokrb5; `FuzzCheckKeytab` holds it to gokrb5's decoder, which `Apply` runs after it on
   each version. Only version 2 is accepted: version 1, the host-byte-order format no current tool
-  writes, is refused. The route's call is RFC 23's plan's epic 4's: its T4.11 keytab secret route calls it
-  in the keytab's pre-write step once this is settled, and until then seals what it is given. A
+  writes, is refused. The route's call is RFC 23's plan's epic 4's: its T4.11 keytab secret route
+  runs it in the keytab's pre-write step, through `KeytabNames`, which refuses what `CheckKeytab`
+  refuses, before the seal, so R2's import refusal is met at the route. A
   `decision:` marker at `CheckKeytab` names the refusal whole, version 1's refusal, and the same
   check `Apply` runs on each version.
 - **D4, a ticket's service name is checked twice.** The ticket's service name, which sits outside
@@ -419,7 +420,7 @@ internal/identity/
                        T5.11  alice's captured AP-REQ, its keytab and the time it was made
   testdata/fuzz/       T5.3, T5.6  crashers, if any
 pkg/identity/
-  keytab.go            T5.2   CheckKeytab (D3, pending); KeytabNames and KeytabName, each key's name and realm, which the API's keytab check reads (RFC 23's plan, T4.11)
+  keytab.go            T5.2   CheckKeytab (D3); KeytabNames and KeytabName, each key's name and realm, which the API's keytab check reads (RFC 23's plan, T4.11)
   identitytest/realm.go  T5.3  Realm: test keys, Ticket, PAC, Keytab (D10)
 pkg/metadata/entity/
   control.go           T5.8a  ProtocolID.Linked (D11)
@@ -895,15 +896,20 @@ this epic and can open at once.
 The sources are RFC 18 as #4058 merged it (83232b441), whose text in the sections cited here is
 the version this document was written against.
 
-**Pending the user's answer:**
+**Settled in review:**
 
-- **Where a keytab import is refused (D3).** RFC 18 §3.3 refuses an import with a DES or RC4 key
+- **Where a keytab import is refused (D3): (a).** RFC 18 §3.3 refuses an import with a DES or RC4 key
   whole and names no site. Options: (a) `pkg/identity.CheckKeytab(b []byte) error`, a pure
   function the API's secret route calls, with RFC 18 §2.7 amended to list it (`if err :=
   identity.CheckKeytab(v); err != nil { return ErrInvalid }`, answered `400`); (b) `Apply` refuses the `State`, too late
   to refuse the write and, refusing the whole `State`, it would hold a disable back too; (c) an
-  `APISignIn`-like interface method handed to the API. Recommended: (a). Written in place in T5.2.
-  RFC 23's plan's epic 4 calls it from its T4.11 keytab secret route once this is settled.
+  `APISignIn`-like interface method handed to the API. Settled as (a), written in place in T5.2;
+  RFC 18 §2.7 lists `CheckKeytab` and `KeytabNames`. RFC 23's plan's epic 4's T4.11 keytab secret
+  route runs the check before the seal, so R2's import refusal is met there, and so is epic 7's
+  R27, the refusal of a key for a name the computer account holds, read through `KeytabNames`.
+
+**Pending the user's answer:**
+
 - **Who declares `require_pac` (D14).** The RFC 18 plan gives the record to E6, whose T6.3
   declares it with the schema, the realm and the `ad` realm refusal; `require_pac`'s first reader
   is T5.8b. Options: (a) T5.8b adds `RequirePAC` to T6.3's record and waits for T6.3, a cross-track
