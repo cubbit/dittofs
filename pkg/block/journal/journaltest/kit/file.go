@@ -43,11 +43,11 @@ func (n *node) loseUndo() {
 // While no change was ever lost, the durable image is the file with its
 // pending changes undone, so clearing them is enough. Once one is lost, the
 // file holds bytes that must never become durable, so the durable image is
-// kept in snap and each Sync replays onto it the changes it covers, in the
-// order they were made.
+// kept by setSnap and each Sync replays onto it the changes it covers, in
+// the order they were made.
 func (sf *seamFile) sync() error {
 	n := sf.node
-	if n.snap == nil && !slices.ContainsFunc(n.undo, func(c change) bool { return c.lost }) {
+	if !n.hasSnap() && !slices.ContainsFunc(n.undo, func(c change) bool { return c.lost }) {
 		for _, c := range n.undo {
 			if c.kind == changeWrite {
 				n.madeDurable += int64(len(c.data))
@@ -76,7 +76,9 @@ func (sf *seamFile) sync() error {
 		}
 	}
 
-	n.setSnap(img)
+	if err := sf.seam.setSnap(n, img); err != nil {
+		return err
+	}
 	n.undo = nil
 	return nil
 }
@@ -177,8 +179,8 @@ func (sf *seamFile) ReadAtDirect(p []byte, off int64) (int, error) {
 // by path, so a file removed or replaced while open, whose path may no longer
 // exist, still has one.
 func (sf *seamFile) durableImage() ([]byte, error) {
-	if sf.node.snap != nil {
-		return sf.node.snapImage(), nil
+	if sf.node.hasSnap() {
+		return sf.node.snapImage()
 	}
 
 	size, err := sf.size()

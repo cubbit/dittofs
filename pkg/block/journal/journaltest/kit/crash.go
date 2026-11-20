@@ -217,7 +217,7 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 	}
 
 	for n := range alive {
-		if len(n.undo) == 0 && n.snap == nil {
+		if len(n.undo) == 0 && !n.hasSnap() {
 			continue
 		}
 
@@ -242,7 +242,8 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 			return err
 		}
 
-		n.undo, n.snap = nil, nil
+		n.undo = nil
+		n.dropSnap()
 	}
 
 	restore := s.undoDir
@@ -255,7 +256,8 @@ func (s *Seam) Crash(opts ...CrashOption) error {
 
 	s.names, s.dirSnap = survivors, nil
 	for _, n := range survivors {
-		n.undo, n.snap = nil, nil
+		n.undo = nil
+		n.dropSnap()
 	}
 
 	return s.emptyStash()
@@ -376,12 +378,12 @@ func (s *Seam) undoDir() error {
 	return nil
 }
 
-// durableImage returns the file's durable image: a copy of snap when it is
-// set, otherwise the file's bytes, read by path, with every unsynced change
-// undone.
+// durableImage returns the file's durable image: a copy of the snapshot when
+// one is kept, otherwise the file's bytes, read by path, with every unsynced
+// change undone.
 func (n *node) durableImage() ([]byte, error) {
-	if n.snap != nil {
-		return n.snapImage(), nil
+	if n.hasSnap() {
+		return n.snapImage()
 	}
 
 	img, err := os.ReadFile(n.path)
@@ -391,20 +393,70 @@ func (n *node) durableImage() ([]byte, error) {
 	return n.undone(img), nil
 }
 
-// setSnap keeps img as the durable image, without its trailing zeros.
-func (n *node) setSnap(img []byte) {
-	n.snapSize = int64(len(img))
-	n.snap = bytes.TrimRight(img, "\x00")
-	if n.snap == nil {
-		n.snap = []byte{} // set, though every byte is zero
-	} else {
-		n.snap = slices.Clone(n.snap) // drop the tail's capacity too
+// snapHeapCap is the most bytes of a durable image a node keeps on the heap.
+// A larger image is spilled to a file in the stash, so a preallocated segment
+// full of data costs a path, not its size, for as long as it is kept.
+const snapHeapCap = 64 << 10
+
+// snapDir is the stash's subdirectory holding spilled durable images. The
+// stash never holds a file of that name: its files are named by number.
+const snapDir = "snaps"
+
+// hasSnap reports whether the node keeps its durable image, on the heap or
+// spilled.
+func (n *node) hasSnap() bool { return n.snap != nil || n.snapPath != "" }
+
+// setSnap keeps img as n's durable image, without its trailing zeros: on the
+// heap up to snapHeapCap bytes, spilled to a file of its own past that. The
+// caller holds mu.
+func (s *Seam) setSnap(n *node, img []byte) error {
+	trimmed := bytes.TrimRight(img, "\x00")
+	if len(trimmed) <= s.snapCap {
+		n.dropSnap()
+		n.snap = slices.Clone(trimmed) // drop the tail's capacity too
+		if n.snap == nil {
+			n.snap = []byte{} // set, though every byte is zero
+		}
+		n.snapSize = int64(len(img))
+		return nil
 	}
+
+	dir := filepath.Join(s.stash, snapDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	s.spilled++
+	path := filepath.Join(dir, fmt.Sprint(s.spilled))
+	if err := os.WriteFile(path, trimmed, 0o644); err != nil {
+		return err
+	}
+
+	n.dropSnap()
+	n.snapPath, n.snapSize = path, int64(len(img))
+	return nil
+}
+
+// dropSnap forgets the kept durable image and unlinks its spill file. A
+// spill file it fails to unlink is left to pruneSnaps.
+func (n *node) dropSnap() {
+	if n.snapPath != "" {
+		_ = os.Remove(n.snapPath)
+	}
+	n.snap, n.snapPath, n.snapSize = nil, "", 0
 }
 
 // snapImage returns a copy of the durable image setSnap kept.
-func (n *node) snapImage() []byte {
-	return resize(slices.Clone(n.snap), n.snapSize)
+func (n *node) snapImage() ([]byte, error) {
+	if n.snapPath == "" {
+		return resize(slices.Clone(n.snap), n.snapSize), nil
+	}
+
+	img, err := os.ReadFile(n.snapPath)
+	if err != nil {
+		return nil, err
+	}
+	return resize(img, n.snapSize), nil
 }
 
 // undone returns img, the file's current bytes, with every unsynced change
