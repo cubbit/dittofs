@@ -47,6 +47,9 @@ type route struct {
 	// API's OpenAPI document.
 	sub    *param
 	params []param
+	// desc is the operation's description in the OpenAPI document, "" for
+	// none.
+	desc string
 }
 
 // ref is the ID the audit records of the row's record id and sub name it

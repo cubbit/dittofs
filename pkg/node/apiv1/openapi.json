@@ -5041,6 +5041,7 @@
     },
     "/api/v1/settings/{sub}": {
       "delete": {
+        "description": "A write of identity.ntlm takes the admin role, whatever x-dittofs-role names for every other key.",
         "operationId": "settings_delete",
         "parameters": [
           {
@@ -5215,6 +5216,7 @@
         "x-dittofs-role": "viewer"
       },
       "put": {
+        "description": "A write of identity.ntlm takes the admin role, whatever x-dittofs-role names for every other key.",
         "operationId": "settings_put",
         "parameters": [
           {

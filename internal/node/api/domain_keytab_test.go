@@ -422,6 +422,17 @@ func TestMayStartAnswersAsDocumented(t *testing.T) {
 	}
 }
 
+// The document's installation setting PUT and DELETE, whose role is an
+// operator's, say that identity.ntlm takes an admin.
+func TestNTLMSettingNamedAdminOnly(t *testing.T) {
+	doc := openAPIDoc(t)
+	for _, m := range []string{"put", "delete"} {
+		if got, _ := at(doc, "paths", "/api/v1/settings/{sub}", m, "description").(string); !strings.Contains(got, "identity.ntlm takes the admin role") {
+			t.Errorf("%s /api/v1/settings/{sub} description %q, want it naming identity.ntlm as an admin's", m, got)
+		}
+	}
+}
+
 // The document names a join's modes, the closed set the route takes.
 func TestJoinModeIsAnEnum(t *testing.T) {
 	got := at(openAPIDoc(t), "components", "schemas", "JoinDomainSpecRequest", "properties", "mode", "enum")

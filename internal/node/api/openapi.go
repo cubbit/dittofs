@@ -177,6 +177,9 @@ func docOperation(rt *route, id string, sc *schemas) (map[string]any, error) {
 	if rt.right == auth.Public {
 		op["security"] = []any{}
 	}
+	if rt.desc != "" {
+		op["description"] = rt.desc
+	}
 	if a.roleByKind {
 		op["x-dittofs-role-by-kind"] = true
 	}
