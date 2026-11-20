@@ -19,6 +19,9 @@ const (
 	testSegmentCap = int64(64 << 10)
 	// testStreams is the number of append streams a test core has.
 	testStreams = 2
+	// testHeadroomSpares is the headroom spares a test core that names
+	// headroom records keeps: one per stream, its few records filling less.
+	testHeadroomSpares = testStreams
 )
 
 var testIdentity = core.JournalID{0xd, 0xa, 0x7, 0xa}

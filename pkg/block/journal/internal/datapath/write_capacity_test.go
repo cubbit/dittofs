@@ -1356,7 +1356,7 @@ func TestWriteAt_HeldSparesCoverEveryPieceOfAMultiSegmentWrite(t *testing.T) {
 // ready.
 func TestWriteRefusedBelowHalfHeadroom(t *testing.T) {
 	c, seam := newTestCore(t,
-		capacityCoreOption(5*testSegmentCap),
+		capacityCoreOption((4+testHeadroomSpares)*testSegmentCap),
 		func(o *coreOptions) { o.headroomRecords = headroomFixture })
 	s := mustShare(t, c, 1)
 	f := testFile(1)
@@ -1418,7 +1418,7 @@ func TestWriteRefusedBelowHalfHeadroom(t *testing.T) {
 // published and no version drawn.
 func TestWriteAtLimitNamesHeadroomOverSpare(t *testing.T) {
 	c, _ := newTestCore(t,
-		capacityCoreOption(5*testSegmentCap),
+		capacityCoreOption((4+testHeadroomSpares)*testSegmentCap),
 		func(o *coreOptions) { o.headroomRecords = headroomFixture })
 	s := mustShare(t, c, 1)
 	warm := testFile(1)
@@ -1467,7 +1467,7 @@ func TestWriteAtLimitNamesHeadroomOverSpare(t *testing.T) {
 // the limit returns.
 func TestWriteAdmittedBelowHalfHeadroomOffTheLimit(t *testing.T) {
 	c, _ := newTestCore(t,
-		capacityCoreOption(5*testSegmentCap),
+		capacityCoreOption((4+testHeadroomSpares)*testSegmentCap),
 		func(o *coreOptions) { o.headroomRecords = headroomFixture })
 	s := mustShare(t, c, 1)
 	f := testFile(1)
@@ -1542,7 +1542,7 @@ func TestWriteAdmittedBelowHalfHeadroomOffTheLimit(t *testing.T) {
 // nothing held.
 func TestFillRefusedBelowHalfHeadroom(t *testing.T) {
 	c, seam := newTestCore(t,
-		capacityCoreOption(5*testSegmentCap),
+		capacityCoreOption((4+testHeadroomSpares)*testSegmentCap),
 		func(o *coreOptions) { o.headroomRecords = headroomFixture })
 	s := mustShare(t, c, 1)
 	ctx := context.Background()
