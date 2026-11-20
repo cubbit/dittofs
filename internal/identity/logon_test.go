@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/cubbit/dittofs/internal/identity"
@@ -217,8 +218,8 @@ func TestSignInRecordsEachAttempt(t *testing.T) {
 		}
 		have := map[string]string{}
 		for _, kv := range got[0].Attributes() {
-			have[string(kv.Key)] = kv.Value.Emit()
-			attrs = append(attrs, kv.Value.Emit())
+			have[string(kv.Key)] = kv.Value.String()
+			attrs = append(attrs, kv.Value.String())
 		}
 		if fmt.Sprint(have) != fmt.Sprint(want) {
 			t.Errorf("%s: identity.authenticate's attributes %v, want exactly %v", c.name, have, want)
@@ -342,4 +343,43 @@ func TestSignInWithoutLogonSink(t *testing.T) {
 	}
 	res, oc, err := s.SignInOutcome(context.Background(), ntlmStep(alicePassword, "alice", "", false))
 	refused(t, "the right password with no logon sink", res, oc, err, vfserr.ErrUnavailable, "unavailable")
+}
+
+// An attempt that panics is still recorded: one unavailable event, one
+// count and one ended identity.authenticate span with an error status, and
+// the panic still reaches the caller. Catches a recording that runs after
+// the attempt rather than deferred, which a panic skips (RFC 18 §3.1).
+func TestSignInRecordsAPanic(t *testing.T) {
+	r, p := ntlmServer(t, "KIOSK")
+	r.ntlmUser(t, p, "alice", "1500", alicePassword)
+	// The fault wrapper panics on a tear, so a torn user read panics inside
+	// the sign-in.
+	s, err := sim.NewSchedule(1, sim.NewTestClock(time.Unix(0, 0)),
+		sim.Rule{Op: kvtest.OpGet, Key: "U‖*", Action: sim.FaultAction{TearAfter: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.fault.SetFault(s)
+	events, count, spans := r.logons.len(), r.signIns(t, "unavailable"), len(r.spans.Ended())
+	ctx, parent := r.tp.Tracer("test").Start(context.Background(), "request")
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Errorf("SignIn with a panicking store returned; want its panic")
+			}
+		}()
+		_, _ = r.srv.SignIn(ctx, ntlmStep(alicePassword, "ALICE", "", false))
+	}()
+	parent.End()
+	r.fault.SetFault(nil)
+
+	if got := r.logons.since(events); len(got) != 1 || got[0].Outcome != "unavailable" {
+		t.Errorf("logon events after a panic = %+v, want one unavailable", got)
+	}
+	if d := r.signIns(t, "unavailable") - count; d != 1 {
+		t.Errorf("identity_authentications_total{smb, ntlm, unavailable} rose by %v after a panic, want 1", d)
+	}
+	if got := r.authenticateSpans(spans); len(got) != 1 || got[0].Status().Code != codes.Error {
+		t.Errorf("identity.authenticate spans ended after a panic = %d (want 1), with an error status", len(got))
+	}
 }

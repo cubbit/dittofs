@@ -98,23 +98,33 @@ func (s *Server) signIn(ctx context.Context, step identity.SignInStep) (identity
 		ctx, span = s.tracer.Start(ctx, "identity.authenticate", trace.WithAttributes(attribute.Int("identity.proof", int(proof))))
 	}
 
-	res, oc, err := s.signInAttempt(ctx, step)
-
-	ev.Outcome = string(oc)
-	if oc == outcomeOK {
-		ev.Principal = res.Identity.Evidence.Principal.ID
-		span.SetAttributes(attribute.String("identity.principal", ev.Principal.String()))
-	}
-	span.SetAttributes(attribute.String("identity.outcome", ev.Outcome))
-	if err != nil {
-		span.SetStatus(codes.Error, ev.Outcome)
-	}
-	span.End()
-	s.signIns.WithLabelValues(ev.Protocol, ev.Mechanism, ev.Outcome).Inc()
-	s.signInSec.WithLabelValues(ev.Mechanism).Observe(s.deps.Clock.Now().Sub(ev.Time).Seconds())
-	if s.deps.Logons != nil {
-		s.deps.Logons.Logon(ctx, &ev)
-	}
+	// Recorded in a defer, so an attempt that panics is still one event, one
+	// count and an ended span, as unavailable, before the panic goes on up.
+	var res identity.SignInResult
+	var err error
+	oc := outcomeUnavailable
+	defer func() {
+		p := recover()
+		ev.Outcome = string(oc)
+		if oc == outcomeOK {
+			ev.Principal = res.Identity.Evidence.Principal.ID
+			span.SetAttributes(attribute.String("identity.principal", ev.Principal.String()))
+		}
+		span.SetAttributes(attribute.String("identity.outcome", ev.Outcome))
+		if err != nil || p != nil {
+			span.SetStatus(codes.Error, ev.Outcome)
+		}
+		span.End()
+		s.signIns.WithLabelValues(ev.Protocol, ev.Mechanism, ev.Outcome).Inc()
+		s.signInSec.WithLabelValues(ev.Mechanism).Observe(s.deps.Clock.Now().Sub(ev.Time).Seconds())
+		if s.deps.Logons != nil {
+			s.deps.Logons.Logon(ctx, &ev)
+		}
+		if p != nil {
+			panic(p)
+		}
+	}()
+	res, oc, err = s.signInAttempt(ctx, step)
 	return res, oc, err
 }
 
