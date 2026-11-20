@@ -236,9 +236,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, a Sync answers the read-only refusal and Stats names the read-only state; a Release then answers journal: not implemented, not the read-only refusal. Needs Release refused on a read-only journal, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
+  reason: 'The journal opens, a Sync answers the read-only refusal, Stats names the read-only state and WriteAt and Release are refused; the failed file''s second Sync then answers nil, acknowledging a sync on a read-only journal. Needs every Sync on a read-only journal refused. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
   issue: '#3395'
-  message: 'a Release on a read-only journal returned journal: not implemented, want ErrJournalReadOnly'
+  message: 'a Sync of the failed write returned <nil>, want ErrJournalReadOnly at once'
 
 - test: TestRFC1B_ReclaimNotStarved
   status: fail
