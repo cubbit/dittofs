@@ -93,6 +93,10 @@ func TestKeySpecsMatchBootstrap(t *testing.T) {
 func collectKeys(t reflect.Type, prefix string, out *[]string) {
 	for i := range t.NumField() {
 		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+
 		key := joinKey(prefix, f.Tag.Get("mapstructure"))
 
 		if f.Type.Kind() == reflect.Struct && f.Type != reflect.TypeFor[entity.NodeID]() &&

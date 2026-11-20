@@ -85,6 +85,12 @@ type Bootstrap struct {
 		Protocol WrappingKey `mapstructure:"protocol" yaml:"protocol"`
 		Storage  WrappingKey `mapstructure:"storage"  yaml:"storage"`
 	} `mapstructure:"keys" yaml:"keys"`
+
+	// where is the file this bootstrap was read from, empty when no file
+	// was read: the <where> refusals of an unset key name when they come
+	// from the file, else the environment. Load fills it; a bootstrap built
+	// by hand reports the environment.
+	where string
 }
 
 // LoggingConfig controls logging behavior.
@@ -202,7 +208,16 @@ func LoadWithSources(configPath string, environ []string) (*Loaded, error) {
 		return nil, rep.err()
 	}
 
-	return assemble(values)
+	loaded, err := assemble(values)
+	if err != nil {
+		return nil, err
+	}
+
+	if leaves != nil {
+		loaded.where = path
+	}
+
+	return loaded, nil
 }
 
 // GetDefaultConfigPath returns the default configuration file path, from the

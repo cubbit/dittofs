@@ -1321,8 +1321,13 @@ func TestLoadEveryKey(t *testing.T) {
 
 			b := loads(t, tc.content, nil)
 
-			if !reflect.DeepEqual(b.Bootstrap, tc.want) {
-				t.Errorf("bootstrap:\ngot  %+v\nwant %+v", b.Bootstrap, tc.want)
+			// The file the bootstrap came from is Validate's to read, not a
+			// key's value.
+			got := b.Bootstrap
+			got.where = ""
+
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("bootstrap:\ngot  %+v\nwant %+v", got, tc.want)
 			}
 
 			files := 0
