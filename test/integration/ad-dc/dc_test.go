@@ -209,6 +209,9 @@ func (s *sambaDCSeeder) StageComputer(t testing.TB, c identitytest.StagedCompute
 	if len(c.SPNs) > 0 {
 		add.Attribute("servicePrincipalName", c.SPNs)
 	}
+	if len(c.Delegation) > 0 {
+		add.Attribute("msDS-AllowedToActOnBehalfOfOtherIdentity", []string{string(c.Delegation)})
+	}
 	if err := s.conn.Add(add); err != nil {
 		t.Fatalf("stage %s: %v", dn, err)
 	}

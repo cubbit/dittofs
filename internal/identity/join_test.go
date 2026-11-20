@@ -282,11 +282,13 @@ func TestOnlineJoinResumedAfterCreate(t *testing.T) {
 
 // A join under the name of an existing account is refused, naming it, with
 // its password unchanged; with a takeover it joins, the version sealed with
-// the controller's number plus one before the password is set.
+// the controller's number plus one before the password is set, recording the
+// account's delegation value as read.
 func TestOnlineJoinExistingAccount(t *testing.T) {
 	fx := newMachine(t)
+	delegation := identitytest.DelegationTo(fx.d.Domain().SID)
 	fx.d.StageComputer(t, identitytest.StagedComputer{Name: "NAS", Password: []byte(pw2), EncTypes: 0x18,
-		SPNs: []string{"HOST/NAS", "HOST/nas.corp.example"}})
+		SPNs: []string{"HOST/NAS", "HOST/nas.corp.example"}, Delegation: delegation})
 	op := fx.joinOp(t, apiv1.JoinDomainSpec{Account: "NAS"}, true)
 	fx.until(t, op, "seal")
 	fx.wantFailed(t, op, "NAS$ already exists")
@@ -306,6 +308,9 @@ func TestOnlineJoinExistingAccount(t *testing.T) {
 	}
 	fx.complete(t, op)
 	fx.wantJoined(t, op, "NAS", vs[0].Number)
+	if got := fx.join(t).Delegation; !bytes.Equal(got, delegation) {
+		t.Errorf("the join's delegation value %x, want the account's %x", got, delegation)
+	}
 	if a, err := fx.computer(t, dc1, "NAS"); err != nil || a.KeyVersion != 2 {
 		t.Errorf("account %+v (%v), want set once, key version 2", a, err)
 	}

@@ -235,9 +235,9 @@ func joinProblem(status int, code apiv1.Code, detail string) *apiv1.Problem {
 }
 
 // start refuses a request the directory record or the names make wrong, and
-// a rotation running on the installation, read tracked in one write, so a
-// rotation started since makes it run again; it writes nothing. It fixes the
-// account's name and the DNS host name, each defaulted, in the cursor.
+// a rotation running on the installation, read tracked in one write that
+// writes nothing. It fixes the account's name and the DNS host name, each
+// defaulted, in the cursor.
 func (j *joining) start(ctx context.Context, target entity.ResourceRef, spec apiv1.JoinDomainSpec) error {
 	rec := j.st.Directory
 	switch {
@@ -262,6 +262,17 @@ func (j *joining) start(ctx context.Context, target entity.ResourceRef, spec api
 	if !dnsHostName(host) {
 		return joinProblem(http.StatusBadRequest, "", fmt.Sprintf("the host name %q is not a DNS name of two labels or more", host))
 	}
+	// decision: this read is a guard behind the writes that start a join or
+	// a rotation, not what keeps the two apart. The API's start of either
+	// kind and the rotation schedule each read the other kind's running
+	// index tracked in the transaction that puts their own operation's row,
+	// so a join and a rotation are never both running, and a join's first
+	// turn finds a rotation started before it. This write writes nothing,
+	// and the rotation's first turn writes nothing the join reads, so two
+	// first turns that overlapped would not conflict: none is tested to.
+	// Overturned if an operation of either kind can start without such a
+	// creating write; each first turn must then write a key the other reads
+	// tracked, so the second to commit retries and refuses naming the first.
 	err = j.s.deps.ControlPlane.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
 		op, ok, err := tx.RunningOperation(string(apiv1.OpRotateMachinePassword), target)
 		if err != nil {
@@ -595,12 +606,14 @@ func (j *joining) noAnswer(ctx context.Context, err error) error {
 // identity.netbios_name, the machine password's versions and the last
 // confirm as they were, then answers the problem that fails the operation.
 //
-// decision: a join that fails before it sealed a version writes nothing, so
-// a request refused for an existing account, or a domain with no controller
-// answering, leaves an installation already joined as it was; once a version
-// is sealed it is the machine password in force, and the installation is
-// recorded not joined. Overturned if a joined installation is refused a
-// join before its operation starts.
+// decision: a failed join records the installation not joined only once it
+// has sealed a version. From then on the machine password in force is one no
+// controller may hold, so a join recorded before no longer holds. A failure
+// before the seal (a refused request, an existing account, no controller
+// answering) has changed nothing, so it writes nothing and an installation
+// already joined stays joined. Overturned if every failed join is to record
+// the installation not joined, or if a joined installation is refused a join
+// before its operation starts, leaving no joined installation to keep.
 func (j *joining) fail(ctx context.Context, status int, detail string) error {
 	if j.c.Version == 0 {
 		return joinProblem(status, "", detail)
