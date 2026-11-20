@@ -574,7 +574,7 @@ func looksSegmental(name string) bool {
 // resolveDefaults has already given their defaults: the spare target one per
 // append stream, so every stream can roll once without waiting for a spare to
 // be made. The headroom keeps the reserved records of settings standing, at
-// the core's own sizing, never less than one segment. The repack
+// the core's own sizing, never less than one segment per stream. The repack
 // reserve keeps at least one segment's cap, the most live payload one segment
 // can hold.
 func buildTargets(s core.Settings) segment.Targets {

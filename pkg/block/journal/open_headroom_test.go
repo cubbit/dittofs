@@ -3,6 +3,7 @@ package journal_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -92,5 +93,83 @@ func TestRestartResetsTheHeadroomPin(t *testing.T) {
 	f.Reopen()
 	if got := f.J.Stats().HeadroomBytes; got != whole {
 		t.Fatalf("HeadroomBytes = %d after a restart, want %d, the headroom whole", got, whole)
+	}
+}
+
+// headroomStreams is the append streams the per-stream headroom checks open
+// with: more than the one segment the fixture's headroom records fill, so a
+// headroom sized by its records alone falls short of one spare per stream.
+const headroomStreams = 4
+
+// TestOpenMakesAHeadroomSparePerStream checks that the open readies one
+// headroom spare per append stream, so every stream can roll once at the
+// maximum. The headroom spares are the spares on disk beyond the content
+// spares Stats reports and the one repack reserve spare. It runs on
+// the journal Init made and on the same directory reopened.
+func TestOpenMakesAHeadroomSparePerStream(t *testing.T) {
+	for _, reopen := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reopen=%v", reopen), func(t *testing.T) {
+			f := journaltest.NewWith(t, func(s *journal.Settings) { s.Streams = headroomStreams })
+			if reopen {
+				f.Reopen()
+			}
+			f.WaitSpares()
+			names, err := f.Seam.List()
+			if err != nil {
+				t.Fatalf("list the journal's directory: %v", err)
+			}
+			// A made spare is renamed into a segment's name, so the spares
+			// are the segment files the journal counts as no segment.
+			st := f.J.Stats()
+			spares := -st.Segments
+			for _, name := range names {
+				if strings.HasSuffix(name, ".seg") {
+					spares++
+				}
+			}
+			const reserve = 1
+			content := st.Spares
+			if got := spares - content - reserve; got != headroomStreams {
+				t.Fatalf("headroom spares = %d (%d spares on disk, %d content, %d reserve), want %d: one per stream", got, spares, content, reserve, headroomStreams)
+			}
+		})
+	}
+}
+
+// TestEveryStreamRollsIntoTheHeadroomAtTheMaximum checks, at the caller that
+// sees the journal's refusal, that at the maximum a removal on every stream
+// is admitted though each stream's active segment is full: each stream's
+// roll finds a headroom spare of its own, none refused naming LimitHeadroom.
+func TestEveryStreamRollsIntoTheHeadroomAtTheMaximum(t *testing.T) {
+	f := journaltest.NewWith(t, func(s *journal.Settings) { s.Streams = headroomStreams })
+	h := f.Share(0)
+	fillToMaximum(t, h, journaltest.File(0))
+	// Files enough to land on every stream: each fills its stream's tail
+	// until a write is refused at the maximum, so the removals below roll.
+	const files = 4 * headroomStreams
+	offs := make([]int64, files)
+	for _, size := range []int{4096, 64} {
+		for k := range files {
+			id := journaltest.File(100 + k)
+			for {
+				_, err := h.WriteAt(t.Context(), id, offs[k], make([]byte, size), 0)
+				var ns *journal.NoSpaceError
+				if errors.As(err, &ns) && ns.Limit == journal.LimitJournal {
+					break
+				}
+				if err != nil {
+					t.Fatalf("a %d-byte write of file %d at the maximum: %v", size, k, err)
+				}
+				offs[k] += int64(size)
+				if offs[k] > journaltest.FixtureMaxBytes {
+					t.Fatalf("file %d took %d bytes past the journal's maximum", k, offs[k])
+				}
+			}
+		}
+	}
+	for k := range files {
+		if _, err := h.Deallocate(t.Context(), journaltest.File(100+k), journal.Extent{Off: 0, Len: 64}); err != nil {
+			t.Fatalf("Deallocate of file %d at the journal's maximum: %v, want it admitted on the headroom", k, err)
+		}
 	}
 }

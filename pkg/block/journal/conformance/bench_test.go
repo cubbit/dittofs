@@ -195,9 +195,9 @@ func jbOpen(b *testing.B, streams int) *journal.Handle {
 	// timed region. Stats names no ready headroom spare, but the pool makes
 	// the headroom's before either of the others, and a fresh journal's
 	// footprint is its spares alone: the streams' content spares, the
-	// headroom's one and the reserve's one at the default settings.
+	// headroom's one per stream and the reserve's one at the default settings.
 	deadline := time.Now().Add(30 * time.Minute)
-	want := int64(streams+2) * journaltest.SegmentCap
+	want := int64(2*streams+1) * journaltest.SegmentCap
 	for {
 		st := j.Stats()
 		if st.Spares >= streams && st.RepackReserveBytes >= journaltest.SegmentCap && st.UsedBytes >= want {

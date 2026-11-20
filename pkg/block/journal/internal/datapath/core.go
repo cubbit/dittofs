@@ -1246,10 +1246,21 @@ func Continue(deps Deps, state State, beforeRetire func(*Core) error) (*Core, er
 // HeadroomSpares is the headroom spare class's target: records header-only
 // records at the charge the admission table draws by, plus each open stream's
 // seal marker, one footer entry and the trailer, which a segment cannot seal
-// without, in whole segments of segCap bytes rounded up. The open's spare
-// targets and the core's pool are sized by this one figure, so the spares a
-// recovery adopts as headroom are the ones the core's pool keeps.
+// without, in whole segments of segCap bytes rounded up, and never fewer
+// than one segment per stream. The open's spare targets and the core's pool
+// are sized by this one figure, so the spares a recovery adopts as headroom
+// are the ones the core's pool keeps.
+//
+// decision: the headroom keeps one spare per stream, because at the maximum
+// a header-only record whose stream's active segment is full must roll, and
+// a spare one stream's roll took cannot be made again inside the maximum: a
+// headroom of fewer segments than streams refuses the next stream's record
+// naming LimitHeadroom, which RFC 1 section 6 forbids. The cost is one spare
+// at the segment cap per stream: 16 streams at the default 256 MiB cap hold
+// 4 GiB, where the default 65,536 records fill one segment. Overturned by a
+// configuration that opens far more streams than it rolls at once at the
+// maximum, which would rather share headroom segments across streams.
 func HeadroomSpares(records, streams int, segCap int64) int {
 	sealReserve := int64(streams) * (format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize)
-	return int((int64(records)*capacity.RecordCharge + sealReserve + segCap - 1) / segCap)
+	return max(int((int64(records)*capacity.RecordCharge+sealReserve+segCap-1)/segCap), streams)
 }

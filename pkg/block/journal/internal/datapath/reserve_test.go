@@ -153,7 +153,7 @@ func TestReserveAhead_PastTheIndexBound(t *testing.T) {
 // Reserve charges an ask against the maximum.
 func TestReserveAhead_BelowHalfTheHeadroom(t *testing.T) {
 	c, _ := newTestCore(t,
-		capacityCoreOption(6*testSegmentCap),
+		capacityCoreOption((5+testHeadroomSpares)*testSegmentCap),
 		func(o *coreOptions) { o.headroomRecords = acceptanceRecords },
 	)
 	s := mustShare(t, c, 1)
