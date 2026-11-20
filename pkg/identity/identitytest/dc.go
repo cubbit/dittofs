@@ -126,6 +126,15 @@ func (d *DomainController) sidOf(rid uint32) sid.SID {
 	return s
 }
 
+// UseDomainSID makes s the domain's SID, as when the domain a Directory
+// serves is the same one, before any account is staged or user added.
+func (d *DomainController) UseDomainSID(_ testing.TB, s sid.SID) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.domainSID = s
+	d.domainSID.SubAuthorities = slices.Clone(s.SubAuthorities)
+}
+
 // HoldReplication stops the controller at addr seeing writes made at the
 // others until ReleaseReplication, so it answers an account as it was.
 func (d *DomainController) HoldReplication(addr string) {

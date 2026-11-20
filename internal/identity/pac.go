@@ -226,15 +226,20 @@ var pacDroppedSpec = metrics.Spec{
 // everyone, authenticated users and network (RFC 22 §16.3).
 var wellKnownKept = map[string]bool{"S-1-1-0": true, "S-1-5-11": true, "S-1-5-2": true}
 
+// sidMember is a group SID with the attributes its signer set on it.
+type sidMember struct {
+	sid   identity.SID
+	attrs uint32
+}
+
 // pacSIDs is the evidence's SIDs and deny-only SIDs from v, a verified PAC's
 // logon information: its user's SID first, then its group memberships, extra
 // SIDs and resource groups, these only when UserFlags says they are
-// populated, in that order, each filtered. Only the user's SID is
-// unfiltered: its binding to the record is checked apart, so a PAC whose
-// logon domain is not a domain's, under S-1-5-21, or is the installation's
-// own, where the user's SID would name a builtin, well-known or local
+// populated, in that order, each filtered by filterSIDs. A PAC whose logon
+// domain is not a domain's, under S-1-5-21, or is the installation's own,
+// where the user's unfiltered SID would name a builtin, well-known or local
 // principal, is refused ErrLogonFailure. A store fault reading the
-// installation or a SID is ErrUnavailable.
+// installation is ErrUnavailable.
 func (s *Server) pacSIDs(ctx context.Context, v *pac.KerbValidationInfo) (sids, deny []identity.SID, err error) {
 	d := v.LogonDomainID
 	logon := rpcSID(d.Revision, d.IdentifierAuthority, d.SubAuthority)
@@ -242,29 +247,41 @@ func (s *Server) pacSIDs(ctx context.Context, v *pac.KerbValidationInfo) (sids, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: installation: %w", vfserr.ErrUnavailable, err)
 	}
-	own, logonBin := kvstore.DomainSID(in.ID), sidBytes(logon)
-	if !ntSID(logon, 21) || bytes.Equal(logonBin, own) {
+	if !ntSID(logon, 21) || bytes.Equal(sidBytes(logon), kvstore.DomainSID(in.ID)) {
 		return nil, nil, logonFailure("a PAC whose logon domain is not a domain's, or is the installation's")
 	}
-	sids = []identity.SID{withRID(logon, v.UserID)}
-	type member struct {
-		sid   identity.SID
-		attrs uint32
-	}
-	var all []member
+	var all []sidMember
 	for _, g := range v.GroupIDs {
-		all = append(all, member{withRID(logon, g.RelativeID), g.Attributes})
+		all = append(all, sidMember{withRID(logon, g.RelativeID), g.Attributes})
 	}
 	for _, e := range v.ExtraSIDs {
-		all = append(all, member{rpcSID(e.SID.Revision, e.SID.IdentifierAuthority, e.SID.SubAuthority), e.Attributes})
+		all = append(all, sidMember{rpcSID(e.SID.Revision, e.SID.IdentifierAuthority, e.SID.SubAuthority), e.Attributes})
 	}
 	if v.UserFlags&logonResourceGroups != 0 && v.ResourceGroupDomainSID.SubAuthorityCount > 0 {
 		r := v.ResourceGroupDomainSID
 		res := rpcSID(r.Revision, r.IdentifierAuthority, r.SubAuthority)
 		for _, g := range v.ResourceGroupIDs {
-			all = append(all, member{withRID(res, g.RelativeID), g.Attributes})
+			all = append(all, sidMember{withRID(res, g.RelativeID), g.Attributes})
 		}
 	}
+	return s.filterSIDs(ctx, logon, withRID(logon, v.UserID), all)
+}
+
+// filterSIDs is the evidence's SIDs and deny-only SIDs a signer vouched for
+// in its logon domain logon, a PAC or a pass-through reply alike: user
+// first, unfiltered, since its binding to the record is checked apart, then
+// each of all the filter keeps, in order, each one it drops counted by
+// reason. A store fault reading the installation or a SID is ErrUnavailable.
+func (s *Server) filterSIDs(ctx context.Context, logon, user identity.SID, all []sidMember) (sids, deny []identity.SID, err error) {
+	sids = []identity.SID{user}
+	if len(all) == 0 {
+		return sids, nil, nil
+	}
+	in, err := s.deps.Store.Installation(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: installation: %w", vfserr.ErrUnavailable, err)
+	}
+	own, logonBin := kvstore.DomainSID(in.ID), sidBytes(logon)
 	for _, m := range all {
 		// decision: a SID's deny-only bit is read before its enabled bit:
 		// Windows writes a deny-only group with SE_GROUP_ENABLED clear, so

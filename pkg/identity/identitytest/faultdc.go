@@ -30,7 +30,17 @@ type FaultyDomainController struct {
 
 	mu      sync.Mutex
 	release chan struct{}
-	holding int // calls ErrHold is holding now
+	holding int                   // calls ErrHold is holding now
+	rewrite func(*netlogon.Reply) // applied to every reply a logon answers; nil for none
+}
+
+// RewriteReplies has every logon the controller answers from then on answer
+// its reply as rewrite leaves it, as a controller in error or a rogue one
+// would send it; nil sends replies as answered.
+func (f *FaultyDomainController) RewriteReplies(rewrite func(*netlogon.Reply)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rewrite = rewrite
 }
 
 // NewFaultyDomainController wraps next with fault.
@@ -163,7 +173,16 @@ type faultyChannel struct {
 }
 
 func (c *faultyChannel) Logon(ctx context.Context, r netlogon.LogonRequest) (netlogon.Reply, error) {
-	return call(ctx, c.f, "logon", r.User, func() (netlogon.Reply, error) { return c.next.Logon(ctx, r) })
+	return call(ctx, c.f, "logon", r.User, func() (netlogon.Reply, error) {
+		rep, err := c.next.Logon(ctx, r)
+		c.f.mu.Lock()
+		rewrite := c.f.rewrite
+		c.f.mu.Unlock()
+		if err == nil && rewrite != nil {
+			rewrite(&rep)
+		}
+		return rep, err
+	})
 }
 
 func (c *faultyChannel) SetPassword(ctx context.Context, password []byte) error {

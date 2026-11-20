@@ -17,6 +17,10 @@ import (
 // anonymous session.
 type Authenticator interface {
 	SignIn(ctx context.Context, step SignInStep) (SignInResult, error)
+	// ComputerName is the NetBIOS name an NTLM CHALLENGE's
+	// MsvAvNbComputerName carries, from the settings in force:
+	// vfserr.ErrUnavailable while none are.
+	ComputerName() (string, error)
 }
 
 // SignInStep is one verification round: an AP-REQ for Service, or a decoded
