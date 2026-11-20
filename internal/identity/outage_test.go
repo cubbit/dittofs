@@ -126,6 +126,46 @@ func TestDirectoryOutageColdLookupRefusedAtOnce(t *testing.T) {
 	})
 }
 
+// A lookup of more SIDs than one batch, at the probe, sends one query, the
+// probe: with the directory still down its other batches are refused unsent,
+// and with it back they are asked once the probe answers, so the whole set is
+// answered and the condition cleared.
+func TestDirectoryOutageSIDLookupProbesOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		e, c, sid := sidEnv(t)
+		// Two batches, alice in the second; the others no entry holds.
+		var sids [][]byte
+		for i := range directory.SIDBatch {
+			sids = append(sids, []byte(fmt.Sprintf("no such SID %d", i)))
+		}
+		sids = append(sids, sid["alice"])
+		e.sidsDown(t)
+		if _, err := c.LookupSIDs(ctx, [][]byte{sid["carol"]}, 0); !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Fatalf("LookupSIDs(carol) with the directory down = %v, want ErrUnavailable", err)
+		}
+		wantCondition(t, c, "unhealthy", "carol refused")
+
+		e.clock.Advance(10 * time.Second)
+		sent := e.queries(t)
+		if got, err := c.LookupSIDs(ctx, sids, 0); !errors.Is(err, vfserr.ErrUnavailable) || got != nil {
+			t.Fatalf("LookupSIDs(65) at the probe with the directory down = %d answers, %v; want none, ErrUnavailable", len(got), err)
+		}
+		synctest.Wait()
+		e.wantQueries(t, sent+1, "a lookup of two batches at the probe, the directory down")
+
+		e.fail(t)
+		e.clock.Advance(10 * time.Second)
+		sent = e.queries(t)
+		got, err := c.LookupSIDs(ctx, sids, 0)
+		if err != nil || len(got) != 1 || string(got[0].SID) != string(sid["alice"]) {
+			t.Fatalf("LookupSIDs(65) at the probe with the directory back = %d answers, %v; want alice's alone", len(got), err)
+		}
+		e.wantQueries(t, sent+2, "a lookup of two batches at the probe, the directory back")
+		wantCondition(t, c, "", "after the probe answered")
+	})
+}
+
 // The condition is degraded after a stale answer and unhealthy after a
 // refusal, staying unhealthy through later stale answers; once the
 // directory is back, lookups before the probe is due still send nothing,

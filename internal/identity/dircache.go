@@ -227,7 +227,7 @@ func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, g
 	// sign-in to notice it. Close ends the loop and waits for it. Overturned
 	// if a quiet node's 20 seconds to clear ever delays a recovery an
 	// operator watches for.
-	if c.out.skip(now) {
+	if skip, _ := c.out.skip(now); skip {
 		r.Err = errDirUnreachable
 	} else {
 		// The query runs on the first caller's context without its
@@ -401,15 +401,9 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 	}
 	// This lookup's queries start before it waits on any, and none waits on
 	// another, so two lookups waiting on each other's queries both finish.
-	for _, f := range mine {
-		if c.out.skip(c.clock.Now()) {
-			c.landSIDs(f, nil, errDirUnreachable)
-			continue
-		}
-		// A query runs without the opener's cancellation, so a caller that
-		// stops waiting leaves it to the others; the client's timeout bounds it.
-		go c.querySIDs(context.WithoutCancel(ctx), f)
-	}
+	// A query runs without the opener's cancellation, so a caller that stops
+	// waiting leaves it to the others; the client's timeout bounds it.
+	c.startSIDs(context.WithoutCancel(ctx), mine)
 	own := map[*sidQuery]bool{}
 	for _, f := range mine {
 		own[f] = true
@@ -464,6 +458,29 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 		}
 	}
 	return out, nil
+}
+
+// startSIDs starts the queries of fs, each batch asking the outage skip of
+// its own: one skipped lands unasked. A batch that is the probe runs alone,
+// and the batches after it start once it lands, so they go to the directory
+// if it answered and land unasked if it failed, rather than being skipped
+// while the probe is still out.
+func (c *dirCache) startSIDs(ctx context.Context, fs []*sidQuery) {
+	for i, f := range fs {
+		skip, probe := c.out.skip(c.clock.Now())
+		if skip {
+			c.landSIDs(f, nil, errDirUnreachable)
+			continue
+		}
+		if probe {
+			go func() {
+				c.querySIDs(ctx, f)
+				c.startSIDs(ctx, fs[i+1:])
+			}()
+			return
+		}
+		go c.querySIDs(ctx, f)
+	}
 }
 
 // querySIDs asks the directory who holds each SID of f's batch in one query,
