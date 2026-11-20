@@ -271,22 +271,33 @@ func (s *Server) signInLocal(ctx context.Context, step identity.SignInStep, proo
 	case !ok:
 		return identity.SignInResult{}, outcomeLogonFailure, vfserr.ErrLogonFailure
 	}
+	key, err := ntlmKey(base, a, avFlags)
+	if err != nil {
+		return identity.SignInResult{}, outcomeLogonFailure, err
+	}
+	return ntlmResult(step, identity.Evidence{Name: u.Name, Principal: u.Principal}, key), outcomeOK, nil
+}
+
+// ntlmKey is the exported session key of a response whose session base key
+// is base, its MIC checked under it; a failure is ErrLogonFailure.
+func ntlmKey(base [16]byte, a *identity.NTLMAuthenticate, avFlags uint32) ([16]byte, error) {
 	key, err := exportedKey(base, a.Flags, a.EncryptedSessionKey)
 	if err == nil {
 		err = checkMIC(key, a, avFlags)
 	}
 	if err != nil {
-		return identity.SignInResult{}, outcomeLogonFailure, fmt.Errorf("%w: %w", vfserr.ErrLogonFailure, err)
+		return key, fmt.Errorf("%w: %w", vfserr.ErrLogonFailure, err)
 	}
+	return key, nil
+}
+
+// ntlmResult is an NTLM sign-in of step proved by a secret, bound to ev,
+// with key as its session key.
+func ntlmResult(step identity.SignInStep, ev identity.Evidence, key [16]byte) identity.SignInResult {
 	return identity.SignInResult{
-		Identity: identity.Identity{
-			Proof:      identity.ProofSecret,
-			Protection: identity.ProtectionNone,
-			Evidence:   identity.Evidence{Name: u.Name, Principal: u.Principal},
-			Client:     step.Client,
-		},
-		Keys: identity.Keys{Session: key[:]},
-	}, outcomeOK, nil
+		Identity: identity.Identity{Proof: identity.ProofSecret, Protection: identity.ProtectionNone, Evidence: ev, Client: step.Client},
+		Keys:     identity.Keys{Session: key[:]},
+	}
 }
 
 // ntlmUser is the user name finds and outcomeOK when it can sign in over

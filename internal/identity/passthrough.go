@@ -50,7 +50,9 @@ func passThroughDomain(st *State, user, domain string) bool {
 // guest logon; its logon domain the directory's; then the exported key and
 // the MIC, as a local sign-in checks them; then the user SID through Find,
 // minting a directory principal, refused when disabled or found by no
-// principal; then its groups through the PAC's filter.
+// principal; then its groups through the PAC's filter. A controller's
+// refusal of the user's credentials or account is ErrLogonFailure; any
+// other failure to get an answer, an NTSTATUS among them, is ErrUnavailable.
 //
 // decision: the directory's domain SID is read before the response is
 // sent, so a directory outage answers ErrUnavailable without the controller
@@ -70,8 +72,9 @@ func (s *Server) signInPassThrough(ctx context.Context, st *State, step identity
 	}
 	rep, err := s.logon(ctx, netlogon.LogonRequest{Domain: a.Domain, User: a.User, Workstation: a.Workstation,
 		Challenge: step.Challenge, NTResponse: a.NTResponse})
+	var status netlogon.Status
 	switch {
-	case errors.Is(err, netlogon.ErrRejected):
+	case errors.As(err, &status) && credentialStatus[status]:
 		return identity.SignInResult{}, outcomeLogonFailure, fmt.Errorf("%w: pass-through: %w", vfserr.ErrLogonFailure, err)
 	case err != nil:
 		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: pass-through: %w", vfserr.ErrUnavailable, err)
@@ -79,14 +82,9 @@ func (s *Server) signInPassThrough(ctx context.Context, st *State, step identity
 	if err := checkReply(rep, domain); err != nil {
 		return identity.SignInResult{}, outcomeLogonFailure, fmt.Errorf("%w: pass-through: %w", vfserr.ErrLogonFailure, err)
 	}
-	var base [16]byte
-	copy(base[:], rep.SessionKey)
-	key, err := exportedKey(base, a.Flags, a.EncryptedSessionKey)
-	if err == nil {
-		err = checkMIC(key, a, avFlags)
-	}
+	key, err := ntlmKey([16]byte(rep.SessionKey), a, avFlags)
 	if err != nil {
-		return identity.SignInResult{}, outcomeLogonFailure, fmt.Errorf("%w: %w", vfserr.ErrLogonFailure, err)
+		return identity.SignInResult{}, outcomeLogonFailure, err
 	}
 	// Find mints the entry the reply's SID names; one whose principal is
 	// marked deleted is ErrUnknownPrincipal until its deletion ends, as an
@@ -115,15 +113,20 @@ func (s *Server) signInPassThrough(ctx context.Context, st *State, step identity
 	if err != nil {
 		return identity.SignInResult{}, outcomeUnavailable, err
 	}
-	return identity.SignInResult{
-		Identity: identity.Identity{
-			Proof:      identity.ProofSecret,
-			Protection: identity.ProtectionNone,
-			Evidence:   identity.Evidence{Name: st.Directory.NetBIOSDomain + `\` + u.Name, Principal: p, SIDs: sids, DenyOnly: deny},
-			Client:     step.Client,
-		},
-		Keys: identity.Keys{Session: key[:]},
-	}, outcomeOK, nil
+	return ntlmResult(step, identity.Evidence{Name: st.Directory.NetBIOSDomain + `\` + u.Name, Principal: p, SIDs: sids, DenyOnly: deny}, key), outcomeOK, nil
+}
+
+// credentialStatus is each NTSTATUS a controller refuses a logon with
+// because of the user's credentials or account: a wrong password or name,
+// an account locked, disabled, expired or restricted, an expired password,
+// and a trust account's logon. Any other status is the controller failing
+// to answer, ErrUnavailable, which the throttle never counts.
+var credentialStatus = map[netlogon.Status]bool{
+	netlogon.StatusNoSuchUser: true, netlogon.StatusWrongPassword: true, netlogon.StatusLogonFailure: true,
+	netlogon.StatusAccountRestriction: true, netlogon.StatusInvalidLogonHours: true, netlogon.StatusInvalidWorkstation: true,
+	netlogon.StatusPasswordExpired: true, netlogon.StatusPasswordMustChange: true, netlogon.StatusAccountDisabled: true,
+	netlogon.StatusAccountExpired: true, netlogon.StatusAccountLockedOut: true,
+	netlogon.StatusNologonInterdomainTrust: true, netlogon.StatusNologonWorkstationTrust: true, netlogon.StatusNologonServerTrust: true,
 }
 
 // checkReply refuses a reply whose user session key is not 16 bytes or is

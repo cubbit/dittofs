@@ -128,7 +128,7 @@ func (d *DomainController) sidOf(rid uint32) sid.SID {
 
 // UseDomainSID makes s the domain's SID, as when the domain a Directory
 // serves is the same one, before any account is staged or user added.
-func (d *DomainController) UseDomainSID(_ testing.TB, s sid.SID) {
+func (d *DomainController) UseDomainSID(s sid.SID) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.domainSID = s

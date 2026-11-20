@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"testing"
 	"time"
@@ -54,7 +55,7 @@ func newPassThrough(t *testing.T, rules ...sim.Rule) *ptFixture {
 	}
 	fx.domain = sid.FormatSID(domain)
 	fx.d = identitytest.NewDomainController("CORP", machineRealm, "DC=corp,DC=example", dc1)
-	fx.d.UseDomainSID(t, *domain)
+	fx.d.UseDomainSID(*domain)
 	fx.d.StageComputer(t, identitytest.StagedComputer{Name: "NAS", Password: []byte(pw2), EncTypes: 0x18})
 	fx.alice = fx.d.AddUser(t, "alice", alicePW)
 	var aliceSID bytes.Buffer
@@ -392,6 +393,28 @@ func TestPassThroughDisabledAndDeleted(t *testing.T) {
 	}
 	if got := fx.signedIn(t, "alice after her deletion ended", ntlmStep(string(alicePW), "alice", "CORP", true)).Identity.Evidence.Principal; got == p {
 		t.Errorf("alice after her deletion ended: bound %v, the deleted principal; want a new one", got)
+	}
+}
+
+// A controller that cannot be asked, or that answers an NTSTATUS other than
+// a credential's, answers unavailable ten times without counting on the
+// throttle, so the right password then signs in.
+func TestPassThroughOutageNeverCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"the connection lost", io.ErrUnexpectedEOF},
+		{"STATUS_NO_LOGON_SERVERS", netlogon.StatusNoLogonServers},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newPassThrough(t, sim.Rule{Op: "logon", Key: "alice", Count: 10, Action: sim.FaultAction{Err: tc.err}})
+			for i := range 10 {
+				res, oc, err := fx.signIn(ntlmStep(string(alicePW), "alice", "CORP", true))
+				refused(t, fmt.Sprintf("%s, sign-in %d", tc.name, i), res, oc, err, vfserr.ErrUnavailable, "unavailable")
+			}
+			fx.signedIn(t, "alice after ten outages", ntlmStep(string(alicePW), "alice", "CORP", true))
+		})
 	}
 }
 
