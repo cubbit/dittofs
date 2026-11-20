@@ -70,8 +70,8 @@ func WithNew(f func(node.Config) (*node.Node, error)) Option {
 }
 
 // New initialises an installation under t.TempDir() through install.Run, as
-// dfs init does: the metadata store, one journal device and the
-// administrator, its password generated and discarded. It then builds a node
+// dfs init does: the metadata store, one journal device, the storage key and
+// the administrator, its password generated and discarded. It then builds a node
 // over them, its API, metrics listener and adapters on loopback. Every KV the
 // harness opens is closed when the test ends. It sets the key file's
 // passphrase in the environment, so a test using it cannot run in parallel.
@@ -99,6 +99,8 @@ func New(t testing.TB, opts ...Option) *Harness {
 	b.API.Listen = []string{"127.0.0.1:0"}
 	b.Metrics.Listen = "127.0.0.1:0"
 	b.Adapters.Listen = []string{"127.0.0.1"}
+	b.Keys.Storage.Kind = keyprovider.KindLocal
+	b.Keys.Storage.Local.File = filepath.Join(root, "storage.key")
 	h.cfg = node.Config{
 		Bootstrap: b,
 		Clock:     h.clock,
@@ -123,8 +125,8 @@ func New(t testing.TB, opts ...Option) *Harness {
 	return h
 }
 
-// storageKey writes a storage key file under dir and opens it, closed when
-// the test ends.
+// storageKey writes a storage key file under dir, at the path the
+// bootstrap's keys.storage names, and opens it, closed when the test ends.
 func storageKey(t testing.TB, dir string) keyprovider.KeyProvider {
 	t.Helper()
 	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)

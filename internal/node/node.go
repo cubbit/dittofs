@@ -21,6 +21,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -83,6 +84,13 @@ type Node struct {
 	// snap is the one deadlined, single-flight engine.Stats fetch the engine
 	// series, the journal series and the health evaluator read.
 	snap *snapshot
+	// storageKey is the storage role's wrapping key the bootstrap's
+	// keys.storage names; Stop closes it.
+	storageKey keyprovider.KeyProvider
+	// tokens issues and verifies access tokens over the installation's
+	// signing key. Only the rotation uses them yet: sign-in hands them to the
+	// API.
+	tokens *auth.Tokens
 	// ending, when set, is called by step 3 of each share removal once its
 	// bound is set on the clock, before it waits on anything.
 	ending func(entity.ShareID)
@@ -90,7 +98,10 @@ type Node struct {
 
 // New resolves the adapters' addresses, refusing an adapters.listen it
 // cannot bind, opens the metadata store over cfg.KV, refusing a KV that
-// holds no installation or one this binary does not read, then builds open
+// holds no installation or one this binary does not read, opens the storage
+// key keys.storage names, refusing a bootstrap that names none and dialling
+// a KMIP server when it names one there, then builds the secret provider and
+// the access tokens over it, open
 // state, the engine and the filesystem, each empty from its own Deps, the
 // budgets and their series, the operation runner with the steps of the
 // kinds this node drives, the watchdog, the adapters' one Deps, the sidecar
@@ -103,6 +114,13 @@ type Node struct {
 // ponytail: the node both builds and drives its components. Split the
 // builder out when it gains dependencies a multi-node test cannot replace
 // cheaply.
+//
+// decision: a configured storage key that cannot be opened refuses the
+// build, the data plane included, though only the control plane uses the
+// key: the node needs it to seal the signing key's versions and to verify
+// access tokens, so a node built without it could serve no signed-in caller.
+// Overturned if the key opens lazily on first use, which
+// would let the data plane start while a KMIP server is down.
 //
 // decision: New builds over another installation's KV, because nothing in
 // Config names the installation to expect. Start refuses that KV at its first
@@ -138,6 +156,9 @@ func newNode(cfg Config, in apiInputs) (*Node, error) {
 	if len(cfg.Bootstrap.Journals) == 0 {
 		return nil, errors.Join(fmt.Errorf("node: %w", errNoDevice), cfg.KV.Close())
 	}
+	if cfg.Bootstrap.Keys.Storage.Kind == "" {
+		return nil, errors.Join(errNoStorageKey, cfg.KV.Close())
+	}
 	n, err := build(cfg, in)
 	if err != nil {
 		return nil, errors.Join(err, cfg.KV.Close())
@@ -145,7 +166,13 @@ func newNode(cfg Config, in apiInputs) (*Node, error) {
 	return n, nil
 }
 
-func build(cfg Config, in apiInputs) (*Node, error) {
+// errNoStorageKey refuses a bootstrap that names no storage key, as dfs init
+// does.
+var errNoStorageKey = errors.New("node: keys.storage is not set: the administrator's password and the signing key are sealed under it")
+
+// build builds the node; once it has opened the storage key, a step that
+// fails after closes it.
+func build(cfg Config, in apiInputs) (_ *Node, err error) {
 	if cfg.Metrics == nil {
 		return nil, errors.New("node: Config.Metrics is missing")
 	}
@@ -180,6 +207,14 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		return nil, fmt.Errorf("node: metadata store: %w", err)
 	}
+	if n.storageKey, err = keyprovider.NewProvider(context.Background(), cfg.Bootstrap.Keys.Storage.Provider()); err != nil {
+		return nil, fmt.Errorf("node: the storage key: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, n.storageKey.Close())
+		}
+	}()
 	open, deps, err := enginewire.Compose(enginewire.Params{
 		Node:    cfg.Bootstrap.Node.ID,
 		Devices: journalPaths(cfg.Bootstrap.Journals),
@@ -223,8 +258,13 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
+	p, err := n.openSecrets(context.Background())
+	if err != nil {
+		return nil, err
+	}
 	steps := operationSteps(n.meta.Nodes())
 	steps[string(apiv1.OpShareDelete)] = stepRow{n.shareDeletion, n.removalProgress}
+	steps[string(apiv1.OpRotateSigningKey)] = n.rotationRow(p)
 	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node.ID, cfg.Logger, steps)
 	n.watchdog = health.NewWatchdog(cfg.Clock)
 	n.sidecars = sidecar.New()
@@ -236,9 +276,9 @@ func build(cfg Config, in apiInputs) (*Node, error) {
 	// decision: the API is handed neither the bootstrap's api.tls
 	// certificate and key nor its api.socket path, though the bootstrap
 	// names them and the API serves TLS on every address but loopback; nor
-	// a signing key or tracer, and in production no Authenticate, as the
-	// installation's signing key is a secret no secret store reads and
-	// Config names no tracer. So a start on an address but loopback is
+	// a signing key or tracer, and in production no Authenticate, as the API
+	// takes neither the access tokens the node builds nor the signing key's
+	// value, and Config names no tracer. So a start on an address but loopback is
 	// refused for want of a certificate even when api.tls names one, no
 	// local socket is served, every call but a public row's answers 401,
 	// every POST and DELETE, which must carry an Idempotency-Key, answers

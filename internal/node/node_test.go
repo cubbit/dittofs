@@ -3,6 +3,7 @@ package node_test
 import (
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
@@ -28,6 +30,16 @@ func TestNewStartsNothing(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	if err := h.Node().Stop(t.Context()); err != nil {
 		t.Fatalf("Stop after New: got %v, want nil", err)
+	}
+}
+
+// Stop closes the storage key, and answers its Close's error.
+func TestStopClosesTheStorageKey(t *testing.T) {
+	h := nodetest.New(t)
+	boom := errors.New("the storage key did not close")
+	h.Node().FailStorageKeyClose(boom)
+	if err := h.Node().Stop(t.Context()); !errors.Is(err, boom) {
+		t.Fatalf("Stop with a storage key whose Close fails: got %v, want %v", err, boom)
 	}
 }
 
@@ -54,6 +66,45 @@ func TestNewRefusesAKVWithNoInstallation(t *testing.T) {
 	}
 	if err := db.View(t.Context(), func(kv.Reader) error { return nil }); err == nil {
 		t.Error("the KV after a refused New: a View succeeded, want it closed")
+	}
+}
+
+// New refuses a bootstrap that names no storage key, as dfs init does, and
+// one whose storage key does not open, over an initialised store; each
+// closes the KV it was handed.
+func TestNewRefusesNoStorageKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string // empty names no storage key
+		want string
+	}{
+		{"none named", "", "node: keys.storage is not set: the administrator's password and the signing key are sealed under it"},
+		{"one that does not open", filepath.Join(t.TempDir(), "missing.key"), "node: the storage key: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := badgerkv.Open(badgerkv.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := kvstore.Init(t.Context(), db, uuid.New()); err != nil {
+				t.Fatal(err)
+			}
+			b := listening("127.0.0.1:0", "127.0.0.1:0")
+			b.Keys.Storage.Local.File = tc.file
+			if tc.file == "" {
+				b.Keys.Storage.Kind = ""
+			}
+			_, err = node.New(node.Config{
+				Bootstrap: b, KV: db, Clock: sim.NewTestClock(time.Unix(0, 0)), Metrics: metrics.New("test", "test"),
+				Logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
+			})
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+				t.Fatalf("New with a storage key %s: got %v, want refused with %q", tc.name, err, tc.want)
+			}
+			if err := db.View(t.Context(), func(kv.Reader) error { return nil }); err == nil {
+				t.Error("the KV after a refused New: a View succeeded, want it closed")
+			}
+		})
 	}
 }
 
@@ -136,6 +187,8 @@ func listening(metrics string, api ...string) bootstrap.Bootstrap {
 	b.Metrics.Listen = metrics
 	b.API.Listen = api
 	b.Journals = []bootstrap.Journal{{Path: "/a journal device the tests never open"}}
+	b.Keys.Storage.Kind = keyprovider.KindLocal
+	b.Keys.Storage.Local.File = "/a storage key the tests never open"
 
 	return b
 }

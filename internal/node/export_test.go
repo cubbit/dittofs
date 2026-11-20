@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -14,6 +15,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -247,3 +249,24 @@ func StatsThrough(n *Node, f func() engine.Stats) {
 	fn := statsFunc(f)
 	n.snap.stats.Store(&fn)
 }
+
+// Tokens is the access tokens the node verifies with, nil when the
+// bootstrap names no storage key.
+func (n *Node) Tokens() *auth.Tokens { return n.tokens }
+
+// RunnerTurn has the operation runner take one turn, as its loop does at
+// each interval. Call it only on a node not started, whose runner runs no
+// loop of its own.
+func (n *Node) RunnerTurn(ctx context.Context) { n.runner.turn(ctx) }
+
+// FailStorageKeyClose has the storage key's Close answer err once the real
+// key is closed beneath it.
+func (n *Node) FailStorageKeyClose(err error) { n.storageKey = failingClose{n.storageKey, err} }
+
+// failingClose is a storage key whose Close closes the real one, then fails.
+type failingClose struct {
+	keyprovider.KeyProvider
+	err error
+}
+
+func (f failingClose) Close() error { return errors.Join(f.KeyProvider.Close(), f.err) }

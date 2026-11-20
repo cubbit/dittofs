@@ -3,6 +3,8 @@ package node
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -92,7 +95,7 @@ func TestStopRetriesAPartWhoseStopFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := &Node{cfg: Config{Clock: sim.NewTestClock(time.Unix(0, 0)), KV: db}}
+	n := &Node{cfg: Config{Clock: sim.NewTestClock(time.Unix(0, 0)), KV: db}, storageKey: localKey(t)}
 	var used, engineStops int
 	n.started("used", func(context.Context) error { used++; return nil })
 	n.started("engine", func(context.Context) error {
@@ -161,4 +164,25 @@ func TestHaltWaitsAPartForItsOwnBound(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("halt still running 10 s after the part's bound")
 	}
+}
+
+// localKey is a real storage key, from a key file under t.TempDir(), which
+// Stop closes. It sets the key file's passphrase in the environment.
+func localKey(t *testing.T) keyprovider.KeyProvider {
+	t.Helper()
+	const passphrase = "lifecycle test passphrase"
+	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
+	b, err := keyprovider.GenerateKeyFile(passphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "storage.key")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kp, err := keyprovider.NewProvider(t.Context(), keyprovider.Config{Kind: keyprovider.KindLocal, File: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kp
 }

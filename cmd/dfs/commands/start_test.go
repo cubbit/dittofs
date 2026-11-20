@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -82,7 +83,7 @@ var testNode = entity.NodeID(uuid.MustParse(nodeUUID))
 // bootstrapFile is a bootstrap the tests write: every listener on loopback
 // port 0, logging to stderr. An empty field is left out of the file.
 type bootstrapFile struct {
-	backend, store, journal, node string
+	backend, store, journal, node, key string
 }
 
 // write writes b under dir as config.yaml and returns its path.
@@ -103,6 +104,9 @@ func (b bootstrapFile) write(t *testing.T, dir string) string {
 	if b.journal != "" {
 		fmt.Fprintf(&body, "journals:\n  - path: '%s'\n", b.journal)
 	}
+	if b.key != "" {
+		fmt.Fprintf(&body, "keys:\n  storage:\n    kind: local\n    local:\n      file: '%s'\n", b.key)
+	}
 	fmt.Fprintf(&body, `api:
   listen: ['127.0.0.1:0']
 metrics:
@@ -122,7 +126,7 @@ blockstore:
 
 // installed is the bootstrap of an installation under dir, as dfs init
 // leaves one: the metadata store at dir/store, one journal at dir/device,
-// recorded for the test's node. A host whose mount the journal's platform
+// recorded for the test's node, and the storage key at dir/storage.key. A host whose mount the journal's platform
 // check refuses skips the test.
 func installed(t *testing.T, dir string) string {
 	t.Helper()
@@ -168,7 +172,24 @@ func installed(t *testing.T, dir string) string {
 	if err := st.RecordJournal(ctx, jid, testNode, entity.JournalDir(dev)); err != nil {
 		t.Fatalf("record the journal: %v", err)
 	}
-	return bootstrapFile{store: store, journal: dev, node: nodeUUID}.write(t, dir)
+	return bootstrapFile{store: store, journal: dev, node: nodeUUID, key: storageKeyFile(t, dir)}.write(t, dir)
+}
+
+// storageKeyFile writes a storage key file under dir, its passphrase set in
+// the environment the child inherits, and returns its path.
+func storageKeyFile(t *testing.T, dir string) string {
+	t.Helper()
+	const passphrase = "dfs start test passphrase"
+	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
+	b, err := keyprovider.GenerateKeyFile(passphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "storage.key")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // Over a directory holding no installation, dfs start exits non-zero at its

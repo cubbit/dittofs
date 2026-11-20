@@ -1,6 +1,7 @@
 package node
 
 import (
+	"errors"
 	"go/ast"
 	gobuild "go/build"
 	"go/importer"
@@ -920,6 +921,129 @@ func writeCalls(dir, path string) ([]string, error) {
 	return bad, nil
 }
 
+// signingKeyFiles are the files of the API, by their path under it, that may
+// reach the signing key: the tokens, which seal and open it, and the
+// rotation step, its one writer after the installation's first version.
+var signingKeyFiles = []string{"auth/rotate.go", "auth/tokens.go"}
+
+// credentialWrite is the API's one function outside signingKeyFiles that
+// may write a secret version: a remote store's credential, which the store
+// refuses to write under the signing key's kind or owner.
+const credentialWrite = "putCredential"
+
+// signingKeyReaches type-checks the package in dir, as import path path, an
+// API package, and returns each identifier outside signingKeyFiles that
+// could reach the signing key: a use of the installation's SigningKey field,
+// which names the key's reference; a use of entity.SecretKey, the key's
+// kind; and a call of a PutSecret or PruneSecret method, which writes or
+// drops a version of any secret, but a PutSecret in credentialWrite. Every
+// way to write the key needs one of these, so a route writing it is caught
+// whatever it is named; one reaching the reference through another package's
+// function, which none of the API's imports has, is not.
+func signingKeyReaches(dir, path string) ([]string, error) {
+	_, files, info, err := typeCheck(dir, path)
+	if err != nil {
+		return nil, err
+	}
+	fset, imp := sourceImporter()
+	ent, err := imp.Import(module + "pkg/metadata/entity")
+	if err != nil {
+		return nil, err
+	}
+	var field types.Object
+	inst := ent.Scope().Lookup("Installation").Type().Underlying().(*types.Struct)
+	for f := range inst.Fields() {
+		if f.Name() == "SigningKey" {
+			field = f
+		}
+	}
+	kind := ent.Scope().Lookup("SecretKey")
+	if field == nil || kind == nil {
+		return nil, errors.New("entity declares no Installation.SigningKey or SecretKey")
+	}
+	sub := strings.TrimPrefix(strings.TrimPrefix(path, module+"internal/node/api"), "/")
+	var bad []string
+	for _, f := range files {
+		file := filepath.Base(fset.Position(f.Pos()).Filename)
+		if sub != "" {
+			file = sub + "/" + file
+		}
+		if slices.Contains(signingKeyFiles, file) {
+			continue
+		}
+		var fn string
+		ast.Inspect(f, func(n ast.Node) bool {
+			if fd, ok := n.(*ast.FuncDecl); ok {
+				fn = fd.Name.Name
+			}
+			id, ok := n.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			at := file + ":" + strconv.Itoa(fset.Position(id.Pos()).Line)
+			switch o := info.Uses[id]; {
+			case o == nil:
+			case o == field:
+				bad = append(bad, at+" uses Installation.SigningKey")
+			case o == kind:
+				bad = append(bad, at+" uses entity.SecretKey")
+			case (o.Name() == "PutSecret" || o.Name() == "PruneSecret") && isMethod(o):
+				if o.Name() == "PutSecret" && fn == credentialWrite {
+					break
+				}
+				bad = append(bad, at+" calls "+o.Name())
+			}
+			return true
+		})
+	}
+	slices.Sort(bad)
+	return bad, nil
+}
+
+// isMethod reports whether o is a method.
+func isMethod(o types.Object) bool {
+	fn, ok := o.(*types.Func)
+	return ok && fn.Signature().Recv() != nil
+}
+
+// No package under api reaches the signing key outside the tokens and the
+// rotation step, so no route writes it (RFC 23's R8); a planted route
+// rewriting it through the installation's field, the key's kind and
+// PutSecret, and dropping it through PruneSecret, is caught at each.
+func TestNoRouteWritesTheSigningKey(t *testing.T) {
+	var dirs []string
+	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range dirs {
+		got, err := signingKeyReaches(dir, module+"internal/node/"+filepath.ToSlash(dir))
+		if err != nil {
+			t.Fatalf("%s: %v", dir, err)
+		}
+		if len(got) > 0 {
+			t.Errorf("%s: reaches the signing key %q, want none", dir, got)
+		}
+	}
+	got, err := signingKeyReaches(filepath.Join("testdata", "arch", "signing-key"), module+"internal/node/api")
+	if err != nil {
+		t.Fatalf("the planted route: %v", err)
+	}
+	want := []string{
+		"routes.go:12 uses Installation.SigningKey",
+		"routes.go:16 uses entity.SecretKey",
+		"routes.go:18 calls PutSecret",
+		"routes.go:24 calls PruneSecret",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the planted route: reaches %q, want %q", got, want)
+	}
+}
+
 // setsAudit reports whether e is a composite literal whose Audit is set to
 // &x or to a call's result, either of which names a record the call built;
 // a variable, nil or not, does not show that one exists.
@@ -1084,9 +1208,13 @@ func apiExports(dir, path string) ([]string, error) {
 // OpenAPI, the document cmd/genopenapi writes; and its auth package Caller,
 // CallerFrom, the With its authentication step calls, the local socket's
 // mark, WithLocal and Local, the role table's Right, its rights and Allowed,
-// the ResetAccount the break-glass reset calls, and the SealSigningKey the
-// initialisation step seals the first signing key with, and nothing else; a
-// planted extra method is caught.
+// the ResetAccount the break-glass reset calls, the SealSigningKey the
+// initialisation step seals the first signing key with, and the access
+// tokens and the signing key's rotation the node builds: Tokens, NewTokens,
+// Issue, Verify and their Claims, the KeyVersion the node opens the key's
+// versions as, RotationStep and RotationProgress, and the interfaces their
+// parameters take, Clock, KeyVersions, Sealer and Writer; and nothing else;
+// a planted extra method is caught.
 func TestAPIExports(t *testing.T) {
 	want := []string{"Deps", "New", "OpenAPI", "Server", "Server.Start", "Server.Stop"}
 	for _, tc := range []struct {
@@ -1095,8 +1223,12 @@ func TestAPIExports(t *testing.T) {
 	}{
 		{"api", "internal/node/api", want},
 		{"api/auth", "internal/node/api/auth", []string{
-			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Drain", "Installation", "Local", "Principals",
-			"Public", "QuotaEvents", "ResetAccount", "Right", "SealSigningKey", "Self", "Shares", "Stores", "View", "With", "WithLocal",
+			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Claims", "Clock", "Clock.Now", "Drain", "Installation",
+			"KeyVersion", "KeyVersion.Format", "KeyVersion.LogValue", "KeyVersion.MarshalJSON", "KeyVersion.MarshalYAML",
+			"KeyVersion.String", "KeyVersions", "KeyVersions.Versions", "Local", "NewTokens", "Principals", "Public",
+			"QuotaEvents", "ResetAccount", "Right", "RotationProgress", "RotationStep", "SealSigningKey", "Sealer",
+			"Sealer.Seal", "Self", "Shares", "Stores", "Tokens", "Tokens.Format", "Tokens.Issue", "Tokens.LogValue",
+			"Tokens.String", "Tokens.Verify", "View", "With", "WithLocal", "Writer", "Writer.Write",
 		}},
 		{"testdata/arch/api-exports", "internal/node/api", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},
 	} {
