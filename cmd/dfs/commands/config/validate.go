@@ -65,7 +65,6 @@ func runConfigValidate(cmd *cobra.Command, _ []string) error {
 
 	_, _ = fmt.Fprintf(out, "\nConfiguration summary:\n")
 	_, _ = fmt.Fprintf(out, "  Log level:       %s\n", cfg.Logging.Level)
-	_, _ = fmt.Fprintf(out, "  Journal path:    %s\n", cfg.Blockstore.Journal.Path)
 
 	return nil
 }

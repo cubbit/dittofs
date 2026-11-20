@@ -333,7 +333,7 @@ func TestLoadRefusesValues(t *testing.T) {
 		},
 		{
 			name: "v1 secret", content: "controlplane:\n  jwt:\n    secret: s3cr3t\n",
-			want:   []string{"P: controlplane.jwt.secret: unknown key; did you mean api.socket?"},
+			want:   []string{"P: controlplane.jwt.secret: " + removedKeyRule},
 			absent: []string{"s3cr3t"},
 		},
 		{
@@ -1131,8 +1131,8 @@ func TestLoadMissingDefault(t *testing.T) {
 		t.Fatalf("LoadWithSources with no default file: %v", err)
 	}
 
-	if len(b.Source) != 43 {
-		t.Errorf("sources: got %d keys, want 43", len(b.Source))
+	if len(b.Source) != 42 {
+		t.Errorf("sources: got %d keys, want 42", len(b.Source))
 	}
 
 	for key, src := range b.Source {
@@ -1154,8 +1154,8 @@ func TestLoadEmptyAndNamedFiles(t *testing.T) {
 	}
 
 	b := loads(t, "", nil)
-	if len(b.Source) != 43 {
-		t.Errorf("sources: got %d keys, want 43", len(b.Source))
+	if len(b.Source) != 42 {
+		t.Errorf("sources: got %d keys, want 42", len(b.Source))
 	}
 
 	for key, src := range b.Source {
@@ -1196,8 +1196,8 @@ func TestLoadWithSources(t *testing.T) {
 		}
 	}
 
-	if len(b.Source) != 43 {
-		t.Errorf("sources: got %d keys, want 43", len(b.Source))
+	if len(b.Source) != 42 {
+		t.Errorf("sources: got %d keys, want 42", len(b.Source))
 	}
 
 	bad := writeFile(t, "logging:\n  level: verbose\n")
@@ -1221,8 +1221,7 @@ func TestLoadEveryKey(t *testing.T) {
 		"metrics:\n  listen: \"127.0.0.1:9091\"\n" +
 		"logging:\n  level: debug\n  format: json\n  output: /l/d.log\n" +
 		"  rotation:\n    max_size: \"2MiB\"\n    max_backups: 3\n    max_age: \"48h\"\n" +
-		"    compress: true\n" +
-		"blockstore:\n  journal:\n    path: /b\n"
+		"    compress: true\n"
 
 	local := func(role string) string {
 		return "  " + role + ":\n    kind: local\n    local:\n      file: /" + role +
@@ -1258,7 +1257,6 @@ func TestLoadEveryKey(t *testing.T) {
 				Compress:   true,
 			},
 		}
-		b.Blockstore.Journal.Path = "/b"
 
 		return b
 	}
@@ -1307,7 +1305,7 @@ func TestLoadEveryKey(t *testing.T) {
 			"badger and local",
 			common + "metadata:\n  backend: badger\n  badger:\n    path: /m/badger\n" +
 				"keys:\n" + local("protocol") + local("storage"),
-			badger, 25,
+			badger, 24,
 		},
 		{
 			"foundationdb and kmip",
@@ -1315,7 +1313,7 @@ func TestLoadEveryKey(t *testing.T) {
 				"    cluster_file: /m/fdb.cluster\n    tls:\n      cert_file: /m/fdb.crt\n" +
 				"      key_file: /m/fdb.key\n      ca_file: /m/fdb-ca.crt\n" +
 				"keys:\n" + kmip("protocol") + kmip("storage"),
-			fdb, 38,
+			fdb, 37,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1363,42 +1361,6 @@ func TestLoadAliasCycle(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("Load of an alias cycle: no return in 30s, the alias is followed again")
-	}
-}
-
-// A relative state directory makes blockstore.journal.path's default
-// relative: the load refuses, naming the variable, and GetDefaultConfig,
-// which has no error to return, panics with the same line. Not parallel: it
-// sets the process's XDG_STATE_HOME, which the state directory still reads.
-func TestLoadRelativeStateDirectory(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", "rel")
-
-	const want = "environment: XDG_STATE_HOME: must be an absolute path"
-
-	if _, err := Load("", nil); err == nil || err.Error() != want {
-		t.Errorf("Load with XDG_STATE_HOME=rel: got %v, want %q", err, want)
-	}
-
-	defer func() {
-		if got := recover(); got != "bootstrap: the defaults do not load: "+want {
-			t.Errorf("GetDefaultConfig with XDG_STATE_HOME=rel: panic %v, want the report", got)
-		}
-	}()
-
-	GetDefaultConfig()
-}
-
-// With XDG_STATE_HOME unset, the state directory is HOME's, and a relative
-// HOME is the variable the refusal names. Not parallel: it sets the
-// process's HOME and XDG_STATE_HOME.
-func TestLoadRelativeHome(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", "")
-	t.Setenv("HOME", "rel")
-
-	const want = "environment: HOME: must be an absolute path"
-
-	if _, err := Load("", nil); err == nil || err.Error() != want {
-		t.Errorf("Load with HOME=rel: got %v, want %q", err, want)
 	}
 }
 

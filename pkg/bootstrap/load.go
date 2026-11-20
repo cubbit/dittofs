@@ -32,9 +32,6 @@ type Bootstrap struct {
 	// Logging controls log output behavior
 	Logging LoggingConfig `mapstructure:"logging" yaml:"logging"`
 
-	// Blockstore holds the per-share local state root.
-	Blockstore BlockstoreConfig `mapstructure:"blockstore" yaml:"blockstore"`
-
 	// Node is this node's identity and its roles. The file names the
 	// identity only when every journal directory's node-id copy is lost.
 	Node struct {
@@ -144,6 +141,10 @@ type Loaded struct {
 
 // whereEnvironment is the <where> of a refusal of a variable.
 const whereEnvironment = "environment"
+
+// settingLine is the rule of a setting written where the host sets its
+// facts: a start never takes a setting from the host (RFC 13 §2.2).
+const settingLine = "a setting, not a host fact; set it through the management API"
 
 // Load reads the host's file and environ, the process environment as
 // os.Environ returns it, and returns the bootstrap, or one error whose lines
@@ -371,9 +372,9 @@ func walk(m *yaml.Node, prefix, path string, leaves map[string]*yaml.Node, rep *
 }
 
 // refuseUndeclared refuses each leaf under an undeclared key, naming why:
-// a key that moved names its replacement, a setting names the management
-// API, and any other key names the closest declared one. No value is
-// printed: an undeclared key's value may be a secret (RFC 13 §6).
+// a setting names the management API, a v1 key of Appendix C's table names
+// its replacement, and any other key names the closest declared one. No
+// value is printed: an undeclared key's value may be a secret (RFC 13 §6).
 //
 // An alias inside an undeclared mapping is a leaf, not followed: an alias
 // may name a mapping that holds it, and following it would never end.
@@ -386,11 +387,13 @@ func refuseUndeclared(n *yaml.Node, key, path string, rep *report) {
 		return
 	}
 
-	switch replacement, moved := renamedKey(key); {
-	case moved:
-		rep.add(path, key, "no longer read; write "+replacement)
+	rule, retired := retiredRule(key)
+
+	switch {
 	case isSetting(key):
-		rep.add(path, key, "a setting, not a host fact; set it through the management API")
+		rep.add(path, key, settingLine)
+	case retired:
+		rep.add(path, key, rule)
 	default:
 		rep.add(path, key, "unknown key; did you mean "+closestKey(key)+"?")
 	}
@@ -668,22 +671,6 @@ func assemble(values map[string]*chosen) (*Loaded, error) {
 		return nil, fmt.Errorf("decode the bootstrap: %w", err)
 	}
 
-	loaded.Blockstore.applyDefaults()
-
-	if err := loaded.Blockstore.validate(); err != nil {
-		var rep report
-
-		// A default path is the state directory's, so the variable that
-		// made it relative is named.
-		if c := values["blockstore.journal.path"]; c.set {
-			rep.add(c.where, c.name, "must be an absolute directory")
-		} else {
-			rep.add(whereEnvironment, stateDirVariable(), "must be an absolute path")
-		}
-
-		return nil, rep.err()
-	}
-
 	return loaded, nil
 }
 
@@ -762,24 +749,6 @@ func getStateDir() string {
 	}
 
 	return filepath.Join(stateDir, "dittofs")
-}
-
-// stateDirVariable names the variable getStateDir read the state directory
-// from.
-func stateDirVariable() string {
-	if runtime.GOOS == "windows" {
-		if os.Getenv("LOCALAPPDATA") != "" {
-			return "LOCALAPPDATA"
-		}
-
-		return "USERPROFILE"
-	}
-
-	if os.Getenv("XDG_STATE_HOME") != "" {
-		return "XDG_STATE_HOME"
-	}
-
-	return "HOME"
 }
 
 // getDefaultLogPath returns the default log file path.

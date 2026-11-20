@@ -31,9 +31,7 @@ var frozenExports = []string{
 	"func LoadWithSources(configPath string, environ []string) (*Loaded, error)",
 	"type Loaded struct{Bootstrap Bootstrap; Source map[string]Source}",
 	"type Source string",
-	"type BlockstoreConfig struct{Journal BlockstoreJournalConfig}",
-	"type BlockstoreJournalConfig struct{Path string}",
-	"type Bootstrap struct{Logging LoggingConfig; Blockstore BlockstoreConfig; " +
+	"type Bootstrap struct{Logging LoggingConfig; " +
 		"Node struct{ID entity.NodeID; Roles []string}; " +
 		"Metadata struct{Backend string; Badger struct{Path string}; " +
 		"FoundationDB struct{ClusterFile string; " +
