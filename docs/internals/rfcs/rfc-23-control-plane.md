@@ -1535,7 +1535,7 @@ An error is an `application/problem+json` body (RFC 9457) with these fields:
 name, and the API adds only its own: `unauthenticated`, `forbidden`,
 `generation_mismatch`, `precondition_required`, `idempotency_mismatch`,
 `managed`, `operation_running`, `not_cancellable`, `last_admin`, `not_a_copy`,
-`password_change_required`, `throttled`, `starting`, `unavailable`. One component
+`joined`, `password_change_required`, `throttled`, `starting`, `unavailable`. One component
 error is answered by the API's own code instead of its name: a failed sign-in,
 RFC 18's `ErrLogonFailure`, is `401` `unauthenticated`, so a refused credential
 reads as any other missing or refused token and the body tells no failure
