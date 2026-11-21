@@ -36,7 +36,6 @@ const (
 var openOwners = map[string]string{
 	"#3596": "epic 7b",
 	"#3379": "epic 9b",
-	"#3395": "epic 12 (T12.2)",
 	"#4859": "the open's loss records for synced damage",
 	"#4860": "the record-less take's return to the pool",
 	"#4861": "the identity refusal and error",
@@ -57,8 +56,9 @@ var openOwnerList = func() string {
 
 // classOwner maps the call a `stub: <Call>` message names to the open epic
 // that writes it. Repack, Forget and repack_copy are landed code on this
-// branch, so a row still failing on one is a defect there and the burn-down
-// owns it.
+// branch and map to no owner: a row failing on one is a defect there, and its
+// message names no stub the table can route, so the classifier rejects it
+// until it gets an owner of its own.
 var classOwner = map[string]string{
 	"MarkOffloaded":  "#3379",
 	"Offload":        "#3379",
@@ -67,9 +67,6 @@ var classOwner = map[string]string{
 	"Stamp":          "#3379",
 	"Restamp":        "#3596",
 	"Inspect.Verify": "#3596",
-	"Forget":         "#3395",
-	"Repack":         "#3395",
-	"repack_copy":    "#3395",
 }
 
 // stubClass names the call a `stub: ` message stops at: the identifier up to

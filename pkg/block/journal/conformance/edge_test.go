@@ -1507,7 +1507,8 @@ func TestEdge_SyncFailsThenSucceeds(t *testing.T) {
 
 // TestEdge_RecordsWithoutBytesAtMaximum checks that a journal at its maximum
 // still takes the records that carry no bytes — one truncate, one delete,
-// one release with its mark, and an idle seal — none refused for space, each
+// one release with its mark, and the seal the delete's roll makes — none
+// refused for space, each
 // drawn on the headroom and each visible in what it changed, while the
 // other share's file is untouched and still reads.
 func TestEdge_RecordsWithoutBytesAtMaximum(t *testing.T) {
@@ -1548,6 +1549,14 @@ func TestEdge_RecordsWithoutBytesAtMaximum(t *testing.T) {
 	if afterDelete <= afterTruncate {
 		t.Fatalf("HeadroomDraws did not rise over a delete at the maximum")
 	}
+	// The seal: the delete's record does not fit the full segment its stream
+	// filled to the maximum, so the stream seals that segment, footer and
+	// all, and rolls into the headroom. An idle seal cannot stand in here:
+	// the headroom segment the removals roll into holds only header-only
+	// records, which the idle sealer leaves active.
+	if got := f.J.Stats().Sealed; got <= s.Sealed {
+		t.Fatalf("Sealed = %d after a delete at the maximum, want above the %d before it: the full segment sealed at the roll", got, s.Sealed)
+	}
 	w := ws[0]
 	try("MarkOffloaded", f.Share(w.share).MarkOffloaded(t.Context(), w.id, []journal.Extent{w.extent}, w.version, w.version))
 	afterMark := f.J.Stats().Counters.HeadroomDraws
@@ -1560,9 +1569,6 @@ func TestEdge_RecordsWithoutBytesAtMaximum(t *testing.T) {
 		t.Fatalf("HeadroomDraws did not rise over a release at the maximum")
 	}
 
-	sealed := f.J.Stats().Sealed
-	f.Advance(2 * journaltest.IdleSealAge)
-	eventually(t, "no seal was made at the journal's maximum", func() bool { return f.J.Stats().Sealed > sealed })
 	for _, seg := range f.J.Inspect().Segments() {
 		if seg.Failed {
 			t.Fatalf("segment %d failed an append at the journal's maximum", seg.ID)
