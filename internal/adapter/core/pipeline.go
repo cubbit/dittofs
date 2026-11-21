@@ -440,7 +440,6 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		p.drop(tr, rec, fmt.Errorf("%w: %v", ErrDecode, err))
 		return
 	}
-	tr.version, tr.versioned = h.Version(), true
 	if h.Next() != 0 {
 		p.serveChain(tr, rec, h, err)
 		return
@@ -781,6 +780,9 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		op = tb.Ops[h.Op()]
 		err = p.check(op, r)
 	}
+	if err == nil {
+		tr.version, tr.versioned = h.Version(), true // the version Route accepted, set only then (§10.2)
+	}
 	if err != nil && !tr.refused {
 		p.refused(tr, stageRoute)
 		p.lap(tr, stageRoute)
@@ -1000,10 +1002,11 @@ type track struct {
 	protocol  string       // the label it records under: the stages', then the table's
 	flight    bool         // counted in flight
 	bytes     int          // the record's
-	version   Version      // its header's, where one decoded
+	version   Version      // the version Route accepted
 	versioned bool
 	cached    bool // a replay hit, whose copy's status the pipeline never reads
 	ran       bool // the service's call started, so its result is the span's
+	unmapped  bool // no row mapped its error, so its result is unmapped (§4.5)
 	op        *Op
 	refused   bool
 	stage     stage // the stage that refused it
@@ -1194,12 +1197,15 @@ func (p *pipeline) routed(tr *track, ts *tableSeries, code uint32) {
 // Overturned if an operator needs a mapped error at a level that pages.
 func (p *pipeline) mapped(tr *track, errs *ErrorTable, err error, op *Op, v Version, log bool) (s Status, send, notFailure bool) {
 	r, matched := errs.row(err, op, v)
+	tr.unmapped = !matched
 	if !matched {
 		tr.series().unmappedErr()
 		p.sh.log.LogAttrs(tr.ctx, slog.LevelError, "an error no row maps", tr.attrs(err)...)
 		return r.Status, true, false
 	}
-	tr.series().statusMapped(err)
+	if !r.NoReply {
+		tr.series().statusMapped(err) // a NoReply row puts nothing on the wire (§10.1)
+	}
 	if log && p.sh.log.Enabled(tr.ctx, slog.LevelDebug) {
 		p.sh.log.LogAttrs(tr.ctx, slog.LevelDebug, "an error its row answers", tr.attrs(err)...)
 	}
@@ -1267,16 +1273,23 @@ func (p *pipeline) end(tr *track, sent bool, s Status, reply int, err error) {
 				a = append(a, attribute.Int64("status", int64(s)))
 			}
 		}
-		// A result is the service's: the call ran, and returned ok or an error
-		// its closed set names. A refusal before it, a cancel, a replay hit
-		// and a request admitted after close ran nothing, whatever error they
-		// carry.
-		if i := serviceError(err); tr.ran && (err == nil || i >= 0) {
-			result := "ok"
-			if err != nil {
+		// A result is the service's: the call ran, and returned ok, an error
+		// its closed set names, or one no row maps, unmapped. A refusal before
+		// it, a cancel, a replay hit and a request admitted after close ran
+		// nothing, whatever error they carry.
+		if tr.ran {
+			result := ""
+			switch i := serviceError(err); {
+			case err == nil:
+				result = "ok"
+			case tr.unmapped:
+				result = "unmapped"
+			case i >= 0:
 				result = serviceErrors[i].name
 			}
-			a = append(a, attribute.String("result", result))
+			if result != "" {
+				a = append(a, attribute.String("result", result))
+			}
 		}
 		if tr.refused {
 			a = append(a, attribute.String("stage", stageNames[tr.stage]))

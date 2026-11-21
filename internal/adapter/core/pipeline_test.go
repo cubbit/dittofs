@@ -1233,6 +1233,32 @@ func TestAMappedServiceErrorCountsUnderItsName(t *testing.T) {
 	}
 }
 
+// A NoReply row puts nothing on the wire, so the service error it maps
+// counts under no name, and is no error no row maps (§10.1).
+func TestANoReplyRowCountsNoMappedError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		spent := &vfs.Delay{Cause: vfs.DelayResources}
+		silent := core.NewErrorTable(testproto.StatusFault,
+			core.ErrorRow{Err: core.ErrDecode, Status: testproto.StatusDecode},
+			core.ErrorRow{Err: core.ErrTooLong, Status: testproto.StatusTooLong},
+			core.ErrorRow{Err: core.ErrReplyTooBig, Status: testproto.StatusReplyTooBig},
+			core.ErrorRow{Err: vfs.ErrDelay, NoReply: true},
+		)
+		s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Flow, st.Errors = refusingFlow{spent}, silent }}, 1<<20, adapter.Deps{Metrics: m})
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		synctest.Wait()
+		got, _ := scrape(t, m)
+		mapped, unmapped := "adapter_status_mapped_total{error=delay,protocol="+testproto.Name+"}", "adapter_unmapped_errors_total{protocol="+testproto.Name+"}"
+		if got[mapped] != 0 || got[unmapped] != 0 {
+			t.Errorf("%s = %v and %s = %v for a NoReply row, want 0 and 0", mapped, got[mapped], unmapped, got[unmapped])
+		}
+		if n := s.p.Runs(); n != 0 {
+			t.Errorf("%d run once the refusal ended, want 0", n)
+		}
+	})
+}
+
 // Each refusal counts under the stage that refused it (RFC 20 §10.1's
 // values).
 func TestEachRefusalCountsUnderItsStage(t *testing.T) {
@@ -1363,8 +1389,9 @@ func TestTheTwoLabels(t *testing.T) {
 }
 
 // Each request has one span, ended, named after its operation once routed,
-// with §10.2's keys alone: a served Echo its status, result and sizes, a
-// refusal at Unwrap the stage that refused it.
+// with §10.2's keys alone: a served Echo its version, status, result and
+// sizes, a refusal at Unwrap the stage that refused it and no version, which
+// only Route's acceptance sets.
 func TestEachRequestHasOneSpan(t *testing.T) {
 	spans := tracetest.NewSpanRecorder()
 	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
@@ -1416,8 +1443,8 @@ func TestEachRequestHasOneSpan(t *testing.T) {
 		t.Errorf("the served Echo's span is %q %v", name, served)
 	}
 	name, refused := pick("refused at unwrap", func(i int) bool { return attrs[i]["stage"] == "unwrap" })
-	if name != "adapter."+testproto.Name || refused["op"] != "" || refused["result"] != "" {
-		t.Errorf("the refused message's span is %q %v, want its stage and no operation or result", name, refused)
+	if name != "adapter."+testproto.Name || refused["op"] != "" || refused["version"] != "" || refused["result"] != "" {
+		t.Errorf("the refused message's span is %q %v, want its stage and no operation, version or result", name, refused)
 	}
 	// A header that does not decode is dropped, not refused: no operation, no
 	// version and no status, which only a reply carries.

@@ -1036,6 +1036,35 @@ func TestEachChainMemberHasItsOwnRequestSpan(t *testing.T) {
 	})
 }
 
+// A chain member's span carries the version Route accepted, and only then
+// (§10.2): of a chain of an Echo at version 1 and one at 3, outside the row,
+// the first span carries version 1 and the second, refused at route, none.
+func TestAChainMembersVersionIsTheOneRouteAccepted(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		spans := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+		d := adapter.Deps{Tracer: tracer, SampleRatio: 1}
+		s := newSeamWith(t, testproto.New(d).Bare(), 1<<20, d)
+		b, _ := chainOf(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("a")}, testproto.Msg{Op: testproto.OpEcho, Version: 3, ID: 2})
+		s.serveBody(b)
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
+			t.Fatalf("the chain is answered %+v, %v", rs, err)
+		}
+		s.finish()
+		versions := map[string]string{} // by stage, "" for the served member
+		for _, sd := range spans.Ended() {
+			a := map[string]string{}
+			for _, kv := range sd.Attributes() {
+				a[string(kv.Key)] = kv.Value.String()
+			}
+			versions[a["stage"]] = a["version"]
+		}
+		if len(versions) != 2 || versions[""] != "1" || versions["route"] != "" {
+			t.Errorf("the members' versions by refusing stage are %v, want 1 for the served Echo and none for the one refused at route", versions)
+		}
+	})
+}
+
 // A chain member whose call fails with an error no row maps is answered the
 // fault status in the chain's record, after the member before it.
 func TestAChainMembersUnmappedErrorIsAnsweredTheFault(t *testing.T) {

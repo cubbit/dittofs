@@ -246,7 +246,6 @@ func (c *chain) at(off int) entry {
 		c.abort(tr, fmt.Errorf("%w: %v", ErrDecode, err))
 		return entry{}
 	}
-	tr.version, tr.versioned = h.Version(), true
 	tr.bytes = memberBytes(c.rec, off, h.Next())
 	e := entry{off: off, tr: tr, h: h}
 	if err != nil {

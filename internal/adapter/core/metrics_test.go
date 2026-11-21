@@ -322,8 +322,9 @@ func TestSeriesCarryOnlyTheirLabels(t *testing.T) {
 }
 
 // The stage values are §10.1's: a refusal counts under the stages that
-// refuse and reply_too_big, adapter_wire_seconds observes decode_header to
-// send but call_service.
+// refuse, map_error among them for what core refuses once the call has
+// returned, and reply_too_big; adapter_wire_seconds observes decode_header
+// to send but call_service.
 // The stage values take §10.1's order: reply_wait between decode_args and
 // resolve_ids, and reply_too_big, which only a refusal takes, last.
 func TestStageValuesAreInOrder(t *testing.T) {
@@ -331,7 +332,7 @@ func TestStageValuesAreInOrder(t *testing.T) {
 	if got, want := orderedValues(wire), []string{"decode_header", "unwrap", "admit", "replay_check", "route", "decode_args", "reply_wait", "resolve_ids", "map_error", "encode", "wrap", "send"}; !slices.Equal(got, want) {
 		t.Errorf("adapter_wire_seconds' stages, in order, are %v, want %v", got, want)
 	}
-	if got, want := orderedValues(refusals), []string{"decode_header", "unwrap", "admit", "replay_check", "route", "decode_args", "reply_wait", "resolve_ids", "reply_too_big"}; !slices.Equal(got, want) {
+	if got, want := orderedValues(refusals), []string{"decode_header", "unwrap", "admit", "replay_check", "route", "decode_args", "reply_wait", "resolve_ids", "map_error", "reply_too_big"}; !slices.Equal(got, want) {
 		t.Errorf("a refusal's stages, in order, are %v, want %v", got, want)
 	}
 }
