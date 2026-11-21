@@ -28,13 +28,13 @@ var captures = []struct {
 	userSID     string
 	extra       []uint32 // buffer types the capture holds beyond the ones identity reads
 }{
-	{"tgt.pac", "krbtgt.keytab", "S-1-5-21-978171696-1174491544-1106729380-1105", []uint32{12, 17, 18}},
-	{"service.pac", "service.keytab", "S-1-5-21-978171696-1174491544-1106729380-1105", []uint32{12, 16, 19}},
+	{"tgt.pac", "krbtgt.keytab", "S-1-5-21-3296391427-225151214-3620391263-1105", []uint32{12, 17, 18}},
+	{"service.pac", "service.keytab", "S-1-5-21-3296391427-225151214-3620391263-1105", []uint32{12, 16, 19}},
 }
 
 var (
 	captureClient   = types.PrincipalName{NameType: 1, NameString: []string{"alice"}}
-	captureAuthTime = time.Date(2026, 11, 20, 7, 40, 42, 0, time.UTC)
+	captureAuthTime = time.Date(2026, 11, 21, 8, 55, 34, 0, time.UTC)
 )
 
 // capture is a captured PAC's bytes and its keytab's AES256 key, the type of

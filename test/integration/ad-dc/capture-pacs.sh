@@ -1,8 +1,10 @@
 #!/bin/sh
 # Regenerates the PACs captured from the Samba fixture, with the keys that
 # verify them: tgt.pac with krbtgt.keytab, and service.pac, from alice's
-# cifs/ service ticket, with service.keytab. It starts a fixture DC, so it
-# needs what the ad_dc tests need: Docker and a DC IP the host can reach.
+# cifs/ service ticket, with service.keytab; and alice.apreq, her AP-REQ for
+# cifs/, with alice.json, the time it was made and her and her groups' SIDs.
+# It starts a fixture DC, so it needs what the ad_dc tests need: Docker and a
+# DC IP the host can reach.
 #
 #   test/integration/ad-dc/capture-pacs.sh <output dir>
 #
