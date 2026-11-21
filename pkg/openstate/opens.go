@@ -697,8 +697,8 @@ func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult)
 // under the app instance r names, for a caller who may read the file, before
 // r's open is judged; a create whose version is not above that of every such
 // open carrying one, a create carrying none included, is refused and closes
-// none. What the close leaves the
-// service goes to out.
+// none, whatever the caller's access. What the close leaves the service goes
+// to out.
 //
 // decision: a create refused for its version is ErrInstanceVersion, which
 // errors.Is ErrShareViolation, so the service maps it as a deny conflict
@@ -719,7 +719,7 @@ func (t *Table) sameCreate(e *entry, who Caller, r OpenRequest, res *OpenResult)
 // Delete the adapter's with the move.
 func (t *Table) takeOver(ctx context.Context, e *entry, who Caller, r OpenRequest, out *outbox) error {
 	k := r.Durable
-	if k.Instance.ID == ([16]byte{}) || !r.MaxRead {
+	if k.Instance.ID == ([16]byte{}) {
 		return nil
 	}
 	var olds []*open // every version is judged before any open is closed
@@ -732,6 +732,9 @@ func (t *Table) takeOver(ctx context.Context, e *entry, who Caller, r OpenReques
 			return ErrInstanceVersion
 		}
 		olds = append(olds, o)
+	}
+	if !r.MaxRead {
+		return nil
 	}
 	for _, o := range olds {
 		t.closeByTable(ctx, e, o, out)

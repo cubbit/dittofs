@@ -172,10 +172,10 @@ func TestLockReplay(t *testing.T) {
 
 // A create naming an app instance another client's open of the file holds
 // closes that open first, a persistent one installed by a restart included,
-// unless the caller may not read the file, the open is the caller's own
-// client's, or both are versioned and the create's version is not higher:
-// then the create meets the open's deny mode as any other, or, for the
-// version, is refused.
+// unless the caller may not read the file or the open is the caller's own
+// client's: then the create meets the open's deny mode as any other. A
+// create whose version is not above a versioned open's is refused whatever
+// the caller's access.
 func TestAppInstanceReplacesItsPredecessor(t *testing.T) {
 	f := newFixture(t)
 	a, b := f.caller(t, smbMachine("pc-a")), f.caller(t, smbMachine("pc-b"))
@@ -188,15 +188,17 @@ func TestAppInstanceReplacesItsPredecessor(t *testing.T) {
 	}
 	oa := f.mustOpen(t, a, file, as(a, 5, true))
 	for what, q := range map[string]struct {
-		who Caller
-		r   OpenRequest
+		who     Caller
+		r       OpenRequest
+		version bool
 	}{
-		"a caller that may not read":   {b, as(b, 6, false)},
-		"the open's own client":        {a, func() OpenRequest { q := as(a, 6, true); q.Durable.Create[1] = 1; return q }()},
-		"a version not above the open": {b, as(b, 5, true)},
+		"a caller that may not read":                           {b, as(b, 6, false), false},
+		"the open's own client":                                {a, func() OpenRequest { q := as(a, 6, true); q.Durable.Create[1] = 1; return q }(), false},
+		"a version not above the open":                         {b, as(b, 5, true), true},
+		"a caller that may not read, a version below the open": {b, as(b, 3, false), true},
 	} {
 		_, err := f.open(q.who, file, q.r)
-		if !errors.Is(err, ErrShareViolation) || errors.Is(err, ErrInstanceVersion) != (what == "a version not above the open") {
+		if !errors.Is(err, ErrShareViolation) || errors.Is(err, ErrInstanceVersion) != q.version {
 			t.Errorf("%s: %v, want ErrShareViolation, ErrInstanceVersion only for the version", what, err)
 		}
 	}
