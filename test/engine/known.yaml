@@ -14,16 +14,16 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space. The row waits on two things, filed apart: the engine''s settled answer composing RFC 8 section 10.2''s dirty-bytes disjunct (the live dirty bytes with the store put-healthy that keep retry-later), filed as the entry''s issue; and the share seal without a caller-side fsync, which the named-predecessor refusal at open (RFC 28 section 3.3) presently forbids over an unsynced seal marker, filed under #4873.'
-  issue: '#4892'
+  reason: 'Waits on offload being composed. The settled answer gives retry-later for dirty bytes only with a put-healthy store behind them (RFC 8 section 10.2), and this part composes no store, so the settled no-space in settled() stands, as ruled on #4892; the row assumes a put-healthy store and goes green once offload reads the store put-health for the dirty half. The journal''s repack is real and the ended-unreclaimed figure is served, and the row stops on the settled answer: the share at its limit holds nothing but live bytes, and the refusal''s two repack passes cycle them — each seals its copy target and retires it before the next — leaving not one sealed or ended segment standing, so the answer''s figure reads zero and the refusal ends no space.'
+  issue: '#5318'
 
 - test: TestRFC8A_Clone
   message: 'a clone its destination''s journal cannot reserve: engine: the share limit has nothing left to free'
   status: fail
   fix: planned
   category: feature
-  reason: 'The same settled answer as its retry-later sibling for the destination''s share: the destination''s journal limit refusal reads an ended-unreclaimed figure of zero once the refusal''s two repack passes have cycled the share''s live bytes, and answers no space where the row wants the retry-later that outlives the refusal. The row waits on the same two things the sibling''s entry names, filed apart as its issue and #4873.'
-  issue: '#4892'
+  reason: 'Waits on offload being composed. The settled answer gives retry-later for dirty bytes only with a put-healthy store behind them (RFC 8 section 10.2), and this part composes no store, so the settled no-space in settled() stands, as ruled on #4892; the row assumes a put-healthy store and goes green once offload reads the store put-health for the dirty half. The same settled answer as its retry-later sibling for the destination''s share: the destination''s journal limit refusal reads an ended-unreclaimed figure of zero once the refusal''s two repack passes have cycled the share''s live bytes, and answers no space where the row wants the retry-later that outlives the refusal.'
+  issue: '#5318'
 
 - test: TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved
   message: 'the refused write is still parked on the seal''s sync: the capacity answer waited on the caller''s own fsync'
@@ -52,8 +52,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The one journal share at its own limit takes the settled no-space answer where the row wants the refusal-later that never becomes no space while another share is healthy: the share''s bytes, none superseded, sit in a single active segment, so each refusal''s scoped pass seals and recycles that one segment whole and the candidacy the settled answer reads is left with nothing. The share rides the same two things the no-space cluster does, filed apart: the engine''s settled answer composing the dirty-bytes disjunct that keeps retry-later (the entry''s issue), and the seal that owes no caller-side fsync (#4873). At the base line it only passed the interim retry-later of the not-built repack.'
-  issue: '#4892'
+  reason: 'Waits on offload being composed. The settled answer gives retry-later for dirty bytes only with a put-healthy store behind them (RFC 8 section 10.2), and this part composes no store, so the settled no-space in settled() stands, as ruled on #4892; the row assumes a put-healthy store and goes green once offload reads the store put-health for the dirty half. The one journal share at its own limit takes the settled no-space answer where the row wants the refusal-later that never becomes no space while another share is healthy: the share''s bytes, none superseded, sit in a single active segment, so each refusal''s scoped pass seals and recycles that one segment whole and the candidacy the settled answer reads is left with nothing.'
+  issue: '#5318'
 - test: TestRFC8B_JournalFullOnAFullDevice
   message: 'answered vfs: retry shortly: capacity, want the device''s ErrNoSpace'
   status: fail
