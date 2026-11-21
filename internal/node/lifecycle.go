@@ -364,9 +364,10 @@ func (n *Node) register(ctx context.Context) error {
 
 // readRecords reads the counters and the shares, keeping those reconcile
 // binds, and the shares being removed, for the engine's start, then calls
-// apply. The counters it read are those reconcile has acted on, so only
-// Start's full first pass, not a counter, makes reconcile record the
-// refusals.
+// apply, the settings walk's first run among it. The counters it read are
+// those reconcile has acted on, but for a settings generation a write inside
+// the walk discarded: then the first full pass walks again, and alone makes
+// reconcile record the refusals.
 func (n *Node) readRecords(ctx context.Context) error {
 	c, err := n.counters(ctx)
 	if err != nil {
@@ -380,10 +381,18 @@ func (n *Node) readRecords(ctx context.Context) error {
 	if n.life.removing, err = n.readRemoving(ctx); err != nil {
 		return err
 	}
-	if _, err := n.apply(ctx, c, nil); err != nil {
+
+	_, moved, err := n.apply(ctx, c, nil)
+	if err != nil {
 		return err
 	}
 	n.rec.seen = c
+	if moved {
+		// A settings write landed inside Start's walk, which discarded it:
+		// its settings generation was not acted on, and the first pass
+		// walks the new one (RFC 23 §2.3).
+		n.rec.seen.Settings = 0
+	}
 	return nil
 }
 
