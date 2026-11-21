@@ -980,3 +980,33 @@ func TestBadExtent(t *testing.T) {
 		}
 	}
 }
+
+// RFC 14 §2.2, RFC 22 §9.3: a write through an open that suspended the
+// modification time leaves it alone, the change time and Version still
+// moving; a write through another open of the file moves it.
+func TestAWriteLeavesAloneTheTimesItsOpenSuspends(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	pc := s.smb(t, "pc", s.alice.Principal)
+	frozen := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
+	other := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
+	s.must(t, errOf(s.SetAttr(ctx, pc, vfs.Target{H: h, Open: &frozen}, vfs.AttrChange{Suspend: entity.TimeModify})))
+	attr := func() vfs.File {
+		t.Helper()
+		f, err := s.GetAttr(ctx, pc, h)
+		s.must(t, err)
+		return f
+	}
+	before := attr()
+	_, err := s.Write(ctx, pc, frozen, 0, []byte("a"), vfs.Unstable)
+	s.must(t, err)
+	if got := attr(); !got.Modify.Equal(before.Modify) || !before.Version.Less(got.Version) {
+		t.Errorf("a write through the open suspending Modify: Modify %v Version %v, want Modify %v and a greater Version than %v", got.Modify, got.Version, before.Modify, before.Version)
+	}
+	_, err = s.Write(ctx, pc, other, 1, []byte("b"), vfs.Unstable)
+	s.must(t, err)
+	if got := attr(); !got.Modify.Equal(got.Change) {
+		t.Errorf("a write through another open: Modify %v, want the write's change time %v", got.Modify, got.Change)
+	}
+}
