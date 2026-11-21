@@ -45,6 +45,16 @@ func (n *node) loseUndo() {
 // file holds bytes that must never become durable, so the durable image is
 // kept by setSnap and each Sync replays onto it the changes it covers, in
 // the order they were made.
+//
+// ponytail: every later Sync of a file a Lose-class fault touched still
+// reads its whole durable image and writes it back whole — up to the
+// format's 256 MiB segment cap — and the durability an image carries lives
+// in one flat byte run, so a diff-shaped kept image needs the image to say
+// which parts are settled. The spill keeps the bytes off the heap between
+// syncs, so the cost is file I/O, not live memory; replace the whole-image
+// round trip with a snapshot cap or a diff-shaped image when a nightly soak
+// cell's wall time or a kit profile shows a Lose-touched segment's syncs
+// dominating the run.
 func (sf *seamFile) sync() error {
 	n := sf.node
 	if !n.hasSnap() && !slices.ContainsFunc(n.undo, func(c change) bool { return c.lost }) {
