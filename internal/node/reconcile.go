@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"sync"
@@ -37,12 +39,14 @@ const (
 // reconciler is reconcile's state: the running set and the counters the
 // node has acted on, and the wake a write on this node sends.
 type reconciler struct {
-	// table is the node's settings table, which the settings walk reads by.
-	//
-	// ponytail: nothing reads it yet; it is kept so node.New builds the
-	// table, which removing the field would leave with no caller. Drop the
-	// marker when reconcile's settings walk lands and reads it.
+	// table is the node's settings table: every section the node declares
+	// and the components of a test stand in for, which the settings walk
+	// reads by, one section's rows at a time.
 	table settings.Table
+	// snapshot is the settings the walks have published, the one a
+	// component reads what it runs from at use: loaded whole, with no lock
+	// shared with the walk.
+	snapshot atomic.Pointer[settings.Snapshot]
 	// wake has one slot, so a wake sent while a pass runs is kept and runs
 	// one more pass after it.
 	wake chan struct{}
@@ -77,9 +81,9 @@ type reconciler struct {
 	// a share once no pass that listed it before its mark can still run, if
 	// the count shows in a profile.
 	gone map[entity.ShareID]bool
-	// shares and applied are the records the last share pass and the last
-	// apply refused.
-	shares, applied []refusal
+	// shares, applied and sections are the records the last share pass, the
+	// last apply and the last settings walk refused.
+	shares, applied, sections []refusal
 	// above is each counter read above pos and not yet reconciled through,
 	// and aboveSince when it was first read so, on the clock's Elapsed.
 	above      [len(counterKinds)]bool
@@ -89,13 +93,14 @@ type reconciler struct {
 	errors [len(counterKinds)]atomic.Uint64
 }
 
-// report is the counters the node has reconciled through and the records
-// it refused, the shares' first, read together.
+// report is the counters the node has reconciled through and the records it
+// refused, the shares' first, then the sections the last settings walk
+// refused, then the applies', read together.
 func (r *reconciler) report() (kvstore.Counters, []entity.RefusedRecord) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []entity.RefusedRecord
-	for _, f := range append(slices.Clone(r.shares), r.applied...) {
+	for _, f := range slices.Concat(r.shares, r.sections, r.applied) {
 		out = append(out, f.rec)
 	}
 	return r.pos, out
@@ -185,31 +190,229 @@ func refused(s entity.Share, retry bool, err error) refusal {
 	}}
 }
 
+// settingsWalk is one settings walk's read of the store: the node view's own,
+// wrapped so the walk notes every row it read that this node runs, which its
+// refusals then name, one row at a time.
+type settingsWalk struct {
+	view  entity.SettingsReader
+	table settings.Table
+	node  entity.NodeID
+	rows  []entity.Setting
+}
+
+// AllSettings lists the view's rows and notes each one this node runs. A row
+// that does not decode is noted too, when its key parses: it is a row the
+// walk read and can refuse.
+func (w *settingsWalk) AllSettings(
+	ctx context.Context,
+	after entity.SettingKey,
+) iter.Seq2[entity.Setting, error] {
+	return func(yield func(entity.Setting, error) bool) {
+		for s, err := range w.view.AllSettings(ctx, after) {
+			if w.readsRow(s) {
+				w.rows = append(w.rows, s)
+			}
+
+			if !yield(s, err) {
+				return
+			}
+		}
+	}
+}
+
+// readsRow reports whether this node runs the row's scope: a node row only
+// its own, every other kind's, and none of a row whose key did not parse.
+func (w *settingsWalk) readsRow(s entity.Setting) bool {
+	if s.Key == "" {
+		return false
+	}
+
+	return s.Scope.Kind != entity.ScopeNode || s.Scope.ID == w.node
+}
+
+// refusals is each row the walk read of the section prefix that goes into a
+// value Read's refusal err held back, named at gen, one problem answering for
+// them all. Keep reverts a refused value whole, so every other key that
+// changed in it reached nothing either and must read refused, never applied;
+// a value at installation or node scope is the section's own one, so all of
+// its rows go named with it, and each row names the section the table's
+// longest prefix gives it, never one nested or look-alike beside it. Rows in
+// walk order.
+//
+// decision: a PerThing section declared at installation or node scope is
+// named whole here, while Keep reverts only the refused thing, so the rows
+// of the other things read refused though they run their new values, since a
+// refusal's key carries no thing to tell them apart by. The safe side: a
+// healthy thing never reads applied while its section is refused. No
+// production table declares a PerThing section yet; name one thing's rows,
+// which needs the thing carried by the refusal, when the first one lands.
+//
+// decision: an Override section whose narrow scope is a share, an
+// installation default each share may replace, names only the refused share's
+// rows here, while the wide row that changed in the same pass reaches every
+// live share but it and still reads applied. Naming the wide row would be
+// wrong, as it does apply everywhere else, so the report stays ambiguous
+// until RFC 23 section 2.4 is worded for a change that reaches most of a
+// section. No production table declares this shape yet; revisit with the
+// first one.
+func (w *settingsWalk) refusals(prefix string, err error, gen uint64) []refusal {
+	p := apiv1.Problem{
+		Status: http.StatusUnprocessableEntity,
+		Title:  "the setting was refused",
+		Detail: err.Error(),
+	}
+	b, _ := json.Marshal(p) // a Problem holds strings, ints and bools, which always marshal
+
+	// A refusal belongs to one instance, a scope of the section's own value
+	// or another kind's; the held value's rows go named together.
+	var (
+		held  = map[entity.SettingScope]bool{}
+		whole bool
+	)
+
+	for scope := range settings.Refusals(err) {
+		if scope.Kind == entity.ScopeInstallation || scope.Kind == entity.ScopeNode {
+			whole = true
+
+			continue
+		}
+
+		held[scope] = true
+	}
+
+	var out []refusal
+
+	for _, row := range w.rows {
+		if w.table.PrefixOf(row.Key) != prefix {
+			continue
+		}
+
+		if !whole && !held[row.Scope] {
+			continue
+		}
+
+		out = append(out, refusal{rec: entity.RefusedRecord{
+			Record:     entity.SettingRef(row.Scope, row.Key),
+			Generation: gen,
+			Error:      b,
+		}})
+	}
+
+	return out
+}
+
+// keepSnapshot is cur with a refused section's values taken from prev, so
+// the section keeps what it last ran, and every other section keeps the new
+// walk's values: in a section with one value per instance, only an instance
+// the walk refuses keeps prev's. It is the walk's one call into settings'
+// Keep, so a change of Keep's behaviour or signature touches one place.
+func keepSnapshot(
+	cur *settings.Snapshot,
+	section string,
+	prev *settings.Snapshot,
+) *settings.Snapshot {
+	return cur.Keep(section, prev)
+}
+
+// walkSettings is apply's settings half: the one walk of every setting row
+// the store holds (RFC 23 §2.3), through the node view and the node's table,
+// published as one snapshot. It runs when the settings generation the pass
+// read moved past the one the last walk read, and on every pass that acts on
+// every kind, as at start and after a failed read, so a change written
+// while no read worked is found at the next one that does.
+//
+// The walk is not one transaction: each page of it reads in its own, so the
+// generation the pass read, not the pages' values, fences it. The counters
+// are read again after the last page, and a walk whose settings generation
+// moved is discarded: it publishes nothing and reports moved, so the pass
+// reports no new settings position and the next poll walks again, and no
+// snapshot of two states of the store is ever published.
+//
+// Each section Read refuses keeps what it last ran, held with no value when
+// it never ran, and its rows are refused at the generation the pass read,
+// naming the rows the refusal claims. A read that fails, midway or at the
+// fence, returns its error, so pass counts it a failed read like the others:
+// no position moves and the next pass runs full.
+func (n *Node) walkSettings(ctx context.Context, c kvstore.Counters) (bool, error) {
+	r := &n.rec
+	if !r.again && c.Settings == r.seen.Settings {
+		return false, nil
+	}
+
+	w := &settingsWalk{
+		view:  n.meta.Nodes(),
+		table: r.table,
+		node:  n.cfg.Bootstrap.Node.ID,
+	}
+
+	cur, refused, err := settings.Read(ctx, w, r.table, n.cfg.Bootstrap.Node.ID)
+	if err != nil {
+		return false, err
+	}
+
+	after, err := n.counters(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	if after.Settings != c.Settings {
+		return true, nil
+	}
+
+	prev := r.snapshot.Load()
+
+	var out []refusal
+
+	for _, prefix := range slices.Sorted(maps.Keys(refused)) {
+		cur = keepSnapshot(cur, prefix, prev)
+		out = append(out, w.refusals(prefix, refused[prefix], c.Settings)...)
+	}
+
+	r.snapshot.Store(cur)
+	r.mu.Lock()
+	r.sections = out
+	r.mu.Unlock()
+
+	return false, nil
+}
+
 // apply hands each component the settings it reads, at counters c, and
-// returns the records it refused. Once start step 9 has run it calls each
-// adapter's slot too, handing it loop to report idle on while it waits on a
-// drain, and returns the slots' refusals.
+// returns the records it refused and whether a write landed inside the
+// settings walk, discarding it: the pass then reports no new settings
+// position. Once start step 9 has run it calls each adapter's slot too,
+// handing it loop to report idle on while it waits on a drain, and returns
+// the slots' refusals.
 //
-// ponytail: apply hands the engine RFC 13 Appendix B's defaults whatever c
-// says, as no settings record carries the engine's values yet, and refuses
-// nothing. Read the settings and principals generations' records here once
-// those carry what a component reads.
-//
-// ponytail: each slot is handed what the node's tests set, and nothing else
-// enables an adapter, as no settings record carries an adapter's section
-// yet. Read each adapter's section with the settings snapshot's Get once it
-// has a body.
-func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop) ([]refusal, error) {
+// ponytail: apply hands the engine RFC 13 Appendix B's defaults whatever the
+// settings say, as no settings record carries the engine's own values yet,
+// and hands the adapters what the node's tests set. Read the engine's and the
+// adapters' rows through the snapshot's Get once those records carry what
+// each component reads, and hand the adapters the generation of the snapshot
+// published, not the one the pass read, so no discarded walk reports a
+// generation its snapshot never carried.
+func (n *Node) apply(
+	ctx context.Context,
+	c kvstore.Counters,
+	loop *health.Loop,
+) ([]refusal, bool, error) {
 	if n.rec.applying != nil {
 		n.rec.applying(c)
 	}
+
+	moved, err := n.walkSettings(ctx, c)
+	if err != nil {
+		return nil, false, err
+	}
+
 	if err := n.engine.Apply(engineDefaults); err != nil {
-		return nil, err
+		return nil, false, err
 	}
+
 	if !n.adapting {
-		return nil, nil
+		return nil, moved, nil
 	}
-	return n.applyAdapters(ctx, loop, c.Settings), nil
+
+	return n.applyAdapters(ctx, loop, c.Settings), moved, nil
 }
 
 // backoff is the wait before the next pass on the backoff, given its last
@@ -397,8 +600,11 @@ func (n *Node) pass(ctx context.Context, loop *health.Loop) error {
 			r.errors[kindShares].Add(1)
 		}
 	}
+
+	var moved bool
 	if apply {
-		refusals, err := n.apply(ctx, c, loop)
+		refusals, m, err := n.apply(ctx, c, loop)
+		moved = m
 		if err != nil {
 			r.errors[kindSettings].Add(1)
 			r.again = true
@@ -417,15 +623,30 @@ func (n *Node) pass(ctx context.Context, loop *health.Loop) error {
 		r.again = true
 		return sharesErr
 	}
-	r.seen = c
+
+	seen := c
+	if moved {
+		// A walk the fence discarded reconciled no settings change: the
+		// settings position and the settings value it acted on keep what
+		// they were, so the next pass, which reads the new generation,
+		// walks again (RFC 23 §2.3).
+		seen.Settings = r.seen.Settings
+	}
 	r.mu.Lock()
+	was := r.pos
 	retry := func(f refusal) bool { return f.retry }
-	r.again = slices.ContainsFunc(r.shares, retry) || slices.ContainsFunc(r.applied, retry)
+	r.again = slices.ContainsFunc(r.shares, retry) ||
+		slices.ContainsFunc(r.sections, retry) ||
+		slices.ContainsFunc(r.applied, retry)
 	r.pos = c
+	if moved {
+		r.pos.Settings = was.Settings
+	}
 	r.above = [len(counterKinds)]bool{}
 	close(r.moved)
 	r.moved = make(chan struct{})
 	r.mu.Unlock()
+	r.seen = seen
 	return nil
 }
 

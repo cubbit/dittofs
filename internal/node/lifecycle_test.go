@@ -300,9 +300,22 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 		}},
 		{step: "register", fault: func(k string) sim.Rule { return failOn(kvtest.OpSet, k, 1) }},
 		{step: "apply", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 1) }, registered: true},
+		// The apply step reads the counters again after the settings walk's
+		// last page: the second read is its own failure point.
+		{
+			step: "apply",
+			fault: func(string) sim.Rule {
+				return failOn(kvtest.OpGet, "CFGGEN", 2)
+			},
+			registered: true,
+		},
 		{step: "engine", fault: func(k string) sim.Rule { return failOn(kvtest.OpSet, k, 2) }, registered: true},
 		{step: "filesystem", fault: func(string) sim.Rule { return failOn(kvtest.OpSet, "SH‖*", 2) }, registered: true, epoch: 1, undone: []string{"stop engine"}},
-		{step: "first reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 2) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop budgets", "stop engine"}},
+		{step: "first reconcile", fault: func(string) sim.Rule {
+			return failOn(kvtest.OpGet, "CFGGEN", 3)
+		}, registered: true, epoch: 1, undone: []string{
+			"stop runner", "stop filesystem", "stop budgets", "stop engine",
+		}},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			var h *nodetest.Harness
