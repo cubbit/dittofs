@@ -258,6 +258,7 @@ func (p *pipeline) count(pd *pending, refuse bool) (grant bool, err error) {
 	}
 	grant = n <= p.st.MaxPending
 	if !grant && refuse {
+		pd.ts.refused(stageMapError)
 		return false, ErrTooManyPending
 	}
 	if !pd.floor && !pd.pool {
@@ -339,6 +340,7 @@ func (p *pipeline) after(pd *pending, err error, reply *resources.Buf, release f
 	if pd.h.Next() != 0 && !pd.pend && !p.st.Hold.Pends(pd.h, err) {
 		pd.last = err
 		pd.mu.Unlock()
+		pd.ts.refused(stageMapError)
 		return false, ErrNotLast
 	}
 	now := p.sh.clock.Now()
@@ -598,6 +600,7 @@ type parked struct {
 // protocol's final header must be built when done is called.
 func (p *pipeline) park(pd *pending, cancel func()) (func(error), error) {
 	if pd.h.Next() != 0 {
+		pd.ts.refused(stageMapError)
 		return nil, ErrNotLast
 	}
 	pd.mu.Lock()
@@ -633,6 +636,7 @@ func (p *pipeline) park(pd *pending, cancel func()) (func(error), error) {
 	if err != nil {
 		t.mu.Unlock()
 		pd.mu.Unlock()
+		pd.ts.refused(stageMapError)
 		return nil, err
 	}
 	wasPending, held := pd.pend, pd.held
@@ -708,6 +712,9 @@ func (p *pipeline) parkDone(pd *pending, err error) {
 	pk.called = true
 	if err != nil && pk.why != nil {
 		err = pk.why
+		if err != ErrCancelled { // the drain ended it; a client's cancel is no refusal (§10.1)
+			pd.ts.refused(stageMapError)
+		}
 	}
 	pk.err, pk.over = err, pk.returned
 	answer := pk.over

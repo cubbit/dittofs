@@ -2,13 +2,18 @@ package core_test
 
 import (
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"maps"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
@@ -322,8 +327,9 @@ func TestSeriesCarryOnlyTheirLabels(t *testing.T) {
 }
 
 // The stage values are §10.1's: a refusal counts under the stages that
-// refuse and reply_too_big, adapter_wire_seconds observes decode_header to
-// send but call_service.
+// refuse, map_error among them for what core refuses once the call has
+// returned, and reply_too_big; adapter_wire_seconds observes decode_header
+// to send but call_service.
 // The stage values take §10.1's order: reply_wait between decode_args and
 // resolve_ids, and reply_too_big, which only a refusal takes, last.
 func TestStageValuesAreInOrder(t *testing.T) {
@@ -331,62 +337,116 @@ func TestStageValuesAreInOrder(t *testing.T) {
 	if got, want := orderedValues(wire), []string{"decode_header", "unwrap", "admit", "replay_check", "route", "decode_args", "reply_wait", "resolve_ids", "map_error", "encode", "wrap", "send"}; !slices.Equal(got, want) {
 		t.Errorf("adapter_wire_seconds' stages, in order, are %v, want %v", got, want)
 	}
-	if got, want := orderedValues(refusals), []string{"decode_header", "unwrap", "admit", "replay_check", "route", "decode_args", "reply_wait", "resolve_ids", "reply_too_big"}; !slices.Equal(got, want) {
+	if got, want := orderedValues(refusals), []string{"decode_header", "unwrap", "admit", "replay_check", "route", "decode_args", "reply_wait", "resolve_ids", "map_error", "reply_too_big"}; !slices.Equal(got, want) {
 		t.Errorf("a refusal's stages, in order, are %v, want %v", got, want)
 	}
 }
 
-// The error label names every sentinel of the service's closed set once, by
-// its name without Err in snake case (§10.1), and each typed value of the
-// set matches exactly one of them.
+// The error label names every sentinel of the service's closed set once,
+// read from Errors()'s own source (§7.3): its one []error literal of bare
+// identifiers, which it returns first and in that order, each named as RFC 25
+// §2.4 spells it, under names unique and of lower-case letters, digits and
+// underscores. Every value it returns past them matches exactly one of them
+// under errors.Is without being it, so a sentinel added outside the literal
+// fails too.
 func TestServiceErrorsNameEverySentinel(t *testing.T) {
-	names := core.ServiceErrorNames()
-	want := map[error]string{
-		vfs.ErrNotFound: "not_found", vfs.ErrExist: "exist", vfs.ErrNotEmpty: "not_empty",
-		vfs.ErrNotDir: "not_dir", vfs.ErrIsDir: "is_dir", vfs.ErrAccess: "access",
-		vfs.ErrPerm: "perm", vfs.ErrStale: "stale", vfs.ErrReadOnly: "read_only",
-		vfs.ErrNameTooLong: "name_too_long", vfs.ErrInvalid: "invalid", vfs.ErrNoSpace: "no_space",
-		vfs.ErrQuota: "quota", vfs.ErrLocked: "locked", vfs.ErrRangeNotLocked: "range_not_locked",
-		vfs.ErrShareViolation: "share_violation", vfs.ErrDeletePending: "delete_pending", vfs.ErrGrace: "grace",
-		vfs.ErrDelay: "delay", vfs.ErrBlocked: "blocked", vfs.ErrWrongSecurity: "wrong_security",
-		vfs.ErrState: "state", vfs.ErrCross: "cross", vfs.ErrIncomplete: "incomplete",
-		vfs.ErrInconsistent: "inconsistent", vfs.ErrLost: "lost", vfs.ErrUnavailable: "unavailable",
-		vfs.ErrCorrupt: "corrupt", vfs.ErrIO: "io", vfs.ErrPastEnd: "past_end",
-		vfs.ErrLogonFailure: "logon_failure", vfs.ErrUnknownPrincipal: "unknown_principal",
+	idents := sentinelLiteral(t, filepath.Join("..", "..", "..", "pkg", "vfs"))
+	all, names := vfs.Errors(), core.ServiceErrorNames()
+	if len(all) < len(idents) || len(names) != len(idents) {
+		t.Fatalf("Errors() returns %d values and the label names %d sentinels, for a literal of %d", len(all), len(names), len(idents))
 	}
-	if !maps.Equal(names, want) {
-		t.Errorf("the error label names %v, want %v", names, want)
-	}
-	snake := regexp.MustCompile(`^[a-z]+(_[a-z]+)*$`)
+	label := regexp.MustCompile(`^[a-z0-9_]+$`)
 	seen := map[string]bool{}
-	for err, name := range names {
-		if !snake.MatchString(name) || seen[name] {
-			t.Errorf("%v is named %q: not snake case, or named twice", err, name)
+	for i, id := range idents {
+		want := snake(strings.TrimPrefix(id, "Err"))
+		if got := names[all[i]]; got != want {
+			t.Errorf("Errors()[%d], %s, is named %q, want %q", i, id, got, want)
 		}
-		seen[name] = true
+		if !label.MatchString(want) || seen[want] {
+			t.Errorf("%s's name %q is not a label value, or is taken twice", id, want)
+		}
+		seen[want] = true
 	}
-	sentinels := 0
-	for _, err := range vfs.Errors() {
-		if _, typed := err.(interface{ Is(error) bool }); !typed {
-			sentinels++
-			if _, ok := names[err]; !ok {
-				t.Errorf("the sentinel %v has no name", err)
-			}
-			continue
-		}
+	sentinels := all[:len(idents)]
+	for _, err := range all[len(idents):] {
 		n := 0
-		for sentinel := range names {
-			if errors.Is(err, sentinel) {
+		for _, s := range sentinels {
+			if err == s {
+				t.Errorf("%v follows the literal and is one of its sentinels", err)
+			}
+			if errors.Is(err, s) {
 				n++
 			}
 		}
 		if n != 1 {
-			t.Errorf("the typed %v matches %d named sentinels, want 1", err, n)
+			t.Errorf("%v matches %d of the literal's sentinels, want 1", err, n)
 		}
 	}
-	if len(names) != sentinels {
-		t.Errorf("%d names for the service's %d sentinels", len(names), sentinels)
+}
+
+// sentinelLiteral is the identifiers of the one []error composite literal in
+// the Errors function of the package in dir, in order; a second such literal,
+// or an element that is not a bare identifier, fails the test.
+func sentinelLiteral(t *testing.T, dir string) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no Go files in %s: %v", dir, err)
 	}
+	var lits []*ast.CompositeLit
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || fn.Name.Name != "Errors" {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if cl, ok := n.(*ast.CompositeLit); ok {
+					if at, ok := cl.Type.(*ast.ArrayType); ok && at.Len == nil {
+						if el, ok := at.Elt.(*ast.Ident); ok && el.Name == "error" {
+							lits = append(lits, cl)
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	if len(lits) != 1 {
+		t.Fatalf("Errors() holds %d []error literals, want one", len(lits))
+	}
+	idents := make([]string, len(lits[0].Elts))
+	for i, e := range lits[0].Elts {
+		id, ok := e.(*ast.Ident)
+		if !ok {
+			t.Fatalf("element %d of Errors()'s literal is a %T, want a bare identifier", i, e)
+		}
+		idents[i] = id.Name
+	}
+	return idents
+}
+
+// snake spells an identifier as RFC 25 §2.4's label values: a run of
+// capitals is one word, its last capital starting the next word where a
+// lower-case letter follows, and digits join the word before them.
+func snake(id string) string {
+	r := []rune(id)
+	var b strings.Builder
+	for i, c := range r {
+		next := i+1 < len(r) && unicode.IsLower(r[i+1])
+		if i > 0 && unicode.IsUpper(c) && (unicode.IsLower(r[i-1]) || next) {
+			b.WriteByte('_')
+		}
+		b.WriteRune(unicode.ToLower(c))
+	}
+	return b.String()
 }
 
 // A server resolves each table's series once, testproto's tables listed by

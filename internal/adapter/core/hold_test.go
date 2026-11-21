@@ -385,6 +385,10 @@ func TestAHeldMembersInterimGrantsItsOwnCredits(t *testing.T) {
 	})
 }
 
+// mapErrorRefusals is the refusals core makes once the call has returned
+// (§10.1's map_error).
+var mapErrorRefusals = "adapter_refusals_total{protocol=" + testproto.Name + ",stage=map_error}"
+
 // Past Stages.MaxPending, a hold starting on the service's error is answered
 // the too-many-pending status at once; a call the interim timer finds in the
 // service goes pending all the same, its interim granting one credit of its
@@ -393,12 +397,16 @@ func TestPastMaxPending(t *testing.T) {
 	none := func(st *core.Stages) { st.MaxPending = 0 }
 	t.Run("a hold on the service's error", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock(), none)
+			m := metrics.New("v", "c")
+			s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, newManualClock(), none)
 			s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
 			s.serve(s.heldChain(1, "f")...)
 			rs, err := s.client.Recv()
 			if err != nil || len(rs) != 2 || rs[1].Interim || rs[1].Status != testproto.StatusTooManyPending {
 				t.Errorf("the chain is answered %+v (%v), want the Create's too-many-pending status at once", rs, err)
+			}
+			if got, _ := scrape(t, m); got[mapErrorRefusals] != 1 {
+				t.Errorf("%s = %v for the hold refused at MaxPending, want 1", mapErrorRefusals, got[mapErrorRefusals])
 			}
 		})
 	})
@@ -976,6 +984,32 @@ func TestTheCreditsBeforeAPendingMemberRideOnItsInterim(t *testing.T) {
 	})
 }
 
+// A call that returns an error no row maps is answered the fault status, and
+// its request span's result is unmapped (§4.5, §10.2).
+func TestAnErrorNoRowMapsIsTheSpansResult(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		spans := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+		s := newHeld(t, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1}, newManualClock())
+		s.faults.Fail(vfs.OpCreate, errUnmappable)
+		s.serve(s.heldChain(1, "f")...)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[1].Status != testproto.StatusFault {
+			t.Fatalf("the chain is answered %+v (%v), want the Create's fault status", rs, err)
+		}
+		synctest.Wait()
+		var result string
+		for _, kv := range requestSpan(t, spans, "Create").Attributes() {
+			if kv.Key == "result" {
+				result = kv.Value.AsString()
+			}
+		}
+		if result != "unmapped" {
+			t.Errorf("the Create's span result is %q, want unmapped", result)
+		}
+	})
+}
+
 // Without the pend flag, a chain's member before the last that the service
 // answers ErrDelay is answered the not-last status at once, with no interim,
 // since the delay row's status would speak for a hold that does not happen,
@@ -985,7 +1019,8 @@ func TestAMemberThatDoesNotPendIsAnsweredNotLast(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		spans := tracetest.NewSpanRecorder()
 		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
-		s := newHeld(t, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1}, newManualClock())
+		m := metrics.New("v", "c")
+		s := newHeld(t, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1, Metrics: m}, newManualClock())
 		s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
 		s.serve(s.pendChain(1, false)...)
 		rs, err := s.client.Recv()
@@ -993,6 +1028,9 @@ func TestAMemberThatDoesNotPendIsAnsweredNotLast(t *testing.T) {
 			t.Errorf("the chain is answered %+v (%v), want the Create's not-last status at once and the Echo's success", rs, err)
 		}
 		synctest.Wait()
+		if got, _ := scrape(t, m); got[mapErrorRefusals] != 1 {
+			t.Errorf("%s = %v for the not-last answer, want 1", mapErrorRefusals, got[mapErrorRefusals])
+		}
 		var result string
 		for _, kv := range requestSpan(t, spans, "Create").Attributes() {
 			if kv.Key == "result" {
@@ -1330,7 +1368,8 @@ func TestARefusedParkMakesNoCallAndSendsNoInterim(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				s := newHeld(t, c.reply, adapter.Deps{}, newManualClock())
+				m := metrics.New("v", "c")
+				s := newHeld(t, c.reply, adapter.Deps{Metrics: m}, newManualClock())
 				msgs, free := c.park(s)
 				s.serve(msgs...)
 				next := s.recvLater()
@@ -1345,6 +1384,9 @@ func TestARefusedParkMakesNoCallAndSendsNoInterim(t *testing.T) {
 				}
 				if ops := s.svc.Ops(); len(ops) != 0 {
 					t.Errorf("the refused park made %v, want no call", ops)
+				}
+				if got, _ := scrape(t, m); got[mapErrorRefusals] != 1 {
+					t.Errorf("%s = %v for the refused park, want 1", mapErrorRefusals, got[mapErrorRefusals])
 				}
 				free()
 				if !s.sentNothing() {
@@ -1369,10 +1411,11 @@ func TestEightParksAreNotCountedAsHeld(t *testing.T) {
 
 // A park its client cancels during its wait is answered the cancel status,
 // the error done reports replaced, and makes no file; the cancel gets no
-// reply of its own (§4.7, §6.5).
+// reply of its own, and counts as no refusal (§4.7, §6.5, §10.1).
 func TestACancelledParkIsAnsweredTheCancelStatus(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		m := metrics.New("v", "c")
+		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, newManualClock())
 		wait := s.parkWait()
 		defer wait.Release()
 		s.serve(s.parkChain(1, "f")...)
@@ -1384,6 +1427,9 @@ func TestACancelledParkIsAnsweredTheCancelStatus(t *testing.T) {
 		}
 		if !s.sentNothing() {
 			t.Error("the cancel got a reply of its own")
+		}
+		if got, _ := scrape(t, m); got[mapErrorRefusals] != 0 {
+			t.Errorf("%s = %v for a park its client cancelled, want 0", mapErrorRefusals, got[mapErrorRefusals])
 		}
 	})
 }
@@ -1427,7 +1473,8 @@ func TestACancelBeforeItsTargetParksEndsIt(t *testing.T) {
 // the park holds nothing (§3.1, §4.7).
 func TestADrainCancelsAPark(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := newHeld(t, 1<<20, adapter.Deps{}, newManualClock())
+		m := metrics.New("v", "c")
+		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, newManualClock())
 		wait := s.parkWait()
 		defer wait.Release()
 		s.serve(s.parkChain(1, "f")...)
@@ -1440,6 +1487,9 @@ func TestADrainCancelsAPark(t *testing.T) {
 		}
 		if s.exists("f") || !s.sentNothing() {
 			t.Errorf("the drained park made its file (%v) or was answered", s.exists("f"))
+		}
+		if got, _ := scrape(t, m); got[mapErrorRefusals] != 1 {
+			t.Errorf("%s = %v for the park the drain ended, want 1", mapErrorRefusals, got[mapErrorRefusals])
 		}
 	})
 }
