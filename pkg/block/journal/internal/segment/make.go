@@ -94,11 +94,33 @@ func (m *Maker) drawID() core.SegmentID {
 // class out of it — and the spare is never taken: a failed make leaves no
 // spare in the ledger, or one its retirement, not a stream, unlinks.
 func (m *Maker) Make() (core.SegmentID, error) {
+	return m.makeUnder(m.max)
+}
+
+// MakeOverMax is Make with one segment cap of room past the maximum: the
+// read-only probe's one spare, kept as the reopen's first, which a journal
+// filled to its maximum must still be able to make.
+//
+// decision: the probe's spare may take the footprint one cap past the
+// maximum, because a full journal lives off recycling, which a read-only
+// journal does not run, so a spare held to the maximum is never made and the
+// journal stays read-only after its device recovers (RFC 1 §5.4). The probe
+// holds at most one spare, so the overshoot is one cap, carried into the
+// reopen, where the admission refuses content until retirement brings the
+// footprint back under. Overturned if a reopen over the maximum is seen to
+// refuse what it must serve, which would take the spare from a reserve held
+// inside the maximum instead.
+func (m *Maker) MakeOverMax() (core.SegmentID, error) {
+	return m.makeUnder(m.max + m.set.cap)
+}
+
+// makeUnder makes one spare, reserving it against max.
+func (m *Maker) makeUnder(max int64) (core.SegmentID, error) {
 	// The reservation sits before any storage is touched, so a refusal owns
 	// no I/O at all, and it is the ledger's own critical section that decides
 	// against the maximum, so two makes near it never both pass.
 	id := m.drawID()
-	if err := m.set.AddSpare(id, m.max); err != nil {
+	if err := m.set.AddSpare(id, max); err != nil {
 		return 0, fmt.Errorf("segment: making %d: reserve: %w", id, err)
 	}
 	if err := m.make(id); err != nil {
