@@ -295,7 +295,7 @@ func (j *joining) start(ctx context.Context, target entity.ResourceRef, spec api
 
 // joinAccountName is the computer account's name a join takes: name, else
 // the installation's NetBIOS name, without its $ and in upper case, refused
-// when outside [A-Z0-9-] or longer than a NetBIOS name.
+// unless it is a valid NetBIOS name.
 func joinAccountName(name, netbios string) (string, error) {
 	n := strings.TrimSuffix(name, "$")
 	if n == "" {
@@ -308,8 +308,8 @@ func joinAccountName(name, netbios string) (string, error) {
 		}
 	}
 	n = string(b)
-	if n == "" || len(n) > maxNetBIOSName || strings.Trim(n, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") != "" {
-		return "", fmt.Errorf("the account name %q is not 1 to %d bytes of [A-Z0-9-]", name, maxNetBIOSName)
+	if err := validNetBIOSName(n); err != nil {
+		return "", fmt.Errorf("the account name %w", err)
 	}
 	return n, nil
 }
@@ -575,6 +575,11 @@ func (j *joining) confirm(ctx context.Context) (step.StepResult, error) {
 		jn.LastRotation.Version, jn.LastRotation.Confirmed = c.Version, now
 		if err := tx.SetMachineJoin(jn); err != nil {
 			return err
+		}
+		// The account's name is written as identity.netbios_name only when
+		// it keeps that setting's rule, which a settings write validates.
+		if err := validNetBIOSName(c.Account); err != nil {
+			return fmt.Errorf("%w: identity.netbios_name %w", step.ErrStepFailed, err)
 		}
 		scope := entity.SettingScope{Kind: entity.ScopeInstallation}
 		old, _, err := tx.Setting(scope, netbiosNameKey)

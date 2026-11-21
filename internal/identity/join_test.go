@@ -362,7 +362,7 @@ func TestOnlineJoinRefusedAtFirstTurn(t *testing.T) {
 		{"the base itself", apiv1.JoinDomainSpec{Account: "NAS", OU: "DC=corp,DC=example"}, nil, "not under the directory's base"},
 		{"one-label host", apiv1.JoinDomainSpec{Account: "NAS", DNSHostName: "nas"}, nil, "not a DNS name"},
 		{"underscore", apiv1.JoinDomainSpec{Account: "NAS_01"}, nil, "NAS_01"},
-		{"16 bytes", apiv1.JoinDomainSpec{Account: strings.Repeat("N", 16)}, nil, "not 1 to 15 bytes"},
+		{"16 bytes", apiv1.JoinDomainSpec{Account: strings.Repeat("N", 16)}, nil, "longer than 15 bytes"},
 		{"the NetBIOS domain", apiv1.JoinDomainSpec{Account: "corp"}, nil, "named as the domain CORP"},
 		{"a rotation running", apiv1.JoinDomainSpec{Account: "NAS"}, func(fx *rotFixture) {
 			if err := fx.cp.Write(context.Background(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
@@ -449,6 +449,34 @@ func TestOnlineJoinEndWritesBothOrNeither(t *testing.T) {
 	fx.fkv.SetFault(nil)
 	if name, ok := fx.netbiosName(t); ok || fx.join(t).Joined {
 		t.Errorf("after a failed End: joined %v, identity.netbios_name %q; want neither written", fx.join(t).Joined, name)
+	}
+}
+
+// An End whose cursor names an account identity.netbios_name's rule refuses
+// fails the join and writes neither Join nor the name.
+func TestOnlineJoinEndRefusesAnInvalidName(t *testing.T) {
+	fx := newMachine(t)
+	op := fx.joinOp(t, apiv1.JoinDomainSpec{Account: "NAS"}, true)
+	fx.until(t, op, "confirm")
+	var c map[string]any
+	if err := json.Unmarshal(op.Step, &c); err != nil {
+		t.Fatal(err)
+	}
+	c["account"] = "nas" // a cursor from a binary that kept the name's case
+	var err error
+	if op.Step, err = json.Marshal(c); err != nil {
+		t.Fatal(err)
+	}
+	res, err := step.Run(context.Background(), fx.s.JoinStep, *op)
+	if err != nil || res.End == nil {
+		t.Fatalf("last turn: err %v; want done with an End", err)
+	}
+	err = fx.cp.Write(context.Background(), entity.WriteMeta{}, res.End)
+	if _, ended := step.Failure(err); !ended {
+		t.Errorf("End's write: %v, want the join failed", err)
+	}
+	if name, ok := fx.netbiosName(t); ok || fx.join(t).Joined {
+		t.Errorf("after the refused End: joined %v, identity.netbios_name %q; want neither written", fx.join(t).Joined, name)
 	}
 }
 
