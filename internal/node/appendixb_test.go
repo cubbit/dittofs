@@ -1,6 +1,8 @@
 package node
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +10,15 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/cubbit/dittofs/internal/node/api/apisettings"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/settings"
 )
 
 // rfc13 is the copy of RFC 13 whose Appendix B the check reads.
@@ -273,5 +284,428 @@ func TestAppendixBRFC23Rows(t *testing.T) {
 			t.Errorf("%s (line %d): scope %q, class %q, admin only %v; want installation, live, true",
 				key, r.line, r.scope, r.class, r.admin)
 		}
+	}
+}
+
+// tableStore is a fresh in-memory control plane the check reads a table
+// through: Read over it, with no row, gives every section's defaults, and
+// Check inside its Write judges a probe write.
+func tableStore(t *testing.T) *kvstore.Store {
+	t.Helper()
+	db, err := badgerkv.Open(badgerkv.Options{})
+	if err != nil {
+		t.Fatalf("open the KV: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close the KV: %v", err)
+		}
+	})
+	if err := kvstore.Init(t.Context(), db, uuid.New()); err != nil {
+		t.Fatalf("init the store: %v", err)
+	}
+	st, err := kvstore.Open(t.Context(), db)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	return st
+}
+
+// probeNode is the node the check reads a table for.
+var probeNode = entity.NodeID{0xa9, 15: 1}
+
+// tableKey is one key the table declares, as the check reads it.
+type tableKey struct {
+	settings.Change
+	scopes    []entity.ScopeKind // the scope kinds Check accepts a write of it at
+	adminOnly bool               // Check refuses an operator's write of it
+}
+
+// tableKeys is every key tb declares, read through pkg/settings' exported
+// surface only.
+//
+// decision: the table exports no list of its keys, so they are read as
+// Diff(nil, Read over an empty store) lists them, each with its section,
+// class and base scope, and each key's scope form and write role are probed
+// with Check: a delete at each of the five scope kinds, refused with
+// ErrWrongScope or not, and an operator's delete at its base scope, refused
+// with ErrForbidden or not. Diff lists no key of a section whose base names
+// no instance (one per share, namespace or remote store, or per thing) or
+// whose defaults Read refuses, so the check fails when it reaches fewer
+// sections than the table holds rather than skip one; an At and a PerThing
+// at one scope accept the same kind, so the probe cannot tell them apart.
+// Add a Table.Keys() export, or seed a row per instance, when a section
+// the probe cannot reach is declared.
+func tableKeys(t *testing.T, st *kvstore.Store, tb settings.Table) []tableKey {
+	t.Helper()
+	snap, refused, err := settings.Read(t.Context(), st.Nodes(), tb, probeNode)
+	if err != nil {
+		t.Fatalf("read the table's defaults: %v", err)
+	}
+	for sec, err := range refused {
+		t.Fatalf("section %s: its defaults are refused, so the check cannot list its keys: %v", sec, err)
+	}
+	changes := settings.Diff(nil, snap)
+	var sections []string
+	for _, ch := range changes {
+		if !slices.Contains(sections, ch.Section) {
+			sections = append(sections, ch.Section)
+		}
+	}
+	if len(sections) != len(tb) {
+		t.Fatalf("Diff lists keys of %d sections %v of the table's %d; "+
+			"a section with no base instance is beyond the check", len(sections), sections, len(tb))
+	}
+
+	check := func(caller entity.APIRole, w settings.Write) error {
+		return st.ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+			return tb.Check(tx, caller, w, nil)
+		})
+	}
+	out := make([]tableKey, 0, len(changes))
+	for _, ch := range changes {
+		k := tableKey{Change: ch}
+		for kind := entity.ScopeInstallation; kind <= entity.ScopeShare; kind++ {
+			scope := entity.SettingScope{Kind: kind}
+			if kind != entity.ScopeInstallation {
+				scope.ID = probeNode
+			}
+			if !errors.Is(check(entity.RoleAdmin, settings.Delete(scope, ch.Key)), settings.ErrWrongScope) {
+				k.scopes = append(k.scopes, kind)
+			}
+		}
+		k.adminOnly = errors.Is(check(entity.RoleOperator, settings.Delete(ch.Scope, ch.Key)), settings.ErrForbidden)
+		out = append(out, k)
+	}
+	return out
+}
+
+// scopeKinds is each scope Appendix B names, by the name it writes.
+var scopeKinds = map[string]entity.ScopeKind{
+	"installation": entity.ScopeInstallation,
+	"node":         entity.ScopeNode,
+	"namespace":    entity.ScopeNamespace,
+	"remote store": entity.ScopeRemote,
+	"share":        entity.ScopeShare,
+}
+
+// cellScopes is the scope kinds a write of a key under a scope cell is
+// accepted at: the scope itself, also per thing, and both scopes of an
+// override. A cell naming no scope kind, "—" or a shard, gives none.
+func cellScopes(cell string) []entity.ScopeKind {
+	names := []string{cell}
+	if m := overrideForm.FindStringSubmatch(cell); m != nil {
+		names = m[1:3]
+	} else if m := perThingForm.FindStringSubmatch(cell); m != nil {
+		names = m[1:2]
+	}
+	var out []entity.ScopeKind
+	for _, n := range names {
+		if k, ok := scopeKinds[n]; ok {
+			out = append(out, k)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// classNames is each class as Appendix B's class cell starts.
+var classNames = map[settings.Class]string{
+	settings.Live:      "live",
+	settings.Restart:   "restart",
+	settings.NextWrite: "next write",
+	settings.Bound:     "bound",
+}
+
+// compareAppendixB compares the table's keys with Appendix B's rows, each
+// key's scope, class and write role, and returns every disagreement, each
+// naming its key, as failures; an Appendix B key under a section's prefix
+// that the section does not declare comes back in reported, and is not a
+// failure.
+func compareAppendixB(t *testing.T, rows []appendixRow, tb settings.Table) (failures, reported []string) {
+	t.Helper()
+	byKey := make(map[string]appendixRow)
+	for _, r := range rows {
+		for _, k := range r.keys {
+			if _, dup := byKey[k]; !dup {
+				byKey[k] = r
+			}
+		}
+	}
+
+	keys := tableKeys(t, tableStore(t), tb)
+	declared := make(map[string]bool, len(keys))
+	var sections []string
+	for _, k := range keys {
+		declared[k.Key] = true
+		if !slices.Contains(sections, k.Section) {
+			sections = append(sections, k.Section)
+		}
+
+		r, ok := byKey[k.Key]
+		if !ok {
+			failures = append(failures, fmt.Sprintf("%s: declared by the table, no Appendix B row", k.Key))
+			continue
+		}
+		if want := cellScopes(r.scope); !slices.Equal(k.scopes, want) {
+			failures = append(failures, fmt.Sprintf("%s (line %d): written at %v, Appendix B's scope %q is %v",
+				k.Key, r.line, k.scopes, r.scope, want))
+		}
+		if got := classNames[k.Class]; got != r.class {
+			failures = append(failures, fmt.Sprintf("%s (line %d): class %q, Appendix B's %q",
+				k.Key, r.line, got, r.class))
+		}
+		if k.adminOnly != r.admin {
+			failures = append(failures, fmt.Sprintf("%s (line %d): written by admin only %v, Appendix B's %v",
+				k.Key, r.line, k.adminOnly, r.admin))
+		}
+	}
+
+	var undeclared []string
+	for _, r := range rows {
+		for _, key := range r.keys {
+			if declared[key] {
+				continue
+			}
+			if slices.ContainsFunc(sections, func(p string) bool { return strings.HasPrefix(key, p+".") }) {
+				reported = append(reported, key)
+			} else {
+				undeclared = append(undeclared, key)
+			}
+		}
+	}
+	// Both are reported, never failed: a section is declared with its
+	// component, and a key of a declared section can land after the section.
+	t.Logf("Appendix B keys under a declared section that it lacks: %v", reported)
+	t.Logf("Appendix B keys no section declares: %d %v", len(undeclared), undeclared)
+	return failures, reported
+}
+
+// The node's table agrees with Appendix B on every key's scope, class and
+// write role, and the api section's two later keys are reported, not failed.
+func TestAppendixBMatchesTheTable(t *testing.T) {
+	rows, err := parseAppendixB(readRFC13(t))
+	if err != nil {
+		t.Fatalf("parse Appendix B: %v", err)
+	}
+	failures, reported := compareAppendixB(t, rows, newTable())
+	if len(failures) > 0 {
+		t.Errorf("the table and Appendix B disagree:\n%s", strings.Join(failures, "\n"))
+	}
+	for _, key := range []string{"api.oidc_role_map", "api.password_sign_in"} {
+		if !slices.Contains(reported, key) {
+			t.Errorf("%s: not among the reported keys %v", key, reported)
+		}
+	}
+}
+
+// renamedAPI is the api section with session_lifetime renamed.
+type renamedAPI struct {
+	SessionLifetime  time.Duration `json:"session_lifetimes" class:"live"`
+	TokenMaxLifetime time.Duration `json:"token_max_lifetime" class:"live"`
+}
+
+func (renamedAPI) Validate() error { return nil }
+
+// Each drift between the table and Appendix B fails the comparison, naming
+// the key that drifted.
+func TestAppendixBDriftFails(t *testing.T) {
+	text := readRFC13(t)
+	const row = "| `audit.retention`: "
+	at := strings.Index(text, row)
+	if at < 0 {
+		t.Fatalf("no row starting %q in %s", row, rfc13)
+	}
+	end := at + strings.IndexByte(text[at:], '\n')
+	cluster := text[:at] + strings.Replace(text[at:end], " | installation | ", " | cluster | ", 1) + text[end:]
+	if cluster == text {
+		t.Fatalf("the audit.retention row has no installation scope cell to edit")
+	}
+
+	api := settings.Of("api", settings.At(entity.ScopeInstallation), apisettings.Defaults(),
+		settings.WriteRole(entity.RoleAdmin))
+	audit := settings.Of("audit", settings.At(entity.ScopeInstallation), apisettings.AuditDefaults(),
+		settings.WriteRole(entity.RoleAdmin))
+	for _, tc := range []struct {
+		name, text string
+		table      settings.Table
+		key        string
+	}{
+		{"a key of the table renamed", text, settings.Table{
+			settings.Of("api", settings.At(entity.ScopeInstallation), renamedAPI(apisettings.Defaults()),
+				settings.WriteRole(entity.RoleAdmin)),
+			audit,
+		}, "api.session_lifetimes"},
+		{"audit at the default role", text, settings.Table{
+			api,
+			settings.Of("audit", settings.At(entity.ScopeInstallation), apisettings.AuditDefaults()),
+		}, "audit.retention"},
+		{"a scope cell edited to cluster", cluster, newTable(), "audit.retention"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := parseAppendixB(tc.text)
+			if err != nil {
+				t.Fatalf("parse Appendix B: %v", err)
+			}
+			failures, _ := compareAppendixB(t, rows, tc.table)
+			if len(failures) != 1 || !regexp.MustCompile(`^`+regexp.QuoteMeta(tc.key)+`[: ]`).MatchString(failures[0]) {
+				t.Errorf("failures %q, want one naming %s", failures, tc.key)
+			}
+		})
+	}
+}
+
+// refMarker is the reference the check writes into every reference field: as
+// a 16-byte reference, or as a string for a reference field of string type.
+var refMarker = [16]byte([]byte("SECRET-MARKER-01"))
+
+// refMarkerForms is every way a Validate could print refMarker: as text, in
+// hex either case, as a UUID, and its first bytes as Go or JSON prints a
+// byte array.
+var refMarkerForms = []string{
+	string(refMarker[:]),
+	hex.EncodeToString(refMarker[:]),
+	strings.ToUpper(hex.EncodeToString(refMarker[:])),
+	uuid.UUID(refMarker).String(),
+	"83 69 67 82", // fmt's %v or %d of the bytes "SECR"
+	"83,69,67,82", // json's
+}
+
+// refLeaks drives each section of tb's Validate with refMarker in every
+// reference field and returns each refusal that prints it, naming the
+// section and the fields.
+//
+// decision: the table exports no list of its reference fields, so a key is
+// one when Check refuses an admin's put of refMarker, as a string or as a
+// 16-byte array, with ErrSecretRef, the refusal it gives a reference field
+// only once the value decodes into it; the row is then written beneath Check
+// and Read runs Validate on it. A reference field of another type would not
+// be found: add a Table export of the reference fields if a section declares
+// one.
+func refLeaks(t *testing.T, tb settings.Table) []string {
+	t.Helper()
+	st := tableStore(t)
+	cp := st.ControlPlane()
+	schema := settings.Versions()[entity.FormatSettings].Max
+	arr, err := json.Marshal(refMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	str, err := json.Marshal(string(refMarker[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	refs := make(map[string][]string)
+	for _, k := range tableKeys(t, st, tb) {
+		for _, v := range [][]byte{arr, str} {
+			row := entity.Setting{Scope: k.Scope, Key: k.Key, Value: v, Schema: schema}
+			err := cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+				return tb.Check(tx, entity.RoleAdmin, settings.Put(row), nil)
+			})
+			if !errors.Is(err, settings.ErrSecretRef) {
+				continue
+			}
+			err = cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+				cur, _, err := tx.Setting(row.Scope, row.Key)
+				if err != nil {
+					return err
+				}
+				_, err = tx.PutSetting(row, cur.Generation)
+				return err
+			})
+			if err != nil {
+				t.Fatalf("write %s beneath the check: %v", k.Key, err)
+			}
+			refs[k.Section] = append(refs[k.Section], k.Key)
+			break
+		}
+	}
+
+	_, refused, err := settings.Read(t.Context(), st.Nodes(), tb, probeNode)
+	if err != nil {
+		t.Fatalf("read the table with its reference fields set: %v", err)
+	}
+	var leaks []string
+	for sec, fields := range refs {
+		err := refused[sec]
+		if err == nil {
+			continue
+		}
+		for _, form := range refMarkerForms {
+			if strings.Contains(err.Error(), form) {
+				leaks = append(leaks, fmt.Sprintf("%s: refusal prints the reference in %v: %v", sec, fields, err))
+				break
+			}
+		}
+	}
+	return leaks
+}
+
+// No section of the node's table prints a reference field's value in a
+// refusal.
+func TestNoRefusalPrintsAReference(t *testing.T) {
+	if leaks := refLeaks(t, newTable()); len(leaks) > 0 {
+		t.Errorf("refusals print a reference:\n%s", strings.Join(leaks, "\n"))
+	}
+}
+
+// Sections holding a reference field, each with a Validate that refuses any
+// value set in it.
+type (
+	hexRef struct {
+		Credential entity.SecretRef `json:"credential" class:"live"`
+	}
+	quotedRef struct {
+		Token string `json:"token" class:"live"`
+	}
+	quietRef struct {
+		Credential entity.SecretRef `json:"credential" class:"live"`
+	}
+)
+
+func (s hexRef) Validate() error {
+	if s.Credential != (entity.SecretRef{}) {
+		return fmt.Errorf("credential %x is not sealed", s.Credential)
+	}
+	return nil
+}
+
+func (s quotedRef) Validate() error {
+	if s.Token != "" {
+		return fmt.Errorf("token %q is not sealed", s.Token)
+	}
+	return nil
+}
+
+func (s quietRef) Validate() error {
+	if s.Credential != (entity.SecretRef{}) {
+		return errors.New("credential is not sealed")
+	}
+	return nil
+}
+
+// A Validate that prints its reference field fails the search, as a 16-byte
+// reference or as a string; one refusing it without printing it passes.
+func TestRefLeaksFindsAPrintedReference(t *testing.T) {
+	at := settings.At(entity.ScopeInstallation)
+	for _, tc := range []struct {
+		name    string
+		section settings.Section
+		leaks   bool
+	}{
+		{"16-byte reference in hex", settings.Of("test.hex", at, hexRef{},
+			settings.SecretRef("Credential", entity.SecretPassword)), true},
+		{"string reference quoted", settings.Of("test.quoted", at, quotedRef{},
+			settings.SecretRef("Token", entity.SecretPassword)), true},
+		{"refused without the value", settings.Of("test.quiet", at, quietRef{},
+			settings.SecretRef("Credential", entity.SecretPassword)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			leaks := refLeaks(t, settings.Table{tc.section})
+			if got := len(leaks) == 1; got != tc.leaks {
+				t.Errorf("leaks %q, want a leak %v", leaks, tc.leaks)
+			}
+		})
 	}
 }
