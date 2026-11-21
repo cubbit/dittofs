@@ -395,6 +395,31 @@ func TestOnlineJoinRefusedAtFirstTurn(t *testing.T) {
 	}
 }
 
+// A join that ends before its first phase runs, on params that do not
+// decode, a mode other than online or a cursor that does not decode, releases
+// the administrator credential held under it.
+func TestOnlineJoinEndedEarlyReleasesTheHold(t *testing.T) {
+	fx := newMachine(t)
+	for _, tc := range []struct {
+		name string
+		edit func(*entity.Operation)
+	}{
+		{"params", func(op *entity.Operation) { op.Params = []byte("{") }},
+		{"offline", func(op *entity.Operation) { op.Params = []byte(`{"mode":"offline","account":"NAS$"}`) }},
+		{"cursor", func(op *entity.Operation) { op.Step = []byte("{") }},
+	} {
+		op := fx.joinOp(t, apiv1.JoinDomainSpec{Account: "NAS"}, true)
+		tc.edit(op)
+		_, err := step.Run(context.Background(), fx.s.JoinStep, *op)
+		if _, ended := step.Failure(err); !ended {
+			t.Errorf("%s: turn err %v, want the join ended", tc.name, err)
+		}
+		if _, held := fx.s.HeldCredential(op.ID); held {
+			t.Errorf("%s: the administrator credential is still held after the join ended", tc.name)
+		}
+	}
+}
+
 // The join's last turn writes Join and identity.netbios_name in its End, one
 // transaction: a commit that fails writes neither.
 func TestOnlineJoinEndWritesBothOrNeither(t *testing.T) {

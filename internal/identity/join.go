@@ -161,6 +161,11 @@ func (s *Server) JoinStep(ctx context.Context, op entity.Operation) (res step.St
 	if op.Target.Kind != entity.ResourceInstallation {
 		return step.StepResult{}, fmt.Errorf("%w: %s's target %s names no installation", step.ErrStepFailed, op.Kind, op.Target.Kind)
 	}
+	defer func() {
+		if _, ended := step.Failure(err); ended || res.Done {
+			s.releaseHold(op.ID)
+		}
+	}()
 	var p apiv1.JoinDomainParams
 	if err := json.Unmarshal(op.Params, &p); err != nil {
 		return step.StepResult{}, fmt.Errorf("%w: the join's params: %w", step.ErrStepFailed, err)
@@ -185,11 +190,6 @@ func (s *Server) JoinStep(ctx context.Context, op entity.Operation) (res step.St
 	if err != nil {
 		return step.StepResult{}, err
 	}
-	defer func() {
-		if _, ended := step.Failure(err); ended || res.Done {
-			s.releaseHold(op.ID)
-		}
-	}()
 	j := &joining{s: s, st: st, in: in, c: c, op: op.ID}
 	if c.Phase != joinStart && st.Directory == nil {
 		return step.StepResult{}, j.fail(ctx, http.StatusConflict, "the installation has no directory record")
