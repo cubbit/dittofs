@@ -134,6 +134,10 @@ type ControlPlaneTx interface {
 	// over the whole set, so two writes that each remove one of the last
 	// ones conflict.
 	EnabledAdmins() (int, error)
+	// IDHighWater is the last uid and the last gid allocated, zero for one
+	// never drawn, read tracked, so a create that raises either conflicts
+	// with the write that read it.
+	IDHighWater() (uid, gid uint32, err error)
 	Installation() (Installation, error)
 	// SetNTLMOff records a write turning identity.ntlm off at settings
 	// generation gen, clearing the NT-hash deletion completed before it.

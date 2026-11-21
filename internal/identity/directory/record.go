@@ -113,35 +113,35 @@ func (r Record) GroupAttr() string {
 // authenticated and encrypted below LDAP.
 func (r Record) Validate() error {
 	if !r.IsAD() && r.Schema != SchemaRFC2307 {
-		return fmt.Errorf("identity.directory: schema %q is neither %q nor %q", r.Schema, SchemaAD, SchemaRFC2307)
+		return fmt.Errorf("schema %q is neither %q nor %q", r.Schema, SchemaAD, SchemaRFC2307)
 	}
 	u, err := url.Parse(r.Address)
 	if err != nil {
-		return fmt.Errorf("identity.directory: address: %w", err)
+		return fmt.Errorf("address: %w", err)
 	}
 	if u.Scheme != "ldaps" && u.Scheme != "ldap" {
-		return fmt.Errorf("identity.directory: address %q is not ldaps:// or ldap://", r.Address)
+		return fmt.Errorf("address %q is not ldaps:// or ldap://", r.Address)
 	}
 	if u.Hostname() == "" {
-		return fmt.Errorf("identity.directory: address %q names no host", r.Address)
+		return fmt.Errorf("address %q names no host", r.Address)
 	}
 	// A password in the address would sit in a plain setting, past the
 	// BindCredential reference meant to hold it.
 	if u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return fmt.Errorf("identity.directory: address %q holds more than ldaps:// or ldap://, a host and a port", r.Address)
+		return fmt.Errorf("address %q holds more than ldaps:// or ldap://, a host and a port", r.Address)
 	}
 	if err := checkPEM(r.TrustRoots); err != nil {
 		return err
 	}
 	for field, attr := range map[string]string{"user_name_attr": r.UserNameAttr, "group_name_attr": r.GroupNameAttr} {
 		if attr != "" && !attrName.MatchString(attr) {
-			return fmt.Errorf("identity.directory: %s %q is neither an attribute name nor a numeric OID", field, attr)
+			return fmt.Errorf("%s %q is neither an attribute name nor a numeric OID", field, attr)
 		}
 	}
 	if r.IsAD() {
 		for i := range len(r.Realm) {
 			if c := r.Realm[i]; 'a' <= c && c <= 'z' {
-				return fmt.Errorf("identity.directory: ad realm %q holds the lower-case letter %q", r.Realm, c)
+				return fmt.Errorf("ad realm %q holds the lower-case letter %q", r.Realm, c)
 			}
 		}
 	}
@@ -166,12 +166,12 @@ func checkPEM(s string) error {
 			break
 		}
 		if _, err := x509.ParseCertificate(b.Bytes); err != nil {
-			return fmt.Errorf("identity.directory: trust_roots: %w", err)
+			return fmt.Errorf("trust_roots: %w", err)
 		}
 		n++
 	}
 	if n == 0 || len(bytes.TrimSpace(rest)) != 0 {
-		return errors.New("identity.directory: trust_roots is not a list of PEM certificates")
+		return errors.New("trust_roots is not a list of PEM certificates")
 	}
 	return nil
 }

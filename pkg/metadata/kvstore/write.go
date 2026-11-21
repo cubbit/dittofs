@@ -226,6 +226,19 @@ func (c controlTx) EnabledAdmins() (int, error) {
 	return n, nil
 }
 
+func (c controlTx) IDHighWater() (uid, gid uint32, err error) {
+	u, err := counterIn(c.tx, idKey(idUID))
+	if err != nil {
+		return 0, 0, err
+	}
+	g, err := counterIn(c.tx, idKey(idGID))
+	if err != nil {
+		return 0, 0, err
+	}
+	// draw raises each counter only to an ID inside a uint32 range.
+	return uint32(u), uint32(g), nil
+}
+
 func (c controlTx) Installation() (entity.Installation, error) {
 	b, err := c.tx.Get(installationKey)
 	if err != nil {

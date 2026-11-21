@@ -1,6 +1,7 @@
 package node
 
 import (
+	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/node/api/apisettings"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/settings"
@@ -15,5 +16,7 @@ func newTable() settings.Table {
 			settings.WriteRole(entity.RoleAdmin)),
 		settings.Of("audit", settings.At(entity.ScopeInstallation), apisettings.AuditDefaults(),
 			settings.WriteRole(entity.RoleAdmin)),
+		identity.Section(),
+		identity.DirectorySection(),
 	}
 }
