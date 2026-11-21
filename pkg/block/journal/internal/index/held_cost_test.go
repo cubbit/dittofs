@@ -34,7 +34,12 @@ func perOp(s *heldSet, samples int, fn func()) float64 {
 	return float64(s.tree.comparisons()-before) / float64(samples)
 }
 
-type heldCosts struct{ lookup, span, insert, report float64 }
+type heldCosts struct {
+	lookup, span, insert, report float64
+	// firstReport is the extents the first report block marked: its number
+	// shows the block edges sit inside pieces, not on their boundaries.
+	firstReport int
+}
 
 func measureHeldCosts(n int) heldCosts {
 	const samples = 2_000
@@ -58,11 +63,17 @@ func measureHeldCosts(n int) heldCosts {
 		s.insert(write(i*pieceLen, pieceLen, rec(1<<21, next), 1<<40))
 	}) / 2
 	// The report: one block of four extents at a time, front to back, as an
-	// offload pass commits them.
+	// offload pass commits them, each block starting half a piece in, so its
+	// edges sit inside pieces: each report rejoins the piece the last one
+	// split and splits the next, the shape the report cost names.
 	var marked int
 	before := s.tree.comparisons()
 	for b := range min(samples, n/4) {
-		marked += s.markOffloaded(ext(int64(b)*4*pieceLen, 4*pieceLen), ver(0), ver(math.MaxUint64))
+		m := s.markOffloaded(ext(int64(b)*4*pieceLen+pieceLen/2, 4*pieceLen), ver(0), ver(math.MaxUint64))
+		marked += m
+		if b == 0 {
+			c.firstReport = m
+		}
 	}
 	c.report = float64(s.tree.comparisons()-before) / float64(marked)
 	return c
@@ -75,19 +86,17 @@ func measureHeldCosts(n int) heldCosts {
 // extent a report marks. A linear walk of the extents, or a report that scans
 // the file to decide anything, multiplies its count by about a thousand.
 //
-// decision: the ratio is held at 2.5, not at the 2 the RFC states. A file
-// written front to back fills the tree's leaves about 94%, so 10^3 extents sit
-// two levels deep and 10^6 five, and binary search costs about five
-// comparisons a level: a correct set measures about 2.0 to 2.1 here, from the
-// rounding of the tree's height alone. The tree itself is held to the RFC's 2
-// in TestComparisonsGrowLogarithmically, on random keys. Every operation is
-// also held to an absolute bound, 1.25 log2(n) a descent, as the tree's
-// lookups are. A lookup is one descent and a span query two. An insert as
-// measured here, a split averaged with an overwrite, makes about ten, cutting,
-// setting and checking both ends for a merge, and a report about nine per
-// extent it marks; a change that adds descents raises those counts. Return to
-// 2 if the RFC is restated with headroom, or if the tree's fill stops
-// depending on the order extents are written in.
+// A file written front to back fills the tree's leaves about 94%, so 10^3
+// extents sit two levels deep and 10^6 five, and binary search costs about
+// five comparisons a level: a correct set measures about 2.0 to 2.1 here,
+// from the rounding of the tree's height alone, under the 2.5 the ratio
+// allows. The tree on random keys is held in TestComparisonsGrowLogarithmically.
+// Every operation is also held to an absolute bound, 1.25 log2(n) a descent,
+// as the tree's lookups are. A lookup is one descent and a span query two.
+// An insert as measured here, a split averaged with an overwrite, makes about
+// ten, cutting, setting and checking both ends for a merge, and a report
+// about nine per extent it marks; a change that adds descents raises those
+// counts.
 //
 // Each count is held from below too, or a set that stopped going through the
 // counted tree would pass every bound at zero.
@@ -117,6 +126,14 @@ func TestHeldCostGrowsLogarithmically(t *testing.T) {
 		}
 		if least := 0.5 * math.Log2(1_000); c.small < least {
 			t.Errorf("%s: %.1f comparisons at 10^3, below %.1f: comparisons go uncounted", c.name, c.small, least)
+		}
+	}
+	// The first block's count shows its edges sat inside pieces: a block
+	// starting half a piece in marks five extents, one each side split off,
+	// where one aligned to the boundaries marks four.
+	for n, c := range map[int]heldCosts{1_000: small, 1_000_000: large} {
+		if c.firstReport != 5 {
+			t.Errorf("at %d extents: the first block marked %d extents, want 5: its edges sit on extent boundaries", n, c.firstReport)
 		}
 	}
 }

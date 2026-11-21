@@ -89,18 +89,33 @@ type mixedEnv interface {
 	// SyncSmall runs the small writer's measured Sync.
 	SyncSmall() error
 
+	// HoldNextAppend makes the stream's next interval stop in flight, at its
+	// first segment write, before anything of it lands: reached closes once
+	// it is stopped, and release lets it go on. Nothing else is held.
+	HoldNextAppend() (reached <-chan struct{}, release func())
+
+	// Queue tells the env one more interval is waiting to be written by the
+	// stream, before the protocol hands it over: the stream's backlog. A
+	// journal sees an interval only when its write reaches it, so the check
+	// does nothing here; a fake whose design waits on the backlog counts it.
+	Queue()
+
+	// WaitedTotal is the write bytes successful syncs waited for over the
+	// segment files: what each found unsynced as it arrived at storage,
+	// before anything parked it. The window's measure is its difference.
+	WaitedTotal() int64
+
 	// DurableTotal is the write bytes successful syncs have made durable
-	// over the segment files: the measure is its difference across a
-	// window.
+	// over the segment files: what the floor checks are read from.
 	DurableTotal() int64
 
 	// SegmentNames lists the segment file names now, so a round can tell the
 	// name set changed while its window was open.
 	SegmentNames() []string
 
-	// WindowBound is what one measured window may make durable: the checked
-	// sync's own record, one fed stream interval — record bytes — and the
-	// header of a segment a roll just took. The env supplies its own record
+	// WindowBound is what one measured window's syncs may wait for: the
+	// checked sync's own record, one stream interval — record bytes — and
+	// the header of a segment a roll just took. The env supplies its own record
 	// sizes, so a fake's window is bounded by the same arithmetic at its own
 	// scale.
 	WindowBound() int64
@@ -156,11 +171,21 @@ func settleParked(t mixedTB, gate *kit.SimGate) {
 //     far: a design that returns success while holding the caller's writes
 //     unsynced fails here;
 //   - the small writer's record lands, pending into the window;
-//   - the gate is armed around the measured Sync; every arrival a fed
-//     interval confirmed is answered with exactly one release, and the
-//     cap stops the feeds after mixedFeeds of them; an arrival while the fed
-//     write is still landing is that write's own roll-seal sync, released
-//     unfed;
+//   - one more interval is handed to the stream and held in flight at its
+//     first segment write, so the stream is appending when the measured
+//     Sync starts;
+//   - the gate is armed around the measured Sync; its first arrival is
+//     answered by letting the held interval land, every later one by a fed
+//     interval, each released once its interval confirmed, and the cap
+//     stops the feeds after mixedFeeds intervals; an arrival while an
+//     interval is still landing is that write's own roll-seal sync,
+//     released unfed;
+//   - a sync that neither arrives nor returns while the interval is in
+//     flight is handed the stream's backlog instead, each interval parked at
+//     its first segment write when handed over and freed by the next arrival
+//     or the next bounded wait, up to the same cap, so a design that waits
+//     for the whole backlog arrives with it pending while a merely delayed
+//     correct arrival measures nothing it never waited for;
 //   - the gate is disarmed and everything it still holds is freed, and only
 //     then is the measured Sync's result waited on — received once, in the
 //     feeds or here, never both;
@@ -168,10 +193,11 @@ func settleParked(t mixedTB, gate *kit.SimGate) {
 //     waits for that confirmation before the next round reads any stream
 //     state: an append still in flight would move the env's counters under
 //     a round that thinks the stream is quiescent;
-//   - the window's measure is compared against the bound, unless the segment
-//     name set changed while the window was open: a fresh segment was taken
-//     and the old one sealed, and its seal covered the stream's own records,
-//     bytes no small-writer sync chose.
+//   - the window's measure, the write bytes its syncs waited for as each
+//     arrived, is compared against the bound, unless the segment name set
+//     changed while the window was open: a fresh segment was taken and the
+//     old one sealed, and its seal covered the stream's own records, bytes
+//     no small-writer sync chose.
 //
 // The interval count is the stream's own: each interval is counted the
 // moment its confirmation arrives — the opening one when the round opens,
@@ -346,38 +372,96 @@ func runMixedRounds(t mixedTB, env mixedEnv) []int {
 			t.Fatalf("the small write: %v", err)
 		}
 
-		// The measured window: the gate armed around the measured Sync, run
-		// on its own goroutine, so the run's own waits stay bounded.
-		before := env.DurableTotal()
+		// The measured window. The stream is handed one interval whose write
+		// the env stops in flight, so an append of the stream is under way
+		// when the small writer's Sync starts, and the gate is armed around
+		// that Sync, run on its own goroutine, so the run's own waits stay
+		// bounded.
+		before := env.WaitedTotal()
 		namesBefore := slices.Clone(env.SegmentNames())
+		reached, releaseHeld := env.HoldNextAppend()
+		// A run that fails while the interval is held lets it go before the
+		// stream goroutine is waited for: the cleanup that joins it runs
+		// after this one.
+		t.Cleanup(releaseHeld)
+		env.Queue()
+		select {
+		case proceed <- struct{}{}:
+		case <-time.After(mixedWait):
+			t.Fatalf("the stream did not take the window's interval within %v", mixedWait)
+		}
+		select {
+		case <-reached:
+		case err := <-errs.value:
+			stubCall(t, "WriteAt", err)
+			t.Fatalf("the streaming writer's in-flight write: %v", err)
+		case <-time.After(mixedWait):
+			t.Fatalf("the stream's interval did not reach its write within %v", mixedWait)
+		}
+		held := true
 		gate.Arm()
 		syncDone := make(chan error, 1)
 		go func() { syncDone <- env.SyncSmall() }()
 
 		// The feeds: each arrival the window's syncs announce is answered
 		// with one stream interval, whose confirmation releases the call
-		// that asked — the release lets it flush, and the flush is what the
-		// measure reads, so a fed record must land in the segment before its
-		// sync is freed to cover it. An arrival while a fed write is still
-		// landing is that write's own roll-seal sync: it is released unfed,
-		// and the write finishes. A design that keeps asking is fed at most
-		// mixedFeeds intervals; after that its arrivals are released
-		// without one and the measure reads the bytes it chose to flush
-		// anyway.
-		sent := 0
-		fedInFlight := false
+		// that asked. The first is the interval already in flight: an append
+		// landing while the sync waits is the one interval the row allows
+		// it. An arrival while a fed write is still landing is that write's
+		// own roll-seal sync: it is released unfed, and the write finishes.
+		// A design that keeps asking is fed at most mixedFeeds intervals;
+		// after that its arrivals are released without one.
+		//
+		// A sync that neither arrives nor returns while the interval is in
+		// flight is waiting on the stream. It is then handed the stream's
+		// backlog, mixedFeeds intervals in all with the one in flight. Each
+		// backlog interval is handed over parked at its first segment write,
+		// so none of its bytes are on the segment — and none in the seam's
+		// waited totals — until it is freed: an arrival that answers it
+		// measures nothing of it, exactly as the first hold's answer measures
+		// nothing of what lands during its park. A design that waits for the
+		// whole backlog without asking is made to land one interval per
+		// bounded wait and so arrives, whenever it asks, with every interval
+		// the waits landed pending against the bound's one.
+		sent, backlog := 0, 0
+		fedInFlight, answering := false, false
 		returned := false
+		// dripParked is whether one backlog interval now sits parked at its
+		// first segment write, and dripRelease frees that park. While it is
+		// parked nothing else is in flight — a park is only installed once
+		// the previous fed write confirmed — so an arrival in that state can
+		// only be a sync's own fsync, never a landing write's roll-seal.
+		dripParked := false
+		var dripRelease func()
 	feedLoop:
 		for {
 			select {
 			case <-gate.Arrivals:
+				if dripParked {
+					// An arrival while a backlog interval sits parked at its
+					// write: answer it with that interval, the shape of the
+					// first held answer. A delayed-but-correct sync is handed
+					// bytes it never waited for otherwise — its measure would
+					// read the next backlog interval's landing as its own
+					// wait.
+					dripRelease()
+					dripParked = false
+					fedInFlight, answering = true, true
+					continue
+				}
 				if fedInFlight {
 					gate.Release()
 					continue
 				}
+				if held {
+					releaseHeld()
+					held = false
+					fedInFlight, answering = true, true
+					continue
+				}
 				select {
 				case proceed <- struct{}{}:
-					fedInFlight = true
+					fedInFlight, answering = true, true
 				case <-done:
 					break feedLoop
 				case <-time.After(mixedWait):
@@ -391,7 +475,10 @@ func runMixedRounds(t mixedTB, env mixedEnv) []int {
 				// count follows the stream, not the rounds, and a fed write
 				// is as much part of the stream as the opening one.
 				fedInFlight = false
-				gate.Release()
+				if answering {
+					answering = false
+					gate.Release()
+				}
 				sent++
 				interval++
 				if sent >= mixedFeeds {
@@ -413,8 +500,79 @@ func runMixedRounds(t mixedTB, env mixedEnv) []int {
 				stubCall(t, "WriteAt", err)
 				t.Fatalf("the streaming writer's fed write: %v", err)
 			case <-time.After(mixedWait):
-				break feedLoop
+				// A bounded wait, the one this check makes, and the only
+				// thing that tells a sync waiting on the stream apart: a
+				// sync that waits on nothing arrives or returns at once, and
+				// one that waits for what the stream has under way does
+				// neither, which no event announces. The waits hand the
+				// backlog over parked — one wait to park the next interval at
+				// its write, the following one to land it if no arrival
+				// came — so a sync that waits for the interval in flight
+				// alone arrives to find the next interval parked, not
+				// landed, and its measure counts only what landed before it,
+				// while a sync that waits for the whole backlog has it
+				// landed around it and arrives with all of it pending. The
+				// ceiling: a sync delayed past two waits is counted against
+				// the one parked interval the earlier wait released — one
+				// interval, never more, since each wait lands one at most.
+				switch {
+				case held:
+					backlog = mixedFeeds - 1
+					for range backlog {
+						env.Queue()
+					}
+					releaseHeld()
+					held = false
+					fedInFlight = true
+				case dripParked:
+					// No arrival asked for the parked interval within the
+					// wait: land it. Its bytes then enter only arrivals that
+					// come after this release, and the arrival branch above
+					// answers none of them with it.
+					dripRelease()
+					dripParked = false
+				case backlog > 0 && !fedInFlight:
+					// Hand the next backlog interval over parked at its
+					// first segment write: its bytes reach the segment only
+					// once an arrival asks for it or a wait runs out, both
+					// below.
+					backlog--
+					reached, release := env.HoldNextAppend()
+					dripRelease = release
+					t.Cleanup(release)
+					select {
+					case proceed <- struct{}{}:
+					case <-done:
+						break feedLoop
+					case <-time.After(mixedWait):
+						t.Fatalf("the stream did not take its backlog's next interval within %v", mixedWait)
+					}
+					select {
+					case <-reached:
+					case err := <-errs.value:
+						stubCall(t, "WriteAt", err)
+						t.Fatalf("the streaming writer's backlog write: %v", err)
+					case <-time.After(mixedWait):
+						t.Fatalf("the backlog's next interval did not reach its write within %v", mixedWait)
+					}
+					dripParked, fedInFlight = true, true
+				default:
+					break feedLoop
+				}
 			}
+		}
+		if held {
+			// The sync returned with the interval still in flight: let it
+			// land, and wait for it below as for any fed write.
+			releaseHeld()
+			fedInFlight = true
+		}
+		if dripParked {
+			// The window closed with a backlog interval still parked at its
+			// write: a write nobody will answer would hang the confirmation
+			// wait below. Let it land, and that wait drains it as any fed
+			// write's.
+			dripRelease()
 		}
 
 		// Close the window: disarm frees everything still parked — the
@@ -457,13 +615,14 @@ func runMixedRounds(t mixedTB, env mixedEnv) []int {
 			}
 		}
 
-		// The measure: the write bytes the window made durable. A window in
-		// which the segment name set changed took a fresh segment: the seal
-		// covered the stream's own records, bytes no small-writer sync chose.
-		waited := env.DurableTotal() - before
+		// The measure: the write bytes the window's syncs waited for, each
+		// what was unsynced as it arrived. A window in which the segment
+		// name set changed took a fresh segment: the seal covered the
+		// stream's own records, bytes no small-writer sync chose.
+		waited := env.WaitedTotal() - before
 		if slices.Equal(namesBefore, env.SegmentNames()) {
 			if waited > env.WindowBound() {
-				t.Fatalf("a small writer's Sync made %d bytes durable in one window - its own record, the fed intervals and a roll header leave no room for more - at interval %d, bound %d", waited, interval, env.WindowBound())
+				t.Fatalf("a small writer's Sync waited for %d bytes in one window - its own record, one stream interval and a roll header leave no room for more - at interval %d, bound %d", waited, interval, env.WindowBound())
 			}
 			measured++
 			fileMeasured++

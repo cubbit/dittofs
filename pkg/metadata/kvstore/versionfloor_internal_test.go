@@ -66,20 +66,29 @@ func TestVersionFloor(t *testing.T) {
 	}
 }
 
-// A share's version limit is only ever raised.
-func TestVersionLimit(t *testing.T) {
+// A share's version limit is only ever raised, and a raise for a share with
+// no record changes nothing.
+func TestVersionLimitsAreOnlyRaised(t *testing.T) {
 	f := newContentFix(t, nil)
 	ctx := context.Background()
+	gone := entity.NewShareID()
 	for _, c := range []struct{ raise, want uint64 }{{1 << 20, 1 << 20}, {1 << 10, 1 << 20}, {1 << 21, 1 << 21}} {
-		if err := f.s.RaiseVersionLimit(ctx, f.share, entity.VersionOf(c.raise)); err != nil {
+		if err := f.s.Lifecycle().RaiseVersionLimits(ctx, map[entity.ShareID]entity.JournalVersion{
+			f.share: entity.VersionOf(c.raise),
+			gone:    entity.VersionOf(1),
+		}); err != nil {
 			t.Fatal(err)
 		}
-		if got, err := f.s.VersionLimit(ctx, f.share); err != nil || got != entity.VersionOf(c.want) {
-			t.Errorf("after raising to %d: %d %v", c.raise, got.Counter(), err)
+		got, err := f.s.Lifecycle().VersionLimits(ctx, []entity.ShareID{f.share, gone})
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if err := f.s.RaiseVersionLimit(ctx, entity.NewShareID(), entity.VersionOf(1)); err == nil {
-		t.Error("raised the limit of a share that does not exist")
+		if got[f.share] != entity.VersionOf(c.want) {
+			t.Errorf("after raising to %d: limit %d, want %d", c.raise, got[f.share].Counter(), entity.VersionOf(c.want).Counter())
+		}
+		if !got[gone].IsZero() {
+			t.Errorf("a share with no record has limit %d, want zero", got[gone].Counter())
+		}
 	}
 }
 

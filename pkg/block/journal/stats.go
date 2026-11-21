@@ -363,7 +363,9 @@ type Counters struct {
 	// resynchronising past a bad one.
 	ScanResyncs uint64
 
-	// IndexRefusals is the number of writes refused at the index entry bound.
+	// IndexRefusals is the number of calls refused at the index entry
+	// bound: content writes and reservations, and releases, deallocates
+	// and clone targets that split a held extent.
 	IndexRefusals uint64
 
 	// SegmentReopens is the number of reads that had to reopen a closed

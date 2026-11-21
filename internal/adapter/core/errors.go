@@ -74,6 +74,18 @@ type ErrorRow struct {
 // Overturned if a table is ever built from configuration.
 func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable {
 	t := &ErrorTable{fault: fault, rows: slices.Clone(rows)}
+	// A row that can never match is a program error: nil names every
+	// operation and version (§4.7), so an empty Ops names none, and a
+	// Versions of First above Last holds no version; each would leave its
+	// error to the fault status (§4.5) with no row saying why.
+	for _, r := range t.rows {
+		if r.Ops != nil && len(r.Ops) == 0 {
+			panic(fmt.Sprintf("core: error table: row %s names an empty Ops, which matches no operation", describe(r)))
+		}
+		if r.Versions != nil && r.Versions.First > r.Versions.Last {
+			panic(fmt.Sprintf("core: error table: row %s names the versions %d to %d, which match no version", describe(r), r.Versions.First, r.Versions.Last))
+		}
+	}
 	// decision: a typed row is one whose Err has an Is method, as the
 	// service's typed values do, matching their sentinel and their own kind;
 	// a sentinel is a plain value. The rows are ranked once here and Map

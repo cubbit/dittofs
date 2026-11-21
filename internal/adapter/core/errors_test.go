@@ -272,6 +272,34 @@ func TestNewErrorTableRefusesRowsThatOverlap(t *testing.T) {
 	}
 }
 
+// A row that can never match is refused at build, naming the row: nil Ops
+// and Versions name every operation and version, so an empty Ops matches no
+// operation and a Versions of First above Last matches no version; each
+// would leave its error to the fault status with no row saying why.
+func TestNewErrorTableRefusesARowThatCanNeverMatch(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		row  core.ErrorRow
+		want string
+	}{
+		{"an empty Ops", core.ErrorRow{Err: vfs.ErrNotFound, Ops: []uint32{}, Status: 1}, "names an empty Ops"},
+		{"a Versions of First above Last", core.ErrorRow{Err: vfs.ErrNotFound, Versions: versions(2, 1), Status: 1}, "match no version"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := buildPanic(c.row)
+			msg := fmt.Sprint(p)
+			if p == nil || !strings.Contains(msg, c.want) || !strings.Contains(msg, fmt.Sprint(vfs.ErrNotFound)) {
+				t.Fatalf("NewErrorTable over a row that never matches returned %q, want a panic naming the row and %v", msg, vfs.ErrNotFound)
+			}
+		})
+	}
+
+	// A row naming operations and a range that holds a version still builds.
+	if p := buildPanic(core.ErrorRow{Err: vfs.ErrNotFound, Ops: []uint32{1}, Versions: versions(1, 2), Status: 3}); p != nil {
+		t.Fatalf("NewErrorTable refused a row that can match: %v", p)
+	}
+}
+
 // protoDecode is a protocol's own decode error, matching ErrDecode as the
 // service's typed values match their sentinels.
 type protoDecode struct{}

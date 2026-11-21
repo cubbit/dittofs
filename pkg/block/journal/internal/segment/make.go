@@ -12,6 +12,14 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
+// ErrDirSyncRefused is the sentinel a make's failed directory sync fails
+// with: the device refused to make a finished spare's name durable, the one
+// step of a make a device in this state answers every time, which the pool
+// counts a refused segment for the read-only rule (the decision at the
+// counter in refill states that rule's ceiling). Every other
+// step of a make fails with its own error alone.
+var ErrDirSyncRefused = errors.New("segment: the directory sync of a new spare failed")
+
 // Maker makes spares: whole segments at the cap, zeroed end to end, durable
 // under their final name, accounted at the cap in the ledger before any
 // storage is touched. A spare is made whole or not at all — a crash leaves no
@@ -152,7 +160,7 @@ func (m *Maker) make(id core.SegmentID) error {
 		return m.fail(id, "rename", rerr)
 	}
 	if derr := m.fs.SyncDir(); derr != nil {
-		return m.fail(id, "sync_dir", derr)
+		return m.fail(id, "sync_dir", fmt.Errorf("%w: %w", ErrDirSyncRefused, derr))
 	}
 	return nil
 }

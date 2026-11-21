@@ -350,15 +350,8 @@ func TestRFC1A_RepackUnderRead(t *testing.T) {
 // TestRFC1A_RemovalOutlivesItsSegment checks that a delete marker is not
 // dropped by the reclamation of the segments around it: the file stays gone
 // across a crash once every segment holding it, the one carrying the delete
-// and the sealed ones carrying its old bytes, has been repacked. The settled
-// repeat reclaims both segments under a drop that reports the first pass's
-// directory syncs as success without committing them — and on this seam the
-// second pass's own successful sync commits the waiting log with them, so
-// the crash runs with the old bytes durably gone; the leg pins only that the
-// file still reads as gone there. The settled marker's drop gate is not
-// checked: a decision at the leg names why this seam cannot represent an
-// unlink the journal holds a warrant for and the disk does not, and the
-// trace row names the issue tracking a seam that can.
+// and the sealed ones carrying its old bytes, has been repacked. The row's
+// settled repeat is TestRFC1A_SettledRemovalOutlivesItsUnlinks.
 func TestRFC1A_RemovalOutlivesItsSegment(t *testing.T) {
 	f := journaltest.NewWithSegmentCap(t, recordCap, nil)
 
@@ -400,84 +393,6 @@ func TestRFC1A_RemovalOutlivesItsSegment(t *testing.T) {
 		}
 		r := read(t, h, id, 0, 256<<10)
 		wantMissing(t, r, 0, []journal.Extent{ext(0, 256<<10)}, "the deleted file once the segments around its marker were repacked")
-
-		// The settled repeat, with fresh old bytes under it: the deleted
-		// file is written and deleted again with its delete settled, and
-		// reclamation runs over both the old bytes' segment and the delete's
-		// own. The leg checks one thing only — that the file still reads as
-		// gone after a crash on the far side of both passes — and checks
-		// nothing about the moment the delete's marker may have been
-		// dropped, which the decision marker below states.
-		//
-		// decision: the settled marker's drop gate — the unlinks it counted
-		// on durable before the marker itself is dropped — is not checked
-		// here, and no assertion on the settled marker after the crash can
-		// be, on this seam. Leaving an issued unlink unflushed takes a
-		// directory sync that reports success and commits nothing, and a
-		// returned success is the journal's whole warrant for durability: a
-		// correct journal drops the settled marker with that warrant in
-		// hand, so asserting the crash still yields the settled marker
-		// fails a journal the rules call correct. The other route — parking
-		// the old unlink and letting the delete's reclamation run beside
-		// it — fails sooner: a parked call parks the journal's own
-		// goroutine, and a crash waits for the journal's calls in flight, so
-		// reclamation cannot reach the delete's segment while the old unlink
-		// is held; nor can the marker be dropped there by any design, wrong
-		// gate or not, while the old segment's records still hold the
-		// overlap that pins the marker live. Overturned when the seam can
-		// end a process with a call in flight that never returned, so the
-		// journal holds no warrant for the unlink the crash reopens beside.
-		h = f.Share(k)
-		h.Settle(id, dv)
-		over := distinct(50+k, recordCap/2)
-		v2 := write(t, h, id, 0, over)
-		// The settled leg's old bytes, fresh on disk: written, marked and
-		// released, their segment sealed on its own so the delete beside
-		// them lands in another one and the two passes below reclaim one
-		// segment each.
-		mark(t, h, id, ext(0, recordCap/2), v2)
-		overSeg := heldEntry(t, f, id).Location.Segment
-		release(t, h, id, ext(0, recordCap/2))
-		sealNow(t, f, overSeg)
-		write(t, h, id, 0, distinct(60+k, 256<<10))
-		deleteSeg := heldEntry(t, f, id).Location.Segment
-		dv2, err := h.Delete(t.Context(), id)
-		stub(t, "Delete", err)
-		if err != nil {
-			t.Fatalf("share %d: the settled leg's delete: %v", k, err)
-		}
-		syncFile(t, h, id)
-		h.Settle(id, dv2)
-		// The first pass reclaims the old bytes' segment with its directory
-		// sync reported to the journal and made durable by nothing: the seam
-		// keeps the removal waiting in its directory log. The fault is
-		// cleared before the second pass, whose own directory syncs succeed
-		// — and a success commits the whole waiting log, the old segment's
-		// removal included — so on this seam the crash finds the old bytes'
-		// segment durably gone, never restored, whatever the journal did
-		// with the settled delete in the pass over its segment.
-		f.Drop(kit.OpSyncDir, "*")
-		repackAll(t, f, journal.RepackScope{Segments: []journal.SegmentID{overSeg}})
-		f.Seam.SetFault(nil)
-		repackAll(t, f, journal.RepackScope{Segments: []journal.SegmentID{deleteSeg}})
-		f.Crash()
-
-		// What the leg pins: after both passes and the crash, no extent of
-		// the deleted file reads as content. The crash cannot have brought
-		// anything back on this seam — the old segment's removal was
-		// committed by the second pass's own syncs — so the read fails only
-		// a journal whose recovery or passes let content through: the two
-		// writes are gone by their release and their delete, and neither
-		// marker the passes may have dropped or carried can turn bytes back
-		// on. What the settled delete's own marker came to — dropped with
-		// the warrant its unlinks' durability gave, or carried forward — is
-		// not asserted, per the decision above: both are states the rules
-		// allow a correct journal, and only a seam that can crash between a
-		// call and its returned success can tell them from a wrong one's.
-		h = f.Share(k)
-		r = read(t, h, id, 0, recordCap/2)
-		wantMissing(t, r, 0, []journal.Extent{ext(0, recordCap/2)},
-			"the settled deleted file after both reclaims and the crash")
 	}
 }
 

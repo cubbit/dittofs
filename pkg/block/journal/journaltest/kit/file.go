@@ -43,11 +43,21 @@ func (n *node) loseUndo() {
 // While no change was ever lost, the durable image is the file with its
 // pending changes undone, so clearing them is enough. Once one is lost, the
 // file holds bytes that must never become durable, so the durable image is
-// kept in snap and each Sync replays onto it the changes it covers, in the
-// order they were made.
+// kept by setSnap and each Sync replays onto it the changes it covers, in
+// the order they were made.
+//
+// ponytail: every later Sync of a file a Lose-class fault touched still
+// reads its whole durable image and writes it back whole — up to the
+// format's 256 MiB segment cap — and the durability an image carries lives
+// in one flat byte run, so a diff-shaped kept image needs the image to say
+// which parts are settled. The spill keeps the bytes off the heap between
+// syncs, so the cost is file I/O, not live memory; replace the whole-image
+// round trip with a snapshot cap or a diff-shaped image when a nightly soak
+// cell's wall time or a kit profile shows a Lose-touched segment's syncs
+// dominating the run.
 func (sf *seamFile) sync() error {
 	n := sf.node
-	if n.snap == nil && !slices.ContainsFunc(n.undo, func(c change) bool { return c.lost }) {
+	if !n.hasSnap() && !slices.ContainsFunc(n.undo, func(c change) bool { return c.lost }) {
 		for _, c := range n.undo {
 			if c.kind == changeWrite {
 				n.madeDurable += int64(len(c.data))
@@ -76,7 +86,9 @@ func (sf *seamFile) sync() error {
 		}
 	}
 
-	n.setSnap(img)
+	if err := sf.seam.setSnap(n, img); err != nil {
+		return err
+	}
 	n.undo = nil
 	return nil
 }
@@ -177,8 +189,8 @@ func (sf *seamFile) ReadAtDirect(p []byte, off int64) (int, error) {
 // by path, so a file removed or replaced while open, whose path may no longer
 // exist, still has one.
 func (sf *seamFile) durableImage() ([]byte, error) {
-	if sf.node.snap != nil {
-		return sf.node.snapImage(), nil
+	if sf.node.hasSnap() {
+		return sf.node.snapImage()
 	}
 
 	size, err := sf.size()
@@ -404,6 +416,13 @@ func (sf *seamFile) Truncate(size int64) error {
 
 func (sf *seamFile) Sync() error {
 	defer sf.seam.call()()
+
+	// What the sync waits for is what is unsynced as it arrives, before a
+	// hold or a fault can stop it, and no sync in flight already waits for.
+	sf.seam.mu.Lock()
+	arrived := sf.node.claimUnsynced()
+	sf.seam.mu.Unlock()
+
 	a, err := sf.enter(OpSync)
 	if err != nil {
 		return err
@@ -414,7 +433,32 @@ func (sf *seamFile) Sync() error {
 		return nil
 	}
 
-	return sf.sync()
+	if err := sf.sync(); err != nil {
+		return err
+	}
+	sf.node.waited += arrived
+	return nil
+}
+
+// claimUnsynced returns the write bytes the node holds that no Sync has
+// covered, a later one still may, and no Sync that arrived before already
+// waits for, and marks them waited for: each byte is waited for once, by the
+// first sync that arrived while it was pending, however many syncs are in
+// flight. The caller holds the seam's mu.
+//
+// ponytail: a sync the fault loses or fails keeps its claim, so a later
+// sync of the same pending bytes does not count them. Release the claim of a
+// sync that made nothing durable if a check ever measures waits across one.
+func (n *node) claimUnsynced() int64 {
+	var total int64
+	for i := range n.undo {
+		c := &n.undo[i]
+		if c.kind == changeWrite && !c.lost && !c.waited {
+			total += int64(len(c.data))
+			c.waited = true
+		}
+	}
+	return total
 }
 
 func (sf *seamFile) Size() (int64, error) {

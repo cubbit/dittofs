@@ -332,10 +332,11 @@ func TestRFC8A_AttachAfterDeviceLoss(t *testing.T) {
 	_, file := f.File("f")
 	write(t, f, file, 0, []byte("lost"))
 
-	old, err := f.FS.Store.VersionLimit(ctx, f.Share.ID)
+	limits, err := f.FS.Store.Lifecycle().VersionLimits(ctx, []entity.ShareID{f.Share.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
+	old := limits[f.Share.ID]
 
 	var id journal.JournalID
 

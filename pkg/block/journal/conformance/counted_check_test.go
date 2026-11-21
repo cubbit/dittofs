@@ -22,9 +22,13 @@ import (
 // RFC 1 §5.2 permits — a correct skip-fsync design, a correct always-fsync
 // design, the starving form, designs that roll, with and without a name
 // change, a slow one whose writes and fsyncs take real time, a group-commit
-// one whose syncs join whatever fsync is in flight — and against designs
+// one whose syncs join whatever fsync is in flight, one that waits for the
+// stream's interval in flight, one whose arrival at storage outlasts a drip
+// wait — and against designs
 // that are wrong on purpose: one that fails its writes, one that never syncs
-// while reporting success, one that renames on every append. The correct
+// while reporting success, one that renames on every append, one that chases
+// the stream's landings with a park each, one that waits for the stream's
+// whole backlog before it asks once. The correct
 // designs pass at the bound; the wrong ones fail the run. The cases drive
 // the protocol itself — the stream goroutine, the feeds, the teardown — so a
 // protocol bug fails here first, against fakes whose every state it can see.
@@ -57,6 +61,10 @@ func fakeRecordBytes(n int64) int64 { return int64(96+8+n+7) &^ 7 }
 // takes real time after its park, and a rolled write's record lands well
 // after its segment's seal sync — together they make a fed write in flight
 // when the window closes if the protocol does not wait for it.
+//
+// fakeSlowArrival is the late design's latency: longer than the protocol's
+// drip wait, so the sync woken by the interval in flight reaches the gate
+// only after the next wait has run out.
 const (
 	fakeIntervalBytes = int64(1 << 16)
 	fakeSmallBytes    = int64(4096)
@@ -64,6 +72,8 @@ const (
 	fakeSlowWrite    = 500 * time.Microsecond
 	fakeSlowFsync    = time.Millisecond
 	fakeSlowPostRoll = 5 * time.Millisecond
+
+	fakeSlowArrival = 2500 * time.Millisecond
 )
 
 // fakeSegCap is the fakes' segment capacity: three stream intervals. A
@@ -101,7 +111,8 @@ const (
 	designAlways mixedDesign = "always"
 
 	// designStarve fsyncs in a loop until nothing of the segment is dirty:
-	// the natural starving form, the one a backlog could grow.
+	// correct here, because each pass parks and the gate lands at most one
+	// interval per park, so the loop ends once the window's feeds do.
 	designStarve mixedDesign = "starve"
 
 	// designRollNoName rolls on the write path when an interval no longer
@@ -130,6 +141,20 @@ const (
 	// the boundary rule arms a round the stream's file-end sync lands in.
 	designCoalesce mixedDesign = "group commit"
 
+	// designWaitInFlight waits, when its Sync is called while an interval of
+	// the stream is under way, for that one interval to land, and then
+	// flushes once: a sync that legitimately waits for the append landing in
+	// flight, and for nothing queued behind it.
+	designWaitInFlight mixedDesign = "waits the interval in flight"
+
+	// designSlowArrival waits for the interval in flight exactly as
+	// designWaitInFlight does, and then takes longer than one drip wait to
+	// reach the gate: a correct sync whose arrival is late. The protocol must
+	// answer it with the backlog interval parked at its write — measuring the
+	// next landed interval against it instead is the false red the parked
+	// handover exists to prevent.
+	designSlowArrival mixedDesign = "slow arrival"
+
 	// designNeverSyncs returns success from every sync and flushes nothing.
 	designNeverSyncs mixedDesign = "never syncs"
 
@@ -149,6 +174,13 @@ const (
 	// window of another and larger file is ever reached; the bound is per
 	// window, not per file, and one fed interval is all the room it has.
 	designBacklogWait mixedDesign = "waits the stream's backlog"
+
+	// designBacklogStarve answers a Sync by waiting until the stream has
+	// landed everything it has queued, then flushing once, never asking
+	// again: the starving shape, whose one fsync arrives with the whole
+	// backlog pending. The window's interval in flight and the backlog the
+	// protocol hands a sync that waits on it are what catch it.
+	designBacklogStarve mixedDesign = "waits the stream's backlog without asking again"
 )
 
 // fakeCase is one choreography case: the design the fake journal answers
@@ -231,6 +263,24 @@ type fakeMixed struct {
 	floorIntervals int
 	floorSmalls    int
 
+	// waited is the write bytes every fsync found pending as it arrived,
+	// before the gate parked it, each byte counted by the first fsync that
+	// arrived for it: what the seam's waited totals read. unclaimed is the
+	// pending bytes no fsync in flight arrived for yet.
+	waited    int64
+	unclaimed int64
+
+	// hold stops the stream's next Append before anything of it lands,
+	// when HoldNextAppend set it; nil otherwise.
+	hold *fakeHold
+
+	// appending is whether an Append is under way, held or landing.
+	appending bool
+
+	// backlog is the intervals the protocol queued and the stream has not
+	// landed yet, which the backlog-waiting design waits out.
+	backlog int
+
 	// closingArmed counts the closing file-end syncs that ran while the
 	// gate was armed. It is written on the stream goroutine and read after
 	// the run joined the stream, so atomic is enough.
@@ -273,6 +323,8 @@ func (f *fakeMixed) Install(gate *kit.SimGate) {
 // Callers hold mu on entry; mu is released around the park, because a
 // parked call is a goroutine the gate must free.
 func (f *fakeMixed) fsync(name string) {
+	arrived := f.unclaimed
+	f.unclaimed = 0
 	f.inFlight++
 	f.mu.Unlock()
 	f.gate.At(kit.OpSync, []byte(name))
@@ -280,8 +332,40 @@ func (f *fakeMixed) fsync(name string) {
 		time.Sleep(fakeSlowFsync)
 	}
 	f.mu.Lock()
+	f.waited += arrived
 	f.inFlight--
 	f.inFlightCond.Broadcast()
+}
+
+// fakeHold is one held Append: reached closes when the stream stops, and
+// the stream goes on once release closes.
+type fakeHold struct {
+	reached chan struct{}
+	release chan struct{}
+}
+
+// HoldNextAppend stops the stream's next Append before anything of it
+// lands, as the seam stops a journal's write in flight.
+func (f *fakeMixed) HoldNextAppend() (<-chan struct{}, func()) {
+	h := &fakeHold{reached: make(chan struct{}), release: make(chan struct{})}
+	f.mu.Lock()
+	f.hold = h
+	f.mu.Unlock()
+	return h.reached, sync.OnceFunc(func() { close(h.release) })
+}
+
+// Queue counts one more interval waiting to be landed by the stream.
+func (f *fakeMixed) Queue() {
+	f.mu.Lock()
+	f.backlog++
+	f.mu.Unlock()
+}
+
+// WaitedTotal is the fakes' waited write bytes across all fsyncs.
+func (f *fakeMixed) WaitedTotal() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.waited
 }
 
 // joinInFlight waits for every fsync in flight to finish, as a group-commit
@@ -298,6 +382,7 @@ func (f *fakeMixed) joinInFlight() {
 func (f *fakeMixed) flush() {
 	f.durable += f.pending
 	f.pending = 0
+	f.unclaimed = 0
 	f.smallPend = 0
 }
 
@@ -317,6 +402,7 @@ func (f *fakeMixed) take(rename bool) {
 		f.names = append(f.names, f.active)
 	}
 	f.pending += fakeHeaderBytes
+	f.unclaimed += fakeHeaderBytes
 	f.filled = fakeHeaderBytes
 }
 
@@ -324,6 +410,15 @@ func (f *fakeMixed) take(rename bool) {
 // interval will not fit, and runs the closing sync when the interval ends a
 // file. It is the stream goroutine the protocol drives.
 func (f *fakeMixed) Append() (more bool, err error) {
+	f.mu.Lock()
+	h := f.hold
+	f.hold = nil
+	f.appending = true
+	f.mu.Unlock()
+	if h != nil {
+		close(h.reached)
+		<-h.release
+	}
 	if f.design == designSlowRoll {
 		time.Sleep(fakeSlowWrite)
 	}
@@ -360,7 +455,13 @@ func (f *fakeMixed) Append() (more bool, err error) {
 		}
 	}
 	f.pending += fakeRecordBytes(fakeIntervalBytes)
+	f.unclaimed += fakeRecordBytes(fakeIntervalBytes)
 	f.filled += fakeRecordBytes(fakeIntervalBytes)
+	f.appending = false
+	if f.backlog > 0 {
+		f.backlog--
+	}
+	f.inFlightCond.Broadcast()
 
 	// The closing sync of a finished file: no design that answers its Sync
 	// calls may return leaving it unsynced.
@@ -474,6 +575,7 @@ func (f *fakeMixed) WriteSmall() error {
 	f.smalls++
 	f.smallPend++
 	f.pending += fakeRecordBytes(fakeSmallBytes)
+	f.unclaimed += fakeRecordBytes(fakeSmallBytes)
 	return nil
 }
 
@@ -504,13 +606,47 @@ func (f *fakeMixed) SyncSmall() error {
 	switch f.design {
 	case designStarve:
 		// Flush while anything of the segment is dirty. Each pass parks at
-		// the gate, so each is fed one interval and covers it; what the
-		// starving loop cannot do under the gated feeder is outgrow one
-		// interval per ask.
+		// the gate, so each is fed one interval and covers it, waiting for
+		// none of it: what lands during a park rides along.
 		for f.pending > 0 || f.smallPend > 0 {
 			f.fsync(f.active)
 			f.flush()
 		}
+		return nil
+	case designWaitInFlight:
+		if f.appending {
+			for landed := f.intervals; f.intervals == landed; {
+				f.inFlightCond.Wait()
+			}
+		}
+		f.fsync(f.active)
+		f.flush()
+		return nil
+	case designSlowArrival:
+		// The same wait as designWaitInFlight, slowed past one drip wait on
+		// the way to the gate: a real delay, not a clock, because what it
+		// models is a loaded box's real time and the honest case keeps it
+		// bounded at that.
+		if f.appending {
+			for landed := f.intervals; f.intervals == landed; {
+				f.inFlightCond.Wait()
+			}
+		}
+		f.mu.Unlock()
+		time.Sleep(fakeSlowArrival)
+		f.mu.Lock()
+		f.fsync(f.active)
+		f.flush()
+		return nil
+	case designBacklogStarve:
+		// Wait until the stream has landed everything queued, then flush
+		// once: never asking again, so no park is fed, and every interval
+		// that landed during the wait is pending at the one arrival.
+		for f.backlog > 0 {
+			f.inFlightCond.Wait()
+		}
+		f.fsync(f.active)
+		f.flush()
 		return nil
 	case designBacklogWait:
 		// The chasing design's first pass covers only what was pending as
@@ -565,8 +701,8 @@ func (f *fakeMixed) SegmentNames() []string {
 	return slices.Clone(f.names)
 }
 
-// WindowBound is what one window may make durable at the fakes' scale: the
-// small record, one fed interval, and a roll's header.
+// WindowBound is what one window's syncs may wait for at the fakes' scale:
+// the small record, one stream interval, and a roll's header.
 func (f *fakeMixed) WindowBound() int64 {
 	return fakeHeaderBytes + fakeRecordBytes(fakeIntervalBytes) + fakeRecordBytes(fakeSmallBytes)
 }
@@ -662,6 +798,8 @@ func TestCounted_MixedChoreography(t *testing.T) {
 		{design: designRollRename},
 		{design: designCoalesce},
 		{design: designSlowRoll},
+		{design: designWaitInFlight},
+		{design: designSlowArrival},
 	}
 	for _, tc := range correct {
 		t.Run(string(tc.design)+" passes", func(t *testing.T) {
@@ -718,7 +856,11 @@ func TestCounted_MixedChoreography(t *testing.T) {
 		// rounds, and no window of any later file is reached. The bound is
 		// what forbids the growth: it is per window, and a window may
 		// carry one fed interval only.
-		{"waits the stream's backlog", fakeCase{design: designBacklogWait, files: fakeCheckFiles, segCap: fakeCheckSegCap}, "durable in one window"},
+		{"waits the stream's backlog", fakeCase{design: designBacklogWait, files: fakeCheckFiles, segCap: fakeCheckSegCap}, "waited for"},
+		// The starving design: its one fsync waits for the whole backlog
+		// the protocol hands it, so the first measured window holds its
+		// own record and every queued interval against the bound's one.
+		{"waits the stream's backlog without asking again", fakeCase{design: designBacklogStarve}, "waited for"},
 		// Names change on every append, so every window is skipped and the
 		// run measures nothing: the vacuity guard is the only thing that
 		// fails it, and this case is the pin that disabling the guard

@@ -93,6 +93,8 @@ type Seam struct {
 	// the reading.
 	callsForOrder [][2]string
 	stashed       int
+	spilled       int // spill files named so far: each one gets a fresh number
+	snapCap       int // the most bytes of a durable image a node keeps on the heap
 	holds         []*Hold
 	crashes       uint64 // Crash and Abandon calls so far; a call that waited across one fails
 
@@ -112,11 +114,15 @@ type node struct {
 
 	// snap is the file's durable image, kept once a change was lost: the
 	// file then holds bytes no Sync will make durable, so undoing the
-	// unsynced changes no longer gives the durable image. Nil otherwise.
-	snap []byte
+	// unsynced changes no longer gives the durable image. Nil when no image
+	// is kept, or when it is spilled to snapPath because it is larger than
+	// the seam's snapCap.
+	snap     []byte
+	snapPath string
 
-	// snapSize is the image's length: snap keeps the image only up to its
-	// last nonzero byte, so a preallocated zero tail costs nothing to hold.
+	// snapSize is the image's length: snap and the spill file keep the image
+	// only up to its last nonzero byte, so a preallocated zero tail costs
+	// nothing to hold.
 	snapSize int64
 
 	// madeDurable is the running total of write bytes its successful Syncs
@@ -126,6 +132,13 @@ type node struct {
 	// the caller's own — another writer's appends landing in the segment
 	// while the call was in flight — are counted as the caller's wait.
 	madeDurable int64
+
+	// waited is the running total of write bytes its successful Syncs found
+	// unsynced when each call arrived at the seam, before any hold or fault
+	// stopped it, each byte counted by the first sync that arrived for it:
+	// what the syncs waited for, without the bytes that landed while one was
+	// in flight and rode along. WaitedBytes reads it.
+	waited int64
 }
 
 type changeKind int
@@ -147,6 +160,7 @@ type change struct {
 	lost    bool   // a failed Sync covered it, or it was dropped: no Sync ever makes it durable
 	dropped bool   // write: it never reached the device, so no crash keeps it either
 	reorder bool   // write: MarkReorder marked it for Reordered's draw
+	waited  bool   // write: a Sync arrived while it was pending and counts it as waited for
 }
 
 type dirOpKind int
@@ -181,6 +195,7 @@ func NewSeam(dir string) (*Seam, error) {
 	s := &Seam{
 		dir:      dir,
 		stash:    stash,
+		snapCap:  snapHeapCap,
 		names:    map[string]*node{},
 		open:     map[*seamFile]struct{}{},
 		calls:    map[string]int{},
@@ -581,11 +596,18 @@ func (s *Seam) linkFrom(epoch uint64, oldName, newName string) error {
 	}
 
 	linked := &node{
-		path:     path,
-		undo:     slices.Clone(n.undo),
-		stale:    n.stale,
-		snap:     slices.Clone(n.snap),
-		snapSize: n.snapSize,
+		path:  path,
+		undo:  slices.Clone(n.undo),
+		stale: n.stale,
+	}
+	if n.hasSnap() {
+		img, err := n.snapImage()
+		if err == nil {
+			err = s.setSnap(linked, img)
+		}
+		if err != nil {
+			return errors.Join(err, os.Remove(path))
+		}
 	}
 	s.names[newName] = linked
 	s.dirLog = append(s.dirLog, dirOp{kind: dirCreate, node: linked, name: newName})
@@ -771,11 +793,16 @@ func (s *Seam) replayDirLog() {
 }
 
 // emptyStash unlinks every stashed file the durable directory does not hold,
-// now that nothing can bring one back; the caller holds mu.
+// now that nothing can bring one back, and every spilled durable image no
+// file the seam can still reach keeps; the caller holds mu.
 func (s *Seam) emptyStash() error {
 	held := map[string]bool{}
 	for _, n := range s.dirSnap {
 		held[n.path] = true
+	}
+
+	if err := s.pruneSnaps(); err != nil {
+		return err
 	}
 
 	entries, err := os.ReadDir(s.stash)
@@ -785,7 +812,7 @@ func (s *Seam) emptyStash() error {
 
 	for _, e := range entries {
 		path := filepath.Join(s.stash, e.Name())
-		if held[path] {
+		if held[path] || e.Name() == snapDir {
 			continue
 		}
 
@@ -794,6 +821,44 @@ func (s *Seam) emptyStash() error {
 		}
 	}
 
+	return nil
+}
+
+// pruneSnaps unlinks every spill file no node the seam can still reach keeps:
+// a node is reachable through the directory now, the durable directory, or a
+// file open on it. A node removed while open loses its image here once its
+// last handle closes. The caller holds mu.
+func (s *Seam) pruneSnaps() error {
+	dir := filepath.Join(s.stash, snapDir)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	kept := map[string]bool{}
+	for _, n := range s.names {
+		kept[n.snapPath] = true
+	}
+	for _, n := range s.durableNames() {
+		kept[n.snapPath] = true
+	}
+	for sf := range s.open {
+		kept[sf.node.snapPath] = true
+	}
+
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		if kept[path] {
+			continue
+		}
+
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -826,6 +891,27 @@ func (s *Seam) DurableBytes(name string) int64 {
 		return 0
 	}
 	return n.madeDurable
+}
+
+// WaitedBytes returns the running total of write bytes the file's successful
+// Syncs waited for, and 0 for a name the seam does not hold: each sync adds
+// the write bytes that were unsynced, and not lost, when the call arrived at
+// the seam, before a hold or a fault could stop it, and that no sync already
+// in flight had arrived for. A write that lands while the sync is held or
+// parked is made durable by it, and counted by DurableBytes, but not here:
+// the sync did not wait for it. Two syncs in flight together count a byte
+// once, for the first to arrive. Like
+// DurableBytes, the total runs over the syncs, and a caller measures one
+// stretch by the difference across it.
+func (s *Seam) WaitedBytes(name string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n, ok := s.names[name]
+	if !ok {
+		return 0
+	}
+	return n.waited
 }
 
 // Durable returns the bytes a crash now would leave in the file name, and an

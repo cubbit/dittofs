@@ -684,6 +684,84 @@ func TestPoolDeviceFullOnENOSPC(t *testing.T) {
 	})
 }
 
+// TestPoolSecondRefusedSpareDirSyncEntersReadOnly checks the
+// refused-segment rule reached from the making of spares: a new spare whose
+// directory sync the device refused is one refused segment, so the second in
+// a row enters the wired read-only state with the refusal that met it,
+// while one refused alone, and a row broken by a made spare, enter nothing.
+// The decision at the counter in refill states the rule's ceiling.
+func TestPoolSecondRefusedSpareDirSyncEntersReadOnly(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("the second in a row enters with the device's refusal", func(t *testing.T) {
+		h := &logRecorder{}
+		entered := make(chan error, 4)
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, slog.New(h))
+		p.SetReadOnlyEnter(func(cause error) { entered <- cause })
+		if err := seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 0, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+		// One failed make ends the pass, its Warn logged; the kick a take
+		// sends after it starts the second, whose failure is the second
+		// refused segment in a row.
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 1)
+		select {
+		case cause := <-entered:
+			t.Fatalf("one refused sync entered the read-only state already: %v", cause)
+		default:
+		}
+		p.Kick()
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 2)
+		select {
+		case cause := <-entered:
+			if !errors.Is(cause, segment.ErrDirSyncRefused) || !errors.Is(cause, syscall.EIO) {
+				t.Fatalf("the read-only entry = %v, want the refused directory sync naming the device's EIO", cause)
+			}
+		default:
+			t.Fatal("the second refused spare in a row entered no read-only state")
+		}
+		if got := p.Counters().Spares; got != 0 {
+			t.Fatalf("%d spares ready over two refused makes, want none", got)
+		}
+		p.Stop()
+	})
+
+	t.Run("a row broken by a made spare enters nothing", func(t *testing.T) {
+		h := &logRecorder{}
+		entered := make(chan error, 4)
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, slog.New(h))
+		p.SetReadOnlyEnter(func(cause error) { entered <- cause })
+		if err := seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+		// The first make fails at its directory sync; one made spare brings
+		// the row back to nothing before the next refusal.
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 1)
+		p.Kick()
+		awaitCounters(t, "the spare made over the cleared fault", p,
+			func(c segment.PoolCounters) bool { return c.Spares == 1 })
+		if err := seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
+			t.Fatalf("the second Schedule: %v", err)
+		}
+		// The take the kick rides on: the one spare made over the cleared
+		// fault leaves the pool short, so the take's kick starts a make
+		// whose refused directory sync is the first of a new row, never the
+		// second in a row.
+		if _, err := p.Take(segment.Content); err != nil {
+			t.Fatalf("the take of the made spare: %v", err)
+		}
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 2)
+		select {
+		case cause := <-entered:
+			t.Fatalf("a row broken by a made spare entered the read-only state: %v", cause)
+		default:
+		}
+		p.Stop()
+	})
+}
+
 // TestPoolRefillRefusedByMaximumStopsThePass: a pass the journal maximum
 // refuses stops, one make per kick, and does not turn the refusal into a
 // full device: with a maximum of two caps and a content target of 3, exactly

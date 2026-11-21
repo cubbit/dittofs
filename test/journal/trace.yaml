@@ -48,9 +48,7 @@ rfc1 / 9.4 / A / "`Settle` drops by version, never content":
 rfc1 / 9.4 / A / "no resurrection":
   tests: [TestRFC1A_NoResurrection]
 rfc1 / 9.4 / A / "removal outlives its segment":
-  tests: [TestRFC1A_RemovalOutlivesItsSegment]
-  owner: '#3678'
-  reason: 'the settled delete''s drop gate — the marker dropped only once its unlinks are durable — needs a seam that can crash while a call is still running, so the moment the delete may be dropped is not checked there'
+  tests: [TestRFC1A_RemovalOutlivesItsSegment, TestRFC1A_SettledRemovalOutlivesItsUnlinks]
 rfc1 / 9.4 / A / "removal during offload":
   tests: [TestRFC1A_RemovalDuringOffload]
 rfc1 / 9.4 / A / "neighbours are frozen":
@@ -333,8 +331,6 @@ rfc1 / 9.7 / "syncs per write":
   tests: [TestCounted_SyncsPerWrite]
 rfc1 / 9.7 / "mixed durability":
   tests: [TestCounted_MixedDurability, TestCounted_MixedChoreography]
-  owner: '#3639'
-  reason: 'the check cannot tell a small-writer sync that waits on the stream''s backlog from one that parks a second time, because no backlog above one interval exists inside a window; a seam that grows one mid-window is tracked there'
 rfc1 / 9.7 / "index cost":
   owner: epic 4
   reason: 'the index''s comparison counters'
@@ -388,7 +384,7 @@ rfc8 / 15 / "one clock":
   owner: 'RFC 8''s second part'
   reason: 'the node half: two TestClocks across every component of a node; the journal''s half is the test'
 rfc1 / 9.4 / A / "a read's `asOf` against a change in flight":
-  pending: 2.7
+  tests: [TestRFC1A_ReadAsOfAgainstAChangeInFlight]
 rfc1 / 9.4 / B / "read-only stops the drain":
   tests: [TestRFC1B_ReadOnlyStopsTheDrain, TestRFC1B_ReadOnlyProbe, TestRFC1B_ReadOnlyOpenRefusedStaysClosed]
   reason: 'the three tests assert only part of the row, and the row stays uncertified until the rest is added. Asserted: the sync refused with ErrJournalReadOnly, WriteAt, Release and the second Sync refused, A reading back, Stats naming the state and the spare, writes again after a reopen, a failing check leaving no spare, a refused open leaving the journal closed. Not asserted, by owner. Epic 6: the loss generation rising once, a truncate undone, the spare tried every 30 s; the offloaded extent not evicted and the offload report succeeding are held as state by epic 6 and acted on by epics 8 and 9. Epic 7, which builds Open: the reopen holding neither B nor the truncate in the whole segment whose sync failed, the unsynced loss record appended for each, and a reopen in a new process. Epic 11: retry-later reads of content only the closed journal held, and the probe checks, which are platform.Check outside the storage seam'

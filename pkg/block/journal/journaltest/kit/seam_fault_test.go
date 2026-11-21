@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -1640,5 +1641,94 @@ func TestDurableImageAfterALossKeepsNoZeroTail(t *testing.T) {
 	s.mu.Unlock()
 	if kept > 4096 {
 		t.Fatalf("the kept image holds %d bytes of a %d-byte file whose content is 4, want at most 4096", kept, size)
+	}
+}
+
+// A durable image larger than the seam's heap cap is spilled to the stash:
+// the node keeps no image bytes on the heap, every read of the durable image
+// still serves it, a link carries a spill of its own, and each spill file is
+// unlinked once no file the seam can reach keeps it, by a SyncDir after its
+// last handle closed or by a Crash.
+func TestADurableImagePastTheCapIsSpilled(t *testing.T) {
+	const size = 4 * snapHeapCap
+
+	s := newSeam(t)
+	f := create(t, s, "seg")
+	write(t, f, strings.Repeat("x", size), 0)
+	syncFile(t, f)
+
+	failNextSync(t, s)
+	write(t, f, "lost", 0)
+	wantEIO(t, OpSync, f.Sync())
+	write(t, f, "data", 4)
+	syncFile(t, f)
+
+	want := "xxxxdata" + strings.Repeat("x", size-8)
+
+	spills := func() int {
+		t.Helper()
+		entries, err := os.ReadDir(filepath.Join(s.stash, snapDir))
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(entries)
+	}
+	heapImage := func(name string) int {
+		t.Helper()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return cap(s.names[name].snap)
+	}
+
+	if got := heapImage("seg"); got != 0 {
+		t.Fatalf("the node keeps %d image bytes on the heap for a %d-byte image, want 0 past the %d-byte cap", got, size, snapHeapCap)
+	}
+	if got, err := s.Durable("seg"); err != nil || string(got) != want {
+		t.Fatalf("Durable(seg) of a spilled image: %d bytes, %v; want the %d synced bytes", len(got), err, size)
+	}
+	if got := readDirect(t, f, size); got != want {
+		t.Fatalf("ReadAtDirect of a spilled image served %d bytes not the synced ones", len(got))
+	}
+
+	if err := s.Link("seg", "copy"); err != nil {
+		t.Fatal(err)
+	}
+	syncDir(t, s)
+	if got, err := s.Durable("copy"); err != nil || string(got) != want {
+		t.Fatalf("Durable(copy) of a linked spilled image: %d bytes, %v; want the %d synced bytes", len(got), err, size)
+	}
+	if n := spills(); n != 2 {
+		t.Fatalf("with seg and its link both keeping an image, the stash holds %d spill files, want 2", n)
+	}
+
+	// Removed while open: the handle still reads the image, so it stays.
+	if err := s.Remove("seg"); err != nil {
+		t.Fatal(err)
+	}
+	syncDir(t, s)
+	if n := spills(); n != 2 {
+		t.Fatalf("with seg removed but open, the stash holds %d spill files, want 2", n)
+	}
+	if got := readDirect(t, f, size); got != want {
+		t.Fatalf("ReadAtDirect of a removed file's spilled image served %d bytes not the synced ones", len(got))
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	syncDir(t, s)
+	if n := spills(); n != 1 {
+		t.Fatalf("after seg's last handle closed, the stash holds %d spill files, want only copy's", n)
+	}
+
+	crash(t, s)
+	if n := spills(); n != 0 {
+		t.Fatalf("after a crash the stash holds %d spill files, want none", n)
+	}
+	if got := onDisk(t, s, "copy"); got != want {
+		t.Fatalf("after a crash copy holds %d bytes not the synced ones", len(got))
 	}
 }

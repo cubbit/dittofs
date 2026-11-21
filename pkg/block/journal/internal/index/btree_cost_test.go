@@ -19,9 +19,9 @@ type costs struct {
 // measureCosts builds a tree of n random keys, then averages the comparisons
 // of random floor lookups, and of inserting a fresh key and deleting it again
 // so that every measured insert sees a tree of n keys.
-func measureCosts(n int) costs {
+func measureCosts(n int, seed uint64) costs {
 	const samples = 10_000
-	rng := rand.New(rand.NewPCG(uint64(n), 1))
+	rng := rand.New(rand.NewPCG(uint64(n), seed))
 	tr := btree[int]{cmps: new(atomic.Uint64)}
 	for tr.len() < n {
 		tr.set(rng.Uint64(), 0)
@@ -47,19 +47,20 @@ func measureCosts(n int) costs {
 }
 
 // TestComparisonsGrowLogarithmically is the "index cost" check: going from
-// 10^3 to 10^6 keys must at most double the comparisons per lookup and per
-// insert, the ratio log(10^6) / log(10^3) an O(log n) structure gives. It
-// catches a linear walk of the keys and a tree that has stopped balancing,
-// without timing anything.
+// 10^3 to 10^6 keys must raise the comparisons per lookup and per insert at
+// most 2.5 times, the ratio log(10^6) / log(10^3) an O(log n) structure gives
+// with headroom. It catches a linear walk of the keys and a tree that has
+// stopped balancing, without timing anything.
 //
-// The ratio has little headroom: with nodes of 31 keys a correct B-tree lands
-// at about 1.88 for lookups and 1.99 for inserts, and with nodes of 16 just
-// above 2, from rounding alone. Nor can it see a linear scan inside each node,
-// which with nodes of bounded size is still logarithmic overall and lands near
-// 2. So both are also held to absolute bounds: lookups to 1.25 log2(n), which
-// binary search within nodes meets at about 1.03 and a linear in-node scan
-// exceeds at about 2.5; inserts, which also test for an exact hit, to
-// 1.5 log2(n), met at about 1.25 and exceeded by a linear scan at about 2.8.
+// The ratio has headroom: a correct B-tree measures 1.9 to 2.1, and the
+// bound's slack is over that, so the height steps of one seed's tree do not
+// fail it; three seeds hold it over more than one spacing. Nor can it see a
+// linear scan inside each node, which with nodes of bounded size is still
+// logarithmic overall and lands near 2. So both are also held to absolute
+// bounds: lookups to 1.25 log2(n), which binary search within nodes meets at
+// about 1.03 and a linear in-node scan exceeds at about 2.5; inserts, which
+// also test for an exact hit, to 1.5 log2(n), met at about 1.25 and exceeded
+// by a linear scan at about 2.8.
 //
 // Both are held from below too, or a counter that stopped counting would pass
 // every bound above at zero. No search by comparisons tells n keys apart in
@@ -69,24 +70,26 @@ func TestComparisonsGrowLogarithmically(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a tree of 10^6 keys")
 	}
-	small, large := measureCosts(1_000), measureCosts(1_000_000)
-	t.Logf("comparisons at 10^3: lookup %.1f, insert %.1f", small.lookup, small.insert)
-	t.Logf("comparisons at 10^6: lookup %.1f, insert %.1f", large.lookup, large.insert)
-	if large.lookup > 2*small.lookup {
-		t.Errorf("lookup: %.1f comparisons at 10^6, more than twice %.1f at 10^3", large.lookup, small.lookup)
-	}
-	if large.insert > 2*small.insert {
-		t.Errorf("insert: %.1f comparisons at 10^6, more than twice %.1f at 10^3", large.insert, small.insert)
-	}
-	if limit := 1.25 * math.Log2(1_000_000); large.lookup > limit {
-		t.Errorf("lookup: %.1f comparisons at 10^6, above %.1f: nodes are not binary searched", large.lookup, limit)
-	}
-	if limit := 1.5 * math.Log2(1_000_000); large.insert > limit {
-		t.Errorf("insert: %.1f comparisons at 10^6, above %.1f: nodes are not binary searched", large.insert, limit)
-	}
-	for n, c := range map[int]costs{1_000: small, 1_000_000: large} {
-		if least := 0.9 * math.Log2(float64(n)); c.lookup < least || c.insert < least {
-			t.Errorf("at %d keys: lookup %.1f, insert %.1f comparisons, below %.1f: comparisons go uncounted", n, c.lookup, c.insert, least)
+	for seed := uint64(1); seed <= 3; seed++ {
+		small, large := measureCosts(1_000, seed), measureCosts(1_000_000, seed)
+		t.Logf("seed %d: comparisons at 10^3: lookup %.1f, insert %.1f", seed, small.lookup, small.insert)
+		t.Logf("seed %d: comparisons at 10^6: lookup %.1f, insert %.1f", seed, large.lookup, large.insert)
+		if large.lookup > 2.5*small.lookup {
+			t.Errorf("seed %d: lookup %.1f comparisons at 10^6, more than 2.5 times %.1f at 10^3", seed, large.lookup, small.lookup)
+		}
+		if large.insert > 2.5*small.insert {
+			t.Errorf("seed %d: insert %.1f comparisons at 10^6, more than 2.5 times %.1f at 10^3", seed, large.insert, small.insert)
+		}
+		if limit := 1.25 * math.Log2(1_000_000); large.lookup > limit {
+			t.Errorf("seed %d: lookup %.1f comparisons at 10^6, above %.1f: nodes are not binary searched", seed, large.lookup, limit)
+		}
+		if limit := 1.5 * math.Log2(1_000_000); large.insert > limit {
+			t.Errorf("seed %d: insert %.1f comparisons at 10^6, above %.1f: nodes are not binary searched", seed, large.insert, limit)
+		}
+		for n, c := range map[int]costs{1_000: small, 1_000_000: large} {
+			if least := 0.9 * math.Log2(float64(n)); c.lookup < least || c.insert < least {
+				t.Errorf("seed %d: at %d keys: lookup %.1f, insert %.1f comparisons, below %.1f: comparisons go uncounted", seed, n, c.lookup, c.insert, least)
+			}
 		}
 	}
 }

@@ -97,32 +97,6 @@ func (c Content) VersionFloor(ctx context.Context, shares []entity.ShareID) (ent
 
 func versionLimitKey(share entity.ShareID) []byte { return shareKey(share, keys.SVl) }
 
-// VersionLimit is the share's version limit: its journal issues versions
-// only below it, so a crash skips the rest of a block and never repeats a
-// version a client saw. Zero when none was written.
-func (s *Store) VersionLimit(ctx context.Context, share entity.ShareID) (v entity.JournalVersion, err error) {
-	err = s.kv.View(ctx, func(r kv.Reader) error {
-		b, ok, err := get(r, versionLimitKey(share))
-		if err != nil || !ok {
-			return err
-		}
-		v, err = decodeVersion(b)
-		return err
-	})
-	return v, err
-}
-
-// RaiseVersionLimit raises the share's version limit to v, in its own
-// transaction, before the journal draws at or above the old one. A limit is
-// never lowered: a v at or below the stored one changes nothing. A share
-// being removed or retired is refused with ErrStale, one with no record as
-// not found; Lifecycle's RaiseVersionLimits skips both instead.
-func (s *Store) RaiseVersionLimit(ctx context.Context, share entity.ShareID, v entity.JournalVersion) error {
-	return s.kv.Update(ctx, func(tx kv.Txn) error {
-		return raiseVersionLimitIn(tx, share, v)
-	})
-}
-
 func encodeVersion(v entity.JournalVersion) []byte { return codec.NewWriter(v1).Fixed(v[:]).Encode() }
 
 func decodeVersion(b []byte) (entity.JournalVersion, error) {

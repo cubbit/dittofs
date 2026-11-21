@@ -1003,6 +1003,70 @@ func TestDurableBytesCountsWhatASyncMadeDurable(t *testing.T) {
 	}
 }
 
+// TestWaitedBytesCountsWhatASyncFoundAtArrival checks the number the
+// mixed-durability check bounds a sync's wait by: a Sync raises it by the
+// write bytes unsynced when it arrived, before the hold stopped it, while a
+// write that landed during the hold is made durable by the same Sync but not
+// counted as waited for; two syncs in flight together count each byte once,
+// for the first to arrive. A failed Sync raises it by nothing, and a name the
+// seam does not hold answers 0.
+func TestWaitedBytesCountsWhatASyncFoundAtArrival(t *testing.T) {
+	s := newSeam(t)
+	f := create(t, s, "seg")
+
+	if got := s.WaitedBytes("no such file"); got != 0 {
+		t.Fatalf("WaitedBytes of a name the seam does not hold = %d, want 0", got)
+	}
+
+	write(t, f, "aaaa", 0)
+	h := s.Hold(t, OpSync, "seg")
+	done := make(chan error, 1)
+	go func() { done <- f.Sync() }()
+	within(t, h.Reached(), "the Sync reaching the hold")
+
+	write(t, f, "bbbbbb", 4) // lands while the Sync is held
+	h.Release()
+	if err := within(t, done, "the held Sync returning"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.DurableBytes("seg"); got != 10 {
+		t.Fatalf("DurableBytes after the held Sync = %d, want both writes, 10", got)
+	}
+	if got := s.WaitedBytes("seg"); got != 4 {
+		t.Fatalf("WaitedBytes after a Sync that arrived with 4 bytes unsynced and covered 6 more landing while held = %d, want 4", got)
+	}
+
+	// Two syncs in flight: the second arrives while the first is held, and
+	// waits only for what landed after the first arrived.
+	write(t, f, "ee", 10)
+	first := s.HoldFirst(t, OpSync, "seg")
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- f.Sync() }()
+	within(t, first.Reached(), "the first Sync reaching the hold")
+	write(t, f, "fff", 12)
+	syncFile(t, f) // arrives with "fff" alone unclaimed, and covers both
+	first.Release()
+	if err := within(t, firstDone, "the held first Sync returning"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.WaitedBytes("seg"); got != 9 {
+		t.Fatalf("WaitedBytes after two syncs in flight together arrived for 2 and 3 bytes = %d, want each byte once, 4 + 2 + 3 = 9", got)
+	}
+
+	write(t, f, "cc", 15)
+	failSync(t, s, f, "seg")
+	if got := s.WaitedBytes("seg"); got != 9 {
+		t.Fatalf("WaitedBytes after a failed Sync = %d, want it raised by nothing, still 9", got)
+	}
+
+	// The lost "cc" is no Sync's to wait for any more.
+	write(t, f, "ddd", 17)
+	syncFile(t, f)
+	if got := s.WaitedBytes("seg"); got != 12 {
+		t.Fatalf("WaitedBytes after a Sync past a lost change = %d, want 9 + 3 = 12", got)
+	}
+}
+
 func TestFailedWriteLeavesNoUndo(t *testing.T) {
 	s := newSeam(t)
 	f := create(t, s, "seg")

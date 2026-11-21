@@ -625,6 +625,13 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	}
 	c.contentTarget = targets.Content
 	c.pool = segment.NewPool(maker, targets, d.Admit, deps.Log)
+	// The second new spare in a row whose directory sync the device refused
+	// makes the journal read-only: Enter keeps the state and names the
+	// device's refusal in it, and the pool's own read-only check — the Admit
+	// above — stops it making any further spare to meet the same refusal.
+	// The counting is an extension §5.4's read-only list does not itself
+	// name; the decision at the counter in the pool states its ceiling.
+	c.pool.SetReadOnlyEnter(d.Enter)
 	// A spare the pool lands wakes the durability workers, so a failed
 	// window whose re-append a pass could not roll for want of a spare is
 	// retried when the spare is there rather than at the worker's next
@@ -669,6 +676,30 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		MaxBytes:   maxBytes,
 		SegmentCap: state.Set.Cap(),
 		Admit:      d.Admit,
+	})
+	// Each loss record the durability layer appends draws on the headroom by
+	// the class of caller it serves: an open's own loss (AtOpen, the loss
+	// records an open appends before it serves) on the open reserve, every
+	// other on the drawing side, which the reserve refuses. The settle the
+	// admission returns is drawn only when the record placed — whatever its
+	// sync did, its bytes are in their segment — and refunded when it did
+	// not.
+	d.SetLossAdmission(func(atOpen bool) (settle func(placed bool), err error) {
+		class := capacity.Loss
+		if atOpen {
+			class = capacity.Open
+		}
+		draw, err := c.headroom.Admit(class)
+		if err != nil {
+			return nil, err
+		}
+		return func(placed bool) {
+			if placed {
+				c.headroom.Drawn(draw)
+				return
+			}
+			c.headroom.Refund(draw)
+		}, nil
 	})
 	// The segment cap the admission sizes its pieces and spares by is the
 	// set's own, not Deps': the streams roll and the reader bounds a record
