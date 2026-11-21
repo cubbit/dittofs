@@ -194,3 +194,27 @@ func TestAttrUint32(t *testing.T) {
 		}
 	}
 }
+
+// StrictlyUnder admits a DN below the base, case and spacing aside, and
+// refuses the base itself, a sibling, a parent, an empty base and a DN that
+// does not parse.
+func TestStrictlyUnder(t *testing.T) {
+	const base = "DC=corp,DC=example"
+	for _, tc := range []struct {
+		dn, base string
+		want     bool
+	}{
+		{"OU=Servers,DC=corp,DC=example", base, true},
+		{"ou=Servers, dc=CORP,dc=example", base, true},
+		{"OU=NAS,OU=Servers,DC=corp,DC=example", base, true},
+		{base, base, false},
+		{"OU=Servers,DC=other,DC=example", base, false},
+		{"DC=example", base, false},
+		{"OU=Servers,DC=corp,DC=example", "", false},
+		{"not a dn", base, false},
+	} {
+		if got := StrictlyUnder(tc.dn, tc.base); got != tc.want {
+			t.Errorf("StrictlyUnder(%q, %q) = %v, want %v", tc.dn, tc.base, got, tc.want)
+		}
+	}
+}

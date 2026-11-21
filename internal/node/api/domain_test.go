@@ -474,6 +474,46 @@ func TestOnlineJoinDomain(t *testing.T) {
 	}
 }
 
+// On an installation joined as NAS, a join of another account that is not
+// the takeover is refused 409 joined before anything is written: an online
+// one, its credential held then released, and an offline one, which holds
+// none and seals no version. Nothing is sealed, no operation is written and
+// the installation still reads joined as NAS$; the takeover is admitted.
+func TestJoinRefusedOnAJoinedInstallation(t *testing.T) {
+	d := serveDomain(t, true)
+	if err := d.store.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		return tx.SetMachineJoin(entity.MachineJoin{Joined: true, Account: "NAS$"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const user = "Administrator@AD.EXAMPLE"
+	for _, tc := range []struct{ name, body string }{
+		{"online", onlineJoin(`,"account":"OTHER"`, user, "adm1n")},
+		{"offline", offlineJoin("OTHER$", "C0mputer-pw")},
+	} {
+		r := d.do(t, http.MethodPost, joinPath, tc.body)
+		if r.status != http.StatusConflict || r.problem(t).Code != apiv1.CodeJoined {
+			t.Errorf("an %s join of the joined installation: answered %d %s, want 409 joined", tc.name, r.status, r.body)
+		}
+	}
+	in := d.installationRecord(t)
+	if in.MachinePassword != (entity.SecretRef{}) {
+		t.Errorf("machine password named: %v, want nothing sealed", in.MachinePassword)
+	}
+	if !in.Join.Joined || in.Join.Account != "NAS$" {
+		t.Errorf("join %+v, want still joined as NAS$", in.Join)
+	}
+	if ops := d.operations(t); len(ops) != 0 {
+		t.Errorf("operations: %+v, want none", ops)
+	}
+	if h := d.joins.taken(); len(h) != 1 || !h[0].released {
+		t.Errorf("holds %+v, want the online join's, released", h)
+	}
+	if r := d.do(t, http.MethodPost, joinPath, onlineJoin(`,"account":"OTHER","takeover":true`, user, "adm1n")); r.status != http.StatusAccepted {
+		t.Errorf("the takeover: answered %d %s, want 202", r.status, r.body)
+	}
+}
+
 // An offline join writes its computer account's password as a new version
 // of the machine password, marked handed over, in an audited write of its
 // own before the operation's, whose params name that version; a retry while

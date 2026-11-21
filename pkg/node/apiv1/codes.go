@@ -16,6 +16,7 @@ const (
 	CodeNotCancellable         Code = "not_cancellable"
 	CodeLastAdmin              Code = "last_admin"
 	CodeNotACopy               Code = "not_a_copy"
+	CodeJoined                 Code = "joined"
 	CodePasswordChangeRequired Code = "password_change_required"
 	CodeThrottled              Code = "throttled"
 	CodeStarting               Code = "starting"
@@ -34,6 +35,7 @@ var apiCodes = []Code{
 	CodeNotCancellable,
 	CodeLastAdmin,
 	CodeNotACopy,
+	CodeJoined,
 	CodePasswordChangeRequired,
 	CodeThrottled,
 	CodeStarting,

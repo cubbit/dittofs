@@ -181,17 +181,27 @@ func (s Settings) Validate() error {
 	if s.DirectoryStaleGrace < 0 {
 		return fmt.Errorf("directory_stale_grace: %v is negative", s.DirectoryStaleGrace)
 	}
-	if s.NetBIOSName == "" {
-		return errors.New("netbios_name: empty")
+	if err := validNetBIOSName(s.NetBIOSName); err != nil {
+		return fmt.Errorf("netbios_name: %w", err)
 	}
-	if len(s.NetBIOSName) > maxNetBIOSName {
-		return fmt.Errorf("netbios_name: %q is longer than %d bytes", s.NetBIOSName, maxNetBIOSName)
+	return nil
+}
+
+// validNetBIOSName refuses a NetBIOS name that is empty, longer than 15
+// bytes or holds a byte outside [A-Z0-9-], the rule identity.netbios_name
+// and a join's computer account name both keep.
+func validNetBIOSName(n string) error {
+	if n == "" {
+		return errors.New("empty")
 	}
-	for i := range len(s.NetBIOSName) {
-		c := s.NetBIOSName[i]
+	if len(n) > maxNetBIOSName {
+		return fmt.Errorf("%q is longer than %d bytes", n, maxNetBIOSName)
+	}
+	for i := range len(n) {
+		c := n[i]
 		upper, digit := 'A' <= c && c <= 'Z', '0' <= c && c <= '9'
 		if !upper && !digit && c != '-' {
-			return fmt.Errorf("netbios_name: %q holds %q, outside [A-Z0-9-]", s.NetBIOSName, c)
+			return fmt.Errorf("%q holds %q, outside [A-Z0-9-]", n, c)
 		}
 	}
 	return nil

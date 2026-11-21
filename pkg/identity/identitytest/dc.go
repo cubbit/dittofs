@@ -349,16 +349,16 @@ func (m *memDC) Create(ctx context.Context, admin identity.JoinCredential, c net
 	if _, ok := m.c.accounts[strings.ToLower(c.Name)]; ok {
 		return fmt.Errorf("%s$: %w", c.Name, fs.ErrExist)
 	}
-	d.putAccount(m.c, c.Name, "CN="+c.Name+","+ou, password, 0x18,
+	d.putAccount(m.c, c.Name, "CN="+c.Name+","+ou, password, 0x18, nil,
 		[]string{"HOST/" + c.Name, "HOST/" + c.DNSHostName, "cifs/" + c.Name, "cifs/" + c.DNSHostName})
 	return nil
 }
 
 // putAccount creates an account at origin, owned by Domain Admins, key
 // version 1. d.mu is held.
-func (d *DomainController) putAccount(origin *controller, name, dn string, password []byte, enc uint32, spns []string) {
+func (d *DomainController) putAccount(origin *controller, name, dn string, password []byte, enc uint32, delegation []byte, spns []string) {
 	a := &dcAccount{
-		Account: netlogon.Account{DN: dn, KeyVersion: 1, EncTypes: enc, Owner: d.sidOf(ridDomainAdmins)},
+		Account: netlogon.Account{DN: dn, KeyVersion: 1, EncTypes: enc, Owner: d.sidOf(ridDomainAdmins), Delegation: delegation},
 		rid:     d.nextRID, spns: spns, password: slices.Clone(password),
 	}
 	d.nextRID++
@@ -521,7 +521,7 @@ func (d *DomainController) BadPwdCount(_ testing.TB, name string) int {
 func (d *DomainController) StageComputer(_ testing.TB, c StagedComputer) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.putAccount(d.dialled, c.Name, "CN="+c.Name+",CN=Computers,"+d.base, c.Password, c.EncTypes, slices.Clone(c.SPNs))
+	d.putAccount(d.dialled, c.Name, "CN="+c.Name+",CN=Computers,"+d.base, c.Password, c.EncTypes, c.Delegation, slices.Clone(c.SPNs))
 }
 
 // SetComputerPassword sets an account's password at the controller last
