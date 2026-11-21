@@ -11,35 +11,44 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
-// readOnlyFixture opens a journal, writes and syncs file a, then writes files
-// b and c and fails b's sync with EROFS, so the journal turns read-only with
-// one synced file and two whose writes it failed. It returns the handle and
-// the three files, after the Sync that met the EROFS has reported it to b; c
-// has not been told yet.
-func readOnlyFixture(t *testing.T) (h *journal.Handle, a, b, c journal.FileID) {
+// readOnlyFiles are the files readOnlyFixture leaves: a written and synced,
+// and r written, truncated and the truncate synced, all before the
+// transition; b written in the window that failed, not yet told; u written
+// and synced, then truncated in that window, so the transition undid its
+// truncate.
+type readOnlyFiles struct{ a, r, b, u journal.FileID }
+
+// readOnlyFixture opens a journal and lays out readOnlyFiles. The transition
+// is u's truncate: a removal waits until its record is durable, so its wait
+// meets the EROFS of the sync and turns the journal read-only.
+func readOnlyFixture(t *testing.T) (*journal.Handle, readOnlyFiles) {
 	t.Helper()
 	f := journaltest.New(t)
-	h, a, b, c = f.Share(0), journaltest.File(0), journaltest.File(1), journaltest.File(2)
+	h := f.Share(0)
+	fs := readOnlyFiles{journaltest.File(0), journaltest.File(1), journaltest.File(2), journaltest.File(3)}
 	ctx := t.Context()
-	if _, err := h.WriteAt(ctx, a, 0, []byte("a"), 1); err != nil {
-		t.Fatalf("WriteAt(a): %v", err)
-	}
-	if _, err := h.Sync(ctx, a); err != nil {
-		t.Fatalf("Sync(a): %v", err)
-	}
-	for _, id := range []journal.FileID{b, c} {
-		if _, err := h.WriteAt(ctx, id, 0, []byte("w"), 1); err != nil {
+	for _, id := range []journal.FileID{fs.a, fs.r, fs.u} {
+		if _, err := h.WriteAt(ctx, id, 0, []byte("written"), 1); err != nil {
 			t.Fatalf("WriteAt(%v): %v", id, err)
 		}
+	}
+	if _, err := h.Truncate(ctx, fs.r, 1); err != nil {
+		t.Fatalf("Truncate(r): %v", err)
+	}
+	if _, err := h.Sync(ctx, fs.a, fs.r, fs.u); err != nil {
+		t.Fatalf("Sync(a, r, u): %v", err)
+	}
+	if _, err := h.WriteAt(ctx, fs.b, 0, []byte("w"), 1); err != nil {
+		t.Fatalf("WriteAt(b): %v", err)
 	}
 	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*", 0, syscall.EROFS)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
-	if _, err := h.Sync(ctx, b); !errors.Is(err, journal.ErrJournalReadOnly) {
-		t.Fatalf("the Sync that met EROFS returned %v, want ErrJournalReadOnly", err)
+	if _, err := h.Truncate(ctx, fs.u, 1); !errors.Is(err, journal.ErrJournalReadOnly) {
+		t.Fatalf("the truncate whose wait met EROFS returned %v, want ErrJournalReadOnly", err)
 	}
 	waitUntil(t, "the journal to turn read-only", func() bool { return f.J.Stats().ReadOnly.ReadOnly })
-	return h, a, b, c
+	return h, fs
 }
 
 // TestReadOnlyRefusesTheAppendingCalls checks RFC 1 §5.4's gate on the calls
@@ -47,7 +56,8 @@ func readOnlyFixture(t *testing.T) (h *journal.Handle, a, b, c journal.FileID) {
 // at once with ErrJournalReadOnly, while an offload, which goes on uploading
 // on a read-only journal, is not refused by it.
 func TestReadOnlyRefusesTheAppendingCalls(t *testing.T) {
-	h, a, _, _ := readOnlyFixture(t)
+	h, fs := readOnlyFixture(t)
+	a := fs.a
 	ctx := t.Context()
 	ext := []journal.Extent{{Off: 0, Len: 1}}
 	for _, c := range []struct {
@@ -71,25 +81,49 @@ func TestReadOnlyRefusesTheAppendingCalls(t *testing.T) {
 	}
 }
 
-// TestReadOnlyRefusesEverySync checks that a read-only journal acknowledges
-// no Sync: a file whose failed write was not reported yet is still told of
-// the failed window, as a SyncError; and the failed file's next Sync, a Sync
-// of a file whose records were all synced before the journal turned
-// read-only, and a Sync naming no file all fail at once with
-// ErrJournalReadOnly.
-func TestReadOnlyRefusesEverySync(t *testing.T) {
-	h, a, b, c := readOnlyFixture(t)
+// TestReadOnlySyncAnswersAsRFC1Says checks each Sync a read-only journal
+// answers, by what it waits on (RFC 1 §5.3, §5.4):
+//   - a file whose truncate the transition undid fails every Sync with the
+//     bare ErrJournalReadOnly, never a SyncError;
+//   - a file with a write in the failed window is told once, a SyncError
+//     wrapping ErrJournalReadOnly, and its next Sync answers nil;
+//   - a file whose records, a truncate among them, were all synced before the
+//     transition answers nil with its mark;
+//   - a Sync naming no file answers nil.
+//
+// The engine relies on the bare refusal meaning "the removal was undone"
+// (engine.undid) and on nil for a removal synced before the transition, which
+// it retries rather than fails: TestATruncateSyncedBeforeTheJournalTurnedReadOnlyIsRetried
+// and the fake journal's Sync in enginetest hold the engine to these answers,
+// and this test holds the real journal to them.
+func TestReadOnlySyncAnswersAsRFC1Says(t *testing.T) {
+	h, fs := readOnlyFixture(t)
 	ctx := t.Context()
-	if marks, err := h.Sync(ctx, c); !errors.Is(err, journal.ErrSyncFailed) || !errors.Is(err, journal.ErrJournalReadOnly) {
-		t.Errorf("the first Sync of a file the read-only journal failed returned %v and marks %v, want a SyncError wrapping ErrJournalReadOnly", err, marks)
+	for i := range 2 {
+		marks, err := h.Sync(ctx, fs.u)
+		var se *journal.SyncError
+		if !errors.Is(err, journal.ErrJournalReadOnly) || errors.As(err, &se) {
+			t.Errorf("Sync %d of the file whose truncate was undone returned %v and marks %v, want the bare ErrJournalReadOnly", i+1, err, marks)
+		}
 	}
-	if marks, err := h.Sync(ctx, b); !errors.Is(err, journal.ErrJournalReadOnly) {
-		t.Errorf("the failed file's second Sync returned %v and marks %v, want ErrJournalReadOnly", err, marks)
+	if marks, err := h.Sync(ctx, fs.b); !errors.Is(err, journal.ErrSyncFailed) || !errors.Is(err, journal.ErrJournalReadOnly) {
+		t.Errorf("the first Sync of a file in the failed window returned %v and marks %v, want a SyncError wrapping ErrJournalReadOnly", err, marks)
 	}
-	if marks, err := h.Sync(ctx, a); !errors.Is(err, journal.ErrJournalReadOnly) {
-		t.Errorf("a Sync of a file synced before the journal turned read-only returned %v and marks %v, want ErrJournalReadOnly", err, marks)
+	if marks, err := h.Sync(ctx, fs.b); err != nil {
+		t.Errorf("the second Sync of the file in the failed window returned %v and marks %v, want nil: the window is reported once", err, marks)
 	}
-	if marks, err := h.Sync(ctx); !errors.Is(err, journal.ErrJournalReadOnly) {
-		t.Errorf("a Sync naming no file returned %v and marks %v, want ErrJournalReadOnly", err, marks)
+	for _, c := range []struct {
+		what string
+		id   journal.FileID
+	}{
+		{"a written file synced before the transition", fs.a},
+		{"a truncated file synced before the transition", fs.r},
+	} {
+		if marks, err := h.Sync(ctx, c.id); err != nil || len(marks) == 0 {
+			t.Errorf("the Sync of %s returned %v and marks %v, want nil with its mark", c.what, err, marks)
+		}
+	}
+	if marks, err := h.Sync(ctx); err != nil {
+		t.Errorf("a Sync naming no file returned %v and marks %v, want nil", err, marks)
 	}
 }

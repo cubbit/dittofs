@@ -79,8 +79,12 @@ func TestRFC1B_ReadOnlyStopsTheDrain(t *testing.T) {
 	if err := h.Release(t.Context(), id, []journal.Extent{{Off: 0, Len: 4096}}); !errors.Is(err, journal.ErrJournalReadOnly) {
 		t.Fatalf("a Release on a read-only journal returned %v, want ErrJournalReadOnly", err)
 	}
-	if _, err := h.Sync(t.Context(), id); !errors.Is(err, journal.ErrJournalReadOnly) {
-		t.Fatalf("a Sync of the failed write returned %v, want ErrJournalReadOnly at once", err)
+	// B's Sync above was the one that reports B's failed window, and RFC 1
+	// §5.3 reports a window once: B is a write, not a header-only record the
+	// transition undid, so the next Sync waits on nothing failed and answers
+	// nil (§5.4 refuses only a Sync that waits on an undone record).
+	if _, err := h.Sync(t.Context(), id); err != nil {
+		t.Fatalf("a second Sync of the failed write returned %v, want nil: the window is reported once", err)
 	}
 	wantBytes(t, h, id, 0, pa, "A after the journal turned read-only")
 
