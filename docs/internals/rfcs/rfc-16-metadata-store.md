@@ -1342,20 +1342,26 @@ type ShareIndex interface {
 // like every other User or Group record change, raise it once in their transaction.
 //
 // Rename applies every renaming one directory answer causes in one
-// transaction (RFC 18 §5.1), so a swap is one call: every "" first, each giving
-// its record's name up and leaving it unnamed, then the takes, each writing
-// its record's Name and NX‖kind‖name row. Every listed record's old name is
-// given up before any take is written, so a name held by a principal in the
-// list never blocks a take; a take whose name, under NX's fold and within its
-// kind, is held by a principal outside the list fails the whole list ErrExist,
-// writing nothing. The list is the records' final names: a principal listed
-// twice, or two takes of one folded name within a kind, has no single reading
-// and is refused ErrInvalid. An empty list opens no transaction and raises no
-// generation. Rename writes nothing but the listed records' Name and their
-// name-index rows, besides the generations.
+// transaction (RFC 18 §5.1), so a swap is one call. Every listed record's old
+// name is given up before any take is written, so a name held by a principal
+// in the list never blocks a take; a take writes its record's Name and
+// NX‖kind‖name row. A refusal writes nothing:
+//   - ErrExist: a take's name, under NX's fold and within its kind, is held by
+//     a principal outside the list;
+//   - ErrInvalid: a principal listed twice, or two takes of one folded name
+//     within a kind, since the list is the records' final names and has no
+//     single reading (RFC 18 §5.1's refresh lists the second such take as "");
+//     or a Machine principal, which has no Name;
+//   - ErrNoEntity: a listed principal with no live record, absent or marked
+//     deleted, since a take would write an NX‖ row that holds the name against
+//     every later principal.
+// An empty list opens no transaction and raises no generation. A non-empty one
+// raises PGEN even when it changes no name, so the caller drops the entries
+// that match the record. Rename writes nothing but the listed records' Name and
+// their name-index rows, besides the generations and each record's Position.
 type Minter interface {
 	Create(ctx context.Context, b MintBatch) error
-	Rename(ctx context.Context, rs []Renaming) error               // one transaction for the whole list; nothing written on any refusal
+	Rename(ctx context.Context, rs []Renaming) error
 	SetEmail(ctx context.Context, p Principal, email string) error // the record's Email only, from the directory (RFC 18 §5.1)
 }
 
