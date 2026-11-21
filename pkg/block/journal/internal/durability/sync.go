@@ -262,7 +262,7 @@ type Durability struct {
 	// lossAdmit is SetLossAdmission's wiring, drawn through before each loss
 	// record is appended. Nil — never wired — admits every loss record, the
 	// behaviour of a layer whose journal budgets no record headroom.
-	lossAdmit func(atOpen bool) (settle func(placed bool), err error)
+	lossAdmit func(atOpen bool) (settle func(placed core.SegmentID), err error)
 
 	// streams are the append streams a loss record is written through, bound
 	// by Start. It is nil before Start, which Lose reports as an error.

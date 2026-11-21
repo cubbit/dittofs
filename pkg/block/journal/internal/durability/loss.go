@@ -107,11 +107,12 @@ func (d *Durability) StreamIndex(file core.FileID) int {
 // is taken, so no loss record ever appends unwired. admit reserves one loss
 // record's headroom entry — atOpen tells the class, an open's own loss
 // drawing the open reserve where a loss found while the journal runs is
-// refused — and the settle it returns is called once with placed, saying
-// whether the record landed, to draw the entry or refund it by. A settle of
-// nil comes only with an error. Nil, or never called, admits every loss: a
-// layer whose journal budgets no record headroom.
-func (d *Durability) SetLossAdmission(admit func(atOpen bool) (settle func(placed bool), err error)) {
+// refused — and the settle it returns is called once with placed, the
+// segment the record landed in, to draw the entry against that segment, or
+// 0 when it landed nowhere, to refund it. A settle of nil comes only with an
+// error. Nil, or never called, admits every loss: a layer whose journal
+// budgets no record headroom.
+func (d *Durability) SetLossAdmission(admit func(atOpen bool) (settle func(placed core.SegmentID), err error)) {
 	d.lossAdmit = admit
 }
 
@@ -214,7 +215,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 			// serves: a refusal returns before the append, like the
 			// read-only one, and the piece is handed back below, so the
 			// loss can be raised again.
-			var settle func(placed bool)
+			var settle func(placed core.SegmentID)
 			if d.lossAdmit != nil {
 				if settle, recErr = d.lossAdmit(l.AtOpen); recErr != nil {
 					refused = true
@@ -223,7 +224,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 			if !refused {
 				at, recErr = d.appendRecord(l)
 				if settle != nil {
-					settle(at != (segment.Location{}))
+					settle(at.Segment)
 				}
 			}
 		}

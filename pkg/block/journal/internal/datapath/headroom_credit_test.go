@@ -8,6 +8,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
@@ -119,4 +120,82 @@ func TestRetirementCreditsTheHeadroomOnce(t *testing.T) {
 	if got := c.Stats().HeadroomBytes; got != want {
 		t.Fatalf("HeadroomBytes = %d after the retirements were replayed, want %d: one draw since the credit, and no second credit", got, want)
 	}
+}
+
+// loseOn raises a corrupt loss of file f through the core's durability layer,
+// at its own extent so repeated losses never share a piece, and returns the
+// segment the record landed in, read as the stream's open segment right
+// after the append.
+func loseOn(t *testing.T, c *Core, s *Share, f core.FileID, off int64, atOpen bool) core.SegmentID {
+	t.Helper()
+	_, err := c.Durability().Lose(context.Background(), durability.Loss{
+		Share:   s.Tag,
+		File:    f,
+		Extent:  core.Extent{Off: off, Len: 4096},
+		Version: core.Version{Counter: 7},
+		Seq:     core.Seq(uint64(off/4096) + 1),
+		Reason:  core.LossCorrupt,
+		AtOpen:  atOpen,
+	})
+	if err != nil {
+		t.Fatalf("Lose(atOpen=%v) at the limit: %v", atOpen, err)
+	}
+	seg, ok := c.Streams().For(f).OpenSegment()
+	if !ok {
+		t.Fatal("the loss record's stream holds no open segment after the append")
+	}
+	return seg
+}
+
+// sealAndRetire seals f's stream early and retires seg through the core's own
+// executor, the path a repack's retirement takes.
+func sealAndRetire(t *testing.T, c *Core, f core.FileID, seg core.SegmentID) {
+	t.Helper()
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatalf("seal the loss record's stream: %v", err)
+	}
+	if _, err := c.Retire(seg, segment.NotHeld); err != nil {
+		t.Fatalf("Retire(%d): %v", seg, err)
+	}
+}
+
+// TestRetirementCreditsALossRecordsDraw checks the loss path's share of the
+// headroom credit: a loss record a running journal appends at its limit draws
+// on the headroom, and retiring the segment it landed in gives that draw
+// back, so HeadroomBytes is whole again. A loss record an open appends on the
+// open reserve, once the drawing side is spent, credits nothing when its
+// segment retires.
+func TestRetirementCreditsALossRecordsDraw(t *testing.T) {
+	t.Run("drawing side", func(t *testing.T) {
+		c, _, s, _ := atTheLimit(t)
+		full := c.Stats().HeadroomBytes
+		lost := testFile(5)
+		seg := loseOn(t, c, s, lost, 0, false)
+		if got := c.Stats().HeadroomBytes; got != full-capacity.RecordCharge {
+			t.Fatalf("HeadroomBytes = %d after a runtime loss at the limit, want %d: the loss record drew one charge", got, full-capacity.RecordCharge)
+		}
+		sealAndRetire(t, c, lost, seg)
+		if got := c.Stats().HeadroomBytes; got != full {
+			t.Fatalf("HeadroomBytes = %d once the loss record's segment %d retired, want %d, the headroom whole", got, seg, full)
+		}
+	})
+	t.Run("open reserve", func(t *testing.T) {
+		c, _, s, _ := atTheLimit(t)
+		drainHeadroom(t, c, s)
+		lost := testFile(5)
+		// The loss lands in a segment of its own: the stream is sealed first,
+		// so the retirement below takes no removal record with it.
+		if _, err := c.Streams().For(lost).Seal(true); err != nil {
+			t.Fatalf("seal the loss file's stream: %v", err)
+		}
+		spent := c.headroom.Spent()
+		seg := loseOn(t, c, s, lost, 0, true)
+		if got := c.headroom.Spent(); got != spent+capacity.RecordCharge {
+			t.Fatalf("Spent = %d after an open's loss on the reserve, want %d", got, spent+capacity.RecordCharge)
+		}
+		sealAndRetire(t, c, lost, seg)
+		if got := c.headroom.Spent(); got != spent+capacity.RecordCharge {
+			t.Fatalf("Spent = %d once the reserve loss's segment %d retired, want %d: a reserve draw credits nothing", got, seg, spent+capacity.RecordCharge)
+		}
+	})
 }
