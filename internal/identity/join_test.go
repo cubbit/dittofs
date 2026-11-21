@@ -19,10 +19,8 @@ import (
 	pid "github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/secrets"
-	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // A hold is readable under its operation's ID until released; the release
@@ -420,9 +418,9 @@ func TestOnlineJoinEndedEarlyReleasesTheHold(t *testing.T) {
 	}
 }
 
-// The join's last turn writes Join and identity.netbios_name in its End, one
-// transaction: a commit that fails writes neither.
-func TestOnlineJoinEndWritesBothOrNeither(t *testing.T) {
+// The join's last turn writes Join and identity.netbios_name in its End and
+// in no turn before it, and its End writes both.
+func TestOnlineJoinEndWritesBoth(t *testing.T) {
 	fx := newMachine(t)
 	op := fx.joinOp(t, apiv1.JoinDomainSpec{Account: "NAS"}, true)
 	fx.until(t, op, "confirm")
@@ -437,18 +435,11 @@ func TestOnlineJoinEndWritesBothOrNeither(t *testing.T) {
 	if name, ok := fx.netbiosName(t); ok || fx.join(t).Joined {
 		t.Fatalf("after the last turn, before its End: joined %v, identity.netbios_name %q; want neither written", fx.join(t).Joined, name)
 	}
-	errCommit := errors.New("commit failed")
-	fault, err := sim.NewSchedule(1, fx.clock, sim.Rule{Op: kvtest.OpUpdate, Key: "*", Count: 1, Action: sim.FaultAction{Err: errCommit}})
-	if err != nil {
-		t.Fatal(err)
+	if err := fx.cp.Write(context.Background(), entity.WriteMeta{}, res.End); err != nil {
+		t.Fatalf("End's write: %v", err)
 	}
-	fx.fkv.SetFault(fault)
-	if err := fx.cp.Write(context.Background(), entity.WriteMeta{}, res.End); !errors.Is(err, errCommit) {
-		t.Fatalf("End's write: %v, want the injected failure", err)
-	}
-	fx.fkv.SetFault(nil)
-	if name, ok := fx.netbiosName(t); ok || fx.join(t).Joined {
-		t.Errorf("after a failed End: joined %v, identity.netbios_name %q; want neither written", fx.join(t).Joined, name)
+	if name, ok := fx.netbiosName(t); !ok || name != "NAS" || !fx.join(t).Joined {
+		t.Errorf("after End: joined %v, identity.netbios_name %q (%v); want joined and NAS written", fx.join(t).Joined, name, ok)
 	}
 }
 

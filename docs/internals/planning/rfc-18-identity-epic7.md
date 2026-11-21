@@ -1015,8 +1015,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   failed join: `Join.Joined` false after a fresh server, `identity.netbios_name` unchanged, the
   attempted version kept (R36); on an installation joined as `NAS`, a join of another account with
   no takeover, with and without a held credential, refused at the API and at its first turn, nothing
-  sealed, still joined as `NAS` (R36); `kvtest`'s wrapper failing `End`'s commit: neither `Joined` nor
-  the name written (catches the two written apart); a join started while a rotation runs: refused
+  sealed, still joined as `NAS` (R36); neither `Joined` nor the name written before `End`, and `End`
+  writing both (catches the two written apart); an `End` whose cursor names an account the
+  setting's rule refuses: the join failed, neither written; a join started while a rotation runs: refused
   at its first turn naming it, nothing sealed (R63); at the API, a join's start and a rotation's
   start overlapping, each creating write held by `kvtest`'s wrapper until both have read the
   running index: the second to commit retries and is refused 409 naming the first, one operation
