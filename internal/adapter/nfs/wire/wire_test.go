@@ -680,3 +680,25 @@ func TestArgsBeginPastTheVerifier(t *testing.T) {
 		t.Fatalf("a reply's args are %x, want none", args)
 	}
 }
+
+// The reply sizes are what the encoders write: an accepted reply's header,
+// the longest header, a program mismatch's, which no denied reply passes, and
+// a COMPOUND's status head for tags of each padding.
+func TestReplySizesAreTheEncoders(t *testing.T) {
+	if n := len(wire.AppendAccepted(nil, 1, wire.AcceptSuccess)); n != wire.AcceptedLen {
+		t.Errorf("AppendAccepted writes %d bytes, AcceptedLen is %d", n, wire.AcceptedLen)
+	}
+	if n := len(wire.AppendProgMismatch(nil, 1, 3, 4)); n != wire.MaxReplyHeaderLen {
+		t.Errorf("AppendProgMismatch writes %d bytes, MaxReplyHeaderLen is %d", n, wire.MaxReplyHeaderLen)
+	}
+	for _, mismatch := range []bool{true, false} {
+		if n := len(wire.AppendDenied(nil, 1, mismatch, 1)); n > wire.MaxReplyHeaderLen {
+			t.Errorf("AppendDenied (mismatch %v) writes %d bytes, past MaxReplyHeaderLen %d", mismatch, n, wire.MaxReplyHeaderLen)
+		}
+	}
+	for tag := range 6 {
+		if n := len(wire.AppendCompoundStatus(nil, 0, make([]byte, tag), 1)); n != wire.CompoundStatusLen(tag) {
+			t.Errorf("AppendCompoundStatus with a %d-byte tag writes %d bytes, CompoundStatusLen says %d", tag, n, wire.CompoundStatusLen(tag))
+		}
+	}
+}

@@ -77,7 +77,7 @@ func nullCall(prog, vers, proc uint32, credFlavour uint32, cred []byte, verfFlav
 // compoundCall is a COMPOUND call of the given minor version and tag, with no
 // operations.
 func compoundCall(minor uint32, tag string) []byte {
-	b := nullCall(progNFS, versNFS4, 1, wire.AuthNone, nil, wire.AuthNone, nil, nil)
+	b := nullCall(wire.ProgNFS, wire.VersNFS4, 1, wire.AuthNone, nil, wire.AuthNone, nil, nil)
 	b = opaque(b, []byte(tag))
 	b = binary.BigEndian.AppendUint32(b, minor)
 	return binary.BigEndian.AppendUint32(b, 1) // one operation, the tag's own count
@@ -192,12 +192,12 @@ func TestTheServedRanges(t *testing.T) {
 		lo, hi uint32
 	}
 	var (
-		nfs3     = routed{"NFS v3", call(progNFS, 3), func(t Tables) *core.OpTable { return t.V3 }, 3}
-		nfs4     = routed{"NFS v4's NULL", call(progNFS, 4), func(t Tables) *core.OpTable { return t.V4 }, 0}
+		nfs3     = routed{"NFS v3", call(wire.ProgNFS, 3), func(t Tables) *core.OpTable { return t.V3 }, 3}
+		nfs4     = routed{"NFS v4's NULL", call(wire.ProgNFS, 4), func(t Tables) *core.OpTable { return t.V4 }, 0}
 		compound = routed{"a COMPOUND of minor 1", compoundCall(1, "abcde"), func(t Tables) *core.OpTable { return t.V4 }, 1}
-		mount3   = routed{"MOUNT v3", call(progMount, 3), func(t Tables) *core.OpTable { return t.Mount }, 3}
-		nlm4     = routed{"NLM v4", call(progNLM, 4), func(t Tables) *core.OpTable { return t.NLM }, 4}
-		nsm1     = routed{"NSM v1", call(progNSM, 1), func(t Tables) *core.OpTable { return t.NSM }, 1}
+		mount3   = routed{"MOUNT v3", call(wire.ProgMount, 3), func(t Tables) *core.OpTable { return t.Mount }, 3}
+		nlm4     = routed{"NLM v4", call(wire.ProgNLM, 4), func(t Tables) *core.OpTable { return t.NLM }, 4}
+		nsm1     = routed{"NSM v1", call(wire.ProgNSM, 1), func(t Tables) *core.OpTable { return t.NSM }, 1}
 	)
 	const unknown = 100099
 	for _, c := range []struct {
@@ -211,9 +211,9 @@ func TestTheServedRanges(t *testing.T) {
 			min: "3", max: "4.2",
 			served: []routed{nfs3, nfs4, compound, mount3, nlm4, nsm1},
 			mismatch: []mismatch{
-				{"NFS v2", call(progNFS, 2), 3, 4},
-				{"MOUNT v1", call(progMount, 1), 3, 3},
-				{"NLM v3", call(progNLM, 3), 4, 4},
+				{"NFS v2", call(wire.ProgNFS, 2), 3, 4},
+				{"MOUNT v1", call(wire.ProgMount, 1), 3, 3},
+				{"NLM v3", call(wire.ProgNLM, 3), 4, 4},
 			},
 			unavailable: []uint32{unknown},
 		},
@@ -221,17 +221,17 @@ func TestTheServedRanges(t *testing.T) {
 			min: "4.0", max: "4.2",
 			served: []routed{nfs4, compound},
 			mismatch: []mismatch{
-				{"NFS v2", call(progNFS, 2), 4, 4},
-				{"NFS v3", call(progNFS, 3), 4, 4},
+				{"NFS v2", call(wire.ProgNFS, 2), 4, 4},
+				{"NFS v3", call(wire.ProgNFS, 3), 4, 4},
 			},
-			unavailable: []uint32{progMount, progNLM, progNSM, unknown},
+			unavailable: []uint32{wire.ProgMount, wire.ProgNLM, wire.ProgNSM, unknown},
 		},
 		{
 			min: "3", max: "3",
 			served: []routed{nfs3, mount3, nlm4, nsm1},
 			mismatch: []mismatch{
-				{"NFS v2", call(progNFS, 2), 3, 3},
-				{"NFS v4's NULL", call(progNFS, 4), 3, 3},
+				{"NFS v2", call(wire.ProgNFS, 2), 3, 3},
+				{"NFS v4's NULL", call(wire.ProgNFS, 4), 3, 3},
 				{"a COMPOUND", compoundCall(0, "abcde"), 3, 3},
 			},
 			unavailable: []uint32{unknown},
@@ -240,18 +240,18 @@ func TestTheServedRanges(t *testing.T) {
 			min: "3", max: "4.2", drop: func(t *Tables) { t.V3, t.Mount = nil, nil },
 			served: []routed{nfs4, compound, nlm4, nsm1},
 			mismatch: []mismatch{
-				{"NFS v3, its table nil", call(progNFS, 3), 4, 4},
+				{"NFS v3, its table nil", call(wire.ProgNFS, 3), 4, 4},
 			},
-			unavailable: []uint32{progMount, unknown},
+			unavailable: []uint32{wire.ProgMount, unknown},
 		},
 		{
 			min: "4.1", max: "4.1",
 			served: []routed{nfs4, compound},
 			mismatch: []mismatch{
-				{"NFS v2", call(progNFS, 2), 4, 4},
-				{"NFS v3", call(progNFS, 3), 4, 4},
+				{"NFS v2", call(wire.ProgNFS, 2), 4, 4},
+				{"NFS v3", call(wire.ProgNFS, 3), 4, 4},
 			},
-			unavailable: []uint32{progMount, progNLM, progNSM, unknown},
+			unavailable: []uint32{wire.ProgMount, wire.ProgNLM, wire.ProgNSM, unknown},
 		},
 	} {
 		name := c.min + " to " + c.max
@@ -321,7 +321,7 @@ func TestTheVersionOrder(t *testing.T) {
 		}
 	}
 	for _, v := range []settings.VersionRange{{Min: "2", Max: "4.2"}, {Min: "3", Max: "5.0"}} {
-		if s := stageOf(v); s.served.has(progNFS) || s.served.has(progMount) {
+		if s := stageOf(v); s.served.has(wire.ProgNFS) || s.served.has(wire.ProgMount) {
 			t.Errorf("%s to %s serves NFS or MOUNT, want nothing", v.Min, v.Max)
 		}
 	}
@@ -337,7 +337,7 @@ func TestTheVersionOrder(t *testing.T) {
 // bad one is AUTH_ERROR, whatever the call names.
 func TestTheCredentialBeforeTheProgram(t *testing.T) {
 	s := stageOf(settings.VersionRange{Min: "4.0", Max: "4.1"})
-	badCompound := nullCall(progNFS, versNFS4, 1, 99, nil, wire.AuthNone, nil, nil)
+	badCompound := nullCall(wire.ProgNFS, wire.VersNFS4, 1, 99, nil, wire.AuthNone, nil, nil)
 	badCompound = opaque(badCompound, nil)
 	badCompound = binary.BigEndian.AppendUint32(badCompound, 2)
 	for _, c := range []struct {
@@ -346,8 +346,8 @@ func TestTheCredentialBeforeTheProgram(t *testing.T) {
 		want error
 	}{
 		{"an unknown program under flavour 99", nullCall(100099, 1, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred},
-		{"MOUNT, not served, under flavour 99", nullCall(progMount, 3, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred},
-		{"NFS v2 under flavour 99", nullCall(progNFS, 2, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred},
+		{"MOUNT, not served, under flavour 99", nullCall(wire.ProgMount, 3, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred},
+		{"NFS v2 under flavour 99", nullCall(wire.ProgNFS, 2, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred},
 		{"a COMPOUND of minor 2 under flavour 99", badCompound, errAuthCred},
 		{"an unknown program with an AUTH_SYS verifier", nullCall(100099, 1, 0, wire.AuthNone, nil, wire.AuthSys, authSys("h", 0, 0), nil), errAuthVerf},
 	} {
@@ -372,7 +372,7 @@ func TestTheMinorVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	table, _, err := s.Route(h, nil)
-	if !errors.Is(err, core.ErrVersion) || table != s.served.table(progNFS, versNFS4) {
+	if !errors.Is(err, core.ErrVersion) || table != s.served.table(wire.ProgNFS, wire.VersNFS4) {
 		t.Fatalf("minor 2: %p, %v; want the version 4 table and ErrVersion", table, err)
 	}
 	out := &resources.Buf{}
@@ -411,7 +411,7 @@ func TestTheMinorVersions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if table, _, err := s41.Route(h, nil); !errors.Is(err, core.ErrVersion) || table != s41.served.table(progNFS, versNFS4) {
+		if table, _, err := s41.Route(h, nil); !errors.Is(err, core.ErrVersion) || table != s41.served.table(wire.ProgNFS, wire.VersNFS4) {
 			t.Errorf("minor %d under 4.1 to 4.1: %p, %v; want the version 4 table and ErrVersion", minor, table, err)
 		}
 	}
@@ -423,7 +423,7 @@ func TestTheMinorVersions(t *testing.T) {
 	if hc.Version() != 1 {
 		t.Errorf("a COMPOUND of minor 1 reads as %d", hc.Version())
 	}
-	hn, _ := decode(t, s2, nullCall(progNFS, versNFS4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil))
+	hn, _ := decode(t, s2, nullCall(wire.ProgNFS, wire.VersNFS4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil))
 	if hn.Version() != 0 {
 		t.Errorf("a NULL after a COMPOUND reads at version %d", hn.Version())
 	}
@@ -441,7 +441,7 @@ func TestTheMinorVersions(t *testing.T) {
 	}
 	// NFS version 4's other procedures are routed at version 0, also after a
 	// COMPOUND: no minor version is kept from one call to the next.
-	h, _ = decode(t, s2, nullCall(progNFS, versNFS4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil))
+	h, _ = decode(t, s2, nullCall(wire.ProgNFS, wire.VersNFS4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil))
 	if h.Version() != 0 {
 		t.Errorf("a NULL to NFS v4 reads at version %d", h.Version())
 	}
@@ -457,15 +457,15 @@ func TestTheCredentials(t *testing.T) {
 		want  error
 		reply string
 	}{
-		{"AUTH_DH", nullCall(progNFS, 3, 0, 3, nil, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
-		{"flavour 99", nullCall(progNFS, 3, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
-		{"RPCSEC_GSS", nullCall(progNFS, 3, 0, wire.AuthGSS, []byte{0, 0, 0, 0}, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
-		{"a truncated AUTH_SYS", nullCall(progNFS, 3, 0, wire.AuthSys, []byte{0, 0}, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
-		{"17 groups", nullCall(progNFS, 3, 0, wire.AuthSys, authSys("h", 0, 0, make([]uint32, 17)...), wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
-		{"a 256-byte name", nullCall(progNFS, 3, 0, wire.AuthSys, authSys(string(make([]byte, 256)), 0, 0), wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
-		{"an AUTH_NONE credential with a body", nullCall(progNFS, 3, 0, wire.AuthNone, []byte{1, 2, 3, 4}, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
-		{"an empty AUTH_SYS verifier", nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthSys, nil, nil), errAuthVerf, "deny-auth-badverf"},
-		{"an AUTH_NONE verifier with a body", nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, []byte{1, 2, 3, 4}, nil), errAuthVerf, "deny-auth-badverf"},
+		{"AUTH_DH", nullCall(wire.ProgNFS, 3, 0, 3, nil, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"flavour 99", nullCall(wire.ProgNFS, 3, 0, 99, nil, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"RPCSEC_GSS", nullCall(wire.ProgNFS, 3, 0, wire.AuthGSS, []byte{0, 0, 0, 0}, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"a truncated AUTH_SYS", nullCall(wire.ProgNFS, 3, 0, wire.AuthSys, []byte{0, 0}, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"17 groups", nullCall(wire.ProgNFS, 3, 0, wire.AuthSys, authSys("h", 0, 0, make([]uint32, 17)...), wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"a 256-byte name", nullCall(wire.ProgNFS, 3, 0, wire.AuthSys, authSys(string(make([]byte, 256)), 0, 0), wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"an AUTH_NONE credential with a body", nullCall(wire.ProgNFS, 3, 0, wire.AuthNone, []byte{1, 2, 3, 4}, wire.AuthNone, nil, nil), errAuthCred, "deny-auth-badcred"},
+		{"an empty AUTH_SYS verifier", nullCall(wire.ProgNFS, 3, 0, wire.AuthNone, nil, wire.AuthSys, nil, nil), errAuthVerf, "deny-auth-badverf"},
+		{"an AUTH_NONE verifier with a body", nullCall(wire.ProgNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, []byte{1, 2, 3, 4}, nil), errAuthVerf, "deny-auth-badverf"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h, err := decode(t, s, c.body)
@@ -481,7 +481,7 @@ func TestTheCredentials(t *testing.T) {
 	}
 	// An RPC version other than 2 is the first refusal, answered RPC_MISMATCH
 	// with 2 and 2.
-	b := nullCall(progNFS, 3, 0, wire.AuthSys, nil, wire.AuthNone, nil, nil)
+	b := nullCall(wire.ProgNFS, 3, 0, wire.AuthSys, nil, wire.AuthNone, nil, nil)
 	b[11] = 3 // the RPC version's low byte: 3
 	h, _ := decode(t, s, b)
 	table, _, err := s.Route(h, nil)
@@ -519,11 +519,11 @@ func TestTheNonCalls(t *testing.T) {
 // answers GARBAGE_ARGS.
 func TestTheDecodeRefusals(t *testing.T) {
 	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
-	over := nullCall(progNFS, 3, 0, wire.AuthSys, nil, wire.AuthNone, nil, nil)
+	over := nullCall(wire.ProgNFS, 3, 0, wire.AuthSys, nil, wire.AuthNone, nil, nil)
 	// A credential whose length claims 401 bytes, with the body absent.
 	over = over[:28]
 	over = binary.BigEndian.AppendUint32(over, 401)
-	short := nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil)
+	short := nullCall(wire.ProgNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil)
 	short = short[:len(short)-4] // the verifier's length, with nothing after it
 	short = short[:len(short)-4]
 	for _, c := range []struct {
@@ -551,7 +551,7 @@ func TestTheDecodeRefusals(t *testing.T) {
 // nothing to say (RFC 21 section 11.5).
 func TestTheFaultIsSystemErr(t *testing.T) {
 	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
-	h, err := decode(t, s, call(progNFS, 3))
+	h, err := decode(t, s, call(wire.ProgNFS, 3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +596,7 @@ func TestReplyLenBoundsEncode(t *testing.T) {
 		// member's head (a compound's reservation).
 		exact bool
 	}{
-		{"a NULL", nullCall(progNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), []core.Status{
+		{"a NULL", nullCall(wire.ProgNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), []core.Status{
 			core.Status(wire.StatusProgram), statusProgUnavail, statusProgMismatch, statusRPCMismatch, statusAuthCred, statusAuthVerf,
 			core.Status(wire.StatusAccept | wire.AcceptGarbageArgs), core.Status(wire.StatusAccept | wire.AcceptSystemErr),
 		}, false},
@@ -639,8 +639,8 @@ func TestReplyLenBoundsEncode(t *testing.T) {
 // status, seeded with a NULL answered PROG_MISMATCH, an AUTH_SYS
 // call answered AUTH_BADCRED and a COMPOUND answered an NFS error.
 func FuzzReplyLenBoundsEncode(f *testing.F) {
-	f.Add(call(progNFS, 3), uint32(statusProgMismatch))
-	f.Add(nullCall(progNFS, 3, 0, wire.AuthSys, authSys("host", 1000, 1000, 4, 24), wire.AuthNone, nil, nil), uint32(statusAuthCred))
+	f.Add(call(wire.ProgNFS, 3), uint32(statusProgMismatch))
+	f.Add(nullCall(wire.ProgNFS, 3, 0, wire.AuthSys, authSys("host", 1000, 1000, 4, 24), wire.AuthNone, nil, nil), uint32(statusAuthCred))
 	f.Add(compoundCall(0, "abcde"), uint32(10021))
 	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
 	f.Fuzz(func(t *testing.T, body []byte, st uint32) {
@@ -666,7 +666,7 @@ func TestHeaderStageAllocs(t *testing.T) {
 		t.Skip("the race detector changes allocation counts")
 	}
 	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
-	body := nullCall(progNFS, versNFS4, 1, wire.AuthSys, authSys("host", 1000, 100, 27), wire.AuthNone, nil, nil)
+	body := nullCall(wire.ProgNFS, wire.VersNFS4, 1, wire.AuthSys, authSys("host", 1000, 100, 27), wire.AuthNone, nil, nil)
 	body = opaque(body, []byte("abcde"))
 	body = binary.BigEndian.AppendUint32(body, 0)
 	body = binary.BigEndian.AppendUint32(body, 1)
@@ -705,13 +705,13 @@ func TestConcurrentCallsKeepTheirOwn(t *testing.T) {
 		body []byte
 		vers core.Version
 	}{
-		{nullCall(progNFS, versNFS3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
+		{nullCall(wire.ProgNFS, wire.VersNFS3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
 		{compoundCall(1, "a"), 1},
-		{nullCall(progNFS, versNFS4, 0, wire.AuthSys, authSys("h", 1, 1), wire.AuthNone, nil, nil), 0},
-		{nullCall(progMount, versMount3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
+		{nullCall(wire.ProgNFS, wire.VersNFS4, 0, wire.AuthSys, authSys("h", 1, 1), wire.AuthNone, nil, nil), 0},
+		{nullCall(wire.ProgMount, wire.VersMount3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
 		{compoundCall(2, "abcde"), 2},
-		{nullCall(progNLM, versNLM4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 4},
-		{nullCall(progNSM, versNSM1, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 1},
+		{nullCall(wire.ProgNLM, wire.VersNLM4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 4},
+		{nullCall(wire.ProgNSM, wire.VersNSM1, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 1},
 		{compoundCall(0, "t"), 0},
 	}
 	running := make(chan struct{})
@@ -763,11 +763,11 @@ func TestTheHeaderVersions(t *testing.T) {
 		body []byte
 		want core.Version
 	}{
-		{"NFS v3", nullCall(progNFS, versNFS3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
-		{"MOUNT v3", nullCall(progMount, versMount3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
-		{"NLM v4", nullCall(progNLM, versNLM4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 4},
-		{"NSM v1", nullCall(progNSM, versNSM1, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 1},
-		{"NFS v4 NULL", nullCall(progNFS, versNFS4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 0},
+		{"NFS v3", nullCall(wire.ProgNFS, wire.VersNFS3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
+		{"MOUNT v3", nullCall(wire.ProgMount, wire.VersMount3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
+		{"NLM v4", nullCall(wire.ProgNLM, wire.VersNLM4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 4},
+		{"NSM v1", nullCall(wire.ProgNSM, wire.VersNSM1, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 1},
+		{"NFS v4 NULL", nullCall(wire.ProgNFS, wire.VersNFS4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 0},
 		{"a COMPOUND of minor 2", compoundCall(2, "t"), 2},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -805,13 +805,13 @@ func TestTheFirstRoutedCallEstablishes(t *testing.T) {
 		_, _, _ = s.Route(h, nil)
 		return false
 	}
-	if establishes(nullCall(progNFS, 3, 0, 99, nil, wire.AuthNone, nil, nil)) {
+	if establishes(nullCall(wire.ProgNFS, 3, 0, 99, nil, wire.AuthNone, nil, nil)) {
 		t.Error("a refused call establishes the connection")
 	}
-	if !establishes(call(progNFS, 3)) {
+	if !establishes(call(wire.ProgNFS, 3)) {
 		t.Error("the first routed call does not establish the connection")
 	}
-	if establishes(call(progNFS, 3)) {
+	if establishes(call(wire.ProgNFS, 3)) {
 		t.Error("the second routed call establishes the connection again")
 	}
 }

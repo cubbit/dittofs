@@ -140,7 +140,7 @@ type ReplayCache interface {
 // methods; the protocol's codec owns every field.
 type Header interface {
 	Op() uint32       // the code the operation table is keyed by
-	Version() Version // the version or dialect the router chose
+	Version() Version // the version or dialect the header names, which Route accepts or refuses
 	Next() int        // offset of the next message chained in the record; 0 for the last
 	Related() bool    // takes its handles from the member before it (SMB's related flag)
 }
