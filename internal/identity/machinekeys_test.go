@@ -2,6 +2,7 @@ package identity_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"errors"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	pkgid "github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
@@ -82,10 +84,12 @@ func ver(n uint64, kvno uint32, password string, handedOver bool) secrets.Versio
 }
 
 // joinedState is a State joined as NAS$ in CORP.EXAMPLE, holding versions,
-// the last confirm naming version confirmed at mt0.
+// the last confirm naming version confirmed at mt0. Its directory takes
+// tickets without a PAC, so a ticket the derived keys verify signs in.
 func joinedState(confirmed uint64, versions ...secrets.Version) identity.State {
 	st := state(1)
-	st.Directory = &directory.Record{Address: "ldaps://dc1.corp.example", Realm: machineRealm, NetBIOSDomain: "CORP"}
+	noPAC := false
+	st.Directory = &directory.Record{Address: "ldaps://dc1.corp.example", Realm: machineRealm, NetBIOSDomain: "CORP", RequirePAC: &noPAC}
 	st.Machine = versions
 	st.Join = entity.MachineJoin{Joined: true, Account: "NAS$", Names: []string{"cifs/NAS.corp.example", "host/nas.corp.example"}}
 	st.Join.LastRotation.Version = confirmed
@@ -93,15 +97,48 @@ func joinedState(confirmed uint64, versions ...secrets.Version) identity.State {
 	return st
 }
 
-// tkt is an AP-REQ for svc under kvno, encrypted under key, issued at now.
-func tkt(svc string, kvno int, key []byte, now time.Time) []byte {
-	r := identitytest.NewRealm(machineRealm)
-	return r.Ticket(identitytest.TicketOpts{Service: svc, KVNO: kvno, Key: key, Now: now})
+// machineServer is a server over store on clock.
+func machineServer(t *testing.T, store *kvstore.Store, clock *sim.TestClock) *identity.Server {
+	t.Helper()
+	s, err := identity.New(identity.Deps{Store: store, Clock: clock, Logons: &logonRecorder{}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s
 }
 
-// verify is the applied State's verdict on b at now: nil or the error.
-func verify(s *identity.Server, b []byte, now time.Time) error {
-	return s.VerifyAPReq(b, pkgid.ServiceCIFS, pkgid.TransportSMB, netip.MustParseAddr("192.0.2.1"), now)
+// newMachineServer is machineServer over a fresh store and clock.
+func newMachineServer(t *testing.T) (*identity.Server, *sim.TestClock) {
+	t.Helper()
+	prof.Watch(t, prof.Options{})
+	clock := sim.NewTestClock(mt0)
+	return machineServer(t, newStore(t), clock), clock
+}
+
+// ticketSignIn signs in over SMB with a ticket for svc under kvno and key, issued
+// at clock's now to a machine client, minted on its first sign-in, and
+// returns the outcome SignIn reports.
+func ticketSignIn(s *identity.Server, clock *sim.TestClock, svc string, kvno int, key []byte) (string, error) {
+	r := identitytest.NewRealm(machineRealm)
+	b := r.Ticket(identitytest.TicketOpts{Client: "host/client.corp.example", Service: svc, KVNO: kvno, Key: key, Now: clock.Now()})
+	_, oc, err := s.SignInOutcome(context.Background(), pkgid.SignInStep{Kerberos: b, Service: pkgid.ServiceCIFS, Transport: pkgid.TransportSMB, Client: netip.MustParseAddr("192.0.2.1")})
+	return oc, err
+}
+
+// wantSignIn checks a sign-in's outcome: ok and no error, or want with
+// ErrLogonFailure or, for "unavailable", ErrUnavailable.
+func wantSignIn(t *testing.T, what, oc string, err error, want string) {
+	t.Helper()
+	wantErr := vfserr.ErrLogonFailure
+	switch want {
+	case "ok":
+		wantErr = nil
+	case "unavailable":
+		wantErr = vfserr.ErrUnavailable
+	}
+	if oc != want || (wantErr == nil) != (err == nil) || (wantErr != nil && !errors.Is(err, wantErr)) {
+		t.Errorf("%s: SignIn = %v, outcome %q; want outcome %q, error %v", what, err, oc, want, wantErr)
+	}
 }
 
 func TestMachineKeys(t *testing.T) {
@@ -117,12 +154,14 @@ func TestMachineKeys(t *testing.T) {
 		return b
 	}
 	type check struct {
-		name   string
-		ticket func(t *testing.T) []byte
-		accept bool
+		name string
+		svc  string
+		kvno int
+		key  func(t *testing.T) []byte
+		want string // the outcome SignIn reports
 	}
-	under := func(svc string, kvno int, password string) func(t *testing.T) []byte {
-		return func(t *testing.T) []byte { return tkt(svc, kvno, machineKey(t, password), mt0) }
+	under := func(password string) func(t *testing.T) []byte {
+		return func(t *testing.T) []byte { return machineKey(t, password) }
 	}
 	for _, tc := range []struct {
 		name   string
@@ -135,13 +174,13 @@ func TestMachineKeys(t *testing.T) {
 				return joinedState(2, ver(2, 7, "pw7", false), ver(1, 6, "pw6", false))
 			},
 			checks: []check{
-				{"number 7", under(machineSvc, 7, "pw7"), true},
-				{"number 6", under(machineSvc, 6, "pw6"), true},
-				{"number 9, unheld, under the current key", under(machineSvc, 9, "pw7"), true},
-				{"number 9, unheld, under the previous key", under(machineSvc, 9, "pw6"), true},
-				{"the name in upper case", under("cifs/NAS.CORP.EXAMPLE", 7, "pw7"), true},
-				{"number 7 under the previous key", under(machineSvc, 7, "pw6"), false},
-				{"a name the account does not hold", under("cifs/other.corp.example", 7, "pw7"), false},
+				{"number 7", machineSvc, 7, under("pw7"), "ok"},
+				{"number 6", machineSvc, 6, under("pw6"), "ok"},
+				{"number 9, unheld, under the current key", machineSvc, 9, under("pw7"), "ok"},
+				{"number 9, unheld, under the previous key", machineSvc, 9, under("pw6"), "ok"},
+				{"the name in upper case", "cifs/NAS.CORP.EXAMPLE", 7, under("pw7"), "ok"},
+				{"number 7 under the previous key", machineSvc, 7, under("pw6"), "logon_failure"},
+				{"a name the account does not hold", "cifs/other.corp.example", 7, under("pw7"), "logon_failure"},
 			},
 		},
 		{
@@ -152,12 +191,14 @@ func TestMachineKeys(t *testing.T) {
 				return joinedState(2, ver(2, 300, "pw300", false), ver(1, 44, "pw44", false))
 			},
 			checks: []check{
-				{"number 300", under(machineSvc, 300, "pw300"), true},
-				{"number 44", under(machineSvc, 44, "pw44"), true},
-				{"number 44 under the key tagged 300", under(machineSvc, 44, "pw300"), false},
+				{"number 300", machineSvc, 300, under("pw300"), "ok"},
+				{"number 44", machineSvc, 44, under("pw44"), "ok"},
+				{"number 44 under the key tagged 300", machineSvc, 44, under("pw300"), "logon_failure"},
 			},
 		},
 		{
+			// Nothing derived leaves the server no service key at all, which
+			// SignIn reports as unavailable.
 			name: "not joined, as a failed join leaves the versions",
 			state: func(*testing.T) identity.State {
 				st := joinedState(2, ver(2, 7, "pw7", false), ver(1, 6, "pw6", false))
@@ -165,14 +206,19 @@ func TestMachineKeys(t *testing.T) {
 				return st
 			},
 			checks: []check{
-				{"number 7", under(machineSvc, 7, "pw7"), false},
-				{"number 6", under(machineSvc, 6, "pw6"), false},
+				{"number 7", machineSvc, 7, under("pw7"), "unavailable"},
+				{"number 6", machineSvc, 6, under("pw6"), "unavailable"},
 			},
+		},
+		{
+			name:   "joined with no versions",
+			state:  func(*testing.T) identity.State { return joinedState(2) },
+			checks: []check{{"number 7", machineSvc, 7, under("pw7"), "unavailable"}},
 		},
 		{
 			name:   "a HandedOver version alone",
 			state:  func(*testing.T) identity.State { return joinedState(0, ver(1, 1, "offline", true)) },
-			checks: []check{{"its number", under(machineSvc, 1, "offline"), false}},
+			checks: []check{{"its number", machineSvc, 1, under("offline"), "unavailable"}},
 		},
 		{
 			name: "a HandedOver version current beside a confirmed one",
@@ -180,8 +226,8 @@ func TestMachineKeys(t *testing.T) {
 				return joinedState(2, ver(3, 8, "offline", true), ver(2, 7, "pw7", false))
 			},
 			checks: []check{
-				{"the handed-over number", under(machineSvc, 8, "offline"), false},
-				{"the confirmed number", under(machineSvc, 7, "pw7"), true},
+				{"the handed-over number", machineSvc, 8, under("offline"), "logon_failure"},
+				{"the confirmed number", machineSvc, 7, under("pw7"), "ok"},
 			},
 		},
 		{
@@ -192,30 +238,25 @@ func TestMachineKeys(t *testing.T) {
 				return st
 			},
 			checks: []check{
-				{"under the imported key", func(t *testing.T) []byte {
+				{"under the imported key", machineSvc, 7, func(t *testing.T) []byte {
 					kt := keytab.New()
 					if err := kt.Unmarshal(imported(t)); err != nil {
 						t.Fatal(err)
 					}
-					return tkt(machineSvc, 7, kt.Entries[0].Key.KeyValue, mt0)
-				}, false},
-				{"under the derived key", under(machineSvc, 7, "pw7"), true},
+					return kt.Entries[0].Key.KeyValue
+				}, "logon_failure"},
+				{"under the derived key", machineSvc, 7, under("pw7"), "ok"},
 			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := newServer(t)
+			s, clock := newMachineServer(t)
 			if err := s.Apply(tc.state(t)); err != nil {
 				t.Fatalf("Apply: %v", err)
 			}
 			for _, c := range tc.checks {
-				err := verify(s, c.ticket(t), mt0)
-				switch {
-				case c.accept && err != nil:
-					t.Errorf("%s: verify = %v, want accepted", c.name, err)
-				case !c.accept && !errors.Is(err, vfserr.ErrLogonFailure):
-					t.Errorf("%s: verify = %v, want ErrLogonFailure", c.name, err)
-				}
+				oc, err := ticketSignIn(s, clock, c.svc, c.kvno, c.key(t))
+				wantSignIn(t, c.name, oc, err, c.want)
 			}
 		})
 	}
@@ -223,20 +264,17 @@ func TestMachineKeys(t *testing.T) {
 
 // A version no longer delivered derives no key from the next Apply on.
 func TestMachineKeysVersionDropped(t *testing.T) {
-	s := newServer(t)
+	s, clock := newMachineServer(t)
 	if err := s.Apply(joinedState(2, ver(2, 7, "pw7", false), ver(1, 6, "pw6", false))); err != nil {
 		t.Fatal(err)
 	}
-	b := tkt(machineSvc, 6, machineKey(t, "pw6"), mt0)
-	if err := verify(s, b, mt0); err != nil {
-		t.Fatalf("number 6 while held: verify = %v, want accepted", err)
-	}
+	oc, err := ticketSignIn(s, clock, machineSvc, 6, machineKey(t, "pw6"))
+	wantSignIn(t, "number 6 while held", oc, err, "ok")
 	if err := s.Apply(joinedState(2, ver(2, 7, "pw7", false))); err != nil {
 		t.Fatal(err)
 	}
-	if err := verify(s, b, mt0); !errors.Is(err, vfserr.ErrLogonFailure) {
-		t.Errorf("number 6 after its version was dropped: verify = %v, want ErrLogonFailure", err)
-	}
+	oc, err = ticketSignIn(s, clock, machineSvc, 6, machineKey(t, "pw6"))
+	wantSignIn(t, "number 6 after its version was dropped", oc, err, "logon_failure")
 }
 
 // The previous version's key is accepted until 10 hours plus the 5-minute skew
@@ -246,60 +284,44 @@ func TestMachineKeysRetention(t *testing.T) {
 	st := joinedState(2, ver(2, 7, "pw7", false), ver(1, 6, "pw6", false))
 	prof.Watch(t, prof.Options{})
 	store := newStore(t)
-	s, err := identity.New(identity.Deps{Store: store, Clock: sim.NewTestClock(time.Unix(0, 0))})
-	if err != nil {
-		t.Fatal(err)
-	}
+	clock := sim.NewTestClock(mt0)
+	s := machineServer(t, store, clock)
 	if err := s.Apply(st); err != nil {
 		t.Fatal(err)
 	}
-	at := func(d time.Duration) (time.Time, []byte) {
-		now := mt0.Add(d)
-		return now, tkt(machineSvc, 6, machineKey(t, "pw6"), now)
-	}
-	now, b := at(10*time.Hour + 4*time.Minute)
-	if err := verify(s, b, now); err != nil {
-		t.Errorf("number 6 at 10h04m after the confirm: verify = %v, want accepted", err)
-	}
-	now, b = at(10*time.Hour + 5*time.Minute + time.Second)
-	if err := verify(s, b, now); !errors.Is(err, vfserr.ErrLogonFailure) {
-		t.Errorf("number 6 at 10h05m01s after the confirm: verify = %v, want ErrLogonFailure", err)
-	}
-	fresh, err := identity.New(identity.Deps{Store: store, Clock: sim.NewTestClock(time.Unix(0, 0))})
-	if err != nil {
-		t.Fatal(err)
-	}
+	clock.Advance(10*time.Hour + 4*time.Minute)
+	oc, err := ticketSignIn(s, clock, machineSvc, 6, machineKey(t, "pw6"))
+	wantSignIn(t, "number 6 at 10h04m after the confirm", oc, err, "ok")
+	clock.Advance(time.Minute + time.Second)
+	oc, err = ticketSignIn(s, clock, machineSvc, 6, machineKey(t, "pw6"))
+	wantSignIn(t, "number 6 at 10h05m01s after the confirm", oc, err, "logon_failure")
+	fresh := machineServer(t, store, clock)
 	if err := fresh.Apply(st); err != nil {
 		t.Fatal(err)
 	}
-	if err := verify(fresh, b, now); !errors.Is(err, vfserr.ErrLogonFailure) {
-		t.Errorf("number 6 at 10h05m01s on a fresh server: verify = %v, want ErrLogonFailure", err)
-	}
-	if err := verify(fresh, tkt(machineSvc, 7, machineKey(t, "pw7"), now), now); err != nil {
-		t.Errorf("number 7 at 10h05m01s: verify = %v, want accepted", err)
-	}
+	oc, err = ticketSignIn(fresh, clock, machineSvc, 6, machineKey(t, "pw6"))
+	wantSignIn(t, "number 6 at 10h05m01s on a fresh server", oc, err, "logon_failure")
+	oc, err = ticketSignIn(fresh, clock, machineSvc, 7, machineKey(t, "pw7"))
+	wantSignIn(t, "number 7 at 10h05m01s on a fresh server", oc, err, "ok")
 	if err := s.Apply(joinedState(2, ver(3, 8, "pw8", false), ver(2, 7, "pw7", false))); err != nil {
 		t.Fatal(err)
 	}
-	if err := verify(s, tkt(machineSvc, 8, machineKey(t, "pw8"), now), now); err != nil {
-		t.Errorf("a sealed version above the confirmed one at 10h05m01s: verify = %v, want accepted", err)
-	}
+	oc, err = ticketSignIn(s, clock, machineSvc, 8, machineKey(t, "pw8"))
+	wantSignIn(t, "a sealed version above the confirmed one at 10h05m01s", oc, err, "ok")
 }
 
 // Of the versions below the confirmed one, only the newest derives a key, so a
 // version two rotations back is refused while the one just below is accepted.
 func TestMachineKeysRetentionOneBelow(t *testing.T) {
-	s := newServer(t)
+	s, clock := newMachineServer(t)
 	if err := s.Apply(joinedState(3, ver(3, 9, "pw9", false), ver(2, 8, "pw8", false), ver(1, 7, "pw7", false))); err != nil {
 		t.Fatal(err)
 	}
-	now := mt0.Add(10 * time.Hour)
-	if err := verify(s, tkt(machineSvc, 7, machineKey(t, "pw7"), now), now); !errors.Is(err, vfserr.ErrLogonFailure) {
-		t.Errorf("number 7, two versions below the confirmed one, at 10h: verify = %v, want ErrLogonFailure", err)
-	}
-	if err := verify(s, tkt(machineSvc, 8, machineKey(t, "pw8"), now), now); err != nil {
-		t.Errorf("number 8, just below the confirmed one, at 10h: verify = %v, want accepted", err)
-	}
+	clock.Advance(10 * time.Hour)
+	oc, err := ticketSignIn(s, clock, machineSvc, 7, machineKey(t, "pw7"))
+	wantSignIn(t, "number 7, two versions below the confirmed one, at 10h", oc, err, "logon_failure")
+	oc, err = ticketSignIn(s, clock, machineSvc, 8, machineKey(t, "pw8"))
+	wantSignIn(t, "number 8, just below the confirmed one, at 10h", oc, err, "ok")
 }
 
 // An imported key for one of the account's names is logged at the Apply that

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -179,7 +180,8 @@ func newRotation(t *testing.T) *rotFixture {
 		t.Fatal(err)
 	}
 
-	fx.rec = directory.Record{Address: "ldaps://dc1.corp.example", Realm: machineRealm, NetBIOSDomain: "CORP",
+	noPAC := false // a ticket the derived keys verify signs in without one
+	fx.rec = directory.Record{Address: "ldaps://dc1.corp.example", Realm: machineRealm, NetBIOSDomain: "CORP", RequirePAC: &noPAC,
 		BindName: "CN=svc,CN=Users,DC=corp,DC=example", BindCredential: bindRef, DCAddress: dc1}
 
 	if fx.in, err = st.Installation(ctx); err != nil {
@@ -233,7 +235,7 @@ func (fx *rotFixture) restart(t *testing.T, secrets identity.SecretProvider) {
 	}
 	fx.reg = metrics.New("test", "test")
 	s, err := identity.New(identity.Deps{Store: fx.store, Clock: fx.clock, Secrets: secrets, Metrics: fx.reg,
-		DomainController: identitytest.NewFaultyDomainController(fx.d, fx.faults), ControlPlane: fx.cp})
+		DomainController: identitytest.NewFaultyDomainController(fx.d, fx.faults), ControlPlane: fx.cp, Logons: &logonRecorder{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,13 +456,11 @@ func (fx *rotFixture) signsIn(t *testing.T, version uint64) {
 	}
 }
 
-// wantTicket wants a ticket for cifs/ under kvno and password's key verified.
+// wantTicket wants a ticket for cifs/ under kvno and password's key signed in.
 func (fx *rotFixture) wantTicket(t *testing.T, kvno int, password string) {
 	t.Helper()
-	now := fx.clock.Now()
-	if err := verify(fx.s, tkt(machineSvc, kvno, machineKey(t, password), now), now); err != nil {
-		t.Errorf("ticket under kvno %d: %v, want accepted", kvno, err)
-	}
+	oc, err := ticketSignIn(fx.s, fx.clock, machineSvc, kvno, machineKey(t, password))
+	wantSignIn(t, "ticket under kvno "+strconv.Itoa(kvno), oc, err, "ok")
 }
 
 // A rotation seals a version tagged with the controller's number plus one,
