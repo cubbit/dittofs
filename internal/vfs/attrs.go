@@ -330,9 +330,10 @@ func (fs *Filesystem) truncate(ctx context.Context, a *admitted, h vfs.Handle, f
 const attrTimes = entity.AttrBirth | entity.AttrAccess | entity.AttrModify
 
 // rightsOf is what an attribute change asks of the chokepoint, each
-// attribute its own right: a size write data; a mode write the ACL; an owner
-// change the owner; a group change the owner, or write the ACL for the
-// file's owner; anything else write attributes.
+// attribute its own right: a size write data; a mode write the ACL; a new
+// owner change the owner, the owner it already has nothing, as RFC 7 §7.4
+// allows setting it to its current value; a group change the owner, or write
+// the ACL for the file's owner; anything else write attributes.
 func rightsOf(id entity.Identity, f vfs.File, a vfs.Attrs) vfs.Access {
 	var want vfs.Access
 	if a.Changes(entity.AttrSize) {
@@ -341,7 +342,7 @@ func rightsOf(id entity.Identity, f vfs.File, a vfs.Attrs) vfs.Access {
 	if a.Changes(entity.AttrMode) {
 		want |= entity.WriteACL
 	}
-	if a.Changes(entity.AttrOwner) {
+	if a.Changes(entity.AttrOwner) && a.Owner != f.Owner {
 		want |= entity.WriteOwner
 	}
 	if a.Changes(entity.AttrGroup) {

@@ -646,3 +646,30 @@ func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 		t.Errorf("an admin's time set through its read-only open: %v, want it set on the admin's own rights", err)
 	}
 }
+
+// RFC 7 §7.4: setting the owner to its current value is allowed, so the
+// owner of a file with no stored ACL, whose mode grants no one change the
+// owner, sets itself as owner, alone or with the file's group, as cp -p and
+// tar do. Giving the file to another principal asks change the owner, which
+// the walk refuses (RFC 19 §3.1).
+func TestAnOwnerSetsItselfAsOwner(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o644)
+	alice := proven(s.alice.Principal, inLab)
+	group := s.record(t, h).Group
+	for name, a := range map[string]entity.Attrs{
+		"alone":               entity.Attrs{}.WithOwner(s.alice.Principal),
+		"with the file group": entity.Attrs{}.WithOwner(s.alice.Principal).WithGroup(group),
+	} {
+		if _, err := s.SetAttr(ctx, alice, vfs.Target{H: h}, vfs.AttrChange{Attrs: a}); err != nil {
+			t.Errorf("the owner setting itself as owner %s: %v", name, err)
+		}
+	}
+	if _, err := s.SetAttr(ctx, alice, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.bob.Principal)}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("the owner giving the file to bob: %v, want ErrAccess", err)
+	}
+	if got := s.record(t, h).Owner; got != s.alice.Principal {
+		t.Errorf("the owner is %v, want alice", got)
+	}
+}

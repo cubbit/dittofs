@@ -14,13 +14,14 @@ const writeRights = entity.WriteData | entity.AppendData | entity.WriteNamedAttr
 	entity.WriteAttributes | entity.Delete | entity.WriteACL | entity.WriteOwner
 
 // A file with no stored ACL grants through its mode what its bits grant
-// whoever they apply to (entity.ModeRights, RFC 19 §4.1), and ownerRights to
-// the owner whatever its bits. A write bit grants write attributes to
-// whoever it applies to, as the mapped GENERIC_WRITE set needs at open; what
-// a non-owner may then set through it is mayChange's. allows grants read
-// attributes to every caller ahead of the mode or a stored ACL.
+// whoever they apply to (entity.ModeRights, RFC 19 §4.1), and the owner its
+// implicit rights whatever its bits, as a stored ACL's walk does. A write bit
+// grants write attributes to whoever it applies to, as the mapped
+// GENERIC_WRITE set needs at open; what a non-owner may then set through it
+// is mayChange's. No bit grants change the owner (RFC 7 §7.4), so the mode
+// grants it to no one. allows grants read attributes to every caller ahead
+// of the mode or a stored ACL.
 const (
-	ownerRights = entity.WriteAttributes | entity.WriteACL | entity.WriteOwner
 	// An owner keeps the right to read and change the ACL whatever its bits
 	// or an ACL say, so neither locks its owner out of repairing it (RFC 19
 	// §3.1, step 5).
@@ -380,7 +381,7 @@ func matches(id entity.Identity, f entity.File, who entity.Principal) bool {
 // modeAllows is what the file's mode grants this caller: what the owner's
 // bits grant to its owner, the group's to a member of its group, the
 // others' to the rest, so the decision is the walk of the ACL the file shows
-// (RFC 19 §4.1), and ownerRights to the owner whatever its bits.
+// (RFC 19 §4.1).
 func modeAllows(id entity.Identity, f entity.File) entity.AccessMask {
 	shift := uint(0)
 	switch {
@@ -389,11 +390,7 @@ func modeAllows(id entity.Identity, f entity.File) entity.AccessMask {
 	case id.InGroup(f.Group):
 		shift = 3
 	}
-	m := entity.ModeRights(f.Mode>>shift&7, f.IsDir())
-	if id.Principal == f.Owner {
-		m |= ownerRights
-	}
-	return m
+	return entity.ModeRights(f.Mode>>shift&7, f.IsDir())
 }
 
 // mayRemove decides whether the caller may remove the entry naming child

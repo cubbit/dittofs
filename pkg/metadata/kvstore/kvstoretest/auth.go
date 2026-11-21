@@ -190,10 +190,10 @@ func testModeMinorRights(t *testing.T, kvo Opener) {
 
 // RFC 19 §4.1: what a file shows is what is evaluated. On a file with no
 // stored ACL and on one storing the ACL the first shows, file or directory,
-// each caller is granted the same of every right a mode bit grants on a
-// directory: its class's bits' set, delete a child on a directory alone,
-// the owner's implicit rights to the owner (§3.1, step 5), and read
-// attributes to every caller.
+// each caller is granted the same of every right an entry can hold: its
+// class's bits' set, delete a child on a directory alone, the owner's
+// implicit rights to the owner (§3.1, step 5), read attributes to every
+// caller, and change the owner, which no bit implies (RFC 7 §7.4), to no one.
 func testModeGrantsWhatItShows(t *testing.T, kvo Opener) {
 	f := newFS(t, kvo, entity.FoldIdentity)
 	files := f.s.Files()
@@ -223,10 +223,10 @@ func testModeGrantsWhatItShows(t *testing.T, kvo Opener) {
 			for _, c := range callers {
 				want := entity.ModeRights(mode>>c.shift&7, dir) | entity.ReadAttributes
 				if c.shift == 6 {
-					want |= entity.ReadACL | entity.WriteAttributes
+					want |= entity.ReadACL | entity.WriteAttributes | entity.WriteACL
 				}
 				for kind, file := range map[string]entity.Handle{"no stored ACL": h, "its ACL stored": stored} {
-					if got, err := files.Granted(ctx, c.id, file, nil, entity.ModeRights(7, true)); err != nil || got != want {
+					if got, err := files.Granted(ctx, c.id, file, nil, entity.EntryRights); err != nil || got != want {
 						t.Errorf("%s on a %03o %v with %s: granted %#x, %v; want %#x", c.name, mode, typ, kind, got, err, want)
 					}
 				}
