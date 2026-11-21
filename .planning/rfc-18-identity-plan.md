@@ -420,9 +420,10 @@ so epic 5 adds it back. The SMB wire side is RFC 22's (`gss`).
 
 RFC 18's suites paragraph puts Tier 1 and Tier 2 in `unit`, and the directory's and domain
 controller's suites also against real AD in `integration/ad-dc`; the `e2e/cross-protocol` rows it
-names are RFC 17's and RFC 19's. Epic 9 adds its Kerberos rows to the existing `e2e/kerberos` cell,
-which the RFC does not name. None keeps a `known.yaml`, so each test lands green with the epic that
-makes it pass.
+names are RFC 17's and RFC 19's. Epic 9 runs its Tier 2 rows over SMB in `unit`, adds no test to
+`e2e`, and restores the `integration/kerberos` cell to capture an MIT KDC's tickets, which the RFC
+does not name (epic 9's D1 and D3, pending the user's answer). None keeps a `known.yaml`, so each
+test lands green with the epic that makes it pass.
 
 ### 1.3 What epic 1 must deliver
 
@@ -612,7 +613,7 @@ proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `Fu
 | E6 | The directory | the LDAP provider lifted, paging, `tokenGroups`, the directory cache with stale grace, directory mints, the directory's domain SID, the `identity.directory` section, the in-memory directory and its suite | 8 | 22 | C | E8; partly E7 |
 | E7 | NETLOGON and the machine account | the secure channel moved and hardened, pass-through, online and offline join, the derived keytab, rotation, identity's runner kinds, status, the in-memory domain controller | 13 | 32 | A | E8 |
 | E8 | Integration | identity composed into the node, its `State` from reconcile, `identity.*` validators, the rows several epics meet in | 5 | 10.5 | team | E9 |
-| E9 🔀 | E2E green | Tier 2 rows through SMB, `e2e/kerberos` | planned after S3 | planned after S3 | team | — |
+| E9 🔀 | E2E green | Tier 2 rows through SMB, an MIT ticket captured in `integration/kerberos` | 10 | 12.25 | team | — |
 | | **Total** | | **63** | **125.5** | | |
 
 **Plan estimate: 63 subtasks, 125.5 man-days, not counting epic 9.**
@@ -1597,7 +1598,9 @@ Identity runs inside the node, and the rows that need several middle epics toget
 
 ### Epic 9 — E2E green 🔀
 
-**Epic 9 estimate: planned after S3.**
+**Epic 9 estimate: 10 subtasks, 12.25 man-days.**
+
+Broken down in [`rfc-18-identity-epic9.md`](rfc-18-identity-epic9.md), ahead of S3.
 
 This epic waits for an SMB adapter serving through the node (S3).
 
@@ -1608,13 +1611,16 @@ This epic waits for an SMB adapter serving through the node (S3).
 - RFC 18 §10's rows "no map to guest", "squash drops SIDs", "squash order follows the proof" (its
   Kerberos half), "disable takes effect" (its SMB half), "binding", "re-authentication", "deny-only
   SIDs", "no file spelling" (its SMB half), "`none` is stored", "NTLM off" and "anonymous lookup"
-  pass over SMB, in `unit`'s Tier 2 and in `e2e/kerberos`.
+  pass over SMB, in `unit`'s Tier 2;
+- an AP-REQ for a ticket an MIT KDC issued, captured in `integration/kerberos`, signs in through
+  identity in `unit` on a clock pinned to its capture (epic 9's D3, pending the user's answer).
 
 **Expected content:**
 - The Tier 2 rows over SMB on the composed harness.
-- The Kerberos rows in `e2e/kerberos` against a real KDC, after mending what it inherits on
-  `feat/storage-v2`: `test/suites.yaml`'s `integration/kerberos` cell names a deleted directory, and
-  `e2e/kerberos`'s `KDCHelper` builds from it.
+- An MIT KDC's ticket captured as a vector, in the `integration/kerberos` cell restored on
+  `feat/storage-v2`: `test/suites.yaml`'s cell names a directory RFC 20's T1.1 deleted.
+  `e2e/kerberos`'s `KDCHelper` builds from it too, but that cell runs no test on
+  `feat/storage-v2`; RFC 22's plan's T16.4 fills it or removes it (epic 9's D1).
 
 ## 6. Risks and open points
 
