@@ -219,9 +219,15 @@ func forbiddenToOps(dir, name, file, imp string) string {
 }
 
 // usesRuntime names each use in f, an ops file other than codec_gen.go, of
-// its protocol's wire runtime, the Decoder and Encoder the generated code
-// alone calls (RFC 20 §5.1, §7.1).
-func usesRuntime(rel, wire string, f *ast.File) []string {
+// what in its protocol's wire reads or writes bytes: the Decoder and Encoder
+// the generated code alone calls, and any of funcs, the functions wire
+// declares, each of which reads, writes or sizes bytes. wire's other types
+// and its constants it may name (RFC 20 §5.1, §7.1).
+//
+// ponytail: a method of a wire type is not caught, as a syntactic walk cannot
+// tell a value's type. Type-check the ops packages, in this test alone, once
+// an ops file holds a value of a wire type.
+func usesRuntime(rel, wire string, funcs map[string]bool, f *ast.File) []string {
 	name := ""
 	for _, spec := range f.Imports {
 		if spec.Path.Value == strconv.Quote(module+wire) {
@@ -234,7 +240,7 @@ func usesRuntime(rel, wire string, f *ast.File) []string {
 	var found []string
 	ast.Inspect(f, func(n ast.Node) bool {
 		if s, ok := n.(*ast.SelectorExpr); ok && name != "" {
-			if x, ok := s.X.(*ast.Ident); ok && x.Name == name && (s.Sel.Name == "Decoder" || s.Sel.Name == "Encoder") {
+			if x, ok := s.X.(*ast.Ident); ok && x.Name == name && (s.Sel.Name == "Decoder" || s.Sel.Name == "Encoder" || funcs[s.Sel.Name]) {
 				found = append(found, rel+": uses "+name+"."+s.Sel.Name+": "+noBytes)
 			}
 		}
@@ -242,6 +248,33 @@ func usesRuntime(rel, wire string, f *ast.File) []string {
 	})
 
 	return found
+}
+
+// declaredFuncs is the names of the functions, methods aside, that the
+// package in dir declares in its files other than tests; none where dir
+// holds no package.
+func declaredFuncs(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil {
+				names[fn.Name.Name] = true
+			}
+		}
+	}
+	return names
 }
 
 // violations walks every Go file under root, test files and files behind a
@@ -257,6 +290,7 @@ func usesRuntime(rel, wire string, f *ast.File) []string {
 func violations(t *testing.T, root string) []string {
 	t.Helper()
 	var found []string
+	funcs := map[string]map[string]bool{} // by wire package, its declared functions
 	err := filepath.WalkDir(root, func(file string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -305,7 +339,11 @@ func violations(t *testing.T, root string) []string {
 			}
 		}
 		if held {
-			found = append(found, usesRuntime(rel, "internal/adapter/"+adapterOf(dir)+"/wire", parsed)...)
+			wire := "internal/adapter/" + adapterOf(dir) + "/wire"
+			if _, ok := funcs[wire]; !ok {
+				funcs[wire] = declaredFuncs(t, filepath.Join(root, wire))
+			}
+			found = append(found, usesRuntime(rel, wire, funcs[wire], parsed)...)
 		}
 		return nil
 	})
@@ -345,6 +383,7 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/nfs/identity.go: imports github.com/cubbit/dittofs/pkg/identity: an adapter imports, of the module, only pkg/vfs, pkg/adapter, pkg/adapter/settings, pkg/resources, pkg/metrics, internal/tlsconfig, core and its own packages",
 		"internal/adapter/nfs/mount/wire/gen/main.go: imports os: a wire package does no file or network I/O",
 		"internal/adapter/nfs/ops/v3/binary.go: imports encoding/binary: an ops file reads and writes no bytes: its codec is generated",
+		"internal/adapter/nfs/ops/v3/parse.go: uses wire.ParseCall: an ops file reads and writes no bytes: its codec is generated",
 		"internal/adapter/nfs/ops/v4/codec_gen.go: imports os: a generated codec_gen.go imports only what a wire package may, and its protocol's wire",
 		"internal/adapter/nfs/ops/v4/encoder.go: uses w.Encoder: an ops file reads and writes no bytes: its codec is generated",
 		"internal/adapter/nfs/prof.go: imports github.com/cubbit/dittofs/internal/prof: the service's test components and the profiler reach an adapter through its tests and adaptertest only",
