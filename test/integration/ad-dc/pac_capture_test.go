@@ -3,6 +3,7 @@
 package ad_dc_test
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"os"
@@ -10,12 +11,17 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
+	"github.com/jcmturner/gokrb5/v8/client"
+	krb5config "github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/credentials"
 	"github.com/jcmturner/gokrb5/v8/iana/adtype"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/types"
+
+	"github.com/cubbit/dittofs/pkg/auth/sid"
 )
 
 // PAC buffer types (MS-PAC 2.4) the captures are checked for.
@@ -33,11 +39,15 @@ const (
 // ticket, as the fixture's KDC issues them, and checks each verifies under the
 // key that decrypts its ticket and carries the buffer types the PAC tests need:
 // the TGT's PAC holds PAC_ATTRIBUTES_INFO and PAC_REQUESTOR, the service
-// ticket's does not.
+// ticket's does not. It also builds alice's AP-REQ for cifs/ with gokrb5's
+// client from the service ticket the KDC issues it, and checks the ticket
+// decrypts under the service keytab.
 //
 // With DITTOFS_AD_DC_PAC_OUT naming a directory, it also writes the captures
 // there with their keys: tgt.pac with krbtgt.keytab, service.pac with
-// service.keytab. capture-pacs.sh runs it so.
+// service.keytab, and alice.apreq with alice.json, the authenticator's time
+// and alice's and her groups' SIDs as samba-tool reads them.
+// capture-pacs.sh runs it so.
 func TestADPACCapture(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping AD-DC integration test in short mode")
@@ -46,7 +56,7 @@ func TestADPACCapture(t *testing.T) {
 		t.Skip("docker not found, skipping AD-DC integration test")
 	}
 
-	setupADDC(t)
+	dcIP := setupADDC(t)
 	serviceKeytab := copyADKeytab(t)
 
 	// alice signs in and fetches her cifs/ ticket inside the DC, with MIT's
@@ -124,6 +134,75 @@ samba-tool domain exportkeytab /tmp/krbtgt.keytab --principal=krbtgt/` + adRealm
 		}
 		t.Logf("wrote %s (%d bytes) and %s to %s", c.file, len(raw), ktName, out)
 	}
+
+	req, ctime := aliceAPReq(t, dcIP, serviceKeytab)
+	if out == "" {
+		return
+	}
+	sids := map[string]string{"alice": sidString(objectSID(t, "user", adUserAlice))}
+	for _, g := range []string{"Domain Users", "devs", "engineering"} {
+		sids[g] = sidString(objectSID(t, "group", g))
+	}
+	meta, err := json.MarshalIndent(aliceCapture{Time: ctime, SIDs: sids}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{"alice.apreq": req, "alice.json": append(meta, '\n')} {
+		if err := os.WriteFile(filepath.Join(out, name), data, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	t.Logf("wrote alice.apreq (%d bytes) and alice.json to %s", len(req), out)
+}
+
+// aliceCapture is alice.json: the time alice's captured AP-REQ was made, and
+// her SID and her groups' by name.
+type aliceCapture struct {
+	Time time.Time         `json:"time"`
+	SIDs map[string]string `json:"sids"`
+}
+
+func sidString(s sid.SID) string { return sid.FormatSID(&s) }
+
+// aliceAPReq signs alice in with gokrb5's client against the DC at dcIP and
+// returns her AP-REQ for cifs/, made from the service ticket the KDC issues,
+// with its authenticator's time. The ticket must decrypt under the keytab at
+// ktPath.
+func aliceAPReq(t *testing.T, dcIP, ktPath string) ([]byte, time.Time) {
+	t.Helper()
+	cfg, err := krb5config.Load(writeADKrb5Conf(t, dcIP))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl := client.NewWithPassword(adUserAlice, adRealm, adUserPass, cfg, client.DisablePAFXFAST(true))
+	if err := cl.Login(); err != nil {
+		t.Fatalf("kinit as alice: %v", err)
+	}
+	defer cl.Destroy()
+	tkt, key, err := cl.GetServiceTicket(adSMBSPNShort)
+	if err != nil {
+		t.Fatalf("alice's service ticket for %s: %v", adSMBSPNShort, err)
+	}
+	kt, err := keytab.Load(ktPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tkt.DecryptEncPart(kt, nil); err != nil {
+		t.Fatalf("decrypt alice's %s ticket under the service keytab: %v", adSMBSPNShort, err)
+	}
+	auth, err := types.NewAuthenticator(cl.Credentials.Domain(), cl.Credentials.CName())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := messages.NewAPReq(tkt, key, auth)
+	if err != nil {
+		t.Fatalf("alice's AP-REQ: %v", err)
+	}
+	b, err := req.Marshal()
+	if err != nil {
+		t.Fatalf("marshal alice's AP-REQ: %v", err)
+	}
+	return b, auth.CTime.Truncate(time.Microsecond)
 }
 
 // ccacheTicket returns the ccache's ticket for service, decrypted with kt.
