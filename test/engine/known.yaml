@@ -60,4 +60,4 @@
   fix: planned
   category: feature
   reason: 'the journal side is done: a reserved write''s Hold refused on a full device answers ENOSPC as itself, so the row''s refused roll answers the device''s ErrNoSpace and raises journal_full, which stays up while a write into an allocated segment is accepted. The row now stops at its last check: with the device given room again and the clock advanced, journal_full never clears. The engine has no clear for it but acceptedWrite (engine/repack.go), which clears only a refusal that named the headroom; RFC 8 §11.1''s clear once the limit that refused has room again since the latest refusal, by at least what it lacked, is not built for the device nor for the maximum. The row waits on the engine building that clear.'
-  issue: '#4611'
+  issue: '#5320'
