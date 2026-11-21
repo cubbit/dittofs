@@ -36,4 +36,5 @@ type Content interface {
 	Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfs.Extent) (int64, error)
 	Overlay(ctx context.Context, s entity.ShareID, f entity.FileID) (o engine.Overlay, pending bool, err error)
 	Allocation(ctx context.Context, s entity.ShareID, f entity.FileID, off int64) (entity.Span, error)
+	AwaitClones(ctx context.Context, f entity.FileID) error
 }

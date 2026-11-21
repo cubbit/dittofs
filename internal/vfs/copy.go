@@ -74,12 +74,16 @@ func (fs *Filesystem) Clone(ctx context.Context, c vfs.Call, a vfs.CopyArgs) (vf
 // decision: an incomplete source is not refused (ErrIncomplete), as no File
 // record carries the mark yet: nothing restores a snapshot. Overturned when
 // snapshots (RFC 12) mark a file incomplete.
-func (fs *Filesystem) copyOrClone(ctx context.Context, c vfs.Call, a vfs.CopyArgs, op vfs.Op) (int64, vfs.WCC, error) {
-	ctx, done, err := fs.enter(ctx)
-	if err != nil {
-		return 0, vfs.WCC{}, err
-	}
-	defer done()
+func (fs *Filesystem) copyOrClone(ctx context.Context, c vfs.Call, a vfs.CopyArgs, op vfs.Op) (n int64, w vfs.WCC, err error) {
+	err = fs.held(ctx, []entity.FileID{fileOf(a.Src.Handle), fileOf(a.Dst.Handle)}, func(ctx context.Context) error {
+		n, w, err = fs.copyOrCloneOnce(ctx, c, a, op)
+		return err
+	})
+	return n, w, err
+}
+
+// copyOrCloneOnce is one attempt of copyOrClone, run again by held.
+func (fs *Filesystem) copyOrCloneOnce(ctx context.Context, c vfs.Call, a vfs.CopyArgs, op vfs.Op) (int64, vfs.WCC, error) {
 	if op == vfs.OpClone && len(a.Extents) != 1 {
 		return 0, vfs.WCC{}, vfs.ErrInvalid
 	}

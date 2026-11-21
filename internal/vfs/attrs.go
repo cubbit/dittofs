@@ -145,12 +145,16 @@ var errGuard = fmt.Errorf("vfs: the ctime guard no longer holds: %w", vfs.ErrInv
 // owner rule cannot see the open; a change setting anything beside times
 // keeps that rule. Overturned once Authorize takes an open's grant in place
 // of the walk and SetAttrs takes the open.
-func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch vfs.AttrChange) (vfs.WCC, error) {
-	ctx, done, err := fs.enter(ctx)
-	if err != nil {
-		return vfs.WCC{}, err
-	}
-	defer done()
+func (fs *Filesystem) SetAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch vfs.AttrChange) (w vfs.WCC, err error) {
+	err = fs.held(ctx, []entity.FileID{fileOf(t.H)}, func(ctx context.Context) error {
+		w, err = fs.setAttr(ctx, c, t, ch)
+		return err
+	})
+	return w, err
+}
+
+// setAttr is one attempt of SetAttr, run again by held.
+func (fs *Filesystem) setAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch vfs.AttrChange) (vfs.WCC, error) {
 	a, release, err := fs.admitTarget(ctx, c, t)
 	if err != nil {
 		return vfs.WCC{}, err

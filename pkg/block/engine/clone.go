@@ -17,13 +17,14 @@ import (
 
 // reg is one running clone's registration on a file: the extent it holds,
 // whether the file is the clone's destination or its source, and whether
-// the clone waits for journal space. A destination registration names its
-// clone, which a retry of it finds there (joinable) for as long as the
+// the clone waits for journal space. Each registration names its clone,
+// whose end a call behind it waits for (AwaitClones), and a retry of the
+// clone finds it on the destination's (joinable) for as long as that
 // registration is installed.
 type reg struct {
 	entity.Extent
 	dst   bool
-	run   *cloneRun   // the clone, on a destination registration
+	run   *cloneRun   // the clone
 	space atomic.Bool // the clone waits for journal space to copy: a call behind it carries DelayCapacity
 }
 
@@ -40,9 +41,9 @@ func (r *reg) delay() error {
 //
 // decision: a call behind a clone answers at once and the engine never waits
 // inside it: RFC 17 §5.9 puts the held wait, bounded by the call's WithHold,
-// in the filesystem service, which holds none of the file's locks across a
-// clone past its admission (WithAdmitted), and a call held behind a clone
-// holds no entry mutex (RFC 14 §11). Withdraw it if RFC 17 moves that hold
+// in the filesystem service, which waits through AwaitClones, holding none of
+// the file's locks across a clone past its admission (WithAdmitted), and a
+// call held behind a clone holds no entry mutex (RFC 14 §11). Withdraw it if RFC 17 moves that hold
 // into the engine.
 func delayClone() error { return &vfserr.Delay{Cause: vfserr.DelayClone} }
 
@@ -164,6 +165,32 @@ func (e *Engine) register(ctx context.Context, f entity.FileID, r *reg) error {
 	return err
 }
 
+// AwaitClones answers nil once every clone registered on file f when it is
+// called has ended, at once when none is, or ctx's error if ctx ends first.
+// It holds no lock while it waits: a call answered DelayClone waits here,
+// outside the engine, for what refused it to end, and is then run again.
+// A clone registered after the call is not waited for.
+func (e *Engine) AwaitClones(ctx context.Context, f entity.FileID) error {
+	var runs []*cloneRun
+	if fe := e.files.lockOf(f); fe != nil {
+		for _, r := range fe.regs {
+			runs = append(runs, r.run)
+		}
+		e.files.unlock(f, fe)
+	}
+	if h := e.awaiting; h != nil {
+		h()
+	}
+	for _, c := range runs {
+		select {
+		case <-c.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
 // unregister removes r from f's entry, which it kept alive.
 func (e *Engine) unregister(f entity.FileID, r *reg) {
 	fe := e.files.lockOf(f)
@@ -278,27 +305,31 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	}
 	c := &cloneRun{sb: sb, db: db, src: src, dst: dst, req: req, done: make(chan struct{})}
 	c.preparing.Store(true)
-	rs := &reg{Extent: entity.Extent{Offset: x.SrcOff, Length: x.Len}}
+	rs := &reg{Extent: entity.Extent{Offset: x.SrcOff, Length: x.Len}, run: c}
 	rd := &reg{Extent: entity.Extent{Offset: x.DstOff, Length: x.Len}, dst: true, run: c}
 	c.rs, c.rd = rs, rd
-	if err := e.register(ctx, src, rs); err != nil {
+	// abandon ends the clone refused before it entered the shares: both
+	// registrations go, either one a call may have met, and its done is
+	// raised, for that call's wait (AwaitClones) to end with it.
+	abandon := func(err error) error {
+		e.unregister(dst, rd)
+		e.unregister(src, rs)
+		close(c.done)
 		return err
 	}
+	if err := e.register(ctx, src, rs); err != nil {
+		return abandon(err)
+	}
 	if err := e.register(ctx, dst, rd); err != nil {
-		e.unregister(src, rs)
-		return err
+		return abandon(err)
 	}
 	if h := e.afterRegister; h != nil {
 		if err := h(); err != nil { // a test of admission alone stops the clone here
-			e.unregister(dst, rd)
-			e.unregister(src, rs)
-			return err
+			return abandon(err)
 		}
 	}
 	if !c.enterShares() { // an Unbind began since the call entered: nothing changed
-		e.unregister(dst, rd)
-		e.unregister(src, rs)
-		return errRemoved
+		return abandon(errRemoved)
 	}
 	// decision: the admitted hook runs once the registrations are installed
 	// and before step 1 (prepare), so step 1's sync of the source, its

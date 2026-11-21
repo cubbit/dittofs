@@ -186,6 +186,46 @@ func TestARegistrationHoldsBothExtents(t *testing.T) {
 	}
 }
 
+// AwaitClones waits, holding nothing, for the clones registered on a file to
+// end, refused ones included: while a clone holds both files it answers
+// either file only at its context's end, a write outside the clone's extents
+// is served meanwhile, and once the clone ends, here refused once
+// registered, a wait that read it during it answers nil; a file no clone
+// holds answers nil at once.
+func TestAwaitClonesWaitsForTheClonesEnd(t *testing.T) {
+	u := cloneUnit(t)
+	src, dst, other := u.create(t, "src"), u.create(t, "dst"), u.create(t, "other")
+	release := heldClone(t, u, src, dst)
+	ended, cancel := context.WithCancel(t.Context())
+	cancel()
+	for name, f := range map[string]entity.FileID{"source": src, "destination": dst} {
+		if err := u.e.AwaitClones(ended, f); !errors.Is(err, context.Canceled) {
+			t.Errorf("AwaitClones on the %s during the clone, its context ended: %v, want context.Canceled", name, err)
+		}
+	}
+	if err := u.e.AwaitClones(ended, other); err != nil {
+		t.Errorf("AwaitClones on a file no clone holds: %v, want nil at once", err)
+	}
+	read := make(chan struct{})
+	u.e.SetAwaiting(func() { close(read) })
+	defer u.e.SetAwaiting(nil)
+	waited := make(chan error, 1)
+	go func() { waited <- u.e.AwaitClones(t.Context(), dst) }()
+	<-read // the wait has read the clone before it ends
+	if _, err := u.e.Write(t.Context(), u.share.ID, dst, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); err != nil {
+		t.Errorf("a write outside the clone's extents while a call waits on it: %v, want served", err)
+	}
+	release()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Errorf("AwaitClones once the clone ended: %v, want nil", err)
+		}
+	case <-time.After(bound):
+		t.Fatalf("AwaitClones did not answer within %v of the clone's end", bound)
+	}
+}
+
 // A clone refused at its destination undoes its source's registration: a
 // write into that source extent is served after.
 func TestARefusedDestinationUndoesTheSource(t *testing.T) {

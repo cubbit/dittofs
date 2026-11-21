@@ -84,6 +84,7 @@ type Engine struct {
 	hooks           struct{ taken, drained atomic.Pointer[func()] } // a test's seams: after a batch's take and a drain's read of the ring
 	beforeTake      atomic.Pointer[func()]                          // a test's seam: run before each take of a group commit's loop
 	afterRegister   func() error                                    // a test's hook: run once a clone's registrations are installed; an error stops the clone there
+	awaiting        func()                                          // a test's hook: run by AwaitClones once it has read the clones it waits for
 
 	// cloneMarker, a test's stand-in for the clone's rebuild, is called by
 	// start step 3 for each clone marker the journal yields above a file's

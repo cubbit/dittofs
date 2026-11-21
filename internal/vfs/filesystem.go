@@ -108,6 +108,10 @@ type Content interface {
 	// false, none is, and the File record answers alone.
 	Overlay(ctx context.Context, s entity.ShareID, f entity.FileID) (o Overlay, pending bool, err error)
 	Allocation(ctx context.Context, s entity.ShareID, f entity.FileID, off int64) (entity.Span, error)
+	// AwaitClones answers nil once every clone or copy chunk registered on f
+	// when it is called has ended, at once when none is, or ctx's error if
+	// ctx ends first. It holds nothing while it waits.
+	AwaitClones(ctx context.Context, f entity.FileID) error
 }
 
 // WriteOpts is what a write asks of the engine beside its bytes.

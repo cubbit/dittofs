@@ -381,6 +381,10 @@ var ErrStopped = errors.New("engine test: the clone stopped once registered")
 // it run on. A nil h removes the hook.
 func (e *Engine) SetAfterRegister(h func() error) { e.afterRegister = h }
 
+// SetAwaiting makes h run in each AwaitClones once it has read the clones it
+// waits for, before it waits. A nil h removes the hook.
+func (e *Engine) SetAwaiting(h func()) { e.awaiting = h }
+
 // SetCloneMarkerHook makes h run for each clone marker start step 3 finds,
 // standing in for the clone's rebuild.
 func (e *Engine) SetCloneMarkerHook(h cloneMarkerFunc) {
