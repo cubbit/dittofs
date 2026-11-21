@@ -149,7 +149,7 @@ func checkDirectory(tx entity.ControlPlaneTx, w settings.Write, r directory.Reco
 // Each side's write runs it against the other's stored value, so a write of
 // either is refused, naming the other.
 func checkNetBIOS(w settings.Write, value, other, otherValue string) error {
-	if value == "" || !equalFoldASCII(value, otherValue) {
+	if !equalFoldASCII(value, otherValue) {
 		return nil
 	}
 	return w.Refuse(fmt.Sprintf("%q is %s %q, ASCII letters folded; the installation's NetBIOS name "+
