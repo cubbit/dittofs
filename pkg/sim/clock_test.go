@@ -241,3 +241,21 @@ func TestJumpMovesOnlyTheWallClock(t *testing.T) {
 		t.Fatalf("Now = %v after the jumps and an Advance, want %v", got, want)
 	}
 }
+
+func TestArmedFiresOnALaterAfterOfItsDuration(t *testing.T) {
+	c := NewTestClock(start)
+	c.After(time.Second) // before Armed: not counted
+	armed := c.Armed(time.Second)
+	if fired(armed) {
+		t.Fatal("Armed(1s) closed by an After(1s) called before it, want only a later one")
+	}
+	c.After(2 * time.Second)
+	if fired(armed) {
+		t.Fatal("Armed(1s) closed by After(2s), want only an After(1s)")
+	}
+	c.After(time.Second)
+	if !fired(armed) {
+		t.Fatal("Armed(1s) still open after After(1s), want it closed")
+	}
+	c.After(time.Second) // a closed Armed is done with: a second After(1s) closes nothing twice
+}
