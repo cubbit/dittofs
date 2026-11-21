@@ -389,14 +389,14 @@ func (s *Server) bindPassword(ctx context.Context, ref entity.SecretRef) ([]byte
 // which would make a local NTLMv2 sign-in's domain name both.
 func (st *State) validate() error {
 	if err := st.Settings.Validate(); err != nil {
-		return err
+		return fmt.Errorf("identity: %w", err)
 	}
 	d := st.Directory
 	if d == nil {
 		return nil
 	}
 	if err := d.Validate(); err != nil {
-		return err
+		return fmt.Errorf("identity.directory: %w", err)
 	}
 	if equalFoldASCII(st.Settings.NetBIOSName, d.NetBIOSDomain) {
 		return fmt.Errorf("identity: netbios_name %q is identity.directory's netbios_domain %q", st.Settings.NetBIOSName, d.NetBIOSDomain)

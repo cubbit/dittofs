@@ -116,7 +116,7 @@ func DialTLS(ctx context.Context, rec Record) (Conn, error) {
 // connection it returns.
 func dialTLS(ctx context.Context, rec Record, ceiling time.Duration) (Conn, error) {
 	if err := rec.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("identity.directory: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, ceiling)
 	defer cancel()

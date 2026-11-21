@@ -29,6 +29,12 @@ func Put(s entity.Setting) Write {
 	}
 }
 
+// Refuse is a section's CheckTx refusing w by rule, printed as RFC 13 §6's
+// line naming w's scope and key, and matching ErrInvalid.
+func (w Write) Refuse(rule string) error {
+	return refuse(w.Scope, w.Key, rule, ErrInvalid)
+}
+
 // Delete is the removal of key's value at scope.
 func Delete(scope entity.SettingScope, key string) Write {
 	return Write{

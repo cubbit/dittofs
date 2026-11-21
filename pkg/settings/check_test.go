@@ -1277,3 +1277,31 @@ func TestCheckNodeWriteOverInstallation(t *testing.T) {
 		t.Errorf("node hi 20 under installation lo 50: err = %v, want ErrInvalid", err)
 	}
 }
+
+// A Write's Refuse reads as RFC 13 §6's line, naming the write's scope, the
+// node's ID among it, and key, and matches ErrInvalid alone.
+func TestWriteRefuse(t *testing.T) {
+	for _, c := range []struct {
+		w    settings.Write
+		want string
+	}{
+		{
+			settings.Put(setting(installation, "test.limit.max", "1")),
+			"setting (installation): test.limit.max: past the limit",
+		},
+		{
+			settings.Delete(nodeA, "test.port.port"),
+			"setting (node 3f2a0000000000000000000000000001): test.port.port: past the limit",
+		},
+	} {
+		err := c.w.Refuse("past the limit")
+		if got := err.Error(); got != c.want {
+			t.Errorf("Refuse of %s: line %q, want %q", c.w.Key, got, c.want)
+		}
+
+		if !errors.Is(err, settings.ErrInvalid) || errors.Is(err, settings.ErrForbidden) {
+			t.Errorf("Refuse of %s: %v matches ErrInvalid %t, ErrForbidden %t; want ErrInvalid only",
+				c.w.Key, err, errors.Is(err, settings.ErrInvalid), errors.Is(err, settings.ErrForbidden))
+		}
+	}
+}

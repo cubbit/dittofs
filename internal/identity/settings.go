@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -50,7 +51,55 @@ func defaultSettings() Settings {
 // Section declares the identity section for the node's settings table.
 func Section() settings.Section {
 	return settings.Of("identity", settings.At(entity.ScopeInstallation), defaultSettings(),
-		settings.SecretRef("Keytab", entity.SecretKeytab))
+		settings.SecretRef("Keytab", entity.SecretKeytab),
+		settings.CheckTx(checkSettings))
+}
+
+// checkSettings is the identity section's write check, run inside the
+// write's transaction on the section the write leaves. A write of id_range,
+// a put or a delete back to the default, is refused when the range's high end
+// is at or below the uid or the gid counter's high-water mark: the counters
+// never fall, so the next uid or gid, past the mark, would lie past the high
+// end, and every later create drawing one would fail. A write of
+// netbios_name is refused when it equals the directory record's NetBIOS
+// domain, read tracked. A write of any other key passes unread, so a range
+// already used up never refuses one.
+//
+// decision: the marks are checked at the write only, never again at Apply,
+// since a second answer read later could refuse a range the write committed
+// and leave the API's range and the server's apart. The check is advisory
+// against a create that read the previous range before the write committed:
+// that create can still raise a counter past the new high end, and the next
+// create then fails as from an exhausted range until the range is widened.
+// Making it exact would take every create carrying the settings generation it
+// read its range at, conflicting with every setting change; worth it only if
+// such a race is ever seen outside a test.
+func checkSettings(tx entity.ControlPlaneTx, w settings.Write, s Settings) error {
+	if w.Key == keyNetBIOSName {
+		domain, _, err := settingString(tx, keyNetBIOSDomain)
+		if err != nil {
+			return err
+		}
+		return checkNetBIOS(w, s.NetBIOSName, keyNetBIOSDomain, domain)
+	}
+	if w.Key != "identity.id_range" {
+		return nil
+	}
+	uid, gid, err := tx.IDHighWater()
+	if err != nil {
+		return fmt.Errorf("identity: read the ID high-water marks: %w", err)
+	}
+	for _, m := range []struct {
+		kind string
+		mark uint32
+	}{{"uid", uid}, {"gid", gid}} {
+		if s.IDRange.Hi <= m.mark {
+			return w.Refuse(fmt.Sprintf("high end %d is at or below the last %s allocated, %d, "+
+				"so no further %s could be drawn from it; set a high end above %d",
+				s.IDRange.Hi, m.kind, m.mark, m.kind, m.mark))
+		}
+	}
+	return nil
 }
 
 // DirectorySection declares the identity.directory section, the directory
@@ -67,30 +116,82 @@ func DirectorySection() settings.Section {
 		directory.Record{Schema: directory.SchemaAD},
 		settings.Required("Address"),
 		settings.WriteRole(entity.RoleAdmin),
-		settings.SecretRef("BindCredential", entity.SecretDirectoryCredential))
+		settings.SecretRef("BindCredential", entity.SecretDirectoryCredential),
+		settings.CheckTx(checkDirectory))
+}
+
+// The two keys the NetBIOS rule relates, one in each identity section.
+const (
+	keyNetBIOSName   = "identity.netbios_name"
+	keyNetBIOSDomain = "identity.directory.netbios_domain"
+)
+
+// checkDirectory is the directory section's write check: a write of the
+// record's NetBIOS domain reads identity.netbios_name in the write's
+// transaction, tracked, and refuses a domain equal to it.
+func checkDirectory(tx entity.ControlPlaneTx, w settings.Write, r directory.Record) error {
+	if w.Key != keyNetBIOSDomain {
+		return nil
+	}
+	name, found, err := settingString(tx, keyNetBIOSName)
+	if err != nil {
+		return err
+	}
+	if !found {
+		name = defaultSettings().NetBIOSName
+	}
+	return checkNetBIOS(w, r.NetBIOSDomain, keyNetBIOSName, name)
+}
+
+// checkNetBIOS refuses w, writing value, when value equals otherValue, the
+// stored value of the key other, with ASCII letters folded, as Apply refuses the two in one State: a local
+// NTLMv2 sign-in's domain would name both the installation and the directory.
+// Each side's write runs it against the other's stored value, so a write of
+// either is refused, naming the other.
+func checkNetBIOS(w settings.Write, value, other, otherValue string) error {
+	if value == "" || !equalFoldASCII(value, otherValue) {
+		return nil
+	}
+	return w.Refuse(fmt.Sprintf("%q is %s %q, ASCII letters folded; the installation's NetBIOS name "+
+		"and the directory's NetBIOS domain must differ", value, other, otherValue))
+}
+
+// settingString is the string the installation's row of key holds, read
+// tracked in tx; false when no row is stored.
+func settingString(tx entity.ControlPlaneTx, key string) (string, bool, error) {
+	row, found, err := tx.Setting(entity.SettingScope{Kind: entity.ScopeInstallation}, key)
+	if err != nil || !found {
+		return "", false, err
+	}
+	var v string
+	if err := json.Unmarshal(row.Value, &v); err != nil {
+		return "", false, fmt.Errorf("identity: read %s: %w", key, err)
+	}
+	return v, true, nil
 }
 
 // Validate refuses a range whose low end is above its high end, a negative
 // stale grace, and a NetBIOS name that is empty, longer than 15 bytes or
-// holds a byte outside [A-Z0-9-].
+// holds a byte outside [A-Z0-9-], each error naming the field, since the
+// settings check prints it after the section's own name.
 func (s Settings) Validate() error {
 	if s.IDRange.Lo > s.IDRange.Hi {
-		return fmt.Errorf("identity: id_range low end %d above high end %d", s.IDRange.Lo, s.IDRange.Hi)
+		return fmt.Errorf("id_range: low end %d above high end %d", s.IDRange.Lo, s.IDRange.Hi)
 	}
 	if s.DirectoryStaleGrace < 0 {
-		return fmt.Errorf("identity: directory_stale_grace %v is negative", s.DirectoryStaleGrace)
+		return fmt.Errorf("directory_stale_grace: %v is negative", s.DirectoryStaleGrace)
 	}
 	if s.NetBIOSName == "" {
-		return errors.New("identity: netbios_name is empty")
+		return errors.New("netbios_name: empty")
 	}
 	if len(s.NetBIOSName) > maxNetBIOSName {
-		return fmt.Errorf("identity: netbios_name %q is longer than %d bytes", s.NetBIOSName, maxNetBIOSName)
+		return fmt.Errorf("netbios_name: %q is longer than %d bytes", s.NetBIOSName, maxNetBIOSName)
 	}
 	for i := range len(s.NetBIOSName) {
 		c := s.NetBIOSName[i]
 		upper, digit := 'A' <= c && c <= 'Z', '0' <= c && c <= '9'
 		if !upper && !digit && c != '-' {
-			return fmt.Errorf("identity: netbios_name %q holds %q, outside [A-Z0-9-]", s.NetBIOSName, c)
+			return fmt.Errorf("netbios_name: %q holds %q, outside [A-Z0-9-]", s.NetBIOSName, c)
 		}
 	}
 	return nil
