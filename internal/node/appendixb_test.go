@@ -314,6 +314,32 @@ func tableStore(t *testing.T) *kvstore.Store {
 // probeNode is the node the check reads a table for.
 var probeNode = entity.NodeID{0xa9, 15: 1}
 
+// sectionSeeds is the smallest set of rows under which Read accepts every
+// section of the node's table whose defaults alone it refuses: one with a
+// required key, which has no default.
+var sectionSeeds = []entity.Setting{
+	{Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
+		Key: "identity.directory.address", Value: []byte(`"ldaps://dc.example.test"`)},
+}
+
+// putBeneathCheck writes row straight to the store at the current schema,
+// as no write through Check could, to stand up a section or plant a value.
+func putBeneathCheck(t *testing.T, st *kvstore.Store, row entity.Setting) {
+	t.Helper()
+	row.Schema = settings.Versions()[entity.FormatSettings].Max
+	err := st.ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		cur, _, err := tx.Setting(row.Scope, row.Key)
+		if err != nil {
+			return err
+		}
+		_, err = tx.PutSetting(row, cur.Generation)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("write %s beneath the check: %v", row.Key, err)
+	}
+}
+
 // tableKey is one key the table declares, as the check reads it.
 type tableKey struct {
 	settings.Change
@@ -325,25 +351,30 @@ type tableKey struct {
 // surface only.
 //
 // decision: the table exports no list of its keys, so they are read as
-// Diff(nil, Read over an empty store) lists them, each with its section,
-// class and base scope, and each key's scope form and write role are probed
-// with Check: a delete at each of the five scope kinds, refused with
-// ErrWrongScope or not, and an operator's delete at its base scope, refused
-// with ErrForbidden or not. Diff lists no key of a section whose base names
-// no instance (one per share, namespace or remote store, or per thing) or
-// whose defaults Read refuses, so the check fails when it reaches fewer
-// sections than the table holds rather than skip one; an At and a PerThing
+// Diff(nil, Read over a store holding only sectionSeeds) lists them, each
+// with its section, class and base scope, and each key's scope form and
+// write role are probed with Check: a delete at each of the five scope
+// kinds, refused with ErrWrongScope or not, and an operator's delete at its
+// base scope, refused with ErrForbidden or not. Diff lists no key of a
+// section whose base names no instance (one per share, namespace or remote
+// store, or per thing) or whose value Read refuses, so the check fails when
+// Read refuses a section, naming it for a seed, and when it reaches fewer
+// sections than the table holds, rather than skip one; an At and a PerThing
 // at one scope accept the same kind, so the probe cannot tell them apart.
 // Add a Table.Keys() export, or seed a row per instance, when a section
 // the probe cannot reach is declared.
 func tableKeys(t *testing.T, st *kvstore.Store, tb settings.Table) []tableKey {
 	t.Helper()
+	for _, row := range sectionSeeds {
+		putBeneathCheck(t, st, row)
+	}
 	snap, refused, err := settings.Read(t.Context(), st.Nodes(), tb, probeNode)
 	if err != nil {
 		t.Fatalf("read the table's defaults: %v", err)
 	}
 	for sec, err := range refused {
-		t.Fatalf("section %s: its defaults are refused, so the check cannot list its keys: %v", sec, err)
+		t.Fatalf("section %s: Read refuses it, so the check cannot list its keys; "+
+			"give it a row in sectionSeeds: %v", sec, err)
 	}
 	changes := settings.Diff(nil, snap)
 	var sections []string
@@ -417,11 +448,26 @@ var classNames = map[settings.Class]string{
 	settings.Bound:     "bound",
 }
 
+// adminByRoute is each key Appendix B writes by admin only whose section the
+// table declares at the operator role, each with the API's gate that holds
+// it to admin instead.
+//
+// decision: these two keys share the identity section with keys an operator
+// writes, and a section has one write role, so the API holds them to admin
+// in its own routes, where this check cannot see: it accepts exactly this
+// disagreement for them, and fails once the table and Appendix B agree on
+// one, so the entry goes with the gap. Withdraw an entry when its key moves
+// to a section declared at the admin role.
+var adminByRoute = map[string]string{
+	"identity.ntlm":   "internal/node/api/ntlm.go: only an admin writes identity.ntlm",
+	"identity.keytab": "internal/node/api/res_settings.go ownKeys: written only by PUT /api/v1/installation/keytab, an admin's",
+}
+
 // compareAppendixB compares the table's keys with Appendix B's rows, each
 // key's scope, class and write role, and returns every disagreement, each
 // naming its key, as failures; an Appendix B key under a section's prefix
 // that the section does not declare comes back in reported, and is not a
-// failure.
+// failure. A key with no row of its own is held by a row naming its section.
 func compareAppendixB(t *testing.T, rows []appendixRow, tb settings.Table) (failures, reported []string) {
 	t.Helper()
 	byKey := make(map[string]appendixRow)
@@ -442,7 +488,13 @@ func compareAppendixB(t *testing.T, rows []appendixRow, tb settings.Table) (fail
 			sections = append(sections, k.Section)
 		}
 
+		// A row naming a whole section, as identity.directory names the
+		// directory record, holds each of the section's keys.
 		r, ok := byKey[k.Key]
+		if !ok {
+			r, ok = byKey[k.Section]
+			declared[k.Section] = ok
+		}
 		if !ok {
 			failures = append(failures, fmt.Sprintf("%s: declared by the table, no Appendix B row", k.Key))
 			continue
@@ -455,7 +507,12 @@ func compareAppendixB(t *testing.T, rows []appendixRow, tb settings.Table) (fail
 			failures = append(failures, fmt.Sprintf("%s (line %d): class %q, Appendix B's %q",
 				k.Key, r.line, got, r.class))
 		}
-		if k.adminOnly != r.admin {
+		switch _, gated := adminByRoute[k.Key]; {
+		case gated && (k.adminOnly || !r.admin):
+			failures = append(failures, fmt.Sprintf("%s (line %d): admin only by its route, but the table "+
+				"(admin only %v) and Appendix B (%v) no longer disagree; drop it from adminByRoute",
+				k.Key, r.line, k.adminOnly, r.admin))
+		case !gated && k.adminOnly != r.admin:
 			failures = append(failures, fmt.Sprintf("%s (line %d): written by admin only %v, Appendix B's %v",
 				k.Key, r.line, k.adminOnly, r.admin))
 		}
@@ -540,7 +597,7 @@ func TestAppendixBDriftFails(t *testing.T) {
 			api,
 			settings.Of("audit", settings.At(entity.ScopeInstallation), apisettings.AuditDefaults()),
 		}, "audit.retention"},
-		{"a scope cell edited to cluster", cluster, newTable(), "audit.retention"},
+		{"a scope cell edited to cluster", cluster, settings.Table{api, audit}, "audit.retention"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rows, err := parseAppendixB(tc.text)
@@ -606,17 +663,7 @@ func refLeaks(t *testing.T, tb settings.Table) []string {
 			if !errors.Is(err, settings.ErrSecretRef) {
 				continue
 			}
-			err = cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-				cur, _, err := tx.Setting(row.Scope, row.Key)
-				if err != nil {
-					return err
-				}
-				_, err = tx.PutSetting(row, cur.Generation)
-				return err
-			})
-			if err != nil {
-				t.Fatalf("write %s beneath the check: %v", k.Key, err)
-			}
+			putBeneathCheck(t, st, row)
 			refs[k.Section] = append(refs[k.Section], k.Key)
 			break
 		}
