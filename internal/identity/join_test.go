@@ -443,9 +443,10 @@ func TestOnlineJoinEndWritesBoth(t *testing.T) {
 	}
 }
 
-// An End whose cursor names an account identity.netbios_name's rule refuses
-// fails the join and writes neither Join nor the name.
-func TestOnlineJoinEndRefusesAnInvalidName(t *testing.T) {
+// A confirm whose cursor names an account identity.netbios_name's rule
+// refuses fails the join and records it: not joined, the failure marked, and
+// the name not written.
+func TestOnlineJoinConfirmRefusesAnInvalidName(t *testing.T) {
 	fx := newMachine(t)
 	op := fx.joinOp(t, apiv1.JoinDomainSpec{Account: "NAS"}, true)
 	fx.until(t, op, "confirm")
@@ -458,16 +459,12 @@ func TestOnlineJoinEndRefusesAnInvalidName(t *testing.T) {
 	if op.Step, err = json.Marshal(c); err != nil {
 		t.Fatal(err)
 	}
-	res, err := step.Run(context.Background(), fx.s.JoinStep, *op)
-	if err != nil || res.End == nil {
-		t.Fatalf("last turn: err %v; want done with an End", err)
+	fx.wantFailed(t, op, "identity.netbios_name")
+	if j := fx.join(t); j.Joined || !j.LastRotation.Failed {
+		t.Errorf("join %+v after the confirm refused the name, want not joined, failed", j)
 	}
-	err = fx.cp.Write(context.Background(), entity.WriteMeta{}, res.End)
-	if _, ended := step.Failure(err); !ended {
-		t.Errorf("End's write: %v, want the join failed", err)
-	}
-	if name, ok := fx.netbiosName(t); ok || fx.join(t).Joined {
-		t.Errorf("after the refused End: joined %v, identity.netbios_name %q; want neither written", fx.join(t).Joined, name)
+	if name, ok := fx.netbiosName(t); ok {
+		t.Errorf("identity.netbios_name %q written, want unwritten", name)
 	}
 }
 

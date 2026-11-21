@@ -524,13 +524,18 @@ func (j *joining) create(ctx context.Context) error {
 	return nil
 }
 
-// confirm asks the pinned controller whether it accepts the sealed version,
-// failing the join if not, then reads the account: a key version number
-// other than the tag is logged and counted. The join ends writing Join, joined,
-// and the account's name as identity.netbios_name in one transaction.
+// confirm fails the join if the account's name breaks identity.netbios_name's
+// rule, which a settings write validates, then asks the pinned controller
+// whether it accepts the sealed version, failing the join if not, and reads
+// the account: a key version number other than the tag is logged and counted.
+// The join ends writing Join, joined, and the account's name as
+// identity.netbios_name in one transaction.
 func (j *joining) confirm(ctx context.Context) (step.StepResult, error) {
 	ctx, done := j.s.bounded(ctx)
 	defer done()
+	if err := validNetBIOSName(j.c.Account); err != nil {
+		return step.StepResult{}, j.fail(ctx, http.StatusConflict, fmt.Sprintf("identity.netbios_name %v", err))
+	}
 	dc, accepted, err := j.probe(ctx)
 	if err != nil {
 		return step.StepResult{}, err
@@ -576,11 +581,6 @@ func (j *joining) confirm(ctx context.Context) (step.StepResult, error) {
 		if err := tx.SetMachineJoin(jn); err != nil {
 			return err
 		}
-		// The account's name is written as identity.netbios_name only when
-		// it keeps that setting's rule, which a settings write validates.
-		if err := validNetBIOSName(c.Account); err != nil {
-			return fmt.Errorf("%w: identity.netbios_name %w", step.ErrStepFailed, err)
-		}
 		scope := entity.SettingScope{Kind: entity.ScopeInstallation}
 		old, _, err := tx.Setting(scope, netbiosNameKey)
 		if err != nil {
@@ -620,8 +620,10 @@ func (j *joining) noAnswer(ctx context.Context, err error) error {
 // no longer holds. A failure before it (a refused request, an existing
 // account, no controller answering) has changed nothing, so it writes
 // nothing. A joined installation reaches a join only as its takeover, since
-// the API and the join's first turn refuse any other. Overturned if a
-// failure before the seal can change what the installation holds.
+// the API and the join's first turn refuse any other. Every failure of the
+// join, the confirm's refusal of the account's name among them, ends here, so
+// none rolls back without the record. Overturned if a failure before the seal
+// can change what the installation holds.
 func (j *joining) fail(ctx context.Context, status int, detail string) error {
 	if j.c.Version == 0 {
 		return joinProblem(status, "", detail)
