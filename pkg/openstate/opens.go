@@ -234,6 +234,10 @@ type Opens interface {
 	// open's; zero and nil for one made by handle, or for a reference
 	// naming no open. It changes nothing.
 	Entry(ctx context.Context, who Caller, f FileKey, o OpenRef) (dir entity.FileID, name []byte, err error)
+	// Suspended is the times the open o of f names leaves alone, or a lock
+	// state's open's, which a write through it passes on (§2.2); zero for a
+	// reference naming no open. It changes nothing.
+	Suspended(ctx context.Context, who Caller, f FileKey, o OpenRef) (entity.TimeMask, error)
 	// Downgrade narrows an open's access and deny to masks within them, and
 	// returns the open's new reference sequence.
 	Downgrade(ctx context.Context, who Caller, o OpenRef, q Seqs, access, deny entity.AccessMask) (seq uint32, err error)
@@ -798,6 +802,22 @@ func (v opens) Entry(ctx context.Context, who Caller, f FileKey, o OpenRef) (ent
 		return err
 	})
 	return dir, name, err
+}
+
+func (v opens) Suspended(ctx context.Context, who Caller, f FileKey, o OpenRef) (entity.TimeMask, error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return 0, err
+	}
+	var times entity.TimeMask
+	err := t.step(f.ID, func(e *entry) error {
+		op, _, _, err := t.lockTarget(e, who, o)
+		if op != nil {
+			times = op.Suspended
+		}
+		return err
+	})
+	return times, err
 }
 
 // addOpen adds o, a new open of f, to e under its step, its shard already
