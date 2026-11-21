@@ -244,7 +244,8 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	if err != nil {
 		return nil, err
 	}
-	n := &Node{cfg: cfg, rec: newReconciler(newTable()), sweep: newSweeper()}
+
+	n := &Node{cfg: cfg, rec: newReconciler(newTable(), newReaches()), sweep: newSweeper()}
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		// decision: over Badger a store whose first key has one of v1's
 		// prefixes is v1's, the only program that wrote one at
