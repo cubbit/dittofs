@@ -163,8 +163,8 @@ func sealAndRetire(t *testing.T, c *Core, f core.FileID, seg core.SegmentID) {
 // headroom credit: a loss record a running journal appends at its limit draws
 // on the headroom, and retiring the segment it landed in gives that draw
 // back, so HeadroomBytes is whole again. A loss record an open appends on the
-// open reserve, once the drawing side is spent, credits nothing when its
-// segment retires.
+// open reserve, once the drawing side is spent, is credited back when its
+// segment retires, to the open reserve first (RFC 1 section 6).
 func TestRetirementCreditsALossRecordsDraw(t *testing.T) {
 	t.Run("drawing side", func(t *testing.T) {
 		c, _, s, _ := atTheLimit(t)
@@ -180,6 +180,9 @@ func TestRetirementCreditsALossRecordsDraw(t *testing.T) {
 		}
 	})
 	t.Run("open reserve", func(t *testing.T) {
+		// Synthetic: an AtOpen loss on a running core whose headroom was
+		// drained; recovery runs on an empty ledger, so production reaches
+		// the reserve only when an open's loss meets a ledger already spent.
 		c, _, s, _ := atTheLimit(t)
 		drainHeadroom(t, c, s)
 		lost := testFile(5)
@@ -194,8 +197,13 @@ func TestRetirementCreditsALossRecordsDraw(t *testing.T) {
 			t.Fatalf("Spent = %d after an open's loss on the reserve, want %d", got, spent+capacity.RecordCharge)
 		}
 		sealAndRetire(t, c, lost, seg)
-		if got := c.headroom.Spent(); got != spent+capacity.RecordCharge {
-			t.Fatalf("Spent = %d once the reserve loss's segment %d retired, want %d: a reserve draw credits nothing", got, seg, spent+capacity.RecordCharge)
+		if got := c.headroom.Spent(); got != spent {
+			t.Fatalf("Spent = %d once the reserve loss's segment %d retired, want %d: the reserve draw credited back to the open reserve", got, seg, spent)
+		}
+		// The credit refilled the open reserve, not the drawing side, which
+		// the drain left spent.
+		if got := c.Stats().HeadroomBytes; got != 0 {
+			t.Fatalf("HeadroomBytes = %d once the reserve draw was credited, want 0: the open reserve refills first", got)
 		}
 	})
 }
