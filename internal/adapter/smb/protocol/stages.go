@@ -29,12 +29,14 @@ var (
 //
 // decision: a header is a view of its record, one pointer to its 64 bytes, so
 // handing it to core as a core.Header allocates nothing. It is valid while the
-// record's Buf is retained, which core does for a request's life. A member
+// record's Buf is retained, which core does for a request's life but a park's:
+// that it releases once the handler returns ErrParked, having taken Final's
+// header, which must not point into the record (RFC 20 section 4.7). A member
 // past the first carries its offset besides, since NextCommand counts from its
 // own header and Next from the record's start; writing the offset into the
 // protocol ID, already checked, would allocate nothing but change bytes a
 // signature covers. Withdraw the view, and copy the fields out, if core ever
-// releases a record before its request ends.
+// reads a header after it releases the record.
 type header struct{ h *wire.Header }
 
 func (v header) Op() uint32 { return uint32(v.h.Command()) }

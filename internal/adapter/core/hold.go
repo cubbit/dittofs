@@ -723,11 +723,9 @@ func (p *pipeline) parkDone(pd *pending, err error) {
 // parked member is the last; otherwise its record goes with its request's
 // goroutine or its chain. A done that came before is answered now.
 //
-// decision: a park's record goes here, once the handler returns ErrParked,
-// not inside Park as §4.7 says, since a handler copies out of its decoded
-// arguments what done needs after Park returns, a refused Park needing no
-// copy. Withdraw it if §4.7 keeps the release in Park and every handler
-// copies before it calls Park.
+// A park's record goes here, once the handler returns ErrParked, as §4.7 has
+// it: a handler copies out of its decoded arguments what done needs after
+// Park returns, and a refused Park needs no copy.
 func (p *pipeline) parked(pd *pending, release func()) bool {
 	pd.mu.Lock()
 	pk := pd.park

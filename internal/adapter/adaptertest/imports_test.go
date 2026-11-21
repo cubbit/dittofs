@@ -98,9 +98,8 @@ func forbidden(dir, file, imp string) string {
 	case test:
 		// A test file outside the adapters is held only to the pkg/ rule below.
 		//
-		// decision: it may import an implementation from outside pkg/, though
-		// RFC 20 §2.5 names no test files, since it never reaches a binary's
-		// build. Withdraw it if a package of test helpers outside
+		// decision: it may import an implementation from outside pkg/, since
+		// it never reaches a binary's build. Withdraw it if a package of test helpers outside
 		// internal/adapter imports an implementation and non-test code
 		// imports that package.
 	case dir == "pkg/adapter/settings":

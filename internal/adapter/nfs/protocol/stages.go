@@ -42,8 +42,10 @@ var (
 // handing it to core as a core.Header allocates nothing, and each call has its
 // own, which the calls core runs at once on one connection read apart. It is
 // valid while the record's Buf is retained, which core does for a request's
-// life. Withdraw the view, and copy the fields out, if core ever releases a
-// record before its request ends.
+// life but a park's: that it releases once the handler returns ErrParked,
+// having taken Final's header, which must not point into the record (RFC 20
+// section 4.7). Withdraw the view, and copy the fields out, if core ever reads
+// a header after it releases the record.
 type header struct{ rec *resources.Buf }
 
 func (h header) call() wire.Call { return wire.Call(h.rec.B) }
