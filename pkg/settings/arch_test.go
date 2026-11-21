@@ -15,7 +15,7 @@ import (
 
 // frozenExports is pkg/settings' surface as RFC 13's configuration freeze
 // leaves it: the binding classes, the scope forms, Of and its options, the
-// table, the snapshot and its reads, the write and its check, and the
+// table, the snapshot and its reads, the write, its refusal and its check, and the
 // errors. A change here is a change to the frozen surface.
 var frozenExports = []string{
 	"type Class uint8",
@@ -50,6 +50,7 @@ var frozenExports = []string{
 	"type Write struct{Scope entity.SettingScope; Key string}",
 	"func Put(s entity.Setting) Write",
 	"func Delete(scope entity.SettingScope, key string) Write",
+	"func (Write).Refuse(rule string) error",
 	"type HoldsContent func(scope entity.SettingScope) (bool, error)",
 	"var ErrBound error",
 	"var ErrForbidden error",

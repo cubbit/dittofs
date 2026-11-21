@@ -333,7 +333,7 @@ func OverrideOnly(fields ...string) Option {
 // transaction on the effective value the write leaves, which reads store
 // state beyond settings through tx's tracked reads. It is handed the write so
 // it can return at once for a key it does not guard. Its error is returned as
-// it is, so its author words the refusal: a refusal wraps ErrInvalid, and a
+// it is, so its author words the refusal: a refusal is the Write's Refuse, and a
 // store error met while reading wraps none of the errors Check returns, so a
 // failing store is never counted as a refused value.
 func CheckTx[T any](check func(tx entity.ControlPlaneTx, w Write, effective T) error) Option {
