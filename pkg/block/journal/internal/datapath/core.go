@@ -585,11 +585,12 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		Latest: c.latestRecord,
 		// The read-only probe runs the open's own check, then makes its one
 		// spare through the maker rather than the pool, whose refill refuses
-		// while the journal is read-only. The spare stays on disk for the
-		// reopen to adopt; the maker is built below, before d.Start.
+		// while the journal is read-only, with one cap of room past the
+		// maximum (see MakeOverMax). The spare stays on disk for the reopen
+		// to adopt; the maker is built below, before d.Start.
 		Check: deps.Check,
 		MakeSpare: func() error {
-			_, err := maker.Make()
+			_, err := maker.MakeOverMax()
 			return err
 		},
 	})

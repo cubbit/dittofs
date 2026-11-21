@@ -5,6 +5,7 @@ import (
 	"errors"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
@@ -125,5 +126,55 @@ func TestReadOnlySyncAnswersAsRFC1Says(t *testing.T) {
 	}
 	if marks, err := h.Sync(ctx); err != nil {
 		t.Errorf("a Sync naming no file returned %v and marks %v, want nil", err, marks)
+	}
+}
+
+// TestReadOnlyProbeMakesItsSpareAtTheMaximum checks that the read-only probe
+// of a journal filled to its maximum still makes the reopen's spare once the
+// device takes writes again (RFC 1 §5.4): a full journal lives off
+// recycling, so a spare held to the maximum could never be made and the
+// journal would stay read-only after the device recovered. The reopen then
+// serves what the journal held.
+func TestReadOnlyProbeMakesItsSpareAtTheMaximum(t *testing.T) {
+	f := journaltest.NewWith(t, func(s *journal.Settings) { s.MaxBytes = 8 * journaltest.FixtureSegmentCap })
+	h := f.Share(0)
+	ctx := t.Context()
+	chunk := make([]byte, journaltest.FixtureSegmentCap/2)
+	var last journal.FileID
+	for i := 0; ; i++ {
+		id := journaltest.File(i)
+		if _, err := h.WriteAt(ctx, id, 0, chunk, 1); err != nil {
+			var ns *journal.NoSpaceError
+			if !errors.As(err, &ns) {
+				t.Fatalf("write %d returned %v, want the journal filled to a NoSpaceError", i, err)
+			}
+			break
+		}
+		if _, err := h.Sync(ctx, id); err != nil {
+			t.Fatalf("Sync of write %d: %v", i, err)
+		}
+		last = id
+	}
+
+	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*", 0, syscall.EROFS)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if _, err := h.Truncate(ctx, last, 1); !errors.Is(err, journal.ErrJournalReadOnly) {
+		t.Fatalf("the truncate whose wait met EROFS returned %v, want ErrJournalReadOnly", err)
+	}
+	waitUntil(t, "the journal to turn read-only", func() bool { return f.J.Stats().ReadOnly.ReadOnly })
+
+	// The probe arms its timer on its own goroutine; the interval itself is
+	// pinned by the datapath and durability probe tests.
+	f.Seam.SetFault(nil)
+	waitUntil(t, "the probe to make its spare at the maximum", func() bool {
+		f.Advance(30 * time.Second)
+		return f.J.Stats().ReadOnly.SpareMade
+	})
+
+	f.Crash()
+	p := make([]byte, 1)
+	if _, missing, _, _, err := f.Share(0).ReadAt(ctx, last, 0, p); err != nil || len(missing) != 0 {
+		t.Fatalf("a read after the reopen returned missing %v, %v; want the write held", missing, err)
 	}
 }
