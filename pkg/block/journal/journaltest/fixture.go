@@ -266,6 +266,9 @@ func (f *Fixture) mountProbe(dir string) (storage.Probe, error) {
 // journals, the open's and the read-only probe's, refuse the directory as a
 // mount without cache flushes while on holds, as a device remounted that way
 // would; false makes the mount suitable again. It is safe from any goroutine.
+// It acts on the fixture's own mount probe only: a fixture given its own
+// WithMountProbe option checks that probe instead, and this then changes
+// nothing.
 func (f *Fixture) SetMountUnsuitable(on bool) { f.unsuitable.Store(on) }
 
 // takeSparesWait is the callback Open hands the spare-pool wait of the journal
