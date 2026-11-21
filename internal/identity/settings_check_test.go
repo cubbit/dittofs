@@ -145,6 +145,31 @@ func TestCheckRefusesDeadIDRange(t *testing.T) {
 	refused("used up", idRange(1_000_000, 1_000_007))
 }
 
+// IDHighWater's read of the counters is tracked: a uid drawn between it and
+// the commit of a settings write retries that write.
+func TestIDHighWaterReadTracked(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	st := newStore(t)
+	attempts := 0
+	err := st.ControlPlane().Write(context.Background(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		attempts++
+		if _, _, err := tx.IDHighWater(); err != nil {
+			return err
+		}
+		if attempts == 1 {
+			allocate(t, st, 1, false, entity.DefaultIDRange)
+		}
+		_, err := tx.PutSetting(entity.Setting{Scope: installationScope, Key: "identity.ntlm", Value: []byte("false")}, 0)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("settings write: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts of the settings write = %d, want 2: a uid drawn after IDHighWater must retry it", attempts)
+	}
+}
+
 // The gid counter's mark refuses a range alone, the uid counter never drawn.
 func TestCheckRefusesIDRangeBelowGIDMark(t *testing.T) {
 	prof.Watch(t, prof.Options{})
