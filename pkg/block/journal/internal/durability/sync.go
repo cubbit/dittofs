@@ -478,6 +478,23 @@ type Durability struct {
 	done chan struct{}
 	stop sync.Once
 	wg   sync.WaitGroup
+
+	// dead marks an instance whose unread piece claims retire: set as Stop
+	// begins, before the workers join, for past that point no reader can
+	// reach the ring any more. A claim one of its Loses took in the
+	// registry's pieces then holds only as far as the reach below says a
+	// reader got, so a later open of the journal takes the pieces over
+	// whose events reached no reader and re-reports the losses they name.
+	dead atomic.Bool
+
+	// servedThrough is the event number a reader's copy of this instance's
+	// ring last reached, zero while no reader took a non-empty copy away.
+	// A reader that carries event N off has answered every loss up to it,
+	// so a dead instance's claim on the loss event E published holds only
+	// while servedThrough >= E; a loss that published no event of its own
+	// — a reported loss, whose report another of the instance's events
+	// carried — is answered with the reach alone, zero saying nothing was.
+	servedThrough atomic.Uint64
 }
 
 // New returns a Durability. A nil Clock, Domains, Index, Counters or MarkLoss is a
@@ -686,6 +703,13 @@ type stream struct {
 
 	// corrupt are the corrupt records' losses Corrupt handed to the worker.
 	corrupt []corruptJob
+	// corruptFiles counts, per file, the corrupt jobs queued or running on
+	// this stream whose loss records are not appended and synced yet. A
+	// Sync naming the file waits the count out, so its durable answer covers
+	// the drops the reads of a caller's goroutine already handed over. A
+	// job's count leaves its file once the job's Lose returned, its append
+	// and sync inside, and the waiter wakes on the notify that step makes.
+	corruptFiles map[core.FileID]int
 	// owed holds, per failed segment whose window is not taken yet, the files
 	// Corrupt took a record of out of the ledger: the window takeWindow makes
 	// for the segment marks them, so they are told as if it had failed them.
@@ -722,17 +746,18 @@ type stream struct {
 
 func newStream(d *Durability, no uint32) *stream {
 	return &stream{
-		d:       d,
-		no:      no,
-		live:    map[core.SegmentID]struct{}{},
-		synced:  map[core.SegmentID]int64{},
-		failed:  map[core.SegmentID]error{},
-		ending:  map[core.SegmentID]struct{}{},
-		counted: map[core.SegmentID]struct{}{},
-		lost:    map[segment.Location]lostRecord{},
-		moved:   map[segment.Location]segment.Location{},
-		kick:    make(chan struct{}, 1),
-		buckets: make([]atomic.Uint64, len(SyncDurationBounds)+1),
+		d:            d,
+		no:           no,
+		live:         map[core.SegmentID]struct{}{},
+		synced:       map[core.SegmentID]int64{},
+		failed:       map[core.SegmentID]error{},
+		ending:       map[core.SegmentID]struct{}{},
+		counted:      map[core.SegmentID]struct{}{},
+		lost:         map[segment.Location]lostRecord{},
+		moved:        map[segment.Location]segment.Location{},
+		corruptFiles: map[core.FileID]int{},
+		kick:         make(chan struct{}, 1),
+		buckets:      make([]atomic.Uint64, len(SyncDurationBounds)+1),
 	}
 }
 
@@ -995,11 +1020,35 @@ func (d *Durability) pushRingLocked(ev core.LossEvent) core.LossEvent {
 }
 
 // lossesLocked returns a copy of this instance's ring, oldest first, the
-// caller holding lmu.
+// caller holding lmu. A read that takes events away records the number its
+// copy reached as the instance's served-through frontier: the losses it
+// held were answered, so the piece claims their Loses hold in the
+// registry's pieces survive the instance as far as that. A read of an
+// empty ring serves nothing, and the frontier does not move.
+//
+// decision: a genuine client read of the ring — the Stats Part a poll
+// consumes, the engine's loss drain — advances the served-through
+// frontier and keeps the piece claims alive past their instance as far
+// as each claim's own event, and the per-write/commit generation and
+// read-only readers reach here no longer: the journal's LossGeneration
+// and ReadOnlyState accessors serve them alone. The internal figure
+// readers that still build a Part — an engine's shares discovery and
+// sweeps, a per-refusal reserve figure, the repack ladder's figures,
+// the journal-full note — advance it too: they run at maintenance
+// frequency, and the error's direction is fail-safe, for a claim held
+// too long only suppresses a re-report, it never publishes anything
+// twice. Overturned by a production case where a figure read precedes a
+// crash and a loss a client would have relayed on went un-republished at
+// the reopen: those readers then take accessors of their own figures too.
 func (d *Durability) lossesLocked() []core.LossEvent {
 	out := make([]core.LossEvent, d.count)
 	for i := range out {
 		out[i] = d.ring[(d.head+i)%core.LossRingSize]
+	}
+	if d.count > 0 {
+		// The copy holds every event the ring held, so the reader reached
+		// the newest number this instance ever issued.
+		d.servedThrough.Store(d.nextEvent)
 	}
 	return out
 }
@@ -1061,7 +1110,7 @@ func (d *Durability) Stats() Part {
 	p.StaleExtents = d.stale
 	p.SupersededExtents = d.superseded
 	d.lmu.Unlock()
-	p.DamagedSegments, p.Segments = d.damagedReport()
+	p.DamagedSegments, p.Segments = d.DamagedReport()
 	return p
 }
 
@@ -1070,6 +1119,18 @@ func (d *Durability) Stats() Part {
 // when Stop returns. A second call is a no-op.
 func (d *Durability) Stop() {
 	d.stop.Do(func() {
+		// The instance's unread claims in the registry's pieces retire
+		// here, whatever the caller's kind of close — a clean journal
+		// Close drains into this Stop, and so does the crash fixture's
+		// close of a dead journal — for past this point no reader reaches
+		// the ring they went to. A reader that already reached an event
+		// answered it, and the claims of the reads it served stay; the
+		// queued Corrupt losses the drain below takes carry claims born
+		// dead when no reader saw them, and a later open takes those
+		// pieces over — the takeover clearing the Reported the dead
+		// report still credited — and republishes the losses into the
+		// open's own fresh ring, which is what that ring is for.
+		d.dead.Store(true)
 		d.mu.Lock()
 		d.stopped = true
 		d.mu.Unlock()
@@ -1090,6 +1151,23 @@ func (d *Durability) Stop() {
 		}
 	})
 	d.wg.Wait()
+}
+
+// claimsDead reports whether this instance has begun stopping, so no reader
+// reaches its ring from this point on.
+func (d *Durability) claimsDead() bool { return d.dead.Load() }
+
+// claimServed answers whether the loss a claim on one of this instance's
+// Loses took was answered by a reader: the ring's read reached the event the
+// claim's loss published. A loss that published no event of its own — a
+// reported one, whose report another of the instance's events carried — is
+// answered with any read of the ring at all.
+func (d *Durability) claimServed(ev uint64) bool {
+	s := d.servedThrough.Load()
+	if ev == 0 {
+		return s > 0
+	}
+	return s >= ev
 }
 
 // target is the last unsynced record of one file in one segment of a stream.
@@ -1214,6 +1292,14 @@ func (st *stream) inWindowLocked(loc segment.Location) bool {
 // holds the append domain of none of the files it names: it would wait on the
 // worker while the worker waits on it, and every other file of the stream
 // would stop completing too.
+//
+// The wait also covers the corrupt jobs a read of a named file queued before
+// the call: the worker appends and syncs each job's loss records inside the
+// job, so the durability the call waits out includes the loss records owed
+// for the drops those reads already made — a fresh process would owe them
+// at its open, and a caller that crashed between the read and this call
+// loses the record to the crash. The wait parks on the pending-job count
+// alone; it issues no sync of its own for it.
 //
 // Syncs are issued by the stream's worker, never by the caller's goroutine,
 // so a cancelled caller is not stuck in the syscall.
@@ -1760,6 +1846,14 @@ func (st *stream) check(ids []core.FileID, targets []target, cs []cand, failFast
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.resolveCandsLocked(cs)
+	// A corrupt job still owed for a named file parks the call: the worker
+	// appends and syncs the loss records the job owes inside it, so the
+	// durable answer may not run ahead of the drops this call's files'
+	// reads already queued. The wait leads no sync of its own — the job's
+	// record syncs on the worker that runs it, never by the waiter.
+	if st.owesCorruptLocked(ids) {
+		pending = true
+	}
 	var owed *owedFailure
 	if failFast {
 		owed = st.takeMarksLocked(ids)

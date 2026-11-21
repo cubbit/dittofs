@@ -2213,6 +2213,9 @@ func TestRFC1A_SinceYieldsOver(t *testing.T) {
 
 	v3 := write(t, h, id, 0, distinct(1, 4<<10))
 	v5 := write(t, h, id, 0, distinct(2, 8<<10))
+	// The row asserts durable writes survive the crash: make both records
+	// durable before it, as the sibling row does.
+	syncFile(t, h, id)
 
 	// The checks read through the fixture's current handle, for a crash
 	// replaces the journal and every handle of it.

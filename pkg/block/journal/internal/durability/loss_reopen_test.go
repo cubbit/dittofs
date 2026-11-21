@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 )
 
 // TestTheLossRingLivesPerInstanceAndItsDedupPerDirectory catches a reopen
@@ -99,5 +100,213 @@ func TestTheLossRingLivesPerInstanceAndItsDedupPerDirectory(t *testing.T) {
 	}
 	if got := e.d.Stats().Losses; len(got) != 2 {
 		t.Errorf("the first directory's ring changed to %d events after a Place at another directory, want 2", len(got))
+	}
+}
+
+// TestATakeoverOfADeadUnreadClaimRepublishes holds the takeover's word: a
+// loss whose record never landed — the append refused against a storage the
+// crash closed — published its event only into the ring of an instance that
+// stopped before any reader reached it, so the only report the loss had
+// answered nothing. The reopen's pass hands its Lose the piece marked
+// reported, the credit that dead report still wrongly carries, and the take
+// that overtakes the retired claim clears it: the reopen publishes the loss
+// into its own ring, raising nothing, for the dead instance's raise already
+// counted the generation — the Raise the take sets even when the caller
+// brought neither, the re-detected deferral's shape, whose first take raised
+// the piece. The kept failed claim names nothing — the pass plans the record
+// as unnamed — while a piece whose report a reader reached keeps its
+// suppression: the takeover does not clear a credit its reader already
+// took, and the pass still appends the record the claim never owned.
+func TestATakeoverOfADeadUnreadClaimRepublishes(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("the unread report is republished", func(t *testing.T) {
+		e := newEnv(t)
+		// The crash shape's own order: the storage closes under the journal
+		// first, then the instance's Stop records the loss its drain owes —
+		// an append that cannot place and an event no reader takes away.
+		e.shutdown()
+		e.d.Stop()
+		l := loss(11)
+		l.Raised = true
+		if _, err := e.d.Lose(ctx, l); err == nil {
+			t.Fatalf("the dead instance's Lose over closed streams: succeeded, want the refused append")
+		}
+
+		reopen := e.newDurability()
+		if reopen.Named(l.Seq, l.Extent) {
+			t.Fatalf("Named answers the dead instance's kept failed claim: the pass would plan no record for the piece its report never answered")
+		}
+		l.Reported = true
+		ev, err := reopen.Lose(ctx, l)
+		if err == nil {
+			t.Fatalf("the reopen's append over closed streams: succeeded, want the refused append")
+		}
+		if ev == (core.LossEvent{}) {
+			t.Fatalf("the takeover kept the dead report's suppression: the reopen published no event for a loss no reader was told of")
+		}
+		if got := reopen.Stats().Losses; len(got) != 1 || got[0].SeqNum != 1 {
+			t.Fatalf("the reopen's ring = %+v, want the one republished loss, numbered 1 of its own count", got)
+		}
+		if got := reopen.Generation(); got != 0 {
+			t.Fatalf("the republished loss raised the generation to %d, want 0: the takeover keeps the raise the dead instance already made", got)
+		}
+	})
+
+	t.Run("a re-plan the caller raised nothing for raises nothing new", func(t *testing.T) {
+		e := newEnv(t)
+		e.shutdown()
+		e.d.Stop()
+		// Neither Reported nor Raised: the re-detected deferred loss's
+		// shape, whose Lose arrives with no flag because its first take
+		// already did the raising the rule would do again over the same
+		// drop.
+		l := loss(13)
+		if _, err := e.d.Lose(ctx, l); err == nil {
+			t.Fatalf("the dead instance's Lose over closed streams: succeeded, want the refused append")
+		}
+		if got := e.d.Generation(); got != 1 {
+			t.Fatalf("the dead instance's own take raised the generation to %d, want 1", got)
+		}
+
+		reopen := e.newDurability()
+		ev, err := reopen.Lose(ctx, l)
+		if err == nil {
+			t.Fatalf("the reopen's append over closed streams: succeeded, want the refused append")
+		}
+		if ev == (core.LossEvent{}) {
+			t.Fatalf("the takeover published nothing for a loss no reader was told of")
+		}
+		if got := reopen.Generation(); got != 1 {
+			t.Fatalf("the republished loss raised the generation to %d, want the 1 its piece's first take already counted", got)
+		}
+	})
+
+	t.Run("a report a reader reached keeps its suppression", func(t *testing.T) {
+		e := newEnv(t)
+		e.shutdown()
+		e.d.Stop()
+		l := loss(12)
+		l.Raised = true
+		if _, err := e.d.Lose(ctx, l); err == nil {
+			t.Fatalf("the dead instance's Lose over closed streams: succeeded, want the refused append")
+		}
+		// A reader reaches the stopped instance's ring — its Stats still
+		// stands in this process — and carries the report away: the reach,
+		// not the moment of it, is what the claim asks.
+		if got := e.d.Stats().Losses; len(got) != 1 {
+			t.Fatalf("the stopped instance's ring = %+v, want the one refused append's event", got)
+		}
+
+		reopen := e.newDurability()
+		if reopen.Named(l.Seq, l.Extent) {
+			t.Fatalf("Named answers a kept failed claim that owns no record: the pass must plan the record the claim still owes however far the ring was read")
+		}
+		l.Reported = true
+		ev, err := reopen.Lose(ctx, l)
+		if err == nil || ev != (core.LossEvent{}) {
+			t.Fatalf("Lose of a served report = %+v, %v, want the zero event over the refused append: the takeover does not clear a credit its reader already took, and the take proceeds so the record the claim owes is still appended", ev, err)
+		}
+		if got := reopen.Stats().Losses; len(got) != 0 {
+			t.Fatalf("the reopen's ring = %+v, want none: a served report keeps its suppression while the owed record is appended", got)
+		}
+	})
+
+	t.Run("a stopped instance's second Lose of its own piece is dropped", func(t *testing.T) {
+		e := newEnv(t)
+		e.shutdown()
+		e.d.Stop()
+		l := loss(14)
+		if _, err := e.d.Lose(ctx, l); err == nil {
+			t.Fatalf("the dead instance's Lose over closed streams: succeeded, want the refused append")
+		}
+		// The drain of a stopped instance can hand it a second job of the
+		// same piece: its own claim bars the retake — the ring held no
+		// reader, so the dead-unserved rule alone would let it take its own
+		// claim over — and the second Lose answers the dedup's zero event,
+		// never a second event into the ring nobody reads.
+		again, rerr := e.d.Lose(ctx, l)
+		if rerr != nil || again != (core.LossEvent{}) {
+			t.Fatalf("the stopped instance's second Lose of its own piece = %+v, %v, want the zero event and nil: its own claim bars it, never a takeover of itself", again, rerr)
+		}
+		if got := e.d.Stats().Losses; len(got) != 1 {
+			t.Fatalf("the stopped instance's ring = %+v, want its one event: the second Lose published nothing", got)
+		}
+	})
+}
+
+// TestAFailureAReporterOnlyTheRingCouldCarryRepublishesOnceClosed holds the
+// failed list's word: a failing loss whose report reached nobody but the
+// ring — a corrupt record's loss record refused against a closed device —
+// keeps the failing instance and its event, so the report is honoured while
+// either lives and the loss re-published once neither does: the open that
+// re-appends the record the failure owed publishes it itself, through the
+// failed leg's failed-window reason the planner carries. A report a reader
+// took away keeps its suppression however the instance ended.
+func TestAFailureAReporterOnlyTheRingCouldCarryRepublishesOnceClosed(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	// The storage closed while the instance is still live, as a crash
+	// beneath the journal: the Lose is refused back — not by the
+	// read-only refusal, which tells its writer — and its event goes
+	// into a ring nobody reads.
+	e.shutdown()
+	l := loss(31)
+	if _, err := e.d.Lose(ctx, l); err == nil {
+		t.Fatalf("the live instance's Lose over closed storage: succeeded, want the refused append")
+	}
+	e.d.Stop()
+
+	// The word the reopen's planner reads: the report reached nothing.
+	fs, err := durability.FailedFor(e.dir, core.JournalID{})
+	if err != nil || len(fs) != 1 || fs[0].Seq != l.Seq {
+		t.Fatalf("FailedFor = %+v, %v, want the one refused record's entry", fs, err)
+	}
+	if fs[0].Reported {
+		t.Fatalf("the stopped instance's unread report still credited its failure: the closed ring answered for nothing")
+	}
+	reopen := e.newDurability()
+	// The failed leg's plan: reported the word says not, so the Lose
+	// publishes the loss instead of holding it back. The reason is the
+	// planner's own row — the failed-window reason the failed leg carries,
+	// not the corrupt reason the original drop took.
+	failleg := loss(31)
+	failleg.Reason = core.LossFailedWindow
+	ev, err := reopen.Lose(ctx, failleg)
+	if err == nil {
+		t.Fatalf("the reopen's append over closed storage: succeeded, want the refused append")
+	}
+	if ev == (core.LossEvent{}) {
+		t.Fatalf("the re-appended record's loss stayed suppressed: a failure only an unread ring carried is re-published")
+	}
+	if got := reopen.Stats().Losses; len(got) != 1 || got[0].Reason != core.LossFailedWindow {
+		t.Fatalf("the reopen's ring = %+v, want the one re-published loss of the failed leg's own reason", got)
+	}
+
+	// A report a reader reached keeps its suppression: the same failure,
+	// read out of the ring before the close, holds the re-append back.
+	// buildEnv, not newEnv: one watch a test file, and this one already
+	// started its own.
+	e2 := buildEnv(t)
+	e2.shutdown()
+	l2 := loss(32)
+	if _, err := e2.d.Lose(ctx, l2); err == nil {
+		t.Fatalf("the live instance's Lose over closed storage: succeeded, want the refused append")
+	}
+	if got := e2.d.Stats().Losses; len(got) != 1 {
+		t.Fatalf("the instance's ring = %+v, want the one refused record's event", got)
+	}
+	e2.d.Stop()
+	fs2, err := durability.FailedFor(e2.dir, core.JournalID{})
+	if err != nil || len(fs2) != 1 || !fs2[0].Reported {
+		t.Fatalf("FailedFor = %+v, %v, want the entry of a report a reader took away", fs2, err)
+	}
+	reopen2 := e2.newDurability()
+	// The plan the word drives: reported, so the re-append holds the
+	// event back.
+	l2.Reported = true
+	ev2, err2 := reopen2.Lose(ctx, l2)
+	if err2 == nil || ev2 != (core.LossEvent{}) {
+		t.Fatalf("Lose of a served report = %+v, %v, want the zero event over the refused append: the reached report keeps its event suppressed while the owed record is still re-appended", ev2, err2)
 	}
 }

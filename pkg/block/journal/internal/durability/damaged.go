@@ -150,10 +150,12 @@ func (d *Durability) publishDamagedLocked() {
 	d.damagedView.Store(&damagedSnap{count: uint64(len(rows)), rows: rows})
 }
 
-// damagedReport returns the count and a copy of the rows in segment order,
+// DamagedReport returns the count and a copy of the rows in segment order,
 // from the report the last change published. It takes no lock, makes no index
-// call and walks nothing.
-func (d *Durability) damagedReport() (uint64, []DamagedRow) {
+// call and walks nothing — and reads no loss ring, whose every copy an
+// outside reader takes marks served: a segment listing reaches for this and
+// not Stats, and serves no losses by it.
+func (d *Durability) DamagedReport() (uint64, []DamagedRow) {
 	v := d.damagedView.Load()
 	if v == nil {
 		return 0, []DamagedRow{}

@@ -41,7 +41,7 @@ func newFailedFixture(t *testing.T) *failedFixture {
 		collectWrite(7, f.file, 21, 21, f.failOffs[1], 32))
 	r.plantSeg(5, b)
 	f.d = r.runDeps()
-	f.d.Failed = f.failed
+	f.d.Failed = failedWords(f.failed)
 	return f
 }
 
@@ -270,7 +270,7 @@ func TestAnAsideDuplicateInASealedHolderThisRunEmptiesStillSurvives(t *testing.T
 			r.plantSeg(tc.ended, damageHeader(buildSeg(tc.ended, loss)))
 
 			d := r.runDeps()
-			d.Failed = []core.Seq{20}
+			d.Failed = failedWords([]core.Seq{20})
 			st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
 			if err != nil {
 				t.Fatalf("Run: %v", err)

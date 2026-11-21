@@ -75,8 +75,8 @@ type Assembled struct {
 // read-only one failed to write.
 func runAssemble(_ context.Context, deps Deps, _ *reader, st *State, _ core.JournalID, _ core.Version, _ []core.SyncMark) error {
 	ctr := st.Rebuilt.Counters
-	for _, seq := range deps.Failed {
-		if err := ctr.Observe(index.Numbers{Seq: seq}); err != nil {
+	for _, f := range deps.Failed {
+		if err := ctr.Observe(index.Numbers{Seq: f.Seq}); err != nil {
 			return err
 		}
 	}

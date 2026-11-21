@@ -1,6 +1,9 @@
 package durability
 
-import "github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+import (
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+)
 
 // corruptJob is one corrupt record's loss, handed by Corrupt to the stream's
 // worker: one Loss per piece the drop took, all of one record.
@@ -30,7 +33,8 @@ func (d *Durability) queueCorrupt(st *stream, job corruptJob) {
 }
 
 // pushCorrupt queues job for the worker without waking it, and reports
-// whether it did: a closed stream has no worker left to drain it.
+// whether it did: a closed stream has no worker left to drain it. A queued
+// job counts as owed on its file, the count a Sync naming the file waits out.
 func (st *stream) pushCorrupt(job corruptJob) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -38,11 +42,17 @@ func (st *stream) pushCorrupt(job corruptJob) bool {
 		return false
 	}
 	st.corrupt = append(st.corrupt, job)
+	st.corruptFiles[jobFile(job)]++
 	return true
 }
 
+// jobFile is the file whose loss records job owes; all of one job's losses
+// name one record, one file.
+func jobFile(job corruptJob) core.FileID { return job.losses[0].File }
+
 // drainCorrupt runs every corrupt loss queued on the stream. It runs on the
-// worker, and once more in Stop after the worker has exited.
+// worker, and once more in Stop after the worker has exited. Each job's
+// finish retires its hold on its file and wakes the waiters parked on it.
 func (d *Durability) drainCorrupt(st *stream) {
 	st.mu.Lock()
 	jobs := st.corrupt
@@ -50,7 +60,37 @@ func (d *Durability) drainCorrupt(st *stream) {
 	st.mu.Unlock()
 	for _, job := range jobs {
 		d.runCorrupt(job)
+		st.finishCorrupt(job)
 	}
+}
+
+// owesCorruptLocked reports whether a corrupt job still queued or running on
+// this stream owes the loss record of a named file. The caller holds mu.
+func (st *stream) owesCorruptLocked(ids []core.FileID) bool {
+	for _, id := range ids {
+		if st.corruptFiles[id] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// finishCorrupt retires one finished corrupt job's hold on its file and
+// wakes every waiter: the job's Lose has appended and synced the loss
+// records it owed — or recorded the failure that stands in for them — so a
+// Sync that named the file may answer now. It runs on the worker and in
+// Stop's drain; the closed-stream arm around it runs its job on the
+// caller's goroutine and parks no waiter on the count.
+func (st *stream) finishCorrupt(job corruptJob) {
+	f := jobFile(job)
+	st.mu.Lock()
+	if n := st.corruptFiles[f]; n <= 1 {
+		delete(st.corruptFiles, f)
+	} else {
+		st.corruptFiles[f] = n - 1
+	}
+	st.mu.Unlock()
+	st.d.notifyAll()
 }
 
 // runCorrupt hands each piece of job to Lose, which appends a loss record of

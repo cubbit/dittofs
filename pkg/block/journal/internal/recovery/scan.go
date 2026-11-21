@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/readretry"
@@ -74,6 +75,13 @@ type segmentScan struct {
 	// the classing draws between a torn drop at the tail and one a later
 	// record follows.
 	VerifiedEnd int64
+
+	// Newest says no verified own header names this segment a predecessor: it
+	// is the newest of its stream, the one segment per stream whose synced
+	// records' payloads the open reads whole (the kinds pass's fold,
+	// recovery/kinds.go); every other segment's payloads stay unread until
+	// the read that serves them.
+	Newest bool
 
 	// LastSeq is the sequence number of the last record the scan kept —
 	// one it fed, an aside whose body verified, or a forget — and LastEnd
@@ -244,11 +252,17 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 // trailer names — the source the rebuild indexed it by — and falls back to
 // the walk where the trailer holds nothing it verifies with or an entry its
 // record contradicts, while every unnamed or unverified-header segment takes
-// the walk, never offered a catalogue. forceScan turns the catalogue off,
-// the test-only switch a source-compare check needs.
+// the walk, never offered a catalogue. The newest segment of a stream — the
+// one no verified own header names as predecessor, the same claim the
+// classing's corrupt arm reads — walks with Newest set, so the kinds pass's
+// fold reads its synced records' payloads whole. forceScan turns the
+// catalogue off, the test-only switch a source-compare check needs.
 func readSegment(rd *reader, identity core.JournalID, info SegmentInfo, named map[core.SegmentID]bool, forceScan bool) (segmentScan, error) {
+	newest := !named[info.ID]
 	if forceScan || info.Unverified || !named[info.ID] {
-		return scanSegment(rd, identity, info)
+		sc, err := scanSegment(rd, identity, info)
+		sc.Newest = newest
+		return sc, err
 	}
 	sc, byCatalog, err := catalogSegment(rd, identity, info)
 	if err != nil || byCatalog {
@@ -257,7 +271,9 @@ func readSegment(rd *reader, identity core.JournalID, info SegmentInfo, named ma
 	// The demotion: a named segment whose trailer holds no verifying
 	// footer — a segment sealed at a crash holds a marker but no trailer —
 	// falls back to the walk, whose answer the catalogued one must match.
-	return scanSegment(rd, identity, info)
+	sc, err = scanSegment(rd, identity, info)
+	sc.Newest = newest
+	return sc, err
 }
 
 // largestCounter is the largest 64-bit value, the number this journal never
@@ -518,7 +534,7 @@ type rebuilt struct {
 // catalogued offsets — walking the two halves of one segment on two
 // readers, merging the scans — when a start-up profile of a journal with
 // huge segments shows the rebuild bound by one.
-func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, named map[core.SegmentID]bool, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool, failed []core.Seq, att Attached, skip map[index.RecordAt]bool, settled *tails, marks []core.SyncMark) (rebuilt, kindResults, tails, error) {
+func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, named map[core.SegmentID]bool, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool, failed []durability.Failed, att Attached, skip map[index.RecordAt]bool, settled *tails, marks []core.SyncMark) (rebuilt, kindResults, tails, error) {
 	ix := index.New(extentLimit)
 	ctr := &index.Counters{}
 	b := ix.Rebuilder(ctr)
@@ -640,6 +656,13 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	// buffered records and through the same reader, so a rotten kept run
 	// reaches the classing as the corrupt drop it is.
 	if verr := ks.verifyRemainders(rd, identity, scans); verr != nil {
+		return rebuilt{}, kindResults{}, tails{}, verr
+	}
+	// The newest segments' own synced records verify before the classing
+	// too, after the kinds pass has said which records its rules own, so a
+	// synced record the open itself found rotten reaches the classing as
+	// the corrupt drop it is.
+	if verr := ks.confineRotten(rd, identity, scans); verr != nil {
 		return rebuilt{}, kindResults{}, tails{}, verr
 	}
 	// The classing reads the scans only after the kinds pass has confined
