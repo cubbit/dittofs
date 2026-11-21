@@ -1017,10 +1017,10 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   no takeover, with and without a held credential, refused at the API and at its first turn, nothing
   sealed, still joined as `NAS` (R36); `kvtest`'s wrapper failing `End`'s commit: neither `Joined` nor
   the name written (catches the two written apart); a join started while a rotation runs: refused
-  at its first turn naming it, nothing sealed (R63); a join and a rotation whose first turns
-  overlap, each `Write` held by `kvtest`'s wrapper until both have read the running index: the
-  second to commit retries and refuses naming the first, one version sealed (catches an untracked
-  read, R63). Doubles: the in-memory directory and controller
+  at its first turn naming it, nothing sealed (R63); at the API, a join's start and a rotation's
+  start overlapping, each creating write held by `kvtest`'s wrapper until both have read the
+  running index: the second to commit retries and is refused 409 naming the first, one operation
+  written (catches an untracked read, R63). Doubles: the in-memory directory and controller
   (kind 2), the fault wrappers (kind 3), the clock (kind 1).
 - **Rules:** rule 9 (D7's `decision:`).
 
