@@ -309,7 +309,7 @@ func joinAccountName(name, netbios string) (string, error) {
 	}
 	n = string(b)
 	if err := validNetBIOSName(n); err != nil {
-		return "", fmt.Errorf("the account name %w", err)
+		return "", fmt.Errorf("the account name: %w", err)
 	}
 	return n, nil
 }
@@ -534,7 +534,7 @@ func (j *joining) confirm(ctx context.Context) (step.StepResult, error) {
 	ctx, done := j.s.bounded(ctx)
 	defer done()
 	if err := validNetBIOSName(j.c.Account); err != nil {
-		return step.StepResult{}, j.fail(ctx, http.StatusConflict, fmt.Sprintf("identity.netbios_name %v", err))
+		return step.StepResult{}, j.fail(ctx, http.StatusConflict, fmt.Sprintf("identity.netbios_name: %v", err))
 	}
 	dc, accepted, err := j.probe(ctx)
 	if err != nil {
