@@ -100,12 +100,6 @@ func (s *Server) DirectoryLookup(ctx context.Context, by directory.Key, value []
 	return s.state.Load().dirLookup(ctx, by, value, false)
 }
 
-// VerifyAPReq verifies an AP-REQ under the applied State at now.
-func (s *Server) VerifyAPReq(b []byte, svc identity.Service, tr identity.Transport, client netip.Addr, now time.Time) error {
-	_, err := verifyAPReq(s.state.Load(), b, svc, tr, client, now)
-	return err
-}
-
 // StringToKey is RFC 3962's string-to-key of password under salt with
 // iterations, for etype, as the machine password's keys are derived.
 func StringToKey(etype int32, password []byte, salt string, iterations uint32) ([]byte, error) {
