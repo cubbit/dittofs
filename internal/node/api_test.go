@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -91,17 +90,23 @@ func TestNodeServesTheAPI(t *testing.T) {
 	// A poll parks on the node's clock: it does not answer while the clock
 	// stands short of its wait, and answers once the clock passes it.
 	// Neither call keeps its connection: the leak check that ends the test
-	// would otherwise race the transport's goroutines winding down. The
-	// clock's waits are counted before the poll is sent, so the wait the
-	// count rises by is the poll's however soon it parks. The poll runs
-	// under the test's context, which ends before the leak check reads, so
-	// a test that fails before reading its answer leaves no connection open.
+	// would otherwise race the transport's goroutines winding down. The test
+	// waits on the poll's own wait being set on the clock: a wait under a
+	// second is one wait of exactly that length. The node's loops arm fixed
+	// waits of a second or more, and the engine's computed waits arm their
+	// full bound while the clock has not moved, so no other wait set meanwhile
+	// can pass for the poll's. Advancing the clock before the poll parks
+	// breaks that. The poll
+	// runs under the test's context, which ends before the leak check reads,
+	// so a test that fails before reading its answer leaves no connection
+	// open.
+	const wait = 900 * time.Millisecond
 	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
-	pollReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+opPath+"?wait=2s", nil)
+	pollReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+opPath+"?wait="+wait.String(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parked := h.Clock().Pending()
+	parked := h.Clock().Armed(wait)
 	polled := make(chan error, 1)
 	var poll *http.Response
 	go func() {
@@ -109,29 +114,31 @@ func TestNodeServesTheAPI(t *testing.T) {
 		poll, err = c.Do(pollReq)
 		polled <- err
 	}()
-	for deadline := time.Now().Add(10 * time.Second); h.Clock().Pending() <= parked; runtime.Gosched() {
-		if time.Now().After(deadline) {
-			t.Fatal("the poll did not park on the node's clock within 10 s")
-		}
+	select {
+	case <-parked:
+	case err := <-polled:
+		t.Fatalf("the poll answered (%v) before parking on the node's clock", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the poll did not park on the node's clock within 10 s")
 	}
-	h.Clock().Advance(time.Second)
+	h.Clock().Advance(wait - time.Millisecond)
 	select {
 	case err := <-polled:
-		t.Fatalf("the parked poll answered (%v) with the node's clock a second short of its wait", err)
+		t.Fatalf("the parked poll answered (%v) with the node's clock a millisecond short of its wait", err)
 	case <-time.After(100 * time.Millisecond): // a bounded wait is the assertion: nothing may answer here
 	}
-	h.Clock().Advance(time.Second)
+	h.Clock().Advance(time.Millisecond)
 	select {
 	case err := <-polled:
 		if err != nil {
-			t.Fatalf("GET the operation with ?wait=2s: %v", err)
+			t.Fatalf("GET the operation with ?wait=%s: %v", wait, err)
 		}
 		_ = poll.Body.Close()
 	case <-time.After(10 * time.Second):
 		t.Fatal("the parked poll: no answer within 10 s of the node's clock passing its wait")
 	}
 	if poll.StatusCode != http.StatusOK {
-		t.Errorf("GET the operation with ?wait=2s: answered %d, want 200 once the wait passed", poll.StatusCode)
+		t.Errorf("GET the operation with ?wait=%s: answered %d, want 200 once the wait passed", wait, poll.StatusCode)
 	}
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+addr+opPath+":cancel", nil)
@@ -470,9 +477,30 @@ func TestTheConnectionsOfAnotherNodeAreNotFound(t *testing.T) {
 	if _, err := h.Store().Nodes().RegisterNode(t.Context(), other); err != nil {
 		t.Fatalf("register another node: %v", err)
 	}
+	// Each read runs under a deadline of its own: a read that waits on the
+	// held adapters ends there and is named, rather than ending the test on
+	// the client's timeout.
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	for _, id := range []entity.NodeID{other.ID, entity.NodeID(uuid.New())} {
-		if got := get(t, addr, connectionsPath(id)); !notFound(got) {
-			t.Errorf("connections of node %s: answered %+v, want 404 not_found", entity.ShareID(id), got)
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+connectionsPath(id), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			cancel()
+			t.Errorf("connections of node %s: the API did not answer while the adapters were held (%v), want 404 not_found before any adapter is read", entity.ShareID(id), err)
+			continue
+		}
+		b, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		cancel()
+		if err != nil {
+			t.Fatalf("connections of node %s: read the answer: %v", entity.ShareID(id), err)
+		}
+		if got := (answer{resp.StatusCode, string(b)}); !notFound(got) {
+			t.Errorf("connections of node %s: answered %+v while the adapters were held, want 404 not_found", entity.ShareID(id), got)
 		}
 	}
 }
