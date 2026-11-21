@@ -285,9 +285,10 @@ const segmentHeaderBytes = 48
 // mixedFeeds is how many stream intervals one window lands at most: the
 // first is the interval the window holds in flight, the one a sync may
 // legitimately wait for, and the rest are fed to a sync that keeps asking, or
-// handed as the stream's backlog to a sync that waits on the stream without
-// asking. Each one past the first is waited-for bytes the row's bound has no
-// room for, so the cap only ends a window whose design is already caught.
+// handed as the stream's backlog — parked at their seam write when handed
+// over — to a sync that waits on the stream without asking. Each one past the
+// first is waited-for bytes the row's bound has no room for, so the cap only
+// ends a window whose design is already caught.
 const mixedFeeds = 3
 
 // mixedErrs carries a stream goroutine's first failure out of its rounds, so
@@ -618,9 +619,12 @@ func (e *fixtureMixedEnv) DurableFloor() int64 {
 // arrives at once waits for its own record alone; one that parks again
 // waits for the interval it was fed and breaches the bound. A sync that
 // arrives at no fsync while the interval is in flight is waiting on the
-// stream: the protocol then hands it the stream's backlog, one interval per
-// bounded wait, and a design that waits for the whole backlog before it asks
-// arrives with all of it pending, which the bound fails. The choreography
+// stream: the protocol then hands it the stream's backlog, each interval
+// parked at its seam write when handed over and freed by the next arrival or
+// the next bounded wait, and a design that waits for the whole backlog before
+// it asks arrives with all of it pending, which the bound fails — while an
+// arrival that is merely late finds the next interval parked rather than
+// landed, and measures nothing it never waited for. The choreography
 // test runs the same runMixedRounds against fakes of these designs, the
 // starving one among them.
 //

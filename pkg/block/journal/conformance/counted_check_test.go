@@ -23,7 +23,8 @@ import (
 // design, the starving form, designs that roll, with and without a name
 // change, a slow one whose writes and fsyncs take real time, a group-commit
 // one whose syncs join whatever fsync is in flight, one that waits for the
-// stream's interval in flight — and against designs
+// stream's interval in flight, one whose arrival at storage outlasts a drip
+// wait — and against designs
 // that are wrong on purpose: one that fails its writes, one that never syncs
 // while reporting success, one that renames on every append, one that chases
 // the stream's landings with a park each, one that waits for the stream's
@@ -60,6 +61,10 @@ func fakeRecordBytes(n int64) int64 { return int64(96+8+n+7) &^ 7 }
 // takes real time after its park, and a rolled write's record lands well
 // after its segment's seal sync — together they make a fed write in flight
 // when the window closes if the protocol does not wait for it.
+//
+// fakeSlowArrival is the late design's latency: longer than the protocol's
+// drip wait, so the sync woken by the interval in flight reaches the gate
+// only after the next wait has run out.
 const (
 	fakeIntervalBytes = int64(1 << 16)
 	fakeSmallBytes    = int64(4096)
@@ -67,6 +72,8 @@ const (
 	fakeSlowWrite    = 500 * time.Microsecond
 	fakeSlowFsync    = time.Millisecond
 	fakeSlowPostRoll = 5 * time.Millisecond
+
+	fakeSlowArrival = 2500 * time.Millisecond
 )
 
 // fakeSegCap is the fakes' segment capacity: three stream intervals. A
@@ -139,6 +146,14 @@ const (
 	// flushes once: a sync that legitimately waits for the append landing in
 	// flight, and for nothing queued behind it.
 	designWaitInFlight mixedDesign = "waits the interval in flight"
+
+	// designSlowArrival waits for the interval in flight exactly as
+	// designWaitInFlight does, and then takes longer than one drip wait to
+	// reach the gate: a correct sync whose arrival is late. The protocol must
+	// answer it with the backlog interval parked at its write — measuring the
+	// next landed interval against it instead is the false red the parked
+	// handover exists to prevent.
+	designSlowArrival mixedDesign = "slow arrival"
 
 	// designNeverSyncs returns success from every sync and flushes nothing.
 	designNeverSyncs mixedDesign = "never syncs"
@@ -607,6 +622,22 @@ func (f *fakeMixed) SyncSmall() error {
 		f.fsync(f.active)
 		f.flush()
 		return nil
+	case designSlowArrival:
+		// The same wait as designWaitInFlight, slowed past one drip wait on
+		// the way to the gate: a real delay, not a clock, because what it
+		// models is a loaded box's real time and the honest case keeps it
+		// bounded at that.
+		if f.appending {
+			for landed := f.intervals; f.intervals == landed; {
+				f.inFlightCond.Wait()
+			}
+		}
+		f.mu.Unlock()
+		time.Sleep(fakeSlowArrival)
+		f.mu.Lock()
+		f.fsync(f.active)
+		f.flush()
+		return nil
 	case designBacklogStarve:
 		// Wait until the stream has landed everything queued, then flush
 		// once: never asking again, so no park is fed, and every interval
@@ -768,6 +799,7 @@ func TestCounted_MixedChoreography(t *testing.T) {
 		{design: designCoalesce},
 		{design: designSlowRoll},
 		{design: designWaitInFlight},
+		{design: designSlowArrival},
 	}
 	for _, tc := range correct {
 		t.Run(string(tc.design)+" passes", func(t *testing.T) {

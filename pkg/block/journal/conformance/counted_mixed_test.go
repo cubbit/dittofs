@@ -181,9 +181,11 @@ func settleParked(t mixedTB, gate *kit.SimGate) {
 //     interval is still landing is that write's own roll-seal sync,
 //     released unfed;
 //   - a sync that neither arrives nor returns while the interval is in
-//     flight is handed the stream's backlog instead, one interval per
-//     bounded wait up to the same cap, so a design that waits for the whole
-//     backlog arrives with it pending;
+//     flight is handed the stream's backlog instead, each interval parked at
+//     its first segment write when handed over and freed by the next arrival
+//     or the next bounded wait, up to the same cap, so a design that waits
+//     for the whole backlog arrives with it pending while a merely delayed
+//     correct arrival measures nothing it never waited for;
 //   - the gate is disarmed and everything it still holds is freed, and only
 //     then is the measured Sync's result waited on — received once, in the
 //     feeds or here, never both;
@@ -412,17 +414,41 @@ func runMixedRounds(t mixedTB, env mixedEnv) []int {
 		//
 		// A sync that neither arrives nor returns while the interval is in
 		// flight is waiting on the stream. It is then handed the stream's
-		// backlog, mixedFeeds intervals in all with the one in flight, landed
-		// one after another with no arrival asked: a design that waits for
-		// every one of them before it asks waited for them all, and the
-		// measure below reads them.
+		// backlog, mixedFeeds intervals in all with the one in flight. Each
+		// backlog interval is handed over parked at its first segment write,
+		// so none of its bytes are on the segment — and none in the seam's
+		// waited totals — until it is freed: an arrival that answers it
+		// measures nothing of it, exactly as the first hold's answer measures
+		// nothing of what lands during its park. A design that waits for the
+		// whole backlog without asking is made to land one interval per
+		// bounded wait and so arrives, whenever it asks, with every interval
+		// the waits landed pending against the bound's one.
 		sent, backlog := 0, 0
 		fedInFlight, answering := false, false
 		returned := false
+		// dripParked is whether one backlog interval now sits parked at its
+		// first segment write, and dripRelease frees that park. While it is
+		// parked nothing else is in flight — a park is only installed once
+		// the previous fed write confirmed — so an arrival in that state can
+		// only be a sync's own fsync, never a landing write's roll-seal.
+		dripParked := false
+		var dripRelease func()
 	feedLoop:
 		for {
 			select {
 			case <-gate.Arrivals:
+				if dripParked {
+					// An arrival while a backlog interval sits parked at its
+					// write: answer it with that interval, the shape of the
+					// first held answer. A delayed-but-correct sync is handed
+					// bytes it never waited for otherwise — its measure would
+					// read the next backlog interval's landing as its own
+					// wait.
+					dripRelease()
+					dripParked = false
+					fedInFlight, answering = true, true
+					continue
+				}
 				if fedInFlight {
 					gate.Release()
 					continue
@@ -478,14 +504,17 @@ func runMixedRounds(t mixedTB, env mixedEnv) []int {
 				// thing that tells a sync waiting on the stream apart: a
 				// sync that waits on nothing arrives or returns at once, and
 				// one that waits for what the stream has under way does
-				// neither, which no event announces. Each wait that runs out
-				// lands the next interval of the backlog, one at a time, so
-				// a sync that waits for the interval in flight alone arrives
-				// once it lands and before the next one is handed over,
-				// while a sync that waits for the whole backlog arrives only
-				// after all of it. The ceiling: a sync stalled past this
-				// wait for any other reason is handed the next interval too,
-				// and is measured with whatever landed before it arrived.
+				// neither, which no event announces. The waits hand the
+				// backlog over parked — one wait to park the next interval at
+				// its write, the following one to land it if no arrival
+				// came — so a sync that waits for the interval in flight
+				// alone arrives to find the next interval parked, not
+				// landed, and its measure counts only what landed before it,
+				// while a sync that waits for the whole backlog has it
+				// landed around it and arrives with all of it pending. The
+				// ceiling: a sync delayed past two waits is counted against
+				// the one parked interval the earlier wait released — one
+				// interval, never more, since each wait lands one at most.
 				switch {
 				case held:
 					backlog = mixedFeeds - 1
@@ -495,16 +524,38 @@ func runMixedRounds(t mixedTB, env mixedEnv) []int {
 					releaseHeld()
 					held = false
 					fedInFlight = true
+				case dripParked:
+					// No arrival asked for the parked interval within the
+					// wait: land it. Its bytes then enter only arrivals that
+					// come after this release, and the arrival branch above
+					// answers none of them with it.
+					dripRelease()
+					dripParked = false
 				case backlog > 0 && !fedInFlight:
+					// Hand the next backlog interval over parked at its
+					// first segment write: its bytes reach the segment only
+					// once an arrival asks for it or a wait runs out, both
+					// below.
 					backlog--
+					reached, release := env.HoldNextAppend()
+					dripRelease = release
+					t.Cleanup(release)
 					select {
 					case proceed <- struct{}{}:
-						fedInFlight = true
 					case <-done:
 						break feedLoop
 					case <-time.After(mixedWait):
 						t.Fatalf("the stream did not take its backlog's next interval within %v", mixedWait)
 					}
+					select {
+					case <-reached:
+					case err := <-errs.value:
+						stubCall(t, "WriteAt", err)
+						t.Fatalf("the streaming writer's backlog write: %v", err)
+					case <-time.After(mixedWait):
+						t.Fatalf("the backlog's next interval did not reach its write within %v", mixedWait)
+					}
+					dripParked, fedInFlight = true, true
 				default:
 					break feedLoop
 				}
@@ -515,6 +566,13 @@ func runMixedRounds(t mixedTB, env mixedEnv) []int {
 			// land, and wait for it below as for any fed write.
 			releaseHeld()
 			fedInFlight = true
+		}
+		if dripParked {
+			// The window closed with a backlog interval still parked at its
+			// write: a write nobody will answer would hang the confirmation
+			// wait below. Let it land, and that wait drains it as any fed
+			// write's.
+			dripRelease()
 		}
 
 		// Close the window: disarm frees everything still parked — the
