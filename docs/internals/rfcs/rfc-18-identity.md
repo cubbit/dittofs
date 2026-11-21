@@ -1607,8 +1607,10 @@ what the user's `tokenGroups` holds.
   entry gave up. An error, a timeout or an answer served stale (§5.3) is not
   that answer: the holder keeps its name, and the renaming record is left
   without one, counted, until a later answer settles it. The renames one
-  answer causes, a swap's both, commit in one transaction with one
-  principals-generation raise, as a mint batch does (§4.1). Later answers never change its `PrincipalID`, entry
+  answer causes, a swap's both, are one `Minter.Rename` call, which commits
+  them in one transaction with one principals-generation raise, as a mint
+  batch does (§4.1), and fails whole when a name it takes is held by a
+  principal it does not rename ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)). Later answers never change its `PrincipalID`, entry
   ID, SID, uid or gid. An entry with no SID or no uid gets one allocated (§4.3,
   §4.4), so a directory without Windows or Unix attributes still yields
   principals that satisfy ID3.

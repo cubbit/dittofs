@@ -1339,11 +1339,31 @@ type ShareIndex interface {
 // batch holds (RFC 18 §7.2), and fails whole with ErrExist, writing nothing,
 // when another principal holds a row any record would write. A record marked
 // Unnamed writes no name-index row, so a held name never fails it (RFC 18 §4.1). Rename and SetEmail,
-// like every other User or Group record change, raise it in their transaction.
+// like every other User or Group record change, raise it once in their transaction.
+//
+// Rename applies every renaming one directory answer causes in one
+// transaction (RFC 18 §5.1), so a swap is one call: every "" first, each giving
+// its record's name up and leaving it unnamed, then the takes, each writing
+// its record's Name and NX‖kind‖name row. Every listed record's old name is
+// given up before any take is written, so a name held by a principal in the
+// list never blocks a take; a take whose name, under NX's fold and within its
+// kind, is held by a principal outside the list fails the whole list ErrExist,
+// writing nothing. The list is the records' final names: a principal listed
+// twice, or two takes of one folded name within a kind, has no single reading
+// and is refused ErrInvalid. An empty list opens no transaction and raises no
+// generation. Rename writes nothing but the listed records' Name and their
+// name-index rows, besides the generations.
 type Minter interface {
 	Create(ctx context.Context, b MintBatch) error
-	Rename(ctx context.Context, p Principal, name string) error    // the record's Name and its name index only; "" gives the name up, leaving the record unnamed (RFC 18 §5.1)
+	Rename(ctx context.Context, rs []Renaming) error               // one transaction for the whole list; nothing written on any refusal
 	SetEmail(ctx context.Context, p Principal, email string) error // the record's Email only, from the directory (RFC 18 §5.1)
+}
+
+// Renaming is one record's new name in a Rename: Name "" gives the name up,
+// leaving the record unnamed and found by its SID and entry ID (RFC 18 §5.1).
+type Renaming struct {
+	P    Principal
+	Name string
 }
 
 // Alloc names the IDs the store draws from its uid, gid and RID counters in the

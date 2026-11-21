@@ -292,12 +292,14 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   `insecure_skip_verify` and `allow_plaintext` are unknown fields, refused by #4059's strict
   decode. `decision:` marker at `Record.Validate`. Prior art: sssd's `ldap_id_use_start_tls`
   with `ldap_tls_reqcert = demand` (from memory).
-- **D5, the renames of one answer are one `Minter` call, pending the user's answer (§9).** RFC 16
-  §3's `Rename(p, name)` renames one principal in its own transaction, so a swap would raise the
-  principals generation twice and pass through a state where one name points at nobody.
-  `Rename(ctx, []Renaming{P, Name})` applies its list in order in one transaction: each `""`
-  first, then the takes, refusing the whole list with `ErrExist` when a take finds its name held
-  by a principal outside the list. Needs an RFC 16 §3 amendment. Prior art: none found.
+- **D5, the renames of one answer are one `Minter` call, settled: the list form replaces the
+  single `Rename`.** A single-principal rename in its own transaction would make a swap raise the
+  principals generation twice and pass through a state where one name points at nobody. RFC 16
+  §3's `Rename(ctx, []Renaming)` applies its list in one transaction: every `""` first, then the
+  takes, every listed record's old name given up before any take is written, refusing the whole
+  list with `ErrExist` when a take finds its name held by a principal outside the list, and
+  `ErrInvalid` for a principal listed twice or two takes of one name; an empty list writes
+  nothing. `SetEmail` stays a single-principal call. Prior art: none found.
 - **D6, the mint path re-runs a plan, not a batch.** The caller hands the path a function that looks
   its principals up and returns the batch of those still missing with the ones bound; on `ErrExist`
   the path calls it again, and stops with `ErrUnavailable` when a run neither binds a principal the
@@ -812,8 +814,10 @@ pkg/settings/
 - **Acceptance criteria:**
   - A refresh whose answer matches the record raises no generation.
 - **Tests:** in kvstore's conformance suite, on the memory KV and Badger: a two-element swap
-  commits with `PGEN` raised by one, and a list whose take names a name held outside it is
-  `ErrExist` with nothing written (R54); a `PutUser` holding the generation read before a
+  commits with `PGEN` raised by one, with and without its `""` renamings, and a list whose take
+  names a name held outside it is `ErrExist` with nothing written (R54); a principal listed twice,
+  and two takes of one folded name, each `ErrInvalid` with nothing written, and an empty list
+  raising no generation (D5); a `PutUser` holding the generation read before a
   `Rename`, and one before a `SetEmail`, each refused `ErrGenerationMismatch` (catches an API
   write that silently reverts a directory rename or e-mail, R51). At identity, over the memory KV store and the in-memory
   directory, on the injected clock: §10's "name swap" row, alice and bob swapped and the clock past
@@ -979,9 +983,9 @@ much of v1's client survives D4 and D10, and the swap's ordering inside one tran
   a `bind_name` field, amending Appendix B's row. Alternative: the
   `directory credential` secret's sealed value holds the name and the password together, which
   hides from an operator which account binds.
-- **The swap's one transaction (D5).** RFC 16 §3's `Rename` takes one principal; RFC 18 §5.1
-  wants a swap's renames in one transaction. Recommended: `Rename` takes a list, amending RFC 16 §3.
-  Alternative: a `Renames` call beside the single one.
+
+**Settled:** D5, by the user on #4729: the list form, replacing the single `Rename`; RFC 16 §3
+amended to match.
 
 **Settled here:** the mint path's owner, which E2's §1.2 now names as T6.2. T6.2 owns it: it needs only E2's T2.3 and comes second in this epic, while E5's machine
 mint, T5.9, is late in E5, which depends on T6.2 for it.
