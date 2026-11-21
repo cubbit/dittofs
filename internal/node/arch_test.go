@@ -1027,12 +1027,14 @@ var signingKeyFiles = []string{"auth/rotate.go", "auth/tokens.go"}
 // credentialWrites are the API's functions outside signingKeyFiles that may
 // write a secret version, each by its file, its receiver's type ("" for
 // none) and its name: secretSetting.put, which writes a remote store's
-// credential and the identity keytab, handOver, an offline join's
-// machine password, and WritePassword, a password's hash and NT hash. Only a
-// row with prunes set may also call PruneSecret, the versions below the ones
-// it writes; WritePassword's is the one such row. The store refuses each under the signing key's kind or
-// owner, and every secretSetting literal is checked to name a constant kind
-// other than the signing key's.
+// credential and the identity keytab, handOver, an offline join's machine
+// password, WritePassword, a password's hash and NT hash, and createStore,
+// which writes a remote store's first credential beside the settings rows
+// it is judged with. Only a row with prunes set may also call PruneSecret,
+// the versions below the ones it writes; WritePassword's is the one such
+// row. The store refuses each under the signing key's kind or owner, and
+// every secretSetting literal is checked to name a constant kind other
+// than the signing key's.
 //
 // decision: the exemption names the functions rather than checking the
 // written secret's kind and owner, which the type checker cannot see: the
@@ -1048,6 +1050,7 @@ var credentialWrites = []struct {
 	{"res_secrets.go", "secretSetting", "put", false},
 	{"res_domain.go", "", "handOver", false},
 	{"auth/password.go", "", "WritePassword", true},
+	{"res_stores.go", "", "createStore", false},
 }
 
 // isCredentialWrite reports whether fd, declared in file, a path under the

@@ -40,6 +40,8 @@ var frozenExports = []string{
 	"type Table []Section",
 	"func (Table).Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, " +
 		"holds HoldsContent) error",
+	"func (Table).Bound(rows []entity.Setting) ([]byte, error)",
+	"func (Table).DecodeBound(b []byte) (map[string]json.RawMessage, error)",
 	"func Refusals(err error) iter.Seq2[entity.SettingScope, string]",
 	"func (Table).PrefixOf(key string) string",
 	"type Snapshot struct{}",

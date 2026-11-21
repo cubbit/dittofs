@@ -141,9 +141,9 @@ type CallOption func(*call)
 
 // WithoutIdempotencyKey sends a POST or a DELETE with no Idempotency-Key, as
 // a call that carries or issues a credential must be: join-domain, an API
-// token's creation, :set-password. Such a call is never sent twice after a
-// lost answer or a retryable refusal, since its second sending would be a
-// second call.
+// token's creation, :set-password, a store's create, whose spec carries its
+// credential's value. Such a call is never sent twice after a lost answer
+// or a retryable refusal, since its second sending would be a second call.
 func WithoutIdempotencyKey() CallOption { return func(c *call) { c.noKey = true } }
 
 // WithQuery adds q to the call's query, such as a share deletion's
