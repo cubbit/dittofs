@@ -184,53 +184,60 @@ func jcommit(t *testing.T, h *nodetest.Harness, s entity.ShareID, f entity.FileI
 	return err
 }
 
+// fillToTheMaximum writes chunks of 256 KiB at file until a write is refused
+// with anything but retry-later for capacity, and returns the bytes written
+// before it and that refusal: a retry-later is a spare still being made, and
+// the chunk is written again. The bound is a real-time backstop, never the
+// assertion.
+func fillToTheMaximum(t *testing.T, h *nodetest.Harness, s entity.ShareID, f entity.FileID) (int64, error) {
+	t.Helper()
+	const chunk = 256 << 10
+	deadline := time.Now().Add(60 * time.Second)
+	var off int64
+	for off < 128*chunk {
+		err := jwrite(t, h, s, f, off, pattern(fmt.Sprint("fill", off/chunk), chunk))
+		var delay *vfserr.Delay
+		switch {
+		case err == nil:
+			off += chunk
+		case errors.As(err, &delay) && delay.Cause == vfserr.DelayCapacity:
+			if time.Now().After(deadline) {
+				t.Fatalf("write at %d was retried-later for 60s: %v", off, err)
+			}
+			time.Sleep(time.Millisecond) // a pause between polls of the real condition
+		default:
+			return off, err
+		}
+	}
+	t.Fatalf("%d bytes written into a journal of %d bytes were never refused", off, int64(fillMax))
+	return off, nil
+}
+
 // Every condition a metric names that a node can reach without the offload
 // and syncer calls moves its series, read from the node's real metrics
 // listener. Conditions that need those calls, or a counter the journal does
 // not maintain yet, are skipped with their reason.
 func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 	t.Run("refused reservation", func(t *testing.T) {
-		h, _ := seamed(t, 4<<20)
+		h, _ := seamed(t, fillMax)
 		started(t, h)
 		sh := addShare(t, h)
 		file := createFiles(t, h, sh, 1)[0]
 		caughtUp(t, h)
 		before := jscrape(t, h)
 
-		// Fill the journal until a write is refused. The engine answers a
-		// capacity refusal two ways: retry-later for a spill flat of
-		// spares, a share limit, or a pass still running — and, since
-		// repack's settle, no-space-at-once when nothing is left to free,
-		// a journal full of only dirty bytes, which an endless delay would
-		// hang a hard mount answering. Either way the journal has refused
-		// the write at its own limit first, so the refused-reservation
-		// counter — not the error's shape — decides what the drive has
-		// reached; both shapes are the engine's, matched as its own
-		// conformance matches them.
-		const chunk = 256 << 10
-		capacityRefusal := func(err error) bool {
-			var delay *vfserr.Delay
-			return errors.As(err, &delay) && delay.Cause == vfserr.DelayCapacity || errors.Is(err, vfserr.ErrNoSpace)
+		// Fill the journal until its maximum refuses a write. A spare still
+		// being made answers retry-later, and the fill writes the same chunk
+		// again; the refusal the row reaches is the maximum's no space,
+		// after the journal took at least a segment of content: a journal
+		// sized past its spare targets refuses nothing at its maximum
+		// before then, so a refusal earlier is some other limit's.
+		accepted, err := fillToTheMaximum(t, h, sh.ID, file.ID)
+		if !errors.Is(err, vfserr.ErrNoSpace) || !strings.Contains(err.Error(), "the journal limit") {
+			t.Fatalf("the fill's refusal = %v after %d bytes, want no space naming the journal's limit", err, accepted)
 		}
-		refused := false
-		for i := range 128 {
-			err := jwrite(t, h, sh.ID, file.ID, int64(i)*chunk, pattern(fmt.Sprint("fill", i), chunk))
-			if err == nil {
-				continue
-			}
-			if !capacityRefusal(err) {
-				t.Fatalf("write %d into the journal of 4 MiB: %v", i, err)
-			}
-			if v, _ := at(t, jscrape(t, h), "dittofs_journal_reservation_refused_total"); v >= 1 {
-				refused = true
-				break
-			}
-			// A spill flat of spares passes retry-later at the engine's
-			// surface; the pool makes its next spare in the background and
-			// the fill goes on.
-		}
-		if !refused {
-			t.Fatal("128 writes of 256 KiB into a journal of 4 MiB were never refused at the journal's own limit")
+		if accepted < 1<<20 {
+			t.Fatalf("the journal's limit refused the fill after %d bytes, want at least a segment of 1 MiB written first", accepted)
 		}
 		after := jscrape(t, h)
 		if v := moved(t, "dittofs_journal_reservation_refused_total", before, after); v < 1 {
