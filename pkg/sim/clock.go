@@ -23,7 +23,7 @@ type TestClock struct {
 	wall    time.Time     // what Now returns
 	mono    time.Duration // what Elapsed returns
 	pending []timer
-	armed   []timer // due is the d an After call must ask for
+	armed   map[time.Duration][]chan struct{} // closed by a later After of that length
 }
 
 // timer is one After channel not yet closed.
@@ -57,7 +57,8 @@ func (c *TestClock) Elapsed() time.Duration {
 }
 
 // After returns a channel that is closed once the clock has moved d past its
-// current Elapsed. A d of zero or less returns a channel already closed.
+// current Elapsed. A d of zero or less returns a channel already closed. It
+// also closes every Armed channel waiting on d.
 func (c *TestClock) After(d time.Duration) <-chan struct{} {
 	ch := make(chan struct{})
 	if d <= 0 {
@@ -69,25 +70,28 @@ func (c *TestClock) After(d time.Duration) <-chan struct{} {
 	defer c.mu.Unlock()
 
 	c.pending = append(c.pending, timer{due: c.mono + d, ch: ch})
-	c.armed = slices.DeleteFunc(c.armed, func(a timer) bool {
-		if a.due == d {
-			close(a.ch)
-			return true
-		}
-		return false
-	})
+	for _, a := range c.armed[d] {
+		close(a)
+	}
+	delete(c.armed, d)
 	return ch
 }
 
 // Armed returns a channel closed once a later After call asks for exactly d,
 // so a test waits on one waiter's wait being set rather than on a count of
-// waits any goroutine may raise. A d of zero or less is never pending, so its
-// channel never closes.
+// waits any goroutine may raise. An After made before Armed is not seen.
+// It panics on a d of zero or less, which After never holds pending.
 func (c *TestClock) Armed(d time.Duration) <-chan struct{} {
+	if d <= 0 {
+		panic("sim: Armed of a non-positive duration")
+	}
 	ch := make(chan struct{})
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.armed = append(c.armed, timer{due: d, ch: ch})
+	if c.armed == nil {
+		c.armed = make(map[time.Duration][]chan struct{})
+	}
+	c.armed[d] = append(c.armed[d], ch)
 	return ch
 }
 

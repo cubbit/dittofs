@@ -259,3 +259,21 @@ func TestArmedFiresOnALaterAfterOfItsDuration(t *testing.T) {
 	}
 	c.After(time.Second) // a closed Armed is done with: a second After(1s) closes nothing twice
 }
+
+func TestArmedClosesEveryWaiterOfItsDuration(t *testing.T) {
+	c := NewTestClock(start)
+	a, b := c.Armed(time.Second), c.Armed(time.Second)
+	c.After(time.Second)
+	if !fired(a) || !fired(b) {
+		t.Fatalf("two Armed(1s) after one After(1s): closed %v and %v, want both", fired(a), fired(b))
+	}
+}
+
+func TestArmedRefusesANonPositiveDuration(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Armed(0) returned, want a panic: After never holds a zero wait pending")
+		}
+	}()
+	NewTestClock(start).Armed(0)
+}

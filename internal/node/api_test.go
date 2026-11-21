@@ -92,8 +92,11 @@ func TestNodeServesTheAPI(t *testing.T) {
 	// Neither call keeps its connection: the leak check that ends the test
 	// would otherwise race the transport's goroutines winding down. The test
 	// waits on the poll's own wait being set on the clock: a wait under a
-	// second is one wait of exactly that length, which no loop of the node
-	// arms, so another loop's wait set meanwhile cannot pass for it. The poll
+	// second is one wait of exactly that length. The node's loops arm fixed
+	// waits of a second or more, and the engine's computed waits arm their
+	// full bound while the clock has not moved, so no other wait set meanwhile
+	// can pass for the poll's. Advancing the clock before the poll parks
+	// breaks that. The poll
 	// runs under the test's context, which ends before the leak check reads,
 	// so a test that fails before reading its answer leaves no connection
 	// open.
@@ -104,7 +107,6 @@ func TestNodeServesTheAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	parked := h.Clock().Armed(wait)
-	h.Clock().After(time.Second) // a loop of the node arming its wait now does not pass for the poll's
 	polled := make(chan error, 1)
 	var poll *http.Response
 	go func() {
