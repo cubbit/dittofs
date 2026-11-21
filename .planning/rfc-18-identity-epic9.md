@@ -11,9 +11,11 @@ unknown principal refused), §3.4 (a PAC with no logon-information buffer), §3.
 (Kerberos names), §4.4 (no mint for an unauthenticated lookup), §6.2 (squashing and its order),
 §6.3 and §6.4 (grants, `none`), §7.1 and §7.2 (the caller cache and a change applied within a
 second); [RFC 22](../docs/internals/rfcs/rfc-22-smb.md) §16.5 (`STATUS_LOGON_FAILURE`) and §18's "§4.1
-re-authentication" and "§4.1 expired session". RFC 18 as `develop` holds it at f272a7c8d.
+re-authentication" and "§4.1 expired session"; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §4.9's
+admission, whose steps 1, 2 and 4 still gate a call that only releases state. RFC 18 as `develop`
+holds it at f272a7c8d.
 **Track:** the team.
-**Epic 9 estimate: 10 subtasks, 11.75 man-days.**
+**Epic 9 estimate: 10 subtasks, 12.25 man-days.**
 **Depends on:** **S3**, an SMB adapter serving through the node: RFC 20's plan's epic 7 (the node
 starts the adapters, and `nodetest` serves them on loopback) and RFC 22's plan's sessions, trees,
 opens and data path (its epics 5 to 7), with its scripted client (T5.8), `gsstest`'s initiators
@@ -23,7 +25,8 @@ setting a DACL needs and which RFC 22's first-mount path leaves for later. **E8*
 `node.New` and its `State` from reconcile (T8.1, T8.2), the in-memory directory and domain
 controller handed through `export_test.go`'s `NewWithDialers` (its D4), the offline join and
 pass-through on the node (T8.6). **E5**: `identitytest.Realm` (its D10), whose tickets and PACs
-every Kerberos row here uses, and the PAC tests T5.5 and T5.6. **E3**: D9's refusal of a deny-only
+every Kerberos row here uses, the PAC tests T5.5 and T5.6, and T5.11's replay of a captured
+AP-REQ. **E3**: D9's refusal of a deny-only
 caller, which shapes T9.6. **RFC 23's plan**: its epic 3's `nodetest` and the writer's at-once apply
 (its D16), its epic 4's user, share, grant, settings, keytab and `resolve-principal` routes (T4.10,
 T4.11), its epic 5's `set-password`.
@@ -46,20 +49,20 @@ identity's own tests.
   principal's own grant, `none` included, decides a squashed share (T9.2), and a deny-only mark
   reaches admission (T9.6);
 - a session acts as the principal it was bound to across a delete and a re-creation under the same
-  name (T9.3);
+  name, over Kerberos (T9.3) and over pass-through (T9.9);
 - a disable, a re-authentication and turning NTLM off each act on sessions already held (T9.4,
   T9.5, T9.9);
-- a machine principal reaches no share, no grant names an API-only account (T9.7), and an
-  anonymous lookup mints nothing (T9.8);
-- an MIT KDC's ticket, its PAC holding no logon-information buffer, is a captured vector that E5's
-  PAC test and `FuzzPAC` read (T9.10).
+- a machine principal reaches no share, no grant names an API-only account on any store backend
+  (T9.7), and an anonymous lookup mints nothing (T9.8);
+- an MIT KDC's AP-REQ, its PAC holding no logon-information buffer, is a captured vector that signs
+  in through `SignIn` on a clock pinned to its capture, and its PAC a `FuzzPAC` seed (T9.10).
 
 ### 1.1 In scope
 
 The rows listed under **Sources**, each over SMB on the composed node in `unit`, as far as D2
 says; the SMB sign-in helpers those rows share; the refusal of a grant naming an API-only account,
-which no epic builds (D6); the MIT KDC image restored under `test/integration/kerberos` with the
-test that captures its ticket.
+which no epic builds, as a store contract in `kvstoretest` (D6); the MIT KDC image restored under
+`test/integration/kerberos` with the test that captures its ticket.
 
 ### 1.2 Out of scope
 
@@ -75,7 +78,7 @@ test that captures its ticket.
   `kvstore`'s `SetGrant` already holds on `feat/storage-v2`.
 - Re-authentication's teardown on a failed proof and an expired session's release calls: RFC 22
   §18's "§4.1 re-authentication" and "§4.1 expired session", run by RFC 22's plan's T5.5 on
-  `memory.New` and by its T16.3 through smbtorture (D4).
+  `memory.New` and by its T16.3 through smbtorture (D2).
 - A deny-only SID matched by deny entries only in a file's ACL: E3's D9 refuses a caller holding a
   deny-only principal at admission until RFC 19 §2.3's deny match lands, owned by #4564; the file
   clauses of "deny-only SIDs" go with it (D7).
@@ -88,6 +91,8 @@ test that captures its ticket.
   row needs a kernel client (D1). So is the MIC Samba's clients send, which E4 flags as a risk:
   `gsstest`'s NTLM initiator cannot disagree with `gss`, and RFC 22's plan's smbtorture cells
   (T16.3) are where a Samba client's MIC is verified.
+- The `e2e/kerberos` cell, which runs kernel-client Kerberos tests and has none on
+  `feat/storage-v2`: T16.4's to fill or remove (D1).
 - `lsarpc`'s `LookupSids` (opnum 15): the RFC 18 plan's deferral ledger row "`lsarpc`'s
   `OpenPolicy`, `LookupSids` and `OpenPolicy3`"; "anonymous lookup" runs on `LookupSids2` (D5).
 - The NFS halves of "squash order follows the proof", "disable takes effect" and "no file
@@ -159,30 +164,30 @@ cite them. Sources are RFC 18 unless named.
 | R5 | A proven identity's grant is read for the principal sign-in authenticated, before the squash: with `Squash = all`, `read-write` to alice, `none` to bob and `read` to everyone, alice over Kerberos writes and the file is owned by `Anonymous`, and bob is refused at the share | invariant | §6.2 "The squash order follows the proof"; §10 "squash order follows the proof", its Kerberos half | T9.2 |
 | R6 | A deny-only SID matches deny entries only and never grants: with a PAC marking `Finance` deny-only, a file whose ACL allows `Finance` read is refused, one that allows alice and denies `Finance` read is refused, and a share whose only grant names `Finance` refuses alice | invariant | §3.4; §6.3; §9.1 ID13; §10 "deny-only SIDs" | T9.6 for the mark reaching admission over SMB; the share-grant clause held by E5's T5.7 and E3's T3.5; the file clauses wait for #4564 (D7) |
 | R7 | A principal with no file spelling acts on files as the share's `Anonymous`, never `authenticated`: a machine principal is refused on a share whose only grant is authenticated users `read` | invariant | §2.4; §6.2; §9.1 ID3; §10 "no file spelling", its SMB half | T9.7 |
-| R8 | No share grant may name a principal with no file spelling: the management API refuses a grant naming a machine principal or an API-only account | MUST NOT | §2.4; §10 "no file spelling" | T9.7 for an API-only account (D6); held for a machine principal by RFC 23's plan's epic 4's T4.10 (its R46) |
-| R9 | A grant of `none` is stored, distinct from no grant: with `Finance` granted `read-write` and alice `none`, alice is refused; with alice's grant removed, she is granted through `Finance` | MUST | §6.4; §9.1 ID14; §10 "`none` is stored" | T9.2's bob, whose `none` refuses him at `TREE_CONNECT` over an everyone grant; the removal's fall-through to a group is E3's T3.5, since an adapter grants nothing (§9.1 ID11) |
+| R8 | No share grant may name a principal with no file spelling: the management API refuses a grant naming a machine principal or an API-only account | MUST NOT | §2.4; §10 "no file spelling" | T9.7 for an API-only account, a case of `kvstoretest`'s conformance suite (D6); held for a machine principal by RFC 23's plan's epic 4's T4.10 (its R46) at the route, and by T9.7's `kvstoretest` case at the store |
+| R9 | A grant of `none` is stored, distinct from no grant: with `Finance` granted `read-write` and alice `none`, alice is refused; with alice's grant removed, she is granted through `Finance` | MUST | §6.4; §9.1 ID14; §10 "`none` is stored" | T9.2's eve, whose `none` refuses her at `TREE_CONNECT` over an everyone grant; the removal's fall-through to a group is E3's T3.5, since an adapter grants nothing (§9.1 ID11) |
 
 **Changes on held sessions**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R10 | A disable reaches a session already held: on a Kerberos session whose calls the caller cache serves, the next call after the disable is still served until the `State` that carries it is applied, and refused from then on, its open handle staying open; on a local NTLM session, never cached, the first call after the disable is refused with no `State` applied | MUST | §3.7; §7.1; §7.2; §9.1 ID10; §10 "disable takes effect", its SMB half | T9.4 |
-| R11 | A session acts as the principal its last successful sign-in bound it to, and its name is never mapped again: alice deleted and a user named alice created, every call on alice's old Kerberos session is refused and a fresh sign-in acts as the new principal; the same for an NTLM pass-through session whose name the directory gives to a new SID | invariant | §3.7; §9.1 ID12; §10 "binding" | T9.3 for the Kerberos half, which catches an adapter or `*vfs.Filesystem` mapping again by name whatever the mechanism; the pass-through half's binding at `SignIn` held by E5's T5.8b and E8's T8.5 |
+| R10 | A disable reaches a session already held: on a Kerberos session whose calls the caller cache serves, the next call after the disable is still served until the `State` that carries it is applied, and refused from then on: its open handle stays in the session's table, and every call through it, `CLOSE` included, is refused; on a local NTLM session, never cached, the first call after the disable is refused with no `State` applied | MUST | §3.7; §7.1; §7.2; §9.1 ID10; §10 "disable takes effect", its SMB half; RFC 17 §4.9's admission, whose steps 1, 2 and 4 still gate a release call | T9.4 |
+| R11 | A session acts as the principal its last successful sign-in bound it to, and its name is never mapped again: alice deleted and a user named alice created, every call on alice's old Kerberos session is refused and a fresh sign-in acts as the new principal; the same for an NTLM pass-through session whose name the directory gives to a new SID | invariant | §3.7; §9.1 ID12; §10 "binding" | T9.3 for the Kerberos half, which catches an adapter or `*vfs.Filesystem` mapping again by name whatever the mechanism; T9.9 for the pass-through half, on `joinedNode` |
 | R12 | Turning `identity.ntlm` off refuses every call on an established NTLM session, local or pass-through, cached or not, from the `Apply` that delivers it, and every fresh NTLM sign-in | MUST | §3.5; §10 "NTLM off", its session halves | T9.9 for held sessions; a fresh sign-in refused by E4; the deletion and the stored NT hashes by E8's T8.10 |
 
 **Re-authentication**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R13 | Any failed re-authentication ends the session it targeted, its trees and opens with it | MUST | §3.8; §10 "re-authentication"; RFC 22 §18 "§4.1 re-authentication" | held by E4 (the context ended at `SignIn`) and RFC 22's plan's T5.5 and T16.3 (the session torn down) (D4) |
+| R13 | Any failed re-authentication ends the session it targeted, its trees and opens with it | MUST | §3.8; §10 "re-authentication"; RFC 22 §18 "§4.1 re-authentication" | held by E4 (the context ended at `SignIn`) and RFC 22's plan's T5.5 and T16.3 (the session torn down) (D2) |
 | R14 | A successful re-authentication replaces the session's identity in one step and keeps its trees and opens, each with the access granted at its open: as alice with a new ticket, the new `Expires` in force; as bob, the session acts as bob while alice's open keeps its access | invariant | §3.8; §9.1 ID12; §10 "re-authentication" | T9.5 |
-| R15 | A session past `Expires` still admits `CLOSE`, an unlock and its re-authentication, and refuses a read with the expired-credential answer, `STATUS_NETWORK_SESSION_EXPIRED` | MUST | §3.8; §10 "re-authentication"; RFC 22 §18 "§4.1 expired session" | T9.5 for a read refused at the real ticket's end; the release calls held by RFC 22's plan's T5.5 and T16.3 (D4) |
+| R15 | A session past `Expires` still admits `CLOSE`, an unlock and its re-authentication, and refuses a read with the expired-credential answer, `STATUS_NETWORK_SESSION_EXPIRED` | MUST | §3.8; §10 "re-authentication"; RFC 22 §18 "§4.1 expired session" | T9.5 for a read refused at the real ticket's end; the release calls held by RFC 22's plan's T5.5 and T16.3 (D2) |
 
 **A real KDC**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R16 | In a keytab realm other than the directory's, a ticket without a PAC, or with a PAC whose server signature verifies but which holds no logon-information buffer, is accepted and its groups read from the store | MUST | §3.4; §4.2; §10 "PAC", its keytab-realm clause | T9.10, with a real MIT KDC's tickets; E5's T5.5 (no PAC) and T5.6 (no logon-information buffer) hold it with the test realm |
+| R16 | In a keytab realm other than the directory's, a ticket without a PAC, or with a PAC whose server signature verifies but which holds no logon-information buffer, is accepted and its groups read from the store | MUST | §3.4; §4.2; §10 "PAC", its keytab-realm clause | T9.10 for the PAC with no logon-information buffer, with a real MIT KDC's AP-REQ; E5's T5.5 (no PAC) and T5.6 (no logon-information buffer) hold it with the test realm |
 
 Which test holds each row is in its subtask's **Tests**, or in the row when another epic's test
 holds it.
@@ -197,7 +202,14 @@ holds it.
   about, and needs root. What a kernel client does show about sign-in, its own Kerberos and
   pass-through handshake, is RFC 20 §7.5's "§4.4 Kerberos and AD" row, which RFC 22's plan's T16.4
   runs. So this epic adds no test to `e2e` (`CLAUDE.md`, "By kind": a rule a lower tier can check
-  belongs there), where the RFC 18 plan had named `e2e/kerberos`. Prior art (from memory): Samba's
+  belongs there), where the RFC 18 plan had named `e2e/kerberos`. That cell
+  (`test/suites.yaml`'s `e2e` option `kerberos`, `go test -tags=e2e -run Kerberos ./test/e2e/`)
+  matches no test on `feat/storage-v2`, where `test/e2e` holds only its framework, so every change
+  under its path triggers, `test/integration/kerberos/**` among them, runs it green on nothing. It
+  stays, for RFC 22's plan's T16.4, whose kernel-client Kerberos rows are what it runs; that owner
+  fills it or removes it with `KDCHelper`. This epic does not remove it:
+  `test/harness/plan/plan_test.go` pins the cell and the paths that plan it, and T16.4 would add it
+  back. Prior art (from memory): Samba's
   selftest checks its authentication rules with its own client libraries against a provisioned
   server, and leaves kernel mounts to cifs-utils.
 - **D2, a row runs here only for what crosses the adapter.** Each row's lower clauses are already
@@ -208,7 +220,11 @@ holds it.
   A field dropped on that path, such as `Expires`, `DenyOnly` or a PAC's groups, leaves every lower
   test green. So a row runs here when such a field crosses, asserted at the client (a status, the
   bytes read, the owner read back), and is named in its R row when nothing crosses (R2, R9, R13,
-  R15's release calls). No marker: test placement. Prior art: `CLAUDE.md`, "Verifying a change".
+  R15's release calls). Re-authentication's teardown and the release calls past `Expires` are the
+  adapter's alone, run by RFC 22's plan's T5.5 on `memory.New` and its T16.3 through smbtorture's
+  `smb2.session.reauth1` to `reauth6` and `expire2s`, which RFC 22 §18 names; what the real
+  Kerberos `SignIn` adds, `Expires` from the ticket and a new principal, is T9.5's. No marker: test
+  placement. Prior art: `CLAUDE.md`, "Verifying a change".
 - **D3, the real KDC runs only to capture its ticket, pending the user's answer (§9).** RFC 18
   never names a real KDC beyond Samba's, and no RFC 18 row needs a kernel client (D1). What only an
   MIT KDC shows is its PAC: since krb5 1.20 (Debian bookworm's `krb5-kdc`) MIT puts a PAC in every
@@ -217,20 +233,21 @@ holds it.
   D6). Neither `identitytest.Realm` nor Samba's KDC issues one. The adapter path a ticket takes is
   the same for every KDC and is T9.2's, so T9.10 does as `integration/ad-dc`'s
   `pac_capture_test.go` does for Samba: it restores `test/integration/kerberos` with `develop`'s MIT
-  image, captures two tickets with the service's keytab, checks each against identity's verifier,
-  and commits them as vectors E5's PAC test and `FuzzPAC` read in `unit`. The capture runs in the
-  `integration/kerberos` cell, unskipped on `feat/storage-v2`, with `kerberos` in lint-go's
-  `go vet -tags=` list. `e2e/kerberos`'s `KDCHelper` builds from the same directory, so its build
-  context exists again, a side effect with no consumer here. A `decision:` marker at the test says
-  why the KDC only captures. Prior art: `pac_capture_test.go` on `feat/storage-v2`; from memory,
-  gokrb5 keeps captured MIT tickets as test vectors.
-- **D4, re-authentication's join runs here, its teardown and releases stay RFC 22's.** RFC 22's
-  plan's T5.5 runs its re-authentication and expired-session rows on `memory.New`, whose `SignIn`
-  sets `Expires` itself, and its T16.3 runs smbtorture's `smb2.session.reauth1` to `reauth6` and
-  `expire2s`, which RFC 22 §18 names. A failed proof's teardown and the release calls past
-  `Expires` are the adapter's alone. What the real Kerberos `SignIn` adds is `Expires` taken from
-  the ticket and a new principal, carried through `*vfs.Filesystem`; T9.5 holds that join. No
-  marker. Prior art: none needed.
+  image, captures one ticket with the service's keytab, checks it against identity's verifier, and
+  commits it as a vector E5's tests and `FuzzPAC` read in `unit`. Only one: a ticket with no PAC is
+  the same whichever KDC issues it, and E5's T5.5 holds it with the test realm. A ticket alone
+  cannot sign in through `SignIn`, which decrypts the authenticator under the session key and
+  refuses a ticket past its end (`kerberos.go`), so the vector is alice's AP-REQ with the capture's
+  authentication time, replayed on the injected clock set to that time, as E5's T5.11 does for
+  Samba's alice; on the wall clock it would go red once the ticket ends. `FuzzPAC` takes PAC bytes
+  (`pacSeeds` reads `testdata/pac/`), so the ticket's PAC is also written there as its own file.
+  The capture runs in the `integration/kerberos` cell, unskipped on `feat/storage-v2`, with
+  `kerberos` in lint-go's `go vet -tags=` list. `e2e/kerberos`'s `KDCHelper` builds from the same
+  directory, so its build context exists again, a side effect with no consumer here (D1). A
+  `decision:` marker at the test says why the KDC only captures. Prior art: `pac_capture_test.go`
+  on `feat/storage-v2` and E5's T5.11 (#5314); from memory, gokrb5 keeps captured MIT
+  tickets as test vectors.
+- **D4, folded into D2.**
 - **D5, "anonymous lookup" runs on `LookupSids2`.** RFC 22's plan's T6.5 builds `OpenPolicy2`,
   `LookupSids2` and `LookupSids3`; opnum 15, `LookupSids`, is a deferral ledger row. The rule, a
   lookup that never mints for an unauthenticated caller, is `Find`'s (`FindOpts.Mint`, §4.4), the
@@ -243,9 +260,14 @@ holds it.
   `kvstore`'s `SetGrant` refuses any principal kind but a user or a group, so a machine is refused,
   and an API-only account, a user record with no uid, is stored; RFC 23's plan's T4.10 tests
   machines only (its R46). T9.7 adds the refusal of a user with no uid to the same check,
-  `ErrInvalid` and nothing written, with a `decision:` marker naming RFC 18 §2.4's rule. The route
-  maps `ErrInvalid` to `400` as T4.10 tests for machines. Alternative: RFC 23's plan's T4.10 takes
-  it. Prior art: none found.
+  `ErrInvalidArgument` and nothing written, with a `decision:` marker naming RFC 18 §2.4's rule. It
+  sits at the store so that every writer is refused, the API, a runner and a test fixture alike, as
+  machines already are; the route maps the error to `400` as T4.10 tests for machines. A refusal
+  `SetGrant` makes is a store contract, so its case joins the `OWNER@` and default-grant refusals
+  in `kvstoretest/auth.go`, run on every backend, with a machine principal's case beside it, which
+  the suite does not hold yet. The check breaks the fixtures that grant
+  a user with no uid, listed in T9.7, which give those users a uid. Alternative: RFC 23's plan's
+  T4.10 takes it. Prior art: none found.
 - **D7, "deny-only SIDs" is held at admission until #4564.** E3's D9 refuses any caller holding a
   deny-only principal at admission, because RFC 19 §2.3's deny match is not built; #4564 owns it.
   Until then both file clauses of the row pass for D9's reason, whatever an ACL says, so running
@@ -275,11 +297,18 @@ internal/node/
                                 T9.7   "no file spelling"
                                 T9.8   "anonymous lookup"
 pkg/metadata/kvstore/shares.go  T9.7   SetGrant refuses a user with no uid (D6)
+pkg/metadata/kvstore/kvstoretest/
+  auth.go                       T9.7   the no-uid and machine grant refusals, on every backend
+  namespace.go, bench.go        T9.7   their admin given a uid
+internal/vfs/                   T9.7   authz_test.go's bob given a uid; tests that rewrite the
+                                       fixture admin's IDs keep its uid
 test/integration/kerberos/
   Dockerfile, entrypoint.sh     T9.10  lifted from develop's history (rule 7)
-  pac_capture_test.go           T9.10  MIT tickets captured and verified
-internal/identity/testdata/     T9.10  the MIT tickets and their keytab, read by E5's PAC test
-                                       and FuzzPAC
+  pac_capture_test.go           T9.10  the MIT ticket captured and verified
+internal/identity/
+  testdata/pac/mit-*            T9.10  alice's AP-REQ, its time, the PAC and the keytab
+  fuzz_test.go                  T9.10  mit-service.pac in pacSeeds
+  pac_test.go                   T9.10  the AP-REQ signed in on the pinned clock
 test/suites.yaml                T9.10  kerberos in lint-go's go vet -tags list
 .github/workflows/tests.yml     T9.10  integration/kerberos out of the V2 skip
 ```
@@ -367,14 +396,20 @@ test/suites.yaml                T9.10  kerberos in lint-go's go vet -tags list
 - **Covers:** R10.
 - **Deliverables:** a test in `identity_smb_live_test.go`.
 - **Acceptance criteria:**
-  - The Kerberos session's refusal comes with the `State` one second later, the NTLM one's with
-    none.
+  - The Kerberos session's refusal comes with the `State` applied one second later, the NTLM
+    one's with none; the disabled session's open stays in the table while every call through it is
+    refused.
 - **Tests:** in `node_test`, the injected clock: bob holds a Kerberos session with a PAC-less
-  ticket of `LOCAL.EXAMPLE`, and an NTLM session; each opens a file and reads twice, the Kerberos
-  one's second read counted a hit by `vfs_caller_cache_lookups_total` (the control). bob disabled
-  through kvstore's view (D8): the NTLM session's next `READ` refused at once; the Kerberos one's
-  served; the clock advanced one second: its next `READ` refused, and `CLOSE` on its open succeeds
-  (catches a cached caller outliving a disable, or a disabled user's handle closed under it, R10).
+  ticket of `LOCAL.EXAMPLE`, and an NTLM session; each opens a file, the Kerberos one with no share
+  access, and reads twice, and `vfs_caller_cache_lookups_total{result="hit"}` read just before and
+  just after the Kerberos session's second read grows by one (the control; the NTLM session's
+  reads fall outside that window). bob disabled through kvstore's view (D8): the NTLM session's
+  next `READ` refused at once; the Kerberos one's served; the clock advanced one second and the
+  reconcile pass awaited on `export_test.go`'s `Moved()`, as `adapters_test.go` does, with a 10 s
+  backstop: its next `READ` refused, and `CLOSE` on its open refused too, while eve's `CREATE` of
+  the same file is still answered `STATUS_SHARING_VIOLATION` by that open (catches a cached caller
+  outliving the disable, a release call let through for a disabled user, or the disabled user's
+  handle closed under it, R10).
 
 ### T9.5 "re-authentication" over SMB
 
@@ -385,7 +420,9 @@ test/suites.yaml                T9.10  kerberos in lint-go's go vet -tags list
 - **Deliverables:** a test in `identity_smb_live_test.go`.
 - **Acceptance criteria:**
   - Every clause is read on the session the re-authentication targeted.
-- **Tests:** in `node_test`, the injected clock, `LOCAL.EXAMPLE` tickets with chosen end times:
+- **Tests:** in `node_test`, the injected clock, `LOCAL.EXAMPLE` tickets with chosen end times; the
+  adapter reads `Expires` against the clock on each request (RFC 18 §3.8), with no `State` to
+  apply, so a clock step needs no wait:
   - alice's Kerberos session with an open; re-authenticated with a ticket ending an hour after the
     first: the clock past the first's end, a `READ` on the open still served (catches the new
     `Expires` dropped between `SignIn` and the session, R14);
@@ -406,19 +443,26 @@ test/suites.yaml                T9.10  kerberos in lint-go's go vet -tags list
   - The two sessions differ only in the mark.
 - **Tests:** in `node_test`, two tickets for dana from `identitytest.Realm`, one marking `Sales`
   deny-only (`SE_GROUP_USE_FOR_DENY_ONLY`), one not, on a share granting everyone `read`: without
-  the mark a `READ` succeeds; with it the call is refused (catches `DenyOnly` dropped between the
-  PAC and admission, which turns a deny-only SID into a plain member, R6). The file clauses: D7.
+  the mark the `TREE_CONNECT` succeeds and a `READ` returns the file's bytes; with it the
+  `TREE_CONNECT`, the first call admission sees, is answered `STATUS_ACCESS_DENIED` (catches
+  `DenyOnly` dropped between the PAC and admission, which turns a deny-only SID into a plain
+  member, R6). The file clauses: D7.
 
 ### T9.7 "no file spelling" over SMB, and the grant refusal
 
-**Subtask T9.7 estimate: 1 man-days.**
+**Subtask T9.7 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T9.2. E5's machine principals (minted at first Kerberos
   sign-in); RFC 23's plan's epic 4's T4.10.
 - **Covers:** R7, R8.
-- **Deliverables:** in `kvstore`'s `SetGrant`, a user with no uid refused `ErrInvalid`, nothing
-  written, beside the machine refusal, with the `decision:` marker (D6); a test in
-  `identity_smb_files_test.go`.
+- **Deliverables:** in `kvstore`'s `SetGrant`, a user with no uid refused `ErrInvalidArgument`,
+  nothing written, beside the machine refusal, with the `decision:` marker (D6); its case and a
+  machine principal's in `kvstoretest/auth.go`, beside the `OWNER@` and default refusals; the
+  fixtures that grant a user with no uid given one: `kvstoretest/namespace.go`'s `setupFS` admin,
+  which `kvstoretest.NewFS` hands to `internal/vfs`'s tests, `kvstoretest/bench.go`'s admin and
+  `internal/vfs/authz`'s `TestViaReachesTheChokepoint` bob, with the `internal/vfs` tests that
+  write the fixture admin's IDs again kept to the uid it is given; the rest found by running the
+  tree; a test in `identity_smb_files_test.go`.
 - **Acceptance criteria:**
   - A grant naming the bootstrap administrator, an API-only account, is refused, and a user with
     a uid is still granted.
@@ -427,9 +471,10 @@ test/suites.yaml                T9.10  kerberos in lint-go's go vet -tags list
     succeeds (the control); `BUILD01$`'s `CORP.EXAMPLE` ticket with a PAC signs in, minting a
     machine principal, and its `TREE_CONNECT` is refused `STATUS_ACCESS_DENIED` (catches a machine
     treated as an authenticated file caller, R7);
-  - in `kvstore`'s own tests: `SetGrant` for a user with no uid refused `ErrInvalid` and the raw
-    keys unchanged; for a user with one, stored (catches an API-only account given file access
-    through a grant, R8). The route's `400` for `ErrInvalid` is T4.10's.
+  - in `kvstoretest`, on every backend: `SetGrant` for a user with no uid, and for a machine
+    principal, refused `ErrInvalidArgument` and no grant readable after it; for a user with a uid,
+    stored (catches an API-only account given file access through a grant, by any writer, R8). The
+    route's `400` for the error is T4.10's.
 
 ### T9.8 "anonymous lookup"
 
@@ -449,49 +494,59 @@ test/suites.yaml                T9.10  kerberos in lint-go's go vet -tags list
 
 ### T9.9 Pass-through on the composed node, and "NTLM off"
 
-**Subtask T9.9 estimate: 1.5 man-days.**
+**Subtask T9.9 estimate: 1.75 man-days.**
 
 - **Track:** the team. **Depends on:** T9.1. E3's T3.10; E7's pass-through; E8's T8.6.
-- **Covers:** R12.
+- **Covers:** R11 (its pass-through half), R12.
 - **Deliverables:** `joinedNode(t)`: `smbNode` offline-joined through the API to the in-memory
   domain controller, as E8's T8.6 does; a pass-through session through `ntlmSession` with the
-  domain's NetBIOS name; a test in `identity_smb_live_test.go`.
+  domain's NetBIOS name; two tests in `identity_smb_live_test.go`.
 - **Acceptance criteria:**
-  - Both sessions are refused with no principal changed.
-- **Tests:** in `node_test`, on `joinedNode`, the injected clock not advanced: alice on a local
-  NTLM session reads; dana on a pass-through session reads twice, the second counted a hit by
-  `vfs_caller_cache_lookups_total` (the control that the cached path is tested); `identity.ntlm`
-  turned off through the API, which applies at once on this node: each session's next `READ`
-  refused (catches an NTLM context outliving the setting through a cached caller or through the
-  adapter's session, R12).
+  - Both NTLM sessions are refused with no principal changed; the old pass-through session is
+    refused with no sign-in in between.
+- **Tests:** in `node_test`, on `joinedNode`:
+  - "NTLM off", the injected clock not advanced: alice on a local NTLM session reads; dana on a
+    pass-through session reads twice, and `vfs_caller_cache_lookups_total{result="hit"}` read just
+    before and just after dana's second read grows by one (the control that the cached path is
+    tested); `identity.ntlm` turned off through the API, which applies at once on this node: each
+    session's next `READ` refused (catches an NTLM context outliving the setting through a cached
+    caller or through the adapter's session, R12);
+  - "binding", its pass-through half: dana on a pass-through session opens a file; dana deleted
+    through the API, and the in-memory domain controller and directory re-link the name dana to a
+    new user SID: a `READ` on the old session refused, and a fresh pass-through sign-in as dana
+    creates a file whose owner SID read back is the new SID's principal, not the old one's (catches
+    a pass-through context mapped again by name, R11).
 
-### T9.10 An MIT KDC's tickets as vectors
+### T9.10 An MIT KDC's ticket as a vector
 
 **Subtask T9.10 estimate: 1.5 man-days.**
 
-- **Track:** the team. **Depends on:** none. E5's T5.5 and T5.6 (the PAC tests that read the
-  vectors), `FuzzPAC`.
+- **Track:** the team. **Depends on:** E5's T5.5, T5.6 and T5.11, `FuzzPAC`; no node.
 - **Covers:** R16.
 - **Deliverables:** `test/integration/kerberos/Dockerfile` and `entrypoint.sh` lifted from
   `develop`'s history (rule 7), building Debian bookworm's `krb5-kdc`; `pac_capture_test.go` (tag
-  `kerberos`), on the model of `integration/ad-dc`'s: the KDC container on its own network,
-  `cifs/<host>` added with `kadmin` and its keytab exported with AES keys only; alice's ticket for
-  it fetched by gokrb5's client; then `cifs/<host>` set `+no_auth_data_required` and a second
-  ticket fetched; with `DITTOFS_KERBEROS_PAC_OUT` set, both tickets and the keytab written there;
-  the `decision:` marker of D3; the captures committed under `internal/identity/testdata/` as E5's
-  T5.5 and T5.6 cases and `FuzzPAC` seeds; `kerberos` in lint-go's `go vet -tags=` list in
-  `test/suites.yaml`; `integration/kerberos` removed from `tests.yml`'s V2 skip and its comment.
+  `kerberos`), on the model of `integration/ad-dc`'s: the KDC container on its own network; alice
+  and `cifs/<host>` added with `kadmin.local` in the container, since the image's entrypoint
+  creates neither, and the service's keytab exported with AES keys only; alice's service ticket
+  fetched by gokrb5's client and her AP-REQ built from it; with `DITTOFS_KERBEROS_PAC_OUT` set,
+  written there as `mit-alice.apreq`, `mit-alice.json` holding the authenticator's time,
+  `mit-service.pac` holding the ticket's PAC, and `mit-service.keytab`; the `decision:` marker of
+  D3; the four committed under `internal/identity/testdata/pac/`, with the README's capture
+  steps; `mit-service.pac` added to `FuzzPAC`'s `pacSeeds`; a `unit` test in `internal/identity`
+  that signs the AP-REQ in; `kerberos` in lint-go's `go vet -tags=` list in `test/suites.yaml`;
+  `integration/kerberos` removed from `tests.yml`'s V2 skip and its comment.
 - **Acceptance criteria:**
   - The capture runs in the `integration/kerberos` cell on `feat/storage-v2`.
+  - The `unit` test runs on the injected clock set to the capture's time, never the wall clock.
 - **Tests:**
-  - in the cell, against the real KDC, no double: the first ticket, decrypted with the exported
-    keytab, holds a PAC whose server signature verifies and which has no logon-information buffer;
-    the second holds no PAC (catches a KDC change that would make either vector take the other's
-    path, R16);
-  - in `unit`, E5's tests over the committed vectors: each ticket signs in through `SignIn` for a
-    local alice in a store group, its caller holding the group (catches an MIT PAC refused, or its
-    missing logon information taken as an empty group list, R16).
-- **Rules:** rule 2's seeds; rule 8; rule 9's marker.
+  - in the cell, against the real KDC, no double: the ticket, decrypted with the exported keytab,
+    holds a PAC whose server signature verifies and which has no logon-information buffer
+    (catches a KDC change that would make the vector take another path, R16);
+  - in `unit`, beside E5's T5.11: alice's AP-REQ signed in through `SignIn` with
+    `mit-service.keytab`, the clock at the capture's time, for a local alice in a store group: her
+    caller holds the group (catches an MIT PAC refused, or its missing logon information taken as
+    an empty group list, R16). Doubles: the injected clock (kind 1).
+- **Rules:** rule 2's seed; rule 8; rule 9's marker.
 
 ## 7. Order of work
 
@@ -509,8 +564,8 @@ flowchart TD
   T9_2 --> T9_8["T9.8 Anonymous lookup"]
   X4(["RFC 22 plan T6.5"]):::sync --> T9_8
   T9_1 --> T9_9["T9.9 Pass-through, NTLM off"]
-  T9_10["T9.10 MIT tickets as vectors"]
-  X5(["E5 T5.5 and T5.6"]):::sync --> T9_10
+  T9_10["T9.10 MIT ticket as a vector"]
+  X5(["E5 T5.5, T5.6 and T5.11"]):::sync --> T9_10
   T9_2 --> C1(["after T9.2: Kerberos and NTLM sessions on the composed node"]):::sync
   T9_3 & T9_4 & T9_5 & T9_6 & T9_7 & T9_8 & T9_9 --> C2(["RFC 18 §10's SMB rows pass"]):::sync
   T9_10 --> C3(["integration/kerberos runs on feat/storage-v2"]):::sync
@@ -526,9 +581,9 @@ before S3.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T9.1, T9.2 | 3.75 | S3, E8, RFC 22's plan's T4.6, T5.8, T12.2 and T12.4 | the SMB sessions every row signs in with, proven by their first rows |
-| 2 | T9.3, T9.4, T9.5, T9.6, T9.7, T9.8 | 5 | PR 1, RFC 22's plan's T5.5 and T6.5 | the rows on Kerberos sessions, and the grant refusal they need |
-| 3 | T9.9 | 1.5 | PR 1 | pass-through on the composed node and NTLM off on its sessions |
-| 4 | T9.10 | 1.5 | E5's T5.6 | the MIT vectors, which need no node |
+| 2 | T9.3, T9.4, T9.5, T9.6, T9.7, T9.8 | 5.25 | PR 1, RFC 22's plan's T5.5 and T6.5 | the rows on Kerberos sessions, and the grant refusal they need |
+| 3 | T9.9 | 1.75 | PR 1 | pass-through on the composed node, its binding and NTLM off on its sessions |
+| 4 | T9.10 | 1.5 | E5's T5.6 and T5.11 | the MIT vector, which needs no node |
 
 A suggestion only: one pull request per subtask works as well. PRs 2 and 3 can be open at once;
 PR 4 can land before S3.
@@ -554,11 +609,11 @@ scripted client as that plan's T5.8 builds it. T9.10 does not wait.
   root, a kernel and `cifs.upcall` to rows whose every clause the in-process test holds.
   Recommended: (a).
 - **The real KDC (D3).** Options: (a) the MIT KDC runs in the restored `integration/kerberos` cell
-  only to capture tickets that E5's `unit` tests read; (b) the same cell signs a live MIT ticket in
-  over SMB on the composed node, 1 man-day more, whose adapter path T9.2 already holds; (c) none,
-  the test realm and Samba's KDC taken as enough. Recommended: (a): the MIT PAC with no
-  logon-information buffer is a path no other test takes, and a vector holds it in every `unit`
-  run.
+  only to capture one ticket, whose AP-REQ E5's `unit` tests replay on a pinned clock; (b) the
+  same cell signs a live MIT ticket in over SMB on the composed node, 1 man-day more, whose adapter
+  path T9.2 already holds; (c) none, the test realm and Samba's KDC taken as enough.
+  Recommended: (a): the MIT PAC with no logon-information buffer is a path no other test takes,
+  and a vector holds it in every `unit` run.
 - **The grant refusal for an API-only account (D6).** Options: (a) T9.7 adds it to `SetGrant`
   beside the machine refusal; (b) RFC 23's plan's T4.10 takes it, with its R46 widened to RFC 18
   §2.4's two kinds. Recommended: (a), the smaller change, in the one place both kinds meet.
@@ -575,14 +630,11 @@ scripted client as that plan's T5.8 builds it. T9.10 does not wait.
 - **`nodetest` serving SMB on loopback**, its listener's address readable by a test, with the
   in-memory directory and domain controller handed by E8's `NewWithDialers`: RFC 20's plan's epic
   7 and RFC 22's plan's in-process rows assume the first; E8's D4 the second.
+- **`e2e/kerberos` is T16.4's.** The cell runs no test on `feat/storage-v2`; RFC 22's plan's T16.4
+  owner fills it with the kernel-client Kerberos rows or removes it with `KDCHelper` and the
+  harness's pins (D1).
 - **Descriptors before the rows.** RFC 22's plan leaves its epics 11 and 12 outside its first-mount
   path; T9.2's DACLs and owners need its T12.2 and T12.4, so PR 1 waits for them.
-
-**Further points, each changed in this document's pull request:**
-
-- **The RFC 18 plan, §1.2 and epic 9**, named `e2e/kerberos` for the Kerberos rows; they now name
-  `unit` and the restored `integration/kerberos` cell, marked pending D1 and D3, and epic 9's
-  estimate line and its §2 row carry this document's figure.
 
 **Gaps in the RFCs, as pull request material:**
 

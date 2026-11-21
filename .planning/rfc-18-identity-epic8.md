@@ -84,8 +84,8 @@ Kerberos sign-in.
 
 ### 1.2 Out of scope
 
-- RFC 18 §10's Tier 2 rows over SMB, "NTLM off"'s cache-hit and fresh-sign-in halves among them:
-  E9.
+- RFC 18 §10's Tier 2 rows over SMB, "NTLM off"'s cache-hit half among them: E9. Its fresh
+  NTLM sign-in refused: E4's R15.
 - "NTLM off"'s password-set half: RFC 23's plan's epic 5, whose T5.7 holds a password change
   across an NTLM-off commit over the real identity (D9). The turn-back-on rule's cases: RFC 23's
   plan's epic 4's T4.11, and its `202` and `409` through the route, that plan's epic 7's T7.5; an

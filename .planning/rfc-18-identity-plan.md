@@ -613,8 +613,8 @@ proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `Fu
 | E6 | The directory | the LDAP provider lifted, paging, `tokenGroups`, the directory cache with stale grace, directory mints, the directory's domain SID, the `identity.directory` section, the in-memory directory and its suite | 8 | 22 | C | E8; partly E7 |
 | E7 | NETLOGON and the machine account | the secure channel moved and hardened, pass-through, online and offline join, the derived keytab, rotation, identity's runner kinds, status, the in-memory domain controller | 13 | 32 | A | E8 |
 | E8 | Integration | identity composed into the node, its `State` from reconcile, `identity.*` validators, the rows several epics meet in | 5 | 10.5 | team | E9 |
-| E9 🔀 | E2E green | Tier 2 rows through SMB, MIT tickets captured in `integration/kerberos` | 10 | 11.75 | team | — |
-| | **Total**, not counting E9 | | **63** | **125.5** | | |
+| E9 🔀 | E2E green | Tier 2 rows through SMB, an MIT ticket captured in `integration/kerberos` | 10 | 12.25 | team | — |
+| | **Total** | | **63** | **125.5** | | |
 
 **Plan estimate: 63 subtasks, 125.5 man-days, not counting epic 9.**
 
@@ -1598,7 +1598,7 @@ Identity runs inside the node, and the rows that need several middle epics toget
 
 ### Epic 9 — E2E green 🔀
 
-**Epic 9 estimate: 10 subtasks, 11.75 man-days.**
+**Epic 9 estimate: 10 subtasks, 12.25 man-days.**
 
 Broken down in [`rfc-18-identity-epic9.md`](rfc-18-identity-epic9.md), ahead of S3.
 
@@ -1612,14 +1612,15 @@ This epic waits for an SMB adapter serving through the node (S3).
   Kerberos half), "disable takes effect" (its SMB half), "binding", "re-authentication", "deny-only
   SIDs", "no file spelling" (its SMB half), "`none` is stored", "NTLM off" and "anonymous lookup"
   pass over SMB, in `unit`'s Tier 2;
-- tickets an MIT KDC issued, captured in `integration/kerberos`, sign in through identity in
-  `unit` (epic 9's D3, pending the user's answer).
+- an AP-REQ for a ticket an MIT KDC issued, captured in `integration/kerberos`, signs in through
+  identity in `unit` on a clock pinned to its capture (epic 9's D3, pending the user's answer).
 
 **Expected content:**
 - The Tier 2 rows over SMB on the composed harness.
-- An MIT KDC's tickets captured as vectors, in the `integration/kerberos` cell restored on
-  `feat/storage-v2`: `test/suites.yaml`'s cell names a directory RFC 20's T1.1 deleted, and
-  `e2e/kerberos`'s `KDCHelper` builds from it, so restoring it mends both.
+- An MIT KDC's ticket captured as a vector, in the `integration/kerberos` cell restored on
+  `feat/storage-v2`: `test/suites.yaml`'s cell names a directory RFC 20's T1.1 deleted.
+  `e2e/kerberos`'s `KDCHelper` builds from it too, but that cell runs no test on
+  `feat/storage-v2`; RFC 22's plan's T16.4 fills it or removes it (epic 9's D1).
 
 ## 6. Risks and open points
 
