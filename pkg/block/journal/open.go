@@ -633,10 +633,10 @@ func buildTargets(s core.Settings) segment.Targets {
 // before any write is admitted, and the spares it makes are reserved against
 // the maximum, so a maximum below what the targets name leaves the pool short.
 // With the default settings — 16 streams, whose spare target defaults to one
-// spare per stream, a headroom of 65536 records no larger than the segment
-// cap, and a repack reserve of one segment — an unbounded Open makes 18 spares
-// of SegmentCap bytes each (16 content + 1 headroom + 1 reserve, about 4.5 GiB
-// at the format's 256 MiB cap).
+// spare per stream, a headroom of 65536 records that covers each stream's
+// last segment, and a repack reserve of one segment — an unbounded Open makes
+// 33 spares of SegmentCap bytes each (16 content + 16 headroom + 1 reserve,
+// about 8.25 GiB at the format's 256 MiB cap).
 func resolveDefaults(s core.Settings) core.Settings {
 	if s.Streams < 1 {
 		s.Streams = defaultStreams

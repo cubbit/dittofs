@@ -114,6 +114,12 @@ type PoolCounters struct {
 	Spares int64
 	// HeadroomBytes is the ready headroom spares at the segment cap, as
 	// allocated now.
+	//
+	// decision: no production path reads it since the journal's Stats report
+	// the headroom's ledger instead; it stays as the pool's own read of its
+	// ready headroom class, which the pool's tests and the durability
+	// harness wait on. Withdrawn if those tests move to another read of the
+	// class, or if a gauge of the allocated headroom comes back to read it.
 	HeadroomBytes int64
 	// RepackReserveBytes is the ready reserve spares at the segment cap, as
 	// allocated now.
