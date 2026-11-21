@@ -27,9 +27,22 @@ func identityTable() settings.Table {
 // putSetting writes key = value for role as the API's route does: the
 // table's Check, then the put, in one Write.
 func putSetting(cp kvstore.ControlPlane, role entity.APIRole, key, value string) error {
+	_, err := putSettingWith(cp, role, key, value, func(int) error { return nil })
+	return err
+}
+
+// putSettingWith is putSetting running between on each attempt the Check
+// passes, before the put, and returning how many attempts the Write took.
+func putSettingWith(cp kvstore.ControlPlane, role entity.APIRole, key, value string,
+	between func(attempt int) error,
+) (attempts int, err error) {
 	s := entity.Setting{Scope: installationScope, Key: key, Value: []byte(value)}
-	return cp.Write(context.Background(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+	err = cp.Write(context.Background(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		attempts++
 		if err := identityTable().Check(tx, role, settings.Put(s), nil); err != nil {
+			return err
+		}
+		if err := between(attempts); err != nil {
 			return err
 		}
 		cur, _, err := tx.Setting(s.Scope, s.Key)
@@ -39,6 +52,7 @@ func putSetting(cp kvstore.ControlPlane, role entity.APIRole, key, value string)
 		_, err = tx.PutSetting(s, cur.Generation)
 		return err
 	})
+	return attempts, err
 }
 
 // idRange is an identity.id_range value.

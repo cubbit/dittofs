@@ -894,15 +894,16 @@ pkg/settings/
   `Check`.
 - **Acceptance criteria:**
   - The refusal names the other key.
-- **Tests:** through `Check` over the memory KV store's `Write`, wrapped in `kvtest`'s `FaultKV`: §10's "NetBIOS name and domain"
+- **Tests:** through `Check` over the memory KV store's `Write`: §10's "NetBIOS name and domain"
   row, `identity.netbios_name` set to the record's domain in another case, and a record naming
-  `identity.netbios_name`, each refused naming the other (R4, R5); two transactions each writing
-  one side to a value the other's old value allowed, the first held before its commit by a
-  `sim.Fault` delay on the test clock: one of the two commits fails on its tracked read (catches a read that is not tracked, R4); an
+  `identity.netbios_name`, each refused naming the other (R4, R5); a write of
+  `identity.netbios_name` `CORP` over the domain `OLD`, the domain row set to `corp` by a raw KV
+  `Set` between its `Check` and its commit, which raises no `CFGGEN`: it takes 2 attempts and is
+  refused naming `identity.directory.netbios_domain`, no name row stored (catches a read that is
+  not tracked, which takes 1 attempt and commits `CORP` beside `corp`, R4); an
   `operator`'s first put of `identity.directory` refused `ErrForbidden`, as is its later change of
   one field, and an `admin`'s passing, the test #4059's epic 3 assigns this epic (catches the
-  section declared without `WriteRole`, R6). Doubles: `kvtest`'s `FaultKV` (kind 3), the injected
-  clock (kind 1).
+  section declared without `WriteRole`, R6). No test double.
 
 ## 7. Order of work
 
