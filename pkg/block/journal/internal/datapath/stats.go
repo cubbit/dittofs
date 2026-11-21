@@ -140,6 +140,16 @@ func (c *Core) Stats() Stats {
 
 	pc := c.pool.Counters()
 	s.Spares, s.RepackReserveBytes = int(pc.Spares), pc.RepackReserveBytes
+	// decision: HeadroomBytes is the headroom's unused reservation in the
+	// admission's ledger, not the headroom "as allocated now" that RFC 1 §3.7
+	// names. The §9.4 row "removal records dropped per extent" asserts that
+	// HeadroomBytes stays above half its size while 10^5 removals draw on it,
+	// which only the ledger meaning can show: the allocated headroom spares
+	// do not move with the records drawn. The ceiling is a dashboard that
+	// reads it as the space set aside on disk: a journal with 16 streams
+	// allocates 16 headroom segments of 256 MiB while this reads about 13 MiB.
+	// Overturned by an amendment of §3.7, or by a separate gauge of the
+	// allocated headroom bytes beside this one.
 	s.HeadroomBytes = c.headroom.Unused()
 	s.HeadroomSparesShort = int(pc.HeadroomSparesShort)
 	ds := c.cache.Stats()

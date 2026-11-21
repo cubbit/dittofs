@@ -1925,7 +1925,8 @@ func (s *Stream) idleDueLocked(now time.Duration, threshold int64) (due bool, wa
 	// seals it, and the headroom its records drew is not credited back until
 	// content writes resume and fill it. Overturned by a bounded journal at its
 	// limit under removals whose headroom segments stay active; RFC 1
-	// section 9's open question "Repack seals for capacity" owns the rule.
+	// section 10's open question 5, "Repack seals for capacity", owns the
+	// rule.
 	if s.closed || s.id == 0 || s.sealState != sealOpen ||
 		s.next-format.SegmentHeaderSize <= threshold {
 		return false, -1

@@ -51,7 +51,7 @@ type refusalNote struct {
 	freed    uint64
 	maxBytes int64
 	used     int64
-	headroom int64
+	headroom int64 // the headroom's unused reservation, in bytes
 	extents  int64
 	extentAt int64
 }
@@ -349,7 +349,7 @@ func (e *Engine) raiseFull(b *binding, r refusal, err error) {
 		Cause:   err,
 		Detail: fmt.Sprintf(
 			"the journal refused a write by %s, lacking %d %s; used %d of %d bytes, "+
-				"freed %d, headroom %d, index %d of %d",
+				"freed %d, unused headroom reservation %d bytes, index %d of %d",
 			r, n.missing, n.unit, n.used, n.maxBytes, n.freed, n.headroom, n.extents, n.extentAt,
 		),
 	}, time.Time{})
