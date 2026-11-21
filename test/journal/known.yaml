@@ -492,7 +492,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs segment headers with a predecessor, recovery by scan and the loss ring.'
+  reason: 'The journal opens and the segment is cut; the reopen is then refused at recovery: the named predecessor''s missing end is a range that names no record, which recovery refuses rather than counting. Needs recovery that counts a range naming no record as a loss and opens over it.'
   issue: '#3596'
   message: 'a named predecessor''s missing end at [525168,525364) that names no record'
 
@@ -556,7 +556,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path and recovery by scan.'
+  reason: 'The journal opens and the seal marker is copied into a payload; the crash''s reopen is then refused at recovery: a refused range that names no record, which recovery refuses rather than counting. Needs recovery that counts a range naming no record as a loss and opens over it.'
   issue: '#3596'
   message: 'a refused range at [65688,65792) that names no record'
 
