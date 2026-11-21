@@ -42,6 +42,7 @@ var openOwners = map[string]string{
 	"#4861": "the identity refusal and error",
 	"#4862": "the same-process reopen's loss record",
 	"#4863": "the open's removal markers",
+	"#5227": "the RFC 28 ruling on a footer entry its record contradicts",
 }
 
 // openOwnerList names each open owner with its issue, so a failure that
