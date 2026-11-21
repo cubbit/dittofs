@@ -695,9 +695,10 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// records an open appends before it serves) on the open reserve, every
 	// other on the drawing side, which the reserve refuses. The settle the
 	// admission returns is drawn only when the record placed — whatever its
-	// sync did, its bytes are in their segment — and refunded when it did
-	// not.
-	d.SetLossAdmission(func(atOpen bool) (settle func(placed bool), err error) {
+	// sync did, its bytes are in their segment — against the segment it
+	// placed in, which that segment's retirement credits back, and refunded
+	// when it placed nowhere.
+	d.SetLossAdmission(func(atOpen bool) (settle func(placed core.SegmentID), err error) {
 		class := capacity.Loss
 		if atOpen {
 			class = capacity.Open
@@ -706,9 +707,9 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		if err != nil {
 			return nil, err
 		}
-		return func(placed bool) {
-			if placed {
-				c.headroom.Drawn(draw)
+		return func(placed core.SegmentID) {
+			if placed != 0 {
+				c.headroom.Drawn(draw, placed)
 				return
 			}
 			c.headroom.Refund(draw)

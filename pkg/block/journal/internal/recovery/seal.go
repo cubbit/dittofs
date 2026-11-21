@@ -358,8 +358,11 @@ func OpenLosses(ctx context.Context, st *State, d *durability.Durability, headro
 	// itself, for the records an open must append before it serves are
 	// few, bounded (RFC 1 section 6): a journal whose headroom ran out
 	// before the crash still opens and still records what the crash
-	// corrupted. Withdrawn when the open draws these records through the
-	// capacity ledger instead of counting its own reserve.
+	// corrupted. Each record also draws the capacity ledger by the open's
+	// class at a limit the open reached, and that ledger, empty at every
+	// open, refuses none the reserve here admits: the plan stays the bound.
+	// Withdrawn when the open draws these records through the capacity
+	// ledger instead of counting its own reserve.
 	plan, past := planOpenLosses(*st, d.Named, d.PlacedUnsynced, capacity.OpenReserveRecords(headroomRecords))
 	st.Kinds.PastReserve = past
 

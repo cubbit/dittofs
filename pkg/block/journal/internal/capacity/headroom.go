@@ -140,8 +140,9 @@ type Headroom struct {
 	// that is restarted while repack cannot retire those segments can append
 	// up to another headroom's worth of header-only records past its maximum
 	// per restart, about 13 MiB at the defaults, without bound across
-	// restarts. The open's own records count against the open reserve in the
-	// recovery pass itself, not here. Overturned by a footprint seen above
+	// restarts. The open's own records are bounded by the open reserve in the
+	// recovery pass itself; their loss records also draw here, by the Open
+	// class, at a limit the open reached. Overturned by a footprint seen above
 	// the maximum after restarts, or by a ruling that the drawing side
 	// persists across an open.
 	//
@@ -165,7 +166,9 @@ type Headroom struct {
 	// a segment that is gone. The removal and forget paths register the
 	// record before the segment can be retired, but the sealer's marker does
 	// not: SealOpen leaves the segment Sealed before the sealer calls Drawn,
-	// so a retirement tick in that gap leaves one record's charge stuck.
+	// so a retirement tick in that gap leaves one record's charge stuck. The
+	// loss path calls Drawn as soon as its append returns, from the settle
+	// the durability layer's admission hands back, with the same gap.
 	// Upgrade by naming the segment at the admission if that charge ever
 	// shows in the gauge.
 	bySeg map[core.SegmentID]int64
@@ -211,6 +214,10 @@ type Draw struct {
 	// back exactly what it took: a below-limit admission drew nothing and
 	// counts nothing, whichever way the limit moved in between.
 	drew bool
+	// reserve names a draw an open took from the open reserve, once the
+	// drawing side was spent: Drawn counts it but attributes it to no
+	// segment, so no retirement credits it.
+	reserve bool
 }
 
 // Admit consults the headroom for one record of class c, returning whether
@@ -272,7 +279,7 @@ func (h *Headroom) Admit(c RecordClass) (Draw, error) {
 		if c == Open && free > 0 {
 			h.drawn.Add(RecordCharge)
 			h.mu.Unlock()
-			return Draw{Append: true, drew: true}, nil
+			return Draw{Append: true, drew: true, reserve: true}, nil
 		}
 		h.mu.Unlock()
 		return Draw{}, refuseHeadroom(1)
@@ -300,12 +307,28 @@ func (h *Headroom) Admit(c RecordClass) (Draw, error) {
 // so the two agree whichever way the footprint moved after the admission,
 // and the segment's share of the ledger, which its retirement credits back.
 // A record that drew nothing — below the limit, a repack copy, an Offloaded
-// never appended — counts nothing.
+// never appended — counts nothing. A draw on the open reserve, or one whose
+// segment is 0 (named by no append), is counted but attributed to no
+// segment, so the ledger's per-segment figures never sum past drawn.
+//
+// decision: an open's draw on the open reserve — a loss record an open
+// appends once the drawing side is spent — is never credited by its
+// segment's retirement. The reserve is the open's own budget, which the
+// recovery planner counts whole at every open and the ledger restarts with;
+// leaving the draw in the ledger errs on the safe side, too high and never
+// credited twice. The ceiling: until the next open the drawing side ends
+// short by those draws once every other credit lands, at most the open
+// reserve, 4,096 records or about 896 KiB at the defaults. Overturned by a
+// journal whose open drew the reserve and that then sits at its limit with
+// HeadroomBytes short by those records until a restart.
 func (h *Headroom) Drawn(d Draw, seg core.SegmentID) {
 	if !d.drew {
 		return
 	}
 	h.draws.Add(1)
+	if d.reserve || seg == 0 {
+		return
+	}
 	h.mu.Lock()
 	h.bySeg[seg] += RecordCharge
 	h.mu.Unlock()
@@ -315,11 +338,10 @@ func (h *Headroom) Drawn(d Draw, seg core.SegmentID) {
 // is retired, unlinked or recycled: the space those records took is free
 // again (RFC 1 section 6, the headroom refills as segments are unlinked).
 // The RFC's rule that regained headroom goes to the open reserve first holds
-// trivially here: the reserve is never drawn in this ledger, for no record
-// appended while the journal serves draws it, the open's own records count
-// against it in the recovery pass, and the ledger starts empty at each open.
-// The segment's entry is taken whole, so a second Credit of seg returns
-// nothing.
+// through the one drawn total: the reserve is the last records of what is
+// free, so a credit refills whatever an open drew of it before the drawing
+// side sees any. The segment's entry is taken whole, so a second Credit of
+// seg returns nothing.
 func (h *Headroom) Credit(seg core.SegmentID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
