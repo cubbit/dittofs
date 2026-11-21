@@ -32,6 +32,16 @@ var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 var nodeID = entity.NodeID{'n', 'o', 'd', 'e'}
 
+// journalOptions is what the harness opens its journals with: a suitable
+// mount and two append streams. At the default sixteen, a journal makes a
+// content and a headroom spare per stream at the 256 MiB cap, 8.25 GiB per
+// open, which tests running in parallel would multiply past a CI disk; two
+// streams make five. A test's own WithSettings, appended after, replaces it.
+// A fresh slice each call, so a test appending to one aliases no other.
+func journalOptions() []journal.Option {
+	return []journal.Option{journaltest.SuitableMount(), journal.WithSettings(journal.Settings{Streams: 2})}
+}
+
 // passphrase opens the harness's storage key file.
 const passphrase = "nodetest passphrase"
 
@@ -105,7 +115,7 @@ func New(t testing.TB, opts ...Option) *Harness {
 		Bootstrap: b,
 		Clock:     h.clock,
 		Logger:    slog.New(failOnBudget{slog.NewTextHandler(t.Output(), nil), t}),
-		Journal:   []journal.Option{journaltest.SuitableMount()},
+		Journal:   journalOptions(),
 	}
 	h.openKV(t)
 	err := install.Run(ctx, install.Deps{
@@ -113,7 +123,7 @@ func New(t testing.TB, opts ...Option) *Harness {
 		KV:         h.cfg.KV,
 		StorageKey: storageKey(t, root),
 		Clock:      h.clock,
-		Journal:    []journal.Option{journaltest.SuitableMount()},
+		Journal:    journalOptions(),
 		Out:        io.Discard,
 		Logger:     h.cfg.Logger,
 	})

@@ -333,19 +333,21 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		}
 		found := openedFigures{reporting: st.Reporting(), took: cfg.Clock.Elapsed() - started}
 		deps, state := continueFrom(st, datapath.Deps{
-			FS:            cfg.Storage,
-			Clock:         cfg.Clock,
-			Tracer:        cfg.Tracer,
-			Log:           cfg.Logger,
-			Dir:           dir,
-			Identity:      ff.Identity,
-			Streams:       s.Streams,
-			SegmentCap:    core.SegmentCapOf(s),
-			ExtentLimit:   s.ExtentLimit,
-			Descriptors:   cfg.Budget,
-			Targets:       buildTargets(s),
-			MaxBytes:      s.MaxBytes,
-			IdleSealBytes: s.IdleSealBytes,
+			FS:              cfg.Storage,
+			Clock:           cfg.Clock,
+			Tracer:          cfg.Tracer,
+			Log:             cfg.Logger,
+			Dir:             dir,
+			Identity:        ff.Identity,
+			Streams:         s.Streams,
+			SegmentCap:      core.SegmentCapOf(s),
+			ExtentLimit:     s.ExtentLimit,
+			Descriptors:     cfg.Budget,
+			Targets:         buildTargets(s),
+			HeadroomRecords: s.HeadroomRecords,
+			MaxBytes:        s.MaxBytes,
+			IdleSealBytes:   s.IdleSealBytes,
+			Check:           probeCheck(dir, cfg),
 		})
 		// The re-append's sealed target reaches the continuation as the
 		// active row its all-zero rebuild scan seeded it with, for no fate
@@ -457,8 +459,10 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		Descriptors: cfg.Budget,
 		Targets:     buildTargets(s),
 
-		MaxBytes:      s.MaxBytes,
-		IdleSealBytes: s.IdleSealBytes,
+		HeadroomRecords: s.HeadroomRecords,
+		MaxBytes:        s.MaxBytes,
+		IdleSealBytes:   s.IdleSealBytes,
+		Check:           probeCheck(dir, cfg),
 	}, datapath.State{Counters: counters})
 	if err != nil {
 		// datapath.New takes its own cleanup when a layer below it fails, and
@@ -506,6 +510,12 @@ func holdDeferredHolders(c *datapath.Core, dir string, id core.JournalID) error 
 		}
 	}
 	return nil
+}
+
+// probeCheck is the platform check the open itself makes of dir, which the
+// read-only probe runs before it makes a spare (RFC 1 §5.4).
+func probeCheck(dir string, cfg core.Config) func() error {
+	return func() error { return platform.CheckDir(dir, cfg.MountProbe) }
 }
 
 // continueFrom is the core an assembled recovery continues as: the deps the
@@ -571,17 +581,24 @@ func looksSegmental(name string) bool {
 // buildTargets returns the spare pool's targets from the settings, which
 // resolveDefaults has already given their defaults: the spare target one per
 // append stream, so every stream can roll once without waiting for a spare to
-// be made. The headroom keeps the reserved records of settings standing:
-// each is charged the largest of them with its footer entry, so they take a
-// whole number of segments rounded up and never less than one. The repack
+// be made. The headroom keeps the reserved records of settings standing, at
+// the core's own sizing, never less than one segment per stream. The repack
 // reserve keeps at least one segment's cap, the most live payload one segment
 // can hold.
+//
+// decision: the open does not check the maximum against what these targets
+// reserve. The headroom and the reserve fill before any content spare, so
+// (streams + 1) x cap stands ahead of the first content spare and the open's
+// footprint is (2 x streams + 1) x cap — 8.25 GiB at the default 16 streams
+// of 256 MiB; a maximum near that floor leaves content little or no spare to
+// roll into. No production caller sets MaxBytes yet, and the first that does
+// should validate it against (2 x streams + 1) x cap at open. The headroom's
+// target is at least one segment, as HeadroomSpares never answers less for a
+// stream count resolveDefaults has given its default.
 func buildTargets(s core.Settings) segment.Targets {
-	segCap := core.SegmentCapOf(s)
-	headroom := (int64(headroomRecordBytes)*int64(s.HeadroomRecords) + segCap - 1) / segCap
 	return segment.Targets{
 		Content:  s.SpareTarget,
-		Headroom: int(max(headroom, 1)),
+		Headroom: datapath.HeadroomSpares(s.HeadroomRecords, s.Streams, core.SegmentCapOf(s)),
 		Reserve:  1,
 	}
 }
@@ -600,10 +617,10 @@ func buildTargets(s core.Settings) segment.Targets {
 // before any write is admitted, and the spares it makes are reserved against
 // the maximum, so a maximum below what the targets name leaves the pool short.
 // With the default settings — 16 streams, whose spare target defaults to one
-// spare per stream, a headroom of 65536 records no larger than the segment
-// cap, and a repack reserve of one segment — an unbounded Open makes 18 spares
-// of SegmentCap bytes each (16 content + 1 headroom + 1 reserve, about 4.5 GiB
-// at the format's 256 MiB cap).
+// spare per stream, a headroom of 65536 records that covers each stream's
+// last segment, and a repack reserve of one segment — an unbounded Open makes
+// 33 spares of SegmentCap bytes each (16 content + 16 headroom + 1 reserve,
+// about 8.25 GiB at the format's 256 MiB cap).
 func resolveDefaults(s core.Settings) core.Settings {
 	if s.Streams < 1 {
 		s.Streams = defaultStreams
@@ -622,11 +639,6 @@ func resolveDefaults(s core.Settings) core.Settings {
 	}
 	return s
 }
-
-// headroomRecordBytes is what one reserved header-only record is charged: the
-// largest of them with its footer entry, a 96-byte header, a payload of at
-// most 56 bytes and a 72-byte footer entry.
-const headroomRecordBytes = 96 + 56 + 72
 
 // The settings' defaults, where the caller named none.
 const (

@@ -257,7 +257,7 @@ type Durability struct {
 	// lossAdmit is SetLossAdmission's wiring, drawn through before each loss
 	// record is appended. Nil — never wired — admits every loss record, the
 	// behaviour of a layer whose journal budgets no record headroom.
-	lossAdmit func(atOpen bool) (settle func(placed bool), err error)
+	lossAdmit func(atOpen bool) (settle func(placed core.SegmentID), err error)
 
 	// streams are the append streams a loss record is written through, bound
 	// by Start. It is nil before Start, which Lose reports as an error.
@@ -306,6 +306,11 @@ type Durability struct {
 	// and may change their offloaded bits.
 	onCorruptHeld func([]index.Piece)
 
+	// beforeCorruptLoss is a test hook, nil in production: the worker runs it
+	// before it records the losses a Corrupt queued, so a test can read the
+	// layer between the drop and the record.
+	beforeCorruptLoss func()
+
 	// beforeTakeWindow is a test hook, nil in production: the worker runs it
 	// with no lock held before it takes each queued end event's window.
 	beforeTakeWindow func()
@@ -321,7 +326,10 @@ type Durability struct {
 	// lock order and is never held across an Append, a Sync or a MarkLoss,
 	// which take locks of other domains. A window raise (RaiseWindow) takes
 	// the registry alone and raises with no event, so a snapshot may show
-	// it ahead of the events.
+	// it ahead of the events. A corrupt drop (Corrupt) is a second exception:
+	// it raises outside lmu, counts in a later lmu section and leaves its event
+	// to the worker, so a snapshot may show the raise ahead of the count and of
+	// the event; only after Corrupt returns are the raise and the count paired.
 	lmu               sync.Mutex
 	corruptDataLoss   uint64
 	corruptRepairable uint64
@@ -1056,7 +1064,9 @@ func (d *Durability) Stats() Part {
 	// This instance's ring and the directory's generation are read in one
 	// section, and lmu holds the raise and the publish of a Lose together,
 	// so the snapshot never holds the raise without its event, nor an
-	// event without its raise. The raise stays with the directory so a
+	// event without its raise, for a loss made by Lose; a window raise or a
+	// corrupt drop can show the raise ahead of its event, and a corrupt drop
+	// ahead of its count (see lmu). The raise stays with the directory so a
 	// reopen reports the generation it continues; the events are this
 	// ring's, which the reopen starts empty.
 	p.Losses = d.lossesLocked()

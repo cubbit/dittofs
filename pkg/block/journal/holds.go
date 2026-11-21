@@ -11,6 +11,9 @@ import "context"
 // Its record is refused with a NoSpaceError naming LimitHeadroom once less
 // than half the reserved headroom remains.
 func (h *Handle) Hold(ctx context.Context, share ShareID, cut SnapshotCut, marks map[FileID]Version) error {
+	if err := h.readOnly(); err != nil {
+		return err
+	}
 	return ErrNotImplemented
 }
 
@@ -19,6 +22,9 @@ func (h *Handle) Hold(ctx context.Context, share ShareID, cut SnapshotCut, marks
 // Released content nothing else keeps is reclaimable like any superseded
 // record.
 func (h *Handle) Unhold(ctx context.Context, share ShareID, cut SnapshotCut) error {
+	if err := h.readOnly(); err != nil {
+		return err
+	}
 	return ErrNotImplemented
 }
 
@@ -39,5 +45,8 @@ func (h *Handle) Held(share ShareID) int64 {
 // than half the reserved headroom remains, and a refused or failed Stamp
 // records nothing.
 func (h *Handle) Stamp(ctx context.Context, id FileID, through Version, cut SnapshotCut) error {
+	if err := h.readOnly(); err != nil {
+		return err
+	}
 	return ErrNotImplemented
 }

@@ -61,6 +61,10 @@ type Deps struct {
 	// core whose wiring never named one; a negative threshold is a setting
 	// bug the sealer's constructor panics on.
 	IdleSealBytes int64
+	// Check runs the checks open makes of the journal's mount and directory,
+	// which the read-only probe runs before it makes its spare. Nil runs
+	// none, which is right only for a core whose directory no open checked.
+	Check func() error
 }
 
 // State is the in-memory state a Core continues from. A zero State builds a
@@ -226,6 +230,9 @@ type coreOptions struct {
 	// the real one: the wrapper must pass every call through and never
 	// answer in the real filesystem's place.
 	wrapFS func(storage.FS) storage.FS
+	// check is the test helper's Deps.Check, the platform check the
+	// read-only probe runs before it makes its spare.
+	check func() error
 }
 
 // Core is the journal's assembled write and read paths: the placement index,
@@ -488,6 +495,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// once a data path does, which is never before d.Start; assigning tr
 	// early keeps the wiring's order readable while the closures stay safe.
 	var tr *reclaim.Tracker
+	var maker *segment.Maker
 	// The recorder is installed before anything is started: the pool's
 	// refill worker, the retirer, the sealer and the durability layer all
 	// reach these locks in the background, and a lock Init'ed after its
@@ -575,6 +583,16 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		// A Sync naming a file with nothing unsynced still gets its mark,
 		// from the file's newest record the index names.
 		Latest: c.latestRecord,
+		// The read-only probe runs the open's own check, then makes its one
+		// spare through the maker rather than the pool, whose refill refuses
+		// while the journal is read-only, with one cap of room past the
+		// maximum (see MakeOverMax). The spare stays on disk for the reopen
+		// to adopt; the maker is built below, before d.Start.
+		Check: deps.Check,
+		MakeSpare: func() error {
+			_, err := maker.MakeOverMax()
+			return err
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -600,7 +618,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	if maxBytes > 0 {
 		makerBytes = maxBytes
 	}
-	maker := segment.NewMaker(fs, state.Set, makerBytes, deps.LastSegment, deps.Log)
+	maker = segment.NewMaker(fs, state.Set, makerBytes, deps.LastSegment, deps.Log)
 	// The pool asks the read-only check before each spare it makes, so a
 	// read-only journal makes none (RFC 1 §5.4). The headroom's spare class
 	// is sized by the records it holds, whole spares at the charge the
@@ -608,20 +626,15 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	//
 	// decision: zero headroom records readies no headroom spare and so
 	// throttles no content write — the journal fails open, holding no
-	// headroom to measure — because zero is the wire value only while the
-	// open path that resolves every setting's default does not exist; the
-	// journals it wires resolve the default and pass the figure here.
-	// Withdraw once a zero HeadroomRecords can reach this from a caller
-	// that names a setting, rather than only a wiring that names none.
+	// headroom to measure — because zero reaches here only from a test core
+	// that names none: the open resolves the setting's default, never below
+	// one record, and passes the figure here.
 	targets := deps.Targets
 	if o.contentSpares != 0 {
 		targets.Content = o.contentSpares
 	}
 	if headroomRecords > 0 {
-		// Each open stream also needs its seal marker, one footer entry and the
-		// trailer, which a segment cannot seal without.
-		sealReserve := int64(deps.Streams) * (format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize)
-		targets.Headroom = int((int64(headroomRecords)*capacity.RecordCharge + sealReserve + state.Set.Cap() - 1) / state.Set.Cap())
+		targets.Headroom = HeadroomSpares(headroomRecords, deps.Streams, state.Set.Cap())
 	}
 	c.contentTarget = targets.Content
 	c.pool = segment.NewPool(maker, targets, d.Admit, deps.Log)
@@ -682,9 +695,10 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// records an open appends before it serves) on the open reserve, every
 	// other on the drawing side, which the reserve refuses. The settle the
 	// admission returns is drawn only when the record placed — whatever its
-	// sync did, its bytes are in their segment — and refunded when it did
-	// not.
-	d.SetLossAdmission(func(atOpen bool) (settle func(placed bool), err error) {
+	// sync did, its bytes are in their segment — against the segment it
+	// placed in, which that segment's retirement credits back, and refunded
+	// when it placed nowhere.
+	d.SetLossAdmission(func(atOpen bool) (settle func(placed core.SegmentID), err error) {
 		class := capacity.Loss
 		if atOpen {
 			class = capacity.Open
@@ -693,9 +707,9 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		if err != nil {
 			return nil, err
 		}
-		return func(placed bool) {
-			if placed {
-				c.headroom.Drawn(draw)
+		return func(placed core.SegmentID) {
+			if placed != 0 {
+				c.headroom.Drawn(draw, placed)
 				return
 			}
 			c.headroom.Refund(draw)
@@ -1147,6 +1161,7 @@ func (c *Core) Retirer() *segment.Retirer { return c.retirer }
 // first, in the same step, and before the figures drop by the segment's own
 // bytes: a tally between the two stands above the truth, never below it.
 func (c *Core) retiredSegment(id core.SegmentID) {
+	c.headroom.Credit(id)
 	c.dur.Retired(id)
 	c.cap.CopiesTransfer(id)
 	c.cap.RetiredEverySeeded()
@@ -1245,4 +1260,31 @@ func Continue(deps Deps, state State, beforeRetire func(*Core) error) (*Core, er
 	}
 	c.retiring.Start()
 	return c, nil
+}
+
+// HeadroomSpares is the headroom spare class's target: records header-only
+// records at the charge the admission table draws by, plus each open stream's
+// seal marker, one footer entry and the trailer, which a segment cannot seal
+// without, in whole segments of segCap bytes rounded up — k segments — plus
+// one segment for every stream past the first: k + streams - 1. The open's
+// spare targets and the core's pool are sized by this one figure, so the
+// spares a recovery adopts as headroom are the ones the core's pool keeps.
+//
+// decision: the headroom keeps a spare per stream on top of what its
+// records fill, because at the maximum a header-only record whose stream's
+// active segment is full must roll, and a spare one stream's roll took
+// cannot be made again inside the maximum: a headroom of fewer segments than
+// streams refuses the next stream's record naming LimitHeadroom, which RFC 1
+// section 6 forbids. Each stream can leave at most one headroom segment
+// partly filled, so the records' k segments and the streams-1 others' last
+// segments cover the worst case; at k = 1 that is one spare per stream. The
+// cost is a spare at the segment cap per stream: 16 streams at the default
+// 256 MiB cap hold 4 GiB, where the default 65,536 records fill one segment.
+// Overturned by a configuration that opens far more streams than it rolls at
+// once at the maximum, which would rather share headroom segments across
+// streams.
+func HeadroomSpares(records, streams int, segCap int64) int {
+	sealReserve := int64(streams) * (format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize)
+	k := int((int64(records)*capacity.RecordCharge + sealReserve + segCap - 1) / segCap)
+	return k + max(streams, 1) - 1
 }

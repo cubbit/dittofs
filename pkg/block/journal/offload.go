@@ -114,7 +114,17 @@ func (h *Handle) OffloadMany(ctx context.Context, files []Capture, limit, widen 
 // appends a record so the bits survive a restart, except below half the
 // reserved headroom, where it sets the bits and appends none, so a crash
 // loses them. It may be called on any file at any time.
+//
+// decision: a read-only journal refuses MarkOffloaded with ErrJournalReadOnly,
+// as RFC 1 §5.4 refuses every call that would append a record, though its
+// below-half rule, like report's on a read-only journal, could set the bits
+// in memory instead. Overturned if the engine's reseed is seen to need the
+// bits set on a read-only journal, which would take the report's in-memory
+// path.
 func (h *Handle) MarkOffloaded(ctx context.Context, id FileID, extents []Extent, oldest, newest Version) error {
+	if err := h.readOnly(); err != nil {
+		return err
+	}
 	return ErrNotImplemented
 }
 
@@ -122,6 +132,9 @@ func (h *Handle) MarkOffloaded(ctx context.Context, id FileID, extents []Extent,
 // names, and appends a record so the change survives a restart. It may be
 // called on any file at any time.
 func (h *Handle) Unmark(ctx context.Context, id FileID, extents []Extent) error {
+	if err := h.readOnly(); err != nil {
+		return err
+	}
 	return ErrNotImplemented
 }
 
@@ -139,5 +152,20 @@ func (h *Handle) Unmark(ctx context.Context, id FileID, extents []Extent) error 
 // splitting a held extent would pass the index's cap on what removals add. It
 // takes the file append domain.
 func (h *Handle) Release(ctx context.Context, id FileID, extents []Extent) error {
+	if err := h.readOnly(); err != nil {
+		return err
+	}
 	return ErrNotImplemented
+}
+
+// readOnly is the read-only refusal every call that would append a record
+// answers at once on a read-only journal (RFC 1 §5.4), the durability layer's
+// own gate, or nil. Offload and OffloadMany do not ask it: offload goes on
+// uploading on a read-only journal, its report setting bits in memory only. A
+// zero Handle, which a test builds over a zero Journal, answers nil.
+func (h *Handle) readOnly() error {
+	if h.j == nil || h.j.core == nil {
+		return nil
+	}
+	return h.j.core.Durability().Admit()
 }

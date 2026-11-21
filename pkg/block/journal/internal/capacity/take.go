@@ -750,6 +750,22 @@ func (c *Capacity) Take(ctx context.Context, r Request) (*Grant, error) {
 	// the pool's answer alone. The part of an open reservation's ask
 	// no held spare covers is not the write's to spend either: it rides beside
 	// the footprint.
+	//
+	// decision: a spare the pool is still making covers nothing here, though
+	// its cap is already in the footprint: the maker reserves it against the
+	// maximum before it creates the file. So a write that needs a segment
+	// while the journal's only missing spare is in flight, at a footprint
+	// that reached the maximum with it, is refused naming the journal's
+	// maximum, which the engine answers as nothing left to free. RFC 1
+	// section 6 reads the other way: "a content write that needs a segment
+	// while no spare is ready is refused at once with ErrNoSpace naming the
+	// spare pool", which the engine retries, and the maximum is not exceeded
+	// once that spare lands. The ceiling: a journal sized to its spare
+	// targets refuses its first write so on a device whose preallocation is
+	// slow, and a journal at its limit does so whenever a write races the
+	// remaking of a spare. Overturned by a test that holds a content spare's
+	// allocate at a footprint at the maximum and requires the write to be
+	// answered retry-later, naming the spare pool.
 	var seats int
 	if sparesN > 0 && c.cfg.MaxBytes > 0 {
 		cover := readySnap - c.pendingSeats

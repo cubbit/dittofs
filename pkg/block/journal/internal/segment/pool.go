@@ -114,6 +114,12 @@ type PoolCounters struct {
 	Spares int64
 	// HeadroomBytes is the ready headroom spares at the segment cap, as
 	// allocated now.
+	//
+	// decision: no production path reads it since the journal's Stats report
+	// the headroom's ledger instead; it stays as the pool's own read of its
+	// ready headroom class, which the pool's tests and the durability
+	// harness wait on. Withdrawn if those tests move to another read of the
+	// class, or if a gauge of the allocated headroom comes back to read it.
 	HeadroomBytes int64
 	// RepackReserveBytes is the ready reserve spares at the segment cap, as
 	// allocated now.
@@ -573,6 +579,9 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 			p.pending = n
 		}
 		p.mu.Unlock()
+		if err := p.fullDeviceAnswer(); err != nil {
+			return nil, err
+		}
 		return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: missing, Unit: core.UnitSegments}
 	}
 	p.pending = 0
@@ -843,6 +852,24 @@ func (p *Pool) BorrowHeadroom(n int) { p.borrowed.Store(int64(n)) }
 func (p *Pool) HeadroomShort() int {
 	short := p.t.Headroom - int(p.readyN[Headroom].Load()) - int(p.holdTaken.Load())
 	return int(max(min(int64(short), p.borrowed.Load()), 0))
+}
+
+// fullDeviceAnswer is the answer a refused spare take owes a full device: the
+// platform's own ENOSPC, wrapped so errors.Is holds for syscall.ENOSPC and not
+// for core.ErrNoSpace, or nil when the device has room or a full-size retired
+// segment is to hand, whose recycle is the spare. It takes p.mu and the
+// retirer's lock, so the caller holds neither.
+//
+// decision: the flag stays set after space is freed outside the journal, until
+// a kicked make succeeds, and Hold kicks the refill only in its defer after
+// answering, so the first write after the space returns may get ENOSPC where
+// one retry-later would have served it. Overturned by ENOSPC answers observed
+// while the device has free space.
+func (p *Pool) fullDeviceAnswer() error {
+	if p.DeviceFull() && !p.retiredToHand() {
+		return fmt.Errorf("%w: making one failed for lack of device space: %w", ErrNoSegmentForTheRoll, syscall.ENOSPC)
+	}
+	return nil
 }
 
 // DeviceFull reports whether a make has failed with ENOSPC and no spare has

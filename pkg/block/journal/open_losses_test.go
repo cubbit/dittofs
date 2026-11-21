@@ -337,7 +337,9 @@ func TestOpenWhoseReserveIsEmptyAtTheCopyWaitsForTheReserveAlone(t *testing.T) {
 		}
 	}
 	plantEndedSegment(t, f, 941)
-	maxBytes := int64(6 * openSegmentCap) // the ended segment, five spares: the headroom's and the reserve's, no content spare
+	// The ended segment and six spares, no content spare: the headroom's five
+	// (four its records fill, one more for the second stream) and the reserve's.
+	maxBytes := int64(7 * openSegmentCap)
 
 	// The backstop only: the wait the open takes is the pool's reserve event.
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)

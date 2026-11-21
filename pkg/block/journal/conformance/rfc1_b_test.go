@@ -1351,6 +1351,106 @@ func TestRFC1B_RecordsWithoutBytesAtTheLimit(t *testing.T) {
 	t.Fatal("content writes went on succeeding on a full device")
 }
 
+// TestRFC1B_RepackAtTheLimitRecoversTheHeadroom checks that a journal held at
+// its maximum, its headroom drawn below half by removals, gets the headroom
+// back through repack alone: repack's carries draw on their own reserve, none
+// refused by the spare limit, and the segments repack retires credit back the
+// headroom their records drew. The deletes are left unsettled, so repack must
+// carry their records rather than drop them.
+func TestRFC1B_RepackAtTheLimitRecoversTheHeadroom(t *testing.T) {
+	// A removal that rolls at the limit lands in a headroom spare, a segment
+	// holding header-only records alone: the idle-seal threshold sits below
+	// what the drain appends, so that segment seals idle with the others. At
+	// the defaults such a segment never seals idle — the whole headroom is
+	// below the 16 MiB threshold — so this threshold is what lets the row
+	// reach repack at all, not a stand-in for the default behaviour.
+	f := journaltest.NewWith(t, func(s *journal.Settings) { s.IdleSealBytes = 4096 })
+	fillUntilRefused(t, f, []int{0, 1}, 0, 256<<10)
+	full := headroom(t, f)
+	drain, h0 := journaltest.File(50), f.Share(0)
+	var drained journal.Version
+	for i := int64(0); f.J.Stats().HeadroomBytes >= full/2; i++ {
+		if i == 1<<16 {
+			t.Fatalf("HeadroomBytes = %d after %d removals at the limit, still not below half of %d", f.J.Stats().HeadroomBytes, i, full)
+		}
+		v, err := h0.Deallocate(t.Context(), drain, ext(2*i, 1))
+		stub(t, "Deallocate", err)
+		if err != nil {
+			t.Fatalf("a removal at the limit with the headroom above half: %v", err)
+		}
+		drained = v
+	}
+	var deleted [2]journal.Version
+	for k := range 2 {
+		v, err := f.Share(k).Delete(t.Context(), journaltest.File(k))
+		stub(t, "Delete", err)
+		if err != nil {
+			t.Fatalf("delete file %d at the limit: %v", k, err)
+		}
+		deleted[k] = v
+	}
+	h0.Settle(drain, drained)
+	for k := range 2 {
+		syncFile(t, f.Share(k), journaltest.File(k))
+	}
+	syncFile(t, h0, drain)
+
+	// repack runs passes until one frees nothing and reports the total; a
+	// carry refused at the limit fails the check here.
+	repack := func() int64 {
+		var total int64
+		for {
+			freed, err := f.J.Repack(t.Context(), 2*journaltest.FixtureMaxBytes, journal.RepackScope{})
+			stub(t, "Repack", err)
+			if err != nil {
+				t.Fatalf("repack at the limit: %v", err)
+			}
+			if freed == 0 {
+				return total
+			}
+			total += freed
+		}
+	}
+
+	// While the deletes are unsettled their records are live, and the
+	// segments holding them are repacked by carrying them.
+	// Every segment is sealed idle first, so no stream has an active segment
+	// and a carried record lands only through a roll, which for a repack copy
+	// takes a repack-reserve spare: a segment that appears during the passes
+	// is that roll's.
+	f.Advance(journaltest.IdleSealAge)
+	before := map[journal.SegmentID]bool{}
+	eventually(t, "the segments were never all sealed idle", func() bool {
+		clear(before)
+		for _, seg := range f.J.Inspect().Segments() {
+			if !seg.Sealed {
+				return false
+			}
+			before[seg.ID] = true
+		}
+		return true
+	})
+	eventually(t, "repack at the limit never freed storage", func() bool { return repack() > 0 })
+	rolled := false
+	for _, seg := range f.J.Inspect().Segments() {
+		rolled = rolled || !before[seg.ID]
+	}
+	if !rolled {
+		t.Fatalf("repack at the limit freed storage with no new segment among %v: no carried record rolled onto a reserve spare", f.J.Inspect().Segments())
+	}
+
+	// Settled, the deletes leave nothing live, and repack retires what is
+	// left of the drawn records' segments.
+	for k := range 2 {
+		f.Share(k).Settle(journaltest.File(k), deleted[k])
+	}
+	f.Advance(journaltest.IdleSealAge)
+	eventually(t, "the headroom never came back to half through repack", func() bool {
+		repack()
+		return f.J.Stats().HeadroomBytes >= full/2
+	})
+}
+
 // TestRFC1B_NoVersionRepeats checks that a version a crash lost is not issued
 // again and that the journal's floor holds after a reopen; that a journal
 // opened with no version limit issues nothing; and that writes and draws are

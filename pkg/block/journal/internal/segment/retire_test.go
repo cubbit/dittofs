@@ -2808,3 +2808,127 @@ func questionInFlight() bool {
 	buf := make([]byte, 1<<20)
 	return strings.Contains(string(buf[:runtime.Stack(buf, true)]), "(*Retirer).fullToWaitOn")
 }
+
+// TestRetireDirectRetirementLeavesNoQueuedRecycle: a repack that retires its
+// source directly, while the worker holds the same id queued and refused for
+// the repack's own claim, leaves no recycle behind it in the queue. At the
+// journal's maximum the carry's next reserve take is then refilled by a made
+// spare, where a stale queued recycle would stall the refill and answer the
+// carry's wait with the spare limit; and a later pass of the idle worker
+// counts no double retire for the id the repack already retired (a pass
+// already past its skip when the direct retirement lands still may).
+func TestRetireDirectRetirementLeavesNoQueuedRecycle(t *testing.T) {
+	seam := newSeam(t)
+	set := segment.NewSet(segCap, nil)
+	// The maximum holds the sealed source and one spare: the journal is at its
+	// limit once the reserve is made.
+	m := segment.NewMaker(seam.FS(), set, 2*segCap, 0, nil)
+	c := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(64))
+	p := segment.NewPool(m, segment.Targets{Reserve: 1}, nil, nil)
+	retired := make(chan core.SegmentID, 4)
+	r := segment.NewRetirer(segment.RetirerConfig{
+		Set:     set,
+		Cache:   c,
+		Pool:    p,
+		Maker:   m,
+		FS:      seam.FS(),
+		Retired: func(id core.SegmentID) { retired <- id },
+	})
+	t.Cleanup(r.Stop)
+
+	src, err := m.Make()
+	if err != nil {
+		t.Fatalf("the source's making: %v", err)
+	}
+	if err := set.Take(src); err != nil {
+		t.Fatalf("the source's takeover: %v", err)
+	}
+	if err := set.Seal(src, true); err != nil {
+		t.Fatalf("the source's seal: %v", err)
+	}
+	p.Start()
+	t.Cleanup(p.Stop)
+	if err := p.WaitReserveSpare(t.Context()); err != nil {
+		t.Fatalf("the reserve spare before the repack: %v", err)
+	}
+
+	// Only kicks run the worker's passes: the retry ticker never fires within
+	// the test, and the pass hook delivers each finished pass, so the worker is
+	// idle whenever the test has seen every kick's pass end.
+	segment.RetryEveryForTest(r, time.Hour)
+	passes := make(chan struct{}, 8)
+	r.SetPassHook(func() { passes <- struct{}{} })
+	awaitPass := func(what string) {
+		t.Helper()
+		select {
+		case <-passes:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("the worker never finished %s", what)
+		}
+	}
+	r.Start()
+	awaitPass("the pass Start's kick runs")
+
+	// The repack holds the source's claim while the worker's pass reaches the
+	// queued id, which the pass marks refused for that claim. Once that pass
+	// has ended with no kick pending, no pass runs until the test kicks one.
+	if !set.Claim(src) {
+		t.Fatalf("the repack's claim on the source was refused")
+	}
+	r.Enqueue(src, segment.NotHeld)
+	awaitPass("the pass over the claimed source")
+	if _, _, blocked := r.QueueForTest(); blocked != 1 {
+		t.Fatalf("the pass over the claimed source left %d claim-refused ids, want 1", blocked)
+	}
+	if r.KickPendingForTest() {
+		t.Fatalf("a kick is still pending after the pass over the claimed source")
+	}
+
+	// The repack releases its claim and retires the source itself. The pool
+	// holds its reserve, so the retirement is an unlink.
+	set.Release(src)
+	ret, err := r.Retire(src, segment.NotHeld)
+	if err != nil {
+		t.Fatalf("the repack's direct retirement of the source: %v", err)
+	}
+	if ret.Recycled {
+		t.Fatalf("the direct retirement recycled the source, want an unlink beside a full reserve")
+	}
+	if id := <-retired; id != src {
+		t.Fatalf("the direct retirement's hook named %d, want the source %d", id, src)
+	}
+	if _, full, blocked := r.QueueForTest(); full != 0 || blocked != 0 {
+		t.Fatalf("after the direct retirement the queue lists %d full and %d claim-refused ids, want 0 and 0", full, blocked)
+	}
+
+	// The carry takes the reserve spare, and its wait for the next one is
+	// answered by a made spare: the unlink left room under the maximum.
+	next, err := p.Take(segment.Reserve)
+	if err != nil {
+		t.Fatalf("the carry's reserve take: %v", err)
+	}
+	if err := p.WaitReserveSpare(t.Context()); err != nil {
+		t.Fatalf("the carry's wait for the next reserve spare: %v, want the spare the refill makes", err)
+	}
+
+	// The worker's next pass finds the id gone from its queue and leaves the
+	// ledger's double-retire count alone: the worker is idle here, so the
+	// best-effort skip has no window to miss. The carry's segment, sealed early
+	// and queued behind the source's listing, is the barrier: the pass reaches
+	// it only after the source's listing.
+	if err := set.Seal(next, false); err != nil {
+		t.Fatalf("the carry's segment's seal: %v", err)
+	}
+	r.Enqueue(next, segment.NotHeld)
+	select {
+	case id := <-retired:
+		if id != next {
+			t.Fatalf("the worker's pass retired %d, want the carry's segment %d", id, next)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the worker's pass never retired the carry's segment")
+	}
+	if got := set.Counters().DoubleRetires; got != 0 {
+		t.Fatalf("the worker's pass after the direct retirement counted %d double retires, want 0", got)
+	}
+}

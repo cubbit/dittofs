@@ -96,8 +96,9 @@ func (d *Durability) probeOnce() {
 	}
 	if err := d.makeSpare(); err != nil {
 		// An EROFS reaches Enter through the wrapped storage; anything else
-		// is tried again at the next tick.
-		d.log.Debug("journal read-only probe: spare not made", "err", err)
+		// is tried again at the next tick. It is a warning: the check passed,
+		// so the journal stays read-only only for this failure.
+		d.log.Warn("journal read-only probe: spare not made", "err", err)
 		return
 	}
 	d.setSpareMade()

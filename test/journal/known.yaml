@@ -180,9 +180,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and fills the device; the refused content write comes back as the spare limit''s NoSpaceError, not the filesystem''s ENOSPC, so the check stops before its release, removal, mark and repack legs. The headroom is built, so the error it hands a full device''s write is a defect in it, the same family as the device-ENOSPC row of this file.'
-  issue: '#3395'
-  message: 'want the filesystem''s ENOSPC and no NoSpaceError'
+  reason: 'The journal opens and fills the device; the refused content write now answers the filesystem''s ENOSPC, and the check fails on a stub call at its mark leg. Needs release, removal, mark and repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_IndexBoundRefuses
   status: fail
@@ -232,22 +232,6 @@
   issue: '#3379'
   message: 'stub: Offload'
 
-- test: TestRFC1B_ReadOnlyProbe
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens, a Sync answers the read-only refusal and Stats names the read-only state; Stats never names the probe''s failed check. Needs the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
-  issue: '#3395'
-  message: 'Stats to name the failed check within 2s'
-
-- test: TestRFC1B_ReadOnlyStopsTheDrain
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens, a Sync answers the read-only refusal and Stats names the read-only state; a Release then answers journal: not implemented, not the read-only refusal. Needs Release refused on a read-only journal, the probe and the reopen. The test asserts only part of the RFC 1 9.4 B row; the trace.yaml reason lists the rest.'
-  issue: '#3395'
-  message: 'a Release on a read-only journal returned journal: not implemented, want ErrJournalReadOnly'
-
 - test: TestRFC1B_ReclaimNotStarved
   status: fail
   fix: planned
@@ -260,9 +244,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and the journal-sized fill is refused naming the limit it reached, but a Deallocate at the journal''s maximum is then refused by the headroom limit, though a record without payload bytes must draw on the headroom; the check stops before its mark, release and idle-sealing legs. The headroom is built, so the refusal it answers that Deallocate with is a defect in it.'
-  issue: '#3395'
-  message: 'Deallocate at the journal''s maximum: journal: no space: refused by the headroom limit'
+  reason: 'The journal opens, the journal-sized fill is refused naming the limit it reached, and the truncate, deallocate and delete at the journal''s maximum are admitted on the headroom, which keeps a spare per stream to roll into; the check then stops at the stub call it reaches. Needs MarkOffloaded and Release, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_RemovalRecordsDroppedPerExtent
   status: fail
@@ -356,9 +340,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The check stops in its setup: its second write''s segment stays unsealed past the idle-seal age, so the offload the row means to check is never reached. Idle sealing is built code, so the segment a check leaves idle is a defect in it; the report''s own legs wait on the offload epics.'
-  issue: '#3395'
-  message: 'segment 3 was not sealed once idle within 2s'
+  reason: 'The journal seals both writes idle and the check then stops at the stub call it reaches. Needs Offload with the incremental report, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: Offload'
 
 - test: TestRFC1C_LossSurvivesRestart
   status: fail
@@ -440,14 +424,6 @@
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
-- test: TestRFC1D_MetricsAreReachable
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Stats serves the counters, but CorruptExtentsDataLoss stays zero after a dirty extent was read corrupt, so the leg the row wants — the corrupt-read loss a public read reaches — never moves. The data path is built, so the loss figure its corrupt read leaves out is a defect in it. The node-level journal series test''s corrupt-extent data_loss leg rides this same known red and skips until this turns green.'
-  issue: '#3395'
-  message: 'CorruptExtentsDataLoss is zero after a dirty extent was read corrupt'
-
 - test: TestRFC1D_NamedInequalitiesHold
   status: fail
   fix: planned
@@ -496,22 +472,6 @@
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
-- test: TestRFC28B_SegmentReclaimable
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Segments keeps the row of a retired damaged segment, marked retired, until close (RFC 1 section 4.4), and this check expects the repacked segment gone from the list: the RFC and the check disagree for a segment repack emptied before retiring it. Waits on the RFC owner, not on a call.'
-  issue: '#3395'
-  message: 'is still among the journal'
-
-- test: TestRFC28C_BadCopyDoesNotMaskAGoodOne
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check''s own assertion fails where it expects damage reported: the segment holds a copy that does not verify and is not reported damaged. Needs the damaged report for a record whose re-read fails where the catalog can name it.'
-  issue: '#3395'
-  message: 'holds a copy that does not verify and is not reported damaged'
-
 - test: TestRFC28C_SyncedDamageIsNotATornTail
   status: fail
   fix: planned
@@ -532,9 +492,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs segment headers with a predecessor, recovery by scan and the loss ring.'
+  reason: 'The journal opens and the segment is cut; the reopen is then refused at recovery: the named predecessor''s missing end is a range that names no record, which recovery refuses rather than counting. Needs recovery that counts a range naming no record as a loss and opens over it.'
   issue: '#3596'
-  message: 'reopen after the cut: journal: open refused at recovery: segment 3: a named predecessor''s missing end at [525168,525364) that names no record'
+  message: 'a named predecessor''s missing end at [525168,525364) that names no record'
 
 - test: TestRFC28C_BitsSurviveRestart
   status: fail
@@ -580,8 +540,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails at the open itself: the recovery read no segments by catalog, wanting the one whose footer should have named it. Needs the catalog rebuild reading the footer''s entries and reads that check the record header against them.'
-  issue: '#3395'
+  reason: 'decision: parked red on purpose, since the RFC 28 row and recovery disagree and neither changes until the RFC 28 owner rules. The row wants a read through a footer entry its record contradicts refused as corruption; recovery instead demotes the whole segment to a scan at open, so the record''s own verifying header wins, the extent is served and no segment is read by catalog. Overturned by the owner''s ruling on #5227: amend the row and this test, or make recovery confine the record as corrupt.'
+  issue: '#5227'
   message: 'recovery read 0 segments by catalog, want 1'
 
 - test: TestRFC28C_ScanResynchronises
@@ -596,9 +556,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path and recovery by scan.'
+  reason: 'The journal opens and the seal marker is copied into a payload; the crash''s reopen is then refused at recovery: a refused range that names no record, which recovery refuses rather than counting. Needs recovery that counts a range naming no record as a loss and opens over it.'
   issue: '#3596'
-  message: 'fixture: crash: journal: open refused at recovery: segment 4: a refused range at [65688,65792) that names no record'
+  message: 'a refused range at [65688,65792) that names no record'
 
 - test: TestRFC28C_SparesAreReAdopted
   status: fail
@@ -652,25 +612,25 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The check stops at its first write: with the spare''s rename held, the write is refused by the spare limit for want of a spare the journal never made, instead of waiting for the one mid-rename, before any of the row''s recovery or repack legs runs. The spare pool is built code, so a take that refuses a write rather than waiting is a defect in it.'
-  issue: '#3395'
-  message: 'write 65536 bytes at 0: journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
+  reason: 'The journal opens and the check stops at the stub call its setup reaches when it releases the filled segment''s records. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_RetiredSegmentsAreRecycled
   status: fail
   fix: planned
   category: feature
-  reason: 'The check stops at its first write: with spare-making held, the journal never makes one, and the write is refused by the spare limit with 1 segments missing, before any recycle leg runs. The spare pool is built code, so the take that refuses a write rather than waiting for the spare it is owed is a defect in it.'
-  issue: '#3395'
-  message: 'write 65536 bytes at 0: journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
+  reason: 'The journal opens and the check stops at the stub call its setup reaches when it releases the filled segment''s records. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead
   status: fail
   fix: planned
   category: feature
-  reason: 'The check stops in its recycled-segment setup: with spare-making held, the journal never makes one, and the first write is refused by the spare limit with 1 segments missing, before any catalog leg runs. The spare pool is built code, so the take that refuses a write rather than waiting for the spare it is owed is a defect in it.'
-  issue: '#3395'
-  message: 'write 65536 bytes at 0: journaltest: calls refused for want of a spare; the journal never made one: journal: no space: refused by the spare limit, 1 segments missing'
+  reason: 'The journal opens and the check stops at the stub call its setup reaches when it releases the filled segment''s records. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC28C_StaleExtent
   status: fail
@@ -712,14 +672,6 @@
   issue: '#3596'
   message: 'stub: Restamp'
 
-
-- test: TestDamage_LostWrites/failed_unlink
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The precondition fails: a sync that fails with nothing unsynced does not report the segment failed through Inspect().Segments(). Open: whether such a Sync reaches the device at all; no 9b call is involved.'
-  issue: '#3395'
-  message: 'is not reported failed after its sync failed'
 
 - test: TestDamage_BitFlip/record_header/magic
   status: fail
@@ -1041,21 +993,13 @@
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
-- test: TestEdge_ZeroLengthWrite
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; WriteAt answers an empty write with no error and the zero version, neither refusing it with ErrZeroLength nor drawing a version. Needs WriteAt for an empty payload.'
-  issue: '#3395'
-  message: 'an empty write at 0 drew version {0 0}, not above the write before it'
-
 - test: TestEdge_RecordsWithoutBytesAtMaximum
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and the records without bytes are taken; the check reads HeadroomDraws from Stats, and Stats is not written yet (T8.13) and reads zero. Needs the stats.'
-  issue: '#3395'
-  message: 'HeadroomDraws did not rise over a truncate at the maximum'
+  reason: 'The journal fills to its maximum and draws the truncate and the delete on its headroom; the check then stops at the stub call it reaches. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
 
 - test: TestEdge_FillOverHeldDirtyAndAbsent
   status: fail
@@ -1209,18 +1153,3 @@
   issue: '#3379'
   message: 'stub: Hold'
 
-- test: TestRFC1A_SyncedLossMasksSuperseded
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs Open: the synced corrupt loss masking what it superseded is built (Durability.Corrupt), the fixture cannot open a journal.'
-  issue: '#3395'
-  message: 'the extent whose superseding record rotted: missing = []'
-
-- test: TestEdge_FilesystemENOSPCIsNotErrNoSpace
-  status: skip
-  fix: planned
-  category: feature
-  reason: 'The roll path answers a full device with the spare limit alone: no take reads the pool''s device-full state, so the check''s bounded retry would spend every attempt on a retryable refusal. Withdraws when a write on a full device answers the device''s error.'
-  issue: '#3395'
-  message: 'a content write on a full device answers the spare limit: no take reads the pool''s device-full state yet'

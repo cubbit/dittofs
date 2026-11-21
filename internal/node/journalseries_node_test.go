@@ -1,6 +1,7 @@
 package node_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -39,13 +40,7 @@ func seamed(t *testing.T, maxBytes int64) (*nodetest.Harness, *kit.Seam) {
 			return nil, err
 		}
 		seam = s
-		settings := journal.Settings{
-			MaxBytes: maxBytes, Streams: 2, SpareTarget: 2,
-			HeadroomRecords: 1024, // the conformance fixtures' own share of a small journal
-			IdleSealBytes:   1 << 20 / 16,
-		}
-		journaltest.SetSegmentCap(&settings, 1<<20)
-		cfg.Journal = append(cfg.Journal, journal.WithStorage(s.FS()), journal.WithSettings(settings))
+		cfg.Journal = append(cfg.Journal, journal.WithStorage(s.FS()), journal.WithSettings(fillSettings(maxBytes)))
 		return node.New(cfg)
 	}))
 	if seam == nil {
@@ -189,53 +184,60 @@ func jcommit(t *testing.T, h *nodetest.Harness, s entity.ShareID, f entity.FileI
 	return err
 }
 
+// fillToTheMaximum writes chunks of 256 KiB at file until a write is refused
+// with anything but retry-later for capacity, and returns the bytes written
+// before it and that refusal: a retry-later is a spare still being made, and
+// the chunk is written again. The bound is a real-time backstop, never the
+// assertion.
+func fillToTheMaximum(t *testing.T, h *nodetest.Harness, s entity.ShareID, f entity.FileID) (int64, error) {
+	t.Helper()
+	const chunk = 256 << 10
+	deadline := time.Now().Add(60 * time.Second)
+	var off int64
+	for off < 128*chunk {
+		err := jwrite(t, h, s, f, off, pattern(fmt.Sprint("fill", off/chunk), chunk))
+		var delay *vfserr.Delay
+		switch {
+		case err == nil:
+			off += chunk
+		case errors.As(err, &delay) && delay.Cause == vfserr.DelayCapacity:
+			if time.Now().After(deadline) {
+				t.Fatalf("write at %d was retried-later for 60s: %v", off, err)
+			}
+			time.Sleep(time.Millisecond) // a pause between polls of the real condition
+		default:
+			return off, err
+		}
+	}
+	t.Fatalf("%d bytes written into a journal of %d bytes were never refused", off, int64(fillMax))
+	return off, nil
+}
+
 // Every condition a metric names that a node can reach without the offload
 // and syncer calls moves its series, read from the node's real metrics
 // listener. Conditions that need those calls, or a counter the journal does
 // not maintain yet, are skipped with their reason.
 func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 	t.Run("refused reservation", func(t *testing.T) {
-		h, _ := seamed(t, 4<<20)
+		h, _ := seamed(t, fillMax)
 		started(t, h)
 		sh := addShare(t, h)
 		file := createFiles(t, h, sh, 1)[0]
 		caughtUp(t, h)
 		before := jscrape(t, h)
 
-		// Fill the journal until a write is refused. The engine answers a
-		// capacity refusal two ways: retry-later for a spill flat of
-		// spares, a share limit, or a pass still running — and, since
-		// repack's settle, no-space-at-once when nothing is left to free,
-		// a journal full of only dirty bytes, which an endless delay would
-		// hang a hard mount answering. Either way the journal has refused
-		// the write at its own limit first, so the refused-reservation
-		// counter — not the error's shape — decides what the drive has
-		// reached; both shapes are the engine's, matched as its own
-		// conformance matches them.
-		const chunk = 256 << 10
-		capacityRefusal := func(err error) bool {
-			var delay *vfserr.Delay
-			return errors.As(err, &delay) && delay.Cause == vfserr.DelayCapacity || errors.Is(err, vfserr.ErrNoSpace)
+		// Fill the journal until its maximum refuses a write. A spare still
+		// being made answers retry-later, and the fill writes the same chunk
+		// again; the refusal the row reaches is the maximum's no space,
+		// after the journal took at least a segment of content: a journal
+		// sized past its spare targets refuses nothing at its maximum
+		// before then, so a refusal earlier is some other limit's.
+		accepted, err := fillToTheMaximum(t, h, sh.ID, file.ID)
+		if !errors.Is(err, vfserr.ErrNoSpace) || !strings.Contains(err.Error(), "the journal limit") {
+			t.Fatalf("the fill's refusal = %v after %d bytes, want no space naming the journal's limit", err, accepted)
 		}
-		refused := false
-		for i := range 128 {
-			err := jwrite(t, h, sh.ID, file.ID, int64(i)*chunk, pattern(fmt.Sprint("fill", i), chunk))
-			if err == nil {
-				continue
-			}
-			if !capacityRefusal(err) {
-				t.Fatalf("write %d into the journal of 4 MiB: %v", i, err)
-			}
-			if v, _ := at(t, jscrape(t, h), "dittofs_journal_reservation_refused_total"); v >= 1 {
-				refused = true
-				break
-			}
-			// A spill flat of spares passes retry-later at the engine's
-			// surface; the pool makes its next spare in the background and
-			// the fill goes on.
-		}
-		if !refused {
-			t.Fatal("128 writes of 256 KiB into a journal of 4 MiB were never refused at the journal's own limit")
+		if accepted < 1<<20 {
+			t.Fatalf("the journal's limit refused the fill after %d bytes, want at least a segment of 1 MiB written first", accepted)
 		}
 		after := jscrape(t, h)
 		if v := moved(t, "dittofs_journal_reservation_refused_total", before, after); v < 1 {
@@ -281,17 +283,42 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 		}
 	})
 	t.Run("corrupt extent, data loss", func(t *testing.T) {
-		// The drive would be: write, commit, restart, flip a payload byte
-		// behind the open journal's back through the storage seam, read —
-		// the read drops the extent as corrupt with its bit unset and the
-		// counter rises. The journal's own conformance leg of the same
-		// shape is red today (its known failure, the same issue that owns
-		// the reachability check this node leg answers): a flipped byte's
-		// visibility to the open that holds the record is not
-		// deterministic, and the node drove it green only when the drop
-		// landed on the read's verify, red when the open's walk took it
-		// without the count. Unskips with the conformance leg it rides on.
-		t.Skip("the corrupt-extent drop is not deterministically reachable while its known conformance leg stays red: the journal sees a flipped byte's record on the read's verify only sometimes, and when the open's walk takes it the corrupt counter does not rise; the series is exported and unskips with the conformance leg it rides on")
+		h, seam := seamed(t, 8<<20)
+		started(t, h)
+		sh := addShare(t, h)
+		file := createFiles(t, h, sh, 1)[0]
+		caughtUp(t, h)
+		payload := pattern("corrupt", 4096)
+		if err := jwrite(t, h, sh.ID, file.ID, 0, payload); err != nil {
+			t.Fatal(err)
+		}
+		if err := jcommit(t, h, sh.ID, file.ID); err != nil {
+			t.Fatal(err)
+		}
+		caughtUp(t, h)
+		before := jscrape(t, h)
+
+		// Flip a payload byte behind the journal's back, through the seam,
+		// then read: the read drops the extent as corrupt with its offloaded
+		// bit unset, and the counter has risen by the time the read returns.
+		flipPayloadByte(t, seam, payload)
+		got := make([]byte, len(payload))
+		n, rerr := h.Node().Engine().Read(t.Context(), sh.ID, file.ID, 0, got)
+		if rerr == nil && n == len(payload) && bytes.Equal(got, payload) {
+			t.Fatal("the read returned the original bytes after one was flipped: it did not verify the record")
+		}
+		after := jscrape(t, h)
+		dataLoss := func(m map[string]map[string]float64) float64 {
+			for labels, v := range m["dittofs_journal_corrupt_extents_total"] {
+				if strings.Contains(labels, "outcome=data_loss,") {
+					return v
+				}
+			}
+			return 0
+		}
+		if got := dataLoss(after) - dataLoss(before); got < 1 {
+			t.Errorf("dittofs_journal_corrupt_extents_total{outcome=data_loss} moved by %v over a read of a corrupt dirty extent, want it to rise", got)
+		}
 	})
 	t.Run("corrupt extent, repairable", func(t *testing.T) {
 		t.Skip("needs the offload pass that marks an extent offloaded, which the node never runs: the synced-side share of this counter reaches a node test with the syncer and offload work")
@@ -736,6 +763,50 @@ func newestID(t *testing.T, seam *kit.Seam) uint64 {
 		newest = max(newest, id)
 	}
 	return newest
+}
+
+// flipPayloadByte inverts one byte of the first segment in the journal's
+// directory that holds payload, through the seam, and syncs the file.
+func flipPayloadByte(t *testing.T, seam *kit.Seam, payload []byte) {
+	t.Helper()
+	names, err := seam.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".seg") {
+			continue
+		}
+		f, err := seam.Open(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size, err := f.Size()
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, size)
+		_, err = f.ReadAt(buf, 0)
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatal(err)
+		}
+		at := bytes.Index(buf, payload)
+		if at >= 0 {
+			if _, err := f.WriteAt([]byte{buf[at] ^ 0xff}, int64(at)); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Sync(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if at >= 0 {
+			return
+		}
+	}
+	t.Fatal("the payload is in no segment of the journal's directory")
 }
 
 // plant writes a durable file under name in the journal's directory, through

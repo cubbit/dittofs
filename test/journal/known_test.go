@@ -36,12 +36,12 @@ const (
 var openOwners = map[string]string{
 	"#3596": "epic 7b",
 	"#3379": "epic 9b",
-	"#3395": "epic 12 (T12.2)",
 	"#4859": "the open's loss records for synced damage",
 	"#4860": "the record-less take's return to the pool",
 	"#4861": "the identity refusal and error",
 	"#4862": "the same-process reopen's loss record",
 	"#4863": "the open's removal markers",
+	"#5227": "the RFC 28 ruling on a footer entry its record contradicts",
 }
 
 // openOwnerList names each open owner with its issue, so a failure that
@@ -56,8 +56,9 @@ var openOwnerList = func() string {
 
 // classOwner maps the call a `stub: <Call>` message names to the open epic
 // that writes it. Repack, Forget and repack_copy are landed code on this
-// branch, so a row still failing on one is a defect there and the burn-down
-// owns it.
+// branch and map to no owner: a row failing on one is a defect there, and its
+// message names no stub the table can route, so the classifier rejects it
+// until it gets an owner of its own.
 var classOwner = map[string]string{
 	"MarkOffloaded":  "#3379",
 	"Offload":        "#3379",
@@ -66,9 +67,6 @@ var classOwner = map[string]string{
 	"Stamp":          "#3379",
 	"Restamp":        "#3596",
 	"Inspect.Verify": "#3596",
-	"Forget":         "#3395",
-	"Repack":         "#3395",
-	"repack_copy":    "#3395",
 }
 
 // stubClass names the call a `stub: ` message stops at: the identifier up to
@@ -86,30 +84,14 @@ var stubClass = regexp.MustCompile(`^stub: ([A-Za-z_.]+)`)
 // rows. The ceiling is that a new row has no entry until someone adds it, and
 // the test fails on it.
 var testOwner = map[string]string{
-	"TestRFC1A_SinceYieldsOver":                               "#4863",
-	"TestRFC1A_SyncedLossMasksSuperseded":                     "#3395",
-	"TestRFC1B_HeadroomIsAllocated":                           "#3395",
-	"TestRFC1B_ReadOnlyProbe":                                 "#3395",
-	"TestRFC1B_ReadOnlyStopsTheDrain":                         "#3395",
-	"TestRFC1B_RecordsWithoutBytesAtTheLimit":                 "#3395",
-	"TestRFC1C_IncrementalReport":                             "#3395",
-	"TestRFC1C_LossSurvivesRestart":                           "#4862",
-	"TestRFC1D_MetricsAreReachable":                           "#3395",
-	"TestRFC28A_AZeroSlotIsNotTheEnd":                         "#3596",
-	"TestRFC28A_FooterIsNotAuthoritative":                     "#3395",
-	"TestRFC28B_SegmentReclaimable":                           "#3395",
-	"TestRFC28C_BadCopyDoesNotMaskAGoodOne":                   "#3395",
-	"TestRFC28C_SyncedDamageIsNotATornTail":                   "#4859",
-	"TestRFC28C_SparesAreReAdopted":                           "#4860",
-	"TestRFC28C_SpareIsWholeOrAbsent/durable_temporary_entry": "#3395",
-	"TestRFC28C_RetiredSegmentsAreRecycled":                   "#3395",
-	"TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead":        "#3395",
-	"TestRFC28C_JournalGone":                                  "#4861",
-	"TestRFC28C_InterruptedInit":                              "#4861",
-	"TestDamage_LostWrites/failed_unlink":                     "#3395",
-	"TestEdge_ZeroLengthWrite":                                "#3395",
-	"TestEdge_RecordsWithoutBytesAtMaximum":                   "#3395",
-	"TestEdge_FilesystemENOSPCIsNotErrNoSpace":                "#3395",
+	"TestRFC1A_SinceYieldsOver":             "#4863",
+	"TestRFC1C_LossSurvivesRestart":         "#4862",
+	"TestRFC28A_AZeroSlotIsNotTheEnd":       "#3596",
+	"TestRFC28A_FooterIsNotAuthoritative":   "#5227",
+	"TestRFC28C_SyncedDamageIsNotATornTail": "#4859",
+	"TestRFC28C_SparesAreReAdopted":         "#4860",
+	"TestRFC28C_JournalGone":                "#4861",
+	"TestRFC28C_InterruptedInit":            "#4861",
 }
 
 // owner returns the open issue that owns e's failure, and whether any table

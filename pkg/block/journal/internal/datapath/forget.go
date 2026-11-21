@@ -190,7 +190,7 @@ func (c *Core) Forget(ctx context.Context, tag core.ShareTag) error {
 		c.headroom.Refund(draw)
 		return err
 	}
-	c.headroom.Drawn(draw)
+	c.headroom.Drawn(draw, pl.Loc.Segment)
 	c.cap.Landed(tag, pl.Loc.Len)
 
 	// The forget record's liveness, registered the moment its bytes landed:
