@@ -40,13 +40,7 @@ func seamed(t *testing.T, maxBytes int64) (*nodetest.Harness, *kit.Seam) {
 			return nil, err
 		}
 		seam = s
-		settings := journal.Settings{
-			MaxBytes: maxBytes, Streams: 2, SpareTarget: 2,
-			HeadroomRecords: 1024, // the conformance fixtures' own share of a small journal
-			IdleSealBytes:   1 << 20 / 16,
-		}
-		journaltest.SetSegmentCap(&settings, 1<<20)
-		cfg.Journal = append(cfg.Journal, journal.WithStorage(s.FS()), journal.WithSettings(settings))
+		cfg.Journal = append(cfg.Journal, journal.WithStorage(s.FS()), journal.WithSettings(fillSettings(maxBytes)))
 		return node.New(cfg)
 	}))
 	if seam == nil {

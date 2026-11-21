@@ -17,6 +17,7 @@ import (
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 	"go.opentelemetry.io/otel/codes"
@@ -38,6 +39,36 @@ func traced(t *testing.T, maxBytes int64) (*nodetest.Harness, *tracetest.SpanRec
 		return node.New(cfg)
 	}))
 	return h, sr
+}
+
+// fillMax is the maximum of the journal the span tests fill: the pool's spare
+// targets at fillSettings — two content spares, a headroom spare per stream
+// and the repack reserve, 5 MiB — and one segment past them, the seat a write
+// needs while its content spare is still being made. A maximum at the targets
+// alone has the pool's reservations fill it, and that write is refused.
+const fillMax = 6 << 20
+
+// The span tests' first write must find the journal able to take it once its
+// first content spare lands: while that spare is still being made — its cap
+// already reserved against the maximum, the zero fill of a preallocation
+// that can take a while — the write is answered retry-later, never the
+// no-space a journal at its maximum answers. The seam holds that spare's
+// making at its allocate, the window a slow device stretches.
+func TestTheFillJournalsFirstWriteWaitsForItsContentSpare(t *testing.T) {
+	h, seam := seamed(t, fillMax)
+	// The pool makes the two headroom spares and the repack reserve first;
+	// the fourth spare is the first content one.
+	hold := seam.HoldFirst(t, kit.OpAllocate, "*0004.spare.tmp")
+	started(t, h)
+	sh := addShare(t, h)
+	file := createFiles(t, h, sh, 1)[0]
+	caughtUp(t, h)
+	err := jwrite(t, h, sh.ID, file.ID, 0, pattern("first", 4096))
+	hold.Release()
+	var delay *vfserr.Delay
+	if !errors.As(err, &delay) || delay.Cause != vfserr.DelayCapacity {
+		t.Fatalf("the first write while the content spare is made = %v, want retry-later for capacity: the journal's maximum leaves no room past its spare targets", err)
+	}
 }
 
 // fillSettings is the shape of journal that fills: maxBytes bytes over
@@ -94,7 +125,7 @@ func refused(err error) bool {
 
 // fillUntilRefused writes chunks of 256 KiB at file until the journal itself
 // counts a refused reservation, never longer than 128 chunks into a journal
-// of 4 MiB. A capacity answer is not a refusal by its shape: a pool still
+// of 6 MiB. A capacity answer is not a refusal by its shape: a pool still
 // making its next spare answers the same retry-later, so the journal's own
 // refused-reservation counter, read from the node's listener before the fill
 // and after each retry-later, says when the journal counted one more
@@ -124,7 +155,7 @@ func fillUntilRefused(t *testing.T, h *nodetest.Harness, shID entity.ShareID, fi
 			t.Fatalf("write %d was refused for 60s with no new counted refusal, want the pool to make a spare or the journal to refuse at its limit: %v", i, err)
 		}
 	}
-	t.Fatal("128 writes of 256 KiB into a journal of 4 MiB were never refused, want the fill to reach the journal's limit")
+	t.Fatal("128 writes of 256 KiB into a journal of 6 MiB were never refused, want the fill to reach the journal's limit")
 }
 
 // writeSpared is the first write into a started node: the journal's pool
@@ -155,7 +186,7 @@ func writeSpared(t *testing.T, h *nodetest.Harness, s entity.ShareID, f entity.F
 // journal with. The drives are bounded by their own outcomes — the commit
 // returns, the fill loop stops at its first refusal — never by a sleep.
 func TestTheJournalTracesItsOperations(t *testing.T) {
-	h, sr := traced(t, 4<<20)
+	h, sr := traced(t, fillMax)
 	started(t, h)
 	sh := addShare(t, h)
 	file := createFiles(t, h, sh, 1)[0]
@@ -241,7 +272,7 @@ func TestTheJournalTracesItsOperations(t *testing.T) {
 // commit returns and the fill reaches its first refusal.
 func TestTheJournalRunsUntracedWithoutATracer(t *testing.T) {
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
-		cfg.Journal = append(cfg.Journal, journal.WithSettings(fillSettings(4<<20)))
+		cfg.Journal = append(cfg.Journal, journal.WithSettings(fillSettings(fillMax)))
 		return node.New(cfg) // Config.Tracer left nil: the journals open untraced
 	}))
 	started(t, h)
