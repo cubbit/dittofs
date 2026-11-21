@@ -540,8 +540,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails at the open itself: the recovery read no segments by catalog, wanting the one whose footer should have named it. Needs the catalog rebuild reading the footer''s entries and reads that check the record header against them.'
-  issue: '#3395'
+  reason: 'decision: parked red on purpose, since the RFC 28 row and recovery disagree and neither changes until the RFC 28 owner rules. The row wants a read through a footer entry its record contradicts refused as corruption; recovery instead demotes the whole segment to a scan at open, so the record''s own verifying header wins, the extent is served and no segment is read by catalog. Overturned by the owner''s ruling on #5227: amend the row and this test, or make recovery confine the record as corrupt.'
+  issue: '#5227'
   message: 'recovery read 0 segments by catalog, want 1'
 
 - test: TestRFC28C_ScanResynchronises

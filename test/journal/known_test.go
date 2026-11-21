@@ -42,6 +42,7 @@ var openOwners = map[string]string{
 	"#4861": "the identity refusal and error",
 	"#4862": "the same-process reopen's loss record",
 	"#4863": "the open's removal markers",
+	"#5227": "the RFC 28 ruling on a footer entry its record contradicts",
 }
 
 // openOwnerList names each open owner with its issue, so a failure that
@@ -89,7 +90,7 @@ var testOwner = map[string]string{
 	"TestRFC1A_SinceYieldsOver":             "#4863",
 	"TestRFC1C_LossSurvivesRestart":         "#4862",
 	"TestRFC28A_AZeroSlotIsNotTheEnd":       "#3596",
-	"TestRFC28A_FooterIsNotAuthoritative":   "#3395",
+	"TestRFC28A_FooterIsNotAuthoritative":   "#5227",
 	"TestRFC28C_SyncedDamageIsNotATornTail": "#4859",
 	"TestRFC28C_SparesAreReAdopted":         "#4860",
 	"TestRFC28C_JournalGone":                "#4861",
