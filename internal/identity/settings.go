@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -59,8 +60,10 @@ func Section() settings.Section {
 // a put or a delete back to the default, is refused when the range's high end
 // is at or below the uid or the gid counter's high-water mark: the counters
 // never fall, so the next uid or gid, past the mark, would lie past the high
-// end, and every later create drawing one would fail. A write of any other
-// key passes unread, so a range already used up never refuses one.
+// end, and every later create drawing one would fail. A write of
+// netbios_name is refused when it equals the directory record's NetBIOS
+// domain, read tracked. A write of any other key passes unread, so a range
+// already used up never refuses one.
 //
 // decision: the marks are checked at the write only, never again at Apply,
 // since a second answer read later could refuse a range the write committed
@@ -72,6 +75,13 @@ func Section() settings.Section {
 // read its range at, conflicting with every setting change; worth it only if
 // such a race is ever seen outside a test.
 func checkSettings(tx entity.ControlPlaneTx, w settings.Write, s Settings) error {
+	if w.Key == keyNetBIOSName {
+		domain, _, err := settingString(tx, keyNetBIOSDomain)
+		if err != nil {
+			return err
+		}
+		return checkNetBIOS(w, s.NetBIOSName, keyNetBIOSDomain, domain)
+	}
 	if w.Key != "identity.id_range" {
 		return nil
 	}
@@ -106,7 +116,58 @@ func DirectorySection() settings.Section {
 		directory.Record{Schema: directory.SchemaAD},
 		settings.Required("Address"),
 		settings.WriteRole(entity.RoleAdmin),
-		settings.SecretRef("BindCredential", entity.SecretDirectoryCredential))
+		settings.SecretRef("BindCredential", entity.SecretDirectoryCredential),
+		settings.CheckTx(checkDirectory))
+}
+
+// The two keys the NetBIOS rule relates, one in each identity section.
+const (
+	keyNetBIOSName   = "identity.netbios_name"
+	keyNetBIOSDomain = "identity.directory.netbios_domain"
+)
+
+// checkDirectory is the directory section's write check: a write of the
+// record's NetBIOS domain reads identity.netbios_name in the write's
+// transaction, tracked, and refuses a domain equal to it.
+func checkDirectory(tx entity.ControlPlaneTx, w settings.Write, r directory.Record) error {
+	if w.Key != keyNetBIOSDomain {
+		return nil
+	}
+	name, found, err := settingString(tx, keyNetBIOSName)
+	if err != nil {
+		return err
+	}
+	if !found {
+		name = defaultSettings().NetBIOSName
+	}
+	return checkNetBIOS(w, r.NetBIOSDomain, keyNetBIOSName, name)
+}
+
+// checkNetBIOS refuses w, writing value, when value equals otherValue, the
+// stored value of the key other, with ASCII letters folded, as Apply refuses the two in one State: a local
+// NTLMv2 sign-in's domain would name both the installation and the directory.
+// Each side's write runs it against the other's stored value, so a write of
+// either is refused, naming the other.
+func checkNetBIOS(w settings.Write, value, other, otherValue string) error {
+	if value == "" || !equalFoldASCII(value, otherValue) {
+		return nil
+	}
+	return w.Refuse(fmt.Sprintf("%q is %s %q, ASCII letters folded; the installation's NetBIOS name "+
+		"and the directory's NetBIOS domain must differ", value, other, otherValue))
+}
+
+// settingString is the string the installation's row of key holds, read
+// tracked in tx; false when no row is stored.
+func settingString(tx entity.ControlPlaneTx, key string) (string, bool, error) {
+	row, found, err := tx.Setting(entity.SettingScope{Kind: entity.ScopeInstallation}, key)
+	if err != nil || !found {
+		return "", false, err
+	}
+	var v string
+	if err := json.Unmarshal(row.Value, &v); err != nil {
+		return "", false, fmt.Errorf("identity: read %s: %w", key, err)
+	}
+	return v, true, nil
 }
 
 // Validate refuses a range whose low end is above its high end, a negative
