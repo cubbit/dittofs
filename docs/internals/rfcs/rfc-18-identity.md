@@ -1060,9 +1060,11 @@ controller knows. The probe has three answers: it accepts, it rejects, or it
 could not be asked, which retries and never reads as a rejection. A join whose
 pinned controller could not be asked for an hour fails, naming the controller;
 a join run again then pins another, and is run with a takeover, since the
-failed one may have created the account. A failed join, online or offline,
-leaves the installation not joined, and `identity.netbios_name` unchanged,
-since the join writes it only at its last step. It prunes the versions it
+failed one may have created the account. A join of a joined installation is
+refused unless it is the takeover. A join that fails before its seal leaves the
+installation as it was; one that fails after it leaves the installation not
+joined, and `identity.netbios_name` unchanged, since the join writes it only at
+its last step. It prunes the versions it
 sealed but those it sent to a controller: the account's creation's, or each
 closing rotation's set, so at most two, since the controller may hold the
 second as its current password and the first as its previous one. Those stay
