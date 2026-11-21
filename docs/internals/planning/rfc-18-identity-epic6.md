@@ -349,10 +349,13 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   entry" for a minted principal is cached as a negative answer for 30 seconds and read by
   resolution as disabled, refused `ErrAccess`, counted `disabled`. Prior art: sssd marks an entry
   gone from the directory as expired, not deleted (from memory).
-- **D13, the NetBIOS cross-check imports nothing of identity.** T6.13's code in `pkg/settings`
-  reads the two settings' rows by key and the record's `netbios_domain` field from its JSON, so
-  nothing outside `internal/identity` and its tests imports `internal/identity`, as E1's import
-  rule requires. Prior art: RFC 13 §6's port rule, built the same way.
+- **D13, the NetBIOS cross-check is identity's own `CheckTx`.** Both settings belong to identity,
+  so RFC 13 §6 keeps the rule with the component: each identity section's `CheckTx`, in
+  `internal/identity`, reads the other's row by key, tracked, in the write's transaction, and
+  `Apply` runs the same rule on the `State`. `pkg/settings` holds no rule naming either key and
+  imports nothing of identity, so nothing outside `internal/identity` and its tests imports
+  `internal/identity`, as E1's import rule requires. RFC 13 §6 sends a rule to the control plane
+  only when its two settings belong to different components, as the port rule's do.
 
 ## 5. Target tree
 
@@ -391,8 +394,8 @@ pkg/identity/identitytest/
 pkg/metadata/kvstore/
   minter.go                   T6.10 Rename (D5), SetEmail
   kvstoretest/principals.go   T6.10 their conformance rows
-pkg/settings/
-  check.go                    T6.13 the NetBIOS cross-check in Check
+internal/identity/
+  settings.go                 T6.13 the NetBIOS cross-check in both sections' CheckTx (D13)
 ```
 
 ## 6. Subtasks
@@ -887,11 +890,11 @@ pkg/settings/
 
 - **Track:** C. **Depends on:** T6.3. #4059's epic 3.
 - **Covers:** R4, R5, R6.
-- **Deliverables:** in #4059's `Check`, code naming `identity.netbios_name` and
-  `identity.directory`'s NetBIOS domain, as RFC 13 §6's port rule is: a put of either reads the
-  other's current value as a tracked read in the write's transaction and refuses a match, ASCII
-  letters folded, naming the other. Consumed by RFC 23's plan's settings route, which calls
-  `Check`.
+- **Deliverables:** in identity's two sections' `CheckTx` functions, which #4059's `Check` runs
+  (D13), code naming `identity.netbios_name` and `identity.directory`'s NetBIOS domain: a put of
+  either reads the other's current value as a tracked read in the write's transaction and refuses
+  a match, ASCII letters folded, naming the other. Consumed by RFC 23's plan's settings route,
+  which calls `Check`.
 - **Acceptance criteria:**
   - The refusal names the other key.
 - **Tests:** through `Check` over the memory KV store's `Write`: §10's "NetBIOS name and domain"
