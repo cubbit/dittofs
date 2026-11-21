@@ -11,12 +11,23 @@ import (
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// keys is every key the store holds, with its value.
+// ceilingKey is the store's clock ceiling, N‖node‖clk under the node ID
+// newResolving opens the store with. The store raises it every second of
+// wall time on its own, so it changes whatever identity does.
+var ceilingKey = func() string {
+	var opts badgerkv.Options
+	return string(append(keys.ID([]byte{keys.KindN}, opts.NodeID[:]), keys.NClk))
+}()
+
+// keys is every key the store holds, with its value, but the store's own
+// clock ceiling.
 func (r *resolving) keys(t *testing.T) map[string]string {
 	t.Helper()
 	out := map[string]string{}
@@ -25,7 +36,9 @@ func (r *resolving) keys(t *testing.T) map[string]string {
 			if err != nil {
 				return err
 			}
-			out[string(e.Key)] = string(e.Value)
+			if string(e.Key) != ceilingKey {
+				out[string(e.Key)] = string(e.Value)
+			}
 		}
 		return nil
 	})
