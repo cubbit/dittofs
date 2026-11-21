@@ -127,6 +127,13 @@ func TestReadOnlySyncAnswersAsRFC1Says(t *testing.T) {
 	if marks, err := h.Sync(ctx); err != nil {
 		t.Errorf("a Sync naming no file returned %v and marks %v, want nil", err, marks)
 	}
+	// A Sync naming the undone file beside a durable one waits on the undone
+	// record, so it answers the bare refusal, not the durable file's mark.
+	marks, err := h.Sync(ctx, fs.a, fs.u)
+	var se *journal.SyncError
+	if !errors.Is(err, journal.ErrJournalReadOnly) || errors.As(err, &se) || len(marks) != 0 {
+		t.Errorf("a Sync naming a durable file and the undone one returned %v and marks %v, want the bare ErrJournalReadOnly and no marks", err, marks)
+	}
 }
 
 // TestReadOnlyProbeMakesItsSpareAtTheMaximum checks that the read-only probe
@@ -145,8 +152,8 @@ func TestReadOnlyProbeMakesItsSpareAtTheMaximum(t *testing.T) {
 		id := journaltest.File(i)
 		if _, err := h.WriteAt(ctx, id, 0, chunk, 1); err != nil {
 			var ns *journal.NoSpaceError
-			if !errors.As(err, &ns) {
-				t.Fatalf("write %d returned %v, want the journal filled to a NoSpaceError", i, err)
+			if !errors.As(err, &ns) || ns.Limit != journal.LimitJournal {
+				t.Fatalf("write %d returned %v, want the journal filled to a NoSpaceError naming the journal maximum", i, err)
 			}
 			break
 		}
@@ -154,6 +161,11 @@ func TestReadOnlyProbeMakesItsSpareAtTheMaximum(t *testing.T) {
 			t.Fatalf("Sync of write %d: %v", i, err)
 		}
 		last = id
+	}
+	// At the maximum: a spare reserved against it, as the pool's maker
+	// reserves one, cannot be made, so the probe's spare must go past it.
+	if st := f.J.Stats(); st.UsedBytes+journaltest.FixtureSegmentCap <= st.MaxBytes {
+		t.Fatalf("UsedBytes %d, MaxBytes %d: one more segment still fits, want the journal at its maximum", st.UsedBytes, st.MaxBytes)
 	}
 
 	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*", 0, syscall.EROFS)); err != nil {
