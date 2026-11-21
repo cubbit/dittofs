@@ -59,7 +59,7 @@ func (h header) Version() core.Version {
 	if minor, ok := c.MinorVersion(); ok {
 		return core.Version(minor)
 	}
-	if c.Program() == progNFS && c.Version() == versNFS4 {
+	if c.Program() == wire.ProgNFS && c.Version() == wire.VersNFS4 {
 		return 0
 	}
 	return core.Version(c.Version())
@@ -156,22 +156,12 @@ func (s *stage) Args(rec *resources.Buf, h core.Header) []byte {
 // result's head a reply that fails before or at a member writes beside the
 // members' bounds (RFC 20 section 4.7).
 func (s *stage) ReplyLen(h core.Header) int {
-	n := 32
 	hd, ok := h.(header)
 	if !ok || !hd.compound() {
-		return n
+		return wire.MaxReplyHeaderLen
 	}
-	tag := len(hd.call().Tag())
-	return 24 + 4 + 4 + tag + pad(tag) + 4 + resultHead
+	return wire.AcceptedLen + wire.CompoundStatusLen(len(hd.call().Tag())) + wire.ResultHeadLen
 }
-
-// resultHead is a member's result head, an operation code and a status: the
-// bytes a member whose reply fails before or at it writes beside the
-// members' bounds (RFC 20 section 4.7).
-const resultHead = 8
-
-// pad is XDR's padding of n bytes to four.
-func pad(n int) int { return (4 - n%4) % 4 }
 
 // Route chooses the table and builds the request, one of the call's own, in
 // the order of RFC 20 section 4.1's route row: a message that is not a call
