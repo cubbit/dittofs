@@ -26,7 +26,7 @@ func TestClosedSetsAreRFC23s(t *testing.T) {
 		{"Code", strs(apiCodes), []string{
 			"unauthenticated", "forbidden", "generation_mismatch", "precondition_required",
 			"idempotency_mismatch", "managed", "operation_running", "not_cancellable",
-			"last_admin", "not_a_copy", "password_change_required", "throttled", "starting",
+			"last_admin", "not_a_copy", "joined", "password_change_required", "throttled", "starting",
 			"unavailable",
 		}},
 		{"OpKind", strs(opKinds), []string{

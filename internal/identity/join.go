@@ -234,13 +234,16 @@ func joinProblem(status int, code apiv1.Code, detail string) *apiv1.Problem {
 	return &apiv1.Problem{Status: status, Code: code, Title: "the domain join failed", Detail: detail}
 }
 
-// start refuses a request the directory record or the names make wrong, and
-// a rotation running on the installation, read tracked in one write that
+// start refuses a join of a joined installation that is not the takeover, a
+// request the directory record or the names make wrong, and a rotation
+// running on the installation, read tracked in one write that
 // writes nothing. It fixes the account's name and the DNS host name, each
 // defaulted, in the cursor.
 func (j *joining) start(ctx context.Context, target entity.ResourceRef, spec apiv1.JoinDomainSpec) error {
 	rec := j.st.Directory
 	switch {
+	case j.in.Join.Joined && !spec.Takeover:
+		return joinProblem(http.StatusConflict, apiv1.CodeJoined, fmt.Sprintf("the installation is joined as %s; a new join needs the takeover", j.in.Join.Account))
 	case rec == nil:
 		return joinProblem(http.StatusConflict, "", "the installation has no directory record")
 	case !rec.IsAD():
@@ -606,14 +609,14 @@ func (j *joining) noAnswer(ctx context.Context, err error) error {
 // identity.netbios_name, the machine password's versions and the last
 // confirm as they were, then answers the problem that fails the operation.
 //
-// decision: a failed join records the installation not joined only once it
-// has sealed a version. From then on the machine password in force is one no
-// controller may hold, so a join recorded before no longer holds. A failure
-// before the seal (a refused request, an existing account, no controller
-// answering) has changed nothing, so it writes nothing and an installation
-// already joined stays joined. Overturned if every failed join is to record
-// the installation not joined, or if a joined installation is refused a join
-// before its operation starts, leaving no joined installation to keep.
+// decision: a failed join leaves the installation as it was; only a failure
+// after the seal records it not joined. From the seal on, the machine
+// password in force is one no controller may hold, so a join recorded before
+// no longer holds. A failure before it (a refused request, an existing
+// account, no controller answering) has changed nothing, so it writes
+// nothing. A joined installation reaches a join only as its takeover, since
+// the API and the join's first turn refuse any other. Overturned if a
+// failure before the seal can change what the installation holds.
 func (j *joining) fail(ctx context.Context, status int, detail string) error {
 	if j.c.Version == 0 {
 		return joinProblem(status, "", detail)

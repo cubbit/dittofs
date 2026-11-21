@@ -208,7 +208,7 @@ func TestProblemAnswers(t *testing.T) {
 		{status: 403}: {"forbidden", "password_change_required", "access", "perm", "wrong_security", "access_denied", "auth_required",
 			"permission_denied", "privilege_required"},
 		{status: 404}: {"not_found"},
-		{status: 409}: {"managed", "not_cancellable", "last_admin", "not_a_copy", "stale", "cross_project", "tags_exhausted", "exist",
+		{status: 409}: {"managed", "not_cancellable", "last_admin", "not_a_copy", "joined", "stale", "cross_project", "tags_exhausted", "exist",
 			"not_empty", "read_only", "no_space", "quota", "range_not_locked", "delete_pending", "state", "cross", "incomplete",
 			"already_exists", "quota_exceeded", "stale_handle", "lock_not_found", "newer_schema", "bound_setting", "format_version",
 			"unproven", "wrong_kind", "kind_changed"},

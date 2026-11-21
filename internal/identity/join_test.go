@@ -427,19 +427,35 @@ func TestOnlineJoinEndWritesBothOrNeither(t *testing.T) {
 	}
 }
 
-// On a joined installation, a join refused before it sealed anything leaves
-// it joined; one that fails after its seal leaves it not joined, with
-// identity.netbios_name as it was.
+// On an installation joined as NAS, a join of another account that is not
+// the takeover is refused at its first turn, whether or not the
+// administrator's credential is held: nothing is sealed, the installation
+// still reads joined as NAS, and the hold is released.
+func TestOnlineJoinOfAJoinedInstallationRefused(t *testing.T) {
+	for _, hold := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no credential", true: "a held credential"}[hold], func(t *testing.T) {
+			fx := newRotation(t)
+			before := fx.versions(t)
+			op := fx.joinOp(t, apiv1.JoinDomainSpec{Account: "OTHER"}, hold)
+			fx.wantFailed(t, op, "a new join needs the takeover")
+			if vs := fx.versions(t); !slices.EqualFunc(vs, before, func(a, b secrets.Version) bool { return a.Number == b.Number }) {
+				t.Errorf("versions %v, want %v, nothing sealed", vs, before)
+			}
+			if j := fx.join(t); !j.Joined || j.Account != "NAS$" || j.LastRotation.Failed {
+				t.Errorf("join %+v, want still joined as NAS$", j)
+			}
+			if _, held := fx.s.HeldCredential(op.ID); held {
+				t.Error("the credential is still held after the refused join")
+			}
+		})
+	}
+}
+
+// On a joined installation, a takeover that fails after its seal leaves it
+// not joined, with identity.netbios_name as it was.
 func TestOnlineJoinFailureOnJoinedInstallation(t *testing.T) {
 	fx := newRotation(t)
-	op := fx.joinOp(t, apiv1.JoinDomainSpec{Account: "NAS"}, true)
-	fx.until(t, op, "seal")
-	fx.wantFailed(t, op, "NAS$ already exists")
-	if j := fx.join(t); !j.Joined || j.LastRotation.Failed {
-		t.Errorf("join %+v after a refused join, want still joined", j)
-	}
-
-	op = fx.joinOp(t, apiv1.JoinDomainSpec{Account: "NAS", Takeover: true}, false)
+	op := fx.joinOp(t, apiv1.JoinDomainSpec{Account: "NAS", Takeover: true}, false)
 	fx.until(t, op, "create")
 	fx.runs(t, op) // records the attempt
 	fx.wantFailed(t, op, "administrator credential")
