@@ -673,7 +673,7 @@ the wire:
   shared across minor versions: over NFSv4.0 every stateid of a client
   `EXCHANGE_ID` confirmed, an open's, a lock's or a delegation's, is refused
   `NFS4ERR_BAD_STATEID`, since that state was created on a session and is
-  marked so (`Sessioned`), and the service refuses it to a call with no
+  marked so (its open's `Session`), and the service refuses it to a call with no
   session (§5.2 rule 5). A confirm that finds the record but comes from another
   principal is `NFS4ERR_CLID_INUSE` (`ErrState` (`ClientInUse`); RFC 7530 §16.34.5,
   RFC 8881 §18.36.4) and leaves the record in place for its own principal.
@@ -1005,7 +1005,7 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    state its stateid resolves to, as
    [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) defines it, and rule 4 has
    nothing to compare it with. A delegation stateid over NFSv4.0, and any
-   stateid of state created on a session (`Sessioned`), is refused by
+   stateid of state created on a session (its open's `Session`), is refused by
    the service, since the call has no session
    ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open),
    [RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)): `NFS4ERR_BAD_STATEID`
