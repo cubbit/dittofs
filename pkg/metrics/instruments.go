@@ -16,12 +16,8 @@ import (
 // simply no-ops. (The server itself builds the registry unconditionally and
 // gates only the /metrics listener, but other callers/tests may pass nil.)
 type instruments struct {
-	requests     *prometheus.CounterVec   // {protocol,op,status}
-	reqDuration  *prometheus.HistogramVec // {protocol,op}
-	connsTotal   *prometheus.CounterVec   // {protocol}
-	connsClosed  *prometheus.CounterVec   // {protocol}
-	authAttempts *prometheus.CounterVec   // {protocol,mechanism}
-	authFailures *prometheus.CounterVec   // {protocol,mechanism}
+	authAttempts *prometheus.CounterVec // {protocol,mechanism}
+	authFailures *prometheus.CounterVec // {protocol,mechanism}
 
 	// Local-store eviction / backpressure (subsystem "localstore").
 	backpressureTotal       prometheus.Counter
@@ -77,23 +73,6 @@ type instruments struct {
 func newInstruments(reg *prometheus.Registry) *instruments {
 	factory := prometheus.NewCounterVec
 	in := &instruments{
-		requests: factory(prometheus.CounterOpts{
-			Namespace: Namespace, Subsystem: "adapter", Name: "requests_total",
-			Help: "Protocol requests handled, by protocol, operation, and status (ok|error).",
-		}, []string{"protocol", "op", "status"}),
-		reqDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: Namespace, Subsystem: "adapter", Name: "request_duration_seconds",
-			Help:    "Protocol request handling latency in seconds, by protocol and operation.",
-			Buckets: prometheus.DefBuckets,
-		}, []string{"protocol", "op"}),
-		connsTotal: factory(prometheus.CounterOpts{
-			Namespace: Namespace, Subsystem: "adapter", Name: "connections_total",
-			Help: "Connections accepted since process start, by protocol.",
-		}, []string{"protocol"}),
-		connsClosed: factory(prometheus.CounterOpts{
-			Namespace: Namespace, Subsystem: "adapter", Name: "connections_closed_total",
-			Help: "Connections closed since process start, by protocol. Active = total - closed.",
-		}, []string{"protocol"}),
 		authAttempts: factory(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "auth", Name: "attempts_total",
 			Help: "Authentication attempts, by protocol and mechanism (sys|krb5|ntlm).",
@@ -240,7 +219,7 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 		}),
 	}
 	reg.MustRegister(
-		in.requests, in.reqDuration, in.connsTotal, in.connsClosed, in.authAttempts, in.authFailures,
+		in.authAttempts, in.authFailures,
 		in.backpressureTotal, in.backpressureWaitSeconds, in.evictionsTotal, in.evictedBytesTotal,
 		in.gcRuns, in.gcRunning, in.gcLastRunTime, in.gcSweptObjects, in.gcFreedBytes, in.gcDurationSecs, in.gcStrandedRows,
 		in.snapOps, in.snapDuration,
@@ -250,32 +229,6 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 		in.blockRangeReadsTotal, in.blockRangeReadBytes,
 	)
 	return in
-}
-
-// RecordRequest records one handled protocol request: its count (by status) and
-// its latency. status should be "ok" or "error".
-func (m *Metrics) RecordRequest(protocol, op, status string, d time.Duration) {
-	if m == nil {
-		return
-	}
-	m.in.requests.WithLabelValues(protocol, op, status).Inc()
-	m.in.reqDuration.WithLabelValues(protocol, op).Observe(d.Seconds())
-}
-
-// RecordConnAccepted counts an accepted connection.
-func (m *Metrics) RecordConnAccepted(protocol string) {
-	if m == nil {
-		return
-	}
-	m.in.connsTotal.WithLabelValues(protocol).Inc()
-}
-
-// RecordConnClosed counts a closed connection.
-func (m *Metrics) RecordConnClosed(protocol string) {
-	if m == nil {
-		return
-	}
-	m.in.connsClosed.WithLabelValues(protocol).Inc()
 }
 
 // RecordAuth records an authentication attempt and, when ok is false, a failure.
