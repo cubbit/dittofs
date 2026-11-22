@@ -426,14 +426,17 @@ func testWellKnownPrincipals(t *testing.T, kvo Opener) {
 // through GROUP@ or its mode, and never an allow entry or a share grant.
 // Each case is checked against the same caller holding the group as an
 // ordinary member, which the entry or grant answers the other way, so the
-// refusal is the deny-only principal's and not the fixture's.
+// refusal is the deny-only principal's and not the fixture's. A caller
+// holding finance in both lists, which resolution never builds, is answered
+// as the deny-only one: the deny-only mark wins.
 func testDenyOnlyPrincipals(t *testing.T, kvo Opener) {
 	f := newFS(t, kvo, entity.FoldIdentity)
 	cp, files := f.s.ControlPlane(), f.s.Files()
 	finance := f.group("finance")
 	alice := f.member("alice", entity.Principal{})
-	member, denyOnly := alice, alice
+	member, denyOnly, both := alice, alice, alice
 	member.Groups, denyOnly.DenyOnly = []entity.Principal{finance}, []entity.Principal{finance}
+	both.Groups, both.DenyOnly = member.Groups, denyOnly.DenyOnly
 	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
 	read := entity.ReadData
 	file := func(name string, mode uint32, es ...entity.ACE) entity.Handle {
@@ -469,12 +472,21 @@ func testDenyOnlyPrincipals(t *testing.T, kvo Opener) {
 		if err := files.Authorize(ctx, denyOnly, c.h, nil, read); (err == nil) != c.denyOnlyOK {
 			t.Errorf("%s, read by a caller holding finance deny-only: %v, want allowed %v", c.name, err, c.denyOnlyOK)
 		}
-		want := entity.AccessMask(0)
-		if c.denyOnlyOK {
-			want = read
+		if err := files.Authorize(ctx, both, c.h, nil, read); (err == nil) != c.denyOnlyOK {
+			t.Errorf("%s, read by a caller holding finance both as a group and deny-only: %v, want allowed %v", c.name, err, c.denyOnlyOK)
 		}
-		if got, err := files.Granted(ctx, denyOnly, c.h, nil, read); err != nil || got != want {
-			t.Errorf("%s, Granted read to a caller holding finance deny-only = %#x, %v; want %#x", c.name, got, err, want)
+		for _, g := range []struct {
+			who string
+			id  entity.Identity
+			ok  bool
+		}{{"a finance member", member, c.memberOK}, {"a caller holding finance deny-only", denyOnly, c.denyOnlyOK}} {
+			want := entity.AccessMask(0)
+			if g.ok {
+				want = read
+			}
+			if got, err := files.Granted(ctx, g.id, c.h, nil, read); err != nil || got != want {
+				t.Errorf("%s, Granted read to %s = %#x, %v; want %#x", c.name, g.who, got, err, want)
+			}
 		}
 	}
 

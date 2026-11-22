@@ -72,7 +72,7 @@ func TestASquashedCallerKeepsNoGroupOfItsEvidence(t *testing.T) {
 		{entity.SquashAll, vfs.ErrAccess},
 	} {
 		s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: c.squash, Anonymous: nobody.Principal}, policyVersion(t, s.cp, s.share))))
-		if _, _, err := s.Read(ctx, call, vfs.Anonymous(h), 0, buf); c.want == nil && err != nil || c.want != nil && !errors.Is(err, c.want) {
+		if _, _, err := s.Read(ctx, call, vfs.Anonymous(h), 0, buf); !errors.Is(err, c.want) {
 			t.Errorf("a Finance member's read of a file granting Finance alone, squash %v: %v, want %v", c.squash, err, c.want)
 		}
 	}
@@ -164,7 +164,7 @@ func TestADenyOnlyPrincipalMatchesDenyEntriesOnly(t *testing.T) {
 		{"a file allowing Finance alone, read holding Finance deny-only", denyOnly, granted, vfs.ErrAccess},
 		{"a file allowing Finance alone, read holding Finance", member, granted, nil},
 	} {
-		if _, _, err := s.Read(ctx, c.call, vfs.Anonymous(c.h), 0, buf); c.want == nil && err != nil || c.want != nil && !errors.Is(err, c.want) {
+		if _, _, err := s.Read(ctx, c.call, vfs.Anonymous(c.h), 0, buf); !errors.Is(err, c.want) {
 			t.Errorf("%s: %v, want %v", c.name, err, c.want)
 		}
 	}

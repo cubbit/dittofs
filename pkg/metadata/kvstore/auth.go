@@ -354,6 +354,11 @@ func aclAllows(id entity.Identity, f entity.File, acl entity.ACL, want entity.Ac
 // holds deny-only makes a deny entry naming it match and an allow entry
 // naming it miss, even where matches would answer it: counted as a group, it
 // would grant what the proof withheld (RFC 19 §2.3).
+//
+// decision: an allow entry misses a deny-only principal even when the
+// caller also lists it in Groups. Resolution never builds such a caller,
+// keeping the lists disjoint; the guard keeps a caller built any other way
+// failing closed. Drop it only if Identity's construction enforces the split.
 func applies(id entity.Identity, f entity.File, e entity.ACE) bool {
 	held := holdsDenyOnly(id, f, e.Who)
 	if e.Type == entity.ACEDeny {
