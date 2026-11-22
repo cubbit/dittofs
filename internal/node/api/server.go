@@ -63,6 +63,9 @@ type Deps struct {
 	// Authenticate answers who a request is; nil, every route but the
 	// public ones answers 401.
 	Authenticate func(*http.Request) (auth.Caller, error)
+	// Credentials signs a caller in and refreshes its session; nil, sign-in
+	// and refresh answer 503.
+	Credentials signIns
 	// Store is the metadata store's control plane, which every read and
 	// write of the API reaches; nil, each answers 503.
 	Store controlPlane
