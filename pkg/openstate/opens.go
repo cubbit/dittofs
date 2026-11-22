@@ -231,12 +231,13 @@ type Opens interface {
 	Renamed(ctx context.Context, f FileKey, fromDir entity.FileID, fromName []byte, toDir entity.FileID, toName []byte) error
 	// Entry is the entry the open o of f was made through, its directory
 	// and its name there as renames have moved them, or a lock state's
-	// open's; zero and nil for one made by handle, or for a reference
-	// naming no open. It changes nothing.
+	// open's; zero and nil for one made by handle, or for an anonymous
+	// reference; ErrBadState for a delegated one. It changes nothing.
 	Entry(ctx context.Context, who Caller, f FileKey, o OpenRef) (dir entity.FileID, name []byte, err error)
 	// Suspended is the times the open o of f names leaves alone, or a lock
-	// state's open's, which a write through it passes on (§2.2); zero for a
-	// reference naming no open. It changes nothing.
+	// state's open's, which a write through it passes on (§2.2); zero for an
+	// anonymous reference; ErrBadState for a delegated one. It changes
+	// nothing.
 	Suspended(ctx context.Context, who Caller, f FileKey, o OpenRef) (entity.TimeMask, error)
 	// Downgrade narrows an open's access and deny to masks within them, and
 	// returns the open's new reference sequence.

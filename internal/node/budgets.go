@@ -12,12 +12,15 @@ import (
 // connection-state and hold pools, and RFC 24 §4.4's connection_limit for
 // it, the connection-state pool over twice the 64 KiB a connection costs.
 //
-// ponytail: fixed figures, whatever memory the host has, and the runtime's
-// soft limit left unset. Derive them from the limit with Detect and SplitFor,
-// setting the soft limit to fifteen sixteenths of it, exporting
-// memory_limit_bytes, raising memory_limit_below_floors and bounding
-// connection_limit by half the open-file limit too, once pkg/resources has
-// Detect and SplitFor.
+// ponytail: the node builds the receive, reply, connection-state and hold pools
+// at 512 MiB each and connection_limit at 4,096, the 8 GiB figures, whatever
+// memory the host has, builds none of the other four pools, and leaves the
+// runtime's soft limit unset, so on a host with less than 8 GiB it can run out
+// of memory before any pool refuses. Derive all of them from L, setting the
+// soft limit to fifteen sixteenths of it, exporting memory_limit_bytes,
+// raising memory_limit_below_floors and bounding connection_limit by half
+// the open-file limit too, once pkg/resources has Detect and SplitFor
+// (RFC 24 §2.7).
 const (
 	poolCeiling     = 512 << 20
 	connectionLimit = 4096
