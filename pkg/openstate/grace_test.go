@@ -576,6 +576,39 @@ func TestUnservedShardMintsNothing(t *testing.T) {
 	f.mustOpen(t, c, in(9), OpenRequest{Access: rd})
 }
 
+// Suspended answers the times an open suspends, for the open and for a lock
+// state under it; another open of the file, and an anonymous reference,
+// suspend none.
+func TestSuspendedIsTheOpensTimes(t *testing.T) {
+	f := newFixture(t)
+	p := f.caller(t, smb("p-pc"))
+	file := anyFile()
+	o := f.mustOpen(t, p, file, OpenRequest{Access: rd | wr})
+	other := f.mustOpen(t, p, file, OpenRequest{Access: rd | wr})
+	if err := f.Opens().Update(ctx, p, o.ID, OpenUpdate{Suspend: entity.TimeModify}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.Locks().Lock(ctx, p, file, LockReq{Owner: LockOwner{Client: p.Client, Name: []byte("lo")}, Open: refOf(o), Ranges: []LockRange{{ByteRange: ByteRange{Length: 1}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ls := res.Ref
+	ls.Seq = 0
+	for what, c := range map[string]struct {
+		ref  OpenRef
+		want entity.TimeMask
+	}{
+		"the open":              {refOf(o), entity.TimeModify},
+		"a lock state under it": {OpenRef{Kind: RefLocked, State: ls}, entity.TimeModify},
+		"another open":          {refOf(other), 0},
+		"an anonymous one":      {OpenRef{Kind: RefAnonymous}, 0},
+	} {
+		if got, err := f.Opens().Suspended(ctx, p, file, c.ref); err != nil || got != c.want {
+			t.Errorf("%s: suspends %v, %v; want %v", what, got, err, c.want)
+		}
+	}
+}
+
 // Entry answers the entry an open was made through as a rename moved it,
 // for the open and for a lock state under it; nothing for an open made by
 // handle, or once its entry is removed; and NotYours to another client.

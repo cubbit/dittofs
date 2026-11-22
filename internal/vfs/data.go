@@ -86,6 +86,15 @@ func (fs *Filesystem) write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 		// verifier without staging.
 		return vfs.WriteResult{WCC: vfs.WCC{Before: &f, After: f}}, nil
 	}
+	// A write through an open leaves alone the times that open suspends
+	// (RFC 14 §2.2); the change time moves whatever it suspends.
+	var suspended entity.TimeMask
+	if ref.Kind != openstate.RefAnonymous && ref.Kind != openstate.RefDelegated {
+		if suspended, err = fs.opens.Suspended(ctx, a.who(), keyOf(f), ref); err != nil {
+			unlock()
+			return vfs.WriteResult{}, openErr(err)
+		}
+	}
 	var res *quota.Reservation
 	add, err := fs.charges(ctx, f, off, int64(len(src)))
 	if err == nil {
@@ -96,11 +105,8 @@ func (fs *Filesystem) write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 		return vfs.WriteResult{}, err
 	}
 	var wr vfs.WriteResult
-	// decision: a write passes no suspended times: open state keeps the
-	// times an open suspends but answers them to no caller, so a write
-	// through such an open still moves mtime and ctime. Pass them once
-	// CheckIO answers the open's.
 	opts := WriteOpts{
+		Suspend: suspended,
 		// The reservation travels with the staged bytes: the engine's Done,
 		// on the commit that charges them or on their drop, releases it,
 		// never this call's return. A write the engine refused it never
