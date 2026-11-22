@@ -415,7 +415,7 @@ func (r *rotation) seal(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	pw := []byte(rand.Text() + rand.Text() + rand.Text() + rand.Text())
+	pw := newMachinePassword()
 	defer clear(pw)
 	sec, err := r.s.deps.Secrets.Seal(ctx, secrets.Protocol, entity.SecretMachinePassword, machineOwner(r.in), ref, pw,
 		secrets.Meta{KeyVersion: acct.KeyVersion + 1})
@@ -554,6 +554,11 @@ func (r *rotation) probeSealed(ctx context.Context) (sealedProbe, error) {
 		return sealedProbe{}, r.noAnswer(ctx, err)
 	}
 	return sealedProbe{vs: vs, pw: pw, dc: dc, accepted: accepted}, nil
+}
+
+// newMachinePassword is a new random machine password; the caller clears it.
+func newMachinePassword() []byte {
+	return []byte(rand.Text() + rand.Text() + rand.Text() + rand.Text())
 }
 
 // probe asks dc whether it accepts password for account: an error only when

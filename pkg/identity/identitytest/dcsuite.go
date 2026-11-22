@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"io/fs"
@@ -29,6 +30,35 @@ type StagedComputer struct {
 	Password []byte
 	EncTypes uint32 // msDS-SupportedEncryptionTypes; 0 leaves it unset
 	SPNs     []string
+	// Delegation is msDS-AllowedToActOnBehalfOfOtherIdentity, a
+	// self-relative security descriptor such as DelegationTo's; nil leaves
+	// it unset.
+	Delegation []byte
+}
+
+// DelegationTo is a self-relative security descriptor, owned by
+// BUILTIN\Administrators, whose DACL allows allowed full control: a
+// resource-based constrained delegation value naming allowed. Its owner
+// precedes its DACL, as a controller writes one back.
+func DelegationTo(allowed sid.SID) []byte {
+	var owner, trustee bytes.Buffer
+	sid.EncodeSID(&owner, &sid.SID{Revision: 1, SubAuthorityCount: 2, IdentifierAuthority: [6]byte{5: 5}, SubAuthorities: []uint32{32, 544}})
+	sid.EncodeSID(&trustee, &allowed)
+	aceSize := 8 + trustee.Len()
+	aclSize := 8 + aceSize
+	b := make([]byte, 20, 20+owner.Len()+aclSize)
+	b[0] = 1                                                      // revision
+	binary.LittleEndian.PutUint16(b[2:], 0x8004)                  // SE_SELF_RELATIVE | SE_DACL_PRESENT
+	binary.LittleEndian.PutUint32(b[4:], 20)                      // owner
+	binary.LittleEndian.PutUint32(b[16:], uint32(20+owner.Len())) // DACL
+	b = append(b, owner.Bytes()...)
+	b = append(b, 2, 0) // ACL revision, Sbz1
+	b = binary.LittleEndian.AppendUint16(b, uint16(aclSize))
+	b = binary.LittleEndian.AppendUint16(b, 1) // one ACE
+	b = append(b, 0, 0, 0, 0)                  // Sbz2; ACCESS_ALLOWED_ACE_TYPE, no flags
+	b = binary.LittleEndian.AppendUint16(b, uint16(aceSize))
+	b = binary.LittleEndian.AppendUint32(b, 0x000F01FF) // full control
+	return append(b, trustee.Bytes()...)
 }
 
 // DCSeeder puts what a row of DomainControllerConformance needs into the
@@ -60,7 +90,8 @@ type DCSeeder interface {
 // DomainControllerConformance holds a domain controller to what identity
 // reads of Active Directory's: pass-through, the bad-password count, a
 // computer account's creation and the refusal of an existing one, its key
-// version number, encryption types, names and owner, and the three answers
+// version number, encryption types, names, owner and delegation value, and
+// the three answers
 // of the probe. open returns a new connection to one controller and its
 // seeder; the in-memory DomainController runs it in unit tests and a real
 // controller in integration tests, so the in-memory one stands in only where
@@ -284,6 +315,16 @@ func DomainControllerConformance(t *testing.T, open func(t *testing.T) (netlogon
 		}
 		if got := account(t, dc, s, unset).EncTypes; got != 0 {
 			t.Errorf("msDS-SupportedEncryptionTypes unset, read %#x, want 0", got)
+		}
+	})
+
+	t.Run("a delegation value reads as written", func(t *testing.T) {
+		dc, s := start(t)
+		name := randomName("DCT")
+		want := DelegationTo(s.Domain().SID)
+		s.StageComputer(t, StagedComputer{Name: name, Password: password(), Delegation: want})
+		if got := account(t, dc, s, name).Delegation; !bytes.Equal(got, want) {
+			t.Errorf("msDS-AllowedToActOnBehalfOfOtherIdentity written %x, read %x", want, got)
 		}
 	})
 

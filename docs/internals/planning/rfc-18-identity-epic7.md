@@ -226,7 +226,7 @@ can cite them. Sources are RFC 18 unless named.
 | R33 | A resumed join creates nothing if its pinned controller already accepts the sealed password | MUST | §3.5 | T7.14 |
 | R34 | The probe has three answers: accepts, a channel set up with the version verifying the controller's server credential; rejects; and could not be asked, which retries and never reads as a rejection | MUST | §3.5 | T7.3, T7.14 |
 | R35 | A join whose pinned controller could not be asked for an hour fails, naming the controller; a join run again with a takeover pins another | bound | §3.5; §3.3's `ponytail:` | T7.14 |
-| R36 | A failed join leaves the installation not joined and `identity.netbios_name` unchanged, keeps each version it sent to a controller, at most two, unconfirmed, and prunes the rest it sealed; the kept ones are pruned once a later join has completed | MUST | §3.5 | T7.14, T7.15; the removal of an unsent current version is pending §9 |
+| R36 | A join of a joined installation, online or offline, is refused `409` `joined` unless the request takes it over, checked at the request and at the join's first step, never at a resumed one, before anything is written. A join that fails before its seal leaves the installation as it was; one that fails after it leaves the installation not joined, and `identity.netbios_name` unchanged. A failed join keeps each version it sent to a controller, at most two, unconfirmed, and prunes the rest it sealed; the kept ones are pruned once a later join has completed | MUST | §3.5 | T7.14, T7.15; the removal of an unsent current version is pending §9 |
 | R37 | The administrator credential is used for one operation, held only in the memory of the node that took it under the operation's ID, and never stored, logged or put in the operation's record; a hold whose operation is never created ends with its request | MUST NOT | §3.5; RFC 23 §3.5, §4.5 | T7.4; the online join's credential in no record or log: RFC 23's plan's epic 7's T7.6; the rest of the capture: E8's T8.11; the refused-write end: E8's T8.6 |
 | R38 | A join resumed without the credential continues only if the account already accepts the sealed password; one that must still create the account fails, naming the missing credential | MUST | §3.5 | T7.14 |
 | R39 | An online join refuses a computer account that already exists, naming it, unless the request takes it over; a takeover sets the password in the same order | MUST | §3.5 | T7.14, T7.16 |
@@ -987,8 +987,8 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 - **Deliverables:** `JoinStep`, a `step.Step`, and `JoinProgress`, a `step.Progress` (D4), online:
   at the first turn, the record's
   schema `rfc2307`, an OU outside the base, a bad host name, an account name outside R45's
-  pattern or equal to the record's NetBIOS domain, and a `rotate-machine-password` running (R63,
-  the running index read tracked) each failing; the OU and host name defaulted; pin
+  pattern or equal to the record's NetBIOS domain, a joined installation and no takeover, and a
+  `rotate-machine-password` running (R63, the running index read tracked) each failing; the OU and host name defaulted; pin
   a controller; seal with D7's tag, in one write with `MachinePassword` (D5); probe, and if not
   accepted record the attempt and create the object (`cifs/` and `host/` on the short and fully
   qualified names, `dNSHostName`, `0x18`) with the held credential, or `Reset` on a takeover, an
@@ -996,7 +996,7 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   a rotation does, reading the account's names, owner and delegation attribute; at the last step
   `Join.Joined` and `identity.netbios_name` in its `StepResult.End`; an hour unanswered failing
   naming the
-  controller; a failed join writing `Join` not joined and keeping each version it attempted to send;
+  controller; a failed join after its seal writing `Join` not joined and keeping each version it attempted to send;
   the hold released at the join's end. Consumed by E8's T8.6 and T8.11 and T7.15.
 - **Acceptance criteria:**
   - A join writes `identity.netbios_name` in no turn but its last, in the same transaction as
@@ -1013,12 +1013,19 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   refused at the first turn, `nas-01` written `NAS-01` (R45); an account named as the record's
   NetBIOS domain in another case refused (R62); the owner and delegation value on `Join` (R46); a
   failed join: `Join.Joined` false after a fresh server, `identity.netbios_name` unchanged, the
-  attempted version kept (R36); `kvtest`'s wrapper failing `End`'s commit: neither `Joined` nor
-  the name written (catches the two written apart); a join started while a rotation runs: refused
-  at its first turn naming it, nothing sealed (R63); a join and a rotation whose first turns
-  overlap, each `Write` held by `kvtest`'s wrapper until both have read the running index: the
-  second to commit retries and refuses naming the first, one version sealed (catches an untracked
-  read, R63). Doubles: the in-memory directory and controller
+  attempted version kept (R36); on an installation joined as `NAS`, a join of another account with
+  no takeover, online with and without a held credential and offline, refused `409` `joined` at the
+  API and at its first turn, nothing sealed, still joined as `NAS` (R36); on an installation joined as
+  `NAS`, a takeover failing at its first turn: still joined as `NAS`, nothing sealed (R36); an
+  offline join of `NAS$` taking it over, as after its password is reset: admitted, its version
+  handed over (R36); neither `Joined` nor the name written before `End`, and `End`
+  writing both (catches the two written apart); a confirm whose cursor names an account the
+  setting's rule refuses: the join failed and recorded not joined, `identity.netbios_name` not
+  written (R36, R45); a join started while a rotation runs: refused
+  at its first turn naming it, nothing sealed (R63); at the API, a join's start and a rotation's
+  start overlapping, each creating write held by `kvtest`'s wrapper until both have read the
+  running index: the second to commit retries and is refused 409 naming the first, one operation
+  written (catches an untracked read, R63). Doubles: the in-memory directory and controller
   (kind 2), the fault wrappers (kind 3), the clock (kind 1).
 - **Rules:** rule 9 (D7's `decision:`).
 

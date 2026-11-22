@@ -310,3 +310,15 @@ func attrUint32(v string) (uint32, error) {
 	}
 	return uint32(n), nil
 }
+
+// StrictlyUnder reports whether dn is a distinguished name below base, never
+// base itself, compared RDN by RDN with ASCII letters folded. An empty base,
+// or a dn or base that does not parse, is not.
+func StrictlyUnder(dn, base string) bool {
+	b, err := ldap.ParseDN(base)
+	if err != nil || len(b.RDNs) == 0 {
+		return false
+	}
+	d, err := ldap.ParseDN(dn)
+	return err == nil && b.AncestorOfFold(d)
+}

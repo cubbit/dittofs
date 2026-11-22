@@ -474,6 +474,82 @@ func TestOnlineJoinDomain(t *testing.T) {
 	}
 }
 
+// On an installation joined as NAS, a join of another account that is not
+// the takeover is refused 409 joined before anything is written: an online
+// one, its credential held then released, and an offline one, which holds
+// none and seals no version. Nothing is sealed, no operation is written and
+// the installation still reads joined as NAS$; the takeover is admitted, and
+// while it runs an offline join that is not the takeover is still refused
+// joined, which wins over operation_running.
+func TestJoinRefusedOnAJoinedInstallation(t *testing.T) {
+	d := serveDomain(t, true)
+	if err := d.store.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		return tx.SetMachineJoin(entity.MachineJoin{Joined: true, Account: "NAS$"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const user = "Administrator@AD.EXAMPLE"
+	for _, tc := range []struct{ name, body string }{
+		{"online", onlineJoin(`,"account":"OTHER"`, user, "adm1n")},
+		{"offline", offlineJoin("OTHER$", "C0mputer-pw")},
+	} {
+		r := d.do(t, http.MethodPost, joinPath, tc.body)
+		if r.status != http.StatusConflict || r.problem(t).Code != apiv1.CodeJoined {
+			t.Errorf("an %s join of the joined installation: answered %d %s, want 409 joined", tc.name, r.status, r.body)
+		}
+	}
+	in := d.installationRecord(t)
+	if in.MachinePassword != (entity.SecretRef{}) {
+		t.Errorf("machine password named: %v, want nothing sealed", in.MachinePassword)
+	}
+	if !in.Join.Joined || in.Join.Account != "NAS$" {
+		t.Errorf("join %+v, want still joined as NAS$", in.Join)
+	}
+	if ops := d.operations(t); len(ops) != 0 {
+		t.Errorf("operations: %+v, want none", ops)
+	}
+	if h := d.joins.taken(); len(h) != 1 || !h[0].released {
+		t.Errorf("holds %+v, want the online join's, released", h)
+	}
+	if r := d.do(t, http.MethodPost, joinPath, onlineJoin(`,"account":"OTHER","takeover":true`, user, "adm1n")); r.status != http.StatusAccepted {
+		t.Errorf("the takeover: answered %d %s, want 202", r.status, r.body)
+	}
+	if r := d.do(t, http.MethodPost, joinPath, offlineJoin("OTHER$", "C0mputer-pw")); r.status != http.StatusConflict || r.problem(t).Code != apiv1.CodeJoined {
+		t.Errorf("an offline join while the takeover runs: answered %d %s, want 409 joined", r.status, r.body)
+	}
+}
+
+// On an installation joined as NAS, an offline join of NAS$ that takes it
+// over, as after an administrator resets the account's password, is
+// admitted: its password is written as version 1, handed over, and the
+// operation's params name the takeover and that version.
+func TestOfflineJoinTakesOverAJoinedInstallation(t *testing.T) {
+	d := serveDomain(t, true)
+	if err := d.store.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		return tx.SetMachineJoin(entity.MachineJoin{Joined: true, Account: "NAS$"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"spec":{"mode":"offline","account":"NAS$","takeover":true},"credential":{"password":"` + b64("Reset-pw-4d2a") + `"}}`
+	if r := d.do(t, http.MethodPost, joinPath, body); r.status != http.StatusAccepted {
+		t.Fatalf("the offline takeover: answered %d %s, want 202", r.status, r.body)
+	}
+	in := d.installationRecord(t)
+	sec, err := d.store.Secret(t.Context(), in.MachinePassword, 0)
+	if err != nil || sec.Version != 1 || !sec.HandedOver {
+		t.Errorf("machine password version %d handed over %v (%v), want version 1 handed over", sec.Version, sec.HandedOver, err)
+	}
+	ops := d.operations(t)
+	if len(ops) != 1 {
+		t.Fatalf("operations: %+v, want one", ops)
+	}
+	var params apiv1.JoinDomainParams
+	want := apiv1.JoinDomainParams{JoinDomainSpec: apiv1.JoinDomainSpec{Mode: apiv1.JoinOffline, Account: "NAS$", Takeover: true}, Version: 1}
+	if err := json.Unmarshal(ops[0].Params, &params); err != nil || params != want {
+		t.Errorf("params %s (%v), want %+v", ops[0].Params, err, want)
+	}
+}
+
 // An offline join writes its computer account's password as a new version
 // of the machine password, marked handed over, in an audited write of its
 // own before the operation's, whose params name that version; a retry while

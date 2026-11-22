@@ -73,6 +73,15 @@ var (
 	errNoDirectory = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no directory to ask"}
 	errNoIdentity  = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no identity service to drive the operation"}
 	errNoSealer    = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no secret provider to seal the value with"}
+	// decision: a join of a joined installation, online or offline, is
+	// refused unless the request takes it over, so a mistyped join un-joins
+	// nothing; an offline one is refused at its hand-over, before it seals
+	// or writes a version, since that version would make current a password
+	// the joined account may not hold. The takeover is how an offline join
+	// recovers a joined installation, such as after an administrator resets
+	// the account's password. Overturned if a joined installation gains
+	// another way back, such as a leave action.
+	errJoined = &refusal{code: apiv1.CodeJoined, detail: "the installation is joined; a new join needs the takeover"}
 )
 
 // installationRef is the installation as an operation's target, an audit
@@ -196,7 +205,9 @@ func prepareRotate(ctx context.Context, rq request[none]) (opStart, error) {
 
 // prepareJoin is join-domain's pre-write step. Either mode is refused 503
 // while the node holds no identity service to drive the join, and, at its
-// start, 409 while a rotation runs. An online join's organisational unit
+// start, 409 joined while the installation is joined, unless the request
+// takes it over, before 409 while a rotation runs, so a failed join leaves
+// the installation as it was. An online join's organisational unit
 // outside the directory record's base, or host name that is not a DNS name,
 // is refused 400 before anything is held or written, each left empty for
 // identity's default; then the operation's ID is picked and the
@@ -250,6 +261,9 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 		id := entity.OperationID(entity.NewShareID())
 		owned = true
 		check := func(tx entity.ControlPlaneTx, in entity.Installation) error {
+			if in.Join.Joined && !p.Takeover {
+				return errJoined
+			}
 			if err := notRotating(tx, in); err != nil {
 				return err
 			}
@@ -270,8 +284,8 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 			return opStart{}, &fieldError{field: "credential.user", detail: "an offline join takes the computer account's password alone"}
 		case p.Account == "":
 			return opStart{}, &fieldError{field: "spec.account", detail: "an offline join names the account an administrator created"}
-		case p.OU != "" || p.DNSHostName != "" || p.Takeover:
-			return opStart{}, &fieldError{field: "spec", detail: "an offline join creates no account, so it takes no ou, dns_host_name or takeover"}
+		case p.OU != "" || p.DNSHostName != "":
+			return opStart{}, &fieldError{field: "spec", detail: "an offline join creates no account, so it takes no ou or dns_host_name"}
 		case rq.d.Joins == nil:
 			return opStart{}, errNoIdentity
 		case rq.d.Sealer == nil:
@@ -282,13 +296,16 @@ func prepareJoin(ctx context.Context, rq request[apiv1.JoinDomain]) (opStart, er
 			return opStart{}, err
 		}
 		owned = true
-		ref, err := handOver(ctx, rq, cred.Password)
+		ref, err := handOver(ctx, rq, cred.Password, p.Takeover)
 		if err != nil {
 			return opStart{}, err
 		}
 		p.Version = ref.Version
 		b, err := json.Marshal(p)
 		return opStart{params: b, check: func(tx entity.ControlPlaneTx, in entity.Installation) error {
+			if in.Join.Joined && !p.Takeover {
+				return errJoined
+			}
 			if err := notRotating(tx, in); err != nil {
 				return err
 			}
@@ -410,7 +427,9 @@ func notRotating(tx entity.ControlPlaneTx, in entity.Installation) error {
 // operation_running while a join or a rotation runs, read tracked in it, so
 // no version a running one did not take becomes current under it, and when
 // another join's hand-over wrote the version this one sealed first. It
-// returns the version written, unsealed fields only.
+// returns the version written, unsealed fields only. Unless takeover, it is
+// refused 409 joined, before the seal and again in the write, read tracked,
+// while the installation is joined, ahead of any other refusal.
 //
 // ponytail: a version whose join's operation write is then refused stays,
 // sealed and unused, below the next version written, since PruneSecret cuts
@@ -418,11 +437,14 @@ func notRotating(tx entity.ControlPlaneTx, in entity.Installation) error {
 // include the password in force and its retained predecessor. Prune the
 // orphans when the store can delete one version, or when the machine
 // password's retention pass drops handed-over versions no join took.
-func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte) (entity.Secret, error) {
+func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte, takeover bool) (entity.Secret, error) {
 	defer clear(password)
 	in, err := rq.d.Store.Installation(ctx)
 	if err != nil {
 		return entity.Secret{}, err
+	}
+	if in.Join.Joined && !takeover {
+		return entity.Secret{}, errJoined
 	}
 	ref := in.MachinePassword
 	if ref == (entity.SecretRef{}) {
@@ -437,6 +459,9 @@ func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte
 		cur, err := tx.Installation()
 		if err != nil {
 			return err
+		}
+		if cur.Join.Joined && !takeover {
+			return errJoined
 		}
 		if err := noneRunning(tx, cur, apiv1.OpJoinDomain, apiv1.OpRotateMachinePassword); err != nil {
 			return err
