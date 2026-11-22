@@ -304,10 +304,19 @@ func refusedUntil(t *testing.T, h *nodetest.Harness, key string) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the node's refusals within 10 s: got %+v, want %s among them", h.Node().Refused(), key)
+			t.Fatalf("the node's refusals within 10 s: got %q, want %s among them", refusedIDs(h.Node().Refused()), key)
 		}
 		turn(h)
 	}
+}
+
+// refusedIDs is each refused record's ID, as a failure prints it.
+func refusedIDs(rs []entity.RefusedRecord) []string {
+	var ids []string
+	for _, r := range rs {
+		ids = append(ids, string(r.Record.ID))
+	}
+	return ids
 }
 
 // directoryDomain is r's NetBIOS domain, empty for no directory.
@@ -322,8 +331,8 @@ func directoryDomain(r *directory.Record) string {
 // directory's NetBIOS domain, keeps both last sections and the keytab the
 // last identity section names, and still delivers the new principals
 // generation; each row that moved into the clash is reported refused, once,
-// a NetBIOS value compared to the last with ASCII letters folded, as the
-// clash check compares it.
+// a NetBIOS value compared to the last byte for byte, so a row that changed
+// case only, put back with the last section, is reported too.
 func TestAStateIdentityRefusesKeepsTheLastSections(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	realm := identitytest.NewRealm("TEST.REALM", krbService)
@@ -375,7 +384,7 @@ func TestAStateIdentityRefusesKeepsTheLastSections(t *testing.T) {
 		clash: func(t *testing.T, h *nodetest.Harness, _ *secrets.Provider, _ *identitytest.Directory) {
 			putSettings(t, h, map[string]string{"identity.netbios_name": `"KORP"`, "identity.directory.netbios_domain": `"KORP"`})
 		},
-		refused: []string{"identity.netbios_name"},
+		refused: []string{"identity.netbios_name", "identity.directory.netbios_domain"},
 		domain:  "korp",
 	}, {
 		name: "a clashing directory arrives with a keytab move",
@@ -431,7 +440,7 @@ func TestAStateIdentityRefusesKeepsTheLastSections(t *testing.T) {
 				t.Errorf("NetBIOS name: got %q, %v, want the last applied, DITTOFS", got, err)
 			}
 			if got := h.Node().Refused(); len(got) != len(tc.refused) {
-				t.Errorf("refusals: got %+v, want %v alone", got, tc.refused)
+				t.Errorf("refusals: got %q, want %v alone", refusedIDs(got), tc.refused)
 			}
 			if tc.check != nil {
 				tc.check(t, h)

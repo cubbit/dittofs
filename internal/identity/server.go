@@ -402,23 +402,30 @@ func (st *State) validate() error {
 		return fmt.Errorf("identity.directory: %w", err)
 	}
 	if equalFoldASCII(st.Settings.NetBIOSName, d.NetBIOSDomain) {
-		return fmt.Errorf("identity: netbios_name %q is identity.directory's netbios_domain %q", st.Settings.NetBIOSName, d.NetBIOSDomain)
+		return fmt.Errorf("%w: netbios_name %q is identity.directory's netbios_domain %q", ErrNetBIOSClash, st.Settings.NetBIOSName, d.NetBIOSDomain)
 	}
 	return nil
 }
 
+// ErrNetBIOSClash is a State whose NetBIOS name equals its directory's
+// NetBIOS domain, ASCII letters folded, which Apply refuses.
+var ErrNetBIOSClash = errors.New("identity: NetBIOS name clash")
+
 // NetBIOSMoved is the keys of the NetBIOS name and the directory's NetBIOS
-// domain whose value in st differs from last's, compared as validate's clash
-// check compares them, ASCII letters folded; the domain's alone when neither
-// does. For a State validate refuses for the clash, they are the rows that
-// moved into it.
+// domain whose value in st differs from last's, byte for byte, so a change of
+// case is a move: a refused State puts back last's rows whole, case
+// included, and each row that differs is one the node does not run. The
+// domain's alone when neither moved, since last passed the clash check, so
+// a clash with neither side moved comes from the directory arriving. For a
+// State Apply refuses with ErrNetBIOSClash, they are the rows that moved
+// into it.
 func NetBIOSMoved(st, last State) []string {
 	var keys []string
-	if !equalFoldASCII(st.Settings.NetBIOSName, last.Settings.NetBIOSName) {
+	if st.Settings.NetBIOSName != last.Settings.NetBIOSName {
 		keys = append(keys, KeyNetBIOSName)
 	}
 	if keys == nil || st.Directory == nil || last.Directory == nil ||
-		!equalFoldASCII(st.Directory.NetBIOSDomain, last.Directory.NetBIOSDomain) {
+		st.Directory.NetBIOSDomain != last.Directory.NetBIOSDomain {
 		keys = append(keys, KeyNetBIOSDomain)
 	}
 	return keys

@@ -180,8 +180,13 @@ func TestAWalkTheSettingsMovedUnderIsReadAgain(t *testing.T) {
 			t.Errorf("Stop: %v", err)
 		}
 	})
-	if got := <-first; got != "OTHER" {
-		t.Errorf("NetBIOS name in the first State identity was handed: got %q, want OTHER, written during the first walk", got)
+	select {
+	case got := <-first:
+		if got != "OTHER" {
+			t.Errorf("NetBIOS name in the first State identity was handed: got %q, want OTHER, written during the first walk", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("identity was handed no State within 10 s of Start")
 	}
 	if got, err := h.Node().ComputerName(); err != nil || got != "OTHER" {
 		t.Errorf("NetBIOS name written during the first walk: got %q, %v, want OTHER", got, err)
