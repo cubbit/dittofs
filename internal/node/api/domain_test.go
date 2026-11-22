@@ -988,3 +988,23 @@ func TestNTLMSettingRefusedToAnOperator(t *testing.T) {
 		t.Errorf("operations: %+v, want none", ops)
 	}
 }
+
+// An API-only account gains no file identity: an edit giving it a Kerberos
+// name, which a ticket would map to it, is refused 400 naming spec.kerberos
+// while it holds no uid, and one giving it a uid is refused by the store,
+// which holds no uid on a user with no SID. Neither writes a spelling.
+func TestAPIOnlyAccountGainsNoFileIdentity(t *testing.T) {
+	d := serveDomain(t, false)
+	u, tag := d.createUser(t, apiv1.UserSpec{Name: "ci", Role: apiv1.RoleOperator}, "ci")
+	path := "/api/v1/users/" + u.ID
+	r := d.do(t, http.MethodPatch, path, `{"spec":{"kerberos":"ci@OTHER.EXAMPLE"}}`, "If-Match", tag)
+	if r.status != http.StatusBadRequest || r.problem(t).Field != "spec.kerberos" {
+		t.Errorf("a Kerberos name on the API-only account: answered %d %s, want 400 naming spec.kerberos", r.status, r.body)
+	}
+	if r = d.do(t, http.MethodPatch, path, `{"spec":{"uid":5100}}`, "If-Match", tag); r.status != http.StatusBadRequest {
+		t.Errorf("a uid on the API-only account: answered %d %s, want 400", r.status, r.body)
+	}
+	if got, ok := d.userRecord(t, u.ID); !ok || len(got.IDs) != 0 {
+		t.Errorf("the API-only account after the refused edits: %+v, want no spelling", got)
+	}
+}
