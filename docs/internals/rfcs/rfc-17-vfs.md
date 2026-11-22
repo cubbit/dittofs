@@ -1301,9 +1301,10 @@ record names no entry. So, while a watch is set on the share, `SetAttr`,
 `SetACL`, `SetXattr`, `RemoveXattr`, `Write` and `Deallocate` through an open
 or a lock state read `Opens.Entry`, the directory and name that open was made
 through as renames have moved them, and report the change there through
-`Watches.Changed`. A change through no such entry is reported, for a
-directory other than a share's root, under its name in the parent its record
-names; for a regular file it is not reported.
+`Watches.Changed`. A call through a delegation or an anonymous reference does
+not ask `Entry`, as neither names an open. A change through no such entry is
+reported, for a directory other than a share's root, under its name in the
+parent its record names; for a regular file it is not reported.
 
 > decision: a regular file changed through no open — an open made by handle, a
 > delegation, an anonymous stateid, an NFSv3 `WRITE` or `SETATTR`, or an open
@@ -1853,7 +1854,7 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 	if len(src) == 0 { // a write of no byte returns after step 3: nothing reserved, cleared, timed or staged (above)
 		return WriteResult{WCC: WCC{Before: &f, After: f}}, false, nil
 	}
-	var sus TimeMask // the times its open suspends, read under this lock, where Opens.Update cannot change them; none for a delegated reference (step 6)
+	var sus TimeMask // the times its open suspends, read under this lock, where Opens.Update cannot change them; none for a delegated reference (read for step 6)
 	if ref.Kind != Delegated {
 		if sus, err = s.opens.Suspended(ctx, c.Who(), keyOf(f), ref); err != nil {
 			return wr, false, err
