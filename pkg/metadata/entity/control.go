@@ -545,3 +545,9 @@ func (q Quota) Unlimited() bool {
 
 // SecretRef names a sealed credential; the zero ref names none.
 type SecretRef [16]byte
+
+// MachinePasswordOwner is the machine password's owner: in's
+// machine_password field.
+func (in Installation) MachinePasswordOwner() SecretOwner {
+	return SecretOwner{Record: ResourceRef{Kind: ResourceInstallation, ID: in.ID[:]}, Key: "machine_password"}
+}

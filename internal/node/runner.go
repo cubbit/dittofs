@@ -28,10 +28,13 @@ const (
 	lastRetry  = 30 * time.Second
 )
 
-// stepRow is one operation kind's step and how its progress reads.
+// stepRow is one operation kind's step, how its progress reads, and what
+// the runner writes beside the record of an operation of the kind it fails,
+// nil for nothing.
 type stepRow struct {
 	run      step.Step
 	progress step.Progress
+	failed   func(tx entity.ControlPlaneTx) error
 }
 
 // runner drives the operations no component drives on its own, one step of
@@ -125,7 +128,9 @@ func (r *runner) turn(ctx context.Context) {
 // when the state or the phase did: a step's error that failed names, or its
 // panic, fails the operation, any other is retried with the same cursor
 // after a wait, and a done step ends it with its Result and its End's
-// writes, an End's error or panic answered as a step's is. A step ctx
+// writes, an End's error or panic answered as a step's is. An operation
+// failed is written with its kind's failed writes; when those writes are
+// what failed the commit, the failure is recorded without them. A step ctx
 // interrupted commits nothing, whatever it answered.
 //
 // decision: an operation whose kind has no step stays pending, so a binary
@@ -154,9 +159,10 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 	}
 	next := op
 	problem, fails := step.Failure(err)
+	end := res.End
 	switch {
 	case fails:
-		next.State, next.Error = entity.OpFailed, problem
+		next.State, next.Error, end = entity.OpFailed, problem, row.failed
 	case err != nil:
 		r.retry(ctx, op, now, err)
 		return
@@ -165,10 +171,23 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 	default:
 		next.State, next.Step = entity.OpRunning, res.Next
 	}
-	err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, res.End)
-	if problem, fails := step.Failure(err); fails {
+	err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, end)
+	if problem, refused := step.Failure(err); refused && !fails {
 		next = op
 		next.State, next.Error = entity.OpFailed, problem
+		err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, row.failed)
+		fails = true
+	}
+	if fails && err != nil {
+		// row.failed, or the commit carrying it, did not land: a failure must
+		// always be recorded, or the step that answered it runs again at
+		// every turn, so it is recorded bare.
+		//
+		// decision: a plain store error here is not retried either, so a
+		// one-off blip loses row.failed's writes; for a rotation, the failed
+		// LastRotation, and with it that one back-off, costing one extra
+		// rotation rather than a step rerun at every turn. Retry it once the
+		// failed write of some kind carries more than a schedule's back-off.
 		err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, nil)
 	}
 	if err != nil {
@@ -179,8 +198,9 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 }
 
 // commit writes next over op, audited when its state or phase moved, with
-// end's writes in the same transaction when next succeeded; a next that
-// changes none of the cursor, the state and the phase commits nothing.
+// end's writes in the same transaction when next ended, succeeded or failed;
+// a next that changes none of the cursor, the state and the phase commits
+// nothing.
 //
 // decision: end runs code from outside the node, so its panic is recovered
 // and, like a step's, fails the operation: end's writes roll back with the
@@ -195,7 +215,7 @@ func (r *runner) commit(ctx context.Context, op, next entity.Operation, before, 
 		meta.Audit = r.audit(op, next.State, before, after)
 	}
 	return r.cp.Write(ctx, meta, func(tx entity.ControlPlaneTx) (err error) {
-		if next.State == entity.OpSucceeded && end != nil {
+		if (next.State == entity.OpSucceeded || next.State == entity.OpFailed) && end != nil {
 			defer func() {
 				if p := recover(); p != nil {
 					err = fmt.Errorf("%w: operation end: panic: %v", step.ErrStepFailed, p)

@@ -14,10 +14,15 @@ import (
 // to read-only before resolution: ReadOnlyNotNarrowed, ReadOnlyShare or
 // ReadOnlyClient, never ReadOnlyGrant, which resolution sets itself. Resolve
 // answers vfserr.ErrAccess for a disabled or deleted principal, a deleted
-// Anonymous, or a principal over the group cap, and vfserr.ErrUnavailable for
+// Anonymous, a principal over the group cap, or a Secret identity while NTLM
+// is off, and vfserr.ErrUnavailable for
 // an undecidable lookup or an incomplete group closure.
 type Resolver interface {
 	Resolve(ctx context.Context, id Identity, p entity.SharePolicy, narrowed ReadOnlyCause) (*Caller, error)
+	// ResolveMark resolves by, the principal that marked a file delete on
+	// close, for the unlink the last close runs: as Resolve resolves a
+	// Secret identity bound to by, but never refused because NTLM is off.
+	ResolveMark(ctx context.Context, by entity.Principal, p entity.SharePolicy, narrowed ReadOnlyCause) (*Caller, error)
 	// Current is the serial of the State a Resolve starting now reads, one
 	// atomic load of that State: admission stores and serves a cached Caller
 	// only while its Built equals it.

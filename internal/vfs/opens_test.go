@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	identitysrv "github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/identity/identitymem"
 	"github.com/cubbit/dittofs/internal/vfs/contenttest"
 
@@ -21,7 +22,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/settings"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
@@ -488,6 +491,51 @@ func TestDeleteOnCloseRunsAtTheLastClose(t *testing.T) {
 	}
 	if n.held(t, r.File.ID) {
 		t.Error("f's content is held once its delete on close removed its last name")
+	}
+}
+
+// A Kerberos SMB client's delete on close runs at the last close while
+// identity.ntlm is off: the unlink the mark replays is resolved for its
+// marker without the NTLM gate, which would refuse it, and nothing is
+// counted against NTLM.
+func TestADeleteOnCloseRunsWhileNTLMIsOff(t *testing.T) {
+	reg := metrics.New("test", "test")
+	fx := kvstoretest.NewFS(t, memKV)
+	srv, err := identitysrv.New(identitysrv.Deps{Store: fx.Store, Clock: sim.NewTestClock(time.Unix(0, 0)), Metrics: reg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, _, err := settings.Read(t.Context(), fx.Store.Nodes(), settings.Table{identitysrv.Section()}, entity.NodeID{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := identitysrv.SettingsOf(snap, entity.NodeID{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids.NTLM = false
+	if err := srv.Apply(identitysrv.State{Settings: ids}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+	n := namesOver(t, startShares(t, newFixtureOver(t, Deps{Identity: srv}, fx), nil))
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	req := byName(n.fs.Root, "f", vfs.OpenOrCreate, entity.ReadData|entity.Delete)
+	req.DeleteOnClose, req.Backup = true, true
+	r, err := n.Open(ctx, c, req)
+	n.must(t, err)
+	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
+		t.Fatalf("the marking open's close: %v", err)
+	}
+	if _, _, err := n.Lookup(ctx, n.admin, n.fs.Root, []byte("f")); !errors.Is(err, vfs.ErrNotFound) {
+		t.Errorf("f after its last close, NTLM off: %v, want gone", err)
+	}
+	if got := testutil.CollectAndCount(reg.Registry(), "dittofs_identity_resolution_refusals_total"); got != 0 {
+		t.Errorf("refusals counted for a Kerberos delete on close: %d series, want none", got)
 	}
 }
 

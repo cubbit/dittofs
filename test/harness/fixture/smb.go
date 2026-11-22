@@ -58,7 +58,7 @@ func (s *Server) mountCIFS(ctx context.Context, server, password string) (string
 	if err := os.WriteFile(creds, []byte("username="+User+"\npassword="+password+"\n"), 0o600); err != nil {
 		return "", err
 	}
-	opts, err := s.mountAt(ctx, "cifs", fmt.Sprintf("vers=%s,port=%d,credentials=%s", cmp.Or(s.f.SMB.Dialect, smbDialect), s.smbPort, creds), "//"+server+s.shares[0])
+	opts, err := s.mountAt(ctx, "cifs", fmt.Sprintf("vers=%s,port=%d,credentials=%s", cmp.Or(s.f.SMB.Dialect, smbDialect), s.smbPort, creds), "//"+server+"/"+s.shares[0])
 	return versOf(opts), err
 }
 
@@ -77,7 +77,7 @@ func (s *Server) mountSMBFS(ctx context.Context, server, password string) (strin
 		return "", err
 	}
 	s.mount = dir
-	url := fmt.Sprintf("//%s:%s@%s:%d%s", User, password, server, s.smbPort, s.shares[0])
+	url := fmt.Sprintf("//%s:%s@%s:%d/%s", User, password, server, s.smbPort, s.shares[0])
 	argv := []string{"mount_smbfs", "-N", "-o", "nobrowse", url, dir}
 	hide := strings.NewReplacer(password, "{password}").Replace
 	_, _ = fmt.Fprintf(s.out, "[dt] fixture: $ %s\n", hide(strings.Join(argv, " ")))
@@ -118,7 +118,7 @@ const mapScript = `$ErrorActionPreference = 'Stop'; ` +
 // mapDrive maps the share on a free drive, {mount}, as the user dt runs as,
 // and returns the dialect the system reports for the connection.
 func (s *Server) mapDrive(ctx context.Context, server, password string) (string, error) {
-	share := strings.TrimPrefix(s.shares[0], "/")
+	share := s.shares[0]
 	path := `\\` + server + `\` + share
 	_, _ = fmt.Fprintf(s.out, "[dt] fixture: New-SmbMapping -RemotePath %s -TcpPort %d -UserName %s\n", path, s.smbPort, User)
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", mapScript)

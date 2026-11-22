@@ -205,8 +205,8 @@ it, in the part this epic owns.
   so they land together in T7.5. No marker.
 - **D8, the fixture's start is the runner's input.** `run`'s `startFixture` and `fixture`'s
   `interfaces` are package-level variables dt's tests swap, which `CLAUDE.md` bans. The runner
-  takes its fixture start as a field set by its constructor, and the fixture takes its interface
-  list the same way. Exactly one test, `fixture/server_test.go`, starts the real server; dt's
+  takes its fixture start as a field set by its constructor, and the interface list is an
+  argument of a pure function choosing `{server}` from it, `pickAddress`. Exactly one test, `fixture/server_test.go`, starts the real server; dt's
   lifecycle tests pass a start of their own through the field. No marker.
 
 ## 5. Target tree
@@ -239,8 +239,10 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 - **Deliverables:** `Server`'s start (D2): the bootstrap under the fixture's data directory naming
   `127.0.0.1:0`; `dfs init` with its password by environment variable; `dfs start` in its own
   process group, the API address read from its log, `/health/ready` waited on; a sign-in through
-  the client; the users `User` and `User2` with their UIDs, the shares, and grants for both users
-  on each share, created through the client (namespaces, remote stores and adapters seeded per
+  the client; the users `User` and `User2` with their UIDs, the shares, and the grants
+  [RFC 29 §4.2](../rfcs/rfc-29-test-harness.md) gives (none on `/export` unless the fixture mounts
+  it over SMB, then `{user}`'s `read-write`; `{user}`'s `admin` on a shares file's shares; none for
+  `{user2}`), created through the client (namespaces, remote stores and adapters seeded per
   D3); `Reset` recreating the share and its grants; stop by `SIGTERM`, the group killed after
   `stopGrace`; `Kill` and `Restart`. `ErrNoServer` and `run`'s refusal deleted; the start injected
   through the runner (D8). Consumed by E8.
@@ -249,7 +251,7 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
     exit 0.
   - `dt`'s own fixture tests pass with the start passed through the runner's field.
 - **Tests:** `fixture/server_test.go`, the one real start, under `t.TempDir()` and `127.0.0.1:0`:
-  start, the users, shares and both users' grants read back through the client (catches a
+  start, the users, shares and exactly RFC 29's grants read back through the client (catches a
   configure step or a grant skipped); `Reset`, the grants read back again (catches a reset that
   drops them); a second `dfs init` over the same data directory refused and nothing changed;
   `Kill`, `Restart`, the shares still there. `TestDittoFSFixtureRefused` deleted with what it

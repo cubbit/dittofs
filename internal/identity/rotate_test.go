@@ -596,7 +596,7 @@ func TestRotationPruneDroppedWithItsWrite(t *testing.T) {
 }
 
 // A rotation started while a join runs on the installation is refused at its
-// first turn, naming the join, with nothing written.
+// first turn, naming the join, with nothing written by the step.
 func TestRotationRefusedDuringJoin(t *testing.T) {
 	fx := newRotation(t)
 	join := entity.Operation{ID: entity.OperationID(uuid.New()), Kind: string(apiv1.OpJoinDomain),
@@ -609,10 +609,12 @@ func TestRotationRefusedDuringJoin(t *testing.T) {
 	}
 	before := fx.join(t)
 	op := fx.op()
-	done, err := fx.turn(t, op)
+	fx.reconcile(t)
+	// The step alone, without the runner's failed write.
+	_, err := step.Run(context.Background(), fx.s.RotateStep, *op)
 	p, ok := errors.AsType[*apiv1.Problem](err)
-	if !done || !ok || p.Code != apiv1.CodeOperationRunning || !strings.Contains(p.Detail, uuid.UUID(join.ID).String()[:8]) {
-		t.Fatalf("first turn: done %v, err %v; want refused naming the join", done, err)
+	if !ok || p.Code != apiv1.CodeOperationRunning || !strings.Contains(p.Detail, uuid.UUID(join.ID).String()[:8]) {
+		t.Fatalf("first turn: err %v; want refused naming the join", err)
 	}
 	if vs := fx.versions(t); len(vs) != 1 {
 		t.Errorf("versions %v, want nothing sealed", vs)

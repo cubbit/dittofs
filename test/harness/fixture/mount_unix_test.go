@@ -159,7 +159,7 @@ func TestMountSMB(t *testing.T) {
 			t.Setenv("DT_FAKE_VERS", tc.vers)
 			t.Setenv("DT_FAKE_MOUNT_FAIL", tc.fail)
 			var w bytes.Buffer
-			s := &Server{f: registry.Fixture{SMB: registry.SMB{Dialect: tc.dialect}}, smbPort: 40002, data: t.TempDir(), shares: []string{"/smbbasic", "/other"}, out: &w}
+			s := &Server{f: registry.Fixture{SMB: registry.SMB{Dialect: tc.dialect}}, smbPort: 40002, data: t.TempDir(), shares: []string{"smbbasic", "other"}, out: &w}
 			err := s.mountSMB(context.Background(), "10.0.0.9", "s3cret")
 			if tc.goos != "windows" {
 				t.Cleanup(func() { _ = os.Remove(s.mount) })

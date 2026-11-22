@@ -453,7 +453,7 @@ func (j *joining) sealNew(ctx context.Context, tag uint32) (uint64, error) {
 	}
 	pw := newMachinePassword()
 	defer clear(pw)
-	sec, err := j.s.deps.Secrets.Seal(ctx, secrets.Protocol, entity.SecretMachinePassword, machineOwner(j.in), ref, pw,
+	sec, err := j.s.deps.Secrets.Seal(ctx, secrets.Protocol, entity.SecretMachinePassword, j.in.MachinePasswordOwner(), ref, pw,
 		secrets.Meta{KeyVersion: tag})
 	if err != nil {
 		return 0, err
@@ -550,7 +550,7 @@ func (j *joining) probe(ctx context.Context) (netlogon.DC, bool, error) {
 
 // sealed is version n's password, a copy the caller clears.
 func (j *joining) sealed(ctx context.Context, n uint64) ([]byte, error) {
-	vs, err := j.s.deps.Secrets.Versions(ctx, secrets.Protocol, entity.SecretMachinePassword, machineOwner(j.in), j.in.MachinePassword)
+	vs, err := j.s.deps.Secrets.Versions(ctx, secrets.Protocol, entity.SecretMachinePassword, j.in.MachinePasswordOwner(), j.in.MachinePassword)
 	if err != nil {
 		return nil, err
 	}

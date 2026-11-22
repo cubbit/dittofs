@@ -637,7 +637,8 @@ func (fs *Filesystem) deferredUnlink(ctx context.Context, share entity.ShareID, 
 }
 
 // marker is the admission of the principal d names as marking a file of
-// share delete on close, resolved on the share as a proven caller is.
+// share delete on close, resolved on the share through ResolveMark, which
+// does not hold it to identity.ntlm, and never from admission's cache.
 func (fs *Filesystem) marker(ctx context.Context, share entity.ShareID, d entity.DeleteRecord) (*admitted, error) {
 	sh, p, err := fs.meta.ShareIndex().Share(ctx, share)
 	if err != nil {
@@ -653,9 +654,14 @@ func (fs *Filesystem) marker(ctx context.Context, share entity.ShareID, d entity
 	id := vfs.Identity{Proof: vfs.ProofSecret, Evidence: vfs.Evidence{Principal: d.By}}
 	a := &admitted{share: sh, policy: p}
 	a.caller = authz.Caller{Share: sh.ID, Proved: id, Protocol: entity.ProtocolSMB}
-	if a.caller.Identity, a.caller.Mapped, err = fs.resolve(ctx, id, sh, p, ro, false); err != nil {
+	c, err := fs.identity.ResolveMark(ctx, d.By, p.SharePolicy(sh.GrantVersion), ro)
+	if err != nil {
 		return nil, err
 	}
+	if a.caller.Identity, err = acting(c, false); err != nil {
+		return nil, err
+	}
+	a.caller.Mapped = c.Mapped
 	// The unlink is privileged only when the marking open was: over SMB an
 	// admin's open without backup intent was decided without privilege.
 	a.caller.Privileged = d.Privileged

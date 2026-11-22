@@ -10,9 +10,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/internal/node/api/apisettings"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
@@ -120,6 +122,9 @@ type Node struct {
 	// ending, when set, is called by step 3 of each share removal once its
 	// bound is set on the clock, before it waits on anything.
 	ending func(entity.ShareID)
+	// machineRef is the machine password's reference last applied, which
+	// identity's State does not hold.
+	machineRef atomic.Pointer[entity.SecretRef]
 }
 
 // New resolves the adapters' addresses, refusing an adapters.listen it
@@ -131,12 +136,13 @@ type Node struct {
 // state and the engine, each empty from its own Deps, the budgets and their
 // series, the secret provider and the access tokens over the storage key,
 // the identity server over the store, the secret provider, the logger as
-// its logon sink, the tracer and the directory's dialer, the
+// its logon sink, the tracer, the directory's and the domain controllers'
+// dialers and the store's control plane, the
 // filesystem over the engine and identity, the operation runner with the steps of the kinds this
 // node drives, the watchdog, the adapters' one Deps, the sidecar runner and
 // a slot per protocol, and the API over the store's control plane and node
-// view, the runner's progress, the health evaluator, the slots' connections
-// and the writer's wait. It starts nothing: no journal,
+// view, the runner's progress, the health evaluator, the slots' connections,
+// the writer's wait and identity's directory and join hold. It starts nothing: no journal,
 // goroutine or listener exists until Start, but for the socket an unset
 // adapters.listen opens and closes at once to learn whether tcp6 does.
 //
@@ -165,14 +171,16 @@ type Node struct {
 func New(cfg Config) (*Node, error) { return newNode(cfg, seams{}) }
 
 // seams is what only a test hands the node in place of its own: the API's
-// Authenticate and SigningKey, and the directory's dialer. With no
-// Authenticate, the API takes the node's sign-in and, with no SigningKey,
-// the access tokens' current key; a test's Authenticate with no SigningKey
-// leaves the API none. A nil dialer is the production one.
+// Authenticate and SigningKey, and the directory's and the domain
+// controllers' dialers. With no Authenticate, the API takes the node's
+// sign-in and, with no SigningKey, the access tokens' current key; a test's
+// Authenticate with no SigningKey leaves the API none. A nil dialer is the
+// production one.
 type seams struct {
 	authenticate func(*http.Request) (auth.Caller, error)
 	signingKey   func(context.Context) ([]byte, error)
 	directory    directory.Dialer
+	dc           netlogon.Dialer
 }
 
 // newNode is New with the seams in, which only a test sets.
@@ -309,8 +317,13 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	if dial == nil {
 		dial = directory.DialTLS
 	}
+	dc := in.dc
+	if dc == nil {
+		dc = netlogon.NewDialer((&net.Dialer{}).DialContext)
+	}
 	if n.identity, err = identity.New(identity.Deps{Store: n.meta, Secrets: p, Clock: cfg.Clock, Metrics: cfg.Metrics, Logger: cfg.Logger,
-		Tracer: cfg.Tracer, Logons: identity.LogLines(cfg.Logger), Directory: dial}); err != nil {
+		Tracer: cfg.Tracer, Logons: identity.LogLines(cfg.Logger), Directory: dial, DomainController: dc,
+		ControlPlane: n.meta.ControlPlane()}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
 	n.health.Add(identityConditions{n})
@@ -319,8 +332,12 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 		return nil, fmt.Errorf("node: %w", err)
 	}
 	steps := operationSteps(n.meta.Nodes())
-	steps[string(apiv1.OpShareDelete)] = stepRow{n.shareDeletion, n.removalProgress}
+	steps[string(apiv1.OpShareDelete)] = stepRow{run: n.shareDeletion, progress: n.removalProgress}
 	steps[string(apiv1.OpRotateSigningKey)] = n.rotationRow(p)
+	steps[string(apiv1.OpJoinDomain)] = stepRow{run: n.identity.JoinStep, progress: n.identity.JoinProgress}
+	steps[string(apiv1.OpRotateMachinePassword)] = stepRow{run: n.identity.RotateStep, progress: n.identity.RotateProgress, failed: n.identity.RotateFailed}
+	steps[string(apiv1.OpResolvePrincipal)] = stepRow{run: n.identity.ResolvePrincipalStep, progress: n.identity.ResolvePrincipalProgress}
+	steps[string(apiv1.OpTestDirectory)] = stepRow{run: n.identity.TestDirectoryStep, progress: n.identity.TestDirectoryProgress}
 	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node.ID, cfg.Logger, steps)
 	n.watchdog = health.NewWatchdog(cfg.Clock)
 	n.sidecars = sidecar.New()
@@ -368,6 +385,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 		Node:         cfg.Bootstrap.Node.ID,
 		Applied:      n.applied,
 		Directory:    n.identity,
+		Joins:        n.identity,
 	})
 	return n, nil
 }

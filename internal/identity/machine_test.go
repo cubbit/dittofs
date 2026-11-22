@@ -278,8 +278,9 @@ func (fx *rotFixture) phase(op *entity.Operation) string {
 }
 
 // turn runs one turn of op as the runner does, the store's State delivered
-// first unless held: a retried error fails the test, a failure ends op and
-// is returned, and a done turn's End is written.
+// first unless held: a retried error fails the test, a failure ends op, a
+// rotation's with RotateFailed written, and is returned, and a done turn's
+// End is written.
 func (fx *rotFixture) turn(t *testing.T, op *entity.Operation) (done bool, failed error) {
 	t.Helper()
 	if op.State != entity.OpRunning {
@@ -295,6 +296,11 @@ func (fx *rotFixture) turn(t *testing.T, op *entity.Operation) (done bool, faile
 	res, err := step.Run(context.Background(), run, *op)
 	if _, fails := step.Failure(err); fails {
 		op.State = entity.OpFailed
+		if op.Kind != string(apiv1.OpJoinDomain) {
+			if err := fx.cp.Write(context.Background(), entity.WriteMeta{}, fx.s.RotateFailed); err != nil {
+				t.Fatalf("the rotation's failed write: %v", err)
+			}
+		}
 		fx.reconcile(t)
 		return true, err
 	}

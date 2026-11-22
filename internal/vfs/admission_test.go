@@ -5,13 +5,18 @@ import (
 	"crypto/rand"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	identitysrv "github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/identity/identitymem"
 	"github.com/cubbit/dittofs/internal/vfs/authz"
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -197,5 +202,101 @@ func TestNewRefusesADepsWithoutIdentity(t *testing.T) {
 	d.Identity = identitymem.New(t, fs.Store)
 	if _, err := New(d); err != nil {
 		t.Errorf("New of the same Deps with Identity: %v", err)
+	}
+}
+
+// squash sets the caching share's export policy to squash, its Anonymous
+// left as the store holds it.
+func (c *caching) squash(t *testing.T, squash entity.Squash) {
+	t.Helper()
+	p, err := c.cp.ExportPolicy(t.Context(), c.share)
+	c.must(t, err)
+	p.Squash = squash
+	c.must(t, errOf(c.cp.PutExportPolicy(t.Context(), p, p.Version)))
+}
+
+// A Kerberos caller bound to the well-known root acts as the share's
+// Anonymous on a root-squashing share, unprivileged, and as root itself,
+// privileged, on a share that squashes nothing.
+func TestACallerBoundToRootIsSquashedOrPrivilegedByTheShare(t *testing.T) {
+	c := newCaching(t)
+	// No grant names root itself; it reaches a share as a proven caller.
+	c.must(t, errOf(c.cp.SetGrant(t.Context(), entity.ShareGrant{Share: c.share, Principal: entity.AuthenticatedUsers, Access: entity.AccessReadWrite}, 0)))
+	call := c.ticket(entity.RootPrincipal, inLab, 0)
+	for _, w := range []struct {
+		squash     entity.Squash
+		principal  entity.Principal
+		privileged bool
+	}{
+		{entity.SquashRoot, entity.AnonymousPrincipal, false},
+		{entity.SquashNone, entity.RootPrincipal, true},
+	} {
+		c.squash(t, w.squash)
+		id, err := c.admitCall(call)
+		if err != nil {
+			t.Fatalf("root's call, squash %v: %v", w.squash, err)
+		}
+		if id.Principal != w.principal || id.Privileged != w.privileged {
+			t.Errorf("root's call, squash %v: acts as %v, privileged %v; want %v, privileged %v", w.squash, id.Principal, id.Privileged, w.principal, w.privileged)
+		}
+	}
+}
+
+// identity.ntlm turned off by a State differing only in it raises the
+// serial and refuses an admitted NTLM caller's next call, counted as
+// ntlm_off, while a cached Kerberos caller resolves afresh and is served.
+func TestNTLMTurnedOffRefusesAnNTLMCallersNextCall(t *testing.T) {
+	c := newCaching(t)
+	bob := c.user(t, "bob", "", c.share, entity.AccessReadWrite)
+	ntlm := withSIDs(bob.Principal, vfs.ProofSecret, nil, nil)
+	krb := c.ticket(bob.Principal, inLab, 0)
+	if _, err := c.admitCall(ntlm); err != nil {
+		t.Fatalf("bob's NTLM call with NTLM on: %v", err)
+	}
+	c.twice(t, "bob's Kerberos call", krb, true)
+
+	serial := c.srv.Current()
+	off := c.ids
+	off.NTLM = false
+	c.must(t, c.srv.Apply(identitysrv.State{Generation: c.gen, Settings: off}))
+	if c.srv.Current() == serial {
+		t.Fatalf("Current() = %d after NTLM was turned off, want it raised", serial)
+	}
+	if _, err := c.admitCall(ntlm); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("bob's NTLM call once NTLM is off: %v, want ErrAccess", err)
+	}
+	if err := testutil.GatherAndCompare(c.reg.Registry(), strings.NewReader(`
+# HELP dittofs_identity_resolution_refusals_total Calls refused at resolution, by reason.
+# TYPE dittofs_identity_resolution_refusals_total counter
+dittofs_identity_resolution_refusals_total{reason="ntlm_off"} 1
+`), "dittofs_identity_resolution_refusals_total"); err != nil {
+		t.Errorf("refusals once NTLM is off: %v", err)
+	}
+	before := c.resolutions()
+	if _, err := c.admitCall(krb); err != nil {
+		t.Errorf("bob's Kerberos call once NTLM is off: %v, want served", err)
+	}
+	if got := c.resolutions() - before; got != 1 {
+		t.Errorf("bob's Kerberos call once NTLM is off resolved %d times, want 1", got)
+	}
+}
+
+// A well-known principal has no user record, so resolution reads none for
+// it: with every user read failing, a call proving nothing squashed to the
+// well-known anonymous and a Kerberos caller bound to root are served.
+func TestAWellKnownPrincipalIsResolvedWithNoUserRead(t *testing.T) {
+	c := newCaching(t)
+	ctx := t.Context()
+	c.must(t, errOf(c.cp.SetGrant(ctx, entity.ShareGrant{Share: c.share, Principal: entity.Everyone, Access: entity.AccessRead}, 0)))
+	c.squash(t, entity.SquashNone)
+	s, err := sim.NewSchedule(1, sim.NewTestClock(time.Unix(0, 0)), sim.Rule{Op: kvtest.OpGet, Key: "U‖*", Action: sim.FaultAction{Err: errors.New("injected user read fault")}})
+	c.must(t, err)
+	c.fault.SetFault(s)
+	anon := vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofNone, Client: inLab}}
+	if id, err := c.admitCall(anon); err != nil || id.Principal != entity.AnonymousPrincipal {
+		t.Errorf("a call proving nothing, every user read failing: acts as %v, %v; want %v, served", id.Principal, err, entity.AnonymousPrincipal)
+	}
+	if id, err := c.admitCall(c.ticket(entity.RootPrincipal, inLab, 0)); err != nil || id.Principal != entity.RootPrincipal {
+		t.Errorf("root's call, every user read failing: acts as %v, %v; want %v, served", id.Principal, err, entity.RootPrincipal)
 	}
 }

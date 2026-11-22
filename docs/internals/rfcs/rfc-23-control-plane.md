@@ -715,8 +715,8 @@ change missed during a store outage is then found at the next read that works.
 A full reconcile lists records by kind in pages
 ([RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them)),
 and reads every scope's settings in pages of 256 through `AllSettings` (§2.1), as
-each moved settings generation does too (every `Setting` or `Secret` change raises
-it); what bounds its rate is open (§13). Each page is its own read transaction, so
+each moved settings generation does too (every `Setting` or `Secret` change and
+every write of `Installation.Join` raise it); what bounds its rate is open (§13). Each page is its own read transaction, so
 a write can land between two, and a walk could then mix two states of the
 store. The reconcile therefore reads `CFGGEN` before the first page, reports only
 that generation as applied, and reads it again after the last page: if it moved,

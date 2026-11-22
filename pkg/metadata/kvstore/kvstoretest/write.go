@@ -355,7 +355,12 @@ func testInstallationInWrite(t *testing.T, kvo Opener) {
 			j.LastRotation.Version, j.LastRotation.Confirmed = 3, time.Unix(1_800_000_000, 0).UTC()
 			pw := entity.SecretRef{15: 0x3C}
 			must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetMachinePassword(pw) }))
+			before, err := s.Nodes().Counters(ctx)
+			must(t, err)
 			must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetMachineJoin(j) }))
+			if after, err := s.Nodes().Counters(ctx); err != nil || after.Settings <= before.Settings {
+				t.Errorf("settings generation across a machine join's write: got %d, %v, want above %d", after.Settings, err, before.Settings)
+			}
 			in, err := s.Installation(ctx)
 			must(t, err)
 			if !reflect.DeepEqual(in.Join, j) {

@@ -30,17 +30,13 @@ func TestAddress(t *testing.T) {
 		}, "192.168.1.20"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			interfaces = func() ([]iface, error) { return tc.ifaces, nil }
-			t.Cleanup(func() { interfaces = realInterfaces })
-			got, err := address()
+			got, err := pickAddress(tc.ifaces)
 			if got != tc.want || (err == nil) != (tc.want != "") {
 				t.Errorf("got %q, %v; want %q", got, err, tc.want)
 			}
 		})
 	}
 }
-
-var realInterfaces = interfaces
 
 // The network is the one the fixture's server is on: the host's, or, for dt
 // in a dtc container on a bridge network, that container's.
@@ -59,7 +55,7 @@ func TestNetwork(t *testing.T) {
 	}
 }
 
-// What dt sets up in fixtures, and what it doesn't yet.
+// What dt itself sets up in fixtures, and what it doesn't yet.
 func TestUnsupported(t *testing.T) {
 	mountsHere, kerberosHere := "only on Linux", "Kerberos only for SMB on Linux"
 	if runtime.GOOS == "linux" {
@@ -86,7 +82,7 @@ func TestUnsupported(t *testing.T) {
 		{registry.Fixture{Profile: "memory", Kerberos: true}, "Kerberos only for SMB"},
 		{registry.Fixture{Profile: "memory", Reset: "once"}, `reset shares "once"`},
 	} {
-		if got := Unsupported(&tc.f, runtime.GOOS); (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
+		if got := NotSetUp(&tc.f, runtime.GOOS); (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
 			t.Errorf("%+v: %q, want %q", tc.f, got, tc.want)
 		}
 	}
