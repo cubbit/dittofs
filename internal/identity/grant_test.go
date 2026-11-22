@@ -288,3 +288,54 @@ func TestResolveDenyOnlyMatchesNoGrant(t *testing.T) {
 		t.Errorf("Finance as a group: Access %v, %v; want read-write", accessOf(c), err)
 	}
 }
+
+// A store membership the PAC marks deny-only is not a group: alice, a store
+// member of Finance, holding Finance deny-only, gets nothing from a share
+// grant naming Finance, admin included, nor from one naming Corp, Finance's
+// parent, which the store reaches only through Finance. Corp listed enabled
+// in the PAC still grants.
+func TestResolveDenyOnlyStoreMembership(t *testing.T) {
+	ctx := context.Background()
+	r := newResolving(t)
+	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("60000")}
+	r.user(t, nobody, 0)
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1000")}
+	r.user(t, alice, 0)
+	finance, corp := r.group(t, "Finance", "S-1-5-21-1-2-3-2001"), r.group(t, "Corp", "S-1-5-21-1-2-3-2002")
+	r.member(t, finance, alice.Principal)
+	r.member(t, corp, finance)
+	financeSID, corpSID := *sid.ParseSIDMust("S-1-5-21-1-2-3-2001"), *sid.ParseSIDMust("S-1-5-21-1-2-3-2002")
+
+	member := ticket(alice.Principal, alice.Name)
+	denied := ticket(alice.Principal, alice.Name)
+	denied.Evidence.DenyOnly = []pid.SID{financeSID}
+	corpEnabled := ticket(alice.Principal, alice.Name)
+	corpEnabled.Evidence.SIDs = []pid.SID{corpSID}
+	corpEnabled.Evidence.DenyOnly = []pid.SID{financeSID}
+
+	const none, rw, admin = entity.AccessNone, entity.AccessReadWrite, entity.AccessAdmin
+	for _, c := range []struct {
+		name   string
+		id     pid.Identity
+		grant  entity.ShareGrant
+		access entity.ShareAccess
+		groups []entity.Principal
+	}{
+		{"a store member of Finance, Finance granted", member, grantTo(finance, rw), rw, []entity.Principal{finance, corp}},
+		{"Finance deny-only, Finance granted", denied, grantTo(finance, rw), none, nil},
+		{"Finance deny-only, Finance granted admin", denied, grantTo(finance, admin), none, nil},
+		{"Finance deny-only, Corp granted", denied, grantTo(corp, rw), none, nil},
+		{"Finance deny-only, Corp enabled in the PAC and granted", corpEnabled, grantTo(corp, rw), rw, []entity.Principal{corp}},
+	} {
+		share := r.sharing(t, c.grant)
+		got, err := r.srv.Resolve(ctx, c.id, entity.SharePolicy{Share: share, Squash: entity.SquashNone, Anonymous: nobody.Principal}, pid.ReadOnlyNotNarrowed)
+		if err != nil {
+			t.Fatalf("%s: Resolve: %v", c.name, err)
+		}
+		want := slices.Clone(c.groups)
+		slices.SortFunc(want, func(a, b entity.Principal) int { return slices.Compare(a.ID[:], b.ID[:]) })
+		if got.Access != c.access || got.Admin || got.Privileged || !slices.Equal(got.Groups, want) {
+			t.Errorf("%s: Access %v, Admin %v, Privileged %v, Groups %v; want Access %v, not admin, not privileged, Groups %v", c.name, got.Access, got.Admin, got.Privileged, got.Groups, c.access, want)
+		}
+	}
+}

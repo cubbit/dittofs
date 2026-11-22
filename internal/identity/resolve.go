@@ -316,11 +316,12 @@ func storeErr(err error) error {
 }
 
 // closure is every group p is in, directly or through nested groups, each
-// once. A failed read fails it whole: a partial list can grant access by
-// leaving out the group a deny entry names.
-func closure(ctx context.Context, pr kvstore.Principals, p entity.Principal) ([]entity.Principal, error) {
+// once, none in stop nor reached only through one. A failed read fails it
+// whole: a partial list can grant access by leaving out the group a deny
+// entry names.
+func closure(ctx context.Context, pr kvstore.Principals, p entity.Principal, stop ...entity.Principal) ([]entity.Principal, error) {
 	var out []entity.Principal
-	for g, err := range pr.Groups(ctx, p) {
+	for g, err := range pr.Groups(ctx, p, stop...) {
 		if err != nil {
 			return nil, unavailable(err)
 		}
@@ -334,39 +335,20 @@ func closure(ctx context.Context, pr kvstore.Principals, p entity.Principal) ([]
 // evidence SID maps to and that group's closure, so a deny entry naming a
 // parent of a PAC's group still matches; each listed once. Each
 // deny-only SID maps to a principal in deny, never in groups, and adds none
-// of its groups. A SID no principal holds stays unmapped; a lookup error
-// mapping any SID fails the whole collection, since dropping a deny fails
-// open.
+// of its groups: collect alone keeps the two lists disjoint. A SID no
+// principal holds stays unmapped; a lookup error mapping any SID fails the
+// whole collection, since dropping a deny fails open.
+//
+// decision: a deny-only principal stops every closure walk, so a group the
+// store reaches only through it (a parent of a deny-only Finance) is not
+// the caller's, and neither is the deny-only principal itself, whatever the
+// store records. A group the PAC lists enabled, or that another membership
+// reaches, stays. This fails closed: the directory marked the SID deny-only,
+// and RFC 18 §6.3 says it adds none of its groups. The cost is that a deny
+// entry naming such a parent no longer matches through it; a PAC lists the
+// parent itself when the directory means it to apply. Overturned if a
+// deny-only membership must still carry its parents' denies.
 func collect(ctx context.Context, pr kvstore.Principals, of entity.Principal, ev identity.Evidence) (groups, deny []entity.Principal, err error) {
-	seen := map[entity.Principal]bool{}
-	add := func(gs []entity.Principal) {
-		for _, g := range gs {
-			if !seen[g] {
-				seen[g] = true
-				groups = append(groups, g)
-			}
-		}
-	}
-	gs, err := closure(ctx, pr, of)
-	if err != nil {
-		return nil, nil, err
-	}
-	add(gs)
-	for _, sd := range ev.SIDs {
-		g, ok, err := bySID(ctx, pr, sd)
-		if err != nil {
-			return nil, nil, err
-		}
-		// The user's own SID, first in a PAC, maps to a user, not a group:
-		// its closure is the mapped principal's, already collected.
-		if !ok || g.Kind != entity.PrincipalGroup {
-			continue
-		}
-		if gs, err = closure(ctx, pr, g); err != nil {
-			return nil, nil, err
-		}
-		add(append(gs, g))
-	}
 	for _, sd := range ev.DenyOnly {
 		d, ok, err := bySID(ctx, pr, sd)
 		if err != nil {
@@ -377,6 +359,39 @@ func collect(ctx context.Context, pr kvstore.Principals, of entity.Principal, ev
 		}
 	}
 	slices.SortFunc(deny, comparePrincipals)
+	seen := map[entity.Principal]bool{}
+	for _, d := range deny {
+		seen[d] = true
+	}
+	add := func(gs []entity.Principal) {
+		for _, g := range gs {
+			if !seen[g] {
+				seen[g] = true
+				groups = append(groups, g)
+			}
+		}
+	}
+	gs, err := closure(ctx, pr, of, deny...)
+	if err != nil {
+		return nil, nil, err
+	}
+	add(gs)
+	for _, sd := range ev.SIDs {
+		g, ok, err := bySID(ctx, pr, sd)
+		if err != nil {
+			return nil, nil, err
+		}
+		// The user's own SID, first in a PAC, maps to a user, not a group:
+		// its closure is the mapped principal's, already collected. A SID
+		// also marked deny-only stays deny-only.
+		if !ok || g.Kind != entity.PrincipalGroup || slices.Contains(deny, g) {
+			continue
+		}
+		if gs, err = closure(ctx, pr, g, deny...); err != nil {
+			return nil, nil, err
+		}
+		add(append(gs, g))
+	}
 	return groups, deny, nil
 }
 
