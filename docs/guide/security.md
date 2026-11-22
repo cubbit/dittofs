@@ -134,15 +134,20 @@ NTLM authenticates two classes of user:
 
 - **Local DittoFS users:** the NTLMv2 response is validated directly against the NT hash stored
   in the control-plane user store.
-- **AD domain users:** when a machine account is configured (`kerberos.machine_account`), the
+- **AD domain users:** once the installation has joined the domain, the
   challenge/response is forwarded to the Domain Controller over a sealed NETLOGON secure channel
   (MS-NRPC sign+seal AES, post-ZeroLogon). The DC performs the validation; no local NT hash is
-  stored or used. **Without a machine account, domain-user NTLM fails with
-  `STATUS_LOGON_FAILURE`.**
+  stored or used. **Without a join, domain-user NTLM fails with
+  `STATUS_LOGON_FAILURE`.** A domain user is never mapped to guest.
 
-> **Machine secret sensitivity:** the machine account shared secret is stored at rest in
-> plaintext (like the LDAP bind password and Kerberos keytab). It is write-only and redacted from
-> API responses. Protect it with filesystem permissions equivalent to a keytab file (`chmod 600`).
+> **Machine secret sensitivity:** the computer account's password is sealed at rest by the
+> secret provider, like the LDAP bind password and the Kerberos keytab, and is never returned by
+> the API. It rotates by itself. Kerberos keys for the account's service names are
+> derived from it, and **AES only** (`msDS-SupportedEncryptionTypes` `0x18`): DES and RC4 keys
+> are refused.
+>
+> **Joining has two operator duties the code cannot check**, listed in
+> [identity.md, Part C2](identity.md#part-c2-join-the-domain).
 
 NTLM security tradeoffs:
 
@@ -150,7 +155,7 @@ NTLM security tradeoffs:
 - Vulnerable to relay attacks without channel binding
 - Session key derived from password hash (weaker than Kerberos session key)
 - Signing uses HMAC-SHA256 (weaker than AES-CMAC/GMAC)
-- NETLOGON passthrough requires a pre-provisioned machine account
+- NETLOGON passthrough requires a joined computer account
 
 **Recommendation:** configure Kerberos for all production deployments. Use NTLM only as a
 transition mechanism or for clients that cannot use Kerberos.
@@ -163,17 +168,17 @@ account for them. Three pieces are independent and can be enabled in any combina
 | Piece | What it does | Credential at rest |
 |---|---|---|
 | **Kerberos service keytab** | Verifies AD-issued service tickets over SMB (SPNEGO) and NFS (RPCSEC\_GSS) | Keytab file |
-| **Machine account** (`kerberos.machine_account`) | Forwards the NTLM challenge/response to the Domain Controller over a sealed NETLOGON channel, for clients that cannot use Kerberos | Computer account secret |
+| **Machine account** (a domain join) | Forwards the NTLM challenge/response to the Domain Controller over a sealed NETLOGON channel, for clients that cannot use Kerberos | Computer account secret |
 | **LDAP idmap** | Maps the authenticated principal or SID to a Unix UID/GID and resolves nested group membership | Read-only bind DN + password |
 
 Security notes:
 
-- With a machine account configured, AD-user NTLM is validated by the Domain Controller —
+- Once joined, AD-user NTLM is validated by the Domain Controller —
   **no local NT hash is stored or used**. Without one, domain-user NTLM fails with
   `STATUS_LOGON_FAILURE`.
-- The keytab, the LDAP bind password, and the machine account secret are stored at rest in
-  plaintext (write-only, and redacted from API responses). Protect them with filesystem
-  permissions equivalent to a keytab file (`chmod 600`).
+- The keytab and the computer account's password are sealed at rest by the secret provider,
+  write-only, and never returned by the API. Joining and its operator duties are in
+  [identity.md, Part C2](identity.md#part-c2-join-the-domain).
 - The LDAP bind account is read-only; reach the directory over LDAPS or a private network.
 - A principal is resolved through the same idmap regardless of the protocol it arrived on,
   so an AD user gets one Unix identity across SMB and NFS.

@@ -586,13 +586,8 @@ dittofs/
 
 ### Data path
 
-No content store is wired until the adapters run on `vfs.Service`. WRITE runs
-`metaSvc.PrepareWrite` first (permissions, type, read-only share), so a refused
-write keeps its own status; a zero-count WRITE succeeds, and any other answers
-`common.ErrNoContentStore`, which `types.StatusForErr` maps to `NFS3ERR_IO` /
-`NFS4ERR_IO`. READ, COMMIT, CLONE, DEALLOCATE and the data runs of READ_PLUS
-answer the same for a file with content; on an empty file, or past EOF, they
-succeed as before. SETATTR and CREATE size changes are metadata updates.
+The NFS adapter has no file operations yet; see
+[Data path](architecture.md#data-path).
 
 ### Buffer Pooling
 

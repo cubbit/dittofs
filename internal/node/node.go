@@ -309,7 +309,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 		return nil, fmt.Errorf("node: %w", err)
 	}
 	n.health.Add(identityConditions{n})
-	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves,
+	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Clock: cfg.Clock, Running: n.rec.serves,
 		Identity: n.identity, Auth: n.identity, Names: n.identity}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}

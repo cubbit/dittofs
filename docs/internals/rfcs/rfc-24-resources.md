@@ -332,11 +332,9 @@ each, 1.5 GiB, 1 GiB each and 2 GiB unpooled.
 > at 512 MiB each and `connection_limit` at 4,096, the 8 GiB figures, whatever
 > memory the host has, builds none of the other four pools, and leaves the
 > runtime's soft limit unset, so on a host with less than 8 GiB it can run out
-> of memory before any pool refuses. Derive all of them from *L*, setting the
-> soft limit to fifteen sixteenths of it, exporting `memory_limit_bytes`,
-> raising `memory_limit_below_floors` and bounding `connection_limit` by half
-> the open-file limit too, once `pkg/resources` has `Detect` and `SplitFor`
-> (§2.7).
+> of memory before any pool refuses. The full entry, with what derives from *L*
+> once `pkg/resources` has `Detect` and `SplitFor` (§2.7), is kept at the
+> figures, in `internal/node/budgets.go`.
 
 Every node holds all eight pools, because every node composes everything they
 hold ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)).
