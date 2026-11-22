@@ -241,7 +241,9 @@ func TestResolveMapsTheBoundPrincipalNotTheName(t *testing.T) {
 }
 
 // A call naming no share runs the map step alone: it answers Mapped, reads
-// no grant and no group, which fail here, and squashes nothing.
+// no grant and no group, which fail here, and squashes nothing. A call
+// proving nothing maps to the well-known anonymous, the default of the zero
+// policy, never to the zero principal.
 func TestResolveOnNoShareMapsAlone(t *testing.T) {
 	r := newResolving(t)
 	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1000")}
@@ -257,6 +259,10 @@ func TestResolveOnNoShareMapsAlone(t *testing.T) {
 	want := pid.Caller{Mapped: alice.Principal, Fresh: expires}
 	if c.Mapped != want.Mapped || !c.Principal.IsZero() || c.Groups != nil || c.Access != entity.AccessNone || c.Authenticated || !c.Fresh.Equal(want.Fresh) {
 		t.Errorf("Resolve on no share = %+v, want %+v", *c, want)
+	}
+	c, err = r.srv.Resolve(context.Background(), pid.Identity{Proof: pid.ProofNone}, entity.SharePolicy{}, pid.ReadOnlyNotNarrowed)
+	if err != nil || c.Mapped != entity.AnonymousPrincipal {
+		t.Errorf("Resolve of a call proving nothing on no share: Mapped %v, %v; want %v", c, err, entity.AnonymousPrincipal)
 	}
 }
 
@@ -546,11 +552,10 @@ func TestResolveSquashedCallerKeepsNothingOfItsOwn(t *testing.T) {
 }
 
 // A caller with no principal to act as fails closed, refused ErrAccess and
-// never the zero principal, which owns every share's root: a squashed proven
-// caller and one proving nothing, on a share whose policy names no
-// Anonymous, though the share grants the one its admin and everyone read;
-// and a claimed identity, which resolution maps to no principal, even under
-// a policy naming a live Anonymous that everyone's read would admit.
+// never the zero principal, which owns every share's root: a claimed
+// identity, which resolution maps to no principal, under a policy naming no
+// Anonymous and under one naming a live Anonymous that everyone's read would
+// admit.
 func TestNoAnonymousPrincipalFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	r := newResolving(t)
@@ -570,8 +575,6 @@ func TestNoAnonymousPrincipalFailsClosed(t *testing.T) {
 		id    pid.Identity
 		share entity.SharePolicy
 	}{
-		{"squashed, no Anonymous", ticket(alice.Principal, alice.Name), none},
-		{"proving nothing, no Anonymous", pid.Identity{Proof: pid.ProofNone}, none},
 		{"claimed, no Anonymous", claimed, none},
 		{"claimed, a live Anonymous", claimed, named},
 	} {
@@ -579,6 +582,47 @@ func TestNoAnonymousPrincipalFailsClosed(t *testing.T) {
 		if !errors.Is(err, vfserr.ErrAccess) || got != nil {
 			t.Errorf("%s: Resolve = %+v, %v; want nil, ErrAccess", c.name, got, err)
 		}
+	}
+}
+
+// A squashed proven caller and one proving nothing, on a share whose policy
+// names no Anonymous, act as the well-known anonymous, never the zero
+// principal: the one proving nothing with everyone's read, the proven one
+// with its own admin grant, neither with a flag.
+func TestAPolicyNamingNoAnonymousActsAsTheWellKnownOne(t *testing.T) {
+	ctx := context.Background()
+	r := newResolving(t)
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1000")}
+	r.user(t, alice, 0)
+	none := r.grantedShare(t, entity.SquashAll, entity.Principal{}, alice.Principal, entity.AccessAdmin)
+	if _, err := r.cp.SetGrant(ctx, entity.ShareGrant{Share: none.Share, Principal: entity.Everyone, Access: entity.AccessRead}, 0); err != nil {
+		t.Fatalf("SetGrant: %v", err)
+	}
+	for _, c := range []struct {
+		name   string
+		id     pid.Identity
+		access entity.ShareAccess
+	}{
+		{"squashed, no Anonymous", ticket(alice.Principal, alice.Name), entity.AccessAdmin},
+		{"proving nothing, no Anonymous", pid.Identity{Proof: pid.ProofNone}, entity.AccessRead},
+	} {
+		got, err := r.srv.Resolve(ctx, c.id, none, pid.ReadOnlyNotNarrowed)
+		if err != nil || got.Principal != entity.AnonymousPrincipal || got.Access != c.access || got.Authenticated || got.Admin || got.Privileged {
+			t.Errorf("%s: Resolve = %+v, %v; want acting as %v with access %v and no flag", c.name, got, err, entity.AnonymousPrincipal, c.access)
+		}
+	}
+}
+
+// Before any State is applied, an NTLM caller is unavailable, as its sign-in
+// is, and never resolved: the setting that would admit it is unknown.
+func TestResolveRefusesAnNTLMCallerBeforeAnyState(t *testing.T) {
+	r := newResolving(t)
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1000")}
+	r.user(t, alice, 0)
+	id := pid.Identity{Proof: pid.ProofSecret, Evidence: pid.Evidence{Name: alice.Name, Principal: alice.Principal}}
+	c, err := r.srv.Resolve(context.Background(), id, entity.SharePolicy{}, pid.ReadOnlyNotNarrowed)
+	if !errors.Is(err, vfserr.ErrUnavailable) || c != nil {
+		t.Errorf("an NTLM caller before any State: Resolve = %+v, %v; want nil, ErrUnavailable", c, err)
 	}
 }
 

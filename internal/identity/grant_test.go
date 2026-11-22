@@ -50,6 +50,9 @@ func grantTo(p entity.Principal, a entity.ShareAccess) entity.ShareGrant {
 func TestResolveTable(t *testing.T) {
 	ctx := context.Background()
 	r := newResolving(t)
+	if err := r.srv.Apply(state(1)); err != nil { // NTLM on, so a Secret caller resolves
+		t.Fatal(err)
+	}
 	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("60000")}
 	r.user(t, nobody, 0)
 	guests := r.group(t, "Guests", "")

@@ -219,14 +219,18 @@ func keyOf(rec entity.ClientRecord) nameKey { return nameKey{rec.Protocol, strin
 
 // admit checks a client's own fields and returns the record they make.
 //
-// decision: the service records an owner that maps to the anonymous principal
-// as zero, since only it knows the installation's anonymous principal; a zero
-// owner protects nothing, so Protect is cleared with it. Record it if a
-// protocol is served whose anonymous callers the table can tell apart.
+// decision: an owner that is the well-known anonymous principal is recorded
+// as zero, since every caller proving nothing maps to it, so it tells no
+// client's caller from another's; a zero owner protects nothing, so Protect
+// is cleared with it. Record it if a protocol is served whose anonymous
+// callers the table can tell apart.
 func admit(c Client) (entity.ClientRecord, error) {
 	rec := c.ClientRecord
 	if len(rec.Name) == 0 || len(rec.Name) > maxName || len(rec.Adapter) > kvstore.MaxAdapter {
 		return entity.ClientRecord{}, ErrInvalid
+	}
+	if rec.Owner == entity.AnonymousPrincipal {
+		rec.Owner = entity.Principal{}
 	}
 	if rec.Owner.IsZero() {
 		rec.Protect = false
