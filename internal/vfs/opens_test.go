@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/identity/identitymem"
 	"github.com/cubbit/dittofs/internal/vfs/contenttest"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -109,7 +110,7 @@ func (f *fixture) restart(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(Deps{Meta: f.fs.Store, Open: tab, Engine: f.engine})
+	s, err := New(Deps{Meta: f.fs.Store, Open: tab, Engine: f.engine, Identity: identitymem.New(t, f.fs.Store)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +129,7 @@ func (f *fixture) restart(t *testing.T) *fixture {
 // sess, and answers a call from it.
 func (s *shares) nfs41(t *testing.T, name string, uid uint32, sess uint64) vfs.Call {
 	t.Helper()
-	c := claimed(uid, inLab)
+	c := s.as(t, uid, inLab)
 	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte(name), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
 	p, err := s.Propose(t.Context(), c, info)
 	s.must(t, err)
@@ -981,7 +982,7 @@ func TestEachFailedStartStepLeavesItBuilt(t *testing.T) {
 			live := entity.Share{ID: entity.NewShareID(), Name: "b", Path: "/b", Root: entity.NewFileID()}
 			clock := sim.NewTestClock(time.Unix(0, 0))
 			tab, err := openstate.New(openstate.Deps{Records: fx.Store, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
-			s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: contentOver(clock, fx.Store, live.ID)})
+			s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: contentOver(clock, fx.Store, live.ID), Identity: identitymem.New(t, fx.Store)})
 			if err := errors.Join(err, err2, errOf(kvstoretest.CreateShare(t.Context(), cp, live)), cp.DeleteShare(ctx, fx.Share.ID, entity.SnapshotsRefuse, 1)); err != nil {
 				t.Fatal(err)
 			}

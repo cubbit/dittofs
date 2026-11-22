@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/cubbit/dittofs/internal/identity/identitymem"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
@@ -50,7 +51,7 @@ func fuzzShare(f *testing.F) (*Filesystem, vfs.Call, vfs.Handle) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	s, err := New(Deps{Meta: st, Open: tab, Engine: contentOver(clock, st, sh.ID)})
+	s, err := New(Deps{Meta: st, Open: tab, Engine: contentOver(clock, st, sh.ID), Identity: identitymem.New(f, st)})
 	if err != nil {
 		f.Fatal(err)
 	}

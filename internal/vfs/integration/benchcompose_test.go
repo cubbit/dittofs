@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/identity/identitymem"
 	"github.com/cubbit/dittofs/internal/prof"
 	filesystem "github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
@@ -198,10 +199,11 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 	c.e = e
 
 	c.fs, err = filesystem.New(filesystem.Deps{
-		Meta:   meta,
-		Open:   opens,
-		Engine: e,
-		Logger: logger,
+		Meta:     meta,
+		Open:     opens,
+		Engine:   e,
+		Logger:   logger,
+		Identity: identitymem.New(b, meta),
 	})
 	if err != nil {
 		b.Fatalf("bench: filesystem: %v", err)

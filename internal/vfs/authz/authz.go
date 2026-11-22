@@ -8,8 +8,10 @@ package authz
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -25,6 +27,52 @@ type Caller struct {
 	Proved          vfs.Identity  // what the adapter proved
 	Client          vfs.ClientID  // zero where the call names no client
 	Protocol        vfs.Protocol  // zero where the call names no client
+}
+
+// Acting is c as the chokepoint takes it: its principal, groups and flags,
+// held to c's Access, with a read narrowed by the share or a client rule
+// kept as the cause the chokepoint answers ErrReadOnly for. A read grant is
+// no such cause: Access alone holds the caller to it, refused ErrAccess.
+//
+// decision: a caller holding a deny-only principal is refused here, at
+// admission, because entity.Identity has no deny-only field: dropping them
+// would let a file's deny entry naming one miss, which fails open. Withdraw
+// the refusal once the chokepoint matches deny-only principals against deny
+// entries (RFC 19 §2.3).
+//
+// decision: a caller whose Access is none is refused here, and so is not
+// audited, because the chokepoint cannot be handed a none: it reads a zero
+// Access as "read the grants", and a call that never reaches it, a lock, a
+// watch or a share listing, would act on a share no grant admits it to.
+// Overturned once the chokepoint takes a grant of none in Access, or
+// admission's refusals are audited.
+//
+// decision: with releases, a call that only releases state, a caller whose
+// Access is none is admitted with Access zero, as admission exempts such a
+// call from the client rules' refusal, so a caller whose grant was removed
+// still gives up the locks and opens it holds. Resolution refuses a
+// squashed proven caller granted none itself, so the grants the chokepoint
+// would read are the ones resolution read, which name none, and open state
+// still refuses a caller that does not own the state.
+func Acting(c *identity.Caller, releases bool) (entity.Identity, error) {
+	if len(c.DenyOnly) > 0 {
+		return entity.Identity{}, fmt.Errorf("%w: the caller holds a deny-only principal", vfs.ErrAccess)
+	}
+	if c.Access == entity.AccessNone && !releases {
+		return entity.Identity{}, fmt.Errorf("%w: the share grants the caller none", vfs.ErrAccess)
+	}
+	ro := entity.NotNarrowed
+	switch c.ReadOnly {
+	case identity.ReadOnlyShare:
+		ro = entity.NarrowedByShare
+	case identity.ReadOnlyClient:
+		ro = entity.NarrowedByClient
+	}
+	return entity.Identity{
+		Principal: c.Principal, Group: c.Group, Groups: c.Groups,
+		Privileged: c.Privileged, Authenticated: c.Authenticated, Admin: c.Admin,
+		ReadOnly: ro, Access: c.Access,
+	}, nil
 }
 
 // Policy is what a share's audit policy selects.

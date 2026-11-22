@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/identity/identitymem"
 	filesystem "github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
@@ -54,7 +55,7 @@ func composeOver(t *testing.T, wrap func(c *composition, e filesystem.Content) f
 		if wrap != nil {
 			content = wrap(c, e)
 		}
-		fs, err := filesystem.New(filesystem.Deps{Meta: f.FS.Store, Open: f.Opens, Engine: content, Logger: f.Logger()})
+		fs, err := filesystem.New(filesystem.Deps{Meta: f.FS.Store, Open: f.Opens, Engine: content, Logger: f.Logger(), Identity: identitymem.New(t, f.FS.Store)})
 		if err != nil {
 			t.Fatalf("compose: %v", err)
 		}

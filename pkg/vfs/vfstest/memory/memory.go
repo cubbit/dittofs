@@ -1,6 +1,6 @@
 // Package memory is the filesystem over memory: internal/vfs.New over the
-// in-memory store, real open state and the in-memory Content, each held to
-// its own conformance suite, behind vfstest's recording wrapper of the calls
+// in-memory store, the real identity server over that store, real open state
+// and the in-memory Content, each held to its own conformance suite, behind vfstest's recording wrapper of the calls
 // that may change state. It is the Service a handler is tested against.
 //
 // decision: it is a package of its own below vfstest rather than part of
@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/identity/identitymem"
 	ivfs "github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/internal/vfs/contenttest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -56,7 +57,7 @@ func New(t *testing.T) *Service {
 	must(t, err)
 	content := contenttest.NewOver(wallClock{}, fs.Store)
 	content.Bind(fs.Share.ID)
-	f, err := ivfs.New(ivfs.Deps{Meta: fs.Store, Open: tab, Engine: content})
+	f, err := ivfs.New(ivfs.Deps{Meta: fs.Store, Open: tab, Engine: content, Identity: identitymem.New(t, fs.Store)})
 	must(t, err)
 	must(t, tab.Start(t.Context(), f, f.Admission))
 	t.Cleanup(tab.Stop)

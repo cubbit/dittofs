@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cubbit/dittofs/internal/vfs/admit"
 	"github.com/cubbit/dittofs/internal/vfs/authz"
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -646,16 +646,15 @@ func (fs *Filesystem) marker(ctx context.Context, share entity.ShareID, d entity
 	if err := sh.State.Gate(); err != nil {
 		return nil, storeErr(err)
 	}
-	ro := entity.NotNarrowed
+	ro := identity.ReadOnlyNotNarrowed
 	if p.ReadOnly {
-		ro = entity.NarrowedByShare
+		ro = identity.ReadOnlyShare
 	}
 	id := vfs.Identity{Proof: vfs.ProofSecret, Evidence: vfs.Evidence{Principal: d.By}}
 	a := &admitted{share: sh, policy: p}
 	a.caller = authz.Caller{Share: sh.ID, Proved: id, Protocol: entity.ProtocolSMB}
-	a.caller.Identity, a.caller.Mapped, err = admit.Resolve(ctx, principals{fs.meta.Principals()}, id, sh.ID, p, ro)
-	if err != nil {
-		return nil, storeErr(err)
+	if a.caller.Identity, a.caller.Mapped, err = fs.resolve(ctx, id, sh, p, ro, false); err != nil {
+		return nil, err
 	}
 	// The unlink is privileged only when the marking open was: over SMB an
 	// admin's open without backup intent was decided without privilege.

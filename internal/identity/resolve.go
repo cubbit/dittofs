@@ -415,11 +415,11 @@ func forwarded(id identity.Identity) error {
 	return nil
 }
 
-// live is p's user record, refusing a user disabled or deleted, counted
-// under reason when it names one; any other principal passes, with the zero
-// record.
+// live is p's user or machine record, refusing one disabled or deleted,
+// counted under reason when it names one; any other principal passes, with
+// the zero record.
 func live(ctx context.Context, pr kvstore.Principals, p entity.Principal, reason string) (entity.User, error) {
-	if p.Kind != entity.PrincipalUser {
+	if p.Kind != entity.PrincipalUser && p.Kind != entity.PrincipalMachine {
 		return entity.User{}, nil
 	}
 	u, err := pr.User(ctx, p)

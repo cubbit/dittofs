@@ -185,7 +185,7 @@ func TestDelegatedIOIsTheHoldersOwn(t *testing.T) {
 	s.must(t, err)
 	ref := vfs.Delegated(r.Grant.ID, h)
 	as := func(uid uint32) vfs.Call {
-		c := claimed(uid, inLab)
+		c := s.as(t, uid, inLab)
 		c.Protocol, c.Client, c.Session = holder.Protocol, holder.Client, holder.Session
 		return c
 	}
@@ -231,14 +231,14 @@ func TestAMissedRecallRevokesTheGrant(t *testing.T) {
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	h, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "f", kvstore.Regular(0o666))
 	s.fs.Create(t, s.fs.Admin, s.fs.Root, "g", kvstore.Regular(0o666))
-	holder, cb := s.connected(t, claimed(1000, inLab), vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("host"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus})
+	holder, cb := s.connected(t, s.as(t, 1000, inLab), vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("host"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus})
 	holder.Session = vfs.SessionRef{ID: 1}
 	r, err := s.Open(ctx, holder, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData, Want: openstate.GrantRead})
 	s.must(t, err)
 	if r.Grant == nil {
 		t.Fatal("the open was offered no delegation")
 	}
-	writer := claimed(1000, inLab)
+	writer := s.as(t, 1000, inLab)
 	start := time.Now()
 	var delay *vfs.Delay
 	if _, err := s.Write(ctx, writer, vfs.Anonymous(h), 0, []byte("x"), vfs.Unstable); !errors.As(err, &delay) || delay.Cause != vfs.DelayRecall {
@@ -322,6 +322,7 @@ func TestLockingIsAdmittedOnEveryEntryPath(t *testing.T) {
 	bob := s.user(t, "bob", "1000", s.share, entity.AccessReadWrite)
 	s.must(t, errOf(s.cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab", Members: []string{"10.0.0.0/24"}}, 0)))
 	host := s.nfs41(t, "host", 1000, 1)
+	host.Identity.Proof = vfs.ProofSecret // below the "proof" case's minimum
 	s.fs.Create(t, s.fs.Admin, s.fs.Root, "f", kvstore.Regular(0o644))
 	at := func(addr bool) vfs.Call {
 		c := host
@@ -379,7 +380,7 @@ func TestLockingIsAdmittedOnEveryEntryPath(t *testing.T) {
 	}{
 		{"admitted", entity.ExportPolicy{}, entity.ShareEnabled, false, nil, nil},
 		{"quiesced", entity.ExportPolicy{}, entity.ShareQuiesced, false, vfs.ErrDelay, vfs.ErrDelay},
-		{"proof", entity.ExportPolicy{MinProof: entity.ProofSecret}, entity.ShareEnabled, false, vfs.ErrWrongSecurity, vfs.ErrWrongSecurity},
+		{"proof", entity.ExportPolicy{MinProof: entity.ProofTicket}, entity.ShareEnabled, false, vfs.ErrWrongSecurity, vfs.ErrWrongSecurity},
 		{"client rules", entity.ExportPolicy{Clients: []entity.ClientRule{{Match: entity.ClientMatch{Netgroup: "lab"}, Access: entity.AccessReadWrite}}},
 			entity.ShareEnabled, true, vfs.ErrAccess, nil},
 	} {
@@ -574,7 +575,7 @@ func TestASquashedOwnerIsDecidedAsReadData(t *testing.T) {
 	a := &attrs{shares: s}
 	h := a.file(t, "f", ops.Principal, 0o600)
 	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashAll, Anonymous: nobody.Principal}, 0)))
-	host, _ := s.connected(t, claimed(1500, inLab), nlmHost("ops-host", 1))
+	host, _ := s.connected(t, s.as(t, 1500, inLab), nlmHost("ops-host", 1))
 	o := vfs.LockOwner{Client: host.Client, Name: []byte("pid 1")}
 	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: o, Ranges: span(0, 1, true)}); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("squashed ops's NLM lock of its own 0600 file: %v, want ErrAccess", err)
