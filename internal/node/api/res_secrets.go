@@ -52,11 +52,10 @@ func secretRefOf(ctx context.Context, d Deps, s entity.Setting) (*apiv1.SecretRe
 
 // secretSetting is a write-only secret that a setting names by reference:
 // the scope the path's ID names, the setting's key, the secret's kind, the
-// field its audit records name the value by, exists, which refuses a set on
-// a record that does not exist, read in the write's transaction, nil for
-// none, and check, which refuses a value before it is sealed and returns
-// what to check again in the write's transaction, read tracked there, both
-// nil for none.
+// field its audit records name the value by, record, the key of the record
+// the secret belongs to, and check, which refuses a value before it is
+// sealed and returns what to check again in the write's transaction, read
+// tracked there, nil for none.
 type secretSetting struct {
 	scope   func([16]byte) entity.SettingScope
 	key     string
@@ -226,9 +225,11 @@ var storeCredentials = secretSetting{scope: storeScope, key: storeCredential, ki
 // one, which RFC 13 §5.2 has the check prove. The check and the namespace
 // claim it proves against are not built, so it refuses every set, failing
 // closed. The ceiling: POST /stores takes no credential, so until the check
-// is built no remote store holds a credential set through the API. Withdraw
-// the refusal once both are built, and run the claim part only for a store
-// that held a credential once the store records that.
+// is built no remote store holds a credential set through the API, and the
+// plan's requirement that a store can be created and given its first
+// credential is not met until then. Withdraw the
+// refusal once both are built, and run the claim part only for a store that
+// held a credential once the store records that.
 func capabilityCheck(context.Context, Deps, []byte) (func(entity.ControlPlaneTx) error, error) {
 	return nil, &componentError{field: storeCredential, detail: "the store's capability check is not built yet", err: secreterr.ErrUnproven}
 }

@@ -156,9 +156,9 @@ func (c *Client) Stores() Resource[apiv1.StoreSpec, struct{}] {
 }
 
 // SetStoreCredential is PUT /stores/{id}/credential: it seals value as the
-// first credential of the remote store id names, etag "*", and returns the
-// credential's reference and version and its tag. A store that holds a
-// credential is refused.
+// credential of the remote store id names and returns the credential's
+// reference and version and its tag. Until the store's capability check is
+// built, the node refuses every set 409.
 func (c *Client) SetStoreCredential(ctx context.Context, id string, value []byte, etag string) (apiv1.SecretRef, string, error) {
 	rp, err := c.write(ctx, http.MethodPut, "/api/v1/stores/"+url.PathEscape(id)+"/credential", apiv1.Credential{Spec: apiv1.CredentialSpec{Value: value}}, etag, nil)
 	if err != nil {
