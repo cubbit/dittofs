@@ -19,9 +19,11 @@ import (
 type Deps struct {
 	// Node is this node's identity, from its bootstrap; JournalID looks up its
 	// devices under it.
-	Node      entity.NodeID
-	Devices   []string // one journal directory per device; Start opens each
-	Open      func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (Journal, error)
+	Node    entity.NodeID
+	Devices []string // one journal directory per device; Start opens each
+	// Open opens the journal in dir with the floor, the identity and the
+	// sync marks the store recorded for it, each naming its stream.
+	Open      func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID, marks []entity.SyncMark) (Journal, error)
 	Existence Existence
 	Content   Content
 	Lifecycle Lifecycle
@@ -105,8 +107,8 @@ type Content interface {
 }
 
 // Lifecycle is the store's access outside block metadata's views: this
-// node's devices' journal identities, the installation's tags, the shares'
-// version limits and the shards' incarnations.
+// node's devices' journal identities and sync marks, the installation's tags,
+// the shares' version limits and the shards' incarnations.
 //
 // decision: a device is named by its journal directory as the bootstrap
 // writes it, one of Deps.Devices, looked up under Deps.Node, and the identity
@@ -115,6 +117,7 @@ type Content interface {
 // identifier of its own.
 type Lifecycle interface {
 	JournalID(ctx context.Context, node entity.NodeID, device entity.JournalDir) ([16]byte, error)
+	SyncMarks(ctx context.Context, j [16]byte) ([]entity.SyncMark, kvstore.OpenGen, error)
 	Tags(ctx context.Context) (map[entity.ShareID]entity.TagRecord, error)
 	VersionLimits(ctx context.Context, shares []entity.ShareID) (map[entity.ShareID]entity.JournalVersion, error)
 	RaiseVersionLimits(ctx context.Context, to map[entity.ShareID]entity.JournalVersion) error

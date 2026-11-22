@@ -84,7 +84,7 @@ func NewUnit(t *testing.T, o UnitOptions) *Unit {
 	d := engine.Deps{
 		Node:    entity.NodeID{1},
 		Devices: []string{"unit"},
-		Open: func(context.Context, string, journal.Version, journal.JournalID) (engine.Journal, error) {
+		Open: func(context.Context, string, journal.Version, journal.JournalID, []entity.SyncMark) (engine.Journal, error) {
 			return j, nil
 		},
 		Existence: u.FS.Store.Existence(),

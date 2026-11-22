@@ -13,6 +13,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 // defaultVersionBlock is the version block of an engine whose Deps leave it
@@ -114,10 +115,23 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 	expect := journal.JournalID(id)
 	floor := journal.VersionFromBytes(openFloor(stored, limits))
 
-	j, err := e.d.Open(ctx, dir, floor, expect)
+	// A device with no journal recorded has no marks either, and Open
+	// refuses it: reading them would only raise the zero identity's open
+	// generation.
+	var recorded []entity.SyncMark
+	var gen kvstore.OpenGen
+	if id != ([16]byte{}) {
+		if recorded, gen, err = e.d.Lifecycle.SyncMarks(ctx, id); err != nil {
+			return opened{}, fmt.Errorf("engine: start: read the sync marks of %s: %w", dir, err)
+		}
+	}
+
+	j, err := e.d.Open(ctx, dir, floor, expect, recorded)
 	if err != nil {
 		return e.refuseDevice(dir, expect, shares, tags, err)
 	}
+
+	e.noteOpen(j, id, gen)
 
 	u.push(j.Close)
 

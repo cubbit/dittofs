@@ -888,7 +888,7 @@ func (f *Fixture) start() {
 	// decision: the refuse and fake-journal branches answer without the
 	// composed opener, as fault injection: rows that run them test the fake,
 	// not the shipped opener. Every other open goes through it.
-	d.Open = func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
+	d.Open = func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID, marks []entity.SyncMark) (engine.Journal, error) {
 		if f.refuse.Load() {
 			return nil, fmt.Errorf(
 				"journal: directory %s refused: mount has no barriers: %w",
@@ -899,7 +899,7 @@ func (f *Fixture) start() {
 			f.fake.Reopen()
 			return f.fake, nil
 		}
-		j, err := open(ctx, dir, floor, expect)
+		j, err := open(ctx, dir, floor, expect, marks)
 		if err != nil {
 			return nil, err
 		}

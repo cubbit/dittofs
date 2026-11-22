@@ -391,10 +391,18 @@ func (c fencedContent) PruneRemovals(ctx context.Context, share entity.ShareID, 
 }
 
 // fencedLifecycle is the lifecycle view with its write transactions recorded:
-// the version limits' raise and the incarnations' raises.
+// the open generation's raise, the version limits' raise and the
+// incarnations' raises.
 type fencedLifecycle struct {
 	Lifecycle
 	f *fence
+}
+
+func (l fencedLifecycle) SyncMarks(ctx context.Context, j [16]byte) ([]entity.SyncMark, kvstore.OpenGen, error) {
+	l.f.begin()
+	marks, gen, err := l.Lifecycle.SyncMarks(ctx, j)
+	l.f.end(ctx, err)
+	return marks, gen, err
 }
 
 func (l fencedLifecycle) RaiseVersionLimits(ctx context.Context, to map[entity.ShareID]entity.JournalVersion) error {

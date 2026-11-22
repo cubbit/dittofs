@@ -47,8 +47,9 @@ func TestADropRefusedForTheHeadroomIsRetryLater(t *testing.T) {
 			dir string,
 			floor journal.Version,
 			id journal.JournalID,
+			marks []entity.SyncMark,
 		) (engine.Journal, error) {
-			j, err := open(ctx, dir, floor, id)
+			j, err := open(ctx, dir, floor, id, marks)
 
 			return forgetFault{Journal: j, err: refusalErr(journal.LimitHeadroom)}, err
 		}
@@ -226,8 +227,9 @@ func TestAContextEndedByTheRepackAnswersRetryLater(t *testing.T) {
 				dir string,
 				floor journal.Version,
 				id journal.JournalID,
+				marks []entity.SyncMark,
 			) (engine.Journal, error) {
-				j, err := open(ctx, dir, floor, id)
+				j, err := open(ctx, dir, floor, id, marks)
 
 				return cancelRepack{Journal: j, cancel: &cancel}, err
 			}

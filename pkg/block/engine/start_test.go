@@ -69,6 +69,7 @@ type openCall struct {
 	dir    string
 	floor  journal.Version
 	expect journal.JournalID
+	marks  []entity.SyncMark
 }
 
 // starterConfig is what a test asks of newStarter.
@@ -239,9 +240,9 @@ func newStarter(t *testing.T, opts ...starterOption) *starter {
 
 // open is the starter's Deps.Open: it records the call, holds it at the gate
 // when one is set, and answers the fake journal or openErr.
-func (s *starter) open(_ context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
+func (s *starter) open(_ context.Context, dir string, floor journal.Version, expect journal.JournalID, marks []entity.SyncMark) (engine.Journal, error) {
 	s.mu.Lock()
-	s.opens = append(s.opens, openCall{dir, floor, expect})
+	s.opens = append(s.opens, openCall{dir, floor, expect, marks})
 	g, err := s.gate, s.openErr
 	s.gate = nil
 
@@ -869,6 +870,75 @@ func TestStartOpensWithTheRecordedIdentityAndFloor(t *testing.T) {
 				t.Errorf("Open got floor %d, want the larger of floor and limit, %d", opens[0].floor.Counter, want.Counter())
 			}
 		})
+	}
+}
+
+// RFC 8 §2.5 step 1 and §5.2: Start opens the journal with the sync marks
+// the group commit recorded before the restart, and the group commit of the
+// new open records its own marks under the open generation Start raised, so
+// the open after it reads those.
+func TestStartOpensWithTheRecordedSyncMarks(t *testing.T) {
+	s := newStarter(t, freshJournals())
+	ctx := t.Context()
+
+	// commit writes n bytes to a new file of share one and commits its
+	// existence, which syncs the journal and records its marks.
+	commit := func(e *engine.Engine, name string, n int) {
+		t.Helper()
+		_, f := s.fs.Create(t, s.fs.Admin, s.fs.Root, name, kvstore.Regular(0o644))
+		if _, err := e.Write(ctx, s.one.ID, f.ID, 0, make([]byte, n), engine.WriteOpts{}); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		if err := e.CommitExistence(ctx, s.one.ID, f.ID); err != nil {
+			t.Fatalf("commit %s: %v", name, err)
+		}
+	}
+	// restart closes e and starts a new engine over the same store.
+	restart := func(e *engine.Engine) *engine.Engine {
+		t.Helper()
+		if err := e.Close(ctx); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		next, err := engine.New(s.deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(next.CloseGroupCommits)
+		if err := next.Apply(enginetest.Settings); err != nil {
+			t.Fatal(err)
+		}
+		if err := next.Start(ctx, []engine.Share{s.one, s.two}); err != nil {
+			t.Fatalf("Start after the restart: %v", err)
+		}
+		return next
+	}
+
+	if err := s.start(t); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	commit(s.e, "a", 1)
+	first := s.j.RecordedMarks()
+	if len(first) == 0 {
+		t.Fatal("the first open recorded no marks")
+	}
+
+	e := restart(s.e)
+	if got := s.openCalls()[1].marks; !slices.Equal(got, first) {
+		t.Errorf("the second Open got marks %v, want the recorded %v", got, first)
+	}
+
+	s.mu.Lock()
+	second := s.j
+	s.mu.Unlock()
+	commit(e, "b", 3)
+	want := second.RecordedMarks()
+	if len(want) == 0 || slices.Equal(want, first) {
+		t.Fatalf("the second open recorded %v, want marks other than the first's %v", want, first)
+	}
+
+	_ = restart(e)
+	if got := s.openCalls()[2].marks; !slices.Equal(got, want) {
+		t.Errorf("the third Open got marks %v, want the %v the second open recorded", got, want)
 	}
 }
 

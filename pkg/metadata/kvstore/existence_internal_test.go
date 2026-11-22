@@ -633,3 +633,52 @@ func TestAWritesOverLeavesAnOverwriteRecord(t *testing.T) {
 		t.Errorf("overwrite records %+v, want %+v", got, want)
 	}
 }
+
+// RFC 16 §3: Lifecycle.SyncMarks reads what the group commit recorded, each
+// mark under its stream, and raises the open generation in the same
+// transaction, so the marks write of the open it replaced is refused and the
+// new open's commits; a stored mark that does not decode reads as absent and
+// fails nothing.
+func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testing.T) {
+	f := newContentFix(t, nil)
+	ctx := context.Background()
+	j := [16]byte{4}
+	a := entity.SyncMark{Stream: 1, Segment: 3, Through: 100, Offset: 90, Sequence: 7}
+	b := entity.SyncMark{Stream: 4, Segment: 8, Through: 60, Offset: 50, Sequence: 2}
+	if _, err := f.s.Existence().Commit(ctx, nil, &MarksWrite{Journal: j, Marks: []entity.SyncMark{a, b}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.kv.Update(ctx, func(tx kv.Txn) error { return tx.Set(syncMarkKey(j, 6), []byte{1}) }); err != nil {
+		t.Fatal(err)
+	}
+
+	marks, gen, err := f.s.Lifecycle().SyncMarks(ctx, j)
+	if err != nil {
+		t.Fatalf("SyncMarks: %v", err)
+	}
+	if got, want := byStream(marks...), byStream(a, b); !maps.Equal(got, want) {
+		t.Errorf("SyncMarks read %v, want %v, the undecodable stream 6 left out", got, want)
+	}
+	if gen != 1 {
+		t.Errorf("SyncMarks raised the open generation to %d, want 1 from none", gen)
+	}
+
+	c := entity.SyncMark{Stream: 1, Segment: 3, Through: 200, Offset: 190, Sequence: 9}
+	if _, err := f.s.Existence().Commit(ctx, nil, &MarksWrite{Journal: j, Gen: 0, Marks: []entity.SyncMark{c}}); !errors.Is(err, ErrOpenGenMoved) {
+		t.Errorf("a marks write of the replaced open: %v, want ErrOpenGenMoved", err)
+	}
+	if _, err := f.s.Existence().Commit(ctx, nil, &MarksWrite{Journal: j, Gen: gen, Marks: []entity.SyncMark{c}}); err != nil {
+		t.Fatalf("a marks write of the new open: %v", err)
+	}
+
+	marks, gen, err = f.s.Lifecycle().SyncMarks(ctx, j)
+	if err != nil {
+		t.Fatalf("SyncMarks again: %v", err)
+	}
+	if got, want := byStream(marks...), byStream(c, b); !maps.Equal(got, want) {
+		t.Errorf("the second SyncMarks read %v, want %v", got, want)
+	}
+	if gen != 2 {
+		t.Errorf("the second SyncMarks raised the open generation to %d, want 2", gen)
+	}
+}

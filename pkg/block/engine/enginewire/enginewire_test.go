@@ -19,6 +19,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
@@ -42,14 +43,14 @@ func TestCompose(t *testing.T) {
 	w := composed(t)
 	fs, table, d, dir := w.fs, w.table, w.deps, w.deps.Devices[0]
 
-	j, err := d.Open(ctx, dir, journal.Version{}, w.id)
+	j, err := d.Open(ctx, dir, journal.Version{}, w.id, nil)
 	if err != nil {
 		t.Fatalf("Open of the journal under its own identity: got %v, want it opened", err)
 	}
 	if err := j.Close(); err != nil {
 		t.Fatalf("close the journal: %v", err)
 	}
-	if j, err := d.Open(ctx, dir, journal.Version{}, journal.JournalID{9}); err == nil {
+	if j, err := d.Open(ctx, dir, journal.Version{}, journal.JournalID{9}, nil); err == nil {
 		_ = j.Close()
 		t.Errorf("Open under another identity: got the journal, want a refusal")
 	}
@@ -327,7 +328,7 @@ func TestComposeAdaptsTheTracerToTheJournal(t *testing.T) {
 	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr)).Tracer("dittofs")
 
 	w := composedWith(t, tracer)
-	j, err := w.deps.Open(t.Context(), w.dir, journal.Version{}, w.id)
+	j, err := w.deps.Open(t.Context(), w.dir, journal.Version{}, w.id, nil)
 	if err != nil {
 		t.Fatalf("Open of the journal under its own identity: got %v, want it opened", err)
 	}
@@ -386,5 +387,148 @@ func TestComposeAdaptsTheTracerToTheJournal(t *testing.T) {
 	}
 	if ident == "" {
 		t.Fatalf("no journal span carried the journal attribute (spans seen: %v)", counts)
+	}
+}
+
+// RFC 8 §2.5 step 1, RFC 28 §3.3: the composed Open hands the journal the
+// sync marks it is given. Over a real directory with the power loss
+// simulated beneath the journal, a record is written and synced, the power
+// lost, and the record's bytes flipped on disk. Opened with the mark its
+// sync returned, the journal knows the record was acknowledged and does not
+// cut it as a torn tail: it refuses the open, as it does for every lost
+// synced tail until its reconcile can recover what the record held. Opened
+// with no marks, the same directory opens with the record cut and no loss
+// reported, which is the open the engine made before it passed the marks.
+func TestComposeOpensTheJournalWithItsMarks(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		marks bool
+	}{
+		{"with the sync's marks", true},
+		{"with no marks", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := t.Context()
+			dir := t.TempDir()
+			seam, err := kit.NewSeam(dir)
+			if err != nil {
+				t.Fatalf("seam: %v", err)
+			}
+			clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+			opts := []journal.Option{journaltest.SuitableMount(), journal.WithStorage(seam.FS()), journal.WithClock(clock)}
+			id, err := journal.Init(ctx, dir, journal.InstallationID{1}, opts...)
+			if err != nil {
+				t.Fatalf("journal init: %v", err)
+			}
+
+			j, err := journal.Open(ctx, dir, journal.Version{}, id, nil, opts...)
+			if err != nil {
+				t.Fatalf("Open before the crash: %v", err)
+			}
+			if err := j.SetVersionLimit(journal.Version{Counter: 1 << 20}); err != nil {
+				t.Fatalf("SetVersionLimit: %v", err)
+			}
+			h, err := j.Share(journal.ShareTag(1), 0, journal.Version{})
+			if err != nil {
+				t.Fatalf("Share: %v", err)
+			}
+			file := journal.NewFileID([16]byte{'l'})
+			p := []byte(strings.Repeat("lost", 1024))
+			if err := journaltest.RetrySpare(func() error {
+				_, err := h.WriteAt(ctx, file, 0, p, 0)
+				return err
+			}); err != nil {
+				t.Fatalf("WriteAt: %v", err)
+			}
+			synced, err := h.Sync(ctx, file)
+			if err != nil || len(synced) == 0 {
+				t.Fatalf("Sync returned marks %v, %v; want the record's mark", synced, err)
+			}
+			if err := seam.Crash(); err != nil {
+				t.Fatalf("crash: %v", err)
+			}
+			_ = h.Close()
+			_ = j.Close()
+			flipRecord(t, seam, p)
+
+			var marks []entity.SyncMark
+			if c.marks {
+				for _, m := range synced {
+					marks = append(marks, entity.SyncMark(m))
+				}
+			}
+			// The crash closed every file the seam served, so the journal
+			// the wiring opens takes the seam's storage as it is now.
+			fs := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
+				db, err := badgerkv.Open(badgerkv.Options{})
+				if err != nil {
+					tb.Fatal(err)
+				}
+				tb.Cleanup(func() { _ = db.Close() })
+				return db
+			})
+			_, d, err := enginewire.Compose(enginewire.Params{
+				Node: node, Devices: []string{dir}, Store: fs.Store, Clock: clock,
+				Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+				Journal: []journal.Option{journaltest.SuitableMount(), journal.WithStorage(seam.FS())},
+			})
+			if err != nil {
+				t.Fatalf("Compose: %v", err)
+			}
+
+			ej, err := d.Open(ctx, dir, journal.Version{}, id, marks)
+			if c.marks {
+				if !errors.Is(err, journal.ErrOpenRefused) {
+					if err == nil {
+						_ = ej.Close()
+					}
+					t.Fatalf("Open with the sync's mark = %v, want ErrOpenRefused for the acknowledged record lost", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Open with no marks = %v, want the record cut as a torn tail", err)
+			}
+			defer func() { _ = ej.Close() }()
+			if losses := ej.Stats().Losses; len(losses) != 0 {
+				t.Errorf("Open with no marks reported losses %+v, want none", losses)
+			}
+		})
+	}
+}
+
+// flipRecord flips the first byte of p in every journal file whose durable
+// image holds it, and makes the flip durable.
+func flipRecord(t *testing.T, seam *kit.Seam, p []byte) {
+	t.Helper()
+	names, err := seam.List()
+	if err != nil {
+		t.Fatalf("list the journal's files: %v", err)
+	}
+	flipped := false
+	for _, name := range names {
+		image, err := seam.Durable(name)
+		if err != nil {
+			continue
+		}
+		at := strings.Index(string(image), string(p))
+		if at < 0 {
+			continue
+		}
+		f, err := seam.Open(name)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+		if _, err := f.WriteAt([]byte{^image[at]}, int64(at)); err != nil {
+			t.Fatalf("flip a byte of %s: %v", name, err)
+		}
+		if err := f.Sync(); err != nil {
+			t.Fatalf("sync %s: %v", name, err)
+		}
+		_ = f.Close()
+		flipped = true
+	}
+	if !flipped {
+		t.Fatal("no journal file holds the record")
 	}
 }

@@ -253,7 +253,7 @@ func TestARetryFollowsTheIntervalOfItsCause(t *testing.T) {
 			var calls atomic.Int32
 
 			s := newStarter(t, withStartDeps(func(d *engine.Deps) {
-				d.Open = func(context.Context, string, journal.Version, journal.JournalID) (engine.Journal, error) {
+				d.Open = func(context.Context, string, journal.Version, journal.JournalID, []entity.SyncMark) (engine.Journal, error) {
 					calls.Add(1)
 
 					return nil, tc.refusal()
