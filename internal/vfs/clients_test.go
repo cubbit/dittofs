@@ -12,6 +12,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -52,13 +53,43 @@ func none(t *testing.T, who string, cb *vfstest.Callbacks) {
 	}
 }
 
-// fastRetry makes grantRetry a millisecond until the test's cleanups, those
-// registered after it included, have run: a filesystem's Stop then waits for
-// every delivery reading it.
-func fastRetry(t *testing.T) {
-	d := grantRetry
-	t.Cleanup(func() { grantRetry = d })
-	grantRetry = time.Millisecond
+// grantOnce sends s's grant to id's client, which it fails to answer, and
+// answers a channel closed once s's deliveries have all returned. It fails
+// the test unless the grant then waits a grantRetry on clock to be sent again.
+func grantOnce(t *testing.T, s *shares, clock *sim.TestClock, id vfs.ClientID) <-chan struct{} {
+	t.Helper()
+	armed := clock.Armed(grantRetry)
+	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
+	done := make(chan struct{})
+	go func() { s.sending.Wait(); close(done) }()
+	if !sentAgain(t, clock, armed, done) {
+		t.Fatal("an unanswered grant was not sent again")
+	}
+	return done
+}
+
+// resent advances clock one grantRetry and answers whether the grant whose
+// deliveries end at done is then sent again and waits once more: false once
+// they have returned.
+func resent(t *testing.T, clock *sim.TestClock, done <-chan struct{}) bool {
+	t.Helper()
+	armed := clock.Armed(grantRetry)
+	clock.Advance(grantRetry)
+	return sentAgain(t, clock, armed, done)
+}
+
+// sentAgain answers true once armed closes, false once done does.
+func sentAgain(t *testing.T, clock *sim.TestClock, armed, done <-chan struct{}) bool {
+	t.Helper()
+	select {
+	case <-armed:
+		return true
+	case <-done:
+		return false
+	case <-time.After(10 * time.Second):
+		t.Fatalf("at %v the grant neither waited to be sent again nor returned", clock.Elapsed())
+		return false
+	}
 }
 
 // signedIn is a call from SMB session id, signed in as p.
@@ -408,8 +439,8 @@ func TestABreakSkipsASessionReauthenticatedAsGuest(t *testing.T) {
 // session ended meanwhile, is sent again once the open is disconnected, on
 // the session the adapter then picks, through the same Callbacks.
 func TestAFailedBreakGoesToTheNextSession(t *testing.T) {
-	fastRetry(t)
 	s := newShares(t, nil, nil)
+	s.retry = time.Millisecond
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	path, pc := failing(func(_ context.Context, c vfstest.Callback) error {
@@ -524,18 +555,25 @@ func delegate(t *testing.T, s *shares, cl vfs.ClientID) openstate.CachingGrant {
 // A recall whose send fails is sent again through the path the client
 // registers next, and each failure is counted.
 func TestAFailedRecallGoesThroughTheClientsNextPath(t *testing.T) {
-	fastRetry(t)
-	s := newShares(t, nil, nil)
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	s := startShares(t, newFixtureOf(t, Deps{Clock: clock}), nil)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	path, lost := failing(func(context.Context, vfstest.Callback) error { return errors.New("connection reset") })
 	id := laptop(t, s, path)
 	g := delegate(t, s, id)
+	armed := clock.Armed(grantRetry)
 	s.RecallGrant(g)
+	select {
+	case <-armed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a recall whose send failed did not wait a grantRetry on the filesystem's clock")
+	}
 	calls(t, lost, 1)
 	fresh := &vfstest.Callbacks{}
 	if again := laptop(t, s, fresh); again != id {
 		t.Fatalf("the reconnect answered client %v, want %v", again, id)
 	}
+	clock.Advance(grantRetry)
 	calls(t, fresh, 1)
 	if got := breaks(fresh); len(got) != 1 || got[0] != g.ID {
 		t.Errorf("the client's new path saw %v, want the recall", fresh.Delivered())
@@ -560,8 +598,8 @@ func (n nowhere) RecallGrant(ctx context.Context, s vfs.SessionRef, openers []vf
 // A recall sent nowhere at first is counted once, however often it is
 // asked again.
 func TestARecallSentNowhereAtFirstIsCountedOnce(t *testing.T) {
-	fastRetry(t)
 	s := newShares(t, nil, nil)
+	s.retry = time.Millisecond
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	cb := &vfstest.Callbacks{}
 	id := laptop(t, s, nowhere{cb})
@@ -582,8 +620,8 @@ type valueCallbacks struct {
 // A failed recall finds the client's next path by its registration, so
 // Callbacks that are not comparable are resent through as any others.
 func TestAFailedRecallFindsTheNextPathOfNonComparableCallbacks(t *testing.T) {
-	fastRetry(t)
 	s := newShares(t, nil, nil)
+	s.retry = time.Millisecond
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	path, lost := failing(func(context.Context, vfstest.Callback) error { return errors.New("connection reset") })
 	id := laptop(t, s, valueCallbacks{Callbacks: path})
@@ -863,8 +901,8 @@ func TestNoPathWithoutAnAdmittedConnect(t *testing.T) {
 // A lock grant the client gives no answer to is sent again; one it answers
 // is not, and a wait that ended ungranted is sent once whatever the answer.
 func TestALockGrantUnansweredIsSentAgain(t *testing.T) {
-	fastRetry(t)
 	s := newShares(t, nil, nil)
+	s.retry = time.Millisecond
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	var silent atomic.Int32
 	silent.Store(2)
@@ -1177,8 +1215,8 @@ func TestARefusedLockGrantReleasesTheLock(t *testing.T) {
 // A lock grant goes on being sent only while the client has Callbacks: once
 // the client ends, the grant is sent no more.
 func TestALockGrantStopsAtThePathsEnd(t *testing.T) {
-	fastRetry(t)
 	s := newShares(t, nil, nil)
+	s.retry = time.Millisecond
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	path, cb := failing(func(context.Context, vfstest.Callback) error { return context.DeadlineExceeded })
 	id, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), path)
@@ -1200,8 +1238,8 @@ func TestALockGrantStopsAtThePathsEnd(t *testing.T) {
 // session ends, her lease's open kept as durable, and a break raised then is
 // sent on the session she signs in on again within its deadline.
 func TestABreakWithNoSessionGoesToTheNextOneSignedIn(t *testing.T) {
-	fastRetry(t)
 	s := newShares(t, nil, nil)
+	s.retry = time.Millisecond
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	pc := &vfstest.Callbacks{}
@@ -1225,8 +1263,8 @@ func TestABreakWithNoSessionGoesToTheNextOneSignedIn(t *testing.T) {
 // A break whose send failed is sent again through Callbacks of a type that
 // cannot be compared: its routes are told apart without comparing them.
 func TestAFailedBreakThroughIncomparableCallbacksIsSentAgain(t *testing.T) {
-	fastRetry(t)
 	s := newShares(t, nil, nil)
+	s.retry = time.Millisecond
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	path, rec := failing(func(_ context.Context, c vfstest.Callback) error {
@@ -1275,72 +1313,70 @@ func TestAnSMBConnectListsThisNode(t *testing.T) {
 }
 
 // A lock grant the client never answers stops being sent once
-// grantResendFor has passed, and at once when the client's record is
-// released.
+// grantResendFor has passed, and at its next retry once the client's record
+// is released.
 func TestALockGrantStopsBeingSentAtItsDeadlineOrRelease(t *testing.T) {
-	fastRetry(t)
-	d := grantResendFor
-	t.Cleanup(func() { grantResendFor = d })
-	s := newShares(t, nil, nil)
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	s := startShares(t, newFixtureOf(t, Deps{Clock: clock}), nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite).Principal
 	silent := func(context.Context, vfstest.Callback) error { return context.DeadlineExceeded }
-	stops := func(name string, cb *vfstest.Callbacks, end func()) {
-		t.Helper()
-		calls(t, cb, 3)
-		end()
-		time.Sleep(20 * time.Millisecond)
-		n := len(cb.Delivered())
-		time.Sleep(50 * time.Millisecond)
-		if m := len(cb.Delivered()); m != n {
-			t.Errorf("%s: the grant was sent %d times more", name, m-n)
-		}
-	}
 
-	grantResendFor = 20 * time.Millisecond
 	path, cb := failing(silent)
 	id, _, err := s.Connect(t.Context(), signedIn(alice, 1), smb("alice-pc", 1), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
-	stops("past its deadline", cb, func() { time.Sleep(grantResendFor) })
+	done := grantOnce(t, s, clock, id)
+	for clock.Elapsed()+grantRetry <= grantResendFor {
+		if !resent(t, clock, done) {
+			t.Fatalf("at %v, within grantResendFor %v, the grant stopped being sent", clock.Elapsed(), grantResendFor)
+		}
+	}
+	if resent(t, clock, done) {
+		t.Fatalf("at %v, past grantResendFor %v, the grant is still sent", clock.Elapsed(), grantResendFor)
+	}
+	if got, want := len(cb.Delivered()), int(grantResendFor/grantRetry)+1; got != want {
+		t.Errorf("past its deadline the grant was sent %d times, want %d", got, want)
+	}
 
-	grantResendFor = time.Hour
 	path, cb = failing(silent)
 	id, gen, err := s.Connect(t.Context(), signedIn(alice, 2), smb("bob-pc", 1), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
-	stops("released", cb, func() {
-		if _, err := s.Disconnect(t.Context(), signedIn(alice, 2), id, vfs.SessionRef{ID: 2}, vfs.SessionEnd{Last: true, Gen: gen}); err != nil {
-			t.Fatal(err)
-		}
-	})
+	done = grantOnce(t, s, clock, id)
+	if !resent(t, clock, done) {
+		t.Fatal("an unanswered grant was not sent a second time")
+	}
+	if _, err := s.Disconnect(t.Context(), signedIn(alice, 2), id, vfs.SessionRef{ID: 2}, vfs.SessionEnd{Last: true, Gen: gen}); err != nil {
+		t.Fatal(err)
+	}
+	if resent(t, clock, done) {
+		t.Fatal("once the client's record was released the grant is still sent")
+	}
+	if got := len(cb.Delivered()); got != 2 {
+		t.Errorf("the released client's grant was sent %d times, want 2", got)
+	}
 }
 
 // An NLM host's grant is never given up for a silence: it is still sent
 // again past grantResendFor.
 func TestAnNLMLockGrantIsResentPastTheBound(t *testing.T) {
-	fastRetry(t)
-	d := grantResendFor
-	t.Cleanup(func() { grantResendFor = d })
-	grantResendFor = 20 * time.Millisecond
-	s := newShares(t, nil, nil)
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	s := startShares(t, newFixtureOf(t, Deps{Clock: clock}), nil)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
-	path, cb := failing(func(context.Context, vfstest.Callback) error { return context.DeadlineExceeded })
+	path, _ := failing(func(context.Context, vfstest.Callback) error { return context.DeadlineExceeded })
 	id, _, err := s.Connect(t.Context(), s.as(t, 1000, inLab), nlmHost("build01", 1), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.LockWaitOver(openstate.LockWaiter{File: entity.NewFileID(), Owner: openstate.LockOwner{Client: id}, Wait: openstate.WaitCallback}, true)
-	time.Sleep(grantResendFor + 20*time.Millisecond)
-	n := len(cb.Delivered())
-	time.Sleep(50 * time.Millisecond)
-	if m := len(cb.Delivered()); m == n {
-		t.Error("an NLM host's grant stopped being sent past grantResendFor")
+	t.Cleanup(func() { s.ClientEnded(id, nil, openstate.RevokedLeaseExpired) })
+	done := grantOnce(t, s, clock, id)
+	for clock.Elapsed() <= grantResendFor+grantRetry {
+		if !resent(t, clock, done) {
+			t.Fatalf("at %v, past grantResendFor %v, an NLM host's grant stopped being sent", clock.Elapsed(), grantResendFor)
+		}
 	}
-	s.ClientEnded(id, nil, openstate.RevokedLeaseExpired)
 }
 
 // A repeat of a last Disconnect that open state already released answers
