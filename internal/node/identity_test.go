@@ -3,11 +3,14 @@ package node_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/identity"
@@ -15,6 +18,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
 	vfs "github.com/cubbit/dittofs/pkg/vfs"
@@ -165,3 +169,89 @@ func TestAWalkTheSettingsMovedUnderIsReadAgain(t *testing.T) {
 
 // settingsScan is the settings walk's scan, as a FaultKV rule names it.
 var settingsScan = keys.Describe([]byte{keys.KindCFG})
+
+// A disable written through the API reaches identity on the node that wrote
+// it before the write answers, the clock never moved: bob, signed in by NTLM,
+// is served a call; with reconcile held after it read the counters the
+// disable's write does not answer; released, it answers with identity
+// applied the principals generation it raised, and bob's next call through
+// the filesystem is refused.
+func TestADisableAppliesAtOnceOnTheWritingNode(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(admin)))
+	var holding atomic.Bool
+	held, release := make(chan struct{}, 1), make(chan struct{})
+	h.Node().OnReconcileRead(func(kvstore.Counters) {
+		if !holding.Load() {
+			return
+		}
+		select {
+		case held <- struct{}{}:
+		default:
+		}
+		<-release
+	})
+	awaited := make(chan struct{}, 4)
+	h.Node().OnAwaited(func() { awaited <- struct{}{} })
+	bob := ntlmUser(t, h, sealer(t, h), "bob", "bob's password")
+	sh := addShare(t, h)
+	if _, err := h.Store().ControlPlane().SetGrant(t.Context(), entity.ShareGrant{Share: sh.ID, Principal: bob.Principal, Access: entity.AccessRead}, 0); err != nil {
+		t.Fatalf("grant bob the share: %v", err)
+	}
+	started(t, h)
+	// Registered after started's, so it runs first: Stop finds no pass held.
+	released := false
+	t.Cleanup(func() {
+		holding.Store(false)
+		if !released {
+			close(release)
+		}
+	})
+
+	res, err := signInNTLM(t, h, "bob", "bob's password")
+	if err != nil || res.Identity.Evidence.Principal != bob.Principal {
+		t.Fatalf("bob's NTLM sign-in: bound %v, %v; want %v, nil", res.Identity.Evidence.Principal, err, bob.Principal)
+	}
+	call := vfs.Call{Identity: res.Identity}
+	root := entity.NewHandle(sh.ID, sh.Root)
+	if _, err := h.Node().Service().StatFS(t.Context(), call, root); err != nil {
+		t.Fatalf("bob's call before the disable: %v", err)
+	}
+
+	cur, _, err := h.Store().ControlPlane().User(t.Context(), bob.Principal)
+	if err != nil {
+		t.Fatalf("read bob: %v", err)
+	}
+	addr, _ := h.Node().Addrs()
+	holding.Store(true)
+	ch := send(t.Context(), addr, http.MethodPatch, "/api/v1/users/"+uuid.UUID(bob.Principal.ID).String(), `{"spec":{"disabled":true}}`,
+		"If-Match", `"`+strconv.FormatUint(cur.Generation, 10)+`"`)
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no reconcile pass read the counters within 10 s of the disable")
+	}
+	select {
+	case <-awaited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the disable's wait for the node never started within 10 s")
+	}
+	// No event marks an answer that is never sent, so a bounded wait is the
+	// assertion here.
+	select {
+	case r := <-ch:
+		t.Fatalf("PATCH bob disabled answered %d %s with reconcile held, want no answer until it applies", r.status, r.body)
+	case <-time.After(500 * time.Millisecond):
+	}
+	holding.Store(false)
+	released = true
+	close(release)
+	if r := answeredIn(t, "PATCH bob disabled once reconcile is released", ch); r.status != http.StatusOK {
+		t.Fatalf("PATCH bob disabled: answered %d %s, want 200", r.status, r.body)
+	}
+	if got, want := h.Node().AppliedIdentity().Generation, counters(t, h).Principals; got < want {
+		t.Errorf("identity's principals generation when the disable answered: got %d, want at least %d, the one it raised", got, want)
+	}
+	if _, err := h.Node().Service().StatFS(t.Context(), call, root); !errors.Is(err, vfserr.ErrAccess) {
+		t.Errorf("bob's call once his disable answered, the clock never moved: got %v, want ErrAccess", err)
+	}
+}

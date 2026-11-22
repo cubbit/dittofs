@@ -303,6 +303,31 @@ func TestTokenRotation(t *testing.T) {
 	}
 }
 
+// A version read before a write gives way, once the write has committed, to a
+// newer one a switch made meanwhile; a version as new as the newest held stays.
+func TestSignerFollowsASwitch(t *testing.T) {
+	f := newKeyFix(t)
+	tk := f.tokens()
+	before, err := tk.current(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.seal()
+	if err := tk.refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := tk.signer(before).Version; got != 2 {
+		t.Errorf("signer of version 1 read before a switch to 2: version %d, want 2", got)
+	}
+	now, err := tk.current(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tk.signer(now).Version; got != 2 {
+		t.Errorf("signer of the newest version 2: version %d, want 2", got)
+	}
+}
+
 // A verifier that has not seen a rotation made elsewhere reloads on the new
 // kid, but at most once a second.
 func TestTokenUnknownKidReloads(t *testing.T) {

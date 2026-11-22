@@ -70,6 +70,21 @@ func storeNow(t *testing.T, h *nodetest.Harness) time.Time {
 	return a.Time
 }
 
+// storeReached waits until the store's time has reached at, as it does once
+// its ceiling is raised past it, about once a second of real time.
+func storeReached(t *testing.T, h *nodetest.Harness, at time.Time) {
+	t.Helper()
+	// Polling the store's time is the wait: its ceiling is raised on real
+	// time, which no clock the test holds moves.
+	deadline := time.Now().Add(10 * time.Second)
+	for storeNow(t, h).Before(at) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the store's time did not reach %v within 10 s", at)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // sweptAt returns the first sweep turn that reads a store time past at, and
 // so deletes what is due at at. The turns before it read a store time before
 // at, and delete nothing due there.
@@ -93,15 +108,7 @@ func sweptAt(t *testing.T, h *nodetest.Harness, ch <-chan []kvstore.Swept, at ti
 	}
 	h.Clock().Advance(d)
 	awaitSweep(t, ch)
-	// Polling the store's time is the wait: its ceiling is raised on real
-	// time, which no clock the test holds moves.
-	deadline := time.Now().Add(10 * time.Second)
-	for storeNow(t, h).Before(before) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the store's time did not reach %v within 10 s", before)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	storeReached(t, h, before)
 	h.Clock().Advance(sweepInterval)
 	return awaitSweep(t, ch)
 }

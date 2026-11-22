@@ -30,17 +30,18 @@ func operationSteps(nodes kvstore.Nodes) map[string]stepRow {
 //
 // decision: a principal that is not marked, a target that names no
 // principal of kind, and a user whose record names a secret sealed for
-// another holder or as another kind, fail the operation rather than retry
-// it: only the mark marks, the running operation holds its target, refusing
-// the deletion that could mark it, and a secret keeps the kind and owner of
-// its current version, so none changes on a retry. A user naming a secret
-// sealed after its mark stays marked, as kvstore's ownSecrets decision says.
-// Every other error, kv.ErrTooLarge
-// included, is retried on the runner's backoff, since a failed deletion is
-// never resumed and would leave the principal marked and half-deleted; and a
-// batch's size can change between turns, as its quota drop reads every
-// share. Fail a batch too large for one transaction only if a batch is ever
-// bounded by its key budget alone.
+// another holder or as another kind, or one whose current version does not
+// decode (kvstore.ErrSecretUndecodable), fail the operation rather than
+// retry it: only the mark marks, the running operation holds its target,
+// refusing the deletion that could mark it, a secret keeps the kind and
+// owner of its current version, and nothing but a direct edit of the store
+// repairs a version that does not decode, so none changes on a retry. The
+// user stays marked, as kvstore's ownSecrets decision says. Every other
+// error, kv.ErrTooLarge included, is retried on the runner's backoff, since
+// a failed deletion is never resumed and would leave the principal marked
+// and half-deleted; and a batch's size can change between turns, as its
+// quota drop reads every share. Fail a batch too large for one transaction
+// only if a batch is ever bounded by its key budget alone.
 func principalDeletion(nodes kvstore.Nodes, kind entity.PrincipalKind) step.Step {
 	target := entity.ResourceUser
 	if kind == entity.PrincipalGroup {
@@ -104,9 +105,10 @@ func (n *Node) shareDeletion(ctx context.Context, op entity.Operation) (step.Ste
 // forgotten, rather than attach it again.
 var errForgetMissing = errors.New("step 4 of a share's removal waits for the journal to forget a share's tag")
 
-// failInvalid has an invalid argument from the store fail the operation.
+// failInvalid has an invalid argument from the store, or a secret version
+// that does not decode, fail the operation.
 func failInvalid(err error) error {
-	if se, ok := errors.AsType[*merrs.StoreError](err); ok && se.Code == merrs.ErrInvalidArgument {
+	if se, ok := errors.AsType[*merrs.StoreError](err); (ok && se.Code == merrs.ErrInvalidArgument) || errors.Is(err, kvstore.ErrSecretUndecodable) {
 		return fmt.Errorf("%w: %w", step.ErrStepFailed, err)
 	}
 	return err

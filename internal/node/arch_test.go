@@ -941,11 +941,12 @@ func TestAPIWritesOnlyThroughWrite(t *testing.T) {
 // refusal's audit.
 var writeAdapters = []string{"write", "(*Server).refuse"}
 
-// signInCount is auth's sign-in count, the one function of auth's whose
-// Write sets no audit record: the attempt is audited when it settles, in the
-// settle's own Write, and an attempt that never settles was never checked,
-// so it is counted and not recorded.
-const signInCount = "reserve"
+// signInCounts are auth's sign-in count and the takeback of an attempt the
+// store could not check, the functions of auth's whose Write sets no audit
+// record: the attempt is audited when it settles, in the settle's own Write,
+// and an attempt that never settles, or whose password the store could not
+// check, checked none, so it is counted and not recorded.
+var signInCounts = []string{"reserve", "unreserve"}
 
 // writeCalls type-checks the package in dir, as import path path, and
 // returns each way it breaks the write rule: a use of the store's Write
@@ -953,7 +954,7 @@ const signInCount = "reserve"
 // anywhere; a call of it from a function writeAdapters does not name, unless
 // the package is auth, whose every function may call it; and a call whose
 // WriteMeta is not a literal setting Audit to &x or to a call's result, but
-// auth's signInCount. A
+// auth's signInCounts. A
 // Write is any method so named whose second parameter is entity.WriteMeta.
 func writeCalls(dir, path string) ([]string, error) {
 	_, files, info, err := typeCheck(dir, path)
@@ -1005,7 +1006,7 @@ func writeCalls(dir, path string) ([]string, error) {
 		case !isAuth && !slices.Contains(writeAdapters, name):
 			bad = append(bad, name+" calls Write outside the write adapter")
 		}
-		if exempt := isAuth && name == signInCount; !exempt && (len(c.Args) < 2 || !setsAudit(c.Args[1])) {
+		if exempt := isAuth && slices.Contains(signInCounts, name); !exempt && (len(c.Args) < 2 || !setsAudit(c.Args[1])) {
 			bad = append(bad, name+" calls Write with no audit record")
 		}
 	}
@@ -1384,7 +1385,12 @@ func apiExports(dir, path string) ([]string, error) {
 // the ResetAccount the break-glass reset calls, the SealSigningKey the
 // initialisation step seals the first signing key with, and the access
 // tokens and the signing key's rotation the node builds: Tokens, NewTokens,
-// Issue, Verify, Close and their Claims, the KeyVersion the node opens the key's
+// Issue, Verify, Close, the SigningKey the API keys its idempotency digests
+// with and their Claims, the sign-in service the node builds, Service,
+// NewService and its Deps, SignIn, Refresh, Authenticate and Refused, the
+// Audited they answer, the credential a caller presented and the Session it
+// names, ErrThrottled, which the problem table answers,
+// the KeyVersion the node opens the key's
 // versions as, RotationStep and RotationProgress, and the interfaces their
 // parameters take, Clock, KeyVersions, Sealer and Writer; and nothing else;
 // a planted extra method is caught.
@@ -1396,11 +1402,14 @@ func TestAPIExports(t *testing.T) {
 	}{
 		{"api", "internal/node/api", want},
 		{"api/auth", "internal/node/api/auth", []string{
-			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Claims", "Clock", "Clock.Now", "Drain", "Installation",
+			"Accounts", "Allowed", "Audit", "Audited", "AuditedApplied", "AuditedNothing", "AuditedRefused", "Caller", "Caller.Session",
+			"CallerFrom", "Claims", "Clock", "Clock.Now", "CredentialKind", "CredentialNone", "CredentialSession", "Deps", "Drain",
+			"ErrThrottled", "Installation",
 			"KeyVersion", "KeyVersion.Format", "KeyVersion.LogValue", "KeyVersion.MarshalJSON", "KeyVersion.MarshalYAML",
-			"KeyVersion.String", "KeyVersions", "KeyVersions.Versions", "Local", "NewTokens", "Principals", "Public",
+			"KeyVersion.String", "KeyVersions", "KeyVersions.Versions", "Local", "NewService", "NewTokens", "Principals", "Public",
 			"QuotaEvents", "ResetAccount", "Right", "RotationProgress", "RotationStep", "SealSigningKey", "Sealer",
-			"Sealer.Seal", "Self", "Shares", "Stores", "Tokens", "Tokens.Close", "Tokens.Format", "Tokens.Issue", "Tokens.LogValue",
+			"Sealer.Seal", "Self", "Service", "Service.Authenticate", "Service.Refresh", "Service.Refused", "Service.SignIn", "Shares", "Stores",
+			"Tokens", "Tokens.Close", "Tokens.Format", "Tokens.Issue", "Tokens.LogValue", "Tokens.SigningKey",
 			"Tokens.String", "Tokens.Verify", "View", "With", "WithLocal", "Writer", "Writer.Write",
 		}},
 		{"testdata/arch/api-exports", "internal/node/api", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},

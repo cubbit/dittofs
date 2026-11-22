@@ -13,11 +13,30 @@ import (
 // it must change its password before anything else. Its audit records name
 // it by all of the first three.
 type Caller struct {
-	Principal  entity.Principal
-	Name       string
+	Principal entity.Principal
+	Name      string
+	// Kind and ID are the credential the caller presented, set by
+	// Authenticate; Credential is its ID as the audit records it.
+	Kind       CredentialKind
+	ID         [16]byte
 	Credential string
 	Role       entity.APIRole
 	MustChange bool
+}
+
+// CredentialKind is what a caller presented: no credential, or a session's
+// access token.
+type CredentialKind uint8
+
+const (
+	CredentialNone CredentialKind = iota
+	CredentialSession
+)
+
+// Session is the session c authenticated under, false for a caller that
+// presented none.
+func (c Caller) Session() ([16]byte, bool) {
+	return c.ID, c.Kind == CredentialSession
 }
 
 type callerKey struct{}
