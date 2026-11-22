@@ -476,8 +476,7 @@ type Open struct {
 	Token      uint64       // names it within its shard, every open has one; an NFS open's StateRef token (§2.11)
 	Seq        uint32       // its reference sequence (below)
 	Durability Durability   // none, durable, persistent (§8.1)
-	Session    SessionRef   // the session that opened or last reconnected it (§8.1); zero: none
-	Sessioned  bool         // the call that created it had a session (Caller.Sessioned): a call with none presenting it is refused (below)
+	Session    SessionRef   // the session that opened or last reconnected it (§8.1); zero: none. Set or zero, it marks whether the creating call had a session, a mark a reconnect never changes (below)
 	Grant      GrantID      // the grant covering it: one over its client's opens under one key, or over it alone (§2.4); zero: none
 	Delete     DeleteMark   // its close makes the file delete pending, the unlink run as Delete.By (§9.4)
 	Suspended  TimeMask     // Modify, Access: times I/O through it leaves alone (below); zero: none
@@ -598,10 +597,13 @@ SMB the client its session binds, and for NLM the host's client record.
 resolves to, or for an operation that names an open or lock owner, that owner's
 client, and only a client confirmed under NFSv4.0: a stateid of any other client,
 a delegation's among them, is `ErrNotYours`.** The service enforces that
-without knowing a minor version: an open, a lock state and a grant record
-whether the call that created them had a session (`Sessioned`, copied from
-`Caller.Sessioned`, which RFC 17 sets when `Call.Session` is), and a call with
-no session that presents a reference to state so marked is `ErrNotYours`,
+without knowing a minor version: an open's `Session`, set from the opening
+session or zero, marks whether the call that created it had one, and a
+reconnect, which changes the session, never changes the mark; a lock state and
+a grant take the mark of the open they were made under, and a lock state under
+no open has none. A call with no session (RFC 17 leaves `Caller.Sessioned`
+false when `Call.Session` is unset) that presents a reference to state so
+marked is `ErrNotYours`,
 whatever its principal, a delegation's among them; a call naming only a client
 ID presents none, and the NFS adapter refuses that one from the client record's
 minor version ([RFC 21 §5.2](rfc-21-nfs.md#5.2%20Stateids)); a `Peers` call, which carries no `Call`, is exempt. The primary checks the state it holds,
@@ -662,7 +664,6 @@ type LockState struct {
 	Owner     LockOwner
 	Open      uint64 // the Token of the open it was taken under
 	Seq       uint32 // its reference sequence (§2.2)
-	Sessioned bool   // the call that created it had a session, as Open.Sessioned (§2.2)
 }
 
 // LockOwner is who holds a lock.
@@ -741,7 +742,6 @@ type CachingGrant struct {
 	V2        bool      // a v2 lease: Epoch is counted and sent; fixed when the lease is created
 	Recall    *Recall   // a recall in flight; nil: none (§5.3)
 	Parent    LeaseKey  // a v2 lease's parent key, as its first request named it, written with a persistent open; never read here
-	Sessioned bool      // the call that created it had a session, as Open.Sessioned (§2.2)
 }
 
 type Recall struct {
@@ -3007,8 +3007,8 @@ func (t *Table) Checks() Checks
 principal it runs as, mapped before squashing (§2.1), and the protocol of the
 request; the primary refuses, with `ErrNotYours`, a call naming state its client
 does not hold, or through an open by a principal that is neither the opener nor,
-with `Protect`, the client's `Owner`, or state marked `Sessioned` when the call
-has no session (§2.2). `Protocol` is set on every call, NFSv3's
+with `Protect`, the client's `Owner`, or state created on a session when the
+call has none (§2.2). `Protocol` is set on every call, NFSv3's
 included, and is what a rule that differs by protocol reads: `CheckChange`
 applies §7's deny-delete refusal to an NFS caller and §9.5's open-children
 refusal to an SMB one. It is never looked up from the client record: NFSv3 has
@@ -3030,7 +3030,7 @@ type Caller struct {
 	Client    ClientID      // as the adapter proved it for the call (§2.2); for NLM the host's client record; zero for an NFSv3 call that names no lock
 	Principal Principal     // mapped, never squashed
 	Protocol  protocol.Kind // the request's protocol (§2.1), set on every call
-	Sessioned bool          // the call has a session (RFC 17's Call.Session set): copied onto the state it creates, and refused state so marked when false (§2.2)
+	Sessioned bool          // the call has a session (RFC 17's Call.Session set); false: refused state created on one (§2.2)
 }
 
 // FileKey names the file a call acts on.
