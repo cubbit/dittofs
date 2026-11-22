@@ -237,7 +237,7 @@ func TestAnAdapterListensOnlyFromTheAdaptersStep(t *testing.T) {
 	started(t, h)
 
 	want := []step{{"refuse", false}, {"listeners", false}, {"register", false}, {"apply", false}, {"engine", false},
-		{"filesystem", false}, {"runner", false}, {"first reconcile", false}, {"adapters", true}, {"reconcile", true}}
+		{"identity", false}, {"filesystem", false}, {"runner", false}, {"first reconcile", false}, {"adapters", true}, {"reconcile", true}}
 	mu.Lock()
 	got := slices.Clone(steps)
 	mu.Unlock()
@@ -468,7 +468,7 @@ func TestTheAdaptersDrainUntilTheDeadline(t *testing.T) {
 	if err := answered(t, stopped); err != nil {
 		t.Errorf("Stop with SMB draining until the deadline: got %v, want nil", err)
 	}
-	want := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners", "stop store"}
+	want := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners", "stop store"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, want) {
 		t.Errorf("parts stopped: got %v, want %v", got, want)
 	}

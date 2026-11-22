@@ -175,13 +175,14 @@ func TestStartAndStopInOrder(t *testing.T) {
 		"register":        {ready: starting, metrics: scraped, registered: true, address: api, incarnation: before},
 		"apply":           {ready: starting, metrics: scraped, registered: true, address: api, incarnation: before},
 		"engine":          {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 1},
+		"identity":        {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 1},
 		"filesystem":      {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 		"runner":          {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 		"first reconcile": {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 		"adapters":        {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 		"reconcile":       {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 	}
-	steps := []string{"refuse", "listeners", "register", "apply", "engine", "filesystem", "runner", "first reconcile", "adapters", "reconcile"}
+	steps := []string{"refuse", "listeners", "register", "apply", "engine", "identity", "filesystem", "runner", "first reconcile", "adapters", "reconcile"}
 	if got := s.reported(); !slices.Equal(got, steps) {
 		t.Fatalf("start steps: got %v, want %v", got, steps)
 	}
@@ -200,7 +201,7 @@ func TestStartAndStopInOrder(t *testing.T) {
 	if err := h.Node().Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners", "stop store"}
+	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners", "stop store"}
 	if got := s.reported()[len(steps):]; !slices.Equal(got, stops) {
 		t.Fatalf("stop steps: got %v, want %v", got, stops)
 	}
@@ -301,8 +302,8 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 		{step: "register", fault: func(k string) sim.Rule { return failOn(kvtest.OpSet, k, 1) }},
 		{step: "apply", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 1) }, registered: true},
 		{step: "engine", fault: func(k string) sim.Rule { return failOn(kvtest.OpSet, k, 2) }, registered: true},
-		{step: "filesystem", fault: func(string) sim.Rule { return failOn(kvtest.OpSet, "SH‖*", 2) }, registered: true, epoch: 1, undone: []string{"stop engine"}},
-		{step: "first reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 2) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop budgets", "stop engine"}},
+		{step: "filesystem", fault: func(string) sim.Rule { return failOn(kvtest.OpSet, "SH‖*", 2) }, registered: true, epoch: 1, undone: []string{"stop identity", "stop engine"}},
+		{step: "first reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 2) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine"}},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			var h *nodetest.Harness
@@ -424,7 +425,7 @@ func TestStopWithAnEndedContext(t *testing.T) {
 	if err := h.Node().Stop(ctx); err != nil {
 		t.Errorf("Stop with an ended context: got %v, want nil", err)
 	}
-	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners", "stop store"}
+	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners", "stop store"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with an ended context: got %v, want %v", got, stops)
 	}
@@ -784,7 +785,7 @@ func TestStopStepPastItsBound(t *testing.T) {
 	if stopErr == nil || !strings.Contains(stopErr.Error(), "stop runner: not stopped within") || !strings.Contains(stopErr.Error(), "stop store: left open") {
 		t.Errorf("Stop with the runner held: got %v, want the runner named past its bound and the store left open", stopErr)
 	}
-	stops := []string{"stop reconcile", "stop adapters", "stop filesystem", "stop budgets", "stop engine", "stop listeners"}
+	stops := []string{"stop reconcile", "stop adapters", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with the runner held: got %v, want %v", got, stops)
 	}
@@ -839,7 +840,7 @@ func TestStopStoreClosePastItsBound(t *testing.T) {
 	if stopErr == nil || !strings.Contains(stopErr.Error(), "stop store: not stopped within 30s") {
 		t.Errorf("Stop with the store's close held: got %v, want the store named past its bound", stopErr)
 	}
-	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop engine", "stop listeners"}
+	stops := []string{"stop reconcile", "stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine", "stop listeners"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with the store's close held: got %v, want %v", got, stops)
 	}
@@ -899,7 +900,7 @@ func TestStopLeavesTheEngineUnderAHeldFilesystem(t *testing.T) {
 	waitFor(t, s.waits, "filesystem")
 	h.Clock().Advance(30 * time.Second)
 	stopErr := answered(t, stopped)
-	for _, want := range []string{"stop filesystem: not stopped within", "stop budgets: left open", "stop engine: left open", "stop store: left open"} {
+	for _, want := range []string{"stop filesystem: not stopped within", "stop budgets: left open", "stop identity: left open", "stop engine: left open", "stop store: left open"} {
 		if stopErr == nil || !strings.Contains(stopErr.Error(), want) {
 			t.Errorf("Stop with the filesystem's call held: got %v, want it to say %q", stopErr, want)
 		}
@@ -919,7 +920,7 @@ func TestStopLeavesTheEngineUnderAHeldFilesystem(t *testing.T) {
 	if err := answered(t, stopped); err != nil {
 		t.Errorf("Stop once the filesystem's call answered: got %v, want nil", err)
 	}
-	if got, want := stopsIn(s.reported())[len(stops):], []string{"stop filesystem", "stop budgets", "stop engine", "stop store"}; !slices.Equal(got, want) {
+	if got, want := stopsIn(s.reported())[len(stops):], []string{"stop filesystem", "stop budgets", "stop identity", "stop engine", "stop store"}; !slices.Equal(got, want) {
 		t.Errorf("parts the second Stop stopped: got %v, want %v", got, want)
 	}
 }
