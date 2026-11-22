@@ -38,10 +38,6 @@ const (
 // node has acted on, and the wake a write on this node sends.
 type reconciler struct {
 	// table is the node's settings table, which the settings walk reads by.
-	//
-	// ponytail: nothing reads it yet; it is kept so node.New builds the
-	// table, which removing the field would leave with no caller. Drop the
-	// marker when reconcile's settings walk lands and reads it.
 	table settings.Table
 	// wake has one slot, so a wake sent while a pass runs is kept and runs
 	// one more pass after it.

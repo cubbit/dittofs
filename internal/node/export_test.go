@@ -16,6 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -23,6 +24,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/secrets"
+	pvfs "github.com/cubbit/dittofs/pkg/vfs"
 	"slices"
 	"sync"
 )
@@ -75,6 +77,12 @@ func (n *Node) StartFailed() []health.Condition { return n.startFailed() }
 
 // Filesystem is the filesystem the node built.
 func (n *Node) Filesystem() *vfs.Filesystem { return n.fs }
+
+// Service is the filesystem as the adapters will be handed it.
+func (n *Node) Service() pvfs.Service { return n.fs }
+
+// Accounts is identity as the management API will be handed it.
+func (n *Node) Accounts() identity.APISignIn { return n.identity }
 
 // Engine is the engine the node built.
 func (n *Node) Engine() *engine.Engine { return n.engine }

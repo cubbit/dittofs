@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/sidecar"
@@ -69,6 +70,7 @@ type Node struct {
 	meta     *kvstore.Store
 	open     *openstate.Table
 	engine   *engine.Engine
+	identity *identity.Server
 	fs       *vfs.Filesystem
 	runner   *runner
 	rec      reconciler
@@ -113,9 +115,10 @@ type Node struct {
 // holds no installation or one this binary does not read, and opens the
 // storage key keys.storage names, refusing a bootstrap that names none and
 // dialling a KMIP server when it names one there. It then builds open
-// state, the engine and the filesystem, each empty from its own Deps, the
-// budgets and their series, the secret provider and the access tokens over
-// the storage key, the operation runner with the steps of the kinds this
+// state and the engine, each empty from its own Deps, the budgets and their
+// series, the secret provider and the access tokens over the storage key,
+// the identity server over the store and the secret provider, the
+// filesystem over the engine and identity, the operation runner with the steps of the kinds this
 // node drives, the watchdog, the adapters' one Deps, the sidecar runner and
 // a slot per protocol, and the API over the store's control plane and node
 // view, the runner's progress, the health evaluator, the slots' connections
@@ -274,12 +277,16 @@ func build(cfg Config, in apiInputs) (_ *Node, err error) {
 	n.health = &health.Evaluator{}
 	n.health.Add(&engineConditions{snap: snap, subject: n.subject()})
 	n.health.Add(&nodeConditions{n})
-	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves}); err != nil {
-		return nil, fmt.Errorf("node: %w", err)
-	}
 	p, err := n.openSecrets(context.Background())
 	if err != nil {
 		return nil, err
+	}
+	if n.identity, err = n.newIdentity(p); err != nil {
+		return nil, err
+	}
+	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves,
+		Identity: n.identity, Auth: n.identity, Names: n.identity}); err != nil {
+		return nil, fmt.Errorf("node: %w", err)
 	}
 	steps := operationSteps(n.meta.Nodes())
 	steps[string(apiv1.OpShareDelete)] = stepRow{n.shareDeletion, n.removalProgress}

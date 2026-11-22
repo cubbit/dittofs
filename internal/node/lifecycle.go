@@ -159,8 +159,9 @@ func (n *Node) Start(ctx context.Context) error {
 		{"register", n.register},
 		{"apply", n.readRecords},
 		{stepEngine, n.startEngine},
-		// A slot for identity, started after its first Apply, and stopped
-		// after the filesystem and before the engine.
+		// Identity starts after its first Apply, and stops after the
+		// filesystem and before the engine.
+		{stepIdentity, n.startIdentity},
 		{stepFilesystem, n.startFilesystem},
 		{stepRunner, n.startRunner},
 		// ponytail: the management API's calls are served from the
@@ -364,9 +365,9 @@ func (n *Node) register(ctx context.Context) error {
 
 // readRecords reads the counters and the shares, keeping those reconcile
 // binds, and the shares being removed, for the engine's start, then calls
-// apply. The counters it read are those reconcile has acted on, so only
-// Start's full first pass, not a counter, makes reconcile record the
-// refusals.
+// apply, and hands identity its first State. The counters it read are those
+// reconcile has acted on, so only Start's full first pass, not a counter,
+// makes reconcile record the refusals.
 func (n *Node) readRecords(ctx context.Context) error {
 	c, err := n.counters(ctx)
 	if err != nil {
@@ -382,6 +383,9 @@ func (n *Node) readRecords(ctx context.Context) error {
 	}
 	if _, err := n.apply(ctx, c, nil); err != nil {
 		return err
+	}
+	if err := n.applyIdentity(ctx, c); err != nil {
+		return fmt.Errorf("identity: %w", err)
 	}
 	n.rec.seen = c
 	return nil
@@ -432,7 +436,7 @@ func (n *Node) startFilesystem(ctx context.Context) error {
 	n.started(partBudgets, n.checkBudgets)
 	n.started(stepFilesystem, func(ctx context.Context) error {
 		return errors.Join(n.fs.Drain(ctx), n.fs.Stop())
-	}, stepEngine, partBudgets)
+	}, stepEngine, stepIdentity, partBudgets)
 	return n.joinRemovals(ctx)
 }
 
