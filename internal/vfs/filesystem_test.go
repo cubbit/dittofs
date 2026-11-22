@@ -50,19 +50,19 @@ func memKV(tb testing.TB) kv.KV {
 	return db
 }
 
-func newFixture(t *testing.T, events vfs.Events) *fixture {
+func newFixture(t testing.TB, events vfs.Events) *fixture {
 	t.Helper()
 	return newFixtureOf(t, Deps{Events: events})
 }
 
 // newFixtureOf is newFixture over d's Events and Metrics.
-func newFixtureOf(t *testing.T, d Deps) *fixture {
+func newFixtureOf(t testing.TB, d Deps) *fixture {
 	t.Helper()
 	return newFixtureOver(t, d, kvstoretest.NewFS(t, memKV))
 }
 
 // newFixtureOver is newFixtureOf over fs.
-func newFixtureOver(t *testing.T, d Deps, fs *kvstoretest.FS) *fixture {
+func newFixtureOver(t testing.TB, d Deps, fs *kvstoretest.FS) *fixture {
 	t.Helper()
 	// The administrator holds a uid, so that it signs in as itself rather
 	// than as the share's anonymous principal.

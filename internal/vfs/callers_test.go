@@ -40,15 +40,17 @@ type caching struct {
 	reg   *metrics.Registry    // the identity server's metrics
 	ids   identitysrv.Settings // the identity settings the store holds
 	gen   uint64               // the generation of the last State applied
+	views kv.Counting          // the reads the store has served
 }
 
-func newCaching(t *testing.T) *caching {
+func newCaching(t testing.TB) *caching {
 	t.Helper()
 	prof.Watch(t, prof.Options{})
 	c := &caching{clock: sim.NewTestClock(time.Unix(1_000_000, 0)), spans: tracetest.NewSpanRecorder(), reg: metrics.New("test", "test")}
 	fx := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
 		c.fault = kvtest.NewFaultKV(memKV(tb))
-		return c.fault
+		c.views.KV = c.fault
+		return &c.views
 	})
 	c.tp = sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()), sdktrace.WithSpanProcessor(c.spans))
 	t.Cleanup(func() { _ = c.tp.Shutdown(context.Background()) })
@@ -75,7 +77,7 @@ func newCaching(t *testing.T) *caching {
 
 // raise applies a State differing from the current one, which raises the
 // serial.
-func (c *caching) raise(t *testing.T) {
+func (c *caching) raise(t testing.TB) {
 	t.Helper()
 	c.gen++
 	if err := c.srv.Apply(identitysrv.State{Generation: c.gen, Settings: c.ids}); err != nil {

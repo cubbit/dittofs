@@ -181,8 +181,8 @@ suites:
   # twins (BenchmarkRaw*) with the J rows, since a J row is read only as a fraction of its
   # twin. A directory on a RAM-backed filesystem fails the benchmark on its own check, so
   # that refusal exits 1 (b.Fatalf in the rows), deliberately unlike the unset-variable
-  # guard's 2. No -race: it changes the latency they measure. No -timeout either: go test applies none to benchmarks, so the
-  # cell's limit is the guard — engine-bench's, the same headroom, not the registry's
+  # guard's 2. No -race: it changes the latency they measure. An explicit -timeout=290m, as go test would otherwise stop a benchmark binary at
+  # 10 minutes; the cell's limit sits above it — engine-bench's, the same headroom, not the registry's
   # default 60m, which a real run's counts could outlive.
   # decision: format exit, not go-json: go test -json sends no pass event for a passing
   # benchmark, which a go-json cell grades as failed.
@@ -197,7 +197,7 @@ suites:
       # The bench pattern's quotes rule out the flow style shellcheck's and engine-bench's
       # single-quoted lines use, so the entry takes the literal block the shellcheck one does.
       - sh: |
-          test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$JOURNAL_BENCH_COUNT" || n=$JOURNAL_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "JOURNAL_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -tags=journal_conformance,journal_bench -run ^$ -bench '^Benchmark(J[123]_|Raw)' ./pkg/block/journal/conformance/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; test $s -ne 0 || grep -q '^BenchmarkJ' {out}/bench.txt || { echo "no BenchmarkJ benchmark ran" >&2; exit 2; }; exit $s
+          test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$JOURNAL_BENCH_COUNT" || n=$JOURNAL_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "JOURNAL_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -timeout=290m -tags=journal_conformance,journal_bench -run ^$ -bench '^Benchmark(J[123]_|Raw)' ./pkg/block/journal/conformance/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; test $s -ne 0 || grep -q '^BenchmarkJ' {out}/bench.txt || { echo "no BenchmarkJ benchmark ran" >&2; exit 2; }; exit $s
     tier: manual
     timeout: { test: 300m, cell: 310m }
   # The engine's conformance checks, behind their own tag for the same reason: they run
@@ -223,13 +223,14 @@ suites:
   # DITTOFS_BENCH_DIR must name a directory on the device under test: without it every
   # benchmark skips and go test passes, so the cell fails before running it.
   # No -race: it changes the latency they measure, and engine-conformance covers the races.
-  # No -timeout either: go test applies none to benchmarks, so the cell's limit is the guard.
+  # An explicit -timeout=290m, as go test would otherwise stop a benchmark binary at 10 minutes;
+  # the cell's limit sits above it.
   # decision: format exit, not go-json: go test -json sends no pass event for a passing
   # benchmark, which a go-json cell grades as failed. A count a benchmark breaks fails the cell,
   # which then names the command rather than the benchmark; its b.Fatalf line is in bench.txt.
   engine-bench:
     cmd:
-      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "ENGINE_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "ENGINE_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -timeout=290m -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
     timeout: { test: 300m, cell: 310m }
   # The reconcile pass a live change waits on, at 10⁴ shares cold and under share churn, against
@@ -244,6 +245,17 @@ suites:
       - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -benchtime=1x -run ^$ -bench ^BenchmarkReconcile$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
     timeout: { test: 180m, cell: 190m }
+  # Admission's caller cache at 10⁴ callers on 25 shares with the identity State's serial
+  # raised once a second: warm Ticket callers, and Secret callers, which carry no freshness and
+  # so resolve on every call. Reports ns/op, allocs/op, p99-ns, reads/s, reads/op, misses/op, raises and misses/raise; compare
+  # the two with benchstat -col /proof on bench.txt. A -benchtime of tens of seconds, so that a
+  # run spans many raises; an explicit -timeout, as go test would otherwise stop a benchmark
+  # binary at 10 minutes. No -race: it changes the latency measured.
+  caller-cache-bench:
+    cmd:
+      - { sh: 'go test -count=5 -benchtime=30s -timeout=60m -run ^$ -bench ^BenchmarkAdmissionCallers$ ./internal/vfs/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 70m, cell: 80m }
   # A metadata commit's cost with checked sign-ins from many sources beside it, each costing two
   # commits, against none; compare with benchstat -col /signins on bench.txt. No -race, as for
   # engine-bench. Badger lives under t.TempDir(), so TMPDIR is pointed at DITTOFS_BENCH_DIR, a
