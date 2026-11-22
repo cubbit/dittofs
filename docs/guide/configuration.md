@@ -1481,7 +1481,7 @@ spec:
 | ⭐ `dittofs_adapter_status_mapped_total{protocol,error}` | Service errors that reached the client, by error (`not_found`, `exist`, `io` and the rest of the closed set). |
 | `dittofs_adapter_refusals_total{protocol,stage}` | Requests the adapter refused itself, by the pipeline stage that refused them. |
 | ⭐ `dittofs_adapter_unmapped_errors_total{protocol}` | Errors no protocol row maps, answered the fault status: each one is a bug. |
-| `dittofs_adapter_wire_seconds{protocol,stage}` | Time a request spends in each pipeline stage around the service call; its `_count` for `stage="decode_header"` counts requests. |
+| `dittofs_adapter_wire_seconds{protocol,stage}` | Time a request spends in each pipeline stage around the service call; its `_count` for `stage="decode_header"` counts every record received, one whose header does not decode included, so a ratio over it reads slightly low while a client sends records that do not decode. |
 | `dittofs_adapter_connections{protocol,state}` / `dittofs_adapter_connection_closes_total{protocol,reason}` | Connections open, by state (`handshake`, `established`), and connections refused or closed, by reason. |
 | `dittofs_auth_attempts_total{protocol,mechanism}` / `dittofs_auth_failures_total{protocol,mechanism}` | Authentication attempts and failures (`mechanism` is `sys`/`krb5`/`ntlm`). |
 | ⭐ `dittofs_remote_up{share}` | `1` if the share's remote backend is healthy, else `0`. |
