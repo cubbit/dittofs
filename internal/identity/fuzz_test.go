@@ -118,13 +118,14 @@ const (
 	pacAllocBase    = 16 << 10
 )
 
-// pacSeeds are the captured PACs, and PACs the test realm built: with no
+// pacSeeds are the captured PACs, Samba's and MIT's, and PACs the test realm built: with no
 // logon information, and repeating a logon-information, client-information
 // and signature buffer; then a header claiming 0xffffffff buffers in eight
 // bytes, and a buffer lying past the PAC's end.
 func pacSeeds(t testing.TB) [][]byte {
 	tgt, _ := capture(t, "tgt.pac", "krbtgt.keytab")
 	svc, _ := capture(t, "service.pac", "service.keytab")
+	mit, _ := capture(t, "mit-service.pac", "mit-service.keytab")
 	r := identitytest.NewRealm(testRealm, "cifs/nas.test")
 	logon := identitytest.LogonInfo{Name: "alice", Domain: "CORP", DomainSID: "S-1-5-21-1-2-3", UserRID: 1105,
 		Groups: []identitytest.GroupRID{{RID: 513, Attributes: 7}}}
@@ -135,7 +136,7 @@ func pacSeeds(t testing.TB) [][]byte {
 	past := identitytest.EncodePAC([]identitytest.PACBuffer{{Type: identitytest.PACClientInfo, Data: make([]byte, 16)}})
 	binary.LittleEndian.PutUint64(past[16:], 1<<40)
 	return [][]byte{
-		tgt, svc,
+		tgt, svc, mit,
 		pac(identitytest.PACOpts{}),
 		pac(identitytest.PACOpts{Logon: []identitytest.LogonInfo{logon, logon}}),
 		pac(identitytest.PACOpts{Logon: []identitytest.LogonInfo{logon}, Extra: []identitytest.PACBuffer{{Type: identitytest.PACClientInfo, Data: []byte("a second client")}}}),
