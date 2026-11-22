@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -95,41 +96,73 @@ func TestUserWriteAnswersOnceApplied(t *testing.T) {
 	}
 }
 
+// reconcileHold holds each reconcile pass of a node after it read the
+// counters, once hold is called, until release.
+type reconcileHold struct {
+	holding atomic.Bool
+	// held receives once a held pass has read the counters.
+	held chan struct{}
+	// awaited receives as each write's wait for the node starts.
+	awaited chan struct{}
+	gate    chan struct{}
+	// release lets every pass through, the held one and those after it; a
+	// second call does nothing.
+	release func()
+}
+
+// holdReconcile installs h's node's reconcile and await hooks, holding
+// nothing until hold; awaited buffers buf starts, and a start past them is
+// dropped. Call it before the node starts, and register release as a cleanup
+// after started's, so it runs first and Stop finds no pass held.
+func holdReconcile(h *nodetest.Harness, buf int) *reconcileHold {
+	r := &reconcileHold{held: make(chan struct{}, 1), awaited: make(chan struct{}, buf), gate: make(chan struct{})}
+	r.release = sync.OnceFunc(func() { r.holding.Store(false); close(r.gate) })
+	h.Node().OnReconcileRead(func(kvstore.Counters) {
+		if !r.holding.Load() {
+			return
+		}
+		select {
+		case r.held <- struct{}{}:
+		default:
+		}
+		<-r.gate
+	})
+	h.Node().OnAwaited(func() {
+		select {
+		case r.awaited <- struct{}{}:
+		default:
+		}
+	})
+	return r
+}
+
+// hold has each reconcile pass from now on held until release.
+func (r *reconcileHold) hold() { r.holding.Store(true) }
+
 // With reconcile held after it read the counters, a user's write waits on
 // the API's clock and, once a second has passed on it, answers its own
 // commit, the node still short of applying it; a grant, which raises
 // neither generation, answers at its commit with the clock untouched.
 func TestUserWriteWaitsASecondThenAnswersItsCommit(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(admin)))
-	var holding atomic.Bool
-	held, release := make(chan struct{}, 1), make(chan struct{})
-	h.Node().OnReconcileRead(func(kvstore.Counters) {
-		if !holding.Load() {
-			return
-		}
-		select {
-		case held <- struct{}{}:
-		default:
-		}
-		<-release
-	})
-	awaited := make(chan struct{}, 4)
-	h.Node().OnAwaited(func() { awaited <- struct{}{} })
+	rh := holdReconcile(h, 4)
 	sh := addShare(t, h)
 	started(t, h)
 	// Registered after started's, so it runs first: Stop finds no pass held.
-	t.Cleanup(func() { holding.Store(false); close(release) })
+	t.Cleanup(rh.release)
 	addr, _ := h.Node().Addrs()
 	p, tag := putUser(t, h, "alice")
-	holding.Store(true)
+	rh.hold()
 	ch := send(t.Context(), addr, http.MethodPatch, "/api/v1/users/"+uuid.UUID(p.ID).String(), `{"spec":{"disabled":true}}`, "If-Match", tag)
 	select {
-	case <-held:
+	case <-rh.held:
+	case r := <-ch:
+		t.Fatalf("PATCH the user answered %d %s before a reconcile pass read the counters", r.status, r.body)
 	case <-time.After(10 * time.Second):
 		t.Fatal("no reconcile pass read the counters within 10 s of the write")
 	}
 	select {
-	case <-awaited: // the writer's second is armed on the node's clock
+	case <-rh.awaited: // the writer's second is armed on the node's clock
 	case <-time.After(10 * time.Second):
 		t.Fatal("the write's wait for the node never started within 10 s")
 	}
@@ -169,25 +202,12 @@ func TestUserWriteWaitsASecondThenAnswersItsCommit(t *testing.T) {
 func TestWhichWritesWaitForTheNode(t *testing.T) {
 	signing := func(context.Context) ([]byte, error) { return []byte("installation"), nil }
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewSigning(admin, signing)))
-	var holding atomic.Bool
-	held, release := make(chan struct{}, 1), make(chan struct{})
-	h.Node().OnReconcileRead(func(kvstore.Counters) {
-		if !holding.Load() {
-			return
-		}
-		select {
-		case held <- struct{}{}:
-		default:
-		}
-		<-release
-	})
-	awaited := make(chan struct{}, 16)
-	h.Node().OnAwaited(func() { awaited <- struct{}{} })
+	rh := holdReconcile(h, 16)
 	sh := addShare(t, h)
 	started(t, h)
-	t.Cleanup(func() { holding.Store(false); close(release) })
+	t.Cleanup(rh.release)
 	addr, _ := h.Node().Addrs()
-	holding.Store(true)
+	rh.hold()
 
 	keys := 0
 	write := func(what string, raises bool, method, path, body, tag string) sent {
@@ -206,7 +226,7 @@ func TestWhichWritesWaitForTheNode(t *testing.T) {
 			return answeredIn(t, what+" with the node's clock untouched", ch)
 		}
 		select {
-		case <-awaited:
+		case <-rh.awaited:
 		case r := <-ch:
 			t.Fatalf("%s answered %d %s without waiting for the node", what, r.status, r.body)
 		case <-time.After(10 * time.Second):
@@ -252,7 +272,7 @@ func TestWhichWritesWaitForTheNode(t *testing.T) {
 	r := write("POST /users", true, http.MethodPost, "/api/v1/users", `{"spec":{"name":"alice"}}`, "")
 	want("POST /users", r, http.StatusCreated)
 	select {
-	case <-held: // the pass the create woke is held, so no later write is applied
+	case <-rh.held: // the pass the create woke is held, so no later write is applied
 	case <-time.After(10 * time.Second):
 		t.Fatal("no reconcile pass read the counters within 10 s of the create")
 	}
