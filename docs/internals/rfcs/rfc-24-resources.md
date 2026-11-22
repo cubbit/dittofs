@@ -181,8 +181,8 @@ a move for 20 s, and the SMB adapter holds each write pending
 
 1. Each SMB write the adapter holds keeps its receive reservation while its
    connection is within its floor of 256 held requests and 32 MiB, which
-   counts every request the connection holds, whatever its command, at its
-   record's whole receive charge
+   counts every request the connection holds, whatever its command, a parked
+   one excepted, at its record's whole receive charge
    ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)).
 2. Past the floor, the held write's whole charge is reserved from the hold pool,
    a sixteenth of *L*, and only then released from the receive pool (§4.3); the
@@ -327,11 +327,15 @@ each for the five small pools, 12 GiB for the metadata store, 8 GiB each for
 the index and transfers, and 16 GiB unpooled; on an 8 GiB container, 512 MiB
 each, 1.5 GiB, 1 GiB each and 2 GiB unpooled.
 
-> ponytail: until `pkg/resources` has `Detect` and `SplitFor` (§2.7), the node
-> builds the receive, reply, connection-state and hold pools at a fixed 512 MiB
-> each, their figure on an 8 GiB node, and `connection_limit` at 4,096, whatever
-> memory the host has, and leaves the runtime's soft limit unset. Derive them
-> from *L* once those exist.
+> ponytail: the node builds the receive, reply, connection-state and hold pools
+> at 512 MiB each and `connection_limit` at 4,096, the 8 GiB figures, whatever
+> memory the host has, builds none of the other four pools, and leaves the
+> runtime's soft limit unset, so on a host with less than 8 GiB it can run out
+> of memory before any pool refuses. Derive all of them from *L*, setting the
+> soft limit to fifteen sixteenths of it, exporting `memory_limit_bytes`,
+> raising `memory_limit_below_floors` and bounding `connection_limit` by half
+> the open-file limit too, once `pkg/resources` has `Detect` and `SplitFor`
+> (§2.7).
 
 Every node holds all eight pools, because every node composes everything they
 hold ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)).
