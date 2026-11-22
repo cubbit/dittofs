@@ -1556,7 +1556,8 @@ and RFC 21 carries it on the wire.
 A directory is one external source of users and groups — an LDAP directory with
 Windows attributes (MS-ADTS), or one with RFC 2307 attributes — named by the
 installation's directory record (`identity.directory`): its schema, `ad` or
-`rfc2307`, `ad` when the record names none, its address, base, bind
+`rfc2307`, `ad` when the record names none, its address, base, bind name
+(`bind_name`, the distinguished name or UPN its simple bind sends), bind
 credential reference, trust roots, realm, NetBIOS domain, the attributes
 that hold a user's and a group's name (default `sAMAccountName`; `uid` and `cn`
 for an `rfc2307` one), `require_pac`, true unless the record sets it false
