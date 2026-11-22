@@ -99,12 +99,12 @@ func protocolRow(r kv.Reader, id entity.ProtocolID) (entity.Principal, bool, boo
 // Groups yields every group p is a member of, directly or through nested
 // groups, each once, nearest first. A cycle of nested groups ends the walk
 // rather than loop. A group marked deleted is not one, nor are the groups
-// reached only through it.
-func (p Principals) Groups(ctx context.Context, of entity.Principal) iter.Seq2[entity.Principal, error] {
+// reached only through it; the same holds for each group in stop.
+func (p Principals) Groups(ctx context.Context, of entity.Principal, stop ...entity.Principal) iter.Seq2[entity.Principal, error] {
 	return func(yield func(entity.Principal, error) bool) {
 		var groups []entity.Principal
 		err := p.s.kv.View(ctx, func(r kv.Reader) (err error) {
-			groups, err = groupsOf(r, of)
+			groups, err = groupsOf(r, of, stop)
 			return err
 		})
 		if err != nil {
@@ -122,8 +122,11 @@ func (p Principals) Groups(ctx context.Context, of entity.Principal) iter.Seq2[e
 // ponytail: collects the whole transitive closure before yielding, so memory
 // grows with the number of groups one principal is in, not with group sizes.
 // Stream it if a principal's groups ever number in the thousands.
-func groupsOf(r kv.Reader, of entity.Principal) ([]entity.Principal, error) {
+func groupsOf(r kv.Reader, of entity.Principal, stop []entity.Principal) ([]entity.Principal, error) {
 	seen := map[entity.PrincipalID]bool{of.ID: true}
+	for _, s := range stop {
+		seen[s.ID] = true // never yielded, never walked through
+	}
 	var out []entity.Principal
 	queue := []entity.PrincipalID{of.ID}
 	for len(queue) > 0 {

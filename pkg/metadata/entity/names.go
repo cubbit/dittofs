@@ -138,6 +138,13 @@ type Identity struct {
 	Group Principal
 	// Groups is every group Principal is in, nested ones included.
 	Groups []Principal
+	// DenyOnly holds the principals the caller's proof marked deny-only: a
+	// deny entry naming one matches the caller, an allow entry never does,
+	// and no share grant is read for one. InGroup does not report them.
+	// These hold only while DenyOnly and Groups share no principal, which
+	// resolution keeps: it leaves each deny-only principal, and the groups
+	// reached only through it, out of Groups.
+	DenyOnly []Principal
 	// Privileged marks a caller allowed what an owner is not: an unsquashed
 	// root, or a principal the share grant names admin.
 	Privileged bool

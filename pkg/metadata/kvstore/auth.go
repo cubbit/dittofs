@@ -3,6 +3,7 @@ package kvstore
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
@@ -332,7 +333,7 @@ func aclGrants(r kv.Reader, id entity.Identity, f entity.File, want entity.Acces
 func aclAllows(id entity.Identity, f entity.File, acl entity.ACL, want entity.AccessMask) bool {
 	undecided := want
 	for _, e := range acl.Entries {
-		if !e.Effective() || !matches(id, f, e.Who) {
+		if !e.Effective() || !applies(id, f, e) {
 			continue
 		}
 		hit := e.Mask & undecided
@@ -347,6 +348,32 @@ func aclAllows(id entity.Identity, f entity.File, acl entity.ACL, want entity.Ac
 		}
 	}
 	return false
+}
+
+// applies reports whether entry e names the caller. A principal the caller
+// holds deny-only makes a deny entry naming it match and an allow entry
+// naming it miss, even where matches would answer it: counted as a group, it
+// would grant what the proof withheld (RFC 19 §2.3).
+//
+// decision: an allow entry misses a deny-only principal even when the
+// caller also lists it in Groups. Resolution never builds such a caller,
+// keeping the lists disjoint; the guard keeps a caller built any other way
+// failing closed. Drop it only if Identity's construction enforces the split.
+func applies(id entity.Identity, f entity.File, e entity.ACE) bool {
+	held := holdsDenyOnly(id, f, e.Who)
+	if e.Type == entity.ACEDeny {
+		return held || matches(id, f, e.Who)
+	}
+	return !held && matches(id, f, e.Who)
+}
+
+// holdsDenyOnly reports whether the caller holds who deny-only: who itself,
+// or GROUP@ when the file's group is one.
+func holdsDenyOnly(id entity.Identity, f entity.File, who entity.Principal) bool {
+	if who == entity.OwnerGroup {
+		who = f.Group
+	}
+	return !who.IsZero() && slices.Contains(id.DenyOnly, who)
 }
 
 // matches reports whether an entry naming who applies to the caller. The
@@ -381,16 +408,20 @@ func matches(id entity.Identity, f entity.File, who entity.Principal) bool {
 // modeAllows is what the file's mode grants this caller: what the owner's
 // bits grant to its owner, the group's to a member of its group, the
 // others' to the rest, so the decision is the walk of the ACL the file shows
-// (RFC 19 §4.1).
+// (RFC 19 §4.1). A caller holding the file's group deny-only is matched
+// by that ACL's deny GROUP@ and not its allow GROUP@, so it gets the others'
+// bits less what the group's lack.
 func modeAllows(id entity.Identity, f entity.File) entity.AccessMask {
-	shift := uint(0)
+	rights := func(shift uint) entity.AccessMask { return entity.ModeRights(f.Mode>>shift&7, f.IsDir()) }
 	switch {
 	case id.Principal == f.Owner:
-		shift = 6
+		return rights(6)
+	case holdsDenyOnly(id, f, entity.OwnerGroup):
+		return rights(0) & rights(3)
 	case id.InGroup(f.Group):
-		shift = 3
+		return rights(3)
 	}
-	return entity.ModeRights(f.Mode>>shift&7, f.IsDir())
+	return rights(0)
 }
 
 // mayRemove decides whether the caller may remove the entry naming child

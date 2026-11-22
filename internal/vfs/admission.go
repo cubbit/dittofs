@@ -311,20 +311,14 @@ func (fs *Filesystem) resolve(ctx context.Context, id vfs.Identity, sh entity.Sh
 	return a, c.Mapped, err
 }
 
-// acting is c as the chokepoint takes it: its principal, groups and flags,
-// held to c's Access, with a read narrowed by the share or a client rule
-// kept as the cause the chokepoint answers ErrReadOnly for. A read grant is
+// acting is c as the chokepoint takes it: its principal, groups, deny-only
+// principals and flags, held to c's Access, with a read narrowed by the
+// share or a client rule kept as the cause the chokepoint answers ErrReadOnly for. A read grant is
 // no such cause: Access alone holds the caller to it, refused ErrAccess.
 // Access is admission's snapshot of the grant, read with the share: the
 // chokepoint takes it in place of re-reading the grants in the operation's
 // transaction, so a grant revoked between admission's share read and the
 // operation still lets that one call through.
-//
-// decision: a caller holding a deny-only principal is refused here, at
-// admission, because entity.Identity has no deny-only field: dropping them
-// would let a file's deny entry naming one miss, which fails open. Withdraw
-// the refusal once the chokepoint matches deny-only principals against deny
-// entries (RFC 19 §2.3).
 //
 // decision: a caller whose Access is none is refused here, and so is not
 // audited, because the chokepoint cannot be handed a none: it reads a zero
@@ -346,9 +340,6 @@ func (fs *Filesystem) resolve(ctx context.Context, id vfs.Identity, sh entity.Sh
 // Extend the exemption to it, by telling resolution the call only releases
 // state, if such held state is seen to block other clients.
 func acting(c *identity.Caller, releases bool) (entity.Identity, error) {
-	if len(c.DenyOnly) > 0 {
-		return entity.Identity{}, fmt.Errorf("%w: the caller holds a deny-only principal", vfs.ErrAccess)
-	}
 	if c.Access == entity.AccessNone && !releases {
 		return entity.Identity{}, fmt.Errorf("%w: the share grants the caller none", vfs.ErrAccess)
 	}
@@ -360,7 +351,7 @@ func acting(c *identity.Caller, releases bool) (entity.Identity, error) {
 		ro = entity.NarrowedByClient
 	}
 	return entity.Identity{
-		Principal: c.Principal, Group: c.Group, Groups: slices.Clip(c.Groups),
+		Principal: c.Principal, Group: c.Group, Groups: slices.Clip(c.Groups), DenyOnly: slices.Clip(c.DenyOnly),
 		Privileged: c.Privileged, Authenticated: c.Authenticated, Admin: c.Admin,
 		ReadOnly: ro, Access: c.Access,
 	}, nil

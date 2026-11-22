@@ -72,7 +72,7 @@ func TestASquashedCallerKeepsNoGroupOfItsEvidence(t *testing.T) {
 		{entity.SquashAll, vfs.ErrAccess},
 	} {
 		s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: c.squash, Anonymous: nobody.Principal}, policyVersion(t, s.cp, s.share))))
-		if _, _, err := s.Read(ctx, call, vfs.Anonymous(h), 0, buf); c.want == nil && err != nil || c.want != nil && !errors.Is(err, c.want) {
+		if _, _, err := s.Read(ctx, call, vfs.Anonymous(h), 0, buf); !errors.Is(err, c.want) {
 			t.Errorf("a Finance member's read of a file granting Finance alone, squash %v: %v, want %v", c.squash, err, c.want)
 		}
 	}
@@ -128,27 +128,56 @@ func TestANewShareAdmitsNobodyUntilGranted(t *testing.T) {
 	}
 }
 
-// A caller holding Finance deny-only is refused at admission, though the
-// file's ACL allows everyone and denies only Finance: the chokepoint cannot
-// match a deny-only principal, and letting the call through would let the
-// deny entry miss.
-func TestADenyOnlyPrincipalIsRefusedAtAdmission(t *testing.T) {
+// A caller holding Finance deny-only is admitted and then held to each
+// file's ACL as RFC 19 §2.3 has it: it reads a file allowing everyone, is
+// refused one denying Finance though everyone is allowed after, and one
+// denying Corp, Finance's parent in the store, the same way, and is refused
+// one allowing Finance alone, which a caller holding Finance as an ordinary
+// SID reads.
+func TestADenyOnlyPrincipalMatchesDenyEntriesOnly(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	finance := s.finance(t)
+	var corpSID bytes.Buffer
+	sid.EncodeSID(&corpSID, sid.ParseSIDMust("S-1-5-21-1-2-3-2002"))
+	corp := entity.Group{Principal: entity.NewGroup(), Name: "corp",
+		IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: "3002"}, {Scheme: entity.SchemeSID, Value: corpSID.String()}}}
+	s.must(t, errOf(s.cp.PutGroup(ctx, corp, 0, entity.Alloc{})))
+	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: corp.Principal, Member: finance.Principal}))
 	dora := s.user(t, "dora", "", s.share, entity.AccessReadWrite)
-	h := s.file(t, "ledger", s.fs.Admin.Principal, 0o600)
-	_, err := s.SetACL(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Target{H: h}, entity.ACL{Entries: []entity.ACE{
-		{Type: entity.ACEDeny, Mask: entity.ReadData, Who: finance.Principal},
-		{Type: entity.ACEAllow, Mask: entity.ReadData | entity.ReadAttributes, Who: entity.Everyone},
-	}})
-	s.must(t, err)
-	buf := make([]byte, 1)
-	if _, _, err := s.Read(ctx, withSIDs(dora.Principal, vfs.ProofSecret, nil, nil), vfs.Anonymous(h), 0, buf); err != nil {
-		t.Fatalf("dora's read with no deny-only SID: %v", err)
+	read := entity.ReadData | entity.ReadAttributes
+	file := func(name string, es ...entity.ACE) vfs.Handle {
+		h := s.file(t, name, s.fs.Admin.Principal, 0o600)
+		_, err := s.SetACL(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Target{H: h}, entity.ACL{Entries: es})
+		s.must(t, err)
+		return h
 	}
-	if _, _, err := s.Read(ctx, withSIDs(dora.Principal, vfs.ProofSecret, nil, []string{financeSID}), vfs.Anonymous(h), 0, buf); !errors.Is(err, vfs.ErrAccess) {
-		t.Errorf("a read by a caller holding Finance deny-only, the file denying Finance: %v, want ErrAccess", err)
+	open := file("open", entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.Everyone})
+	denied := file("denied",
+		entity.ACE{Type: entity.ACEDeny, Mask: entity.ReadData, Who: finance.Principal},
+		entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.Everyone})
+	corpDenied := file("corp-denied",
+		entity.ACE{Type: entity.ACEDeny, Mask: entity.ReadData, Who: corp.Principal},
+		entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.Everyone})
+	granted := file("granted", entity.ACE{Type: entity.ACEAllow, Mask: read, Who: finance.Principal})
+	denyOnly := withSIDs(dora.Principal, vfs.ProofSecret, nil, []string{financeSID})
+	member := withSIDs(dora.Principal, vfs.ProofSecret, []string{financeSID}, nil)
+	buf := make([]byte, 1)
+	for _, c := range []struct {
+		name string
+		call vfs.Call
+		h    vfs.Handle
+		want error
+	}{
+		{"a file allowing everyone, read holding Finance deny-only", denyOnly, open, nil},
+		{"a file denying Finance, read holding Finance deny-only", denyOnly, denied, vfs.ErrAccess},
+		{"a file denying Corp, read holding Finance deny-only", denyOnly, corpDenied, vfs.ErrAccess},
+		{"a file allowing Finance alone, read holding Finance deny-only", denyOnly, granted, vfs.ErrAccess},
+		{"a file allowing Finance alone, read holding Finance", member, granted, nil},
+	} {
+		if _, _, err := s.Read(ctx, c.call, vfs.Anonymous(c.h), 0, buf); !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, err, c.want)
+		}
 	}
 }
 
