@@ -454,6 +454,34 @@ func TestResolveDirectoryNeverRenamesBack(t *testing.T) {
 	}
 }
 
+// Nor a group of the closure: eng, renamed engineering in the directory and
+// its record renamed by a Find of the new name, keeps it at bob's next
+// resolution, which reads the closure the cache still holds.
+func TestResolveDirectoryNeverRenamesAGroupBack(t *testing.T) {
+	e := newAD(t)
+	bobDN := e.d.AddUser(t, "bob", nil)
+	engDN := e.d.AddGroup(t, "eng", map[string][][]byte{"member": attr(bobDN)})
+	bob := e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\bob`}, true)
+	eng := e.groupOf(t, "eng")
+	if _, err := e.resolveAs(bob, fileShare()); err != nil {
+		t.Fatalf("Resolve(bob) = %v", err)
+	}
+	e.d.Modify(engDN, map[string][][]byte{"sAMAccountName": attr("engineering")})
+	if got := e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\engineering`}, true); got != eng {
+		t.Fatalf(`Find(KORP\engineering) = %v, want eng's %v`, got, eng)
+	}
+	before := e.pgen(t)
+	if _, err := e.resolveAs(bob, fileShare()); err != nil {
+		t.Fatalf("Resolve(bob) after the rename = %v", err)
+	}
+	if got := e.spelled(t, eng); got != `KORP\engineering` {
+		t.Errorf(`eng's name after bob's next resolution = %q, want KORP\engineering: renamed back from the cached closure`, got)
+	}
+	if got := e.pgen(t); got != before {
+		t.Errorf("PGEN %d after the resolution, want %d unchanged", got, before)
+	}
+}
+
 // dirFaultStore is dirStore behind the kv fault wrapper.
 func dirFaultStore(t *testing.T) (*kvstore.Store, uuid.UUID, *kvtest.FaultKV) {
 	t.Helper()
