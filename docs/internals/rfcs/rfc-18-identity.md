@@ -880,9 +880,11 @@ controller.
   record's principal ID and, when one holds the PAC's SID, that principal's ID
   (never a name,
   [RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)),
-  and binds nothing. A name reused in the directory after its first holder was
-  deleted is then refused rather than bound to the wrong person, whether the
-  name selects a directory record or a `krb` row.
+  and binds nothing. A client name or authentication-time mismatch is checked
+  before §4.2's mapping, so no record is selected yet: it logs the client's
+  address and no principal ID. A name reused in the directory after its first
+  holder was deleted is then refused rather than bound to the wrong person,
+  whether the name selects a directory record or a `krb` row.
 - The evidence's `SIDs` are the user SID and the group SIDs the PAC lists — its
   memberships, extra SIDs and resource groups — excluding any whose attributes
   mark them disabled. A SID in the installation's own domain (§4.4), in the
@@ -1058,9 +1060,12 @@ controller knows. The probe has three answers: it accepts, it rejects, or it
 could not be asked, which retries and never reads as a rejection. A join whose
 pinned controller could not be asked for an hour fails, naming the controller;
 a join run again then pins another, and is run with a takeover, since the
-failed one may have created the account. A failed join, online or offline,
-leaves the installation not joined, and `identity.netbios_name` unchanged,
-since the join writes it only at its last step. It prunes the versions it
+failed one may have created the account. A join of a joined installation,
+online or offline, is refused `409` `joined` unless the request takes it over;
+the check runs at the request and at the join's first step, never at a resumed
+one. A join that fails before its seal leaves the installation as it was; one that fails after it leaves the installation not
+joined, and `identity.netbios_name` unchanged, since the join writes it only at
+its last step. It prunes the versions it
 sealed but those it sent to a controller: the account's creation's, or each
 closing rotation's set, so at most two, since the controller may hold the
 second as its current password and the first as its previous one. Those stay
@@ -1068,7 +1073,8 @@ in force, unconfirmed, as a failed rotation's does (below), until a later join
 completes: that join seals its own versions beside them and prunes them once it
 is joined, so the rule of at most one unconfirmed version (below) holds only
 on a joined installation. It is recovered by running a join again: an offline one once the
-account's password has been reset, or an online one with a takeover. The administrator credential an online join takes is used for that
+account's password has been reset, with a takeover while the installation is
+still joined, or an online one with a takeover. The administrator credential an online join takes is used for that
 one operation, held only in the memory of the node that took it, and never
 stored, logged or put in the operation's record. The node holds it under the
 operation's ID before the record that creates the operation is written, so the
@@ -1548,7 +1554,8 @@ and RFC 21 carries it on the wire.
 A directory is one external source of users and groups — an LDAP directory with
 Windows attributes (MS-ADTS), or one with RFC 2307 attributes — named by the
 installation's directory record (`identity.directory`): its schema, `ad` or
-`rfc2307`, `ad` when the record names none, its address, base, bind
+`rfc2307`, `ad` when the record names none, its address, base, bind name
+(`bind_name`, the distinguished name or UPN its simple bind sends), bind
 credential reference, trust roots, realm, NetBIOS domain, the attributes
 that hold a user's and a group's name (default `sAMAccountName`; `uid` and `cn`
 for an `rfc2307` one), `require_pac`, true unless the record sets it false
@@ -1605,8 +1612,17 @@ what the user's `tokenGroups` holds.
   entry gave up. An error, a timeout or an answer served stale (§5.3) is not
   that answer: the holder keeps its name, and the renaming record is left
   without one, counted, until a later answer settles it. The renames one
-  answer causes, a swap's both, commit in one transaction with one
-  principals-generation raise, as a mint batch does (§4.1). Later answers never change its `PrincipalID`, entry
+  answer causes, a swap's both, are one `Minter.Rename` call, which commits
+  them in one transaction with one principals-generation raise, as a mint
+  batch does (§4.1), and fails whole when a name it takes is held by a
+  principal it does not rename ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)).
+  The list holds only the records whose name changes. On `ErrExist`, when
+  another call took a name between the refresh's read and its call, the
+  refresh re-reads the holders and plans the list again, under §4.1's progress
+  rule: a take still held is listed as `""` and counted, so the list loses a
+  take every round. Of two takes whose names fold equal (§4.6), the second is
+  listed as `""` and counted, so an answer naming two groups `Finance` and
+  `finance` still commits. Later answers never change its `PrincipalID`, entry
   ID, SID, uid or gid. An entry with no SID or no uid gets one allocated (§4.3,
   §4.4), so a directory without Windows or Unix attributes still yields
   principals that satisfy ID3.
@@ -2010,7 +2026,11 @@ the principal before or after the squash depends on what the proof proved:
   naming a parent group of a PAC's group still matches. Each group is listed
   once.
 - **Deny-only.** Each of the evidence's `DenyOnly` SIDs maps to a principal in
-  `DenyOnly`, never in `Groups`, and adds none of its own groups. A lookup error
+  `DenyOnly`, never in `Groups`, and adds none of its own groups to `Groups`.
+  A group the store reaches only through a deny-only principal is itself held
+  deny-only: it matches deny entries and grants nothing, so a PAC never removes
+  a group the store records. A group the PAC lists enabled, or another
+  membership reaches, stays in `Groups`. A lookup error
   while mapping one fails the resolution, as for a group: dropping a deny fails
   open. A deny-only SID no principal holds stays in the evidence, so the
   resolution after its principal is minted — which raises the generation
@@ -2518,7 +2538,7 @@ RFC 16's conformance suite's, not repeated here.
 | rogue domain controller | 1 | In `integration/ad-dc`, a fault wrapper around the client's connection to the real domain controller changes one byte of the server credential in `NetrServerAuthenticate3`'s reply, which the controller computed after accepting the client's: it fails to verify (MS-NRPC 3.1.4.1), the channel is refused, and no NTLM response is sent. A controller that does not hold the machine password, a second domain's among them, refuses the client's credential first and never reaches this check. | pass-through to whoever answers on the address |
 | zeroed secure channel reply | 1 | In `integration/ad-dc`, through the same fault wrapper: zero the server challenge in `NetrServerReqChallenge`'s reply, and the channel is refused before `NetrServerAuthenticate3` is sent; zero the server credential in `NetrServerAuthenticate3`'s reply, and it is refused. A unit row refuses a challenge of one byte repeated, and a reply whose all-zero server credential equals the one the client computed from such a challenge. | a server challenge or credential the set-up accepts though §3.5 refuses it |
 | NETLOGON wire | 1 | In `integration/ad-dc`, through the same fault wrapper. Drop the connection after a pass-through's `NetrLogonSamLogonEx` with a wrong password was written: `ErrUnavailable`, the request not sent again, and the account's `badPwdCount` up by one; drop it before the request was written: sent once on a new connection. The client's `NetrServerAuthenticate3` offers no RC4, and with the AES flag cleared in the flags the reply negotiates, the channel is refused. Every `NetrLogonSamLogonEx` the wrapper passes carries a Netlogon verifier at the privacy level. | a bad password counted twice toward lockout; a channel negotiated down from AES; a logon sent unsealed |
-| NetBIOS name while joined | 1 | On a joined installation, a settings change to `identity.netbios_name`: refused at validation, the name unchanged. | a CHALLENGE naming an account the installation does not hold |
+| NetBIOS name while joined | 1 | On a joined installation, a settings change to `identity.netbios_name`: refused by the settings route (409 joined), the name unchanged. | a CHALLENGE naming an account the installation does not hold |
 | NetBIOS name and domain | 1 | A settings change giving `identity.netbios_name` the directory record's NetBIOS domain, and a directory record whose NetBIOS domain is `identity.netbios_name`, in another case: each refused at validation, naming the other. | one domain routing to both sources |
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
 | `ManageGIDs` (deferred, §3.2) | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. Written with RFC 21's plan, which adds the field. | groups capped at the credential's 16 |

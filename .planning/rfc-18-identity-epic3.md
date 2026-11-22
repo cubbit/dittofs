@@ -73,7 +73,8 @@ counter and the `identity.resolve` span; the cache's benchmark.
 - Binding a PAC to the record a `krb` row selected, by the SID the row is linked for (RFC 18
   §3.4, §4.2): E5's sign-in. Resolution never reads the `krb` row (D8).
 - A deny-only principal matched by a file's deny entries at the chokepoint (RFC 19 §2.3): no
-  epic of RFC 18's plan; #4564 owns it, and D9 keeps the gap closed meanwhile.
+  epic of RFC 18's plan; #4564 owns it. Its design (#5390) has the chokepoint match a
+  caller's deny-only principals against deny entries only, and withdraws D9's refusal.
   E5's breakdown pull request does not merge while that issue has no assignee (§9).
 - The API's account check under the generation (RFC 18 §7.2, §8.1): E2's `Account`.
 - Composing identity in the node and applying its first `State`: E8's T8.1, which T3.6 waits
@@ -281,7 +282,10 @@ row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight di
   `Evidence.DenyOnly`. A `decision:` marker at the conversion names the withdrawal: RFC 19
   §2.3's deny match, owned by #4564. Prior art
   (from memory): Windows' restricted token keeps deny-only groups in the token the access
-  check reads.
+  check reads. **Withdrawn by design:** #5390 gives `entity.Identity` a `DenyOnly` field and
+  has the chokepoint match a caller's deny-only principals against deny entries, never allow
+  entries or share grants (RFC 19 §2.3), so admission stops refusing such a caller and the
+  marker goes with the refusal.
 
 - **D10, deny-only principals do not count toward the group cap.** RFC 18 §2.5 caps "groups",
   and a deny-only principal is in `DenyOnly`, never `Groups` (§6.3); counting it would refuse a
@@ -482,7 +486,7 @@ pkg/metadata/kvstore/
 **Subtask T3.6 estimate: 1.75 man-days.**
 
 - **Track:** A. **Depends on:** T3.5; E8's T8.1 (identity in `node.New`). RFC 23's plan's epic 2's T2.3, the `S‖id‖gv` writer, landed with #4477.
-- **Covers:** R6, R27, R35, R38; D9's refusal.
+- **Covers:** R6, R27, R35, R38; D9's refusal, which #5390's design withdraws.
 - **Deliverables:** the `SharePolicy` admission hands `Resolve`, built from the share and
   policy `ShareIndex.Share` reads in one view, keyed on the `entity.Share.GrantVersion` that read
   returns (RFC 23's plan's epic 2's T2.3, #4477; `shareIn` reads `S‖id‖gv` in the same view), so no call
@@ -494,7 +498,8 @@ pkg/metadata/kvstore/
   chokepoint, carrying `Caller.Group` (zero for every caller this epic resolves, since `Claimed`
   is refused, D7) and the narrowing cause, folded onto `entity`'s three (`ReadOnlyGrant` to
   `NotNarrowed`, the share and client causes one to one, §9), D9's refusal and marker at the
-  conversion, and a caller whose `Access` is
+  conversion (withdrawn by #5390's design, which carries `DenyOnly` through it instead), and a
+  caller whose `Access` is
   `none` refused there too, since the chokepoint reads a zero `Access` as "read the grants"
   and would read the squashed principal's (the moved resolver's `decision:` keeps saying so); `clients.go` through `Resolve` (D5) and `opens.go`'s marker admission through
   `Resolve`; `vfs`'s tests that admit a claimed identity moved to proven ones (D7);
@@ -519,8 +524,9 @@ pkg/metadata/kvstore/
   scenario, an NTLM (`Secret`) user on a share with no grant refused (R38); a client record
   created by a call naming no share owned by the mapped principal (R6); a `Secret` caller whose
   evidence carries a deny-only SID mapping to `Finance`, on a file whose ACL denies `Finance`
-  and allows everyone: refused at admission (catches D9's refusal removed, which lets the read
-  through, fail-open); the arch test's seed of a non-test package importing `identitymem`
+  and allows everyone: refused (catches D9's refusal removed, which lets the read
+  through, fail-open; with #5390's design the chokepoint's deny match refuses it, not
+  admission); the arch test's seed of a non-test package importing `identitymem`
   reported.
 
 ### T3.7 The proof key
@@ -699,6 +705,8 @@ text in the sections cited here is the version this document was written against
   request, the first that sets `Evidence.DenyOnly`, does not merge while that issue has no
   assignee. Rejected: E3 adding the field and the match, about 1.5 man-days outside RFC 18; and
   E5 refusing a PAC carrying deny-only SIDs, which moves the same refusal to sign-in.
+  Withdrawn by design: the chokepoint matches deny-only principals (#5390, RFC 19 §2.3), so
+  the refusal goes.
 - **The local-disable ceiling (D6): a caller with a zero `Fresh` is never cached.** Until E8's
   T8.2, nothing hands `Apply` a new `State` on a running node, so neither D3 nor the serial
   fences a local disable, and the cache's bound counts entries, not time. A local caller

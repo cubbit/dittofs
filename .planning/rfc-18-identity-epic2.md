@@ -743,7 +743,11 @@ internal/identity/
   `identity.*` write once a range is used up, D1), and `[1 000 000, 1 000 007]` written again is
   refused; the gid counter alone at or past `Hi`: refused (catches a
   check of the uid counter only); a `State` with a range below the marks, applied by `Apply`
-  (catches a second check at `Apply`, which would split the two range sources, D1). No test double.
+  (catches a second check at `Apply`, which would split the two range sources, D1); from a fresh
+  store, a put of `identity.id_range` `[1 000 000, 2 000 000]` through `Check`, a uid allocated in
+  another transaction between its `Check` and its put on the first attempt only: 2 attempts, the
+  range committed (catches the counters read untracked, which commits in 1, R11, D1). No test
+  double.
 
 ### T2.10 A local name's characters, refused by the store
 

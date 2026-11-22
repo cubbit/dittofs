@@ -189,7 +189,7 @@ deferral ledger set for it.
 | R16 | Every settings-backed write of the API, a put and a delete, is checked by `Check` with the caller's role inside the write's transaction before its row is written, so a refused write commits nothing and its refusal names the key | MUST | RFC 13 §6 ("Checked twice"); RFC 23 §5.2; RFC 13's plan, §4.4 (`Check` on the settings route) | T5.4 |
 | R17 | Whether a scope holds content is read through the write's transaction, tracked, so a content write conflicts with a bound change | MUST | RFC 13 §5.1; RFC 13's plan, §4.4 | T5.4 |
 | R32 | The content read fails closed: a namespace answers that it holds content while its blocks may still be draining, and a scope kind with no content rule is refused as a store error, never read as empty | invariant | D6; RFC 13 §5.1 | T5.4 |
-| R18 | A remote store's credential, set when the store has none yet, is its first value and passes; a store can be created and given its credential | MUST | RFC 13's plan, D9; RFC 23's plan, §6.1 (a remote store's credential on its create) | T5.4 |
+| R18 | A remote store's credential, set when the store has none yet, is its first value and passes `Check`; a store can be created and given its credential. Through the API, the credential `PUT` is refused until the store's capability check exists, a first set too (RFC 13's plan, D9) | MUST | RFC 13's plan, D9; RFC 23's plan, §6.1 (a remote store's credential on its create) | T5.4 |
 | R19 | A remote store's or a namespace's delete, once nothing names it, removes its scope's settings as the scope's removal, never refused as a change of a bound or location key | invariant | RFC 23's plan, §6.1 (a store's and a namespace's delete) | T5.4 |
 | R34 | A namespace's bound settings are recorded once, with the namespace, when it is created: its record's `Bound` holds, encoded by the settings schema, every namespace-scope key the table classes bound, with the value the create gives it, else its default, and no other key; a namespace section that declares no bound key records an empty set, never an absent `Bound` | invariant | RFC 13 §5.3; RFC 16 §2.3; D12 | T5.4 |
 | R20 | The effective `adapters.nfs.port` and `adapters.smb.port`, a node's override else the installation's value, differ unless 0; a write of either at either scope is checked against the other on the node a node-scope write names, or on this node (`Deps.Node`) for an installation write, reading both tracked in the write's transaction. `sidecars.portmap.port` and every other node an installation write reaches are D8's deferrals | MUST | RFC 13 §6 ("A rule across settings"), Appendix B's port rows; D8 | T5.7 |
@@ -400,7 +400,7 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 - **Covers:** R1, R2.
 - **Deliverables:** `apisettings` split into `Settings` and `Audit` with `json` and `class` tags
   (D1); `internal/node/settings.go`, the one `settings.Table` with the `api` and `audit` sections,
-  both `admin`-only; the table built in `node.New` and kept for reconcile. Consumed by T5.2 and
+  both `admin`-only; the table built in `node.New` and kept for reconcile; T5.9 gives it the node's registry. Consumed by T5.2 and
   T5.4, which hands it to the API; RFC 20's T7.6 and the RFC 18 plan's T8.1 add their rows to it.
   It is not handed to `api.Deps.Settings` here: under `holdsContent`'s answer, a handed-in table
   refuses every store and namespace delete until T5.4's scope removal lands.
@@ -663,14 +663,17 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 - **Deliverables:** `BenchmarkReconcile` (#4688) grown with a case at 10⁴ shares' settings, E3's
   sparse fixture over the node's table and test sections, and 16 references for the secrets pass,
   timed from the commit to the end of the pass; its figure in the pull request against the 100 ms
-  ceiling, and the one-walk marker's trigger fired there if it is past it; `series_test.go`
-  reading the node's registry after a start.
+  ceiling, and the one-walk marker's trigger fired there if it is past it; the call
+  `(Table).WithMetrics(registry)` on the node's table, built in `node.New`; `series_test.go`
+  reading the node's registry after a start and after a refused write through the settings route.
 - **Acceptance criteria:**
   - The benchmark fails itself when the pass reports a refused section or a position below the
     commit's, so its run in the `pr` tier can fail on code.
   - Every RFC 13 §8 series but `config_provisioning_applied` and
     `config_provisioning_refused_total` is registered, and none has a label outside its closed
     set.
+  - A refused write through the settings route raises `config_refused_total` on the node's
+    registry.
 - **Tests:** the benchmark, once per change in the `pr` tier with `-benchtime=1x`, the `manual`
   figures by `benchstat` over `-count=10`; the series test, failing when a series is missing or a
   label set carries a record ID (catches an owner's series never registered on the node, R30).
@@ -742,6 +745,10 @@ Pending the user's answer, each written in its recommended form above:
 
 Further points:
 
+- **Five per-journal rows name no key.** Appendix B L1159, L1163, L1166, L1307 and L1308 (the
+  maximum footprint, `ExtentLimit`, append streams, the eviction occupancy target and the fill
+  low-water mark) say "per journal" and give no key name, and no subtask of this epic declares the
+  journal section. Who names the keys and declares that section is open.
 - **The table's rows (D2)** depart from the plans' "with the adapters' section": the adapters'
   rows are RFC 20's T7.6's. Four places gave them to this epic, each corrected in this document's
   pull request: RFC 13's plan's epic 5 text ("the one table, with the adapters'

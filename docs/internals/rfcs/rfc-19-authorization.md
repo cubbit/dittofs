@@ -446,11 +446,19 @@ Four kinds of call take a different path through the sequence:
 - **A change of mode, owner, group or times** asks a right of this sequence, so
   it is cut by `C` before the ownership rules of
   [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)
-  decide the value: a `chmod` asks write the ACL; a `chown` asks change the
-  owner; a `chgrp` asks change the owner, or write the ACL when the caller owns
-  the file; setting the times to a client-given value, or any other attribute,
-  asks write attributes, and setting them to the server's time asks write data.
-  So an owner on a read share cannot `chmod`, `chgrp` or `touch -d` its file.
+  decide the value: a `chmod` asks write the ACL; a `chown` by a caller other
+  than the file's owner asks change the owner; a `chgrp` asks change the owner,
+  or write the ACL when the caller owns the file; setting the times to a
+  client-given value, or any other attribute, asks write attributes, and
+  setting them to the server's time asks write data.
+  The owner's `chown` asks no right of the service's decision, so no access
+  event records a change of the owner alone. The store's own check still runs
+  this sequence for write attributes: the share grant, so a read-only share
+  refuses it `ErrReadOnly`; the flags; and the ACL, under which the owner holds
+  write attributes unless an entry names owner rights. RFC 7 §7.4's ownership
+  rules decide the rest.
+  So an owner on a read share cannot `chmod`, `chown`, `chgrp` or `touch -d`
+  its file.
 
 > decision: release-only calls are exempt from the ceiling's refusal. Once a
 > grant is revoked or a client rule narrows, a client that cannot close, unlock
@@ -687,7 +695,7 @@ lock-then-write on a descriptor opened for read and later reopened.
 
 ## 4. Mode and ACL
 
-![The mode and the ACL derive from each other: the ACL is implied by the mode when none is stored, the mode is re-derived on every ACL set, and chmod merges into a stored ACL. The chmod 750 example narrows the named allows by splitting each into an unchanged inherit-only copy and a limited effective copy, leaves bob's deny untouched and appends one OWNER@ allow for write at the end](img/rfc19-mode-acl.svg)
+![The mode and the ACL derive from each other: the ACL is implied by the mode when none is stored, the mode is re-derived on every ACL set, and chmod merges into a stored ACL. The chmod 750 example narrows builders' allow, the group bits being the mask, by splitting it into an unchanged inherit-only copy and a limited effective copy, leaves alice's allow, which the owner bits keep whole, and bob's deny untouched, and appends nothing, as the owner class already holds rwx](img/rfc19-mode-acl.svg)
 
 RFC 7 requires the two to agree after every transaction
 ([RFC 7 §2.6](rfc-7-namespace-metadata.md#2.6%20ACL%2C%20and%20how%20it%20agrees%20with%20the%20mode)).
@@ -780,9 +788,9 @@ Only effective entries count, and the owner's implicit rights do not: they are
 not mode bits.
 
 The group class is the union over named principals, not `GROUP@` alone, so that
-the merge — which limits every named allow to the new group bits — is an identity
-on the ACL's own mode. A `cp -p` or `chmod` that sets the mode it just read must
-grant afterwards exactly what was granted before.
+the merge, which limits every named allow not naming `o` to the new group bits,
+is an identity on the ACL's own mode. A `cp -p` or `chmod` that sets the mode it
+just read must grant afterwards exactly what was granted before.
 
 Two identities **MUST** hold, and are checked (§9):
 
@@ -790,44 +798,62 @@ Two identities **MUST** hold, and are checked (§9):
   and every owner `o`;
 - for every ACL `a` and owner `o`, `a.WithMode(a.Mode(o), o)` grants every
   caller of a file owned by `o` exactly what `a` grants — for every `a` whose
-  allows hold write data wherever they hold another right the write bit adds
+  allows hold write data wherever they hold another right the write bit adds,
+  and whose denies holding write data hold every right the write bit adds
   (§10, item 5).
 
 ### 4.3 Setting mode and ACL
 
-`chmod` on a file with a stored ACL never raises an entry and never moves one.
+`chmod` on a file with a stored ACL never moves an entry, and raises one only
+to grant what an allow appended at the end would.
 
 - **A `chmod` of a file with a stored ACL** is the merge `WithMode(m, o)`:
   - **It only limits.** Every effective allow is limited to its class's new
-    bits: `OWNER@` allows to the owner bits; allows naming an everyone-like
-    principal (§2.3) to the other bits; when the ACL has an effective named allow
-    not naming `o`, every named allow **and** every `GROUP@` allow to the group
-    bits — the group bits are the mask, as a POSIX `chmod` sets the mask and
-    leaves the owning group's entry alone; otherwise `GROUP@` allows to the group
-    bits. A limit removes only the rights of `R` (§4.1) a missing bit withholds,
-    never the minor rights every bit grants, and keeps every other right of the
-    entry.
+    bits: `OWNER@` allows, and allows naming owner rights or `o`, which §4.2
+    counts in the owner class, to the owner bits; allows naming an everyone-like
+    principal (§2.3) to the other bits, even one that is `o`; when the ACL has an
+    effective named allow not naming `o`, every such named allow **and** every
+    `GROUP@` allow to the group bits, the group bits being the mask, as a POSIX
+    `chmod` sets the mask and leaves the owning group's entry alone; otherwise
+    `GROUP@` allows to the group bits. An allow naming a principal of no class,
+    such as SYSTEM, matches no caller and is left untouched. A limit removes only
+    the rights of `R` (§4.1) a missing bit withholds, never the minor rights every
+    bit grants, and keeps every other right of the entry.
   - **It adds only what a new bit grants.** For each class, the bits the new mode
     sets that the limited ACL does not already imply for it are granted by one new
     allow — `OWNER@`, `GROUP@` (only when no named allow holds the group class)
     and `EVERYONE@`, each with `R` of those bits — **appended at the end** of the
     access list, after every inherited entry, so it can override no deny. An
     entry it would add with an empty mask is left out. A `chmod` to the file's own
-    mode therefore adds nothing.
+    mode therefore adds nothing. When an effective allow naming the same
+    principal, neither inheritable nor inherited, has no effective deny after it,
+    the rights are added to that allow instead: with only allows after it, it
+    grants exactly what the appended allow would, and a `chmod` that narrows and
+    then widens again adds no entry.
   - An inherit-only entry is left untouched: it governs children. An entry both
-    effective and inheritable is split in place into an inherit-only copy,
-    unchanged, and an effective copy, limited as above.
+    effective and inheritable that the limit narrows is split in place into an
+    inherit-only copy, unchanged, and an effective copy, limited as above; one
+    the limit leaves whole is left as it is.
   - Deny, audit and alarm entries are left untouched.
   - `Mode` becomes the merged ACL's `Mode(o)`, which equals the requested bits
-    unless a deny withholds some or named entries grant less than the requested
-    group bits; the stored `Mode` shows what is granted, never more. A merge that
-    would exceed §2.8's limit fails `ErrInvalid` and changes nothing.
+    unless a deny withholds some, named entries grant less than the requested
+    group bits, or the requested other bits hold one the owner or group bits
+    lack, as in 0604. The merge writes no deny, so such a bit can reach the owner
+    or group class too, and the stored `Mode` then holds more than was asked: an
+    ACL from 0600 set to 0604 becomes allow `OWNER@` `R(rw-)` and allow
+    `EVERYONE@` `R(r--)`, whose `Mode(o)` is 0644, so the group can read, where
+    §4.1's ACL for 0604 refuses it. Either way the stored `Mode` shows what is
+    granted, never more. A merge that would exceed §2.8's limit fails
+    `ErrInvalid` and changes nothing.
 - **A `chmod` of a file with no stored ACL** changes `Mode` and stores no ACL.
 - **Setting an ACL** stores it and stores `Mode` as its `Mode(o)` for the owner
   the file has after the set, with the special bits kept, in one transaction.
 - **A request that sets the ACL and the mode together** stores the ACL, and takes
   from the mode only setuid, setgid and sticky.
-- **A `chown` or `chgrp`** changes no entry. `OWNER@` and `GROUP@` follow it.
+- **A `chown` or `chgrp`** changes no entry. `OWNER@` and `GROUP@` follow it. A
+  `chown` of a file with a stored ACL stores `Mode` as the ACL's `Mode(o)` for
+  the new owner, with the special bits kept, as entries naming the old or the
+  new owner change class.
 - The right each of these asks is §3.1's.
 
 ### 4.4 Inheritance
@@ -1058,14 +1084,15 @@ ACL, which `build` holds implicitly as owner (§3.1 step 5); the tool reads thre
 entries, appends one and writes four back, bob's deny first and intact. The same
 tool on `release`, which alice owns, is refused.
 
-**7. alice runs `chmod 750 release` from a Linux box** (§4.3). The named allows
-for alice and `builders` are each split into an inherit-only copy, unchanged, and
-an effective copy limited to the new group bits, `r-x`. bob's deny is untouched.
-The limited ACL implies `r-x` for the owner, and the new owner bits set write, so
-one allow `OWNER@` `R(-w-)` is appended at the end. No `GROUP@` allow is added:
-the `builders` allow holds the group class. `Mode(alice)` is 0750. `builders` can
-no longer add files to `release` itself, and every file created below it still
-inherits modify from the unchanged inherit-only copy.
+**7. alice runs `chmod 750 release` from a Linux box** (§4.3). The named allow
+for `builders` is split into an inherit-only copy, unchanged, and an effective
+copy limited to the new group bits, `r-x`. alice's allow names the owner, so it
+is limited to the owner bits, `rwx`, and stays as it is. bob's deny is untouched.
+The limited ACL implies `rwx` for the owner, so nothing is appended, and no
+`GROUP@` allow is added: the `builders` allow holds the group class.
+`Mode(alice)` is 0750. `builders` can no longer add files to `release` itself,
+and every file created below it still inherits modify from the unchanged
+inherit-only copy.
 
 ## 7. Invariants
 
@@ -1077,7 +1104,7 @@ inherits modify from the unchanged inherit-only copy.
 | Z4 | `Authorize(want)` succeeds exactly when `Granted(want)` is `want`, an empty `want` included; `Granted(want)` is within `want` and the share ceiling; a maximal request whose `G` is empty is refused by the service. |
 | Z5 | No file ACL widens a share ceiling, and no share ceiling is written into a file's ACL, stored or shown. |
 | Z6 | The ACL a client is shown is the ACL the walk reads, `ACLFromMode` of the mode where none is stored. |
-| Z7 | `ACLFromMode(m, d).Mode(o) == m`; `a.WithMode(a.Mode(o), o, d)` grants what `a` grants on a file owned by `o`, for every `a` §4.2 names; and no `chmod` raises an existing allow or places a new one before any other entry. |
+| Z7 | `ACLFromMode(m, d).Mode(o) == m`; `a.WithMode(a.Mode(o), o, d)` grants what `a` grants on a file owned by `o`, for every `a` §4.2 names; and no `chmod` raises an existing allow that an effective deny follows, or places a new allow before any other entry. |
 | Z8 | Reading an ACL through either protocol and writing back what was read stores the same ACL, less entries naming deleted principals (§5.2); over SMB, a named allow with no inherit flags for the file's current owner or group comes back as `OWNER@` or `GROUP@` (RFC 22 §11). |
 | Z9 | Every principal an entry can name has a SID and an NFSv4 `who`; no entry is left out of a read for want of a spelling. |
 | Z10 | Audit and alarm entries never change a decision; the system-security right is granted only to a caller with `admin` set. |
@@ -1135,7 +1162,7 @@ server.
 | §4.1 what a mode bit grants | On a 0664 file owned by alice of group `staff`, as bob, a `staff` member, open asking the read and write sets with their minor rights: assert granted. Through that open set the times to the server's time and to a client time: assert both allowed and the client time stored as given; set a stored marker, the mode or the owner: assert `ErrPerm`. As bob on no open, set `Modify` to a client time: assert refused. As a user outside `staff`, the same open: assert refused. |
 | §4.2 the two identities | **Unit**, on the functions: for every nine-bit `m` and both file types `d`, assert `ACLFromMode(m, d).Mode(o) == m`. For a generated corpus of ACLs — named users and groups, entries naming the owner, denies before and after allows, inherit-only and both-flag entries, owner rights, several allows for one special principal around an inherited deny, partial-write directory masks such as list and add a file only, and allows naming Authenticated Users and NETWORK — and each of two owners `o`, assert `a.WithMode(a.Mode(o), o, d)` grants every caller of a fixed population exactly what `a` grants. **Through both adapters**: on a 0750 directory alice owns with an allow for `builders`, run `chmod $(stat -c %a d) d` over NFS, then read the descriptor over SMB: assert the ACL unchanged and `builders` still granted. |
 | §4.2, §4.3 the group bits are a mask | On a file owned by alice, group `staff`, set the ACL `allow bob READ_DATA`: assert `Mode` is 0040. `chmod` it to its own mode over NFS: assert a member of `staff` other than bob is still refused read, and the stored ACL unchanged. Set the same ACL on a file bob owns: assert `Mode` is 0400. |
-| §4.3 the merge never raises | (a) Explicit `allow EVERYONE@ read`, inherited `deny bob write`, inherited `allow EVERYONE@ write`: `chmod` to the file's own mode over NFS; assert bob still refused write over both protocols and the ACL unchanged. Repeat with `GROUP@` and a member's deny. (b) A directory with `allow EVERYONE@` list and add a file: `chmod` to its own mode; assert the mask unchanged and a non-owner refused delete of another's file. (c) Inherited `deny bob read` and no `EVERYONE@` allow: `chmod o+r`; assert bob still refused, the new allow last. (d) An ACL holding a named-user allow granting write, an inherit-only entry, and an entry both effective and inheritable: `chmod 600`; assert the named user granted nothing, the inherit-only entry unchanged, the other split, and `Mode` the ACL's own. |
+| §4.3 the merge raises no allow a deny follows | (a) Explicit `allow EVERYONE@ read`, inherited `deny bob write`, inherited `allow EVERYONE@ write`: `chmod` to the file's own mode over NFS; assert bob still refused write over both protocols and the ACL unchanged. Repeat with `GROUP@` and a member's deny. (b) A directory with `allow EVERYONE@` list and add a file: `chmod` to its own mode; assert the mask unchanged and a non-owner refused delete of another's file. (c) Inherited `deny bob read` and no `EVERYONE@` allow: `chmod o+r`; assert bob still refused, the new allow last. (d) An ACL holding a named-user allow granting write, an inherit-only entry, and an entry both effective and inheritable: `chmod 600`; assert the named user granted nothing, the inherit-only entry unchanged, the other split, and `Mode` the ACL's own. |
 | §4.2 everyone-like principals | A file with `allow Authenticated Users R(rwx)` and `allow builders R(rwx)`: `chmod 750` over NFS. Assert an authenticated non-member is refused read over both protocols, `Mode` reads 0750, and `builders` keep `r-x`. Repeat with NETWORK and an asserted-identity caller. |
 | §4.1 shown is evaluated | On a 0640 file with no stored ACL, query the descriptor over SMB and `acl` over NFSv4: assert both are `ACLFromMode(0640)`, and that each listed principal is granted exactly what its entry says. On 0604: assert a group deny is shown and a group member is refused read over both. |
 | §2.8 no partial set | Set over SMB a DACL holding a callback deny for bob and an allow for everyone; assert the set is refused and the stored ACL unchanged, and bob's read still refused or granted as before. Repeat with an object allow, and with 129 entries. |
@@ -1198,7 +1225,10 @@ tests.
    append, write attributes and write extended attributes too. So an allow
    holding append without write data — `allow bob APPEND_DATA` — implies no
    write bit, and `chmod` to the file's own mode strips the append: §4.2's second
-   identity does not hold for it, and is stated without it.
+   identity does not hold for it, and is stated without it. A deny holding write
+   data without the rest of what the write bit adds, ahead of an allow holding all
+   of it, leaves its callers that rest alone, the same partial set, and is left
+   out of the identity too.
 6. **`dacl` and `sacl`.** Whether any client of the reference profile reads or
    sets them is unmeasured. If none does, serving `acl` alone loses no round
    trip, because `acl` leaves the stored flags as they were (RFC 21 §11.3). What it does
@@ -1266,7 +1296,7 @@ tests.
 | §3.7 | access-based enumeration decided at the chokepoint | the SMB handler filters listings itself, with its own `UID == 0` bypass |
 | §4.1 | the mode-implied ACL is shown and evaluated | a file with no stored ACL is shown owner and SYSTEM full control over SMB and an empty `acl` over NFSv4, and evaluated by a separate mode check in which the write bit grants delete on the file and ownership grants change-the-owner (`SynthesizeWindowsDefault`) |
 | §4.2 | setting an ACL stores the mode it implies | setting an ACL leaves `Mode` unchanged; the mode-from-ACL function has no production caller |
-| §4.3 | `chmod` limits named allows and never raises one | `chmod` rewrites only the owner, group and everyone entries and leaves named entries unchanged |
+| §4.3 | `chmod` limits named allows and raises no allow that an effective deny follows | `chmod` rewrites only the owner, group and everyone entries and leaves named entries unchanged |
 | §4.4 | the inherited flag follows the parent's auto-inherited flag | the auto-inherited flag is kept only when a set carries both it and the auto-inherit request, unless a per-share setting (`acl flag inherited canonicalization = no`) keeps it as sent; inheritance past the size limit is truncated, oldest first |
 | §4.4 | no server-side propagation | a propagation function exists with no production caller, and the SMB fidelity guide lists recursive propagation as working (`PropagateACL`) |
 | §5.1, RFC 20 §2.3 | one translation both adapters share | NFS writes stored who strings verbatim; SMB has its own principal-to-SID mapping inside its handler package |

@@ -381,8 +381,8 @@ would leave one less is refused, as one whose operation after a `READ` has a
 bound near the cap is
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
 In an NFSv4.1 session the hook also lowers the room it is handed by what the
-session's `ca_maxresponsesize` falls short of the cap, read from the session
-the compound's own `SEQUENCE` resolved into `Request.State` (§3.1), so the
+session's `ca_maxresponsesize` falls short of the cap, a budget the compound's
+own `SEQUENCE` copies from its session into `Request.State` (§3.1), so the
 reply stays within that budget too.
 
 > decision: a `READDIR`'s `maxcount`, and a `LISTXATTRS`'s `lxa_maxcount`
@@ -437,6 +437,11 @@ a channel is how many requests may be in flight on it at once.
   reply cache: the slots it can charge, at least one; where it cannot charge
   one, `CREATE_SESSION` is answered `NFS4ERR_DELAY`
   ([RFC 24 §4.5](rfc-24-resources.md#4.5%20Sessions%20and%20reply%20caches)).
+- `CREATE_SESSION` grants a `ca_maxoperations` of the lesser of what the
+  client asks and §11.5's compound cap, 128 (RFC 8881 §18.36). A `COMPOUND` on
+  the session longer than what it was granted is refused
+  `NFS4ERR_TOO_MANY_OPS` before any of its operations runs, as one past the
+  cap is ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
 - Under memory pressure the server **MAY** ask the client to use fewer slots (by
   lowering `sr_target_highest_slotid` in its replies; RFC 24 §4.5 says when),
   and **MUST** honour a client that then retires slots. It **MUST NOT** shrink the table
@@ -668,7 +673,7 @@ the wire:
   shared across minor versions: over NFSv4.0 every stateid of a client
   `EXCHANGE_ID` confirmed, an open's, a lock's or a delegation's, is refused
   `NFS4ERR_BAD_STATEID`, since that state was created on a session and is
-  marked so (`Sessioned`), and the service refuses it to a call with no
+  marked so (its open's `Session`), and the service refuses it to a call with no
   session (§5.2 rule 5). A confirm that finds the record but comes from another
   principal is `NFS4ERR_CLID_INUSE` (`ErrState` (`ClientInUse`); RFC 7530 §16.34.5,
   RFC 8881 §18.36.4) and leaves the record in place for its own principal.
@@ -1000,7 +1005,7 @@ lock or close. It has two parts: `other`, 12 bytes saying *which* state, and
    state its stateid resolves to, as
    [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) defines it, and rule 4 has
    nothing to compare it with. A delegation stateid over NFSv4.0, and any
-   stateid of state created on a session (`Sessioned`), is refused by
+   stateid of state created on a session (its open's `Session`), is refused by
    the service, since the call has no session
    ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open),
    [RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)): `NFS4ERR_BAD_STATEID`
@@ -2655,7 +2660,8 @@ status, in a row naming it that wins there; `ErrMoved` to
 row of NFSv4's table naming them in `Ops`; NFSv3, MOUNT and NLM each have a
 table of their own, RFC 20 §4.5), §7.4; `ErrDraining`, and `ErrMoved` for any other
 NFSv4 operation and for NFSv3, MOUNT and NLM, which have no move signal, to no
-reply.
+reply. The compound cap is 128 operations, and an NFSv4.1 session's
+`ca_maxoperations` is never above it (§3.1).
 
 **A status names its layer.** Each row's status is one `core.Status` whose two
 high bits name its layer: 0 a program's status, inside an accepted reply whose

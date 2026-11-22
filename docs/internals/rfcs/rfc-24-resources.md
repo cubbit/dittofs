@@ -180,13 +180,15 @@ a move for 20 s, and the SMB adapter holds each write pending
 ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)).
 
 1. Each SMB write the adapter holds keeps its receive reservation while its
-   connection is within its floor of 256 requests and 32 MiB
+   connection is within its floor of 256 held requests and 32 MiB, which
+   counts every request the connection holds, whatever its command, a parked
+   one excepted, at its record's whole receive charge
    ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)).
 2. Past the floor, the held write's whole charge is reserved from the hold pool,
    a sixteenth of *L*, and only then released from the receive pool (§4.3); the
    receive pool gets it back for other clients.
 3. With the hold pool full too, the adapter answers a further past-floor write
-   whose hold starts on an `ErrDelay` the service returned
+   whose hold starts on an error the service returned
    `STATUS_INSUFFICIENT_RESOURCES` at once, as RFC 20 §4.6 and RFC 22 state; a
    write still in the service when its interim goes out is never refused.
 
@@ -301,7 +303,7 @@ sixteenth. It is not reserved by anyone and nothing waits for it.
 | --- | --- | --- | --- | --- |
 | **receive** | request buffers from frame until the call returns, writes' payloads included (§3.2) | 1/16 | 16 MiB | the connection's reader waits; the socket is not read, and TCP pushes back on the client |
 | **reply** | reply buffers from before the call until the writer has sent them (§3.3) | 1/16 | 16 MiB | the call waits, within its deadline; at the deadline `ErrDelay` with `DelayResources` |
-| **hold** | held requests' bytes past their connection's floor ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)) | 1/16 | none | the adapter answers a request whose hold starts on an `ErrDelay` the service returned at once, holding nothing: `STATUS_INSUFFICIENT_RESOURCES` over SMB (§4.3); a call still in the service is never refused |
+| **hold** | held requests' bytes past their connection's floor ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)) | 1/16 | none | the adapter answers a request whose hold starts on an error the service returned at once, holding nothing: `STATUS_INSUFFICIENT_RESOURCES` over SMB (§4.3); a call still in the service is never refused |
 | **connection state** | each connection's fixed cost; sessions and their reply caches; security contexts (§4.4, §4.5) | 1/16 | 4 MiB | new connections closed at accept; a new session refused retry-later or granted fewer slots |
 | **open state** | opens, byte-range locks, lock waiters, caching grants, quota reservations; **(cluster)** the routed-request dedup table (§4.6) | 1/16 | 4 MiB | new state refused with `ErrDelay` and `DelayResources`; no caching grant offered; never a close or unlock; a reclaim only past its allowance |
 | **metadata store** | the store's in-process memory: caches, write buffers, compaction (§7.3) | 3/16 | 64 MiB | the store evicts; it never refuses |
@@ -324,6 +326,14 @@ The fractions are **fixed**, not settings. On a 64 GiB node they are 4 GiB
 each for the five small pools, 12 GiB for the metadata store, 8 GiB each for
 the index and transfers, and 16 GiB unpooled; on an 8 GiB container, 512 MiB
 each, 1.5 GiB, 1 GiB each and 2 GiB unpooled.
+
+> ponytail: the node builds the receive, reply, connection-state and hold pools
+> at 512 MiB each and `connection_limit` at 4,096, the 8 GiB figures, whatever
+> memory the host has, builds none of the other four pools, and leaves the
+> runtime's soft limit unset, so on a host with less than 8 GiB it can run out
+> of memory before any pool refuses. The full entry, with what derives from *L*
+> once `pkg/resources` has `Detect` and `SplitFor` (§2.7), is kept at the
+> figures, in `internal/node/budgets.go`.
 
 Every node holds all eight pools, because every node composes everything they
 hold ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)).
@@ -1007,7 +1017,7 @@ counts nothing about holds. This RFC fixes which pool holds the bytes:
   (`Buf.Charge`), so the bytes a connection holds under its floor are the
   memory it keeps in the receive pool; past them the charge moves to the hold
   pool, which counts it there. Past
-  both, a request whose hold starts on an `ErrDelay` the service returned is
+  both, a request whose hold starts on an error the service returned is
   refused at once and nothing is held for it; a call still in the service is
   not refused, as above.
 - A held call holds no reply reservation between attempts; each re-run takes one

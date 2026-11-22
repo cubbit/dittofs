@@ -16,7 +16,7 @@ and `SetEmail`, `MintBatch`, `Alloc`); [RFC 23](../docs/internals/rfcs/rfc-23-co
 `test-directory`; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §3.9's `directory_unreachable` row
 and §8.2's `Source`.
 **Track:** C.
-**Epic 6 estimate: 13 subtasks, 27 man-days.**
+**Epic 6 estimate: 13 subtasks, 27.25 man-days.**
 **Depends on:** **E1** (S1): `pkg/identity`'s `Identities`, `FindOpts`, `Spelling`, `Caller`;
 `internal/identity`'s `Server`, `Deps`, `State`, `Apply`, `Start`. **E2**: T2.3's `Minter.Create`
 (T6.2), T2.4's `Settings`, `State.Settings` and `Apply`'s refusal (T6.3), its `Deps.Secrets`
@@ -249,7 +249,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R51 | Later answers change a record's name through the store's rename and its e-mail address, each only when it changed, and never its `PrincipalID`, entry ID, SID, uid or gid | invariant | §5.1; RFC 16 §3 | T6.10 |
 | R52 | A record whose entry no longer answers its name gives the name up at once: it takes the new name when free, and is otherwise left without one, counted in `identity_renames_unnamed_total` and logged | invariant | §5.1, §9.2 | T6.10 |
 | R53 | When a directory principal holds the new name, the directory is asked about that holder's entry, and only a definite answer that it no longer answers the name, a fresh answer naming it otherwise or "no such entry", makes the holder give the name up first; an error, a timeout or a stale answer leaves the holder its name and the renaming record without one | invariant | §5.1 | T6.10 |
-| R54 | The renames one answer causes, a swap's both, commit in one transaction with one principals-generation raise | invariant | §5.1 | T6.10 |
+| R54 | The renames one answer causes, a swap's both, commit in one transaction with one principals-generation raise; on `ErrExist` the refresh re-reads the holders and plans the list again under §4.1's progress rule, a take still held listed as `""` and counted, and of two takes whose names fold equal the second is listed as `""` and counted | invariant | §5.1 | T6.10 |
 | R55 | §10's "name swap" row | test row | §10 | T6.10 |
 | R56 | "No such entry" for a principal the directory once minted is read as disabled, never as "no change" | invariant | §5.1, §3.7 | T6.11 |
 
@@ -292,12 +292,12 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   `insecure_skip_verify` and `allow_plaintext` are unknown fields, refused by #4059's strict
   decode. `decision:` marker at `Record.Validate`. Prior art: sssd's `ldap_id_use_start_tls`
   with `ldap_tls_reqcert = demand` (from memory).
-- **D5, the renames of one answer are one `Minter` call, pending the user's answer (§9).** RFC 16
-  §3's `Rename(p, name)` renames one principal in its own transaction, so a swap would raise the
-  principals generation twice and pass through a state where one name points at nobody.
-  `Rename(ctx, []Renaming{P, Name})` applies its list in order in one transaction: each `""`
-  first, then the takes, refusing the whole list with `ErrExist` when a take finds its name held
-  by a principal outside the list. Needs an RFC 16 §3 amendment. Prior art: none found.
+- **D5, the renames of one answer are one `Minter` call, settled: the list form replaces the
+  single `Rename`.** A single-principal rename in its own transaction would make a swap raise the
+  principals generation twice and pass through a state where one name points at nobody, so
+  `Rename(ctx, []Renaming)` takes every renaming one answer causes and applies them in one
+  transaction. RFC 16 §3 holds its contract. `SetEmail` stays a single-principal call. Prior art:
+  none found.
 - **D6, the mint path re-runs a plan, not a batch.** The caller hands the path a function that looks
   its principals up and returns the batch of those still missing with the ones bound; on `ErrExist`
   the path calls it again, and stops with `ErrUnavailable` when a run neither binds a principal the
@@ -349,10 +349,12 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   entry" for a minted principal is cached as a negative answer for 30 seconds and read by
   resolution as disabled, refused `ErrAccess`, counted `disabled`. Prior art: sssd marks an entry
   gone from the directory as expired, not deleted (from memory).
-- **D13, the NetBIOS cross-check imports nothing of identity.** T6.13's code in `pkg/settings`
-  reads the two settings' rows by key and the record's `netbios_domain` field from its JSON, so
-  nothing outside `internal/identity` and its tests imports `internal/identity`, as E1's import
-  rule requires. Prior art: RFC 13 §6's port rule, built the same way.
+- **D13, the NetBIOS cross-check is identity's own `CheckTx`.** Both settings belong to identity,
+  so RFC 13 §6 keeps the rule with the component: each identity section's `CheckTx`, in
+  `internal/identity`, reads the other's row by key, tracked, in the write's transaction, and
+  `Apply` runs the same rule on the `State`. `pkg/settings` holds no rule naming either key and
+  imports nothing of identity, as E1's import rule (only `internal/node` and identity's own
+  packages import `internal/identity`) requires.
 
 ## 5. Target tree
 
@@ -367,6 +369,7 @@ internal/identity/
                               T6.5  Deps.Directory, the client swapped on a record change
   settings.go                 T6.3  the identity.directory section's registration
                               T6.7  Settings.DirectoryStaleGrace
+                              T6.13 the NetBIOS cross-check in both sections' CheckTx (D13)
   dircache.go                 T6.7  the directory cache, fresh-only answers (D11)
   outage.go                   T6.8  directory_unreachable, the probe (D9), Conditions
   dirmint.go                  T6.9  directory mints, Find's directory spellings, step 3, the bound
@@ -391,8 +394,6 @@ pkg/identity/identitytest/
 pkg/metadata/kvstore/
   minter.go                   T6.10 Rename (D5), SetEmail
   kvstoretest/principals.go   T6.10 their conformance rows
-pkg/settings/
-  check.go                    T6.13 the NetBIOS cross-check in Check
 ```
 
 ## 6. Subtasks
@@ -791,9 +792,9 @@ pkg/settings/
 
 ### T6.10 Later answers: renames, e-mail, the swap
 
-**Subtask T6.10 estimate: 2.75 man-days.**
+**Subtask T6.10 estimate: 3 man-days.**
 
-- **Track:** C. **Depends on:** T6.9. RFC 16 §3's amendment (D5). RFC 23's plan's epic 2's T2.2
+- **Track:** C. **Depends on:** T6.9. RFC 23's plan's epic 2's T2.2
   (`User.Email`) and T2.6 (the `PGEN` raise and the records' `Position`).
 - **Covers:** R44, R48, R49, R51, R52, R53, R54, R55.
 - **Deliverables:** kvstore's `Minter.Rename(ctx, []Renaming)` (D5) and `SetEmail`, each raising
@@ -805,15 +806,25 @@ pkg/settings/
   unnamed; a new name held by a directory principal asks the holder's entry fresh-only (D11), one hop and
   never further, and a definite answer renames both in one call, the holder taking its own new
   name when free or when it is the one the renaming record gives up, else left unnamed and
-  counted; anything else leaves the renaming record unnamed;
+  counted; anything else leaves the renaming record unnamed; the list holds only the records whose
+  name changes; on `ErrExist` the refresh re-reads the holders and plans the list again under RFC
+  18 §4.1's progress rule, a take still held listed as `""` and counted; of two takes whose names
+  fold equal, the second listed as `""` and counted;
   `identity_renames_unnamed_total{kind}`; never a change to `PrincipalID`, entry ID, SID, uid or
   gid. Consumed by T6.11, whose reads trigger the refresh, by RFC 23's plan's user reads, which
   return the e-mail address (RFC 18 §2.2), and by E8.
 - **Acceptance criteria:**
   - A refresh whose answer matches the record raises no generation.
-- **Tests:** in kvstore's conformance suite, on the memory KV and Badger: a two-element swap
-  commits with `PGEN` raised by one, and a list whose take names a name held outside it is
-  `ErrExist` with nothing written (R54); a `PutUser` holding the generation read before a
+- **Tests:** in kvstore's conformance suite, on the memory KV and Badger: a direct swap
+  `[{A,"bob"},{B,"alice"}]` and a handoff `[{A,""},{B,"alice"}]` each commit with `PGEN` raised
+  by one, and a list whose take names a name held outside it, `Alice` against a held `alice`, is
+  `ErrExist` with nothing written (R54); a principal listed twice, and two takes of one folded name
+  within a kind, each `ErrInvalid` with nothing written, while a user and a group taking one name
+  in one list commit, and an empty list raises no generation (D5); a listed principal marked
+  deleted by `DeleteUser`'s first transaction, and one with no record, each `ErrNoEntity`, and a
+  Machine principal `ErrInvalid`, each with nothing written and no `NX‖` row (catches a take that
+  holds a name for a deleted record or names a machine); a committed list's records each carry the
+  raised `PGEN` as their `Position`; a `PutUser` holding the generation read before a
   `Rename`, and one before a `SetEmail`, each refused `ErrGenerationMismatch` (catches an API
   write that silently reverts a directory rename or e-mail, R51). At identity, over the memory KV store and the in-memory
   directory, on the injected clock: §10's "name swap" row, alice and bob swapped and the clock past
@@ -825,8 +836,13 @@ pkg/settings/
   name free (R52); a changed `mail`: `SetEmail` once, an unchanged one: no write (R51); the
   "SID-less directory" entry later given a SID: the record's SID unchanged (R44, R48); the "name
   held at mint" row's rename, the local `finance` renamed: the next answer names the directory
-  group (R49). Doubles: the in-memory directory (kind 2), the fault wrapper (kind 3), the injected
-  clock (kind 1).
+  group (R49); a `Create` taking `carol` committed between the refresh's read and its `Rename`,
+  by a pause hook set from `export_test.go`: the list is planned again and commits, the swap in it
+  done and `carol`'s take left unnamed, `identity_renames_unnamed_total` raised by one (catches a
+  swap lost to a concurrent mint, R52, R54); an answer renaming two groups to `Finance` and
+  `finance`: the list commits, the second take unnamed and counted (catches a list refused
+  `ErrInvalid` on every refresh, R54). Doubles: the in-memory directory (kind 2), the fault wrapper
+  (kind 3), the injected clock (kind 1).
 
 ### T6.11 Resolution of a directory principal
 
@@ -887,22 +903,31 @@ pkg/settings/
 
 - **Track:** C. **Depends on:** T6.3. #4059's epic 3.
 - **Covers:** R4, R5, R6.
-- **Deliverables:** in #4059's `Check`, code naming `identity.netbios_name` and
-  `identity.directory`'s NetBIOS domain, as RFC 13 §6's port rule is: a put of either reads the
-  other's current value as a tracked read in the write's transaction and refuses a match, ASCII
-  letters folded, naming the other. Consumed by RFC 23's plan's settings route, which calls
-  `Check`.
+- **Deliverables:** in identity's two sections' `CheckTx` functions, which #4059's `Check` runs
+  (D13), code naming `identity.netbios_name` and `identity.directory`'s NetBIOS domain: a put or
+  delete of either compares the other's effective value, its default when no row exists (Appendix
+  B gives the name `DITTOFS`; no record, no directory), as a tracked read in the write's
+  transaction and refuses a match, ASCII letters folded, naming the other. Consumed by RFC 23's
+  plan's settings route, which calls `Check`.
 - **Acceptance criteria:**
   - The refusal names the other key.
-- **Tests:** through `Check` over the memory KV store's `Write`, wrapped in `kvtest`'s `FaultKV`: §10's "NetBIOS name and domain"
+- **Tests:** through `Check` over the memory KV store's `Write`: §10's "NetBIOS name and domain"
   row, `identity.netbios_name` set to the record's domain in another case, and a record naming
-  `identity.netbios_name`, each refused naming the other (R4, R5); two transactions each writing
-  one side to a value the other's old value allowed, the first held before its commit by a
-  `sim.Fault` delay on the test clock: one of the two commits fails on its tracked read (catches a read that is not tracked, R4); an
+  `identity.netbios_name`, each refused naming the other (R4, R5); a write of
+  `identity.netbios_name` `CORP` over the domain `OLD`, the domain row set to `corp` by a raw KV
+  `Set` between its `Check` and its commit, which raises no `CFGGEN`: it takes 2 attempts and is
+  refused naming `identity.directory.netbios_domain`, no name row stored (catches a read that is
+  not tracked, which takes 1 attempt and commits `CORP` beside `corp`, R4); its mirror, a write of
+  the domain `corp` over the name `NAS`, the name row set to `CORP` by a raw `Set`: 2 attempts,
+  refused naming `identity.netbios_name` (catches the domain side's read untracked, R4); the
+  directory put with the domain `dittofs` and no `identity.netbios_name` row: refused naming the
+  name, since its default `DITTOFS` matches (catches the absent row compared as empty, R4); the
+  name row holding `CORP` over the domain `DITTOFS`, the name row deleted: refused naming the
+  domain, since the name's default `DITTOFS` matches (catches a delete of either skipping the
+  check, which leaves the stored config one `Apply` refuses, R4); an
   `operator`'s first put of `identity.directory` refused `ErrForbidden`, as is its later change of
   one field, and an `admin`'s passing, the test #4059's epic 3 assigns this epic (catches the
-  section declared without `WriteRole`, R6). Doubles: `kvtest`'s `FaultKV` (kind 3), the injected
-  clock (kind 1).
+  section declared without `WriteRole`, R6). No test double.
 
 ## 7. Order of work
 
@@ -926,7 +951,6 @@ flowchart TD
   E2X -. "T2.2, T2.5" .-> T6_9
   T6_9 --> C1(["after T6.9: Find, step 3 for E5 and E7"]):::sync
   T6_9 --> T6_10["T6.10 Later answers"]
-  A16(["RFC 16 §3 amendment: Rename takes a list"]):::sync -. "D5" .-> T6_10
   X23b(["RFC 23 epic 2 T2.2, T2.6: User.Email, PGEN raise"]):::sync -. "Email, PGEN" .-> T6_10
   T6_10 --> T6_11["T6.11 Resolution"]
   E3X -. "T3.4, T3.8" .-> T6_11
@@ -949,7 +973,7 @@ a directory principal resolves end to end.
 | 2 | T6.2, T6.3 | 2.75 | — | the mint path E5 waits for, and the record every later subtask reads |
 | 3 | T6.4, T6.5, T6.6 | 8.25 | PR 1, PR 2 | the LDAP side whole: connection, in-memory directory and suite, client, groups, held to Samba |
 | 4 | T6.7, T6.8 | 4.5 | PR 3 | the cache and its outage mode, one review of the grace |
-| 5 | T6.9, T6.10, T6.11, T6.12 | 8.75 | PR 4 | directory principals from mint to resolution, with the benchmarks that measure them |
+| 5 | T6.9, T6.10, T6.11, T6.12 | 9 | PR 4 | directory principals from mint to resolution, with the benchmarks that measure them |
 | 6 | T6.13 | 1.25 | PR 2 | the cross-check once #4059's write check lands; may be open beside PR 3 to PR 5 |
 
 A suggestion only: one pull request per subtask works as well.
@@ -960,10 +984,10 @@ The sources are RFC 18 as #4058 merged it (83232b441), whose text in the section
 the version this document was written against.
 
 The RFC 18 plan's figure for this epic is 8 subtasks, 22 man-days; this document's is 13 subtasks,
-27 man-days: the mint path (T6.2) and `Minter.Rename` and `SetEmail` (in T6.10), which E2's document
+27.25 man-days: the mint path (T6.2) and `Minter.Rename` and `SetEmail` (in T6.10), which E2's document
 hands to this epic, add 2.25; the outage mode as its own subtask and the suite's second run in
-`integration/ad-dc` add most of the rest; `FuzzRangeAttr` (T6.6), `KerberosLinkSID` (T6.9) and the
-records' `Generation` raise (T6.10) add 0.25 each. The fixture's TLS part (T6.1) keeps its 1 man-day
+`integration/ad-dc` add most of the rest; `FuzzRangeAttr` (T6.6), `KerberosLinkSID` (T6.9), the
+records' `Generation` raise (T6.10) and `Rename`'s refusals and re-planning (T6.10) add 0.25 each. The fixture's TLS part (T6.1) keeps its 1 man-day
 although it is already built, since it has not merged, and gains 0.5 for rebasing the three fixture
 branches onto `feat/storage-v2` and the cell's skip there. T6.5 and T6.10 are the least certain: how
 much of v1's client survives D4 and D10, and the swap's ordering inside one transaction.
@@ -979,11 +1003,9 @@ much of v1's client survives D4 and D10, and the swap's ordering inside one tran
   a `bind_name` field, amending Appendix B's row. Alternative: the
   `directory credential` secret's sealed value holds the name and the password together, which
   hides from an operator which account binds.
-- **The swap's one transaction (D5).** RFC 16 §3's `Rename` takes one principal; RFC 18 §5.1
-  wants a swap's renames in one transaction. Recommended: `Rename` takes a list, amending RFC 16 §3.
-  Alternative: a `Renames` call beside the single one.
 
-**Settled here:** the mint path's owner, which E2's §1.2 now names as T6.2. T6.2 owns it: it needs only E2's T2.3 and comes second in this epic, while E5's machine
+**Settled here:** D5, by the user on #4729: the list form, replacing the single `Rename`, with
+RFC 16 §3 amended to match; and the mint path's owner, which E2's §1.2 now names as T6.2. T6.2 owns it: it needs only E2's T2.3 and comes second in this epic, while E5's machine
 mint, T5.9, is late in E5, which depends on T6.2 for it.
 
 **Where the RFC 18 plan and the RFCs disagree:**
@@ -1022,9 +1044,9 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
   should drop "name".
 - RFC 18 §5.1 names no entry ID for an `rfc2307` directory, which has no `objectGUID`; T6.5 takes
   `entryUUID` (RFC 4530).
-- RFC 13 §6 runs a rule across two components' settings in the control plane; the NetBIOS rule
-  relates two sections of one component, and T6.13 builds it the port rule's way. RFC 13 §6 could
-  say a rule across two sections of one component runs the same way.
+- The NetBIOS rule relates two sections of one component, so T6.13 keeps it with identity, in
+  both sections' `CheckTx` (D13). RFC 13 §6 could say outright that a rule within one component
+  stays with it.
 
 **Other:**
 

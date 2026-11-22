@@ -890,7 +890,7 @@ session. More generally, a `Service` call with no session that presents
 a reference to state created on a session — an `OpenRef`, `StateRef` or
 `GrantID`, or a lock owner whose lock state was — is
 `StateError{NotYours, Sessioned: true}`, whatever its principal: the state
-carries the mark (`Sessioned`), so the file's primary checks it without a
+carries the mark, its open's `Session`, so the file's primary checks it without a
 client record ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A `ClientID`
 argument names no state and is not checked here (the NFS adapter checks a
 v4.0 one against the record's minor version,
@@ -1281,7 +1281,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `Downgrade`, `ConfirmOpen` | `Opens.Downgrade`, `ConfirmOpen` | — | primary |
 | `Close` | `Opens.Close`; `Namespace.Unlink` for a delete on close | `Delete` for an orphan | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)) |
 | `Read` | `Checks.CheckIO`; `Files.Authorize` for an anonymous or delegated open | `Read` | primary |
-| `Write` | `Checks.CheckIO`; `Files.Authorize`; `Files.SetAttrs` to clear setuid; `Capacity.Usage` for quota; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw`, `Allocation` for the reservation, `Write`, `Overlay`, `Commit` when stable | primary |
+| `Write` | `Checks.CheckIO`; `Opens.Suspended` for the times its open suspends; `Files.Authorize`; `Files.SetAttrs` to clear setuid; `Capacity.Usage` for quota; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw`, `Allocation` for the reservation, `Write`, `Overlay`, `Commit` when stable | primary |
 | `Commit` | `Opens.Flushed` through an SMB open | `Commit` | primary |
 | `Deallocate`, `Seek` | `Checks.CheckIO`; for `Deallocate`, `Opens.Entry` and `Watches.Changed` for the change (below) | `Deallocate`; `Allocation` | primary |
 | `Copy`, `Clone` | `Checks.CheckIO` on both | `Copy`, `Clone`, each with the admitted hook (`WithAdmitted`, §5.9 step 4); across shards `Read` and `Write` | the destination's primary, reading at the source's across shards through `Peers.ReadAt` |
@@ -1301,9 +1301,10 @@ record names no entry. So, while a watch is set on the share, `SetAttr`,
 `SetACL`, `SetXattr`, `RemoveXattr`, `Write` and `Deallocate` through an open
 or a lock state read `Opens.Entry`, the directory and name that open was made
 through as renames have moved them, and report the change there through
-`Watches.Changed`. A change through no such entry is reported, for a
-directory other than a share's root, under its name in the parent its record
-names; for a regular file it is not reported.
+`Watches.Changed`. A call through a delegation or an anonymous reference does
+not ask `Entry`, as neither names an open. A change through no such entry is
+reported, for a directory other than a share's root, under its name in the
+parent its record names; for a regular file it is not reported.
 
 > decision: a regular file changed through no open — an open made by handle, a
 > delegation, an anonymous stateid, an NFSv3 `WRITE` or `SETATTR`, or an open
@@ -1799,7 +1800,7 @@ it, long enough for a lease break to run out and be revoked.
 | 3 | in grace, `ErrGrace` for a write overlapping a lock, deny mode or grant that may still be reclaimed; otherwise the caller's open and others' byte-range locks; a conflicting caching grant starts a recall and returns `ErrDelay` | [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard), [§7](rfc-14-open-state.md#7.%20Conflicts%20across%20protocols) |
 | 4 | reserve the charge the write adds: the bytes it lands in holes below the size its staged writes leave, read from the engine's `Allocation` over its range under the admission lock, and the bytes it writes past that size; the gap a write leaves past the size stays a hole and is not reserved. A write that adds no charge, an overwrite of data, reserves nothing | §5.6 |
 | 5 | `ErrPerm` for an immutable file, or an append-only one below its size, releasing step 4's reservation, before anything changes; then, for a caller not privileged — the owner included — on a setuid file, or setgid with group execute, clear those bits in a committed mode change. The same step runs for a truncate, a deallocate and a copy or clone's destination | [RFC 7 §7.8](rfc-7-namespace-metadata.md#7.8%20Immutable%20and%20append-only%20flags%20are%20enforced%20at%20the%20chokepoint), [§9.6](rfc-7-namespace-metadata.md#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file) |
-| 6 | under the file's accept lock: check step 5's flags again against the overlay's size; capture `WCC.Before`; the engine's `Write`, passing the times the open has suspended; `WCC.After`; release the lock; for a stable write, the engine's `Commit` over the extent. Every other change of a file draws its version from `Draw` under the same lock; a change refused `ErrVersionBehind` is redrawn and retried within the deadline, never surfaced, and `DelayConflict` at it | [RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more), [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps), [§9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward), [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) |
+| 6 | under the file's accept lock: check step 5's flags again against the overlay's size; capture `WCC.Before`; the engine's `Write`, passing the times the open suspends, read under the admission lock (`Opens.Suspended`); `WCC.After`; release the lock; for a stable write, the engine's `Commit` over the extent. Every other change of a file draws its version from `Draw` under the same lock; a change refused `ErrVersionBehind` is redrawn and retried within the deadline, never surfaced, and `DelayConflict` at it | [RFC 8 §4.1](rfc-8-engine.md#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more), [RFC 7 §9.2](rfc-7-namespace-metadata.md#9.2%20Timestamps), [§9.4](rfc-7-namespace-metadata.md#9.4%20The%20change%20attribute%20and%20ctime%20never%20move%20backward), [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) |
 | 7 | reply: a stable write once the journal has synced it **and**, if it overwrites committed content, its existence commit has landed; one whose extent covers committed content also waits for a recorded sync mark ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)); a stable write of only appends past the committed size or fills of committed holes waits only for the sync. A stable write whose `Commit` answers a verifier other than its `Write`'s is `ErrDelay` (`DelayCommit`) instead (§5.8). The group commit records existence, usage and `mtime`, and releases the reservation | [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) |
 
 Steps 3–6 run at the primary as one step (§4.8), except across a hold (§5.0).
@@ -1853,6 +1854,12 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 	if len(src) == 0 { // a write of no byte returns after step 3: nothing reserved, cleared, timed or staged (above)
 		return WriteResult{WCC: WCC{Before: &f, After: f}}, false, nil
 	}
+	var sus TimeMask // the times its open suspends, read under this lock, where Opens.Update cannot change them; none for a delegated reference (read for step 6)
+	if ref.Kind != Delegated {
+		if sus, err = s.opens.Suspended(ctx, c.Who(), keyOf(f), ref); err != nil {
+			return wr, false, err
+		}
+	}
 	res, err := s.quota.Reserve(ctx, c.Identity, chargeOf(f), Usage{Bytes: charge(f, off, src)}) // step 4: holes filled plus bytes past the size; charge reads the overlaid size (§5.7) under the lock, not f's committed one (§5.6)
 	if err != nil {
 		return wr, false, err
@@ -1869,7 +1876,7 @@ func (s *Filesystem) writeOnce(ctx context.Context, c Caller, ref OpenRef, f Fil
 		wr.WCC.Before = s.captureBefore(ctx, f) // nil where it cannot be taken (§5.7)
 		// The reservation travels with the staged bytes: the existence commit that
 		// records their charge releases it (step 7), never this function's return.
-		wr.Verifier, err = s.engine.Write(ctx, f.Share, f.ID, off, src, opts(ref, st, res))
+		wr.Verifier, err = s.engine.Write(ctx, f.Share, f.ID, off, src, opts(sus, st, res))
 		wr.WCC.After = s.overlaid(ctx, f) // same hold, once staged
 	})
 	if retry || err != nil {
