@@ -182,19 +182,22 @@ func refused(s entity.Share, retry bool, err error) refusal {
 }
 
 // apply hands each component the settings it reads, at counters c, and
-// returns the records it refused. Once start step 9 has run it calls each
-// adapter's slot too, handing it loop to report idle on while it waits on a
-// drain, and returns the slots' refusals.
+// returns the records it refused: the engine, then identity, handed the
+// principals generation and one walk of the settings (walkSettings). Once
+// start step 9 has run it calls each adapter's slot too, handing it loop to
+// report idle on while it waits on a drain, and returns the slots' refusals
+// with identity's.
 //
 // ponytail: apply hands the engine RFC 13 Appendix B's defaults whatever c
 // says, as no settings record carries the engine's values yet, and refuses
-// nothing. Read the settings and principals generations' records here once
-// those carry what a component reads.
+// nothing. Read the engine's section from the pass's one walk, as identity
+// does, once a settings record carries what the engine reads.
 //
 // ponytail: each slot is handed what the node's tests set, and nothing else
 // enables an adapter, as no settings record carries an adapter's section
-// yet. Read each adapter's section with the settings snapshot's Get once it
-// has a body.
+// yet. Read each adapter's section from the pass's one walk with the
+// snapshot's Get once it has a body, so every component of a pass runs one
+// view of the settings.
 func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop) ([]refusal, error) {
 	if n.rec.applying != nil {
 		n.rec.applying(c)
@@ -202,10 +205,48 @@ func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop)
 	if err := n.engine.Apply(engineDefaults); err != nil {
 		return nil, err
 	}
-	if !n.adapting {
-		return nil, nil
+	at, snap, err := n.walkSettings(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("identity: the settings walk: %w", err)
 	}
-	return n.applyAdapters(ctx, loop, c.Settings), nil
+	refusals, err := n.applyIdentity(ctx, at, snap)
+	if err != nil {
+		return nil, fmt.Errorf("identity: %w", err)
+	}
+	if !n.adapting {
+		return refusals, nil
+	}
+	return append(refusals, n.applyAdapters(ctx, loop, c.Settings)...), nil
+}
+
+// walkSettings is one walk of the settings, and the counters read before it,
+// during which the settings generation did not move. The counters are read
+// right before each walk and again after it; a walk the generation moved
+// under is discarded and walked again, since the walk reads each page in its
+// own transaction and could mix two states of the store. While writes keep
+// moving the generation the call waits, and ends only with ctx, as a pass's
+// position stalls (RFC 23 §2.3).
+func (n *Node) walkSettings(ctx context.Context) (kvstore.Counters, *settings.Snapshot, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return kvstore.Counters{}, nil, err
+		}
+		c, err := n.counters(ctx)
+		if err != nil {
+			return kvstore.Counters{}, nil, err
+		}
+		snap, _, err := settings.Read(ctx, n.meta.Nodes(), n.rec.table, n.cfg.Bootstrap.Node.ID)
+		if err != nil {
+			return kvstore.Counters{}, nil, err
+		}
+		after, err := n.counters(ctx)
+		if err != nil {
+			return kvstore.Counters{}, nil, err
+		}
+		if after.Settings == c.Settings {
+			return c, snap, nil
+		}
+	}
 }
 
 // backoff is the wait before the next pass on the backoff, given its last

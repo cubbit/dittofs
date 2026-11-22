@@ -3,11 +3,13 @@ package node_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/nodetest"
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -90,24 +92,48 @@ func TestIdentityServesTheAPIAndTheFilesystem(t *testing.T) {
 }
 
 // putSetting writes an installation row of key holding value, unchecked,
-// as a row the store accepted from another binary.
+// as a row the store accepted from another binary, over the row stored.
 func putSetting(t *testing.T, h *nodetest.Harness, key, value string) {
 	t.Helper()
 	s := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: key, Value: []byte(value)}
-	if _, err := h.Store().ControlPlane().PutSetting(t.Context(), s, 0); err != nil {
+	err := h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		old, _, err := tx.Setting(s.Scope, key)
+		if err != nil {
+			return err
+		}
+		_, err = tx.PutSetting(s, old.Generation)
+		return err
+	})
+	if err != nil {
 		t.Fatalf("put %s = %s: %v", key, value, err)
 	}
 }
 
-// An identity row the section refuses fails the start, naming the row: no
-// default stands in for it.
+// An identity row the section refuses, or a first State identity refuses,
+// fails the start, naming the row: no default stands in for it.
 func TestARefusedIdentityRowFailsTheStart(t *testing.T) {
-	h := nodetest.New(t, nodetest.InMemory())
-	putSetting(t, h, "identity.ntlm", `123`)
-	err := h.Node().Start(t.Context())
-	t.Cleanup(func() { _ = h.Node().Stop(context.Background()) })
-	if err == nil || !strings.Contains(err.Error(), "identity.ntlm") {
-		t.Fatalf("Start with identity.ntlm = 123: got %v, want an error naming identity.ntlm", err)
+	prof.Watch(t, prof.Options{})
+	for _, tc := range []struct {
+		name, key, value, want string
+		directory              bool // the rest of a directory record is written too
+	}{
+		{"a row that does not decode", "identity.ntlm", `123`, "identity.ntlm", false},
+		{"a directory domain equal to the node's name", "identity.directory.netbios_domain", `"DITTOFS"`, "netbios_domain", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := nodetest.New(t, nodetest.InMemory())
+			if tc.directory {
+				for k, v := range map[string]string{"address": "ldaps://dc.corp.example", "base": "DC=corp,DC=example", "bind_name": "svc", "realm": "CORP.EXAMPLE"} {
+					putSetting(t, h, "identity.directory."+k, strconv.Quote(v))
+				}
+			}
+			putSetting(t, h, tc.key, tc.value)
+			err := h.Node().Start(t.Context())
+			t.Cleanup(func() { _ = h.Node().Stop(context.Background()) })
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Start with %s = %s: got %v, want an error naming %s", tc.key, tc.value, err, tc.want)
+			}
+		})
 	}
 }
 

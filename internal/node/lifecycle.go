@@ -242,7 +242,7 @@ func (n *Node) Stop(ctx context.Context) error {
 	} else if l.stepped != nil {
 		l.stepped("stop store")
 	}
-	return errors.Join(err, n.storageKey.Close())
+	return errors.Join(err, n.closeKeys())
 }
 
 // halt stops the parts from keep on, in reverse start order. Each that stops
@@ -365,15 +365,15 @@ func (n *Node) register(ctx context.Context) error {
 
 // readRecords reads the counters and the shares, keeping those reconcile
 // binds, and the shares being removed, for the engine's start, then calls
-// apply, and hands identity its first State. The counters it read first are
-// those reconcile has acted on, so only Start's full first pass, not a
+// apply, which hands identity its first State. The counters it read first
+// are those reconcile has acted on, so only Start's full first pass, not a
 // counter, makes reconcile record the refusals.
 //
 // decision: reconcile's mark is the counters read before the shares, not the
-// later ones identity's walk settled on: the shares and apply acted on the
+// later ones apply's settings walk settled on: the shares and apply acted on the
 // first, so a mark at the later ones would skip a share or setting written
 // between. Identity may run a newer State than the mark says, which costs
-// one more pass, never a missed one.
+// one more pass, never a missed one. Each pass keeps the same mark.
 func (n *Node) readRecords(ctx context.Context) error {
 	c, err := n.counters(ctx)
 	if err != nil {
@@ -389,9 +389,6 @@ func (n *Node) readRecords(ctx context.Context) error {
 	}
 	if _, err := n.apply(ctx, c, nil); err != nil {
 		return err
-	}
-	if _, err := n.applyIdentity(ctx); err != nil {
-		return fmt.Errorf("identity: %w", err)
 	}
 	n.rec.seen = c
 	return nil

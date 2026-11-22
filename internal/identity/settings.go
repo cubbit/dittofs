@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/settings"
 )
@@ -48,12 +49,12 @@ func defaultSettings() Settings {
 	}
 }
 
-// sectionName is the identity section's prefix in the settings table.
-const sectionName = "identity"
+// SectionName is the identity section's prefix in the settings table.
+const SectionName = "identity"
 
 // Section declares the identity section for the node's settings table.
 func Section() settings.Section {
-	return settings.Of(sectionName, settings.At(entity.ScopeInstallation), defaultSettings(),
+	return settings.Of(SectionName, settings.At(entity.ScopeInstallation), defaultSettings(),
 		settings.SecretRef("Keytab", entity.SecretKeytab),
 		settings.CheckTx(checkSettings))
 }
@@ -61,7 +62,24 @@ func Section() settings.Section {
 // SettingsOf is the identity section in snap as node reads it, or the
 // section's refusal when the walk refused a row of it.
 func SettingsOf(snap *settings.Snapshot, node entity.NodeID) (Settings, error) {
-	return settings.Get[Settings](snap, sectionName, node)
+	return settings.Get[Settings](snap, SectionName, node)
+}
+
+// DirectorySectionName is the identity.directory section's prefix.
+const DirectorySectionName = "identity.directory"
+
+// DirectoryOf is the identity.directory section in snap as node reads it:
+// nil when no row of it is stored, which is no directory, or the section's
+// refusal when the walk refused a row of it or the record it holds.
+func DirectoryOf(snap *settings.Snapshot, node entity.NodeID) (*directory.Record, error) {
+	if !snap.Stored(DirectorySectionName) {
+		return nil, nil
+	}
+	r, err := settings.Get[directory.Record](snap, DirectorySectionName, node)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 // checkSettings is the identity section's write check, run inside the
@@ -84,12 +102,12 @@ func SettingsOf(snap *settings.Snapshot, node entity.NodeID) (Settings, error) {
 // read its range at, conflicting with every setting change; worth it only if
 // such a race is ever seen outside a test.
 func checkSettings(tx entity.ControlPlaneTx, w settings.Write, s Settings) error {
-	if w.Key == keyNetBIOSName {
-		domain, _, err := settingString(tx, keyNetBIOSDomain)
+	if w.Key == KeyNetBIOSName {
+		domain, _, err := settingString(tx, KeyNetBIOSDomain)
 		if err != nil {
 			return err
 		}
-		return checkNetBIOS(w, s.NetBIOSName, keyNetBIOSDomain, domain)
+		return checkNetBIOS(w, s.NetBIOSName, KeyNetBIOSDomain, domain)
 	}
 	if w.Key != "identity.id_range" {
 		return nil
@@ -121,7 +139,7 @@ func checkSettings(tx entity.ControlPlaneTx, w settings.Write, s Settings) error
 // decoded or validated alone, since an empty address fails Validate. Overturned
 // if the settings read ever validates a section with no rows from its default.
 func DirectorySection() settings.Section {
-	return settings.Of("identity.directory", settings.At(entity.ScopeInstallation),
+	return settings.Of(DirectorySectionName, settings.At(entity.ScopeInstallation),
 		directory.Record{Schema: directory.SchemaAD},
 		settings.Required("Address"),
 		settings.WriteRole(entity.RoleAdmin),
@@ -129,27 +147,32 @@ func DirectorySection() settings.Section {
 		settings.CheckTx(checkDirectory))
 }
 
+// KeytabKey is the installation setting naming the keytab, and the key of
+// the keytab secret's owner, which the API seals it under and the node opens
+// it by. It is pkg/identity's, which the API reads without this package.
+const KeytabKey = identity.KeytabSetting
+
 // The two keys the NetBIOS rule relates, one in each identity section.
 const (
-	keyNetBIOSName   = "identity.netbios_name"
-	keyNetBIOSDomain = "identity.directory.netbios_domain"
+	KeyNetBIOSName   = "identity.netbios_name"
+	KeyNetBIOSDomain = "identity.directory.netbios_domain"
 )
 
 // checkDirectory is the directory section's write check: a write of the
 // record's NetBIOS domain reads identity.netbios_name in the write's
 // transaction, tracked, and refuses a domain equal to it.
 func checkDirectory(tx entity.ControlPlaneTx, w settings.Write, r directory.Record) error {
-	if w.Key != keyNetBIOSDomain {
+	if w.Key != KeyNetBIOSDomain {
 		return nil
 	}
-	name, found, err := settingString(tx, keyNetBIOSName)
+	name, found, err := settingString(tx, KeyNetBIOSName)
 	if err != nil {
 		return err
 	}
 	if !found {
 		name = defaultSettings().NetBIOSName
 	}
-	return checkNetBIOS(w, r.NetBIOSDomain, keyNetBIOSName, name)
+	return checkNetBIOS(w, r.NetBIOSDomain, KeyNetBIOSName, name)
 }
 
 // checkNetBIOS refuses w, writing value, when value equals otherValue, the

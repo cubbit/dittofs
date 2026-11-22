@@ -686,9 +686,10 @@ func TestAnOwnerSetsItselfAsOwner(t *testing.T) {
 	}
 }
 
-// The owner's chown asks nothing of the walk but is still cut by the share
+// The owner's chown asks nothing of Decide but is still cut by the share
 // ceiling: on a read-only share its chown to itself and its give-away are
-// both ErrReadOnly (RFC 19 §3.1).
+// both ErrReadOnly (RFC 19 §3.1). Only the give-away guards mayChange's grant
+// check, as its closing authorize refuses the chown to itself again.
 func TestAReadOnlyShareRefusesTheOwnersChown(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()

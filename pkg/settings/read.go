@@ -549,3 +549,42 @@ func Get[T any](snap *Snapshot, section string, node entity.NodeID) (T, error) {
 
 	return clone(v), nil
 }
+
+// Stored reports whether a row of section's wide scope went into snap,
+// refused or not: false for a section running on its defaults alone, or one
+// snap does not hold.
+func (s *Snapshot) Stored(section string) bool {
+	if s == nil {
+		return false
+	}
+
+	e, ok := s.sections[section]
+
+	return ok && e.stored
+}
+
+// RefusedRows is the scope and key of each row err refuses, err being a
+// refusal Read or Get answered, in err's order, each key as its row stores
+// it. A refusal the section's Validate made names no row, as Validate names
+// no field, and is listed under the section's prefix. An error holding no
+// refusal lists none.
+func RefusedRows(err error) []entity.SettingKey {
+	switch e := err.(type) {
+	case *refusal:
+		key := e.key
+		if unquoted, uerr := strconv.Unquote(key); uerr == nil {
+			key = unquoted // an unknown key is printed quoted
+		}
+
+		return []entity.SettingKey{{Scope: e.scope, Key: key}}
+	case interface{ Unwrap() []error }:
+		var out []entity.SettingKey
+		for _, e := range e.Unwrap() {
+			out = append(out, RefusedRows(e)...)
+		}
+
+		return out
+	}
+
+	return nil
+}

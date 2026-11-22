@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
@@ -17,7 +18,11 @@ func (n *Node) openSecrets(ctx context.Context) (*secrets.Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("node: the installation: %w", err)
 	}
-	p, err := secrets.New(n.meta.ControlPlane(), map[secrets.Role]keyprovider.KeyProvider{secrets.Storage: n.storageKey})
+	keys := map[secrets.Role]keyprovider.KeyProvider{secrets.Storage: n.storageKey}
+	if n.protocolKey != nil {
+		keys[secrets.Protocol] = n.protocolKey
+	}
+	p, err := secrets.New(n.meta.ControlPlane(), keys)
 	if err != nil {
 		return nil, fmt.Errorf("node: the secret provider: %w", err)
 	}
@@ -43,4 +48,13 @@ func (k providerKeys) Versions(ctx context.Context, kind entity.SecretKind, owne
 		ks[i] = auth.KeyVersion{Version: v.Number, Value: v.Value}
 	}
 	return ks, err
+}
+
+// closeKeys closes the storage key and the protocol key, when opened.
+func (n *Node) closeKeys() error {
+	err := n.storageKey.Close()
+	if n.protocolKey != nil {
+		err = errors.Join(err, n.protocolKey.Close())
+	}
+	return err
 }

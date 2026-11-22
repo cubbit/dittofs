@@ -447,12 +447,16 @@ Four kinds of call take a different path through the sequence:
   it is cut by `C` before the ownership rules of
   [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)
   decide the value: a `chmod` asks write the ACL; a `chown` by a caller other
-  than the file's owner asks change the owner; the owner's own asks nothing of
-  the walk but is still cut by `C`, so a read-only share refuses it
-  `ErrReadOnly`, and RFC 7 §7.4's ownership rules decide the rest; a `chgrp`
-  asks change the owner, or write the ACL when the caller owns the file;
-  setting the times to a client-given value, or any other attribute, asks write
-  attributes, and setting them to the server's time asks write data.
+  than the file's owner asks change the owner; a `chgrp` asks change the owner,
+  or write the ACL when the caller owns the file; setting the times to a
+  client-given value, or any other attribute, asks write attributes, and
+  setting them to the server's time asks write data.
+  The owner's `chown` asks no right of the service's decision, so no access
+  event records a change of the owner alone. The store's own check still runs
+  this sequence for write attributes: the share grant, so a read-only share
+  refuses it `ErrReadOnly`; the flags; and the ACL, under which the owner holds
+  write attributes unless an entry names owner rights. RFC 7 §7.4's ownership
+  rules decide the rest.
   So an owner on a read share cannot `chmod`, `chown`, `chgrp` or `touch -d`
   its file.
 

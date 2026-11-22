@@ -519,8 +519,9 @@ func TestInterruptedStepCommitsNothing(t *testing.T) {
 	}
 }
 
-// A user's deletion fails on a user its deletion did not mark and on a
-// target that names no user, and ends at once on a user already gone. A
+// A user's deletion fails on a user its deletion did not mark, on a target
+// that names no user and on a user whose current password version does not
+// decode, and ends at once on a user already gone. A
 // store error, a transaction too large included, leaves it pending until a
 // retry a second later runs it again.
 func TestUserDeletionStepAnswers(t *testing.T) {
@@ -549,6 +550,14 @@ func TestUserDeletionStepAnswers(t *testing.T) {
 		}, nil, entity.OpFailed, entity.OpFailed},
 		{"a group's ID", deletion(entity.ResourceRef{Kind: entity.ResourceGroup, ID: group.ID[:]}), nil, entity.OpFailed, entity.OpFailed},
 		{"a short ID", deletion(entity.ResourceRef{Kind: entity.ResourceUser, ID: []byte{1}}), nil, entity.OpFailed, entity.OpFailed},
+		{"an undecodable current password", func(b *bench) entity.Operation {
+			pw := entity.SecretRef{15: 1}
+			u, gen := b.user(entity.User{Name: "alice", Password: pw})
+			b.must("write alice's undecodable password", b.db.Update(b.t.Context(), func(tx kv.Txn) error {
+				return tx.Set(keys.Uint64(keys.ID([]byte{keys.KindSEC}, pw[:]), 1), []byte("not a secret"))
+			}))
+			return b.deleteUser(u, gen)
+		}, nil, entity.OpFailed, entity.OpFailed},
 		{"a user already gone", deletion(userRef(entity.NewUser())), nil, entity.OpSucceeded, entity.OpSucceeded},
 		{"a store error", marked, errors.New("store unreachable"), entity.OpPending, entity.OpSucceeded},
 		{"a transaction too large", marked, kv.ErrTooLarge, entity.OpPending, entity.OpSucceeded},

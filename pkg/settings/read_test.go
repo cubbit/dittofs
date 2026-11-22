@@ -1130,3 +1130,47 @@ func TestReadOtherNodeRows(t *testing.T) {
 		t.Fatalf("refused for node b %v, want local ErrInvalid and peer ErrNewerSchema", refused)
 	}
 }
+
+// RefusedRows names each refused row by its scope and its key as stored: an
+// unknown key unquoted, each missing required key, and the section's prefix
+// for a refusal its Validate made; none for no refusal.
+func TestRefusedRows(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := newRdStore(t)
+	table := settings.Table{
+		settings.Of("srv", settings.At(entity.ScopeInstallation), rdServerDefault()),
+		settings.Of("peer", settings.At(entity.ScopeInstallation), rdPeer{},
+			settings.Required("Address", "Peer")),
+		settings.Of("cred", settings.At(entity.ScopeInstallation), rdCred{}),
+		settings.Of("list", settings.At(entity.ScopeInstallation), rdList{}),
+	}
+
+	s.put(t, rdInstallation, "srv.port", "0")
+	s.put(t, rdInstallation, "cred.nosuch", "1")
+
+	_, refused := rdRead(t, s.nodes, table, rdNodeA)
+
+	for _, tc := range []struct {
+		section string
+		want    []string
+	}{
+		{"srv", []string{"srv"}},
+		{"peer", []string{"peer.address", "peer.peer"}},
+		{"cred", []string{"cred.nosuch"}},
+		{"list", nil},
+	} {
+		var got []string
+		for _, k := range settings.RefusedRows(refused[tc.section]) {
+			if k.Scope != rdInstallation {
+				t.Errorf("RefusedRows(%s): row %s at scope %+v, want the installation's", tc.section, k.Key, k.Scope)
+			}
+
+			got = append(got, k.Key)
+		}
+
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Errorf("RefusedRows(%s): keys %q, want %q", tc.section, got, tc.want)
+		}
+	}
+}

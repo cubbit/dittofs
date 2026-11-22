@@ -311,8 +311,8 @@ func TestDeleteUserRefusesAForeignSecret(t *testing.T) {
 			}
 			// The batch refuses an unmarked user; one marked would lose its
 			// grant and membership to it.
-			if done, _ := r.s.Nodes().ContinueDelete(ctx, alice.Principal); done {
-				t.Errorf("a deletion batch after the refused DeleteUser answered done, want not done")
+			if done, err := r.s.Nodes().ContinueDelete(ctx, alice.Principal); err == nil || done {
+				t.Errorf("a deletion batch after the refused DeleteUser: got done %v, %v; want refused", done, err)
 			}
 
 			r.must(r.s.kv.View(ctx, func(rd kv.Reader) error {
@@ -431,35 +431,58 @@ func TestUserDeletionTakesAnUndecodableOldVersion(t *testing.T) {
 	}))
 }
 
-// DeleteUser marks a user whose current password version does not decode,
-// so a corrupt secret does not keep the user live, and the batch that would
-// delete the record fails on that version, leaving the record marked and
-// every version held.
-func TestUserDeletionStallsOnAnUndecodableCurrentVersion(t *testing.T) {
-	ctx := context.Background()
-	r := newRestarting(t, 100)
-	cp := r.s.ControlPlane()
-	pw := entity.SecretRef{15: 1}
-	alice := entity.User{Principal: entity.NewUser(), Name: "alice", Password: pw}
-	gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
-	r.must(err)
-	for _, v := range []uint64{1, 2} {
-		r.must(cp.PutSecret(ctx, userSecret(pw, entity.SecretPassword, alice, entity.UserPasswordKey, v), v-1))
-	}
-	r.must(r.s.kv.Update(ctx, func(tx kv.Txn) error {
-		return tx.Set(secretKey(pw, 2), []byte("not a secret"))
-	}))
+// DeleteUser marks a user whose current password or NT hash version does not
+// decode, its value or its key, so a corrupt secret does not keep the user
+// live, and the batch that would delete the record fails on that version as
+// ErrSecretUndecodable, leaving the record marked and every version held.
+func TestUserDeletionFailsOnAnUndecodableCurrentVersion(t *testing.T) {
+	ref := entity.SecretRef{15: 1}
+	for _, c := range []struct {
+		name   string
+		user   entity.User
+		kind   entity.SecretKind
+		key    string
+		badKey bool
+	}{
+		{"password value", entity.User{Password: ref}, entity.SecretPassword, entity.UserPasswordKey, false},
+		{"NT hash value", entity.User{NTHash: ref}, entity.SecretNTHash, entity.UserNTHashKey, false},
+		{"password key", entity.User{Password: ref}, entity.SecretPassword, entity.UserPasswordKey, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			r := newRestarting(t, 100)
+			cp := r.s.ControlPlane()
+			alice := c.user
+			alice.Principal, alice.Name = entity.NewUser(), "alice"
+			gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
+			r.must(err)
+			for _, v := range []uint64{1, 2} {
+				r.must(cp.PutSecret(ctx, userSecret(ref, c.kind, alice, c.key, v), v-1))
+			}
+			r.must(r.s.kv.Update(ctx, func(tx kv.Txn) error {
+				if c.badKey {
+					// Sorts after version 2's key and below secretIn's bound.
+					return tx.Set(append(secretPrefix(ref), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0), []byte("x"))
+				}
+				return tx.Set(secretKey(ref, 2), []byte("not a secret"))
+			}))
 
-	if err := cp.DeleteUser(ctx, alice.Principal, gen); err != nil {
-		t.Fatalf("DeleteUser over an undecodable current version: got %v, want nil", err)
-	}
-	if _, ok, err := cp.UserNamed(ctx, "alice"); err != nil || ok {
-		t.Errorf("UserNamed(alice) after the mark: found %v, error %v; want not found", ok, err)
-	}
-	done, err := r.s.Nodes().ContinueDelete(ctx, alice.Principal)
-	if !errors.As(err, new(secretUndecodable)) || done {
-		t.Errorf("deletion batch over an undecodable current version: done %v, error %v; want not done, the decode error", done, err)
-	}
+			if err := cp.DeleteUser(ctx, alice.Principal, gen); err != nil {
+				t.Fatalf("DeleteUser over an undecodable current %s: got %v, want nil", c.name, err)
+			}
+			if _, ok, err := cp.UserNamed(ctx, "alice"); err != nil || ok {
+				t.Errorf("UserNamed(alice) after the mark: found %v, error %v; want not found", ok, err)
+			}
+			done, err := r.s.Nodes().ContinueDelete(ctx, alice.Principal)
+			if !errors.Is(err, ErrSecretUndecodable) || done {
+				t.Errorf("deletion batch over an undecodable current %s: done %v, error %v; want not done, ErrSecretUndecodable", c.name, done, err)
+			}
 
-	heldSecrets(t, r, alice, "after the failed batch", true, pw)
+			if c.badKey {
+				heldSecrets(t, r, alice, "after the failed batch", true)
+			} else {
+				heldSecrets(t, r, alice, "after the failed batch", true, ref)
+			}
+		})
+	}
 }

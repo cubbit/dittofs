@@ -202,7 +202,9 @@ const maxSettingKey = 255
 // settings table, and refused 404 for a record of a scope that does not
 // exist, and 400 for a key only a resource's own route writes. A write of
 // the installation's identity.ntlm also runs the rule for turning NTLM back
-// on, and answers 202 with the NT-hash deletion it starts. A
+// on, and answers 202 with the NT-hash deletion it starts; one of its
+// identity.netbios_name is refused 409 joined while the installation is
+// joined. A
 // share-scoped setting of a share being removed is refused stale by the
 // store.
 func settingRoutes() []route {
@@ -252,6 +254,9 @@ func settingRoutes() []route {
 					}
 					var gen uint64
 					st := entity.Setting{Scope: sc.scope(rq.ID), Key: rq.Sub, Value: v}
+					if err := netbiosRule(tx, st.Scope, st.Key); err != nil {
+						return apiv1.Setting{}, rq.ID, err
+					}
 					err := ntlmWrite(ctx, tx, rq.start, st.Scope, st.Key, func() (err error) {
 						gen, err = putSetting(ctx, rq.d, tx, st, rq.Expect)
 						return err
@@ -261,6 +266,9 @@ func settingRoutes() []route {
 			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, desc: desc, serve: write(tagsOf(w), nil,
 				func(ctx context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
 					scope := sc.scope(rq.ID)
+					if err := netbiosRule(tx, scope, rq.Sub); err != nil {
+						return none{}, rq.ID, err
+					}
 					return none{}, rq.ID, ntlmWrite(ctx, tx, rq.start, scope, rq.Sub, func() error {
 						return deleteSetting(ctx, rq.d, tx, scope, rq.Sub, rq.Expect)
 					})

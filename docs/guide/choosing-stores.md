@@ -11,7 +11,7 @@ the exact config keys and CLI flags, see [Configuration](configuration.md).
 > | Control-plane database | Users, shares, permissions, policies | `sqlite`, `postgres` | `database.*` in config |
 > | Metadata store (per share) | Inodes, names, attrs, ACLs, dedup index | `badger` (on disk or `in_memory`) | not created from the CLI |
 > | Block store (per share) | File content (chunks) | `s3`, `memory` | no CLI command today; returns as a resource of the v2 management API |
-> | Journal (per share) | Writes not yet offloaded to the block store | none — always on disk | `blockstore.journal.path` in config |
+> | Journal (per share) | Writes not yet offloaded to the block store | none — always on disk | `journals` devices in config |
 
 ## Metadata store (per share)
 
@@ -40,7 +40,7 @@ yet.
 Content is split into content-addressed chunks (FastCDC chunking + BLAKE3 hashing,
 **dedup is always on**, no toggle). Every share has exactly **one block store** — the
 durable home for its content — and an on-disk **journal** in front of it. The journal is
-not a store you choose: it is provisioned automatically under `blockstore.journal.path`,
+not a store you choose: it is provisioned automatically from the node's `journals` devices,
 absorbs writes, and hands them to an async syncer that offloads them to the block store.
 
 | Type | Latency | Capacity | Durability | When to choose |

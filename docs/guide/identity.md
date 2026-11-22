@@ -19,6 +19,9 @@ See also: [docs/CONFIGURATION.md](configuration.md) (every config key + env var)
 [docs/SMB.md](smb.md), [docs/NFS.md](nfs.md), and [docs/ACLS.md](access-control.md) (the
 cross-protocol ACL/SID model).
 
+> **Joining the domain** (the computer account, the ports a firewalled site opens,
+> rotation): see [Part C2](#part-c2-join-the-domain).
+
 > **Joining a real Windows Server AD?** For an end-to-end operator runbook
 > (`ktpass` keytab, LDAP, granting AD users/groups directly, and per-user
 > "mount on login"), see [windows-ad-setup.md](windows-ad-setup.md). This page
@@ -399,6 +402,182 @@ a change applies on the next `dfs` restart.
 
 ---
 
+## Part C2: Join the domain
+
+Joining gives DittoFS a **computer account** in the domain. The account does two
+jobs: its service names (`host/`, `cifs/` and whatever the account's
+`servicePrincipalName` and the domain's SPN mappings add) accept Kerberos
+tickets under keys DittoFS **derives from the account's password**, and its
+secure channel to a domain controller validates NTLM sign-ins of domain users
+(NETLOGON pass-through). Without a join, a domain user's NTLM sign-in fails.
+
+A join is an operation of the management API. `dfsctl` has no join command, so
+the examples use `curl` with an administrator's token:
+
+```bash
+H=(-H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json')
+URL=http://127.0.0.1:8080/api/v1      # the API's address; see configuration.md
+```
+
+### Before you join
+
+- The directory record names the realm and the base:
+  `identity.directory.realm` (for example `DITTOFS.AD`) and
+  `identity.directory.base` (for example `DC=dittofs,DC=ad`). An online join's
+  organisational unit must lie strictly under the base. A join is refused while
+  the record's schema is `rfc2307`, which has no domain controller.
+- Domain controllers are found from the domain's DNS SRV records, with
+  fail-over, unless the directory record names a controller address, which is
+  then used alone.
+- **AES only.** DittoFS accepts and derives AES128 and AES256 keys
+  (`msDS-SupportedEncryptionTypes` = `0x18`) and refuses DES and RC4. An online
+  join sets the attribute on the account it creates; an offline join refuses an
+  account whose value lacks either bit or is absent.
+- A firewalled site opens these ports from the DittoFS host to **each** domain
+  controller:
+
+  | Port | Used for |
+  |---|---|
+  | 135 | RPC endpoint mapper, which names NETLOGON's port |
+  | the controller's dynamic RPC range | the NETLOGON secure channel. On Windows this is `49152-65535` unless the site narrowed it; on Samba it is `rpc server dynamic port range` |
+  | 88 | Kerberos |
+  | 636, or 389 for an `ldap://` record (StartTLS) | LDAP, which the online join creates the account over and the directory reads use |
+
+  Also open DNS (53) if the controllers are found by SRV records.
+
+### Online join
+
+DittoFS creates the computer account as an administrator and takes its
+password. The administrator needs the right to create computer objects in the
+organisational unit:
+
+```bash
+curl -s "${H[@]}" -X POST "$URL/installation:join-domain" -d '{
+  "spec": {"mode": "online", "account": "DITTOFS$",
+           "ou": "OU=Servers,DC=dittofs,DC=ad"},
+  "credential": {"user": "Administrator@DITTOFS.AD", "password": "'"$(printf %s "$ADMIN_PW" | base64 | tr -d '\n')"'"}}'
+```
+
+- `spec.account` is the account's name, with or without the `$`; empty takes
+  identity's default. `spec.ou` defaults to the domain's `Computers` container.
+  `spec.dns_host_name` (a name of two labels or more) defaults to the account's
+  name in lower case, a dot and the realm in lower case.
+- `credential.password` is base64 in the JSON. The administrator's credential
+  is held in memory for this one operation, never stored or logged.
+- The answer is `202` with the operation and its `Location`. Follow it with
+  `GET $URL/operations/{id}?wait=60s` until it is `succeeded` or `failed`; a
+  failure names the controller, the account or the attribute that ended it.
+- A join of a computer account that already exists is refused, naming it, unless
+  the request sets `"takeover": true`: the default NetBIOS name is `DITTOFS`, so
+  a second installation joining the same domain would otherwise reset the
+  first one's password.
+
+### Offline join
+
+An administrator creates the computer account, so DittoFS never holds a
+credential that can create or delete accounts. Create it with the attribute
+set; an account created in Active Directory Users and Computers has none, and
+the join refuses it:
+
+```powershell
+New-ADComputer -Name DITTOFS -Enabled $true `
+  -AccountPassword (ConvertTo-SecureString 'a-long-random-password' -AsPlainText -Force) `
+  -OtherAttributes @{'msDS-SupportedEncryptionTypes'=0x18}
+```
+
+Then hand DittoFS the account and its password. There is no `credential.user`,
+`ou` or `dns_host_name`:
+
+```bash
+curl -s "${H[@]}" -X POST "$URL/installation:join-domain" -d '{
+  "spec": {"mode": "offline", "account": "DITTOFS$"},
+  "credential": {"password": "'"$(printf %s "$ACCOUNT_PW" | base64 | tr -d '\n')"'"}}'
+```
+
+The join verifies the password against a controller, reports which service
+names the account holds, then **rotates the password twice**, because whoever
+created the account knows the password you handed over. The handed-over
+password derives no Kerberos key, so the account's names accept no ticket until
+the second rotation has confirmed.
+
+Two things the code cannot check for you:
+
+- **Keep the account's creator off the network path to the domain controller
+  while the join runs.** The first rotation is authenticated by the handed-over
+  password, so a creator who can observe or answer that exchange can learn the
+  password, and the next one. Run the join from a network the creator is not on,
+  or use an online join.
+- **Transfer the computer object's ownership after any join.** The owner can
+  write `msDS-AllowedToActOnBehalfOfOtherIdentity` and, through resource-based
+  constrained delegation, have a controller sign a ticket for any user to the
+  account's names. The account's creator usually stays its owner, and whoever
+  may write the organisational unit can do the same. In Active Directory Users
+  and Computers, set the object's owner to *Domain Admins* and review the
+  attribute. DittoFS does not yet report the owner or the attribute.
+
+### After a join
+
+`GET $URL/installation` answers `status.join`: `joined`, the `account`, the
+service `names` it holds and `last_rotation`. A join also writes the account's
+name, upper case and without the `$`, as `identity.netbios_name` (letters,
+digits and `-`, at most 15 bytes). **Do not rename a joined installation.** RFC 13 and
+RFC 18 specify a refusal of a change to `identity.netbios_name` while joined, but
+the code does not enforce it yet, and a rename breaks NTLM pass-through, since
+the name no longer matches the computer account. To change the name, join again
+with `"takeover": true` naming the new account in `spec.account`: the join writes
+that account's name as `identity.netbios_name` when it ends. There is no leave
+operation.
+
+The account's names are derived, so a keytab must **not** hold keys for them: a
+keytab import (`PUT $URL/installation/keytab`, body `{"spec": {"value":
+"<base64 keytab>"}}`, with `If-None-Match: *` for a first import or `If-Match` with
+the current tag to replace one, or it answers `428`) holding a key for one of the joined account's names is
+refused, and so is a join naming an account whose names the stored keytab
+already holds (`409`, naming `spec.account`). Every other service name, such as `nfs/<host>`, another host
+name, or a name registered on a separate service account, still needs an
+imported keytab. The keytab holds AES keys only; one with a DES or RC4 key is
+refused whole. Export one as in [Part C](#one-keytab-both-protocols).
+
+### Rejoin and takeover
+
+A join of an installation that is already joined, online or offline, is refused
+`409` with the code `joined` unless the request sets `"takeover": true`. The
+takeover is also how you recover: an offline join after an administrator reset
+the account's password, or a join whose domain controller stopped answering for
+an hour. A join is also refused `409` while another join or a rotation runs
+(`operation_running`), and `503` (`unavailable`) when the node has no identity
+service, or, for a join that names its account, has a keytab stored that identity
+has not applied.
+
+### Rotation
+
+The machine password rotates by itself **seven days** after the last
+confirmed rotation, inside Windows' 30-day maximum, and a failed rotation is
+retried after an hour. To rotate now:
+
+```bash
+curl -s "${H[@]}" -H "Idempotency-Key: rotate-$(date +%s)" -X POST "$URL/installation:rotate-machine-password"
+```
+
+A key is reused only to retry the same attempt: a retry with the same key within
+24 hours replays the first answer, so a new rotation needs a new key.
+
+A rotation seals the new password first, waits for this node to hold it, sets
+it at one pinned controller and then reads the account's key version number to
+confirm. The wait is for this node only; with several nodes, the others pick the
+new version up on their next reconcile. Tickets issued under the previous password keep verifying for the
+retention (ten hours plus the clock skew). A rotation is refused while a join
+runs, and fails, saying the installation is not joined, when it is not.
+
+Two health conditions report the account:
+
+| Condition | Meaning | What to do |
+|---|---|---|
+| `machine_password_rotation_failed` | the last rotation failed, or could not start because a node lagged | read the operation's failure, which names the controller or version; fix it and rotate again; a join with a takeover is the fallback |
+| `machine_account_unhealthy` | this node's secure channel to a controller is failing | check the ports above, the account in the directory and the clock |
+
+---
+
 ## Part D: Kubernetes operator (DittoServer CR)
 
 The dittofs-operator renders the `ldap:` and `kerberos:` config blocks and mounts
@@ -606,9 +785,8 @@ A real Windows client gets the cleanest experience by **joining the domain** and
 authenticating to DittoFS over **Kerberos** — the server side is fully proven
 (SMB SPNEGO/PAC + AES keytab, Part C). Connecting by a name with no Kerberos SPN
 (such as an IP) falls back to **NTLM**, which
-is now supported for AD domain users via **NETLOGON pass-through** — configure a
-machine account (`kerberos.machine_account`, see
-[configuration.md](configuration.md#12-kerberos-configuration) and
+is now supported for AD domain users via **NETLOGON pass-through** — join the
+domain ([Part C2](#part-c2-join-the-domain) and
 [windows-ad-setup.md](windows-ad-setup.md)). For Kerberos acceptance testing,
 domain-join is still the path with no extra server dependency.
 
@@ -684,9 +862,8 @@ icacls \\<dittofs-smb-ip>\<share>\<file>     # CLI equivalent of the Security ta
   carries AES256/AES128 keys for the SPNs (Part A).
 - **Machine account (NETLOGON) for NTLM pass-through:** the keytab covers
   Kerberos; for AD domain users authenticating over **NTLM** (Explorer
-  double-click / connect by IP, no SPN) configure `kerberos.machine_account`.
-  Both **offline** (pre-created computer account + supplied secret) and **online
-  `net ads join`** (DittoFS creates the computer object over LDAPS and rotates
-  the password) are supported. See
-  [configuration.md](configuration.md#12-kerberos-configuration) and
+  double-click / connect by IP, no SPN) join the domain. Both **offline**
+  (pre-created computer account + its password) and **online** (DittoFS creates
+  the computer object over LDAPS) joins are supported, and the password rotates
+  by itself. See [Part C2](#part-c2-join-the-domain) and
   [windows-ad-setup.md](windows-ad-setup.md).

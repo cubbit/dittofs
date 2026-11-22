@@ -128,10 +128,11 @@ func (n *Node) statusTurn(ctx context.Context) {
 // lists every change it did not apply. Report per-record positions if a
 // component ever applies records out of order.
 //
-// ponytail: the restart-pending set and the secret versions are empty, as
-// nothing applies a restart-class setting or resolves a secret yet; and the
-// claim generation is zero, as no namespace is claimed. Fill each with the
-// component that first applies, resolves or claims it.
+// ponytail: the restart-pending set is empty, as nothing applies a
+// restart-class setting yet; the secret versions are identity's keytab
+// alone, as no other component holds a secret's versions yet; and the claim
+// generation is zero, as no namespace is claimed. Fill each with the
+// component that first applies, holds or claims it.
 func (n *Node) nodeStatus() entity.NodeStatus {
 	pos, refused := n.rec.report()
 	for _, kind := range n.runner.refusedKinds() {
@@ -143,6 +144,7 @@ func (n *Node) nodeStatus() entity.NodeStatus {
 		ShareList:  pos.ShareList,
 		Principals: pos.Principals,
 		Refused:    refused,
+		Secrets:    n.identitySecrets(),
 		Conditions: encodeConditions(n.health.Conditions(nil)),
 		Adapters:   []entity.AdapterStatus{n.nfs.status(), n.smb.status()},
 	}
