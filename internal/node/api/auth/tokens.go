@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -199,6 +200,13 @@ func (t *Tokens) current(ctx context.Context) (KeyVersion, error) {
 	return t.held[0], nil
 }
 
+// SigningKey is the value of the version that signs now, a copy, which keys
+// the API's idempotency digests.
+func (t *Tokens) SigningKey(ctx context.Context) ([]byte, error) {
+	k, err := t.current(ctx)
+	return slices.Clone(k.Value), err
+}
+
 // byVersion is the held version v, and false when it is not held.
 func (t *Tokens) byVersion(ctx context.Context, v uint64) (KeyVersion, bool, error) {
 	t.mu.Lock()
@@ -228,6 +236,20 @@ type Claims struct {
 	IssuedAt  time.Time
 }
 
+// signer is the version to sign with once a write has committed: the newest
+// version held, or k, read before the write, when none is newer. A rotation
+// that switched the key while the request ran is followed here without a
+// read, so a token signed after the switch never carries the replaced kid
+// past the prune's margin on the node that switched.
+func (t *Tokens) signer(k KeyVersion) KeyVersion {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.held) > 0 && t.held[0].Version > k.Version {
+		return t.held[0]
+	}
+	return k
+}
+
 // Issue signs an access token for principal's session, issued at iat in
 // whole seconds and expiring accessLife later, with the current version.
 func (t *Tokens) Issue(ctx context.Context, principal entity.Principal, session [16]byte, iat time.Time) (string, error) {
@@ -235,6 +257,13 @@ func (t *Tokens) Issue(ctx context.Context, principal entity.Principal, session 
 	if err != nil {
 		return "", err
 	}
+	return sign(k, principal, session, iat)
+}
+
+// sign signs an access token for principal's session with k, issued at iat
+// and expiring accessLife later. It reads nothing, so a caller that read k
+// before its write commits signs with nothing left to fail.
+func sign(k KeyVersion, principal entity.Principal, session [16]byte, iat time.Time) (string, error) {
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims{
 		Session: hex.EncodeToString(session[:]),
 		RegisteredClaims: jwt.RegisteredClaims{

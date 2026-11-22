@@ -35,6 +35,7 @@ var covered = []struct{ dir, alias, prefix string }{
 	{"../../../pkg/metadata/kv", "kv", "Err"},
 	{"../../../pkg/settings", "settings", "Err"},
 	{"../../../pkg/secrets/secreterr", "secreterr", "Err"},
+	{"auth", "auth", "Err"},
 }
 
 // answeredAs are the errors whose row answers another code than their own

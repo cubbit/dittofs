@@ -33,8 +33,12 @@ type route struct {
 	starts          apiv1.OpKind
 	mayStart        apiv1.OpKind
 	keyless         bool
-	beforeReady     bool
-	serve           adapter
+	// ownRecord marks a POST on a path naming no ID that writes the one
+	// record the path reaches, as sign-out's of the caller's session: it
+	// creates nothing.
+	ownRecord   bool
+	beforeReady bool
+	serve       adapter
 	// query is the query parameters a write row takes; a write naming any
 	// other is refused. A read row's adapter checks its own.
 	query []string
@@ -103,9 +107,12 @@ func valueNamed[E fmt.Stringer](vs []E, s string) (E, bool) {
 // hasID reports whether the row's path names a record by {id}.
 func (rt *route) hasID() bool { return strings.Contains(rt.pattern, "{id}") }
 
-// creates reports whether the row creates its record: a POST on a
-// collection, answered 201 with the record's Location.
-func (rt *route) creates() bool { return rt.method == http.MethodPost && !rt.hasID() && rt.verb == "" }
+// creates reports whether the row creates its record: a write POSTed on a
+// collection, answered 201 with the record's Location; neither a call nor a
+// write of the one record its path reaches.
+func (rt *route) creates() bool {
+	return rt.method == http.MethodPost && !rt.hasID() && rt.verb == "" && rt.serve.form == formWrite && !rt.ownRecord
+}
 
 // precondition is what a write row's request must carry: an
 // Idempotency-Key; If-Match; or, a PUT that may create its record, If-Match
@@ -239,9 +246,9 @@ var baseRoutes = []route{
 	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "rotate-machine-password", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpRotateMachinePassword, serve: action(prepareRotate)},
 }
 
-// routes is the whole table: the rows above, and the generic setting
-// resource's rows at each scope.
-var routes = slices.Concat(baseRoutes, settingRoutes())
+// routes is the whole table: the rows above, sign-in's, and the generic
+// setting resource's rows at each scope.
+var routes = slices.Concat(baseRoutes, authRoutes, settingRoutes())
 
 // version answers the API's major versions and nothing else.
 func version(context.Context, Deps, request[none]) (apiv1.Version, error) {

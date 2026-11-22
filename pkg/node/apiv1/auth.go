@@ -38,10 +38,14 @@ func (s SignIn) LogValue() slog.Value {
 func (s SignIn) Format(f fmt.State, _ rune) { show(f, s.LogValue()) }
 
 // Tokens answers a sign-in, a refresh and a password change: an access token
-// to present on each call, and the refresh token that gets the next pair.
+// to present on each call, when it expires, the refresh token that gets the
+// next pair, and whether the account must change its password before any
+// call but that change and sign-out.
 type Tokens struct {
-	Access  string `json:"access_token"`
-	Refresh string `json:"refresh_token"`
+	Access     string    `json:"access_token"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	Refresh    string    `json:"refresh_token"`
+	MustChange bool      `json:"must_change"`
 }
 
 func (Tokens) LogValue() slog.Value { return redacted }

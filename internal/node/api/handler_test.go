@@ -201,15 +201,20 @@ func (r reply) problem(t *testing.T) apiv1.Problem {
 const thing = "/api/v1/things/" + api.TestID
 
 // With no Authenticate, every row but the public ones, and a path no row
-// names, answers 401 unauthenticated; /api/version and the probes answer.
+// names, answers 401 unauthenticated; /api/version and the probes answer,
+// and sign-in and refresh, with no sign-in to call, answer 503.
 func TestNoAuthenticateAnswers401(t *testing.T) {
 	s := serve(t, nil)
 	rows := append(api.Rows(), api.Row{Method: http.MethodGet, Path: "/api/v1/no-such-thing"})
 	for _, rt := range rows {
 		r := s.do(t, rt.Method, rt.Path, "")
 		if rt.Public {
-			if r.status != http.StatusOK {
-				t.Errorf("public %s %s: answered %d %s, want 200", rt.Method, rt.Path, r.status, r.body)
+			want := http.StatusOK
+			if rt.Credential {
+				want = http.StatusServiceUnavailable
+			}
+			if r.status != want {
+				t.Errorf("public %s %s: answered %d %s, want %d", rt.Method, rt.Path, r.status, r.body, want)
 			}
 			continue
 		}
