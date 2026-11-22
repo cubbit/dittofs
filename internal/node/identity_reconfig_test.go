@@ -600,8 +600,9 @@ func TestTheDirectoryOutageReachesNodeStatus(t *testing.T) {
 	statusUntil(t, h, "directory_unreachable naming this node", unreachable)
 	fault.down.Store(false)
 	h.Clock().Advance(time.Minute) // past the probe's wait
-	// The probe runs on its own goroutine: Find answers only once it has
-	// reached the directory and cleared the down mark, which the status shows.
+	// The probe loop runs on its own goroutine, and a Find sent while its
+	// probe is in flight is refused; the cleared status shows the probe is
+	// done.
 	statusUntil(t, h, "no directory_unreachable", func(s entity.NodeStatus) bool { return !unreachable(s) })
 	if err := find(); err != nil {
 		t.Fatalf("Find once the directory answers again: %v", err)
