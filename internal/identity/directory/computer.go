@@ -16,6 +16,11 @@ import (
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 )
 
+// AESEncTypes is msDS-SupportedEncryptionTypes' two AES bits, AES128 and
+// AES256: what a created computer account is given, and what an offline
+// join requires of the account it takes.
+const AESEncTypes = 0x18
+
 // ComputerAccount is what Active Directory holds of a computer account.
 type ComputerAccount struct {
 	DN         string
@@ -252,7 +257,7 @@ func CreateComputer(ctx context.Context, rec Record, adminName string, adminPass
 	add.Attribute("dNSHostName", []string{c.DNSHostName})
 	add.Attribute("servicePrincipalName", []string{"HOST/" + c.Name, "HOST/" + c.DNSHostName,
 		"cifs/" + c.Name, "cifs/" + c.DNSHostName})
-	add.Attribute("msDS-SupportedEncryptionTypes", []string{"24"})
+	add.Attribute("msDS-SupportedEncryptionTypes", []string{strconv.Itoa(AESEncTypes)})
 	add.Attribute("unicodePwd", []string{unicodePwd(password)})
 	err = conn.during(ctx, func() error { return conn.l.Add(add) })
 	if ldap.IsErrorWithCode(err, ldap.LDAPResultEntryAlreadyExists) {

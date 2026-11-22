@@ -152,14 +152,14 @@ func TestOfflineJoin(t *testing.T) {
 func TestOfflineJoinRefusesUnmarkedVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		hand func(*rotFixture) uint64
+		hand func(*testing.T, *rotFixture) uint64
 	}{
-		{"unmarked", func(fx *rotFixture) uint64 { return fx.handOver(t, pw2, secrets.Meta{}) }},
-		{"none named", func(fx *rotFixture) uint64 {
+		{"unmarked", func(t *testing.T, fx *rotFixture) uint64 { return fx.handOver(t, pw2, secrets.Meta{}) }},
+		{"none named", func(t *testing.T, fx *rotFixture) uint64 {
 			fx.handOver(t, pw2, secrets.Meta{HandedOver: true})
 			return 0
 		}},
-		{"superseded", func(fx *rotFixture) uint64 {
+		{"superseded", func(t *testing.T, fx *rotFixture) uint64 {
 			v := fx.handOver(t, pw2, secrets.Meta{HandedOver: true})
 			fx.handOver(t, pw3, secrets.Meta{HandedOver: true})
 			return v
@@ -168,7 +168,7 @@ func TestOfflineJoinRefusesUnmarkedVersion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fx := newMachine(t)
 			fx.stageNAS(t, 0x18, nil)
-			v := tc.hand(fx)
+			v := tc.hand(t, fx)
 			before := len(fx.versions(t))
 			op := fx.offlineOp(t, "NAS", v, false)
 			fx.wantFailed(t, op, "version "+strconv.FormatUint(v, 10)+" is not the current one marked handed over")
@@ -188,7 +188,7 @@ func TestOfflineJoinResumed(t *testing.T) {
 	fx := newMachine(t)
 	fx.stageNAS(t, 0x18, nil)
 	op := fx.offline(t, pw2, false)
-	fx.until(t, op, "seal")
+	fx.until(t, op, "seal1")
 	fx.restart(t, fx.p)
 	if vs := fx.versions(t); len(vs) != 1 || !vs[0].Meta.HandedOver {
 		t.Fatalf("versions %v after a fresh server, want the handed-over one alone, still marked", vs)
@@ -314,7 +314,7 @@ func TestOfflineJoinOfAJoinedInstallation(t *testing.T) {
 
 	fx.d.SetComputerPassword(t, "NAS", []byte(pw4)) // an administrator's reset
 	op = fx.offline(t, pw4, true)
-	fx.until(t, op, "seal")
+	fx.until(t, op, "seal1")
 	fx.reconcile(t)
 	oc, err := ticketSignIn(fx.s, fx.clock, machineSvc, 2, machineKey(t, pw4))
 	wantSignIn(t, "the handed-over key during the takeover", oc, err, "logon_failure")
