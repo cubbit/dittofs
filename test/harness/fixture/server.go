@@ -11,7 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,26 +37,36 @@ var apiListening = regexp.MustCompile(`node: listening api=(\S+)`)
 // password from.
 const passwordEnv = "DT_ADMIN_PASSWORD"
 
+// installedText is what dfs init answers over a finished installation.
+const installedText = "the installation is already initialised"
+
 // Start initialises an installation under out/dfs with dfs init from bin,
 // starts it there with dfs start, its output in out/dfs.log, and configures
-// it through the API as f asks: the users User and User2, the share Share,
-// and both users' grants on it. It makes one attempt: when a step fails, or
-// ctx ends first, it stops what it started and returns why. w gets dt's
-// lines on the setup, and never a credential.
+// it through the API as f asks: the users User and User2, the share Share
+// with the grants RFC 29 gives on it, applied on the node. It refuses a
+// fixture Unsupported names, before anything starts. It makes one attempt:
+// when a step fails, or ctx ends first, it stops what it started and returns
+// why. w gets dt's lines on the setup, and never a credential.
 func Start(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer) (*Server, error) {
-	if why := unserved(f); why != "" {
+	if why := Unsupported(&f, runtime.GOOS); why != "" {
 		return nil, errors.New(why)
 	}
-	server, err := address()
-	if err != nil {
-		return nil, err
+	// A server only the API reaches listens on loopback, so a host with no
+	// other address runs it too.
+	server := "127.0.0.1"
+	if f.NFS.Serves() || f.SMB.Enabled {
+		var err error
+		if server, err = address(); err != nil {
+			return nil, err
+		}
 	}
-	s := &Server{f: f, data: filepath.Join(out, "dfs"), shares: []string{Share}, out: w, bin: bin,
-		password: secret(), vals: map[string]string{"server": server, "share": strings.TrimPrefix(Share, "/"), "user": User, "user2": User2}}
+	s := &Server{f: f, data: filepath.Join(out, "dfs"), server: server, shares: []string{strings.TrimPrefix(Share, "/")},
+		out: w, bin: bin, password: secret(), users: map[string]string{}, shareIDs: map[string]string{}}
+	var err error
 	if s.log, err = os.Create(filepath.Join(out, "dfs.log")); err != nil {
 		return nil, err
 	}
-	if err = s.install(ctx, server); err == nil {
+	if err = s.install(ctx); err == nil {
 		err = s.run(ctx)
 	}
 	if err == nil {
@@ -67,30 +79,9 @@ func Start(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer
 	return s, nil
 }
 
-// unserved says why fixture f can't be set up yet, or returns "".
-//
-// decision: a fixture that serves NFS or SMB, with its clients or KDC, or holds its blocks in S3, or
-// names a shares file, is refused, since the node serves no adapter yet, its
-// adapter status names no port a cell could reach, a share's settings are
-// written only through the settings API, which refuses them until the
-// settings table is wired, and no route sets a user's password. Every such
-// fixture's cell would otherwise run against a server answering none of its
-// tests. Withdraw each refusal once its part serves.
-func unserved(f registry.Fixture) string {
-	switch {
-	case f.NFS.Serves() || f.SMB.Enabled || f.Client != "" || f.Kerberos:
-		return "dt serves no NFS or SMB through the node yet: the node serves no adapter, and its adapter status names no port"
-	case f.Profile == "badger-s3":
-		return "dt seeds no remote store yet, so it sets up no S3 profile"
-	case f.Shares != "":
-		return "dt sets no share settings yet, so it reads no shares file"
-	}
-	return ""
-}
-
 // install writes the installation's bootstrap and storage key under s.data,
 // runs dfs init over them, and seeds the namespace the share is in.
-func (s *Server) install(ctx context.Context, server string) error {
+func (s *Server) install(ctx context.Context) error {
 	s.home = filepath.Join(s.data, "home")
 	journal := filepath.Join(s.data, "journal")
 	for _, dir := range []string{s.home, journal} {
@@ -108,10 +99,9 @@ func (s *Server) install(ctx context.Context, server string) error {
 	}
 	s.node = uuid.New()
 	s.config = filepath.Join(s.data, "config.yaml")
-	// decision: the server logs at INFO to standard error, which dfs.log
-	// keeps: errors, warnings and a panic's trace, and the record naming
-	// the API's address, without a line per operation.
-	config := fmt.Sprintf(`logging: { level: info, output: stderr }
+	// decision: dfs logs to standard error, which dfs.log keeps, since the
+	// API's bound address is read from that output.
+	config := fmt.Sprintf(`logging: { output: stderr }
 node: { id: %s }
 metadata: { badger: { path: %q } }
 journals: [ { path: %q } ]
@@ -119,8 +109,7 @@ keys: { storage: { kind: local, local: { file: %q } } }
 api: { listen: ['127.0.0.1:0'] }
 metrics: { listen: '127.0.0.1:0' }
 adapters: { listen: [%q] }
-blockstore: { journal: { path: %q } }
-`, uuid.UUID(s.node), s.store(), journal, filepath.Join(s.data, "storage.key"), server, filepath.Join(s.data, "blocks"))
+`, uuid.UUID(s.node), filepath.Join(s.data, "store"), journal, filepath.Join(s.data, "storage.key"), s.server)
 	if err := os.WriteFile(s.config, []byte(config), 0o600); err != nil {
 		return err
 	}
@@ -129,9 +118,6 @@ blockstore: { journal: { path: %q } }
 	}
 	return s.seed(ctx)
 }
-
-// store is the metadata store's directory.
-func (s *Server) store() string { return filepath.Join(s.data, "store") }
 
 // initialise runs dfs init over the installation, with the administrator's
 // password in passwordEnv, its output in dfs.log.
@@ -148,16 +134,17 @@ func (s *Server) initialise(ctx context.Context) error {
 }
 
 // seed writes the namespace the share is in through the metadata store,
-// before the node opens it.
+// before the node opens it, with one setting at its remote store's scope.
 //
 // decision: the namespace is written through the store, not the API, which
-// refuses a namespace's write until the settings table is wired. It names a
-// remote store ID of its own, with no store record: a namespace must name
-// one, and a memory profile has no remote store, while nothing the fixture
-// starts reads the record. Move it onto the API, with a real store for an
-// S3 profile, once those writes are accepted.
+// refuses a namespace's write until the settings table is wired. A namespace
+// must name a remote store, and the node's reconcile refuses a share whose
+// namespace's store holds no setting at its scope, so the store gets an
+// endpoint that nothing dials, as a memory profile reads no block from it.
+// Move both onto the API, with a real store for an S3 profile, once those
+// writes are accepted.
 func (s *Server) seed(ctx context.Context) (err error) {
-	db, err := badgerkv.Open(badgerkv.Options{Dir: s.store(), NodeID: entity.NodeID(s.node)})
+	db, err := badgerkv.Open(badgerkv.Options{Dir: filepath.Join(s.data, "store"), NodeID: entity.NodeID(s.node)})
 	if err != nil {
 		return fmt.Errorf("opening the metadata store to seed it: %w", err)
 	}
@@ -166,8 +153,14 @@ func (s *Server) seed(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("opening the metadata store to seed it: %w", err)
 	}
+	cp := st.ControlPlane()
+	store := uuid.New()
+	endpoint := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeRemote, ID: store}, Key: "endpoint", Value: []byte("https://store.invalid")}
+	if _, err := cp.PutSetting(ctx, endpoint, 0); err != nil {
+		return fmt.Errorf("seeding the remote store: %w", err)
+	}
 	id := entity.NewNamespaceID()
-	if _, err := st.ControlPlane().PutNamespace(ctx, entity.Namespace{ID: id, Store: uuid.New()}, 0); err != nil {
+	if _, err := cp.PutNamespace(ctx, entity.Namespace{ID: id, Store: store}, 0); err != nil {
 		return fmt.Errorf("seeding the namespace: %w", err)
 	}
 	s.namespace = uuid.UUID(id).String()
@@ -191,8 +184,8 @@ func (s *Server) env() []string {
 }
 
 // run starts dfs start in a process group of its own, reads the API's
-// address from its log, waits until the API answers ready, and signs in as
-// the administrator.
+// address from its log, waits until the API answers ready, signs in as the
+// administrator, and reads what this start decided.
 func (s *Server) run(ctx context.Context) error {
 	argv := []string{filepath.Join(s.bin, "dfs"), "start", "--config", s.config}
 	_, _ = fmt.Fprintf(s.out, "[dt] fixture: $ %s\n", strings.Join(argv, " "))
@@ -207,20 +200,10 @@ func (s *Server) run(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	s.cmd, s.exited, s.stopped = cmd, make(chan struct{}), false
+	s.cmd, s.exited, s.killed, s.api = cmd, make(chan struct{}), false, ""
 	addr := make(chan string, 1)
 	go func() {
-		lines := bufio.NewScanner(pipe)
-		for lines.Scan() {
-			_, _ = fmt.Fprintln(s.log, lines.Text())
-			if m := apiListening.FindStringSubmatch(lines.Text()); m != nil {
-				select {
-				case addr <- m[1]:
-				default:
-				}
-			}
-		}
-		s.err = cmd.Wait()
+		s.err = s.copyLog(pipe, addr)
 		close(s.exited)
 	}()
 	select {
@@ -235,7 +218,31 @@ func (s *Server) run(ctx context.Context) error {
 	if err := s.waitReady(ctx); err != nil {
 		return err
 	}
-	return s.signIn(ctx)
+	if err := s.signIn(ctx); err != nil {
+		return err
+	}
+	return s.discover(ctx)
+}
+
+// copyLog copies dfs's output into dfs.log until it ends, sending the API's
+// address on addr once it is logged, and returns what cmd's Wait returns. A
+// line of any length is read whole, and the output is drained to its end, so
+// dfs never blocks writing its log.
+func (s *Server) copyLog(pipe io.Reader, addr chan<- string) error {
+	r := bufio.NewReader(pipe)
+	for {
+		line, err := r.ReadString('\n')
+		_, _ = io.WriteString(s.log, line)
+		if m := apiListening.FindStringSubmatch(line); m != nil {
+			addr <- m[1]
+			break
+		}
+		if err != nil {
+			break
+		}
+	}
+	_, _ = io.Copy(s.log, r)
+	return s.cmd.Wait()
 }
 
 // waitReady polls /health/ready until it answers ready, or dfs exits, or
@@ -277,12 +284,24 @@ func (s *Server) signIn(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	src := &session{c: bare, password: s.password}
-	if src.access, err = src.Refresh(ctx, ""); err != nil {
+	s.session = &session{c: bare, password: s.password}
+	if _, err := s.session.Refresh(ctx, ""); err != nil {
 		return err
 	}
-	s.client, err = client.New(s.api, client.WithTokenSource(src))
+	s.client, err = client.New(s.api, client.WithTokenSource(s.session))
 	return err
+}
+
+// discover reads what a start decides that the placeholders carry: each
+// adapter's bound port, which a restart can move.
+//
+// ponytail: the node's adapter status names no port and no fixture that
+// serves a protocol starts (Unserved), so nothing is read yet and the ports
+// stay unset. Read each adapter's port from its status here once it names
+// one.
+func (s *Server) discover(context.Context) error {
+	s.nfsPort, s.smbPort = 0, 0
+	return nil
 }
 
 // session is the administrator's token, signed in again when the server
@@ -292,6 +311,7 @@ type session struct {
 	password string
 	mu       sync.Mutex
 	access   string
+	signIns  int
 }
 
 func (t *session) Token(context.Context) (string, error) {
@@ -308,13 +328,14 @@ func (t *session) Refresh(ctx context.Context, _ string) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.access = tk.Access
+	t.signIns++
 	return tk.Access, nil
 }
 
 // configure creates the users User and User2, with their UIDs, and each of
-// the fixture's shares with both users' grants on it.
+// the fixture's shares with its grants.
 func (s *Server) configure(ctx context.Context) error {
-	for i, u := range []apiv1.UserSpec{{Name: User, UID: ptr(UserUID)}, {Name: User2, UID: ptr(User2UID)}} {
+	for _, u := range []apiv1.UserSpec{{Name: User, UID: new(UserUID)}, {Name: User2, UID: new(User2UID)}} {
 		res, err := s.client.Users().Create(ctx, u)
 		if err != nil {
 			return fmt.Errorf("creating the user %s: %w", u.Name, err)
@@ -322,7 +343,7 @@ func (s *Server) configure(ctx context.Context) error {
 		if res.Resource == nil {
 			return fmt.Errorf("creating the user %s started an operation", u.Name)
 		}
-		s.users[i] = res.Resource.ID
+		s.users[u.Name] = res.Resource.ID
 	}
 	for _, name := range s.shares {
 		if err := s.addShare(ctx, name); err != nil {
@@ -332,83 +353,140 @@ func (s *Server) configure(ctx context.Context) error {
 	return nil
 }
 
-func ptr[T any](v T) *T { return &v }
+// grants is the access each fixture user holds on every share of fixture f,
+// by the user's name, as RFC 29 §4.2 gives it: on a shares file's shares,
+// {user} holds admin; on the default share, {user} holds read-write when the
+// fixture mounts it over SMB, since the mount is {user}'s; otherwise no
+// user, {user2} included, holds a grant.
+func grants(f registry.Fixture) map[string]string {
+	switch {
+	case f.Shares != "":
+		return map[string]string{User: "admin"}
+	case f.SMB.Mount:
+		return map[string]string{User: "read-write"}
+	}
+	return map[string]string{}
+}
 
 // addShare creates the share name, admitting every client with the
-// fixture's squash, and grants both users read-write on it.
+// fixture's squash, puts its grants, and waits until the node applied it.
 func (s *Server) addShare(ctx context.Context, name string) error {
 	sh, err := s.client.CreateShare(ctx, apiv1.NewShare{
-		Spec:         apiv1.ShareSpec{Name: strings.TrimPrefix(name, "/"), Path: name, Namespace: s.namespace},
+		Spec:         apiv1.ShareSpec{Name: name, Path: "/" + name, Namespace: s.namespace},
 		ExportPolicy: apiv1.ExportPolicySpec{Flavors: []string{"sys"}, Squash: s.f.Squash, Clients: []apiv1.ClientRule{}},
 	})
 	if err != nil {
 		return fmt.Errorf("creating the share %s: %w", name, err)
 	}
-	for _, u := range s.users {
-		if _, err := s.client.Grants(sh.ID).Put(ctx, u, apiv1.GrantSpec{Access: "read-write"}, "*"); err != nil {
-			return fmt.Errorf("granting %s on the share %s: %w", u, name, err)
+	s.shareIDs[name] = sh.ID
+	for user, access := range grants(s.f) {
+		if _, err := s.client.Grants(sh.ID).Put(ctx, s.users[user], apiv1.GrantSpec{Access: access}, "*"); err != nil {
+			return fmt.Errorf("granting %s %s on the share %s: %w", user, access, name, err)
 		}
 	}
-	return nil
+	return s.waitApplied(ctx, name)
+}
+
+// waitApplied polls the share name until every node reporting it applied it
+// and none refused it, or ctx ends.
+func (s *Server) waitApplied(ctx context.Context, name string) error {
+	for {
+		sh, err := s.client.Shares().Get(ctx, s.shareIDs[name])
+		if err == nil && applied(sh.Status) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the share %s was not applied (status %+v, %v): %w", name, sh.Status, err, ctx.Err())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+// applied reports whether a share's status has it applied on every node
+// reporting it, at least one, and refused by none.
+func applied(st apiv1.ShareStatus) bool {
+	return st.Applied != nil && st.Applied.Of > 0 && st.Applied.Nodes == st.Applied.Of && st.Refused == 0
 }
 
 // Reset deletes the share a test runs on, its {share}, and creates it again
 // with its grants.
 //
 // decision: Reset waits for the delete's answer, not for the deletion's
-// operation to end: the operation's last step waits for the journal to
-// forget the share's tag, which it cannot yet, so it never ends, while the
-// share leaves the list and frees its name once the delete is answered. Wait
-// on the operation once a share's deletion ends.
-func (s *Server) Reset(name string) error {
-	ctx := context.Background()
-	var found *apiv1.Resource[apiv1.ShareSpec, apiv1.ShareStatus]
-	for sh, err := range s.client.Shares().List(ctx, nil) {
-		if err != nil {
-			return fmt.Errorf("listing the shares: %w", err)
-		}
-		if sh.Spec.Name == name {
-			found = &sh
-			break
-		}
-	}
-	if found == nil {
+// operation to end, since a share deletion's last step waits for the journal
+// to forget the share's tag, which it cannot yet, so the operation never
+// ends. The share leaves the list and frees its name once the delete is
+// answered, but the old share stays removing, with its grants, and the new
+// one is created on the same namespace, which races that deletion once the
+// share holds files. A fixture must therefore serve no files through a reset
+// share until a share's deletion ends, and each reset then gets a namespace
+// of its own, through the API once the settings table is wired.
+func (s *Server) Reset(ctx context.Context, name string) error {
+	id, ok := s.shareIDs[name]
+	if !ok {
 		return fmt.Errorf("the fixture has no share %s", name)
 	}
-	tagged, err := s.client.Shares().Get(ctx, found.ID)
+	tagged, err := s.client.Shares().Get(ctx, id)
 	if err == nil {
-		_, err = s.client.Shares().Delete(ctx, found.ID, tagged.ETag)
+		_, err = s.client.Shares().Delete(ctx, id, tagged.ETag)
 	}
 	if err != nil {
 		return fmt.Errorf("deleting the share %s: %w", name, err)
 	}
-	if err := s.addShare(ctx, "/"+name); err != nil {
+	if err := s.addShare(ctx, name); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(s.out, "[dt] fixture: share %s recreated\n", name)
 	return nil
 }
 
-// Placeholders returns what the server gives a cell's commands, by name.
-func (s *Server) Placeholders() map[string]string { return s.vals }
+// Placeholders returns what the server gives a cell's commands, by name, as
+// its current start decided them.
+func (s *Server) Placeholders() map[string]string {
+	vals := map[string]string{"server": s.server, "share": s.shares[0], "user": User, "user2": User2}
+	if s.nfsPort > 0 {
+		vals["nfs-port"] = strconv.Itoa(s.nfsPort)
+	}
+	if s.smbPort > 0 {
+		vals["smb-port"] = strconv.Itoa(s.smbPort)
+	}
+	if s.mount != "" {
+		vals["mount"] = s.mount
+	}
+	return vals
+}
 
 // Kill ends dfs's group with SIGKILL, leaving its installation for Restart.
-func (s *Server) Kill() {
+// It returns an error, and leaves dfs not restartable, when dfs had already
+// exited on its own: a crash it would otherwise hide.
+func (s *Server) Kill() error {
+	select {
+	case <-s.exited:
+		return fmt.Errorf("dfs exited on its own before Kill (%v); its output is %s", s.err, s.log.Name())
+	default:
+	}
 	stopGroup(s.cmd, true)
 	<-s.exited
-	s.stopped = true
+	s.killed = true
+	return nil
 }
 
 // Restart starts dfs again over the installation a Kill left, and signs in
-// again.
-func (s *Server) Restart(ctx context.Context) error { return s.run(ctx) }
+// again. It refuses a dfs that Kill didn't end, or a server Stop ended, so it
+// never leaves a dfs that nothing stops.
+func (s *Server) Restart(ctx context.Context) error {
+	if !s.killed || s.stopDone {
+		return errors.New("Restart follows a Kill, before Stop")
+	}
+	return s.run(ctx)
+}
 
 // Stop stops the process group dt started dfs in, and nothing outside it,
 // and removes the server's data; its output stays. dfs gets SIGTERM and
-// stopGrace to exit before SIGKILL. It returns an error when dfs had exited
-// before Stop, the server ending before its cell did, or did not exit zero.
+// stopGrace to exit before SIGKILL. Its error is stopResult's.
 func (s *Server) Stop() error {
 	s.stop.Do(func() {
+		s.stopDone = true
 		defer func() {
 			_ = s.log.Close()
 			_ = os.RemoveAll(s.data)
@@ -416,24 +494,37 @@ func (s *Server) Stop() error {
 		if s.cmd == nil {
 			return
 		}
+		early := false
 		select {
 		case <-s.exited:
-			if !s.stopped {
-				s.stopErr = fmt.Errorf("dfs exited before its cell ended (%v); its output is %s", s.err, s.log.Name())
-			}
-			return
+			early = !s.killed
 		default:
+			stopGroup(s.cmd, false)
+			select {
+			case <-s.exited:
+			case <-time.After(stopGrace):
+				stopGroup(s.cmd, true)
+				<-s.exited
+			}
 		}
-		stopGroup(s.cmd, false)
-		select {
-		case <-s.exited:
-		case <-time.After(stopGrace):
-			stopGroup(s.cmd, true)
-			<-s.exited
+		if s.killed {
+			return
 		}
-		if s.err != nil {
-			s.stopErr = fmt.Errorf("dfs did not stop cleanly on SIGTERM (%v); its output is %s", s.err, s.log.Name())
-		}
+		s.stopErr = stopResult(early, s.err, s.log.Name())
 	})
 	return s.stopErr
+}
+
+// stopResult is Stop's answer for a dfs that exited before Stop, early, or
+// on Stop's SIGTERM with Wait's error waitErr: an error when dfs ended before
+// its cell did, the server crashing under it, or didn't exit zero on the
+// signal; nil otherwise. log names dfs's output.
+func stopResult(early bool, waitErr error, log string) error {
+	switch {
+	case early:
+		return fmt.Errorf("dfs exited before its cell ended (%v); its output is %s", waitErr, log)
+	case waitErr != nil:
+		return fmt.Errorf("dfs did not stop cleanly on SIGTERM (%v); its output is %s", waitErr, log)
+	}
+	return nil
 }

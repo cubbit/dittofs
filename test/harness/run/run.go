@@ -335,7 +335,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			return didntRun(err.Error())
 		}
 		// What dt can't do yet decides before the needs, as in Blocked.
-		if why := fixture.Unsupported(&spec, hostOS); why != "" {
+		if why := o.unsupported(&spec, hostOS); why != "" {
 			return didntRun(why)
 		}
 	}
@@ -352,7 +352,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		podman, err = needs.Podman()
 		return err
 	}
-	if why, unmet := Blocked(c.Unit, c.Needs, check); why != "" {
+	if why, unmet := blocked(c.Unit, c.Needs, check, o.unsupported); why != "" {
 		// A machine that met the needs could run the cell, so without --ci
 		// it's skipped; what dt can't do yet is never a skip.
 		if len(unmet) > 0 && !o.CI {
@@ -570,6 +570,9 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		if test != "" {
 			prefix = test + ": "
 		}
+		if server != nil {
+			maps.Copy(vals, server.Placeholders()) // a restart can move a port
+		}
 		if first != "" {
 			vals["share"] = cmp.Or(lines[test].Share, first)
 		}
@@ -577,7 +580,10 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			// decision: a test whose share wasn't reset doesn't run, since it
 			// would run on what the test before it left there. The reset is
 			// one of the fixture's steps, so it isn't retried.
-			if err := server.Reset(vals["share"]); err != nil {
+			reset, done := context.WithTimeout(cellCtx, fixtureSetup)
+			err := server.Reset(reset, vals["share"])
+			done()
+			if err != nil {
 				return nil, []string{prefix + "its share wasn't reset: " + err.Error()}
 			}
 		}
@@ -1215,10 +1221,15 @@ var hostOS = runtime.GOOS
 // as another platform. A cell dtc can't run counts for neither, unless it runs
 // here, which keeps the run here.
 func Container(cells []Cell, check func(need string) error) bool {
+	return container(cells, check, fixture.Unsupported)
+}
+
+// container is Container, with fix saying what of a fixture dt can't set up.
+func container(cells []Cell, check func(need string) error, fix func(*registry.Fixture, string) string) bool {
 	move := false
 	for _, c := range cells {
-		if inDtc(c.Unit) != "" {
-			if unsupported(c.Unit, hostOS) == "" && !slices.ContainsFunc(c.Needs, func(n string) bool { return check(n) != nil }) {
+		if inDtc(c.Unit, fix) != "" {
+			if unsupported(c.Unit, hostOS, fix) == "" && !slices.ContainsFunc(c.Needs, func(n string) bool { return check(n) != nil }) {
 				return false
 			}
 			continue
@@ -1245,7 +1256,12 @@ func Container(cells []Cell, check func(need string) error) bool {
 // needs, and is empty when what stops the cell is something dt doesn't do
 // yet. dt run and dt list both decide through it, so they can't disagree.
 func Blocked(u *registry.Suite, list []string, check func(need string) error) (why string, unmet []string) {
-	if why := unsupported(u, hostOS); why != "" {
+	return blocked(u, list, check, fixture.Unsupported)
+}
+
+// blocked is Blocked, with fix saying what of a fixture dt can't set up.
+func blocked(u *registry.Suite, list []string, check func(need string) error, fix func(*registry.Fixture, string) string) (why string, unmet []string) {
+	if why := unsupported(u, hostOS, fix); why != "" {
 		return why, nil
 	}
 	var reasons []string
@@ -1261,8 +1277,8 @@ func Blocked(u *registry.Suite, list []string, check func(need string) error) (w
 // inDtc says why dt can't run suite u in dtc, or returns "": dtc meets the
 // linux need and runs dt as root, which a fixture whose users hold self
 // refuses.
-func inDtc(u *registry.Suite) string {
-	if why := unsupported(u, "linux"); why != "" {
+func inDtc(u *registry.Suite, fix func(*registry.Fixture, string) string) string {
+	if why := unsupported(u, "linux", fix); why != "" {
 		return why
 	}
 	if u.Fixture != nil && slices.Contains(u.Fixture.Users, "self") {
@@ -1272,9 +1288,9 @@ func inDtc(u *registry.Suite) string {
 }
 
 // unsupported says why dt can't run the suite yet on platform goos, or
-// returns "": only a fixture field dt doesn't do yet, since it reads every
-// format.
-func unsupported(u *registry.Suite, goos string) string {
+// returns "": only a fixture field dt doesn't do yet, as fix says, since it
+// reads every format.
+func unsupported(u *registry.Suite, goos string, fix func(*registry.Fixture, string) string) string {
 	if u.Format == "go-json" && u.Fixture != nil && u.Fixture.Client != "" {
 		return "dt doesn't run go test on a namespaced client yet"
 	}
@@ -1285,9 +1301,26 @@ func unsupported(u *registry.Suite, goos string) string {
 		return "dt doesn't run a suite that needs root on a namespaced client yet"
 	}
 	if u.Fixture != nil {
-		return fixture.Unsupported(u.Fixture, goos)
+		return fix(u.Fixture, goos)
 	}
 	return ""
+}
+
+// unsupported says what of fixture f dt can't set up on goos, for o's start.
+//
+// decision: a start of a test's own stands in for the server, so only what
+// dt itself sets up refuses its fixture (fixture.NotSetUp), not what the
+// DittoFS server doesn't serve yet (fixture.Unserved). dt's own tests of a
+// fixture's lifecycle (its reset, its stop, a server that ends, the KDC's
+// image, its mounts) run NFS, SMB, Kerberos and shares fixtures through such
+// a start, which the server's refusals would otherwise leave unreachable.
+// Every real run passes no start, so dt run, dt list and Blocked refuse the
+// same cells.
+func (o Options) unsupported(f *registry.Fixture, goos string) string {
+	if o.start != nil {
+		return fixture.NotSetUp(f, goos)
+	}
+	return fixture.Unsupported(f, goos)
 }
 
 // base is the ref {base} stands for in a run: o.Base (--base) when given, else

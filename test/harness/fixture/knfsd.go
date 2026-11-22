@@ -203,7 +203,9 @@ func StartKnfsd(ctx context.Context, f registry.Fixture, out string, w io.Writer
 func (k *Knfsd) Placeholders() map[string]string { return k.vals }
 
 // Reset fails: a knfsd fixture has one share, and no reset.
-func (k *Knfsd) Reset(string) error { return errors.New("a knfsd fixture resets no share") }
+func (k *Knfsd) Reset(context.Context, string) error {
+	return errors.New("a knfsd fixture resets no share")
+}
 
 // Command is argv as it is: the tests run on this machine.
 func (k *Knfsd) Command(argv []string, _ string, _ []string) ([]string, error) { return argv, nil }

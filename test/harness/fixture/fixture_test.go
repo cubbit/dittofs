@@ -55,7 +55,7 @@ func TestNetwork(t *testing.T) {
 	}
 }
 
-// What dt sets up in fixtures, and what it doesn't yet.
+// What dt itself sets up in fixtures, and what it doesn't yet.
 func TestUnsupported(t *testing.T) {
 	mountsHere, kerberosHere := "only on Linux", "Kerberos only for SMB on Linux"
 	if runtime.GOOS == "linux" {
@@ -82,7 +82,7 @@ func TestUnsupported(t *testing.T) {
 		{registry.Fixture{Profile: "memory", Kerberos: true}, "Kerberos only for SMB"},
 		{registry.Fixture{Profile: "memory", Reset: "once"}, `reset shares "once"`},
 	} {
-		if got := Unsupported(&tc.f, runtime.GOOS); (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
+		if got := NotSetUp(&tc.f, runtime.GOOS); (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
 			t.Errorf("%+v: %q, want %q", tc.f, got, tc.want)
 		}
 	}

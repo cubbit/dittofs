@@ -41,7 +41,7 @@ func (f *fakeServer) Placeholders() map[string]string {
 	return vals
 }
 
-func (f *fakeServer) Reset(share string) error {
+func (f *fakeServer) Reset(_ context.Context, share string) error {
 	f.resets++
 	_, _ = fmt.Fprintln(f.out, "[dt] fake reset", share)
 	return f.resetErr
@@ -263,5 +263,25 @@ func TestCommandOnTheClient(t *testing.T) {
 	rep, out := runTarget(t, root, r, "c", false, start)
 	if o := rep.Outcomes[0]; o.Result != report.Passed || !strings.Contains(out, "[dt] $ env ON_CLIENT=yes sh -c") {
 		t.Errorf("outcome %+v\n%s", o, out)
+	}
+}
+
+// A real run, which passes no start of its own, leaves a cell whose fixture
+// the DittoFS server can't serve yet not run, naming why, before it builds
+// {bin}; Blocked, which dt list reads, says the same.
+func TestUnservedFixtureNotRun(t *testing.T) {
+	root, r := repo(t, `suites:
+  u: { cmd: "true", fixture: { profile: memory, nfs: export } }
+`, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
+	rep, out := runTarget(t, root, r, "u", false)
+	want := "dt serves no NFS or SMB through the node yet"
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || !strings.HasPrefix(o.Note, want) {
+		t.Errorf("outcome %+v, want not run naming %q\n%s", o, want, out)
+	}
+	if _, err := os.Stat(filepath.Join(rep.Dir, "bin")); err == nil {
+		t.Errorf("{bin} was built for a cell that can't run")
+	}
+	if why, _ := Blocked(r.Suites[0], nil, func(string) error { return nil }); !strings.HasPrefix(why, want) {
+		t.Errorf("Blocked: %q, want %q", why, want)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/test/harness/fixture"
 	"github.com/cubbit/dittofs/test/harness/registry"
 	"github.com/cubbit/dittofs/test/harness/report"
 )
@@ -868,7 +869,9 @@ func TestFirstScenarioLimit(t *testing.T) {
 // --in auto moves a run to dtc when a cell needs what is missing here and the
 // container gives, unless a cell needs what is met here and the container
 // lacks. A cell dtc can't run doesn't move it, and keeps it here when it runs
-// here. The tests set hostOS to darwin.
+// here. The tests set hostOS to darwin. The fixtures are judged as a start of
+// a test's own judges them, by what dt itself sets up, since the DittoFS
+// server serves none of them yet; through Container, an NFS cell stays here.
 func TestContainer(t *testing.T) {
 	was := hostOS
 	hostOS = "darwin"
@@ -912,9 +915,12 @@ func TestContainer(t *testing.T) {
 		{"one missing need the container lacks too", []Cell{cell("linux", "rpcbind")}, []string{"linux", "rpcbind"}, false},
 		{"a service missing here, so in the container too", []Cell{cell("linux", "service:localstack")}, []string{"linux", "service:localstack"}, false},
 	} {
-		if got := Container(c.cells, missing(c.unmet...)); got != c.want {
+		if got := container(c.cells, missing(c.unmet...), fixture.NotSetUp); got != c.want {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
 		}
+	}
+	if Container([]Cell{nfs}, missing("linux")) {
+		t.Errorf("an NFS mount the server can't serve yet moves the run to dtc, want it kept here")
 	}
 }
 

@@ -19,7 +19,7 @@ var fixtureSetup = plan.FixtureSetup
 // reports the server ending before its cell did.
 type fixtureServer interface {
 	Placeholders() map[string]string
-	Reset(share string) error
+	Reset(ctx context.Context, share string) error
 	Command(argv []string, dir string, env []string) ([]string, error)
 	Stop() error
 }
