@@ -111,7 +111,7 @@ func (s *Server) install(ctx context.Context, server string) error {
 	// decision: the server logs at INFO to standard error, which dfs.log
 	// keeps: errors, warnings and a panic's trace, and the record naming
 	// the API's address, without a line per operation.
-	config := fmt.Sprintf(`logging: { level: INFO, output: stderr }
+	config := fmt.Sprintf(`logging: { level: info, output: stderr }
 node: { id: %s }
 metadata: { badger: { path: %q } }
 journals: [ { path: %q } ]
@@ -148,11 +148,14 @@ func (s *Server) initialise(ctx context.Context) error {
 }
 
 // seed writes the namespace the share is in through the metadata store,
-// with no remote store, before the node opens it.
+// before the node opens it.
 //
 // decision: the namespace is written through the store, not the API, which
-// refuses a namespace's write until the settings table is wired. Move it
-// onto the API once that write is accepted.
+// refuses a namespace's write until the settings table is wired. It names a
+// remote store ID of its own, with no store record: a namespace must name
+// one, and a memory profile has no remote store, while nothing the fixture
+// starts reads the record. Move it onto the API, with a real store for an
+// S3 profile, once those writes are accepted.
 func (s *Server) seed(ctx context.Context) (err error) {
 	db, err := badgerkv.Open(badgerkv.Options{Dir: s.store(), NodeID: entity.NodeID(s.node)})
 	if err != nil {
@@ -164,7 +167,7 @@ func (s *Server) seed(ctx context.Context) (err error) {
 		return fmt.Errorf("opening the metadata store to seed it: %w", err)
 	}
 	id := entity.NewNamespaceID()
-	if _, err := st.ControlPlane().PutNamespace(ctx, entity.Namespace{ID: id}, 0); err != nil {
+	if _, err := st.ControlPlane().PutNamespace(ctx, entity.Namespace{ID: id, Store: uuid.New()}, 0); err != nil {
 		return fmt.Errorf("seeding the namespace: %w", err)
 	}
 	s.namespace = uuid.UUID(id).String()
@@ -351,6 +354,12 @@ func (s *Server) addShare(ctx context.Context, name string) error {
 
 // Reset deletes the share a test runs on, its {share}, and creates it again
 // with its grants.
+//
+// decision: Reset waits for the delete's answer, not for the deletion's
+// operation to end: the operation's last step waits for the journal to
+// forget the share's tag, which it cannot yet, so it never ends, while the
+// share leaves the list and frees its name once the delete is answered. Wait
+// on the operation once a share's deletion ends.
 func (s *Server) Reset(name string) error {
 	ctx := context.Background()
 	var found *apiv1.Resource[apiv1.ShareSpec, apiv1.ShareStatus]
@@ -366,12 +375,9 @@ func (s *Server) Reset(name string) error {
 	if found == nil {
 		return fmt.Errorf("the fixture has no share %s", name)
 	}
-	op, err := s.client.Shares().Delete(ctx, found.ID, "")
-	if err == nil && op != nil {
-		var done apiv1.Operation
-		if done, err = s.client.Wait(ctx, *op); err == nil && done.State != apiv1.OpSucceeded {
-			err = fmt.Errorf("its deletion ended %s", done.State)
-		}
+	tagged, err := s.client.Shares().Get(ctx, found.ID)
+	if err == nil {
+		_, err = s.client.Shares().Delete(ctx, found.ID, tagged.ETag)
 	}
 	if err != nil {
 		return fmt.Errorf("deleting the share %s: %w", name, err)
