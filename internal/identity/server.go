@@ -219,9 +219,10 @@ type Server struct {
 	schedStop func() // ends the rotation's schedule and waits for it, under mu; nil while it does not run
 	scheduled func() // a test's view of each schedule check, its next tick armed; nil in production
 
-	beforeMachineMint func() // a test's pause just before a machine's mint plan returns its batch; nil in production
-	beforeMachineLink func() // a test's pause just before a machine's link is written; nil in production
-	beforeRename      func() // a test's pause between a refresh's plan and its Rename; nil in production
+	beforeMachineMint func()                 // a test's pause just before a machine's mint plan returns its batch; nil in production
+	beforeMachineLink func()                 // a test's pause just before a machine's link is written; nil in production
+	beforeRename      func()                 // a test's pause between a refresh's plan and its Rename; nil in production
+	beforeCreate      func(entity.MintBatch) // a test's pause between a mint's plan and its Create; nil in production
 }
 
 // Conditions appends identity's conditions: the node's

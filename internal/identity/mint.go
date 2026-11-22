@@ -86,6 +86,9 @@ func (s *Server) mint(ctx context.Context, plan func(context.Context) (entity.Mi
 			s.logClash(ctx, failed)
 			return fmt.Errorf("%w: a mint re-run bound or unnamed nothing the run before did not", vfserr.ErrUnavailable)
 		}
+		if s.beforeCreate != nil {
+			s.beforeCreate(b)
+		}
 		err = s.deps.Store.Minter().Create(ctx, b)
 		switch {
 		case err == nil:

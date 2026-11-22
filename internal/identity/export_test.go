@@ -235,3 +235,6 @@ func (s *Server) OnMachineLink(f func()) { s.beforeMachineLink = f }
 // OnRename has every refresh of a directory principal run f between its
 // plan and its Rename.
 func (s *Server) OnRename(f func()) { s.beforeRename = f }
+
+// OnCreate has every mint run f with its batch just before its Create.
+func (s *Server) OnCreate(f func(entity.MintBatch)) { s.beforeCreate = f }

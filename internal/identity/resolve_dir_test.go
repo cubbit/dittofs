@@ -256,7 +256,13 @@ func TestResolveDirectoryMintsTheEvidenceSIDs(t *testing.T) {
 // the same 300 directory groups, run at once, all succeed, each group minted
 // once and the generation raised at most once per resolution; then a second
 // wave whose group sets overlap pairwise without being equal all succeed.
+//
+// It runs RFC 18 §10's own numbers; TestResolveDirectoryMintReRuns pins the
+// re-runs deterministically, so a short run skips this one.
 func TestResolveDirectoryMintBurst(t *testing.T) {
+	if testing.Short() {
+		t.Skip("50 resolutions over 300 groups")
+	}
 	e := newAD(t)
 	const users, groups = 50, 300
 	dns := make([][]byte, users)
@@ -350,4 +356,46 @@ func TestResolveDirectoryStopsAtTwentySeconds(t *testing.T) {
 			synctest.Wait()
 		}
 	})
+}
+
+// A resolution whose mint loses the race twice still succeeds: bob's
+// resolution plans eng and ops, and just before each of its Creates a
+// competing Find mints one of them, so its first Create and its first re-run's
+// both fail ErrExist and only the second re-run binds everything. Each group
+// is minted once, and bob holds both.
+func TestResolveDirectoryMintReRuns(t *testing.T) {
+	e := newAD(t)
+	bobDN, bob := e.minted(t, "bob", nil)
+	e.d.AddGroup(t, "eng", map[string][][]byte{"member": attr(bobDN)})
+	e.d.AddGroup(t, "ops", map[string][][]byte{"member": attr(bobDN)})
+	race := []pid.Spelling{sidOf(t, e.entry(t, directory.ByGroupName, "eng")), sidOf(t, e.entry(t, directory.ByGroupName, "ops"))}
+	competing, creates := false, 0
+	// The competing mint runs inside the hook, to its commit, on the
+	// resolution's own goroutine; its own Create passes the hook untouched.
+	e.s.OnCreate(func(entity.MintBatch) {
+		if competing || creates >= len(race) {
+			return
+		}
+		competing = true
+		defer func() { competing = false }()
+		e.mustFind(t, race[creates], true)
+		creates++
+	})
+	before := e.counter(t, "identity_mints_total", "kind", "group")
+	c, err := e.resolveAs(bob, fileShare())
+	e.s.OnCreate(nil)
+	if err != nil {
+		t.Fatalf("Resolve(bob) after two lost Creates = %v, want a caller from the second re-run", err)
+	}
+	if creates != len(race) {
+		t.Fatalf("competing mints %d, want %d: the resolution's Creates were not each overtaken", creates, len(race))
+	}
+	if got := e.counter(t, "identity_mints_total", "kind", "group") - before; got != 2 {
+		t.Errorf("groups minted %v, want 2: each once", got)
+	}
+	for i, name := range []string{"eng", "ops"} {
+		if p := e.mustFind(t, race[i], false); !slices.Contains(c.Groups, p) {
+			t.Errorf("bob's groups %v, want %s %v", c.Groups, name, p)
+		}
+	}
 }
