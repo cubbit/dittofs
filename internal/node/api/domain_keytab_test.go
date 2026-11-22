@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/secrets"
 )
@@ -86,6 +88,74 @@ func TestJoinAndRotationExcludeEachOther(t *testing.T) {
 	})
 }
 
+// bothRead is a fault for kvtest's wrapper that holds the first two writes
+// of the running index, each made after its transaction read the index,
+// until both have arrived, so two creating writes are in flight at once; a
+// later write passes. Closing abort lets a held write go when the test
+// fails first.
+type bothRead struct {
+	mu          sync.Mutex
+	n           int
+	both, abort chan struct{}
+}
+
+func (b *bothRead) At(op string, key []byte) (time.Duration, int, error) {
+	if op != kvtest.OpSet || !strings.HasPrefix(string(key), "OPR‖") {
+		return 0, 0, nil
+	}
+	b.mu.Lock()
+	b.n++
+	n := b.n
+	if n == 2 {
+		close(b.both)
+	}
+	b.mu.Unlock()
+	if n <= 2 {
+		select {
+		case <-b.both:
+		case <-b.abort:
+		}
+	}
+	return 0, 0, nil
+}
+
+// A join's start and a rotation's start, both writes held until each has
+// read the other's running index, cannot both commit: the second to commit
+// retries on the tracked read, finds the first running and is refused 409
+// operation_running naming it.
+func TestJoinAndRotationStartsOverlap(t *testing.T) {
+	d := serveDomain(t, true)
+	b := &bothRead{both: make(chan struct{}), abort: make(chan struct{})}
+	defer close(b.abort)
+	d.disk.fault.SetFault(b)
+	join := d.async(t, http.MethodPost, joinPath, onlineJoin("", "Administrator@AD.EXAMPLE", "adm1n"))
+	rotate := d.async(t, http.MethodPost, rotatePath, "", "Idempotency-Key", "rotate")
+	await(t, b.both, "both creating writes")
+	var replies []reply
+	for _, ch := range []<-chan reply{join, rotate} {
+		select {
+		case r := <-ch:
+			replies = append(replies, r)
+		case <-time.After(10 * time.Second):
+			t.Fatal("a start not answered in 10s")
+		}
+	}
+	d.disk.fault.SetFault(nil)
+	ops := d.operations(t)
+	if len(ops) != 1 {
+		t.Fatalf("operations %+v, answers %d and %d; want one started", ops, replies[0].status, replies[1].status)
+	}
+	var refused reply
+	for _, r := range replies {
+		if r.status != http.StatusAccepted {
+			refused = r
+		}
+	}
+	if p := refused.problem(t); refused.status != http.StatusConflict || p.Code != apiv1.CodeOperationRunning || !slices.Contains(p.Names, uuid.UUID(ops[0].ID).String()) {
+		t.Errorf("the second start: answered %d %s, want 409 operation_running naming %v", refused.status, refused.body, uuid.UUID(ops[0].ID))
+	}
+}
+
 // Each malformed join or resolve is refused 400 naming its field, with
 // nothing written: a version the request sets, an offline join given what
 // only an online one takes, and a name, an account or an OU over 1024 bytes.
@@ -99,7 +169,6 @@ func TestDomainRefusalRows(t *testing.T) {
 		{"a join setting the version", joinPath, `{"spec":{"mode":"offline","account":"DFS$","version":2},"credential":{"password":"` + b64("pw") + `"}}`, "spec.version", nil},
 		{"an offline join given an ou", joinPath, `{"spec":{"mode":"offline","account":"DFS$","ou":"OU=x,DC=ad"},"credential":{"password":"` + b64("pw") + `"}}`, "spec", nil},
 		{"an offline join given a host name", joinPath, `{"spec":{"mode":"offline","account":"DFS$","dns_host_name":"dfs.ad"},"credential":{"password":"` + b64("pw") + `"}}`, "spec", nil},
-		{"an offline join given takeover", joinPath, `{"spec":{"mode":"offline","account":"DFS$","takeover":true},"credential":{"password":"` + b64("pw") + `"}}`, "spec", nil},
 		{"a join naming a long account", joinPath, offlineJoin(long, "pw"), "spec.account", nil},
 		{"an online join naming a long OU", joinPath, onlineJoin(`,"ou":"OU=`+long+`"`, "Administrator@AD.EXAMPLE", "pw"), "spec.ou", nil},
 		{"a join of no mode", joinPath, `{"spec":{"mode":"sideways"},"credential":{"password":"` + b64("pw") + `"}}`, "spec.mode", nil},

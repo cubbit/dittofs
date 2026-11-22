@@ -4,16 +4,31 @@
 // no clock (RFC 20 section 2.5).
 package wire
 
-// The programs, and the versions and procedures whose calls carry more than a
-// header (RFC 5531 Appendix A, RFC 21 section 2.1).
+// The programs and the versions NFS serves, MOUNT, NLM and NSM being NFS
+// version 3's auxiliary programs, and the procedure whose calls carry more
+// than a header (RFC 5531 Appendix A, RFC 21 sections 2.1 and 2.2).
 const (
 	ProgNFS   uint32 = 100003
 	ProgMount uint32 = 100005
 	ProgNLM   uint32 = 100021
 	ProgNSM   uint32 = 100024
 
-	VersNFS4     uint32 = 4
+	VersNFS3   uint32 = 3
+	VersNFS4   uint32 = 4
+	VersMount3 uint32 = 3
+	VersNLM4   uint32 = 4
+	VersNSM1   uint32 = 1
+
 	ProcCompound uint32 = 1
+)
+
+// The program statuses the adapter's tables answer with, from RFC 1813
+// section 2.6 and RFC 7530 section 13: NFSv3's and NFSv4's fault, and a
+// COMPOUND's minor version not served (RFC 21 section 11.5).
+const (
+	NFS3ErrServerFault       uint32 = 10006
+	NFS4ErrServerFault       uint32 = 10006
+	NFS4ErrMinorVersMismatch uint32 = 10021
 )
 
 // The message types, reply states, accept states, reject states, auth stats

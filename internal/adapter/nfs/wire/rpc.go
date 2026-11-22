@@ -270,6 +270,21 @@ func (r *reader) opaqueAuth() (flavour uint32, at, n int, err error) {
 	return 0, 0, 0, fmt.Errorf("nfs/wire: %w: a flavour", errPastRecord)
 }
 
+// The bytes the reply encoders write: AcceptedLen is AppendAccepted's,
+// MaxReplyHeaderLen the most any reply header takes, AppendProgMismatch's
+// with its two versions, and ResultHeadLen a COMPOUND member's result head,
+// its operation code and status (RFC 5531 section 9.2, RFC 7530 section
+// 16.2).
+const (
+	AcceptedLen       = 24
+	MaxReplyHeaderLen = AcceptedLen + 8
+	ResultHeadLen     = 8
+)
+
+// CompoundStatusLen is what AppendCompoundStatus writes for a tag of tagLen
+// bytes: the status, the tag padded to four, and the results count.
+func CompoundStatusLen(tagLen int) int { return 4 + 4 + tagLen + (4-tagLen%4)%4 + 4 }
+
 // AppendAccepted appends an accepted reply for xid: the reply state, an empty
 // AUTH_NONE verifier, and stat (RFC 5531 section 9.2.2). The program's reply
 // follows, at its call's procedure.

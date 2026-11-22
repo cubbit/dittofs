@@ -5,22 +5,8 @@ import (
 	"strings"
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/wire"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
-)
-
-// The programs NFS serves, MOUNT, NLM and NSM being NFS version 3's auxiliary
-// programs (RFC 5531 Appendix A, RFC 21 sections 2.1 and 2.2).
-const (
-	progNFS   uint32 = 100003
-	progMount uint32 = 100005
-	progNLM   uint32 = 100021
-	progNSM   uint32 = 100024
-
-	versNFS3   uint32 = 3
-	versNFS4   uint32 = 4
-	versMount3 uint32 = 3
-	versNLM4   uint32 = 4
-	versNSM1   uint32 = 1
 )
 
 // pair is one served program and version.
@@ -51,15 +37,15 @@ func newServed(v settings.VersionRange, t Tables) served {
 		return s
 	}
 	if from <= 0 && 0 <= to {
-		s.add(t.V3, progNFS, versNFS3)
-		s.add(t.Mount, progMount, versMount3)
-		s.add(t.NLM, progNLM, versNLM4)
-		s.add(t.NSM, progNSM, versNSM1)
+		s.add(t.V3, wire.ProgNFS, wire.VersNFS3)
+		s.add(t.Mount, wire.ProgMount, wire.VersMount3)
+		s.add(t.NLM, wire.ProgNLM, wire.VersNLM4)
+		s.add(t.NSM, wire.ProgNSM, wire.VersNSM1)
 	}
 	if to >= 1 && from <= to && t.V4 != nil {
 		s.four = true
 		s.minorLo, s.minorHi = core.Version(max(from, 1)-1), core.Version(to-1)
-		s.add(t.V4, progNFS, versNFS4)
+		s.add(t.V4, wire.ProgNFS, wire.VersNFS4)
 	}
 	return s
 }

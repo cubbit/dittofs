@@ -153,6 +153,26 @@ func (d *Directory) AddGroup(_ testing.TB, name string, attrs map[string][][]byt
 	return d.add(name, []string{"top", "group"}, d.rid(), gt)
 }
 
+// Modify sets attrs on the entry dn names, each replacing the attribute of
+// that name in any case, a nil value deleting it, as an LDAP modify's
+// replace does; the DN is kept, so a changed name attribute renames the
+// entry as Active Directory's sAMAccountName change does.
+func (d *Directory) Modify(dn string, attrs map[string][][]byte) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e := d.entries[strings.ToLower(dn)]
+	for k, v := range attrs {
+		for have := range e.attrs {
+			if strings.EqualFold(have, k) {
+				delete(e.attrs, have)
+			}
+		}
+		if v != nil {
+			e.attrs[k] = v
+		}
+	}
+}
+
 // SetMaxValRange sets the most values one range of an attribute holds, 1 500
 // unless set, as Active Directory's MaxValRange.
 func (d *Directory) SetMaxValRange(n int) {

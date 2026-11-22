@@ -35,6 +35,7 @@ var own = map[apiv1.Code]answerOf{
 	apiv1.CodeNotCancellable:         {http.StatusConflict, apiv1.CodeNotCancellable, false},
 	apiv1.CodeLastAdmin:              {http.StatusConflict, apiv1.CodeLastAdmin, false},
 	apiv1.CodeNotACopy:               {http.StatusConflict, apiv1.CodeNotACopy, false},
+	apiv1.CodeJoined:                 {http.StatusConflict, apiv1.CodeJoined, false},
 	apiv1.CodePasswordChangeRequired: {http.StatusForbidden, apiv1.CodePasswordChangeRequired, false},
 	apiv1.CodeThrottled:              {http.StatusTooManyRequests, apiv1.CodeThrottled, true},
 	apiv1.CodeStarting:               {http.StatusServiceUnavailable, apiv1.CodeStarting, true},

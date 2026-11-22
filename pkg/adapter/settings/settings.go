@@ -8,10 +8,11 @@
 // omitted field keeps its default, and Validate refuses a zero value where one
 // is required, never filling it.
 //
-// decision: every adapter setting is live but Port, so there is no
-// restart-only mark and no comparison of two shapes. The node applies a
-// changed Port by building a new adapter and never hands it to Reconfigure,
-// which refuses one with a sentinel error and a one-field comparison.
+// decision: every adapter setting is live but Port, the one field whose class
+// tag is restart, every other's live, so no two shapes are compared. The node
+// applies a changed Port by building a new adapter and never hands it to
+// Reconfigure, which refuses one with a sentinel error and a one-field
+// comparison.
 //
 // decision: Port defaults to 12049 for NFS and 12445 for SMB, not the
 // well-known 2049 and 445, so dfs serves without root and the guides and test

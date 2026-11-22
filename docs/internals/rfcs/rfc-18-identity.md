@@ -1060,9 +1060,12 @@ controller knows. The probe has three answers: it accepts, it rejects, or it
 could not be asked, which retries and never reads as a rejection. A join whose
 pinned controller could not be asked for an hour fails, naming the controller;
 a join run again then pins another, and is run with a takeover, since the
-failed one may have created the account. A failed join, online or offline,
-leaves the installation not joined, and `identity.netbios_name` unchanged,
-since the join writes it only at its last step. It prunes the versions it
+failed one may have created the account. A join of a joined installation,
+online or offline, is refused `409` `joined` unless the request takes it over;
+the check runs at the request and at the join's first step, never at a resumed
+one. A join that fails before its seal leaves the installation as it was; one that fails after it leaves the installation not
+joined, and `identity.netbios_name` unchanged, since the join writes it only at
+its last step. It prunes the versions it
 sealed but those it sent to a controller: the account's creation's, or each
 closing rotation's set, so at most two, since the controller may hold the
 second as its current password and the first as its previous one. Those stay
@@ -1070,7 +1073,8 @@ in force, unconfirmed, as a failed rotation's does (below), until a later join
 completes: that join seals its own versions beside them and prunes them once it
 is joined, so the rule of at most one unconfirmed version (below) holds only
 on a joined installation. It is recovered by running a join again: an offline one once the
-account's password has been reset, or an online one with a takeover. The administrator credential an online join takes is used for that
+account's password has been reset, with a takeover while the installation is
+still joined, or an online one with a takeover. The administrator credential an online join takes is used for that
 one operation, held only in the memory of the node that took it, and never
 stored, logged or put in the operation's record. The node holds it under the
 operation's ID before the record that creates the operation is written, so the

@@ -285,6 +285,18 @@ func (c *startContent) listedShares() []entity.ShareID {
 	return slices.Clone(c.listed)
 }
 
+// wantNoRuns checks that no removal run of any result has been counted: the
+// loop is held, so no posted item can have run at all.
+func (r *rig) wantNoRuns(t *testing.T, what string) {
+	t.Helper()
+
+	runs := r.e.Stats().RemovalRuns
+	n := runs["advanced"] + runs["conflict"] + runs["done"] + runs["error"]
+	if n != 0 {
+		t.Errorf("%s: removal runs %v, want none", what, runs)
+	}
+}
+
 // wantPosted checks that Start posted exactly n items to the removal loop,
 // which has not been let run yet: the loop holds them all, so a missing post
 // fails here and not as a wait that never ends.
@@ -366,9 +378,9 @@ func TestStartAppliesTheReplayThenResumesTheRemovalItCreated(t *testing.T) {
 
 	r.wantRemovals(t, got, []kvstore.UnfinishedRemoval{{File: f, Version: jver(v2)}})
 
-	if n := r.content.resumed(f); n != 0 {
-		t.Errorf("Resume ran %d times before the loop was let run, want 0", n)
-	}
+	// The loop is held: no posted item can have run at all, so no run is
+	// counted yet; the metric moves only with the loop.
+	r.wantNoRuns(t, "runs before the loop was let run")
 
 	r.wantPosted(t, 1)
 	r.run()
@@ -441,6 +453,10 @@ func TestStartPostsTenThousandRemovalsAndRunsNoBatchBeforeItReturns(t *testing.T
 		t.Errorf("%d batches ran by the time Start returned, want 0", got)
 	}
 
+	// The loop is held until the test lets it run, so no posted item ran
+	// before Start returned.
+	r.wantNoRuns(t, "runs by the time Start returned")
+
 	r.wantPosted(t, n)
 	r.run()
 	r.gate.waitBatches(t, n)
@@ -509,9 +525,9 @@ func TestAClonedRemovalIsHandedToTheHookAndNotPosted(t *testing.T) {
 		)
 	}
 
-	if n := r.content.resumed(f); n != 0 {
-		t.Errorf("Resume ran %d times for the clone's file, want 0", n)
-	}
+	// Nothing was posted for the clone's file, so no run is counted for a
+	// removal the rebuild alone runs.
+	r.wantNoRuns(t, "runs for the clone's file")
 
 	if p := r.content.prunedAt(f); len(p) != 0 {
 		t.Errorf("the clone's file was pruned at %v, want never", p)
@@ -823,9 +839,9 @@ func TestAPlainRemovalOlderThanAnUnfinishedCloneIsLeftPendingAndReadsStayCorrect
 		t.Errorf("clone removals handed %+v, want exactly %+v", handed, rec)
 	}
 
-	if n := r.content.resumed(f); n != 0 {
-		t.Errorf("Resume ran %d times for the file, want 0", n)
-	}
+	// The pending clone holds the file: nothing was posted, so no run is
+	// counted for it.
+	r.wantNoRuns(t, "runs for the file, which the pending clone holds")
 
 	if p := r.content.prunedAt(f); len(p) != 0 {
 		t.Errorf("the file was pruned at %v, want never", p)
