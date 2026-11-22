@@ -137,7 +137,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 
 **6. Block storage** (`pkg/block/`)
 - `engine/`: the engine (RFC 8) over `journal/`, the journal (RFC 1). The node builds it and `vfs.Service` over it; adapters reach it only through `vfs.Service` (see [Data path](#data-path)).
-- `remote/`: block store interface and implementations (`s3/` production, `memory/` testing). Each share binds one block store config; `shares.Service` acquires its remote store on AddShare and releases it on RemoveShare, ref-counted per config across the shares that use it.
+- `remote/`: block store interface and implementations (`s3/` production, `memory/` testing). Not wired into the node yet: the engine takes no remote store.
 - `gc/`: mark-sweep over the remote stores and the metadata manifests.
 
 **7. Metadata Store** (`pkg/metadata/store.go`)
@@ -155,13 +155,12 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 it, and `vfs.Service`'s Read, Write and Commit read and write file content
 through the engine (`internal/vfs/data.go`). No protocol serves that path yet:
 the RFC 20 NFS and SMB adapters are built on `vfs.Service`, but their operation
-tables are empty, so every NFS procedure answers `PROC_UNAVAIL` and every SMB
-command `STATUS_NOT_SUPPORTED` until RFC 20's file operations land.
+tables are empty, so every NFS procedure answers `PROC_UNAVAIL` and SMB has no
+file operations yet, until RFC 20's file operations land.
 
 Each share keeps a state directory beneath `blockstore.journal.path`
 (`<path>/shares/<share-name>/`) holding its gc-state, snapshots and migration
-journal, and binds one remote store, ref-counted per block store config across
-the shares that use it.
+journal.
 
 The engine (`pkg/block/engine`, [RFC 8](rfcs/rfc-8-engine.md)) and the journal
 (`pkg/block/journal`, [RFC 1](rfcs/rfc-1-journal.md)) are built and tested on
@@ -568,7 +567,8 @@ lock, err := metaSvc.AcquireLock(ctx, shareName, handle, offset, length, exclusi
 
 `vfs.Service.Write` admits the caller and judges the file (type, read-only
 share, rights, open state) and reserves its quota before the engine stages a
-byte, so a refused write changes nothing; a zero-count write returns once
+byte, so a refused write changes no metadata or content (a conflicting grant may
+already be recalled); a zero-count write returns once
 judged. No protocol WRITE handler calls it yet.
 
 ## Built-In and Custom Backends

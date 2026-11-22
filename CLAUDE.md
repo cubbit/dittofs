@@ -126,21 +126,21 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
    restarts for persistent backends.
 
 4. **The data path is live below the adapters; no adapter serves it yet.** `node.New`
-   builds the engine, `pkg/block/engine` (formerly `enginev2`) over `pkg/block/journal`,
-   and `vfs.Service` over it (`internal/node/node.go`); `vfs.Service`'s Read, Write and
-   Commit read and write content through the engine (`internal/vfs/data.go`). The RFC 20
-   NFS and SMB adapters are built on `vfs.Service`, but their operation tables are still
-   empty, so no client reads or writes a file until RFC 20's file operations land. The
-   adapters reach the engine only through `vfs.Service`, never directly. Each share still
-   binds one block store config, and its remote store is ref-counted per config across the
-   shares that use it; its state directory hangs off `blockstore.journal.path`. Lifecycle
-   is tied to `AddShare` / `RemoveShare`.
+   builds the engine, `pkg/block/engine` over `pkg/block/journal`, and `vfs.Service` over
+   it (`internal/node/node.go`); `vfs.Service`'s Read, Write and Commit read and write
+   content through the engine (`internal/vfs/data.go`). The NFS and SMB adapters have no
+   file operations yet, so no client reads or writes a file (see
+   [Data path](docs/internals/architecture.md#data-path)). The adapters reach the engine
+   only through `vfs.Service`, never directly. One engine per node runs over the node's
+   journal devices (`bootstrap.journals`); shares bind to it at `engine.Start`. No remote
+   store is wired yet.
 
 5. **WRITE judges before it stages:** `vfs.Service.Write` admits the caller and judges
    the file's type, a read-only share, the caller's rights and open state, and reserves the
-   quota, before the engine stages a byte; a zero-count write returns once judged
-   (`internal/vfs/data.go`). On this branch no protocol WRITE handler exists yet, since the
-   v1 adapters are gone; `develop` keeps the v1 rule.
+   quota, before the engine stages a byte — and refuses an immutable or append-only file
+   at staging (`internal/vfs/data.go`); a zero-count write returns once judged. On this
+   branch no protocol WRITE handler exists yet
+   ([Data path](docs/internals/architecture.md#data-path)); `develop` keeps the v1 rule.
 
 6. **Error codes:** return `metadata.ExportError` values (`ErrNotDirectory`, `ErrNoEntity`,
    `ErrAccess`, `ErrExist`, `ErrNotEmpty`, …). Log expected errors at `Debug`, unexpected at `Error`.

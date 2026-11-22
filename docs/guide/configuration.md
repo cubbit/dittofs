@@ -296,10 +296,8 @@ unavailable until they are rebuilt on the v2 management API, so no command
 attaches a block store to a share today. Today's CLI has no command to create a block store: remote stores
 return as resource commands of the v2 management API.
 
-> **No protocol serves files yet.** The server builds the engine
-> (`pkg/block/engine`) and the filesystem service over it, but the NFS and SMB
-> adapters have no file operations yet: NFS answers every procedure
-> `PROC_UNAVAIL` and SMB every command `STATUS_NOT_SUPPORTED`.
+> **No protocol serves files yet.** The NFS and SMB adapters have no file
+> operations yet; see [Data path](../internals/architecture.md#data-path).
 
 #### Share state root (`blockstore.journal.path`)
 

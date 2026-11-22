@@ -586,10 +586,8 @@ dittofs/
 
 ### Data path
 
-The NFS adapter's operation tables are empty, so every procedure, READ, WRITE
-and COMMIT among them, answers `PROC_UNAVAIL` until RFC 20's file operations
-land (`internal/adapter/nfs/nfs.go`). Below it the path is live: `vfs.Service`'s
-Read, Write and Commit read and write content through the engine.
+The NFS adapter has no file operations yet; see
+[Data path](architecture.md#data-path).
 
 ### Buffer Pooling
 

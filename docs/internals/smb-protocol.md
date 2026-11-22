@@ -222,11 +222,8 @@ internal/adapter/nfs/            internal/adapter/smb/
 
 ## Data path
 
-The SMB adapter's one operation table is empty, so every command, READ, WRITE
-and FLUSH among them, answers `STATUS_NOT_SUPPORTED` until RFC 20's file
-operations land (`internal/adapter/smb/smb.go`). Below it the path is live:
-`vfs.Service`'s Read, Write and Commit read and write content through the
-engine.
+The SMB adapter has no file operations yet; see
+[Data path](architecture.md#data-path).
 
 ### READ Response Buffer Pool
 

@@ -74,7 +74,8 @@ func reclaimBenchData(dir string) {
 //
 // Mount strings are the documented interface (see docs/guide/nfs.md, dfsctl).
 // It has no cold barrier and no settle wait: both read the content store's
-// stats and evict it, and the management API has no stats or eviction call yet. The server bringup (config schema + dfsctl
+// stats and evict it, and the management API has no stats or eviction call
+// yet. The server bringup (config schema + dfsctl
 // bootstrap) is pinned against a live dfs on the VM — the first managed run is
 // where it gets tuned.
 const (

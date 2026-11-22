@@ -32,9 +32,9 @@ local/remote split is gone, and the valid types are `s3` and `memory`. If you ar
 here looking for how to implement a custom *local* store type, that concept no
 longer exists; see [The journal](#the-journal-local-tier) for what replaced it.
 
-**Key Design Principle**: the engine (`pkg/block/engine`) composes the journal
-and a share's remote block store and orchestrates reads and writes across the
-two tiers; `vfs.Service` is its only caller on the data path.
+**Key Design Principle**: the engine (`pkg/block/engine`) runs over the journal
+and orchestrates reads and writes; the remote tier is not wired yet;
+`vfs.Service` is its only caller on the data path.
 
 This separation enables:
 - Independent scaling of metadata and block storage
@@ -70,14 +70,10 @@ only local tier and it is not pluggable.
 
 ### Shares, remote stores and the data path
 
-Each share binds one block store config. `shares.Service` acquires that config's
-remote store on AddShare and releases it on RemoveShare; the remote is
-ref-counted per config, so shares on the same config share one connection, and
-the last share to go closes it.
-
-The engine (`pkg/block/engine`, RFC 8) composes the journal and the remote
-store; the node builds it and `vfs.Service` over it, and the adapters reach it
-only through `vfs.Service`.
+The engine (`pkg/block/engine`, RFC 8) runs over the journal; the node builds it
+and `vfs.Service` over it, and the adapters reach it only through
+`vfs.Service`. The remote tier is not wired yet. The adapters have no file
+operations yet (see [Data path](architecture.md#data-path)).
 
 ## Implementing Metadata Stores
 
