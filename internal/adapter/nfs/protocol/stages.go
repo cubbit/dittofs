@@ -42,8 +42,10 @@ var (
 // handing it to core as a core.Header allocates nothing, and each call has its
 // own, which the calls core runs at once on one connection read apart. It is
 // valid while the record's Buf is retained, which core does for a request's
-// life. Withdraw the view, and copy the fields out, if core ever releases a
-// record before its request ends.
+// life but a park's: that it releases once the handler returns ErrParked,
+// having taken Final's header, which must not point into the record (RFC 20
+// section 4.7). Withdraw the view, and copy the fields out, if core ever reads
+// a header after it releases the record.
 type header struct{ rec *resources.Buf }
 
 func (h header) call() wire.Call { return wire.Call(h.rec.B) }
@@ -57,7 +59,7 @@ func (h header) Version() core.Version {
 	if minor, ok := c.MinorVersion(); ok {
 		return core.Version(minor)
 	}
-	if c.Program() == progNFS && c.Version() == versNFS4 {
+	if c.Program() == wire.ProgNFS && c.Version() == wire.VersNFS4 {
 		return 0
 	}
 	return core.Version(c.Version())
@@ -154,22 +156,12 @@ func (s *stage) Args(rec *resources.Buf, h core.Header) []byte {
 // result's head a reply that fails before or at a member writes beside the
 // members' bounds (RFC 20 section 4.7).
 func (s *stage) ReplyLen(h core.Header) int {
-	n := 32
 	hd, ok := h.(header)
 	if !ok || !hd.compound() {
-		return n
+		return wire.MaxReplyHeaderLen
 	}
-	tag := len(hd.call().Tag())
-	return 24 + 4 + 4 + tag + pad(tag) + 4 + resultHead
+	return wire.AcceptedLen + wire.CompoundStatusLen(len(hd.call().Tag())) + wire.ResultHeadLen
 }
-
-// resultHead is a member's result head, an operation code and a status: the
-// bytes a member whose reply fails before or at it writes beside the
-// members' bounds (RFC 20 section 4.7).
-const resultHead = 8
-
-// pad is XDR's padding of n bytes to four.
-func pad(n int) int { return (4 - n%4) % 4 }
 
 // Route chooses the table and builds the request, one of the call's own, in
 // the order of RFC 20 section 4.1's route row: a message that is not a call

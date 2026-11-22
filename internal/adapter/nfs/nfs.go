@@ -14,15 +14,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 )
 
-// The program statuses the tables answer with, from RFC 1813 section 2.6 and
-// RFC 7530 section 13: NFSv3's and NFSv4's fault, and a COMPOUND's minor
-// version not served (RFC 21 section 11.5).
-const (
-	nfs3ErrServerFault       = 10006
-	nfs4ErrServerFault       = 10006
-	nfs4ErrMinorVersMismatch = 10021
-)
-
 // New builds the NFS adapter, configured: it validates s, refusing a TLS mode
 // other than off until StartTLS among the rest, so no certificate file is
 // loaded; refuses Deps missing VFS or Budgets, naming each missing, core
@@ -64,9 +55,9 @@ func New(d adapter.Deps, s settings.NFS) (*core.Server, error) {
 func tables() protocol.Tables {
 	aux := errorTable(core.Status(wire.StatusAccept | wire.AcceptSystemErr))
 	return protocol.Tables{
-		V3: table("nfs3", errorTable(nfs3ErrServerFault)),
-		V4: table("nfs4", errorTable(nfs4ErrServerFault,
-			core.ErrorRow{Err: core.ErrVersion, Status: nfs4ErrMinorVersMismatch})),
+		V3: table("nfs3", errorTable(core.Status(wire.NFS3ErrServerFault))),
+		V4: table("nfs4", errorTable(core.Status(wire.NFS4ErrServerFault),
+			core.ErrorRow{Err: core.ErrVersion, Status: core.Status(wire.NFS4ErrMinorVersMismatch)})),
 		Mount: table("nfs3", aux),
 		NLM:   table("nfs3", aux),
 		NSM:   table("nfs3", aux),

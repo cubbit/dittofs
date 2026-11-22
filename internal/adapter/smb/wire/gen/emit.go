@@ -12,10 +12,9 @@ import (
 // emit writes the codec of every struct, in the order the inputs declare
 // them.
 //
-// decision: the dialect is a uint32 where RFC 20 section 4.7's Decoder and
-// Encoder name core.Version: section 7.1 holds a codec_gen.go to wire's
-// imports, among which core is not. Overturned when the RFC settles which
-// gives way.
+// The dialect is a uint32, which core.Version aliases, so a codec_gen.go,
+// which imports no core (RFC 20 section 7.1), meets section 4.7's Decoder and
+// Encoder.
 //
 // decision: a byte field is appended to out, never lent as a segment of its
 // own through (*Buf).Attach, which RFC 20 section 5.3 keeps for a reply field

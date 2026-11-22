@@ -180,8 +180,11 @@ func (framer) MaxRecord() (int, int) { return maxBody, maxFragments }
 //
 // decision: a header is a pointer to its bytes in the record, so handing it to
 // core as a core.Header allocates nothing. It is valid while the record's Buf
-// is retained, which core does for a request's life. Withdraw it, and copy the
-// fields out, if core ever releases a record before its request ends.
+// is retained, which core does for a request's life but a park's: that it
+// releases once the handler returns ErrParked, having taken Final's header,
+// which must not point into the record (RFC 20 section 4.7). Withdraw it, and
+// copy the fields out, if core ever reads a header after it releases the
+// record.
 type header [headerLen]byte
 
 // stepless is a header refused for its own next step: its Next is one the
