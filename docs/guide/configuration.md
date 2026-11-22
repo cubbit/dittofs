@@ -1177,7 +1177,7 @@ writes, as settings of the installation:
 | Setting | Meaning |
 |---|---|
 | `identity.directory.realm`, `identity.directory.base` | the realm and base DN the join uses; an online join's OU must lie strictly under the base |
-| `identity.netbios_name` | written by the join from the account's name (default `DITTOFS` until then); do not rename a joined installation: the refusal RFC 13 and RFC 18 specify is not built yet, and a rename breaks NTLM pass-through (see [identity.md](identity.md#after-a-join)) |
+| `identity.netbios_name` | written by the join from the account's name (default `DITTOFS` until then); while joined, a change through the settings API is refused `409` `joined`, and a new join with `"takeover": true` changes it (see [identity.md](identity.md#after-a-join)) |
 | `identity.keytab` | the sealed keytab of AES keys for service names the computer account does not hold, set with `PUT /api/v1/installation/keytab` |
 
 For the step-by-step, including pre-creating the account for an offline join and
