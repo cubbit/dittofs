@@ -621,9 +621,12 @@ func (j *joining) noAnswer(ctx context.Context, err error) error {
 // account, no controller answering) has changed nothing, so it writes
 // nothing. A joined installation reaches a join only as its takeover, since
 // the API and the join's first turn refuse any other. Every failure of the
-// join, the confirm's refusal of the account's name among them, ends here, so
-// none rolls back without the record. Overturned if a failure before the seal
-// can change what the installation holds.
+// join's phases, the confirm's refusal of the account's name among them, ends
+// here, so none rolls back without the record. The exception is corrupted
+// state: a cursor that does not decode, or names no phase, fails the step
+// without fail, and may do so after the seal, leaving the installation
+// recorded as it was. Overturned if a failure before the seal can change
+// what the installation holds.
 func (j *joining) fail(ctx context.Context, status int, detail string) error {
 	if j.c.Version == 0 {
 		return joinProblem(status, "", detail)

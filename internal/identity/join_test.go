@@ -492,6 +492,21 @@ func TestOnlineJoinOfAJoinedInstallationRefused(t *testing.T) {
 	}
 }
 
+// On an installation joined as NAS, a takeover failing at its first turn,
+// before its seal, leaves it as it was: still joined as NAS, nothing sealed.
+func TestOnlineJoinTakeoverFailingBeforeSeal(t *testing.T) {
+	fx := newRotation(t)
+	before := fx.versions(t)
+	op := fx.joinOp(t, apiv1.JoinDomainSpec{Account: "NAS_01", Takeover: true}, true)
+	fx.wantFailed(t, op, "NAS_01")
+	if vs := fx.versions(t); !slices.EqualFunc(vs, before, func(a, b secrets.Version) bool { return a.Number == b.Number }) {
+		t.Errorf("versions %v, want %v, nothing sealed", vs, before)
+	}
+	if j := fx.join(t); !j.Joined || j.Account != "NAS$" || j.LastRotation.Failed {
+		t.Errorf("join %+v, want still joined as NAS$, no failure recorded", j)
+	}
+}
+
 // On a joined installation, a takeover that fails after its seal leaves it
 // not joined, with identity.netbios_name as it was.
 func TestOnlineJoinFailureOnJoinedInstallation(t *testing.T) {

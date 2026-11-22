@@ -169,7 +169,6 @@ func TestDomainRefusalRows(t *testing.T) {
 		{"a join setting the version", joinPath, `{"spec":{"mode":"offline","account":"DFS$","version":2},"credential":{"password":"` + b64("pw") + `"}}`, "spec.version", nil},
 		{"an offline join given an ou", joinPath, `{"spec":{"mode":"offline","account":"DFS$","ou":"OU=x,DC=ad"},"credential":{"password":"` + b64("pw") + `"}}`, "spec", nil},
 		{"an offline join given a host name", joinPath, `{"spec":{"mode":"offline","account":"DFS$","dns_host_name":"dfs.ad"},"credential":{"password":"` + b64("pw") + `"}}`, "spec", nil},
-		{"an offline join given takeover", joinPath, `{"spec":{"mode":"offline","account":"DFS$","takeover":true},"credential":{"password":"` + b64("pw") + `"}}`, "spec", nil},
 		{"a join naming a long account", joinPath, offlineJoin(long, "pw"), "spec.account", nil},
 		{"an online join naming a long OU", joinPath, onlineJoin(`,"ou":"OU=`+long+`"`, "Administrator@AD.EXAMPLE", "pw"), "spec.ou", nil},
 		{"a join of no mode", joinPath, `{"spec":{"mode":"sideways"},"credential":{"password":"` + b64("pw") + `"}}`, "spec.mode", nil},

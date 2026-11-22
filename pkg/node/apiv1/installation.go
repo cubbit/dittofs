@@ -72,10 +72,10 @@ type JoinCredential struct {
 
 // JoinDomainSpec is a domain join as a request states it: its mode; the
 // computer account's name, with or without its $, empty for identity's
-// default; and an online join's organisational unit, a distinguished name
-// under the directory record's base, its DNS host name, and whether it takes
-// over an account of that name it did not create, each empty for identity's
-// default.
+// default; whether it takes over a joined installation, and for an online
+// join an account of that name it did not create; and an online join's
+// organisational unit, a distinguished name under the directory record's
+// base, and its DNS host name, each empty for identity's default.
 type JoinDomainSpec struct {
 	Mode        JoinMode `json:"mode"`
 	Account     string   `json:"account,omitempty"`
