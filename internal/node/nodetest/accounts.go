@@ -41,7 +41,7 @@ func (h *Harness) Account(t testing.TB, name, password string, role entity.APIRo
 	if err != nil {
 		t.Fatalf("nodetest: hash %s's password: %v", name, err)
 	}
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: u.Principal.ID[:]}, Key: "password"}
+	owner := entity.UserSecretOwner(u.Principal.ID, entity.UserPasswordKey)
 	sec, err := h.Secrets(t).Seal(ctx, secrets.Storage, entity.SecretPassword, owner, u.Password, hs.Password, secrets.Meta{})
 	if err != nil {
 		t.Fatalf("nodetest: seal %s's password: %v", name, err)
@@ -59,8 +59,10 @@ func (h *Harness) Account(t testing.TB, name, password string, role entity.APIRo
 }
 
 // SignedIn stores an account named name holding role, with a password of
-// its own, and signs it in through the API the started node serves at addr:
-// a caller of that role, its principal and its tokens.
+// its own, and signs it in through the API the started node serves at addr,
+// which the test reads from the node, since the node exposes its bound
+// address only to its own tests: a caller of that role, its principal and
+// its tokens.
 func (h *Harness) SignedIn(t testing.TB, addr, name string, role entity.APIRole) (entity.Principal, apiv1.Tokens) {
 	t.Helper()
 	password := rand.Text()

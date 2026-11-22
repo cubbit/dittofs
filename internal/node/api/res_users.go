@@ -78,6 +78,20 @@ func userSpecOf(u entity.User) apiv1.UserSpec {
 	return sp
 }
 
+// kerberosNeedsUID refuses, 400, an edit giving a user that holds no uid a
+// Kerberos name it did not hold, as an API-only account holds none: a
+// ticket would map to an account with no file identity, which a share
+// treats as its anonymous user, past a gate that admits Kerberos alone. A
+// name the user already holds is kept.
+func kerberosNeedsUID(before, after entity.ProtocolIDs) error {
+	old, _ := krbOf(before)
+	krb, ok := krbOf(after)
+	if ok && krb.Value != old.Value && numberOf(after, entity.SchemeUID) == nil {
+		return &fieldError{field: "spec.kerberos", detail: "a user holding no uid is given no Kerberos name; give it a uid first"}
+	}
+	return nil
+}
+
 // specRole is the role r states, none when it states none; refused 400
 // unless it names one of the three roles.
 func specRole(r apiv1.Role) (entity.APIRole, error) {
@@ -119,14 +133,19 @@ var users = writing[userDoc]{kind: entity.ResourceUser, raises: true, read: func
 	return userDoc{userSpecOf(u)}, u.Generation, ok, err
 }, hidden: func(ctx context.Context, tx entity.ControlPlaneTx, id [16]byte) (bool, error) {
 	u, ok, err := tx.User(userAt(id))
-	return !ok || hiddenFrom(ctx, u), err
+	if err == nil && !ok {
+		return false, errNotFound
+	}
+	return hiddenFrom(ctx, u), err
 }}
 
 // createUser is POST /users: a user of the spec's name and role, its uid
 // the one the spec names or, when it names none, one allocated from
 // identity.id_range, and its SID allocated, in the create's transaction. A
 // user created with a role and neither a uid nor a Kerberos name is an
-// API-only account and is allocated neither: it holds no spelling. A name or
+// API-only account and is allocated neither: it holds no spelling, and gains
+// no file identity later, since an edit giving it a Kerberos name, which a
+// ticket would map to it, is refused while it holds no uid. A name or
 // uid another principal holds is refused by the store, and a uid of 0 here.
 // Its Kerberos name is stored linked as the pre-write step asked the
 // directory. A role is given by an admin only.
@@ -206,6 +225,9 @@ func putUser(ctx context.Context, rq request[userDoc], link krbLink, tx entity.C
 	if u.IDs, err = withKerberos(tx, rq.start, u.IDs, sp.Kerberos, link); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
+	if err := kerberosNeedsUID(was.IDs, u.IDs); err != nil {
+		return apiv1.User{}, rq.ID, err
+	}
 	u.Name, u.Email, u.Disabled, u.Role = sp.Name, sp.Email, sp.Disabled, role
 	if u.Generation, err = tx.PutUser(u, rq.Expect, entity.Alloc{}); err != nil {
 		return apiv1.User{}, rq.ID, nameField("spec.name", err)
@@ -262,8 +284,11 @@ var usersList = listing[entity.User, apiv1.User]{
 var user = watching[apiv1.User]{
 	read: func(ctx context.Context, d Deps, rq request[none]) (apiv1.User, error) {
 		u, ok, err := d.Store.User(ctx, userAt(rq.ID))
-		if err == nil && (!ok || hiddenFrom(ctx, u)) {
+		switch {
+		case err == nil && !ok:
 			return apiv1.User{}, errNotFound
+		case err == nil && hiddenFrom(ctx, u):
+			return apiv1.User{}, errHidden
 		}
 		return userOf(shown(ctx, u)), err
 	},

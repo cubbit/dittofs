@@ -131,9 +131,8 @@ func tagsOf[B any](w writing[B]) writing[none] {
 }
 
 // hiddenFrom reports whether the caller ctx carries may not know of u: a
-// user holding an API role, to a caller that may not read accounts, as
-// accounts with a role are the role table's accounts right's, an admin's
-// alone to read and write.
+// user holding an API role, to a caller that may not read what the role
+// table's auth.Accounts right guards, which only an admin may.
 //
 // decision: an account with a role is hidden by the role alone, and only on
 // /users: there a read answers 404 and a listing leaves it out, and a write
@@ -141,19 +140,24 @@ func tagsOf[B any](w writing[B]) writing[none] {
 // does. Grants, memberships and quotas resolve a principal's ID through
 // principalIn, which does not hide it, so a grant, membership or quota naming
 // an admin's ID succeeds where one naming a missing ID answers 404, telling a
-// caller below admin which IDs are accounts; none of those writes changes
-// the account or its role. Overturned if an account's ID must be secret
-// from an operator: principalIn would then hide it too.
+// caller below admin which IDs are accounts; and a create naming a name or
+// a uid an account holds answers 409 where a free one answers 201, telling
+// an operator which names and uids are accounts'. None of those writes
+// changes the account or its role. Overturned if an account's ID, name or
+// uid must be secret from an operator: principalIn would then hide it too,
+// and a create's conflict on a hidden account would answer as a free one's
+// cannot, so the store's uniqueness would need a namespace of its own for
+// accounts.
 func hiddenFrom(ctx context.Context, u entity.User) bool {
 	c, _ := auth.CallerFrom(ctx)
 	read, _ := auth.Allowed(c, auth.Accounts)
 	return u.Role != entity.RoleNone && !read
 }
 
-// checkLastAdmin refuses, 409 last_admin, a write that takes before, an
-// enabled admin, out of the enabled admins, by disabling, demoting or
-// deleting it, after being the zero user for a deletion, when it leaves
-// none. The admins are counted tracked in tx after the write, so of two
+// checkLastAdmin refuses, 409 last_admin, a write that changes a user from
+// before to after, when before is an enabled admin, after is not, and no
+// enabled admin is left: a disable, a demotion or, with after the zero User,
+// a deletion. The admins are counted tracked in tx after the write, so of two
 // writes each removing one of the last two, the second to commit conflicts,
 // counts again, and is refused.
 func checkLastAdmin(tx entity.ControlPlaneTx, before, after entity.User) error {
@@ -172,7 +176,7 @@ func checkLastAdmin(tx entity.ControlPlaneTx, before, after entity.User) error {
 // for a viewer reading another user, as only operator, admin and the user
 // itself read it.
 func shown(ctx context.Context, u entity.User) entity.User {
-	if c, _ := auth.CallerFrom(ctx); c.Role < entity.RoleOperator && c.Principal != u.Principal {
+	if c, _ := auth.CallerFrom(ctx); !holds(c, auth.Principals) && c.Principal != u.Principal {
 		u.Email = ""
 	}
 	return u
