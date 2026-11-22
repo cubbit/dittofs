@@ -46,7 +46,9 @@ func (fs *Filesystem) who(ctx context.Context, c vfs.Call, cl vfs.ClientID) (ope
 // but the first on a shared host. Overturned if a ClientGuid shared this way
 // is seen in the wild.
 func record(info vfs.ClientInfo, p entity.Principal) openstate.Client {
-	if info.Protocol != entity.ProtocolNFSv4 {
+	// An anonymous caller's record holds no owner, as open state records one,
+	// since an owner every anonymous caller maps to protects nothing.
+	if info.Protocol != entity.ProtocolNFSv4 || p == entity.AnonymousPrincipal {
 		p = entity.Principal{}
 	}
 	return openstate.Client{ClientRecord: entity.ClientRecord{

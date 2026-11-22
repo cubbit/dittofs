@@ -774,6 +774,30 @@ func TestAnNFSv4ClientIsOwnedByItsMappedPrincipal(t *testing.T) {
 	}
 }
 
+// An NFSv4 client proposed by a call proving nothing, which maps to the
+// well-known anonymous, holds no Owner and is unprotected, as every
+// anonymous caller maps alike: a signed-in principal naming it is not
+// refused ClientInUse.
+func TestAnAnonymousNFSv4ClientHasNoOwner(t *testing.T) {
+	s := newShares(t, nil, nil)
+	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
+	ctx := t.Context()
+	anon := vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofNone, Client: inLab}}
+	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("kiosk"), Boot: [8]byte{1}, Protect: true, Recovery: entity.RecoverStatus}
+	p, err := s.Propose(ctx, anon, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Proposal = &p
+	if _, _, err := s.Connect(ctx, anon, info, &vfstest.Callbacks{}); err != nil {
+		t.Fatal(err)
+	}
+	info.Proposal = nil
+	if _, err := s.Propose(ctx, s.as(t, 1000, inLab), info); err != nil {
+		t.Errorf("alice's Propose of an anonymous client's name answered %v, want accepted", err)
+	}
+}
+
 // A client's Adapter bytes come back from Record as Propose and Connect gave
 // them, so the NFSv4 adapter reads the minor version that confirmed the
 // client from its record, and a confirm under the other one replaces them.

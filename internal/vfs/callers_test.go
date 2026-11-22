@@ -20,6 +20,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/settings"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -36,6 +37,7 @@ type caching struct {
 	clock *sim.TestClock // the cache's wall clock, and the identity server's
 	tp    *sdktrace.TracerProvider
 	spans *tracetest.SpanRecorder
+	reg   *metrics.Registry    // the identity server's metrics
 	ids   identitysrv.Settings // the identity settings the store holds
 	gen   uint64               // the generation of the last State applied
 }
@@ -43,14 +45,14 @@ type caching struct {
 func newCaching(t *testing.T) *caching {
 	t.Helper()
 	prof.Watch(t, prof.Options{})
-	c := &caching{clock: sim.NewTestClock(time.Unix(1_000_000, 0)), spans: tracetest.NewSpanRecorder()}
+	c := &caching{clock: sim.NewTestClock(time.Unix(1_000_000, 0)), spans: tracetest.NewSpanRecorder(), reg: metrics.New("test", "test")}
 	fx := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
 		c.fault = kvtest.NewFaultKV(memKV(tb))
 		return c.fault
 	})
 	c.tp = sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()), sdktrace.WithSpanProcessor(c.spans))
 	t.Cleanup(func() { _ = c.tp.Shutdown(context.Background()) })
-	srv, err := identitysrv.New(identitysrv.Deps{Store: fx.Store, Clock: c.clock, Tracer: c.tp.Tracer("test")})
+	srv, err := identitysrv.New(identitysrv.Deps{Store: fx.Store, Clock: c.clock, Tracer: c.tp.Tracer("test"), Metrics: c.reg})
 	if err != nil {
 		t.Fatal(err)
 	}

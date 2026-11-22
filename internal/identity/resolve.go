@@ -26,6 +26,7 @@ const (
 	reasonStoreUnavailable = "store_unavailable"
 	reasonGroupCap         = "group_cap"
 	reasonAnonymousMissing = "anonymous_missing"
+	reasonNTLMOff          = "ntlm_off"
 )
 
 // groupCap is the most groups a caller may hold; one in more is refused.
@@ -66,16 +67,22 @@ var noSpan = trace.SpanFromContext(context.Background())
 //
 // The forwarded Identity is checked first, before any store read: evidence
 // naming a principal below ProofSecret, or none at ProofSecret or above, is
-// ErrInvalid. Then the map step: a proven identity maps to the principal
-// sign-in bound its evidence to, never to its name again, and that
-// principal's user or machine record is re-read, one disabled or deleted
-// refused ErrAccess; a ProofNone identity maps to the share's Anonymous. A call
-// naming no share stops there, with Mapped set.
+// ErrInvalid. A ProofSecret identity, NTLM's, is refused ErrAccess while the
+// State's identity.ntlm is off, or before any State is applied. Then the map
+// step: a proven identity maps to the principal sign-in bound its evidence
+// to, never to its name again, and that principal's user or machine record is
+// re-read, one disabled or deleted refused ErrAccess; a well-known principal,
+// root or anonymous, has no record and none is read. A ProofNone identity
+// maps to the share's Anonymous, the well-known anonymous where the policy
+// names none, a call naming no share included. A call naming no share stops
+// there, with Mapped set.
 //
 // On a share, a caller the policy squashes, a ProofNone one, or a proven one
 // whose user holds no uid acts as the policy's Anonymous, with that
 // principal's closure for its groups, no deny-only principal and no flag; a
-// policy naming none refuses it, as does a deleted or disabled Anonymous.
+// deleted or disabled Anonymous refuses it. A caller mapped to the
+// well-known root holds uid 0: a root squash replaces it, and unsquashed it
+// is privileged.
 // Otherwise a proven caller's groups are its closure unioned with those of
 // its evidence's SIDs, its deny-only SIDs mapped apart. A caller in more than
 // groupCap groups is refused.
@@ -124,7 +131,7 @@ func (s *Server) Resolve(ctx context.Context, id identity.Identity, p entity.Sha
 		if s.loaded != nil {
 			s.loaded()
 		}
-		c, err = s.resolve(ctx, span, st.serial(), id, p, narrowed)
+		c, err = s.resolve(ctx, span, st, id, p, narrowed)
 		if st.serial() == s.Current() {
 			break
 		}
@@ -132,11 +139,26 @@ func (s *Server) Resolve(ctx context.Context, id identity.Identity, p entity.Sha
 	return c, err
 }
 
-// resolve is one pass of Resolve's map step, squash and grant under the
-// State whose serial is built, which it stamps on the caller.
-func (s *Server) resolve(ctx context.Context, span trace.Span, built uint64, id identity.Identity, p entity.SharePolicy, narrowed identity.ReadOnlyCause) (c *identity.Caller, err error) {
+// resolve is one pass of Resolve's map step, squash and grant under st,
+// whose serial it stamps on the caller.
+func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id identity.Identity, p entity.SharePolicy, narrowed identity.ReadOnlyCause) (c *identity.Caller, err error) {
+	// A Secret caller is refused under the State that turned NTLM off, so
+	// a session signed in before the change is refused at its next call.
+	if id.Proof == identity.ProofSecret && (st == nil || !st.Settings.NTLM) {
+		return nil, &refusal{reasonNTLMOff, fmt.Errorf("%w: NTLM is off", vfserr.ErrAccess)}
+	}
 	pr := s.deps.Store.Principals()
 	proven := id.Proof >= identity.ProofSecret
+	// decision: a policy naming no Anonymous acts as the well-known anonymous,
+	// never the zero principal, which owns every share's root, and is not
+	// refused: the well-known anonymous has no record to delete and no group,
+	// and no grant may name it, so it reaches what an operator opened to
+	// everyone and nothing more. Overturned if a zero
+	// Anonymous is ever meant as "refuse squashed callers"; that then needs
+	// its own policy field.
+	if p.Anonymous.IsZero() {
+		p.Anonymous = entity.AnonymousPrincipal
+	}
 	mapped := p.Anonymous
 	if proven {
 		mapped = id.Evidence.Principal
@@ -155,7 +177,7 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, built uint64, id 
 	// with a zero Fresh, so a local principal resolves on every call and its
 	// disable reaches its next call. Overturned once each new State reaches
 	// a running node, which then bounds such a caller instead.
-	c = &identity.Caller{Mapped: mapped, Fresh: id.Evidence.Expires, Built: built}
+	c = &identity.Caller{Mapped: mapped, Fresh: id.Evidence.Expires, Built: st.serial()}
 
 	// decision: a call naming no share, such as a client record's creation,
 	// runs the map step alone, under no share's policy, and acts as Mapped:
@@ -165,12 +187,14 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, built uint64, id 
 		return c, nil
 	}
 
-	// ponytail: root is found by a uid 0 in the user's record, but the store
-	// holds uid 0 for the well-known root principal and refuses it on any
-	// record, so this never matches. Replace it with a caller mapped to the
-	// well-known root when resolution handles well-known principals.
-	root := proven && slices.Contains(u.IDs, entity.ProtocolID{Scheme: entity.SchemeUID, Value: "0"})
-	fileUser := proven && slices.ContainsFunc(u.IDs, func(i entity.ProtocolID) bool { return i.Scheme == entity.SchemeUID })
+	// decision: a proven caller mapped to the well-known root is a file user
+	// with uid 0 though no record holds one, and unsquashed it is privileged
+	// with no admin grant, as the superuser is on a POSIX server. Only a name
+	// an operator linked to root maps to it, so the link is the grant; a
+	// share that squashes root takes the privilege away. Overturned if root
+	// on one client must be told apart from root on another.
+	root := proven && mapped == entity.RootPrincipal
+	fileUser := root || proven && slices.ContainsFunc(u.IDs, func(i entity.ProtocolID) bool { return i.Scheme == entity.SchemeUID })
 	squashed := !fileUser || p.Squash == entity.SquashAll || root && p.Squash == entity.SquashRoot
 	// decision: a claimed identity is squashed before its grant is read, a
 	// proven one after. A grant on a claimed uid has no security value, since
@@ -210,9 +234,6 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, built uint64, id 
 	// means one thing whatever the protocol. Revisit if an operator needs
 	// NFS squashed and SMB not on one share; that is two shares today.
 	if squashed {
-		if p.Anonymous.IsZero() {
-			return nil, &refusal{reasonAnonymousMissing, fmt.Errorf("%w: the share names no anonymous principal", vfserr.ErrAccess)}
-		}
 		c.Principal = p.Anonymous
 		if _, err := live(ctx, pr, c.Principal, reasonAnonymousMissing); err != nil {
 			return nil, err

@@ -14,7 +14,8 @@ import (
 // to read-only before resolution: ReadOnlyNotNarrowed, ReadOnlyShare or
 // ReadOnlyClient, never ReadOnlyGrant, which resolution sets itself. Resolve
 // answers vfserr.ErrAccess for a disabled or deleted principal, a deleted
-// Anonymous, or a principal over the group cap, and vfserr.ErrUnavailable for
+// Anonymous, a principal over the group cap, or a Secret identity while NTLM
+// is off, and vfserr.ErrUnavailable for
 // an undecidable lookup or an incomplete group closure.
 type Resolver interface {
 	Resolve(ctx context.Context, id Identity, p entity.SharePolicy, narrowed ReadOnlyCause) (*Caller, error)
