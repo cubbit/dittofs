@@ -68,7 +68,7 @@ also live in [NFS.md](nfs.md#glossary) and [SMB.md](smb.md#glossary).
 | **FastCDC** | A content-defined chunking algorithm that splits file data into variable-size chunks at content-based boundaries, so small edits only re-chunk the affected region. [FastCDC paper (USENIX ATC '16)](https://www.usenix.org/conference/atc16/technical-sessions/presentation/xia) |
 | **BLAKE3** | The fast cryptographic hash DittoFS uses to address CAS blocks and verify them end-to-end. [BLAKE3 specification](https://github.com/BLAKE3-team/BLAKE3-specs) |
 | **Block store** | The durable home for a share's file content ([S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) or memory). Every share has exactly one; it has no *kind*. |
-| **Journal** | The on-disk, append-only tier in front of a share's block store. It absorbs writes, is provisioned automatically under `blockstore.journal.path`, and is offloaded to the block store by an async syncer. |
+| **Journal** | The on-disk, append-only tier in front of a share's block store. It absorbs writes, is provisioned automatically from the node's `journals` devices, and is offloaded to the block store by an async syncer. |
 | **Commit acknowledgement** | Per-share setting (`commit_ack`) for what an NFS COMMIT / SMB Flush waits for: `journal` (survives host crash) or `block-store` (survives device loss). |
 | **Metadata store** | The pluggable backend that holds the directory tree, file attributes, and ACLs — [BadgerDB](https://github.com/dgraph-io/badger), on disk or in memory, one per share. |
 

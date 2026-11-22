@@ -104,7 +104,7 @@ dfsctl user create --username $(whoami) --host-uid
 A share is built from a **metadata store** (where file metadata lives) and a **block
 store** (the durable home for file content). Every share also keeps an on-disk **journal**
 that absorbs writes before they reach the block store; it is provisioned automatically
-under `blockstore.journal.path` and is not a store you create. Not sure which to pick?
+from the node's `journals` devices and is not a store you create. Not sure which to pick?
 See [Choosing stores](choosing-stores.md).
 
 The CLI has no command to create either store today. The CLI creates no metadata store,

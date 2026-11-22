@@ -227,7 +227,7 @@ the request, calls the handler and encodes the reply.
 
 ### Adding a New Store Backend
 
-DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`) and the engine (`pkg/block/engine`), which the adapters reach through `vfs.Service` once the data path is wired.
+DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`) and the engine (`pkg/block/engine`), which the adapters reach through `vfs.Service` once its file operations land (see [Data path](architecture.md#data-path)).
 
 **Metadata Store:**
 
@@ -318,8 +318,8 @@ Adapters receive a runtime reference and **interact with services, not stores di
    - `Protocol()`: Return name
    - `Port()`: Return listen port
    - `Healthcheck(ctx)`: Report health from cheap, already-tracked signals
-3. Reach file content through `vfs.Service` once the data path is wired; until
-   then a data operation answers `block.ErrNoContentStore`
+3. Reach file content only through `vfs.Service`, whose Read, Write and Commit
+   reach the engine
 4. Register in `cmd/dfs/main.go`
 5. Update README with usage instructions
 
