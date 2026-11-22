@@ -2,7 +2,6 @@ package api_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -243,34 +242,6 @@ func TestStoreAndNamespaceDeletesRefusedWhileNamed(t *testing.T) {
 	}
 }
 
-// A store's credential's set with no sealer is refused before anything is
-// written, by the store's capability check before the missing sealer: no
-// setting names a credential, no counter moves, and the refusal's audit
-// record holds no part of the value.
-func TestCredentialSetRefusalHoldsNoValue(t *testing.T) {
-	s := serve(t, as(entity.RoleOperator, false))
-	st := s.remoteStore(t)
-	scope := entity.SettingScope{Kind: entity.ScopeRemote, ID: st}
-	before := s.written(t, scope)
-	r := s.do(t, http.MethodPut, "/api/v1/stores/"+st.String()+"/credential", `{"spec":{"value":"aHVudGVyMi1zM2NyM3Q="}}`, "If-None-Match", "*")
-	if r.status != http.StatusConflict || r.problem(t).Code != "unproven" {
-		t.Fatalf("PUT credential with no sealer: answered %d %s, want 409 unproven", r.status, r.body)
-	}
-	if after := s.written(t, scope); after != before {
-		t.Errorf("a refused credential set changed the store:\n got %s\nwant %s", after, before)
-	}
-	as := s.audits(t)
-	if len(as) == 0 || string(as[len(as)-1].Outcome) == "applied" {
-		t.Fatalf("audit records %q, want the refusal", outcomes(as))
-	}
-	b, _ := json.Marshal(as[len(as)-1])
-	for _, v := range []string{"aHVudGVyMi1zM2NyM3Q=", "hunter2-s3cr3t"} {
-		if bytes.Contains(b, []byte(v)) {
-			t.Errorf("the refusal's audit record %s holds the value", b)
-		}
-	}
-}
-
 // An adapter reads back whether it is enabled, its settings below
 // adapters.<protocol>, and, for each node that reports it, its state and
 // the settings generation it runs; a node reporting only another adapter is
@@ -431,19 +402,14 @@ type remoteSettings struct {
 
 func (remoteSettings) Validate() error { return nil }
 
-// storageSealer seals under the storage role, a remote store's credential's.
-type storageSealer struct{ p *secrets.Provider }
-
-func (s storageSealer) Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte, handedOver bool) (entity.Secret, error) {
-	return s.p.Seal(ctx, secrets.Storage, kind, owner, ref, value, secrets.Meta{HandedOver: handedOver})
-}
-
 // A store's credential's set runs the store's capability check, which is
 // not built and refuses: on a store that never held one, and on one whose
 // credential was deleted, since the delete keeps no record that it held
 // one. With a settings table and a sealer that would admit the set, it is
 // refused 409 unproven naming the credential, and writes nothing: no
-// setting names a credential and no counter moves.
+// setting names a credential, no counter moves, and the refusal's audit
+// record holds no part of the value. A set for a store that does not exist
+// is 404, before the check.
 func TestCredentialSetRunsTheCapabilityCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -452,7 +418,9 @@ func TestCredentialSetRunsTheCapabilityCheck(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) {
 				d.Settings = settings.Table{settings.Of("remote", settings.At(entity.ScopeRemote), remoteSettings{})}
-				d.Sealer = storageSealer{provider(t, d.Store.(kvstore.ControlPlane)).p}
+				seal := provider(t, d.Store.(kvstore.ControlPlane))
+				seal.role = secrets.Storage
+				d.Sealer = seal
 			})
 			st := s.remoteStore(t)
 			scope := entity.SettingScope{Kind: entity.ScopeRemote, ID: st}
@@ -469,7 +437,7 @@ func TestCredentialSetRunsTheCapabilityCheck(t *testing.T) {
 				}
 			}
 			before := s.written(t, scope)
-			r := s.do(t, http.MethodPut, path, `{"spec":{"value":"b3RoZXI="}}`, "If-None-Match", "*")
+			r := s.do(t, http.MethodPut, path, `{"spec":{"value":"aHVudGVyMi1zM2NyM3Q="}}`, "If-None-Match", "*")
 			if r.status != http.StatusConflict {
 				t.Fatalf("PUT credential: answered %d %s, want 409", r.status, r.body)
 			}
@@ -479,6 +447,25 @@ func TestCredentialSetRunsTheCapabilityCheck(t *testing.T) {
 			if after := s.written(t, scope); after != before {
 				t.Errorf("a refused credential set changed the store:\n got %s\nwant %s", after, before)
 			}
+			recs := s.audits(t)
+			if len(recs) == 0 || string(recs[len(recs)-1].Outcome) == "applied" {
+				t.Fatalf("audit records %q, want the refusal last", outcomes(recs))
+			}
+			b, _ := json.Marshal(recs[len(recs)-1])
+			for _, v := range []string{"aHVudGVyMi1zM2NyM3Q=", "hunter2-s3cr3t"} {
+				if bytes.Contains(b, []byte(v)) {
+					t.Errorf("the refusal's audit record %s holds the value", b)
+				}
+			}
 		})
 	}
+	t.Run("a store that does not exist", func(t *testing.T) {
+		s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) {
+			d.Settings = settings.Table{settings.Of("remote", settings.At(entity.ScopeRemote), remoteSettings{})}
+		})
+		r := s.do(t, http.MethodPut, "/api/v1/stores/"+uuid.NewString()+"/credential", `{"spec":{"value":"b3RoZXI="}}`, "If-None-Match", "*")
+		if r.status != http.StatusNotFound {
+			t.Errorf("PUT credential of a store that does not exist: answered %d %s, want 404", r.status, r.body)
+		}
+	})
 }

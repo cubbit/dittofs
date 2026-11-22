@@ -158,10 +158,10 @@ func (cs *callers) resolve(ctx context.Context, k callerKey, resolve func(contex
 		return nil, ctx.Err()
 	}
 	// A call that joined the flight after an Apply the flight's starter had
-	// not read resolves on its own, whatever the flight answered, so no call
-	// admitted after a State is served a caller, or a refusal, decided under
-	// an older one.
-	if f.serial < serial {
+	// not read resolves on its own, unless the flight answered a caller built
+	// under that State or a later one, so no call admitted after a State is
+	// served a caller, or a refusal, decided under an older one.
+	if f.serial < serial && (f.err != nil || f.c.Built < serial) {
 		return resolve(ctx)
 	}
 	return f.c, f.err
@@ -190,15 +190,19 @@ func (cs *callers) fly(ctx context.Context, k callerKey, f *flight, resolve func
 }
 
 // lookup is the entry under k, built under serial and still fresh, moved to
-// the front; nil if none. It runs under cs.mu.
+// the front; nil if none. An entry built under an older serial, or past its
+// Fresh, is removed; one built under a newer serial than the call read is
+// kept for the calls that read it. It runs under cs.mu.
 func (cs *callers) lookup(k callerKey, serial uint64) *identity.Caller {
 	e := cs.entries[k]
 	if e == nil {
 		return nil
 	}
 	c := e.Value.(*cachedCaller).caller
-	if c.Built != serial || !cs.now().Before(c.Fresh) {
-		cs.remove(e)
+	if stale := !cs.now().Before(c.Fresh); c.Built != serial || stale {
+		if c.Built < serial || stale {
+			cs.remove(e)
+		}
 		return nil
 	}
 	cs.lru.MoveToFront(e)

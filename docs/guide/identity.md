@@ -520,13 +520,13 @@ Two things the code cannot check for you:
 `GET $URL/installation` answers `status.join`: `joined`, the `account`, the
 service `names` it holds and `last_rotation`. A join also writes the account's
 name, upper case and without the `$`, as `identity.netbios_name` (letters,
-digits and `-`, at most 15 bytes). **Do not rename a joined installation.** RFC 13 and
-RFC 18 specify a refusal of a change to `identity.netbios_name` while joined, but
-the code does not enforce it yet, and a rename breaks NTLM pass-through, since
-the name no longer matches the computer account. To change the name, join again
-with `"takeover": true` naming the new account in `spec.account`: the join writes
-that account's name as `identity.netbios_name` when it ends. There is no leave
-operation.
+digits and `-`, at most 15 bytes). While the installation is joined, the name is
+the computer account's, so the settings API refuses to change it: a `PUT` or a
+`DELETE` of `$URL/settings/identity.netbios_name` answers `409` with the code
+`joined`, naming the account, and the name stays as it was. To change the name,
+join again with `"takeover": true` naming the new account in `spec.account`: the
+join writes that account's name as `identity.netbios_name` when it ends. There is
+no leave operation.
 
 The account's names are derived, so a keytab must **not** hold keys for them: a
 keytab import (`PUT $URL/installation/keytab`, body `{"spec": {"value":

@@ -62,8 +62,10 @@ type secretSetting struct {
 	key     string
 	kind    entity.SecretKind
 	auditAs string
-	exists  func(tx entity.ControlPlaneTx, id [16]byte) error
-	check   func(ctx context.Context, d Deps, value []byte) (inTx func(entity.ControlPlaneTx) error, err error)
+	// record, when set, is the key whose setting at the scope is the record
+	// the secret belongs to: a set on a scope without it is 404.
+	record string
+	check  func(ctx context.Context, d Deps, value []byte) (inTx func(entity.ControlPlaneTx) error, err error)
 }
 
 // sealedSecret is a secret's pre-write step's result: the sealed version,
@@ -83,8 +85,10 @@ func (ss secretSetting) owner(id [16]byte) entity.SecretOwner {
 // ponytail: a secret named by a setting is set once, and its rotation, an
 // operation that writes the new version and waits for every node to report
 // it, is not built, so a set over an existing one is refused rather than
-// writing a version no node is waited on for. Until it is, a store's
-// credential or the keytab is changed by a DELETE, then a PUT. Build the
+// writing a version no node is waited on for. Until it is, the keytab is
+// changed by a DELETE, then a PUT; a store's credential cannot be changed
+// at all, since its PUT is refused until the store's capability check is
+// built (see capabilityCheck). Build the
 // rotation operation (RFC 13 §7, and RFC 18 §3.3's for the keytab) and
 // route the set through it when an operator must change one without the
 // gap between the two.
@@ -115,8 +119,9 @@ func (ss secretSetting) writing(kind entity.ResourceKind) writing[apiv1.Credenti
 }
 
 // seal is the secret's pre-write step: the value sealed as the first version
-// of a new reference, under its kind's role, then cleared. A record that
-// holds the secret is refused 409 first, then a value check refuses, then,
+// of a new reference, under its kind's role, then cleared. A set on a
+// record that does not exist is refused 404 first, then one on a record
+// that holds the secret 409, then a value check refuses, then,
 // with no sealer, the set is refused 503, each before anything is written.
 //
 // ponytail: the node hands in no sealer and no settings table yet, so
@@ -129,6 +134,9 @@ func (ss secretSetting) seal(ctx context.Context, rq request[apiv1.Credential]) 
 	all, err := scopeSettings(ctx, rq.d.Store, ss.scope(rq.ID))
 	if err != nil {
 		return sealedSecret{}, err
+	}
+	if _, ok := all[ss.record]; ss.record != "" && !ok {
+		return sealedSecret{}, errNotFound
 	}
 	if _, ok := all[ss.key]; ok {
 		return sealedSecret{}, ss.rotation()
@@ -156,8 +164,11 @@ func (ss secretSetting) seal(ctx context.Context, rq request[apiv1.Credential]) 
 // cannot change under the write.
 func (ss secretSetting) put(ctx context.Context, rq request[apiv1.Credential], in sealedSecret, tx entity.ControlPlaneTx) (apiv1.SecretRef, [16]byte, error) {
 	sealed, scope := in.Secret, ss.scope(rq.ID)
-	if ss.exists != nil {
-		if err := ss.exists(tx, rq.ID); err != nil {
+	if ss.record != "" {
+		if _, ok, err := tx.Setting(scope, ss.record); err != nil || !ok {
+			if err == nil {
+				err = errNotFound
+			}
 			return apiv1.SecretRef{}, rq.ID, err
 		}
 	}
@@ -203,14 +214,7 @@ func (ss secretSetting) remove(ctx context.Context, rq request[none], _ struct{}
 // role, set only on a store that exists and only once the store's
 // capability check admits it.
 var storeCredentials = secretSetting{scope: storeScope, key: storeCredential, kind: entity.SecretRemoteCredential, auditAs: "credential",
-	exists: func(tx entity.ControlPlaneTx, id [16]byte) error {
-		_, ok, err := tx.Setting(storeScope(id), storeEndpoint)
-		if err == nil && !ok {
-			err = errNotFound
-		}
-		return err
-	},
-	check: capabilityCheck}
+	record: storeEndpoint, check: capabilityCheck}
 
 // capabilityCheck is a remote store's capability check, run on every set of
 // its credential.
@@ -221,8 +225,10 @@ var storeCredentials = secretSetting{scope: storeScope, key: storeCredential, ki
 // version 1, so the version cannot tell a first credential from a changed
 // one, which RFC 13 §5.2 has the check prove. The check and the namespace
 // claim it proves against are not built, so it refuses every set, failing
-// closed. Withdraw the refusal once both are built, and run the claim part
-// only for a store that held a credential once the store records that.
+// closed. The ceiling: POST /stores takes no credential, so until the check
+// is built no remote store holds a credential set through the API. Withdraw
+// the refusal once both are built, and run the claim part only for a store
+// that held a credential once the store records that.
 func capabilityCheck(context.Context, Deps, []byte) (func(entity.ControlPlaneTx) error, error) {
 	return nil, &componentError{field: storeCredential, detail: "the store's capability check is not built yet", err: secreterr.ErrUnproven}
 }

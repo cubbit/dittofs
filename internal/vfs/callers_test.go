@@ -15,6 +15,7 @@ import (
 
 	identitysrv "github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
@@ -362,6 +363,76 @@ func TestASteadilyRaisedSerialServesEveryCallAndStoresNone(t *testing.T) {
 		t.Errorf("the cache holds %d callers after calls each raised during, want 0", n)
 	}
 	c.twice(t, "the first call with no raise during it", call, true)
+}
+
+// A call that joins a resolution after an Apply its starter had not read is
+// served the flight's caller without resolving again when that caller was
+// built under the new State: the raise lands between the resolution's two
+// passes, so its second pass, and the caller, are under the new serial.
+func TestAJoinerAfterAnApplyTheFlightCaughtUpWithResolvesNoMore(t *testing.T) {
+	c := newCaching(t)
+	bob := c.user(t, "bob", "", c.share, entity.AccessReadWrite)
+	call := c.ticket(bob.Principal, inLab, 0)
+	var waiting atomic.Int32
+	c.callers.waiting = func() { waiting.Add(1) }
+	before := c.resolutions()
+	ctx, span := c.tp.Tracer("test").Start(context.Background(), "call")
+	defer span.End()
+
+	hold := c.hold(t, 2)
+	first := c.admitLater(ctx, call)
+	held(t, hold)
+	c.raise(t)
+	hold.Advance(time.Hour)
+	held(t, hold)
+	joined := c.admitLater(ctx, call)
+	until(t, "the later call waiting on the resolution", func() bool { return waiting.Load() == 1 })
+	hold.Advance(time.Hour)
+
+	for what, ch := range map[string]<-chan admittedAs{"the call that resolved bob": first, "the call that joined after the raise": joined} {
+		if a := answer(t, what, ch); a.err != nil || a.id.Principal != bob.Principal {
+			t.Errorf("%s: %v acting as %v, want served as bob", what, a.err, a.id.Principal)
+		}
+	}
+	if got := c.resolutions() - before; got != 1 {
+		t.Errorf("a joiner after a raise the flight's second pass read: %d resolutions, want 1, the flight's", got)
+	}
+}
+
+// A lookup by a call that read an older serial than the entry was built
+// under misses but keeps the entry, so the next call that reads the current
+// serial is served from it; a lookup under a newer serial removes it.
+func TestALookupUnderAnOlderSerialKeepsTheNewerEntry(t *testing.T) {
+	c := newCaching(t)
+	bob := c.user(t, "bob", "", c.share, entity.AccessReadWrite)
+	call := c.ticket(bob.Principal, inLab, 0)
+	c.twice(t, "bob's first calls", call, true)
+	c.callers.mu.Lock()
+	var got *identity.Caller
+	for k := range c.callers.entries {
+		got = c.callers.lookup(k, c.callers.resolver.Current()-1)
+	}
+	n := len(c.callers.entries)
+	c.callers.mu.Unlock()
+	if got != nil || n != 1 {
+		t.Fatalf("a lookup under the previous serial: served %v with %d entries left, want a miss keeping the 1 entry", got, n)
+	}
+	before := c.resolutions()
+	if _, err := c.admitCall(call); err != nil {
+		t.Fatalf("bob's next call: %v", err)
+	}
+	if got := c.resolutions() - before; got != 0 {
+		t.Errorf("bob's next call under the current serial resolved %d times, want 0: served from the kept entry", got)
+	}
+	c.callers.mu.Lock()
+	for k := range c.callers.entries {
+		c.callers.lookup(k, c.callers.resolver.Current()+1)
+	}
+	n = len(c.callers.entries)
+	c.callers.mu.Unlock()
+	if n != 0 {
+		t.Errorf("a lookup under a newer serial than the entry's: %d entries left, want the older entry removed", n)
+	}
 }
 
 // The mirror of the in-flight disable, a refusal: bob's resolution reads him

@@ -107,9 +107,6 @@ func (s *Server) releaseHold(id entity.OperationID) {
 	}
 }
 
-// netbiosNameKey is the setting a join writes the account's name to.
-const netbiosNameKey = "identity.netbios_name"
-
 // The join's phases (RFC 18 §3.5). An online join runs joinPhases; an
 // offline one runs offlinePhases, its two closing rotations each a seal, a
 // set and a confirm.
@@ -704,11 +701,11 @@ func (j *joining) confirm(ctx context.Context, round int) (step.StepResult, erro
 			return err
 		}
 		scope := entity.SettingScope{Kind: entity.ScopeInstallation}
-		old, _, err := tx.Setting(scope, netbiosNameKey)
+		old, _, err := tx.Setting(scope, KeyNetBIOSName)
 		if err != nil {
 			return err
 		}
-		_, err = tx.PutSetting(entity.Setting{Scope: scope, Key: netbiosNameKey, Value: name}, old.Generation)
+		_, err = tx.PutSetting(entity.Setting{Scope: scope, Key: KeyNetBIOSName, Value: name}, old.Generation)
 		return err
 	}}, nil
 }

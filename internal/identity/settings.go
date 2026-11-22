@@ -154,7 +154,7 @@ const KeytabKey = identity.KeytabSetting
 
 // The two keys the NetBIOS rule relates, one in each identity section.
 const (
-	KeyNetBIOSName   = "identity.netbios_name"
+	KeyNetBIOSName   = identity.NetBIOSNameSetting
 	KeyNetBIOSDomain = "identity.directory.netbios_domain"
 )
 
