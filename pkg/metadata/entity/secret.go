@@ -34,7 +34,7 @@ type Secret struct {
 }
 
 // SecretOwner is the one holder a secret belongs to: a record's field (a
-// user's password hash and NT hash, under the keys "password" and "nt_hash";
+// user's password hash and NT hash, under UserPasswordKey and UserNTHashKey;
 // the installation's signing key and machine password, under "signing_key"
 // and "machine_password") or a setting's key (a keytab, the directory's bind
 // credential, an OpenID Connect client's secret). Encoded with the version,

@@ -16,10 +16,8 @@ import (
 // version of each share whose grant it drops; its memberships, both ways for
 // a group; its quota records; and, for a user, its API tokens, its sessions
 // and its account's sign-in count. The batch that finds none of them left
-// deletes the record and, for a user, every version of each secret it names;
-// a user whose record names a secret sealed for another holder or as another
-// kind is refused there as an invalid argument, left marked with its record
-// and every version of its secrets, and nothing resumes its deletion yet.
+// deletes the record and, for a user, every version of each secret it names,
+// refusing one sealed for another holder as ownSecrets says.
 // Files keep naming p, as an unknown principal. A user's deletion of a
 // machine's ID deletes the machine; a record of any other kind than p's
 // refuses.
@@ -107,10 +105,7 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 	if d.took {
 		return false, nil
 	}
-	if err := ctl.ownSecrets(u); err != nil { // a group's zero u names none
-		return false, err
-	}
-	if err := deleteRecord(tx, p, ids, u.Password, u.NTHash); err != nil {
+	if err := deleteRecord(tx, p, ids, u); err != nil { // a group's zero u names no secret
 		return false, err
 	}
 	return true, nil
@@ -280,20 +275,24 @@ func (b *batch) dropSignInCount(p entity.Principal) error {
 }
 
 // deleteRecord ends p's deletion: its record goes, with the dir spelling
-// row its mark kept and every version of each secret a user's names, its
-// password hash and its NT hash.
+// row its mark kept and every version of each secret u, p's user record,
+// names, its password hash and its NT hash, once ownSecrets has accepted
+// them.
 //
 // decision: the secret is deleted by the reference the owner's own record
-// holds, its owner checked by ownSecrets in the same batch, so the store
-// deletes its versions itself rather than through the secrets service.
-// A reference read from anywhere but its owner's record goes through that
-// service. Every secret change raises the settings generation, so every node
-// stops resolving the secret.
+// holds, its owner checked by ownSecrets in the same transaction, so the
+// store deletes its versions itself rather than through the secrets
+// service. A reference read from anywhere but its owner's record goes
+// through that service. Every secret change raises the settings generation,
+// so every node stops resolving the secret.
 //
 // ponytail: every version goes in this one transaction, which holds as long
 // as a secret keeps a current version and the few it replaced. Delete the
 // versions in batches if retention ever keeps many.
-func deleteRecord(tx kv.Txn, p entity.Principal, ids entity.ProtocolIDs, secrets ...entity.SecretRef) error {
+func deleteRecord(tx kv.Txn, p entity.Principal, ids entity.ProtocolIDs, u entity.User) error {
+	if err := (controlTx{tx: tx}).ownSecrets(u); err != nil {
+		return err
+	}
 	if _, err := raise(tx, pgenKey); err != nil {
 		return err
 	}
@@ -306,12 +305,12 @@ func deleteRecord(tx kv.Txn, p entity.Principal, ids entity.ProtocolIDs, secrets
 	}
 	var versions [][]byte
 	named := false
-	for _, secret := range secrets {
+	for _, secret := range []entity.SecretRef{u.Password, u.NTHash} {
 		if secret == (entity.SecretRef{}) {
 			continue
 		}
 		named = true
-		for row, err := range tx.Scan(keys.ID([]byte{keys.KindSEC}, secret[:]), nil) {
+		for row, err := range tx.Scan(secretPrefix(secret), nil) {
 			if err != nil {
 				return err
 			}

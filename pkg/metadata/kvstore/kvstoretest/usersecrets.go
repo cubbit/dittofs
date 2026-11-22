@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
@@ -130,5 +131,56 @@ func testRepointedNTHashSurvivesItsPredecessor(t *testing.T, kvo Opener) {
 	}
 	if _, err := cp.Secret(ctx, second, 1); !merrs.IsNotFoundError(err) {
 		t.Errorf("second after the deletion: error %v, want not found", err)
+	}
+}
+
+// PutUser refuses a user whose password or NT hash reference names a held
+// secret sealed for another holder or as another kind than the field's, or
+// whose two references are one, on a new record and on a changed one, and
+// accepts the user's own.
+func testPutUserRefusesAForeignSecret(t *testing.T, kvo Opener) {
+	prof.Watch(t, prof.Options{})
+
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	bob, bobPw := user("bob"), newSecretRef()
+	must(t, cp.PutSecret(ctx, secretOf(bobPw, bob.Principal.ID, 1, "bob"), 0))
+
+	// Each refused create is its own principal, so none is refused as a
+	// generation conflict with another.
+	others := user("carol")
+	others.Password = bobPw
+	wrongKind := user("dave")
+	wrongKind.NTHash = newSecretRef()
+	nt := secretOf(wrongKind.NTHash, wrongKind.Principal.ID, 1, "dave")
+	nt.Owner = entity.UserSecretOwner(wrongKind.Principal.ID, entity.UserNTHashKey)
+	must(t, cp.PutSecret(ctx, nt, 0))
+	oneSecret := user("erin")
+	oneSecret.Password = newSecretRef()
+	oneSecret.NTHash = oneSecret.Password
+
+	for _, c := range []struct {
+		name string
+		u    entity.User
+	}{
+		{"naming bob's password", others},
+		{"naming an NT hash of the password kind", wrongKind},
+		{"naming one secret as both", oneSecret},
+	} {
+		if _, err := cp.PutUser(ctx, c.u, 0, entity.Alloc{}); !secretInvalid(err) {
+			t.Errorf("PutUser %s: got %v, want an invalid argument", c.name, err)
+		}
+	}
+
+	alice := user("alice")
+	alice.Password = newSecretRef()
+	must(t, cp.PutSecret(ctx, secretOf(alice.Password, alice.Principal.ID, 1, "alice"), 0))
+	gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
+	if err != nil {
+		t.Fatalf("PutUser naming alice's own password: %v", err)
+	}
+	alice.Password = bobPw
+	if _, err := cp.PutUser(ctx, alice, gen, entity.Alloc{}); !secretInvalid(err) {
+		t.Errorf("PutUser changed to name bob's password: got %v, want an invalid argument", err)
 	}
 }

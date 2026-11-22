@@ -336,23 +336,26 @@ func userShape(u entity.User) error {
 
 // ownSecrets refuses u when a secret its record names is held, at its
 // current version, sealed for another holder or as another kind than the
-// field's. PutUser runs it on every write, and a user's deletion again in
-// the batch that deletes the record, which takes every version of each
-// secret the record names, so neither reaches another holder's. The current
-// version is read tracked, guarding every version, so a concurrent seal
-// conflicts.
+// field's. PutUser runs it on every write, DeleteUser before the mark, and a
+// user's deletion again in the batch that deletes the record, which takes
+// every version of each secret the record names, so none reaches another
+// holder's. The current version is read tracked, guarding every version,
+// so a concurrent seal conflicts.
 //
 // decision: only the current version is checked, since PutSecret refuses a
 // version whose kind or owner differs from the current one's, so every
 // version carries the current one's. A reference no secret holds yet is
 // accepted, since a user's reference is named before its first version is
 // sealed; a first version then sealed under it for another holder is
-// refused by the deletion instead. That refusal fails the deletion closed:
-// the batch is refused as an invalid argument, the deletion's operation
-// fails, and the record stays marked with every version of its secrets,
-// rather than taking another holder's secret or leaving the user's own
-// password-equivalent behind. Nothing resumes such a deletion yet. Withdraw
-// the acceptance if every caller comes to seal before it names.
+// refused by the deletion instead. A user naming one already is refused at
+// DeleteUser with nothing touched; one sealed after the mark is refused in
+// the record's batch, which fails the deletion closed: the batch is refused
+// as an invalid argument, the deletion's operation fails, and the record
+// stays marked with every version of its secrets, its grants, memberships
+// and tokens already dropped, rather than taking another holder's secret or
+// leaving the user's own password-equivalent behind. Nothing resumes such a
+// deletion yet. Withdraw the acceptance if every caller comes to seal before
+// it names.
 func (c controlTx) ownSecrets(u entity.User) error {
 	for _, f := range []struct {
 		ref  entity.SecretRef
@@ -560,6 +563,9 @@ func (c controlTx) DeleteUser(p entity.Principal, expect uint64) error {
 		return err
 	}
 	if err := expected(u.Generation, expect); err != nil {
+		return err
+	}
+	if err := c.ownSecrets(u); err != nil {
 		return err
 	}
 	if err := indexAdmin(c.tx, p.ID, enabledAdmin(u), false); err != nil {
