@@ -65,8 +65,9 @@ func deletionProgress(context.Context, entity.Operation) apiv1.Progress {
 // shareDeletion is the step of a share's deletion past its mark, its
 // operation's target the share's ID. Each turn runs one batch of the removal
 // with Nodes.ContinueRemoval and acts on the step it answers: at 3 it ends
-// the share's live state on this node, and done ends the operation. It keeps
-// no cursor: the removal's own records hold where it stands.
+// the share's live state on this node, at 4 it forgets the share's tag and
+// drops a batch of its files, and done ends the operation. It keeps no
+// cursor: the removal's own records hold where it stands.
 //
 // decision: a share that is not being removed, and a target that names no
 // share, fail the operation rather than retry it, as a principal's deletion
@@ -86,24 +87,43 @@ func (n *Node) shareDeletion(ctx context.Context, op entity.Operation) (step.Ste
 	case at == 3:
 		return step.StepResult{}, n.removeShare(ctx, id)
 	case at == 4:
-		return step.StepResult{}, errForgetMissing
+		return step.StepResult{}, failInvalid(n.dropFiles(ctx, id))
 	}
 	return step.StepResult{}, nil
 }
 
-// errForgetMissing is the answer of a share deletion that stands at step 4.
+// dropFiles is a turn of step 4 of share id's removal on this node: one
+// batch of its shard's files dropped with Nodes.ContinueShardRemoval, which
+// refuses with kvstore.ErrRemovalOrder until the shard is recorded
+// forgotten. On that refusal the share's tag is dropped through the engine
+// instead, its handle closed and the tag forgotten in the journal, and only
+// then the shard recorded forgotten, so a record that says forgotten never
+// stands for a tag the journal still holds; the next turn drops the files.
+// Each part is idempotent: a crash between the drop and the record drops
+// again, a Drop after a restart forgets the tag the engine's start left
+// removed, and a record already made changes nothing.
 //
-// decision: step 4 waits for the journal to forget a share's tag: the
-// engine's Drop runs the journal's whole-tag Forget, which answers
-// ErrNotImplemented, so a removal that reaches step 4 is retried on the
-// runner's backoff and never ends. A DELETE of a share through the API
-// therefore ends the share's live state and then parks here, its operation
-// running at phase "files" and a retry logged at every backoff turn: that is
-// this decision, not a fault. Drop the tag, record the shard forgotten
-// and drop its files with Nodes.ContinueShardRemoval here once Forget exists;
-// then startEngine must also leave out a share whose tag the store records
-// forgotten, rather than attach it again.
-var errForgetMissing = errors.New("step 4 of a share's removal waits for the journal to forget a share's tag")
+// ponytail: a share has one shard, its root's, and this node is its primary,
+// as removeShare says.
+func (n *Node) dropFiles(ctx context.Context, id entity.ShareID) error {
+	var sh entity.Share
+	_, err := n.bounded(ctx, func(ctx context.Context) (err error) {
+		sh, _, err = n.meta.ShareIndex().Share(ctx, id)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	nodes := n.meta.Nodes()
+	_, err = nodes.ContinueShardRemoval(ctx, id, sh.Shard)
+	if !errors.Is(err, kvstore.ErrRemovalOrder) {
+		return err
+	}
+	if err := n.engine.Drop(ctx, id); err != nil {
+		return err
+	}
+	return nodes.RecordShardRemoval(ctx, id, sh.Shard, entity.TagForgotten)
+}
 
 // failInvalid has an invalid argument from the store, or a secret version
 // that does not decode, fail the operation.

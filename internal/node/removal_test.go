@@ -124,11 +124,12 @@ func tagState(t *testing.T, h *nodetest.Harness, id entity.ShareID) entity.TagSt
 	return tags[id].State
 }
 
-// offloaded runs runner turns until share id's shard is recorded offloaded.
+// offloaded runs runner turns until share id's shard is recorded offloaded
+// or past it, forgotten by step 4.
 func (g *gatedRunner) offloaded(t *testing.T, id entity.ShareID) {
 	t.Helper()
 	for range 100 {
-		if tagState(t, g.h, id) == entity.TagOffloaded {
+		if tagState(t, g.h, id) >= entity.TagOffloaded {
 			return
 		}
 		g.next(t)

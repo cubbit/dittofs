@@ -65,6 +65,10 @@ func NewStepping(stepped func(n *Node, step string)) func(Config) (*Node, error)
 	}
 }
 
+// OnStep has Start call stepped after each start step completes, as
+// NewStepping does, on a node already built. Call it before Start.
+func (n *Node) OnStep(stepped func(step string)) { n.life.stepped = stepped }
+
 // Addrs is the API's and the metrics listener's bound addresses, nil before
 // Start opened them.
 func (n *Node) Addrs() (api, metrics string) {

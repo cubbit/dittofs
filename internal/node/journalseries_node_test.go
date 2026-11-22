@@ -443,12 +443,19 @@ func TestJournalSeriesUnattachedTagCoversTheSum(t *testing.T) {
 	// Restart over the half-removed share: a start past the offload step
 	// binds nothing, while the tag is not yet forgotten and its records are
 	// still on disk - the detached share's records the collector must
-	// count in the sum alone. The clock is not advanced past the restart,
-	// so the removal's later steps, which run on runner turns, cannot race
-	// this check.
+	// count in the sum alone. The scrape runs once the filesystem step has
+	// ended and before the runner starts, whose first turn forgets the tag.
 	h.Restart(t)
+	var scr map[string]map[string]float64
+	h.Node().OnStep(func(step string) {
+		if step == "filesystem" {
+			scr = jscrape(t, h)
+		}
+	})
 	started(t, h)
-	scr := jscrape(t, h)
+	if scr == nil {
+		t.Fatal("the restart reached no filesystem step, so nothing was scraped")
+	}
 	used := scr["dittofs_journal_share_used_bytes"]
 	labeled := 0
 	var sum float64
