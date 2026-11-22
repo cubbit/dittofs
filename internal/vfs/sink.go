@@ -54,6 +54,13 @@ import (
 
 // callbackDeadline bounds each callback: the lease or oplock break deadline,
 // past which a client's answer changes nothing.
+//
+// decision: every callbackDeadline is real time, a context timeout, while
+// the waits between a grant's resends and a recall's retries run on the
+// filesystem's clock. In production both are the host's clock; under a test
+// clock a send that hangs, or a recall left retrying, still ends after
+// callbackDeadline of real time whether or not the test advances its clock.
+// Put the deadline on the filesystem's clock if a test must drive one past it.
 const callbackDeadline = 35 * time.Second
 
 // grantRetry is how long a lock grant the client did not answer waits before
@@ -155,11 +162,6 @@ func (fs *Filesystem) RecallGrant(g openstate.CachingGrant) {
 		to = g.Recall.To
 	}
 	fs.background(func(stop context.Context) {
-		// decision: the recall's deadline is real time while its retry waits
-		// on the filesystem's clock. In production both are the host's clock;
-		// under a test clock nobody advances, a recall whose first send fails
-		// gives up after callbackDeadline of real time instead of retrying.
-		// Move the deadline onto fs.clock once a test drives a recall's retries.
 		ctx, cancel := context.WithTimeout(stop, callbackDeadline)
 		defer cancel()
 		var tried recallRoute // the route last sent through; zero: none yet
