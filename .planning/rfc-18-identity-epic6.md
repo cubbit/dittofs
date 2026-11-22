@@ -350,9 +350,10 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   resolution as disabled, refused `ErrAccess`, counted `disabled`. Prior art: sssd marks an entry
   gone from the directory as expired, not deleted (from memory).
 - **D13, the NetBIOS cross-check imports nothing of identity.** T6.13's code in `pkg/settings`
-  reads the two settings' rows by key and the record's `netbios_domain` field from its JSON, so
-  nothing outside `internal/identity` and its tests imports `internal/identity`, as E1's import
-  rule requires. Prior art: RFC 13 §6's port rule, built the same way.
+  reads the two settings' rows by key and the record's `netbios_domain` field from its JSON, and
+  imports nothing of identity, as E1's import rule (only `internal/node` and identity's own
+  packages import `internal/identity`) requires. Prior art: RFC 13 §6's port rule, built the same
+  way.
 
 ## 5. Target tree
 
