@@ -43,8 +43,8 @@ const (
 // client from the service ticket the KDC issues it, and checks the ticket
 // decrypts under the service keytab.
 //
-// With DITTOFS_AD_DC_PAC_OUT naming a directory, it also writes the captures
-// there with their keys: tgt.pac with krbtgt.keytab, service.pac with
+// With DITTOFS_AD_DC_PAC_OUT naming a directory, and every check above
+// passed, it also writes the captures there with their keys: tgt.pac with krbtgt.keytab, service.pac with
 // service.keytab, and alice.apreq with alice.json, the authenticator's time
 // and alice's and her groups' SIDs as samba-tool reads them.
 // capture-pacs.sh runs it so.
@@ -86,18 +86,17 @@ samba-tool domain exportkeytab /tmp/krbtgt.keytab --principal=krbtgt/` + adRealm
 	krbtgtKeytab := filepath.Join(dir, "krbtgt.keytab")
 	svcKT := loadKeytab(t, serviceKeytab)
 	captures := []struct {
-		service, keytab, file string
-		kt                    *keytab.Keytab
-		want, absent          []uint32
+		service, keytab, file, ktFile string
+		kt                            *keytab.Keytab
+		want, absent                  []uint32
 	}{
-		{"krbtgt", krbtgtKeytab, "tgt.pac", loadKeytab(t, krbtgtKeytab),
+		{"krbtgt", krbtgtKeytab, "tgt.pac", "krbtgt.keytab", loadKeytab(t, krbtgtKeytab),
 			[]uint32{pacLogonInfo, pacServerSignature, pacKDCSignature, pacClientInfo, pacUPNDNSInfo, pacAttributesInfo, pacRequestor}, nil},
-		{"cifs", serviceKeytab, "service.pac", svcKT,
+		{"cifs", serviceKeytab, "service.pac", "service.keytab", svcKT,
 			[]uint32{pacLogonInfo, pacServerSignature, pacKDCSignature, pacClientInfo, pacUPNDNSInfo}, []uint32{pacAttributesInfo, pacRequestor}},
 	}
 	// files collects every capture, written only once all of them are made,
-	// so a failed capture leaves the old testdata whole rather than mixed
-	// with a new domain's.
+	// so a failed capture writes nothing.
 	files := map[string][]byte{}
 	for _, c := range captures {
 		tkt := ccacheTicket(t, cc, c.kt, c.service)
@@ -125,7 +124,7 @@ samba-tool domain exportkeytab /tmp/krbtgt.keytab --principal=krbtgt/` + adRealm
 			t.Fatalf("read the %s keytab: %v", c.service, err)
 		}
 		files[c.file] = raw
-		files[map[string]string{"krbtgt": "krbtgt.keytab", "cifs": "service.keytab"}[c.service]] = ktBytes
+		files[c.ktFile] = ktBytes
 	}
 
 	req, ctime := aliceAPReq(t, dcIP, svcKT)

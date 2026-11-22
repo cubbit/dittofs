@@ -354,7 +354,7 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   `internal/identity`, reads the other's row by key, tracked, in the write's transaction, and
   `Apply` runs the same rule on the `State`. `pkg/settings` holds no rule naming either key and
   imports nothing of identity, as E1's import rule (only `internal/node` and identity's own
-  packages import `internal/identity`) requires. RFC 13 §6 sends a rule to the control plane
+  packages import `internal/identity`; `_test.go` files are not checked) requires. RFC 13 §6 sends a rule to the control plane
   only when its two settings belong to different components, as the port rule's do.
 
 ## 5. Target tree
