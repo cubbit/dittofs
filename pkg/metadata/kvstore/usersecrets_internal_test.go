@@ -254,3 +254,83 @@ func bobHeld(t *testing.T, r *restarting, s entity.Secret) {
 	})
 	r.must(err)
 }
+
+// A user's deletion whose record names a secret sealed for another holder,
+// or as another kind than the field's, is refused in the batch that would
+// delete the record, and leaves every version of that secret and the record
+// itself. Each foreign secret is sealed after alice's record names its
+// reference, as no PutUser check can see.
+func TestUserDeletionRefusesAForeignSecret(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		secret func(alice, bob entity.User, v uint64) entity.Secret
+	}{
+		{"another user's password", func(alice, bob entity.User, v uint64) entity.Secret {
+			return userSecret(alice.Password, entity.SecretPassword, bob, "password", v)
+		}},
+		{"alice's field, another kind", func(alice, bob entity.User, v uint64) entity.Secret {
+			return userSecret(alice.Password, entity.SecretNTHash, alice, "password", v)
+		}},
+		{"alice's other field", func(alice, bob entity.User, v uint64) entity.Secret {
+			return userSecret(alice.Password, entity.SecretPassword, alice, "nt_hash", v)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			r := newRestarting(t, 100)
+			cp := r.s.ControlPlane()
+			alice := entity.User{Principal: entity.NewUser(), Name: "alice", Password: entity.SecretRef{15: 1}, NTHash: entity.SecretRef{15: 2}}
+			bob := entity.User{Principal: entity.NewUser(), Name: "bob"}
+			gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
+			r.must(err)
+			_, err = cp.PutUser(ctx, bob, 0, entity.Alloc{})
+			r.must(err)
+			for _, v := range []uint64{1, 2} {
+				r.must(cp.PutSecret(ctx, c.secret(alice, bob, v), v-1))
+				r.must(cp.PutSecret(ctx, userSecret(alice.NTHash, entity.SecretNTHash, alice, "nt_hash", v), v-1))
+			}
+
+			r.must(cp.DeleteUser(ctx, alice.Principal, gen))
+			done, err := r.s.Nodes().ContinueDelete(ctx, alice.Principal)
+			if !isInvalid(err) || done {
+				t.Errorf("deletion naming a foreign secret: done %v, error %v; want not done, invalid argument", done, err)
+			}
+
+			heldSecrets(t, r, alice, "after the refused batch", true, alice.Password, alice.NTHash)
+		})
+	}
+}
+
+// PutUser refuses a password or NT hash reference whose held secret was
+// sealed for another holder or as another kind, on a new record and on a
+// changed one, and accepts the user's own.
+func TestPutUserRefusesAForeignSecret(t *testing.T) {
+	ctx := context.Background()
+	r := newRestarting(t, 100)
+	cp := r.s.ControlPlane()
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice"}
+	bob := entity.User{Principal: entity.NewUser(), Name: "bob"}
+	bobPw, aliceNT, aliceWrong := entity.SecretRef{15: 1}, entity.SecretRef{15: 2}, entity.SecretRef{15: 3}
+	r.must(cp.PutSecret(ctx, userSecret(bobPw, entity.SecretPassword, bob, "password", 1), 0))
+	r.must(cp.PutSecret(ctx, userSecret(aliceNT, entity.SecretNTHash, alice, "nt_hash", 1), 0))
+	r.must(cp.PutSecret(ctx, userSecret(aliceWrong, entity.SecretPassword, alice, "nt_hash", 1), 0))
+
+	refused := func(what string, u entity.User, expect uint64) {
+		t.Helper()
+		if _, err := cp.PutUser(ctx, u, expect, entity.Alloc{}); !isInvalid(err) {
+			t.Errorf("PutUser %s: error %v, want invalid argument", what, err)
+		}
+	}
+	withPw, withNT := alice, alice
+	withPw.Password, withNT.NTHash = bobPw, aliceWrong
+	refused("naming bob's password", withPw, 0)
+	refused("naming an NT hash of the password kind", withNT, 0)
+
+	alice.NTHash = aliceNT
+	gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
+	if err != nil {
+		t.Fatalf("PutUser naming alice's own NT hash: %v", err)
+	}
+	withPw.NTHash = aliceNT
+	refused("changed to name bob's password", withPw, gen)
+}
