@@ -23,8 +23,6 @@ import (
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 
 	"github.com/cubbit/dittofs/internal/node/nodetest"
-	"github.com/cubbit/dittofs/pkg/identity"
-	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
@@ -180,41 +178,14 @@ func wantStatus(t *testing.T, what string, r authReply, status int, code apiv1.C
 // initialisation step seals the administrator's, and returns its principal.
 func (s *authNode) account(t *testing.T, name, password string, role entity.APIRole) entity.Principal {
 	t.Helper()
-	ctx := t.Context()
-	p := s.secrets(t)
-	u := entity.User{Principal: entity.NewUser(), Name: name, Role: role, Password: entity.SecretRef(uuid.New())}
-	hs, err := identity.NewHashes(u, []byte(password), identity.NTLMSetting{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: u.Principal.ID[:]}, Key: "password"}
-	sec, err := p.Seal(ctx, secrets.Storage, entity.SecretPassword, owner, u.Password, hs.Password, secrets.Meta{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.write(t, func(tx entity.ControlPlaneTx) error {
-		if _, err := tx.PutUser(u, 0, entity.Alloc{}); err != nil {
-			return err
-		}
-		return tx.PutSecret(sec, 0)
-	})
-	return u.Principal
+	return s.h.Account(t, name, password, role)
 }
 
 // secrets is a secret provider over the harness's store and storage key,
 // as another node's would be.
 func (s *authNode) secrets(t *testing.T) *secrets.Provider {
 	t.Helper()
-	kp, err := keyprovider.NewProvider(t.Context(), keyprovider.Config{Kind: keyprovider.KindLocal, File: s.h.StorageKeyFile()})
-	if err != nil {
-		t.Fatalf("open the storage key: %v", err)
-	}
-	t.Cleanup(func() { _ = kp.Close() })
-	p, err := secrets.New(s.h.Store().ControlPlane(), map[secrets.Role]keyprovider.KeyProvider{secrets.Storage: kp})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p
+	return s.h.Secrets(t)
 }
 
 // write commits fn through the store's control plane, as another node would.
