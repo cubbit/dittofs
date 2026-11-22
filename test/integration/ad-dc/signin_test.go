@@ -89,6 +89,42 @@ type signInNode struct {
 
 func newSignInNode(t *testing.T, dcIP string, ca []byte) *signInNode {
 	t.Helper()
+	st, p, ref := sealedStore(t)
+
+	n := &signInNode{st: st, reg: metrics.New("test", "test"), logons: &logonSink{}}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := l.Addr().String()
+	_ = l.Close()
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if n.down.Load() {
+			addr = closed
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+	n.s, err = identity.New(identity.Deps{Store: st, Clock: wallClock{}, Metrics: n.reg, Secrets: p, Logons: n.logons,
+		Directory: directory.DialTLS, DomainController: netlogon.NewDialer(dial), ControlPlane: st.ControlPlane()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.s.Stop(context.Background()) })
+	n.state = identity.State{
+		Settings:  identity.Settings{IDRange: entity.DefaultIDRange, NTLM: true, NetBIOSName: nodeAccount},
+		Machine:   []secrets.Version{{Number: 1, Value: []byte(nodePassword)}},
+		Join:      entity.MachineJoin{Joined: true, Account: nodeAccount + "$"},
+		Directory: adRecord(dcIP, ca, ref),
+	}
+	n.apply(t)
+	return n
+}
+
+// sealedStore is a Badger store in memory and a secret provider over it, the
+// directory's bind password, the administrator's, sealed under the reference
+// it answers.
+func sealedStore(t *testing.T) (*kvstore.Store, *secrets.Provider, entity.SecretRef) {
+	t.Helper()
 	ctx := context.Background()
 	db, err := badgerkv.Open(badgerkv.Options{})
 	if err != nil {
@@ -133,36 +169,15 @@ func newSignInNode(t *testing.T, dcIP string, ca []byte) *signInNode {
 		func(tx entity.ControlPlaneTx) error { return tx.PutSecret(sec, sec.Version-1) }); err != nil {
 		t.Fatal(err)
 	}
+	return st, p, ref
+}
 
-	n := &signInNode{st: st, reg: metrics.New("test", "test"), logons: &logonSink{}}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := l.Addr().String()
-	_ = l.Close()
-	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if n.down.Load() {
-			addr = closed
-		}
-		return (&net.Dialer{}).DialContext(ctx, network, addr)
-	}
-	n.s, err = identity.New(identity.Deps{Store: st, Clock: wallClock{}, Metrics: n.reg, Secrets: p, Logons: n.logons,
-		Directory: directory.DialTLS, DomainController: netlogon.NewDialer(dial), ControlPlane: st.ControlPlane()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = n.s.Stop(context.Background()) })
-	n.state = identity.State{
-		Settings: identity.Settings{IDRange: entity.DefaultIDRange, NTLM: true, NetBIOSName: nodeAccount},
-		Machine:  []secrets.Version{{Number: 1, Value: []byte(nodePassword)}},
-		Join:     entity.MachineJoin{Joined: true, Account: nodeAccount + "$"},
-		Directory: &directory.Record{Schema: directory.SchemaAD, Address: "ldaps://" + adDCHost, Base: adBaseDN,
-			BindName: adBindDN, BindCredential: ref, TrustRoots: string(ca), Realm: adRealm, NetBIOSDomain: adDomain,
-			DNSServer: dcIP, DCAddress: dcIP},
-	}
-	n.apply(t)
-	return n
+// adRecord is the fixture's directory record, binding with the password
+// sealed under ref, its domain controller named explicitly at dcIP.
+func adRecord(dcIP string, ca []byte, ref entity.SecretRef) *directory.Record {
+	return &directory.Record{Schema: directory.SchemaAD, Address: "ldaps://" + adDCHost, Base: adBaseDN,
+		BindName: adBindDN, BindCredential: ref, TrustRoots: string(ca), Realm: adRealm, NetBIOSDomain: adDomain,
+		DNSServer: dcIP, DCAddress: dcIP}
 }
 
 // apply applies n.state.
