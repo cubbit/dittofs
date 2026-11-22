@@ -222,13 +222,11 @@ internal/adapter/nfs/            internal/adapter/smb/
 
 ## Data path
 
-No content store is wired until the adapters run on `vfs.Service`. WRITE
-validates its target with `metaSvc.PrepareWrite` (permissions, type, read-only
-share) and then answers `common.ErrNoContentStore`, which `types.StatusForErr`
-maps to the generic I/O status; READ, FLUSH, copy-chunk and the sparse-range
-ioctls answer the same for a file with content. A zero-length WRITE, FLUSH of an
-empty file and SET_ZERO_DATA at or past EOF still succeed, and size changes
-(end-of-file, allocation, overwrite) are metadata updates.
+The SMB adapter's one operation table is empty, so every command, READ, WRITE
+and FLUSH among them, answers `STATUS_NOT_SUPPORTED` until RFC 20's file
+operations land (`internal/adapter/smb/smb.go`). Below it the path is live:
+`vfs.Service`'s Read, Write and Commit read and write content through the
+engine.
 
 ### READ Response Buffer Pool
 

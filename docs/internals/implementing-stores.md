@@ -34,7 +34,7 @@ longer exists; see [The journal](#the-journal-local-tier) for what replaced it.
 
 **Key Design Principle**: the engine (`pkg/block/engine`) composes the journal
 and a share's remote block store and orchestrates reads and writes across the
-two tiers; the data path is cut until it is wired through `vfs.Service`.
+two tiers; `vfs.Service` is its only caller on the data path.
 
 This separation enables:
 - Independent scaling of metadata and block storage
@@ -75,10 +75,9 @@ remote store on AddShare and releases it on RemoveShare; the remote is
 ref-counted per config, so shares on the same config share one connection, and
 the last share to go closes it.
 
-No share holds a content store until the adapters run on `vfs.Service`: every
-data operation answers `block.ErrNoContentStore`. After the cutover the engine
-(`pkg/block/engine`, RFC 8) composes the journal and the remote store, and the
-adapters reach it only through `vfs.Service`.
+The engine (`pkg/block/engine`, RFC 8) composes the journal and the remote
+store; the node builds it and `vfs.Service` over it, and the adapters reach it
+only through `vfs.Service`.
 
 ## Implementing Metadata Stores
 

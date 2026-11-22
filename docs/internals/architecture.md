@@ -37,7 +37,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 │            (NFS, SMB)                   │
 │       pkg/adapter/{nfs,smb}/            │
 └───────────────┬─────────────────────────┘
-                │ metadata service (data path cut)
+                │ (no file operations yet: see Data path)
                 ▼
 ┌─────────────────────────────────────────┐
 │              Runtime                    │
@@ -136,8 +136,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 **Recycle bin (trash).** The recycle trap lives inside `MetadataService.RemoveFile`, `RemoveDirectory`, and `Move`, gated by a per-share `TrashPolicy` read through a locked accessor. When the policy enables the bin, an unlink (NFS REMOVE/RMDIR, SMB delete-on-close) or a replace-overwrite (a `Move` whose destination clobbers an existing node) moves the victim into a single shared `#recycle` directory at the share root instead of destroying it, preserving the original path subtree and owner. Block deletion is deferred: recycling returns an empty `PayloadID` so protocol adapters skip the block-deletion step, and a recycled node keeps its content blocks until it is reaped or the bin is emptied. The runtime's `trash.Service` (`pkg/controlplane/runtime/trash/`) owns list/restore/empty and runs a background reaper that enforces the per-share retention-days and max-size policy on an hourly interval (oldest-first eviction). Disabling trash auto-empties the bin.
 
 **6. Block storage** (`pkg/block/`)
-- The data path is cut: no share holds a content store, and every operation that reads or writes file content answers `block.ErrNoContentStore` (see [Data path](#data-path)).
-- `engine/`: the engine (RFC 8) over `journal/`, the journal (RFC 1). After the cutover the adapters reach it through `vfs.Service`.
+- `engine/`: the engine (RFC 8) over `journal/`, the journal (RFC 1). The node builds it and `vfs.Service` over it; adapters reach it only through `vfs.Service` (see [Data path](#data-path)).
 - `remote/`: block store interface and implementations (`s3/` production, `memory/` testing). Each share binds one block store config; `shares.Service` acquires its remote store on AddShare and releases it on RemoveShare, ref-counted per config across the shares that use it.
 - `gc/`: mark-sweep over the remote stores and the metadata manifests.
 
@@ -152,14 +151,12 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 
 ## Data path
 
-No share holds a content store until the adapters run on `vfs.Service`. Every
-operation that reads or writes file content answers `block.ErrNoContentStore`
-(`pkg/block/errors.go`), carried to the adapters as `common.ErrNoContentStore`
-in the I/O row, so each protocol answers its generic I/O status. Metadata
-operations run against the metadata service as before; a size change is a
-metadata update only, and an operation that touches no content (a zero-count
-WRITE, COMMIT or FLUSH of an empty file) succeeds. Snapshot create and restore
-answer the same sentinel, since a snapshot captures content.
+`node.New` (`internal/node/node.go`) builds the engine and `vfs.Service` over
+it, and `vfs.Service`'s Read, Write and Commit read and write file content
+through the engine (`internal/vfs/data.go`). No protocol serves that path yet:
+the RFC 20 NFS and SMB adapters are built on `vfs.Service`, but their operation
+tables are empty, so every NFS procedure answers `PROC_UNAVAIL` and every SMB
+command `STATUS_NOT_SUPPORTED` until RFC 20's file operations land.
 
 Each share keeps a state directory beneath `blockstore.journal.path`
 (`<path>/shares/<share-name>/`) holding its gc-state, snapshots and migration
@@ -569,10 +566,10 @@ lock, err := metaSvc.AcquireLock(ctx, shareName, handle, offset, length, exclusi
 
 ### Write Coordination Pattern
 
-WRITE validates its target with `metaSvc.PrepareWrite` (permissions, type,
-read-only share), which modifies no metadata, so a refused write answers with
-its own status. A zero-count WRITE then succeeds; any other answers
-`common.ErrNoContentStore` until the adapters run on `vfs.Service`.
+`vfs.Service.Write` admits the caller and judges the file (type, read-only
+share, rights, open state) and reserves its quota before the engine stages a
+byte, so a refused write changes nothing; a zero-count write returns once
+judged. No protocol WRITE handler calls it yet.
 
 ## Built-In and Custom Backends
 
@@ -705,8 +702,6 @@ dittofs/
 │       └── ...                   # Per-section config (logging, gc, snapshot, ...)
 │
 ├── internal/                     # Private implementation details
-│   ├── adapter/common/           # Shared NFS/SMB adapter helpers:
-│   │   └── content.go            # ErrNoContentStore, the data path's answer
 │   ├── adapter/nfs/              # NFS protocol internals
 │   │   ├── rpc/                  # RPC layer (call/reply handling)
 │   │   │   └── gss/              # RPCSEC_GSS framework

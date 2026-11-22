@@ -296,12 +296,10 @@ unavailable until they are rebuilt on the v2 management API, so no command
 attaches a block store to a share today. Today's CLI has no command to create a block store: remote stores
 return as resource commands of the v2 management API.
 
-> **No content store is wired yet.** The data path is being moved onto the new
-> engine (`pkg/block/engine`), served through the filesystem service. Until that
-> cutover, every operation that reads or writes file content (NFS READ, WRITE,
-> COMMIT; SMB READ, WRITE, FLUSH, copy-chunk, sparse ranges) answers each
-> protocol's generic I/O error. Metadata operations — lookup, getattr, setattr,
-> create, mkdir, rename, readdir, remove — work normally.
+> **No protocol serves files yet.** The server builds the engine
+> (`pkg/block/engine`) and the filesystem service over it, but the NFS and SMB
+> adapters have no file operations yet: NFS answers every procedure
+> `PROC_UNAVAIL` and SMB every command `STATUS_NOT_SUPPORTED`.
 
 #### Share state root (`blockstore.journal.path`)
 
