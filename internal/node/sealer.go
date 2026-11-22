@@ -30,12 +30,12 @@ func (s providerSealer) Seal(ctx context.Context, kind entity.SecretKind, owner 
 	return s.p.Seal(ctx, role, kind, owner, ref, value, secrets.Meta{HandedOver: handedOver})
 }
 
-// signingSealer is providerSealer as the signing key's rotation seals with
-// it: a signing key is never handed over.
-type signingSealer struct{ providerSealer }
+// authSealer is providerSealer as auth seals with it, the signing key's
+// rotation and a password's hashes: neither is ever handed over.
+type authSealer struct{ providerSealer }
 
 // Seal seals value as providerSealer does, not handed over.
-func (s signingSealer) Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte) (entity.Secret, error) {
+func (s authSealer) Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte) (entity.Secret, error) {
 	return s.providerSealer.Seal(ctx, kind, owner, ref, value, false)
 }
 

@@ -553,13 +553,15 @@ func componentAllowed(rel string) bool {
 // of it, only its error values, the names starting Err; and identity's
 // package, whose server and calls the node hands in behind interfaces, only
 // the join credential the API hands identity, the keytab's names, the
-// keytab's setting key, which the API seals the keytab under, and the NetBIOS
-// name's setting key, which the settings route refuses to change while joined.
+// keytab's setting key, which the API seals the keytab under, the NetBIOS
+// name's setting key, which the settings route refuses to change while joined,
+// and NewHashes and the NTLM setting it takes, the pure derivation of a new
+// password's hashes, which the password write seals.
 var onlyNames = map[string]func(name string) bool{
 	"pkg/metadata/kv": func(n string) bool { return strings.HasPrefix(n, "Err") },
 	"pkg/identity": func(n string) bool {
 		return n == "JoinCredential" || n == "KeytabNames" || n == "KeytabName" || n == "KeytabSetting" ||
-			n == "NetBIOSNameSetting"
+			n == "NetBIOSNameSetting" || n == "NewHashes" || n == "NTLMSetting"
 	},
 }
 
@@ -1390,6 +1392,8 @@ func apiExports(dir, path string) ([]string, error) {
 // Issue, Verify, Close, the SigningKey the API keys its idempotency digests
 // with and their Claims, the sign-in service the node builds, Service,
 // NewService and its Deps, SignIn, Refresh, Authenticate and Refused, the
+// password writes, ChangePassword, SealPassword, SetPassword and the
+// PasswordSet between the last two, the
 // Audited they answer, the credential a caller presented and the Session it
 // names, ErrThrottled, which the problem table answers,
 // the KeyVersion the node opens the key's
@@ -1408,9 +1412,10 @@ func TestAPIExports(t *testing.T) {
 			"CallerFrom", "Claims", "Clock", "Clock.Now", "CredentialKind", "CredentialNone", "CredentialSession", "Deps", "Drain",
 			"ErrThrottled", "Installation",
 			"KeyVersion", "KeyVersion.Format", "KeyVersion.LogValue", "KeyVersion.MarshalJSON", "KeyVersion.MarshalYAML",
-			"KeyVersion.String", "KeyVersions", "KeyVersions.Versions", "Local", "NewService", "NewTokens", "Principals", "Public",
+			"KeyVersion.String", "KeyVersions", "KeyVersions.Versions", "Local", "NewService", "NewTokens", "PasswordSet", "Principals", "Public",
 			"QuotaEvents", "ResetAccount", "Right", "RotationProgress", "RotationStep", "SealSigningKey", "Sealer",
-			"Sealer.Seal", "Self", "Service", "Service.Authenticate", "Service.Refresh", "Service.Refused", "Service.SignIn", "Shares", "Stores",
+			"Sealer.Seal", "Self", "Service", "Service.Authenticate", "Service.ChangePassword", "Service.Refresh", "Service.Refused",
+			"Service.SealPassword", "Service.SetPassword", "Service.SignIn", "Shares", "Stores",
 			"Tokens", "Tokens.Close", "Tokens.Format", "Tokens.Issue", "Tokens.LogValue", "Tokens.SigningKey",
 			"Tokens.String", "Tokens.Verify", "View", "With", "WithLocal", "Writer", "Writer.Write",
 		}},

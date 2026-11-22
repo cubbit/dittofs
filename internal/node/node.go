@@ -349,7 +349,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	// The session lifetime is the api section's default until the settings
 	// reach the node's components.
 	if n.auth, err = auth.NewService(auth.Deps{Store: n.meta.ControlPlane(), Accounts: n.identity, Tokens: n.tokens,
-		Settings: apisettings.Defaults, Clock: cfg.Clock, Metrics: reg}); err != nil {
+		Sealer: authSealer{providerSealer{p}}, Settings: apisettings.Defaults, Clock: cfg.Clock, Metrics: reg}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
 	if in.authenticate == nil {

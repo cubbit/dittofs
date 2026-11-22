@@ -33,7 +33,7 @@ func (n *Node) openSecrets(ctx context.Context) (*secrets.Provider, error) {
 // rotationRow is the step table's row of the signing key's rotation, which
 // seals through p.
 func (n *Node) rotationRow(p *secrets.Provider) stepRow {
-	return stepRow{run: auth.RotationStep(n.meta.ControlPlane(), signingSealer{providerSealer{p}}, n.tokens, n.cfg.Bootstrap.Node.ID), progress: auth.RotationProgress}
+	return stepRow{run: auth.RotationStep(n.meta.ControlPlane(), authSealer{providerSealer{p}}, n.tokens, n.cfg.Bootstrap.Node.ID), progress: auth.RotationProgress}
 }
 
 // providerKeys is the secret provider as the access tokens read the signing
