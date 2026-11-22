@@ -1525,9 +1525,12 @@ spec:
 
 | Metric | Meaning |
 |--------|---------|
-| ⭐ `dittofs_adapter_requests_total{protocol,op,status}` | Per-protocol request RED counter (`status` is `ok` or `error`). |
-| `dittofs_adapter_request_duration_seconds{protocol,op}` | Request latency histogram. |
-| `dittofs_adapter_connections_total{protocol}` | Connections accepted since start, by protocol. |
+| ⭐ `dittofs_adapter_requests_in_flight{protocol}` | Requests admitted and not yet answered. |
+| ⭐ `dittofs_adapter_status_mapped_total{protocol,error}` | Service errors that reached the client, by error (`not_found`, `exist`, `io` and the rest of the closed set). |
+| `dittofs_adapter_refusals_total{protocol,stage}` | Requests the adapter refused itself, by the pipeline stage that refused them. |
+| ⭐ `dittofs_adapter_unmapped_errors_total{protocol}` | Errors no protocol row maps, answered the fault status: each one is a bug. |
+| `dittofs_adapter_wire_seconds{protocol,stage}` | Time a request spends in each pipeline stage around the service call; its `_count` for `stage="decode_header"` counts requests. |
+| `dittofs_adapter_connections{protocol,state}` / `dittofs_adapter_connection_closes_total{protocol,reason}` | Connections open, by state (`handshake`, `established`), and connections refused or closed, by reason. |
 | `dittofs_auth_attempts_total{protocol,mechanism}` / `dittofs_auth_failures_total{protocol,mechanism}` | Authentication attempts and failures (`mechanism` is `sys`/`krb5`/`ntlm`). |
 | ⭐ `dittofs_remote_up{share}` | `1` if the share's remote backend is healthy, else `0`. |
 | ⭐ `dittofs_sync_pending_bytes{share}` | On-disk bytes present locally but not yet mirrored to the remote (data at risk). |
@@ -1618,11 +1621,12 @@ groups:
         annotations:
           summary: "DittoFS local store for {{ $labels.share }} is near its disk limit"
 
-      # Elevated adapter error rate (>5% of requests over 5m).
+      # Elevated adapter error rate (>5% of requests over 5m): service errors
+      # that reached the client, not_found left out as a lookup's usual answer.
       - alert: DittoFSAdapterErrorRate
         expr: |
-          sum(rate(dittofs_adapter_requests_total{status="error"}[5m])) by (protocol)
-            / sum(rate(dittofs_adapter_requests_total[5m])) by (protocol) > 0.05
+          sum(rate(dittofs_adapter_status_mapped_total{error!="not_found"}[5m])) by (protocol)
+            / sum(rate(dittofs_adapter_wire_seconds_count{stage="decode_header"}[5m])) by (protocol) > 0.05
         for: 5m
         labels: { severity: warning }
         annotations:
@@ -1631,9 +1635,11 @@ groups:
 
 ### Dashboard guidance
 
-Build (or import) a Grafana dashboard around the ⭐ core series: an adapter RED
-row (rate of `dittofs_adapter_requests_total`, error ratio, latency percentiles
-from `dittofs_adapter_request_duration_seconds`), a durability row
+Build (or import) a Grafana dashboard around the ⭐ core series: an adapter row
+(request rate from `dittofs_adapter_wire_seconds_count{stage="decode_header"}`,
+requests in flight, service errors by `error` from
+`dittofs_adapter_status_mapped_total`, refusals by `stage`, unmapped errors, and
+per-stage latency percentiles from `dittofs_adapter_wire_seconds`), a durability row
 (`dittofs_remote_up`, `dittofs_sync_pending_bytes`, and snapshot success rate
 from `dittofs_snapshot_operations_total`), and a capacity row
 (`dittofs_localstore_disk_used_bytes`, `dittofs_quota_used_bytes`). DittoFS does
