@@ -42,7 +42,7 @@ type Deps struct {
 	Audit   func(vfs.ShareID) authz.Policy // each share's audit policy; nil: every share's is off
 	Metrics prometheus.Registerer          // nil: the filesystem's metrics are kept but not registered
 	Logger  *slog.Logger                   // nil: slog.Default()
-	Clock   Clock                          // times the resends of grants and recalls; nil: the host's clock
+	Clock   Clock                          // times the resends of grants and recalls, and ages cached callers; nil: the host's clock
 
 	// Identity resolves each admitted call's Identity to its Caller, Auth
 	// verifies SignIn's rounds, and Names answers Spell and Find. New
@@ -58,9 +58,6 @@ type Deps struct {
 	// Running reports whether the node has bound a share, which admission
 	// serves only then; nil: every share is served.
 	Running func(entity.ShareID) bool
-	// Now is the wall clock the caller cache compares a caller's Fresh
-	// with; nil: time.Now.
-	Now func() time.Time
 }
 
 // Content is the engine's content methods, declared where the filesystem calls
@@ -197,14 +194,18 @@ type Filesystem struct {
 }
 
 // Clock is the part of the node's clock the filesystem reads: the waits
-// between resends of grants and recalls, and a grant's resend bound.
+// between resends of grants and recalls, a grant's resend bound, and the wall
+// time a cached caller's Fresh is compared with.
 type Clock interface {
+	Now() time.Time                        // the wall time
 	Elapsed() time.Duration                // monotonic, from an origin the clock chose
 	After(d time.Duration) <-chan struct{} // fires after d on the monotonic clock
 }
 
 // hostClock is the host's monotonic clock, for a filesystem given none.
 type hostClock struct{ origin time.Time }
+
+func (hostClock) Now() time.Time { return time.Now() }
 
 func (c hostClock) Elapsed() time.Duration { return time.Since(c.origin) }
 
@@ -262,14 +263,10 @@ func New(d Deps) (*Filesystem, error) {
 	if fs.events == nil {
 		fs.events = noEvents{}
 	}
-	now := d.Now
-	if now == nil {
-		now = time.Now
-	}
-	fs.callers = newCallers(d.Identity, now, maxCallers, maxCallerGroups)
 	if fs.clock == nil {
 		fs.clock = hostClock{time.Now()}
 	}
+	fs.callers = newCallers(d.Identity, fs.clock.Now, maxCallers, maxCallerGroups)
 	fs.engine, fs.checks, fs.opens, fs.log = d.Engine, d.Open.Checks(), d.Open.Opens(), d.Logger
 	if fs.log == nil {
 		fs.log = slog.Default()

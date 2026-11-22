@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -67,7 +66,7 @@ func newCaching(t *testing.T) *caching {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
-	c.shares = startShares(t, newFixtureOver(t, Deps{Identity: srv, Now: c.clock.Now}, fx), nil)
+	c.shares = startShares(t, newFixtureOver(t, Deps{Identity: srv, Clock: c.clock}, fx), nil)
 	return c
 }
 
@@ -118,15 +117,16 @@ func (c *caching) admitIn(ctx context.Context, call vfs.Call) (entity.Identity, 
 	return a.caller.Identity, nil
 }
 
-// twice admits call twice and checks that the first resolved only if miss
-// says so, and that the second was served from the cache.
+// twice admits call twice and checks that the first resolved, and counted a
+// miss, only if miss says so, and that the second was served from the cache
+// and counted a hit.
 func (c *caching) twice(t *testing.T, what string, call vfs.Call, miss bool) entity.Identity {
 	t.Helper()
 	want := 0
 	if miss {
 		want = 1
 	}
-	before := c.resolutions()
+	before, hits, misses := c.resolutions(), testutil.ToFloat64(c.callers.hits), testutil.ToFloat64(c.callers.misses)
 	id, err := c.admitCall(call)
 	if err != nil {
 		t.Fatalf("%s: admission: %v", what, err)
@@ -134,12 +134,24 @@ func (c *caching) twice(t *testing.T, what string, call vfs.Call, miss bool) ent
 	if got := c.resolutions() - before; got != want {
 		t.Errorf("%s: the first call resolved %d times, want %d", what, got, want)
 	}
-	before = c.resolutions()
+	if got := testutil.ToFloat64(c.callers.misses) - misses; got != float64(want) {
+		t.Errorf("%s: the first call counted %v misses, want %d", what, got, want)
+	}
+	if got := testutil.ToFloat64(c.callers.hits) - hits; got != float64(1-want) {
+		t.Errorf("%s: the first call counted %v hits, want %d", what, got, 1-want)
+	}
+	before, hits, misses = c.resolutions(), testutil.ToFloat64(c.callers.hits), testutil.ToFloat64(c.callers.misses)
 	if _, err := c.admitCall(call); err != nil {
 		t.Fatalf("%s: the second admission: %v", what, err)
 	}
 	if got := c.resolutions() - before; got != 0 {
 		t.Errorf("%s: the second call resolved %d times, want 0: the first one's caller was not cached", what, got)
+	}
+	if got := testutil.ToFloat64(c.callers.hits) - hits; got != 1 {
+		t.Errorf("%s: the second call counted %v hits, want 1", what, got)
+	}
+	if got := testutil.ToFloat64(c.callers.misses) - misses; got != 0 {
+		t.Errorf("%s: the second call counted %v misses, want 0", what, got)
 	}
 	return id
 }
@@ -166,8 +178,8 @@ func held(t *testing.T, clock *sim.TestClock) {
 	until(t, "a user read reaching the hold", func() bool { return clock.Pending() > 0 })
 }
 
-// until polls cond, failing the test if it does not hold within a generous
-// backstop.
+// until polls cond every millisecond, failing the test if it does not hold
+// within a generous backstop.
 func until(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -175,7 +187,7 @@ func until(t *testing.T, what string, cond func() bool) {
 		if time.Now().After(deadline) {
 			t.Fatalf("never saw %s", what)
 		}
-		runtime.Gosched()
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -293,7 +305,7 @@ func TestAGrantWrittenBeforeTheStoreIsNotServedFromTheCache(t *testing.T) {
 // disabled and the State carrying it applied. The stale caller is served to
 // the call that resolved it and stored nowhere; a call of bob's that joined
 // the resolution after that State resolves on its own and is refused, and so
-// is his next one.
+// is his next one. The call that started the resolution waits on no flight.
 func TestAnInFlightDisableIsNeitherStoredNorServedToALaterCall(t *testing.T) {
 	c := newCaching(t)
 	bob := c.user(t, "bob", "", c.share, entity.AccessReadWrite)
@@ -312,7 +324,7 @@ func TestAnInFlightDisableIsNeitherStoredNorServedToALaterCall(t *testing.T) {
 	c.must(t, errOf(c.cp.PutUser(t.Context(), bob, userGeneration(t, c.fs.Store, bob.Principal), entity.Alloc{})))
 	c.raise(t)
 	joined := c.admitLater(context.Background(), call)
-	until(t, "the later call waiting on the resolution", func() bool { return waiting.Load() == 2 })
+	until(t, "the later call waiting on the resolution", func() bool { return waiting.Load() == 1 })
 	hold.Advance(time.Hour)
 
 	if a := answer(t, "the call that resolved bob", first); a.err != nil {
@@ -346,12 +358,54 @@ func TestASteadilyRaisedSerialServesEveryCallAndStoresNone(t *testing.T) {
 			t.Fatalf("round %d: a call raised during both passes: %v, want served", round, a.err)
 		}
 	}
+	if n := len(c.callers.entries); n != 0 {
+		t.Errorf("the cache holds %d callers after calls each raised during, want 0", n)
+	}
 	c.twice(t, "the first call with no raise during it", call, true)
 }
 
-// 32 misses of one key share one resolution, and the call that started it
-// giving up leaves the other 31 served: the resolution runs on a context its
-// cancel does not reach.
+// The mirror of the in-flight disable, a refusal: bob's resolution reads him
+// disabled in its second pass while he is enabled and the State carrying it
+// applied. The refusal answers the call that resolved it alone; a call of
+// bob's that joined the resolution after that State resolves on its own and
+// is served.
+func TestAnInFlightRefusalIsNotServedToALaterCall(t *testing.T) {
+	c := newCaching(t)
+	bob := c.user(t, "bob", "", c.share, entity.AccessReadWrite)
+	bob.Disabled = true
+	c.must(t, errOf(c.cp.PutUser(t.Context(), bob, userGeneration(t, c.fs.Store, bob.Principal), entity.Alloc{})))
+	c.raise(t)
+	call := c.ticket(bob.Principal, inLab, 0)
+	var waiting atomic.Int32
+	c.callers.waiting = func() { waiting.Add(1) }
+
+	hold := c.hold(t, 2)
+	first := c.admitLater(context.Background(), call)
+	held(t, hold)
+	c.raise(t)
+	hold.Advance(time.Hour)
+	held(t, hold)
+
+	bob.Disabled = false
+	c.must(t, errOf(c.cp.PutUser(t.Context(), bob, userGeneration(t, c.fs.Store, bob.Principal), entity.Alloc{})))
+	c.raise(t)
+	joined := c.admitLater(context.Background(), call)
+	until(t, "the later call waiting on the resolution", func() bool { return waiting.Load() == 1 })
+	hold.Advance(time.Hour)
+
+	if a := answer(t, "the call that resolved bob", first); !errors.Is(a.err, vfs.ErrAccess) {
+		t.Errorf("the call whose second pass read bob disabled: %v, want ErrAccess", a.err)
+	}
+	if a := answer(t, "the call that joined after the enable", joined); a.err != nil {
+		t.Errorf("bob's call joining the resolution after the enable's State: %v, want served", a.err)
+	}
+}
+
+// 32 misses of one key share one resolution, run by the call that missed
+// first. That call, cancelled, waits the resolution out and is served, as
+// are the 30 that joined and waited on; one that joined and is cancelled
+// answers at once: the resolution runs on a context no call's cancel reaches,
+// and each call that joined waits only on its own.
 func TestConcurrentMissesOfOneKeyShareOneResolution(t *testing.T) {
 	c := newCaching(t)
 	bob := c.user(t, "bob", "", c.share, entity.AccessReadWrite)
@@ -361,34 +415,74 @@ func TestConcurrentMissesOfOneKeyShareOneResolution(t *testing.T) {
 	var resolvedIn atomic.Value
 	c.callers.beforeStore = func(ctx context.Context) { resolvedIn.Store(ctx.Err() == nil) }
 	hold := c.hold(t, 1)
-	before := c.resolutions()
+	before, misses := c.resolutions(), testutil.ToFloat64(c.callers.misses)
 
 	ctx, span := c.tp.Tracer("test").Start(context.Background(), "call")
 	defer span.End()
-	lead, cancel := context.WithCancel(ctx)
+	lead, cancelLead := context.WithCancel(ctx)
 	first := c.admitLater(lead, call)
 	held(t, hold)
+	quitter, cancelQuitter := context.WithCancel(ctx)
+	quit := c.admitLater(quitter, call)
 	var rest []<-chan admittedAs
-	for range 31 {
+	for range 30 {
 		rest = append(rest, c.admitLater(ctx, call))
 	}
-	until(t, "32 calls waiting on the resolution", func() bool { return waiting.Load() == 32 })
-	cancel()
-	if a := answer(t, "the call that started the resolution", first); !errors.Is(a.err, context.Canceled) {
-		t.Errorf("the first call, cancelled: %v, want context.Canceled", a.err)
+	until(t, "31 calls waiting on the resolution", func() bool { return waiting.Load() == 31 })
+	cancelLead()
+	cancelQuitter()
+	if a := answer(t, "a joined call, cancelled", quit); !errors.Is(a.err, context.Canceled) {
+		t.Errorf("a joined call, cancelled while the resolution is held: %v, want context.Canceled", a.err)
 	}
 	hold.Advance(time.Hour)
-	for i, ch := range rest {
-		if a := answer(t, "a waiting call", ch); a.err != nil || a.id.Principal != bob.Principal {
-			t.Errorf("waiting call %d: %v acting as %v, want served as bob", i, a.err, a.id.Principal)
+	for i, ch := range append(rest, first) {
+		if a := answer(t, "a missing call", ch); a.err != nil || a.id.Principal != bob.Principal {
+			t.Errorf("missing call %d (the last the one that started the resolution): %v acting as %v, want served as bob", i, a.err, a.id.Principal)
 		}
 	}
 	if got := c.resolutions() - before; got != 1 {
 		t.Errorf("32 misses of one key resolved %d times, want 1", got)
 	}
+	if got := testutil.ToFloat64(c.callers.misses) - misses; got != 32 {
+		t.Errorf("32 misses of one key counted %v misses, want 32", got)
+	}
 	if live, _ := resolvedIn.Load().(bool); !live {
 		t.Error("the shared resolution ran on a context the first call's cancel ended, want one detached from it")
 	}
+}
+
+// A resolution that panics unwinds through the call that ran it, and answers
+// the call that joined it ErrUnavailable; the key's next call resolves anew.
+func TestAPanickingResolutionAnswersTheCallsJoinedAndLeavesNoFlight(t *testing.T) {
+	c := newCaching(t)
+	bob := c.user(t, "bob", "", c.share, entity.AccessReadWrite)
+	call := c.ticket(bob.Principal, inLab, 0)
+	var waiting atomic.Int32
+	c.callers.waiting = func() { waiting.Add(1) }
+	var once sync.Once
+	c.callers.beforeStore = func(context.Context) { once.Do(func() { panic("resolution") }) }
+	hold := c.hold(t, 1)
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		_, _ = c.admitIn(context.Background(), call)
+	}()
+	held(t, hold)
+	joined := c.admitLater(context.Background(), call)
+	until(t, "the later call waiting on the resolution", func() bool { return waiting.Load() == 1 })
+	hold.Advance(time.Hour)
+	select {
+	case r := <-panicked:
+		if r == nil {
+			t.Error("the call that ran the panicking resolution returned, want it to panic")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the call that ran the panicking resolution never ended")
+	}
+	if a := answer(t, "the call that joined", joined); !errors.Is(a.err, vfs.ErrUnavailable) {
+		t.Errorf("the call that joined a panicking resolution: %v, want ErrUnavailable", a.err)
+	}
+	c.twice(t, "the next call", call, true)
 }
 
 // A caller is served until its ticket's end and not at it: past it, the next
