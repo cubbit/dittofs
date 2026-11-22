@@ -19,6 +19,10 @@ import (
 // an undecidable lookup or an incomplete group closure.
 type Resolver interface {
 	Resolve(ctx context.Context, id Identity, p entity.SharePolicy, narrowed ReadOnlyCause) (*Caller, error)
+	// ResolveMark resolves by, the principal that marked a file delete on
+	// close, for the unlink the last close runs: as Resolve resolves a
+	// Secret identity bound to by, but never refused because NTLM is off.
+	ResolveMark(ctx context.Context, by entity.Principal, p entity.SharePolicy, narrowed ReadOnlyCause) (*Caller, error)
 	// Current is the serial of the State a Resolve starting now reads, one
 	// atomic load of that State: admission stores and serves a cached Caller
 	// only while its Built equals it.
