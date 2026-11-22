@@ -30,7 +30,9 @@ var installation = entity.SettingScope{Kind: entity.ScopeInstallation}
 // fails the start, since a refused setting is never replaced by a default
 // (RFC 13 §6). Its ceiling: a node rolled back below a newer writer, or one
 // whose store accepted a row unchecked, does not start, and the row is
-// repaired in the store by hand, as the API is not serving. Overturned once
+// repaired in the store by hand, as the API is not serving. The same holds
+// for a machine password whose versions do not open before identity holds a
+// State: the start fails, as there is no last State to keep. Overturned once
 // identity can be left unapplied, answering unavailable, while the API
 // repairs the row.
 //

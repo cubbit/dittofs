@@ -172,14 +172,17 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 		next.State, next.Step = entity.OpRunning, res.Next
 	}
 	err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, end)
-	if problem, refused := step.Failure(err); refused {
+	if problem, refused := step.Failure(err); refused && !fails {
 		next = op
 		next.State, next.Error = entity.OpFailed, problem
-		second := row.failed
-		if fails {
-			second = nil // row.failed itself was refused: record the failure bare
-		}
-		err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, second)
+		err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, row.failed)
+		fails = true
+	}
+	if fails && err != nil {
+		// row.failed, or the commit carrying it, did not land: a failure must
+		// always be recorded, or the step that answered it runs again at
+		// every turn, so it is recorded bare.
+		err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, nil)
 	}
 	if err != nil {
 		r.retry(ctx, op, now, err)

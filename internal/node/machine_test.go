@@ -493,23 +493,30 @@ func TestARotationWhoseEndIsRefusedIsRecordedFailed(t *testing.T) {
 	}
 }
 
-// A rotation that fails while every write of the installation is refused,
-// its failed write among them, ends failed all the same: the runner's
-// second commit records the failure bare. Catches a second commit that
-// reruns the refused failed write, which leaves the rotation running,
-// holding the running index against every join and rotation, and its step
-// rerun at every backoff.
+// A rotation that fails while every write of the installation fails, its
+// failed write among them, ends failed all the same: the runner's last
+// commit records the failure bare, whether that write was refused or failed
+// with a plain store error. Catches a commit that reruns the failed write or
+// retries the turn, which leaves the rotation running, holding the running
+// index against every join and rotation, and its step rerun at every turn.
 func TestARotationWhoseFailedWriteIsRefusedEndsFailed(t *testing.T) {
-	m := newMachine(t, false)
-	m.join(t)
-	before := m.installation(t).Join.LastRotation
-	setFault(t, m.kv, nil, sim.Rule{Op: kvtest.OpSet, Key: installationWrite, Action: sim.FaultAction{Err: errWriteFailed}})
-	op := m.ended(t, m.post(t, "rotate-machine-password", ""))
-	if op.State != entity.OpFailed {
-		t.Fatalf("a rotation whose failed write is refused: ended %v with %s, want failed", op.State, op.Error)
-	}
-	if lr := m.installation(t).Join.LastRotation; lr != before {
-		t.Fatalf("the last rotation once its failed write was refused: %+v, want unchanged %+v", lr, before)
+	for name, fault := range map[string]error{
+		"refused":       errWriteFailed,
+		"a plain error": errors.New("the installation's write failed"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := newMachine(t, false)
+			m.join(t)
+			before := m.installation(t).Join.LastRotation
+			setFault(t, m.kv, nil, sim.Rule{Op: kvtest.OpSet, Key: installationWrite, Action: sim.FaultAction{Err: fault}})
+			op := m.ended(t, m.post(t, "rotate-machine-password", ""))
+			if op.State != entity.OpFailed {
+				t.Fatalf("a rotation whose failed write is %s: ended %v with %s, want failed", name, op.State, op.Error)
+			}
+			if lr := m.installation(t).Join.LastRotation; lr != before {
+				t.Fatalf("the last rotation once its failed write was %s: %+v, want unchanged %+v", name, lr, before)
+			}
+		})
 	}
 }
 
