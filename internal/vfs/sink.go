@@ -59,7 +59,7 @@ const callbackDeadline = 35 * time.Second
 // grantRetry is how long a lock grant the client did not answer waits before
 // it is sent again, and how often a recall not yet sent, or whose send
 // failed, looks for a new path to send it through.
-var grantRetry = 10 * time.Second
+const grantRetry = 10 * time.Second
 
 // grantResendFor is how long after its first send an unanswered lock grant
 // to a client other than an NLM host is sent again: one lease period. Past it
@@ -73,7 +73,7 @@ var grantRetry = 10 * time.Second
 // grant; an NLM host's for as long as its record lives. Resend at the
 // client's next Connect, and bound the NLM goroutines, if hosts that stay
 // down are seen missing their grants or holding goroutines.
-var grantResendFor = 90 * time.Second
+const grantResendFor = 90 * time.Second
 
 // ClientEnded tells the client its state ended, then drops its path and
 // its watches.
@@ -98,16 +98,16 @@ func (fs *Filesystem) ClientEnded(c entity.ClientID, shards []openstate.ShardID,
 func (fs *Filesystem) LockWaitOver(w openstate.LockWaiter, granted bool) {
 	c := w.Owner.Client
 	fs.deliver(fs.latest("LockWaitOver", c), func(ctx context.Context, cb vfs.Callbacks) {
-		until := time.Now().Add(grantResendFor)
+		until := fs.clock.Elapsed() + fs.resendFor
 		refused, err := cb.LockWaitOver(ctx, w, granted)
 		for granted && err != nil {
 			fs.callbackErrors.WithLabelValues("LockWaitOver").Inc()
 			select {
 			case <-fs.stop.Done():
 				return
-			case <-time.After(grantRetry):
+			case <-fs.clock.After(fs.retry):
 			}
-			if time.Now().After(until) && !fs.reg.isNLM(c) {
+			if fs.clock.Elapsed() > until && !fs.reg.isNLM(c) {
 				return
 			}
 			if cb = fs.counted("LockWaitOver", fs.reg.latest(c)); cb == nil {
@@ -182,7 +182,7 @@ func (fs *Filesystem) RecallGrant(g openstate.CachingGrant) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(grantRetry):
+			case <-fs.clock.After(fs.retry):
 			}
 		}
 	})

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -41,6 +42,7 @@ type Deps struct {
 	Audit   func(vfs.ShareID) authz.Policy // each share's audit policy; nil: every share's is off
 	Metrics prometheus.Registerer          // nil: the filesystem's metrics are kept but not registered
 	Logger  *slog.Logger                   // nil: slog.Default()
+	Clock   openstate.Clock                // times the resends of grants and recalls; nil: the host's clock
 
 	// Identity resolves each admitted call's Identity to its Caller, Auth
 	// verifies SignIn's rounds, and Names answers Spell and Find. New
@@ -185,6 +187,21 @@ type Filesystem struct {
 	inflight       prometheus.Gauge
 	callbackErrors *prometheus.CounterVec
 	refusals       prometheus.Counter
+
+	clock     openstate.Clock
+	retry     time.Duration // grantRetry but in tests
+	resendFor time.Duration // grantResendFor but in tests
+}
+
+// hostClock is the host's monotonic clock, for a filesystem given none.
+type hostClock struct{ origin time.Time }
+
+func (c hostClock) Elapsed() time.Duration { return time.Since(c.origin) }
+
+func (hostClock) After(d time.Duration) <-chan struct{} {
+	ch := make(chan struct{})
+	time.AfterFunc(d, func() { close(ch) })
+	return ch
 }
 
 var (
@@ -217,6 +234,9 @@ func New(d Deps) (*Filesystem, error) {
 		auth:      d.Auth,
 		names:     d.Names,
 		marks:     openMark{d.Open.Opens()},
+		clock:     d.Clock,
+		retry:     grantRetry,
+		resendFor: grantResendFor,
 		inflight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "dittofs", Name: "vfs_inflight_calls",
 			Help: "Calls admitted and not yet answered: what a drain waits for.",
@@ -232,6 +252,9 @@ func New(d Deps) (*Filesystem, error) {
 	}
 	if fs.events == nil {
 		fs.events = noEvents{}
+	}
+	if fs.clock == nil {
+		fs.clock = hostClock{time.Now()}
 	}
 	fs.engine, fs.checks, fs.opens, fs.log = d.Engine, d.Open.Checks(), d.Open.Opens(), d.Logger
 	if fs.log == nil {
