@@ -685,3 +685,20 @@ func TestAnOwnerSetsItselfAsOwner(t *testing.T) {
 		t.Errorf("the owner is %v, want alice", got)
 	}
 }
+
+// The owner's chown asks nothing of the walk but is still cut by the share
+// ceiling: on a read-only share its chown to itself and its give-away are
+// both ErrReadOnly (RFC 19 §3.1).
+func TestAReadOnlyShareRefusesTheOwnersChown(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, ReadOnly: true}, policyVersion(t, s.cp, s.share))))
+	alice := proven(s.alice.Principal, inLab)
+	for name, owner := range map[string]entity.Principal{"to herself": s.alice.Principal, "to bob": s.bob.Principal} {
+		_, err := s.SetAttr(ctx, alice, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(owner)})
+		if !errors.Is(err, vfs.ErrReadOnly) {
+			t.Errorf("the owner's chown %s on a read-only share: %v, want ErrReadOnly", name, err)
+		}
+	}
+}
