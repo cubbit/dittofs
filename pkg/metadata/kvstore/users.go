@@ -224,6 +224,9 @@ func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64
 	if err := expected(old.Generation, expect); err != nil {
 		return 0, err
 	}
+	if err := c.ownSecrets(u); err != nil {
+		return 0, err
+	}
 	if u.IDs, err = c.allocate(u.Principal.Kind, u.IDs, existed, a); err != nil {
 		return 0, err
 	}
@@ -322,6 +325,62 @@ func userShape(u entity.User) error {
 		return validIDs(u.IDs, entity.SchemeKerberos)
 	}
 	return merrs.NewInvalidArgumentError("a user record is a user or a machine")
+}
+
+// userSecretRef is a secret a user record names, with the kind and owner
+// each of its versions must carry: the user's record, under the field's name.
+type userSecretRef struct {
+	ref   entity.SecretRef
+	kind  entity.SecretKind
+	owner entity.SecretOwner
+}
+
+// userSecretRefs is u's password hash and NT hash references, the zero
+// reference among them when a field names none.
+func userSecretRefs(u entity.User) []userSecretRef {
+	owner := func(key string) entity.SecretOwner {
+		return entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: key}
+	}
+	return []userSecretRef{
+		{u.Password, entity.SecretPassword, owner("password")},
+		{u.NTHash, entity.SecretNTHash, owner("nt_hash")},
+	}
+}
+
+// holds refuses s unless it carries r's kind and owner.
+func (r userSecretRef) holds(s entity.Secret) error {
+	if s.Kind != r.kind || !s.Owner.Equal(r.owner) {
+		return merrs.NewInvalidArgumentError("a user's " + r.owner.Key + " names a secret sealed for another holder")
+	}
+	return nil
+}
+
+// ownSecrets refuses u when a secret its record names is held and was sealed
+// for another holder or as another kind, so a user's deletion, which takes
+// every version of each, never reaches another holder's. The current version
+// is read tracked, guarding every version, so a concurrent seal conflicts.
+//
+// decision: a reference no secret holds yet is accepted, since a user's
+// reference is named before its first version is sealed; PutSecret keeps a
+// later version's kind and owner, and the deletion checks every version, so
+// a first version sealed for another holder is refused there instead.
+// Withdraw this if every caller comes to seal before it names.
+func (c controlTx) ownSecrets(u entity.User) error {
+	for _, r := range userSecretRefs(u) {
+		if r.ref == (entity.SecretRef{}) {
+			continue
+		}
+		s, ok, err := c.Secret(r.ref, 0)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if err := r.holds(s); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // localName refuses, as an invalid argument wrapping entity.ErrLocalName, a
