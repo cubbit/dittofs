@@ -480,21 +480,25 @@ the server falls back to NTLM:
 
 - **Local users**: the NTLMv2 response is validated against the NT hash stored in the control-
   plane user store.
-- **AD domain users**: when a machine account is configured (`kerberos.machine_account`),
-  DittoFS validates the domain user's NTLM response by forwarding it to the DC over a sealed
+- **AD domain users**: once the installation has joined the domain, DittoFS
+  validates the domain user's NTLM response by forwarding it to the DC over a sealed
   NETLOGON secure channel (MS-NRPC `NetrLogonSamLogon`, sign+seal AES). The DC-returned SID
   is resolved through the same LDAP/idmap pipeline used for Kerberos, so the user maps to the
   same UID/GID across NFS-krb5, SMB-krb5, and SMB-NTLM.
 
-**Machine account requirement**: NETLOGON passthrough requires an offline-provisioned machine
-account (`DITTOFS$`) and its shared secret. The CLI no longer configures them, and the v2 CLI
-does not rebuild that command.
+**Machine account requirement**: NETLOGON passthrough requires a computer account in the
+domain, created by an online join or pre-created for an offline one. Joining is a
+management-API operation; see [identity.md, Part C2](identity.md#part-c2-join-the-domain).
+The account's password is sealed at rest, rotates by itself, and is never
+returned by the API. Without a join, a domain user's NTLM sign-in fails.
 
-The secret is stored at-rest and is write-only / redacted in API responses.
+**No map to guest.** A failed sign-in, whether a wrong password, an unknown user or a
+DC that cannot be reached, is a failed sign-in: DittoFS never answers it with a guest
+session. A client gets a guest session only by asking for one.
 
 > **Note**: end-to-end interoperability of the NETLOGON secure channel against a Samba AD-DC
-> is still being validated — the sealed-schannel `AlterContext` is currently rejected by the
-> test DC (`RPC_S_UNKNOWN_AUTHN_SERVICE`); see #1345.
+> is still being validated. The channel runs over TCP, and the `AlterContext` refusal an
+> earlier version met no longer reproduces.
 
 ### Share access policy
 
