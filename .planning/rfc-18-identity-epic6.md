@@ -349,10 +349,13 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   entry" for a minted principal is cached as a negative answer for 30 seconds and read by
   resolution as disabled, refused `ErrAccess`, counted `disabled`. Prior art: sssd marks an entry
   gone from the directory as expired, not deleted (from memory).
-- **D13, the NetBIOS cross-check imports nothing of identity.** T6.13's code in `pkg/settings`
-  reads the two settings' rows by key and the record's `netbios_domain` field from its JSON, so
-  nothing outside `internal/identity` and its tests imports `internal/identity`, as E1's import
-  rule requires. Prior art: RFC 13 §6's port rule, built the same way.
+- **D13, the NetBIOS cross-check is identity's own `CheckTx`.** Both settings belong to identity,
+  so RFC 13 §6 keeps the rule with the component: each identity section's `CheckTx`, in
+  `internal/identity`, reads the other's row by key, tracked, in the write's transaction, and
+  `Apply` runs the same rule on the `State`. `pkg/settings` holds no rule naming either key and
+  imports nothing of identity, as E1's import rule (only `internal/node` and identity's own
+  packages import `internal/identity`) requires. RFC 13 §6 sends a rule to the control plane
+  only when its two settings belong to different components, as the port rule's do.
 
 ## 5. Target tree
 
@@ -391,8 +394,8 @@ pkg/identity/identitytest/
 pkg/metadata/kvstore/
   minter.go                   T6.10 Rename (D5), SetEmail
   kvstoretest/principals.go   T6.10 their conformance rows
-pkg/settings/
-  check.go                    T6.13 the NetBIOS cross-check in Check
+internal/identity/
+  settings.go                 T6.13 the NetBIOS cross-check in both sections' CheckTx (D13)
 ```
 
 ## 6. Subtasks
@@ -902,22 +905,25 @@ pkg/settings/
 
 - **Track:** C. **Depends on:** T6.3. #4059's epic 3.
 - **Covers:** R4, R5, R6.
-- **Deliverables:** in #4059's `Check`, code naming `identity.netbios_name` and
-  `identity.directory`'s NetBIOS domain, as RFC 13 §6's port rule is: a put of either reads the
-  other's current value as a tracked read in the write's transaction and refuses a match, ASCII
-  letters folded, naming the other. Consumed by RFC 23's plan's settings route, which calls
-  `Check`.
+- **Deliverables:** in identity's two sections' `CheckTx` functions, which #4059's `Check` runs
+  (D13), code naming `identity.netbios_name` and `identity.directory`'s NetBIOS domain: a put of
+  either reads the other's current value as a tracked read in the write's transaction and refuses
+  a match, ASCII letters folded, naming the other. Consumed by RFC 23's plan's settings route,
+  which calls `Check`.
 - **Acceptance criteria:**
   - The refusal names the other key.
-- **Tests:** through `Check` over the memory KV store's `Write`, wrapped in `kvtest`'s `FaultKV`: §10's "NetBIOS name and domain"
+- **Tests:** through `Check` over the memory KV store's `Write`: §10's "NetBIOS name and domain"
   row, `identity.netbios_name` set to the record's domain in another case, and a record naming
-  `identity.netbios_name`, each refused naming the other (R4, R5); two transactions each writing
-  one side to a value the other's old value allowed, the first held before its commit by a
-  `sim.Fault` delay on the test clock: one of the two commits fails on its tracked read (catches a read that is not tracked, R4); an
+  `identity.netbios_name`, each refused naming the other (R4, R5); a write of
+  `identity.netbios_name` `CORP` over the domain `OLD`, the domain row set to `corp` by a raw KV
+  `Set` between its `Check` and its commit, which raises no `CFGGEN`: it takes 2 attempts and is
+  refused naming `identity.directory.netbios_domain`, no name row stored (catches a read that is
+  not tracked, which takes 1 attempt and commits `CORP` beside `corp`, R4); its mirror, a write of
+  the domain `corp` over the name `NAS`, the name row set to `CORP` by a raw `Set`: 2 attempts,
+  refused naming `identity.netbios_name` (catches the domain side's read untracked, R4); an
   `operator`'s first put of `identity.directory` refused `ErrForbidden`, as is its later change of
   one field, and an `admin`'s passing, the test #4059's epic 3 assigns this epic (catches the
-  section declared without `WriteRole`, R6). Doubles: `kvtest`'s `FaultKV` (kind 3), the injected
-  clock (kind 1).
+  section declared without `WriteRole`, R6). No test double.
 
 ## 7. Order of work
 
