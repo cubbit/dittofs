@@ -906,10 +906,11 @@ internal/identity/
 - **Track:** C. **Depends on:** T6.3. #4059's epic 3.
 - **Covers:** R4, R5, R6.
 - **Deliverables:** in identity's two sections' `CheckTx` functions, which #4059's `Check` runs
-  (D13), code naming `identity.netbios_name` and `identity.directory`'s NetBIOS domain: a put of
-  either reads the other's current value as a tracked read in the write's transaction and refuses
-  a match, ASCII letters folded, naming the other. Consumed by RFC 23's plan's settings route,
-  which calls `Check`.
+  (D13), code naming `identity.netbios_name` and `identity.directory`'s NetBIOS domain: a put or
+  delete of either compares the other's effective value, its default when no row exists (Appendix
+  B gives the name `DITTOFS`; no record, no directory), as a tracked read in the write's
+  transaction and refuses a match, ASCII letters folded, naming the other. Consumed by RFC 23's
+  plan's settings route, which calls `Check`.
 - **Acceptance criteria:**
   - The refusal names the other key.
 - **Tests:** through `Check` over the memory KV store's `Write`: §10's "NetBIOS name and domain"
@@ -920,7 +921,12 @@ internal/identity/
   refused naming `identity.directory.netbios_domain`, no name row stored (catches a read that is
   not tracked, which takes 1 attempt and commits `CORP` beside `corp`, R4); its mirror, a write of
   the domain `corp` over the name `NAS`, the name row set to `CORP` by a raw `Set`: 2 attempts,
-  refused naming `identity.netbios_name` (catches the domain side's read untracked, R4); an
+  refused naming `identity.netbios_name` (catches the domain side's read untracked, R4); the
+  directory put with the domain `dittofs` and no `identity.netbios_name` row: refused naming the
+  name, since its default `DITTOFS` matches (catches the absent row compared as empty, R4); the
+  name row holding `CORP` over the domain `DITTOFS`, the name row deleted: refused naming the
+  domain, since the name's default `DITTOFS` matches (catches a delete of either skipping the
+  check, which leaves the stored config one `Apply` refuses, R4); an
   `operator`'s first put of `identity.directory` refused `ErrForbidden`, as is its later change of
   one field, and an `admin`'s passing, the test #4059's epic 3 assigns this epic (catches the
   section declared without `WriteRole`, R6). No test double.
@@ -1040,9 +1046,9 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
   should drop "name".
 - RFC 18 §5.1 names no entry ID for an `rfc2307` directory, which has no `objectGUID`; T6.5 takes
   `entryUUID` (RFC 4530).
-- RFC 13 §6 runs a rule across two components' settings in the control plane; the NetBIOS rule
-  relates two sections of one component, and T6.13 builds it the port rule's way. RFC 13 §6 could
-  say a rule across two sections of one component runs the same way.
+- The NetBIOS rule relates two sections of one component, so T6.13 keeps it with identity, in
+  both sections' `CheckTx` (D13). RFC 13 §6 could say outright that a rule within one component
+  stays with it.
 
 **Other:**
 
