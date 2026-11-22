@@ -34,6 +34,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/secrets"
+	"github.com/cubbit/dittofs/pkg/settings"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -913,6 +914,45 @@ func TestInstallationRead(t *testing.T) {
 	}
 	if strings.Contains(string(r.body), "machine_password") {
 		t.Errorf("answer %s names the machine password", r.body)
+	}
+}
+
+// The installation's identity.netbios_name through the settings route, judged
+// by identity's section of the settings table: an admin's put is accepted while the installation is not joined; once it is
+// joined, a put and a delete are each refused 409 joined, leaving the name
+// as it was.
+func TestNetBIOSNameRefusedWhileJoined(t *testing.T) {
+	s := serve(t, as(entity.RoleAdmin, false), func(d *api.Deps) { d.Settings = settings.Table{identity.Section()} })
+	scope := entity.SettingScope{Kind: entity.ScopeInstallation}
+	const path = "/api/v1/settings/identity.netbios_name"
+	gen := s.putSetting(t, scope, "identity.netbios_name", `"NAS"`)
+	r := s.do(t, http.MethodPut, path, `{"spec":{"value":"OTHER"}}`, "If-Match", strconv.Quote(strconv.FormatUint(gen, 10)), "Idempotency-Key", "netbios-unjoined")
+	if r.status != http.StatusOK {
+		t.Fatalf("a put of identity.netbios_name while not joined: answered %d %s, want 200", r.status, r.body)
+	}
+	gen = s.putSetting(t, scope, "identity.netbios_name", `"NAS"`)
+	if err := s.store.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		return tx.SetMachineJoin(entity.MachineJoin{Joined: true, Account: "NAS$"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tag := strconv.Quote(strconv.FormatUint(gen, 10))
+	for _, tc := range []struct{ method, body string }{
+		{http.MethodPut, `{"spec":{"value":"OTHER"}}`},
+		{http.MethodDelete, ""},
+	} {
+		r := s.do(t, tc.method, path, tc.body, "If-Match", tag, "Idempotency-Key", "netbios-"+tc.method)
+		if r.status != http.StatusConflict || r.problem(t).Code != apiv1.CodeJoined || !strings.Contains(r.problem(t).Detail, "NAS$") {
+			t.Errorf("a %s of identity.netbios_name while joined as NAS$: answered %d %s, want 409 joined naming NAS$", tc.method, r.status, r.body)
+		}
+	}
+	for st, err := range s.store.Settings(t.Context(), scope) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Key == "identity.netbios_name" && (st.Generation != gen || string(st.Value) != `"NAS"`) {
+			t.Errorf("identity.netbios_name after the refusals: %s at %d, want \"NAS\" at %d", st.Value, st.Generation, gen)
+		}
 	}
 }
 
