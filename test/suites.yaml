@@ -264,6 +264,17 @@ suites:
     cmd:
       - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -run ^$ -bench ^BenchmarkSignInCommitCost$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
+  # A directory principal's cold resolution, alone, as 50 first sign-ins at once and with a PAC of
+  # 1 024 SIDs, against the in-memory directory with every search delayed 5, 20 and 50 ms on the
+  # wall clock; the measurement the directory cache's in-flight bound and the SID batch size
+  # wait on. A resolution that fails or reaches its 20-second bound fails the cell; its b.Fatalf
+  # line is in bench.txt. No -race: it changes the latency they measure. -timeout, because go
+  # test's default 10 minutes covers a benchmark run too, and ten counts outlive it.
+  identity-dir-bench:
+    cmd:
+      - { sh: 'go test -count=10 -timeout=50m -run ^$ -bench ^BenchmarkDirectory ./internal/identity/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 55m, cell: 60m }
   # Measures only the version-limit probe, with journal setup outside the timer.
   version-limit-probe-bench:
     cmd:

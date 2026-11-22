@@ -497,6 +497,15 @@ func (d *Directory) tokenGroups(e *entry) [][]byte {
 			}
 		}
 	}
+	// The groups each DN is a member of, read in one pass, so the walk costs
+	// one scan of the entries rather than one per group it visits.
+	groupsOf := map[string][]*entry{}
+	for _, g := range d.entries {
+		for _, v := range g.get("member") {
+			k := strings.ToLower(string(v))
+			groupsOf[k] = append(groupsOf[k], g)
+		}
+	}
 	seen := map[*entry]bool{}
 	var sids [][]byte
 	var visit func(m *entry)
@@ -508,10 +517,8 @@ func (d *Directory) tokenGroups(e *entry) [][]byte {
 		if m != e {
 			sids = append(sids, clone(m.get("objectSid"))...)
 		}
-		for _, g := range d.entries {
-			if slices.ContainsFunc(g.get("member"), func(v []byte) bool { return strings.EqualFold(string(v), m.dn) }) {
-				visit(g)
-			}
+		for _, g := range groupsOf[strings.ToLower(m.dn)] {
+			visit(g)
 		}
 	}
 	visit(e)
