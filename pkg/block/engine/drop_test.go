@@ -34,7 +34,7 @@ func (u *unit) dropped(t *testing.T) {
 
 	u.unbind(t)
 
-	if err := u.e.Drop(t.Context(), u.share.ID); err != nil {
+	if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); err != nil {
 		t.Fatalf("Drop: %v", err)
 	}
 }
@@ -84,7 +84,7 @@ func TestDropClosesTheHandleThenForgetsAndKeepsTheBindingRemoved(t *testing.T) {
 		t.Errorf("Bind after Drop = %v, want exactly ErrStale", err)
 	}
 
-	if err := u.e.Drop(t.Context(), u.share.ID); err != nil {
+	if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); err != nil {
 		t.Errorf("a second Drop = %v, want nil", err)
 	}
 
@@ -109,7 +109,7 @@ func TestDropOfAShareStartLeftRemovedForgetsItsTagWithNoHandle(t *testing.T) {
 		t.Fatalf("Draw before Drop = %v, want exactly ErrStale", err)
 	}
 
-	if err := s.e.Drop(t.Context(), offloaded); err != nil {
+	if err := s.e.Drop(t.Context(), offloaded, 92); err != nil {
 		t.Fatalf("Drop = %v, want nil", err)
 	}
 
@@ -151,7 +151,7 @@ func TestDropRefusesAShareNotFullyUnboundAndTouchesNothing(t *testing.T) {
 
 		u.write(t, f, 0, []byte("abc"))
 
-		if err := u.e.Drop(t.Context(), u.share.ID); !errors.Is(err, vfserr.ErrInvalid) {
+		if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); !errors.Is(err, vfserr.ErrInvalid) {
 			t.Errorf("Drop of a serving share = %v, want ErrInvalid", err)
 		}
 
@@ -178,7 +178,7 @@ func TestDropRefusesAShareNotFullyUnboundAndTouchesNothing(t *testing.T) {
 			t.Fatalf("Unbind under a cancelled context = %v, want context.Canceled", err)
 		}
 
-		if err := u.e.Drop(t.Context(), u.share.ID); !errors.Is(err, vfserr.ErrInvalid) {
+		if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); !errors.Is(err, vfserr.ErrInvalid) {
 			t.Errorf("Drop with a call still inside = %v, want ErrInvalid", err)
 		}
 
@@ -196,7 +196,7 @@ func TestDropRefusesAShareNotFullyUnboundAndTouchesNothing(t *testing.T) {
 func TestDropOfAShareWithNoBindingAnswersNil(t *testing.T) {
 	u := newUnit(t)
 
-	if err := u.e.Drop(t.Context(), entity.NewShareID()); err != nil {
+	if err := u.e.Drop(t.Context(), entity.NewShareID(), 0); err != nil {
 		t.Errorf("Drop of a share with no binding = %v, want nil", err)
 	}
 
@@ -212,7 +212,7 @@ func TestARemovalOfAShareWithNoBindingRefusesALaterBind(t *testing.T) {
 		remove func(*engine.Engine, context.Context, entity.ShareID) error
 	}{
 		{"unbind", func(e *engine.Engine, ctx context.Context, id entity.ShareID) error { return e.Unbind(ctx, id, false) }},
-		{"drop", (*engine.Engine).Drop},
+		{"drop", func(e *engine.Engine, ctx context.Context, id entity.ShareID) error { return e.Drop(ctx, id, 0) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u := newUnitWith(t, unitConfig{unbound: true})
@@ -225,7 +225,7 @@ func TestARemovalOfAShareWithNoBindingRefusesALaterBind(t *testing.T) {
 			if got := u.e.StateOf(u.share.ID); got != 0 {
 				t.Errorf("binding state after the refused Bind: got %v, want none", got)
 			}
-			if err := u.e.Drop(t.Context(), u.share.ID); err != nil {
+			if err := u.e.Drop(t.Context(), u.share.ID, 0); err != nil {
 				t.Errorf("Drop again: got %v, want nil", err)
 			}
 			u.wantEvents(t)
@@ -245,7 +245,7 @@ func TestDropAfterCloseAnswersClosed(t *testing.T) {
 	}
 
 	_, want := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("x"), engine.WriteOpts{})
-	got := u.e.Drop(t.Context(), u.share.ID)
+	got := u.e.Drop(t.Context(), u.share.ID, u.share.Tag)
 
 	if got == nil || want == nil || got.Error() != want.Error() || !unavailable(got) {
 		t.Errorf("Drop after Close = %v, want what Write answers: %v, an ErrUnavailable", got, want)
@@ -282,7 +282,7 @@ func dropHeldByAnItem(t *testing.T) (*unit, *loopItem, <-chan error) {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- u.e.Drop(t.Context(), u.share.ID)
+		done <- u.e.Drop(t.Context(), u.share.ID, u.share.Tag)
 	}()
 
 	reached(t, joined, done)
@@ -343,7 +343,7 @@ func TestDropFreesTheGuardOfTheFileOfTheRunningItem(t *testing.T) {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- u.e.Drop(t.Context(), u.share.ID)
+		done <- u.e.Drop(t.Context(), u.share.ID, u.share.Tag)
 	}()
 
 	reached(t, joined, done)
@@ -413,7 +413,7 @@ func TestADropEndsTheParkedItemsOfTheShareOnce(t *testing.T) {
 	close(block.release)
 	<-clone.entered
 
-	if err := u.e.Drop(t.Context(), u.share.ID); err != nil {
+	if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); err != nil {
 		t.Fatalf("Drop = %v, want nil", err)
 	}
 
@@ -527,7 +527,7 @@ func TestDropUnderWritesWithABatchDueAsItJoinsCallsEachDoneOnce(t *testing.T) {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- u.e.Drop(t.Context(), u.share.ID)
+		done <- u.e.Drop(t.Context(), u.share.ID, u.share.Tag)
 	}()
 
 	select {
@@ -569,7 +569,7 @@ func TestAFailedForgetLeavesTheWritesToTheRetry(t *testing.T) {
 	u.rec.failForgets = 1
 	u.rec.mu.Unlock()
 
-	if err := u.e.Drop(t.Context(), u.share.ID); err == nil {
+	if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); err == nil {
 		t.Fatal("Drop with a failing Forget = nil, want its error")
 	}
 
@@ -579,7 +579,7 @@ func TestAFailedForgetLeavesTheWritesToTheRetry(t *testing.T) {
 
 	u.wantEvents(t, handleClose(u.share))
 
-	if err := u.e.Drop(t.Context(), u.share.ID); err != nil {
+	if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); err != nil {
 		t.Fatalf("the retried Drop = %v, want nil", err)
 	}
 
@@ -707,7 +707,7 @@ func TestDropEndsAReleasesRetryWithUnavailableAndNoDone(t *testing.T) {
 		t.Fatalf("Unbind: %v", err)
 	}
 
-	if err := r.e.Drop(ctx, r.one.ID); err != nil {
+	if err := r.e.Drop(ctx, r.one.ID, r.one.Tag); err != nil {
 		t.Fatalf("Drop: %v", err)
 	}
 
@@ -802,7 +802,7 @@ func TestADropWhoseHandleCloseFailsWithoutClosingKeepsTheBindingAndSkipsForget(t
 		u.unbind(t)
 		u.rec.handle(0).failNext.Store(true)
 
-		if err := u.e.Drop(t.Context(), u.share.ID); !unavailable(err) {
+		if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); !unavailable(err) {
 			t.Fatalf("Drop with a failing close = %v, want ErrUnavailable from the close", err)
 		}
 
@@ -818,7 +818,7 @@ func TestADropWhoseHandleCloseFailsWithoutClosingKeepsTheBindingAndSkipsForget(t
 			t.Errorf("writes without their Done after the failed Drop = %d, want 1", got)
 		}
 
-		if err := u.e.Drop(t.Context(), u.share.ID); err != nil {
+		if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); err != nil {
 			t.Fatalf("the retried Drop = %v, want nil", err)
 		}
 
@@ -831,7 +831,7 @@ func TestADropWhoseHandleCloseFailsWithoutClosingKeepsTheBindingAndSkipsForget(t
 		u.unbind(t)
 		u.rec.handle(0).failNext.Store(true)
 
-		if err := u.e.Drop(t.Context(), u.share.ID); !unavailable(err) {
+		if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); !unavailable(err) {
 			t.Fatalf("Drop with a failing close = %v, want ErrUnavailable from the close", err)
 		}
 
@@ -854,7 +854,7 @@ func TestADropWhoseHandleCloseFailedAfterClosingTreatsErrClosedAsClosed(t *testi
 	u.write(t, u.create(t, "f"), 0, []byte("abc"))
 	u.unbind(t)
 
-	if err := u.e.Drop(t.Context(), u.share.ID); !unavailable(err) {
+	if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); !unavailable(err) {
 		t.Fatalf("Drop with a failing close = %v, want ErrUnavailable from the close", err)
 	}
 
@@ -864,7 +864,7 @@ func TestADropWhoseHandleCloseFailedAfterClosingTreatsErrClosedAsClosed(t *testi
 
 	h.closeErr = nil
 
-	if err := u.e.Drop(t.Context(), u.share.ID); err != nil {
+	if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); err != nil {
 		t.Fatalf("the retried Drop = %v, want nil: journal.ErrClosed is a closed handle", err)
 	}
 
@@ -966,7 +966,7 @@ func TestADeleteWhoseRetryIsPostedWhileUnbindJoinsIsEndedByDrop(t *testing.T) {
 		t.Fatalf("Unbind = %v, want nil", err)
 	}
 
-	if err := u.e.Drop(t.Context(), u.share.ID); err != nil {
+	if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); err != nil {
 		t.Fatalf("Drop = %v, want nil", err)
 	}
 
@@ -1002,7 +1002,7 @@ func TestCloseAfterAFailedDropTreatsErrClosedAsClosed(t *testing.T) {
 
 		u.unbind(t)
 
-		if err := u.e.Drop(t.Context(), u.share.ID); !unavailable(err) {
+		if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); !unavailable(err) {
 			t.Fatalf("Drop with a failing close = %v, want ErrUnavailable from the close", err)
 		}
 
@@ -1023,7 +1023,7 @@ func TestCloseAfterAFailedDropTreatsErrClosedAsClosed(t *testing.T) {
 
 		u.unbind(t)
 
-		if err := u.e.Drop(t.Context(), u.share.ID); !unavailable(err) {
+		if err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag); !unavailable(err) {
 			t.Fatalf("Drop with a failing close = %v, want ErrUnavailable from the close", err)
 		}
 

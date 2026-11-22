@@ -56,7 +56,7 @@ func TestADropRefusedForTheHeadroomIsRetryLater(t *testing.T) {
 
 	u.unbind(t)
 
-	err := u.e.Drop(t.Context(), u.share.ID)
+	err := u.e.Drop(t.Context(), u.share.ID, u.share.Tag)
 	if !isDelay(err, vfserr.DelayCapacity) {
 		t.Errorf("a Drop whose Forget the headroom refused: %v, want ErrDelay(DelayCapacity)", err)
 	}

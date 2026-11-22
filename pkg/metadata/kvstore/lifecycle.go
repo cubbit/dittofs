@@ -348,6 +348,16 @@ func nextShare(r kv.Reader, prefix, after []byte) (id entity.ShareID, found bool
 	return id, false, nil
 }
 
+// TagState is how far share's removal has gone, as Tags reads it for every
+// share: Forgotten once every shard's rm row is at forgotten or later.
+func (l Lifecycle) TagState(ctx context.Context, share entity.ShareID) (st entity.TagState, err error) {
+	err = l.s.kv.View(ctx, func(r kv.Reader) (err error) {
+		st, err = tagState(r, share)
+		return err
+	})
+	return st, err
+}
+
 // tagState is how far share's removal has gone: the least step any of its
 // shards' rm rows reached, a shard with no row counting as not started.
 func tagState(r kv.Reader, share entity.ShareID) (entity.TagState, error) {

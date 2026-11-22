@@ -87,7 +87,7 @@ func TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag(t *testing.T) {
 		t.Fatalf("Unbind: %v", err)
 	}
 
-	if err := f.E.Drop(ctx, f.Share.ID); err != nil {
+	if err := f.E.Drop(ctx, f.Share.ID, f.Share.Tag); err != nil {
 		t.Fatalf("Drop: %v", err)
 	}
 

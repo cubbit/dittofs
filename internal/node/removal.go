@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/step"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -92,37 +93,59 @@ func (n *Node) shareDeletion(ctx context.Context, op entity.Operation) (step.Ste
 	return step.StepResult{}, nil
 }
 
-// dropFiles is a turn of step 4 of share id's removal on this node: one
-// batch of its shard's files dropped with Nodes.ContinueShardRemoval, which
-// refuses with kvstore.ErrRemovalOrder until the shard is recorded
-// forgotten. On that refusal the share's tag is dropped through the engine
-// instead, its handle closed and the tag forgotten in the journal, and only
-// then the shard recorded forgotten, so a record that says forgotten never
-// stands for a tag the journal still holds; the next turn drops the files.
-// Each part is idempotent: a crash between the drop and the record drops
-// again, a Drop after a restart forgets the tag the engine's start left
-// removed, and a record already made changes nothing.
+// dropFiles is a turn of step 4 of share id's removal on this node. Until
+// the store records the share's tag forgotten, the turn drops the tag
+// through the engine, its handle closed and the tag the store names
+// forgotten in the journal, and only then records the shard forgotten, so a
+// record that says forgotten never stands for a tag the journal still holds.
+// Each later turn drops one batch of the shard's files with
+// Nodes.ContinueShardRemoval. Each part is idempotent: a crash between the
+// drop and the record drops again, and a record already made changes
+// nothing.
 //
-// ponytail: a share has one shard, its root's, and this node is its primary,
-// as removeShare says.
+// decision: the engine's Drop is not bounded on the node's clock, as the
+// store calls are: it waits only for the share's own work, which step 3's
+// unbind has already joined, and for the journal's forget, and a Drop that
+// hangs holds this one runner turn, which the watchdog reports as a stall.
+// Bound it as step 3 bounds its unbind if a Drop is ever seen to hang.
+//
+// ponytail: step 4 runs once per share, on this node's journal alone: a share
+// has one shard, its root's, this node is its primary, and no replica holds
+// the tag. A whole-tag forget is safe here only because the removal reaches
+// step 4 once every shard is offloaded. RFC 16 §2.3.2 step 3 (cluster) needs a
+// replicated per-shard forget sent to every replica, and the tag kept while
+// any other shard of the share the node serves has not recorded one; build
+// those once a share has more than one shard or a shard more than one node.
 func (n *Node) dropFiles(ctx context.Context, id entity.ShareID) error {
-	var sh entity.Share
+	var (
+		sh entity.Share
+		st entity.TagState
+	)
 	_, err := n.bounded(ctx, func(ctx context.Context) (err error) {
-		sh, _, err = n.meta.ShareIndex().Share(ctx, id)
+		if sh, _, err = n.meta.ShareIndex().Share(ctx, id); err != nil {
+			return err
+		}
+		st, err = n.meta.Lifecycle().TagState(ctx, id)
 		return err
 	})
 	if err != nil {
 		return err
 	}
 	nodes := n.meta.Nodes()
-	_, err = nodes.ContinueShardRemoval(ctx, id, sh.Shard)
-	if !errors.Is(err, kvstore.ErrRemovalOrder) {
+	if st == entity.TagForgotten {
+		_, err = n.bounded(ctx, func(ctx context.Context) error {
+			_, err := nodes.ContinueShardRemoval(ctx, id, sh.Shard)
+			return err
+		})
 		return err
 	}
-	if err := n.engine.Drop(ctx, id); err != nil {
+	if err := n.engine.Drop(ctx, id, journal.ShareTag(sh.Tag)); err != nil {
 		return err
 	}
-	return nodes.RecordShardRemoval(ctx, id, sh.Shard, entity.TagForgotten)
+	_, err = n.bounded(ctx, func(ctx context.Context) error {
+		return nodes.RecordShardRemoval(ctx, id, sh.Shard, entity.TagForgotten)
+	})
+	return err
 }
 
 // failInvalid has an invalid argument from the store, or a secret version

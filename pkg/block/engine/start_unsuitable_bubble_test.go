@@ -327,8 +327,10 @@ func TestARetriedOpenThatFindsTheJournalLostEndsTheRetry(t *testing.T) {
 					t.Errorf("Unbind = %v, want nil as for a journal lost at Start", err)
 				}
 
-				if err := b.e.Drop(context.Background(), s.ID); err != nil {
-					t.Errorf("Drop = %v, want nil as for a journal lost at Start", err)
+				// The lost journal may come back, its records with it, so
+				// the tag waits for a journal to forget it in.
+				if err := b.e.Drop(context.Background(), s.ID, s.Tag); !errors.Is(err, vfserr.ErrUnavailable) {
+					t.Errorf("Drop = %v, want ErrUnavailable, no journal open to forget the tag in", err)
 				}
 			})
 		})
