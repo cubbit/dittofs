@@ -23,8 +23,24 @@ func secretKey(id entity.SecretRef, version uint64) []byte {
 	return keys.Uint64(secretPrefix(id), version)
 }
 
+// secretUndecodable is a held secret version whose value does not decode.
+type secretUndecodable struct{ error }
+
+func (e secretUndecodable) Unwrap() error { return e.error }
+
+// decodeHeld decodes a held version of a secret, marking a failure as
+// secretUndecodable.
+func decodeHeld(id entity.SecretRef, version uint64, b []byte) (entity.Secret, bool, error) {
+	s, err := decodeSecret(id, version, b)
+	if err != nil {
+		return s, false, secretUndecodable{err}
+	}
+	return s, true, nil
+}
+
 // secretIn reads one version of a secret, version 0 the current one; false
-// when no such version is held.
+// when no such version is held. A held version that does not decode fails
+// as secretUndecodable.
 func secretIn(r kv.Reader, id entity.SecretRef, version uint64) (entity.Secret, bool, error) {
 	if version != 0 {
 		b, ok, err := get(r, secretKey(id, version))
@@ -32,9 +48,7 @@ func secretIn(r kv.Reader, id entity.SecretRef, version uint64) (entity.Secret, 
 			return entity.Secret{}, false, err
 		}
 
-		s, err := decodeSecret(id, version, b)
-
-		return s, err == nil, err
+		return decodeHeld(id, version, b)
 	}
 
 	// Before finds the last key strictly below its bound, so the bound sorts
@@ -52,9 +66,7 @@ func secretIn(r kv.Reader, id entity.SecretRef, version uint64) (entity.Secret, 
 		return entity.Secret{}, false, err
 	}
 
-	s, err := decodeSecret(id, v, row.Value)
-
-	return s, err == nil, err
+	return decodeHeld(id, v, row.Value)
 }
 
 // secretVersion is the version a secret's key names after its prefix.

@@ -33,8 +33,9 @@ func operationSteps(nodes kvstore.Nodes) map[string]stepRow {
 // another holder or as another kind, fail the operation rather than retry
 // it: only the mark marks, the running operation holds its target, refusing
 // the deletion that could mark it, and a secret keeps the kind and owner of
-// its current version, so none changes on a retry; the last stays marked,
-// as kvstore's ownSecrets decision says. Every other error, kv.ErrTooLarge
+// its current version, so none changes on a retry. A user naming a secret
+// sealed after its mark stays marked, as kvstore's ownSecrets decision says.
+// Every other error, kv.ErrTooLarge
 // included, is retried on the runner's backoff, since a failed deletion is
 // never resumed and would leave the principal marked and half-deleted; and a
 // batch's size can change between turns, as its quota drop reads every

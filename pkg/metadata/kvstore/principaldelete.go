@@ -17,7 +17,8 @@ import (
 // a group; its quota records; and, for a user, its API tokens, its sessions
 // and its account's sign-in count. The batch that finds none of them left
 // deletes the record and, for a user, every version of each secret it names,
-// refusing one sealed for another holder as ownSecrets says.
+// refusing one sealed for another holder or as another kind as ownSecrets
+// says.
 // Files keep naming p, as an unknown principal. A user's deletion of a
 // machine's ID deletes the machine; a record of any other kind than p's
 // refuses.
@@ -105,7 +106,7 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 	if d.took {
 		return false, nil
 	}
-	if err := deleteRecord(tx, p, ids, u); err != nil { // a group's zero u names no secret
+	if err := ctl.deleteRecord(p, ids, u); err != nil { // a group's zero u names no secret
 		return false, err
 	}
 	return true, nil
@@ -289,8 +290,9 @@ func (b *batch) dropSignInCount(p entity.Principal) error {
 // ponytail: every version goes in this one transaction, which holds as long
 // as a secret keeps a current version and the few it replaced. Delete the
 // versions in batches if retention ever keeps many.
-func deleteRecord(tx kv.Txn, p entity.Principal, ids entity.ProtocolIDs, u entity.User) error {
-	if err := (controlTx{tx: tx}).ownSecrets(u); err != nil {
+func (c controlTx) deleteRecord(p entity.Principal, ids entity.ProtocolIDs, u entity.User) error {
+	tx := c.tx
+	if err := c.ownSecrets(u, false); err != nil {
 		return err
 	}
 	if _, err := raise(tx, pgenKey); err != nil {
