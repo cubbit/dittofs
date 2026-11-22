@@ -173,6 +173,14 @@ func (d *Directory) Modify(dn string, attrs map[string][][]byte) {
 	}
 }
 
+// Delete removes the entry dn names, as an LDAP delete does: no search
+// answers it from then on.
+func (d *Directory) Delete(dn string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.entries, strings.ToLower(dn))
+}
+
 // SetMaxValRange sets the most values one range of an attribute holds, 1 500
 // unless set, as Active Directory's MaxValRange.
 func (d *Directory) SetMaxValRange(n int) {

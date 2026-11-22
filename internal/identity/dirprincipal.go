@@ -248,37 +248,63 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 		if err != nil {
 			return entity.Principal{}, err
 		}
-		for _, g := range groups {
-			// decision: a group tokenGroups names but no entry holds is not
-			// minted: with no entry ID it has no dir spelling, so no later
-			// answer could find or rename it. Its SID still reaches the
-			// caller's groups through resolution. Overturned if such a SID
-			// must own files.
-			if len(g.EntryID) == 0 {
-				continue
-			}
-			// decision: an rfc2307 directory's groups are not held to a
-			// domain, since its record names none and it routes no SID;
-			// overturned if one is found holding a well-known SID.
-			if domain != nil && g.SID != nil && !inDomain(domain, g.SID) {
-				reason := "other_domain"
-				if v, _, err := sid.DecodeSID(g.SID); err == nil && strings.HasPrefix(sid.FormatSID(v), "S-1-5-32-") {
-					reason = "builtin"
-				}
-				s.skipped.WithLabelValues(reason).Inc()
-				continue
-			}
-			entries = append(entries, g)
-		}
+		entries = append(entries, s.mintableGroups(domain, groups)...)
 	}
+	ps, err := s.mintDir(ctx, st, entries, true)
+	if err != nil {
+		return entity.Principal{}, err
+	}
+	return ps[0], nil
+}
+
+// mintableGroups is the groups of a closure a mint may mint: each held by an
+// entry, and of domain's, the directory's domain SID, when it is an ad
+// directory's; a group of another domain is skipped and counted.
+func (s *Server) mintableGroups(domain []byte, groups []directory.Answer) []directory.Answer {
+	var out []directory.Answer
+	for _, g := range groups {
+		// decision: a group tokenGroups names but no entry holds is not
+		// minted: with no entry ID it has no dir spelling, so no later
+		// answer could find or rename it. Its SID still reaches the
+		// caller's groups through resolution. Overturned if such a SID
+		// must own files.
+		if len(g.EntryID) == 0 {
+			continue
+		}
+		// decision: an rfc2307 directory's groups are not held to a
+		// domain, since its record names none and it routes no SID;
+		// overturned if one is found holding a well-known SID.
+		if domain != nil && g.SID != nil && !inDomain(domain, g.SID) {
+			reason := "other_domain"
+			if v, _, err := sid.DecodeSID(g.SID); err == nil && strings.HasPrefix(sid.FormatSID(v), "S-1-5-32-") {
+				reason = "builtin"
+			}
+			s.skipped.WithLabelValues(reason).Inc()
+			continue
+		}
+		out = append(out, g)
+	}
+	return out
+}
+
+// mintDir is the principal holding each of entries' dir spellings, those not
+// yet minted minted through the mint path in one batch, and every one
+// already minted refreshed from its entry once the mint commits. An entry
+// listed twice is minted once. An entry whose principal is marked deleted,
+// its deletion still running, is not minted anew: with first, the first entry
+// so marked fails the call ErrUnknownPrincipal, and any other is answered the
+// zero principal.
+func (s *Server) mintDir(ctx context.Context, st *State, entries []directory.Answer, first bool) ([]entity.Principal, error) {
 	type remap struct {
 		p  entity.Principal
 		id uint32
 	}
 	var remapped []remap
-	var bound []dirBound // the entries already minted, refreshed from this answer once the mint commits
-	err = s.mint(ctx, func(ctx context.Context) (entity.MintBatch, int, error) {
-		remapped, p, bound = remapped[:0], entity.Principal{}, bound[:0]
+	var bound []dirBound // the entries already minted, refreshed from their answers once the mint commits
+	ps := make([]entity.Principal, len(entries))
+	err := s.mint(ctx, func(ctx context.Context) (entity.MintBatch, int, error) {
+		remapped, bound = remapped[:0], bound[:0]
+		clear(ps)
 		var b entity.MintBatch
 		claimed := map[entity.ProtocolID]bool{} // the uids and gids this batch takes
 		held := func(id entity.ProtocolID) (bool, error) {
@@ -295,13 +321,16 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 			}
 			return false, fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
 		}
+		planned := map[string]entity.Principal{} // by entry ID, each entry planned once
 		for i, e := range entries {
+			if q, ok := planned[string(e.EntryID)]; ok {
+				ps[i] = q
+				continue
+			}
 			q, err := s.byDir(ctx, e.EntryID)
 			switch {
 			case err == nil:
-				if i == 0 {
-					p = q
-				}
+				ps[i], planned[string(e.EntryID)] = q, q
 				bound = append(bound, dirBound{q, e})
 				continue
 			case !errors.Is(err, vfserr.ErrUnknownPrincipal):
@@ -313,9 +342,10 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 			switch marked, err := s.markedDir(ctx, e.EntryID); {
 			case err != nil:
 				return entity.MintBatch{}, 0, err
-			case marked && i == 0:
+			case marked && i == 0 && first:
 				return entity.MintBatch{}, 0, vfserr.ErrUnknownPrincipal
 			case marked:
+				planned[string(e.EntryID)] = entity.Principal{}
 				continue
 			}
 			ids, alloc, from, err := dirSpellings(e, st.Settings.IDRange, held)
@@ -330,9 +360,7 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 				np = entity.NewUser()
 				b.Users = append(b.Users, entity.MintUser{User: entity.User{Principal: np, Name: e.Name, IDs: ids, Email: e.Mail}, Alloc: alloc})
 			}
-			if i == 0 {
-				p = np
-			}
+			ps[i], planned[string(e.EntryID)] = np, np
 			if from != nil {
 				remapped = append(remapped, remap{np, *from})
 			}
@@ -340,17 +368,17 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 		return b, len(bound), nil
 	})
 	if err != nil {
-		return entity.Principal{}, err
+		return nil, err
 	}
 	if err := s.refresh(ctx, st, bound); err != nil {
-		return entity.Principal{}, err
+		return nil, err
 	}
 	for _, r := range remapped {
 		s.remapped.WithLabelValues(r.p.Kind.String()).Inc()
 		s.logger.WarnContext(ctx, "identity: directory principal minted with an allocated ID in place of the entry's reserved or held one",
 			"kind", r.p.Kind.String(), "principal", r.p.ID.String(), "id", r.id)
 	}
-	return p, nil
+	return ps, nil
 }
 
 // dirSpellings is the spellings a's record is minted with and what the mint
