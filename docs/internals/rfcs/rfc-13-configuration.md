@@ -1063,7 +1063,7 @@ because the rule stands here alone, or marked not yet applied:
     *Applied* ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities), [§4.6](rfc-16-metadata-store.md#4.6%20Store%20format)).
 11. **RFC 16:** the installation-wide settings generation of [§5](#5.%20Binding%20classes) is
     RFC 16's `CFGGEN` record, raised in the transaction of every `Setting` or
-    `Secret` change. *Applied.*
+    `Secret` change and every write of `Installation.Join`. *Applied.*
 
 ## 11. Open questions
 

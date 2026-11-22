@@ -597,6 +597,15 @@ The refusal sits at both places a change can enter:
   the RFC 18 plan included, so the change costs no caller. A credential's first version,
   sealed when the store is created, passes; an identity provider's bind credential, a
   `protocol`-role secret of another kind, is not refused.
+- **A first credential, through the API, is refused too, until the capability check exists**
+  (#5391). The API's credential `PUT` seals each set at a fresh reference, and a credential
+  `DELETE` removes the setting naming the old one, so neither `Seal`'s version nor any record
+  tells a store's first credential from one set again after a delete. The `PUT` therefore runs
+  the capability check on every set, and, the check not being built, refuses every one, failing
+  closed. `POST /stores` takes no credential, so until the check is built no remote store holds a
+  credential set through the API. The route's `decision:` names that ceiling; it is withdrawn
+  with the rest of D9, and the check's claim part then runs only for a store recorded as having
+  held a credential.
 
 RFC 23's plan's credential rotation (its epic 3's runner kind) and its proven endpoint (its epic 4)
 wait with it, in O1.

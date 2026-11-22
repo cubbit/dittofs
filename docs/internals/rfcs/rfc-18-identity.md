@@ -2026,7 +2026,11 @@ the principal before or after the squash depends on what the proof proved:
   naming a parent group of a PAC's group still matches. Each group is listed
   once.
 - **Deny-only.** Each of the evidence's `DenyOnly` SIDs maps to a principal in
-  `DenyOnly`, never in `Groups`, and adds none of its own groups. A lookup error
+  `DenyOnly`, never in `Groups`, and adds none of its own groups to `Groups`.
+  A group the store reaches only through a deny-only principal is itself held
+  deny-only: it matches deny entries and grants nothing, so a PAC never removes
+  a group the store records. A group the PAC lists enabled, or another
+  membership reaches, stays in `Groups`. A lookup error
   while mapping one fails the resolution, as for a group: dropping a deny fails
   open. A deny-only SID no principal holds stays in the evidence, so the
   resolution after its principal is minted — which raises the generation
@@ -2534,7 +2538,7 @@ RFC 16's conformance suite's, not repeated here.
 | rogue domain controller | 1 | In `integration/ad-dc`, a fault wrapper around the client's connection to the real domain controller changes one byte of the server credential in `NetrServerAuthenticate3`'s reply, which the controller computed after accepting the client's: it fails to verify (MS-NRPC 3.1.4.1), the channel is refused, and no NTLM response is sent. A controller that does not hold the machine password, a second domain's among them, refuses the client's credential first and never reaches this check. | pass-through to whoever answers on the address |
 | zeroed secure channel reply | 1 | In `integration/ad-dc`, through the same fault wrapper: zero the server challenge in `NetrServerReqChallenge`'s reply, and the channel is refused before `NetrServerAuthenticate3` is sent; zero the server credential in `NetrServerAuthenticate3`'s reply, and it is refused. A unit row refuses a challenge of one byte repeated, and a reply whose all-zero server credential equals the one the client computed from such a challenge. | a server challenge or credential the set-up accepts though §3.5 refuses it |
 | NETLOGON wire | 1 | In `integration/ad-dc`, through the same fault wrapper. Drop the connection after a pass-through's `NetrLogonSamLogonEx` with a wrong password was written: `ErrUnavailable`, the request not sent again, and the account's `badPwdCount` up by one; drop it before the request was written: sent once on a new connection. The client's `NetrServerAuthenticate3` offers no RC4, and with the AES flag cleared in the flags the reply negotiates, the channel is refused. Every `NetrLogonSamLogonEx` the wrapper passes carries a Netlogon verifier at the privacy level. | a bad password counted twice toward lockout; a channel negotiated down from AES; a logon sent unsealed |
-| NetBIOS name while joined | 1 | On a joined installation, a settings change to `identity.netbios_name`: refused at validation, the name unchanged. | a CHALLENGE naming an account the installation does not hold |
+| NetBIOS name while joined | 1 | On a joined installation, a settings change to `identity.netbios_name`: refused by the settings route (409 joined), the name unchanged. | a CHALLENGE naming an account the installation does not hold |
 | NetBIOS name and domain | 1 | A settings change giving `identity.netbios_name` the directory record's NetBIOS domain, and a directory record whose NetBIOS domain is `identity.netbios_name`, in another case: each refused at validation, naming the other. | one domain routing to both sources |
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
 | `ManageGIDs` (deferred, §3.2) | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. Written with RFC 21's plan, which adds the field. | groups capped at the credential's 16 |

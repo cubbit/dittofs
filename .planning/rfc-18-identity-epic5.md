@@ -1018,9 +1018,10 @@ the version this document was written against.
   (D6), the thinner test realm, and T5.11 lifting `develop`'s ticket fetch. Kept against the
   simplification pass: the fixture's estimate, as asked, and §10 "PAC"'s padding and corrupted
   signature clauses beside the flipped-bit test, being the RFC's own rows;
-- E3's D9 refuses a caller holding a deny-only principal at admission until RFC 19 §2.3's deny
-  match has an owner; T5.7's deny-only SIDs reach that refusal, which T5.7's share-grant test
-  exercises.
+- E3's D9 refused a caller holding a deny-only principal at admission until RFC 19 §2.3's deny
+  match was built. Its design (#5390) has the chokepoint match deny-only principals against
+  deny entries only and withdraws that refusal, so T5.7's deny-only SIDs reach the chokepoint,
+  and T5.7's share-grant test holds that they admit through no grant.
 
 **Field ownership.** This epic adds `State.Keytab` (T5.2), `SignInStep.Transport` (T5.3, D15), the `identity.keytab` key to E2's
 `identity.Settings` (T5.2), `entity.ProtocolID.Linked` (T5.8a), `RequirePAC` to E6's T6.3
