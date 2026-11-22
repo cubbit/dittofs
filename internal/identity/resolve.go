@@ -65,7 +65,8 @@ var noSpan = trace.SpanFromContext(context.Background())
 // disabled or deleted user or machine is refused on the first call after the
 // change. A directory principal's enabled state and groups are read through
 // the directory cache on every call too (see dirStep), and its caller's
-// Fresh lowered to the bound of the answers read.
+// Fresh is set by freshUntil: never later than the bound of the answers
+// read, and no longer zero for NTLM, so admission may cache it.
 //
 // The forwarded Identity is checked first, before any store read: evidence
 // naming a principal below ProofSecret, or none at ProofSecret or above, is
@@ -157,7 +158,7 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	// adapter refuses a request on a context past its Expires. A cache never
 	// stores a caller with a zero Fresh, so a local principal resolves on
 	// every call and its disable reaches its next call. A directory
-	// principal's is lowered below to the bound of the answers it used.
+	// principal's is set below by freshUntil, from the answers it used.
 	// Overturned once each new State reaches a running node, which then
 	// bounds such a caller instead.
 	c = &identity.Caller{Mapped: mapped, Fresh: id.Evidence.Expires, Built: st.serial()}
@@ -172,11 +173,11 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	// A directory principal's enabled state and groups are the directory's,
 	// read on every resolution; a local principal's step sends no query. Its
 	// groups are read only where they are used, on a share for a file user.
-	var dirGroups []entity.Principal
+	var dirClosure []entity.Principal
 	if entryID, ok := dirEntryID(u); proven && ok {
 		now := s.deps.Clock.Now()
 		var oldest time.Time
-		if dirGroups, oldest, err = s.dirStep(ctx, st, mapped, entryID, id.Evidence, fileUser && p.Share != (entity.ShareID{})); err != nil {
+		if dirClosure, oldest, err = s.dirStep(ctx, st, mapped, entryID, id.Evidence, fileUser && p.Share != (entity.ShareID{})); err != nil {
 			return nil, err
 		}
 		c.Fresh = freshUntil(now, oldest, c.Fresh, st.Settings.DirectoryStaleGrace)
@@ -199,7 +200,7 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	// is added; it then needs its own order.
 	var groups, deny []entity.Principal
 	if fileUser {
-		if groups, deny, err = collect(ctx, pr, mapped, id.Evidence, dirGroups); err != nil {
+		if groups, deny, err = collect(ctx, pr, mapped, id.Evidence, dirClosure); err != nil {
 			return nil, err
 		}
 		if err := s.capped(ctx, mapped, groups); err != nil {

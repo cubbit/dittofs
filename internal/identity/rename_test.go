@@ -301,6 +301,9 @@ func TestRefreshNameHeldAtMint(t *testing.T) {
 	if _, err := e.st.ControlPlane().PutGroup(ctx, lg, lg.Generation, entity.Alloc{}); err != nil {
 		t.Fatal(err)
 	}
+	// A record is refreshed only from an answer queried for it, so the
+	// cached one is let expire first.
+	e.clock.Advance(5 * time.Minute)
 	if got := e.mustFind(t, qualified("Finance"), true); got != g {
 		t.Fatalf(`Find(KORP\Finance) = %v, want the directory group %v`, got, g)
 	}

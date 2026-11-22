@@ -190,6 +190,7 @@ type Server struct {
 	unnamed    *prometheus.CounterVec   // by kind
 	remapped   *prometheus.CounterVec   // by kind
 	renamedOff *prometheus.CounterVec   // by kind: records a later answer left without a name
+	refreshErr *prometheus.CounterVec   // by kind: refreshes a resolution could not write
 	skipped    *prometheus.CounterVec   // by reason
 	pacDropped *prometheus.CounterVec   // by reason
 	unmapped   *prometheus.CounterVec   // by scheme
@@ -283,6 +284,7 @@ func New(d Deps) (*Server, error) {
 	s.unnamed = counter(d.Metrics, unnamedSpec)
 	s.remapped = counter(d.Metrics, remappedSpec)
 	s.renamedOff = counter(d.Metrics, renamesUnnamedSpec)
+	s.refreshErr = counter(d.Metrics, refreshFailedSpec)
 	s.skipped = counter(d.Metrics, skippedSpec)
 	s.pacDropped = counter(d.Metrics, pacDroppedSpec)
 	s.unmapped = counter(d.Metrics, unmappedSpec)

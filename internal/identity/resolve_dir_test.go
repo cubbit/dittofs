@@ -2,8 +2,10 @@ package identity_test
 
 import (
 	"context"
+
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"slices"
 	"strconv"
 	"sync"
@@ -16,6 +18,9 @@ import (
 	"github.com/cubbit/dittofs/internal/prof"
 	pid "github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -189,8 +194,13 @@ func TestResolveDirectoryCallerBound(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Resolve(bob) at t0+%v, the directory down = %v, want a caller from the stale answers", at, err)
 		}
-		if limit := t0.Add(5*time.Minute + grace); c.Fresh.After(limit) {
-			t.Errorf("Fresh at t0+%v = %v, past the TTL plus grace %v", at, c.Fresh, limit)
+		// The earlier of 5 minutes on and the stale answers' TTL plus grace.
+		want := e.clock.Now().Add(5 * time.Minute)
+		if limit := t0.Add(5*time.Minute + grace); limit.Before(want) {
+			want = limit
+		}
+		if !c.Fresh.Equal(want) {
+			t.Errorf("Fresh at t0+%v = %v, want %v", at, c.Fresh, want)
 		}
 	}
 	e.clock.Advance(time.Second)
@@ -212,6 +222,9 @@ func TestResolveDirectoryGroupsFailWhole(t *testing.T) {
 	e.d.AddGroup(t, "eng", map[string][][]byte{"member": attr(bobDN)})
 	bob := e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\bob`}, true)
 	eng := e.groupOf(t, "eng")
+	// Past the TTL plus the grace of the closure the mint cached, so none is
+	// served stale.
+	e.clock.Advance(21 * time.Minute)
 	// The tokenGroups read is a base search under exactly this filter.
 	e.fail(t, sim.Rule{Op: "search", Key: "(objectClass=user)", Count: 1, Action: sim.FaultAction{Err: errors.New("injected directory fault")}})
 	before := e.refusals(t, "directory_unavailable")
@@ -296,6 +309,7 @@ func TestResolveDirectoryMintBurst(t *testing.T) {
 	for i := range groups {
 		e.d.AddGroup(t, fmt.Sprintf("g%03d", i), map[string][][]byte{"member": dns})
 	}
+	e.clock.Advance(5 * time.Minute) // past the closures the users' mints cached
 	burst("first wave", groups)
 	// User i is in h(i) and h(i+1): every two neighbours share one group.
 	for i := range users {
@@ -318,7 +332,7 @@ func TestResolveDirectoryStopsAtTwentySeconds(t *testing.T) {
 		for i := range 300 {
 			e.d.AddGroup(t, fmt.Sprintf("g%03d", i), map[string][][]byte{"member": attr(a.DN)})
 		}
-		e.clock.Advance(6 * time.Minute)
+		e.clock.Advance(21 * time.Minute) // past the grace of the closure the mint cached
 		e.fail(t, sim.Rule{Op: "search", Key: "*", Action: sim.FaultAction{Delay: 4 * time.Second}})
 		before := e.refusals(t, "directory_unavailable")
 		start := e.clock.Now()
@@ -368,6 +382,7 @@ func TestResolveDirectoryMintReRuns(t *testing.T) {
 	bobDN, bob := e.minted(t, "bob", nil)
 	e.d.AddGroup(t, "eng", map[string][][]byte{"member": attr(bobDN)})
 	e.d.AddGroup(t, "ops", map[string][][]byte{"member": attr(bobDN)})
+	e.clock.Advance(5 * time.Minute) // past the closure bob's mint cached
 	race := []pid.Spelling{sidOf(t, e.entry(t, directory.ByGroupName, "eng")), sidOf(t, e.entry(t, directory.ByGroupName, "ops"))}
 	competing, creates := false, 0
 	// The competing mint runs inside the hook, to its commit, on the
@@ -396,6 +411,143 @@ func TestResolveDirectoryMintReRuns(t *testing.T) {
 	for i, name := range []string{"eng", "ops"} {
 		if p := e.mustFind(t, race[i], false); !slices.Contains(c.Groups, p) {
 			t.Errorf("bob's groups %v, want %s %v", c.Groups, name, p)
+		}
+	}
+}
+
+// spelled is p's qualified name, "" for none.
+func (e *dirPrincipals) spelled(t *testing.T, p entity.Principal) string {
+	t.Helper()
+	sp, err := e.spell(t, p, pid.SchemeQualified)
+	if err != nil {
+		return ""
+	}
+	return sp.Text
+}
+
+// A resolution never renames a record from an answer the cache held: bob's
+// entry-ID answer, cached at his first resolution, still names him bob after
+// the directory renamed him bobby and a Find by the new name renamed his
+// record; his next resolution leaves the record bobby, writing nothing.
+func TestResolveDirectoryNeverRenamesBack(t *testing.T) {
+	e := newAD(t)
+	bobDN, bob := e.minted(t, "bob", nil)
+	if _, err := e.resolveAs(bob, fileShare()); err != nil {
+		t.Fatalf("Resolve(bob) = %v", err)
+	}
+	e.d.Modify(bobDN, map[string][][]byte{"sAMAccountName": attr("bobby")})
+	if got := e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\bobby`}, true); got != bob {
+		t.Fatalf(`Find(KORP\bobby) = %v, want bob's %v`, got, bob)
+	}
+	if got := e.spelled(t, bob); got != `KORP\bobby` {
+		t.Fatalf(`bob's name after Find(KORP\bobby) = %q, want KORP\bobby`, got)
+	}
+	before := e.pgen(t)
+	if _, err := e.resolveAs(bob, fileShare()); err != nil {
+		t.Fatalf("Resolve(bob) after the rename = %v", err)
+	}
+	if got := e.spelled(t, bob); got != `KORP\bobby` {
+		t.Errorf(`bob's name after his next resolution = %q, want KORP\bobby: renamed back from the cached answer`, got)
+	}
+	if got := e.pgen(t); got != before {
+		t.Errorf("PGEN %d after the resolution, want %d unchanged", got, before)
+	}
+}
+
+// dirFaultStore is dirStore behind the kv fault wrapper.
+func dirFaultStore(t *testing.T) (*kvstore.Store, uuid.UUID, *kvtest.FaultKV) {
+	t.Helper()
+	ctx := context.Background()
+	db, err := badgerkv.Open(badgerkv.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	inst := uuid.New()
+	if err := kvstore.Init(ctx, db, inst); err != nil {
+		t.Fatal(err)
+	}
+	f := kvtest.NewFaultKV(db)
+	st, err := kvstore.Open(ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, inst, f
+}
+
+// A refresh the store cannot write never refuses the resolution: renamed
+// bobby in the directory and every store write failing, bob still resolves
+// with his group, the failure counted, his record left bob.
+func TestResolveDirectoryRefreshFailureCarriesOn(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	st, inst, f := dirFaultStore(t)
+	e := newDirPrincipals(t, st, inst, directory.SchemaAD)
+	bobDN := e.d.AddUser(t, "bob", nil)
+	e.d.AddGroup(t, "eng", map[string][][]byte{"member": attr(bobDN)})
+	bob := e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\bob`}, true)
+	eng := e.groupOf(t, "eng")
+	e.d.Modify(bobDN, map[string][][]byte{"sAMAccountName": attr("bobby")})
+	e.clock.Advance(5 * time.Minute)
+	s, err := sim.NewSchedule(1, e.clock, sim.Rule{Op: kvtest.OpUpdate, Key: "*", Action: sim.FaultAction{Err: errors.New("injected store fault")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.SetFault(s)
+	c, err := e.resolveAs(bob, fileShare())
+	f.SetFault(nil)
+	if err != nil {
+		t.Fatalf("Resolve(bob) with his rename unwritable = %v, want a caller", err)
+	}
+	if !slices.Contains(c.Groups, eng) {
+		t.Errorf("bob's groups %v, want eng %v", c.Groups, eng)
+	}
+	if got := e.counter(t, "identity_directory_refresh_failures_total", "kind", "user"); got != 1 {
+		t.Errorf("identity_directory_refresh_failures_total{kind=user} = %v, want 1", got)
+	}
+	if got := e.spelled(t, bob); got != `KORP\bob` {
+		t.Errorf("bob's name = %q, want KORP\\bob: the failed rename wrote", got)
+	}
+}
+
+// A directory group the ticket marks deny-only is in the caller's deny list,
+// never in its groups.
+func TestResolveDirectoryDenyOnlyGroup(t *testing.T) {
+	e := newAD(t)
+	bobDN := e.d.AddUser(t, "bob", nil)
+	e.d.AddGroup(t, "eng", map[string][][]byte{"member": attr(bobDN)})
+	bob := e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\bob`}, true)
+	engSID := sidOf(t, e.entry(t, directory.ByGroupName, "eng"))
+	eng := e.mustFind(t, engSID, false)
+	id := pid.Identity{Proof: pid.ProofTicket, Evidence: pid.Evidence{Principal: bob, DenyOnly: []pid.SID{engSID.SID}}}
+	c, err := e.s.Resolve(context.Background(), id, fileShare(), pid.ReadOnlyNotNarrowed)
+	if err != nil {
+		t.Fatalf("Resolve(bob, eng deny-only) = %v", err)
+	}
+	if slices.Contains(c.Groups, eng) {
+		t.Errorf("bob's groups %v hold eng %v, which the ticket marks deny-only", c.Groups, eng)
+	}
+	if !slices.Contains(c.DenyOnly, eng) {
+		t.Errorf("bob's deny-only %v, want eng %v", c.DenyOnly, eng)
+	}
+}
+
+// freshUntil is the earliest of 5 minutes after the build, the oldest
+// answer's TTL plus grace, and the evidence's end when it has one.
+func TestFreshUntil(t *testing.T) {
+	now := time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)
+	grace := 15 * time.Minute
+	for _, tc := range []struct {
+		name            string
+		oldest, expires time.Time
+		want            time.Time
+	}{
+		{"fresh answer, no evidence end", now, time.Time{}, now.Add(5 * time.Minute)},
+		{"answer 18 minutes old", now.Add(-18 * time.Minute), time.Time{}, now.Add(2 * time.Minute)},
+		{"evidence ending first", now, now.Add(time.Minute), now.Add(time.Minute)},
+		{"evidence ending later", now, now.Add(time.Hour), now.Add(5 * time.Minute)},
+	} {
+		if got := identity.FreshUntil(now, tc.oldest, tc.expires, grace); !got.Equal(tc.want) {
+			t.Errorf("%s: freshUntil = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
