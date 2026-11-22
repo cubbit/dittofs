@@ -33,7 +33,7 @@ func New(t testing.TB, st *kvstore.Store) *identity.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids, err := settings.Get[identity.Settings](snap, "identity", entity.NodeID{})
+	ids, err := settings.Get[identity.Settings](snap, identity.SectionName, entity.NodeID{})
 	if err != nil {
 		t.Fatal(err)
 	}

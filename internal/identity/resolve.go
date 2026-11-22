@@ -61,14 +61,15 @@ var noSpan = trace.SpanFromContext(context.Background())
 // Resolve resolves id to the Caller it acts as on the share p governs,
 // narrowed to read-only by narrowed. It is admission's resolution step: it
 // keeps no table of callers, and reads the store on every call, so a
-// disabled or deleted user is refused on the first call after the change.
+// disabled or deleted user or machine is refused on the first call after the
+// change.
 //
 // The forwarded Identity is checked first, before any store read: evidence
 // naming a principal below ProofSecret, or none at ProofSecret or above, is
 // ErrInvalid. Then the map step: a proven identity maps to the principal
 // sign-in bound its evidence to, never to its name again, and that
-// principal's user record is re-read, a disabled or deleted user refused
-// ErrAccess; a ProofNone identity maps to the share's Anonymous. A call
+// principal's user or machine record is re-read, one disabled or deleted
+// refused ErrAccess; a ProofNone identity maps to the share's Anonymous. A call
 // naming no share stops there, with Mapped set.
 //
 // On a share, a caller the policy squashes, a ProofNone one, or a proven one
@@ -189,13 +190,14 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, built uint64, id 
 			return nil, err
 		}
 		// decision: a squashed proven caller whose grant is none, its own
-		// none or no grant at all, is refused here, at resolution, and so is
-		// not audited, while an unsquashed one is refused by the store's
-		// check and audited there. The store reads the grants of the
-		// principal a caller acts as, and a squashed caller acts as another
-		// whose grants are not the ones read here. Overturned once
-		// resolution's refusals are audited, or the store's check takes the
-		// caller's Access, none included, in place of reading the grants.
+		// none or no grant at all, is refused here, at resolution, whatever
+		// the call, while an unsquashed one resolves with Access none, which
+		// admission refuses unless the call only releases state. Neither
+		// refusal is audited. So a squashed caller whose grant was removed
+		// cannot release the opens and locks it holds. Overturned once
+		// resolution's or admission's refusals are audited, or once
+		// resolution is told a call only releases state, to admit that
+		// squashed caller as admission admits the unsquashed one.
 		if squashed && c.Access == entity.AccessNone {
 			return nil, fmt.Errorf("%w: the share grants the caller none", vfserr.ErrAccess)
 		}

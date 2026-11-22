@@ -14,7 +14,7 @@ const (
 	// stepIdentity names identity's start step and its part.
 	stepIdentity = "identity"
 	// identitySection is the prefix of identity's settings section.
-	identitySection = "identity"
+	identitySection = identity.SectionName
 )
 
 // newIdentity builds the identity server over the node's store, the secret

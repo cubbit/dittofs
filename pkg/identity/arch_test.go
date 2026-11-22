@@ -97,8 +97,12 @@ func violations(t *testing.T, root string) []string {
 		}
 		// decision: test files are exempt from all three rules: a test may
 		// build a real server or talk to a directory, and the rules govern
-		// what ships. Withdraw it if a non-test package starts importing a
-		// test helper that imports the server or LDAP.
+		// what ships. One non-test package imports a test helper that builds
+		// the server, pkg/vfs/vfstest/memory importing identitymem, and it is
+		// bounded: forbidden admits that importer alone, and only test files
+		// import vfstest/memory. Withdraw it if another non-test package
+		// starts importing a test helper that imports the server or LDAP, or
+		// a non-test package starts importing vfstest/memory.
 		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return nil
 		}

@@ -140,8 +140,8 @@ var (
 	// RootPrincipal is what a claimed uid 0 maps to: privileged where a
 	// share leaves it unsquashed, and the owner of what it creates there.
 	// Resolution does not map uid 0 to it yet, and no ACL check matches it,
-	// so ACL.Valid refuses a deny naming it; admit.Resolve's decision says
-	// what a claimed uid 0 acts as meanwhile.
+	// so ACL.Valid refuses a deny naming it; the ponytail: in
+	// identity.Resolve says what a claimed uid 0 gets meanwhile.
 	//
 	// decision: uid 0 is a well-known principal, root, not a user an operator
 	// creates. Without it a claimed uid 0 maps to no principal and acts as

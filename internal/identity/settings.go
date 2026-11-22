@@ -48,9 +48,12 @@ func defaultSettings() Settings {
 	}
 }
 
+// SectionName is the prefix of the identity section, which Section declares.
+const SectionName = "identity"
+
 // Section declares the identity section for the node's settings table.
 func Section() settings.Section {
-	return settings.Of("identity", settings.At(entity.ScopeInstallation), defaultSettings(),
+	return settings.Of(SectionName, settings.At(entity.ScopeInstallation), defaultSettings(),
 		settings.SecretRef("Keytab", entity.SecretKeytab),
 		settings.CheckTx(checkSettings))
 }

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/identity/identitymem"
+	"github.com/cubbit/dittofs/internal/vfs/authz"
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
@@ -79,9 +81,11 @@ func TestASquashedCallerKeepsNoGroupOfItsEvidence(t *testing.T) {
 // A user signed in over NTLM is refused a share no grant names at
 // admission, so neither its Root nor its listing reaches it, though the user
 // holds a grant on another; once a grant names it, it is admitted: a new
-// share is reachable by nobody until an operator grants it.
+// share is reachable by nobody until an operator grants it. The refusal is
+// admission's, so a share auditing every decision records none of it.
 func TestANewShareAdmitsNobodyUntilGranted(t *testing.T) {
-	s := newShares(t, nil, nil)
+	rec := &recorder{}
+	s := newShares(t, rec, func(vfs.ShareID) authz.Policy { return authz.AuditAll })
 	ctx := t.Context()
 	fresh := s.addShare(t, "fresh", "/fresh")
 	ned := s.user(t, "ned", "", s.share, entity.AccessReadWrite)
@@ -108,6 +112,12 @@ func TestANewShareAdmitsNobodyUntilGranted(t *testing.T) {
 		if !errors.Is(err, vfs.ErrAccess) {
 			t.Errorf("an NTLM user and a share with no grant, %s: %v, want ErrAccess", what, err)
 		}
+	}
+	rec.mu.Lock()
+	audited := rec.got
+	rec.mu.Unlock()
+	if len(audited) != 0 {
+		t.Errorf("a grant of none refused at admission was audited: %+v; want no event, as the decision: at acting says, so update that decision if admission now audits its refusals", audited)
 	}
 	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: fresh, Principal: ned.Principal, Access: entity.AccessRead}, 0)))
 	admitted, rooted, listed = reached()
@@ -151,7 +161,12 @@ func TestNewRefusesADepsWithoutIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(Deps{Meta: fs.Store, Open: tab, Engine: contentOver(clock, fs.Store, fs.Share.ID)}); err == nil {
+	d := Deps{Meta: fs.Store, Open: tab, Engine: contentOver(clock, fs.Store, fs.Share.ID)}
+	if _, err := New(d); err == nil {
 		t.Error("New of a Deps without Identity succeeded")
+	}
+	d.Identity = identitymem.New(t, fs.Store)
+	if _, err := New(d); err != nil {
+		t.Errorf("New of the same Deps with Identity: %v", err)
 	}
 }
