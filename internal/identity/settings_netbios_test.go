@@ -1,26 +1,25 @@
 package identity_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
-	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/settings"
-	"github.com/cubbit/dittofs/pkg/sim"
 )
 
-// faultStore opens an initialised in-memory metadata store behind a FaultKV,
-// closed at the test's end.
-func faultStore(t *testing.T) (*kvstore.Store, *kvtest.FaultKV) {
+// kvStore opens an initialised in-memory metadata store and returns it with
+// the KV beneath it, closed at the test's end.
+func kvStore(t *testing.T) (*kvstore.Store, kv.KV) {
 	t.Helper()
 	ctx := context.Background()
 	db, err := badgerkv.Open(badgerkv.Options{})
@@ -28,15 +27,40 @@ func faultStore(t *testing.T) (*kvstore.Store, *kvtest.FaultKV) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	f := kvtest.NewFaultKV(db)
-	if err := kvstore.Init(ctx, f, uuid.New()); err != nil {
+	if err := kvstore.Init(ctx, db, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
-	st, err := kvstore.Open(ctx, f)
+	st, err := kvstore.Open(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return st, f
+	return st, db
+}
+
+// rawRow is the KV key and value of the installation's row key = value, as
+// the store writes it, taken from a store of its own.
+func rawRow(t *testing.T, key, value string) (k, v []byte) {
+	t.Helper()
+	ctx := context.Background()
+	st, db := kvStore(t)
+	if _, err := st.ControlPlane().PutSetting(ctx, entity.Setting{Scope: installationScope, Key: key, Value: []byte(value)}, 0); err != nil {
+		t.Fatal(err)
+	}
+	err := db.View(ctx, func(r kv.Reader) error {
+		for row, err := range r.Scan(nil, nil) {
+			if err != nil {
+				return err
+			}
+			if bytes.Contains(row.Key, []byte(key)) {
+				k, v = row.Key, row.Value
+			}
+		}
+		return nil
+	})
+	if err != nil || k == nil {
+		t.Fatalf("raw row of %s = %s: found %t, err %v", key, value, k != nil, err)
+	}
+	return k, v
 }
 
 // mustPut is an admin's putSetting that must commit.
@@ -106,45 +130,31 @@ func TestCheckNetBIOSNameAgainstDomain(t *testing.T) {
 	}
 }
 
-// Two writes, each of one side to a value the other side's old value
-// allows, the first held before its commit: the second commits, and the
-// first, its read of the other side overtaken, retries and is refused.
-func TestCheckNetBIOSConcurrentSides(t *testing.T) {
+// A write of the NetBIOS name whose read of the domain is overtaken between
+// its check and its commit, by a raw write of the domain row that raises no
+// settings generation, retries on that read alone and is refused naming the
+// domain: the second attempt's check reads the new domain.
+func TestCheckNetBIOSDomainOvertaken(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	st, f := faultStore(t)
+	ctx := context.Background()
+	st, db := kvStore(t)
 	cp := st.ControlPlane()
 	mustPut(t, cp, dcAddress, dcAddrJSON)
 	mustPut(t, cp, domainKey, `"OLD"`)
+	k, v := rawRow(t, domainKey, `"corp"`)
 
-	clock := sim.NewTestClock(time.Unix(0, 0))
-	sched, err := sim.NewSchedule(1, clock, sim.Rule{
-		Op: kvtest.OpSet, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Second},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.SetFault(sched)
-
-	first := make(chan error, 1)
-	go func() { first <- putSetting(cp, entity.RoleAdmin, nameKey, `"CORP"`) }()
-
-	// Polls the condition itself, the first write parked on the clock.
-	deadline := time.Now().Add(10 * time.Second)
-	for clock.Pending() < 1 {
-		if time.Now().After(deadline) {
-			t.Fatal("the first write never reached its held set")
+	attempts, err := putSettingWith(cp, entity.RoleAdmin, nameKey, `"CORP"`, func(attempt int) error {
+		if attempt > 1 {
+			return nil
 		}
-		time.Sleep(time.Millisecond)
+		return db.Update(ctx, func(tx kv.Txn) error { return tx.Set(k, v) })
+	})
+	refusedNaming(t, "name write, domain overtaken", err, nameKey, domainKey)
+	if attempts != 2 {
+		t.Errorf("attempts of the name write = %d, want 2: its check's read of %s must be tracked", attempts, domainKey)
 	}
-
-	if err := putSetting(cp, entity.RoleAdmin, domainKey, `"corp"`); err != nil {
-		t.Fatalf("second write, the domain corp while the name is DITTOFS: %v, want committed", err)
-	}
-	clock.Advance(time.Second)
-
-	refusedNaming(t, "first write, held", <-first, nameKey, domainKey)
 	var found bool
-	err = cp.Write(context.Background(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) (err error) {
+	err = cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) (err error) {
 		_, found, err = tx.Setting(installationScope, nameKey)
 		return err
 	})

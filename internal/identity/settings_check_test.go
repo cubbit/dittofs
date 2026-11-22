@@ -27,9 +27,22 @@ func identityTable() settings.Table {
 // putSetting writes key = value for role as the API's route does: the
 // table's Check, then the put, in one Write.
 func putSetting(cp kvstore.ControlPlane, role entity.APIRole, key, value string) error {
+	_, err := putSettingWith(cp, role, key, value, func(int) error { return nil })
+	return err
+}
+
+// putSettingWith is putSetting running between on each attempt the Check
+// passes, before the put, and returning how many attempts the Write took.
+func putSettingWith(cp kvstore.ControlPlane, role entity.APIRole, key, value string,
+	between func(attempt int) error,
+) (attempts int, err error) {
 	s := entity.Setting{Scope: installationScope, Key: key, Value: []byte(value)}
-	return cp.Write(context.Background(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+	err = cp.Write(context.Background(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		attempts++
 		if err := identityTable().Check(tx, role, settings.Put(s), nil); err != nil {
+			return err
+		}
+		if err := between(attempts); err != nil {
 			return err
 		}
 		cur, _, err := tx.Setting(s.Scope, s.Key)
@@ -39,6 +52,7 @@ func putSetting(cp kvstore.ControlPlane, role entity.APIRole, key, value string)
 		_, err = tx.PutSetting(s, cur.Generation)
 		return err
 	})
+	return attempts, err
 }
 
 // idRange is an identity.id_range value.
@@ -129,6 +143,31 @@ func TestCheckRefusesDeadIDRange(t *testing.T) {
 		t.Errorf("put of identity.ntlm with the range used up: %v, want committed", err)
 	}
 	refused("used up", idRange(1_000_000, 1_000_007))
+}
+
+// IDHighWater's read of the counters is tracked: a uid drawn between it and
+// the commit of a settings write retries that write.
+func TestIDHighWaterReadTracked(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	st := newStore(t)
+	attempts := 0
+	err := st.ControlPlane().Write(context.Background(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		attempts++
+		if _, _, err := tx.IDHighWater(); err != nil {
+			return err
+		}
+		if attempts == 1 {
+			allocate(t, st, 1, false, entity.DefaultIDRange)
+		}
+		_, err := tx.PutSetting(entity.Setting{Scope: installationScope, Key: "identity.ntlm", Value: []byte("false")}, 0)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("settings write: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts of the settings write = %d, want 2: a uid drawn after IDHighWater must retry it", attempts)
+	}
 }
 
 // The gid counter's mark refuses a range alone, the uid counter never drawn.
