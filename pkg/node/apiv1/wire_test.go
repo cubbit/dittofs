@@ -100,6 +100,7 @@ func TestWireBodies(t *testing.T) {
 		{"user spec", UserSpec{Name: "alice", UID: &uid, Email: "alice@example.com", Disabled: true}, new(UserSpec),
 			[]string{"disabled", "email", "name", "uid"}},
 		{"user spec with no uid or address", UserSpec{Name: "bob"}, new(UserSpec), []string{"disabled", "name"}},
+		{"api-only account's spec", UserSpec{Name: "ci", Role: RoleOperator}, new(UserSpec), []string{"disabled", "name", "role"}},
 		{"group spec", GroupSpec{Name: "staff", GID: &gid}, new(GroupSpec), []string{"gid", "name"}},
 		{"grant spec", GrantSpec{Access: "none"}, new(GrantSpec), []string{"access"}},
 		{"netgroup spec", NetgroupSpec{Members: []string{"10.0.0.0/8"}}, new(NetgroupSpec), []string{"members"}},

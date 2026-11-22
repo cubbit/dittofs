@@ -1433,6 +1433,14 @@
           "name": {
             "type": "string"
           },
+          "role": {
+            "enum": [
+              "viewer",
+              "operator",
+              "admin"
+            ],
+            "type": "string"
+          },
           "uid": {
             "minimum": 0,
             "type": "integer"
@@ -1471,6 +1479,17 @@
               "null"
             ]
           },
+          "role": {
+            "enum": [
+              "viewer",
+              "operator",
+              "admin"
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "uid": {
             "minimum": 0,
             "type": [
@@ -1497,6 +1516,14 @@
             "type": "string"
           },
           "name": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "viewer",
+              "operator",
+              "admin"
+            ],
             "type": "string"
           },
           "uid": {

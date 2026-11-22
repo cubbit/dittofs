@@ -145,7 +145,7 @@ them.
 | R12 | The access token is HS256, signed with `golang-jwt`, its `kid` naming the signing key's version, so a token signed before a rotation still verifies | MUST | RFC 23 plan §4.2 D3 | T5.3 |
 | R13 | On every call the API refuses a disabled or deleted account, a revoked session, and a token issued before the account's not-before time: an access token by its issue time, a refresh or an API token by its session's or its own creation time | MUST | RFC 23 §5.3, CP10 | T5.5, T5.6, T5.8 |
 | R14 | An issue or creation time is the store time of the write that issued the token or created the session, raised to the account's not-before when that is later; times compare in whole seconds; a raise sets not-before to the whole second after its commit | MUST | RFC 23 §5.3; RFC 16 §2.3 (`Session`, `APIToken`) | T5.5, T5.7 |
-| R15 | Changing a role raises no not-before: the account's sessions and API tokens survive it, and its new role applies on the next call | MUST | RFC 23 §5.3 | T5.6 |
+| R15 | Changing a role raises no not-before: the account's sessions and API tokens survive it, and its new role applies on the next call | MUST | RFC 23 §5.3 | T5.6, T5.8 |
 | R16 | The refresh token is opaque and random, kept only as its hash in a session that expires `api.session_lifetime` after sign-in; each use returns a new one and invalidates the old, and presenting an invalidated one revokes the whole session | MUST | RFC 23 §5.3; RFC 16 §2.3 (`Session`) | T5.5 |
 | R17 | An API token is opaque and random, shown once at creation, kept only as its hash, with an expiry no later than `api.token_max_lifetime`, and checked as an access token is, with its record in place of the session | MUST | RFC 23 §5.3; RFC 16 §2.3 (`APIToken`) | T5.8 |
 | R18 | The signing key is one installation `Secret` sealed under the storage wrapping key, owned by the installation record under `signing_key` | MUST | RFC 23 §5.3; RFC 16 §2.3 (`Secret`, `SecretOwner`) | T5.3 |
@@ -191,7 +191,7 @@ them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R40 | Every sign-in whose password is checked, failed or not, and every request refused after authentication, is audited; a request refused before authentication, a `429` included, is counted, not recorded | MUST | RFC 23 §6 | T5.5, T5.6 |
-| R41 | `api_sign_ins_total{method, result}` counts sign-ins, `result` `ok` or the problem code, and `api_auth_failures_total{reason}` counts refused authentication; no subject, address or name is a label | MUST | RFC 23 §11 | T5.5, T5.6 |
+| R41 | `api_sign_ins_total{method, result}` counts sign-ins, `result` `ok` or the problem code, and `api_auth_failures_total{reason}` counts refused authentication, never a call refused after it, which `api_requests_total{op, outcome}` counts by its code; no subject, address or name is a label | MUST | RFC 23 §11 | T5.5, T5.6 |
 
 **Initialisation and recovery**
 
@@ -291,13 +291,18 @@ internal/node/api/auth/
   service.go                               T5.5  Service, its Deps, the shared token and error helpers
   signin.go                                T5.5  sign-in: reserve, the password check, the settling write
   session.go                               T5.5  refresh, Authenticate: the credential, then the account
-  check.go check_test.go                   T5.6  the account check, last_admin, the role-raise rule
   password.go password_test.go             T5.7  POST /auth/password, :set-password
   apitokens.go apitokens_test.go           T5.8  API tokens; the credential routes' table test
   rotate.go rotate_test.go                 T5.9  the rotation's runner step
 internal/install/
   install.go install_test.go export_test.go T5.4 Run, Deps, the crash point (D6)
+internal/node/api/
+  res_users.go principals.go               T5.6  the role field, the role-raise rule, checkLastAdmin, the
+                                                 hiding keyed to the accounts read right (on E4's write
+                                                 adapter, which holds the users row's hidden hook, D1)
+  handler.go                               T5.6  a hidden record's refused read audited
 internal/node/
+  check_test.go                            T5.6  the per-call check's tests over the harness
   auth_test.go auth_bench_test.go          T5.5  auth's tests over the harness, the benchmark: a whole
                                                  node, so they live with the node's own tests
 internal/node/nodetest/                    T5.4  installation through install.Run; T5.6 a caller per role
@@ -470,15 +475,22 @@ the user's read fails `reserve` first: a sign-in answering `503`,
 
 - **Track:** C. **Depends on:** T5.5; E2 (`EnabledAdmins`).
 - **Covers:** R3, R4, R5, R6, R7, R13, R15, R35, R40, R41; E4's R42 (the API-only account).
-- **Deliverables:** in `check.go`, on top of T5.5's `Authenticate`, which already verifies the
+- **Deliverables:** in package `api`, not in `auth`: the user handlers in `res_users.go` and the
+  rules in `principals.go`, since the role rules run inside E4's write adapter, whose `users` row
+  holds the `hidden` hook that `:set-password` and token writes reach too (D1). On top of T5.5's
+  `Authenticate`, which already verifies the
   token, reads `APISignIn.Account`, and refuses a revoked session and a `NotBefore`, and sets the
   caller's `MustChange`, which E4's row flag reads: the per-route rights and roles, the refused
-  call's audit, and `checkLastAdmin(tx, before, after)` reading `EnabledAdmins` in the write's transaction, and the
+  call's audit, a read hidden by a role among them, and `checkLastAdmin(tx, before, after)` reading
+  `EnabledAdmins` in the write's transaction, and the
   role-raise rule, for E4's user handlers; a role on a machine principal refused; `nodetest`'s
   signed-in caller of each role; the role field on E4's user routes, with R42's API-only account:
   one created with a role and no spelling gets none, so its create allocates no uid and no RID,
-  where T4.10's `createUser` always allocates both today; this check replaces T4.10's hiding of a
-  user holding a role from a caller below `admin` (`404` on read and write, left out of listings).
+  where T4.10's `createUser` always allocates both today, and an edit giving it a Kerberos name is
+  refused while it holds no uid; the check KEEPS T4.10's hiding of a user holding a role from a
+  caller below `admin` (`404` on read and write, left out of listings), keyed now to the role
+  table's accounts read right, its reach and its leaks named by the `decision:` marker at
+  `hiddenFrom`.
   Consumed by every E4 route,
   E6 and E7.
 - **Acceptance criteria:**
@@ -487,10 +499,12 @@ the user's read fails `reserve` first: a sign-in answering `503`,
 - **Tests:** over the harness: every route as each role against RFC 23 §5.2, `404` where the caller
   may not read (R4); an operator giving itself `admin`, and editing another user that holds a
   role, refused (R5); the two demotions held after their reads by a fault that blocks on a channel
-  (R6); a role written on a machine principal refused `400` (R7); a disabled account and a revoked
+  (R6); a role written on a machine principal refused by the store as an invalid argument, and
+  the user route answering `404` for a machine's ID (R7); a disabled account and a revoked
   session refused on the next call, the clock not advanced (R3, R13); a demotion leaving the
   session and token alive with viewer rights (R15); a must-change session refused `403`
-  `password_change_required` on other routes (R35); a refused call audited and counted (R40, R41);
+  `password_change_required` on other routes (R35); a refused call audited (R40) and counted in
+  `api_requests_total{outcome}`, not in `api_auth_failures_total` (R41);
   an API-only account, created with a role and no spelling, holding none (E4's R42, moved here
   from T4.10 with the role field).
 
@@ -541,7 +555,8 @@ the user's read fails `reserve` first: a sign-in answering `503`,
   - A token asked for past the maximum lifetime is refused.
 - **Tests:** over the harness: create, call, revoke, call refused (R17); a token past its expiry on
   the injected clock refused (R17); one created before a `NotBefore` raise refused (R13); a password
-  sign-in for the service account refused (R2); the raw keys holding only the hash (R39); one table
+  sign-in for the service account refused (R2); an API token surviving its account's demotion
+  (R15); the raw keys holding only the hash (R39); one table
   test over sign-in, refresh, the password change, `:set-password` and token creation, each refusing
   an `Idempotency-Key` `400` and leaving no idempotency record (R38).
 

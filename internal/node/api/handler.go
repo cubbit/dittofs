@@ -26,8 +26,12 @@ import (
 const maxBody = 1 << 20
 
 // errNotFound is a path no row names, an ID that does not parse, or a resource
-// the caller may not know exists.
-var errNotFound = fmt.Errorf("api: no such resource: %w", vfserr.ErrNotFound)
+// that does not exist; errHidden one the caller's role may not know exists,
+// answered alike.
+var (
+	errNotFound = fmt.Errorf("api: no such resource: %w", vfserr.ErrNotFound)
+	errHidden   = fmt.Errorf("api: no such resource: %w", vfserr.ErrNotFound)
+)
 
 // request is a handler's decoded request: the ID its path names, the
 // segment its {sub} names below it, empty for none, its body,
@@ -252,7 +256,8 @@ func pick(rows []route, r *http.Request) (*route, string) {
 // run authenticates r unless its row is public, refuses a caller the row
 // does not admit, parses the path's ID and runs the row's adapter. With no
 // Authenticate, every caller is refused 401. A refusal of an authenticated
-// caller here, before the adapter, is audited against the row's kind and
+// caller here, before the adapter, or by a read adapter answering a record
+// the caller may not know of, is audited against the row's kind and
 // the path's ID when it parses, or, on an installation row, whose path
 // names none, the installation's ID; the write adapter audits its own.
 //
@@ -273,27 +278,33 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 		ctx = auth.With(ctx, c)
 	}
 	id, err := admit(ctx, rt, rawID, r.PathValue("sub"))
-	if err != nil {
-		if _, authed := auth.CallerFrom(ctx); authed && rt != nil {
-			rec := s.auditOf(ctx, r)
-			rec.Target.Kind = rt.kind
-			// Named as the row's adapter names it, so an applied and a
-			// refused write of one record share a target: an installation
-			// row's path names no ID, so the installation's is read.
-			sid, perr := entity.ParseShareID(rawID)
-			switch hasID := rt.hasID(); {
-			case (hasID && perr == nil) || (!hasID && rt.target != nil):
-				rec.Target.ID = rt.ref(sid, r.PathValue("sub"))
-			case !hasID && rt.kind == entity.ResourceInstallation && s.d.Store != nil:
-				if in, err := s.d.Store.Installation(ctx); err == nil {
-					rec.Target.ID = in.ID[:]
-				}
-			}
-			s.refuse(ctx, rec, err)
+	if err == nil {
+		// A read answering a record its caller may not know of is refused
+		// after authentication too, so it is audited here; a write's adapter
+		// audits its own refusals, and a call's are its own.
+		var a answer
+		if a, err = rt.serve.run(ctx, s, r, rt, id); err == nil || rt.serve.form >= formWrite || !errors.Is(err, errHidden) {
+			return a, err
 		}
-		return answer{}, err
 	}
-	return rt.serve.run(ctx, s, r, rt, id)
+	if _, authed := auth.CallerFrom(ctx); authed && rt != nil {
+		rec := s.auditOf(ctx, r)
+		rec.Target.Kind = rt.kind
+		// Named as the row's adapter names it, so an applied and a
+		// refused write of one record share a target: an installation
+		// row's path names no ID, so the installation's is read.
+		sid, perr := entity.ParseShareID(rawID)
+		switch hasID := rt.hasID(); {
+		case (hasID && perr == nil) || (!hasID && rt.target != nil):
+			rec.Target.ID = rt.ref(sid, r.PathValue("sub"))
+		case !hasID && rt.kind == entity.ResourceInstallation && s.d.Store != nil:
+			if in, err := s.d.Store.Installation(ctx); err == nil {
+				rec.Target.ID = in.ID[:]
+			}
+		}
+		s.refuse(ctx, rec, err)
+	}
+	return answer{}, err
 }
 
 // admit refuses a row the caller ctx carries may not call, and an ID or a
@@ -308,7 +319,7 @@ func admit(ctx context.Context, rt *route, rawID, sub string) (id [16]byte, err 
 		read, hold := auth.Allowed(c, rt.right)
 		switch {
 		case !read:
-			return id, errNotFound
+			return id, errHidden
 		case !hold:
 			return id, &refusal{code: apiv1.CodeForbidden, detail: "the caller's role does not permit this call"}
 		case c.MustChange && !rt.mustChange:

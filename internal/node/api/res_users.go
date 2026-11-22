@@ -71,7 +71,49 @@ const maxEmail = 254
 
 func userSpecOf(u entity.User) apiv1.UserSpec {
 	krb, _ := krbOf(u.IDs)
-	return apiv1.UserSpec{Name: u.Name, UID: numberOf(u.IDs, entity.SchemeUID), Email: u.Email, Disabled: u.Disabled, Kerberos: krb.Value}
+	sp := apiv1.UserSpec{Name: u.Name, UID: numberOf(u.IDs, entity.SchemeUID), Email: u.Email, Disabled: u.Disabled, Kerberos: krb.Value}
+	if u.Role != entity.RoleNone {
+		sp.Role = apiv1.Role(u.Role.String())
+	}
+	return sp
+}
+
+// kerberosNeedsUID refuses, 400, an edit giving a user with no uid, and so
+// no SID either, a Kerberos name it did not hold, as an API-only account
+// holds neither: a ticket would map to an account with no file identity,
+// which a share treats as its anonymous user, past a gate that admits
+// Kerberos alone. A name the user already holds is kept.
+func kerberosNeedsUID(before, after entity.ProtocolIDs) error {
+	old, _ := krbOf(before)
+	krb, ok := krbOf(after)
+	if ok && krb.Value != old.Value && numberOf(after, entity.SchemeUID) == nil {
+		return &fieldError{field: "spec.kerberos", detail: "a user holding no uid is given no Kerberos name; give it a uid first"}
+	}
+	return nil
+}
+
+// specRole is the role r states, none when it states none; refused 400
+// unless it names one of the three roles.
+func specRole(r apiv1.Role) (entity.APIRole, error) {
+	var role entity.APIRole
+	if r == "" {
+		return role, nil
+	}
+	if err := role.UnmarshalText([]byte(r)); err != nil || role == entity.RoleNone {
+		return role, &fieldError{field: "spec.role", detail: "not a role: viewer, operator or admin"}
+	}
+	return role, nil
+}
+
+// roleWrite refuses, 403, a write by a caller below admin that gives a user
+// a role or changes the one it holds, so an operator cannot raise privilege,
+// its own included. A user holding a role is hidden from such a caller, so
+// a write naming one is refused before, 404.
+func roleWrite(ctx context.Context, before, after entity.APIRole) error {
+	if c, _ := auth.CallerFrom(ctx); before != after && !holds(c, auth.Accounts) {
+		return &refusal{code: apiv1.CodeForbidden, detail: "only an admin gives or changes a role"}
+	}
+	return nil
 }
 
 func userOf(u entity.User) apiv1.User {
@@ -91,16 +133,32 @@ var users = writing[userDoc]{kind: entity.ResourceUser, raises: true, read: func
 	return userDoc{userSpecOf(u)}, u.Generation, ok, err
 }, hidden: func(ctx context.Context, tx entity.ControlPlaneTx, id [16]byte) (bool, error) {
 	u, ok, err := tx.User(userAt(id))
-	return !ok || hiddenFrom(ctx, u), err
+	if err == nil && !ok {
+		return false, errNotFound
+	}
+	return hiddenFrom(ctx, u), err
 }}
 
-// createUser is POST /users: a user of the spec's name, its uid the one the
-// spec names or, when it names none, one allocated from identity.id_range,
-// and its SID allocated, in the create's transaction. A name or uid another
-// principal holds is refused by the store, and a uid of 0 here. Its
-// Kerberos name is stored linked as the pre-write step asked the directory.
+// createUser is POST /users: a user of the spec's name and role, its uid
+// the one the spec names or, when it names none, one allocated from
+// identity.id_range, and its SID allocated, in the create's transaction. A
+// user created with a role and neither a uid nor a Kerberos name is an
+// API-only account and is allocated neither: it holds no spelling, and gains
+// no file identity later: an edit giving it a Kerberos name, which a ticket
+// would map to it, is refused while it holds no uid, and the store holds a
+// uid only with a SID. A name or
+// uid another principal holds is refused by the store, and a uid of 0 here.
+// Its Kerberos name is stored linked as the pre-write step asked the
+// directory. A role is given by an admin only.
 func createUser(ctx context.Context, rq request[userDoc], link krbLink, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
 	sp := rq.Body.Spec
+	role, err := specRole(sp.Role)
+	if err != nil {
+		return apiv1.User{}, rq.ID, err
+	}
+	if err := roleWrite(ctx, entity.RoleNone, role); err != nil {
+		return apiv1.User{}, rq.ID, err
+	}
 	ids, err := withNumber(nil, entity.SchemeUID, sp.UID, "spec.uid")
 	if err != nil {
 		return apiv1.User{}, rq.ID, err
@@ -108,7 +166,7 @@ func createUser(ctx context.Context, rq request[userDoc], link krbLink, tx entit
 	if ids, err = withKerberos(tx, rq.start, ids, sp.Kerberos, link); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
-	u := entity.User{Principal: entity.NewUser(), Name: sp.Name, Email: sp.Email, Disabled: sp.Disabled, IDs: ids}
+	u := entity.User{Principal: entity.NewUser(), Name: sp.Name, Email: sp.Email, Disabled: sp.Disabled, IDs: ids, Role: role}
 	if err := newName(sp.Name); err != nil {
 		return apiv1.User{}, u.Principal.ID, err
 	}
@@ -116,6 +174,9 @@ func createUser(ctx context.Context, rq request[userDoc], link krbLink, tx entit
 		return apiv1.User{}, u.Principal.ID, err
 	}
 	a := entity.Alloc{UID: sp.UID == nil, RID: true}
+	if role != entity.RoleNone && sp.UID == nil && sp.Kerberos == "" {
+		a = entity.Alloc{}
+	}
 	if a.UID {
 		if a.Range, err = idRange(tx); err != nil {
 			return apiv1.User{}, u.Principal.ID, err
@@ -128,14 +189,17 @@ func createUser(ctx context.Context, rq request[userDoc], link krbLink, tx entit
 	return userOf(u), u.Principal.ID, err
 }
 
-// putUser is PUT and PATCH /users/{id}: the user's name, uid, address and
-// disabled flag as the spec states them, under the generation If-Match
-// names, every other field and spelling kept. Its uid is removed only with
-// its SID, which never changes, so the store refuses a spec naming none. A
-// user that does not exist, or that the caller may not know of, is 404
-// before its precondition: a user is created only by POST. Disabling the
-// last enabled admin is refused. A Kerberos name it keeps keeps its link; a
-// new one is stored linked as the pre-write step asked the directory.
+// putUser is PUT and PATCH /users/{id}: the user's name, uid, address,
+// disabled flag and role as the spec states them, under the generation
+// If-Match names, every other field and spelling kept. Its uid is removed
+// only with its SID, which never changes, so the store refuses a spec naming
+// none. A user that does not exist, or that the caller may not know of, is
+// 404 before its precondition: a user is created only by POST. A role is
+// given or changed by an admin only, and disabling or demoting the last
+// enabled admin is refused. A role change raises no not-before, so the
+// user's sessions and tokens survive it and its next call is checked against
+// the new role. A Kerberos name it keeps keeps its link; a new one is stored
+// linked as the pre-write step asked the directory.
 func putUser(ctx context.Context, rq request[userDoc], link krbLink, tx entity.ControlPlaneTx) (apiv1.User, [16]byte, error) {
 	sp := rq.Body.Spec
 	u, _, err := tx.User(userAt(rq.ID))
@@ -143,6 +207,13 @@ func putUser(ctx context.Context, rq request[userDoc], link krbLink, tx entity.C
 		return apiv1.User{}, rq.ID, err
 	}
 	was := u
+	role, err := specRole(sp.Role)
+	if err != nil {
+		return apiv1.User{}, rq.ID, err
+	}
+	if err := roleWrite(ctx, u.Role, role); err != nil {
+		return apiv1.User{}, rq.ID, err
+	}
 	if err := named(u.Name, sp.Name); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
@@ -155,11 +226,14 @@ func putUser(ctx context.Context, rq request[userDoc], link krbLink, tx entity.C
 	if u.IDs, err = withKerberos(tx, rq.start, u.IDs, sp.Kerberos, link); err != nil {
 		return apiv1.User{}, rq.ID, err
 	}
-	u.Name, u.Email, u.Disabled = sp.Name, sp.Email, sp.Disabled
+	if err := kerberosNeedsUID(was.IDs, u.IDs); err != nil {
+		return apiv1.User{}, rq.ID, err
+	}
+	u.Name, u.Email, u.Disabled, u.Role = sp.Name, sp.Email, sp.Disabled, role
 	if u.Generation, err = tx.PutUser(u, rq.Expect, entity.Alloc{}); err != nil {
 		return apiv1.User{}, rq.ID, nameField("spec.name", err)
 	}
-	return userOf(u), rq.ID, lastAdmin(tx, was)
+	return userOf(u), rq.ID, checkLastAdmin(tx, was, u)
 }
 
 // deleteUser is DELETE /users/{id}: DeleteUser's mark under the generation
@@ -174,7 +248,7 @@ func deleteUser(_ context.Context, rq request[none], _ struct{}, tx entity.Contr
 	if err := tx.DeleteUser(userAt(rq.ID), rq.Expect); err != nil {
 		return none{}, rq.ID, err
 	}
-	return none{}, rq.ID, lastAdmin(tx, u)
+	return none{}, rq.ID, checkLastAdmin(tx, u, entity.User{})
 }
 
 // usersList is GET /users, every named user in name order; ?name= answers
@@ -211,8 +285,11 @@ var usersList = listing[entity.User, apiv1.User]{
 var user = watching[apiv1.User]{
 	read: func(ctx context.Context, d Deps, rq request[none]) (apiv1.User, error) {
 		u, ok, err := d.Store.User(ctx, userAt(rq.ID))
-		if err == nil && (!ok || hiddenFrom(ctx, u)) {
+		switch {
+		case err == nil && !ok:
 			return apiv1.User{}, errNotFound
+		case err == nil && hiddenFrom(ctx, u):
+			return apiv1.User{}, errHidden
 		}
 		return userOf(shown(ctx, u)), err
 	},

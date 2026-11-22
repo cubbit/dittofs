@@ -23,8 +23,6 @@ import (
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 
 	"github.com/cubbit/dittofs/internal/node/nodetest"
-	"github.com/cubbit/dittofs/pkg/identity"
-	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
@@ -98,17 +96,27 @@ func (r authReply) stripped(t *testing.T) string {
 // and the header pairs in hdr.
 func (s *authNode) send(t *testing.T, method, path, token string, body any, hdr ...string) authReply {
 	t.Helper()
+	r, err := s.try(t.Context(), method, path, token, body, hdr...)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	return r
+}
+
+// try is send answering its error, for a goroutine of the test's, which may
+// not fail the test fatally.
+func (s *authNode) try(ctx context.Context, method, path, token string, body any, hdr ...string) (authReply, error) {
 	var rd io.Reader = http.NoBody
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			t.Fatal(err)
+			return authReply{}, err
 		}
 		rd = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(t.Context(), method, "http://"+s.addr+path, rd)
+	req, err := http.NewRequestWithContext(ctx, method, "http://"+s.addr+path, rd)
 	if err != nil {
-		t.Fatal(err)
+		return authReply{}, err
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -119,14 +127,11 @@ func (s *authNode) send(t *testing.T, method, path, token string, body any, hdr 
 	c := http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 	resp, err := c.Do(req)
 	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
+		return authReply{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return authReply{resp.StatusCode, b, resp.Header}
+	return authReply{resp.StatusCode, b, resp.Header}, err
 }
 
 // signIn signs name in with password.
@@ -176,47 +181,6 @@ func wantStatus(t *testing.T, what string, r authReply, status int, code apiv1.C
 	}
 }
 
-// account stores a user named name holding role and password, sealed as the
-// initialisation step seals the administrator's, and returns its principal.
-func (s *authNode) account(t *testing.T, name, password string, role entity.APIRole) entity.Principal {
-	t.Helper()
-	ctx := t.Context()
-	p := s.secrets(t)
-	u := entity.User{Principal: entity.NewUser(), Name: name, Role: role, Password: entity.SecretRef(uuid.New())}
-	hs, err := identity.NewHashes(u, []byte(password), identity.NTLMSetting{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: u.Principal.ID[:]}, Key: "password"}
-	sec, err := p.Seal(ctx, secrets.Storage, entity.SecretPassword, owner, u.Password, hs.Password, secrets.Meta{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.write(t, func(tx entity.ControlPlaneTx) error {
-		if _, err := tx.PutUser(u, 0, entity.Alloc{}); err != nil {
-			return err
-		}
-		return tx.PutSecret(sec, 0)
-	})
-	return u.Principal
-}
-
-// secrets is a secret provider over the harness's store and storage key,
-// as another node's would be.
-func (s *authNode) secrets(t *testing.T) *secrets.Provider {
-	t.Helper()
-	kp, err := keyprovider.NewProvider(t.Context(), keyprovider.Config{Kind: keyprovider.KindLocal, File: s.h.StorageKeyFile()})
-	if err != nil {
-		t.Fatalf("open the storage key: %v", err)
-	}
-	t.Cleanup(func() { _ = kp.Close() })
-	p, err := secrets.New(s.h.Store().ControlPlane(), map[secrets.Role]keyprovider.KeyProvider{secrets.Storage: kp})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
 // write commits fn through the store's control plane, as another node would.
 func (s *authNode) write(t *testing.T, fn func(entity.ControlPlaneTx) error) {
 	t.Helper()
@@ -235,16 +199,6 @@ func (s *authNode) change(t *testing.T, p entity.Principal, fn func(tx entity.Co
 		}
 		return fn(tx, &u)
 	})
-}
-
-// adminPrincipal is the administrator's principal.
-func (s *authNode) adminPrincipal(t *testing.T) entity.Principal {
-	t.Helper()
-	p, err := s.h.Store().Principals().ByName(t.Context(), entity.PrincipalUser, "admin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p
 }
 
 // audits is every audit record the store holds.
@@ -302,7 +256,7 @@ func TestRefreshRotatesAndReuseRevokes(t *testing.T) {
 	wantStatus(t, "the replaced refresh token", s.refresh(t, first.Refresh), http.StatusUnauthorized, apiv1.CodeUnauthenticated)
 	wantStatus(t, "the current refresh token, after the session was revoked", s.refresh(t, second.Refresh), http.StatusUnauthorized, apiv1.CodeUnauthenticated)
 	wantStatus(t, "a call on the revoked session", s.list(t, second.Access), http.StatusUnauthorized, apiv1.CodeUnauthenticated)
-	for _, err := range s.h.Store().ControlPlane().Sessions(t.Context(), s.adminPrincipal(t)) {
+	for _, err := range s.h.Store().ControlPlane().Sessions(t.Context(), s.principalNamed(t, "admin")) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -336,10 +290,10 @@ func (k signingKeys) Versions(ctx context.Context, kind entity.SecretKind, owner
 // with the installation's own key, is refused at its session.
 func TestTokenNamingAnotherAccountsSession(t *testing.T) {
 	s := newAuthNode(t)
-	alice := s.account(t, "alice", "alice's password", entity.RoleViewer)
+	alice := s.h.Account(t, "alice", "alice's password", entity.RoleViewer)
 	s.tokens(t, "admin", adminPassword)
 	var session [16]byte
-	for sess, err := range s.h.Store().ControlPlane().Sessions(t.Context(), s.adminPrincipal(t)) {
+	for sess, err := range s.h.Store().ControlPlane().Sessions(t.Context(), s.principalNamed(t, "admin")) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -349,7 +303,7 @@ func TestTokenNamingAnotherAccountsSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tk := auth.NewTokens(signingKeys{s.secrets(t)}, in.ID, in.SigningKey, s.h.Clock())
+	tk := auth.NewTokens(signingKeys{s.h.Secrets(t)}, in.ID, in.SigningKey, s.h.Clock())
 	defer tk.Close()
 	forged, err := tk.Issue(t.Context(), alice, session, s.h.Clock().Now().Truncate(time.Second))
 	if err != nil {
@@ -397,7 +351,7 @@ func TestFailureSettlesAtItsSettle(t *testing.T) {
 		fault = kvtest.NewFaultKV(inner)
 		return fault
 	}))
-	u, ok, err := s.h.Store().ControlPlane().User(t.Context(), s.adminPrincipal(t))
+	u, ok, err := s.h.Store().ControlPlane().User(t.Context(), s.principalNamed(t, "admin"))
 	if err != nil || !ok {
 		t.Fatalf("read admin: %v, %v", ok, err)
 	}
@@ -447,8 +401,8 @@ func TestSignOutEndsEachSession(t *testing.T) {
 // more than a wrong password's, and a disabled account's says the same.
 func TestDisabledAndDeletedAccountsRefused(t *testing.T) {
 	s := newAuthNode(t)
-	alice := s.account(t, "alice", "alice's password", entity.RoleViewer)
-	bob := s.account(t, "bob", "bob's password", entity.RoleViewer)
+	alice := s.h.Account(t, "alice", "alice's password", entity.RoleViewer)
+	bob := s.h.Account(t, "bob", "bob's password", entity.RoleViewer)
 	tk := s.tokens(t, "alice", "alice's password")
 	bobs := s.tokens(t, "bob", "bob's password")
 	wrong := s.signIn(t, "alice", "not it")
@@ -544,7 +498,7 @@ func TestAccountChangedInTheWindow(t *testing.T) {
 		t.Run(tc.what, func(t *testing.T) {
 			w := &inWindow{}
 			fault.SetFault(w)
-			p := s.account(t, "signin-"+tc.what, "its password", entity.RoleViewer)
+			p := s.h.Account(t, "signin-"+tc.what, "its password", entity.RoleViewer)
 			audits := len(s.audits(t))
 			w.write = tc.change(p)
 			w.armed.Store(true)
@@ -562,7 +516,7 @@ func TestAccountChangedInTheWindow(t *testing.T) {
 				}
 			}
 
-			q := s.account(t, "refresh-"+tc.what, "its password", entity.RoleViewer)
+			q := s.h.Account(t, "refresh-"+tc.what, "its password", entity.RoleViewer)
 			tk := s.tokens(t, "refresh-"+tc.what, "its password")
 			w.write = tc.change(q)
 			w.armed.Store(true)
@@ -580,7 +534,7 @@ func TestAccountChangedInTheWindow(t *testing.T) {
 // and a success, neither is stored.
 func TestSuccessResetsCounts(t *testing.T) {
 	s := newAuthNode(t)
-	alice := s.account(t, "alice", "alice's password", entity.RoleViewer)
+	alice := s.h.Account(t, "alice", "alice's password", entity.RoleViewer)
 	for range 4 {
 		s.signIn(t, "alice", "wrong")
 	}
@@ -629,7 +583,7 @@ func TestSessionLifetimeEndsCalls(t *testing.T) {
 // by the raise it follows.
 func TestSessionAfterNotBeforeRaise(t *testing.T) {
 	s := newAuthNode(t)
-	s.change(t, s.adminPrincipal(t), func(tx entity.ControlPlaneTx, u *entity.User) error {
+	s.change(t, s.principalNamed(t, "admin"), func(tx entity.ControlPlaneTx, u *entity.User) error {
 		u.NotBefore = tx.Now().Truncate(time.Second).Add(time.Second)
 		_, err := tx.PutUser(*u, u.Generation, entity.Alloc{})
 		return err
@@ -648,7 +602,7 @@ func TestNotBeforeRefusesEarlierTokens(t *testing.T) {
 	tk := s.tokens(t, "admin", adminPassword)
 	s.h.Clock().Advance(2 * time.Second)
 	storeReached(t, s.h, s.h.Clock().Now())
-	s.change(t, s.adminPrincipal(t), func(tx entity.ControlPlaneTx, u *entity.User) error {
+	s.change(t, s.principalNamed(t, "admin"), func(tx entity.ControlPlaneTx, u *entity.User) error {
 		u.NotBefore = tx.Now().Truncate(time.Second).Add(time.Second)
 		_, err := tx.PutUser(*u, u.Generation, entity.Alloc{})
 		return err
@@ -669,7 +623,7 @@ func TestNotBeforeRefusesEarlierTokens(t *testing.T) {
 // the raise lands inside the lag, as its own store time shows.
 func TestSessionCreatedAtStoreTime(t *testing.T) {
 	s := newAuthNode(t)
-	admin := s.adminPrincipal(t)
+	admin := s.principalNamed(t, "admin")
 	for range 20 {
 		s.h.Clock().Advance(time.Hour)
 		tk := s.tokens(t, "admin", adminPassword)
@@ -733,7 +687,7 @@ func TestCheckedSignInCommitsTwice(t *testing.T) {
 // unchecked.
 func TestSpellingsShareOneCount(t *testing.T) {
 	s := newAuthNode(t)
-	alice := s.account(t, "alice", "alice's password", entity.RoleViewer)
+	alice := s.h.Account(t, "alice", "alice's password", entity.RoleViewer)
 	for _, name := range []string{"alice", "alice", "alice", "alice", "ALICE"} {
 		wantStatus(t, "failure as "+name, s.signIn(t, name, "wrong"), http.StatusUnauthorized, apiv1.CodeUnauthenticated)
 	}
@@ -762,7 +716,7 @@ func TestSignInAuditSeriesAndSecrets(t *testing.T) {
 		cfg.Logger = slog.New(slog.NewMultiHandler(cfg.Logger.Handler(), slog.NewTextHandler(&log, nil)))
 		return node.New(cfg)
 	}))
-	admin := s.adminPrincipal(t)
+	admin := s.principalNamed(t, "admin")
 	tk := s.tokens(t, "admin", adminPassword)
 	before := len(s.audits(t))
 	for range 5 {
@@ -881,7 +835,7 @@ func TestUnavailableStoreIsNotARefusal(t *testing.T) {
 		fault = kvtest.NewFaultKV(inner)
 		return fault
 	}))
-	alice := s.account(t, "alice", "alice's password", entity.RoleViewer)
+	alice := s.h.Account(t, "alice", "alice's password", entity.RoleViewer)
 	tk := s.tokens(t, "alice", "alice's password")
 	count, audits := s.sourceCount(t), len(s.audits(t))
 
@@ -949,7 +903,7 @@ func TestSigningKeyReadBeforeCommit(t *testing.T) {
 	key := &unavailable{prefix: keys.Describe(keys.ID([]byte{keys.KindSEC}, in.SigningKey[:]))}
 	fault.SetFault(key)
 	tk := s.tokens(t, "admin", adminPassword)
-	admin := s.adminPrincipal(t)
+	admin := s.principalNamed(t, "admin")
 	sessions := func() int {
 		n := 0
 		for _, err := range s.h.Store().ControlPlane().Sessions(t.Context(), admin) {

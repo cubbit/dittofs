@@ -66,11 +66,12 @@ func answeredIn(t *testing.T, what string, ch <-chan sent) sent {
 	}
 }
 
-// putUser writes a user through the store and returns it with its ETag.
+// putUser writes a user through the store, its uid and SID allocated as the
+// API's create allocates them, and returns it with its ETag.
 func putUser(t *testing.T, h *nodetest.Harness, name string) (entity.Principal, string) {
 	t.Helper()
 	p := entity.NewUser()
-	gen, err := h.Store().ControlPlane().PutUser(t.Context(), entity.User{Principal: p, Name: name}, 0, entity.Alloc{})
+	gen, err := h.Store().ControlPlane().PutUser(t.Context(), entity.User{Principal: p, Name: name}, 0, entity.Alloc{UID: true, RID: true, Range: entity.DefaultIDRange})
 	if err != nil {
 		t.Fatalf("put user %s: %v", name, err)
 	}
