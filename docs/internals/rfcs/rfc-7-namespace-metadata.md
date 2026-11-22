@@ -1805,13 +1805,15 @@ The authorisation cache key carries it ([§7.5](#7.5%20A%20cached%20decision%20i
 > another principal more narrowly than its reference servers, failing closed, is
 > [RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)'s decision.
 
-> decision: the file's owner's `chown` does not ask change the owner
-> ([RFC 19 §3.1](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order)),
+> decision: the file's owner's `chown` asks nothing of the sequence of
+> [RFC 19 §3.1](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order),
 > so its chown to itself is allowed where it holds write attributes, and a
-> give-away is answered `ErrPerm`, as `chown(2)` answers it; the share grant
-> and its read-only narrowing still refuse the call. Neither a give-away nor
-> the share's refusal of the owner's `chown` emits an access event, since it
-> reaches no decision. Withdraw it if an audit needs every owner change.
+> give-away is answered `ErrPerm`, as `chown(2)` answers it. The store's own
+> check of write attributes still refuses the call: the share grant and its
+> read-only narrowing, the flags, and the owner's rights in the ACL. Neither a
+> give-away nor that check's refusal emits an access event, since neither
+> reaches a decision. Withdraw it if an audit needs every owner change, or
+> every refusal of one.
 
 ### 7.5 A cached decision is keyed by everything it read
 
