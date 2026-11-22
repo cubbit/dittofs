@@ -15,6 +15,11 @@ const (
 	etypeAES256 = 18 // aes256-cts-hmac-sha1-96
 )
 
+// KeytabSetting is the installation setting naming the keytab, and the key
+// of the keytab secret's owner: the API seals the keytab under it and the
+// node opens it by it.
+const KeytabSetting = "identity.keytab"
+
 // CheckKeytab refuses, with vfserr.ErrInvalid, a keytab that does not parse
 // as MIT's version 2 format, holds no key, or holds any key that is not
 // aes128-cts-hmac-sha1-96 or aes256-cts-hmac-sha1-96.

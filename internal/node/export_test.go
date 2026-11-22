@@ -9,6 +9,8 @@ import (
 	"net/netip"
 	"testing"
 
+	iidentity "github.com/cubbit/dittofs/internal/identity"
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/sidecar"
 	"github.com/cubbit/dittofs/internal/vfs"
@@ -203,15 +205,39 @@ func (n *Node) OnSweep(turned func([]kvstore.Swept)) { n.sweep.turned = turned }
 // NewAuthenticating is New with authenticate as the API's Authenticate,
 // which New leaves unset.
 func NewAuthenticating(authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
-	return func(cfg Config) (*Node, error) { return newNode(cfg, apiInputs{authenticate: authenticate}) }
+	return func(cfg Config) (*Node, error) { return newNode(cfg, seams{authenticate: authenticate}) }
 }
 
 // NewSigning is NewAuthenticating with signingKey as the API's SigningKey,
 // which New leaves unset, so writes carrying an Idempotency-Key are served.
 func NewSigning(authenticate func(*http.Request) (auth.Caller, error), signingKey func(context.Context) ([]byte, error)) func(Config) (*Node, error) {
 	return func(cfg Config) (*Node, error) {
-		return newNode(cfg, apiInputs{authenticate: authenticate, signingKey: signingKey})
+		return newNode(cfg, seams{authenticate: authenticate, signingKey: signingKey})
 	}
+}
+
+// NewWithDirectory is New with dir as identity's directory dialer, which
+// New sets to the TLS one, and authenticate, when set, as the API's
+// Authenticate.
+func NewWithDirectory(dir directory.Dialer, authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
+	return func(cfg Config) (*Node, error) {
+		return newNode(cfg, seams{directory: dir, authenticate: authenticate})
+	}
+}
+
+// AppliedIdentity is the State identity runs, the zero State before the
+// first Apply.
+func (n *Node) AppliedIdentity() iidentity.State {
+	if st := n.identity.Applied(); st != nil {
+		return *st
+	}
+	return iidentity.State{}
+}
+
+// AppliedKeytab is the keytab identity holds in force and its current
+// version, as node status reports it.
+func (n *Node) AppliedKeytab() (entity.SecretRef, uint64, []identity.KeytabName) {
+	return n.identity.AppliedKeytab()
 }
 
 // SetNFS has apply hand the NFS slot enabled and s, as the adapter's

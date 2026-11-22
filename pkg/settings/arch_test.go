@@ -41,6 +41,8 @@ var frozenExports = []string{
 		"holds HoldsContent) error",
 	"type Snapshot struct{}",
 	"func (*Snapshot).Keep(section string, prev *Snapshot) *Snapshot",
+	"func (*Snapshot).Stored(section string) bool",
+	"func RefusedRows(err error) []entity.SettingKey",
 	"func Read(ctx context.Context, r entity.SettingsReader, " +
 		"table Table, node entity.NodeID) (*Snapshot, map[string]error, error)",
 	"func Get[T any](snap *Snapshot, section string, node entity.NodeID) (T, error)",

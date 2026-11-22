@@ -552,10 +552,13 @@ func componentAllowed(rel string) bool {
 // names: KV, which also declares a store's interface and an implementation
 // of it, only its error values, the names starting Err; and identity's
 // package, whose server and calls the node hands in behind interfaces, only
-// the join credential the API hands identity and the keytab's names.
+// the join credential the API hands identity, the keytab's names and the
+// keytab's setting key, which the API seals the keytab under.
 var onlyNames = map[string]func(name string) bool{
 	"pkg/metadata/kv": func(n string) bool { return strings.HasPrefix(n, "Err") },
-	"pkg/identity":    func(n string) bool { return n == "JoinCredential" || n == "KeytabNames" || n == "KeytabName" },
+	"pkg/identity": func(n string) bool {
+		return n == "JoinCredential" || n == "KeytabNames" || n == "KeytabName" || n == "KeytabSetting"
+	},
 }
 
 // otherUses returns each name f uses from the package it imports as imp

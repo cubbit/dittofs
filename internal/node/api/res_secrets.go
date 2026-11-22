@@ -213,8 +213,9 @@ var storeCredentials = secretSetting{scope: storeScope, key: storeCredential, ki
 // credential.
 var credentials = storeCredentials.writing(entity.ResourceRemoteStore)
 
-// keytabKey is the installation setting naming the keytab.
-const keytabKey = "identity.keytab"
+// keytabKey is the installation setting naming the keytab, and its secret's
+// owner key, identity's, which the node opens the keytab by.
+const keytabKey = identity.KeytabSetting
 
 // keytabs is the installation's keytab, identity's, sealed under the
 // protocol role, refused when identity's check refuses it or it holds a key

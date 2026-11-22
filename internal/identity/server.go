@@ -384,7 +384,7 @@ func (s *Server) bindPassword(ctx context.Context, ref entity.SecretRef) ([]byte
 		return nil, errors.New("no secret provider")
 	}
 	return s.deps.Secrets.Resolve(ctx, secrets.Protocol, entity.SecretDirectoryCredential,
-		entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}, ref)
+		entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: DirectorySectionName}, ref)
 }
 
 // validate refuses settings or a directory record that fail their Validate,
@@ -428,6 +428,10 @@ func equalFoldASCII(a, b string) bool {
 	}
 	return true
 }
+
+// Applied is the State a call starting now reads, which the caller only
+// reads; nil before the first Apply and after Stop.
+func (s *Server) Applied() *State { return s.state.Load() }
 
 // Current is the serial of the State a Resolve starting now reads; 0 before
 // the first Apply and after Stop.
