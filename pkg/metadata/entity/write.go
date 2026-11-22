@@ -162,6 +162,9 @@ type ControlPlaneTx interface {
 	// attempt gets a new one.
 	Now() time.Time
 
+	// DeleteUser refuses, as an invalid argument and marking nothing, a user
+	// whose password or NT hash reference names a held secret PutUser would
+	// refuse.
 	DeleteUser(p Principal, expect uint64) error
 	DeleteGroup(p Principal, expect uint64) error
 	DeleteShare(share ShareID, snapshots SnapshotDisposition, expect uint64) error

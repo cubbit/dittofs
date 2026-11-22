@@ -259,26 +259,98 @@ func bobHeld(t *testing.T, r *restarting, s entity.Secret) {
 	r.must(err)
 }
 
+// foreignSecrets are the secrets alice's password reference may name that
+// are not hers: sealed for another holder, or as another kind than the
+// field's.
+var foreignSecrets = []struct {
+	name   string
+	secret func(alice, bob entity.User, v uint64) entity.Secret
+}{
+	{"another user's password", func(alice, bob entity.User, v uint64) entity.Secret {
+		return userSecret(alice.Password, entity.SecretPassword, bob, entity.UserPasswordKey, v)
+	}},
+	{"alice's field, another kind", func(alice, bob entity.User, v uint64) entity.Secret {
+		return userSecret(alice.Password, entity.SecretNTHash, alice, entity.UserPasswordKey, v)
+	}},
+	{"alice's other field", func(alice, bob entity.User, v uint64) entity.Secret {
+		return userSecret(alice.Password, entity.SecretPassword, alice, entity.UserNTHashKey, v)
+	}},
+}
+
+// DeleteUser refuses a user whose record names a secret sealed for another
+// holder, or as another kind than the field's, before it marks anything:
+// the record stays unmarked, and its grant, its membership and every
+// version of its secrets stay held.
+func TestDeleteUserRefusesAForeignSecret(t *testing.T) {
+	for _, c := range foreignSecrets {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			r := newRestarting(t, 100)
+			cp := r.s.ControlPlane()
+			alice := entity.User{Principal: entity.NewUser(), Name: "alice", Password: entity.SecretRef{15: 1}, NTHash: entity.SecretRef{15: 2}}
+			bob := entity.User{Principal: entity.NewUser(), Name: "bob"}
+			g := fileGroup("staff", "2001")
+			gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
+			r.must(err)
+			_, err = cp.PutUser(ctx, bob, 0, entity.Alloc{})
+			r.must(err)
+			_, err = cp.PutGroup(ctx, g, 0, entity.Alloc{})
+			r.must(err)
+			r.must(cp.AddMember(ctx, entity.Membership{Group: g.Principal, Member: alice.Principal}))
+			share := r.share("a")
+			_, err = cp.SetGrant(ctx, entity.ShareGrant{Share: share, Principal: alice.Principal, Access: entity.AccessRead}, 0)
+			r.must(err)
+			for _, v := range []uint64{1, 2} {
+				r.must(cp.PutSecret(ctx, c.secret(alice, bob, v), v-1))
+				r.must(cp.PutSecret(ctx, userSecret(alice.NTHash, entity.SecretNTHash, alice, entity.UserNTHashKey, v), v-1))
+			}
+
+			if err := cp.DeleteUser(ctx, alice.Principal, gen); !isInvalid(err) {
+				t.Errorf("DeleteUser naming a foreign secret: got %v, want an invalid argument", err)
+			}
+
+			r.must(r.s.kv.View(ctx, func(rd kv.Reader) error {
+				b, ok, err := get(rd, userKey(alice.Principal.ID))
+				if err != nil || !ok {
+					t.Fatalf("alice's record after the refused DeleteUser: held %v, error %v; want held", ok, err)
+				}
+				u, err := decodeUser(alice.Principal.ID, b)
+				if err != nil {
+					return err
+				}
+				if u.Deleted {
+					t.Errorf("alice's record after the refused DeleteUser: Deleted true, want false")
+				}
+				for what, k := range map[string][]byte{
+					"grant":      grantKey(share, alice.Principal.ID),
+					"membership": memberKey(g.Principal.ID, alice.Principal.ID),
+				} {
+					if _, ok, err := get(rd, k); err != nil || !ok {
+						t.Errorf("alice's %s after the refused DeleteUser: held %v, error %v; want held", what, ok, err)
+					}
+				}
+				for _, ref := range []entity.SecretRef{alice.Password, alice.NTHash} {
+					got, err := rawVersions(rd, ref)
+					if err != nil {
+						return err
+					}
+					if !slices.Equal(got, []uint64{1, 2}) {
+						t.Errorf("versions of secret %x after the refused DeleteUser: got %v, want [1 2]", ref[:], got)
+					}
+				}
+				return nil
+			}))
+		})
+	}
+}
+
 // A user's deletion whose record names a secret sealed for another holder,
-// or as another kind than the field's, is refused in the batch that would
-// delete the record, and leaves every version of that secret and the record
-// itself. Each foreign secret is sealed after alice's record names its
-// reference, as no PutUser check can see.
+// or as another kind than the field's, after DeleteUser marked it, is
+// refused in the batch that would delete the record, and leaves every
+// version of that secret and the record itself. No PutUser or DeleteUser
+// check can see a secret sealed that late.
 func TestUserDeletionRefusesAForeignSecret(t *testing.T) {
-	for _, c := range []struct {
-		name   string
-		secret func(alice, bob entity.User, v uint64) entity.Secret
-	}{
-		{"another user's password", func(alice, bob entity.User, v uint64) entity.Secret {
-			return userSecret(alice.Password, entity.SecretPassword, bob, entity.UserPasswordKey, v)
-		}},
-		{"alice's field, another kind", func(alice, bob entity.User, v uint64) entity.Secret {
-			return userSecret(alice.Password, entity.SecretNTHash, alice, entity.UserPasswordKey, v)
-		}},
-		{"alice's other field", func(alice, bob entity.User, v uint64) entity.Secret {
-			return userSecret(alice.Password, entity.SecretPassword, alice, entity.UserNTHashKey, v)
-		}},
-	} {
+	for _, c := range foreignSecrets {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := context.Background()
 			r := newRestarting(t, 100)
@@ -290,11 +362,13 @@ func TestUserDeletionRefusesAForeignSecret(t *testing.T) {
 			_, err = cp.PutUser(ctx, bob, 0, entity.Alloc{})
 			r.must(err)
 			for _, v := range []uint64{1, 2} {
-				r.must(cp.PutSecret(ctx, c.secret(alice, bob, v), v-1))
 				r.must(cp.PutSecret(ctx, userSecret(alice.NTHash, entity.SecretNTHash, alice, entity.UserNTHashKey, v), v-1))
 			}
 
 			r.must(cp.DeleteUser(ctx, alice.Principal, gen))
+			for _, v := range []uint64{1, 2} {
+				r.must(cp.PutSecret(ctx, c.secret(alice, bob, v), v-1))
+			}
 			done, err := r.s.Nodes().ContinueDelete(ctx, alice.Principal)
 			if !isInvalid(err) || done {
 				t.Errorf("deletion naming a foreign secret: done %v, error %v; want not done, invalid argument", done, err)
@@ -303,4 +377,50 @@ func TestUserDeletionRefusesAForeignSecret(t *testing.T) {
 			heldSecrets(t, r, alice, "after the refused batch", true, alice.Password, alice.NTHash)
 		})
 	}
+}
+
+// A user's deletion takes every version of a secret its record names by its
+// keys alone, so an old version whose row no longer decodes is deleted with
+// the rest and does not stall the deletion.
+func TestUserDeletionTakesAnUndecodableOldVersion(t *testing.T) {
+	ctx := context.Background()
+	r := newRestarting(t, 100)
+	cp := r.s.ControlPlane()
+	pw := entity.SecretRef{15: 1}
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", Password: pw}
+	gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
+	r.must(err)
+	for _, v := range []uint64{1, 2} {
+		r.must(cp.PutSecret(ctx, userSecret(pw, entity.SecretPassword, alice, entity.UserPasswordKey, v), v-1))
+	}
+	r.must(r.s.kv.Update(ctx, func(tx kv.Txn) error {
+		return tx.Set(secretKey(pw, 1), []byte("not a secret"))
+	}))
+
+	if err := cp.DeleteUser(ctx, alice.Principal, gen); err != nil {
+		t.Fatalf("DeleteUser over an undecodable version 1: %v", err)
+	}
+	for batch := 1; ; batch++ {
+		done, err := r.s.Nodes().ContinueDelete(ctx, alice.Principal)
+		if err != nil {
+			t.Fatalf("batch %d of a deletion over an undecodable version 1: %v", batch, err)
+		}
+		if done {
+			break
+		}
+		if batch == 10 {
+			t.Fatalf("deletion over an undecodable version 1 not done after %d batches", batch)
+		}
+	}
+
+	r.must(r.s.kv.View(ctx, func(rd kv.Reader) error {
+		got, err := rawVersions(rd, pw)
+		if err != nil {
+			return err
+		}
+		if len(got) != 0 {
+			t.Errorf("versions of alice's password after her deletion: got %v, want none", got)
+		}
+		return nil
+	}))
 }

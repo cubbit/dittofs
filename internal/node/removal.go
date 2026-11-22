@@ -33,15 +33,13 @@ func operationSteps(nodes kvstore.Nodes) map[string]stepRow {
 // another holder or as another kind, fail the operation rather than retry
 // it: only the mark marks, the running operation holds its target, refusing
 // the deletion that could mark it, and a secret keeps the kind and owner of
-// its current version, so none changes on a retry. The last leaves the user
-// marked with its record and every version of its secrets, and nothing
-// resumes it yet: fail closed rather than take another holder's secret or
-// leave the user's own password-equivalent behind. Every other error,
-// kv.ErrTooLarge included, is retried on the runner's backoff, since a
-// failed deletion is never resumed and would leave the principal marked and
-// half-deleted; and a batch's size can change between turns, as its quota
-// drop reads every share. Fail a batch too large for one transaction only if
-// a batch is ever bounded by its key budget alone.
+// its current version, so none changes on a retry; the last stays marked,
+// as kvstore's ownSecrets decision says. Every other error, kv.ErrTooLarge
+// included, is retried on the runner's backoff, since a failed deletion is
+// never resumed and would leave the principal marked and half-deleted; and a
+// batch's size can change between turns, as its quota drop reads every
+// share. Fail a batch too large for one transaction only if a batch is ever
+// bounded by its key budget alone.
 func principalDeletion(nodes kvstore.Nodes, kind entity.PrincipalKind) step.Step {
 	target := entity.ResourceUser
 	if kind == entity.PrincipalGroup {
