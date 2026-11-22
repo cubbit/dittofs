@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	iidentity "github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/internal/prof"
@@ -97,17 +98,28 @@ func TestIdentityServesTheAPIAndTheFilesystem(t *testing.T) {
 // as a row the store accepted from another binary, over the row stored.
 func putSetting(t *testing.T, h *nodetest.Harness, key, value string) {
 	t.Helper()
-	s := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: key, Value: []byte(value)}
+	putSettings(t, h, map[string]string{key: value})
+}
+
+// putSettings writes each installation setting of rows, key to value, in
+// one transaction, so no reconcile pass reads some of them without the rest.
+func putSettings(t *testing.T, h *nodetest.Harness, rows map[string]string) {
+	t.Helper()
+	scope := entity.SettingScope{Kind: entity.ScopeInstallation}
 	err := h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-		old, _, err := tx.Setting(s.Scope, key)
-		if err != nil {
-			return err
+		for key, value := range rows {
+			old, _, err := tx.Setting(scope, key)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.PutSetting(entity.Setting{Scope: scope, Key: key, Value: []byte(value)}, old.Generation); err != nil {
+				return err
+			}
 		}
-		_, err = tx.PutSetting(s, old.Generation)
-		return err
+		return nil
 	})
 	if err != nil {
-		t.Fatalf("put %s = %s: %v", key, value, err)
+		t.Fatalf("put %v: %v", rows, err)
 	}
 }
 
@@ -142,9 +154,17 @@ func TestARefusedIdentityRowFailsTheStart(t *testing.T) {
 // A settings write that lands during the walk identity's first State is read
 // from discards the walk, and identity is applied from the next one, which
 // holds the write. The held scan reads the page in a transaction begun before
-// the write, so the first walk misses it.
+// the write, so the first walk misses it. The first State identity is handed
+// is checked, since a later pass would apply the write anyway.
 func TestAWalkTheSettingsMovedUnderIsReadAgain(t *testing.T) {
 	h, f := faulted(t)
+	first := make(chan string, 1)
+	h.Node().OnIdentityApply(func(st iidentity.State) {
+		select {
+		case first <- st.Settings.NetBIOSName:
+		default:
+		}
+	})
 	held := sim.NewTestClock(time.Unix(0, 0))
 	setFault(t, f, held, sim.Rule{Op: kvtest.OpScan, Key: settingsScan, Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
 	started := make(chan error, 1)
@@ -160,6 +180,9 @@ func TestAWalkTheSettingsMovedUnderIsReadAgain(t *testing.T) {
 			t.Errorf("Stop: %v", err)
 		}
 	})
+	if got := <-first; got != "OTHER" {
+		t.Errorf("NetBIOS name in the first State identity was handed: got %q, want OTHER, written during the first walk", got)
+	}
 	if got, err := h.Node().ComputerName(); err != nil || got != "OTHER" {
 		t.Errorf("NetBIOS name written during the first walk: got %q, %v, want OTHER", got, err)
 	}

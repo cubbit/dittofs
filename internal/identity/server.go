@@ -407,6 +407,23 @@ func (st *State) validate() error {
 	return nil
 }
 
+// NetBIOSMoved is the keys of the NetBIOS name and the directory's NetBIOS
+// domain whose value in st differs from last's, compared as validate's clash
+// check compares them, ASCII letters folded; the domain's alone when neither
+// does. For a State validate refuses for the clash, they are the rows that
+// moved into it.
+func NetBIOSMoved(st, last State) []string {
+	var keys []string
+	if !equalFoldASCII(st.Settings.NetBIOSName, last.Settings.NetBIOSName) {
+		keys = append(keys, KeyNetBIOSName)
+	}
+	if keys == nil || st.Directory == nil || last.Directory == nil ||
+		!equalFoldASCII(st.Directory.NetBIOSDomain, last.Directory.NetBIOSDomain) {
+		keys = append(keys, KeyNetBIOSDomain)
+	}
+	return keys
+}
+
 // equalFoldASCII compares a and b with ASCII letters folded and every other
 // byte as itself, so a Unicode letter that folds to an ASCII one, the Kelvin
 // sign to k among them, never matches.
