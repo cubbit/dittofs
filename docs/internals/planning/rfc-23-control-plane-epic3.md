@@ -672,14 +672,14 @@ Dockerfile                                 T3.9  HEALTHCHECK on https://localhos
   a set the unbind leaves stale); a share whose namespace names no remote store, refused by
   reconcile, its first call refused by admission (catches admission serving the share list in
   place of the running set).
-- **Waits on the journal:** step 4 drops the share's files through `engine.Drop`, which asks the
-  journal to forget the share's tag, and a restart needs a journal that has served to open again.
-  Neither exists yet: the RFC 1 plan's T9.10 builds `Forget`, and its epic 7a reopens a journal.
-  Until both land, the deletion stops at step 3 and holds step 4 with a `decision:` marker, and
-  four of the tests above wait: the deletion run through to `succeeded` with its rows read back
-  gone, a restart during step 4's batches, a restart between the mark and step 3 (written for
-  now against a share marked before the node's first start), and the start path ending an open
-  made before the restart.
+- **The journal's forget:** step 4 runs. It drops the share's tag through `engine.Drop`, which
+  forgets the tag the store names in the journal, records the shard forgotten, then drops the
+  share's files, and the deletion ends `succeeded`. Three of the four tests that waited on it are
+  written: the deletion run through to `succeeded` with the share's record read back gone, a
+  restart within step 4 (between the tag's drop and the shard's forget record), and a restart
+  between the mark and step 3 on a share the node had served. The fourth, the start path ending an
+  open made before the restart, is still to write: it needs an SMB durable open held across the
+  restart.
 
 ### T3.7 Node status and its series
 
