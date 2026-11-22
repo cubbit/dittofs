@@ -105,8 +105,9 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   and `GOOS=darwin`, which the filter's skip of `unit/windows` would otherwise leave unbuilt
   once T4.8's socket options differ by platform; it lands with `core` (T1.7), the first
   package whose files will differ by platform. `test/required-tests.json`, whose every entry names a v1 test, is repinned to the surviving
-  authorization gates in `internal/vfs/admit` (`TestNoAnonymousPrincipalFailsClosed`,
-  `TestAnUnmappedClaimedRootIsPrivileged`), so `required-tests.sh` neither loses its subject nor
+  anonymous gates admission resolves through identity (`TestNoAnonymousPrincipalFailsClosed` and
+  `TestResolveRefusesASquashToADeletedAnonymous` in `internal/identity`,
+  `TestANewShareSquashesToAnonymous` in `internal/vfs`), so `required-tests.sh` neither loses its subject nor
   fails on an empty manifest. A build tag on `lint-go`'s `go vet -tags=` line stays while any file
   behind it compiles; a tag whose files are all deleted leaves the line.
 - **`pkg/adapter`** (RFC 20 §3.4, §3.5): `Adapter` (`Reconfigure` taking `settings.Settings`),

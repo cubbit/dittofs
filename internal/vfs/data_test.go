@@ -283,7 +283,7 @@ func TestAnOpenWritesOnlyForItsOpener(t *testing.T) {
 	a := s.nfs41(t, "a-host", 2000, 0) // no session: NFSv4.0
 	b := s.nfs41(t, "b-host", 2001, 0)
 	onHers := a
-	onHers.Identity = claimed(2001, inLab).Identity
+	onHers.Identity = s.as(t, 2001, inLab).Identity
 	for _, name := range []string{"hers", "both"} {
 		ref := s.opener(t, a, name, entity.ReadData|entity.WriteData)
 		for how, bob := range map[string]vfs.Call{"on alice's client": onHers, "on his own": b} {

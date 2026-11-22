@@ -545,6 +545,43 @@ func TestResolveSquashedCallerKeepsNothingOfItsOwn(t *testing.T) {
 	}
 }
 
+// A caller with no principal to act as fails closed, refused ErrAccess and
+// never the zero principal, which owns every share's root: a squashed proven
+// caller and one proving nothing, on a share whose policy names no
+// Anonymous, though the share grants the one its admin and everyone read;
+// and a claimed identity, which resolution maps to no principal, even under
+// a policy naming a live Anonymous that everyone's read would admit.
+func TestNoAnonymousPrincipalFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	r := newResolving(t)
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1000")}
+	r.user(t, alice, 0)
+	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("60000")}
+	r.user(t, nobody, 0)
+	none := r.grantedShare(t, entity.SquashAll, entity.Principal{}, alice.Principal, entity.AccessAdmin)
+	if _, err := r.cp.SetGrant(ctx, entity.ShareGrant{Share: none.Share, Principal: entity.Everyone, Access: entity.AccessRead}, 0); err != nil {
+		t.Fatalf("SetGrant: %v", err)
+	}
+	named := none
+	named.Squash, named.Anonymous = entity.SquashNone, nobody.Principal
+	claimed := pid.Identity{Proof: pid.ProofClaimed, Claims: pid.Claims{UID: 1000, GID: 1000}}
+	for _, c := range []struct {
+		name  string
+		id    pid.Identity
+		share entity.SharePolicy
+	}{
+		{"squashed, no Anonymous", ticket(alice.Principal, alice.Name), none},
+		{"proving nothing, no Anonymous", pid.Identity{Proof: pid.ProofNone}, none},
+		{"claimed, no Anonymous", claimed, none},
+		{"claimed, a live Anonymous", claimed, named},
+	} {
+		got, err := r.srv.Resolve(ctx, c.id, c.share, pid.ReadOnlyNotNarrowed)
+		if !errors.Is(err, vfserr.ErrAccess) || got != nil {
+			t.Errorf("%s: Resolve = %+v, %v; want nil, ErrAccess", c.name, got, err)
+		}
+	}
+}
+
 // A deleted Anonymous fails closed: a call the policy would squash is
 // refused ErrAccess and counted as anonymous_missing.
 func TestResolveRefusesASquashToADeletedAnonymous(t *testing.T) {

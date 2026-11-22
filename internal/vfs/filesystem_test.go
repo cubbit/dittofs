@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	identitysrv "github.com/cubbit/dittofs/internal/identity"
+	"github.com/cubbit/dittofs/internal/identity/identitymem"
 	"github.com/cubbit/dittofs/internal/vfs/contenttest"
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -79,6 +80,9 @@ func newFixtureOver(t *testing.T, d Deps, fs *kvstoretest.FS) *fixture {
 	content := contentOver(wallClock{}, fs.Store, fs.Share.ID)
 	engine := contenttest.Faults(content)
 	d.Meta, d.Open, d.Engine = fs.Store, tab, engine
+	if d.Identity == nil {
+		d.Identity = identitymem.New(t, fs.Store)
+	}
 	s, err := New(d)
 	if err != nil {
 		t.Fatal(err)

@@ -43,15 +43,13 @@ type Deps struct {
 	Logger  *slog.Logger                   // nil: slog.Default()
 
 	// Identity resolves each admitted call's Identity to its Caller, Auth
-	// verifies SignIn's rounds, and Names answers Spell and Find.
+	// verifies SignIn's rounds, and Names answers Spell and Find. New
+	// refuses a Deps without Identity.
 	//
-	// decision: Names and Auth are read; Identity is not yet: admission
-	// still resolves on its own. It is declared now so the identity server's
-	// consumers are fixed before its bodies are written, and is read once
-	// admission is routed through it. The node hands all three, but New
-	// still accepts a Deps without Auth or Names, and then the calls they
-	// serve are refused ErrUnavailable, failing closed; withdraw that once
-	// New refuses such a Deps.
+	// decision: a nil Auth or Names is accepted, and leaves the calls it
+	// serves refused ErrUnavailable, failing closed, as a filesystem with no
+	// sign-in or naming still serves callers resolved through Identity.
+	// Refuse a Deps without them too once every builder passes them.
 	Identity identity.Resolver
 	Auth     identity.Authenticator
 	Names    identity.Identities
@@ -143,20 +141,21 @@ func (s state) String() string { return states[s] }
 // sink, keeping no queue of its own, so an event is dropped, and counted, in
 // one place only: the sink.
 type Filesystem struct {
-	meta   *kvstore.Store
-	open   *openstate.Table
-	engine Content
-	checks openstate.Checks
-	opens  openstate.Opens
-	log    *slog.Logger
-	authz  authz.Authz
-	events vfs.Events
-	auth   identity.Authenticator // nil: SignIn answers errNoIdentity
-	names  identity.Identities    // nil: Spell and Find answer errNoIdentity
-	quota  *quota.Quotas
-	locks  lockorder.Locks
-	pseudo atomic.Pointer[pseudofs.Tree] // the pseudo-filesystem last built
-	build  chan struct{}                 // holds a token while one call rebuilds pseudo
+	meta     *kvstore.Store
+	open     *openstate.Table
+	engine   Content
+	checks   openstate.Checks
+	opens    openstate.Opens
+	log      *slog.Logger
+	authz    authz.Authz
+	events   vfs.Events
+	identity identity.Resolver
+	auth     identity.Authenticator // nil: SignIn answers errNoIdentity
+	names    identity.Identities    // nil: Spell and Find answer errNoIdentity
+	quota    *quota.Quotas
+	locks    lockorder.Locks
+	pseudo   atomic.Pointer[pseudofs.Tree] // the pseudo-filesystem last built
+	build    chan struct{}                 // holds a token while one call rebuilds pseudo
 
 	clients   openstate.Clients
 	recovery  openstate.Recovery
@@ -196,8 +195,8 @@ var (
 
 // New builds the filesystem. It starts no goroutine and opens nothing.
 func New(d Deps) (*Filesystem, error) {
-	if d.Meta == nil || d.Open == nil || d.Engine == nil {
-		return nil, errors.New("vfs: a filesystem needs a metadata store, open state and an engine")
+	if d.Meta == nil || d.Open == nil || d.Engine == nil || d.Identity == nil {
+		return nil, errors.New("vfs: a filesystem needs a metadata store, open state, an engine and an identity resolver")
 	}
 	fs := &Filesystem{
 		meta:      d.Meta,
@@ -214,6 +213,7 @@ func New(d Deps) (*Filesystem, error) {
 		served:    map[entity.ShareID]bool{},
 		events:    d.Events,
 		running:   d.Running,
+		identity:  d.Identity,
 		auth:      d.Auth,
 		names:     d.Names,
 		marks:     openMark{d.Open.Opens()},

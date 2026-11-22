@@ -335,17 +335,17 @@ func TestADestroyedClientsPathIsDropped(t *testing.T) {
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
-	p, err := s.Propose(ctx, claimed(1000, inLab), info)
+	p, err := s.Propose(ctx, s.as(t, 1000, inLab), info)
 	if err != nil {
 		t.Fatal(err)
 	}
 	info.Proposal = &p
 	cb := &vfstest.Callbacks{}
-	id, _, err := s.Connect(ctx, claimed(1000, inLab), info, cb)
+	id, _, err := s.Connect(ctx, s.as(t, 1000, inLab), info, cb)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Destroy(ctx, claimed(1000, inLab), id); err != nil {
+	if err := s.Destroy(ctx, s.as(t, 1000, inLab), id); err != nil {
 		t.Fatal(err)
 	}
 	s.RecallAny(id, 0)
@@ -470,13 +470,13 @@ func TestADelegationsRecallGoesByItsClientsPath(t *testing.T) {
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
-	p, err := s.Propose(ctx, claimed(1000, inLab), info)
+	p, err := s.Propose(ctx, s.as(t, 1000, inLab), info)
 	if err != nil {
 		t.Fatal(err)
 	}
 	info.Proposal = &p
 	cb := &vfstest.Callbacks{}
-	id, _, err := s.Connect(ctx, claimed(1000, inLab), info, cb)
+	id, _, err := s.Connect(ctx, s.as(t, 1000, inLab), info, cb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,12 +497,12 @@ func TestADelegationsRecallGoesByItsClientsPath(t *testing.T) {
 func laptop(t *testing.T, s *shares, cb vfs.Callbacks) vfs.ClientID {
 	t.Helper()
 	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
-	p, err := s.Propose(t.Context(), claimed(1000, inLab), info)
+	p, err := s.Propose(t.Context(), s.as(t, 1000, inLab), info)
 	if err != nil {
 		t.Fatal(err)
 	}
 	info.Proposal = &p
-	id, _, err := s.Connect(t.Context(), claimed(1000, inLab), info, cb)
+	id, _, err := s.Connect(t.Context(), s.as(t, 1000, inLab), info, cb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,13 +660,13 @@ func TestALeaseExpiryTellsTheClientAndDropsItsPath(t *testing.T) {
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("laptop"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
-	p, err := s.Propose(ctx, claimed(1000, inLab), info)
+	p, err := s.Propose(ctx, s.as(t, 1000, inLab), info)
 	if err != nil {
 		t.Fatal(err)
 	}
 	info.Proposal = &p
 	cb := &vfstest.Callbacks{}
-	id, _, err := s.Connect(ctx, claimed(1000, inLab), info, cb)
+	id, _, err := s.Connect(ctx, s.as(t, 1000, inLab), info, cb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -714,16 +714,16 @@ func TestAnNFSv4ClientIsOwnedByItsMappedPrincipal(t *testing.T) {
 	ctx := t.Context()
 	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("linux-host"), Boot: [8]byte{1}, Protect: true, Recovery: entity.RecoverStatus}
 
-	p, err := s.Propose(ctx, claimed(1000, inLab), info)
+	p, err := s.Propose(ctx, s.as(t, 1000, inLab), info)
 	if err != nil {
 		t.Fatal(err)
 	}
 	info.Proposal = &p
-	id, _, err := s.Connect(ctx, claimed(1000, inLab), info, &vfstest.Callbacks{})
+	id, _, err := s.Connect(ctx, s.as(t, 1000, inLab), info, &vfstest.Callbacks{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec, err := s.Record(ctx, claimed(1000, inLab), id)
+	rec, err := s.Record(ctx, s.as(t, 1000, inLab), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,7 +731,7 @@ func TestAnNFSv4ClientIsOwnedByItsMappedPrincipal(t *testing.T) {
 		t.Errorf("the record's Owner is %v (protect %v), want alice's principal, protected", rec.Owner, rec.Protect)
 	}
 	info.Proposal = nil
-	if _, err := s.Propose(ctx, claimed(1001, outside), info); !clientInUse(err) {
+	if _, err := s.Propose(ctx, s.as(t, 1001, outside), info); !clientInUse(err) {
 		t.Errorf("mallory's Propose of alice's name answered %v, want ClientInUse", err)
 	}
 }
@@ -745,16 +745,16 @@ func TestAClientsAdapterBytesComeBackFromItsRecord(t *testing.T) {
 	ctx := t.Context()
 	for _, minor := range []byte{0, 1} {
 		info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("linux-host"), Boot: [8]byte{1 + minor}, Adapter: []byte{1, minor}, Recovery: entity.RecoverStatus}
-		p, err := s.Propose(ctx, claimed(1000, inLab), info)
+		p, err := s.Propose(ctx, s.as(t, 1000, inLab), info)
 		if err != nil {
 			t.Fatal(err)
 		}
 		info.Proposal = &p
-		id, _, err := s.Connect(ctx, claimed(1000, inLab), info, &vfstest.Callbacks{})
+		id, _, err := s.Connect(ctx, s.as(t, 1000, inLab), info, &vfstest.Callbacks{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		rec, err := s.Record(ctx, claimed(1000, inLab), id)
+		rec, err := s.Record(ctx, s.as(t, 1000, inLab), id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -796,15 +796,15 @@ func TestAClientRecordKeepsItsRecoveryKind(t *testing.T) {
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	old := &vfstest.Callbacks{}
-	id, _, err := s.Connect(ctx, claimed(1000, inLab), nlmHost("build01", 1), old)
+	id, _, err := s.Connect(ctx, s.as(t, 1000, inLab), nlmHost("build01", 1), old)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec, err := s.Record(ctx, claimed(1000, inLab), id); err != nil || rec.Recovery != entity.RecoverNotice {
+	if rec, err := s.Record(ctx, s.as(t, 1000, inLab), id); err != nil || rec.Recovery != entity.RecoverNotice {
 		t.Fatalf("the host's record answered recovery %v, %v; want the notice", rec.Recovery, err)
 	}
 	lockAndUnlock(t, s, id)
-	again, _, err := s.Connect(ctx, claimed(1000, inLab), nlmHost("build01", 1), &vfstest.Callbacks{})
+	again, _, err := s.Connect(ctx, s.as(t, 1000, inLab), nlmHost("build01", 1), &vfstest.Callbacks{})
 	if err != nil || again == id {
 		t.Fatalf("the idle host's next Connect answered %v, %v; want a new client", again, err)
 	}
@@ -833,16 +833,16 @@ func TestAHostRestartConnectsItWithTheNotice(t *testing.T) {
 	s := newShares(t, nil, nil)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
-	if err := s.HostRestarted(ctx, claimed(1000, inLab), []byte("build01"), 2); err != nil {
+	if err := s.HostRestarted(ctx, s.as(t, 1000, inLab), []byte("build01"), 2); err != nil {
 		t.Fatal(err)
 	}
 	info := nlmHost("build01", 2)
 	info.Recovery = entity.RecoverStatus
-	id, _, err := s.Connect(ctx, claimed(1000, inLab), info, &vfstest.Callbacks{})
+	id, _, err := s.Connect(ctx, s.as(t, 1000, inLab), info, &vfstest.Callbacks{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec, err := s.Record(ctx, claimed(1000, inLab), id); err != nil || rec.Recovery != entity.RecoverNotice {
+	if rec, err := s.Record(ctx, s.as(t, 1000, inLab), id); err != nil || rec.Recovery != entity.RecoverNotice {
 		t.Errorf("the restarted host's record answered recovery %v, %v; want the notice", rec.Recovery, err)
 	}
 }
@@ -1013,7 +1013,7 @@ func stateKind(err error, k vfs.StateKind) bool {
 func TestEachClientCallReachesOpenState(t *testing.T) {
 	s := newShares(t, nil, nil)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
-	ctx, c, gone := t.Context(), claimed(1000, inLab), vfs.ClientID(999)
+	ctx, c, gone := t.Context(), s.as(t, 1000, inLab), vfs.ClientID(999)
 	for name, err := range map[string]error{
 		"AddSession": func() error { _, err := s.AddSession(ctx, c, gone, nil, nil); return err }(),
 		"Disconnect": func() error {
@@ -1041,11 +1041,11 @@ func TestAHostRestartEndsItsOldClient(t *testing.T) {
 	s := newShares(t, nil, nil)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	cb := &vfstest.Callbacks{}
-	id, _, err := s.Connect(t.Context(), claimed(1000, inLab), nlmHost("build01", 1), cb)
+	id, _, err := s.Connect(t.Context(), s.as(t, 1000, inLab), nlmHost("build01", 1), cb)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.HostRestarted(t.Context(), claimed(1000, inLab), []byte("build01"), 2); err != nil {
+	if err := s.HostRestarted(t.Context(), s.as(t, 1000, inLab), []byte("build01"), 2); err != nil {
 		t.Fatal(err)
 	}
 	got := calls(t, cb, 1)
@@ -1126,7 +1126,7 @@ func TestADelegationsRecall(t *testing.T) {
 		openstate.FileKey{Share: s.share, ID: g.File}, openstate.OpenRequest{Access: entity.WriteData}); !errors.As(err, &delay) {
 		t.Fatalf("build01's write open answered %v, want a delay behind the recall", err)
 	}
-	asLaptop := claimed(1000, inLab)
+	asLaptop := s.as(t, 1000, inLab)
 	asLaptop.Client = id
 	if err := s.AckRecall(ctx, asLaptop, g.ID, openstate.GrantNone); err != nil {
 		t.Errorf("the client's answer to its delegation's recall: %v", err)
@@ -1140,7 +1140,7 @@ func TestARefusedLockGrantReleasesTheLock(t *testing.T) {
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	ctx := t.Context()
 	host := func(name string, cb vfs.Callbacks) openstate.Caller {
-		id, _, err := s.Connect(ctx, claimed(1000, inLab), nlmHost(name, 1), cb)
+		id, _, err := s.Connect(ctx, s.as(t, 1000, inLab), nlmHost(name, 1), cb)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1329,7 +1329,7 @@ func TestAnNLMLockGrantIsResentPastTheBound(t *testing.T) {
 	s := newShares(t, nil, nil)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	path, cb := failing(func(context.Context, vfstest.Callback) error { return context.DeadlineExceeded })
-	id, _, err := s.Connect(t.Context(), claimed(1000, inLab), nlmHost("build01", 1), path)
+	id, _, err := s.Connect(t.Context(), s.as(t, 1000, inLab), nlmHost("build01", 1), path)
 	if err != nil {
 		t.Fatal(err)
 	}

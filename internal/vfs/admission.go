@@ -3,11 +3,12 @@ package vfs
 import (
 	"context"
 	"errors"
-	"strconv"
+	"fmt"
 
 	"github.com/cubbit/dittofs/internal/vfs/admit"
 	"github.com/cubbit/dittofs/internal/vfs/authz"
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -49,7 +50,7 @@ func (fs *Filesystem) admitHandleFor(ctx context.Context, c vfs.Call, h vfs.Hand
 
 // admit runs admission for the call c reaching share: it counts the call
 // against the share, then runs the share's state, its security minimums and
-// its client rules, then admit.Resolve resolves its Identity on the share.
+// its client rules, then Deps.Identity resolves its Identity on the share.
 // secure false skips the minimums alone, for the one call whose answer is the
 // remedy for failing them. releases true is a call that only releases state,
 // which check exempts from the client rules' refusal. A share never created
@@ -124,7 +125,9 @@ func (fs *Filesystem) servedShard(ctx context.Context, sh entity.Share) error {
 // share is admitted as an enabled one would be, and ErrDelay answered only
 // once every later step admits the call. With releases, a call that only
 // releases state, the client rules' refusal is not answered: the call is
-// admitted narrowed to read-only, as a client rule narrows one.
+// admitted narrowed to read-only, as a client rule narrows one; nor is an
+// unsquashed caller's share grant of none (see acting, which names the
+// squashed caller's gap).
 //
 // decision: a call that only releases state is exempt from the client rules'
 // refusal, as RFC 17 §4.9 step 5 and RFC 19 §3.1 ask, so a client the rules
@@ -161,16 +164,16 @@ func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareI
 	if err != nil {
 		return a, storeErr(err)
 	}
-	ro := entity.NotNarrowed
+	ro := identity.ReadOnlyNotNarrowed
 	switch {
 	case p.ReadOnly:
-		ro = entity.NarrowedByShare
+		ro = identity.ReadOnlyShare
 	case byClient:
-		ro = entity.NarrowedByClient
+		ro = identity.ReadOnlyClient
 	}
 	a.caller = authz.Caller{Share: sh.ID, Proved: c.Identity, Client: c.Client, Protocol: c.Protocol}
 	a.sessioned = c.Session != (vfs.SessionRef{})
-	a.caller.Identity, a.caller.Mapped, err = admit.Resolve(ctx, principals{fs.meta.Principals()}, c.Identity, sh.ID, p, ro)
+	a.caller.Identity, a.caller.Mapped, err = fs.resolve(ctx, c.Identity, sh, p, ro, releases)
 	if err == nil && delay {
 		err = &vfs.Delay{Cause: vfs.DelayFrozen}
 	}
@@ -288,71 +291,72 @@ func (n netgroups) Members(ctx context.Context, name string) ([]string, bool, er
 	return g.Members, found, err
 }
 
-// principals is the resolve step's reads of the store, its errors mapped.
-type principals struct{ pr kvstore.Principals }
-
-func (p principals) ByID(ctx context.Context, scheme entity.ProtocolScheme, n uint32) (entity.Principal, bool, error) {
-	got, err := p.pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: scheme, Value: strconv.FormatUint(uint64(n), 10)})
-	if merrs.IsNotFoundError(err) {
-		return entity.Principal{}, false, nil
-	}
-	return got, err == nil, storeErr(err)
-}
-
-func (p principals) User(ctx context.Context, of entity.Principal) (entity.User, bool, error) {
-	u, err := p.pr.User(ctx, of)
-	if merrs.IsNotFoundError(err) {
-		return u, false, nil
-	}
-	return u, err == nil, storeErr(err)
-}
-
-// Grant is of's access to share as a signed-in principal: its own grant,
-// none included, else the widest of its groups', else authenticated users',
-// else everyone's.
-//
-// ponytail: this repeats the identity resolver's grant order over the
-// store's own-grant read, but not its answers: its groups are the store
-// closure alone, so a group reached only through a PAC SID grants in the
-// resolver and not here. It goes when admission resolves through the
-// identity server.
-func (p principals) Grant(ctx context.Context, share entity.ShareID, of entity.Principal) (entity.ShareAccess, error) {
-	if a, ok, err := p.pr.Grant(ctx, share, of); err != nil || ok {
-		return a, storeErr(err)
-	}
-	groups, err := p.Groups(ctx, of)
+// resolve is admission's step 4: what id acts as on sh under its policy p,
+// narrowed to read-only by ro, resolved through Deps.Identity, and the
+// principal it mapped to before any squash. The policy is the one sh's read
+// returned, keyed on that read's grant version. With releases, a call that
+// only releases state, an unsquashed caller's grant of none is not refused
+// (see acting).
+func (fs *Filesystem) resolve(ctx context.Context, id vfs.Identity, sh entity.Share, p entity.ExportPolicy, ro identity.ReadOnlyCause, releases bool) (entity.Identity, entity.Principal, error) {
+	c, err := fs.identity.Resolve(ctx, id, p.SharePolicy(sh.GrantVersion), ro)
 	if err != nil {
-		return 0, err
+		return entity.Identity{}, entity.Principal{}, err
 	}
-	var access entity.ShareAccess
-	found := false
-	for _, g := range groups {
-		a, ok, err := p.pr.Grant(ctx, share, g)
-		if err != nil {
-			return 0, storeErr(err)
-		}
-		if ok {
-			found, access = true, max(access, a)
-		}
-	}
-	if found {
-		return access, nil
-	}
-	for _, d := range []entity.Principal{entity.AuthenticatedUsers, entity.Everyone} {
-		if a, ok, err := p.pr.Grant(ctx, share, d); err != nil || ok {
-			return a, storeErr(err)
-		}
-	}
-	return entity.AccessNone, nil
+	a, err := acting(c, releases)
+	return a, c.Mapped, err
 }
 
-func (p principals) Groups(ctx context.Context, of entity.Principal) ([]entity.Principal, error) {
-	var out []entity.Principal
-	for g, err := range p.pr.Groups(ctx, of) {
-		if err != nil {
-			return nil, storeErr(err)
-		}
-		out = append(out, g)
+// acting is c as the chokepoint takes it: its principal, groups and flags,
+// held to c's Access, with a read narrowed by the share or a client rule
+// kept as the cause the chokepoint answers ErrReadOnly for. A read grant is
+// no such cause: Access alone holds the caller to it, refused ErrAccess.
+// Access is admission's snapshot of the grant, read with the share: the
+// chokepoint takes it in place of re-reading the grants in the operation's
+// transaction, so a grant revoked between admission's share read and the
+// operation still lets that one call through.
+//
+// decision: a caller holding a deny-only principal is refused here, at
+// admission, because entity.Identity has no deny-only field: dropping them
+// would let a file's deny entry naming one miss, which fails open. Withdraw
+// the refusal once the chokepoint matches deny-only principals against deny
+// entries (RFC 19 §2.3).
+//
+// decision: a caller whose Access is none is refused here, and so is not
+// audited, because the chokepoint cannot be handed a none: it reads a zero
+// Access as "read the grants", and a call that never reaches it, a lock, a
+// watch or a share listing, would act on a share no grant admits it to.
+// Overturned once the chokepoint takes a grant of none in Access, or
+// admission's refusals are audited.
+//
+// decision: with releases, a call that only releases state, an unsquashed
+// caller whose Access is none is admitted with Access zero, as admission
+// exempts such a call from the client rules' refusal, so a caller whose
+// grant was removed still gives up the locks and opens it holds. The grants
+// the chokepoint would read are then the ones resolution read, which name
+// none, and open state still refuses a caller that does not own the state.
+// A squashed caller gets no such exemption: resolution refuses a squashed
+// proven caller granted none before acting sees it, so on a share squashing
+// its file users a user whose grant was removed cannot close its opens or
+// release its locks, which stay held until its lease or session ends.
+// Extend the exemption to it, by telling resolution the call only releases
+// state, if such held state is seen to block other clients.
+func acting(c *identity.Caller, releases bool) (entity.Identity, error) {
+	if len(c.DenyOnly) > 0 {
+		return entity.Identity{}, fmt.Errorf("%w: the caller holds a deny-only principal", vfs.ErrAccess)
 	}
-	return out, nil
+	if c.Access == entity.AccessNone && !releases {
+		return entity.Identity{}, fmt.Errorf("%w: the share grants the caller none", vfs.ErrAccess)
+	}
+	ro := entity.NotNarrowed
+	switch c.ReadOnly {
+	case identity.ReadOnlyShare:
+		ro = entity.NarrowedByShare
+	case identity.ReadOnlyClient:
+		ro = entity.NarrowedByClient
+	}
+	return entity.Identity{
+		Principal: c.Principal, Group: c.Group, Groups: c.Groups,
+		Privileged: c.Privileged, Authenticated: c.Authenticated, Admin: c.Admin,
+		ReadOnly: ro, Access: c.Access,
+	}, nil
 }

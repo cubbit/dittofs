@@ -14,7 +14,7 @@ import (
 	"time"
 
 	identitysrv "github.com/cubbit/dittofs/internal/identity"
-	"github.com/cubbit/dittofs/internal/vfs/admit"
+	"github.com/cubbit/dittofs/internal/identity/identitymem"
 	"github.com/cubbit/dittofs/internal/vfs/authz"
 	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
 	"github.com/cubbit/dittofs/pkg/identity"
@@ -139,8 +139,14 @@ func proven(p entity.Principal, at netip.Addr) vfs.Call {
 	return vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofTicket, Protection: vfs.ProtectionPrivacy, Evidence: vfs.Evidence{Principal: p}, Client: at}}
 }
 
-func claimed(uid uint32, at netip.Addr) vfs.Call {
-	return vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofClaimed, Claims: vfs.Claims{UID: uid, GID: uid}, Client: at}}
+// as is a call proven by a ticket as the user holding uid, from at.
+// Resolution refuses a claimed identity, so a test of a user's calls signs it
+// in instead.
+func (s *shares) as(t *testing.T, uid uint32, at netip.Addr) vfs.Call {
+	t.Helper()
+	p, err := s.fs.Store.Principals().ByProtocolID(t.Context(), entity.ProtocolID{Scheme: entity.SchemeUID, Value: strconv.FormatUint(uint64(uid), 10)})
+	s.must(t, err)
+	return proven(p, at)
 }
 
 // Root finds a share by path or by name, folded, answers its root and the
@@ -233,16 +239,16 @@ func TestAdmissionOnEveryEntryPath(t *testing.T) {
 		id     vfs.Call
 		want   error
 	}{
-		{"admitted", entity.ExportPolicy{}, entity.ShareEnabled, claimed(1000, inLab), nil},
+		{"admitted", entity.ExportPolicy{}, entity.ShareEnabled, proven(bob.Principal, inLab), nil},
 		{"no grant", entity.ExportPolicy{}, entity.ShareEnabled, proven(stranger.Principal, inLab), vfs.ErrAccess},
-		{"quiesced", entity.ExportPolicy{}, entity.ShareQuiesced, claimed(1000, inLab), vfs.ErrDelay},
-		{"proof", entity.ExportPolicy{MinProof: entity.ProofSecret}, entity.ShareEnabled, claimed(1000, inLab), vfs.ErrWrongSecurity},
+		{"quiesced", entity.ExportPolicy{}, entity.ShareQuiesced, proven(bob.Principal, inLab), vfs.ErrDelay},
+		{"proof", entity.ExportPolicy{MinProof: entity.ProofSecret}, entity.ShareEnabled, vfs.Call{Identity: vfs.Identity{Client: inLab}}, vfs.ErrWrongSecurity},
 		{"kerberos only, NTLM", entity.ExportPolicy{MinProof: entity.ProofTicket}, entity.ShareEnabled,
 			vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofSecret, Protection: vfs.ProtectionPrivacy, Evidence: vfs.Evidence{Principal: bob.Principal}, Client: inLab}}, vfs.ErrWrongSecurity},
 		{"krb5p", entity.ExportPolicy{MinProof: entity.ProofTicket, MinProtection: entity.ProtectionPrivacy}, entity.ShareEnabled,
 			vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofTicket, Protection: vfs.ProtectionIntegrity, Evidence: vfs.Evidence{Principal: bob.Principal}, Client: inLab}}, vfs.ErrWrongSecurity},
 		{"client rules", entity.ExportPolicy{Clients: []entity.ClientRule{{Match: entity.ClientMatch{Netgroup: "lab"}, Access: entity.AccessReadWrite}}},
-			entity.ShareEnabled, claimed(1000, outside), vfs.ErrAccess},
+			entity.ShareEnabled, proven(bob.Principal, outside), vfs.ErrAccess},
 	} {
 		c.policy.Share = s.share
 		s.must(t, errOf(s.cp.PutExportPolicy(ctx, c.policy, policyVersion(t, s.cp, c.policy.Share))))
@@ -256,25 +262,25 @@ func TestAdmissionOnEveryEntryPath(t *testing.T) {
 	}
 }
 
-// A caller squashed on one share and not on another acts as root on the
+// A caller squashed on one share and not on another is privileged on the
 // second only, each share resolving it afresh.
 func TestSquashIsEachSharesOwn(t *testing.T) {
 	s := newShares(t, nil, nil)
 	other := s.addShare(t, "other", "/other")
-	s.must(t, errOf(s.cp.SetGrant(t.Context(), entity.ShareGrant{Share: other, Principal: entity.Everyone, Access: entity.AccessReadWrite}, 0)))
+	s.must(t, errOf(s.cp.SetGrant(t.Context(), entity.ShareGrant{Share: other, Principal: s.fs.Admin.Principal, Access: entity.AccessAdmin}, 0)))
 	nobody := s.user(t, "nobody", "", s.share, entity.AccessReadWrite)
-	s.must(t, errOf(s.cp.PutExportPolicy(t.Context(), entity.ExportPolicy{Share: s.share, Squash: entity.SquashRoot, Anonymous: nobody.Principal}, 0)))
+	s.must(t, errOf(s.cp.PutExportPolicy(t.Context(), entity.ExportPolicy{Share: s.share, Squash: entity.SquashAll, Anonymous: nobody.Principal}, 0)))
 	s.must(t, errOf(s.cp.PutExportPolicy(t.Context(), entity.ExportPolicy{Share: other, Squash: entity.SquashNone}, 0)))
-	asRoot := claimed(0, inLab)
-	_, data, err := s.Root(t.Context(), asRoot, vfs.ShareRef{Path: "/data"})
+	admin := proven(s.fs.Admin.Principal, inLab)
+	_, data, err := s.Root(t.Context(), admin, vfs.ShareRef{Path: "/data"})
 	s.must(t, err)
-	_, oth, err := s.Root(t.Context(), asRoot, vfs.ShareRef{Path: "/other"})
+	_, oth, err := s.Root(t.Context(), admin, vfs.ShareRef{Path: "/other"})
 	s.must(t, err)
 	if data.MaximalAccess&entity.WriteData != 0 {
-		t.Errorf("root squashed on /data may write its 0755 root: %#x", data.MaximalAccess)
+		t.Errorf("the admin squashed on /data may write its 0755 root: %#x", data.MaximalAccess)
 	}
 	if oth.MaximalAccess&entity.WriteData == 0 {
-		t.Errorf("root unsquashed on /other may not write its root: %#x", oth.MaximalAccess)
+		t.Errorf("the admin unsquashed on /other may not write its root: %#x", oth.MaximalAccess)
 	}
 }
 
@@ -441,7 +447,9 @@ func TestSecInfoAnswersTheRemedy(t *testing.T) {
 		Flavors: []entity.AuthFlavor{entity.FlavorKerberos}, MinProof: entity.ProofTicket, MinProtection: entity.ProtectionIntegrity}, 0)))
 	other := s.addShare(t, "other", "/other")
 	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: other, Flavors: []entity.AuthFlavor{entity.FlavorSys}}, 0)))
-	weak := claimed(1000, inLab)
+	bob := s.user(t, "bob", "", s.share, entity.AccessReadWrite)
+	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: other, Principal: bob.Principal, Access: entity.AccessReadWrite}, 0)))
+	weak := vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofSecret, Evidence: vfs.Evidence{Principal: bob.Principal}, Client: inLab}}
 	got, err := s.SecInfo(ctx, weak, s.fs.Root, []byte("x"))
 	if want := []vfs.AuthFlavor{vfs.FlavorKrb5p, vfs.FlavorKrb5i}; err != nil || !slices.Equal(got, want) {
 		t.Errorf("SecInfo in the share: %v, %v, want %v", got, err, want)
@@ -467,6 +475,7 @@ func TestListSharesListsWhatTheCallerReaches(t *testing.T) {
 	ctx := t.Context()
 	s.addShare(t, "admin$", "/admin")
 	quiet := s.addShare(t, "quiet", "/quiet")
+	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: quiet, Principal: s.fs.Admin.Principal, Access: entity.AccessAdmin}, 0)))
 	s.must(t, s.cp.SetShareState(ctx, quiet, entity.ShareEnabled, entity.ShareQuiesced))
 	hidden := s.addShare(t, "hidden", "/hidden")
 	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: hidden, SMB: entity.SMBHidden}, 0)))
@@ -644,30 +653,33 @@ func TestAnAuditedDecisionReachesTheSink(t *testing.T) {
 	rec := &recorder{}
 	audit := func(vfs.ShareID) authz.Policy { return authz.AuditDenials }
 	s := newShares(t, rec, audit)
-	stranger := s.user(t, "stranger", "", s.share, entity.AccessNone)
-	call := proven(stranger.Principal, inLab)
-	call.Client, call.Protocol = 7, entity.ProtocolSMB
-	if _, err := s.StatFS(t.Context(), call, s.fs.Root); !errors.Is(err, vfs.ErrAccess) {
-		t.Fatalf("a caller with no grant: %v", err)
+	chmod := func(s *shares) error {
+		alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
+		bob := s.user(t, "bob", "", s.share, entity.AccessReadWrite)
+		h := (&attrs{shares: s}).file(t, "f", alice.Principal, 0o644)
+		call := proven(bob.Principal, inLab)
+		call.Client, call.Protocol = 7, entity.ProtocolSMB
+		_, err := s.SetAttr(t.Context(), call, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o777)})
+		return err
+	}
+	if err := chmod(s); !errors.Is(err, vfs.ErrAccess) {
+		t.Fatalf("a chmod of another's file: %v", err)
 	}
 	rec.mu.Lock()
 	got := rec.got
 	rec.mu.Unlock()
-	if len(got) != 1 || got[0].Op != vfs.OpStatFS || got[0].Allowed || got[0].Addr != inLab ||
+	if len(got) != 1 || got[0].Op != vfs.OpSetAttr || got[0].Allowed || got[0].Addr != inLab ||
 		got[0].Client != 7 || got[0].Protocol != entity.ProtocolSMB {
-		t.Errorf("the sink received %+v by the time StatFS answered", got)
+		t.Errorf("the sink received %+v by the time SetAttr answered", got)
 	}
 
-	n := newShares(t, nil, audit)
-	stranger = n.user(t, "stranger", "", n.share, entity.AccessNone)
-	if _, err := n.StatFS(t.Context(), proven(stranger.Principal, inLab), n.fs.Root); !errors.Is(err, vfs.ErrAccess) {
+	if err := chmod(newShares(t, nil, audit)); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("an audited refusal with no sink supplied: %v", err)
 	}
 }
 
-// A claimed uid gains nothing from its user's admin grant, and a squashed
-// proven caller nothing from its own: only an unsquashed proven caller is
-// admin, and privileged with it.
+// A squashed proven caller gains nothing from its own admin grant: only an
+// unsquashed proven caller is admin, and privileged with it.
 func TestOnlyAnUnsquashedProvenCallerIsAdmin(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
@@ -678,9 +690,6 @@ func TestOnlyAnUnsquashedProvenCallerIsAdmin(t *testing.T) {
 		s.must(t, err)
 		release()
 		return a.caller
-	}
-	if c := caller(claimed(1500, inLab)); c.Admin || c.Privileged {
-		t.Errorf("a claimed uid with an admin grant: admin %v, privileged %v", c.Admin, c.Privileged)
 	}
 	if c := caller(proven(ops.Principal, inLab)); !c.Admin || !c.Privileged || !c.Authenticated {
 		t.Errorf("a proven admin: %+v", c.Identity)
@@ -718,7 +727,7 @@ func TestAProvenCallersGrantIsReadBeforeTheSquash(t *testing.T) {
 		t.Errorf("a proven caller granted read-write, anonymous granted none: %v", err)
 	}
 	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: entity.Everyone, Access: entity.AccessRead}, 0)))
-	calls := map[string]vfs.Call{"proven": proven(eve.Principal, inLab), "claimed": claimed(4242, inLab)}
+	calls := map[string]vfs.Call{"proven": proven(eve.Principal, inLab), "anonymous": {Identity: vfs.Identity{Client: inLab}}}
 	for name, c := range calls {
 		if _, err := s.StatFS(ctx, c, s.fs.Root); !errors.Is(err, vfs.ErrAccess) {
 			t.Errorf("a %s caller granted none, everyone granted read: %v", name, err)
@@ -753,16 +762,19 @@ func TestAProvenCallersGroupGrantIsReadBeforeTheSquash(t *testing.T) {
 	}
 }
 
-// A claimed caller is not authenticated: a share whose only grant names
+// An anonymous caller is not authenticated: a share whose only grant names
 // authenticated users refuses it, and admits a proven one.
-func TestAClaimedCallerIsNotAuthenticated(t *testing.T) {
+func TestAnAnonymousCallerIsNotAuthenticated(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
 	carol := s.user(t, "carol", "4242", s.share, entity.AccessNone)
 	s.must(t, s.cp.DeleteGrant(ctx, s.share, carol.Principal, grantVersion(t, s.cp, s.share, carol.Principal)))
+	nobody := s.user(t, "nobody", "", s.share, entity.AccessNone)
+	s.must(t, s.cp.DeleteGrant(ctx, s.share, nobody.Principal, grantVersion(t, s.cp, s.share, nobody.Principal)))
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Anonymous: nobody.Principal}, 0)))
 	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: entity.AuthenticatedUsers, Access: entity.AccessRead}, 0)))
-	if _, err := s.StatFS(ctx, claimed(4242, inLab), s.fs.Root); !errors.Is(err, vfs.ErrAccess) {
-		t.Errorf("a claimed caller took authenticated users' grant: %v", err)
+	if _, err := s.StatFS(ctx, vfs.Call{Identity: vfs.Identity{Client: inLab}}, s.fs.Root); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("an anonymous caller took authenticated users' grant: %v", err)
 	}
 	if _, err := s.StatFS(ctx, proven(carol.Principal, inLab), s.fs.Root); err != nil {
 		t.Errorf("a proven caller under authenticated users' grant: %v", err)
@@ -826,8 +838,8 @@ func TestADeletedOrDisabledMachineIsRefused(t *testing.T) {
 		if _, _, err := s.admit(ctx, id, s.share, true, false); !errors.Is(err, vfs.ErrAccess) {
 			t.Errorf("%s machine: admission on a share with an anonymous principal answered %v, want ErrAccess", c.name, err)
 		}
-		if p, err := admit.Mapped(ctx, principals{s.meta.Principals()}, id.Identity); !errors.Is(err, vfs.ErrAccess) {
-			t.Errorf("%s machine: Mapped = %v, %v; want ErrAccess", c.name, p, err)
+		if who, err := s.who(ctx, id, 0); !errors.Is(err, vfs.ErrAccess) {
+			t.Errorf("%s machine: the caller naming no share = %v, %v; want ErrAccess", c.name, who.Principal, err)
 		}
 	}
 }
@@ -944,6 +956,7 @@ func TestSecInfoAtAMountRunsTheClientRules(t *testing.T) {
 	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Flavors: []entity.AuthFlavor{entity.FlavorKerberos},
 		Clients: []entity.ClientRule{{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("10.0.0.0/8")}, Access: entity.AccessReadWrite}}}, 0)))
 	vault := s.addShare(t, "secret", "/vault/secret")
+	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: vault, Principal: s.fs.Admin.Principal, Access: entity.AccessAdmin}, 0)))
 	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: vault, Flavors: []entity.AuthFlavor{entity.FlavorKerberos},
 		Clients: []entity.ClientRule{{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("10.0.0.0/8")}, Access: entity.AccessReadWrite}}}, 0)))
 	out := proven(s.fs.Admin.Principal, outside)
@@ -995,19 +1008,20 @@ func TestAPausedSharesMountIsListedWhateverIsAsked(t *testing.T) {
 	}
 }
 
-// A share with no stored policy squashes root to the anonymous principal,
-// and a policy naming no anonymous principal names it too: neither a
-// claimed uid 0 nor a squashed caller acts as the zero principal, which
-// owns every share's root.
-func TestANewShareSquashesRootToAnonymous(t *testing.T) {
+// A share with no stored policy makes a caller proving nothing the anonymous
+// principal, and a policy naming no anonymous principal names it too:
+// neither an anonymous nor a squashed caller acts as the zero principal,
+// which owns every share's root.
+func TestANewShareSquashesToAnonymous(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
 	fresh := s.addShare(t, "fresh", "/fresh")
-	a, release, err := s.admit(ctx, claimed(0, inLab), fresh, true, false)
+	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: fresh, Principal: entity.Everyone, Access: entity.AccessRead}, 0)))
+	a, release, err := s.admit(ctx, vfs.Call{Identity: vfs.Identity{Client: inLab}}, fresh, true, false)
 	s.must(t, err)
 	release()
 	if a.caller.Privileged || a.caller.Principal != entity.AnonymousPrincipal {
-		t.Errorf("a claimed uid 0 on a share with no policy: privileged %v, acting as %v", a.caller.Privileged, a.caller.Principal)
+		t.Errorf("an anonymous caller on a share with no policy: privileged %v, acting as %v", a.caller.Privileged, a.caller.Principal)
 	}
 	bob := s.user(t, "bob", "", s.share, entity.AccessReadWrite)
 	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashAll}, 0)))
@@ -1030,11 +1044,11 @@ func TestASquashedCallerIsTheAnonymousPrincipalOnly(t *testing.T) {
 	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: bob.Principal}))
 	nobody := s.user(t, "nobody", "", s.share, entity.AccessRead)
 	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashAll, Anonymous: nobody.Principal}, 0)))
-	a, release, err := s.admit(ctx, claimed(1000, inLab), s.share, true, false)
+	a, release, err := s.admit(ctx, proven(bob.Principal, inLab), s.share, true, false)
 	s.must(t, err)
 	release()
 	if a.caller.Principal != nobody.Principal || a.caller.InGroup(staff.Principal) {
-		t.Errorf("a squashed claimed caller: acting as %v, group %v, groups %v", a.caller.Principal, a.caller.Group, a.caller.Groups)
+		t.Errorf("a squashed caller: acting as %v, group %v, groups %v", a.caller.Principal, a.caller.Group, a.caller.Groups)
 	}
 	s.must(t, s.cp.DeleteUser(ctx, nobody.Principal, userGeneration(t, s.fs.Store, nobody.Principal)))
 	if _, err := s.StatFS(ctx, proven(bob.Principal, inLab), s.fs.Root); !errors.Is(err, vfs.ErrAccess) {
@@ -1165,7 +1179,7 @@ func TestAListingFailsWithTheStore(t *testing.T) {
 	fx := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV { db.KV = memKV(tb); return db })
 	clock := sim.NewTestClock(time.Unix(0, 0))
 	tab, err := openstate.New(openstate.Deps{Records: fx.Store, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
-	s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: contentOver(clock, fx.Store, fx.Share.ID)})
+	s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: contentOver(clock, fx.Store, fx.Share.ID), Identity: identitymem.New(t, fx.Store)})
 	if err = errors.Join(err, err2); err != nil {
 		t.Fatal(err)
 	}

@@ -50,6 +50,11 @@ func forbidden(dir, imp string) string {
 		return "pkg/identity is a leaf: it imports only the standard library, entity, pkg/auth/sid, vfserr, argon2 and md4"
 	case dir == "pkg/vfs/vfstest/memory" && imp == module+server+"/identitymem":
 		return ""
+	// identitymem hands vfstest/memory the real server, which it may not
+	// import itself; any other importer would use it as a way around the rule
+	// below.
+	case imp == module+server+"/identitymem":
+		return "only pkg/vfs/vfstest/memory imports internal/identity/identitymem"
 	// identitytest hands tests identity's directory and NETLOGON clients, so
 	// it imports those two and never the server.
 	case dir == "pkg/identity/identitytest" &&
@@ -92,8 +97,12 @@ func violations(t *testing.T, root string) []string {
 		}
 		// decision: test files are exempt from all three rules: a test may
 		// build a real server or talk to a directory, and the rules govern
-		// what ships. Withdraw it if a non-test package starts importing a
-		// test helper that imports the server or LDAP.
+		// what ships. One non-test package imports a test helper that builds
+		// the server, pkg/vfs/vfstest/memory importing identitymem, and it is
+		// bounded: forbidden admits that importer alone, and only test files
+		// import vfstest/memory. Withdraw it if another non-test package
+		// starts importing a test helper that imports the server or LDAP, or
+		// a non-test package starts importing vfstest/memory.
 		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return nil
 		}
@@ -120,8 +129,9 @@ func violations(t *testing.T, root string) []string {
 }
 
 // pkg/identity is a leaf, only the node and identity's own packages import
-// the server, only the directory client imports LDAP, and the secure channel
-// imports no Kerberos library.
+// the server, only pkg/vfs/vfstest/memory imports identitymem, only the
+// directory client imports LDAP, and the secure channel imports no Kerberos
+// library.
 func TestImports(t *testing.T) {
 	for _, v := range violations(t, filepath.Join("..", "..")) {
 		t.Error(v)
@@ -135,6 +145,7 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/smb/directory.go: imports " + module + "internal/identity/directory: only internal/node and identity's own packages import the identity server",
 		"internal/adapter/smb/ldap.go: imports " + ldap + ": only internal/identity/directory imports LDAP",
 		"internal/identity/netlogon/krb5.go: imports github.com/jcmturner/gokrb5/v8/client: internal/identity/netlogon imports no Kerberos library",
+		"internal/node/mem.go: imports " + module + "internal/identity/identitymem: only pkg/vfs/vfstest/memory imports internal/identity/identitymem",
 		"internal/node/nodetest/nodetest.go: imports " + module + "internal/identity/directory: only internal/node and identity's own packages import the identity server",
 		"internal/vfs/server.go: imports " + module + "internal/identity: only internal/node and identity's own packages import the identity server",
 		"pkg/identity/identitytest/srv.go: imports " + module + "internal/identity: only internal/node and identity's own packages import the identity server",
