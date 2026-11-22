@@ -141,7 +141,8 @@ func (c *dirCache) Lookup(ctx context.Context, by directory.Key, value []byte, g
 
 // LookupSIDs asks the cache who holds each of sids, under grace.
 func (c *dirCache) LookupSIDs(ctx context.Context, sids [][]byte, grace time.Duration) ([]directory.Answer, error) {
-	return c.lookupSIDs(ctx, sids, grace)
+	out, _, err := c.lookupSIDs(ctx, sids, grace)
+	return out, err
 }
 
 // Asking is the number of SIDs a query in flight is registered to.
@@ -235,3 +236,10 @@ func (s *Server) OnMachineLink(f func()) { s.beforeMachineLink = f }
 // OnRename has every refresh of a directory principal run f between its
 // plan and its Rename.
 func (s *Server) OnRename(f func()) { s.beforeRename = f }
+
+// OnCreate has every mint run f with its batch just before its Create.
+func (s *Server) OnCreate(f func(entity.MintBatch)) { s.beforeCreate = f }
+
+// FreshUntil is when a directory principal's caller built at now stops being
+// served.
+var FreshUntil = freshUntil

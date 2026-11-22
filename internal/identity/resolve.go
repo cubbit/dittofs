@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -63,7 +64,10 @@ var noSpan = trace.SpanFromContext(context.Background())
 // narrowed to read-only by narrowed. It is admission's resolution step: it
 // keeps no table of callers, and reads the store on every call, so a
 // disabled or deleted user or machine is refused on the first call after the
-// change.
+// change. A directory principal's enabled state and groups are read through
+// the directory cache on every call too (see dirStep), and its caller's
+// Fresh is set by freshUntil: never later than the bound of the answers
+// read, and no longer zero for NTLM, so admission may cache it.
 //
 // The forwarded Identity is checked first, before any store read: evidence
 // naming a principal below ProofSecret, or none at ProofSecret or above, is
@@ -201,21 +205,15 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 		}
 	}
 
-	// decision: Fresh is the evidence's Expires, zero for NTLM and for every
-	// unproven caller, and resolution never checks it: the adapter refuses a
-	// request on a context past its Expires. A cache never stores a caller
-	// with a zero Fresh, so a local principal resolves on every call and its
-	// disable reaches its next call. Overturned once each new State reaches
-	// a running node, which then bounds such a caller instead.
+	// decision: a local principal's Fresh is the evidence's Expires, zero for
+	// NTLM and for every unproven caller, and resolution never checks it: the
+	// adapter refuses a request on a context past its Expires. A cache never
+	// stores a caller with a zero Fresh, so a local principal resolves on
+	// every call and its disable reaches its next call. A directory
+	// principal's is set below by freshUntil, from the answers it used.
+	// Overturned once each new State reaches a running node, which then
+	// bounds such a caller instead.
 	c = &identity.Caller{Mapped: mapped, Fresh: id.Evidence.Expires, Built: st.serial()}
-
-	// decision: a call naming no share, such as a client record's creation,
-	// runs the map step alone, under no share's policy, and acts as Mapped:
-	// no squash, group or grant applies outside a share. Overturned if a call
-	// naming no share ever acts on a share's files.
-	if p.Share == (entity.ShareID{}) {
-		return c, nil
-	}
 
 	// decision: a proven caller mapped to the well-known root is a file user
 	// with uid 0 though no record holds one, and unsquashed it is privileged
@@ -228,6 +226,28 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	// must be told apart from root on another.
 	root := proven && mapped == entity.RootPrincipal
 	fileUser := root || proven && slices.ContainsFunc(u.IDs, func(i entity.ProtocolID) bool { return i.Scheme == entity.SchemeUID })
+
+	// A directory principal's enabled state and groups are the directory's,
+	// read on every resolution; a local principal's step sends no query. Its
+	// groups are read only where they are used, on a share for a file user.
+	var dirClosure []entity.Principal
+	if entryID, ok := dirEntryID(u); proven && ok {
+		now := s.deps.Clock.Now()
+		var oldest time.Time
+		if dirClosure, oldest, err = s.dirStep(ctx, st, mapped, entryID, id.Evidence, fileUser && p.Share != (entity.ShareID{})); err != nil {
+			return nil, err
+		}
+		c.Fresh = freshUntil(now, oldest, c.Fresh, st.Settings.DirectoryStaleGrace)
+	}
+
+	// decision: a call naming no share, such as a client record's creation,
+	// runs the map step alone, under no share's policy, and acts as Mapped:
+	// no squash, group or grant applies outside a share. Overturned if a call
+	// naming no share ever acts on a share's files.
+	if p.Share == (entity.ShareID{}) {
+		return c, nil
+	}
+
 	squashed := !fileUser || p.Squash == entity.SquashAll || root && p.Squash == entity.SquashRoot
 	// decision: a claimed identity is squashed before its grant is read, a
 	// proven one after. A grant on a claimed uid has no security value, since
@@ -237,7 +257,7 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	// is added; it then needs its own order.
 	var groups, deny []entity.Principal
 	if fileUser {
-		if groups, deny, err = collect(ctx, pr, mapped, id.Evidence); err != nil {
+		if groups, deny, err = collect(ctx, pr, mapped, id.Evidence, dirClosure); err != nil {
 			return nil, err
 		}
 		if err := s.capped(ctx, mapped, groups); err != nil {
@@ -386,8 +406,9 @@ func closure(ctx context.Context, pr kvstore.Principals, p entity.Principal, sto
 
 // collect is a proven caller's groups and deny-only principals. Its groups
 // are the closure of its store memberships, unioned with each group an
-// evidence SID maps to and that group's closure, so a deny entry naming a
-// parent of a PAC's group still matches; each listed once. Each
+// evidence SID maps to and each of dir, its directory groups, and that
+// group's closure, so a deny entry naming a parent of a PAC's group still
+// matches; each listed once. Each
 // deny-only SID maps to a principal in deny, never in groups, and adds none
 // of its groups to groups: a group the store reaches only through it goes
 // to deny too. collect alone keeps the two lists disjoint. A SID no
@@ -404,7 +425,7 @@ func closure(ctx context.Context, pr kvstore.Principals, p entity.Principal, sto
 // never removes a group the store records. The cost is that a parent the
 // directory meant to drop entirely still denies. Overturned if a deny-only
 // membership must not carry its parents' denies.
-func collect(ctx context.Context, pr kvstore.Principals, of entity.Principal, ev identity.Evidence) (groups, deny []entity.Principal, err error) {
+func collect(ctx context.Context, pr kvstore.Principals, of entity.Principal, ev identity.Evidence, dir []entity.Principal) (groups, deny []entity.Principal, err error) {
 	for _, sd := range ev.DenyOnly {
 		d, ok, err := bySID(ctx, pr, sd)
 		if err != nil {
@@ -432,15 +453,21 @@ func collect(ctx context.Context, pr kvstore.Principals, of entity.Principal, ev
 		return nil, nil, err
 	}
 	add(gs)
+	mapped := slices.Clone(dir)
 	for _, sd := range ev.SIDs {
 		g, ok, err := bySID(ctx, pr, sd)
 		if err != nil {
 			return nil, nil, err
 		}
+		if ok {
+			mapped = append(mapped, g)
+		}
+	}
+	for _, g := range mapped {
 		// The user's own SID, first in a PAC, maps to a user, not a group:
-		// its closure is the mapped principal's, already collected. A SID
+		// its closure is the mapped principal's, already collected. A group
 		// also marked deny-only stays deny-only.
-		if !ok || g.Kind != entity.PrincipalGroup || slices.Contains(deny, g) {
+		if g.Kind != entity.PrincipalGroup || slices.Contains(deny, g) {
 			continue
 		}
 		if gs, err = closure(ctx, pr, g, deny...); err != nil {

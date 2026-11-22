@@ -85,14 +85,14 @@ func (s *Server) findDirectorySID(ctx context.Context, st *State, value []byte, 
 	if !inDomain(domain, value) {
 		return entity.Principal{}, vfserr.ErrUnknownPrincipal // another domain's
 	}
-	a, ok, err := st.dirLookup(ctx, directory.BySID, value, false)
+	e, queried, err := st.dir.lookupEntry(ctx, directory.BySID, value, st.Settings.DirectoryStaleGrace, false)
 	if err != nil {
 		return entity.Principal{}, err
 	}
-	if !ok {
+	if !e.found {
 		return entity.Principal{}, vfserr.ErrUnknownPrincipal
 	}
-	return s.dirPrincipal(ctx, st, a, true)
+	return s.dirPrincipal(ctx, st, e.ans, queried, true)
 }
 
 // findDirectoryName is the principal holding the dir spelling of the entry
@@ -101,13 +101,16 @@ func (s *Server) findDirectorySID(ctx context.Context, st *State, value []byte, 
 func (s *Server) findDirectoryName(ctx context.Context, st *State, name string, mint bool, keys ...directory.Key) (entity.Principal, error) {
 	ctx, cancel := directory.Bounded(ctx, s.deps.Clock, directoryBound, errDirectoryBound)
 	defer cancel()
+	if st == nil || st.dir == nil {
+		return entity.Principal{}, fmt.Errorf("%w: identity: no directory", vfserr.ErrUnavailable)
+	}
 	for _, k := range keys {
-		a, ok, err := st.dirLookup(ctx, k, []byte(name), false)
+		e, queried, err := st.dir.lookupEntry(ctx, k, []byte(name), st.Settings.DirectoryStaleGrace, false)
 		if err != nil {
 			return entity.Principal{}, err
 		}
-		if ok {
-			return s.dirPrincipal(ctx, st, a, mint)
+		if e.found {
+			return s.dirPrincipal(ctx, st, e.ans, queried, mint)
 		}
 	}
 	return entity.Principal{}, vfserr.ErrUnknownPrincipal
@@ -213,8 +216,10 @@ func (s *Server) markedDir(ctx context.Context, id []byte) (bool, error) {
 // an ad entry whose SID is not an account of the directory's domain, such as
 // a builtin group, whose SID spells a well-known principal (§4.4), nor an
 // entry whose principal is marked deleted while its deletion runs (§3.7):
-// such a user is ErrUnknownPrincipal, and such a group is left out.
-func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer, mint bool) (entity.Principal, error) {
+// such a user is ErrUnknownPrincipal, and such a group is left out. A record
+// already minted is refreshed only from an answer a query of this lookup
+// gave, queried for a's own; see refreshable.
+func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer, queried, mint bool) (entity.Principal, error) {
 	if len(a.EntryID) == 0 {
 		return entity.Principal{}, fmt.Errorf("%w: identity: the directory answered an entry with no ID", vfserr.ErrUnavailable)
 	}
@@ -225,6 +230,9 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 	// settles the name. Overturned if a stale name is seen to outlive the
 	// sign-ins that would refresh it.
 	if err == nil && mint {
+		if !queried {
+			return p, nil
+		}
 		return p, s.refresh(ctx, st, []dirBound{{p, a}})
 	}
 	if !mint || !errors.Is(err, vfserr.ErrUnknownPrincipal) {
@@ -243,42 +251,105 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 		}
 	}
 	entries := []directory.Answer{a}
+	groupsQueried := false
 	if !a.Group {
-		groups, err := st.dir.groups(ctx, a)
+		g, q, err := st.dir.groupsOf(ctx, a, st.Settings.DirectoryStaleGrace)
 		if err != nil {
 			return entity.Principal{}, err
 		}
-		for _, g := range groups {
-			// decision: a group tokenGroups names but no entry holds is not
-			// minted: with no entry ID it has no dir spelling, so no later
-			// answer could find or rename it. Its SID still reaches the
-			// caller's groups through resolution. Overturned if such a SID
-			// must own files.
-			if len(g.EntryID) == 0 {
-				continue
-			}
-			// decision: an rfc2307 directory's groups are not held to a
-			// domain, since its record names none and it routes no SID;
-			// overturned if one is found holding a well-known SID.
-			if domain != nil && g.SID != nil && !inDomain(domain, g.SID) {
-				reason := "other_domain"
-				if v, _, err := sid.DecodeSID(g.SID); err == nil && strings.HasPrefix(sid.FormatSID(v), "S-1-5-32-") {
-					reason = "builtin"
-				}
-				s.skipped.WithLabelValues(reason).Inc()
-				continue
-			}
-			entries = append(entries, g)
+		groupsQueried = q
+		entries = append(entries, s.mintableGroups(domain, g.groups)...)
+	}
+	ps, bound, err := s.mintDir(ctx, st, entries, true)
+	if err != nil {
+		return entity.Principal{}, err
+	}
+	refresh := refreshable(ps, entries, bound, func(i int) bool { return i == 0 && queried || i > 0 && groupsQueried })
+	if err := s.refresh(ctx, st, refresh); err != nil {
+		return entity.Principal{}, err
+	}
+	return ps[0], nil
+}
+
+// refreshable is the principals of bound, indexes into entries already
+// minted, whose answer queried says a query of this call gave, each with its
+// answer: what a refresh may rename from.
+//
+// decision: a record is refreshed only from an answer a query of this call
+// sent or joined, never from one the cache held, fresh or stale. The cache
+// keeps one answer per question, so an answer under one key can be older than
+// one under another that already renamed the record, and refreshing from it
+// would rename the record back, raising the principals generation at every
+// call until the older answer expires. RFC 18 §5.1 has a stale answer not
+// count as an answer, and a cached one is no newer. The cost is that a
+// rename waits for the next query of its entry, at most the TTL. A queried
+// answer can still be older than the one that last wrote the record: a
+// query sent before the directory's rename and answered after a lookup by
+// the new name renamed the record, or one a lagging replica gives, renames
+// it back, once per such race, since the calls after it read the cache; the
+// next query of the entry heals it, within the TTL. Overturned if that flip
+// is seen to matter, which keeping on the record the time of the answer that
+// last wrote it, and skipping an older one, would close at the cost of a
+// record field.
+func refreshable(ps []entity.Principal, entries []directory.Answer, bound []int, queried func(int) bool) []dirBound {
+	var out []dirBound
+	for _, i := range bound {
+		if queried(i) {
+			out = append(out, dirBound{ps[i], entries[i]})
 		}
 	}
+	return out
+}
+
+// mintableGroups is the groups of a closure a mint may mint: each held by an
+// entry, and of domain's, the directory's domain SID, when it is an ad
+// directory's; a group of another domain is skipped and counted.
+func (s *Server) mintableGroups(domain []byte, groups []directory.Answer) []directory.Answer {
+	var out []directory.Answer
+	for _, g := range groups {
+		// decision: a group tokenGroups names but no entry holds is not
+		// minted: with no entry ID it has no dir spelling, so no later
+		// answer could find or rename it. With no principal its SID maps
+		// to nothing at resolution, so it is in no caller's groups and no
+		// ACL entry can name it, to grant or to deny. Overturned if such a
+		// SID must own files or be named by an ACL.
+		if len(g.EntryID) == 0 {
+			continue
+		}
+		// decision: an rfc2307 directory's groups are not held to a
+		// domain, since its record names none and it routes no SID;
+		// overturned if one is found holding a well-known SID.
+		if domain != nil && g.SID != nil && !inDomain(domain, g.SID) {
+			reason := "other_domain"
+			if v, _, err := sid.DecodeSID(g.SID); err == nil && strings.HasPrefix(sid.FormatSID(v), "S-1-5-32-") {
+				reason = "builtin"
+			}
+			s.skipped.WithLabelValues(reason).Inc()
+			continue
+		}
+		out = append(out, g)
+	}
+	return out
+}
+
+// mintDir is the principal holding each of entries' dir spellings, those not
+// yet minted minted through the mint path in one batch; bound is the index
+// of each entry whose principal was already minted, for the caller to
+// refresh as its rule says. An entry
+// listed twice is minted once. An entry whose principal is marked deleted,
+// its deletion still running, is not minted anew: with first, the first entry
+// so marked fails the call ErrUnknownPrincipal, and any other is answered the
+// zero principal.
+func (s *Server) mintDir(ctx context.Context, st *State, entries []directory.Answer, first bool) (ps []entity.Principal, bound []int, err error) {
 	type remap struct {
 		p  entity.Principal
 		id uint32
 	}
 	var remapped []remap
-	var bound []dirBound // the entries already minted, refreshed from this answer once the mint commits
+	ps = make([]entity.Principal, len(entries))
 	err = s.mint(ctx, func(ctx context.Context) (entity.MintBatch, int, error) {
-		remapped, p, bound = remapped[:0], entity.Principal{}, bound[:0]
+		remapped, bound = remapped[:0], bound[:0]
+		clear(ps)
 		var b entity.MintBatch
 		claimed := map[entity.ProtocolID]bool{} // the uids and gids this batch takes
 		held := func(id entity.ProtocolID) (bool, error) {
@@ -295,14 +366,17 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 			}
 			return false, fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
 		}
+		planned := map[string]entity.Principal{} // by entry ID, each entry planned once
 		for i, e := range entries {
+			if q, ok := planned[string(e.EntryID)]; ok {
+				ps[i] = q
+				continue
+			}
 			q, err := s.byDir(ctx, e.EntryID)
 			switch {
 			case err == nil:
-				if i == 0 {
-					p = q
-				}
-				bound = append(bound, dirBound{q, e})
+				ps[i], planned[string(e.EntryID)] = q, q
+				bound = append(bound, i)
 				continue
 			case !errors.Is(err, vfserr.ErrUnknownPrincipal):
 				return entity.MintBatch{}, 0, err
@@ -313,9 +387,10 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 			switch marked, err := s.markedDir(ctx, e.EntryID); {
 			case err != nil:
 				return entity.MintBatch{}, 0, err
-			case marked && i == 0:
+			case marked && i == 0 && first:
 				return entity.MintBatch{}, 0, vfserr.ErrUnknownPrincipal
 			case marked:
+				planned[string(e.EntryID)] = entity.Principal{}
 				continue
 			}
 			ids, alloc, from, err := dirSpellings(e, st.Settings.IDRange, held)
@@ -330,9 +405,7 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 				np = entity.NewUser()
 				b.Users = append(b.Users, entity.MintUser{User: entity.User{Principal: np, Name: e.Name, IDs: ids, Email: e.Mail}, Alloc: alloc})
 			}
-			if i == 0 {
-				p = np
-			}
+			ps[i], planned[string(e.EntryID)] = np, np
 			if from != nil {
 				remapped = append(remapped, remap{np, *from})
 			}
@@ -340,17 +413,14 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 		return b, len(bound), nil
 	})
 	if err != nil {
-		return entity.Principal{}, err
-	}
-	if err := s.refresh(ctx, st, bound); err != nil {
-		return entity.Principal{}, err
+		return nil, nil, err
 	}
 	for _, r := range remapped {
 		s.remapped.WithLabelValues(r.p.Kind.String()).Inc()
 		s.logger.WarnContext(ctx, "identity: directory principal minted with an allocated ID in place of the entry's reserved or held one",
 			"kind", r.p.Kind.String(), "principal", r.p.ID.String(), "id", r.id)
 	}
-	return p, nil
+	return ps, bound, nil
 }
 
 // dirSpellings is the spellings a's record is minted with and what the mint

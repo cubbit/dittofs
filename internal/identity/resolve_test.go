@@ -404,17 +404,24 @@ func onShare(squash entity.Squash, anonymous entity.Principal) entity.SharePolic
 // there, and returns its policy.
 func (r *resolving) grantedShare(t *testing.T, squash entity.Squash, anonymous, p entity.Principal, access entity.ShareAccess) entity.SharePolicy {
 	t.Helper()
+	return grantedShare(t, r.cp, squash, anonymous, p, access)
+}
+
+// grantedShare stores a share in cp, in a namespace of its own, grants p
+// access there, and returns its policy.
+func grantedShare(t *testing.T, cp kvstore.ControlPlane, squash entity.Squash, anonymous, p entity.Principal, access entity.ShareAccess) entity.SharePolicy {
+	t.Helper()
 	ctx := context.Background()
 	pol := onShare(squash, anonymous)
 	ns := entity.Namespace{ID: entity.NewNamespaceID(), Store: [16]byte{15: 1}}
-	if _, err := r.cp.PutNamespace(ctx, ns, 0); err != nil {
+	if _, err := cp.PutNamespace(ctx, ns, 0); err != nil {
 		t.Fatalf("PutNamespace: %v", err)
 	}
 	sh := entity.Share{ID: pol.Share, Name: "s", Path: "/s", Root: entity.NewFileID(), Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: ns.ID}}}
-	if _, err := r.cp.PutShare(ctx, sh, 0); err != nil {
+	if _, err := cp.PutShare(ctx, sh, 0); err != nil {
 		t.Fatalf("PutShare: %v", err)
 	}
-	if _, err := r.cp.SetGrant(ctx, entity.ShareGrant{Share: pol.Share, Principal: p, Access: access}, 0); err != nil {
+	if _, err := cp.SetGrant(ctx, entity.ShareGrant{Share: pol.Share, Principal: p, Access: access}, 0); err != nil {
 		t.Fatalf("SetGrant: %v", err)
 	}
 	return pol

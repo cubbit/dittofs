@@ -190,6 +190,7 @@ type Server struct {
 	unnamed    *prometheus.CounterVec   // by kind
 	remapped   *prometheus.CounterVec   // by kind
 	renamedOff *prometheus.CounterVec   // by kind: records a later answer left without a name
+	refreshErr *prometheus.CounterVec   // by kind: refreshes a resolution could not write
 	skipped    *prometheus.CounterVec   // by reason
 	pacDropped *prometheus.CounterVec   // by reason
 	unmapped   *prometheus.CounterVec   // by scheme
@@ -219,9 +220,10 @@ type Server struct {
 	schedStop func() // ends the rotation's schedule and waits for it, under mu; nil while it does not run
 	scheduled func() // a test's view of each schedule check, its next tick armed; nil in production
 
-	beforeMachineMint func() // a test's pause just before a machine's mint plan returns its batch; nil in production
-	beforeMachineLink func() // a test's pause just before a machine's link is written; nil in production
-	beforeRename      func() // a test's pause between a refresh's plan and its Rename; nil in production
+	beforeMachineMint func()                 // a test's pause just before a machine's mint plan returns its batch; nil in production
+	beforeMachineLink func()                 // a test's pause just before a machine's link is written; nil in production
+	beforeRename      func()                 // a test's pause between a refresh's plan and its Rename; nil in production
+	beforeCreate      func(entity.MintBatch) // a test's pause between a mint's plan and its Create; nil in production
 }
 
 // Conditions appends identity's conditions: the node's
@@ -282,6 +284,7 @@ func New(d Deps) (*Server, error) {
 	s.unnamed = counter(d.Metrics, unnamedSpec)
 	s.remapped = counter(d.Metrics, remappedSpec)
 	s.renamedOff = counter(d.Metrics, renamesUnnamedSpec)
+	s.refreshErr = counter(d.Metrics, refreshFailedSpec)
 	s.skipped = counter(d.Metrics, skippedSpec)
 	s.pacDropped = counter(d.Metrics, pacDroppedSpec)
 	s.unmapped = counter(d.Metrics, unmappedSpec)
