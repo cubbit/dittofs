@@ -18,6 +18,7 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/internal/adapter/nfs/protocol"
+	"github.com/cubbit/dittofs/internal/adapter/nfs/wire"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/metrics"
@@ -43,8 +44,6 @@ const (
 	garbageArgs  = 4 // GARBAGE_ARGS
 	systemErr    = 5 // SYSTEM_ERR
 	authBadCred  = 1 // AUTH_BADCRED
-
-	minorVersMismatch = 10021 // NFS4ERR_MINOR_VERS_MISMATCH
 
 	lastFragment = 1 << 31 // a record mark's last-fragment bit (RFC 5531 section 11)
 	maxRecord    = 1<<20 + 4<<10
@@ -301,8 +300,8 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 			call(3, progNFS, 3, 0, append(words(authSys), opaque(sys)...)),
 			words(3, 1, 1, 1, authBadCred)}, // REPLY, MSG_DENIED, AUTH_ERROR
 		{"a COMPOUND of minor version 3 from the version 4 table", "nfs4",
-			call(4, progNFS, 4, 1, none, append(tag, words(3, 0)...)...),            // COMPOUND: tag, minor version, no operations
-			append(append(accepted(4, 0, minorVersMismatch), tag...), words(0)...)}, // SUCCESS, the status, the tag, no results
+			call(4, progNFS, 4, 1, none, append(tag, words(3, 0)...)...),                        // COMPOUND: tag, minor version, no operations
+			append(append(accepted(4, 0, wire.NFS4ErrMinorVersMismatch), tag...), words(0)...)}, // SUCCESS, the status, the tag, no results
 		{"a verifier past the record", "nfs3",
 			words(5, 0, 2, progNFS, 3, 0, authNone, 0, authNone, 8), accepted(5, garbageArgs)},
 		{"a NULL after it", "nfs3",
