@@ -99,9 +99,9 @@ func forbidden(dir, file, imp string) string {
 		// A test file outside the adapters is held only to the pkg/ rule below.
 		//
 		// decision: it may import an implementation from outside pkg/, since
-		// it never reaches a binary's build. Withdraw it if a package of test helpers outside
-		// internal/adapter imports an implementation and non-test code
-		// imports that package.
+		// it never reaches a binary's build. Withdraw it if a package of test
+		// helpers outside internal/adapter imports an implementation and
+		// non-test code imports that package.
 	case dir == "pkg/adapter/settings":
 		if !standard(imp) {
 			return "pkg/adapter/settings is a leaf: it imports the standard library only"
