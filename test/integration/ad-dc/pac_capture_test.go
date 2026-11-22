@@ -83,24 +83,26 @@ samba-tool domain exportkeytab /tmp/krbtgt.keytab --principal=krbtgt/` + adRealm
 	if err != nil {
 		t.Fatalf("load alice's ccache: %v", err)
 	}
+	krbtgtKeytab := filepath.Join(dir, "krbtgt.keytab")
+	svcKT := loadKeytab(t, serviceKeytab)
 	captures := []struct {
 		service, keytab, file string
+		kt                    *keytab.Keytab
 		want, absent          []uint32
 	}{
-		{"krbtgt", filepath.Join(dir, "krbtgt.keytab"), "tgt.pac",
+		{"krbtgt", krbtgtKeytab, "tgt.pac", loadKeytab(t, krbtgtKeytab),
 			[]uint32{pacLogonInfo, pacServerSignature, pacKDCSignature, pacClientInfo, pacUPNDNSInfo, pacAttributesInfo, pacRequestor}, nil},
-		{"cifs", serviceKeytab, "service.pac",
+		{"cifs", serviceKeytab, "service.pac", svcKT,
 			[]uint32{pacLogonInfo, pacServerSignature, pacKDCSignature, pacClientInfo, pacUPNDNSInfo}, []uint32{pacAttributesInfo, pacRequestor}},
 	}
-	out := os.Getenv("DITTOFS_AD_DC_PAC_OUT")
+	// files collects every capture, written only once all of them are made,
+	// so a failed capture leaves the old testdata whole rather than mixed
+	// with a new domain's.
+	files := map[string][]byte{}
 	for _, c := range captures {
-		kt, err := keytab.Load(c.keytab)
-		if err != nil {
-			t.Fatalf("load the %s keytab: %v", c.service, err)
-		}
-		tkt := ccacheTicket(t, cc, kt, c.service)
+		tkt := ccacheTicket(t, cc, c.kt, c.service)
 		raw := rawPAC(t, tkt, c.service)
-		isPAC, pac, err := tkt.GetPACType(kt, nil, log.New(io.Discard, "", 0))
+		isPAC, pac, err := tkt.GetPACType(c.kt, nil, log.New(io.Discard, "", 0))
 		if !isPAC || err != nil {
 			t.Fatalf("the %s ticket's PAC: present %v, verified under its key: %v, want present and verified", c.service, isPAC, err)
 		}
@@ -118,25 +120,17 @@ samba-tool domain exportkeytab /tmp/krbtgt.keytab --principal=krbtgt/` + adRealm
 				t.Errorf("the %s ticket's PAC holds buffer types %v, want no %d", c.service, got, a)
 			}
 		}
-
-		if out == "" {
-			continue
-		}
 		ktBytes, err := os.ReadFile(c.keytab)
 		if err != nil {
 			t.Fatalf("read the %s keytab: %v", c.service, err)
 		}
-		ktName := map[string]string{"krbtgt": "krbtgt.keytab", "cifs": "service.keytab"}[c.service]
-		for name, data := range map[string][]byte{c.file: raw, ktName: ktBytes} {
-			if err := os.WriteFile(filepath.Join(out, name), data, 0o644); err != nil {
-				t.Fatalf("write %s: %v", name, err)
-			}
-		}
-		t.Logf("wrote %s (%d bytes) and %s to %s", c.file, len(raw), ktName, out)
+		files[c.file] = raw
+		files[map[string]string{"krbtgt": "krbtgt.keytab", "cifs": "service.keytab"}[c.service]] = ktBytes
 	}
 
-	req, ctime := aliceAPReq(t, dcIP, serviceKeytab)
-	if out == "" {
+	req, ctime := aliceAPReq(t, dcIP, svcKT)
+	out := os.Getenv("DITTOFS_AD_DC_PAC_OUT")
+	if out == "" || t.Failed() {
 		return
 	}
 	sids := map[string]string{"alice": sidString(objectSID(t, "user", adUserAlice))}
@@ -147,12 +141,14 @@ samba-tool domain exportkeytab /tmp/krbtgt.keytab --principal=krbtgt/` + adRealm
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, data := range map[string][]byte{"alice.apreq": req, "alice.json": append(meta, '\n')} {
+	files["alice.apreq"] = req
+	files["alice.json"] = append(meta, '\n')
+	for name, data := range files {
 		if err := os.WriteFile(filepath.Join(out, name), data, 0o644); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
+		t.Logf("wrote %s (%d bytes) to %s", name, len(data), out)
 	}
-	t.Logf("wrote alice.apreq (%d bytes) and alice.json to %s", len(req), out)
 }
 
 // aliceCapture is alice.json: the time alice's captured AP-REQ was made, and
@@ -162,47 +158,76 @@ type aliceCapture struct {
 	SIDs map[string]string `json:"sids"`
 }
 
+// sidString formats s, which objectSID parsed from samba-tool's string, so
+// a malformed objectSid fails the capture rather than being written.
 func sidString(s sid.SID) string { return sid.FormatSID(&s) }
 
 // aliceAPReq signs alice in with gokrb5's client against the DC at dcIP and
 // returns her AP-REQ for cifs/, made from the service ticket the KDC issues,
-// with its authenticator's time. The ticket must decrypt under the keytab at
-// ktPath.
-func aliceAPReq(t *testing.T, dcIP, ktPath string) ([]byte, time.Time) {
+// with its authenticator's time. The ticket must decrypt under kt.
+func aliceAPReq(t *testing.T, dcIP string, kt *keytab.Keytab) ([]byte, time.Time) {
 	t.Helper()
-	cfg, err := krb5config.Load(writeADKrb5Conf(t, dcIP))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cl := client.NewWithPassword(adUserAlice, adRealm, adUserPass, cfg, client.DisablePAFXFAST(true))
-	if err := cl.Login(); err != nil {
-		t.Fatalf("kinit as alice: %v", err)
-	}
-	defer cl.Destroy()
-	tkt, key, err := cl.GetServiceTicket(adSMBSPNShort)
-	if err != nil {
-		t.Fatalf("alice's service ticket for %s: %v", adSMBSPNShort, err)
-	}
-	kt, err := keytab.Load(ktPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cl := adLogin(t, writeADKrb5Conf(t, dcIP), adUserAlice, adUserPass)
+	tkt, key := adTicket(t, cl, adSMBSPNShort)
 	if err := tkt.DecryptEncPart(kt, nil); err != nil {
 		t.Fatalf("decrypt alice's %s ticket under the service keytab: %v", adSMBSPNShort, err)
 	}
+	return adAPReq(t, cl, tkt, key)
+}
+
+// adLogin signs name in with password through gokrb5's client, under the
+// krb5.conf at krb5Conf, and returns the client, destroyed at the test's end.
+func adLogin(t *testing.T, krb5Conf, name, password string) *client.Client {
+	t.Helper()
+	cfg, err := krb5config.Load(krb5Conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl := client.NewWithPassword(name, adRealm, password, cfg, client.DisablePAFXFAST(true))
+	if err := cl.Login(); err != nil {
+		t.Fatalf("kinit as %s: %v", name, err)
+	}
+	t.Cleanup(cl.Destroy)
+	return cl
+}
+
+// adTicket is cl's service ticket for spn and its session key.
+func adTicket(t *testing.T, cl *client.Client, spn string) (messages.Ticket, types.EncryptionKey) {
+	t.Helper()
+	tkt, key, err := cl.GetServiceTicket(spn)
+	if err != nil {
+		t.Fatalf("service ticket for %s: %v", spn, err)
+	}
+	return tkt, key
+}
+
+// adAPReq is cl's AP-REQ presenting tkt with a fresh authenticator, and the
+// authenticator's time.
+func adAPReq(t *testing.T, cl *client.Client, tkt messages.Ticket, key types.EncryptionKey) ([]byte, time.Time) {
+	t.Helper()
 	auth, err := types.NewAuthenticator(cl.Credentials.Domain(), cl.Credentials.CName())
 	if err != nil {
 		t.Fatal(err)
 	}
 	req, err := messages.NewAPReq(tkt, key, auth)
 	if err != nil {
-		t.Fatalf("alice's AP-REQ: %v", err)
+		t.Fatalf("%s's AP-REQ: %v", cl.Credentials.UserName(), err)
 	}
 	b, err := req.Marshal()
 	if err != nil {
-		t.Fatalf("marshal alice's AP-REQ: %v", err)
+		t.Fatalf("marshal %s's AP-REQ: %v", cl.Credentials.UserName(), err)
 	}
 	return b, auth.CTime.Truncate(time.Microsecond)
+}
+
+// loadKeytab loads the keytab at path.
+func loadKeytab(t *testing.T, path string) *keytab.Keytab {
+	t.Helper()
+	kt, err := keytab.Load(path)
+	if err != nil {
+		t.Fatalf("load the keytab %s: %v", path, err)
+	}
+	return kt
 }
 
 // ccacheTicket returns the ccache's ticket for service, decrypted with kt.

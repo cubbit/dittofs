@@ -21,7 +21,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jcmturner/gokrb5/v8/client"
-	krb5config "github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/iana/keyusage"
 	"github.com/jcmturner/gokrb5/v8/keytab"
@@ -412,44 +411,10 @@ func TestSignInKerberos(t *testing.T) {
 	krb5Conf := writeADKrb5Conf(t, dcIP)
 	from := netip.MustParseAddr("192.0.2.41")
 
-	// login signs name in with password and returns its client.
-	login := func(t *testing.T, name, password string) *client.Client {
-		t.Helper()
-		cfg, err := krb5config.Load(krb5Conf)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl := client.NewWithPassword(name, adRealm, password, cfg, client.DisablePAFXFAST(true))
-		if err := cl.Login(); err != nil {
-			t.Fatalf("kinit as %s: %v", name, err)
-		}
-		t.Cleanup(cl.Destroy)
-		return cl
-	}
-	// ticket is cl's service ticket for spn and its session key.
-	ticket := func(t *testing.T, cl *client.Client, spn string) (messages.Ticket, types.EncryptionKey) {
-		t.Helper()
-		tkt, key, err := cl.GetServiceTicket(spn)
-		if err != nil {
-			t.Fatalf("service ticket for %s: %v", spn, err)
-		}
-		return tkt, key
-	}
 	// apReq is a step presenting tkt with a fresh authenticator.
 	apReq := func(t *testing.T, cl *client.Client, tkt messages.Ticket, key types.EncryptionKey) pid.SignInStep {
 		t.Helper()
-		auth, err := types.NewAuthenticator(cl.Credentials.Domain(), cl.Credentials.CName())
-		if err != nil {
-			t.Fatal(err)
-		}
-		req, err := messages.NewAPReq(tkt, key, auth)
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, err := req.Marshal()
-		if err != nil {
-			t.Fatal(err)
-		}
+		b, _ := adAPReq(t, cl, tkt, key)
 		return pid.SignInStep{Kerberos: b, Service: pid.ServiceCIFS, Transport: pid.TransportSMB, Client: from}
 	}
 	refused := func(t *testing.T, what string, step pid.SignInStep) {
@@ -459,8 +424,8 @@ func TestSignInKerberos(t *testing.T) {
 		}
 	}
 
-	alice := login(t, adUserAlice, adUserPass)
-	aliceTkt, aliceKey := ticket(t, alice, adSMBSPNShort)
+	alice := adLogin(t, krb5Conf, adUserAlice, adUserPass)
+	aliceTkt, aliceKey := adTicket(t, alice, adSMBSPNShort)
 
 	t.Run("domain user", func(t *testing.T) {
 		res, oc, err := n.signIn(apReq(t, alice, aliceTkt, aliceKey))
@@ -509,8 +474,8 @@ func TestSignInKerberos(t *testing.T) {
 	seed.StageComputer(t, identitytest.StagedComputer{Name: machine, Password: []byte(machinePW), EncTypes: 0x18, SPNs: []string{otherSPN}})
 
 	t.Run("machine account", func(t *testing.T) {
-		cl := login(t, machine+"$", machinePW)
-		tkt, key := ticket(t, cl, adSMBSPNShort)
+		cl := adLogin(t, krb5Conf, machine+"$", machinePW)
+		tkt, key := adTicket(t, cl, adSMBSPNShort)
 		res, oc, err := n.signIn(apReq(t, cl, tkt, key))
 		if err != nil || oc != "ok" {
 			t.Fatalf("%s$'s ticket: %v, outcome %q; want ok", machine, err, oc)
@@ -541,7 +506,7 @@ func TestSignInKerberos(t *testing.T) {
 	})
 
 	t.Run("another service name", func(t *testing.T) {
-		tkt, key := ticket(t, alice, otherSPN)
+		tkt, key := adTicket(t, alice, otherSPN)
 		refused(t, "alice's ticket for "+otherSPN, apReq(t, alice, tkt, key))
 	})
 
@@ -552,8 +517,8 @@ func TestSignInKerberos(t *testing.T) {
 		if out, err := adDockerExec("samba-tool", "user", "setpassword", "dittofs-svc", "--newpassword=Svc-"+randomHex()+"1!"); err != nil {
 			t.Fatalf("samba-tool user setpassword dittofs-svc: %v\n%s", err, out)
 		}
-		cl := login(t, adUserAlice, adUserPass)
-		tkt, key := ticket(t, cl, adSMBSPNShort)
+		cl := adLogin(t, krb5Conf, adUserAlice, adUserPass)
+		tkt, key := adTicket(t, cl, adSMBSPNShort)
 		if tkt.EncPart.KVNO == aliceTkt.EncPart.KVNO {
 			t.Fatalf("the ticket after the password change is under kvno %d, the keytab's; want a newer one", tkt.EncPart.KVNO)
 		}
