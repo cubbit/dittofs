@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -9,8 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/secrets"
+	"github.com/cubbit/dittofs/pkg/settings"
 	"github.com/google/uuid"
 )
 
@@ -238,17 +243,18 @@ func TestStoreAndNamespaceDeletesRefusedWhileNamed(t *testing.T) {
 	}
 }
 
-// A secret's set with no sealer is refused 503 before anything is written:
-// no setting names a credential, no counter moves, and the refusal's audit
+// A store's credential's set with no sealer is refused before anything is
+// written, by the store's capability check before the missing sealer: no
+// setting names a credential, no counter moves, and the refusal's audit
 // record holds no part of the value.
-func TestCredentialSetWithoutSealerRefused(t *testing.T) {
+func TestCredentialSetRefusalHoldsNoValue(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	st := s.remoteStore(t)
 	scope := entity.SettingScope{Kind: entity.ScopeRemote, ID: st}
 	before := s.written(t, scope)
 	r := s.do(t, http.MethodPut, "/api/v1/stores/"+st.String()+"/credential", `{"spec":{"value":"aHVudGVyMi1zM2NyM3Q="}}`, "If-None-Match", "*")
-	if r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
-		t.Fatalf("PUT credential with no sealer: answered %d %s, want 503 unavailable", r.status, r.body)
+	if r.status != http.StatusConflict || r.problem(t).Code != "unproven" {
+		t.Fatalf("PUT credential with no sealer: answered %d %s, want 409 unproven", r.status, r.body)
 	}
 	if after := s.written(t, scope); after != before {
 		t.Errorf("a refused credential set changed the store:\n got %s\nwant %s", after, before)
@@ -413,5 +419,66 @@ func TestAdapterEnabledAmongSettingsRefused(t *testing.T) {
 	r := s.do(t, http.MethodPut, "/api/v1/adapters/smb", `{"spec":{"enabled":true,"settings":{"enabled":false}}}`, "If-Match", `"0"`)
 	if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "spec.settings.enabled" {
 		t.Errorf("PUT adapter naming enabled in its settings: answered %d %s, want 400 naming spec.settings.enabled", r.status, r.body)
+	}
+}
+
+// remoteSettings is a remote store's endpoint and credential reference, the
+// keys the credential routes write, as a settings table judges them.
+type remoteSettings struct {
+	Endpoint   string `json:"endpoint"   class:"live"`
+	Credential string `json:"credential" class:"live"`
+}
+
+func (remoteSettings) Validate() error { return nil }
+
+// storageSealer seals under the storage role, a remote store's credential's.
+type storageSealer struct{ p *secrets.Provider }
+
+func (s storageSealer) Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte, handedOver bool) (entity.Secret, error) {
+	return s.p.Seal(ctx, secrets.Storage, kind, owner, ref, value, secrets.Meta{HandedOver: handedOver})
+}
+
+// A store's credential's set runs the store's capability check, which is
+// not built and refuses: on a store that never held one, and on one whose
+// credential was deleted, since the delete keeps no record that it held
+// one. With a settings table and a sealer that would admit the set, it is
+// refused 409 unproven naming the credential, and writes nothing: no
+// setting names a credential and no counter moves.
+func TestCredentialSetRunsTheCapabilityCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		held bool
+	}{{"a first credential", false}, {"a credential set after its delete", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) {
+				d.Settings = settings.Table{settings.Of("remote", settings.At(entity.ScopeRemote), remoteSettings{})}
+				d.Sealer = storageSealer{provider(t, d.Store.(kvstore.ControlPlane)).p}
+			})
+			st := s.remoteStore(t)
+			scope := entity.SettingScope{Kind: entity.ScopeRemote, ID: st}
+			path := "/api/v1/stores/" + st.String() + "/credential"
+			if tc.held {
+				ref := entity.SecretRef(uuid.New())
+				s.putSetting(t, scope, "remote.credential", strconv.Quote(uuid.UUID(ref).String()))
+				if err := s.store.PutSecret(t.Context(), entity.Secret{ID: ref, Kind: entity.SecretRemoteCredential, Version: 1,
+					Owner: entity.SecretOwner{Scope: scope, Key: "remote.credential"}, Value: []byte("sealed")}, 0); err != nil {
+					t.Fatalf("put secret: %v", err)
+				}
+				if r := s.do(t, http.MethodDelete, path, "", "If-Match", `"1"`, "Idempotency-Key", "del-cred"); r.status != http.StatusOK {
+					t.Fatalf("DELETE credential: answered %d %s, want 200", r.status, r.body)
+				}
+			}
+			before := s.written(t, scope)
+			r := s.do(t, http.MethodPut, path, `{"spec":{"value":"b3RoZXI="}}`, "If-None-Match", "*")
+			if r.status != http.StatusConflict {
+				t.Fatalf("PUT credential: answered %d %s, want 409", r.status, r.body)
+			}
+			if p := r.problem(t); p.Code != "unproven" || p.Field != "remote.credential" {
+				t.Fatalf("PUT credential: answered %d %s, want 409 unproven naming remote.credential", r.status, r.body)
+			}
+			if after := s.written(t, scope); after != before {
+				t.Errorf("a refused credential set changed the store:\n got %s\nwant %s", after, before)
+			}
+		})
 	}
 }
