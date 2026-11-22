@@ -3,6 +3,7 @@ package kvstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -279,8 +280,8 @@ var foreignSecrets = []struct {
 
 // DeleteUser refuses a user whose record names a secret sealed for another
 // holder, or as another kind than the field's, before it marks anything:
-// the record stays unmarked, and its grant, its membership and every
-// version of its secrets stay held.
+// the record stays unmarked, so a deletion batch run after it drops nothing,
+// and its grant, its membership and every version of its secrets stay held.
 func TestDeleteUserRefusesAForeignSecret(t *testing.T) {
 	for _, c := range foreignSecrets {
 		t.Run(c.name, func(t *testing.T) {
@@ -307,6 +308,11 @@ func TestDeleteUserRefusesAForeignSecret(t *testing.T) {
 
 			if err := cp.DeleteUser(ctx, alice.Principal, gen); !isInvalid(err) {
 				t.Errorf("DeleteUser naming a foreign secret: got %v, want an invalid argument", err)
+			}
+			// The batch refuses an unmarked user; one marked would lose its
+			// grant and membership to it.
+			if done, _ := r.s.Nodes().ContinueDelete(ctx, alice.Principal); done {
+				t.Errorf("a deletion batch after the refused DeleteUser answered done, want not done")
 			}
 
 			r.must(r.s.kv.View(ctx, func(rd kv.Reader) error {
@@ -423,4 +429,37 @@ func TestUserDeletionTakesAnUndecodableOldVersion(t *testing.T) {
 		}
 		return nil
 	}))
+}
+
+// DeleteUser marks a user whose current password version does not decode,
+// so a corrupt secret does not keep the user live, and the batch that would
+// delete the record fails on that version, leaving the record marked and
+// every version held.
+func TestUserDeletionStallsOnAnUndecodableCurrentVersion(t *testing.T) {
+	ctx := context.Background()
+	r := newRestarting(t, 100)
+	cp := r.s.ControlPlane()
+	pw := entity.SecretRef{15: 1}
+	alice := entity.User{Principal: entity.NewUser(), Name: "alice", Password: pw}
+	gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
+	r.must(err)
+	for _, v := range []uint64{1, 2} {
+		r.must(cp.PutSecret(ctx, userSecret(pw, entity.SecretPassword, alice, entity.UserPasswordKey, v), v-1))
+	}
+	r.must(r.s.kv.Update(ctx, func(tx kv.Txn) error {
+		return tx.Set(secretKey(pw, 2), []byte("not a secret"))
+	}))
+
+	if err := cp.DeleteUser(ctx, alice.Principal, gen); err != nil {
+		t.Fatalf("DeleteUser over an undecodable current version: got %v, want nil", err)
+	}
+	if _, ok, err := cp.UserNamed(ctx, "alice"); err != nil || ok {
+		t.Errorf("UserNamed(alice) after the mark: found %v, error %v; want not found", ok, err)
+	}
+	done, err := r.s.Nodes().ContinueDelete(ctx, alice.Principal)
+	if !errors.As(err, new(secretUndecodable)) || done {
+		t.Errorf("deletion batch over an undecodable current version: done %v, error %v; want not done, the decode error", done, err)
+	}
+
+	heldSecrets(t, r, alice, "after the failed batch", true, pw)
 }

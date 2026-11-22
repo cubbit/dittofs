@@ -184,3 +184,41 @@ func testPutUserRefusesAForeignSecret(t *testing.T, kvo Opener) {
 		t.Errorf("PutUser changed to name bob's password: got %v, want an invalid argument", err)
 	}
 }
+
+// DeleteUser refuses a user whose password reference names a secret sealed,
+// after the user named it, for another holder, and marks nothing: the user
+// is found unmarked, a deletion batch run after the refusal drops nothing,
+// and the user's grant and membership stay listed.
+func testDeleteUserRefusesAForeignSecret(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	alice, bob, g, sh := user("alice"), user("bob"), group("staff"), share("photos", "/photos")
+	alice.Password = newSecretRef()
+	gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
+	must(t, err)
+	must(t, errOf(cp.PutUser(ctx, bob, 0, entity.Alloc{})))
+	must(t, cp.PutSecret(ctx, secretOf(alice.Password, bob.Principal.ID, 1, "bob"), 0))
+	must(t, errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
+	must(t, cp.AddMember(ctx, entity.Membership{Group: g.Principal, Member: alice.Principal}))
+	must(t, errOf(CreateShare(ctx, cp, sh)))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: alice.Principal, Access: entity.AccessRead}, 0)))
+
+	if err := cp.DeleteUser(ctx, alice.Principal, gen); !secretInvalid(err) {
+		t.Errorf("DeleteUser naming bob's password: got %v, want an invalid argument", err)
+	}
+	// The batch refuses an unmarked user; one marked would lose its grant and
+	// membership to it.
+	if done, _ := s.Nodes().ContinueDelete(ctx, alice.Principal); done {
+		t.Errorf("a deletion batch after the refused DeleteUser answered done, want not done")
+	}
+
+	if got, ok, err := cp.User(ctx, alice.Principal); err != nil || !ok || got.Deleted {
+		t.Errorf("User(alice) after the refused DeleteUser: found %v, Deleted %v, error %v; want found, Deleted false", ok, got.Deleted, err)
+	}
+	if got := all(t, cp.ShareGrants(ctx, sh.ID, entity.PrincipalID{})); len(got) != 1 || got[0].Principal != alice.Principal {
+		t.Errorf("grants after the refused DeleteUser: got %+v, want alice's alone", got)
+	}
+	if got := all(t, s.Principals().Groups(ctx, alice.Principal)); len(got) != 1 || got[0] != g.Principal {
+		t.Errorf("alice's groups after the refused DeleteUser: got %v, want [%v]", got, g.Principal)
+	}
+}

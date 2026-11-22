@@ -89,6 +89,7 @@ func Run(t *testing.T, open Opener) {
 		{"DeletedUserLeavesNoSecret", testDeletedUserLeavesNoSecret},
 		{"RepointedNTHashSurvivesItsPredecessor", testRepointedNTHashSurvivesItsPredecessor},
 		{"PutUserRefusesAForeignSecret", testPutUserRefusesAForeignSecret},
+		{"DeleteUserRefusesAForeignSecret", testDeleteUserRefusesAForeignSecret},
 		{"Shares", testShares},
 		{"SetShareState", testSetShareState},
 		{"GrantVersions", testGrantVersions},

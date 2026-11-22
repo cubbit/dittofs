@@ -3,6 +3,7 @@ package kvstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"iter"
 	"slices"
 	"strconv"
@@ -226,7 +227,7 @@ func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64
 	if err := expected(old.Generation, expect); err != nil {
 		return 0, err
 	}
-	if err := c.ownSecrets(u); err != nil {
+	if err := c.ownSecrets(u, false); err != nil {
 		return 0, err
 	}
 	if u.IDs, err = c.allocate(u.Principal.Kind, u.IDs, existed, a); err != nil {
@@ -340,23 +341,29 @@ func userShape(u entity.User) error {
 // user's deletion again in the batch that deletes the record, which takes
 // every version of each secret the record names, so none reaches another
 // holder's. The current version is read tracked, guarding every version,
-// so a concurrent seal conflicts.
+// so a concurrent seal conflicts. Any error reading the current version
+// refuses u too, but for one at the mark: atMark skips a field whose current
+// version does not decode.
 //
 // decision: only the current version is checked, since PutSecret refuses a
 // version whose kind or owner differs from the current one's, so every
 // version carries the current one's. A reference no secret holds yet is
 // accepted, since a user's reference is named before its first version is
 // sealed; a first version then sealed under it for another holder is
-// refused by the deletion instead. A user naming one already is refused at
-// DeleteUser with nothing touched; one sealed after the mark is refused in
-// the record's batch, which fails the deletion closed: the batch is refused
-// as an invalid argument, the deletion's operation fails, and the record
-// stays marked with every version of its secrets, its grants, memberships
-// and tokens already dropped, rather than taking another holder's secret or
-// leaving the user's own password-equivalent behind. Nothing resumes such a
-// deletion yet. Withdraw the acceptance if every caller comes to seal before
-// it names.
-func (c controlTx) ownSecrets(u entity.User) error {
+// refused by the deletion instead. At DeleteUser only an owner or kind
+// mismatch refuses, with nothing touched; a current version that does not
+// decode is passed, so a corrupt secret does not keep the user live,
+// findable by name and holding its grants. The record's batch refuses on
+// every error, which fails the deletion closed: a mismatch, as for a version
+// sealed after the mark, is refused as an invalid argument and the
+// deletion's operation fails; a current version that does not decode fails
+// the batch with that decode error, which the operation retries, so the
+// deletion stalls. Either way the record stays marked with every version of
+// its secrets, its grants, memberships and tokens already dropped, rather
+// than taking another holder's secret or leaving the user's own
+// password-equivalent behind. Nothing resumes a failed deletion yet.
+// Withdraw the acceptance if every caller comes to seal before it names.
+func (c controlTx) ownSecrets(u entity.User, atMark bool) error {
 	for _, f := range []struct {
 		ref  entity.SecretRef
 		kind entity.SecretKind
@@ -369,6 +376,9 @@ func (c controlTx) ownSecrets(u entity.User) error {
 			continue
 		}
 		s, ok, err := c.Secret(f.ref, 0)
+		if atMark && errors.As(err, new(secretUndecodable)) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -565,7 +575,7 @@ func (c controlTx) DeleteUser(p entity.Principal, expect uint64) error {
 	if err := expected(u.Generation, expect); err != nil {
 		return err
 	}
-	if err := c.ownSecrets(u); err != nil {
+	if err := c.ownSecrets(u, true); err != nil {
 		return err
 	}
 	if err := indexAdmin(c.tx, p.ID, enabledAdmin(u), false); err != nil {
