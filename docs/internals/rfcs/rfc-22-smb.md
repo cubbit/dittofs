@@ -2541,7 +2541,6 @@ mapping it needs is here.
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
 | `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` passed as `vfs.MaximumAllowed`, which the service resolves to the granted mask (§11) |
 | `Open.Mode.Deny` | the complement of `ShareAccess` over read, write and delete | — | a share bit set allows that access; RFC 14 holds what is refused |
-| `Open.Session`, the mark a lock state and a caching grant take from their open | set, from the creating call's session | none | every SMB call carries a session, so the mark never refuses an SMB call ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) |
 | `OpenRequest.Backup` | `FILE_OPEN_FOR_BACKUP_INTENT` | — | the service sets `Open.Mode.Privileged` when its caller is privileged (§11, S28) |
 | `Open.Durability` | `DHnQ`, `DH2Q`; persistent when `DH2Q` asks it on a continuously available share | — | §6.4 |
 | `Durable.Timeout` | the durable timeout the create negotiated | — | MS-SMB2 3.3.5.9.10 bounds |
@@ -2549,7 +2548,7 @@ mapping it needs is here.
 | `Durable.Instance` | `AppInstanceId`, `AppInstanceVersion` | — | §6.4 |
 | `Durable.LockSeq` | `LockSequenceNumber` and `LockSequenceIndex` | — | §6.5; durable v2 and persistent opens on 3.x |
 | `Open.Channel.Seq` | `ChannelSequence` | — | checked at the primary as MS-SMB2 3.3.5.2.10 says (§6.5) |
-| `Open.Session` | the session ID with its gateway node and that node's epoch | — | session IDs are unique only per node and process |
+| `Open.Session` | the session ID with its gateway node and that node's epoch | none | session IDs are unique only per node and process; set on every SMB open, so the mark a lock state and a caching grant take from it never refuses an SMB call ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) |
 | `Open.Via` | the directory the create named | — | zero for a create by file ID, which then grants no delete through a parent |
 | `Open.Delete.OnClose` | `FILE_DELETE_ON_CLOSE` | — | `Delete.By` is the creating principal |
 | `Opens.Update` (`Delete`) | `FileDispositionInformation`, `FileDispositionInformationEx` | — | through the open |
