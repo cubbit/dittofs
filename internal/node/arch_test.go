@@ -1026,8 +1026,9 @@ var signingKeyFiles = []string{"auth/rotate.go", "auth/tokens.go"}
 // credentialWrites are the API's functions outside signingKeyFiles that may
 // write a secret version, each by its file, its receiver's type ("" for
 // none) and its name: secretSetting.put, which writes a remote store's
-// credential and the identity keytab, and handOver, an offline join's
-// machine password. The store refuses each under the signing key's kind or
+// credential and the identity keytab, handOver, an offline join's
+// machine password, and writePassword, a password's hash and NT hash, which
+// alone also prunes the versions below the ones it writes. The store refuses each under the signing key's kind or
 // owner, and every secretSetting literal is checked to name a constant kind
 // other than the signing key's.
 //
@@ -1038,14 +1039,18 @@ var signingKeyFiles = []string{"auth/rotate.go", "auth/tokens.go"}
 // another type, or a function of the same name in another file is checked.
 // Overturned once a secret write takes its kind and owner as constants a
 // check can read.
-var credentialWrites = []struct{ file, recv, name string }{
-	{"res_secrets.go", "secretSetting", "put"},
-	{"res_domain.go", "", "handOver"},
+var credentialWrites = []struct {
+	file, recv, name string
+	prunes           bool
+}{
+	{"res_secrets.go", "secretSetting", "put", false},
+	{"res_domain.go", "", "handOver", false},
+	{"auth/password.go", "", "writePassword", true},
 }
 
-// isCredentialWrite reports whether fd, declared in file, is one of
-// credentialWrites.
-func isCredentialWrite(file string, fd *ast.FuncDecl) bool {
+// isCredentialWrite reports whether fd, declared in file, a path under the
+// API, is one of credentialWrites, and whether it may also prune.
+func isCredentialWrite(file string, fd *ast.FuncDecl) (write, prune bool) {
 	recv := ""
 	if fd.Recv != nil && len(fd.Recv.List) == 1 {
 		t := fd.Recv.List[0].Type
@@ -1056,9 +1061,12 @@ func isCredentialWrite(file string, fd *ast.FuncDecl) bool {
 			recv = id.Name
 		}
 	}
-	return slices.ContainsFunc(credentialWrites, func(w struct{ file, recv, name string }) bool {
-		return w.file == filepath.Base(file) && w.recv == recv && w.name == fd.Name.Name
-	})
+	for _, w := range credentialWrites {
+		if w.file == file && w.recv == recv && w.name == fd.Name.Name {
+			return true, w.prunes
+		}
+	}
+	return false, false
 }
 
 // signingKeyReaches type-checks the package in dir, as import path path, an
@@ -1067,7 +1075,8 @@ func isCredentialWrite(file string, fd *ast.FuncDecl) bool {
 // which names the key's reference; a use of entity.SecretKey, the key's
 // kind; and a call of a PutSecret, PruneSecret or SetSigningKey method,
 // which writes or drops a version of any secret or names another secret as
-// the key, but a PutSecret in one of credentialWrites. Every
+// the key, but a PutSecret in one of credentialWrites, and a PruneSecret in
+// one of them that prunes. Every
 // way to write the key needs one of these, so a route writing it is caught
 // whatever it is named; one reaching the reference through another package's
 // function, which none of the API's imports has, is not.
@@ -1106,8 +1115,10 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 			continue
 		}
 		for _, d := range f.Decls {
-			fd, ok := d.(*ast.FuncDecl)
-			exempt := ok && sub == "" && isCredentialWrite(file, fd)
+			var exempt, prunes bool
+			if fd, ok := d.(*ast.FuncDecl); ok {
+				exempt, prunes = isCredentialWrite(file, fd)
+			}
 			ast.Inspect(d, func(n ast.Node) bool {
 				if lit, ok := n.(*ast.CompositeLit); ok && sub == "" && !secretKindAllowed(info, lit, kind) {
 					bad = append(bad, file+":"+strconv.Itoa(fset.Position(lit.Pos()).Line)+" builds a secretSetting whose kind is SecretKey or no constant")
@@ -1124,7 +1135,7 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 				case o == kind:
 					bad = append(bad, at+" uses entity.SecretKey")
 				case (o.Name() == "PutSecret" || o.Name() == "PruneSecret" || o.Name() == "SetSigningKey") && isMethod(o):
-					if o.Name() == "PutSecret" && exempt {
+					if o.Name() == "PutSecret" && exempt || o.Name() == "PruneSecret" && prunes {
 						break
 					}
 					bad = append(bad, at+" calls "+o.Name())
