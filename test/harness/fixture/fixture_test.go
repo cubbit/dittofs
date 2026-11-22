@@ -30,17 +30,13 @@ func TestAddress(t *testing.T) {
 		}, "192.168.1.20"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			interfaces = func() ([]iface, error) { return tc.ifaces, nil }
-			t.Cleanup(func() { interfaces = realInterfaces })
-			got, err := address()
+			got, err := pickAddress(tc.ifaces)
 			if got != tc.want || (err == nil) != (tc.want != "") {
 				t.Errorf("got %q, %v; want %q", got, err, tc.want)
 			}
 		})
 	}
 }
-
-var realInterfaces = interfaces
 
 // The network is the one the fixture's server is on: the host's, or, for dt
 // in a dtc container on a bridge network, that container's.

@@ -27,14 +27,14 @@ func TestFixtureMount(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(server.mount, "marker"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
+	start, _ := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
 	root, r := repo(t, `suites:
   m:
     cmd: ["test -f {mount}/marker", "test -f marker"]
     dir: "{mount}"
     fixture: { profile: memory, nfs: "4.1" }
 `, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
-	rep, out := runTarget(t, root, r, "m", false)
+	rep, out := runTarget(t, root, r, "m", false, start)
 	want, note := report.Passed, ""
 	if runtime.GOOS != "linux" {
 		want, note = report.NotRun, "dt mounts NFS only on Linux yet"

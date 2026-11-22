@@ -13,14 +13,18 @@ import (
 
 // at runs group g with up to n cells at once, and returns the report and what
 // the run printed.
-func at(t *testing.T, root string, r *registry.Registry, n int) (Report, string) {
+func at(t *testing.T, root string, r *registry.Registry, n int, start ...startFunc) (Report, string) {
 	t.Helper()
 	cells, err := Select(root, r, "g", "", "pr", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &out, Parallel: n})
+	o := Options{Root: root, Results: filepath.Join(root, "results"), Out: &out, Parallel: n}
+	if len(start) > 0 {
+		o.start = start[0]
+	}
+	rep, err := Run(context.Background(), cells, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +124,7 @@ func TestConflict(t *testing.T) {
 // With --parallel, the run's {bin} is built once, before any cell starts,
 // not by each fixture cell at once into the same directory.
 func TestParallelBuildsBinOnce(t *testing.T) {
-	fakeFixture(t, func(context.Context) (fixtureServer, error) { return &fakeServer{}, nil })
+	start, _ := fakeFixture(t, func(context.Context) (fixtureServer, error) { return &fakeServer{}, nil })
 	root, r := repo(t, `groups: { g: [a, b] }
 suites:
   a: { cmd: "true", parallel: true, fixture: { profile: memory, nfs: export } }
@@ -137,7 +141,7 @@ exit 0
 	t.Setenv("PATH", filepath.Join(root, "fake")+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GO_LOCK", filepath.Join(root, "go.lock"))
 	t.Setenv("GO_LOG", filepath.Join(root, "go.log"))
-	rep, out := at(t, root, r, 2)
+	rep, out := at(t, root, r, 2, start)
 	log, _ := os.ReadFile(filepath.Join(root, "go.log"))
 	if rep.Status() != 0 || string(log) != "build\n" {
 		t.Errorf("go build ran %q, outcomes %+v\n%s", log, rep.Outcomes, out)

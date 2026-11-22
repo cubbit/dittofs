@@ -72,6 +72,7 @@ type Options struct {
 	Base     string    // --base: the ref {base} stands for; empty leaves it to the event (see base)
 	Changed  bool      // --changed: {packages} of patterns holds only the packages changed since the base
 	Packages []string  // --packages: runs only these packages, in place of a suite's patterns and of --changed's
+	start    startFunc // a fixture's start; nil is startFixture, and dt's own tests pass their own
 }
 
 // minute is a variable so the tests can shorten a cell's limit.
@@ -494,7 +495,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		if spec.Shares != "" {
 			spec.Shares = filepath.Join(o.Root, spec.Shares)
 		}
-		server, err = startFixture(setup, spec, needs.ServiceEnv(o.Root, c.Needs), vals["bin"], out, w)
+		start := o.start
+		if start == nil {
+			start = startFixture
+		}
+		server, err = start(setup, spec, needs.ServiceEnv(o.Root, c.Needs), vals["bin"], out, w)
 		if err != nil {
 			return setupFailed("the fixture", err)
 		}

@@ -1,17 +1,11 @@
 package fixture
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
 	"github.com/cubbit/dittofs/test/harness/registry"
 )
-
-// ErrNoServer refuses a fixture whose server is DittoFS: dt starts none
-// until its fixture is rebuilt on the server's new control plane, with dfs
-// init and dfs start.
-var ErrNoServer = errors.New("dt starts no DittoFS server until its fixture is rebuilt on the new control plane")
 
 // Unsupported says what of fixture f dt doesn't set up yet on platform goos,
 // as runtime.GOOS names it, or returns "". A field that holds a matrix

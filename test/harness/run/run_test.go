@@ -52,16 +52,21 @@ func anyRepo(t *testing.T, y string, files map[string]string) (string, *registry
 	return root, r
 }
 
-// runTarget selects and runs target at tier pr, and returns the report and
-// everything the run printed.
-func runTarget(t *testing.T, root string, r *registry.Registry, target string, ci bool) (Report, string) {
+// runTarget selects and runs target at tier pr, its fixtures started by
+// start when one is given, and returns the report and everything the run
+// printed.
+func runTarget(t *testing.T, root string, r *registry.Registry, target string, ci bool, start ...startFunc) (Report, string) {
 	t.Helper()
 	cells, err := Select(root, r, target, "", "pr", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), CI: ci, Out: &out})
+	o := Options{Root: root, Results: filepath.Join(root, "results"), CI: ci, Out: &out}
+	if len(start) > 0 {
+		o.start = start[0]
+	}
+	rep, err := Run(context.Background(), cells, o)
 	if err != nil {
 		t.Fatal(err)
 	}

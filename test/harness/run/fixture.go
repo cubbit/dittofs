@@ -24,9 +24,14 @@ type fixtureServer interface {
 	Stop() error
 }
 
-// startFixture starts a cell's server; the tests replace it. It starts the
-// kernel's NFS server, and refuses a DittoFS one (fixture.ErrNoServer).
-var startFixture = func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error) {
+// startFunc starts a cell's server: fixture f, with the variables of the
+// services it needs, from the binaries in bin, its output under out and dt's
+// lines on its setup to w.
+type startFunc func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error)
+
+// startFixture is the start a run takes when its Options name none: the
+// kernel's NFS server for a knfsd fixture, DittoFS otherwise.
+func startFixture(ctx context.Context, f registry.Fixture, _ []string, bin, out string, w io.Writer) (fixtureServer, error) {
 	if f.Server == "knfsd" {
 		k, err := fixture.StartKnfsd(ctx, f, out, w)
 		if err != nil {
@@ -34,16 +39,11 @@ var startFixture = func(ctx context.Context, f registry.Fixture, services []stri
 		}
 		return k, nil
 	}
-	// decision: a DittoFS fixture is refused here, after {bin} and the KDC's
-	// image are built, not before them in runCell. dt's own tests of a
-	// fixture's lifecycle (its reset, its stop, a server that ends, the KDC's
-	// image, its mounts) drive this path through a fake start, and a refusal
-	// ahead of the build would leave every one of them unreachable. The cost is
-	// a cached build for a cell whose server never starts; every such cell is
-	// already filtered where dfs serves nothing. Move the refusal ahead of the
-	// build if a cell that asks for one runs anywhere before the fixture is
-	// rebuilt on dfs init and dfs start.
-	return nil, fixture.ErrNoServer
+	s, err := fixture.Start(ctx, f, bin, out, w)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // cellFixture is fixture f with a cell's matrix values filled in.

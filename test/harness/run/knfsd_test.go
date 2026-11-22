@@ -14,7 +14,7 @@ import (
 // doesn't run: its checkout has none to build. Its commands get {server} and
 // {nfs-port}, and none of dfs's users.
 func TestKnfsdCell(t *testing.T) {
-	asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return &fakeServer{}, nil })
+	start, asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return &fakeServer{}, nil })
 	root, r := repo(t, `suites:
   k: { cmd: "echo {server}:{nfs-port}", fixture: { server: knfsd, nfs: export } }
   u: { cmd: "echo {user}", fixture: { server: knfsd, nfs: export } }
@@ -31,7 +31,7 @@ func TestKnfsdCell(t *testing.T) {
 		cells[i].Needs = nil // the test's, not this machine's knfsd
 	}
 	var out bytes.Buffer
-	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &out})
+	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &out, start: start})
 	if err != nil {
 		t.Fatal(err)
 	}
