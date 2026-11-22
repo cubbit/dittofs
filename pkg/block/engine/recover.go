@@ -121,8 +121,14 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 	var recorded []entity.SyncMark
 	var gen kvstore.OpenGen
 	if id != ([16]byte{}) {
-		if recorded, gen, err = e.d.Lifecycle.SyncMarks(ctx, id); err != nil {
+		var skipped [][]byte
+		if recorded, gen, skipped, err = e.d.Lifecycle.SyncMarks(ctx, id); err != nil {
 			return opened{}, fmt.Errorf("engine: start: read the sync marks of %s: %w", dir, err)
+		}
+		// The open treats each stream left out as having no recorded mark,
+		// and the next marks write carrying it replaces the stored one.
+		for _, s := range skipped {
+			e.d.Logger.Warn("sync mark left out: it does not decode", "device", dir, "stream", fmt.Sprintf("%x", s))
 		}
 	}
 
@@ -131,8 +137,6 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 		return e.refuseDevice(dir, expect, shares, tags, err)
 	}
 
-	e.noteOpen(j, id, gen)
-
 	u.push(j.Close)
 
 	if err := forgetFinished(ctx, j, tags); err != nil {
@@ -140,6 +144,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 	}
 
 	vl := newVersionLimit(j)
+	vl.open = marks{journal: id, gen: gen}
 	o := opened{
 		journal: vl,
 		id:      expect,
@@ -259,7 +264,7 @@ func (e *Engine) attachLate(ctx context.Context, shares []Share) bool {
 	if !closed {
 		for _, b := range o.table {
 			if !b.removed {
-				b.gc = e.groupCommitFor(b.j)
+				b.gc = e.groupCommitFor(b.j, b.vl.open)
 			}
 		}
 
@@ -835,6 +840,7 @@ var errLimitRefused = errors.New("engine: the journal refused the version limit"
 // lock, and the state of its raise.
 type versionLimit struct {
 	j    Journal
+	open marks         // the identity and open generation Start read for this open of j; its group commit's marks writes carry them
 	last atomic.Uint64 // the counter of the limit last passed with SetVersionLimit
 	rate rateBuckets
 

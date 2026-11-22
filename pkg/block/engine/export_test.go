@@ -328,7 +328,7 @@ func (e *Engine) OnLoop(f func()) { e.beforeTake.Store(&f) }
 
 // DueNow reports whether f is on journal j's due set, asked for now.
 func (e *Engine) DueNow(j Journal, f entity.FileID) bool {
-	g := e.groupCommitFor(j)
+	g := e.groupCommitFor(j, marks{})
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.due[f] != nil && g.due[f].now
@@ -336,7 +336,7 @@ func (e *Engine) DueNow(j Journal, f entity.FileID) bool {
 
 // Due reports whether f is on journal j's due set.
 func (e *Engine) Due(j Journal, f entity.FileID) bool {
-	g := e.groupCommitFor(j)
+	g := e.groupCommitFor(j, marks{})
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.due[f] != nil
@@ -359,7 +359,7 @@ func (e *Engine) SyncFile(ctx context.Context, s entity.ShareID, f entity.FileID
 
 // Failing reports whether existence_commit_failing names f on journal j.
 func (e *Engine) Failing(j Journal, f entity.FileID) bool {
-	g := e.groupCommitFor(j)
+	g := e.groupCommitFor(j, marks{})
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.failing[f] != nil && g.failing[f].raised
@@ -645,7 +645,7 @@ func (e *Engine) RaisesAlive() int32 {
 // every due file due now and returns once the due set is empty and no batch
 // is in flight, or at ctx's end.
 func (e *Engine) CommitAll(ctx context.Context, j Journal) error {
-	g := e.groupCommitFor(j)
+	g := e.groupCommitFor(j, marks{})
 	for {
 		g.mu.Lock()
 		if g.closed {
@@ -692,7 +692,7 @@ func (e *Engine) CommitAll(ctx context.Context, j Journal) error {
 // returns once no batch is in flight there, so none of them is committed
 // after.
 func (e *Engine) DropShare(ctx context.Context, j Journal, s entity.ShareID) error {
-	g := e.groupCommitFor(j)
+	g := e.groupCommitFor(j, marks{})
 
 	g.removals.dropShare(s)
 

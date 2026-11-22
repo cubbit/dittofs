@@ -56,9 +56,10 @@ type groupCommit struct {
 }
 
 // marks is what a group commit knows of its journal's sync marks. Its
-// journal and gen are the ones Start read for the open (noteOpen); a journal
-// no start opened, a fixture's, records under the zero identity at open
-// generation 0, which a J‖journal‖og never raised matches.
+// journal and gen are the ones Start read for the open, carried on the open's
+// versionLimit; a journal no start opened, a fixture's, records under the
+// zero identity at open generation 0, which a J‖journal‖og never raised
+// matches.
 type marks struct {
 	journal   [16]byte          // the journal's identity
 	gen       kvstore.OpenGen   // the open generation of the journal's current open
@@ -191,10 +192,12 @@ func storeOp(op pendingOp, mtime time.Time) kvstore.PendingOp {
 	return o
 }
 
-// groupCommitFor is journal j's group commit, started on first use. Once
+// groupCommitFor is journal j's group commit, started on first use with
+// open's journal and gen, the identity and open generation its marks writes
+// carry. Once
 // the engine's group commits are closed it starts none: it answers a closed
 // one, which runs no goroutine and notes no file.
-func (e *Engine) groupCommitFor(j Journal) *groupCommit {
+func (e *Engine) groupCommitFor(j Journal, open marks) *groupCommit {
 	e.gcMu.Lock()
 	defer e.gcMu.Unlock()
 	// decision: gcs is keyed by the Journal value, so a Journal must be
@@ -208,7 +211,7 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	g := &groupCommit{
 		e:        e,
 		j:        j,
-		marks:    e.opens[j],
+		marks:    open,
 		due:      map[entity.FileID]*dueFile{},
 		returned: make(chan struct{}),
 		wake:     make(chan struct{}, 1),
@@ -237,17 +240,6 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	go g.run()
 	go g.removals.run()
 	return g
-}
-
-// noteOpen notes the identity and open generation Start read for journal j's
-// open, which its group commit's marks writes carry.
-func (e *Engine) noteOpen(j Journal, id [16]byte, gen kvstore.OpenGen) {
-	e.gcMu.Lock()
-	defer e.gcMu.Unlock()
-	if e.opens == nil {
-		e.opens = map[Journal]marks{}
-	}
-	e.opens[j] = marks{journal: id, gen: gen}
 }
 
 // halt stops the group commit's goroutine and joins it within the bound b,
