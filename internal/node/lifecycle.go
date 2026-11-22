@@ -370,7 +370,7 @@ func (n *Node) register(ctx context.Context) error {
 // counter, makes reconcile record the refusals.
 //
 // decision: reconcile's mark is the counters read before the shares, not the
-// later ones identity's walk settled on: the shares and apply acted on the
+// later ones apply's settings walk settled on: the shares and apply acted on the
 // first, so a mark at the later ones would skip a share or setting written
 // between. Identity may run a newer State than the mark says, which costs
 // one more pass, never a missed one. Each pass keeps the same mark.

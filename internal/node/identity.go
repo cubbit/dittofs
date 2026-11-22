@@ -14,28 +14,16 @@ import (
 	"github.com/cubbit/dittofs/pkg/settings"
 )
 
-const (
-	// stepIdentity names identity's start step and its part.
-	stepIdentity = "identity"
-	// The identity sections' prefixes and the keytab's key, as the node
-	// reports a refusal of each.
-	identitySection  = "identity"
-	directorySection = "identity.directory"
-	keytabSetting    = "identity.keytab"
-)
+// stepIdentity names identity's start step and its part.
+const stepIdentity = "identity"
 
 // installation is the installation's settings scope.
 var installation = entity.SettingScope{Kind: entity.ScopeInstallation}
 
-// applyIdentity hands identity a State: the principals generation, the
-// identity and identity.directory sections and the keytab's versions, read
-// from one walk of the settings during which the settings generation did not
-// move, and returns the records it refused. The counters are read right
-// before each walk and again after it; a walk the generation moved under is
-// discarded and walked again, since the walk reads each page in its own
-// transaction and could mix two states of the store. While writes keep
-// moving the generation the call waits, and ends only with ctx, as a pass's
-// position stalls (RFC 23 §2.3).
+// applyIdentity hands identity a State: the principals generation of c, and
+// the identity and identity.directory sections and the keytab's versions
+// from snap, the pass's settings walk at c, and returns the records it
+// refused.
 //
 // decision: before identity holds a State, a section the walk refuses, a row
 // that does not decode, holds a newer schema or fails the section's checks,
@@ -47,98 +35,111 @@ var installation = entity.SettingScope{Kind: entity.ScopeInstallation}
 // repairs the row.
 //
 // decision: once identity holds a State, a refused section, or a State
-// Apply refuses, never holds a principal change back: the refused record is
-// reported with the settings generation it was read at, and identity is
-// applied the new principals generation and keytab versions with the last
-// section identity accepted in place of the refused one; when Apply refuses
-// the State, with both last sections. So identity runs on its last good
-// settings while the API repairs the row, and a disable still reaches it.
-// Overturned if a refused setting must ever stop sign-in outright.
-func (n *Node) applyIdentity(ctx context.Context) ([]refusal, error) {
+// Apply refuses, never holds a principal change back: each refused row is
+// reported under its own key with the settings generation it was read at,
+// and identity is applied the new principals generation with the last
+// section identity accepted in place of the refused one, and the last
+// keytab in place of one that does not read; when Apply refuses the State,
+// with both last sections and the last sections' keytab. So identity runs on
+// its last good settings while the API repairs the row, and a disable still
+// reaches it. Its ceiling: the last section stands in whole, so a refused
+// row holds back every other row of its section, and those rows read applied
+// through the API while they do not run, as the walk's decode stops at the
+// first refused row and leaves no value for the rest; and a refusal the
+// section's Validate made names no row, so it is reported under the
+// section's prefix, which the API matches to no row, and the section's rows
+// read applied. Overturned by a walk that decodes a section with its
+// refused rows dropped and Validate naming the field it refuses, or if a
+// refused setting must ever stop sign-in outright.
+func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *settings.Snapshot) ([]refusal, error) {
 	node := n.cfg.Bootstrap.Node.ID
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		c, err := n.counters(ctx)
-		if err != nil {
-			return nil, err
-		}
-		snap, _, err := settings.Read(ctx, n.meta.Nodes(), n.rec.table, node)
-		if err != nil {
-			return nil, err
-		}
-		after, err := n.counters(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if after.Settings != c.Settings {
-			continue
-		}
-		return n.applyIdentityAt(ctx, c, snap)
-	}
-}
-
-// applyIdentityAt builds identity's State from snap, read at counters c,
-// and applies it, as applyIdentity says.
-func (n *Node) applyIdentityAt(ctx context.Context, c kvstore.Counters, snap *settings.Snapshot) ([]refusal, error) {
-	node := n.cfg.Bootstrap.Node.ID
-	last := n.idState.Load()
+	last := n.identity.Applied()
 	var refusals []refusal
-	// kept is the last value identity accepted for a refused section, or the
-	// refusal itself while identity holds none.
-	kept := func(key string, err error) error {
+	// refuse reports the rows err refuses, or key when it names none, or is
+	// err itself while identity holds no State.
+	refuse := func(key string, err error) error {
 		if last == nil {
 			return err
 		}
-		refusals = append(refusals, settingRefused(key, c.Settings, err))
+		refusals = refusedRows(refusals, key, c.Settings, err)
 		return nil
 	}
 	st := identity.State{Generation: c.Principals}
 	var err error
 	if st.Settings, err = identity.SettingsOf(snap, node); err != nil {
-		if err := kept(identitySection, err); err != nil {
+		if err := refuse(identity.SectionName, err); err != nil {
 			return nil, err
 		}
 		st.Settings = last.Settings
 	}
 	if st.Directory, err = identity.DirectoryOf(snap, node); err != nil {
-		if err := kept(directorySection, err); err != nil {
+		if err := refuse(identity.DirectorySectionName, err); err != nil {
 			return nil, err
 		}
 		st.Directory = last.Directory
 	}
 	if st.Keytab, err = n.keytab(ctx, st.Settings.Keytab); err != nil {
-		if err := kept(keytabSetting, err); err != nil {
+		if err := refuse(identity.KeytabKey, err); err != nil {
 			return nil, err
 		}
-		st.Keytab = last.Keytab
+		st.Settings.Keytab, st.Keytab = last.Settings.Keytab, last.Keytab
 	}
 	if err := n.identity.Apply(st); err != nil {
-		if err := kept(identitySection, err); err != nil {
+		if last == nil {
 			return nil, err
+		}
+		// Both sections passed their Validate in the walk, so Apply refuses
+		// only the NetBIOS name equal to the directory's NetBIOS domain: the
+		// row reported is the side that moved.
+		key := identity.KeyNetBIOSName
+		if st.Settings.NetBIOSName == last.Settings.NetBIOSName {
+			key = identity.KeyNetBIOSDomain
+		}
+		refusals = refusedRows(refusals, key, c.Settings, err)
+		// The keytab the last identity section names; read already, or kept,
+		// when it names the one st does.
+		if st.Settings.Keytab != last.Settings.Keytab {
+			if st.Keytab, err = n.keytab(ctx, last.Settings.Keytab); err != nil {
+				refusals = refusedRows(refusals, identity.KeytabKey, c.Settings, err)
+				st.Keytab = last.Keytab
+			}
 		}
 		st.Settings, st.Directory = last.Settings, last.Directory
 		if err := n.identity.Apply(st); err != nil {
 			return refusals, err
 		}
 	}
-	n.idState.Store(&st)
 	return refusals, nil
 }
 
 // keytab is every version of the keytab ref names still held, opened,
 // current first; none for the zero ref.
 //
-// ponytail: a keytab read that fails is refused until the settings
-// generation next moves, a store error among them, as the provider's error
+// ponytail: a keytab read that fails is refused until the settings or the
+// principals generation next moves, a store error among them, as the provider's error
 // does not tell a store error from a version that does not open. Retry it on
 // reconcile's backoff once the two can be told apart.
 func (n *Node) keytab(ctx context.Context, ref entity.SecretRef) ([]secrets.Version, error) {
 	if ref == (entity.SecretRef{}) {
 		return nil, nil
 	}
-	return n.secrets.Versions(ctx, secrets.Protocol, entity.SecretKeytab, entity.SecretOwner{Scope: installation, Key: keytabSetting}, ref)
+	return n.secrets.Versions(ctx, secrets.Protocol, entity.SecretKeytab, entity.SecretOwner{Scope: installation, Key: identity.KeytabKey}, ref)
+}
+
+// refusedRows is refusals with each row err refuses added, or key when err
+// names none, at settings generation gen.
+func refusedRows(refusals []refusal, key string, gen uint64, err error) []refusal {
+	keys := []string{key}
+	if rows := settings.RefusedRows(err); len(rows) > 0 {
+		keys = keys[:0]
+		for _, r := range rows {
+			keys = append(keys, r.Key)
+		}
+	}
+	for _, k := range keys {
+		refusals = append(refusals, settingRefused(k, gen, err))
+	}
+	return refusals
 }
 
 // settingRefused is the refusal of the installation setting key at settings

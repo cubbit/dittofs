@@ -216,17 +216,29 @@ func NewSigning(authenticate func(*http.Request) (auth.Caller, error), signingKe
 	}
 }
 
-// NewWithDialers is New with dir as identity's directory dialer, which New
-// sets to the TLS one, and authenticate, when set, as the API's
+// NewWithDirectory is New with dir as identity's directory dialer, which
+// New sets to the TLS one, and authenticate, when set, as the API's
 // Authenticate.
-func NewWithDialers(dir directory.Dialer, authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
+func NewWithDirectory(dir directory.Dialer, authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
 	return func(cfg Config) (*Node, error) {
 		return newNode(cfg, seams{directory: dir, authenticate: authenticate})
 	}
 }
 
-// AppliedIdentity is the last State identity accepted from the node.
-func (n *Node) AppliedIdentity() iidentity.State { return *n.idState.Load() }
+// AppliedIdentity is the State identity runs, the zero State before the
+// first Apply.
+func (n *Node) AppliedIdentity() iidentity.State {
+	if st := n.identity.Applied(); st != nil {
+		return *st
+	}
+	return iidentity.State{}
+}
+
+// AppliedKeytab is the keytab identity holds in force and its current
+// version, as node status reports it.
+func (n *Node) AppliedKeytab() (entity.SecretRef, uint64, []identity.KeytabName) {
+	return n.identity.AppliedKeytab()
+}
 
 // SetNFS has apply hand the NFS slot enabled and s, as the adapter's
 // settings section will. Safe while the node runs: a pass reads it once a

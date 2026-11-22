@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"sync/atomic"
 
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/identity/directory"
@@ -75,9 +74,6 @@ type Node struct {
 	open     *openstate.Table
 	engine   *engine.Engine
 	identity *identity.Server
-	// idState is the last State identity accepted, which a refused
-	// section's value is kept from; nil until the first Apply.
-	idState atomic.Pointer[identity.State]
 	// secrets is the secret provider, over the storage key and the
 	// protocol key when the bootstrap names one.
 	secrets  *secrets.Provider
