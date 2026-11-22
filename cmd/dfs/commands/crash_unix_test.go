@@ -238,9 +238,9 @@ func applied(st apiv1.ShareStatus) bool {
 
 // §2.1's crash half: a share whose create was answered 201, the node killed
 // before its reconcile read the share list, serves once the node restarts.
-// Until that read the share reads applied on no node, so neither the create
-// nor the API binds it or claims it: only the record carries it across the
-// crash.
+// Until that read the share reads applied on no node, so the row catches a
+// status the API made up rather than read from the node, and a create whose
+// record the crash lost.
 func TestCrashBeforeTheShareListReadServesTheCreatedShare(t *testing.T) {
 	config, ns := crashInstall(t, nil)
 	// No share's row exists until the create commits, so the first scan of
@@ -272,12 +272,11 @@ func TestCrashBeforeTheShareListReadServesTheCreatedShare(t *testing.T) {
 
 // deletedFiles is how many files the share the deletion row removes holds.
 //
-// ponytail: RFC 23's row seeds 10⁵ files, but the runner moves an operation
-// one step a turn, a turn a second, and a batch of step 4 drops about 21
-// rows, so 10⁵ files take hours to drop; 50 files take about 15 batches,
-// the files phase still several turns, the drop inside the child's bound.
-// Seed 10⁵ once the runner runs a step again at once while it reports work
-// left.
+// ponytail: RFC 23's row seeds 10⁵ files, which at the runner's pace, set
+// by the ponytail on its run loop, take about 4 hours to drop; 50 files are
+// 151 rows under the share's file prefix, 8 batches of step 4, so the files
+// phase spans several turns and the drop ends inside the child's bound. Seed
+// 10⁵ once that ponytail is replaced.
 const deletedFiles = 50
 
 // §3.2 delete: a share's deletion, the node killed during its files phase
@@ -318,7 +317,7 @@ func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 	})
 
 	// Every scan of the share's file rows is a batch of step 4, the files
-	// phase: the first drops a batch, and the second is held.
+	// phase: the second scan is held.
 	files := keys.ID([]byte{keys.KindF}, share.ID[:])
 	c := serve(t, config, hold(kvtest.OpScan, files, 2, nil))
 	id := share.ID.String()
@@ -345,7 +344,7 @@ func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 	c.kill(t)
 
 	c = serve(t, config)
-	last := before
+	last, sawRunning := before, false
 	end := poll(t, c, "the deletion succeeded after the restart", func(ctx context.Context) (apiv1.Operation, error) {
 		now, err := c.api.Operation(ctx, op.ID)
 		if err != nil {
@@ -355,9 +354,12 @@ func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 			now.State != apiv1.OpRunning && now.State != apiv1.OpSucceeded {
 			t.Fatalf("operation %s after the restart: %+v, after %+v; want it running or succeeded, Done never falling", op.ID, now, last)
 		}
-		last = now
+		last, sawRunning = now, sawRunning || now.State == apiv1.OpRunning
 		return now, nil
 	}, func(o apiv1.Operation) bool { return o.State == apiv1.OpSucceeded })
+	if !sawRunning {
+		t.Errorf("operation %s after the restart: read succeeded at once, want it read running first: the same operation resumed", op.ID)
+	}
 	if end.Progress.Done <= before.Progress.Done {
 		t.Errorf("operation %s succeeded with Done %d, want above the %d it read before the kill", op.ID, end.Progress.Done, before.Progress.Done)
 	}

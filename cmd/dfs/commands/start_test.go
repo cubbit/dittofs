@@ -55,6 +55,18 @@ const heldLine = "dfs start child: held"
 // n-th of op on key made once store holds a row under arm, and holds that
 // one and every later one forever, once it printed heldLine; so a caller
 // that gives up on a held call and retries is held again.
+//
+// key is the key's keys.Describe text, which is what FaultKV hands At, and
+// Describe renders an ID by its first 4 bytes: a row names the whole key it
+// means, and another key that renders alike, at 2^-32 per pair, is held too.
+//
+// decision: the hold names a store scan, not a point in the node, and stops
+// the caller the row means only while nothing else scans that prefix once
+// armed: the shares' rows are scanned by the reconcile's share list read,
+// and by Removing and Tags only at start, before any share exists; a
+// share's file rows only by step 4's batch, shardDropBatch. A new scanner of
+// either prefix overturns it: the hold then moves to a named hook in the
+// node, as stageKey is in runStart.
 type holdAt struct {
 	op, key string
 	n       int64
@@ -72,8 +84,10 @@ func (h *holdAt) At(op string, key []byte) (time.Duration, int, error) {
 	return 0, 0, nil
 }
 
-// armed reports whether the store holds a committed row under h.arm, read
-// past the fault, so the call being consulted counts only once it does.
+// armed reports whether the store holds a committed row under h.arm, so
+// the call being consulted counts only once it does. Its View goes to the
+// inner store, never through the fault, so it consults nothing and cannot
+// hold itself or count as a call of its own.
 func (h *holdAt) armed() bool {
 	if len(h.arm) == 0 {
 		return true
