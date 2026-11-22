@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -23,24 +24,24 @@ func secretKey(id entity.SecretRef, version uint64) []byte {
 	return keys.Uint64(secretPrefix(id), version)
 }
 
-// secretUndecodable is a held secret version whose value does not decode.
-type secretUndecodable struct{ error }
-
-func (e secretUndecodable) Unwrap() error { return e.error }
+// ErrSecretUndecodable is a held secret version whose key or value does not
+// decode. No retry changes it: nothing but a direct edit of the store
+// repairs the version, since PutSecret and PruneSecret read it too.
+var ErrSecretUndecodable = errors.New("kvstore: a held secret version does not decode")
 
 // decodeHeld decodes a held version of a secret, marking a failure as
-// secretUndecodable.
+// ErrSecretUndecodable.
 func decodeHeld(id entity.SecretRef, version uint64, b []byte) (entity.Secret, bool, error) {
 	s, err := decodeSecret(id, version, b)
 	if err != nil {
-		return s, false, secretUndecodable{err}
+		return s, false, fmt.Errorf("%w: %w", ErrSecretUndecodable, err)
 	}
 	return s, true, nil
 }
 
 // secretIn reads one version of a secret, version 0 the current one; false
-// when no such version is held. A held version that does not decode fails
-// as secretUndecodable.
+// when no such version is held. A held version whose key or value does not
+// decode fails as ErrSecretUndecodable.
 func secretIn(r kv.Reader, id entity.SecretRef, version uint64) (entity.Secret, bool, error) {
 	if version != 0 {
 		b, ok, err := get(r, secretKey(id, version))
@@ -69,10 +70,11 @@ func secretIn(r kv.Reader, id entity.SecretRef, version uint64) (entity.Secret, 
 	return decodeHeld(id, v, row.Value)
 }
 
-// secretVersion is the version a secret's key names after its prefix.
+// secretVersion is the version a secret's key names after its prefix; a key
+// of another length fails as ErrSecretUndecodable.
 func secretVersion(prefix, key []byte) (uint64, error) {
 	if len(key) != len(prefix)+8 {
-		return 0, errMalformed
+		return 0, fmt.Errorf("%w: %w: secret key %x", ErrSecretUndecodable, errMalformed, key)
 	}
 
 	return binary.BigEndian.Uint64(key[len(prefix):]), nil

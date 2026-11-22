@@ -208,8 +208,8 @@ func testDeleteUserRefusesAForeignSecret(t *testing.T, kvo Opener) {
 	}
 	// The batch refuses an unmarked user; one marked would lose its grant and
 	// membership to it.
-	if done, _ := s.Nodes().ContinueDelete(ctx, alice.Principal); done {
-		t.Errorf("a deletion batch after the refused DeleteUser answered done, want not done")
+	if done, err := s.Nodes().ContinueDelete(ctx, alice.Principal); err == nil || done {
+		t.Errorf("a deletion batch after the refused DeleteUser: got done %v, %v; want refused", done, err)
 	}
 
 	if got, ok, err := cp.User(ctx, alice.Principal); err != nil || !ok || got.Deleted {
