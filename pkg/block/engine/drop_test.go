@@ -141,6 +141,36 @@ func TestDropOfAShareStartLeftRemovedForgetsItsTagWithNoHandle(t *testing.T) {
 	}
 }
 
+// A Drop of a share the engine never bound, whose tag the journal still
+// holds, forgets that tag once and closes no handle: the tag the store names
+// is forgotten whether or not the share was ever attached.
+func TestDropOfAShareWithNoBindingForgetsTheTagItIsGiven(t *testing.T) {
+	s := newStarter(t)
+	s.seed(t, 94)
+
+	if err := s.e.Start(t.Context(), []engine.Share{s.one}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := s.e.Drop(t.Context(), entity.NewShareID(), 94); err != nil {
+		t.Fatalf("Drop of a share with no binding = %v, want nil", err)
+	}
+
+	log := s.j.log()
+
+	if got := countOf(log, "forget 94"); got != 1 {
+		t.Errorf("forget 94 ran %d times in %v, want 1", got, log)
+	}
+
+	if s.j.called("close handle 94") {
+		t.Errorf("Drop closed a handle of a share it never bound: %v", log)
+	}
+
+	if _, ok := s.j.Stats().Shares[94]; ok {
+		t.Error("the journal still names tag 94 after Drop")
+	}
+}
+
 // A Drop of a share whose Unbind has not completed is refused with ErrInvalid
 // and touches nothing: not a Serving share, not one whose Unbind ended on its
 // context while a call was still inside it.
