@@ -28,10 +28,15 @@ func operationSteps(nodes kvstore.Nodes) map[string]stepRow {
 // no cursor, since each batch finds what is left from the rows, and a record
 // already gone answers done.
 //
-// decision: a principal that is not marked, and a target that names no
-// principal of kind, fail the operation rather than retry it: only the mark
-// marks, and the running operation holds its target, refusing the deletion
-// that could mark it, so neither changes on a retry. Every other error,
+// decision: a principal that is not marked, a target that names no
+// principal of kind, and a user whose record names a secret sealed for
+// another holder or as another kind, fail the operation rather than retry
+// it: only the mark marks, the running operation holds its target, refusing
+// the deletion that could mark it, and a secret keeps the kind and owner of
+// its current version, so none changes on a retry. The last leaves the user
+// marked with its record and every version of its secrets, and nothing
+// resumes it yet: fail closed rather than take another holder's secret or
+// leave the user's own password-equivalent behind. Every other error,
 // kv.ErrTooLarge included, is retried on the runner's backoff, since a
 // failed deletion is never resumed and would leave the principal marked and
 // half-deleted; and a batch's size can change between turns, as its quota

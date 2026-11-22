@@ -91,7 +91,7 @@ func (s *Server) storedHash(ctx context.Context, p entity.Principal) ([]byte, bo
 		return s.dummy, false, nil
 	}
 	// The hash is owned by the user's record under "password" (RFC 16 §2.3).
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: u.Principal.ID[:]}, Key: "password"}
+	owner := entity.UserSecretOwner(u.Principal.ID, entity.UserPasswordKey)
 	phc, err := s.deps.Secrets.Resolve(ctx, secrets.Storage, entity.SecretPassword, owner, u.Password)
 	if err != nil {
 		return nil, false, fmt.Errorf("%w: password hash: %w", vfserr.ErrUnavailable, err)

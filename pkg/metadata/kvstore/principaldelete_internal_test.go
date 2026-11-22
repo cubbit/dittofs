@@ -179,8 +179,8 @@ func TestUserDeletionResumesFromTheMarkAcrossRestarts(t *testing.T) {
 		return tx.PutSignInFailures(count, entity.SignInFailures{Count: 1})
 	}))
 	for _, sec := range []entity.Secret{
-		userSecret(ref, entity.SecretPassword, u, "password", 1), userSecret(ref, entity.SecretPassword, u, "password", 2),
-		userSecret(otherRef, entity.SecretPassword, other, "password", 1), userSecret(ntRef, entity.SecretNTHash, u, "nt_hash", 1),
+		userSecret(ref, entity.SecretPassword, u, entity.UserPasswordKey, 1), userSecret(ref, entity.SecretPassword, u, entity.UserPasswordKey, 2),
+		userSecret(otherRef, entity.SecretPassword, other, entity.UserPasswordKey, 1), userSecret(ntRef, entity.SecretNTHash, u, entity.UserNTHashKey, 1),
 	} {
 		r.must(cp.PutSecret(ctx, sec, sec.Version-1))
 	}

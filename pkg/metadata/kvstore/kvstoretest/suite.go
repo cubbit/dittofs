@@ -217,6 +217,7 @@ func Run(t *testing.T, open Opener) {
 		{"SecretPutRace", testSecretPutRace},
 		{"SecretVersionNumber", testSecretVersionNumber},
 		{"SecretKeepsKindAndOwner", testSecretKeepsKindAndOwner},
+		{"PutUserRefusesAForeignSecret", testPutUserRefusesAForeignSecret},
 		{"SecretRaisesSettingsGeneration", testSecretRaisesSettingsGeneration},
 		{"SecretPutIsOneTransaction", testSecretPutIsOneTransaction},
 		{"SecretTxPutRollsBack", testSecretTxPutRollsBack},

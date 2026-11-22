@@ -321,7 +321,7 @@ func commitAdmin(ctx context.Context, d Deps, st *kvstore.Store, inst [16]byte, 
 	if err != nil {
 		return fmt.Errorf("install: the administrator's password: %w", err)
 	}
-	pw, err := s.Seal(ctx, entity.SecretPassword, userSecretOwner(admin, "password"), admin.Password, h.Password)
+	pw, err := s.Seal(ctx, entity.SecretPassword, entity.UserSecretOwner(admin.Principal.ID, entity.UserPasswordKey), admin.Password, h.Password)
 	if err != nil {
 		return fmt.Errorf("install: seal the administrator's password: %w", err)
 	}
@@ -435,9 +435,4 @@ func generatePassword() []byte {
 func printPassword(w io.Writer, name string, password []byte) error {
 	_, err := fmt.Fprintf(w, "The administrator %q's generated password, shown once; it must be changed at the first sign-in:\n%s\n", name, password)
 	return err
-}
-
-// userSecretOwner is the owner of u's secret under key, as the API names it.
-func userSecretOwner(u entity.User, key string) entity.SecretOwner {
-	return entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: key}
 }

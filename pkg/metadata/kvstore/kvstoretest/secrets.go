@@ -20,18 +20,15 @@ import (
 )
 
 // secretOf is version v of a user's password hash, owned by user under
-// "password", sealed bytes standing in for a value.
+// entity.UserPasswordKey, sealed bytes standing in for a value.
 func secretOf(id entity.SecretRef, user entity.PrincipalID, v uint64, value string) entity.Secret {
 	return entity.Secret{
 		ID:      id,
 		Kind:    entity.SecretPassword,
 		Version: v,
 		KeyID:   "protocol-1",
-		Owner: entity.SecretOwner{
-			Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(user[:])},
-			Key:    "password",
-		},
-		Value: []byte(value),
+		Owner:   entity.UserSecretOwner(user, entity.UserPasswordKey),
+		Value:   []byte(value),
 	}
 }
 
@@ -290,10 +287,10 @@ func testSecretKeepsKindAndOwner(t *testing.T, kvo Opener) {
 		name string
 		s    entity.Secret
 	}{
-		{"another kind", moved(entity.SecretNTHash, userOwner(user, userID[:], "password"))},
-		{"a record ID one byte off", moved(pass, userOwner(user, otherID[:], "password"))},
-		{"another record kind", moved(pass, userOwner(group, userID[:], "password"))},
-		{"another key", moved(pass, userOwner(user, userID[:], "nt_hash"))},
+		{"another kind", moved(entity.SecretNTHash, userOwner(user, userID[:], entity.UserPasswordKey))},
+		{"a record ID one byte off", moved(pass, userOwner(user, otherID[:], entity.UserPasswordKey))},
+		{"another record kind", moved(pass, userOwner(group, userID[:], entity.UserPasswordKey))},
+		{"another key", moved(pass, userOwner(user, userID[:], entity.UserNTHashKey))},
 		{"a setting owner", moved(pass, entity.SecretOwner{Scope: scope, Key: "password"})},
 		{"another scope ID", byScope(2, entity.SettingScope{Kind: share, ID: uuid.New()})},
 		{"another scope kind", byScope(2, entity.SettingScope{Kind: ns, ID: scope.ID})},
@@ -309,7 +306,58 @@ func testSecretKeepsKindAndOwner(t *testing.T, kvo Opener) {
 		}
 	}
 
-	must(t, cp.PutSecret(ctx, moved(pass, userOwner(user, bytes.Clone(userID[:]), "password")), 1))
+	must(t, cp.PutSecret(ctx, moved(pass, userOwner(user, bytes.Clone(userID[:]), entity.UserPasswordKey)), 1))
+}
+
+// PutUser refuses a user whose password or NT hash reference names a held
+// secret sealed for another holder or as another kind than the field's, or
+// whose two references are one, on a new record and on a changed one, and
+// accepts the user's own.
+func testPutUserRefusesAForeignSecret(t *testing.T, kvo Opener) {
+	prof.Watch(t, prof.Options{})
+
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	bob, bobPw := user("bob"), newSecretRef()
+	must(t, cp.PutSecret(ctx, secretOf(bobPw, bob.Principal.ID, 1, "bob"), 0))
+
+	// Each refused create is its own principal, so none is refused as a
+	// generation conflict with another.
+	others := user("carol")
+	others.Password = bobPw
+	wrongKind := user("dave")
+	wrongKind.NTHash = newSecretRef()
+	nt := secretOf(wrongKind.NTHash, wrongKind.Principal.ID, 1, "dave")
+	nt.Owner = entity.UserSecretOwner(wrongKind.Principal.ID, entity.UserNTHashKey)
+	must(t, cp.PutSecret(ctx, nt, 0))
+	oneSecret := user("erin")
+	oneSecret.Password = newSecretRef()
+	oneSecret.NTHash = oneSecret.Password
+
+	for _, c := range []struct {
+		name string
+		u    entity.User
+	}{
+		{"naming bob's password", others},
+		{"naming an NT hash of the password kind", wrongKind},
+		{"naming one secret as both", oneSecret},
+	} {
+		if _, err := cp.PutUser(ctx, c.u, 0, entity.Alloc{}); !secretInvalid(err) {
+			t.Errorf("PutUser %s: got %v, want an invalid argument", c.name, err)
+		}
+	}
+
+	alice := user("alice")
+	alice.Password = newSecretRef()
+	must(t, cp.PutSecret(ctx, secretOf(alice.Password, alice.Principal.ID, 1, "alice"), 0))
+	gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
+	if err != nil {
+		t.Fatalf("PutUser naming alice's own password: %v", err)
+	}
+	alice.Password = bobPw
+	if _, err := cp.PutUser(ctx, alice, gen, entity.Alloc{}); !secretInvalid(err) {
+		t.Errorf("PutUser changed to name bob's password: got %v, want an invalid argument", err)
+	}
 }
 
 // Each put raises the settings generation by exactly one, and a refused one

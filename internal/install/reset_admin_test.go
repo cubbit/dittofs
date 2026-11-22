@@ -248,7 +248,7 @@ func (f *fix) ntAccount(pk keyprovider.KeyProvider, old string) (entity.User, en
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: u.Principal.ID[:]}, Key: "nt_hash"}
+	owner := entity.UserSecretOwner(u.Principal.ID, entity.UserNTHashKey)
 	if old == "" {
 		return f.named("ops"), owner
 	}

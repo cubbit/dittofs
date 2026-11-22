@@ -55,6 +55,20 @@ func (o SecretOwner) Equal(x SecretOwner) bool {
 		o.Key == x.Key
 }
 
+// The keys a user's record holds its secrets under.
+const (
+	UserPasswordKey = "password" // the password hash
+	UserNTHashKey   = "nt_hash"  // the NT hash
+)
+
+// UserSecretOwner is the owner of the secret user id's record holds under
+// key, UserPasswordKey or UserNTHashKey. Every site that seals or checks a
+// user's secret builds its owner here, so the store's ownership checks and
+// the seals agree.
+func UserSecretOwner(id PrincipalID, key string) SecretOwner {
+	return SecretOwner{Record: ResourceRef{Kind: ResourceUser, ID: id[:]}, Key: key}
+}
+
 // SecretKind is what a secret holds. Its value is stored, so a new kind is
 // appended and none is renumbered; the zero kind names none. A kind is
 // declared only once RFC 13 §7 gives it a wrapping-key role, so the node

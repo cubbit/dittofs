@@ -223,7 +223,7 @@ func TestUserDeletionResumesAcrossRestart(t *testing.T) {
 	secretPrefix := keys.ID([]byte{keys.KindSEC}, secret[:])
 	b.must("write alice's secret", cp.PutSecret(ctx, entity.Secret{
 		ID: secret, Kind: entity.SecretPassword, Version: 1, KeyID: "storage-1", Value: []byte{1},
-		Owner: entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: alice.ID[:]}, Key: "password"},
+		Owner: entity.UserSecretOwner(alice.ID, entity.UserPasswordKey),
 	}, 0))
 	g := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
 	_, err := cp.PutGroup(ctx, g, 0, groupIDs)

@@ -165,6 +165,9 @@ type ControlPlaneTx interface {
 	DeleteUser(p Principal, expect uint64) error
 	DeleteGroup(p Principal, expect uint64) error
 	DeleteShare(share ShareID, snapshots SnapshotDisposition, expect uint64) error
+	// PutUser refuses, as an invalid argument, a password or NT hash
+	// reference naming a held secret sealed for another holder or as another
+	// kind than the field's, or both fields naming one secret.
 	PutUser(u User, expect uint64, a Alloc) (uint64, error)
 	PutGroup(g Group, expect uint64, a Alloc) (uint64, error)
 	PutShare(s Share, expect uint64) (uint64, error)

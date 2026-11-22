@@ -62,11 +62,11 @@ func userSecretsGo(t *testing.T, restart bool) {
 
 	// Each of alice's secrets is written, then rotated once.
 	for _, v := range []uint64{1, 2} {
-		r.must(cp.PutSecret(ctx, userSecret(pw, entity.SecretPassword, alice, "password", v), v-1))
-		r.must(cp.PutSecret(ctx, userSecret(nt, entity.SecretNTHash, alice, "nt_hash", v), v-1))
+		r.must(cp.PutSecret(ctx, userSecret(pw, entity.SecretPassword, alice, entity.UserPasswordKey, v), v-1))
+		r.must(cp.PutSecret(ctx, userSecret(nt, entity.SecretNTHash, alice, entity.UserNTHashKey, v), v-1))
 	}
 
-	bobSecret := userSecret(bobPw, entity.SecretPassword, bob, "password", 1)
+	bobSecret := userSecret(bobPw, entity.SecretPassword, bob, entity.UserPasswordKey, 1)
 	r.must(cp.PutSecret(ctx, bobSecret, 0))
 
 	grant := entity.ShareGrant{
@@ -81,8 +81,6 @@ func userSecretsGo(t *testing.T, restart bool) {
 		t.Helper()
 		heldSecrets(t, r, alice, when, record, pw, nt)
 	}
-	held("before the deletion", true)
-
 	r.must(cp.DeleteUser(ctx, alice.Principal, gen))
 
 	if restart {
@@ -156,19 +154,14 @@ func userSecret(
 		Kind:    kind,
 		Version: v,
 		KeyID:   "protocol-1",
-		Owner: entity.SecretOwner{
-			Record: entity.ResourceRef{
-				Kind: entity.ResourceUser,
-				ID:   bytes.Clone(u.Principal.ID[:]),
-			},
-			Key: key,
-		},
-		Value: fmt.Appendf(nil, "%s %d", key, v),
+		Owner:   entity.UserSecretOwner(u.Principal.ID, key),
+		Value:   fmt.Appendf(nil, "%s %d", key, v),
 	}
 }
 
-// heldSecrets fails unless u's record is held exactly when record says, and
-// each reference holds versions 1 and 2 while it is, none once it is gone.
+// heldSecrets fails unless u's record is held, still marked for deletion,
+// exactly when record says, and each reference holds versions 1 and 2 while
+// it is, none once it is gone.
 func heldSecrets(
 	t *testing.T,
 	r *restarting,
@@ -185,13 +178,24 @@ func heldSecrets(
 	}
 
 	err := r.s.kv.View(context.Background(), func(rd kv.Reader) error {
-		_, ok, err := get(rd, userKey(u.Principal.ID))
+		b, ok, err := get(rd, userKey(u.Principal.ID))
 		if err != nil {
 			return err
 		}
 
 		if ok != record {
 			t.Errorf("%s: %s's record held %v, want %v", when, u.Name, ok, record)
+		}
+
+		if ok {
+			got, err := decodeUser(u.Principal.ID, b)
+			if err != nil {
+				return err
+			}
+
+			if !got.Deleted {
+				t.Errorf("%s: %s's record Deleted false, want true", when, u.Name)
+			}
 		}
 
 		for _, ref := range refs {
@@ -266,13 +270,13 @@ func TestUserDeletionRefusesAForeignSecret(t *testing.T) {
 		secret func(alice, bob entity.User, v uint64) entity.Secret
 	}{
 		{"another user's password", func(alice, bob entity.User, v uint64) entity.Secret {
-			return userSecret(alice.Password, entity.SecretPassword, bob, "password", v)
+			return userSecret(alice.Password, entity.SecretPassword, bob, entity.UserPasswordKey, v)
 		}},
 		{"alice's field, another kind", func(alice, bob entity.User, v uint64) entity.Secret {
-			return userSecret(alice.Password, entity.SecretNTHash, alice, "password", v)
+			return userSecret(alice.Password, entity.SecretNTHash, alice, entity.UserPasswordKey, v)
 		}},
 		{"alice's other field", func(alice, bob entity.User, v uint64) entity.Secret {
-			return userSecret(alice.Password, entity.SecretPassword, alice, "nt_hash", v)
+			return userSecret(alice.Password, entity.SecretPassword, alice, entity.UserNTHashKey, v)
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -287,7 +291,7 @@ func TestUserDeletionRefusesAForeignSecret(t *testing.T) {
 			r.must(err)
 			for _, v := range []uint64{1, 2} {
 				r.must(cp.PutSecret(ctx, c.secret(alice, bob, v), v-1))
-				r.must(cp.PutSecret(ctx, userSecret(alice.NTHash, entity.SecretNTHash, alice, "nt_hash", v), v-1))
+				r.must(cp.PutSecret(ctx, userSecret(alice.NTHash, entity.SecretNTHash, alice, entity.UserNTHashKey, v), v-1))
 			}
 
 			r.must(cp.DeleteUser(ctx, alice.Principal, gen))
@@ -299,38 +303,4 @@ func TestUserDeletionRefusesAForeignSecret(t *testing.T) {
 			heldSecrets(t, r, alice, "after the refused batch", true, alice.Password, alice.NTHash)
 		})
 	}
-}
-
-// PutUser refuses a password or NT hash reference whose held secret was
-// sealed for another holder or as another kind, on a new record and on a
-// changed one, and accepts the user's own.
-func TestPutUserRefusesAForeignSecret(t *testing.T) {
-	ctx := context.Background()
-	r := newRestarting(t, 100)
-	cp := r.s.ControlPlane()
-	alice := entity.User{Principal: entity.NewUser(), Name: "alice"}
-	bob := entity.User{Principal: entity.NewUser(), Name: "bob"}
-	bobPw, aliceNT, aliceWrong := entity.SecretRef{15: 1}, entity.SecretRef{15: 2}, entity.SecretRef{15: 3}
-	r.must(cp.PutSecret(ctx, userSecret(bobPw, entity.SecretPassword, bob, "password", 1), 0))
-	r.must(cp.PutSecret(ctx, userSecret(aliceNT, entity.SecretNTHash, alice, "nt_hash", 1), 0))
-	r.must(cp.PutSecret(ctx, userSecret(aliceWrong, entity.SecretPassword, alice, "nt_hash", 1), 0))
-
-	refused := func(what string, u entity.User, expect uint64) {
-		t.Helper()
-		if _, err := cp.PutUser(ctx, u, expect, entity.Alloc{}); !isInvalid(err) {
-			t.Errorf("PutUser %s: error %v, want invalid argument", what, err)
-		}
-	}
-	withPw, withNT := alice, alice
-	withPw.Password, withNT.NTHash = bobPw, aliceWrong
-	refused("naming bob's password", withPw, 0)
-	refused("naming an NT hash of the password kind", withNT, 0)
-
-	alice.NTHash = aliceNT
-	gen, err := cp.PutUser(ctx, alice, 0, entity.Alloc{})
-	if err != nil {
-		t.Fatalf("PutUser naming alice's own NT hash: %v", err)
-	}
-	withPw.NTHash = aliceNT
-	refused("changed to name bob's password", withPw, gen)
 }
