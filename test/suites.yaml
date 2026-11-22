@@ -244,6 +244,17 @@ suites:
       - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -benchtime=1x -run ^$ -bench ^BenchmarkReconcile$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
     timeout: { test: 180m, cell: 190m }
+  # Admission's caller cache at 10⁴ callers on 25 shares with the identity State's serial
+  # raised once a second: warm Ticket callers, and Secret callers, which carry no freshness and
+  # so resolve on every call. Reports ns/op, allocs/op, p99-ns, reads/s and misses/op; compare
+  # the two with benchstat -col /name on bench.txt. A -benchtime of tens of seconds, so that a
+  # run spans many raises; an explicit -timeout, as go test would otherwise stop a benchmark
+  # binary at 10 minutes. No -race: it changes the latency measured.
+  caller-cache-bench:
+    cmd:
+      - { sh: 'go test -count=5 -benchtime=30s -timeout=60m -run ^$ -bench ^BenchmarkAdmissionCallers$ ./internal/vfs/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 70m, cell: 80m }
   # A metadata commit's cost with checked sign-ins from many sources beside it, each costing two
   # commits, against none; compare with benchstat -col /signins on bench.txt. No -race, as for
   # engine-bench. Badger lives under t.TempDir(), so TMPDIR is pointed at DITTOFS_BENCH_DIR, a

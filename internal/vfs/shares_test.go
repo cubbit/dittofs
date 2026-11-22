@@ -46,7 +46,7 @@ func newShares(t *testing.T, events vfs.Events, audit func(vfs.ShareID) authz.Po
 }
 
 // startShares starts f's filesystem, serving it until the test ends.
-func startShares(t *testing.T, f *fixture, audit func(vfs.ShareID) authz.Policy) *shares {
+func startShares(t testing.TB, f *fixture, audit func(vfs.ShareID) authz.Policy) *shares {
 	t.Helper()
 	f.authz.Policy = audit
 	if err := f.Start(t.Context()); err != nil {
@@ -59,7 +59,7 @@ func startShares(t *testing.T, f *fixture, audit func(vfs.ShareID) authz.Policy)
 	return &shares{fixture: f, cp: f.fs.Store.ControlPlane(), share: f.fs.Share.ID}
 }
 
-func (s *shares) must(t *testing.T, err error) {
+func (s *shares) must(t testing.TB, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ var nextUID atomic.Uint32
 
 // user makes a user holding uid, or a fresh one above 60000 when uid is
 // empty, with access to share, and answers it.
-func (s *shares) user(t *testing.T, name, uid string, share entity.ShareID, a entity.ShareAccess) entity.User {
+func (s *shares) user(t testing.TB, name, uid string, share entity.ShareID, a entity.ShareAccess) entity.User {
 	t.Helper()
 	if uid == "" {
 		uid = strconv.FormatUint(uint64(60000+nextUID.Add(1)), 10)
@@ -84,7 +84,7 @@ func (s *shares) user(t *testing.T, name, uid string, share entity.ShareID, a en
 
 // userGeneration is the generation a write replacing or deleting user p
 // expects.
-func userGeneration(t *testing.T, st *kvstore.Store, p entity.Principal) uint64 {
+func userGeneration(t testing.TB, st *kvstore.Store, p entity.Principal) uint64 {
 	t.Helper()
 	u, err := st.Principals().User(t.Context(), p)
 	if err != nil {
@@ -127,7 +127,7 @@ func quotaVersion(t *testing.T, cp kvstore.ControlPlane, share entity.ShareID, t
 }
 
 // addShare makes a share at path, bound in the engine, answering its ID.
-func (s *shares) addShare(t *testing.T, name, path string) entity.ShareID {
+func (s *shares) addShare(t testing.TB, name, path string) entity.ShareID {
 	t.Helper()
 	sh := entity.Share{ID: entity.NewShareID(), Name: name, Path: path, Root: entity.NewFileID()}
 	s.must(t, errOf(kvstoretest.CreateShare(t.Context(), s.cp, sh)))
