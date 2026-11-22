@@ -37,28 +37,25 @@ func kvStore(t *testing.T) (*kvstore.Store, kv.KV) {
 	return st, db
 }
 
-// rawRow is the KV key and value of the installation's row key = value, as
-// the store writes it, taken from a store of its own.
-func rawRow(t *testing.T, key, value string) (k, v []byte) {
+// rawRow is the KV key and value of the one row of db whose key holds the
+// setting's key, failing unless exactly one does.
+func rawRow(t *testing.T, db kv.KV, key string) (k, v []byte) {
 	t.Helper()
-	ctx := context.Background()
-	st, db := kvStore(t)
-	if _, err := st.ControlPlane().PutSetting(ctx, entity.Setting{Scope: installationScope, Key: key, Value: []byte(value)}, 0); err != nil {
-		t.Fatal(err)
-	}
-	err := db.View(ctx, func(r kv.Reader) error {
+	n := 0
+	err := db.View(context.Background(), func(r kv.Reader) error {
 		for row, err := range r.Scan(nil, nil) {
 			if err != nil {
 				return err
 			}
 			if bytes.Contains(row.Key, []byte(key)) {
-				k, v = row.Key, row.Value
+				k, v = bytes.Clone(row.Key), bytes.Clone(row.Value)
+				n++
 			}
 		}
 		return nil
 	})
-	if err != nil || k == nil {
-		t.Fatalf("raw row of %s = %s: found %t, err %v", key, value, k != nil, err)
+	if err != nil || n != 1 {
+		t.Fatalf("raw row of %s: %d rows hold the key, err %v; want exactly one", key, n, err)
 	}
 	return k, v
 }
@@ -130,36 +127,48 @@ func TestCheckNetBIOSNameAgainstDomain(t *testing.T) {
 	}
 }
 
-// A write of the NetBIOS name whose read of the domain is overtaken between
-// its check and its commit, by a raw write of the domain row that raises no
-// settings generation, retries on that read alone and is refused naming the
-// domain: the second attempt's check reads the new domain.
-func TestCheckNetBIOSDomainOvertaken(t *testing.T) {
-	prof.Watch(t, prof.Options{})
-	ctx := context.Background()
-	st, db := kvStore(t)
-	cp := st.ControlPlane()
-	mustPut(t, cp, dcAddress, dcAddrJSON)
-	mustPut(t, cp, domainKey, `"OLD"`)
-	k, v := rawRow(t, domainKey, `"corp"`)
+// A write of either NetBIOS side whose read of the other is overtaken
+// between its check and its commit, by a raw write of the other's row that
+// raises no settings generation, retries on that read alone and is refused
+// naming the other: the second attempt's check reads the new value.
+func TestCheckNetBIOSOtherSideOvertaken(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		key, value         string // the write
+		other, raw, stored string // the other side: the raw row's value, then the value stored under it
+	}{
+		{"name write, domain overtaken", nameKey, `"CORP"`, domainKey, `"corp"`, `"OLD"`},
+		{"domain write, name overtaken", domainKey, `"corp"`, nameKey, `"CORP"`, `"NAS"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+			ctx := context.Background()
+			st, db := kvStore(t)
+			cp := st.ControlPlane()
+			mustPut(t, cp, dcAddress, dcAddrJSON)
+			mustPut(t, cp, tc.other, tc.raw)
+			k, v := rawRow(t, db, tc.other)
+			mustPut(t, cp, tc.other, tc.stored)
 
-	attempts, err := putSettingWith(cp, entity.RoleAdmin, nameKey, `"CORP"`, func(attempt int) error {
-		if attempt > 1 {
-			return nil
-		}
-		return db.Update(ctx, func(tx kv.Txn) error { return tx.Set(k, v) })
-	})
-	refusedNaming(t, "name write, domain overtaken", err, nameKey, domainKey)
-	if attempts != 2 {
-		t.Errorf("attempts of the name write = %d, want 2: its check's read of %s must be tracked", attempts, domainKey)
-	}
-	var found bool
-	err = cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) (err error) {
-		_, found, err = tx.Setting(installationScope, nameKey)
-		return err
-	})
-	if err != nil || found {
-		t.Errorf("%s after the refused write: found %t, err %v; want no row", nameKey, found, err)
+			attempts, err := putSettingWith(cp, entity.RoleAdmin, tc.key, tc.value, func(attempt int) error {
+				if attempt > 1 {
+					return nil
+				}
+				return db.Update(ctx, func(tx kv.Txn) error { return tx.Set(k, v) })
+			})
+			refusedNaming(t, tc.name, err, tc.key, tc.other)
+			if attempts != 2 {
+				t.Errorf("%s: attempts = %d, want 2: its check's read of %s must be tracked", tc.name, attempts, tc.other)
+			}
+			var found bool
+			err = cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) (err error) {
+				_, found, err = tx.Setting(installationScope, tc.key)
+				return err
+			})
+			if err != nil || found {
+				t.Errorf("%s: %s after the refused write: found %t, err %v; want no row", tc.name, tc.key, found, err)
+			}
+		})
 	}
 }
 

@@ -353,8 +353,8 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   so RFC 13 §6 keeps the rule with the component: each identity section's `CheckTx`, in
   `internal/identity`, reads the other's row by key, tracked, in the write's transaction, and
   `Apply` runs the same rule on the `State`. `pkg/settings` holds no rule naming either key and
-  imports nothing of identity, so nothing outside `internal/identity` and its tests imports
-  `internal/identity`, as E1's import rule requires. RFC 13 §6 sends a rule to the control plane
+  imports nothing of identity, as E1's import rule (only `internal/node` and identity's own
+  packages import `internal/identity`; `_test.go` files are not checked) requires. RFC 13 §6 sends a rule to the control plane
   only when its two settings belong to different components, as the port rule's do.
 
 ## 5. Target tree
@@ -918,7 +918,9 @@ internal/identity/
   `identity.netbios_name` `CORP` over the domain `OLD`, the domain row set to `corp` by a raw KV
   `Set` between its `Check` and its commit, which raises no `CFGGEN`: it takes 2 attempts and is
   refused naming `identity.directory.netbios_domain`, no name row stored (catches a read that is
-  not tracked, which takes 1 attempt and commits `CORP` beside `corp`, R4); an
+  not tracked, which takes 1 attempt and commits `CORP` beside `corp`, R4); its mirror, a write of
+  the domain `corp` over the name `NAS`, the name row set to `CORP` by a raw `Set`: 2 attempts,
+  refused naming `identity.netbios_name` (catches the domain side's read untracked, R4); an
   `operator`'s first put of `identity.directory` refused `ErrForbidden`, as is its later change of
   one field, and an `admin`'s passing, the test #4059's epic 3 assigns this epic (catches the
   section declared without `WriteRole`, R6). No test double.

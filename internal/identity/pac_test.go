@@ -2,6 +2,7 @@ package identity
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,16 +21,14 @@ import (
 )
 
 // captures are the PACs the Samba fixture issued (testdata/pac/README.md),
-// with the keytab holding the key of the ticket each came in and what the
-// capture recorded of its user: alice of DITTOFS.AD, signed in at
-// captureAuthTime.
+// with the keytab holding the key of the ticket each came in: alice's of
+// DITTOFS.AD, signed in at captureAuthTime, her SID the one alice.json holds.
 var captures = []struct {
 	pac, keytab string
-	userSID     string
 	extra       []uint32 // buffer types the capture holds beyond the ones identity reads
 }{
-	{"tgt.pac", "krbtgt.keytab", "S-1-5-21-3296391427-225151214-3620391263-1105", []uint32{12, 17, 18}},
-	{"service.pac", "service.keytab", "S-1-5-21-3296391427-225151214-3620391263-1105", []uint32{12, 16, 19}},
+	{"tgt.pac", "krbtgt.keytab", []uint32{12, 17, 18}},
+	{"service.pac", "service.keytab", []uint32{12, 16, 19}},
 }
 
 var (
@@ -72,6 +71,16 @@ func userSID(v *pac.KerbValidationInfo) string {
 // decodes to the user SID its capture recorded. Catches a verifier and a
 // builder that agree only with each other.
 func TestVerifyPACCaptures(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "pac", "alice.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var alice struct {
+		SIDs map[string]string `json:"sids"`
+	}
+	if err := json.Unmarshal(b, &alice); err != nil || alice.SIDs["alice"] == "" {
+		t.Fatalf("alice.json: %v, sids %v; want alice's SID", err, alice.SIDs)
+	}
 	for _, c := range captures {
 		raw, key := capture(t, c.pac, c.keytab)
 		bufs, err := pacBuffers(raw)
@@ -87,8 +96,8 @@ func TestVerifyPACCaptures(t *testing.T) {
 		if err != nil || v == nil {
 			t.Fatalf("%s: verifyPAC = %v, %v; want its logon information", c.pac, v, err)
 		}
-		if got := userSID(v); got != c.userSID {
-			t.Errorf("%s: user SID = %s, want %s", c.pac, got, c.userSID)
+		if got := userSID(v); got != alice.SIDs["alice"] {
+			t.Errorf("%s: user SID = %s, want alice's %s from alice.json", c.pac, got, alice.SIDs["alice"])
 		}
 	}
 }

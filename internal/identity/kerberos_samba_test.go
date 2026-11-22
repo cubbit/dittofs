@@ -44,6 +44,14 @@ func TestKerberosSambaTicket(t *testing.T) {
 	if err := json.Unmarshal(read("alice.json"), &c); err != nil {
 		t.Fatalf("alice.json: %v", err)
 	}
+	if c.Time.IsZero() {
+		t.Fatal("alice.json: no time")
+	}
+	for _, k := range []string{"alice", "Domain Users", "devs", "engineering"} {
+		if c.SIDs[k] == "" {
+			t.Fatalf("alice.json: no SID for %s", k)
+		}
+	}
 	k := kerberosServer(t)
 	k.applyKeytab(t, read("service.keytab"))
 	k.clock.Jump(c.Time.Sub(k.clock.Now()))
