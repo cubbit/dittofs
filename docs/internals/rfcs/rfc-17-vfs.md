@@ -890,7 +890,7 @@ session. More generally, a `Service` call with no session that presents
 a reference to state created on a session — an `OpenRef`, `StateRef` or
 `GrantID`, or a lock owner whose lock state was — is
 `StateError{NotYours, Sessioned: true}`, whatever its principal: the state
-carries the mark (`Sessioned`), so the file's primary checks it without a
+carries the mark, its open's `Session`, so the file's primary checks it without a
 client record ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). A `ClientID`
 argument names no state and is not checked here (the NFS adapter checks a
 v4.0 one against the record's minor version,
