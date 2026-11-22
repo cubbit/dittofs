@@ -64,6 +64,23 @@ func SettingsOf(snap *settings.Snapshot, node entity.NodeID) (Settings, error) {
 	return settings.Get[Settings](snap, sectionName, node)
 }
 
+// directorySectionName is the identity.directory section's prefix.
+const directorySectionName = "identity.directory"
+
+// DirectoryOf is the identity.directory section in snap as node reads it:
+// nil when no row of it is stored, which is no directory, or the section's
+// refusal when the walk refused a row of it or the record it holds.
+func DirectoryOf(snap *settings.Snapshot, node entity.NodeID) (*directory.Record, error) {
+	if !snap.Stored(directorySectionName) {
+		return nil, nil
+	}
+	r, err := settings.Get[directory.Record](snap, directorySectionName, node)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 // checkSettings is the identity section's write check, run inside the
 // write's transaction on the section the write leaves. A write of id_range,
 // a put or a delete back to the default, is refused when the range's high end
@@ -121,7 +138,7 @@ func checkSettings(tx entity.ControlPlaneTx, w settings.Write, s Settings) error
 // decoded or validated alone, since an empty address fails Validate. Overturned
 // if the settings read ever validates a section with no rows from its default.
 func DirectorySection() settings.Section {
-	return settings.Of("identity.directory", settings.At(entity.ScopeInstallation),
+	return settings.Of(directorySectionName, settings.At(entity.ScopeInstallation),
 		directory.Record{Schema: directory.SchemaAD},
 		settings.Required("Address"),
 		settings.WriteRole(entity.RoleAdmin),

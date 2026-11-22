@@ -90,11 +90,19 @@ func TestIdentityServesTheAPIAndTheFilesystem(t *testing.T) {
 }
 
 // putSetting writes an installation row of key holding value, unchecked,
-// as a row the store accepted from another binary.
+// as a row the store accepted from another binary, over the row stored.
 func putSetting(t *testing.T, h *nodetest.Harness, key, value string) {
 	t.Helper()
 	s := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: key, Value: []byte(value)}
-	if _, err := h.Store().ControlPlane().PutSetting(t.Context(), s, 0); err != nil {
+	err := h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		old, _, err := tx.Setting(s.Scope, key)
+		if err != nil {
+			return err
+		}
+		_, err = tx.PutSetting(s, old.Generation)
+		return err
+	})
+	if err != nil {
 		t.Fatalf("put %s = %s: %v", key, value, err)
 	}
 }

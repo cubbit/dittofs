@@ -549,3 +549,16 @@ func Get[T any](snap *Snapshot, section string, node entity.NodeID) (T, error) {
 
 	return clone(v), nil
 }
+
+// Stored reports whether a row of section's wide scope went into snap,
+// refused or not: false for a section running on its defaults alone, or one
+// snap does not hold.
+func (s *Snapshot) Stored(section string) bool {
+	if s == nil {
+		return false
+	}
+
+	e, ok := s.sections[section]
+
+	return ok && e.stored
+}

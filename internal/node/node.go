@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/internal/identity"
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/sidecar"
@@ -31,6 +33,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/secrets"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -49,12 +52,13 @@ type Config struct {
 	Logger *slog.Logger
 	// Tracer is the host's tracer, nil when tracing is off. Each journal
 	// the engine opens starts its spans below it, naming the journal by its
-	// identity; nil opens every journal without one, tracing nothing.
+	// identity, and identity its sign-in and resolution spans; nil traces
+	// nothing.
 	//
 	// decision: the host builds the tracing provider and hands it here, and
-	// only the journals take the tracer; the root building the provider from
-	// the tracing settings and handing the tracer to every component is not
-	// built. This field goes once the root builds the provider from those
+	// only the journals and identity take the tracer; the root building the
+	// provider from the tracing settings and handing the tracer to every
+	// component is not built. This field goes once the root builds the provider from those
 	// settings.
 	Tracer trace.Tracer
 	// Journal are options for every journal the node opens, after one
@@ -71,6 +75,12 @@ type Node struct {
 	open     *openstate.Table
 	engine   *engine.Engine
 	identity *identity.Server
+	// idState is the last State identity accepted, which a refused
+	// section's value is kept from; nil until the first Apply.
+	idState atomic.Pointer[identity.State]
+	// secrets is the secret provider, over the storage key and the
+	// protocol key when the bootstrap names one.
+	secrets  *secrets.Provider
 	fs       *vfs.Filesystem
 	runner   *runner
 	rec      reconciler
@@ -101,6 +111,9 @@ type Node struct {
 	// storageKey is the storage role's wrapping key the bootstrap's
 	// keys.storage names; Stop closes it.
 	storageKey keyprovider.KeyProvider
+	// protocolKey is the protocol role's wrapping key keys.protocol names,
+	// nil when it names none; Stop closes it.
+	protocolKey keyprovider.KeyProvider
 	// tokens issues and verifies access tokens over the installation's
 	// signing key. Only the rotation uses them yet; sign-in will hand them to
 	// the API. Stop clears the versions they hold.
@@ -114,10 +127,12 @@ type Node struct {
 // cannot bind, opens the metadata store over cfg.KV, refusing a KV that
 // holds no installation or one this binary does not read, and opens the
 // storage key keys.storage names, refusing a bootstrap that names none and
-// dialling a KMIP server when it names one there. It then builds open
+// dialling a KMIP server when it names one there, and the protocol key
+// keys.protocol names, when it names one. It then builds open
 // state and the engine, each empty from its own Deps, the budgets and their
 // series, the secret provider and the access tokens over the storage key,
-// the identity server over the store and the secret provider, the
+// the identity server over the store, the secret provider, the logger as
+// its logon sink, the tracer and the directory's dialer, the
 // filesystem over the engine and identity, the operation runner with the steps of the kinds this
 // node drives, the watchdog, the adapters' one Deps, the sidecar runner and
 // a slot per protocol, and the API over the store's control plane and node
@@ -148,17 +163,19 @@ type Node struct {
 // registry is refused as a duplicate registration; the test harness gives
 // each build a fresh registry. Unregister in Stop when an in-process
 // rebuild on one registry is needed.
-func New(cfg Config) (*Node, error) { return newNode(cfg, apiInputs{}) }
+func New(cfg Config) (*Node, error) { return newNode(cfg, seams{}) }
 
-// apiInputs is what only a test hands the API yet: its Authenticate and
-// its SigningKey, each nil in production.
-type apiInputs struct {
+// seams is what only a test hands the node yet: the API's Authenticate and
+// SigningKey, each nil in production, and the directory's dialer, nil for
+// the production one.
+type seams struct {
 	authenticate func(*http.Request) (auth.Caller, error)
 	signingKey   func(context.Context) ([]byte, error)
+	directory    directory.Dialer
 }
 
-// newNode is New with the API's inputs in, which only a test sets.
-func newNode(cfg Config, in apiInputs) (*Node, error) {
+// newNode is New with the seams in, which only a test sets.
+func newNode(cfg Config, in seams) (*Node, error) {
 	if cfg.KV == nil {
 		return nil, errors.New("node: Config.KV is missing")
 	}
@@ -187,7 +204,7 @@ var errNoStorageKey = errors.New("node: keys.storage is not set: the administrat
 
 // build builds the node; once it has opened the storage key, a step that
 // fails after closes it.
-func build(cfg Config, in apiInputs) (_ *Node, err error) {
+func build(cfg Config, in seams) (_ *Node, err error) {
 	if cfg.Metrics == nil {
 		return nil, errors.New("node: Config.Metrics is missing")
 	}
@@ -233,9 +250,14 @@ func build(cfg Config, in apiInputs) (_ *Node, err error) {
 	}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, n.storageKey.Close())
+			err = errors.Join(err, n.closeKeys())
 		}
 	}()
+	if cfg.Bootstrap.Keys.Protocol.Kind != "" {
+		if n.protocolKey, err = keyprovider.NewProvider(context.Background(), cfg.Bootstrap.Keys.Protocol.Provider()); err != nil {
+			return nil, fmt.Errorf("node: the protocol key: %w", err)
+		}
+	}
 	open, deps, err := enginewire.Compose(enginewire.Params{
 		Node:    cfg.Bootstrap.Node.ID,
 		Devices: journalPaths(cfg.Bootstrap.Journals),
@@ -281,9 +303,16 @@ func build(cfg Config, in apiInputs) (_ *Node, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if n.identity, err = identity.New(identity.Deps{Store: n.meta, Secrets: p, Clock: cfg.Clock, Metrics: cfg.Metrics, Logger: cfg.Logger}); err != nil {
+	n.secrets = p
+	dial := in.directory
+	if dial == nil {
+		dial = directory.DialTLS
+	}
+	if n.identity, err = identity.New(identity.Deps{Store: n.meta, Secrets: p, Clock: cfg.Clock, Metrics: cfg.Metrics, Logger: cfg.Logger,
+		Tracer: cfg.Tracer, Logons: identity.LogLines(cfg.Logger), Directory: dial}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
+	n.health.Add(identityConditions{n})
 	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves,
 		Identity: n.identity, Auth: n.identity, Names: n.identity}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
@@ -329,6 +358,7 @@ func build(cfg Config, in apiInputs) (_ *Node, err error) {
 		Clock:        cfg.Clock,
 		Node:         cfg.Bootstrap.Node.ID,
 		Applied:      n.applied,
+		Directory:    n.identity,
 	})
 	return n, nil
 }

@@ -32,7 +32,7 @@ var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 var nodeID = entity.NodeID{'n', 'o', 'd', 'e'}
 
-// passphrase opens the harness's storage key file.
+// passphrase opens the harness's storage and protocol key files.
 const passphrase = "nodetest passphrase"
 
 // Harness is one node built over its own installation.
@@ -71,9 +71,10 @@ func WithNew(f func(node.Config) (*node.Node, error)) Option {
 
 // New initialises an installation under t.TempDir() through install.Run, as
 // dfs init does: the metadata store, one journal device, the storage key and
-// the administrator, its password generated and discarded. It then builds a node
+// the administrator, its password generated and discarded. It writes a
+// protocol key file too, which the bootstrap names. It then builds a node
 // over them, its API, metrics listener and adapters on loopback. Every KV the
-// harness opens is closed when the test ends. It sets the key file's
+// harness opens is closed when the test ends. It sets the key files'
 // passphrase in the environment, so a test using it cannot run in parallel.
 func New(t testing.TB, opts ...Option) *Harness {
 	t.Helper()
@@ -101,6 +102,8 @@ func New(t testing.TB, opts ...Option) *Harness {
 	b.Adapters.Listen = []string{"127.0.0.1"}
 	b.Keys.Storage.Kind = keyprovider.KindLocal
 	b.Keys.Storage.Local.File = filepath.Join(root, "storage.key")
+	b.Keys.Protocol.Kind = keyprovider.KindLocal
+	b.Keys.Protocol.Local.File = keyFile(t, root, "protocol.key")
 	h.cfg = node.Config{
 		Bootstrap: b,
 		Clock:     h.clock,
@@ -129,21 +132,29 @@ func New(t testing.TB, opts ...Option) *Harness {
 // bootstrap's keys.storage names, and opens it, closed when the test ends.
 func storageKey(t testing.TB, dir string) keyprovider.KeyProvider {
 	t.Helper()
-	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
-	b, err := keyprovider.GenerateKeyFile(passphrase)
-	if err != nil {
-		t.Fatalf("nodetest: generate the storage key: %v", err)
-	}
-	path := filepath.Join(dir, "storage.key")
-	if err := os.WriteFile(path, b, 0o600); err != nil {
-		t.Fatalf("nodetest: write the storage key: %v", err)
-	}
+	path := keyFile(t, dir, "storage.key")
 	kp, err := keyprovider.NewProvider(t.Context(), keyprovider.Config{Kind: keyprovider.KindLocal, File: path})
 	if err != nil {
 		t.Fatalf("nodetest: open the storage key: %v", err)
 	}
 	t.Cleanup(func() { _ = kp.Close() })
 	return kp
+}
+
+// keyFile writes a key file named name under dir, sealed with the
+// passphrase it sets in the environment, and returns its path.
+func keyFile(t testing.TB, dir, name string) string {
+	t.Helper()
+	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
+	b, err := keyprovider.GenerateKeyFile(passphrase)
+	if err != nil {
+		t.Fatalf("nodetest: generate %s: %v", name, err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatalf("nodetest: write %s: %v", name, err)
+	}
+	return path
 }
 
 // Restart stops the node and builds a new one over a new KV on the same
@@ -181,6 +192,10 @@ func (h *Harness) StoreDir() string { return h.dir }
 // StorageKeyFile is the storage key file the harness's bootstrap names,
 // opened with the passphrase New sets.
 func (h *Harness) StorageKeyFile() string { return h.cfg.Bootstrap.Keys.Storage.Local.File }
+
+// ProtocolKeyFile is the protocol key file the harness's bootstrap names,
+// opened with the passphrase New sets.
+func (h *Harness) ProtocolKeyFile() string { return h.cfg.Bootstrap.Keys.Protocol.Local.File }
 
 // Store is a metadata store over the node's KV, for a test to write records
 // and read them back, as another node's would.

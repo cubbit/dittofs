@@ -182,9 +182,11 @@ func refused(s entity.Share, retry bool, err error) refusal {
 }
 
 // apply hands each component the settings it reads, at counters c, and
-// returns the records it refused. Once start step 9 has run it calls each
-// adapter's slot too, handing it loop to report idle on while it waits on a
-// drain, and returns the slots' refusals.
+// returns the records it refused: the engine, then identity, which reads the
+// principals generation and its sections from its own walk of the settings
+// (applyIdentity). Once start step 9 has run it calls each adapter's slot
+// too, handing it loop to report idle on while it waits on a drain, and
+// returns the slots' refusals with identity's.
 //
 // ponytail: apply hands the engine RFC 13 Appendix B's defaults whatever c
 // says, as no settings record carries the engine's values yet, and refuses
@@ -202,10 +204,14 @@ func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop)
 	if err := n.engine.Apply(engineDefaults); err != nil {
 		return nil, err
 	}
-	if !n.adapting {
-		return nil, nil
+	refusals, err := n.applyIdentity(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("identity: %w", err)
 	}
-	return n.applyAdapters(ctx, loop, c.Settings), nil
+	if !n.adapting {
+		return refusals, nil
+	}
+	return append(refusals, n.applyAdapters(ctx, loop, c.Settings)...), nil
 }
 
 // backoff is the wait before the next pass on the backoff, given its last
