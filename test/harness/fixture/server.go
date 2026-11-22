@@ -2,6 +2,7 @@ package fixture
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -510,7 +511,7 @@ func (s *Server) Stop() error {
 			stopGroup(s.cmd, false)
 			select {
 			case <-s.exited:
-			case <-time.After(stopGrace):
+			case <-time.After(cmp.Or(s.grace, stopGrace)):
 				stopGroup(s.cmd, true)
 				<-s.exited
 			}
