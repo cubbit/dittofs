@@ -607,7 +607,8 @@ func TestResolveRefusesASquashToADeletedAnonymous(t *testing.T) {
 }
 
 // Each deny-only SID maps to a principal in DenyOnly, never in Groups, and
-// adds none of its groups; one no principal holds stays unmapped, with no
+// adds none of its groups to Groups: its parent Corp is deny-only too. One
+// no principal holds stays unmapped, with no
 // error; a lookup error mapping one refuses the call.
 func TestResolveMapsDenyOnlyApart(t *testing.T) {
 	r := newResolving(t)
@@ -625,7 +626,7 @@ func TestResolveMapsDenyOnlyApart(t *testing.T) {
 		want     []entity.Principal
 	}{
 		{"unmapped", "S-1-5-21-1-2-3-4444", nil},
-		{"Finance", "S-1-5-21-1-2-3-2001", []entity.Principal{finance}},
+		{"Finance", "S-1-5-21-1-2-3-2001", []entity.Principal{finance, corp}},
 	} {
 		id := ticket(alice.Principal, alice.Name)
 		id.Evidence.DenyOnly = []pid.SID{*sid.ParseSIDMust(c.denyOnly)}
@@ -633,6 +634,7 @@ func TestResolveMapsDenyOnlyApart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Resolve with a deny-only %s SID: %v", c.name, err)
 		}
+		slices.SortFunc(c.want, func(a, b entity.Principal) int { return slices.Compare(a.ID[:], b.ID[:]) })
 		if !slices.Equal(got.DenyOnly, c.want) || !slices.Equal(got.Groups, []entity.Principal{accounts}) {
 			t.Errorf("deny-only %s: DenyOnly %v, Groups %v; want %v, [%v]", c.name, got.DenyOnly, got.Groups, c.want, accounts)
 		}

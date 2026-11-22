@@ -316,11 +316,12 @@ func storeErr(err error) error {
 }
 
 // closure is every group p is in, directly or through nested groups, each
-// once. A failed read fails it whole: a partial list can grant access by
-// leaving out the group a deny entry names.
-func closure(ctx context.Context, pr kvstore.Principals, p entity.Principal) ([]entity.Principal, error) {
+// once, none in stop nor reached only through one. A failed read fails it
+// whole: a partial list can grant access by leaving out the group a deny
+// entry names.
+func closure(ctx context.Context, pr kvstore.Principals, p entity.Principal, stop ...entity.Principal) ([]entity.Principal, error) {
 	var out []entity.Principal
-	for g, err := range pr.Groups(ctx, p) {
+	for g, err := range pr.Groups(ctx, p, stop...) {
 		if err != nil {
 			return nil, unavailable(err)
 		}
@@ -334,11 +335,36 @@ func closure(ctx context.Context, pr kvstore.Principals, p entity.Principal) ([]
 // evidence SID maps to and that group's closure, so a deny entry naming a
 // parent of a PAC's group still matches; each listed once. Each
 // deny-only SID maps to a principal in deny, never in groups, and adds none
-// of its groups. A SID no principal holds stays unmapped; a lookup error
-// mapping any SID fails the whole collection, since dropping a deny fails
-// open.
+// of its groups to groups: a group the store reaches only through it goes
+// to deny too. collect alone keeps the two lists disjoint. A SID no
+// principal holds stays unmapped; a lookup error mapping any SID fails the
+// whole collection, since dropping a deny fails open.
+//
+// decision: a deny-only principal stops every closure walk, so a group the
+// store reaches only through it (a parent of a deny-only Finance) is never
+// in groups; it is in deny, with the deny-only principal itself. A group the
+// PAC lists enabled, or that another membership reaches, stays in groups
+// and out of deny. Both sides fail closed: such a parent grants nothing,
+// since the directory marked the SID deny-only and RFC 18 §6.3 says it adds
+// none of its groups, and a deny entry naming it still matches, since a PAC
+// never removes a group the store records. The cost is that a parent the
+// directory meant to drop entirely still denies. Overturned if a deny-only
+// membership must not carry its parents' denies.
 func collect(ctx context.Context, pr kvstore.Principals, of entity.Principal, ev identity.Evidence) (groups, deny []entity.Principal, err error) {
+	for _, sd := range ev.DenyOnly {
+		d, ok, err := bySID(ctx, pr, sd)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok && !slices.Contains(deny, d) {
+			deny = append(deny, d)
+		}
+	}
+	slices.SortFunc(deny, comparePrincipals)
 	seen := map[entity.Principal]bool{}
+	for _, d := range deny {
+		seen[d] = true
+	}
 	add := func(gs []entity.Principal) {
 		for _, g := range gs {
 			if !seen[g] {
@@ -347,7 +373,7 @@ func collect(ctx context.Context, pr kvstore.Principals, of entity.Principal, ev
 			}
 		}
 	}
-	gs, err := closure(ctx, pr, of)
+	gs, err := closure(ctx, pr, of, deny...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -358,22 +384,29 @@ func collect(ctx context.Context, pr kvstore.Principals, of entity.Principal, ev
 			return nil, nil, err
 		}
 		// The user's own SID, first in a PAC, maps to a user, not a group:
-		// its closure is the mapped principal's, already collected.
-		if !ok || g.Kind != entity.PrincipalGroup {
+		// its closure is the mapped principal's, already collected. A SID
+		// also marked deny-only stays deny-only.
+		if !ok || g.Kind != entity.PrincipalGroup || slices.Contains(deny, g) {
 			continue
 		}
-		if gs, err = closure(ctx, pr, g); err != nil {
+		if gs, err = closure(ctx, pr, g, deny...); err != nil {
 			return nil, nil, err
 		}
 		add(append(gs, g))
 	}
-	for _, sd := range ev.DenyOnly {
-		d, ok, err := bySID(ctx, pr, sd)
+	// A parent the store reaches only through a deny-only principal is not
+	// in seen yet: it joins deny, so its deny entries still match and it
+	// grants nothing.
+	for _, d := range slices.Clone(deny) {
+		ps, err := closure(ctx, pr, d)
 		if err != nil {
 			return nil, nil, err
 		}
-		if ok && !slices.Contains(deny, d) {
-			deny = append(deny, d)
+		for _, p := range ps {
+			if !seen[p] {
+				seen[p] = true
+				deny = append(deny, p)
+			}
 		}
 	}
 	slices.SortFunc(deny, comparePrincipals)
