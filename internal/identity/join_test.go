@@ -394,8 +394,9 @@ func TestOnlineJoinRefusedAtFirstTurn(t *testing.T) {
 }
 
 // A join that ends before its first phase runs, on params that do not
-// decode, a mode other than online or a cursor that does not decode, releases
-// the administrator credential held under it.
+// decode, a mode not built, a cursor that does not decode or one naming a
+// phase of the other mode, releases the administrator credential held under
+// it.
 func TestOnlineJoinEndedEarlyReleasesTheHold(t *testing.T) {
 	fx := newMachine(t)
 	for _, tc := range []struct {
@@ -403,7 +404,8 @@ func TestOnlineJoinEndedEarlyReleasesTheHold(t *testing.T) {
 		edit func(*entity.Operation)
 	}{
 		{"params", func(op *entity.Operation) { op.Params = []byte("{") }},
-		{"offline", func(op *entity.Operation) { op.Params = []byte(`{"mode":"offline","account":"NAS$"}`) }},
+		{"mode", func(op *entity.Operation) { op.Params = []byte(`{"mode":"sideways","account":"NAS$"}`) }},
+		{"offline phase", func(op *entity.Operation) { op.Step = []byte(`{"phase":"verify"}`) }},
 		{"cursor", func(op *entity.Operation) { op.Step = []byte("{") }},
 	} {
 		op := fx.joinOp(t, apiv1.JoinDomainSpec{Account: "NAS"}, true)
