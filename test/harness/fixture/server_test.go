@@ -2,13 +2,16 @@ package fixture
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/test/harness/registry"
 )
@@ -20,6 +23,17 @@ import (
 // refused and changes nothing; and after Kill and Restart the share is still
 // there. Stop ends it with exit 0.
 func TestServer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("dfs is stopped by SIGTERM, which this system can't send")
+	}
+	// dfs init opens its journal under the platform's own check, which a
+	// test cannot hand a probe, so the check runs here first, on the same
+	// mount.
+	if _, err := journal.Init(t.Context(), t.TempDir(), [16]byte{1}); errors.Is(err, journal.ErrUnsuitableStorage) {
+		t.Skipf("the journal's platform check refuses the temporary directory's mount (%v); set TMPDIR to a directory on a suitable mount", err)
+	} else if err != nil {
+		t.Fatalf("journal init on a scratch directory: %v", err)
+	}
 	bin := t.TempDir()
 	build := exec.Command("go", "build", "-o", filepath.Join(bin, "dfs"), "github.com/cubbit/dittofs/cmd/dfs")
 	if out, err := build.CombinedOutput(); err != nil {
