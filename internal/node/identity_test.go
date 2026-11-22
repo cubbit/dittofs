@@ -95,17 +95,28 @@ func TestIdentityServesTheAPIAndTheFilesystem(t *testing.T) {
 // as a row the store accepted from another binary, over the row stored.
 func putSetting(t *testing.T, h *nodetest.Harness, key, value string) {
 	t.Helper()
-	s := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: key, Value: []byte(value)}
+	putSettings(t, h, map[string]string{key: value})
+}
+
+// putSettings writes each installation setting of rows, key to value, in
+// one transaction, so no reconcile pass reads some of them without the rest.
+func putSettings(t *testing.T, h *nodetest.Harness, rows map[string]string) {
+	t.Helper()
+	scope := entity.SettingScope{Kind: entity.ScopeInstallation}
 	err := h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-		old, _, err := tx.Setting(s.Scope, key)
-		if err != nil {
-			return err
+		for key, value := range rows {
+			old, _, err := tx.Setting(scope, key)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.PutSetting(entity.Setting{Scope: scope, Key: key, Value: []byte(value)}, old.Generation); err != nil {
+				return err
+			}
 		}
-		_, err = tx.PutSetting(s, old.Generation)
-		return err
+		return nil
 	})
 	if err != nil {
-		t.Fatalf("put %s = %s: %v", key, value, err)
+		t.Fatalf("put %v: %v", rows, err)
 	}
 }
 

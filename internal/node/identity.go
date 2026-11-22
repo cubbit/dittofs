@@ -90,12 +90,10 @@ func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *sett
 		}
 		// Both sections passed their Validate in the walk, so Apply refuses
 		// only the NetBIOS name equal to the directory's NetBIOS domain: the
-		// row reported is the side that moved.
-		key := identity.KeyNetBIOSName
-		if st.Settings.NetBIOSName == last.Settings.NetBIOSName {
-			key = identity.KeyNetBIOSDomain
+		// rows reported are each side that moved, both when both did.
+		for _, key := range identity.NetBIOSMoved(st, *last) {
+			refusals = refusedRows(refusals, key, c.Settings, err)
 		}
-		refusals = refusedRows(refusals, key, c.Settings, err)
 		// The keytab the last identity section names; read already, or kept,
 		// when it names the one st does.
 		if st.Settings.Keytab != last.Settings.Keytab {
