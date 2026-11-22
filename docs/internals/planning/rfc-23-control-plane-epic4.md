@@ -837,7 +837,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   does, so a `PUT`, `PATCH` or `DELETE` of a missing user is `404`, not `412`, and no `/users`
   answer tells which IDs are accounts; the hiding covers `/users` only, since grants, memberships
   and quotas resolve a principal's ID whatever its role, so a grant on an admin's ID succeeds where
-  one on a missing ID is `404`, and those routes do not hide role holders until E5's per-call check; the last enabled admin kept, its disable or delete refused `409`
+  one on a missing ID is `404`, and those routes do not hide role holders, which E5's T5.6 keeps and the `decision:` marker at `hiddenFrom` records; the last enabled admin kept, its disable or delete refused `409`
   `last_admin`, counted in the write's transaction; a uid or gid of 0 refused, an absent one
   allocated; a user, group or netgroup name refused when it is invalid UTF-8, holds a control
   character, begins or ends with white space, or exceeds 255 bytes, a user or group created with
