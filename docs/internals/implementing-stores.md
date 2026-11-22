@@ -26,7 +26,7 @@ implement:
 
 The local tier is **not** one of them. Every share keeps an on-disk **journal**
 (`pkg/block/journal/`) in front of its block store; it is provisioned
-automatically under `blockstore.journal.path` and has no type, no kind, and no
+automatically from the node's `journals` devices and has no type, no kind, and no
 operator-facing configuration. A block store has no kind either — the old
 local/remote split is gone, and the valid types are `s3` and `memory`. If you are
 here looking for how to implement a custom *local* store type, that concept no

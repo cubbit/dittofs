@@ -137,7 +137,7 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
 
 5. **WRITE judges before it stages:** `vfs.Service.Write` admits the caller and judges
    the file's type, a read-only share, the caller's rights and open state, and reserves the
-   quota, before the engine stages a byte — and refuses an immutable or append-only file
+   quota, before the engine stages a byte — and refuses an immutable file, or an append-only one below its end,
    at staging (`internal/vfs/data.go`); a zero-count write returns once judged. On this
    branch no protocol WRITE handler exists yet
    ([Data path](docs/internals/architecture.md#data-path)); `develop` keeps the v1 rule.

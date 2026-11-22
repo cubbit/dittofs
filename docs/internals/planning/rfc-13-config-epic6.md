@@ -620,7 +620,7 @@ Pending the user's answer, each written in its recommended form above:
   share scope as an error. So the rows' "no content, accepted" half is reachable only for a store
   with no namespace naming it (R17). `CLAUDE.md` rule 4 and `docs/internals/architecture.md` on
   that branch said the data path is cut and `block.ErrNoContentStore` answers every content
-  operation; no code returned that error, and #5280 corrected those lines.
+  operation; no code returned that error, and the change closing #5280 corrected those lines.
 - **The table declares no bound setting today (D3).** Recommended: the loop plus the test's own
   section. The alternative, requiring at least one declared bound key, fails the epic until
   another plan declares one.

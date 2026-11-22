@@ -299,10 +299,12 @@ return as resource commands of the v2 management API.
 > **No protocol serves files yet.** The NFS and SMB adapters have no file
 > operations yet; see [Data path](../internals/architecture.md#data-path).
 
-#### Share state root (`blockstore.journal.path`)
+#### State root (`blockstore.journal.path`)
 
-Each share keeps a state directory (gc-state, snapshots, the migration journal)
-beneath one server-level root, `<path>/shares/<share-name>/`:
+The key is still parsed and must be an absolute path, but shares keep no state
+directory under it. The node reads it only at start, to detect a v1 state layout
+(a `shares/<name>/` directory holding a populated `journal`, `blobs` or `logs`
+directory) and refuse to start over one. The journal devices come from `journals`:
 
 ```yaml
 blockstore:
@@ -312,7 +314,7 @@ blockstore:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `path` | string | `<state dir>/blocks` | Root holding every share's state directory. Must be absolute (a leading `~` is expanded). |
+| `path` | string | `<state dir>/blocks` | Root probed at start for a v1 state layout. Must be absolute (a leading `~` is expanded). |
 
 Env-var mapping follows the dot-path convention:
 `DITTOFS_BLOCKSTORE_JOURNAL_PATH`.
@@ -899,7 +901,7 @@ Shares are managed at runtime via `dfsctl` and persisted in the control plane da
 
 - **Shared Metadata**: `/cloud` and `/archive` both use `badger-main` - they share the same metadata database
 - **Performance Tiering**: Different shares use different storage backends (memory, S3)
-- **Isolation**: Each share gets its own BlockStore and its own journal directory beneath `blockstore.journal.path`
+- **Isolation**: Each share gets its own BlockStore; the node's journal devices come from `journals`
 - **Resource Efficiency**: Block stores are shared (ref counted) when multiple shares reference the same config
 
 #### Per-share and per-identity quotas

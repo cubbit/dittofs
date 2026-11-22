@@ -156,11 +156,12 @@ it, and `vfs.Service`'s Read, Write and Commit read and write file content
 through the engine (`internal/vfs/data.go`). No protocol serves that path yet:
 the RFC 20 NFS and SMB adapters are built on `vfs.Service`, but their operation
 tables are empty, so every NFS procedure answers `PROC_UNAVAIL` and SMB has no
-file operations yet, until RFC 20's file operations land.
+file operations until RFC 20's file operations land.
 
-Each share keeps a state directory beneath `blockstore.journal.path`
-(`<path>/shares/<share-name>/`) holding its gc-state, snapshots and migration
-journal.
+The journal devices come from `bootstrap.journals`. `blockstore.journal.path`
+is still parsed and validated, but the node reads it only at preflight, to
+detect a v1 state layout (`probeV1State`, `internal/node/preflight.go`); shares
+keep no state directory beneath it.
 
 The engine (`pkg/block/engine`, [RFC 8](rfcs/rfc-8-engine.md)) and the journal
 (`pkg/block/journal`, [RFC 1](rfcs/rfc-1-journal.md)) are built and tested on
@@ -567,8 +568,9 @@ lock, err := metaSvc.AcquireLock(ctx, shareName, handle, offset, length, exclusi
 
 `vfs.Service.Write` admits the caller and judges the file (type, read-only
 share, rights, open state) and reserves its quota before the engine stages a
-byte, so a refused write changes no metadata or content (a conflicting grant may
-already be recalled); a zero-count write returns once
+byte, so a write refused while it is judged or reserved changes no metadata or
+content (a conflicting grant may already be recalled); one the engine refuses
+may already have cleared setuid and setgid; a zero-count write returns once
 judged. No protocol WRITE handler calls it yet.
 
 ## Built-In and Custom Backends
