@@ -255,8 +255,16 @@ func (fs *Filesystem) setAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 	// write is staged between; the reservation is released once the store
 	// has applied the change, and reverted, the writes moved back, when it
 	// did not. A privileged caller is held to the limit as any other.
+	//
+	// decision: an unprivileged caller's change of owner, which the store
+	// refuses with ErrPerm (RFC 7 §7.4), is not rehomed, so the quota of the
+	// owner it names neither answers it nor shows through it. It reads the
+	// store's rule here. Overturned once those rules are a read-only check
+	// this can call, or when the store lets a caller holding change the owner
+	// take ownership, a change that must be rehomed.
+	refused := ch.Changes(entity.AttrOwner) && ch.Owner != f.Owner && !id.Privileged
 	applied := false
-	if mv, scopes := moved(f, ch.Attrs); len(scopes) > 0 {
+	if mv, scopes := moved(f, ch.Attrs); len(scopes) > 0 && !refused {
 		res, err := fs.rehome(ctx, a, mv, entity.Usage{Bytes: f.Charged, Files: 1}, scopes...)
 		if err != nil {
 			return vfs.WCC{}, err
@@ -331,10 +339,8 @@ const attrTimes = entity.AttrBirth | entity.AttrAccess | entity.AttrModify
 
 // rightsOf is what an attribute change asks of the chokepoint, each
 // attribute its own right: a size write data; a mode write the ACL; an owner
-// change the owner, except the file's owner naming itself, as RFC 7 §7.4
-// allows setting the owner to its current value (anyone else naming the
-// current owner still asks it, as chown(2) refuses them); a group change the
-// owner, or write the ACL for the file's owner; anything else write
+// change the owner, of any caller but the file's owner (RFC 19 §3.1); a group
+// change the owner, or write the ACL for the file's owner; anything else write
 // attributes.
 func rightsOf(id entity.Identity, f vfs.File, a vfs.Attrs) vfs.Access {
 	var want vfs.Access
@@ -344,7 +350,15 @@ func rightsOf(id entity.Identity, f vfs.File, a vfs.Attrs) vfs.Access {
 	if a.Changes(entity.AttrMode) {
 		want |= entity.WriteACL
 	}
-	if a.Changes(entity.AttrOwner) && (a.Owner != f.Owner || id.Principal != f.Owner) {
+	// decision: the file's owner asks nothing to set the owner, so its chown
+	// to itself is allowed and its give-away is refused by the store with
+	// ErrPerm, as chown(2) answers (RFC 7 §7.4); any other caller asks change
+	// the owner, and the walk refuses one without it. The owner's change of
+	// owner reaches no Decide, so it emits no access event; the store's
+	// mayChange still applies the share grant, the client rule's narrowing
+	// and the privilege rule. Withdraw it if an audit needs every owner
+	// change.
+	if a.Changes(entity.AttrOwner) && id.Principal != f.Owner {
 		want |= entity.WriteOwner
 	}
 	if a.Changes(entity.AttrGroup) {
