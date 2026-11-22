@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
@@ -41,20 +42,29 @@ func (s *Server) auditOf(ctx context.Context, r *http.Request) entity.AuditRecor
 		Node: s.d.Node, Source: r.RemoteAddr, Request: req}
 }
 
-// refuse counts a refused write by its precondition, when one refused it,
-// and audits it in a Write of its own holding only its audit record, so no
-// idempotency record is kept and a corrected retry under the same key is a
-// new request. A failure to write the record is logged and does not change
-// the answer; with no store there is nowhere to write it.
+// refuse counts a refused request by its precondition, when one refused it,
+// or as a refused authentication when its caller's role or a password it
+// must change did, and audits it in a Write of its own holding only its
+// audit record, so no idempotency record is kept and a corrected retry under
+// the same key is a new request. A failure to write the record is logged and
+// does not change the answer; with no store there is nowhere to write it.
 func (s *Server) refuse(ctx context.Context, rec entity.AuditRecord, err error) {
 	p, _ := problemOf(err)
-	switch p.Code {
-	case apiv1.CodeGenerationMismatch:
+	reason := ""
+	switch {
+	case p.Code == apiv1.CodeGenerationMismatch:
 		s.preconditions.WithLabelValues("generation").Inc()
-	case apiv1.CodeIdempotencyMismatch:
+	case p.Code == apiv1.CodeIdempotencyMismatch:
 		s.preconditions.WithLabelValues("idempotency").Inc()
-	case apiv1.CodePreconditionRequired:
+	case p.Code == apiv1.CodePreconditionRequired:
 		s.preconditions.WithLabelValues("missing").Inc()
+	case p.Code == apiv1.CodeForbidden || errors.Is(err, errHidden):
+		reason = "role"
+	case p.Code == apiv1.CodePasswordChangeRequired:
+		reason = "must_change"
+	}
+	if reason != "" && s.d.Credentials != nil {
+		_ = s.d.Credentials.Refused(reason) // its answer is the refusal err already is
 	}
 	if s.d.Store == nil {
 		return

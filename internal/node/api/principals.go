@@ -131,8 +131,9 @@ func tagsOf[B any](w writing[B]) writing[none] {
 }
 
 // hiddenFrom reports whether the caller ctx carries may not know of u: a
-// user holding an API role, to a caller that is not admin, as accounts with
-// a role are admin's alone to read and write.
+// user holding an API role, to a caller that may not read accounts, as
+// accounts with a role are the role table's accounts right's, an admin's
+// alone to read and write.
 //
 // decision: an account with a role is hidden by the role alone, and only on
 // /users: there a read answers 404 and a listing leaves it out, and a write
@@ -140,18 +141,24 @@ func tagsOf[B any](w writing[B]) writing[none] {
 // does. Grants, memberships and quotas resolve a principal's ID through
 // principalIn, which does not hide it, so a grant, membership or quota naming
 // an admin's ID succeeds where one naming a missing ID answers 404, telling a
-// non-admin which IDs are accounts. A per-call check of the caller's account,
-// with the rule on raising a role, closes that once accounts and sign-in land.
+// caller below admin which IDs are accounts; none of those writes changes
+// the account or its role. Overturned if an account's ID must be secret
+// from an operator: principalIn would then hide it too.
 func hiddenFrom(ctx context.Context, u entity.User) bool {
 	c, _ := auth.CallerFrom(ctx)
-	return u.Role != entity.RoleNone && c.Role < entity.RoleAdmin
+	read, _ := auth.Allowed(c, auth.Accounts)
+	return u.Role != entity.RoleNone && !read
 }
 
-// lastAdmin refuses, 409 last_admin, a write that leaves no enabled admin,
-// counted tracked in tx after the write, so two writes each removing one of
-// the last two conflict.
-func lastAdmin(tx entity.ControlPlaneTx, was entity.User) error {
-	if was.Role != entity.RoleAdmin || was.Disabled {
+// checkLastAdmin refuses, 409 last_admin, a write that takes before, an
+// enabled admin, out of the enabled admins, by disabling, demoting or
+// deleting it, after being the zero user for a deletion, when it leaves
+// none. The admins are counted tracked in tx after the write, so of two
+// writes each removing one of the last two, the second to commit conflicts,
+// counts again, and is refused.
+func checkLastAdmin(tx entity.ControlPlaneTx, before, after entity.User) error {
+	enabledAdmin := func(u entity.User) bool { return u.Role == entity.RoleAdmin && !u.Disabled }
+	if !enabledAdmin(before) || enabledAdmin(after) {
 		return nil
 	}
 	n, err := tx.EnabledAdmins()

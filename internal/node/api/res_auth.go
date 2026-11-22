@@ -12,10 +12,13 @@ import (
 )
 
 // signIns is sign-in and refresh, each auditing its own write from the
-// request's record as it arrived, and saying what it audited.
+// request's record as it arrived, and saying what it audited; and the count
+// of refused authentication, which a call refused by its caller's rights is
+// counted in too.
 type signIns interface {
 	SignIn(ctx context.Context, rec entity.AuditRecord, in apiv1.SignIn) (apiv1.Tokens, auth.Audited, error)
 	Refresh(ctx context.Context, rec entity.AuditRecord, in apiv1.Refresh) (apiv1.Tokens, auth.Audited, error)
+	Refused(reason string) error
 }
 
 // authRoutes are sign-in, refresh and sign-out. Sign-in and refresh are

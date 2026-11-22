@@ -241,7 +241,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			}
 			if w.hidden != nil && !created {
 				if hide, err := w.hidden(ctx, tx, id); err != nil || hide {
-					return cmp.Or(err, errNotFound)
+					return cmp.Or(err, errHidden)
 				}
 			}
 			doc, tag, ok, err := w.read(tx, id, sub)

@@ -413,6 +413,7 @@ func typed(name string, m mode) map[string]any {
 // schema names.
 var enums = map[reflect.Type][]string{
 	reflect.TypeFor[apiv1.JoinMode](): {string(apiv1.JoinOnline), string(apiv1.JoinOffline)},
+	reflect.TypeFor[apiv1.Role]():     {string(apiv1.RoleViewer), string(apiv1.RoleOperator), string(apiv1.RoleAdmin)},
 }
 
 func (sc *schemas) of(t reflect.Type, m mode) (map[string]any, error) {

@@ -26,8 +26,12 @@ import (
 const maxBody = 1 << 20
 
 // errNotFound is a path no row names, an ID that does not parse, or a resource
-// the caller may not know exists.
-var errNotFound = fmt.Errorf("api: no such resource: %w", vfserr.ErrNotFound)
+// that does not exist; errHidden one the caller's role may not know exists,
+// answered alike.
+var (
+	errNotFound = fmt.Errorf("api: no such resource: %w", vfserr.ErrNotFound)
+	errHidden   = fmt.Errorf("api: no such resource: %w", vfserr.ErrNotFound)
+)
 
 // request is a handler's decoded request: the ID its path names, the
 // segment its {sub} names below it, empty for none, its body,
@@ -308,7 +312,7 @@ func admit(ctx context.Context, rt *route, rawID, sub string) (id [16]byte, err 
 		read, hold := auth.Allowed(c, rt.right)
 		switch {
 		case !read:
-			return id, errNotFound
+			return id, errHidden
 		case !hold:
 			return id, &refusal{code: apiv1.CodeForbidden, detail: "the caller's role does not permit this call"}
 		case c.MustChange && !rt.mustChange:
