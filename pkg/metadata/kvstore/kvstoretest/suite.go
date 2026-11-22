@@ -38,6 +38,7 @@ func Run(t *testing.T, open Opener) {
 		{"ModeMinorRights", testModeMinorRights},
 		{"ModeGrantsWhatItShows", testModeGrantsWhatItShows},
 		{"WellKnownPrincipals", testWellKnownPrincipals},
+		{"DenyOnlyPrincipals", testDenyOnlyPrincipals},
 		{"Inheritance", testInheritance},
 		{"DeleteThroughParent", testDeleteThroughParent},
 		{"PrivilegeGrantsOnlyEntryRights", testPrivilegeGrantsOnlyEntryRights},

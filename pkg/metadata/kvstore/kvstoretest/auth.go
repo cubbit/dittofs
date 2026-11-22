@@ -421,6 +421,76 @@ func testWellKnownPrincipals(t *testing.T, kvo Opener) {
 	}
 }
 
+// RFC 18's deny-only rows, RFC 19 §2.3: a principal the caller holds
+// deny-only matches a deny entry naming it, directly or as the file's group
+// through GROUP@ or its mode, and never an allow entry or a share grant.
+// Each case is checked against the same caller holding the group as an
+// ordinary member, which the entry or grant answers the other way, so the
+// refusal is the deny-only principal's and not the fixture's.
+func testDenyOnlyPrincipals(t *testing.T, kvo Opener) {
+	f := newFS(t, kvo, entity.FoldIdentity)
+	cp, files := f.s.ControlPlane(), f.s.Files()
+	finance := f.group("finance")
+	alice := f.member("alice", entity.Principal{})
+	member, denyOnly := alice, alice
+	member.Groups, denyOnly.DenyOnly = []entity.Principal{finance}, []entity.Principal{finance}
+	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
+	read := entity.ReadData
+	file := func(name string, mode uint32, es ...entity.ACE) entity.Handle {
+		h, _ := f.create(f.admin, pub, name, regular(mode))
+		must(t, errOf(files.SetAttrs(ctx, f.admin, h, entity.Attrs{}.WithGroup(finance))))
+		if len(es) > 0 {
+			must(t, errOf(files.SetACL(ctx, f.admin, h, entity.ACL{Entries: es})))
+		}
+		return h
+	}
+	for _, c := range []struct {
+		name                 string
+		h                    entity.Handle
+		memberOK, denyOnlyOK bool
+	}{
+		{"an ACL allowing finance read", file("allow", 0o600,
+			entity.ACE{Type: entity.ACEAllow, Mask: read, Who: finance}), true, false},
+		{"an ACL denying finance read, then allowing alice", file("deny", 0o600,
+			entity.ACE{Type: entity.ACEDeny, Mask: read, Who: finance},
+			entity.ACE{Type: entity.ACEAllow, Mask: read, Who: alice.Principal}), false, false},
+		{"an ACL denying GROUP@ read, then allowing everyone", file("group-deny", 0o600,
+			entity.ACE{Type: entity.ACEDeny, Mask: read, Who: entity.OwnerGroup},
+			entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.Everyone}), false, false},
+		{"an ACL allowing GROUP@ read", file("group-allow", 0o600,
+			entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.OwnerGroup}), true, false},
+		{"mode 0640, group finance", file("mode-0640", 0o640), true, false},
+		{"mode 0604, group finance", file("mode-0604", 0o604), false, false},
+		{"mode 0644, group finance", file("mode-0644", 0o644), true, true},
+	} {
+		if err := files.Authorize(ctx, member, c.h, nil, read); (err == nil) != c.memberOK {
+			t.Errorf("%s, read by a finance member: %v, want allowed %v", c.name, err, c.memberOK)
+		}
+		if err := files.Authorize(ctx, denyOnly, c.h, nil, read); (err == nil) != c.denyOnlyOK {
+			t.Errorf("%s, read by a caller holding finance deny-only: %v, want allowed %v", c.name, err, c.denyOnlyOK)
+		}
+		want := entity.AccessMask(0)
+		if c.denyOnlyOK {
+			want = read
+		}
+		if got, err := files.Granted(ctx, denyOnly, c.h, nil, read); err != nil || got != want {
+			t.Errorf("%s, Granted read to a caller holding finance deny-only = %#x, %v; want %#x", c.name, got, err, want)
+		}
+	}
+
+	// A share whose only grant names finance admits a member and refuses a
+	// caller holding finance deny-only.
+	dave := user("dave")
+	must(t, errOf(cp.PutUser(ctx, dave, 0, entity.Alloc{})))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: finance, Access: entity.AccessRead}, 0)))
+	if e := files.Authorize(ctx, entity.Identity{Principal: dave.Principal, Groups: []entity.Principal{finance}}, pub, nil, read); e != nil {
+		t.Errorf("a finance member under finance's share grant: %v", e)
+	}
+	if e := files.Authorize(ctx, entity.Identity{Principal: dave.Principal, DenyOnly: []entity.Principal{finance}}, pub, nil, read); !isDenied(e) {
+		t.Errorf("a caller holding finance deny-only under finance's share grant: %v, want access denied", e)
+	}
+}
+
 // RFC 7 §2.6's inheritance row: a subdirectory bob creates in alice's
 // directory gets an effective "bob: full" and keeps "CREATOR OWNER: full"
 // inherit-only, the file bob creates in it gets "bob: full" and nothing for
