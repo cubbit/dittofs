@@ -235,3 +235,7 @@ func (s *Server) OnMachineMint(f func()) { s.beforeMachineMint = f }
 
 // OnMachineLink has every machine link run f just before its write.
 func (s *Server) OnMachineLink(f func()) { s.beforeMachineLink = f }
+
+// OnRename has every refresh of a directory principal run f between its
+// plan and its Rename.
+func (s *Server) OnRename(f func()) { s.beforeRename = f }

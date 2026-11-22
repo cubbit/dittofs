@@ -44,6 +44,7 @@ type dirPrincipals struct {
 	clock *sim.TestClock
 	reg   *metrics.Registry
 	logon *logonRecorder
+	first string // the DN of the user groupsOf put in its groups
 }
 
 // dirStore is a memory KV store initialised with a fresh installation ID.
