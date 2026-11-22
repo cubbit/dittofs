@@ -1,8 +1,8 @@
 // Package fixture sets up the server a cell's tests run against, and what
-// they reach it through: the kernel's NFS server, the namespaced clients, a
-// KDC, an S3 bucket, and the share's NFS and SMB mounts. dt starts it before a
-// cell's first test and stops it after the last. A DittoFS server it refuses,
-// until its fixture is rebuilt on the new control plane (ErrNoServer).
+// they reach it through: DittoFS, initialised with dfs init and started with
+// dfs start, or the kernel's NFS server, the namespaced clients, a KDC, an S3
+// bucket, and the share's NFS and SMB mounts. dt starts it before a cell's
+// first test and stops it after the last.
 package fixture
 
 import (
@@ -11,16 +11,21 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"os/exec"
+	"sync"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // Share is the fixture's share, the default one when no shares file is given.
 const Share = "/export"
 
-// User is {user} and User2 is {user2}: the test users every fixture creates,
-// with {password}, each with its UID as its GID too.
+// User is {user} and User2 is {user2}: the test users every DittoFS fixture
+// creates, each with its UID as its GID too, and no password yet, since no
+// route sets one.
 const (
 	User     = "dt-user"
 	UserUID  = uint32(65535)
@@ -32,23 +37,47 @@ const (
 // killed.
 const stopGrace = 10 * time.Second
 
-// Server is a DittoFS fixture's mounts and clients: the share it mounts, over
-// NFS or SMB, and the namespaced clients it mounts it from. dt starts no
-// DittoFS server to hold them until its fixture is rebuilt (ErrNoServer).
+// Server is a DittoFS fixture: the dfs it started, the API client signed in
+// as its administrator, the share it mounts, over NFS or SMB, and the
+// namespaced clients it mounts it from.
 //
-// decision: Server and the helpers on it (the NFS and SMB mounts, the
-// namespaced clients, the KDC, the S3 bucket) stay, though nothing starts a
-// DittoFS server, because the fixture's rebuild on dfs init and dfs start
-// reuses them. Delete them if that rebuild lands without them.
+// decision: the NFS and SMB mounts, the namespaced clients, the KDC and the
+// S3 bucket stay on Server, though no fixture reaches them yet (Unserved),
+// because a fixture serving a protocol through the node reuses them. Delete
+// them if that fixture lands without them.
 type Server struct {
 	f       registry.Fixture
 	data    string
-	shares  []string  // the shares' names, the first is {share}
+	server  string    // {server}
+	shares  []string  // the shares' names, without a leading /; the first is {share}
 	nfsPort int       // 0 when the fixture serves no NFS
 	smbPort int       // 0 when the fixture serves no SMB
 	mount   string    // {mount}, once the fixture makes it
 	clients *clients  // its namespaced clients, when it has them
 	out     io.Writer // dt's lines on the setup and the teardown
+
+	bin        string            // the directory holding dfs
+	config     string            // the bootstrap's path
+	home       string            // the children's HOME, under which their XDG directories are
+	passphrase string            // the storage key's
+	password   string            // the administrator's
+	node       [16]byte          // the node's identity, which the bootstrap names
+	namespace  string            // the ID of the namespace the shares are in
+	users      map[string]string // each fixture user's ID, by name
+	shareIDs   map[string]string // each share's ID, by name
+	log        *os.File          // dfs.log, dfs init's and dfs start's output
+
+	cmd     *exec.Cmd // dfs start, while it runs
+	exited  chan struct{}
+	err     error // what cmd's Wait returned, once exited is closed
+	killed  bool  // Kill ended cmd, which Restart may replace
+	api     string
+	client  *client.Client
+	session *session // the client's token source
+
+	stop     sync.Once
+	stopDone bool // Stop has run: nothing starts again
+	stopErr  error
 }
 
 // Command is argv as a cell's test runs it, in dir with env added: on the
@@ -73,8 +102,8 @@ type iface struct {
 	addrs []net.Addr
 }
 
-// interfaces lists this machine's interfaces; the tests replace it.
-var interfaces = func() ([]iface, error) {
+// interfaces lists this machine's interfaces.
+func interfaces() ([]iface, error) {
 	list, err := net.Interfaces()
 	if err != nil {
 		return nil, err
@@ -87,15 +116,20 @@ var interfaces = func() ([]iface, error) {
 	return out, nil
 }
 
-// address is {server}: the IPv4 address of the first interface that is up
-// and not loopback, leaving out link-local addresses. A client connecting to
-// it has an address of the same kind, which the server dials for NFSv4.0
-// callbacks; it refuses a loopback one.
+// address is {server}, picked from this machine's interfaces.
 func address() (string, error) {
 	list, err := interfaces()
 	if err != nil {
 		return "", err
 	}
+	return pickAddress(list)
+}
+
+// pickAddress is {server} among the interfaces in list: the IPv4 address of
+// the first that is up and not loopback, leaving out link-local addresses. A
+// client connecting to it has an address of the same kind, which the server
+// dials for NFSv4.0 callbacks; it refuses a loopback one.
+func pickAddress(list []iface) (string, error) {
 	for _, i := range list {
 		if i.flags&net.FlagUp == 0 || i.flags&net.FlagLoopback != 0 {
 			continue

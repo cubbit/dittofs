@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/test/harness/fixture"
 	"github.com/cubbit/dittofs/test/harness/registry"
 	"github.com/cubbit/dittofs/test/harness/report"
 )
@@ -52,16 +53,21 @@ func anyRepo(t *testing.T, y string, files map[string]string) (string, *registry
 	return root, r
 }
 
-// runTarget selects and runs target at tier pr, and returns the report and
-// everything the run printed.
-func runTarget(t *testing.T, root string, r *registry.Registry, target string, ci bool) (Report, string) {
+// runTarget selects and runs target at tier pr, its fixtures started by
+// start when one is given, and returns the report and everything the run
+// printed.
+func runTarget(t *testing.T, root string, r *registry.Registry, target string, ci bool, start ...startFunc) (Report, string) {
 	t.Helper()
 	cells, err := Select(root, r, target, "", "pr", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), CI: ci, Out: &out})
+	o := Options{Root: root, Results: filepath.Join(root, "results"), CI: ci, Out: &out}
+	if len(start) > 0 {
+		o.start = start[0]
+	}
+	rep, err := Run(context.Background(), cells, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -863,7 +869,9 @@ func TestFirstScenarioLimit(t *testing.T) {
 // --in auto moves a run to dtc when a cell needs what is missing here and the
 // container gives, unless a cell needs what is met here and the container
 // lacks. A cell dtc can't run doesn't move it, and keeps it here when it runs
-// here. The tests set hostOS to darwin.
+// here. The tests set hostOS to darwin. The fixtures are judged as a start of
+// a test's own judges them, by what dt itself sets up, since the DittoFS
+// server serves none of them yet; through Container, an NFS cell stays here.
 func TestContainer(t *testing.T) {
 	was := hostOS
 	hostOS = "darwin"
@@ -907,9 +915,12 @@ func TestContainer(t *testing.T) {
 		{"one missing need the container lacks too", []Cell{cell("linux", "rpcbind")}, []string{"linux", "rpcbind"}, false},
 		{"a service missing here, so in the container too", []Cell{cell("linux", "service:localstack")}, []string{"linux", "service:localstack"}, false},
 	} {
-		if got := Container(c.cells, missing(c.unmet...)); got != c.want {
+		if got := container(c.cells, missing(c.unmet...), fixture.NotSetUp); got != c.want {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
 		}
+	}
+	if Container([]Cell{nfs}, missing("linux")) {
+		t.Errorf("an NFS mount the server can't serve yet moves the run to dtc, want it kept here")
 	}
 }
 

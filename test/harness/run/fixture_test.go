@@ -11,12 +11,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/test/harness/fixture"
 	"github.com/cubbit/dittofs/test/harness/registry"
 	"github.com/cubbit/dittofs/test/harness/report"
 )
@@ -35,14 +35,15 @@ type fakeServer struct {
 }
 
 func (f *fakeServer) Placeholders() map[string]string {
-	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "smb-port": "40002", "share": "one", "user": "dt-user", "user2": "dt-user2", "password": "s3cret"}
+	// Each reset moves {smb-port}, as a restart moves a port.
+	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "smb-port": strconv.Itoa(40002 + f.resets), "share": "one", "user": "dt-user", "user2": "dt-user2", "password": "s3cret"}
 	if f.mount != "" {
 		vals["mount"] = f.mount
 	}
 	return vals
 }
 
-func (f *fakeServer) Reset(share string) error {
+func (f *fakeServer) Reset(_ context.Context, share string) error {
 	f.resets++
 	_, _ = fmt.Fprintln(f.out, "[dt] fake reset", share)
 	return f.resetErr
@@ -57,21 +58,20 @@ func (f *fakeServer) Stop() error {
 	return f.err
 }
 
-// asked is a fixture startFixture was asked for, with the services'
+// asked is a fixture a start was asked for, with the services'
 // variables it was given.
 type asked struct {
 	registry.Fixture
 	services []string
 }
 
-// fakeFixture makes startFixture call start, and returns the fixtures it was
+// fakeFixture is a fixture start that calls start, and the fixtures it was
 // asked for, from cells that may run at once.
-func fakeFixture(t *testing.T, start func(ctx context.Context) (fixtureServer, error)) *[]asked {
+func fakeFixture(t *testing.T, start func(ctx context.Context) (fixtureServer, error)) (startFunc, *[]asked) {
 	t.Helper()
 	var list []asked
 	var mu sync.Mutex
-	real := startFixture
-	startFixture = func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error) {
+	return func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error) {
 		mu.Lock()
 		list = append(list, asked{f, services})
 		mu.Unlock()
@@ -80,9 +80,7 @@ func fakeFixture(t *testing.T, start func(ctx context.Context) (fixtureServer, e
 			fake.out = w
 		}
 		return s, err
-	}
-	t.Cleanup(func() { startFixture = real })
-	return &list
+	}, &list
 }
 
 const fixtureSuite = `suites:
@@ -104,9 +102,9 @@ func TestFixtureCell(t *testing.T) {
 	t.Cleanup(s3.Close)
 	t.Setenv("LOCALSTACK_ENDPOINT", s3.URL)
 	server := &fakeServer{}
-	asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
+	start, asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
 	root, r := repo(t, fixtureSuite, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
-	rep, out := runTarget(t, root, r, "f", false)
+	rep, out := runTarget(t, root, r, "f", false, start)
 	if len(rep.Outcomes) != 3 || rep.Outcomes[0].Result != report.Passed || rep.Outcomes[1].Result != report.Passed {
 		t.Fatalf("outcomes %+v\n%s", rep.Outcomes, out)
 	}
@@ -140,7 +138,7 @@ func TestFixtureKerberosImage(t *testing.T) {
 	}
 	log := fakeDocker(t)
 	var before string // the docker calls when the fixture started
-	fakeFixture(t, func(context.Context) (fixtureServer, error) {
+	start, _ := fakeFixture(t, func(context.Context) (fixtureServer, error) {
 		data, _ := os.ReadFile(log)
 		before = string(data)
 		return &fakeServer{}, nil
@@ -148,7 +146,7 @@ func TestFixtureKerberosImage(t *testing.T) {
 	root, r := repo(t, `suites:
   k: { cmd: "echo {realm} {krb5-conf}", fixture: { profile: memory, smb: true, kerberos: true } }
 `, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
-	rep, out := runTarget(t, root, r, "k", false)
+	rep, out := runTarget(t, root, r, "k", false, start)
 	build := "build\n-q\n-t\ndittofs-dt-kdc\n" + filepath.Join("test", "smb-conformance", "kdc") + "\n"
 	if o := rep.Outcomes[0]; o.Result != report.Passed || !strings.Contains(before, build) {
 		t.Errorf("outcome %+v, docker calls before the fixture:\n%s\n%s", o, before, out)
@@ -158,11 +156,11 @@ func TestFixtureKerberosImage(t *testing.T) {
 // A fixture that fails its setup leaves its cell not run and its tests
 // unstarted; one that passes the setup's limit is tried once.
 func TestFixtureSetupFails(t *testing.T) {
-	fakeFixture(t, func(context.Context) (fixtureServer, error) {
+	start, _ := fakeFixture(t, func(context.Context) (fixtureServer, error) {
 		return nil, errors.New("dfs exited before its API answered")
 	})
 	root, r := repo(t, fixtureSuite, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
-	rep, out := runTarget(t, root, r, "f/memory", false)
+	rep, out := runTarget(t, root, r, "f/memory", false, start)
 	if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != "the fixture: dfs exited before its API answered" || strings.Contains(out, "[dt] $ echo") {
 		t.Errorf("a failed setup: %+v\n%s", o, out)
 	}
@@ -170,11 +168,11 @@ func TestFixtureSetupFails(t *testing.T) {
 	// Long enough for the build, which the first run cached.
 	fixtureSetup = 3 * time.Second
 	t.Cleanup(func() { fixtureSetup = 5 * time.Minute })
-	asked := fakeFixture(t, func(ctx context.Context) (fixtureServer, error) {
+	start, asked := fakeFixture(t, func(ctx context.Context) (fixtureServer, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
-	rep, _ = runTarget(t, root, r, "f/memory", false)
+	rep, _ = runTarget(t, root, r, "f/memory", false, start)
 	if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != "the fixture wasn't set up within 3s, and isn't retried" || len(*asked) != 1 {
 		t.Errorf("a setup past its limit: %+v, started %d times", o, len(*asked))
 	}
@@ -184,9 +182,9 @@ func TestFixtureSetupFails(t *testing.T) {
 // say.
 func TestFixtureServerEnds(t *testing.T) {
 	server := &fakeServer{err: errors.New("dfs exited before its cell ended: exit status 2")}
-	fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
+	start, _ := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
 	root, r := repo(t, fixtureSuite, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
-	rep, _ := runTarget(t, root, r, "f/memory", false)
+	rep, _ := runTarget(t, root, r, "f/memory", false, start)
 	if o := rep.Outcomes[0]; o.Result != report.Failed || o.Note != "the fixture: dfs exited before its cell ended: exit status 2" {
 		t.Errorf("outcome %+v", o)
 	}
@@ -198,7 +196,7 @@ func TestFixtureStepsShareTheLimit(t *testing.T) {
 	fixtureSetup = 3 * time.Second
 	t.Cleanup(func() { fixtureSetup = 5 * time.Minute })
 	var deadline time.Time
-	fakeFixture(t, func(ctx context.Context) (fixtureServer, error) {
+	start, _ := fakeFixture(t, func(ctx context.Context) (fixtureServer, error) {
 		deadline, _ = ctx.Deadline()
 		time.Sleep(time.Until(deadline) - time.Second) // a slow start leaves the pull a second
 		return &fakeServer{}, nil
@@ -208,7 +206,7 @@ func TestFixtureStepsShareTheLimit(t *testing.T) {
 `, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
 	fakeDocker(t)
 	t.Setenv("FAKE_IMAGE", "stall")
-	rep, out := runTarget(t, root, r, "f", false)
+	rep, out := runTarget(t, root, r, "f", false, start)
 	if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != "the fixture wasn't set up within 3s, and isn't retried" {
 		t.Errorf("outcome %+v\n%s", o, out)
 	}
@@ -221,24 +219,24 @@ func TestFixtureStepsShareTheLimit(t *testing.T) {
 // before the test, and a test whose reset fails doesn't run. A test's {share}
 // is its share= in a .txt list, else the fixture's first share. The fixture
 // finds its shares file from the repository's root, and the commands get
-// {smb-port} and {user2}.
+// {smb-port}, read again for each test, and {user2}.
 func TestFixtureResetEach(t *testing.T) {
 	server := &fakeServer{}
-	asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
+	start, asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
 	root, r := repo(t, `suites:
   r:
     cmd: "echo {test} {share} {smb-port} {user2}"
     tests: list.txt
     fixture: { profile: memory, smb: true, shares: smb/shares.yaml, reset: each }
 `, withBins(map[string]string{"go.mod": goModule["go.mod"], "smb/shares.yaml": "- name: /one\n- name: /two\n", "list.txt": "a share=two\nb\n"}))
-	rep, out := runTarget(t, root, r, "r", false)
+	rep, out := runTarget(t, root, r, "r", false, start)
 	var steps []string
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "[dt] fake reset") || strings.HasPrefix(line, "[dt] $ echo") {
 			steps = append(steps, line)
 		}
 	}
-	want := []string{"[dt] fake reset two", "[dt] $ echo a two 40002 dt-user2", "[dt] fake reset one", "[dt] $ echo b one 40002 dt-user2"}
+	want := []string{"[dt] fake reset two", "[dt] $ echo a two 40003 dt-user2", "[dt] fake reset one", "[dt] $ echo b one 40004 dt-user2"}
 	if o := rep.Outcomes[0]; o.Result != report.Passed || !slices.Equal(steps, want) {
 		t.Errorf("outcome %+v, steps:\n%s\nwant:\n%s", o, strings.Join(steps, "\n"), strings.Join(want, "\n"))
 	}
@@ -247,7 +245,7 @@ func TestFixtureResetEach(t *testing.T) {
 	}
 
 	server.resetErr = errors.New("the API answered 500")
-	rep, out = runTarget(t, root, r, "r", false)
+	rep, out = runTarget(t, root, r, "r", false, start)
 	if o := rep.Outcomes[0]; o.Result != report.NotRun || o.Note != "a: its share wasn't reset: the API answered 500; b: its share wasn't reset: the API answered 500" || strings.Contains(out, "[dt] $ echo") {
 		t.Errorf("a failed reset: %+v\n%s", o, out)
 	}
@@ -256,7 +254,7 @@ func TestFixtureResetEach(t *testing.T) {
 // A fixture with a client runs each command there, and dt shows it as it
 // runs.
 func TestCommandOnTheClient(t *testing.T) {
-	fakeFixture(t, func(context.Context) (fixtureServer, error) {
+	start, _ := fakeFixture(t, func(context.Context) (fixtureServer, error) {
 		return &fakeServer{client: []string{"env", "ON_CLIENT=yes"}}, nil
 	})
 	root, r := repo(t, `suites:
@@ -264,19 +262,28 @@ func TestCommandOnTheClient(t *testing.T) {
     cmd: { sh: 'test "$ON_CLIENT" = yes' }
     fixture: { profile: memory, nfs: export }
 `, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
-	rep, out := runTarget(t, root, r, "c", false)
+	rep, out := runTarget(t, root, r, "c", false, start)
 	if o := rep.Outcomes[0]; o.Result != report.Passed || !strings.Contains(out, "[dt] $ env ON_CLIENT=yes sh -c") {
 		t.Errorf("outcome %+v\n%s", o, out)
 	}
 }
 
-// A cell whose fixture's server is DittoFS is refused at its start, with the
-// reason, since dt starts no DittoFS server until its fixture is rebuilt.
-func TestDittoFSFixtureRefused(t *testing.T) {
-	for _, server := range []string{"", "dfs"} {
-		_, err := startFixture(context.Background(), registry.Fixture{Server: server, Profile: "memory"}, nil, t.TempDir(), t.TempDir(), io.Discard)
-		if !errors.Is(err, fixture.ErrNoServer) {
-			t.Errorf("server %q: startFixture returned %v, want %v", server, err, fixture.ErrNoServer)
-		}
+// A real run, which passes no start of its own, leaves a cell whose fixture
+// the DittoFS server can't serve yet not run, naming why, before it builds
+// {bin}; Blocked, which dt list reads, says the same.
+func TestUnservedFixtureNotRun(t *testing.T) {
+	root, r := repo(t, `suites:
+  u: { cmd: "true", fixture: { profile: memory, nfs: export } }
+`, withBins(map[string]string{"go.mod": goModule["go.mod"]}))
+	rep, out := runTarget(t, root, r, "u", false)
+	want := "dt serves no NFS or SMB through the node yet"
+	if o := rep.Outcomes[0]; o.Result != report.NotRun || !strings.HasPrefix(o.Note, want) {
+		t.Errorf("outcome %+v, want not run naming %q\n%s", o, want, out)
+	}
+	if _, err := os.Stat(filepath.Join(rep.Dir, "bin")); err == nil {
+		t.Errorf("{bin} was built for a cell that can't run")
+	}
+	if why, _ := Blocked(r.Suites[0], nil, func(string) error { return nil }); !strings.HasPrefix(why, want) {
+		t.Errorf("Blocked: %q, want %q", why, want)
 	}
 }
