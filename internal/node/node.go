@@ -118,14 +118,13 @@ type Node struct {
 // state and the engine, each empty from its own Deps, the budgets and their
 // series, the secret provider and the access tokens over the storage key,
 // the identity server over the store and the secret provider, the
-// filesystem over the engine and identity, the operation runner with the
-// steps of the kinds this node drives, the watchdog, the adapters' one
-// Deps, the sidecar runner and a slot per protocol, and the API over the
-// store's control plane and node view, the runner's progress, the health
-// evaluator, the slots' connections and the writer's wait. It starts
-// nothing: no journal, goroutine or listener exists until Start, but for
-// the socket an unset adapters.listen opens and closes at once to learn
-// whether tcp6 does.
+// filesystem over the engine and identity, the operation runner with the steps of the kinds this
+// node drives, the watchdog, the adapters' one Deps, the sidecar runner and
+// a slot per protocol, and the API over the store's control plane and node
+// view, the runner's progress, the health evaluator, the slots' connections
+// and the writer's wait. It starts nothing: no journal,
+// goroutine or listener exists until Start, but for the socket an unset
+// adapters.listen opens and closes at once to learn whether tcp6 does.
 //
 // ponytail: the node both builds and drives its components. Split the
 // builder out when it gains dependencies a multi-node test cannot replace

@@ -34,11 +34,8 @@ type Settings struct {
 // the wire name is its suffix, never the installation's to choose.
 const maxNetBIOSName = 15
 
-// SectionName is the identity section's prefix in the settings table.
-const SectionName = "identity"
-
-// DefaultSettings is the section's value where no row sets a key.
-func DefaultSettings() Settings {
+// defaultSettings is the section's value where no row sets a key.
+func defaultSettings() Settings {
 	return Settings{
 		IDRange: entity.DefaultIDRange,
 		// decision: NTLM is on by default. Workgroup deployments with local users
@@ -51,11 +48,20 @@ func DefaultSettings() Settings {
 	}
 }
 
+// sectionName is the identity section's prefix in the settings table.
+const sectionName = "identity"
+
 // Section declares the identity section for the node's settings table.
 func Section() settings.Section {
-	return settings.Of(SectionName, settings.At(entity.ScopeInstallation), DefaultSettings(),
+	return settings.Of(sectionName, settings.At(entity.ScopeInstallation), defaultSettings(),
 		settings.SecretRef("Keytab", entity.SecretKeytab),
 		settings.CheckTx(checkSettings))
+}
+
+// SettingsOf is the identity section in snap as node reads it, or the
+// section's refusal when the walk refused a row of it.
+func SettingsOf(snap *settings.Snapshot, node entity.NodeID) (Settings, error) {
+	return settings.Get[Settings](snap, sectionName, node)
 }
 
 // checkSettings is the identity section's write check, run inside the
@@ -141,7 +147,7 @@ func checkDirectory(tx entity.ControlPlaneTx, w settings.Write, r directory.Reco
 		return err
 	}
 	if !found {
-		name = DefaultSettings().NetBIOSName
+		name = defaultSettings().NetBIOSName
 	}
 	return checkNetBIOS(w, r.NetBIOSDomain, keyNetBIOSName, name)
 }

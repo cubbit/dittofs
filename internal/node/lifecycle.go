@@ -365,9 +365,9 @@ func (n *Node) register(ctx context.Context) error {
 
 // readRecords reads the counters and the shares, keeping those reconcile
 // binds, and the shares being removed, for the engine's start, then calls
-// apply, and hands identity its first State. The counters it read are those
-// reconcile has acted on, so only Start's full first pass, not a counter,
-// makes reconcile record the refusals.
+// apply, and hands identity its first State. The counters identity's State
+// was read at are those reconcile has acted on, so only Start's full first
+// pass, not a counter, makes reconcile record the refusals.
 func (n *Node) readRecords(ctx context.Context) error {
 	c, err := n.counters(ctx)
 	if err != nil {
@@ -384,10 +384,9 @@ func (n *Node) readRecords(ctx context.Context) error {
 	if _, err := n.apply(ctx, c, nil); err != nil {
 		return err
 	}
-	if err := n.applyIdentity(ctx, c); err != nil {
+	if n.rec.seen, err = n.applyIdentity(ctx); err != nil {
 		return fmt.Errorf("identity: %w", err)
 	}
-	n.rec.seen = c
 	return nil
 }
 
