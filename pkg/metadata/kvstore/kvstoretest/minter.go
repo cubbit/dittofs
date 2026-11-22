@@ -1,6 +1,7 @@
 package kvstoretest
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -285,5 +286,214 @@ func testMintNoAPIRole(t *testing.T, kvo Opener) {
 	}
 	if after := admins(); after != before {
 		t.Errorf("enabled admins after the refused mint: %d, want %d", after, before)
+	}
+}
+
+// record is what a rename may write of a principal: its name, generation and
+// position.
+type record struct {
+	name     string
+	gen, pos uint64
+}
+
+// recordOf reads p's user or group record, deleted or absent as the zero
+// record.
+func recordOf(t *testing.T, s *kvstore.Store, p entity.Principal) record {
+	t.Helper()
+	if p.Kind == entity.PrincipalGroup {
+		g, err := s.Records().Group(ctx, p)
+		if merrs.IsNotFoundError(err) {
+			return record{}
+		}
+		must(t, err)
+		return record{g.Name, g.Generation, g.Position}
+	}
+	u, err := s.Principals().User(ctx, p)
+	if merrs.IsNotFoundError(err) {
+		return record{}
+	}
+	must(t, err)
+	return record{u.Name, u.Generation, u.Position}
+}
+
+// holder is the principal of kind holding name, the zero one for none.
+func holder(t *testing.T, s *kvstore.Store, kind entity.PrincipalKind, name string) entity.Principal {
+	t.Helper()
+	p, err := s.Principals().ByName(ctx, kind, name)
+	if merrs.IsNotFoundError(err) {
+		return entity.Principal{}
+	}
+	must(t, err)
+	return p
+}
+
+// A swap and a handoff each commit in one transaction with one principals
+// generation raise, every listed record taking the raised value as its
+// position, and a name a listed principal gives up never blocks a take.
+func testRenameSwapAndHandoff(t *testing.T, kvo Opener) {
+	for _, c := range []struct {
+		name      string
+		aTo       string
+		wantAlice func(a, b entity.Principal) entity.Principal
+		wantBob   func(a, b entity.Principal) entity.Principal
+	}{
+		{"swap", "bob", func(_, b entity.Principal) entity.Principal { return b }, func(a, _ entity.Principal) entity.Principal { return a }},
+		{"handoff", "", func(_, b entity.Principal) entity.Principal { return b }, func(_, _ entity.Principal) entity.Principal { return entity.Principal{} }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, _ := newStore(t, kvo)
+			a, b := user("alice"), user("bob")
+			must(t, errOf(s.ControlPlane().PutUser(ctx, a, 0, entity.Alloc{})))
+			must(t, errOf(s.ControlPlane().PutUser(ctx, b, 0, entity.Alloc{})))
+			before := counters(t, s).Principals
+			if err := s.Minter().Rename(ctx, []entity.Renaming{{P: a.Principal, Name: c.aTo}, {P: b.Principal, Name: "alice"}}); err != nil {
+				t.Fatalf("Rename: %v", err)
+			}
+			after := counters(t, s).Principals
+			if after != before+1 {
+				t.Errorf("principals generation across the %s: %d to %d, want a raise of one", c.name, before, after)
+			}
+			if got, want := holder(t, s, entity.PrincipalUser, "alice"), c.wantAlice(a.Principal, b.Principal); got != want {
+				t.Errorf("alice after the %s: held by %v, want %v", c.name, got, want)
+			}
+			if got, want := holder(t, s, entity.PrincipalUser, "bob"), c.wantBob(a.Principal, b.Principal); got != want {
+				t.Errorf("bob after the %s: held by %v, want %v", c.name, got, want)
+			}
+			for _, p := range []entity.Principal{a.Principal, b.Principal} {
+				if r := recordOf(t, s, p); r.pos != after {
+					t.Errorf("%v's position after the %s: %d, want the raised %d", p, c.name, r.pos, after)
+				}
+			}
+			if r := recordOf(t, s, a.Principal); r.name != c.aTo {
+				t.Errorf("the first record's name after the %s: %q, want %q", c.name, r.name, c.aTo)
+			}
+		})
+	}
+}
+
+// Each refusal writes nothing: a take another principal holds, under the
+// fold, is ErrExist; a principal listed twice, two takes of one folded name
+// within a kind and a machine are ErrInvalid; a principal marked deleted and
+// one with no record are not found, and no name row is left for them.
+func testRenameRefusals(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	a, held, g1, g2, gone := user("x"), user("alice"), group("g1"), group("g2"), user("gone")
+	for _, u := range []entity.User{a, held, gone} {
+		must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	}
+	for _, g := range []entity.Group{g1, g2} {
+		must(t, errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
+	}
+	m := machine(krb("host/a.corp.example@CORP.EXAMPLE"))
+	must(t, errOf(cp.PutUser(ctx, m, 0, entity.Alloc{})))
+	must(t, cp.DeleteUser(ctx, gone.Principal, userGeneration(t, s, gone.Principal)))
+	absent := entity.NewUser()
+
+	watched := []entity.Principal{a.Principal, held.Principal, g1.Principal, g2.Principal}
+	snapshot := func() (map[entity.Principal]record, uint64) {
+		out := map[entity.Principal]record{}
+		for _, p := range watched {
+			out[p] = recordOf(t, s, p)
+		}
+		return out, counters(t, s).Principals
+	}
+	for _, c := range []struct {
+		name  string
+		list  []entity.Renaming
+		check func(error) bool
+		want  string
+		free  []string // user names no row may hold after the refusal
+	}{
+		{"a take held outside the list", []entity.Renaming{{P: a.Principal, Name: "Alice"}}, merrs.IsAlreadyExistsError, "already exists", nil},
+		{"a principal listed twice", []entity.Renaming{{P: a.Principal, Name: "y"}, {P: a.Principal, Name: "z"}}, invalid, "invalid argument", []string{"y", "z"}},
+		{"two takes of one folded name", []entity.Renaming{{P: g1.Principal, Name: "Finance"}, {P: g2.Principal, Name: "finance"}}, invalid, "invalid argument", nil},
+		{"a machine", []entity.Renaming{{P: a.Principal, Name: "y"}, {P: m.Principal, Name: "host"}}, invalid, "invalid argument", []string{"y", "host"}},
+		{"a principal marked deleted", []entity.Renaming{{P: a.Principal, Name: "y"}, {P: gone.Principal, Name: "zed"}}, merrs.IsNotFoundError, "not found", []string{"y", "zed"}},
+		{"a principal with no record", []entity.Renaming{{P: a.Principal, Name: "y"}, {P: absent, Name: "zed"}}, merrs.IsNotFoundError, "not found", []string{"y", "zed"}},
+	} {
+		was, pgen := snapshot()
+		if err := s.Minter().Rename(ctx, c.list); !c.check(err) {
+			t.Errorf("%s: %v, want %s", c.name, err, c.want)
+		}
+		now, after := snapshot()
+		for p, r := range was {
+			if now[p] != r {
+				t.Errorf("%s: %v's record %+v, want it unchanged %+v", c.name, p, now[p], r)
+			}
+		}
+		if after != pgen {
+			t.Errorf("%s: principals generation %d, want it unchanged %d", c.name, after, pgen)
+		}
+		for _, n := range c.free {
+			if p := holder(t, s, entity.PrincipalUser, n); !p.IsZero() {
+				t.Errorf("%s: the name %s is held by %v, want no row", c.name, n, p)
+			}
+		}
+		if got := holder(t, s, entity.PrincipalUser, "x"); got != a.Principal {
+			t.Errorf("%s: x held by %v, want the record it names %v", c.name, got, a.Principal)
+		}
+	}
+}
+
+// A user and a group taking one name in one list commit, since names are
+// unique per kind; an empty list raises no generation.
+func testRenameKindsAndEmpty(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	u, g := user("u"), group("g")
+	must(t, errOf(s.ControlPlane().PutUser(ctx, u, 0, entity.Alloc{})))
+	must(t, errOf(s.ControlPlane().PutGroup(ctx, g, 0, entity.Alloc{})))
+	before := counters(t, s).Principals
+	if err := s.Minter().Rename(ctx, nil); err != nil {
+		t.Fatalf("an empty Rename: %v", err)
+	}
+	if after := counters(t, s).Principals; after != before {
+		t.Errorf("principals generation across an empty Rename: %d to %d, want no raise", before, after)
+	}
+	if err := s.Minter().Rename(ctx, []entity.Renaming{{P: u.Principal, Name: "staff"}, {P: g.Principal, Name: "staff"}}); err != nil {
+		t.Fatalf("a user and a group taking one name: %v", err)
+	}
+	if got := holder(t, s, entity.PrincipalUser, "staff"); got != u.Principal {
+		t.Errorf("user staff held by %v, want %v", got, u.Principal)
+	}
+	if got := holder(t, s, entity.PrincipalGroup, "staff"); got != g.Principal {
+		t.Errorf("group staff held by %v, want %v", got, g.Principal)
+	}
+}
+
+// SetEmail writes the address with one principals generation raise and the
+// raised position, and a put holding the generation read before a Rename or
+// a SetEmail is refused, so an API write never reverts either.
+func testRenameAndSetEmailRaiseGeneration(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	u := user("alice")
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	for _, c := range []struct {
+		name  string
+		write func() error
+	}{
+		{"Rename", func() error { return s.Minter().Rename(ctx, []entity.Renaming{{P: u.Principal, Name: "alicia"}}) }},
+		{"SetEmail", func() error { return s.Minter().SetEmail(ctx, u.Principal, "a@example") }},
+	} {
+		read, err := s.Principals().User(ctx, u.Principal)
+		must(t, err)
+		before := counters(t, s).Principals
+		must(t, c.write())
+		after := counters(t, s).Principals
+		if after != before+1 {
+			t.Errorf("principals generation across %s: %d to %d, want a raise of one", c.name, before, after)
+		}
+		if r := recordOf(t, s, u.Principal); r.pos != after {
+			t.Errorf("position after %s: %d, want %d", c.name, r.pos, after)
+		}
+		if _, err := cp.PutUser(ctx, read, read.Generation, entity.Alloc{}); !errors.Is(err, entity.ErrGenerationMismatch) {
+			t.Errorf("a PutUser holding the generation read before %s: %v, want %v", c.name, err, entity.ErrGenerationMismatch)
+		}
+	}
+	got, err := s.Principals().User(ctx, u.Principal)
+	must(t, err)
+	if got.Email != "a@example" || got.Name != "alicia" {
+		t.Errorf("after Rename and SetEmail: name %q, e-mail %q; want alicia and a@example", got.Name, got.Email)
 	}
 }
