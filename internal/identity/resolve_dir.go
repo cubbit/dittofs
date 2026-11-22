@@ -121,8 +121,9 @@ func (s *Server) dirStep(ctx context.Context, st *State, p entity.Principal, ent
 		}
 		return nil, time.Time{}, err
 	}
-	// A SID answer is never refreshed from: it says whom a SID names, and a
-	// lookup by entry ID settles that record's name.
+	// A ticket's SID answers are not refreshed from here: they only pick the
+	// groups to mint, and a lookup by entry ID settles a record's name. A Find
+	// by SID does refresh from a queried SID answer (dirPrincipal).
 	s.refreshOrLog(ctx, st, refreshable(ps, entries, bound, func(i int) bool { return groupsQueried && i < closure }))
 	for _, q := range ps {
 		if !q.IsZero() {

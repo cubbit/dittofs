@@ -2,16 +2,16 @@ package identity_test
 
 import (
 	"context"
-
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
 	"slices"
 	"strconv"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/identity/directory"
@@ -577,5 +577,60 @@ func TestFreshUntil(t *testing.T) {
 		if got := identity.FreshUntil(now, tc.oldest, tc.expires, grace); !got.Equal(tc.want) {
 			t.Errorf("%s: freshUntil = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A Find never renames a record from an answer the cache held: bob's by-name
+// answer, cached when a Find of KORP\bob minted him, still names him bob
+// after the directory renamed him bobby and a Find by the new name renamed his
+// record; a second Find of KORP\bob, answered from the cache, leaves the
+// record bobby, writing nothing.
+func TestFindDirectoryNeverRenamesBack(t *testing.T) {
+	e := newAD(t)
+	bobDN, bob := e.minted(t, "bob", nil)
+	e.d.Modify(bobDN, map[string][][]byte{"sAMAccountName": attr("bobby")})
+	if got := e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\bobby`}, true); got != bob {
+		t.Fatalf(`Find(KORP\bobby) = %v, want bob's %v`, got, bob)
+	}
+	before := e.pgen(t)
+	if got := e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\bob`}, true); got != bob {
+		t.Fatalf(`Find(KORP\bob) from the cache = %v, want %v`, got, bob)
+	}
+	if got := e.spelled(t, bob); got != `KORP\bobby` {
+		t.Errorf(`bob's name after a cached Find of KORP\bob = %q, want KORP\bobby: renamed back from the cached answer`, got)
+	}
+	if got := e.pgen(t); got != before {
+		t.Errorf("PGEN %d after the cached Find, want %d unchanged", got, before)
+	}
+}
+
+// Nor does a mint rename a group of the closure from a closure the cache
+// held: alice's first mint fails at its Create after caching her closure
+// naming eng; eng is renamed engineering in the directory and its record by a
+// Find of the new name; alice's retried mint, reading the cached closure,
+// leaves eng's record engineering.
+func TestFindDirectoryMintNeverRenamesAGroupBack(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	st, inst, f := dirFaultStore(t)
+	e := newDirPrincipals(t, st, inst, directory.SchemaAD)
+	aliceDN := e.d.AddUser(t, "alice", nil)
+	engDN := e.d.AddGroup(t, "eng", map[string][][]byte{"member": attr(aliceDN)})
+	eng := e.mustFind(t, sidOf(t, e.entry(t, directory.ByGroupName, "eng")), true)
+	s, err := sim.NewSchedule(1, e.clock, sim.Rule{Op: kvtest.OpUpdate, Key: "*", Count: 1, Action: sim.FaultAction{Err: errors.New("injected store fault")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.SetFault(s)
+	if _, err := e.find(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\alice`}, true); !errors.Is(err, vfserr.ErrUnavailable) {
+		t.Fatalf(`Find(KORP\alice) with its Create failing = %v, want ErrUnavailable`, err)
+	}
+	f.SetFault(nil)
+	e.d.Modify(engDN, map[string][][]byte{"sAMAccountName": attr("engineering")})
+	if got := e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\engineering`}, true); got != eng {
+		t.Fatalf(`Find(KORP\engineering) = %v, want eng's %v`, got, eng)
+	}
+	e.mustFind(t, pid.Spelling{Scheme: pid.SchemeQualified, Text: `KORP\alice`}, true)
+	if got := e.spelled(t, eng); got != `KORP\engineering` {
+		t.Errorf(`eng's name after alice's mint = %q, want KORP\engineering: renamed back from the cached closure`, got)
 	}
 }

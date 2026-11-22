@@ -282,8 +282,15 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 // would rename the record back, raising the principals generation at every
 // call until the older answer expires. RFC 18 §5.1 has a stale answer not
 // count as an answer, and a cached one is no newer. The cost is that a
-// rename waits for the next query of its entry, at most the TTL. Overturned
-// if a rename must land sooner than the TTL.
+// rename waits for the next query of its entry, at most the TTL. A queried
+// answer can still be older than the one that last wrote the record: a
+// query sent before the directory's rename and answered after a lookup by
+// the new name renamed the record, or one a lagging replica gives, renames
+// it back, once per such race, since the calls after it read the cache; the
+// next query of the entry heals it, within the TTL. Overturned if that flip
+// is seen to matter, which keeping on the record the time of the answer that
+// last wrote it, and skipping an older one, would close at the cost of a
+// record field.
 func refreshable(ps []entity.Principal, entries []directory.Answer, bound []int, queried func(int) bool) []dirBound {
 	var out []dirBound
 	for _, i := range bound {
