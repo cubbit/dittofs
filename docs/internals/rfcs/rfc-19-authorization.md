@@ -443,19 +443,20 @@ Four kinds of call take a different path through the sequence:
   acknowledgement of a lease, oplock or delegation break, the return of a grant,
   a logoff or tree disconnect — is not refused at step 2 when the caller's
   ceiling no longer admits it, and runs no walk.
-- **A change of mode, owner, group or times**, except the owner's `chown`, asks
-  a right of this sequence, so it is cut by `C` before the ownership rules of
+- **A change of mode, owner, group or times** asks a right of this sequence, so
+  it is cut by `C` before the ownership rules of
   [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved)
   decide the value: a `chmod` asks write the ACL; a `chown` by a caller other
   than the file's owner asks change the owner; a `chgrp` asks change the owner,
   or write the ACL when the caller owns the file; setting the times to a
   client-given value, or any other attribute, asks write attributes, and
   setting them to the server's time asks write data.
-  The owner's `chown` asks nothing of this sequence, so no access event records
-  it. The store's own check of write attributes still refuses it: the share
-  grant, so a read-only share refuses it `ErrReadOnly`; the flags; and the
-  ACL, under which the owner holds write attributes unless an entry names owner
-  rights. RFC 7 §7.4's ownership rules decide the rest.
+  The owner's `chown` asks no right of the service's decision, so no access
+  event records a change of the owner alone. The store's own check still runs
+  this sequence for write attributes: the share grant, so a read-only share
+  refuses it `ErrReadOnly`; the flags; and the ACL, under which the owner holds
+  write attributes unless an entry names owner rights. RFC 7 §7.4's ownership
+  rules decide the rest.
   So an owner on a read share cannot `chmod`, `chown`, `chgrp` or `touch -d`
   its file.
 
