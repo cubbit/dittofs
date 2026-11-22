@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -34,7 +35,8 @@ type fakeServer struct {
 }
 
 func (f *fakeServer) Placeholders() map[string]string {
-	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "smb-port": "40002", "share": "one", "user": "dt-user", "user2": "dt-user2", "password": "s3cret"}
+	// Each reset moves {smb-port}, as a restart moves a port.
+	vals := map[string]string{"server": "10.0.0.9", "nfs-port": "40001", "smb-port": strconv.Itoa(40002 + f.resets), "share": "one", "user": "dt-user", "user2": "dt-user2", "password": "s3cret"}
 	if f.mount != "" {
 		vals["mount"] = f.mount
 	}
@@ -217,7 +219,7 @@ func TestFixtureStepsShareTheLimit(t *testing.T) {
 // before the test, and a test whose reset fails doesn't run. A test's {share}
 // is its share= in a .txt list, else the fixture's first share. The fixture
 // finds its shares file from the repository's root, and the commands get
-// {smb-port} and {user2}.
+// {smb-port}, read again for each test, and {user2}.
 func TestFixtureResetEach(t *testing.T) {
 	server := &fakeServer{}
 	start, asked := fakeFixture(t, func(context.Context) (fixtureServer, error) { return server, nil })
@@ -234,7 +236,7 @@ func TestFixtureResetEach(t *testing.T) {
 			steps = append(steps, line)
 		}
 	}
-	want := []string{"[dt] fake reset two", "[dt] $ echo a two 40002 dt-user2", "[dt] fake reset one", "[dt] $ echo b one 40002 dt-user2"}
+	want := []string{"[dt] fake reset two", "[dt] $ echo a two 40003 dt-user2", "[dt] fake reset one", "[dt] $ echo b one 40004 dt-user2"}
 	if o := rep.Outcomes[0]; o.Result != report.Passed || !slices.Equal(steps, want) {
 		t.Errorf("outcome %+v, steps:\n%s\nwant:\n%s", o, strings.Join(steps, "\n"), strings.Join(want, "\n"))
 	}

@@ -570,9 +570,6 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		if test != "" {
 			prefix = test + ": "
 		}
-		if server != nil {
-			maps.Copy(vals, server.Placeholders()) // a restart can move a port
-		}
 		if first != "" {
 			vals["share"] = cmp.Or(lines[test].Share, first)
 		}
@@ -585,6 +582,16 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			done()
 			if err != nil {
 				return nil, []string{prefix + "its share wasn't reset: " + err.Error()}
+			}
+		}
+		if server != nil {
+			// What a start decides, as a port, is read again for each test,
+			// since a restart, a reset's among them, can move it. The share
+			// stays the test's own.
+			for k, v := range server.Placeholders() {
+				if k != "share" {
+					vals[k] = v
+				}
 			}
 		}
 		var output bytes.Buffer
