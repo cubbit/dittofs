@@ -177,7 +177,7 @@ which epic owns the rest.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R8 | `tests.yml`'s V2 filter gains `integration/kerberos`; the required job's fixed `dt run integration/kerberos` step is removed on the branch; `test/suites.yaml` stays as develop has it | MUST | owner decision | T1.3 |
-| R9 | `test/required-tests.json` is repinned to `TestNoAnonymousPrincipalFailsClosed` and `TestAnUnmappedClaimedRootIsPrivileged` in `internal/vfs/admit`, so `required-tests.sh` neither loses its subject nor fails on an empty manifest | MUST | owner decision | T1.3 |
+| R9 | `test/required-tests.json` is repinned to the anonymous gates admission resolves through identity: `TestNoAnonymousPrincipalFailsClosed` and `TestResolveRefusesASquashToADeletedAnonymous` in `internal/identity`, and `TestANewShareSquashesToAnonymous` in `internal/vfs`, so `required-tests.sh` neither loses its subject nor fails on an empty manifest | MUST | owner decision | T1.3 |
 | R10 | `lint-go`'s `go vet -tags=` line keeps a tag only while a file behind it compiles | MUST | owner decision | T1.3 |
 | R11 | A per-change cell vets the adapter packages with `GOOS=windows` and `GOOS=darwin` | MUST | owner decision | T1.7 |
 | R12 | withdrawn: the cell and its fixed step land with their first gate in E3 (D7). Was: `unit/adapter-allocs` runs per change from a fixed `dt run unit/adapter-allocs` step in the unit job, as `unit/journal-index` does | MUST | owner decision | — |
@@ -597,7 +597,10 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
     `dt run integration/kerberos` step is removed on the branch; `test/suites.yaml`'s cells
     otherwise stay as develop has them;
   - `test/required-tests.json` pins `TestNoAnonymousPrincipalFailsClosed` and
-    `TestAnUnmappedClaimedRootIsPrivileged` in `./internal/vfs/admit`;
+    `TestResolveRefusesASquashToADeletedAnonymous` in `./internal/identity`, and
+    `TestANewShareSquashesToAnonymous` in `./internal/vfs`; the pin on a claimed root's
+    privilege, `TestAnUnmappedClaimedRootIsPrivileged`, has no successor until resolution
+    maps a claimed uid 0 (RFC 18 epic 3, T3.10), as a claimed identity is refused meanwhile;
   - `lint-go`'s `go vet -tags=` line loses `kerberos`, the one tag whose files are all
     deleted; every other tag keeps files.
 - **What still runs, and why it stays green.** `dt plan` for the pr and merge tiers, through

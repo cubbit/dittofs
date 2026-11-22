@@ -24,9 +24,12 @@
     "have."
   ],
   "packages": {
-    "./internal/vfs/admit": [
-      "TestAnUnmappedClaimedRootIsPrivileged",
-      "TestNoAnonymousPrincipalFailsClosed"
+    "./internal/identity": [
+      "TestNoAnonymousPrincipalFailsClosed",
+      "TestResolveRefusesASquashToADeletedAnonymous"
+    ],
+    "./internal/vfs": [
+      "TestANewShareSquashesToAnonymous"
     ]
   }
 }
