@@ -52,7 +52,13 @@ type options struct {
 	watch    bool
 	inMemory bool
 	newNode  func(node.Config) (*node.Node, error)
+	password string
 }
+
+// AdminPassword has New give the administrator password as its first
+// password, through the environment as dfs init's --admin-password-env
+// does, so it need not be changed before a call.
+func AdminPassword(password string) Option { return func(o *options) { o.password = password } }
 
 // Watch has New watch the test with prof.Watch, registered before anything
 // the harness opens so that its check runs after the harness closed it all.
@@ -71,8 +77,9 @@ func WithNew(f func(node.Config) (*node.Node, error)) Option {
 
 // New initialises an installation under t.TempDir() through install.Run, as
 // dfs init does: the metadata store, one journal device, the storage key and
-// the administrator, its password generated and discarded. It writes a
-// protocol key file too, which the bootstrap names. It then builds a node
+// administrator, its password generated and discarded unless
+// AdminPassword gives one. It writes the protocol key file too, which the
+// bootstrap names. It then builds the node
 // over them, its API, metrics listener and adapters on loopback. Every KV the
 // harness opens is closed when the test ends. It sets the key files'
 // passphrase in the environment, so a test using it cannot run in parallel.
@@ -111,14 +118,20 @@ func New(t testing.TB, opts ...Option) *Harness {
 		Journal:   []journal.Option{journaltest.SuitableMount()},
 	}
 	h.openKV(t)
+	var env string
+	if o.password != "" {
+		env = "DITTOFS_NODETEST_ADMIN_PASSWORD"
+		t.Setenv(env, o.password)
+	}
 	err := install.Run(ctx, install.Deps{
-		Bootstrap:  &h.cfg.Bootstrap,
-		KV:         h.cfg.KV,
-		StorageKey: storageKey(t, root),
-		Clock:      h.clock,
-		Journal:    []journal.Option{journaltest.SuitableMount()},
-		Out:        io.Discard,
-		Logger:     h.cfg.Logger,
+		PasswordEnv: env,
+		Bootstrap:   &h.cfg.Bootstrap,
+		KV:          h.cfg.KV,
+		StorageKey:  storageKey(t, root),
+		Clock:       h.clock,
+		Journal:     []journal.Option{journaltest.SuitableMount()},
+		Out:         io.Discard,
+		Logger:      h.cfg.Logger,
 	})
 	if err != nil {
 		t.Fatalf("nodetest: install: %v", err)

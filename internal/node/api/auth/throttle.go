@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/netip"
@@ -184,9 +185,15 @@ func takeBack(f entity.SignInFailures, nonce uint64, now time.Time) (entity.Sign
 	return f, true
 }
 
+// ErrThrottled is a sign-in refused until its wait has passed, answered 429
+// with Retry-After; the error carrying it says how long.
+var ErrThrottled = errors.New("auth: sign-in throttled")
+
 // throttled is an attempt refused until its wait has passed: the API answers
 // it 429 with Retry-After.
 type throttled struct{ wait time.Duration }
+
+func (e *throttled) Is(target error) bool { return target == ErrThrottled }
 
 func (e *throttled) Error() string { return fmt.Sprintf("sign-in throttled for %v", e.wait) }
 

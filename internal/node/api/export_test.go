@@ -43,6 +43,7 @@ func NewWithTestRows(d Deps) *Server {
 type Row struct {
 	Method, Path string
 	Public       bool
+	Credential   bool // a sign-in or a refresh, public and keyless
 }
 
 // TestID is the ID every Row's path names.
@@ -56,7 +57,8 @@ func Rows() []Row {
 		if rt.verb != "" && rt.hasID() {
 			id += ":" + rt.verb
 		}
-		out = append(out, Row{rt.method, strings.Replace(rt.muxPattern(), "{id}", id, 1), rt.right == auth.Public})
+		public := rt.right == auth.Public
+		out = append(out, Row{rt.method, strings.Replace(rt.muxPattern(), "{id}", id, 1), public, public && rt.serve.form == formCall})
 	}
 	return out
 }
