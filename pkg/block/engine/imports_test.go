@@ -36,7 +36,7 @@ var allowed = map[string][]string{
 	// its calls over the same real store, journal and clock, under the
 	// profiler.
 	module + "pkg/block/journal/journaltest":     {"enginetest", internalTests, wireTests},
-	module + "pkg/block/journal/journaltest/kit": {"enginetest"},
+	module + "pkg/block/journal/journaltest/kit": {"enginetest", wireTests},
 	module + "pkg/block/journal/journaltest/raw": {wireTests},
 	module + "internal/prof":                     {"enginetest", unitTests, wireTests},
 	module + "pkg/metadata/kv":                   {"enginetest", unitTests, wireTests},
