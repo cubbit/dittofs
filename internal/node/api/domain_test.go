@@ -962,8 +962,9 @@ const netbiosPath = "/api/v1/settings/" + pid.NetBIOSNameSetting
 // The installation's identity.netbios_name through the settings route, judged
 // by identity's section of the settings table: an admin's put is accepted
 // while the installation is not joined; once it is joined, a put and a
-// delete are each refused 409 joined, leaving the name as it was. Each
-// method sends the tag it reads, so neither answers for the other's write.
+// delete are each refused 409 joined, leaving the name as it was, while
+// another identity key is still accepted. Each method sends the tag it
+// reads, so neither answers for the other's write.
 func TestNetBIOSNameRefusedWhileJoined(t *testing.T) {
 	s := serve(t, as(entity.RoleAdmin, false), func(d *api.Deps) { d.Settings = settings.Table{identity.Section()} })
 	scope := entity.SettingScope{Kind: entity.ScopeInstallation}
@@ -988,6 +989,11 @@ func TestNetBIOSNameRefusedWhileJoined(t *testing.T) {
 				t.Errorf("identity.netbios_name after the refused %s: %s at %s, want \"NAS\" at %s", tc.method, got, tag, want)
 			}
 		})
+	}
+	tag = strconv.Quote(strconv.FormatUint(s.putSetting(t, scope, "identity.ntlm", "false"), 10))
+	r = s.do(t, http.MethodPut, "/api/v1/settings/identity.ntlm", `{"spec":{"value":true}}`, "If-Match", tag, "Idempotency-Key", "ntlm-joined")
+	if r.status != http.StatusOK {
+		t.Fatalf("a put of identity.ntlm while joined as NAS$: answered %d %s, want 200", r.status, r.body)
 	}
 }
 
