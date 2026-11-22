@@ -489,7 +489,7 @@ the server falls back to NTLM:
 **Machine account requirement**: NETLOGON passthrough requires a computer account in the
 domain, created by an online join or pre-created for an offline one. Joining is a
 management-API operation; see [identity.md, Part C2](identity.md#part-c2-join-the-domain).
-The account's password is sealed at rest, rotates every seven days, and is never
+The account's password is sealed at rest, rotates by itself, and is never
 returned by the API. Without a join, a domain user's NTLM sign-in fails.
 
 **No map to guest.** A failed sign-in, whether a wrong password, an unknown user or a
@@ -497,8 +497,8 @@ DC that cannot be reached, is a failed sign-in: DittoFS never answers it with a 
 session. A client gets a guest session only by asking for one.
 
 > **Note**: end-to-end interoperability of the NETLOGON secure channel against a Samba AD-DC
-> is still being validated — the sealed-schannel `AlterContext` is currently rejected by the
-> test DC (`RPC_S_UNKNOWN_AUTHN_SERVICE`); see #1345.
+> is still being validated. The channel runs over TCP, and the `AlterContext` refusal an
+> earlier version met no longer reproduces.
 
 ### Share access policy
 

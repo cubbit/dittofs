@@ -274,7 +274,7 @@ the ports are in [identity.md, Part C2](identity.md#part-c2-join-the-domain).
 
 **Step 2 — join.** `POST /api/v1/installation:join-domain` with the mode, the
 account and the credential (see Part C2). Follow the operation it answers with
-until it has succeeded. The password then rotates by itself every seven days.
+until it has succeeded. The password then rotates by itself.
 
 **After the join, transfer the computer object's ownership** (for example to
 *Domain Admins*) and check its `msDS-AllowedToActOnBehalfOfOtherIdentity`: the
@@ -297,7 +297,7 @@ This feature is **server-OS-agnostic** — the DittoFS server can run on **Linux
 Windows**; the AD/Kerberos/NETLOGON setup is identical and only the host firewall
 differs. Pass-through needs the DittoFS host to reach the **DC outbound** on
 RPC endpoint mapper `135`, the DC's dynamic RPC range (`49152-65535` unless the
-site narrowed it) for the NETLOGON channel, Kerberos `88`, LDAPS `636`, and DNS
+site narrowed it) for the NETLOGON channel, Kerberos `88`, LDAPS `636` (or `389` for an `ldap://` directory record, with StartTLS), and DNS
 `53`, and to accept SMB `445` **inbound** from clients. The Explorer **double-click** additionally needs LAN
 discovery (see [configuration.md](configuration.md) → *Network discovery*):
 inbound WS-Discovery UDP `3702`, mDNS UDP `5353`, and the metadata fetch on TCP
@@ -319,7 +319,7 @@ inbound WS-Discovery UDP `3702`, mDNS UDP `5353`, and the metadata fetch on TCP
   firewall-cmd --reload
   ```
   Outbound to the DC is usually already permitted; if you restrict egress, allow
-  `88`, `389`/`636`, `445`, and `53` to the DC.
+  `135`, the DC's dynamic RPC range, `88`, `636` (or `389` for an `ldap://` record), and `53` to the DC.
 
 > **Known limitation:** SMB multichannel **session-bind** for pass-through domain
 > users is not yet supported — a client that opens extra channels logs a benign

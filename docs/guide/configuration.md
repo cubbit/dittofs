@@ -1159,7 +1159,7 @@ samba-tool domain exportkeytab /etc/dittofs/dittofs.keytab \
     --principal=nfs/server.example.com@EXAMPLE.COM
 ```
 
-Point `kerberos.keytab_path` at the combined keytab. The SMB handler selects
+Import the combined keytab as `identity.keytab` with `PUT /api/v1/installation/keytab`. The SMB handler selects
 the `cifs/` principal (deriving it from the NFS `service_principal`, or via an
 explicit override); NFS RPCSEC_GSS uses the `nfs/` principal.
 
@@ -1179,7 +1179,7 @@ writes, as settings of the installation:
 | Setting | Meaning |
 |---|---|
 | `identity.directory.realm`, `identity.directory.base` | the realm and base DN the join uses; an online join's OU must lie strictly under the base |
-| `identity.netbios_name` | written by the join from the account's name (default `DITTOFS` until then); a joined installation refuses to change it |
+| `identity.netbios_name` | written by the join from the account's name (default `DITTOFS` until then); do not rename a joined installation: the refusal RFC 13 and RFC 18 specify is not built yet, and a rename breaks NTLM pass-through (see [identity.md](identity.md#after-a-join)) |
 | `identity.keytab` | the sealed keytab of AES keys for service names the computer account does not hold, set with `PUT /api/v1/installation/keytab` |
 
 For the step-by-step, including pre-creating the account for an offline join and

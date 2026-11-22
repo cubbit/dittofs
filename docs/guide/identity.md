@@ -439,9 +439,9 @@ URL=http://127.0.0.1:8080/api/v1      # the API's address; see configuration.md
   | Port | Used for |
   |---|---|
   | 135 | RPC endpoint mapper, which names NETLOGON's port |
-  | the controller's dynamic RPC range | the NETLOGON secure channel. On Windows this is `49152-65535` unless the site narrowed it; on Samba it is `rpc server dynamic port range` (the test fixture pins `50000-50019`) |
+  | the controller's dynamic RPC range | the NETLOGON secure channel. On Windows this is `49152-65535` unless the site narrowed it; on Samba it is `rpc server dynamic port range` |
   | 88 | Kerberos |
-  | 636 | LDAPS, which the online join creates the account over and the directory reads use |
+  | 636, or 389 for an `ldap://` record (StartTLS) | LDAP, which the online join creates the account over and the directory reads use |
 
   Also open DNS (53) if the controllers are found by SRV records.
 
@@ -455,7 +455,7 @@ organisational unit:
 curl -s "${H[@]}" -X POST "$URL/installation:join-domain" -d '{
   "spec": {"mode": "online", "account": "DITTOFS$",
            "ou": "OU=Servers,DC=dittofs,DC=ad"},
-  "credential": {"user": "Administrator@DITTOFS.AD", "password": "'"$(printf %s "$ADMIN_PW" | base64)"'"}}'
+  "credential": {"user": "Administrator@DITTOFS.AD", "password": "'"$(printf %s "$ADMIN_PW" | base64 | tr -d '\n')"'"}}'
 ```
 
 - `spec.account` is the account's name, with or without the `$`; empty takes
@@ -491,7 +491,7 @@ Then hand DittoFS the account and its password. There is no `credential.user`,
 ```bash
 curl -s "${H[@]}" -X POST "$URL/installation:join-domain" -d '{
   "spec": {"mode": "offline", "account": "DITTOFS$"},
-  "credential": {"password": "'"$(printf %s "$ACCOUNT_PW" | base64)"'"}}'
+  "credential": {"password": "'"$(printf %s "$ACCOUNT_PW" | base64 | tr -d '\n')"'"}}'
 ```
 
 The join verifies the password against a controller, reports which service
@@ -520,11 +520,18 @@ Two things the code cannot check for you:
 `GET $URL/installation` answers `status.join`: `joined`, the `account`, the
 service `names` it holds and `last_rotation`. A join also writes the account's
 name, upper case and without the `$`, as `identity.netbios_name` (letters,
-digits and `-`, at most 15 bytes); a joined installation refuses to change it.
+digits and `-`, at most 15 bytes). **Do not rename a joined installation.** RFC 13 and
+RFC 18 specify a refusal of a change to `identity.netbios_name` while joined, but
+the code does not enforce it yet, and a rename breaks NTLM pass-through, since
+the name no longer matches the computer account. To change the name, join again
+with `"takeover": true` naming the new account in `spec.account`: the join writes
+that account's name as `identity.netbios_name` when it ends. There is no leave
+operation.
 
 The account's names are derived, so a keytab must **not** hold keys for them: a
 keytab import (`PUT $URL/installation/keytab`, body `{"spec": {"value":
-"<base64 keytab>"}}`) holding a key for one of the joined account's names is
+"<base64 keytab>"}}`, with `If-None-Match: *` for a first import or `If-Match` with
+the current tag to replace one, or it answers `428`) holding a key for one of the joined account's names is
 refused, and so is a join naming an account whose names the stored keytab
 already holds (`409`, naming `spec.account`). Every other service name, such as `nfs/<host>`, another host
 name, or a name registered on a separate service account, still needs an
@@ -539,7 +546,8 @@ takeover is also how you recover: an offline join after an administrator reset
 the account's password, or a join whose domain controller stopped answering for
 an hour. A join is also refused `409` while another join or a rotation runs
 (`operation_running`), and `503` (`unavailable`) when the node has no identity
-service, or has a keytab stored that identity has not applied.
+service, or, for a join that names its account, has a keytab stored that identity
+has not applied.
 
 ### Rotation
 
@@ -548,12 +556,16 @@ confirmed rotation, inside Windows' 30-day maximum, and a failed rotation is
 retried after an hour. To rotate now:
 
 ```bash
-curl -s "${H[@]}" -H 'Idempotency-Key: rotate-1' -X POST "$URL/installation:rotate-machine-password"
+curl -s "${H[@]}" -H "Idempotency-Key: rotate-$(date +%s)" -X POST "$URL/installation:rotate-machine-password"
 ```
 
-A rotation seals the new password first, waits for every node to hold it, sets
+A key is reused only to retry the same attempt: a retry with the same key within
+24 hours replays the first answer, so a new rotation needs a new key.
+
+A rotation seals the new password first, waits for this node to hold it, sets
 it at one pinned controller and then reads the account's key version number to
-confirm. Tickets issued under the previous password keep verifying for the
+confirm. The wait is for this node only; with several nodes, the others pick the
+new version up on their next reconcile. Tickets issued under the previous password keep verifying for the
 retention (ten hours plus the clock skew). A rotation is refused while a join
 runs, and fails, saying the installation is not joined, when it is not.
 
