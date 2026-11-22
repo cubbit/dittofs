@@ -2,7 +2,7 @@ package vfs
 
 import (
 	"context"
-	"sort"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -13,24 +13,11 @@ import (
 
 	identitysrv "github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// viewCounter passes every call to its store and counts the read
-// transactions, which a run reports per second.
-type viewCounter struct {
-	kv.KV
-	n atomic.Int64
-}
-
-func (v *viewCounter) View(ctx context.Context, fn func(kv.Reader) error) error {
-	v.n.Add(1)
-	return v.KV.View(ctx, fn)
-}
-
-// Callers is how many callers the benchmarks admit, and shares how many
-// shares those callers are spread over.
+// benchCallers is how many callers the benchmarks admit, and benchShares how
+// many shares those callers are spread over.
 const (
 	benchCallers = 10_000
 	benchShares  = 25
@@ -44,18 +31,28 @@ const (
 // cache.
 //
 // Beside ns/op and allocs/op it reports the store's read transactions per
-// second (reads/s), the 99th percentile of one admission (p99-ns) and the
-// cache's misses per admission (misses/op). Each call is timed with the
-// clock, which ns/op includes. The 99th percentile of a run shorter than a
-// few raises says nothing about them: run it with a -benchtime of tens of
-// seconds.
+// second (reads/s) and per admission (reads/op), both store-wide: the Apply
+// goroutine's reads are in them. It reports the 99th percentile of one
+// admission (p99-ns), the cache's misses per admission (misses/op), the serial
+// raises the run saw (raises) and the misses per raise (misses/raise). Each
+// call is timed with the clock, which ns/op includes.
+//
+// The raises keep a wall-clock cadence, as the figures it is read against
+// are per second, so misses/op follows the host's speed: it is about
+// 10⁴ x raises / b.N, and a faster build shows fewer with the cache no
+// better. Read Ticket by misses/raise instead. A run is valid when it is
+// about 10⁴, every caller missing once per raise, and raises is in the tens.
+// A host that cannot admit all 10⁴ callers inside a second shows fewer, and
+// its Ticket is then closer to Secret than to a warm cache: do not read it.
+// Run it with a -benchtime of tens of seconds, so the 99th percentile spans
+// many raises.
 func BenchmarkAdmissionCallers(b *testing.B) {
 	for _, proof := range []struct {
 		name string
 		call func(c *caching, p entity.Principal) vfs.Call
 	}{
-		{"Ticket", func(c *caching, p entity.Principal) vfs.Call { return c.ticket(p, inLab, 0) }},
-		{"Secret", func(_ *caching, p entity.Principal) vfs.Call { return withSIDs(p, vfs.ProofSecret, nil, nil) }},
+		{"proof=Ticket", func(c *caching, p entity.Principal) vfs.Call { return c.ticket(p, inLab, 0) }},
+		{"proof=Secret", func(_ *caching, p entity.Principal) vfs.Call { return withSIDs(p, vfs.ProofSecret, nil, nil) }},
 	} {
 		b.Run(proof.name, func(b *testing.B) {
 			c := newCaching(b)
@@ -87,6 +84,7 @@ func BenchmarkAdmissionCallers(b *testing.B) {
 
 			stop, done := make(chan struct{}), make(chan struct{})
 			var applyErr error
+			var raises atomic.Int64
 			go func() {
 				defer close(done)
 				tick := time.NewTicker(time.Second)
@@ -102,7 +100,7 @@ func BenchmarkAdmissionCallers(b *testing.B) {
 						applyErr = err
 						return
 					}
-					c.spans.Reset() // one span per resolution would otherwise pile up for the run
+					raises.Add(1)
 				}
 			}()
 			var once sync.Once
@@ -110,7 +108,8 @@ func BenchmarkAdmissionCallers(b *testing.B) {
 			b.Cleanup(endApply)
 
 			took := make([]time.Duration, b.N)
-			views, misses := c.views.n.Load(), testutil.ToFloat64(c.callers.misses)
+			c.views.TakeReads()
+			misses := testutil.ToFloat64(c.callers.misses)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := range b.N {
@@ -127,10 +126,16 @@ func BenchmarkAdmissionCallers(b *testing.B) {
 			if applyErr != nil {
 				b.Fatalf("raising the serial: %v", applyErr)
 			}
-			sort.Slice(took, func(i, j int) bool { return took[i] < took[j] })
+			slices.Sort(took)
+			reads, missed := float64(c.views.TakeReads()), testutil.ToFloat64(c.callers.misses)-misses
 			b.ReportMetric(float64(took[len(took)*99/100]), "p99-ns")
-			b.ReportMetric(float64(c.views.n.Load()-views)/b.Elapsed().Seconds(), "reads/s")
-			b.ReportMetric((testutil.ToFloat64(c.callers.misses)-misses)/float64(b.N), "misses/op")
+			b.ReportMetric(reads/b.Elapsed().Seconds(), "reads/s")
+			b.ReportMetric(reads/float64(b.N), "reads/op")
+			b.ReportMetric(missed/float64(b.N), "misses/op")
+			b.ReportMetric(float64(raises.Load()), "raises")
+			if r := raises.Load(); r > 0 {
+				b.ReportMetric(missed/float64(r), "misses/raise")
+			}
 		})
 	}
 }

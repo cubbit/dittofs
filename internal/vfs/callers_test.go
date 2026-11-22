@@ -38,7 +38,7 @@ type caching struct {
 	spans *tracetest.SpanRecorder
 	ids   identitysrv.Settings // the identity settings the store holds
 	gen   uint64               // the generation of the last State applied
-	views viewCounter          // the read transactions the store has served
+	views kv.Counting          // the reads the store has served
 }
 
 func newCaching(t testing.TB) *caching {
