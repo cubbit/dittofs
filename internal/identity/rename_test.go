@@ -93,6 +93,33 @@ func TestRefreshNameSwap(t *testing.T) {
 	}
 }
 
+// A holder whose entry now answers a name a third principal holds gives up
+// the name the renaming record takes and is left unnamed, counted: one hop,
+// never further.
+func TestRefreshHolderNewNameHeld(t *testing.T) {
+	e := newAD(t)
+	dnA, dnB := e.d.AddUser(t, "alice", nil), e.d.AddUser(t, "bob", nil)
+	e.d.AddUser(t, "carol", nil)
+	pA, pB, pC := e.mustFind(t, qualified("alice"), true), e.mustFind(t, qualified("bob"), true), e.mustFind(t, qualified("carol"), true)
+	e.rename(dnA, "bob")
+	e.rename(dnB, "carol")
+	e.clock.Advance(pastTTL)
+	if got := e.mustFind(t, qualified("bob"), true); got != pA {
+		t.Fatalf(`Find(KORP\bob) = %v, want %v, minted as alice`, got, pA)
+	}
+	for name, want := range map[string]entity.Principal{"bob": pA, "carol": pC} {
+		if got := e.holder(t, entity.PrincipalUser, name); got != want {
+			t.Errorf("%s held by %v, want %v", name, got, want)
+		}
+	}
+	if n := e.nameOf(t, pB); n != "" {
+		t.Errorf("the holder whose new name carol holds: name %q, want none", n)
+	}
+	if n := e.counter(t, "identity_renames_unnamed_total", "kind", "user"); n != 1 {
+		t.Errorf("identity_renames_unnamed_total{kind=user} %v, want 1", n)
+	}
+}
+
 // When the directory cannot answer, fresh, that the holder of a name no
 // longer answers it, the holder keeps its name and the renaming record is
 // left unnamed, counted: the query about bob's entry failing, timing out,
