@@ -64,13 +64,9 @@ func start(t *testing.T, ctx context.Context, bin string) *Server {
 // through the client; a session the server ends is signed in again; Reset
 // recreates the share; a second dfs init over the same installation is
 // refused and changes nothing; after Kill and Restart the share is still
-// there; Stop ends it with exit 0, and Restart then refuses. No child reads
-// or writes the HOME or the configuration directory dt runs with.
+// there; Stop ends it with exit 0, and Restart then refuses.
 func TestServer(t *testing.T) {
 	bin := buildDfs(t)
-	home, xdg := t.TempDir(), t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("DITTOFS_LOGGING_LEVEL", "error") // would hide the API's address from dt
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -138,11 +134,6 @@ func TestServer(t *testing.T) {
 	}
 	if err := s.Restart(ctx); err == nil {
 		t.Errorf("Restart after Stop: accepted, want it refused")
-	}
-	for _, dir := range []string{home, xdg} {
-		if ents, _ := os.ReadDir(dir); len(ents) != 0 {
-			t.Errorf("%s holds %s after the fixture ran, want it untouched", dir, ents[0].Name())
-		}
 	}
 }
 
@@ -353,5 +344,67 @@ while :; do sleep 0.1; done
 	}
 	if err := s.Restart(ctx); err == nil || !strings.Contains(err.Error(), "follows a Kill") || s.cmd != running {
 		t.Errorf("Restart after Stop: %v, want it refused, starting nothing", err)
+	}
+}
+
+// A dfs that ignores SIGTERM, with a child of its own holding its output, is
+// killed with its whole group after the grace, and Stop says so: a kill of
+// dfs alone would leave the child holding the pipe, and Stop waiting on it.
+func TestStopKillsTheGroupAfterTheGrace(t *testing.T) {
+	s := fakeDfs(t, `trap '' TERM
+sleep 1000 &
+echo "node: listening api=`+readyAPI(t)+`"
+wait
+`)
+	s.grace = 100 * time.Millisecond
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	_ = s.run(ctx) // the sign-in is refused; dfs runs on
+	done := make(chan error, 1)
+	go func() { done <- s.Stop() }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "did not stop cleanly") {
+			t.Errorf("Stop of a dfs ignoring SIGTERM: %v, want it killed and reported", err)
+		}
+	case <-time.After(30 * time.Second): // the bounded wait is the assertion
+		_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL) // frees the cleanup's Stop
+		t.Fatal("Stop never returned: dfs's group was not killed")
+	}
+}
+
+// env keeps a child off the user's own directories and away from a
+// DITTOFS_ variable set for the developer's server: every home and profile
+// directory points under the fixture's home, and the passphrase is the only
+// DITTOFS_ variable left.
+func TestEnvIsolates(t *testing.T) {
+	for k, v := range map[string]string{
+		"HOME": "/home/dev", "XDG_STATE_HOME": "/home/dev/.local/state", "XDG_CONFIG_HOME": "/home/dev/.config",
+		"LOCALAPPDATA": `C:\\Users\\dev\\AppData\\Local`, "APPDATA": `C:\\Users\\dev\\AppData\\Roaming`,
+		"USERPROFILE": `C:\\Users\\dev`, "DITTOFS_API_LISTEN": "0.0.0.0:80",
+	} {
+		t.Setenv(k, v)
+	}
+	s := &Server{home: t.TempDir(), passphrase: "p"}
+	got := map[string]string{}
+	for _, kv := range s.env() {
+		k, v, _ := strings.Cut(kv, "=")
+		if _, dup := got[k]; dup {
+			t.Errorf("env sets %s twice", k)
+		}
+		got[k] = v
+	}
+	for _, k := range []string{"HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"} {
+		if v, ok := got[k]; !ok || !strings.HasPrefix(v, s.home) {
+			t.Errorf("env's %s = %q, want it under the fixture's home %s", k, v, s.home)
+		}
+	}
+	for k, v := range got {
+		if strings.HasPrefix(k, "DITTOFS_") && k != "DITTOFS_ENCRYPTION_PASSPHRASE" {
+			t.Errorf("env keeps %s=%s, want no DITTOFS_ variable but the passphrase", k, v)
+		}
+	}
+	if got["DITTOFS_ENCRYPTION_PASSPHRASE"] != "p" {
+		t.Errorf("env's passphrase = %q, want p", got["DITTOFS_ENCRYPTION_PASSPHRASE"])
 	}
 }

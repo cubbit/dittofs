@@ -75,6 +75,7 @@ type Server struct {
 	client  *client.Client
 	session *session // the client's token source
 
+	grace    time.Duration // how long Stop waits after SIGTERM; zero is stopGrace
 	stop     sync.Once
 	stopDone bool // Stop has run: nothing starts again
 	stopErr  error
