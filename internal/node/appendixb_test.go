@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -196,16 +197,10 @@ func scopeFormFailures(t *testing.T, text string) []string {
 	return bad
 }
 
-// RFC 13 §9's "§3 scope forms": every Appendix B scope cell is one of the five
-// scopes in one of §3's three forms, or none with a class of fixed, derived or
-// bootstrap; the same check over the appendix with one scope cell edited to
-// cluster, a scope that is not one, fails.
-func TestAppendixBScopeForms(t *testing.T) {
-	text := readRFC13(t)
-	if bad := scopeFormFailures(t, text); len(bad) > 0 {
-		t.Errorf("Appendix B scope cells outside RFC 13 §3's forms:\n%s", strings.Join(bad, "\n"))
-	}
-
+// clusterAuditRetention is text with the audit.retention row's installation
+// scope cell edited to cluster, a scope that is not one.
+func clusterAuditRetention(t *testing.T, text string) string {
+	t.Helper()
 	const row = "| `audit.retention`: "
 	at := strings.Index(text, row)
 	if at < 0 {
@@ -216,7 +211,20 @@ func TestAppendixBScopeForms(t *testing.T) {
 	if edited == text {
 		t.Fatalf("the audit.retention row has no installation scope cell to edit")
 	}
-	if bad := scopeFormFailures(t, edited); len(bad) != 1 || !strings.Contains(bad[0], "audit.retention") {
+	return edited
+}
+
+// RFC 13 §9's "§3 scope forms": every Appendix B scope cell is one of the five
+// scopes in one of §3's three forms, or none with a class of fixed, derived or
+// bootstrap; the same check over the appendix with one scope cell edited to
+// cluster, a scope that is not one, fails.
+func TestAppendixBScopeForms(t *testing.T) {
+	text := readRFC13(t)
+	if bad := scopeFormFailures(t, text); len(bad) > 0 {
+		t.Errorf("Appendix B scope cells outside RFC 13 §3's forms:\n%s", strings.Join(bad, "\n"))
+	}
+
+	if bad := scopeFormFailures(t, clusterAuditRetention(t, text)); len(bad) != 1 || !strings.Contains(bad[0], "audit.retention") {
 		t.Errorf("scope cell edited to cluster: failures %q, want one naming audit.retention", bad)
 	}
 }
@@ -468,6 +476,13 @@ var adminByRoute = map[string]string{
 // naming its key, as failures; an Appendix B key under a section's prefix
 // that the section does not declare comes back in reported, and is not a
 // failure. A key with no row of its own is held by a row naming its section.
+//
+// decision: a key held by a row naming its whole section has its scope, class
+// and write role checked, never its name: the row lists the section's fields
+// in prose ("the attributes holding a user's and a group's name"), which no
+// key matches word for word, so a field the row does not name, as
+// identity.directory.bind_name today, passes. Check field names against the
+// row once Appendix B lists a whole section's fields as keys.
 func compareAppendixB(t *testing.T, rows []appendixRow, tb settings.Table) (failures, reported []string) {
 	t.Helper()
 	byKey := make(map[string]appendixRow)
@@ -507,11 +522,11 @@ func compareAppendixB(t *testing.T, rows []appendixRow, tb settings.Table) (fail
 			failures = append(failures, fmt.Sprintf("%s (line %d): class %q, Appendix B's %q",
 				k.Key, r.line, got, r.class))
 		}
-		switch _, gated := adminByRoute[k.Key]; {
+		switch route, gated := adminByRoute[k.Key]; {
 		case gated && (k.adminOnly || !r.admin):
-			failures = append(failures, fmt.Sprintf("%s (line %d): admin only by its route, but the table "+
+			failures = append(failures, fmt.Sprintf("%s (line %d): admin only by its route (%s), but the table "+
 				"(admin only %v) and Appendix B (%v) no longer disagree; drop it from adminByRoute",
-				k.Key, r.line, k.adminOnly, r.admin))
+				k.Key, r.line, route, k.adminOnly, r.admin))
 		case !gated && k.adminOnly != r.admin:
 			failures = append(failures, fmt.Sprintf("%s (line %d): written by admin only %v, Appendix B's %v",
 				k.Key, r.line, k.adminOnly, r.admin))
@@ -568,16 +583,7 @@ func (renamedAPI) Validate() error { return nil }
 // the key that drifted.
 func TestAppendixBDriftFails(t *testing.T) {
 	text := readRFC13(t)
-	const row = "| `audit.retention`: "
-	at := strings.Index(text, row)
-	if at < 0 {
-		t.Fatalf("no row starting %q in %s", row, rfc13)
-	}
-	end := at + strings.IndexByte(text[at:], '\n')
-	cluster := text[:at] + strings.Replace(text[at:end], " | installation | ", " | cluster | ", 1) + text[end:]
-	if cluster == text {
-		t.Fatalf("the audit.retention row has no installation scope cell to edit")
-	}
+	cluster := clusterAuditRetention(t, text)
 
 	api := settings.Of("api", settings.At(entity.ScopeInstallation), apisettings.Defaults(),
 		settings.WriteRole(entity.RoleAdmin))
@@ -589,7 +595,10 @@ func TestAppendixBDriftFails(t *testing.T) {
 		key        string
 	}{
 		{"a key of the table renamed", text, settings.Table{
-			settings.Of("api", settings.At(entity.ScopeInstallation), renamedAPI(apisettings.Defaults()),
+			settings.Of("api", settings.At(entity.ScopeInstallation), renamedAPI{
+				SessionLifetime:  apisettings.Defaults().SessionLifetime,
+				TokenMaxLifetime: apisettings.Defaults().TokenMaxLifetime,
+			},
 				settings.WriteRole(entity.RoleAdmin)),
 			audit,
 		}, "api.session_lifetimes"},
@@ -629,8 +638,11 @@ var refMarkerForms = []string{
 }
 
 // refLeaks drives each section of tb's Validate with refMarker in every
-// reference field and returns each refusal that prints it, naming the
-// section and the fields.
+// reference field, and with each of refusing written beneath Check, and
+// returns the reference keys it found by section, and as failures each
+// refusal that prints refMarker and each section holding a reference that
+// Read does not refuse, since a section Validate accepts prints nothing for
+// the search to search.
 //
 // decision: the table exports no list of its reference fields, so a key is
 // one when Check refuses an admin's put of refMarker, as a string or as a
@@ -638,8 +650,9 @@ var refMarkerForms = []string{
 // only once the value decodes into it; the row is then written beneath Check
 // and Read runs Validate on it. A reference field of another type would not
 // be found: add a Table export of the reference fields if a section declares
-// one.
-func refLeaks(t *testing.T, tb settings.Table) []string {
+// one. Only the refusal refusing gives each section is searched, so a
+// Validate printing a reference in another refusal passes.
+func refLeaks(t *testing.T, tb settings.Table, refusing []entity.Setting) (refs map[string][]string, failures []string) {
 	t.Helper()
 	st := tableStore(t)
 	cp := st.ControlPlane()
@@ -653,7 +666,7 @@ func refLeaks(t *testing.T, tb settings.Table) []string {
 		t.Fatal(err)
 	}
 
-	refs := make(map[string][]string)
+	refs = make(map[string][]string)
 	for _, k := range tableKeys(t, st, tb) {
 		for _, v := range [][]byte{arr, str} {
 			row := entity.Setting{Scope: k.Scope, Key: k.Key, Value: v, Schema: schema}
@@ -669,31 +682,54 @@ func refLeaks(t *testing.T, tb settings.Table) []string {
 		}
 	}
 
+	for _, row := range refusing {
+		putBeneathCheck(t, st, row)
+	}
+
 	_, refused, err := settings.Read(t.Context(), st.Nodes(), tb, probeNode)
 	if err != nil {
 		t.Fatalf("read the table with its reference fields set: %v", err)
 	}
-	var leaks []string
 	for sec, fields := range refs {
 		err := refused[sec]
 		if err == nil {
+			failures = append(failures, fmt.Sprintf("%s: holds the reference %v, but Read accepts it, "+
+				"so no refusal is searched; give it a row in refusing", sec, fields))
 			continue
 		}
 		for _, form := range refMarkerForms {
 			if strings.Contains(err.Error(), form) {
-				leaks = append(leaks, fmt.Sprintf("%s: refusal prints the reference in %v: %v", sec, fields, err))
+				failures = append(failures, fmt.Sprintf("%s: refusal prints the reference in %v: %v", sec, fields, err))
 				break
 			}
 		}
 	}
-	return leaks
+	return refs, failures
+}
+
+// refusingSeeds is one row per section of the node's table holding a
+// reference that its Validate refuses for a reason other than the reference.
+var refusingSeeds = []entity.Setting{
+	{Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
+		Key: "identity.netbios_name", Value: []byte(`"not a netbios name"`)},
+	{Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
+		Key: "identity.directory.realm", Value: []byte(`"example.test"`)},
 }
 
 // No section of the node's table prints a reference field's value in a
-// refusal.
+// refusal, each section holding one refused, and the reference fields found
+// are the two RFC 18 and Appendix B name.
 func TestNoRefusalPrintsAReference(t *testing.T) {
-	if leaks := refLeaks(t, newTable()); len(leaks) > 0 {
-		t.Errorf("refusals print a reference:\n%s", strings.Join(leaks, "\n"))
+	refs, failures := refLeaks(t, newTable(), refusingSeeds)
+	if len(failures) > 0 {
+		t.Errorf("reference search:\n%s", strings.Join(failures, "\n"))
+	}
+	want := map[string][]string{
+		"identity":           {"identity.keytab"},
+		"identity.directory": {"identity.directory.bind_credential"},
+	}
+	if !maps.EqualFunc(refs, want, slices.Equal) {
+		t.Errorf("reference fields found %v, want %v", refs, want)
 	}
 }
 
@@ -749,9 +785,9 @@ func TestRefLeaksFindsAPrintedReference(t *testing.T) {
 			settings.SecretRef("Credential", entity.SecretPassword)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			leaks := refLeaks(t, settings.Table{tc.section})
-			if got := len(leaks) == 1; got != tc.leaks {
-				t.Errorf("leaks %q, want a leak %v", leaks, tc.leaks)
+			_, leaks := refLeaks(t, settings.Table{tc.section}, nil)
+			if got := len(leaks) == 1 && strings.Contains(leaks[0], "prints the reference"); got != tc.leaks || len(leaks) > 1 {
+				t.Errorf("failures %q, want one leak %v", leaks, tc.leaks)
 			}
 		})
 	}
