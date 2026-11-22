@@ -17,6 +17,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
@@ -228,7 +229,7 @@ type holdAdmins struct {
 }
 
 func (f *holdAdmins) At(op string, key []byte) (time.Duration, int, error) {
-	if op != kvtest.OpScan || string(key) != "UA" {
+	if op != kvtest.OpScan || string(key) != keys.Describe([]byte{keys.KindUA}) {
 		return 0, 0, nil
 	}
 	f.mu.Lock()
@@ -446,7 +447,7 @@ func TestRefusedCallAuditedAndCounted(t *testing.T) {
 // An account created with a role and no spelling is API-only: it holds no
 // uid and no SID, where a user created with neither role nor spelling is
 // allocated both, and one created with a role and a uid keeps the uid and is
-// allocated a SID.
+// allocated a SID. A role that is none of the three is refused 400.
 func TestAPIOnlyAccountHoldsNoSpelling(t *testing.T) {
 	s := newAuthNode(t)
 	admin := s.tokens(t, "admin", adminPassword).Access
@@ -467,6 +468,12 @@ func TestAPIOnlyAccountHoldsNoSpelling(t *testing.T) {
 	}
 	s.createUser(t, admin, `{"spec":{"name":"plain"}}`, "k-plain")
 	s.createUser(t, admin, `{"spec":{"name":"both","uid":5000,"role":"viewer"}}`, "k-both")
+	for _, role := range []string{"none", "root"} {
+		r := s.send(t, http.MethodPost, "/api/v1/users", admin, json.RawMessage(`{"spec":{"name":"bad","role":"`+role+`"}}`), "Idempotency-Key", "k-"+role)
+		if r.status != http.StatusBadRequest || r.problem(t).Field != "spec.role" {
+			t.Errorf("a create with role %q: answered %d %s, want 400 naming spec.role", role, r.status, r.body)
+		}
+	}
 	for name, want := range map[string][]entity.ProtocolScheme{
 		"plain": {entity.SchemeUID, entity.SchemeSID},
 		"both":  {entity.SchemeUID, entity.SchemeSID},
