@@ -99,9 +99,9 @@ func forbidden(dir, file, imp string) string {
 		// A test file outside the adapters is held only to the pkg/ rule below.
 		//
 		// decision: it may import an implementation from outside pkg/, since
-		// it never reaches a binary's build. Withdraw it if a package of test helpers outside
-		// internal/adapter imports an implementation and non-test code
-		// imports that package.
+		// it never reaches a binary's build. Withdraw it if a package of test
+		// helpers outside internal/adapter imports an implementation and
+		// non-test code imports that package.
 	case dir == "pkg/adapter/settings":
 		if !standard(imp) {
 			return "pkg/adapter/settings is a leaf: it imports the standard library only"
@@ -219,14 +219,16 @@ func forbiddenToOps(dir, name, file, imp string) string {
 }
 
 // usesRuntime names each use in f, an ops file other than codec_gen.go, of
-// what in its protocol's wire reads or writes bytes: the Decoder and Encoder
-// the generated code alone calls, and any of funcs, the functions wire
-// declares, each of which reads, writes or sizes bytes. wire's other types
-// and its constants it may name (RFC 20 §5.1, §7.1).
+// what in its protocol's wire it may not name: the Decoder and Encoder the
+// generated code alone calls, and any of funcs, the functions wire declares;
+// and a dot import of wire, whose names the walk below cannot see. wire's
+// other types, its constants and its variables it may name (RFC 20 §5.1,
+// §7.1).
 //
-// ponytail: a method of a wire type is not caught, as a syntactic walk cannot
-// tell a value's type. Type-check the ops packages, in this test alone, once
-// an ops file holds a value of a wire type.
+// ponytail: a call of a method of a wire type that reads or writes bytes,
+// today nfs's Call and smb's Header, is not caught, as a syntactic walk
+// cannot tell a value's type. Type-check the ops packages, in this test
+// alone, once an ops file names one of those types.
 func usesRuntime(rel, wire string, funcs map[string]bool, f *ast.File) []string {
 	name := ""
 	for _, spec := range f.Imports {
@@ -236,6 +238,9 @@ func usesRuntime(rel, wire string, funcs map[string]bool, f *ast.File) []string 
 				name = spec.Name.Name
 			}
 		}
+	}
+	if name == "." {
+		return []string{rel + ": imports " + module + wire + " with a dot: " + noBytes}
 	}
 	var found []string
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -383,6 +388,7 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/nfs/identity.go: imports github.com/cubbit/dittofs/pkg/identity: an adapter imports, of the module, only pkg/vfs, pkg/adapter, pkg/adapter/settings, pkg/resources, pkg/metrics, internal/tlsconfig, core and its own packages",
 		"internal/adapter/nfs/mount/wire/gen/main.go: imports os: a wire package does no file or network I/O",
 		"internal/adapter/nfs/ops/v3/binary.go: imports encoding/binary: an ops file reads and writes no bytes: its codec is generated",
+		"internal/adapter/nfs/ops/v3/dot.go: imports github.com/cubbit/dittofs/internal/adapter/nfs/wire with a dot: an ops file reads and writes no bytes: its codec is generated",
 		"internal/adapter/nfs/ops/v3/parse.go: uses wire.ParseCall: an ops file reads and writes no bytes: its codec is generated",
 		"internal/adapter/nfs/ops/v4/codec_gen.go: imports os: a generated codec_gen.go imports only what a wire package may, and its protocol's wire",
 		"internal/adapter/nfs/ops/v4/encoder.go: uses w.Encoder: an ops file reads and writes no bytes: its codec is generated",

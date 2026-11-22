@@ -243,6 +243,9 @@ type startFault struct {
 	// a FaultKV rule set once the node is built.
 	cfg   func(t *testing.T, cfg *node.Config)
 	fault func(nodeKey string) sim.Rule
+	// after, when set, runs after each start step that completes, as the
+	// step's name, to break the next one through the node itself.
+	after func(t *testing.T, n *node.Node, step string)
 	// registered and epoch are the node's record after the failed Start.
 	registered bool
 	epoch      uint64
@@ -301,9 +304,20 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 		}},
 		{step: "register", fault: func(k string) sim.Rule { return failOn(kvtest.OpSet, k, 1) }},
 		{step: "apply", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 1) }, registered: true},
+		// The settings walk identity's first State is read from fails on the
+		// store, which the section's defaults do not stand in for.
+		{step: "apply", fault: func(string) sim.Rule { return failOn(kvtest.OpScan, "CFG", 1) }, registered: true, want: "identity:"},
 		{step: "engine", fault: func(k string) sim.Rule { return failOn(kvtest.OpSet, k, 2) }, registered: true},
+		// Identity stopped after its first Apply has no State to start on.
+		{step: "identity", after: func(t *testing.T, n *node.Node, step string) {
+			if step == "engine" {
+				if err := n.StopIdentity(t.Context()); err != nil {
+					t.Fatalf("stop identity after the engine's step: %v", err)
+				}
+			}
+		}, registered: true, epoch: 1, undone: []string{"stop engine"}, want: "before any State was applied"},
 		{step: "filesystem", fault: func(string) sim.Rule { return failOn(kvtest.OpSet, "SH‖*", 2) }, registered: true, epoch: 1, undone: []string{"stop identity", "stop engine"}},
-		{step: "first reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 2) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine"}},
+		{step: "first reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 4) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine"}, want: "first reconcile: injected"},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			var h *nodetest.Harness
@@ -315,7 +329,12 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 				if tc.cfg != nil {
 					tc.cfg(t, &cfg)
 				}
-				return node.NewStepping(s.stepped)(cfg)
+				return node.NewStepping(func(n *node.Node, step string) {
+					s.stepped(n, step)
+					if tc.after != nil {
+						tc.after(t, n, step)
+					}
+				})(cfg)
 			}))
 			addShare(t, h)
 			if tc.fault != nil {

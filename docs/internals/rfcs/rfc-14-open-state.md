@@ -476,7 +476,7 @@ type Open struct {
 	Token      uint64       // names it within its shard, every open has one; an NFS open's StateRef token (§2.11)
 	Seq        uint32       // its reference sequence (below)
 	Durability Durability   // none, durable, persistent (§8.1)
-	Session    SessionRef   // the session that opened or last reconnected it (§8.1); zero: none. Set or zero, it marks whether the creating call had a session, a mark a reconnect never changes (below)
+	Session    SessionRef   // the session that opened or last reconnected it (§8.1); zero: none. Its session mark (below)
 	Grant      GrantID      // the grant covering it: one over its client's opens under one key, or over it alone (§2.4); zero: none
 	Delete     DeleteMark   // its close makes the file delete pending, the unlink run as Delete.By (§9.4)
 	Suspended  TimeMask     // Modify, Access: times I/O through it leaves alone (below); zero: none
@@ -599,8 +599,10 @@ client, and only a client confirmed under NFSv4.0: a stateid of any other client
 a delegation's among them, is `ErrNotYours`.** The service enforces that
 without knowing a minor version: an open's `Session`, set from the opening
 session or zero, marks whether the call that created it had one, and a
-reconnect, which changes the session, never changes the mark; a lock state and
-a grant take the mark of the open they were made under, and a lock state under
+reconnect, which changes the session, never changes the mark: one with no
+session of an open created on one is refused, and an open created on none is
+never reconnected, as only SMB opens park and every SMB call carries a session;
+a lock state and a grant take the mark of the open they were made under, and a lock state under
 no open has none. A call with no session (RFC 17 leaves `Caller.Sessioned`
 false when `Call.Session` is unset) that presents a reference to state so
 marked is `ErrNotYours`,
@@ -3066,8 +3068,8 @@ type Opens interface {
 	Durable(ctx, f FileKey) (recs []entity.OpenRecord, commit func(committed bool), err error) // §9.1: the unlink writes recs in its transaction
 	Releasing(ctx, f FileKey) (done func(released bool), err error)          // §9.1: under the file's admission lock, marks f releasing; ErrFileOpen if an open exists, ErrReleasing if already marked; done(false) clears the mark
 	Renamed(ctx, f FileKey, fromDir FileID, fromName []byte, toDir FileID, toName []byte) error // §9.4: after a rename commits, moves the Via and Name of f's opens made through the old entry; a nil toName and zero toDir, after an unlink or a rename over f, clears them
-	Entry(ctx, who Caller, f FileKey, o OpenRef) (dir FileID, name []byte, err error) // the Via and Name of the open o names, a lock state's open's for a Locked one, as renames have moved them; zero and nil for one made by handle, one whose entry was removed, or a reference naming no open; changes nothing. RFC 17 §3.5 reports a change to f's attributes or data there
-	Suspended(ctx, who Caller, f FileKey, o OpenRef) (TimeMask, error)     // the times the open o names leaves alone, a lock state's open's for a Locked one; zero for a reference naming no open; changes nothing. RFC 17 §5.1 passes them with the write (§2.2)
+	Entry(ctx, who Caller, f FileKey, o OpenRef) (dir FileID, name []byte, err error) // the Via and Name of the open o names, a lock state's open's for a Locked one, as renames have moved them; zero and nil for one made by handle, one whose entry was removed, or an anonymous reference; `ErrBadState` for a delegated one; changes nothing. RFC 17 §3.5 reports a change to f's attributes or data there
+	Suspended(ctx, who Caller, f FileKey, o OpenRef) (TimeMask, error)     // the times the open o names leaves alone, a lock state's open's for a Locked one; zero for an anonymous reference; `ErrBadState` for a delegated one; changes nothing. RFC 17 §5.1 passes them with the write (§2.2)
 	CloneOpen(ctx, src FileKey, c CloneSource) (OpenID, error)              // §9.2: holds in the table the source open of no client that the clone's first phase wrote in its transaction; ErrBadState when none is stored
 	CloneClose(ctx, o OpenID) error                                         // §9.2: the clone's last batch, whose transaction deleted the hold; an orphan or pending unlink it leaves reaches Sink.Closed, as a Disconnect's do
 	Channel(ctx, who Caller, o OpenID, seq uint16, replay bool) (stale bool, done func(), err error) // §8.1: admits a request at channel sequence seq and counts it in flight; done uncounts it whenever it leaves, its open disconnected or not, never below zero
@@ -3084,7 +3086,7 @@ type Locks interface {
 
 type Grants interface {
 	AckRecall(ctx, who Caller, g GrantID, to GrantKind) error               // no recall in flight: a delegation's return, else ErrNoRecall (§2.4); to GrantNone: a return; a lease or oplock only from one of its openers' principals, else ErrNotYours (§2.1)
-	Openers(ctx, g GrantID) ([]Open, error)                                 // the opens g covers, as held now: a lease's under its key, an oplock's one; each with its Session and Principal, which route an SMB break (§2.1); a delegation covers none; changes nothing
+	Openers(ctx, g GrantID) ([]Open, error)                                 // the opens g covers, as held now: a lease's under its key, an oplock's one; each with its Session and Principal, which route an SMB break (§2.1), a parked open's Session zero, as no session holds it, though the open keeps its mark (§2.2); a delegation covers none; changes nothing
 }
 
 type Watches interface {

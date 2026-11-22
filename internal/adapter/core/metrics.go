@@ -62,7 +62,7 @@ var specs = [vecs]struct {
 	gauge bool
 }{
 	vInFlight:      {metrics.Spec{Name: "adapter_requests_in_flight", Help: "Requests admitted and not yet answered.", Labels: []string{"protocol"}}, true},
-	vRefusals:      {metrics.Spec{Name: "adapter_refusals_total", Help: "Requests refused before the service, by the stage that refused them.", Labels: []string{"protocol", "stage"}}, false},
+	vRefusals:      {metrics.Spec{Name: "adapter_refusals_total", Help: "Requests core refused, by the stage that refused them.", Labels: []string{"protocol", "stage"}}, false},
 	vReplayHits:    {metrics.Spec{Name: "adapter_replay_hits_total", Help: "Requests answered from the replay cache.", Labels: []string{"protocol"}}, false},
 	vPanics:        {metrics.Spec{Name: "adapter_handler_panics_total", Help: "Handlers that panicked, by operation.", Labels: []string{"protocol", "op"}}, false},
 	vUnmapped:      {metrics.Spec{Name: "adapter_unmapped_errors_total", Help: "Errors no row of the table maps, answered the fault status.", Labels: []string{"protocol"}}, false},
@@ -134,7 +134,7 @@ var stageNames = [stages]string{
 // refusing is the stages a refusal counts under, and timed the stages
 // adapter_wire_seconds observes (§10.1).
 var (
-	refusing = []stage{stageDecodeHeader, stageUnwrap, stageAdmit, stageReplayCheck, stageRoute, stageDecodeArgs, stageReplyWait, stageResolveIDs, stageReplyTooBig}
+	refusing = []stage{stageDecodeHeader, stageUnwrap, stageAdmit, stageReplayCheck, stageRoute, stageDecodeArgs, stageReplyWait, stageResolveIDs, stageMapError, stageReplyTooBig}
 	timed    = []stage{stageDecodeHeader, stageUnwrap, stageAdmit, stageReplayCheck, stageRoute, stageDecodeArgs, stageReplyWait, stageResolveIDs, stageMapError, stageEncode, stageWrap, stageSend}
 )
 

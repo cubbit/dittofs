@@ -84,6 +84,12 @@ func (n *Node) Service() pvfs.Service { return n.fs }
 // Accounts is identity as the management API will be handed it.
 func (n *Node) Accounts() identity.APISignIn { return n.identity }
 
+// ComputerName is the NetBIOS name in identity's applied State.
+func (n *Node) ComputerName() (string, error) { return n.identity.ComputerName() }
+
+// StopIdentity stops identity, dropping its applied State.
+func (n *Node) StopIdentity(ctx context.Context) error { return n.identity.Stop(ctx) }
+
 // Engine is the engine the node built.
 func (n *Node) Engine() *engine.Engine { return n.engine }
 

@@ -281,8 +281,8 @@ func build(cfg Config, in apiInputs) (_ *Node, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if n.identity, err = n.newIdentity(p); err != nil {
-		return nil, err
+	if n.identity, err = identity.New(identity.Deps{Store: n.meta, Secrets: p, Clock: cfg.Clock, Metrics: cfg.Metrics, Logger: cfg.Logger}); err != nil {
+		return nil, fmt.Errorf("node: %w", err)
 	}
 	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves,
 		Identity: n.identity, Auth: n.identity, Names: n.identity}); err != nil {

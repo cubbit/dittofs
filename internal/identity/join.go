@@ -110,16 +110,40 @@ func (s *Server) releaseHold(id entity.OperationID) {
 // netbiosNameKey is the setting a join writes the account's name to.
 const netbiosNameKey = "identity.netbios_name"
 
-// The online join's phases, in the order its turns run them (RFC 18 §3.5).
+// The join's phases (RFC 18 §3.5). An online join runs joinPhases; an
+// offline one runs offlinePhases, its two closing rotations each a seal, a
+// set and a confirm.
 const (
 	joinStart   = ""        // check the request, refuse a running rotation
 	joinPin     = "pin"     // pin a controller
 	joinSeal    = "seal"    // read the account, seal the new version
 	joinCreate  = "create"  // probe, record the attempt, create or reset
 	joinConfirm = "confirm" // probe, read the account, record the join
+
+	joinVerify   = "verify"   // read the account, verify the handed-over password
+	joinSeal1    = "seal1"    // the first closing rotation's seal
+	joinSet1     = "set1"     // probe, record the attempt, set
+	joinConfirm1 = "confirm1" // probe, read the account
+	joinSeal2    = "seal2"    // the second closing rotation's seal
+	joinSet2     = "set2"     // probe, record the attempt, set
+	joinConfirm2 = "confirm2" // probe, read the account, record the join
 )
 
-var joinPhases = []string{joinStart, joinPin, joinSeal, joinCreate, joinConfirm}
+var (
+	joinPhases    = []string{joinStart, joinPin, joinSeal, joinCreate, joinConfirm}
+	offlinePhases = []string{joinStart, joinPin, joinVerify, joinSeal1, joinSet1, joinConfirm1, joinSeal2, joinSet2, joinConfirm2}
+)
+
+// phasesOf is the phases a join of mode runs; nil for a mode not built.
+func phasesOf(mode apiv1.JoinMode) []string {
+	switch mode {
+	case apiv1.JoinOnline:
+		return joinPhases
+	case apiv1.JoinOffline:
+		return offlinePhases
+	}
+	return nil
+}
 
 // joinCursor is the join's durable cursor, recorded as the operation's Step
 // after each turn.
@@ -134,29 +158,42 @@ type joinCursor struct {
 	Version     uint64    `json:"version,omitempty"`
 	Attempted   bool      `json:"attempted,omitempty"`
 	Unanswered  time.Time `json:"unanswered,omitzero"`
+	Number      uint32    `json:"number,omitempty"` // offline: the key version number read at the verify
+	First       uint64    `json:"first,omitempty"`  // offline: the first closing rotation's version
 }
 
 // joinResult is a completed join's Result.
 type joinResult struct {
-	Account string `json:"account"`
-	DC      string `json:"dc"`
-	Version uint64 `json:"version"`
-	Tag     uint32 `json:"tag"`
-	Read    uint32 `json:"read"`
+	Account    string   `json:"account"`
+	DC         string   `json:"dc"`
+	Version    uint64   `json:"version"`
+	Tag        uint32   `json:"tag"`
+	Read       uint32   `json:"read"`
+	Names      []string `json:"names,omitempty"`
+	Owner      string   `json:"owner,omitempty"`
+	Delegation []byte   `json:"delegation,omitempty"`
 }
 
 // JoinProgress is the join's progress, read from its cursor.
 func (s *Server) JoinProgress(_ context.Context, op entity.Operation) apiv1.Progress {
 	var c joinCursor
+	var p apiv1.JoinDomainParams
 	_ = json.Unmarshal(op.Step, &c) // no cursor yet reads as the first phase
-	return apiv1.Progress{Phase: c.Phase, Done: int64(slices.Index(joinPhases, c.Phase)), Total: int64(len(joinPhases)), Unit: "steps"}
+	_ = json.Unmarshal(op.Params, &p)
+	phases := phasesOf(p.Mode)
+	return apiv1.Progress{Phase: c.Phase, Done: int64(slices.Index(phases, c.Phase)), Total: int64(len(phases)), Unit: "steps"}
 }
 
 // JoinStep runs one turn of a join-domain operation on the installation op
 // targets, from the cursor op.Step holds. A failure that ends the join is a
-// *apiv1.Problem naming the controller, the account or the missing
-// credential; every other error is retried with the same cursor. The
-// administrator credential held under op.ID is released when the join ends.
+// *apiv1.Problem naming the controller, the account, the version, the number
+// read or the missing credential; every other error is retried with the same
+// cursor. The administrator credential held under op.ID is released when the
+// join ends.
+//
+// An offline join takes the version op.Params names, which the API stored
+// marked HandedOver, verifies it at the pinned controller and rotates the
+// password twice as its own last steps, joined only at the second confirm.
 func (s *Server) JoinStep(ctx context.Context, op entity.Operation) (res step.StepResult, err error) {
 	if op.Target.Kind != entity.ResourceInstallation {
 		return step.StepResult{}, fmt.Errorf("%w: %s's target %s names no installation", step.ErrStepFailed, op.Kind, op.Target.Kind)
@@ -170,7 +207,8 @@ func (s *Server) JoinStep(ctx context.Context, op entity.Operation) (res step.St
 	if err := json.Unmarshal(op.Params, &p); err != nil {
 		return step.StepResult{}, fmt.Errorf("%w: the join's params: %w", step.ErrStepFailed, err)
 	}
-	if p.Mode != apiv1.JoinOnline {
+	phases := phasesOf(p.Mode)
+	if phases == nil {
 		return step.StepResult{}, fmt.Errorf("%w: the %q join is not built", step.ErrStepFailed, p.Mode)
 	}
 	var c joinCursor
@@ -178,6 +216,9 @@ func (s *Server) JoinStep(ctx context.Context, op entity.Operation) (res step.St
 		if err := json.Unmarshal(op.Step, &c); err != nil {
 			return step.StepResult{}, fmt.Errorf("%w: the join's cursor: %w", step.ErrStepFailed, err)
 		}
+	}
+	if !slices.Contains(phases, c.Phase) {
+		return step.StepResult{}, fmt.Errorf("%w: the %s join's cursor names no phase %q", step.ErrStepFailed, p.Mode, c.Phase)
 	}
 	st := s.state.Load()
 	if st == nil {
@@ -191,6 +232,9 @@ func (s *Server) JoinStep(ctx context.Context, op entity.Operation) (res step.St
 		return step.StepResult{}, err
 	}
 	j := &joining{s: s, st: st, in: in, c: c, op: op.ID}
+	if p.Mode == apiv1.JoinOffline {
+		j.offline, j.handed = true, p.Version
+	}
 	if c.Phase != joinStart && st.Directory == nil {
 		return step.StepResult{}, j.fail(ctx, http.StatusConflict, "the installation has no directory record")
 	}
@@ -204,9 +248,21 @@ func (s *Server) JoinStep(ctx context.Context, op entity.Operation) (res step.St
 	case joinCreate:
 		err = j.create(ctx)
 	case joinConfirm:
-		res, err = j.confirm(ctx)
-	default:
-		return step.StepResult{}, fmt.Errorf("%w: the join's cursor names no phase %q", step.ErrStepFailed, c.Phase)
+		res, err = j.confirm(ctx, 0)
+	case joinVerify:
+		err = j.verify(ctx)
+	case joinSeal1:
+		err = j.closingSeal(ctx, 1)
+	case joinSeal2:
+		err = j.closingSeal(ctx, 2)
+	case joinSet1:
+		err = j.closingSet(ctx, 1)
+	case joinSet2:
+		err = j.closingSet(ctx, 2)
+	case joinConfirm1:
+		res, err = j.confirm(ctx, 1)
+	case joinConfirm2:
+		res, err = j.confirm(ctx, 2)
 	}
 	if errors.Is(err, errUnanswered) {
 		err = nil
@@ -228,6 +284,9 @@ type joining struct {
 	in entity.Installation
 	c  joinCursor
 	op entity.OperationID
+	// offline is an offline join, handed the version its params name.
+	offline bool
+	handed  uint64
 }
 
 func joinProblem(status int, code apiv1.Code, detail string) *apiv1.Problem {
@@ -284,7 +343,7 @@ func (j *joining) start(ctx context.Context, target entity.ResourceRef, spec api
 		if ok {
 			return joinProblem(http.StatusConflict, apiv1.CodeOperationRunning, fmt.Sprintf("the rotation %x is running on the installation", op.ID))
 		}
-		return nil
+		return j.handedOver(tx)
 	})
 	if err != nil {
 		return err
@@ -346,6 +405,9 @@ func (j *joining) pin(ctx context.Context) error {
 		if err == nil {
 			_ = dc.Close()
 			j.c.DC, j.c.Phase = a, joinSeal
+			if j.offline {
+				j.c.Phase = joinVerify
+			}
 			return nil
 		}
 		errs = append(errs, fmt.Errorf("%s: %w", a, err))
@@ -376,6 +438,18 @@ func (j *joining) seal(ctx context.Context, takeover bool) error {
 	default:
 		j.c.Exists, j.c.Tag = true, acct.KeyVersion+1
 	}
+	v, err := j.sealNew(ctx, j.c.Tag)
+	if err != nil {
+		return err
+	}
+	j.c.Version, j.c.Phase = v, joinCreate
+	return nil
+}
+
+// sealNew seals a new version of the machine password tagged tag beside
+// Installation.MachinePassword in one write, before any controller sees it,
+// and answers its number.
+func (j *joining) sealNew(ctx context.Context, tag uint32) (uint64, error) {
 	ref := j.in.MachinePassword
 	if ref == (entity.SecretRef{}) {
 		ref = entity.SecretRef(entity.NewShareID())
@@ -383,9 +457,9 @@ func (j *joining) seal(ctx context.Context, takeover bool) error {
 	pw := newMachinePassword()
 	defer clear(pw)
 	sec, err := j.s.deps.Secrets.Seal(ctx, secrets.Protocol, entity.SecretMachinePassword, machineOwner(j.in), ref, pw,
-		secrets.Meta{KeyVersion: j.c.Tag})
+		secrets.Meta{KeyVersion: tag})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// decision: identity writes the machine account's records itself, the
 	// sealed version beside Installation.MachinePassword in one write, since
@@ -395,13 +469,35 @@ func (j *joining) seal(ctx context.Context, takeover bool) error {
 		if err := tx.PutSecret(sec, sec.Version-1); err != nil {
 			return err
 		}
-		return tx.SetMachinePassword(ref)
+		if err := tx.SetMachinePassword(ref); err != nil {
+			return err
+		}
+		return j.unjoin(tx)
 	})
 	if err != nil {
+		return 0, err
+	}
+	return sec.Version, nil
+}
+
+// unjoin records an offline join's installation not joined in its closing
+// seals' write, so a takeover's old join no longer holds once the first
+// rotation's version exists: pass-through, the secure channel and the
+// machine keys each read Join.Joined alone, and would otherwise sign in with
+// a closing rotation's version before the second confirm, which RFC 18 §3.5
+// forbids. As fail's rule has it, from the seal on a join recorded before no
+// longer holds. An online join's seal leaves Join as it was.
+func (j *joining) unjoin(tx entity.ControlPlaneTx) error {
+	if !j.offline {
+		return nil
+	}
+	in, err := tx.Installation()
+	if err != nil || !in.Join.Joined {
 		return err
 	}
-	j.c.Version, j.c.Phase = sec.Version, joinCreate
-	return nil
+	jn := in.Join
+	jn.Joined = false
+	return tx.SetMachineJoin(jn)
 }
 
 // account reads the computer account at the pinned controller, bound with
@@ -438,7 +534,7 @@ func (j *joining) accountAt(ctx context.Context, dc netlogon.DC) (netlogon.Accou
 // probe opens the pinned controller and asks whether it accepts the sealed
 // version; the caller closes the controller.
 func (j *joining) probe(ctx context.Context) (netlogon.DC, bool, error) {
-	pw, err := j.sealed(ctx)
+	pw, err := j.sealed(ctx, j.c.Version)
 	if err != nil {
 		return nil, false, err
 	}
@@ -455,21 +551,21 @@ func (j *joining) probe(ctx context.Context) (netlogon.DC, bool, error) {
 	return dc, ok, nil
 }
 
-// sealed is the sealed version's password, a copy the caller clears.
-func (j *joining) sealed(ctx context.Context) ([]byte, error) {
+// sealed is version n's password, a copy the caller clears.
+func (j *joining) sealed(ctx context.Context, n uint64) ([]byte, error) {
 	vs, err := j.s.deps.Secrets.Versions(ctx, secrets.Protocol, entity.SecretMachinePassword, machineOwner(j.in), j.in.MachinePassword)
 	if err != nil {
 		return nil, err
 	}
 	var pw []byte
 	for _, v := range vs {
-		if v.Number == j.c.Version {
+		if v.Number == n {
 			pw = slices.Clone(v.Value)
 		}
 		clear(v.Value)
 	}
 	if pw == nil {
-		return nil, j.fail(ctx, http.StatusServiceUnavailable, fmt.Sprintf("the machine password's version %d is no longer held", j.c.Version))
+		return nil, j.fail(ctx, http.StatusServiceUnavailable, fmt.Sprintf("the machine password's version %d is no longer held", n))
 	}
 	return pw, nil
 }
@@ -493,14 +589,18 @@ func (j *joining) create(ctx context.Context) error {
 		j.c.Phase = joinConfirm
 		return nil
 	case !j.c.Attempted:
+		// The attempt is recorded in the cursor, as rotation.set's decision:
+		// says.
 		j.c.Attempted = true
 		return nil
 	}
+	// The held administrator writes the password, so unlike a rotation's set
+	// and the offline join's closingSet no machine password signs in here.
 	admin, ok := j.s.heldCredential(j.op)
 	if !ok {
 		return j.fail(ctx, http.StatusConflict, fmt.Sprintf("no administrator credential is held for the join to create %s$; run the join again with a takeover", j.c.Account))
 	}
-	pw, err := j.sealed(ctx)
+	pw, err := j.sealed(ctx, j.c.Version)
 	if err != nil {
 		return err
 	}
@@ -528,9 +628,12 @@ func (j *joining) create(ctx context.Context) error {
 // rule, which a settings write validates, then asks the pinned controller
 // whether it accepts the sealed version, failing the join if not, and reads
 // the account: a key version number other than the tag is logged and counted.
-// The join ends writing Join, joined, and the account's name as
-// identity.netbios_name in one transaction.
-func (j *joining) confirm(ctx context.Context) (step.StepResult, error) {
+// round is the offline join's closing rotation, 0 for the online join's
+// confirm. The first closing rotation's confirm moves on to the second's seal;
+// the second's fails the join unless the number read is the one the verify
+// read plus two. The join's last confirm ends it writing Join, joined, and
+// the account's name as identity.netbios_name in one transaction.
+func (j *joining) confirm(ctx context.Context, round int) (step.StepResult, error) {
 	ctx, done := j.s.bounded(ctx)
 	defer done()
 	if err := validNetBIOSName(j.c.Account); err != nil {
@@ -551,13 +654,32 @@ func (j *joining) confirm(ctx context.Context) (step.StepResult, error) {
 	if err != nil {
 		return step.StepResult{}, err
 	}
-	if acct.KeyVersion != j.c.Tag {
+	switch {
+	case round == 2 && acct.KeyVersion != j.c.Number+2:
+		// decision: the proof of no third set is the pinned controller's
+		// number alone, since msDS-KeyVersionNumber is each controller's own:
+		// a controller the two sets have not reached still accepts the
+		// handed-over password until they replicate. Overturned if a
+		// deployment needs the guarantee at every controller before the join
+		// ends; the confirm then waits for each one's number.
+		return step.StepResult{}, j.fail(ctx, http.StatusConflict, fmt.Sprintf("domain controller %s reads %s$'s key version number %d, not %d, the %d the join verified plus two",
+			j.c.DC, j.c.Account, acct.KeyVersion, j.c.Number+2, j.c.Number))
+	case acct.KeyVersion != j.c.Tag:
 		j.s.logger.Warn("identity: the joined machine password's key version number differs from its tag",
 			"dc", j.c.DC, "version", j.c.Version, "tag", j.c.Tag, "read", acct.KeyVersion)
 		j.s.mismatches.WithLabelValues().Inc()
 	}
+	if round == 1 {
+		j.c.First, j.c.Phase = j.c.Version, joinSeal2
+		return step.StepResult{}, nil
+	}
 	c := j.c
-	result, err := json.Marshal(joinResult{Account: c.Account + "$", DC: c.DC, Version: c.Version, Tag: c.Tag, Read: acct.KeyVersion})
+	jr := joinResult{Account: c.Account + "$", DC: c.DC, Version: c.Version, Tag: c.Tag, Read: acct.KeyVersion,
+		Names: acct.Names, Delegation: acct.Delegation}
+	if acct.Owner.Revision != 0 {
+		jr.Owner = sid.FormatSID(&acct.Owner)
+	}
+	result, err := json.Marshal(jr)
 	if err != nil {
 		return step.StepResult{}, err
 	}

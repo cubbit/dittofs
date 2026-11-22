@@ -4333,10 +4333,10 @@ package that does file or network I/O (but `os` in `<protocol>/wire/gen`,
 from files), a
 generated `codec_gen.go` that imports more than those and its protocol's
 `wire`, and an `ops` file other than `codec_gen.go` that names its protocol's
-`wire.Decoder`, `wire.Encoder` or any function of that `wire`, each of which
-reads, writes or sizes bytes, or imports `encoding/binary`, since a command
-file touches no bytes (§5.1; an `ops` package's test files are held by
-neither rule); it may name `wire`'s other types and its constants. Once the
+`wire.Decoder`, `wire.Encoder` or any function of that `wire`, imports that
+`wire` with a dot, or imports `encoding/binary`, since a command file touches
+no bytes (§5.1; an `ops` package's test files are held by neither rule); it
+may name `wire`'s other types, its constants and its variables. Once the
 plan's ledger rows for them land, it will also fail an `ops` file that calls
 a method of a `wire` type that reads or writes bytes, and a call of an entry
 method (`Root`, `SecInfo`, `ListShares`) outside the
