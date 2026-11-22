@@ -493,12 +493,14 @@ func TestARotationWhoseEndIsRefusedIsRecordedFailed(t *testing.T) {
 	}
 }
 
-// A rotation that fails while every write of the installation fails, its
-// failed write among them, ends failed all the same: the runner's last
-// commit records the failure bare, whether that write was refused or failed
-// with a plain store error. Catches a commit that reruns the failed write or
-// retries the turn, which leaves the rotation running, holding the running
-// index against every join and rotation, and its step rerun at every turn.
+// A rotation whose seal write is refused, and whose failed write then
+// fails too, ends failed all the same: the runner's last commit records the
+// failure bare, whether that write was refused or failed with a plain store
+// error. The seal write is always refused, since a plain error there is
+// retried and never reaches the failed write. Catches a commit that reruns
+// the failed write or retries the turn, which leaves the rotation running,
+// holding the running index against every join and rotation, and its step
+// rerun at every turn.
 func TestARotationWhoseFailedWriteIsRefusedEndsFailed(t *testing.T) {
 	for name, fault := range map[string]error{
 		"refused":       errWriteFailed,
@@ -508,7 +510,9 @@ func TestARotationWhoseFailedWriteIsRefusedEndsFailed(t *testing.T) {
 			m := newMachine(t, false)
 			m.join(t)
 			before := m.installation(t).Join.LastRotation
-			setFault(t, m.kv, nil, sim.Rule{Op: kvtest.OpSet, Key: installationWrite, Action: sim.FaultAction{Err: fault}})
+			setFault(t, m.kv, nil,
+				sim.Rule{Op: kvtest.OpSet, Key: installationWrite, Count: 1, Action: sim.FaultAction{Err: errWriteFailed}},
+				sim.Rule{Op: kvtest.OpSet, Key: installationWrite, From: 2, Action: sim.FaultAction{Err: fault}})
 			op := m.ended(t, m.post(t, "rotate-machine-password", ""))
 			if op.State != entity.OpFailed {
 				t.Fatalf("a rotation whose failed write is %s: ended %v with %s, want failed", name, op.State, op.Error)

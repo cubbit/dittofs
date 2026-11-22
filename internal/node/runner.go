@@ -182,6 +182,12 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 		// row.failed, or the commit carrying it, did not land: a failure must
 		// always be recorded, or the step that answered it runs again at
 		// every turn, so it is recorded bare.
+		//
+		// decision: a plain store error here is not retried either, so a
+		// one-off blip loses row.failed's writes; for a rotation, the failed
+		// LastRotation, and with it that one back-off, costing one extra
+		// rotation rather than a step rerun at every turn. Retry it once the
+		// failed write of some kind carries more than a schedule's back-off.
 		err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, nil)
 	}
 	if err != nil {
