@@ -145,28 +145,23 @@ func TestCheckRefusesDeadIDRange(t *testing.T) {
 	refused("used up", idRange(1_000_000, 1_000_007))
 }
 
-// IDHighWater's read of the counters is tracked: a uid drawn between it and
-// the commit of a settings write retries that write.
-func TestIDHighWaterReadTracked(t *testing.T) {
+// The id_range check's read of the counters' marks is tracked: a uid drawn
+// between a put of identity.id_range's check and its commit retries that put.
+func TestCheckIDRangeReadTracked(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	st := newStore(t)
-	attempts := 0
-	err := st.ControlPlane().Write(context.Background(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-		attempts++
-		if _, _, err := tx.IDHighWater(); err != nil {
-			return err
-		}
-		if attempts == 1 {
-			allocate(t, st, 1, false, entity.DefaultIDRange)
-		}
-		_, err := tx.PutSetting(entity.Setting{Scope: installationScope, Key: "identity.ntlm", Value: []byte("false")}, 0)
-		return err
-	})
+	attempts, err := putSettingWith(st.ControlPlane(), entity.RoleAdmin, "identity.id_range",
+		idRange(1_000_000, 2_000_000), func(attempt int) error {
+			if attempt == 1 {
+				allocate(t, st, 1, false, entity.DefaultIDRange)
+			}
+			return nil
+		})
 	if err != nil {
-		t.Fatalf("settings write: %v", err)
+		t.Fatalf("put of identity.id_range: %v, want committed", err)
 	}
 	if attempts != 2 {
-		t.Errorf("attempts of the settings write = %d, want 2: a uid drawn after IDHighWater must retry it", attempts)
+		t.Errorf("attempts of the put of identity.id_range = %d, want 2: a uid drawn after its check must retry it", attempts)
 	}
 }
 
