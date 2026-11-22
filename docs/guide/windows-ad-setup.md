@@ -248,44 +248,37 @@ secure channel, gets back the user + group SIDs, and authorizes them with the
 
 This needs a dedicated **machine (computer) account** — *not* the `svc-dittofs`
 service account, because NETLOGON requires a workstation-trust secure channel
-that only a machine account can establish.
+that only a machine account can establish. DittoFS joins the domain with a
+management-API operation, online or offline; the steps, the request bodies and
+the ports are in [identity.md, Part C2](identity.md#part-c2-join-the-domain).
 
-**Step 1 — create the machine account (offline).** On a DC, elevated PowerShell:
+**Step 1 — pick a join.**
 
-```powershell
-New-ADComputer -Name DITTOFS `
-  -AccountPassword (ConvertTo-SecureString 'M4chine!Pass2026' -AsPlainText -Force) `
-  -Enabled $true `
-  -OtherAttributes @{'msDS-SupportedEncryptionTypes'=31}   # 31 = advertise AES
-```
+- **Online:** DittoFS creates the computer account itself. Give it an
+  administrator that may create computer objects in the target OU.
+- **Offline:** you create the account and hand DittoFS its password. Create it
+  with AES enabled, `msDS-SupportedEncryptionTypes` = `0x18`. DittoFS accepts
+  AES only, so an account without the attribute, which is what Active
+  Directory Users and Computers creates, is refused:
 
-Don't set a `dNSHostName`/SPN on it — the host already owns `HOST/vm2…` via its
-own computer account, and this account is only a NETLOGON client identity.
-(Alternatively, skip this step and let DittoFS create + rotate the account itself
-with `online_join` — see [configuration.md](configuration.md#12-kerberos-configuration).)
+  ```powershell
+  New-ADComputer -Name DITTOFS `
+    -AccountPassword (ConvertTo-SecureString 'M4chine!Pass2026' -AsPlainText -Force) `
+    -Enabled $true `
+    -OtherAttributes @{'msDS-SupportedEncryptionTypes'=0x18}
+  ```
 
-**Step 2 — add the machine account to the server config** (under `kerberos:`):
+  Keep the account's creator off the network path between DittoFS and the DC
+  while the join runs: the join rotates the password twice, and the first
+  rotation is authenticated by the password you handed over.
 
-```yaml
-kerberos:
-  enabled: true
-  realm: "CUBBIT.LOCAL"
-  netbios_domain: "CUBBIT"
-  # ... keytab_path etc. as in step 2 ...
-  machine_account:
-    enabled: true
-    account_name: "DITTOFS$"
-    secret: "M4chine!Pass2026"
-    dc_address: ["192.168.100.70"]   # optional; empty => DNS SRV discovery
-```
+**Step 2 — join.** `POST /api/v1/installation:join-domain` with the mode, the
+account and the credential (see Part C2). Follow the operation it answers with
+until it has succeeded. The password then rotates by itself every seven days.
 
-Restart the server. The log should show
-`NETLOGON machine account: offline provider active account=DITTOFS$`.
-
-The CLI no longer has commands to show the live machine-account state or to
-force a password rotation, and the v2 CLI rebuilds neither. For the
-offline/static provider, rotate the secret by updating the machine-account
-configuration.
+**After the join, transfer the computer object's ownership** (for example to
+*Domain Admins*) and check its `msDS-AllowedToActOnBehalfOfOtherIdentity`: the
+owner can have a DC sign a ticket for any user to the account's names.
 
 **Step 3 — test the NTLM path.** From a domain member, connect by **IP** (forces
 NTLM) or double-click the server in Explorer → Network:
@@ -303,8 +296,9 @@ domain user`, then the usual SID-grant match at TREE_CONNECT.
 This feature is **server-OS-agnostic** — the DittoFS server can run on **Linux or
 Windows**; the AD/Kerberos/NETLOGON setup is identical and only the host firewall
 differs. Pass-through needs the DittoFS host to reach the **DC outbound** on
-Kerberos `88`, LDAP `389`/`636`, SMB `445`, and DNS `53`, and to accept SMB `445`
-**inbound** from clients. The Explorer **double-click** additionally needs LAN
+RPC endpoint mapper `135`, the DC's dynamic RPC range (`49152-65535` unless the
+site narrowed it) for the NETLOGON channel, Kerberos `88`, LDAPS `636`, and DNS
+`53`, and to accept SMB `445` **inbound** from clients. The Explorer **double-click** additionally needs LAN
 discovery (see [configuration.md](configuration.md) → *Network discovery*):
 inbound WS-Discovery UDP `3702`, mDNS UDP `5353`, and the metadata fetch on TCP
 `5357`.
