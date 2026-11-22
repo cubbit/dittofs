@@ -58,11 +58,25 @@ func (s *Server) stopSchedule() {
 
 // schedule checks whether a rotation is due at once and then every
 // scheduleTick on the server's clock, until ctx ends.
+//
+// decision: a check is not waited for once ctx ends, so Stop returns while a
+// store that ignores its context holds the check's write, as the node's own
+// loops stop waiting on such a call. The abandoned write may still commit a
+// rotation after Stop, which the next start's runner drives. Overturned if
+// a write after Stop must be ruled out, which needs a store that honours its
+// context.
 func (s *Server) schedule(ctx context.Context, done chan struct{}) {
 	defer close(done)
 	for {
-		if err := s.scheduleRotation(ctx); err != nil && ctx.Err() == nil {
-			s.logger.Error("identity: the machine password rotation's schedule", "err", err)
+		checked := make(chan error, 1)
+		go func() { checked <- s.scheduleRotation(ctx) }()
+		select {
+		case err := <-checked:
+			if err != nil && ctx.Err() == nil {
+				s.logger.Error("identity: the machine password rotation's schedule", "err", err)
+			}
+		case <-ctx.Done():
+			return
 		}
 		tick := s.deps.Clock.After(scheduleTick)
 		if s.scheduled != nil {
@@ -107,15 +121,16 @@ func (s *Server) scheduleRotation(ctx context.Context) error {
 		}
 		lr := in.Join.LastRotation
 		due := lr.Confirmed.Add(rotationPeriod)
-		// decision: only a rotation's failure path writes Failed, so a
-		// rotation that ends another way (a store error out of its step,
-		// the runner giving up on it, a cancel from the API) leaves Failed
-		// false and Confirmed as old as it was, and the next tick starts
-		// another, once a minute with no back-off. The store has no tracked
-		// read of the last ended operation of a kind to back off from, so
-		// the operation runner's failure path must write Failed and At for
-		// every rotation it ends. Holds while no runner drives a rotation;
-		// overturned when one does without that write.
+		// decision: the back-off reads Failed alone, which RotateFailed
+		// writes as the node runner records every rotation it fails while
+		// the installation is joined, so a rotation that ends another way
+		// than through the rotation's own failure (a fault out of its step,
+		// a refused End) is backed off from too. A failure whose own
+		// RotateFailed write is refused is recorded bare, with no back-off. The
+		// store has no tracked read of the last ended operation of a kind
+		// to back off from. A cancel from the API ends no rotation yet, as
+		// the kind is not cancellable; overturned when one does without
+		// that write.
 		if lr.Failed {
 			due = lr.At.Add(rotationRetry)
 		}

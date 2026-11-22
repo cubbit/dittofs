@@ -31,7 +31,9 @@ var installation = entity.SettingScope{Kind: entity.ScopeInstallation}
 // fails the start, since a refused setting is never replaced by a default
 // (RFC 13 §6). Its ceiling: a node rolled back below a newer writer, or one
 // whose store accepted a row unchecked, does not start, and the row is
-// repaired in the store by hand, as the API is not serving. Overturned once
+// repaired in the store by hand, as the API is not serving. The same holds
+// for a machine password whose versions do not open before identity holds a
+// State: the start fails, as there is no last State to keep. Overturned once
 // identity can be left unapplied, answering unavailable, while the API
 // repairs the row.
 //
@@ -85,6 +87,19 @@ func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *sett
 		}
 		st.Settings.Keytab, st.Keytab = last.Settings.Keytab, last.Keytab
 	}
+	machine, err := n.machine(ctx)
+	if err != nil {
+		if last == nil {
+			return nil, err
+		}
+		// ponytail: a machine password that does not read keeps the last
+		// one identity holds and is logged, never reported refused, as no
+		// record of the settings names it. Report it once node status
+		// carries a refused secret.
+		n.cfg.Logger.Warn("identity: the machine password does not read; identity keeps the last", "error", err)
+		machine = machineState{ref: *n.machineRef.Load(), versions: last.Machine, join: last.Join}
+	}
+	st.Machine, st.Join = machine.versions, machine.join
 	if n.rec.handing != nil {
 		n.rec.handing(st)
 	}
@@ -118,7 +133,32 @@ func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *sett
 			return refusals, err
 		}
 	}
+	n.machineRef.Store(&machine.ref)
 	return refusals, nil
+}
+
+// machineState is the machine account as identity's State takes it, from
+// one read of the installation record: the machine password's reference
+// and its versions held, opened, current first, and the join.
+type machineState struct {
+	ref      entity.SecretRef
+	versions []secrets.Version
+	join     entity.MachineJoin
+}
+
+// machine reads the machine account's state; no versions for an
+// installation that names no machine password.
+func (n *Node) machine(ctx context.Context) (machineState, error) {
+	in, err := n.meta.Installation(ctx)
+	if err != nil {
+		return machineState{}, err
+	}
+	m := machineState{ref: in.MachinePassword, join: in.Join}
+	if m.ref == (entity.SecretRef{}) {
+		return m, nil
+	}
+	m.versions, err = n.secrets.Versions(ctx, secrets.Protocol, entity.SecretMachinePassword, in.MachinePasswordOwner(), m.ref)
+	return m, err
 }
 
 // keytab is every version of the keytab ref names still held, opened,
@@ -160,13 +200,17 @@ func settingRefused(key string, gen uint64, err error) refusal {
 }
 
 // identitySecrets is the secret versions identity holds, as node status
-// reports them: the keytab's current version while one is in force.
+// reports them: the keytab's and the machine password's current versions,
+// each while one is in force.
 func (n *Node) identitySecrets() []entity.SecretVersion {
-	ref, v, _ := n.identity.AppliedKeytab()
-	if v == 0 {
-		return nil
+	var vs []entity.SecretVersion
+	if ref, v, _ := n.identity.AppliedKeytab(); v != 0 {
+		vs = append(vs, entity.SecretVersion{Secret: ref, Version: v})
 	}
-	return []entity.SecretVersion{{Secret: ref, Version: v}}
+	if st, ref := n.identity.Applied(), n.machineRef.Load(); st != nil && ref != nil && len(st.Machine) > 0 {
+		vs = append(vs, entity.SecretVersion{Secret: *ref, Version: st.Machine[0].Number})
+	}
+	return vs
 }
 
 // identityConditions is identity's conditions as the health evaluator reads
