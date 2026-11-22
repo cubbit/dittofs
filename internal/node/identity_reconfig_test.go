@@ -321,7 +321,9 @@ func directoryDomain(r *directory.Record) string {
 // A State identity refuses whole, an installation NetBIOS name equal to the
 // directory's NetBIOS domain, keeps both last sections and the keytab the
 // last identity section names, and still delivers the new principals
-// generation; the row that moved into the clash is reported refused, once.
+// generation; each row that moved into the clash is reported refused, once,
+// a NetBIOS value compared to the last with ASCII letters folded, as the
+// clash check compares it.
 func TestAStateIdentityRefusesKeepsTheLastSections(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	realm := identitytest.NewRealm("TEST.REALM", krbService)
@@ -332,8 +334,8 @@ func TestAStateIdentityRefusesKeepsTheLastSections(t *testing.T) {
 		name string
 		// before applies first; clash is written for one pass after it.
 		before, clash step
-		refused       string // the one row reported refused
-		domain        string // the directory's NetBIOS domain identity keeps, empty for none
+		refused       []string // the rows reported refused
+		domain        string   // the directory's NetBIOS domain identity keeps, empty for none
 		check         func(t *testing.T, h *nodetest.Harness)
 	}{{
 		name: "the directory's domain moves to the node's name",
@@ -343,7 +345,7 @@ func TestAStateIdentityRefusesKeepsTheLastSections(t *testing.T) {
 		clash: func(t *testing.T, h *nodetest.Harness, _ *secrets.Provider, _ *identitytest.Directory) {
 			putSetting(t, h, "identity.directory.netbios_domain", `"DITTOFS"`)
 		},
-		refused: "identity.directory.netbios_domain",
+		refused: []string{"identity.directory.netbios_domain"},
 		domain:  "KORP",
 	}, {
 		name: "the node's name moves to the directory's domain",
@@ -353,8 +355,28 @@ func TestAStateIdentityRefusesKeepsTheLastSections(t *testing.T) {
 		clash: func(t *testing.T, h *nodetest.Harness, _ *secrets.Provider, _ *identitytest.Directory) {
 			putSetting(t, h, "identity.netbios_name", `"KORP"`)
 		},
-		refused: "identity.netbios_name",
+		refused: []string{"identity.netbios_name"},
 		domain:  "KORP",
+	}, {
+		name: "both sides move to one name in one pass",
+		before: func(t *testing.T, h *nodetest.Harness, p *secrets.Provider, d *identitytest.Directory) {
+			directoryRecord(t, h, p, d, "KORP")
+		},
+		clash: func(t *testing.T, h *nodetest.Harness, _ *secrets.Provider, _ *identitytest.Directory) {
+			putSettings(t, h, map[string]string{"identity.netbios_name": `"SAME"`, "identity.directory.netbios_domain": `"SAME"`})
+		},
+		refused: []string{"identity.netbios_name", "identity.directory.netbios_domain"},
+		domain:  "KORP",
+	}, {
+		name: "the name moves to the domain while the domain changes case only",
+		before: func(t *testing.T, h *nodetest.Harness, p *secrets.Provider, d *identitytest.Directory) {
+			directoryRecord(t, h, p, d, "korp")
+		},
+		clash: func(t *testing.T, h *nodetest.Harness, _ *secrets.Provider, _ *identitytest.Directory) {
+			putSettings(t, h, map[string]string{"identity.netbios_name": `"KORP"`, "identity.directory.netbios_domain": `"KORP"`})
+		},
+		refused: []string{"identity.netbios_name"},
+		domain:  "korp",
 	}, {
 		name: "a clashing directory arrives with a keytab move",
 		before: func(t *testing.T, h *nodetest.Harness, p *secrets.Provider, _ *identitytest.Directory) {
@@ -370,7 +392,7 @@ func TestAStateIdentityRefusesKeepsTheLastSections(t *testing.T) {
 			putSetting(t, h, "identity.keytab", refJSON(ref2))
 			directoryRecord(t, h, p, d, "DITTOFS")
 		},
-		refused: "identity.directory.netbios_domain",
+		refused: []string{"identity.directory.netbios_domain"},
 		check: func(t *testing.T, h *nodetest.Harness) {
 			if _, err := signInKerberos(t, h, realm, nil, 0); err != nil {
 				t.Errorf("alice's ticket under ref1's key, the last identity section's keytab: %v, want signed in", err)
@@ -395,7 +417,9 @@ func TestAStateIdentityRefusesKeepsTheLastSections(t *testing.T) {
 			tc.clash(t, h, p, d)
 			putUser(t, h, "carol")
 			moved := counters(t, h).Principals
-			refusedUntil(t, h, tc.refused)
+			for _, key := range tc.refused {
+				refusedUntil(t, h, key)
+			}
 			st := h.Node().AppliedIdentity()
 			if st.Generation < moved {
 				t.Errorf("identity's principals generation: got %d, want at least %d, carol's write", st.Generation, moved)
@@ -406,8 +430,8 @@ func TestAStateIdentityRefusesKeepsTheLastSections(t *testing.T) {
 			if got, err := h.Node().ComputerName(); err != nil || got != "DITTOFS" {
 				t.Errorf("NetBIOS name: got %q, %v, want the last applied, DITTOFS", got, err)
 			}
-			if got := h.Node().Refused(); len(got) != 1 {
-				t.Errorf("refusals: got %+v, want %s alone", got, tc.refused)
+			if got := h.Node().Refused(); len(got) != len(tc.refused) {
+				t.Errorf("refusals: got %+v, want %v alone", got, tc.refused)
 			}
 			if tc.check != nil {
 				tc.check(t, h)
@@ -600,10 +624,12 @@ func TestTheDirectoryOutageReachesNodeStatus(t *testing.T) {
 	statusUntil(t, h, "directory_unreachable naming this node", unreachable)
 	fault.down.Store(false)
 	h.Clock().Advance(time.Minute) // past the probe's wait
+	// The probe runs on its own goroutine: Find answers only once it has
+	// reached the directory and cleared the down mark, which the status shows.
+	statusUntil(t, h, "no directory_unreachable", func(s entity.NodeStatus) bool { return !unreachable(s) })
 	if err := find(); err != nil {
 		t.Fatalf("Find once the directory answers again: %v", err)
 	}
-	statusUntil(t, h, "no directory_unreachable", func(s entity.NodeStatus) bool { return !unreachable(s) })
 }
 
 // A Kerberos name written through the API for a local user is linked for

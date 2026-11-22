@@ -146,6 +146,10 @@ func (n *Node) OnApply(applying func(kvstore.Counters)) { n.rec.applying = apply
 // is set on the node's clock. Call it before Start.
 func (n *Node) OnReconcileWait(waiting func()) { n.rec.waiting = waiting }
 
+// OnIdentityApply has the node call handing with each State it hands
+// identity, before identity's Apply. Call it before Start.
+func (n *Node) OnIdentityApply(handing func(iidentity.State)) { n.rec.handing = handing }
+
 // Applied is the wait a write on this node makes.
 func (n *Node) Applied(ctx context.Context) error { return n.applied(ctx) }
 
@@ -202,14 +206,16 @@ func (n *Node) Bound(id entity.ShareID) (entity.ShareState, bool) {
 // of its Sweep calls that answered deleted. Call it before Start.
 func (n *Node) OnSweep(turned func([]kvstore.Swept)) { n.sweep.turned = turned }
 
-// NewAuthenticating is New with authenticate as the API's Authenticate,
-// which New leaves unset.
+// NewAuthenticating is New with authenticate as the API's Authenticate in
+// place of the node's sign-in, and no signing key, so a write carrying an
+// Idempotency-Key answers 503.
 func NewAuthenticating(authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
 	return func(cfg Config) (*Node, error) { return newNode(cfg, seams{authenticate: authenticate}) }
 }
 
-// NewSigning is NewAuthenticating with signingKey as the API's SigningKey,
-// which New leaves unset, so writes carrying an Idempotency-Key are served.
+// NewSigning is NewAuthenticating with signingKey as the API's SigningKey
+// in place of the access tokens' current key, so writes carrying an
+// Idempotency-Key are served.
 func NewSigning(authenticate func(*http.Request) (auth.Caller, error), signingKey func(context.Context) ([]byte, error)) func(Config) (*Node, error) {
 	return func(cfg Config) (*Node, error) {
 		return newNode(cfg, seams{authenticate: authenticate, signingKey: signingKey})
@@ -364,3 +370,6 @@ func (k *keptKeys) Versions(ctx context.Context, kind entity.SecretKind, owner e
 	}
 	return vs, err
 }
+
+// SignIns is the sign-in service the node hands its API.
+func (n *Node) SignIns() *auth.Service { return n.auth }

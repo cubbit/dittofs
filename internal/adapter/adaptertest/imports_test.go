@@ -219,34 +219,40 @@ func forbiddenToOps(dir, name, file, imp string) string {
 }
 
 // usesRuntime names each use in f, an ops file other than codec_gen.go, of
-// what in its protocol's wire it may not name: the Decoder and Encoder the
-// generated code alone calls, and any of funcs, the functions wire declares;
-// and a dot import of wire, whose names the walk below cannot see. wire's
-// other types, its constants and its variables it may name (RFC 20 §5.1,
-// §7.1).
+// what in its protocol's wire it may not name, under any name f imports wire
+// as: the Decoder and Encoder the generated code alone calls, and any of
+// funcs, the functions wire declares; and a dot import of wire, whose names
+// the walk below cannot see. staticcheck's ST1001 flags a dot import too, but
+// not one a nolint directive hides, and without RFC 20's reason. wire's other
+// types, its constants and its variables it may name (RFC 20 §5.1, §7.1).
 //
 // ponytail: a call of a method of a wire type that reads or writes bytes,
 // today nfs's Call and smb's Header, is not caught, as a syntactic walk
 // cannot tell a value's type. Type-check the ops packages, in this test
-// alone, once an ops file names one of those types.
+// alone, once an ops package holds a value of one of those types.
 func usesRuntime(rel, wire string, funcs map[string]bool, f *ast.File) []string {
-	name := ""
+	names := map[string]bool{}
 	for _, spec := range f.Imports {
-		if spec.Path.Value == strconv.Quote(module+wire) {
-			name = path.Base(wire)
-			if spec.Name != nil {
-				name = spec.Name.Name
-			}
+		if spec.Path.Value != strconv.Quote(module+wire) {
+			continue
 		}
+		name := path.Base(wire)
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		if name == "." {
+			return []string{rel + ": imports " + module + wire + " with a dot: " + noBytes}
+		}
+		names[name] = true
 	}
-	if name == "." {
-		return []string{rel + ": imports " + module + wire + " with a dot: " + noBytes}
+	if len(names) == 0 {
+		return nil
 	}
 	var found []string
 	ast.Inspect(f, func(n ast.Node) bool {
-		if s, ok := n.(*ast.SelectorExpr); ok && name != "" {
-			if x, ok := s.X.(*ast.Ident); ok && x.Name == name && (s.Sel.Name == "Decoder" || s.Sel.Name == "Encoder" || funcs[s.Sel.Name]) {
-				found = append(found, rel+": uses "+name+"."+s.Sel.Name+": "+noBytes)
+		if s, ok := n.(*ast.SelectorExpr); ok {
+			if x, ok := s.X.(*ast.Ident); ok && names[x.Name] && (s.Sel.Name == "Decoder" || s.Sel.Name == "Encoder" || funcs[s.Sel.Name]) {
+				found = append(found, rel+": uses "+x.Name+"."+s.Sel.Name+": "+noBytes)
 			}
 		}
 		return true
@@ -389,7 +395,9 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/nfs/mount/wire/gen/main.go: imports os: a wire package does no file or network I/O",
 		"internal/adapter/nfs/ops/v3/binary.go: imports encoding/binary: an ops file reads and writes no bytes: its codec is generated",
 		"internal/adapter/nfs/ops/v3/dot.go: imports github.com/cubbit/dittofs/internal/adapter/nfs/wire with a dot: an ops file reads and writes no bytes: its codec is generated",
+		"internal/adapter/nfs/ops/v3/dottwice.go: imports github.com/cubbit/dittofs/internal/adapter/nfs/wire with a dot: an ops file reads and writes no bytes: its codec is generated",
 		"internal/adapter/nfs/ops/v3/parse.go: uses wire.ParseCall: an ops file reads and writes no bytes: its codec is generated",
+		"internal/adapter/nfs/ops/v3/twice.go: uses a.ParseCall: an ops file reads and writes no bytes: its codec is generated",
 		"internal/adapter/nfs/ops/v4/codec_gen.go: imports os: a generated codec_gen.go imports only what a wire package may, and its protocol's wire",
 		"internal/adapter/nfs/ops/v4/encoder.go: uses w.Encoder: an ops file reads and writes no bytes: its codec is generated",
 		"internal/adapter/nfs/prof.go: imports github.com/cubbit/dittofs/internal/prof: the service's test components and the profiler reach an adapter through its tests and adaptertest only",

@@ -14,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/internal/node/api"
+	"github.com/cubbit/dittofs/internal/node/api/apisettings"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/sidecar"
 	"github.com/cubbit/dittofs/internal/tlsconfig"
@@ -111,9 +112,11 @@ type Node struct {
 	// nil when it names none; Stop closes it.
 	protocolKey keyprovider.KeyProvider
 	// tokens issues and verifies access tokens over the installation's
-	// signing key. Only the rotation uses them yet; sign-in will hand them to
-	// the API. Stop clears the versions they hold.
+	// signing key, for sign-in and the rotation. Stop clears the versions
+	// they hold.
 	tokens *auth.Tokens
+	// auth signs callers in and answers who each API call is.
+	auth *auth.Service
 	// ending, when set, is called by step 3 of each share removal once its
 	// bound is set on the clock, before it waits on anything.
 	ending func(entity.ShareID)
@@ -161,9 +164,11 @@ type Node struct {
 // rebuild on one registry is needed.
 func New(cfg Config) (*Node, error) { return newNode(cfg, seams{}) }
 
-// seams is what only a test hands the node yet: the API's Authenticate and
-// SigningKey, each nil in production, and the directory's dialer, nil for
-// the production one.
+// seams is what only a test hands the node in place of its own: the API's
+// Authenticate and SigningKey, and the directory's dialer. With no
+// Authenticate, the API takes the node's sign-in and, with no SigningKey,
+// the access tokens' current key; a test's Authenticate with no SigningKey
+// leaves the API none. A nil dialer is the production one.
 type seams struct {
 	authenticate func(*http.Request) (auth.Caller, error)
 	signingKey   func(context.Context) ([]byte, error)
@@ -309,7 +314,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 		return nil, fmt.Errorf("node: %w", err)
 	}
 	n.health.Add(identityConditions{n})
-	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Running: n.rec.serves,
+	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger, Clock: cfg.Clock, Running: n.rec.serves,
 		Identity: n.identity, Auth: n.identity, Names: n.identity}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
@@ -324,16 +329,23 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 		[]uint16{listenPort(cfg.Bootstrap.API.Listen[0]), listenPort(cfg.Bootstrap.Metrics.Listen)}, cfg.Clock, n.drains)
 	n.health.Add(&adapterConditions{n})
 	n.life.ready.Store(readyStarting)
-	// decision: the API is handed no signing key or tracer, and in
-	// production no Authenticate, as the API takes neither the access tokens
-	// the node builds nor the signing key's value, and Config's tracer is the
+	// The session lifetime is the api section's default until the settings
+	// reach the node's components.
+	if n.auth, err = auth.NewService(auth.Deps{Store: n.meta.ControlPlane(), Accounts: n.identity, Tokens: n.tokens,
+		Settings: apisettings.Defaults, Clock: cfg.Clock, Metrics: reg}); err != nil {
+		return nil, fmt.Errorf("node: %w", err)
+	}
+	if in.authenticate == nil {
+		in.authenticate = n.auth.Authenticate
+		if in.signingKey == nil {
+			in.signingKey = n.tokens.SigningKey
+		}
+	}
+	// decision: the API is handed no tracer, as Config's tracer is the
 	// journals', not the API's: the API's own tracer is RFC 23's own wiring,
-	// fed from Config once it lands. So every call but a public row's answers
-	// 401, every POST and DELETE, which must carry an Idempotency-Key,
-	// answers 503 or 428, and the API's spans go to the no-op tracer. Fill
-	// each from the secret store, sign-in and the host's tracer as they land.
-	// An empty api.socket serves no local socket: the bootstrap gives it no
-	// default path yet.
+	// fed from Config once it lands, so the API's spans go to the no-op
+	// tracer. An empty api.socket serves no local socket: the bootstrap gives
+	// it no default path yet.
 	n.api = api.New(api.Deps{
 		Ready:        n.readiness,
 		Served:       n.life.served.Load,
@@ -345,6 +357,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 		Metrics:      cfg.Metrics,
 		Logger:       cfg.Logger,
 		Authenticate: in.authenticate,
+		Credentials:  n.auth,
 		SigningKey:   in.signingKey,
 		Store:        n.meta.ControlPlane(),
 		Nodes:        n.meta.Nodes(),

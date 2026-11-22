@@ -288,13 +288,18 @@ internal/node/api/auth/
   rights.go                                T5.1  E4's table, already holding this epic's rights; unchanged
   throttle.go throttle_test.go             T5.2  decide, settle, takeBack, sourceOf; the store side
   tokens.go tokens_test.go                 T5.3  the signing key's versions, issue, verify
-  signin.go signin_test.go bench_test.go   T5.5  Service, Authenticate, sign-in, refresh, sign-out
+  service.go                               T5.5  Service, its Deps, the shared token and error helpers
+  signin.go                                T5.5  sign-in: reserve, the password check, the settling write
+  session.go                               T5.5  refresh, Authenticate: the credential, then the account
   check.go check_test.go                   T5.6  the account check, last_admin, the role-raise rule
   password.go password_test.go             T5.7  POST /auth/password, :set-password
   apitokens.go apitokens_test.go           T5.8  API tokens; the credential routes' table test
   rotate.go rotate_test.go                 T5.9  the rotation's runner step
 internal/install/
   install.go install_test.go export_test.go T5.4 Run, Deps, the crash point (D6)
+internal/node/
+  auth_test.go auth_bench_test.go          T5.5  auth's tests over the harness, the benchmark: a whole
+                                                 node, so they live with the node's own tests
 internal/node/nodetest/                    T5.4  installation through install.Run; T5.6 a caller per role
 pkg/metadata/kvstore/                      T5.2  ClearSourceSignIns, a bounded batch
 cmd/dfs/commands/
@@ -422,15 +427,16 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   failure settled and audited only on `errors.Is(err, vfserr.ErrLogonFailure)`, and
   `ErrUnavailable` answered `503` with no settlement, no refusal audit and the source's raise taken
   back (R47);
-  refresh through `Session(id)`, reading the account through `APISignIn.Account` as `Authenticate`
+  refresh through `SessionByRefresh(hash)`, reading the account through `APISignIn.Account` as `Authenticate`
   does, an invalidated token revoking the session with `DeleteSession`; `Account`'s `ErrUnavailable`
   answered `503`, not `401`, in refresh and in `Authenticate` alike (R47);
   sign-out; the two series; RFC 23 §4.5's `decision:` at the credential routes; the client's
-  `SignIn`, `Refresh` and `ChangePassword` sent through E4's client core with refresh off (E4's
-  T4.8), so a `401` from any of them is returned as it is, never refreshed and replayed; `pkg/identity`
-  added to E4's import allow-list for `auth` (T5.1), while `pkg/vfs/vfserr`, where the sign-in
-  errors are declared, needs no edit, since E4's rule admits it for the whole node; `bench_test.go`,
-  checked sign-ins from many sources beside metadata commits, in the manual tier. Consumed by T5.6
+  `SignIn` and `Refresh` sent through E4's client core with refresh off (E4's
+  T4.8), so a `401` from either is returned as it is, never refreshed and replayed; `auth` reaches
+  identity through D1's own interfaces, so no import allow-list changes, and `pkg/vfs/vfserr`, where
+  the sign-in errors are declared, needs no edit, since E4's rule admits it for the whole node;
+  `internal/node/auth_bench_test.go`, checked sign-ins from many sources beside metadata commits,
+  in the manual tier. Consumed by T5.6
   and E6's `login`.
 - **Acceptance criteria:**
   - A refresh presenting an already-rotated token revokes its session.
@@ -446,9 +452,10 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   per checked sign-in (R33); 4 failures as `alice` and 1 as `ALICE`, then `CORP\alice` answering
   `429` (R25, R32); a checked failure audited, a `429` not; the series read from the registry
   (R40, R41); a captured log, the audit records and the series' labels holding no password or
-  token (R39); a `kvtest` fault on the user read under the real identity: a sign-in answering `503`,
+  token (R39); a `kvtest` fault on the sealed password's read under the real identity, since one on
+the user's read fails `reserve` first: a sign-in answering `503`,
   no settled failure and no refusal audit record, the source's count as before, and a refresh and a
-  call with a valid access token each `503`, not `401` (R47); a wrong password's body answering
+  call with a valid access token, the account's read faulted, each `503`, not `401` (R47); a wrong password's body answering
   `401` with code `unauthenticated`, and E4's totality test over `vfs.Errors()` passing with both
   identity errors mapped (R48); E4's client with a token source of
   the test's own over `Client.SignIn` and `Client.Refresh` on these routes, the clock advanced past
@@ -463,9 +470,10 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 
 - **Track:** C. **Depends on:** T5.5; E2 (`EnabledAdmins`).
 - **Covers:** R3, R4, R5, R6, R7, R13, R15, R35, R40, R41; E4's R42 (the API-only account).
-- **Deliverables:** in `check.go`: `Authenticate`'s check, `verify` then `APISignIn.Account`, the
-  session's revocation and `NotBefore`, the caller's `MustChange`, which E4's row flag reads;
-  `checkLastAdmin(tx, before, after)` reading `EnabledAdmins` in the write's transaction, and the
+- **Deliverables:** in `check.go`, on top of T5.5's `Authenticate`, which already verifies the
+  token, reads `APISignIn.Account`, and refuses a revoked session and a `NotBefore`, and sets the
+  caller's `MustChange`, which E4's row flag reads: the per-route rights and roles, the refused
+  call's audit, and `checkLastAdmin(tx, before, after)` reading `EnabledAdmins` in the write's transaction, and the
   role-raise rule, for E4's user handlers; a role on a machine principal refused; `nodetest`'s
   signed-in caller of each role; the role field on E4's user routes, with R42's API-only account:
   one created with a role and no spelling gets none, so its create allocates no uid and no RID,
@@ -500,7 +508,8 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   returns one, under the protocol role, both before one `Write` that reads `identity.ntlm` tracked and
   refuses a moved revision, puts both versions, prunes the previous ones with `tx.PruneSecret`,
   raises `NotBefore` from `tx.Now()`, clears must-change and creates the answered session;
-  `:set-password` with the same write and `resetAccount`; no other route writes a hash. Consumed by
+  `:set-password` with the same write and `resetAccount`; no other route writes a hash; the client's
+  `ChangePassword`, sent with refresh off as T5.5's `SignIn` is. Consumed by
   E6 and E7.
 - **Acceptance criteria:**
   - After a change, the session that made it refreshes no more, and the answered one does.

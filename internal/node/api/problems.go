@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
@@ -116,6 +117,8 @@ var components = []struct {
 	// component error answered by another code; withdraw it if a client must
 	// tell a failed sign-in from an expired token.
 	{vfserr.ErrLogonFailure, answerOf{http.StatusUnauthorized, apiv1.CodeUnauthenticated, false}},
+	// A sign-in past its wait, answered with the wait it carries.
+	{auth.ErrThrottled, answerOf{http.StatusTooManyRequests, apiv1.CodeThrottled, true}},
 	// A spelling no principal holds is a refused value, the name the write
 	// carried, not a missing resource.
 	{vfserr.ErrUnknownPrincipal, answerOf{http.StatusBadRequest, "unknown_principal", false}},

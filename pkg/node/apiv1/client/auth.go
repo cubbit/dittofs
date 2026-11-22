@@ -1,0 +1,46 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
+)
+
+// SignIn signs name in with password and returns its access and refresh
+// tokens. It is sent once, with no idempotency key, and its 401 is a refused
+// password, returned as it is.
+func (c *Client) SignIn(ctx context.Context, name string, password []byte) (apiv1.Tokens, error) {
+	return c.credential(ctx, "/api/v1/auth/sign-in", apiv1.SignIn{Name: name, Password: string(password)})
+}
+
+// Refresh exchanges a session's refresh token for new tokens; the one
+// presented refreshes no more. It is sent as SignIn is: a second sending
+// would present a rotated token and revoke the session.
+func (c *Client) Refresh(ctx context.Context, refresh string) (apiv1.Tokens, error) {
+	return c.credential(ctx, "/api/v1/auth/refresh", apiv1.Refresh{Token: refresh})
+}
+
+// SignOut ends the session of the token the client's source holds. It is
+// sent with no idempotency key, which the server refuses on it, and so is
+// never sent twice after a lost answer.
+func (c *Client) SignOut(ctx context.Context) error {
+	_, err := c.write(ctx, http.MethodPost, "/api/v1/auth/sign-out", nil, "", []CallOption{WithoutIdempotencyKey()})
+	return err
+}
+
+// credential sends a sign-in or a refresh carrying body and decodes the
+// tokens it answers.
+func (c *Client) credential(ctx context.Context, path string, body any) (apiv1.Tokens, error) {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return apiv1.Tokens{}, err
+	}
+	rp, err := c.do(ctx, call{method: http.MethodPost, path: path, body: b, noKey: true, credential: true})
+	if err != nil {
+		return apiv1.Tokens{}, err
+	}
+	var t apiv1.Tokens
+	return t, json.Unmarshal(rp.body, &t)
+}

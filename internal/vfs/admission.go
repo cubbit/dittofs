@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/cubbit/dittofs/internal/vfs/admit"
 	"github.com/cubbit/dittofs/internal/vfs/authz"
@@ -55,10 +56,6 @@ func (fs *Filesystem) admitHandleFor(ctx context.Context, c vfs.Call, h vfs.Hand
 // remedy for failing them. releases true is a call that only releases state,
 // which check exempts from the client rules' refusal. A share never created
 // is ErrStale, as a handle naming it is.
-//
-// ponytail: admission's steps 1-4 run on every call, uncached; cache them
-// per (share, identity) with every version §4.9 lists in the key once a
-// profile shows them.
 //
 // decision: a share the node has not bound, one just created or one it
 // refused, answers a Delay rather than an error, as a share reconcile binds
@@ -294,11 +291,19 @@ func (n netgroups) Members(ctx context.Context, name string) ([]string, bool, er
 // resolve is admission's step 4: what id acts as on sh under its policy p,
 // narrowed to read-only by ro, resolved through Deps.Identity, and the
 // principal it mapped to before any squash. The policy is the one sh's read
-// returned, keyed on that read's grant version. With releases, a call that
-// only releases state, an unsquashed caller's grant of none is not refused
-// (see acting).
+// returned, keyed on that read's grant version, which the share read took
+// before any read of the grants resolution makes. The caller comes from
+// admission's cache where one built under the current State is held for the
+// same key. With releases, a call that only releases state, an unsquashed
+// caller's grant of none is not refused (see acting).
 func (fs *Filesystem) resolve(ctx context.Context, id vfs.Identity, sh entity.Share, p entity.ExportPolicy, ro identity.ReadOnlyCause, releases bool) (entity.Identity, entity.Principal, error) {
-	c, err := fs.identity.Resolve(ctx, id, p.SharePolicy(sh.GrantVersion), ro)
+	k := callerKey{proof: id.Key(), policy: p.SharePolicy(sh.GrantVersion), narrowed: ro}
+	if len(p.Clients) > 0 {
+		k.client = id.Client.Unmap()
+	}
+	c, err := fs.callers.resolve(ctx, k, func(ctx context.Context) (*identity.Caller, error) {
+		return fs.identity.Resolve(ctx, id, k.policy, k.narrowed)
+	})
 	if err != nil {
 		return entity.Identity{}, entity.Principal{}, err
 	}
@@ -346,7 +351,7 @@ func acting(c *identity.Caller, releases bool) (entity.Identity, error) {
 		ro = entity.NarrowedByClient
 	}
 	return entity.Identity{
-		Principal: c.Principal, Group: c.Group, Groups: c.Groups, DenyOnly: c.DenyOnly,
+		Principal: c.Principal, Group: c.Group, Groups: slices.Clip(c.Groups), DenyOnly: slices.Clip(c.DenyOnly),
 		Privileged: c.Privileged, Authenticated: c.Authenticated, Admin: c.Admin,
 		ReadOnly: ro, Access: c.Access,
 	}, nil

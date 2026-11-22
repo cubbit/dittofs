@@ -244,6 +244,14 @@ suites:
       - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -benchtime=1x -run ^$ -bench ^BenchmarkReconcile$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
     timeout: { test: 180m, cell: 190m }
+  # A metadata commit's cost with checked sign-ins from many sources beside it, each costing two
+  # commits, against none; compare with benchstat -col /signins on bench.txt. No -race, as for
+  # engine-bench. Badger lives under t.TempDir(), so TMPDIR is pointed at DITTOFS_BENCH_DIR, a
+  # directory on the device under test: on tmpfs the fsync a commit waits on vanishes.
+  signin-bench:
+    cmd:
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -run ^$ -bench ^BenchmarkSignInCommitCost$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
   # Measures only the version-limit probe, with journal setup outside the timer.
   version-limit-probe-bench:
     cmd:

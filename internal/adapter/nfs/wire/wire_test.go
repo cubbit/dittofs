@@ -561,7 +561,7 @@ func TestReplies(t *testing.T) {
 		{"deny-rpc-mismatch", wire.AppendDenied(nil, 0x33b50de8, true, 0)},
 		{"deny-auth-badcred", wire.AppendDenied(nil, 0x33b50de8, false, wire.AuthBadCred)},
 		{"deny-auth-badverf", wire.AppendDenied(nil, 0x33b50de8, false, wire.AuthBadVerf)},
-		{"compound-minor-mismatch", wire.AppendCompoundStatus(nil, 10021, []byte("abcde"), 0)},
+		{"compound-minor-mismatch", wire.AppendCompoundStatus(nil, wire.NFS4ErrMinorVersMismatch, []byte("abcde"), 0)},
 		{"compound-two-results", wire.AppendCompoundStatus(nil, 0, []byte("abcde"), 2)},
 	} {
 		t.Run(c.golden, func(t *testing.T) {
