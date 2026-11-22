@@ -37,9 +37,6 @@ func (s *Server) Mint(ctx context.Context, plan func(context.Context) (entity.Mi
 	return s.mint(ctx, plan)
 }
 
-// DefaultSettings is the identity section's value where no row sets a key.
-var DefaultSettings = defaultSettings
-
 // KeyOf is the key the applied State's ring holds for a service name, realm,
 // key version number and encryption type.
 func (s *Server) KeyOf(name, realm string, kvno uint32, etype int32) ([]byte, bool) {

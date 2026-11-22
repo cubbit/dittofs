@@ -34,8 +34,11 @@ type Settings struct {
 // the wire name is its suffix, never the installation's to choose.
 const maxNetBIOSName = 15
 
-// defaultSettings is the section's value where no row sets a key.
-func defaultSettings() Settings {
+// SectionName is the identity section's prefix in the settings table.
+const SectionName = "identity"
+
+// DefaultSettings is the section's value where no row sets a key.
+func DefaultSettings() Settings {
 	return Settings{
 		IDRange: entity.DefaultIDRange,
 		// decision: NTLM is on by default. Workgroup deployments with local users
@@ -50,7 +53,7 @@ func defaultSettings() Settings {
 
 // Section declares the identity section for the node's settings table.
 func Section() settings.Section {
-	return settings.Of("identity", settings.At(entity.ScopeInstallation), defaultSettings(),
+	return settings.Of(SectionName, settings.At(entity.ScopeInstallation), DefaultSettings(),
 		settings.SecretRef("Keytab", entity.SecretKeytab),
 		settings.CheckTx(checkSettings))
 }
@@ -138,7 +141,7 @@ func checkDirectory(tx entity.ControlPlaneTx, w settings.Write, r directory.Reco
 		return err
 	}
 	if !found {
-		name = defaultSettings().NetBIOSName
+		name = DefaultSettings().NetBIOSName
 	}
 	return checkNetBIOS(w, r.NetBIOSDomain, keyNetBIOSName, name)
 }

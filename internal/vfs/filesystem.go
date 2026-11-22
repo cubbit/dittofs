@@ -48,9 +48,10 @@ type Deps struct {
 	// decision: Names and Auth are read; Identity is not yet: admission
 	// still resolves on its own. It is declared now so the identity server's
 	// consumers are fixed before its bodies are written, and is read once
-	// admission is routed through it. A nil Auth or Names leaves the calls it
-	// serves refused ErrUnavailable, failing closed, until the node composes
-	// identity; withdraw that once New refuses a Deps without them.
+	// admission is routed through it. The node hands all three, but New
+	// still accepts a Deps without Auth or Names, and then the calls they
+	// serve are refused ErrUnavailable, failing closed; withdraw that once
+	// New refuses such a Deps.
 	Identity identity.Resolver
 	Auth     identity.Authenticator
 	Names    identity.Identities

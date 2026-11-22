@@ -6,54 +6,61 @@ import (
 
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
-	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/settings"
 )
 
 const (
 	// stepIdentity names identity's start step and its part.
 	stepIdentity = "identity"
-	// identitySection is the prefix of identity's settings section.
-	identitySection = "identity"
+	// identityWalks is how many settings walks the first State tries before
+	// the start fails, each discarded when the settings generation moved
+	// during it.
+	identityWalks = 3
 )
 
-// newIdentity builds the identity server over the node's store, the secret
-// provider p, the node's clock, metrics registry and logger. It starts
-// nothing: its first State arrives at start step 4.
-func (n *Node) newIdentity(p *secrets.Provider) (*identity.Server, error) {
-	s, err := identity.New(identity.Deps{
-		Store:   n.meta,
-		Secrets: p,
-		Clock:   n.cfg.Clock,
-		Metrics: n.cfg.Metrics,
-		Logger:  n.cfg.Logger,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("node: %w", err)
-	}
-	return s, nil
-}
-
 // applyIdentity hands identity its first State: the principals generation
-// in c and the identity section, decoded from one walk of the settings.
+// and the identity section, decoded from one walk of the settings during
+// which the settings generation did not move. c is the counters read before
+// the first walk; a walk the generation moved under is discarded and walked
+// again, up to identityWalks times, since the walk reads each page in its
+// own transaction and could mix two states of the store.
 //
-// decision: an identity section the node cannot decode, or identity refuses,
-// fails the start, since identity cannot start before a State is applied and
-// none is yet to fall back on. Overturned once a refused section is reported
-// refused and identity is applied with the section's defaults instead.
+// decision: an identity section the walk refuses, a row that does not
+// decode, holds a newer schema or fails the section's checks, is logged and
+// identity runs the section's defaults, so a node rolled back below a newer
+// writer, or one row the store accepted unchecked, still starts and its API
+// can repair the row. The defaults are only safe for the first State: once
+// identity runs one, re-applying must keep it and report the row refused
+// instead. A store error, and a State identity refuses, still fail the
+// start: neither has a value to fall back on.
 func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters) error {
-	snap, _, err := settings.Read(ctx, n.meta.Nodes(), n.rec.table, n.cfg.Bootstrap.Node.ID)
-	if err != nil {
-		return err
+	node := n.cfg.Bootstrap.Node.ID
+	for range identityWalks {
+		snap, refused, err := settings.Read(ctx, n.meta.Nodes(), n.rec.table, node)
+		if err != nil {
+			return err
+		}
+		after, err := n.counters(ctx)
+		if err != nil {
+			return err
+		}
+		if after.Settings != c.Settings {
+			c = after
+			continue
+		}
+		ids := identity.DefaultSettings()
+		if err := refused[identity.SectionName]; err != nil {
+			n.cfg.Logger.Error("identity: settings section refused, running its defaults", "err", err)
+		} else if ids, err = settings.Get[identity.Settings](snap, identity.SectionName, node); err != nil {
+			return err
+		}
+		return n.identity.Apply(identity.State{Generation: c.Principals, Settings: ids})
 	}
-	ids, err := settings.Get[identity.Settings](snap, identitySection, n.cfg.Bootstrap.Node.ID)
-	if err != nil {
-		return err
-	}
-	return n.identity.Apply(identity.State{Generation: c.Principals, Settings: ids})
+	return fmt.Errorf("the settings generation moved during each of %d walks", identityWalks)
 }
 
-// startIdentity starts identity under the State start step 4 applied.
+// startIdentity starts identity once readRecords has applied its first
+// State, and stops it with the node.
 func (n *Node) startIdentity(ctx context.Context) error {
 	if err := n.identity.Start(ctx); err != nil {
 		return err
