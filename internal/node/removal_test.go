@@ -318,11 +318,25 @@ func TestAPassDoesNotRunAShareUnboundAfterItsBind(t *testing.T) {
 		atBound <- s.ID
 		<-resume
 	})
+	waiting := make(chan struct{}, 1)
+	h.Node().OnReconcileWait(func() {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	})
 	g := gateRunner(h)
 	defer g.release()
 	started(t, h)
 	g.took(t)
 	sh := createShare(t, h, "a", storeA)
+	// Only the clock wakes reconcile here, so an advance before the loop's
+	// first wait after Start is set would be lost.
+	select {
+	case <-waiting:
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconcile's loop set no wait within 10 s of Start")
+	}
 	moved := h.Node().Moved()
 	h.Clock().Advance(time.Second)
 	select {
