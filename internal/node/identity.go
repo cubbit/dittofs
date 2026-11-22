@@ -84,6 +84,7 @@ func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *sett
 		}
 		st.Settings.Keytab, st.Keytab = last.Settings.Keytab, last.Keytab
 	}
+	n.handing(st)
 	if err := n.identity.Apply(st); err != nil {
 		if last == nil {
 			return nil, err
@@ -103,11 +104,19 @@ func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *sett
 			}
 		}
 		st.Settings, st.Directory = last.Settings, last.Directory
+		n.handing(st)
 		if err := n.identity.Apply(st); err != nil {
 			return refusals, err
 		}
 	}
 	return refusals, nil
+}
+
+// handing calls the reconciler's handing hook, when set, with st.
+func (n *Node) handing(st identity.State) {
+	if n.rec.handing != nil {
+		n.rec.handing(st)
+	}
 }
 
 // keytab is every version of the keytab ref names still held, opened,

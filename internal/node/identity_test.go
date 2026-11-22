@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	iidentity "github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/identity"
@@ -151,9 +152,17 @@ func TestARefusedIdentityRowFailsTheStart(t *testing.T) {
 // A settings write that lands during the walk identity's first State is read
 // from discards the walk, and identity is applied from the next one, which
 // holds the write. The held scan reads the page in a transaction begun before
-// the write, so the first walk misses it.
+// the write, so the first walk misses it. The first State identity is handed
+// is checked, since a later pass would apply the write anyway.
 func TestAWalkTheSettingsMovedUnderIsReadAgain(t *testing.T) {
 	h, f := faulted(t)
+	first := make(chan string, 1)
+	h.Node().OnIdentityApply(func(st iidentity.State) {
+		select {
+		case first <- st.Settings.NetBIOSName:
+		default:
+		}
+	})
 	held := sim.NewTestClock(time.Unix(0, 0))
 	setFault(t, f, held, sim.Rule{Op: kvtest.OpScan, Key: settingsScan, Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
 	started := make(chan error, 1)
@@ -169,6 +178,9 @@ func TestAWalkTheSettingsMovedUnderIsReadAgain(t *testing.T) {
 			t.Errorf("Stop: %v", err)
 		}
 	})
+	if got := <-first; got != "OTHER" {
+		t.Errorf("NetBIOS name in the first State identity was handed: got %q, want OTHER, written during the first walk", got)
+	}
 	if got, err := h.Node().ComputerName(); err != nil || got != "OTHER" {
 		t.Errorf("NetBIOS name written during the first walk: got %q, %v, want OTHER", got, err)
 	}
