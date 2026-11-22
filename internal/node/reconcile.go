@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -47,13 +48,15 @@ type reconciler struct {
 	// reconcile binds it, and bound once the engine bound it; applying, when
 	// set, with the counters each apply acts on; waiting, when set, once each
 	// wait of the loop is set on the node's clock; awaited, when set, as each
-	// write's wait for the node to apply it starts.
+	// write's wait for the node to apply it starts; handing, when set, with
+	// each State identity is handed, before its Apply.
 	awaited  func()
 	paused   func(kvstore.Counters)
 	binding  func(entity.Share)
 	bound    func(entity.Share)
 	applying func(kvstore.Counters)
 	waiting  func()
+	handing  func(identity.State)
 
 	// Read and written by Start's steps and then by the loop alone.
 	seen  kvstore.Counters // the counters the last pass acted on
