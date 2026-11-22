@@ -555,18 +555,25 @@ func delegate(t *testing.T, s *shares, cl vfs.ClientID) openstate.CachingGrant {
 // A recall whose send fails is sent again through the path the client
 // registers next, and each failure is counted.
 func TestAFailedRecallGoesThroughTheClientsNextPath(t *testing.T) {
-	s := newShares(t, nil, nil)
-	s.retry = time.Millisecond
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	s := startShares(t, newFixtureOf(t, Deps{Clock: clock}), nil)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	path, lost := failing(func(context.Context, vfstest.Callback) error { return errors.New("connection reset") })
 	id := laptop(t, s, path)
 	g := delegate(t, s, id)
+	armed := clock.Armed(grantRetry)
 	s.RecallGrant(g)
+	select {
+	case <-armed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a recall whose send failed did not wait a grantRetry on the filesystem's clock")
+	}
 	calls(t, lost, 1)
 	fresh := &vfstest.Callbacks{}
 	if again := laptop(t, s, fresh); again != id {
 		t.Fatalf("the reconnect answered client %v, want %v", again, id)
 	}
+	clock.Advance(grantRetry)
 	calls(t, fresh, 1)
 	if got := breaks(fresh); len(got) != 1 || got[0] != g.ID {
 		t.Errorf("the client's new path saw %v, want the recall", fresh.Delivered())
