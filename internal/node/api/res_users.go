@@ -78,11 +78,11 @@ func userSpecOf(u entity.User) apiv1.UserSpec {
 	return sp
 }
 
-// kerberosNeedsUID refuses, 400, an edit giving a user that holds no uid a
-// Kerberos name it did not hold, as an API-only account holds none: a
-// ticket would map to an account with no file identity, which a share
-// treats as its anonymous user, past a gate that admits Kerberos alone. A
-// name the user already holds is kept.
+// kerberosNeedsUID refuses, 400, an edit giving a user with no uid, and so
+// no SID either, a Kerberos name it did not hold, as an API-only account
+// holds neither: a ticket would map to an account with no file identity,
+// which a share treats as its anonymous user, past a gate that admits
+// Kerberos alone. A name the user already holds is kept.
 func kerberosNeedsUID(before, after entity.ProtocolIDs) error {
 	old, _ := krbOf(before)
 	krb, ok := krbOf(after)
@@ -144,8 +144,9 @@ var users = writing[userDoc]{kind: entity.ResourceUser, raises: true, read: func
 // identity.id_range, and its SID allocated, in the create's transaction. A
 // user created with a role and neither a uid nor a Kerberos name is an
 // API-only account and is allocated neither: it holds no spelling, and gains
-// no file identity later, since an edit giving it a Kerberos name, which a
-// ticket would map to it, is refused while it holds no uid. A name or
+// no file identity later: an edit giving it a Kerberos name, which a ticket
+// would map to it, is refused while it holds no uid, and the store holds a
+// uid only with a SID. A name or
 // uid another principal holds is refused by the store, and a uid of 0 here.
 // Its Kerberos name is stored linked as the pre-write step asked the
 // directory. A role is given by an admin only.
