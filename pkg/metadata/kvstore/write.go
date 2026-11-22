@@ -269,6 +269,9 @@ func (c controlTx) SetNTHashDeleted(op entity.OperationID) error {
 }
 
 func (c controlTx) SetMachineJoin(j entity.MachineJoin) error {
+	if _, err := raiseCfgGen(c.tx); err != nil {
+		return err
+	}
 	return c.setInstallation(func(in *entity.Installation) { in.Join = j })
 }
 

@@ -90,11 +90,12 @@ func (s *Server) RotateStep(ctx context.Context, op entity.Operation) (step.Step
 		return step.StepResult{}, fmt.Errorf("%w: %s's target %s names no installation", step.ErrStepFailed, op.Kind, op.Target.Kind)
 	}
 	// decision: a cursor that does not decode, or names no phase, ends the
-	// operation as a fault without recording the last rotation failed: it is a
-	// programming or storage fault, not a rotation the controller or this node
-	// refused, so raising machine_password_rotation_failed would misreport it
-	// (RFC 18 §3.5 reports a rotation that cannot complete). Overturned if such
-	// a cursor is shown to arise from a rotation's own course.
+	// operation as a fault the step records nothing for: it is a programming
+	// or storage fault, not a rotation the controller or this node refused.
+	// The node's runner still records the last rotation failed for every
+	// rotation it fails, so the schedule backs off from it and
+	// machine_password_rotation_failed is raised. Overturned if such a cursor
+	// is shown to arise from a rotation's own course.
 	var c rotateCursor
 	if len(op.Step) > 0 {
 		if err := json.Unmarshal(op.Step, &c); err != nil {

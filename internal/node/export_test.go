@@ -11,6 +11,7 @@ import (
 
 	iidentity "github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/sidecar"
 	"github.com/cubbit/dittofs/internal/vfs"
@@ -222,6 +223,15 @@ func NewSigning(authenticate func(*http.Request) (auth.Caller, error), signingKe
 func NewWithDirectory(dir directory.Dialer, authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
 	return func(cfg Config) (*Node, error) {
 		return newNode(cfg, seams{directory: dir, authenticate: authenticate})
+	}
+}
+
+// NewWithDialers is New with dir and dc as identity's directory and domain
+// controllers' dialers, which New sets to the network ones, and
+// authenticate and signingKey as the API's, as NewSigning sets them.
+func NewWithDialers(dir directory.Dialer, dc netlogon.Dialer, authenticate func(*http.Request) (auth.Caller, error), signingKey func(context.Context) ([]byte, error)) func(Config) (*Node, error) {
+	return func(cfg Config) (*Node, error) {
+		return newNode(cfg, seams{directory: dir, dc: dc, authenticate: authenticate, signingKey: signingKey})
 	}
 }
 

@@ -141,6 +141,14 @@ func (d *Directory) AddUser(_ testing.TB, name string, attrs map[string][][]byte
 	return d.add(name, []string{"top", "person", "organizationalPerson", "user"}, d.rid(), pg)
 }
 
+// SetPassword sets the password a bind as dn succeeds with, so a test can
+// bind as an account a domain controller holds too.
+func (d *Directory) SetPassword(_ testing.TB, dn string, password []byte) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.passwords[strings.ToLower(dn)] = slices.Clone(password)
+}
+
 // AddGroup adds a group named name under the Users container, its
 // sAMAccountName and cn name, with an objectSid of the domain's, a random
 // objectGUID and the groupType of a global security group, then attrs over

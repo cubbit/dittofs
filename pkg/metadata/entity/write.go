@@ -151,6 +151,8 @@ type ControlPlaneTx interface {
 	SetNTLMOff(gen uint64) error
 	// SetNTHashDeleted records the NT-hash deletion op as completed.
 	SetNTHashDeleted(op OperationID) error
+	// SetMachineJoin records the machine account's join, raising the
+	// settings generation, so every node re-reads it.
 	SetMachineJoin(j MachineJoin) error
 	// SetMachinePassword names the secret holding the computer account's
 	// password, in the write that seals its version.

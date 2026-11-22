@@ -84,6 +84,19 @@ func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *sett
 		}
 		st.Settings.Keytab, st.Keytab = last.Settings.Keytab, last.Keytab
 	}
+	machine, err := n.machine(ctx)
+	if err != nil {
+		if last == nil {
+			return nil, err
+		}
+		// ponytail: a machine password that does not read keeps the last
+		// one identity holds and is logged, never reported refused, as no
+		// record of the settings names it. Report it once node status
+		// carries a refused secret.
+		n.cfg.Logger.Warn("identity: the machine password does not read; identity keeps the last", "error", err)
+		machine = *n.machineApplied.Load()
+	}
+	st.Machine, st.Join = machine.versions, machine.join
 	if err := n.identity.Apply(st); err != nil {
 		if last == nil {
 			return nil, err
@@ -109,7 +122,47 @@ func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *sett
 			return refusals, err
 		}
 	}
+	n.machineApplied.Store(&machine)
 	return refusals, nil
+}
+
+// machineState is the machine account as identity's State takes it, from
+// one read of the installation record: the machine password's reference
+// and its versions held, opened, current first, and the join.
+type machineState struct {
+	ref      entity.SecretRef
+	versions []secrets.Version
+	join     entity.MachineJoin
+}
+
+// machine reads the machine account's state; no versions for an
+// installation that names no machine password.
+func (n *Node) machine(ctx context.Context) (machineState, error) {
+	in, err := n.meta.Installation(ctx)
+	if err != nil {
+		return machineState{}, err
+	}
+	m := machineState{ref: in.MachinePassword, join: in.Join}
+	if m.ref == (entity.SecretRef{}) {
+		return m, nil
+	}
+	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceInstallation, ID: in.ID[:]}, Key: "machine_password"}
+	m.versions, err = n.secrets.Versions(ctx, secrets.Protocol, entity.SecretMachinePassword, owner, m.ref)
+	return m, err
+}
+
+// rotationFailed records the installation's last machine password rotation
+// failed now, beside the record of the rotation the runner fails, unless the
+// installation is not joined, which raises nothing. The schedule backs off
+// from it, as it has no read of the last rotation ended.
+func rotationFailed(tx entity.ControlPlaneTx) error {
+	in, err := tx.Installation()
+	if err != nil || !in.Join.Joined {
+		return err
+	}
+	j := in.Join
+	j.LastRotation.At, j.LastRotation.Failed = tx.Now(), true
+	return tx.SetMachineJoin(j)
 }
 
 // keytab is every version of the keytab ref names still held, opened,
@@ -151,13 +204,17 @@ func settingRefused(key string, gen uint64, err error) refusal {
 }
 
 // identitySecrets is the secret versions identity holds, as node status
-// reports them: the keytab's current version while one is in force.
+// reports them: the keytab's and the machine password's current versions,
+// each while one is in force.
 func (n *Node) identitySecrets() []entity.SecretVersion {
-	ref, v, _ := n.identity.AppliedKeytab()
-	if v == 0 {
-		return nil
+	var vs []entity.SecretVersion
+	if ref, v, _ := n.identity.AppliedKeytab(); v != 0 {
+		vs = append(vs, entity.SecretVersion{Secret: ref, Version: v})
 	}
-	return []entity.SecretVersion{{Secret: ref, Version: v}}
+	if m := n.machineApplied.Load(); m != nil && len(m.versions) > 0 {
+		vs = append(vs, entity.SecretVersion{Secret: m.ref, Version: m.versions[0].Number})
+	}
+	return vs
 }
 
 // identityConditions is identity's conditions as the health evaluator reads

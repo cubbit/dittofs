@@ -17,8 +17,8 @@ import (
 // operationSteps is the runner's step table: the kinds this node drives.
 func operationSteps(nodes kvstore.Nodes) map[string]stepRow {
 	return map[string]stepRow{
-		string(apiv1.OpUserDelete):  {principalDeletion(nodes, entity.PrincipalUser), deletionProgress},
-		string(apiv1.OpGroupDelete): {principalDeletion(nodes, entity.PrincipalGroup), deletionProgress},
+		string(apiv1.OpUserDelete):  {run: principalDeletion(nodes, entity.PrincipalUser), progress: deletionProgress},
+		string(apiv1.OpGroupDelete): {run: principalDeletion(nodes, entity.PrincipalGroup), progress: deletionProgress},
 	}
 }
 
