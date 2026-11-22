@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -72,7 +71,7 @@ func TestServer(t *testing.T) {
 	home, xdg := t.TempDir(), t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	t.Setenv("DITTOFS_LOGGING_LEVEL", "ERROR") // would hide the API's address from dt
+	t.Setenv("DITTOFS_LOGGING_LEVEL", "error") // would hide the API's address from dt
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 	s := start(t, ctx, bin)
@@ -154,8 +153,8 @@ func TestServerCrash(t *testing.T) {
 }
 
 // configured checks, through the client, that the server holds User and
-// User2 with their UIDs, the share Share alone, applied on the node, and
-// exactly the grants grants gives on it, and returns the share's ID.
+// User2 with their UIDs, the share Share alone, applied on the node, and no
+// grant on it, and returns the share's ID.
 func configured(t *testing.T, s *Server, when string) string {
 	t.Helper()
 	ctx := t.Context()
@@ -186,7 +185,7 @@ func configured(t *testing.T, s *Server, when string) string {
 			continue
 		}
 		if !applied(sh.Status) {
-			t.Errorf("%s: the share %s's status is %+v, want it applied on its one node and refused by none", when, Share, sh.Status)
+			t.Errorf("%s: the share %s is applied on %+v and refused by %d, want it applied on its one node and refused by none", when, Share, sh.Status.Applied, sh.Status.Refused)
 		}
 	}
 	id := s.shareIDs[strings.TrimPrefix(Share, "/")]
@@ -200,8 +199,10 @@ func configured(t *testing.T, s *Server, when string) string {
 		}
 		got[ids[g.ID]] = g.Spec.Access
 	}
-	if want := grants(s.f); !maps.Equal(got, want) {
-		t.Errorf("%s: the grants on %s are %v, by user, want %v", when, Share, got, want)
+	// RFC 29 §4.2: on the default share no user holds a grant, {user2}
+	// included, unless the fixture mounts it over SMB, which this one doesn't.
+	if len(got) != 0 {
+		t.Errorf("%s: the grants on %s are %v, by user, want none", when, Share, got)
 	}
 	return id
 }
@@ -310,5 +311,30 @@ while :; do sleep 0.1; done
 	}
 	if log, _ := os.ReadFile(s.log.Name()); !strings.Contains(string(log), strings.Repeat("y", 300000)) {
 		t.Errorf("dfs.log lacks the long line after the address")
+	}
+}
+
+// Restart refuses a dfs that is running, or one Stop ended, naming why, and
+// starts none: a second dfs would be left with nothing to stop it.
+func TestRestartRefuses(t *testing.T) {
+	s := fakeDfs(t, `trap 'exit 0' TERM
+echo "node: listening api=`+readyAPI(t)+`"
+while :; do sleep 0.1; done
+`)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	_ = s.run(ctx) // the sign-in is refused; dfs runs on
+	running := s.cmd
+	if err := s.Restart(ctx); err == nil || !strings.Contains(err.Error(), "follows a Kill") || s.cmd != running {
+		t.Errorf("Restart of a running dfs: %v, want it refused, starting nothing", err)
+	}
+	if err := s.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if err := s.Stop(); err != nil {
+		t.Fatalf("Stop after Kill: %v, want nil", err)
+	}
+	if err := s.Restart(ctx); err == nil || !strings.Contains(err.Error(), "follows a Kill") || s.cmd != running {
+		t.Errorf("Restart after Stop: %v, want it refused, starting nothing", err)
 	}
 }
