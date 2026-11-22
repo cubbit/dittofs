@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/step"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -65,8 +66,9 @@ func deletionProgress(context.Context, entity.Operation) apiv1.Progress {
 // shareDeletion is the step of a share's deletion past its mark, its
 // operation's target the share's ID. Each turn runs one batch of the removal
 // with Nodes.ContinueRemoval and acts on the step it answers: at 3 it ends
-// the share's live state on this node, and done ends the operation. It keeps
-// no cursor: the removal's own records hold where it stands.
+// the share's live state on this node, at 4 it forgets the share's tag and
+// drops a batch of its files, and done ends the operation. It keeps no
+// cursor: the removal's own records hold where it stands.
 //
 // decision: a share that is not being removed, and a target that names no
 // share, fail the operation rather than retry it, as a principal's deletion
@@ -86,24 +88,65 @@ func (n *Node) shareDeletion(ctx context.Context, op entity.Operation) (step.Ste
 	case at == 3:
 		return step.StepResult{}, n.removeShare(ctx, id)
 	case at == 4:
-		return step.StepResult{}, errForgetMissing
+		return step.StepResult{}, failInvalid(n.dropFiles(ctx, id))
 	}
 	return step.StepResult{}, nil
 }
 
-// errForgetMissing is the answer of a share deletion that stands at step 4.
+// dropFiles is a turn of step 4 of share id's removal on this node. Until
+// the store records the share's tag forgotten, the turn drops the tag
+// through the engine, its handle closed and the tag the store names
+// forgotten in the journal, and only then records the shard forgotten, so a
+// record that says forgotten never stands for a tag the journal still holds.
+// Each later turn drops one batch of the shard's files with
+// Nodes.ContinueShardRemoval. Each part is idempotent: a crash between the
+// drop and the record drops again, and a record already made changes
+// nothing.
 //
-// decision: step 4 waits for the journal to forget a share's tag: the
-// engine's Drop runs the journal's whole-tag Forget, which answers
-// ErrNotImplemented, so a removal that reaches step 4 is retried on the
-// runner's backoff and never ends. A DELETE of a share through the API
-// therefore ends the share's live state and then parks here, its operation
-// running at phase "files" and a retry logged at every backoff turn: that is
-// this decision, not a fault. Drop the tag, record the shard forgotten
-// and drop its files with Nodes.ContinueShardRemoval here once Forget exists;
-// then startEngine must also leave out a share whose tag the store records
-// forgotten, rather than attach it again.
-var errForgetMissing = errors.New("step 4 of a share's removal waits for the journal to forget a share's tag")
+// decision: the engine's Drop is not bounded on the node's clock, as the
+// store calls are: it waits only for the share's own work, which step 3's
+// unbind has already joined, and for the journal's forget, and a Drop that
+// hangs holds this one runner turn, which the watchdog reports as a stall.
+// Bound it as step 3 bounds its unbind if a Drop is ever seen to hang.
+//
+// ponytail: step 4 runs once per share, on this node's journal alone: a share
+// has one shard, its root's, this node is its primary, and no replica holds
+// the tag. A whole-tag forget is safe here only because the removal reaches
+// step 4 once every shard is offloaded. RFC 16 §2.3.2 step 3 (cluster) needs a
+// replicated per-shard forget sent to every replica, and the tag kept while
+// any other shard of the share the node serves has not recorded one; build
+// those once a share has more than one shard or a shard more than one node.
+func (n *Node) dropFiles(ctx context.Context, id entity.ShareID) error {
+	var (
+		sh entity.Share
+		st entity.TagState
+	)
+	_, err := n.bounded(ctx, func(ctx context.Context) (err error) {
+		if sh, _, err = n.meta.ShareIndex().Share(ctx, id); err != nil {
+			return err
+		}
+		st, err = n.meta.Lifecycle().TagState(ctx, id)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	nodes := n.meta.Nodes()
+	if st == entity.TagForgotten {
+		_, err = n.bounded(ctx, func(ctx context.Context) error {
+			_, err := nodes.ContinueShardRemoval(ctx, id, sh.Shard)
+			return err
+		})
+		return err
+	}
+	if err := n.engine.Drop(ctx, id, journal.ShareTag(sh.Tag)); err != nil {
+		return err
+	}
+	_, err = n.bounded(ctx, func(ctx context.Context) error {
+		return nodes.RecordShardRemoval(ctx, id, sh.Shard, entity.TagForgotten)
+	})
+	return err
+}
 
 // failInvalid has an invalid argument from the store, or a secret version
 // that does not decode, fail the operation.

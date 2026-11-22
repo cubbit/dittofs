@@ -235,7 +235,7 @@ func TestADropOfARemovedSharesTagWaitsForTheRetriedOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.e.Drop(t.Context(), removed); !isDelay(err, vfserr.DelayFrozen) {
+	if err := s.e.Drop(t.Context(), removed, 91); !isDelay(err, vfserr.DelayFrozen) {
 		t.Errorf("Drop of a removed share while unattached = %v, want ErrDelay(DelayFrozen)", err)
 	}
 
@@ -261,7 +261,7 @@ func TestAnUnsuitableJournalsSharesAnswerRetryLaterToLifecycleCalls(t *testing.T
 		t.Errorf("Unbind of a refused share = %v, want ErrDelay(DelayFrozen)", err)
 	}
 
-	if err := s.e.Drop(t.Context(), s.one.ID); !isDelay(err, vfserr.DelayFrozen) {
+	if err := s.e.Drop(t.Context(), s.one.ID, s.one.Tag); !isDelay(err, vfserr.DelayFrozen) {
 		t.Errorf("Drop of a refused share = %v, want ErrDelay(DelayFrozen)", err)
 	}
 
@@ -542,7 +542,7 @@ func TestLifecycleCallsSucceedOnceTheRetriedOpenAttaches(t *testing.T) {
 		t.Errorf("Unbind once attached = %v, want nil", err)
 	}
 
-	if err := s.e.Drop(t.Context(), s.one.ID); err != nil {
+	if err := s.e.Drop(t.Context(), s.one.ID, s.one.Tag); err != nil {
 		t.Errorf("Drop once attached = %v, want nil", err)
 	}
 

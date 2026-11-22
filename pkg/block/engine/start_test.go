@@ -1381,7 +1381,7 @@ func TestLifecycleCallsDuringStartAreDelayed(t *testing.T) {
 		t.Errorf("Unbind during Start = %v, want ErrDelay(DelayFrozen)", err)
 	}
 
-	if err := s.e.Drop(t.Context(), s.one.ID); !isDelay(err, vfserr.DelayFrozen) {
+	if err := s.e.Drop(t.Context(), s.one.ID, s.one.Tag); !isDelay(err, vfserr.DelayFrozen) {
 		t.Errorf("Drop during Start = %v, want ErrDelay(DelayFrozen)", err)
 	}
 

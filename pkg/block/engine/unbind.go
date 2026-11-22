@@ -102,23 +102,30 @@ func (e *Engine) beginLifecycle(id entity.ShareID, wants func(*binding) bool) (*
 
 // Drop ends the share's journal tag (RFC 8 §2.3): the removal items it still
 // has on the loop, its files in the group commit, its handle, then the
-// whole-tag Forget, and the writes that Forget dropped get their Done once,
-// charging nothing. The share must be unbound: its calls and batches have
-// ended, or Drop answers ErrInvalid. The binding stays, as a removed one that
-// holds the tag and no handle, so the share answers ErrStale and a repeated
-// Drop only forgets again. A step that fails leaves the rest to the retry. A
-// share with no binding is recorded as removed, as beginLifecycle says, and
-// answers nil, as does a Drop of it again, which has no tag to forget.
+// whole-tag Forget of tag, and the writes that Forget dropped get their Done
+// once, charging nothing. tag is the share's tag as the store records it,
+// forgotten whether or not this engine ever attached the share: a share the
+// node refused at its start still has records of its tag in the journal. The
+// share must be unbound: its calls and batches have ended, or Drop answers
+// ErrInvalid. The binding stays, as a removed one that holds no handle, so the
+// share answers ErrStale and a repeated Drop only forgets again. A step that
+// fails leaves the rest to the retry. A share with no binding is recorded as
+// removed, as beginLifecycle says, and its tag forgotten; tag 0 forgets
+// nothing.
 //
 // ponytail: every dropped share keeps a removed binding in the share table,
 // one entry per share removed since the engine started. Keep a set of the
 // removed share IDs instead when that count shows in a profile.
-func (e *Engine) Drop(ctx context.Context, id entity.ShareID) error {
+func (e *Engine) Drop(ctx context.Context, id entity.ShareID, tag journal.ShareTag) error {
 	b, err := e.beginLifecycle(id, func(*binding) bool {
 		return true
 	})
-	if err != nil || b == nil {
+	if err != nil {
 		return err
+	}
+
+	if b == nil {
+		return e.forget(ctx, id, tag)
 	}
 
 	defer e.endCall(id)
@@ -143,11 +150,7 @@ func (e *Engine) Drop(ctx context.Context, id entity.ShareID) error {
 		b = e.swapRemoved(b)
 	}
 
-	if b.share.Tag == 0 { // recorded removed while it had no binding
-		return nil
-	}
-
-	if err := e.forget(ctx, b); err != nil {
+	if err := e.forget(ctx, id, tag); err != nil {
 		return err
 	}
 
@@ -200,8 +203,19 @@ func (e *Engine) swapRemoved(b *binding) *binding {
 	return rb
 }
 
-// forget runs the whole-tag Forget of removed binding b in the journal.
-func (e *Engine) forget(ctx context.Context, b *binding) error {
+// forget runs the whole-tag Forget of share id's tag in the journal; tag 0
+// is no tag, and forgets nothing.
+//
+// decision: with no journal open, a journal lost at Start among the cases,
+// forget answers ErrUnavailable rather than nil, so a removal waits for a
+// journal to forget the tag in: a lost device brought back holds the tag's
+// records, and once the share's records are gone no start forgets them.
+// Overturned if an acknowledged loss can never bring the device back.
+func (e *Engine) forget(ctx context.Context, id entity.ShareID, tag journal.ShareTag) error {
+	if tag == 0 {
+		return nil
+	}
+
 	e.mu.Lock()
 	vl, err := e.onlyJournal()
 	e.mu.Unlock()
@@ -210,10 +224,10 @@ func (e *Engine) forget(ctx context.Context, b *binding) error {
 		return err
 	}
 
-	if err := vl.j.Forget(ctx, b.share.Tag); err != nil {
+	if err := vl.j.Forget(ctx, tag); err != nil {
 		return fmt.Errorf(
 			"engine: drop share %v: forget the tag: %w",
-			b.share.ID,
+			id,
 			e.journalErr(err),
 		)
 	}

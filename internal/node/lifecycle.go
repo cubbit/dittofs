@@ -396,9 +396,10 @@ func (n *Node) readRecords(ctx context.Context) error {
 
 // startEngine starts open state, with the filesystem as its Sink and its
 // admission as its Order, then the engine over every share readRecords kept.
-// A share being removed is handed to the engine too, which attaches it until
-// its removal's step 3 unbinds it and drops its tag, but it joins no running
-// set.
+// A share being removed is handed to the engine too, but joins no running
+// set: the engine attaches it only while the store records its tag serving,
+// so step 3 can unbind it, and leaves one recorded offloaded or forgotten
+// removed, holding its tag for step 4's drop, a forgotten tag forgotten again.
 //
 // ponytail: every share's namespace is taken as held, so every share kept is
 // bound, serving or quiesced as its record says, with no journal limit. Add

@@ -242,7 +242,7 @@ func TestStatsTagSharesNameEveryAttachedShare(t *testing.T) {
 	if err := u.e.Unbind(t.Context(), two.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := u.e.Drop(t.Context(), two.ID); err != nil {
+	if err := u.e.Drop(t.Context(), two.ID, two.Tag); err != nil {
 		t.Fatal(err)
 	}
 	js = u.e.Stats().Journals["unit"]

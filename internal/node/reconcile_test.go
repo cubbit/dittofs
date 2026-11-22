@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
@@ -527,7 +528,7 @@ func TestReconcileDoesNotBindAShareDroppedMidPass(t *testing.T) {
 	if err := h.Store().ControlPlane().DeleteShare(t.Context(), sh.ID, entity.SnapshotsRefuse, 1); err != nil {
 		t.Fatalf("mark the share removed: %v", err)
 	}
-	if err := h.Node().Engine().Drop(t.Context(), sh.ID); err != nil {
+	if err := h.Node().Engine().Drop(t.Context(), sh.ID, journal.ShareTag(sh.Tag)); err != nil {
 		t.Fatalf("drop the share: %v", err)
 	}
 	moved := h.Node().Moved()
@@ -546,8 +547,8 @@ func TestReconcileDoesNotBindAShareDroppedMidPass(t *testing.T) {
 	if refusedShare(h.Node().Refused(), sh.ID) {
 		t.Errorf("share dropped while the pass that listed it ran: among the refusals, want not, as it is gone")
 	}
-	if err := h.Node().Engine().Drop(t.Context(), sh.ID); err != nil {
-		t.Errorf("a second drop of the share the engine never bound: got %v, want nil, as it holds no tag to forget", err)
+	if err := h.Node().Engine().Drop(t.Context(), sh.ID, journal.ShareTag(sh.Tag)); err != nil {
+		t.Errorf("a second drop of the share the engine never bound: got %v, want nil, as the journal holds nothing of its tag", err)
 	}
 }
 
