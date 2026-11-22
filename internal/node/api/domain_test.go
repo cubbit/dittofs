@@ -1007,4 +1007,10 @@ func TestAPIOnlyAccountGainsNoFileIdentity(t *testing.T) {
 	if got, ok := d.userRecord(t, u.ID); !ok || len(got.IDs) != 0 {
 		t.Errorf("the API-only account after the refused edits: %+v, want no spelling", got)
 	}
+	// A role and a Kerberos name together are no API-only account: the
+	// create allocates the uid and the SID the Kerberos name needs.
+	svc, _ := d.createUser(t, apiv1.UserSpec{Name: "svc", Role: apiv1.RoleOperator, Kerberos: "svc@OTHER.EXAMPLE"}, "svc")
+	if svc.Spec.UID == nil {
+		t.Errorf("an account created with a role and a Kerberos name: no uid, want one allocated")
+	}
 }
