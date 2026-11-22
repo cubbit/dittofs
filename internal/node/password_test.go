@@ -211,10 +211,11 @@ func TestOperatorCannotSetAnAdminsPassword(t *testing.T) {
 	plain := s.h.Account(t, "plain", "plain's password", entity.RoleNone)
 	root := s.principalNamed(t, "admin")
 	before := s.stored(t, root)
+	version := versionOf(t, s, before.Password)
 	wantStatus(t, "the operator setting the admin's password", s.setPassword(t, op.Access, root, "taken over"), http.StatusNotFound, codeNotFound)
-	if after := s.stored(t, root); after.Generation != before.Generation || versionOf(t, s, after.Password) != versionOf(t, s, before.Password) {
+	if after := s.stored(t, root); after.Generation != before.Generation || versionOf(t, s, after.Password) != version {
 		t.Errorf("the admin after the refused set: generation %d, password version %d; want %d and %d unchanged",
-			after.Generation, versionOf(t, s, after.Password), before.Generation, versionOf(t, s, before.Password))
+			after.Generation, versionOf(t, s, after.Password), before.Generation, version)
 	}
 	s.tokens(t, "admin", adminPassword)
 	if r := s.setPassword(t, op.Access, plain, "plain's new password"); r.status != http.StatusOK {
