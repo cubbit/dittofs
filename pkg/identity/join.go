@@ -9,3 +9,9 @@ type JoinCredential struct {
 	User     string
 	Password []byte
 }
+
+// NetBIOSNameSetting is the installation setting holding its NetBIOS name,
+// the computer account's name while it is joined: identity's settings and
+// its join write it, and the API's settings route refuses a change of it
+// while joined.
+const NetBIOSNameSetting = "identity.netbios_name"

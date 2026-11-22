@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,6 +32,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/secrets"
@@ -917,42 +919,114 @@ func TestInstallationRead(t *testing.T) {
 	}
 }
 
+// netbiosName is the installation's identity.netbios_name as s's store
+// holds it, and its generation as the If-Match tag a write sends.
+func (s *served) netbiosName(t *testing.T) (value, tag string) {
+	t.Helper()
+	for st, err := range s.store.Settings(t.Context(), entity.SettingScope{Kind: entity.ScopeInstallation}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Key == pid.NetBIOSNameSetting {
+			return string(st.Value), strconv.Quote(strconv.FormatUint(st.Generation, 10))
+		}
+	}
+	return "", ""
+}
+
+// joinAs records s's installation joined as account, as a join's last step
+// does, without writing the name the real join also writes.
+func (s *served) joinAs(t *testing.T, account string) {
+	t.Helper()
+	if err := s.store.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		return tx.SetMachineJoin(entity.MachineJoin{Joined: true, Account: account})
+	}); err != nil {
+		t.Fatalf("join as %s: %v", account, err)
+	}
+}
+
+// refusedJoined fails the test unless r is the rule's refusal, 409 joined,
+// naming the account.
+func refusedJoined(t *testing.T, what string, r reply, account string) {
+	t.Helper()
+	if r.status != http.StatusConflict || r.problem(t).Code != apiv1.CodeJoined || !strings.Contains(r.problem(t).Detail, account) {
+		t.Errorf("%s: answered %d %s, want 409 joined naming %s", what, r.status, r.body, account)
+	}
+}
+
+const netbiosPath = "/api/v1/settings/" + pid.NetBIOSNameSetting
+
 // The installation's identity.netbios_name through the settings route, judged
-// by identity's section of the settings table: an admin's put is accepted while the installation is not joined; once it is
-// joined, a put and a delete are each refused 409 joined, leaving the name
-// as it was.
+// by identity's section of the settings table: an admin's put is accepted
+// while the installation is not joined; once it is joined, a put and a
+// delete are each refused 409 joined, leaving the name as it was. Each
+// method sends the tag it reads, so neither answers for the other's write.
 func TestNetBIOSNameRefusedWhileJoined(t *testing.T) {
 	s := serve(t, as(entity.RoleAdmin, false), func(d *api.Deps) { d.Settings = settings.Table{identity.Section()} })
 	scope := entity.SettingScope{Kind: entity.ScopeInstallation}
-	const path = "/api/v1/settings/identity.netbios_name"
-	gen := s.putSetting(t, scope, "identity.netbios_name", `"NAS"`)
-	r := s.do(t, http.MethodPut, path, `{"spec":{"value":"OTHER"}}`, "If-Match", strconv.Quote(strconv.FormatUint(gen, 10)), "Idempotency-Key", "netbios-unjoined")
+	s.putSetting(t, scope, pid.NetBIOSNameSetting, `"NAS"`)
+	_, tag := s.netbiosName(t)
+	r := s.do(t, http.MethodPut, netbiosPath, `{"spec":{"value":"OTHER"}}`, "If-Match", tag, "Idempotency-Key", "netbios-unjoined")
 	if r.status != http.StatusOK {
 		t.Fatalf("a put of identity.netbios_name while not joined: answered %d %s, want 200", r.status, r.body)
 	}
-	gen = s.putSetting(t, scope, "identity.netbios_name", `"NAS"`)
-	if err := s.store.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-		return tx.SetMachineJoin(entity.MachineJoin{Joined: true, Account: "NAS$"})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	tag := strconv.Quote(strconv.FormatUint(gen, 10))
+	s.putSetting(t, scope, pid.NetBIOSNameSetting, `"NAS"`)
+	s.joinAs(t, "NAS$")
+	_, want := s.netbiosName(t)
 	for _, tc := range []struct{ method, body string }{
 		{http.MethodPut, `{"spec":{"value":"OTHER"}}`},
 		{http.MethodDelete, ""},
 	} {
-		r := s.do(t, tc.method, path, tc.body, "If-Match", tag, "Idempotency-Key", "netbios-"+tc.method)
-		if r.status != http.StatusConflict || r.problem(t).Code != apiv1.CodeJoined || !strings.Contains(r.problem(t).Detail, "NAS$") {
-			t.Errorf("a %s of identity.netbios_name while joined as NAS$: answered %d %s, want 409 joined naming NAS$", tc.method, r.status, r.body)
+		t.Run(tc.method, func(t *testing.T) {
+			_, tag := s.netbiosName(t)
+			r := s.do(t, tc.method, netbiosPath, tc.body, "If-Match", tag, "Idempotency-Key", "netbios-"+tc.method)
+			refusedJoined(t, "a "+tc.method+" of identity.netbios_name while joined as NAS$", r, "NAS$")
+			if got, tag := s.netbiosName(t); got != `"NAS"` || tag != want {
+				t.Errorf("identity.netbios_name after the refused %s: %s at %s, want \"NAS\" at %s", tc.method, got, tag, want)
+			}
+		})
+	}
+}
+
+// A join committing between a put's read of the installation and its
+// commit aborts the put on that tracked read: the put's first Set is held on
+// the test clock while the join commits, then released. Its transaction runs
+// again, now reads joined, and the put is refused 409 joined; the name is
+// unchanged. The join here writes the installation record alone, not the
+// name as the real one also does, so the put's own tracked read of the
+// name's record cannot be what aborts it.
+func TestNetBIOSNameRuleRacingAJoin(t *testing.T) {
+	disk := newOnDisk(t)
+	s := serve(t, as(entity.RoleAdmin, false), disk.use, func(d *api.Deps) { d.Settings = settings.Table{identity.Section()} })
+	s.putSetting(t, entity.SettingScope{Kind: entity.ScopeInstallation}, pid.NetBIOSNameSetting, `"NAS"`)
+	_, tag := s.netbiosName(t)
+
+	clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	sched, err := sim.NewSchedule(1, clock, sim.Rule{Op: kvtest.OpSet, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk.fault.SetFault(sched)
+	done := make(chan reply, 1)
+	go func() {
+		done <- s.do(t, http.MethodPut, netbiosPath, `{"spec":{"value":"OTHER"}}`, "If-Match", tag, "Idempotency-Key", "netbios-race")
+	}()
+	for deadline := time.Now().Add(10 * time.Second); clock.Pending() < 1; runtime.Gosched() {
+		if time.Now().After(deadline) {
+			t.Fatal("the put's write never reached the delay")
 		}
 	}
-	for st, err := range s.store.Settings(t.Context(), scope) {
-		if err != nil {
-			t.Fatal(err)
-		}
-		if st.Key == "identity.netbios_name" && (st.Generation != gen || string(st.Value) != `"NAS"`) {
-			t.Errorf("identity.netbios_name after the refusals: %s at %d, want \"NAS\" at %d", st.Value, st.Generation, gen)
-		}
+	s.joinAs(t, "NAS$")
+	clock.Advance(time.Second)
+	var r reply
+	select {
+	case r = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the held put never answered")
+	}
+	refusedJoined(t, "a put racing a join", r, "NAS$")
+	if got, _ := s.netbiosName(t); got != `"NAS"` {
+		t.Errorf("identity.netbios_name after the put raced the join: got %s, want \"NAS\"", got)
 	}
 }
 

@@ -1,13 +1,14 @@
 package api
 
 import (
+	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
 // netbiosNameKey is the installation's own NetBIOS name, the computer
 // account's name while it is joined.
-const netbiosNameKey = "identity.netbios_name"
+const netbiosNameKey = identity.NetBIOSNameSetting
 
 // netbiosRule is the rule for the installation's NetBIOS name, run in the
 // transaction of a put or a delete of key at scope before the write: a write
@@ -19,6 +20,11 @@ const netbiosNameKey = "identity.netbios_name"
 // The join writes the name itself in the transaction that records it
 // joined, through the store rather than this route, so it never meets the
 // rule.
+//
+// decision: the rule judges the installation's scope only, because
+// identity's section of the settings table holds the key at that scope
+// alone and refuses it at any other; widen it if the key ever gains a
+// narrower scope.
 func netbiosRule(tx entity.ControlPlaneTx, scope entity.SettingScope, key string) error {
 	if scope.Kind != entity.ScopeInstallation || key != netbiosNameKey {
 		return nil
