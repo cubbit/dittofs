@@ -97,18 +97,17 @@ func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *sett
 		machine = machineState{ref: *n.machineRef.Load(), versions: last.Machine, join: last.Join}
 	}
 	st.Machine, st.Join = machine.versions, machine.join
+	n.handing(st)
 	if err := n.identity.Apply(st); err != nil {
 		if last == nil {
 			return nil, err
 		}
 		// Both sections passed their Validate in the walk, so Apply refuses
 		// only the NetBIOS name equal to the directory's NetBIOS domain: the
-		// row reported is the side that moved.
-		key := identity.KeyNetBIOSName
-		if st.Settings.NetBIOSName == last.Settings.NetBIOSName {
-			key = identity.KeyNetBIOSDomain
+		// rows reported are each side that moved, both when both did.
+		for _, key := range identity.NetBIOSMoved(st, *last) {
+			refusals = refusedRows(refusals, key, c.Settings, err)
 		}
-		refusals = refusedRows(refusals, key, c.Settings, err)
 		// The keytab the last identity section names; read already, or kept,
 		// when it names the one st does.
 		if st.Settings.Keytab != last.Settings.Keytab {
@@ -118,6 +117,7 @@ func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *sett
 			}
 		}
 		st.Settings, st.Directory = last.Settings, last.Directory
+		n.handing(st)
 		if err := n.identity.Apply(st); err != nil {
 			return refusals, err
 		}
@@ -148,6 +148,13 @@ func (n *Node) machine(ctx context.Context) (machineState, error) {
 	}
 	m.versions, err = n.secrets.Versions(ctx, secrets.Protocol, entity.SecretMachinePassword, in.MachinePasswordOwner(), m.ref)
 	return m, err
+}
+
+// handing calls the reconciler's handing hook, when set, with st.
+func (n *Node) handing(st identity.State) {
+	if n.rec.handing != nil {
+		n.rec.handing(st)
+	}
 }
 
 // keytab is every version of the keytab ref names still held, opened,

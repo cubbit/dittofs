@@ -42,7 +42,7 @@ type Deps struct {
 	Audit   func(vfs.ShareID) authz.Policy // each share's audit policy; nil: every share's is off
 	Metrics prometheus.Registerer          // nil: the filesystem's metrics are kept but not registered
 	Logger  *slog.Logger                   // nil: slog.Default()
-	Clock   Clock                          // times the resends of grants and recalls; nil: the host's clock
+	Clock   Clock                          // times the resends of grants and recalls, and ages cached callers; nil: the host's clock
 
 	// Identity resolves each admitted call's Identity to its Caller, Auth
 	// verifies SignIn's rounds, and Names answers Spell and Find. New
@@ -152,6 +152,7 @@ type Filesystem struct {
 	authz    authz.Authz
 	events   vfs.Events
 	identity identity.Resolver
+	callers  *callers               // admission's resolved callers
 	auth     identity.Authenticator // nil: SignIn answers errNoIdentity
 	names    identity.Identities    // nil: Spell and Find answer errNoIdentity
 	quota    *quota.Quotas
@@ -193,14 +194,18 @@ type Filesystem struct {
 }
 
 // Clock is the part of the node's clock the filesystem reads: the waits
-// between resends of grants and recalls, and a grant's resend bound.
+// between resends of grants and recalls, a grant's resend bound, and the wall
+// time a cached caller's Fresh is compared with.
 type Clock interface {
+	Now() time.Time                        // the wall time
 	Elapsed() time.Duration                // monotonic, from an origin the clock chose
 	After(d time.Duration) <-chan struct{} // fires after d on the monotonic clock
 }
 
 // hostClock is the host's monotonic clock, for a filesystem given none.
 type hostClock struct{ origin time.Time }
+
+func (hostClock) Now() time.Time { return time.Now() }
 
 func (c hostClock) Elapsed() time.Duration { return time.Since(c.origin) }
 
@@ -261,6 +266,7 @@ func New(d Deps) (*Filesystem, error) {
 	if fs.clock == nil {
 		fs.clock = hostClock{time.Now()}
 	}
+	fs.callers = newCallers(d.Identity, fs.clock.Now, maxCallers, maxCallerGroups)
 	fs.engine, fs.checks, fs.opens, fs.log = d.Engine, d.Open.Checks(), d.Open.Opens(), d.Logger
 	if fs.log == nil {
 		fs.log = slog.Default()
@@ -268,7 +274,7 @@ func New(d Deps) (*Filesystem, error) {
 	fs.quota = quota.New(capacity{d.Meta.Capacity()}, fs.events.Quota)
 	fs.authz = authz.Authz{Files: d.Meta.Files(), Policy: d.Audit, Emit: fs.events.Access}
 	if d.Metrics != nil {
-		for _, c := range []prometheus.Collector{fs.inflight, fs.callbackErrors, fs.refusals} {
+		for _, c := range append([]prometheus.Collector{fs.inflight, fs.callbackErrors, fs.refusals}, fs.callers.collectors()...) {
 			if err := d.Metrics.Register(c); err != nil {
 				return nil, fmt.Errorf("vfs: %w", err)
 			}

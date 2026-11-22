@@ -8,6 +8,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/secrets/secreterr"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -199,7 +200,8 @@ func (ss secretSetting) remove(ctx context.Context, rq request[none], _ struct{}
 }
 
 // storeCredentials is a remote store's credential, sealed under the storage
-// role, set only on a store that exists.
+// role, set only on a store that exists and only once the store's
+// capability check admits it.
 var storeCredentials = secretSetting{scope: storeScope, key: storeCredential, kind: entity.SecretRemoteCredential, auditAs: "credential",
 	exists: func(tx entity.ControlPlaneTx, id [16]byte) error {
 		_, ok, err := tx.Setting(storeScope(id), storeEndpoint)
@@ -207,7 +209,23 @@ var storeCredentials = secretSetting{scope: storeScope, key: storeCredential, ki
 			err = errNotFound
 		}
 		return err
-	}}
+	},
+	check: capabilityCheck}
+
+// capabilityCheck is a remote store's capability check, run on every set of
+// its credential.
+//
+// decision: the check runs on every set, a first one too, because nothing
+// records whether the store held a credential before: a DELETE removes the
+// setting naming it, and the set after it seals a fresh reference at
+// version 1, so the version cannot tell a first credential from a changed
+// one, which RFC 13 §5.2 has the check prove. The check and the namespace
+// claim it proves against are not built, so it refuses every set, failing
+// closed. Withdraw the refusal once both are built, and run the claim part
+// only for a store that held a credential once the store records that.
+func capabilityCheck(context.Context, Deps, []byte) (func(entity.ControlPlaneTx) error, error) {
+	return nil, &componentError{field: storeCredential, detail: "the store's capability check is not built yet", err: secreterr.ErrUnproven}
+}
 
 // credentials is what the write adapter knows of a remote store's
 // credential.
