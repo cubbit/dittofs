@@ -301,7 +301,9 @@ func TestOfflineJoinRefusedDuringRotation(t *testing.T) {
 // no takeover is refused at its first turn, still joined as NAS; one of NAS$
 // taking it over after its password is reset joins. While it runs, the old
 // join still applied, the handed-over version derives no key and sets up no
-// channel, though the controller accepts it.
+// channel, though the controller accepts it; from the first closing seal the
+// installation reads not joined, so neither the first rotation's version nor
+// the second's signs in before the second confirm.
 func TestOfflineJoinOfAJoinedInstallation(t *testing.T) {
 	fx := newRotation(t)
 	op := fx.offlineOp(t, "OTHER", fx.handOver(t, pw3, secrets.Meta{HandedOver: true}), false)
@@ -317,6 +319,23 @@ func TestOfflineJoinOfAJoinedInstallation(t *testing.T) {
 	oc, err := ticketSignIn(fx.s, fx.clock, machineSvc, 2, machineKey(t, pw4))
 	wantSignIn(t, "the handed-over key during the takeover", oc, err, "logon_failure")
 	fx.noPassThrough(t, "during the takeover, the controller on the handed-over password")
+	for _, at := range []string{"seal2", "confirm2"} {
+		fx.until(t, op, at)
+		fx.reconcile(t)
+		if fx.join(t).Joined {
+			t.Errorf("at %s: the installation reads joined, want not joined", at)
+		}
+		fx.noPassThrough(t, "at "+at)
+		v1 := fx.versions(t)[0]
+		if at == "confirm2" {
+			v1 = fx.versions(t)[1]
+		}
+		oc, err := ticketSignIn(fx.s, fx.clock, machineSvc, int(v1.Meta.KeyVersion), machineKey(t, string(v1.Value)))
+		wantSignIn(t, "the first rotation's key at "+at, oc, err, "unavailable")
+	}
 	fx.complete(t, op)
-	fx.wantJoined(t, op, "NAS", fx.versions(t)[0].Number)
+	vs := fx.versions(t)
+	fx.wantJoined(t, op, "NAS", vs[0].Number)
+	fx.wantTicket(t, int(vs[0].Meta.KeyVersion), string(vs[0].Value))
+	fx.signsIn(t, vs[0].Number)
 }

@@ -491,12 +491,35 @@ func (j *joining) sealNew(ctx context.Context, tag uint32) (uint64, error) {
 		if err := tx.PutSecret(sec, sec.Version-1); err != nil {
 			return err
 		}
-		return tx.SetMachinePassword(ref)
+		if err := tx.SetMachinePassword(ref); err != nil {
+			return err
+		}
+		return j.unjoin(tx)
 	})
 	if err != nil {
 		return 0, err
 	}
 	return sec.Version, nil
+}
+
+// unjoin records an offline join's installation not joined in its closing
+// seals' write, so a takeover's old join no longer holds once the first
+// rotation's version exists: pass-through, the secure channel and the
+// machine keys each read Join.Joined alone, and would otherwise sign in with
+// a closing rotation's version before the second confirm, which RFC 18 §3.5
+// forbids. As fail's rule has it, from the seal on a join recorded before no
+// longer holds. An online join's seal leaves Join as it was.
+func (j *joining) unjoin(tx entity.ControlPlaneTx) error {
+	if !j.offline {
+		return nil
+	}
+	in, err := tx.Installation()
+	if err != nil || !in.Join.Joined {
+		return err
+	}
+	jn := in.Join
+	jn.Joined = false
+	return tx.SetMachineJoin(jn)
 }
 
 // account reads the computer account at the pinned controller, bound with
