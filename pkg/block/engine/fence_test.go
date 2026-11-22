@@ -277,7 +277,19 @@ func TestSelfFenceOnAnErroringStore(t *testing.T) {
 
 	u.faults.SetFault(nil)
 	u.until(t, "a write acknowledged once the store commits", func() bool { _, err := u.tryWrite(b); return err == nil })
-	if err := <-done; err != nil {
+	// The write can be acknowledged on a commit other than the stalled
+	// one's, the marks retried alone on a backoff of their own, while the
+	// stalled commit's retry is still due on the clock: keep moving it.
+	var err error
+	u.until(t, "the commit answered", func() bool {
+		select {
+		case err = <-done:
+			return true
+		default:
+			return false
+		}
+	})
+	if err != nil {
 		t.Errorf("the commit once the store answers: %v", err)
 	}
 }
