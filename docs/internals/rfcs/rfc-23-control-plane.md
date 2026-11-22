@@ -1049,7 +1049,11 @@ them and decides nothing about identity:
   version of the machine password's `Secret`, marked `HandedOver` (RFC 16 §2.3,
   as the RFC 18 plan amends it), in a write of its own (§4.3),
   audited as a `set` of that reference, committed before the operation's, so
-  no record holds more than the reference. That write is refused `409`
+  no record holds more than the reference. A join of a joined installation
+  that does not take it over is refused `409` `joined`, the offline one at its
+  hand-over write, before it writes a version; one that also meets a running
+  join or rotation is answered `joined`, which a retry cannot clear, rather
+  than the retryable `operation_running`. That write is refused `409`
   `operation_running` while a `join-domain` or a `rotate-machine-password`
   runs (§4.6), reading the running operations tracked, so no version a running
   join or rotation did not take becomes current under it. A crash between the
@@ -1070,7 +1074,8 @@ them and decides nothing about identity:
   previous one applied, in
   [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)'s order
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). A rotation is refused
-  `409` while a join runs. Leaving the domain has
+  `409` while a join runs, and a join while a rotation runs, each reading the
+  other's running operations tracked in the write that creates its own. Leaving the domain has
   no action until RFC 18 defines it. `test-directory` checks that every node reaches the
   directory the record names, and reports each node's answer. The join's
   state is the installation record's `Join` ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities), as the RFC 18 plan
@@ -1422,9 +1427,10 @@ of one is kept anywhere but §5.3's hashes. A retry is a new call:
   shown, is listed under the account and revocable, and expires as §5.3 bounds;
 - a retried offline **`join-domain`** is refused `409` `operation_running`
   while the first join runs, at its first write, so it writes no version (§3.5);
-  once the first join has ended, the retry writes its password as a new
-  version and starts a second join. The client finds the first in the
-  operation list;
+  once the first join has ended, a retry of one that joined the installation is
+  refused `409` `joined` at the same write unless it takes the installation
+  over, and otherwise the retry writes its password as a new version and
+  starts a second join. The client finds the first in the operation list;
 - a retried online **`join-domain`** hands the credential over again under a
   new operation ID; while the first join runs, its write is refused `409`
   `operation_running` and the hold ends with the request
@@ -1549,7 +1555,7 @@ status, and a test proves it total (§12):
 | `401` | no valid token; a failed sign-in (`ErrLogonFailure`) |
 | `403` | the role does not permit the call; a token that may only change its password |
 | `404` | no such resource, or one the caller may not know exists |
-| `409` | the resource's state refuses it: `ErrStale`, `ErrLocked`, `ErrMoving`, `ErrDelay`, a bound setting, a managed record, an operation running, the last admin, a namespace that is not a copy |
+| `409` | the resource's state refuses it: `ErrStale`, `ErrLocked`, `ErrMoving`, `ErrDelay`, a bound setting, a managed record, an operation running, the last admin, a namespace that is not a copy, a joined installation (`joined`) |
 | `412`, `428` | §4.4 and §4.5 |
 | `422` | an idempotency key reused with another request |
 | `429` | sign-in throttled (§5.3), code `throttled`, so `api_sign_ins_total` counts it as that result |
