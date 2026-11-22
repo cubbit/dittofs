@@ -651,11 +651,12 @@ func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 // owner of a file with no stored ACL, whose mode grants no one change the
 // owner, sets itself as owner, alone or with the file's group, as cp -p and
 // tar do. Giving the file to another principal asks change the owner, which
-// the walk refuses (RFC 19 §3.1).
+// the walk refuses (RFC 19 §3.1), and so does a non-owner naming the current
+// owner, though the mode grants it write attributes, as chown(2) refuses it.
 func TestAnOwnerSetsItselfAsOwner(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
-	h := s.file(t, "f", s.alice.Principal, 0o644)
+	h := s.file(t, "f", s.alice.Principal, 0o666)
 	alice := proven(s.alice.Principal, inLab)
 	group := s.record(t, h).Group
 	for name, a := range map[string]entity.Attrs{
@@ -668,6 +669,10 @@ func TestAnOwnerSetsItselfAsOwner(t *testing.T) {
 	}
 	if _, err := s.SetAttr(ctx, alice, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.bob.Principal)}); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("the owner giving the file to bob: %v, want ErrAccess", err)
+	}
+	bob := proven(s.bob.Principal, inLab)
+	if _, err := s.SetAttr(ctx, bob, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.alice.Principal)}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("bob setting the owner to alice, its owner already: %v, want ErrAccess", err)
 	}
 	if got := s.record(t, h).Owner; got != s.alice.Principal {
 		t.Errorf("the owner is %v, want alice", got)
