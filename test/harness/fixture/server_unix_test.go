@@ -96,6 +96,23 @@ func TestServer(t *testing.T) {
 	if reset == first {
 		t.Errorf("after Reset the share is still %s, want it recreated under a new ID", first)
 	}
+	// A share already removing, as after a Reset whose recreate failed, is
+	// recreated by the next Reset, not deleted again.
+	gone, err := s.client.Shares().Get(ctx, reset)
+	if err != nil {
+		t.Fatalf("reading the share %s: %v", reset, err)
+	}
+	if _, err := s.client.Shares().Delete(ctx, reset, gone.ETag); err != nil {
+		t.Fatalf("deleting the share %s ahead of Reset: %v", reset, err)
+	}
+	if err := s.Reset(ctx, strings.TrimPrefix(Share, "/")); err != nil {
+		t.Fatalf("Reset of a share already removing: %v", err)
+	}
+	again := configured(t, s, "after Reset of a share already removing")
+	if again == reset {
+		t.Errorf("after Reset of a share already removing the share is still %s, want it recreated", reset)
+	}
+	reset = again
 
 	before := state(t, s, "before the second dfs init")
 	if err := s.Kill(); err != nil {

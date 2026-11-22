@@ -168,17 +168,19 @@ func (s *Server) seed(ctx context.Context) (err error) {
 }
 
 // env is a child's environment: dt's, without the server's own variables,
-// with its home and XDG directories under s.home, and the storage key's
-// passphrase.
+// with its home, XDG and Windows profile directories under s.home, and the
+// storage key's passphrase.
 func (s *Server) env() []string {
 	// decision: the fixture's server is configured by dt's file alone, so a
 	// DITTOFS_ variable set for a developer's own server can't move its
 	// ports or its stores, and no child reads or writes the user's own
 	// configuration.
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
-		return strings.HasPrefix(kv, "DITTOFS_") || strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "XDG_")
+		return strings.HasPrefix(kv, "DITTOFS_") || strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "XDG_") ||
+			strings.HasPrefix(kv, "LOCALAPPDATA=") || strings.HasPrefix(kv, "APPDATA=") || strings.HasPrefix(kv, "USERPROFILE=")
 	})
-	return append(env, "HOME="+s.home, "XDG_CONFIG_HOME="+filepath.Join(s.home, "config"),
+	return append(env, "HOME="+s.home, "USERPROFILE="+s.home, "LOCALAPPDATA="+filepath.Join(s.home, "local"),
+		"APPDATA="+filepath.Join(s.home, "roaming"), "XDG_CONFIG_HOME="+filepath.Join(s.home, "config"),
 		"XDG_STATE_HOME="+filepath.Join(s.home, "state"), "XDG_DATA_HOME="+filepath.Join(s.home, "data"),
 		"XDG_CACHE_HOME="+filepath.Join(s.home, "cache"), "DITTOFS_ENCRYPTION_PASSPHRASE="+s.passphrase)
 }
@@ -426,12 +428,18 @@ func (s *Server) Reset(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("the fixture has no share %s", name)
 	}
-	tagged, err := s.client.Shares().Get(ctx, id)
-	if err == nil {
-		_, err = s.client.Shares().Delete(ctx, id, tagged.ETag)
-	}
-	if err != nil {
-		return fmt.Errorf("deleting the share %s: %w", name, err)
+	// A share already removing, by an earlier Reset whose recreate failed or
+	// by the test itself, is not deleted again: the store refuses that as
+	// stale, which would fail every later reset of the cell.
+	if id != "" {
+		tagged, err := s.client.Shares().Get(ctx, id)
+		if err == nil && tagged.Status.State != "removing" {
+			_, err = s.client.Shares().Delete(ctx, id, tagged.ETag)
+		}
+		if err != nil {
+			return fmt.Errorf("deleting the share %s: %w", name, err)
+		}
+		s.shareIDs[name] = ""
 	}
 	if err := s.addShare(ctx, name); err != nil {
 		return err
@@ -443,7 +451,7 @@ func (s *Server) Reset(ctx context.Context, name string) error {
 // Placeholders returns what the server gives a cell's commands, by name, as
 // its current start decided them.
 func (s *Server) Placeholders() map[string]string {
-	vals := map[string]string{"server": s.server, "share": s.shares[0], "user": User, "user2": User2}
+	vals := map[string]string{"server": s.server, "share": s.shares[0], "user": User, "user2": User2, "password": ""}
 	if s.nfsPort > 0 {
 		vals["nfs-port"] = strconv.Itoa(s.nfsPort)
 	}
