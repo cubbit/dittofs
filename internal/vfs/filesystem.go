@@ -188,9 +188,8 @@ type Filesystem struct {
 	callbackErrors *prometheus.CounterVec
 	refusals       prometheus.Counter
 
-	clock     openstate.Clock
-	retry     time.Duration // grantRetry but in tests
-	resendFor time.Duration // grantResendFor but in tests
+	clock openstate.Clock
+	retry time.Duration // grantRetry but in tests
 }
 
 // hostClock is the host's monotonic clock, for a filesystem given none.
@@ -236,7 +235,6 @@ func New(d Deps) (*Filesystem, error) {
 		marks:     openMark{d.Open.Opens()},
 		clock:     d.Clock,
 		retry:     grantRetry,
-		resendFor: grantResendFor,
 		inflight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "dittofs", Name: "vfs_inflight_calls",
 			Help: "Calls admitted and not yet answered: what a drain waits for.",

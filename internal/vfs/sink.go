@@ -98,7 +98,7 @@ func (fs *Filesystem) ClientEnded(c entity.ClientID, shards []openstate.ShardID,
 func (fs *Filesystem) LockWaitOver(w openstate.LockWaiter, granted bool) {
 	c := w.Owner.Client
 	fs.deliver(fs.latest("LockWaitOver", c), func(ctx context.Context, cb vfs.Callbacks) {
-		until := fs.clock.Elapsed() + fs.resendFor
+		until := fs.clock.Elapsed() + grantResendFor
 		refused, err := cb.LockWaitOver(ctx, w, granted)
 		for granted && err != nil {
 			fs.callbackErrors.WithLabelValues("LockWaitOver").Inc()
@@ -155,6 +155,11 @@ func (fs *Filesystem) RecallGrant(g openstate.CachingGrant) {
 		to = g.Recall.To
 	}
 	fs.background(func(stop context.Context) {
+		// decision: the recall's deadline is real time while its retry waits
+		// on the filesystem's clock. In production both are the host's clock;
+		// under a test clock nobody advances, a recall whose first send fails
+		// gives up after callbackDeadline of real time instead of retrying.
+		// Move the deadline onto fs.clock once a test drives a recall's retries.
 		ctx, cancel := context.WithTimeout(stop, callbackDeadline)
 		defer cancel()
 		var tried recallRoute // the route last sent through; zero: none yet
