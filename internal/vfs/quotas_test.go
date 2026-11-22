@@ -477,6 +477,32 @@ func TestAChownChangingNothingReservesNothing(t *testing.T) {
 	}
 }
 
+// RFC 7 §7.4: an unprivileged owner's give-away to bob, at his file limit,
+// is answered ErrPerm, not his quota, and reserves nothing against him, so it
+// emits no quota event that would show his quota state.
+func TestAnOwnersGiveAwayIsErrPermWhateverTheNewOwnersQuota(t *testing.T) {
+	s, sink := newQuotas(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o644)
+	s.file(t, "g", s.bob.Principal, 0o644)
+	bobs := s.usage(t, s.bob.Principal)
+	if bobs.Files == 0 {
+		t.Fatal("bob owns no file, so a limit at his usage is none")
+	}
+	s.limit(t, kvstore.QuotaTarget{Principal: s.bob.Principal}, entity.Limit{Files: bobs.Files})
+	sink.take()
+	chown := vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.bob.Principal)}
+	if _, err := s.SetAttr(ctx, proven(s.alice.Principal, inLab), vfs.Target{H: h}, chown); !errors.Is(err, vfs.ErrPerm) {
+		t.Errorf("alice giving her file to bob, at his file limit: %v, want ErrPerm", err)
+	}
+	if got := sink.take(); len(got) != 0 {
+		t.Errorf("the refused give-away emitted %+v, want no quota event", got)
+	}
+	if got := s.record(t, h).Owner; got != s.alice.Principal {
+		t.Errorf("the owner is %v, want alice", got)
+	}
+}
+
 // V37: a chown first commits the file's pending existence, so bytes staged
 // unstable and not yet charged count against the new owner: one near his
 // byte limit is refused, though the file's committed charge alone fits.

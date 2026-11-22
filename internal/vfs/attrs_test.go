@@ -646,3 +646,59 @@ func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 		t.Errorf("an admin's time set through its read-only open: %v, want it set on the admin's own rights", err)
 	}
 }
+
+// RFC 19 §3.1: the file's owner asks nothing to set the owner, so on a file
+// whose mode grants no one change the owner, and on one whose stored ACL
+// withholds it from her, she sets herself as owner, alone or with the file's
+// group, as cp -p and tar do, and her give-away to bob reaches RFC 7 §7.4's
+// rule, which refuses it ErrPerm. A non-owner naming the current owner asks
+// change the owner, which the walk refuses, though the mode grants it write
+// attributes, as chown(2) refuses it.
+func TestAnOwnerSetsItselfAsOwner(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	stored := s.file(t, "g", s.alice.Principal, 0o644)
+	withheld := entity.ACL{Entries: []entity.ACE{{Type: entity.ACEAllow, Mask: entity.ReadData | entity.WriteData | entity.ReadAttributes | entity.WriteAttributes, Who: entity.Owner}}}
+	_, err := s.SetACL(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Target{H: stored}, withheld)
+	s.must(t, err)
+	alice := proven(s.alice.Principal, inLab)
+	for file, h := range map[string]vfs.Handle{"with no stored ACL": h, "whose stored ACL withholds change the owner": stored} {
+		group := s.record(t, h).Group
+		for name, a := range map[string]entity.Attrs{
+			"alone":               entity.Attrs{}.WithOwner(s.alice.Principal),
+			"with the file group": entity.Attrs{}.WithOwner(s.alice.Principal).WithGroup(group),
+		} {
+			if _, err := s.SetAttr(ctx, alice, vfs.Target{H: h}, vfs.AttrChange{Attrs: a}); err != nil {
+				t.Errorf("the owner of a file %s setting herself as owner %s: %v", file, name, err)
+			}
+		}
+		if _, err := s.SetAttr(ctx, alice, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.bob.Principal)}); !errors.Is(err, vfs.ErrPerm) {
+			t.Errorf("the owner of a file %s giving it to bob: %v, want ErrPerm", file, err)
+		}
+	}
+	bob := proven(s.bob.Principal, inLab)
+	if _, err := s.SetAttr(ctx, bob, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.alice.Principal)}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("bob setting the owner to alice, its owner already: %v, want ErrAccess", err)
+	}
+	if got := s.record(t, h).Owner; got != s.alice.Principal {
+		t.Errorf("the owner is %v, want alice", got)
+	}
+}
+
+// The owner's chown asks nothing of the walk but is still cut by the share
+// ceiling: on a read-only share its chown to itself and its give-away are
+// both ErrReadOnly (RFC 19 §3.1).
+func TestAReadOnlyShareRefusesTheOwnersChown(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, ReadOnly: true}, policyVersion(t, s.cp, s.share))))
+	alice := proven(s.alice.Principal, inLab)
+	for name, owner := range map[string]entity.Principal{"to herself": s.alice.Principal, "to bob": s.bob.Principal} {
+		_, err := s.SetAttr(ctx, alice, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(owner)})
+		if !errors.Is(err, vfs.ErrReadOnly) {
+			t.Errorf("the owner's chown %s on a read-only share: %v, want ErrReadOnly", name, err)
+		}
+	}
+}
