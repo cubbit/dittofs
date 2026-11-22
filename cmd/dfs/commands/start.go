@@ -13,6 +13,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/spf13/cobra"
 )
@@ -122,13 +123,17 @@ func runStart(cmd *cobra.Command, _ []string) error {
 			slog.Warn("dfs: the trace provider did not shut down clean", "err", err)
 		}
 	}()
-	kv, err := openKV(cfg, clock)
+	db, err := openKV(cfg, clock)
 	if err != nil {
 		return fmt.Errorf("opening the metadata store: %w", err)
 	}
+	var store kv.KV = db
+	if wrap, ok := base.Value(kvKey{}).(func(kv.KV) kv.KV); ok {
+		store = wrap(store)
+	}
 	n, err := node.New(node.Config{
 		Bootstrap: *cfg,
-		KV:        kv,
+		KV:        store,
 		Clock:     clock,
 		Metrics:   metrics.New(Version, Commit),
 		Logger:    slog.Default(),
@@ -166,6 +171,12 @@ func runStart(cmd *cobra.Command, _ []string) error {
 // there, so it lands at a known stage rather than at a timing. Production
 // sets none.
 type stageKey struct{}
+
+// kvKey keys a hook in the command's context that wraps the metadata
+// store's KV before the node opens it: a test holds one store call there, so
+// the process is killed at a known call rather than at a timing. Production
+// sets none.
+type kvKey struct{}
 
 // The stages a stageKey hook is called at: before the start check and once
 // it returned, and before Start and once it returned, each "returned" stage

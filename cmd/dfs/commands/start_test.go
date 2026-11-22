@@ -3,6 +3,7 @@ package commands
 import (
 	"cmp"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +12,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -20,7 +24,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/google/uuid"
 )
@@ -33,6 +39,55 @@ const childEnv = "DFS_START_CHILD_ARGS"
 // itself SIGTERM at that stage and wait for the signal to land before it goes
 // on: the signal lands at a known stage, at no particular timing.
 const signalAtEnv = "DFS_START_CHILD_SIGTERM_AT"
+
+// holdEnv, when set to an operation, a key as keys.Describe renders it, a
+// count and an arming prefix in hex, one per line, makes the child hold the
+// count-th store call of the operation on the key made once the store holds
+// a row under the prefix, any call when the prefix is empty: it prints
+// heldLine and never answers the call, so the test kills the child at that
+// call, at no particular timing.
+const holdEnv = "DFS_START_CHILD_HOLD"
+
+// heldLine is the line the child prints once it holds the call holdEnv names.
+const heldLine = "dfs start child: held"
+
+// holdAt is the sim.Fault holdEnv sets: it passes every call before the
+// n-th of op on key made once store holds a row under arm, and holds that
+// one and every later one forever, once it printed heldLine; so a caller
+// that gives up on a held call and retries is held again.
+type holdAt struct {
+	op, key string
+	n       int64
+	arm     []byte
+	store   kv.KV
+	seen    atomic.Int64
+	once    sync.Once
+}
+
+func (h *holdAt) At(op string, key []byte) (time.Duration, int, error) {
+	if op == h.op && string(key) == h.key && h.armed() && h.seen.Add(1) >= h.n {
+		h.once.Do(func() { fmt.Println(heldLine) })
+		<-make(chan struct{})
+	}
+	return 0, 0, nil
+}
+
+// armed reports whether the store holds a committed row under h.arm, read
+// past the fault, so the call being consulted counts only once it does.
+func (h *holdAt) armed() bool {
+	if len(h.arm) == 0 {
+		return true
+	}
+	found := false
+	_ = h.store.View(context.Background(), func(r kv.Reader) error {
+		for _, err := range r.Scan(h.arm, nil) {
+			found = err == nil
+			break
+		}
+		return nil
+	})
+	return found
+}
 
 // TestStartChild is the child process the start tests run: dfs itself.
 func TestStartChild(t *testing.T) {
@@ -57,6 +112,28 @@ func TestStartChild(t *testing.T) {
 				os.Exit(2)
 			}
 			<-signal.Done()
+		})
+	}
+	if hold := os.Getenv(holdEnv); hold != "" {
+		parts := strings.Split(hold, "\n")
+		var (
+			n   int64
+			arm []byte
+			err = fmt.Errorf("%d lines", len(parts))
+		)
+		if len(parts) == 4 {
+			if n, err = strconv.ParseInt(parts[2], 10, 64); err == nil {
+				arm, err = hex.DecodeString(parts[3])
+			}
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s=%q: %v; want an operation, a key, a count and a prefix, one per line\n", holdEnv, hold, err)
+			os.Exit(2)
+		}
+		ctx = context.WithValue(ctx, kvKey{}, func(inner kv.KV) kv.KV {
+			f := kvtest.NewFaultKV(inner)
+			f.SetFault(&holdAt{op: parts[0], key: parts[1], n: n, arm: arm, store: inner})
+			return f
 		})
 	}
 	if err := root.ExecuteContext(ctx); err != nil {
@@ -167,6 +244,23 @@ func installed(t *testing.T, dir string) string {
 	return installation(t, dir).write(t, dir)
 }
 
+// skipUnsuitableMount skips the test when the journal's platform check
+// refuses the mount holding dir. The child opens its journal under the
+// platform's own check, which a test cannot hand a probe, so the check runs
+// here first, over the same mount.
+func skipUnsuitableMount(t *testing.T, dir string) {
+	t.Helper()
+	scratch := filepath.Join(dir, "scratch")
+	if err := os.Mkdir(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Init(t.Context(), scratch, [16]byte{1}); errors.Is(err, journal.ErrUnsuitableStorage) {
+		t.Skipf("the journal's platform check refuses the mount holding %s (%v); set TMPDIR to a directory on a suitable mount", dir, err)
+	} else if err != nil {
+		t.Fatalf("journal init on the scratch directory: %v", err)
+	}
+}
+
 // installation is the bootstrap of an installation under dir, as dfs init
 // leaves one: the metadata store at dir/store, one journal at dir/device,
 // recorded for the test's node, and the storage key at dir/storage.key. A
@@ -174,18 +268,7 @@ func installed(t *testing.T, dir string) string {
 func installation(t *testing.T, dir string) bootstrapFile {
 	t.Helper()
 	ctx := t.Context()
-	scratch := filepath.Join(dir, "scratch")
-	if err := os.Mkdir(scratch, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// The child opens its journal under the platform's own check, which a
-	// test cannot hand a probe, so the check runs here first, over the same
-	// mount.
-	if _, err := journal.Init(ctx, scratch, [16]byte{1}); errors.Is(err, journal.ErrUnsuitableStorage) {
-		t.Skipf("the journal's platform check refuses the mount holding %s (%v); set TMPDIR to a directory on a suitable mount", dir, err)
-	} else if err != nil {
-		t.Fatalf("journal init on the scratch directory: %v", err)
-	}
+	skipUnsuitableMount(t, dir)
 
 	store, dev := filepath.Join(dir, "store"), filepath.Join(dir, "device")
 	install := [16]byte{'s', 't', 'a', 'r', 't'}
