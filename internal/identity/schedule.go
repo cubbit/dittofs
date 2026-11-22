@@ -121,11 +121,12 @@ func (s *Server) scheduleRotation(ctx context.Context) error {
 		}
 		lr := in.Join.LastRotation
 		due := lr.Confirmed.Add(rotationPeriod)
-		// decision: the back-off reads Failed alone, which the rotation's
-		// failure path and the node runner's write: the runner records
-		// Failed and At beside every rotation it fails, so a rotation that
-		// ends another way than through the rotation's own failure (a
-		// fault out of its step, a failed End) is backed off from too. The
+		// decision: the back-off reads Failed alone, which RotateFailed
+		// writes as the node runner records every rotation it fails while
+		// the installation is joined, so a rotation that ends another way
+		// than through the rotation's own failure (a fault out of its step,
+		// a refused End) is backed off from too. A failure whose own
+		// RotateFailed write is refused is recorded bare, with no back-off. The
 		// store has no tracked read of the last ended operation of a kind
 		// to back off from. A cancel from the API ends no rotation yet, as
 		// the kind is not cancellable; overturned when one does without

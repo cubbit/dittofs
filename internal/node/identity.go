@@ -94,7 +94,7 @@ func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *sett
 		// record of the settings names it. Report it once node status
 		// carries a refused secret.
 		n.cfg.Logger.Warn("identity: the machine password does not read; identity keeps the last", "error", err)
-		machine = *n.machineApplied.Load()
+		machine = machineState{ref: *n.machineRef.Load(), versions: last.Machine, join: last.Join}
 	}
 	st.Machine, st.Join = machine.versions, machine.join
 	if err := n.identity.Apply(st); err != nil {
@@ -122,7 +122,7 @@ func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *sett
 			return refusals, err
 		}
 	}
-	n.machineApplied.Store(&machine)
+	n.machineRef.Store(&machine.ref)
 	return refusals, nil
 }
 
@@ -146,23 +146,8 @@ func (n *Node) machine(ctx context.Context) (machineState, error) {
 	if m.ref == (entity.SecretRef{}) {
 		return m, nil
 	}
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceInstallation, ID: in.ID[:]}, Key: "machine_password"}
-	m.versions, err = n.secrets.Versions(ctx, secrets.Protocol, entity.SecretMachinePassword, owner, m.ref)
+	m.versions, err = n.secrets.Versions(ctx, secrets.Protocol, entity.SecretMachinePassword, in.MachinePasswordOwner(), m.ref)
 	return m, err
-}
-
-// rotationFailed records the installation's last machine password rotation
-// failed now, beside the record of the rotation the runner fails, unless the
-// installation is not joined, which raises nothing. The schedule backs off
-// from it, as it has no read of the last rotation ended.
-func rotationFailed(tx entity.ControlPlaneTx) error {
-	in, err := tx.Installation()
-	if err != nil || !in.Join.Joined {
-		return err
-	}
-	j := in.Join
-	j.LastRotation.At, j.LastRotation.Failed = tx.Now(), true
-	return tx.SetMachineJoin(j)
 }
 
 // keytab is every version of the keytab ref names still held, opened,
@@ -211,8 +196,8 @@ func (n *Node) identitySecrets() []entity.SecretVersion {
 	if ref, v, _ := n.identity.AppliedKeytab(); v != 0 {
 		vs = append(vs, entity.SecretVersion{Secret: ref, Version: v})
 	}
-	if m := n.machineApplied.Load(); m != nil && len(m.versions) > 0 {
-		vs = append(vs, entity.SecretVersion{Secret: m.ref, Version: m.versions[0].Number})
+	if st, ref := n.identity.Applied(), n.machineRef.Load(); st != nil && ref != nil && len(st.Machine) > 0 {
+		vs = append(vs, entity.SecretVersion{Secret: *ref, Version: st.Machine[0].Number})
 	}
 	return vs
 }

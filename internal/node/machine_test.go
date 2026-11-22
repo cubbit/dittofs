@@ -20,12 +20,16 @@ import (
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
+	"github.com/cubbit/dittofs/internal/node/step"
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/secrets"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 const (
@@ -67,11 +71,13 @@ type machine struct {
 	p      *secrets.Provider
 	dc     *identitytest.DomainController
 	faults *dcFaults
-	keys   int // the Idempotency-Keys sent
+	kv     *kvtest.FaultKV // the node's store, as its last start wrapped it
+	keys   int             // the Idempotency-Keys sent
 }
 
-// newMachine builds the node, in memory unless onDisk, writes its directory
-// record, calls each of before on its node, and starts it.
+// newMachine builds the node over a FaultKV, in memory unless onDisk,
+// writes its directory record, calls each of before on its node, and
+// starts it.
 func newMachine(t *testing.T, onDisk bool, before ...func(*node.Node)) *machine {
 	t.Helper()
 	dir := identitytest.NewDirectory("DC=corp,DC=example")
@@ -96,8 +102,12 @@ func newMachine(t *testing.T, onDisk bool, before ...func(*node.Node)) *machine 
 
 	m := &machine{dc: dc, faults: &dcFaults{m: map[string]error{}}}
 	signing := func(context.Context) ([]byte, error) { return []byte("installation"), nil }
-	opts := []nodetest.Option{nodetest.Watch(),
-		nodetest.WithNew(node.NewWithDialers(dir.Dial, identitytest.NewFaultyDomainController(dc, m.faults), admin, signing))}
+	build := node.NewWithDialers(dir.Dial, identitytest.NewFaultyDomainController(dc, m.faults), admin, signing)
+	opts := []nodetest.Option{nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		m.kv = kvtest.NewFaultKV(cfg.KV)
+		cfg.KV = m.kv
+		return build(cfg)
+	})}
 	if !onDisk {
 		opts = append(opts, nodetest.InMemory())
 	}
@@ -452,4 +462,73 @@ func TestARotationTheRunnerFailsBacksTheScheduleOff(t *testing.T) {
 		}
 	}
 	t.Fatal("no rotation started within 10 min of the hour passing")
+}
+
+// installationWrite is the installation record's write, as a FaultKV rule
+// names it.
+var installationWrite = keys.Describe([]byte{keys.KindIN})
+
+// errWriteFailed is an installation write the store refuses as a failure of
+// the operation writing it, which the runner does not retry.
+var errWriteFailed = fmt.Errorf("%w: the installation's write refused", step.ErrStepFailed)
+
+// A rotation whose End is refused still records the last rotation failed:
+// the runner's second commit writes the failure with the kind's failed
+// write, so the schedule backs off from it. The rotation writes the
+// installation twice, the sealed version's reference and then its End, so
+// the second write is refused. Catches a fallback that records the failure
+// bare after an End, which leaves the schedule restarting the rotation
+// every minute.
+func TestARotationWhoseEndIsRefusedIsRecordedFailed(t *testing.T) {
+	m := newMachine(t, false)
+	m.join(t)
+	before := m.installation(t).Join.LastRotation
+	setFault(t, m.kv, nil, sim.Rule{Op: kvtest.OpSet, Key: installationWrite, From: 2, Count: 1, Action: sim.FaultAction{Err: errWriteFailed}})
+	op := m.ended(t, m.post(t, "rotate-machine-password", ""))
+	if op.State != entity.OpFailed || !bytes.Contains(op.Error, []byte("the installation's write refused")) {
+		t.Fatalf("a rotation whose End is refused: ended %v with %s, want failed naming the refused write", op.State, op.Error)
+	}
+	if lr := m.installation(t).Join.LastRotation; before.Failed || !lr.Failed || lr.Version != before.Version {
+		t.Fatalf("the last rotation once its End was refused: %+v (before the rotation %+v), want failed at the version before", lr, before)
+	}
+}
+
+// A rotation that fails while every write of the installation is refused,
+// its failed write among them, ends failed all the same: the runner's
+// second commit records the failure bare. Catches a second commit that
+// reruns the refused failed write, which leaves the rotation running,
+// holding the running index against every join and rotation, and its step
+// rerun at every backoff.
+func TestARotationWhoseFailedWriteIsRefusedEndsFailed(t *testing.T) {
+	m := newMachine(t, false)
+	m.join(t)
+	before := m.installation(t).Join.LastRotation
+	setFault(t, m.kv, nil, sim.Rule{Op: kvtest.OpSet, Key: installationWrite, Action: sim.FaultAction{Err: errWriteFailed}})
+	op := m.ended(t, m.post(t, "rotate-machine-password", ""))
+	if op.State != entity.OpFailed {
+		t.Fatalf("a rotation whose failed write is refused: ended %v with %s, want failed", op.State, op.Error)
+	}
+	if lr := m.installation(t).Join.LastRotation; lr != before {
+		t.Fatalf("the last rotation once its failed write was refused: %+v, want unchanged %+v", lr, before)
+	}
+}
+
+// A machine password that does not read at a settings change keeps the
+// versions and the join identity last applied. Catches a fallback that
+// applies no machine account, which stops every pass-through until the
+// record reads again.
+func TestAMachinePasswordThatDoesNotReadKeepsTheLast(t *testing.T) {
+	m := newMachine(t, false)
+	m.join(t)
+	setFault(t, m.kv, nil, sim.Rule{Op: kvtest.OpGet, Key: installationWrite, Action: sim.FaultAction{Err: errors.New("the installation does not read")}})
+	gen := m.h.Node().Positions().Settings
+	putSetting(t, m.h, "identity.ntlm", "true")
+	for deadline := time.Now().Add(10 * time.Second); m.h.Node().Positions().Settings <= gen; turn(m.h) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the settings position within 10 s: %d, want past %d", m.h.Node().Positions().Settings, gen)
+		}
+	}
+	if st := m.h.Node().AppliedIdentity(); len(st.Machine) == 0 || !st.Join.Joined {
+		t.Fatalf("identity once the machine password did not read: %d versions, joined %v; want the last kept", len(st.Machine), st.Join.Joined)
+	}
 }

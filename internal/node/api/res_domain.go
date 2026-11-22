@@ -52,11 +52,10 @@ type opStart struct {
 	check   func(tx entity.ControlPlaneTx, in entity.Installation) error
 }
 
-// The settings and secret owner the domain's routes read and write.
+// The settings the domain's routes read and write.
 const (
-	directoryBase   = "identity.directory.base"
-	directoryRealm  = "identity.directory.realm"
-	machinePassword = "machine_password"
+	directoryBase  = "identity.directory.base"
+	directoryRealm = "identity.directory.realm"
 )
 
 // maxDirectoryName bounds a principal's name, a Kerberos name, a computer
@@ -450,12 +449,12 @@ func handOver(ctx context.Context, rq request[apiv1.JoinDomain], password []byte
 	if ref == (entity.SecretRef{}) {
 		ref = entity.SecretRef(entity.NewShareID())
 	}
-	owner := entity.SecretOwner{Record: installationRef(in), Key: machinePassword}
+	owner := in.MachinePasswordOwner()
 	sealed, err := rq.d.Sealer.Seal(ctx, entity.SecretMachinePassword, owner, ref, password, true)
 	if err != nil {
 		return entity.Secret{}, err
 	}
-	err = rq.own(ctx, installationRef(in), []byte(`{"`+machinePassword+`":"set"}`), func(tx entity.ControlPlaneTx) error {
+	err = rq.own(ctx, installationRef(in), []byte(`{"`+owner.Key+`":"set"}`), func(tx entity.ControlPlaneTx) error {
 		cur, err := tx.Installation()
 		if err != nil {
 			return err

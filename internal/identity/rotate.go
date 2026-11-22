@@ -67,12 +67,6 @@ type rotateResult struct {
 	Read    uint32 `json:"read"`
 }
 
-// machineOwner is the machine password's owner: the installation record's
-// machine_password field.
-func machineOwner(in entity.Installation) entity.SecretOwner {
-	return entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceInstallation, ID: in.ID[:]}, Key: "machine_password"}
-}
-
 // RotateProgress is the rotation's progress, read from its cursor.
 func (s *Server) RotateProgress(_ context.Context, op entity.Operation) apiv1.Progress {
 	var c rotateCursor
@@ -93,9 +87,10 @@ func (s *Server) RotateStep(ctx context.Context, op entity.Operation) (step.Step
 	// operation as a fault the step records nothing for: it is a programming
 	// or storage fault, not a rotation the controller or this node refused.
 	// The node's runner still records the last rotation failed for every
-	// rotation it fails, so the schedule backs off from it and
-	// machine_password_rotation_failed is raised. Overturned if such a cursor
-	// is shown to arise from a rotation's own course.
+	// rotation it fails while the installation is joined, so the schedule
+	// backs off from it and machine_password_rotation_failed is raised.
+	// Overturned if such a cursor is shown to arise from a rotation's own
+	// course.
 	var c rotateCursor
 	if len(op.Step) > 0 {
 		if err := json.Unmarshal(op.Step, &c); err != nil {
@@ -279,7 +274,7 @@ func (r *rotation) start(ctx context.Context, op entity.Operation) error {
 			// rest (RFC 13 §7). A cut that failed half way through rolls back
 			// with the whole write.
 			pruneErr = r.s.deps.Secrets.Prune(
-				ctx, tx, entity.SecretMachinePassword, machineOwner(in), in.MachinePassword,
+				ctx, tx, entity.SecretMachinePassword, in.MachinePasswordOwner(), in.MachinePassword,
 			)
 			if pruneErr != nil {
 				return pruneErr
@@ -337,7 +332,7 @@ func (r *rotation) start(ctx context.Context, op entity.Operation) error {
 		// schedule, and the next scheduled one prunes again. Overturned if a
 		// transient provider error is shown to fail rotations a retry would
 		// save.
-		return r.fail(ctx, fmt.Sprintf("prune the machine password: %v", pruneErr))
+		return r.fail(fmt.Sprintf("prune the machine password: %v", pruneErr))
 	}
 
 	r.c.Phase = phasePin
@@ -392,7 +387,7 @@ func (r *rotation) previous(ctx context.Context) error {
 	case r.c.Waiting.IsZero():
 		r.c.Waiting = now
 	case now.Sub(r.c.Waiting) >= unanswered:
-		return r.fail(ctx, fmt.Sprintf("this node does not hold the machine password's version %d after %v", cur.Version, unanswered))
+		return r.fail(fmt.Sprintf("this node does not hold the machine password's version %d after %v", cur.Version, unanswered))
 	}
 	return nil
 }
@@ -418,7 +413,7 @@ func (r *rotation) seal(ctx context.Context) error {
 	}
 	pw := newMachinePassword()
 	defer clear(pw)
-	sec, err := r.s.deps.Secrets.Seal(ctx, secrets.Protocol, entity.SecretMachinePassword, machineOwner(r.in), ref, pw,
+	sec, err := r.s.deps.Secrets.Seal(ctx, secrets.Protocol, entity.SecretMachinePassword, r.in.MachinePasswordOwner(), ref, pw,
 		secrets.Meta{KeyVersion: acct.KeyVersion + 1})
 	if err != nil {
 		return err
@@ -457,7 +452,7 @@ func (r *rotation) applied() {
 
 // versions are the machine password's versions, current first.
 func (r *rotation) versions(ctx context.Context) ([]secrets.Version, error) {
-	return r.s.deps.Secrets.Versions(ctx, secrets.Protocol, entity.SecretMachinePassword, machineOwner(r.in), r.in.MachinePassword)
+	return r.s.deps.Secrets.Versions(ctx, secrets.Protocol, entity.SecretMachinePassword, r.in.MachinePasswordOwner(), r.in.MachinePassword)
 }
 
 // value is the sealed version's password among vs. A version no longer held,
@@ -465,7 +460,7 @@ func (r *rotation) versions(ctx context.Context) ([]secrets.Version, error) {
 func (r *rotation) value(ctx context.Context, vs []secrets.Version) ([]byte, error) {
 	i := slices.IndexFunc(vs, func(v secrets.Version) bool { return v.Number == r.c.Version })
 	if i < 0 {
-		return nil, r.fail(ctx, fmt.Sprintf("the machine password's version %d is no longer held", r.c.Version))
+		return nil, r.fail(fmt.Sprintf("the machine password's version %d is no longer held", r.c.Version))
 	}
 	return vs[i].Value, nil
 }
@@ -509,11 +504,11 @@ func (r *rotation) set(ctx context.Context) error {
 		}
 	}
 	if ch == nil {
-		return r.fail(ctx, fmt.Sprintf("domain controller %s accepts none of the machine password's versions", r.c.DC))
+		return r.fail(fmt.Sprintf("domain controller %s accepts none of the machine password's versions", r.c.DC))
 	}
 	defer func() { _ = ch.Close() }()
 	if err := ch.SetPassword(ctx, pw); errors.Is(err, netlogon.ErrRejected) {
-		return r.fail(ctx, fmt.Sprintf("domain controller %s refused the machine password's version %d: %v", r.c.DC, r.c.Version, err))
+		return r.fail(fmt.Sprintf("domain controller %s refused the machine password's version %d: %v", r.c.DC, r.c.Version, err))
 	} else if err != nil {
 		// The set may have reached the controller; the next turn's probe
 		// settles it.
@@ -589,7 +584,7 @@ func (r *rotation) confirm(ctx context.Context) (step.StepResult, error) {
 	}
 	defer func() { _ = p.dc.Close() }()
 	if !p.accepted {
-		return step.StepResult{}, r.fail(ctx, fmt.Sprintf("domain controller %s no longer accepts the machine password's version %d", r.c.DC, r.c.Version))
+		return step.StepResult{}, r.fail(fmt.Sprintf("domain controller %s no longer accepts the machine password's version %d", r.c.DC, r.c.Version))
 	}
 	acct, err := r.accountAt(ctx, p.dc)
 	if err != nil {
@@ -676,27 +671,28 @@ func (r *rotation) noAnswer(ctx context.Context, err error) error {
 	if name == "" {
 		name = r.st.Directory.Realm
 	}
-	return r.fail(ctx, fmt.Sprintf("domain controller %s unanswered for %v: %v", name, unanswered, err))
+	return r.fail(fmt.Sprintf("domain controller %s unanswered for %v: %v", name, unanswered, err))
 }
 
-// fail records the last rotation failed, moving its time and leaving the
-// version and the confirm as they were, then answers the problem that fails
-// the operation.
-func (r *rotation) fail(ctx context.Context, detail string) error {
-	// The turn's bound may have ended ctx; the record is still written.
-	err := r.s.deps.ControlPlane.Write(context.WithoutCancel(ctx), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-		in, err := tx.Installation()
-		if err != nil {
-			return err
-		}
-		j := in.Join
-		j.LastRotation.At, j.LastRotation.Failed = tx.Now(), true
-		return tx.SetMachineJoin(j)
-	})
-	if err != nil {
+// fail answers the problem that fails the operation. The runner that fails
+// it writes RotateFailed beside its record.
+func (r *rotation) fail(detail string) error {
+	return problem(http.StatusServiceUnavailable, apiv1.CodeUnavailable, detail)
+}
+
+// RotateFailed records the installation's last machine password rotation
+// failed now, moving its time and leaving the version and the confirm as
+// they were, in tx, which the runner writes beside the record of every
+// rotation it fails; an installation not joined records nothing. The
+// schedule backs off from it, as it has no read of the last rotation ended.
+func (s *Server) RotateFailed(tx entity.ControlPlaneTx) error {
+	in, err := tx.Installation()
+	if err != nil || !in.Join.Joined {
 		return err
 	}
-	return problem(http.StatusServiceUnavailable, apiv1.CodeUnavailable, detail)
+	j := in.Join
+	j.LastRotation.At, j.LastRotation.Failed = tx.Now(), true
+	return tx.SetMachineJoin(j)
 }
 
 // bounded is ctx ended once channelBound passes on the server's clock, so a

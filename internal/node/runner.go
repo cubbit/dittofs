@@ -129,8 +129,9 @@ func (r *runner) turn(ctx context.Context) {
 // panic, fails the operation, any other is retried with the same cursor
 // after a wait, and a done step ends it with its Result and its End's
 // writes, an End's error or panic answered as a step's is. An operation
-// failed is written with its kind's failed writes. A step ctx interrupted
-// commits nothing, whatever it answered.
+// failed is written with its kind's failed writes; when those writes are
+// what failed the commit, the failure is recorded without them. A step ctx
+// interrupted commits nothing, whatever it answered.
 //
 // decision: an operation whose kind has no step stays pending, so a binary
 // that gains the step later runs it. Its kind is logged once and kept for
@@ -158,9 +159,10 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 	}
 	next := op
 	problem, fails := step.Failure(err)
+	end := res.End
 	switch {
 	case fails:
-		next.State, next.Error = entity.OpFailed, problem
+		next.State, next.Error, end = entity.OpFailed, problem, row.failed
 	case err != nil:
 		r.retry(ctx, op, now, err)
 		return
@@ -169,15 +171,15 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 	default:
 		next.State, next.Step = entity.OpRunning, res.Next
 	}
-	end := res.End
-	if fails {
-		end = row.failed
-	}
 	err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, end)
-	if problem, fails := step.Failure(err); fails {
+	if problem, refused := step.Failure(err); refused {
 		next = op
 		next.State, next.Error = entity.OpFailed, problem
-		err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, row.failed)
+		second := row.failed
+		if fails {
+			second = nil // row.failed itself was refused: record the failure bare
+		}
+		err = r.commit(ctx, op, next, before, row.progress(ctx, next).Phase, second)
 	}
 	if err != nil {
 		r.retry(ctx, op, now, err)

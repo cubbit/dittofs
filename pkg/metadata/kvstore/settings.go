@@ -97,14 +97,15 @@ func (c ControlPlane) Settings(ctx context.Context, scope entity.SettingScope) i
 	})
 }
 
-// raiseCfgGen raises the one settings generation every write of a setting or
-// a secret moves in its own transaction, and every node polls to re-read
-// settings, so each such write costs every node one reconcile walk.
+// raiseCfgGen raises the one settings generation every write of a setting, a
+// secret or the installation's Join moves in its own transaction, and every
+// node polls to re-read settings, so each such write costs every node one
+// reconcile walk.
 //
-// ponytail: one generation for every settings and secret write. This helper
-// serves the setting writes: the secret write, the principal removal and the
-// share removal raise the counter directly until the secrets work unifies
-// them. Upgrade to a generation per section, or secrets off CFGGEN with
+// ponytail: one generation for every settings, secret and Join write. This
+// helper serves the setting writes and SetMachineJoin: the secret write, the
+// principal removal and the share removal raise the counter directly until
+// the secrets work unifies them. Upgrade to a generation per section, or secrets off CFGGEN with
 // their own counter, when the commit rate of the secret-write benchmark
 // under this contention falls under half the rate of the same run without
 // the raise.

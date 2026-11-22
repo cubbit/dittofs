@@ -122,8 +122,9 @@ type Node struct {
 	// ending, when set, is called by step 3 of each share removal once its
 	// bound is set on the clock, before it waits on anything.
 	ending func(entity.ShareID)
-	// machineApplied is the machine account identity last applied.
-	machineApplied atomic.Pointer[machineState]
+	// machineRef is the machine password's reference last applied, which
+	// identity's State does not hold.
+	machineRef atomic.Pointer[entity.SecretRef]
 }
 
 // New resolves the adapters' addresses, refusing an adapters.listen it
@@ -334,7 +335,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	steps[string(apiv1.OpShareDelete)] = stepRow{run: n.shareDeletion, progress: n.removalProgress}
 	steps[string(apiv1.OpRotateSigningKey)] = n.rotationRow(p)
 	steps[string(apiv1.OpJoinDomain)] = stepRow{run: n.identity.JoinStep, progress: n.identity.JoinProgress}
-	steps[string(apiv1.OpRotateMachinePassword)] = stepRow{run: n.identity.RotateStep, progress: n.identity.RotateProgress, failed: rotationFailed}
+	steps[string(apiv1.OpRotateMachinePassword)] = stepRow{run: n.identity.RotateStep, progress: n.identity.RotateProgress, failed: n.identity.RotateFailed}
 	steps[string(apiv1.OpResolvePrincipal)] = stepRow{run: n.identity.ResolvePrincipalStep, progress: n.identity.ResolvePrincipalProgress}
 	steps[string(apiv1.OpTestDirectory)] = stepRow{run: n.identity.TestDirectoryStep, progress: n.identity.TestDirectoryProgress}
 	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node.ID, cfg.Logger, steps)
