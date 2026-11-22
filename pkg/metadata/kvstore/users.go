@@ -189,7 +189,9 @@ func fixedID(id entity.PrincipalID) bool { return [15]byte(id[:15]) == [15]byte{
 
 // PutUser creates a user, expect zero, or changes the one whose generation
 // expect names, raising its generation. A user marked deleted is not found,
-// and a put never marks one: the mark is DeleteUser's alone.
+// and a put never marks one: the mark is DeleteUser's alone. A reference to
+// a secret sealed for another holder or as another kind is refused, as
+// ownSecrets has it.
 func (c ControlPlane) PutUser(ctx context.Context, u entity.User, expect uint64, a entity.Alloc) (uint64, error) {
 	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutUser(u, expect, a) })
 }
@@ -303,8 +305,10 @@ func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint
 }
 
 // userShape refuses a user record of a shape no principal has: a
-// well-known or unminted principal, and a machine with anything but its one
-// Kerberos spelling. A user or group may have no name, as one minted from a
+// well-known or unminted principal, a password hash and NT hash naming one
+// secret, whose kind fits only one of the two fields once sealed, so every
+// deletion of the user would refuse it, and a machine with anything but its
+// one Kerberos spelling. A user or group may have no name, as one minted from a
 // directory whose name another principal holds: no name row finds it.
 //
 // decision: the shape is checked on every write, not only where a record is
@@ -314,6 +318,9 @@ func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint
 func userShape(u entity.User) error {
 	if fixedID(u.Principal.ID) {
 		return merrs.NewInvalidArgumentError("a user needs a minted principal")
+	}
+	if u.Password == u.NTHash && u.Password != (entity.SecretRef{}) {
+		return merrs.NewInvalidArgumentError("a user's password hash and NT hash are two secrets")
 	}
 	switch u.Principal.Kind {
 	case entity.PrincipalUser:
@@ -327,57 +334,43 @@ func userShape(u entity.User) error {
 	return merrs.NewInvalidArgumentError("a user record is a user or a machine")
 }
 
-// userSecretRef is a secret a user record names, with the kind and owner
-// each of its versions must carry: the user's record, under the field's name.
-type userSecretRef struct {
-	ref   entity.SecretRef
-	kind  entity.SecretKind
-	owner entity.SecretOwner
-}
-
-// userSecretRefs is u's password hash and NT hash references, the zero
-// reference among them when a field names none.
-func userSecretRefs(u entity.User) []userSecretRef {
-	owner := func(key string) entity.SecretOwner {
-		return entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: key}
-	}
-	return []userSecretRef{
-		{u.Password, entity.SecretPassword, owner("password")},
-		{u.NTHash, entity.SecretNTHash, owner("nt_hash")},
-	}
-}
-
-// holds refuses s unless it carries r's kind and owner.
-func (r userSecretRef) holds(s entity.Secret) error {
-	if s.Kind != r.kind || !s.Owner.Equal(r.owner) {
-		return merrs.NewInvalidArgumentError("a user's " + r.owner.Key + " names a secret sealed for another holder")
-	}
-	return nil
-}
-
-// ownSecrets refuses u when a secret its record names is held and was sealed
-// for another holder or as another kind, so a user's deletion, which takes
-// every version of each, never reaches another holder's. The current version
-// is read tracked, guarding every version, so a concurrent seal conflicts.
+// ownSecrets refuses u when a secret its record names is held, at its
+// current version, sealed for another holder or as another kind than the
+// field's. PutUser runs it on every write, and a user's deletion again in
+// the batch that deletes the record, which takes every version of each
+// secret the record names, so neither reaches another holder's. The current
+// version is read tracked, guarding every version, so a concurrent seal
+// conflicts.
 //
-// decision: a reference no secret holds yet is accepted, since a user's
-// reference is named before its first version is sealed; PutSecret keeps a
-// later version's kind and owner, and the deletion checks every version, so
-// a first version sealed for another holder is refused there instead.
-// Withdraw this if every caller comes to seal before it names.
+// decision: only the current version is checked, since PutSecret refuses a
+// version whose kind or owner differs from the current one's, so every
+// version carries the current one's. A reference no secret holds yet is
+// accepted, since a user's reference is named before its first version is
+// sealed; a first version then sealed under it for another holder is
+// refused by the deletion instead. That refusal fails the deletion closed:
+// the batch is refused as an invalid argument, the deletion's operation
+// fails, and the record stays marked with every version of its secrets,
+// rather than taking another holder's secret or leaving the user's own
+// password-equivalent behind. Nothing resumes such a deletion yet. Withdraw
+// the acceptance if every caller comes to seal before it names.
 func (c controlTx) ownSecrets(u entity.User) error {
-	for _, r := range userSecretRefs(u) {
-		if r.ref == (entity.SecretRef{}) {
+	for _, f := range []struct {
+		ref  entity.SecretRef
+		kind entity.SecretKind
+		key  string
+	}{
+		{u.Password, entity.SecretPassword, entity.UserPasswordKey},
+		{u.NTHash, entity.SecretNTHash, entity.UserNTHashKey},
+	} {
+		if f.ref == (entity.SecretRef{}) {
 			continue
 		}
-		s, ok, err := c.Secret(r.ref, 0)
+		s, ok, err := c.Secret(f.ref, 0)
 		if err != nil {
 			return err
 		}
-		if ok {
-			if err := r.holds(s); err != nil {
-				return err
-			}
+		if ok && (s.Kind != f.kind || !s.Owner.Equal(entity.UserSecretOwner(u.Principal.ID, f.key))) {
+			return merrs.NewInvalidArgumentError("a user's " + f.key + " names a secret sealed for another holder")
 		}
 	}
 	return nil

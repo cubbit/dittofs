@@ -247,7 +247,7 @@ func (s *Server) signInLocal(ctx context.Context, step identity.SignInStep, proo
 	}
 	ntHash := s.dummyNT
 	// The NT hash is owned by the user's record under "nt_hash" (RFC 16 §2.3).
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: u.Principal.ID[:]}, Key: "nt_hash"}
+	owner := entity.UserSecretOwner(u.Principal.ID, entity.UserNTHashKey)
 	ref := u.NTHash
 	if oc != outcomeOK {
 		ref = s.dummyRef

@@ -130,7 +130,7 @@ func ResetAdmin(ctx context.Context, d ResetDeps) error {
 	next := u
 	next.MustChange = true
 	next.Password = orNew(u.Password)
-	pw, err := p.Seal(ctx, secrets.Storage, entity.SecretPassword, userSecretOwner(u, "password"), next.Password, h.Password, secrets.Meta{})
+	pw, err := p.Seal(ctx, secrets.Storage, entity.SecretPassword, entity.UserSecretOwner(u.Principal.ID, entity.UserPasswordKey), next.Password, h.Password, secrets.Meta{})
 	if err != nil {
 		return fmt.Errorf("install: seal the account %q's password: %w", d.Name, err)
 	}
@@ -156,7 +156,7 @@ func ResetAdmin(ctx context.Context, d ResetDeps) error {
 		// pkg/secrets exports no kind-to-role lookup; Seal refuses a role its
 		// kind is not sealed under, so a drift fails closed. Overturned once
 		// pkg/secrets exports its table.
-		if nt, err = p.Seal(ctx, secrets.Protocol, entity.SecretNTHash, userSecretOwner(u, "nt_hash"), ntRef, ntValue, secrets.Meta{}); err != nil {
+		if nt, err = p.Seal(ctx, secrets.Protocol, entity.SecretNTHash, entity.UserSecretOwner(u.Principal.ID, entity.UserNTHashKey), ntRef, ntValue, secrets.Meta{}); err != nil {
 			return fmt.Errorf("install: seal the account %q's NT hash: %w", d.Name, err)
 		}
 	}

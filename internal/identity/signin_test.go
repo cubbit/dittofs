@@ -113,7 +113,7 @@ func (r *resolving) sealNTHash(t *testing.T, p *secrets.Provider, u *entity.User
 	t.Helper()
 	ctx := context.Background()
 	u.NTHash = entity.SecretRef(uuid.New())
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: "nt_hash"}
+	owner := entity.UserSecretOwner(u.Principal.ID, entity.UserNTHashKey)
 	sec, err := p.Seal(ctx, secrets.Protocol, entity.SecretNTHash, owner, u.NTHash, hash, secrets.Meta{})
 	if err != nil {
 		t.Fatal(err)

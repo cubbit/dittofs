@@ -16,7 +16,10 @@ import (
 // version of each share whose grant it drops; its memberships, both ways for
 // a group; its quota records; and, for a user, its API tokens, its sessions
 // and its account's sign-in count. The batch that finds none of them left
-// deletes the record and, for a user, every version of each secret it names.
+// deletes the record and, for a user, every version of each secret it names;
+// a user whose record names a secret sealed for another holder or as another
+// kind is refused there as an invalid argument, left marked with its record
+// and every version of its secrets, and nothing resumes its deletion yet.
 // Files keep naming p, as an unknown principal. A user's deletion of a
 // machine's ID deletes the machine; a record of any other kind than p's
 // refuses.
@@ -44,11 +47,10 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 		return !ok, err
 	}
 	var marked bool
-	var secrets []userSecretRef
+	var u entity.User
 	var ids entity.ProtocolIDs
 	if p.Kind != entity.PrincipalGroup {
-		u, err := decodeUser(p.ID, b)
-		if err != nil {
+		if u, err = decodeUser(p.ID, b); err != nil {
 			return false, err
 		}
 		if u.Principal.Kind != p.Kind {
@@ -59,7 +61,7 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 			}
 			p = u.Principal
 		}
-		marked, secrets, ids = u.Deleted, userSecretRefs(u), u.IDs
+		marked, ids = u.Deleted, u.IDs
 	} else {
 		g, err := decodeGroup(p.ID, b)
 		if err != nil {
@@ -105,7 +107,10 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 	if d.took {
 		return false, nil
 	}
-	if err := deleteRecord(tx, p, ids, secrets...); err != nil {
+	if err := ctl.ownSecrets(u); err != nil { // a group's zero u names none
+		return false, err
+	}
+	if err := deleteRecord(tx, p, ids, u.Password, u.NTHash); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -279,14 +284,8 @@ func (b *batch) dropSignInCount(p entity.Principal) error {
 // password hash and its NT hash.
 //
 // decision: the secret is deleted by the reference the owner's own record
-// holds, and every version is checked to carry the kind and owner that
-// record's field gives it before any goes, so the store deletes them itself
-// rather than through the secrets service. A version sealed for another
-// holder refuses the batch, failing the deletion closed: it is left marked
-// for an operator rather than taking another holder's secret or leaving a
-// password-equivalent behind. PutUser refuses a reference to another
-// holder's secret, so only a record written before that check, or a secret
-// sealed under a reference a record already named, can reach the refusal.
+// holds, its owner checked by ownSecrets in the same batch, so the store
+// deletes its versions itself rather than through the secrets service.
 // A reference read from anywhere but its owner's record goes through that
 // service. Every secret change raises the settings generation, so every node
 // stops resolving the secret.
@@ -294,7 +293,7 @@ func (b *batch) dropSignInCount(p entity.Principal) error {
 // ponytail: every version goes in this one transaction, which holds as long
 // as a secret keeps a current version and the few it replaced. Delete the
 // versions in batches if retention ever keeps many.
-func deleteRecord(tx kv.Txn, p entity.Principal, ids entity.ProtocolIDs, secrets ...userSecretRef) error {
+func deleteRecord(tx kv.Txn, p entity.Principal, ids entity.ProtocolIDs, secrets ...entity.SecretRef) error {
 	if _, err := raise(tx, pgenKey); err != nil {
 		return err
 	}
@@ -308,24 +307,12 @@ func deleteRecord(tx kv.Txn, p entity.Principal, ids entity.ProtocolIDs, secrets
 	var versions [][]byte
 	named := false
 	for _, secret := range secrets {
-		if secret.ref == (entity.SecretRef{}) {
+		if secret == (entity.SecretRef{}) {
 			continue
 		}
 		named = true
-		prefix := secretPrefix(secret.ref)
-		for row, err := range tx.Scan(prefix, nil) {
+		for row, err := range tx.Scan(keys.ID([]byte{keys.KindSEC}, secret[:]), nil) {
 			if err != nil {
-				return err
-			}
-			v, err := secretVersion(prefix, row.Key)
-			if err != nil {
-				return err
-			}
-			s, err := decodeSecret(secret.ref, v, row.Value)
-			if err != nil {
-				return err
-			}
-			if err := secret.holds(s); err != nil {
 				return err
 			}
 			versions = append(versions, slices.Clone(row.Key))

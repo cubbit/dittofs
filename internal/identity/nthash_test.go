@@ -101,7 +101,7 @@ func (d *ntDrop) open(init bool) {
 // seal seals value as version expect+1 of u's secret ref of kind, owned by
 // u's record under field, in tx.
 func (d *ntDrop) seal(tx entity.ControlPlaneTx, role secrets.Role, kind entity.SecretKind, u entity.User, field string, ref entity.SecretRef, value []byte, expect uint64) (entity.Secret, error) {
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: field}
+	owner := entity.UserSecretOwner(u.Principal.ID, field)
 	sec, err := d.p.Seal(context.Background(), role, kind, owner, ref, value, secrets.Meta{})
 	if err != nil {
 		return sec, err

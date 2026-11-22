@@ -1,7 +1,6 @@
 package kvstoretest
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -51,12 +50,12 @@ func testDeletedUserLeavesNoSecret(t *testing.T, kvo Opener) {
 		kind  entity.SecretKind
 		ref   entity.SecretRef
 	}{
-		{"password", secrets.Storage, entity.SecretPassword, u.Password},
-		{"nt_hash", secrets.Protocol, entity.SecretNTHash, u.NTHash},
+		{entity.UserPasswordKey, secrets.Storage, entity.SecretPassword, u.Password},
+		{entity.UserNTHashKey, secrets.Protocol, entity.SecretNTHash, u.NTHash},
 	}
 	for v := range uint64(2) {
 		for _, r := range refs {
-			owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: r.field}
+			owner := entity.UserSecretOwner(u.Principal.ID, r.field)
 			sec, err := p.Seal(ctx, r.role, r.kind, owner, r.ref, fmt.Appendf(nil, "%s %d", r.field, v+1), secrets.Meta{})
 			must(t, err)
 			must(t, cp.PutSecret(ctx, sec, v))
@@ -93,7 +92,7 @@ func testRepointedNTHashSurvivesItsPredecessor(t *testing.T, kvo Opener) {
 	u.NTHash = first
 	gen, err := cp.PutUser(ctx, u, 0, entity.Alloc{})
 	must(t, err)
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: "nt_hash"}
+	owner := entity.UserSecretOwner(u.Principal.ID, entity.UserNTHashKey)
 	for _, ref := range []entity.SecretRef{first, second} {
 		sec, err := p.Seal(ctx, secrets.Protocol, entity.SecretNTHash, owner, ref, ref[:], secrets.Meta{})
 		must(t, err)

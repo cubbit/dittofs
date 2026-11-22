@@ -1,7 +1,6 @@
 package identity_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -179,7 +178,7 @@ func (r *resolving) withPassword(t *testing.T, u *entity.User, password string, 
 func (r *resolving) sealPassword(t *testing.T, p *secrets.Provider, u entity.User, hash []byte) {
 	t.Helper()
 	ctx := context.Background()
-	owner := entity.SecretOwner{Record: entity.ResourceRef{Kind: entity.ResourceUser, ID: bytes.Clone(u.Principal.ID[:])}, Key: "password"}
+	owner := entity.UserSecretOwner(u.Principal.ID, entity.UserPasswordKey)
 	sec, err := p.Seal(ctx, secrets.Storage, entity.SecretPassword, owner, u.Password, hash, secrets.Meta{})
 	if err != nil {
 		t.Fatal(err)
