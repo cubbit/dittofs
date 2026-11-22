@@ -229,8 +229,9 @@ func trackedRepack(err error, lies bool, out **repackFault) func(*engine.Deps) {
 			dir string,
 			floor journal.Version,
 			id journal.JournalID,
+			marks []entity.SyncMark,
 		) (engine.Journal, error) {
-			j, err2 := open(ctx, dir, floor, id)
+			j, err2 := open(ctx, dir, floor, id, marks)
 
 			*out = &repackFault{Journal: j, err: err, lies: lies}
 
@@ -1331,8 +1332,9 @@ func recordBudgets(out **budgetRecorder) func(*engine.Deps) {
 			dir string,
 			floor journal.Version,
 			id journal.JournalID,
+			marks []entity.SyncMark,
 		) (engine.Journal, error) {
-			j, err := open(ctx, dir, floor, id)
+			j, err := open(ctx, dir, floor, id, marks)
 
 			*out = &budgetRecorder{Journal: j}
 

@@ -55,12 +55,13 @@ func withOpens(answers ...error) starterOption {
 			dir string,
 			floor journal.Version,
 			expect journal.JournalID,
+			marks []entity.SyncMark,
 		) (engine.Journal, error) {
 			if err := o.next(); err != nil {
 				return nil, err
 			}
 
-			return inner(ctx, dir, floor, expect)
+			return inner(ctx, dir, floor, expect, marks)
 		}
 	})
 }

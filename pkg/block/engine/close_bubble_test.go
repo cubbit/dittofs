@@ -242,6 +242,7 @@ func (b *bubble) open(
 	_ string,
 	_ journal.Version,
 	_ journal.JournalID,
+	_ []entity.SyncMark,
 ) (engine.Journal, error) {
 	if b.openFn != nil {
 		return b.openFn(ctx)

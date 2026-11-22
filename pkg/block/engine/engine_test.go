@@ -28,7 +28,7 @@ func fullDeps() Deps {
 	return Deps{
 		Node:    entity.NodeID{1},
 		Devices: []string{"/dev0"},
-		Open: func(context.Context, string, journal.Version, journal.JournalID) (Journal, error) {
+		Open: func(context.Context, string, journal.Version, journal.JournalID, []entity.SyncMark) (Journal, error) {
 			return nil, nil
 		},
 		Existence: existence{},

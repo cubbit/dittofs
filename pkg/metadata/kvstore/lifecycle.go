@@ -142,6 +142,60 @@ func (l Lifecycle) JournalID(
 	return id, err
 }
 
+// SyncMarks is journal j's recorded sync marks, for its Open, and the open
+// generation it raises J‖journal‖og to in the same transaction, which every
+// marks write of that open carries. An og never raised reads as 0. A mark
+// that does not decode is left out, as absent, and fails nothing; a non-nil
+// error means the transaction failed and og was not raised.
+//
+// decision: the store holds no logger, so a mark left out is not logged
+// with its stream as RFC 16 asks: the open treats its stream as having no
+// recorded mark, and the next marks write carrying that stream replaces it.
+// Log it once the store is given a logger.
+func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.SyncMark, gen OpenGen, err error) {
+	err = l.s.kv.Update(ctx, func(tx kv.Txn) error {
+		marks = nil
+
+		var og uint64
+		b, ok, err := get(tx, openGenKey(j))
+		if err != nil {
+			return err
+		}
+		if ok {
+			if og, err = decodeCounter(b); err != nil {
+				return err
+			}
+		}
+
+		og++
+		if err := tx.Set(openGenKey(j), encodeCounter(og)); err != nil {
+			return err
+		}
+		gen = OpenGen(og)
+
+		pre := syncMarksPrefix(j)
+		for row, err := range tx.Scan(pre, nil) {
+			if err != nil {
+				return err
+			}
+			s, _, kerr := keys.ReadUint64(row.Key[len(pre):])
+			m, derr := decodeSyncMark(row.Value)
+			if kerr != nil || derr != nil {
+				continue
+			}
+			m.Stream = uint32(s)
+			marks = append(marks, m)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return marks, gen, nil
+}
+
 // RecordJournal records journal id as living on node's device, the store's
 // part of creating or adopting a journal: the initialisation step calls it
 // after the journal's Init, and a recovery import for each journal it adopts.

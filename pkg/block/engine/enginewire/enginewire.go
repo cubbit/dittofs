@@ -64,8 +64,12 @@ func Compose(p Params) (*openstate.Table, engine.Deps, error) {
 	return open, engine.Deps{
 		Node:    p.Node,
 		Devices: p.Devices,
-		Open: func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
-			j, err := journal.Open(ctx, dir, floor, expect, nil, journalOptions(p, expect)...)
+		Open: func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID, recorded []entity.SyncMark) (engine.Journal, error) {
+			marks := make([]journal.SyncMark, len(recorded))
+			for i, m := range recorded {
+				marks[i] = journal.SyncMark(m)
+			}
+			j, err := journal.Open(ctx, dir, floor, expect, marks, journalOptions(p, expect)...)
 			if err != nil {
 				return nil, err
 			}

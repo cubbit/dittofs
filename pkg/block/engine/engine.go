@@ -75,6 +75,7 @@ type Engine struct {
 
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                        // each journal's group commit
+	opens           map[Journal]marks                               // each opened journal's identity and open generation, for its group commit
 	gcsClosed       bool                                            // the group commits were closed: none starts again
 	conflictBound   atomic.Int64                                    // nanoseconds: see bounded
 	splits          atomic.Int64                                    // engine_group_commit_splits_total

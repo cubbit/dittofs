@@ -379,12 +379,13 @@ func (c *bench) awaitSizes(b *testing.B, want int64, deadline time.Duration) {
 // its first spares and hands it to the engine.
 func openJournal(
 	clock journal.Clock,
-) func(context.Context, string, journal.Version, journal.JournalID) (engine.Journal, error) {
+) func(context.Context, string, journal.Version, journal.JournalID, []entity.SyncMark) (engine.Journal, error) {
 	return func(
 		ctx context.Context,
 		dir string,
 		floor journal.Version,
 		expect journal.JournalID,
+		_ []entity.SyncMark,
 	) (engine.Journal, error) {
 		j, err := journal.Open(ctx, dir, floor, expect, nil, journal.WithClock(clock),
 			journal.WithSettings(benchJournalSettings))

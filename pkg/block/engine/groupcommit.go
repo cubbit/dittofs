@@ -55,12 +55,10 @@ type groupCommit struct {
 	cap capState // the journal's refusals: passes running, failing steps, journal_full's figures
 }
 
-// marks is what a group commit knows of its journal's sync marks.
-//
-// decision: nothing opens a journal yet, so a group commit records its marks
-// under the zero identity at open generation 0, which a J‖journal‖og never
-// raised matches. Withdraw this when Start opens the journal: it sets both,
-// the generation from Lifecycle.SyncMarks, before the first group commit.
+// marks is what a group commit knows of its journal's sync marks. Its
+// journal and gen are the ones Start read for the open (noteOpen); a journal
+// no start opened, a fixture's, records under the zero identity at open
+// generation 0, which a J‖journal‖og never raised matches.
 type marks struct {
 	journal   [16]byte          // the journal's identity
 	gen       kvstore.OpenGen   // the open generation of the journal's current open
@@ -210,6 +208,7 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	g := &groupCommit{
 		e:        e,
 		j:        j,
+		marks:    e.opens[j],
 		due:      map[entity.FileID]*dueFile{},
 		returned: make(chan struct{}),
 		wake:     make(chan struct{}, 1),
@@ -238,6 +237,17 @@ func (e *Engine) groupCommitFor(j Journal) *groupCommit {
 	go g.run()
 	go g.removals.run()
 	return g
+}
+
+// noteOpen notes the identity and open generation Start read for journal j's
+// open, which its group commit's marks writes carry.
+func (e *Engine) noteOpen(j Journal, id [16]byte, gen kvstore.OpenGen) {
+	e.gcMu.Lock()
+	defer e.gcMu.Unlock()
+	if e.opens == nil {
+		e.opens = map[Journal]marks{}
+	}
+	e.opens[j] = marks{journal: id, gen: gen}
 }
 
 // halt stops the group commit's goroutine and joins it within the bound b,
