@@ -189,6 +189,7 @@ type Server struct {
 	mints      *prometheus.CounterVec   // by kind
 	unnamed    *prometheus.CounterVec   // by kind
 	remapped   *prometheus.CounterVec   // by kind
+	renamedOff *prometheus.CounterVec   // by kind: records a later answer left without a name
 	skipped    *prometheus.CounterVec   // by reason
 	pacDropped *prometheus.CounterVec   // by reason
 	unmapped   *prometheus.CounterVec   // by scheme
@@ -220,6 +221,7 @@ type Server struct {
 
 	beforeMachineMint func() // a test's pause just before a machine's mint plan returns its batch; nil in production
 	beforeMachineLink func() // a test's pause just before a machine's link is written; nil in production
+	beforeRename      func() // a test's pause between a refresh's plan and its Rename; nil in production
 }
 
 // Conditions appends identity's conditions: the node's
@@ -279,6 +281,7 @@ func New(d Deps) (*Server, error) {
 	s.mints = counter(d.Metrics, mintsSpec)
 	s.unnamed = counter(d.Metrics, unnamedSpec)
 	s.remapped = counter(d.Metrics, remappedSpec)
+	s.renamedOff = counter(d.Metrics, renamesUnnamedSpec)
 	s.skipped = counter(d.Metrics, skippedSpec)
 	s.pacDropped = counter(d.Metrics, pacDroppedSpec)
 	s.unmapped = counter(d.Metrics, unmappedSpec)

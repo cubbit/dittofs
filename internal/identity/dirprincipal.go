@@ -219,6 +219,14 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 		return entity.Principal{}, fmt.Errorf("%w: identity: the directory answered an entry with no ID", vfserr.ErrUnavailable)
 	}
 	p, err := s.byDir(ctx, a.EntryID)
+	// decision: a lookup without mint never refreshes the record it finds,
+	// so a call that proved nothing, such as lsarpc on IPC$, writes nothing,
+	// as it mints nothing. Its answer still binds; a later lookup with mint
+	// settles the name. Overturned if a stale name is seen to outlive the
+	// sign-ins that would refresh it.
+	if err == nil && mint {
+		return p, s.refresh(ctx, st, []dirBound{{p, a}})
+	}
 	if !mint || !errors.Is(err, vfserr.ErrUnknownPrincipal) {
 		return p, err
 	}
@@ -268,10 +276,10 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 		id uint32
 	}
 	var remapped []remap
+	var bound []dirBound // the entries already minted, refreshed from this answer once the mint commits
 	err = s.mint(ctx, func(ctx context.Context) (entity.MintBatch, int, error) {
-		remapped, p = remapped[:0], entity.Principal{}
+		remapped, p, bound = remapped[:0], entity.Principal{}, bound[:0]
 		var b entity.MintBatch
-		bound := 0
 		claimed := map[entity.ProtocolID]bool{} // the uids and gids this batch takes
 		held := func(id entity.ProtocolID) (bool, error) {
 			if claimed[id] {
@@ -294,7 +302,7 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 				if i == 0 {
 					p = q
 				}
-				bound++
+				bound = append(bound, dirBound{q, e})
 				continue
 			case !errors.Is(err, vfserr.ErrUnknownPrincipal):
 				return entity.MintBatch{}, 0, err
@@ -329,9 +337,12 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 				remapped = append(remapped, remap{np, *from})
 			}
 		}
-		return b, bound, nil
+		return b, len(bound), nil
 	})
 	if err != nil {
+		return entity.Principal{}, err
+	}
+	if err := s.refresh(ctx, st, bound); err != nil {
 		return entity.Principal{}, err
 	}
 	for _, r := range remapped {

@@ -95,6 +95,13 @@ type MintGroup struct {
 	Unnamed bool
 }
 
+// Renaming is one record's new name in a Minter rename: Name "" gives the
+// name up, leaving the record unnamed and found by its SID and entry ID.
+type Renaming struct {
+	P    Principal
+	Name string
+}
+
 // WriteMeta is what a control-plane write records beside its change, each in
 // the change's own transaction. The write's function may complete the
 // records through these pointers: the audit record's After and Outcome, the
