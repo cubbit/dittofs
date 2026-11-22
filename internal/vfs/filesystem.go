@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -56,6 +57,9 @@ type Deps struct {
 	// Running reports whether the node has bound a share, which admission
 	// serves only then; nil: every share is served.
 	Running func(entity.ShareID) bool
+	// Now is the wall clock the caller cache compares a caller's Fresh
+	// with; nil: time.Now.
+	Now func() time.Time
 }
 
 // Content is the engine's content methods, declared where the filesystem calls
@@ -150,6 +154,7 @@ type Filesystem struct {
 	authz    authz.Authz
 	events   vfs.Events
 	identity identity.Resolver
+	callers  *callers               // admission's resolved callers
 	auth     identity.Authenticator // nil: SignIn answers errNoIdentity
 	names    identity.Identities    // nil: Spell and Find answer errNoIdentity
 	quota    *quota.Quotas
@@ -233,6 +238,11 @@ func New(d Deps) (*Filesystem, error) {
 	if fs.events == nil {
 		fs.events = noEvents{}
 	}
+	now := d.Now
+	if now == nil {
+		now = time.Now
+	}
+	fs.callers = newCallers(d.Identity, now, maxCallers, maxCallerGroups)
 	fs.engine, fs.checks, fs.opens, fs.log = d.Engine, d.Open.Checks(), d.Open.Opens(), d.Logger
 	if fs.log == nil {
 		fs.log = slog.Default()
@@ -240,7 +250,7 @@ func New(d Deps) (*Filesystem, error) {
 	fs.quota = quota.New(capacity{d.Meta.Capacity()}, fs.events.Quota)
 	fs.authz = authz.Authz{Files: d.Meta.Files(), Policy: d.Audit, Emit: fs.events.Access}
 	if d.Metrics != nil {
-		for _, c := range []prometheus.Collector{fs.inflight, fs.callbackErrors, fs.refusals} {
+		for _, c := range append([]prometheus.Collector{fs.inflight, fs.callbackErrors, fs.refusals}, fs.callers.collectors()...) {
 			if err := d.Metrics.Register(c); err != nil {
 				return nil, fmt.Errorf("vfs: %w", err)
 			}
