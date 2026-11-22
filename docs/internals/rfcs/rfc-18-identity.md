@@ -2026,7 +2026,11 @@ the principal before or after the squash depends on what the proof proved:
   naming a parent group of a PAC's group still matches. Each group is listed
   once.
 - **Deny-only.** Each of the evidence's `DenyOnly` SIDs maps to a principal in
-  `DenyOnly`, never in `Groups`, and adds none of its own groups. A lookup error
+  `DenyOnly`, never in `Groups`, and adds none of its own groups to `Groups`.
+  A group the store reaches only through a deny-only principal is itself held
+  deny-only: it matches deny entries and grants nothing, so a PAC never removes
+  a group the store records. A group the PAC lists enabled, or another
+  membership reaches, stays in `Groups`. A lookup error
   while mapping one fails the resolution, as for a group: dropping a deny fails
   open. A deny-only SID no principal holds stays in the evidence, so the
   resolution after its principal is minted — which raises the generation

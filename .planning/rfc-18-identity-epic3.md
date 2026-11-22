@@ -486,7 +486,7 @@ pkg/metadata/kvstore/
 **Subtask T3.6 estimate: 1.75 man-days.**
 
 - **Track:** A. **Depends on:** T3.5; E8's T8.1 (identity in `node.New`). RFC 23's plan's epic 2's T2.3, the `S‖id‖gv` writer, landed with #4477.
-- **Covers:** R6, R27, R35, R38; D9's refusal.
+- **Covers:** R6, R27, R35, R38; D9's refusal, which #5390's design withdraws.
 - **Deliverables:** the `SharePolicy` admission hands `Resolve`, built from the share and
   policy `ShareIndex.Share` reads in one view, keyed on the `entity.Share.GrantVersion` that read
   returns (RFC 23's plan's epic 2's T2.3, #4477; `shareIn` reads `S‖id‖gv` in the same view), so no call
@@ -498,7 +498,8 @@ pkg/metadata/kvstore/
   chokepoint, carrying `Caller.Group` (zero for every caller this epic resolves, since `Claimed`
   is refused, D7) and the narrowing cause, folded onto `entity`'s three (`ReadOnlyGrant` to
   `NotNarrowed`, the share and client causes one to one, §9), D9's refusal and marker at the
-  conversion, and a caller whose `Access` is
+  conversion (withdrawn by #5390's design, which carries `DenyOnly` through it instead), and a
+  caller whose `Access` is
   `none` refused there too, since the chokepoint reads a zero `Access` as "read the grants"
   and would read the squashed principal's (the moved resolver's `decision:` keeps saying so); `clients.go` through `Resolve` (D5) and `opens.go`'s marker admission through
   `Resolve`; `vfs`'s tests that admit a claimed identity moved to proven ones (D7);
@@ -523,8 +524,9 @@ pkg/metadata/kvstore/
   scenario, an NTLM (`Secret`) user on a share with no grant refused (R38); a client record
   created by a call naming no share owned by the mapped principal (R6); a `Secret` caller whose
   evidence carries a deny-only SID mapping to `Finance`, on a file whose ACL denies `Finance`
-  and allows everyone: refused at admission (catches D9's refusal removed, which lets the read
-  through, fail-open); the arch test's seed of a non-test package importing `identitymem`
+  and allows everyone: refused (catches D9's refusal removed, which lets the read
+  through, fail-open; with #5390's design the chokepoint's deny match refuses it, not
+  admission); the arch test's seed of a non-test package importing `identitymem`
   reported.
 
 ### T3.7 The proof key
