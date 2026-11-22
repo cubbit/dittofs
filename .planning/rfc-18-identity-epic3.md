@@ -73,7 +73,8 @@ counter and the `identity.resolve` span; the cache's benchmark.
 - Binding a PAC to the record a `krb` row selected, by the SID the row is linked for (RFC 18
   §3.4, §4.2): E5's sign-in. Resolution never reads the `krb` row (D8).
 - A deny-only principal matched by a file's deny entries at the chokepoint (RFC 19 §2.3): no
-  epic of RFC 18's plan; #4564 owns it, and D9 keeps the gap closed meanwhile.
+  epic of RFC 18's plan; #4564 owns it. Its design (#5390) has the chokepoint match a
+  caller's deny-only principals against deny entries only, and withdraws D9's refusal.
   E5's breakdown pull request does not merge while that issue has no assignee (§9).
 - The API's account check under the generation (RFC 18 §7.2, §8.1): E2's `Account`.
 - Composing identity in the node and applying its first `State`: E8's T8.1, which T3.6 waits
@@ -281,7 +282,10 @@ row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight di
   `Evidence.DenyOnly`. A `decision:` marker at the conversion names the withdrawal: RFC 19
   §2.3's deny match, owned by #4564. Prior art
   (from memory): Windows' restricted token keeps deny-only groups in the token the access
-  check reads.
+  check reads. **Withdrawn by design:** #5390 gives `entity.Identity` a `DenyOnly` field and
+  has the chokepoint match a caller's deny-only principals against deny entries, never allow
+  entries or share grants (RFC 19 §2.3), so admission stops refusing such a caller and the
+  marker goes with the refusal.
 
 - **D10, deny-only principals do not count toward the group cap.** RFC 18 §2.5 caps "groups",
   and a deny-only principal is in `DenyOnly`, never `Groups` (§6.3); counting it would refuse a
@@ -699,6 +703,8 @@ text in the sections cited here is the version this document was written against
   request, the first that sets `Evidence.DenyOnly`, does not merge while that issue has no
   assignee. Rejected: E3 adding the field and the match, about 1.5 man-days outside RFC 18; and
   E5 refusing a PAC carrying deny-only SIDs, which moves the same refusal to sign-in.
+  Withdrawn by design: the chokepoint matches deny-only principals (#5390, RFC 19 §2.3), so
+  the refusal goes.
 - **The local-disable ceiling (D6): a caller with a zero `Fresh` is never cached.** Until E8's
   T8.2, nothing hands `Apply` a new `State` on a running node, so neither D3 nor the serial
   fences a local disable, and the cache's bound counts entries, not time. A local caller
