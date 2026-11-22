@@ -58,9 +58,9 @@ func (p *Provider) Seal(
 	// store's credential changes only once the store's capability check finds
 	// the namespace's claim at the location it reaches (RFC 13 §5.2); neither
 	// is built, so a new version of one is refused and fails closed, while its
-	// first version, sealed when the store is created, passes. No secret
-	// delete exists, so delete-then-seal cannot reach a first version again.
-	// Withdraw when both pieces are built.
+	// first version passes. The API seals each set at a fresh reference, so
+	// it runs the check itself, and this gate covers a reseal of one
+	// reference. Withdraw when both pieces are built.
 	if cur.Version > 0 && cur.Kind == entity.SecretRemoteCredential {
 		return entity.Secret{}, ErrUnproven
 	}

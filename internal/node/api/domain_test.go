@@ -87,12 +87,15 @@ func (h *heldJoins) taken() []held {
 	return out
 }
 
-// sealing is the secret provider as the API seals with it, under the
-// protocol role, the machine password's, the one kind these tests seal.
-type sealing struct{ p *secrets.Provider }
+// sealing is the secret provider as the API seals with it, under role:
+// provider's is the protocol role, the machine password's.
+type sealing struct {
+	p    *secrets.Provider
+	role secrets.Role
+}
 
 func (s sealing) Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte, handedOver bool) (entity.Secret, error) {
-	return s.p.Seal(ctx, secrets.Protocol, kind, owner, ref, value, secrets.Meta{HandedOver: handedOver})
+	return s.p.Seal(ctx, s.role, kind, owner, ref, value, secrets.Meta{HandedOver: handedOver})
 }
 
 // provider is the secret provider over cp, each role's key a real key file
@@ -122,7 +125,7 @@ func provider(t *testing.T, cp kvstore.ControlPlane) sealing {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return sealing{p}
+	return sealing{p, secrets.Protocol}
 }
 
 // domain is the API as an admin over Badger on disk, identity's join hold

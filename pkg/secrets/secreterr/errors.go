@@ -15,8 +15,9 @@ var (
 	// ErrKindChanged is a new version naming another kind or owner than the
 	// stored one.
 	ErrKindChanged = errors.New("secrets: a new version changes the kind or owner")
-	// ErrUnproven is a new version of a remote store's credential, refused
-	// whatever its value.
+	// ErrUnproven is a remote store's credential refused whatever its value:
+	// a new version of one, and, through the API, every set of one, a first
+	// set too.
 	//
 	// decision: a remote store's credential changes only once the store's
 	// capability check finds the namespace's claim at the location it
