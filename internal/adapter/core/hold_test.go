@@ -397,16 +397,23 @@ func TestPastMaxPending(t *testing.T) {
 	none := func(st *core.Stages) { st.MaxPending = 0 }
 	t.Run("a hold on the service's error", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
+			spans := tracetest.NewSpanRecorder()
+			tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
 			m := metrics.New("v", "c")
-			s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, newManualClock(), none)
+			s := newHeld(t, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1, Metrics: m}, newManualClock(), none)
 			s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
 			s.serve(s.heldChain(1, "f")...)
 			rs, err := s.client.Recv()
 			if err != nil || len(rs) != 2 || rs[1].Interim || rs[1].Status != testproto.StatusTooManyPending {
 				t.Errorf("the chain is answered %+v (%v), want the Create's too-many-pending status at once", rs, err)
 			}
+			synctest.Wait()
 			if got, _ := scrape(t, m); got[mapErrorRefusals] != 1 {
 				t.Errorf("%s = %v for the hold refused at MaxPending, want 1", mapErrorRefusals, got[mapErrorRefusals])
+			}
+			// A refusal after the call has its stage and no result (§10.2).
+			if a := spanAttrs(requestSpan(t, spans, "Create")); a["stage"] != "map_error" || a["result"] != "" {
+				t.Errorf("the refused Create's span carries stage %q and result %q, want map_error and none", a["stage"], a["result"])
 			}
 		})
 	})
@@ -632,6 +639,15 @@ func requestSpan(t *testing.T, spans *tracetest.SpanRecorder, op string) sdktrac
 	}
 	t.Fatalf("no request span ended for the %s", op)
 	return nil
+}
+
+// spanAttrs is sd's attributes by key.
+func spanAttrs(sd sdktrace.ReadOnlySpan) map[string]string {
+	a := map[string]string{}
+	for _, kv := range sd.Attributes() {
+		a[string(kv.Key)] = kv.Value.String()
+	}
+	return a
 }
 
 // A held request keeps its request span across its re-drives, with one
@@ -1031,14 +1047,9 @@ func TestAMemberThatDoesNotPendIsAnsweredNotLast(t *testing.T) {
 		if got, _ := scrape(t, m); got[mapErrorRefusals] != 1 {
 			t.Errorf("%s = %v for the not-last answer, want 1", mapErrorRefusals, got[mapErrorRefusals])
 		}
-		var result string
-		for _, kv := range requestSpan(t, spans, "Create").Attributes() {
-			if kv.Key == "result" {
-				result = kv.Value.AsString()
-			}
-		}
-		if result != "delay" {
-			t.Errorf("the Create's span carries result %q, want the service's delay", result)
+		// Refused at map_error, it keeps the held error as its result (§10.2).
+		if a := spanAttrs(requestSpan(t, spans, "Create")); a["result"] != "delay" || a["stage"] != "map_error" {
+			t.Errorf("the Create's span carries result %q and stage %q, want the service's delay and map_error", a["result"], a["stage"])
 		}
 	})
 }
@@ -1307,6 +1318,33 @@ func TestALongParkedNameIsAnsweredTheOverflow(t *testing.T) {
 	})
 }
 
+// A park whose service error no row maps, answered the overflow status as its
+// reply outgrows the buffer it kept, has unmapped as its span's result: the
+// overflow's own mapping, which a row answers, is core's, not the service's
+// (§10.2).
+func TestAnOutgrownParksResultIsItsServiceErrorsMapping(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		spans := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+		s := newHeld(t, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1}, newManualClock())
+		wait := s.parkWait()
+		defer wait.Release()
+		s.faults.Fail(vfs.OpCreate, vfs.ErrExist) // a closed error this protocol has no row for
+		s.serve(s.parkChain(1, strings.Repeat("n", 5000))...)
+		s.interimOf(2)
+		wait.Release()
+		if r := s.finalOf(2); r.Status != testproto.StatusOverflow {
+			t.Errorf("released, the park is answered %d, want the overflow status", r.Status)
+		}
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if a := spanAttrs(requestSpan(t, spans, "Park")); a["result"] != "unmapped" {
+			t.Errorf("the outgrown park's span carries result %q, want unmapped, as no row maps the service's error", a["result"])
+		}
+	})
+}
+
 // parkEight parks eight requests, each waiting in its held Create.
 func (s *served) parkEight() {
 	s.t.Helper()
@@ -1368,8 +1406,10 @@ func TestARefusedParkMakesNoCallAndSendsNoInterim(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
+				spans := tracetest.NewSpanRecorder()
+				tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
 				m := metrics.New("v", "c")
-				s := newHeld(t, c.reply, adapter.Deps{Metrics: m}, newManualClock())
+				s := newHeld(t, c.reply, adapter.Deps{Tracer: tracer, SampleRatio: 1, Metrics: m}, newManualClock())
 				msgs, free := c.park(s)
 				s.serve(msgs...)
 				next := s.recvLater()
@@ -1391,6 +1431,12 @@ func TestARefusedParkMakesNoCallAndSendsNoInterim(t *testing.T) {
 				free()
 				if !s.sentNothing() {
 					t.Error("more was sent after the refusal")
+				}
+				if err := s.p.Wait(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if a := spanAttrs(requestSpan(t, spans, "Park")); a["stage"] != "map_error" || a["result"] != "" {
+					t.Errorf("the refused park's span carries stage %q and result %q, want map_error and none", a["stage"], a["result"])
 				}
 			})
 		})
@@ -1473,8 +1519,10 @@ func TestACancelBeforeItsTargetParksEndsIt(t *testing.T) {
 // the park holds nothing (§3.1, §4.7).
 func TestADrainCancelsAPark(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		spans := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
 		m := metrics.New("v", "c")
-		s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, newManualClock())
+		s := newHeld(t, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1, Metrics: m}, newManualClock())
 		wait := s.parkWait()
 		defer wait.Release()
 		s.serve(s.parkChain(1, "f")...)
@@ -1490,6 +1538,9 @@ func TestADrainCancelsAPark(t *testing.T) {
 		}
 		if got, _ := scrape(t, m); got[mapErrorRefusals] != 1 {
 			t.Errorf("%s = %v for the park the drain ended, want 1", mapErrorRefusals, got[mapErrorRefusals])
+		}
+		if a := spanAttrs(requestSpan(t, spans, "Park")); a["stage"] != "map_error" || a["result"] != "" {
+			t.Errorf("the drained park's span carries stage %q and result %q, want map_error and none", a["stage"], a["result"])
 		}
 	})
 }

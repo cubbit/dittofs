@@ -258,7 +258,7 @@ func (p *pipeline) count(pd *pending, refuse bool) (grant bool, err error) {
 	}
 	grant = n <= p.st.MaxPending
 	if !grant && refuse {
-		pd.ts.refused(stageMapError)
+		p.refused(pd.tr, stageMapError)
 		return false, ErrTooManyPending
 	}
 	if !pd.floor && !pd.pool {
@@ -340,7 +340,8 @@ func (p *pipeline) after(pd *pending, err error, reply *resources.Buf, release f
 	if pd.h.Next() != 0 && !pd.pend && !p.st.Hold.Pends(pd.h, err) {
 		pd.last = err
 		pd.mu.Unlock()
-		pd.ts.refused(stageMapError)
+		p.refused(pd.tr, stageMapError)
+		pd.tr.notLast = true
 		return false, ErrNotLast
 	}
 	now := p.sh.clock.Now()
@@ -598,9 +599,13 @@ type parked struct {
 // decision: Final's header is taken here, before the record goes, since a
 // header may lie in it, and done's reply goes out under it. Overturned if a
 // protocol's final header must be built when done is called.
-func (p *pipeline) park(pd *pending, cancel func()) (func(error), error) {
+func (p *pipeline) park(pd *pending, cancel func()) (done func(error), err error) {
+	defer func() {
+		if err != nil {
+			p.refused(pd.tr, stageMapError) // every refusal of a park is map_error's (§10.1)
+		}
+	}()
 	if pd.h.Next() != 0 {
-		pd.ts.refused(stageMapError)
 		return nil, ErrNotLast
 	}
 	pd.mu.Lock()
@@ -615,7 +620,6 @@ func (p *pipeline) park(pd *pending, cancel func()) (func(error), error) {
 		cancel()
 		return dropped, nil
 	}
-	var err error
 	switch {
 	case !pd.pend && t.n >= p.st.MaxPending:
 		err = ErrTooManyPending
@@ -636,7 +640,6 @@ func (p *pipeline) park(pd *pending, cancel func()) (func(error), error) {
 	if err != nil {
 		t.mu.Unlock()
 		pd.mu.Unlock()
-		pd.ts.refused(stageMapError)
 		return nil, err
 	}
 	wasPending, held := pd.pend, pd.held
@@ -712,8 +715,8 @@ func (p *pipeline) parkDone(pd *pending, err error) {
 	pk.called = true
 	if err != nil && pk.why != nil {
 		err = pk.why
-		if err != ErrCancelled { // the drain ended it; a client's cancel is no refusal (§10.1)
-			pd.ts.refused(stageMapError)
+		if !errors.Is(err, ErrCancelled) { // the drain ended it; a client's cancel is no refusal (§10.1)
+			p.refused(pd.tr, stageMapError)
 		}
 	}
 	pk.err, pk.over = err, pk.returned
@@ -805,7 +808,9 @@ func (p *pipeline) answerPark(pd *pending, err error) {
 		encErr = errOutgrown
 	}
 	if encErr != nil {
+		unmapped := tr.unmapped // the span's result is the service error's, not the overflow's
 		s, _, _ = p.mapped(tr, pd.tb.Errors, encErr, pd.op, h.Version(), true)
+		tr.unmapped = unmapped
 		buf.B = buf.B[:0]
 		if encErr = p.st.Header.Encode(h, s, buf); encErr != nil {
 			buf.Release()

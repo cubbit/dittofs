@@ -755,6 +755,9 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 	)
 	if err == nil {
 		tb, r, err = p.st.Router.Route(h, prev)
+		if err == nil {
+			tr.version, tr.versioned = h.Version(), true // the version Route accepted, set only then (§10.2)
+		}
 	}
 	if tb != nil {
 		var serr error
@@ -779,9 +782,6 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 	if err == nil {
 		op = tb.Ops[h.Op()]
 		err = p.check(op, r)
-	}
-	if err == nil {
-		tr.version, tr.versioned = h.Version(), true // the version Route accepted, set only then (§10.2)
 	}
 	if err != nil && !tr.refused {
 		p.refused(tr, stageRoute)
@@ -1007,6 +1007,7 @@ type track struct {
 	cached    bool // a replay hit, whose copy's status the pipeline never reads
 	ran       bool // the service's call started, so its result is the span's
 	unmapped  bool // no row mapped its error, so its result is unmapped (§4.5)
+	notLast   bool // refused ErrNotLast in place of a held error, its result that error (§4.7)
 	op        *Op
 	refused   bool
 	stage     stage // the stage that refused it
@@ -1276,19 +1277,17 @@ func (p *pipeline) end(tr *track, sent bool, s Status, reply int, err error) {
 		// A result is the service's: the call ran, and returned ok, an error
 		// its closed set names, or one no row maps, unmapped. A refusal before
 		// it, a cancel, a replay hit and a request admitted after close ran
-		// nothing, whatever error they carry.
-		if tr.ran {
-			result := ""
+		// nothing, whatever error they carry, and a refusal after it, at
+		// map_error, has none either, but for a chain member answered
+		// ErrNotLast in place of a held error, which it names (§10.2).
+		if tr.ran && (!tr.refused || tr.notLast) {
 			switch i := serviceError(err); {
 			case err == nil:
-				result = "ok"
+				a = append(a, attribute.String("result", "ok"))
 			case tr.unmapped:
-				result = "unmapped"
+				a = append(a, attribute.String("result", "unmapped"))
 			case i >= 0:
-				result = serviceErrors[i].name
-			}
-			if result != "" {
-				a = append(a, attribute.String("result", result))
+				a = append(a, attribute.String("result", serviceErrors[i].name))
 			}
 		}
 		if tr.refused {

@@ -1403,14 +1403,18 @@ func TestEachRequestHasOneSpan(t *testing.T) {
 	bad[len(bad)-1] ^= 0x01
 	s.serveBody(bad)
 	s.read()
+	// A Create with no session: Route accepts its version, and the
+	// operation's row refuses it at the route stage.
+	s.serveBody(body(s.f, testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 3, Name: "f"}))
+	s.read()
 	// A record whose header does not decode at all names no version, no
 	// operation and no status: it is dropped rather than refused, and the
 	// connection is closed, so no reply comes back.
 	s.serveBody([]byte{0x01})
 	s.finish()
 	ended := spans.Ended()
-	if len(ended) != 3 {
-		t.Fatalf("%d spans ended for three requests", len(ended))
+	if len(ended) != 4 {
+		t.Fatalf("%d spans ended for four requests", len(ended))
 	}
 	// The spans are found by what they carry, not by the order they ended in:
 	// a request's span ends on its own goroutine, after its reply is queued.
@@ -1445,6 +1449,10 @@ func TestEachRequestHasOneSpan(t *testing.T) {
 	name, refused := pick("refused at unwrap", func(i int) bool { return attrs[i]["stage"] == "unwrap" })
 	if name != "adapter."+testproto.Name || refused["op"] != "" || refused["version"] != "" || refused["result"] != "" {
 		t.Errorf("the refused message's span is %q %v, want its stage and no operation, version or result", name, refused)
+	}
+	_, checked := pick("refused at route", func(i int) bool { return attrs[i]["stage"] == "route" })
+	if checked["version"] != "2" || checked["op"] != "create" || checked["result"] != "" {
+		t.Errorf("the Create refused for want of a session has span %v, want the version Route accepted, its op and no result", checked)
 	}
 	// A header that does not decode is dropped, not refused: no operation, no
 	// version and no status, which only a reply carries.
