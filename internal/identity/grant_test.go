@@ -292,8 +292,10 @@ func TestResolveDenyOnlyMatchesNoGrant(t *testing.T) {
 // A store membership the PAC marks deny-only is not a group: alice, a store
 // member of Finance, holding Finance deny-only, gets nothing from a share
 // grant naming Finance, admin included, nor from one naming Corp, Finance's
-// parent, which the store reaches only through Finance. Corp listed enabled
-// in the PAC still grants.
+// parent, which the store reaches only through Finance; both are deny-only,
+// so a deny entry naming either still matches her. Corp listed enabled in
+// the PAC still grants, and so does Corp reached through bob's other group,
+// Eng: neither makes Corp deny-only.
 func TestResolveDenyOnlyStoreMembership(t *testing.T) {
 	ctx := context.Background()
 	r := newResolving(t)
@@ -305,6 +307,14 @@ func TestResolveDenyOnlyStoreMembership(t *testing.T) {
 	r.member(t, finance, alice.Principal)
 	r.member(t, corp, finance)
 	financeSID, corpSID := *sid.ParseSIDMust("S-1-5-21-1-2-3-2001"), *sid.ParseSIDMust("S-1-5-21-1-2-3-2002")
+	bob := entity.User{Principal: entity.NewUser(), Name: "bob", IDs: fileIDs("1001")}
+	r.user(t, bob, 0)
+	eng := r.group(t, "Eng", "S-1-5-21-1-2-3-2003")
+	r.member(t, finance, bob.Principal)
+	r.member(t, eng, bob.Principal)
+	r.member(t, corp, eng)
+	bobDenied := ticket(bob.Principal, bob.Name)
+	bobDenied.Evidence.DenyOnly = []pid.SID{financeSID}
 
 	member := ticket(alice.Principal, alice.Name)
 	denied := ticket(alice.Principal, alice.Name)
@@ -320,22 +330,26 @@ func TestResolveDenyOnlyStoreMembership(t *testing.T) {
 		grant  entity.ShareGrant
 		access entity.ShareAccess
 		groups []entity.Principal
+		deny   []entity.Principal
 	}{
-		{"a store member of Finance, Finance granted", member, grantTo(finance, rw), rw, []entity.Principal{finance, corp}},
-		{"Finance deny-only, Finance granted", denied, grantTo(finance, rw), none, nil},
-		{"Finance deny-only, Finance granted admin", denied, grantTo(finance, admin), none, nil},
-		{"Finance deny-only, Corp granted", denied, grantTo(corp, rw), none, nil},
-		{"Finance deny-only, Corp enabled in the PAC and granted", corpEnabled, grantTo(corp, rw), rw, []entity.Principal{corp}},
+		{"a store member of Finance, Finance granted", member, grantTo(finance, rw), rw, []entity.Principal{finance, corp}, nil},
+		{"Finance deny-only, Finance granted", denied, grantTo(finance, rw), none, nil, []entity.Principal{finance, corp}},
+		{"Finance deny-only, Finance granted admin", denied, grantTo(finance, admin), none, nil, []entity.Principal{finance, corp}},
+		{"Finance deny-only, Corp granted", denied, grantTo(corp, rw), none, nil, []entity.Principal{finance, corp}},
+		{"Finance deny-only, Corp enabled in the PAC and granted", corpEnabled, grantTo(corp, rw), rw, []entity.Principal{corp}, []entity.Principal{finance}},
+		{"Finance deny-only, Corp reached through Eng and granted", bobDenied, grantTo(corp, rw), rw, []entity.Principal{eng, corp}, []entity.Principal{finance}},
 	} {
 		share := r.sharing(t, c.grant)
 		got, err := r.srv.Resolve(ctx, c.id, entity.SharePolicy{Share: share, Squash: entity.SquashNone, Anonymous: nobody.Principal}, pid.ReadOnlyNotNarrowed)
 		if err != nil {
 			t.Fatalf("%s: Resolve: %v", c.name, err)
 		}
-		want := slices.Clone(c.groups)
-		slices.SortFunc(want, func(a, b entity.Principal) int { return slices.Compare(a.ID[:], b.ID[:]) })
-		if got.Access != c.access || got.Admin || got.Privileged || !slices.Equal(got.Groups, want) {
-			t.Errorf("%s: Access %v, Admin %v, Privileged %v, Groups %v; want Access %v, not admin, not privileged, Groups %v", c.name, got.Access, got.Admin, got.Privileged, got.Groups, c.access, want)
+		byID := func(a, b entity.Principal) int { return slices.Compare(a.ID[:], b.ID[:]) }
+		want, wantDeny := slices.Clone(c.groups), slices.Clone(c.deny)
+		slices.SortFunc(want, byID)
+		slices.SortFunc(wantDeny, byID)
+		if got.Access != c.access || got.Admin || got.Privileged || !slices.Equal(got.Groups, want) || !slices.Equal(got.DenyOnly, wantDeny) {
+			t.Errorf("%s: Access %v, Admin %v, Privileged %v, Groups %v, DenyOnly %v; want Access %v, not admin, not privileged, Groups %v, DenyOnly %v", c.name, got.Access, got.Admin, got.Privileged, got.Groups, got.DenyOnly, c.access, want, wantDeny)
 		}
 	}
 }

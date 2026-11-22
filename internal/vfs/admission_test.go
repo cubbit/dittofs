@@ -130,13 +130,20 @@ func TestANewShareAdmitsNobodyUntilGranted(t *testing.T) {
 
 // A caller holding Finance deny-only is admitted and then held to each
 // file's ACL as RFC 19 §2.3 has it: it reads a file allowing everyone, is
-// refused one denying Finance though everyone is allowed after, and is
-// refused one allowing Finance alone, which a caller holding Finance as an
-// ordinary SID reads.
+// refused one denying Finance though everyone is allowed after, and one
+// denying Corp, Finance's parent in the store, the same way, and is refused
+// one allowing Finance alone, which a caller holding Finance as an ordinary
+// SID reads.
 func TestADenyOnlyPrincipalMatchesDenyEntriesOnly(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	finance := s.finance(t)
+	var corpSID bytes.Buffer
+	sid.EncodeSID(&corpSID, sid.ParseSIDMust("S-1-5-21-1-2-3-2002"))
+	corp := entity.Group{Principal: entity.NewGroup(), Name: "corp",
+		IDs: entity.ProtocolIDs{{Scheme: entity.SchemeGID, Value: "3002"}, {Scheme: entity.SchemeSID, Value: corpSID.String()}}}
+	s.must(t, errOf(s.cp.PutGroup(ctx, corp, 0, entity.Alloc{})))
+	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: corp.Principal, Member: finance.Principal}))
 	dora := s.user(t, "dora", "", s.share, entity.AccessReadWrite)
 	read := entity.ReadData | entity.ReadAttributes
 	file := func(name string, es ...entity.ACE) vfs.Handle {
@@ -148,6 +155,9 @@ func TestADenyOnlyPrincipalMatchesDenyEntriesOnly(t *testing.T) {
 	open := file("open", entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.Everyone})
 	denied := file("denied",
 		entity.ACE{Type: entity.ACEDeny, Mask: entity.ReadData, Who: finance.Principal},
+		entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.Everyone})
+	corpDenied := file("corp-denied",
+		entity.ACE{Type: entity.ACEDeny, Mask: entity.ReadData, Who: corp.Principal},
 		entity.ACE{Type: entity.ACEAllow, Mask: read, Who: entity.Everyone})
 	granted := file("granted", entity.ACE{Type: entity.ACEAllow, Mask: read, Who: finance.Principal})
 	denyOnly := withSIDs(dora.Principal, vfs.ProofSecret, nil, []string{financeSID})
@@ -161,6 +171,7 @@ func TestADenyOnlyPrincipalMatchesDenyEntriesOnly(t *testing.T) {
 	}{
 		{"a file allowing everyone, read holding Finance deny-only", denyOnly, open, nil},
 		{"a file denying Finance, read holding Finance deny-only", denyOnly, denied, vfs.ErrAccess},
+		{"a file denying Corp, read holding Finance deny-only", denyOnly, corpDenied, vfs.ErrAccess},
 		{"a file allowing Finance alone, read holding Finance deny-only", denyOnly, granted, vfs.ErrAccess},
 		{"a file allowing Finance alone, read holding Finance", member, granted, nil},
 	} {
