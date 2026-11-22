@@ -54,17 +54,17 @@ func operation(t *testing.T, h *nodetest.Harness, id entity.OperationID) entity.
 	return op
 }
 
-// held is the signing key's current version, and whether version v of it
-// is still stored.
+// held is a secret's current version, the signing key's or a password's,
+// and whether version v of it is still stored.
 func held(t *testing.T, h *nodetest.Harness, ref entity.SecretRef, v uint64) (current uint64, stored bool) {
 	t.Helper()
 	cur, err := h.Store().ControlPlane().Secret(t.Context(), ref, 0)
 	if err != nil {
-		t.Fatalf("read the signing key's current version: %v", err)
+		t.Fatalf("read secret %x's current version: %v", ref[:], err)
 	}
 	_, err = h.Store().ControlPlane().Secret(t.Context(), ref, v)
 	if err != nil && !merrs.IsNotFoundError(err) {
-		t.Fatalf("read the signing key's version %d: %v", v, err)
+		t.Fatalf("read secret %x's version %d: %v", ref[:], v, err)
 	}
 	return cur.Version, err == nil
 }
