@@ -225,9 +225,10 @@ func forbiddenToOps(dir, name, file, imp string) string {
 // other types, its constants and its variables it may name (RFC 20 §5.1,
 // §7.1).
 //
-// ponytail: a method of a wire type is not caught, as a syntactic walk cannot
-// tell a value's type. Type-check the ops packages, in this test alone, once
-// an ops file holds a value of a wire type.
+// ponytail: a call of a method of a wire type that reads or writes bytes,
+// today nfs's Call and smb's Header, is not caught, as a syntactic walk
+// cannot tell a value's type. Type-check the ops packages, in this test
+// alone, once an ops file names one of those types.
 func usesRuntime(rel, wire string, funcs map[string]bool, f *ast.File) []string {
 	name := ""
 	for _, spec := range f.Imports {
