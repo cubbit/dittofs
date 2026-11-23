@@ -209,6 +209,21 @@ func (m *machine) join(t *testing.T) entity.OperationID {
 	return id
 }
 
+// joinOffline starts an offline join of NAS$ through the API, handing over
+// password, taking the installation over if takeover, and returns its
+// operation's ID.
+func (m *machine) joinOffline(t *testing.T, password string, takeover bool) entity.OperationID {
+	t.Helper()
+	body, err := json.Marshal(apiv1.JoinDomain{
+		Spec:       apiv1.JoinDomainSpec{Mode: apiv1.JoinOffline, Account: "NAS$", Takeover: takeover},
+		Credential: apiv1.JoinCredential{Password: []byte(password)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m.post(t, "join-domain", string(body))
+}
+
 // passThrough signs alice in as CORP\alice through the node's filesystem
 // service, which passes it to the domain controller.
 func (m *machine) passThrough(t *testing.T) (identity.SignInResult, error) {
@@ -282,6 +297,23 @@ func TestAJoinThroughTheAPIRunsOnTheNode(t *testing.T) {
 		t.Fatalf("the installation's join after the join: %+v, want joined as NAS$", j)
 	}
 	m.passedThrough(t, "once joined")
+}
+
+// An offline join through the API, its computer account staged at the
+// domain controller and its password handed over, answers 202 and runs on
+// the node's runner to joined, and alice's NTLM sign-in in the domain is
+// then passed through. Catches the API handed no sealer, which refuses the
+// hand-over 503.
+func TestAnOfflineJoinThroughTheAPIRunsOnTheNode(t *testing.T) {
+	m := newMachine(t, false)
+	const handed = "Nas-Staged-Passw0rd"
+	m.dc.StageComputer(t, identitytest.StagedComputer{Name: "NAS", Password: []byte(handed), EncTypes: 0x18})
+	m.succeeded(t, "the offline join", m.joinOffline(t, handed, false))
+	caughtUp(t, m.h)
+	if j := m.installation(t).Join; !j.Joined || j.Account != "NAS$" {
+		t.Fatalf("the installation's join after the offline join: %+v, want joined as NAS$", j)
+	}
+	m.passedThrough(t, "once joined offline")
 }
 
 // Once joined, a ticket under a key derived from the machine password signs

@@ -42,6 +42,7 @@ func (s authSealer) Seal(ctx context.Context, kind entity.SecretKind, owner enti
 	return s.providerSealer.Seal(ctx, kind, owner, ref, value, false)
 }
 
-// The secret provider, through providerSealer, and the settings table are
-// what the API's Deps take, once the node builds them.
-var _ = api.Deps{Sealer: providerSealer{}, Settings: settings.Table{}}
+// The settings table is what the API's Deps take once the settings route
+// judges each key by its own write role; until then the node hands the API
+// none, and every write of a setting is refused.
+var _ = api.Deps{Settings: settings.Table{}}

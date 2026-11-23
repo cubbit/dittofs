@@ -123,10 +123,9 @@ func (ss secretSetting) writing(kind entity.ResourceKind) writing[apiv1.Credenti
 // that holds the secret 409, then a value check refuses, then,
 // with no sealer, the set is refused 503, each before anything is written.
 //
-// ponytail: the node hands in no sealer and no settings table yet, so
-// neither a store's credential nor the keytab is sealed or written through
-// these routes, and no test reads a sealed version back raw. Test the set
-// end to end once the node hands in both.
+// ponytail: no test seals a store's credential or the keytab through
+// these routes on the composed node and reads the sealed version back raw.
+// Test the set end to end there once a node test needs either written.
 func (ss secretSetting) seal(ctx context.Context, rq request[apiv1.Credential]) (sealedSecret, error) {
 	v := rq.Body.Spec.Value
 	defer clear(v)

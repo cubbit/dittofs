@@ -386,6 +386,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 		Applied:      n.applied,
 		Directory:    n.identity,
 		Joins:        n.identity,
+		Sealer:       providerSealer{p},
 	})
 	return n, nil
 }
