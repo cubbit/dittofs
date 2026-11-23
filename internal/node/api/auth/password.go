@@ -232,6 +232,8 @@ func PasswordChange(before, after entity.User) ([]byte, error) {
 	case after.NTHash != (entity.SecretRef{}):
 		c["nt_hash"] = "set"
 	case before.NTHash != (entity.SecretRef{}):
+		// The reference in a UUID's text form, written out by hand: the API's
+		// packages may not import a UUID library.
 		c["nt_hash"] = [2]any{fmt.Sprintf("%x-%x-%x-%x-%x", before.NTHash[:4], before.NTHash[4:6], before.NTHash[6:8], before.NTHash[8:10], before.NTHash[10:]), nil}
 	}
 	if before.MustChange != after.MustChange {
