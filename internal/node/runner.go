@@ -40,8 +40,9 @@ type stepRow struct {
 
 // runner drives the operations no component drives on its own, one step of
 // each per turn, recording each turn's answer in the operation's record.
-// A turn follows the last at once while a step in it reported work left, and
-// runInterval later otherwise.
+// A full turn drives every operation listed, every runInterval; between
+// them, turns follow at once while a step reports work left, each driving
+// only the operations whose last step did.
 //
 // ponytail: the runner keeps no claim and resumes, at every turn, every
 // operation whose record has not ended, so a second node would drive the
@@ -55,6 +56,7 @@ type runner struct {
 	log     *slog.Logger
 	steps   map[string]stepRow
 	retries map[entity.OperationID]retry
+	busy    map[entity.OperationID]bool // the operations whose last committed step answered More
 
 	// turned, when set, is called with run's context after each turn, once
 	// the wait for the next, if any, is set on the clock.
@@ -70,7 +72,7 @@ type retry struct{ at, wait time.Duration }
 
 func newRunner(cp kvstore.ControlPlane, clock engine.Clock, node entity.NodeID, log *slog.Logger, steps map[string]stepRow) *runner {
 	return &runner{cp: cp, clock: clock, node: node, log: log, steps: steps,
-		retries: map[entity.OperationID]retry{}, refused: map[string]bool{}}
+		retries: map[entity.OperationID]retry{}, busy: map[entity.OperationID]bool{}, refused: map[string]bool{}}
 }
 
 // progressOf reads op's progress by its kind's row: unknown for a kind this
@@ -84,21 +86,29 @@ func (r *runner) progressOf(ctx context.Context, op entity.Operation) apiv1.Prog
 
 // run takes turns until ctx ends, reporting each to loop: the next at once
 // while a step of the last reported work left, and runInterval later on the
-// runner's clock otherwise. A step ctx interrupts commits nothing, so each
-// operation is left at its last durable step.
+// runner's clock otherwise; a turn runInterval or more after the last full
+// one is full. A step ctx interrupts commits nothing, so each operation is
+// left at its last durable step.
 //
-// decision: a turn that follows at once still drives every operation listed,
-// one step each, so a long deletion moves no faster than any other operation
-// that has work left and starves none; an operation waiting on its own
-// schedule or a retry is asked again, which its step answers at once. No
-// turn starts once ctx has ended, so a Stop ends the runner after the step it
-// interrupts, however much work is left.
+// decision: a turn that follows at once drives, one step each, every
+// operation whose last step reported work left, so two long deletions
+// alternate and neither starves the other; the others, waiting on their own
+// schedule, a remote peer or a retry, are driven only by the full turn every
+// runInterval, so a step that probes something remote while it waits is not
+// called once per batch of a deletion. No turn starts once ctx has ended, so
+// a Stop ends the runner after the step it interrupts, however much work is
+// left.
 func (r *runner) run(ctx context.Context, loop *health.Loop) {
 	now := make(chan struct{})
 	close(now)
+	full := r.clock.Elapsed() - runInterval
 	for ctx.Err() == nil {
+		all := r.clock.Elapsed()-full >= runInterval
+		if all {
+			full = r.clock.Elapsed()
+		}
 		next := (<-chan struct{})(now)
-		if !r.turn(ctx) {
+		if !r.turn(ctx, all) {
 			next = r.clock.After(runInterval)
 		}
 		loop.Turn()
@@ -113,14 +123,17 @@ func (r *runner) run(ctx context.Context, loop *health.Loop) {
 	}
 }
 
-// turn pages through the operations not yet ended and drives each one, so
-// an operation created since the last turn is picked up, then forgets the
-// retry waits of those no longer listed. It reports whether a step reported
-// work left.
+// turn pages through the operations not yet ended and drives each one, or
+// unless all is set only those whose last step reported work left, so an
+// operation created since the last full turn is picked up by the next, then
+// forgets the retry waits of those no longer listed. It reports whether a
+// step reported work left.
 //
-// ponytail: a turn pages through the whole running index. Keep a cursor or
-// a wake-up per operation when that page-through shows in a profile.
-func (r *runner) turn(ctx context.Context) (more bool) {
+// ponytail: a turn pages through the whole running index, and a deletion
+// with work left runs turns back to back, so the page-through repeats once
+// per batch. Keep a cursor or a wake-up per operation when that page-through
+// shows in a profile.
+func (r *runner) turn(ctx context.Context, all bool) bool {
 	listed := map[entity.OperationID]bool{}
 	for op, err := range r.cp.RunningOperations(ctx, entity.Operation{}) {
 		if err != nil {
@@ -130,12 +143,13 @@ func (r *runner) turn(ctx context.Context) (more bool) {
 			return false
 		}
 		listed[op.ID] = true
-		if r.drive(ctx, op) {
-			more = true
+		if all || r.busy[op.ID] {
+			r.busy[op.ID] = r.drive(ctx, op)
 		}
 	}
 	maps.DeleteFunc(r.retries, func(id entity.OperationID, _ retry) bool { return !listed[id] })
-	return more
+	maps.DeleteFunc(r.busy, func(id entity.OperationID, more bool) bool { return !more || !listed[id] })
+	return len(r.busy) > 0
 }
 
 // drive runs one step of op and commits its answer when the step's cursor,

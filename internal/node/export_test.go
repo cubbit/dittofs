@@ -333,7 +333,7 @@ func (n *Node) Tokens() *auth.Tokens { return n.tokens }
 // RunnerTurn has the operation runner take one turn, as its loop does at
 // each interval. Call it only on a node not started, whose runner runs no
 // loop of its own.
-func (n *Node) RunnerTurn(ctx context.Context) { n.runner.turn(ctx) }
+func (n *Node) RunnerTurn(ctx context.Context) { n.runner.turn(ctx, true) }
 
 // FailStorageKeyClose has the storage key's Close answer err once the real
 // key is closed beneath it.

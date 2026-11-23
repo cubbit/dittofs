@@ -116,6 +116,9 @@ func (n *Node) shareDeletion(ctx context.Context, op entity.Operation) (step.Ste
 // replicated per-shard forget sent to every replica, and the tag kept while
 // any other shard of the share the node serves has not recorded one; build
 // those once a share has more than one shard or a shard more than one node.
+// Steps 3 and 4 then also stop answering More while they wait on another
+// node's record, since the shareDeletion step answers More on the premise
+// that this node does their work, and would otherwise turn back to back.
 func (n *Node) dropFiles(ctx context.Context, id entity.ShareID) error {
 	var (
 		sh entity.Share

@@ -90,7 +90,7 @@ func (b *bench) runner(steps map[string]stepRow) *runner {
 // at advances the clock to d past its start and has r take a turn.
 func (b *bench) at(r *runner, d time.Duration) {
 	b.clock.Advance(d - b.clock.Elapsed())
-	r.turn(b.t.Context())
+	r.turn(b.t.Context(), true)
 }
 
 // must fails the test when step's err is set.
@@ -514,7 +514,7 @@ func TestInterruptedStepCommitsNothing(t *testing.T) {
 		cancel()
 		return step.StepResult{}, step.ErrStepFailed
 	}}})
-	r.turn(ctx)
+	r.turn(ctx, true)
 	if got := b.read(op.ID); got.State != entity.OpRunning || got.Generation != op.Generation {
 		t.Errorf("operation whose step was interrupted: got %v at generation %d, want running at %d", got.State, got.Generation, op.Generation)
 	}
@@ -773,36 +773,44 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 }
 
 // While a step reports work left the loop turns again at once, on a clock
-// that never moves; each such turn still drives every operation one step, so
-// one with endless work left starves neither another operation nor the
-// loop's context; and once no step reports work left the loop waits on its
-// clock again.
+// that never moves, driving every operation with work left once a turn, so
+// two of them alternate and neither starves; an operation whose step reports
+// none, waiting on its own schedule, runs only at a full turn, once on the
+// clock's start and again a runInterval later; and once no step reports work
+// left the loop waits on its clock.
 func TestRunTurnsAtOnceWhileAStepHasWorkLeft(t *testing.T) {
 	b := newBench(t, "", nil)
 	ctx, cancel := context.WithCancel(t.Context())
-	var long, other int
-	var turns atomic.Int64
-	more := true
+	var a, c, waiting, turns atomic.Int64
+	var more atomic.Bool
+	more.Store(true)
+	busy := func(n *atomic.Int64) func(context.Context, entity.Operation) (step.StepResult, error) {
+		return func(context.Context, entity.Operation) (step.StepResult, error) {
+			n.Add(1)
+			return step.StepResult{More: more.Load()}, nil
+		}
+	}
 	r := b.runner(map[string]stepRow{
-		"long": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
-			long++
-			return step.StepResult{More: more}, nil
-		}},
-		"other": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
-			other++
+		"a": {progress: noPhase, run: busy(&a)},
+		"b": {progress: noPhase, run: busy(&c)},
+		"wait": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
+			waiting.Add(1)
 			return step.StepResult{}, nil
 		}},
 	})
-	b.operation(entity.Operation{Kind: "long", Target: aShare, State: entity.OpRunning})
-	b.operation(entity.Operation{Kind: "other", Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{2}}, State: entity.OpRunning})
+	for i, kind := range []string{"a", "b", "wait"} {
+		b.operation(entity.Operation{Kind: kind, Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{byte(i + 1)}}, State: entity.OpRunning})
+	}
 	const atOnce = 50
-	waited := make(chan struct{})
+	waited, full := make(chan struct{}), make(chan struct{})
 	r.turned = func(context.Context) {
 		switch turns.Add(1) {
 		case atOnce:
-			more = false // the next turn reports no work left
+			more.Store(false) // the next turn reports no work left
 		case atOnce + 1:
 			close(waited)
+		case atOnce + 2:
+			close(full)
 		}
 	}
 	done := make(chan struct{})
@@ -816,11 +824,21 @@ func TestRunTurnsAtOnceWhileAStepHasWorkLeft(t *testing.T) {
 		t.Fatalf("%d turns within 10 s on a clock that never moved, want %d, each step but the last reporting work left", turns.Load(), atOnce+1)
 	}
 	waitFor(t, "the loop to wait on its clock once no step reports work left", func() bool { return b.clock.Pending() > 0 })
-	if long != atOnce+1 || other != atOnce+1 {
-		t.Errorf("steps over %d turns: the one with work left ran %d, the other %d; want each once a turn", atOnce+1, long, other)
+	if a.Load() != atOnce+1 || c.Load() != atOnce+1 || waiting.Load() != 1 {
+		t.Errorf("steps over %d turns on a clock that never moved: the two with work left ran %d and %d, the waiting one %d; want %d each and 1, at the full turn alone",
+			atOnce+1, a.Load(), c.Load(), waiting.Load(), atOnce+1)
 	}
 	if e := b.clock.Elapsed(); e != 0 {
 		t.Errorf("clock over the turns: %v elapsed, want 0, no turn waiting while a step had work left", e)
+	}
+	b.clock.Advance(runInterval)
+	select {
+	case <-full:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no turn within 10 s of the clock moving a runInterval")
+	}
+	if waiting.Load() != 2 {
+		t.Errorf("the waiting operation after the full turn a runInterval later: ran %d, want 2", waiting.Load())
 	}
 	cancel()
 	select {
