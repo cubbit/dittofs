@@ -1101,8 +1101,10 @@ Clear stored credentials
 End the current context's session and clear its tokens.
 
 The server is asked to end the session, then the tokens are removed from the
-context, which keeps its server, account and CA bundle so dfsctl login signs in
-again with only a password. A context signed in with an API token only forgets
+context; if the server cannot be reached the context keeps them, the only
+handle on the live session, and logout fails so it can be run again. A
+context signed out keeps its server, account and CA bundle so dfsctl login
+signs in again with only a password. A context signed in with an API token only forgets
 the token, which stays valid until it is revoked. To switch between contexts or
 remove one entirely, use the context subcommand.
 
