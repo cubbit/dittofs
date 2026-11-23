@@ -1140,14 +1140,15 @@ running.
 
 1. Refuse every call with `ErrUnavailable`.
 2. Stop the work queue: the scheduler's `Stop` refuses new dispatch, cancels the
-   passes and batches in flight, clone batches included, and joins them. Then commit every file's pending
+   passes and batches in flight, clone batches and a capacity refusal's pass
+   ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) included, and joins them. Then commit every file's pending
    existence in a last group commit per journal, within the stop bound, so a
    clean stop leaves no append or hole fill for recovery to replay. A file whose
    phase-1 retry was cancelled, a clone's destination included, stays out of
    that last group commit, and its pending operations, the removal's or the
    clone's included, are left for recovery ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches), [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
 3. Cancel the other background loops, then join them: the age tick, the
-   rescan, eviction, the reseed, a capacity refusal's pass and the retried opens of a journal refused at
+   rescan, eviction, the reseed and the retried opens of a journal refused at
    `Start`: the 30 s retry of unsuitable storage and the 60 s retry of an
    unread range, the latter with any acknowledgement it is running, which
    resumes as an operation at the next start.
@@ -3446,9 +3447,8 @@ The journal refuses a write it cannot reserve for, and does not evict for itself
 ([§2.8](#2.8%20Package%20layout)), decides, and the engine answers; `admit`
 ([§3.1](#3.1%20Policy%20is%20decided%20here%20and%20executed%20below)) acts only before the journal call and is never given a refusal:
 
-1. repack the refused share's segments — `Repack` with the share as its scope
-   ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)) — or, for the journal's own capacity, the segments with the most
-   unreclaimed bytes ([§10.3](#10.3%20Repack%20is%20triggered%20here)), then retry;
+1. for the journal's own capacity, repack the segments with the most unreclaimed bytes
+   ([§10.3](#10.3%20Repack%20is%20triggered%20here)), then retry; a share's own limit skips this step and runs step 4's pass;
 2. evict offloaded extents by segment ([§10.1](#10.1%20Eviction%20is%20chosen%20here%2C%20and%20needs%20no%20new%20record)), repack exactly those
    segments — `Repack` with them as its scope — then retry;
 3. if what is held is dirty and the remote is put-healthy, turn the journal's
