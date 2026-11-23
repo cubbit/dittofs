@@ -386,7 +386,8 @@ jobs:
 
       - *download
 
-      # go vet and golangci-lint compile fdbkv, which links libfdb_c on Linux.
+      # go vet and golangci-lint compile fdbkv, under its foundationdb tag, which
+      # links libfdb_c.
       - &fdb
         name: Install the FoundationDB client
         uses: ./.github/actions/fdb-client
@@ -527,8 +528,6 @@ jobs:
           fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
       - *go
       - *download
-      # The tests compile fdbkv, which links libfdb_c on Linux.
-      - *fdb
       - *build
 
       # decision: a pull request tests only the packages it changed; the merge
@@ -569,6 +568,12 @@ jobs:
       - name: Build the commands
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: go build ./cmd/...
+
+      # This job installs no FoundationDB client, so a build and a vet of the
+      # whole tree with cgo on prove that only the foundationdb tag links it.
+      - name: Build and vet without the FoundationDB client
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: CGO_ENABLED=1 go build ./... && CGO_ENABLED=1 go vet ./...
 
       - *report
       - *upload

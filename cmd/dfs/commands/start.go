@@ -123,11 +123,10 @@ func runStart(cmd *cobra.Command, _ []string) error {
 			slog.Warn("dfs: the trace provider did not shut down clean", "err", err)
 		}
 	}()
-	db, err := openKV(cfg, clock)
+	store, err := openKV(ctx, cfg, clock)
 	if err != nil {
 		return fmt.Errorf("opening the metadata store: %w", err)
 	}
-	var store kv.KV = db
 	if wrap, ok := base.Value(kvKey{}).(func(kv.KV) kv.KV); ok {
 		store = wrap(store)
 	}

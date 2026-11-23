@@ -417,26 +417,31 @@ func TestStartRefusesTheStore(t *testing.T) {
 		name string
 		b    func(dir string) bootstrapFile
 		want string
+		// noFDB marks a refusal only a build without FoundationDB answers.
+		noFDB bool
 	}{
-		{"backend not badger", func(dir string) bootstrapFile {
+		{"foundationdb in a build without it", func(dir string) bootstrapFile {
 			return bootstrapFile{
 				backend: "foundationdb",
 				journal: filepath.Join(dir, "device"),
 				node:    nodeUUID,
 			}
-		}, `metadata.backend "foundationdb" is not one this build opens; it opens badger`},
+		}, `metadata.backend "foundationdb" is opened only by a build with the foundationdb tag`, true},
 		{"no store path", func(dir string) bootstrapFile {
 			return bootstrapFile{journal: filepath.Join(dir, "device"), node: nodeUUID}
-		}, "metadata.badger.path is not set"},
+		}, "metadata.badger.path is not set", false},
 		{"no node", func(dir string) bootstrapFile {
 			return bootstrapFile{store: filepath.Join(dir, "store"), journal: filepath.Join(dir, "device")}
-		}, "node.id is not set"},
+		}, "node.id is not set", false},
 		{"no store directory", func(dir string) bootstrapFile {
 			return bootstrapFile{store: filepath.Join(dir, "missing"),
 				journal: filepath.Join(dir, "device"), node: nodeUUID}
-		}, "the start check: the node is not initialised"},
+		}, "the start check: the node is not initialised", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if foundationDB && tc.noFDB {
+				t.Skip("this build opens foundationdb")
+			}
 			dir := t.TempDir()
 			root := NewRoot()
 			root.SetOut(io.Discard)
