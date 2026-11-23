@@ -77,7 +77,7 @@ func Compose(p Params) (*openstate.Table, engine.Deps, error) {
 		},
 		Existence: p.Store.Existence(),
 		Content:   p.Store.Content(),
-		Lifecycle: p.Store.Lifecycle(),
+		Lifecycle: p.Store.Lifecycle().WithLogger(p.Logger),
 		Holds:     openstate.EngineHolds(open, p.Store.Opens()),
 		Clock:     p.Clock,
 		Logger:    p.Logger,

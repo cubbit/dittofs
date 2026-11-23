@@ -398,11 +398,11 @@ type fencedLifecycle struct {
 	f *fence
 }
 
-func (l fencedLifecycle) SyncMarks(ctx context.Context, j [16]byte) ([]entity.SyncMark, kvstore.OpenGen, [][]byte, error) {
+func (l fencedLifecycle) SyncMarks(ctx context.Context, j [16]byte) ([]entity.SyncMark, kvstore.OpenGen, error) {
 	l.f.begin()
-	marks, gen, skipped, err := l.Lifecycle.SyncMarks(ctx, j)
+	marks, gen, err := l.Lifecycle.SyncMarks(ctx, j)
 	l.f.end(ctx, err)
-	return marks, gen, skipped, err
+	return marks, gen, err
 }
 
 func (l fencedLifecycle) RaiseVersionLimits(ctx context.Context, to map[entity.ShareID]entity.JournalVersion) error {

@@ -121,14 +121,8 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 	var recorded []entity.SyncMark
 	var gen kvstore.OpenGen
 	if id != ([16]byte{}) {
-		var skipped [][]byte
-		if recorded, gen, skipped, err = e.d.Lifecycle.SyncMarks(ctx, id); err != nil {
+		if recorded, gen, err = e.d.Lifecycle.SyncMarks(ctx, id); err != nil {
 			return opened{}, fmt.Errorf("engine: start: read the sync marks of %s: %w", dir, err)
-		}
-		// The open treats each stream left out as having no recorded mark,
-		// and the next marks write carrying it replaces the stored one.
-		for _, s := range skipped {
-			e.d.Logger.Warn("sync mark left out: it does not decode", "device", dir, "stream", fmt.Sprintf("%x", s))
 		}
 	}
 

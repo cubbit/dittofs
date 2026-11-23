@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
@@ -668,38 +670,71 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 	if _, err := f.s.Existence().Commit(ctx, nil, &MarksWrite{Journal: j, Marks: []entity.SyncMark{a, b}}); err != nil {
 		t.Fatalf("record the marks of streams 1 and 4: %v", err)
 	}
-	// Each malformed row is left out and named in skipped, and none of them
-	// becomes another stream's mark: a decodable value under a key with
+	// Each malformed row is left out and logged with its stream, and none of
+	// them becomes another stream's mark: a decodable value under a key with
 	// trailing bytes after stream 4's, or under a key too short for a stream.
+	// A malformed key is deleted, which no marks write would ever replace; a
+	// well-formed key with an undecodable value is kept for the next marks
+	// write of its stream to replace.
 	valid := encodeSyncMark(entity.SyncMark{Segment: 99, Through: 1, Offset: 1, Sequence: 1})
 	malformed := []struct {
-		name  string
-		key   []byte
-		value []byte
+		name    string
+		key     []byte
+		value   []byte
+		stream  string // the stream as logged
+		deleted bool
 	}{
-		{"an undecodable value", syncMarkKey(j, 6), []byte{1}},
-		{"a key with trailing bytes", append(syncMarkKey(j, 4), 0), valid},
-		{"a key too short for a stream", append(syncMarksPrefix(j), 7), valid},
+		{"an undecodable value", syncMarkKey(j, 6), []byte{1}, "6", false},
+		{"a key with trailing bytes", append(syncMarkKey(j, 4), 0), valid, "0000000400", true},
+		{"a key too short for a stream", append(syncMarksPrefix(j), 7), valid, "07", true},
 	}
-	var want [][]byte
 	for _, m := range malformed {
 		if err := f.s.kv.Update(ctx, func(tx kv.Txn) error { return tx.Set(m.key, m.value) }); err != nil {
 			t.Fatalf("store %s: %v", m.name, err)
 		}
-		want = append(want, m.key[len(syncMarksPrefix(j)):])
 	}
 
-	marks, gen, skipped, err := f.s.Lifecycle().SyncMarks(ctx, j)
+	var logs bytes.Buffer
+	marks, gen, err := f.s.Lifecycle().WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))).SyncMarks(ctx, j)
 	if err != nil {
 		t.Fatalf("SyncMarks: %v", err)
 	}
 	if got, want := byStream(marks...), byStream(a, b); !maps.Equal(got, want) {
 		t.Errorf("SyncMarks read %v, want %v, every malformed row left out", got, want)
 	}
-	slices.SortFunc(want, bytes.Compare)
-	slices.SortFunc(skipped, bytes.Compare)
-	if !slices.EqualFunc(skipped, want, bytes.Equal) {
-		t.Errorf("SyncMarks skipped %x, want the stream part of each malformed row, %x", skipped, want)
+	logged := map[string]string{} // each logged stream's message
+	for line := range strings.Lines(logs.String()) {
+		var r struct {
+			Msg     string
+			Journal string
+			Stream  any
+		}
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		if r.Journal == hex.EncodeToString(j[:]) {
+			logged[fmt.Sprint(r.Stream)] = r.Msg
+		}
+	}
+	for _, m := range malformed {
+		msg, ok := logged[m.stream]
+		if !ok {
+			t.Errorf("%s: no log names stream %s of journal %x; logged %v", m.name, m.stream, j, logged)
+			continue
+		}
+		if strings.Contains(msg, "deleted") != m.deleted {
+			t.Errorf("%s: logged %q, want it to say deleted: %v", m.name, msg, m.deleted)
+		}
+		gerr := f.s.kv.View(ctx, func(r kv.Reader) error { _, err := r.Get(m.key); return err })
+		if gerr != nil && !errors.Is(gerr, kv.ErrNotFound) {
+			t.Fatalf("%s: read key %x: %v", m.name, m.key, gerr)
+		}
+		if present := gerr == nil; present == m.deleted {
+			t.Errorf("%s: key %x present %v after SyncMarks, want deleted %v", m.name, m.key, present, m.deleted)
+		}
+	}
+	if len(logged) != len(malformed) {
+		t.Errorf("SyncMarks logged streams %v, want only the %d malformed rows'", logged, len(malformed))
 	}
 	if gen != 1 {
 		t.Errorf("SyncMarks raised the open generation to %d, want 1 from none", gen)
@@ -713,7 +748,7 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 		t.Fatalf("a marks write of the new open: %v", err)
 	}
 
-	marks, gen, _, err = f.s.Lifecycle().SyncMarks(ctx, j)
+	marks, gen, err = f.s.Lifecycle().SyncMarks(ctx, j)
 	if err != nil {
 		t.Fatalf("SyncMarks again: %v", err)
 	}

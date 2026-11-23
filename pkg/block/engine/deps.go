@@ -117,7 +117,7 @@ type Content interface {
 // identifier of its own.
 type Lifecycle interface {
 	JournalID(ctx context.Context, node entity.NodeID, device entity.JournalDir) ([16]byte, error)
-	SyncMarks(ctx context.Context, j [16]byte) ([]entity.SyncMark, kvstore.OpenGen, [][]byte, error)
+	SyncMarks(ctx context.Context, j [16]byte) ([]entity.SyncMark, kvstore.OpenGen, error)
 	Tags(ctx context.Context) (map[entity.ShareID]entity.TagRecord, error)
 	VersionLimits(ctx context.Context, shares []entity.ShareID) (map[entity.ShareID]entity.JournalVersion, error)
 	RaiseVersionLimits(ctx context.Context, to map[entity.ShareID]entity.JournalVersion) error
