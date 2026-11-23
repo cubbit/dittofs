@@ -67,7 +67,7 @@ jobs:
         if: github.event_name != 'pull_request' || steps.filter.outputs.kv == 'true'
         run: >
           DITTOFS_FDB_CLUSTER_FILE="$HOME/.cache/dittofs-fdb/data/fdb.cluster"
-          go test -race -count=1 -timeout=20m
+          go test -tags=foundationdb -race -count=1 -timeout=20m
           -run '^(TestConformance|TestNowAcrossNodes|TestUnknownCommitOutcomeNotReapplied|TestSweepClearsOnlyOldMarks|TestOpenIsolatesAndClears|TestStoreConformanceFDB|TestStoreConformanceFDBFrozenClock|FuzzNamespaceFDB|TestScanSkipsTheBackendsOwnRows)$'
           ./pkg/metadata/kv/fdbkv/... ./pkg/metadata/kvstore/
 
@@ -80,3 +80,65 @@ jobs:
         with:
           path: ${{ steps.go.outputs.path }}
           key: ${{ steps.go.outputs.key }}
+
+  # An installation owns its whole cluster, so these tests run on a cluster of
+  # their own, each clearing every key when it ends: on the suites job's they
+  # would find its prefixes' keys foreign. A job of its own because cluster.sh
+  # fixes the container name and port, so two clusters cannot share a host.
+  install:
+    name: FoundationDB installation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The suites job's paths, plus the commands that open the store, the
+      # start check and node they drive, and the bootstrap loader.
+      - name: Check for installation changes
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            install:
+              - 'pkg/metadata/kv/**'
+              - 'pkg/metadata/kvstore/**'
+              - 'pkg/metadata/entity/**'
+              - 'cmd/dfs/commands/**'
+              - 'internal/node/**'
+              - 'pkg/bootstrap/**'
+              - 'test/fdb/**'
+              - 'go.mod'
+              - 'go.sum'
+              - '.github/actions/fdb-client/**'
+              - '.github/actions/release-asset/**'
+              - '.github/actions/go-cache/**'
+              - '.github/workflows/foundationdb.yml'
+
+      # The suites job saves the Go caches both jobs read.
+      - name: Set up Go
+        if: github.event_name != 'pull_request' || steps.filter.outputs.install == 'true'
+        uses: ./.github/actions/go-cache
+        with:
+          go-version: "1.26.x"
+
+      - name: Install the FoundationDB client
+        if: github.event_name != 'pull_request' || steps.filter.outputs.install == 'true'
+        uses: ./.github/actions/fdb-client
+
+      - name: Start a one-process FoundationDB
+        if: github.event_name != 'pull_request' || steps.filter.outputs.install == 'true'
+        run: test/fdb/cluster.sh up 1
+
+      # -p 1: each test owns the cluster while it runs, which
+      # DITTOFS_FDB_OWN_CLUSTER lets the tests that clear it rely on.
+      - name: Run the installation tests on FoundationDB
+        if: github.event_name != 'pull_request' || steps.filter.outputs.install == 'true'
+        run: >
+          DITTOFS_FDB_CLUSTER_FILE="$HOME/.cache/dittofs-fdb/data/fdb.cluster"
+          DITTOFS_FDB_OWN_CLUSTER=1
+          go test -tags=foundationdb -race -p 1 -count=1 -timeout=20m
+          -run '^(TestCheckKVFoundationDBNeedsNoBadgerPath|TestOpenKVGivesUpOnAnUnreachableCluster|TestOpenKVOpensFoundationDB)$'
+          ./cmd/dfs/commands/

@@ -96,7 +96,7 @@ Two behaviours go beyond what FoundationDB does by itself. An unknown commit res
 
 `Limits()` on FoundationDB: keys up to 10 kB less the store's prefix, values up to 100 kB less the stamp, five seconds per transaction, and `TxnBytes` of 3 MB, under a third of FoundationDB's 10 MB because FoundationDB counts a written key three times (the mutation and both ends of its conflict range). A transaction of unusually short keys can still reach FoundationDB's limit first; it then gets `ErrTooLarge` from the backend's own estimate.
 
-The backend builds on Linux with cgo, the build `dfs` ships for Linux, and needs FoundationDB's client library (`foundationdb-clients` 7.3) to compile and run; the Nix dev shell and CI provide it. macOS and Windows builds, and any `CGO_ENABLED=0` build, leave it out and run Badger only.
+The backend builds only with the `foundationdb` tag and cgo, and needs FoundationDB's client library (`foundationdb-clients` 7.3) to compile and run; the Nix dev shell and CI provide it. A build without the tag leaves it out, stays free of `libfdb_c`, and refuses `metadata.backend: foundationdb`, naming the tag.
 
 **Speed.** The store's benchmarks on one FoundationDB 7.3.77 process in podman, on the same consumer NVMe as Badger's disk runs, 16 Oct 2026 (p50, or throughput where marked):
 
@@ -549,7 +549,7 @@ flowchart TB
 
 `go test -race ./pkg/metadata/kv/... ./pkg/metadata/entity/... ./pkg/metadata/kvstore/...` runs everything; add `-short` to skip the on-disk Badger run. `go test -bench . ./pkg/metadata/kvstore/` runs the store's benchmarks, and `go test ./pkg/metadata/kvstore/ -run '^$' -fuzz '^FuzzNamespace$' -fuzztime 60s` fuzzes the namespace beyond its seeds.
 
-On FoundationDB, `test/fdb/cluster.sh up` starts a one-process cluster in Docker or podman (`up 3` starts three), and `test/fdb/cluster.sh test ./pkg/metadata/kv/fdbkv/... ./pkg/metadata/kvstore/` runs the backend's conformance suite and the store's suites on it, each test under a prefix of its own. `cluster.sh down` removes the cluster and its data.
+On FoundationDB, `test/fdb/cluster.sh up` starts a one-process cluster in Docker or podman (`up 3` starts three), and `test/fdb/cluster.sh test -tags=foundationdb ./pkg/metadata/kv/fdbkv/... ./pkg/metadata/kvstore/` runs the backend's conformance suite and the store's suites on it, each test under a prefix of its own. `cluster.sh down` removes the cluster and its data.
 
 ## 15. Against today's store
 

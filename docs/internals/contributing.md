@@ -64,14 +64,18 @@ If you prefer not to use Nix, install dependencies manually:
   - Linux: `nfs-common` package
   - macOS: Built-in NFS client
 - Git
-- FoundationDB client library, on Linux only
+- FoundationDB client library, to build with the `foundationdb` tag and to run
+  `test/harness/bin/dt run lint-go`, on every OS
 
 #### FoundationDB client
 
-A Linux build with cgo compiles the FoundationDB metadata backend, which links
-`libfdb_c`, so `go build ./...` and `go test ./...` fail with
+The FoundationDB metadata backend links `libfdb_c`, so it builds only with the
+`foundationdb` tag; `go build ./...` and `go test ./...` leave it out and need
+nothing. With the tag, `go build -tags=foundationdb ./...` fails with
 `foundationdb/fdb_c.h: No such file or directory` until the client is
-installed. macOS builds leave the backend out and need nothing.
+installed. `dt run lint-go` vets and lints with the tag, so it needs the
+client on macOS too, where the Nix dev shell does not provide it: install
+the macOS package from FoundationDB's releases.
 
 On Debian or Ubuntu, install the same release CI uses, checked against the
 digest CI pins (on ARM, use `aarch64` and the arm64 digest from
@@ -86,12 +90,9 @@ sudo dpkg -i foundationdb-clients_${v}-1_amd64.deb
 
 On other x86_64 distributions, `test/fdb/cluster.sh client` downloads the library and
 headers under `~/.cache/dittofs-fdb/` without installing anything, and
-`test/fdb/cluster.sh test ./...` runs `go test` with them on the cgo paths.
+`test/fdb/cluster.sh test -tags=foundationdb ./...` runs `go test` with them on the cgo paths.
 That script also starts a local cluster for the backend's tests
 (`test/fdb/cluster.sh up`, then `down`); without one they skip.
-
-To build without the client at all, set `CGO_ENABLED=0`. That leaves the
-backend out, at the cost of `-race`, which needs cgo.
 
 ### Clone and Setup
 

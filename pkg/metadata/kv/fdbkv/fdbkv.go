@@ -1,6 +1,8 @@
-//go:build linux && cgo
+//go:build foundationdb
 
-// Package fdbkv is the replicated kv backend, on FoundationDB.
+// Package fdbkv is the replicated kv backend, on FoundationDB. It links
+// FoundationDB's client library, libfdb_c, so it builds only with the
+// foundationdb tag, and a build without it needs no client library.
 package fdbkv
 
 import (
@@ -65,8 +67,9 @@ type Store struct {
 var apiOnce = sync.OnceValue(func() error { return fdb.APIVersion(apiVersion) })
 
 // Open connects to the cluster and raises this node's clock ceiling before
-// returning, so no Now precedes a durable ceiling.
-func Open(opts Options) (*Store, error) {
+// returning, so no Now precedes a durable ceiling. ctx bounds the connection:
+// the client waits for an unreachable cluster until it ends.
+func Open(ctx context.Context, opts Options) (*Store, error) {
 	if err := apiOnce(); err != nil {
 		return nil, fmt.Errorf("fdbkv: client API %d: %w", apiVersion, err)
 	}
@@ -98,12 +101,14 @@ func Open(opts Options) (*Store, error) {
 
 	// A start resumes from the stored ceiling, so a clock stepped back across
 	// a restart cannot carry Now backward.
-	stored, err := s.readCeiling()
+	stored, err := s.readCeiling(ctx)
 	if err != nil {
 		return nil, err
 	}
 	s.time = backend.NewClock(opts.Clock, stored, 0)
-	if err := s.time.Raise(s.writeCeiling); err != nil {
+	if err := s.time.Raise(func(v []byte) error {
+		return s.Update(ctx, func(t kv.Txn) error { return t.Set(s.clk, v) })
+	}); err != nil {
 		return nil, err
 	}
 	go func() {
@@ -408,9 +413,9 @@ func unstamp(v []byte) (uint64, []byte, error) {
 	return binary.BigEndian.Uint64(v[:8]), v[stampSize:], nil
 }
 
-func (s *Store) readCeiling() (time.Time, error) {
+func (s *Store) readCeiling(ctx context.Context) (time.Time, error) {
 	var c time.Time
-	err := s.View(context.Background(), func(r kv.Reader) error {
+	err := s.View(ctx, func(r kv.Reader) error {
 		b, err := r.Get(s.clk)
 		if errors.Is(err, kv.ErrNotFound) {
 			return nil
