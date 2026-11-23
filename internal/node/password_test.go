@@ -534,10 +534,11 @@ func TestPasswordsReachNeitherStoreNorLog(t *testing.T) {
 	}
 }
 
-// The client's ChangePassword sends the token its source holds and returns
-// a refused current password's 401 as it is, refreshing nothing; with the
-// right one it answers the new session's tokens. SetPassword sets a user's
-// password, which the next sign-in checks.
+// The client's ChangePassword refreshes its source once, then returns a
+// refused current password's 401 as it is, refreshing no more; with the
+// right one, sent once the access token expired, it answers the new
+// session's tokens. SetPassword sets a user's password, which the next
+// sign-in checks.
 func TestClientChangesAndSetsPasswords(t *testing.T) {
 	s := newAuthNode(t)
 	p := s.h.Account(t, "pat", "pat's password", entity.RoleViewer)
@@ -555,12 +556,14 @@ func TestClientChangesAndSetsPasswords(t *testing.T) {
 		t.Fatal(err)
 	}
 	var pr *apiv1.Problem
-	if _, err := c.ChangePassword(t.Context(), []byte("a guess"), []byte("next")); !errors.As(err, &pr) || pr.Code != apiv1.CodeUnauthenticated || src.refreshes != 0 {
-		t.Errorf("ChangePassword with a wrong current password: %v after %d refreshes, want the 401 unauthenticated and none", err, src.refreshes)
+	if _, err := c.ChangePassword(t.Context(), []byte("a guess"), []byte("next")); !errors.As(err, &pr) || pr.Code != apiv1.CodeUnauthenticated || src.refreshes != 1 {
+		t.Errorf("ChangePassword with a wrong current password: %v after %d refreshes, want the 401 unauthenticated and the one before sending", err, src.refreshes)
 	}
+	s.h.Clock().Advance(16 * time.Minute)
+	storeReached(t, s.h, s.h.Clock().Now())
 	answered, err := c.ChangePassword(t.Context(), []byte("pat's password"), []byte("pat's next password"))
 	if err != nil || answered.Access == "" || answered.Refresh == "" {
-		t.Fatalf("ChangePassword: %+v, %v; want both tokens", answered, err)
+		t.Fatalf("ChangePassword: %+v, %v after %d refreshes; want both tokens", answered, err, src.refreshes)
 	}
 	admin, err := bare.SignIn(t.Context(), "admin", []byte(adminPassword))
 	if err != nil {

@@ -40,10 +40,10 @@ const sealTries = 3
 // decision: a record that holds no JSON bool is refused, ErrUnavailable,
 // never read as on or off, because identity refuses it too and keeps
 // running the value it last applied, which this read cannot know. So a
-// password set and a write of identity.ntlm are refused while such a record
-// is stored; the settings table refuses writing one, so only a store
-// written around it holds one. Overturned if identity ever reads such a
-// record as a value.
+// password set is refused while such a record is stored, until an admin's
+// write of identity.ntlm repairs it, the one read that takes it as on; the
+// settings table refuses writing one, so only a store written around it
+// holds one. Overturned if identity ever reads such a record as a value.
 func NTLM(s entity.Setting, ok bool) (identity.NTLMSetting, error) {
 	if !ok {
 		return identity.NTLMSetting{On: true}, nil
@@ -253,10 +253,10 @@ func passwordChange(ps PasswordSet) []byte {
 // decision: an account written between the check and the write answers
 // ErrUnavailable, its attempt's raise taken back, never a settled failure:
 // the current password was right, and what moved the account is the
-// NT-hash deletion or a caller holding the Principals right, which can set
-// the password anyway. The client signs in again or retries. Overturned if a
-// write by the account itself can land in that window and must be told
-// apart.
+// NT-hash deletion, a caller holding the Principals right, which can set
+// the password anyway, or the account's own concurrent change, whose retry
+// is then refused as the current password is no longer current. The client
+// signs in again or retries. Overturned if a 503 here must tell those apart.
 func (s *Service) ChangePassword(ctx context.Context, rec entity.AuditRecord, in apiv1.PasswordChange) (apiv1.Tokens, Audited, error) {
 	current, next := []byte(in.Current), []byte(in.New)
 	defer clear(current)
