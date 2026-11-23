@@ -825,6 +825,42 @@ func putSecond(
 	return err
 }
 
+// clockDeadline is a context whose deadline is read on the engine's clock: the
+// context it wraps never ends by it in real time.
+type clockDeadline struct {
+	context.Context
+	at time.Time
+}
+
+func (c clockDeadline) Deadline() (time.Time, bool) { return c.at, true }
+
+// passBound is the deadline putSecondAtBound gives its write on the engine's
+// clock. Its tenth, the most a share-limit refusal waits for the share's pass,
+// is a length no other wait of the engine asks the clock for, so the armed
+// wait is the refusal's.
+const passBound = 10*time.Second + 70*time.Millisecond
+
+// putSecondAtBound is putSecond under a deadline of passBound on the engine's
+// clock, which it moves past a tenth of that once the refusal waits for the
+// share's pass: the answer a refusal gives at its bound.
+func putSecondAtBound(t *testing.T, f *enginetest.Fixture, id entity.FileID, off int64, n int, c byte) error {
+	t.Helper()
+
+	armed := f.Clock.Armed(passBound / 10)
+	ctx := clockDeadline{Context: t.Context(), at: f.Clock.Now().Add(passBound)}
+	got := make(chan error, 1)
+
+	go func() {
+		_, err := f.E.Write(ctx, f.Second.ID, id, off, bytes.Repeat([]byte{c}, n), engine.WriteOpts{Done: func() {}})
+		got <- err
+	}()
+
+	within(t, "the refusal waiting for the share's pass", armed)
+	f.Clock.Advance(passBound / 10)
+
+	return within(t, "the refusal's answer at its bound", got)
+}
+
 // mustSecond is putSecond that must be served.
 func mustSecond(t *testing.T, f *enginetest.Fixture, id entity.FileID, off int64, n int, c byte) {
 	t.Helper()
@@ -1040,8 +1076,9 @@ func TestRFC8A_CapacityScopedRepack(t *testing.T) {
 }
 
 // Two refusals race for the only unreclaimed segments, the first refusal's
-// repack held at the journal's storage: the second answers ErrDelay, never
-// ErrNoSpace, and is served once the hold is let go.
+// pass held at the journal's storage: the second, arriving after that pass's
+// sync, waits for the next pass and answers ErrDelay at its bound, never
+// ErrNoSpace, and the first is served once the hold is let go.
 func TestRFC8A_CapacityRacingRefusals(t *testing.T) {
 	// Room for four 1 MiB records: the overwrites fill it, the repack frees
 	// the two superseded ones, and the two racing writes take their place.
@@ -1063,7 +1100,7 @@ func TestRFC8A_CapacityRacingRefusals(t *testing.T) {
 
 	within(t, "the first repack reaching the storage seam", hold.Reached())
 
-	err := putSecond(t, f, fa, 3*mib, mib, 'd')
+	err := putSecondAtBound(t, f, fa, 3*mib, mib, 'd')
 
 	var d *vfserr.Delay
 	if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
@@ -1177,7 +1214,8 @@ func TestRFC8A_CapacityJournalMaximumActiveSegmentsOnly(t *testing.T) {
 }
 
 // A refusal's pass held mid-pass on a failed segment whose window has resolved,
-// then a second refusal: ErrDelay, served once the hold is let go.
+// then a second refusal: ErrDelay at its bound, and the first served once the
+// hold is let go.
 func TestRFC8A_CapacityResolvedFailedSegmentCountsAsLeft(t *testing.T) {
 	f := enginetest.New(t)
 	limitedSecond(t, f, 4*mib)
@@ -1197,7 +1235,7 @@ func TestRFC8A_CapacityResolvedFailedSegmentCountsAsLeft(t *testing.T) {
 	within(t, "the first repack reaching the storage seam", hold.Reached())
 
 	var d *vfserr.Delay
-	if err := putSecond(t, f, fa, 3*mib, mib, 'd'); !errors.As(err, &d) {
+	if err := putSecondAtBound(t, f, fa, 3*mib, mib, 'd'); !errors.As(err, &d) {
 		t.Errorf("the second refusal: %v, want ErrDelay", err)
 	}
 
@@ -1233,10 +1271,10 @@ func TestRFC8A_CapacityScopeSyncTakesAFailedWindow(t *testing.T) {
 
 // A refusal while a failed window is unresolved: the window is made in a
 // segment that also holds share A's synced, superseded bytes, its writes all
-// B's, and the seam holds the sync that resolves it. A, at its limit, is
-// refused: its scope sync covers only A's files, so it does not wait on that
-// sync. ErrDelay comes under a tenth of the caller's deadline, and the write is
-// served once the window resolves.
+// B's, and the seam holds every sync, so the share's pass, whose sync and seal
+// both sync, cannot end. A, at its limit, is refused: it waits for the pass a
+// tenth of its deadline and answers ErrDelay, and the pass runs on; once the
+// hold is let go and the window resolves, the write is served.
 func TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved(t *testing.T) {
 	f := enginetest.New(t)
 	limitedSecond(t, f, 4*mib)
@@ -1254,38 +1292,31 @@ func TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved(t *testing.T) {
 	f.Clock.Advance(time.Minute)
 	within(t, "the re-append's sync reaching the seam", hold.Reached())
 
-	// The refused write parks the capacity answer behind the share seal's
-	// caller-side fsync waiting on the seam, so it is given its own bounded
-	// deadline: the bounded wait IS the assertion (the harness's allowance,
-	// for a wait no injected clock can advance), failing on its own message
-	// rather than letting a parked write hold the suite until its package
-	// timeout. On the landed design the refusal answers ErrDelay long
-	// before the deadline, inside the tenth of the caller's bound.
-	start := time.Now()
-	parked := make(chan error, 1)
-	go func() { parked <- putSecond(t, f, fa, 2*mib, mib, 'c') }()
-	var err error
-	select {
-	case err = <-parked:
-	case <-time.After(bound / 10):
-		// The held sync must be let go first, or the cleanup joins the
-		// parked write and the suite hangs behind the row again.
-		hold.Release()
-		t.Fatal("the refused write is still parked on the seal's sync: the capacity answer waited on the caller's own fsync")
-	}
+	err := putSecondAtBound(t, f, fa, 2*mib, mib, 'c')
 
 	var d *vfserr.Delay
 	if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
+		hold.Release()
 		t.Fatalf("a refusal over an unresolved window: %v, want ErrDelay(DelayCapacity)", err)
 	}
 
-	if took := time.Since(start); took > bound/10 {
-		t.Errorf("the refusal took %v, want under %v: it waited on the sync", took, bound/10)
-	}
-
 	hold.Release()
-	f.Clock.Advance(time.Minute)
-	mustSecond(t, f, fa, 2*mib, mib, 'c')
+
+	// The window resolves in the journal's own workers once the sync is let
+	// go, and no figure says when: until it has, a pass cannot repack the
+	// segment it ended and the write is still retry-later. So the write is
+	// retried as a client retries a retry-later, with the clock moved between
+	// tries, until it is served; any other answer, no space above all, fails.
+	for deadline := time.Now().Add(bound); ; time.Sleep(10 * time.Millisecond) {
+		f.Clock.Advance(time.Minute)
+		err := putSecond(t, f, fa, 2*mib, mib, 'c')
+		if err == nil {
+			break
+		}
+		if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity || time.Now().After(deadline) {
+			t.Fatalf("the write once the hold is let go: %v, want served, after retry-later at most", err)
+		}
+	}
 }
 
 // Small overwrites at the index bound left unsynced: the write is served after

@@ -174,7 +174,7 @@ func TestARefusedReservationChangesNothing(t *testing.T) {
 	u := clonedUnit(t)
 	src := u.committedFile(t, "src", fill(2*mib, 's'))
 	dst := u.committedFile(t, "dst", fill(2*mib, 'd'))
-	u.j.RefuseReserve(&journal.NoSpaceError{Limit: journal.LimitShare, Missing: 1, Unit: journal.UnitBytes})
+	u.j.RefuseReserve(&journal.NoSpaceError{Limit: journal.LimitJournal, Missing: 1, Unit: journal.UnitBytes})
 	err := u.e.Clone(t.Context(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: 2 * mib})
 	if !isDelay(err, vfserr.DelayCapacity) {
 		t.Fatalf("a refused reservation: %v, want DelayCapacity", err)

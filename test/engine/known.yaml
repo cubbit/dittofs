@@ -25,13 +25,13 @@
   reason: 'Waits on offload being composed. The settled answer gives retry-later for dirty bytes only with a put-healthy store behind them (RFC 8 section 10.2), and this part composes no store, so the settled no-space in settled() stands, as ruled on #4892; the row assumes a put-healthy store and goes green once offload reads the store put-health for the dirty half. The same settled answer as its retry-later sibling for the destination''s share: the destination''s journal limit refusal reads an ended-unreclaimed figure of zero once the refusal''s two repack passes have cycled the share''s live bytes, and answers no space where the row wants the retry-later that outlives the refusal.'
   issue: '#5318'
 
-- test: TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved
-  message: 'the refused write is still parked on the seal''s sync: the capacity answer waited on the caller''s own fsync'
+- test: TestRFC8A_CloneResumedAtAFullLimit
+  message: 'the share limit has nothing left to free: vfs: no space without operator action, want only the capacity delay'
   status: fail
   fix: planned
   category: feature
-  reason: 'What the row demonstrates, on its own bounded assertion now: the refusal over an unresolved window parks the refused write on the share seal''s caller-side fsync — the seal runs in the refusal''s own goroutine and syncs the records of the segment it closes, which the row''s held sync stops. What it waits on: the RFC 8 / RFC 28 ruling the PR text carries — whether the seal may place its marker without a caller-side sync, which the named-predecessor recovery refusal over an unsynced marker stands against, or whether the durability layer learns to seal off the caller''s goroutine. Once ruled, the refusal answers ErrDelay under a tenth of the caller''s bound and the entry leaves.'
-  issue: '#4873'
+  reason: 'Waits on offload being composed. The settled answer gives retry-later for dirty bytes only with a put-healthy store behind them (RFC 8 section 10.2), and this part composes no store, so the settled no-space in settled() stands, as ruled on #4892; the row fills its share with live, dirty bytes and wants the retry-later a put-healthy store would give. The share-limit refusal now runs one pass per share that repacks only when the share''s unreclaimed bytes after its sync are above zero: the filler supersedes nothing, so no pass repacks, the ended figure reads zero and the refusal answers no space, as its retry-later sibling at the share limit does. It passed before only because the refusal''s two repack passes sealed and cycled the live bytes, leaving an ended figure the settled answer read as something to free.'
+  issue: '#5318'
 
 - test: TestV26/journal/a_clone_of_a_lost_run_reads_lost_there
   message: 'the destination over the source''s lost run: <nil>, want ErrLost'

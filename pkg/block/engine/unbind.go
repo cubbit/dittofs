@@ -49,6 +49,10 @@ func (e *Engine) Unbind(ctx context.Context, id entity.ShareID, keepHolds bool) 
 	if err := b.gc.removals.joinRunning(ctx, id); err != nil {
 		return err
 	}
+
+	if err := e.endPasses(ctx, b); err != nil {
+		return err
+	}
 	e.forgetShare(id) // its clones are done; their files may change where this node does not see it
 	return nil
 }
@@ -137,6 +141,10 @@ func (e *Engine) Drop(ctx context.Context, id entity.ShareID, tag journal.ShareT
 		}
 
 		if err := e.endShareWork(ctx, b); err != nil {
+			return err
+		}
+
+		if err := e.endPasses(ctx, b); err != nil {
 			return err
 		}
 

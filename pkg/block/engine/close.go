@@ -308,6 +308,10 @@ func (e *Engine) stopWork(b *stopBound) error {
 		}
 	}
 
+	if err := e.stopPasses(b); err != nil {
+		return err
+	}
+
 	cloned := make(chan struct{})
 
 	go func() {

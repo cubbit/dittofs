@@ -269,25 +269,6 @@ func TestAShareRefusalRepacksTheShareScope(t *testing.T) {
 	}
 }
 
-// When the scoped repack suffices, the last step does not run: the share's own
-// unsynced overwrite stays unsynced.
-func TestAShareRefusalStopsAtTheRepackWhenItSuffices(t *testing.T) {
-	s := newSegUnit(t, 150, 0)
-	fa := entity.NewFileID()
-
-	s.j.AddEnded(s.a.Tag, 50)
-	s.j.HoldSyncTimer(true)
-	s.overwritten(t, s.a, fa)
-
-	if err := s.put(t.Context(), s.a, fa, 100, 40, 'c'); err != nil {
-		t.Fatalf("A's write after the scoped repack: %v, want served", err)
-	}
-
-	if got := s.j.Stats().Shares[s.a.Tag].UsedBytes; got != 120 {
-		t.Errorf("A holds %d bytes on disk, want 120: the last step synced A's file", got)
-	}
-}
-
 // A share's refusal syncs the share's own files and no other share's, and the
 // overwrite its sync supersedes is freed: the write is served after the last
 // step.
@@ -452,13 +433,18 @@ func TestAHeadroomRefusalWithAnUnresolvedFailedSegmentIsDelay(t *testing.T) {
 // over the fake's Sync.
 type repackSyncHold struct {
 	engine.Handle
-	entered chan struct{}
-	release chan struct{}
-	once    atomic.Bool
+	entered  chan struct{}
+	release  chan struct{}
+	returned chan struct{} // closed, when set, once the held Sync returns
+	once     atomic.Bool
 }
 
 func (h *repackSyncHold) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
 	if h.once.CompareAndSwap(false, true) {
+		if h.returned != nil {
+			defer close(h.returned)
+		}
+
 		close(h.entered)
 
 		select {
@@ -531,13 +517,14 @@ func TestAnIndexRefusalBesideARefusalInItsSyncIsNoSpace(t *testing.T) {
 	}
 }
 
-// Over a journal whose Repack is not built, a refusal keeps the interim
-// retry-later answer and does not end no space by a figure of 0.
+// Over a journal whose Repack is not built, a refusal by the journal's own
+// limit keeps the interim retry-later answer and does not end no space by a
+// figure of 0.
 func TestARefusalOverAJournalThatCannotRepackIsRetryLater(t *testing.T) {
 	u := newUnit(t)
 	f := u.create(t, "f")
 
-	if err := u.j.Refuse(enginetest.CallWriteAt, refusalErr(journal.LimitShare)); err != nil {
+	if err := u.j.Refuse(enginetest.CallWriteAt, refusalErr(journal.LimitJournal)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -645,6 +632,7 @@ func TestAFailingStepIsNeverTheAnswer(t *testing.T) {
 
 	t.Run("a closed journal is unavailable", func(t *testing.T) {
 		s := newSegUnit(t, 100, 0, faultyRepack(journal.ErrClosed, false))
+		s.j.AddFailed(s.a.Tag, 5, true)
 		s.refuse(t, journal.LimitShare)
 
 		err := s.put(t.Context(), s.a, entity.NewFileID(), 0, 1, 'x')
@@ -837,11 +825,13 @@ func TestAnEndedContextRepacksAndSealsNothing(t *testing.T) {
 	}
 }
 
-// A caller whose context ends while the last step's scope sync is held does not
-// repack after it: the sync fails with the context's error, and the one Repack
-// call is the first step's.
-func TestAContextEndedInTheScopeSyncRepacksNoMore(t *testing.T) {
-	hold := &repackSyncHold{entered: make(chan struct{}), release: make(chan struct{})}
+// heldPass is a unit whose share's pass is held in its scope sync, with
+// unreclaimed bytes for the pass to repack once the sync returns, the
+// journal whose Repack calls it counts, and the function that lets the sync go.
+func heldPass(t *testing.T) (*unit, *repackSyncHold, *repackFault, entity.FileID, func()) {
+	t.Helper()
+
+	hold := &repackSyncHold{entered: make(chan struct{}), release: make(chan struct{}), returned: make(chan struct{})}
 	wrap := func(h engine.Handle) engine.Handle {
 		hold.Handle = h
 
@@ -855,6 +845,7 @@ func TestAContextEndedInTheScopeSyncRepacksNoMore(t *testing.T) {
 		deps: []func(*engine.Deps){trackedRepack(nil, false, &fault)},
 	})
 	u.j.SegmentCap(segBytes, 0)
+	u.j.AddEnded(u.share.Tag, 30)
 
 	f := u.create(t, "f")
 	u.write(t, f, 0, []byte("x"))
@@ -866,6 +857,15 @@ func TestAContextEndedInTheScopeSyncRepacksNoMore(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	return u, hold, fault, f, release
+}
+
+// A caller whose context ends while the share's pass is held in its scope sync
+// answers retry-later, and the pass runs on under the engine's lifetime: once
+// the sync is let go it repacks.
+func TestASharePassOutlivesItsCallersCancel(t *testing.T) {
+	u, hold, fault, f, release := heldPass(t)
+
 	ctx, cancel := context.WithCancel(bounded(t))
 	defer cancel()
 
@@ -876,7 +876,7 @@ func TestAContextEndedInTheScopeSyncRepacksNoMore(t *testing.T) {
 		got <- err
 	}()
 
-	within(t, "the refusal reaching its scope sync", hold.entered)
+	within(t, "the pass reaching its scope sync", hold.entered)
 	cancel()
 
 	err := within(t, "the cancelled write's answer", got)
@@ -884,8 +884,292 @@ func TestAContextEndedInTheScopeSyncRepacksNoMore(t *testing.T) {
 		t.Errorf("a context ended in the scope sync: %v, want ErrDelay(DelayCapacity)", err)
 	}
 
+	release()
+	u.e.AwaitSharePassesForTest()
+
 	if n := fault.calls.Load(); n != 1 {
-		t.Errorf("%d Repack calls, want 1: the first step's, none after the ended sync", n)
+		t.Errorf("%d Repack calls once the sync was let go, want 1: the pass ended with its caller", n)
+	}
+}
+
+// A refusal waits for a held pass a tenth of its deadline by the engine's
+// clock, then answers retry-later, and the pass, left running, still repacks
+// once its sync is let go.
+func TestARefusalWaitsATenthOfItsDeadlineForThePass(t *testing.T) {
+	u, hold, fault, f, release := heldPass(t)
+
+	ctx := &endsAtCtx{Context: t.Context(), now: u.clock.Now(), done: make(chan struct{})}
+	armed := u.clock.Armed(time.Hour / 10)
+	got := make(chan error, 1)
+
+	go func() {
+		_, err := u.e.Write(ctx, u.share.ID, f, 0, []byte("y"), engine.WriteOpts{Done: func() {}})
+		got <- err
+	}()
+
+	within(t, "the pass reaching its scope sync", hold.entered)
+	within(t, "the refusal's wait for the pass", armed)
+
+	u.clock.Advance(time.Hour/10 - time.Nanosecond)
+	select {
+	case err := <-got:
+		t.Fatalf("the refusal answered %v before a tenth of its deadline", err)
+	default:
+	}
+
+	u.clock.Advance(time.Nanosecond)
+
+	if err := within(t, "the refusal's answer at its bound", got); !isDelay(err, vfserr.DelayCapacity) {
+		t.Errorf("a refusal past a tenth of its deadline: %v, want ErrDelay(DelayCapacity)", err)
+	}
+
+	release()
+	u.e.AwaitSharePassesForTest()
+
+	if n := fault.calls.Load(); n != 1 {
+		t.Errorf("%d Repack calls once the sync was let go, want 1: the pass ended with the refusal's wait", n)
+	}
+}
+
+// Close cancels a share pass held in its scope sync and joins it: Close ends
+// clean, and the pass repacks nothing after its cancelled sync.
+func TestCloseStopsASharePass(t *testing.T) {
+	u, hold, fault, f, _ := heldPass(t)
+
+	ctx, cancel := context.WithCancel(bounded(t))
+	defer cancel()
+
+	got := make(chan error, 1)
+
+	go func() {
+		_, err := u.e.Write(ctx, u.share.ID, f, 0, []byte("y"), engine.WriteOpts{Done: func() {}})
+		got <- err
+	}()
+
+	within(t, "the pass reaching its scope sync", hold.entered)
+	cancel()
+	within(t, "the cancelled write's answer", got)
+
+	closed := make(chan error, 1)
+
+	go func() { closed <- u.e.Close(bounded(t)) }()
+
+	if err := within(t, "Close", closed); err != nil {
+		t.Errorf("Close with a share pass held: %v, want nil", err)
+	}
+
+	if n := fault.calls.Load(); n != 0 {
+		t.Errorf("%d Repack calls after Close, want 0: Close did not stop the pass", n)
+	}
+}
+
+// A refusal whose context has no deadline waits for a held pass 3 s by the
+// engine's clock, a tenth of the 30 s default request deadline, then answers
+// retry-later.
+func TestARefusalWithNoDeadlineWaitsThreeSeconds(t *testing.T) {
+	u, hold, _, f, _ := heldPass(t)
+
+	armed := u.clock.Armed(3 * time.Second)
+	got := make(chan error, 1)
+
+	go func() {
+		_, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("y"), engine.WriteOpts{Done: func() {}})
+		got <- err
+	}()
+
+	within(t, "the pass reaching its scope sync", hold.entered)
+	within(t, "the refusal's wait for the pass", armed)
+	u.clock.Advance(3 * time.Second)
+
+	if err := within(t, "the refusal's answer", got); !isDelay(err, vfserr.DelayCapacity) {
+		t.Errorf("a refusal with no deadline past 3 s: %v, want ErrDelay(DelayCapacity)", err)
+	}
+}
+
+// Unbind cancels the share's pass held in its scope sync and waits for it
+// before it answers, so Drop never closes the handle under a running pass.
+func TestUnbindEndsTheSharePass(t *testing.T) {
+	u, hold, fault, f, _ := heldPass(t)
+
+	ctx, cancel := context.WithCancel(bounded(t))
+	defer cancel()
+
+	got := make(chan error, 1)
+
+	go func() {
+		_, err := u.e.Write(ctx, u.share.ID, f, 0, []byte("y"), engine.WriteOpts{Done: func() {}})
+		got <- err
+	}()
+
+	within(t, "the pass reaching its scope sync", hold.entered)
+	cancel()
+	within(t, "the cancelled write's answer", got)
+
+	if err := u.e.Unbind(bounded(t), u.share.ID, false); err != nil {
+		t.Fatalf("Unbind with a share pass held: %v", err)
+	}
+
+	select {
+	case <-hold.returned:
+	default:
+		t.Error("Unbind answered while the share's pass was still in its sync, want it ended")
+	}
+
+	if n := fault.calls.Load(); n != 0 {
+		t.Errorf("%d Repack calls after Unbind, want 0: the pass ran on after its share was unbound", n)
+	}
+}
+
+// syncCounter is a handle that counts the Sync calls reaching the journal and
+// passes each through.
+type syncCounter struct {
+	engine.Handle
+	n *atomic.Int64
+}
+
+func (h syncCounter) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+	h.n.Add(1)
+
+	return h.Handle.Sync(ctx, ids...)
+}
+
+// passUnit is a unit with share A limited to aLimit, its handles wrapped by
+// wrap, and the journal whose Repack calls it counts.
+func passUnit(t *testing.T, aLimit int64, wrap func(engine.Handle) engine.Handle) (*segUnit, *repackFault) {
+	t.Helper()
+
+	var fault *repackFault
+
+	u := newUnitWith(t, unitConfig{wrap: wrap, deps: []func(*engine.Deps){trackedRepack(nil, false, &fault)}})
+	u.j.SegmentCap(segBytes, 0)
+
+	a := enginetest.AddShare(t, u.fs.Store, "a", aLimit)
+	if err := u.e.Bind(t.Context(), a); err != nil {
+		t.Fatal(err)
+	}
+
+	return &segUnit{unit: u, a: a}, fault
+}
+
+// Two refusals to different files of one share, the second arriving before
+// the first's pass has begun its sync, join that one pass: one sync, one
+// repack, and both writes served.
+func TestTwoRefusalsJoinOnePass(t *testing.T) {
+	var syncs atomic.Int64
+
+	s, fault := passUnit(t, 85, func(h engine.Handle) engine.Handle { return syncCounter{h, &syncs} })
+	s.j.HoldSyncTimer(true)
+	s.overwritten(t, s.a, entity.NewFileID()) // 80 bytes held, 40 superseded once synced
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once atomic.Bool
+	s.e.OnSharePass(func() {
+		if once.CompareAndSwap(false, true) {
+			close(entered)
+			<-release
+		}
+	})
+	let := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(let)
+
+	before := syncs.Load()
+	first := make(chan error, 1)
+
+	go func() { first <- s.put(bounded(t), s.a, entity.NewFileID(), 0, 10, 'x') }()
+
+	within(t, "the first refusal's pass starting", entered)
+
+	armed := s.clock.Armed(time.Hour / 10)
+	second := make(chan error, 1)
+
+	go func() {
+		ctx := &endsAtCtx{Context: t.Context(), now: s.clock.Now(), done: make(chan struct{})}
+		second <- s.put(ctx, s.a, entity.NewFileID(), 0, 10, 'y')
+	}()
+
+	within(t, "the second refusal waiting for a pass", armed)
+	let()
+
+	if err := within(t, "the first write's answer", first); err != nil {
+		t.Errorf("the first write: %v, want served", err)
+	}
+
+	if err := within(t, "the second write's answer", second); err != nil {
+		t.Errorf("the second write: %v, want served", err)
+	}
+
+	if got := s.e.Stats().SharePasses; got != 1 {
+		t.Errorf("share passes the two refusals started: %d, want 1, which the second joined", got)
+	}
+
+	if got := syncs.Load() - before; got != 1 {
+		t.Errorf("syncs the two refusals made: %d, want 1", got)
+	}
+
+	if got := fault.calls.Load(); got != 1 {
+		t.Errorf("repacks the two refusals made: %d, want 1", got)
+	}
+}
+
+// syncedHold is a handle whose first Sync syncs, then holds until release: a
+// pass past the start of its sync.
+type syncedHold struct {
+	engine.Handle
+	entered, release chan struct{}
+	once             *atomic.Bool
+}
+
+func (h syncedHold) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+	marks, err := h.Handle.Sync(ctx, ids...)
+	if h.once.CompareAndSwap(false, true) {
+		close(h.entered)
+		<-h.release
+	}
+
+	return marks, err
+}
+
+// A refusal that arrives once a pass's sync has begun does not decide from
+// that sync: alice's overwrite, served after it, is unsynced, so bob, refused
+// next, waits for the next pass, whose sync makes her superseded bytes
+// unreclaimed and whose repack frees them, and is served rather than told no
+// space.
+func TestARefusalAfterThePassSyncedWaitsForTheNext(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once atomic.Bool
+
+	s, _ := passUnit(t, 100, func(h engine.Handle) engine.Handle {
+		return syncedHold{Handle: h, entered: entered, release: release, once: &once}
+	})
+	let := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(let)
+	s.j.HoldSyncTimer(true)
+
+	fa := entity.NewFileID()
+	s.must(t, s.a, fa, 0, 20, 'a')
+
+	carol := make(chan error, 1)
+
+	go func() { carol <- s.put(bounded(t), s.a, entity.NewFileID(), 0, 90, 'c') }()
+
+	within(t, "carol's pass past its sync", entered)
+
+	s.must(t, s.a, fa, 0, 20, 'b') // alice: fits, and her superseded record is unsynced
+
+	armed := s.clock.Armed(time.Hour / 10)
+	bob := make(chan error, 1)
+
+	go func() {
+		ctx := &endsAtCtx{Context: t.Context(), now: s.clock.Now(), done: make(chan struct{})}
+		bob <- s.put(ctx, s.a, entity.NewFileID(), 0, 70, 'b')
+	}()
+
+	within(t, "bob's refusal waiting for a pass", armed)
+	let()
+	within(t, "carol's answer", carol)
+
+	if err := within(t, "bob's answer", bob); err != nil {
+		t.Errorf("bob's write after alice's unsynced overwrite: %v, want served by the next pass", err)
 	}
 }
 
@@ -922,8 +1206,8 @@ func TestARepackHeldPastTheDeadlineIsDelay(t *testing.T) {
 }
 
 // Two refusals racing for the only unreclaimed segment: the second, while the
-// first's pass is held with it selected, is retry-later and never no space; the
-// first is served when it ends.
+// first's pass is held in its repack with it selected, is retry-later at its
+// bound and never no space; the first is served when its pass ends.
 func TestRacingRefusalsAnswerOnWhatIsLeft(t *testing.T) {
 	s := newSegUnit(t, 100, 0)
 	s.j.AddEnded(s.a.Tag, 100)
@@ -939,7 +1223,20 @@ func TestRacingRefusalsAnswerOnWhatIsLeft(t *testing.T) {
 
 	within(t, "the first pass reaching its pause point", entered)
 
-	err := s.put(bounded(t), s.a, entity.NewFileID(), 0, 40, 'y')
+	// The second comes after the pass's sync began, so it waits for the next
+	// pass, and answers at a tenth of its deadline by the engine's clock.
+	armed := s.clock.Armed(time.Hour / 10)
+	second := make(chan error, 1)
+
+	go func() {
+		ctx := &endsAtCtx{Context: t.Context(), now: s.clock.Now(), done: make(chan struct{})}
+		second <- s.put(ctx, s.a, entity.NewFileID(), 0, 40, 'y')
+	}()
+
+	within(t, "the second refusal's wait for the pass", armed)
+	s.clock.Advance(time.Hour / 10)
+
+	err := within(t, "the second refusal's answer", second)
 	if !isDelay(err, vfserr.DelayCapacity) {
 		t.Errorf(
 			"the second refusal while the first's pass is held: %v, want ErrDelay(DelayCapacity)",
@@ -1291,90 +1588,6 @@ func TestADeadlinePassingInTheScopeSyncIsADelay(t *testing.T) {
 	err := within(t, "the held write's answer", got)
 	if !isDelay(err, vfserr.DelayCapacity) || errors.Is(err, vfserr.ErrNoSpace) {
 		t.Errorf("a deadline passing inside the scope sync: %v, want ErrDelay(DelayCapacity)", err)
-	}
-}
-
-// budgetRecorder is a journal whose Repack pass-through records the budget
-// each relief step hands it: the share-figures' empty read is what charges a
-// pass with no bytes, and the rows below pin each figure that refuses that
-// charge by naming the budget its pass ran at.
-type budgetRecorder struct {
-	engine.Journal
-	mu      sync.Mutex
-	budgets []int64
-}
-
-func (r *budgetRecorder) Repack(ctx context.Context, budget int64, scope journal.RepackScope) (int64, error) {
-	r.mu.Lock()
-	r.budgets = append(r.budgets, budget)
-	r.mu.Unlock()
-
-	return r.Journal.Repack(ctx, budget, scope)
-}
-
-func (r *budgetRecorder) firstBudget() (int64, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if len(r.budgets) == 0 {
-		return 0, false
-	}
-
-	return r.budgets[0], true
-}
-
-func recordBudgets(out **budgetRecorder) func(*engine.Deps) {
-	return func(d *engine.Deps) {
-		open := d.Open
-
-		d.Open = func(
-			ctx context.Context,
-			dir string,
-			floor journal.Version,
-			id journal.JournalID,
-			marks []entity.SyncMark,
-		) (engine.Journal, error) {
-			j, err := open(ctx, dir, floor, id, marks)
-
-			*out = &budgetRecorder{Journal: j}
-
-			return *out, err
-		}
-	}
-}
-
-// A reservation still in flight keeps the relief's first pass at the full
-// repack reserve — the reservation's room may reach the caller by landing or
-// rolling back without a free, so the figures never read empty while one
-// holds, and the pass an empty reading would charge with no bytes runs whole
-// instead. The row whose first pass flips when the reservation condition
-// leaves the figures' read.
-func TestAReservationInFlightKeepsTheFirstPassWhole(t *testing.T) {
-	var rec *budgetRecorder
-
-	s := newSegUnit(t, 100, 0, recordBudgets(&rec))
-	f := s.create(t, "f")
-	s.must(t, s.a, f, 0, 40, 'a')
-
-	h, err := s.j.Share(s.a.Tag, 100, journal.Version{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = h.Close() }()
-
-	if _, err := h.Reserve(40, 1); err != nil {
-		t.Fatal(err)
-	}
-
-	s.refuse(t, journal.LimitShare)
-
-	if err := s.put(bounded(t), s.a, f, 40, 1, 'x'); err == nil {
-		t.Fatal("the write was served under its share limit arithmetic")
-	}
-
-	got, ok := rec.firstBudget()
-	if !ok || got == 0 {
-		t.Errorf("the first pass ran at budget %d (of %d passes), want the full repack reserve: a reservation in flight keeps the figures from reading empty", got, len(rec.budgets))
 	}
 }
 

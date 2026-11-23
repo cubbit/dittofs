@@ -138,30 +138,15 @@ func (e *Engine) scopeOf(b *binding, r refusal) (journal.RepackScope, []*binding
 	return journal.RepackScope{}, bound
 }
 
-// repack runs one repack pass over scope. A pass the share-limit figures
-// name empty runs at a budget of no bytes — the journal runs no unit, seals
-// nothing and touches no segment, paying nothing of the caller's deadline,
-// which is why a call that answers nothing can still be worth making — and
-// every other pass runs at one repack reserve of bytes, which the journal
-// sizes to at least a segment's live payload (RFC 8 section 10.3). The result
-// of the pass is not read: what is left to free is read from Stats
-// afterwards.
-func (e *Engine) repack(ctx context.Context, b *binding, r refusal, scope journal.RepackScope) error {
+// repack runs one repack pass over scope at one repack reserve of bytes,
+// which the journal sizes to at least a segment's live payload (RFC 8
+// section 10.3). The result of the pass is not read: what is left to free is
+// read from Stats afterwards.
+func (e *Engine) repack(ctx context.Context, b *binding, scope journal.RepackScope) error {
 	b.gc.cap.passes.Add(1)
 	defer b.gc.cap.passes.Add(-1)
 
-	// The share's own limit charges its first pass with a budget of no
-	// bytes when the pre-sync figures read empty: a scope the figures name
-	// empty is one no pass can relieve, so the pass runs for its own
-	// contract — its error is the ladder's to answer — and seals and copies
-	// for nothing, paying nothing of the caller's deadline. A pass with a
-	// real candidate runs at the repack reserve as before.
-	budget := b.j.Stats().RepackReserveBytes
-	if r.limit == journal.LimitShare && e.figuresEmpty(b, r) {
-		budget = 0
-	}
-
-	_, err := b.j.Repack(ctx, budget, scope)
+	_, err := b.j.Repack(ctx, b.j.Stats().RepackReserveBytes, scope)
 
 	return err
 }
@@ -202,18 +187,19 @@ func (e *Engine) syncScope(ctx context.Context, own *binding, bound []*binding) 
 	return nil
 }
 
-// relieve runs the next step of b's repack path for a refusal by r and reports
-// whether the call is retried. A step that fails with anything but the
-// caller's context leaves the refusal as the input, as if it freed nothing,
-// and the error is logged, not answered (RFC 8 §10.2). A closed journal is
-// returned as it is.
+// relieve runs the next step of b's repack path for a refusal by one of the
+// journal's own limits and reports whether the call is retried. A step that
+// fails with anything but the caller's context leaves the refusal as the
+// input, as if it freed nothing, and the error is logged, not answered (RFC 8
+// §10.2). A closed journal is returned as it is. A share's own limit runs
+// sharePass instead.
 //
-// ponytail: repack runs only at a refusal, one scoped pass per refusal and none
-// queued or kept in flight per scope; the eviction loop's own repack comes with
-// offload. A journal-wide limit also runs its own syncScope per refusal, which
-// grows with the files on the journal, so a burst of N refusals is 2N repacks
-// and N full-journal syncs. Upgrade to one repack and one scope sync in flight
-// per journal and scope that later refusals wait on when repack bytes copied
+// ponytail: a journal-wide limit runs its repack path in the caller's
+// goroutine, one pass per refusal and none kept in flight per journal; the
+// eviction loop's own repack comes with offload. Its syncScope runs per
+// refusal too and grows with the files on the journal, so a burst of N
+// refusals is 2N repacks and N full-journal syncs. Upgrade to the share
+// limit's one pass in flight that later refusals join when repack bytes copied
 // per byte freed, or the time a refusal spends in syncScope, rises under a
 // refusal storm.
 func (e *Engine) relieve(ctx context.Context, b *binding, r refusal, at *step) error {
@@ -223,11 +209,11 @@ func (e *Engine) relieve(ctx context.Context, b *binding, r refusal, at *step) e
 
 	switch *at {
 	case stepNone:
-		err = e.repack(ctx, b, r, scope)
+		err = e.repack(ctx, b, scope)
 		*at = stepRepack
 	default:
 		if err = e.syncScope(ctx, b, bound); err == nil || ctx.Err() == nil {
-			serr := e.repack(ctx, b, r, scope)
+			serr := e.repack(ctx, b, scope)
 			if err == nil {
 				err = serr
 			}
@@ -236,6 +222,256 @@ func (e *Engine) relieve(ctx context.Context, b *binding, r refusal, at *step) e
 		*at = stepLast
 	}
 
+	return e.stepOutcome(ctx, b, err)
+}
+
+// sharePass is one pass of step 4 over a share's own scope (RFC 8 §10.2):
+// the share's sync, then its repack. A refusal of the share's limit joins it
+// while its sync has not begun; one that comes later waits for the next pass.
+type sharePass struct {
+	done    chan struct{}
+	err     error              // set before done closes: nil to retry, else what the refusal maps
+	syncing bool               // under the passes' mu: the sync began, so a refusal now waits for the next
+	cancel  context.CancelFunc // ends the pass, set once it starts
+}
+
+// passSlot is a share's pass in flight and the one queued behind it.
+type passSlot struct{ cur, next *sharePass }
+
+// sharePasses are the share passes, at most one in flight and one queued per
+// share, run under the engine's lifetime rather than any caller's: ctx is
+// what Close cancels and wg what it joins. closed is set under mu when Close
+// stops them and ended holds the shares whose passes Unbind or Drop is
+// stopping, so no pass starts for them after the join.
+type sharePasses struct {
+	mu      sync.Mutex
+	closed  bool
+	slots   map[*binding]*passSlot
+	ended   map[*binding]bool
+	started atomic.Int64 // the passes started, which Stats reports
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+}
+
+// endedPass is a pass that ran nothing and ends with err.
+func endedPass(err error) *sharePass {
+	p := &sharePass{done: make(chan struct{}), err: err}
+	close(p.done)
+
+	return p
+}
+
+// passFor is the pass a refusal of b's share limit, by r, waits for: the
+// pass in flight while its sync has not begun, else the one queued behind it,
+// queued now if none is, else a new one, started now. Once Close has stopped
+// the passes, or Unbind or Drop the share's, it is a pass already ended with
+// the journal closed.
+//
+// decision: a refusal that arrives once the pass's sync has begun does not
+// join it: a write served after that sync, such as a small overwrite, holds a
+// superseded record the sync did not reach, so the figures after the pass
+// would count it as nothing and answer no space. It waits for the next pass,
+// which syncs it. Overturned if the journal's sync reports which records it
+// covered, so a joiner could tell whether its share's writes were among them.
+func (e *Engine) passFor(b *binding, r refusal) *sharePass {
+	ps := &e.passing
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	if ps.closed || ps.ended[b] {
+		return endedPass(journal.ErrClosed)
+	}
+
+	sl := ps.slots[b]
+	switch {
+	case sl == nil:
+		if ps.slots == nil {
+			ps.slots = map[*binding]*passSlot{}
+		}
+
+		sl = &passSlot{cur: &sharePass{done: make(chan struct{})}}
+		ps.slots[b] = sl
+		e.startPass(b, r, sl.cur)
+
+		return sl.cur
+	case !sl.cur.syncing:
+		return sl.cur
+	case sl.next == nil:
+		sl.next = &sharePass{done: make(chan struct{})}
+	}
+
+	return sl.next
+}
+
+// startPass runs p over b's scope in the background. ps.mu is held.
+func (e *Engine) startPass(b *binding, r refusal, p *sharePass) {
+	ps := &e.passing
+
+	var ctx context.Context
+	ctx, p.cancel = context.WithCancel(ps.ctx)
+	ps.started.Add(1)
+	ps.wg.Add(1)
+
+	go func() {
+		defer ps.wg.Done()
+
+		if h := e.seams.passing.Load(); h != nil {
+			(*h)()
+		}
+
+		ps.mu.Lock()
+		p.syncing = true
+		ps.mu.Unlock()
+
+		err := e.sharePass(ctx, b, r)
+		p.cancel()
+
+		ps.mu.Lock()
+		sl := ps.slots[b]
+		next := sl.next
+		sl.next = nil
+
+		switch {
+		case next == nil:
+			delete(ps.slots, b)
+		case ps.closed || ps.ended[b]:
+			delete(ps.slots, b)
+			next.err = journal.ErrClosed
+			close(next.done)
+		default:
+			sl.cur = next
+			e.startPass(b, r, next)
+		}
+		ps.mu.Unlock()
+
+		p.err = err
+		close(p.done)
+	}()
+}
+
+// sharePass syncs every file of b's share, so what an unsynced overwrite
+// supersedes becomes unreclaimed, and repacks the share's scope, which seals
+// and syncs the segments it closes, only when the share's unreclaimed bytes
+// after the sync, active segments included, are above zero: a share of live,
+// synced bytes is left untouched, and superseded bytes that sit only in an
+// active segment are still sealed and freed.
+func (e *Engine) sharePass(ctx context.Context, b *binding, r refusal) error {
+	scope, bound := e.scopeOf(b, r)
+
+	err := e.syncScope(ctx, b, bound)
+	if !errors.Is(err, journal.ErrClosed) && ctx.Err() == nil &&
+		b.j.Stats().Shares[b.share.Tag].UnreclaimedBytes > 0 {
+		if serr := e.repack(ctx, b, scope); err == nil {
+			err = serr
+		}
+	}
+
+	return e.stepOutcome(ctx, b, err)
+}
+
+// passWaitNoDeadline is the most a refusal whose context has no deadline
+// waits for its share's pass: a tenth of the 30 s default request deadline.
+//
+// decision: a context with no deadline is given the 30 s default request
+// deadline, the one stopDefault is tied to, so it waits 3 s, then answers
+// ErrDelay (DelayCapacity), rather than without limit: a held or slow sync
+// would otherwise park the caller for as long as it lasts, while a pass that
+// nothing holds ends well inside 3 s and the write is still served in one
+// call. Overturned if RFC 8 or RFC 23 sets another default request deadline.
+const passWaitNoDeadline = stopDefault / 10
+
+// awaitPass waits for p to end and reports whether it did: at most a tenth of
+// the time left to ctx's deadline by the engine's clock, or
+// passWaitNoDeadline with no deadline, and never past ctx's end or the shut
+// of b's gate. A pass that has not ended is left running.
+func (e *Engine) awaitPass(ctx context.Context, b *binding, p *sharePass) bool {
+	select {
+	case <-p.done:
+		return true
+	default:
+	}
+
+	wait := passWaitNoDeadline
+	if deadline, ok := ctx.Deadline(); ok {
+		wait = deadline.Sub(e.d.Clock.Now()) / 10
+	}
+
+	select {
+	case <-p.done:
+		return true
+	case <-e.d.Clock.After(wait):
+	case <-ctx.Done():
+	case <-b.gate.shutdown():
+	}
+
+	return false
+}
+
+// endPasses cancels b's share pass in flight, fails the one queued behind it
+// and waits, within ctx, for the first to end, so the share's handle is not
+// closed under it (RFC 8 §2.5). Unbind and Drop call it once the share's
+// calls have drained, so no refusal starts another.
+func (e *Engine) endPasses(ctx context.Context, b *binding) error {
+	ps := &e.passing
+	ps.mu.Lock()
+
+	if ps.ended == nil {
+		ps.ended = map[*binding]bool{}
+	}
+	ps.ended[b] = true
+
+	var cur *sharePass
+	if sl := ps.slots[b]; sl != nil {
+		cur = sl.cur
+		cur.cancel()
+	}
+	ps.mu.Unlock()
+
+	if cur != nil {
+		select {
+		case <-cur.done:
+		case <-ctx.Done():
+			return fmt.Errorf("engine: share %v: waiting for its capacity pass: %w", b.share.ID, ctx.Err())
+		}
+	}
+
+	ps.mu.Lock()
+	delete(ps.ended, b)
+	ps.mu.Unlock()
+
+	return nil
+}
+
+// stopPasses cancels the share passes in flight and joins them; none starts
+// after it.
+func (e *Engine) stopPasses(b *stopBound) error {
+	ps := &e.passing
+	ps.mu.Lock()
+	ps.closed = true
+	ps.mu.Unlock()
+
+	ps.cancel()
+
+	passed := make(chan struct{})
+
+	go func() {
+		ps.wg.Wait()
+		close(passed)
+	}()
+
+	if !b.join(passed, "a share pass") {
+		return stuck("a share pass")
+	}
+
+	return nil
+}
+
+// stepOutcome is what a step of b's repack path that ended with err leaves the
+// refusal: nil to retry, as if the step freed nothing when it failed with
+// anything but ctx's end, a closed journal or an unimplemented repack, which
+// are returned as they are.
+func (e *Engine) stepOutcome(ctx context.Context, b *binding, err error) error {
 	switch {
 	case err == nil:
 		e.stepOK(b)
@@ -293,42 +529,6 @@ func (e *Engine) left(b *binding, r refusal) int64 {
 	}
 
 	return st.UnreclaimedEndedBytes
-}
-
-// figuresEmpty answers whether the share-limit figures of b's journal name
-// nothing the relief could act on, read before the scope's own sync runs
-// and used only to charge the relief's pass: an empty read sends the pass
-// to the journal at a budget of no bytes, a call that keeps the ladder's
-// failing-step and dead-sync contracts without their cost. The figures and
-// what each guards against:
-//
-//   - the share's unreclaimed bytes, beyond zero, name dead weight in any
-//     segment — released extents, superseded records — that a pass could
-//     retire;
-//   - the share's reservations still in flight name bytes whose room the
-//     caller may get by landing or rolling one back without a free, so the
-//     figures cannot yet rule anything freable;
-//   - the share's ended candidacy, the record bytes charged in segments no
-//     append can reach, names the live bytes a pass would cycle;
-//   - the repack reserve below twice the share's live payload means a pass
-//     cannot converge: its copies would stall charged in sealed segments,
-//     the stall a share looping a half-open batch against its own limit
-//     rides.
-//
-// decision: the check answers the share's own limit alone. A journal-wide
-// refusal with its unreclaimed bytes all in active segments is served by the
-// sync-then-repack ladder, so a zero read of the journal's own figure does
-// not predict that verdict; extending the check there needs the journal-side
-// post-sync figure that the active-segments row's serving path itself is the
-// evidence for. Withdrawn when the journal-wide limits share the prediction.
-func (e *Engine) figuresEmpty(b *binding, r refusal) bool {
-	st := b.j.Stats()
-	figs, booked := st.Shares[b.share.Tag]
-	if !booked || figs.UnreclaimedBytes > 0 || figs.ReservedBytes > 0 || e.left(b, r) > 0 ||
-		st.RepackReserveBytes < 2*figs.HeldBytes {
-		return false
-	}
-	return true
 }
 
 // raiseFull raises journal_full for a refusal by r of b's journal, with what
