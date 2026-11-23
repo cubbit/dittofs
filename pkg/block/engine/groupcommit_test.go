@@ -1288,7 +1288,7 @@ func TestASuspendedContentChangeCommitsItsChangeTimeAlone(t *testing.T) {
 	} {
 		for _, suspend := range []entity.TimeMask{entity.TimeModify, 0} {
 			t.Run(fmt.Sprintf("%s suspending %v", c.name, suspend), func(t *testing.T) {
-				u := cloneUnit(t)
+				u := clonedUnit(t)
 				u.clock.Advance(time.Since(u.clock.Now()) + time.Hour) // past the store's own time of the create
 				src := u.committedFile(t, "src", []byte("xy"))
 				f := u.committedFile(t, "f", []byte("abcd"))

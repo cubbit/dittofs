@@ -48,6 +48,9 @@ func (fs *Filesystem) read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off
 	if len(dst) == 0 { // a read of no byte returns once judged
 		return 0, off >= f.Size, nil
 	}
+	// decision: a read asks open state for no suspended times, as no read
+	// moves the access time, so there is none to leave alone (RFC 14 §2.2).
+	// Overturned once a read moves it: then read the mask as write does.
 	n, err := fs.engine.Read(ctx, f.Share, f.ID, off, dst)
 	return n, err == nil && off+int64(n) >= f.Size, storeErr(err)
 }
