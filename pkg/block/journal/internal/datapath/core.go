@@ -587,9 +587,13 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		// spare through the maker rather than the pool, whose refill refuses
 		// while the journal is read-only, with one cap of room past the
 		// maximum (see MakeOverMax). The spare stays on disk for the reopen
-		// to adopt; the maker is built below, before d.Start.
+		// to adopt; the maker is built below, before d.Start, for it makes
+		// its spares through the FS the layer built here observes.
 		Check: deps.Check,
 		MakeSpare: func() error {
+			if maker == nil {
+				return errors.New("datapath: the read-only probe ran before the spare maker was built")
+			}
 			_, err := maker.MakeOverMax()
 			return err
 		},
@@ -622,7 +626,10 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// The pool asks the read-only check before each spare it makes, so a
 	// read-only journal makes none (RFC 1 §5.4). The headroom's spare class
 	// is sized by the records it holds, whole spares at the charge the
-	// admission table draws by.
+	// admission table draws by. The core owns the headroom's target: a
+	// Deps.Targets.Headroom is replaced here whenever records are named, the
+	// open's own figure being the same HeadroomSpares, which the open keeps
+	// only for the recovery's adoption order.
 	//
 	// decision: zero headroom records readies no headroom spare and so
 	// throttles no content write — the journal fails open, holding no

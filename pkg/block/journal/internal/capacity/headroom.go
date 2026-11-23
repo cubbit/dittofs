@@ -318,7 +318,9 @@ func (h *Headroom) Admit(c RecordClass) (Draw, error) {
 // it appended into, an open's draw on the open reserve included, so its
 // segment's retirement credits it back; a draw whose segment is 0, named by
 // no append, is counted but attributed to none, so the ledger's per-segment
-// figures never sum past drawn.
+// figures never sum past drawn. Only tests that draw without appending pass
+// 0: every production caller names the segment its record landed in, and
+// the loss path refunds a record that landed nowhere instead.
 func (h *Headroom) Drawn(d Draw, seg core.SegmentID) {
 	if !d.drew {
 		return
@@ -418,18 +420,16 @@ func (h *Headroom) Unused() int64 {
 //
 // decision: the gate is the same at-limit predicate the draw itself runs
 // under, so the figure BelowHalf reports moves only with admissions the
-// limit gated. The footprint read runs before the section for the same
-// domain reason as Admit's.
+// limit gated. It takes no lock: the footprint read holds none for the same
+// domain reason as Admit's, and the drawn figure is one atomic read, as Unused's:
+// Unused's own figure is not compared, because its floor at zero answers
+// differently from this one where half the drawing side is zero records.
 func (h *Headroom) BelowHalf() bool {
 	if h.cfg.Records <= 0 || !h.atLimit() {
 		return false
 	}
-	total := h.cfg.Records
-	size := total - h.reserve
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	free := total - recordsOf(h.drawn.Load())
-	return free-h.reserve < size/2
+	free := h.cfg.Records - recordsOf(h.drawn.Load())
+	return free-h.reserve < (h.cfg.Records-h.reserve)/2
 }
 
 // refuseHeadroom is the named refusal a class that drew nothing hands its

@@ -2942,6 +2942,7 @@ func TestPoolHoldOnFullDevice(t *testing.T) {
 			t.Fatalf("Schedule: %v", err)
 		}
 		p.Start()
+		t.Cleanup(p.Stop)
 		awaitDeviceFull(t, true, p)
 		_, err := p.Hold(1)
 		if !errors.Is(err, syscall.ENOSPC) {
@@ -2951,7 +2952,6 @@ func TestPoolHoldOnFullDevice(t *testing.T) {
 		if errors.As(err, &ns) || errors.Is(err, core.ErrNoSpace) {
 			t.Fatalf("Hold on a full device = %v, want no NoSpaceError and no ErrNoSpace", err)
 		}
-		p.Stop()
 	})
 
 	t.Run("EIO answers the spare limit", func(t *testing.T) {
@@ -2961,12 +2961,12 @@ func TestPoolHoldOnFullDevice(t *testing.T) {
 			t.Fatalf("Schedule: %v", err)
 		}
 		p.Start()
+		t.Cleanup(p.Stop)
 		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 1)
 		_, err := p.Hold(1)
 		var ns *core.NoSpaceError
 		if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
 			t.Fatalf("Hold over an EIO pool = %v, want the spare limit's NoSpaceError", err)
 		}
-		p.Stop()
 	})
 }

@@ -2894,8 +2894,13 @@ func TestRetireDirectRetirementLeavesNoQueuedRecycle(t *testing.T) {
 	if ret.Recycled {
 		t.Fatalf("the direct retirement recycled the source, want an unlink beside a full reserve")
 	}
-	if id := <-retired; id != src {
-		t.Fatalf("the direct retirement's hook named %d, want the source %d", id, src)
+	select {
+	case id := <-retired:
+		if id != src {
+			t.Fatalf("the direct retirement's hook named %d, want the source %d", id, src)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the direct retirement's hook never fired")
 	}
 	if _, full, blocked := r.QueueForTest(); full != 0 || blocked != 0 {
 		t.Fatalf("after the direct retirement the queue lists %d full and %d claim-refused ids, want 0 and 0", full, blocked)

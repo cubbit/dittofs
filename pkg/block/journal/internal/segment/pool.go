@@ -1368,7 +1368,7 @@ func (p *Pool) refill() bool {
 		// holding no lock: it is the journal's own policy, not a function of
 		// the capacity domain, and no lock of the domain may be held across
 		// it. The one spare a read-only journal does make, the probe's (RFC 1
-		// §5.4), is made through Maker.Make, not this refill, so this does not
+		// §5.4), is made through Maker.MakeOverMax, not this refill, so this does not
 		// stop it. Withdrawn if that spare ever has to come from the pool, or
 		// if the journal ever needs the refill to run while read-only.
 		if p.readOnly != nil {

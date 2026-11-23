@@ -824,7 +824,7 @@ func (r *Retirer) dropQueued(id core.SegmentID) {
 	_, wasFull := r.full[id]
 	delete(r.full, id)
 	delete(r.claimBlocked, id)
-	emptied := wasFull && len(r.full) <= len(r.claimBlocked)
+	emptied := wasFull && len(r.full) == len(r.claimBlocked)
 	r.mu.Unlock()
 
 	if emptied && r.cfg.Pool != nil {
