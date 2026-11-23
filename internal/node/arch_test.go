@@ -1,7 +1,9 @@
 package node
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"go/ast"
 	gobuild "go/build"
 	"go/constant"
@@ -9,9 +11,11 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -19,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/cubbit/dittofs/internal/prof"
 )
 
 // configFields are the fields of Config: what the host supplies and the node
@@ -686,7 +692,7 @@ func TestNoComponentImports(t *testing.T) {
 // platform are in dir as import path path, with every import read from
 // source.
 func typeCheck(dir, path string) (*types.Package, []*ast.File, *types.Info, error) {
-	fset, imp := sourceImporter()
+	fset, imp := exportImporter()
 	files, err := parsePackage(fset, dir)
 	if err != nil {
 		return nil, nil, nil, err
@@ -726,12 +732,49 @@ func parsePackage(fset *token.FileSet, dir string) ([]*ast.File, error) {
 	return files, nil
 }
 
-// sourceImporter is one importer from source for every check, so a package
-// two checks import is type-checked once.
-var sourceImporter = sync.OnceValues(func() (*token.FileSet, types.Importer) {
+// exportImporter is one importer for every check, so a package two checks
+// import is loaded once. It reads the export data the go command compiled for
+// each package: type-checking the node's dependencies from source instead
+// takes over a minute under the race detector.
+var exportImporter = sync.OnceValues(func() (*token.FileSet, types.Importer) {
 	fset := token.NewFileSet()
-	return fset, importer.ForCompiler(fset, "source", nil)
+	exports := sync.OnceValues(exportFiles)
+	return fset, importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		files, err := exports()
+		if err != nil {
+			return nil, err
+		}
+		if files[path] == "" {
+			return nil, fmt.Errorf("no export data for %s", path)
+		}
+		return os.Open(files[path])
+	})
 })
+
+// exportFiles lists the export data file of each package under
+// internal/node, of the metadata store's, and of every package they import,
+// by import path. The go command compiles what the build cache lacks, with
+// the race detector when this binary has it, so the build of this binary
+// already cached them.
+func exportFiles() (map[string]string, error) {
+	args := []string{"list", "-export", "-deps", "-f", "{{.ImportPath}}={{.Export}}"}
+	if prof.RaceEnabled {
+		args = append(args, "-race")
+	}
+	cmd := exec.Command("go", append(args, "./...", "../../pkg/metadata/kvstore")...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go list -export: %w: %s", err, stderr.String())
+	}
+	files := map[string]string{}
+	for line := range strings.Lines(string(out)) {
+		path, file, _ := strings.Cut(strings.TrimSpace(line), "=")
+		files[path] = file
+	}
+	return files, nil
+}
 
 // kvUpdate is the KV's write transaction, through which every write of the
 // store commits.
@@ -1097,7 +1140,7 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	fset, imp := sourceImporter()
+	fset, imp := exportImporter()
 	ent, err := imp.Import(module + "pkg/metadata/entity")
 	if err != nil {
 		return nil, err
