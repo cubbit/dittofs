@@ -10,9 +10,8 @@ where the block tier stands.
 3. [Understanding the Architecture](#understanding-the-architecture)
 4. [Implementing Metadata Stores](#implementing-metadata-stores)
 5. [The journal (local tier)](#the-journal-local-tier)
-6. [Remote stores](#remote-stores)
-7. [Best Practices](#best-practices)
-8. [Additional Resources](#additional-resources)
+6. [Best Practices](#best-practices)
+7. [Additional Resources](#additional-resources)
 
 ## Overview
 
@@ -24,7 +23,9 @@ The block tier has nothing to plug in. Every share keeps an on-disk **journal**
 (`pkg/block/journal/`); it is provisioned automatically from the node's
 `journals` devices and has no type, no kind, and no operator-facing
 configuration. The v1 remote block stores (`s3`, `memory`) and their conformance
-suite are deleted, and the engine takes no remote store yet.
+suite are deleted, and the engine takes no remote store yet. The remote tier
+returns with [RFC 4](rfcs/rfc-4-remote-tier.md), and its contract and
+conformance suite with it.
 
 **Key Design Principle**: the engine (`pkg/block/engine`) runs over the journal
 and orchestrates reads and writes; `vfs.Service` is its only caller on the data
@@ -72,13 +73,6 @@ The journal (`pkg/block/journal`, [RFC 1](rfcs/rfc-1-journal.md)) is **not a
 pluggable store**: one journal per device, with a handle per share, provisioned
 by the engine. Its contract is its own package API; its conformance checks run
 under the `journal_conformance` tag (`pkg/block/journal/conformance/`).
-
-## Remote stores
-
-None yet. The v1 remote tier (its S3 and memory stores,
-its compression and encryption decorators, the block codec and the syncer) is
-deleted. The remote tier returns with [RFC 4](rfcs/rfc-4-remote-tier.md), and its
-contract and conformance suite with it.
 
 ## Best Practices
 

@@ -469,8 +469,6 @@ dittofs/
 │   ├── discovery/                # Service discovery (mDNS/DNS-SD)
 │   ├── health/                   # Health/readiness aggregation
 │   ├── metrics/                  # Prometheus metrics
-│   ├── netutil/                  # Network helpers
-│   ├── schedule/                 # Scheduled task runner
 │   ├── snapshot/                 # Snapshot/backup support
 │   │
 │   └── config/                   # Configuration parsing

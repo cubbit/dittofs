@@ -329,12 +329,11 @@ A config file still carrying the old `blockstore.local.*` keys is **refused at
 startup**, naming both spellings — see [Upgrading](#upgrading-from-the-localremote-block-store-split).
 The former journal tuning keys (`chunk_size`, `chunk_max`, `dirty_expire`,
 `max_log_bytes`, `backpressure_max_wait`) are no longer read; a config file
-carrying them loads with an unknown-key warning.
+carrying them is refused at load, naming each one as an unknown key.
+There is no `syncer:` config block: a config file that still has one is refused
+at load, naming each `syncer.*` key.
 
 #### GC knobs
-
-There is no `syncer:` config block: a stale `syncer:` section in a config
-file is tolerated but ignored, logged as an unknown key.
 
 The mark-sweep GC is the one tunable surface, configured via the top-level
 `gc:` server-config section:
@@ -474,7 +473,7 @@ API.
 
 The v1 remote block tier is deleted: its `s3` and `memory` stores, and the
 `compression` and `encryption` settings in a remote store's `config` JSON, are
-read by nothing. Remote stores return as resources of the v2 management API.
+read by nothing.
 
 #### Upgrading from the local/remote block store split
 
@@ -556,9 +555,7 @@ share has no block store after upgrade
 
 These shares kept their data in a local block store and never had a
 remote one. Every share now needs a block store, and the local store
-they used cannot become one — pick an s3 or memory block store for
-each, with the server stopped:
-  UPDATE shares SET block_store_id = '<block store id>' WHERE name = '<share>';
+they used cannot become one.
 ```
 
 A share that kept its data in a local store and never had a remote one reaches
@@ -568,10 +565,10 @@ was typically an `fs` store, a type that exists only locally, so the share would
 come up bound to a block store that cannot be built. The choice of a real store
 is the operator's.
 
-**Action:** pick an `s3` or `memory` block store for each named share and set
-`block_store_id` to its id, with the server stopped, then restart. The old
-column is left in place until every share is bound, so the record of which local
-store each one used is still there to consult.
+**Action:** no block store type is left to bind such a share to: this build
+reads no v1 block layout, so copy the share's content out through a protocol
+with the v1 release that wrote it and re-ingest it into a share on this build
+(see [the migration guide](block-store-migration.md)).
 
 **6. Two block stores sharing a name**
 

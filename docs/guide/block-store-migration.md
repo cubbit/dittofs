@@ -19,5 +19,7 @@ through a protocol with the v1 release that wrote it, and copy it into a share
 on this build. Objects a v1 release left in a bucket (`cas/`, `blocks/`) are
 read by nothing here and stay billed until removed by hand.
 
-A start that finds a v1 local layout, at a journal device or under
-`blockstore.journal.path`, refuses rather than open it as empty.
+A start that finds packed-block local state (a `shares/<name>/` holding a
+populated `journal`, `blobs` or `logs` directory), at a journal device or under
+`blockstore.journal.path`, refuses rather than open it as empty; the older
+layouts are not detected.
