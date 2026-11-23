@@ -21,8 +21,8 @@ Common questions about DittoFS and their answers.
 
 DittoFS is a modular virtual filesystem written entirely in Go that decouples file access protocols
 from storage backends. It supports NFSv3, NFSv4/v4.1, and SMB2 with pluggable metadata and block
-stores, making it easy to serve files over multiple protocols from various backends (BadgerDB,
-on disk or in memory, for metadata; memory or S3 for blocks).
+stores. Today the metadata store is Badger, on disk, and file content lives in an on-disk
+journal; see [Choosing Stores](choosing-stores.md).
 
 ### Why not use FUSE?
 
@@ -115,51 +115,19 @@ The lack of FUSE overhead and optimized Go implementation provides competitive p
 - Low latency for metadata operations
 - Scales well with concurrent connections
 
-### My BadgerDB logs "Block cache might be too small ... hit-ratio: 0.26 ... sets-rejected" — what do I do?
-
-That message means the BadgerDB metadata engine's in-memory **block cache** is
-undersized for your working set, so it is thrashing: most lookups miss the cache
-and hit disk. A low hit-ratio also widens the window for the dedup
-transaction-conflict race and the local-cache write-path backpressure stall, so
-it is worth fixing.
-
-By default the block and index caches **auto-size from the memory available to
-the process** (≈15 % / ≈7.5 %, with 512/256 MiB floors and 4 GiB/2 GiB
-ceilings), so a 4 GiB host already gets ~614 MiB / ~307 MiB without tuning. If
-you still see the warning, your hot metadata set is larger than the auto-sized
-cache — raise it explicitly:
-
-```yaml
-metadata:
-  badger:
-    block_cache_mb: 2048   # raise first; 0 = auto-size
-    index_cache_mb: 1024
-```
-
-or via env (`DITTOFS_METADATA_BADGER_BLOCK_CACHE_MB=2048`). See
-[CONFIGURATION.md → BadgerDB cache sizing](configuration.md#badgerdb-cache-sizing-config-file)
-for a sizing table keyed to object/metadata count. Aim for a hit-ratio above
-~0.8 with no `sets-rejected`.
-
 ### Does metadata persist across server restarts?
 
-It depends on how the `badger` metadata store is configured:
+Yes. The metadata store is Badger, on disk, in the directory `metadata.badger.path`
+names; there is no in-memory mode. A FoundationDB backend is configured with
+`metadata.backend: foundationdb`, for multi-node deployments, but this build does not
+open it yet. See [Configuration § Metadata](configuration.md#7-metadata-configuration).
 
-- **On disk** (`path`): Yes, all metadata persists
-- **In memory** (`in_memory: true`): No, all data is lost on restart
-
-`badger` is the only metadata store type. A store row still naming `memory`,
-`sqlite` or `postgres` fails with `unsupported metadata store type "<x>": badger is
-the only metadata store type`; see the
-[metadata store migration guide](metadata-store-migration.md). A distributed transactional
-key-value store (TiKV preferred) is the planned backend for multi-node deployments;
-it is not implemented yet.
+A metadata store written by a v1 release is not opened: see
+[Upgrading from v1](upgrading-from-v1.md).
 
 ### Can I import an existing filesystem into DittoFS?
 
-Not yet, but the path-based file handle strategy in BadgerDB enables this as a future feature. The
-handles are deterministic based on file paths (`shareName:/path/to/file`), making filesystem scanning
-and import possible.
+Not yet.
 
 ### Does DittoFS deduplicate blocks across files?
 
@@ -175,41 +143,9 @@ shares all of its chunks the same way.
 
 ### How does garbage collection work?
 
-The block-store GC is a fail-closed mark-sweep over the union of every live
-block's `ContentHash`:
-
-1. **Mark.** Stream every `FileChunk`'s `ContentHash` via the
-   `MetadataStore.EnumerateFileChunks(ctx, fn)` cursor across **every
-   share that targets the same remote** (cross-share aggregation by
-   `bucket+endpoint+prefix`, not share name). The live set is built on
-   disk under `<localStore>/gc-state/<runID>/db/` (memory-bounded
-   regardless of metadata size). Hold providers then add hashes the
-   namespace no longer references but that must survive: snapshot
-   manifests, and files unlinked while still held open (NFSv4 open
-   stateids, SMB open handles) — POSIX unlink-while-open data stays
-   readable until the last close, beyond the grace period.
-2. **Sweep.** A single `RemoteStore.Walk` enumerates every CAS object
-   cluster-wide (the backend paginates internally). An object is kept
-   iff its hash is in the live set OR its `LastModified` is newer than
-   `snapshot − gc.grace_period` (default 1h). Otherwise it is deleted.
-
-The mark phase is fail-closed: any error aborts the sweep entirely.
-Sweep-side per-object DELETE failures are captured and continue;
-garbage that survives a transient is reclaimed on the next run.
-
-Triggers:
-
-- Periodic, on by default. The server runs GC every `gc.auto_interval`
-  (default 15m; values in (0, 1m) are refused) unless `gc.auto_enabled` is
-  false. See [Garbage Collection](garbage-collection.md#automatic-gc-default).
-  A scheduled run reports in the server log only.
-- The CLI no longer has a command to run GC on demand or to show the last
-  run. Remote (block) store commands return as resource commands of the v2
-  management API.
-
-See [RFC 9](../internals/rfcs/rfc-9-gc.md)
-and [CONFIGURATION.md](configuration.md) for the full design and every
-`gc.*` knob.
+v1's mark-sweep collector went with the v1 block and metadata stores, and its
+`gc.*` and `integrity.*` keys are refused at load. See
+[Garbage Collection](garbage-collection.md) for what frees space today.
 
 ### How do I migrate an older store layout?
 
@@ -261,44 +197,13 @@ See [CONFIGURATION.md](configuration.md) for more examples.
 
 ### Can multiple shares share the same metadata store?
 
-Yes! Multiple shares can reference the same store instance for resource efficiency:
-
-```bash
-# Both shares use the same metadata store; remote stores are ref-counted
-./dfsctl share create --name /prod --metadata shared-meta --block-store s3-prod
-./dfsctl share create --name /archive --metadata shared-meta --block-store s3-archive
-```
+They always do: one metadata store serves the whole node, and a share does not name
+one.
 
 ### Is there a recycle bin / can I recover deleted files?
 
-Yes, on an opt-in, per-share basis. When a share has the recycle bin
-enabled, deleting a file or directory moves it into a visible
-`#recycle` directory at the share root instead of destroying it. You
-can browse and restore from `#recycle` over NFS or SMB like any other
-folder (just drag the item back out). The CLI no longer has commands or
-flags to enable, list, restore or empty the bin; they return with their own
-API.
-
-Retention is configurable per share: `trash_retention_days`
-auto-purges entries older than N days (`0` = keep forever), and
-`trash_max_bytes` caps the bin and evicts oldest-first when
-exceeded (`0` = unbounded). A background reaper enforces both hourly.
-
-Caveats:
-
-- The bin is a **single shared `#recycle` per share** — not per-user.
-- Triggers are **unlink** (NFS REMOVE/RMDIR, SMB delete-on-close) and
-  **replace-overwrite** (a rename/copy that clobbers an existing file
-  recycles the victim). In-place truncate/overwrite of a file's
-  *content* is **not** recycled.
-- Deleting an item that is already inside `#recycle` is **permanent**.
-- **Disabling trash auto-empties the bin**, permanently deleting its
-  contents.
-- Exclude globs (`trash_exclude_patterns`) cause matching
-  deletions to bypass the bin entirely.
-
-See [CONFIGURATION.md](configuration.md#recycle-bin-trash) for the
-per-share settings.
+No. v1's per-share recycle bin (`#recycle`) went with the v1 metadata store, and
+nothing replaces it yet.
 
 ### How do I enable debug logging?
 
@@ -333,7 +238,7 @@ See [TROUBLESHOOTING.md](troubleshooting.md) for solutions.
 |---------|----------------|---------|
 | Permission Requirements | Kernel-level | Userspace only |
 | Storage Backend | Filesystem only | Pluggable |
-| Metadata Backend | Filesystem only | BadgerDB (on disk or in memory) |
+| Metadata Backend | Filesystem only | Badger (on disk) |
 | Language | C/C++ | Pure Go |
 | Deployment | Complex (kernel modules) | Single binary |
 | Multi-protocol | Separate servers | Unified (NFS + SMB) |
@@ -582,7 +487,7 @@ macOS restricts SMB mount access to the mount owner regardless of Unix permissio
 
 #### Hard Links
 
-The BadgerDB metadata store fully supports hard links via the NFS LINK procedure.
+The metadata store and the filesystem service support hard links; no protocol serves them yet.
 
 #### Special Files
 

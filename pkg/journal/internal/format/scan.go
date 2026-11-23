@@ -569,23 +569,23 @@ func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err e
 
 // firstNonZero is the index of the first byte of b that is not zero, or -1
 // when every byte is. The zero consume runs it over each window of a
-// segment's unwritten remainder, so it compares whole blocks against zeros,
-// which the runtime does many bytes at a time, and looks at single bytes only
-// inside the first block that differs.
+// segment's unwritten remainder, so it tells a whole block at once — a block
+// is all zero when its first byte is zero and it equals itself shifted by one
+// byte, a compare the runtime does many bytes at a time with no zeros of its
+// own to keep clean — and looks at single bytes only inside the first block
+// that differs.
 func firstNonZero(b []byte) int {
-	for off := 0; off < len(b); off += len(zeroBlock) {
-		c := b[off:min(off+len(zeroBlock), len(b))]
-		if !bytes.Equal(c, zeroBlock[:len(c)]) {
+	for off := 0; off < len(b); off += zeroBlock {
+		c := b[off:min(off+zeroBlock, len(b))]
+		if c[0] != 0 || !bytes.Equal(c[1:], c[:len(c)-1]) {
 			return off + slices.IndexFunc(c, func(x byte) bool { return x != 0 })
 		}
 	}
 	return -1
 }
 
-// zeroBlock is the zeros firstNonZero compares a block against. Nothing may
-// write it: concurrent scans share it, and a non-zero byte here would make
-// every block holding that byte read as zeros.
-var zeroBlock [4096]byte
+// zeroBlock is the bytes firstNonZero tells at once.
+const zeroBlock = 4096
 
 // zeroSlot tells whether the bytes one slot holds — the min(8, size-p) bytes
 // it holds past p, always at least one, for every caller passes p < size —

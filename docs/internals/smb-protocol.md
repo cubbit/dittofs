@@ -244,36 +244,17 @@ decision.
 
 ## Error Mapping
 
-Every `metadata.ErrorCode` is translated to an `NTSTATUS` via
-`smb/types.StatusForErr`, whose switch lives in the adapter types package
-(`internal/adapter/smb/types`). Examples:
-
-- `ErrNotFound` → `STATUS_OBJECT_NAME_NOT_FOUND`
-- `ErrAlreadyExists` → `STATUS_OBJECT_NAME_COLLISION`
-- `ErrAccessDenied` / `ErrPermissionDenied` / `ErrAuthRequired` → `STATUS_ACCESS_DENIED`
-  (SMB has no EPERM distinction per MS-ERREF 2.3)
-- `ErrIsDirectory` → `STATUS_FILE_IS_A_DIRECTORY`
-- `ErrStaleHandle` → `STATUS_FILE_CLOSED`
-
-### Lock-Context vs General-Context Divergence
-
-Lock-operation errors (SMB2 LOCK requests) use the separate functions
-`smb/types.StatusForLock` / `StatusForLockErr`, alongside
-`StatusFor` / `StatusForErr` for general I/O — same package, distinct
-functions, so the divergence is visible at the call site. The divergence
-matters: **`ErrLocked` in lock context → `STATUS_LOCK_NOT_GRANTED`;
-`ErrLocked` in general READ/WRITE I/O context → `STATUS_FILE_LOCK_CONFLICT`**.
-Clients react differently to the two codes (retry-later vs.
-hard-fail-with-indication), so the distinction is wire-visible.
-
-See `internal/adapter/smb/types/statusfor.go` for both switches.
-
-### Wrapped Error Unwrapping
-
-`smb/types.StatusForErr` uses `errors.As`, so wrapped `StoreError` values
-(`fmt.Errorf("context: %w", storeErr)`) unwrap correctly. Prior to v0.15.0 the SMB handler
-used an unwrapped type assertion that failed on wrapped errors and fell through to
-`STATUS_INTERNAL_ERROR` — the consolidation fixed that latent bug.
+The filesystem service answers in its own errors, in no protocol's terms
+(`pkg/vfs/errors.go`), and SMB maps them, with the adapter core's own refusals,
+through one `core.ErrorTable` (`internal/adapter/core/errors.go`): rows of an
+error, matched with `errors.Is`, optionally narrowed to commands, and an
+`NTSTATUS`; an error no row matches is `STATUS_INTERNAL_ERROR`. A row may name
+the commands it applies to, which is how one error can answer differently in a
+LOCK than in a READ or WRITE. `New` in `internal/adapter/smb/smb.go` builds the
+table. With no command served yet, its only rows are core's: an unserved command
+is `STATUS_NOT_SUPPORTED`, a request that does not decode
+`STATUS_INVALID_PARAMETER`, and a CANCEL gets no reply. The rows mapping the
+service's errors land with the commands ([RFC 20 §4.5](rfcs/rfc-20-adapters.md)).
 
 ---
 
@@ -698,9 +679,9 @@ listings locally:
 - **Break trigger**: Any modification to the directory's contents (create, delete, rename)
 - **Break target**: Always breaks to None (directory leases only support Read state)
 
-Directory lease breaks are triggered by the `MetadataService` when `CreateFile`, `RemoveFile`,
-or `Rename` modifies a directory. The break flows through the
-`LockManager.CheckAndBreakDirectoryCaching()` method.
+The filesystem service decides every grant and every break, in the open-state table
+(`pkg/openstate`, [RFC 14 §5](rfcs/rfc-14-open-state.md)), which adapters never import; it
+asks the adapter to send a break through `vfs.Callbacks.RecallGrant`.
 
 ---
 
@@ -892,87 +873,16 @@ caching state from the other protocol:
 | Any delegation | Write lease | **Conflict** | Write lease implies exclusive write caching |
 | Dir delegation | Dir lease | **Coexist** | Both are read-only directory caching |
 
-### Break Flow: SMB Write Triggers NFS Delegation Recall
+### Breaks across protocols
 
-```
-SMB Client                    LockManager                     NFS Client
-    |                              |                               |
-    |-- CREATE (write) ---------->|                               |
-    |                              |-- CheckAndBreakCachingForWrite |
-    |                              |   find NFS read delegation    |
-    |                              |   mark delegation.Breaking    |
-    |                              |-- OnDelegationRecall -------->|
-    |                              |   (via NFSBreakHandler)       |
-    |                              |                 CB_RECALL --->|
-    |                              |                               |
-    |                              |<---- DELEGRETURN -------------|
-    |                              |   delegation removed          |
-    |<-- CREATE response ----------|                               |
-```
-
-### Break Flow: NFS Open Triggers SMB Lease Break
-
-```
-NFS Client                    LockManager                     SMB Client
-    |                              |                               |
-    |-- OPEN (write) ------------>|                               |
-    |                              |-- CheckAndBreakCachingForWrite |
-    |                              |   find SMB RWH lease          |
-    |                              |   mark lease.Breaking         |
-    |                              |-- OnOpLockBreak ------------->|
-    |                              |   (via SMBBreakHandler)       |
-    |                              |             LEASE_BREAK ----->|
-    |                              |                               |
-    |                              |<---- LEASE_BREAK_ACK ---------|
-    |                              |   lease downgraded/removed    |
-    |<-- OPEN response ------------|                               |
-```
-
-### Directory Change Coordination
-
-When a file is created, deleted, or renamed, the MetadataService triggers directory caching
-breaks for the parent directory:
-
-```
-Any Client                    MetadataService               LockManager
-    |                              |                              |
-    |-- CREATE file in /dir ------>|                              |
-    |                              |-- notifyDirChange("/dir") -->|
-    |                              |                              |
-    |                              |   CheckAndBreakDirectoryCaching:
-    |                              |   1. Break SMB dir leases    |
-    |                              |   2. Break NFS dir delegations
-    |                              |   3. Queue DirNotification   |
-    |                              |      (type=Add, name=file)   |
-    |                              |                              |
-    |                              |   Consumers:                 |
-    |                              |   - SMB: CHANGE_NOTIFY       |
-    |                              |   - NFS: CB_NOTIFY           |
-```
-
-**RENAME across directories** breaks both source and target directory leases and delegations.
-
-### Anti-Storm Mechanism
-
-To prevent rapid grant-break-grant-break cycles (lease/delegation storms), the LockManager
-maintains a unified `recentlyBrokenCache` with a configurable TTL (default 30 seconds):
-
-1. When a lease or delegation is broken, the file handle is marked in the cache
-2. Subsequent lease/delegation grant requests check the cache
-3. If the handle was recently broken, the grant is denied (client retries later)
-4. The TTL applies cross-protocol: an NFS delegation broken due to SMB activity prevents NFS
-   re-grant for the TTL duration, and vice versa
-
-### Notification Queue
-
-Directory change notifications are queued in a bounded notification queue owned by the
-LockManager:
-
-- **Capacity**: 1024 events per directory (configurable)
-- **Overflow**: Collapses to a single "full rescan needed" event
-- **Flush**: Triggered by size threshold (100 events) or time threshold (500ms)
-- **Consumers**: NFS adapter drains into CB_NOTIFY; SMB adapter drains into CHANGE_NOTIFY
-- **Event types**: Add, Remove, Rename, Modify (with entry name and old/new names for rename)
+An SMB lease and an NFS delegation are both caching grants in the open-state table
+(`pkg/openstate`, [RFC 14 §5 and §7](rfcs/rfc-14-open-state.md)), which the filesystem
+service alone consults. When an open or a change conflicts with a grant, whichever
+protocol holds it, the service recalls the grant through the holder's adapter,
+`vfs.Callbacks.RecallGrant`: an NFS CB_RECALL on the client's back channel, or an SMB
+lease or oplock break on the session. A directory change is delivered to the watches it
+matches through `vfs.Callbacks.Notify`, which SMB answers as CHANGE_NOTIFY and NFS as
+CB_NOTIFY. Neither adapter serves these yet: their operation tables are empty.
 
 ### Hidden Files
 
@@ -1114,26 +1024,9 @@ events delivered through the unified notification queue.
 
 ### Current Status
 
-The implementation accepts CHANGE_NOTIFY requests and delivers change events through the
-LockManager's notification queue:
-
-- **Watch Registration**: Clients can register directory watches with completion filters
-- **Change Detection**: CREATE, CLOSE (delete-on-close), SET_INFO (rename), and
-  cross-protocol operations trigger change events
-- **Notification Queue**: Events are queued and delivered to registered watchers via the
-  LockManager
-
-### How It Works
-
-```
-Client registers CHANGE_NOTIFY -> STATUS_PENDING
-  |
-MetadataService detects change -> LockManager.notifyDirChange()
-  |
-LockManager queues DirNotification -> flush to registered consumers
-  |
-SMB adapter delivers CHANGE_NOTIFY response with FILE_NOTIFY_INFORMATION
-```
+The SMB adapter serves no command yet, CHANGE_NOTIFY included. Watches are kept by the
+filesystem service ([RFC 14 §2.5](rfcs/rfc-14-open-state.md)), and their changes reach the
+adapter through `vfs.Callbacks.Notify`.
 
 ### Completion Filter Support
 

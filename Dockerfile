@@ -52,7 +52,7 @@ WORKDIR /app
 COPY --from=builder --chown=65532:65532 /build/dfs /app/dfs
 
 # Create data directories with proper permissions
-RUN mkdir -p /data/metadata /data/blocks /data/cache /data/state /config && \
+RUN mkdir -p /data/metadata /data/blocks/journal /data/cache /data/state /config && \
     chown -R 65532:65532 /data /config
 
 # Run as non-root user

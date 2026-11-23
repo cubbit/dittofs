@@ -689,3 +689,32 @@ func payloadCopySegment(f *testing.F) []byte {
 	seg, _ = scanAppend(f, seg, testIdentity, scanTestRecords()[1])
 	return seg
 }
+
+// FuzzFirstNonZero holds firstNonZero to a byte-by-byte search over any
+// input: the two answer the same index, -1 when every byte is zero. The seeds
+// are the block's edges — nothing, a block less one, a block, a block and one
+// of zeros — a byte that is not zero at the first byte, at the last byte of
+// the first block, at the first byte of the second, and at the end, and a
+// block of one byte repeated, not zero, which equals itself shifted.
+func FuzzFirstNonZero(f *testing.F) {
+	at := func(n, i int) []byte {
+		b := make([]byte, n)
+		b[i] = 0x80
+		return b
+	}
+	f.Add([]byte{})
+	for _, n := range []int{zeroBlock - 1, zeroBlock, zeroBlock + 1} {
+		f.Add(make([]byte, n))
+	}
+	n := 2*zeroBlock + 3
+	for _, i := range []int{0, zeroBlock - 1, zeroBlock, n - 1} {
+		f.Add(at(n, i))
+	}
+	f.Add(bytes.Repeat([]byte{0x5a}, zeroBlock))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		want := slices.IndexFunc(b, func(x byte) bool { return x != 0 })
+		if got := firstNonZero(b); got != want {
+			t.Fatalf("firstNonZero of %d bytes = %d, want %d, the byte-by-byte search's answer", len(b), got, want)
+		}
+	})
+}
