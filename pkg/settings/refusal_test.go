@@ -162,9 +162,27 @@ func TestReadsAgreesWithReadRowByRow(t *testing.T) {
 			}
 
 			row := entity.Setting{Scope: tc.scope, Key: tc.key}
-			if got := table.Reads(row); got != tc.want {
+
+			prefix, got := table.Reads(row)
+			if got != tc.want {
 				t.Errorf("Reads = %v, want %v, as Read does", got, tc.want)
 			}
+
+			if want := table.PrefixOf(tc.key); got && prefix != want {
+				t.Errorf("Reads names section %q, want %q, the one PrefixOf names", prefix, want)
+			}
 		})
+	}
+}
+
+// A row with no key, as the walk yields one whose key does not parse, is read
+// by no section, so the walk needs no check of its own for it.
+func TestReadsSkipsARowWithNoKey(t *testing.T) {
+	table := settings.Table{
+		settings.Of("srv", settings.At(entity.ScopeInstallation), rdServerDefault()),
+	}
+
+	if prefix, ok := table.Reads(entity.Setting{}); ok || prefix != "" {
+		t.Fatalf("Reads of a row with no key = %q, %v; want no section", prefix, ok)
 	}
 }

@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"iter"
 	"log/slog"
-	"maps"
 	"net/http"
 	"slices"
 	"sync"
@@ -65,6 +63,9 @@ type reconciler struct {
 	applying func(kvstore.Counters)
 	waiting  func()
 	handing  func(identity.State)
+	// walking, when set, is called by the settings walk each time it waits on
+	// the store for its next row, with the rows it has received.
+	walking func(seen int)
 
 	// Read and written by Start's steps and then by the loop alone.
 	seen  kvstore.Counters // the counters the last pass acted on
@@ -84,9 +85,9 @@ type reconciler struct {
 	// a share once no pass that listed it before its mark can still run, if
 	// the count shows in a profile.
 	gone map[entity.ShareID]bool
-	// shares, applied and sections are the records the last share pass, the
-	// last apply and the last settings walk refused.
-	shares, applied, sections []refusal
+	// shares and applied are the records the last share pass and the last
+	// apply refused.
+	shares, applied []refusal
 	// above is each counter read above pos and not yet reconciled through,
 	// and aboveSince when it was first read so, on the clock's Elapsed.
 	above      [len(counterKinds)]bool
@@ -96,14 +97,13 @@ type reconciler struct {
 	errors [len(counterKinds)]atomic.Uint64
 }
 
-// report is the counters the node has reconciled through and the records it
-// refused, the shares' first, then the sections the last settings walk
-// refused, then the applies', read together.
+// report is the counters the node has reconciled through and the records
+// it refused, the shares' first, read together.
 func (r *reconciler) report() (kvstore.Counters, []entity.RefusedRecord) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []entity.RefusedRecord
-	for _, f := range slices.Concat(r.shares, r.sections, r.applied) {
+	for _, f := range append(slices.Clone(r.shares), r.applied...) {
 		out = append(out, f.rec)
 	}
 	return r.pos, out
@@ -193,221 +193,16 @@ func refused(s entity.Share, retry bool, err error) refusal {
 	}}
 }
 
-// settingsWalk is one settings walk's read of the store: the node view's own,
-// wrapped so the walk notes every row it read that this node runs and its
-// section reads, which its refusals then name, one row at a time.
-type settingsWalk struct {
-	view  entity.SettingsReader
-	table settings.Table
-	node  entity.NodeID
-	rows  []entity.Setting
-}
-
-// AllSettings lists the view's rows and notes each one this node runs and its
-// section reads, never one Read skips, at a scope kind its section does not
-// have or a field an OverrideOnly option does not name, so a refusal never
-// claims a row the walk ignored. A row that does not decode is noted too,
-// when its key parses: it is a row the walk read and can refuse.
-func (w *settingsWalk) AllSettings(
-	ctx context.Context,
-	after entity.SettingKey,
-) iter.Seq2[entity.Setting, error] {
-	return func(yield func(entity.Setting, error) bool) {
-		for s, err := range w.view.AllSettings(ctx, after) {
-			if w.readsRow(s) && w.table.Reads(s) {
-				w.rows = append(w.rows, s)
-			}
-
-			if !yield(s, err) {
-				return
-			}
-		}
-	}
-}
-
-// readsRow reports whether this node runs the row's scope: a node row only
-// its own, every other kind's, and none of a row whose key did not parse.
-func (w *settingsWalk) readsRow(s entity.Setting) bool {
-	if s.Key == "" {
-		return false
-	}
-
-	return s.Scope.Kind != entity.ScopeNode || s.Scope.ID == w.node
-}
-
-// refusals is each row the walk kept of the section prefix that goes into a
-// value Read's refusal err held back, named at gen, one problem answering for
-// them all. Keep reverts a refused value whole, so every other key that
-// changed in it reached nothing either and must read refused, never applied;
-// a value at installation or node scope is the section's own one, so every row
-// the walk kept of it goes named with it, never a row Read skips, and each
-// row names the section the table's longest prefix gives it, never one nested
-// or look-alike beside it. Rows in walk order.
-//
-// decision: a PerThing section declared at installation or node scope is
-// named whole here, while Keep reverts only the refused thing, so the rows
-// of the other things read refused though they run their new values, since a
-// refusal's key carries no thing to tell them apart by. The safe side: a
-// healthy thing never reads applied while its section is refused. No
-// production table declares a PerThing section yet; name one thing's rows,
-// which needs the thing carried by the refusal, when the first one lands.
-//
-// decision: an Override section whose narrow scope is a share, an
-// installation default each share may replace, names only the refused share's
-// rows here, while the wide row that changed in the same pass reaches every
-// live share but it and still reads applied. Naming the wide row would be
-// wrong, as it does apply everywhere else, so the report stays ambiguous
-// until RFC 23 section 2.4 is worded for a change that reaches most of a
-// section. No production table declares this shape yet; revisit with the
-// first one.
-func (w *settingsWalk) refusals(prefix string, err error, gen uint64) []refusal {
-	p := apiv1.Problem{
-		Status: http.StatusUnprocessableEntity,
-		Title:  "the setting was refused",
-		Detail: err.Error(),
-	}
-	b, _ := json.Marshal(p) // a Problem holds strings, ints and bools, which always marshal
-
-	// A refusal belongs to one instance, a scope of the section's own value
-	// or another kind's; the held value's rows go named together.
-	var (
-		held  = map[entity.SettingScope]bool{}
-		whole bool
-	)
-
-	for scope := range settings.Refusals(err) {
-		if scope.Kind == entity.ScopeInstallation || scope.Kind == entity.ScopeNode {
-			whole = true
-
-			continue
-		}
-
-		held[scope] = true
-	}
-
-	var out []refusal
-
-	for _, row := range w.rows {
-		if w.table.PrefixOf(row.Key) != prefix {
-			continue
-		}
-
-		if !whole && !held[row.Scope] {
-			continue
-		}
-
-		out = append(out, refusal{rec: entity.RefusedRecord{
-			Record:     entity.SettingRef(row.Scope, row.Key),
-			Generation: gen,
-			Error:      b,
-		}})
-	}
-
-	return out
-}
-
-// settingsRead is one settings walk's result: the counters read right before
-// it, during which the settings generation did not move, the snapshot Read
-// built, the sections it refused, and the walk's note of the rows it read, which
-// name each refusal.
-type settingsRead struct {
-	at      kvstore.Counters
-	snap    *settings.Snapshot
-	refused map[string]error
-	walk    *settingsWalk
-}
-
-// walkSettings is the pass's one published walk of the settings (RFC 23
-// §2.3), fenced by its own counters, not the pass's: they are read right
-// before each walk and again after it, and a pass may walk several times, as a
-// walk the generation moved under is discarded and walked again, since the
-// walk reads each page in its own transaction and could mix two states of the
-// store. While writes keep moving the generation the call waits, and ends only
-// with ctx, as a pass's position stalls. Each page's reads run in the store
-// bound, so a store that stops answering ends the call with an error rather
-// than holding reconcile.
-func (n *Node) walkSettings(ctx context.Context) (settingsRead, error) {
-	r := &n.rec
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return settingsRead{}, err
-		}
-
-		c, err := n.counters(ctx)
-		if err != nil {
-			return settingsRead{}, err
-		}
-
-		var (
-			w       = &settingsWalk{view: n.meta.Nodes(), table: r.table, node: n.cfg.Bootstrap.Node.ID}
-			snap    *settings.Snapshot
-			refused map[string]error
-		)
-
-		if _, err := n.bounded(ctx, func(ctx context.Context) (err error) {
-			snap, refused, err = settings.Read(ctx, w, r.table, n.cfg.Bootstrap.Node.ID)
-			return err
-		}); err != nil {
-			return settingsRead{}, err
-		}
-
-		after, err := n.counters(ctx)
-		if err != nil {
-			return settingsRead{}, err
-		}
-
-		if after.Settings == c.Settings {
-			return settingsRead{at: c, snap: snap, refused: refused, walk: w}, nil
-		}
-	}
-}
-
-// reportedByApply is the sections whose refusals a component's own apply
-// reports, as applyIdentity does for identity's two: the settings walk does
-// not name their rows again.
-var reportedByApply = []string{identity.SectionName, identity.DirectorySectionName}
-
-// keepSettings publishes the walk's snapshot, after the components were
-// handed it. Each section Read refused keeps what it last ran, held with no
-// value when it never ran, and its rows are refused at the generation the walk
-// read, naming the rows the refusal claims, except a section reportedByApply.
-//
-// decision: a refusal no row the walk kept answers, as a required key with no
-// row at all, publishes no record: no row names it, so the node reports no
-// refused record for that section, though Read refused it, and it keeps what
-// it last ran, held with no value when it never ran. A section that never
-// ran reads as unconfigured through the snapshot, never defaulted and never
-// refused. Withdrawn when the node's report must name a refusal no row
-// answers for.
-func (n *Node) keepSettings(wk settingsRead) {
-	r := &n.rec
-	cur, prev := wk.snap, r.snapshot.Load()
-
-	var out []refusal
-
-	for _, prefix := range slices.Sorted(maps.Keys(wk.refused)) {
-		cur = cur.Keep(prefix, prev)
-
-		if !slices.Contains(reportedByApply, prefix) {
-			out = append(out, wk.walk.refusals(prefix, wk.refused[prefix], wk.at.Settings)...)
-		}
-	}
-
-	r.snapshot.Store(cur)
-	r.mu.Lock()
-	r.sections = out
-	r.mu.Unlock()
-}
-
-// apply hands each component the settings it reads, at counters c, and
-// returns the records it refused: the engine, then identity, handed the
-// principals generation and one walk of the settings (walkSettings), which
-// is then published for the components that read the snapshot (keepSettings),
-// and the refusals of the sections no component's apply reports are kept for
-// the node's report. Once start step 9 has run it calls each adapter's slot
-// too, handing it loop to report idle on while it waits on a drain, and
-// returns the slots' refusals with identity's.
+// apply hands each component the settings it reads and returns the records it
+// refused: the engine, then identity, handed the principals generation of c
+// and the settings of one walk (walkSettings), read at the walk's own
+// counters, wk.at, which a write may have moved past c, so the refusal
+// records identity and the walk raise carry the settings generation of wk.at,
+// not c's. The walk is then published for the components that read the
+// snapshot (keepSettings), whose refusals, the sections no component's apply
+// reports, are returned with identity's. Once start step 9 has run it calls
+// each adapter's slot too, handing it loop to report idle on while it waits on
+// a drain, and returns the slots' refusals with them.
 //
 // ponytail: apply hands the engine RFC 13 Appendix B's defaults whatever c
 // says, as no settings record carries the engine's values yet, and refuses
@@ -435,7 +230,7 @@ func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop)
 	if err != nil {
 		return nil, fmt.Errorf("identity: %w", err)
 	}
-	n.keepSettings(wk)
+	refusals = append(refusals, n.keepSettings(wk)...)
 	if !n.adapting {
 		return refusals, nil
 	}
@@ -656,7 +451,6 @@ func (n *Node) pass(ctx context.Context, loop *health.Loop) error {
 	r.mu.Lock()
 	retry := func(f refusal) bool { return f.retry }
 	r.again = slices.ContainsFunc(r.shares, retry) ||
-		slices.ContainsFunc(r.sections, retry) ||
 		slices.ContainsFunc(r.applied, retry)
 	r.pos = c
 	r.above = [len(counterKinds)]bool{}
