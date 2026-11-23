@@ -379,7 +379,7 @@ documents and merged surfaces, not on #5484.
 | S1b | syncer interface agreed | = the RFC 3 plan's S1: a joint review of the written signatures with this plan's authors. No compile check. |
 | S1c | remote store contract agreed | = the RFC 4 plan's S1, including the codec's encode and decode calls. |
 | S1d | transform pipeline agreed | = the RFC 5 plan's S1, including the chain pin and release calls, the salvage-key wrap and the destroyed-material notice. |
-| S3 | a pass runs end to end | internal to this plan; the RFC 2 plan's S4 cites it. |
+| S3 | a pass runs end to end | internal to this plan; the RFC 2 plan's S3 cites it. |
 | S5 | offload components built | the four components themselves. |
 | S6 | journal offload half built | the journal plan's epics 9b and 7b. |
 | S7 | store adapter and node composition built | epic 21 done: the RFC 3 store adapter passes `syncertest`'s conformance suite in `integration`; remote stores held one client per store configuration, ref-counted; each component's collectors and alert rules registered in the node. |
@@ -390,8 +390,7 @@ What each point means for this plan's epics:
   review; epic 11 folds what was agreed. S1a fixes `Cut`, its settings per namespace with one
   `Deps.Carver` (RFC 8 §2.6), the chunk ID under the namespace's key (RFC 2 §4.3), the block name and
   its nonce (RFC 2 §4.2) and the assembler's fold (RFC 2 §5.1). S1b fixes the calls of RFC 3 §1.3 the
-  engine makes, the errors and denial causes the refusal table reads (RFC 8 §10.2), and the in-memory
-  store with its fault wrapper. S1c fixes the calls the store adapter composes and the mapping of
+  engine makes, the errors and denial causes the refusal table reads (RFC 8 §10.2). RFC 3's in-memory store and its fault wrapper are not part of S1b: they land at the RFC 3 plan's S2 (its epic 2), which S5 covers. S1c fixes the calls the store adapter composes and the mapping of
   RFC 4 §4.8's errors onto RFC 3's values. S1d fixes the chain, its ID and pin (RFC 5 §2.8), the
   material errors (RFC 5 §2.7), the chunk-ID key (RFC 5 Appendix B.2), the destroyed-material notice
   (RFC 8 §10.4) and the salvage-key wrap (RFC 1 §3).
@@ -401,8 +400,7 @@ What each point means for this plan's epics:
   `feat/storage-v2` and are listed in `known.yaml`. Epics 13, 15 and 17 start here.
 - **S3 🔀 a pass runs end to end** (inside track B, the end of epic 16, over S5's carver and RFC 3's
   syncer and S6's `Offload`). A file written through the journal is offered, carved, packed, put
-  through a flow to RFC 3's in-memory store, committed and reported offloaded. The RFC 2 plan names
-  this point its S4.
+  through a flow to RFC 3's in-memory store, committed and reported offloaded. The RFC 2 plan names this point its S3.
 - **S4 🔀 offload complete in the fixture** (epics 13 to 20 done). Every method of §1.3 has its
   behaviour, and every row whose component and journal call exist is green. Epic 21 starts here.
 - **S5 🔀 offload components built** (external: the RFC 2 to RFC 5 plans' implementation epics). The
@@ -660,13 +658,12 @@ RFC 8 §15.1's "§6.6 minted names and intents", "§6.7 widening", "§6.7 stretc
 per-block reporting" go green at S3.
 
 **Expected content:**
-- `offloadDue` with the block-target, age and pressure triggers, and a pass bounded by `upload_workers`
-  block targets.
+- `offloadDue` with the block-target, age and pressure triggers, and a pass bounded by `upload_workers` block targets, taken as a number: the RFC 3 plan's epic 8 declares the setting and epic 21 reads it, so this epic does not wait on it.
 - Capture: guards in file-identity order, sync and existence commit, `OffloadMany` with each file's
   `Through`, the captured namespace and chunk-ID key.
 - Carve: one `Cut` per maximal stretch, `realEnd`, `consumed`, widening to re-tile, the age's forced
   final cut; the `carver_` series; RFC 2 §10.1's consumer checks.
-- Assemble: every chunk carried, zero refs, early close within `K`, one flow and namespace per block
+- Assemble: every chunk carried, zero refs, early close within `K` (the key budget `kvstore` computes at open, `budget.go`, which gains an accessor here), one flow and namespace per block
   (RFC 2 §5.3), as S1a agrees the inputs.
 - Intent: the stale-namespace refusal, the chain pinned, the name minted once per attempt from a
   cryptographic nonce, `Intend`.
@@ -833,7 +830,7 @@ rows pass on a composed node in `e2e`; the journal plan's system scenarios left 
   the store's addresses (D5); `syncertest` run against it.
 - The syncer built once and closed after the engine; remote stores registered per configuration, one
   client per store configuration, ref-counted, with their probe keys.
-- `Deps.Carver`, `Syncer`, `Refs`, `Watchdog` from the root; `*Engine` added to the health evaluator.
+- `Deps.Carver`, `Syncer`, `Refs`, `Watchdog` from the root; `*Engine` and the syncer's conditions added to the health evaluator; the node's stats fetch (`internal/node/stats.go`, `engine.Stats` only today) widened to the syncer's `Stats`.
 - Each component's collectors and alert rules registered in `internal/node`, with RFC 8 §11.1's
   offload conditions and `offload_age_exceeded` (RFC 25 §7).
 - RFC 13 Appendix B's keys this part reads and the remote store's keys from `pkg/remote`, reloadable
