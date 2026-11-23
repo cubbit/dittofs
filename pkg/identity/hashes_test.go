@@ -3,12 +3,15 @@ package identity_test
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/md4" //nolint:staticcheck // SA1019: NTLM's NT hash is MD4 by definition
 
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -85,6 +88,29 @@ func TestNewHashes(t *testing.T) {
 				t.Errorf("password hash %q verifies a wrong password", h.Password)
 			}
 		})
+	}
+}
+
+// The NT hash of a password past ASCII, one rune outside the BMP among them,
+// matches MD4 over the standard library's UTF-16 encoding of it.
+func TestNewHashesNTHashEncodesUTF16(t *testing.T) {
+	u := entity.User{Principal: entity.NewUser(), Name: "alice",
+		IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "1500"}}}
+	for _, pw := range []string{"Pässwörd", "pw\U0001F600!", "\u00e9\U00010348\u4e2d"} {
+		var le []byte
+		for _, u := range utf16.Encode([]rune(pw)) {
+			le = binary.LittleEndian.AppendUint16(le, u)
+		}
+		m := md4.New()
+		_, _ = m.Write(le)
+		want := m.Sum(nil)
+		h, err := identity.NewHashes(u, []byte(pw), identity.NTLMSetting{On: true})
+		if err != nil {
+			t.Fatalf("NewHashes(%q): %v", pw, err)
+		}
+		if !bytes.Equal(h.NTHash, want) {
+			t.Errorf("NT hash of %q = %x, want %x", pw, h.NTHash, want)
+		}
 	}
 }
 

@@ -61,20 +61,29 @@ const (
 	argonKeyLen  = 32
 )
 
-// ntHash is MD4 over the password's UTF-16LE form, NTLM's NTOWFv1.
+// ntHash is MD4 over the password's UTF-16LE form, NTLM's NTOWFv1. It
+// decodes the bytes in place rather than through a string, and clears the
+// UTF-16 copy and md4's buffer once hashed. One copy is beyond its reach:
+// Sum pads a private copy of md4's state, last partial block included, and
+// leaves it to the garbage collector.
 func ntHash(password []byte) []byte {
-	runes := []rune(string(password))
-	defer clear(runes)
-	units := utf16.Encode(runes)
-	defer clear(units)
-	b := make([]byte, 0, 2*len(units))
+	b := make([]byte, 0, 2*len(password)) // a UTF-8 byte makes at most one UTF-16 unit
 	defer clear(b[:cap(b)])
-	for _, u := range units {
-		b = binary.LittleEndian.AppendUint16(b, u)
+	for p := password; len(p) > 0; {
+		r, n := utf8.DecodeRune(p)
+		p = p[n:]
+		if r1, r2 := utf16.EncodeRune(r); r1 != utf8.RuneError {
+			b = binary.LittleEndian.AppendUint16(b, uint16(r1))
+			b = binary.LittleEndian.AppendUint16(b, uint16(r2))
+		} else {
+			b = binary.LittleEndian.AppendUint16(b, uint16(r))
+		}
 	}
 	m := md4.New()
 	_, _ = m.Write(b) // a hash never fails a write
-	return m.Sum(nil)
+	sum := m.Sum(nil)
+	_, _ = m.Write(make([]byte, md4.BlockSize)) // one block overwrites the buffered tail
+	return sum
 }
 
 func holds(u entity.User, scheme entity.ProtocolScheme) bool {
