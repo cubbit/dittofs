@@ -18,8 +18,11 @@ import (
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
-// storeC is a remote store the applied sweep configures and leaves empty.
+// storeC is a remote store the applied sweep configures and removes.
 var storeC = [16]byte{0: 'c', 15: 1}
+
+// storeD is a remote store the applied sweep configures with no credential.
+var storeD = [16]byte{0: 'd', 15: 1}
 
 // configureJSON configures store by its endpoint, its value JSON as the API
 // writes one.
@@ -79,7 +82,7 @@ func (w *wired) seedSweep(t *testing.T, setup string) sweepFixture {
 	cred := entity.SecretRef(uuid.New())
 	for _, st := range []entity.Setting{
 		{Scope: remote, Key: "remote.endpoint", Value: []byte(`"https://store.invalid"`)},
-		{Scope: remote, Key: "remote.credential", Value: []byte(strconv.Quote(uuid.UUID(cred).String()))},
+		{Scope: remote, Key: "remote.credential", Value: []byte(refJSON(cred))},
 		{Scope: remote, Key: sweepSetting, Value: []byte(`"daily"`)},
 		{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: sweepSetting, Value: []byte(`"daily"`)},
 		{Scope: entity.SettingScope{Kind: entity.ScopeNode, ID: node}, Key: sweepSetting, Value: []byte(`"daily"`)},
@@ -449,13 +452,14 @@ func keytabOf(t *testing.T, name string) []byte {
 // node is applied once through the API, and every other one answers the
 // refusal it waits on (sweepApplied). Catches a change with no record.
 //
-// decision: three groups of routes wait rather than apply. The
-// settings-backed writes (a setting at every scope, an adapter, a remote
-// store, a namespace, a store's credential's delete) are refused by the
-// empty settings table the node hands its API until the table is wired, and
-// a store's first credential by the store's capability check, not built; the
-// keytab's PUT needs the secret provider the node does not yet hand its API,
-// and its DELETE a keytab only that PUT writes; :cancel has no success
+// decision: three groups of routes wait rather than apply. A setting's
+// write and delete at every scope, an adapter's write, a namespace's create
+// and a store credential's delete are refused by the node's settings table,
+// which holds no section that reads their keys yet; a store's first
+// credential is refused by the store's capability check, not built; a
+// store's create, which seals its credential, and the keytab's PUT need the
+// secret provider the node does not yet hand its API, and the keytab's
+// DELETE a keytab only that PUT writes; :cancel has no success
 // answer while no operation kind is cancellable. Each waits as a refused
 // write, so the row fails the day its route succeeds, and the route then
 // moves into the applied writes.
@@ -557,6 +561,12 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:resolve-principal", path: "/api/v1/installation:resolve-principal", body: apiv1.ResolvePrincipalParams{Name: "bob@AD.EXAMPLE"}, hdr: idemKey()})
 		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:join-domain", path: "/api/v1/installation:join-domain", secrets: []string{joinPassword, base64.StdEncoding.EncodeToString([]byte(joinPassword))},
 			body: apiv1.JoinDomain{Spec: apiv1.JoinDomainSpec{Mode: apiv1.JoinOnline}, Credential: apiv1.JoinCredential{User: "Administrator@AD.EXAMPLE", Password: []byte(joinPassword)}}})
+		// A store and a namespace holding nothing, each removed.
+		empty := "/api/v1/stores/" + uuid.UUID(storeC).String()
+		configureJSON(t, w.h, storeC)
+		ap.do(wiredWrite{by: a, route: "DELETE /api/v1/stores/{id}", path: empty, hdr: match(empty, idemKey()...)})
+		ns := "/api/v1/namespaces/" + f.emptyNamespace
+		ap.do(wiredWrite{by: a, route: "DELETE /api/v1/namespaces/{id}", path: ns, hdr: match(ns, idemKey()...)})
 		ap.do(wiredWrite{by: frank, route: changePassword, path: "/api/v1/auth/password",
 			body: apiv1.PasswordChange{Current: frankPassword, New: frankNext}, secrets: []string{frankPassword, frankNext}})
 		frank.token = w.tokens(t, "frank", frankNext).Access
@@ -579,16 +589,21 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		cred := store + "/credential"
 		// A store holding no namespace and no credential, so neither its
 		// delete nor a first credential is refused for what it holds.
-		bare := "/api/v1/stores/" + uuid.UUID(storeC).String()
-		configureJSON(t, w.h, storeC)
+		// A store holding no credential, for a first credential's write.
+		bare := "/api/v1/stores/" + uuid.UUID(storeD).String()
+		configureJSON(t, w.h, storeD)
 		waits = append(waits,
 			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/adapters/{sub}", path: "/api/v1/adapters/nfs", body: json.RawMessage(`{"spec":{"enabled":true,"settings":{"port":12049}}}`), hdr: match("/api/v1/adapters/nfs")}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
-			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/stores", path: "/api/v1/stores", body: json.RawMessage(`{"spec":{"settings":{"remote.endpoint":"https://s3.example","remote.bucket":"b"}}}`), hdr: idemKey()}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
-			waitingWrite{wiredWrite: wiredWrite{route: "DELETE /api/v1/stores/{id}", path: bare, hdr: match(bare, idemKey()...)}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
-			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/stores/{id}/credential", path: bare + "/credential", body: map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("a new credential")}}, hdr: []string{"If-None-Match", "*"}}, status: http.StatusConflict, code: "unproven", why: "the store's capability check"},
+			// A store's create carries its credential, so it takes no key and
+			// keeps no idempotency record (RFC 23 §4.5).
+			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/stores", path: "/api/v1/stores", body: map[string]any{"spec": apiv1.StoreSpec{
+				Settings:   map[string]json.RawMessage{"remote.endpoint": json.RawMessage(`"https://s3.example"`), "remote.bucket": json.RawMessage(`"b"`)},
+				Credential: &apiv1.StoreCredential{Value: []byte("a store's secret key")}}}},
+				status: http.StatusServiceUnavailable, code: apiv1.CodeUnavailable, why: "the secret provider the node does not yet hand its API"},
+			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/stores/{id}/credential", path: bare + "/credential", body: map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("a new credential")}}, hdr: []string{"If-None-Match", "*"}},
+				status: http.StatusConflict, code: "unproven", why: "the store's capability check"},
 			waitingWrite{wiredWrite: wiredWrite{route: "DELETE /api/v1/stores/{id}/credential", path: cred, hdr: append([]string{"If-Match", `"1"`}, idemKey()...)}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/namespaces", path: "/api/v1/namespaces", body: json.RawMessage(`{"spec":{"store":"` + uuid.UUID(storeA).String() + `","settings":{"namespace.prefix":"p/"}}}`), hdr: idemKey()}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
-			waitingWrite{wiredWrite: wiredWrite{route: "DELETE /api/v1/namespaces/{id}", path: "/api/v1/namespaces/" + f.emptyNamespace, hdr: match("/api/v1/namespaces/"+f.emptyNamespace, idemKey()...)}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/installation/keytab", path: "/api/v1/installation/keytab", body: map[string]any{"spec": map[string]any{"value": base64.StdEncoding.EncodeToString(keytabOf(t, "cifs/nas.ad.example"))}}, hdr: []string{"If-None-Match", "*"}},
 				status: http.StatusServiceUnavailable, code: apiv1.CodeUnavailable, why: "the secret provider the node does not yet hand its API"},
 			waitingWrite{wiredWrite: wiredWrite{route: "DELETE /api/v1/installation/keytab", path: "/api/v1/installation/keytab", hdr: append([]string{"If-Match", `"1"`}, idemKey()...)},
