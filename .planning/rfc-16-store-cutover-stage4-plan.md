@@ -32,7 +32,7 @@ already done, and what remains is smaller and different:
   - `pkg/metadata/backup`: 2 files, 339 lines;
   - `pkg/block/gc`, v1's GC over the v1 store: 24 files, 8,074 lines.
 
-  An eighth package, `internal/sysinfo` (6 files, 262 lines), is imported only by
+  An eighth tree, `internal/sysinfo` (6 files, 262 lines), is imported only by
   `pkg/metadata/store/badger/cache.go`, so it is dead once the store goes.
 
   `go list` finds no importer outside this set, test files and the `integration`, `e2e` and `fdb`
@@ -128,7 +128,7 @@ already done, and what remains is smaller and different:
   and merges before the first tag cut from a tree holding `fdbkv`, since that tag's release job
   fails today (plan §1).
 - If D1 is answered "not in release 1", E3 and E4 move to the cluster stage, and stage 4 is E1 and
-  E2 alone, 5 man-days.
+  E2 alone, 6.75 man-days, or 5.25 if D8 is also answered no.
 - **D7, settled in review: an installation owns its whole FoundationDB cluster.** The store opens
   `fdbkv` with no key prefix, so `Init`'s scan (`store.go:108-115`) and T3.3's probe read the whole
   cluster, and any key another user wrote there is foreign. The bootstrap gains no prefix key.
@@ -143,7 +143,7 @@ already done, and what remains is smaller and different:
 
 ## 4. Decisions for Marco
 
-1. **Does release 1 ship FoundationDB at all?** RFC 0 §1.4 makes the first release "one node, an
+1. **D1. Does release 1 ship FoundationDB at all?** RFC 0 §1.4 makes the first release "one node, an
    embedded metadata store and no replicas". FoundationDB is the replicated backend of the cluster
    (RFC 15). It is not forbidden on one node: RFC 15 §2.2 refuses only an embedded store with more
    than one node.
@@ -151,7 +151,7 @@ already done, and what remains is smaller and different:
    conformance runs stay on `badger-s3`. The backend is merged and passes kvstore's conformance
    suite on a real cluster (`foundationdb.yml:66-72`), so the only work left is wiring and
    packaging. Deferring it would leave the bootstrap accepting a value no build opens.
-2. **A build tag, or cgo alone?** **Recommended: a `foundationdb` tag** on `fdbkv`, on
+2. **D2. A build tag, or cgo alone?** **Recommended: a `foundationdb` tag** on `fdbkv`, on
    `fdbkvtest`, on `pkg/metadata/kvstore/suite_fdb_test.go` (today `linux && cgo`, importing
    both), and on the file of `cmd/dfs/commands` that opens it. Tagging the packages but not that
    test file would leave `go vet ./...` with cgo failing on "build constraints exclude all Go
@@ -162,7 +162,7 @@ already done, and what remains is smaller and different:
    list in `test/suites.yaml`, and CodeQL. The
    unit job's FoundationDB client step goes. A build without the tag refuses
    `metadata.backend: foundationdb` and names the build that opens it.
-3. **Which artefacts carry FoundationDB?** **Recommended:**
+3. **D3. Which artefacts carry FoundationDB?** **Recommended:**
    - an image, `marmos91c/dittofs:<tag>-foundationdb`, multi-arch, on `debian:bookworm-slim` with
      `libfdb_c` 7.3.77 from the same pinned `.deb` the CI action installs. Apple builds that
      library for glibc only, so Alpine cannot carry it;
@@ -171,7 +171,7 @@ already done, and what remains is smaller and different:
    - no deb, rpm, Homebrew or Scoop package. Apple publishes `foundationdb-clients` only on its
      GitHub releases, so a package could not declare that dependency (see the deferral ledger);
    - macOS and Windows keep only the static build.
-4. **How does the start check work without a store directory?** **Recommended:** `Preflight`
+4. **D4. How does the start check work without a store directory?** **Recommended:** `Preflight`
    takes the store as one of two things, and `internal/node` exports nothing new. RFC 23 §2.1's
    `decision:` (:515-521) allows `New`, `Start`, `Stop` and `Preflight` only.
 
@@ -233,19 +233,19 @@ already done, and what remains is smaller and different:
    The alternative is to skip the store probe when there is no directory and let `node.New`'s
    `kvstore.Open` answer. It is rejected: it loses "metadata store lost", which RFC 13 §2.2
    requires when the journals name an installation and the store holds none.
-5. **One refusal sentence for v1.** **Recommended:** each of the three v1 finds (plan §1) refuses
+5. **D5. One refusal sentence for v1.** **Recommended:** each of the three v1 finds (plan §1) refuses
    with `refusing to start: <what was found> at <path> is from v1; upgrading from v1 is not
    supported: start a new installation with dfs init on empty storage`. Over a Badger store,
    `dfs init` maps `ErrForeignStore` to the same sentence. Over FoundationDB, v1 never ran, so a key
    with no format record belongs to someone else, and the error keeps `ErrForeignStore`'s own
    wording rather than telling the operator to clear a cluster. A v1 bootstrap keeps RFC 13's
    unknown-key refusal, which names each key's replacement.
-6. **Plain names.** RFC 16 §3.2 calls the store `metadata.Init` and `metadata.Open`. The code says
+6. **D6. Plain names.** RFC 16 §3.2 calls the store `metadata.Init` and `metadata.Open`. The code says
    `kvstore`, because `pkg/metadata` was v1's. **Recommended: not in stage 4.** Renaming
    `pkg/metadata/kvstore` to `pkg/metadata` touches 209 importing files, while RFC 18, 20, 21 and
    23 PRs are open against them. Do it at the cutover, as one mechanical PR once those lanes drain
    (deferral ledger).
-8. **Does the v1 block tier go in stage 4 too?** These packages are as dead as the store, and the
+8. **D8. Does the v1 block tier go in stage 4 too?** These packages are as dead as the store, and the
    RFC 8 plan's rule 7 calls them v1:
    - `pkg/block` (its root package), `remote`, `remote/memory`, `remote/s3`, `middleware`,
      `middleware/compression`, `middleware/encryption`, `blockcodec`, `syncer`, `carver`, `chunker`
@@ -338,13 +338,14 @@ the contract that replaces `storetest`.
     `.github/instructions/copilot.instructions.md`.
   - `feat/storage-v2`'s own plans, `docs/internals/planning/rfc-14-open-state-plan.md` and
     `rfc-17-vfs-plan.md`.
-  - On `develop`: the RFC 23 plan's D13 (`.planning/rfc-23-control-plane-plan.md:712`) still says
-    `config show` keeps `internal/sysinfo` and `pkg/block`. It imports neither any more, so that
-    plan is edited on `develop`.
-  - The `pkg/metadata/**` paths in `test/suites.yaml:333,358` stay, since they now match the
+  - The RFC 23 plan's D13 (`.planning/rfc-23-control-plane-plan.md:712`) says `config show` keeps
+    `internal/sysinfo` and `pkg/block`. That holds on `develop`, where `show.go` still imports
+    both, and not on `feat/storage-v2`, so D13 is edited in the PR that lands the branch on
+    `develop`.
+  - The `pkg/metadata/**` paths in `test/suites.yaml:345,370` stay, since they now match the
     new store.
 
-  Done when `dt docs --check` passes and `rg 'metadata/(store|storetest|lock|acl|backup)|block/gc'`
+  Done when `dt docs --check` passes and `rg --hidden -g '!.git' 'metadata/(store|storetest|lock|acl|backup)|block/gc'`
   finds nothing outside `.planning/` and the RFCs. `docs/internals/planning/` is not excluded.
 - **T2.3 — the user docs' metadata sections (1.25 md).**
   - `configuration.md`'s metadata section becomes Appendix C's four keys, with v1's cache keys
@@ -363,7 +364,8 @@ the contract that replaces `storetest`.
   - Delete D8's packages, `pkg/netutil` and `pkg/schedule`, and run `go mod tidy`, which drops
     `pierrec/lz4/v4`.
   - The `unit` suite's `nonrace` option (`test/suites.yaml:90-92`) runs two tests in `./pkg/block/`
-    and `./pkg/block/middleware/compression/`. Both go with their packages, so the option goes.
+    and `./pkg/block/middleware/compression/`. Both go with their packages, so the option goes,
+    and RFC 29 §4.1's registry example drops it too.
   - `test/harness/demo/plan-compare.sh:25` names `pkg/block/blockstore.go`; it moves to a path that
     still exists.
   - `pkg/block/engine/imports_test.go:126-129` keeps its refused-import rows only for packages
@@ -371,11 +373,12 @@ the contract that replaces `storetest`.
   - CLAUDE.md rule 7's block half (`:149-159`): `blockstoretest.RemoteBlockStoreConformance`,
     `remote.RemoteBlockStore`, and `pkg/block/blockstore.go`'s `Meta`, `DurabilityReporter` and
     `IsDurable`.
-  - The block-tier references in `docs/guide/faq.md`, `docs/guide/configuration.md` and
-    `bench/README.md`.
+  - The block-tier references in `docs/guide/faq.md`, `docs/guide/configuration.md`,
+    `bench/README.md`, `docs/internals/architecture.md:590`, `docs/internals/contributing.md:250-254`
+    and `implementing-stores.md`'s block half.
 
   Done when `dt run unit` and `lint-go` are green and
-  `rg 'pkg/block/(remote|middleware|blockcodec|syncer|carver|chunker|blockstoretest)'` finds
+  `rg --hidden -g '!.git' 'pkg/block/(remote|middleware|blockcodec|syncer|carver|chunker|blockstoretest)'` finds
   nothing outside `.planning/`, `docs/internals/planning/` and the RFCs: storage-v2's plans
   there, the RFC 8 plan among them, name these packages as what they delete.
 
