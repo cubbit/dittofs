@@ -618,6 +618,18 @@ A component **MUST NOT** import another component in this set. The composition
 root, the node (`node.New`), is the one exception: it builds the components,
 imports them, and is imported by none of them ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)).
 
+Two more import edges are allowed, each named here and nowhere else:
+
+- the engine's wiring (`enginewire`, [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)), which builds
+  the content components for the node and the engine's checks alike, imports the carver, the
+  syncer, the remote block store and the transforms;
+- the remote tier's block codec imports the transforms, whose chain it applies to every body
+  ([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms)).
+
+No other edge between components is allowed, and the transforms import no other component: what
+they need from the remote tier they declare as an interface of their own, which the wiring
+supplies.
+
 Where a component requires a capability it does not own, it **MUST** declare an
 interface for that capability in its own package, named for the need rather than
 for the provider. The composition root supplies an implementation at composition

@@ -1345,7 +1345,7 @@ pkg/engine/            the engine (this RFC)
   queue.go                   the engine's two sources for the shared work scheduler, per journal (§6.1)
   offload/                   the pipeline state machine (§6.3–§6.8): capture, carve, assemble, intent, put, commit, report
   arch_test.go               §15.3's architecture test
-pkg/sched/                   the shared work scheduler (§6.1.1), used by the engine and GC
+pkg/workqueue/               the shared work scheduler (§6.1.1), used by the engine and GC
 ```
 
 **On `feat/storage-v2` the engine is `pkg/engine`**, as the journal is `pkg/journal`.
@@ -2128,7 +2128,7 @@ the engine, a namespace for GC. The scheduler is its own package, which each
 component instantiates, so no component imports another through it:
 
 ```go
-package sched // pkg/sched
+package workqueue // pkg/workqueue
 
 // Key names one entry; posts for one key merge.
 type Key struct {
@@ -2270,6 +2270,7 @@ The scheduler **MUST**:
   store slows no other: GC's tenant is a namespace, whose store is one
   ([RFC 9 §3.6](rfc-9-gc.md#3.6%20Failures%20resolve%20on%20their%20own)), and the engine's sources register `Rate` 0, since the
   syncer paces puts ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
+  `Rate` pacing lands with its first caller, GC's sources; until then a source registers `Rate` 0.
 
 > decision: no tenant borrows another's reservation. Borrowing would make a
 > tenant's room depend on how full the others are, and taking the entries back
@@ -3781,7 +3782,7 @@ removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)
 | `Overlay(share, file)` | size, times and version of the journal's uncommitted operations of the file, replayed in version order, and whether any is pending ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) |
 | `Allocation(share, file, off)` | [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) |
 | `PrepareCut(shard)`, `CommitCut(shard)` | the snapshot cut, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
-| `PreWarm(share, files)` | one page of a pre-warm, [§7.4](#7.4%20The%20speculator) |
+| `PreWarm(share, files)` | one page of a pre-warm, [§7.4](#7.4%20The%20speculator); it and the speculator's pre-warm land with their first caller, RFC 23's pre-warm action |
 | `WaitOffloaded()` | [§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) |
 | `Stats()` | per share and journal, conditions included, [§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) |
 
