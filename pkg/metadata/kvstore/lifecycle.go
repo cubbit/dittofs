@@ -156,7 +156,8 @@ func (l Lifecycle) JournalID(
 // generation it raises J‖journal‖og to in the same transaction, which every
 // marks write of that open carries. An og never raised reads as 0. A mark
 // that does not decode is left out, as absent, fails nothing, and is logged
-// with its stream once the transaction commits (RFC 16 §3). A non-nil error
+// with its stream and the journal's device, read from J‖journal in the same
+// transaction, once the transaction commits (RFC 16 §3). A non-nil error
 // means the transaction failed and og was not raised.
 //
 // A key whose stream is not 4 bytes is deleted in the same transaction: no
@@ -167,8 +168,9 @@ func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.Sy
 	pre := syncMarksPrefix(j)
 	var undecodable []uint32 // well-formed keys whose value does not decode
 	var malformed [][]byte   // each key deleted, whole
+	var device string        // the journal's device, for the warnings; "" when unrecorded
 	err = l.s.kv.Update(ctx, func(tx kv.Txn) error {
-		marks, undecodable, malformed = nil, nil, nil
+		marks, undecodable, malformed, device = nil, nil, nil, ""
 
 		og, err := counterIn(tx, openGenKey(j))
 		if err != nil {
@@ -203,6 +205,16 @@ func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.Sy
 				return err
 			}
 		}
+		if len(undecodable)+len(malformed) > 0 {
+			// The device only names the journal in a warning, so a record
+			// that is missing, does not decode or cannot be read leaves it
+			// unnamed rather than failing the generation raise.
+			if b, ok, gerr := get(tx, journalKey(j)); gerr == nil && ok {
+				if rec, derr := decodeJournal(b); derr == nil {
+					device = string(rec.Device)
+				}
+			}
+		}
 
 		return nil
 	})
@@ -214,11 +226,11 @@ func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.Sy
 		id := hex.EncodeToString(j[:])
 		for _, s := range undecodable {
 			l.log.Warn("sync mark left out: its value does not decode; the next marks write carrying its stream, if any, replaces it",
-				"journal", id, "stream", s)
+				"journal", id, "device", device, "stream", s)
 		}
 		for _, k := range malformed {
 			l.log.Warn("sync mark left out and deleted: its key does not decode",
-				"journal", id, "key", hex.EncodeToString(k[len(pre):]))
+				"journal", id, "device", device, "key", hex.EncodeToString(k[len(pre):]))
 		}
 	}
 

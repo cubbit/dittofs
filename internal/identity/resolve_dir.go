@@ -51,6 +51,26 @@ func dirRefusal(err error) error {
 	return &refusal{reasonDirectoryUnavailable, err}
 }
 
+// dirRead reads the entry whose entry ID is entryID through st's directory
+// cache, under ctx's bound, which its caller opens: whether a query of this
+// read answered it, and whether the directory shows it disabled or holds no
+// such entry, which RFC 18 §3.7 reads as disabled for a principal it once
+// minted. An entry the cache can answer neither fresh nor within the stale
+// grace, or no directory, is a refusal counted directory_unavailable and
+// failing ErrUnavailable (dirRefusal), which a sign-in reads as
+// ErrUnavailable. It writes nothing; a caller that admits the entry
+// refreshes from it when queried.
+func (s *Server) dirRead(ctx context.Context, st *State, entryID []byte) (e *dirEntry, queried, disabled bool, err error) {
+	if st == nil || st.dir == nil {
+		return nil, false, false, dirRefusal(errors.New("identity: a directory principal with no directory"))
+	}
+	e, queried, err = st.dir.lookupEntry(ctx, directory.ByEntryID, entryID, st.Settings.DirectoryStaleGrace, false)
+	if err != nil {
+		return nil, false, false, dirRefusal(err)
+	}
+	return e, queried, !e.found || !e.ans.Enabled, nil
+}
+
 // dirStep is resolution's directory step for p, the directory principal
 // whose dir spelling is entryID, under st. Its entry is read through the
 // directory cache on every resolution, never from the store (RFC 18 §3.4):
@@ -68,21 +88,17 @@ func dirRefusal(err error) error {
 // given. The step opens the 20-second bound once, which each of its queries,
 // mints and waits inherits.
 func (s *Server) dirStep(ctx context.Context, st *State, p entity.Principal, entryID []byte, ev identity.Evidence, groups bool) (dir []entity.Principal, oldest time.Time, err error) {
-	if st == nil || st.dir == nil {
-		return nil, time.Time{}, dirRefusal(errors.New("identity: a directory principal with no directory"))
-	}
 	ctx, cancel := directory.Bounded(ctx, s.deps.Clock, directoryBound, errDirectoryBound)
 	defer cancel()
-	grace := st.Settings.DirectoryStaleGrace
-	e, queried, err := st.dir.lookupEntry(ctx, directory.ByEntryID, entryID, grace, false)
+	e, queried, disabled, err := s.dirRead(ctx, st, entryID)
 	if err != nil {
-		return nil, time.Time{}, dirRefusal(err)
+		return nil, time.Time{}, err
 	}
 	// "No such entry" for a principal the directory once minted is the
 	// account gone, read as disabled, never as "no change"; nothing is
 	// written, and the 30-second negative answer refuses the calls after it
 	// without a query.
-	if !e.found || !e.ans.Enabled {
+	if disabled {
 		return nil, time.Time{}, &refusal{reasonDisabled, fmt.Errorf("%w: the directory account is disabled or gone", vfserr.ErrAccess)}
 	}
 	oldest = e.at
@@ -92,7 +108,7 @@ func (s *Server) dirStep(ctx context.Context, st *State, p entity.Principal, ent
 	if !groups {
 		return nil, oldest, nil
 	}
-	g, groupsQueried, err := st.dir.groupsOf(ctx, e.ans, grace)
+	g, groupsQueried, err := st.dir.groupsOf(ctx, e.ans, st.Settings.DirectoryStaleGrace)
 	if err != nil {
 		return nil, time.Time{}, dirRefusal(err)
 	}

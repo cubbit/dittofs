@@ -146,15 +146,14 @@ func TestKerberosSignInReusedDirectoryName(t *testing.T) {
 	}
 }
 
-// Part of RFC 18 §10's "mint conflict", not the row: alice minted, bob's
-// entry holding another SID and alice's uidNumber signs in, and bob is bound
-// to no principal of alice's while alice's record stays byte-equal with her
-// uid. The row's own claim, that bob's sign-in fails, is not checked: today
-// the mint gives bob an allocated uid (dirSpellings), and that clause stays
-// open until RFC 18 settles between the two. A refusal must be
-// ErrLogonFailure binding nothing. Two concurrent sign-ins of one unminted
-// entry, each mint's commit held until both have planned theirs, bind one
-// principal. Catches a lost mint bound to whoever holds the row.
+// RFC 18 §10's "mint conflict": alice minted, bob's entry holding another SID
+// and alice's uidNumber signs in with an allocated uid in place of hers, as
+// an entry with 0 or 65534 does, bound to no principal of alice's, counted in
+// identity_mints_remapped_total, while alice's record stays byte-equal with
+// her uid. Two concurrent sign-ins of one unminted entry, each mint's commit
+// held until both have planned theirs, bind one principal. Catches a held
+// number refusing the mint or reaching bob, and a lost mint bound to whoever
+// holds the row.
 func TestKerberosSignInMintConflict(t *testing.T) {
 	t.Run("a held uidNumber", func(t *testing.T) {
 		e := newAD(t)
@@ -165,18 +164,18 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 		e.d.AddUser(t, "bob", map[string][][]byte{"uidNumber": attr("3000")})
 		res, err := e.s.SignIn(context.Background(), e.ticket(realm, "bob", e.logonOf(t, "bob")))
 		bob := res.Identity.Evidence.Principal
-		switch {
-		case err != nil && !errors.Is(err, vfserr.ErrLogonFailure):
-			t.Errorf("bob's sign-in = %v, want a principal or ErrLogonFailure", err)
-		case err != nil && bob != (entity.Principal{}):
-			t.Errorf("bob refused %v, yet bound %v", err, bob)
-		case err == nil:
-			if bob == alice {
-				t.Fatalf("bob bound alice's principal %v", alice)
-			}
-			if got := e.num(t, bob, pid.SchemeUID); got == 3000 {
-				t.Errorf("bob's uid %d, want any but alice's 3000", got)
-			}
+		if err != nil {
+			t.Fatalf("bob's sign-in with alice's uidNumber = %v, want a principal with an allocated uid", err)
+		}
+		if bob == alice {
+			t.Fatalf("bob bound alice's principal %v", alice)
+		}
+		rng := entity.DefaultIDRange
+		if got := e.num(t, bob, pid.SchemeUID); got < rng.Lo || got > rng.Hi {
+			t.Errorf("bob's uid %d, want one allocated from [%d, %d], not alice's 3000", got, rng.Lo, rng.Hi)
+		}
+		if got := e.counter(t, "identity_mints_remapped_total", "kind", "user"); got != 1 {
+			t.Errorf("identity_mints_remapped_total{kind=user} after bob's mint %v, want 1", got)
 		}
 		if after := e.record(t, alice); !reflect.DeepEqual(after, before) {
 			t.Errorf("alice's record after bob's sign-in %+v, want %+v unchanged", after, before)
@@ -195,7 +194,10 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 		held := 0
 		arrived, release := make(chan struct{}, 2), make(chan struct{})
 		releaseOnce := sync.OnceFunc(func() { close(release) })
-		defer releaseOnce() // a backstop's Fatal leaves no mint parked
+		var wg sync.WaitGroup
+		// A backstop's Fatal leaves no mint parked, nor running into the
+		// fixture's cleanup.
+		defer func() { releaseOnce(); wg.Wait() }()
 		e.s.OnCreate(func(entity.MintBatch) {
 			mu.Lock()
 			held++
@@ -206,7 +208,6 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 				<-release
 			}
 		})
-		var wg sync.WaitGroup
 		ps := make([]entity.Principal, 2)
 		errs := make([]error, 2)
 		for i := range steps {
@@ -235,6 +236,59 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 	})
 }
 
+// RFC 18 §3.4's refresh on a sign-in: alice, reached by a krb row linked for
+// her SID, signs in past the TTL once the directory renamed her entry to
+// alicia, and the resolution after it, inside the TTL, finds her record named
+// alicia; once the directory deleted her entry instead, the sign-in is
+// refused with outcome disabled and her record keeps its name. Catches the
+// sign-in's enabled read filling the cache without refreshing the record,
+// which hides the rename for one more TTL, and a gone entry's empty answer
+// refreshing it.
+func TestKerberosSignInRefreshesTheRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		change  func(e *dirPrincipals, dn string)
+		outcome string // the sign-in's
+		want    string // the stored name after it
+	}{
+		{"renamed", func(e *dirPrincipals, dn string) {
+			e.d.Modify(dn, map[string][][]byte{"sAMAccountName": attr("alicia")})
+		}, "ok", "alicia"},
+		{"deleted", func(e *dirPrincipals, dn string) { e.d.Delete(dn) }, "disabled", "alice"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newAD(t)
+			ctx := context.Background()
+			realm := e.kerberos(t)
+			dn := e.d.AddUser(t, "alice", nil)
+			logon := e.logonOf(t, "alice")
+			alice := e.signedIn(t, realm, "alice")
+			u := e.record(t, alice)
+			u.IDs = append(u.IDs, linkedKrbID("alice@CORP.EXAMPLE", logon.DomainSID+"-"+strconv.FormatUint(uint64(logon.UserRID), 10)))
+			if _, err := e.st.ControlPlane().PutUser(ctx, u, u.Generation, entity.Alloc{}); err != nil {
+				t.Fatal(err)
+			}
+			tc.change(e, dn)
+			e.clock.Advance(5*time.Minute + time.Second)
+			res, oc, err := e.s.SignInOutcome(ctx, e.ticket(realm, "alice", logon))
+			if oc != tc.outcome {
+				t.Fatalf("alice's sign-in by her krb row: outcome %q, %v; want %q", oc, err, tc.outcome)
+			}
+			if oc == "ok" {
+				if got := res.Identity.Evidence.Principal; got != alice {
+					t.Fatalf("alice's sign-in by her krb row bound %v, want %v", got, alice)
+				}
+				if _, err := e.resolveAs(alice, fileShare()); err != nil {
+					t.Fatalf("resolve alice after the sign-in: %v", err)
+				}
+			}
+			if got := e.record(t, alice).Name; got != tc.want {
+				t.Errorf("alice's stored name after the sign-in %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // keytab applies a keytab of a realm named name for cifs/nas.corp.example in
 // place of the State's, and returns the realm.
 func (e *dirPrincipals) keytab(t *testing.T, name string) *identitytest.Realm {
@@ -253,10 +307,12 @@ func (e *dirPrincipals) keytab(t *testing.T, name string) *identitytest.Realm {
 // PAC's SID names is gone; the label is read without writing. alice minted,
 // then her entry deleted or renamed: a ticket of another realm whose PAC
 // carries her SID is refused logon_failure, sending no directory query and
-// writing nothing, not even her new name; and in the directory's realm, her
-// deleted entry's own query failing past the TTL plus the grace, the refusal
-// stays logon_failure. Catches a foreign ticket reaching the directory or
-// writing a record, and a failed read labelled disabled.
+// writing nothing, not even her new name; in the directory's realm, her
+// renamed entry, which the label reads by its ID and finds enabled, is
+// refused logon_failure writing nothing either; and her deleted entry's own
+// query failing past the TTL plus the grace, the refusal stays logon_failure.
+// Catches a foreign ticket reaching the directory, the label's read writing a
+// record, and a failed read labelled disabled.
 func TestKerberosSignInGoneLabel(t *testing.T) {
 	grace := identity.DefaultSettings().DirectoryStaleGrace
 	for _, tc := range []struct {
@@ -270,6 +326,9 @@ func TestKerberosSignInGoneLabel(t *testing.T) {
 		{"another realm, entry renamed", func(e *dirPrincipals, dn string) {
 			e.d.Modify(dn, map[string][][]byte{"sAMAccountName": attr("alicia")})
 		}, 5*time.Minute + time.Second, "", "TRUST.EXAMPLE"},
+		{"the directory's realm, entry renamed", func(e *dirPrincipals, dn string) {
+			e.d.Modify(dn, map[string][][]byte{"sAMAccountName": attr("alicia")})
+		}, 5*time.Minute + time.Second, "", ""},
 		{"the entry's query failing", func(e *dirPrincipals, dn string) { e.d.Delete(dn) }, 5*time.Minute + grace + time.Second, "(objectGUID=*", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

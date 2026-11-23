@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"reflect"
 	"slices"
@@ -330,10 +329,11 @@ func TestADisableAppliesAtOnceOnTheWritingNode(t *testing.T) {
 }
 
 // A user the API created and gave a password signs in by NTLMv2 through the
-// filesystem and opens the root of a share granting her read-write: alice is
-// created with a uid through POST /users, her password set by an admin's
+// filesystem and is admitted to a share her grant names: alice is created
+// with a uid through POST /users, her password set by an admin's
 // :set-password, and an NTLMv2 response computed from that password binds
-// her principal, whose open of the share's root its grant admits.
+// her principal, whose open of the share's root its grant admits. The row
+// checks admission by the grant, not its read-write level.
 func TestAUserTheAPICreatedSignsInByNTLMAndOpens(t *testing.T) {
 	s := newAuthNode(t)
 	admin := s.tokens(t, "admin", adminPassword).Access
@@ -361,14 +361,16 @@ func TestAUserTheAPICreatedSignsInByNTLMAndOpens(t *testing.T) {
 	if _, err := s.h.Node().Service().Open(t.Context(), call, vfs.OpenRequest{
 		H: entity.NewHandle(sh.ID, sh.Root), Disposition: vfs.OpenExisting, Access: entity.ReadData,
 	}); err != nil {
-		t.Errorf("alice's open of the root of the share granting her read-write: %v, want admitted", err)
+		t.Errorf("alice's open of the root of the share her grant names: %v, want admitted", err)
 	}
 }
 
 // The API refuses a password to a directory user and stores nothing: dave,
 // minted from the in-memory directory by a proven caller's Find, is refused
 // :set-password 400 invalid, and the store holds the same secret rows and
-// the same record of dave as before it.
+// the same record of dave, read raw and through the store, as before it.
+// TestPasswordSetRefusesInvalid refuses a user written with a directory id;
+// this one reaches the refusal through a real directory's mint.
 func TestTheAPIRefusesADirectoryUsersPassword(t *testing.T) {
 	d := identitytest.NewDirectory("DC=corp,DC=example")
 	d.AddUser(t, "dave", nil)
@@ -386,24 +388,35 @@ func TestTheAPIRefusesADirectoryUsersPassword(t *testing.T) {
 	if err != nil || dave.IsZero() {
 		t.Fatalf(`Find(KORP\dave) once the directory record applied: got %v, %v; want a minted principal`, dave, err)
 	}
-	before, sealed := s.stored(t, dave), secretRows(t, raw)
+	before := s.stored(t, dave)
+	daves := keys.ID([]byte{keys.KindU}, dave.ID[:])
+	sealed, record := rawRows(t, raw, []byte{keys.KindSEC}), rawRows(t, raw, daves)
+	if len(sealed) == 0 || len(record) == 0 {
+		t.Fatalf("before the :set-password: %d secret rows and %d rows of dave's record read, want some of each", len(sealed), len(record))
+	}
 
 	admin := s.tokens(t, "admin", adminPassword).Access
 	wantStatus(t, "a minted directory user's :set-password", s.setPassword(t, admin, dave, "a password"), http.StatusBadRequest, "invalid")
 	if after := s.stored(t, dave); !reflect.DeepEqual(after, before) {
 		t.Errorf("dave's record after the refused :set-password: %+v, want it unchanged, %+v", after, before)
 	}
-	if after := secretRows(t, raw); !maps.Equal(after, sealed) {
-		t.Errorf("secret rows after the refused :set-password: %d, want the %d before it, unchanged", len(after), len(sealed))
+	for _, c := range []struct {
+		name   string
+		prefix []byte
+		before map[string]string
+	}{{"secret", []byte{keys.KindSEC}, sealed}, {"dave's record", daves, record}} {
+		if diff := changedKeys(c.before, rawRows(t, raw, c.prefix)); len(diff) != 0 {
+			t.Errorf("%s rows the refused :set-password added, removed or rewrote: %v, want none", c.name, diff)
+		}
 	}
 }
 
-// secretRows is every secret row the KV holds, key to value.
-func secretRows(t *testing.T, raw kv.KV) map[string]string {
+// rawRows is every row under prefix the KV holds, key to value.
+func rawRows(t *testing.T, raw kv.KV, prefix []byte) map[string]string {
 	t.Helper()
 	rows := map[string]string{}
 	err := raw.View(t.Context(), func(r kv.Reader) error {
-		for kvp, err := range r.Scan([]byte{keys.KindSEC}, nil) {
+		for kvp, err := range r.Scan(prefix, nil) {
 			if err != nil {
 				return err
 			}
@@ -412,9 +425,27 @@ func secretRows(t *testing.T, raw kv.KV) map[string]string {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("scan the secret rows: %v", err)
+		t.Fatalf("scan the rows under %s: %v", keys.Describe(prefix), err)
 	}
 	return rows
+}
+
+// changedKeys names, as keys.Describe reads them, the keys one of before and
+// after holds and the other does not, or that they hold with different values.
+func changedKeys(before, after map[string]string) []string {
+	var diff []string
+	for k, v := range before {
+		if w, ok := after[k]; !ok || w != v {
+			diff = append(diff, keys.Describe([]byte(k)))
+		}
+	}
+	for k := range after {
+		if _, ok := before[k]; !ok {
+			diff = append(diff, keys.Describe([]byte(k)))
+		}
+	}
+	slices.Sort(diff)
+	return diff
 }
 
 // Nothing the node records carries a secret: on a node joined online

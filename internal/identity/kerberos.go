@@ -362,8 +362,18 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 	// twice, by name and then by entry ID, each under its own 20-second
 	// bound. Read the enabled state from step 3's answer when the second
 	// query shows up in sign-in latency or the directory's load.
+	//
+	// An enabled entry a query of this read answered refreshes the record,
+	// as resolution's directory step would, so the answer it puts in the
+	// cache does not hide a rename from the resolutions after it.
 	if id, ok := dirEntryID(u); ok {
-		switch disabled, err := s.dirDisabled(ctx, st, id); {
+		bctx, cancel := directory.Bounded(ctx, s.deps.Clock, directoryBound, errDirectoryBound)
+		e, queried, disabled, err := s.dirRead(bctx, st, id)
+		if err == nil && !disabled && queried {
+			s.refreshOrLog(bctx, st, []dirBound{{p, e.ans}})
+		}
+		cancel()
+		switch {
 		case err != nil:
 			return identity.SignInResult{}, outcomeUnavailable, err
 		case disabled:
@@ -444,33 +454,11 @@ func (s *Server) kerberosPrincipal(ctx context.Context, st *State, name string, 
 	return p, false, err
 }
 
-// dirDisabled reads the entry whose entry ID is entryID through st's
-// directory cache, under its own 20-second bound, and reports whether the
-// directory shows it disabled or holds no such entry, which RFC 18 §3.7
-// reads as disabled for a principal it once minted. An entry the cache can
-// answer neither fresh nor within the stale grace is ErrUnavailable. It
-// writes nothing: no record is refreshed from the answer.
-func (s *Server) dirDisabled(ctx context.Context, st *State, entryID []byte) (bool, error) {
-	if st.dir == nil {
-		return false, fmt.Errorf("%w: identity: a directory principal with no directory", vfserr.ErrUnavailable)
-	}
-	ctx, cancel := directory.Bounded(ctx, s.deps.Clock, directoryBound, errDirectoryBound)
-	defer cancel()
-	e, _, err := st.dir.lookupEntry(ctx, directory.ByEntryID, entryID, st.Settings.DirectoryStaleGrace, false)
-	if err != nil {
-		if !errors.Is(err, vfserr.ErrUnavailable) {
-			err = fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
-		}
-		return false, err
-	}
-	return !e.found || !e.ans.Enabled, nil
-}
-
 // dirAccountGone picks the outcome of a refused ticket of realm, whose
 // client name §4.2 mapped to no principal: true when realm is the
 // directory's, compared case and all as step 3 compares it, and logon, its
 // verified PAC's logon information, names by its user SID a directory
-// principal whose entry dirDisabled reports disabled or gone, the account
+// principal whose entry dirRead reports disabled or gone, the account
 // RFC 18 §3.7 calls disabled, whose name step 3 no longer finds. The ticket
 // is refused either way; any fault reading the store or the directory
 // reports false, so the outcome stays logon_failure. It writes nothing, and
@@ -492,7 +480,9 @@ func (s *Server) dirAccountGone(ctx context.Context, st *State, realm string, lo
 	if !ok {
 		return false
 	}
-	disabled, err := s.dirDisabled(ctx, st, id)
+	ctx, cancel := directory.Bounded(ctx, s.deps.Clock, directoryBound, errDirectoryBound)
+	defer cancel()
+	_, _, disabled, err := s.dirRead(ctx, st, id)
 	return err == nil && disabled
 }
 

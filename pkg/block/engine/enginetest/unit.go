@@ -81,6 +81,7 @@ func NewUnit(t *testing.T, o UnitOptions) *Unit {
 		return db
 	})
 
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	d := engine.Deps{
 		Node:    entity.NodeID{1},
 		Devices: []string{"unit"},
@@ -89,9 +90,9 @@ func NewUnit(t *testing.T, o UnitOptions) *Unit {
 		},
 		Existence: u.FS.Store.Existence(),
 		Content:   u.FS.Store.Content(),
-		Lifecycle: u.FS.Store.Lifecycle(),
+		Lifecycle: u.FS.Store.Lifecycle().WithLogger(logger), // as enginewire composes it
 		Clock:     u.Clock,
-		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:    logger,
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
 			return ctx, func(error) {}
 		},

@@ -537,7 +537,7 @@ func TestComposeLogsASkippedMarkToTheEnginesLogger(t *testing.T) {
 	if _, _, err := d.Lifecycle.SyncMarks(t.Context(), j); err != nil {
 		t.Fatalf("SyncMarks: %v", err)
 	}
-	want := fmt.Sprintf("journal=%s key=07", hex.EncodeToString(j[:]))
+	want := fmt.Sprintf(`journal=%s device="" key=07`, hex.EncodeToString(j[:]))
 	if !strings.Contains(logs.String(), want) {
 		t.Errorf("the engine's logger holds %q, want a warning naming %q", logs.String(), want)
 	}

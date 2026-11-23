@@ -57,7 +57,11 @@ var signInSecondsSpec = metrics.Spec{
 // it. It reads the store, the directory and the secret provider, and writes
 // only the principal a Kerberos name's or a pass-through's first sign-in
 // mints, a directory principal (§4.2's step 3) or a machine (§2.4), and the
-// link a machine minted without a PAC takes from its first verified one.
+// link a machine minted without a PAC takes from its first verified one,
+// and, past the directory cache's TTL, a directory principal's name and
+// e-mail address its enabled read refreshes. That refresh comes before the
+// PAC is bound, so a sign-in the PAC then refuses has already written it,
+// the directory's own answer for the entry.
 func (s *Server) SignIn(ctx context.Context, step identity.SignInStep) (identity.SignInResult, error) {
 	res, _, err := s.signIn(ctx, step)
 	return res, err
