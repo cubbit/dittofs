@@ -21,13 +21,13 @@ Code paths referenced:
 | Path | Function(s) | File |
 |------|-------------|------|
 | SD read (build) | `BuildSecurityDescriptor`, `buildDACL`, `buildSACL`, `buildEmptySACL` | `internal/adapter/smb/handlers/security.go` |
-| Read-side DACL synthesis | `SynthesizeWindowsDefault`, `SynthesizeFromMode` | `pkg/metadata/acl/synthesize.go` |
+| Read-side DACL synthesis | `SynthesizeWindowsDefault`, `SynthesizeFromMode` | deleted with the v1 store |
 | SD write (parse) | `ParseSecurityDescriptorWithOptions`, `parseDACL`, `parseACEs` (shared DACL/SACL) | `internal/adapter/smb/handlers/security.go` |
 | SET_INFO Security | `setSecurityInfo`, `checkSetInfoSecurityAccess` | `internal/adapter/smb/handlers/set_info.go` |
 | SID derivation | `UserSID`, `GroupSID`, `UIDFromSID`, `GIDFromSID`, `PrincipalToSID`, `SIDToPrincipal` | `pkg/auth/sid/mapper.go` |
-| Generic-mask expansion | `ExpandGenericMask` | `pkg/metadata/acl/generic.go` |
-| Inheritance | `ComputeInheritedACL`, `PropagateACL`, flag translation | `pkg/metadata/acl/inherit.go`, `pkg/metadata/acl/flags.go` |
-| Storage | `FileAttr.ACL` / `SetAttrs.ACL` | `pkg/metadata/file_types.go` |
+| Generic-mask expansion | `ExpandGenericMask` | deleted with the v1 store |
+| Inheritance | `ComputeInheritedACL`, `PropagateACL`, flag translation | deleted with the v1 store |
+| Storage | `FileAttr.ACL` / `SetAttrs.ACL` | deleted with the v1 store |
 
 NFSv4 ACE mask bits and Windows `ACCESS_MASK` bits share identical positions by
 RFC 7530 design, so masks need no translation. Only the principal format differs

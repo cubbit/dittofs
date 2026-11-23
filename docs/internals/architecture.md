@@ -123,31 +123,18 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
   - `kerberos/`: Kerberos `Provider` — keytab and krb5.conf state with hot-reload
   - `sid/`: Windows SID types, encoding, and cross-protocol mapping
 
-**5. MetadataService** (`pkg/metadata/`)
-- **Central service for all metadata operations**
-- Routes operations to the correct store based on share name
-- Owns LockManager per share (for SMB/NLM byte-range locking)
-- Split into focused files:
-  - `file_create.go`, `file_modify.go`, `file_remove.go`, `file_helpers.go`, `file_types.go`: File operations
-  - `auth_identity.go`, `auth_permissions.go`: Identity resolution and permission checks
-- Protocol handlers should use this instead of stores directly
-- `storetest/`: Metadata store conformance test suite (all implementations must pass)
-
-**Recycle bin (trash).** The recycle trap lives inside `MetadataService.RemoveFile`, `RemoveDirectory`, and `Move`, gated by a per-share `TrashPolicy` read through a locked accessor. When the policy enables the bin, an unlink (NFS REMOVE/RMDIR, SMB delete-on-close) or a replace-overwrite (a `Move` whose destination clobbers an existing node) moves the victim into a single shared `#recycle` directory at the share root instead of destroying it, preserving the original path subtree and owner. Block deletion is deferred: recycling returns an empty `PayloadID` so protocol adapters skip the block-deletion step, and a recycled node keeps its content blocks until it is reaped or the bin is emptied. The runtime's `trash.Service` (`pkg/controlplane/runtime/trash/`) owns list/restore/empty and runs a background reaper that enforces the per-share retention-days and max-size policy on an hourly interval (oldest-first eviction). Disabling trash auto-empties the bin.
-
-**6. Block storage** (`pkg/block/`)
+**5. Block storage** (`pkg/block/`)
 - `engine/`: the engine (RFC 8) over `journal/`, the journal (RFC 1). The node builds it and `vfs.Service` over it; adapters reach it only through `vfs.Service` (see [Data path](#data-path)).
 - `remote/`: block store interface and implementations (`s3/` production, `memory/` testing). Not wired into the node yet: the engine takes no remote store.
-- `gc/`: mark-sweep over the remote stores and the metadata manifests.
 
-**7. Metadata Store** (`pkg/metadata/store.go`)
-- **Simple CRUD interface** for file/directory metadata
-- Stores file structure, attributes, permissions
-- Implementations:
-  - `pkg/metadata/store/badger/`: BadgerDB (embedded, path-based handles), the
-    only backend — on disk for single-node deployments, or fully in memory
-    (`in_memory: true`) for tests
-- File handles are opaque identifiers (implementation-specific format)
+**6. Metadata store** (`pkg/metadata/`, [RFC 16](rfcs/rfc-16-metadata-store.md))
+- `kvstore/`: the store over a `kv.KV` — the records, their keys and codecs,
+  and the views the node and `vfs.Service` read and write through
+- `kv/`: the key-value contract and its backends, `badgerkv/` (embedded) and
+  `fdbkv/` (FoundationDB); `kv/kvtest/` is the conformance suite a backend passes
+- `kvstore/kvstoretest/`: the store's conformance suite
+- `entity/`: the record types; `errors/`: the store's error codes
+- File handles are opaque identifiers
 
 ## Data path
 
@@ -166,157 +153,6 @@ keep no state directory beneath it.
 The engine (`pkg/block/engine`, [RFC 8](rfcs/rfc-8-engine.md)) and the journal
 (`pkg/block/journal`, [RFC 1](rfcs/rfc-1-journal.md)) are built and tested on
 their own, behind the `engine_conformance` and `journal_conformance` tags.
-
-## Garbage Collection (mark-sweep)
-
-The block-store GC is a fail-closed mark-sweep over the union of every live
-`FileChunk.ContentHash` across all shares pointing at the same remote.
-
-### Algorithm
-
-1. **Mark phase.** Stream every `FileChunk`'s `ContentHash` via the
-   `MetadataStore.EnumerateFileChunks(ctx, fn)` cursor. The cursor
-   is implemented natively by the Badger store and
-   never loads the full set into application memory. Hashes are appended
-   to an on-disk live set under `<localStore>/gc-state/<runID>/db/`
-   (a Badger temp store). Snapshot time `T` is captured at the start of
-   the run. Cross-share aggregation keys on **remote-store identity**
-   (`bucket+endpoint+prefix`), not share name, so an object reachable from
-   any share that targets the same remote is considered live. Hold
-   providers then inject hashes the namespace no longer references but
-   that must survive the sweep: snapshot manifests
-   (`SnapshotHoldProvider`) and open-but-unlinked files
-   (`openHandleHoldProvider`, #1448) — a file unlinked while still held
-   open via NFSv4 open stateids or SMB open handles keeps its blocks
-   until the last close, restoring POSIX unlink-while-open semantics
-   beyond the grace period. NFSv3 is stateless (kernel clients
-   silly-rename), so no server-side hold applies there.
-2. **Sweep phase.** A single `RemoteStore.Walk` enumerates every CAS
-   object cluster-wide; the backend (e.g. S3) paginates internally. For
-   each key, the engine keeps the object iff the hash is present in the
-   live set OR the object's `LastModified` is newer than
-   `T − gc.grace_period` (default 1h). Otherwise the engine issues a DELETE.
-
-### Packed-block reclamation
-
-Because new data lives in packed `blocks/<id>` objects rather than one object
-per chunk, the sweep cannot DELETE one remote object per dead hash. Instead
-each dead chunk is reclaimed by refcount:
-
-1. A dead `ContentHash` — present in the store's synced-hash index but absent
-   from the live set — is resolved to its enclosing block, and
-   `DecrLiveChunkCount(blockID, 1)` is applied.
-2. When a block's live-chunk count reaches **zero**, the block is fully
-   reclaimed: its local blob is evicted, `RemoteBlockStore.DeleteBlock`
-   removes the remote object, and the block record is deleted.
-
-A block that still has *any* live chunk is retained by the refcount pass —
-packing never deletes a referenced chunk along with its block-mates. Runs are
-**serialized per remote** (keyed on remote-store config identity), so the
-`LiveChunkCount` that several shares targeting the same remote share is only
-ever mutated by one run at a time.
-
-### Compaction of partially-dead blocks
-
-Refcount reclamation alone frees a block only when its *last* live chunk dies,
-so a block that keeps a few live chunks but has shed many dead ones pins the
-dead bytes forever. Compaction (`gc.CompactBlocks`, #1487) closes that gap.
-It runs as an optional final phase of each per-remote sweep, under the same
-per-remote lock and immediately **after** the sweep — by which point the sweep
-has already cleared the synced marker of every past-grace dead chunk. So a
-chunk resident in a block is "still live here" iff its synced locator still
-points at that block; a chunk that lost its marker (swept dead) or whose
-locator has moved is dropped. This reuses the sweep's own keep/delete decision,
-so compaction never reclaims a chunk the sweep would have spared, and needs no
-second live-set scan.
-
-- **Candidate selection** is byte-based: the sum of the `WireLength` of every
-  live locator pointing at a block, over the block's object `Length`. Below the
-  operator's `gc.compaction_live_ratio` (0 disables; a value like `0.5` compacts
-  a block once it is more than half dead) the block is a candidate. Computed
-  from the block record + locators alone — no per-block download to decide, and
-  no extra stored field.
-- **Repack** downloads the candidate block once, verifies it against its
-  record's whole-block BLAKE3 hash, copies the still-live chunks' wire bodies
-  verbatim into a fresh block (the per-chunk encryption already lives in the
-  body), `PutBlock`s it, then `DefaultCommitBlock` writes the new record and
-  rewrites the moved chunks' locators (last-wins) in one transaction, and
-  finally deletes the old block object + record.
-- **Crash safety** is identical to the live carver / cas→blocks migration and
-  every crash window lands on an existing reconcile class: a crash after
-  `PutBlock` before the commit leaves an orphan object (reconcile class 3); a
-  crash after the commit before the old block is deleted leaves the old block as
-  a leaked record (class 2). A re-run converges — the moved chunks' locators no
-  longer point at the old block, so compaction finds nothing to move and just
-  deletes the husk.
-
-Because compaction rewrites a live chunk's locator to a new block before
-deleting the old one, a reader that resolved the old locator *before* the
-rewrite and issues its `GetBlock` *after* the delete sees a miss. This is safe
-only because the read path (`dispatchRemoteFetch`, the chokepoint both the
-client demand read and background prefetch share) re-resolves the locator once
-on `ErrChunkNotFound` and retries against the moved chunk's new block — without
-that guard the delete would surface a spurious `EIO` for a perfectly live chunk.
-
-### Fail-closed posture
-
-Mark-phase and sweep-phase failures are treated asymmetrically:
-
-- **Mark errors abort the sweep entirely.** Any uncertainty about the
-  live set could lead to deleting referenced data. Sweep workers do not
-  start if the mark phase returned any error.
-- **Sweep-side per-prefix DELETE errors are captured and continue.** A
-  single S3 503 transient should not waste a successful mark phase. The
-  run summary reports `error_count` and the first N error samples;
-  garbage that survives a transient is reclaimed on the next run.
-
-### gc-state directory layout
-
-```
-<localStore>/gc-state/
-  20260425T143022Z-abc/
-    db/                          (Badger temp store for the live set)
-    incomplete.flag              (removed by MarkComplete; cleaned by next run)
-  20260425T153122Z-def/
-    db/
-    (no incomplete.flag — successful run)
-  last-run.json                  (most recent GCRunSummary)
-```
-
-Each run writes `incomplete.flag` at start; the next run detects stale
-directories (by leftover flag) and deletes them before starting fresh.
-Mark is idempotent, so resume-on-restart is intentionally not built.
-
-### Triggers and observability
-
-- **Periodic** via the background scheduler, on by default. `dfs start`
-  runs GC every `gc.auto_interval` (default 15m; values in (0, 1m) are
-  refused) unless `gc.auto_enabled` is false. See
-  [Garbage Collection](../guide/garbage-collection.md#automatic-gc-default).
-- **On-demand**: the CLI no longer has a command to run GC. Remote
-  (block) store commands return as resource commands of the v2 management
-  API. The mark-sweep is global across every share that targets the same
-  remote, and every run scans every remote.
-- **Observability** via structured slog INFO at start/end with `run_id`,
-  `hashes_marked`, `objects_swept`, `bytes_freed`, `duration_ms`, and
-  `error_count`. An on-demand run also persists its summary at
-  `<localStore>/gc-state/last-run.json`. A scheduled run persists none.
-
-GC coordinates with the share-snapshots subsystem through a single
-rule: **manifest-on-disk = block held**. Snapshots register a hold
-implicitly by writing a `manifest.json` under
-`<localStoreDir>/snapshots/<share>/<id>/`. GC's mark phase enumerates
-every manifest file at sweep start and unions the referenced hashes
-into its retention set, so any block referenced by any snapshot
-survives the sweep. The provider that exposes this hold to the GC
-layer is `SnapshotHoldProvider`. No hold flag lives in any database
-table — the disk is the source of truth.
-
-See [SNAPSHOTS.md](../guide/snapshots.md#8-gc-hold-semantics) for the
-operator-facing description of the hold semantics, including the
-delete-vs-GC race window.
-
-See `docs/guide/configuration.md` for every `gc.*` and `syncer.*` knob.
 
 ## Share Snapshots
 
@@ -540,30 +376,6 @@ unavailable until they are rebuilt on the v2 management API.
 
 The service layer provides business logic and coordination between stores.
 
-### MetadataService
-
-Handles all metadata operations with share-based routing:
-
-```go
-// MetadataService - central service for metadata operations
-type MetadataService struct {
-    stores       map[string]MetadataStore  // shareName -> store
-    lockManagers map[string]*LockManager   // shareName -> lock manager
-}
-
-// Usage by protocol handlers
-metaSvc := metadata.New()
-metaSvc.RegisterStoreForShare("/export", inMemoryBadgerStore)
-metaSvc.RegisterStoreForShare("/archive", badgerStore)
-
-// High-level operations (with business logic)
-file, err := metaSvc.CreateFile(authCtx, parentHandle, "test.txt", fileAttr)
-entries, err := metaSvc.ReadDir(ctx, dirHandle)
-
-// Byte-range locking (SMB/NLM)
-lock, err := metaSvc.AcquireLock(ctx, shareName, handle, offset, length, exclusive)
-```
-
 ### Write Coordination Pattern
 
 `vfs.Service.Write` admits the caller and judges the file (type, read-only
@@ -588,7 +400,7 @@ No custom code required - configure via CLI:
 
 See [docs/IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guides for:
 - **Block Store**: Implement `pkg/block/remote.RemoteStore` (`pkg/block/remote/remote.go`) interface
-- **Metadata Store**: Implement `pkg/metadata/Store` interface
+- **Metadata Store**: Implement `pkg/metadata/kv.KV` and pass `kv/kvtest`
 
 ## Directory Structure
 
@@ -620,27 +432,11 @@ dittofs/
 │   │   │   └── doc.go            # Package doc
 │   │   └── sid/                  # Windows SID types and mapping
 │   │
-│   ├── metadata/                 # Metadata layer
-│   │   ├── service.go            # MetadataService (business logic, routing)
-│   │   ├── store.go              # MetadataStore interface (CRUD)
-│   │   ├── file_create.go        # File/directory creation operations
-│   │   ├── file_modify.go        # File modification operations
-│   │   ├── file_remove.go        # File removal operations
-│   │   ├── file_helpers.go       # Shared file operation helpers
-│   │   ├── file_types.go         # File-related type definitions
-│   │   ├── auth_identity.go      # Identity resolution
-│   │   ├── auth_permissions.go   # Permission checking
-│   │   ├── cookies.go            # CookieManager (NFS/SMB pagination)
-│   │   ├── types.go              # FileAttr, DirEntry, etc.
-│   │   ├── errors.go             # Metadata-specific errors
-│   │   ├── lock_exports.go       # LockManager surface for byte-range locks
-│   │   ├── acl/                  # Windows ACL model and ACE evaluation
-│   │   ├── lock/                 # Lock manager, break/grace machinery
-│   │   ├── storetest/            # Conformance test suite for store implementations
-│   │   └── store/                # Store implementations
-│   │       ├── badger/           # BadgerDB (on disk or in memory)
-│   │       ├── basestore/        # Store-agnostic helpers
-│   │       └── internal/         # Caches, retry
+│   ├── metadata/                 # Metadata layer (RFC 16)
+│   │   ├── kvstore/              # The store over a kv.KV; kvstoretest/ is its suite
+│   │   ├── kv/                   # Key-value contract, badgerkv/, fdbkv/, kvtest/
+│   │   ├── entity/               # Record types
+│   │   └── errors/               # Store error codes
 │   │
 │   ├── block/                    # Per-share block storage
 │   │   ├── blockstore.go         # BlockStore interface
@@ -728,7 +524,7 @@ dittofs/
 │   ├── auth/                     # Kerberos/Netlogon service internals
 │   ├── cli/                      # CLI output formatting
 │   ├── logger/                   # Logging utilities
-│   └── ...                       # tlsconfig/, pathutil/, bytesize/, sysinfo/
+│   └── ...                       # tlsconfig/, pathutil/, bytesize/
 │
 ├── docs/                         # Documentation
 │   ├── internals/                # This file, protocol and store internals

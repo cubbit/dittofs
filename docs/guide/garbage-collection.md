@@ -111,5 +111,4 @@ check the server logs.
 
 - [Configuration § GC](configuration.md) — every knob and env var.
 - [FAQ](faq.md) — common questions about reclamation timing.
-- [Architecture: mark-sweep](../internals/architecture.md#garbage-collection-mark-sweep)
-  — the internal design.
+- [RFC 9](../internals/rfcs/rfc-9-gc.md) — the garbage-collection design.

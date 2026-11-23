@@ -60,7 +60,7 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 - ✅ NFS auxiliary protocols (NLM, NSM, Portmap) in internal/protocol/{nlm,nsm,portmap}/
 
 **Store Layer (pkg/metadata/, pkg/blockstore/):**
-- ✅ Metadata stores handle: permissions, file structure, attributes (pkg/metadata/store/badger/)
+- ✅ Metadata stores handle: permissions, file structure, attributes (pkg/metadata/kvstore over a pkg/metadata/kv backend)
 - ✅ Block stores handle: file data read/write operations via local + remote backends (pkg/blockstore/)
 - ✅ Verify two-phase write pattern: PrepareWrite → BlockStore.WriteAt → CommitWrite
 - ✅ Check thread safety (mutexes, atomic operations)

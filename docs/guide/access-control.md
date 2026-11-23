@@ -104,7 +104,7 @@ graph TB
     SMBWIRE --> ACL
 
     subgraph "Common Model"
-        ACL["<b>ACL Engine</b><br/><code>pkg/metadata/acl/</code><br/><br/>ACE/ACL types<br/>Evaluate() — process-first-match<br/>ComputeInheritedACL()<br/>ValidateACL() — canonical ordering<br/>DeriveMode() / AdjustACLForMode()"]
+        ACL["<b>ACL Model</b><br/><code>pkg/metadata/entity/acl.go</code><br/><br/>ACE/ACL types"]
         IDENTITY["<b>Identity Mapping</b><br/><code>pkg/identity/</code><br/><br/>ConventionMapper<br/>TableMapper<br/>StaticMapper<br/>CachedMapper"]
     end
 

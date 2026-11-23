@@ -414,8 +414,7 @@ directly):
 `DITTOFS_GC_AUTO_ENABLED`,
 `DITTOFS_GC_AUTO_INTERVAL`.
 
-See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
-for the full mark-sweep design.
+See [RFC 9](../internals/rfcs/rfc-9-gc.md) for the garbage-collection design.
 
 #### Background integrity scan
 
@@ -496,8 +495,7 @@ A background reaper enforces `trash_retention_days` and
 file's content is not recycled (only unlink and replace-overwrite are).
 
 The CLI no longer has trash commands or flags; they return with their own
-API. See [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
-for the recycle-trap design.
+API.
 
 #### Remote block-level compression (opt-in)
 

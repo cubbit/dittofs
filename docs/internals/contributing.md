@@ -227,17 +227,15 @@ the request, calls the handler and encodes the reply.
 
 ### Adding a New Store Backend
 
-DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`) and the engine (`pkg/block/engine`), which the adapters reach through `vfs.Service` once its file operations land (see [Data path](architecture.md#data-path)).
+Business logic (permission checking, locking, quotas) lives in the filesystem service (`internal/vfs`) and the engine (`pkg/block/engine`), which the adapters reach through `vfs.Service` once its file operations land (see [Data path](architecture.md#data-path)).
 
 **Metadata Store:**
 
-1. Implement `pkg/metadata/MetadataStore` interface (simple CRUD operations)
-2. Handle file handle generation (must be unique and stable)
-3. Implement root directory creation (`CreateRootDirectory`)
-4. Ensure thread safety (concurrent access across shares)
-5. Consider persistence strategy for handles
-6. Implement `EnumerateFileChunks(ctx, authCtx, fn)` using a backend-native cursor (no full-set load, honors `ctx.Done()`); pass the v0.15.0 conformance scenarios in `pkg/metadata/storetest/`. See [IMPLEMENTING_STORES.md](implementing-stores.md#metadatastoreenumeratefilechunks-v0150-phase-11).
-7. **Note**: Permission checking is handled by `MetadataService`, not stores
+The metadata store (`pkg/metadata/kvstore`) is written once, over `kv.KV`
+(`pkg/metadata/kv/kv.go`). A new backend implements `kv.KV` and passes
+`pkg/metadata/kv/kvtest`'s suite, and the store over it
+`pkg/metadata/kvstore/kvstoretest`'s. See
+[IMPLEMENTING_STORES.md](implementing-stores.md#implementing-metadata-stores).
 
 **Journal (local tier):**
 
@@ -255,9 +253,9 @@ share; it is not a pluggable backend. Its conformance checks run under the
 
 See [IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guide.
 
-### Adding a new metadata.ErrorCode
+### Adding a new metadata error code
 
-Every `metadata.ErrorCode` that should surface to NFS and/or SMB clients is
+Every `ErrorCode` of `pkg/metadata/errors` that should surface to NFS and/or SMB clients is
 mapped to protocol-specific status codes by the per-package `StatusFor`
 switch in the adapter types packages (`internal/adapter/nfs/types`,
 `internal/adapter/nfs/v4/types`, `internal/adapter/smb/types`). Adding a
@@ -265,8 +263,7 @@ new code is a one-edit-per-package contract — the enum-walk test in each
 package fails loudly if a switch arm or expectation row is missing.
 
 1. **Declare the constant** — add the new value in
-   `pkg/metadata/errors/errors.go` and re-export it from
-   `pkg/metadata/errors.go`.
+   `pkg/metadata/errors/errors.go`.
 
 2. **Add the switch arm + expectation row in each types package** —
    extend the `StatusFor` switch and the `expected` table in
@@ -412,14 +409,14 @@ func HandleLookup(ctx *AuthContext, dirHandle, name string) {
 
 ### Error Handling
 
-Return proper NFS error codes via `metadata.ExportError`:
+Return `*StoreError` values from `pkg/metadata/errors`:
 
 ```go
-// Examples from metadata/errors.go
+// Examples from pkg/metadata/errors/errors.go
 ErrNotDirectory      // NFS3ERR_NOTDIR
-ErrNoEntity          // NFS3ERR_NOENT
-ErrAccess            // NFS3ERR_ACCES
-ErrExist             // NFS3ERR_EXIST
+ErrNotFound          // NFS3ERR_NOENT
+ErrAccessDenied      // NFS3ERR_ACCES
+ErrAlreadyExists     // NFS3ERR_EXIST
 ErrNotEmpty          // NFS3ERR_NOTEMPTY
 ```
 
