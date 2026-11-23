@@ -3,6 +3,7 @@ package durability
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"slices"
 	"strings"
@@ -678,12 +679,15 @@ func TestCorruptRecordInPendingWindowMarksFile(t *testing.T) {
 	f, g := fw.c.File, gw.c.File
 
 	cr.corrupt(t, fw.c)
-	// The worker is still parked: the report comes from Corrupt's mark.
+	// The worker is still parked: the report comes from Corrupt's mark, and
+	// the failure it owes is answered without waiting the parked job's
+	// record out — a failure ends the call as it always did.
 	wantSyncError(t, mustReturn(t, "first Sync", cr.syncAsync(context.Background(), f)), fw.loc.Segment, f)
-	cr.wantNilSync(t, f)
 
 	release()
 	cr.awaitResolved(t)
+	// The corrupt job's record has landed: the later Sync answers nil, the
+	// window's report told once and never marked again.
 	cr.wantNilSync(t, f)
 	wantSyncError(t, mustReturn(t, "Sync of g", cr.syncAsync(context.Background(), g)), gw.loc.Segment, g)
 
@@ -944,8 +948,11 @@ func TestCorruptAfterWorkerFailedRecordDoesNothing(t *testing.T) {
 }
 
 // TestCorruptAppendsNothingAndReturnsBeforeSeal covers the read's side: with
-// every write held at the seam, Corrupt returns, the generation is up, and a
-// Sync of the file returns, while the loss record waits for the worker.
+// every write held at the seam, Corrupt returns before the seal, the
+// generation is up, and the worker's loss-record append is the one write the
+// hold parks. The Sync that names the file waits that queued job out — its
+// durable answer covers the corrupt read's debt — so it returns only once
+// the hold lets the worker append and sync the loss record.
 func TestCorruptAppendsNothingAndReturnsBeforeSeal(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	cr := newCorruptRig(t, nil)
@@ -966,14 +973,147 @@ func TestCorruptAppendsNothingAndReturnsBeforeSeal(t *testing.T) {
 	if got := cr.d.Generation(); got != before+1 {
 		t.Fatalf("the generation is %d when Corrupt returned, want %d", got, before+1)
 	}
-	if err := mustReturn(t, "Sync", cr.syncAsync(context.Background(), f)); err != nil {
-		t.Fatalf("Sync = %v while the worker is held", err)
+	syncing := cr.syncAsync(context.Background(), f)
+	mustBlock(t, "Sync", syncing)
+	hold.Release()
+	if err := mustReturn(t, "Sync", syncing); err != nil {
+		t.Fatalf("Sync = %v once the loss record was appended and synced", err)
 	}
 	if got := cr.seam.Calls(kit.OpWrite); got > writes+1 {
 		t.Fatalf("%d writes reached the seam, want at most the worker's one", got-writes)
 	}
-	hold.Release()
 	cr.awaitRecord(t, w.c.Seq)
+}
+
+// TestSyncDoesNotWaitTheCorruptJobAReadQueuedMidCall pins the wait's ceiling:
+// the corrupt debt a Sync waits out is the one its own snapshot took — the
+// jobs a read of its files queued before the call took its targets. A
+// corruption read queues a job while the call is already waiting, with the
+// worker parked before the drain that would run it, and the answer comes all
+// the same: the job is that later read's debt, and a call that owed it
+// nothing answers nothing for it. The loss record is still unappended when
+// the answer lands, which is the whole of the claim.
+func TestSyncDoesNotWaitTheCorruptJobAReadQueuedMidCall(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var armed atomic.Bool
+	hook, reached, release := gate(t)
+	cr := newCorruptRig(t, func(cr *corruptRig) {
+		// Installed before the layer starts, as every test hook is, so the
+		// worker never races the field it reads each pass.
+		cr.d.afterHolds = func() {
+			if armed.CompareAndSwap(true, false) {
+				hook()
+			}
+		}
+	})
+	// Registered after the rig's own cleanups, so a failing test reports
+	// before the layer's Stop tries to join the parked worker.
+	t.Cleanup(release)
+	f := file(1)
+	w := cr.write(t, f, 0, "aaaa")
+	hold := cr.seam.HoldFirst(t, kit.OpSync, format.SegmentName(w.loc.Segment))
+	// The call's targets and corrupt debt are snapshotted before it parks:
+	// reached says the worker is inside the call's led sync, so the check
+	// that leads it has already taken them.
+	syncing := cr.syncMarksAsync(context.Background(), f)
+	awaitGate(t, "the held sync", hold.Reached())
+
+	// Armed before the release, so the pass it parks — the first after the
+	// held sync returns, before that pass reaches the drain step — holds
+	// the queued job back: the job's loss record would append only behind
+	// the gate.
+	armed.Store(true)
+	cr.corrupt(t, w.c)
+	hold.Release()
+
+	answered := mustSyncReturn(t, "Sync", syncing)
+	if answered.err != nil {
+		t.Fatalf("Sync = %v, want nil: the loss is the read's to report", answered.err)
+	}
+	if len(answered.marks) != 0 {
+		t.Fatalf("Sync returned %d marks, want none: %+v", len(answered.marks), answered.marks)
+	}
+	awaitGate(t, "the worker parked before its drain", reached)
+	if recs := cr.recordsNaming(t, w.c.Seq); len(recs) != 0 {
+		t.Fatalf("%d loss records named the record before the drain ran, want none", len(recs))
+	}
+	release()
+	cr.awaitRecord(t, w.c.Seq)
+}
+
+// TestASyncSnapshottingItsCorruptDebtRacesTheQueueNothing drives the
+// pairing under load: a writer keeps dropping corrupt records of the file
+// while a caller loops Sync over it, each call taking its targets and its
+// corrupt debt together out of the stream's one critical section. The race
+// detector is the assert: the debt snapshot once read the queue outside the
+// lock, and a push or a finish of a corrupt job landed alongside it.
+func TestASyncSnapshottingItsCorruptDebtRacesTheQueueNothing(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr := newCorruptRig(t, nil)
+	f := file(1)
+	// A bootstrap record, so the first Sync has a target past the writes
+	// the loop makes.
+	w := cr.write(t, f, 0, "aaaa")
+	cr.corrupt(t, w.c)
+
+	// The writer's steps run without the test's t helpers on its stack, each
+	// error relayed to the channel the test goroutine reads after the join:
+	// a t.Fatalf in the writer would end the wrong goroutine's run.
+	var done atomic.Bool
+	syncs := new(atomic.Int64)
+	failing := make(chan error, 1)
+	go func() {
+		defer close(failing)
+		for !done.Load() {
+			v, err := cr.d.counters.Draw()
+			if err != nil {
+				failing <- err
+				return
+			}
+			seq, err := cr.d.counters.NextSeq()
+			if err != nil {
+				failing <- err
+				return
+			}
+			x := core.Extent{Off: 4096 * (syncs.Load() + 1), Len: 4}
+			cr.lastSeq.Store(uint64(seq))
+			unlock := cr.domains.Lock(f)
+			p, err := cr.streams.For(f).Append(format.RecordHeader{
+				Kind: format.KindWrite, File: f, Extent: x, Seq: seq, Version: v, Tag: 1,
+			}, format.RecordBody{Payload: []byte("gggg"), MTime: 1})
+			if err == nil {
+				_, err = cr.ix.WriteRetain(1, f, index.Placed{
+					Extent: x, Record: index.RecordAt{Segment: p.Loc.Segment, Offset: uint32(p.Loc.Off)}, Version: v,
+				}, seq)
+			}
+			unlock()
+			if err != nil {
+				failing <- err
+				return
+			}
+			out, err := cr.d.Corrupt(context.Background(), Corruption{
+				Share: 1, File: f, Record: index.RecordAt{Segment: p.Loc.Segment, Offset: uint32(p.Loc.Off)},
+				Seq: seq, Version: v, Extent: x,
+			})
+			if err != nil || out.Kind != CorruptDropped {
+				failing <- fmt.Errorf("Corrupt = %+v, %v, want Dropped and nil", out, err)
+				return
+			}
+			syncs.Add(1)
+		}
+	}()
+	for range 100 {
+		if _, err := cr.d.Sync(context.Background(), f); err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+	}
+	done.Store(true)
+	if err := <-failing; err != nil {
+		t.Fatalf("the writer beside the Sync loop: %v", err)
+	}
+	if syncs.Load() == 0 {
+		t.Fatalf("the writer dropped nothing beside the Sync loop")
+	}
 }
 
 // TestCorruptThenStopWritesLossRecord covers a loss queued just before Stop

@@ -53,12 +53,14 @@ func runTails(t *testing.T, r *rig) State {
 
 func planted(st State) int { return len(st.Rebuilt.Index.FileEntries(tailFile())) }
 
-// A's payload rots under a header that verifies. The open reads no content
-// payload and verifies only past the synced-through, so no open phase
-// reports A: the read that would serve it catches it, through the corrupt
-// path that raises the loss event and drops the extent. That split between
-// the open's scan and the serving read is the format's own, so A stays
-// indexed and the segment intact.
+// A's payload rots under a header that verifies. The newest segment's
+// sync-proven payloads are the one content the open reads back (the kinds
+// pass's fold), and the synced-through B and C name proves A synced past its
+// own end, so the open finds the rot itself: A confines as a synced corrupt
+// drop — the loss record the open appends names its extent, and no serving
+// read ever reaches a record reported lost — while B and C attach and the
+// segment keeps the intact fate its own verdicts draw, never a torn tail
+// cut over a record the sync answered for.
 func TestSyncedDamageIsNotATornTailPayloadLeg(t *testing.T) {
 	endA := endAfter(tailRec(200, 0x4100))
 	endB := endAfter(tailRec(200, 0x4100), tailRec(201, 0x8100))
@@ -70,12 +72,16 @@ func TestSyncedDamageIsNotATornTailPayloadLeg(t *testing.T) {
 	r.plantSeg(2, seg)
 	st := runTails(t, r)
 
-	if got := planted(st); got != 3 {
-		t.Errorf("the index holds %d entries, want 3: A, B and C attach", got)
+	if got := planted(st); got != 2 {
+		t.Errorf("the index holds %d entries, want 2: B and C attach, A confined as corrupt", got)
 	}
 	wantFate(t, st, 2, fateIntact, 0)
-	if len(st.Tails.Damaged) != 0 {
-		t.Errorf("Damaged got %v, want none: a payload the read catches is not the tail's", st.Tails.Damaged)
+	if got := st.Tails.Damaged; !slices.Equal(got, []core.SegmentID{2}) {
+		t.Errorf("Damaged got %v, want [2]: the sync proved A's bytes whole and its rot is damage the open reports", got)
+	}
+	if got := st.Tails.Corrupt; len(got) != 1 || got[0].Segment != 2 ||
+		got[0].Drop.Header.Extent.Off != 0x4100 || !got[0].Drop.Synced {
+		t.Errorf("Corrupt got %+v, want the one synced corrupt drop of A at 0x4100 in segment 2: the proof the open read itself", got)
 	}
 }
 
@@ -600,4 +606,30 @@ func TestATrailerProvenPredecessorReleasesItsTake(t *testing.T) {
 	// behind was the tail's first byte, and the second open cut and sealed
 	// there, the early seal of the record the segment whole held.
 	wantCutLeft(t, r, st2, 1, before[format.SegmentName(1)])
+}
+
+// TestASealedNewestSegmentConfinesRotPastTheSyncedThrough pins the fold's
+// sealed arm: the synced-through no header named proves a record of a
+// sealed segment whole — the marker proves the whole records area — so a
+// payload rotten past the synced-through is confined as a synced corrupt
+// drop at the open's own read, never left to a torn-tail cut over bytes
+// the seal answered for.
+func TestASealedNewestSegmentConfinesRotPastTheSyncedThrough(t *testing.T) {
+	seg := buildSeg(2, tailRec(200, 0x4100), tailRec(201, 0x8100))
+	seg[format.SegmentHeaderSize+format.RecordHeaderSize+8+2] ^= 0xff // A's payload; no header names a sync
+	seg = append(seg, raw.SealMarker{Identity: journalID, Segment: 2, Offset: uint64(len(seg))}.Bytes()...)
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, seg)
+	st := runTails(t, r)
+
+	if got := planted(st); got != 1 {
+		t.Errorf("the index holds %d entries, want 1: the sealed segment's B attaches and its rotted A is confined as corrupt", got)
+	}
+	wantFate(t, st, 2, fateSealed, 0)
+	if got := st.Tails.Corrupt; len(got) != 1 || got[0].Segment != 2 ||
+		got[0].Drop.Header.Extent.Off != 0x4100 || !got[0].Drop.Synced {
+		t.Errorf("Corrupt got %+v, want the one synced corrupt drop of A at 0x4100 in segment 2: the seal, not a header's synced-through, proved A's bytes whole", got)
+	}
 }

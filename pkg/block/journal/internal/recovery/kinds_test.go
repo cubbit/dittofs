@@ -12,12 +12,24 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
+
+// failedWords carries a seq list as the failed-list data the run takes,
+// none of the entries carrying a report to honour: the shape of failed
+// records whose report nobody answered.
+func failedWords(seqs []core.Seq) []durability.Failed {
+	out := make([]durability.Failed, 0, len(seqs))
+	for _, s := range seqs {
+		out = append(out, durability.Failed{Seq: s})
+	}
+	return out
+}
 
 // asideRun is the rig's Run over Deps carrying the directory's failed
 // list, the shape every kinds check drives: the collected losses come back
@@ -26,7 +38,7 @@ import (
 func (r *rig) asideRun(failed []core.Seq) (State, error) {
 	r.t.Helper()
 	d := r.runDeps()
-	d.Failed = failed
+	d.Failed = failedWords(failed)
 	return Run(context.Background(), d, core.Version{}, journalID, nil)
 }
 

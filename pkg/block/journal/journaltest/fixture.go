@@ -145,6 +145,29 @@ func NewUnwatched(tb testing.TB) *Fixture {
 	return newFixture(tb, nil, false, FixtureSegmentCap, nil)
 }
 
+// NewBare initialises a journal in a new temporary directory and opens
+// nothing: no spare is made and the directory holds only the format file
+// Init wrote, the state a crash between Init and the caller's recording of
+// the identity leaves — an interrupted Init, in which nothing was ever
+// acknowledged. What the fixture opens later — Reopen, TryReopen,
+// TryReopenAs — opens it again as usual, each open making its own spares,
+// which a write may have to wait for through the spare refusal it retries.
+func NewBare(tb testing.TB) *Fixture {
+	tb.Helper()
+
+	// Registered first, so its checks run after every other cleanup has
+	// closed what it opened.
+	prof.Watch(tb, prof.Options{})
+
+	f := bareFixture(tb, nil, FixtureSegmentCap, nil)
+	var err error
+	f.id, err = journal.Init(tb.Context(), f.Dir, FixtureInstall, f.options()...)
+	if err != nil {
+		tb.Fatalf("fixture: init: %v", err)
+	}
+	return f
+}
+
 // newFixture is New with fault set on the seam before the journal is
 // initialised, the profiler only when watch is set, segments of segCap
 // bytes, set, when not nil, applied to the settings, and opts added before

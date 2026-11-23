@@ -241,8 +241,10 @@ type primary struct {
 // into its inputs.
 //
 // ponytail: every sample reads the journal's Stats() for its loss generation,
-// one call per write and per Commit. Add a journal call returning the
-// generation alone if a profile shows Stats() on the write path.
+// one call per write and per Commit. Stats no longer touches the loss ring's
+// served window, so the sample is only a cost, and a journal call returning
+// the generation alone cuts it — add one if a profile shows Stats() on the
+// write path.
 func (e *Engine) verifier(b *binding) vfserr.Verifier {
 	var in [16 + 8 + 16 + 8 + 8]byte
 	copy(in[0:16], b.primary.node[:])

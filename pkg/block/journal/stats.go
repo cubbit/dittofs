@@ -49,6 +49,22 @@ func (j *Journal) Stats() Stats {
 	return s
 }
 
+// Losses returns the journal's published loss events, oldest first, and is
+// the read that takes them away: the drain or poll that consumes them marks
+// them served, so an in-process reopen of the journal publishes again only
+// the losses no genuine read reached — the losses found at open its ring
+// re-places, exactly RFC 1 section 3.8's restart clause inside one process.
+// Stats reports the same events as a figure and marks nothing served, for
+// its callers — the metrics export, an engine's startup reads — are not the
+// reader the losses belong to. After Close it answers nil, as Stats answers
+// its zero Stats.
+func (j *Journal) Losses() []LossEvent {
+	if j.closed.Load() || j.core == nil {
+		return nil
+	}
+	return j.core.Durability().Losses()
+}
+
 // statsFrom converts the core's statistics to the public shape. Maps and
 // slices are copied, so the result is the caller's.
 func statsFrom(c datapath.Stats) Stats {

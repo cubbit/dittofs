@@ -488,6 +488,32 @@ type Durability struct {
 	done chan struct{}
 	stop sync.Once
 	wg   sync.WaitGroup
+
+	// reach is this instance's word to the registry on who read its ring,
+	// read by the claims a Stop of the instance left behind: dead retires
+	// them to the served window, the events a genuine reader's copy last
+	// carried. It is allocated on its own, for the registry's claims hold
+	// it alone — an embedded value would keep the whole Durability, extent
+	// index included, alive behind it past the instance's life.
+	reach *reach
+}
+
+// reach is a Durability's word to the per-process registry on who read the
+// instance's loss ring. The registry holds it for the life of the process —
+// a stopped journal's claims read it long past the instance itself — so it
+// carries no more than the two answers those claims ask.
+type reach struct {
+	// dead is set as Stop begins, before the workers join: past that point
+	// the instance serves no caller its events, so the served window is the
+	// only question a claim's retirement has left.
+	dead atomic.Bool
+	// servedFrom and servedThrough bound the events a genuine reader's copy
+	// of the ring last carried: how far the reader got, and where the copy
+	// began — the ring keeps only the newest LossRingSize events, so a copy
+	// that begins later than an event was published never carried it, and
+	// the from keeps the window answering nothing for it. Both zero while
+	// no reader took a non-empty copy away.
+	servedFrom, servedThrough atomic.Uint64
 }
 
 // New returns a Durability. A nil Clock, Domains, Index, Counters or MarkLoss is a
@@ -514,6 +540,7 @@ func New(cfg Config) (*Durability, error) {
 		log = slog.New(slog.DiscardHandler)
 	}
 	d := &Durability{
+		reach:    &reach{},
 		clock:    cfg.Clock,
 		domains:  cfg.Domains,
 		tracer:   cfg.Tracer,
@@ -696,6 +723,20 @@ type stream struct {
 
 	// corrupt are the corrupt records' losses Corrupt handed to the worker.
 	corrupt []corruptJob
+	// corruptSeq numbers the corrupt jobs a stream queues, front to back;
+	// the first job takes 1.
+	corruptSeq uint64
+	// corruptQueued holds, per file a corrupt job was ever queued for on this
+	// stream, the seq of the newest job queued for it, and corruptDone the
+	// seq of the newest job finished for it. Jobs finish in queue order —
+	// the worker drains the queue front to back, and so does Stop's drain —
+	// so done reaches a call's waited-through seq exactly when every job the
+	// call owes has appended and synced its loss records. The entries stay
+	// once set: a waiter parked on a seq judges it by done, which a deleted
+	// entry would answer as zero. The cost is one entry per file ever
+	// corrupted on the stream, held for the instance's life.
+	corruptQueued map[core.FileID]uint64
+	corruptDone   map[core.FileID]uint64
 	// owed holds, per failed segment whose window is not taken yet, the files
 	// Corrupt took a record of out of the ledger: the window takeWindow makes
 	// for the segment marks them, so they are told as if it had failed them.
@@ -732,17 +773,19 @@ type stream struct {
 
 func newStream(d *Durability, no uint32) *stream {
 	return &stream{
-		d:       d,
-		no:      no,
-		live:    map[core.SegmentID]struct{}{},
-		synced:  map[core.SegmentID]int64{},
-		failed:  map[core.SegmentID]error{},
-		ending:  map[core.SegmentID]struct{}{},
-		counted: map[core.SegmentID]struct{}{},
-		lost:    map[segment.Location]lostRecord{},
-		moved:   map[segment.Location]segment.Location{},
-		kick:    make(chan struct{}, 1),
-		buckets: make([]atomic.Uint64, len(SyncDurationBounds)+1),
+		d:             d,
+		no:            no,
+		live:          map[core.SegmentID]struct{}{},
+		synced:        map[core.SegmentID]int64{},
+		failed:        map[core.SegmentID]error{},
+		ending:        map[core.SegmentID]struct{}{},
+		counted:       map[core.SegmentID]struct{}{},
+		lost:          map[segment.Location]lostRecord{},
+		moved:         map[segment.Location]segment.Location{},
+		corruptQueued: map[core.FileID]uint64{},
+		corruptDone:   map[core.FileID]uint64{},
+		kick:          make(chan struct{}, 1),
+		buckets:       make([]atomic.Uint64, len(SyncDurationBounds)+1),
 	}
 }
 
@@ -1005,13 +1048,47 @@ func (d *Durability) pushRingLocked(ev core.LossEvent) core.LossEvent {
 }
 
 // lossesLocked returns a copy of this instance's ring, oldest first, the
-// caller holding lmu.
+// caller holding lmu. It serves figures alone and marks nothing served: the
+// readers it answers — the Stats Part, the journal's figures — are never the
+// reader the losses belong to, and the reach below is what decides which
+// losses were answered.
 func (d *Durability) lossesLocked() []core.LossEvent {
 	out := make([]core.LossEvent, d.count)
 	for i := range out {
 		out[i] = d.ring[(d.head+i)%core.LossRingSize]
 	}
 	return out
+}
+
+// Losses is the genuine read of this instance's ring: a copy of its events,
+// oldest first, whose events the caller takes away. The window the copy
+// carried — through its newest, from its oldest — joins the reach, so the
+// claims a Lose took in the registry's pieces survive this instance exactly
+// as far as a reader was answered for the loss each claim's event published.
+// A read of an empty ring serves nothing, and the window does not move.
+//
+// decision: only this read advances the served window. Stats reports the
+// ring without moving it, for its callers are figures — the metrics export,
+// an engine's startup reads, the poll Stats serves — and a figure read moved
+// ahead of the engine's drain or a client's poll would mark the events it
+// copied served, keeping an in-process reopen from publishing the losses
+// found at open to the one reader they were for, suppressing a report nobody
+// delivered. Overturned by a figure the loss reporting itself needs — that
+// reader takes its genuine read of its own.
+func (d *Durability) Losses() []core.LossEvent {
+	d.lmu.Lock()
+	defer d.lmu.Unlock()
+	if d.count > 0 {
+		// The copy carries exactly the events the ring holds, so the reader
+		// was answered for those alone: the through is how far the reader
+		// got, and the from keeps the window from answering the events the
+		// ring had already overwritten — a poller that knows it missed them
+		// has still not read them — whose claims then survive, and a reopen
+		// places the losses they name found at open again.
+		d.reach.servedThrough.Store(d.nextEvent)
+		d.reach.servedFrom.Store(d.nextEvent - uint64(d.count) + 1)
+	}
+	return d.lossesLocked()
 }
 
 // Stats returns the counters kept at each sync, without walking the ledger. A
@@ -1071,7 +1148,7 @@ func (d *Durability) Stats() Part {
 	p.StaleExtents = d.stale
 	p.SupersededExtents = d.superseded
 	d.lmu.Unlock()
-	p.DamagedSegments, p.Segments = d.damagedReport()
+	p.DamagedSegments, p.Segments = d.DamagedReport()
 	return p
 }
 
@@ -1080,6 +1157,18 @@ func (d *Durability) Stats() Part {
 // when Stop returns. A second call is a no-op.
 func (d *Durability) Stop() {
 	d.stop.Do(func() {
+		// The instance's unread claims in the registry's pieces retire
+		// here, whatever the caller's kind of close — a clean journal
+		// Close drains into this Stop, and so does the crash fixture's
+		// close of a dead journal — for past this point no reader reaches
+		// the ring they went to. A reader that already reached an event
+		// answered it, and the claims of the reads it served stay; the
+		// queued Corrupt losses the drain below takes carry claims born
+		// dead when no reader saw them, and a later open takes those
+		// pieces over — the takeover clearing the Reported the dead
+		// report still credited — and republishes the losses into the
+		// open's own fresh ring, which is what that ring is for.
+		d.reach.dead.Store(true)
 		d.mu.Lock()
 		d.stopped = true
 		d.mu.Unlock()
@@ -1100,6 +1189,37 @@ func (d *Durability) Stop() {
 		}
 	})
 	d.wg.Wait()
+}
+
+// claimsDead reports whether the reach's instance has begun stopping, so
+// no reader reaches its ring from this point on.
+func (r *reach) claimsDead() bool { return r.dead.Load() }
+
+// claimServed answers whether the loss a claim on one of that instance's
+// takes was answered by a reader: a genuine read's copy carried the event
+// the claim's take published. The window's from keeps the answer honest
+// where the ring had overwritten the event before the read — a copy that
+// never carried it answered nothing for it, whatever the reader knows it
+// missed — so a claim on an overwritten event survives its instance, and a
+// reopen places the loss it names found at open again.
+//
+// decision: a loss that published no event of its own — a reported one,
+// whose report another of the instance's events carried — is answered by any
+// genuine read at all, for the event that carried its report is not known to
+// the claim. The answer errs toward a reopen re-reporting the loss found at
+// open on a copy that held no carrying event, with one narrow edge where it
+// does not: when the carrying event was overwritten in the ring before any
+// genuine read, the first read of what remains answers the claim for good,
+// and a reopen then keeps the suppression — hiding a report nobody
+// delivered. That is the price of the claim naming no event; retired when a
+// reported loss learns the number of the window's event that carried its
+// report.
+func (r *reach) claimServed(ev uint64) bool {
+	from, through := r.servedFrom.Load(), r.servedThrough.Load()
+	if ev == 0 {
+		return through > 0
+	}
+	return ev >= from && ev <= through
 }
 
 // target is the last unsynced record of one file in one segment of a stream.
@@ -1141,10 +1261,14 @@ type cand struct {
 // takes, whose record never comes back, unlike a re-appended header-only
 // record. The mark settle sets still tells the file's calls.
 type work struct {
-	st       *stream
-	ids      []core.FileID
-	targets  []target
-	cands    []cand
+	st      *stream
+	ids     []core.FileID
+	targets []target
+	cands   []cand
+	// owed is the corrupt debt this call took a snapshot of on this stream:
+	// per named file owed jobs when the call began, the seq of the file's
+	// newest queued job. nil when the call owed none.
+	owed     owedCorrupt
 	failLost bool
 }
 
@@ -1225,6 +1349,16 @@ func (st *stream) inWindowLocked(loc segment.Location) bool {
 // worker while the worker waits on it, and every other file of the stream
 // would stop completing too.
 //
+// The wait also covers the corrupt jobs a read of a named file queued before
+// the call took its targets: the worker appends and syncs each job's loss
+// records inside the job, so the durability the call waits out includes the
+// loss records owed for the drops those reads already made — a fresh process
+// would owe them at its open, and a caller that crashed between the read and
+// this call loses the record to the crash. A job a read queues once the call
+// is waiting is not this call's to answer, so it never extends the wait. The
+// wait parks on the snapshotted debt alone; it issues no sync of its own for
+// it.
+//
 // Syncs are issued by the stream's worker, never by the caller's goroutine,
 // so a cancelled caller is not stuck in the syscall.
 func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) ([]core.SyncMark, error) {
@@ -1241,7 +1375,8 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) ([]core.SyncM
 	// is no target by then.
 	var ws []work
 	for _, st := range d.snapshot() {
-		w := work{st: st, ids: ids, targets: st.targetsOf(ids)}
+		w := work{st: st, ids: ids}
+		w.targets, w.owed = st.targetsOf(ids)
 		w.cands = candsOf(w.targets)
 		ws = append(ws, w)
 	}
@@ -1507,7 +1642,14 @@ func (d *Durability) snapshot() []*stream {
 // and waits for its seal or fails through the failed map. Compaction removes
 // only completed entries, so a target stays in the ledger until the worker is
 // done with it.
-func (st *stream) targetsOf(ids []core.FileID) []target {
+//
+// Beside the targets, in the one critical section that takes them, it answers
+// the call's corrupt debt snapshot: what its named files owed this stream
+// when the targets were seen — jobs a read queued before the call — so the
+// two read the same instant of the queue, and no push or finish of a corrupt
+// job can land between them and make the pairing of debts to targets say
+// more or less than the call began with.
+func (st *stream) targetsOf(ids []core.FileID) ([]target, owedCorrupt) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	var ts []target
@@ -1539,7 +1681,7 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 			consider(&w.entries[i])
 		}
 	}
-	return ts
+	return ts, st.owedCorruptLocked(ids)
 }
 
 // await waits until no target of any stream is pending. With failFast, the
@@ -1598,7 +1740,7 @@ func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error 
 		wait := d.changes()
 		pending, failing := false, false
 		for _, w := range ws {
-			p, f, found, err := w.st.check(w.ids, w.targets, w.cands, failFast, w.failLost)
+			p, f, found, err := w.st.check(w.ids, w.targets, w.cands, failFast, w.failLost, w.owed)
 			if found != nil {
 				// Every stream owes the call its marks, and a mark left on one
 				// stream would be told to the file's next Sync again: the rest
@@ -1768,10 +1910,26 @@ func (st *stream) undoingLocked(ids []core.FileID) bool {
 //
 // The wait's candidates cs are re-resolved under the same lock, while the
 // stream's move table still names the records that re-appended; see cand.
-func (st *stream) check(ids []core.FileID, targets []target, cs []cand, failFast, failLost bool) (pending, failing bool, found *owedFailure, err error) {
+// debt is the call's corrupt-debt snapshot, taken beside its targets: the
+// per-file seqs of the corrupt jobs a read queued before the call, which
+// the wait parks until each has appended and synced the loss record it owes.
+func (st *stream) check(ids []core.FileID, targets []target, cs []cand, failFast, failLost bool, debt owedCorrupt) (pending, failing bool, found *owedFailure, err error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.resolveCandsLocked(cs)
+	// A corrupt job the call owed parks it: the worker appends and syncs the
+	// loss records the job owes inside it, so the durable answer may not run
+	// ahead of the drops the reads this call's files took before it made.
+	// A job a read queued after the snapshot never enters this wait — it is
+	// not this call's to answer — and the wait leads no sync of its own:
+	// the job's record syncs on the worker that runs it, never by the waiter.
+	for f, through := range debt {
+		if st.corruptDone[f] < through {
+			pending = true
+			break
+		}
+	}
+
 	var owed *owedFailure
 	if failFast {
 		owed = st.takeMarksLocked(ids)

@@ -289,6 +289,15 @@ func (j *FakeJournal) Stats() journal.Stats {
 	return s
 }
 
+// Losses returns the losses Stats reports, on the read the engine's drain
+// uses — the one that takes the events away, the genuine reader the journal
+// marks served. The fake keeps no served state, so it changes nothing.
+func (j *FakeJournal) Losses() []journal.LossEvent {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return slices.Clone(j.losses)
+}
+
 // headroomRefusal reports whether err is a refusal naming the headroom, which
 // a write under a reservation passes (RFC 1 §6).
 func headroomRefusal(err error) bool {

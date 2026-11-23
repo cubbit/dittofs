@@ -1651,13 +1651,19 @@ func TestRFC1C_LossSurvivesRestart(t *testing.T) {
 	if got := f.J.Stats().LossGeneration; got != generation {
 		t.Fatalf("a second reopen raised the loss generation from %d to %d", generation, got)
 	}
-	// The fresh instance numbers its own ring from its own zero, so a
-	// re-report would carry the same SeqNum as the first instance's event
-	// and no comparison across the two rings can tell it apart: the second
-	// reopen's ring must hold nothing at all, the per-journal piece dedup
-	// answering for the loss the first instance's record already took.
-	if after := f.J.Stats().Losses; len(after) != 0 {
-		t.Fatalf("a second reopen reported %+v as new; the first open's loss record answers for the piece", after)
+	// Reading A: a reopen does not hide a loss nobody had read. The
+	// reopen after the crash published the loss found at open into its own
+	// ring and no reader took the event away — every read this row made
+	// of it is a figure — so its placed claim retired with it, and this
+	// later reopen places the loss record found at open again. It raised
+	// no generation, and the fresh instance numbers its own ring from its
+	// own zero, so the loss still reads as found, never as new.
+	after := f.J.Stats().Losses
+	if len(after) != 1 || !after[0].AtOpen || after[0].Extent != e || after[0].File != id {
+		t.Fatalf("a second reopen's ring = %+v, want the loss found at open placed again for the reader nobody was", after)
+	}
+	if got := f.J.Stats().LossGeneration; got != generation {
+		t.Fatalf("the re-placed loss moved the generation from %d to %d, want none: found at open raises nothing", generation, got)
 	}
 }
 

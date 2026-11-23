@@ -52,6 +52,13 @@ type Journal interface {
 	Forget(ctx context.Context, tag journal.ShareTag) error
 	Strand(tag journal.ShareTag) error
 	Stats() journal.Stats
+	// Losses returns the journal's published losses, oldest first, and is
+	// the read that takes them away: the engine's drain is the journal's
+	// genuine reader, whose read marks the events served, so an
+	// in-process reopen re-places found at open exactly what no drain
+	// reached. Stats reports the same events to everyone else and marks
+	// nothing served, so the engine's own polls may use it freely.
+	Losses() []journal.LossEvent
 	// SyncMarks is the mark of each append stream's last sync, the journal's
 	// Stats.SyncMarks, each naming its stream.
 	SyncMarks() []entity.SyncMark

@@ -20,7 +20,7 @@ import (
 func assembleRun(t *testing.T, r *rig, failed []core.Seq) State {
 	t.Helper()
 	d := r.runDeps()
-	d.Failed = failed
+	d.Failed = failedWords(failed)
 	st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -37,7 +37,7 @@ func assembleRun(t *testing.T, r *rig, failed []core.Seq) State {
 func assembleRunForCounters(t *testing.T, r *rig, failed []core.Seq) State {
 	t.Helper()
 	d := r.runDeps()
-	d.Failed = failed
+	d.Failed = failedWords(failed)
 	st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
