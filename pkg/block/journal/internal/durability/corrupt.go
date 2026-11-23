@@ -350,8 +350,6 @@ func (st *stream) takeCorrupt(c Corruption, dirty bool) (synced, lost bool) {
 			continue
 		}
 		if st.covered(e.w.Loc) {
-			// Synced: the worker completes the entry and lifts what the
-			// record superseded, whether or not it has yet.
 			return true, false
 		}
 		file, seg, loc := e.w.File, e.w.Loc.Segment, e.w.Loc

@@ -11,6 +11,11 @@ type corruptJob struct {
 	record index.RecordAt
 	synced bool
 	losses []Loss
+	// seq is the job's place in the stream's queue, taken as it was queued.
+	// A Sync records it per file to wait only the jobs the stream owed when
+	// the call took its targets — those a read queued before the call — and
+	// never one a later read queues once the call is waiting.
+	seq uint64
 }
 
 // queueCorrupt hands job to the stream's worker and wakes it. Once the layer
@@ -34,15 +39,19 @@ func (d *Durability) queueCorrupt(st *stream, job corruptJob) {
 
 // pushCorrupt queues job for the worker without waking it, and reports
 // whether it did: a closed stream has no worker left to drain it. A queued
-// job counts as owed on its file, the count a Sync naming the file waits out.
+// job owes its file the seq it takes here, and only a Sync that named the
+// file before this moment — the job is inside the call's owed snapshot —
+// waits that seq out.
 func (st *stream) pushCorrupt(job corruptJob) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.closed {
 		return false
 	}
+	st.corruptSeq++
+	job.seq = st.corruptSeq
 	st.corrupt = append(st.corrupt, job)
-	st.corruptFiles[jobFile(job)]++
+	st.corruptQueued[jobFile(job)] = job.seq
 	return true
 }
 
@@ -50,9 +59,10 @@ func (st *stream) pushCorrupt(job corruptJob) bool {
 // name one record, one file.
 func jobFile(job corruptJob) core.FileID { return job.losses[0].File }
 
-// drainCorrupt runs every corrupt loss queued on the stream. It runs on the
-// worker, and once more in Stop after the worker has exited. Each job's
-// finish retires its hold on its file and wakes the waiters parked on it.
+// drainCorrupt runs every corrupt loss queued on the stream, front to back.
+// It runs on the worker, and once more in Stop after the worker has exited.
+// Each job's finish records its seq as its file's done-through, which unblocks
+// the waiters parked on it, and wakes them.
 func (d *Durability) drainCorrupt(st *stream) {
 	st.mu.Lock()
 	jobs := st.corrupt
@@ -64,31 +74,41 @@ func (d *Durability) drainCorrupt(st *stream) {
 	}
 }
 
-// owesCorruptLocked reports whether a corrupt job still queued or running on
-// this stream owes the loss record of a named file. The caller holds mu.
-func (st *stream) owesCorruptLocked(ids []core.FileID) bool {
+// owedCorrupt is a Sync call's snapshot of the corrupt debt its named files
+// owed on one stream when the call took its targets: per file, through the
+// seq of the newest job queued for it. nil names no owed job.
+type owedCorrupt map[core.FileID]uint64
+
+// owedCorrupt takes that snapshot. The caller holds mu. The snapshot belongs
+// to the call alone: jobs a later read queues after it were never owed to
+// this call, and no later wait of the same files consults them.
+func (st *stream) owedCorrupt(ids []core.FileID) owedCorrupt {
+	var owed owedCorrupt
 	for _, id := range ids {
-		if st.corruptFiles[id] > 0 {
-			return true
+		through := st.corruptQueued[id]
+		if st.corruptDone[id] >= through {
+			continue // nothing owed, or the file was never queued for
 		}
+		if owed == nil {
+			owed = owedCorrupt{}
+		}
+		owed[id] = through
 	}
-	return false
+	return owed
 }
 
-// finishCorrupt retires one finished corrupt job's hold on its file and
-// wakes every waiter: the job's Lose has appended and synced the loss
-// records it owed — or recorded the failure that stands in for them — so a
-// Sync that named the file may answer now. It runs on the worker and in
-// Stop's drain; the closed-stream arm around it runs its job on the
-// caller's goroutine and parks no waiter on the count.
+// finishCorrupt records one finished job's seq as its file's done-through and
+// wakes every waiter: the job's Lose has appended and synced the loss records
+// it owed — or recorded the failure that stands in for them — so a Sync whose
+// snapshot reaches the job's seq may answer now. Jobs finish in queue order,
+// so done keeps to the file's seqs and no waiter ends early while an earlier
+// job of its snapshot is still owed. It runs on the worker and in Stop's
+// drain; the closed-stream arm around it runs its job on the caller's
+// goroutine, where it takes no seq and parks no waiter.
 func (st *stream) finishCorrupt(job corruptJob) {
 	f := jobFile(job)
 	st.mu.Lock()
-	if n := st.corruptFiles[f]; n <= 1 {
-		delete(st.corruptFiles, f)
-	} else {
-		st.corruptFiles[f] = n - 1
-	}
+	st.corruptDone[f] = job.seq
 	st.mu.Unlock()
 	st.d.notifyAll()
 }

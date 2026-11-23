@@ -984,6 +984,62 @@ func TestCorruptAppendsNothingAndReturnsBeforeSeal(t *testing.T) {
 	cr.awaitRecord(t, w.c.Seq)
 }
 
+// TestSyncDoesNotWaitTheCorruptJobAReadQueuedMidCall pins the wait's ceiling:
+// the corrupt debt a Sync waits out is the one its own snapshot took — the
+// jobs a read of its files queued before the call took its targets. A
+// corruption read queues a job while the call is already waiting, with the
+// worker parked before the drain that would run it, and the answer comes all
+// the same: the job is that later read's debt, and a call that owed it
+// nothing answers nothing for it. The loss record is still unappended when
+// the answer lands, which is the whole of the claim.
+func TestSyncDoesNotWaitTheCorruptJobAReadQueuedMidCall(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	var armed atomic.Bool
+	hook, reached, release := gate(t)
+	cr := newCorruptRig(t, func(cr *corruptRig) {
+		// Installed before the layer starts, as every test hook is, so the
+		// worker never races the field it reads each pass.
+		cr.d.afterHolds = func() {
+			if armed.CompareAndSwap(true, false) {
+				hook()
+			}
+		}
+	})
+	// Registered after the rig's own cleanups, so a failing test reports
+	// before the layer's Stop tries to join the parked worker.
+	t.Cleanup(release)
+	f := file(1)
+	w := cr.write(t, f, 0, "aaaa")
+	hold := cr.seam.HoldFirst(t, kit.OpSync, format.SegmentName(w.loc.Segment))
+	// The call's targets and corrupt debt are snapshotted before it parks:
+	// reached says the worker is inside the call's led sync, so the check
+	// that leads it has already taken them.
+	syncing := cr.syncMarksAsync(context.Background(), f)
+	awaitGate(t, "the held sync", hold.Reached())
+
+	// Armed before the release, so the pass it parks — the first after the
+	// held sync returns, before that pass reaches the drain step — holds
+	// the queued job back: the job's loss record would append only behind
+	// the gate.
+	armed.Store(true)
+	cr.corrupt(t, w.c)
+	hold.Release()
+
+	answered := mustSyncReturn(t, "Sync", syncing)
+	if answered.err != nil {
+		t.Fatalf("Sync = %v, want nil: the loss is the read's to report", answered.err)
+	}
+	if len(answered.marks) != 0 {
+		t.Fatalf("Sync returned %d marks, want none: %+v", len(answered.marks), answered.marks)
+	}
+	awaitGate(t, "the worker parked before its drain", reached)
+	if recs := cr.recordsNaming(t, w.c.Seq); len(recs) != 0 {
+		t.Fatalf("%d loss records named the record before the drain ran, want none", len(recs))
+	}
+	release()
+	cr.awaitRecord(t, w.c.Seq)
+}
+
 // TestCorruptThenStopWritesLossRecord covers a loss queued just before Stop
 // that the worker never drained: Stop records it, so its record is on disk
 // when Stop returns.
