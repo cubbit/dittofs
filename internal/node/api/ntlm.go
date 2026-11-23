@@ -54,9 +54,12 @@ func ntlmWrite(ctx context.Context, tx entity.ControlPlaneTx, start func(apiv1.O
 	if err != nil {
 		return err
 	}
+	// decision: a malformed old value reads as on, identity's default, here
+	// alone, so a write of a valid value repairs the record; every other read
+	// refuses it, as identity does.
 	was, err := ntlmOn(old, had)
 	if err != nil {
-		return err
+		was = true
 	}
 	on, err := ntlmOn(now, has)
 	if err != nil {
