@@ -365,74 +365,14 @@ func (s *starter) removing(t *testing.T, name string, state entity.TagState) eng
 	return sh
 }
 
-// removeShare takes share sh's removal in st through its steps until its tag
-// reads state, recording each shard's step as the node's removal does.
+// removeShare drives share sh's removal in st until its tag reads state, or
+// to its end when state is zero, as kvstoretest.RemoveShareUntil does.
 func removeShare(t *testing.T, st *kvstore.Store, sh engine.Share, state entity.TagState) {
 	t.Helper()
 
-	ctx := t.Context()
-
-	rec, _, err := st.ShareIndex().Share(ctx, sh.ID)
-	if err != nil {
+	if err := kvstoretest.RemoveShareUntil(t.Context(), st, sh.ID, sh.Shard, state); err != nil {
 		t.Fatal(err)
 	}
-
-	if err := st.ControlPlane().DeleteShare(ctx, sh.ID, entity.SnapshotsDelete, rec.Generation); err != nil {
-		t.Fatal(err)
-	}
-
-	for range 100 {
-		got, err := st.Lifecycle().TagState(ctx, sh.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if got == state {
-			return
-		}
-
-		step, done, err := st.Nodes().ContinueRemoval(ctx, sh.ID)
-		if err != nil || done {
-			t.Fatalf("share %v's removal: step %d, done %v, %v; want it short of %v", sh.ID, step, done, err, state)
-		}
-
-		if reached, ok := map[uint8]entity.TagState{3: entity.TagOffloaded, 4: entity.TagForgotten}[step]; ok {
-			if err := st.Nodes().RecordShardRemoval(ctx, sh.ID, sh.Shard, reached); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-
-	t.Fatalf("share %v's removal never reached %v", sh.ID, state)
-}
-
-// removed runs share sh's removal in st to its end, recording each shard's
-// step as the node's removal does, so the store holds no record of it.
-func removed(t *testing.T, st *kvstore.Store, sh engine.Share) {
-	t.Helper()
-
-	removeShare(t, st, sh, entity.TagForgotten)
-
-	ctx := t.Context()
-
-	for range 100 {
-		step, done, err := st.Nodes().ContinueRemoval(ctx, sh.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if done {
-			return
-		}
-
-		for shardDone := step != 4; !shardDone; {
-			if shardDone, err = st.Nodes().ContinueShardRemoval(ctx, sh.ID, sh.Shard); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-
-	t.Fatalf("share %v's removal never finished", sh.ID)
 }
 
 // startLifecycle is the store's lifecycle view, wrapped twice over: a

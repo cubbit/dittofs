@@ -123,7 +123,7 @@ func TestATagAShareRecordNamesIsNeverStranded(t *testing.T) {
 func TestAnAttachedTagTheStoreDoesNotNameIsNotStranded(t *testing.T) {
 	r := newRig(t)
 
-	removed(t, r.fs.Store, r.two)
+	removeShare(t, r.fs.Store, r.two, 0)
 
 	r.leaveTag(t, r.two.Tag, 4096, 0)
 	r.begin(t)

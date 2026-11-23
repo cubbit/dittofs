@@ -156,7 +156,7 @@ func testShareRemovalAcrossReopens(t *testing.T, d Durable) {
 		if step == 5 {
 			atFive++
 		}
-		if reached, ok := map[uint8]entity.TagState{3: entity.TagOffloaded, 4: entity.TagForgotten}[step]; ok {
+		if reached, ok := stepTags[step]; ok {
 			must(t, reopen().Nodes().RecordShardRemoval(ctx, sh.ID, got.Shard, reached))
 		}
 		for shardDone := step != 4; !shardDone; {
