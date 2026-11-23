@@ -437,6 +437,9 @@ func TestLogoutEndsTheSession(t *testing.T) {
 	if err := health(t.Context(), env); !errors.Is(err, credentials.ErrNotLoggedIn) {
 		t.Errorf("a command after logout: %v, want ErrNotLoggedIn", err)
 	}
+	if _, _, err := dfsctl(newEnv(t, "", false), "logout"); !errors.Is(err, credentials.ErrNotLoggedIn) {
+		t.Errorf("logout with no context: %v, want ErrNotLoggedIn", err)
+	}
 }
 
 // login --token-file keeps an API token, with no refresh token, in a context
