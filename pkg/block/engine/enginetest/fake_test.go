@@ -410,6 +410,13 @@ func TestFakeStrandRecordsTheTagAndForgetsItAtAReopen(t *testing.T) {
 // A read-only journal refuses a write and reports the state until a reopen,
 // after which it writes again and reports nothing: RFC 1 §5.4 ends the state
 // with a reopen.
+//
+// decision: this runs over the fake alone, not over the real journal as
+// TestShareAgreesWithTheJournal does, because the real journal turns
+// read-only only through storage faults at its seam, which the journal's own
+// conformance row for the rule (TestRFC1B_ReadOnlyStopsTheDrain) drives and
+// this package cannot reach. Run it over both if the journal gains a way to
+// turn read-only on cue.
 func TestFakeReadOnlyEndsAtAReopen(t *testing.T) {
 	j := NewFakeJournal()
 	if err := j.SetVersionLimit(ver(1 << 40)); err != nil {
