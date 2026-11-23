@@ -4,8 +4,7 @@ There is no garbage collector to run or configure today.
 
 v1's collector, a mark-sweep over the remote block store's content-addressed
 objects, went with the v1 block and metadata stores, and so did its one-time
-reconcile and the per-share recycle bin; the `dittofs_gc_*` metrics are still
-exported, but nothing sets them. No remote block store is wired to the engine
+reconcile, the per-share recycle bin and the `dittofs_gc_*` metrics. No remote block store is wired to the engine
 yet, so there are no objects to sweep.
 
 What frees space now is the engine itself: removing a file records its removal

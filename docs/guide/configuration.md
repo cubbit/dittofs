@@ -855,7 +855,7 @@ DittoFS exposes a Prometheus `/metrics` endpoint on a **dedicated listener**,
 separate from the control-plane API and the protocol adapters. It is **opt-in
 and disabled by default**. When enabled it serves the standard Go/process
 collectors plus the DittoFS instruments (request RED metrics per adapter,
-connection counts, sync/remote/local-store/quota/GC gauges, and snapshot
+connection counts, sync/remote/local-store/quota gauges, and snapshot
 timestamps).
 
 ```yaml
@@ -988,15 +988,10 @@ spec:
 | ⭐ `dittofs_adapter_unmapped_errors_total{protocol}` | Errors no protocol row maps, answered the fault status: each one is a bug. |
 | `dittofs_adapter_wire_seconds{protocol,stage}` | Time a request spends in each pipeline stage around the service call; its `_count` for `stage="decode_header"` counts every record received, one whose header does not decode included, so a ratio over it reads slightly low while a client sends records that do not decode. |
 | `dittofs_adapter_connections{protocol,state}` / `dittofs_adapter_connection_closes_total{protocol,reason}` | Connections open, by state (`handshake`, `established`), and connections refused or closed, by reason. |
-| `dittofs_auth_attempts_total{protocol,mechanism}` / `dittofs_auth_failures_total{protocol,mechanism}` | Authentication attempts and failures (`mechanism` is `sys`/`krb5`/`ntlm`). |
 | ⭐ `dittofs_remote_up{share}` | `1` if the share's remote backend is healthy, else `0`. |
 | ⭐ `dittofs_sync_pending_bytes{share}` | On-disk bytes present locally but not yet mirrored to the remote (data at risk). |
 | `dittofs_localstore_disk_used_bytes{share}` | Local block-store disk bytes in use. |
-| `dittofs_localstore_evictions_total` / `dittofs_localstore_backpressure_total` | Local block-store segments evicted under disk pressure (an operator drain is not counted) and appends held waiting for space (process-wide). |
 | `dittofs_quota_used_bytes{scope,principal,share}` | Bytes used by a quota principal (`scope` user/group, `principal` is the uid/gid). |
-| `dittofs_gc_runs_total{result}` / `dittofs_gc_last_run_timestamp_seconds` / `dittofs_gc_freed_bytes_total` | GC run count (`result` ok/error), last-run time, bytes reclaimed. |
-| ⭐ `dittofs_snapshot_operations_total{op,result}` | Snapshot operations by `op` (create/delete/restore) and `result` (ok/error). |
-| `dittofs_snapshot_duration_seconds{op}` | Snapshot operation latency histogram, by `op` (create/delete/restore). |
 | ⭐ `dittofs_snapshot_last_success_timestamp_seconds{share}` | Unix time of the last successful snapshot create (backup-freshness signal). |
 | ⭐ `dittofs_integrity_findings{share,kind}` | Findings from the last structural manifest scan, by `kind`: `payloads_with_findings`, `damaged_payloads`, `claimed_uncovered_ranges`, `unplaceable_rows`, `unknown_hash_rows`. |
 | ⭐ `dittofs_integrity_last_scan_timestamp_seconds{share}` | Unix time the structural manifest scan last completed. 0 means it has never run since process start **or** its last attempt failed. |
@@ -1097,8 +1092,7 @@ Build (or import) a Grafana dashboard around the ⭐ core series: an adapter row
 requests in flight, service errors by `error` from
 `dittofs_adapter_status_mapped_total`, refusals by `stage`, unmapped errors, and
 per-stage latency percentiles from `dittofs_adapter_wire_seconds`), a durability row
-(`dittofs_remote_up`, `dittofs_sync_pending_bytes`, and snapshot success rate
-from `dittofs_snapshot_operations_total`), and a capacity row
+(`dittofs_remote_up`, `dittofs_sync_pending_bytes`), and a capacity row
 (`dittofs_localstore_disk_used_bytes`, `dittofs_quota_used_bytes`). DittoFS does
 not ship a dashboard JSON; these series are stable and named for direct use.
 
