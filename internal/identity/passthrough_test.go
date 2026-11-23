@@ -493,6 +493,25 @@ func TestPassThroughBounds(t *testing.T) {
 	wait(t, "the held calls' return", func() bool { return fx.s.PassThroughs() == 0 })
 }
 
+// A caller that hangs up on a sign-in whose call the controller holds ends
+// the call: its slot is freed, though the call's context is no child of the
+// caller's.
+func TestPassThroughCallerEndsTheCall(t *testing.T) {
+	fx := newPassThrough(t, sim.Rule{Op: "logon", Key: "alice", Action: sim.FaultAction{Err: identitytest.ErrHold}})
+	ctx, hangUp := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := fx.s.SignIn(ctx, ntlmStep(string(alicePW), "alice", "CORP", true))
+		done <- err
+	}()
+	wait(t, "the held call", func() bool { return fx.f.Holding() == 1 })
+	hangUp()
+	if err := recv(t, done, "the sign-in's answer"); err == nil {
+		t.Errorf("SignIn after the caller hung up = nil, want an error")
+	}
+	wait(t, "the held call ended and its slot freed", func() bool { return fx.f.Holding() == 0 && fx.s.PassThroughs() == 0 })
+}
+
 // The seam answers identity.netbios_name from the State in force, a new one
 // after Apply, and ErrUnavailable before any.
 func TestComputerName(t *testing.T) {
