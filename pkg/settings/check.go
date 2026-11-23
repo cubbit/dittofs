@@ -110,6 +110,14 @@ func (t Table) Check(
 		return refuse(w.Scope, w.Key, "written by "+writers(sec.writeRole), ErrForbidden)
 	}
 
+	// A key KeyRole names carries a higher bar than its section's, so an
+	// operator keeps the section's other keys while this one stays an
+	// admin's, first value included: the gate runs before anything decodes or
+	// judges the value.
+	if role, guarded := sec.keyRoles[declared]; guarded && rank(caller) < rank(role) {
+		return refuse(w.Scope, w.Key, "written by "+writers(role), ErrForbidden)
+	}
+
 	// decision: a delete of a per-thing key with no thing names no row of any
 	// thing, so no required key or Validate judges it; refusing it would leave
 	// such a row unremovable. Withdraw once a per-thing section stores a key

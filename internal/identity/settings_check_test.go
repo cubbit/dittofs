@@ -145,6 +145,91 @@ func TestCheckRefusesDeadIDRange(t *testing.T) {
 	refused("used up", idRange(1_000_000, 1_000_007))
 }
 
+// The identity keys Appendix B gives to admin alone are refused to an
+// operator by the table itself, put and delete, first value included and a
+// change over the stored row, while the section's other keys stay an
+// operator's and an admin's put of identity.ntlm commits beside them.
+func TestCheckRefusesOperatorOnAdminKeys(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	st := newStore(t)
+	cp := st.ControlPlane()
+	tb := identityTable()
+
+	tabRef := "[" + strings.TrimSuffix(strings.Repeat("0, ", 16), ", ") + "]"
+
+	checkPut := func(key, value string) error {
+		return putSetting(cp, entity.RoleOperator, key, value)
+	}
+
+	for _, tc := range []struct {
+		key, value string
+	}{
+		{"identity.ntlm", "false"},
+		{"identity.keytab", tabRef},
+	} {
+		err := checkPut(tc.key, tc.value)
+		if !errors.Is(err, settings.ErrForbidden) {
+			t.Errorf("an operator's first put of %s: err = %v, want ErrForbidden", tc.key, err)
+		}
+
+		err = st.ControlPlane().Write(
+			context.Background(), entity.WriteMeta{},
+			func(tx entity.ControlPlaneTx) error {
+				return tb.Check(tx, entity.RoleOperator,
+					settings.Delete(installationScope, tc.key), nil)
+			})
+		if !errors.Is(err, settings.ErrForbidden) {
+			t.Errorf("an operator's delete of %s: err = %v, want ErrForbidden", tc.key, err)
+		}
+	}
+
+	// The change over the stored row, on identity.ntlm: its row, stored
+	// beneath the check since the operator's own puts commit nothing, is
+	// the one an operator's change and an admin's trusted replace both
+	// meet. identity.keytab's row would need the sealed secret its
+	// reference names beside it before the reference gate leaves the
+	// section writable, which is the secrets tests' ground.
+	//
+	// decision: the keytab's change case is left to a test that can seal
+	// one, since the role gate the case exercises is the same one either
+	// way. Withdraw once a helper here can seal a keytab secret.
+	store := func(value string) {
+		t.Helper()
+
+		err := st.ControlPlane().Write(
+			context.Background(), entity.WriteMeta{},
+			func(tx entity.ControlPlaneTx) error {
+				cur, _, err := tx.Setting(installationScope, "identity.ntlm")
+				if err == nil {
+					_, err = tx.PutSetting(entity.Setting{
+						Scope: installationScope, Key: "identity.ntlm",
+						Value: []byte(value),
+					}, cur.Generation)
+				}
+
+				return err
+			})
+		if err != nil {
+			t.Fatalf("store identity.ntlm for the change case: %v", err)
+		}
+	}
+
+	store("false")
+
+	err := checkPut("identity.ntlm", "true")
+	if !errors.Is(err, settings.ErrForbidden) {
+		t.Errorf("an operator's change of identity.ntlm: err = %v, want ErrForbidden", err)
+	}
+
+	if err := putSetting(cp, entity.RoleAdmin, "identity.ntlm", "false"); err != nil {
+		t.Errorf("an admin's put of identity.ntlm: err = %v, want committed", err)
+	}
+
+	if err := putSetting(cp, entity.RoleOperator, "identity.netbios_name", `"NAS"`); err != nil {
+		t.Errorf("an operator's put of identity.netbios_name: err = %v, want committed", err)
+	}
+}
+
 // The id_range check's read of the counters' marks is tracked: a uid drawn
 // between a put of identity.id_range's check and its commit retries that put.
 func TestCheckIDRangeReadTracked(t *testing.T) {

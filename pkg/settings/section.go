@@ -79,6 +79,7 @@ type Section struct {
 	def          any
 	fields       []field
 	writeRole    entity.APIRole
+	keyRoles     map[string]entity.APIRole
 	required     []string
 	secretRefs   map[string]entity.SecretKind
 	overrideOnly []string
@@ -120,6 +121,7 @@ const (
 	optCheckTx
 	optSecretRef
 	optFormatVersion
+	optKeyRole
 )
 
 // classes are the class tag's spellings, RFC 13 §5's words as written.
@@ -138,7 +140,8 @@ var classes = map[string]Class{
 // panics on a field with no class, no explicit json name or a class that is
 // not one of the four, on two fields that share a key, on an option naming a
 // field T does not have, on OverrideOnly outside an Override scope, on a write
-// role other than operator and admin, on a CheckTx of another type than T, on
+// role other than operator and admin, on a KeyRole that does not rank above
+// the section's final write role, on a CheckTx of another type than T, on
 // the zero Scope, and on an empty prefix or one ending in a dot. An option's
 // field is a Go field name, resolved as Go's selector resolves it, the
 // shallowest field of that name, so a typo fails the table's first test
@@ -339,6 +342,28 @@ func Of[T interface{ Validate() error }](
 			}
 
 			sec.formatVersion = key
+		case optKeyRole:
+			key, _ := keyOf("KeyRole", o.fields[0])
+
+			if sec.keyRoles == nil {
+				sec.keyRoles = make(map[string]entity.APIRole)
+			}
+
+			sec.keyRoles[key] = o.role
+		}
+	}
+
+	// A key role only raises the section's write role, and WriteRole may
+	// name it after KeyRole, so the two are compared once both are in:
+	// a key never ends below the role its section declares. The fields'
+	// declared order decides which refusal a section with several to give
+	// prints, so the message is always the same one.
+	for _, f := range sec.fields {
+		role, guarded := sec.keyRoles[f.key]
+
+		if guarded && rank(role) <= rank(sec.writeRole) {
+			refuse("KeyRole %s names %d, at or below the section's write role %d",
+				byKey[f.key], role, sec.writeRole)
 		}
 	}
 
@@ -352,6 +377,20 @@ func WriteRole(role entity.APIRole) Option {
 	return Option{
 		kind: optWriteRole,
 		role: role,
+	}
+}
+
+// KeyRole names the one field whose key the section's own write role does
+// not cover, with the least role that may write it. A key role only raises
+// the section's write role, never lowers it: Of panics on a role that does
+// not rank above the section's, so an admin-only key keeps the section's
+// other keys an operator writes. The field is a Go field name of the
+// section's type, not a json key; given twice for one field, the last wins.
+func KeyRole(field string, role entity.APIRole) Option {
+	return Option{
+		kind:   optKeyRole,
+		fields: []string{field},
+		role:   role,
 	}
 }
 

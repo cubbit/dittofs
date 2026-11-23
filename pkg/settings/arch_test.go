@@ -32,6 +32,7 @@ var frozenExports = []string{
 		"opts ...Option) Section",
 	"type Option struct{}",
 	"func WriteRole(role entity.APIRole) Option",
+	"func KeyRole(field string, role entity.APIRole) Option",
 	"func Required(fields ...string) Option",
 	"func CheckTx[T any](check func(tx entity.ControlPlaneTx, w Write, effective T) error) Option",
 	"func SecretRef(field string, kind entity.SecretKind) Option",
