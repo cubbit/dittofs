@@ -504,8 +504,8 @@ type reach struct {
 	// of the ring last carried: how far the reader got, and where the copy
 	// began — the ring keeps only the newest LossRingSize events, so a copy
 	// that begins later than an event was published never carried it, and
-	// the window's from keeps the from answering nothing for it. Both zero
-	// while no reader took a non-empty copy away.
+	// the from keeps the window answering nothing for it. Both zero while
+	// no reader took a non-empty copy away.
 	servedFrom, servedThrough atomic.Uint64
 }
 
