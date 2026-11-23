@@ -40,7 +40,7 @@ func TestMarksFollowEachSuccessfulSync(t *testing.T) {
 	if err != nil || len(b) != 1 {
 		t.Fatalf("the second Sync = %+v, %v, want one mark", b, err)
 	}
-	if !markNewer(b[0], a[0]) {
+	if !r.d.markNewer(b[0], a[0]) {
 		t.Fatalf("the second mark %+v is not newer than the first %+v", b[0], a[0])
 	}
 	wantMarks(t, "after the second sync", r.d, b[0])
@@ -61,9 +61,11 @@ func TestMarksIgnoreAFailedSync(t *testing.T) {
 	wantMarks(t, "after the failed sync", fr.d, seed)
 }
 
-// TestSeedMarksIsACopyAndRaiseNeverLowers covers the figure's own rules: the
-// seed is copied both ways, a mark naming no later record than its stream's
-// entry changes nothing, a later one replaces it, whatever its segment's id, and a stream with no entry gains one.
+// TestSeedMarksIsACopyAndRaiseNeverLowers covers the figure's own rules on a
+// layer with no stream bound, where the order falls back to the record's
+// sequence number: the seed is copied both ways, a mark naming no later
+// record than its stream's entry changes nothing, a later one replaces it,
+// whatever its segment's id, and a stream with no entry gains one.
 func TestSeedMarksIsACopyAndRaiseNeverLowers(t *testing.T) {
 	d := &Durability{}
 	m0 := core.SyncMark{Stream: 0, Segment: 5, Through: 100, Offset: 90, Sequence: 7}
@@ -117,7 +119,7 @@ func TestMarksNeverFallUnderConcurrentSyncs(t *testing.T) {
 			default:
 			}
 			if m := r.d.Marks(); len(m) == 1 {
-				if markNewer(last, m[0]) {
+				if r.d.markNewer(last, m[0]) {
 					t.Errorf("the figure fell from %+v to %+v", last, m[0])
 					return
 				}
@@ -143,7 +145,7 @@ func TestMarksNeverFallUnderConcurrentSyncs(t *testing.T) {
 				mu.Lock()
 				defer mu.Unlock()
 				for _, m := range marks {
-					if markNewer(m, newest) {
+					if r.d.markNewer(m, newest) {
 						newest = m
 					}
 				}
@@ -154,4 +156,39 @@ func TestMarksNeverFallUnderConcurrentSyncs(t *testing.T) {
 	close(stop)
 	<-readerDone
 	wantMarks(t, "after the concurrent syncs", r.d, newest)
+}
+
+// TestMarksOrderByPositionNotBySequence covers the two orders that sequence
+// numbers get wrong: records of one stream appended out of sequence order, and
+// a record in a segment with a lower id than the mark the figure holds.
+func TestMarksOrderByPositionNotBySequence(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRig(t, 1)
+	r.publish(t, file(1), 0, "aaaa")
+	open, ok := r.streams.Stream(0).OpenSegment()
+	if !ok {
+		t.Fatal("the stream reports no open segment after a write")
+	}
+	x := uint64(open)
+
+	// In one segment the mark synced through further wins, whichever of the
+	// two records drew the larger sequence number.
+	late := core.SyncMark{Stream: 0, Segment: x, Through: 100, Offset: 100, Sequence: 11}
+	early := core.SyncMark{Stream: 0, Segment: x, Through: 200, Offset: 200, Sequence: 10}
+	r.d.SeedMarks([]core.SyncMark{late})
+	r.d.RaiseMarks([]core.SyncMark{early})
+	wantMarks(t, "the record appended later with the smaller sequence number", r.d, early)
+	r.d.RaiseMarks([]core.SyncMark{{Stream: 0, Segment: x, Through: 150, Offset: 150, Sequence: 12}})
+	wantMarks(t, "a mark synced through less", r.d, early)
+
+	// Across segments the open segment wins: a figure naming a segment the
+	// stream left, with a sequence number past the new record's, gives way,
+	// and a straggler naming it afterwards changes nothing.
+	left := core.SyncMark{Stream: 0, Segment: x + 7, Through: 100, Offset: 100, Sequence: 9}
+	here := core.SyncMark{Stream: 0, Segment: x, Through: 50, Offset: 50, Sequence: 2}
+	r.d.SeedMarks([]core.SyncMark{left})
+	r.d.RaiseMarks([]core.SyncMark{here})
+	wantMarks(t, "a mark in the open segment over one in a segment of a higher id", r.d, here)
+	r.d.RaiseMarks([]core.SyncMark{{Stream: 0, Segment: x + 7, Through: 900, Offset: 900, Sequence: 99}})
+	wantMarks(t, "a straggler in a segment the stream left", r.d, here)
 }

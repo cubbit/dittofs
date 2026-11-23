@@ -63,8 +63,7 @@ func TestMarksRecordedNeverLeavesStatsOlder(t *testing.T) {
 		t.Fatalf("after MarksRecorded of the entry itself Stats names %+v, want %+v", got, m)
 	}
 	past := m
-	past.Segment++
-	past.Through, past.Offset, past.Sequence = 4096, 4000, m.Sequence+1
+	past.Through, past.Offset, past.Sequence = m.Through+4096, m.Offset+4000, m.Sequence+1
 	j.MarksRecorded([]SyncMark{past})
 	if got := j.Stats().SyncMarks[m.Stream]; got != past {
 		t.Fatalf("after MarksRecorded of a mark past the entry Stats names %+v, want %+v: an entry never older than a recorded mark", got, past)

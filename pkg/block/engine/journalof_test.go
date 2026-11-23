@@ -74,7 +74,6 @@ func TestJournalOfServesTheJournalsMarks(t *testing.T) {
 	// A recorded mark past the entry reaches the journal: its entry is never
 	// older than what the caller says is recorded.
 	past := synced[0]
-	past.Segment++
 	past.Through, past.Offset, past.Sequence = past.Through+4096, past.Offset+4000, past.Sequence+1
 	j.MarksRecorded([]entity.SyncMark{past})
 	if got := j.SyncMarks(); !slices.Equal(got, []entity.SyncMark{past}) {

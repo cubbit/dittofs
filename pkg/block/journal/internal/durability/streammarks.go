@@ -54,7 +54,7 @@ func (d *Durability) RaiseMarks(marks []core.SyncMark) {
 			case !found:
 				next = slices.Insert(next, i, m)
 				changed = true
-			case markNewer(m, next[i]):
+			case d.markNewer(m, next[i]):
 				next[i] = m
 				changed = true
 			}
@@ -65,26 +65,53 @@ func (d *Durability) RaiseMarks(marks []core.SyncMark) {
 	}
 }
 
-// markNewer reports that a is a later mark of a stream than b: it names a
-// later record, by sequence number, or, naming the same one, the copy in a
-// later segment, or the same segment synced through further.
+// markNewer reports that a is a later mark of a stream than b.
 //
-// decision: sequence numbers order a stream's marks, not segment ids. A
-// segment id says when the segment was made, not when its records were
-// appended: a spare made early is used after a copy segment made later, so a
-// new record can sit in a lower segment than the open's recovered mark names,
-// and an order by segment would keep the older mark for good. Overturned if
-// a record can ever be appended with a lower sequence number than one already
-// synced on its stream.
-func markNewer(a, b core.SyncMark) bool {
+// In one segment the mark synced through further is later, whatever the
+// sequence numbers of the records it names: a sequence number is drawn before
+// the append, so two files of a stream can place their records in the
+// opposite order. Across segments the mark in the segment the stream appends
+// to now is later, since a stream only moves forward: a copy the open or a
+// failed window made lands in the segment the stream takes next, and a
+// segment the stream left is behind it. When neither mark is in the open
+// segment, the later record by sequence number is later, then the higher
+// segment id.
+//
+// decision: segment ids order nothing here: an id says when a segment was
+// made, not when its records were appended, and a spare made early is used
+// after a copy segment made later. Overturned if a stream can append to a
+// segment other than the one it reports open.
+func (d *Durability) markNewer(a, b core.SyncMark) bool {
+	if a.Segment == b.Segment {
+		if a.Through != b.Through {
+			return a.Through > b.Through
+		}
+		if a.Offset != b.Offset {
+			return a.Offset > b.Offset
+		}
+		return a.Sequence > b.Sequence
+	}
+	if open, ok := d.openSegmentOf(a.Stream); ok {
+		switch uint64(open) {
+		case a.Segment:
+			return true
+		case b.Segment:
+			return false
+		}
+	}
 	if a.Sequence != b.Sequence {
 		return a.Sequence > b.Sequence
 	}
-	if a.Segment != b.Segment {
-		return a.Segment > b.Segment
+	return a.Segment > b.Segment
+}
+
+// openSegmentOf is the segment the stream appends to, false before Start, for
+// a stream the layer has none of, and while the stream's segment is sealing,
+// sealed or ended.
+func (d *Durability) openSegmentOf(stream uint32) (core.SegmentID, bool) {
+	streams := d.streams.Load()
+	if streams == nil || int(stream) >= streams.Len() {
+		return 0, false
 	}
-	if a.Through != b.Through {
-		return a.Through > b.Through
-	}
-	return a.Offset > b.Offset
+	return streams.Stream(int(stream)).OpenSegment()
 }
