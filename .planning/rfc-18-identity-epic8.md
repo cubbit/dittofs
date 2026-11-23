@@ -626,8 +626,11 @@ test/integration/ad-dc/
 - **Tests:** in `node_test`, through `nodetest`, the in-memory directory and the injected clock:
   - the #4053 scenario: alice created through the API, `set-password` run, a share granting her
     read-write; an NTLMv2 AUTHENTICATE computed from her password signs in through `Service()` and
-    her open of a file is admitted (catches the API and the filesystem holding two identities, or
-    an NT hash the API never writes, R29);
+    her open of the share's root for reading is admitted (catches the API and the filesystem
+    holding two identities, or an NT hash the API never writes, R29). The open is a read: the grant
+    matches by alice's `PrincipalID`, so admission is what shows the two identities are one, and a
+    read-write create at the root is refused by its 0755 mode whatever the grant, which would test
+    file modes, not identity;
   - the API's refusal of a directory user's password: `set-password` on a minted directory user
     refused, and no `Secret` and no change to the record read back raw (catches the route storing a
     hash `NewHashes` refused, R24).

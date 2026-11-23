@@ -336,9 +336,12 @@ the API returns it as [RFC 23 §5.2](rfc-23-control-plane.md#5.2%20Roles) says.
 3. A uid or gid the operator assigns, or the directory supplies, **MAY** be any
    value no current principal holds. 0 is root's and 65534 anonymous's
    (§2.1): neither is ever allocated, and either is refused for any other
-   principal — a directory entry whose `uidNumber` or `gidNumber` is one of them
-   gets an allocated one instead, and the mint is counted
-   (`identity_mints_remapped_total`, §9.2). Assigning a deleted
+   principal. A directory entry whose `uidNumber` or `gidNumber` is one of them,
+   or one another principal already holds, gets an allocated one instead, and
+   the mint is counted (`identity_mints_remapped_total`, §9.2): failing the
+   mint would refuse more than that entry, since a user mints in one batch with
+   its groups, so one group whose `gidNumber` clashes would refuse every
+   member's sign-in, every time. Assigning a deleted
    principal's uid to a new one gives the new principal no file of the old
    one's, because files name principals, never uids.
 4. A missing uid or gid **MUST NOT** be filled with a default. A user created
@@ -1330,7 +1333,8 @@ write, so the batch shrinks or loses a name every round and the re-runs end,
 inside §5.1's bound. A re-run that does neither fails the call
 `ErrUnavailable`; it writes nothing and logs both `PrincipalID`s. Two nodes
 minting alice find alice by name or SID on the re-run; bob claiming alice's
-`uidNumber` finds no bob, and fails.
+`uidNumber` finds no bob, and is minted with an allocated uid (rule 3), the
+mint counted.
 
 **A name never fails a mint.** A directory principal whose name another
 principal of its kind holds under §4.6's comparison — a local group `finance`
@@ -2444,7 +2448,7 @@ alice's still signs in as alice.
 | Sign-in latency | `identity_authentication_seconds{mechanism}` | histogram (`request`) |
 | Records identity minted | `identity_mints_total{kind}`: `machine`, `user`, `group` | counter |
 | Mints whose name another principal held (§4.1) | `identity_mints_unnamed_total{kind}`: `user`, `group` | counter |
-| Directory mints whose `uidNumber` or `gidNumber` was 0 or 65534 and got an allocated ID (§2.3) | `identity_mints_remapped_total{kind}`: `user`, `group` | counter |
+| Directory mints whose `uidNumber` or `gidNumber` was 0, 65534 or an ID another principal holds, and got an allocated ID (§2.3) | `identity_mints_remapped_total{kind}`: `user`, `group` | counter |
 | Directory principals left without a name by a rename (§5.1) | `identity_renames_unnamed_total{kind}`: `user`, `group` | counter |
 | Refreshes of a directory principal's name or e-mail that resolution could not write and served the caller anyway (§5.1) | `identity_directory_refresh_failures_total{kind}`: `user`, `group` | counter |
 | Rotation confirms whose key version number differs from the tag (§3.5) | `identity_machine_key_version_mismatches_total` | counter |
@@ -2557,7 +2561,7 @@ RFC 16's conformance suite's, not repeated here.
 | name case | 1 | Two users whose names differ only in case: the second refused as a duplicate. A local user named `bob@example.com`: refused. | names unique byte for byte |
 | `AUTH_SYS` from the directory | 2 | An `AUTH_SYS` call sends the `uidNumber` of a directory entry with no record: the caller is that entry's minted principal, not `authenticated`. | a directory that never maps a claimed uid |
 | mint from a claim, guarded | 2 | Send `AUTH_SYS` calls for 10^4 uids the directory does not hold: assert each acts as anonymous and no record is written. Send calls for 500 `uidNumber`s it holds, from 50 addresses at once: assert no more than the node cap minted per minute, the rest refused retryably, never anonymous. Rename a minted entry in the directory: assert the same `PrincipalID` with the new name after the TTL. Disable one entry and delete another: assert both refused after the TTL. | a mint on the client's word, a scan bounded only per address, or a record that follows the entry's name |
-| mint conflict | 1 | Mint directory user alice, then sign in bob, whose entry has another SID and alice's `uidNumber`: the sign-in fails, bob is bound to no principal, alice's record unchanged. Two concurrent mints of one entry: both bind to one principal. | a lost mint bound to whoever holds the row |
+| mint conflict | 1 | Mint directory user alice, then sign in bob, whose entry has another SID and alice's `uidNumber`: bob signs in with an allocated uid, the mint counted in `identity_mints_remapped_total`, bound to no principal of alice's, and alice's record unchanged. Two concurrent mints of one entry: both bind to one principal. | a lost mint bound to whoever holds the row |
 | NTLM without a domain controller | 2 | With a directory and no pass-through, an NTLM sign-in for a user only in the directory: `ErrLogonFailure`, and no session. | a directory-only user let in |
 | token checks | 1 | Against a test issuer, a real signer with test keys rather than a stand-in, ID tokens with the wrong issuer, the wrong audience, several audiences and another `azp`, an expired `exp`, an `nbf` ahead past the skew, a corrupted signature, `alg` `none`, `alg` `HS256` keyed with the issuer's public key bytes, `RS256` naming an EC key, and no `kid` against a two-key set: each refused `ErrLogonFailure`. A discovery document whose `issuer` differs: refused. | a check skipped; algorithm confusion |
 | key-set outage | 1 | Sign in once, then make the key set unreachable under a fake clock: within the hour plus 15 minutes sign-in succeeds, counted stale; past it `ErrUnavailable` and no session. An issuer behind a certificate that does not verify: refused. | fail-open on an outage |
