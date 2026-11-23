@@ -24,7 +24,6 @@ require (
 	github.com/oiweiwei/go-msrpc v1.6.4
 	github.com/oiweiwei/gokrb5.fork/v9 v9.0.8 // indirect
 	github.com/olekukonko/tablewriter v1.1.5
-	github.com/pierrec/lz4/v4 v4.1.33
 	github.com/prometheus/client_golang v1.25.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
@@ -144,7 +143,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/google/uuid v1.6.0
-	github.com/klauspost/compress v1.20.3
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/sagikazarmark/locafero v0.11.0 // indirect
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 // indirect

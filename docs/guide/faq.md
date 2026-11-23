@@ -100,10 +100,9 @@ See [ARCHITECTURE.md](../internals/architecture.md) for details.
 
 ### Can I implement my own storage backend?
 
-Absolutely! Implement either or both of these interfaces:
-
-- **Metadata Store**: `pkg/metadata/Store` interface
-- **Block Store**: `pkg/block/remote.RemoteStore` interface
+A metadata backend, yes: implement `pkg/metadata/kv.KV` and pass the
+`pkg/metadata/kv/kvtest` suite. The block tier has no pluggable backend
+today: the journal is local, and the v1 remote stores are deleted.
 
 See [IMPLEMENTING_STORES.md](../internals/implementing-stores.md) for implementation guidelines.
 
@@ -212,80 +211,12 @@ See [RFC 9](../internals/rfcs/rfc-9-gc.md)
 and [CONFIGURATION.md](configuration.md) for the full design and every
 `gc.*` knob.
 
-### Why is the cache cold after a write?
-
-It is **not**. Cache invalidation is **surgical**: a write drops only the
-chunk-level entries that the write actually invalidated, not the entire
-file. Other chunks referenced by the file — and any chunks shared with
-other files via cross-file dedup — stay warm.
-
-If you are seeing whole-file cold misses after a write, that is a bug.
-File a report.
-
-The mechanism: `engine.WriteAt` returns the new `[]BlockRef`, the
-caller commits it in the same metadata transaction that updates
-`Mtime`/`Size`, then calls `Cache.InvalidateFile(payloadID,
-removedHashes)` with **only the hashes that disappeared from the
-file**. Hashes that survived (unchanged ranges) and hashes still
-referenced by other files via dedup remain in the cache.
-
-### What's a BlockRef?
-
-A `BlockRef` is the 3-tuple `(Hash ContentHash, Offset uint64, Size
-uint32)` defined in `pkg/block/types.go`. `FileAttr.Blocks
-[]BlockRef` is the **authoritative content list** for every file: which
-chunks compose the file, where each chunk sits inside the file, and how
-big it is.
-
-The list is:
-
-- **Sorted by `Offset`** so the engine can resolve a read range against it.
-- **Populated on every sync finalization** — the engine returns the
-  new `[]BlockRef` from `WriteAt`/`Truncate`/`Delete`/`CopyPayload`
-  and the caller persists it in the same metadata transaction.
-
-`BlockRef.Hash` is the `ContentHash` (32-byte BLAKE3) under which the
-chunk is stored in the CAS keyspace `cas/{hh}/{hh}/{hex}`. Two files
-referencing the same chunk via dedup share one `Hash`, which is what
-makes cross-file dedup work both for storage (CAS) and in the cache (a
-shared hash hits the same entry).
-
-See [ARCHITECTURE.md](../internals/architecture.md#data-path)
-for the full design and
-[IMPLEMENTING_STORES.md](../internals/implementing-stores.md) for storage-encoding
-requirements.
-
 ### How do I migrate an older store layout?
 
-Upgrades from the v0.16–v0.21 standalone-CAS layout are automatic: each
-share converts its leftover per-chunk objects into packed blocks on the
-first start after the upgrade, blocking until done (idempotent and
-resumable — a killed migration converges on the next start).
-
-Stores still on the pre-v0.16 `.blk` layout must first be migrated with
-dittofs v0.21 or earlier (its `migrate-to-cas` command, removed in later
-releases); the boot guard refuses `.blk` layouts with exit code 78. See
-[the migration guide](block-store-migration.md) for the full runbook.
-
-A share's pre-journal local cache (the `blobs/` + `logs/` on-disk layout
-from v0.26 and earlier) is also migrated automatically on first start:
-
-- Bytes already offloaded to the block store are re-materialized from it
-  using the surviving metadata manifest — always safe.
-- Bytes that never reached the block store are re-ingested from the append
-  logs in the background; reads that arrive mid-migration fault their file in
-  on demand, and the old on-disk data is deleted only once every file has
-  been re-ingested (a crash mid-migration simply resumes on the next start).
-
-  This only works when the append logs are complete. A local cache large
-  enough to have *compacted* its logs moved some bytes into the packed
-  `blobs/` substrate, and the index that located them (`local_chunk_index`)
-  is dropped by the metadata schema upgrade — so those bytes cannot be
-  recovered. When any log was compacted, the boot guard refuses to open the
-  share (exit code 78) and leaves every byte on disk untouched. Recover such
-  a share by restoring the metadata store from a **pre-upgrade backup** and
-  reading it with the matching older dittofs release, or by rebuilding the
-  share's contents from its authoritative source.
+You can't, in place. This build reads no v1 block layout (pre-v0.16 `.blk`
+files, standalone CAS objects, packed blocks, or the pre-journal `blobs/` +
+`logs/` cache): the v1 block tier is deleted. Re-ingest such a share's content
+through a protocol. See [the migration guide](block-store-migration.md).
 
 ## Usage Questions
 
