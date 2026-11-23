@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -80,6 +81,37 @@ type WriteOpts struct {
 	// reservation it releases went with the filesystem service, which stops
 	// before Close.
 	Done func()
+}
+
+// suspendedKey is the context key of the times a call leaves alone.
+type suspendedKey struct{}
+
+// WithSuspended returns ctx carrying m, the times a Truncate, Deallocate,
+// Clone or Copy called with it leaves alone, as WriteOpts.Suspend is a
+// write's: those the open the call came through suspended. Of them only the
+// modification time is one these calls move; the change time moves whatever
+// m names.
+//
+// decision: the mask rides the context, as the admitted hook does, rather
+// than a parameter of each of the four calls, which every caller of them
+// would pass as none. Make it a parameter if a second option joins it.
+//
+// decision: the mask is held in memory only, so a truncate, deallocate or
+// clone replayed or rebuilt at a start, a grow included (stageGrow), moves
+// the modification time, and a rebuilt clone's copies move it too
+// (rebuildMarker): the journal's removal and clone records carry no mask,
+// and a copy's record is not told from a client write there. Overturned once
+// they carry one.
+func WithSuspended(ctx context.Context, m entity.TimeMask) context.Context {
+	return context.WithValue(ctx, suspendedKey{}, m)
+}
+
+// Suspended is the times ctx carries for its call to leave alone
+// (WithSuspended), none when it carries none: what the engine reads, and
+// what another Content reads at the same calls.
+func Suspended(ctx context.Context) entity.TimeMask {
+	m, _ := ctx.Value(suspendedKey{}).(entity.TimeMask)
+	return m
 }
 
 // Overlay is a file's size, times and version as its uncommitted operations

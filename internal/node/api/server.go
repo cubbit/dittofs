@@ -109,7 +109,8 @@ type Deps struct {
 	// Tracer opens each call's span; nil, the no-op tracer.
 	Tracer trace.Tracer
 	// Settings is the settings table, which judges every write of a
-	// setting; nil, the empty table, under which every key is refused.
+	// setting; nil, every settings-backed write is refused 503, a secret's
+	// set before it is sealed.
 	Settings settingsTable
 	// Sealer seals a secret's value before the write that stores it; nil,
 	// every write of a secret answers 503. A typed nil, a nil pointer in the
@@ -183,28 +184,48 @@ func newServer(d Deps, rows []route) *Server {
 		startRights: startRights(rows),
 		quit:        make(chan struct{}),
 		tracer:      d.Tracer,
-		requests: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dittofs_api_requests_total",
-			Help: "API calls, by op and outcome: ok or the problem's code."}, []string{"op", "outcome"}),
-		seconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "dittofs_api_request_seconds",
-			Help: "How long API calls take, by op.", Buckets: requestBuckets}, []string{"op"}),
-		unmapped: prometheus.NewCounter(prometheus.CounterOpts{Name: "dittofs_api_unmapped_errors_total",
-			Help: "API errors answered 500 because the problem table names none of them; zero on a healthy node."}),
-		preconditions: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dittofs_api_precondition_failures_total",
-			Help: "Writes refused on a precondition, by kind: generation, idempotency or missing."}, []string{"kind"}),
-		replays: prometheus.NewCounter(prometheus.CounterOpts{Name: "dittofs_api_idempotent_replays_total",
-			Help: "Writes answered from their idempotency record."}),
-		idempotencyWritten: prometheus.NewCounter(prometheus.CounterOpts{Name: "dittofs_api_idempotency_records_written_total",
-			Help: "Idempotency records written with the writes they answer."}),
-		audits: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dittofs_audit_records_total",
-			Help: "Audit records written, by outcome: applied or refused."}, []string{"outcome"}),
+		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "dittofs_api_requests_total",
+			Help: "API calls, by op and outcome: ok or the problem's code.",
+		}, []string{"op", "outcome"}),
+		seconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "dittofs_api_request_seconds",
+			Help: "How long API calls take, by op.", Buckets: requestBuckets,
+		}, []string{"op"}),
+		unmapped: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "dittofs_api_unmapped_errors_total",
+			Help: "API errors answered 500 because the problem table names none of them; " +
+				"zero on a healthy node.",
+		}),
+		preconditions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "dittofs_api_precondition_failures_total",
+			Help: "Writes refused on a precondition, by kind: generation, idempotency or missing.",
+		}, []string{"kind"}),
+		replays: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "dittofs_api_idempotent_replays_total",
+			Help: "Writes answered from their idempotency record.",
+		}),
+		idempotencyWritten: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "dittofs_api_idempotency_records_written_total",
+			Help: "Idempotency records written with the writes they answer.",
+		}),
+		audits: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "dittofs_audit_records_total",
+			Help: "Audit records written, by outcome: applied or refused.",
+		}, []string{"outcome"}),
 	}
 	if s.tracer == nil {
 		s.tracer = noop.NewTracerProvider().Tracer("")
 	}
-	inFlight := prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "dittofs_api_calls_in_flight",
-		Help: "API calls running now, parked polls apart."}, func() float64 { return float64(len(s.calls)) })
-	limit := prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "dittofs_api_calls_in_flight_limit",
-		Help: "How many API calls the node runs at once."}, func() float64 { return maxCalls })
+
+	inFlight := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "dittofs_api_calls_in_flight",
+		Help: "API calls running now, parked polls apart.",
+	}, func() float64 { return float64(len(s.calls)) })
+	limit := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "dittofs_api_calls_in_flight_limit",
+		Help: "How many API calls the node runs at once.",
+	}, func() float64 { return maxCalls })
 	d.Metrics.Registry().MustRegister(s.requests, s.seconds, s.unmapped, s.preconditions, s.replays, s.idempotencyWritten, s.audits, newOpsCollector(s), inFlight, limit)
 
 	api := http.NewServeMux()
@@ -231,13 +252,19 @@ func newServer(d Deps, rows []route) *Server {
 	// requiring a token.
 	// The read timeout covers the body, so a client that sends its headers
 	// and then stalls gives its call slot back.
-	s.api = &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
+	s.api = &http.Server{
+		Handler:           api,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			if _, ok := c.(*net.UnixConn); ok {
 				return auth.WithLocal(ctx)
 			}
 			return ctx
-		}}
+		},
+	}
 	s.met = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	s.api.RegisterOnShutdown(sync.OnceFunc(func() { close(s.quit) }))
 	return s

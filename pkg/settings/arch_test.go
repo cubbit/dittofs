@@ -32,6 +32,7 @@ var frozenExports = []string{
 		"opts ...Option) Section",
 	"type Option struct{}",
 	"func WriteRole(role entity.APIRole) Option",
+	"func KeyRole(field string, role entity.APIRole) Option",
 	"func Required(fields ...string) Option",
 	"func CheckTx[T any](check func(tx entity.ControlPlaneTx, w Write, effective T) error) Option",
 	"func SecretRef(field string, kind entity.SecretKind) Option",
@@ -40,6 +41,8 @@ var frozenExports = []string{
 	"type Table []Section",
 	"func (Table).Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, " +
 		"holds HoldsContent) error",
+	"func (Table).Bound(rows []entity.Setting) ([]byte, error)",
+	"func (Table).DecodeBound(b []byte) (map[string]json.RawMessage, error)",
 	"func Refusals(err error) iter.Seq2[entity.SettingScope, string]",
 	"func (Table).PrefixOf(key string) string",
 	"type Snapshot struct{}",

@@ -303,7 +303,7 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	if e.doneBefore(req) {
 		return nil
 	}
-	c := &cloneRun{sb: sb, db: db, src: src, dst: dst, req: req, done: make(chan struct{})}
+	c := &cloneRun{sb: sb, db: db, src: src, dst: dst, req: req, suspend: Suspended(ctx), done: make(chan struct{})}
 	c.preparing.Store(true)
 	rs := &reg{Extent: entity.Extent{Offset: x.SrcOff, Length: x.Len}, run: c}
 	rd := &reg{Extent: entity.Extent{Offset: x.DstOff, Length: x.Len}, dst: true, run: c}
@@ -519,8 +519,9 @@ func (e *Engine) Copy(ctx context.Context, srcShare entity.ShareID, src entity.F
 type cloneRun struct {
 	sb, db    *binding
 	src, dst  entity.FileID
-	req       cloneRequest // the request it was made from, which a retry of it repeats (joinable)
-	preparing atomic.Bool  // in its step 1, on its call: not joined until it is done
+	req       cloneRequest    // the request it was made from, which a retry of it repeats (joinable)
+	suspend   entity.TimeMask // the times it leaves alone, as its first call's context carried them (Suspended)
+	preparing atomic.Bool     // in its step 1, on its call: not joined until it is done
 	rs, rd    *reg
 	spec      journal.CloneSpec
 	runs      []journal.Held
@@ -823,6 +824,10 @@ func (e *Engine) copyRuns(ctx context.Context, c *cloneRun) (journal.Version, er
 		return newest, nil
 	}
 	now := e.d.Clock.Now()
+	mtime := now.UnixNano()
+	if c.suspend&entity.TimeModify != 0 {
+		mtime = 0 // the journal's mark of a write that leaves the modification time alone
+	}
 	buf := make([]byte, copyBuf)
 	for _, run := range c.runs {
 		p := buf[:run.Extent.Len]
@@ -833,13 +838,13 @@ func (e *Engine) copyRuns(ctx context.Context, c *cloneRun) (journal.Version, er
 		for _, h := range held {
 			at := h.Extent.Off - run.Extent.Off
 			off := c.spec.DstOff + h.Extent.Off - c.spec.SrcOff
-			v, err := c.res.WriteAt(ctx, fileID(c.dst), off, p[at:at+h.Extent.Len], now.UnixNano())
+			v, err := c.res.WriteAt(ctx, fileID(c.dst), off, p[at:at+h.Extent.Len], mtime)
 			if err != nil {
 				return newest, err
 			}
 			fe := e.files.lockFor(c.dst)
 			fe.insert(pendingOp{version: v, kind: opWrite, extent: journal.Extent{Off: off, Len: h.Extent.Len},
-				at: now, setsMtime: true, copy: true})
+				at: now, setsMtime: mtime != 0, copy: true})
 			e.files.unlock(c.dst, fe)
 			e.issued(c.db.vl, v)
 			newest = newer(newest, v)
@@ -863,7 +868,7 @@ func (e *Engine) tryClonePhase1(ctx context.Context, c *cloneRun, r *removal) er
 		return err
 	}
 	op := kvstore.CloneOp{Share: c.db.share.ID, File: c.dst, Version: entity.JournalVersion(r.v.Bytes()),
-		Copied: entity.JournalVersion(c.newest.Bytes()), Time: r.at,
+		Copied: entity.JournalVersion(c.newest.Bytes()), Time: r.at, Suspend: c.suspend,
 		Spec: entity.CloneSpec{SrcShare: c.sb.share.ID, Src: c.src, SrcOff: c.spec.SrcOff, DstOff: c.spec.DstOff,
 			Len: c.spec.Len, AsOf: entity.JournalVersion(c.spec.AsOf.Bytes())}}
 	if err := e.d.Existence.Clone(ctx, op, e.held(r)); err != nil {

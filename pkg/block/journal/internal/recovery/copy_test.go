@@ -335,18 +335,21 @@ func TestAFailedReappendTargetTakesAnEndedFate(t *testing.T) {
 // re-appends draw on the repack reserve — never on a share's limit, never a
 // headroom or content spare, and charging no share a byte — so a journal
 // whose every other spare class is spent before the crash still opens and
-// serves the record the device lost from its re-append. The reserve spare
-// is NOT the lowest id planted, so the phase drawing the headroom or the
-// content spare instead fails the adoption assertion below.
+// serves the record the device lost from its re-append. The phase drawing
+// the headroom or the content spare instead fails the adoption assertion
+// below. The reserve spare is the lowest id planted, as the adoption order
+// gives the lowest ids to the reserve, so a re-append that simply took the
+// lowest id would pass here: the order's own tests in the segment package
+// pin which id the reserve gets.
 func TestOpenAtMaximumStillReappends(t *testing.T) {
 	r, good, bAt := deviceLostB(t)
 	want := reappendOf(t, 2, bAt, good)
-	// One spare for each class in the fill order — headroom, then the repack
-	// reserve, then content — so the class each remaining adoption names pins
-	// the one the re-append drew from.
-	head, reserve, content := core.SegmentID(3), core.SegmentID(4), core.SegmentID(5)
-	d := r.reserveDeps(head, reserve, content)
-	d.SpareTargets = segment.Targets{Headroom: 1, Reserve: 1} // the first adopted spare takes the headroom, the second the reserve, the third the content class
+	// One spare for each class in the fill order — the repack reserve, then
+	// the headroom, then content — so the class each remaining adoption
+	// names pins the one the re-append drew from.
+	reserve, head, content := core.SegmentID(3), core.SegmentID(4), core.SegmentID(5)
+	d := r.reserveDeps(reserve, head, content)
+	d.SpareTargets = segment.Targets{Headroom: 1, Reserve: 1} // the first adopted spare takes the reserve, the second the headroom, the third the content class
 
 	st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
 	if err != nil {

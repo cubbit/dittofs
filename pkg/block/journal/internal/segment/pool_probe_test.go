@@ -80,3 +80,12 @@ func (r *Retirer) HoldMuForTest() (release func()) {
 	var once sync.Once
 	return func() { once.Do(r.mu.Unlock) }
 }
+
+// QueueForTest reads the retirer's queue: the ids still listed for a pass,
+// the queued ids a recycle would take, and those refused for another path's
+// claim, so a test sees what the refill and the spare wait will read.
+func (r *Retirer) QueueForTest() (listed, full, claimBlocked int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.queue), len(r.full), len(r.claimBlocked)
+}

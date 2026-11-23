@@ -311,8 +311,8 @@ func TestOpenAPIDescribesWaitsAndRefusals(t *testing.T) {
 	conforms(t, doc, http.MethodPost, "/api/v1/users", r, "ETag", "Location")
 
 	r = s.do(t, http.MethodPut, "/api/v1/settings/adapters.nfs.port", `{"spec":{"value":12049}}`, "If-None-Match", "*")
-	if r.status != http.StatusBadRequest {
-		t.Fatalf("%s: answered %d %s, want the settings table's 400", r.req, r.status, r.body)
+	if r.status != http.StatusServiceUnavailable {
+		t.Fatalf("%s: answered %d %s, want 503, no table handed in", r.req, r.status, r.body)
 	}
 	conforms(t, doc, http.MethodPut, "/api/v1/settings/{sub}", r)
 }

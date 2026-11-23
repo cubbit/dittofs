@@ -62,6 +62,11 @@ type (
 		valid
 		Rate uint32 `json:"rate" class:"live"`
 	}
+	keyedSettings struct {
+		valid
+		Admu  bool   `json:"admu"  class:"live"`
+		Plain uint32 `json:"plain" class:"live"`
+	}
 )
 
 // Validate refuses a port past 65535, printing it, as RFC 13 §6's example
@@ -570,6 +575,73 @@ func TestCheckRoleDelete(t *testing.T) {
 	refused(t, "operator", s.check(tb, entity.RoleOperator, settings.Delete(installation, key)),
 		settings.ErrForbidden, "")
 	passed(t, "admin", s.check(tb, entity.RoleAdmin, settings.Delete(installation, key)))
+}
+
+// A key role raises the write role of that key alone, first value included:
+// an operator is refused the put and the delete of the key KeyRole names,
+// while the section's other keys stay an operator's and an admin writes the
+// key as any other. The roles below operator are refused by the section's
+// own gate before the key gate is reached, so that loop pins the section's
+// gate, not this one.
+func TestCheckKeyRoleGate(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	tb := settings.Table{
+		settings.Of("keys", settings.At(entity.ScopeInstallation), keyedSettings{},
+			settings.KeyRole("Admu", entity.RoleAdmin),
+		),
+	}
+
+	refused(t, "operator's first put", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "keys.admu", "false"))), settings.ErrForbidden,
+		`setting (installation): keys.admu: written by admin only`)
+
+	s.put(t, installation, "keys.admu", "false")
+
+	refused(t, "operator's change", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "keys.admu", "true"))), settings.ErrForbidden, "")
+	refused(t, "operator's delete", s.check(tb, entity.RoleOperator,
+		settings.Delete(installation, "keys.admu")), settings.ErrForbidden, "")
+
+	for _, role := range []entity.APIRole{
+		entity.RoleViewer,
+		entity.RoleNone,
+		entity.APIRole(200),
+		entity.RoleAdmin + 1,
+	} {
+		refused(t, fmt.Sprintf("role %d", role), s.check(tb, role,
+			settings.Put(setting(installation, "keys.admu", "true"))),
+			settings.ErrForbidden, "")
+	}
+
+	passed(t, "admin put", s.check(tb, entity.RoleAdmin,
+		settings.Put(setting(installation, "keys.admu", "true"))))
+	passed(t, "operator's sibling key", s.check(tb, entity.RoleOperator,
+		settings.Put(setting(installation, "keys.plain", "7"))))
+}
+
+// A key role guards a key of a per-thing section too, named by its field
+// wherever the thing sits in the written key: the gate reads the key as
+// the section declares it, not as the write spells it.
+func TestCheckKeyRolePerThing(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := open(t)
+	sb := settings.Table{
+		settings.Of("sjournal", settings.PerThing(entity.ScopeNode, "journal"), keyedSettings{},
+			settings.KeyRole("Admu", entity.RoleAdmin),
+		),
+	}
+	key := "sjournal." + journalID + ".admu"
+
+	refused(t, "operator's put", s.check(sb, entity.RoleOperator,
+		settings.Put(setting(nodeA, key, "false"))), settings.ErrForbidden,
+		fmt.Sprintf("setting (%s): %s: written by admin only", scopeName(nodeA), key))
+	passed(t, "admin's put", s.check(sb, entity.RoleAdmin,
+		settings.Put(setting(nodeA, key, "false"))))
+	passed(t, "operator's sibling", s.check(sb, entity.RoleOperator,
+		settings.Put(setting(nodeA, "sjournal."+journalID+".plain", "7"))))
 }
 
 // A key is judged by the section of the longest prefix on a dot boundary: an

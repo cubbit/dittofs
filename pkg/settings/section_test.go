@@ -370,6 +370,58 @@ func TestOfPanics(t *testing.T) {
 			"settings: section p: write role 9 is neither operator nor admin",
 		},
 		{
+			"key role naming no field",
+			func() {
+				Of("p", installation, plain{}, KeyRole("Nope", entity.RoleAdmin))
+			},
+			"settings: section p: KeyRole names Nope, which is no setting field",
+		},
+		{
+			"key role below the section's",
+			func() {
+				Of("p", installation, plain{}, KeyRole("Lo", entity.RoleOperator))
+			},
+			"settings: section p: KeyRole Lo names 2, at or below the section's write role 2",
+		},
+		{
+			"key role of viewer",
+			func() {
+				Of("p", installation, plain{}, KeyRole("Lo", entity.RoleViewer))
+			},
+			"settings: section p: KeyRole Lo names 1, at or below the section's write role 2",
+		},
+		{
+			"key role unknown",
+			func() {
+				Of("p", installation, plain{}, KeyRole("Lo", entity.APIRole(9)))
+			},
+			"settings: section p: KeyRole Lo names 9, at or below the section's write role 2",
+		},
+		{
+			"key role on an admin section",
+			func() {
+				Of("p", installation, plain{},
+					WriteRole(entity.RoleAdmin), KeyRole("Lo", entity.RoleAdmin))
+			},
+			"settings: section p: KeyRole Lo names 3, at or below the section's write role 3",
+		},
+		{
+			"key role raised before an admin section",
+			func() {
+				Of("p", installation, plain{},
+					KeyRole("Lo", entity.RoleAdmin), WriteRole(entity.RoleAdmin))
+			},
+			"settings: section p: KeyRole Lo names 3, at or below the section's write role 3",
+		},
+		{
+			"two key roles below, the first declared one named",
+			func() {
+				Of("p", installation, plain{},
+					KeyRole("Credential", entity.RoleOperator), KeyRole("Lo", entity.RoleViewer))
+			},
+			"settings: section p: KeyRole Lo names 1, at or below the section's write role 2",
+		},
+		{
 			"no scope",
 			func() {
 				Of("p", Scope{}, plain{})
@@ -469,6 +521,18 @@ func TestOfOptionsKept(t *testing.T) {
 	wantRefs := map[string]entity.SecretKind{"p.credential": entity.SecretRemoteCredential}
 	if !maps.Equal(sec.secretRefs, wantRefs) {
 		t.Errorf("secret references = %v, want %v", sec.secretRefs, wantRefs)
+	}
+
+	raised := Of(
+		"p",
+		installation,
+		plain{},
+		KeyRole("Credential", entity.RoleAdmin),
+	)
+
+	wantRoles := map[string]entity.APIRole{"p.credential": entity.RoleAdmin}
+	if !maps.Equal(raised.keyRoles, wantRoles) {
+		t.Errorf("key roles = %v, want %v", raised.keyRoles, wantRoles)
 	}
 
 	smb := Of("adapters.smb", installation, adaptersettings.DefaultSMB(), Required("Port"))

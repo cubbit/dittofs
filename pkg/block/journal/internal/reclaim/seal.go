@@ -32,7 +32,7 @@ type Sealer struct {
 	// All three may be nil: a sealer over a journal with no headroom to
 	// draw.
 	admit  func(capacity.RecordClass) (capacity.Draw, error)
-	drawn  func(capacity.Draw)
+	drawn  func(capacity.Draw, core.SegmentID)
 	refund func(capacity.Draw)
 
 	// decision: mu is unranked: it guards the book alone and is held across
@@ -48,7 +48,7 @@ type Sealer struct {
 
 // NewSealer returns a sealer over streams and the set they share, drawing the
 // marker's admission through admit, drawn and refund.
-func NewSealer(streams *segment.Streams, set *segment.Set, admit func(capacity.RecordClass) (capacity.Draw, error), drawn, refund func(capacity.Draw)) *Sealer {
+func NewSealer(streams *segment.Streams, set *segment.Set, admit func(capacity.RecordClass) (capacity.Draw, error), drawn func(capacity.Draw, core.SegmentID), refund func(capacity.Draw)) *Sealer {
 	if streams == nil || set == nil {
 		panic("reclaim: NewSealer needs its streams and its segment set")
 	}
@@ -140,7 +140,7 @@ func (s *Sealer) seal(st *segment.Stream, i int, id core.SegmentID) bool {
 		return false
 	}
 	if s.drawn != nil {
-		s.drawn(draw)
+		s.drawn(draw, id)
 	}
 	return true
 }

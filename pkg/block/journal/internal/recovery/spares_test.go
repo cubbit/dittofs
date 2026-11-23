@@ -788,7 +788,7 @@ func TestSparesPhaseDropsTheAdoptedSegmentsFate(t *testing.T) {
 // content class keeping two spares, the headroom one, the repack reserve one
 // — with a segment its successor names standing among them, never a
 // candidate: the adoptions ascend by id and class into the targets' fill
-// order, the headroom first, then the reserve, then the content class, and
+// order, the reserve first, then the headroom, then the content class, and
 // every spare past every target still takes the content class — adopted, not
 // orphaned, never unlinked.
 func TestSparesPhaseClassesAdoptedSparesIntoTheThreeClasses(t *testing.T) {
@@ -837,21 +837,21 @@ func TestSparesPhaseClassesAdoptedSparesIntoTheThreeClasses(t *testing.T) {
 				t.Fatalf("spares: the classing open: %v", err)
 			}
 
-			// The fill order: the lowest id fills the headroom, the next the
-			// reserve, and every one after takes the content class — the
-			// content target's two and every extra beside.
+			// The fill order: the lowest id fills the repack reserve, the
+			// next the headroom, and every one after takes the content
+			// class — the content target's two and every extra beside.
 			want := make([]AdoptedSpare, len(row.ids))
 			if len(row.ids) > 0 {
-				want[0] = AdoptedSpare{ID: row.ids[0], Class: segment.Headroom}
+				want[0] = AdoptedSpare{ID: row.ids[0], Class: segment.Reserve}
 			}
 			if len(row.ids) > 1 {
-				want[1] = AdoptedSpare{ID: row.ids[1], Class: segment.Reserve}
+				want[1] = AdoptedSpare{ID: row.ids[1], Class: segment.Headroom}
 			}
 			for i := 2; i < len(row.ids); i++ {
 				want[i] = AdoptedSpare{ID: row.ids[i], Class: segment.Content}
 			}
 			if got := st.Spares.Adopted; !slices.Equal(got, want) {
-				t.Errorf("spares: the adoptions' classes got %v, want %v, the fill order headroom, reserve, content over ids ascending", got, want)
+				t.Errorf("spares: the adoptions' classes got %v, want %v, the fill order reserve, headroom, content over ids ascending", got, want)
 			}
 			if len(st.Spares.Unlinked) != 0 {
 				t.Errorf("spares: the classing open unlinked %v, want nothing: no spare is ever orphaned", st.Spares.Unlinked)

@@ -33,6 +33,19 @@ func (c *Core) Sync(ctx context.Context, s *Share, ids ...core.FileID) ([]core.S
 			return nil, err
 		}
 	}
+	// decision: a read-only journal adds no refusal of its own here; the
+	// layer's answers are RFC 1's. A file whose header-only record the
+	// transition undid fails every Sync with the bare ErrJournalReadOnly
+	// (§5.4: "every Sync that waits on one fails"); a file with a write in a
+	// failed window gets that failure once, as a SyncError wrapping the
+	// refusal, and the Sync after it reports only what happened since (§5.3);
+	// a file whose records were all synced before the transition, or a Sync
+	// naming no file, answers nil with its marks, since nothing it waits on
+	// was failed. The engine reads the bare refusal as "the removal was
+	// undone" and retries a removal whose Sync answered nil, so a blanket
+	// refusal here would fail removals the journal made durable. Overturned
+	// if RFC 1 §5.4 comes to refuse every Sync on a read-only journal, which
+	// would change the engine's undid contract with it.
 	return c.dur.Sync(ctx, ids...)
 }
 
