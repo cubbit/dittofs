@@ -113,7 +113,8 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
 
 1. **Protocol handlers handle only protocol concerns.** XDR/SMB wire encoding, framing,
    dispatch, type conversion. Permission checks, file ops, and directory traversal belong in
-   `pkg/metadata/` and the store implementations. Don't inline business logic into handlers.
+   the filesystem service (`internal/vfs`) and the store (`pkg/metadata/kvstore`). Don't inline
+   business logic into handlers.
 
 2. **On this branch the v1 adapters and their share gates are gone.** The NFS and SMB
    adapters, their `AuthContext` builders, and the runtime's share-access, netgroup and
@@ -142,11 +143,12 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
    branch no protocol WRITE handler exists yet
    ([Data path](docs/internals/architecture.md#data-path)); `develop` keeps the v1 rule.
 
-6. **Error codes:** return `metadata.ExportError` values (`ErrNotDirectory`, `ErrNoEntity`,
-   `ErrAccess`, `ErrExist`, `ErrNotEmpty`, …). Log expected errors at `Debug`, unexpected at `Error`.
+6. **Error codes:** return `*StoreError` values from `pkg/metadata/errors` (codes `ErrNotFound`,
+   `ErrNotDirectory`, `ErrAccessDenied`, `ErrAlreadyExists`, `ErrNotEmpty`, …). Log expected errors
+   at `Debug`, unexpected at `Error`.
 
-7. **Store contracts** live in `pkg/metadata/storetest/` — any new metadata backend must pass
-   that conformance suite. Block stores have exactly one suite,
+7. **Store contracts:** a new key-value backend passes `pkg/metadata/kv/kvtest`'s suite, and the
+   store over it `pkg/metadata/kvstore/kvstoretest`'s. Block stores have exactly one suite,
    `blockstoretest.RemoteBlockStoreConformance`, and it covers only the block-keyed
    `remote.RemoteBlockStore` surface. There is **no hash-keyed suite**: the CAS `block.Store`
    interface and its `BlockStoreConformance` were deleted. The journal and the engine carry their
@@ -171,7 +173,7 @@ collaborators:
   in a thin layer.
 - Take a dependency as a small interface the consumer declares, and test against a **real**
   implementation of it: the memory metadata or block store, `t.TempDir()`, a listener on
-  `127.0.0.1:0`, an in-memory SQLite control-plane store.
+  `127.0.0.1:0`, a Badger key-value store under `t.TempDir()`.
 
 Only three kinds of test double are allowed:
 
@@ -269,7 +271,7 @@ entry (§4.7 fails a run whose known failure passes).
 server for the key provider, and a real S3-compatible endpoint. Postgres is gone: the stores are
 Badger, and FoundationDB for a cluster, so don't add a Postgres test. CI starts no S3 endpoint
 yet, so a test that needs one skips in every run and guards nothing until one is wired in; don't
-count it as coverage. Badger under `t.TempDir()` and in-memory SQLite are real implementations, and their
+count it as coverage. Badger under `t.TempDir()` is a real implementation, and its
 tests run untagged. Durability and ordering changes need a test on a real filesystem with
 the crash simulated beneath the code under test (RFC 1 §1.3), because a memory backend proves
 nothing about fsync or a crash. A backend the host lacks is a skip that names the environment
@@ -351,7 +353,7 @@ func (s *BadgerMetadataStore) GetFileChunkAtOffset(...)
 
 They are a **debt ledger, not TODOs**: each one records a decision that was correct at the
 time along with the evidence that would overturn it. They appear throughout the codebase,
-mostly in `pkg/block/engine`, `pkg/block/journal` and `pkg/metadata/store`.
+mostly in `pkg/block/engine`, `pkg/block/journal` and `pkg/metadata/kvstore`.
 
 This is the one sanctioned exception to the "no external references" rule above — the
 prefix is what makes the set harvestable as a group. Keep the marker when editing nearby

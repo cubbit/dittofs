@@ -1,9 +1,6 @@
-// Package errors provides error types and error codes for the metadata package.
-// This is a leaf package with no internal dependencies, designed to be imported
-// by both the lock package and metadata store implementations without causing
-// circular imports.
-//
-// Import graph: errors <- lock <- metadata <- store implementations
+// Package errors provides error types and error codes for the metadata store.
+// This is a leaf package with no internal dependencies, so the store, the
+// filesystem service and their callers can all share it without circular imports.
 package errors
 
 import (
