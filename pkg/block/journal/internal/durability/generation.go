@@ -133,16 +133,17 @@ type dirKey struct {
 	id   core.JournalID
 }
 
-// claim is one taken piece's holder: the Durability whose Lose or Place
-// took it, whose claim retires when the instance stops and no reader
-// reached the event the take published into its ring, for then nothing
-// answered for the loss it published. The record on the disk keeps backing
-// a placed claim's piece whatever the claim does, and only the REPORTING of
-// it is at stake: a placed claim that retires lets a later open publish the
-// record found at open again, which is the reader that reopen's ring is
-// for.
+// claim is one taken piece's holder: the reach of the instance whose Lose
+// or Place took it, whose claim retires when the instance stops and no
+// reader reached the event the take published into its ring, for then
+// nothing answered for the loss it published. The reach is all the registry
+// needs of the instance, so that is all the claim holds. The record on the
+// disk keeps backing a placed claim's piece whatever the claim does, and
+// only the REPORTING of it is at stake: a placed claim that retires lets a
+// later open publish the record found at open again, which is the reader
+// that reopen's ring is for.
 type claim struct {
-	d *Durability
+	r *reach
 	// placed marks a Place's claim: the record the disk names is on it
 	// already, so a reopen of it owes no append, and only its publication
 	// is what the claim answers for.
@@ -191,18 +192,19 @@ func (s *dirState) heldLocked(k piece, d *Durability) bool {
 	if !ok {
 		return false
 	}
+	r := &d.reach
 	// An unplaced claim bars no other taker: the record it names never
 	// landed, so the piece is still owed, and the claim's word is read by
 	// the takeover that follows, never by the hold. Its own instance it
 	// bars still, however the claim is kept: a second Lose of the piece
 	// through the taking Durability itself — a stopped one can queue two —
 	// answers the dedup's zero event, never a takeover of its own claim.
-	if c.d != d && c.unplaced {
+	if c.r != r && c.unplaced {
 		return false
 	}
 	// The same-instance arm holds placed or not, live or stopped: the
 	// earlier take is this instance's own report.
-	return c.d == d || !c.d.claimsDead() || c.d.claimServed(c.ev)
+	return c.r == r || !c.r.claimsDead() || c.r.claimServed(c.ev)
 }
 
 // setClaimEvent records that the claim d holds on k published ev into d's
@@ -211,7 +213,7 @@ func (s *dirState) heldLocked(k piece, d *Durability) bool {
 func (s *dirState) setClaimEvent(k piece, d *Durability, ev uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.pieces[k]; ok && c.d == d {
+	if c, ok := s.pieces[k]; ok && c.r == &d.reach {
 		c.ev = ev
 		s.pieces[k] = c
 	}
@@ -224,7 +226,7 @@ func (s *dirState) setClaimEvent(k piece, d *Durability, ev uint64) {
 func (s *dirState) markUnplaced(k piece, d *Durability) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.pieces[k]; ok && c.d == d && !c.placed {
+	if c, ok := s.pieces[k]; ok && c.r == &d.reach && !c.placed {
 		c.unplaced = true
 		s.pieces[k] = c
 	}
@@ -273,11 +275,11 @@ func (s *dirState) take(k piece, d *Durability) (took, takeover, unsyncedDebt bo
 	}
 	c, had := s.pieces[k]
 	_, unsyncedDebt = s.unsynced[k]
-	s.takeoverLocked(k, claim{d: d})
+	s.takeoverLocked(k, claim{r: &d.reach})
 	// A claim that reaches the take published its report unread, kept
 	// unplaced ones with rings still served beyond it among them: their
 	// word is the suppression the caller's Reported already carries.
-	return true, had && !c.d.claimServed(c.ev), unsyncedDebt
+	return true, had && !c.r.claimServed(c.ev), unsyncedDebt
 }
 
 // takePiece takes the piece of the loss record an open's Place found on
@@ -301,7 +303,7 @@ func (s *dirState) takePiece(d *Durability, dropped core.Seq, ext core.Extent) b
 	if s.heldLocked(k, d) {
 		return false
 	}
-	s.takeoverLocked(k, claim{d: d, placed: true})
+	s.takeoverLocked(k, claim{r: &d.reach, placed: true})
 	return true
 }
 
@@ -327,7 +329,7 @@ func (s *dirState) named(k piece) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.pieces[k]
-	return ok && !c.unplaced && (c.placed || !c.d.claimsDead() || c.d.claimServed(c.ev))
+	return ok && !c.unplaced && (c.placed || !c.r.claimsDead() || c.r.claimServed(c.ev))
 }
 
 // release hands back a piece a live take claimed: the loss record it names
@@ -406,16 +408,16 @@ type Failed struct {
 }
 
 // failedWord is one failed list entry as the registry keeps it: the dropped
-// sequence number whose loss record could not be appended, the Durability
-// whose Lose could not append it, and the event number that Lose published
-// — zero when it published none of its own, a reported loss whose report
-// rode one of the window's other events. A read-only journal's refusal
-// names a nil reporter: its failure reached the writer by the refusal every
-// Sync of the file returns, not by a ring event, so its report stands
+// sequence number whose loss record could not be appended, the reach of the
+// instance whose Lose could not append it, and the event number that Lose
+// published — zero when it published none of its own, a reported loss whose
+// report rode one of the window's other events. A read-only journal's
+// refusal names a nil reach: its failure reached the writer by the refusal
+// every Sync of the file returns, not by a ring event, so its report stands
 // whatever became of any ring.
 type failedWord struct {
 	seq core.Seq
-	d   *Durability
+	r   *reach
 	ev  uint64
 }
 
@@ -432,7 +434,11 @@ func (s *dirState) addFailed(seq core.Seq, d *Durability, ev uint64) {
 			return
 		}
 	}
-	s.failed = append(s.failed, failedWord{seq: seq, d: d, ev: ev})
+	var r *reach // nil for a read-only refusal, which reports through itself
+	if d != nil {
+		r = &d.reach
+	}
+	s.failed = append(s.failed, failedWord{seq: seq, r: r, ev: ev})
 }
 
 // FailedFor returns the failed list of the journal the open names by dir
@@ -467,9 +473,9 @@ func (s *dirState) failedWords() []Failed {
 	for _, f := range s.failed {
 		// A nil reporter's report stands on its own: the refusal that
 		// told the writer lost nothing the ring could fail to carry.
-		standalone := f.d == nil
+		standalone := f.r == nil
 		out = append(out, Failed{Seq: f.seq,
-			Reported: standalone || !f.d.claimsDead() || f.d.claimServed(f.ev)})
+			Reported: standalone || !f.r.claimsDead() || f.r.claimServed(f.ev)})
 	}
 	slices.SortFunc(out, func(a, b Failed) int { return cmp.Compare(a.Seq, b.Seq) })
 	return out

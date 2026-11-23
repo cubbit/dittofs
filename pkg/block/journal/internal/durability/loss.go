@@ -372,7 +372,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 			// too: that record is still on disk, so a failed retry frees
 			// nothing.
 			if at == (segment.Location{}) && !retaken {
-				if !d.claimsDead() {
+				if !d.reach.claimsDead() {
 					d.dir.release(k)
 				} else {
 					d.dir.markUnplaced(k, d)

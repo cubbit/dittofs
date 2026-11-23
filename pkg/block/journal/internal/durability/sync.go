@@ -1183,13 +1183,13 @@ func (d *Durability) Stop() {
 	d.wg.Wait()
 }
 
-// claimsDead reports whether this instance has begun stopping, so no reader
-// reaches its ring from this point on.
-func (d *Durability) claimsDead() bool { return d.reach.dead.Load() }
+// claimsDead reports whether the reach's instance has begun stopping, so
+// no reader reaches its ring from this point on.
+func (r *reach) claimsDead() bool { return r.dead.Load() }
 
-// claimServed answers whether the loss a claim on one of this instance's
-// Loses took was answered by a reader: a genuine read's copy carried the
-// event the claim's loss published. The window's from keeps the answer honest
+// claimServed answers whether the loss a claim on one of that instance's
+// takes was answered by a reader: a genuine read's copy carried the event
+// the claim's take published. The window's from keeps the answer honest
 // where the ring had overwritten the event before the read — a copy that
 // never carried it answered nothing for it, whatever the reader knows it
 // missed — so a claim on an overwritten event survives its instance, and a
@@ -1201,8 +1201,8 @@ func (d *Durability) claimsDead() bool { return d.reach.dead.Load() }
 // the claim. The answer can then retire such a claim on a copy that held no
 // carrying event, which errs toward a reopen re-reporting the loss found at
 // open, never toward hiding one nobody read.
-func (d *Durability) claimServed(ev uint64) bool {
-	from, through := d.reach.servedFrom.Load(), d.reach.servedThrough.Load()
+func (r *reach) claimServed(ev uint64) bool {
+	from, through := r.servedFrom.Load(), r.servedThrough.Load()
 	if ev == 0 {
 		return through > 0
 	}
