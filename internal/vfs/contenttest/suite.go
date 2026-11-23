@@ -299,7 +299,11 @@ func aSuspendedContentChangeLeavesTheModifyTimeAlone(t *testing.T, s Subject) {
 				}
 			}
 			modify, _ := s.Times(t, f)
-			s.Clock.Advance(time.Minute)
+			// Less than the engine's 30s self-fence: the last case's removal
+			// or clone may still hold a store transaction in the background,
+			// and a jump past the fence reads as a stalled store, answering
+			// the commit below a delay.
+			s.Clock.Advance(time.Second)
 			at := s.Clock.Now()
 			ctx, cancel := context.WithTimeout(engine.WithSuspended(t.Context(), suspend), 5*time.Second)
 			err := c.do(ctx, src, f)
