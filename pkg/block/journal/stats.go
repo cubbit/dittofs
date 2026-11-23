@@ -200,13 +200,14 @@ type Stats struct {
 	// verify. Kind: gauge.
 	DamagedSegments int
 
-	// SyncMarks holds, per append stream, the mark of its last completed
-	// sync: its synced-through offset, and the end and sequence number of the
-	// last record that sync covered for a caller that named it. Until the
-	// stream's next sync after an open it is what that open recovered of it,
-	// a copy the open re-appended counted at where that copy verifies now. It
-	// only rises: a failed sync raises nothing, and after MarksRecorded(m) the
-	// stream's entry is never older than m. Kind: value.
+	// SyncMarks holds, per append stream, the mark of the last Sync that
+	// named a file of it: its synced-through offset, and the end and sequence
+	// number of the record it covered. Until the stream's next such Sync after
+	// an open it is what that open recovered of it, a copy the open
+	// re-appended counted at where that copy verifies now. It only rises: a
+	// failed sync raises nothing, nor does a sync no caller named a file for,
+	// and a Sync's mark replaces the entry only when the stream's own order
+	// puts it later (see the durability layer's figure). Kind: value.
 	SyncMarks map[uint32]SyncMark
 
 	// LastSyncError is the most recent sync failure; nil when no sync has

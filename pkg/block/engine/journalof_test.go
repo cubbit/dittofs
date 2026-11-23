@@ -8,7 +8,6 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
-	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 
@@ -70,13 +69,5 @@ func TestJournalOfServesTheJournalsMarks(t *testing.T) {
 	j.MarksRecorded(synced)
 	if got := j.SyncMarks(); !slices.Equal(got, synced) {
 		t.Fatalf("SyncMarks = %+v after MarksRecorded of it, want it unchanged: %+v", got, synced)
-	}
-	// A recorded mark past the entry reaches the journal: its entry is never
-	// older than what the caller says is recorded.
-	past := synced[0]
-	past.Through, past.Offset, past.Sequence = past.Through+4096, past.Offset+4000, past.Sequence+1
-	j.MarksRecorded([]entity.SyncMark{past})
-	if got := j.SyncMarks(); !slices.Equal(got, []entity.SyncMark{past}) {
-		t.Fatalf("SyncMarks = %+v after MarksRecorded of a mark past the entry, want %+v", got, past)
 	}
 }

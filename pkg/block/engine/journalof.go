@@ -8,9 +8,7 @@ package engine
 // is the journal's own.
 
 import (
-	"cmp"
 	"context"
-	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -38,18 +36,13 @@ func (j journalOf) Share(tag journal.ShareTag, limit int64, floor journal.Versio
 }
 
 // SyncMarks is the mark of each append stream's last completed sync, the
-// journal's Stats.SyncMarks, ordered by stream.
-//
-// ponytail: a whole Stats is built to read the marks, once per group commit.
-// Upgrade to a journal call that answers the marks alone when the commit rate
-// shows the rest of the answer in a profile.
+// journal's, ordered by stream.
 func (j journalOf) SyncMarks() []entity.SyncMark {
-	m := j.Journal.Stats().SyncMarks
-	out := make([]entity.SyncMark, 0, len(m))
-	for _, mark := range m {
-		out = append(out, entity.SyncMark(mark))
+	marks := j.Journal.SyncMarks()
+	out := make([]entity.SyncMark, len(marks))
+	for i, mark := range marks {
+		out[i] = entity.SyncMark(mark)
 	}
-	slices.SortFunc(out, func(a, b entity.SyncMark) int { return cmp.Compare(a.Stream, b.Stream) })
 	return out
 }
 
