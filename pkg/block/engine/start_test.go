@@ -376,8 +376,9 @@ func removeShare(t *testing.T, st *kvstore.Store, sh engine.Share, state entity.
 }
 
 // startLifecycle is the store's lifecycle view, wrapped twice over: a
-// pass-through record of each RaiseVersionLimits that reached the store, and
-// of the Updates each RaiseAtStart made, which never answers in the store's
+// pass-through record of every RaiseVersionLimits call that gets past fail,
+// the ones failRaises fails or a gate holds included, and of the Updates
+// each RaiseAtStart made, which never answers in the store's
 // place; and a fault wrapper, which fails the calls named in fail or planned
 // with failRaises, holds a call at a gate, and leaves the shards in drop out
 // of RaiseAtStart's answer, as a store whose answer lost them, on cue.
@@ -591,7 +592,7 @@ func (s *starter) shardOf(t *testing.T, id entity.ShardID) entity.Shard {
 // it returns, in order, which never answers in the journal's place; and a
 // fault wrapper, which fails a call named in fail with its error and holds
 // the next SetVersionLimit at the gate armed, once, or the handles' writes
-// while hold is in force.
+// while held is set (by hold).
 type logJournal struct {
 	*enginetest.FakeJournal
 	fail      map[string]error
@@ -1237,7 +1238,7 @@ func TestAFailedStartClosesInReverse(t *testing.T) {
 		name   string
 		store  string // the lifecycle call that fails
 		floor  bool   // the version floor read fails
-		call   string // the journal call that fails, by its log name
+		call   string // the journal call that fails, by its log name; "forget" is the forgotten share's, whose tag the store gives once the share is made
 		opened bool   // the journal was opened
 		closes []string
 	}{

@@ -995,7 +995,7 @@ func (j *FakeJournal) loseWindow() {
 }
 
 // ReadOnly turns the journal read-only for cause: every write and removal
-// from then on is refused with journal.ErrJournalReadOnly wrapping cause,
+// from then on until Reopen is refused with journal.ErrJournalReadOnly wrapping cause,
 // and Stats reports the state. Each of undone is a file with a removal the
 // entry undid, so every Sync naming it answers the refusal bare. The fake
 // neither undoes that removal nor restores what it cut: a test reads the

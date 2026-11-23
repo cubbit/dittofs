@@ -326,29 +326,6 @@ func (r *rig) fileIn(t *testing.T, sh engine.Share, name string) entity.FileID {
 	return f.ID
 }
 
-// sizeIn commits existence of a write of [0, size) for file f of share sh at
-// version 1, as commitSize does for share one.
-func (r *rig) sizeIn(t *testing.T, sh entity.ShareID, f entity.FileID, size int64) {
-	t.Helper()
-
-	pending := []kvstore.PendingExistence{{
-		Share: sh,
-		File:  f,
-		Ops: []kvstore.PendingOp{{
-			Version: entity.VersionOf(1),
-			Kind:    kvstore.OpWrite,
-			Extent:  entity.Extent{Length: size},
-			Mtime:   committed,
-			Ctime:   committed,
-		}},
-	}}
-
-	failed, err := r.fs.Store.Existence().Commit(t.Context(), pending, nil)
-	if err != nil || failed[f] != nil {
-		t.Fatalf("commit size %d: %v, %v", size, err, failed[f])
-	}
-}
-
 // truncateAt writes phase 1 of a truncate of file f of share sh to its
 // length less 4096, at version v, through the store, as the write path does:
 // the store then holds the truncate's removal record, not done.
@@ -378,7 +355,7 @@ func (r *rig) removalIn(t *testing.T, sh engine.Share, name string, v entity.Jou
 	t.Helper()
 
 	f := r.fileIn(t, sh, name)
-	r.sizeIn(t, sh.ID, f, 8192)
+	r.commitSize(t, sh.ID, f, 8192)
 	r.truncateAt(t, sh.ID, f, v)
 
 	return f
@@ -392,7 +369,7 @@ func (r *rig) cloneInto(t *testing.T, src engine.Share, f entity.FileID, v entit
 	t.Helper()
 
 	from := r.fileIn(t, src, "source of "+fname(f))
-	r.sizeIn(t, src.ID, from, 8192)
+	r.commitSize(t, src.ID, from, 8192)
 
 	spec := entity.CloneSpec{
 		SrcShare: src.ID,
@@ -462,7 +439,7 @@ func (r *rig) listed(t *testing.T) []kvstore.UnfinishedRemoval {
 func TestStartAppliesTheReplayThenResumesTheRemovalItCreated(t *testing.T) {
 	r := newRig(t)
 	h, f := r.newFile(t, "a")
-	r.commitSize(t, f, 8192)
+	r.commitSize(t, r.one.ID, f, 8192)
 
 	v2, err := r.jh.Truncate(t.Context(), journal.NewFileID(f), 4096)
 	if err != nil {
@@ -714,7 +691,7 @@ func TestARemovalCrashedBetweenBatchesResumesAndReadsRemovedThroughout(t *testin
 		return db
 	}))
 	_, f := r.newFile(t, "a")
-	r.commitSize(t, f, 24576)
+	r.commitSize(t, r.one.ID, f, 24576)
 
 	for i, off := range []int64{4096, 12288, 20480} {
 		v := entity.VersionOf(uint64(2 + i))
@@ -811,7 +788,7 @@ func (r *rig) wantReadsRemoved(t *testing.T, f entity.FileID) {
 func TestARemovalDoneButNotPrunedIsPrunedAtRestart(t *testing.T) {
 	r := newRig(t)
 	_, f := r.newFile(t, "a")
-	r.commitSize(t, f, 8192)
+	r.commitSize(t, r.one.ID, f, 8192)
 
 	ns := r.fs.Store.Namespace()
 
@@ -875,7 +852,7 @@ func TestARemovalDoneButNotPrunedIsPrunedAtRestart(t *testing.T) {
 // store keeps both records not done, and a read of the file waits for the
 // clone, as the store answers it while the clone is pending, rather than
 // reading a removal half run.
-func TestAPlainRemovalOlderThanAnUnfinishedCloneIsLeftPendingAndReadsStayCorrect(t *testing.T) {
+func TestAPlainRemovalOlderThanAnUnfinishedCloneIsLeftPendingAndReadsWaitForTheClone(t *testing.T) {
 	r := newRig(t)
 	f := r.removalIn(t, r.one, "a", entity.VersionOf(2))
 	cv := entity.VersionOf(3)
@@ -934,7 +911,7 @@ func TestAPlainRemovalOlderThanAnUnfinishedCloneIsLeftPendingAndReadsStayCorrect
 func TestOneFileWithManyRemovalsIsOneItemPrunedAtTheNewest(t *testing.T) {
 	r := newRig(t)
 	f := r.newFile2(t, "a")
-	r.commitSize(t, f, 16384)
+	r.commitSize(t, r.one.ID, f, 16384)
 
 	// The first removal's phase 2 ran to its end; the two after it did not.
 	r.truncateAt(t, r.one.ID, f, entity.VersionOf(2))
@@ -1054,7 +1031,7 @@ func (r *rig) retryUntilBatch(t *testing.T) {
 func TestAPruneThatFailsAtStartLeavesTheRemovalAndIsRetried(t *testing.T) {
 	r := newRig(t)
 	_, f := r.newFile(t, "a")
-	r.commitSize(t, f, 8192)
+	r.commitSize(t, r.one.ID, f, 8192)
 
 	ns := r.fs.Store.Namespace()
 
@@ -1166,7 +1143,7 @@ func TestACloneRemovalFollowedByAnotherFileFailsStart(t *testing.T) {
 	}
 
 	r.cloneInto(t, r.sibling(t, "unserved"), clone, v)
-	r.sizeIn(t, r.one.ID, plain, 8192)
+	r.commitSize(t, r.one.ID, plain, 8192)
 	r.truncateAt(t, r.one.ID, plain, v)
 
 	if recs := r.listed(t); len(recs) != 2 || recs[0].File != clone || recs[1].File != plain {
