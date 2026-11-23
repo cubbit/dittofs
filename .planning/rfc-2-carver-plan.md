@@ -42,7 +42,9 @@ RFC 8 offload plan's pull request carries; one nightly `fuzz` suite, the golden-
 the corpus fetch are registered here and shared (§1.4).
 **RFC 2 amendments in this pull request:** §5.1, §5.7: the dedup lookup lands with its first
 caller, the dedup oracle (D3); §10.4, §10.6: the allocation counts run per pull request, the
-second architecture nightly, and K4 on the corpus by hand (§1.4).
+golden vectors' second architecture nightly, and K4 on the corpus by hand, with edit stability
+checked per change on seeded input against K4's criterion (§1.4). This pull request merges after
+the RFC 8 offload plan's (#5528), which carries the RFC 0 §1.2 amendment rule 7 cites.
 **Transition:** new installations only, as #3119 decided. v1 and v2 never run in one binary, so no
 name carries a version, and v2 neither reads nor migrates anything v1 wrote. No epic touches v1
 code.
@@ -93,7 +95,8 @@ the reference box, fuzzing at full size, the second architecture.
 The exported surface of D1's packages, frozen at S1, which is RFC 8 offload plan S1a "carver
 interface agreed", with stub bodies. S1 is final: epic 1 also settles the assembler inputs the
 pipeline supplies (D3): the key budget (§6 point 2), the lookup (deferred), the all-zero flag
-and each chunk's age.
+and each chunk's age. S1 therefore waits on the user's answer to §6 point 2, whose other option
+changes epics 1 and 5.
 
 - `carver`: the settings value built from a namespace's `Target`, its encryption flag, its
   chunking key and its chunk-ID key (RFC 2 §3.2, §3.7, §4.1, §6; D4); `Cut` (§1.2, §2.1, §2.2,
@@ -119,14 +122,18 @@ carver, `carver-allocs`, `tier: pr`. Neither keeps a `known.yaml`, so no test of
 red: each lands green with the epic that makes it pass.
 
 **Registered by epic 2** in `test/suites.yaml`, each with its line in RFC 2's suites paragraph and
-`docs/internals/testing.md` regenerated with `dt docs`. No `carver` group: a group lists suites,
-not options (`test/suites.yaml:11` on `feat/storage-v2`), and the one suite here is shared.
+`docs/internals/testing.md` regenerated with `dt docs`. A group lists suites, not options
+(`test/suites.yaml:11` on `feat/storage-v2`), and epic 2's one suite is shared, so the `carver`
+group comes with the carver's own suite, `carver-bench`, in epic 7, as the RFC 3 and RFC 4 plans
+register `syncer` and `remote`.
 - `unit`'s `carver-allocs` option, `tier: pr`, running the allocation counts by name, as
   `adapter-allocs` does (`test/suites.yaml:124`).
 - The one nightly `fuzz` suite of the offload plans, a `go test -fuzz` per target, with the
   reference chunker's own bounds property as its first target; epics 3 to 5 add theirs, and the
-  RFC 4, 5 and 8 plans add their own targets and their RFCs' suites-paragraph lines. §1.5's instruction says epic issues exist before epic 2's pull request
-because red tests name them; here no test is red, so that clause has nothing to apply to.
+  RFC 4, 5 and 8 plans add their own targets and their RFCs' suites-paragraph lines.
+
+§1.5's instruction says epic issues exist before epic 2's pull request because red tests name
+them; here no test is red, so that clause has nothing to apply to.
 
 **The scenario catalogue, by source.** Each check lands in the epic named:
 - RFC 2 §9's rows: the chunker rows in epic 3; the carver and name rows in epic 4; the consumer
@@ -200,7 +207,8 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
 
 1. **Independent unit tests.** Each epic carries its own unit tests, over epic 2's components
    and the packages of the epics it depends on once landed. The carver needs no test double at
-   all (RFC 2 §1.3); the assembler's lookup is a function over a map (RFC 2 §5.7). E1 declares no
+   all (RFC 2 §1.3); the assembler takes no lookup in the first release, and once the dedup oracle
+   adds one, its tests pass a function over a map (RFC 2 §5.7). E1 declares no
    internal interface for a test to stand in for (rule 12).
 2. **Fuzz tests where relevant** (`CLAUDE.md`, "Writing tests", "By kind"). The carver parses
    nothing off a disk or a wire, so its fuzz targets are RFC 2 §10.1's properties: random bytes and
@@ -228,7 +236,8 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
    allows the engine's wiring to import the carver, never the other way. v1 is deleted by #5484.
 8. **Real dependencies for properties of those dependencies** (`CLAUDE.md`, "Writing tests").
    Three checks need the real thing: the golden vectors on a second CPU architecture (RFC 2 §10.1
-   "Architecture", B2), the speed measures on the reference box (RFC 2 §9.1 K1 to K3), and the
+   "Architecture", B2), the speed measures on the reference box and on two CPU architectures
+   (RFC 2 §9.1 K1 to K3), and the
    default `Target` measured through the real offload path (RFC 2 Appendix C). Everything else is
    a pure function of bytes and settings.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). RFC 2 §6's `ponytail:` goes at
@@ -254,10 +263,10 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
 | 4 | **The carver and identity** | `Cut`, artificial ends, errors, chunk IDs, block names | 7 | 13.5 | B | 6, 7 |
 | 5 | **The block assembler** | the fold without a lookup, P1 to P6, the short last block, the block-target range | 6 | 9.5 | C | 6, 7 |
 | 6 | **Integration: the default `Target` on the real path** 🔀 | RFC 2 Appendix C's measurement plan through the composed pipeline; §11's default frozen before the release writes content | planned after S3 | planned after S3 | team | 7 |
-| 7 | **E2E green** | K1 to K5 by hand on the reference box, full-size fuzzing nightly, the second architecture | 4 | 7 | team | — |
-| | **Total** | | **33** | **54** | | |
+| 7 | **E2E green** | K1 to K3 nightly on the reference box and a second architecture, K4 and K5 by hand, full-size runs nightly | 5 | 8.5 | team | — |
+| | **Total** | | **34** | **55.5** | | |
 
-**Plan estimate: 33 subtasks, 54 man-days, not counting epic 6.**
+**Plan estimate: 34 subtasks, 55.5 man-days, not counting epic 6.**
 
 RFC 2 is 1,582 lines, which gives N = 4. Its cohesive areas are three: the chunker and the
 carver, RFC 2 §1.2's two layers, and the block assembler, which §1 and §5 make a separate layer.
@@ -290,7 +299,7 @@ flowchart TD
   E4 & E5 --> S3(["S3 = RFC 8 offload plan S3 a pass runs end to end"]):::sync
   X6(["RFC 8 offload plan S6: journal epic 9b, #3379"]):::sync -. "Offload, OffloadMany" .-> S3
   S3 --> E6["E6 The default Target on the real path 🔀"]:::sync
-  E3 & E4 & E5 --> E7["E7 E2E green"]
+  E2 & E3 & E4 & E5 --> E7["E7 E2E green"]
   E6 -. "the default frozen closes it" .-> E7
   classDef blocker stroke:#c0392b,stroke-width:3px
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -304,10 +313,13 @@ and S3 are two of them; S2 is its own.
 - **S1 🔀 RFC 8 offload plan S1a carver interface agreed** (end of epic 1). The team reviews every
   exported signature with the RFC 8 offload plan's and RFC 4 plan's authors, since their code
   calls it. It is final: the inputs the pipeline supplies to the fold are settled in epic 1
-  (D3, §6 point 2), not after it.
+  (D3, §6 point 2), not after it, so S1 waits on the user's answer to §6 point 2. §6 points 3 and
+  5 do not move it: the first is the node's table, and the fold takes an age either way.
 - **S2 🔀 Reference and goldens in place** (end of epic 2). The reference chunker agrees with the
   golden tables and boundaries; the BLAKE3 modes match the independent vectors; the inputs, the
-  corpus fetch and the two suites exist. Epics 3, 4 and 5 start.
+  corpus fetch and the two suites exist. Epics 3, 4 and 5 start. S2 waits on the user's answer to
+  §6 point 1's §3.2 reading: the golden boundaries freeze on one reading, and switching afterwards
+  moves every boundary, a migration (RFC 2 §3.6).
 - **S3 🔀 RFC 8 offload plan S3 a pass runs end to end** (external). A workload written through
   the journal is offloaded through the carver, the assembler and the syncer, with offers bounded
   and widened as RFC 8 §6.7 says; it is the end of the RFC 8 offload plan's epic 16. It needs
@@ -396,8 +408,9 @@ pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
 - **D6. The goldens come from implementations the code under test does not share**, from one
   script in `carvetest`. The gear tables, a chunk ID and a block name are computed with BLAKE3's
   reference implementation (its `b3sum` tool or its official Python binding, named once with the
-  commands beside the vectors); the name vector's chain ID is laid out by hand from RFC 5 §2.8's
-  table, and the RFC 5 plan adds its own chain-ID vector to the same script. Boundaries come from
+  commands beside the vectors). The name vector's chain ID is computed by the script from RFC 5
+  §2.8's byte table, as RFC 2 §9's golden-name row requires, not committed as opaque bytes; the
+  RFC 5 plan adds its own chain-ID vector to the same script, which must agree with it. Boundaries come from
   epic 2's reference chunker. Prior art: BLAKE3's own `test_vectors.json`, produced by its
   reference implementation (from memory). Applied by epic 2.
 - **D7. The corpus is public tarballs pinned by SHA-256, fetched once and cached outside the
@@ -405,12 +418,12 @@ pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
   several kinds" (RFC 2 §9.1), and a check may not fetch (RFC 2 §1.3), so they run only in a
   `manual` suite; the per-change edit stability runs on seeded input (RFC 2 §10.4 as amended).
   Prior art: `golang.org/x/benchmarks` fetches its inputs (from memory). Applied by epics 2 and 7.
-- **D8. Under `-short`, the heavy rows run a reduced size**, and their full size runs in the
-  nightly `fuzz` suite's sibling cell (epic 7). RFC 2 §10.3's sweep at every byte offset is
-  quadratic in the stretch, and §10.4's 256 MiB per profile and §9's 64 MiB of zeros at every
-  `Target` add up past what `unit` can spend. Under `-short` the sweep covers every chunk end and
-  buffer refill, one byte either side, and a seeded sample of other offsets, at the smallest valid
-  `Target`. Prior art: Go's own `testing.Short()` convention in the standard library's tests.
+- **D8. Under `-short`, only RFC 2 §10.3's fault sweep runs a reduced size**, and its full size
+  runs nightly (epic 7). The sweep at every byte offset is quadratic in the stretch; under
+  `-short` it covers every chunk end and buffer refill, one byte either side, and a seeded sample
+  of other offsets, at the smallest valid `Target`. The linear rows keep RFC 2's sizes on every
+  pull request: §10.4's average chunk size over 256 MiB of seeded input at every profile, one pass
+  of the boundary search, and §9's 64 MiB of zeros at every `Target`. Prior art: Go's own `testing.Short()` convention in the standard library's tests.
   Applied by epics 3 and 4.
 - **D9. The block name takes plain byte arrays** for the scope, the nonce, the chain ID and the
   chunk IDs (RFC 2 §4.2). It imports nothing of RFC 5's or RFC 16's packages (RFC 2 §1.1), and it
@@ -538,19 +551,28 @@ on the K5 corpus and the default `Target` is frozen in RFC 2 and RFC 13 Appendix
 
 ### Epic 7 — E2E green
 
-**Epic 7 estimate: 4 subtasks, 7 man-days.**
+**Epic 7 estimate: 5 subtasks, 8.5 man-days.**
 
 What no per-change suite runs (RFC 2 §10.6's last sentence). **Owns:** RFC 2 §9.1, §10.5, §10.6.
-**Done when:** K1 to K5 recorded on the reference box against §10.5's targets, as §10.6 records
-them; the golden vectors and allocation counts green on a second architecture nightly; D8's full
-sizes run nightly; RFC 2's suites paragraph names each new suite.
+**Done when:** K1 to K3 run nightly after merge on two CPU architectures, each failing below its
+§10.5 ratio to BLAKE3 measured in the same run, and are recorded on the reference box with
+§10.6's fields; K4 and K5 recorded by hand on the reference box over D7's corpus; the golden
+vectors and allocation counts green on the second architecture nightly; D8's full sizes run
+nightly; RFC 2's suites paragraph names each new suite.
 
 **Expected content:**
-- A `manual` suite for K1 to K5 (RFC 29 §4.10), with §10.6's SIMD and toolchain fields; K4 and K5
-  over D7's corpus, reported.
-- D8's full sizes in a nightly cell.
-- A nightly cell running the carver's golden vectors and allocation counts on the harness's
-  `macos` host, arm64 (`needs: [macos]`).
+- The `carver` group and its `carver-bench` suite (RFC 29 §4.10). Its nightly cell runs on the
+  reference box, the dedicated host (`needs: [linux, host:dedicated]`, `metrics: go-bench`, as
+  `journal-bench-data`): K1 to K3 with §10.6's SIMD and toolchain fields, each checked against its
+  §10.5 ratio, in the shape of RFC 29's `TestBLAKE3FasterThanSHA256`. That is the K1 after merge
+  RFC 2 §10.4 relies on: a warm-up over the whole chunk drops K1 from over 20× BLAKE3 to about
+  2×, under the 10× target. The host runs develop's latest commit, so the series starts when the
+  carver reaches develop.
+- `carver-bench`'s `arm64` option, nightly on the harness's `macos` host, arm64
+  (`needs: [macos]`): the same K1 to K3 ratio checks, the golden vectors and the allocation counts.
+- `carver-bench`'s `corpus` option, `tier: manual`: K4 and K5 over D7's corpus, reported against
+  §10.5, since a check may not fetch (RFC 2 §1.3).
+- D8's full-size sweep in a nightly cell.
 - RFC 2's suites paragraph and `docs/internals/testing.md` regenerated with `dt docs`.
 
 ## 6. Risks and open points
@@ -563,8 +585,8 @@ sizes run nightly; RFC 2's suites paragraph names each new suite.
      returns no error (D2, D3); the plan's shape names refs apart from carried entries, which P6
      needs.
    - §3.2: say whether "while the chunk is shorter than `Target`" counts the byte being tested;
-     the golden boundaries depend on it. Epic 2's reference chunker takes the reading in which the
-     length counts the bytes before the tested one, until the RFC says.
+     the golden boundaries depend on it, so S2 waits on the answer (§3.2). Recommended: the
+     reading in which the length counts the bytes before the tested one.
    - Appendix A: once #5484 deletes v1, its table describes nothing; proposed: keep A.1 and A.2 as
      the measurements behind §3.2 and §3.4, and drop the table.
 2. **The key budget against P2 and A7** — pending the user's answer, settled in epic 1 for S1.
@@ -608,6 +630,7 @@ sizes run nightly; RFC 2's suites paragraph names each new suite.
 | The block-target key in RFC 13's table and RFC 13 §9's "§6 block target range" row (RFC 2 §5.2; epic 5 keeps the constructor's refusal as a defence) | the block target is a remote-store setting (RFC 13's scope table) | RFC 4 plan, epic 7 | its remote-store settings land |
 | The dedup lookup and the adopted disposition, with §5.7's two rows that need it, and §4.3's matching rules (D3; RFC 2 §5.1 as amended) | no caller in v1.1: deduplication is off in the first release (RFC 8 §6.5) | RFC 8 | deduplication is re-added, post-v1 |
 | RFC 2 §6's keyed PRF upgrade of the keyed gear table (§4.3) | the RFC's `ponytail:` | unowned | a deployment must hide which files it holds from a bucket reader |
+| Setting each chunk's all-zero flag from the bytes `emit` hands over, and the consumer check that a chunk with any non-zero byte is never flagged: a wrong flag makes it a zero ref that no block stores (D3; §1.5 rule 5) | the caller holds the bytes; the assembler never sees them (RFC 2 §5.5) | RFC 8 offload plan, epic 15 | its Carve state lands |
 | Randomised assembly (RFC 2 §5.6) (epic 5) | sequential assembly is the RFC's proposal; changing it needs no migration | unowned | a measured need to blur the chunk-size fingerprint, post-v1 |
 
 ## 7. RFC coverage

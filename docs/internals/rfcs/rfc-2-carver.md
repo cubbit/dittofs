@@ -922,8 +922,8 @@ The lookup lands with its first caller, the dedup oracle
 fold carries every chunk that is not all zeros. The signature above shows it as
 it will be then; the first release's `Add` takes no lookup.
 
-The assembler does no I/O but the lookup it is handed, keeps nothing between
-passes, and **MUST NOT** survive its pass. A lookup error carries the chunk
+The assembler does no I/O but, once it exists, the lookup it is handed, keeps nothing between
+passes, and **MUST NOT** survive its pass. Once there is a lookup, a lookup error carries the chunk
 ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)).
 
 ### 5.2 Packing rules
@@ -1360,7 +1360,7 @@ same answer on any runner:
 - **average chunk size** over 256 MiB of seeded random input, within 10% of
   `Target` at every profile;
 - **edit stability** on a seeded synthetic input with bytes inserted near its
-  start. K4 on the fixed corpus needs the corpus fetched, which no check may do
+  start: every chunk shared except the one or two around the edit. K4 on the fixed corpus needs the corpus fetched, which no check may do
   ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction)), so it runs by hand with K5.
 
 A warm-up that crept back over the whole chunk ([§3.4](#3.4%20How%20far%20back%20a%20decision%20looks)) changes no output, so no
@@ -1394,7 +1394,7 @@ Results are recorded as [the index](rfc-index.md#Test%20tiers) requires, plus th
 BLAKE3 used (AVX-512, AVX2, NEON) and the toolchain version: the same carver on
 the same box differs by more across those than across commits.
 
-**Suites.** §9's chunker, carver, name and consumer rows, §5.7's assembler checks and §10's golden
+**Suites.** §9's chunker, carver, name and consumer rows, §5.7's assembler checks but the two that need the lookup, and §10's golden
 vectors, differential, property and fault tests run in `unit`, and an allocation count the race
 detector skews runs in an option of `unit` named for the carver, on every pull request. No suite runs yet §9.1's K1 to K5 on the
 reference box, fuzzing past the seed corpus, or the golden vectors on a second CPU architecture.
