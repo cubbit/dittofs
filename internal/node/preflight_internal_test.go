@@ -20,6 +20,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
@@ -376,6 +377,9 @@ func TestPreflight(t *testing.T) {
 		noClock bool
 		// cancelCtx hands the check a context its caller already canceled.
 		cancelCtx bool
+		// withKV also hands the check an opened KV, beside whatever store
+		// directory setup returns.
+		withKV bool
 		// v1Root names the row's blockstore journal root, the configured
 		// v1 location the check is handed; nil defaults to the row's
 		// <parent>/blocks.
@@ -427,17 +431,31 @@ func TestPreflight(t *testing.T) {
 			neverIs:  []error{errUnidentifiable},
 		},
 		{
-			name: "empty storeDir",
+			name: "neither a store directory nor a KV",
 			setup: func(t *testing.T, parent string) (string, []string) {
 				dir := filepath.Join(parent, "device")
 				initJournal(t, dir, instA)
 				return "", []string{dir}
 			},
-			want:     errNoStoreDir,
+			want:     errNoStore,
 			contains: func(string) []string { return []string{"not set"} },
 			// the ruling of the order: a wiring error beats the no-device
 			// refusal when both apply.
 			neverIs: []error{errNoDevice},
+		},
+		{
+			name: "both a store directory and a KV",
+			setup: func(t *testing.T, parent string) (string, []string) {
+				dir := filepath.Join(parent, "device")
+				initJournal(t, dir, instA)
+				// a present store, so a check that probed either one would
+				// pass rather than refuse.
+				openStore(t, filepath.Join(parent, "store"))
+				return filepath.Join(parent, "store"), []string{dir}
+			},
+			withKV:   true,
+			want:     errTwoStores,
+			contains: func(string) []string { return []string{"not both"} },
 		},
 		{
 			name: "no device, no store directory created",
@@ -773,7 +791,18 @@ func TestPreflight(t *testing.T) {
 			} else {
 				defer cancel()
 			}
-			got := Preflight(ctx, storeDir, v1Root, devices, clock, journaltest.SuitableMount())
+			var store kv.KV
+			if r.withKV {
+				// Outside parent, whose tree the row hashes: Badger's own
+				// files are no part of the check's storage.
+				db, err := badgerkv.Open(badgerkv.Options{Dir: t.TempDir()})
+				if err != nil {
+					t.Fatalf("open the KV: %v", err)
+				}
+				t.Cleanup(func() { _ = db.Close() })
+				store = db
+			}
+			got := Preflight(ctx, storeDir, store, v1Root, devices, clock, journaltest.SuitableMount())
 			if r.postRun != nil {
 				r.postRun(t, storeDir, devices)
 			}
@@ -821,7 +850,7 @@ func TestPreflightCancelDuringTheProbes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	afterDeviceOpen = cancel
 	t.Cleanup(func() { afterDeviceOpen = nil })
-	err := Preflight(ctx, store, filepath.Join(parent, "blocks"), []string{d1, d2},
+	err := Preflight(ctx, store, nil, filepath.Join(parent, "blocks"), []string{d1, d2},
 		sim.NewTestClock(time.Unix(0, 0)), journaltest.SuitableMount())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Preflight over a context ended mid-probe: got %v, want the context's own error", err)

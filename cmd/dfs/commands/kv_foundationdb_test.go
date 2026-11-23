@@ -4,9 +4,11 @@ package commands
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -116,5 +118,62 @@ func TestOpenKVOpensFoundationDB(t *testing.T) {
 	}
 	if _, ok := db.(*fdbkv.Store); !ok {
 		t.Fatalf("openKV(foundationdb) opened a %T, want *fdbkv.Store", db)
+	}
+}
+
+// closeRecorder passes every call through to the store it wraps and records
+// each Close that reaches it.
+type closeRecorder struct {
+	kv.KV
+	closes atomic.Int32
+}
+
+func (c *closeRecorder) Close() error {
+	c.closes.Add(1)
+	return c.KV.Close()
+}
+
+// dfs start opens a FoundationDB store before the start check, so a check
+// that refuses must close it before the command returns: over an empty
+// cluster the check refuses "not initialised", and the store, wrapped where it
+// opens, saw exactly one Close by then.
+func TestStartRefusalClosesTheStoreOnFoundationDB(t *testing.T) {
+	cf := os.Getenv("DITTOFS_FDB_CLUSTER_FILE")
+	if cf == "" {
+		t.Skip("no FoundationDB: run through test/fdb/cluster.sh test, which sets DITTOFS_FDB_CLUSTER_FILE")
+	}
+	if os.Getenv("DITTOFS_FDB_OWN_CLUSTER") == "" {
+		t.Skip("clears the whole cluster: set DITTOFS_FDB_OWN_CLUSTER=1 on a cluster of its own, with -p 1")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Cleanup(func() { fdbkvtest.ClearAll(t, cf) })
+	dir := t.TempDir()
+	cluster, err := os.ReadFile(cf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The bootstrap names the cluster file beside it.
+	if err := os.WriteFile(filepath.Join(dir, "fdb.cluster"), cluster, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := bootstrapFile{backend: "foundationdb", journal: filepath.Join(dir, "device"), node: nodeUUID}.write(t, dir)
+	var opened []*closeRecorder
+	ctx := context.WithValue(t.Context(), kvKey{}, func(inner kv.KV) kv.KV {
+		r := &closeRecorder{KV: inner}
+		opened = append(opened, r)
+		return r
+	})
+	root := NewRoot()
+	root.SetOut(io.Discard)
+	root.SetArgs([]string{"start", "--config", config})
+	err = root.ExecuteContext(ctx)
+	if want := "the start check: the node is not initialised"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("dfs start over an empty cluster: %v, want an error starting %q", err, want)
+	}
+	if len(opened) != 1 {
+		t.Fatalf("dfs start over an empty cluster opened the store %d times, want once", len(opened))
+	}
+	if n := opened[0].closes.Load(); n != 1 {
+		t.Fatalf("dfs start over an empty cluster: the store saw %d Close calls by the time the command returned, want 1", n)
 	}
 }

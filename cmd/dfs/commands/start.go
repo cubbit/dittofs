@@ -46,7 +46,8 @@ Examples:
 // runStart reads the bootstrap, refuses v1's control-plane database, runs the
 // start check over the store and journals it finds, opens the metadata
 // store's KV, builds and starts the node, and stops it on SIGINT or SIGTERM.
-// Each error names the step that failed.
+// A store with no directory, FoundationDB's, is opened before the check,
+// which reads it. Each error names the step that failed.
 func runStart(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 	// The handler is installed first, so a signal while the store opens or
@@ -97,12 +98,32 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	for _, j := range cfg.Journals {
 		devices = append(devices, j.Path)
 	}
+	// store is the metadata store's KV, held here until node.New takes it
+	// over: every return before that closes it.
+	var store kv.KV
+	defer func() {
+		if store != nil {
+			if err := store.Close(); err != nil {
+				slog.Warn("dfs: the metadata store did not close clean", "err", err)
+			}
+		}
+	}()
+	storeDir := cfg.Metadata.Badger.Path
+	if cfg.Metadata.Backend == "foundationdb" {
+		// A cluster has no directory to probe: the check reads the store
+		// through the KV the node then takes.
+		storeDir = ""
+		if store, err = openStore(ctx, base, cfg, clock); err != nil {
+			return err
+		}
+	}
 	stage(base, stagePreflight, ctx)
-	err = node.Preflight(ctx, cfg.Metadata.Badger.Path, cfg.Blockstore.Journal.Path, devices, clock)
+	err = node.Preflight(ctx, storeDir, store, cfg.Blockstore.Journal.Path, devices, clock)
 	stage(base, stagePreflightReturned, ctx)
 	if err != nil {
-		// A check the signal cancelled ends the start on the signal: nothing
-		// is open yet, so the command exits zero as a stopped start does. A
+		// A check the signal cancelled ends the start on the signal: the
+		// only thing open is a store with no directory, which the return
+		// closes, so the command exits zero as a stopped start does. A
 		// refusal of the check's own exits non-zero under a signal too.
 		if ctx.Err() != nil && base.Err() == nil && onlyCanceled(err) {
 			slog.Info("dfs: the start ended on a termination signal", "err", err)
@@ -111,9 +132,9 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("the start check: %w", err)
 	}
 	// The tracing provider is built after the start's refusals, so a refused
-	// start builds no exporter, and before the KV opens: node.New owns the KV
-	// from openKV on — a New that fails closes it — so a start refused on its
-	// endpoint must refuse before the KV exists, not leak one.
+	// start builds no exporter, and before a Badger store opens, so a start
+	// refused on its endpoint opens no store directory; a store opened before
+	// the check is closed by the return.
 	tracer, stopTracing, err := devTracing()
 	if err != nil {
 		return fmt.Errorf("building the tracing provider: %w", err)
@@ -123,12 +144,10 @@ func runStart(cmd *cobra.Command, _ []string) error {
 			slog.Warn("dfs: the trace provider did not shut down clean", "err", err)
 		}
 	}()
-	store, err := openKV(ctx, cfg, clock)
-	if err != nil {
-		return fmt.Errorf("opening the metadata store: %w", err)
-	}
-	if wrap, ok := base.Value(kvKey{}).(func(kv.KV) kv.KV); ok {
-		store = wrap(store)
+	if store == nil {
+		if store, err = openStore(ctx, base, cfg, clock); err != nil {
+			return err
+		}
 	}
 	n, err := node.New(node.Config{
 		Bootstrap: *cfg,
@@ -138,6 +157,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		Logger:    slog.Default(),
 		Tracer:    tracer,
 	})
+	// node.New owns the KV from here on: a New that fails closes it.
+	store = nil
 	if err != nil {
 		return fmt.Errorf("building the node: %w", err)
 	}
@@ -165,6 +186,20 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	return answer(startErr, ended, stopErr)
 }
 
+// openStore opens the metadata store's KV and wraps it in base's kvKey hook,
+// if any, so every reader of the store, the start check included, sees the
+// wrapped KV.
+func openStore(ctx, base context.Context, cfg *bootstrap.Bootstrap, clock systemClock) (kv.KV, error) {
+	store, err := openKV(ctx, cfg, clock)
+	if err != nil {
+		return nil, fmt.Errorf("opening the metadata store: %w", err)
+	}
+	if wrap, ok := base.Value(kvKey{}).(func(kv.KV) kv.KV); ok {
+		store = wrap(store)
+	}
+	return store, nil
+}
+
 // stageKey keys a hook in the command's context that runs at each stage of
 // runStart, given the stage and the signal context: a test delivers a signal
 // there, so it lands at a known stage rather than at a timing. Production
@@ -172,8 +207,9 @@ func runStart(cmd *cobra.Command, _ []string) error {
 type stageKey struct{}
 
 // kvKey keys a hook in the command's context that wraps the metadata
-// store's KV before the node opens it: a test holds one store call there, so
-// the process is killed at a known call rather than at a timing. Production
+// store's KV right after it opens, before the start check or the node reads
+// it: a test holds one store call there, so the process is killed at a known
+// call rather than at a timing, or records the store's Close. Production
 // sets none.
 type kvKey struct{}
 
