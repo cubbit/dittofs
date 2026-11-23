@@ -13,9 +13,9 @@ import (
 
 // Deps is what the composition root hands New. Each interface holds exactly
 // the methods the engine calls on that component, and the root passes the
-// component's own type as it. Every member but VersionBlock is required: New
-// refuses a missing one by name, so a fixture supplies stubs of the whole
-// interface, never nil.
+// component's own type as it. Every member but VersionBlock and FreeSpace is
+// required: New refuses a missing one by name, so a fixture supplies stubs of
+// the whole interface, never nil.
 type Deps struct {
 	// Node is this node's identity, from its bootstrap; JournalID looks up its
 	// devices under it.
@@ -38,6 +38,12 @@ type Deps struct {
 	// 2²⁴. It is fixed, not an operator setting (RFC 13 Appendix B), so the
 	// root leaves it zero and only a check of the raise sets it.
 	VersionBlock uint64
+
+	// FreeSpace is the free space, in bytes, of the filesystem holding the
+	// journal directory dir, which journal_full's clear after a full device
+	// reads (RFC 8 §11.1). Nil asks the filesystem; only a check sets it, to
+	// give a device it filled room again.
+	FreeSpace func(dir string) (int64, error)
 }
 
 // Journal is one device's journal, as the engine calls it.

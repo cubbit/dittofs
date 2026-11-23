@@ -83,6 +83,7 @@ type Engine struct {
 	readOnlyLogged  atomic.Bool                                     // the journal's turn read-only was logged: see noteReadOnly
 	hooks           struct{ taken, drained atomic.Pointer[func()] } // a test's seams: after a batch's take and a drain's read of the ring
 	beforeTake      atomic.Pointer[func()]                          // a test's seam: run before each take of a group commit's loop
+	fullChecked     atomic.Pointer[func()]                          // a test's seam: run each time a group commit's loop judged journal_full's room
 	afterRegister   func() error                                    // a test's hook: run once a clone's registrations are installed; an error stops the clone there
 	awaiting        func()                                          // a test's hook: run by AwaitClones once it has read the clones it waits for
 
@@ -171,6 +172,9 @@ func New(d Deps) (*Engine, error) {
 		ended:    make(chan struct{}),
 		stopping: make(chan struct{}),
 		block:    cmp.Or(d.VersionBlock, defaultVersionBlock),
+	}
+	if e.d.FreeSpace == nil {
+		e.d.FreeSpace = freeSpace
 	}
 	e.conflictBound.Store(int64(time.Second))
 	e.raising.ctx, e.raising.cancel = context.WithCancel(context.Background())

@@ -472,6 +472,13 @@ func (g *groupCommit) run() {
 		case mw > 0 && (wait < 0 || mw < wait):
 			wait = mw
 		}
+		switch fw := g.fullDue(start); {
+		case fw == 0:
+			g.checkFull()
+			continue
+		case fw > 0 && (wait < 0 || fw < wait):
+			wait = fw
+		}
 		var timer <-chan struct{}
 		if wait >= 0 {
 			timer = g.e.d.Clock.After(wait)
