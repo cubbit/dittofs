@@ -90,7 +90,7 @@ and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T7.2–T7.6 | every row builds the node through `nodetest` over the in-memory KV or Badger under `t.TempDir()`, signed in through E5's callers; the doubles are `sim.TestClock` (kind 1), `kvtest.FaultKV` with a fault the test implements (kind 3), and, for T7.6, the RFC 18 plan's `pkg/identity/identitytest` directory and domain controller, held to their suites (kind 2) |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T7.2–T7.6 | every in-process row builds the node through `nodetest` over the in-memory KV or Badger under `t.TempDir()`, signed in through E5's callers; T7.2's rows run a real `dfs start` child over Badger under `t.TempDir()` instead (D1); the doubles are `sim.TestClock` (kind 1), `kvtest.FaultKV` with a fault the test implements (kind 3), and, for T7.6, the RFC 18 plan's `pkg/identity/identitytest` directory and domain controller, held to their suites (kind 2) |
 | rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | none | this epic adds no decoder; E2 and E4 fuzz the bodies, the cursor and the codecs |
 | rule 3, observability follows RFC 25 | T7.3 | no new series; `config_generation_behind` is read through `/api/v1/health`, and `api_unmapped_errors_total` stays 0 after the error table's run |
 | rule 4, profiling | T7.2–T7.6 | every in-process row runs under `nodetest`'s `Watch()`, which registers `internal/prof`'s `prof.Watch`, at its top level; a child-process row checks the child exited |
@@ -114,7 +114,7 @@ it, in the part this epic owns.
 | --- | --- | --- | --- | --- |
 | R1 | The harness's server fixture initialises its installation with `dfs init` and starts it with `dfs start`, for the cells E8 runs | MUST | RFC 23 plan §5 epic 7 | T7.1 |
 | R2 | Long work is an operation whose progress is the owning component's durable cursor; it survives a crash and is readable through the API | invariant | RFC 23 §10 (CP7) | T7.2 |
-| R3 | `§3.2 delete`: a share with 10⁵ files, the node killed during the "files" phase once `Done` > 0 and restarted, reports the same operation `running` with `Done` at least that value and rising, and ends `succeeded`; a second delete with a new key answers `409` `stale` | test row | RFC 23 §12 | T7.2 |
+| R3 | `§3.2 delete`: a share with 10⁵ files (seeded at 50 until the runner runs a step again at once while it reports work left, a row of [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger)), the node killed during the "files" phase once `Done` > 0 and restarted, reports the same operation `running` with `Done` at least that value and rising, and ends `succeeded`; a second delete with a new key answers `409` `stale` | test row | RFC 23 §12 | T7.2 |
 | R4 | `§2.1 API writes only records`, its crash half: a share create committed, the node killed before it reads the share list and restarted, serves the share | test row | RFC 23 §12 | T7.2 |
 
 **One fully wired node**
@@ -167,12 +167,14 @@ it, in the part this epic owns.
 ## 4. Decisions this epic takes
 
 - **D1, a crash is a child process killed on an event.** R2 to R4 kill the node. The child is the
-  test binary run again (`-test.run` naming one child test, its data directory a flag the test
-  file registers), which builds the node through `nodetest` over Badger on disk. A
-  `kvtest.FaultKV` fault holds the one operation and key the row cues on (the removal's next
-  batch, the reconcile's read of the share list), the child prints `held`, and the parent sends
-  `SIGKILL` when it reads that line, then restarts over the same directory with E3's `Restart`,
-  which keeps `New`'s options. An in-process abandon cannot stand in: Badger's directory lock
+  test binary run again as E3's `TestStartChild`, which runs the real `dfs start` with the
+  arguments `DFS_START_CHILD_ARGS` holds, over an installation `dfs init` made under
+  `t.TempDir()`, Badger on disk. `DFS_START_CHILD_HOLD` sets `runStart`'s `kvKey{}` context hook,
+  which wraps the KV in a `kvtest.FaultKV` before `node.New`; its fault holds the one operation
+  and key the row cues on (the removal's next batch, the reconcile's read of the share list), the
+  child prints `held`, and the parent sends `SIGKILL` when it reads that line. A restart is a
+  fresh child over the same directory, not `nodetest` and not E3's `Restart`.
+  An in-process abandon cannot stand in: Badger's directory lock
   refuses a second open in the same process, and `Close` flushes what a kill does not. The fault
   filters by key, so the API's reads of other keys pass; `node.Config` takes one KV, so the
   reconcile cannot have a fault of its own. No marker. Prior art: Go's own `os/exec` tests re-exec
@@ -264,8 +266,10 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 - **Track:** the team. **Depends on:** T7.1; E3 (the runner, share removal, `Restart`).
 - **Covers:** R2, R3, R4.
 - **Deliverables:** `cmd/dfs/commands/crash_unix_test.go`, beside E3's `dfs start` child test
-  (D1): the child test; `§3.2 delete`, the share's 10⁵ files seeded through the metadata store's
-  view, its delete started through the API, the child held at the removal's next batch once the
+  (D1): the child test; `§3.2 delete`, the share's files seeded through the metadata store's
+  view, 50 of them until the runner runs a step again at once while it reports work left (10⁵
+  waits on that; a row of the plan's deferral ledger),
+  its delete started through the API, the child held at the removal's next batch once the
   operation's `Done` > 0, killed, restarted, and the operation polled to `succeeded`, skipped under
   `testing.Short()`; `§2.1`'s crash half, the child held at the reconcile's read of the share list
   after the create's `201`, killed, restarted, the share serving.
