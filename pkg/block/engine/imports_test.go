@@ -16,10 +16,9 @@ const module = "github.com/cubbit/dittofs/"
 
 // allowed is every import a package of the engine may have besides the
 // standard library and the engine's own packages. Each entry names the
-// packages under this directory it applies to; "*" is every one. Nothing of
-// the previous engine, journal, syncer, carver, remote tier or metadata
-// service is on it, and neither is the filesystem's package: the engine takes
-// only its errors, from pkg/vfs/vfserr. Open state is enginewire's, which
+// packages under this directory it applies to; "*" is every one. The
+// filesystem's package is not on it: the engine takes only its errors, from
+// pkg/vfs/vfserr. Open state is enginewire's, which
 // builds, starts and stops it with the engine, and its test's, the
 // fixture's and the unit tests', which run it for real.
 var allowed = map[string][]string{
@@ -118,19 +117,15 @@ func TestImportRule(t *testing.T) {
 	}
 }
 
-// TestImportRuleRefusesPreviousAndFilesystem pins the rule's edges: the
-// previous components, the filesystem's package and open state are refused,
+// TestImportRuleRefusesFilesystemAndOpenState pins the rule's edges: the
+// filesystem's packages, the journal's test kit and open state are refused,
 // while the metadata packages the engine needs and the filesystem's errors
 // are allowed.
-func TestImportRuleRefusesPreviousAndFilesystem(t *testing.T) {
+func TestImportRuleRefusesFilesystemAndOpenState(t *testing.T) {
 	for _, c := range []struct {
 		path    string
 		allowed bool
 	}{
-		{module + "pkg/block/syncer", false},
-		{module + "pkg/block/carver", false},
-		{module + "pkg/block/remote/s3", false},
-		{module + "pkg/metadata", false},
 		{module + "pkg/vfs", false},
 		{module + "pkg/vfs/vfstest", false},
 		{module + "internal/vfs", false},
@@ -161,7 +156,7 @@ func forbidden(rel, path string) string {
 			return ""
 		}
 	}
-	return "not on the engine's allowlist: no previous component, no pkg/vfs"
+	return "not on the engine's allowlist"
 }
 
 // within reports whether path is root or a package below it.

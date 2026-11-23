@@ -1487,7 +1487,7 @@ names, on the composed single-node harness of the [index](rfc-index.md#Test%20ha
 
 **Suites.** §12's checks run on the composed single-node harness in `unit`, the
 scrape's diff against metrics.golden included, and §6.3's allocation counts, which
-the race detector skews, join `unit/nonrace`. No suite runs yet §6.2's propagation
+the race detector skews, run in a non-race option of `unit`, added with the first such gate. No suite runs yet §6.2's propagation
 row, which needs two nodes.
 
 ## 13. Open questions

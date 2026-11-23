@@ -48,12 +48,12 @@ the runner, not a DittoFS server, so its numbers are not performance data.
 
 ## Component microbenchmarks live with their code
 
-Per-package `Benchmark*` functions (chunker, hash, metadata,
-snapshot) run via `go test -bench` in their home package — not here:
+Per-package `Benchmark*` functions (engine, journal, metadata store) run via
+`go test -bench` in their home package — not here:
 
 ```sh
-go test -bench=. -benchmem -run=^$ ./pkg/snapshot/        # snapshot create/manifest/verify scale
-go test -bench=. -benchmem -run=^$ ./pkg/block/chunker/   # FastCDC throughput
+go test -bench=. -benchmem -run=^$ ./pkg/block/engine/    # the engine's calls
+go test -bench=. -benchmem -run=^$ ./pkg/metadata/kvstore/ # the metadata store
 ```
 
 ## Layout

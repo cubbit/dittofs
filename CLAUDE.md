@@ -7,7 +7,7 @@ conventions, and playbooks.
 ## Project
 
 DittoFS is an experimental modular virtual filesystem in Go. NFSv3/v4.0/v4.1 + SMB2/3 servers
-in userspace (no FUSE), with pluggable metadata and block stores; on this branch `dfs` serves
+in userspace (no FUSE), with pluggable metadata stores; on this branch `dfs` serves
 no file protocol (rule 2 below). **Not production ready.**
 
 Two binaries: `dfs` (server, `cmd/dfs/`) and `dfsctl` (REST client, `cmd/dfsctl/`). Both use Cobra.
@@ -20,7 +20,7 @@ Two binaries: `dfs` (server, `cmd/dfs/`) and `dfsctl` (REST client, `cmd/dfsctl/
 - `docs/guide/cli.md` — full `dfs` / `dfsctl` reference (**generated** — see below)
 - `docs/guide/nfs.md`, `docs/guide/smb.md` — user mounting guides (protocol internals in `docs/internals/`)
 - `docs/guide/smb-acl-fidelity.md` — SMB Windows-ACL/SD interop matrix (Works/Partial/Unsupported)
-- `docs/internals/implementing-stores.md` — metadata/block store contracts
+- `docs/internals/implementing-stores.md` — the metadata store contract; where the block tier stands
 - `docs/internals/debugging.md` — SMB/NFS pcap-diff interop playbook
 - `docs/guide/faq.md` — known limitations (ETXTBSY, POSIX gaps, single-node)
 - `docs/internals/contributing.md` — dev workflow
@@ -150,17 +150,14 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
    expected errors at `Debug`, unexpected at `Error`.
 
 7. **Store contracts:** a new key-value backend passes `pkg/metadata/kv/kvtest`'s suite, and the
-   store over it `pkg/metadata/kvstore/kvstoretest`'s. Block stores have exactly one suite,
-   `blockstoretest.RemoteBlockStoreConformance`, and it covers only the block-keyed
-   `remote.RemoteBlockStore` surface. There is **no hash-keyed suite**: the CAS `block.Store`
-   interface and its `BlockStoreConformance` were deleted. The journal and the engine carry their
-   own conformance suites (`journal_conformance`, `engine_conformance` tags).
+   store over it `pkg/metadata/kvstore/kvstoretest`'s. The block tier has no pluggable store and
+   no store suite; the remote tier returns with its own contract. The journal and the engine carry their own
+   conformance suites (`journal_conformance`, `engine_conformance` tags).
 
-   **`pkg/block` declares no whole-block-store interface.** The tier contracts live with their
-   tiers (`remote.RemoteBlockStore`, the journal's own API); what stays in
-   `pkg/block/blockstore.go` is what both sides speak — `Meta`, `DurabilityReporter` and
-   `IsDurable`. So a method reachable only from tests has nothing holding its signature up: say
-   so with a `decision:` marker at the method rather than reintroducing an interface to pin it.
+   **`pkg/block` is only `engine/` and `journal/`; its root package is gone.** No interface
+   declares the engine's or the journal's surface: each is its own package API. So a method
+   reachable only from tests has nothing holding its signature up: say so with a `decision:`
+   marker at the method rather than reintroducing an interface to pin it.
 
 ## Writing tests
 
@@ -174,8 +171,8 @@ collaborators:
 - Put the logic in a function of its inputs, and test that function. Keep the I/O at the edge,
   in a thin layer.
 - Take a dependency as a small interface the consumer declares, and test against a **real**
-  implementation of it: the memory block store, `t.TempDir()`, a listener on `127.0.0.1:0`, a
-  Badger key-value store, in memory or under `t.TempDir()`.
+  implementation of it: a journal under `t.TempDir()` (`journaltest`), `t.TempDir()`, a listener
+  on `127.0.0.1:0`, a Badger key-value store, in memory or under `t.TempDir()`.
 
 Only three kinds of test double are allowed:
 
