@@ -100,9 +100,12 @@ type suspendedKey struct{}
 // truncate, deallocate or clone replayed or rebuilt at a start, a grow
 // included (stageGrow), moves the modification time. A suspended write is not
 // in this gap: its record holds modification time 0, and replay keeps it
-// (stageWrite). So a persistent open (RFC 14 §2.2), whose mask outlives a
-// crash, can see its frozen Modify move after one, for an operation still
-// uncommitted then. Overturned once those records carry the mask.
+// (stageWrite), except above a clone marker, where rebuildMarker stages every
+// write as moving it, a client write outside the extent included, since its
+// record is not told from a copy's. So a persistent open (RFC 14 §2.2),
+// whose mask outlives a crash, can see its frozen Modify move after one, for
+// an operation still uncommitted then. Overturned once those records carry
+// the mask.
 func WithSuspended(ctx context.Context, m entity.TimeMask) context.Context {
 	return context.WithValue(ctx, suspendedKey{}, m)
 }
