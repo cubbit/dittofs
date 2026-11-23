@@ -496,12 +496,17 @@ func settingsImports(_ string, files []fileImports) ([]string, error) {
 // weakKeyCallers returns each non-test file under root that references
 // GenerateWeakKeyFile, whose key file protects its master key at the lowest
 // cost a key file may record: only a test, or a package of test helpers
-// whose name ends in test, may write one. It walks root itself, ignoring
-// files: it reads each file's calls, not its imports, so a shared import
-// snapshot serves it nothing — its parse is of whole files.
+// whose name ends in test, may write one. That name is exempt only because
+// no binary links a package of the module whose name ends in test, so each
+// one the binaries under cmd link is reported too. It walks root itself,
+// ignoring files: it reads each file's references, not its imports, so a
+// shared import snapshot serves it nothing; its parse is of whole files.
 func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
-	var bad []string
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	bad, err := linkedTestPackages(root)
+	if err != nil {
+		return nil, err
+	}
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -547,6 +552,36 @@ func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 	})
 	slices.Sort(bad)
 	return bad, err
+}
+
+// linkedTestPackages returns each package of the module rooted at root whose
+// name ends in test and which a binary under root's cmd links.
+func linkedTestPackages(root string) ([]string, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command("go", "list", "-deps", "-f", "{{if and .Module .Module.Main}}{{.Name}} {{.Dir}}{{end}}", "./cmd/...")
+	cmd.Dir = abs
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go list -deps ./cmd/...: %w: %s", err, stderr.String())
+	}
+	var bad []string
+	for line := range strings.Lines(string(out)) {
+		name, dir, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if !strings.HasSuffix(name, "test") {
+			continue
+		}
+		rel, err := filepath.Rel(abs, dir)
+		if err != nil {
+			return nil, err
+		}
+		bad = append(bad, filepath.ToSlash(rel)+" is named "+name+" and linked into a binary")
+	}
+	return bad, nil
 }
 
 // Each import rule reports nothing over the module and exactly the violation
@@ -598,6 +633,7 @@ func TestImportRules(t *testing.T) {
 		{"who writes a weak key file", weakKeyCallers, "weak-key",
 			[]string{
 				"internal/install/weak.go references GenerateWeakKeyFile",
+				"pkg/attest is named attest and linked into a binary",
 				"pkg/store/store.go references GenerateWeakKeyFile",
 			}},
 		{"the API settings' imports", settingsImports, "settings-leaf",
