@@ -435,8 +435,12 @@ func removed(t *testing.T, st *kvstore.Store, sh engine.Share) {
 	t.Fatalf("share %v's removal never finished", sh.ID)
 }
 
-// startLifecycle is the store's lifecycle view with each call named in fail
-// failing with its error.
+// startLifecycle is the store's lifecycle view, wrapped twice over: a
+// pass-through record of each RaiseVersionLimits that reached the store, and
+// of the Updates each RaiseAtStart made, which never answers in the store's
+// place; and a fault wrapper, which fails the calls named in fail or planned
+// with failRaises, holds a call at a gate, and leaves the shards in drop out
+// of RaiseAtStart's answer, as a store whose answer lost them, on cue.
 type startLifecycle struct {
 	engine.Lifecycle
 	fail      map[string]error
@@ -642,10 +646,12 @@ func (s *starter) shardOf(t *testing.T, id entity.ShardID) entity.Shard {
 	return sh
 }
 
-// logJournal is the engine's view of a fake journal: it logs each call the
-// engine makes on it, and on the handles it returns, in order; fails a call
-// named in fail with its error; and holds the next SetVersionLimit at the
-// gate armed, once.
+// logJournal is the engine's view of a fake journal, wrapped twice over: a
+// pass-through record of each call the engine makes on it, and on the handles
+// it returns, in order, which never answers in the journal's place; and a
+// fault wrapper, which fails a call named in fail with its error and holds
+// the next SetVersionLimit at the gate armed, once, or the handles' writes
+// while hold is in force.
 type logJournal struct {
 	*enginetest.FakeJournal
 	fail      map[string]error
@@ -666,7 +672,8 @@ type sharedCall struct {
 	floor journal.Version
 }
 
-// add logs call and answers the error fail names for it.
+// add records call, then answers the fault fail arms for it, if any, in the
+// journal's place: the call is recorded whether or not it is failed.
 func (j *logJournal) add(call string) error {
 	j.mu.Lock()
 

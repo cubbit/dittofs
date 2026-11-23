@@ -56,9 +56,11 @@ func settleCall(f entity.FileID, v journal.Version) string {
 	return fmt.Sprintf("settle %s %s", fname(f), vname(v))
 }
 
-// logExistence wraps the store's existence view: it logs each Commit and
-// Remove in the journal's call log, keeps what they were handed, and holds or
-// fails them when a test asks.
+// logExistence wraps the store's existence view twice over: a pass-through
+// record of each Commit and Remove, in the journal's call log and with what
+// they were handed, which never answers in the store's place; and a fault
+// wrapper, which holds a call at a gate or fails it, whole or per file
+// without writing, when a test asks.
 type logExistence struct {
 	engine.Existence
 	j *logJournal

@@ -84,8 +84,10 @@ func (g *batchLog) drain() {
 	}
 }
 
-// startContent is the store's content view recording each phase 2, prune and
-// listing that reaches the store, and failing them when a test asks.
+// startContent is the store's content view wrapped twice over: a
+// pass-through record of each phase 2, prune and listing that reaches the
+// store, which never answers in its place; and a fault wrapper, which fails
+// them when a test freezes the view, arms failPrune or sets listErr.
 type startContent struct {
 	engine.Content
 
