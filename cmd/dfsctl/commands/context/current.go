@@ -39,7 +39,7 @@ func runContextCurrent(cmd *cobra.Command, env cmdutil.Env, args []string) error
 	if contextName == "" {
 		return fmt.Errorf("no current context set\n\n" +
 			"Login to a server first:\n" +
-			"  dfsctl login --server http://localhost:8080")
+			"  dfsctl login --server https://<host> --username <name>")
 	}
 
 	ctx, err := store.GetContext(contextName)

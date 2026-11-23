@@ -95,14 +95,14 @@ func TestRemovedCommandsAbsent(t *testing.T) {
 	}
 
 	root, _ := newTestRoot()
-	for _, f := range []string{"token", "client-cert", "client-key", "tls-skip-verify"} {
+	for _, f := range []string{"token", "server", "cacert", "client-cert", "client-key", "tls-skip-verify"} {
 		if root.PersistentFlags().Lookup(f) != nil {
 			t.Errorf("global flag --%s: got it defined, want it absent", f)
 		}
 	}
 	trash := []string{"enable-trash", "trash-retention-days", "trash-restrict-empty-to-admin", "trash-max-size", "trash-exclude"}
 	for path, flags := range map[string][]string{
-		"login":        {"client-cert", "client-key", "tls-skip-verify"},
+		"login":        {"client-cert", "client-key", "tls-skip-verify", "password"},
 		"share create": trash,
 		"share edit":   trash,
 	} {
