@@ -186,6 +186,7 @@ func writeSpared(t *testing.T, h *nodetest.Harness, s entity.ShareID, f entity.F
 // journal with. The drives are bounded by their own outcomes — the commit
 // returns, the fill loop stops at its first refusal — never by a sleep.
 func TestTheJournalTracesItsOperations(t *testing.T) {
+	t.Parallel()
 	h, sr := traced(t, fillMax)
 	started(t, h)
 	sh := addShare(t, h)
@@ -271,6 +272,7 @@ func TestTheJournalTracesItsOperations(t *testing.T) {
 // With Config.Tracer nil, the same drives run to their own outcomes: the
 // commit returns and the fill reaches its first refusal.
 func TestTheJournalRunsUntracedWithoutATracer(t *testing.T) {
+	t.Parallel()
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		cfg.Journal = append(cfg.Journal, journal.WithSettings(fillSettings(fillMax)))
 		return node.New(cfg) // Config.Tracer left nil: the journals open untraced
@@ -295,6 +297,7 @@ func TestTheJournalRunsUntracedWithoutATracer(t *testing.T) {
 // directory holding none runs no recovery, and no attach pass to log — so
 // the drive writes one first, as the node's own writes do.
 func TestTheJournalLoggerNamesTheJournal(t *testing.T) {
+	t.Parallel()
 	log := &logBuffer{}
 	var dev string
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {

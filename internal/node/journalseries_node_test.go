@@ -218,7 +218,9 @@ func fillToTheMaximum(t *testing.T, h *nodetest.Harness, s entity.ShareID, f ent
 // listener. Conditions that need those calls, or a counter the journal does
 // not maintain yet, are skipped with their reason.
 func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
+	t.Parallel()
 	t.Run("refused reservation", func(t *testing.T) {
+		t.Parallel()
 		h, _ := seamed(t, fillMax)
 		started(t, h)
 		sh := addShare(t, h)
@@ -245,6 +247,7 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 		}
 	})
 	t.Run("sync failure", func(t *testing.T) {
+		t.Parallel()
 		h, seam := seamed(t, 8<<20)
 		started(t, h)
 		sh := addShare(t, h)
@@ -283,6 +286,7 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 		}
 	})
 	t.Run("corrupt extent, data loss", func(t *testing.T) {
+		t.Parallel()
 		h, seam := seamed(t, 8<<20)
 		started(t, h)
 		sh := addShare(t, h)
@@ -325,15 +329,19 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 		}
 	})
 	t.Run("corrupt extent, repairable", func(t *testing.T) {
+		t.Parallel()
 		t.Skip("needs the offload pass that marks an extent offloaded, which the node never runs: the synced-side share of this counter reaches a node test with the syncer and offload work")
 	})
 	t.Run("descriptor overruns", func(t *testing.T) {
+		t.Parallel()
 		t.Skip("the journal maintains no descriptor_overruns or descriptor_open_failures counters yet, so no drive exists: the series lands with its source")
 	})
 	t.Run("fill", func(t *testing.T) {
+		t.Parallel()
 		t.Skip("Fill is the syncer's call, which the node never runs without the offload work: filled_bytes and fill_refused reach a node test with it")
 	})
 	t.Run("rejected segment", func(t *testing.T) {
+		t.Parallel()
 		h, seam := seamed(t, 8<<20)
 		started(t, h)
 
@@ -366,6 +374,7 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 		}
 	})
 	t.Run("torn tail", func(t *testing.T) {
+		t.Parallel()
 		t.Skip("a torn tail is counted by the open that truncates it, so a node test needs a crash under the running journal and a reopen over what it left; the sanctioned node restart stops the journal cleanly first, and a node stop after the seam's crash fails on the files the crash closed, so the reopen a torn tail needs is not reachable from a node test until a stop tolerates a crashed journal; the journal's own conformance drives the counter, whose series this change exports")
 	})
 }
@@ -374,6 +383,7 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 // are worst by that gauge, the unlabelled sum covers every share, and a
 // change of worst between two scrapes is followed.
 func TestJournalSeriesShareWorstN(t *testing.T) {
+	t.Parallel()
 	h, _ := seamed(t, 64<<20)
 	started(t, h)
 	configure(t, h, storeA)
@@ -447,6 +457,7 @@ func TestJournalSeriesShareWorstN(t *testing.T) {
 // unbound while the journal still holds the tag's records: nothing has
 // released or repacked them.
 func TestJournalSeriesUnattachedTagCoversTheSum(t *testing.T) {
+	t.Parallel()
 	h, _ := seamed(t, 8<<20)
 	configure(t, h, storeA)
 	sh := createShare(t, h, "a", storeA)
@@ -514,6 +525,7 @@ func TestJournalSeriesUnattachedTagCoversTheSum(t *testing.T) {
 // healthy, with the counters reset as the scrape shows them. The engine's
 // own series stay, proving the scrape served.
 func TestJournalSeriesClosedJournalAbsent(t *testing.T) {
+	t.Parallel()
 	noJournalSeries := func(scr map[string]map[string]float64) {
 		t.Helper()
 		for series := range scr {
@@ -563,6 +575,7 @@ func TestJournalSeriesClosedJournalAbsent(t *testing.T) {
 // label value carries what RFC 25 §2.5's cardinality rule keeps private —
 // a path, a slash.
 func TestJournalSeriesLabelAllowList(t *testing.T) {
+	t.Parallel()
 	h, _ := seamed(t, 8<<20)
 	started(t, h)
 	sh := addShare(t, h)

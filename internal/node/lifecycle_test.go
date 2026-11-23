@@ -577,6 +577,7 @@ func TestStartRefusalLeavesEverythingByteIdentical(t *testing.T) {
 // The start_failed condition answers while Start holds the node at a step:
 // it does not wait for the Start to end.
 func TestStartFailedAnswersDuringStart(t *testing.T) {
+	t.Parallel()
 	answered := make(chan int, 1)
 	h := nodetest.New(t, nodetest.WithNew(node.NewStepping(func(n *node.Node, step string) {
 		if step != "apply" {
@@ -603,6 +604,7 @@ func TestStartFailedAnswersDuringStart(t *testing.T) {
 // Start logs the addresses the API and the metrics listeners bound, which a
 // host reads to reach a node it gave port 0.
 func TestStartLogsTheBoundAddresses(t *testing.T) {
+	t.Parallel()
 	var logged syncBuffer
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		cfg.Logger = slog.New(slog.NewTextHandler(&logged, nil))

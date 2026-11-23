@@ -29,6 +29,7 @@ import (
 // the two operator traps the not-initialised and disagree messages must not
 // fall into.
 func TestDecide(t *testing.T) {
+	t.Parallel()
 	instA := journal.InstallationID{0xAA, 0x01}
 	instB := journal.InstallationID{0xBB, 0x02}
 	corruptFormat := fmt.Errorf("%w: the format file is damaged", journal.ErrCorrupt)
@@ -231,6 +232,7 @@ func TestDecide(t *testing.T) {
 
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
+			t.Parallel()
 			got := decide(r.facts)
 			if !errors.Is(got, r.want) {
 				t.Fatalf("decide's verdict: got %v, want %v", got, r.want)
@@ -353,6 +355,7 @@ func openStore(t *testing.T, dir string) {
 // upgrade that renames it fails here rather than making the store probe read
 // every store as absent.
 func TestManifestName(t *testing.T) {
+	t.Parallel()
 	if manifestName != badger.ManifestFilename {
 		t.Errorf("manifestName = %q, want badger.ManifestFilename %q: the store probe would misread every store", manifestName, badger.ManifestFilename)
 	}
@@ -365,6 +368,7 @@ func TestManifestName(t *testing.T) {
 // trees are hashed before and after. Storage is real, journals by journal.Init
 // and the store directory by a Badger open.
 func TestPreflight(t *testing.T) {
+	t.Parallel()
 	instA := journal.InstallationID{0xAA, 0x01}
 
 	rows := []struct {
@@ -748,6 +752,7 @@ func TestPreflight(t *testing.T) {
 
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
+			t.Parallel()
 			parent := t.TempDir()
 			storeDir, devices := r.setup(t, parent)
 			hashRoots := append(slices.Clone(devices), parent)
