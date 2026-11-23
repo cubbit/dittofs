@@ -308,23 +308,24 @@ func (s *dirState) takePiece(d *Durability, dropped core.Seq, ext core.Extent) b
 }
 
 // named reports whether a Lose or a Place of this journal identity took the
-// piece k and still answers for it: a loss whose record landed or is
-// deferred holds its claim while its instance lives or a reader reached
-// its event, and a Place's claim never retires. A kept failed claim — one
-// whose record never landed, marked unplaced — answers for nothing
-// however far its ring was read, for it owns no record at all: the piece
-// is still owed, and the pass plans its record. A claim of an instance
-// that stopped before any reader reached its loss's event answers for
-// nothing — the piece stays taken, but the open's pass plans it as
-// unnamed, and the take that follows takes the claim over and republishes
-// the loss it names. A deferred loss answers the same rule: a deferring
-// instance that stopped unread leaves the copy the registry's deferral
-// still drives — the copy that retires the segment writes its record —
-// while the pass that re-plans the piece appends a record of its own when
-// it holds the reserve, two records naming one piece, answered once by the
-// next open's placement; a re-plan past the reserve defers again, and the
-// registry keeps one entry per piece. The open's pass consults named apart
-// from its own take, to know which losses no record is owed for.
+// piece k and still answers for it: a claim whose record landed or is
+// deferred holds while its instance lives or as far as a reader reached the
+// event the take published — placed and lost claims on the one rule. A kept
+// failed claim — one whose record never landed, marked unplaced — answers
+// for nothing however far its ring was read, for it owns no record at all:
+// the piece is still owed, and the pass plans its record. The ceiling this
+// arms: the answer keeps a record the directory already names only through
+// a delivered report, so a claim that stopped before any reader took its
+// event retires, named answers false and the pass plans a second record for
+// the piece — the first still on disk. Two records naming one piece place
+// once, the take answers either, and the later open reports the loss found
+// at open exactly once, so the duplicate is a disk residue known and kept,
+// never a second report; a deferred loss reaches the same shape, its copy
+// still driven by the registry's deferral while the pass plans a record of
+// its own. Withdrawn by a wording that owes the dead claim's report a
+// delivery, which would make the pass consult the failed list's reach
+// instead of this answer. The open's pass consults named apart from its own
+// take, to know which losses no record is owed for.
 func (s *dirState) named(k piece) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

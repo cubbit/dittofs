@@ -376,6 +376,49 @@ func TestALossNobodyReadIsStillFoundAtOpenAtTheThirdReopen(t *testing.T) {
 	}
 }
 
+// TestNamedAnswersThePieceOnlyThroughADeliveredReport pins named's ceiling:
+// the answer the open's pass reads keeps a record the disk already names
+// only as long as the claim that took it was answered — the taking instance
+// alive, a reader reached its event, or the record a Place found. A claim
+// that stopped before any reader took its event retires, so named answers
+// false and the pass plans the record again: the directory gains a second
+// loss record for the piece, the report the dead claim held never having
+// been delivered. Both records name one piece and the take dedup releases
+// it once, so the later open reports the loss found at open exactly once —
+// the residual of a reported loss nobody read, known and kept rather than
+// hidden.
+func TestNamedAnswersThePieceOnlyThroughADeliveredReport(t *testing.T) {
+	ctx := context.Background()
+
+	// A read-away claim: the loss record landed, a genuine reader carried
+	// its event, and the answer the given name holds.
+	e := newEnv(t)
+	served := loss(15)
+	if _, err := e.d.Lose(ctx, served); err != nil {
+		t.Fatalf("the served piece's Lose: %v", err)
+	}
+	if got := e.d.Losses(); len(got) != 1 {
+		t.Fatalf("the ring = %+v, want the one served piece's event", got)
+	}
+	e.d.Stop()
+	if !e.d.Named(served.Seq, served.Extent) {
+		t.Fatalf("Named of the served piece = false, want true: a reader carried its report")
+	}
+
+	// The unread ceiling: the same loss through another instance whose ring
+	// no reader reaches, so its claim retires and the pass plans the record
+	// the directory already names again.
+	another := buildEnv(t)
+	unread := loss(16)
+	if _, err := another.d.Lose(ctx, unread); err != nil {
+		t.Fatalf("the unread piece's Lose: %v", err)
+	}
+	another.d.Stop()
+	if another.d.Named(unread.Seq, unread.Extent) {
+		t.Fatalf("Named of the unread piece = true, want false: its claim retired with the instance whose ring answered nobody, so the pass plans the record the directory already names again")
+	}
+}
+
 // TestAnOverwrittenEventAGenuineReadNeverCarriedStaysUnserved pins the
 // served window's clamp: the ring keeps the newest core.LossRingSize events,
 // and a genuine read answers for the events its copy carried alone. The

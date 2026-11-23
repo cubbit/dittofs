@@ -1201,9 +1201,14 @@ func (r *reach) claimsDead() bool { return r.dead.Load() }
 // decision: a loss that published no event of its own — a reported one,
 // whose report another of the instance's events carried — is answered by any
 // genuine read at all, for the event that carried its report is not known to
-// the claim. The answer can then retire such a claim on a copy that held no
-// carrying event, which errs toward a reopen re-reporting the loss found at
-// open, never toward hiding one nobody read.
+// the claim. The answer errs toward a reopen re-reporting the loss found at
+// open on a copy that held no carrying event, with one narrow edge where it
+// does not: when the carrying event was overwritten in the ring before any
+// genuine read, the first read of what remains answers the claim for good,
+// and a reopen then keeps the suppression — hiding a report nobody
+// delivered. That is the price of the claim naming no event; retired when a
+// reported loss learns the number of the window's event that carried its
+// report.
 func (r *reach) claimServed(ev uint64) bool {
 	from, through := r.servedFrom.Load(), r.servedThrough.Load()
 	if ev == 0 {
