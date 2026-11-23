@@ -317,8 +317,9 @@ type settingsRead struct {
 	walk    *settingsWalk
 }
 
-// walkSettings is one walk of the settings, the pass's only one (RFC 23
-// §2.3). The counters are read right before each walk and again after it; a
+// walkSettings is the pass's one published walk of the settings (RFC 23
+// §2.3), fenced by its own counters, not the pass's: they are read right
+// before each walk and again after it, and a pass may walk several times, as a
 // walk the generation moved under is discarded and walked again, since the
 // walk reads each page in its own transaction and could mix two states of the
 // store. While writes keep moving the generation the call waits, and ends only

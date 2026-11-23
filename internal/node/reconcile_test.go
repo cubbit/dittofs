@@ -964,10 +964,11 @@ var cfgScan = keys.Describe([]byte{keys.KindCFG})
 
 // The settings walk reads every scope's settings in pages and the counters
 // before its first page and after its last: a write landing after the pass
-// read its counters, while the walk's second page holds, discards the walk.
-// The pass reports no new settings position, and the next poll walks again
-// and reports the new generation.
-func TestSettingsWalkDiscardedOnAMovedGeneration(t *testing.T) {
+// read its counters, while the walk's second page holds, makes the walk start
+// again, so the snapshot never holds two states of the store. The pass reports
+// the generation it read, not the newer one its second walk saw, and the next
+// poll reports the new generation.
+func TestSettingsWalkRepeatedOnAMovedGeneration(t *testing.T) {
 	h, f := faulted(t)
 	declareSections(t, h)
 	ch := watchStatus(h)
@@ -1007,7 +1008,8 @@ func TestSettingsWalkDiscardedOnAMovedGeneration(t *testing.T) {
 
 	// The pass reads this change in its counters, before its walk.
 	walkAt(t, h, entity.SettingScope{Kind: entity.ScopeInstallation}, "beta", 6)
-	turn(h) // the walk holds in its second page
+	h.Clock().Advance(time.Second)
+	wait(t, "the walk held in its second page", func() bool { return held.Pending() == 1 })
 	// This change lands between the walk's first page and its held second.
 	walkAt(t, h, entity.SettingScope{Kind: entity.ScopeNode, ID: h.NodeID()}, "alpha", 5)
 	moved := h.Node().Moved()
@@ -1020,19 +1022,21 @@ func TestSettingsWalkDiscardedOnAMovedGeneration(t *testing.T) {
 		t.Fatal("the held walk did not end within 10 s")
 	}
 
-	if got := h.Node().Positions(); got.Settings != gen0 {
+	// The pass read beta's change, one generation up, and reports no more:
+	// alpha's, which the walk's second run saw, waits for the next poll.
+	if got := h.Node().Positions(); got.Settings != gen0+1 {
 		t.Fatalf(
-			"after a walk a write landed in: settings position %d, want %d, the walk discarded",
+			"after a walk a write landed in: settings position %d, want %d, the generation the pass read",
 			got.Settings,
-			gen0,
+			gen0+1,
 		)
 	}
 
-	if got := readStatus(t, h).Settings; got != gen0 {
+	if got, err := runLevel(t, h, h.Node().Settings(), "alpha"); err != nil || got != 5 {
 		t.Errorf(
-			"the node's status read back: settings %d, want %d, no mixed position reported",
+			"alpha after the walk started again: level %d, %v; want 5, the state its second run read",
 			got,
-			gen0,
+			err,
 		)
 	}
 
