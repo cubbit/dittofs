@@ -1,7 +1,9 @@
 package node
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"go/ast"
 	gobuild "go/build"
 	"go/constant"
@@ -9,9 +11,11 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -19,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/cubbit/dittofs/internal/prof"
 )
 
 // configFields are the fields of Config: what the host supplies and the node
@@ -335,15 +341,17 @@ func startImports(root string) ([]string, error) {
 // exemptCalls returns each call from a non-test file of startPackage under
 // root outside startExempt to a function declared in one of startExempt.
 // The package is type-checked with its type errors ignored, so a planted
-// tree need not compile whole.
+// tree need not compile whole, and with no import resolved: a call by a bare
+// name resolves within the package whatever its imports hold, and loading
+// them from source would type-check the whole closure of dfs.
 func exemptCalls(root string) ([]string, error) {
-	fset, imp := sourceImporter()
+	fset := token.NewFileSet()
 	files, err := parsePackage(fset, filepath.Join(root, filepath.FromSlash(startPackage)))
 	if err != nil {
 		return nil, err
 	}
 	info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
-	conf := types.Config{Importer: imp, Error: func(error) {}}
+	conf := types.Config{Importer: noImports{}, Error: func(error) {}}
 	_, _ = conf.Check(module+startPackage, fset, files, info)
 	rel := func(pos token.Pos) string {
 		return startPackage + "/" + filepath.Base(fset.Position(pos).Filename)
@@ -370,6 +378,14 @@ func exemptCalls(root string) ([]string, error) {
 		})
 	}
 	return bad, nil
+}
+
+// noImports refuses every import, so a type check resolves only the
+// package's own names.
+type noImports struct{}
+
+func (noImports) Import(path string) (*types.Package, error) {
+	return nil, errors.New("not loaded: " + path)
 }
 
 // enginewireImporters returns each non-test file under root that imports
@@ -465,6 +481,59 @@ func settingsImports(root string) ([]string, error) {
 	return bad, err
 }
 
+// weakKeyCallers returns each non-test file under root that calls
+// GenerateWeakKeyFile, whose key file protects its master key at the lowest
+// cost a key file may record: only a test, or a package of test helpers
+// whose name ends in test, may write one.
+func weakKeyCallers(root string) ([]string, error) {
+	var bad []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != root && (d.Name() == "testdata" || strings.HasPrefix(d.Name(), ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		if strings.HasSuffix(f.Name.Name, "test") {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			var name string
+			switch fn := ast.Unparen(call.Fun).(type) {
+			case *ast.Ident:
+				name = fn.Name
+			case *ast.SelectorExpr:
+				name = fn.Sel.Name
+			}
+			if name == "GenerateWeakKeyFile" {
+				bad = append(bad, filepath.ToSlash(rel)+" calls GenerateWeakKeyFile")
+			}
+			return true
+		})
+		return nil
+	})
+	slices.Sort(bad)
+	return bad, err
+}
+
 // Each import rule reports nothing over the module and exactly the violation
 // planted in its testdata tree, beside the allowed look-alikes planted with it.
 func TestImportRules(t *testing.T) {
@@ -504,6 +573,8 @@ func TestImportRules(t *testing.T) {
 				"pkg/node/apiv1 imports github.com/spf13/cobra outside the standard library",
 				"pkg/node/apiv1/client imports github.com/google/uuid outside the standard library",
 			}},
+		{"who writes a weak key file", weakKeyCallers, "weak-key",
+			[]string{"pkg/store/store.go calls GenerateWeakKeyFile"}},
 		{"the API settings' imports", settingsImports, "settings-leaf",
 			[]string{"internal/node/api/apisettings/settings.go imports " + module + "pkg/node/apiv1"}},
 	} {
@@ -673,10 +744,10 @@ func TestNoComponentImports(t *testing.T) {
 }
 
 // typeCheck type-checks the package whose non-test sources for this host's
-// platform are in dir as import path path, with every import read from
-// source.
+// platform are in dir as import path path, with every import read from the
+// export data exportImporter lists.
 func typeCheck(dir, path string) (*types.Package, []*ast.File, *types.Info, error) {
-	fset, imp := sourceImporter()
+	fset, imp := exportImporter()
 	files, err := parsePackage(fset, dir)
 	if err != nil {
 		return nil, nil, nil, err
@@ -716,12 +787,49 @@ func parsePackage(fset *token.FileSet, dir string) ([]*ast.File, error) {
 	return files, nil
 }
 
-// sourceImporter is one importer from source for every check, so a package
-// two checks import is type-checked once.
-var sourceImporter = sync.OnceValues(func() (*token.FileSet, types.Importer) {
+// exportImporter is one importer for every check, so a package two checks
+// import is loaded once. It reads the export data the go command compiled for
+// each package: type-checking the node's dependencies from source instead
+// takes over a minute under the race detector.
+var exportImporter = sync.OnceValues(func() (*token.FileSet, types.Importer) {
 	fset := token.NewFileSet()
-	return fset, importer.ForCompiler(fset, "source", nil)
+	exports := sync.OnceValues(exportFiles)
+	return fset, importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		files, err := exports()
+		if err != nil {
+			return nil, err
+		}
+		if files[path] == "" {
+			return nil, fmt.Errorf("no export data for %s", path)
+		}
+		return os.Open(files[path])
+	})
 })
+
+// exportFiles lists the export data file of each package under
+// internal/node, of the metadata store's, and of every package they import,
+// by import path. The go command compiles what the build cache lacks, with
+// the race detector when this binary has it, so the build of this binary
+// already cached them.
+func exportFiles() (map[string]string, error) {
+	args := []string{"list", "-export", "-deps", "-f", "{{.ImportPath}}={{.Export}}"}
+	if prof.RaceEnabled {
+		args = append(args, "-race")
+	}
+	cmd := exec.Command("go", append(args, "./...", "../../pkg/metadata/kvstore")...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go list -export: %w: %s", err, stderr.String())
+	}
+	files := map[string]string{}
+	for line := range strings.Lines(string(out)) {
+		path, file, _ := strings.Cut(strings.TrimSpace(line), "=")
+		files[path] = file
+	}
+	return files, nil
+}
 
 // kvUpdate is the KV's write transaction, through which every write of the
 // store commits.
@@ -1027,12 +1135,14 @@ var signingKeyFiles = []string{"auth/rotate.go", "auth/tokens.go"}
 // credentialWrites are the API's functions outside signingKeyFiles that may
 // write a secret version, each by its file, its receiver's type ("" for
 // none) and its name: secretSetting.put, which writes a remote store's
-// credential and the identity keytab, handOver, an offline join's
-// machine password, and WritePassword, a password's hash and NT hash. Only a
-// row with prunes set may also call PruneSecret, the versions below the ones
-// it writes; WritePassword's is the one such row. The store refuses each under the signing key's kind or
-// owner, and every secretSetting literal is checked to name a constant kind
-// other than the signing key's.
+// credential and the identity keytab, handOver, an offline join's machine
+// password, WritePassword, a password's hash and NT hash, and createStore,
+// which writes a remote store's first credential beside the settings rows
+// it is judged with. Only a row with prunes set may also call PruneSecret,
+// the versions below the ones it writes; WritePassword's is the one such
+// row. The store refuses each under the signing key's kind or owner, and
+// every secretSetting literal is checked to name a constant kind other
+// than the signing key's.
 //
 // decision: the exemption names the functions rather than checking the
 // written secret's kind and owner, which the type checker cannot see: the
@@ -1048,6 +1158,7 @@ var credentialWrites = []struct {
 	{"res_secrets.go", "secretSetting", "put", false},
 	{"res_domain.go", "", "handOver", false},
 	{"auth/password.go", "", "WritePassword", true},
+	{"res_stores.go", "", "createStore", false},
 }
 
 // isCredentialWrite reports whether fd, declared in file, a path under the
@@ -1087,7 +1198,7 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	fset, imp := sourceImporter()
+	fset, imp := exportImporter()
 	ent, err := imp.Import(module + "pkg/metadata/entity")
 	if err != nil {
 		return nil, err

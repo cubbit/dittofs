@@ -1016,3 +1016,60 @@ func TestAWriteLeavesAloneTheTimesItsOpenSuspends(t *testing.T) {
 		t.Errorf("a write through another open: Modify %v, want the write's change time %v", got.Modify, got.Change)
 	}
 }
+
+// RFC 14 §2.2: a deallocate, a size change, a copy and a clone through an
+// open that suspended the modification time leave it alone, as a write
+// does; through another open of the file each moves it to its change time.
+func TestAContentChangeLeavesAloneTheTimesItsOpenSuspends(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		do   func(s *attrs, pc vfs.Call, h, src vfs.Handle, through vfs.OpenRef) error
+	}{
+		{"deallocate", func(s *attrs, pc vfs.Call, _, _ vfs.Handle, o vfs.OpenRef) error {
+			_, err := s.Deallocate(t.Context(), pc, o, 0, 1)
+			return err
+		}},
+		{"end of file", func(s *attrs, pc vfs.Call, h, _ vfs.Handle, o vfs.OpenRef) error {
+			_, err := s.SetAttr(t.Context(), pc, vfs.Target{H: h, Open: &o}, size(1))
+			return err
+		}},
+		{"copy", func(s *attrs, pc vfs.Call, _, src vfs.Handle, o vfs.OpenRef) error {
+			_, err := s.Copy(t.Context(), pc, vfs.CopyArgs{Src: vfs.Anonymous(src), Dst: o, Extents: []vfs.Extent{{Len: 2}}})
+			return err
+		}},
+		{"clone", func(s *attrs, pc vfs.Call, _, src vfs.Handle, o vfs.OpenRef) error {
+			_, err := s.Clone(t.Context(), pc, vfs.CopyArgs{Src: vfs.Anonymous(src), Dst: o, Extents: []vfs.Extent{{Len: 2}}})
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newAttrs(t)
+			ctx := t.Context()
+			h := s.file(t, "f", s.alice.Principal, 0o666)
+			src := s.file(t, "src", s.alice.Principal, 0o666)
+			pc := s.smb(t, "pc", s.alice.Principal)
+			_, err := s.Write(ctx, pc, vfs.Anonymous(src), 0, []byte("xy"), vfs.Unstable)
+			s.must(t, err)
+			frozen := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
+			other := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
+			_, err = s.Write(ctx, pc, other, 0, []byte("abcd"), vfs.Unstable)
+			s.must(t, err)
+			s.must(t, errOf(s.SetAttr(ctx, pc, vfs.Target{H: h, Open: &frozen}, vfs.AttrChange{Suspend: entity.TimeModify})))
+			attr := func() vfs.File {
+				t.Helper()
+				f, err := s.GetAttr(ctx, pc, h)
+				s.must(t, err)
+				return f
+			}
+			before := attr()
+			s.must(t, c.do(s, pc, h, src, frozen))
+			if got := attr(); !got.Modify.Equal(before.Modify) || !before.Change.Before(got.Change) {
+				t.Errorf("a %s through the open suspending Modify: Modify %v Change %v, want Modify %v and a Change after %v", c.name, got.Modify, got.Change, before.Modify, before.Change)
+			}
+			s.must(t, c.do(s, pc, h, src, other))
+			if got := attr(); !got.Modify.Equal(got.Change) || !got.Modify.After(before.Modify) {
+				t.Errorf("a %s through another open: Modify %v, want the change time %v, after %v", c.name, got.Modify, got.Change, before.Modify)
+			}
+		})
+	}
+}

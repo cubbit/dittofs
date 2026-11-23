@@ -19,6 +19,9 @@ const (
 	testSegmentCap = int64(64 << 10)
 	// testStreams is the number of append streams a test core has.
 	testStreams = 2
+	// testHeadroomSpares is the headroom spares a test core that names
+	// headroom records keeps: one per stream, its few records filling less.
+	testHeadroomSpares = testStreams
 )
 
 var testIdentity = core.JournalID{0xd, 0xa, 0x7, 0xa}
@@ -89,6 +92,7 @@ func buildCore(t testing.TB, o coreOptions) (*Core, *kit.Seam) {
 		Descriptors: core.NewDescriptorBudget(64),
 		Tracer:      o.tracer,
 		Targets:     segment.Targets{Content: 2 * testStreams},
+		Check:       o.check,
 	}, o.state, o)
 	if err != nil {
 		t.Fatalf("New: %v", err)

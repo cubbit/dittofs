@@ -80,7 +80,7 @@ func newPassThroughUnwatched(t *testing.T, rules ...sim.Rule) *ptFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fx.reached = &reached{clock: fx.clock, next: sched, at: map[string]time.Time{}}
+	fx.reached = &reached{clock: fx.clock, next: sched, at: map[string]time.Time{}, n: map[string]int{}}
 	fx.f = identitytest.NewFaultyDomainController(fx.d, fx.reached)
 	p := protocolSecrets(t, st)
 	var pw []byte

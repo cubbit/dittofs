@@ -31,7 +31,7 @@ func TestNodeSignIn(t *testing.T) {
 	dcIP := setupADDC(t)
 	const test = "TestSambaTicketThroughTheNode"
 	// go test runs a test in its package's directory, three below the module.
-	cmd := exec.CommandContext(t.Context(), "go", "test", "-tags=ad_dc", "-count=1", "-v", "-run=^"+test+"$", "./internal/node/")
+	cmd := exec.CommandContext(t.Context(), "go", "test", "-count=1", "-v", "-run=^"+test+"$", "./internal/node/")
 	cmd.Dir = filepath.Join("..", "..", "..")
 	cmd.Env = append(os.Environ(), "DITTOFS_AD_DC_IP="+dcIP, "DITTOFS_AD_DC_CA="+copyADCA(t), "DITTOFS_AD_DC_KEYTAB="+copyADKeytab(t))
 	out, err := cmd.CombinedOutput()

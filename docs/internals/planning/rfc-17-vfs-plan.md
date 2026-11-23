@@ -24,8 +24,8 @@ stage 5. E11 is the item of #3152 that puts the engine on the RFC 16 store.
 - **The engine:** not built. Journal v2 has its types, errors and data-path declarations
   (#3157, #3159, #3162, #3190); the engine itself is stage 3 (#3152, E11).
 - **Today's server** on `develop`: `pkg/metadata.Service`, the protocol handlers that each order
-  their own calls, and `pkg/metadata/lock`. Route B ports none of it (D1), except the
-  pseudo-filesystem (piece 3).
+  their own calls, and the lock package; stage 4 deleted the service and the lock package from
+  `feat/storage-v2`. Route B ports none of it (D1), except the pseudo-filesystem (piece 3).
 
 ## 2. Decisions to settle
 

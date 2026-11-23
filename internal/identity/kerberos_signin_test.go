@@ -492,13 +492,7 @@ func TestKerberosSignInReachesTheDirectory(t *testing.T) {
 // cifs/nas.corp.example, and returns the realm.
 func (e *dirPrincipals) kerberos(t *testing.T) *identitytest.Realm {
 	t.Helper()
-	realm := identitytest.NewRealm("CORP.EXAMPLE", "cifs/nas.corp.example")
-	st := *e.s.Applied()
-	st.Keytab = []secrets.Version{{Number: 1, Value: realm.Keytab()}}
-	if err := e.s.Apply(st); err != nil {
-		t.Fatal(err)
-	}
-	return realm
+	return e.keytab(t, "CORP.EXAMPLE")
 }
 
 // ticket is an SMB step presenting realm's cifs/nas.corp.example ticket for

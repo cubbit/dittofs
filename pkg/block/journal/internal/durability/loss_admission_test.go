@@ -24,7 +24,7 @@ func atLimitHeadroom(e *env) *capacity.Headroom {
 	// The wiring the core makes: the open class for a loss an open's own leg
 	// raises, the loss class for every other, and the settle drawn only when
 	// the record placed and refunded when it did not.
-	e.d.SetLossAdmission(func(atOpen bool) (settle func(placed bool), err error) {
+	e.d.SetLossAdmission(func(atOpen bool) (settle func(placed core.SegmentID), err error) {
 		class := capacity.Loss
 		if atOpen {
 			class = capacity.Open
@@ -33,9 +33,9 @@ func atLimitHeadroom(e *env) *capacity.Headroom {
 		if err != nil {
 			return nil, err
 		}
-		return func(placed bool) {
-			if placed {
-				h.Drawn(draw)
+		return func(placed core.SegmentID) {
+			if placed != 0 {
+				h.Drawn(draw, placed)
 				return
 			}
 			h.Refund(draw)

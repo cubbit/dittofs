@@ -12,8 +12,9 @@ import (
 const (
 	// sealMax is the footprint maximum the limit tests run a journal at: a
 	// few segments past what the spare pool and one active segment hold, so
-	// the journal sits at its limit once the pool has settled.
-	sealMax = 4*copySegCap + copySegCap/2
+	// the journal sits at its limit once the pool has settled. The pool keeps
+	// a headroom spare per stream.
+	sealMax = (3+copyStreams)*copySegCap + copySegCap/2
 	// sealHeadroom is the headroom the half test runs: eight records, whose
 	// drawing side of four goes below half after three draws.
 	sealHeadroom = 8

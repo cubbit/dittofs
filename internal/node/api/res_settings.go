@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -17,9 +18,10 @@ import (
 
 // settingsTable is the settings table the node hands in: the components'
 // validators, by key prefix, which judge a setting's write inside its
-// transaction.
+// transaction, and the codec that records a namespace's bound settings.
 type settingsTable interface {
 	Check(tx entity.ControlPlaneTx, caller entity.APIRole, w settings.Write, holds settings.HoldsContent) error
+	Bound(rows []entity.Setting) ([]byte, error)
 }
 
 var _ settingsTable = settings.Table{}
@@ -40,36 +42,64 @@ func refusedKey(key string, err error) error {
 	return &componentError{key, "refused by the settings table", err}
 }
 
+// errNoTable refuses a settings-backed write on a node that hands in no
+// settings table.
+var errNoTable = &refusal{
+	code:   apiv1.CodeUnavailable,
+	detail: "the node holds no settings table to judge the write with",
+}
+
 // checkSetting judges the write w builds for the caller ctx carries through
 // the table d holds, inside tx, a refusal naming key. w runs only once a
-// table is handed in.
-//
-// decision: with no table handed in, every key is refused ErrUnknownKey, as
-// the empty table refuses a prefix with no validator, so a setting-backed
-// write fails closed until the node hands the table in. A secret's set is
-// refused 503 before it gets here, in secretSetting.seal, so no seal is spent
-// on it. Overturned once the node always hands one, when nil should refuse
-// 503 unavailable instead.
+// table is handed in; without one the write is refused, so no setting is
+// written by a table no component declared.
 func checkSetting(ctx context.Context, d Deps, tx entity.ControlPlaneTx, key string, w func() settings.Write) error {
 	if d.Settings == nil {
-		return refusedKey(key, settings.ErrUnknownKey)
+		return errNoTable
 	}
 	c, _ := auth.CallerFrom(ctx)
-	if err := d.Settings.Check(tx, c.Role, w(), holdsContent); err != nil {
+	if err := d.Settings.Check(tx, c.Role, w(), contentIn(tx)); err != nil {
 		return refusedKey(key, err)
 	}
 	return nil
 }
 
-// holdsContent answers that every scope holds content.
+// contentIn answers whether the scope holds content, read through tx, the
+// write's own transaction, so a write of content under a bound change
+// conflicts with it.
 //
-// decision: a bound setting is refused at every scope as though content
-// were there, since nothing records what a scope holds: a namespace no share
-// names still holds blocks until GC drains it, and a store holds whatever its
-// namespaces left. So a bound setting fails closed, never open. Overturned
-// once the store records a scope's content, read in the write's transaction
-// as RFC 13's HoldsContent describes.
-func holdsContent(entity.SettingScope) (bool, error) { return true, nil }
+// decision: a remote store holds content while a namespace names it, read
+// tracked, and a namespace never reads empty: once its last share is
+// removed it still holds blocks until GC drains them, and a Target or
+// chunking key changed then makes that content unreachable, which RFC 13
+// §5.1 refuses. A share's scope, and every other kind, holds no content a
+// read can name, so instead of answering "no content" they answer an error.
+// Two windows stay open until the store records a scope's content, read in
+// the write's transaction as RFC 13's HoldsContent describes. A namespace's
+// bound settings stay refused for its whole life, wider than the rule it
+// guards: once the drain is readable in the transaction, a namespace holds
+// content while a share names it or its drain is unfinished. And a store
+// reads empty once its last namespace's record is deleted, while GC still
+// drains that namespace's blocks in it, because the record goes at once
+// with the delete; that window exposes only a store's bound keys other
+// than its location ones, since the base refuses a location change with or
+// without content, and it closes with the same change, the record kept
+// under its drain mark so that the name read stays true until the drain
+// ends. Withdrawn when the drain is readable in the transaction or a
+// share-scope bound setting is declared.
+func contentIn(tx entity.ControlPlaneTx) settings.HoldsContent {
+	return func(scope entity.SettingScope) (bool, error) {
+		switch scope.Kind {
+		case entity.ScopeRemote:
+			return tx.StoreNamed(scope.ID)
+		case entity.ScopeNamespace:
+			return true, nil
+		default:
+			return false, fmt.Errorf(
+				"settings: nothing answers whether a %s scope holds content", scope.Kind)
+		}
+	}
+}
 
 // putSettings writes each of values at scope, in key order, each judged by
 // the settings table first, under the generation tx reads it at.
@@ -95,6 +125,44 @@ func putSetting(ctx context.Context, d Deps, tx entity.ControlPlaneTx, s entity.
 	return tx.PutSetting(s, expect)
 }
 
+// createSettings writes every row of values at scope, then judges each as a
+// put in key order once the record they belong to is whole in the
+// transaction.
+//
+// decision: a create is judged as one record, not key by key: RFC 13 §4.2
+// refuses the record that omits a required setting, so one that sends a
+// required key and leaves another out is refused whichever key its write
+// would be judged by, and a refusal names the first key judged. The rows are
+// written first, and every judged write sees its own row, so the gates that
+// compare a value against the one stored read the record as it would be
+// committed. A refused create commits nothing, since it all runs in the
+// write's transaction.
+func createSettings(
+	ctx context.Context,
+	d Deps,
+	tx entity.ControlPlaneTx,
+	scope entity.SettingScope,
+	values map[string]json.RawMessage,
+) error {
+	for _, k := range slices.Sorted(maps.Keys(values)) {
+		s := entity.Setting{Scope: scope, Key: k, Value: values[k]}
+		if _, err := tx.PutSetting(s, 0); err != nil {
+			return err
+		}
+	}
+
+	for _, k := range slices.Sorted(maps.Keys(values)) {
+		s := entity.Setting{Scope: scope, Key: k, Value: values[k]}
+		if err := checkSetting(ctx, d, tx, k, func() settings.Write {
+			return settings.Put(s)
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // deleteSetting removes key's value at scope under expect, judged by the
 // settings table first.
 func deleteSetting(ctx context.Context, d Deps, tx entity.ControlPlaneTx, scope entity.SettingScope, key string, expect uint64) error {
@@ -113,6 +181,7 @@ func deleteSettings(ctx context.Context, d Deps, tx entity.ControlPlaneTx, scope
 		if err != nil {
 			return err
 		}
+
 		if !ok {
 			continue
 		}
@@ -120,6 +189,35 @@ func deleteSettings(ctx context.Context, d Deps, tx entity.ControlPlaneTx, scope
 			return err
 		}
 	}
+	return nil
+}
+
+// removeScope deletes each of keys at scope without judging any change: the
+// removal of the scope that holds them, not a change of one setting at a
+// time.
+//
+// decision: a deleted store's or namespace's rows are not checked, since the
+// scope removed holds no record an effective value could guard, and the
+// route's own role check authorized the removal (RFC 13's Check judges a
+// change, never a scope's removal). A setting whose removal needs a check of
+// its own, a secret's version that outlives its setting among them, would
+// overturn this.
+func removeScope(tx entity.ControlPlaneTx, scope entity.SettingScope, keys []string) error {
+	for _, k := range keys {
+		old, ok, err := tx.Setting(scope, k)
+		if err != nil {
+			return err
+		}
+
+		if !ok {
+			continue
+		}
+
+		if err := tx.DeleteSetting(scope, k, old.Generation); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -229,7 +327,8 @@ func settingRoutes() []route {
 			}
 			return entity.SettingRef(sc.scope(id), key).ID, nil
 		}
-		w := writing[settingDoc]{kind: entity.ResourceSetting, raises: true,
+		w := writing[settingDoc]{
+			kind: entity.ResourceSetting, raises: true,
 			read: func(tx entity.ControlPlaneTx, id [16]byte, key string) (settingDoc, uint64, bool, error) {
 				if via, ok := ownKeys[key]; ok {
 					return settingDoc{}, 0, false, &fieldError{field: key, detail: "written by " + via}
@@ -244,7 +343,8 @@ func settingRoutes() []route {
 				}
 				s, ok, err := tx.Setting(sc.scope(id), key)
 				return settingDoc{apiv1.SettingSpec{Value: s.Value}}, s.Generation, ok, err
-			}}
+			},
+		}
 		path := sc.path + "/{sub}"
 		out = append(out,
 			route{method: http.MethodGet, pattern: path, kind: entity.ResourceSetting, right: auth.View, target: target, sub: subSetting, serve: watch(settingRead(sc.scope))},

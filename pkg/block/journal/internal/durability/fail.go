@@ -106,6 +106,13 @@ func (d *Durability) settle(st *stream, w *window, fails func(entry) bool, err e
 	// a *core.SyncError (check), and one waiting on the record fails through
 	// st.lost. Its content records, if any, still mark it, and the refusal
 	// then answers in place of that mark (await).
+	//
+	// decision: the engine reads that bare refusal as "this file's removal was
+	// undone", so st.undone must name a file only for a header-only record of
+	// that file. A record that names no file (offloaded, unmark, hold, stamp,
+	// forget) lands under the zero file, which no Sync names. Overturned, and
+	// the engine's undid contract revisited, if such a record ever comes to
+	// name a file and so feed st.undone.
 	st.mu.Lock()
 	var marked []core.FileID
 	for _, e := range w.entries {

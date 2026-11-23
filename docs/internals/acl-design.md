@@ -21,7 +21,7 @@ Because the bit values are identical by design, no translation is needed for per
 
 ## The common ACL model
 
-The protocol-agnostic ACL implementation lives in `pkg/metadata/acl/` with zero dependencies on NFS or SMB wire formats.
+The protocol-agnostic ACL model is `entity.ACL` (`pkg/metadata/entity/acl.go`), with zero dependencies on NFS or SMB wire formats.
 
 ### ACE structure
 
@@ -168,7 +168,7 @@ A key design question is whether DittoFS should use a **proprietary ACL abstract
 
 ### Approach A: NFSv4 ACLs as canonical (current)
 
-This is what DittoFS implements today. The internal ACL model uses NFSv4-style ACEs (RFC 7530 Section 6), stored as `acl.ACL` in `pkg/metadata/acl/`.
+This is what DittoFS implements today. The internal ACL model uses NFSv4-style ACEs (RFC 7530 Section 6), stored as `entity.ACL` (`pkg/metadata/entity/acl.go`).
 
 **Strengths:**
 - Minimal code — one model shared by both protocols

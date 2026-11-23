@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -592,11 +591,13 @@ func TestAMachinePasswordThatDoesNotReadKeepsTheLast(t *testing.T) {
 	}
 }
 
-// A valid keytab's PUT answers 503 unavailable on the composed node, which
-// hands the API no settings table to judge the setting naming the keytab,
-// and writes neither a secret version nor that setting: the table's absence
-// is answered before the seal, not as the setting's 400 unknown_key after it.
-func TestAKeytabPutWithNoSettingsTableIsUnavailable(t *testing.T) {
+// An admin's PUT of a valid keytab on the composed node, which hands the API
+// both the secret provider and the settings table, is sealed and written
+// end to end: it answers the secret's reference at version 1, adds one
+// secret row that holds no byte of the keytab, and writes identity.keytab
+// naming that reference, its row read raw holding no byte of the keytab
+// either, while the provider opens the version back to the keytab's bytes.
+func TestAKeytabPutOnTheNodeIsSealedAndWritten(t *testing.T) {
 	m := newMachine(t, false)
 	kt := keytab.New()
 	if err := kt.AddEntry(machineSvc, machineRealm, "keytab", time.Unix(1, 0), 1, etypeID.AES256_CTS_HMAC_SHA1_96); err != nil {
@@ -610,22 +611,52 @@ func TestAKeytabPutWithNoSettingsTableIsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := secretRows(t, m.kv)
+	sec, cfg := []byte{keys.KindSEC}, []byte{keys.KindCFG}
+	secBefore, cfgBefore := rawRows(t, m.kv, sec), rawRows(t, m.kv, cfg)
 	addr, _ := m.h.Node().Addrs()
 	r := answeredIn(t, "PUT the keytab", send(t.Context(), addr, http.MethodPut, "/api/v1/installation/keytab", string(body), "If-None-Match", "*"))
-	var p apiv1.Problem
-	if err := json.Unmarshal(r.body, &p); err != nil || r.status != http.StatusServiceUnavailable || p.Code != apiv1.CodeUnavailable {
-		t.Errorf("PUT the keytab with no settings table: answered %d %s, want 503 %s", r.status, r.body, apiv1.CodeUnavailable)
+	var got apiv1.SecretRef
+	if err := json.Unmarshal(r.body, &got); err != nil || r.status != http.StatusOK || got.Ref == "" || got.Version != 1 {
+		t.Fatalf("PUT the keytab: answered %d %s, want 200 with the secret's reference at version 1", r.status, r.body)
 	}
-	if after := secretRows(t, m.kv); !maps.Equal(after, before) {
-		t.Errorf("secret rows after the refused PUT: %d, want the %d before it, unchanged", len(after), len(before))
+	for _, c := range []struct {
+		name          string
+		before, after map[string]string
+	}{{"secret", secBefore, rawRows(t, m.kv, sec)}, {"setting", cfgBefore, rawRows(t, m.kv, cfg)}} {
+		diff := changedKeys(c.before, c.after)
+		if len(diff) == 0 {
+			t.Errorf("%s rows the PUT added or rewrote: none, want some", c.name)
+		}
+		for _, k := range diff {
+			if bytes.Contains([]byte(c.after[k]), b) {
+				t.Errorf("%s row %q after the PUT holds the keytab's bytes, want them sealed", c.name, k)
+			}
+		}
 	}
+	row, ok := m.setting(t, "identity.keytab")
+	if !ok {
+		t.Fatal("identity.keytab after the PUT: none, want the setting naming the sealed keytab")
+	}
+	var ref entity.SecretRef
+	if err := json.Unmarshal(row.Value, &ref); err != nil || entity.ShareID(ref).String() != got.Ref {
+		t.Fatalf("identity.keytab's value after the PUT: %s (%v), want the answered reference %s", row.Value, err, got.Ref)
+	}
+	owner := entity.SecretOwner{Scope: installationScope, Key: "identity.keytab"}
+	if v, err := m.p.Resolve(t.Context(), secrets.Protocol, entity.SecretKeytab, owner, ref); err != nil || !bytes.Equal(v, b) {
+		t.Errorf("the sealed keytab opened: %d bytes, %v; want the %d bytes PUT", len(v), err, len(b))
+	}
+}
+
+// setting is the installation's setting key, read through the store.
+func (m *machine) setting(t *testing.T, key string) (entity.Setting, bool) {
+	t.Helper()
 	for s, err := range m.h.Store().ControlPlane().Settings(t.Context(), installationScope) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if s.Key == "identity.keytab" {
-			t.Errorf("identity.keytab after the refused PUT: %+v, want none", s)
+		if s.Key == key {
+			return s, true
 		}
 	}
+	return entity.Setting{}, false
 }

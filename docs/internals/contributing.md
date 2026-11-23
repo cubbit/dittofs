@@ -227,17 +227,15 @@ the request, calls the handler and encodes the reply.
 
 ### Adding a New Store Backend
 
-DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`) and the engine (`pkg/block/engine`), which the adapters reach through `vfs.Service` once its file operations land (see [Data path](architecture.md#data-path)).
+Business logic (permission checking, locking, quotas) lives in the filesystem service (`internal/vfs`) and the engine (`pkg/block/engine`), which the adapters reach through `vfs.Service` once its file operations land (see [Data path](architecture.md#data-path)).
 
 **Metadata Store:**
 
-1. Implement `pkg/metadata/MetadataStore` interface (simple CRUD operations)
-2. Handle file handle generation (must be unique and stable)
-3. Implement root directory creation (`CreateRootDirectory`)
-4. Ensure thread safety (concurrent access across shares)
-5. Consider persistence strategy for handles
-6. Implement `EnumerateFileChunks(ctx, authCtx, fn)` using a backend-native cursor (no full-set load, honors `ctx.Done()`); pass the v0.15.0 conformance scenarios in `pkg/metadata/storetest/`. See [IMPLEMENTING_STORES.md](implementing-stores.md#metadatastoreenumeratefilechunks-v0150-phase-11).
-7. **Note**: Permission checking is handled by `MetadataService`, not stores
+The metadata store (`pkg/metadata/kvstore`) is written once, over `kv.KV`
+(`pkg/metadata/kv/kv.go`). A new backend implements `kv.KV` and passes
+`pkg/metadata/kv/kvtest`'s suite, and the store over it
+`pkg/metadata/kvstore/kvstoretest`'s. See
+[IMPLEMENTING_STORES.md](implementing-stores.md#implementing-metadata-stores).
 
 **Journal (local tier):**
 
@@ -255,56 +253,13 @@ share; it is not a pluggable backend. Its conformance checks run under the
 
 See [IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guide.
 
-### Adding a new metadata.ErrorCode
+### Adding a new metadata error code
 
-Every `metadata.ErrorCode` that should surface to NFS and/or SMB clients is
-mapped to protocol-specific status codes by the per-package `StatusFor`
-switch in the adapter types packages (`internal/adapter/nfs/types`,
-`internal/adapter/nfs/v4/types`, `internal/adapter/smb/types`). Adding a
-new code is a one-edit-per-package contract — the enum-walk test in each
-package fails loudly if a switch arm or expectation row is missing.
-
-1. **Declare the constant** — add the new value in
-   `pkg/metadata/errors/errors.go` and re-export it from
-   `pkg/metadata/errors.go`.
-
-2. **Add the switch arm + expectation row in each types package** —
-   extend the `StatusFor` switch and the `expected` table in
-   `statusfor_test.go` for every package whose protocol should observe
-   the code:
-
-   ```go
-   case merrs.ErrFooBar:
-       return nfs3types.NFS3ErrXXX
-   ```
-
-   The enum-walk test (`TestStatusFor_EnumWalk`) iterates the full
-   `ErrorCode` range and fails if either the arm or the expectation row
-   is missing.
-
-3. **SMB lock-context override (if applicable)** — if the code has
-   different semantics in SMB2 LOCK requests versus general I/O, give it
-   an arm in `smb/types`'s `StatusForLock` (and a row in the lock
-   expectation table). `StatusForLockErr` consults the lock switch;
-   `StatusForErr` consults the general one.
-
-4. **Add a test case** — pick the right tier:
-   - **E2E tier** (triggerable via real NFS/SMB file operations): add a
-     trigger helper in `test/e2e/helpers/error_triggers.go` and a row in
-     `TestCrossProtocol_ErrorConformance` in
-     `test/e2e/cross_protocol_test.go`. Expected errnos are derived at
-     runtime from `nfs/types.StatusForErr` / `smb/types.StatusForErr` —
-     you do not hand-transcribe protocol codes into the test table.
-   - **Unit tier** (exotic codes — quota, grace-period, deadlock,
-     connection-limits): add the code to the expectation table in the
-     relevant `statusfor_test.go`. `TestStatusFor_EnumWalk` picks it up
-     automatically and asserts every switch returns the expected value.
-   - **Not sure which tier**: the enum-walk test fails on any code
-     missing an expectation row, so the tier decision cannot leave the
-     code uncovered.
-
-6. **Run the test suite** — `go test -race ./internal/adapter/common/...`
-   must stay green.
+To add a store error code, declare it in `pkg/metadata/errors/errors.go`, before
+`errCodeSentinel` and with a `String` arm, and give it a row in `storeCodes`
+(`internal/vfs/errors.go`), which maps it to one of the `pkg/vfs/vfserr` sentinels. An unmapped
+code answers `ErrUnavailable`, a retry. The node API answers store codes from its own table in
+`internal/node/api/problems.go`; `TestProblemTableIsTotal` fails on a code without a row there.
 
 ### Adding a New Protocol Adapter
 
@@ -412,16 +367,10 @@ func HandleLookup(ctx *AuthContext, dirHandle, name string) {
 
 ### Error Handling
 
-Return proper NFS error codes via `metadata.ExportError`:
-
-```go
-// Examples from metadata/errors.go
-ErrNotDirectory      // NFS3ERR_NOTDIR
-ErrNoEntity          // NFS3ERR_NOENT
-ErrAccess            // NFS3ERR_ACCES
-ErrExist             // NFS3ERR_EXIST
-ErrNotEmpty          // NFS3ERR_NOTEMPTY
-```
+The store returns `*StoreError` values from `pkg/metadata/errors` (codes `ErrNotFound`,
+`ErrNotDirectory`, `ErrAccessDenied`, …). The filesystem service maps them to the
+`pkg/vfs/vfserr` sentinels (`ErrNotFound`, `ErrNotDir`, `ErrAccess`, `ErrExist`, `ErrNotEmpty`, …)
+in `storeErr` (`internal/vfs/errors.go`), and each adapter maps those to its own status codes.
 
 Log appropriately:
 - `logger.Debug()`: Expected/normal errors (permission denied, file not found)

@@ -52,6 +52,12 @@ type Directory struct {
 	maxValRange int  // the most values of one range
 	maxPageSize int  // the most entries of one page
 	noTokens    bool // tokenGroups answered empty
+
+	// groupsOf is the groups each lower-cased DN is a member of, built by
+	// the first tokenGroups after a write and dropped by every write, which
+	// holds mu exclusively; groupsMu orders the searches building it.
+	groupsMu sync.Mutex
+	groupsOf map[string][]*entry
 }
 
 // domainUsersRID is the RID of Domain Users, every user's primary group
@@ -70,6 +76,11 @@ type entry struct {
 }
 
 func (e *entry) get(name string) [][]byte {
+	// A name asked in the case it was stored under, the common case, skips
+	// the case-insensitive scan a filter's every operand would otherwise pay.
+	if v, ok := e.attrs[name]; ok {
+		return v
+	}
 	for k, v := range e.attrs {
 		if strings.EqualFold(k, name) {
 			return v
@@ -126,6 +137,7 @@ func NewDirectory(base string) *Directory {
 }
 
 func (d *Directory) put(dn string, attrs map[string][][]byte) {
+	d.groupsOf = nil
 	d.entries[strings.ToLower(dn)] = &entry{dn: dn, attrs: attrs}
 }
 
@@ -169,6 +181,7 @@ func (d *Directory) Modify(dn string, attrs map[string][][]byte) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e := d.entries[strings.ToLower(dn)]
+	d.groupsOf = nil
 	for k, v := range attrs {
 		for have := range e.attrs {
 			if strings.EqualFold(have, k) {
@@ -187,6 +200,7 @@ func (d *Directory) Delete(dn string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.entries, strings.ToLower(dn))
+	d.groupsOf = nil
 }
 
 // SetMaxValRange sets the most values one range of an attribute holds, 1 500
@@ -499,15 +513,7 @@ func (d *Directory) tokenGroups(e *entry) [][]byte {
 			}
 		}
 	}
-	// The groups each DN is a member of, read in one pass, so the walk costs
-	// one scan of the entries rather than one per group it visits.
-	groupsOf := map[string][]*entry{}
-	for _, g := range d.entries {
-		for _, v := range g.get("member") {
-			k := strings.ToLower(string(v))
-			groupsOf[k] = append(groupsOf[k], g)
-		}
-	}
+	groupsOf := d.memberIndex()
 	seen := map[*entry]bool{}
 	var sids [][]byte
 	var visit func(m *entry)
@@ -530,6 +536,24 @@ func (d *Directory) tokenGroups(e *entry) [][]byte {
 	return sids
 }
 
+// memberIndex is the groups each lower-cased DN is a member of, read in one
+// pass over the entries and kept until the next write, so a walk costs no
+// scan of the entries at all; d.mu is held, for reading at least.
+func (d *Directory) memberIndex() map[string][]*entry {
+	d.groupsMu.Lock()
+	defer d.groupsMu.Unlock()
+	if d.groupsOf == nil {
+		d.groupsOf = map[string][]*entry{}
+		for _, g := range d.entries {
+			for _, v := range g.get("member") {
+				k := strings.ToLower(string(v))
+				d.groupsOf[k] = append(d.groupsOf[k], g)
+			}
+		}
+	}
+	return d.groupsOf
+}
+
 // security reports whether e's groupType holds the security bit.
 func security(e *entry) bool {
 	v := e.get("groupType")
@@ -542,8 +566,8 @@ func security(e *entry) bool {
 
 // under reports whether dn is base or below it.
 func under(dn, base string) bool {
-	dn, base = strings.ToLower(dn), strings.ToLower(base)
-	return dn == base || strings.HasSuffix(dn, ","+base)
+	n := len(dn) - len(base)
+	return n >= 0 && strings.EqualFold(dn[n:], base) && (n == 0 || n > 0 && dn[n-1] == ',')
 }
 
 // inScope reports whether dn is within scope of base.

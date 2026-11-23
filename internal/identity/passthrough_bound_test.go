@@ -74,19 +74,23 @@ wait:
 }
 
 // reached passes each domain controller op to next and keeps the clock's
-// time at which each op and key first reached it, before any delay of next.
+// time at which each op and key first reached it, before any delay of next,
+// and how many times it did.
 type reached struct {
 	clock *sim.TestClock
 	next  sim.Fault
 	mu    sync.Mutex
 	at    map[string]time.Time
+	n     map[string]int
 }
 
 func (r *reached) At(op string, key []byte) (time.Duration, int, error) {
 	r.mu.Lock()
-	if k := op + " " + string(key); r.at[k].IsZero() {
+	k := op + " " + string(key)
+	if r.at[k].IsZero() {
 		r.at[k] = r.clock.Now()
 	}
+	r.n[k]++
 	r.mu.Unlock()
 	return r.next.At(op, key)
 }
@@ -97,6 +101,13 @@ func (r *reached) first(opKey string) (time.Time, bool) {
 	defer r.mu.Unlock()
 	at, ok := r.at[opKey]
 	return at, ok
+}
+
+// count is how many times "op key" reached the controller.
+func (r *reached) count(opKey string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.n[opKey]
 }
 
 // noneMinted fails unless no principal holds alice's SID.
@@ -180,11 +191,12 @@ func TestPassThroughBoundCountsTheCall(t *testing.T) {
 
 // A controller that keeps its connection up and never answers holds a
 // pass-through's slot past the sign-in's answer at 5 seconds, until 30
-// seconds from the call's start, the held call's ceiling, which frees it.
+// seconds from the call's start, the held call's ceiling, which frees it and
+// retires the channel, so the next sign-in sets up a new one.
 func TestPassThroughHeldCallCeiling(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	synctest.Test(t, func(t *testing.T) {
-		fx := newPassThroughUnwatched(t, sim.Rule{Op: "logon", Key: "alice", Action: sim.FaultAction{Err: identitytest.ErrHold}})
+		fx := newPassThroughUnwatched(t, sim.Rule{Op: "logon", Key: "alice", Count: 1, Action: sim.FaultAction{Err: identitytest.ErrHold}})
 		done := make(chan error, 1)
 		go func() {
 			_, _, err := fx.signIn(ntlmStep(string(alicePW), "alice", "CORP", true))
@@ -211,11 +223,15 @@ func TestPassThroughHeldCallCeiling(t *testing.T) {
 		if h, n := fx.f.Holding(), fx.s.PassThroughs(); h != 0 || n != 0 {
 			t.Errorf("at the 30s ceiling: %d calls held, %d slots taken; want 0 and 0", h, n)
 		}
+		fx.signedIn(t, "after the ceiling", ntlmStep(string(alicePW), "alice", "CORP", true))
+		if n := fx.reached.count("dial " + dc1); n != 2 {
+			t.Errorf("after the ceiling: %d channel set-ups dialled the controller, want 2, the held call's channel retired", n)
+		}
 	})
 }
 
 // RFC 18 §10 "directory deadline"'s sign-in clause: a cold pass-through
-// sign-in of alice in 300 groups, every directory search delayed 4 seconds
+// sign-in of alice in 300 groups, every directory search delayed 4.5 seconds
 // and the controller answering at once, fails ErrUnavailable at 20 seconds
 // on the clock, and nothing is minted.
 func TestPassThroughBoundCountsTheDirectory(t *testing.T) {

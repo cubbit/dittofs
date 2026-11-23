@@ -416,7 +416,12 @@ func TestComposeOpensTheJournalWithItsMarks(t *testing.T) {
 				t.Fatalf("seam: %v", err)
 			}
 			clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-			opts := []journal.Option{journaltest.SuitableMount(), journal.WithStorage(seam.FS()), journal.WithClock(clock)}
+			// Small segments and few streams: the open after the crash
+			// scans every segment, and the format's own size makes that
+			// scan, not the open's decision, the test's whole cost.
+			settings := journal.Settings{Streams: 2, SpareTarget: 2}
+			journaltest.SetSegmentCap(&settings, journaltest.FixtureSegmentCap)
+			opts := []journal.Option{journaltest.SuitableMount(), journal.WithStorage(seam.FS()), journal.WithClock(clock), journal.WithSettings(settings)}
 			id, err := journal.Init(ctx, dir, journal.InstallationID{1}, opts...)
 			if err != nil {
 				t.Fatalf("journal init: %v", err)
@@ -471,7 +476,7 @@ func TestComposeOpensTheJournalWithItsMarks(t *testing.T) {
 			_, d, err := enginewire.Compose(enginewire.Params{
 				Node: node, Devices: []string{dir}, Store: fs.Store, Clock: clock,
 				Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-				Journal: []journal.Option{journaltest.SuitableMount(), journal.WithStorage(seam.FS())},
+				Journal: []journal.Option{journaltest.SuitableMount(), journal.WithStorage(seam.FS()), journal.WithSettings(settings)},
 			})
 			if err != nil {
 				t.Fatalf("Compose: %v", err)
@@ -537,7 +542,7 @@ func TestComposeLogsASkippedMarkToTheEnginesLogger(t *testing.T) {
 	if _, _, err := d.Lifecycle.SyncMarks(t.Context(), j); err != nil {
 		t.Fatalf("SyncMarks: %v", err)
 	}
-	want := fmt.Sprintf("journal=%s key=07", hex.EncodeToString(j[:]))
+	want := fmt.Sprintf(`journal=%s device="" key=07`, hex.EncodeToString(j[:]))
 	if !strings.Contains(logs.String(), want) {
 		t.Errorf("the engine's logger holds %q, want a warning naming %q", logs.String(), want)
 	}

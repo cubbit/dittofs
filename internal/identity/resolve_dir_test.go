@@ -267,8 +267,8 @@ func TestResolveDirectoryMintsTheEvidenceSIDs(t *testing.T) {
 
 // RFC 18 §10's mint burst: 50 first resolutions of distinct users each in
 // the same 300 directory groups, run at once, all succeed, each group minted
-// once and the generation raised at most once per resolution; then a second
-// wave whose group sets overlap pairwise without being equal all succeed.
+// once and the generation raised at most once per resolution; and a wave
+// whose group sets overlap pairwise without being equal all succeed.
 //
 // It runs RFC 18 §10's own numbers; TestResolveDirectoryMintReRuns pins the
 // re-runs deterministically, so a short run skips this one.
@@ -306,17 +306,19 @@ func TestResolveDirectoryMintBurst(t *testing.T) {
 			t.Errorf("%s: PGEN raised %d, want 1 to %d, once per minting resolution", wave, got, users)
 		}
 	}
-	for i := range groups {
-		e.d.AddGroup(t, fmt.Sprintf("g%03d", i), map[string][][]byte{"member": dns})
-	}
-	e.clock.Advance(5 * time.Minute) // past the closures the users' mints cached
-	burst("first wave", groups)
+	// The overlapping wave runs first, while each user is in only his two
+	// groups, so its resolutions do not also read the 300 the burst mints.
 	// User i is in h(i) and h(i+1): every two neighbours share one group.
 	for i := range users {
 		e.d.AddGroup(t, fmt.Sprintf("h%02d", i), map[string][][]byte{"member": {dns[i], dns[(i+users-1)%users]}})
 	}
+	e.clock.Advance(5 * time.Minute) // past the closures the users' mints cached
+	burst("overlapping wave", users)
+	for i := range groups {
+		e.d.AddGroup(t, fmt.Sprintf("g%03d", i), map[string][][]byte{"member": dns})
+	}
 	e.clock.Advance(5 * time.Minute)
-	burst("second wave", users)
+	burst("burst", groups)
 }
 
 // A cold resolution of a user in 300 groups, every search delayed 4

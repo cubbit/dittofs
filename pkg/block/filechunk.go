@@ -21,13 +21,13 @@ import (
 // own row by exact ID, and a sibling row is what keeps a shared hash in the GC
 // live set. Withdraw this only if row IDs ever become hash-derived; restoring a
 // UNIQUE constraint on hash would reject the second writer of any cross-file
-// dedup. The conformance test storetest.testPut_TwoIDsSameHash pins it for
-// every backend.
+// dedup. No implementation, and so no test, holds this interface now; the
+// next one needs a test that two IDs may share one hash.
 //
 // Enumeration of all FileChunks across the store has moved up to
 // MetadataStore.EnumerateFileChunks.
 //
-// Backends MAY (and currently do) implement additional methods
+// Backends MAY implement additional methods
 // (GetFileChunk, ListFileChunks, ListRemoteBlocks, ListUnreferenced)
 // for engine-internal use; those are accessed via a wider engine-
 // internal interface, NOT via this public surface.
@@ -56,9 +56,6 @@ type FileChunkStore interface {
 	// return either of the colliding rows. The dedup short-circuit
 	// treats the lookup as best-effort — a miss just means the caller
 	// re-PUTs the chunk, never data loss.
-	//
-	// The conformance test storetest.testPut_TwoIDsSameHash
-	// pins this contract across every backend.
 	Put(ctx context.Context, block *FileChunk) error
 
 	// Delete removes a FileChunk by ID. Returns ErrFileChunkNotFound
@@ -130,8 +127,7 @@ type FileChunkStore interface {
 // dedup-delete and stats fan-out (callers under
 // pkg/block/engine/).
 //
-// The badger metadata store satisfies this interface — the methods are concrete on the backend struct, just
-// not on the public FileChunkStore surface. Future work will
+// Nothing implements it since the v1 metadata store was deleted. Future work will
 // eliminate the remaining call sites by routing reads through
 // FileAttr.Blocks, and this interface will go away with them.
 type EngineFileChunkStore interface {

@@ -127,6 +127,18 @@ func loadLocalKeyFile(path, passphrase string) (string, []byte, error) {
 // CLI can offer an "auto-create on first use" affordance without
 // reinventing the encoding.
 func GenerateKeyFile(passphrase string) ([]byte, error) {
+	return generateKeyFile(passphrase, 3, 64*1024)
+}
+
+// GenerateWeakKeyFile is GenerateKeyFile at the lowest Argon2 cost a key file
+// may record, minArgonTime and minArgonMemoryKiB, for tests that open many
+// key files: it derives about 24 times faster and protects the master key as
+// much less. Never write one where a key protects data.
+func GenerateWeakKeyFile(passphrase string) ([]byte, error) {
+	return generateKeyFile(passphrase, minArgonTime, minArgonMemoryKiB)
+}
+
+func generateKeyFile(passphrase string, argTime, argMemKiB uint32) ([]byte, error) {
 	if passphrase == "" {
 		return nil, ErrPassphraseMissing
 	}
@@ -138,11 +150,7 @@ func GenerateKeyFile(passphrase string) ([]byte, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return nil, fmt.Errorf("keyprovider: read salt: %w", err)
 	}
-	const (
-		argTime    = 3
-		argMemKiB  = 64 * 1024
-		argThreads = 4
-	)
+	const argThreads = 4
 	derived := argon2.IDKey([]byte(passphrase), salt, argTime, argMemKiB, argThreads, 32)
 	aead, err := newGCM(derived)
 	if err != nil {

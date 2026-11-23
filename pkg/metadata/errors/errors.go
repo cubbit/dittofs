@@ -1,9 +1,6 @@
-// Package errors provides error types and error codes for the metadata package.
-// This is a leaf package with no internal dependencies, designed to be imported
-// by both the lock package and metadata store implementations without causing
-// circular imports.
-//
-// Import graph: errors <- lock <- metadata <- store implementations
+// Package errors provides error types and error codes for the metadata store.
+// This is a leaf package with no internal dependencies, so the store, the
+// filesystem service and their callers can all share it without circular imports.
 package errors
 
 import (
@@ -69,9 +66,6 @@ const (
 	// ErrLocked indicates the resource is locked.
 	ErrLocked
 
-	// ErrLockNotFound indicates the specified lock does not exist.
-	ErrLockNotFound
-
 	// ErrPrivilegeRequired indicates elevated privileges are required.
 	ErrPrivilegeRequired
 
@@ -84,19 +78,14 @@ const (
 	// ErrGracePeriod indicates operation blocked by grace period.
 	ErrGracePeriod
 
-	// ErrLockLimitExceeded indicates lock limits have been exceeded.
-	ErrLockLimitExceeded
-
 	// ErrLockConflict indicates a lock conflict (enhanced lock types).
 	ErrLockConflict
 
-	// ErrConnectionLimitReached indicates connection limit has been reached.
-	ErrConnectionLimitReached
-
-	// ErrConflict indicates a concurrent-write conflict: a Badger SSI abort, or
-	// a directory entry that changed under a rename or remove between the
-	// unlocked lookup and the transaction. Callers may retry; it never means a
-	// rule refused the write.
+	// ErrConflict indicates a rule refused a write in the state it found: a
+	// namespace a share still names, a share holding snapshots or one a clone
+	// onto another share still reads (DeleteNamespace, DeleteShare), or a share
+	// not in the state its transition starts from (SetShareState). The refusal
+	// lasts only as long as that state, so a caller may retry once it changes.
 	ErrConflict
 
 	// ErrCrossShare indicates a two-handle operation named handles from two
@@ -150,8 +139,6 @@ func (e ErrorCode) String() string {
 		return "StaleHandle"
 	case ErrLocked:
 		return "Locked"
-	case ErrLockNotFound:
-		return "LockNotFound"
 	case ErrPrivilegeRequired:
 		return "PrivilegeRequired"
 	case ErrNameTooLong:
@@ -160,12 +147,8 @@ func (e ErrorCode) String() string {
 		return "Deadlock"
 	case ErrGracePeriod:
 		return "GracePeriod"
-	case ErrLockLimitExceeded:
-		return "LockLimitExceeded"
 	case ErrLockConflict:
 		return "LockConflict"
-	case ErrConnectionLimitReached:
-		return "ConnectionLimitReached"
 	case ErrConflict:
 		return "Conflict"
 	case ErrCrossShare:
@@ -248,29 +231,6 @@ func NewNotDirectoryError(path string) *StoreError {
 	}
 }
 
-// NewInvalidHandleError creates an InvalidHandle error.
-//
-// Maps to NFS BADHANDLE / SMB STATUS_INVALID_HANDLE. Use for handles that are
-// structurally malformed (cannot be decoded into a share + UUID).
-func NewInvalidHandleError() *StoreError {
-	return &StoreError{
-		Code:    ErrInvalidHandle,
-		Message: "invalid file handle",
-	}
-}
-
-// NewStaleHandleError creates a StaleHandle error.
-//
-// Maps to NFS *STALE / SMB STATUS_FILE_CLOSED. Use for handles that decode
-// correctly but name a share that no longer exists (e.g. a handle held across
-// a RemoveShare).
-func NewStaleHandleError(shareName string) *StoreError {
-	return &StoreError{
-		Code:    ErrStaleHandle,
-		Message: fmt.Sprintf("no store configured for share %q", shareName),
-	}
-}
-
 // NewNotEmptyError creates a NotEmpty error.
 func NewNotEmptyError(path string) *StoreError {
 	return &StoreError{
@@ -341,14 +301,6 @@ func NewNameTooLongError(path string) *StoreError {
 	}
 }
 
-// NewConnectionLimitError creates a connection limit exceeded error.
-func NewConnectionLimitError(adapterType string, limit int) *StoreError {
-	return &StoreError{
-		Code:    ErrConnectionLimitReached,
-		Message: fmt.Sprintf("connection limit reached for %s adapter (max: %d)", adapterType, limit),
-	}
-}
-
 // ============================================================================
 // Error Type Checking Helpers
 // ============================================================================
@@ -367,28 +319,13 @@ func hasCode(err error, codes ...ErrorCode) bool {
 // Unwraps via errors.As so wrapped StoreErrors (fmt.Errorf("...: %w", storeErr))
 // still classify correctly.
 func IsNotFoundError(err error) bool {
-	return hasCode(err, ErrNotFound, ErrLockNotFound)
+	return hasCode(err, ErrNotFound)
 }
 
 // IsAlreadyExistsError returns true if the error is, or wraps, an
 // AlreadyExists error.
 func IsAlreadyExistsError(err error) bool {
 	return hasCode(err, ErrAlreadyExists)
-}
-
-// IsLockConflictError returns true if the error is a lock conflict.
-func IsLockConflictError(err error) bool {
-	return hasCode(err, ErrLocked, ErrLockConflict)
-}
-
-// IsDeadlockError returns true if the error indicates a deadlock.
-func IsDeadlockError(err error) bool {
-	return hasCode(err, ErrDeadlock)
-}
-
-// IsGracePeriodError returns true if the error is due to grace period.
-func IsGracePeriodError(err error) bool {
-	return hasCode(err, ErrGracePeriod)
 }
 
 // IsAccessDeniedError returns true if the error is a permission denial
@@ -400,28 +337,9 @@ func IsAccessDeniedError(err error) bool {
 	return hasCode(err, ErrAccessDenied)
 }
 
-// IsLockLimitError returns true if the error is due to lock limits.
-func IsLockLimitError(err error) bool {
-	return hasCode(err, ErrLockLimitExceeded)
-}
-
 // IsConflictError returns true if the error is a Conflict error
 // Unwraps via errors.As so wrapped StoreErrors classify
 // correctly.
 func IsConflictError(err error) bool {
 	return hasCode(err, ErrConflict)
-}
-
-// IsInvalidHandleError returns true if the error is a StoreError with
-// ErrInvalidHandle code. Unwraps via errors.As so wrapped StoreErrors
-// classify correctly.
-func IsInvalidHandleError(err error) bool {
-	return hasCode(err, ErrInvalidHandle)
-}
-
-// IsStaleHandleError returns true if the error is a StoreError with
-// ErrStaleHandle code. Unwraps via errors.As so wrapped StoreErrors
-// classify correctly.
-func IsStaleHandleError(err error) bool {
-	return hasCode(err, ErrStaleHandle)
 }

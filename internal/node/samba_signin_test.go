@@ -1,5 +1,3 @@
-//go:build ad_dc
-
 package node_test
 
 import (
@@ -75,7 +73,9 @@ func sambaDCFromEnv(t *testing.T) sambaDC {
 func (dc sambaDC) admin(t *testing.T) *ldap.Conn {
 	t.Helper()
 	roots := x509.NewCertPool()
-	roots.AppendCertsFromPEM(dc.ca)
+	if !roots.AppendCertsFromPEM(dc.ca) {
+		t.Fatal("no certificate in DITTOFS_AD_DC_CA")
+	}
 	conn, err := ldap.DialURL("ldaps://"+net.JoinHostPort(dc.ip, "636"), ldap.DialWithTLSConfig(&tls.Config{RootCAs: roots, ServerName: sambaHost}))
 	if err != nil {
 		t.Fatalf("LDAPS to the DC: %v", err)
@@ -92,8 +92,11 @@ func entry(t *testing.T, conn *ldap.Conn, name string) (string, sid.SID) {
 	t.Helper()
 	res, err := conn.Search(ldap.NewSearchRequest(sambaBase, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		"(sAMAccountName="+ldap.EscapeFilter(name)+")", []string{"objectSid"}, nil))
-	if err != nil || len(res.Entries) != 1 {
+	if err != nil {
 		t.Fatalf("find %s in the directory: %v", name, err)
+	}
+	if len(res.Entries) != 1 {
+		t.Fatalf("find %s in the directory: %d entries, want 1", name, len(res.Entries))
 	}
 	s, _, err := sid.DecodeSID(res.Entries[0].GetRawAttributeValue("objectSid"))
 	if err != nil {

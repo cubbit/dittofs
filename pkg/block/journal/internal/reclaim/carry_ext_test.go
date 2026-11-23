@@ -1024,7 +1024,7 @@ func TestCarryDeferredLossOnReserve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the headroom's opening draw: %v", err)
 	}
-	hr.Drawn(draw)
+	hr.Drawn(draw, 0)
 
 	// The wirings the pass would make: the registry mapped field by field,
 	// and the headroom the record is admitted through.

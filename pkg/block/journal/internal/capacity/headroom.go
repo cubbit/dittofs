@@ -125,17 +125,66 @@ type Headroom struct {
 	// section alone. A recorded wrong order under it must be reported,
 	// not exempted.
 	mu lockorder.Mutex
-	// drawn is the record bytes the headroom has admitted and no Refund
-	// has returned; guarded by mu.
+	// drawn is the record bytes the headroom has admitted and neither a
+	// Refund nor a Credit has returned. Every check and move of it runs
+	// under mu; it is an atomic only so Stats reads it without mu.
 	//
-	// ponytail: drawn only grows until a retirement returns headroom. With
-	// the default 65,536 records, about 30,720 cumulative at-limit draws put
-	// the journal below half, so content writes are refused each time it
-	// returns to the limit, and about 61,440 exhaust it, so every non-Open
-	// record at the limit is refused; drawn lives in memory, so a restart
-	// resets it. Upgrade by crediting it from the retirement path when repack
-	// lands.
-	drawn int64
+	// decision: drawn lives in memory and every open starts it at zero, so a
+	// restart gives back the whole drawing side. That departs from RFC 1
+	// section 6, which promises only the open reserve whole at the next open:
+	// on disk nothing tells a record drawn at the limit from the same kind
+	// appended below it, so an open cannot recount the draws the segments it
+	// adopted still hold. The footprint does not overrun for it: the pool
+	// makes every spare inside the maximum, and a header-only record appended
+	// into an existing segment moves no footprint. The ceiling runs the other
+	// way. The headroom spares the drawn records rolled into before the
+	// restart are segments now, which the pool cannot make again inside the
+	// maximum, while the ledger reads whole; the open re-adopts what spares
+	// are left into the repack reserve first (see segment.AdoptClasses), so
+	// the headroom gets only those past the reserve's. So after a restart at
+	// the limit Admit admits records whose roll — each stream's first after
+	// the open, and any once its active segment fills — finds neither a
+	// content nor a headroom spare, and the stream refuses it naming
+	// LimitHeadroom, the refusal the headroom's per-stream sizing exists to
+	// keep away, while HeadroomBytes reads nearly whole. It lasts until a
+	// retirement frees a segment the pool remakes as a headroom spare, once
+	// the repack reserve, which a retirement's recycle refills first, is
+	// whole. The
+	// open's own records are bounded by the open reserve in the recovery pass
+	// itself; their loss records also draw here, by the Open class, at a
+	// limit the open reached. Overturned by recomputing the ledger at open
+	// from the headroom spares actually ready, by a ruling that the drawing
+	// side persists across an open, or by a restart at the limit seen
+	// refusing a roll that way in the field.
+	//
+	// decision: what the ledger drew comes back only through Credit, when a
+	// retirement takes the segment that holds the records, and at the limit
+	// only repack retires: the credit is worth what repack retires there. A
+	// repack at the limit leaves a segment standing for records the liveness
+	// tracker still counts, such as an unsettled removal's, so the headroom
+	// those records drew comes back only once they settle and a later pass
+	// retires the segment. Overturned by a repack pass at the limit that has
+	// retired every sealed segment the liveness tracker does not hold and
+	// still leaves HeadroomBytes below half.
+	drawn atomic.Int64
+	// bySeg is, per segment, the record bytes of drawn records that
+	// appended into it: what Credit returns to drawn once the segment is
+	// retired. Guarded by mu.
+	//
+	// ponytail: a draw whose segment is retired between its append and
+	// its Drawn call stays in the ledger until the next open, the safe
+	// side: it is never credited, never credited twice, and its entry names
+	// a segment that is gone. The removal and forget paths register the
+	// record before the segment can be retired, but the sealer's marker does
+	// not: SealOpen leaves the segment Sealed before the sealer calls Drawn,
+	// so a retirement tick in that gap leaves one record's charge stuck. The
+	// loss path calls Drawn from the settle the durability layer's admission
+	// hands back, once its append has returned — and that append includes
+	// the record's sync, a group-commit wait — so its gap spans the wait, at
+	// the same one-charge risk.
+	// Upgrade by naming the segment at the admission if that charge ever
+	// shows in the gauge.
+	bySeg map[core.SegmentID]int64
 	// draws is the headroom_draws counter, records appended while the
 	// journal was at its limit. An atomic, so Stats reads it without mu.
 	draws atomic.Uint64
@@ -150,6 +199,7 @@ func NewHeadroom(cfg HeadroomConfig) *Headroom {
 	return &Headroom{
 		cfg:     cfg,
 		reserve: OpenReserveRecords(cfg.Records),
+		bySeg:   map[core.SegmentID]int64{},
 	}
 }
 
@@ -230,13 +280,13 @@ func (h *Headroom) Admit(c RecordClass) (Draw, error) {
 	half := size / 2
 
 	h.mu.Lock()
-	free := total - recordsOf(h.drawn)
+	free := total - recordsOf(h.drawn.Load())
 	switch {
 	case free <= h.reserve:
 		// Exhausted for this class: only the open reserve is left, which
 		// an open's own records still draw on, down to nothing.
 		if c == Open && free > 0 {
-			h.drawn += RecordCharge
+			h.drawn.Add(RecordCharge)
 			h.mu.Unlock()
 			return Draw{Append: true, drew: true}, nil
 		}
@@ -256,21 +306,54 @@ func (h *Headroom) Admit(c RecordClass) (Draw, error) {
 			return Draw{Append: false}, nil
 		}
 	}
-	h.drawn += RecordCharge
+	h.drawn.Add(RecordCharge)
 	h.mu.Unlock()
 	return Draw{Append: true, drew: true}, nil
 }
 
-// Drawn counts one admitted record once it has appended: the headroom_draws
-// counter, raised for every draw that moved the ledger, so the two agree
-// whichever way the footprint moved after the admission. A record that drew
-// nothing — below the limit, a repack copy, an Offloaded never appended —
-// counts nothing.
-func (h *Headroom) Drawn(d Draw) {
+// Drawn counts one admitted record once it has appended into segment seg:
+// the headroom_draws counter, raised for every draw that moved the ledger,
+// so the two agree whichever way the footprint moved after the admission,
+// and the segment's share of the ledger, which its retirement credits back.
+// A record that drew nothing — below the limit, a repack copy, an Offloaded
+// never appended — counts nothing. Every draw is attributed to the segment
+// it appended into, an open's draw on the open reserve included, so its
+// segment's retirement credits it back; a draw whose segment is 0, named by
+// no append, is counted but attributed to none, so the ledger's per-segment
+// figures never sum past drawn. Only tests that draw without appending pass
+// 0: every production caller names the segment its record landed in, and
+// the loss path refunds a record that landed nowhere instead.
+func (h *Headroom) Drawn(d Draw, seg core.SegmentID) {
 	if !d.drew {
 		return
 	}
 	h.draws.Add(1)
+	if seg == 0 {
+		return
+	}
+	h.mu.Lock()
+	h.bySeg[seg] += RecordCharge
+	h.mu.Unlock()
+}
+
+// Credit returns to the headroom the draws that appended into seg, once seg
+// is retired, unlinked or recycled: the space those records took is free
+// again (RFC 1 section 6, the headroom refills as segments are unlinked).
+// What an open drew of the open reserve comes back the same way, and the
+// RFC's rule that regained headroom goes to the open reserve first holds
+// through the one drawn total: the reserve is the last records of what is
+// free, so a credit refills whatever was drawn of it before the drawing side,
+// and Unused, which leaves the reserve out, sees any. The segment's entry is
+// taken whole, so a second Credit of seg returns nothing.
+func (h *Headroom) Credit(seg core.SegmentID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n, ok := h.bySeg[seg]
+	if !ok {
+		return
+	}
+	delete(h.bySeg, seg)
+	h.drawn.Store(max(h.drawn.Load()-n, 0))
 }
 
 // Refund returns one admission's draw when the append it admitted failed:
@@ -284,10 +367,7 @@ func (h *Headroom) Refund(d Draw) {
 		return
 	}
 	h.mu.Lock()
-	h.drawn -= RecordCharge
-	if h.drawn < 0 {
-		h.drawn = 0
-	}
+	h.drawn.Store(max(h.drawn.Load()-RecordCharge, 0))
 	h.mu.Unlock()
 }
 
@@ -310,14 +390,28 @@ func (h *Headroom) Draws() uint64 {
 
 // Spent returns the bytes of the headroom currently drawn.
 //
-// decision: this method is reached only from the datapath's recorded-lock
-// fixture, which needs one entry point that takes the headroom's mutex with
-// no precondition on the journal's footprint to prove its recorder is wired.
-// Nothing holds its signature up but that probe; withdraw it with the probe.
+// decision: this method is reached only from datapath tests: the
+// recorded-lock fixture, which needs one entry point that takes the
+// headroom's mutex with no precondition on the journal's footprint to prove
+// its recorder is wired, and the loss-credit test, which reads the open
+// reserve's draws that Unused leaves out. Nothing holds its signature up but
+// those tests; withdraw it with them.
 func (h *Headroom) Spent() int64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.drawn
+	return h.drawn.Load()
+}
+
+// Unused returns the drawing side's unused reservation in bytes: the records
+// not yet drawn, without the open reserve, at RecordCharge each. It is the
+// figure BelowHalf halves, read at or below the limit alike, and zero for a
+// headroom of no records. It names no allocated storage: the headroom's
+// spare segments are counted where the set counts every segment.
+//
+// It takes no lock, so Stats never waits on an admission: a read racing a
+// draw answers the figure before or after it.
+func (h *Headroom) Unused() int64 {
+	return int64(max(h.cfg.Records-recordsOf(h.drawn.Load())-h.reserve, 0)) * RecordCharge
 }
 
 // BelowHalf reports whether the headroom's drawing side has fallen below
@@ -328,18 +422,16 @@ func (h *Headroom) Spent() int64 {
 //
 // decision: the gate is the same at-limit predicate the draw itself runs
 // under, so the figure BelowHalf reports moves only with admissions the
-// limit gated. The footprint read runs before the section for the same
-// domain reason as Admit's.
+// limit gated. It takes no lock: the footprint read holds none for the same
+// domain reason as Admit's, and the drawn figure is one atomic read, as Unused's:
+// Unused's own figure is not compared, because its floor at zero answers
+// differently from this one where half the drawing side is zero records.
 func (h *Headroom) BelowHalf() bool {
 	if h.cfg.Records <= 0 || !h.atLimit() {
 		return false
 	}
-	total := h.cfg.Records
-	size := total - h.reserve
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	free := total - recordsOf(h.drawn)
-	return free-h.reserve < size/2
+	free := h.cfg.Records - recordsOf(h.drawn.Load())
+	return free-h.reserve < (h.cfg.Records-h.reserve)/2
 }
 
 // refuseHeadroom is the named refusal a class that drew nothing hands its
