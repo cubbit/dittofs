@@ -1,7 +1,9 @@
 package client_test
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -19,9 +21,14 @@ func TestStoresNamespacesAdaptersSettings(t *testing.T) {
 	st := uuid.New()
 	scope := entity.SettingScope{Kind: entity.ScopeRemote, ID: st}
 	ref := entity.SecretRef(uuid.New())
+
+	refRow, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatalf("marshal the reference row: %v", err)
+	}
 	for _, set := range []entity.Setting{
 		{Scope: scope, Key: "remote.endpoint", Value: []byte(`"https://s3.example"`)},
-		{Scope: scope, Key: "remote.credential", Value: []byte(`"` + uuid.UUID(ref).String() + `"`)},
+		{Scope: scope, Key: "remote.credential", Value: refRow},
 		{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "adapters.nfs.enabled", Value: []byte("true")},
 	} {
 		if _, err := s.store.PutSetting(t.Context(), set, 0); err != nil {
@@ -38,8 +45,14 @@ func TestStoresNamespacesAdaptersSettings(t *testing.T) {
 	}
 
 	got, err := c.Stores().Get(t.Context(), st.String())
-	if want := (apiv1.SecretRef{Ref: uuid.UUID(ref).String(), Version: 1}); err != nil || got.Spec.Credential == nil || *got.Spec.Credential != want {
-		t.Errorf("Stores().Get: %+v err %v, want credential %+v", got, err, want)
+	if err != nil || got.Spec.Credential == nil {
+		t.Fatalf("Stores().Get: %+v err %v, want its credential", got, err)
+	}
+
+	if got.Spec.Credential.Ref != uuid.UUID(ref).String() || got.Spec.Credential.Version != 1 {
+		t.Errorf(
+			"Stores().Get: credential %+v, want reference %s at version 1",
+			got.Spec.Credential, uuid.UUID(ref))
 	}
 	if n, err := c.Namespaces().Get(t.Context(), uuid.UUID(ns).String()); err != nil || n.Spec.Store != st.String() || n.ETag == "" {
 		t.Errorf("Namespaces().Get: %+v err %v, want on store %s with its tag", n, err, st)
@@ -68,4 +81,34 @@ func TestStoresNamespacesAdaptersSettings(t *testing.T) {
 	}
 	// A credential's set with no sealer answers 503, which the client
 	// retries on its clock; the refusal itself is the API's test.
+}
+
+// A store's create goes with no idempotency key, since its spec carries its
+// credential's value: the request the front recorded holds none. The front
+// answers the create itself, since the API behind it hands in no table and
+// its refusal, a 503, the client would retry on its clock.
+func TestStoresCreateGoesNoKey(t *testing.T) {
+	s := serve(t, admin())
+	c := dial(t, s.url, newClock())
+
+	s.front.add(fault{
+		match: func(r *http.Request) bool {
+			return r.Method == http.MethodPost && r.URL.Path == "/api/v1/stores"
+		},
+		status: http.StatusCreated,
+		header: http.Header{"Content-Type": []string{"application/json"}},
+		body:   `{"id":"id","generation":0,"spec":{"settings":{}}}`,
+	})
+
+	if _, err := c.Stores().Create(t.Context(),
+		apiv1.StoreSpec{Settings: map[string]json.RawMessage{}}); err != nil {
+		t.Fatalf("Stores().Create: %v", err)
+	}
+
+	for _, req := range s.front.requests(http.MethodPost) {
+		if req.uri == "/api/v1/stores" && req.header.Get("Idempotency-Key") != "" {
+			t.Errorf("the create carried the idempotency key %q, want none",
+				req.header.Get("Idempotency-Key"))
+		}
+	}
 }

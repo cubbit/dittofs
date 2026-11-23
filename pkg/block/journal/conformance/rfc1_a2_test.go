@@ -1871,6 +1871,13 @@ func TestRFC1A_LossByExactRecord(t *testing.T) {
 // its extent rather than falling back to the version it superseded: the
 // extent reads missing after a reopen that still has the older record on
 // disk, never its stale bytes.
+//
+// decision: a later synced record of the stream proves the overwrite synced;
+// the variant that hands the open the sync marks instead is not exercised,
+// because that open refuses an acknowledged record that verifies nowhere (the
+// recorded decision in recovery/marks.go, held until the reconcile's journal
+// half lands). It is turned on by that half, when this check gains the marks
+// variant beside the later-record one.
 func TestRFC1A_SyncedLossMasksSuperseded(t *testing.T) {
 	f := journaltest.New(t)
 	const size = 64 << 10
@@ -1881,6 +1888,11 @@ func TestRFC1A_SyncedLossMasksSuperseded(t *testing.T) {
 		syncFile(t, h, id)
 		overwrite := distinct(20+k, size)
 		write(t, h, id, 0, overwrite)
+		syncFile(t, h, id)
+		// A later synced record of the same stream proves the overwrite
+		// synced: without one the corrupt last record would be a torn tail,
+		// which is dropped with no loss.
+		write(t, h, id, size, distinct(40+k, size))
 		syncFile(t, h, id)
 
 		corrupt(t, f, id, overwrite)

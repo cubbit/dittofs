@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"maps"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
-	"github.com/cubbit/dittofs/pkg/settings"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -32,13 +33,11 @@ var namespaces = writing[namespaceDoc]{kind: entity.ResourceNamespace, raises: t
 
 // createNamespace is POST /namespaces: a new namespace on the remote store
 // its spec names, which must exist, with its settings, the bound ones
-// among them, written at its scope, each judged by the settings table, in
-// the transaction that writes its record.
-//
-// ponytail: the bound fields are written as settings at the namespace's
-// scope and the record's Bound is left empty, where RFC 16 holds them in
-// Namespace.Bound, encoded by the settings schema. Encode them into Bound
-// once X3's schema says how.
+// among them, written at its scope, the record judged as a whole once every
+// row is in the transaction. The record's Bound holds every bound key the
+// table declares, the ones the create sends with the value sent and the
+// others at their default, encoded by the settings table, beside the rows
+// that carry the effective values.
 func createNamespace(ctx context.Context, rq request[namespaceDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Namespace, [16]byte, error) {
 	id := entity.NewNamespaceID()
 	spec := rq.Body.Spec
@@ -53,12 +52,31 @@ func createNamespace(ctx context.Context, rq request[namespaceDoc], _ struct{}, 
 		return apiv1.Namespace{}, id, err
 	}
 	if len(spec.Settings) == 0 {
-		return apiv1.Namespace{}, id, &fieldError{field: "spec.settings", detail: "a namespace states its bound settings at its creation"}
+		return apiv1.Namespace{}, id, &fieldError{
+			field: "spec.settings", detail: "a namespace states its bound settings at its creation",
+		}
 	}
-	if err := putSettings(ctx, rq.d, tx, namespaceScope(id), spec.Settings); err != nil {
+
+	if err := createSettings(ctx, rq.d, tx, namespaceScope(id), spec.Settings); err != nil {
 		return apiv1.Namespace{}, id, err
 	}
-	gen, err := tx.PutNamespace(entity.Namespace{ID: id, Store: st}, 0)
+
+	rows := make([]entity.Setting, 0, len(spec.Settings))
+	for _, k := range slices.Sorted(maps.Keys(spec.Settings)) {
+		rows = append(rows, entity.Setting{
+			Scope: namespaceScope(id),
+			Key:   k,
+			Value: spec.Settings[k],
+		})
+	}
+
+	b, err := rq.d.Settings.Bound(rows)
+	if err != nil {
+		return apiv1.Namespace{}, id, err
+	}
+
+	gen, err := tx.PutNamespace(entity.Namespace{ID: id, Store: st, Bound: b}, 0)
+
 	return apiv1.Namespace{ID: idString(id), Generation: gen, Spec: spec}, id, err
 }
 
@@ -66,14 +84,8 @@ func createNamespace(ctx context.Context, rq request[namespaceDoc], _ struct{}, 
 // share names the namespace, one range read, before anything else; then
 // refused while the node hands in no settings table, even when no setting
 // is left at its scope; then the record under the generation If-Match
-// names, and every setting at its scope the pre-write step listed, each
-// judged by the table.
-//
-// ponytail: the table judges each setting's delete on its own, and a bound
-// key's delete (the prefix) is refused while the scope holds content, which
-// holdsContent answers for every scope. So once a table is handed in, no
-// namespace can be deleted. The table must judge a resource's delete as
-// the removal of its whole scope, which RFC 13's Check does not state yet.
+// names, and every setting at its scope the pre-write step listed, removed
+// with the scope, not judged as a change.
 //
 // ponytail: a setting written at the namespace's scope between the listing
 // and the commit outlives it; delete it in the transaction once it can list
@@ -87,7 +99,7 @@ func deleteNamespace(ctx context.Context, rq request[none], keys []string, tx en
 	case named:
 		return none{}, rq.ID, fmt.Errorf("namespace %s: a share names it: %w", id, vfserr.ErrNotEmpty)
 	case rq.d.Settings == nil:
-		return none{}, rq.ID, refusedKey("namespace", settings.ErrUnknownKey)
+		return none{}, rq.ID, errNoTable
 	}
 	// ponytail: the record and its settings go at once, while RFC 9 §7.6
 	// drains a namespace no share names under its drain mark, and GC's
@@ -96,7 +108,8 @@ func deleteNamespace(ctx context.Context, rq request[none], keys []string, tx en
 	if err := tx.DeleteNamespace(id, rq.Expect); err != nil {
 		return none{}, rq.ID, err
 	}
-	return none{}, rq.ID, deleteSettings(ctx, rq.d, tx, namespaceScope(rq.ID), keys)
+
+	return none{}, rq.ID, removeScope(tx, namespaceScope(rq.ID), keys)
 }
 
 // namespaceOn is n on the wire, with its settings.

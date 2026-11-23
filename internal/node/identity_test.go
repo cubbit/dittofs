@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -30,7 +29,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
-	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
 	vfs "github.com/cubbit/dittofs/pkg/vfs"
@@ -379,8 +377,8 @@ func TestTheAPIRefusesADirectoryUsersPassword(t *testing.T) {
 		raw = cfg.KV
 		return node.NewWithDirectory(d.Dial, nil)(cfg)
 	}))
-	// Through the store: the composed node hands the API no settings table,
-	// so the settings route refuses the directory record.
+	// Through the store: no API route seals the directory record's bind
+	// credential yet, so the record is written beside the node.
 	directoryRecord(t, s.h, sealer(t, s.h), d, "KORP")
 	caughtUp(t, s.h)
 	proven := vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofSecret}}
@@ -495,7 +493,7 @@ func TestNoSecretInWhatTheNodeRecords(t *testing.T) {
 	const handed = "Nas-Handed-Passw0rd"
 	secret["the offline join's password"] = []byte(handed)
 	m.dc.SetComputerPassword(t, "NAS", []byte(handed))
-	offline := handOverOffline(t, m, handed)
+	offline := m.joinOffline(t, handed, true)
 	m.succeeded(t, "the offline join", offline)
 	machinePasswords()
 	rotation := m.post(t, "rotate-machine-password", "")
@@ -570,38 +568,6 @@ func TestNoSecretInWhatTheNodeRecords(t *testing.T) {
 			}
 		}
 	}
-}
-
-// handOverOffline seals password as the machine password's next version,
-// handed over, and starts an offline join of NAS$ taking the installation
-// over at that version, as the API's join-domain route does: the composed
-// node hands the API no sealer, so the route answers 503 to an offline join.
-func handOverOffline(t *testing.T, m *machine, password string) entity.OperationID {
-	t.Helper()
-	in := m.installation(t)
-	sec, err := m.p.Seal(t.Context(), secrets.Protocol, entity.SecretMachinePassword, in.MachinePasswordOwner(), in.MachinePassword,
-		[]byte(password), secrets.Meta{HandedOver: true})
-	if err != nil {
-		t.Fatalf("seal the offline join's password: %v", err)
-	}
-	params, err := json.Marshal(apiv1.JoinDomainParams{JoinDomainSpec: apiv1.JoinDomainSpec{Mode: apiv1.JoinOffline, Account: "NAS$", Takeover: true},
-		Version: sec.Version})
-	if err != nil {
-		t.Fatal(err)
-	}
-	op := entity.Operation{ID: entity.OperationID(uuid.New()), Kind: string(apiv1.OpJoinDomain), Target: entity.ResourceRef{Kind: entity.ResourceInstallation, ID: in.ID[:]},
-		Account: entity.NewUser(), State: entity.OpRunning, Params: params}
-	err = m.h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-		if err := tx.PutSecret(sec, sec.Version-1); err != nil {
-			return err
-		}
-		_, err := tx.PutOperation(op, 0)
-		return err
-	})
-	if err != nil {
-		t.Fatalf("hand the offline join over: %v", err)
-	}
-	return op.ID
 }
 
 // opRows is every distinct operation record read, key and value as the KV

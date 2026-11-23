@@ -156,12 +156,14 @@ func (c *Client) Health(ctx context.Context) (apiv1.Health, error) {
 	return get[apiv1.Health](ctx, c, "/api/v1/health")
 }
 
-// Stores is the remote stores: Create is POST /stores, Get is GET
+// Stores is the remote stores: Create is POST /stores, whose spec carries
+// its credential's value and so goes with no idempotency key; Get is GET
 // /stores/{id} and Delete is DELETE /stores/{id}; no route serves List, Put
 // or Patch. A store's settings are each a setting at its scope, and its
-// credential is set by SetStoreCredential.
+// credential is set on the create or by SetStoreCredential, which the
+// store's capability check refuses until it is built.
 func (c *Client) Stores() Resource[apiv1.StoreSpec, struct{}] {
-	return Resource[apiv1.StoreSpec, struct{}]{c: c, path: "/api/v1/stores"}
+	return Resource[apiv1.StoreSpec, struct{}]{c: c, path: "/api/v1/stores", keyless: true}
 }
 
 // SetStoreCredential is PUT /stores/{id}/credential: it seals value as the

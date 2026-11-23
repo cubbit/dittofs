@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"slices"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform/platformtest"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
@@ -93,6 +96,11 @@ type Fixture struct {
 	opts    []journal.Option
 	handles map[int]*journal.Handle
 
+	// unsuitable makes the fixture's mount probe answer a mount the platform
+	// check refuses. The journal's own goroutines read it, the read-only
+	// probe's among them.
+	unsuitable atomic.Bool
+
 	// spares is the spare-pool wait the opened journal handed over, the
 	// settle event the fixture blocks on before it hands its caller a
 	// journal whose pool is still filling in the background. Open's own
@@ -168,6 +176,13 @@ func NewBare(tb testing.TB) *Fixture {
 	return f
 }
 
+// NewUnwatchedWith is NewUnwatched with set applied to the journal's settings
+// before Init.
+func NewUnwatchedWith(tb testing.TB, set func(*journal.Settings)) *Fixture {
+	tb.Helper()
+	return newFixture(tb, nil, false, FixtureSegmentCap, set)
+}
+
 // newFixture is New with fault set on the seam before the journal is
 // initialised, the profiler only when watch is set, segments of segCap
 // bytes, set, when not nil, applied to the settings, and opts added before
@@ -230,12 +245,31 @@ func bareFixture(tb testing.TB, fault sim.Fault, segCap int64, set func(*journal
 	// The suitable mount comes first, so a caller's own probe option, passed
 	// through NewWithOptions, replaces it; the fixture's clock, settings and
 	// storage stay the last word on theirs.
-	f.opts = append([]journal.Option{SuitableMount()}, append(opts[:len(opts):len(opts)],
+	f.opts = append([]journal.Option{journal.WithMountProbe(f.mountProbe)}, append(opts[:len(opts):len(opts)],
 		journal.WithClock(clock), journal.WithSettings(settings),
 		journal.WithSparesReady(f.takeSparesWait))...)
 	tb.Cleanup(f.close)
 	return f
 }
+
+// mountProbe is the fixture's mount probe: SuitableMount's suitable mount,
+// or, while SetMountUnsuitable holds, the same mount with its cache flushes
+// off, which the real platform check refuses as unsuitable storage.
+func (f *Fixture) mountProbe(dir string) (storage.Probe, error) {
+	if f.unsuitable.Load() {
+		return platformtest.NoBarrierMount("/"), nil
+	}
+	return platformtest.SuitableGather("/")(dir)
+}
+
+// SetMountUnsuitable makes every later platform check of the fixture's
+// journals, the open's and the read-only probe's, refuse the directory as a
+// mount without cache flushes while on holds, as a device remounted that way
+// would; false makes the mount suitable again. It is safe from any goroutine.
+// It acts on the fixture's own mount probe only: a fixture given its own
+// WithMountProbe option checks that probe instead, and this then changes
+// nothing.
+func (f *Fixture) SetMountUnsuitable(on bool) { f.unsuitable.Store(on) }
 
 // takeSparesWait is the callback Open hands the spare-pool wait of the journal
 // it built. The fixture keeps the last one, so its wait is the pool of the

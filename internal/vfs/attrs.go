@@ -8,6 +8,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/internal/vfs/quota"
+	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -234,6 +235,7 @@ func (fs *Filesystem) setAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 			return vfs.WCC{}, openErr(err)
 		}
 	}
+	var suspended entity.TimeMask
 	if size {
 		ref := openstate.OpenRef{Kind: openstate.RefAnonymous, Handle: t.H}
 		if t.Open != nil {
@@ -242,6 +244,9 @@ func (fs *Filesystem) setAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		cut := openstate.ByteRange{Offset: uint64(min(f.Size, ch.Size)), Length: ^uint64(0)}
 		if err := fs.checks.CheckIO(ctx, who, key, ref, cut, entity.WriteData); err != nil {
 			return vfs.WCC{}, openErr(err)
+		}
+		if suspended, err = fs.suspended(ctx, a, f, ref); err != nil {
+			return vfs.WCC{}, err
 		}
 	}
 	// An owner or group change moves the file's charge, its bytes and one
@@ -295,7 +300,7 @@ func (fs *Filesystem) setAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		applied = true
 	}
 	if size {
-		if err := fs.truncate(ctx, a, t.H, f, ch.Attrs); err != nil {
+		if err := fs.truncate(ctx, a, t.H, f, ch.Attrs, suspended); err != nil {
 			return vfs.WCC{}, err
 		}
 	}
@@ -324,14 +329,14 @@ func moved(f vfs.File, ch vfs.Attrs) (c quota.Charge, scopes []vfs.QuotaScope) {
 // truncate stages f's size change in the engine, once an unprivileged
 // caller's change has cleared setuid and setgid in a committed change, as a
 // write's does, which changes the mode alone; a change naming the mode sets
-// it explicitly instead.
-func (fs *Filesystem) truncate(ctx context.Context, a *admitted, h vfs.Handle, f vfs.File, ch vfs.Attrs) error {
+// it explicitly instead. It leaves alone the times suspended names.
+func (fs *Filesystem) truncate(ctx context.Context, a *admitted, h vfs.Handle, f vfs.File, ch vfs.Attrs, suspended entity.TimeMask) error {
 	if !ch.Changes(entity.AttrMode) {
 		if _, err := fs.clearSetID(ctx, a, h, f, false); err != nil {
 			return err
 		}
 	}
-	return storeErr(fs.engine.Truncate(ctx, f.Share, f.ID, ch.Size))
+	return storeErr(fs.engine.Truncate(engine.WithSuspended(ctx, suspended), f.Share, f.ID, ch.Size))
 }
 
 // attrTimes are the attributes that are times.

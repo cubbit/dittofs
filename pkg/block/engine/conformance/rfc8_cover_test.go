@@ -647,10 +647,11 @@ func TestRFC8B_JournalFullOnAFullDevice(t *testing.T) {
 		t.Fatal("no write was refused on a device with no room")
 	}
 
-	// The device's own refusal is answered ErrNoSpace; a roll with no spare
-	// ready answers ErrDelay and raises nothing (RFC 8 §10.2, §11.1). This
-	// check comes first: which of the two the engine meets first depends on
-	// the scheduler, and both answer a capacity delay today.
+	// The device's own refusal is answered ErrNoSpace at once, a reserved
+	// write's hold on the full device included; a roll with no spare ready
+	// while the device has room answers ErrDelay and raises nothing (RFC 8
+	// §10.2, §11.1). This check comes first, so a refusal that met the plain
+	// spare limit fails here rather than at the journal_full checks below.
 	if !errors.Is(refused, vfserr.ErrNoSpace) {
 		t.Fatalf("the refused roll answered %v, want the device's ErrNoSpace", refused)
 	}

@@ -69,14 +69,42 @@ type Targets struct {
 	Reserve  int
 }
 
-// AdoptClasses returns the classes of the first n adopted spares: the fill
-// order fills the headroom first, then the repack reserve, then the content
-// class, and every spare past every target takes the content class. The
-// re-adoptions the spares phase records ascend by id, so the caller hands the
-// i-th class to the i-th id: the lowest ids land in the headroom. A caller
-// with other claimants on the headroom — the spares phase's held takes, which
-// stand there first — counts them into n ahead of this call and hands this
-// call only the classes the re-adoptions take.
+// AdoptClasses returns the classes of the first n adopted spares: the repack
+// reserve first, then the headroom, then the content class, and every spare
+// past every target takes the content class. The re-adoptions the spares
+// phase records ascend by id, so the caller hands the i-th class to the i-th
+// id: the lowest ids land in the reserve. A caller with other claimants on
+// the headroom — the spares phase's held takes — lowers the headroom's
+// target by them before this call, so the re-adoptions fill only the slots
+// the holds leave.
+//
+// decision: an open adopts into the reserve before the headroom, the other
+// way from the refill, which makes the headroom first. At a restart at the
+// journal's limit the pool can make no spare inside the maximum, so the
+// spares the open adopts are all repack has to carry into, and repack — the
+// one way out at the limit (RFC 1 section 6) — is what returns the headroom;
+// a directory holding fewer spares than the headroom's target would
+// otherwise give the reserve's own spare to the headroom. The refill keeps
+// the headroom first because it runs where the device has room: there a
+// near-full device's one spare goes to the records an open owes, which
+// roll into the headroom, so the open still serves. The ceiling: the open's
+// loss pass needs one roll per stream that holds losses, and it waits for
+// those spares before any retirement the open makes, so a restart at the
+// limit whose directory holds no more spares than the streams with losses
+// to record — under the old order, fewer than them — gives the reserve its
+// spare and leaves a loss record no spare to roll into, and the open
+// refuses. At the journal's own limit nothing inside it can make that spare
+// fit, so every retry adopts the same set and refuses the same way: the
+// directory stays closed until the operator raises the maximum or frees the
+// device, the failure RFC 1 section 6 borrows a spare to avoid for an open's
+// re-appends. The fallback — the open's loss records rolling into the
+// reserve's spare, counted like the re-appends' borrowed headroom — is not
+// built: it collides with the same open's emptying, which draws that
+// reserve spare, and it overrules Pool.Take's rule that a class falls back to
+// no other, which is a question for the owner of RFC 1 section 6, filed as
+// its own issue (the open's loss records falling back to the reserve spare,
+// or deferred as RFC 28 section 3.3 defers drops past the open reserve).
+// Overturned by that ruling, or by an open seen refusing that way.
 //
 // decision: the counting starts at the headroom, not at the reconcile spare
 // — a re-adopted spare counts toward the reconcile spare's quota while the
@@ -94,11 +122,11 @@ type Targets struct {
 func (t Targets) AdoptClasses(n int) []Class {
 	classes := make([]Class, n)
 	i := 0
-	for ; i < n && i < t.Headroom; i++ {
-		classes[i] = Headroom
-	}
-	for r := 0; i < n && r < t.Reserve; i, r = i+1, r+1 {
+	for ; i < n && i < t.Reserve; i++ {
 		classes[i] = Reserve
+	}
+	for h := 0; i < n && h < t.Headroom; i, h = i+1, h+1 {
+		classes[i] = Headroom
 	}
 	for ; i < n; i++ {
 		classes[i] = Content
@@ -114,6 +142,12 @@ type PoolCounters struct {
 	Spares int64
 	// HeadroomBytes is the ready headroom spares at the segment cap, as
 	// allocated now.
+	//
+	// decision: no production path reads it since the journal's Stats report
+	// the headroom's ledger instead; it stays as the pool's own read of its
+	// ready headroom class, which the pool's tests and the durability
+	// harness wait on. Withdrawn if those tests move to another read of the
+	// class, or if a gauge of the allocated headroom comes back to read it.
 	HeadroomBytes int64
 	// RepackReserveBytes is the ready reserve spares at the segment cap, as
 	// allocated now.
@@ -573,6 +607,9 @@ func (p *Pool) Hold(n int) (*Hold, error) {
 			p.pending = n
 		}
 		p.mu.Unlock()
+		if err := p.fullDeviceAnswer(); err != nil {
+			return nil, err
+		}
 		return nil, &core.NoSpaceError{Limit: core.LimitSpare, Missing: missing, Unit: core.UnitSegments}
 	}
 	p.pending = 0
@@ -705,8 +742,8 @@ func (h *Hold) Close() {
 }
 
 // wantRecycle reserves a slot for a recycled spare in the first class short of
-// its target, in the refill's own order — headroom, then reserve, then
-// content, whose target the holds and the refused asks ride above — counting
+// its target — reserve, then headroom, then content, whose target the holds
+// and the refused asks ride above — counting
 // the ready spares and the reservations in flight together. It answers false
 // when no class is short or the pool is stopped, and the reservation it takes
 // when it answers true is what recycled spends and recycleFailed gives back.
@@ -743,15 +780,19 @@ func (p *Pool) wantRecycle() (Class, bool) {
 		return 0, false
 	}
 	switch {
+	case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
+		// The reserve first, unlike the refill's makes: a recycle is a
+		// retirement's segment, and a retirement gives the repack reserve
+		// back what its copies spent (RFC 1 sections 6 and 7.2), so the next
+		// pass at the limit, where nothing else makes a spare, has one.
+		p.incoming[Reserve]++
+		return Reserve, true
 	case len(p.ready[Headroom])+p.incoming[Headroom]+int(p.holdTaken.Load()) < p.t.Headroom:
 		// The open's held takes count here as the refill counts them: a
 		// reserved slot a held take occupies is a slot the recycle would
 		// double-fill.
 		p.incoming[Headroom]++
 		return Headroom, true
-	case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
-		p.incoming[Reserve]++
-		return Reserve, true
 	case len(p.ready[Content])+p.incoming[Content] < p.contentGoalLocked():
 		// Content counts what holds demand and what a refused Hold asked,
 		// exactly as the refill does: a recycle filling a slot is worth what
@@ -843,6 +884,24 @@ func (p *Pool) BorrowHeadroom(n int) { p.borrowed.Store(int64(n)) }
 func (p *Pool) HeadroomShort() int {
 	short := p.t.Headroom - int(p.readyN[Headroom].Load()) - int(p.holdTaken.Load())
 	return int(max(min(int64(short), p.borrowed.Load()), 0))
+}
+
+// fullDeviceAnswer is the answer a refused spare take owes a full device: the
+// platform's own ENOSPC, wrapped so errors.Is holds for syscall.ENOSPC and not
+// for core.ErrNoSpace, or nil when the device has room or a full-size retired
+// segment is to hand, whose recycle is the spare. It takes p.mu and the
+// retirer's lock, so the caller holds neither.
+//
+// decision: the flag stays set after space is freed outside the journal, until
+// a kicked make succeeds, and Hold kicks the refill only in its defer after
+// answering, so the first write after the space returns may get ENOSPC where
+// one retry-later would have served it. Overturned by ENOSPC answers observed
+// while the device has free space.
+func (p *Pool) fullDeviceAnswer() error {
+	if p.DeviceFull() && !p.retiredToHand() {
+		return fmt.Errorf("%w: making one failed for lack of device space: %w", ErrNoSegmentForTheRoll, syscall.ENOSPC)
+	}
+	return nil
 }
 
 // DeviceFull reports whether a make has failed with ENOSPC and no spare has
@@ -1303,6 +1362,10 @@ func (p *Pool) refill() bool {
 			p.mu.Unlock()
 			return false
 		}
+		// The headroom before the reserve here, the other way from a
+		// recycle (see wantRecycle): a recycle is a retirement's segment and
+		// returns the reserve what repack spent, while this pass makes a
+		// spare where the device has room.
 		// decision: the headroom and the reserve fill before the content
 		// class, because they are what keeps a full journal able to free
 		// space — the records that return space roll into them — so a pass
@@ -1341,7 +1404,7 @@ func (p *Pool) refill() bool {
 		// holding no lock: it is the journal's own policy, not a function of
 		// the capacity domain, and no lock of the domain may be held across
 		// it. The one spare a read-only journal does make, the probe's (RFC 1
-		// §5.4), is made through Maker.Make, not this refill, so this does not
+		// §5.4), is made through Maker.MakeOverMax, not this refill, so this does not
 		// stop it. Withdrawn if that spare ever has to come from the pool, or
 		// if the journal ever needs the refill to run while read-only.
 		if p.readOnly != nil {

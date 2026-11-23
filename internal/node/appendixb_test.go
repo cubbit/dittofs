@@ -456,21 +456,6 @@ var classNames = map[settings.Class]string{
 	settings.Bound:     "bound",
 }
 
-// adminByRoute is each key Appendix B writes by admin only whose section the
-// table declares at the operator role, each with the API's gate that holds
-// it to admin instead.
-//
-// decision: these two keys share the identity section with keys an operator
-// writes, and a section has one write role, so the API holds them to admin
-// in its own routes, where this check cannot see: it accepts exactly this
-// disagreement for them, and fails once the table and Appendix B agree on
-// one, so the entry goes with the gap. Withdraw an entry when its key moves
-// to a section declared at the admin role.
-var adminByRoute = map[string]string{
-	"identity.ntlm":   "internal/node/api/ntlm.go: only an admin writes identity.ntlm",
-	"identity.keytab": "internal/node/api/res_settings.go ownKeys: written only by PUT /api/v1/installation/keytab, an admin's",
-}
-
 // compareAppendixB compares the table's keys with Appendix B's rows, each
 // key's scope, class and write role, and returns every disagreement, each
 // naming its key, as failures; an Appendix B key under a section's prefix
@@ -522,12 +507,8 @@ func compareAppendixB(t *testing.T, rows []appendixRow, tb settings.Table) (fail
 			failures = append(failures, fmt.Sprintf("%s (line %d): class %q, Appendix B's %q",
 				k.Key, r.line, got, r.class))
 		}
-		switch route, gated := adminByRoute[k.Key]; {
-		case gated && (k.adminOnly || !r.admin):
-			failures = append(failures, fmt.Sprintf("%s (line %d): admin only by its route (%s), but the table "+
-				"(admin only %v) and Appendix B (%v) no longer disagree; drop it from adminByRoute",
-				k.Key, r.line, route, k.adminOnly, r.admin))
-		case !gated && k.adminOnly != r.admin:
+
+		if k.adminOnly != r.admin {
 			failures = append(failures, fmt.Sprintf("%s (line %d): written by admin only %v, Appendix B's %v",
 				k.Key, r.line, k.adminOnly, r.admin))
 		}

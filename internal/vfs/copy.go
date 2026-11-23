@@ -112,6 +112,10 @@ func (fs *Filesystem) copyOrCloneOnce(ctx context.Context, c vfs.Call, a vfs.Cop
 	if err != nil {
 		return 0, vfs.WCC{}, err
 	}
+	suspended, err := fs.suspended(ctx, da, df, a.Dst) // the destination's open's, whose content changes
+	if err != nil {
+		return 0, vfs.WCC{}, err
+	}
 	for _, x := range a.Extents {
 		if badExtent(x, sf.ID == df.ID) || x.SrcOff+x.Len > sf.Size {
 			return 0, vfs.WCC{}, vfs.ErrInvalid
@@ -165,7 +169,7 @@ func (fs *Filesystem) copyOrCloneOnce(ctx context.Context, c vfs.Call, a vfs.Cop
 		before = &b
 		return nil
 	}
-	ectx := engine.WithAdmitted(ctx, admitted)
+	ectx := engine.WithSuspended(engine.WithAdmitted(ctx, admitted), suspended)
 	var n int64
 	if op == vfs.OpClone {
 		err = fs.engine.Clone(ectx, sf.Share, sf.ID, df.Share, df.ID, a.Extents[0])

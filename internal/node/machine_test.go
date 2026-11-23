@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
+	"github.com/jcmturner/gokrb5/v8/keytab"
 
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/internal/node"
@@ -209,6 +210,21 @@ func (m *machine) join(t *testing.T) entity.OperationID {
 	return id
 }
 
+// joinOffline starts an offline join of NAS$ through the API, handing over
+// password, taking the installation over if takeover, and returns its
+// operation's ID.
+func (m *machine) joinOffline(t *testing.T, password string, takeover bool) entity.OperationID {
+	t.Helper()
+	body, err := json.Marshal(apiv1.JoinDomain{
+		Spec:       apiv1.JoinDomainSpec{Mode: apiv1.JoinOffline, Account: "NAS$", Takeover: takeover},
+		Credential: apiv1.JoinCredential{Password: []byte(password)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m.post(t, "join-domain", string(body))
+}
+
 // passThrough signs alice in as CORP\alice through the node's filesystem
 // service, which passes it to the domain controller.
 func (m *machine) passThrough(t *testing.T) (identity.SignInResult, error) {
@@ -282,6 +298,23 @@ func TestAJoinThroughTheAPIRunsOnTheNode(t *testing.T) {
 		t.Fatalf("the installation's join after the join: %+v, want joined as NAS$", j)
 	}
 	m.passedThrough(t, "once joined")
+}
+
+// An offline join through the API, its computer account staged at the
+// domain controller and its password handed over, answers 202 and runs on
+// the node's runner to joined, and alice's NTLM sign-in in the domain is
+// then passed through. Only it covers a join to a staged computer account
+// without takeover, then the sign-in passed through on that join.
+func TestAnOfflineJoinThroughTheAPIRunsOnTheNode(t *testing.T) {
+	m := newMachine(t, false)
+	const handed = "Nas-Staged-Passw0rd"
+	m.dc.StageComputer(t, identitytest.StagedComputer{Name: "NAS", Password: []byte(handed), EncTypes: 0x18})
+	m.succeeded(t, "the offline join", m.joinOffline(t, handed, false))
+	caughtUp(t, m.h)
+	if j := m.installation(t).Join; !j.Joined || j.Account != "NAS$" {
+		t.Fatalf("the installation's join after the offline join: %+v, want joined as NAS$", j)
+	}
+	m.passedThrough(t, "once joined offline")
 }
 
 // Once joined, a ticket under a key derived from the machine password signs
@@ -556,4 +589,74 @@ func TestAMachinePasswordThatDoesNotReadKeepsTheLast(t *testing.T) {
 	if st := m.h.Node().AppliedIdentity(); len(st.Machine) == 0 || !st.Join.Joined {
 		t.Fatalf("identity once the machine password did not read: %d versions, joined %v; want the last kept", len(st.Machine), st.Join.Joined)
 	}
+}
+
+// An admin's PUT of a valid keytab on the composed node, which hands the API
+// both the secret provider and the settings table, is sealed and written
+// end to end: it answers the secret's reference at version 1, adds one
+// secret row that holds no byte of the keytab, and writes identity.keytab
+// naming that reference, its row read raw holding no byte of the keytab
+// either, while the provider opens the version back to the keytab's bytes.
+func TestAKeytabPutOnTheNodeIsSealedAndWritten(t *testing.T) {
+	m := newMachine(t, false)
+	kt := keytab.New()
+	if err := kt.AddEntry(machineSvc, machineRealm, "keytab", time.Unix(1, 0), 1, etypeID.AES256_CTS_HMAC_SHA1_96); err != nil {
+		t.Fatal(err)
+	}
+	b, err := kt.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(apiv1.Credential{Spec: apiv1.CredentialSpec{Value: b}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec, cfg := []byte{keys.KindSEC}, []byte{keys.KindCFG}
+	secBefore, cfgBefore := rawRows(t, m.kv, sec), rawRows(t, m.kv, cfg)
+	addr, _ := m.h.Node().Addrs()
+	r := answeredIn(t, "PUT the keytab", send(t.Context(), addr, http.MethodPut, "/api/v1/installation/keytab", string(body), "If-None-Match", "*"))
+	var got apiv1.SecretRef
+	if err := json.Unmarshal(r.body, &got); err != nil || r.status != http.StatusOK || got.Ref == "" || got.Version != 1 {
+		t.Fatalf("PUT the keytab: answered %d %s, want 200 with the secret's reference at version 1", r.status, r.body)
+	}
+	for _, c := range []struct {
+		name          string
+		before, after map[string]string
+	}{{"secret", secBefore, rawRows(t, m.kv, sec)}, {"setting", cfgBefore, rawRows(t, m.kv, cfg)}} {
+		diff := changedKeys(c.before, c.after)
+		if len(diff) == 0 {
+			t.Errorf("%s rows the PUT added or rewrote: none, want some", c.name)
+		}
+		for _, k := range diff {
+			if bytes.Contains([]byte(c.after[k]), b) {
+				t.Errorf("%s row %q after the PUT holds the keytab's bytes, want them sealed", c.name, k)
+			}
+		}
+	}
+	row, ok := m.setting(t, "identity.keytab")
+	if !ok {
+		t.Fatal("identity.keytab after the PUT: none, want the setting naming the sealed keytab")
+	}
+	var ref entity.SecretRef
+	if err := json.Unmarshal(row.Value, &ref); err != nil || entity.ShareID(ref).String() != got.Ref {
+		t.Fatalf("identity.keytab's value after the PUT: %s (%v), want the answered reference %s", row.Value, err, got.Ref)
+	}
+	owner := entity.SecretOwner{Scope: installationScope, Key: "identity.keytab"}
+	if v, err := m.p.Resolve(t.Context(), secrets.Protocol, entity.SecretKeytab, owner, ref); err != nil || !bytes.Equal(v, b) {
+		t.Errorf("the sealed keytab opened: %d bytes, %v; want the %d bytes PUT", len(v), err, len(b))
+	}
+}
+
+// setting is the installation's setting key, read through the store.
+func (m *machine) setting(t *testing.T, key string) (entity.Setting, bool) {
+	t.Helper()
+	for s, err := range m.h.Store().ControlPlane().Settings(t.Context(), installationScope) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Key == key {
+			return s, true
+		}
+	}
+	return entity.Setting{}, false
 }

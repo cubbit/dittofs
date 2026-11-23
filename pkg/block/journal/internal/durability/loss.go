@@ -43,6 +43,11 @@ type Loss struct {
 	// and publishes it but raises nothing.
 	Raised bool
 
+	// Counted says the caller already moved the corrupt counters for this
+	// corrupt loss, so Lose counts nothing for it. It is read for a corrupt
+	// loss only.
+	Counted bool
+
 	// Marked says the caller already left the marker of a synced loss, so
 	// Lose leaves none.
 	Marked bool
@@ -102,11 +107,12 @@ func (d *Durability) StreamIndex(file core.FileID) int {
 // is taken, so no loss record ever appends unwired. admit reserves one loss
 // record's headroom entry — atOpen tells the class, an open's own loss
 // drawing the open reserve where a loss found while the journal runs is
-// refused — and the settle it returns is called once with placed, saying
-// whether the record landed, to draw the entry or refund it by. A settle of
-// nil comes only with an error. Nil, or never called, admits every loss: a
-// layer whose journal budgets no record headroom.
-func (d *Durability) SetLossAdmission(admit func(atOpen bool) (settle func(placed bool), err error)) {
+// refused — and the settle it returns is called once with placed, the
+// segment the record landed in, to draw the entry against that segment, or
+// 0 when it landed nowhere, to refund it. A settle of nil comes only with an
+// error. Nil, or never called, admits every loss: a layer whose journal
+// budgets no record headroom.
+func (d *Durability) SetLossAdmission(admit func(atOpen bool) (settle func(placed core.SegmentID), err error)) {
 	d.lossAdmit = admit
 }
 
@@ -209,7 +215,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 			// serves: a refusal returns before the append, like the
 			// read-only one, and the piece is handed back below, so the
 			// loss can be raised again.
-			var settle func(placed bool)
+			var settle func(placed core.SegmentID)
 			if d.lossAdmit != nil {
 				if settle, recErr = d.lossAdmit(l.AtOpen); recErr != nil {
 					refused = true
@@ -218,7 +224,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 			if !refused {
 				at, recErr = d.appendRecord(l)
 				if settle != nil {
-					settle(at != (segment.Location{}))
+					settle(at.Segment)
 				}
 			}
 		}
@@ -270,15 +276,18 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// stored and is now gone, and anything else can be fetched again. A
 	// failed window raises it once, for the window, through RaiseWindow.
 	//
-	// The raise, the counters and the event are one critical section, so a
-	// Stats call never sees the raised generation without the event that
-	// raised it. The raise stays before the publish: a reader that sees the
-	// event sees its raise.
+	// For a loss made here the raise, the counters and the event are one
+	// critical section, so a Stats call never sees the raised generation
+	// without the event that raised it. The raise stays before the publish: a
+	// reader that sees the event sees its raise. A corrupt drop is the
+	// exception: Corrupt raised and counted before this call (see the decision
+	// in dropCorrupt), and only the event is published here.
 	d.lmu.Lock()
 	if (l.Reason == core.LossCorrupt || l.Reason == core.LossAcknowledged) && !l.Offloaded && !l.Raised {
 		d.dir.raise()
 	}
 	switch {
+	case l.Counted && l.Reason == core.LossCorrupt:
 	case l.Reason == core.LossCorrupt && !l.Offloaded:
 		d.corruptDataLoss++
 	case l.Reason == core.LossCorrupt:

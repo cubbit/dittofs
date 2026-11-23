@@ -15,14 +15,17 @@ import (
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 
+	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/secrets"
+	"github.com/cubbit/dittofs/pkg/settings"
 )
 
 // opNamed is the operation of kind the store holds, failing when there is
@@ -394,12 +397,9 @@ func TestKeytabRouteRefusals(t *testing.T) {
 // A keytab identity's check refuses, and one holding a key for a name the
 // computer account holds in the directory's realm, compared with ASCII
 // letters folded, are each refused before anything is written; with a
-// sealer, the empty settings table refuses the setting naming any other,
-// one for the account's name in another realm among them, so no version is
-// written either. The keytab's bytes are found nowhere.
-//
-// ponytail: no test reads a sealed keytab back raw, since the settings table
-// the setting's write needs is not handed in yet; test it once it is.
+// sealer but no settings table, any other, one for the account's name in
+// another realm among them, is refused 503 before it is sealed, so no
+// version is written either. The keytab's bytes are found nowhere.
 func TestKeytabRoute(t *testing.T) {
 	good := keytabOf(t, "cifs/nas.ad.example", etypeID.AES256_CTS_HMAC_SHA1_96)
 	d := serveDomain(t, true)
@@ -423,8 +423,14 @@ func TestKeytabRoute(t *testing.T) {
 		{"an RC4 keytab", rc4, http.StatusBadRequest, "invalid"},
 		{"a keytab for a name the join holds", held, http.StatusBadRequest, "invalid"},
 		{"a keytab for the computer account's own name", account, http.StatusBadRequest, "invalid"},
-		{"a good keytab, refused by the empty table", good, http.StatusBadRequest, "unknown_key"},
-		{"the account's name in another realm, refused by the empty table", elsewhere, http.StatusBadRequest, "unknown_key"},
+		{
+			"a good keytab, refused by the missing table", good,
+			http.StatusServiceUnavailable, "unavailable",
+		},
+		{
+			"the account's name in another realm, refused by the missing table", elsewhere,
+			http.StatusServiceUnavailable, "unavailable",
+		},
 	} {
 		r := d.do(t, http.MethodPut, keytabPath, putKeytab(tc.b), "If-None-Match", "*")
 		replies = append(replies, r)
@@ -449,6 +455,76 @@ func TestKeytabRoute(t *testing.T) {
 		if s.Key == "identity.keytab" {
 			t.Errorf("identity.keytab written: %+v, want none", s)
 		}
+	}
+}
+
+// The keytab's set succeeds once the node hands in the table its setting's
+// write is judged by: with the identity section declared and a sealer
+// present, a good keytab is stored as its sealed first version beside the
+// reference row naming it, written in the form a reference field decodes,
+// and the answer carries the reference and the version, never the value.
+// The secret is committed first, so the table's reference gate reads, in
+// the same transaction, the version the write just sealed.
+func TestKeytabSetStoresItsReference(t *testing.T) {
+	good := keytabOf(t, "cifs/nas.ad.example", etypeID.AES256_CTS_HMAC_SHA1_96)
+
+	var p sealing
+
+	s := serve(t, as(entity.RoleAdmin, false), func(deps *api.Deps) {
+		p = provider(t, deps.Store.(kvstore.ControlPlane))
+		deps.Sealer = p
+		deps.Settings = settings.Table{identity.Section()}
+	})
+
+	r := s.do(t, http.MethodPut, keytabPath, putKeytab(good), "If-None-Match", "*")
+
+	if r.status != http.StatusOK {
+		t.Fatalf(
+			"PUT the keytab over the declared table: answered %d %s, want 200",
+			r.status,
+			r.body,
+		)
+	}
+
+	var got apiv1.SecretRef
+	if err := json.Unmarshal(r.body, &got); err != nil {
+		t.Fatalf("the set's answer %s: %v", r.body, err)
+	}
+
+	if got.Version != 1 || got.Ref == "" {
+		t.Errorf("the set's answer %+v, want the reference at version 1", got)
+	}
+
+	row, ok := s.settingRow(t, installation, identity.KeytabKey)
+	if !ok {
+		t.Fatal("no identity.keytab row stored, want the one naming the sealed keytab")
+	}
+
+	var ref entity.SecretRef
+	if err := json.Unmarshal([]byte(row), &ref); err != nil {
+		t.Fatalf("the identity.keytab row %s: %v", row, err)
+	}
+
+	if uuid.UUID(ref).String() != got.Ref {
+		t.Errorf(
+			"the identity.keytab row names %s, want the answered reference %s",
+			uuid.UUID(ref).String(),
+			got.Ref,
+		)
+	}
+
+	sec, err := s.store.Secret(t.Context(), ref, 0)
+	if err != nil || sec.Version != 1 || sec.Kind != entity.SecretKeytab {
+		t.Errorf(
+			"the sealed keytab: version %d kind %s err %v, want version 1, a keytab",
+			sec.Version,
+			sec.Kind,
+			err,
+		)
+	}
+
+	if bytes.Contains(r.body, good) {
+		t.Errorf("the set's answer carries the keytab's value: %s", r.body)
 	}
 }
 
@@ -533,14 +609,24 @@ func TestKeytabDelete(t *testing.T) {
 		t.Errorf("a DELETE with no keytab: answered %d %s, want 412, no record holding the tag", r.status, r.body)
 	}
 	ref := entity.SecretRef(uuid.New())
-	s.putSetting(t, installation, "identity.keytab", strconv.Quote(uuid.UUID(ref).String()))
-	if err := s.store.PutSecret(t.Context(), entity.Secret{ID: ref, Kind: entity.SecretKeytab, Version: 1,
-		Owner: entity.SecretOwner{Scope: installation, Key: "identity.keytab"}, Value: []byte("sealed")}, 0); err != nil {
+	s.putSetting(t, installation, "identity.keytab", refRow(t, ref))
+	sealed := entity.Secret{
+		ID: ref, Kind: entity.SecretKeytab, Version: 1,
+		Owner: entity.SecretOwner{Scope: installation, Key: "identity.keytab"},
+		Value: []byte("sealed"),
+	}
+
+	if err := s.store.PutSecret(t.Context(), sealed, 0); err != nil {
 		t.Fatal(err)
 	}
-	r := s.do(t, http.MethodDelete, keytabPath, "", "If-Match", `"1"`, "Idempotency-Key", "del-one")
-	if r.status != http.StatusBadRequest || r.problem(t).Code != "unknown_key" || r.problem(t).Field != "identity.keytab" {
-		t.Errorf("a DELETE of the keytab: answered %d %s, want 400 unknown_key naming identity.keytab", r.status, r.body)
+
+	r := s.do(t, http.MethodDelete, keytabPath, "",
+		"If-Match", `"1"`, "Idempotency-Key", "del-one")
+
+	if r.problem(t).Code != "unavailable" || r.status != http.StatusServiceUnavailable {
+		t.Errorf(
+			"a DELETE of the keytab: answered %d %s, want 503 naming the missing table",
+			r.status, r.body)
 	}
 	in := s.installationRecord(t)
 	audits := s.audits(t)
@@ -566,7 +652,8 @@ func TestJoinRefusedForAnAccountTheKeytabHolds(t *testing.T) {
 	if err := d.store.PutSecret(t.Context(), sealed, 0); err != nil {
 		t.Fatal(err)
 	}
-	d.putSetting(t, installation, "identity.keytab", strconv.Quote(uuid.UUID(ref).String()))
+
+	d.putSetting(t, installation, "identity.keytab", refRow(t, ref))
 
 	if r := d.do(t, http.MethodPost, joinPath, offlineJoin("DFS$", "pw-1")); r.status != http.StatusServiceUnavailable {
 		t.Errorf("a join before identity applied the keytab: answered %d %s, want 503", r.status, r.body)
@@ -616,7 +703,8 @@ func (d *domain) storeKeytab(t *testing.T, kt []byte) (entity.SecretRef, uint64)
 	if err := d.store.PutSecret(t.Context(), sealed, 0); err != nil {
 		t.Fatal(err)
 	}
-	d.putSetting(t, installation, "identity.keytab", strconv.Quote(uuid.UUID(ref).String()))
+
+	d.putSetting(t, installation, "identity.keytab", refRow(t, ref))
 	return ref, sealed.Version
 }
 

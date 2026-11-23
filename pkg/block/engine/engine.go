@@ -102,6 +102,7 @@ type Engine struct {
 		joining  atomic.Pointer[func(what string)] // a join of Close, with what it waits for
 		draining atomic.Pointer[func()]            // Close's wait for the lifecycle calls
 		refused  atomic.Pointer[func()]            // a refused call about to wait for the raise
+		passing  atomic.Pointer[func()]            // a share pass started, before its sync begins
 	}
 	// refusals is engine_write_refusals_total, the writes answered as refused.
 	refusals atomic.Int64
@@ -116,6 +117,9 @@ type Engine struct {
 
 	block   uint64 // the versions one raise of the version limit covers
 	raising raises // the version limit raises running
+
+	// passing is the share passes in flight, which Close cancels and joins.
+	passing sharePasses
 
 	// retrying is the retried open of a journal refused as unsuitable
 	// (RFC 8 §2.5): the context Close cancels, and the group that joins it.
@@ -180,6 +184,7 @@ func New(d Deps) (*Engine, error) {
 	e.conflictBound.Store(int64(time.Second))
 	e.raising.ctx, e.raising.cancel = context.WithCancel(context.Background())
 	e.retrying.ctx, e.retrying.cancel = context.WithCancel(context.Background())
+	e.passing.ctx, e.passing.cancel = context.WithCancel(context.Background())
 
 	return e, nil
 }

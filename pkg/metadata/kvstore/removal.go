@@ -189,6 +189,7 @@ type RemoveOp struct {
 	Kind    entity.RemovalKind // RemoveTruncate or RemoveDeallocate
 	Extent  entity.Extent      // a truncate's runs to the end of file
 	Time    time.Time
+	Suspend entity.TimeMask // the times it leaves alone: Time moves the modification time unless this names it
 }
 
 // Remove applies phase 1 of a removal, after the file's pending existence
@@ -319,7 +320,10 @@ func removePhase1(tx kv.Txn, share entity.ShareID, file entity.FileID, epoch uin
 	}
 	was := f.Version
 	f.Applied = op.Version
-	f.Modify, f.Change = later(f.Modify, op.Time), later(f.Change, op.Time)
+	if op.Suspend&entity.TimeModify == 0 {
+		f.Modify = later(f.Modify, op.Time)
+	}
+	f.Change = later(f.Change, op.Time)
 	f.Version = nextFileVersion(tx, entity.MaxVersion(f.Version, f.Applied))
 	if err := putFile(tx, was, f); err != nil {
 		return err

@@ -6,6 +6,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/internal/vfs/quota"
+	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -47,6 +48,9 @@ func (fs *Filesystem) read(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off
 	if len(dst) == 0 { // a read of no byte returns once judged
 		return 0, off >= f.Size, nil
 	}
+	// decision: a read asks open state for no suspended times, as no read
+	// moves the access time, so there is none to leave alone (RFC 14 §2.2).
+	// Overturned once a read moves it: then read the mask as write does.
 	n, err := fs.engine.Read(ctx, f.Share, f.ID, off, dst)
 	return n, err == nil && off+int64(n) >= f.Size, storeErr(err)
 }
@@ -86,14 +90,10 @@ func (fs *Filesystem) write(ctx context.Context, c vfs.Call, ref vfs.OpenRef, of
 		// verifier without staging.
 		return vfs.WriteResult{WCC: vfs.WCC{Before: &f, After: f}}, nil
 	}
-	// A write through an open leaves alone the times that open suspends
-	// (RFC 14 §2.2); the change time moves whatever it suspends.
-	var suspended entity.TimeMask
-	if ref.Kind != openstate.RefAnonymous && ref.Kind != openstate.RefDelegated {
-		if suspended, err = fs.opens.Suspended(ctx, a.who(), keyOf(f), ref); err != nil {
-			unlock()
-			return vfs.WriteResult{}, openErr(err)
-		}
+	suspended, err := fs.suspended(ctx, a, f, ref)
+	if err != nil {
+		unlock()
+		return vfs.WriteResult{}, err
 	}
 	var res *quota.Reservation
 	add, err := fs.charges(ctx, f, off, int64(len(src)))
@@ -264,14 +264,31 @@ func (fs *Filesystem) deallocate(ctx context.Context, c vfs.Call, ref vfs.OpenRe
 		unlock()
 		return vfs.WCC{Before: &f, After: f}, nil
 	}
+	suspended, err := fs.suspended(ctx, a, f, ref)
+	if err != nil {
+		unlock()
+		return vfs.WCC{}, err
+	}
 	w, err := fs.stage(ctx, c, a, ref.Handle, f, off, false, func() error {
-		return fs.engine.Deallocate(ctx, f.Share, f.ID, off, length)
+		return fs.engine.Deallocate(engine.WithSuspended(ctx, suspended), f.Share, f.ID, off, length)
 	})
 	unlock()
 	if err == nil {
 		fs.entryChanged(ctx, a, &ref, f, written(w))
 	}
 	return w, err
+}
+
+// suspended is the times the open ref names suspends, which a change of
+// content through it leaves alone (RFC 14 §2.2), the change time moving
+// whatever it suspends: none for an anonymous or delegated reference, which
+// names no open.
+func (fs *Filesystem) suspended(ctx context.Context, a *admitted, f vfs.File, ref vfs.OpenRef) (entity.TimeMask, error) {
+	if ref.Kind == openstate.RefAnonymous || ref.Kind == openstate.RefDelegated {
+		return 0, nil
+	}
+	m, err := fs.opens.Suspended(ctx, a.who(), keyOf(f), ref)
+	return m, openErr(err)
 }
 
 // Seek answers the first offset at or after off of the file ref names that

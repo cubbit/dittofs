@@ -53,8 +53,12 @@ func defaultSettings() Settings {
 const SectionName = "identity"
 
 // Section declares the identity section for the node's settings table.
+// identity.ntlm and identity.keytab are written by admin only (RFC 13
+// Appendix B), while the section's other keys stay an operator's.
 func Section() settings.Section {
 	return settings.Of(SectionName, settings.At(entity.ScopeInstallation), defaultSettings(),
+		settings.KeyRole("NTLM", entity.RoleAdmin),
+		settings.KeyRole("Keytab", entity.RoleAdmin),
 		settings.SecretRef("Keytab", entity.SecretKeytab),
 		settings.CheckTx(checkSettings))
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
+	"github.com/cubbit/dittofs/pkg/settings"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/google/uuid"
 )
@@ -72,10 +73,14 @@ func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error)) 
 		Logger:       slog.New(slog.NewTextHandler(t.Output(), nil)),
 		Authenticate: authenticate,
 		Store:        h.Store().ControlPlane(),
-		SigningKey:   func(context.Context) ([]byte, error) { return []byte("installation"), nil },
-		Nodes:        h.Store().Nodes(),
-		Clock:        h.Clock(),
-		Node:         entity.NodeID{'c', 'l', 'i'},
+		// The empty table, so a refused setting names its key instead of the
+		// node's missing table: the client's retry clock stops at the first
+		// answer, and a 503 would retry until the test times out.
+		Settings:   settings.Table{},
+		SigningKey: func(context.Context) ([]byte, error) { return []byte("installation"), nil },
+		Nodes:      h.Store().Nodes(),
+		Clock:      h.Clock(),
+		Node:       entity.NodeID{'c', 'l', 'i'},
 	})
 	addr, _, err := srv.Start()
 	if err != nil {

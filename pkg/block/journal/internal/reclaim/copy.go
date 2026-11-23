@@ -100,7 +100,7 @@ type Copier struct {
 	// a caller bug Carry answers with an error.
 	deferred func(core.SegmentID) []DeferredLoss
 	admit    func(capacity.RecordClass) (capacity.Draw, error)
-	drawn    func(capacity.Draw)
+	drawn    func(capacity.Draw, core.SegmentID)
 	// waitSpare waits the pool's settle for a reserve spare the roll wants,
 	// the refill's event the one wait; nil keeps a refused roll the error it
 	// was — the shape the tests that drive the copier alone take.
@@ -137,7 +137,7 @@ type Copier struct {
 // consulted once per deferred loss under the class the repack reserve
 // serves — and drawn pairs each admitted draw with the record that
 // appended.
-func NewCopier(ix *index.Index, c *index.Counters, st *segment.Streams, un *unread.Set, tr *Tracker, dom Domains, forgetting func(core.ShareTag) bool, corrupt Corrupter, clk core.Clock, log *slog.Logger, deferred func(core.SegmentID) []DeferredLoss, admit func(capacity.RecordClass) (capacity.Draw, error), drawn func(capacity.Draw), waitSpare func(context.Context) error) *Copier {
+func NewCopier(ix *index.Index, c *index.Counters, st *segment.Streams, un *unread.Set, tr *Tracker, dom Domains, forgetting func(core.ShareTag) bool, corrupt Corrupter, clk core.Clock, log *slog.Logger, deferred func(core.SegmentID) []DeferredLoss, admit func(capacity.RecordClass) (capacity.Draw, error), drawn func(capacity.Draw, core.SegmentID), waitSpare func(context.Context) error) *Copier {
 	return &Copier{ix: ix, counters: c, streams: st, un: un, tracker: tr, dom: dom, forgetting: forgetting, corrupt: corrupt, deferred: deferred, admit: admit, drawn: drawn, waitSpare: waitSpare, clock: clk, log: log}
 }
 

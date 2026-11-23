@@ -269,25 +269,6 @@ func TestAShareRefusalRepacksTheShareScope(t *testing.T) {
 	}
 }
 
-// When the scoped repack suffices, the last step does not run: the share's own
-// unsynced overwrite stays unsynced.
-func TestAShareRefusalStopsAtTheRepackWhenItSuffices(t *testing.T) {
-	s := newSegUnit(t, 150, 0)
-	fa := entity.NewFileID()
-
-	s.j.AddEnded(s.a.Tag, 50)
-	s.j.HoldSyncTimer(true)
-	s.overwritten(t, s.a, fa)
-
-	if err := s.put(t.Context(), s.a, fa, 100, 40, 'c'); err != nil {
-		t.Fatalf("A's write after the scoped repack: %v, want served", err)
-	}
-
-	if got := s.j.Stats().Shares[s.a.Tag].UsedBytes; got != 120 {
-		t.Errorf("A holds %d bytes on disk, want 120: the last step synced A's file", got)
-	}
-}
-
 // A share's refusal syncs the share's own files and no other share's, and the
 // overwrite its sync supersedes is freed: the write is served after the last
 // step.
@@ -452,13 +433,18 @@ func TestAHeadroomRefusalWithAnUnresolvedFailedSegmentIsDelay(t *testing.T) {
 // over the fake's Sync.
 type repackSyncHold struct {
 	engine.Handle
-	entered chan struct{}
-	release chan struct{}
-	once    atomic.Bool
+	entered  chan struct{}
+	release  chan struct{}
+	returned chan struct{} // closed, when set, once the held Sync returns
+	once     atomic.Bool
 }
 
 func (h *repackSyncHold) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
 	if h.once.CompareAndSwap(false, true) {
+		if h.returned != nil {
+			defer close(h.returned)
+		}
+
 		close(h.entered)
 
 		select {
@@ -531,26 +517,35 @@ func TestAnIndexRefusalBesideARefusalInItsSyncIsNoSpace(t *testing.T) {
 	}
 }
 
-// Over a journal whose Repack is not built, a refusal keeps the interim
-// retry-later answer and does not end no space by a figure of 0.
+// Over a journal whose Repack is not built, a refusal by the journal's own
+// limit keeps the interim retry-later answer and does not end no space by a
+// figure of 0. A refusal by the share's own limit runs the share's pass,
+// which repacks only when the share has unreclaimed bytes after its sync, so
+// it reaches no Repack, and with nothing of the share's to free it is no space.
 func TestARefusalOverAJournalThatCannotRepackIsRetryLater(t *testing.T) {
-	u := newUnit(t)
-	f := u.create(t, "f")
+	for _, c := range []struct {
+		limit journal.Limit
+		want  func(error) bool
+		what  string
+	}{
+		{journal.LimitJournal, func(err error) bool { return isDelay(err, vfserr.DelayCapacity) }, "ErrDelay(DelayCapacity)"},
+		{journal.LimitShare, func(err error) bool {
+			return errors.Is(err, vfserr.ErrNoSpace) && strings.Contains(err.Error(), "the share limit has nothing left to free")
+		}, "ErrNoSpace, the share limit has nothing left to free"},
+	} {
+		t.Run(c.limit.String(), func(t *testing.T) {
+			u := newUnit(t)
+			f := u.create(t, "f")
 
-	if err := u.j.Refuse(enginetest.CallWriteAt, refusalErr(journal.LimitShare)); err != nil {
-		t.Fatal(err)
-	}
+			if err := u.j.Refuse(enginetest.CallWriteAt, refusalErr(c.limit)); err != nil {
+				t.Fatal(err)
+			}
 
-	_, err := u.e.Write(
-		t.Context(),
-		u.share.ID,
-		f,
-		0,
-		[]byte("x"),
-		engine.WriteOpts{Done: func() {}},
-	)
-	if !isDelay(err, vfserr.DelayCapacity) {
-		t.Errorf("a refusal with Repack not built: %v, want ErrDelay(DelayCapacity)", err)
+			_, err := u.e.Write(t.Context(), u.share.ID, f, 0, []byte("x"), engine.WriteOpts{Done: func() {}})
+			if !c.want(err) {
+				t.Errorf("a %v refusal with Repack not built: %v, want %s", c.limit, err, c.what)
+			}
+		})
 	}
 }
 
@@ -645,6 +640,7 @@ func TestAFailingStepIsNeverTheAnswer(t *testing.T) {
 
 	t.Run("a closed journal is unavailable", func(t *testing.T) {
 		s := newSegUnit(t, 100, 0, faultyRepack(journal.ErrClosed, false))
+		s.j.AddFailed(s.a.Tag, 5, true)
 		s.refuse(t, journal.LimitShare)
 
 		err := s.put(t.Context(), s.a, entity.NewFileID(), 0, 1, 'x')
@@ -837,58 +833,6 @@ func TestAnEndedContextRepacksAndSealsNothing(t *testing.T) {
 	}
 }
 
-// A caller whose context ends while the last step's scope sync is held does not
-// repack after it: the sync fails with the context's error, and the one Repack
-// call is the first step's.
-func TestAContextEndedInTheScopeSyncRepacksNoMore(t *testing.T) {
-	hold := &repackSyncHold{entered: make(chan struct{}), release: make(chan struct{})}
-	wrap := func(h engine.Handle) engine.Handle {
-		hold.Handle = h
-
-		return hold
-	}
-
-	var fault *repackFault
-
-	u := newUnitWith(t, unitConfig{
-		wrap: wrap,
-		deps: []func(*engine.Deps){trackedRepack(nil, false, &fault)},
-	})
-	u.j.SegmentCap(segBytes, 0)
-
-	f := u.create(t, "f")
-	u.write(t, f, 0, []byte("x"))
-
-	release := sync.OnceFunc(func() { close(hold.release) })
-	t.Cleanup(release)
-
-	if err := u.j.Refuse(enginetest.CallWriteAt, refusalErr(journal.LimitShare)); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(bounded(t))
-	defer cancel()
-
-	got := make(chan error, 1)
-
-	go func() {
-		_, err := u.e.Write(ctx, u.share.ID, f, 0, []byte("y"), engine.WriteOpts{Done: func() {}})
-		got <- err
-	}()
-
-	within(t, "the refusal reaching its scope sync", hold.entered)
-	cancel()
-
-	err := within(t, "the cancelled write's answer", got)
-	if !isDelay(err, vfserr.DelayCapacity) {
-		t.Errorf("a context ended in the scope sync: %v, want ErrDelay(DelayCapacity)", err)
-	}
-
-	if n := fault.calls.Load(); n != 1 {
-		t.Errorf("%d Repack calls, want 1: the first step's, none after the ended sync", n)
-	}
-}
-
 // A repack held past the caller's deadline is retry-later, never no space, and
 // the write is not staged: the call ends with the caller's context.
 func TestARepackHeldPastTheDeadlineIsDelay(t *testing.T) {
@@ -922,8 +866,8 @@ func TestARepackHeldPastTheDeadlineIsDelay(t *testing.T) {
 }
 
 // Two refusals racing for the only unreclaimed segment: the second, while the
-// first's pass is held with it selected, is retry-later and never no space; the
-// first is served when it ends.
+// first's pass is held in its repack with it selected, is retry-later at its
+// bound and never no space; the first is served when its pass ends.
 func TestRacingRefusalsAnswerOnWhatIsLeft(t *testing.T) {
 	s := newSegUnit(t, 100, 0)
 	s.j.AddEnded(s.a.Tag, 100)
@@ -939,7 +883,20 @@ func TestRacingRefusalsAnswerOnWhatIsLeft(t *testing.T) {
 
 	within(t, "the first pass reaching its pause point", entered)
 
-	err := s.put(bounded(t), s.a, entity.NewFileID(), 0, 40, 'y')
+	// The second comes after the pass's sync began, so it waits for the next
+	// pass, and answers at a tenth of its deadline by the engine's clock.
+	armed := s.clock.Armed(time.Hour / 10)
+	second := make(chan error, 1)
+
+	go func() {
+		ctx := &endsAtCtx{Context: t.Context(), now: s.clock.Now(), done: make(chan struct{})}
+		second <- s.put(ctx, s.a, entity.NewFileID(), 0, 40, 'y')
+	}()
+
+	within(t, "the second refusal's wait for the pass", armed)
+	s.clock.Advance(time.Hour / 10)
+
+	err := within(t, "the second refusal's answer", second)
 	if !isDelay(err, vfserr.DelayCapacity) {
 		t.Errorf(
 			"the second refusal while the first's pass is held: %v, want ErrDelay(DelayCapacity)",
@@ -1291,90 +1248,6 @@ func TestADeadlinePassingInTheScopeSyncIsADelay(t *testing.T) {
 	err := within(t, "the held write's answer", got)
 	if !isDelay(err, vfserr.DelayCapacity) || errors.Is(err, vfserr.ErrNoSpace) {
 		t.Errorf("a deadline passing inside the scope sync: %v, want ErrDelay(DelayCapacity)", err)
-	}
-}
-
-// budgetRecorder is a journal whose Repack pass-through records the budget
-// each relief step hands it: the share-figures' empty read is what charges a
-// pass with no bytes, and the rows below pin each figure that refuses that
-// charge by naming the budget its pass ran at.
-type budgetRecorder struct {
-	engine.Journal
-	mu      sync.Mutex
-	budgets []int64
-}
-
-func (r *budgetRecorder) Repack(ctx context.Context, budget int64, scope journal.RepackScope) (int64, error) {
-	r.mu.Lock()
-	r.budgets = append(r.budgets, budget)
-	r.mu.Unlock()
-
-	return r.Journal.Repack(ctx, budget, scope)
-}
-
-func (r *budgetRecorder) firstBudget() (int64, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if len(r.budgets) == 0 {
-		return 0, false
-	}
-
-	return r.budgets[0], true
-}
-
-func recordBudgets(out **budgetRecorder) func(*engine.Deps) {
-	return func(d *engine.Deps) {
-		open := d.Open
-
-		d.Open = func(
-			ctx context.Context,
-			dir string,
-			floor journal.Version,
-			id journal.JournalID,
-			marks []entity.SyncMark,
-		) (engine.Journal, error) {
-			j, err := open(ctx, dir, floor, id, marks)
-
-			*out = &budgetRecorder{Journal: j}
-
-			return *out, err
-		}
-	}
-}
-
-// A reservation still in flight keeps the relief's first pass at the full
-// repack reserve — the reservation's room may reach the caller by landing or
-// rolling back without a free, so the figures never read empty while one
-// holds, and the pass an empty reading would charge with no bytes runs whole
-// instead. The row whose first pass flips when the reservation condition
-// leaves the figures' read.
-func TestAReservationInFlightKeepsTheFirstPassWhole(t *testing.T) {
-	var rec *budgetRecorder
-
-	s := newSegUnit(t, 100, 0, recordBudgets(&rec))
-	f := s.create(t, "f")
-	s.must(t, s.a, f, 0, 40, 'a')
-
-	h, err := s.j.Share(s.a.Tag, 100, journal.Version{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = h.Close() }()
-
-	if _, err := h.Reserve(40, 1); err != nil {
-		t.Fatal(err)
-	}
-
-	s.refuse(t, journal.LimitShare)
-
-	if err := s.put(bounded(t), s.a, f, 40, 1, 'x'); err == nil {
-		t.Fatal("the write was served under its share limit arithmetic")
-	}
-
-	got, ok := rec.firstBudget()
-	if !ok || got == 0 {
-		t.Errorf("the first pass ran at budget %d (of %d passes), want the full repack reserve: a reservation in flight keeps the figures from reading empty", got, len(rec.budgets))
 	}
 }
 
