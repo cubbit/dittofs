@@ -28,7 +28,6 @@ import (
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
-	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -100,10 +99,7 @@ func startNode(t *testing.T) *testNode {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	path := filepath.Join(dir, "api.sock")
-	h := nodetest.New(t, nodetest.InMemory(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
-		cfg.Bootstrap.API.Socket = path
-		return node.New(cfg)
-	}))
+	h := nodetest.New(t, nodetest.InMemory(), nodetest.APISocket(path))
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("start the node: %v", err)
 	}
