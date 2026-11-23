@@ -96,23 +96,8 @@ func Init(ctx context.Context, db kv.KV, install [16]byte) error {
 		} else if !errors.Is(err, kv.ErrNotFound) {
 			return err
 		}
-		// decision: Init refuses every key but the clock ceiling a store's
-		// own Open leaves in whatever directory it opened — v1's text keys
-		// and this format's records alike — because Init, the
-		// initialisation step, would otherwise write a new Installation over
-		// storage it can no longer name. A store holding nothing but the
-		// ceiling is one whose records went wholesale, which is what the
-		// initialisation step exists to recover. Overturned when a store
-		// can name its records without opening: a read-only open the backend
-		// tolerates after an unclean close.
-		for k, err := range tx.Scan(nil, nil) {
-			if err != nil {
-				return err
-			}
-			ceil := k.Key
-			if len(ceil) != 1+keys.IDLen+1 || ceil[0] != keys.KindN || ceil[len(ceil)-1] != keys.NClk {
-				return fmt.Errorf("%w: key %q names a record a new installation must not overwrite", ErrForeignStore, k.Key)
-			}
+		if err := refuseForeign(tx); err != nil {
+			return err
 		}
 		in := entity.Installation{ID: install, Instance: uuid.New()}
 		for _, kvs := range [][2][]byte{
@@ -128,15 +113,46 @@ func Init(ctx context.Context, db kv.KV, install [16]byte) error {
 	})
 }
 
+// refuseForeign answers ErrForeignStore, naming the first key that is not a
+// clock ceiling, over a store with no format record.
+//
+// decision: Init and Open refuse every key but the clock ceiling a store's
+// own Open leaves in whatever directory it opened — v1's text keys and this
+// format's records alike. Init, the initialisation step, would otherwise
+// write a new Installation over storage it can no longer name, and Open
+// would answer ErrNotInitialised, sending the operator to that step for a
+// store that is not empty. A store holding nothing but ceilings is one whose
+// records went wholesale, which is what the initialisation step exists to
+// recover, so it stays not initialised. Overturned when a store can name its
+// records without opening: a read-only open the backend tolerates after an
+// unclean close.
+func refuseForeign(r kv.Reader) error {
+	for k, err := range r.Scan(nil, nil) {
+		if err != nil {
+			return err
+		}
+		ceil := k.Key
+		if len(ceil) != 1+keys.IDLen+1 || ceil[0] != keys.KindN || ceil[len(ceil)-1] != keys.NClk {
+			return fmt.Errorf("%w: key %q names a record a new installation must not overwrite", ErrForeignStore, k.Key)
+		}
+	}
+	return nil
+}
+
 // Open reads the format record before any other key and refuses a store
-// whose format or fold rules this binary does not implement. It never
-// rewrites the record: a store's format is raised only by the control plane's
-// gate, so an older binary keeps opening it until then.
+// whose format or fold rules this binary does not implement. With no format
+// record it answers ErrForeignStore over a store holding any key but a clock
+// ceiling, and ErrNotInitialised otherwise. It never rewrites the record: a
+// store's format is raised only by the control plane's gate, so an older
+// binary keeps opening it until then.
 func Open(ctx context.Context, db kv.KV) (*Store, error) {
 	var f format
 	err := db.View(ctx, func(r kv.Reader) error {
 		b, err := r.Get(keys.Format)
 		if errors.Is(err, kv.ErrNotFound) {
+			if err := refuseForeign(r); err != nil {
+				return err
+			}
 			return ErrNotInitialised
 		}
 		if err != nil {

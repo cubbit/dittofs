@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -36,11 +37,39 @@ func set(t *testing.T, db kv.KV, key, value []byte) {
 	}
 }
 
-func TestOpenRefusesUninitialised(t *testing.T) {
+// Open over a store holding nothing but clock ceilings — its own Open's and
+// another node's — answers it not initialised, never foreign.
+func TestOpenOverCeilingsOnlyIsNotInitialised(t *testing.T) {
 	db := memKV(t)
-	set(t, db, []byte("other"), []byte("x"))
+	other := make([]byte, keys.IDLen)
+	other[0] = 0xCD
+	set(t, db, append(keys.ID([]byte{keys.KindN}, other), keys.NClk), []byte("ceiling"))
 	if _, err := Open(context.Background(), db); !errors.Is(err, ErrNotInitialised) {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("Open over a store holding only clock ceilings: %v, want ErrNotInitialised", err)
+	}
+}
+
+// Open over a store holding a v1 Badger key and no format record refuses it
+// as foreign rather than answering it not initialised, which would send the
+// operator to the initialisation step, and commits nothing.
+func TestOpenRefusesAForeignStore(t *testing.T) {
+	ctx := context.Background()
+	for _, key := range []string{"f:1", "p:x", "c:y", "lock:z"} {
+		t.Run(key, func(t *testing.T) {
+			db := openBadger(t, t.TempDir())
+			set(t, db, []byte(key), []byte("v1 record"))
+			before := keysHash(t, db)
+			_, err := Open(ctx, db)
+			if !errors.Is(err, ErrForeignStore) || errors.Is(err, ErrNotInitialised) {
+				t.Fatalf("Open over a store holding the v1 key %q: %v, want ErrForeignStore", key, err)
+			}
+			if !strings.Contains(err.Error(), key) {
+				t.Errorf("Open's refusal over %q: %v, want it to name the key", key, err)
+			}
+			if after := keysHash(t, db); after != before {
+				t.Errorf("Open refused over %q committed records after it: hash %s after %s before, want nothing committed", key, after, before)
+			}
+		})
 	}
 }
 
