@@ -101,12 +101,12 @@ already done, and what remains is smaller and different:
 | # | Epic | Content | Subtasks | Man-days | Blocks |
 | --- | --- | --- | --- | --- | --- |
 | 1 | **v1 refused in one sentence** | a v1 Badger store recognised at start and at init; one refusal wording for all three v1 finds | 2 | 2 | — |
-| 2 | **Delete the v1 store** | the seven trees and `internal/sysinfo`, `go.mod`, the internal docs, CLAUDE.md and agent skills; the user docs' metadata sections; the v1 block tier (D8) | 4 | 4.5 | — |
+| 2 | **Delete the v1 store** | the seven trees and `internal/sysinfo`, `go.mod`, the internal docs, CLAUDE.md and agent skills; the user docs' metadata sections; the v1 block tier (D8) | 4 | 4.75 | — |
 | 3 | **FoundationDB selectable in `dfs`** | a `foundationdb` build tag; bootstrap to `fdbkv` options with TLS; the start check without a store directory; init and start on a cluster of their own | 4 | 7 | E4 |
 | 4 | **FoundationDB release packaging** | the release hook; an image and two Linux tarballs built with FoundationDB; a smoke test of the image; install docs | 4 | 5 | — |
-| | **Total** | | **14** | **18.5** | |
+| | **Total** | | **14** | **18.75** | |
 
-**Plan estimate: 14 subtasks, 18.5 man-days.**
+**Plan estimate: 14 subtasks, 18.75 man-days.**
 
 ## 3. Dependencies, blockers and the split
 
@@ -258,7 +258,7 @@ already done, and what remains is smaller and different:
    deleted at the cutover" (`.planning/rfc-8-journal-only-engine-plan.md:357`), while the 3 Nov
    decision is to delete v1 "as soon as nothing live depends on it". **Recommended: yes, as T2.4**
    (1.5 md). If the answer is no, T2.4 moves to the cutover's ledger, and the plan is 13
-   subtasks, 17 man-days.
+   subtasks, 17.25 man-days.
 
 ## 5. The epics in detail
 
@@ -306,7 +306,7 @@ and creates neither), #3119's route B.
 
 ### Epic 2 — Delete the v1 store
 
-**Epic 2 estimate: 4 subtasks, 4.5 man-days.**
+**Epic 2 estimate: 4 subtasks, 4.75 man-days.**
 
 RFC 16 §6.1: the store's two suites, `kvtest` for a backend and `kvstoretest` for the store, are
 the contract that replaces `storetest`.
@@ -346,7 +346,7 @@ the contract that replaces `storetest`.
 
   Done when `dt docs --check` passes and `rg 'metadata/(store|storetest|lock|acl|backup)|block/gc'`
   finds nothing outside `.planning/` and the RFCs. `docs/internals/planning/` is not excluded.
-- **T2.3 — the user docs' metadata sections (1 md).**
+- **T2.3 — the user docs' metadata sections (1.25 md).**
   - `configuration.md`'s metadata section becomes Appendix C's four keys, with v1's cache keys
     gone.
   - `metadata-store-migration.md` is replaced by a short "Upgrading from v1" page: not
@@ -354,6 +354,11 @@ the contract that replaces `storetest`.
   - The metadata parts of `choosing-stores.md`, `faq.md`, `install.md` and `sizing.md` are
     rewritten.
   - The adapter and user-guide parts stay the cutover's, as RFC 20's ledger has them on #3119.
+  - `scripts/setup-dittofs-demo.sh` is deleted: it drives only v1's `dfsctl store …` commands,
+    which no longer exist.
+  - `docker/config.yaml` is rewritten in v2 keys, so `dfs config validate --config
+    docker/config.yaml` passes; it now fails on `controlplane.host` and `database.sqlite.path`.
+    The compose file's v1 bootstrap (`docker/bootstrap.sh`) stays the v2 image story's.
 - **T2.4 — delete the v1 block tier (1.5 md, if D8 says yes).**
   - Delete D8's packages, `pkg/netutil` and `pkg/schedule`, and run `go mod tidy`, which drops
     `pierrec/lz4/v4`.
