@@ -292,7 +292,7 @@ Out of scope, each named in O1:
 | E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 9 | 18.5 | A | E5; partly E3; RFC 23's epics 3, 4 and 5 (its X1) |
 | E3 | Settings | a delete, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark, the reconcile decoding only the changed scopes | 10 | 22 | B | E5; partly RFC 18's plan's epic 6 |
 | E4 | Secrets | `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epics 4 and 5 (its X1) |
-| E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; RFC 23's integration epic (its X3) |
+| E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; partly E3; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty, off by default; the launchers on `dfs init` and the images' `init` as an explicit step, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
 | | **Total** | | **43** | **83.75** | | |
 
@@ -333,7 +333,7 @@ flowchart TD
   R2 --> S3
   E2 & E3 & E4 --> E5["E5 Integration"]
   S3 -. "partly" .-> E5
-  E5 -. "partly: T3.10 waits for T5.2" .-> E3
+  E5 -. "partly: T3.10 waits for T5.2 and T5.3" .-> E3
   E2 -. "X1 in RFC 23's plan: dfs start, dfs init, MakeRuntimeDir" .-> R35(["RFC 23's epics 3, 4 and 5"]):::sync
   E4 -. "X1: pkg/secrets, dfs init's first password" .-> R5(["RFC 23's epics 4 and 5"]):::sync
   S4(["S4 RFC 23's dfs init exists"]):::sync --> E6["E6 E2E green"]
@@ -381,7 +381,7 @@ flowchart TD
 | E4 | RFC 18's plan's epic 2 (S2) | Identity seals and resolves its secrets here. |
 | E3 | RFC 18's plan's epic 6, partly | The NetBIOS cross-check is a tracked read through `Check`; the rest does not wait. Turning `identity.ntlm` back on is refused by #4050's settings route, not by a validator (RFC 18 plan's A13). |
 | E4 | E3, partly | Two of `Check`'s tests, D9's credential reference repointed at a freshly sealed `remote credential` and D10's reference to a secret of another kind or owner, need sealed secrets; the rest of E3 does not wait. |
-| E5 | E3, partly | T3.10's swap in `walkSettings` waits for T5.2 to merge, since T5.2 rewrites that function; the rest of T3.10, and T5.2 and T5.3, do not wait. |
+| E5 | E3, partly | T3.10's swaps in `walkSettings` and in T5.3's apply wait for T5.2 and T5.3 to merge, since they write those calls; the rest of T3.10, and T5.2 and T5.3, do not wait. |
 | E2 | E3, partly | The newer-schema refusal and the block format gate read the binary's registered ranges in `pkg/settings/versions.go`, which epic 2's version gate subtask adds; E3's T3.3 imports the shared strict parser epic 2's T2.1 creates; the rest of E3 does not wait. |
 | E5 | E6 | E2E green runs the wired server. |
 | RFC 23's epic 2 (outside) | E2 and E4, partly | The version gate adds a node's ranges to RFC 23's `Node` record, `WriteMissingNodeIDs` reads RFC 16's `JournalID`, and `Prune` reads the versions a node holds from its `NodeStatus`. Everything else in both epics starts at S1. |
@@ -953,7 +953,7 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 		return err
 	}
 	// n.nodes is the node view Store.Nodes() gives (RFC 23's epic 2, D7), not the API's ControlPlane; n.raw and n.at are the
-	// last walk's own snapshot, before any Keep, and the CFGGEN it was read at (epic 3's T3.10, D7)
+	// last walk's own snapshot, before any Keep, and the CFGGEN it was read at (epic 3's D7)
 	raw, pass, bad, err := settings.Advance(ctx, n.nodes, node.Settings, n.id, n.raw, n.at) // ponytail: every scope's settings, read in pages, per move, only the changed scopes decoded (§4.3)
 	if err != nil {
 		return err // the walk itself failed; nothing is decoded yet

@@ -20,8 +20,9 @@ there, which T3.1's newer-schema refusal and T3.6's format gate read; the plan's
 row for that dependency came in #4662. S2, a `Secret` sealed by E4, for T3.7 only.
 E2's T2.1, the shared strict size and duration parser of RFC 13 Appendix B's grammar, for
 T3.3's decode, which imports its file and record modes and its duration grammar.
-E5's T5.2 merged, for T3.10's swap in reconcile's `walkSettings` only; T5.2 does not wait for T3.10.
-**Blocks:** E5, which builds the node's table from `Of`, reconciles through `Read` and `Diff`, and
+E5's T5.2 and T5.3 merged, for T3.10's swaps in reconcile's `walkSettings` and in T5.3's apply only;
+T5.2 and T5.3 do not wait for T3.10.
+**Blocks:** E5, which builds the node's table from `Of`, reconciles through `Read` and `Diff` (`Advance` and the `Pass` from T3.10 on), and
 calls `Check` from the API's settings routes, which wait on T3.7's secret gates (PR 4); the RFC 18
 plan's epic 6, partly, whose NetBIOS cross-check is a tracked read through `Check`.
 
@@ -102,7 +103,7 @@ epic.
   through E4.
 - **A1**, RFC 13's plan's amendment making `identity.directory`, the whole record, `admin`-only.
 - **D9**, **D10** and **D11**, RFC 13's plan's decisions on a store location's change, on a
-  reference's kind and owner, and on a section's schema; **D1** to **D6** without a plan named are
+  reference's kind and owner, and on a section's schema; **D1** to **D7** without a plan named are
   this epic's own (§4).
 - **O1** and **O4**, RFC 13's plan's open points: O1 its deferred scope, the cluster rules and the
   proof of a store location's change; O4 the components' sections, each its own plan's. **O3**,
@@ -200,7 +201,7 @@ Every obligation RFC 13, RFC 16 and RFC 23 place on this epic, and those RFC 13'
 | --- | --- | --- | --- | --- |
 | R29 | `config_refused_total` by component and reason and `config_bound_refusals_total`; no label names a record or a secret: `reason` is a name of E1's closed error list, `component` the declared section prefix, and an unknown key has one fixed value | MUST | RFC 13 §8; RFC 25 §2.4 | T3.9 |
 | R30 | The reconcile scan and `Diff` are measured at 10⁴ shares' settings, against a ceiling of 100 ms | bound | RFC 13's plan, §4.3 | T3.9, T3.10 |
-| R34 | A pass that decodes only the scopes above the reconciled position returns the snapshot, the changes, in the same order, and the refused sections that `Read` and `Diff` return over every row | invariant | RFC 13 §5 ("re-reads the records whose generation moved"); RFC 23 §2.4 | T3.10 |
+| R34 | A pass that decodes only the scopes above the reconciled position returns the snapshot, the changes, in the same order, and the refused sections that `Read` and `Diff` return over every row, except D7's one exception (a value `json.Marshal` cannot encode) | invariant | RFC 13 §5 ("re-reads the records whose generation moved"); RFC 23 §2.4 | T3.10 |
 
 **Secrecy**
 
@@ -348,8 +349,8 @@ leaves the `decision:` note only.
   but needs an RFC 16 key, a removal entry on every delete path and its pruning: the plan's ledger
   gives it to RFC 16, with the walk's own time as its trigger. `Advance` is this epic's third
   exception to E1's freeze, with its `Pass`, after D6's `FormatVersion` and T3.9's `WithMetrics`:
-  T3.10 adds both to the export pin. T3.10 makes the one swap in reconcile's `walkSettings` once E5's
-  T5.2 has merged, since T5.2 rewrites that function; T5.2 and T5.3 do not wait for T3.10. The `ponytail:` marker moves to `Advance`.
+  T3.10 adds both to the export pin. T3.10 makes the two swaps, `settings.Read` in reconcile's `walkSettings` and T5.3's
+  `Diff` of the apply, once E5's T5.2 and T5.3 have merged, since they write those calls; T5.2 and T5.3 do not wait for T3.10. The `ponytail:` marker moves to `Advance`.
 
 ## 5. Target tree
 
@@ -368,7 +369,7 @@ pkg/settings/diff.go                    T3.8  Diff, Keep
 pkg/settings/metrics.go                 T3.9  the two series
 pkg/settings/read_bench_test.go         T3.9  the reconcile benchmark, Read and Diff; T3.10 its scan_above and walk cases
 pkg/settings/advance.go                 T3.10 Advance, the pass over the changed scopes
-internal/node/reconcile.go              T3.10 walkSettings calls Advance (E5's T5.2 file, after T5.2 merges)
+internal/node (reconcile)               T3.10 walkSettings calls Advance, T5.3's apply calls pass.Diff (after T5.2 and T5.3 merge)
 ```
 
 ## 6. Subtasks
@@ -698,7 +699,9 @@ internal/node/reconcile.go              T3.10 walkSettings calls Advance (E5's T
 - **Deliverables:** `Diff(prev, cur)`, listing each changed key with its section, scope and class,
   every key with no previous snapshot; `(*Snapshot).Keep(section, prev)`, which with no previous
   snapshot, or one without the section, leaves the section with no value, so `Get` on it returns
-  an error as E1's `Get` does for a section held at start, never its default (R28).
+  an error as E1's `Get` does for a section held at start, never its default (R28). In a section
+  with one value per instance or per thing, `Keep` holds only the refused instance or thing, the
+  whole section only when its own value is refused.
 - **Acceptance criteria:** a key whose value is unchanged is never listed.
 - **Tests:** one change per class lands with that class; a per-thing value changed for one journal
   lists that journal only; a first reconcile, `Diff` with no previous snapshot, lists every key;
@@ -756,7 +759,7 @@ internal/node/reconcile.go              T3.10 walkSettings calls Advance (E5's T
 
 **Subtask T3.10 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** T3.4, T3.8, T3.9; E5's T5.2 merged, for the swap in `walkSettings` only.
+- **Track:** B. **Depends on:** T3.4, T3.8, T3.9; E5's T5.2 and T5.3 merged, for the swaps in `walkSettings` and in T5.3's apply only.
 - **Covers:** R30, R34.
 - **Deliverables:** `Advance(ctx, r, table, node, prev, at)` and `(*Pass).Diff(was, cur)` in
   `pkg/settings` (D7): with no previous snapshot, `Read`, every section marked rebuilt; otherwise one `AllSettings` walk through
@@ -775,17 +778,21 @@ internal/node/reconcile.go              T3.10 walkSettings calls Advance (E5's T
   the export pin; the test hook on the `Table` instance. The `ponytail:` marker moves from `Read` to
   `Advance`: one walk of every row per pass, only the changed scopes decoded; upgrade to an index by
   (kind, position) in RFC 16 once the walk alone, `BenchmarkReconcileScan`'s `walk` case, passes 100 ms or its restarts stall the reconciled
-  position. In `walkSettings` (`internal/node/reconcile.go`, E5's T5.2, merged first), the swap:
+  position. In `walkSettings` (package `internal/node`, E5's T5.2, merged first), the swap:
   `settings.Read` becomes `settings.Advance`, the last walk's raw snapshot and its `CFGGEN` kept for the
-  next pass, a walk the generation moved under discarded with `at` unchanged. `BenchmarkReconcileScan` gains `scan_above`, `Advance` from the fixture's previous
+  next pass, a walk the generation moved under discarded with `at` unchanged. In T5.3's apply (E5's
+  T5.3, merged first), the `Diff` of the apply becomes `pass.Diff`, after the `Keep` calls.
+  `BenchmarkReconcileScan` gains `scan_above`, `Advance` from the fixture's previous
   snapshot, with the same guards, and `walk`, the store walk alone through `SettingsReader` with no
-  decode, which is the index's trigger.
+  decode, which is the index's trigger; the `walk` case fails itself when the rows it counted differ
+  from the fixture's, like T3.9's guards.
 - **Acceptance criteria:**
   - `scan_above` under 100 ms at 10⁴ shares, sparse and dense, the median of ten runs on one
     machine. `walk` is reported beside it with no limit: past 100 ms it fires the index's trigger,
     it does not fail T3.10.
   - Over a seeded sequence of writes, `Advance` and `Read` with `Diff` give snapshots that diff
-    empty both ways, the same changes in the same order and the same refused sections.
+    empty both ways, the same changes in the same order and the same refused sections; the
+    sequence's sections hold no value `json.Marshal` cannot encode (D7's one exception).
   - A row above `at` is decoded and a row at or below it is not.
 - **Tests:** on Badger under `t.TempDir()` through `kvstore`, never a fake reader: a seeded
   sequence of 200 writes on 50 shares over an `At`, an `Override` with a required key, an
@@ -804,7 +811,8 @@ internal/node/reconcile.go              T3.10 walkSettings calls Advance (E5's T
   a refusal lost silently), and a row whose key does not parse inside a share's rows, over a pass
   where that share does not change (catches a scope split in two); the previous snapshot unchanged after the call (catches a
   published snapshot mutated in place); on `nodetest`, after the swap, a write between two pages
-  leaving `at` where it was and the next pass applying it, T5.2's own tests passing unchanged.
+  leaving `at` where it was and the walk taken again in the same pass when `CFGGEN` moved, with `at`
+  unchanged until the next poll, T5.2's and T5.3's own tests passing unchanged.
 
 ## 7. Order of work
 
@@ -826,13 +834,13 @@ flowchart TD
   T3_4 --> T3_8["T3.8 Diff, Keep, classes"]
   T3_4 & T3_6 & T3_8 --> T3_9["T3.9 Series, benchmark"]
   T3_9 --> T3_10["T3.10 Pass over the changed scopes"]
-  T5_2(["E5's T5.2 merged, for the walkSettings swap"]):::sync --> T3_10
+  T5_2(["E5's T5.2 and T5.3 merged, for the two swaps"]):::sync --> T3_10
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
 T3.1 and T3.2 start at once. Checkpoint after T3.4: a section reads end to end, enough for E5 to
 build the node's table. Six subtasks wait outside the epic: T3.1 and T3.6 on E2's T2.8, T3.3 on
-E2's T2.1, T3.4 on RFC 23's T2.8, T3.7 on E4's S2 and T3.10 on E5's T5.2.
+E2's T2.1, T3.4 on RFC 23's T2.8, T3.7 on E4's S2 and T3.10 on E5's T5.2 and T5.3.
 
 ## 8. Suggested pull requests
 
@@ -842,7 +850,7 @@ E2's T2.1, T3.4 on RFC 23's T2.8, T3.7 on E4's S2 and T3.10 on E5's T5.2.
 | 2 | T3.4, T3.8 | 3.5 | PR 1, RFC 23's T2.8 | the read side, what reconcile calls |
 | 3 | T3.5, T3.6, T3.9 | 7.5 | PR 2 | the write check, its gates and the series and benchmark over the finished code |
 | 4 | T3.7 | 1.5 | PR 3, S2 | the secret references once E4 seals |
-| 5 | T3.10 | 3 | PR 3, E5's T5.2 | the reconcile over the changed scopes and its call in `walkSettings`, #5563 |
+| 5 | T3.10 | 3 | PR 3, E5's T5.2 and T5.3 | the reconcile over the changed scopes and its calls in `walkSettings` and T5.3's apply, #5563 |
 
 A suggestion only: one pull request per subtask works as well.
 

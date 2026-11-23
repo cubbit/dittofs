@@ -23,8 +23,8 @@ whose two wrapping keys build the provider. S3, outside RFC 13's plan: RFC 23's 
 adapter and secret routes, which already call `Check` through `checkSetting` with the caller's role,
 and `Deps.Sealer` (its T4.9, #4994, landed). RFC 20's plan's T7.6, the adapters' section types, for
 T5.7 only.
-**Blocks:** E6, which runs RFC 13 §9's single-node rows on the wired server; E3's T3.10, for its swap
-in `walkSettings` only, which waits for T5.2 to merge; RFC 23's integration
+**Blocks:** E6, which runs RFC 13 §9's single-node rows on the wired server; E3's T3.10, for its swaps
+in `walkSettings` and in T5.3's apply only, which wait for T5.2 and T5.3 to merge; RFC 23's integration
 epic (its epic 7, through X3), whose rows that write a setting wait for `Check` on the routes; RFC
 20's plan's T7.6, which reads each adapter's section from the snapshot this epic's reconcile
 publishes; the RFC 18 plan's epic 8, which lists identity's sections in this epic's table and runs
@@ -423,8 +423,7 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 - **Covers:** R6, R7, R8, R9, R10, R11.
 - **Deliverables:** `apply`'s settings half in `reconcile.go`: `CFGGEN` read, `settings.Read` over
   the node view's `AllSettings` (after T5.2 merges, E3's T3.10 swaps this call for `settings.Advance`
-  from the last walk's own snapshot, its `Pass` diffing after the `Keep` calls; T5.2 does not wait
-  for T3.10), `CFGGEN` read again and the walk discarded when it moved; each
+  from the last walk's own snapshot; T5.2 does not wait for T3.10), `CFGGEN` read again and the walk discarded when it moved; each
   refused section kept at its last snapshot with `Keep` (only the refused instance or thing, the
   whole section only when its own value is refused), or held unstarted when it never ran, and
   returned as a refusal with its generation and error; the snapshot stored in an
@@ -456,7 +455,8 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 
 - **Track:** the team. **Depends on:** T5.2.
 - **Covers:** R8, R10, R11, R12, R13, R14.
-- **Deliverables:** `Diff` over the previous and the new snapshot, each change down its class's
+- **Deliverables:** `Diff` over the previous and the new snapshot (after T5.3 merges, E3's T3.10 swaps it
+  for the `Pass`'s `Diff`, taken after the `Keep` calls; T5.3 does not wait for T3.10), each change down its class's
   path: a live or bound one to its section's apply or "read at use" (D5), an apply's failure
   refusing that section only; a restart-class one into `NodeStatus.RestartPending` (an adapter's
   port is RFC 20's T7.6's rebuild); a next-write one with nothing to apply; the section-to-apply map
