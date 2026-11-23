@@ -1096,8 +1096,10 @@ func (d *Durability) Losses() []core.LossEvent {
 		// of events the ring overwrote since that read restarts the window
 		// at this copy's from, for one interval cannot hold both the
 		// events the earlier read carried and the ones this copy began
-		// with. The from is stored before the through, so a claim reading
-		// the two at once sees a window that is narrower, never wider.
+		// with. The from is stored before the through, and claimServed
+		// loads the through before the from, so a claim reading the two
+		// while a read moves them sees a window that is narrower, never
+		// wider — one half of the pairing alone does not hold the answer.
 		from := d.nextEvent - uint64(d.count) + 1
 		if t := d.reach.servedThrough.Load(); t == 0 || from > t+1 {
 			d.reach.servedFrom.Store(from)
@@ -1234,7 +1236,13 @@ func (r *reach) claimsDead() bool { return r.dead.Load() }
 // reported loss learns the number of the window's event that carried its
 // report.
 func (r *reach) claimServed(ev uint64) bool {
-	from, through := r.servedFrom.Load(), r.servedThrough.Load()
+	// The through is loaded before the from, and Losses stores the from
+	// before the through: a window narrower than any read carried — an old
+	// through with the from that restarted past it reads empty — never one
+	// wider, which the opposite halves of either order would span the gap a
+	// restarting read leaves. Both halves of the pairing hold the answer;
+	// break neither alone.
+	through, from := r.servedThrough.Load(), r.servedFrom.Load()
 	if ev == 0 {
 		return through > 0
 	}

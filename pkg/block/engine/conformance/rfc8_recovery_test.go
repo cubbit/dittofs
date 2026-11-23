@@ -515,9 +515,10 @@ func TestRFC8A_ALossTheDrainServedIsNotRefoundAtTheReopen(t *testing.T) {
 // found at open again, into its own ring, and the drain of the reopened
 // process applies them: the file's loss sequence rises over the loss the
 // ended process never told a client. The leg above asserts the same reopen
-// silent over a loss a Commit's drain took; this one is the row's honest
-// red, proving the fixture can see a found-at-open event through the public
-// surface when the journal places one.
+// silent over a loss a Commit's drain took; this one is its standing
+// opposite, proving the fixture can see a found-at-open event through the
+// public surface when the journal places one — the answer the row's
+// revert-check rests on it being able to give.
 func TestRFC8A_ALossNoDrainReachedIsReportedAtTheReopen(t *testing.T) {
 	f := enginetest.New(t)
 	_, id := f.File("a")
