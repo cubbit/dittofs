@@ -25,6 +25,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/secrets"
+	"github.com/cubbit/dittofs/pkg/settings"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/google/uuid"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
@@ -238,7 +239,11 @@ func TestSealedPlaintextCleared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rq := request[apiv1.Credential]{Body: apiv1.Credential{Spec: apiv1.CredentialSpec{Value: v}}, d: e.d}
+	// The empty table, not none, so the seal runs rather than the 503 for a
+	// missing table.
+	d := e.d
+	d.Settings = settings.Table{}
+	rq := request[apiv1.Credential]{Body: apiv1.Credential{Spec: apiv1.CredentialSpec{Value: v}}, d: d}
 	if _, err := keytabs.seal(t.Context(), rq); err != nil {
 		t.Fatalf("seal the keytab: %v", err)
 	}

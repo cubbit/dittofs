@@ -394,9 +394,9 @@ func TestKeytabRouteRefusals(t *testing.T) {
 // A keytab identity's check refuses, and one holding a key for a name the
 // computer account holds in the directory's realm, compared with ASCII
 // letters folded, are each refused before anything is written; with a
-// sealer, the empty settings table refuses the setting naming any other,
-// one for the account's name in another realm among them, so no version is
-// written either. The keytab's bytes are found nowhere.
+// sealer but no settings table, any other, one for the account's name in
+// another realm among them, is refused 503 before it is sealed, so no
+// version is written either. The keytab's bytes are found nowhere.
 //
 // ponytail: no test reads a sealed keytab back raw, since the settings table
 // the setting's write needs is not handed in yet; test it once it is.
@@ -423,8 +423,8 @@ func TestKeytabRoute(t *testing.T) {
 		{"an RC4 keytab", rc4, http.StatusBadRequest, "invalid"},
 		{"a keytab for a name the join holds", held, http.StatusBadRequest, "invalid"},
 		{"a keytab for the computer account's own name", account, http.StatusBadRequest, "invalid"},
-		{"a good keytab, refused by the empty table", good, http.StatusBadRequest, "unknown_key"},
-		{"the account's name in another realm, refused by the empty table", elsewhere, http.StatusBadRequest, "unknown_key"},
+		{"a good keytab, with no settings table", good, http.StatusServiceUnavailable, "unavailable"},
+		{"the account's name in another realm, with no settings table", elsewhere, http.StatusServiceUnavailable, "unavailable"},
 	} {
 		r := d.do(t, http.MethodPut, keytabPath, putKeytab(tc.b), "If-None-Match", "*")
 		replies = append(replies, r)

@@ -46,8 +46,10 @@ func refusedKey(key string, err error) error {
 //
 // decision: with no table handed in, every key is refused ErrUnknownKey, as
 // the empty table refuses a prefix with no validator, so a setting-backed
-// write fails closed until the node hands the table in. Overturned once the
-// node always hands one, when nil should refuse 503 unavailable instead.
+// write fails closed until the node hands the table in. A secret's set is
+// refused 503 before it gets here, in secretSetting.seal, so no seal is spent
+// on it. Overturned once the node always hands one, when nil should refuse
+// 503 unavailable instead.
 func checkSetting(ctx context.Context, d Deps, tx entity.ControlPlaneTx, key string, w func() settings.Write) error {
 	if d.Settings == nil {
 		return refusedKey(key, settings.ErrUnknownKey)

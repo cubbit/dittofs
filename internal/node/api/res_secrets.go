@@ -50,6 +50,10 @@ func secretRefOf(ctx context.Context, d Deps, s entity.Setting) (*apiv1.SecretRe
 	return &apiv1.SecretRef{Ref: idString(ref), Version: sec.Version}, nil
 }
 
+// errNoSettings refuses a secret's set while no settings table is handed in
+// to judge the setting naming it.
+var errNoSettings = &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no settings table to judge the setting naming the secret"}
+
 // secretSetting is a write-only secret that a setting names by reference:
 // the scope the path's ID names, the setting's key, the secret's kind, the
 // field its audit records name the value by, record, the key of the record
@@ -120,12 +124,14 @@ func (ss secretSetting) writing(kind entity.ResourceKind) writing[apiv1.Credenti
 // seal is the secret's pre-write step: the value sealed as the first version
 // of a new reference, under its kind's role, then cleared. A set on a
 // record that does not exist is refused 404 first, then one on a record
-// that holds the secret 409, then a value check refuses, then,
-// with no sealer, the set is refused 503, each before anything is written.
+// that holds the secret 409, then a value check refuses, then, with no
+// settings table or no sealer, the set is refused 503, each before anything
+// is sealed or written: with no table the setting naming the secret would be
+// refused, so no seal is spent on a write that cannot land.
 //
-// ponytail: no test seals a store's credential or the keytab through
-// these routes on the composed node and reads the sealed version back raw.
-// Test the set end to end there once a node test needs either written.
+// ponytail: the node hands in no settings table yet, so neither a store's
+// credential nor the keytab is written through these routes on the composed
+// node. Test the set end to end once it hands one in.
 func (ss secretSetting) seal(ctx context.Context, rq request[apiv1.Credential]) (sealedSecret, error) {
 	v := rq.Body.Spec.Value
 	defer clear(v)
@@ -147,6 +153,9 @@ func (ss secretSetting) seal(ctx context.Context, rq request[apiv1.Credential]) 
 		if out.inTx, err = ss.check(ctx, rq.d, v); err != nil {
 			return sealedSecret{}, err
 		}
+	}
+	if rq.d.Settings == nil {
+		return sealedSecret{}, errNoSettings
 	}
 	if rq.d.Sealer == nil {
 		return sealedSecret{}, errNoSealer

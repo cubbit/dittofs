@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
+	"github.com/jcmturner/gokrb5/v8/keytab"
 
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
 	"github.com/cubbit/dittofs/internal/node"
@@ -302,8 +304,8 @@ func TestAJoinThroughTheAPIRunsOnTheNode(t *testing.T) {
 // An offline join through the API, its computer account staged at the
 // domain controller and its password handed over, answers 202 and runs on
 // the node's runner to joined, and alice's NTLM sign-in in the domain is
-// then passed through. Catches the API handed no sealer, which refuses the
-// hand-over 503.
+// then passed through. Only it covers a join to a staged computer account
+// without takeover, then the sign-in passed through on that join.
 func TestAnOfflineJoinThroughTheAPIRunsOnTheNode(t *testing.T) {
 	m := newMachine(t, false)
 	const handed = "Nas-Staged-Passw0rd"
@@ -587,5 +589,43 @@ func TestAMachinePasswordThatDoesNotReadKeepsTheLast(t *testing.T) {
 	}
 	if st := m.h.Node().AppliedIdentity(); len(st.Machine) == 0 || !st.Join.Joined {
 		t.Fatalf("identity once the machine password did not read: %d versions, joined %v; want the last kept", len(st.Machine), st.Join.Joined)
+	}
+}
+
+// A valid keytab's PUT answers 503 unavailable on the composed node, which
+// hands the API no settings table to judge the setting naming the keytab,
+// and writes neither a secret version nor that setting: the table's absence
+// is answered before the seal, not as the setting's 400 unknown_key after it.
+func TestAKeytabPutWithNoSettingsTableIsUnavailable(t *testing.T) {
+	m := newMachine(t, false)
+	kt := keytab.New()
+	if err := kt.AddEntry(machineSvc, machineRealm, "keytab", time.Unix(1, 0), 1, etypeID.AES256_CTS_HMAC_SHA1_96); err != nil {
+		t.Fatal(err)
+	}
+	b, err := kt.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(apiv1.Credential{Spec: apiv1.CredentialSpec{Value: b}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := secretRows(t, m.kv)
+	addr, _ := m.h.Node().Addrs()
+	r := answeredIn(t, "PUT the keytab", send(t.Context(), addr, http.MethodPut, "/api/v1/installation/keytab", string(body), "If-None-Match", "*"))
+	var p apiv1.Problem
+	if err := json.Unmarshal(r.body, &p); err != nil || r.status != http.StatusServiceUnavailable || p.Code != apiv1.CodeUnavailable {
+		t.Errorf("PUT the keytab with no settings table: answered %d %s, want 503 %s", r.status, r.body, apiv1.CodeUnavailable)
+	}
+	if after := secretRows(t, m.kv); !maps.Equal(after, before) {
+		t.Errorf("secret rows after the refused PUT: %d, want the %d before it, unchanged", len(after), len(before))
+	}
+	for s, err := range m.h.Store().ControlPlane().Settings(t.Context(), installationScope) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Key == "identity.keytab" {
+			t.Errorf("identity.keytab after the refused PUT: %+v, want none", s)
+		}
 	}
 }
