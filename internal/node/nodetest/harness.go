@@ -187,7 +187,8 @@ func New(t testing.TB, opts ...Option) *Harness {
 // harness in the binary seals under the same weak key, so no node test can
 // tell one installation's key from another's, and the first open's error
 // holds for the whole binary. Withdraw it when a node test needs two
-// installations with different keys.
+// installations with different keys, or a test that asserts a key mismatch
+// is refused.
 var generated = sync.OnceValues(func() (map[string][]byte, error) {
 	keys := map[string][]byte{}
 	for _, name := range []string{"storage.key", "protocol.key"} {
