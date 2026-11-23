@@ -183,17 +183,27 @@ func standard(imp string) bool {
 	return imp != "C" && !strings.Contains(first, ".")
 }
 
-// walkImports calls fn with each .go file under root, as a slash path relative
-// to root, and the paths it imports; test files are read only when tests is
-// set. It leaves out testdata, hidden directories and nested modules.
+// fileImports is one walk row: a .go file's slash path relative to the walked
+// root, the paths it imports, and whether it is a test file — a rule that
+// ignores tests skips such a row rather than the walk skipping the file.
+type fileImports struct {
+	File    string
+	Imports []string
+	Test    bool
+}
+
+// walkSnapshot returns each .go file under root as one fileImports row, test
+// files included, each row marked. It leaves out testdata, hidden directories
+// and nested modules.
 //
 // decision: every file is parsed with go/parser, ignoring build constraints
 // and GOOS or GOARCH file-name suffixes, rather than listed through go/build,
 // which reads only the files of one build; so no file behind a tag or for
 // another platform can hide an import from a rule. Its ceiling is the source
 // on disk: an import that only a build-time generator writes is not seen.
-func walkImports(root string, tests bool, fn func(file string, imports []string)) error {
-	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+func walkSnapshot(root string) ([]fileImports, error) {
+	var rows []fileImports
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -209,7 +219,7 @@ func walkImports(root string, tests bool, fn func(file string, imports []string)
 			}
 			return nil
 		}
-		if !strings.HasSuffix(p, ".go") || (!tests && strings.HasSuffix(p, "_test.go")) {
+		if !strings.HasSuffix(p, ".go") {
 			return nil
 		}
 		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.ImportsOnly)
@@ -228,9 +238,10 @@ func walkImports(root string, tests bool, fn func(file string, imports []string)
 		if err != nil {
 			return err
 		}
-		fn(filepath.ToSlash(rel), imports)
+		rows = append(rows, fileImports{File: filepath.ToSlash(rel), Imports: imports, Test: strings.HasSuffix(p, "_test.go")})
 		return nil
 	})
+	return rows, err
 }
 
 // v1Paths are v1's control plane and its client, which never return at these
@@ -238,42 +249,42 @@ func walkImports(root string, tests bool, fn func(file string, imports []string)
 // rule, guards its deletion.
 var v1Paths = []string{module + "pkg/controlplane", module + "internal/controlplane", module + "pkg/snapshot", module + "pkg/apiclient"}
 
-// v1Imports returns each import of a v1 path by a file under root, tests
+// v1Imports returns each import of a v1 path by a file of root's rows, tests
 // included.
-func v1Imports(root string) ([]string, error) {
+func v1Imports(_ string, files []fileImports) ([]string, error) {
 	var bad []string
-	err := walkImports(root, true, func(file string, imports []string) {
-		for _, imp := range imports {
+	for _, r := range files {
+		for _, imp := range r.Imports {
 			if slices.ContainsFunc(v1Paths, func(v1 string) bool { return under(imp, v1) }) {
-				bad = append(bad, file+" imports "+imp)
+				bad = append(bad, r.File+" imports "+imp)
 			}
 		}
-	})
+	}
 	slices.Sort(bad)
-	return bad, err
+	return bad, nil
 }
 
-// nodeImporters returns each file under root, tests included, that imports
-// the node but may not: only the server's start command and the test harness
-// build a node, and the node's own external tests drive it.
-func nodeImporters(root string) ([]string, error) {
+// nodeImporters returns each file of root's rows, tests included, that
+// imports the node but may not: only the server's start command and the test
+// harness build a node, and the node's own external tests drive it.
+func nodeImporters(_ string, files []fileImports) ([]string, error) {
 	var bad []string
-	err := walkImports(root, true, func(file string, imports []string) {
+	for _, r := range files {
 		// decision: the harness under internal/node/nodetest is the one
 		// importer besides dfs start, because it drives a whole node in tests
 		// as dfs start does in production; the node's own _test.go files are
 		// its tests, in package node_test only because they use the harness,
 		// which imports the node. No other exemption is named.
-		ownTest := path.Dir(file) == "internal/node" && strings.HasSuffix(file, "_test.go")
-		if file == "cmd/dfs/commands/start.go" || under(file, "internal/node/nodetest") || ownTest {
-			return
+		ownTest := path.Dir(r.File) == "internal/node" && strings.HasSuffix(r.File, "_test.go")
+		if r.File == "cmd/dfs/commands/start.go" || under(r.File, "internal/node/nodetest") || ownTest {
+			continue
 		}
-		if slices.Contains(imports, module+"internal/node") {
-			bad = append(bad, file+" imports the node")
+		if slices.Contains(r.Imports, module+"internal/node") {
+			bad = append(bad, r.File+" imports the node")
 		}
-	})
+	}
 	slices.Sort(bad)
-	return bad, err
+	return bad, nil
 }
 
 // startPackage is dfs start's package, and startAllowed what of this module
@@ -307,25 +318,22 @@ var (
 // and each of startExempt missing under root, so that a file renamed away
 // can leave the rule neither passing over nothing nor exempting a name a new
 // file could take.
-func startImports(root string) ([]string, error) {
+func startImports(root string, files []fileImports) ([]string, error) {
 	var bad []string
 	seen := map[string]bool{}
-	err := walkImports(root, false, func(file string, imports []string) {
-		if path.Dir(file) != startPackage {
-			return
+	for _, r := range files {
+		if r.Test || path.Dir(r.File) != startPackage {
+			continue
 		}
-		seen[file] = true
-		if slices.Contains(startExempt, file) {
-			return
+		seen[r.File] = true
+		if slices.Contains(startExempt, r.File) {
+			continue
 		}
-		for _, imp := range imports {
+		for _, imp := range r.Imports {
 			if rel, ok := strings.CutPrefix(imp, module); ok && !slices.Contains(startAllowed, rel) {
-				bad = append(bad, file+" imports "+imp)
+				bad = append(bad, r.File+" imports "+imp)
 			}
 		}
-	})
-	if err != nil {
-		return nil, err
 	}
 	for _, f := range append([]string{startPackage + "/start.go"}, startExempt...) {
 		if !seen[f] {
@@ -388,22 +396,25 @@ func (noImports) Import(path string) (*types.Package, error) {
 	return nil, errors.New("not loaded: " + path)
 }
 
-// enginewireImporters returns each non-test file under root that imports
+// enginewireImporters returns each non-test file of root's rows that imports
 // enginewire outside the two packages its package doc names: the node and
 // enginetest.
-func enginewireImporters(root string) ([]string, error) {
+func enginewireImporters(_ string, files []fileImports) ([]string, error) {
 	var bad []string
-	err := walkImports(root, false, func(file string, imports []string) {
-		dir := path.Dir(file)
+	for _, r := range files {
+		if r.Test {
+			continue
+		}
+		dir := path.Dir(r.File)
 		if dir == "internal/node" || dir == "pkg/block/engine/enginetest" {
-			return
+			continue
 		}
-		if slices.Contains(imports, module+"pkg/block/engine/enginewire") {
-			bad = append(bad, file+" imports enginewire")
+		if slices.Contains(r.Imports, module+"pkg/block/engine/enginewire") {
+			bad = append(bad, r.File+" imports enginewire")
 		}
-	})
+	}
 	slices.Sort(bad)
-	return bad, err
+	return bad, nil
 }
 
 // cliRoots are where the CLI's dependency closure starts, and cliAllowed what
@@ -419,14 +430,14 @@ var (
 // outside the standard library and pkg/node/apiv1 itself, which its client
 // imports. It follows non-test files only, as the
 // binary is built from them.
-func cliClosure(root string) ([]string, error) {
+func cliClosure(_ string, files []fileImports) ([]string, error) {
 	pkgs := map[string][]string{}
-	err := walkImports(root, false, func(file string, imports []string) {
-		dir := path.Dir(file)
-		pkgs[dir] = append(pkgs[dir], imports...)
-	})
-	if err != nil {
-		return nil, err
+	for _, r := range files {
+		if r.Test {
+			continue
+		}
+		dir := path.Dir(r.File)
+		pkgs[dir] = append(pkgs[dir], r.Imports...)
 	}
 	var bad, queue []string
 	seen := map[string]bool{}
@@ -465,27 +476,29 @@ const settingsLeaf = "internal/node/api/apisettings"
 
 // settingsImports returns each import by a non-test file of settingsLeaf
 // outside the standard library.
-func settingsImports(root string) ([]string, error) {
+func settingsImports(_ string, files []fileImports) ([]string, error) {
 	var bad []string
-	err := walkImports(root, false, func(file string, imports []string) {
-		if !under(path.Dir(file), settingsLeaf) {
-			return
+	for _, r := range files {
+		if r.Test || !under(path.Dir(r.File), settingsLeaf) {
+			continue
 		}
-		for _, imp := range imports {
+		for _, imp := range r.Imports {
 			if !standard(imp) {
-				bad = append(bad, file+" imports "+imp)
+				bad = append(bad, r.File+" imports "+imp)
 			}
 		}
-	})
+	}
 	slices.Sort(bad)
-	return bad, err
+	return bad, nil
 }
 
 // weakKeyCallers returns each non-test file under root that calls
 // GenerateWeakKeyFile, whose key file protects its master key at the lowest
 // cost a key file may record: only a test, or a package of test helpers
-// whose name ends in test, may write one.
-func weakKeyCallers(root string) ([]string, error) {
+// whose name ends in test, may write one. It walks root itself, ignoring
+// files: it reads each file's calls, not its imports, so a shared import
+// snapshot serves it nothing — its parse is of whole files.
+func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 	var bad []string
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -537,9 +550,15 @@ func weakKeyCallers(root string) ([]string, error) {
 // Each import rule reports nothing over the module and exactly the violation
 // planted in its testdata tree, beside the allowed look-alikes planted with it.
 func TestImportRules(t *testing.T) {
+	// One walk of the module, shared by every rule's module check; a rule
+	// that reads calls rather than imports walks root itself.
+	files, err := walkSnapshot(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("over the module: %v", err)
+	}
 	for _, tc := range []struct {
 		name string
-		rule func(root string) ([]string, error)
+		rule func(root string, files []fileImports) ([]string, error)
 		tree string
 		want []string
 	}{
@@ -578,14 +597,19 @@ func TestImportRules(t *testing.T) {
 		{"the API settings' imports", settingsImports, "settings-leaf",
 			[]string{"internal/node/api/apisettings/settings.go imports " + module + "pkg/node/apiv1"}},
 	} {
-		got, err := tc.rule(filepath.Join("..", ".."))
+		got, err := tc.rule(filepath.Join("..", ".."), files)
 		if err != nil {
 			t.Fatalf("%s over the module: %v", tc.name, err)
 		}
 		if len(got) > 0 {
 			t.Errorf("%s over the module: violations %q, want none", tc.name, got)
 		}
-		got, err = tc.rule(filepath.Join("testdata", "arch", tc.tree))
+		tree := filepath.Join("testdata", "arch", tc.tree)
+		rows, err := walkSnapshot(tree)
+		if err != nil {
+			t.Fatalf("%s over %s: %v", tc.name, tc.tree, err)
+		}
+		got, err = tc.rule(tree, rows)
 		if err != nil {
 			t.Fatalf("%s over %s: %v", tc.name, tc.tree, err)
 		}
