@@ -190,9 +190,14 @@ func (n *Node) Wake() {
 	}
 }
 
-// OnRunnerTurn has the operation runner call turned after each turn, once
-// the wait for the next is set on the node's clock. Call it before Start.
-func (n *Node) OnRunnerTurn(turned func()) { n.runner.turned = turned }
+// OnRunnerTurn has the operation runner call turned after each turn, with
+// the runner's context, once the wait for the next, if any, is set on the
+// node's clock. Call it before Start.
+func (n *Node) OnRunnerTurn(turned func(ctx context.Context)) { n.runner.turned = turned }
+
+// RunnerWaits reports whether the operation runner's last turn ended in a
+// wait on the node's clock. Call it only from the OnRunnerTurn hook.
+func (n *Node) RunnerWaits() bool { return n.runner.waits }
 
 // OnStatus has the status writer call turned at the end of each turn with
 // the status it built and whether it committed it. Call it before Start.
@@ -332,7 +337,7 @@ func (n *Node) Tokens() *auth.Tokens { return n.tokens }
 // RunnerTurn has the operation runner take one turn, as its loop does at
 // each interval. Call it only on a node not started, whose runner runs no
 // loop of its own.
-func (n *Node) RunnerTurn(ctx context.Context) { n.runner.turn(ctx) }
+func (n *Node) RunnerTurn(ctx context.Context) { n.runner.turn(ctx, true) }
 
 // FailStorageKeyClose has the storage key's Close answer err once the real
 // key is closed beneath it.

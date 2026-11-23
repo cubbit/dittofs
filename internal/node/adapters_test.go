@@ -420,7 +420,7 @@ func TestTheAdaptersDrainUntilTheDeadline(t *testing.T) {
 	s := newSteps(t, &h)
 	h = nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewStepping(s.stepped)))
 	turned := make(chan struct{}, 1)
-	h.Node().OnRunnerTurn(func() {
+	h.Node().OnRunnerTurn(func(context.Context) {
 		select {
 		case turned <- struct{}{}:
 		default:

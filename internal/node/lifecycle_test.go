@@ -731,7 +731,7 @@ func TestStartRunsTheOperationRunner(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	id := deleteUser(t, h)
 	turns := make(chan struct{}, 1)
-	h.Node().OnRunnerTurn(func() { turns <- struct{}{} })
+	h.Node().OnRunnerTurn(func(context.Context) { turns <- struct{}{} })
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
