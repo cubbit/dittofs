@@ -1112,12 +1112,12 @@ func TestScanSearchConsumesAnAllZeroWindowAsOne(t *testing.T) {
 	})
 }
 
-// firstNonZero answers what a byte-by-byte search answers wherever the one
-// byte that is not zero sits: at the first and last byte of a block, either
-// side of a block's edge, at the end of a length that is no whole number of
-// blocks, and nowhere at all.
+// firstNonZero finds the first byte that is not zero wherever it sits: at the
+// first and last byte of a block, either side of a block's edge, at the end of
+// a length that is no whole number of blocks, ahead of a later non-zero byte,
+// and nowhere at all.
 func TestFirstNonZeroFindsTheFirstByteThatIsNotZero(t *testing.T) {
-	block := len(zeroBlock)
+	block := zeroBlock
 	for _, n := range []int{0, 1, 7, block - 1, block, block + 1, 3*block + 5} {
 		b := make([]byte, n)
 		if got := firstNonZero(b); got != -1 {
