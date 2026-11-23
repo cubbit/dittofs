@@ -182,7 +182,11 @@ func TestSambaTicketThroughTheNode(t *testing.T) {
 	p := sealer(t, h)
 	keytabRef, bindRef := entity.SecretRef(uuid.New()), entity.SecretRef(uuid.New())
 	seal(t, h, p, secrets.Protocol, entity.SecretKeytab, entity.SecretOwner{Scope: installationScope, Key: "identity.keytab"}, keytabRef, dc.keytab)
-	seal(t, h, p, secrets.Protocol, entity.SecretDirectoryCredential, entity.SecretOwner{Scope: installationScope, Key: "identity.directory"}, bindRef, []byte(sambaAdminPass))
+	seal(t, h, p, secrets.Protocol, entity.SecretDirectoryCredential,
+		entity.SecretOwner{
+			Scope: installationScope,
+			Key:   "identity.directory.bind_credential",
+		}, bindRef, []byte(sambaAdminPass))
 	rows := map[string]string{
 		// The default NetBIOS name, DITTOFS, is the controller's domain,
 		// which identity refuses a node to share.

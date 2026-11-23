@@ -375,7 +375,7 @@ func TestResolveNeedsTheRoleKey(t *testing.T) {
 	zero := &Provider{}
 	dirOwner := entity.SecretOwner{
 		Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
-		Key:   "identity.directory",
+		Key:   "identity.directory.bind_credential",
 	}
 
 	value, err = zero.Resolve(ctx, Protocol, entity.SecretDirectoryCredential, dirOwner, nt)

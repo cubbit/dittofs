@@ -127,7 +127,11 @@ func newMachineLogged(t *testing.T, log io.Writer, onDisk bool, before ...func(*
 	m.h = nodetest.New(t, opts...)
 	m.p = sealer(t, m.h)
 	ref := entity.SecretRef(uuid.New())
-	seal(t, m.h, m.p, secrets.Protocol, entity.SecretDirectoryCredential, entity.SecretOwner{Scope: installationScope, Key: "identity.directory"}, ref, []byte(svcPW))
+	seal(t, m.h, m.p, secrets.Protocol, entity.SecretDirectoryCredential,
+		entity.SecretOwner{
+			Scope: installationScope,
+			Key:   "identity.directory.bind_credential",
+		}, ref, []byte(svcPW))
 	for k, v := range map[string]string{
 		"address": strconv.Quote("ldaps://" + machineDC), "base": `"DC=corp,DC=example"`, "bind_name": strconv.Quote(svc),
 		"realm": strconv.Quote(machineRealm), "netbios_domain": `"CORP"`, "dc_address": strconv.Quote(machineDC),

@@ -387,7 +387,10 @@ func (s *Server) bindPassword(ctx context.Context, ref entity.SecretRef) ([]byte
 		return nil, errors.New("no secret provider")
 	}
 	return s.deps.Secrets.Resolve(ctx, secrets.Protocol, entity.SecretDirectoryCredential,
-		entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: DirectorySectionName}, ref)
+		entity.SecretOwner{
+			Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
+			Key:   DirectoryBindCredentialKey,
+		}, ref)
 }
 
 // validate refuses settings or a directory record that fail their Validate,
