@@ -17,8 +17,11 @@ import (
 	"github.com/cubbit/dittofs/pkg/settings"
 )
 
+// settingsPage is the rows of one page of the settings walk, RFC 23 §2.3's 256.
+const settingsPage = 256
+
 // settingsWalk is one settings walk's read of the store: the node view's own,
-// wrapped so the walk bounds each wait on the store and notes every row it
+// wrapped so the walk bounds each page it waits on and notes every row it
 // read that this node runs and its section reads, by the section's prefix,
 // which its refusals then name, one row at a time.
 type settingsWalk struct {
@@ -29,7 +32,8 @@ type settingsWalk struct {
 	// clock.
 	bound func() <-chan struct{}
 	// waiting, when set, is called with the rows the walk has received each
-	// time it arms its bound to wait on the store for the next one.
+	// time it arms its bound for the next page: at 0, then at each
+	// settingsPage rows.
 	waiting func(seen int)
 	// rows is each row the walk kept, by the prefix of the section that
 	// reads it, in walk order.
@@ -42,12 +46,14 @@ type settingsWalk struct {
 // claims a row the walk ignored. A row that does not decode is noted too,
 // when its key parses: it is a row the walk read and can refuse.
 //
-// Each wait on the store for the next row is bound by storeBound, so a page
-// the store stops answering ends the walk with an error, however many pages
-// the walk has read before it, and a walk of many pages that each answer
-// within the bound is never cut short. Only a wait for a page can last: the
-// rows of one page come at once. A store that ignores its context is left
-// reading, as bounded leaves a call, and its answer is dropped.
+// Each page of settingsPage rows is bound by storeBound from when the walk
+// reaches it, one bound per page and not per row, so a page the store stops
+// answering ends the walk with an error naming the rows read, however many
+// pages the walk has read before it, and a walk of many pages that each answer
+// within the bound is never cut short. The store reads a page in one read and
+// yields its rows at once, so only the wait for a page can last. A store that
+// ignores its context is left reading, as bounded leaves a call, and its
+// answer is dropped.
 func (w *settingsWalk) AllSettings(
 	ctx context.Context,
 	after entity.SettingKey,
@@ -76,7 +82,16 @@ func (w *settingsWalk) AllSettings(
 			}
 		}()
 
+		var deadline <-chan struct{}
+
 		for {
+			if seen%settingsPage == 0 {
+				deadline = w.bound()
+				if w.waiting != nil {
+					w.waiting(seen)
+				}
+			}
+
 			var (
 				got read
 				ok  bool
@@ -84,19 +99,14 @@ func (w *settingsWalk) AllSettings(
 
 			select {
 			case got, ok = <-rows:
-			default:
-				deadline := w.bound()
-				if w.waiting != nil {
-					w.waiting(seen)
-				}
+			case <-deadline:
+				yield(entity.Setting{}, fmt.Errorf(
+					"the store did not answer within %v, after %d rows",
+					storeBound,
+					seen,
+				))
 
-				select {
-				case got, ok = <-rows:
-				case <-deadline:
-					yield(entity.Setting{}, fmt.Errorf("the store did not answer within %v", storeBound))
-
-					return
-				}
+				return
 			}
 
 			if !ok {
