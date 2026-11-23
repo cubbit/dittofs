@@ -35,21 +35,24 @@ var skippedSpec = metrics.Spec{
 	Labels: []string{"reason"},
 }
 
-// directoryBound is how long one lookup's identity work may take, its
-// directory queries and its mints together (RFC 18 §5.1). Each lookup opens
-// it once through directory.Bounded on the injected clock, so every query,
-// mint and wait below it inherits one deadline, and each fails
-// ErrUnavailable once it ends.
+// directoryBound is how long one lookup's or sign-in's identity work may
+// take: its directory queries and its mints, and for a pass-through sign-in
+// its wait for a secure channel slot and its call to the domain controller
+// (RFC 18 §5.1). Each opens it once through directory.Bounded on the injected
+// clock, so every query, mint, wait and call below it inherits one deadline,
+// and each fails ErrUnavailable once it ends.
 //
-// decision: the bound is one deadline per lookup, not a budget split between
-// its steps: a slow directory may spend the whole 20 seconds on whichever
-// step it slows, each query still under its own 5-second timeout. Overturned
-// if a later step, such as the mint, must be kept time an earlier slow one
-// would use.
+// decision: the bound is one deadline per lookup or sign-in, not a budget
+// split between its steps: a slow directory or controller may spend the whole
+// 20 seconds on whichever step it slows, each query still under its own
+// 5-second timeout and the controller call under its own 5-second bound.
+// Overturned if a later step, such as the mint or the controller call, must
+// be kept time an earlier slow one would use.
 const directoryBound = 20 * time.Second
 
-// errDirectoryBound ends a lookup that ran past directoryBound.
-var errDirectoryBound = errors.New("identity: the lookup ran past its 20-second bound")
+// errDirectoryBound ends a lookup or sign-in, the controller call included,
+// that ran past directoryBound.
+var errDirectoryBound = errors.New("identity: the identity work ran past its 20-second bound")
 
 // inDomain reports whether the binary SID value is an account of domain's:
 // domain's SID with one RID more.

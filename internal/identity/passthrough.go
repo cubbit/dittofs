@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync/atomic"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/internal/identity/netlogon"
@@ -70,19 +69,16 @@ func (s *Server) signInPassThrough(ctx context.Context, st *State, step identity
 	// lookups below open their own, which this one ends first.
 	caller := ctx
 	ctx, cancel := directory.Bounded(caller, s.deps.Clock, directoryBound, errDirectoryBound)
-	var returned atomic.Bool
 	defer cancel()
-	defer returned.Store(true) // before cancel, so the AfterFunc below sees it
-	// The call's context ends with the bound or the caller, never with this
-	// return, so a call left past its own bound keeps its slot, as logon has
-	// it. It carries the caller's values but is no child of the caller, so
-	// nothing of this sign-in stays registered on a long-lived caller.
+	// The call's context ends with the bound or the caller while the sign-in
+	// runs, never with its return, so a call left past its own bound keeps its
+	// slot, as logon has it, until the controller answers, logon's ceiling
+	// ends it, or Stop does. It carries the caller's values but is no child of
+	// the caller, so nothing of this sign-in stays registered on a long-lived
+	// caller.
 	callCtx, endCall := context.WithCancelCause(context.WithoutCancel(caller))
-	context.AfterFunc(ctx, func() {
-		if !returned.Load() {
-			endCall(context.Cause(ctx))
-		}
-	})
+	stop := context.AfterFunc(ctx, func() { endCall(context.Cause(ctx)) })
+	defer stop() // runs before cancel, so this return never ends the call
 	domain, err := st.dir.domainSID(ctx)
 	if err != nil {
 		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: pass-through: the domain SID: %w", vfserr.ErrUnavailable, err)

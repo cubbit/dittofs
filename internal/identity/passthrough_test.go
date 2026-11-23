@@ -31,19 +31,20 @@ import (
 // whose directory, an in-memory one behind its own fault wrapper, serves the
 // same domain and holds alice under the SID the controller answers for her.
 type ptFixture struct {
-	s      *identity.Server
-	st     *kvstore.Store
-	d      *identitytest.DomainController
-	f      *identitytest.FaultyDomainController
-	dir    *identitytest.Directory
-	dirf   *switched
-	clock  *sim.TestClock
-	reg    *metrics.Registry
-	logons *logonRecorder
-	domain string // the domain's SID
-	alice  sid.SID
-	userDN string // alice's entry in the directory
-	bind   string // the directory's bind name
+	s       *identity.Server
+	st      *kvstore.Store
+	d       *identitytest.DomainController
+	f       *identitytest.FaultyDomainController
+	dir     *identitytest.Directory
+	dirf    *switched
+	clock   *sim.TestClock
+	reg     *metrics.Registry
+	logons  *logonRecorder
+	reached *reached // when each controller op first arrived
+	domain  string   // the domain's SID
+	alice   sid.SID
+	userDN  string // alice's entry in the directory
+	bind    string // the directory's bind name
 }
 
 func newPassThrough(t *testing.T, rules ...sim.Rule) *ptFixture {
@@ -79,7 +80,8 @@ func newPassThroughUnwatched(t *testing.T, rules ...sim.Rule) *ptFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fx.f = identitytest.NewFaultyDomainController(fx.d, sched)
+	fx.reached = &reached{clock: fx.clock, next: sched, at: map[string]time.Time{}}
+	fx.f = identitytest.NewFaultyDomainController(fx.d, fx.reached)
 	p := protocolSecrets(t, st)
 	var pw []byte
 	fx.bind, pw = dir.Account()
@@ -506,8 +508,8 @@ func TestPassThroughCallerEndsTheCall(t *testing.T) {
 	}()
 	wait(t, "the held call", func() bool { return fx.f.Holding() == 1 })
 	hangUp()
-	if err := recv(t, done, "the sign-in's answer"); err == nil {
-		t.Errorf("SignIn after the caller hung up = nil, want an error")
+	if err := recv(t, done, "the sign-in's answer"); !errors.Is(err, context.Canceled) {
+		t.Errorf("SignIn after the caller hung up = %v, want the hang-up, context.Canceled", err)
 	}
 	wait(t, "the held call ended and its slot freed", func() bool { return fx.f.Holding() == 0 && fx.s.PassThroughs() == 0 })
 }
