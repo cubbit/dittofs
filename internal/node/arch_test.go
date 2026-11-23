@@ -308,7 +308,7 @@ func nodeImporters(_ string, files []fileImports) ([]string, error) {
 const startPackage = "cmd/dfs/commands"
 
 var (
-	startAllowed = []string{"internal/node", "pkg/bootstrap", "pkg/metadata/kv", "pkg/metadata/kv/badgerkv", "pkg/metrics"}
+	startAllowed = []string{"internal/node", "pkg/bootstrap", "pkg/metadata/kv", "pkg/metadata/kv/badgerkv", "pkg/metadata/kv/fdbkv", "pkg/metrics"}
 	startExempt  = []string{"cmd/dfs/commands/init.go", "cmd/dfs/commands/reset_admin.go", "cmd/dfs/commands/root.go"}
 )
 
