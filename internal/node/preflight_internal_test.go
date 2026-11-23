@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -22,6 +23,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 
@@ -862,5 +866,193 @@ func TestPreflightCancelDuringTheProbes(t *testing.T) {
 	}
 	if after := hashTree(t, parent); after != before[parent] {
 		t.Errorf("the trees changed across an ended probe: hash %s after %s before, want the check to touch nothing", after, before[parent])
+	}
+}
+
+// kvRow is one row of the start check over a store with no directory, run
+// over every backend that opens one: store writes the row's keys into the
+// opened KV, journal makes the row's device hold a journal of the
+// installation, and want is the verdict, nil to pass.
+type kvRow struct {
+	name     string
+	store    func(t *testing.T, db kv.KV)
+	journal  bool
+	want     error
+	contains string
+}
+
+// kvInstall is the installation the KV rows' stores and journals belong to.
+var kvInstall = journal.InstallationID{0xAA, 0x01}
+
+// setKey writes value at key into db.
+func setKey(t *testing.T, db kv.KV, key, value []byte) {
+	t.Helper()
+	if err := db.Update(t.Context(), func(tx kv.Txn) error { return tx.Set(key, value) }); err != nil {
+		t.Fatalf("write %q: %v", key, err)
+	}
+}
+
+// kvRows are the KV rows: each of kvstore.Open's answers, classified.
+func kvRows() []kvRow {
+	return []kvRow{
+		{name: "an empty store is not initialised", want: errNotInitialised},
+		{
+			name:    "a journal over an empty store is the store lost",
+			journal: true,
+			want:    errStoreLost,
+			// a store with no directory names no volume to check.
+			contains: "the metadata store holds none",
+		},
+		{
+			name:  "a key that is not the installation's is unidentifiable",
+			store: func(t *testing.T, db kv.KV) { setKey(t, db, []byte("foreign"), []byte("v")) },
+			want:  errUnidentifiable,
+		},
+		{
+			name: "an initialised store passes",
+			store: func(t *testing.T, db kv.KV) {
+				if err := kvstore.Init(t.Context(), db, [16]byte(kvInstall)); err != nil {
+					t.Fatalf("initialise the store: %v", err)
+				}
+			},
+		},
+		{
+			// The node's own open refuses it naming the format, as it does
+			// a Badger directory holding the same store.
+			name:    "a store of a newer format passes",
+			journal: true,
+			store: func(t *testing.T, db kv.KV) {
+				// codec version 1, the format, no fold rules.
+				setKey(t, db, keys.Format, append(binary.BigEndian.AppendUint64([]byte{1}, kvstore.MaxFormat+1), 0))
+				if _, err := kvstore.Open(t.Context(), db); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("format %d,", kvstore.MaxFormat+1)) {
+					t.Fatalf("kvstore.Open over the planted record: %v, want it refusing format %d", err, kvstore.MaxFormat+1)
+				}
+			},
+		},
+		{
+			name:    "a format record that does not decode passes",
+			journal: true,
+			store:   func(t *testing.T, db kv.KV) { setKey(t, db, keys.Format, []byte{0xff}) },
+		},
+	}
+}
+
+// run plants the row's store into db and a device beside it, runs the
+// check over db, and asserts the verdict and that db is still open.
+func (r kvRow) run(t *testing.T, db kv.KV) {
+	t.Helper()
+	if r.store != nil {
+		r.store(t, db)
+	}
+	dir := filepath.Join(t.TempDir(), "device")
+	if r.journal {
+		initJournal(t, dir, kvInstall)
+	} else {
+		makeDir(t, dir)
+	}
+	got := Preflight(t.Context(), "", db, filepath.Join(t.TempDir(), "blocks"), []string{dir},
+		sim.NewTestClock(time.Unix(0, 0)), journaltest.SuitableMount())
+	if !errors.Is(got, r.want) || (r.want == nil && got != nil) {
+		t.Fatalf("Preflight over the KV: got %v, want %v", got, r.want)
+	}
+	if got != nil && !strings.Contains(got.Error(), r.contains) {
+		t.Errorf("Preflight over the KV: %q, want it to contain %q", got, r.contains)
+	}
+	// Preflight never closes the host's KV: the node goes on to use it.
+	if err := db.View(t.Context(), func(kv.Reader) error { return nil }); err != nil {
+		t.Errorf("the KV after the check: %v, want it still open", err)
+	}
+}
+
+// The KV rows over a Badger store opened in memory, a store with no
+// directory, so they run with no cluster.
+func TestPreflightOverAKV(t *testing.T) {
+	for _, r := range kvRows() {
+		t.Run(r.name, func(t *testing.T) {
+			r.run(t, memKV(t))
+		})
+	}
+}
+
+// memKV is a Badger store in memory, closed when the test ends.
+func memKV(t *testing.T) kv.KV {
+	t.Helper()
+	db, err := badgerkv.Open(badgerkv.Options{})
+	if err != nil {
+		t.Fatalf("open an in-memory store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// failView is a fault that fails every View with err, running before first
+// when it is set.
+type failView struct {
+	err    error
+	before func()
+}
+
+func (f failView) At(op string, _ []byte) (time.Duration, int, error) {
+	if op != kvtest.OpView {
+		return 0, 0, nil
+	}
+	if f.before != nil {
+		f.before()
+	}
+	return 0, 0, f.err
+}
+
+// A store read that fails is no verdict on the store: the check answers the
+// read's error, never one of the verdicts, unless the caller canceled the
+// read, whose context then answers, or a v1 layout outranks it. Each row's
+// device holds a journal, so a failed read taken for an absent store would
+// answer the store lost.
+func TestPreflightWhenTheStoreReadFails(t *testing.T) {
+	errRead := errors.New("the transport dropped the read")
+	verdicts := []error{errNotInitialised, errStoreLost, errUnidentifiable}
+	for _, r := range []struct {
+		name string
+		// cancel ends the check's context as the read fails.
+		cancel bool
+		// v1 plants a v1 layout under the check's journal root.
+		v1      bool
+		want    error
+		neverIs []error
+	}{
+		{name: "the read's error", want: errRead, neverIs: verdicts},
+		{
+			name:    "a read failing after its caller stopped",
+			cancel:  true,
+			want:    context.Canceled,
+			neverIs: append([]error{errRead}, verdicts...),
+		},
+		{name: "a v1 layout", v1: true, want: errV1State, neverIs: append([]error{errRead}, verdicts...)},
+	} {
+		t.Run(r.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			fault := failView{err: errRead}
+			if r.cancel {
+				fault.before = cancel
+			}
+			db := kvtest.NewFaultKV(memKV(t))
+			db.SetFault(fault)
+			parent := t.TempDir()
+			if r.v1 {
+				writeFile(t, filepath.Join(parent, "blocks", "shares", "s1", "blobs", "f1"), "v1 data")
+			}
+			dir := filepath.Join(parent, "device")
+			initJournal(t, dir, kvInstall)
+			got := Preflight(ctx, "", db, filepath.Join(parent, "blocks"), []string{dir},
+				sim.NewTestClock(time.Unix(0, 0)), journaltest.SuitableMount())
+			if !errors.Is(got, r.want) {
+				t.Fatalf("Preflight over a failing read: got %v, want %v", got, r.want)
+			}
+			for _, never := range r.neverIs {
+				if errors.Is(got, never) {
+					t.Errorf("Preflight over a failing read: got %v, which is %v", got, never)
+				}
+			}
+		})
 	}
 }

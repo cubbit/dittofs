@@ -148,20 +148,27 @@ func probeStore(storeDir string) (storeState, error) {
 
 // probeKV classifies kvstore.Open's answer over db, a store with no
 // directory that its host opened: a store present; ErrNotInitialised absent;
-// ErrForeignStore or ErrFormat unidentifiable, returned with that error. Any
-// other error, a transport's or the backend's limits', is no verdict on the
-// store: it is returned as failed, and refuses the start as it stands.
+// ErrForeignStore unidentifiable, returned with that error. Any other error,
+// a transport's or the backend's limits', is no verdict on the store: it is
+// returned as failed, with the state unidentifiable, and refuses the start as
+// it stands.
+//
+// decision: a store whose format record this binary does not read, ErrFormat,
+// is present, as a Badger directory holding the same store is to probeStore:
+// the check passes and the node's own open refuses it naming the format, on
+// either backend. Overturned when the start check is to name the format
+// itself, which it would then have to do over a directory too.
 func probeKV(ctx context.Context, db kv.KV) (state storeState, why, failed error) {
 	_, err := kvstore.Open(ctx, db)
 	switch {
-	case err == nil:
+	case err == nil, errors.Is(err, kvstore.ErrFormat):
 		return storePresent, nil, nil
 	case errors.Is(err, kvstore.ErrNotInitialised):
 		return storeAbsent, nil, nil
-	case errors.Is(err, kvstore.ErrForeignStore), errors.Is(err, kvstore.ErrFormat):
+	case errors.Is(err, kvstore.ErrForeignStore):
 		return storeUnidentifiable, err, nil
 	}
-	return 0, nil, fmt.Errorf("reading the metadata store: %w", err)
+	return storeUnidentifiable, nil, fmt.Errorf("reading the metadata store: %w", err)
 }
 
 // afterDeviceOpen runs after each device's journal opens, in device order;
@@ -221,6 +228,17 @@ func Preflight(ctx context.Context, storeDir string, store kv.KV, v1Root string,
 	if store != nil {
 		var failed error
 		if state, err, failed = probeKV(ctx, store); failed != nil {
+			// A backend may report a read its caller canceled as an error of
+			// its own, FoundationDB's as a deadline: the context's error is
+			// the answer instead, as it is for the device probes.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// The v1 layout outranks a read that failed, as it outranks
+			// every verdict on the store.
+			if facts.V1 != "" {
+				return decide(facts)
+			}
 			return failed
 		}
 	} else {
@@ -306,8 +324,9 @@ func decide(f startFacts) error {
 	if segments {
 		held = ", while its segments still live on the devices"
 	}
-	if f.StoreDir == "" {
-		return fmt.Errorf("%w: the metadata store holds none of installation %x the devices name — the journal at %s carries identity %x%s; check that the bootstrap names the installation's store first, then restore it from a backup, which loses every write since that backup", errStoreLost, first.Installation, firstDir, first.Found, held)
+	store, check := "the metadata store", "check that the bootstrap names the installation's store first"
+	if f.StoreDir != "" {
+		store, check = "the store volume at "+f.StoreDir, "check the store volume's mount first"
 	}
-	return fmt.Errorf("%w: the store volume at %s holds none of installation %x the devices name — the journal at %s carries identity %x%s; check the store volume's mount first, then restore it from a backup, which loses every write since that backup", errStoreLost, f.StoreDir, first.Installation, firstDir, first.Found, held)
+	return fmt.Errorf("%w: %s holds none of installation %x the devices name — the journal at %s carries identity %x%s; %s, then restore it from a backup, which loses every write since that backup", errStoreLost, store, first.Installation, firstDir, first.Found, held, check)
 }

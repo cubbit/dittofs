@@ -140,5 +140,5 @@ jobs:
           DITTOFS_FDB_CLUSTER_FILE="$HOME/.cache/dittofs-fdb/data/fdb.cluster"
           DITTOFS_FDB_OWN_CLUSTER=1
           go test -tags=foundationdb -race -p 1 -count=1 -timeout=20m
-          -run '^(TestCheckKVFoundationDBNeedsNoBadgerPath|TestOpenKVPassesTheTLSFiles|TestOpenKVGivesUpOnAnUnreachableCluster|TestOpenKVOpensFoundationDB|TestStartRefusalClosesTheStoreOnFoundationDB|TestPreflightOnFoundationDB)$'
+          -run '^(TestCheckKVFoundationDBNeedsNoBadgerPath|TestOpenKVPassesTheTLSFiles|TestOpenKVGivesUpOnAnUnreachableCluster|TestOpenKVOpensFoundationDB|TestStartClosesTheStoreOnFoundationDB|TestPreflightOnFoundationDB)$'
           ./cmd/dfs/commands/ ./internal/node/

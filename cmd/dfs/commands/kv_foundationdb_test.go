@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -133,11 +134,12 @@ func (c *closeRecorder) Close() error {
 	return c.KV.Close()
 }
 
-// dfs start opens a FoundationDB store before the start check, so a check
-// that refuses must close it before the command returns: over an empty
-// cluster the check refuses "not initialised", and the store, wrapped where it
-// opens, saw exactly one Close by then.
-func TestStartRefusalClosesTheStoreOnFoundationDB(t *testing.T) {
+// dfs start opens a FoundationDB store before the start check, so every
+// return before node.New takes the store must close it, the command's
+// answer either way. Each row runs dfs start over an empty cluster, with the
+// store wrapped where it opens, and asserts the answer and that the store saw
+// exactly one Close by the time the command returned.
+func TestStartClosesTheStoreOnFoundationDB(t *testing.T) {
 	cf := os.Getenv("DITTOFS_FDB_CLUSTER_FILE")
 	if cf == "" {
 		t.Skip("no FoundationDB: run through test/fdb/cluster.sh test, which sets DITTOFS_FDB_CLUSTER_FILE")
@@ -145,35 +147,68 @@ func TestStartRefusalClosesTheStoreOnFoundationDB(t *testing.T) {
 	if os.Getenv("DITTOFS_FDB_OWN_CLUSTER") == "" {
 		t.Skip("clears the whole cluster: set DITTOFS_FDB_OWN_CLUSTER=1 on a cluster of its own, with -p 1")
 	}
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Cleanup(func() { fdbkvtest.ClearAll(t, cf) })
-	dir := t.TempDir()
 	cluster, err := os.ReadFile(cf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The bootstrap names the cluster file beside it.
-	if err := os.WriteFile(filepath.Join(dir, "fdb.cluster"), cluster, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	config := bootstrapFile{backend: "foundationdb", journal: filepath.Join(dir, "device"), node: nodeUUID}.write(t, dir)
-	var opened []*closeRecorder
-	ctx := context.WithValue(t.Context(), kvKey{}, func(inner kv.KV) kv.KV {
-		r := &closeRecorder{KV: inner}
-		opened = append(opened, r)
-		return r
-	})
-	root := NewRoot()
-	root.SetOut(io.Discard)
-	root.SetArgs([]string{"start", "--config", config})
-	err = root.ExecuteContext(ctx)
-	if want := "the start check: the node is not initialised"; err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Fatalf("dfs start over an empty cluster: %v, want an error starting %q", err, want)
-	}
-	if len(opened) != 1 {
-		t.Fatalf("dfs start over an empty cluster opened the store %d times, want once", len(opened))
-	}
-	if n := opened[0].closes.Load(); n != 1 {
-		t.Fatalf("dfs start over an empty cluster: the store saw %d Close calls by the time the command returned, want 1", n)
+	for _, r := range []struct {
+		name string
+		// signalAt is the stage at which the start delivers SIGTERM to
+		// itself, "" for none.
+		signalAt string
+		// want is the prefix of the command's error, "" for a nil answer.
+		want string
+	}{
+		{name: "the check refuses", want: "the start check: the node is not initialised"},
+		// The signal lands before the check reads the store, so the start
+		// ends on it and exits zero, with the store it opened closed.
+		{name: "a SIGTERM during the check", signalAt: stagePreflight},
+	} {
+		t.Run(r.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			t.Cleanup(func() { fdbkvtest.ClearAll(t, cf) })
+			dir := t.TempDir()
+			// The bootstrap names the cluster file beside it.
+			if err := os.WriteFile(filepath.Join(dir, "fdb.cluster"), cluster, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			config := bootstrapFile{backend: "foundationdb", journal: filepath.Join(dir, "device"), node: nodeUUID}.write(t, dir)
+			var opened []*closeRecorder
+			ctx := context.WithValue(t.Context(), kvKey{}, func(inner kv.KV) kv.KV {
+				c := &closeRecorder{KV: inner}
+				opened = append(opened, c)
+				return c
+			})
+			if r.signalAt != "" {
+				// runStart's signal handler is installed by then, so the
+				// SIGTERM ends its context rather than the test process.
+				ctx = context.WithValue(ctx, stageKey{}, func(name string, signal context.Context) {
+					if name != r.signalAt {
+						return
+					}
+					if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+						t.Errorf("SIGTERM to itself: %v", err)
+						return
+					}
+					<-signal.Done()
+				})
+			}
+			root := NewRoot()
+			root.SetOut(io.Discard)
+			root.SetArgs([]string{"start", "--config", config})
+			err := root.ExecuteContext(ctx)
+			switch {
+			case r.want == "" && err != nil:
+				t.Fatalf("dfs start over an empty cluster: %v, want nil", err)
+			case r.want != "" && (err == nil || !strings.HasPrefix(err.Error(), r.want)):
+				t.Fatalf("dfs start over an empty cluster: %v, want an error starting %q", err, r.want)
+			}
+			if len(opened) != 1 {
+				t.Fatalf("dfs start over an empty cluster opened the store %d times, want once", len(opened))
+			}
+			if n := opened[0].closes.Load(); n != 1 {
+				t.Fatalf("dfs start over an empty cluster: the store saw %d Close calls by the time the command returned, want 1", n)
+			}
+		})
 	}
 }
