@@ -87,12 +87,22 @@ type Targets struct {
 // otherwise give the reserve's own spare to the headroom. The refill keeps
 // the headroom first because it runs where the device has room: there a
 // near-full device's one spare goes to the records an open owes, which
-// roll into the headroom, so the open still serves. The ceiling: a restart
-// at the limit whose directory holds exactly one spare, with corrupt drops
-// the open must record, gives that spare to the reserve, and the open's loss
-// records find no spare to roll into, so the open refuses until a spare
-// fits. Overturned by an open seen refusing that way, or by a ruling that
-// lets an open's own loss records roll into the reserve's spare.
+// roll into the headroom, so the open still serves. The ceiling: the open's
+// loss pass needs one roll per stream that holds losses, and it waits for
+// those spares before any retirement the open makes, so a restart at the
+// limit whose directory holds no more spares than the streams with losses
+// to record — under the old order, fewer than them — gives the reserve its
+// spare and leaves a loss record no spare to roll into, and the open
+// refuses. At the journal's own limit nothing inside it can make that spare
+// fit, so every retry adopts the same set and refuses the same way: the
+// directory stays closed until the operator raises the maximum or frees the
+// device, the failure RFC 1 section 6 borrows a spare to avoid for an open's
+// re-appends. The fallback — the open's loss records rolling into the
+// reserve's spare, counted like the re-appends' borrowed headroom — is not
+// built: it collides with the same open's emptying, which draws that
+// reserve spare, and it overrules Pool.Take's rule that a class falls back to
+// no other, which needs an RFC ruling. Overturned by that ruling, or by an
+// open seen refusing that way.
 //
 // decision: the counting starts at the headroom, not at the reconcile spare
 // — a re-adopted spare counts toward the reconcile spare's quota while the

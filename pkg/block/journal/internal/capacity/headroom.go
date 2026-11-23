@@ -142,13 +142,14 @@ type Headroom struct {
 	// maximum, while the ledger reads whole; the open re-adopts what spares
 	// are left into the repack reserve first (see segment.AdoptClasses), so
 	// the headroom gets only those past the reserve's. So after a restart at
-	// the limit Admit
-	// admits records whose roll — each stream's first after the open, and
-	// any once its active segment fills — finds neither a content nor a
-	// headroom spare, and the stream refuses it naming LimitHeadroom, the
-	// refusal the headroom's per-stream sizing exists to keep away, while
-	// HeadroomBytes reads nearly whole. It lasts until a retirement frees a
-	// segment the pool remakes as a headroom spare, its first class. The
+	// the limit Admit admits records whose roll — each stream's first after
+	// the open, and any once its active segment fills — finds neither a
+	// content nor a headroom spare, and the stream refuses it naming
+	// LimitHeadroom, the refusal the headroom's per-stream sizing exists to
+	// keep away, while HeadroomBytes reads nearly whole. It lasts until a
+	// retirement frees a segment the pool remakes as a headroom spare, once
+	// the repack reserve, which a retirement's recycle refills first, is
+	// whole. The
 	// open's own records are bounded by the open reserve in the recovery pass
 	// itself; their loss records also draw here, by the Open class, at a
 	// limit the open reached. Overturned by recomputing the ledger at open

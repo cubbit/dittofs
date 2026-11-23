@@ -335,9 +335,12 @@ func TestAFailedReappendTargetTakesAnEndedFate(t *testing.T) {
 // re-appends draw on the repack reserve — never on a share's limit, never a
 // headroom or content spare, and charging no share a byte — so a journal
 // whose every other spare class is spent before the crash still opens and
-// serves the record the device lost from its re-append. The reserve spare
-// is NOT the lowest id planted, so the phase drawing the headroom or the
-// content spare instead fails the adoption assertion below.
+// serves the record the device lost from its re-append. The phase drawing
+// the headroom or the content spare instead fails the adoption assertion
+// below. The reserve spare is the lowest id planted, as the adoption order
+// gives the lowest ids to the reserve, so a re-append that simply took the
+// lowest id would pass here: the order's own tests in the segment package
+// pin which id the reserve gets.
 func TestOpenAtMaximumStillReappends(t *testing.T) {
 	r, good, bAt := deviceLostB(t)
 	want := reappendOf(t, 2, bAt, good)
