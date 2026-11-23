@@ -3,10 +3,46 @@ package node
 import (
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/node/api/apisettings"
+	asettings "github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/settings"
 )
+
+// The adapters' sections' prefixes in the settings table.
+const (
+	adaptersNFS = "adapters.nfs"
+	adaptersSMB = "adapters.smb"
+)
+
+// nfsSection is the NFS adapter's part of the settings table: the protocol's
+// whole shape beside the one key the node owns, enabled, which no adapter's
+// own shape carries (RFC 13 Appendix B, RFC 20 section 3.6). Enabled is off
+// by default, and live with the shape's settings; Port and Enabled are the
+// keys a node's record may replace, the rest holding one value at the
+// installation's.
+type nfsSection struct {
+	asettings.NFS
+	Enabled bool `json:"enabled" class:"live"`
+}
+
+// Validate is the protocol's own check: enabled is a bool, never a value out
+// of shape (RFC 13 section 6).
+func (s nfsSection) Validate() error {
+	return s.NFS.Validate()
+}
+
+// smbSection is the SMB adapter's part of the settings table, as the NFS
+// adapter's: its protocol's whole shape beside the node's enabled key.
+type smbSection struct {
+	asettings.SMB
+	Enabled bool `json:"enabled" class:"live"`
+}
+
+// Validate is smbSection's own shape check that the NFS one's is.
+func (s smbSection) Validate() error {
+	return s.SMB.Validate()
+}
 
 // settingSchema opens the store to write settings rows up to the newest
 // schema the settings table reads, so no node writes a row it would refuse.
@@ -25,6 +61,12 @@ func newTable() settings.Table {
 			settings.WriteRole(entity.RoleAdmin)),
 		identity.Section(),
 		identity.DirectorySection(),
+		settings.Of(adaptersNFS, settings.Override(entity.ScopeInstallation, entity.ScopeNode),
+			nfsSection{NFS: asettings.DefaultNFS()},
+			settings.OverrideOnly("Port", "Enabled")),
+		settings.Of(adaptersSMB, settings.Override(entity.ScopeInstallation, entity.ScopeNode),
+			smbSection{SMB: asettings.DefaultSMB()},
+			settings.OverrideOnly("Port", "Enabled")),
 	}
 }
 
@@ -65,6 +107,10 @@ func usedAt() reach {
 // moment, so a change reaches its reader at its next operation and no apply
 // runs for them.
 //
+// The adapters' sections are marked read at use only until a component runs
+// from them: nothing does yet, and without an entry the router would refuse
+// each as applied by nothing.
+//
 // decision: api is read at use though the node serves no sign-in and issues
 // no token yet, so no reader exists: its routes, which load the published
 // snapshot as they land, are its readers, and mapping it nowhere would
@@ -72,7 +118,9 @@ func usedAt() reach {
 // Overturned once the api section gains a component the node applies.
 func newReaches() map[string]reach {
 	return map[string]reach{
-		"api":   usedAt(),
-		"audit": usedAt(),
+		"api":       usedAt(),
+		"audit":     usedAt(),
+		adaptersNFS: usedAt(),
+		adaptersSMB: usedAt(),
 	}
 }

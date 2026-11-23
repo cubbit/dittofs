@@ -493,10 +493,10 @@ func keytabOf(t *testing.T, name string) []byte {
 //
 // decision: three groups of routes wait rather than apply. A setting's
 // write and delete at a node's, a namespace's, a store's and a share's
-// scope, an adapter's write, a store's create and update, a namespace's
-// create and a store credential's delete are refused by the node's settings
-// table, which holds no section at those scopes, nor the adapters', the
-// remote store's or the namespace's: each is declared by the plan of the
+// scope, a store's create and update, a namespace's create and a store
+// credential's delete are refused by the node's settings table, which
+// declares the written key at none of those scopes, nor the remote store's
+// or the namespace's sections: each is declared by the plan of the
 // component that reads it, and the route applies here once it is; a
 // store's first credential is refused by the store's capability check, not
 // built; :cancel has no success answer while no operation kind is
@@ -642,6 +642,9 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		retention := "/api/v1/settings/audit.retention"
 		ap.do(wiredWrite{by: a, route: "PUT /api/v1/settings/{sub}", path: retention, body: json.RawMessage(`{"spec":{"value":"2880h"}}`), hdr: create})
 		ap.do(wiredWrite{by: a, route: "DELETE /api/v1/settings/{sub}", path: retention, hdr: match(retention, idemKey()...)})
+		// An adapter's write, left disabled so the node binds no port for it.
+		adapter := "/api/v1/adapters/nfs"
+		ap.do(wiredWrite{by: a, route: "PUT /api/v1/adapters/{sub}", path: adapter, body: json.RawMessage(`{"spec":{"enabled":false,"settings":{"port":12049}}}`), hdr: match(adapter)})
 		var waits []waitingWrite
 		for _, sc := range []struct{ route, scope string }{
 			{"/api/v1/nodes/{id}", node}, {"/api/v1/namespaces/{id}", "/api/v1/namespaces/" + f.namespace},
@@ -657,7 +660,6 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		bare := "/api/v1/stores/" + uuid.UUID(storeD).String()
 		configureJSON(t, w.h, storeD)
 		waits = append(waits,
-			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/adapters/{sub}", path: "/api/v1/adapters/nfs", body: json.RawMessage(`{"spec":{"enabled":true,"settings":{"port":12049}}}`), hdr: match("/api/v1/adapters/nfs")}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			// A store's create carries its credential, so it takes no key and
 			// keeps no idempotency record (RFC 23 §4.5).
 			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/stores", path: "/api/v1/stores", body: map[string]any{"spec": apiv1.StoreSpec{

@@ -214,6 +214,46 @@ func clusterAuditRetention(t *testing.T, text string) string {
 	return edited
 }
 
+// scopeEdited is text with the scope cell of the row whose setting cell
+// starts with row edited from one wide-scope form to another.
+func scopeEdited(t *testing.T, text, row, from, to string) string {
+	t.Helper()
+
+	at := strings.Index(text, row)
+	if at < 0 {
+		t.Fatalf("no row starting %q in %s", row, rfc13)
+	}
+
+	end := at + strings.IndexByte(text[at:], '\n')
+
+	old, next := " | "+from+" | ", " | "+to+" | "
+	if !strings.Contains(text[at:end], old) {
+		t.Fatalf("the row %q holds no scope cell %q to edit", row, from)
+	}
+
+	edited := text[:at] + strings.Replace(text[at:end], old, next, 1) + text[end:]
+	if edited == text {
+		t.Fatalf("the row %q keeps its %q scope cell", row, from)
+	}
+
+	return edited
+}
+
+// failedKeys is each failure's key, its text before ": " or " (".
+func failedKeys(failures []string) []string {
+	out := make([]string, 0, len(failures))
+	for _, f := range failures {
+		name := f
+		if at := strings.IndexAny(name, ":("); at >= 0 {
+			name = name[:at]
+		}
+
+		out = append(out, strings.TrimSpace(name))
+	}
+
+	return out
+}
+
 // RFC 13 §9's "§3 scope forms": every Appendix B scope cell is one of the five
 // scopes in one of §3's three forms, or none with a class of fixed, derived or
 // bootstrap; the same check over the appendix with one scope cell edited to
@@ -460,11 +500,90 @@ var classNames = map[settings.Class]string{
 	settings.Bound:     "bound",
 }
 
+// wildRow is one row key with a part in angle brackets, as
+// adapters.<protocol>.port, which holds any single part in that place, and
+// the row that writes it.
+type wildRow struct {
+	row   appendixRow
+	key   string
+	parts []string // the key split on a dot, "" where the key writes a part in angle brackets
+}
+
+// holds reports whether the row key holds key: as many parts, each literal
+// part equal.
+func (w wildRow) holds(key string) bool {
+	parts := strings.Split(key, ".")
+	if len(parts) != len(w.parts) {
+		return false
+	}
+
+	for i, part := range w.parts {
+		if part != "" && part != parts[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+// keyIndex is Appendix B's rows as the comparison looks a key up: by its
+// literal key, and by a key with a part in angle brackets, which holds any
+// single part in its place. The first row writing a key wins.
+type keyIndex struct {
+	byKey map[string]appendixRow
+	wild  []wildRow
+}
+
+// indexed is rows as the comparison looks their keys up.
+func indexed(rows []appendixRow) keyIndex {
+	x := keyIndex{byKey: make(map[string]appendixRow, len(rows))}
+	for _, r := range rows {
+		for _, key := range r.keys {
+			if !strings.Contains(key, "<") {
+				if _, dup := x.byKey[key]; !dup {
+					x.byKey[key] = r
+				}
+
+				continue
+			}
+
+			parts := strings.Split(key, ".")
+			for i, part := range parts {
+				if strings.HasPrefix(part, "<") {
+					parts[i] = ""
+				}
+			}
+
+			x.wild = append(x.wild, wildRow{row: r, key: key, parts: parts})
+		}
+	}
+
+	return x
+}
+
+// rowOf is the row holding key, and the row's key that holds it: its own row,
+// or one whose parts in angle brackets hold a single part in their place.
+func (x keyIndex) rowOf(key string) (appendixRow, string, bool) {
+	if r, ok := x.byKey[key]; ok {
+		return r, key, true
+	}
+
+	for _, w := range x.wild {
+		if w.holds(key) {
+			return w.row, w.key, true
+		}
+	}
+
+	return appendixRow{}, "", false
+}
+
 // compareAppendixB compares the table's keys with Appendix B's rows, each
 // key's scope, class and write role, and returns every disagreement, each
 // naming its key, as failures; an Appendix B key under a section's prefix
 // that the section does not declare comes back in reported, and is not a
-// failure. A key with no row of its own is held by a row naming its section.
+// failure. A key with no row of its own is held by a row naming its section,
+// or by one whose angle-bracketed parts hold its parts there, as
+// adapters.<protocol>.port holds every adapter's port.
 //
 // decision: a key held by a row naming its whole section has its scope, class
 // and write role checked, never its name: the row lists the section's fields
@@ -474,14 +593,8 @@ var classNames = map[settings.Class]string{
 // row once Appendix B lists a whole section's fields as keys.
 func compareAppendixB(t *testing.T, rows []appendixRow, tb settings.Table) (failures, reported []string) {
 	t.Helper()
-	byKey := make(map[string]appendixRow)
-	for _, r := range rows {
-		for _, k := range r.keys {
-			if _, dup := byKey[k]; !dup {
-				byKey[k] = r
-			}
-		}
-	}
+
+	x := indexed(rows)
 
 	keys := tableKeys(t, tableStore(t), tb)
 	declared := make(map[string]bool, len(keys))
@@ -492,14 +605,17 @@ func compareAppendixB(t *testing.T, rows []appendixRow, tb settings.Table) (fail
 			sections = append(sections, k.Section)
 		}
 
-		// A row naming a whole section, as identity.directory names the
-		// directory record, holds each of the section's keys.
-		r, ok := byKey[k.Key]
-		if !ok {
-			r, ok = byKey[k.Section]
-			declared[k.Section] = ok
+		// A row holding the key by its own name or its angle-bracketed parts,
+		// and one naming a whole section, as identity.directory names the
+		// directory record, holding each of the section's keys.
+		r, named, holds := x.rowOf(k.Key)
+		if !holds {
+			r, holds = x.byKey[k.Section]
+			named = k.Section
 		}
-		if !ok {
+
+		declared[named] = holds
+		if !holds {
 			failures = append(failures, fmt.Sprintf("%s: declared by the table, no Appendix B row", k.Key))
 			continue
 		}
@@ -546,6 +662,7 @@ func TestAppendixBMatchesTheTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse Appendix B: %v", err)
 	}
+
 	failures, reported := compareAppendixB(t, rows, newTable())
 	if len(failures) > 0 {
 		t.Errorf("the table and Appendix B disagree:\n%s", strings.Join(failures, "\n"))
@@ -597,6 +714,7 @@ func TestAppendixBDriftFails(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+
 			rows, err := parseAppendixB(tc.text)
 			if err != nil {
 				t.Fatalf("parse Appendix B: %v", err)
@@ -604,6 +722,51 @@ func TestAppendixBDriftFails(t *testing.T) {
 			failures, _ := compareAppendixB(t, rows, tc.table)
 			if len(failures) != 1 || !regexp.MustCompile(`^`+regexp.QuoteMeta(tc.key)+`[: ]`).MatchString(failures[0]) {
 				t.Errorf("failures %q, want one naming %s", failures, tc.key)
+			}
+		})
+	}
+}
+
+// Each drift of an adapter row between the table and Appendix B fails the
+// comparison, naming the key or keys the row holds: a row of one adapter's
+// own keys fails naming it, and a per-protocol row, its parts in angle
+// brackets, fails naming every key it holds, one per adapter.
+func TestAppendixBAdapterRowsDriftFails(t *testing.T) {
+	t.Parallel()
+	text := readRFC13(t)
+
+	for _, tc := range []struct {
+		name string
+		text string
+		want []string
+	}{
+		{
+			"smb's own row", scopeEdited(t, text,
+				"| `adapters.smb.recall_timeout`: ", "installation, per adapter", "node"),
+			[]string{"adapters.smb.recall_timeout"},
+		},
+		{
+			"the per-protocol enabled row", scopeEdited(t, text,
+				"| `adapters.<protocol>.enabled`: ", "installation default, node override", "node"),
+			[]string{"adapters.nfs.enabled", "adapters.smb.enabled"},
+		},
+		{
+			"the per-protocol port row", scopeEdited(t, text,
+				"| `adapters.<protocol>.port`: ", "installation default, node override", "node"),
+			[]string{"adapters.nfs.port", "adapters.smb.port"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rows, err := parseAppendixB(tc.text)
+			if err != nil {
+				t.Fatalf("parse Appendix B: %v", err)
+			}
+
+			failures, _ := compareAppendixB(t, rows, newTable())
+			if got := failedKeys(failures); !slices.Equal(got, tc.want) {
+				t.Errorf("failures %q, want the keys %v", failures, tc.want)
 			}
 		})
 	}
@@ -739,6 +902,7 @@ var refusingSeeds = []entity.Setting{
 // are the two RFC 18 and Appendix B name.
 func TestNoRefusalPrintsAReference(t *testing.T) {
 	t.Parallel()
+
 	refs, failures := refLeaks(t, newTable(), refusingSeeds)
 	if len(failures) > 0 {
 		t.Errorf("reference search:\n%s", strings.Join(failures, "\n"))
