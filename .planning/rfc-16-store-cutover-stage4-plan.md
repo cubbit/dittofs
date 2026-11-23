@@ -371,7 +371,8 @@ the contract that replaces `storetest`.
 
   Done when `dt run unit` and `lint-go` are green and
   `rg 'pkg/block/(remote|middleware|blockcodec|syncer|carver|chunker|blockstoretest)'` finds
-  nothing outside `.planning/` and the RFCs.
+  nothing outside `.planning/`, `docs/internals/planning/` and the RFCs: storage-v2's plans
+  there, the RFC 8 plan among them, name these packages as what they delete.
 
 ### Epic 3 — FoundationDB selectable in `dfs`
 
