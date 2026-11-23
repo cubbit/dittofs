@@ -367,6 +367,9 @@ func (r *replayer) stageWrite(s replayStep) {
 // stageGrow adds a truncate at or above the file's size, which masks nothing
 // and commits as a write does, setting the modification time to the
 // restart's.
+//
+// decision: a grow suspended by its open moves the modification time here
+// too, as the journal records no mask; see WithSuspended.
 func (r *replayer) stageGrow(s replayStep) {
 	r.batch = append(r.batch, pendingOp{
 		version: s.version,

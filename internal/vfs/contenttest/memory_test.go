@@ -68,6 +68,13 @@ func TestMemoryOverAStore(t *testing.T) {
 			},
 			Clock: clock,
 			Lose:  func(_ *testing.T, f entity.FileID) { m.Lose(fs.Share.ID, f) },
+			Times: func(t *testing.T, f entity.FileID) (time.Time, time.Time) {
+				r, err := fs.Store.Files().Get(t.Context(), fs.Admin, entity.NewHandle(fs.Share.ID, f))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return r.Modify, r.Change
+			},
 		}
 	})
 }

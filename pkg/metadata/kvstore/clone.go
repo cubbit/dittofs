@@ -29,6 +29,7 @@ type CloneOp struct {
 	Version entity.JournalVersion
 	Copied  entity.JournalVersion
 	Time    time.Time
+	Suspend entity.TimeMask // the times it leaves alone: Time moves the modification time unless this names it
 }
 
 // Clone applies phase 1 of a clone, after the destination's pending
@@ -210,7 +211,10 @@ func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) (bool, error)
 	f.MaxSpan = max(f.MaxSpan, ext.Length)
 	f.Size = max(f.Size, ext.End())
 	f.Applied = op.Version
-	f.Modify, f.Change = later(f.Modify, op.Time), later(f.Change, op.Time)
+	if op.Suspend&entity.TimeModify == 0 {
+		f.Modify = later(f.Modify, op.Time)
+	}
+	f.Change = later(f.Change, op.Time)
 	f.Version = nextFileVersion(tx, entity.MaxVersion(f.Version, entity.MaxVersion(op.Version, op.Copied)))
 	if err := putFile(tx, was, f); err != nil {
 		return false, err

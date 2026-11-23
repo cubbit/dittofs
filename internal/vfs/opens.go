@@ -282,7 +282,8 @@ func (fs *Filesystem) openedFile(ctx context.Context, a *admitted, h vfs.Handle,
 	if !overwrite {
 		return fs.joined(ctx, f)
 	}
-	if err := fs.truncate(ctx, a, h, f, entity.Attrs{}.WithSize(0)); err != nil {
+	// The open being made has suspended no time yet.
+	if err := fs.truncate(ctx, a, h, f, entity.Attrs{}.WithSize(0), 0); err != nil {
 		return vfs.File{}, err
 	}
 	return fs.file(ctx, a, h)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/vfs/contenttest"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
@@ -44,6 +45,13 @@ func TestContentSuiteOverTheJournal(t *testing.T) {
 				// The Commit fails the window holding id's pending writes, so the
 				// loss is in place when Lose returns; it may answer that failure.
 				_, _, _ = f.E.Commit(t.Context(), f.Share.ID, id, 0, 0)
+			},
+			Times: func(t *testing.T, id entity.FileID) (time.Time, time.Time) {
+				r, err := f.FS.Store.Files().Get(t.Context(), f.FS.Admin, entity.NewHandle(f.Share.ID, id))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return r.Modify, r.Change
 			},
 		}
 	})

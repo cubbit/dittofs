@@ -1080,3 +1080,42 @@ func TestACancelledCloneCallAnswersDelayClone(t *testing.T) {
 		t.Error("the destination does not read the source's bytes")
 	}
 }
+
+// A clone whose context suspends the modification time stages its copies of
+// the source's held bytes leaving it alone: before its phase 1, the
+// destination's overlay moves the change time and no modification time; a
+// clone suspending nothing moves both.
+func TestASuspendedClonesCopiesLeaveTheModifyTimeAlone(t *testing.T) {
+	for _, suspend := range []entity.TimeMask{entity.TimeModify, 0} {
+		t.Run(fmt.Sprintf("suspending %v", suspend), func(t *testing.T) {
+			u, h := clonedHookedUnit(t)
+			src := u.committedFile(t, "src", fill(mib, 's'))
+			dst := u.create(t, "dst")
+			held, hold := make(chan struct{}), make(chan struct{})
+			h.guardedSync(&h.synced, dst, func() {
+				close(held)
+				<-hold
+			})
+			var released sync.Once
+			release := func() { released.Do(func() { close(hold) }) }
+			t.Cleanup(release)
+			answer := u.startClone(engine.WithSuspended(context.Background(), suspend), src, dst, vfserr.Extent{Len: mib})
+			select {
+			case <-held:
+			case err := <-answer:
+				t.Fatalf("the clone answered %v before its phase 1", err)
+			}
+			o, _, err := u.e.Overlay(t.Context(), u.share.ID, dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if o.Ctime.IsZero() || o.Mtime.IsZero() != (suspend != 0) {
+				t.Errorf("the destination's overlay before phase 1 of a clone suspending %v: mtime %v, ctime %v; want ctime set and mtime set only with nothing suspended", suspend, o.Mtime, o.Ctime)
+			}
+			release()
+			if err := <-answer; err != nil {
+				t.Fatalf("the clone: %v", err)
+			}
+		})
+	}
+}
