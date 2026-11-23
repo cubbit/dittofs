@@ -98,9 +98,9 @@ const (
 	dittofsKeyPassphrase = "dfsbench-key-passphrase"
 )
 
-// dittofsDataDir holds the subject's metadata (/meta, /meta.db) and local block
-// cache (/blocks). It lives on the isolated data volume when one is mounted,
-// else the legacy root-disk path.
+// dittofsDataDir holds the subject's metadata store (/meta) and journal
+// (/blocks), the two paths the setup's configuration names. It lives on the
+// isolated data volume when one is mounted, else the legacy root-disk path.
 var dittofsDataDir = benchPath("/var/lib/bench-dittofs", "dittofs")
 
 // dittofsServerLog is where dittofsSetup redirects the benched server's stdout
@@ -249,20 +249,11 @@ func dittofsSetup(ctx context.Context, env BackendEnv, durability string, maxSiz
 		return fmt.Errorf("dittofs setup: writing the files dfs init reads: %w", err)
 	}
 
-	initArgs := append(
-		dittofsEnv(),
-		"dfs",
-		"init",
-		"--config",
-		configPath,
-		"--admin-password-file",
-		passwordFile,
-	)
-	if err := exec.Sh(ctx, "env", initArgs...); err != nil {
+	if err := exec.Sh(ctx, "env", dittofsInitArgs("dfs", configPath, passwordFile)...); err != nil {
 		return fmt.Errorf("dfs init: %w", err)
 	}
 
-	start := strings.Join(dittofsEnv(), " ") + " dfs start --config " + configPath +
+	start := strings.Join(dittofsStartArgs("dfs", configPath), " ") +
 		" >" + dittofsServerLog + " 2>&1 &"
 	if err := exec.Sh(ctx, "sh", "-c", start); err != nil {
 		return err
@@ -283,6 +274,12 @@ func dittofsSetup(ctx context.Context, env BackendEnv, durability string, maxSiz
 		"--server", dittofsAPIURL, "--username", "admin", "--password", dittofsAdminPass); err != nil {
 		return fmt.Errorf("dfsctl login: %w", err)
 	}
+	// ponytail: this step is the gone CLI's registration and has no successor:
+	// dfsctl carries no store command, and the server opens the metadata
+	// store its own configuration names, at dataDir/meta. When the CLI is
+	// rebuilt the step goes away rather than reopening that directory, which
+	// the running server holds on the Badger directory lock the cleanup
+	// above guards.
 	if err := exec.Sh(ctx, "dfsctl", "store", "metadata", "add",
 		"--name", dittofsMeta, "--db-path", dittofsDataDir+"/meta"); err != nil {
 		return err
@@ -421,11 +418,42 @@ func waitPort(ctx context.Context, port string) error {
 // regardless of the binary's default, so log volume is uniform across A/B
 // runs; the level is lower case, the only spelling the server accepts. The
 // passphrase unlocks the two key files writeDittofsInit writes.
+//
+// decision: dittofsEnv carries only non-secret fixed literals, so the whole
+// argv may show them (the env arguments, the shell line the start joins them
+// into, and a failed run's error text, which carries the whole argv): both
+// entries name this file's public constants, the log level and the throwaway
+// passphrase of a disposable VM's keys. Nothing a run must not print may
+// join them.
 func dittofsEnv() []string {
 	return []string{
 		"DITTOFS_LOGGING_LEVEL=warn",
 		"DITTOFS_ENCRYPTION_PASSPHRASE=" + dittofsKeyPassphrase,
 	}
+}
+
+// dittofsInitArgs is the whole command line the setup runs for dfs init
+// through env(1): the environment first, then the binary and its flags.
+// dfsBin is "dfs" in the setup, which finds the server on the PATH the bench
+// VM installed it on, so a test can run the same argv against a binary it
+// built.
+func dittofsInitArgs(dfsBin, configPath, passwordFile string) []string {
+	return append(dittofsEnv(),
+		dfsBin,
+		"init",
+		"--config",
+		configPath,
+		"--admin-password-file",
+		passwordFile,
+	)
+}
+
+// dittofsStartArgs is dfs start's argv, the environment first: the setup
+// joins the entries into the shell line it backgrounds, its output
+// redirected to dittofsServerLog, while a test runs them as env(1)
+// arguments against a binary it built.
+func dittofsStartArgs(dfsBin, configPath string) []string {
+	return append(dittofsEnv(), dfsBin, "start", "--config", configPath)
 }
 
 // writeDittofsInit writes under confDir the files dfs init reads: the
