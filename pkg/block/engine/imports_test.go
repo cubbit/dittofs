@@ -156,7 +156,7 @@ func forbidden(rel, path string) string {
 			return ""
 		}
 	}
-	return "not on the engine's allowlist: no previous component, no pkg/vfs"
+	return "not on the engine's allowlist"
 }
 
 // within reports whether path is root or a package below it.
