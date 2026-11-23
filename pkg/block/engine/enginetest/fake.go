@@ -315,7 +315,8 @@ func (j *FakeJournal) Close() error {
 // process ending closes, every handle, as Close does, so a late call of the
 // old process fails with ErrClosed; then it opens again with the held pieces
 // kept, and with every marker and synced loss unsettled again, as RFC 1 §3.10
-// has recovery rebuild them: Settle is not persisted.
+// has recovery rebuild them: Settle is not persisted. A read-only journal
+// writes again, as the state ends with a reopen (RFC 1 §5.4).
 func (j *FakeJournal) Reopen() {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -335,6 +336,8 @@ func (j *FakeJournal) Reopen() {
 	j.syncedAt = j.last               // what the fake kept across the restart is durable
 	j.failing, j.undurable = nil, nil // a restart loses the unreported failures
 	j.doomNext, j.doomed = nil, nil   // and the windows not yet failed
+
+	j.readOnly, j.refusal, j.undone = journal.ReadOnlyState{}, nil, nil
 }
 
 // Lose drops what file id holds in e as the journal does on a loss: the bytes

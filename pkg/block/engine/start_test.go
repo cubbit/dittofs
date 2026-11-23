@@ -654,10 +654,6 @@ type logJournal struct {
 	onStrand  func(journal.ShareTag)                 // a test's hook: run at each Strand call
 	onSync    atomic.Pointer[func([]journal.FileID)] // a test's hook: run at each Sync on a handle, before the journal's
 
-	// ro, when set, is the read-only state Stats reports, as a journal that
-	// turned read-only does until it is reopened; clearing it is the reopen.
-	ro atomic.Pointer[journal.ReadOnlyState]
-
 	mu     sync.Mutex
 	calls  []string
 	shared []sharedCall
@@ -791,16 +787,6 @@ func (j *logJournal) Draw() (journal.Version, error) {
 	}
 
 	return j.FakeJournal.Draw()
-}
-
-func (j *logJournal) Stats() journal.Stats {
-	s := j.FakeJournal.Stats()
-
-	if ro := j.ro.Load(); ro != nil {
-		s.ReadOnly = *ro
-	}
-
-	return s
 }
 
 func (j *logJournal) Close() error {

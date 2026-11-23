@@ -1646,7 +1646,7 @@ func TestCloseOfAReadOnlyJournalLeavesItsPendingExistenceToTheNextStart(t *testi
 		pending[fname(f)] = entity.JournalVersion(r.e.Pending(f)[0].Version.Bytes())
 	}
 
-	r.j.ro.Store(&journal.ReadOnlyState{ReadOnly: true, Err: syscall.EROFS})
+	r.j.ReadOnly(syscall.EROFS)
 
 	mark := len(r.j.log())
 	waiting := joinOf(r.e, "the last group commit")
@@ -1682,7 +1682,6 @@ func TestCloseOfAReadOnlyJournalLeavesItsPendingExistenceToTheNextStart(t *testi
 	}
 
 	// The reopened journal writes again.
-	r.j.ro.Store(nil)
 	r.restart(t)
 
 	mark = len(r.j.log())
