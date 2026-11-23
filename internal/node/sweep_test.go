@@ -328,11 +328,22 @@ func TestSweepBoundedWhileTheStoreHangs(t *testing.T) {
 		}
 	}
 	// The other loops report their turns on their own once the clock moved,
-	// so liveness is awaited rather than read once.
+	// so liveness is awaited rather than read once. A loop whose own store
+	// write began after the last move waits out that write's bound, as it
+	// would in time on a real clock, so the clock moves a second at a time
+	// while liveness is awaited, at most one bound further.
 	api, _ := h.Node().Addrs()
-	wait(t, fmt.Sprintf("/health/live answering live %v into the store's hang, past the stall bound", h.Clock().Elapsed()-hung), func() bool {
-		return get(t, api, "/health/live") == answer{http.StatusOK, "live"}
-	})
+	live := func() bool { return get(t, api, "/health/live") == answer{http.StatusOK, "live"} }
+	for from := h.Clock().Elapsed(); !live(); {
+		if h.Clock().Elapsed()-from > storeBound {
+			t.Fatalf("/health/live not live %v into the store's hang, past the stall bound, with every loop's call given its bound", h.Clock().Elapsed()-hung)
+		}
+		h.Clock().Advance(time.Second)
+		// Polls liveness itself for a moment before the clock moves again.
+		for deadline := time.Now().Add(100 * time.Millisecond); time.Now().Before(deadline) && !live(); {
+			<-time.After(10 * time.Millisecond)
+		}
+	}
 
 	stopped := make(chan error, 1)
 	go func() { stopped <- h.Node().Stop(context.Background()) }()

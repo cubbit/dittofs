@@ -358,22 +358,26 @@ func (n *Node) readShares(ctx context.Context) ([]entity.Share, func(entity.Shar
 
 // bounded runs f, a store call, with a context that ends once storeBound
 // passes on the node's clock, and answers f's error, or a timeout once the
-// bound passed without f answering. f's answer is then dropped, and so is
-// what it writes after, so a store that ignores its context holds no pass
-// past the bound: f writes its results only into what the caller reads once
-// bounded answered nil. With the timeout it also answers the channel f
-// answers on once it returns, for a caller whose call may still commit.
+// bound passed without f answering, or ctx's error once ctx ended first, so a
+// Stop that cancels the caller is not held by its hung call. f's answer is
+// then dropped, and so is what it writes after, so a store that ignores its
+// context holds no pass past the bound: f writes its results only into what
+// the caller reads once bounded answered nil. With the timeout or ctx's end
+// it also answers the channel f answers on once it returns, for a caller whose
+// call may still commit.
 func (n *Node) bounded(ctx context.Context, f func(context.Context) error) (running <-chan error, err error) {
 	bound := n.cfg.Clock.After(storeBound)
-	ctx, cancel := context.WithCancel(ctx)
+	call, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- f(ctx) }()
+	go func() { done <- f(call) }()
 	select {
 	case err := <-done:
 		return nil, err
 	case <-bound:
 		return done, fmt.Errorf("the store did not answer within %v", storeBound)
+	case <-ctx.Done():
+		return done, ctx.Err()
 	}
 }
 
