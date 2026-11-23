@@ -134,7 +134,7 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
+   v1's journal (`pkg/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
@@ -396,7 +396,7 @@ below or in §1.2.
 ## 5. Target tree
 
 ```text
-pkg/block/journal/internal/
+pkg/journal/internal/
   segment/
     set.go          T5.1   segment set, footprint ledger, claims, per-(segment, tag) bytes
     descriptors.go  T5.2   descriptor cache over one per-process budget, reference drain

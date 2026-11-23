@@ -64,10 +64,10 @@ turns no conformance test green and adds none to `known.yaml`.
 
 ### 1.1 In scope
 
-- `pkg/block/journal/internal/format`: the `format` file, segment header, seal marker,
+- `pkg/journal/internal/format`: the `format` file, segment header, seal marker,
   record (header, 16 kinds and their bodies), catalog entry and trailer codecs; CRC32C;
   segment file names; the footer reader; the slot scanner.
-- `pkg/block/journal/internal/platform`: files, sync, directory sync and allocation per
+- `pkg/journal/internal/platform`: files, sync, directory sync and allocation per
   OS; the barrier, copy-on-write, Btrfs subvolume and Windows cache-policy probes; the
   `E1-D6` `decision:` marker.
 
@@ -204,7 +204,7 @@ Copied verbatim from [the plan](rfc-1-journal-plan.md) §1.5, as its instruction
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
+   v1's journal (`pkg/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
@@ -375,7 +375,7 @@ alone. The unlink itself is epic 7's. Kept as P4 until the RFC says so.
 ## 4. Target tree
 
 ```text
-pkg/block/journal/
+pkg/journal/
   internal/format/                    imports core; stdlib only
     crc.go                            CRC32C plain and seeded                       (3.1, 3.3)
     formatfile.go                     format file codec                              (3.1)

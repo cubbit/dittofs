@@ -1042,7 +1042,7 @@ queue rather than change what they test. `dt plan --estimate` gives a tier's run
 **No selection by changed layer.** The components depend on each other too much for "this PR only
 touched NFS" to be safe. The full set after every merge is what catches the cross-component
 regressions a small PR tier misses. The one exception is a narrow suite whose `paths` name what can
-break it: e2e's Kerberos run is a protocol feature that a change under `pkg/block` can't affect, so
+break it: e2e's Kerberos run is a protocol feature that a change under `pkg/engine` or `pkg/journal` can't affect, so
 it runs on pull requests that touch the adapters, the metadata (auth metadata included), the
 authentication code, the control plane, the configuration or the server's start-up, and after
 every merge.

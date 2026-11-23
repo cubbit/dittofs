@@ -101,7 +101,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
 
 ### 1.3 Names used here
 
-- **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
+- **E1**, epic 1, interfaces: `pkg/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal, `kvstore` and the real open-state table,
@@ -161,7 +161,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   the engine's one import test, a walk over every package of `pkg/engine` with
    one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
    `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
    engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
@@ -468,7 +468,7 @@ pkg/metadata/kvstore/
     lifecycle.go     T6.1  the view's cases
                      T6.11 the batch cases: 3 × K shards and shares, a raise failed part way
     shards.go        T6.11 testRaiseAtStartAllOrNone's comment, all or none per transaction
-pkg/block/engine/
+pkg/engine/
   deps.go            T6.1  Lifecycle's new shape (D2, D4, D10)
   share.go           T6.2  the share table (D1), the binding, Bind
                      T6.9  Unbind, Drop, the removed state (D9)

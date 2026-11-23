@@ -171,7 +171,7 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
+   v1's journal (`pkg/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
@@ -590,7 +590,7 @@ are epic 9's; and the scan's resynchronisation (RFC 28 §3.3) is epic 7's.
 ## 5. Target tree
 
 ```text
-pkg/block/journal/
+pkg/journal/
   errors.go          T6.6   ErrJournalReadOnly
   stats.go           T6.6   ReadOnly (ReadOnlyState)
   handle.go          T6.1   SetSyncPolicy removed; Share loses its policy argument

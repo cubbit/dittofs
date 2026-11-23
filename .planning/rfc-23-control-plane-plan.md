@@ -237,7 +237,7 @@ It declares no internal interface: each one in this list has a consumer in produ
 tests of the epic that fills it in.
 
 **The architecture tests**, each of which fails once against a planted violation, built like
-`pkg/block/journal/imports_test.go`:
+`pkg/journal/imports_test.go`:
 
 - only `cmd/dfs` and the harness import `internal/node` (RFC 23 CP16);
 - the CLI's dependency closure names no store or server package (RFC 23 §7, CP14);

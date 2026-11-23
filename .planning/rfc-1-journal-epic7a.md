@@ -254,7 +254,7 @@ each refusal.
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
+   v1's journal (`pkg/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
@@ -565,10 +565,10 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 
 ## 5. Target tree
 
-The journal's code lives at `pkg/block/journal` on the programme branch.
+The journal's code lives at `pkg/journal` on the programme branch.
 
 ```text
-pkg/block/journal/
+pkg/journal/
   journal.go             T7.1, T7.12   Open runs recovery.Run, then datapath.New (D1); takes the marks argument
   errors.go              T7.1    SegmentRange, *UnreadableRangesError wrapping ErrUnreadable (D15)
   stats.go               T7.14   Stats.SyncMarks
@@ -1258,7 +1258,7 @@ A suggestion only: one pull request per subtask works as well.
   **Blocks:** T7.1's signature change, nothing else.
 - **Conformance rows with no test yet.** RFC 28 §4.2 lists "a seal marker only the cache holds",
   "a mark proves only up to `Through`", "an open at an exhausted headroom", "unreadable is not
-  empty" and "an ended segment is emptied once", and `pkg/block/journal/conformance` has no test
+  empty" and "an ended segment is emptied once", and `pkg/journal/conformance` has no test
   for any of them. T7.9, T7.10, T7.12, T7.7 and T7.13 add the halves this epic can pass; the
   halves that need held unread records or the reconcile wait in `known.yaml` for E7b.
   **Decides:** E2's owner, for the traceability matrix and `known.yaml` entries if they land

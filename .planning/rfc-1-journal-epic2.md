@@ -10,7 +10,7 @@ grading; [the RFC index](../docs/internals/rfcs/rfc-index.md), "Test tiers" and 
 (@didimelli), with the split given per subtask; @simonebaracchi coordinates and runs the
 review at the end.
 **Estimate:** 17 subtasks; sizes in §8.
-**Depends on:** epic 1's frozen public surface of `pkg/block/journal` (the end of
+**Depends on:** epic 1's frozen public surface of `pkg/journal` (the end of
 epic 1 is sync point **S1, interfaces frozen**).
 **Blocks:** all testing in epics 3–12. The end of this epic is sync point **S2, red suite
 in CI**.
@@ -48,9 +48,9 @@ At the end of the epic:
 ### 1.1 In scope
 
 - `pkg/sim`: `TestClock`, `Fault`, `FaultAction` and the seeded `Schedule`.
-- `pkg/block/journal/journaltest`: the crash seam, the profiler, the fixture, the
+- `pkg/journal/journaltest`: the crash seam, the profiler, the fixture, the
   reference model and the hand-written byte builders.
-- `pkg/block/journal/conformance`: the conformance tests, the model-based test and its
+- `pkg/journal/conformance`: the conformance tests, the model-based test and its
   corpus.
 - `test/journal/`: the known-failure file and the traceability map with its check.
 - `test/suites.yaml`: the `journal-conformance` suite, the `journal` group, and the new
@@ -106,7 +106,7 @@ is named with the reason.
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
+   v1's journal (`pkg/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
@@ -188,7 +188,7 @@ turn `unit` red.
   ```yaml
   journal-conformance:
     format: go-json
-    cmd: go test -race -tags=journal_conformance -timeout=30m ./pkg/block/journal/conformance/...
+    cmd: go test -race -tags=journal_conformance -timeout=30m ./pkg/journal/conformance/...
     known: test/journal/known.yaml
     tier: pr
   ```
@@ -333,7 +333,7 @@ is not a setting, and no exported symbol may be added for it (rule 11).
 - *How:* `core.Settings` gains an unexported field, set only through
   `core.SetSegmentCap(*Settings, int64)` in `internal/core`. The fixture, inside the
   journal's tree, sets it and passes the settings through the public `WithSettings`.
-  Code outside `pkg/block/journal/...` cannot reach `internal/core`, so the public
+  Code outside `pkg/journal/...` cannot reach `internal/core`, so the public
   surface does not change. The field is honoured once epic 5 implements segments.
 - *Default in the fixture:* 1 MiB. A check that names a size in the RFC (a 1 MiB record,
   a 64 KiB extent) keeps that size and states the cap it needs.
@@ -392,7 +392,7 @@ so `goleak` is not available.
 pkg/sim/                         TestClock, Fault, FaultAction, Schedule        (2.2)
                                  node-wide (RFC 8 §2.1); imports nothing of the journal
   clock.go  fault.go  schedule.go  *_test.go
-pkg/block/journal/
+pkg/journal/
   internal/core/settings.go      unexported segment-cap field, SetSegmentCap    (2.5a, D8)
   journaltest/                   test components, inside the journal's tree
     seam.go  hold.go             crash-simulating seam, holds                    (2.1, 2.2)

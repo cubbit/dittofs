@@ -67,7 +67,7 @@ and `Durable`, the fixture's `FailNextSync` and `Stall`, and `newUnitOver`).
 
 ### 1.3 Names used here
 
-- **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
+- **E1**, epic 1, interfaces: `pkg/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal and `kvstore`, the fault-injecting
@@ -121,7 +121,7 @@ and `Durable`, the fixture's `FailNextSync` and `Stall`, and `newUnitOver`).
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   the engine's one import test, a walk over every package of `pkg/engine` with
    one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
    `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
    engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
@@ -352,7 +352,7 @@ Only what the RFC leaves to the code. Ids are stable; a missing number became a 
 ## 5. Target tree
 
 ```text
-pkg/block/engine/
+pkg/engine/
   commit.go         T4.1  the verifier's five inputs and the derivation (D1, D2)
                     T4.2  Commit
   groupcommit.go    T4.3  the group commit per journal: due set, batch, in-batch mark, commitNow, commitThrough, commitAll, closeGroupCommits, dropShare (D4, D5, D10)
