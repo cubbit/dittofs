@@ -339,7 +339,7 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
   the API, and E6's refusal rows for them flipped to success; D3's seeding moved onto the API and
   its marker removed.
   R13's applied and secret halves for the writes the settings table still refuses (a setting at
-  every scope, an adapter, a namespace's create, a store credential's delete), the store create
+  every scope, an adapter, a namespace's create, a store's create, a store credential's delete)
   and a store's first credential: each moved from the waiting writes of T7.3's `sweepApplied`
   into its applied writes, its audit record checked for no credential. The store create is sent
   with no `Idempotency-Key`, as it carries its credential.
@@ -354,15 +354,13 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 **Subtask T7.6 estimate: 1.5 man-days.**
 
 - **Track:** the team. **Depends on:** X1; the RFC 18 plan's epics 7 and 8; T7.3.
-- **Covers:** R22, R26; R13's applied and secret halves for the keytab's routes.
+- **Covers:** R22, R26.
 - **Deliverables:** in `integration_test.go`: the two `join-domain` clauses, over `identitytest`'s
   directory and domain controller, the log captured and the metrics registry read; NTLM's
   consumer after a completed deletion, through the composed node's `SignIn` (R26).
   Also, through the API over the same directory, E6's success paths, which `nodetest` cannot
   reach: a grant by directory name runs `resolve-principal` and grants the ID it returned (E6's
   R16), and `resolve-principal` and `test-directory` end `succeeded`.
-  R13's applied and secret halves for the keytab's `PUT` and `DELETE`, moved the same way once the
-  node hands its API the secret provider.
 - **Acceptance criteria:**
   - Neither join leaves an idempotency record, and neither credential is found raw where CP11
     names.
@@ -427,21 +425,22 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
 - T7.3 as built differs from its text in these places.
   - R13's applied half reaches today only the routes that can succeed on this node. Since the
     node hands its API its settings table (#5472), a store's and a namespace's delete are applied
-    here. A setting's write and delete at every scope, an adapter's write, a namespace's create and
-    a store credential's delete are still refused `unknown_key`, the node's table holding no
-    section that reads their keys, and wait with T7.5; a store's first credential waits on the
-    store's capability check; the store create, which seals its credential, and the keytab's
-    routes wait on the secret provider the node does not yet hand its API, the store create with
-    T7.5 and the keytab with T7.6; `:cancel`'s waits on the first
+    here. Since it hands its API its sealer (#5456) and the per-key write role is built (#5478),
+    the keytab's `PUT` and `DELETE` are applied here too, so T7.6 no longer carries them. A
+    setting's write and delete at every scope, an adapter's write, a store's create, a namespace's
+    create and a store credential's delete are still refused `unknown_key`, the node's table
+    holding no section that reads their keys, and wait with T7.5; a store's first credential waits
+    on the store's capability check; `:cancel`'s waits on the first
     cancellable operation kind (§6.1 of the plan). Each waits in `sweepApplied` as a write that
     must still answer its current refusal, so it fails the day the route succeeds. The directory's
     actions (`resolve-principal`, `test-directory`, `join-domain`, `rotate-machine-password`) start
     their operations on the composed node, so they are applied here.
   - R13's secret half is shown here only for what today's applied routes carry: the passwords of
     `:set-password` and `POST /auth/password`, an API token, the bearer of each call, and the
-    online join's administrator password, none of them found in an audit record. The routes that
-    write a stored secret (a store's create and its credential, the keytab) are waiting ones, so
-    their secret half moves to T7.5 and T7.6 with their applied halves.
+    online join's administrator password, none of them found in an audit record, and the keytab,
+    found in no audit record, no answer and no log line. The routes that write a store's secret (a
+    store's create and its credential) are waiting ones, so their secret half moves to T7.5 with
+    their applied halves.
   - The store create takes no `Idempotency-Key` since #5472, as a call carrying a credential. RFC
     23 §4.5's rule covers it, but the list of such calls there names sign-in, refresh,
     `POST /auth/password`, `:set-password`, API-token creation and `join-domain`, not the store
