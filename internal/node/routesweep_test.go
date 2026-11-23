@@ -150,7 +150,8 @@ type sweepCall struct {
 // with no body and no precondition on records that exist, answers as §5.2
 // says: a role under the route's least is refused, 404 where it may not
 // know of what the route reaches and 403 elsewhere; a role holding it is
-// never refused for its role, and reads the record 200. Each call writes
+// never refused for its role, and reads the record 200. A role refused is
+// refused alike on made-up IDs, before any record is looked up. Each call writes
 // exactly one audit record under its caller, but a read that answered.
 // Catches a route missing its check, and a refusal with no record.
 func TestWiredRoleSweep(t *testing.T) {
@@ -179,6 +180,14 @@ func TestWiredRoleSweep(t *testing.T) {
 				}
 				path := f.fill(op.path, who.a.p, node)
 				calls = append(calls, sweepCall{who.a, who.role, need, op.key(), op.method, path, w.send(t, op.method, path, who.a.token, nil, hdr...)})
+				// A role the route refuses is refused before the record is
+				// looked up, so made-up IDs answer as the real ones do, and
+				// the refusal tells no record's existence. A route whose role
+				// is its operation's kind's must read the operation first.
+				if who.role < need && !op.byKind && strings.Contains(op.path, "{") {
+					path := concrete(op.path)
+					calls = append(calls, sweepCall{who.a, who.role, need, op.key(), op.method, path, w.send(t, op.method, path, who.a.token, nil, hdr...)})
+				}
 			}
 		}
 		for _, c := range calls {
@@ -603,8 +612,6 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 				waitingWrite{wiredWrite: wiredWrite{route: "DELETE " + sc.route + "/settings/{sub}", path: path, hdr: match(path, idemKey()...)}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"})
 		}
 		cred := store + "/credential"
-		// A store holding no namespace and no credential, so neither its
-		// delete nor a first credential is refused for what it holds.
 		// A store holding no credential, for a first credential's write.
 		bare := "/api/v1/stores/" + uuid.UUID(storeD).String()
 		configureJSON(t, w.h, storeD)
