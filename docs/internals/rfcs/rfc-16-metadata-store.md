@@ -1400,7 +1400,7 @@ type MintBatch struct {
 // Signatures are indicative; RFC 8 owns what each call carries.
 type Lifecycle interface {
 	JournalID(ctx context.Context, node NodeID, device JournalDir) (JournalID, error) // the identity recorded for a node's device (JD‖node‖device), for Open
-	SyncMarks(ctx context.Context, j JournalID) ([]SyncMark, OpenGen, error)          // the journal's sync marks, for Open, raising J‖journal‖og in the same transaction; returns the value written. A mark that does not decode is left out and logged with its stream, err == nil; a non-nil err means the transaction failed and og was not raised
+	SyncMarks(ctx context.Context, j JournalID) ([]SyncMark, OpenGen, error)          // the journal's sync marks, for Open, raising J‖journal‖og in the same transaction; returns the value written. A mark that does not decode is left out and logged with its stream, err == nil, and one whose key does not decode is deleted in the same transaction, since no marks write would replace it; a non-nil err means the transaction failed and og was not raised
 	Tags(ctx context.Context) (map[ShareID]TagRecord, error)                          // every share record's tag and its removal state, for start steps 1 and 5
 	VersionLimits(ctx context.Context, shares []ShareID) (map[ShareID]Version, error) // each share's limit, read for Open's floor
 	RaiseVersionLimits(ctx context.Context, to map[ShareID]Version) error             // a tracked max-write of S‖id‖vl, within K keys a transaction
