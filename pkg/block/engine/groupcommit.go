@@ -194,9 +194,11 @@ func storeOp(op pendingOp, mtime time.Time) kvstore.PendingOp {
 
 // groupCommitFor is journal j's group commit, started on first use with
 // open's journal and gen, the identity and open generation its marks writes
-// carry. Once
-// the engine's group commits are closed it starts none: it answers a closed
-// one, which runs no goroutine and notes no file.
+// carry. Only the first caller's open counts: once j's group commit exists,
+// open is ignored, so a caller that passes the zero marks (lostWhole, the
+// test helpers) fixes the zero identity if it runs before the binding that
+// carries the open's. Once the engine's group commits are closed it starts
+// none: it answers a closed one, which runs no goroutine and notes no file.
 func (e *Engine) groupCommitFor(j Journal, open marks) *groupCommit {
 	e.gcMu.Lock()
 	defer e.gcMu.Unlock()
