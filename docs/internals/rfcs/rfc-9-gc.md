@@ -1998,7 +1998,7 @@ package gc // internal/gc
 // Deps is everything GC is built from (§2.5). The composition root fills it;
 // the node then drives Start, Add, Remove, Drain and Close (RFC 23 §2.2).
 type Deps struct {
-	Sched    *sched.Scheduler           // RFC 8 §6.1.1: GC's own instance, one per process
+	Sched    *workqueue.Scheduler       // RFC 8 §6.1.1: GC's own instance, one per process
 	Syncer   Syncer                     // RFC 3 §1.3, through the root's adapter
 	Settings func(NamespaceID) Settings // live namespace gc.* settings (RFC 13 App. B), read at each pass
 	Clock    Clock                      // the package's own subset of RFC 8 §2.1's Clock
