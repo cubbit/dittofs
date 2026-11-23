@@ -751,6 +751,20 @@ cannot see an endpoint, a credential or a bucket, so the engine, which can, name
 the group, and stores registered under one `ProbeKey` share their outage probe.
 A zero key shares with nothing.
 
+**What lands with its first caller.** Some of this interface has no caller in the first
+release that ships the syncer, and lands with the caller that first needs it, never before:
+
+| Lands later | With its first caller |
+| --- | --- |
+| `FetchRaw`, `UploadRaw`, `FetchVersion`, and `Store`'s `GetVersion`, `PutRaw` and `GetRaw`; the staging budget ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) | a copying backup, a restore or `Verify` ([RFC 26](rfc-26-catalog-backups.md)); GC's relocation ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)); a re-home ([RFC 27](rfc-27-namespace-migration.md)) |
+| `Small` | a backup location's calls ([RFC 26](rfc-26-catalog-backups.md)); a `Recheck` pass ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
+| `SetDrift` and `ErrDrift` | GC's `Recheck` ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); until then a drifted bucket setting goes unseen |
+| a registration with `PutProbe` false, refused until then | an immutable backup location ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) |
+| the sizing tool ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) | an operator's need to size the pools beyond the defaults, which the node's transfers pool already reduces ([RFC 24 §7.2](rfc-24-resources.md#7.2%20The%20syncer%20and%20staging)) |
+
+Each obligation below on what lands later binds from the release that brings its caller. `Register`
+takes `Probes` from the first release, so a later caller changes no signature.
+
 ### 1.4 It is testable on its own
 
 The syncer's dependencies are exactly four, and each is supplied, never reached
@@ -2003,12 +2017,12 @@ peak memory, and a result is recorded with the revision it measured.
 | B2 | scheduler cost | one transfer dispatched with 1, 10, 100 and 1,000 flows waiting | flat: DRR is O(1) per dispatch ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
 | B3 | fairness under load | one flow saturating uploads on a slow store; a second issuing fetches | the second flow's p99 wait within one round; the first never above its cap |
 | B4 | joined fetches | N readers on one cold chunk | one transfer, whatever N ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
-| B5 | the real link | the syncer over a local emulator of the remote service and over a real service, at the pool sizes the sizing tool printed ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) | within a few percent of the tool's raw figure; the gap is what the syncer costs on a real link |
+| B5 | the real link | the syncer over a local emulator of the remote service and over a real service, and raw calls on the same store at the same pool size | within a few percent of the raw calls; the gap is what the syncer costs on a real link |
 
 Benchmarks run after a change merges and never gate one; what gates a change
 instead is in [§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing). B5 needs a real store and credentials, and runs where those are.
 
-B5 reports a fraction of the sizing tool's raw figure, with the pools' occupancy
+B5 reports a fraction of the raw calls' throughput, with the pools' occupancy
 beside it: a low fraction with a pool that is not full means the limit is
 upstream of the syncer ([RFC 8 §15.4](rfc-8-engine.md#15.4%20Benchmarks)).
 
@@ -2027,7 +2041,7 @@ section is the plan around it.
 | Memory | S2 | held-pool heap checks ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)) |
 | Structure | the dependency set of [§1.4](#1.4%20It%20is%20testable%20on%20its%20own) | an import test |
 | Benchmark | [§7.4](#7.4%20Benchmarks), B1–B5 | real time; B1–B4 on the in-memory store with a simulated link, B5 on a real store; after merge, never gating ([§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing)) |
-| Soak | leaks and drift | hours, nightly, against a local emulator of the remote service with outages injected on a cycle, asserting tasks, open connections, `inflight_bytes` and queue depth return to idle after each |
+| Soak | leaks and drift | hours, nightly, in the engine's soak on the composed node ([RFC 8 §15](rfc-8-engine.md#15.%20Conformance)), against a local emulator of the remote service with outages injected on a cycle, asserting tasks, open connections, `inflight_bytes` and queue depth return to idle after each |
 
 There is no crash test here. The syncer persists nothing (S7), so a crash leaves
 nothing of its own to recover; what a crash does to transfers in flight is the
@@ -2117,8 +2131,8 @@ benchmark:
 
 ### 8.5 Performance targets
 
-B1 is stated against raw calls on the same in-memory store, and B5 against the sizing
-tool's raw figure for the same store, so both hold on any link. Results are
+B1 is stated against raw calls on the same in-memory store, and B5 against raw calls
+on the same store at the same pool size, so both hold on any link. Results are
 recorded in absolute numbers.
 
 | # | Metric | Proposed target |
@@ -2126,7 +2140,7 @@ recorded in absolute numbers.
 | B1 | throughput through the syncer, same pool size | ≥ 97% of raw calls on the in-memory store |
 | B2 | one dispatch with 1,000 flows waiting | ≤ 1 µs, and flat from 1 flow |
 | B3 | a fetch's queue wait while another flow saturates uploads | p99 within one round |
-| B5 | throughput through the syncer on a real store | ≥ 95% of the sizing tool's raw figure; below 90% is a regression |
+| B5 | throughput through the syncer on a real store | ≥ 95% of raw calls on the same store at the same pool size; below 90% is a regression |
 | — | peak memory per half | ≤ pool × the per-transfer figure of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound), plus 10% |
 | — | a failed store refused | within one probe interval plus the probe's bound |
 | — | a recovered store accepting work | within one probe interval |
@@ -2140,9 +2154,13 @@ region, round-trip time, bandwidth, block size, the pool sizes and the sizing
 tool's raw figures; for B1–B4, the in-memory store's simulated latency and per-byte time.
 
 **Suites.** §7's Group A and B checks against the in-memory store and its fault wrapper and §8's model, memory,
-import, fault-sweep and counted checks run in `unit`, an allocation count the race detector skews in
-`unit/nonrace`; §8.1's real-backend checks, against the local emulator behind a fault proxy, run in
-`integration`. No suite runs yet §7.4's benchmarks or §8.1's nightly soak.
+import, fault-sweep and counted checks run in `unit`, and an allocation count the race detector skews
+in an option of `unit` of its own, the syncer's allocation gate, on pull requests; §8.1's real-backend
+checks, the in-memory store's conformance checks run against the engine's adapter over the local
+emulator behind a fault proxy, run in `integration`. The scheduler model's and the health model's fuzz
+targets join the nightly fuzz suite every storage component shares. §7.4's benchmarks run in a manual
+suite of the syncer's own, B5 against a real service only where credentials are; §8.1's soak runs in
+the engine's soak suite ([RFC 8 §15](rfc-8-engine.md#15.%20Conformance)). None of these but `unit` and `integration` is registered yet.
 
 ## 9. Open questions
 
