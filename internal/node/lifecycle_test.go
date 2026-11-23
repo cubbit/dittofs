@@ -626,6 +626,9 @@ func TestStartLogsTheBoundAddresses(t *testing.T) {
 // The API listens on api.listen and the metrics listener on metrics.listen,
 // each on its own address.
 func TestStartListensOnEachKeysAddress(t *testing.T) {
+	// decision: serial, because it picks a free loopback port, releases it and
+	// binds it again later; a parallel test's own port-0 listener could take it
+	// in between. Run it in parallel once the port is held until the bind.
 	apiAddr, metAddr := freeAddr(t), freeAddr(t)
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		cfg.Bootstrap.API.Listen = []string{apiAddr}

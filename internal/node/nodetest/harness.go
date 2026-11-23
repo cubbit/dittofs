@@ -74,6 +74,13 @@ func AdminPassword(password string) Option { return func(o *options) { o.passwor
 // Watch has New watch the test with prof.Watch, registered before anything
 // the harness opens so that its check runs after the harness closed it all.
 // Watch a top-level test only, never a subtest on its own.
+//
+// decision: a watched test stays serial. prof.Watch checks the whole
+// process's goroutines and descriptors, so a test running beside it would
+// fail it with its own. Serial tests all end before a parallel one starts, so
+// the watched tests keep their check and the unwatched ones run in parallel.
+// Withdraw it, and run the node's tests in parallel, if the leak check moves
+// to the end of the test binary.
 func Watch() Option { return func(o *options) { o.watch = true } }
 
 // InMemory keeps Badger in memory rather than on disk. Such a harness
@@ -92,8 +99,9 @@ func WithNew(f func(node.Config) (*node.Node, error)) Option {
 // AdminPassword gives one. It writes the protocol key file too, which the
 // bootstrap names. It then builds the node
 // over them, its API, metrics listener and adapters on loopback. Every KV the
-// harness opens is closed when the test ends. It sets the key files'
-// passphrase in the environment, so a test using it cannot run in parallel.
+// harness opens is closed when the test ends. A test may run it in parallel
+// unless it gives AdminPassword, whose password travels through the
+// environment.
 func New(t testing.TB, opts ...Option) *Harness {
 	t.Helper()
 	o := options{newNode: node.New}
@@ -193,9 +201,18 @@ func storageKey(t testing.TB, path string) keyprovider.KeyProvider {
 
 // keyFile writes the generated key file name under dir, sealed with the
 // passphrase it sets in the environment, and returns its path.
+//
+// decision: the passphrase is set with os.Setenv and never restored, rather
+// than with t.Setenv, which panics in a parallel test. Every harness sets the
+// same value, so tests running at once agree on it. It is set on every call,
+// not once, because a serial test's t.Setenv of the same variable restores
+// what it found, which may be no value. Withdraw this if the key provider
+// takes the passphrase other than from the environment.
 func keyFile(t testing.TB, dir, name string) string {
 	t.Helper()
-	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
+	if err := os.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase); err != nil {
+		t.Fatalf("nodetest: set the key files' passphrase: %v", err)
+	}
 	keys, err := generated()
 	if err != nil {
 		t.Fatalf("nodetest: generate the key files: %v", err)
