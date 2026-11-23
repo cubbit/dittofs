@@ -1014,6 +1014,10 @@ type readsOf struct {
 	// segment, so the peak names how many readers ran beside each other.
 	inSeg   int
 	peakSeg int
+	// parked is how many segment reads are blocked at the gate now: the
+	// reads a check waits on, never one the gate let through, which
+	// counting inSeg instead would take for a parked one.
+	parked int
 
 	// gate, once closed, holds every later segment read past the header
 	// slot at offset 0 — the attach pass reads each header alone — until
@@ -1060,11 +1064,12 @@ func (r *readsOf) releaseSegReads() {
 	}
 }
 
-// inFlightSegReads returns how many gated segment reads are blocked now.
+// inFlightSegReads returns how many segment reads are blocked at the gate
+// now.
 func (r *readsOf) inFlightSegReads() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.inSeg
+	return r.parked
 }
 
 func (r *readsOf) Create(name string) (storage.File, error) { return r.fs.Create(name) }
@@ -1128,11 +1133,17 @@ func (f readRec) ReadAt(p []byte, off int64) (int, error) {
 	if f.of.inSeg > f.of.peakSeg {
 		f.of.peakSeg = f.of.inSeg
 	}
+	if gate != nil {
+		f.of.parked++
+	}
 	f.of.mu.Unlock()
 	if gate != nil {
 		<-gate // parked where the reader the bound ran mid-walk stands
 	}
 	f.of.mu.Lock()
+	if gate != nil {
+		f.of.parked--
+	}
 	f.of.inSeg--
 	f.of.mu.Unlock()
 	n, err := f.f.ReadAt(p, off)
