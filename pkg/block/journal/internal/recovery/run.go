@@ -54,11 +54,11 @@ type Deps struct {
 
 	// SpareTargets is how many spares each of the pool's classes keeps, in
 	// segments: it decides the class each adopted spare is recorded under,
-	// in the fill order — the headroom first, then the repack reserve, then
-	// the content class, with every spare past every target taking the
-	// content class, for none is ever orphaned. The open fills it with the
-	// pool's own targets, so a re-adopted spare lands in the class the pool
-	// would have made it in.
+	// in the adoption order — the repack reserve first, then the headroom,
+	// then the content class, with every spare past every target taking the
+	// content class, for none is ever orphaned (segment.AdoptClasses says
+	// why the reserve goes before the headroom, which the refill does not).
+	// The open fills it with the pool's own targets.
 	SpareTargets segment.Targets
 
 	// Liveness is the segment liveness tracker the journal the open

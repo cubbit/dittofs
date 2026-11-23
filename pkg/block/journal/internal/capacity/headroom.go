@@ -139,9 +139,10 @@ type Headroom struct {
 	// into an existing segment moves no footprint. The ceiling runs the other
 	// way. The headroom spares the drawn records rolled into before the
 	// restart are segments now, which the pool cannot make again inside the
-	// maximum, while the ledger reads whole; and the open re-adopts its
-	// spares in the pool's fill order, headroom first, so a reserve spare may
-	// come back as a headroom one. So after a restart at the limit Admit
+	// maximum, while the ledger reads whole; the open re-adopts what spares
+	// are left into the repack reserve first (see segment.AdoptClasses), so
+	// the headroom gets only those past the reserve's. So after a restart at
+	// the limit Admit
 	// admits records whose roll — each stream's first after the open, and
 	// any once its active segment fills — finds neither a content nor a
 	// headroom spare, and the stream refuses it naming LimitHeadroom, the

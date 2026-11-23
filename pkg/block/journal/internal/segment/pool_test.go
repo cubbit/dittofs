@@ -2389,9 +2389,10 @@ func TestPoolAnAbandonedAskIsClearedByTheSpareThatCoversIt(t *testing.T) {
 // count has grown — the class of the make that completed — so the sequence
 // the leaves read off is the fill order the refill itself ran in. The last
 // make's class is the one each class's total is still short of at the end.
-// AdoptClasses over the same Targets must return that same sequence, for the
-// classes the spares phase records are the ones the pool's own worker would
-// have filled.
+// AdoptClasses over the same Targets must return that same set of classes
+// with the reserve's moved first: the spares phase records the classes the
+// pool's own worker would have filled, adopting into the reserve before the
+// headroom (see AdoptClasses).
 func TestTargetsAdoptClassesFollowsTheRefillsFillOrder(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -2493,8 +2494,11 @@ func TestTargetsAdoptClassesFollowsTheRefillsFillOrder(t *testing.T) {
 				t.Fatalf("the last make filled %d classes, want the one each class was short of: %+v", missing, final)
 			}
 
-			if got := row.t.AdoptClasses(len(seq)); !slices.Equal(got, seq) {
-				t.Errorf("AdoptClasses over %d adoptions got %v, want %v, the classes the refill itself made its spares in", len(seq), got, seq)
+			want := slices.Concat(
+				slices.DeleteFunc(slices.Clone(seq), func(c segment.Class) bool { return c != segment.Reserve }),
+				slices.DeleteFunc(slices.Clone(seq), func(c segment.Class) bool { return c == segment.Reserve }))
+			if got := row.t.AdoptClasses(len(seq)); !slices.Equal(got, want) {
+				t.Errorf("AdoptClasses over %d adoptions got %v, want %v, the classes the refill itself made its spares in with the reserve's first", len(seq), got, want)
 			}
 			p.Stop()
 		})
@@ -2502,11 +2506,10 @@ func TestTargetsAdoptClassesFollowsTheRefillsFillOrder(t *testing.T) {
 }
 
 // TestTargetsAdoptClassesNamesTheFillOrder pins the fill order the spares
-// phase reads through the one method that owns it: the headroom first, then
-// the repack reserve, then the content class, and every spare past every
-// target takes the content class — the order the pool's own refill fills a
-// short pool in, so a re-adopted spare lands in the class its own worker
-// would have made it in.
+// phase reads through the one method that owns it: the repack reserve first,
+// then the headroom, then the content class, and every spare past every
+// target takes the content class — the refill's classes with the reserve
+// moved ahead of the headroom.
 func TestTargetsAdoptClassesNamesTheFillOrder(t *testing.T) {
 	same := segment.Targets{Content: 2, Headroom: 1, Reserve: 1}
 	for _, row := range []struct {
@@ -2516,10 +2519,10 @@ func TestTargetsAdoptClassesNamesTheFillOrder(t *testing.T) {
 		want []segment.Class
 	}{
 		{"none adopted", same, 0, nil},
-		{"the headroom first", same, 1, []segment.Class{segment.Headroom}},
-		{"then the repack reserve", same, 2, []segment.Class{segment.Headroom, segment.Reserve}},
+		{"the repack reserve first", same, 1, []segment.Class{segment.Reserve}},
+		{"then the headroom", same, 2, []segment.Class{segment.Reserve, segment.Headroom}},
 		{"then the content class", same, 4,
-			[]segment.Class{segment.Headroom, segment.Reserve, segment.Content, segment.Content}},
+			[]segment.Class{segment.Reserve, segment.Headroom, segment.Content, segment.Content}},
 		{"every spare past every target takes the content class", segment.Targets{}, 3,
 			[]segment.Class{segment.Content, segment.Content, segment.Content}},
 	} {

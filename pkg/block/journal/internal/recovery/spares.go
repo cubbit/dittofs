@@ -184,14 +184,14 @@ type allocProber interface{ Allocated() (bool, error) }
 // adoption and start holds every re-adopted spare to.
 type Spares struct {
 	// Adopted holds one entry per re-adopted spare, ascending by id, each
-	// with the class the pool's targets' fill order gave its id.
+	// with the class the pool's targets' adoption order gave its id.
 	Adopted []AdoptedSpare
 	// Held holds each id the phase withheld because its header names a
 	// predecessor whose end is not yet proven, ascending by id: the take is
 	// left exactly as it stands — not adopted, not unlinked, no slot of it
 	// touched. Held takes count in two places and stand in the headroom
-	// both times: the fill order spends its headroom slots on them before
-	// the adopted spares draw their classes, and the pool's HoldTaken
+	// both times: the adoption order leaves the headroom slots they take
+	// out of what the adopted spares draw, and the pool's HoldTaken
 	// count — which nothing hands this list to yet — is what would keep the
 	// refill from making a headroom spare over each: until it is wired, a
 	// hold costs one headroom cap past the targets while it stands.
@@ -255,7 +255,7 @@ type AdoptedSpare struct {
 // takes whole cap-sized segments only, and a hole no byte of its size can
 // name would take the writes of a whole segment and lose a crash's worth of
 // them. Each is left for the pool to make again; every adoption is recorded
-// with the class the pool's own targets' fill order gives its id.
+// with the class the pool's own targets' adoption order gives its id.
 func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.JournalID, _ core.Version, marks []core.SyncMark) error {
 	// decision: a zero SegmentCap — a Deps literal that forgot the cap —
 	// refuses the phase naming it, rather than unlinking every candidate
@@ -381,14 +381,14 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 			return err
 		}
 	}
-	// The held takes stand in the headroom first, ahead of the classes the
-	// re-adopted spares draw — bounded by the headroom's own target, for
+	// The held takes stand in the headroom's slots, which the re-adopted
+	// spares then do not fill — bounded by the headroom's own target, for
 	// the pool makes and takes no slot a hold stands in: a hold past the
-	// headroom's slots consumes no deeper class, exactly as the refill
+	// headroom's slots consumes no other class, exactly as the refill
 	// would make none there.
-	lead := min(len(held), deps.SpareTargets.Headroom)
-	all := deps.SpareTargets.AdoptClasses(lead + len(adopted))
-	classes := all[lead:]
+	left := deps.SpareTargets
+	left.Headroom -= min(len(held), left.Headroom)
+	classes := left.AdoptClasses(len(adopted))
 	for i := range adopted {
 		adopted[i].Class = classes[i] // candidates ascend, so the i-th class is the i-th id's
 	}

@@ -69,14 +69,30 @@ type Targets struct {
 	Reserve  int
 }
 
-// AdoptClasses returns the classes of the first n adopted spares: the fill
-// order fills the headroom first, then the repack reserve, then the content
-// class, and every spare past every target takes the content class. The
-// re-adoptions the spares phase records ascend by id, so the caller hands the
-// i-th class to the i-th id: the lowest ids land in the headroom. A caller
-// with other claimants on the headroom — the spares phase's held takes, which
-// stand there first — counts them into n ahead of this call and hands this
-// call only the classes the re-adoptions take.
+// AdoptClasses returns the classes of the first n adopted spares: the repack
+// reserve first, then the headroom, then the content class, and every spare
+// past every target takes the content class. The re-adoptions the spares
+// phase records ascend by id, so the caller hands the i-th class to the i-th
+// id: the lowest ids land in the reserve. A caller with other claimants on
+// the headroom — the spares phase's held takes — lowers the headroom's
+// target by them before this call, so the re-adoptions fill only the slots
+// the holds leave.
+//
+// decision: an open adopts into the reserve before the headroom, the other
+// way from the refill, which makes the headroom first. At a restart at the
+// journal's limit the pool can make no spare inside the maximum, so the
+// spares the open adopts are all repack has to carry into, and repack — the
+// one way out at the limit (RFC 1 section 6) — is what returns the headroom;
+// a directory holding fewer spares than the headroom's target would
+// otherwise give the reserve's own spare to the headroom. The refill keeps
+// the headroom first because it runs where the device has room: there a
+// near-full device's one spare goes to the records an open owes, which
+// roll into the headroom, so the open still serves. The ceiling: a restart
+// at the limit whose directory holds exactly one spare, with corrupt drops
+// the open must record, gives that spare to the reserve, and the open's loss
+// records find no spare to roll into, so the open refuses until a spare
+// fits. Overturned by an open seen refusing that way, or by a ruling that
+// lets an open's own loss records roll into the reserve's spare.
 //
 // decision: the counting starts at the headroom, not at the reconcile spare
 // — a re-adopted spare counts toward the reconcile spare's quota while the
@@ -94,11 +110,11 @@ type Targets struct {
 func (t Targets) AdoptClasses(n int) []Class {
 	classes := make([]Class, n)
 	i := 0
-	for ; i < n && i < t.Headroom; i++ {
-		classes[i] = Headroom
-	}
-	for r := 0; i < n && r < t.Reserve; i, r = i+1, r+1 {
+	for ; i < n && i < t.Reserve; i++ {
 		classes[i] = Reserve
+	}
+	for h := 0; i < n && h < t.Headroom; i, h = i+1, h+1 {
+		classes[i] = Headroom
 	}
 	for ; i < n; i++ {
 		classes[i] = Content

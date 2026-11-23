@@ -96,20 +96,15 @@ func TestRestartResetsTheHeadroomPin(t *testing.T) {
 	}
 }
 
-// TestRestartAtTheLimitRefusesTheRollPin pins the ceiling of the ledger's
-// restart decision rather than guarding a change: a journal at its maximum
-// whose removals rolled into its headroom spares is restarted, the ledger
-// starts empty and reads whole, but the spares those rolls took are segments
-// now, which the pool cannot make again inside the maximum. Each stream's
-// first removal after the restart rolls — a fresh stream holds no active
-// segment — and once the spares the open re-adopted are taken the next roll
-// finds neither a content nor a headroom spare and is refused naming the
-// headroom, though the ledger, which never refused it, reads nearly whole. It must change with the
-// decision: once the open recounts the ledger from the headroom spares
-// actually ready, the refusal comes from the ledger, or not at all.
-func TestRestartAtTheLimitRefusesTheRollPin(t *testing.T) {
-	f := journaltest.NewWith(t, func(s *journal.Settings) { s.Streams = headroomStreams })
-	whole := f.J.Stats().HeadroomBytes
+// headroomSpentAtTheLimit builds a journal of headroomStreams streams at its
+// maximum whose headroom spares the streams' removals rolled into, then
+// filled with content to the limit, so the open's early seal of those
+// segments returns no tail worth a segment, and returns it with the
+// headroom's unused reservation before any draw.
+func headroomSpentAtTheLimit(t *testing.T) (f *journaltest.Fixture, whole int64) {
+	t.Helper()
+	f = journaltest.NewWith(t, func(s *journal.Settings) { s.Streams = headroomStreams })
+	whole = f.J.Stats().HeadroomBytes
 	h := f.Share(0)
 	fillToMaximum(t, h, journaltest.File(0))
 	// One removal of each of files spread over every stream, at the
@@ -138,6 +133,22 @@ func TestRestartAtTheLimitRefusesTheRollPin(t *testing.T) {
 			}
 		}
 	}
+	return f, whole
+}
+
+// TestRestartAtTheLimitRefusesTheRollPin pins the ceiling of the ledger's
+// restart decision rather than guarding a change: a journal at its maximum
+// whose removals rolled into its headroom spares is restarted, the ledger
+// starts empty and reads whole, but the spares those rolls took are segments
+// now, which the pool cannot make again inside the maximum. Each stream's
+// first removal after the restart rolls — a fresh stream holds no active
+// segment — and once the spares the open re-adopted are taken the next roll
+// finds neither a content nor a headroom spare and is refused naming the
+// headroom, though the ledger, which never refused it, reads nearly whole. It must change with the
+// decision: once the open recounts the ledger from the headroom spares
+// actually ready, the refusal comes from the ledger, or not at all.
+func TestRestartAtTheLimitRefusesTheRollPin(t *testing.T) {
+	f, whole := headroomSpentAtTheLimit(t)
 	f.Reopen()
 	if got := f.J.Stats().HeadroomBytes; got != whole {
 		t.Fatalf("HeadroomBytes = %d after the restart, want %d, the ledger whole", got, whole)
@@ -146,7 +157,7 @@ func TestRestartAtTheLimitRefusesTheRollPin(t *testing.T) {
 	// the headroom spares left over from before the restart are taken the
 	// next roll is refused, a few records into a ledger that reads nearly
 	// whole.
-	h = f.Share(0)
+	h := f.Share(0)
 	for i := int64(0); i < 64; i++ {
 		_, err := h.Deallocate(t.Context(), journaltest.File(int(1+i)), journal.Extent{Off: 1<<30 + i*8192, Len: 4096})
 		if err == nil {
@@ -162,6 +173,27 @@ func TestRestartAtTheLimitRefusesTheRollPin(t *testing.T) {
 		return
 	}
 	t.Fatal("64 removals over every stream after the restart were all admitted, want a roll refused naming the headroom")
+}
+
+// TestRestartAtTheLimitKeepsTheRepackReserve checks that a restart at the
+// maximum whose directory holds fewer spares than the headroom's target
+// re-adopts the repack reserve's spare as the reserve's: repack is the one
+// way out at the limit, where the pool can make no spare, and its copies draw
+// on that reserve (RFC 1 section 6), so a reserve spare re-adopted as a
+// headroom one would leave repack nothing to carry into. A repack pass then
+// runs at the limit without a refusal.
+func TestRestartAtTheLimitKeepsTheRepackReserve(t *testing.T) {
+	f, _ := headroomSpentAtTheLimit(t)
+	if got := f.J.Stats().RepackReserveBytes; got != journaltest.FixtureSegmentCap {
+		t.Fatalf("RepackReserveBytes = %d before the restart, want %d, the reserve's spare", got, journaltest.FixtureSegmentCap)
+	}
+	f.Reopen()
+	if got := f.J.Stats().RepackReserveBytes; got != journaltest.FixtureSegmentCap {
+		t.Fatalf("RepackReserveBytes = %d after the restart at the limit, want %d: the reserve's spare was re-adopted as another class", got, journaltest.FixtureSegmentCap)
+	}
+	if _, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{}); err != nil {
+		t.Fatalf("Repack at the limit after the restart: %v", err)
+	}
 }
 
 // headroomStreams is the append streams the per-stream headroom checks open
