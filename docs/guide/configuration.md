@@ -286,14 +286,8 @@ at load, naming each `syncer.*` key.
 
 #### Garbage collection and the integrity scan
 
-Neither runs. v1's mark-sweep collector and its background manifest scan went
-with the v1 block and metadata stores, and nothing replaces them yet. A config
-file that still carries v1's keys (`gc.auto_enabled`, `gc.auto_interval`,
-`gc.grace_period`, `integrity.auto_enabled`, and the rest of either block) is
-refused at load, naming each as unknown. The `gc` keys of the new design, such as
-`gc.interval`, are refused in the file too, as settings to set through the
-management API; nothing reads them yet. See
-[Garbage Collection](garbage-collection.md) for what frees space today.
+Neither runs, and a config file carrying a `gc` or `integrity` key is refused at
+load: see [Garbage Collection](garbage-collection.md).
 
 #### Recycle bin (trash)
 
@@ -319,8 +313,7 @@ config.yaml: blockstore.local.path: no longer read; write blockstore.journal.pat
 refusal names, such as `blockstore.journal.max_log_bytes`, is refused in turn as
 unknown, so delete it rather than rename it.
 
-The control-plane migrations earlier releases ran for the split went with the
-control-plane database. A v1 installation is not upgraded at all: see
+The migrations earlier releases ran for the split are gone. A v1 installation is not upgraded at all: see
 [Upgrading from v1](upgrading-from-v1.md).
 
 ### 7. Metadata Configuration
@@ -382,32 +375,11 @@ from the CLI.
 
 ### 8. Shares (Exports)
 
-Shares are managed at runtime via `dfsctl` and persisted in the metadata store. Each share references metadata and block stores by name:
-
-```bash
-# Create shares referencing existing stores
-./dfsctl share create --name /fast --metadata memory-fast --block-store mem-blocks
-./dfsctl share create --name /cloud --metadata badger-main --block-store s3-remote
-./dfsctl share create --name /archive --metadata badger-main --block-store s3-archive
-
-# Grant permissions on shares
-./dfsctl share permission grant /fast --user alice --level read-write
-./dfsctl share permission grant /cloud --user alice --level read-write
-./dfsctl share permission grant /cloud --group editors --level read
-
-# List shares and their permissions
-./dfsctl share list
-./dfsctl share permission list /cloud
-
-# Delete a share
-./dfsctl share remove /fast
-```
-
-**Configuration Patterns:**
-
-- **Performance Tiering**: Different shares use different storage backends (memory, S3)
-- **Isolation**: Each share gets its own BlockStore; the node's journal devices come from `journals`
-- **Resource Efficiency**: Block stores are shared (ref counted) when multiple shares reference the same config
+Shares are persisted in the metadata store. Like the block-store commands in
+[§6](#6-block-store-configuration), the CLI's share commands (`dfsctl share …`
+and `dfsctl share permission …`) are unavailable until they are rebuilt on the
+v2 management API; each refuses with `not available until the CLI is rebuilt on
+the v2 API`.
 
 #### Per-share and per-identity quotas
 
@@ -590,9 +562,7 @@ dfsctl share permission revoke /export --user alice
 
 This build serves no file protocol: `dfs start` runs only the control-plane
 REST API and metrics. The adapter, grace, netgroup and client commands and
-their REST routes are removed. Adapter settings already stored in the
-control-plane database are kept for a later release that serves NFS and SMB
-again. These settings never belonged in the server YAML/TOML file and are not
+their REST routes are removed. These settings never belonged in the server YAML/TOML file and are not
 read from `DITTOFS_ADAPTERS_*` environment variables.
 
 ### SMB3 Encryption Configuration
@@ -1106,54 +1076,31 @@ Override configuration using environment variables with the `DITTOFS_` prefix:
 - Replace dots with underscores
 - Nested paths use underscores
 
-**Special Variables** (not config overrides):
-
-```bash
-# Set the initial admin password on first start (instead of auto-generating one)
-export DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password
-```
-
-> **Note**: `DITTOFS_ADMIN_INITIAL_PASSWORD` is only used during the very first server start when the admin user is created. It has no effect on subsequent starts. When set, the admin account's `MustChangePassword` flag is not enabled.
-
 #### Bootstrap admin password
 
-On the **first** start (when no `admin` user exists yet) the initial admin password is chosen in this precedence:
+`dfs init` creates the administrator account `admin`. Its first password comes
+from `--admin-password-file` (a file of at most 4 KiB; one trailing newline is
+dropped) or `--admin-password-env` (the name of an environment variable holding
+it). With neither, `dfs init` generates one and prints it once to standard
+output, never to the log, and it must be changed at the first sign-in.
 
-1. **`DITTOFS_ADMIN_INITIAL_PASSWORD`** (env, plaintext) — sets a known password and also derives the NT hash, so the admin can authenticate over **SMB** as well as the REST/control-plane API.
-2. **`admin.password_hash`** (config, bcrypt `$2a$`/`$2b$`/`$2y$`) — sets a known credential without writing a plaintext secret to disk. No NT hash is derivable from a bcrypt hash, so an admin bootstrapped this way works for the **control-plane/REST API only, not SMB** (use option 1 for SMB). A value that is not a valid bcrypt hash is rejected at startup.
-3. **Auto-generated** — a random password is generated. It is printed once **only when `dfs start` runs with stdout attached to an interactive terminal** (i.e. `dfs start` in a real TTY). Under Docker/systemd/CI where stdout is a pipe, the password is **not written to the log and cannot be recovered** — the log only records that an admin user was created. Recovery via `dfsctl user password admin` is not possible in this state (it requires an authenticated admin session). Options 1 and 2 are consulted **only while bootstrapping a new admin**, so once this first start has created the admin user, setting them and restarting will **not** change the password — you must delete the `admin` row from the `users` table of the control-plane database (not the database itself, which also holds your shares, stores, mounts and other users) and re-bootstrap with option 1 or 2 set. For any non-interactive deployment, set option 1 or 2 before the very first start.
-
-Options 1 and 2 also skip the forced first-login password change (the operator already chose the password). All three apply only on first start; later starts never change an existing admin's password.
-
-```yaml
-admin:
-  username: admin
-  # bcrypt hash, e.g. from `htpasswd -bnBC 10 "" 'my-secure-password' | tr -d ':\n'`
-  password_hash: "$2b$10$..."
-```
+To recover an administrator's password, stop the node and run `dfs reset-admin`
+on the host that holds the metadata store. It prints a new generated password
+once to standard output, which must be changed at the first sign-in, and refuses
+every credential issued before it.
 
 **Examples**:
 
 ```bash
 # Logging
-export DITTOFS_LOGGING_LEVEL=DEBUG
+export DITTOFS_LOGGING_LEVEL=debug
 export DITTOFS_LOGGING_FORMAT=json
 
-# Server
-export DITTOFS_SHUTDOWN_TIMEOUT=60s
-
 # Metadata store
-export DITTOFS_METADATA_BADGER_PATH=/var/lib/dittofs/metadata
-
-# Control Plane API Server
-export DITTOFS_CONTROLPLANE_PORT=8080
-export DITTOFS_CONTROLPLANE_SECRET=your-secret-key-at-least-32-characters
-export DITTOFS_CONTROLPLANE_PPROF=false
-export DITTOFS_CONTROLPLANE_PPROF_MUTEX_RATE=100
-export DITTOFS_CONTROLPLANE_PPROF_BLOCK_RATE_NS=1000000
+export DITTOFS_METADATA_BADGER_PATH=/var/lib/dittofs/metadata/store
 
 # Start server with overrides
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 ## Configuration Precedence
@@ -1168,9 +1115,9 @@ This precedence does not apply to stores managed through `dfsctl`:
 Example:
 
 ```bash
-# config.yaml has shutdown_timeout: 30s
-# Override the server shutdown timeout for this process
-DITTOFS_SHUTDOWN_TIMEOUT=60s ./dfs start
+# config.yaml has logging.level: info
+# Override the log level for this process
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 ## Configuration Examples
@@ -1286,5 +1233,5 @@ cat /path/to/config.yaml
 Start server with debug logging to see loaded configuration:
 
 ```bash
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```

@@ -14,40 +14,38 @@ How to size the machine that runs `dfs`. For picking *which* stores to run, see
 Size **one box**, not a fleet. The only metadata store this build opens (`badger`) is
 embedded in one process, and it also holds the control plane's records, so there is no
 separate database to size and you cannot run active-active `dfs` replicas against the same
-data. So "sizing" means sizing a single server, plus:
+data. So "sizing" means sizing a single server.
 
-- an **S3 backend** you size and scale separately (Cubbit DS3, MinIO, Ceph RGW, …).
-
-The realistic topology is **badger metadata + on-disk journal + an `s3` block store**.
+All file content lives on the node's journal devices (the `journals` list): no remote
+block store is wired to the engine yet, and the remote tier returns with
+[RFC 4](../internals/rfcs/rfc-4-remote-tier.md). The topology is **badger metadata + the
+journal devices**, all on the one box.
 
 ## What drives each resource
 
 | Resource | What drives it | How to size it |
 |----------|----------------|----------------|
-| **RAM** | Badger runs with its own default cache sizes, which no key changes. Plus per-connection NFS/SMB buffers. FastCDC/BLAKE3 streaming buffers are pooled and **capped at the chunk size** — they do *not* grow with file size. | Give the process a real RAM budget; the operating system's page cache also serves the metadata store's files, so spare RAM still speeds `lookup`/`getattr`/`readdir`. |
-| **Disk (journal)** | Each share's journal is a **write-through tier** in front of its block store. With no per-share `--journal-size` it claims a soft 80% of the volume's free space at open, so it will happily grow into whatever you give it. Metadata (badger LSM, at `metadata.badger.path`) also lives on disk and grows with inode/file count. | Set `--journal-size` to your **hot working set**, not total data — total data lives in S3 — and leave headroom for metadata on the same volume. Use NVMe/SSD: writes hit the journal first. |
-| **CPU** | The write path is CPU-bound: FastCDC chunking + BLAKE3 hashing on every write (dedup is always on), plus encryption if enabled. | Cores help write throughput and concurrent connections. At small scale writes are typically per-op / `fsync`-bound rather than CPU-starved. |
-| **Network** | Background sync to the S3 backend, plus client NFS/SMB traffic. | Bandwidth to the S3 endpoint gates durable-write acknowledgement and cold-read latency. Keep `dfs` close to its S3 backend. |
+| **RAM** | Badger runs with its own default cache sizes, which no key changes. Plus per-connection NFS/SMB buffers. | Give the process a real RAM budget; the operating system's page cache also serves the metadata store's files, so spare RAM still speeds `lookup`/`getattr`/`readdir`. |
+| **Disk (journal)** | The journal devices hold the only copy of every byte written. Metadata (badger LSM, at `metadata.badger.path`) also lives on disk and grows with inode/file count. | Size the journal devices for **total data**, and leave headroom for metadata if it shares a volume. Use NVMe/SSD: every write lands on the journal. |
+| **CPU** | Client protocol work and the journal's write path. | Cores help write throughput and concurrent connections. At small scale writes are typically per-op / `fsync`-bound rather than CPU-starved. |
+| **Network** | Client NFS/SMB traffic only: nothing syncs off the node. | Size for your clients. |
 
 ## Starting points
 
 Anchor points, not guarantees — validate against your workload.
 
-| Tier | vCPU | RAM | Journal disk | Notes |
+| Tier | vCPU | RAM | Journal disk (≥ total data) | Notes |
 |------|------|-----|--------------|-------|
-| **Pilot / eval** | 2–4 | 4–8 GiB | 20–50 GiB SSD | A 10 GiB `--journal-size` is fine for small hot sets |
-| **Single-node "serious"** | 8 | 16–32 GiB | 100–500 GiB NVMe (≥ hot working set) | NVMe matters — writes hit the journal first |
+| **Pilot / eval** | 2–4 | 4–8 GiB | 20–50 GiB SSD | |
+| **Single-node "serious"** | 8 | 16–32 GiB | 100–500 GiB NVMe | NVMe matters — every write lands on the journal |
 | **Heavy** | 16+ | 64 GiB+ | 1 TiB+ NVMe | Past the tested envelope — validate, don't assume |
-
-Add, separately: an **S3 backend** sized for *total* data.
 
 ## Rules of thumb
 
-- **Journal = hot set, S3 = everything.** Don't size local disk for total capacity.
+- **The journal holds everything.** Size the journal devices for total data, not a hot set.
 - **RAM buys metadata speed.** The metadata store is the hot path for every filesystem
   operation; leave the page cache room to hold its hot files.
-- **NVMe for the journal.** Writes land there before syncing to S3.
-- **Co-locate with S3.** Round-trips to the backend gate durable writes and cold reads.
+- **NVMe for the journal.** Every write lands there.
 - **One box.** No active-active HA today — plan for a single node.
 
 ## See also
