@@ -1622,7 +1622,9 @@ what the user's `tokenGroups` holds.
   rule: a take still held is listed as `""` and counted, so the list loses a
   take every round. Of two takes whose names fold equal (§4.6), the second is
   listed as `""` and counted, so an answer naming two groups `Finance` and
-  `finance` still commits. Later answers never change its `PrincipalID`, entry
+  `finance` still commits. A refresh that cannot be written is logged and
+  counted (§9.2), and the resolution carries on with the record as stored.
+  Later answers never change its `PrincipalID`, entry
   ID, SID, uid or gid. An entry with no SID or no uid gets one allocated (§4.3,
   §4.4), so a directory without Windows or Unix attributes still yields
   principals that satisfy ID3.
