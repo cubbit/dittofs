@@ -515,15 +515,22 @@ type reach struct {
 	// the instance serves no caller its events, so the served window is the
 	// only question a claim's retirement has left.
 	dead atomic.Bool
-	// servedFrom and servedThrough bound the joined window of the events a
-	// genuine reader's copies carried since the last gap: how far the reader
-	// got, and where the window began. A read contiguous with the window so
-	// far keeps its earlier start, so an event an earlier read served stays
-	// served past the ring wrap that overwrites it; a read that begins past
-	// a run of events the ring overwrote unread restarts the window at its
-	// own start, so the events no copy ever carried stay answered by
-	// nobody. Both zero while no reader took a non-empty copy away.
-	servedFrom, servedThrough atomic.Uint64
+	// served is the window of the events genuine reads carried, stored as
+	// one pair a claim reads whole: how far the reader got, and where the
+	// window began. A read contiguous with the window so far keeps its
+	// earlier start, so an event an earlier read served stays served past
+	// the ring wrap that overwrites it; a read that begins past a run of
+	// events the ring overwrote unread restarts the window at its own
+	// start, so the events no copy ever carried stay answered by nobody.
+	// Nil while no reader took a non-empty copy away.
+	served atomic.Pointer[servedWindow]
+}
+
+// servedWindow is one served window of the reach: the events
+// [from, through] that genuine reads carried since the last gap overwrote
+// some of them unread.
+type servedWindow struct {
+	from, through uint64
 }
 
 // New returns a Durability. A nil Clock, Domains, Index, Counters or MarkLoss is a
@@ -1089,22 +1096,27 @@ func (d *Durability) Losses() []core.LossEvent {
 	d.lmu.Lock()
 	defer d.lmu.Unlock()
 	if d.count > 0 {
-		// The window the copy carried joins the one its predecessors did: a
+		// The window the copy carried joins the one its predecessors did,
+		// and the pair is stored as one value a claim reads whole: a
 		// contiguous read — its from no later than the last read's through
 		// plus one — keeps the earlier start, so an event an earlier read
 		// served stays served past the ring wrap that overwrites it; a gap
-		// of events the ring overwrote since that read restarts the window
-		// at this copy's from, for one interval cannot hold both the
-		// events the earlier read carried and the ones this copy began
-		// with. The from is stored before the through, and claimServed
-		// loads the through before the from, so a claim reading the two
-		// while a read moves them sees a window that is narrower, never
-		// wider — one half of the pairing alone does not hold the answer.
+		// of events the ring overwrote since that read restarts the window,
+		// for one interval cannot hold both the events the earlier read
+		// carried and the ones this copy began with.
 		from := d.nextEvent - uint64(d.count) + 1
-		if t := d.reach.servedThrough.Load(); t == 0 || from > t+1 {
-			d.reach.servedFrom.Store(from)
+		if w := d.reach.served.Load(); w == nil || from > w.through+1 {
+			// decision: a read after a gap of overwritten events restarts
+			// the window, so the events an earlier read served are no
+			// longer known served, and a reopen may report them again.
+			// This errs toward a duplicate report, never toward a hidden
+			// loss; one interval cannot hold both windows. Retired when a
+			// read retires its claims at read time, or the window keeps
+			// one interval per gap.
+			d.reach.served.Store(&servedWindow{from: from, through: d.nextEvent})
+		} else {
+			d.reach.served.Store(&servedWindow{from: w.from, through: d.nextEvent})
 		}
-		d.reach.servedThrough.Store(d.nextEvent)
 	}
 	return d.lossesLocked()
 }
@@ -1221,8 +1233,10 @@ func (r *reach) claimsDead() bool { return r.dead.Load() }
 // where the ring overwrote the event before any read reached it — a copy
 // that never carried it answered nothing for it, whatever the reader knows
 // it missed — so a claim on an event no read reached survives its instance,
-// and a reopen places the loss it names found at open again; an earlier
-// read's mark survives the wrap, so a served event is never re-placed.
+// and a reopen places the loss it names found at open again. An event an
+// earlier read served stays served over its wrap, until a later read
+// arrives over a gap of overwritten events and restarts the window — the
+// duplicate the gap's decision names.
 //
 // decision: a loss that published no event of its own — a reported one,
 // whose report another of the instance's events carried — is answered by any
@@ -1236,17 +1250,14 @@ func (r *reach) claimsDead() bool { return r.dead.Load() }
 // reported loss learns the number of the window's event that carried its
 // report.
 func (r *reach) claimServed(ev uint64) bool {
-	// The through is loaded before the from, and Losses stores the from
-	// before the through: a window narrower than any read carried — an old
-	// through with the from that restarted past it reads empty — never one
-	// wider, which the opposite halves of either order would span the gap a
-	// restarting read leaves. Both halves of the pairing hold the answer;
-	// break neither alone.
-	through, from := r.servedThrough.Load(), r.servedFrom.Load()
-	if ev == 0 {
-		return through > 0
+	w := r.served.Load()
+	if w == nil {
+		return false
 	}
-	return ev >= from && ev <= through
+	if ev == 0 {
+		return true
+	}
+	return ev >= w.from && ev <= w.through
 }
 
 // target is the last unsynced record of one file in one segment of a stream.

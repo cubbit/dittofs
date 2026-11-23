@@ -530,3 +530,39 @@ func TestServedEventsStayServedPastTheRingWrap(t *testing.T) {
 		t.Fatalf("the reopen published %d found-at-open events, want 0: every published event was served by a read before the wrap, so no claim survived its instance %v", len(got), got)
 	}
 }
+
+// TestAGapRestartsTheServedWindow pins the restart half of the served window,
+// the unsafe direction the join alone would hide: one read serves event 1,
+// then the ring wraps unread past events 2..5, and a second read arrives over
+// the gap and restarts the window. 2..5 must come back, unheld by no read: a
+// window that joined across the gap would count them served, and a reopen
+// would hide losses nobody was told about. 1 does too: one interval cannot
+// hold both reads, so a gap re-reports, never hides — the duplicate the
+// restart's decision errs toward (see Losses).
+func TestAGapRestartsTheServedWindow(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	n := core.LossRingSize + 5
+	seqs := make([]core.Seq, n)
+	events := make([]core.LossEvent, n)
+	for i := range events {
+		seqs[i] = core.Seq(100 + i)
+		ev, err := e.d.Lose(ctx, loss(seqs[i]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		events[i] = ev
+		if i == 0 {
+			e.d.Losses()
+		}
+	}
+	e.d.Losses()
+	e.d.Stop()
+	reopen := e.newDurability()
+	for i, ev := range events {
+		reopen.Place(ev, seqs[i])
+	}
+	if got := reopen.Stats().Losses; len(got) != 5 {
+		t.Fatalf("the reopen published %d found-at-open events, want 5: events 2..5 no read carried, and event 1, which the gap restart re-reports: %+v", len(got), got)
+	}
+}
