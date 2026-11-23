@@ -730,8 +730,8 @@ func (h *Hold) Close() {
 }
 
 // wantRecycle reserves a slot for a recycled spare in the first class short of
-// its target, in the refill's own order — headroom, then reserve, then
-// content, whose target the holds and the refused asks ride above — counting
+// its target — reserve, then headroom, then content, whose target the holds
+// and the refused asks ride above — counting
 // the ready spares and the reservations in flight together. It answers false
 // when no class is short or the pool is stopped, and the reservation it takes
 // when it answers true is what recycled spends and recycleFailed gives back.
@@ -768,15 +768,19 @@ func (p *Pool) wantRecycle() (Class, bool) {
 		return 0, false
 	}
 	switch {
+	case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
+		// The reserve first, unlike the refill's makes: a recycle is a
+		// retirement's segment, and a retirement gives the repack reserve
+		// back what its copies spent (RFC 1 sections 6 and 7.2), so the next
+		// pass at the limit, where nothing else makes a spare, has one.
+		p.incoming[Reserve]++
+		return Reserve, true
 	case len(p.ready[Headroom])+p.incoming[Headroom]+int(p.holdTaken.Load()) < p.t.Headroom:
 		// The open's held takes count here as the refill counts them: a
 		// reserved slot a held take occupies is a slot the recycle would
 		// double-fill.
 		p.incoming[Headroom]++
 		return Headroom, true
-	case len(p.ready[Reserve])+p.incoming[Reserve] < p.t.Reserve:
-		p.incoming[Reserve]++
-		return Reserve, true
 	case len(p.ready[Content])+p.incoming[Content] < p.contentGoalLocked():
 		// Content counts what holds demand and what a refused Hold asked,
 		// exactly as the refill does: a recycle filling a slot is worth what

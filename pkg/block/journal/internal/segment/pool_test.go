@@ -1630,14 +1630,15 @@ func TestPoolAHoldClosedDuringAMakeLeavesTheTarget(t *testing.T) {
 }
 
 // TestPoolWantRecycleReservesTheShortestClassFirst: a recycle's spare is
-// reserved in the first class short of its target, in the refill's own order —
-// headroom, then reserve, then content — and the reservation counts against
+// reserved in the first class short of its target — the reserve, then the
+// headroom, then content, the reserve ahead of the refill's own order — and
+// the reservation counts against
 // the next one, so two reservations against a target of one give one true and
 // one false. No class short and a stopped pool answer false.
 func TestPoolWantRecycleReservesTheShortestClassFirst(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	t.Run("the refill's order", func(t *testing.T) {
+	t.Run("the reserve first", func(t *testing.T) {
 		// No class is short: nothing to reserve.
 		_, _, _, empty := poolOf(t, segment.Targets{Content: 0, Headroom: 0, Reserve: 0}, noMax, 0, nil)
 		if _, ok := empty.WantRecycleForTest(); ok {
@@ -1661,36 +1662,36 @@ func TestPoolWantRecycleReservesTheShortestClassFirst(t *testing.T) {
 			t.Fatalf("after the giveback no recycle was wanted for the headroom, want it short again: %v", c)
 		}
 
-		// The reserve is wanted after the headroom, which the outstanding
-		// reservation above fills: over targets the headroom's and the
-		// reserve's, the reserve answers once the headroom's slot is taken.
-		_, _, _, res := poolOf(t, segment.Targets{Content: 0, Headroom: 1, Reserve: 2}, noMax, 0, nil)
-		if c, ok := res.WantRecycleForTest(); !ok || c != segment.Headroom {
-			t.Fatalf("a recycle was wanted for %v over a short headroom, want Headroom", c)
+		// The headroom is wanted after the reserve, which the outstanding
+		// reservation fills: over targets the reserve's and the headroom's,
+		// the headroom answers once the reserve's slot is taken.
+		_, _, _, res := poolOf(t, segment.Targets{Content: 0, Headroom: 2, Reserve: 1}, noMax, 0, nil)
+		if c, ok := res.WantRecycleForTest(); !ok || c != segment.Reserve {
+			t.Fatalf("a recycle was wanted for %v over a short reserve, want Reserve", c)
 		}
-		res.RecycleFailedForTest(segment.Headroom)
+		res.RecycleFailedForTest(segment.Reserve)
 		c, ok := res.WantRecycleForTest()
-		if !ok || c != segment.Headroom {
-			t.Fatalf("after the giveback a recycle was wanted for %v, want the short headroom again", c)
-		}
-		// The headroom's slot stays reserved: the reserve answers next.
-		c, ok = res.WantRecycleForTest()
 		if !ok || c != segment.Reserve {
-			t.Fatalf("a recycle was wanted for %v over a short reserve the headroom's reservation leaves, want Reserve", c)
+			t.Fatalf("after the giveback a recycle was wanted for %v, want the short reserve again", c)
+		}
+		// The reserve's slot stays reserved: the headroom answers next.
+		c, ok = res.WantRecycleForTest()
+		if !ok || c != segment.Headroom {
+			t.Fatalf("a recycle was wanted for %v over a short headroom the reserve's reservation leaves, want Headroom", c)
 		}
 
-		// Content rides last: once the headroom's and the reserve's slots are
+		// Content rides last: once the reserve's and the headroom's slots are
 		// reserved against them, the content class answers.
 		_, _, _, con := poolOf(t, segment.Targets{Content: 2, Headroom: 1, Reserve: 1}, noMax, 0, nil)
-		if c, ok := con.WantRecycleForTest(); !ok || c != segment.Headroom {
-			t.Fatalf("a recycle was wanted for %v over a short headroom, want Headroom", c)
-		}
 		if c, ok := con.WantRecycleForTest(); !ok || c != segment.Reserve {
-			t.Fatalf("a recycle was wanted for %v over the reserve the headroom's reservation leaves, want Reserve", c)
+			t.Fatalf("a recycle was wanted for %v over a short reserve, want Reserve", c)
+		}
+		if c, ok := con.WantRecycleForTest(); !ok || c != segment.Headroom {
+			t.Fatalf("a recycle was wanted for %v over the headroom the reserve's reservation leaves, want Headroom", c)
 		}
 		c, ok = con.WantRecycleForTest()
 		if !ok || c != segment.Content {
-			t.Fatalf("a recycle was wanted for %v with the headroom and the reserve reserved, want Content", c)
+			t.Fatalf("a recycle was wanted for %v with the reserve and the headroom reserved, want Content", c)
 		}
 	})
 

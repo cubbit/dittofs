@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
@@ -193,6 +194,44 @@ func TestRestartAtTheLimitKeepsTheRepackReserve(t *testing.T) {
 	}
 	if _, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{}); err != nil {
 		t.Fatalf("Repack at the limit after the restart: %v", err)
+	}
+}
+
+// TestRepackAfterARestartAtTheLimitGivesTheReserveBack checks that, after a
+// restart at the maximum with the headroom short, each repack pass gives the
+// repack reserve back what its copies spent (RFC 1 sections 6 and 7.2): the
+// retirement's freed segment refills the reserve before the headroom, so a
+// second pass still has its spare and carries. Each pass frees the three
+// quarters of file 0 a round of removals left unheld in half of the file.
+func TestRepackAfterARestartAtTheLimitGivesTheReserveBack(t *testing.T) {
+	f, _ := headroomSpentAtTheLimit(t)
+	f.Reopen()
+	h := f.Share(0)
+	const chunk = int64(256 << 10)
+	half := int64(journaltest.FixtureMaxBytes / 2)
+	for pass, from := range []int64{0, half} {
+		for off := from; off < from+half; off += 4 * chunk {
+			for k := int64(1); k < 4; k++ {
+				if _, err := h.Deallocate(t.Context(), journaltest.File(0), journal.Extent{Off: off + k*chunk, Len: chunk}); err != nil {
+					t.Fatalf("pass %d: Deallocate at %d: %v", pass, off+k*chunk, err)
+				}
+			}
+		}
+		freed, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{})
+		if err != nil {
+			t.Fatalf("pass %d: Repack at the limit: %v", pass, err)
+		}
+		if freed <= 0 {
+			t.Fatalf("pass %d: Repack freed %d bytes, want the removed three quarters back: it found no reserve spare to carry into", pass, freed)
+		}
+		// The recycle that refills the reserve lands off the pass's own
+		// path; the poll waits on the figure itself, the deadline a backstop.
+		for deadline := time.Now().Add(10 * time.Second); f.J.Stats().RepackReserveBytes != journaltest.FixtureSegmentCap; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				st := f.J.Stats()
+				t.Fatalf("pass %d: RepackReserveBytes = %d after a pass that freed %d, want %d: the freed segments went to the headroom first", pass, st.RepackReserveBytes, freed, journaltest.FixtureSegmentCap)
+			}
+		}
 	}
 }
 
