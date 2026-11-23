@@ -120,7 +120,7 @@ and title and not copied.
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T3.3, T3.4, T3.6, T3.9 | a resumed deletion and a resumed operation restart a node over the same Badger and journal directories; listeners are real, on `127.0.0.1:0`; `dfs start` runs as a child process |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T3.1–T3.6 | RFC 23's notes at their sites: §2.1's two `decision:` notes at `New` and `Start`, and T3.1's two at `New` (another installation's KV, one build per metrics registry), §2.5's at the metrics listener, §2.1's and §2.4's `ponytail:` notes at `New` and the status writer; RFC 23's plan's §4.3 `ponytail:` notes (every namespace held, the runner's missing claim, the health registry's reach); D5's, D6's, D7's and D8's markers |
 | rule 10, a test must be able to fail | all | each test names the requirement it catches; where the code holds a requirement by construction, or another epic's test holds it, the row names that |
-| rule 11, a symbol is exported only if RFC 23's interface uses it | all | `internal/node` keeps E1's five exports, which its pin holds; `internal/node/api` exports `New`, `Deps`, whose fields E4 adds to, and `Server` with `Start` and `Stop`, pinned by an export test; `nodetest` is the harness RFC 23 names; `pkg/health` gains RFC 25 §8.2's `Source` and evaluator and the watchdog the node and the API share; `internal/node/step` exports the three step types outside steps need (D7); `pkg/openstate` gains the engine's `CloneHold` adapter (D12) and `pkg/block/engine` `JournalOf` (D17) |
+| rule 11, a symbol is exported only if RFC 23's interface uses it | all | `internal/node` keeps E1's five exports, which its pin holds; `internal/node/api` exports `New`, `Deps`, whose fields E4 adds to, and `Server` with `Start` and `Stop`, pinned by an export test; `nodetest` is the harness RFC 23 names; `pkg/health` gains RFC 25 §8.2's `Source` and evaluator and the watchdog the node and the API share; `internal/node/step` exports the three step types outside steps need (D7); `pkg/openstate` gains the engine's `CloneHold` adapter (D12) and `pkg/engine` `JournalOf` (D17) |
 | rule 12, each subtask creates only what it declares | all | each package lands with its first `_test.go`, which `lint-repo`'s new-package check requires; no remote client, factory or settings package is built for a consumer outside this epic (D5, D9) |
 
 ## 3. Requirements and invariants
@@ -359,13 +359,13 @@ that subtasks and tests can cite them.
   too. No marker. Prior art: read-your-writes in session-consistent stores, such as MongoDB's
   causal sessions (from memory).
 
-- **D17, `engine.JournalOf` has one copy, in `pkg/block/engine`.** The node's journal opener
+- **D17, `engine.JournalOf` has one copy, in `pkg/engine`.** The node's journal opener
   returns `journal.Open`'s journal as the engine's `Journal`, which `enginetest`'s adapter did; for
-  D12's reason, a test fixture importing `testing`, it moves to `pkg/block/engine`'s `JournalOf`,
+  D12's reason, a test fixture importing `testing`, it moves to `pkg/engine`'s `JournalOf`,
   which the node and `enginetest` both call. No marker.
 
 - **D18, the node and `enginetest` build the engine through one `enginewire.Compose`.**
-  `pkg/block/engine/enginewire.Compose(Params)` builds open state over the store and returns it
+  `pkg/engine/enginewire.Compose(Params)` builds open state over the store and returns it
   with the engine's `Deps`: each device's journal opener over `journal.Open` and `JournalOf`
   (D17), the store's views, `openstate.EngineHolds` (D12) and a no-op `Tracer`. It opens and
   starts nothing. `node.New` and `enginetest` both call it, so the fixture the engine's tests run
@@ -382,9 +382,9 @@ that subtasks and tests can cite them.
 ```text
 pkg/openstate/
   engineholds.go                           T3.1  EngineHolds, moved from enginetest (D12)
-pkg/block/engine/
+pkg/engine/
   journalof.go                             T3.1  JournalOf, moved from enginetest (D17)
-pkg/block/engine/enginewire/
+pkg/engine/enginewire/
   enginewire.go                            T3.2  Compose, which the node and enginetest call (D18)
 pkg/config/
   config.go                                T3.1  the bootstrap's host-set Node and Devices (D1)
@@ -414,7 +414,7 @@ internal/vfs/
 cmd/dfs/commands/
   clock.go, start.go                       T3.9  systemClock, RFC 23 §2's run, the signal handler first
   kv.go, preflight.go                      T3.9  the store's refusals and open; the v1 refusal (R3)
-pkg/block/journal/internal/format/
+pkg/journal/internal/format/
   names.go                                 T3.10 node-id and node-id.tmp known
 Dockerfile                                 T3.9  HEALTHCHECK on https://localhost:8080/health/live
 ```

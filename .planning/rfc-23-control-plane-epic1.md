@@ -200,7 +200,7 @@ that subtasks and tests can cite them.
   fills them together, with `WriteMeta` and `ControlPlaneTx` in `pkg/metadata/entity`, which kvstore
   and the API both already import. Not the root `pkg/metadata`: on `feat/storage-v2` it is still
   v1's metadata `Service`, and kvstore naming a type there would pull it into kvstore's closure and,
-  through kvstore, into the engine's. `pkg/block/engine/imports_test.go` checks only direct
+  through kvstore, into the engine's. `pkg/engine/imports_test.go` checks only direct
   imports, so no test would fail: the reason is closure hygiene. The two
   types can move beside RFC 16 §3's views once that `Service` leaves the root package. A stub view frozen a
   whole epic before its bodies would pin signatures no test exercises. The user's decision. No
@@ -239,7 +239,7 @@ that subtasks and tests can cite them.
   failing on its assertion on every run. A rule reads every file under each build tag `lint-go`
   names (the `go vet -tags=` list in `test/suites.yaml`), not only the default context, since a
   tagged file is invisible to a gate that reads without its tag. They walk sources with
-  `go/build` and `go/parser`, as `pkg/block/journal/imports_test.go` and
+  `go/build` and `go/parser`, as `pkg/journal/imports_test.go` and
   `internal/adapter/adaptertest`'s import test do (checked). No marker.
 - **D11, `dfsctl` keeps its command tree until the CLI epic.** Deleting the v1 commands would make
   411 lines of invocations across 28 pages, and 28 in Go strings, name commands that do not exist,

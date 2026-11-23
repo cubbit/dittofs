@@ -809,7 +809,7 @@ and `New`, internal and public. Every operation is answered as not supported thr
 pipeline: `STATUS_NOT_SUPPORTED` for SMB; `PROG_UNAVAIL`, `PROG_MISMATCH` or `PROC_UNAVAIL` for
 NFS as RFC 20 §4.8 says. `wire/` and `protocol/` need only E1's types and E2's `testproto`, so
 they start at S2; only `New`, which wires a `protocol/` to the real runner, waits for S3. Golden vectors are read by a small helper inside each `wire` package, as
-`pkg/block/journal/internal/format` does.
+`pkg/journal/internal/format` does.
 
 RFC sections: §2.5's `wire` purity, §4.7's Header and Router rows for both protocols, §4.8's NFS
 and SMB rows, §5.1, §5.2, §5.4 for the headers, §6.10's codec gate for the headers.

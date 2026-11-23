@@ -10,7 +10,7 @@ write records; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §2.3 and §5.7, f
 `Overlay` feeds.
 **Track:** A.
 **Epic 3 estimate: 6 subtasks, 13 man-days.**
-**Depends on:** sync point **S2, red suite in CI**: E1's `pkg/block/engine` surface
+**Depends on:** sync point **S2, red suite in CI**: E1's `pkg/engine` surface
 (`Engine`, `Deps`, the `Journal` and `Handle` interfaces, `WriteOpts`, `Overlay`) and E2's
 in-memory journal (`enginetest.FakeJournal`), profiler wiring and red rows; #3608 and #3609,
 which put the share on every content call (D1). Nothing of epic 4:
@@ -67,7 +67,7 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
 
 ### 1.3 Names used here
 
-- **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
+- **E1**, epic 1, interfaces: `pkg/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal and `kvstore`, the fault-injecting
@@ -127,7 +127,7 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   the engine's one import test, a walk over every package of `pkg/engine` with
    one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
    `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
    engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
@@ -244,7 +244,7 @@ subtasks and tests can cite them.
   table, which knows only bound shares, so it answers `DelayFrozen` for any other; the
   removed and retired states, and their `ErrStale`, land with epic 6's `Unbind` and `Drop`.
   The parameter is not on this base yet: it lands in RFC 8 §12.1 and RFC 17 §2.3 with
-  #3608, and in `pkg/block/engine`'s and `internal/vfs`'s declared signatures with
+  #3608, and in `pkg/engine`'s and `internal/vfs`'s declared signatures with
   #3609, both ahead of T3.1.
 - **D2, the unit composition.** `Bind` and `Start` are epic 6's, so a unit test cannot bind
   a share through them. T3.1 adds `export_test.go`, in package `engine`, with a hook that
@@ -318,7 +318,7 @@ subtasks and tests can cite them.
 ## 5. Target tree
 
 ```text
-pkg/block/engine/
+pkg/engine/
   file.go           T3.1  per-file entries, sharded by file; pending operations; bindingOf (D1)
   export_test.go    T3.1  the binding hook, counter accessors (D2, D9)
   unit_test.go      T3.1  the unit composition over the in-memory journal and the real kvstore
