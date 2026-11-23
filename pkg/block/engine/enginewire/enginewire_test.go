@@ -1,6 +1,7 @@
 package enginewire_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -500,6 +501,45 @@ func TestComposeOpensTheJournalWithItsMarks(t *testing.T) {
 				t.Errorf("Open with no marks reported losses %+v, want none", losses)
 			}
 		})
+	}
+}
+
+// The Lifecycle Compose hands the engine logs a sync mark it leaves out to
+// the engine's logger: a key under J‖journal‖sm too short for a stream is
+// logged there, with its journal and key, when the journal's marks are read.
+func TestComposeLogsASkippedMarkToTheEnginesLogger(t *testing.T) {
+	var db kv.KV
+	fs := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
+		var err error
+		if db, err = badgerkv.Open(badgerkv.Options{}); err != nil {
+			tb.Fatal(err)
+		}
+		tb.Cleanup(func() { _ = db.Close() })
+		return db
+	})
+	j := [16]byte{'j'}
+	// J‖journal‖sm then one byte where the stream's four belong: J is 0x2e
+	// and sm 0x01, as kvstore's golden test pins them.
+	key := append(append([]byte{0x2e}, j[:]...), 0x01, 7)
+	if err := db.Update(t.Context(), func(tx kv.Txn) error { return tx.Set(key, []byte{1}) }); err != nil {
+		t.Fatalf("store the malformed mark key: %v", err)
+	}
+
+	var logs bytes.Buffer
+	_, d, err := enginewire.Compose(enginewire.Params{
+		Node: node, Store: fs.Store,
+		Clock:  sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if _, _, err := d.Lifecycle.SyncMarks(t.Context(), j); err != nil {
+		t.Fatalf("SyncMarks: %v", err)
+	}
+	want := fmt.Sprintf("journal=%s key=07", hex.EncodeToString(j[:]))
+	if !strings.Contains(logs.String(), want) {
+		t.Errorf("the engine's logger holds %q, want a warning naming %q", logs.String(), want)
 	}
 }
 
