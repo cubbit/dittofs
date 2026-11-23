@@ -3641,9 +3641,9 @@ limit, a roll with no spare ready while the device has room, and pacing alone
 raise nothing, [RFC 25 §3.2](rfc-25-observability.md#3.2%20Severity). It clears once the limit that refused has room
 again since the latest refusal, by at least what that refusal lacked: under the
 journal's maximum, the storage retired segments returned since then, by an
-unlink or a recycle (`freed_bytes`, [RFC 1 §3.9](rfc-1-journal.md#3.9%20Metrics)), and any rise of the maximum
-since then (`MaxBytes`, [RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), together reaching the bytes the refusal
-names; under the headroom or the index bound, the records or entries it names,
+unlink or a recycle (`freed_bytes`, [RFC 1 §3.9](rfc-1-journal.md#3.9%20Metrics)), and any change of the maximum
+since then, a lowered one counted against them (`MaxBytes`, [RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspection)), together reaching the bytes the refusal
+names, or the maximum removed; under the headroom or the index bound, the records or entries it names,
 regained; on a full device, a spare that can be ready again, made from a
 segment's cap of free space in the journal directory's filesystem, which the
 engine reads itself through `Deps.FreeSpace` (§2.6), on the journal's group
