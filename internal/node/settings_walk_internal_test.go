@@ -7,6 +7,7 @@ import (
 	"iter"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -206,7 +207,11 @@ func TestSettingsWalkTimeoutNamesTheRowsRead(t *testing.T) {
 
 	var got error
 
-	for _, err := range w.AllSettings(t.Context(), entity.SettingKey{}) {
+	// A backstop: a walk that never times out ends here and fails on its assertion.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	for _, err := range w.AllSettings(ctx, entity.SettingKey{}) {
 		if err != nil {
 			got = err
 		}

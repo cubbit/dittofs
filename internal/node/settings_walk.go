@@ -226,7 +226,7 @@ type settingsRead struct {
 // walk the generation moved under is discarded and walked again, since the
 // walk reads each page in its own transaction and could mix two states of the
 // store. While writes keep moving the generation the call waits, and ends only
-// with ctx, as a pass's position stalls. Each wait on a page is bound by
+// with ctx, as a pass's position stalls. Each page is bound by
 // storeBound (settingsWalk.AllSettings), not the walk as a whole, so a store
 // that stops answering ends the call with an error rather than holding
 // reconcile, and a walk of many pages that each answer in time never fails.
