@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,5 +82,65 @@ func TestScanSkipsTheBackendsOwnRows(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// tlsFiles writes a certificate, a key and a CA file under dir, as paths;
+// the client is never asked to read them.
+func tlsFiles(t *testing.T) fdbkv.TLS {
+	dir := t.TempDir()
+	tls := fdbkv.TLS{CertFile: dir + "/cert.pem", KeyFile: dir + "/key.pem", CAFile: dir + "/ca.pem"}
+	for _, f := range []string{tls.CertFile, tls.KeyFile, tls.CAFile} {
+		if err := os.WriteFile(f, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return tls
+}
+
+// A missing TLS file is refused, named, before the client is touched, so no
+// cluster is needed: the client itself takes any path and fails only on
+// connecting.
+func TestOpenRefusesAMissingTLSFile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(*fdbkv.TLS) *string
+	}{
+		{"cert_file", func(tls *fdbkv.TLS) *string { return &tls.CertFile }},
+		{"key_file", func(tls *fdbkv.TLS) *string { return &tls.KeyFile }},
+		{"ca_file", func(tls *fdbkv.TLS) *string { return &tls.CAFile }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tls := tlsFiles(t)
+			missing := tc.path(&tls)
+			*missing += ".missing"
+			s, err := fdbkv.Open(fdbkv.Options{ClusterFile: t.TempDir() + "/fdb.cluster", TLS: tls})
+			if err == nil {
+				_ = s.Close()
+				t.Fatalf("Open with a missing %s: nil error, want one naming %s", tc.name, *missing)
+			}
+			if !strings.Contains(err.Error(), *missing) {
+				t.Fatalf("Open with a missing %s: %v, want an error naming %s", tc.name, err, *missing)
+			}
+		})
+	}
+}
+
+// The client reads its TLS files once, when its network starts, and ignores
+// any given later, so an Open naming other files than the process's first is
+// refused rather than connected with the first's. No cluster is needed: the
+// first Open gives the client its files before it finds no cluster file.
+func TestOpenRefusesOtherTLSFiles(t *testing.T) {
+	if s, err := fdbkv.Open(fdbkv.Options{ClusterFile: t.TempDir() + "/fdb.cluster"}); err == nil {
+		_ = s.Close()
+		t.Fatal("Open on a missing cluster file: nil error, want the client's refusal")
+	}
+	s, err := fdbkv.Open(fdbkv.Options{ClusterFile: t.TempDir() + "/fdb.cluster", TLS: tlsFiles(t)})
+	if err == nil {
+		_ = s.Close()
+		t.Fatal("Open with TLS files after one without: nil error, want a refusal")
+	}
+	if want := "TLS files differ"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("Open with TLS files after one without: %v, want an error naming %q", err, want)
 	}
 }

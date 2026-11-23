@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"os"
 	"sync"
 	"time"
 
@@ -30,6 +31,8 @@ const apiVersion = 730
 type Options struct {
 	// ClusterFile names the cluster; empty is the client's default.
 	ClusterFile string
+	// TLS names the client's TLS files; the zero value names none.
+	TLS TLS
 	// Prefix is put before every key, so stores can share a cluster.
 	Prefix []byte
 	// NodeID names this node's clock record, N‖node‖clk.
@@ -64,13 +67,72 @@ type Store struct {
 	closed bool
 }
 
+// TLS is the client's certificate, its key and the CA file that verifies the
+// cluster, each a path; an empty path is not passed to the client.
+type TLS struct {
+	CertFile, KeyFile, CAFile string
+}
+
 var apiOnce = sync.OnceValue(func() error { return fdb.APIVersion(apiVersion) })
+
+// network is the TLS the first Open gave the client. TLS files are options of
+// the process's one client network, which reads them once, when it starts:
+// one set after that is accepted and ignored.
+var network struct {
+	sync.Mutex
+	set bool
+	tls TLS
+}
+
+// setTLS gives the client t's files, once per process, and refuses an Open
+// naming other files than the first: the client would ignore them.
+func setTLS(t TLS) error {
+	network.Lock()
+	defer network.Unlock()
+	if network.set {
+		if t != network.tls {
+			return errors.New("fdbkv: TLS files differ from those this process's client was given first")
+		}
+		return nil
+	}
+	for _, o := range []struct {
+		path string
+		set  func(string) error
+	}{
+		{t.CertFile, fdb.Options().SetTLSCertPath},
+		{t.KeyFile, fdb.Options().SetTLSKeyPath},
+		{t.CAFile, fdb.Options().SetTLSCaPath},
+	} {
+		if o.path == "" {
+			continue
+		}
+		if err := o.set(o.path); err != nil {
+			return fmt.Errorf("fdbkv: TLS file %s: %w", o.path, err)
+		}
+	}
+	network.set, network.tls = true, t
+	return nil
+}
 
 // Open connects to the cluster and raises this node's clock ceiling before
 // returning, so no Now precedes a durable ceiling.
+//
+// A TLS file that is missing is refused, named, before the client is touched:
+// the client takes a path without opening it, and fails only on connecting.
 func Open(opts Options) (*Store, error) {
+	for _, f := range []string{opts.TLS.CertFile, opts.TLS.KeyFile, opts.TLS.CAFile} {
+		if f == "" {
+			continue
+		}
+		if _, err := os.Stat(f); err != nil {
+			return nil, fmt.Errorf("fdbkv: TLS file: %w", err)
+		}
+	}
 	if err := apiOnce(); err != nil {
 		return nil, fmt.Errorf("fdbkv: client API %d: %w", apiVersion, err)
+	}
+	if err := setTLS(opts.TLS); err != nil {
+		return nil, err
 	}
 	db, err := fdb.OpenDatabase(opts.ClusterFile)
 	if err != nil {
