@@ -500,10 +500,10 @@ var storeCodes = map[merrs.ErrorCode]struct {
 	merrs.ErrIsDirectory: {400, "is_directory"}, merrs.ErrNotDirectory: {400, "not_directory"}, merrs.ErrInvalidArgument: {400, "invalid_argument"},
 	merrs.ErrIOError: {500, "io_error"}, merrs.ErrNoSpace: {409, "no_space"}, merrs.ErrQuotaExceeded: {409, "quota_exceeded"},
 	merrs.ErrReadOnly: {409, "read_only"}, merrs.ErrNotSupported: {400, "not_supported"}, merrs.ErrInvalidHandle: {400, "invalid_handle"},
-	merrs.ErrStaleHandle: {409, "stale_handle"}, merrs.ErrLocked: {409, "locked"}, merrs.ErrLockNotFound: {409, "lock_not_found"},
+	merrs.ErrStaleHandle: {409, "stale_handle"}, merrs.ErrLocked: {409, "locked"},
 	merrs.ErrPrivilegeRequired: {403, "privilege_required"}, merrs.ErrNameTooLong: {400, "name_too_long"}, merrs.ErrDeadlock: {409, "deadlock"},
-	merrs.ErrGracePeriod: {503, "grace_period"}, merrs.ErrLockLimitExceeded: {409, "lock_limit_exceeded"}, merrs.ErrLockConflict: {409, "lock_conflict"},
-	merrs.ErrConnectionLimitReached: {503, "connection_limit_reached"}, merrs.ErrConflict: {409, "conflict"}, merrs.ErrCrossShare: {400, "cross_share"},
+	merrs.ErrGracePeriod: {503, "grace_period"}, merrs.ErrLockConflict: {409, "lock_conflict"},
+	merrs.ErrConflict: {409, "conflict"}, merrs.ErrCrossShare: {400, "cross_share"},
 }
 
 // §4.7 error table, and §8.1's store-unreachable row, through the API of a
