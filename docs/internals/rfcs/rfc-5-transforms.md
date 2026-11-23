@@ -527,6 +527,9 @@ configured transform, in order, it covers:
   writes.
 
 The stage order is fixed ([§2.3](#2.3%20The%20chain%20order%20is%20fixed)), so order is not an input of its own.
+A block takes its chain ID from its pin ([§3.1](#3.1%20Interfaces)), read once when its name is
+minted, so a configuration change or a rotation while the block is in flight
+changes the chain ID of the next block only.
 
 **Its bytes.** The chain ID is 32 bytes:
 
@@ -653,8 +656,8 @@ type Materials interface {
 	// and has lost or removed for good.
 	Get(ctx context.Context, id MaterialID) ([]byte, error)
 	// Remove destroys material: it refuses while the material is current in
-	// any open chain, waits for encodes in flight that hold it, then checks
-	// the census, all under one fence, and erases every copy (§5.3). A master
+	// any open chain, waits for every open pin that holds it, then checks the
+	// census, all under one fence, and erases every copy (§5.3). A master
 	// key or export key that a retained export names is ErrMaterialInUse.
 	// It lands with its first caller (§5.3).
 	Remove(ctx context.Context, id MaterialID) error
@@ -860,12 +863,13 @@ and material.
   ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)); the chunks move and the move retires the source. Retirement
   relocates a block even when it is fully live, the one exception to
   [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy).
-- **Removal waits for an empty census, and for encodes in flight.** A census
-  says only what committed blocks use; a put already encoding under the
-  material commits a block the census does not yet show. So removal, under one
-  fence against new encodes, **MUST** first make sure the material is current in
-  no open chain, then wait for every encode in flight that took it, and only then
-  check that the census is empty. An encode that starts after the fence finds the
+- **Removal waits for an empty census, and for open pins.** A census says only
+  what committed blocks use; a block pinned under the material
+  ([§3.1](#3.1%20Interfaces)) commits a block the census does not yet show, and may
+  encode again on a retry until it commits or is abandoned. So removal, under one
+  fence against new pins, **MUST** first make sure the material is current in no
+  open chain, then wait for every open pin that holds it to be released, and only
+  then check that the census is empty. A pin taken after the fence finds the
   material not current and cannot take it.
 - **Copying backups hold material too.** A copying backup copies sealed blocks,
   never re-sealed, into a block folder at its location, and each retained
@@ -900,10 +904,10 @@ and material.
   names it.
 
 **Removal lands with its first caller.** `Remove`, its fence and its count of
-encodes in flight are built with the first act that destroys material: GC's
+open pins are built with the first act that destroys material: GC's
 retirement relocation ([RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy))
-or an operator's destroy ([RFC 23](rfc-23-control-plane.md)), whichever comes
-first. Until then no material is destroyed by this installation, and a pin
+or an operator's destroy, an operation RFC 23 does not yet specify, whichever
+comes first. Until then no material is destroyed by this installation, and a pin
 ([§3.1](#3.1%20Interfaces)) only fixes a block's chain.
 
 **A drained namespace's keys go last, all or none.** When a namespace no share
@@ -1000,7 +1004,7 @@ never moves.
 | T10 | The chain ID changes whenever a body's bytes or length could; nothing else changes it. |
 | T11 | A chain and an envelope list at most one transform per stage, in stage order; anything else is refused. |
 | T12 | A read asks the material provider only for material its block record's census lists, and the provider never serves material whose fingerprint no longer matches. |
-| T13 | Material is destroyed only after it is current in no open chain, no encode in flight holds it, and the census is empty, checked under one fence; once destroyed, no copy of it or of any key derived from it remains anywhere the installation runs. |
+| T13 | Material is destroyed only after it is current in no open chain, no open pin ([§3.1](#3.1%20Interfaces)) holds it, and the census is empty, checked under one fence; once destroyed, no copy of it or of any key derived from it remains anywhere the installation runs. |
 | T14 | Material belongs to one namespace, and every call that names it names that namespace. |
 | T15 | Whether a namespace encrypts is fixed at its creation; an encrypting namespace holds no body without the encrypt stage. |
 | T16 | A chain that encrypts compresses only where its compress stage explicitly accepts the size leak. |
@@ -1403,8 +1407,9 @@ old version can be destroyed in the service only once the destroy check of
 [B.2](#B.2%20Keys) passes for its own ID. **The provider does not wait for a wrap to notice
 it.** A namespace whose keys never change wraps nothing, so the provider reads
 the service's current primary version of each master key the configuration
-uses when the configuration opens and once every GC recheck period
-([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), and a primary version other than the one its current records name
+uses when the configuration opens and, once GC runs, every GC recheck period
+([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); until GC lands, an in-place rotation is seen at the
+next open. A primary version other than the one its current records name
 starts that master-key rotation. A read that fails is retried at the next
 period and changes nothing; until a rotation runs, the records stay wrapped
 under the old version, which still unwraps them. Under a name that stays the same across
