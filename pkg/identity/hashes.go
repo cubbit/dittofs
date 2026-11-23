@@ -63,8 +63,13 @@ const (
 
 // ntHash is MD4 over the password's UTF-16LE form, NTLM's NTOWFv1.
 func ntHash(password []byte) []byte {
-	b := make([]byte, 0, 2*len(password))
-	for _, u := range utf16.Encode([]rune(string(password))) {
+	runes := []rune(string(password))
+	defer clear(runes)
+	units := utf16.Encode(runes)
+	defer clear(units)
+	b := make([]byte, 0, 2*len(units))
+	defer clear(b[:cap(b)])
+	for _, u := range units {
 		b = binary.LittleEndian.AppendUint16(b, u)
 	}
 	m := md4.New()

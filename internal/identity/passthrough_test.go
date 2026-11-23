@@ -31,25 +31,35 @@ import (
 // whose directory, an in-memory one behind its own fault wrapper, serves the
 // same domain and holds alice under the SID the controller answers for her.
 type ptFixture struct {
-	s      *identity.Server
-	st     *kvstore.Store
-	d      *identitytest.DomainController
-	f      *identitytest.FaultyDomainController
-	dirf   *switched
-	clock  *sim.TestClock
-	reg    *metrics.Registry
-	logons *logonRecorder
-	domain string // the domain's SID
-	alice  sid.SID
-	bind   string // the directory's bind name
+	s       *identity.Server
+	st      *kvstore.Store
+	d       *identitytest.DomainController
+	f       *identitytest.FaultyDomainController
+	dir     *identitytest.Directory
+	dirf    *switched
+	clock   *sim.TestClock
+	reg     *metrics.Registry
+	logons  *logonRecorder
+	reached *reached // when each controller op first arrived
+	domain  string   // the domain's SID
+	alice   sid.SID
+	userDN  string // alice's entry in the directory
+	bind    string // the directory's bind name
 }
 
 func newPassThrough(t *testing.T, rules ...sim.Rule) *ptFixture {
 	t.Helper()
 	prof.Watch(t, prof.Options{})
+	return newPassThroughUnwatched(t, rules...)
+}
+
+// newPassThroughUnwatched is newPassThrough without prof's watch, for a test
+// that builds the fixture inside a synctest bubble and watches outside it.
+func newPassThroughUnwatched(t *testing.T, rules ...sim.Rule) *ptFixture {
+	t.Helper()
 	st, _ := dirStore(t)
-	fx := &ptFixture{st: st, dirf: &switched{}, clock: sim.NewTestClock(mt0), reg: metrics.New("test", "test"), logons: &logonRecorder{}}
 	dir := identitytest.NewDirectory("DC=corp,DC=example")
+	fx := &ptFixture{st: st, dir: dir, dirf: &switched{}, clock: sim.NewTestClock(mt0), reg: metrics.New("test", "test"), logons: &logonRecorder{}}
 	domain, _, err := sid.DecodeSID(dir.DomainSID())
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +71,7 @@ func newPassThrough(t *testing.T, rules ...sim.Rule) *ptFixture {
 	fx.alice = fx.d.AddUser(t, "alice", alicePW)
 	var aliceSID bytes.Buffer
 	sid.EncodeSID(&aliceSID, &fx.alice)
-	dir.AddUser(t, "alice", map[string][][]byte{"objectSid": {aliceSID.Bytes()}})
+	fx.userDN = dir.AddUser(t, "alice", map[string][][]byte{"objectSid": {aliceSID.Bytes()}})
 	// The domain's Guest, as every domain holds one, so a reply naming it
 	// finds an entry to mint.
 	dir.AddUser(t, "Guest", map[string][][]byte{"objectSid": {directory.WithRID(dir.DomainSID(), 501)}})
@@ -70,7 +80,8 @@ func newPassThrough(t *testing.T, rules ...sim.Rule) *ptFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fx.f = identitytest.NewFaultyDomainController(fx.d, sched)
+	fx.reached = &reached{clock: fx.clock, next: sched, at: map[string]time.Time{}}
+	fx.f = identitytest.NewFaultyDomainController(fx.d, fx.reached)
 	p := protocolSecrets(t, st)
 	var pw []byte
 	fx.bind, pw = dir.Account()
@@ -482,6 +493,25 @@ func TestPassThroughBounds(t *testing.T) {
 	}
 	fx.f.Release()
 	wait(t, "the held calls' return", func() bool { return fx.s.PassThroughs() == 0 })
+}
+
+// A caller that hangs up on a sign-in whose call the controller holds ends
+// the call: its slot is freed, though the call's context is no child of the
+// caller's.
+func TestPassThroughCallerEndsTheCall(t *testing.T) {
+	fx := newPassThrough(t, sim.Rule{Op: "logon", Key: "alice", Action: sim.FaultAction{Err: identitytest.ErrHold}})
+	ctx, hangUp := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := fx.s.SignIn(ctx, ntlmStep(string(alicePW), "alice", "CORP", true))
+		done <- err
+	}()
+	wait(t, "the held call", func() bool { return fx.f.Holding() == 1 })
+	hangUp()
+	if err := recv(t, done, "the sign-in's answer"); !errors.Is(err, context.Canceled) {
+		t.Errorf("SignIn after the caller hung up = %v, want the hang-up, context.Canceled", err)
+	}
+	wait(t, "the held call ended and its slot freed", func() bool { return fx.f.Holding() == 0 && fx.s.PassThroughs() == 0 })
 }
 
 // The seam answers identity.netbios_name from the State in force, a new one

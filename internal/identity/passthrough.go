@@ -64,13 +64,26 @@ func (s *Server) signInPassThrough(ctx context.Context, st *State, step identity
 	if st.dir == nil {
 		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: pass-through: no directory", vfserr.ErrUnavailable)
 	}
-	dctx, cancel := directory.Bounded(ctx, s.deps.Clock, directoryBound, errDirectoryBound)
-	domain, err := st.dir.domainSID(dctx)
-	cancel()
+	// One bound for the whole sign-in: the domain SID, the secure channel's
+	// slot and call, the mint and the filter's reads (RFC 18 §5.1). The
+	// lookups below open their own, which this one ends first.
+	caller := ctx
+	ctx, cancel := directory.Bounded(caller, s.deps.Clock, directoryBound, errDirectoryBound)
+	defer cancel()
+	// The call's context ends with the bound or the caller while the sign-in
+	// runs, never with its return, so a call left past its own bound keeps its
+	// slot, as logon has it, until the controller answers, logon's ceiling
+	// ends it, or Stop does. It carries the caller's values but is no child of
+	// the caller, so nothing of this sign-in stays registered on a long-lived
+	// caller.
+	callCtx, endCall := context.WithCancelCause(context.WithoutCancel(caller))
+	stop := context.AfterFunc(ctx, func() { endCall(context.Cause(ctx)) })
+	defer stop() // runs before cancel, so this return never ends the call
+	domain, err := st.dir.domainSID(ctx)
 	if err != nil {
 		return identity.SignInResult{}, outcomeUnavailable, fmt.Errorf("%w: pass-through: the domain SID: %w", vfserr.ErrUnavailable, err)
 	}
-	rep, err := s.logon(ctx, netlogon.LogonRequest{Domain: a.Domain, User: a.User, Workstation: a.Workstation,
+	rep, err := s.logon(callCtx, netlogon.LogonRequest{Domain: a.Domain, User: a.User, Workstation: a.Workstation,
 		Challenge: step.Challenge, NTResponse: a.NTResponse})
 	var status netlogon.Status
 	switch {

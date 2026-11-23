@@ -29,13 +29,16 @@ const (
 	channelWait    = 5 * time.Second  // for a slot
 	channelBound   = 5 * time.Second  // for the call, the channel's set-up included
 	channelAttempt = channelBound / 2 // for each controller but the last during a set-up
+	channelHold    = 6 * channelBound // for a call held past its bound, from its start
 )
 
-// errBound ends a call's set-up when the call runs past channelBound, and
-// errSilent a controller's attempt when it runs past channelAttempt.
+// errBound ends a call's set-up when the call runs past channelBound,
+// errSilent a controller's attempt when it runs past channelAttempt, and
+// errHeld a call held past channelHold.
 var (
 	errBound  = errors.New("no answer within the call's bound")
 	errSilent = errors.New("no answer within the controller's bound")
+	errHeld   = errors.New("no answer within the held call's ceiling")
 )
 
 // conditionMachineAccount is raised while the secure channel to every domain
@@ -83,9 +86,17 @@ func (c *nodeChannel) close() {
 // at most channelBound for its answer, either answering ErrUnavailable. A
 // call that runs past its bound keeps its slot until the call underneath
 // returns, so a controller that stops answering is sent no more than
-// channelSlots calls. A refusal is the controller's, matching
-// netlogon.ErrRejected; a call its caller hangs up on answers ctx's error;
+// channelSlots calls, or until channelHold from the call's start, when it is
+// ended and the channel retired. A refusal is the controller's, matching
+// netlogon.ErrRejected; a call its caller hangs up on answers ctx's cause;
 // any other failure is ErrUnavailable alone.
+//
+// decision: a held call ends at channelHold, 30 seconds from its start, the
+// request deadline that ended it while the caller's context still reached
+// it, because netlogon sets no transport deadline: a controller that keeps
+// its connection up and never answers would otherwise hold every slot until
+// Stop. Retiring the channel then makes the next call set one up again.
+// Overturned once netlogon bounds a call on the wire itself.
 //
 // ponytail: pass-through reaches only the one directory's domain; RFC 18
 // §5.1's ponytail says when to follow trusts.
@@ -109,9 +120,10 @@ func (s *Server) logon(ctx context.Context, r netlogon.LogonRequest) (netlogon.R
 		case <-s.deps.Clock.After(channelWait):
 			return netlogon.Reply{}, fmt.Errorf("%w: no secure channel slot within %v", vfserr.ErrUnavailable, channelWait)
 		case <-ctx.Done():
-			return netlogon.Reply{}, ctx.Err()
+			return netlogon.Reply{}, context.Cause(ctx)
 		}
 	}
+	start := s.deps.Clock.Now()
 	cctx, cancel := context.WithCancelCause(ctx)
 	stop := context.AfterFunc(life, func() { cancel(context.Canceled) })
 	// The bound ends the call's set-up, which holds the channel's lock, but
@@ -161,14 +173,24 @@ func (s *Server) logon(ctx context.Context, r netlogon.LogonRequest) (netlogon.R
 		// controller's ErrUnavailable. Overturned if a controller fault that
 		// coincides with a hang-up must still be reported as one.
 		if a.err != nil && ctx.Err() != nil {
-			return netlogon.Reply{}, ctx.Err()
+			return netlogon.Reply{}, context.Cause(ctx)
 		}
 		return a.reply, a.err
 	case <-bound:
 		endSetUp(errBound)
+		// Armed only for a call past its bound, so a call that answers in
+		// time leaves no timer behind.
+		held := s.deps.Clock.After(channelHold - s.deps.Clock.Now().Sub(start))
+		go func() {
+			select {
+			case <-held:
+				cancel(errHeld)
+			case <-cctx.Done():
+			}
+		}()
 		return netlogon.Reply{}, fmt.Errorf("%w: no answer from the domain controller within %v", vfserr.ErrUnavailable, channelBound)
 	case <-ctx.Done():
-		return netlogon.Reply{}, ctx.Err()
+		return netlogon.Reply{}, context.Cause(ctx)
 	}
 }
 
@@ -176,7 +198,8 @@ func (s *Server) logon(ctx context.Context, r netlogon.LogonRequest) (netlogon.R
 // again when st's machine password versions, account or directory record
 // differ from those it was set up from, or its version has passed its
 // retention; none once life has ended. A set-up that fails at every
-// controller, or that the call's bound ends, raises machine_account_unhealthy,
+// controller, or that the call's bound or a sign-in's ends, raises
+// machine_account_unhealthy,
 // and one that succeeds clears it.
 func (s *Server) channel(ctx, life context.Context, st *State) (*nodeChannel, error) {
 	in := inputsOf(st)
@@ -197,8 +220,9 @@ func (s *Server) channel(ctx, life context.Context, st *State) (*nodeChannel, er
 	}
 	c, err := s.setUp(ctx, st, now)
 	if err != nil {
-		// A set-up its caller or Stop ended says nothing of the controllers.
-		if cause := context.Cause(ctx); cause == nil || errors.Is(cause, errBound) {
+		// A set-up its caller or Stop ended says nothing of the controllers;
+		// one a bound ended does.
+		if cause := context.Cause(ctx); cause == nil || errors.Is(cause, errBound) || errors.Is(cause, errDirectoryBound) {
 			s.unhealthy.Store(true)
 		}
 		return nil, err
