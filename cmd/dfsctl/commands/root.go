@@ -4,6 +4,9 @@ package commands
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	ctxcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/context"
@@ -11,7 +14,9 @@ import (
 	quotacmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/quota"
 	sharecmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/share"
 	usercmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/user"
+	"github.com/cubbit/dittofs/internal/cli/credentials"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // Version, Commit and Date describe the build; main sets them from the values
@@ -78,6 +83,30 @@ func runGroups(c *cobra.Command) {
 		}
 		runGroups(sub)
 	}
+}
+
+// Main runs one dfsctl process's invocation with args, over the process's
+// streams and the credentials file at its default path, and returns its exit
+// status. A first interrupt or SIGTERM ends the command's context: its call
+// returns, its defers run and its lock is released, and a prompt restores
+// the terminal. A second one kills the process, so a read that does not
+// watch the context, such as a confirmation, still ends.
+func Main(args []string) int {
+	path, err := credentials.DefaultPath()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() { <-ctx.Done(); stop() }()
+	return Run(ctx, cmdutil.Env{
+		In:          os.Stdin,
+		Out:         os.Stdout,
+		Err:         os.Stderr,
+		ConfigPath:  path,
+		Interactive: term.IsTerminal(int(os.Stdin.Fd())),
+	}, args)
 }
 
 // Run executes one dfsctl invocation with args under ctx, printing any error
