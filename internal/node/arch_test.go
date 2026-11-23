@@ -335,15 +335,17 @@ func startImports(root string) ([]string, error) {
 // exemptCalls returns each call from a non-test file of startPackage under
 // root outside startExempt to a function declared in one of startExempt.
 // The package is type-checked with its type errors ignored, so a planted
-// tree need not compile whole.
+// tree need not compile whole, and with no import resolved: a call by a bare
+// name resolves within the package whatever its imports hold, and loading
+// them from source would type-check the whole closure of dfs.
 func exemptCalls(root string) ([]string, error) {
-	fset, imp := sourceImporter()
+	fset := token.NewFileSet()
 	files, err := parsePackage(fset, filepath.Join(root, filepath.FromSlash(startPackage)))
 	if err != nil {
 		return nil, err
 	}
 	info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
-	conf := types.Config{Importer: imp, Error: func(error) {}}
+	conf := types.Config{Importer: noImports{}, Error: func(error) {}}
 	_, _ = conf.Check(module+startPackage, fset, files, info)
 	rel := func(pos token.Pos) string {
 		return startPackage + "/" + filepath.Base(fset.Position(pos).Filename)
@@ -370,6 +372,14 @@ func exemptCalls(root string) ([]string, error) {
 		})
 	}
 	return bad, nil
+}
+
+// noImports refuses every import, so a type check resolves only the
+// package's own names.
+type noImports struct{}
+
+func (noImports) Import(path string) (*types.Package, error) {
+	return nil, errors.New("not loaded: " + path)
 }
 
 // enginewireImporters returns each non-test file under root that imports
