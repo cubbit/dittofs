@@ -3460,7 +3460,12 @@ The journal refuses a write it cannot reserve for, and does not evict for itself
    ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and §4.4's per-segment accounting reports no unreclaimed
    bytes; [RFC 1 §10](rfc-1-journal.md#10.%20Open%20questions) records both. A seal marker draws
    on the reserved headroom, so a journal at its limit still takes it
-   ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)).
+   ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). The scope's sync and repack run as one pass per scope,
+   under the engine's lifetime rather than the caller's, which later refusals join; the pass
+   repacks only when the figures after its sync show unreclaimed bytes. A refusal waits for it
+   at most a tenth of its deadline, and then answers `ErrDelay`, as rule 6 of §1 has a delay
+   that would outlast the deadline do; a pass that ends in time leaves the refusal to decide
+   from the figures read after it.
 
 **One table decides every capacity refusal.** [RFC 0](rfc-0-data-lifecycle.md), [RFC 1](rfc-1-journal.md), RFC 17 and the
 protocol RFCs cite it rather than restate it. The cause of a put-unhealthy store
