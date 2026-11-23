@@ -10,7 +10,7 @@ reports), §3.5 (the domain's actions) and §4.1 (the rule for turning `identity
 [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §6, §7 (a new secret version resolved again and reported)
 and Appendix B's `identity.*` rows; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §3.9, §5.4 and §7.
 **Track:** the team.
-**Epic 8 estimate: 11 subtasks, 14.75 man-days.**
+**Epic 8 estimate: 12 subtasks, 15.25 man-days.**
 **Depends on:** **E2**: T2.4's `Settings`, `State.Settings` and `Deps.Secrets` and T2.6's
 `APISignIn` (T8.1), T2.7's `identity.nt-hash-delete` step (T8.10). **E3**: T3.1's span, T3.6's
 admission through identity and T3.10's resolution over the caller cache (T8.2, T8.3, T8.9). **E4**:
@@ -675,6 +675,27 @@ test/integration/ad-dc/
   a log line or a logon line carrying one, R16). The online join's administrator credential is RFC
   23's plan's epic 7's T7.6 (R22 there), over the same harness and domain controller. Doubles: the
   in-memory directory and domain controller (kind 2), the injected clock (kind 1).
+
+### T8.12 The API's sealer in `node.New`
+
+**Subtask T8.12 estimate: 0.5 man-days.**
+
+- **Track:** the team. **Depends on:** T8.1. RFC 23's plan's epic 4 (T4.11, the keytab route,
+  and the secret routes that seal through `Deps.Sealer`).
+- **Covers:** RFC 23's plan's epic 4 D13: `Deps.Sealer` filled in `node.New` by this epic, which
+  composes identity and hands it to the API.
+- **Deliverables:** `node.New` hands the API its `Sealer` (the provider sealer `internal/node`
+  already builds); the settings table stays out of `api.Deps` until the settings route's per-key
+  write role lands, which T8.10 waits on.
+- **Acceptance criteria:**
+  - On the composed node, a route that seals a secret (the keytab route, the offline join's
+    hand-over) answers as RFC 23 says instead of `503`.
+- **Tests:** in `node_test`, through `nodetest`: the offline join started through
+  `POST /api/v1/installation:join-domain` with a handed-over password answers `202` and runs to
+  joined (catches a sealer never handed over, which answers `503`); and T8.11's search runs over
+  that route's own handling of the handed-over password, its hand-over written through the route
+  instead of the store (catches the route keeping the password in a log line or a step's state).
+  Doubles: the in-memory domain controller (kind 2), the injected clock (kind 1).
 
 ## 7. Order of work
 
