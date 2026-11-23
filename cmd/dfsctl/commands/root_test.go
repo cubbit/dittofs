@@ -122,7 +122,7 @@ func TestRemovedCommandsAbsent(t *testing.T) {
 // leaving Env.Out empty.
 func TestRunPrintsErrorToEnvErr(t *testing.T) {
 	var out, errOut bytes.Buffer
-	status := Run(cmdutil.Env{In: strings.NewReader(""), Out: &out, Err: &errOut}, []string{"share", "unmount"})
+	status := Run(t.Context(), cmdutil.Env{In: strings.NewReader(""), Out: &out, Err: &errOut}, []string{"share", "unmount"})
 	if status != 1 {
 		t.Errorf("status: got %d, want 1", status)
 	}
@@ -137,7 +137,7 @@ func TestRunPrintsErrorToEnvErr(t *testing.T) {
 // A command's output lands in the Env the root was built with.
 func TestVersionWritesToEnvOut(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if status := Run(cmdutil.Env{In: strings.NewReader(""), Out: &out, Err: &errOut}, []string{"version", "--short"}); status != 0 {
+	if status := Run(t.Context(), cmdutil.Env{In: strings.NewReader(""), Out: &out, Err: &errOut}, []string{"version", "--short"}); status != 0 {
 		t.Fatalf("dfsctl version --short: got status %d (stderr %q), want 0", status, errOut.String())
 	}
 	if out.String() != Version+"\n" {

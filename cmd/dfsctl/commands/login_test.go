@@ -15,8 +15,12 @@ import (
 	"net/http/httputil"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -36,7 +40,24 @@ import (
 // API, and exits 0 if it was answered.
 const childConfig = "DFSCTL_TEST_CHILD_CONFIG"
 
+// childHold, set in a process's environment, makes the test binary a
+// process that takes the lock of the credentials file it names, as main
+// runs a command, under a context an interrupt ends; says "locked" on
+// stdout; and holds the lock until it is interrupted.
+const childHold = "DFSCTL_TEST_CHILD_HOLD"
+
 func TestMain(m *testing.M) {
+	if path := os.Getenv(childHold); path != "" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		err := credentials.Update(ctx, path, nil, func(*credentials.Store) error {
+			fmt.Println("locked")
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	if path := os.Getenv(childConfig); path != "" {
 		err := health(context.Background(), cmdutil.Env{Err: os.Stderr, ConfigPath: path})
 		if err != nil {
@@ -129,14 +150,21 @@ func newEnv(t *testing.T, stdin string, interactive bool) cmdutil.Env {
 	}
 }
 
+// commandBound is the longest one in-process invocation may take, so a lock
+// nobody releases fails the test on its error instead of hanging the
+// package.
+const commandBound = time.Minute
+
 // dfsctl runs one invocation in env and returns its stdout, its stderr and
 // its error.
 func dfsctl(env cmdutil.Env, args ...string) (string, string, error) {
 	var out, errOut bytes.Buffer
 	env.Out, env.Err = &out, &errOut
+	ctx, cancel := context.WithTimeout(context.Background(), commandBound)
+	defer cancel()
 	root := NewRoot(env)
 	root.SetArgs(args)
-	err := root.Execute()
+	err := root.ExecuteContext(ctx)
 	return out.String(), errOut.String(), err
 }
 
@@ -164,7 +192,7 @@ func file(t *testing.T, name, content string) string {
 // stored is the context name as env's credentials file holds it.
 func stored(t *testing.T, env cmdutil.Env, name string) credentials.Context {
 	t.Helper()
-	s, err := credentials.NewStoreAt(env.ConfigPath)
+	s, err := credentials.Read(env.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,11 +234,13 @@ func TestCommandAfterExpiryRefreshes(t *testing.T) {
 	}
 }
 
-// Two dfsctl processes refreshing one context at once both succeed, one
-// refreshing and the other using its tokens, and the session survives: a
-// third command, after the access token expires again, refreshes with the
-// refresh token the file holds. The test holds the lock until both
-// processes are waiting on it, so both read the expired token first.
+// Two dfsctl processes refreshing one context at once both succeed, and the
+// session survives: a third command, after the access token expires again,
+// refreshes with the refresh token the file holds. The test holds the lock
+// until both processes are waiting on it, so both present the expired token
+// first. Whichever takes the lock second finds the first's new pair in the
+// file and uses it; refreshing again would only rotate the pair once more,
+// so what keeps the session is that the file is read under the lock.
 func TestConcurrentRefreshKeepsTheSession(t *testing.T) {
 	n := startNode(t)
 	n.h.Account(t, "pat", "pat's password", entity.RoleViewer)
@@ -219,11 +249,18 @@ func TestConcurrentRefreshKeepsTheSession(t *testing.T) {
 	n.expire(t)
 
 	lock := env.ConfigPath + ".lock"
-	if err := os.WriteFile(lock, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
+	held, release := make(chan struct{}), make(chan struct{})
+	holder := make(chan error, 1)
+	go func() {
+		holder <- credentials.Update(ctx, env.ConfigPath, nil, func(*credentials.Store) error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
 	waiting := make(chan struct{}, 2)
 	type child struct {
 		cmd    *exec.Cmd
@@ -260,8 +297,9 @@ func TestConcurrentRefreshKeepsTheSession(t *testing.T) {
 			t.Fatalf("waiting for both processes to wait on %s: %v", lock, ctx.Err())
 		}
 	}
-	if err := os.Remove(lock); err != nil {
-		t.Fatal(err)
+	close(release)
+	if err := <-holder; err != nil {
+		t.Fatalf("the test's hold on the lock: %v", err)
 	}
 	for i, c := range children {
 		<-c.done
@@ -303,6 +341,10 @@ func TestLoginWithCACert(t *testing.T) {
 	}
 	if err := health(t.Context(), env); err != nil {
 		t.Errorf("a command in the TLS context: %v, want it answered under the stored CA", err)
+	}
+	mustRun(t, env, "login", "-u", "pat", "--password-file", pw)
+	if c := stored(t, env, "default"); c.CACert != ca {
+		t.Errorf("the CA after a login naming no server or CA: %q, want the stored %q kept", c.CACert, ca)
 	}
 }
 
@@ -436,11 +478,117 @@ func TestLoginWithAPIToken(t *testing.T) {
 	if _, _, err := dfsctl(env, "login", "-c", "bad", "--server", n.socket, "--token-file", file(t, "bad", "not a token")); err == nil {
 		t.Error("login with a token the server refuses: nil, want an error")
 	}
-	if _, err := credentials.NewStoreAt(env.ConfigPath); err != nil {
+	s, err := credentials.Read(env.ConfigPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	s, _ := credentials.NewStoreAt(env.ConfigPath)
 	if _, err := s.GetContext("bad"); !errors.Is(err, credentials.ErrContextNotFound) {
 		t.Errorf("the context of a refused token: %v, want it never saved", err)
+	}
+
+	// The token replaces pat's session in the context pat signed in to:
+	// the account name is not kept beside a token that may be another's,
+	// and there is no password to change.
+	mustRun(t, env, "login", "-c", "default", "--token-file", file(t, "token2", tok.Status.Token))
+	if c := stored(t, env, "default"); c.Username != "" || c.AccessToken != tok.Status.Token || c.RefreshToken != "" {
+		t.Errorf("the context after an API-token login over pat's session: %+v, want the token and no account", c)
+	}
+	if _, _, err := dfsctl(env, "password", "change"); err == nil || !strings.Contains(err.Error(), "API token") {
+		t.Errorf("password change on an API-token context: %v, want a refusal naming the API token", err)
+	}
+}
+
+// A refresh refuses a context that names another server than the one its
+// command dialled: node 1 never receives the token node 2 issued, though
+// the context was signed in again to node 2 while the command ran.
+func TestRefreshRefusesAChangedContext(t *testing.T) {
+	n1, n2 := startNode(t), startNode(t)
+	n1.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	n2.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	var mu sync.Mutex
+	var seen []string
+	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", n1.socket)
+	}}
+	t.Cleanup(tr.CloseIdleConnections)
+	proxy := httptest.NewServer(&httputil.ReverseProxy{Transport: tr, Rewrite: func(r *httputil.ProxyRequest) {
+		mu.Lock()
+		seen = append(seen, r.In.Header.Get("Authorization"))
+		mu.Unlock()
+		r.Out.URL.Scheme, r.Out.URL.Host = "http", "node"
+	}})
+	t.Cleanup(proxy.Close)
+
+	env := newEnv(t, "", false)
+	mustRun(t, env, "login", "--server", proxy.URL, "-u", "pat", "--password-file", file(t, "pw", "pat's password"))
+	c, _, err := cmdutil.NewClient(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := n2.login(t, env, "pat", "pat's password")
+	n1.expire(t)
+	if _, err := c.Health(t.Context()); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Errorf("a call after its context moved to another server: %v, want it refused as changed", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, h := range seen {
+		if h == "Bearer "+other.AccessToken {
+			t.Fatal("node 1 received the access token node 2 issued")
+		}
+	}
+}
+
+// An interrupted command releases the credentials file's lock: a process
+// holding it is sent SIGINT, and the lock is then taken at once, with no
+// temporary file left beside the credentials file.
+func TestInterruptReleasesTheLock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no SIGINT to send a process on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "dfsctl", "config.json")
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	child := exec.CommandContext(ctx, os.Args[0])
+	child.Env = append(os.Environ(), childHold+"="+path)
+	out, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if line, err := bufio.NewReader(out).ReadString('\n'); err != nil || line != "locked\n" {
+		t.Fatalf("the child holding the lock said %q, %v, want locked", line, err)
+	}
+	if err := child.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	_ = child.Wait()
+	waited := false
+	if err := credentials.Update(ctx, path, func(string) { waited = true }, func(*credentials.Store) error { return nil }); err != nil {
+		t.Fatalf("taking the lock after the interrupt: %v", err)
+	}
+	if waited {
+		t.Error("the lock was still held after its holder was interrupted, want it released")
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "config.json.lock" {
+			t.Errorf("%s left beside the credentials file, want only its lock", e.Name())
+		}
+	}
+}
+
+// A server that is neither a URL nor a path, as host:port, is refused by
+// name rather than read as a socket's path.
+func TestLoginRefusesHostPort(t *testing.T) {
+	env := newEnv(t, "", false)
+	_, _, err := dfsctl(env, "login", "--server", "localhost:8080", "-u", "pat", "--password-file", file(t, "pw", "x"))
+	if err == nil || !strings.Contains(err.Error(), `"localhost:8080"`) {
+		t.Errorf("login --server localhost:8080: %v, want it refused naming the server", err)
 	}
 }

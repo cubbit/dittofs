@@ -33,14 +33,14 @@ Examples:
 }
 
 func runLogout(cmd *cobra.Command, env cmdutil.Env) error {
-	s, err := credentials.NewStoreAt(env.ConfigPath)
+	s, err := credentials.Read(env.ConfigPath)
 	if err != nil {
 		return err
 	}
 	name := s.GetCurrentContextName()
 	cur, err := s.GetCurrentContext()
 	if err != nil {
-		return fmt.Errorf("not logged in - no current context")
+		return credentials.ErrNotLoggedIn
 	}
 	// The sign-out runs outside the lock, which a refresh it needs takes.
 	if cur.RefreshToken != "" {

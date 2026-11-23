@@ -41,6 +41,13 @@ Examples:
 }
 
 func runPasswordChange(cmd *cobra.Command, env cmdutil.Env) error {
+	snap, err := credentials.Read(env.ConfigPath)
+	if err != nil {
+		return err
+	}
+	if cur, err := snap.GetCurrentContext(); err == nil && cur.AccessToken != "" && cur.RefreshToken == "" {
+		return fmt.Errorf("%s: context %q holds an API token; it has no password to change", cmd.CommandPath(), snap.GetCurrentContextName())
+	}
 	c, name, err := cmdutil.NewClient(env)
 	if err != nil {
 		return err
@@ -54,7 +61,7 @@ func runPasswordChange(cmd *cobra.Command, env cmdutil.Env) error {
 	if err != nil {
 		return err
 	}
-	if path, _ := cmd.Flags().GetString("new-password-file"); path == "" {
+	if !cmd.Flags().Changed("new-password-file") {
 		again, err := sec.Prompt(cmd, "new-password-file", "new password again")
 		if err != nil {
 			return err

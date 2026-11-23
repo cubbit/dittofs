@@ -1,6 +1,7 @@
 package credentials
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,12 +9,27 @@ import (
 	"testing"
 )
 
-// open reads the store at path, failing the test on an error.
-func open(t *testing.T, path string) *Store {
+// update runs fn under the lock on the file at path, failing the test on an
+// error.
+func update(t *testing.T, path string, fn func(*Store) error) {
 	t.Helper()
-	s, err := NewStoreAt(path)
+	if err := Update(t.Context(), path, nil, fn); err != nil {
+		t.Fatalf("Update %s: %v", path, err)
+	}
+}
+
+// set saves ctx as the context name of the file at path.
+func set(t *testing.T, path, name string, ctx *Context) {
+	t.Helper()
+	update(t, path, func(s *Store) error { return s.SetContext(name, ctx) })
+}
+
+// read reads the file at path, failing the test on an error.
+func read(t *testing.T, path string) Snapshot {
+	t.Helper()
+	s, err := Read(path)
 	if err != nil {
-		t.Fatalf("NewStoreAt(%s): %v", path, err)
+		t.Fatalf("Read %s: %v", path, err)
 	}
 	return s
 }
@@ -22,30 +38,24 @@ func open(t *testing.T, path string) *Store {
 // one and the tokens as the last change left them.
 func TestStoreChangesPersist(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dfsctl", "config.json")
-	s := open(t, path)
-	if names := s.ListContexts(); len(names) != 0 {
+	if names := read(t, path).ListContexts(); len(names) != 0 {
 		t.Fatalf("a missing file's contexts: %v, want none", names)
 	}
-	if err := s.SetContext("a", &Context{ServerURL: "https://a.example", Username: "eli", CACert: "/ca.pem"}); err != nil {
-		t.Fatalf("SetContext a: %v", err)
-	}
-	if err := s.SetContext("b", &Context{ServerURL: "/run/dittofs/api.sock"}); err != nil {
-		t.Fatalf("SetContext b: %v", err)
-	}
-	if err := s.SetTokens("a", "access", "refresh"); err != nil {
-		t.Fatalf("SetTokens: %v", err)
-	}
-	if err := s.UseContext("a"); err != nil {
-		t.Fatalf("UseContext: %v", err)
-	}
-	if err := s.RenameContext("a", "prod"); err != nil {
-		t.Fatalf("RenameContext: %v", err)
-	}
-	if err := s.DeleteContext("b"); err != nil {
-		t.Fatalf("DeleteContext: %v", err)
-	}
+	set(t, path, "a", &Context{ServerURL: "https://a.example", Username: "eli", CACert: "/ca.pem"})
+	set(t, path, "b", &Context{ServerURL: "/run/dittofs/api.sock"})
+	update(t, path, func(s *Store) error {
+		for _, err := range []error{s.SetTokens("a", "access", "refresh"), s.UseContext("a"), s.RenameContext("a", "prod"), s.DeleteContext("b")} {
+			if err != nil {
+				return err
+			}
+		}
+		if err := s.SetTokens("b", "x", "y"); err != ErrContextNotFound {
+			t.Errorf("SetTokens on a missing context: %v, want ErrContextNotFound", err)
+		}
+		return nil
+	})
 
-	got := open(t, path)
+	got := read(t, path)
 	if name := got.GetCurrentContextName(); name != "prod" {
 		t.Errorf("current context: %q, want prod", name)
 	}
@@ -60,22 +70,17 @@ func TestStoreChangesPersist(t *testing.T) {
 	if _, err := got.GetContext("b"); err != ErrContextNotFound {
 		t.Errorf("deleted context b: %v, want ErrContextNotFound", err)
 	}
-	if err := got.SetTokens("b", "x", "y"); err != ErrContextNotFound {
-		t.Errorf("SetTokens on a missing context: %v, want ErrContextNotFound", err)
-	}
 }
 
 // The file is its owner's alone, 0600 in a 0700 directory, and a save leaves
-// no temporary file beside it.
+// no temporary file beside it, only the lock file.
 func TestStoreFileMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX modes; the file's ACL on Windows is not checked")
 	}
 	dir := filepath.Join(t.TempDir(), "dfsctl")
 	path := filepath.Join(dir, "config.json")
-	if err := open(t, path).SetContext("a", &Context{ServerURL: "https://a.example", AccessToken: "secret"}); err != nil {
-		t.Fatalf("SetContext: %v", err)
-	}
+	set(t, path, "a", &Context{ServerURL: "https://a.example", AccessToken: "secret"})
 	for _, tc := range []struct {
 		path string
 		want os.FileMode
@@ -92,8 +97,8 @@ func TestStoreFileMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 {
-		t.Errorf("the directory holds %d entries, want only config.json", len(entries))
+	if len(entries) != 2 {
+		t.Errorf("the directory holds %d entries, want config.json and its lock", len(entries))
 	}
 }
 
@@ -109,12 +114,53 @@ func TestStoreRefusesSkipVerify(t *testing.T) {
 		}
 	}
 	write("true")
-	_, err := NewStoreAt(path)
+	_, err := Read(path)
 	if err == nil || !strings.Contains(err.Error(), "tls_skip_verify") || !strings.Contains(err.Error(), "--cacert") {
 		t.Errorf("a file holding tls_skip_verify true: %v, want a refusal naming tls_skip_verify and --cacert", err)
 	}
 	write("false")
-	if _, err := NewStoreAt(path); err != nil {
+	if _, err := Read(path); err != nil {
 		t.Errorf("a file holding tls_skip_verify false: %v, want it read", err)
+	}
+}
+
+// While one Update holds the lock, another waits, saying so once, and runs
+// only after the first returns, reading what the first saved.
+func TestUpdateWaitsForTheLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	held, release := make(chan struct{}), make(chan struct{})
+	first := make(chan error, 1)
+	go func() {
+		first <- Update(t.Context(), path, nil, func(s *Store) error {
+			close(held)
+			<-release
+			return s.SetContext("a", &Context{ServerURL: "https://a.example"})
+		})
+	}()
+	<-held
+	waited := make(chan string, 1)
+	second := make(chan error, 1)
+	go func() {
+		second <- Update(t.Context(), path, func(lock string) { waited <- lock }, func(s *Store) error {
+			if _, err := s.GetContext("a"); err != nil {
+				return fmt.Errorf("the context the first Update saved: %w", err)
+			}
+			return nil
+		})
+	}()
+	select {
+	case lock := <-waited:
+		if lock != path+".lock" {
+			t.Errorf("waited on %s, want %s.lock", lock, path)
+		}
+	case err := <-second:
+		t.Fatalf("the second Update returned %v while the first held the lock, want it waiting", err)
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("first Update: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Errorf("second Update: %v", err)
 	}
 }

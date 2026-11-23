@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -67,7 +66,7 @@ func (staticToken) Refresh(context.Context, string) (string, error) {
 }
 
 func runLogin(cmd *cobra.Command, env cmdutil.Env) error {
-	s, err := credentials.NewStoreAt(env.ConfigPath)
+	s, err := credentials.Read(env.ConfigPath)
 	if err != nil {
 		return err
 	}
@@ -93,7 +92,9 @@ func runLogin(cmd *cobra.Command, env cmdutil.Env) error {
 	if server == "" {
 		return fmt.Errorf("%s: context %q names no server; pass --server", cmd.CommandPath(), name)
 	}
-	if !strings.Contains(server, "://") {
+	// A server with a path separator and no scheme is a socket's path; one
+	// with neither, as host:port, is left for the client to refuse by name.
+	if !strings.Contains(server, "://") && strings.ContainsAny(server, `/`+string(filepath.Separator)) {
 		if server, err = filepath.Abs(server); err != nil {
 			return err
 		}
@@ -101,12 +102,16 @@ func runLogin(cmd *cobra.Command, env cmdutil.Env) error {
 	next := &credentials.Context{ServerURL: server, Username: cmp.Or(user, prev.Username), CACert: cacert}
 
 	mustChange := false
-	if path, _ := cmd.Flags().GetString("token-file"); path != "" {
-		b, err := os.ReadFile(path)
+	sec := cmdutil.NewSecrets(env)
+	if cmd.Flags().Changed("token-file") {
+		// An API token names its account to the server, not to dfsctl: the
+		// context keeps only a --username given with it.
+		next.Username = user
+		b, err := sec.Read(cmd, "token-file", "API token")
 		if err != nil {
 			return err
 		}
-		next.AccessToken = strings.TrimSpace(string(b))
+		next.AccessToken = string(b)
 		c, err := cmdutil.Dial(server, cacert, client.WithTokenSource(staticToken(next.AccessToken)))
 		if err != nil {
 			return err
@@ -120,7 +125,7 @@ func runLogin(cmd *cobra.Command, env cmdutil.Env) error {
 		if next.Username == "" {
 			return fmt.Errorf("%s: no account to sign in; pass --username", cmd.CommandPath())
 		}
-		password, err := cmdutil.NewSecrets(env).Read(cmd, "password-file", "password")
+		password, err := sec.Read(cmd, "password-file", "password")
 		if err != nil {
 			return err
 		}

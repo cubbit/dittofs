@@ -2,6 +2,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
@@ -79,12 +80,12 @@ func runGroups(c *cobra.Command) {
 	}
 }
 
-// Run executes one dfsctl invocation with args, printing any error to env.Err,
-// and returns the process's exit status.
-func Run(env cmdutil.Env, args []string) int {
+// Run executes one dfsctl invocation with args under ctx, printing any error
+// to env.Err, and returns the process's exit status.
+func Run(ctx context.Context, env cmdutil.Env, args []string) int {
 	root := NewRoot(env)
 	root.SetArgs(args)
-	if err := root.Execute(); err != nil {
+	if err := root.ExecuteContext(ctx); err != nil {
 		_, _ = fmt.Fprintf(env.Err, "Error: %v\n", err)
 		return 1
 	}

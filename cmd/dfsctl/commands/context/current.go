@@ -29,7 +29,7 @@ Examples:
 
 func runContextCurrent(cmd *cobra.Command, env cmdutil.Env, args []string) error {
 	// Load credential store
-	store, err := credentials.NewStoreAt(env.ConfigPath)
+	store, err := credentials.Read(env.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize credential store: %w", err)
 	}
