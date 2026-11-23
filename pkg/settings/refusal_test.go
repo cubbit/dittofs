@@ -10,7 +10,7 @@ import (
 )
 
 // rfNamed is one refusal Refusals named: the scope instance its value
-// belongs to and the key it prints.
+// belongs to and the key the row wrote.
 type rfNamed struct {
 	scope entity.SettingScope
 	key   string
@@ -28,7 +28,8 @@ func rfAll(err error) []rfNamed {
 
 // Refusals names each refused value's own scope and key and nothing else:
 // one bad row of a per-instance section names its own share alone, beside a
-// fine share; two bad rows are named in scope order; a value its section's
+// fine share; two bad rows are named in scope order; an unknown key comes
+// bare, as the row wrote it, so PrefixOf answers it; a value its section's
 // Validate refused is named once, at its scope and the section's prefix.
 func TestRefusalsNamesEachRefusedScopeAndKey(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -43,6 +44,7 @@ func TestRefusalsNamesEachRefusedScopeAndKey(t *testing.T) {
 	s.put(t, rdShareScope(1), "sha.f", "1")
 	s.raw(t, rdShareScope(2), "sha.f", []byte{0xff})
 	s.raw(t, rdShareScope(3), "sha.f", []byte{0xff})
+	s.put(t, rdShareScope(4), "sha.nope", "1")
 	s.put(t, rdInstallation, "srv.port", "60001")
 
 	_, refused := rdRead(t, s.nodes, table, rdNodeA)
@@ -55,9 +57,17 @@ func TestRefusalsNamesEachRefusedScopeAndKey(t *testing.T) {
 	want := []rfNamed{
 		{rdShareScope(2), "sha.f"},
 		{rdShareScope(3), "sha.f"},
+		{rdShareScope(4), "sha.nope"},
 	}
 	if !slices.Equal(got, want) {
-		t.Fatalf("Refusals of sha = %+v, want %+v, the two bad rows by scope order", got, want)
+		t.Fatalf("Refusals of sha = %+v, want %+v, the bad rows by scope order "+
+			"and the unknown key bare", got, want)
+	}
+
+	// An early break stops the sequence: no more key is yielded once the
+	// loop body returns false, where a sequence that went on would panic.
+	for range settings.Refusals(refused["sha"]) {
+		break
 	}
 
 	got = rfAll(refused["srv"])
@@ -75,12 +85,8 @@ func TestRefusalsNamesNothingOutsideARefusal(t *testing.T) {
 		t.Fatalf("Refusals of nil = %+v, want none", got)
 	}
 
-	outside := entity.ErrBadRow
-
-	if err := outside; err != nil {
-		if got := rfAll(err); len(got) != 0 {
-			t.Fatalf("Refusals of an outside error = %+v, want none", got)
-		}
+	if got := rfAll(entity.ErrBadRow); len(got) != 0 {
+		t.Fatalf("Refusals of an outside error = %+v, want none", got)
 	}
 }
 

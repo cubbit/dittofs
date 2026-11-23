@@ -2,6 +2,7 @@ package settings
 
 import (
 	"iter"
+	"strconv"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -9,9 +10,11 @@ import (
 // Refusals is each refusal err joins, as the scope instance its refused value
 // belongs to and the key it names, in the order err joins them: err is one
 // section's refusal, the value of Read's refused map, one refusal or several
-// joined. An error that wraps none of this package's refusals names nothing.
-// The walk of a snapshot reports the rows it read with these, so a refusal
-// names the instances it refused and no other.
+// joined. A key held quoted to print comes back unquoted, so PrefixOf answers
+// it; a key cut by the print's bound stays cut, since no unquote opens it.
+// An error that wraps none of this package's refusals names nothing. The walk
+// of a snapshot reports the rows it read with these, so a refusal names the
+// instances it refused and no other.
 func Refusals(err error) iter.Seq2[entity.SettingScope, string] {
 	return func(yield func(entity.SettingScope, string) bool) {
 		var down func(error) bool
@@ -19,7 +22,12 @@ func Refusals(err error) iter.Seq2[entity.SettingScope, string] {
 		down = func(err error) bool {
 			switch value := err.(type) {
 			case *refusal:
-				return yield(value.scope, value.key)
+				key := value.key
+				if raw, uerr := strconv.Unquote(key); uerr == nil {
+					key = raw
+				}
+
+				return yield(value.scope, key)
 			case interface{ Unwrap() []error }:
 				for _, leaf := range value.Unwrap() {
 					if !down(leaf) {
