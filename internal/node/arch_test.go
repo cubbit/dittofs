@@ -271,9 +271,10 @@ func nodeImporters(root string) ([]string, error) {
 }
 
 // startPackage is dfs start's package, and startAllowed what of this module
-// its files may import: the node, the bootstrap, Badger and the metrics
-// registry. The command reads the bootstrap and opens the KV and the
-// registry, and the node builds every component. start.go is the one file of
+// its files may import: the node, the bootstrap, Badger, the KV interface
+// the node's store is typed by, and the metrics registry. The command reads
+// the bootstrap and opens the KV and the registry, and the node builds every
+// component. start.go is the one file of
 // them that imports the node, so nodeImporters names only it.
 //
 // decision: every non-test file of the package is held to startAllowed, a new
@@ -290,7 +291,7 @@ func nodeImporters(root string) ([]string, error) {
 const startPackage = "cmd/dfs/commands"
 
 var (
-	startAllowed = []string{"internal/node", "pkg/bootstrap", "pkg/metadata/kv/badgerkv", "pkg/metrics"}
+	startAllowed = []string{"internal/node", "pkg/bootstrap", "pkg/metadata/kv", "pkg/metadata/kv/badgerkv", "pkg/metrics"}
 	startExempt  = []string{"cmd/dfs/commands/init.go", "cmd/dfs/commands/reset_admin.go", "cmd/dfs/commands/root.go"}
 )
 

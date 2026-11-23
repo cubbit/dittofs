@@ -513,8 +513,10 @@ jobs:
     needs: plan
     if: ${{ !cancelled() && (needs.plan.result != 'success' || contains(fromJSON(needs.plan.outputs.fixed), 'unit')) }}
     runs-on: ubuntu-latest
-    # go test caps itself at 25m; this catches a wedged setup.
-    timeout-minutes: 35
+    # go test caps the suite at 25m of test time, but the suite's wall time,
+    # with builds and the -race runs of every package, now reaches 32m, and
+    # unit/whole-tree and the report run after it. This catches a wedged setup.
+    timeout-minutes: 50
     steps:
       # A pull request's run compares with origin/<base>, which only a full
       # checkout has.
