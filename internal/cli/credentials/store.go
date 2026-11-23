@@ -74,7 +74,7 @@ type Store struct {
 // server its user chose not to.
 func Read(path string) (Snapshot, error) {
 	s := Snapshot{config: &Config{Contexts: map[string]*Context{}}}
-	data, err := os.ReadFile(path)
+	data, err := readFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
 	}
@@ -179,8 +179,8 @@ func DefaultPath() (string, error) {
 // save writes the config to a temporary file beside it, readable by its
 // owner only, renames that into place, so a reader never sees half a file,
 // and syncs the directory, so the rename survives a crash. The directory is
-// created 0700 when missing, and on Windows both carry a DACL granting only
-// the current user.
+// kept 0700, a wider existing one narrowed, and on Windows both carry a DACL
+// granting only the current user.
 func (s *Store) save() error {
 	dir := filepath.Dir(s.configPath)
 	if err := os.MkdirAll(dir, DirPermissions); err != nil {

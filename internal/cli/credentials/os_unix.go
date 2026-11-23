@@ -19,9 +19,17 @@ func tryLock(f *os.File) (held bool, err error) {
 	return false, err
 }
 
-// restrict does nothing: the file's and the directory's modes already keep
-// them to their owner.
-func restrict(string, bool) error { return nil }
+// readFile is os.ReadFile: a rename replaces a file another process reads.
+func readFile(path string) ([]byte, error) { return os.ReadFile(path) }
+
+// restrict keeps the directory dir to its owner, 0700, an existing one wider
+// than that included; a file's own mode is set as it is created.
+func restrict(path string, dir bool) error {
+	if !dir {
+		return nil
+	}
+	return os.Chmod(path, DirPermissions)
+}
 
 // syncDir flushes dir's entries, so a rename into it survives a crash.
 func syncDir(dir string) error {

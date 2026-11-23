@@ -72,7 +72,8 @@ func TestStoreChangesPersist(t *testing.T) {
 	}
 }
 
-// The file is its owner's alone, 0600 in a 0700 directory, and a save leaves
+// The file is its owner's alone, 0600 in a 0700 directory, a group-writable
+// directory that already existed included, and a save leaves
 // no temporary file beside it, only the lock file.
 func TestStoreFileMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -80,6 +81,13 @@ func TestStoreFileMode(t *testing.T) {
 	}
 	dir := filepath.Join(t.TempDir(), "dfsctl")
 	path := filepath.Join(dir, "config.json")
+	// An existing directory wider than 0700 is narrowed by the save.
+	if err := os.Mkdir(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o775); err != nil {
+		t.Fatal(err)
+	}
 	set(t, path, "a", &Context{ServerURL: "https://a.example", AccessToken: "secret"})
 	for _, tc := range []struct {
 		path string

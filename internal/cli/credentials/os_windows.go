@@ -4,6 +4,7 @@ package credentials
 
 import (
 	"errors"
+	"io"
 	"os"
 
 	"golang.org/x/sys/windows"
@@ -18,6 +19,25 @@ func tryLock(f *os.File) (held bool, err error) {
 		return true, nil
 	}
 	return false, err
+}
+
+// readFile reads the file at path opened with FILE_SHARE_DELETE, which
+// os.ReadFile leaves out, so another dfsctl's save may rename over the file
+// while this one reads it.
+func readFile(path string) ([]byte, error) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.CreateFile(p, windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	f := os.NewFile(uintptr(h), path)
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
 }
 
 // restrict replaces path's DACL with one protected from inheritance that
