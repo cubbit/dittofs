@@ -68,7 +68,7 @@ jobs:
         run: >
           DITTOFS_FDB_CLUSTER_FILE="$HOME/.cache/dittofs-fdb/data/fdb.cluster"
           go test -tags=foundationdb -race -count=1 -timeout=20m
-          -run '^(TestConformance|TestNowAcrossNodes|TestUnknownCommitOutcomeNotReapplied|TestSweepClearsOnlyOldMarks|TestOpenIsolatesAndClears|TestStoreConformanceFDB|TestStoreConformanceFDBFrozenClock|FuzzNamespaceFDB|TestScanSkipsTheBackendsOwnRows)$'
+          -run '^(TestConformance|TestNowAcrossNodes|TestUnknownCommitOutcomeNotReapplied|TestSweepClearsOnlyOldMarks|TestOpenIsolatesAndClears|TestStoreConformanceFDB|TestStoreConformanceFDBFrozenClock|FuzzNamespaceFDB|TestScanSkipsTheBackendsOwnRows|TestOpenRefusesAMissingTLSFile|TestOpenRefusesOtherTLSFiles)$'
           ./pkg/metadata/kv/fdbkv/... ./pkg/metadata/kvstore/
 
       # Only a push run saves: a pull request run reads its base branch's
@@ -138,5 +138,5 @@ jobs:
         run: >
           DITTOFS_FDB_CLUSTER_FILE="$HOME/.cache/dittofs-fdb/data/fdb.cluster"
           go test -tags=foundationdb -race -p 1 -count=1 -timeout=20m
-          -run '^(TestCheckKVFoundationDBNeedsNoBadgerPath|TestOpenKVOpensFoundationDB)$'
+          -run '^(TestCheckKVFoundationDBNeedsNoBadgerPath|TestOpenKVPassesTheTLSFiles|TestOpenKVOpensFoundationDB)$'
           ./cmd/dfs/commands/

@@ -12,10 +12,12 @@ import (
 const foundationDB = true
 
 // openFoundationDB opens the cluster metadata.foundationdb.cluster_file names,
-// with no key prefix: an installation owns its whole cluster.
+// over the TLS files metadata.foundationdb.tls names, with no key prefix: an
+// installation owns its whole cluster.
 func openFoundationDB(cfg *bootstrap.Bootstrap, clock systemClock) (kv.KV, error) {
 	db, err := fdbkv.Open(fdbkv.Options{
 		ClusterFile: cfg.Metadata.FoundationDB.ClusterFile,
+		TLS:         fdbkv.TLS(cfg.Metadata.FoundationDB.TLS),
 		NodeID:      cfg.Node.ID,
 		Clock:       clock.Now,
 	})

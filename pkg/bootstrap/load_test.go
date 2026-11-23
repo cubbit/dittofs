@@ -656,6 +656,19 @@ func TestLoadRelations(t *testing.T) {
 				"read only with metadata.backend: foundationdb; remove it"},
 		},
 		{
+			name:    "foundationdb without a cluster file",
+			content: "metadata:\n  backend: foundationdb\n",
+			want: []string{"P: metadata.foundationdb.cluster_file: " +
+				"required with metadata.backend: foundationdb"},
+		},
+		{
+			name:    "foundationdb from a variable without a cluster file",
+			content: "logging:\n  level: info\n",
+			environ: []string{"DITTOFS_METADATA_BACKEND=foundationdb"},
+			want: []string{"environment: DITTOFS_METADATA_FOUNDATIONDB_CLUSTER_FILE: " +
+				"required with metadata.backend: foundationdb"},
+		},
+		{
 			name:    "local block beside kmip",
 			content: "keys:\n  protocol:\n    kind: kmip\n    local:\n      file: /k\n",
 			want: []string{

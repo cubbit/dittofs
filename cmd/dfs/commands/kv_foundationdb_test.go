@@ -23,31 +23,34 @@ func foundationDBConfig(clusterFile string) *bootstrap.Bootstrap {
 }
 
 // A FoundationDB bootstrap names no Badger path, so checkKV accepts it
-// without one; it refuses TLS files it would not pass to the client.
+// without one.
 func TestCheckKVFoundationDBNeedsNoBadgerPath(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		edit func(*bootstrap.Bootstrap)
-		want string // the refusal's text; empty is none
-	}{
-		{"no badger path", func(*bootstrap.Bootstrap) {}, ""},
-		{"tls files", func(cfg *bootstrap.Bootstrap) {
-			cfg.Metadata.FoundationDB.TLS.CertFile = "cert.pem"
-			cfg.Metadata.FoundationDB.TLS.KeyFile = "key.pem"
-			cfg.Metadata.FoundationDB.TLS.CAFile = "ca.pem"
-		}, "metadata.foundationdb.tls is not supported yet"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := foundationDBConfig("fdb.cluster")
-			tc.edit(cfg)
-			err := checkKV(cfg)
-			if tc.want == "" && err != nil {
-				t.Fatalf("checkKV(foundationdb, %s): %v, want nil", tc.name, err)
-			}
-			if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
-				t.Fatalf("checkKV(foundationdb, %s): %v, want an error naming %q", tc.name, err, tc.want)
-			}
-		})
+	if err := checkKV(foundationDBConfig("fdb.cluster")); err != nil {
+		t.Fatalf("checkKV(foundationdb, no badger path): %v, want nil", err)
+	}
+}
+
+// openKV gives the client the bootstrap's TLS files: a missing key file is
+// refused naming it, which fdbkv does before it touches the client, so no
+// cluster is needed. Dropped on the way, the open would reach the client and
+// fail on the cluster file instead.
+func TestOpenKVPassesTheTLSFiles(t *testing.T) {
+	dir := t.TempDir()
+	cfg := foundationDBConfig(dir + "/fdb.cluster")
+	tls := &cfg.Metadata.FoundationDB.TLS
+	tls.CertFile, tls.KeyFile, tls.CAFile = dir+"/cert.pem", dir+"/key.pem", dir+"/ca.pem"
+	for _, f := range []string{tls.CertFile, tls.CAFile} {
+		if err := os.WriteFile(f, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := openKV(cfg, newSystemClock())
+	if err == nil {
+		_ = db.Close()
+		t.Fatalf("openKV(foundationdb, no %s): nil error, want one naming it", tls.KeyFile)
+	}
+	if !strings.Contains(err.Error(), tls.KeyFile) {
+		t.Fatalf("openKV(foundationdb, no %s): %v, want an error naming it", tls.KeyFile, err)
 	}
 }
 

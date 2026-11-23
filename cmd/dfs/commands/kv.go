@@ -22,12 +22,6 @@ func checkKV(cfg *bootstrap.Bootstrap) error {
 		if !foundationDB {
 			return errors.New(noFoundationDB)
 		}
-		// ponytail: the client is not given the TLS files yet, so a bootstrap
-		// naming them is refused rather than connected without TLS. Passing
-		// them as the client's network options replaces this refusal.
-		if tls := cfg.Metadata.FoundationDB.TLS; tls.CertFile != "" || tls.KeyFile != "" || tls.CAFile != "" {
-			return errors.New("metadata.foundationdb.tls is not supported yet")
-		}
 	} else if cfg.Metadata.Badger.Path == "" {
 		// ponytail: RFC 13 Appendix C defaults metadata.badger.path to the
 		// state directory's metadata, which the bootstrap loader does not
