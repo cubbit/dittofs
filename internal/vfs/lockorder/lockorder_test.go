@@ -218,3 +218,64 @@ func TestADrainGivingUpLeavesAnotherWaiting(t *testing.T) {
 	inFlight()
 	<-drained
 }
+
+// Waiters counts the calls blocked on a lock, never its holders: shared
+// holders and an exclusive one count nothing, a call queued behind them one.
+func TestWaitersCountsOnlyTheBlocked(t *testing.T) {
+	var l Locks
+	set := Set{Accept: []Key{lo}}
+	release, err := l.Take(context.Background(), set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := l.Waiters(set); n != 0 {
+		t.Fatalf("Waiters with one holder and no waiter = %d, want 0", n)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if r, err := l.Take(context.Background(), set); err == nil {
+			r()
+		}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for l.Waiters(set) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("Waiters with a second call blocked = %d, want 1", l.Waiters(set))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	release()
+	<-done
+
+	// A shared taker queued behind an exclusive holder counts once.
+	drain, err := l.Take(context.Background(), Set{Drain: []Key{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	go func() {
+		defer close(entered)
+		if r, err := l.Take(context.Background(), Set{Enter: []Key{dir}}); err == nil {
+			r()
+		}
+	}()
+	deadline = time.Now().Add(10 * time.Second)
+	for l.Waiters(Set{Enter: []Key{dir}}) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("Waiters with a shared call blocked behind a drain = %d, want 1", l.Waiters(Set{Enter: []Key{dir}}))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	drain()
+	<-entered
+
+	shared, err := l.Take(context.Background(), Set{Enter: []Key{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shared()
+	if n := l.Waiters(Set{Enter: []Key{dir}}) + l.Waiters(set); n != 0 {
+		t.Errorf("Waiters with one shared holder and a freed lock = %d, want 0", n)
+	}
+}

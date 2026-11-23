@@ -40,6 +40,22 @@ func (l *Locks) Admission(f Key) (unlock func()) {
 	return func() { l.admit.release(f, true) }
 }
 
+// Waiters answers how many calls wait for the locks s names, summed over
+// them: a call holding a lock is not counted, nor one not yet at it.
+//
+// decision: only tests call it, to wait until a call is blocked on a lock
+// rather than sleeping and hoping it got there; it reads counts the tables
+// already keep and changes nothing.
+func (l *Locks) Waiters(s Set) int {
+	n := 0
+	for _, w := range [][]lockOf{ordered(&l.admit, nil, s.Admit), ordered(&l.fold, s.Enter, s.Drain), ordered(&l.accept, nil, s.Accept)} {
+		for _, o := range w {
+			n += o.t.waiters(o.k)
+		}
+	}
+	return n
+}
+
 // lockOf is one lock a call takes.
 type lockOf struct {
 	t    *table
@@ -155,6 +171,21 @@ func (t *table) acquire(ctx context.Context, k Key, excl bool) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// waiters is how many callers wait for k's lock: its users not holding it.
+func (t *table) waiters(k Key) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	l := t.m[k]
+	if l == nil {
+		return 0
+	}
+	n := l.users - l.shared
+	if l.held {
+		n--
+	}
+	return n
 }
 
 // release releases one hold of k's lock, taken as excl says.
