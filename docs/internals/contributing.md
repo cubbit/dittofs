@@ -244,15 +244,8 @@ The local tier is `pkg/block/journal`, one journal per device with a handle per
 share; it is not a pluggable backend. Its conformance checks run under the
 `journal_conformance` tag (`pkg/block/journal/conformance/`).
 
-**Block Store (Remote):**
-
-1. Implement `pkg/block/remote.RemoteStore` interface. It embeds `RemoteBlockStore`,
-   `ChunkReader` and `ChunkSealer`, and adds `HealthCheck`, `Healthcheck`, and
-   `Close` — see `pkg/block/remote/remote.go`.
-2. Remote stores are shared across shares via ref counting
-3. Test with the `RemoteBlockStoreConformance` suite in `pkg/block/blockstoretest/`
-
-See [IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guide.
+**Block Store (Remote):** none yet. The v1 remote tier and its conformance suite are
+deleted, and the engine takes no remote store.
 
 ### Adding a new metadata error code
 

@@ -2141,7 +2141,7 @@ tool's raw figures; for B1–B4, the in-memory store's simulated latency and per
 
 **Suites.** §7's Group A and B checks against the in-memory store and its fault wrapper and §8's model, memory,
 import, fault-sweep and counted checks run in `unit`, an allocation count the race detector skews in
-`unit/nonrace`; §8.1's real-backend checks, against the local emulator behind a fault proxy, run in
+a non-race option of `unit`, added with the first such gate; §8.1's real-backend checks, against the local emulator behind a fault proxy, run in
 `integration`. No suite runs yet §7.4's benchmarks or §8.1's nightly soak.
 
 ## 9. Open questions

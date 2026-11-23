@@ -416,7 +416,7 @@ NFSv4.2 extends v4.1 with sparse file operations (RFC 7862: ALLOCATE, DEALLOCATE
 | Operation | Status | Notes |
 | ----------- | -------- | ------- |
 | ALLOCATE | Implemented | Space pre-allocation via block store |
-| DEALLOCATE | Implemented | Punch holes in content-addressed/dedup-safe way via `pkg/block` |
+| DEALLOCATE | Implemented | Punch holes via the engine (`pkg/block/engine`) |
 | SEEK | Implemented | SEEK_HOLE and SEEK_DATA ([#1303](https://github.com/cubbit/dittofs/issues/1303)) — returns `NFS4_CONTENT_HOLE` for unwritten regions ([#1304](https://github.com/cubbit/dittofs/issues/1304)) |
 | READ_PLUS | Implemented | Returns data segments and hole descriptors; integrates with block storage ([#1305](https://github.com/cubbit/dittofs/issues/1305)) |
 
