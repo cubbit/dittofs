@@ -676,6 +676,11 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 	// A malformed key is deleted, which no marks write would ever replace; a
 	// well-formed key with an undecodable value is kept for the next marks
 	// write of its stream to replace.
+	// Each warning names the journal's device as RecordJournal recorded it.
+	const device = entity.JournalDir("/var/lib/dittofs/journal/dev0")
+	if err := f.s.RecordJournal(ctx, j, entity.NodeID{1}, device); err != nil {
+		t.Fatalf("record journal %x on %s: %v", j, device, err)
+	}
 	valid := encodeSyncMark(entity.SyncMark{Segment: 99, Through: 1, Offset: 1, Sequence: 1})
 	malformed := []struct {
 		name    string
@@ -706,6 +711,7 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 	for line := range strings.Lines(logs.String()) {
 		var r struct {
 			Journal string
+			Device  string
 			Stream  *uint32
 			Key     *string
 		}
@@ -714,6 +720,9 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 		}
 		if r.Journal != hex.EncodeToString(j[:]) {
 			continue
+		}
+		if r.Device != string(device) {
+			t.Errorf("log line %q names device %q, want %q", line, r.Device, device)
 		}
 		switch {
 		case r.Stream != nil:
