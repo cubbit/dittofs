@@ -417,6 +417,19 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
 
 - A consumer-side row for the `krb` link (a PAC-bearing ticket binding the linked local user, refused once the directory account is recreated) needs a Kerberos sign-in this unit tier cannot make; it belongs to the RFC 18 plan's epic 8 or E8's `e2e/kerberos`.
 - RFC 23's plan §5 epic 7 still says the cancelled state is written into the operation's record; RFC 23 §4.1 gives the deletion no cancel, so that clause goes when the plan is next revised.
+- T7.3 as built differs from its text in five places. The applied half of R13 cannot reach the
+  settings-backed writes (a setting at every scope, an adapter, a remote store, a namespace, a
+  store's credential) before X3, nor the domain's routes (the keytab, `resolve-principal`,
+  `test-directory`, `join-domain`, `rotate-machine-password`) before X1 and the RFC 18 plan's
+  epics 7 and 8, nor `:cancel`, which has no success answer while no kind is cancellable: the
+  test lists them under a `decision:` marker, their refused half runs in the role sweep, and
+  their applied half moves to T7.5 and T7.6. R15's machine grant answers `400`
+  `invalid_argument`, the store's code, not `invalid`. R8's store is unreachable when its reads
+  fail `vfserr.ErrUnavailable`; a KV error outside every closed set answers `500` and counts as
+  unmapped. R14's `::ffff:127.0.0.1` reaches the node only on a dual-stack listener, `[::]`, which
+  the node serves over TLS alone, as it binds one API address; and its `127.0.0.6` clause runs on
+  Linux only. R6 holds, but the node's API stays open past §2.2's step 3: its listeners close
+  after the engine, not at step 3.
 - E3's T3.9 stop-bound exit test may move to this epic's fixture (§1.2); E3 decides when T3.9
   lands.
 - The proposals to RFC 23's plan that this document leaves to a later pull request: §5 epic 7's
