@@ -1,114 +1,27 @@
 # Garbage Collection
 
-DittoFS stores file data as content-addressed **blocks** (chunks). When you delete
-a file, its directory entry disappears immediately, but the underlying blocks are
-reclaimed **asynchronously** by garbage collection (GC). GC sweeps the share's
-**block store** — the objects behind `s3` or `memory` backing.
+There is no garbage collector to run or configure today.
 
-The **journal** on disk (e.g. `/var/lib/dittofs/blocks`) is not swept by GC. It
-reclaims its own dead bytes as it rewrites, and evicts what the block store
-already holds when it comes under space pressure. So GC is not the way to free
-journal disk.
+v1's collector, a mark-sweep over the remote block store's content-addressed
+objects, went with the v1 block and metadata stores, and so did its one-time
+reconcile and the per-share recycle bin; the `dittofs_gc_*` metrics are still
+exported, but nothing sets them. No remote block store is wired to the engine
+yet, so there are no objects to sweep.
 
-A block is reclaimed only when **no live file references it** and **no snapshot
-holds it**. Blocks shared by several files (deduplication) survive until the last
-referrer is gone.
+What frees space now is the engine itself: removing a file records its removal
+in the metadata store, and the engine finishes it in the background, picking up
+any removal left unfinished at the next start. Nothing about it is configurable.
 
-## Automatic GC (default)
+## Configuration
 
-Background GC is **on by default** — you do not need to run anything. The server
-reclaims orphaned blocks on a fixed interval:
-
-```yaml
-gc:
-  auto_enabled: true     # background GC on/off (default true)
-  auto_interval: 15m     # period between runs (default 15m; (0,1m) rejected)
-  grace_period: 1h       # blocks younger than this are never swept (default 1h)
-```
-
-(Env vars: `DITTOFS_GC_AUTO_ENABLED`, `DITTOFS_GC_AUTO_INTERVAL`,
-`DITTOFS_GC_GRACE_PERIOD`.)
-
-The **grace period** protects freshly written blocks: a block whose last
-modification is within `grace_period` is never deleted, even if it currently looks
-unreferenced. Keep it comfortably longer than your worst-case metadata-commit
-latency after a write (the 1h default is ample).
-
-Disable automatic GC (`auto_enabled: false`) only if you want to drive
-reclamation entirely on demand or via external scheduling.
-
-## Manual GC
-
-The CLI no longer has a command to trigger GC or show a run's summary. With
-`auto_enabled: false`, nothing reclaims blocks.
-
-## Reclaiming space leaked by older versions
-
-Versions before the unlink-refcount fix could leave **stranded** block rows behind
-when files were deleted, so their blocks were never reclaimed and disk usage only
-grew. On upgrade, the server runs a **one-time reconcile** automatically (guarded by
-a per-store marker) to reap those stranded rows and reclaim the space.
-
-The CLI no longer has a command to run it on demand.
-
-A reconcile run reports how many rows it reaped in the Prometheus counter
-`dittofs_gc_stranded_rows_reaped_total`, and in the server log
-(`INFO RunBlockGCReconcile: complete`).
-
-## Retention and pinning
-
-A share's `retention` policy controls the **local cache**, not GC of orphans:
-
-- `retention: pin` keeps *referenced* blocks on local disk indefinitely (no cache
-  eviction). It does **not** protect *orphaned* blocks — GC still reclaims remote
-  blocks that no live file or snapshot references regardless of `pin`, and the
-  local journal still reclaims the disk bytes of superseded records.
-- Other retention policies additionally let the local cache evict cold *referenced*
-  blocks under disk pressure (they can be refetched from the remote tier).
-
-So under `retention: pin`, deleting files **does** free space once GC runs — pin
-only affects whether *live* data stays cached locally.
-
-## Snapshots
-
-GC never deletes a block held by a snapshot. Snapshot holds are derived from each
-snapshot's file manifests, independently of the live file set, so taking a snapshot
-pins its blocks until the snapshot is deleted. See [Snapshots](snapshots.md).
-
-## Trash (recycle bin)
-
-If a share has the [trash](configuration.md#8-shares-exports) feature enabled
-(`trash_enabled`, **off by default**), deleting a file **moves it to `#recycle`**
-rather than removing it — its blocks stay referenced and are **not** GC-eligible.
-Blocks are reclaimed only after the file leaves the trash:
-
-```
-delete file → moved to #recycle (blocks retained) → empty trash → real delete → GC reclaims
-```
-
-The CLI no longer has trash commands; they return with their own API.
-
-## Monitoring
-
-GC health is exported on the Prometheus endpoint (see
-[Configuration § Metrics](configuration.md)):
-
-| Metric | Meaning |
-| --- | --- |
-| `dittofs_gc_runs_total{result}` | GC passes, labelled `ok`/`error` |
-| `dittofs_gc_running` | passes currently in flight (0 when idle) |
-| `dittofs_gc_swept_objects_total` | remote objects reclaimed |
-| `dittofs_gc_freed_bytes_total` | remote bytes reclaimed |
-| `dittofs_gc_duration_seconds` | per-pass duration histogram |
-| `dittofs_gc_last_run_timestamp_seconds` | wall-clock of the last completed pass |
-| `dittofs_gc_stranded_rows_reaped_total` | rows reaped by reconcile/migration runs |
-
-A `gc_last_run_timestamp_seconds` that stops advancing means the scheduler is wedged
-or disabled; a climbing `gc_runs_total{result="error"}` means passes are failing —
-check the server logs.
+A config file that still carries v1's `gc` block (`gc.auto_enabled`,
+`gc.auto_interval`, `gc.grace_period`, `gc.dry_run_sample_size`,
+`gc.compaction_live_ratio`) or its `integrity` block is refused at load, naming
+each key as unknown. The `gc` keys of the new design, such as `gc.interval`, are
+refused in the file too, as settings to set through the management API; nothing
+reads them yet.
 
 ## Related
 
-- [Configuration § GC](configuration.md) — every knob and env var.
-- [FAQ](faq.md) — common questions about reclamation timing.
-- [RFC 9](../internals/rfcs/rfc-9-gc.md) — the garbage-collection design.
+- [RFC 9](../internals/rfcs/rfc-9-gc.md): the design of the collector to come.
+- [Upgrading from v1](upgrading-from-v1.md).

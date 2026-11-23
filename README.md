@@ -37,7 +37,7 @@ Traditional file servers are welded to one storage layer and one access protocol
 DittoFS separates the two. A single server process can:
 
 - Speak **NFSv3, NFSv4.0, NFSv4.1, NFSv4.2, and SMB2/3** at the same time, over the same data.
-- Store metadata in **[BadgerDB](https://github.com/dgraph-io/badger)**, on disk or fully in memory — one store per share.
+- Store metadata in **[BadgerDB](https://github.com/dgraph-io/badger)**, on disk — one store for the whole node.
 - Store file content in one **block store** ([S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) or memory)
   per share, fronted by an on-disk **journal** that absorbs writes, with an async syncer between them.
 - Run **entirely in userspace** — no FUSE, no kernel modules, no special privileges.
@@ -67,7 +67,7 @@ Two binaries drive it:
 | **Authentication** | AUTH_UNIX + Kerberos (RPCSEC_GSS) for NFS; NTLM + Kerberos (SPNEGO) for SMB |
 | **Active Directory** | Kerberos service keytab for AD-issued tickets; optional machine account (offline or online domain join) for NTLM pass-through; LDAP idmap (`idmap_ad` / `idmap_rid`) maps AD users and nested groups to the same Unix UID/GID over SMB and NFS |
 | **Cross-protocol coordination** | Bidirectional lease/delegation breaks between SMB and NFS |
-| **Metadata stores** | BadgerDB (on disk, or in memory for tests) — one per share. A distributed transactional KV store (TiKV preferred) is planned for multi-node, not yet implemented |
+| **Metadata stores** | BadgerDB, on disk — one per node. FoundationDB, for multi-node, is configured but not yet selectable |
 | **Block stores** | S3, memory. One per share, fronted by an on-disk journal. Per-share isolation, async sync |
 | **Client-side encryption** | Per-remote envelope encryption (AES-256-GCM / ChaCha20-Poly1305 / XChaCha20-Poly1305) |
 | **Share snapshots** | Point-in-time reference holds (no data copy) with restore |
@@ -277,7 +277,7 @@ Full docs live in [`docs/`](docs/), split by audience.
 - [Snapshots](docs/guide/snapshots.md) · [Quotas](docs/guide/quotas.md) · [Encryption](docs/guide/encryption.md)
 - [Security](docs/guide/security.md) — hardening checklist and secure configuration
 - [Block Store Migration](docs/guide/block-store-migration.md) — migrating legacy block layouts to CAS
-- [Metadata Store Migration](docs/guide/metadata-store-migration.md) — moving shares off the removed SQL and memory metadata stores
+- [Upgrading from v1](docs/guide/upgrading-from-v1.md) — not supported: what a start over v1 data says
 - [Troubleshooting](docs/guide/troubleshooting.md) · [FAQ](docs/guide/faq.md) · [Glossary](docs/guide/glossary.md)
 
 ### For contributors — [`docs/internals/`](docs/internals/)

@@ -231,9 +231,8 @@ curl http://localhost:8080/health
 
 `dittofs-blocks` carries the journal, which holds the only copy of every byte that has not
 reached the block store yet — never leave it in the container's writable layer. These
-volumes only receive data if the config points at them: set `blockstore.journal.path` to
-`/data/blocks` and `database.sqlite.path` to `/data/state/controlplane.db`, and give the
-metadata store `/data/metadata` when you create it. The container starts with no stores
+volumes only receive data if the config points at them: set `metadata.badger.path` to
+`/data/metadata` and list `/data/blocks` under `journals`. The container starts with no stores
 and no shares; create them with `dfsctl` (see the [CLI reference](cli.md)) or use the
 Compose stack below, which does it for you.
 
@@ -350,9 +349,8 @@ Removing DittoFS takes three steps:
 
 Removing the binaries never deletes your data.
 
-Before you start, if you plan to delete metadata stores, note the directory
-each on-disk store was created with (its `config.path`). The CLI no longer has a
-command that lists metadata stores.
+Before you start, if you plan to delete the metadata store, note the directory
+`metadata.badger.path` names in the server's config file.
 
 ### 1. Stop the server and unmount shares
 
@@ -421,7 +419,7 @@ scoop bucket rm cubbit
 
 | Data | Linux / macOS | Windows |
 |---|---|---|
-| Config file and control-plane database | `~/.config/dittofs/` | `%APPDATA%\dittofs\` |
+| Config file | `~/.config/dittofs/` | `%APPDATA%\dittofs\` |
 | Logs, PID file, journal (`blocks/`) | `~/.local/state/dittofs/` | `%LOCALAPPDATA%\dittofs\` |
 
 ```bash
@@ -436,7 +434,7 @@ no home directory, so unless you configured paths explicitly its data is in:
 
 | Data | Path |
 |---|---|
-| Control-plane database | `/.config/dittofs/` |
+| Config file | `/.config/dittofs/` |
 | Logs and journal | `/tmp/dittofs/` |
 | systemd overrides you created | `/etc/systemd/system/dfs.service.d/` |
 
@@ -447,7 +445,7 @@ sudo systemctl daemon-reload
 
 **Everywhere:**
 
-- Local metadata stores: the BadgerDB directory named by the `config.path` you
+- The metadata store: the directory `metadata.badger.path` names, which you
   noted before stopping the server.
 - `dfsctl` credentials: `~/.config/dfsctl/config.json` (Windows:
   `%APPDATA%\dfsctl\config.json`), for each user who ran `dfsctl login`.
@@ -465,9 +463,7 @@ docker compose down -v
 The single-container setup also bind-mounts `~/.config/dittofs/config.yaml`
 from the host; remove it as shown above.
 
-**Remote storage:** data in remote block stores such as S3 buckets, and in
-externally managed PostgreSQL databases used for the control plane, is not
-touched by any step above. Delete it on the storage side if you no longer need
-it. A PostgreSQL or SQLite metadata store left by an older version is not
-touched either; to move its shares to BadgerDB, see
-[Metadata store migration](metadata-store-migration.md).
+**Remote storage:** data a v1 release left in remote block stores such as S3
+buckets, or in an externally managed PostgreSQL database, is not touched by any
+step above. Delete it on the storage side if you no longer need it. See
+[Upgrading from v1](upgrading-from-v1.md).

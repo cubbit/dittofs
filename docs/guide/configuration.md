@@ -109,60 +109,11 @@ shutdown_timeout: 30s   # Maximum time to wait for graceful shutdown
 
 ### 4. Database (Control Plane)
 
-DittoFS uses a control plane database to store persistent configuration for users, groups, shares, and permissions. This enables dynamic management via CLI commands and REST API without restarting the server.
-
-```yaml
-database:
-  # Database type: sqlite (single-node) or postgres (HA-capable)
-  type: sqlite
-
-  # SQLite configuration (default)
-  sqlite:
-    # Path to the SQLite database file
-    # Default: $XDG_CONFIG_HOME/dittofs/controlplane.db
-    path: /var/lib/dittofs/controlplane.db
-
-  # PostgreSQL configuration (for HA deployments)
-  postgres:
-    host: localhost
-    port: 5432
-    database: dfs
-    user: dfs
-    password: ${POSTGRES_PASSWORD}  # Use environment variable
-    sslmode: require               # disable, require, verify-ca, verify-full
-    ssl_root_cert: ""              # Path to CA certificate
-    max_open_conns: 25             # Maximum open connections
-    max_idle_conns: 5              # Maximum idle connections
-```
-
-**Database Types:**
-
-| Type | Description | Use Case |
-|------|-------------|----------|
-| `sqlite` | Embedded SQLite database | Single-node deployments (default) |
-| `postgres` | PostgreSQL database | High-availability, multi-node deployments |
-
-**SQLite Configuration:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `path` | `~/.config/dittofs/controlplane.db` | Database file path |
-
-**PostgreSQL Configuration:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `host` | (required) | PostgreSQL server hostname |
-| `port` | `5432` | PostgreSQL server port |
-| `database` | (required) | Database name |
-| `user` | (required) | Database user |
-| `password` | (required) | Database password |
-| `sslmode` | `disable` | SSL mode: disable, require, verify-ca, verify-full |
-| `ssl_root_cert` | | Path to CA certificate for SSL verification |
-| `max_open_conns` | `25` | Maximum number of open connections |
-| `max_idle_conns` | `5` | Maximum number of idle connections |
-
-> **Note**: The control plane database automatically creates tables and runs migrations on startup.
+There is no separate control-plane database. Users, groups, shares and the
+installation's other records live in the metadata store, which the `metadata`
+block configures ([Metadata Configuration](#7-metadata-configuration)). A config
+file that still carries a `database` block is refused at load, naming each of its
+keys as unknown.
 
 ### 5. API Server
 
@@ -333,141 +284,21 @@ carrying them is refused at load, naming each one as an unknown key.
 There is no `syncer:` config block: a config file that still has one is refused
 at load, naming each `syncer.*` key.
 
-#### GC knobs
+#### Garbage collection and the integrity scan
 
-The mark-sweep GC is the one tunable surface, configured via the top-level
-`gc:` server-config section:
-
-```yaml
-gc:
-  grace_period: 1h            # Objects whose LastModified is newer than
-                              # (snapshot - grace_period) are NEVER
-                              # deleted. Default 1h. Values in (0, 5m)
-                              # are REJECTED at config load; values in
-                              # [5m, 10m) are accepted but emit a
-                              # warning. The cushion protects in-flight
-                              # uploads whose metadata-txn lands after
-                              # the snapshot.
-  dry_run_sample_size: 1000   # Maximum candidate keys reported in
-                              # --dry-run mode. Default 1000.
-  compaction_live_ratio: 0    # Reclaim dead bytes from partially-dead
-                              # blocks. After each sweep, a block whose
-                              # live bytes / object size is below this
-                              # ratio is repacked (live chunks only) and
-                              # the old block deleted. Must be in [0, 1];
-                              # 0 (default) disables compaction. A value
-                              # like 0.5 compacts a block once it is more
-                              # than half dead.
-  auto_enabled: true          # Run background GC automatically so you
-                              # don't have to invoke the CLI. Default
-                              # true. Set false to turn background
-                              # GC off.
-  auto_interval: 15m          # Period between background GC runs.
-                              # Default 15m. Values in (0, 1m) are
-                              # REJECTED. Ignored when auto_enabled is
-                              # false.
-```
-
-**Tuning guidance:**
-
-- Background GC is **on by default** (`auto_enabled: true`, every
-  `auto_interval`) and reclaims orphaned blocks on **both** the local
-  and remote tiers. Disable it (`auto_enabled: false`) only if you want
-  to drive GC entirely on demand or via external scheduling.
-- Today's CLI has no command to run GC on demand.
-- `gc.grace_period` MUST be longer than your worst-case
-  metadata-commit latency after a successful PUT. The default 1h is
-  comfortable for any commit path that completes in seconds.
-
-Env-var mapping (dot-path convention; the top-level `gc` block binds
-directly):
-`DITTOFS_GC_GRACE_PERIOD`,
-`DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`,
-`DITTOFS_GC_AUTO_ENABLED`,
-`DITTOFS_GC_AUTO_INTERVAL`.
-
-See [RFC 9](../internals/rfcs/rfc-9-gc.md) for the garbage-collection design.
-
-#### Background integrity scan
-
-A share's manifest can end up disagreeing with its own files' block lists:
-a file claims bytes in a range that no manifest row covers. At read time
-that is indistinguishable from a legitimate sparse hole — absent rows are
-how sparse files are represented — so the read returns zeros and reports
-success. Nothing on the data path can report it. The background scan is
-what finds it.
-
-```yaml
-integrity:
-  auto_enabled: true          # Run the structural manifest scan
-                              # automatically. Default true. Set false to
-                              # turn the scan off.
-  auto_interval: 24h          # Period between scans. Default 24h. Values
-                              # in (0, 5m) are REJECTED — a scan is a full
-                              # metadata walk of every share. Ignored when
-                              # auto_enabled is false.
-```
-
-The scan is **metadata-only**: it fetches no block and touches no remote
-object, so it costs a metadata walk regardless of how much data a share
-holds and generates **no S3 egress**. It writes nothing — it neither plans
-nor applies repairs. Shares are scanned one at a time.
-
-Findings surface in three places:
-
-- `dfsctl share show <name>` reports when the share was last scanned and
-  what was found. A share with damaged payloads reads as `degraded` even
-  when every subsystem probe is healthy.
-- Prometheus: `dittofs_integrity_last_scan_timestamp_seconds`,
-  `dittofs_integrity_last_scan_failed`,
-  `dittofs_integrity_last_scan_duration_seconds`,
-  `dittofs_integrity_files_scanned`, and
-  `dittofs_integrity_findings{kind="..."}` broken out by
-  `payloads_with_findings`, `damaged_payloads`,
-  `claimed_uncovered_ranges`, `unplaceable_rows` and `unknown_hash_rows`.
-
-  The last-scan timestamp is 0 both for a share never scanned and for one
-  whose last scan failed — a failed scan completes nothing, so it has no
-  time to report. `dittofs_integrity_last_scan_failed` is what separates
-  them: `0` with a zero timestamp means the scan has not run yet, `1` means
-  it is running and erroring. Without that second series a scanner failing
-  on every tick would look exactly like one that was never switched on, and
-  stay that way indefinitely.
-- The server log, at `WARN`, for any share with damaged payloads.
-
-Today's CLI has no command that shows the per-file detail behind a finding
-or repairs it.
-
-The schedule restarts from zero on server start, so a box restarted more
-often than `auto_interval` never completes a scan. Lower the interval on a
-host that reboots frequently.
-
-Env-var mapping:
-`DITTOFS_INTEGRITY_AUTO_ENABLED`,
-`DITTOFS_INTEGRITY_AUTO_INTERVAL`.
+Neither runs. v1's mark-sweep collector and its background manifest scan went
+with the v1 block and metadata stores, and nothing replaces them yet. A config
+file that still carries v1's keys (`gc.auto_enabled`, `gc.auto_interval`,
+`gc.grace_period`, `integrity.auto_enabled`, and the rest of either block) is
+refused at load, naming each as unknown. The `gc` keys of the new design, such as
+`gc.interval`, are refused in the file too, as settings to set through the
+management API; nothing reads them yet. See
+[Garbage Collection](garbage-collection.md) for what frees space today.
 
 #### Recycle bin (trash)
 
-The recycle bin is configured **per share**, in the share's record, not the
-server config file. When enabled, deleting a file or directory moves it
-into a visible `#recycle` directory at the share root instead of
-destroying it; it can be restored over the mount.
-
-| Share field | Type | Default | Meaning |
-|---|---|---|---|
-| `trash_enabled` | bool | `false` | Turn the per-share recycle bin on or off. Disabling it auto-empties the bin (permanently deletes its contents). |
-| `trash_retention_days` | int | `0` | Auto-purge bin entries older than N days. `0` = keep forever. |
-| `trash_restrict_to_admin` | bool | `false` | Restrict emptying the bin to admins. Users may still restore. |
-| `trash_max_bytes` | int64 (bytes) | `0` | Cap total bytes held in the bin; over-cap evicts oldest-first. `0` = unbounded. |
-| `trash_exclude_patterns` | glob list | (none) | Deletions matching any glob bypass the bin and are removed immediately. |
-
-A background reaper enforces `trash_retention_days` and
-`trash_max_bytes` on an hourly interval. Deletes of items already
-*inside* `#recycle` are permanent, and in-place truncate/overwrite of a
-file's content is not recycled (only unlink and replace-overwrite are).
-
-The CLI no longer has trash commands or flags; they return with their own
-API.
+There is none. v1's per-share recycle bin (`#recycle` and the share's `trash_*`
+fields) went with the v1 metadata store, and nothing replaces it yet.
 
 #### Remote stores
 
@@ -477,248 +308,81 @@ read by nothing.
 
 #### Upgrading from the local/remote block store split
 
-Before this release a share carried **two** block stores — a local one (type `fs`
-or `memory`) and an optional remote one — and both the config file and the
-control-plane schema were shaped around that split. The first start after the
-upgrade migrates them, and **refuses to start** in six cases where guessing would
-silently change what an operator configured. Each refusal is recoverable; none of
-them lose data.
-
-**1. A config file still using `blockstore.local.*`**
+A config file that still names a key under `blockstore.local` is refused at
+load, naming the key under `blockstore.journal` that replaced it:
 
 ```
-config uses renamed keys; update them and restart:
-  blockstore.local.max_log_bytes -> blockstore.journal.max_log_bytes
+config.yaml: blockstore.local.path: no longer read; write blockstore.journal.path
 ```
 
-Unknown keys are normally warned about and ignored, but a *renamed* one cannot
-ride that policy: the operator believes the setting is live, an equivalent exists
-under the new name, and dropping it silently changes runtime behaviour.
+`path` is the only key left under `blockstore.journal`. Any other key the
+refusal names, such as `blockstore.journal.max_log_bytes`, is refused in turn as
+unknown, so delete it rather than rename it.
 
-**Action:** rename the section to `blockstore.journal` (every key beneath it keeps
-its name) and restart.
-
-**2. Shares whose journals do not live under the configured root**
-
-```
-shares do not live under the configured journal root
-  configured blockstore.journal.path: /var/lib/dittofs/blocks
-  share "/archive" stores its data in: /srv/dittofs/archive
-
-Set blockstore.journal.path to /srv/dittofs/archive and restart.
-```
-
-A share's journal holds the only copy of every byte not yet offloaded, so a root
-that disagrees with where the data actually is would serve a share whose bytes are
-somewhere else — reads would return zeros for everything written before the
-change, with nothing failing. Relocating the directories automatically would mean
-moving that only copy during startup, where a partial move cannot be undone.
-
-**Action:** when every share agrees on one directory, the error names it — set
-`blockstore.journal.path` to that directory and restart. When shares are spread
-across several directories, one root cannot express that: move them under a single
-parent (preserving the `shares/<name>/` level), point `blockstore.journal.path` at
-it, and restart.
-
-**3. Both size columns present**
-
-```
-shares table has both local_store_size and journal_size;
-copy the intended values into journal_size, drop local_store_size, and restart
-```
-
-An earlier upgrade added the new column without moving the values across. Which
-one is authoritative is not recoverable from the schema, and choosing wrong
-silently changes every share's size ceiling.
-
-**Action:** copy the values you intend to keep into `journal_size`, drop
-`local_store_size`, and restart.
-
-**4. Both store-id columns present**
-
-```
-shares table has both remote_block_store_id and block_store_id;
-copy the intended values into block_store_id, drop the old column, and restart
-```
-
-Same shape as above, with a worse failure mode: picking the empty column would
-leave every share without a block store.
-
-**Action:** copy the values into `block_store_id`, drop
-`remote_block_store_id`, and restart.
-
-**5. A share left with no block store**
-
-```
-share has no block store after upgrade
-  "/archive" has no block store
-
-These shares kept their data in a local block store and never had a
-remote one. Every share now needs a block store, and the local store
-they used cannot become one.
-```
-
-A share that kept its data in a local store and never had a remote one reaches
-the new model with nothing to bind to: the rename in case 4 hands it an empty
-`block_store_id`. Carrying the old local id across is not a repair — that tier
-was typically an `fs` store, a type that exists only locally, so the share would
-come up bound to a block store that cannot be built. The choice of a real store
-is the operator's.
-
-**Action:** no block store type is left to bind such a share to: this build
-reads no v1 block layout, so copy the share's content out through a protocol
-with the v1 release that wrote it and re-ingest it into a share on this build
-(see [the migration guide](block-store-migration.md)).
-
-**6. Two block stores sharing a name**
-
-```
-two block stores share a name
-  "archive" is used by more than one block store
-
-Block stores no longer have a kind, so their names must be unique.
-Rename one of each pair, then restart.
-```
-
-Names used to be unique per `(name, kind)`, so a local `archive` and a remote
-`archive` could coexist. With the kind column gone they collide. Renaming one
-automatically would break the operator's scripts at some later point; deleting one
-would orphan any share referencing it.
-
-**Action:** give one store of each colliding pair a different name, then restart.
-This collision stops the server from starting, so break the tie in the
-control-plane database, with the server stopped:
-
-```sql
-UPDATE block_store_configs SET name = 'archive-local' WHERE id = '<the row to rename>';
-```
-
-Pick the row by `id`; `SELECT id, name, kind, type FROM block_store_configs` shows
-which is which while the `kind` column still exists. A share normally holds the
-store's UUID, but older rows written through the REST update path hold the *name*
-instead, so check
-`SELECT name, block_store_id FROM shares` afterwards and repoint any share that
-was matching on the old name.
-
-**What migrates without asking**
-
-- `shares.local_store_size` → `shares.journal_size`
-- `shares.remote_block_store_id` → `shares.block_store_id`
-- `shares.local_block_store_id` → dropped, after its `durability` / `writeback` /
-  `require_durable_commit` settings are carried onto the share as `commit_ack` and
-  `relaxed_metadata_commit` (see [Durability](durability.md))
-- `block_store_configs.kind` → dropped, after the collision check above
-- `blockstore.journal.default_remote_cache_size` → deleted; per-share
-  `--journal-size` is now the whole of the sizing policy
+The control-plane migrations earlier releases ran for the split went with the
+control-plane database. A v1 installation is not upgraded at all: see
+[Upgrading from v1](upgrading-from-v1.md).
 
 ### 7. Metadata Configuration
 
-The CLI creates no metadata store; the server config file contains the global
-BadgerDB cache settings below. `badger` is the only metadata
-store type: on disk for single-node deployments, or fully in memory for tests. A
-distributed transactional key-value store — TiKV is the preferred one — is the
-planned backend for multi-node deployments; it is not implemented yet.
-
-A store row naming `memory`, `sqlite` or `postgres` (types earlier releases
-accepted) fails with `unsupported metadata store type "<x>": badger is the only
-metadata store type`; see the
-[metadata store migration guide](metadata-store-migration.md). Filesystem capabilities and
-limits are supplied by the metadata store and protocol implementation, not by a
-config-file capabilities block.
-
-#### BadgerDB cache sizing (config file)
-
-The BadgerDB metadata engine keeps two in-memory caches that dominate read
-performance under concurrent NFS/SMB load:
-
-- the **block cache** — decompressed LSM-tree data blocks, and
-- the **index cache** — the block-offset indices used to locate keys.
-
-Badger's own defaults are tiny (256 MiB block, index cache disabled), which
-thrashes on a busy server over a large directory tree. The symptom in the logs
-is `Block cache might be too small ... hit-ratio: 0.26 ... sets-rejected`; every
-cold lookup then walks the LSM tree from disk, which also widens the window for
-the dedup transaction-conflict race and the local-cache write-path backpressure
-stall.
-
-By default both sizes **auto-scale with the memory available to the process**,
-so no tuning is required:
-
-| Cache | Fraction of available RAM | Floor   | Ceiling |
-|-------|---------------------------|---------|---------|
-| block | 15 %                      | 512 MiB | 4 GiB   |
-| index | 7.5 %                     | 256 MiB | 2 GiB   |
-
-The fractions are deliberately conservative because the same process also holds
-the local journal cache, the metadata working set, and read buffers. The available-memory
-figure is the cgroup limit inside a container, or physical RAM otherwise (same
-detection used for block-store sizing). Examples:
-
-- **4 GiB host** → ~614 MiB block / ~307 MiB index (the floors don't bind).
-- **2 GiB host / 2 GiB cgroup** → 512 MiB block / 256 MiB index (floors bind).
-- **64 GiB host** → 4 GiB block / 2 GiB index (ceilings bind).
-
-To override the auto-sizing, set the sizes explicitly (in MiB) in the top-level
-`metadata.badger` block. Setting one dimension still auto-sizes the other:
+The metadata store holds the namespace (files, directories and their
+attributes) and every control-plane record: users, groups, shares and the
+installation itself. One store serves the whole node, so a share does not name
+one. Four keys, those of RFC 13's Appendix C, say which store and where:
 
 ```yaml
 metadata:
+  backend: badger                        # or foundationdb
   badger:
-    block_cache_mb: 2048   # 0 (default) = auto-size from available RAM
-    index_cache_mb: 1024   # 0 (default) = auto-size from available RAM
+    path: /var/lib/dittofs/metadata
+  # foundationdb:                        # read only with backend: foundationdb
+  #   cluster_file: /etc/foundationdb/fdb.cluster
+  #   tls:                               # all three, or none
+  #     cert_file: /etc/dittofs/fdb/client.pem
+  #     key_file: /etc/dittofs/fdb/client.key
+  #     ca_file: /etc/dittofs/fdb/ca.pem
 ```
 
-Environment overrides: `DITTOFS_METADATA_BADGER_BLOCK_CACHE_MB`,
-`DITTOFS_METADATA_BADGER_INDEX_CACHE_MB`.
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `metadata.backend` | `badger` or `foundationdb` | `badger` | Which store. Only the block it names is read: a key of the other block is refused at load. |
+| `metadata.badger.path` | absolute path | none (see below) | Badger's directory. |
+| `metadata.foundationdb.cluster_file` | absolute path | none | FoundationDB's cluster file. |
+| `metadata.foundationdb.tls.cert_file`, `.key_file`, `.ca_file` | absolute paths | none | The client certificate, its key and the CA file. Name the three together or none. |
 
-**Recommended sizing vs. object/metadata count.** As a rule of thumb the block
-cache should hold the hot directory/inode working set. Each cached file/inode is
-on the order of a few hundred bytes of decompressed LSM data, so:
+Each key's environment name is `DITTOFS_` and the key in upper case, its dots
+as underscores: `DITTOFS_METADATA_BACKEND`, `DITTOFS_METADATA_BADGER_PATH`,
+`DITTOFS_METADATA_FOUNDATIONDB_CLUSTER_FILE`, and so on.
 
-| Hot metadata objects | Suggested `block_cache_mb` | Suggested `index_cache_mb` |
-|----------------------|----------------------------|----------------------------|
-| up to ~1 M           | auto (≥512)                | auto (≥256)                |
-| ~1–10 M              | 1024–2048                  | 512–1024                   |
-| ~10–50 M             | 2048–4096                  | 1024–2048                  |
-| > 50 M               | 4096+ (raise host RAM)     | 2048+                      |
+**This build opens Badger only.** The loader and `dfs config validate` accept
+`backend: foundationdb` and its keys, but `dfs init` and `dfs start` refuse it
+before opening anything:
 
-If you still see `hit-ratio` below ~0.8 or `sets-rejected` in the Badger logs,
-the cache is undersized for the working set — raise `block_cache_mb` first.
+```
+metadata.backend "foundationdb" is not one this build opens; it opens badger
+```
 
-These global sizes apply to every BadgerDB metadata store on the node. A single
-store can override them with the `block_cache_mb` and `index_cache_mb` keys of
-its own config.
+**Set `metadata.badger.path`.** RFC 13 defaults it to `metadata` under the
+state directory, but the loader does not fill that default yet, so `dfs init`
+and `dfs start` refuse a path that is not set (`metadata.badger.path is not
+set`). Like the journal devices, it belongs in a directory on a volume, never at
+the volume's mount point (see [State root](#state-root-blockstorejournalpath)).
 
-#### `relaxed_durability`
+**`dfs init` creates the store; `dfs start` only opens one.** A start over a
+directory holding no store refuses and names `dfs init`. A start over a
+directory holding something that is not a store of this installation, a v1
+metadata store among them, refuses too: see [Upgrading from v1](upgrading-from-v1.md).
 
-Applies to on-disk `badger` metadata stores. **Defaults to `true`.**
-
-Namespace operations (`create`, `unlink`, `rename`, `mkdir`, `rmdir`,
-attribute-only `setattr`) commit without an inline flush; a background syncer
-makes them durable within ~100 ms. Writes paired with file data commit
-synchronously either way, so this is bounded loss, never corruption.
-
-Setting `"relaxed_durability": false` in a store's config fsyncs every
-namespace commit, at roughly a third of the create throughput.
-
-Only an event that takes the kernel down — power loss, kernel panic, hypervisor
-reset — can lose that window. Killing the `dfs` process (`SIGKILL`, OOM-kill,
-panic) loses nothing at either setting, because an acknowledged write is already
-in the kernel page cache. See
-[Durability → Namespace durability](durability.md#namespace-durability-relaxed_durability).
-
-#### Metadata Store Instances
-
-The CLI no longer creates, lists or removes metadata stores.
-
-> **Persistence Options** (`badger` config keys: `path`, `in_memory`,
-> `block_cache_mb`, `index_cache_mb`, `relaxed_durability`):
-> - **On disk** (`path`): persistent embedded database for single-node deployments. File handles and metadata survive restarts.
-> - **In memory** (`in_memory: true`, no `path`): everything is lost on restart. For tests and throwaway servers.
+**v1's metadata settings are gone.** No key sizes Badger's caches: a file still
+setting `metadata.badger.block_cache_mb` or `metadata.badger.index_cache_mb` is
+refused at load as an unknown key. The per-store settings v1 kept with each
+metadata store (`in_memory`, `relaxed_durability` and the per-store cache sizes)
+have no equivalent: there is one on-disk store per node and nothing to create
+from the CLI.
 
 ### 8. Shares (Exports)
 
-Shares are managed at runtime via `dfsctl` and persisted in the control plane database. Each share references metadata and block stores by name:
+Shares are managed at runtime via `dfsctl` and persisted in the metadata store. Each share references metadata and block stores by name:
 
 ```bash
 # Create shares referencing existing stores
@@ -741,7 +405,6 @@ Shares are managed at runtime via `dfsctl` and persisted in the control plane da
 
 **Configuration Patterns:**
 
-- **Shared Metadata**: `/cloud` and `/archive` both use `badger-main` - they share the same metadata database
 - **Performance Tiering**: Different shares use different storage backends (memory, S3)
 - **Isolation**: Each share gets its own BlockStore; the node's journal devices come from `journals`
 - **Resource Efficiency**: Block stores are shared (ref counted) when multiple shares reference the same config
@@ -809,7 +472,7 @@ fresh grace window.
 
 ### 9. User Management
 
-DittoFS supports a unified user management system for both NFS and SMB protocols. Users, groups, and their permissions are stored in the control plane database (see [Database Configuration](#4-database-control-plane)) and can be managed via:
+DittoFS supports a unified user management system for both NFS and SMB protocols. Users, groups, and their permissions are stored in the metadata store (see [Metadata Configuration](#7-metadata-configuration)) and can be managed via:
 
 1. **CLI commands** (`dfsctl user`, `dfsctl group`) - Recommended for initial setup
 2. **REST API** - For programmatic management and integrations
@@ -878,7 +541,7 @@ In this example, `special-viewer` gets `read-write` on `/archive` (user explicit
 
 #### CLI Management Commands
 
-Users and groups live in the control-plane database, not the config file. Manage them with
+Users and groups live in the metadata store, not the config file. Manage them with
 `dfsctl` against a running server (run `dfsctl login` first). See [CLI.md](cli.md) for the
 complete, generated reference.
 
@@ -1485,17 +1148,8 @@ export DITTOFS_LOGGING_FORMAT=json
 # Server
 export DITTOFS_SHUTDOWN_TIMEOUT=60s
 
-# Database (Control Plane)
-export DITTOFS_DATABASE_TYPE=sqlite
-export DITTOFS_DATABASE_SQLITE_PATH=/var/lib/dittofs/controlplane.db
-# PostgreSQL
-export DITTOFS_DATABASE_TYPE=postgres
-export DITTOFS_DATABASE_POSTGRES_HOST=localhost
-export DITTOFS_DATABASE_POSTGRES_PORT=5432
-export DITTOFS_DATABASE_POSTGRES_DATABASE=dfs
-export DITTOFS_DATABASE_POSTGRES_USER=dfs
-export DITTOFS_DATABASE_POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-export DITTOFS_DATABASE_POSTGRES_SSLMODE=require
+# Metadata store
+export DITTOFS_METADATA_BADGER_PATH=/var/lib/dittofs/metadata
 
 # Control Plane API Server
 export DITTOFS_CONTROLPLANE_PORT=8080
@@ -1595,16 +1249,6 @@ Different shares using different storage backends:
 # Grant permissions
 ./dfsctl share permission grant /temp --user alice --level read-write
 ./dfsctl share permission grant /cloud --user alice --level read-write
-```
-
-### Shared Metadata Pattern
-
-Multiple shares sharing the same metadata database:
-
-```bash
-# Both shares use the same metadata store, different block stores
-./dfsctl share create --name /prod --metadata shared-badger --block-store s3-production
-./dfsctl share create --name /archive --metadata shared-badger --block-store s3-archive
 ```
 
 ## IDE Support with JSON Schema
