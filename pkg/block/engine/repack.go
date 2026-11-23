@@ -404,18 +404,19 @@ func (e *Engine) acceptedWrite(b *binding) {
 // journal_full clears: a segment's cap, from which a spare can be made again
 // (RFC 8 §11.1, RFC 28 §2.2).
 //
-// decision: the journal reports no segment cap, so this is the format's,
+// ponytail: the journal reports no segment cap, so this copies the format's,
 // 256 MiB. A journal opened with a smaller cap, which only a test harness can
-// set, clears later than it could, never earlier. Withdrawn when the journal's
-// Stats reports its segment cap.
+// set, clears later than it could, never earlier. Upgrade to the cap the
+// journal's Stats reports once it reports one.
 const deviceRoomBytes = 256 << 20
 
 // roomAgain reports whether the limit refusal n named has room again since
 // it, by at least what n lacked (RFC 8 §11.1), from st, the journal's figures
 // now, and free, the free space of the journal directory's filesystem, which
 // it reads only for a full device. Under the maximum the room is the storage
-// retired segments returned since n, by an unlink or a recycle, and any rise
-// of the maximum; never UsedBytes, which a recycle does not lower. On a full
+// retired segments returned since n, by an unlink or a recycle, and any
+// change of the maximum, a lowered one counted against them, or the maximum
+// removed; never UsedBytes, which a recycle does not lower. On a full
 // device it is a segment's cap, recycled or free.
 //
 // decision: a free-space read that fails counts as no room, so journal_full
@@ -438,7 +439,11 @@ func (n *refusalNote) roomAgain(st journal.Stats, free func() (int64, error)) bo
 		return err == nil && f >= deviceRoomBytes
 	}
 
-	return gained+max(st.MaxBytes-n.maxBytes, 0) >= max(n.missing, 1)
+	if st.MaxBytes <= 0 {
+		return true // the maximum was removed: the journal is unbounded
+	}
+
+	return gained+(st.MaxBytes-n.maxBytes) >= max(n.missing, 1)
 }
 
 // fullRecheck is how often the group commit's loop judges the room of a
@@ -469,7 +474,8 @@ func (g *groupCommit) fullDue(now time.Time) time.Duration {
 //
 // ponytail: the check rides on the group commit's loop, which wakes for it
 // at the refusal and then every fullRecheck while a refusal of the device or
-// the maximum stands, idle or not; a store stall holds the loop inside a
+// the maximum stands, idle or not, and runs it before each take, so a batch
+// on every pass does not starve it; a store stall holds the loop inside a
 // commit, so the clear can lag by a stall. Upgrade to the work queue's age
 // tick (RFC 8 §2.5 step 7) when the second part builds it.
 func (g *groupCommit) checkFull() {
@@ -484,7 +490,13 @@ func (g *groupCommit) checkFull() {
 
 	room := n.roomAgain(g.j.Stats(), func() (int64, error) { return e.d.FreeSpace(e.d.Devices[0]) })
 
+	if h := e.fullJudging.Load(); h != nil {
+		(*h)()
+	}
+
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.full == n {
 		if room {
 			c.full = nil
@@ -493,8 +505,8 @@ func (g *groupCommit) checkFull() {
 			c.checkAt = e.d.Clock.Now().Add(fullRecheck)
 		}
 	}
-	c.mu.Unlock()
 
+	// Under the lock, so a test that hears it reads the state this judge left.
 	if h := e.fullChecked.Load(); h != nil {
 		(*h)()
 	}
