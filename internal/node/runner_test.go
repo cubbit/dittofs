@@ -233,6 +233,7 @@ func answersMore(t *testing.T, steps map[string]stepRow) map[string]stepRow {
 // with no row naming the user or her secret left, and another user's grant
 // kept.
 func TestUserDeletionResumesAcrossRestart(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, t.TempDir(), nil)
 	ctx, cp := t.Context(), b.store.ControlPlane()
 	secret := entity.SecretRef{15: 1}
@@ -298,6 +299,7 @@ func TestUserDeletionResumesAcrossRestart(t *testing.T) {
 // A turn whose step answers the cursor recorded commits nothing; one whose
 // cursor moved commits once.
 func TestUnchangedTurnCommitsNothing(t *testing.T) {
+	t.Parallel()
 	counting := new(kv.Counting)
 	b := newBench(t, "", func(db kv.KV) kv.KV { counting.KV = db; return counting })
 	next := []byte("a")
@@ -329,6 +331,7 @@ func noPhase(context.Context, entity.Operation) apiv1.Progress { return apiv1.Pr
 // unchanged, commits once with an audit record naming both phases; a turn
 // whose phase stays commits nothing.
 func TestPhaseChangeCommitsWithItsAudit(t *testing.T) {
+	t.Parallel()
 	counting := new(kv.Counting)
 	b := newBench(t, "", func(db kv.KV) kv.KV { counting.KV = db; return counting })
 	phase, moveTo := "", ""
@@ -369,6 +372,7 @@ func TestPhaseChangeCommitsWithItsAudit(t *testing.T) {
 // retry commits all three, audited as the account that started the
 // operation, on this node.
 func TestStateChangeCommitsWithItsAudit(t *testing.T) {
+	t.Parallel()
 	var f *kvtest.FaultKV
 	b := newBench(t, "", faults(&f))
 	alice, gen := b.user(entity.User{Name: "alice"})
@@ -434,6 +438,7 @@ func TestStateChangeCommitsWithItsAudit(t *testing.T) {
 // runner's caller: the End's writes roll back, the cursor stays as recorded,
 // and the failure is audited.
 func TestEndPanicFailsOperation(t *testing.T) {
+	t.Parallel()
 	gone := &apiv1.Problem{Status: 404, Code: "not_found", Title: "no such user"}
 	goneBody, _ := json.Marshal(gone)
 	for _, c := range []struct {
@@ -448,6 +453,7 @@ func TestEndPanicFailsOperation(t *testing.T) {
 		{"a problem", func() error { return gone }, string(goneBody)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			b := newBench(t, "", nil)
 			op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning, Step: []byte("s1")})
 			setting := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "ended", Value: []byte("yes")}
@@ -483,6 +489,7 @@ func TestEndPanicFailsOperation(t *testing.T) {
 // the operation with it as Error; a cancelled context's error is retried,
 // leaving the state and cursor as recorded; a done step records its Result.
 func TestStepAnswerRecorded(t *testing.T) {
+	t.Parallel()
 	gone := &apiv1.Problem{Status: 404, Code: "not_found", Title: "no such user"}
 	goneBody, _ := json.Marshal(gone)
 	for _, c := range []struct {
@@ -505,6 +512,7 @@ func TestStepAnswerRecorded(t *testing.T) {
 		{"done", step.StepResult{Next: []byte("s2"), Done: true, Result: json.RawMessage(`{"id":7}`)}, nil, nil, entity.OpSucceeded, "s2", "", `{"id":7}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			b := newBench(t, "", nil)
 			op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning, Step: []byte("s1")})
 			b.at(b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
@@ -524,6 +532,7 @@ func TestStepAnswerRecorded(t *testing.T) {
 
 // A step whose context ends while it runs commits nothing, even a failure.
 func TestInterruptedStepCommitsNothing(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning, Step: []byte("s1")})
 	ctx, cancel := context.WithCancel(t.Context())
@@ -543,6 +552,7 @@ func TestInterruptedStepCommitsNothing(t *testing.T) {
 // store error, a transaction too large included, leaves it pending until a
 // retry a second later runs it again.
 func TestUserDeletionStepAnswers(t *testing.T) {
+	t.Parallel()
 	userRef := func(u entity.Principal) entity.ResourceRef {
 		return entity.ResourceRef{Kind: entity.ResourceUser, ID: u.ID[:]}
 	}
@@ -581,6 +591,7 @@ func TestUserDeletionStepAnswers(t *testing.T) {
 		{"a transaction too large", marked, kv.ErrTooLarge, entity.OpPending, entity.OpSucceeded},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			var f *kvtest.FaultKV
 			b := newBench(t, "", faults(&f))
 			op := c.op(b)
@@ -605,6 +616,7 @@ func TestUserDeletionStepAnswers(t *testing.T) {
 // operation ends succeeded with no row naming the machine, and its Kerberos
 // name finds nothing.
 func TestMachineDeletionEnds(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	ctx, cp := t.Context(), b.store.ControlPlane()
 	name := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "host/build01.corp.example@CORP.EXAMPLE"}
@@ -630,6 +642,7 @@ func TestMachineDeletionEnds(t *testing.T) {
 // A group's deletion runs past its mark to its end, leaving no row naming
 // the group.
 func TestGroupDeletionEnds(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	ctx, cp := t.Context(), b.store.ControlPlane()
 	alice, _ := b.user(entity.User{Name: "alice"})
@@ -652,6 +665,7 @@ func TestGroupDeletionEnds(t *testing.T) {
 
 // Both deletion kinds read their progress as an uncounted run of batches.
 func TestDeletionProgress(t *testing.T) {
+	t.Parallel()
 	steps := operationSteps(kvstore.Nodes{})
 	want := apiv1.Progress{Phase: "batches", Total: -1, Unit: "batches"}
 	for _, kind := range []apiv1.OpKind{apiv1.OpUserDelete, apiv1.OpGroupDelete} {
@@ -664,6 +678,7 @@ func TestDeletionProgress(t *testing.T) {
 // A deletion whose batches keep failing on a store error runs again 1 s
 // after its first failure, the wait doubling at each failure up to 30 s.
 func TestRetriedStepBacksOff(t *testing.T) {
+	t.Parallel()
 	var f *kvtest.FaultKV
 	b := newBench(t, "", faults(&f))
 	alice, gen := b.user(entity.User{Name: "alice"})
@@ -687,6 +702,7 @@ func TestRetriedStepBacksOff(t *testing.T) {
 // A step that succeeds without changing its operation ends the run of
 // failures: the next failure waits 1 s again, not 2.
 func TestBackoffRestartsAfterASuccess(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	answers := []error{errors.New("first failure"), nil, errors.New("second failure"), nil}
 	r := b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(_ context.Context, op entity.Operation) (step.StepResult, error) {
@@ -711,6 +727,7 @@ func TestBackoffRestartsAfterASuccess(t *testing.T) {
 // Operations of a kind with no step stay pending, unchanged, and the kind
 // is listed once among the refused.
 func TestKindWithNoStepStaysPending(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	kind := string(apiv1.OpRotateSigningKey)
 	var ops []entity.Operation
@@ -731,6 +748,7 @@ func TestKindWithNoStepStaysPending(t *testing.T) {
 
 // An ended operation is not handed to its kind's step; a running one is.
 func TestEndedOperationIsNotDriven(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	ended := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpFailed, Error: []byte(`{}`)})
 	running := b.operation(entity.Operation{Kind: "k", Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{2}}, State: entity.OpRunning})

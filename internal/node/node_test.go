@@ -35,6 +35,7 @@ func TestNewStartsNothing(t *testing.T) {
 
 // Stop closes the storage key, and answers its Close's error.
 func TestStopClosesTheStorageKey(t *testing.T) {
+	t.Parallel()
 	h := nodetest.New(t)
 	boom := errors.New("the storage key did not close")
 	h.Node().FailStorageKeyClose(boom)
@@ -46,6 +47,7 @@ func TestStopClosesTheStorageKey(t *testing.T) {
 // Stop clears the bytes of every signing-key version the access tokens
 // read.
 func TestStopClearsTheSigningKey(t *testing.T) {
+	t.Parallel()
 	h := nodetest.New(t)
 	kept, err := h.Node().KeepSigningKeys(t.Context())
 	if err != nil {
@@ -98,6 +100,7 @@ func TestNewRefusesAKVWithNoInstallation(t *testing.T) {
 // one whose storage key does not open, over an initialised store; each
 // closes the KV it was handed.
 func TestNewRefusesNoStorageKey(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		file string // empty names no storage key
@@ -107,6 +110,7 @@ func TestNewRefusesNoStorageKey(t *testing.T) {
 		{"one that does not open", filepath.Join(t.TempDir(), "missing.key"), "node: the storage key: "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			db, err := badgerkv.Open(badgerkv.Options{})
 			if err != nil {
 				t.Fatal(err)
@@ -136,6 +140,7 @@ func TestNewRefusesNoStorageKey(t *testing.T) {
 // New refuses an empty API or metrics address, which would bind a random
 // port on every interface, and closes the KV it was handed.
 func TestNewRefusesAnEmptyAddress(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		metrics string
@@ -145,6 +150,7 @@ func TestNewRefusesAnEmptyAddress(t *testing.T) {
 		{"metrics", "", []string{"127.0.0.1:0"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			db, err := badgerkv.Open(badgerkv.Options{})
 			if err != nil {
 				t.Fatal(err)
@@ -170,6 +176,7 @@ func TestNewRefusesAnEmptyAddress(t *testing.T) {
 // address, which may come from the environment, and closes the KV it was
 // handed.
 func TestNewRefusesTwoAPIAddresses(t *testing.T) {
+	t.Parallel()
 	db, err := badgerkv.Open(badgerkv.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -221,6 +228,7 @@ func listening(metrics string, api ...string) bootstrap.Bootstrap {
 // The engine's series are in the registry the node was handed from New on,
 // so a scrape answers them before anything starts.
 func TestEngineSeriesRegistered(t *testing.T) {
+	t.Parallel()
 	h := nodetest.New(t)
 	mfs, err := h.Metrics().Registry().Gather()
 	if err != nil {

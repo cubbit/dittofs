@@ -219,6 +219,7 @@ func clusterAuditRetention(t *testing.T, text string) string {
 // bootstrap; the same check over the appendix with one scope cell edited to
 // cluster, a scope that is not one, fails.
 func TestAppendixBScopeForms(t *testing.T) {
+	t.Parallel()
 	text := readRFC13(t)
 	if bad := scopeFormFailures(t, text); len(bad) > 0 {
 		t.Errorf("Appendix B scope cells outside RFC 13 §3's forms:\n%s", strings.Join(bad, "\n"))
@@ -231,6 +232,7 @@ func TestAppendixBScopeForms(t *testing.T) {
 
 // Each of RFC 13 §3's rules on a scope cell refuses the cell that breaks it.
 func TestScopeFormErr(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		scope, class string
 		ok           bool
@@ -263,6 +265,7 @@ func TestScopeFormErr(t *testing.T) {
 // The parse refuses an Appendix B row it would otherwise skip or misread: an
 // unpadded one and one with a wrong cell count.
 func TestParseAppendixBRefusesMalformedRow(t *testing.T) {
+	t.Parallel()
 	const head = "## Appendix B\n\n| Setting | Defined in | Scope | Class | Default |\n| --- | --- | --- | --- | --- |\n"
 	for name, row := range map[string]string{
 		"unpadded":   "|`x`|RFC 13|installation|live|1|",
@@ -278,6 +281,7 @@ func TestParseAppendixBRefusesMalformedRow(t *testing.T) {
 // The parse finds RFC 23's rows by key, each at installation scope, live and
 // written by admin only.
 func TestAppendixBRFC23Rows(t *testing.T) {
+	t.Parallel()
 	rows, err := parseAppendixB(readRFC13(t))
 	if err != nil {
 		t.Fatalf("parse Appendix B: %v", err)
@@ -537,6 +541,7 @@ func compareAppendixB(t *testing.T, rows []appendixRow, tb settings.Table) (fail
 // The node's table agrees with Appendix B on every key's scope, class and
 // write role, and the api section's two later keys are reported, not failed.
 func TestAppendixBMatchesTheTable(t *testing.T) {
+	t.Parallel()
 	rows, err := parseAppendixB(readRFC13(t))
 	if err != nil {
 		t.Fatalf("parse Appendix B: %v", err)
@@ -563,6 +568,7 @@ func (renamedAPI) Validate() error { return nil }
 // Each drift between the table and Appendix B fails the comparison, naming
 // the key that drifted.
 func TestAppendixBDriftFails(t *testing.T) {
+	t.Parallel()
 	text := readRFC13(t)
 	cluster := clusterAuditRetention(t, text)
 
@@ -590,6 +596,7 @@ func TestAppendixBDriftFails(t *testing.T) {
 		{"a scope cell edited to cluster", cluster, settings.Table{api, audit}, "audit.retention"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rows, err := parseAppendixB(tc.text)
 			if err != nil {
 				t.Fatalf("parse Appendix B: %v", err)
@@ -731,6 +738,7 @@ var refusingSeeds = []entity.Setting{
 // refusal, each section holding one refused, and the reference fields found
 // are the two RFC 18 and Appendix B name.
 func TestNoRefusalPrintsAReference(t *testing.T) {
+	t.Parallel()
 	refs, failures := refLeaks(t, newTable(), refusingSeeds)
 	if len(failures) > 0 {
 		t.Errorf("reference search:\n%s", strings.Join(failures, "\n"))
@@ -782,6 +790,7 @@ func (s quietRef) Validate() error {
 // A Validate that prints its reference field fails the search, as a 16-byte
 // reference or as a string; one refusing it without printing it passes.
 func TestRefLeaksFindsAPrintedReference(t *testing.T) {
+	t.Parallel()
 	at := settings.At(entity.ScopeInstallation)
 	for _, tc := range []struct {
 		name    string
@@ -796,6 +805,7 @@ func TestRefLeaksFindsAPrintedReference(t *testing.T) {
 			settings.SecretRef("Credential", entity.SecretPassword)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, leaks := refLeaks(t, settings.Table{tc.section}, nil)
 			if got := len(leaks) == 1 && strings.Contains(leaks[0], "prints the reference"); got != tc.leaks || len(leaks) > 1 {
 				t.Errorf("failures %q, want one leak %v", leaks, tc.leaks)

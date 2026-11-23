@@ -67,6 +67,7 @@ var fourReserved = map[string]int64{"receive": 1 << 10, "reply": 2 << 10, "conne
 // pool holding them, naming the pool and its bytes, and none before the
 // filesystem's part has stopped; one stopped with nothing reserved logs none.
 func TestStopLogsEachBudgetNotAtZero(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		reserved map[string]int64
@@ -75,6 +76,7 @@ func TestStopLogsEachBudgetNotAtZero(t *testing.T) {
 		{"none reserved", map[string]int64{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			var logged syncBuffer
 			var atFilesystem *string // the log once the filesystem's part stopped
 			h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
@@ -115,6 +117,7 @@ func TestStopLogsEachBudgetNotAtZero(t *testing.T) {
 // the count, naming it as pool conns with its connections, as it does a pool
 // holding bytes (RFC 24 §2.7).
 func TestStopLogsTheConnectionCountNotAtZero(t *testing.T) {
+	t.Parallel()
 	var logged syncBuffer
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		cfg.Logger = slog.New(slog.NewJSONHandler(&logged, nil))
@@ -191,6 +194,7 @@ func (r *recorder) Errorf(format string, args ...any) {
 // The harness fails a test whose node stops with budgets not at zero,
 // naming each pool and its bytes.
 func TestHarnessFailsOnABudgetNotAtZero(t *testing.T) {
+	t.Parallel()
 	rec := &recorder{TB: t}
 	h := nodetest.New(rec)
 	n := h.Node()

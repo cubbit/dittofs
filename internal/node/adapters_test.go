@@ -635,6 +635,7 @@ func TestAPassHeldPastItsBoundLeavesTheAdaptersOpen(t *testing.T) {
 // unspecified address, naming the key and the indexes, never the value, and
 // closes the KV it was handed (RFC 13 §6, Appendix C).
 func TestNewRefusesAnAdaptersListenItCannotBind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		listen []string
@@ -647,6 +648,7 @@ func TestNewRefusesAnAdaptersListenItCannotBind(t *testing.T) {
 		{"beside ::", []string{"192.0.2.1", "2001:db8::1", "::"}, "node: adapters.listen[2]: overlaps adapters.listen[1]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			db, err := badgerkv.Open(badgerkv.Options{})
 			if err != nil {
 				t.Fatal(err)

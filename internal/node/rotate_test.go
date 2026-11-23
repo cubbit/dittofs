@@ -201,6 +201,7 @@ func TestRotationProgressReadsThroughTheAPI(t *testing.T) {
 // Every turn between the switch and the 15 min and margin commits nothing;
 // the turn at them commits the operation's end, once.
 func TestRotationWaitCommitsNothing(t *testing.T) {
+	t.Parallel()
 	var counting *kv.Counting
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		counting = &kv.Counting{KV: cfg.KV}
@@ -257,6 +258,7 @@ func TestRotationResumesAtThePruneAfterARestart(t *testing.T) {
 // A rotation whose target is not the installation, by kind or by ID, fails
 // at its first turn naming the target, and seals nothing.
 func TestRotationRefusesAnotherTarget(t *testing.T) {
+	t.Parallel()
 	h := nodetest.New(t)
 	in, err := h.Store().Installation(t.Context())
 	if err != nil {
@@ -287,6 +289,7 @@ func TestRotationRefusesAnotherTarget(t *testing.T) {
 // A rotation over an installation that names no signing key fails, naming
 // it, rather than retry at every turn.
 func TestRotationFailsWithNoSigningKey(t *testing.T) {
+	t.Parallel()
 	h := nodetest.New(t)
 	err := h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
 		return tx.SetSigningKey(entity.SecretRef{})
@@ -306,6 +309,7 @@ func TestRotationFailsWithNoSigningKey(t *testing.T) {
 // another signing key than the one the node was built with: at the switch,
 // before it seals, or at the end, before it prunes.
 func TestRotationRefusesARepointedKey(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		switchd bool // repointed after the switch, before the end
@@ -314,6 +318,7 @@ func TestRotationRefusesARepointedKey(t *testing.T) {
 		{"between the switch and the end", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := nodetest.New(t)
 			op, ref := startRotation(t, h)
 			if tc.switchd {
