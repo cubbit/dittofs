@@ -247,6 +247,29 @@ func TestWaitersCountsOnlyTheBlocked(t *testing.T) {
 	}
 	release()
 	<-done
+
+	// A shared taker queued behind an exclusive holder counts once.
+	drain, err := l.Take(context.Background(), Set{Drain: []Key{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	go func() {
+		defer close(entered)
+		if r, err := l.Take(context.Background(), Set{Enter: []Key{dir}}); err == nil {
+			r()
+		}
+	}()
+	deadline = time.Now().Add(10 * time.Second)
+	for l.Waiters(Set{Enter: []Key{dir}}) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("Waiters with a shared call blocked behind a drain = %d, want 1", l.Waiters(Set{Enter: []Key{dir}}))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	drain()
+	<-entered
+
 	shared, err := l.Take(context.Background(), Set{Enter: []Key{dir}})
 	if err != nil {
 		t.Fatal(err)
