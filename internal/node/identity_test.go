@@ -377,8 +377,8 @@ func TestTheAPIRefusesADirectoryUsersPassword(t *testing.T) {
 		raw = cfg.KV
 		return node.NewWithDirectory(d.Dial, nil)(cfg)
 	}))
-	// Through the store: the composed node hands the API no settings table,
-	// so the settings route refuses the directory record.
+	// Through the store: no API route seals the directory record's bind
+	// credential yet, so the record is written beside the node.
 	directoryRecord(t, s.h, sealer(t, s.h), d, "KORP")
 	caughtUp(t, s.h)
 	proven := vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofSecret}}
