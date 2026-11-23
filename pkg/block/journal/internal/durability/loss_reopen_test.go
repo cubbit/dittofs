@@ -375,3 +375,63 @@ func TestALossNobodyReadIsStillFoundAtOpenAtTheThirdReopen(t *testing.T) {
 		t.Fatalf("%d loss records on disk across three reopens, want the two", len(lh))
 	}
 }
+
+// TestAnOverwrittenEventAGenuineReadNeverCarriedStaysUnserved pins the
+// served window's clamp: the ring keeps the newest core.LossRingSize events,
+// and a genuine read answers for the events its copy carried alone. The
+// events the ring had overwritten before the read — a poller that knows it
+// missed them has still not read them — stay answered by nobody, so their
+// claims survive their instance and the reopen places the losses they name
+// found at open again, while every event the copy carried stays suppressed.
+func TestAnOverwrittenEventAGenuineReadNeverCarriedStaysUnserved(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+
+	// Four more losses than the ring holds, all unread, each its own piece.
+	n := core.LossRingSize + 4
+	seqs := make([]core.Seq, n)
+	events := make([]core.LossEvent, n)
+	for i := range events {
+		seqs[i] = core.Seq(100 + i)
+		ev, err := e.d.Lose(ctx, loss(seqs[i]))
+		if err != nil {
+			t.Fatalf("Lose of the piece at %d: %v", i, err)
+		}
+		if ev == (core.LossEvent{}) {
+			t.Fatalf("the piece at %d published no event", i)
+		}
+		events[i] = ev
+	}
+	if got := e.d.Stats().Losses; len(got) != core.LossRingSize {
+		t.Fatalf("the ring holds %d events, want its %d newest", len(got), core.LossRingSize)
+	}
+	// One genuine read, the drain's: its copy carries only the newest
+	// LossRingSize events, never the first four.
+	if got := e.d.Losses(); len(got) != core.LossRingSize {
+		t.Fatalf("the genuine read carried %d events, want the %d newest", len(got), core.LossRingSize)
+	}
+	e.d.Stop()
+
+	// The reopen reads what the disk holds and places each record the
+	// claims let it. The four overwritten pieces' claims retired with their
+	// unread events; the two hundred fifty-six the read carried stay held.
+	reopen := e.newDurability()
+	for i, ev := range events {
+		reopen.Place(ev, seqs[i])
+	}
+	var placed []core.LossEvent
+	for _, ev := range reopen.Stats().Losses {
+		if !ev.AtOpen {
+			t.Fatalf("the reopen published %+v, not marked found at open", ev)
+		}
+		placed = append(placed, ev)
+	}
+	if len(placed) != 4 {
+		t.Fatalf("the reopen published %d found-at-open events, want the 4 overwritten ones: %+v", len(placed), placed)
+	}
+	for _, ev := range placed {
+		if ev.Version.Counter < 200 || ev.Version.Counter >= 204 {
+			t.Fatalf("the reopen published %+v, want only one of the four overwritten pieces", ev)
+		}
+	}
+}
