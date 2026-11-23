@@ -466,6 +466,9 @@ func TestPasswordSetRefusesInvalid(t *testing.T) {
 	if got := s.sourceCount(t); got.Count != was.Count {
 		t.Errorf("the source's count after the refused change: %d, want %d", got.Count, was.Count)
 	}
+	if f, found, err := s.h.Store().ControlPlane().SignInFailures(t.Context(), entity.SignInKey{Account: p}); err != nil || found {
+		t.Errorf("the account's count after the refused change: %+v, %v, %v; want none", f, found, err)
+	}
 	wantStatus(t, ":set-password to an empty password", s.setPassword(t, admin, p, ""), http.StatusBadRequest, "invalid")
 	if v := versionOf(t, s, pw); v != 1 {
 		t.Errorf("the password hash's version after the refused sets: %d, want 1", v)
