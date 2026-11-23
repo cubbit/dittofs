@@ -182,6 +182,12 @@ func New(t testing.TB, opts ...Option) *Harness {
 // by name, generated once for the test binary: each costs a key derivation,
 // slow under the race detector, and no test needs two harnesses' keys to
 // differ. They are weak, so each open the node makes costs little too.
+//
+// decision: this cache and opened below are global to the test binary. Every
+// harness in the binary seals under the same weak key, so no node test can
+// tell one installation's key from another's, and the first open's error
+// holds for the whole binary. Withdraw it when a node test needs two
+// installations with different keys.
 var generated = sync.OnceValues(func() (map[string][]byte, error) {
 	keys := map[string][]byte{}
 	for _, name := range []string{"storage.key", "protocol.key"} {
