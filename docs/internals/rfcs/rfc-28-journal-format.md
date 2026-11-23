@@ -905,7 +905,7 @@ extent is left unallocated or unwritten; one that fails is unlinked and made
 again rather than adopted. A re-adopted spare whose header slot or trailer slot
 is not zeros — a recycle interrupted before its zeroing was synced — has both
 slots zeroed and synced before a stream may take it ([§2.2](#2.2%20Segments)). Recovery **MUST** re-adopt a segment that passes as a spare ([§2.2](#2.2%20Segments)), unless a sync mark names its id ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) or its header names a predecessor still on disk whose seal is not proven, counted first toward the reconcile spare while the journal has none ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), then toward the
-headroom, the repack reserve or a stream's next segment, and **MUST NOT** treat it
+repack reserve, the headroom or a stream's next segment, in that order ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity): at the limit repack is the one way out, so its reserve spare comes first), and **MUST NOT** treat it
 as an orphan: unlinking it after an age gate would leave the reserves the re-appends
 below draw on short at the very start that needs them. A record-less take whose
 header names a predecessor still on disk whose seal is not proven is held rather than re-adopted,
