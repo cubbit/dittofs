@@ -300,7 +300,11 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 
 		// Flip a payload byte behind the journal's back, through the seam,
 		// then read: the read drops the extent as corrupt with its offloaded
-		// bit unset, and the counter has risen by the time the read returns.
+		// bit unset, and the counter is read once the read returns. This leg
+		// checks the series is reachable from the node's listener, not the
+		// ordering: it passes on timing alone without the count made before
+		// Corrupt returns, which durability's
+		// TestCorruptCountsTheLossWhenCorruptReturns guards.
 		flipPayloadByte(t, seam, payload)
 		got := make([]byte, len(payload))
 		n, rerr := h.Node().Engine().Read(t.Context(), sh.ID, file.ID, 0, got)
