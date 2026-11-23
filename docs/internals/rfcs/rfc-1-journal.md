@@ -1342,6 +1342,7 @@ un-offloaded delete that a crash reverts would resurrect a removed file.
 Extents(id FileID) ([]Extent, error)      // held extents, offset order
 Files() iter.Seq[FileID]                   // files of this share with a held extent, an unsettled removal marker or an unsettled synced loss, recorded or deferred (§6), a `superseded` one excepted
 Stats() Stats                              // the Journal's, not the Handle's (§3): journal-wide, with a per-share breakdown
+Losses() []LossEvent                       // the genuine read: marks the events its copy carries served (§3.8)
 DirtyFiles() iter.Seq2[FileID, time.Time]  // files with a held or retained extent whose offloaded bit is unset, each with its oldest dirty byte's write time
 ```
 
@@ -1495,14 +1496,17 @@ index, unless a snapshot hold keeps it ([§3.11](#3.11%20Snapshot%20holds)).
 At open, every loss record still on disk is placed in the ring, marked as found
 at open, so a restart does not hide a loss nobody had read. What one read means
 is settled: `Losses` is the genuine read, the read whose call marks the events
-its copy carried served, and a reopen — a restart or a reopen in one process —
-places found at open exactly the loss records the ended instance's genuine
+its copy carried served, and an in-process reopen — the served suppression
+lives in the process's memory, so a restart re-places every loss record on
+disk — places found at open the loss records the ended instance's genuine
 reader never took away, so the first reopen reports a loss nobody read and a
-later reopen past a genuine read does not report it as new, which the
-[§9.4](#9.4%20The%20checks) row separates. Every other read of the ring, `Stats`'s included, is
-a figure that marks nothing served: a figure read moved ahead of the reader the
-losses belong to would suppress a report nobody delivered, and the engine's
-commit drain is the one genuine caller ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
+later one past a genuine read does not report it as new, which the
+[§9.4](#9.4%20The%20checks) row separates — except that a read after a gap of overwritten events
+can leave an earlier read's events to be reported again. Every other read of
+the ring, `Stats`'s included, is a figure that marks nothing served: a figure
+read moved ahead of the reader the losses belong to would suppress a report
+nobody delivered, and the engine's commit drain is the one genuine caller
+([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
 A loss record is
 dropped by the same per-extent test as a removal record ([§7.2](#7.2%20Repack)): once no segment
 still on disk holds a record of its file over its extent at or below the pair of
