@@ -130,7 +130,11 @@ func TestDittofsArgv_InitAndStartTheBuiltDfs(t *testing.T) {
 		}
 		stopped = true
 		_ = startCmd.Process.Kill()
-		_ = <-exited
+		// After the kill the exit error is normally "signal: killed"; an
+		// earlier exit comes back here as the error waitAccept put back.
+		if err := <-exited; err != nil {
+			t.Logf("dfs exit: %v", err)
+		}
 	}
 	t.Cleanup(stop)
 	for _, addr := range []string{api, metrics} {
