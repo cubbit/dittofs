@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -472,5 +473,95 @@ func TestRFC8A_RemovalDoneNotPrunedIsPrunedAtRestart(t *testing.T) {
 
 	if got := f.KeysOf(id); len(got) != 0 {
 		t.Errorf("the released file still holds %d keys after its prune: %q", len(got), got)
+	}
+}
+
+// A dirty extent a Commit's drain took away is not placed found at open again
+// by an in-process reopen: the drain is the journal's genuine loss reader —
+// its read marks the events served — so the failed window's loss records the
+// reopen finds on disk were answered once already, and the reopened journal
+// publishes nothing for them. The drain's read is the only one that answers;
+// a Stats figure of the same events would mark nothing served, and the
+// reopen would re-report the loss as new, the duplicate RFC 1 §9.4's row
+// rules out.
+func TestRFC8A_ALossTheDrainServedIsNotRefoundAtTheReopen(t *testing.T) {
+	f := enginetest.New(t)
+	_, id := f.File("a")
+
+	// The dirty extent: a write whose window the journal fails drops it and
+	// leaves its loss records on disk.
+	write(t, f, id, 0, []byte("lost in a failed window"))
+	f.FailNextWindow()
+
+	if _, seq, err := f.E.Commit(t.Context(), f.Share.ID, id, 0, 0); err != nil || seq != 1 {
+		t.Fatalf("Commit over the failed window: sequence %d, %v, want 1: the drain it ran carried the loss away", seq, err)
+	}
+
+	// The close runs no batch — nothing is due — and the reopen places found
+	// at open only what no drain reached.
+	f.Restart()
+
+	if seq := f.E.LossSeq(f.Share.ID, id); seq != 0 {
+		t.Errorf("loss sequence after the reopen = %d, want 0: the loss a drain served stays served past the stop, never placed found at open again", seq)
+	}
+}
+
+// A loss no drain of the ended instance ever reached IS there at its reopen,
+// the mirror of the leg above: a dirty extent written through the raw handle
+// holds nothing pending in the engine, so its failed sync window publishes
+// live loss events no engine sync drains, and the close that follows — an
+// engine holding nothing due runs no last batch — drains nothing either. The
+// ended instance's claims die unread, so the reopen places the loss records
+// found at open again, into its own ring, and the drain of the reopened
+// process applies them: the file's loss sequence rises over the loss the
+// ended process never told a client. The leg above asserts the same reopen
+// silent over a loss a Commit's drain took; this one is the row's honest
+// red, proving the fixture can see a found-at-open event through the public
+// surface when the journal places one.
+func TestRFC8A_ALossNoDrainReachedIsReportedAtTheReopen(t *testing.T) {
+	f := enginetest.New(t)
+	_, id := f.File("a")
+	p := bytes.Repeat([]byte("lost"), 1024)
+
+	// The dirty extent: held by the journal alone, through the raw handle,
+	// so the engine holds no pending operation and no batch of its own can
+	// drain the ring.
+	if _, err := f.Handle().WriteAt(t.Context(), journal.NewFileID(id), 0, p, 0); err != nil {
+		t.Fatalf("journal write of the dirty extent: %v", err)
+	}
+	f.FailNextWindow()
+
+	// The journal's own timer sync fails the window and publishes the loss
+	// events live; no engine sync ever reads them.
+	f.Clock.Advance(time.Second)
+	eventually(t, "the journal's timer sync fails the window", func() bool {
+		for _, j := range f.E.Stats().Journals {
+			if j.Stats.Counters.SyncFailures > 0 && len(j.Stats.Losses) > 0 {
+				return true
+			}
+		}
+		return false
+	})
+
+	// Nothing is due, so the close runs no last batch and no drain: the
+	// reopen is the loss's first reader.
+	f.Restart()
+
+	// The found-at-open event is in the reopened journal's ring, naming the
+	// lost extent, and the drain of the reopened process applies it.
+	found := false
+	for _, j := range f.E.Stats().Journals {
+		for _, ev := range j.Stats.Losses {
+			if ev.AtOpen && ev.File == journal.NewFileID(id) {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("the reopened journal holds no found-at-open event naming the extent: the un-drained loss is not re-placed at the reopen")
+	}
+
+	if seq := f.E.LossSeq(f.Share.ID, id); seq != 1 {
+		t.Errorf("loss sequence after the reopen = %d, want 1: the found-at-open event reached the drain and raised the lost file", seq)
 	}
 }
