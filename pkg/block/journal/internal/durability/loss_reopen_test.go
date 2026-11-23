@@ -423,11 +423,12 @@ func TestNamedAnswersThePieceOnlyThroughADeliveredReport(t *testing.T) {
 
 // TestAnOverwrittenEventAGenuineReadNeverCarriedStaysUnserved pins the
 // served window's clamp: the ring keeps the newest core.LossRingSize events,
-// and a genuine read answers for the events its copy carried alone. The
-// events the ring had overwritten before the read — a poller that knows it
-// missed them has still not read them — stay answered by nobody, so their
+// and the one genuine read answers for the events its copy carried alone.
+// The events the ring had overwritten before any read — a poller that knows
+// it missed them has still not read them — stay answered by nobody, so their
 // claims survive their instance and the reopen places the losses they name
-// found at open again, while every event the copy carried stays suppressed.
+// found at open again, while every event the copy carried stays suppressed
+// past its own overwriting (TestServedEventsStayServedPastTheRingWrap below).
 func TestAnOverwrittenEventAGenuineReadNeverCarriedStaysUnserved(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
@@ -478,5 +479,54 @@ func TestAnOverwrittenEventAGenuineReadNeverCarriedStaysUnserved(t *testing.T) {
 		if ev.Version.Counter < 200 || ev.Version.Counter >= 204 {
 			t.Fatalf("the reopen published %+v, want only one of the four overwritten pieces", ev)
 		}
+	}
+}
+
+// TestServedEventsStayServedPastTheRingWrap pins the served window's join: the
+// drain reads the ring after every Loses, so each read is contiguous with the
+// window so far and keeps its earlier start. An event an earlier read served
+// keeps that answer even once the ring has wrapped past it — the claims
+// retired by its read stay retired — so an in-process reopen places the
+// losses they name found at open never again, the duplicate RFC 1 §9.4's row
+// rules out. The clamp's other side, the events no copy ever carried, stays
+// with the test above.
+func TestServedEventsStayServedPastTheRingWrap(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+
+	// Four more losses than the ring holds, each its own piece, and the
+	// drain's genuine read serving every event at once: the writes each
+	// land in a ring a reader already drained.
+	n := core.LossRingSize + 4
+	seqs := make([]core.Seq, n)
+	events := make([]core.LossEvent, n)
+	for i := range events {
+		seqs[i] = core.Seq(100 + i)
+		ev, err := e.d.Lose(ctx, loss(seqs[i]))
+		if err != nil {
+			t.Fatalf("Lose of the piece at %d: %v", i, err)
+		}
+		if ev == (core.LossEvent{}) {
+			t.Fatalf("the piece at %d published no event", i)
+		}
+		events[i] = ev
+		if got := e.d.Losses(); len(got) != i+1 && len(got) != core.LossRingSize {
+			t.Fatalf("the drain after the piece at %d carried %d events, want every published one the ring still holds", i, len(got))
+		}
+	}
+
+	// The wrap: the ring holds the newest LossRingSize events, the first
+	// four overwritten — by reads each of which carried them away.
+	e.d.Stop()
+
+	// The reopen reads what the disk holds and re-places each record a
+	// surviving claim lets through. Every event was served, so no claim
+	// survived the wrap: no loss is published found at open again.
+	reopen := e.newDurability()
+	for i, ev := range events {
+		reopen.Place(ev, seqs[i])
+	}
+	if got := reopen.Stats().Losses; len(got) != 0 {
+		t.Fatalf("the reopen published %d found-at-open events, want 0: every published event was served by a read before the wrap, so no claim survived its instance %v", len(got), got)
 	}
 }
