@@ -1111,3 +1111,46 @@ func TestScanSearchConsumesAnAllZeroWindowAsOne(t *testing.T) {
 		}
 	})
 }
+
+// firstNonZero answers what a byte-by-byte search answers wherever the one
+// byte that is not zero sits: at the first and last byte of a block, either
+// side of a block's edge, at the end of a length that is no whole number of
+// blocks, and nowhere at all.
+func TestFirstNonZeroFindsTheFirstByteThatIsNotZero(t *testing.T) {
+	block := len(zeroBlock)
+	for _, n := range []int{0, 1, 7, block - 1, block, block + 1, 3*block + 5} {
+		b := make([]byte, n)
+		if got := firstNonZero(b); got != -1 {
+			t.Errorf("firstNonZero of %d zero bytes = %d, want -1", n, got)
+		}
+		for _, at := range []int{0, 1, block - 1, block, block + 1, 2*block + 3, n - 1} {
+			if at < 0 || at >= n {
+				continue
+			}
+			b := make([]byte, n)
+			b[at] = 0x5a
+			if at+1 < n {
+				b[n-1] = 1 // a later byte that is not zero must not win
+			}
+			if got := firstNonZero(b); got != at {
+				t.Errorf("firstNonZero of %d bytes with the first non-zero byte at %d = %d, want %d", n, at, got, at)
+			}
+		}
+	}
+}
+
+// BenchmarkScanSegmentHeadersOverZeros walks the shape a reopened journal's
+// newest segment has: a few records, then zeros to the segment's cap, which
+// the forward search reads to the end.
+func BenchmarkScanSegmentHeadersOverZeros(b *testing.B) {
+	seg, _ := scanSegment(b, testIdentity, scanTestRecords()...)
+	seg = append(seg, make([]byte, 64<<20-len(seg))...)
+	r := bytes.NewReader(seg)
+	b.SetBytes(int64(len(seg)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ScanSegmentHeaders(r, int64(len(seg)), testIdentity, testSegment); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
