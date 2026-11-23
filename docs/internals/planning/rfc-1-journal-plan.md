@@ -6,7 +6,7 @@ release-1 parts of [RFC 15 — topology](../rfcs/rfc-15-topology.md). The test f
 follow [RFC 29 — test harness](../rfcs/rfc-29-test-harness.md).
 **Team:** three people. **Track A** (storage) is @viquitorreis, **track B** (model and
 operations) is @didimelli, and @simonebaracchi coordinates (§3.4).
-**Naming:** **v1** was the journal before this plan (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`, one journal per
+**Naming:** **v1** was the journal before this plan (`pkg/journal` until #3645 deleted it on `feat/storage-v2`, one journal per
 share). **v2** is the journal RFC 1 describes (one journal per disk, shared by every share
 placed on that disk).
 
@@ -19,7 +19,7 @@ placed on that disk).
 v2 is a new local journal. It is not a refactor of v1 and shares no code with it. The two
 differ at the root:
 
-| | v1 (`pkg/block/journal` until #3645 deleted it) | v2 (this plan) |
+| | v1 (`pkg/journal` until #3645 deleted it) | v2 (this plan) |
 | --- | --- | --- |
 | Granularity | one journal per **share** (`<journal.path>/shares/<name>/journal`) | one journal per **device**, shared by every share on it, each share working through its own `Handle` and `ShareTag` |
 | What it knows | carving, chunk sizes, eviction, cold seeding (`Hydrate`, `Commit`, `SeedCold`, …) | extents of files only. No chunks, no blocks, no remote tier ([RFC 1 §1.1](../rfcs/rfc-1-journal.md)) |
@@ -91,7 +91,7 @@ Epic 1 is **interfaces only**. Its output is code that compiles and does nothing
 - The kept tests pass: the import rule, the RFC signature compile check, typed errors
   matching their sentinels, and `Version`'s byte order (§1.5, rule 10).
 - The import test passes, allowing stdlib only (plus `golang.org/x/sys` in
-  `internal/platform`, epic 1 D6) and, while v1 existed, forbidding v1's `pkg/block/journal`.
+  `internal/platform`, epic 1 D6) and, while v1 existed, forbidding v1's `pkg/journal`.
 - Every symbol carries a doc comment stating its contract in terms of the code.
   `CLAUDE.md` keeps RFC section numbers out of source comments, so the map from each
   symbol to its RFC section lives in the epic's planning file instead.
@@ -223,7 +223,7 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
+   v1's journal (`pkg/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
@@ -348,8 +348,8 @@ everything before it.
   those and the system e2e tests remain on the known-failure list. RFC 8's second part cannot finish before this point.
 - **S4a. Engine interface agreed** (with rif, stage 2 of #3119). **Closed, not as
   written.** No interface negotiation happened: the engine interface exists as
-  `engine.Deps` on `feat/storage-v2` (`pkg/block/engine`, composed by
-  `pkg/block/engine/enginewire`), and stage 3's first part is planned and under way as the
+  `engine.Deps` on `feat/storage-v2` (`pkg/engine`, composed by
+  `pkg/engine/enginewire`), and stage 3's first part is planned and under way as the
   [RFC 8 part-1 plan](rfc-8-journal-only-engine-plan.md), built by rif's team. The engine
   wiring, version-limit raise and store contracts this gate was to unblock are that plan's.
   What it never settled — who writes the system scenarios at the filesystem service's
@@ -454,7 +454,7 @@ code lives. Each package is created with its first symbol by the epic named on i
 never as a placeholder (§1.5, rule 12).
 
 ```text
-pkg/block/journal/                package journal — public API (RFC 1 §3)
+pkg/journal/                package journal — public API (RFC 1 §3)
   doc.go  journal.go  handle.go  reservation.go
   types.go  errors.go  stats.go  trace.go  inspect.go
   options.go                      injection points; Clock is aliased from internal/core
@@ -488,10 +488,10 @@ label is needed either (epic 1, D1).
 
 ### 4.1 Code sketch
 
-This sketch is illustrative: signatures come from RFC 1 §3 or from `pkg/block/journal` on
+This sketch is illustrative: signatures come from RFC 1 §3 or from `pkg/journal` on
 `feat/storage-v2`, and the epic documents decide the final names.
 
-The composition root — on `feat/storage-v2` it is `pkg/block/engine/enginewire`,
+The composition root — on `feat/storage-v2` it is `pkg/engine/enginewire`,
 which the node and the engine's test fixture both call — opens one journal per device at
 start, then attaches a handle per share. `pkg/clock` never landed (the sketch's clock
 argument is served by the clock the composition takes); the `marks` argument is still

@@ -867,7 +867,7 @@ Performance is tracked, not gated: hosted runners are too noisy for a threshold.
 - **`fio-verify`:** fio jobs over an NFS 4.1 mount (`fio-verify/smb` over SMB) with data
   verification, so a verify error fails the test. Nightly.
 - **`perf-night`:** the full nightly performance run on the dedicated host.
-- **Go benchmarks:** `go test -bench=. -benchmem -run=^$ ./pkg/block/engine/`, and the `manual`
+- **Go benchmarks:** `go test -bench=. -benchmem -run=^$ ./pkg/engine/`, and the `manual`
   suites `engine-bench`, `reconcile-bench` and `version-limit-probe-bench`.
 
 Writing a benchmark: measure only the operation. Do setup before `b.ResetTimer()`, call

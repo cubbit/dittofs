@@ -1333,7 +1333,7 @@ opened again, and a `Bind` that attaches a share to that journal fails with the 
 ### 2.8 Package layout
 
 ```text
-pkg/block/engine/            the engine (this RFC)
+pkg/engine/            the engine (this RFC)
   engine.go                  New, Start, Close (§2.5, §2.6)
   deps.go                    Deps and the interfaces it holds, each with the methods §2.1's table names
   share.go                   Bind, Unbind, Drop, the share table (§2.3)
@@ -1353,7 +1353,7 @@ pkg/block/engine/            the engine (this RFC)
 pkg/sched/                   the shared work scheduler (§6.1.1), used by the engine and GC
 ```
 
-**On `feat/storage-v2` the engine is `pkg/block/engine`**, as the journal is `pkg/block/journal`.
+**On `feat/storage-v2` the engine is `pkg/engine`**, as the journal is `pkg/journal`.
 While v1 existed they were `pkg/block/enginev2` and `pkg/block/journalv2`; the
 suffix was in Go package and import paths only, and metric, span and log names
 say `engine` and `journal` from the start.
@@ -3833,7 +3833,7 @@ journal records with the operation ([§12.2](#12.2%20A%20retried%20mutation%20is
 Signatures are indicative; the obligations are normative.
 
 ```go
-package engine // pkg/block/engine
+package engine // pkg/engine
 
 // New validates d (§2.6) and builds the engine. It takes no settings, opens
 // nothing and starts no goroutine.

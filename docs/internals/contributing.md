@@ -227,7 +227,7 @@ the request, calls the handler and encodes the reply.
 
 ### Adding a New Store Backend
 
-Business logic (permission checking, locking, quotas) lives in the filesystem service (`internal/vfs`) and the engine (`pkg/block/engine`), which the adapters reach through `vfs.Service` once its file operations land (see [Data path](architecture.md#data-path)).
+Business logic (permission checking, locking, quotas) lives in the filesystem service (`internal/vfs`) and the engine (`pkg/engine`), which the adapters reach through `vfs.Service` once its file operations land (see [Data path](architecture.md#data-path)).
 
 **Metadata Store:**
 
@@ -239,9 +239,9 @@ The metadata store (`pkg/metadata/kvstore`) is written once, over `kv.KV`
 
 **Journal (local tier):**
 
-The local tier is `pkg/block/journal`, one journal per device with a handle per
+The local tier is `pkg/journal`, one journal per device with a handle per
 share; it is not a pluggable backend. Its conformance checks run under the
-`journal_conformance` tag (`pkg/block/journal/conformance/`).
+`journal_conformance` tag (`pkg/journal/conformance/`).
 
 **Block Store (Remote):** none yet. The v1 remote tier and its conformance suite are
 deleted, and the engine takes no remote store.
