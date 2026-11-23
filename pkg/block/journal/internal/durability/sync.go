@@ -239,6 +239,11 @@ type Durability struct {
 	// across the streams.
 	windowSeq atomic.Uint64
 
+	// lastMarks is the figure of each append stream's last completed sync,
+	// one core.SyncMark per stream ordered by stream, replaced whole and never
+	// edited in place: see SeedMarks, RaiseMarks and Marks.
+	lastMarks atomic.Pointer[[]core.SyncMark]
+
 	dir      *dirState
 	counters *index.Counters
 	markLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error)
@@ -1287,7 +1292,9 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) ([]core.SyncM
 	if err := d.await(ctx, ws, true); err != nil {
 		return nil, err
 	}
-	return d.marksOf(ws), nil
+	marks := d.marksOf(ws)
+	d.RaiseMarks(marks)
+	return marks, nil
 }
 
 // candsOf reduces the targets to one candidate per file, the newest: the

@@ -83,6 +83,8 @@ var (
 	_ = func(j *Journal) (int64, error) { return j.Repack(context.Context(nil), int64(0), RepackScope{}) }
 
 	_ = func(j *Journal) Stats { return j.Stats() }
+	_ = func(j *Journal) { j.MarksRecorded([]SyncMark(nil)) }
+	_ = func(j *Journal) []SyncMark { return j.SyncMarks() }
 	_ = func(j *Journal) Inspector { return j.Inspect() }
 	_ = func(in Inspector) ([]IndexEntry, error) { return in.File(FileID{}) }
 	_ = func(in Inspector) iter.Seq2[FileID, []IndexEntry] { return in.All() }
