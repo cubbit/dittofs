@@ -305,7 +305,7 @@ internal/node/
                         T8.2   the identity.directory section
   export_test.go        T8.1   (*Node).Service, (*Node).Accounts (D5)
                         T8.2   NewWithDialers (D4)
-  identity_test.go      T8.1, T8.2, T8.3, T8.6, T8.9, T8.10, T8.11
+  identity_test.go      T8.1, T8.2, T8.3, T8.6, T8.9, T8.10, T8.11, T8.12
 internal/identity/
   kerberos.go (E5's)    T8.5   a directory principal's enabled state at sign-in (D6)
   integration_test.go   T8.5, T8.7   the Tier 1 clauses several epics meet in
@@ -719,7 +719,9 @@ flowchart TD
   X8(["E3 T3.6, E6 T6.9, RFC 23 plan epic 5"]):::sync --> T8_9
   T8_1 --> T8_10["T8.10 NTLM off on the runner"]
   X9(["E2 T2.7, RFC 23 plan T4.11, #4059 epic 5"]):::sync --> T8_10
-  T8_6 & T8_9 --> T8_11["T8.11 No secret recorded"]
+  T8_1 --> T8_12["T8.12 The API's sealer"]
+  X10(["RFC 23 plan epic 4 T4.11"]):::sync --> T8_12
+  T8_6 & T8_9 & T8_12 --> T8_11["T8.11 No secret recorded"]
   T8_3 & T8_4 & T8_5 & T8_7 & T8_8 & T8_10 & T8_11 --> C1(["E8 done: E9 runs on this node"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
@@ -736,7 +738,7 @@ passes through; after T8.11, E9 can start once S3 is reached.
 | 2 | T8.2, T8.3, T8.4 | 4.75 | PR 1, E3's T3.6, E4, E5 (T5.3's test realm among it), E6, the RFC 13 PR adding the `identity.keytab` row, RFC 23's #4550 (reconcile applies on a failed share pass), RFC 23 plan epic 4 T4.11 (keytab route) | the node delivering every principal, Kerberos and directory change, checked against Samba |
 | 3 | T8.5 | 2 | E5's T5.8b, E6's T6.11 | the Kerberos clauses in identity alone; may be open beside PR 2 |
 | 4 | T8.6, T8.7, T8.8 | 4 | PR 2, E7, RFC 23's plan's epic 4's T4.9 and T4.11 | the machine account in the node and what pass-through and the join close |
-| 5 | T8.9, T8.10, T8.11 | 2.5 | PR 4, RFC 23's plan's epics 4 and 5 | the rows through the API, and the capture over everything above |
+| 5 | T8.9, T8.10, T8.11, T8.12 | 3 | PR 4, RFC 23's plan's epics 4 and 5 | the rows through the API, and the capture over everything above |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -770,14 +772,14 @@ T6.6 test only the CLI's arguments and refusal, and the success paths run in its
 
 **Where the RFC 18 plan and this document differ:**
 
-- The figure here is 14.75 man-days over 11 subtasks, against the RFC 18 plan's 10.5 over 5. It
+- The figure here is 15.25 man-days over 12 subtasks, against the RFC 18 plan's 10.5 over 5. It
   holds work the RFC 18 plan's list does not name: the writer's at-once apply held at identity
   (T8.3, 0.5; RFC 23's plan's epic 3 builds it, D3), the
   enabled state at sign-in (in T8.5, 0.75), the NetBIOS check (T8.8, 0.75), the machine account's
   composition, the node's seams, `State.Join`, the four kinds registered with no adapter and the
   refused join's hold (T8.6, 2.25), the live Samba sign-in
   moved from E5 (T8.4, 1.25), and both halves of
-  the `krb` link through the API (in T8.2, 0.5).
+  the `krb` link through the API (in T8.2, 0.5), and the API's sealer (T8.12, 0.5).
   It holds less of the rows: the review found every clause of "admin needs proof", "deny-only
   lookup error" and "NTLM without a domain controller", and the resolution halves of "disabled
   directory account" and "directory deadline", already tested by E3, E4, E5 and E6, so §3 names
