@@ -40,7 +40,7 @@ plan is not merged.
 
 **Naming.** v1 is `pkg/block/middleware`, `middleware/compression` and `middleware/encryption`
 (with `encryption/keyprovider`, which RFC 13's plan moved to `pkg/keyprovider`), with the rest of
-the v1 block tier. Stage 4 of #3119 deletes the v1 block tier (D8,
+the v1 block tier. Stage 4 of #3119 deletes the v1 block tier (that plan's D8,
 [#5484](https://github.com/cubbit/dittofs/issues/5484), `.planning/rfc-16-store-cutover-stage4-plan.md`)
 and with it `github.com/pierrec/lz4/v4`. v2 is RFC 5's chain, built in `pkg/block/transform`. No
 user-visible name carries a version.
@@ -73,7 +73,7 @@ What replaces what:
 
 | v1 | v2 | Fate |
 | --- | --- | --- |
-| `pkg/block/middleware` (the decorator chain over the v1 remote store) | `pkg/block/transform`'s `Chain`, run inside RFC 4's block codec | v1 deleted by stage 4 (D8) |
+| `pkg/block/middleware` (the decorator chain over the v1 remote store) | `pkg/block/transform`'s `Chain`, run inside RFC 4's block codec | v1 deleted by stage 4 (its plan's D8) |
 | `pkg/block/middleware/compression` (zstd and LZ4, a marker per layer) | `pkg/block/transform/compress`, IDs `0x0001` and `0x0002` | v1 deleted by stage 4; `pierrec/lz4/v4` re-added by epic 4 (D4) |
 | `pkg/block/middleware/encryption` (a random data key per chunk under AES-GCM) | `pkg/block/transform/encrypt`, ID `0x0010` | v1 deleted by stage 4 |
 | `pkg/keyprovider` (RFC 13's custody of the `storage` wrapping key; its KMIP provider fetches the key out of the server) | `pkg/block/transform/material` and `material/kmip`, master keys that never leave a key service | `pkg/keyprovider` stays RFC 13's; only its key-file format is shared (D5) |
@@ -301,6 +301,7 @@ flowchart TD
   S4(["S4 RFC 4 plan: the codec calls the chain"]):::sync --> S5
   S5(["S5 RFC 8 offload plan: chain, census and material composed in the engine"]):::sync --> E10["E10 Integration, the engine's part 🔀"]:::sync
   E9 --> E10 --> E11["E11 E2E green 🔀"]:::sync
+  S5 --> E11
   classDef blocker stroke:#c0392b,stroke-width:3px
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
