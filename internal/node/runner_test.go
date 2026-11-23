@@ -890,3 +890,45 @@ func TestRunWithWorkLeftReturnsWhenItsContextEnds(t *testing.T) {
 		t.Fatal("run with work left after its context ended: still running 10 s later, want returned")
 	}
 }
+
+// A run of back-to-back turns that ends 600 ms into the clock waits only the
+// 400 ms left of runInterval: the next full turn comes runInterval after the
+// last one began, not runInterval after the run ended.
+func TestRunKeepsFullTurnsAnIntervalApart(t *testing.T) {
+	b := newBench(t, "", nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	var busy, waiting atomic.Int64
+	r := b.runner(map[string]stepRow{
+		"busy": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
+			n := busy.Add(1)
+			if n == 2 {
+				b.clock.Advance(600 * time.Millisecond) // the run takes 600 ms
+			}
+			return step.StepResult{More: n < 3}, nil
+		}},
+		"wait": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
+			waiting.Add(1)
+			return step.StepResult{}, nil
+		}},
+	})
+	for i, kind := range []string{"busy", "wait"} {
+		b.operation(entity.Operation{Kind: kind, Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{byte(i + 1)}}, State: entity.OpRunning})
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.run(ctx, health.NewWatchdog(b.clock).Loop("runner"))
+	}()
+	waitFor(t, "the loop to wait on its clock once the run ends", func() bool { return b.clock.Pending() > 0 })
+	b.clock.Advance(400 * time.Millisecond)
+	if n := b.clock.Pending(); n != 0 {
+		t.Errorf("the runner's wait 400 ms past a run that ended 600 ms after the last full turn began: %d still pending, want it due runInterval after that turn", n)
+	}
+	waitFor(t, "the full turn to drive the waiting operation again", func() bool { return waiting.Load() == 2 })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run after its context ended: still running 10 s later, want returned")
+	}
+}

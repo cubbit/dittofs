@@ -195,6 +195,10 @@ func (n *Node) Wake() {
 // node's clock. Call it before Start.
 func (n *Node) OnRunnerTurn(turned func(ctx context.Context)) { n.runner.turned = turned }
 
+// RunnerWaits reports whether the operation runner's last turn ended in a
+// wait on the node's clock. Call it only from the OnRunnerTurn hook.
+func (n *Node) RunnerWaits() bool { return n.runner.waits }
+
 // OnStatus has the status writer call turned at the end of each turn with
 // the status it built and whether it committed it. Call it before Start.
 func (n *Node) OnStatus(turned func(s entity.NodeStatus, wrote bool)) { n.status.turned = turned }

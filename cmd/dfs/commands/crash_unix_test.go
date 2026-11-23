@@ -324,6 +324,10 @@ func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 
 	// Every scan of the share's file rows is a batch of step 4, the files
 	// phase: the second scan is held, after the first batch dropped its rows.
+	// Both holds below count on that: nothing else scans the share's file
+	// prefix, at a start or otherwise. A start that did would have the hold
+	// land on the first batch instead, and the row then fails on the rows
+	// left at a kill, not at random.
 	files := keys.ID([]byte{keys.KindF}, share.ID[:])
 	seeded := fileRows(t, config, files)
 	c := serve(t, config, hold(kvtest.OpScan, files, 2, nil))

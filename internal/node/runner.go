@@ -59,8 +59,10 @@ type runner struct {
 	busy    map[entity.OperationID]bool // the operations whose last committed step answered More
 
 	// turned, when set, is called with run's context after each turn, once
-	// the wait for the next, if any, is set on the clock.
+	// the wait for the next, if any, is set on the clock; waits says whether
+	// one was, and turned may read it.
 	turned func(ctx context.Context)
+	waits  bool
 
 	mu      sync.Mutex
 	refused map[string]bool // the kinds found with no step
@@ -85,8 +87,9 @@ func (r *runner) progressOf(ctx context.Context, op entity.Operation) apiv1.Prog
 }
 
 // run takes turns until ctx ends, reporting each to loop: the next at once
-// while a step of the last reported work left, and runInterval later on the
-// runner's clock otherwise; a turn runInterval or more after the last full
+// while a step of the last reported work left, and otherwise the next full
+// turn, runInterval on the runner's clock after the last one began, or at
+// once when that has passed; a turn runInterval or more after the last full
 // one is full. A step ctx interrupts commits nothing, so each operation is
 // left at its last durable step.
 //
@@ -108,8 +111,8 @@ func (r *runner) run(ctx context.Context, loop *health.Loop) {
 			full = r.clock.Elapsed()
 		}
 		next := (<-chan struct{})(now)
-		if !r.turn(ctx, all) {
-			next = r.clock.After(runInterval)
+		if r.waits = !r.turn(ctx, all); r.waits {
+			next = r.clock.After(full + runInterval - r.clock.Elapsed())
 		}
 		loop.Turn()
 		if r.turned != nil {
@@ -131,8 +134,16 @@ func (r *runner) run(ctx context.Context, loop *health.Loop) {
 //
 // ponytail: a turn pages through the whole running index, and a deletion
 // with work left runs turns back to back, so the page-through repeats once
-// per batch. Keep a cursor or a wake-up per operation when that page-through
-// shows in a profile.
+// per batch, as do drive's two reads of the operation's progress, which for
+// a share's deletion are two reads of the removal's record. Keep a cursor or
+// a wake-up per operation when that page-through shows in a profile. Back to
+// back, a large share's drop also runs its quadratic rescan (the ponytail on
+// kvstore's ContinueShardRemoval) with no pause, its store transactions
+// competing with foreground writes, and each batch's bounded store calls
+// leave two storeBound timers that cannot be stopped (the ponytail on the
+// system clock's After): cap the back-to-back time per runInterval when
+// foreground latency during a large drop, or those timers in a heap
+// profile, show it.
 func (r *runner) turn(ctx context.Context, all bool) bool {
 	listed := map[entity.OperationID]bool{}
 	for op, err := range r.cp.RunningOperations(ctx, entity.Operation{}) {

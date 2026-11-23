@@ -15,6 +15,7 @@ import (
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -79,11 +80,13 @@ type gatedRunner struct {
 	proceed  chan struct{}
 	released chan struct{}
 	once     atomic.Bool
+	waits    atomic.Bool // the last turn ended in a wait on the clock
 }
 
 func gateRunner(h *nodetest.Harness) *gatedRunner {
 	g := &gatedRunner{h: h, turns: make(chan struct{}), proceed: make(chan struct{}), released: make(chan struct{})}
 	h.Node().OnRunnerTurn(func(ctx context.Context) {
+		g.waits.Store(h.Node().RunnerWaits())
 		for _, step := range []chan struct{}{g.turns, g.proceed} {
 			select {
 			case step <- struct{}{}:
@@ -600,40 +603,86 @@ func TestARemovalsHungStoreFailsStartAtItsStep(t *testing.T) {
 }
 
 // A share of 1000 files, about 3000 rows and 150 batches of step 4, marked
-// deleted before the start, is deleted on a clock that never moves past the
-// start: each turn whose step reported work left is followed by the next at
-// once, so the deletion is not paced at a turn a second.
+// deleted before the start, is deleted with the runner waiting on its clock
+// once, after the batch that drops the last files: every other turn's step
+// reported work left, so the next followed at once rather than a second
+// later.
 func TestAShareDeletionRunsItsBatchesAtOnce(t *testing.T) {
 	const files = 1000
 	h := nodetest.New(t, nodetest.Watch())
 	configure(t, h, storeA)
 	sh := createShare(t, h, "a", storeA)
 	createFiles(t, h, sh, files)
-	turned := make(chan struct{}, 1)
-	var turns atomic.Int64
-	h.Node().OnRunnerTurn(func(context.Context) {
+	op := deleteShare(t, h, sh)
+	turned, waited := make(chan struct{}, 1), make(chan struct{}, 1)
+	var turns, waits atomic.Int64
+	h.Node().OnRunnerTurn(func(ctx context.Context) {
 		turns.Add(1)
+		if h.Node().RunnerWaits() {
+			if o, _, err := h.Store().ControlPlane().Operation(ctx, op.ID); err == nil && o.State != entity.OpSucceeded {
+				waits.Add(1)
+				select {
+				case waited <- struct{}{}:
+				case <-ctx.Done():
+				}
+			}
+		}
 		select {
 		case turned <- struct{}{}:
 		default:
 		}
 	})
-	op := deleteShare(t, h, sh)
 	began := time.Now()
 	started(t, h)
-	at := h.Clock().Elapsed()
 	// decision: the wall-time bound is only a backstop against a hang; the
-	// assertion is that the clock never moved, as the old pace needed a
-	// second of it per batch.
+	// assertion is on the waits the runner armed, each of which this loop
+	// releases by moving the clock.
 	for opState(t, h, op.ID) != entity.OpSucceeded {
 		select {
 		case <-turned:
+		case <-waited:
+			if n := waits.Load(); n > 1 {
+				t.Fatalf("share deletion of %d files: the runner waited on its clock %d times in %d turns before it succeeded, want once, after the last files' batch", files, n, turns.Load())
+			}
+			h.Clock().Advance(time.Second)
 		case <-time.After(2 * time.Minute):
-			t.Fatalf("share deletion of %d files: %v after %d turns and %v, want succeeded with the clock never moved", files, opState(t, h, op.ID), turns.Load(), time.Since(began))
+			t.Fatalf("share deletion of %d files: %v after %d turns and %v, want succeeded", files, opState(t, h, op.ID), turns.Load(), time.Since(began))
 		}
 	}
-	if moved := h.Clock().Elapsed() - at; moved != 0 {
-		t.Errorf("share deletion of %d files: the clock moved %v, want none", files, moved)
+	if n := waits.Load(); n != 1 {
+		t.Errorf("share deletion of %d files: the runner waited on its clock %d times before it succeeded, want once, after the last files' batch", files, n)
 	}
 	t.Logf("share deletion of %d files: %d runner turns in %v", files, turns.Load(), time.Since(began))
+}
+
+// A removal whose shard record is gone at step 4 cannot drop the share's
+// files, since ContinueShardRemoval answers done without dropping any, and
+// stays held at the step: the deletion's step answers no work left, so the
+// runner waits on its clock between those turns rather than running them back
+// to back, and the operation stays running.
+func TestAShareRemovalHeldAtItsStepWaitsOnTheClock(t *testing.T) {
+	h, f := faulted(t)
+	configure(t, h, storeA)
+	sh := createShare(t, h, "a", storeA)
+	createFiles(t, h, sh, 100)
+	g := gateRunner(h)
+	defer g.release()
+	started(t, h)
+	g.took(t)
+	op := deleteShare(t, h, sh)
+	g.until(t, "the shard recorded forgotten", func() bool { return tagState(t, h, sh.ID) == entity.TagForgotten })
+	if err := f.Update(t.Context(), func(tx kv.Txn) error {
+		return tx.Delete(keys.Uint64([]byte{keys.KindSH}, uint64(sh.Shard)))
+	}); err != nil {
+		t.Fatalf("delete the share's shard record: %v", err)
+	}
+	for i := range 3 {
+		g.next(t)
+		if !g.waits.Load() {
+			t.Fatalf("turn %d with the shard record gone: the runner turned again at once, want it waiting on its clock while the removal is held", i+1)
+		}
+	}
+	if s := opState(t, h, op.ID); s != entity.OpRunning {
+		t.Errorf("the deletion held at step 4: got %v, want running", s)
+	}
 }
