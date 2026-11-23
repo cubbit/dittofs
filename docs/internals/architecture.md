@@ -125,7 +125,6 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 
 **5. Block storage** (`pkg/block/`)
 - `engine/`: the engine (RFC 8) over `journal/`, the journal (RFC 1). The node builds it and `vfs.Service` over it; adapters reach it only through `vfs.Service` (see [Data path](#data-path)).
-- `remote/`: block store interface and implementations (`s3/` production, `memory/` testing). Not wired into the node yet: the engine takes no remote store.
 
 **6. Metadata store** (`pkg/metadata/`, [RFC 16](rfcs/rfc-16-metadata-store.md))
 - `kvstore/`: the store over a `kv.KV` — the records, their keys and codecs,
@@ -399,7 +398,6 @@ No custom code required - configure via CLI:
 ### Implementing Custom Store Backends
 
 See [docs/IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guides for:
-- **Block Store**: Implement `pkg/block/remote.RemoteStore` (`pkg/block/remote/remote.go`) interface
 - **Metadata Store**: Implement `pkg/metadata/kv.KV` and pass `kv/kvtest`
 
 ## Directory Structure
@@ -439,26 +437,9 @@ dittofs/
 │   │   └── errors/               # Store error codes
 │   │
 │   ├── block/                    # Per-share block storage
-│   │   ├── blockstore.go         # BlockStore interface
-│   │   ├── types.go              # Block, BlockState types
-│   │   ├── errors.go             # Block store error types
-│   │   ├── chunker/              # FastCDC content-defined chunker
-│   │   │                         # min=1 MiB / avg=4 MiB / max=16 MiB, lvl 2;
-│   │   │                         # BLAKE3 hashing; consumed by the carve pass
-│   │   ├── carver/               # Carve pass: chunk a file into blocks
-│   │   ├── blockcodec/           # On-disk block payload encoding
-│   │   ├── middleware/           # The remote-store decorators
-│   │   │   ├── compression/      # Optional per-chunk compression
-│   │   │   └── encryption/       # Optional per-chunk encryption
 │   │   ├── engine/               # The engine (RFC 8), not yet wired to the adapters
-│   │   ├── journal/              # The journal (RFC 1), one per device
-│   │   │   ├── localstore.go     # LocalStore interface (*Store implements it)
-│   │   │   └── journaltest/      # Throwaway real store for outside tests
-│   │   ├── syncer/               # Local -> remote sync
-│   │   ├── blockstoretest/       # Conformance suites for block store impls
-│   │   └── remote/               # Block store interface
-│   │       ├── s3/               # S3-backed block store
-│   │       └── memory/           # In-memory block store (testing)
+│   │   └── journal/              # The journal (RFC 1), one per device
+│   │       └── journaltest/      # Throwaway real store for outside tests
 │   │
 │   ├── controlplane/             # Control plane (config + runtime)
 │   │   ├── store/                # GORM-based persistent store
@@ -573,52 +554,12 @@ OPEN -[disconnect]-> ORPHANED -[scavenger timeout]-> EXPIRED -[cleanup]-> CLOSED
 
 ## Migration & Block-Layout Routing
 
-DittoFS has had three block layouts (see the migration guide's table). Neither
-transition into the current one is performed by this build any more: both
-conversions shipped, and both have been removed. A share still on an older
-layout must be staged through a release that still carries the conversion, or
-re-ingested.
-
-### Standalone CAS (v0.16-v0.21) -> packed blocks: removed
-
-The current layout packs chunks into `blocks/<id>` container objects. A share
-carrying leftover standalone-CAS state — remote `cas/` objects, or chunk
-locators that still point at standalone objects — is no longer converted. The
-conversion ran at engine start through v0.31 and is gone; nothing
-replaces it, and there is no boot-time scan for the state it handled.
-
-The read path refuses that state rather than guessing, one chunk at a time:
-
-- A synced locator with an empty `BlockID` fails closed with `ErrChunkNotFound`
-  (`engine.resolveAndReadChunk`), because an empty block id would otherwise
-  resolve to a bogus object key and could surface as zeros.
-- A `FileChunk` with a zero `Hash` predates content addressing entirely and is
-  refused for the same reason (`engine.dispatchRemoteFetch`).
-
-Both log what the operator has to do. **There is no boot signal**: such a share
-starts normally and fails reads as they arrive, which is why staging the upgrade
-matters more than it used to.
-
-Two consequences worth knowing:
-
-- Pre-flip `cas/` objects are never purged. The GC sweep reclaims only what a
-  share resolves to a block locator, and fails toward leaking rather than
-  deleting an object it cannot attribute, so leftover `cas/` objects are billed
-  until removed by hand.
-- The hash-keyed CAS accessors are gone entirely. They were removed along with
-  the `block.Store` interface, on the backends and the decorators alike, so
-  nothing in the tree can read a `cas/` object any more — not even by
-  type-asserting past `remote.RemoteStore`.
-
-### Pre-v0.16 `.blk` -> CAS: migrate with dittofs <= v0.21
-
-The offline `.blk`->CAS tool (`migrate-to-cas`) shipped through v0.21 and has
-been removed. The journal format stamp (`cmd/dfs/commands/start.go`'s
-`handleFormatMismatch`) refuses a directory a newer release wrote and exits 78
-(`EX_CONFIG`); the pre-journal blobs/+logs/ guard was deleted with the
-pre-journal local tier — no production stores exist in field, so opening such a
-directory as an empty journal is accepted. Unlike the standalone-CAS case
-above, this one is a read-time answer, not a boot refusal.
+DittoFS has had three v1 block layouts (see the migration guide's table):
+pre-v0.16 `.blk` files, standalone CAS objects, and packed `blocks/<id>`
+containers. This build reads none of them: the v1 block tier, its remote
+stores, codec, carver and syncer included, is deleted, and the engine keeps a
+share's content in the journal. Content a v1 release wrote must be re-ingested
+through a protocol.
 
 See [the migration guide](../guide/block-store-migration.md) for the operator
 runbook.

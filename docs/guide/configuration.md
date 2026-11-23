@@ -291,7 +291,7 @@ Related glossary terms: [TLS / mTLS](glossary.md#authentication).
 ### 6. Block Store Configuration
 
 Every share references exactly **one block store** — the durable home for its
-content. Valid types are `s3` and `memory`. The CLI's share commands are
+content. The CLI's share commands are
 unavailable until they are rebuilt on the v2 management API, so no command
 attaches a block store to a share today. Today's CLI has no command to create a block store: remote stores
 return as resource commands of the v2 management API.
@@ -333,35 +333,8 @@ carrying them loads with an unknown-key warning.
 
 #### GC knobs
 
-The CAS write path uses an async syncer and a fail-closed mark-sweep
-garbage collector. The syncer's sizing (claim timeout, etc.) is **not** an
-operator-facing config section — it is auto-deduced from system resources at
-startup and constructed in code; there is no `syncer:` config block (a stale
-`syncer:` section in a config file is tolerated but ignored, logged as an
-unknown key). Upload concurrency is **adaptive by default** — see below.
-
-#### Adaptive upload concurrency
-
-When you mirror a share to its block store (S3 or memory), DittoFS uploads
-CAS chunks concurrently. Uploads are **network-latency bound**, not CPU bound:
-a single PUT to a remote region sustains only a few MiB/s, so throughput scales
-with the number of concurrent uploads until the uplink saturates. The right
-number depends on the link, not the host — a CPU-derived default throttled fast
-links and over-subscribed slow ones.
-
-By default DittoFS **discovers the right concurrency itself**. It starts
-conservative and ramps the number of in-flight uploads up while delivered
-throughput (goodput) keeps rising, settling at the point where opening more
-connections stops helping. It backs off only on upload errors or a real
-throughput collapse — never on the latency rise that healthy concurrency itself
-causes. No configuration is required to saturate the uplink.
-
-A remote store can **pin** a fixed concurrency instead, which disables
-auto-tuning; 0, the default, is adaptive. Today's CLI has no command to set it.
-Observe the live window via the Prometheus gauge
-`dittofs_datapath_upload_window` (target concurrency) alongside
-`dittofs_datapath_uploads_inflight` (actual in-flight uploads); see
-[Metrics](#metrics-prometheus).
+There is no `syncer:` config block: a stale `syncer:` section in a config
+file is tolerated but ignored, logged as an unknown key.
 
 The mark-sweep GC is the one tunable surface, configured via the top-level
 `gc:` server-config section:
@@ -497,137 +470,11 @@ file's content is not recycled (only unlink and replace-overwrite are).
 The CLI no longer has trash commands or flags; they return with their own
 API.
 
-#### Remote block-level compression (opt-in)
+#### Remote stores
 
-A remote block store may compress block payloads before upload and
-decompress on download. The plaintext BLAKE3 hash remains the CAS key,
-so dedup and GC are unaffected. The decorator is per-remote: every
-share that references the remote inherits its compression policy.
-
-Add a `compression` block to the remote store's `config` JSON, for example
-`"compression":{"algo":"zstd"}`.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `algo` | string | `"zstd"` | Algorithm: `"zstd"` or `"lz4"`. Defaults to zstd when the `compression` block is present but `algo` is omitted. |
-
-Notes:
-
-- Absence of the `compression` block means no wrapping — zero behavior
-  change for existing remotes.
-- Per-block adaptive: if the compressed body is not strictly smaller
-  than the plaintext, the decorator stores the raw plaintext with no
-  header. Incompressible payloads (random data, already-compressed
-  media) cost only the encoder pass, no on-wire expansion.
-- `GetRange` on a framed block decompresses the full block before
-  slicing — there is no random access into a compressed body. Read
-  paths that consume whole CDC chunks are unaffected.
-- The policy is captured at remote-store creation; restart the share
-  after editing the config to switch algorithms. Mixed framed and raw
-  blocks coexist within one remote and the reader auto-detects via the
-  5-byte `DFCMP` magic prefix.
-
-#### Remote block-level encryption (opt-in)
-
-A remote block store may also encrypt block payloads before upload using
-client-side envelope encryption. Compression (when enabled) runs
-**before** encryption — encrypted bytes are incompressible by design.
-See [ENCRYPTION.md](encryption.md) for the full threat model and design.
-
-Add an `encryption` block to the remote store's `config` JSON:
-
-```yaml
-encryption:
-  aead: aes-256-gcm           # aes-256-gcm | chacha20-poly1305 | xchacha20-poly1305
-  key:
-    kind: local               # local | kmip
-    # kind=local
-    file: /etc/dittofs/keys/share.key
-    # kind=kmip
-    endpoint: kms.example.com:5696
-    server_ca: /etc/dittofs/kmip/ca.pem
-    client_cert: /etc/dittofs/kmip/client.pem
-    client_key:  /etc/dittofs/kmip/client.key
-    key_uid: 12345-abcde-...
-    timeout_ms: 5000
-```
-
-The passphrase that unlocks a local key file is read from the
-`DITTOFS_ENCRYPTION_PASSPHRASE` environment variable — never the config
-file or command line.
-
-#### S3-compatible backend presets
-
-The `s3` remote store talks the AWS S3 API, so any S3-compatible object
-store works — set a custom `endpoint` (and credentials) and DittoFS connects
-to it instead of AWS. The store reads exactly these config keys (see
-`pkg/block/remote/s3/store.go` and the factory in
-`pkg/controlplane/runtime/shares/service.go`):
-
-| Key | Required | Default | Notes |
-| --- | --- | --- | --- |
-| `bucket` | yes | — | Bucket name. Must already exist; DittoFS does not create it. |
-| `access_key_id` | yes | — | S3 access key. For GCS use an **HMAC** key, not a service-account JSON. |
-| `secret_access_key` | yes | — | S3 secret key. |
-| `region` | no | `us-east-1` | Some providers ignore it but the SDK still requires a value; the default is sent when omitted. |
-| `endpoint` | no (AWS) / yes (others) | AWS | Service URL. Scheme optional — `https://` is prepended when absent. |
-| `force_path_style` | no | auto | **Auto-enabled whenever `endpoint` is set.** Set explicitly to `false` to opt back into virtual-hosted-style for providers that require it (e.g. GCS). |
-| `prefix` | no | — | Key prefix prepended to every block (e.g. `dittofs/`). End it with `/`. |
-| `allow_private_endpoint` | no | `false` | Required to point `endpoint` at a loopback or private-network address (MinIO, LocalStack, self-hosted RGW). See the SSRF note below. |
-
-> Path-style addressing (`endpoint.example.com/bucket/key`) is the safe
-> default for non-AWS providers because virtual-hosted style
-> (`bucket.endpoint.example.com/key`) needs wildcard DNS and TLS SANs that
-> most S3-compatible gateways do not provide. DittoFS therefore flips
-> `force_path_style` on automatically the moment you set a custom `endpoint`;
-> the only providers below that need it turned back **off** are those that
-> require virtual-hosted style (GCS).
-
-> **Private endpoints (MinIO, LocalStack, self-hosted RGW).** DittoFS rejects
-> an `endpoint` that resolves to a loopback or private-network address
-> (`127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, link-local, ULA) as an
-> SSRF guard; the cloud metadata address (`169.254.169.254`) is always blocked.
-> Self-hosted gateways normally live on exactly those networks, so add
-> `"allow_private_endpoint": true` to their config to permit them.
-
-Credentials live in the store's own config (`access_key_id`,
-`secret_access_key`) — they are not read from the `DITTOFS_*` server-config
-environment. The CLI's share commands, which attach a store to a share, are
-unavailable until they are rebuilt on the v2 management API.
-
-##### Verified providers
-
-These run against an emulator (or a documented public endpoint) and are
-exercised by the e2e suite where an emulator exists:
-
-| Provider | Verified by | Endpoint | Region | `force_path_style` | Notes |
-| --- | --- | --- | --- | --- | --- |
-| AWS S3 | unit + prod use | _(omit — SDK default)_ | your bucket region | unset (virtual-hosted) | The native case; no `endpoint`. |
-| MinIO | **e2e emulator** | `http://minio.example:9000` | `us-east-1` | auto-on | Self-hosted; HTTP fine on a trusted network. |
-| LocalStack | **e2e emulator** | `http://localstack:4566` | `us-east-1` | auto-on | Test/CI only; not a production target. |
-| Ceph RGW | documented | `https://rgw.example:7480` | `us-east-1` | auto-on | RGW ignores region; any non-empty value is accepted. |
-
-##### Documented-only providers
-
-These are configured exactly like the verified ones but have **not** been run
-against a live account in CI — they are documented from each provider's S3
-compatibility guide. The per-provider column flags the one gotcha that bites.
-
-| Provider | Endpoint | Region | `force_path_style` | Gotcha |
-| --- | --- | --- | --- | --- |
-| **Cubbit DS3** ⭐ _(DittoFS sponsor)_ | `https://s3.cubbit.eu` | `eu-west-1` | auto-on | Geo-distributed, S3-compatible object storage from [Cubbit](https://www.cubbit.io/). Create an S3 access key/secret in the DS3 console; the bucket lives in your assigned region. |
-| Google Cloud Storage (XML/HMAC) | `https://storage.googleapis.com` | `us-east-1` | **set `false`** | Use an **HMAC** key (`access_key_id`/`secret_access_key`), not a service-account JSON. GCS ignores `region` (any non-empty value works), so send the `us-east-1` default. GCS wants virtual-hosted style, so override the auto path-style default to `false`. |
-| Backblaze B2 | `https://s3.us-west-004.backblazeb2.com` | `us-west-004` | auto-on | Endpoint embeds the region (`s3.<region>.backblazeb2.com`); `region` must match it. Use an **application key**, not the master key. |
-| Wasabi | `https://s3.us-east-1.wasabisys.com` | `us-east-1` | auto-on | Region is in the hostname; mismatched `region` causes auth failures. |
-| DigitalOcean Spaces | `https://nyc3.digitaloceanspaces.com` | `us-east-1` | auto-on | Endpoint is the datacenter (`<region>.digitaloceanspaces.com`); send `region: us-east-1` (Spaces ignores it but the SDK requires a value). |
-| Alibaba Cloud OSS | `https://oss-us-west-1.aliyuncs.com` | `us-west-1` | auto-on | Region is encoded in the endpoint host; use the matching OSS region. |
-| Tencent Cloud COS | `https://cos.ap-guangzhou.myqcloud.com` | `ap-guangzhou` | auto-on | Bucket name must include the AppID suffix (`name-1250000000`); endpoint carries the region. |
-| Oracle Cloud (OCI) Object Storage | `https://<namespace>.compat.objectstorage.us-ashburn-1.oraclecloud.com` | `us-ashburn-1` | auto-on | Endpoint contains your tenancy **namespace**; generate a **Customer Secret Key** for S3 compat. |
-| Storj (S3 gateway) | `https://gateway.storjshare.io` | `us-east-1` | auto-on | Use S3-gateway access keys (`uplink share --register`), not the API access grant. |
-
-All of the above accept the same optional knobs as AWS S3 —
-`prefix`, `compression`, `encryption`, and `durable` (see the preceding
-subsections) — because they share the single `s3` store implementation.
+The v1 remote block tier is deleted: its `s3` and `memory` stores, and the
+`compression` and `encryption` settings in a remote store's `config` JSON, are
+read by nothing. Remote stores return as resources of the v2 management API.
 
 #### Upgrading from the local/remote block store split
 

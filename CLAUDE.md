@@ -150,17 +150,15 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
    expected errors at `Debug`, unexpected at `Error`.
 
 7. **Store contracts:** a new key-value backend passes `pkg/metadata/kv/kvtest`'s suite, and the
-   store over it `pkg/metadata/kvstore/kvstoretest`'s. Block stores have exactly one suite,
-   `blockstoretest.RemoteBlockStoreConformance`, and it covers only the block-keyed
-   `remote.RemoteBlockStore` surface. There is **no hash-keyed suite**: the CAS `block.Store`
-   interface and its `BlockStoreConformance` were deleted. The journal and the engine carry their
-   own conformance suites (`journal_conformance`, `engine_conformance` tags).
+   store over it `pkg/metadata/kvstore/kvstoretest`'s. The block tier has no pluggable store and
+   no store suite: the v1 remote tier and its `RemoteBlockStoreConformance` are deleted, and the
+   remote tier returns with its own contract. The journal and the engine carry their own
+   conformance suites (`journal_conformance`, `engine_conformance` tags).
 
-   **`pkg/block` declares no whole-block-store interface.** The tier contracts live with their
-   tiers (`remote.RemoteBlockStore`, the journal's own API); what stays in
-   `pkg/block/blockstore.go` is what both sides speak — `Meta`, `DurabilityReporter` and
-   `IsDurable`. So a method reachable only from tests has nothing holding its signature up: say
-   so with a `decision:` marker at the method rather than reintroducing an interface to pin it.
+   **`pkg/block` is only `engine/` and `journal/`; its root package is gone.** No interface
+   declares the engine's or the journal's surface: each is its own package API. So a method
+   reachable only from tests has nothing holding its signature up: say so with a `decision:`
+   marker at the method rather than reintroducing an interface to pin it.
 
 ## Writing tests
 
