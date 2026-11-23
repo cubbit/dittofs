@@ -22,17 +22,21 @@ already done, and what remains is smaller and different:
   `node.New` (`start.go:126-141`). `node.New` opens `kvstore.Open` (`internal/node/node.go:248`)
   and composes the engine (`node.go:270-283`). The harness seeds the same store
   (`test/harness/fixture/server.go:107,148`). Nothing on the branch opens the v1 store.
-- **The v1 store is dead code, about 103k lines.** The packages are:
+- **The v1 store is dead code: 340 files and 103,114 lines, in seven directory trees holding 13
+  Go packages.** The trees are:
   - `pkg/metadata` (its root package, `MetadataService`): 119 files, 31,339 lines;
   - `pkg/metadata/store/{badger,basestore,internal,metabench}`: 83 files, 18,234 lines;
   - `pkg/metadata/storetest`: 33 files, 13,873 lines;
   - `pkg/metadata/lock`: 57 files, 24,555 lines;
   - `pkg/metadata/acl`: 22 files, 6,700 lines;
   - `pkg/metadata/backup`: 2 files, 339 lines;
-  - `pkg/block/gc`, v1's GC over the v1 store: 23 files, 8,037 lines.
+  - `pkg/block/gc`, v1's GC over the v1 store: 24 files, 8,074 lines.
+
+  An eighth package, `internal/sysinfo` (6 files, 262 lines), is imported only by
+  `pkg/metadata/store/badger/cache.go`, so it is dead once the store goes.
 
   `go list` finds no importer outside this set, test files and the `integration`, `e2e` and `fdb`
-  tags included. As a trial, all seven were deleted in a scratch copy. The result: `go mod tidy`
+  tags included. As a trial, all seven trees were deleted in a scratch copy. The result: `go mod tidy`
   drops only `github.com/oklog/ulid/v2`; `CGO_ENABLED=0 go build ./...` and `go vet ./...` are
   clean, with no tag and with each of those tags; and the architecture tests of `internal/vfs`,
   `internal/node`, `pkg/settings`, `adaptertest` and `pkg/block/engine` pass. Those tests name
@@ -97,15 +101,17 @@ already done, and what remains is smaller and different:
 | # | Epic | Content | Subtasks | Man-days | Blocks |
 | --- | --- | --- | --- | --- | --- |
 | 1 | **v1 refused in one sentence** | a v1 Badger store recognised at start and at init; one refusal wording for all three v1 finds | 2 | 2 | — |
-| 2 | **Delete the v1 store** | the seven packages, `go.mod`, the internal docs and CLAUDE.md; the user docs' metadata sections | 3 | 3 | — |
+| 2 | **Delete the v1 store** | the seven trees and `internal/sysinfo`, `go.mod`, the internal docs, CLAUDE.md and agent skills; the user docs' metadata sections; the v1 block tier (D8) | 4 | 4.5 | — |
 | 3 | **FoundationDB selectable in `dfs`** | a `foundationdb` build tag; bootstrap to `fdbkv` options with TLS; the start check without a store directory; init and start on a cluster of their own | 4 | 7 | E4 |
 | 4 | **FoundationDB release packaging** | the release hook; an image and two Linux tarballs built with FoundationDB; a smoke test of the image; install docs | 4 | 5 | — |
-| | **Total** | | **13** | **17** | |
+| | **Total** | | **14** | **18.5** | |
 
-**Plan estimate: 13 subtasks, 17 man-days.**
+**Plan estimate: 14 subtasks, 18.5 man-days.**
 
 ## 3. Dependencies, blockers and the split
 
+- E2's T2.1 is being built now, ahead of the rest of stage 4: nothing in E1, E3 or E4 frees it or
+  needs it.
 - E1 and E2 are independent, and each can start now. E1's tests build the v1 store from raw keys,
   as `TestInitRefusesAV1Store` does, never from v1's code, so E2 can delete that code in either
   order.
@@ -239,6 +245,20 @@ already done, and what remains is smaller and different:
    `pkg/metadata/kvstore` to `pkg/metadata` touches 209 importing files, while RFC 18, 20, 21 and
    23 PRs are open against them. Do it at the cutover, as one mechanical PR once those lanes drain
    (deferral ledger).
+8. **Does the v1 block tier go in stage 4 too?** These packages are as dead as the store, and the
+   RFC 8 plan's rule 7 calls them v1:
+   - `pkg/block` (its root package), `remote`, `remote/memory`, `remote/s3`, `middleware`,
+     `middleware/compression`, `middleware/encryption`, `blockcodec`, `syncer`, `carver`, `chunker`
+     and `blockstoretest`: 82 files, 11,592 lines;
+   - `pkg/netutil` (2 files) and `pkg/schedule` (2 files), which have no importer.
+
+   Outside the block tier itself and the v1 store, nothing on `feat/storage-v2` imports any of
+   them. Deleting them also drops `github.com/pierrec/lz4/v4`, which only
+   `middleware/compression` imports. The conflict: RFC 8 plan rule 7 ends "v1 is not touched: it is
+   deleted at the cutover" (`.planning/rfc-8-journal-only-engine-plan.md:357`), while the 3 Nov
+   decision is to delete v1 "as soon as nothing live depends on it". **Recommended: yes, as T2.4**
+   (1.5 md). If the answer is no, T2.4 moves to the cutover's ledger, and the plan is 13
+   subtasks, 17 man-days.
 
 ## 5. The epics in detail
 
@@ -286,12 +306,13 @@ and creates neither), #3119's route B.
 
 ### Epic 2 — Delete the v1 store
 
-**Epic 2 estimate: 3 subtasks, 3 man-days.**
+**Epic 2 estimate: 4 subtasks, 4.5 man-days.**
 
 RFC 16 §6.1: the store's two suites, `kvtest` for a backend and `kvstoretest` for the store, are
 the contract that replaces `storetest`.
 
-- **T2.1 — delete the packages (1 md).** Delete the seven packages of plan §1 and run
+- **T2.1 — delete the packages (1 md).** Delete the seven trees of plan §1, holding 13 Go
+  packages, and `internal/sysinfo`, whose only importer is the v1 Badger store. Run
   `go mod tidy`, which drops `oklog/ulid/v2`. The `ponytail:` markers inside them go with them,
   since their shortcuts are gone. Done when `dt run unit` and `lint-go` are green, which the trial
   in plan §1 predicts, and the FoundationDB, CodeQL and `combined-tree` workflows pass.
@@ -302,14 +323,24 @@ the contract that replaces `storetest`.
     - rule 6 (`:145`) names v2's errors in place of `metadata.ExportError`, which no package on
       the branch declares any more;
     - rule 7 (`:148`) says a new backend passes `kvtest`'s and `kvstoretest`'s suites;
-    - the `ponytail:` paragraph (`:354`) stops naming `pkg/metadata/store`.
+    - the `ponytail:` paragraph (`:354`) stops naming `pkg/metadata/store`;
+    - `:174` and `:272` stop recommending an "in-memory SQLite control-plane store", since SQLite
+      is no longer in `go.mod`.
   - `pkg/settings/imports_test.go:21` drops `pkg/metadata/store` from its store packages.
+  - `pkg/metadata/errors/errors.go:6`, the package comment's import graph "errors <- lock <-
+    metadata <- store implementations", names the packages that import it now.
+  - Agent skills: `.claude/skills/fix-issue/SKILL.md:77` and `.pi/skills/fix-issue/SKILL.md:77` say
+    "errors are `metadata.ExportError` values".
+  - `test/suites.yaml:346` drops `internal/auth/**`, a v1 path RFC 23's epic 1 already deleted.
   - Docs: `docs/internals/architecture.md`'s metadata section, `implementing-stores.md`'s
     metadata half, `testing.md:906`, `acl-design.md`, `kv-layer-guide.md`, `smb-protocol.md`,
     `contributing.md`, `docs/guide/smb-acl-fidelity.md`, `docs/guide/access-control.md` and
     `.github/instructions/copilot.instructions.md`.
   - `feat/storage-v2`'s own plans, `docs/internals/planning/rfc-14-open-state-plan.md` and
     `rfc-17-vfs-plan.md`.
+  - On `develop`: the RFC 23 plan's D13 (`.planning/rfc-23-control-plane-plan.md:712`) still says
+    `config show` keeps `internal/sysinfo` and `pkg/block`. It imports neither any more, so that
+    plan is edited on `develop`.
   - The `pkg/metadata/**` paths in `test/suites.yaml:333,358` stay, since they now match the
     new store.
 
@@ -323,6 +354,24 @@ the contract that replaces `storetest`.
   - The metadata parts of `choosing-stores.md`, `faq.md`, `install.md` and `sizing.md` are
     rewritten.
   - The adapter and user-guide parts stay the cutover's, as RFC 20's ledger has them on #3119.
+- **T2.4 — delete the v1 block tier (1.5 md, if D8 says yes).**
+  - Delete D8's packages, `pkg/netutil` and `pkg/schedule`, and run `go mod tidy`, which drops
+    `pierrec/lz4/v4`.
+  - The `unit` suite's `nonrace` option (`test/suites.yaml:90-92`) runs two tests in `./pkg/block/`
+    and `./pkg/block/middleware/compression/`. Both go with their packages, so the option goes.
+  - `test/harness/demo/plan-compare.sh:25` names `pkg/block/blockstore.go`; it moves to a path that
+    still exists.
+  - `pkg/block/engine/imports_test.go:126-129` keeps its refused-import rows only for packages
+    that still exist.
+  - CLAUDE.md rule 7's block half (`:149-159`): `blockstoretest.RemoteBlockStoreConformance`,
+    `remote.RemoteBlockStore`, and `pkg/block/blockstore.go`'s `Meta`, `DurabilityReporter` and
+    `IsDurable`.
+  - The block-tier references in `docs/guide/faq.md`, `docs/guide/configuration.md` and
+    `bench/README.md`.
+
+  Done when `dt run unit` and `lint-go` are green and
+  `rg 'pkg/block/(remote|middleware|blockcodec|syncer|carver|chunker|blockstoretest)'` finds
+  nothing outside `.planning/` and the RFCs.
 
 ### Epic 3 — FoundationDB selectable in `dfs`
 
