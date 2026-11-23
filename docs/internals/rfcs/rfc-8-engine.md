@@ -1148,7 +1148,7 @@ running.
    that last group commit, and its pending operations, the removal's or the
    clone's included, are left for recovery ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches), [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
 3. Cancel the other background loops, then join them: the age tick, the
-   rescan, eviction, the reseed, a capacity refusal's pass and the retried opens of a journal refused at
+   rescan, eviction, the reseed and the retried opens of a journal refused at
    `Start`: the 30 s retry of unsuitable storage and the 60 s retry of an
    unread range, the latter with any acknowledgement it is running, which
    resumes as an operation at the next start.
