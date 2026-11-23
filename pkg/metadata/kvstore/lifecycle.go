@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -145,26 +146,17 @@ func (l Lifecycle) JournalID(
 // SyncMarks is journal j's recorded sync marks, for its Open, and the open
 // generation it raises J‖journal‖og to in the same transaction, which every
 // marks write of that open carries. An og never raised reads as 0. A mark
-// that does not decode is left out, as absent, and fails nothing; a non-nil
-// error means the transaction failed and og was not raised.
-//
-// decision: the store holds no logger, so a mark left out is not logged
-// with its stream as RFC 16 asks: the open treats its stream as having no
-// recorded mark, and the next marks write carrying that stream replaces it.
-// Log it once the store is given a logger.
-func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.SyncMark, gen OpenGen, err error) {
+// whose key or value does not decode is left out, as absent, and fails
+// nothing: skipped holds the stream part of each such key as stored, for the
+// caller to log with its stream (RFC 16 §3), since the store holds no logger.
+// A non-nil error means the transaction failed and og was not raised.
+func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.SyncMark, gen OpenGen, skipped [][]byte, err error) {
 	err = l.s.kv.Update(ctx, func(tx kv.Txn) error {
-		marks = nil
+		marks, skipped = nil, nil
 
-		var og uint64
-		b, ok, err := get(tx, openGenKey(j))
+		og, err := counterIn(tx, openGenKey(j))
 		if err != nil {
 			return err
-		}
-		if ok {
-			if og, err = decodeCounter(b); err != nil {
-				return err
-			}
 		}
 
 		og++
@@ -178,9 +170,10 @@ func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.Sy
 			if err != nil {
 				return err
 			}
-			s, _, kerr := keys.ReadUint64(row.Key[len(pre):])
+			s, rest, kerr := keys.ReadUint64(row.Key[len(pre):])
 			m, derr := decodeSyncMark(row.Value)
-			if kerr != nil || derr != nil {
+			if kerr != nil || len(rest) != 0 || s > math.MaxUint32 || derr != nil {
+				skipped = append(skipped, slices.Clone(row.Key[len(pre):]))
 				continue
 			}
 			m.Stream = uint32(s)
@@ -190,10 +183,10 @@ func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.Sy
 		return nil
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 
-	return marks, gen, nil
+	return marks, gen, skipped, nil
 }
 
 // RecordJournal records journal id as living on node's device, the store's

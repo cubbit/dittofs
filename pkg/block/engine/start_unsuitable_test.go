@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -698,5 +699,46 @@ func TestAFailedLateAttachRaisesAgainInTheStartForm(t *testing.T) {
 			"shard after the attach: %d and %d, want %d and %d: the start form again",
 			got.Incarnation, got.GraceInstance, want, want,
 		)
+	}
+}
+
+// A start step that fails after the journal's open, retried, leaves the
+// group commit of the open that attaches recording its marks under that
+// open's generation, not under one an earlier, failed open read (RFC 16 §3,
+// RFC 8 §2.5).
+func TestALateAttachRecordsMarksUnderItsOwnOpenGeneration(t *testing.T) {
+	cause := errors.New("raise the incarnations: store unavailable")
+	s := newStarter(t, freshJournals(), withOpens(unsuitable()), withRaises(nil, cause))
+
+	if err := s.start(t); err != nil {
+		t.Fatal(err)
+	}
+
+	s.retry(t, retryEvery)
+
+	eventually(t, "journal_unsuitable names the raise's error", func() bool {
+		c, ok := conditionOf(s.e.Stats(), "journal_unsuitable")
+
+		return ok && errors.Is(c.Cause, cause)
+	})
+
+	s.retry(t, retryEvery)
+	s.attached(t)
+
+	ctx := t.Context()
+	_, f := s.fs.Create(t, s.fs.Admin, s.fs.Root, "a", kvstore.Regular(0o644))
+	if _, err := s.e.Write(ctx, s.one.ID, f.ID, 0, []byte{1}, engine.WriteOpts{}); err != nil {
+		t.Fatalf("write after the late attach: %v", err)
+	}
+	if err := s.e.CommitExistence(ctx, s.one.ID, f.ID); err != nil {
+		t.Fatalf("commit after the late attach: %v", err)
+	}
+
+	s.mu.Lock()
+	j := s.j
+	s.mu.Unlock()
+
+	if rec := j.RecordedMarks(); len(rec) == 0 {
+		t.Error("the late attach's open recorded no marks, want its sync's under its own open generation")
 	}
 }

@@ -646,18 +646,41 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 	a := entity.SyncMark{Stream: 1, Segment: 3, Through: 100, Offset: 90, Sequence: 7}
 	b := entity.SyncMark{Stream: 4, Segment: 8, Through: 60, Offset: 50, Sequence: 2}
 	if _, err := f.s.Existence().Commit(ctx, nil, &MarksWrite{Journal: j, Marks: []entity.SyncMark{a, b}}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("record the marks of streams 1 and 4: %v", err)
 	}
-	if err := f.s.kv.Update(ctx, func(tx kv.Txn) error { return tx.Set(syncMarkKey(j, 6), []byte{1}) }); err != nil {
-		t.Fatal(err)
+	// Each malformed row is left out and named in skipped, and none of them
+	// becomes another stream's mark: a decodable value under a key with
+	// trailing bytes after stream 4's, or under a stream that truncates to 1.
+	valid := encodeSyncMark(entity.SyncMark{Segment: 99, Through: 1, Offset: 1, Sequence: 1})
+	malformed := []struct {
+		name  string
+		key   []byte
+		value []byte
+	}{
+		{"an undecodable value", syncMarkKey(j, 6), []byte{1}},
+		{"a key with trailing bytes", append(syncMarkKey(j, 4), 0), valid},
+		{"a stream above MaxUint32", keys.Uint64(syncMarksPrefix(j), 1<<32|1), valid},
+		{"a key too short for a stream", append(syncMarksPrefix(j), 7), valid},
+	}
+	var want [][]byte
+	for _, m := range malformed {
+		if err := f.s.kv.Update(ctx, func(tx kv.Txn) error { return tx.Set(m.key, m.value) }); err != nil {
+			t.Fatalf("store %s: %v", m.name, err)
+		}
+		want = append(want, m.key[len(syncMarksPrefix(j)):])
 	}
 
-	marks, gen, err := f.s.Lifecycle().SyncMarks(ctx, j)
+	marks, gen, skipped, err := f.s.Lifecycle().SyncMarks(ctx, j)
 	if err != nil {
 		t.Fatalf("SyncMarks: %v", err)
 	}
 	if got, want := byStream(marks...), byStream(a, b); !maps.Equal(got, want) {
-		t.Errorf("SyncMarks read %v, want %v, the undecodable stream 6 left out", got, want)
+		t.Errorf("SyncMarks read %v, want %v, every malformed row left out", got, want)
+	}
+	slices.SortFunc(want, bytes.Compare)
+	slices.SortFunc(skipped, bytes.Compare)
+	if !slices.EqualFunc(skipped, want, bytes.Equal) {
+		t.Errorf("SyncMarks skipped %x, want the stream part of each malformed row, %x", skipped, want)
 	}
 	if gen != 1 {
 		t.Errorf("SyncMarks raised the open generation to %d, want 1 from none", gen)
@@ -671,7 +694,7 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 		t.Fatalf("a marks write of the new open: %v", err)
 	}
 
-	marks, gen, err = f.s.Lifecycle().SyncMarks(ctx, j)
+	marks, gen, _, err = f.s.Lifecycle().SyncMarks(ctx, j)
 	if err != nil {
 		t.Fatalf("SyncMarks again: %v", err)
 	}

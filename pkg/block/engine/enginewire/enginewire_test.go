@@ -441,8 +441,8 @@ func TestComposeOpensTheJournalWithItsMarks(t *testing.T) {
 				t.Fatalf("WriteAt: %v", err)
 			}
 			synced, err := h.Sync(ctx, file)
-			if err != nil || len(synced) == 0 {
-				t.Fatalf("Sync returned marks %v, %v; want the record's mark", synced, err)
+			if err != nil || len(synced) != 1 {
+				t.Fatalf("Sync returned marks %v, %v; want the record's one mark", synced, err)
 			}
 			if err := seam.Crash(); err != nil {
 				t.Fatalf("crash: %v", err)
@@ -478,11 +478,17 @@ func TestComposeOpensTheJournalWithItsMarks(t *testing.T) {
 
 			ej, err := d.Open(ctx, dir, journal.Version{}, id, marks)
 			if c.marks {
-				if !errors.Is(err, journal.ErrOpenRefused) {
-					if err == nil {
-						_ = ej.Close()
-					}
-					t.Fatalf("Open with the sync's mark = %v, want ErrOpenRefused for the acknowledged record lost", err)
+				if err == nil {
+					_ = ej.Close()
+				}
+				// Many refusals wrap ErrOpenRefused, so the check names the
+				// lost tail's own: the acknowledged record, by its segment,
+				// sequence and end, which only the mark the sync returned
+				// carries to the journal.
+				m := synced[0]
+				lost := fmt.Sprintf("segment %d: the sync's acknowledged record, sequence %d ending at %d, verifies nowhere", m.Segment, m.Sequence, m.Offset)
+				if !errors.Is(err, journal.ErrOpenRefused) || !strings.Contains(err.Error(), lost) {
+					t.Fatalf("Open with the sync's mark = %v, want ErrOpenRefused naming %q", err, lost)
 				}
 				return
 			}
