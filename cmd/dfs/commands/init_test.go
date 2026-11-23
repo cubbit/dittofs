@@ -126,3 +126,21 @@ func TestInitThenAgain(t *testing.T) {
 		t.Errorf("second dfs init: got %q, %v; want nothing printed and ErrInstalled", out, err)
 	}
 }
+
+// Over a v1 Badger store at metadata.badger.path, dfs init refuses with the
+// v1 sentence naming the directory, printing nothing, leaving v1's keys as
+// they were and the journal directory empty.
+func TestInitRefusesAV1MetadataStore(t *testing.T) {
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	store := filepath.Join(dir, "store")
+	writeV1Store(t, store)
+	out, err := runDfs("init", "--config", config)
+	if want := v1Sentence("a metadata store", store); err == nil || err.Error() != want || out != "" {
+		t.Errorf("dfs init over a v1 store: got %q, %v; want nothing printed and %q", out, err, want)
+	}
+	checkV1Store(t, store)
+	if ents, err := os.ReadDir(filepath.Join(dir, "device")); err != nil || len(ents) != 0 {
+		t.Errorf("journal directory after the refusal: %d entries, %v; want it empty", len(ents), err)
+	}
+}

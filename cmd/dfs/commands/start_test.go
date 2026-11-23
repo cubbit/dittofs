@@ -356,7 +356,8 @@ func TestStartNoInstallation(t *testing.T) {
 // refusal runs first, before the configuration's own checks and the start
 // check, so a v1 deployment's partial bootstrap is refused as v1 rather than
 // for a missing key, and an operator is never told to run dfs init into a v1
-// deployment's directory.
+// deployment's directory: the v1 sentence names dfs init only on empty
+// storage.
 func TestStartRefusesV1Database(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -393,14 +394,15 @@ func TestStartRefusesV1Database(t *testing.T) {
 			} else {
 				code, out = runChild(t, config)
 			}
-			if code == 0 || !strings.Contains(out, "Error: refusing to start: "+v1+" is v1's control-plane database") {
+			sentence := v1Sentence("a control-plane database", v1)
+			if code == 0 || !strings.Contains(out, "Error: "+sentence) {
 				t.Fatalf("dfs start beside %s over %s: exit %d, output:\n%s\nwant non-zero naming it", v1, tc.name, code, out)
 			}
 			if entries, err := os.ReadDir(store); err != nil || len(entries) != 0 {
 				t.Errorf("store directory %s after the refusal: %d entries (%v), want none: nothing opened", store, len(entries), err)
 			}
-			if strings.Contains(out, "dfs init") {
-				t.Errorf("dfs start beside v1's database: the refusal advises running dfs init (%s), which over a v1 deployment's directory is the advice that destroys data", out)
+			if strings.Contains(strings.ReplaceAll(out, sentence, ""), "dfs init") {
+				t.Errorf("dfs start beside v1's database: the output advises running dfs init outside the v1 sentence, which sends it to empty storage (%s); over a v1 deployment's directory that is the advice that destroys data", out)
 			}
 		})
 	}
@@ -450,6 +452,14 @@ func TestStartRefusesTheStore(t *testing.T) {
 	}
 }
 
+// v1Sentence is the sentence every v1 find refuses with, written out here
+// rather than read from the code, so that a change to the code's wording
+// fails the tests that pin it.
+func v1Sentence(found, path string) string {
+	return "refusing to start: " + found + " at " + path + " is from v1; " +
+		"upgrading from v1 is not supported: start a new installation with dfs init on empty storage"
+}
+
 // refuseV1 refuses a database beside the bootstrap or at a fixed path,
 // naming it, and the path beside the bootstrap when it cannot check it; it
 // skips a fixed path it may not search, and passes when none is there.
@@ -467,8 +477,8 @@ func TestRefuseV1(t *testing.T) {
 		want   string // the refusal's prefix; empty is no refusal
 	}{
 		{"none there", missing, []string{filepath.Join(dir, "also-missing.db")}, ""},
-		{"beside the bootstrap", present, []string{missing}, "refusing to start: " + present + " is v1's"},
-		{"at a fixed path", missing, []string{missing, present}, "refusing to start: " + present + " is v1's"},
+		{"beside the bootstrap", present, []string{missing}, v1Sentence("a control-plane database", present)},
+		{"at a fixed path", missing, []string{missing, present}, v1Sentence("a control-plane database", present)},
 		// A file where a directory is expected holds no database beneath it.
 		{"under a file, beside and fixed", filepath.Join(present, "controlplane.db"), []string{filepath.Join(present, "controlplane.db")}, ""},
 	} {
@@ -494,7 +504,7 @@ func TestRefuseV1(t *testing.T) {
 	if err := refuseV1(missing, []string{p}); err != nil {
 		t.Errorf("refuseV1 at a fixed path under an unsearchable directory = %v, want it skipped", err)
 	}
-	if err := refuseV1(missing, []string{p, present}); err == nil || !strings.HasPrefix(err.Error(), "refusing to start: "+present+" is v1's") {
+	if err := refuseV1(missing, []string{p, present}); err == nil || err.Error() != v1Sentence("a control-plane database", present) {
 		t.Errorf("refuseV1 at a fixed path after an unsearchable one = %v, want %s refused: the skip goes on to the next path", err, present)
 	}
 
@@ -584,4 +594,75 @@ func TestStartRefusesAnEmptyStore(t *testing.T) {
 	if entries, err := os.ReadDir(store); err != nil || len(entries) != 0 {
 		t.Errorf("store directory %s after the refusal: %d entries (%v), want none: no store created", store, len(entries), err)
 	}
+}
+
+// v1Records are keys of v1's Badger metadata store, written raw, as v1 left
+// them, with no format record.
+var v1Records = map[string]string{"f:1": "v1 file", "p:x": "v1 parent", "c:y": "v1 child", "lock:z": "v1 lock"}
+
+// writeV1Store writes v1Records into a Badger store at dir.
+func writeV1Store(t *testing.T, dir string) {
+	t.Helper()
+	db, err := badgerkv.Open(badgerkv.Options{Dir: dir, NodeID: testNode})
+	if err != nil {
+		t.Fatalf("open the v1 store: %v", err)
+	}
+	err = db.Update(t.Context(), func(tx kv.Txn) error {
+		for k, v := range v1Records {
+			if err := tx.Set([]byte(k), []byte(v)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err = errors.Join(err, db.Close()); err != nil {
+		t.Fatalf("write the v1 store: %v", err)
+	}
+}
+
+// checkV1Store fails the test unless the Badger store at dir still holds
+// every one of v1Records unchanged.
+func checkV1Store(t *testing.T, dir string) {
+	t.Helper()
+	db, err := badgerkv.Open(badgerkv.Options{Dir: dir, NodeID: testNode})
+	if err != nil {
+		t.Fatalf("reopen the v1 store: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	err = db.View(t.Context(), func(r kv.Reader) error {
+		for k, want := range v1Records {
+			got, err := r.Get([]byte(k))
+			if err != nil {
+				return fmt.Errorf("v1 key %q: %w", k, err)
+			}
+			if string(got) != want {
+				t.Errorf("v1 key %q after the refusal: %q, want %q unchanged", k, got, want)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Errorf("v1 store after the refusal: %v, want every v1 key still there", err)
+	}
+}
+
+// Over a v1 Badger store at metadata.badger.path, which the start check
+// passes as a present store, dfs start refuses with the v1 sentence naming
+// the directory, rather than sending the operator to dfs init, and leaves
+// v1's keys as they were.
+func TestStartRefusesAV1MetadataStore(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := t.TempDir()
+	store := filepath.Join(dir, "store")
+	writeV1Store(t, store)
+	_, err := runDfs("start", "--config", bootstrapFile{store: store, journal: filepath.Join(dir, "device"),
+		node: nodeUUID, key: storageKeyFile(t, dir)}.write(t, dir))
+	if want := v1Sentence("a metadata store", store); err == nil || !strings.HasSuffix(err.Error(), want) {
+		t.Errorf("dfs start over a v1 store: %v, want it refused with %q", err, want)
+	}
+	checkV1Store(t, store)
 }

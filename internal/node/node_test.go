@@ -1,6 +1,7 @@
 package node_test
 
 import (
+	"cmp"
 	"errors"
 	"log/slog"
 	"path/filepath"
@@ -91,6 +92,46 @@ func TestNewRefusesAKVWithNoInstallation(t *testing.T) {
 	}
 	if err := db.View(t.Context(), func(kv.Reader) error { return nil }); err == nil {
 		t.Error("the KV after a refused New: a View succeeded, want it closed")
+	}
+}
+
+// New over a store holding a v1 key and no format record refuses it, closing
+// the KV: over Badger with the one sentence every v1 find gives, naming the
+// store's directory, and over FoundationDB, where v1 never ran, with
+// ErrForeignStore's own wording.
+func TestNewRefusesAV1Store(t *testing.T) {
+	const dir = "/the v1 store"
+	sentence := "refusing to start: a metadata store at " + dir + " is from v1; " +
+		"upgrading from v1 is not supported: start a new installation with dfs init on empty storage"
+	for _, tc := range []struct {
+		backend string
+		v1      bool
+	}{{"", true}, {"badger", true}, {"foundationdb", false}} {
+		t.Run(cmp.Or(tc.backend, "unset"), func(t *testing.T) {
+			db, err := badgerkv.Open(badgerkv.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Update(t.Context(), func(tx kv.Txn) error { return tx.Set([]byte("f:1"), []byte("v1 record")) }); err != nil {
+				t.Fatal(err)
+			}
+			b := listening("127.0.0.1:0", "127.0.0.1:0")
+			b.Metadata.Backend = tc.backend
+			b.Metadata.Badger.Path = dir
+			_, err = node.New(node.Config{
+				Bootstrap: b, KV: db, Clock: sim.NewTestClock(time.Unix(0, 0)), Metrics: metrics.New("test", "test"),
+				Logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
+			})
+			switch {
+			case tc.v1 && (err == nil || err.Error() != sentence):
+				t.Errorf("New over a v1 store, backend %q: got %v, want %q", tc.backend, err, sentence)
+			case !tc.v1 && (!errors.Is(err, kvstore.ErrForeignStore) || strings.Contains(err.Error(), "from v1")):
+				t.Errorf("New over a foreign store, backend %q: got %v, want ErrForeignStore's wording, never the v1 sentence", tc.backend, err)
+			}
+			if err := db.View(t.Context(), func(kv.Reader) error { return nil }); err == nil {
+				t.Error("the KV after a refused New: a View succeeded, want it closed")
+			}
+		})
 	}
 }
 

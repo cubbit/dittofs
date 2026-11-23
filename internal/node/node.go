@@ -246,6 +246,15 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	}
 	n := &Node{cfg: cfg, rec: newReconciler(newTable()), sweep: newSweeper()}
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
+		// decision: over Badger a store with keys and no format record is
+		// v1's, the only program that ever wrote one at metadata.badger.path,
+		// so it is refused as v1. Over another backend v1 never ran, and the
+		// keys belong to someone else: ErrForeignStore's own wording stands
+		// rather than telling the operator to clear a store that is not v1's.
+		// Overturned if a Badger directory can hold another program's keys.
+		if b := cfg.Bootstrap.Metadata.Backend; errors.Is(err, kvstore.ErrForeignStore) && (b == "" || b == "badger") {
+			return nil, refuseV1(cfg.Bootstrap.Metadata.Badger.Path, "a metadata store")
+		}
 		return nil, fmt.Errorf("node: metadata store: %w", err)
 	}
 	// decision: the storage key opens under no context a signal can cut,
