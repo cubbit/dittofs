@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -126,7 +127,18 @@ func TestRunDeleteWithConfirmation(t *testing.T) {
 			var stderr bytes.Buffer
 			env := Env{In: in, Err: &stderr, Interactive: tt.interactive}
 			deleted := false
-			err := RunDeleteWithConfirmation(cmd, env, "Context", "c", tt.force, func() error { deleted = true; return nil })
+			done := make(chan error, 1)
+			go func() {
+				done <- RunDeleteWithConfirmation(cmd, env, "Context", "c", tt.force, func() error { deleted = true; return nil })
+			}()
+			// The bound is the assertion for the interrupted row: a prompt
+			// that ignores its context never returns.
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("still prompting 10 s on, want the removal ended")
+			}
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("error: got %v, want %q", err, tt.wantErr)

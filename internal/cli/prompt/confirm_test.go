@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseConfirm(t *testing.T) {
@@ -60,7 +61,14 @@ func TestConfirmEndsWithItsContext(t *testing.T) {
 		done <- err
 	}()
 	cancel(interrupted)
-	if err := <-done; !errors.Is(err, interrupted) {
-		t.Errorf("Confirm after its context ended: %v, want the context's cause", err)
+	// The bound is the assertion: a Confirm that ignores its context never
+	// returns, and nothing else ends the read.
+	select {
+	case err := <-done:
+		if !errors.Is(err, interrupted) {
+			t.Errorf("Confirm after its context ended: %v, want the context's cause", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Confirm still waiting 10 s after its context ended, want it returned")
 	}
 }
