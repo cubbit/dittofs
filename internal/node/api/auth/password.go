@@ -221,15 +221,24 @@ func WritePassword(tx entity.ControlPlaneTx, ps PasswordSet, o WriteOpts) (befor
 	return before, after, nil
 }
 
-// passwordChange is a password write's audit change: the password, and the
-// NT hash when one was sealed, as "set", never their values.
-func passwordChange(ps PasswordSet) []byte {
-	c := map[string]string{"password": "set"}
-	if ps.nt.Version != 0 {
+// PasswordChange is a password write's audit change, from the account
+// before and after WritePassword, in the API's form: a secret field as
+// "set", never its value; an NT hash the account stops naming as its old
+// reference and null; and must-change and not-before as their old and new
+// values.
+func PasswordChange(before, after entity.User) ([]byte, error) {
+	c := map[string]any{"password": "set"}
+	switch {
+	case after.NTHash != (entity.SecretRef{}):
 		c["nt_hash"] = "set"
+	case before.NTHash != (entity.SecretRef{}):
+		c["nt_hash"] = [2]any{fmt.Sprintf("%x-%x-%x-%x-%x", before.NTHash[:4], before.NTHash[4:6], before.NTHash[6:8], before.NTHash[8:10], before.NTHash[10:]), nil}
 	}
-	b, _ := json.Marshal(c) // a map of strings always encodes
-	return b
+	if before.MustChange != after.MustChange {
+		c["must_change"] = [2]any{before.MustChange, after.MustChange}
+	}
+	c["not_before"] = [2]any{before.NotBefore, after.NotBefore}
+	return json.Marshal(c)
 }
 
 // ChangePassword is POST /auth/password: the caller's own password changed,
@@ -316,8 +325,12 @@ func (s *Service) ChangePassword(ctx context.Context, rec entity.AuditRecord, in
 			if err != nil {
 				return err
 			}
+			change, err := PasswordChange(before, after)
+			if err != nil {
+				return err
+			}
 			out = rec
-			out.Before, out.After, out.Change, out.Outcome = before.Generation, after.Generation, passwordChange(ps), []byte("applied")
+			out.Before, out.After, out.Change, out.Outcome = before.Generation, after.Generation, change, []byte("applied")
 			if err := takeBackSuccess(tx, cnt); err != nil {
 				return err
 			}

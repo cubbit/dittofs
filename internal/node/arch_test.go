@@ -1438,7 +1438,7 @@ func TestAPIExports(t *testing.T) {
 			"CallerFrom", "Claims", "Clock", "Clock.Now", "CredentialKind", "CredentialNone", "CredentialSession", "Deps", "Drain",
 			"ErrThrottled", "Installation",
 			"KeyVersion", "KeyVersion.Format", "KeyVersion.LogValue", "KeyVersion.MarshalJSON", "KeyVersion.MarshalYAML",
-			"KeyVersion.String", "KeyVersions", "KeyVersions.Versions", "Local", "NTLM", "NTLMKey", "NewService", "NewTokens", "PasswordSet",
+			"KeyVersion.String", "KeyVersions", "KeyVersions.Versions", "Local", "NTLM", "NTLMKey", "NewService", "NewTokens", "PasswordChange", "PasswordSet",
 			"Principals", "Public",
 			"QuotaEvents", "ReadNTLM", "ResetAccount", "Right", "RotationProgress", "RotationStep", "SealPassword", "SealSigningKey", "Sealer",
 			"Sealer.Seal", "Self", "Service", "Service.Authenticate", "Service.ChangePassword", "Service.Refresh", "Service.Refused",

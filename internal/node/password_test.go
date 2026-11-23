@@ -154,6 +154,29 @@ func TestMustChangeAccountChangesItsPassword(t *testing.T) {
 	if u := s.stored(t, p); u.MustChange {
 		t.Error("the account is still must-change after the change")
 	}
+	if got := changeOf(t, s, "must_change"); got != `[true,false]` {
+		t.Errorf("the change's audit must_change: %s, want [true,false]", got)
+	}
+}
+
+// changeOf is field of the last applied password change's audit change, as
+// JSON.
+func changeOf(t *testing.T, s *authNode, field string) string {
+	t.Helper()
+	recs := s.audits(t)
+	for i := len(recs) - 1; i >= 0; i-- {
+		r := recs[i]
+		if !bytes.Contains(r.Request, []byte(passwordPath)) || string(r.Outcome) != "applied" {
+			continue
+		}
+		var c map[string]json.RawMessage
+		if err := json.Unmarshal(r.Change, &c); err != nil {
+			t.Fatalf("the change's audit change %s: %v", r.Change, err)
+		}
+		return string(c[field])
+	}
+	t.Fatal("no applied password change is audited")
+	return ""
 }
 
 // The check of the current password is a sign-in's attempt: three failed
@@ -383,6 +406,9 @@ func TestNTLMOffDuringAChangeStoresNoNTHash(t *testing.T) {
 			}
 			if v := versionOf(t, s, after.Password); v != 2 {
 				t.Errorf("the password hash's current version: %d, want 2", v)
+			}
+			if got, want := changeOf(t, s, "nt_hash"), `["`+uuid.UUID(u.NTHash).String()+`",null]`; got != want {
+				t.Errorf("the change's audit nt_hash: %s, want %s, the reference dropped", got, want)
 			}
 		})
 	}

@@ -10,8 +10,6 @@ import (
 	"log/slog"
 	"slices"
 
-	"github.com/google/uuid"
-
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -149,7 +147,7 @@ func ResetAdmin(ctx context.Context, d ResetDeps) error {
 		if err != nil {
 			return err
 		}
-		change, err := resetChange(before, after)
+		change, err := auth.PasswordChange(before, after)
 		if err != nil {
 			return err
 		}
@@ -192,24 +190,6 @@ func (s resetSealer) Seal(ctx context.Context, kind entity.SecretKind, owner ent
 		role = secrets.Protocol
 	}
 	return s.p.Seal(ctx, role, kind, owner, ref, value, secrets.Meta{})
-}
-
-// resetChange is the reset's audit change in the API's form: a secret field
-// as "set", a removed reference as its old value and null, and every other
-// field changed as its old and new values.
-func resetChange(old, new entity.User) ([]byte, error) {
-	c := map[string]any{"password": "set"}
-	switch {
-	case new.NTHash != (entity.SecretRef{}):
-		c["nt_hash"] = "set"
-	case old.NTHash != (entity.SecretRef{}):
-		c["nt_hash"] = [2]any{uuid.UUID(old.NTHash).String(), nil}
-	}
-	if old.MustChange != new.MustChange {
-		c["must_change"] = [2]any{old.MustChange, new.MustChange}
-	}
-	c["not_before"] = [2]any{old.NotBefore, new.NotBefore}
-	return json.Marshal(c)
 }
 
 // resettable refuses an account that is missing, disabled, not an
