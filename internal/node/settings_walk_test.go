@@ -732,6 +732,83 @@ func TestSettingsRefusedAtStartNeverStarts(t *testing.T) {
 	}
 }
 
+// A section refused before it ever ran never runs its component: the apply
+// of a section whose row is undecodable at start is never called, with its
+// defaults or with no value, while a valid section's apply beside it runs
+// its row's value.
+func TestRefusedAtStartNeverRunsItsComponent(t *testing.T) {
+	h, f := servedFaulted(t)
+	declareSections(t, h)
+
+	var (
+		mu     sync.Mutex
+		fresh  int
+		steady []int
+	)
+
+	count := func(prefix string, into func(int)) func(*settings.Snapshot) error {
+		return func(snap *settings.Snapshot) error {
+			v, err := settings.Get[walkTuning](snap, prefix, h.NodeID())
+			if err != nil {
+				return err
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			into(v.Level)
+
+			return nil
+		}
+	}
+
+	h.Node().DeclareSections(
+		node.Declared{
+			Prefix:  "fresh",
+			Section: settings.Of("fresh", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
+			Apply: func(*settings.Snapshot) error {
+				mu.Lock()
+				defer mu.Unlock()
+
+				fresh++
+
+				return nil
+			},
+		},
+		node.Declared{
+			Prefix:  "steady",
+			Section: settings.Of("steady", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
+			Apply:   count("steady", func(l int) { steady = append(steady, l) }),
+		},
+	)
+
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+	walkAt(t, h, installation, "steady", 7)
+	babble(t, f, installation, "fresh.level")
+
+	started(t, h)
+	caughtUp(t, h)
+
+	mu.Lock()
+	gotFresh, gotSteady := fresh, slices.Clone(steady)
+	mu.Unlock()
+
+	if gotFresh != 0 {
+		t.Errorf("fresh's apply, its row refused before it ever ran: %d calls, want 0", gotFresh)
+	}
+
+	if len(gotSteady) == 0 || gotSteady[len(gotSteady)-1] != 7 {
+		t.Errorf("steady's apply beside it: levels %v, want the last at 7, its row's value", gotSteady)
+	}
+
+	want := entity.SettingRef(installation, "fresh.level")
+	refused := h.Node().Refused()
+
+	if len(refused) != 1 || !hasRef([]entity.ResourceRef{refused[0].Record}, want) {
+		t.Errorf("refused records: got %s, want fresh's row alone", describe(refused))
+	}
+}
+
 // A refusal in one share of a per-share section refuses only that share's
 // rows and keeps only that share's last value: the other share runs its new
 // value, and neither its rows nor the kept one appear refused.
