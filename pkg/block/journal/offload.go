@@ -158,14 +158,13 @@ func (h *Handle) Release(ctx context.Context, id FileID, extents []Extent) error
 	return ErrNotImplemented
 }
 
-// readOnly is the read-only refusal every call that would append a record
-// answers at once on a read-only journal (RFC 1 §5.4), the durability layer's
-// own gate, or nil. Offload and OffloadMany do not ask it: offload goes on
-// uploading on a read-only journal, its report setting bits in memory only. A
-// zero Handle, which a test builds over a zero Journal, answers nil.
+// readOnly is the core's read-only refusal (see Core.ReadOnlyRefusal for
+// when it goes), or nil. Offload and OffloadMany do not ask it: offload goes
+// on uploading on a read-only journal, its report setting bits in memory
+// only. A zero Handle, which a test builds over a zero Journal, answers nil.
 func (h *Handle) readOnly() error {
 	if h.j == nil || h.j.core == nil {
 		return nil
 	}
-	return h.j.core.Durability().Admit()
+	return h.j.core.ReadOnlyRefusal()
 }

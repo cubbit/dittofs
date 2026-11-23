@@ -1065,6 +1065,19 @@ func deferredLossOf(l durability.Loss) reclaim.DeferredLoss {
 // Durability returns the durability layer.
 func (c *Core) Durability() *durability.Durability { return c.dur }
 
+// ReadOnlyRefusal is the refusal a call that would append a record answers
+// at once on a read-only journal (RFC 1 section 5.4), or nil: the durability
+// layer's own read-only check, the one the headroom's and the content
+// admission's Admit ask first.
+//
+// decision: it serves only the record calls that do not append through the
+// datapath yet — Release, MarkOffloaded, Unmark, Hold, Unhold and Stamp —
+// so each gets the refusal before its stub answers. Each of them stops
+// asking it once it appends through headroom.Admit, which asks the same
+// check, and this method goes with the last of them: two gates on one
+// append would drift apart.
+func (c *Core) ReadOnlyRefusal() error { return c.dur.Admit() }
+
 // Unread returns the set of records no read returned, which the repack
 // pass's reads mark and the per-segment rows report.
 func (c *Core) Unread() *unread.Set { return c.unread }
