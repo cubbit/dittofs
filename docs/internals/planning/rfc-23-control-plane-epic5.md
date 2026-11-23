@@ -558,18 +558,24 @@ the user's read fails `reserve` first: a sign-in answering `503`,
 
 - **Track:** C. **Depends on:** T5.7.
 - **Covers:** R2, R13, R14 (the API-token half), R15, R17, R38, R39.
-- **Deliverables:** in `apitokens.go`: creation for an account holding a role, a service account
-  or one that signs in by password (RFC 23 §12's "§5.3 revocation" row has one account hold both a
-  session and an API token), by the account itself or by an admin, the token shown once and
-  stored as its hash, its expiry capped by `api.token_max_lifetime`, its `Created` from `tx.Now()`
+- **Deliverables:** in `apitokens.go`: creation for an enabled account holding a role, a service
+  account or one that signs in by password (RFC 23 §12's "§5.3 revocation" row has one account hold
+  both a session and an API token); each account creates, lists and revokes its own tokens, and an
+  admin creates one for another account only when it is a service account (a role and no
+  password), and lists and revokes any account's, a `decision:` at the check since that is wider
+  than §5.2's "service tokens of others" in the direction that only ends credentials; a creation
+  presented with an API token is refused `400` `invalid`, so a token mints no successor, and so is
+  a sign-out presented with one, an API token ending only by its revocation; the token shown once
+  and stored as its hash, its expiry capped by `api.token_max_lifetime`, its `Created` from `tx.Now()`
   raised to `NotBefore`; listing an account's tokens; revocation; the per-call check reading the
   token's record in place of a session, an access token told from an API token by its form (a JWT
   holds dots, base64url none). The routes are `GET` and `POST /api/v1/users/{id}/api-tokens` and
   `DELETE /api/v1/users/{id}/api-tokens/{sub}`, right `Self`, another account's tokens `404` to a
   caller below admin; creation is keyless and answers `200`; a token is never rewritten, so its tag,
   which a revocation's `If-Match` names, is always 1. Sign-in, refresh and the password change
-  refuse an `Idempotency-Key` `400` here too (R38), which their adapter did not before. Consumed by
-  E6.
+  refuse an `Idempotency-Key` `400` here too (R38), which their adapter did not before, every row
+  whose answer carries a credential keyless, held by a route-table test; the password change's
+  refusals before its handler are audited against the caller's account (R40). Consumed by E6.
 - **Acceptance criteria:**
   - A token asked for past the maximum lifetime is refused.
 - **Tests:** over the harness: create, call, revoke, call refused (R17); a token past its expiry on
