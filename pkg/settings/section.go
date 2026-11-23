@@ -90,6 +90,9 @@ type Section struct {
 	// formatVersion is the declared key that holds the block format version,
 	// named by the FormatVersion option; "" names none.
 	formatVersion string
+	// series are the refusal counters WithMetrics gave this section's table:
+	// nil on a table no registry was given, whose refusals count nothing.
+	series *refusalSeries
 }
 
 // field is one key of a section: its binding class, whether it names how to
