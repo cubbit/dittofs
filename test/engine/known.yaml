@@ -54,10 +54,3 @@
   category: feature
   reason: 'Waits on offload being composed. The settled answer gives retry-later for dirty bytes only with a put-healthy store behind them (RFC 8 section 10.2), and this part composes no store, so the settled no-space in settled() stands, as ruled on #4892; the row assumes a put-healthy store and goes green once offload reads the store put-health for the dirty half. The one journal share at its own limit takes the settled no-space answer where the row wants the refusal-later that never becomes no space while another share is healthy: the share''s bytes, none superseded, sit in a single active segment, so each refusal''s scoped pass seals and recycles that one segment whole and the candidacy the settled answer reads is left with nothing.'
   issue: '#5318'
-- test: TestRFC8B_JournalFullOnAFullDevice
-  message: 'journal_full clears once the device has room: not within 10s'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'the journal side is done: a reserved write''s Hold refused on a full device answers ENOSPC as itself, so the row''s refused roll answers the device''s ErrNoSpace and raises journal_full, which stays up while a write into an allocated segment is accepted. The row now stops at its last check: with the device given room again and the clock advanced, journal_full never clears. The engine has no clear for it but acceptedWrite (engine/repack.go), which clears only a refusal that named the headroom; RFC 8 §11.1''s clear once the limit that refused has room again since the latest refusal, by at least what it lacked, is not built for the device nor for the maximum. The row waits on the engine building that clear.'
-  issue: '#5320'
