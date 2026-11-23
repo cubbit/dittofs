@@ -483,7 +483,6 @@ func BenchmarkReconcileScan(b *testing.B) {
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			f := seedBench(b, benchShares, c.dense)
-			b.ResetTimer()
 
 			b.Run("read", func(b *testing.B) {
 				b.ReportAllocs()

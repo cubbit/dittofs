@@ -370,6 +370,21 @@ func TestRefusedSeriesOneReasonPerError(t *testing.T) {
 			component: "adapters.smb",
 		},
 		{
+			what:  "role below the key's own",
+			scope: installation,
+			key:   "test.keys.admu",
+			value: "true",
+			extra: settings.Table{
+				settings.Of("test.keys", settings.At(entity.ScopeInstallation), keyedSettings{},
+					settings.KeyRole("Admu", entity.RoleAdmin),
+				),
+			},
+			caller:    entity.RoleOperator,
+			refusal:   settings.ErrForbidden,
+			reason:    "forbidden",
+			component: "test.keys",
+		},
+		{
 			what:  "refusal of the section's CheckTx",
 			scope: installation,
 			key:   "test.refuser.pending_timeout",
