@@ -142,7 +142,7 @@ that subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R9 | `internal/node`'s exported package-level declarations are `New`, `Node`, `Config` and `Preflight`, the start check the host runs before it opens the store, and `*Node`'s exported methods `Start` and `Stop`, and nothing else | MUST | RFC 23 §2.1 ("The node's surface", and its decision); RFC 23 plan §1.5 rule 11 | T1.3 |
+| R9 | `internal/node`'s exported package-level declarations are `New`, `Node`, `Config` and `Preflight`, the start check the host runs over the store as a directory or, for a store with no directory, as the KV it has opened, and `*Node`'s exported methods `Start` and `Stop`, and nothing else | MUST | RFC 23 §2.1 ("The node's surface", and its decision); RFC 23 plan §1.5 rule 11 | T1.3 |
 | R10 | `Config` carries what the host supplies and the node cannot build: the bootstrap, the KV the metadata store opens on, the clock, the metrics registry and the logger | MUST | RFC 23 §2 (step 2), §2.1 | T1.3 |
 
 **The shared wire types**
@@ -180,9 +180,10 @@ that subtasks and tests can cite them.
   memory).
 - **D2, the node's surface is what RFC 23 §2.1 declares, less what has no consumer.** `New`,
   `Node`, `Config`, `Preflight` and `Start`/`Stop`. `Preflight` is the start check: it has to
-  run before the host opens the KV store, because `Config.KV` arrives already open and
-  Badger's own open writes the `MANIFEST` the check reads, so `New` and `Start` are both too
-  late to tell an absent store from a present one. A package of its own for one function would
+  run before the host opens a store that has a directory, because `Config.KV` arrives already
+  open and Badger's own open writes the `MANIFEST` the check reads, so `New` and `Start` are
+  both too late to tell an absent store from a present one; a store with no directory is
+  checked through the KV the host has opened. A package of its own for one function would
   add a boundary and gain nothing, since the probes read the storage the node's own
   configuration names. `Config.Clock` is `engine.Clock` (`Now`, `Elapsed`,
   `After`), which `sim.TestClock` already implements and the journal's and open state's clocks are
