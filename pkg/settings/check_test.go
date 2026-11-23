@@ -849,7 +849,7 @@ func TestCheckReferenceRefused(t *testing.T) {
 	refused(t, "reference put", s.check(tb, entity.RoleOperator,
 		settings.Put(setting(installation, "test.ref.credential", ref))), settings.ErrSecretRef,
 		"setting (installation): test.ref.credential: "+
-			"a reference is set by the secrets API, not by value")
+			"names no secret of kind password")
 	passed(t, "other field", s.check(tb, entity.RoleOperator,
 		settings.Put(setting(installation, "test.ref.lo", "1"))))
 	passed(t, "reference delete", s.check(tb, entity.RoleOperator,

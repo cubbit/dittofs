@@ -676,7 +676,7 @@ func TestGatesRunAfterTheEarlierOnes(t *testing.T) {
 // by its first write and never changed by a plain one after that: the first
 // put passes with no row before it and no default, the same put over it
 // passes, another value is refused naming RFC 13 §5.2, and a credential
-// reference is set by the secrets API alone, never by value.
+// reference naming no secret is refused.
 func TestStoreLocationFirstValuePasses(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -743,7 +743,7 @@ func TestStoreLocationFirstValuePasses(t *testing.T) {
 		"[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]")))
 	refused(t, "the credential reference", err, settings.ErrSecretRef,
 		"setting (installation): test.credential.credential: "+
-			"a reference is set by the secrets API, not by value")
+			"names no secret of kind remote credential")
 }
 
 // A delete reaches a store location as its put does: removing a stored value
