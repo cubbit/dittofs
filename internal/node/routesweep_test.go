@@ -3,6 +3,7 @@ package node_test
 import (
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 
+	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -453,19 +455,20 @@ func keytabOf(t *testing.T, name string) []byte {
 // refusal it waits on (sweepApplied). Catches a change with no record.
 //
 // decision: three groups of routes wait rather than apply. A setting's
-// write and delete at every scope, an adapter's write, a namespace's create
-// and a store credential's delete are refused by the node's settings table,
-// which holds no section that reads their keys yet; a store's first
-// credential is refused by the store's capability check, not built; a
-// store's create, which seals its credential, and the keytab's PUT need the
-// secret provider the node does not yet hand its API, and the keytab's
-// DELETE a keytab only that PUT writes; :cancel has no success
-// answer while no operation kind is cancellable. Each waits as a refused
-// write, so the row fails the day its route succeeds, and the route then
-// moves into the applied writes.
+// write and delete at every scope, an adapter's write, a store's create, a
+// namespace's create and a store credential's delete are refused by the
+// node's settings table, which holds no section that reads their keys yet; a
+// store's first credential is refused by the store's capability check, not
+// built; :cancel has no success answer while no operation kind is
+// cancellable. Each waits as a refused write, so the row fails the day its
+// route succeeds, and the route then moves into the applied writes.
 func TestWiredEveryWriteAudited(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
-		w := newWired(t, memory, nil)
+		var log syncBuffer
+		w := newWired(t, memory, func(cfg node.Config) (*node.Node, error) {
+			cfg.Logger = slog.New(slog.NewMultiHandler(cfg.Logger.Handler(), slog.NewTextHandler(&log, nil)))
+			return node.New(cfg)
+		})
 		_, setup := w.h.SignedIn(t, w.addr, "setup", entity.RoleAdmin)
 		f := w.seedSweep(t, setup.Access)
 		const frankPassword, frankNext, erinPassword = "frank's first password", "frank's second password", "erin's password"
@@ -561,6 +564,19 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:resolve-principal", path: "/api/v1/installation:resolve-principal", body: apiv1.ResolvePrincipalParams{Name: "bob@AD.EXAMPLE"}, hdr: idemKey()})
 		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:join-domain", path: "/api/v1/installation:join-domain", secrets: []string{joinPassword, base64.StdEncoding.EncodeToString([]byte(joinPassword))},
 			body: apiv1.JoinDomain{Spec: apiv1.JoinDomainSpec{Mode: apiv1.JoinOnline}, Credential: apiv1.JoinCredential{User: "Administrator@AD.EXAMPLE", Password: []byte(joinPassword)}}})
+		// The keytab is a secret: its bytes, raw or as the body carries them,
+		// reach no audit record, no answer and no log line.
+		kt := keytabOf(t, "cifs/nas.ad.example")
+		ktB64 := base64.StdEncoding.EncodeToString(kt)
+		ktPath := "/api/v1/installation/keytab"
+		put := ap.do(wiredWrite{by: a, route: "PUT /api/v1/installation/keytab", path: ktPath, hdr: []string{"If-None-Match", "*"},
+			body: map[string]any{"spec": map[string]any{"value": ktB64}}, secrets: []string{string(kt), ktB64}})
+		del := ap.do(wiredWrite{by: a, route: "DELETE /api/v1/installation/keytab", path: ktPath, hdr: append([]string{"If-Match", put.header.Get("ETag")}, idemKey()...)})
+		for _, r := range []authReply{put, del} {
+			if strings.Contains(string(r.body), string(kt)) || strings.Contains(string(r.body), ktB64) {
+				t.Errorf("a keytab route's answer holds the keytab: %s", r.body)
+			}
+		}
 		// A store and a namespace holding nothing, each removed.
 		empty := "/api/v1/stores/" + uuid.UUID(storeC).String()
 		configureJSON(t, w.h, storeC)
@@ -599,18 +615,17 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/stores", path: "/api/v1/stores", body: map[string]any{"spec": apiv1.StoreSpec{
 				Settings:   map[string]json.RawMessage{"remote.endpoint": json.RawMessage(`"https://s3.example"`), "remote.bucket": json.RawMessage(`"b"`)},
 				Credential: &apiv1.StoreCredential{Value: []byte("a store's secret key")}}}},
-				status: http.StatusServiceUnavailable, code: apiv1.CodeUnavailable, why: "the secret provider the node does not yet hand its API"},
+				status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/stores/{id}/credential", path: bare + "/credential", body: map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("a new credential")}}, hdr: []string{"If-None-Match", "*"}},
 				status: http.StatusConflict, code: "unproven", why: "the store's capability check"},
 			waitingWrite{wiredWrite: wiredWrite{route: "DELETE /api/v1/stores/{id}/credential", path: cred, hdr: append([]string{"If-Match", `"1"`}, idemKey()...)}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/namespaces", path: "/api/v1/namespaces", body: json.RawMessage(`{"spec":{"store":"` + uuid.UUID(storeA).String() + `","settings":{"namespace.prefix":"p/"}}}`), hdr: idemKey()}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
-			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/installation/keytab", path: "/api/v1/installation/keytab", body: map[string]any{"spec": map[string]any{"value": base64.StdEncoding.EncodeToString(keytabOf(t, "cifs/nas.ad.example"))}}, hdr: []string{"If-None-Match", "*"}},
-				status: http.StatusServiceUnavailable, code: apiv1.CodeUnavailable, why: "the secret provider the node does not yet hand its API"},
-			waitingWrite{wiredWrite: wiredWrite{route: "DELETE /api/v1/installation/keytab", path: "/api/v1/installation/keytab", hdr: append([]string{"If-Match", `"1"`}, idemKey()...)},
-				status: http.StatusPreconditionFailed, code: apiv1.CodeGenerationMismatch, why: "a keytab, which only the keytab's PUT writes"},
 			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/operations/{id}:cancel", path: "/api/v1/operations/" + f.op + ":cancel", hdr: idemKey()},
 				status: http.StatusConflict, code: apiv1.CodeNotCancellable, why: "a cancellable operation kind"},
 		)
 		sweepApplied(t, w, ap.done, waits)
+		if l := log.String(); strings.Contains(l, string(kt)) || strings.Contains(l, ktB64) {
+			t.Error("the node's log holds the keytab")
+		}
 	})
 }
