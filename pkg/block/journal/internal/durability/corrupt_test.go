@@ -1040,6 +1040,44 @@ func TestSyncDoesNotWaitTheCorruptJobAReadQueuedMidCall(t *testing.T) {
 	cr.awaitRecord(t, w.c.Seq)
 }
 
+// TestASyncSnapshottingItsCorruptDebtRacesTheQueueNothing drives the
+// pairing under load: a writer keeps dropping corrupt records of the file
+// while a caller loops Sync over it, each call taking its targets and its
+// corrupt debt together out of the stream's one critical section. The race
+// detector is the assert: the debt snapshot once read the queue outside the
+// lock, and a push or a finish of a corrupt job landed alongside it.
+func TestASyncSnapshottingItsCorruptDebtRacesTheQueueNothing(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	cr := newCorruptRig(t, nil)
+	f := file(1)
+	// A bootstrap record, so the first Sync has a target past the writes
+	// the loop makes.
+	w := cr.write(t, f, 0, "aaaa")
+	cr.corrupt(t, w.c)
+
+	var done atomic.Bool
+	syncs := new(atomic.Int64)
+	dones := make(chan struct{})
+	go func() {
+		for !done.Load() {
+			w := cr.write(t, f, 4096*(syncs.Load()+1), "gggg")
+			cr.corrupt(t, w.c)
+			syncs.Add(1)
+		}
+		close(dones)
+	}()
+	for range 100 {
+		if _, err := cr.d.Sync(context.Background(), f); err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+	}
+	done.Store(true)
+	<-dones
+	if syncs.Load() == 0 {
+		t.Fatalf("the writer dropped nothing beside the Sync loop")
+	}
+}
+
 // TestCorruptThenStopWritesLossRecord covers a loss queued just before Stop
 // that the worker never drained: Stop records it, so its record is on disk
 // when Stop returns.

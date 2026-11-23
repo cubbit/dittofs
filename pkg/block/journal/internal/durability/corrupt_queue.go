@@ -79,10 +79,12 @@ func (d *Durability) drainCorrupt(st *stream) {
 // seq of the newest job queued for it. nil names no owed job.
 type owedCorrupt map[core.FileID]uint64
 
-// owedCorrupt takes that snapshot. The caller holds mu. The snapshot belongs
+// owedCorruptLocked takes that snapshot. The caller holds mu — targetsOf
+// folds it into the critical section that takes the call's targets, so the
+// debt and the targets name one instant of the queue. The snapshot belongs
 // to the call alone: jobs a later read queues after it were never owed to
 // this call, and no later wait of the same files consults them.
-func (st *stream) owedCorrupt(ids []core.FileID) owedCorrupt {
+func (st *stream) owedCorruptLocked(ids []core.FileID) owedCorrupt {
 	var owed owedCorrupt
 	for _, id := range ids {
 		through := st.corruptQueued[id]

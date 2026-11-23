@@ -1362,9 +1362,9 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) ([]core.SyncM
 	// is no target by then.
 	var ws []work
 	for _, st := range d.snapshot() {
-		w := work{st: st, ids: ids, targets: st.targetsOf(ids)}
+		w := work{st: st, ids: ids}
+		w.targets, w.owed = st.targetsOf(ids)
 		w.cands = candsOf(w.targets)
-		w.owed = st.owedCorrupt(ids)
 		ws = append(ws, w)
 	}
 	// A named file whose records a sync already covered -- the timer's, or an
@@ -1627,7 +1627,14 @@ func (d *Durability) snapshot() []*stream {
 // and waits for its seal or fails through the failed map. Compaction removes
 // only completed entries, so a target stays in the ledger until the worker is
 // done with it.
-func (st *stream) targetsOf(ids []core.FileID) []target {
+//
+// Beside the targets, in the one critical section that takes them, it answers
+// the call's corrupt debt snapshot: what its named files owed this stream
+// when the targets were seen — jobs a read queued before the call — so the
+// two read the same instant of the queue, and no push or finish of a corrupt
+// job can land between them and make the pairing of debts to targets say
+// more or less than the call began with.
+func (st *stream) targetsOf(ids []core.FileID) ([]target, owedCorrupt) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	var ts []target
@@ -1659,7 +1666,7 @@ func (st *stream) targetsOf(ids []core.FileID) []target {
 			consider(&w.entries[i])
 		}
 	}
-	return ts
+	return ts, st.owedCorruptLocked(ids)
 }
 
 // await waits until no target of any stream is pending. With failFast, the
