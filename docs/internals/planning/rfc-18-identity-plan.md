@@ -1191,16 +1191,28 @@ err = store.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
 	if err != nil || s.Generation != ntlm.Generation {
 		return orConflict(err)
 	}
+	// Both new versions are put and every version below each pruned at once
+	// with tx.PruneSecret (RFC 23 plan's R37).
 	if err := tx.PutSecret(pw, pw.Version-1); err != nil {
 		return err
 	}
-	u.Password = pw.ID
+	if err := tx.PruneSecret(pw.ID, pw.Version); err != nil {
+		return err
+	}
+	u.Password, u.NTHash = pw.ID, entity.SecretRef{}
 	if h.NTHash != nil {
 		if err := tx.PutSecret(nt, nt.Version-1); err != nil {
 			return err
 		}
+		if err := tx.PruneSecret(nt.ID, nt.Version); err != nil {
+			return err
+		}
 		u.NTHash = nt.ID
 	}
+	// With no new NT hash the account names none, and the old password's is
+	// left to the NT-hash deletion turning NTLM off starts, which drops every
+	// secret of that kind; with NTLM on NewHashes derives none only for an
+	// account holding no uid, which never held one.
 	return tx.PutUser(u, u.Generation, entity.Alloc{})
 })
 ```

@@ -483,6 +483,8 @@ func TestRefusedWriteClearsItsBody(t *testing.T) {
 	}{
 		{"a join carrying an Idempotency-Key", http.MethodPost, "/api/v1/installation:join-domain",
 			`{"spec":{"mode":"offline","account":"DFS$"},"credential":{"password":"czNjcmV0"}}`, "Idempotency-Key", nil},
+		{"a :set-password carrying an Idempotency-Key", http.MethodPost, "/api/v1/users/" + uuid.NewString() + ":set-password",
+			`{"password":"s3cret"}`, "Idempotency-Key", nil},
 		{"a keytab put carrying no precondition", http.MethodPut, "/api/v1/installation/keytab", `{"spec":{"value":"czNjcmV0"}}`, "",
 			func(v any) []byte { return v.(*apiv1.Credential).Spec.Value }},
 	} {

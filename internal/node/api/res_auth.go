@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"reflect"
 
@@ -11,19 +12,28 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// signIns is sign-in and refresh, each auditing its own write from the
-// request's record as it arrived, and saying what it audited.
+// signIns is sign-in, refresh and the password change, each auditing its
+// own write from the request's record as it arrived, and saying what it
+// audited; and a user's :set-password, sealed before its write and written
+// in it.
 type signIns interface {
 	SignIn(ctx context.Context, rec entity.AuditRecord, in apiv1.SignIn) (apiv1.Tokens, auth.Audited, error)
 	Refresh(ctx context.Context, rec entity.AuditRecord, in apiv1.Refresh) (apiv1.Tokens, auth.Audited, error)
+	ChangePassword(ctx context.Context, rec entity.AuditRecord, in apiv1.PasswordChange) (apiv1.Tokens, auth.Audited, error)
+	SealPassword(ctx context.Context, u entity.User, password []byte) (auth.PasswordSet, error)
+	SetPassword(tx entity.ControlPlaneTx, ps auth.PasswordSet) error
 }
 
-// authRoutes are sign-in, refresh and sign-out. Sign-in and refresh are
-// public, since they are how a caller gets a token, and answer the tokens;
-// sign-out ends the caller's own session.
+// authRoutes are sign-in, refresh, the password change and sign-out.
+// Sign-in and refresh are public, since they are how a caller gets a token,
+// and answer the tokens; the password change is the caller's own, admitted
+// while its password must change, and answers the tokens of the session it
+// opens; sign-out ends the caller's own session.
 var authRoutes = []route{
 	{method: http.MethodPost, pattern: "/api/v1/auth/sign-in", right: auth.Public, serve: credential(signIns.SignIn, vfserr.ErrLogonFailure, auth.ErrThrottled)},
 	{method: http.MethodPost, pattern: "/api/v1/auth/refresh", right: auth.Public, serve: credential(signIns.Refresh, vfserr.ErrLogonFailure)},
+	{method: http.MethodPost, pattern: "/api/v1/auth/password", kind: entity.ResourceUser, right: auth.Self, mustChange: true,
+		serve: credential(signIns.ChangePassword, vfserr.ErrLogonFailure, auth.ErrThrottled, vfserr.ErrInvalid)},
 	// Sign-out takes no key: the idempotency record is keyed by account, so
 	// a key one session used would answer another session's sign-out from
 	// the first one's record and leave it live; a retry of one that applied
@@ -31,9 +41,10 @@ var authRoutes = []route{
 	{method: http.MethodPost, pattern: "/api/v1/auth/sign-out", kind: entity.ResourceSession, right: auth.Self, mustChange: true, keyless: true, ownRecord: true, serve: write(sessions, nil, signOut)},
 }
 
-// credential adapts sign-in or refresh: a call answering the tokens h
-// issues, or refused with one of refuses by the credential it carries; each
-// audit record h wrote is counted by its outcome.
+// credential adapts sign-in, refresh or the password change: a call
+// answering the tokens h issues, or refused with one of refuses by the
+// credential it carries; each audit record h wrote is counted by its
+// outcome.
 //
 // decision: credential calls keep no idempotency record (RFC 23 §4.5),
 // because replaying their answer means storing a usable credential for the
@@ -45,8 +56,15 @@ var authRoutes = []route{
 func credential[B any](h func(signIns, context.Context, entity.AuditRecord, B) (apiv1.Tokens, auth.Audited, error), refuses ...error) adapter {
 	return adapter{form: formCall, body: reflect.TypeFor[B](), out: reflect.TypeFor[apiv1.Tokens](), refuses: refuses,
 		run: func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
-			rq, err := decodeRequest[B](r, id)
+			// The body holds a password or a token: it is cleared once
+			// decoded, on every path out.
+			b, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
+			defer clear(b)
 			if err != nil {
+				return answer{}, &fieldError{detail: err.Error()}
+			}
+			rq := request[B]{ID: id}
+			if err := decode(b, &rq.Body); err != nil {
 				return answer{}, err
 			}
 			if s.d.Credentials == nil {

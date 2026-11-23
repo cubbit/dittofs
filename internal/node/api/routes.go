@@ -206,6 +206,7 @@ var baseRoutes = []route{
 	{method: http.MethodPut, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, mayStart: apiv1.OpUserDelete, serve: write(users, kerberosLink, putUser)},
 	{method: http.MethodPatch, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, mayStart: apiv1.OpUserDelete, serve: write(users, kerberosLink, putUser)},
 	{method: http.MethodDelete, pattern: "/api/v1/users/{id}", kind: entity.ResourceUser, right: auth.Principals, starts: apiv1.OpUserDelete, serve: write(tagsOf(users), nil, deleteUser)},
+	{method: http.MethodPost, pattern: "/api/v1/users/{id}", verb: "set-password", kind: entity.ResourceUser, right: auth.Principals, keyless: true, serve: write(passwords, sealPassword, setPassword)},
 	{method: http.MethodGet, pattern: "/api/v1/groups", kind: entity.ResourceGroup, right: auth.View, serve: list(groupsList), params: []param{{name: "name", desc: "The group of this name: a list of zero or one."}}},
 	{method: http.MethodPost, pattern: "/api/v1/groups", kind: entity.ResourceGroup, right: auth.Principals, serve: write(groups, nil, createGroup)},
 	{method: http.MethodGet, pattern: "/api/v1/groups/{id}", kind: entity.ResourceGroup, right: auth.View, serve: watch(group)},

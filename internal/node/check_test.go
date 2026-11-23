@@ -29,7 +29,10 @@ import (
 // caller may not know of, is answered with.
 const codeNotFound apiv1.Code = "not_found"
 
-const signOut = "POST /api/v1/auth/sign-out"
+const (
+	signOut        = "POST /api/v1/auth/sign-out"
+	changePassword = "POST /api/v1/auth/password"
+)
 
 // leastRole is the least role each route of the API admits, keyed by its
 // method and its path as the OpenAPI document spells them, a verb after the
@@ -42,7 +45,8 @@ var leastRole = func() map[string]entity.APIRole {
 		// Public: a version, and how a caller gets a token.
 		entity.RoleNone: {"GET /api/version", "POST /api/v1/auth/sign-in", "POST /api/v1/auth/refresh"},
 		// Every resource but accounts, tokens and the audit; health detail,
-		// operations, node status, a node's connections; signing out. An
+		// operations, node status, a node's connections; signing out and
+		// changing one's own password. An
 		// operation's :cancel asks the role that starts its kind, which its
 		// handler checks, so the row itself admits a viewer.
 		entity.RoleViewer: {
@@ -56,10 +60,11 @@ var leastRole = func() map[string]entity.APIRole {
 			"GET /api/v1/shares/{id}/grants/{sub}", "GET /api/v1/shares/{id}/quota", "GET /api/v1/shares/{id}/quotas",
 			"GET /api/v1/shares/{id}/quotas/{sub}", "GET /api/v1/shares/{id}/settings/{sub}", "GET /api/v1/stores/{id}",
 			"GET /api/v1/stores/{id}/settings/{sub}", "GET /api/v1/users", "GET /api/v1/users/{id}", signOut,
+			changePassword,
 		},
 		// Shares and what hangs off them; stores, namespaces, adapters,
 		// settings, netgroups and the secrets they name; users and groups
-		// that hold no role; resolve-principal.
+		// that hold no role, their passwords included; resolve-principal.
 		entity.RoleOperator: {
 			"PUT /api/v1/adapters/{sub}", "POST /api/v1/groups", "DELETE /api/v1/groups/{id}", "PATCH /api/v1/groups/{id}",
 			"PUT /api/v1/groups/{id}", "DELETE /api/v1/groups/{id}/members/{sub}", "PUT /api/v1/groups/{id}/members/{sub}",
@@ -75,7 +80,7 @@ var leastRole = func() map[string]entity.APIRole {
 			"POST /api/v1/stores", "DELETE /api/v1/stores/{id}", "DELETE /api/v1/stores/{id}/credential",
 			"PUT /api/v1/stores/{id}/credential", "DELETE /api/v1/stores/{id}/settings/{sub}",
 			"PUT /api/v1/stores/{id}/settings/{sub}", "POST /api/v1/users", "DELETE /api/v1/users/{id}",
-			"PATCH /api/v1/users/{id}", "PUT /api/v1/users/{id}",
+			"PATCH /api/v1/users/{id}", "PUT /api/v1/users/{id}", "POST /api/v1/users/{id}:set-password",
 		},
 		// The audit; the keytab, the installation's right (§3.5); and the
 		// directory's actions but resolve-principal.
@@ -506,8 +511,8 @@ func TestDemotionKeepsSessions(t *testing.T) {
 }
 
 // Until a must-change password is changed, its session is refused 403
-// password_change_required on every documented route but the public ones and
-// sign-out, which admits it; no route changes a password yet.
+// password_change_required on every documented route but the public ones,
+// the password change and sign-out, which admit it.
 func TestMustChangeRefusesOtherRoutes(t *testing.T) {
 	s := newAuthNode(t)
 	p := s.h.Account(t, "fresh", "first password", entity.RoleAdmin)
@@ -521,7 +526,7 @@ func TestMustChangeRefusesOtherRoutes(t *testing.T) {
 		t.Error("the tokens of a must-change account say nothing of it")
 	}
 	for _, op := range documented(t) {
-		if leastRole[op.key()] == entity.RoleNone || op.key() == signOut {
+		if leastRole[op.key()] == entity.RoleNone || op.key() == signOut || op.key() == changePassword {
 			continue
 		}
 		wantStatus(t, op.key(), s.send(t, op.method, concrete(op.path), tk.Access, nil), http.StatusForbidden, apiv1.CodePasswordChangeRequired)

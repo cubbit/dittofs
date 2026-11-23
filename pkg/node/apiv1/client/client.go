@@ -153,8 +153,10 @@ func WithQuery(q url.Values) CallOption { return func(c *call) { c.query = q } }
 // call is one logical API call: its method, its path with its query, the
 // query its options add, its JSON body, nil for none, the tag it sends in
 // If-Match, "*" sending If-None-Match: * instead, whether it goes without an
-// idempotency key, and whether it is a sign-in or a refresh, which carries
-// its own credential: no token, and its 401 returned as it is.
+// idempotency key, whether it is a sign-in or a refresh, which carries its
+// own credential: no token, and its 401 returned as it is; and whether its
+// 401 is returned as it is although it carries the token, as a password
+// change's, which refuses the current password it presents.
 type call struct {
 	method, path string
 	query        url.Values
@@ -162,6 +164,7 @@ type call struct {
 	etag         string
 	noKey        bool
 	credential   bool
+	noRefresh    bool
 }
 
 // reply is what one sending of a call was answered.
@@ -197,8 +200,9 @@ var errTooLong = errors.New("client: the answer is longer than 16 MiB")
 // refused with a retryable problem, after the Retry-After the problem names;
 // and when its answer was lost, if it is a GET or carries a key, which the
 // server answers from its record. A call refused 401 is sent again once,
-// with the token the source refreshes, but a sign-in or a refresh, whose 401
-// refuses the credential it carries. No call is sent more than 5 times.
+// with the token the source refreshes, but a sign-in, a refresh or a
+// password change, whose 401 refuses the credential it carries. No call is
+// sent more than 5 times.
 //
 // decision: a keyless call (join-domain, :set-password, an API token's
 // creation) is still refreshed and sent again after a 401, since a 401 is an
@@ -233,7 +237,7 @@ func (c *Client) do(ctx context.Context, cl call) (reply, error) {
 		switch {
 		case err != nil:
 			return reply{}, err
-		case r.status == http.StatusUnauthorized && c.tokens != nil && !cl.credential && !refreshed && sent < attempts:
+		case r.status == http.StatusUnauthorized && c.tokens != nil && !cl.credential && !cl.noRefresh && !refreshed && sent < attempts:
 			refreshed = true
 			fresh, err := c.tokens.Refresh(ctx, token)
 			if err != nil {
