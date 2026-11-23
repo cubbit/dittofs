@@ -45,8 +45,9 @@ var leastRole = func() map[string]entity.APIRole {
 		// Public: a version, and how a caller gets a token.
 		entity.RoleNone: {"GET /api/version", "POST /api/v1/auth/sign-in", "POST /api/v1/auth/refresh"},
 		// Every resource but accounts, tokens and the audit; health detail,
-		// operations, node status, a node's connections; signing out and
-		// changing one's own password. An
+		// operations, node status, a node's connections; signing out,
+		// changing one's own password and one's own API tokens, another
+		// account's being an admin's, which the handler checks. An
 		// operation's :cancel asks the role that starts its kind, which its
 		// handler checks, so the row itself admits a viewer.
 		entity.RoleViewer: {
@@ -60,7 +61,8 @@ var leastRole = func() map[string]entity.APIRole {
 			"GET /api/v1/shares/{id}/grants/{sub}", "GET /api/v1/shares/{id}/quota", "GET /api/v1/shares/{id}/quotas",
 			"GET /api/v1/shares/{id}/quotas/{sub}", "GET /api/v1/shares/{id}/settings/{sub}", "GET /api/v1/stores/{id}",
 			"GET /api/v1/stores/{id}/settings/{sub}", "GET /api/v1/users", "GET /api/v1/users/{id}", signOut,
-			changePassword,
+			changePassword, "GET /api/v1/users/{id}/api-tokens", "POST /api/v1/users/{id}/api-tokens",
+			"DELETE /api/v1/users/{id}/api-tokens/{sub}",
 		},
 		// Shares and what hangs off them; stores, namespaces, adapters,
 		// settings, netgroups and the secrets they name; users and groups

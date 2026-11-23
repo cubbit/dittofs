@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -14,14 +15,15 @@ import (
 
 // signIns is sign-in, refresh and the password change, each auditing its
 // own write from the request's record as it arrived, and saying what it
-// audited; and a user's :set-password, sealed before its write and written
-// in it.
+// audited; a user's :set-password, sealed before its write and written in
+// it; and an API token's creation, in the write adapter's transaction.
 type signIns interface {
 	SignIn(ctx context.Context, rec entity.AuditRecord, in apiv1.SignIn) (apiv1.Tokens, auth.Audited, error)
 	Refresh(ctx context.Context, rec entity.AuditRecord, in apiv1.Refresh) (apiv1.Tokens, auth.Audited, error)
 	ChangePassword(ctx context.Context, rec entity.AuditRecord, in apiv1.PasswordChange) (apiv1.Tokens, auth.Audited, error)
 	SealPassword(ctx context.Context, u entity.User, password []byte) (auth.PasswordSet, error)
 	SetPassword(tx entity.ControlPlaneTx, ps auth.PasswordSet) error
+	CreateAPIToken(tx entity.ControlPlaneTx, u entity.User, expires time.Time) (entity.APIToken, string, error)
 }
 
 // authRoutes are sign-in, refresh, the password change and sign-out.
@@ -44,7 +46,8 @@ var authRoutes = []route{
 // credential adapts sign-in, refresh or the password change: a call
 // answering the tokens h issues, or refused with one of refuses by the
 // credential it carries; each audit record h wrote is counted by its
-// outcome.
+// outcome. One carrying an Idempotency-Key is refused 400 before its body
+// is read.
 //
 // decision: credential calls keep no idempotency record (RFC 23 §4.5),
 // because replaying their answer means storing a usable credential for the
@@ -56,6 +59,9 @@ var authRoutes = []route{
 func credential[B any](h func(signIns, context.Context, entity.AuditRecord, B) (apiv1.Tokens, auth.Audited, error), refuses ...error) adapter {
 	return adapter{form: formCall, body: reflect.TypeFor[B](), out: reflect.TypeFor[apiv1.Tokens](), refuses: refuses,
 		run: func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
+			if r.Header.Get("Idempotency-Key") != "" {
+				return answer{}, &fieldError{field: "Idempotency-Key", detail: "this call carries a credential, so it keeps no idempotency record and takes no key"}
+			}
 			// The body holds a password or a token: it is cleared once
 			// decoded, on every path out.
 			b, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
