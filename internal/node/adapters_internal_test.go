@@ -113,6 +113,9 @@ type rig struct {
 // newRig builds the slots on loopback, refusing the ports taken, its leak
 // check armed over the node's budgets: called before the test starts
 // anything. Both adapters are stopped at the test's end, before the check.
+//
+// decision: a test that builds a rig stays serial, because the leak check is
+// prof.Watch's, which a parallel test beside it would fail.
 func newRig(t *testing.T, taken ...uint16) *rig {
 	t.Helper()
 	b, _ := newBudgets()
@@ -312,7 +315,6 @@ func describe(r *refusal) string {
 // with the same settings it does nothing: the port stays, and a sidecar
 // failing every Sync is not failed, so it was not synced (RFC 23 §2.3).
 func TestAnEnabledAdapterServesAndAgainDoesNothing(t *testing.T) {
-	t.Parallel()
 	rg := newRig(t)
 	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb at port 0: refused %s", r.rec.Error)
@@ -344,7 +346,6 @@ func TestAnEnabledAdapterServesAndAgainDoesNothing(t *testing.T) {
 // again, SMB serves from a new adapter, since a stopped one never starts
 // again (RFC 20 §3.1, RFC 23 §2.3).
 func TestADisabledAdapterStopsAndServesAnewWhenEnabled(t *testing.T) {
-	t.Parallel()
 	rg := newRig(t)
 	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb: refused %s", r.rec.Error)
@@ -376,7 +377,6 @@ func TestADisabledAdapterStopsAndServesAnewWhenEnabled(t *testing.T) {
 // change goes through the runner, which syncs the sidecar after it: the
 // sidecar is failed (RFC 20 §3.5, RFC 23 §2.3).
 func TestALiveSettingReachesOnlyConnectionsAcceptedAfterIt(t *testing.T) {
-	t.Parallel()
 	rg := newRig(t)
 	if r := rg.nfs.apply(t.Context(), rg.loop, 0, true, nfsAt(0)); r != nil {
 		t.Fatalf("enable nfs: refused %s", r.rec.Error)
@@ -693,7 +693,6 @@ func TestTheAPIsPortIsRefused(t *testing.T) {
 // listening on a port the system picked names 0: SMB at port 0 serves on a
 // port the system picks for it (RFC 13 §6).
 func TestPortZeroIsNeverTaken(t *testing.T) {
-	t.Parallel()
 	rg := newRig(t, 0)
 	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
 		t.Fatalf("enable smb at port 0 beside a listener at port 0: %s, want applied", describe(r))
@@ -725,7 +724,6 @@ func (h heldStop) Stop(ctx context.Context) error {
 // clock of its own, moved past the 60 s stall before each 30 s of the node's,
 // so only an idle report landing inside those 30 s keeps the loop live.
 func TestADrainWaitKeepsTheLoopLive(t *testing.T) {
-	t.Parallel()
 	rg := newRig(t)
 	stopped, release := make(chan struct{}, 1), make(chan struct{})
 	build := rg.smb.build
@@ -779,7 +777,6 @@ func TestADrainWaitKeepsTheLoopLive(t *testing.T) {
 // every goroutine in it waits on another: the accept loop, waiting on its
 // socket, never does, so it reports no idle while SMB serves.
 func TestAnAdapterReportsThroughTheNode(t *testing.T) {
-	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		rg := newRig(t)
 		if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
@@ -827,7 +824,6 @@ func TestAnAdapterReportsThroughTheNode(t *testing.T) {
 // under the race detector, a read the outcome does not order after the store
 // fails here.
 func TestAnOutcomeIsReadWhileTheCallsStoreIt(t *testing.T) {
-	t.Parallel()
 	rg := newRig(t)
 	stop, read := make(chan struct{}), make(chan struct{})
 	go func() {

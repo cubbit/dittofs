@@ -1009,7 +1009,8 @@ func methodValues(dir, path string, writers map[string]*types.Signature) ([]stri
 // another, in a func field, the store's view itself, and a node taking a
 // store method as a value are caught.
 func TestAPIWritesOnlyThroughWrite(t *testing.T) {
-	t.Parallel()
+	// decision: serial, because it type-checks through exportImporter,
+	// which is shared and not safe for concurrent use.
 	writers, err := storeWriters()
 	if err != nil {
 		t.Fatal(err)
@@ -1332,7 +1333,8 @@ func isMethod(o types.Object) bool {
 // literal whose kind is the signing key's, a password hash's or no
 // constant.
 func TestNoRouteWritesTheSigningKey(t *testing.T) {
-	t.Parallel()
+	// decision: serial, because it type-checks through exportImporter,
+	// which is shared and not safe for concurrent use.
 	var dirs []string
 	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
@@ -1418,7 +1420,8 @@ func setsAudit(e ast.Expr) bool {
 // from auth with no audit record, a nil one or a variable that may be nil
 // are caught; auth's sign-in count, writing none, is not.
 func TestWritesThroughTheAdapter(t *testing.T) {
-	t.Parallel()
+	// decision: serial, because it type-checks through exportImporter,
+	// which is shared and not safe for concurrent use.
 	var dirs []string
 	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
@@ -1494,7 +1497,8 @@ func lifecycleCalls(dir, path string) ([]string, error) {
 // the one enginewire ships; a node calling the table's or the engine's own
 // Start, Stop or Close is caught.
 func TestNodeStartsThroughEnginewire(t *testing.T) {
-	t.Parallel()
+	// decision: serial, because it type-checks through exportImporter,
+	// which is shared and not safe for concurrent use.
 	wire := module + "pkg/block/engine/enginewire."
 	for _, tc := range []struct {
 		dir  string
@@ -1569,7 +1573,8 @@ func apiExports(dir, path string) ([]string, error) {
 // parameters take, Clock, KeyVersions, Sealer and Writer; and nothing else;
 // a planted extra method is caught.
 func TestAPIExports(t *testing.T) {
-	t.Parallel()
+	// decision: serial, because it type-checks through exportImporter,
+	// which is shared and not safe for concurrent use.
 	want := []string{"Deps", "New", "OpenAPI", "Server", "Server.Start", "Server.Stop"}
 	for _, tc := range []struct {
 		dir, path string
