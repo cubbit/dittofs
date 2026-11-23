@@ -589,8 +589,13 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     `Get[T any](snap *Snapshot, section string, node entity.NodeID) (T, error)` (an error for a
     section the snapshot holds no value of, such as one held at start),
     `Diff(prev, cur *Snapshot) []Change` (a nil `prev` makes every key a change) and
-    `(*Snapshot).Keep(section string, prev *Snapshot) *Snapshot` (the section's values from `prev`,
-    the rest from the receiver);
+    `(*Snapshot).Keep(section string, prev *Snapshot) *Snapshot` (`prev`'s values for what the
+    receiver refuses: in a section with one value per instance or per thing, only the refused
+    instance or thing, and the whole section only when its own value is refused, since a record that
+    does not validate stops only what it configures (RFC 13 §6). When the whole section is refused,
+    the whole section keeps its previous values, and an instance the previous snapshot does not hold
+    stays refused, with no value and no default, as in the new read (`Keep` in `diff.go`); the rest
+    from the receiver);
   - a `Table` built from two sections that declare one key panics and names both sections, so
     keys stay unique across sections and the table's first test fails on a clash;
   - `Write`, `Put(s)`, `Delete(scope, key)`, `HoldsContent` (`func(scope entity.SettingScope) (bool, error)`, so that a write that is not
@@ -696,7 +701,7 @@ so PR 3 starts once PR 2 is there. A suggestion only: one pull request per subta
   quote is re-read against the merged text. Pending #4486.
 - **`WriteMissingNodeIDs` differs from its caller.** RFC 23's epic 3 (T3.10) calls it with the
   store's `JournalID`, while T1.3's stub takes `recorded func(dir string) (bool, error)`, a
-  callback the caller builds from that read. The stub keeps the callback until T3.10 and E2 agree
+  callback the caller builds from that read. The stub keeps the callback until RFC 23's T3.10 and E2 agree
   on one form.
 - **`kmip_fake_test.go` moves with `keyprovider`.** It is a canned-response KMIP server, which
   `CLAUDE.md`'s "Writing tests" bans for a new or changed test. The move changes no line of it, so

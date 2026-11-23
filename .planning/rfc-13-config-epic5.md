@@ -23,7 +23,8 @@ whose two wrapping keys build the provider. S3, outside RFC 13's plan: RFC 23's 
 adapter and secret routes, which already call `Check` through `checkSetting` with the caller's role,
 and `Deps.Sealer` (its T4.9, #4994, landed). RFC 20's plan's T7.6, the adapters' section types, for
 T5.7 only.
-**Blocks:** E6, which runs RFC 13 §9's single-node rows on the wired server; RFC 23's integration
+**Blocks:** E6, which runs RFC 13 §9's single-node rows on the wired server; E3's T3.10, for its swap
+in `walkSettings` only, which waits for T5.2 to merge; RFC 23's integration
 epic (its epic 7, through X3), whose rows that write a setting wait for `Check` on the routes; RFC
 20's plan's T7.6, which reads each adapter's section from the snapshot this epic's reconcile
 publishes; the RFC 18 plan's epic 8, which lists identity's sections in this epic's table and runs
@@ -106,8 +107,8 @@ benchmark.
 - Comparing a namespace's `Bound` with its configuration at every open, and refusing the open on
   a difference (RFC 13 §5.3): the engine's, RFC 8 §2.4. T5.4 writes what that comparison reads,
   and exports from `pkg/settings` the decode it reads through (D12).
-- Reconcile reading only the records above its position: the plan's ledger row "Reconcile reading
-  only records above its position", unowned.
+- An index by (kind, position) for reconcile's settings read: the plan's ledger row, owned by RFC 16.
+  Epic 3's T3.10 decodes only the changed scopes, through the same walk.
 
 ### 1.3 Names used here
 
@@ -421,8 +422,11 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
   landed: one read transaction per page).
 - **Covers:** R6, R7, R8, R9, R10, R11.
 - **Deliverables:** `apply`'s settings half in `reconcile.go`: `CFGGEN` read, `settings.Read` over
-  the node view's `AllSettings`, `CFGGEN` read again and the walk discarded when it moved; each
-  refused section kept at its last snapshot with `Keep`, or held unstarted when it never ran, and
+  the node view's `AllSettings` (after T5.2 merges, E3's T3.10 swaps this call for `settings.Advance`
+  from the last walk's own snapshot, its `Pass` diffing after the `Keep` calls; T5.2 does not wait
+  for T3.10), `CFGGEN` read again and the walk discarded when it moved; each
+  refused section kept at its last snapshot with `Keep` (only the refused instance or thing, the
+  whole section only when its own value is refused), or held unstarted when it never ran, and
   returned as a refusal with its generation and error; the snapshot stored in an
   `atomic.Pointer[settings.Snapshot]`; the reconciled settings position advanced only to the first
   `CFGGEN` read. Consumed by T5.3, T5.8, RFC 20's T7.6 and the RFC 18 plan's epic 8.
@@ -443,8 +447,8 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
   next pass is full and applies a change written during the failure (catches a missed change, R7);
   a reader loading the snapshot under `-race` while passes run (catches a published snapshot
   mutated in place, R10).
-- **Rules:** rule 9: the `ponytail:` of RFC 13's plan's §4.3 on the one walk stays at `Read` (E3);
-  this subtask adds none.
+- **Rules:** rule 9: the `ponytail:` of RFC 13's plan's §4.3 on the one walk stays in
+  `pkg/settings`, at `Advance` since E3's T3.10; this subtask adds none.
 
 ### T5.3 Each class's path
 
@@ -663,7 +667,8 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 - **Deliverables:** `BenchmarkReconcile` (#4688) grown with a case at 10⁴ shares' settings, E3's
   sparse fixture over the node's table and test sections, and 16 references for the secrets pass,
   timed from the commit to the end of the pass; its figure in the pull request against the 100 ms
-  ceiling, and the one-walk marker's trigger fired there if it is past it; the call
+  ceiling (the index's trigger is not this figure but the store walk alone, epic 3's
+  `BenchmarkReconcileScan` `walk` case, passing 100 ms); the call
   `(Table).WithMetrics(registry)` on the node's table, built in `node.New`; `series_test.go`
   reading the node's registry after a start and after a refused write through the settings route.
 - **Acceptance criteria:**
