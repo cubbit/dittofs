@@ -192,7 +192,7 @@ func serveDomainAs(t *testing.T, seal bool, authenticate func(*http.Request) (au
 	}
 	name, pw := d.dir.Account()
 	ref := entity.SecretRef(uuid.New())
-	owner := entity.SecretOwner{Scope: installation, Key: "identity.directory"}
+	owner := entity.SecretOwner{Scope: installation, Key: "identity.directory.bind_credential"}
 	bind, err := p.p.Seal(t.Context(), secrets.Protocol, entity.SecretDirectoryCredential, owner, ref, pw, secrets.Meta{})
 	if err != nil {
 		t.Fatal(err)

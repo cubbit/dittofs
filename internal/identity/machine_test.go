@@ -144,7 +144,10 @@ func newMachine(t *testing.T) *rotFixture {
 
 	bindRef := entity.SecretRef(uuid.New())
 	bind, err := p.Seal(ctx, secrets.Protocol, entity.SecretDirectoryCredential,
-		entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}, bindRef, []byte(bindPW), secrets.Meta{})
+		entity.SecretOwner{
+			Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
+			Key:   identity.DirectoryBindCredentialKey,
+		}, bindRef, []byte(bindPW), secrets.Meta{})
 	if err != nil {
 		t.Fatal(err)
 	}

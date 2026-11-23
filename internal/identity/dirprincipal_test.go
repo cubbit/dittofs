@@ -96,7 +96,11 @@ func protocolSecrets(t testing.TB, st *kvstore.Store) *secrets.Provider {
 // under the reference whose first byte is n, and stores it in st.
 func sealBindPassword(t testing.TB, st *kvstore.Store, p *secrets.Provider, n byte, pw []byte) entity.SecretRef {
 	t.Helper()
-	owner := entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}
+
+	owner := entity.SecretOwner{
+		Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
+		Key:   identity.DirectoryBindCredentialKey,
+	}
 	var ref entity.SecretRef
 	ref[0] = n
 	sec, err := p.Seal(context.Background(), secrets.Protocol, entity.SecretDirectoryCredential, owner, ref, pw, secrets.Meta{})
