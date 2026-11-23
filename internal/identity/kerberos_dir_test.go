@@ -194,7 +194,10 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 		held := 0
 		arrived, release := make(chan struct{}, 2), make(chan struct{})
 		releaseOnce := sync.OnceFunc(func() { close(release) })
-		defer releaseOnce() // a backstop's Fatal leaves no mint parked
+		var wg sync.WaitGroup
+		// A backstop's Fatal leaves no mint parked, nor running into the
+		// fixture's cleanup.
+		defer func() { releaseOnce(); wg.Wait() }()
 		e.s.OnCreate(func(entity.MintBatch) {
 			mu.Lock()
 			held++
@@ -205,7 +208,6 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 				<-release
 			}
 		})
-		var wg sync.WaitGroup
 		ps := make([]entity.Principal, 2)
 		errs := make([]error, 2)
 		for i := range steps {
@@ -232,6 +234,36 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 			t.Errorf("carol bound %v and %v, want one principal", ps[0], ps[1])
 		}
 	})
+}
+
+// RFC 18 §3.4's refresh on a sign-in: alice, reached by a krb row linked for
+// her SID, signs in past the TTL once the directory renamed her entry to
+// alicia, and the resolution after it, inside the TTL, finds her record named
+// alicia. Catches the sign-in's enabled read filling the cache without
+// refreshing the record, which hides the rename for one more TTL.
+func TestKerberosSignInRefreshesTheRecord(t *testing.T) {
+	e := newAD(t)
+	ctx := context.Background()
+	realm := e.kerberos(t)
+	dn := e.d.AddUser(t, "alice", nil)
+	logon := e.logonOf(t, "alice")
+	alice := e.signedIn(t, realm, "alice")
+	u := e.record(t, alice)
+	u.IDs = append(u.IDs, linkedKrbID("alice@CORP.EXAMPLE", logon.DomainSID+"-"+strconv.FormatUint(uint64(logon.UserRID), 10)))
+	if _, err := e.st.ControlPlane().PutUser(ctx, u, u.Generation, entity.Alloc{}); err != nil {
+		t.Fatal(err)
+	}
+	e.d.Modify(dn, map[string][][]byte{"sAMAccountName": attr("alicia")})
+	e.clock.Advance(5*time.Minute + time.Second)
+	if res, err := e.s.SignIn(ctx, e.ticket(realm, "alice", logon)); err != nil || res.Identity.Evidence.Principal != alice {
+		t.Fatalf("alice's sign-in by her krb row bound %v, %v; want %v", res.Identity.Evidence.Principal, err, alice)
+	}
+	if _, err := e.resolveAs(alice, fileShare()); err != nil {
+		t.Fatalf("resolve alice after the sign-in: %v", err)
+	}
+	if got := e.record(t, alice).Name; got != "alicia" {
+		t.Errorf("alice's stored name after a sign-in and a resolution past the rename %q, want %q", got, "alicia")
+	}
 }
 
 // keytab applies a keytab of a realm named name for cifs/nas.corp.example in
