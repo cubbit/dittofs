@@ -106,10 +106,30 @@ var leastRole = func() map[string]entity.APIRole {
 var unreadable = map[string]entity.APIRole{"GET /api/v1/audit": entity.RoleAdmin}
 
 // routeOp is one operation of the API's OpenAPI document: its method and
-// path, and the least role the document says it admits.
+// path, the least role the document says it admits, and whether the role it
+// needs is instead the one that starts the kind of operation it names.
 type routeOp struct {
 	method, path string
 	role         entity.APIRole
+	byKind       bool
+}
+
+// actions is RFC 23 §4.1's table of actions: the resource each verb acts on,
+// and whether its role is the one that starts its operation's kind rather
+// than a role of its own.
+var actions = map[string]struct {
+	resource string
+	byKind   bool
+}{
+	"quiesce": {"shares", false}, "resume": {"shares", false}, "rehome": {"shares", false},
+	"accept-copy": {"namespaces", false}, "rebuild-index": {"namespaces", false},
+	"rebuild-reverse-index": {"shares", false}, "raise-format": {"installation", false},
+	"rotate-signing-key": {"installation", false}, "reload-provisioning": {"nodes", false},
+	"set-password": {"users", false}, "drain": {"nodes", false}, "decommission": {"nodes", false},
+	"acknowledge-unreadable": {"nodes", false}, "declare-lost": {"backup-locations", false},
+	"resolve-principal": {"installation", false}, "test-directory": {"installation", false},
+	"join-domain": {"installation", false}, "rotate-machine-password": {"installation", false},
+	"cancel": {"operations", true},
 }
 
 func (o routeOp) key() string { return o.method + " " + o.path }
@@ -132,12 +152,13 @@ func documented(t *testing.T) []routeOp {
 	for path, methods := range doc.Paths {
 		for method, raw := range methods {
 			var op struct {
-				Role string `json:"x-dittofs-role"`
+				Role   string `json:"x-dittofs-role"`
+				ByKind bool   `json:"x-dittofs-role-by-kind"`
 			}
 			if json.Unmarshal(raw, &op) != nil || op.Role == "" {
 				continue
 			}
-			o := routeOp{method: strings.ToUpper(method), path: path}
+			o := routeOp{method: strings.ToUpper(method), path: path, byKind: op.ByKind}
 			if err := o.role.UnmarshalText([]byte(op.Role)); err != nil {
 				t.Fatalf("%s: the document names role %q: %v", o.key(), op.Role, err)
 			}
@@ -155,7 +176,9 @@ func concrete(path string) string {
 }
 
 // The document says each route admits the least role RFC 23 §5.2 gives it,
-// every documented route has one, and every route there is documented.
+// every documented route has one, and every route there is documented; each
+// action is a row of §4.1's table, on that row's resource, its role the
+// operation kind's exactly where the row says so.
 // Then every route is called as each role, a signed-in account of that
 // role: a caller below the least role is refused, 404 where its role may not
 // know of what the route reaches, as the audit, and 403 forbidden where it
@@ -173,6 +196,21 @@ func TestEveryRouteByRole(t *testing.T) {
 			t.Errorf("%s is documented and has no least role in this test: decide it from RFC 23 §5.2", op.key())
 		case op.role != want:
 			t.Errorf("%s: the document says %v may call it, RFC 23 §5.2 says %v", op.key(), op.role, want)
+		}
+		_, verb, isAction := strings.Cut(op.path, ":")
+		coll, _, _ := strings.Cut(strings.TrimPrefix(op.path, "/api/v1/"), "/")
+		coll, _, _ = strings.Cut(coll, ":")
+		a, known := actions[verb]
+		switch {
+		case !isAction && op.byKind:
+			t.Errorf("%s: its role is its operation kind's, and it is no action", op.key())
+		case !isAction:
+		case !known:
+			t.Errorf("%s: action %s is not in RFC 23 §4.1's table", op.key(), verb)
+		case a.resource != coll:
+			t.Errorf("%s: action %s acts on %s, RFC 23 §4.1 puts it on %s", op.key(), verb, coll, a.resource)
+		case a.byKind != op.byKind:
+			t.Errorf("%s: its role by operation kind %v, RFC 23 §4.1 says %v", op.key(), op.byKind, a.byKind)
 		}
 	}
 	for k := range leastRole {
