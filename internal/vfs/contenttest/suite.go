@@ -60,6 +60,7 @@ func Run(t *testing.T, newSubject func(t *testing.T) Subject) {
 		{"OverlayReflectsAWriteStagedAnInstantBefore", overlayReflectsAWrite},
 		{"OverlayReplaysInVersionOrder", overlayReplaysInVersionOrder},
 		{"ASuspendedModifyTimeIsLeftAlone", aSuspendedModifyTimeIsLeftAlone},
+		{"ASuspendedContentChangeLeavesTheModifyTimeAlone", aSuspendedContentChangeLeavesTheModifyTimeAlone},
 		{"DoneIsCalledOnceByTheExistenceCommit", doneIsCalledOnceByTheExistenceCommit},
 		{"TruncateReadsBackAsEndOfFileOrZeros", truncateReadsBack},
 		{"DeallocateReadsBackAsZeros", deallocateReadsBackAsZeros},
@@ -254,6 +255,23 @@ func aSuspendedModifyTimeIsLeftAlone(t *testing.T, s Subject) {
 	}
 	if o, _ := s.overlay(t, f); !o.Mtime.Equal(first) || !o.Ctime.Equal(s.Clock.Now()) {
 		t.Errorf("after a write suspending mtime, Overlay mtime %v, ctime %v; want %v, %v", o.Mtime, o.Ctime, first, s.Clock.Now())
+	}
+}
+
+// A growing truncate whose context suspends the modification time
+// (engine.WithSuspended) moves the change time only. A shrinking truncate, a
+// deallocate and a clone commit the file's existence in the engine, leaving
+// no overlay to read, so the suite holds only the grow, which stays pending.
+func aSuspendedContentChangeLeavesTheModifyTimeAlone(t *testing.T, s Subject) {
+	f := s.File(t)
+	s.write(t, f, 0, "a")
+	first := s.Clock.Now()
+	s.Clock.Advance(time.Second)
+	if err := s.Content.Truncate(engine.WithSuspended(t.Context(), entity.TimeModify), s.Share, f, 8); err != nil {
+		t.Fatal(err)
+	}
+	if o, pending := s.overlay(t, f); !pending || !o.Mtime.Equal(first) || !o.Ctime.Equal(s.Clock.Now()) {
+		t.Errorf("after a grow suspending mtime, Overlay pending %v, mtime %v, ctime %v; want true, %v, %v", pending, o.Mtime, o.Ctime, first, s.Clock.Now())
 	}
 }
 
