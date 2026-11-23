@@ -1192,6 +1192,7 @@ type Deps struct {
 	Holds     CloneHold // a clone's hold on its source (§9.1); the root adapts open state to it
 	Gate      Gate      // RFC 12 §2.3: the per-shard cut gate every existence commit passes
 	Clock     Clock     // Now, Elapsed, After: the subset of the node's clock the engine reads
+	FreeSpace func(dir string) (int64, error) // free bytes of the filesystem holding journal directory dir, for journal_full's clear after a full device (§11.1); nil asks the filesystem
 	Watchdog  *health.Watchdog // RFC 25 §3.5: each journal's scheduler takes Loop("engine.sched." + journal)
 	Metrics   *metrics.Registry
 	Tracer    trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
@@ -3654,7 +3655,9 @@ since then (`MaxBytes`, [RFC 1 §3.7](rfc-1-journal.md#3.7%20State%20introspecti
 names; under the headroom or the index bound, the records or entries it names,
 regained; on a full device, a spare that can be ready again, made from a
 segment's cap of free space in the journal directory's filesystem, which the
-engine reads itself, or recycled ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). After a headroom refusal the next
+engine reads itself through `Deps.FreeSpace` (§2.6), on the journal's group
+commit loop at the refusal and then at most once a second while it stands, so
+`Stats` reads no filesystem, or recycled ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)). After a headroom refusal the next
 content write on the journal accepted outside a reservation clears it too, since
 below half the headroom every unreserved content write is refused, while a
 reservation that holds enough lets its writes pass that rule ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). No other accepted write
