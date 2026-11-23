@@ -3,6 +3,7 @@ package kvstore
 import (
 	"cmp"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"maps"
@@ -238,8 +239,19 @@ func openGenKey(j [16]byte) []byte { return append(journalKey(j), keys.JOg) }
 
 func syncMarksPrefix(j [16]byte) []byte { return append(journalKey(j), keys.JSm) }
 
+// syncMarkKey is J‖journal‖sm‖stream, the stream 4 bytes big-endian (RFC 16
+// §4.2.1).
 func syncMarkKey(j [16]byte, stream uint32) []byte {
-	return keys.Uint64(syncMarksPrefix(j), uint64(stream))
+	return binary.BigEndian.AppendUint32(syncMarksPrefix(j), stream)
+}
+
+// syncMarkStream is the stream a sync mark key names after its prefix, and
+// whether that part is the 4 bytes syncMarkKey writes.
+func syncMarkStream(rest []byte) (uint32, bool) {
+	if len(rest) != 4 {
+		return 0, false
+	}
+	return binary.BigEndian.Uint32(rest), true
 }
 
 func encodeSyncMark(m entity.SyncMark) []byte {

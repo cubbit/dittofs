@@ -738,7 +738,14 @@ func TestALateAttachRecordsMarksUnderItsOwnOpenGeneration(t *testing.T) {
 	j := s.j
 	s.mu.Unlock()
 
-	if rec := j.RecordedMarks(); len(rec) == 0 {
-		t.Error("the late attach's open recorded no marks, want its sync's under its own open generation")
+	// A marks write commits only under the open generation the store holds,
+	// the one this open's SyncMarks raised, so the sync's marks reach the
+	// journal as recorded only when the group commit carries that open's.
+	sync := j.SyncMarks()
+	if len(sync) == 0 {
+		t.Fatal("the late attach's sync returned no marks, want the commit's")
+	}
+	if rec := j.RecordedMarks(); !slices.Equal(rec, sync) {
+		t.Errorf("the late attach's open recorded %v, want its sync's %v, under its own open generation", rec, sync)
 	}
 }

@@ -170,8 +170,8 @@ const (
 
 // Sub-kinds under J‖journal.
 const (
-	JOg byte = 0x01 // the journal's open generation
-	JSm byte = 0x02 // a sync mark: J‖journal‖sm‖stream
+	JSm byte = 0x01 // a sync mark: J‖journal‖sm‖stream, the stream 4 bytes big-endian
+	JOg byte = 0x02 // the journal's open generation
 )
 
 // Enumerated components.

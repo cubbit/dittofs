@@ -3,10 +3,11 @@ package kvstore
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
-	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -20,12 +21,20 @@ import (
 // node's devices' journal identities, the installation's tags, the shares'
 // version limits and the shards' incarnations (RFC 16 §3).
 type Lifecycle struct {
-	s *Store
+	s   *Store
+	log *slog.Logger // where SyncMarks logs a mark it leaves out; nil logs nothing
 }
 
 // Lifecycle is the engine's view of the store outside block metadata.
 func (s *Store) Lifecycle() Lifecycle {
-	return Lifecycle{s}
+	return Lifecycle{s: s}
+}
+
+// WithLogger is l logging to log each sync mark SyncMarks leaves out. A
+// Lifecycle with no logger logs nothing.
+func (l Lifecycle) WithLogger(log *slog.Logger) Lifecycle {
+	l.log = log
+	return l
 }
 
 // journalRecord is a journal's J‖journal value: the node and device it lives
@@ -146,13 +155,20 @@ func (l Lifecycle) JournalID(
 // SyncMarks is journal j's recorded sync marks, for its Open, and the open
 // generation it raises J‖journal‖og to in the same transaction, which every
 // marks write of that open carries. An og never raised reads as 0. A mark
-// whose key or value does not decode is left out, as absent, and fails
-// nothing: skipped holds the stream part of each such key as stored, for the
-// caller to log with its stream (RFC 16 §3), since the store holds no logger.
-// A non-nil error means the transaction failed and og was not raised.
-func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.SyncMark, gen OpenGen, skipped [][]byte, err error) {
+// that does not decode is left out, as absent, fails nothing, and is logged
+// with its stream once the transaction commits (RFC 16 §3). A non-nil error
+// means the transaction failed and og was not raised.
+//
+// A key whose stream is not 4 bytes is deleted in the same transaction: no
+// marks write produces it, so none would ever replace it, and the open would
+// log it again. A well-formed key whose value does not decode is kept: the
+// next marks write carrying its stream, if any, replaces it.
+func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.SyncMark, gen OpenGen, err error) {
+	pre := syncMarksPrefix(j)
+	var undecodable []uint32 // well-formed keys whose value does not decode
+	var malformed [][]byte   // each key deleted, whole
 	err = l.s.kv.Update(ctx, func(tx kv.Txn) error {
-		marks, skipped = nil, nil
+		marks, undecodable, malformed = nil, nil, nil
 
 		og, err := counterIn(tx, openGenKey(j))
 		if err != nil {
@@ -165,28 +181,48 @@ func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.Sy
 		}
 		gen = OpenGen(og)
 
-		pre := syncMarksPrefix(j)
 		for row, err := range tx.Scan(pre, nil) {
 			if err != nil {
 				return err
 			}
-			s, rest, kerr := keys.ReadUint64(row.Key[len(pre):])
-			m, derr := decodeSyncMark(row.Value)
-			if kerr != nil || len(rest) != 0 || s > math.MaxUint32 || derr != nil {
-				skipped = append(skipped, slices.Clone(row.Key[len(pre):]))
+			stream, ok := syncMarkStream(row.Key[len(pre):])
+			if !ok {
+				malformed = append(malformed, slices.Clone(row.Key))
 				continue
 			}
-			m.Stream = uint32(s)
+			m, derr := decodeSyncMark(row.Value)
+			if derr != nil {
+				undecodable = append(undecodable, stream)
+				continue
+			}
+			m.Stream = stream
 			marks = append(marks, m)
+		}
+		for _, k := range malformed {
+			if err := tx.Delete(k); err != nil {
+				return err
+			}
 		}
 
 		return nil
 	})
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, err
 	}
 
-	return marks, gen, skipped, nil
+	if l.log != nil {
+		id := hex.EncodeToString(j[:])
+		for _, s := range undecodable {
+			l.log.Warn("sync mark left out: its value does not decode; the next marks write carrying its stream, if any, replaces it",
+				"journal", id, "stream", s)
+		}
+		for _, k := range malformed {
+			l.log.Warn("sync mark left out and deleted: its key does not decode",
+				"journal", id, "key", hex.EncodeToString(k[len(pre):]))
+		}
+	}
+
+	return marks, gen, nil
 }
 
 // RecordJournal records journal id as living on node's device, the store's

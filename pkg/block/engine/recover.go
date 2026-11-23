@@ -121,14 +121,8 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 	var recorded []entity.SyncMark
 	var gen kvstore.OpenGen
 	if id != ([16]byte{}) {
-		var skipped [][]byte
-		if recorded, gen, skipped, err = e.d.Lifecycle.SyncMarks(ctx, id); err != nil {
+		if recorded, gen, err = e.d.Lifecycle.SyncMarks(ctx, id); err != nil {
 			return opened{}, fmt.Errorf("engine: start: read the sync marks of %s: %w", dir, err)
-		}
-		// The open treats each stream left out as having no recorded mark,
-		// and the next marks write carrying it replaces the stored one.
-		for _, s := range skipped {
-			e.d.Logger.Warn("sync mark left out: it does not decode", "device", dir, "stream", fmt.Sprintf("%x", s))
 		}
 	}
 
@@ -143,8 +137,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 		return opened{}, err
 	}
 
-	vl := newVersionLimit(j)
-	vl.open = marks{journal: id, gen: gen}
+	vl := newVersionLimit(j, marks{journal: id, gen: gen})
 	o := opened{
 		journal: vl,
 		id:      expect,
@@ -867,9 +860,10 @@ type versionLimit struct {
 	changed chan struct{}
 }
 
-// newVersionLimit is the version limit of journal j, its raise lock free.
-func newVersionLimit(j Journal) *versionLimit {
-	return &versionLimit{j: j, lock: make(chan struct{}, 1), changed: make(chan struct{})}
+// newVersionLimit is the version limit of journal j for the open whose
+// identity and open generation are open, its raise lock free.
+func newVersionLimit(j Journal, open marks) *versionLimit {
+	return &versionLimit{j: j, open: open, lock: make(chan struct{}, 1), changed: make(chan struct{})}
 }
 
 // acquire takes the raise lock, or gives up with ctx's error when ctx ends
