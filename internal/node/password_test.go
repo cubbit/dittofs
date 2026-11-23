@@ -255,77 +255,239 @@ func TestPasswordChangeRewritesBothHashes(t *testing.T) {
 	refusedSignIn(t, s.h, "with the old password", "pat", "pat's first password")
 }
 
-// holdSeal holds the first read of one secret's current version once armed,
-// as a seal reads it before its write, until release is closed, and signals
-// reached.
+// holdSeal holds one read of one secret's current version once armed, as a
+// seal reads it before its write, the one after skip such reads, until
+// release is closed, and signals reached.
 type holdSeal struct {
 	bound   string
 	armed   atomic.Bool
+	skip    atomic.Int32
 	reached chan struct{}
 	release chan struct{}
 }
 
 func (f *holdSeal) At(op string, key []byte) (time.Duration, int, error) {
-	if op == kvtest.OpBefore && string(key) == f.bound && f.armed.CompareAndSwap(true, false) {
+	if op == kvtest.OpBefore && string(key) == f.bound && f.armed.Load() && f.skip.Add(-1) < 0 && f.armed.CompareAndSwap(true, false) {
 		close(f.reached)
 		<-f.release
 	}
 	return 0, 0, nil
 }
 
-// A change held after it read identity.ntlm, on, and before its write, by a
-// fault at its seal of the NT hash, while identity.ntlm is turned off: its
-// write refuses the moved setting, and it seals again with no NT hash, so it
-// answers its tokens and stores no NT hash, the user naming none and the old
-// one's reference holding no new version.
-func TestNTLMOffDuringAChangeStoresNoNTHash(t *testing.T) {
-	var fault *kvtest.FaultKV
-	s := newAuthNode(t, withKV(func(inner kv.KV) kv.KV {
-		fault = kvtest.NewFaultKV(inner)
-		return fault
-	}))
-	u := fileAccount(t, s, "pat", "pat's first password", entity.RoleViewer)
-	tk := s.tokens(t, "pat", "pat's first password")
-	bound := append(keys.ID([]byte{keys.KindSEC}, u.NTHash[:]), bytes.Repeat([]byte{0xff}, 9)...)
+// heldAt arms a hold on fault at the seal of secret ref, after skip reads
+// of it, and returns it with its release, which the test's end also runs.
+func heldAt(t *testing.T, fault *kvtest.FaultKV, ref entity.SecretRef, skip int32) (*holdSeal, func()) {
+	t.Helper()
+	bound := append(keys.ID([]byte{keys.KindSEC}, ref[:]), bytes.Repeat([]byte{0xff}, 9)...)
 	f := &holdSeal{bound: keys.Describe(bound), reached: make(chan struct{}), release: make(chan struct{})}
+	f.skip.Store(skip)
 	f.armed.Store(true)
 	fault.SetFault(f)
 	var once sync.Once
 	release := func() { once.Do(func() { close(f.release) }) }
 	t.Cleanup(release)
+	return f, release
+}
 
-	type reply struct {
-		r   authReply
-		err error
-	}
+// reply is one answer of a request a test sent from a goroutine.
+type reply struct {
+	r   authReply
+	err error
+}
+
+// heldCall sends method path with body bearing token from a goroutine, waits
+// for f to hold it, runs during, releases it and returns its answer.
+func (s *authNode) heldCall(t *testing.T, f *holdSeal, release func(), method, path, token string, body any, during func()) authReply {
+	t.Helper()
 	answered := make(chan reply, 1)
 	go func() {
-		r, err := s.try(t.Context(), http.MethodPost, passwordPath, tk.Access, apiv1.PasswordChange{Current: "pat's first password", New: "pat's second password"})
+		r, err := s.try(t.Context(), method, path, token, body)
 		answered <- reply{r, err}
 	}()
 	select {
 	case <-f.reached:
 	case a := <-answered:
-		t.Fatalf("the change answered %d %s (%v) before it sealed the NT hash", a.r.status, a.r.body, a.err)
+		t.Fatalf("%s %s answered %d %s (%v) before its seal", method, path, a.r.status, a.r.body, a.err)
 	case <-time.After(time.Minute):
-		t.Fatal("the change did not reach its seal of the NT hash")
+		t.Fatalf("%s %s did not reach its seal", method, path)
 	}
-	putSetting(t, s.h, "identity.ntlm", `false`)
+	during()
 	release()
-	a := <-answered
-	if a.err != nil {
-		t.Fatal(a.err)
+	select {
+	case a := <-answered:
+		if a.err != nil {
+			t.Fatal(a.err)
+		}
+		return a.r
+	case <-time.After(time.Minute):
+		t.Fatalf("%s %s did not answer within a minute of its release", method, path)
 	}
-	s.decodeTokens(t, "the change across the turn-off", a.r)
-	after := s.stored(t, u.Principal)
-	if after.NTHash != (entity.SecretRef{}) {
-		t.Errorf("the user names NT hash %v after the change, want none", uuid.UUID(after.NTHash))
+	return authReply{}
+}
+
+// faultedAuth is an authNode whose node runs over a fault wrapper of the KV.
+func faultedAuth(t *testing.T) (*authNode, *kvtest.FaultKV) {
+	t.Helper()
+	var fault *kvtest.FaultKV
+	s := newAuthNode(t, withKV(func(inner kv.KV) kv.KV {
+		fault = kvtest.NewFaultKV(inner)
+		return fault
+	}))
+	return s, fault
+}
+
+// A change held after it read identity.ntlm, on, and before its write, by a
+// fault at its seal of the NT hash, while identity.ntlm is turned off: its
+// write refuses the moved setting, and it seals again with no NT hash, so it
+// answers its tokens and stores no NT hash, the user naming none and the old
+// one's reference holding no new version. With the NT-hash deletion also run
+// while it is held, which writes the user, the change answers 503 or its
+// tokens, never 401, and settles no failure.
+func TestNTLMOffDuringAChangeStoresNoNTHash(t *testing.T) {
+	for _, cleanup := range []bool{false, true} {
+		t.Run(fmt.Sprint("deletion run ", cleanup), func(t *testing.T) {
+			s, fault := faultedAuth(t)
+			u := fileAccount(t, s, "pat", "pat's first password", entity.RoleViewer)
+			tk := s.tokens(t, "pat", "pat's first password")
+			was := s.sourceCount(t)
+			f, release := heldAt(t, fault, u.NTHash, 0)
+			r := s.heldCall(t, f, release, http.MethodPost, passwordPath, tk.Access,
+				apiv1.PasswordChange{Current: "pat's first password", New: "pat's second password"}, func() {
+					putSetting(t, s.h, "identity.ntlm", `false`)
+					if !cleanup {
+						return
+					}
+					for after, done := (entity.SecretRef{}), false; !done; {
+						var err error
+						if after, _, done, err = s.h.Store().ControlPlane().DropNTHashes(t.Context(), after, 16); err != nil {
+							t.Fatalf("DropNTHashes: %v", err)
+						}
+					}
+				})
+			after := s.stored(t, u.Principal)
+			if after.NTHash != (entity.SecretRef{}) {
+				t.Errorf("the user names NT hash %v after the change, want none", uuid.UUID(after.NTHash))
+			}
+			if cleanup {
+				if r.status != http.StatusOK && r.status != http.StatusServiceUnavailable {
+					t.Errorf("the change across the deletion: answered %d %s, want 200 or 503", r.status, r.body)
+				}
+				if got := s.sourceCount(t); got.Failed != was.Failed || got.Count != was.Count {
+					t.Errorf("the source's count after the change: %+v, want %+v, no failure settled", got, was)
+				}
+				return
+			}
+			s.decodeTokens(t, "the change across the turn-off", r)
+			if v := versionOf(t, s, u.NTHash); v != 1 {
+				t.Errorf("the old NT hash's current version: %d, want 1, no NT hash written", v)
+			}
+			if v := versionOf(t, s, after.Password); v != 2 {
+				t.Errorf("the password hash's current version: %d, want 2", v)
+			}
+		})
 	}
-	if v := versionOf(t, s, u.NTHash); v != 1 {
-		t.Errorf("the old NT hash's current version: %d, want 1, no NT hash written", v)
+}
+
+// An account written while a password write is held after its seal is
+// refused 503, nothing written: a change, whose current password was right,
+// settles no failure and takes back its raise of the source's count, and the
+// old password still signs in; a :set-password leaves the account as the
+// other write left it.
+func TestAccountMovedDuringAPasswordWrite(t *testing.T) {
+	s, fault := faultedAuth(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	p := s.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	tk := s.tokens(t, "pat", "pat's password")
+	pw := s.stored(t, p).Password
+	edit := func() {
+		s.change(t, p, func(tx entity.ControlPlaneTx, u *entity.User) error {
+			u.Email = u.Name + "@example.com"
+			_, err := tx.PutUser(*u, u.Generation, entity.Alloc{})
+			return err
+		})
 	}
-	if v := versionOf(t, s, after.Password); v != 2 {
-		t.Errorf("the password hash's current version: %d, want 2", v)
+	was := s.sourceCount(t)
+	// The change's check reads the password hash once before its seal does.
+	f, release := heldAt(t, fault, pw, 1)
+	r := s.heldCall(t, f, release, http.MethodPost, passwordPath, tk.Access, apiv1.PasswordChange{Current: "pat's password", New: "pat's next password"}, edit)
+	wantStatus(t, "a change whose account moved", r, http.StatusServiceUnavailable, apiv1.CodeUnavailable)
+	if v := versionOf(t, s, pw); v != 1 {
+		t.Errorf("the password hash's version after the refused change: %d, want 1", v)
+	}
+	if got := s.sourceCount(t); got.Failed != was.Failed || got.Count != was.Count {
+		t.Errorf("the source's count after the refused change: %+v, want %+v", got, was)
+	}
+	s.tokens(t, "pat", "pat's password")
+
+	gen := s.stored(t, p).Generation
+	f, release = heldAt(t, fault, pw, 0)
+	r = s.heldCall(t, f, release, http.MethodPost, userPath(p)+":set-password", admin, apiv1.SetPassword{Password: "set by the admin"}, func() {
+		s.change(t, p, func(tx entity.ControlPlaneTx, u *entity.User) error {
+			u.Email = "moved@example.com"
+			var err error
+			gen, err = tx.PutUser(*u, u.Generation, entity.Alloc{})
+			return err
+		})
+	})
+	wantStatus(t, "a :set-password whose account moved", r, http.StatusServiceUnavailable, apiv1.CodeUnavailable)
+	if got := s.stored(t, p); got.Generation != gen || versionOf(t, s, pw) != 1 {
+		t.Errorf("the account after the refused :set-password: generation %d, password version %d; want %d and 1", got.Generation, versionOf(t, s, pw), gen)
+	}
+}
+
+// A :set-password in the same second as a change ends the change's session:
+// its access token and its refresh token are refused, as not-before rises
+// past the one the change set.
+func TestSetPasswordInTheChangesSecond(t *testing.T) {
+	s := newAuthNode(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	p := s.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	tk := s.tokens(t, "pat", "pat's password")
+	answered := s.decodeTokens(t, "the change", s.changePassword(t, tk.Access, "pat's password", "pat's next password"))
+	if r := s.setPassword(t, admin, p, "set by the admin"); r.status != http.StatusOK {
+		t.Fatalf(":set-password: answered %d %s, want 200", r.status, r.body)
+	}
+	wantStatus(t, "a call with the change's access token", s.list(t, answered.Access), http.StatusUnauthorized, apiv1.CodeUnauthenticated)
+	wantStatus(t, "a refresh of the change's session", s.refresh(t, answered.Refresh), http.StatusUnauthorized, apiv1.CodeUnauthenticated)
+}
+
+// An empty new password is refused 400 and audited: a change's raises no
+// count, and a :set-password's leaves the password as it was. So is a
+// directory principal's :set-password, which signs in only through the
+// directory.
+func TestPasswordSetRefusesInvalid(t *testing.T) {
+	s := newAuthNode(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	p := s.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	tk := s.tokens(t, "pat", "pat's password")
+	pw := s.stored(t, p).Password
+	was, audits := s.sourceCount(t), len(s.audits(t))
+	wantStatus(t, "a change to an empty password", s.changePassword(t, tk.Access, "pat's password", ""), http.StatusBadRequest, "invalid")
+	if got := s.sourceCount(t); got.Count != was.Count {
+		t.Errorf("the source's count after the refused change: %d, want %d", got.Count, was.Count)
+	}
+	wantStatus(t, ":set-password to an empty password", s.setPassword(t, admin, p, ""), http.StatusBadRequest, "invalid")
+	if v := versionOf(t, s, pw); v != 1 {
+		t.Errorf("the password hash's version after the refused sets: %d, want 1", v)
+	}
+	dir := entity.User{Principal: entity.NewUser(), Name: "dir", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeDir, Value: "entry-dir"}}}
+	s.write(t, func(tx entity.ControlPlaneTx) error {
+		_, err := tx.PutUser(dir, 0, entity.Alloc{})
+		return err
+	})
+	wantStatus(t, "a directory principal's :set-password", s.setPassword(t, admin, dir.Principal, "a password"), http.StatusBadRequest, "invalid")
+	if got := s.stored(t, dir.Principal); got.Password != (entity.SecretRef{}) {
+		t.Errorf("the directory principal names password %v after the refused set, want none", uuid.UUID(got.Password))
+	}
+	recs := s.audits(t)[audits:]
+	refused := 0
+	for _, a := range recs {
+		if string(a.Outcome) == "refused: invalid" {
+			refused++
+		}
+	}
+	if refused != 3 {
+		t.Errorf("refused: invalid audit records: %d of %d new, want 3", refused, len(recs))
 	}
 }
 
