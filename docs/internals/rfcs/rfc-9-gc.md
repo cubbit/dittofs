@@ -550,7 +550,7 @@ internal/gc/
 ```
 
 One file per source. The transactional half lives in block metadata, so this
-package holds no transaction code. Today's `pkg/block/gc` is deleted, not
+package holds no transaction code. The v1 `pkg/block/gc` is deleted, not
 refactored: Appendix A's D2, D5, D13 and D14 are its design, not its bugs.
 
 ## 3. A block's life
@@ -2297,7 +2297,7 @@ remote backend that can fail a delete after performing it ([RFC 4 §7.1](rfc-4-r
 
 GC's safety is in block metadata's transactions, so Group A's rows on `MarkDue`,
 adoption, `Relocate`, `Abandon` and the gates are `Blocks` conformance cases in
-RFC 6's store suite (`pkg/metadata/storetest`), run against every backend. GC's
+RFC 6's store suite (`pkg/metadata/kvstore/kvstoretest`), run against every backend. GC's
 own package tests its sources over `gctest`'s verified in-memory implementations ([§2.6](#2.6%20Package%20layout),
 [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)).
 `arch_test.go` asserts that GC imports no component of the set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
@@ -2506,5 +2506,5 @@ amending the requirement.
 | D22 | Verify before delete ([§3.5](#3.5%20The%20deleter%20verifies%20before%20it%20deletes)) | none; the count alone decides |
 | D23 | Space-amplification target and cost-benefit ranking ([§4.4](#4.4%20When%20to%20compact%20is%20policy)) | relocation is run by an operator, per block |
 | D24 | `Recheck` on its own period, gating deletes and prunes ([§7.5](#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) | bucket settings are checked only when the store opens |
-| D25 | One GC per node, built from `Deps`, with `Start`, `Drain` and `Close`, and a context per namespace added by the node ([§2.5](#2.5%20Composition%20and%20lifecycle)) | `CollectGarbage` (`pkg/block/gc/gc.go`) is a free function the runtime calls per remote with an options struct; there is no lifecycle, and jobs live in an in-memory registry |
+| D25 | One GC per node, built from `Deps`, with `Start`, `Drain` and `Close`, and a context per namespace added by the node ([§2.5](#2.5%20Composition%20and%20lifecycle)) | none: the v1 `CollectGarbage` (`pkg/block/gc`) was a free function the runtime called per remote, with no lifecycle, and it is deleted; no GC package replaces it yet |
 | D26 | Settings read live per namespace at each pass ([§8](#8.%20API%20surface)) | `GCConfig` (`pkg/config/config.go`) is read once at start |
