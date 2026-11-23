@@ -168,7 +168,7 @@ func open(t *testing.T) store {
 }
 
 // openOver initialises and opens the store over db.
-func openOver(t *testing.T, db kv.KV) store {
+func openOver(t testing.TB, db kv.KV) store {
 	t.Helper()
 
 	if err := kvstore.Init(ctx, db, uuid.New()); err != nil {
