@@ -329,6 +329,9 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 		// second to every share with an everyone grant. Revisit if a
 		// deployment is shown to need cross-realm users with no directory,
 		// and then as a share-scoped option.
+		if s.dirAccountGone(ctx, st, logon) {
+			return identity.SignInResult{}, outcomeDisabled, errDisabled
+		}
 		return identity.SignInResult{}, outcomeLogonFailure, logonFailure("no principal for the ticket's client")
 	case errors.Is(err, vfserr.ErrInvalid):
 		// The store refuses the minted record, the PAC's SID as its link.
@@ -344,6 +347,24 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 		return identity.SignInResult{}, outcomeLogonFailure, err
 	case err != nil:
 		return identity.SignInResult{}, outcomeUnavailable, err
+	}
+	// decision: a directory principal's enabled state is read through the
+	// directory cache on every Kerberos sign-in, PAC or not, as resolution
+	// reads it (RFC 18 §3.4, §3.7): the PAC and the ticket say only what the
+	// KDC knew at issue, and a ticket outlives a disable by up to its 10
+	// hours. A local principal holds no dir spelling and asks the directory
+	// nothing. Pass-through needs no such read, the domain controller
+	// refusing a disabled account itself. Overturned if the cost of a query
+	// per sign-in past the TTL shows up, when the answer step 3 already read
+	// could serve.
+	if id, ok := dirEntryID(u); ok {
+		var r *refusal
+		switch _, _, err := s.dirStep(ctx, st, p, id, identity.Evidence{}, false); {
+		case errors.As(err, &r) && r.reason == reasonDisabled:
+			return identity.SignInResult{}, outcomeDisabled, errDisabled
+		case err != nil:
+			return identity.SignInResult{}, outcomeUnavailable, err
+		}
 	}
 	ev := identity.Evidence{Name: name, Principal: p, Expires: enc.EndTime, SIDs: sids, DenyOnly: denyOnly}
 	if logon != nil {
@@ -417,6 +438,33 @@ func (s *Server) kerberosPrincipal(ctx context.Context, st *State, name string, 
 		err = fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
 	}
 	return p, false, err
+}
+
+// dirAccountGone reports whether logon, a verified PAC's logon information,
+// names by its user SID a directory principal whose entry the directory,
+// read through the cache, shows disabled or gone: the account RFC 18 §3.7
+// calls disabled, whose name §4.2's step 3 no longer finds. It only picks
+// the refusal's outcome, and any fault reading it reports false, so the
+// sign-in is refused all the same.
+func (s *Server) dirAccountGone(ctx context.Context, st *State, logon *pac.KerbValidationInfo) bool {
+	if logon == nil || st.Directory == nil {
+		return false
+	}
+	p, ok, err := bySID(ctx, s.deps.Store.Principals(), pacUserSID(logon))
+	if err != nil || !ok {
+		return false
+	}
+	u, err := s.deps.Store.Principals().User(ctx, p)
+	if err != nil {
+		return false
+	}
+	id, ok := dirEntryID(u)
+	if !ok {
+		return false
+	}
+	var r *refusal
+	_, _, err = s.dirStep(ctx, st, p, id, identity.Evidence{}, false)
+	return errors.As(err, &r) && r.reason == reasonDisabled
 }
 
 // bindPAC checks a verified PAC's user SID against u, the record §4.2
