@@ -20,7 +20,8 @@ import (
 )
 
 const (
-	// runInterval is the runner's wait between turns.
+	// runInterval is the runner's wait after a turn in which no step reported
+	// work left.
 	runInterval = time.Second
 	// A retried step waits firstRetry, doubling at each failure in a row up
 	// to lastRetry.
@@ -39,6 +40,8 @@ type stepRow struct {
 
 // runner drives the operations no component drives on its own, one step of
 // each per turn, recording each turn's answer in the operation's record.
+// A turn follows the last at once while a step in it reported work left, and
+// runInterval later otherwise.
 //
 // ponytail: the runner keeps no claim and resumes, at every turn, every
 // operation whose record has not ended, so a second node would drive the
@@ -54,7 +57,7 @@ type runner struct {
 	retries map[entity.OperationID]retry
 
 	// turned, when set, is called after each turn, once the wait for the
-	// next is set on the clock.
+	// next, if any, is set on the clock.
 	turned func()
 
 	mu      sync.Mutex
@@ -79,20 +82,33 @@ func (r *runner) progressOf(ctx context.Context, op entity.Operation) apiv1.Prog
 	return apiv1.Progress{Total: -1}
 }
 
-// run takes a turn every runInterval on the runner's clock until ctx ends,
-// reporting each to loop. A step ctx interrupts commits nothing, so each
+// run takes turns until ctx ends, reporting each to loop: the next at once
+// while a step of the last reported work left, and runInterval later on the
+// runner's clock otherwise. A step ctx interrupts commits nothing, so each
 // operation is left at its last durable step.
 //
-// ponytail: an operation moves one step a turn, so a deletion of n batches
-// takes n seconds. Run a step again at once while it reports work left when
-// an operation's batches make that wait show.
+// decision: a turn that follows at once still drives every operation listed,
+// one step each, so a long deletion moves no faster than any other operation
+// that has work left and starves none; an operation waiting on its own
+// schedule or a retry is asked again, which its step answers at once. ctx is
+// checked between turns, so a Stop ends the runner after the step it
+// interrupts, however much work is left.
 func (r *runner) run(ctx context.Context, loop *health.Loop) {
 	for {
-		r.turn(ctx)
+		more := r.turn(ctx)
 		loop.Turn()
-		next := r.clock.After(runInterval)
+		var next <-chan struct{}
+		if !more {
+			next = r.clock.After(runInterval)
+		}
 		if r.turned != nil {
 			r.turned()
+		}
+		if more {
+			if ctx.Err() != nil {
+				return
+			}
+			continue
 		}
 		select {
 		case <-ctx.Done():
@@ -104,23 +120,27 @@ func (r *runner) run(ctx context.Context, loop *health.Loop) {
 
 // turn pages through the operations not yet ended and drives each one, so
 // an operation created since the last turn is picked up, then forgets the
-// retry waits of those no longer listed.
+// retry waits of those no longer listed. It reports whether a step reported
+// work left.
 //
 // ponytail: a turn pages through the whole running index. Keep a cursor or
 // a wake-up per operation when that page-through shows in a profile.
-func (r *runner) turn(ctx context.Context) {
+func (r *runner) turn(ctx context.Context) (more bool) {
 	listed := map[entity.OperationID]bool{}
 	for op, err := range r.cp.RunningOperations(ctx, entity.Operation{}) {
 		if err != nil {
 			if ctx.Err() == nil {
 				r.log.Warn("operation runner: list the operations", "error", err)
 			}
-			return
+			return false
 		}
 		listed[op.ID] = true
-		r.drive(ctx, op)
+		if r.drive(ctx, op) {
+			more = true
+		}
 	}
 	maps.DeleteFunc(r.retries, func(id entity.OperationID, _ retry) bool { return !listed[id] })
+	return more
 }
 
 // drive runs one step of op and commits its answer when the step's cursor,
@@ -131,12 +151,13 @@ func (r *runner) turn(ctx context.Context) {
 // writes, an End's error or panic answered as a step's is. An operation
 // failed is written with its kind's failed writes; when those writes are
 // what failed the commit, the failure is recorded without them. A step ctx
-// interrupted commits nothing, whatever it answered.
+// interrupted commits nothing, whatever it answered. It reports whether the
+// step answered More and its answer was committed.
 //
 // decision: an operation whose kind has no step stays pending, so a binary
 // that gains the step later runs it. Its kind is logged once and kept for
 // refusedKinds, which the node status reports among its refused records.
-func (r *runner) drive(ctx context.Context, op entity.Operation) {
+func (r *runner) drive(ctx context.Context, op entity.Operation) bool {
 	row, ok := r.steps[op.Kind]
 	if !ok {
 		r.mu.Lock()
@@ -146,16 +167,16 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 		if first {
 			r.log.Warn("operation runner: no step for the operation's kind; it stays pending", "operation", op.ID, "kind", op.Kind)
 		}
-		return
+		return false
 	}
 	now := r.clock.Elapsed()
 	if w, waiting := r.retries[op.ID]; waiting && now < w.at {
-		return
+		return false
 	}
 	before := row.progress(ctx, op).Phase
 	res, err := step.Run(ctx, row.run, op)
 	if ctx.Err() != nil {
-		return
+		return false
 	}
 	next := op
 	problem, fails := step.Failure(err)
@@ -165,7 +186,7 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 		next.State, next.Error, end = entity.OpFailed, problem, row.failed
 	case err != nil:
 		r.retry(ctx, op, now, err)
-		return
+		return false
 	case res.Done:
 		next.State, next.Step, next.Result = entity.OpSucceeded, res.Next, res.Result
 	default:
@@ -192,9 +213,10 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 	}
 	if err != nil {
 		r.retry(ctx, op, now, err)
-		return
+		return false
 	}
 	delete(r.retries, op.ID)
+	return res.More && !fails && !res.Done
 }
 
 // commit writes next over op, audited when its state or phase moved, with

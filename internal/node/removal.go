@@ -53,7 +53,7 @@ func principalDeletion(nodes kvstore.Nodes, kind entity.PrincipalKind) step.Step
 			return step.StepResult{}, fmt.Errorf("%w: %s's target %s %x names no %s", step.ErrStepFailed, op.Kind, op.Target.Kind, op.Target.ID, target)
 		}
 		done, err := nodes.ContinueDelete(ctx, entity.Principal{Kind: kind, ID: entity.PrincipalID(op.Target.ID)})
-		return step.StepResult{Done: done}, failInvalid(err)
+		return step.StepResult{Done: done, More: !done}, failInvalid(err)
 	}
 }
 
@@ -86,11 +86,11 @@ func (n *Node) shareDeletion(ctx context.Context, op entity.Operation) (step.Ste
 	case done:
 		return step.StepResult{Done: true}, nil
 	case at == 3:
-		return step.StepResult{}, n.removeShare(ctx, id)
+		return step.StepResult{More: true}, n.removeShare(ctx, id)
 	case at == 4:
-		return step.StepResult{}, failInvalid(n.dropFiles(ctx, id))
+		return step.StepResult{More: true}, failInvalid(n.dropFiles(ctx, id))
 	}
-	return step.StepResult{}, nil
+	return step.StepResult{More: true}, nil
 }
 
 // dropFiles is a turn of step 4 of share id's removal on this node. Until

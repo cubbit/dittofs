@@ -26,6 +26,10 @@ type StepResult struct {
 	Next []byte
 	// Done says the work has ended.
 	Done bool
+	// More, with Done unset, says work is left that the step can do at once,
+	// so the runner runs the next turn without waiting. Leave it unset while
+	// the step waits on something else, such as time passing.
+	More bool
 	// Result, set with Done, is recorded as Operation.Result.
 	Result json.RawMessage
 	// End, set with Done, writes in the transaction that ends the operation:

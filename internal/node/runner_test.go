@@ -770,3 +770,87 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// While a step reports work left the loop turns again at once, on a clock
+// that never moves; each such turn still drives every operation one step, so
+// one with endless work left starves neither another operation nor the
+// loop's context; and once no step reports work left the loop waits on its
+// clock again.
+func TestRunTurnsAtOnceWhileAStepHasWorkLeft(t *testing.T) {
+	b := newBench(t, "", nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	var long, other, turns int
+	more := true
+	r := b.runner(map[string]stepRow{
+		"long": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
+			long++
+			return step.StepResult{More: more}, nil
+		}},
+		"other": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
+			other++
+			return step.StepResult{}, nil
+		}},
+	})
+	b.operation(entity.Operation{Kind: "long", Target: aShare, State: entity.OpRunning})
+	b.operation(entity.Operation{Kind: "other", Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{2}}, State: entity.OpRunning})
+	const atOnce = 50
+	waited := make(chan struct{})
+	r.turned = func() {
+		turns++
+		switch turns {
+		case atOnce:
+			more = false // the next turn reports no work left
+		case atOnce + 1:
+			close(waited)
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.run(ctx, health.NewWatchdog(b.clock).Loop("runner"))
+	}()
+	select {
+	case <-waited:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%d turns within 10 s on a clock that never moved, want %d, each step but the last reporting work left", turns, atOnce+1)
+	}
+	waitFor(t, "the loop to wait on its clock once no step reports work left", func() bool { return b.clock.Pending() > 0 })
+	if long != atOnce+1 || other != atOnce+1 {
+		t.Errorf("steps over %d turns: the one with work left ran %d, the other %d; want each once a turn", atOnce+1, long, other)
+	}
+	if e := b.clock.Elapsed(); e != 0 {
+		t.Errorf("clock over the turns: %v elapsed, want 0, no turn waiting while a step had work left", e)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run after its context ended: still running 10 s later, want returned")
+	}
+}
+
+// A loop whose step never runs out of work returns once its context ends.
+func TestRunWithWorkLeftReturnsWhenItsContextEnds(t *testing.T) {
+	b := newBench(t, "", nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	r := b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
+		return step.StepResult{More: true}, nil
+	}}})
+	b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning})
+	turns := 0
+	r.turned = func() {
+		if turns++; turns == 3 {
+			cancel()
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.run(ctx, health.NewWatchdog(b.clock).Loop("runner"))
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run with work left after its context ended: still running 10 s later, want returned")
+	}
+}
