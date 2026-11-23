@@ -38,7 +38,8 @@ suites:
       # The tests that pin an authorization or encryption gate, run by name: the edit that
       # reopens a gate can delete its test in the same change.
       - test/required-tests.sh
-      # The FoundationDB backend builds only with its tag, so the lint names it.
+      # The build that ships, then the FoundationDB backend, which builds only with its tag.
+      - golangci-lint run --timeout=5m
       - golangci-lint run --build-tags=foundationdb --timeout=5m
   lint-repo:
     job: Repo Checks

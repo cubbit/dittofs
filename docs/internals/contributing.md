@@ -64,7 +64,8 @@ If you prefer not to use Nix, install dependencies manually:
   - Linux: `nfs-common` package
   - macOS: Built-in NFS client
 - Git
-- FoundationDB client library, only to build with the `foundationdb` tag
+- FoundationDB client library, to build with the `foundationdb` tag and to run
+  `test/harness/bin/dt run lint-go`, on every OS
 
 #### FoundationDB client
 
@@ -72,7 +73,9 @@ The FoundationDB metadata backend links `libfdb_c`, so it builds only with the
 `foundationdb` tag; `go build ./...` and `go test ./...` leave it out and need
 nothing. With the tag, `go build -tags=foundationdb ./...` fails with
 `foundationdb/fdb_c.h: No such file or directory` until the client is
-installed.
+installed. `dt run lint-go` vets and lints with the tag, so it needs the
+client on macOS too, where the Nix dev shell does not provide it: install
+the macOS package from FoundationDB's releases.
 
 On Debian or Ubuntu, install the same release CI uses, checked against the
 digest CI pins (on ARM, use `aarch64` and the arm64 digest from

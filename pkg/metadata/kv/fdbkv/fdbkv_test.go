@@ -114,7 +114,7 @@ func TestOpenRefusesAMissingTLSFile(t *testing.T) {
 			tls := tlsFiles(t)
 			missing := tc.path(&tls)
 			*missing += ".missing"
-			s, err := fdbkv.Open(fdbkv.Options{ClusterFile: t.TempDir() + "/fdb.cluster", TLS: tls})
+			s, err := fdbkv.Open(t.Context(), fdbkv.Options{ClusterFile: t.TempDir() + "/fdb.cluster", TLS: tls})
 			if err == nil {
 				_ = s.Close()
 				t.Fatalf("Open with a missing %s: nil error, want one naming %s", tc.name, *missing)
@@ -131,11 +131,11 @@ func TestOpenRefusesAMissingTLSFile(t *testing.T) {
 // refused rather than connected with the first's. No cluster is needed: the
 // first Open gives the client its files before it finds no cluster file.
 func TestOpenRefusesOtherTLSFiles(t *testing.T) {
-	if s, err := fdbkv.Open(fdbkv.Options{ClusterFile: t.TempDir() + "/fdb.cluster"}); err == nil {
+	if s, err := fdbkv.Open(t.Context(), fdbkv.Options{ClusterFile: t.TempDir() + "/fdb.cluster"}); err == nil {
 		_ = s.Close()
 		t.Fatal("Open on a missing cluster file: nil error, want the client's refusal")
 	}
-	s, err := fdbkv.Open(fdbkv.Options{ClusterFile: t.TempDir() + "/fdb.cluster", TLS: tlsFiles(t)})
+	s, err := fdbkv.Open(t.Context(), fdbkv.Options{ClusterFile: t.TempDir() + "/fdb.cluster", TLS: tlsFiles(t)})
 	if err == nil {
 		_ = s.Close()
 		t.Fatal("Open with TLS files after one without: nil error, want a refusal")

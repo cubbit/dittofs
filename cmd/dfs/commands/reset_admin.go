@@ -87,7 +87,10 @@ func runResetAdmin(cmd *cobra.Command, _ []string) (err error) {
 	}
 	// Badger's directory lock refuses the open while a node holds the store,
 	// before anything is read or written.
-	kv, err := openKV(cfg, newSystemClock())
+	// ponytail: FoundationDB has no such lock, so a reset runs beside a node
+	// serving the same cluster. Refuse it there once a running node is visible
+	// in the cluster itself.
+	kv, err := openKV(ctx, cfg, newSystemClock())
 	if err != nil {
 		return fmt.Errorf("opening the metadata store; is a node running over it? Stop it first: %w", err)
 	}

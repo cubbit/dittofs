@@ -86,9 +86,14 @@ jobs:
           # controls rather than the action's internal default.
           db-location: ${{ runner.temp }}/codeql-db
 
+      # Two builds into one database: the one that ships, then the FoundationDB
+      # backend, which builds only with its tag.
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4
-        # The FoundationDB backend builds only with its tag.
+
+      - name: Autobuild with the foundationdb tag
+        if: matrix.language == 'go'
+        uses: github/codeql-action/autobuild@v4
         env:
           GOFLAGS: -tags=foundationdb
 

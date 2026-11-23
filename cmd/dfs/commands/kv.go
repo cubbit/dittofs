@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"errors"
 
 	"github.com/cubbit/dittofs/pkg/bootstrap"
@@ -41,10 +42,11 @@ func checkKV(cfg *bootstrap.Bootstrap) error {
 // metadata.backend selects, the configuration already accepted by checkKV and
 // a Badger directory by the start check: every refusal that read only the
 // configuration ran before the check, and every refusal the directory itself
-// could take the check has already answered.
-func openKV(cfg *bootstrap.Bootstrap, clock systemClock) (kv.KV, error) {
+// could take the check has already answered. ctx bounds a FoundationDB open,
+// which otherwise waits for an unreachable cluster forever.
+func openKV(ctx context.Context, cfg *bootstrap.Bootstrap, clock systemClock) (kv.KV, error) {
 	if cfg.Metadata.Backend == "foundationdb" {
-		return openFoundationDB(cfg, clock)
+		return openFoundationDB(ctx, cfg, clock)
 	}
 	db, err := badgerkv.Open(badgerkv.Options{Dir: cfg.Metadata.Badger.Path, NodeID: cfg.Node.ID, Clock: clock.Now})
 	if err != nil {
