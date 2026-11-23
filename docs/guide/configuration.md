@@ -98,11 +98,10 @@ below for the metrics listener's configuration.
 
 ### 3. Server Settings
 
-Application-wide server configuration:
-
-```yaml
-shutdown_timeout: 30s   # Maximum time to wait for graceful shutdown
-```
+There is no `shutdown_timeout`: a config file that carries it is refused at load,
+naming it as an unknown key. How long an adapter waits for its requests to finish
+when it stops is the `adapters.<protocol>.drain_timeout` setting, set through the
+management API rather than in the file.
 
 > The Prometheus `metrics:` block is a top-level key, documented in its own
 > section below ([Metrics (Prometheus)](#metrics-prometheus)).
@@ -117,127 +116,50 @@ keys as unknown.
 
 ### 5. API Server
 
-The REST API server provides endpoints for authentication, user management, and configuration. It is enabled by default.
+The REST API serves sign-in, the management resources and the health checks. It
+is always on; the `api` block says where it listens:
 
 ```yaml
-controlplane:
-  host: 127.0.0.1            # Bind interface (loopback by default; see below)
-  port: 8080                 # HTTP/HTTPS port for API endpoints
-  read_timeout: 10s          # Max time to read request
-  write_timeout: 10s         # Max time to write response
-  idle_timeout: 60s          # Max idle time for keep-alive
-  drain_stall_timeout: 5m    # Abort POST /api/v1/system/drain-uploads only if
-                             # no upload completes within this window WHILE
-                             # bytes are still unsynced (inactivity timeout,
-                             # NOT a total cap — a large flush may run for as
-                             # long as it keeps making progress, and a drain
-                             # with nothing left to upload is never aborted)
-
-  # Force the bootstrap "admin" user to set a new password on first login.
-  # Default true (secure by default). Set to false for automated/test
-  # deployments that provision the admin password out-of-band and don't want
-  # the forced first-login change. (Supplying DITTOFS_ADMIN_INITIAL_PASSWORD
-  # also skips the forced change, since the operator already chose the password.)
-  require_initial_password_change: true
-
-  # Native TLS (optional). DittoFS only loads these files; it does not issue,
-  # renew, or rotate certificates. When cert_file and key_file are both set,
-  # the API serves HTTPS and hot-reloads the files when they change on disk.
-  # When unset, the API serves plain HTTP. See docs/SECURITY.md.
-  # tls:
-  #   cert_file: /etc/dittofs/tls/tls.crt
-  #   key_file: /etc/dittofs/tls/tls.key
-  #   client_ca: /etc/dittofs/tls/ca.crt   # optional: require + verify client certs (mTLS)
-  #   min_version: "1.2"                    # "1.2" (default) or "1.3"
-
-  # Profiling (disabled by default; for benchmarks/diagnostics only).
-  # The rate keys only take effect when pprof is true; with pprof off all
-  # sampling stays off regardless of their values. When pprof is on and a rate
-  # is unset/0 it falls back to the default shown below.
-  pprof: false                 # Expose /debug/pprof/* endpoints
-  # pprof_mutex_rate: 100        # runtime.SetMutexProfileFraction (default 100 when pprof on)
-  # pprof_block_rate_ns: 1000000 # runtime.SetBlockProfileRate ns (default 1000000 when pprof on)
-
-  # JWT authentication configuration
-  jwt:
-    # HMAC signing key for JWT tokens (min 32 characters)
-    # Can also be set via DITTOFS_CONTROLPLANE_SECRET environment variable
-    secret: "your-secret-key-at-least-32-characters"
-    access_token_duration: 15m   # Access token lifetime
-    refresh_token_duration: 168h # Refresh token lifetime (7 days)
-```
-
-**API Configuration Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `enabled` | `true` | Enable/disable the API server |
-| `host` | `127.0.0.1` | Bind interface. Loopback-only by default (secure-by-default for single-host). Set to `0.0.0.0` for multi-host / Kubernetes (then front it with TLS termination — see [TLS and bind address](#tls-and-bind-address)) |
-| `port` | `8080` | HTTP/HTTPS port for API endpoints |
-| `read_timeout` | `10s` | Maximum duration to read request |
-| `write_timeout` | `10s` | Maximum duration to write response |
-| `idle_timeout` | `60s` | Maximum idle time for keep-alive |
-| `drain_stall_timeout` | `5m` | Inactivity bound for `POST /api/v1/system/drain-uploads`. The drain has **no total time cap** — a multi-GiB flush runs as long as it keeps making progress — and is aborted (504) only if no upload completes within this window while bytes are still unsynced (the remote stalled). A drain with nothing left to upload is never aborted: no attempt can conclude, so a flat counter says nothing about liveness. Mirrors rclone's `--timeout` |
-| `require_initial_password_change` | `true` | Force the bootstrap `admin` user to change its password on first login. Set to `false` to opt out (automated/test deployments). Also skipped when `DITTOFS_ADMIN_INITIAL_PASSWORD` is set |
-| `pprof` | `false` | Expose Go `/debug/pprof/*` profiling endpoints |
-| `pprof_mutex_rate` | `100` (when `pprof: true`; else `0`) | Mutex contention sampling, 1 per N events. Applied only when `pprof: true`; unset/`0` then falls back to `100`. Without it `/debug/pprof/mutex` is header-only. Disable profiling via `pprof: false`, not by zeroing this |
-| `pprof_block_rate_ns` | `1000000` (when `pprof: true`; else `0`) | Block profiling rate in ns, 1 sample per N ns blocked. Applied only when `pprof: true`; unset/`0` then falls back to `1000000`. Without it `/debug/pprof/block` is header-only. Disable profiling via `pprof: false`, not by zeroing this |
-
-**JWT Configuration Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `secret` | (required) | HMAC signing key (min 32 chars) |
-| `access_token_duration` | `15m` | Access token lifetime |
-| `refresh_token_duration` | `168h` | Refresh token lifetime (7 days) |
-
-> **Security Note**: The JWT secret should be kept confidential. Use the `DITTOFS_CONTROLPLANE_SECRET` environment variable in production to avoid storing secrets in config files.
-
-#### TLS and bind address
-
-The control plane API carries admin logins, the `dfsctl` remote password login, operator credentials, and JWTs. By default the server binds to `127.0.0.1` (loopback only) so a fresh `dfs start` is not reachable off-host. For any deployment that must accept connections from another machine — multi-host, Kubernetes — set `host: 0.0.0.0` and protect the listener with TLS.
-
-DittoFS offers **native, file-based TLS** as a secure-by-default floor. It is intentionally thin: DittoFS **loads** certificate files (and an optional client CA for mTLS) — it is **not a certificate authority**, does **not** generate self-signed certificates, and does **not** do ACME, issuance, renewal, or rotation. Certificate *lifecycle* is left to your platform (cert-manager, a mounted Kubernetes Secret, Vault, your PKI). When the platform rewrites the files on disk, DittoFS hot-reloads them with no restart.
-
-```yaml
-controlplane:
-  host: 0.0.0.0
-  port: 8080
-  tls:
+api:
+  listen:                      # default 127.0.0.1:8080
+    - 127.0.0.1:8080
+  tls:                         # needed for any address but loopback
     cert_file: /etc/dittofs/tls/tls.crt
     key_file: /etc/dittofs/tls/tls.key
-    client_ca: /etc/dittofs/tls/ca.crt   # optional → mutual TLS
-    min_version: "1.2"
+  socket: /run/dittofs/api.sock   # optional local socket, no TLS, mode 0600
 ```
 
-**TLS Configuration Options:**
+| Key | Default | Description |
+|-----|---------|-------------|
+| `api.listen` | `127.0.0.1:8080` | The addresses the API listens on, each `ip:port` |
+| `api.tls.cert_file` | (unset) | PEM certificate the API serves under. An address that is not loopback is served only over TLS, so without `cert_file` and `key_file` a start on such an address is refused |
+| `api.tls.key_file` | (unset) | PEM private key for `cert_file` |
+| `api.socket` | (unset) | A Unix socket where the API is also served, without TLS, to the server's own user only |
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `cert_file` | (unset) | Path to the PEM server certificate (or chain). Both `cert_file` and `key_file` must be set to enable HTTPS; setting one without the other is a fatal config error |
-| `key_file` | (unset) | Path to the PEM private key for `cert_file` |
-| `client_ca` | (unset) | Path to a PEM CA bundle. When set, the server **requires and verifies** a client certificate signed by one of these CAs (mutual TLS). Requires `cert_file`/`key_file` |
-| `min_version` | `1.2` | Minimum negotiated TLS version: `"1.2"` or `"1.3"` |
+The metrics listener serves under the same certificate on an address that is not
+loopback.
 
-When `cert_file`/`key_file` are unset, the server serves plain HTTP exactly as before (back-compatible). When set, it serves HTTPS; the files are read and parsed at startup, so a missing or malformed certificate fails fast with a clear error.
+v1's `controlplane` block is gone, and a config file that still carries it is
+refused at load, naming each of its keys as unknown. What replaced each part:
 
-**Recommended deployment model:** terminate TLS for the edge at an ingress / service mesh / reverse proxy (NGINX), and use DittoFS native TLS (or mTLS via `client_ca`) as the secure floor for non-Kubernetes hosts and direct `dfsctl` access. See [docs/SECURITY.md](security.md) and [docs/DEPLOYMENT.md](install.md). For Kubernetes, the operator renders `host: 0.0.0.0` automatically so the API `Service` can reach the pod; see [docs/DEPLOYMENT.md](install.md).
+- `controlplane.host` and `controlplane.port` are `api.listen`.
+- `controlplane.tls.*` is `api.tls.cert_file` and `api.tls.key_file`. There is no
+  client CA (mutual TLS) and no minimum-version key.
+- `controlplane.jwt.*` and `DITTOFS_CONTROLPLANE_SECRET` are gone: `dfs init`
+  creates the signing key and seals it under `keys.storage`. Session and API token
+  lifetimes are the `api.session_lifetime` (default 12h) and
+  `api.token_max_lifetime` (default 365 days) settings, set through the
+  management API; the file refuses them.
+- `controlplane.require_initial_password_change` is gone: the administrator must
+  change its password at the first sign-in only when `dfs init` generated it (see
+  [Installation](install.md)).
+- The timeouts, `drain_stall_timeout` and the `pprof` keys have no replacement.
+
+**Health and API endpoints.** `/health/live` and `/health/ready` answer without a
+token. Every resource is under `/api/v1/` (sign-in is `POST /api/v1/auth/sign-in`),
+and `GET /api/version` names the release.
 
 Related glossary terms: [TLS / mTLS](glossary.md#authentication).
-
-**API Endpoints:**
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/api/v1/auth/login` | POST | Authenticate and get tokens |
-| `/api/v1/auth/refresh` | POST | Refresh access token |
-| `/api/v1/users` | GET/POST | List/create users |
-| `/api/v1/users/{id}` | GET/PUT/DELETE | Get/update/delete user |
-| `/api/v1/groups` | GET/POST | List/create groups |
-| `/api/v1/groups/{id}` | GET/PUT/DELETE | Get/update/delete group |
-| `/api/v1/shares` | GET/POST | List/create shares |
-| `/api/v1/shares/{id}` | GET/PUT/DELETE | Get/update/delete share |
 
 ### 6. Block Store Configuration
 
@@ -682,28 +604,12 @@ The CLI no longer maps a Kerberos principal to a user.
 
 ### 14. Snapshot Scheduler
 
-Controls the background scheduler that drives per-share snapshot policies
-(schedule + retention). Policies themselves are configured per share. The CLI
-no longer has snapshot commands; they return with the snapshot API. See
-[SNAPSHOTS.md §10](snapshots.md#10-scheduled-snapshots-policies). These
-knobs only tune the daemon-wide scheduler loop.
-
-```yaml
-snapshot:
-  # How often the daemon scans for due policies. The per-share policy
-  # interval (not this knob) controls how often a share is snapshotted.
-  scheduler_poll_interval: 1m   # default 1m
-  # Turn the scheduler off entirely. Policies are still stored.
-  scheduler_disabled: false     # default false
-  # Per-request budget for the synchronous restore endpoint.
-  restore_http_timeout: 30m     # default 30m
-```
-
-| Key | Env var | Default |
-|---|---|---|
-| `snapshot.scheduler_poll_interval` | `DITTOFS_SNAPSHOT_SCHEDULER_POLL_INTERVAL` | `1m` |
-| `snapshot.scheduler_disabled` | `DITTOFS_SNAPSHOT_SCHEDULER_DISABLED` | `false` |
-| `snapshot.restore_http_timeout` | `DITTOFS_SNAPSHOT_RESTORE_HTTP_TIMEOUT` | `30m` |
+There are no snapshots to schedule yet (see [Snapshots](snapshots.md)). A config
+file that still carries v1's `snapshot` block (`snapshot.scheduler_poll_interval`,
+`snapshot.scheduler_disabled`, `snapshot.restore_http_timeout`) is refused at
+load, naming each key as unknown. The `snapshots` keys of the new design, such
+as `snapshots.cut_deadline`, are refused in the file too, as settings to set
+through the management API.
 
 ### 15. LDAP / Active Directory Identity Provider
 
@@ -1157,16 +1063,12 @@ Persistent storage with access control, structured logging, and metrics:
 
 ```yaml
 logging:
-  level: WARN
+  level: warn
   format: json
   output: /var/log/dittofs/server.log
 
-shutdown_timeout: 30s
-
 metrics:
-  enabled: true
-  host: 127.0.0.1
-  port: 9090
+  listen: 127.0.0.1:9090
 ```
 
 Then create the share via CLI:
