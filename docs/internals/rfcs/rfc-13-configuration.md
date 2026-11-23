@@ -1387,10 +1387,15 @@ process memory limit, which is read from the runtime, the container and the host
 
 **The state and runtime directories** are not keys. The state directory is
 `$STATE_DIRECTORY` when the service manager sets it, else `$XDG_STATE_HOME/dittofs`,
-else `$HOME/.local/state/dittofs`; the runtime directory is `$RUNTIME_DIRECTORY`, else
+else `$HOME/.local/state/dittofs`, and with none of the three set a start refuses,
+naming `HOME`, rather than use the temporary directory, where another user could
+have made `dittofs` first; the runtime directory is `$RUNTIME_DIRECTORY`, else
 `$XDG_RUNTIME_DIR/dittofs`, else a directory under the state directory that only
 the process's user owns (mode `0700`). A unit may set its variable as a
-colon-separated list, whose first entry is read here. A state directory that already
+colon-separated list, whose first entry is read here. A relative value, or a
+relative first entry, refuses the start naming the variable. A refusal about
+either directory names the variable that chose it; for the runtime directory
+under the state directory, that is the state directory's variable. A state directory that already
 exists is checked, not merely used: a start refuses one that is a symlink, is
 owned by neither the node's user nor root, or is writable by others. A runtime
 directory that already exists is checked harder, since the socket in it has to
@@ -1447,7 +1452,8 @@ unless it is one of these, which are not keys:
 | `DITTOFS_CONFIG` | the start, the path of the host's file when `--config` is not given |
 | `DITTOFS_ENCRYPTION_PASSPHRASE` | the local key provider, a key file's passphrase |
 | `DITTOFS_PASSWORD` | `dfsctl`, which a shell that runs both may export |
-| `DITTOFS_<service>_PORT*` and `DITTOFS_<service>_SERVICE_*`, for each Service of the pod's namespace | Kubernetes, which sets them for every Service with an address, none for a headless one: ignored while the value has the shape the kubelet gives to any of the forms the name parses as, a `tcp://`, `udp://` or `sctp://` link then an IP and a port, an IPv6 one in brackets, for a name ending at `_PORT` or at `_PORT_<n>_<proto>`, an IP for `_ADDR` and `_SERVICE_HOST`, a port number for `_SERVICE_PORT*` and `_PORT_<n>_<proto>_PORT`, `tcp`, `udp` or `sctp` for `_PROTO`, and refused otherwise, as unknown when the name is no v1 key's environment name and naming its replacement when it is (the table below), so `DITTOFS_METRICS_PORT=tcp://10.0.0.5:9090` is ignored and `DITTOFS_METRICS_PORT=9091` is refused naming `metrics.listen` |
+| `DITTOFS_OTLP_ENDPOINT` | the start, a provisional switch for tracing, until the start reads the `tracing.endpoint` setting ([RFC 25 §6.3](rfc-25-observability.md#6.3%20Sampling%20and%20cost)) |
+| `DITTOFS_<service>_PORT*` and `DITTOFS_<service>_SERVICE_*`, for each Service of the pod's namespace, and `DITTOFS_PORT*` and `DITTOFS_SERVICE_*` for a Service named `dittofs` | Kubernetes, which sets them for every Service with an address, none for a headless one: ignored while the value has the shape the kubelet gives to any of the forms the name parses as, a `tcp://`, `udp://` or `sctp://` link then an IP and a port, an IPv6 one in brackets, for a name ending at `_PORT` or at `_PORT_<n>_<PROTO>` (the protocol in upper case, `TCP`, `UDP` or `SCTP`, as the kubelet writes it), an IP for `_ADDR` and `_SERVICE_HOST`, a port number for `_SERVICE_PORT*` and `_PORT_<n>_<PROTO>_PORT`, `tcp`, `udp` or `sctp` for `_PROTO`, and refused otherwise: as a setting when the name is a setting's, else naming its replacement when it is a v1 key's environment name (the table below), else as unknown, so `DITTOFS_METRICS_PORT=tcp://10.0.0.5:9090` is ignored and `DITTOFS_METRICS_PORT=9091` is refused naming `metrics.listen` |
 | the names and prefixes the repository's development tools export (`DITTOFS_TEST_*`, `DITTOFS_E2E_*`, `DITTOFS_PREPUSH_*`, and the launchers' and git hooks' own names) | the tools, which a server they start inherits. The RFC 13 plan's D7 is the list, its repository scan keeps it true, and a bootstrap key wins over any of these names |
 
 **From the files of today.** The key a start refuses names its replacement

@@ -493,13 +493,15 @@ and ignores the rest. The variables read outside viper are allowed, by name or b
 - the repository's launchers, which a server they start inherits: the prefixes `DITTOFS_TEST_*`
   (`test/harness/env.sh`, `needs`), `DITTOFS_E2E_*` and `DITTOFS_PREPUSH_*` (`dtc` forwards
   these), and the names `DITTOFS_REPO`, `DITTOFS_FDB_CLUSTER_FILE`,
-  `DITTOFS_FDB_DIR`, `DITTOFS_BIN`, `DITTOFS_MOUNT`, `DITTOFS_RESULTS_DIR`,
-  `DITTOFS_KNOWN_FAILURES`, `DITTOFS_CLIENT_NS`, `test/edge/`'s `DITTOFS_BRANCH` and the Kerberos
+  `DITTOFS_FDB_DIR`, `DITTOFS_MOUNT`, `DITTOFS_RESULTS_DIR`,
+  `DITTOFS_KNOWN_FAILURES`, `DITTOFS_CLIENT_NS`, `DITTOFS_BENCH_DIR` and the Kerberos
   fixture's `DITTOFS_SPN`, `DITTOFS_UID` and `DITTOFS_GID`;
 - the ten `DITTOFS_SKIP_*` names the git hooks read, which a developer's shell may export:
   `.githooks/pre-commit`'s eight, `commit-msg`'s `DITTOFS_SKIP_COMMITMSG` and `pre-push`'s
   `DITTOFS_SKIP_PREPUSH`. They are allowed by name, not as a prefix, so a production name such as
-  `DITTOFS_SKIP_TLS_VERIFY` cannot hide under one.
+  `DITTOFS_SKIP_TLS_VERIFY` cannot hide under one;
+- `DITTOFS_OTLP_ENDPOINT`, which `dfs start` reads, a provisional switch for tracing, until the
+  start reads the `tracing.endpoint` setting (RFC 25 §6.3).
 
 A key is matched exactly as RFC 13 Appendix C declares it: viper lowercases the keys it reads, so
 `Logging.Level` would pass it, and the file is read once more as strict YAML (`yaml.v3` with
@@ -523,7 +525,7 @@ as: a `_PORT` or
 (`tcp://[fd00::a]:9090`), and a port, an `_ADDR` or `_SERVICE_HOST` an IP, IPv6 bare, a `_PORT_<n>_<PROTO>_PORT` or `_SERVICE_PORT*` a port number, a `_PROTO`
 one of `tcp`, `udp` and `sctp`. A refused v1 name holding a link's value is the link and is
 ignored, since v1 never read a URL there; with any other value it refuses, naming its replacement,
-and any other `DITTOFS_*` name of those forms whose value is not a link's refuses as unknown, so a
+a setting's name of those forms refuses as a setting, and any other `DITTOFS_*` name of those forms whose value is not a link's refuses as unknown, so a
 misspelled `DITTOFS_…_PORT` is never let through by its name. A bootstrap key wins over an allowed prefix: a future key under `DITTOFS_TEST_*` is read as the key,
 never ignored as a launcher's. `DITTOFS_LOGGING_LEVEL`, which `dfsbench` sets, is the bootstrap's log
 level (RFC 13 §2.2), so it stays a bootstrap key.
@@ -531,12 +533,11 @@ level (RFC 13 §2.2), so it stays a bootstrap key.
 The list cannot drift. An epic 2 test scans the repository by content, not by extension, every file
 outside `_test.go` that holds a `DITTOFS_` name (Go, shell with or without a `.sh`, Compose,
 `docker/`, and Markdown but `docs/internals/`, `.planning/` and `CHANGELOG.md`, which name v1's variables on
-purpose), and fails on a name that is neither a bootstrap key nor allowed, so a guide such as
+purpose), and fails on a name that is neither a bootstrap key nor allowed, nor one of the names only tests and scripts read, which the test lists and `dfs start` never reads, so a guide such as
 `README.md` or `docs/guide/` that still tells a user to set a refused variable fails it and epic 2
 corrects it. It exempts a bare
 `DITTOFS_` prefix literal (its own, `checkEnviron`'s, the fixture's), `renamed_keys.go`'s
-refusal table, which names the refused forms on purpose, `test/edge/`'s iptables chain
-`DITTOFS_EDGE_TEST`, which is no variable, `test/harness/bin/dtc`'s forward pattern, whose
+refusal table, which names the refused forms on purpose, `test/harness/bin/dtc`'s forward pattern, whose
 `DITTOFS_SKIP_` forwards the hooks' ten names into its container, and `k8s/dittofs-operator/`, a module of its own that
 RFC 23's plan's O4 moves (below). The rule for launchers is the same scan:
 **every launcher in the repository drops, in epic 2, each name the scan refuses**, whichever file
@@ -1543,6 +1544,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate checks the active versions only and gains the namespace comparison when the key exists, and epic 3's unit test declares one of its own until then | RFC 4 | a plan of RFC 4 declares the key |
 | "§5.1 bound"'s "no content, accepted" half at a namespace and a share scope (epic 5's D6; epic 6's R17) | a namespace holds content for its whole life and a share scope answers an error, since no read in the transaction says what either holds | unowned | the drain is readable in the transaction (D6's own withdrawal), or a share-scope bound setting is declared |
 | "§5.5 dead node"'s single-node sentence as written, an older binary starting on a store a newer one opened (epic 6's D6) | each format has one version, so no older range exists to build | unowned | a format gains a second version, beside the `raise-format` row |
+| The call of `Bootstrap.Validate` in `dfs start` (epic 2's §1.2 and R34) | no RFC 23 task carries it, T3.9 and T3.10 having merged without it; `Validate` is where R34's owner and mode check of a runtime directory a service manager gives (`RUNTIME_DIRECTORY`) lives, which `MakeRuntimeDir` returns without checking | unowned | an RFC 23 task places the call |
 | the settings table's adapters' rows, which RFC 20's plan's deferral ledger gave this plan | the adapters' section type is RFC 20's T7.6's | RFC 20 plan, its T7.6 | that subtask |
 
 ## 7. RFC coverage
