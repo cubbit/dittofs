@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -108,7 +109,7 @@ func New(t testing.TB, opts ...Option) *Harness {
 	b.Metrics.Listen = "127.0.0.1:0"
 	b.Adapters.Listen = []string{"127.0.0.1"}
 	b.Keys.Storage.Kind = keyprovider.KindLocal
-	b.Keys.Storage.Local.File = filepath.Join(root, "storage.key")
+	b.Keys.Storage.Local.File = keyFile(t, root, "storage.key")
 	b.Keys.Protocol.Kind = keyprovider.KindLocal
 	b.Keys.Protocol.Local.File = keyFile(t, root, "protocol.key")
 	h.cfg = node.Config{
@@ -127,7 +128,7 @@ func New(t testing.TB, opts ...Option) *Harness {
 		PasswordEnv: env,
 		Bootstrap:   &h.cfg.Bootstrap,
 		KV:          h.cfg.KV,
-		StorageKey:  storageKey(t, root),
+		StorageKey:  storageKey(t, b.Keys.Storage.Local.File),
 		Clock:       h.clock,
 		Journal:     []journal.Option{journaltest.SuitableMount()},
 		Out:         io.Discard,
@@ -141,30 +142,56 @@ func New(t testing.TB, opts ...Option) *Harness {
 	return h
 }
 
-// storageKey writes a storage key file under dir, at the path the
-// bootstrap's keys.storage names, and opens it, closed when the test ends.
-func storageKey(t testing.TB, dir string) keyprovider.KeyProvider {
-	t.Helper()
-	path := keyFile(t, dir, "storage.key")
-	kp, err := keyprovider.NewProvider(t.Context(), keyprovider.Config{Kind: keyprovider.KindLocal, File: path})
-	if err != nil {
-		t.Fatalf("nodetest: open the storage key: %v", err)
+// generated holds the storage and protocol key files every harness writes,
+// by name, generated once for the test binary: each costs a key derivation,
+// slow under the race detector, and no test needs two harnesses' keys to
+// differ.
+var generated = sync.OnceValues(func() (map[string][]byte, error) {
+	keys := map[string][]byte{}
+	for _, name := range []string{"storage.key", "protocol.key"} {
+		b, err := keyprovider.GenerateKeyFile(passphrase)
+		if err != nil {
+			return nil, err
+		}
+		keys[name] = b
 	}
-	t.Cleanup(func() { _ = kp.Close() })
-	return kp
+	return keys, nil
+})
+
+// opened is the storage key every harness's installation is sealed under,
+// opened once from the first harness's storage key file. It holds no
+// goroutine or descriptor, so it is never closed.
+var opened struct {
+	once sync.Once
+	kp   keyprovider.KeyProvider
+	err  error
 }
 
-// keyFile writes a key file named name under dir, sealed with the
+// storageKey opens the storage key file at path, or returns the one opened
+// already, for install.Run to seal the installation under: every harness's
+// storage key file holds the same key.
+func storageKey(t testing.TB, path string) keyprovider.KeyProvider {
+	t.Helper()
+	opened.once.Do(func() {
+		opened.kp, opened.err = keyprovider.NewProvider(context.Background(), keyprovider.Config{Kind: keyprovider.KindLocal, File: path})
+	})
+	if opened.err != nil {
+		t.Fatalf("nodetest: open the storage key: %v", opened.err)
+	}
+	return opened.kp
+}
+
+// keyFile writes the generated key file name under dir, sealed with the
 // passphrase it sets in the environment, and returns its path.
 func keyFile(t testing.TB, dir, name string) string {
 	t.Helper()
 	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
-	b, err := keyprovider.GenerateKeyFile(passphrase)
+	keys, err := generated()
 	if err != nil {
-		t.Fatalf("nodetest: generate %s: %v", name, err)
+		t.Fatalf("nodetest: generate the key files: %v", err)
 	}
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	if err := os.WriteFile(path, keys[name], 0o600); err != nil {
 		t.Fatalf("nodetest: write %s: %v", name, err)
 	}
 	return path
