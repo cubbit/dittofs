@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -342,7 +341,7 @@ func TestSweepBoundedWhileTheStoreHangs(t *testing.T) {
 		h.Clock().Advance(time.Second)
 		// Polls liveness itself for a moment before the clock moves again.
 		for deadline := time.Now().Add(100 * time.Millisecond); time.Now().Before(deadline) && !live(); {
-			runtime.Gosched()
+			<-time.After(10 * time.Millisecond)
 		}
 	}
 
