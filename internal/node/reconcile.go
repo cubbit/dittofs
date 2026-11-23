@@ -94,6 +94,12 @@ type reconciler struct {
 	// for the restart that runs it. Written by each walk, read by the
 	// status through report, under the same lock as the rest of it.
 	restart []entity.ResourceRef
+	// held is each reference the last secrets pass read the version of,
+	// opened with the kind and owner it is named by, at the version its
+	// section then ran or the last one kept when it was held, and the
+	// lowest version that pass still listed. Written by each pass, read by
+	// the status and its prunes, under the same lock as the rest of it.
+	held map[entity.SecretRef]heldSecret
 	// running is the running set: each share as the engine binds it.
 	running map[entity.ShareID]entity.Share
 	// gone is every share a removal has unbound, which a share pass that
@@ -194,6 +200,7 @@ func newReconciler(table settings.Table, reaches map[string]reach) reconciler {
 		table: table, reaches: reaches, ranOnce: map[string]bool{},
 		wake: make(chan struct{}, 1), moved: make(chan struct{}),
 		running: map[entity.ShareID]entity.Share{}, gone: map[entity.ShareID]bool{},
+		held: map[entity.SecretRef]heldSecret{},
 	}
 }
 
@@ -223,7 +230,9 @@ func refused(s entity.Share, retry bool, err error) refusal {
 // records identity and the walk raise carry the settings generation of wk.at,
 // not c's. The walk is then published for the components that read the
 // snapshot (keepSettings), whose refusals, the sections no component's apply
-// reports, are returned with identity's. Once start step 9 has run it calls
+// reports, are returned with identity's, the secrets pass running between the
+// walk and identity, holding what it refuses before any component runs. Once
+// start step 9 has run it calls
 // each adapter's slot too, handing it loop to report idle on while it waits on
 // a drain, and returns the slots' refusals with them.
 //
@@ -249,11 +258,22 @@ func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop)
 	if err != nil {
 		return nil, fmt.Errorf("identity: the settings walk: %w", err)
 	}
-	refusals, err := n.applyIdentity(ctx, wk.at, wk.snap)
+
+	var pass secretsRead
+
+	if _, err := n.bounded(ctx, func(ctx context.Context) error {
+		pass = n.secretsPass(ctx, wk)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	refusals, err := n.applyIdentity(ctx, wk.at, pass.snap)
 	if err != nil {
 		return nil, fmt.Errorf("identity: %w", err)
 	}
-	kept, err := n.keepSettings(ctx, wk)
+
+	kept, err := n.keepSettings(ctx, wk, pass, refusals)
 	if err != nil {
 		return nil, fmt.Errorf("the settings walk: %w", err)
 	}
