@@ -3019,11 +3019,11 @@ which calls the journal's `Delete`, never its `Release`, which evicts
    none, whatever the extent's size: every ref over the extent is dropped or
    narrowed in phase 2 ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). A deallocate's phase 1 does write one
    hole: the extent's merged hole, at *v*, under the merged hole's own start key ([§8.2](#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros)).
-   Phase 1 moves the file's change time, and its modification time unless the
-   call's suspended times (`WithSuspended`) name Modify: the times the open it
+   A truncate's or deallocate's phase 1 moves the file's change time, and its
+   modification time unless the call's suspended times (`WithSuspended`) name Modify: the times the open it
    came through suspended, as a write's `Suspend` does ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)). The mask
    is held in memory only, since the journal's removal record carries none, so
-   a removal replayed at a start moves Modify whatever it suspended ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
+   a truncate or deallocate replayed at a start moves Modify whatever it suspended ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 4. Release the guard, `Settle(id, v)`, post `RemovalPending(file)` ([§6.1](#6.1%20The%20work%20queue)),
    and return. A pending release has returned its retry channel already, and
    runs this step once its retried phase 1 commits.
@@ -3334,8 +3334,8 @@ refusal of the first chunk returns the error.
    — left to phase 2's batches ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)), and raises the destination's
    `MaxSpan` to the extent's length, the longest hole a batch can write
    there, joined holes included. A crash between the two leaves the clone's
-   journal marker, from which start rebuilds the clone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). As a removal's
-   does ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), phase 1 leaves the destination's modification time
+   journal marker, from which start rebuilds the clone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). As a truncate's or
+   deallocate's does ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), phase 1 leaves the destination's modification time
    alone when the call's suspended times name Modify; a clone rebuilt at a
    start moves it, the journal's clone marker carrying no mask. Release the
    guard and `Settle(dst, v)`.
