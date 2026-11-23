@@ -3,7 +3,6 @@ package kvstore
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -23,7 +22,7 @@ import (
 // version limits and the shards' incarnations (RFC 16 §3).
 type Lifecycle struct {
 	s   *Store
-	log *slog.Logger // where SyncMarks logs a mark it leaves out; slog.Default when nil
+	log *slog.Logger // where SyncMarks logs a mark it leaves out; nil logs nothing
 }
 
 // Lifecycle is the engine's view of the store outside block metadata.
@@ -31,7 +30,8 @@ func (s *Store) Lifecycle() Lifecycle {
 	return Lifecycle{s: s}
 }
 
-// WithLogger is l logging to log each sync mark SyncMarks leaves out.
+// WithLogger is l logging to log each sync mark SyncMarks leaves out. A
+// Lifecycle with no logger logs nothing.
 func (l Lifecycle) WithLogger(log *slog.Logger) Lifecycle {
 	l.log = log
 	return l
@@ -162,10 +162,11 @@ func (l Lifecycle) JournalID(
 // A key whose stream is not 4 bytes is deleted in the same transaction: no
 // marks write produces it, so none would ever replace it, and the open would
 // log it again. A well-formed key whose value does not decode is kept: the
-// next marks write carrying its stream replaces it.
+// next marks write carrying its stream, if any, replaces it.
 func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.SyncMark, gen OpenGen, err error) {
+	pre := syncMarksPrefix(j)
 	var undecodable []uint32 // well-formed keys whose value does not decode
-	var malformed [][]byte   // the stream part of each key deleted
+	var malformed [][]byte   // each key deleted, whole
 	err = l.s.kv.Update(ctx, func(tx kv.Txn) error {
 		marks, undecodable, malformed = nil, nil, nil
 
@@ -180,27 +181,24 @@ func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.Sy
 		}
 		gen = OpenGen(og)
 
-		pre := syncMarksPrefix(j)
-		var drop [][]byte
 		for row, err := range tx.Scan(pre, nil) {
 			if err != nil {
 				return err
 			}
-			stream := row.Key[len(pre):]
-			if len(stream) != 4 {
-				drop = append(drop, slices.Clone(row.Key))
-				malformed = append(malformed, slices.Clone(stream))
+			stream, ok := syncMarkStream(row.Key[len(pre):])
+			if !ok {
+				malformed = append(malformed, slices.Clone(row.Key))
 				continue
 			}
 			m, derr := decodeSyncMark(row.Value)
-			m.Stream = binary.BigEndian.Uint32(stream)
 			if derr != nil {
-				undecodable = append(undecodable, m.Stream)
+				undecodable = append(undecodable, stream)
 				continue
 			}
+			m.Stream = stream
 			marks = append(marks, m)
 		}
-		for _, k := range drop {
+		for _, k := range malformed {
 			if err := tx.Delete(k); err != nil {
 				return err
 			}
@@ -212,16 +210,16 @@ func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.Sy
 		return nil, 0, err
 	}
 
-	log := l.log
-	if log == nil {
-		log = slog.Default()
-	}
-	id := hex.EncodeToString(j[:])
-	for _, s := range undecodable {
-		log.Warn("sync mark left out: its value does not decode; the next marks write of its stream replaces it", "journal", id, "stream", s)
-	}
-	for _, s := range malformed {
-		log.Warn("sync mark left out and deleted: its key does not decode", "journal", id, "stream", hex.EncodeToString(s))
+	if l.log != nil {
+		id := hex.EncodeToString(j[:])
+		for _, s := range undecodable {
+			l.log.Warn("sync mark left out: its value does not decode; the next marks write carrying its stream, if any, replaces it",
+				"journal", id, "stream", s)
+		}
+		for _, k := range malformed {
+			l.log.Warn("sync mark left out and deleted: its key does not decode",
+				"journal", id, "key", hex.EncodeToString(k[len(pre):]))
+		}
 	}
 
 	return marks, gen, nil

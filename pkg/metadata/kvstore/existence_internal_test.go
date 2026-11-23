@@ -3,7 +3,6 @@ package kvstore
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -459,15 +458,15 @@ func (f *cfix) marksOf(j [16]byte) map[uint32]entity.SyncMark {
 			if err != nil {
 				return err
 			}
-			stream := row.Key[len(pre):]
-			if len(stream) != 4 {
-				return fmt.Errorf("sync mark key %x: stream of %d bytes, want 4", row.Key, len(stream))
+			stream, ok := syncMarkStream(row.Key[len(pre):])
+			if !ok {
+				return fmt.Errorf("sync mark key %x: no 4-byte stream", row.Key)
 			}
 			m, err := decodeSyncMark(row.Value)
 			if err != nil {
 				return err
 			}
-			m.Stream = binary.BigEndian.Uint32(stream)
+			m.Stream = stream
 			out[m.Stream] = m
 		}
 		return nil
@@ -670,7 +669,8 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 	if _, err := f.s.Existence().Commit(ctx, nil, &MarksWrite{Journal: j, Marks: []entity.SyncMark{a, b}}); err != nil {
 		t.Fatalf("record the marks of streams 1 and 4: %v", err)
 	}
-	// Each malformed row is left out and logged with its stream, and none of
+	// Each malformed row is left out and logged, a well-formed key by its
+	// stream and a malformed one by its key after the prefix, and none of
 	// them becomes another stream's mark: a decodable value under a key with
 	// trailing bytes after stream 4's, or under a key too short for a stream.
 	// A malformed key is deleted, which no marks write would ever replace; a
@@ -681,12 +681,12 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 		name    string
 		key     []byte
 		value   []byte
-		stream  string // the stream as logged
+		logged  string // the row's attribute as logged
 		deleted bool
 	}{
-		{"an undecodable value", syncMarkKey(j, 6), []byte{1}, "6", false},
-		{"a key with trailing bytes", append(syncMarkKey(j, 4), 0), valid, "0000000400", true},
-		{"a key too short for a stream", append(syncMarksPrefix(j), 7), valid, "07", true},
+		{"an undecodable value", syncMarkKey(j, 6), []byte{1}, "stream=6", false},
+		{"a key with trailing bytes", append(syncMarkKey(j, 4), 0), valid, "key=0000000400", true},
+		{"a key too short for a stream", append(syncMarksPrefix(j), 7), valid, "key=07", true},
 	}
 	for _, m := range malformed {
 		if err := f.s.kv.Update(ctx, func(tx kv.Txn) error { return tx.Set(m.key, m.value) }); err != nil {
@@ -702,28 +702,31 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 	if got, want := byStream(marks...), byStream(a, b); !maps.Equal(got, want) {
 		t.Errorf("SyncMarks read %v, want %v, every malformed row left out", got, want)
 	}
-	logged := map[string]string{} // each logged stream's message
+	logged := map[string]bool{} // each row logged for journal j, as attribute=value
 	for line := range strings.Lines(logs.String()) {
 		var r struct {
-			Msg     string
 			Journal string
-			Stream  any
+			Stream  *uint32
+			Key     *string
 		}
 		if err := json.Unmarshal([]byte(line), &r); err != nil {
 			t.Fatalf("log line %q: %v", line, err)
 		}
-		if r.Journal == hex.EncodeToString(j[:]) {
-			logged[fmt.Sprint(r.Stream)] = r.Msg
+		if r.Journal != hex.EncodeToString(j[:]) {
+			continue
+		}
+		switch {
+		case r.Stream != nil:
+			logged[fmt.Sprintf("stream=%d", *r.Stream)] = true
+		case r.Key != nil:
+			logged["key="+*r.Key] = true
+		default:
+			t.Errorf("log line %q names neither a stream nor a key", line)
 		}
 	}
 	for _, m := range malformed {
-		msg, ok := logged[m.stream]
-		if !ok {
-			t.Errorf("%s: no log names stream %s of journal %x; logged %v", m.name, m.stream, j, logged)
-			continue
-		}
-		if strings.Contains(msg, "deleted") != m.deleted {
-			t.Errorf("%s: logged %q, want it to say deleted: %v", m.name, msg, m.deleted)
+		if !logged[m.logged] {
+			t.Errorf("%s: no log names %s of journal %x; logged %v", m.name, m.logged, j, logged)
 		}
 		gerr := f.s.kv.View(ctx, func(r kv.Reader) error { _, err := r.Get(m.key); return err })
 		if gerr != nil && !errors.Is(gerr, kv.ErrNotFound) {
@@ -734,7 +737,7 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 		}
 	}
 	if len(logged) != len(malformed) {
-		t.Errorf("SyncMarks logged streams %v, want only the %d malformed rows'", logged, len(malformed))
+		t.Errorf("SyncMarks logged %v, want only the %d malformed rows", logged, len(malformed))
 	}
 	if gen != 1 {
 		t.Errorf("SyncMarks raised the open generation to %d, want 1 from none", gen)

@@ -245,6 +245,15 @@ func syncMarkKey(j [16]byte, stream uint32) []byte {
 	return binary.BigEndian.AppendUint32(syncMarksPrefix(j), stream)
 }
 
+// syncMarkStream is the stream a sync mark key names after its prefix, and
+// whether that part is the 4 bytes syncMarkKey writes.
+func syncMarkStream(rest []byte) (uint32, bool) {
+	if len(rest) != 4 {
+		return 0, false
+	}
+	return binary.BigEndian.Uint32(rest), true
+}
+
 func encodeSyncMark(m entity.SyncMark) []byte {
 	return codec.NewWriter(v1).Uint64(m.Segment).Uint64(uint64(m.Through)).Uint64(uint64(m.Offset)).Uint64(m.Sequence).Encode()
 }
