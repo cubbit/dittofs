@@ -3,10 +3,10 @@ package kvstore
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -170,13 +170,13 @@ func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.Sy
 			if err != nil {
 				return err
 			}
-			s, rest, kerr := keys.ReadUint64(row.Key[len(pre):])
+			stream := row.Key[len(pre):]
 			m, derr := decodeSyncMark(row.Value)
-			if kerr != nil || len(rest) != 0 || s > math.MaxUint32 || derr != nil {
-				skipped = append(skipped, slices.Clone(row.Key[len(pre):]))
+			if len(stream) != 4 || derr != nil {
+				skipped = append(skipped, slices.Clone(stream))
 				continue
 			}
-			m.Stream = uint32(s)
+			m.Stream = binary.BigEndian.Uint32(stream)
 			marks = append(marks, m)
 		}
 

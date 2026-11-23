@@ -3,6 +3,8 @@ package kvstore
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -14,7 +16,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
-	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
 func write(v uint64, off, n int64) PendingOp {
@@ -426,6 +427,25 @@ func TestExistenceCommitLostRuns(t *testing.T) {
 	}
 }
 
+// The journal's open generation and sync mark keys hold RFC 16 §4.2.1's
+// layout: J‖journal‖og is og 0x02, and J‖journal‖sm‖stream is sm 0x01 then
+// the stream, 4 bytes big-endian.
+func TestSyncMarkKeysGolden(t *testing.T) {
+	j := [16]byte{0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f}
+	for _, c := range []struct {
+		name string
+		key  []byte
+		want string
+	}{
+		{"J‖journal‖og", openGenKey(j), "2e" + "101112131415161718191a1b1c1d1e1f" + "02"},
+		{"J‖journal‖sm‖stream", syncMarkKey(j, 0x01020304), "2e" + "101112131415161718191a1b1c1d1e1f" + "01" + "01020304"},
+	} {
+		if got := hex.EncodeToString(c.key); got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
 // marksOf reads journal j's every stored sync mark, by the stream its key
 // names.
 func (f *cfix) marksOf(j [16]byte) map[uint32]entity.SyncMark {
@@ -437,15 +457,15 @@ func (f *cfix) marksOf(j [16]byte) map[uint32]entity.SyncMark {
 			if err != nil {
 				return err
 			}
-			s, _, err := keys.ReadUint64(row.Key[len(pre):])
-			if err != nil {
-				return err
+			stream := row.Key[len(pre):]
+			if len(stream) != 4 {
+				return fmt.Errorf("sync mark key %x: stream of %d bytes, want 4", row.Key, len(stream))
 			}
 			m, err := decodeSyncMark(row.Value)
 			if err != nil {
 				return err
 			}
-			m.Stream = uint32(s)
+			m.Stream = binary.BigEndian.Uint32(stream)
 			out[m.Stream] = m
 		}
 		return nil
@@ -650,7 +670,7 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 	}
 	// Each malformed row is left out and named in skipped, and none of them
 	// becomes another stream's mark: a decodable value under a key with
-	// trailing bytes after stream 4's, or under a stream that truncates to 1.
+	// trailing bytes after stream 4's, or under a key too short for a stream.
 	valid := encodeSyncMark(entity.SyncMark{Segment: 99, Through: 1, Offset: 1, Sequence: 1})
 	malformed := []struct {
 		name  string
@@ -659,7 +679,6 @@ func TestLifecycleSyncMarksReadsTheRecordedMarksAndRaisesTheGeneration(t *testin
 	}{
 		{"an undecodable value", syncMarkKey(j, 6), []byte{1}},
 		{"a key with trailing bytes", append(syncMarkKey(j, 4), 0), valid},
-		{"a stream above MaxUint32", keys.Uint64(syncMarksPrefix(j), 1<<32|1), valid},
 		{"a key too short for a stream", append(syncMarksPrefix(j), 7), valid},
 	}
 	var want [][]byte
