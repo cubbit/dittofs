@@ -532,7 +532,7 @@ func TestStartProbesV1Layouts(t *testing.T) {
 				}
 
 				if err != nil &&
-					strings.Contains(err.Error(), "the node's journals are in v1 state") {
+					strings.Contains(err.Error(), "upgrading from v1 is not supported") {
 					t.Errorf(
 						"the start check with a v1 layout %s: %v, want no v1 verdict",
 						tc.name, err,
@@ -564,7 +564,7 @@ func TestStartProbesV1Layouts(t *testing.T) {
 				t.Fatalf("dfs start: exit 0, output:\n%s\nwant a refusal", out)
 			}
 
-			if !strings.Contains(out, "the node's journals are in v1 state") {
+			if !strings.Contains(out, "upgrading from v1 is not supported") {
 				t.Errorf(
 					"dfs start with a v1 layout %s: want the v1 refusal; output:\n%s",
 					tc.name, out,
