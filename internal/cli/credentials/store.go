@@ -95,6 +95,12 @@ func Read(path string) (Snapshot, error) {
 	if err := json.Unmarshal(data, &old); err != nil {
 		return Snapshot{}, fmt.Errorf("%s: %w", path, err)
 	}
+	// decision: the whole file is refused, not only the context holding
+	// tls_skip_verify, so dfsctl cannot repair it either: context remove and
+	// a login replacing that context are refused too, and the error names
+	// the field to delete by hand. Letting them through would mean keeping
+	// that context's raw record across every other save; do that if editing
+	// the file by hand proves to be a burden in practice.
 	for name, c := range old.Contexts {
 		if c.TLSSkipVerify {
 			return Snapshot{}, fmt.Errorf("%s: context %q holds tls_skip_verify, which dfsctl no longer honours; remove the field and log in again with --cacert naming the server's CA", path, name)

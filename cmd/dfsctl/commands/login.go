@@ -81,23 +81,23 @@ func runLogin(cmd *cobra.Command, env cmdutil.Env) error {
 	server, _ := cmd.Flags().GetString("server")
 	user, _ := cmd.Flags().GetString("username")
 	cacert, _ := cmd.Flags().GetString("cacert")
+	if server, err = normalServer(server); err != nil {
+		return err
+	}
+	stored, err := normalServer(prev.ServerURL)
+	if err != nil {
+		return err
+	}
 	if cacert != "" {
 		if cacert, err = filepath.Abs(cacert); err != nil {
 			return err
 		}
-	} else if server == "" || server == prev.ServerURL {
+	} else if server == "" || server == stored {
 		cacert = prev.CACert
 	}
-	server = cmp.Or(server, prev.ServerURL)
+	server = cmp.Or(server, stored)
 	if server == "" {
 		return fmt.Errorf("%s: context %q names no server; pass --server", cmd.CommandPath(), name)
-	}
-	// A server with a path separator and no scheme is a socket's path; one
-	// with neither, as host:port, is left for the client to refuse by name.
-	if !strings.Contains(server, "://") && strings.ContainsAny(server, `/`+string(filepath.Separator)) {
-		if server, err = filepath.Abs(server); err != nil {
-			return err
-		}
 	}
 	next := &credentials.Context{ServerURL: server, Username: cmp.Or(user, prev.Username), CACert: cacert}
 
@@ -152,4 +152,18 @@ func runLogin(cmd *cobra.Command, env cmdutil.Env) error {
 		_, _ = fmt.Fprintln(env.Err, "The password must be changed before any other call: run 'dfsctl password change'")
 	}
 	return nil
+}
+
+// normalServer is server as a context stores it, so two spellings of one
+// server compare equal: a URL without its trailing "/", and a path, which
+// has a separator and no scheme, made absolute. Anything else, as host:port,
+// is left for the client to refuse by name.
+func normalServer(server string) (string, error) {
+	switch {
+	case strings.Contains(server, "://"):
+		return strings.TrimRight(server, "/"), nil
+	case strings.ContainsAny(server, `/`+string(filepath.Separator)):
+		return filepath.Abs(server)
+	}
+	return server, nil
 }

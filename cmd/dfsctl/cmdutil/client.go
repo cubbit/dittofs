@@ -46,6 +46,14 @@ const refreshBound = 30 * time.Second
 type Target struct {
 	Name    string
 	Dialled credentials.Context
+	tokens  *fileTokens
+}
+
+// Access is the access token the client carries now: the one it was built
+// with, or the one a refresh since replaced it with.
+func (t Target) Access() string {
+	tk, _ := t.tokens.Token(context.Background())
+	return tk
 }
 
 // SameTarget reports whether now, a context read later, still names what
@@ -72,8 +80,9 @@ func NewClient(env Env) (*client.Client, Target, error) {
 	if err != nil || cur.AccessToken == "" {
 		return nil, Target{}, credentials.ErrNotLoggedIn
 	}
-	t := Target{Name: s.GetCurrentContextName(), Dialled: *cur}
-	src := &fileTokens{env: env, target: t, access: cur.AccessToken}
+	src := &fileTokens{env: env, access: cur.AccessToken}
+	t := Target{Name: s.GetCurrentContextName(), Dialled: *cur, tokens: src}
+	src.target = t
 	c, err := Dial(cur.ServerURL, cur.CACert, client.WithTokenSource(src))
 	if err != nil {
 		return nil, Target{}, err

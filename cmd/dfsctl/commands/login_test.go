@@ -395,6 +395,81 @@ func TestLoginWithCACert(t *testing.T) {
 	if c := stored(t, env, "default"); c.CACert != ca {
 		t.Errorf("the CA after a login naming no server or CA: %q, want the stored %q kept", c.CACert, ca)
 	}
+	mustRun(t, env, "login", "--server", front.URL+"/", "-u", "pat", "--password-file", pw)
+	if c := stored(t, env, "default"); c.CACert != ca || c.ServerURL != front.URL {
+		t.Errorf("the context after a login naming %s/: server %q, CA %q, want %q and the stored %q kept", front.URL, c.ServerURL, c.CACert, front.URL, ca)
+	}
+}
+
+// A relative socket path names the server a context stored as an absolute
+// one, so a login naming it keeps the stored CA bundle.
+func TestLoginRelativeSocketKeepsTheCA(t *testing.T) {
+	n := startNode(t)
+	n.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	tls := httptest.NewTLSServer(http.NotFoundHandler())
+	tls.Close()
+	ca := file(t, "ca.pem", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tls.Certificate().Raw})))
+	pw := file(t, "pw", "pat's password")
+	env := newEnv(t, "", false)
+	mustRun(t, env, "login", "--server", n.socket, "-u", "pat", "--password-file", pw, "--cacert", ca)
+	t.Chdir(filepath.Dir(n.socket))
+	mustRun(t, env, "login", "--server", "./"+filepath.Base(n.socket), "-u", "pat", "--password-file", pw)
+	if c := stored(t, env, "default"); c.CACert != ca || c.ServerURL != n.socket {
+		t.Errorf("the context after a login naming the socket relatively: server %q, CA %q, want %q and the stored %q kept", c.ServerURL, c.CACert, n.socket, ca)
+	}
+}
+
+// logout leaves the context as it was, refresh token included, and fails,
+// when the server cannot be reached to end the session: the tokens are the
+// only handle on a session still live.
+func TestLogoutKeepsTheSessionWhenTheServerIsUnreachable(t *testing.T) {
+	n := startNode(t)
+	n.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", n.socket)
+	}}
+	t.Cleanup(tr.CloseIdleConnections)
+	front := httptest.NewServer(&httputil.ReverseProxy{Transport: tr, Rewrite: func(r *httputil.ProxyRequest) {
+		r.Out.URL.Scheme, r.Out.URL.Host = "http", "node"
+	}})
+	env := newEnv(t, "", false)
+	mustRun(t, env, "login", "--server", front.URL, "-u", "pat", "--password-file", file(t, "pw", "pat's password"))
+	before := stored(t, env, "default")
+	front.Close()
+	_, _, err := dfsctl(env, "logout")
+	if err == nil || !strings.Contains(err.Error(), "did not end the session") || !strings.Contains(err.Error(), "dfsctl logout") {
+		t.Errorf("logout with the server unreachable: %v, want it to fail saying to run logout again", err)
+	}
+	if after := stored(t, env, "default"); after != before {
+		t.Errorf("the context after a failed sign-out: %+v, want it kept %+v", after, before)
+	}
+}
+
+// logout keeps a session signed in again to the same server while its
+// sign-out was answered: the access token, not only the server and account,
+// must still be the one signed out.
+func TestLogoutKeepsASessionSignedInMeanwhile(t *testing.T) {
+	n := startNode(t)
+	n.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	url, reached, release := n.holdingProxy(t, "/api/v1/auth/sign-out")
+	env := newEnv(t, "", false)
+	pw := file(t, "pw", "pat's password")
+	mustRun(t, env, "login", "--server", url, "-u", "pat", "--password-file", pw)
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := dfsctl(env, "logout")
+		done <- err
+	}()
+	<-reached
+	mustRun(t, env, "login", "--server", url, "-u", "pat", "--password-file", pw)
+	again := stored(t, env, "default")
+	release()
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "changed meanwhile") {
+		t.Errorf("a logout whose context signed in again meanwhile: %v, want it refused as changed meanwhile", err)
+	}
+	if c := stored(t, env, "default"); c != again {
+		t.Errorf("the context after the logout: %+v, want the new session %+v kept", c, again)
+	}
 }
 
 // A must-change account's commands are refused password_change_required
