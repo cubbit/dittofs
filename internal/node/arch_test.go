@@ -493,7 +493,7 @@ func settingsImports(_ string, files []fileImports) ([]string, error) {
 	return bad, nil
 }
 
-// weakKeyCallers returns each non-test file under root that calls
+// weakKeyCallers returns each non-test file under root that references
 // GenerateWeakKeyFile, whose key file protects its master key at the lowest
 // cost a key file may record: only a test, or a package of test helpers
 // whose name ends in test, may write one. It walks root itself, ignoring
@@ -525,20 +525,21 @@ func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		// Any qualified reference counts, a value as much as a call; a bare
+		// name counts only when called, as through a dot-import, so the
+		// declaring package's own declaration is not one.
 		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
 			var name string
-			switch fn := ast.Unparen(call.Fun).(type) {
-			case *ast.Ident:
-				name = fn.Name
+			switch x := n.(type) {
 			case *ast.SelectorExpr:
-				name = fn.Sel.Name
+				name = x.Sel.Name
+			case *ast.CallExpr:
+				if id, ok := ast.Unparen(x.Fun).(*ast.Ident); ok {
+					name = id.Name
+				}
 			}
 			if name == "GenerateWeakKeyFile" {
-				bad = append(bad, filepath.ToSlash(rel)+" calls GenerateWeakKeyFile")
+				bad = append(bad, filepath.ToSlash(rel)+" references GenerateWeakKeyFile")
 			}
 			return true
 		})
@@ -595,7 +596,10 @@ func TestImportRules(t *testing.T) {
 				"pkg/node/apiv1/client imports github.com/google/uuid outside the standard library",
 			}},
 		{"who writes a weak key file", weakKeyCallers, "weak-key",
-			[]string{"pkg/store/store.go calls GenerateWeakKeyFile"}},
+			[]string{
+				"internal/install/weak.go references GenerateWeakKeyFile",
+				"pkg/store/store.go references GenerateWeakKeyFile",
+			}},
 		{"the API settings' imports", settingsImports, "settings-leaf",
 			[]string{"internal/node/api/apisettings/settings.go imports " + module + "pkg/node/apiv1"}},
 	} {
