@@ -663,3 +663,174 @@ func TestRank(t *testing.T) {
 		}
 	}
 }
+
+// The settings structs the location tag and format version tests declare.
+type (
+	locatedStore struct {
+		valid
+		Endpoint string `json:"endpoint" class:"live" location:"store"`
+	}
+	locatedWrong struct {
+		valid
+		Endpoint string `json:"endpoint" class:"live" location:"stor"`
+	}
+	locatedEmpty struct {
+		valid
+		Endpoint string `json:"endpoint" class:"live" location:""`
+	}
+	versionedBlock struct {
+		valid
+		Version uint32 `json:"version" class:"next write"`
+	}
+	versionedString struct {
+		valid
+		Version string `json:"version" class:"live"`
+	}
+	versionedPointer struct {
+		valid
+		Version *uint32 `json:"version" class:"live"`
+	}
+	versionedHidden struct {
+		valid
+		Version int `json:"-" class:"live"`
+	}
+	versionedTwo struct {
+		valid
+		Version uint32 `json:"version" class:"next write"`
+		Target  uint32 `json:"target"  class:"bound"`
+	}
+	versionedSmall struct {
+		valid
+		Version uint8 `json:"version" class:"live"`
+	}
+	versionedLong struct {
+		valid
+		Version int64 `json:"version" class:"live"`
+	}
+)
+
+// Of panics naming a field and its wrong location tag value, and keeps the
+// tag on the field when it reads `store`.
+func TestOfLocationTag(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	cases := []struct {
+		name string
+		of   func()
+		want string
+	}{
+		{
+			"an unknown value",
+			func() {
+				Of("p", installation, locatedWrong{})
+			},
+			`settings: section p: field Endpoint has location "stor", not store`,
+		},
+		{
+			"an empty value",
+			func() {
+				Of("p", installation, locatedEmpty{})
+			},
+			`settings: section p: field Endpoint has location "", not store`,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := panicText(t, c.of); got != c.want {
+				t.Errorf("panic = %q, want %q", got, c.want)
+			}
+		})
+	}
+
+	if got, want := classesOf(Of("p", installation, locatedStore{})),
+		map[string]Class{"p.endpoint": Live}; !maps.Equal(got, want) {
+		t.Errorf("location %q section keys and classes = %v, want %v",
+			"store", got, want)
+	}
+
+	located := Of("p", installation, locatedStore{})
+	if !located.fields[0].store {
+		t.Error("the store tag is not kept on the field")
+	}
+}
+
+// Of panics on a FormatVersion name that is no setting field, on a field that
+// is not an integer, and on two options in one section, and it keeps the
+// declared key of an integer one: a typo must fail the table's first test, not
+// leave the format version gate silent.
+func TestOfFormatVersionPanics(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	cases := []struct {
+		name string
+		of   func()
+		want string
+	}{
+		{
+			"a name that is no field",
+			func() {
+				Of("p", installation, versionedBlock{}, FormatVersion("Nosuch"))
+			},
+			"settings: section p: FormatVersion names Nosuch, which is no setting field",
+		},
+		{
+			"a field a write never carries",
+			func() {
+				Of("p", installation, versionedHidden{}, FormatVersion("Version"))
+			},
+			"settings: section p: FormatVersion names Version, which is no setting field",
+		},
+		{
+			"a string field",
+			func() {
+				Of("p", installation, versionedString{}, FormatVersion("Version"))
+			},
+			"settings: section p: FormatVersion field Version is string, not an integer",
+		},
+		{
+			"a pointer field",
+			func() {
+				Of("p", installation, versionedPointer{}, FormatVersion("Version"))
+			},
+			"settings: section p: FormatVersion field Version is *uint32, not an integer",
+		},
+		{
+			"two options",
+			func() {
+				Of(
+					"p",
+					installation,
+					versionedTwo{},
+					FormatVersion("Version"),
+					FormatVersion("Target"),
+				)
+			},
+			"settings: section p: FormatVersion names both Version and Target",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := panicText(t, c.of); got != c.want {
+				t.Errorf("panic = %q, want %q", got, c.want)
+			}
+		})
+	}
+
+	for _, sec := range []Section{
+		declared(t, func() Section {
+			return Of("p", installation, versionedBlock{}, FormatVersion("Version"))
+		}),
+		declared(t, func() Section {
+			return Of("p", installation, versionedSmall{}, FormatVersion("Version"))
+		}),
+		declared(t, func() Section {
+			return Of("p", installation, versionedLong{}, FormatVersion("Version"))
+		}),
+	} {
+		if sec.formatVersion != "p.version" {
+			t.Errorf("integer field: formatVersion = %q, want %q", sec.formatVersion, "p.version")
+		}
+	}
+}
