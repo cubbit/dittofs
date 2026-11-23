@@ -10,7 +10,7 @@ reports), §3.5 (the domain's actions) and §4.1 (the rule for turning `identity
 [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §6, §7 (a new secret version resolved again and reported)
 and Appendix B's `identity.*` rows; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §3.9, §5.4 and §7.
 **Track:** the team.
-**Epic 8 estimate: 11 subtasks, 14.75 man-days.**
+**Epic 8 estimate: 12 subtasks, 15.25 man-days.**
 **Depends on:** **E2**: T2.4's `Settings`, `State.Settings` and `Deps.Secrets` and T2.6's
 `APISignIn` (T8.1), T2.7's `identity.nt-hash-delete` step (T8.10). **E3**: T3.1's span, T3.6's
 admission through identity and T3.10's resolution over the caller cache (T8.2, T8.3, T8.9). **E4**:
@@ -193,7 +193,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R19 | A directory principal's enabled state is read through the directory cache on every proof: a Kerberos sign-in of a directory account the directory disables, or answers "no such entry" for, fails `ErrLogonFailure` with logon outcome `disabled`, and fails `ErrUnavailable` once the cache can answer neither fresh nor within the grace | MUST | §3.4, §3.7, §5.3 | T8.5 |
 | R20 | A PAC keeps no disabled directory account in: disabled in the directory past the TTL, refused; the directory down past the TTL and the grace, refused; the entry deleted, refused with outcome `disabled` | test row | §10 "disabled directory account" | T8.5 at sign-in; E6's T6.11 at resolution |
 | R21 | One pass-through sign-in's identity work, its directory queries, mints, wait for the secure channel and call to the domain controller, stops at 20 seconds with `ErrUnavailable`; an NTLM session's directory groups follow the directory past the TTL with no generation change | bound | §5.1; §10 "directory deadline" | T8.7 for the pass-through's share of the bound; E6's T6.11 for the groups and for a resolution's bound |
-| R22 | A sign-in whose mint would take a row another principal holds fails, binds no principal and leaves the holder's record unchanged; two concurrent mints of one entry bind one principal | test row | §4.1; §10 "mint conflict" | T8.5 |
+| R22 | A sign-in whose entry carries a uid or gid another principal holds is minted with an allocated one, counted, binds no principal of the holder's and leaves the holder's record unchanged; two concurrent mints of one entry bind one principal | test row | §4.1; §10 "mint conflict" | T8.5 |
 | R23 | A store error while mapping a PAC's deny-only SID fails the call; it is never resolved without the deny | test row | §9.1 ID8; §10 "deny-only lookup error" | held by E3's T3.4 (a `sid` fault while mapping a deny-only SID refuses the call) and E5's T5.7 |
 | R24 | A directory principal holds no local password: the API refuses to set one and stores nothing, `NewHashes` refuses it `ErrInvalid` and a local NTLM sign-in naming one is refused | MUST NOT | §3.5, §5.5; §10 "no local password for a directory user" | T8.9 for the API's refusal (§3.5, §5.5); E2's T2.6 and E4's T4.2 for the row's two halves |
 | R25 | With a directory and no pass-through, an NTLM sign-in for a user only in the directory is `ErrLogonFailure` and yields no session | test row | §5.5; §10 "NTLM without a domain controller" | held by E4's T4.2: a minted directory principal refused locally (its R9), an unminted one an unknown name |
@@ -305,7 +305,7 @@ internal/node/
                         T8.2   the identity.directory section
   export_test.go        T8.1   (*Node).Service, (*Node).Accounts (D5)
                         T8.2   NewWithDialers (D4)
-  identity_test.go      T8.1, T8.2, T8.3, T8.6, T8.9, T8.10, T8.11
+  identity_test.go      T8.1, T8.2, T8.3, T8.6, T8.9, T8.10, T8.11, T8.12
 internal/identity/
   kerberos.go (E5's)    T8.5   a directory principal's enabled state at sign-in (D6)
   integration_test.go   T8.5, T8.7   the Tier 1 clauses several epics meet in
@@ -488,8 +488,9 @@ test/integration/ad-dc/
     the clock past the TTL: her next sign-in `ErrLogonFailure`, outcome `disabled` at E4's sink; the
     directory down past TTL and grace: `ErrUnavailable`; the entry deleted: `ErrLogonFailure`,
     outcome `disabled` (catches the PAC keeping a disabled account in, R19, R20);
-  - "mint conflict": alice minted, bob's entry given another SID and alice's `uidNumber`: his
-    sign-in fails, bob bound to nothing, alice's record byte-equal; two concurrent sign-ins of one
+  - "mint conflict": alice minted, bob's entry given another SID and alice's `uidNumber`: bob
+    signs in with an allocated uid, `identity_mints_remapped_total` counts it, alice's record
+    byte-equal; two concurrent sign-ins of one
     unminted entry, the first's mint commit held by a `FaultKV` delay until the second has read
     the entry: one principal (catches a lost mint bound to whoever holds the row, R22);
   - the acceptance criterion: a local principal with a `krb` link signs in through E5's test
@@ -626,8 +627,11 @@ test/integration/ad-dc/
 - **Tests:** in `node_test`, through `nodetest`, the in-memory directory and the injected clock:
   - the #4053 scenario: alice created through the API, `set-password` run, a share granting her
     read-write; an NTLMv2 AUTHENTICATE computed from her password signs in through `Service()` and
-    her open of a file is admitted (catches the API and the filesystem holding two identities, or
-    an NT hash the API never writes, R29);
+    her open of the share's root for reading is admitted (catches the API and the filesystem
+    holding two identities, or an NT hash the API never writes, R29). The open is a read: the grant
+    matches by alice's `PrincipalID`, so admission is what shows the two identities are one, and a
+    read-write create at the root is refused by its 0755 mode whatever the grant, which would test
+    file modes, not identity;
   - the API's refusal of a directory user's password: `set-password` on a minted directory user
     refused, and no `Secret` and no change to the record read back raw (catches the route storing a
     hash `NewHashes` refused, R24).
@@ -672,6 +676,27 @@ test/integration/ad-dc/
   23's plan's epic 7's T7.6 (R22 there), over the same harness and domain controller. Doubles: the
   in-memory directory and domain controller (kind 2), the injected clock (kind 1).
 
+### T8.12 The API's sealer in `node.New`
+
+**Subtask T8.12 estimate: 0.5 man-days.**
+
+- **Track:** the team. **Depends on:** T8.1. RFC 23's plan's epic 4 (T4.11, the keytab route,
+  and the secret routes that seal through `Deps.Sealer`).
+- **Covers:** RFC 23's plan's epic 4 D13: `Deps.Sealer` filled in `node.New` by this epic, which
+  composes identity and hands it to the API.
+- **Deliverables:** `node.New` hands the API its `Sealer` (the provider sealer `internal/node`
+  already builds); the settings table stays out of `api.Deps` until the settings route's per-key
+  write role lands, which T8.10 waits on.
+- **Acceptance criteria:**
+  - On the composed node, a route that seals a secret (the keytab route, the offline join's
+    hand-over) answers as RFC 23 says instead of `503`.
+- **Tests:** in `node_test`, through `nodetest`: the offline join started through
+  `POST /api/v1/installation:join-domain` with a handed-over password answers `202` and runs to
+  joined (catches a sealer never handed over, which answers `503`); and T8.11's search runs over
+  that route's own handling of the handed-over password, its hand-over written through the route
+  instead of the store (catches the route keeping the password in a log line or a step's state).
+  Doubles: the in-memory domain controller (kind 2), the injected clock (kind 1).
+
 ## 7. Order of work
 
 ```mermaid
@@ -694,7 +719,9 @@ flowchart TD
   X8(["E3 T3.6, E6 T6.9, RFC 23 plan epic 5"]):::sync --> T8_9
   T8_1 --> T8_10["T8.10 NTLM off on the runner"]
   X9(["E2 T2.7, RFC 23 plan T4.11, #4059 epic 5"]):::sync --> T8_10
-  T8_6 & T8_9 --> T8_11["T8.11 No secret recorded"]
+  T8_1 --> T8_12["T8.12 The API's sealer"]
+  X10(["RFC 23 plan epic 4 T4.11"]):::sync --> T8_12
+  T8_6 & T8_9 & T8_12 --> T8_11["T8.11 No secret recorded"]
   T8_3 & T8_4 & T8_5 & T8_7 & T8_8 & T8_10 & T8_11 --> C1(["E8 done: E9 runs on this node"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
@@ -711,7 +738,7 @@ passes through; after T8.11, E9 can start once S3 is reached.
 | 2 | T8.2, T8.3, T8.4 | 4.75 | PR 1, E3's T3.6, E4, E5 (T5.3's test realm among it), E6, the RFC 13 PR adding the `identity.keytab` row, RFC 23's #4550 (reconcile applies on a failed share pass), RFC 23 plan epic 4 T4.11 (keytab route) | the node delivering every principal, Kerberos and directory change, checked against Samba |
 | 3 | T8.5 | 2 | E5's T5.8b, E6's T6.11 | the Kerberos clauses in identity alone; may be open beside PR 2 |
 | 4 | T8.6, T8.7, T8.8 | 4 | PR 2, E7, RFC 23's plan's epic 4's T4.9 and T4.11 | the machine account in the node and what pass-through and the join close |
-| 5 | T8.9, T8.10, T8.11 | 2.5 | PR 4, RFC 23's plan's epics 4 and 5 | the rows through the API, and the capture over everything above |
+| 5 | T8.9, T8.10, T8.11, T8.12 | 3 | PR 4, RFC 23's plan's epics 4 and 5 | the rows through the API, and the capture over everything above |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -745,14 +772,14 @@ T6.6 test only the CLI's arguments and refusal, and the success paths run in its
 
 **Where the RFC 18 plan and this document differ:**
 
-- The figure here is 14.75 man-days over 11 subtasks, against the RFC 18 plan's 10.5 over 5. It
+- The figure here is 15.25 man-days over 12 subtasks, against the RFC 18 plan's 10.5 over 5. It
   holds work the RFC 18 plan's list does not name: the writer's at-once apply held at identity
   (T8.3, 0.5; RFC 23's plan's epic 3 builds it, D3), the
   enabled state at sign-in (in T8.5, 0.75), the NetBIOS check (T8.8, 0.75), the machine account's
   composition, the node's seams, `State.Join`, the four kinds registered with no adapter and the
   refused join's hold (T8.6, 2.25), the live Samba sign-in
   moved from E5 (T8.4, 1.25), and both halves of
-  the `krb` link through the API (in T8.2, 0.5).
+  the `krb` link through the API (in T8.2, 0.5), and the API's sealer (T8.12, 0.5).
   It holds less of the rows: the review found every clause of "admin needs proof", "deny-only
   lookup error" and "NTLM without a domain controller", and the resolution halves of "disabled
   directory account" and "directory deadline", already tested by E3, E4, E5 and E6, so §3 names
