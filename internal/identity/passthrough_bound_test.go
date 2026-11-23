@@ -38,7 +38,7 @@ func coldPassThrough(t *testing.T, groups int, op string, delay time.Duration, r
 // every goroutine of the bubble is blocked, and returns the attempt and how
 // long it took on the clock. The searches and calls the attempt left behind
 // are run out on the clock before it returns.
-func (fx *ptFixture) timedSignIn(t *testing.T) (pid.SignInResult, string, error, time.Duration) {
+func (fx *ptFixture) timedSignIn(t *testing.T) (pid.SignInResult, string, time.Duration, error) {
 	t.Helper()
 	type attempt struct {
 		res pid.SignInResult
@@ -70,7 +70,7 @@ wait:
 		fx.clock.Advance(time.Second)
 		synctest.Wait()
 	}
-	return a.res, a.oc, a.err, took
+	return a.res, a.oc, took, a.err
 }
 
 // reached passes each domain controller op to next and keeps the clock's
@@ -145,7 +145,7 @@ func TestPassThroughBoundCountsTheCall(t *testing.T) {
 				}
 				fx := coldPassThrough(t, 3, tc.op, tc.delay, rules...)
 				start := fx.clock.Now()
-				res, oc, err, took := fx.timedSignIn(t)
+				res, oc, took, err := fx.timedSignIn(t)
 				if tc.ok {
 					if err != nil || oc != "ok" {
 						t.Fatalf("SignIn = %v, outcome %q, after %v; want ok", err, oc, took)
@@ -222,7 +222,7 @@ func TestPassThroughBoundCountsTheDirectory(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	synctest.Test(t, func(t *testing.T) {
 		fx := coldPassThrough(t, 300, "search", 4500*time.Millisecond)
-		res, oc, err, took := fx.timedSignIn(t)
+		res, oc, took, err := fx.timedSignIn(t)
 		refused(t, "300 groups", res, oc, err, vfserr.ErrUnavailable, "unavailable")
 		if took != 20*time.Second {
 			t.Errorf("300 groups: SignIn returned at %v, want 20s", took)
