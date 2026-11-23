@@ -215,9 +215,10 @@ func (w *wired) healthBehind(t *testing.T, c account) bool {
 }
 
 // The condition a node behind raises reaches an admin through
-// /api/v1/health: config_generation_behind of the settings counter is
-// named once the frozen node's lag passes 5 s, not before, and cleared once
-// it catches up. Catches a condition never raised or never cleared.
+// /api/v1/health: config_generation_behind of the settings counter is named
+// while the frozen node lags, and cleared once it catches up. When it is
+// raised is TestStatusRaisesBehindOnAFrozenApply's. Catches a condition never
+// raised or never cleared through the API.
 func TestWiredBehindReadThroughHealth(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
 		var frozen atomic.Bool
@@ -245,13 +246,9 @@ func TestWiredBehindReadThroughHealth(t *testing.T) {
 		if c := awaitRead(t, reached); c.Settings != want {
 			t.Fatalf("frozen pass read settings %d, want the change at %d", c.Settings, want)
 		}
-		w.h.Clock().Advance(5 * time.Second)
-		if w.healthBehind(t, w.admin) {
-			t.Error("config_generation_behind named at a lag of 5 s, want it only past 5 s")
-		}
-		w.h.Clock().Advance(time.Second)
+		w.h.Clock().Advance(time.Minute)
 		if !w.healthBehind(t, w.admin) {
-			t.Error("config_generation_behind not named at a lag of 6 s")
+			t.Error("config_generation_behind not named while the node lags by a minute")
 		}
 
 		frozen.Store(false)
@@ -303,17 +300,20 @@ func TestWiredOperatorReachesNoAdminCredential(t *testing.T) {
 		for _, c := range hidden {
 			wantStatus(t, "the operator's "+c.method+" "+c.path, w.send(t, c.method, c.path, w.operator.token, c.body, c.hdr...), http.StatusNotFound, codeNotFound)
 		}
+		// Each body is one the route accepts from an admin, so only the
+		// operator's role refuses it: the admin's tokens are hidden from it, as
+		// the admin's record is, and the keytab's PUT is an admin's.
 		for _, c := range []struct {
 			method, path string
 			body         any
 			hdr          []string
+			status       int
+			code         apiv1.Code
 		}{
-			{http.MethodPost, admin + "/api-tokens", apiv1.APITokenSpec{Expires: w.h.Clock().Now().Add(time.Hour)}, nil},
-			{http.MethodPut, "/api/v1/installation/keytab", map[string]any{"spec": map[string]any{"value": []byte("taken over")}}, []string{"If-None-Match", "*"}},
+			{http.MethodPost, admin + "/api-tokens", apiv1.APITokenSpec{Expires: w.h.Clock().Now().Add(time.Hour)}, nil, http.StatusNotFound, codeNotFound},
+			{http.MethodPut, "/api/v1/installation/keytab", map[string]any{"spec": map[string]any{"value": keytabOf(t, "cifs/nas.ad.example")}}, []string{"If-None-Match", "*"}, http.StatusForbidden, apiv1.CodeForbidden},
 		} {
-			if r := w.send(t, c.method, c.path, w.operator.token, c.body, c.hdr...); r.status/100 == 2 {
-				t.Errorf("the operator's %s %s: answered %d %s, want it refused", c.method, c.path, r.status, r.body)
-			}
+			wantStatus(t, "the operator's "+c.method+" "+c.path, w.send(t, c.method, c.path, w.operator.token, c.body, c.hdr...), c.status, c.code)
 		}
 		// An operator holds these routes: what each reaches is checked by the
 		// versions below, not by its answer.
@@ -519,8 +519,11 @@ var storeCodes = map[merrs.ErrorCode]struct {
 // decision: some values are neither provoked nor injected here. The
 // filesystem's and the engine's errors (vfserr's file-operation values, the
 // entity errors of the file tree) are raised by components this node's API
-// reaches through no route; the settings table's and the secret provider's
-// refusals wait on the settings table being handed to the API; joined needs
+// reaches through no route; of the settings table's refusals, only
+// unknown_key is reached, as the node's table holds no section that reads a
+// key the API writes, so wrong_scope, required, bound_setting, secret_ref,
+// newer_schema and format_version wait for one; of the secret provider's,
+// only the store's unproven is reached; joined needs
 // a joined installation; managed and not_a_copy are raised by no route yet;
 // a KV conflict reaches no caller bare, and only contention makes one. Each
 // is answered by the problem table, which the API's own test holds total; a
@@ -597,6 +600,14 @@ func TestWiredErrorTable(t *testing.T) {
 				return w.send(t, http.MethodPut, grant, op, json.RawMessage(`{"spec":{"access":"read"}}`), "If-None-Match", "*")
 			}, 400, "invalid"},
 			{"a call before the password changes", func() authReply { return w.send(t, http.MethodGet, "/api/v1/shares", hank, nil) }, 403, apiv1.CodePasswordChangeRequired},
+			{"a setting no section reads", func() authReply {
+				return w.send(t, http.MethodPut, "/api/v1/settings/gc.schedule", admin, json.RawMessage(`{"spec":{"value":"weekly"}}`), "If-None-Match", "*")
+			}, 400, "unknown_key"},
+			{"a store's first credential, its capability unchecked", func() authReply {
+				configureJSON(t, w.h, storeD)
+				return w.send(t, http.MethodPut, "/api/v1/stores/"+uuid.UUID(storeD).String()+"/credential", admin,
+					map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("a credential")}}, "If-None-Match", "*")
+			}, 409, "unproven"},
 		} {
 			wantStatus(t, c.what, c.send(), c.status, c.code)
 		}
