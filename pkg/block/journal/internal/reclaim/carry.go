@@ -257,7 +257,7 @@ func (c *Copier) carryDeferredLoss(ctx context.Context, seg core.SegmentID, entr
 		return fmt.Errorf("reclaim: carrying segment %d: placing the deferred loss record of seq %d: %w", seg, entry.Seq, err)
 	}
 	if c.drawn != nil {
-		c.drawn(draw)
+		c.drawn(draw, pl.Loc.Segment)
 	}
 	// The record is on disk from here: it joins the result before the note
 	// that can fail, so the caller counts it either way.

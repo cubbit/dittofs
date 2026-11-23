@@ -569,7 +569,7 @@ func TestForgetConnectionDropsOnceNoneRemains(t *testing.T) {
 		c.headroom.Refund(draw)
 		t.Fatalf("seal the forget record's segment: %v", err)
 	}
-	c.headroom.Drawn(draw)
+	c.headroom.Drawn(draw, 0)
 	// The pass counts its copies against the repack reserve, which the
 	// retirements above are still handing back on their workers: a pass that
 	// runs before the refund lands declines the unit without an error, as the

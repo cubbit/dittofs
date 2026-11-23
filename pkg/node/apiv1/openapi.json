@@ -1254,19 +1254,6 @@
         ],
         "type": "object"
       },
-      "SecretRefRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "ref": {
-            "type": "string"
-          },
-          "version": {
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "type": "object"
-      },
       "SetPasswordRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1425,10 +1412,43 @@
         },
         "type": "object"
       },
+      "StoreCredential": {
+        "properties": {
+          "ref": {
+            "type": "string"
+          },
+          "value": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "StoreCredentialRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "type": "string"
+          },
+          "value": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "StoreSpec": {
         "properties": {
           "credential": {
-            "$ref": "#/components/schemas/SecretRef"
+            "$ref": "#/components/schemas/StoreCredential"
           },
           "settings": {
             "additionalProperties": {},
@@ -1444,7 +1464,7 @@
         "additionalProperties": false,
         "properties": {
           "credential": {
-            "$ref": "#/components/schemas/SecretRefRequest"
+            "$ref": "#/components/schemas/StoreCredentialRequest"
           },
           "settings": {
             "additionalProperties": {},
@@ -8009,18 +8029,6 @@
     "/api/v1/stores": {
       "post": {
         "operationId": "stores_create",
-        "parameters": [
-          {
-            "description": "At most 255 bytes; a retry with the same key and request answers what the first answered.",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": true,
-            "schema": {
-              "maxLength": 255,
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -8097,12 +8105,6 @@
           },
           "409": {
             "$ref": "#/components/responses/Problem409"
-          },
-          "422": {
-            "$ref": "#/components/responses/Problem422"
-          },
-          "428": {
-            "$ref": "#/components/responses/Problem428"
           },
           "500": {
             "$ref": "#/components/responses/Problem500"

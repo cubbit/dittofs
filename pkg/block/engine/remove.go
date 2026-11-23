@@ -23,6 +23,9 @@ type removal struct {
 	kind entity.RemovalKind
 	v    journal.Version
 	at   time.Time
+	// suspend is the times it leaves alone, those its caller's open
+	// suspended (WithSuspended).
+	suspend entity.TimeMask
 	// through, above v, is the newest version phase 1 committed with it, which
 	// release settles through: a clone's copies and the writes above it.
 	through journal.Version
@@ -181,6 +184,7 @@ func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 	if err != nil {
 		return err
 	}
+	r.suspend = Suspended(ctx)
 	committed, err := e.d.Existence.Size(ctx, s, f)
 	if err != nil {
 		e.release(r, false)
@@ -220,6 +224,7 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 	if err != nil {
 		return err
 	}
+	r.suspend = Suspended(ctx)
 	x := journal.Extent{Off: off, Len: n}
 	if _, err := e.stageAnswering(ctx, r, func(*fileEntry) (journal.Version, error) {
 		return b.h.Deallocate(ctx, fileID(f), x)
@@ -425,7 +430,8 @@ func (e *Engine) stage(ctx context.Context, r *removal, j func(*fileEntry) (jour
 		return false, e.journalErr(err)
 	}
 	r.v = v
-	fe.insert(pendingOp{version: v, kind: kind, extent: x, at: r.at, grow: g, setsMtime: g}) // a size change moves mtime, up as down
+	// A size change moves mtime, up as down, unless its open suspended it.
+	fe.insert(pendingOp{version: v, kind: kind, extent: x, at: r.at, grow: g, setsMtime: g && r.suspend&entity.TimeModify == 0})
 	e.issued(r.b.vl, v)
 	return g, nil
 }
@@ -460,7 +466,7 @@ func replaySize(committed int64, ops []pendingOp) int64 {
 // file has applied, so committing an operation above it first would lose the
 // removal. Withdraw it if the store ever applies a removal below applied.
 func (e *Engine) phase1(ctx context.Context, r *removal, op kvstore.RemoveOp) error {
-	op.Version, op.Time = entity.JournalVersion(r.v.Bytes()), r.at
+	op.Version, op.Time, op.Suspend = entity.JournalVersion(r.v.Bytes()), r.at, r.suspend
 	err := e.tryPhase1(ctx, r, op)
 	switch {
 	case err == nil:

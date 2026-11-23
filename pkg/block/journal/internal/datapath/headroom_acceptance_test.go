@@ -28,7 +28,7 @@ const acceptanceRecords = 40
 func atTheLimit(t *testing.T, opts ...func(*coreOptions)) (*Core, *kit.Seam, *Share, core.FileID) {
 	t.Helper()
 	c, seam := newTestCore(t, append([]func(*coreOptions){
-		capacityCoreOption(5 * testSegmentCap),
+		capacityCoreOption((4 + testHeadroomSpares) * testSegmentCap),
 		func(o *coreOptions) { o.headroomRecords = acceptanceRecords },
 	}, opts...)...)
 	s := mustShare(t, c, 1)
@@ -48,7 +48,7 @@ func admit(t *testing.T, c *Core, k capacity.RecordClass) (capacity.Draw, error)
 	t.Helper()
 	d, err := c.headroom.Admit(k)
 	if err == nil && d.Append {
-		c.headroom.Drawn(d)
+		c.headroom.Drawn(d, 0)
 	}
 	return d, err
 }
@@ -144,7 +144,7 @@ func TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom_Admission(t *testing.T) {
 	if err != nil || d.Append {
 		t.Fatalf("Offloaded below half = %+v, %v; want admitted without an append", d, err)
 	}
-	c.headroom.Drawn(d)
+	c.headroom.Drawn(d, 0)
 	for _, k := range []capacity.RecordClass{capacity.Hold, capacity.Stamp, capacity.CloneTarget} {
 		_, err := admit(t, c, k)
 		_ = refused(t, err, core.LimitHeadroom)
@@ -201,13 +201,15 @@ func TestRFC1B_RepackBesideShareAtLimit_Admission(t *testing.T) {
 }
 
 // TestRFC1B_HeadroomSurvivesItsSpareLeavingThePool checks the headroom is
-// not read off the pool's ready spares: with the headroom spare taken, as a
-// header-only roll at the limit takes it, a release and an open's record are
-// still admitted and the content throttle does not refuse on that alone.
+// not read off the pool's ready spares: with every headroom spare taken, as
+// header-only rolls at the limit take them, a release and an open's record
+// are still admitted and the content throttle does not refuse on that alone.
 func TestRFC1B_HeadroomSurvivesItsSpareLeavingThePool(t *testing.T) {
 	c, _, s, f := atTheLimit(t)
-	if _, err := c.pool.Take(segment.Headroom); err != nil {
-		t.Fatalf("taking the headroom spare: %v", err)
+	for i := range testHeadroomSpares {
+		if _, err := c.pool.Take(segment.Headroom); err != nil {
+			t.Fatalf("taking headroom spare %d: %v", i+1, err)
+		}
 	}
 	if got := c.pool.Counters().HeadroomBytes; got != 0 {
 		t.Fatalf("the pool still holds %d headroom bytes after the take", got)

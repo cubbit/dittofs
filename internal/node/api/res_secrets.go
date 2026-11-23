@@ -21,24 +21,26 @@ type sealer interface {
 }
 
 // refValue is a secret's reference as the setting naming it holds it: the
-// reference's ID as a JSON string. refFrom reads it back.
+// JSON list of the reference's 16 bytes, the form a settings table's strict
+// decode reads a reference field from, so the write's check decodes the row
+// it is given. refFrom reads it back; a read answers an operator the
+// reference as the API spells it, idString.
 func refValue(ref entity.SecretRef) []byte {
-	b, _ := json.Marshal(idString(ref)) // a string always encodes
+	b, _ := json.Marshal(ref) // a [16]byte always encodes
 	return b
 }
 
 func refFrom(v []byte) (entity.SecretRef, error) {
-	var s string
-	if err := json.Unmarshal(v, &s); err != nil {
-		return entity.SecretRef{}, err
-	}
-	id, err := entity.ParseShareID(s)
-	return entity.SecretRef(id), err
+	var ref entity.SecretRef
+
+	err := json.Unmarshal(v, &ref)
+
+	return ref, err
 }
 
 // secretRefOf is the secret the setting s names, as a read answers it: its
 // reference and its current version, never its value.
-func secretRefOf(ctx context.Context, d Deps, s entity.Setting) (*apiv1.SecretRef, error) {
+func secretRefOf(ctx context.Context, d Deps, s entity.Setting) (*apiv1.StoreCredential, error) {
 	ref, err := refFrom(s.Value)
 	if err != nil {
 		return nil, err
@@ -47,7 +49,8 @@ func secretRefOf(ctx context.Context, d Deps, s entity.Setting) (*apiv1.SecretRe
 	if err != nil {
 		return nil, err
 	}
-	return &apiv1.SecretRef{Ref: idString(ref), Version: sec.Version}, nil
+
+	return &apiv1.StoreCredential{Ref: idString(ref), Version: sec.Version}, nil
 }
 
 // secretSetting is a write-only secret that a setting names by reference:
@@ -101,7 +104,8 @@ func (ss secretSetting) rotation() error {
 // auditAs and holds the value only as "set": what it compares is the sealed
 // bytes, which no answer carries.
 func (ss secretSetting) writing(kind entity.ResourceKind) writing[apiv1.Credential] {
-	return writing[apiv1.Credential]{kind: kind, raises: true, auditAs: ss.auditAs,
+	return writing[apiv1.Credential]{
+		kind: kind, raises: true, auditAs: ss.auditAs,
 		secret: func(p string) bool { return p == ss.auditAs+".value" },
 		read: func(tx entity.ControlPlaneTx, id [16]byte, _ string) (apiv1.Credential, uint64, bool, error) {
 			s, ok, err := tx.Setting(ss.scope(id), ss.key)
@@ -114,7 +118,8 @@ func (ss secretSetting) writing(kind entity.ResourceKind) writing[apiv1.Credenti
 			}
 			sec, ok, err := tx.Secret(ref, 0)
 			return apiv1.Credential{Spec: apiv1.CredentialSpec{Value: sec.Value}}, sec.Version, ok, err
-		}}
+		},
+	}
 }
 
 // seal is the secret's pre-write step: the value sealed as the first version
@@ -123,10 +128,9 @@ func (ss secretSetting) writing(kind entity.ResourceKind) writing[apiv1.Credenti
 // that holds the secret 409, then a value check refuses, then,
 // with no sealer, the set is refused 503, each before anything is written.
 //
-// ponytail: the node hands in no sealer and no settings table yet, so
-// neither a store's credential nor the keytab is sealed or written through
-// these routes, and no test reads a sealed version back raw. Test the set
-// end to end once the node hands in both.
+// ponytail: the node hands in no sealer yet, so neither a store's credential
+// nor the keytab reaches these routes in production; test the set end to
+// end once the node hands in the secret provider.
 func (ss secretSetting) seal(ctx context.Context, rq request[apiv1.Credential]) (sealedSecret, error) {
 	v := rq.Body.Spec.Value
 	defer clear(v)
@@ -157,10 +161,11 @@ func (ss secretSetting) seal(ctx context.Context, rq request[apiv1.Credential]) 
 	return out, err
 }
 
-// put writes the sealed version beside the setting naming it, judged by the
-// settings table. A record gone since the step is 404, one given the secret
-// since is refused 409, and the check is run again, tracked, so what it read
-// cannot change under the write.
+// put writes the sealed version, then the setting naming it, judged by the
+// settings table, so the write's check reads the secret the reference names
+// in the same transaction. A record gone since the step is 404, one given
+// the secret since is refused 409, and the check is run again, tracked, so
+// what it read cannot change under the write.
 func (ss secretSetting) put(ctx context.Context, rq request[apiv1.Credential], in sealedSecret, tx entity.ControlPlaneTx) (apiv1.SecretRef, [16]byte, error) {
 	sealed, scope := in.Secret, ss.scope(rq.ID)
 	if ss.record != "" {
@@ -182,10 +187,14 @@ func (ss secretSetting) put(ctx context.Context, rq request[apiv1.Credential], i
 		}
 		return apiv1.SecretRef{}, rq.ID, err
 	}
-	if _, err := putSetting(ctx, rq.d, tx, entity.Setting{Scope: scope, Key: ss.key, Value: refValue(sealed.ID)}, 0); err != nil {
+
+	if err := tx.PutSecret(sealed, sealed.Version-1); err != nil {
 		return apiv1.SecretRef{}, rq.ID, err
 	}
-	if err := tx.PutSecret(sealed, sealed.Version-1); err != nil {
+
+	ref := entity.Setting{Scope: scope, Key: ss.key, Value: refValue(sealed.ID)}
+
+	if _, err := putSetting(ctx, rq.d, tx, ref, 0); err != nil {
 		return apiv1.SecretRef{}, rq.ID, err
 	}
 	return apiv1.SecretRef{Ref: idString(sealed.ID), Version: sealed.Version}, rq.ID, nil
@@ -212,8 +221,14 @@ func (ss secretSetting) remove(ctx context.Context, rq request[none], _ struct{}
 // storeCredentials is a remote store's credential, sealed under the storage
 // role, set only on a store that exists and only once the store's
 // capability check admits it.
-var storeCredentials = secretSetting{scope: storeScope, key: storeCredential, kind: entity.SecretRemoteCredential, auditAs: "credential",
-	record: storeEndpoint, check: capabilityCheck}
+var storeCredentials = secretSetting{
+	scope:   storeScope,
+	key:     storeCredential,
+	kind:    entity.SecretRemoteCredential,
+	auditAs: "credential",
+	record:  storeEndpoint,
+	check:   capabilityCheck,
+}
 
 // capabilityCheck is a remote store's capability check, run on every set of
 // its credential.
@@ -249,7 +264,11 @@ const keytabKey = identity.KeytabSetting
 // directory's realm read then, and again in the write's transaction on both
 // read tracked there, so a join that names the account in between is not
 // missed. The keytab's bytes are cleared once its names are read.
-var keytabs = secretSetting{scope: func([16]byte) entity.SettingScope { return installation }, key: keytabKey, kind: entity.SecretKeytab, auditAs: "keytab",
+var keytabs = secretSetting{
+	scope:   func([16]byte) entity.SettingScope { return installation },
+	key:     keytabKey,
+	kind:    entity.SecretKeytab,
+	auditAs: "keytab",
 	check: func(ctx context.Context, d Deps, v []byte) (func(entity.ControlPlaneTx) error, error) {
 		names, err := identity.KeytabNames(v)
 		if err != nil {
@@ -278,7 +297,8 @@ var keytabs = secretSetting{scope: func([16]byte) entity.SettingScope { return i
 			}
 			return accountHolds(in.Join, s, ok, names)
 		}, nil
-	}}
+	},
+}
 
 // accountHolds refuses a keytab holding a key for a name the computer
 // account holds while joined, its own name or one of its service names, in

@@ -387,6 +387,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 		Credentials:  n.auth,
 		SigningKey:   in.signingKey,
 		Store:        n.meta.ControlPlane(),
+		Settings:     &n.rec.table,
 		Nodes:        n.meta.Nodes(),
 		Progress:     n.runner.progressOf,
 		Health:       n.health,

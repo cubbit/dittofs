@@ -3,6 +3,8 @@ package datapath
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -174,5 +176,88 @@ func TestCore_ReadOnlyRefusesAtOnce(t *testing.T) {
 	}
 	if got := c.ReservedBytes(); got != 0 {
 		t.Fatalf("ReservedBytes = %d after the refusal, want 0", got)
+	}
+}
+
+// probeClock is a driven clock that counts the timers armed for one probe
+// interval, counted once the timer is registered, so a test that saw the
+// count may advance the clock and be sure the timer feels it. A test core
+// builds no idle sealer, the one other component waiting that long.
+type probeClock struct {
+	kit.DrivenClock
+	probes atomic.Int64
+}
+
+func (c *probeClock) After(d time.Duration) <-chan struct{} {
+	ch := c.DrivenClock.After(d)
+	if d == core.ProbeInterval {
+		c.probes.Add(1)
+	}
+	return ch
+}
+
+// TestCore_ReadOnlyProbeChecksThenMakesASpare covers the probe's wiring: a
+// read-only core runs Deps.Check at each probe, a failing check lands in the
+// read-only state and makes no spare file, and once it passes the probe makes
+// one spare segment on disk, past the pool's read-only refusal, and the state
+// reports it (RFC 1 §5.4).
+func TestCore_ReadOnlyProbeChecksThenMakesASpare(t *testing.T) {
+	errNoFlush := errors.New("the mount does not flush its cache")
+	var failing atomic.Bool
+	failing.Store(true)
+	clk := &probeClock{DrivenClock: kit.NewStopwatchClock()}
+	c, seam := newTestCore(t, func(o *coreOptions) {
+		o.clock = clk
+		o.check = func() error {
+			if failing.Load() {
+				return errNoFlush
+			}
+			return nil
+		}
+	})
+	segs := func() int {
+		names, err := seam.List()
+		if err != nil {
+			t.Fatalf("list the directory: %v", err)
+		}
+		n := 0
+		for _, name := range names {
+			if strings.HasSuffix(name, ".seg") {
+				n++
+			}
+		}
+		return n
+	}
+	before := segs()
+
+	c.Durability().Enter(syscall.EROFS)
+	// Each probe waits for the probe to arm its next timer, then lets exactly
+	// one interval pass, so a probe on any other interval fails the wait.
+	armed := int64(0)
+	probe := func(what string, cond func() bool) {
+		armed++
+		waitIn(t, 30e9, "the probe to arm its timer", func() bool { return clk.probes.Load() >= armed })
+		clk.Advance(core.ProbeInterval)
+		waitIn(t, 30e9, what, cond)
+	}
+	probe("the failed check in the read-only state", func() bool {
+		return errors.Is(c.Durability().ReadOnlyState().Check, errNoFlush)
+	})
+	if ro := c.Durability().ReadOnlyState(); ro.SpareMade {
+		t.Fatalf("ReadOnlyState = %+v under a failing check, want no spare made", ro)
+	}
+	if got := segs(); got != before {
+		t.Fatalf("%d segment files under a failing check, want the %d before it", got, before)
+	}
+
+	failing.Store(false)
+	probe("the probe's spare in the read-only state", func() bool {
+		return c.Durability().ReadOnlyState().SpareMade
+	})
+	if ro := c.Durability().ReadOnlyState(); !ro.ReadOnly || ro.Check != nil {
+		t.Fatalf("ReadOnlyState = %+v after the check passed, want read-only with the check cleared", ro)
+	}
+	if got := segs(); got != before+1 {
+		t.Fatalf("%d segment files after the probe's spare, want %d: the one spare it keeps", got, before+1)
 	}
 }
