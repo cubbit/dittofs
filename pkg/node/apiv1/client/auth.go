@@ -33,10 +33,20 @@ func (c *Client) SignOut(ctx context.Context) error {
 // ChangePassword changes the password of the account the client's source
 // signs in, presenting its current one, and returns the tokens of the
 // session the change opens; every earlier session of the account, the
-// source's included, refreshes no more. It is sent once, with no idempotency
-// key, and its 401 is a refused current password, returned as it is and
-// never refreshed.
+// source's included, refreshes no more. The source refreshes first, so an
+// expired access token is never what a 401 answers. The change is then sent
+// once, with no idempotency key, and its 401 is a refused current password,
+// returned as it is and never refreshed.
 func (c *Client) ChangePassword(ctx context.Context, current, next []byte) (apiv1.Tokens, error) {
+	if c.tokens != nil {
+		tk, err := c.tokens.Token(ctx)
+		if err != nil {
+			return apiv1.Tokens{}, err
+		}
+		if _, err := c.tokens.Refresh(ctx, tk); err != nil {
+			return apiv1.Tokens{}, err
+		}
+	}
 	return c.credentialCall(ctx, call{path: "/api/v1/auth/password", noRefresh: true},
 		apiv1.PasswordChange{Current: string(current), New: string(next)})
 }

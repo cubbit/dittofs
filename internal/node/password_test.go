@@ -154,6 +154,29 @@ func TestMustChangeAccountChangesItsPassword(t *testing.T) {
 	if u := s.stored(t, p); u.MustChange {
 		t.Error("the account is still must-change after the change")
 	}
+	if got := changeOf(t, s, "must_change"); got != `[true,false]` {
+		t.Errorf("the change's audit must_change: %s, want [true,false]", got)
+	}
+}
+
+// changeOf is field of the last applied password change's audit change, as
+// JSON.
+func changeOf(t *testing.T, s *authNode, field string) string {
+	t.Helper()
+	recs := s.audits(t)
+	for i := len(recs) - 1; i >= 0; i-- {
+		r := recs[i]
+		if !bytes.Contains(r.Request, []byte(passwordPath)) || string(r.Outcome) != "applied" {
+			continue
+		}
+		var c map[string]json.RawMessage
+		if err := json.Unmarshal(r.Change, &c); err != nil {
+			t.Fatalf("the change's audit change %s: %v", r.Change, err)
+		}
+		return string(c[field])
+	}
+	t.Fatal("no applied password change is audited")
+	return ""
 }
 
 // The check of the current password is a sign-in's attempt: three failed
@@ -384,6 +407,9 @@ func TestNTLMOffDuringAChangeStoresNoNTHash(t *testing.T) {
 			if v := versionOf(t, s, after.Password); v != 2 {
 				t.Errorf("the password hash's current version: %d, want 2", v)
 			}
+			if got, want := changeOf(t, s, "nt_hash"), `["`+uuid.UUID(u.NTHash).String()+`",null]`; got != want {
+				t.Errorf("the change's audit nt_hash: %s, want %s, the reference dropped", got, want)
+			}
 		})
 	}
 }
@@ -534,10 +560,11 @@ func TestPasswordsReachNeitherStoreNorLog(t *testing.T) {
 	}
 }
 
-// The client's ChangePassword sends the token its source holds and returns
-// a refused current password's 401 as it is, refreshing nothing; with the
-// right one it answers the new session's tokens. SetPassword sets a user's
-// password, which the next sign-in checks.
+// The client's ChangePassword refreshes its source once, then returns a
+// refused current password's 401 as it is, refreshing no more; with the
+// right one, sent once the access token expired, it answers the new
+// session's tokens. SetPassword sets a user's password, which the next
+// sign-in checks.
 func TestClientChangesAndSetsPasswords(t *testing.T) {
 	s := newAuthNode(t)
 	p := s.h.Account(t, "pat", "pat's password", entity.RoleViewer)
@@ -555,12 +582,14 @@ func TestClientChangesAndSetsPasswords(t *testing.T) {
 		t.Fatal(err)
 	}
 	var pr *apiv1.Problem
-	if _, err := c.ChangePassword(t.Context(), []byte("a guess"), []byte("next")); !errors.As(err, &pr) || pr.Code != apiv1.CodeUnauthenticated || src.refreshes != 0 {
-		t.Errorf("ChangePassword with a wrong current password: %v after %d refreshes, want the 401 unauthenticated and none", err, src.refreshes)
+	if _, err := c.ChangePassword(t.Context(), []byte("a guess"), []byte("next")); !errors.As(err, &pr) || pr.Code != apiv1.CodeUnauthenticated || src.refreshes != 1 {
+		t.Errorf("ChangePassword with a wrong current password: %v after %d refreshes, want the 401 unauthenticated and the one before sending", err, src.refreshes)
 	}
+	s.h.Clock().Advance(16 * time.Minute)
+	storeReached(t, s.h, s.h.Clock().Now())
 	answered, err := c.ChangePassword(t.Context(), []byte("pat's password"), []byte("pat's next password"))
 	if err != nil || answered.Access == "" || answered.Refresh == "" {
-		t.Fatalf("ChangePassword: %+v, %v; want both tokens", answered, err)
+		t.Fatalf("ChangePassword: %+v, %v after %d refreshes; want both tokens", answered, err, src.refreshes)
 	}
 	admin, err := bare.SignIn(t.Context(), "admin", []byte(adminPassword))
 	if err != nil {
