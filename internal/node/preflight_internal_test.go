@@ -54,7 +54,8 @@ func TestDecide(t *testing.T) {
 			facts: startFacts{V1: "/x/blocks/shares/s1/journal"},
 			want:  errV1State,
 			contains: []string{
-				"/x/blocks/shares/s1/journal",
+				"refusing to start: a pre-journal block layout at /x/blocks/shares/s1/journal is from v1; " +
+					"upgrading from v1 is not supported: start a new installation with dfs init on empty storage",
 			},
 		},
 		{

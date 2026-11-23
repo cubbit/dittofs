@@ -29,7 +29,7 @@ func refuseV1(beside string, fixed []string) error {
 		_, err := os.Stat(p)
 		switch {
 		case err == nil:
-			return fmt.Errorf("refusing to start: %s is v1's control-plane database, which this version does not read; move it away to start", p)
+			return refuseV1Found(p, "a control-plane database")
 		case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
 		case i > 0 && errors.Is(err, fs.ErrPermission):
 			// decision: a fixed /data path the server's user may not search is
@@ -46,4 +46,12 @@ func refuseV1(beside string, fixed []string) error {
 		}
 	}
 	return nil
+}
+
+// refuseV1Found is the one sentence dfs refuses v1 data with, whatever it
+// found: v1's control-plane database here, a v1 Badger store in dfs init.
+// The start check and the node write the same sentence, in internal/node,
+// whose tests pin it as these do.
+func refuseV1Found(path, found string) error {
+	return fmt.Errorf("refusing to start: %s at %s is from v1; upgrading from v1 is not supported: start a new installation with dfs init on empty storage", found, path)
 }
