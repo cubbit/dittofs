@@ -90,25 +90,20 @@ func (r *runner) progressOf(ctx context.Context, op entity.Operation) apiv1.Prog
 // decision: a turn that follows at once still drives every operation listed,
 // one step each, so a long deletion moves no faster than any other operation
 // that has work left and starves none; an operation waiting on its own
-// schedule or a retry is asked again, which its step answers at once. ctx is
-// checked between turns, so a Stop ends the runner after the step it
-// interrupts, however much work is left.
+// schedule or a retry is asked again, which its step answers at once. A
+// step ctx interrupted reports no work left, so a Stop ends the runner after
+// that step, however much work is left.
 func (r *runner) run(ctx context.Context, loop *health.Loop) {
+	now := make(chan struct{})
+	close(now)
 	for {
-		more := r.turn(ctx)
-		loop.Turn()
-		var next <-chan struct{}
-		if !more {
+		next := (<-chan struct{})(now)
+		if !r.turn(ctx) {
 			next = r.clock.After(runInterval)
 		}
+		loop.Turn()
 		if r.turned != nil {
 			r.turned()
-		}
-		if more {
-			if ctx.Err() != nil {
-				return
-			}
-			continue
 		}
 		select {
 		case <-ctx.Done():

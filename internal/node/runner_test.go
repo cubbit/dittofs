@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -779,7 +780,8 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 func TestRunTurnsAtOnceWhileAStepHasWorkLeft(t *testing.T) {
 	b := newBench(t, "", nil)
 	ctx, cancel := context.WithCancel(t.Context())
-	var long, other, turns int
+	var long, other int
+	var turns atomic.Int64
 	more := true
 	r := b.runner(map[string]stepRow{
 		"long": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
@@ -796,8 +798,7 @@ func TestRunTurnsAtOnceWhileAStepHasWorkLeft(t *testing.T) {
 	const atOnce = 50
 	waited := make(chan struct{})
 	r.turned = func() {
-		turns++
-		switch turns {
+		switch turns.Add(1) {
 		case atOnce:
 			more = false // the next turn reports no work left
 		case atOnce + 1:
@@ -812,7 +813,7 @@ func TestRunTurnsAtOnceWhileAStepHasWorkLeft(t *testing.T) {
 	select {
 	case <-waited:
 	case <-time.After(10 * time.Second):
-		t.Fatalf("%d turns within 10 s on a clock that never moved, want %d, each step but the last reporting work left", turns, atOnce+1)
+		t.Fatalf("%d turns within 10 s on a clock that never moved, want %d, each step but the last reporting work left", turns.Load(), atOnce+1)
 	}
 	waitFor(t, "the loop to wait on its clock once no step reports work left", func() bool { return b.clock.Pending() > 0 })
 	if long != atOnce+1 || other != atOnce+1 {
