@@ -48,7 +48,7 @@ type dirPrincipals struct {
 }
 
 // dirStore is a memory KV store initialised with a fresh installation ID.
-func dirStore(t *testing.T) (*kvstore.Store, uuid.UUID) {
+func dirStore(t testing.TB) (*kvstore.Store, uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 	db, err := badgerkv.Open(badgerkv.Options{})
@@ -69,7 +69,7 @@ func dirStore(t *testing.T) (*kvstore.Store, uuid.UUID) {
 
 // protocolSecrets is a secrets provider over st holding a protocol-role key
 // from a key file under a temporary directory, closed when the test ends.
-func protocolSecrets(t *testing.T, st *kvstore.Store) *secrets.Provider {
+func protocolSecrets(t testing.TB, st *kvstore.Store) *secrets.Provider {
 	t.Helper()
 	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", "directory test passphrase")
 	b, err := keyprovider.GenerateKeyFile("directory test passphrase")
@@ -94,7 +94,7 @@ func protocolSecrets(t *testing.T, st *kvstore.Store) *secrets.Provider {
 
 // sealBindPassword seals pw through p as the directory's bind credential,
 // under the reference whose first byte is n, and stores it in st.
-func sealBindPassword(t *testing.T, st *kvstore.Store, p *secrets.Provider, n byte, pw []byte) entity.SecretRef {
+func sealBindPassword(t testing.TB, st *kvstore.Store, p *secrets.Provider, n byte, pw []byte) entity.SecretRef {
 	t.Helper()
 	owner := entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}
 	var ref entity.SecretRef
@@ -112,17 +112,27 @@ func sealBindPassword(t *testing.T, st *kvstore.Store, p *secrets.Provider, n by
 }
 
 // newDirPrincipals builds the server over st and a directory of schema,
-// whose NetBIOS domain is KORP and realm CORP.EXAMPLE.
+// whose NetBIOS domain is KORP and realm CORP.EXAMPLE, on a test clock.
 func newDirPrincipals(t *testing.T, st *kvstore.Store, inst uuid.UUID, schema string) *dirPrincipals {
 	t.Helper()
+	clock := sim.NewTestClock(time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC))
+	e := newDirPrincipalsOn(t, st, inst, schema, clock)
+	e.clock = clock
+	return e
+}
+
+// newDirPrincipalsOn is newDirPrincipals' server on clock, its clock field
+// left nil.
+func newDirPrincipalsOn(t testing.TB, st *kvstore.Store, inst uuid.UUID, schema string, clock identity.Clock) *dirPrincipals {
+	t.Helper()
 	e := &dirPrincipals{st: st, inst: inst, d: identitytest.NewDirectory("DC=corp,DC=example"), fault: &switched{},
-		clock: sim.NewTestClock(time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)), reg: metrics.New("test", "test"), logon: &logonRecorder{}}
+		reg: metrics.New("test", "test"), logon: &logonRecorder{}}
 	e.f = identitytest.NewFaultyDirectory(e.d.Dial, e.fault)
 	name, pw := e.d.Account()
 	p := protocolSecrets(t, st)
 	ref := sealBindPassword(t, st, p, 1, pw)
 	var err error
-	if e.s, err = identity.New(identity.Deps{Store: st, Clock: e.clock, Metrics: e.reg, Secrets: p, Directory: e.f.Dial, Logons: e.logon}); err != nil {
+	if e.s, err = identity.New(identity.Deps{Store: st, Clock: clock, Metrics: e.reg, Secrets: p, Directory: e.f.Dial, Logons: e.logon}); err != nil {
 		t.Fatal(err)
 	}
 	rec := directory.Record{Schema: schema, Address: "ldaps://dc.corp.example", Base: "DC=corp,DC=example", BindName: name,
@@ -167,7 +177,7 @@ func (e *dirPrincipals) pgen(t *testing.T) uint64 {
 }
 
 // counter is name{label=value} read from the registry.
-func (e *dirPrincipals) counter(t *testing.T, name, label, value string) float64 {
+func (e *dirPrincipals) counter(t testing.TB, name, label, value string) float64 {
 	t.Helper()
 	mfs, err := e.reg.Registry().Gather()
 	if err != nil {
