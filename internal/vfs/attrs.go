@@ -300,7 +300,7 @@ func (fs *Filesystem) setAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 		applied = true
 	}
 	if size {
-		if err := fs.truncate(engine.WithSuspended(ctx, suspended), a, t.H, f, ch.Attrs); err != nil {
+		if err := fs.truncate(ctx, a, t.H, f, ch.Attrs, suspended); err != nil {
 			return vfs.WCC{}, err
 		}
 	}
@@ -329,14 +329,14 @@ func moved(f vfs.File, ch vfs.Attrs) (c quota.Charge, scopes []vfs.QuotaScope) {
 // truncate stages f's size change in the engine, once an unprivileged
 // caller's change has cleared setuid and setgid in a committed change, as a
 // write's does, which changes the mode alone; a change naming the mode sets
-// it explicitly instead.
-func (fs *Filesystem) truncate(ctx context.Context, a *admitted, h vfs.Handle, f vfs.File, ch vfs.Attrs) error {
+// it explicitly instead. It leaves alone the times suspended names.
+func (fs *Filesystem) truncate(ctx context.Context, a *admitted, h vfs.Handle, f vfs.File, ch vfs.Attrs, suspended entity.TimeMask) error {
 	if !ch.Changes(entity.AttrMode) {
 		if _, err := fs.clearSetID(ctx, a, h, f, false); err != nil {
 			return err
 		}
 	}
-	return storeErr(fs.engine.Truncate(ctx, f.Share, f.ID, ch.Size))
+	return storeErr(fs.engine.Truncate(engine.WithSuspended(ctx, suspended), f.Share, f.ID, ch.Size))
 }
 
 // attrTimes are the attributes that are times.
