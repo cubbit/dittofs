@@ -328,7 +328,7 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 **Subtask T7.5 estimate: 2 man-days.**
 
 - **Track:** the team. **Depends on:** X3; T7.3, T7.4; the RFC 18 plan's epic 8's T8.10.
-- **Covers:** R17, R18, R19, R20, R21.
+- **Covers:** R17, R18, R19, R20, R21; R13's applied and secret halves for the settings-backed writes.
 - **Deliverables:** in `integration_test.go`: `§2.3 reconcile`, the `view` operation faulted while
   writes pass; `§2.4 applied` with D5's hold on the binding's commit; `§4.1 NTLM back on`, the
   deletion failed by a `User` record its codec refuses (the RFC 18 plan's epic 2's R36), written
@@ -337,6 +337,9 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
   while content exists; E4's settings, adapter, remote-store and namespace success paths through
   the API, and E6's refusal rows for them flipped to success; D3's seeding moved onto the API and
   its marker removed.
+  R13's applied and secret halves for the settings-backed writes (a setting at every scope, an
+  adapter, a remote store, a namespace, a store's credential): each moved from the waiting writes
+  of T7.3's `sweepApplied` into its applied writes, its audit record checked for no credential.
 - **Acceptance criteria:**
   - Each row passes with `Check` wired, and no fixture or row seeds through the store any more.
 - **Tests:** the rows (catch a missed generation lost for good, R17; "applied" inferred from the
@@ -348,13 +351,15 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 **Subtask T7.6 estimate: 1.5 man-days.**
 
 - **Track:** the team. **Depends on:** X1; the RFC 18 plan's epics 7 and 8; T7.3.
-- **Covers:** R22, R26.
+- **Covers:** R22, R26; R13's applied and secret halves for the keytab's routes.
 - **Deliverables:** in `integration_test.go`: the two `join-domain` clauses, over `identitytest`'s
   directory and domain controller, the log captured and the metrics registry read; NTLM's
   consumer after a completed deletion, through the composed node's `SignIn` (R26).
   Also, through the API over the same directory, E6's success paths, which `nodetest` cannot
   reach: a grant by directory name runs `resolve-principal` and grants the ID it returned (E6's
   R16), and `resolve-principal` and `test-directory` end `succeeded`.
+  R13's applied and secret halves for the keytab's `PUT` and `DELETE`, moved the same way once the
+  node hands its API the secret provider.
 - **Acceptance criteria:**
   - Neither join leaves an idempotency record, and neither credential is found raw where CP11
     names.
@@ -416,19 +421,32 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
 
 - A consumer-side row for the `krb` link (a PAC-bearing ticket binding the linked local user, refused once the directory account is recreated) needs a Kerberos sign-in this unit tier cannot make; it belongs to the RFC 18 plan's epic 8 or E8's `e2e/kerberos`.
 - RFC 23's plan §5 epic 7 still says the cancelled state is written into the operation's record; RFC 23 §4.1 gives the deletion no cancel, so that clause goes when the plan is next revised.
-- T7.3 as built differs from its text in five places. The applied half of R13 cannot reach the
-  settings-backed writes (a setting at every scope, an adapter, a remote store, a namespace, a
-  store's credential) before X3, nor the domain's routes (the keytab, `resolve-principal`,
-  `test-directory`, `join-domain`, `rotate-machine-password`) before X1 and the RFC 18 plan's
-  epics 7 and 8, nor `:cancel`, which has no success answer while no kind is cancellable: the
-  test lists them under a `decision:` marker, their refused half runs in the role sweep, and
-  their applied half moves to T7.5 and T7.6. R15's machine grant answers `400`
-  `invalid_argument`, the store's code, not `invalid`. R8's store is unreachable when its reads
-  fail `vfserr.ErrUnavailable`; a KV error outside every closed set answers `500` and counts as
-  unmapped. R14's `::ffff:127.0.0.1` reaches the node only on a dual-stack listener, `[::]`, which
-  the node serves over TLS alone, as it binds one API address; and its `127.0.0.6` clause runs on
-  Linux only. R6 holds, but the node's API stays open past §2.2's step 3: its listeners close
-  after the engine, not at step 3.
+- T7.3 as built differs from its text in these places.
+  - R13's applied half reaches today only the routes that can succeed on this node. The
+    settings-backed writes wait on X3 and move to T7.5, a store's first credential on the store's
+    capability check besides; the keytab's routes wait on the secret
+    provider the node does not yet hand its API and move to T7.6; `:cancel`'s waits on the first
+    cancellable operation kind (§6.1 of the plan). Each waits in `sweepApplied` as a write that
+    must still answer its current refusal, so it fails the day the route succeeds. The directory's
+    actions (`resolve-principal`, `test-directory`, `join-domain`, `rotate-machine-password`) start
+    their operations on the composed node, so they are applied here.
+  - R13's secret half is shown here only for what today's applied routes carry: the passwords of
+    `:set-password` and `POST /auth/password`, an API token, the bearer of each call, and the
+    online join's administrator password, none of them found in an audit record. The routes that
+    write a stored secret (a store's credential, the keytab) are waiting ones, so their secret half
+    moves to T7.5 and T7.6 with their applied halves.
+  - R15 is held by the API's `TestGrants`, which needs no wiring; T7.3's error table keeps the
+    machine grant, refused `400` `invalid` since the grant's write refuses a machine principal
+    itself.
+  - R8 proves the mapping only: a store read failing `vfserr.ErrUnavailable` answers `503`
+    `unavailable` with `Retry-After`. The API sets no deadline on its store calls, so a hung store
+    never answers; #5471 owns that, and the row for a hung store comes with its fix.
+  - R14's `::ffff:127.0.0.1` clause cannot be driven from a client: on a listener of both families
+    the platform hands the node an IPv4 peer as `127.0.0.1` whatever spelling was dialled, so the
+    row sprays `127.0.0.1` and `entity.SourceKey`'s unit test owns the unmapping. Its `127.0.0.6`
+    clause runs where the host routes that address to loopback (Linux; macOS with an `lo0` alias).
+  - R6 holds, but the node's API stays open past §2.2's step 3: Stop closes its listeners after the
+    engine. #5469 owns that.
 - E3's T3.9 stop-bound exit test may move to this epic's fixture (§1.2); E3 decides when T3.9
   lands.
 - The proposals to RFC 23's plan that this document leaves to a later pull request: §5 epic 7's
