@@ -1,15 +1,24 @@
 package node_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	iidentity "github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/node"
@@ -22,12 +31,14 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
 	vfs "github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/md4" //nolint:staticcheck // the NT hash is MD4 of the password, computed here apart from identity's own
 )
 
 // A user whose password was derived with NewHashes and sealed as the API
@@ -404,4 +415,195 @@ func secretRows(t *testing.T, raw kv.KV) map[string]string {
 		t.Fatalf("scan the secret rows: %v", err)
 	}
 	return rows
+}
+
+// Nothing the node records carries a secret: on a node joined online
+// through the API, then taken over by an offline join and rotated, alice
+// signs in by NTLM both as a local user the API created and gave a password
+// and as CORP\alice passed through to the domain controller. Every log line
+// the node wrote, its logon lines among them, and every operation record
+// stored at the end of each runner turn and at the end, read raw, is then
+// searched for alice's password, her NT hash, the session keys her sign-ins
+// returned, every machine password version set and her e-mail address, each
+// raw, in hex and in base64. The online join's administrator credential is
+// not searched for.
+func TestNoSecretInWhatTheNodeRecords(t *testing.T) {
+	var logged syncBuffer
+	ops := &opRows{seen: map[string]bool{}}
+	// A cursor a later step overwrites was stored all the same, so the
+	// records are read at the end of every turn, not only at the end; no
+	// operation runs before the node has started and raw is set.
+	var raw atomic.Pointer[kvtest.FaultKV]
+	m := newMachineLogged(t, &logged, false, func(n *node.Node) {
+		n.OnRunnerTurn(func() {
+			if kv := raw.Load(); kv != nil {
+				_ = ops.read(context.Background(), kv) // the read at the end reports a failing scan
+			}
+		})
+	})
+	raw.Store(m.kv)
+	const email = "alice.secret@corp.example"
+	secret := map[string][]byte{"alice's password": []byte(alicePW), "alice's e-mail": []byte(email)}
+	machinePasswords := func() {
+		in := m.installation(t)
+		vs, err := m.p.Versions(t.Context(), secrets.Protocol, entity.SecretMachinePassword, in.MachinePasswordOwner(), in.MachinePassword)
+		if err != nil {
+			t.Fatalf("the machine password's versions: %v", err)
+		}
+		for _, v := range vs {
+			secret[fmt.Sprintf("machine password version %d", v.Number)] = bytes.Clone(v.Value)
+		}
+	}
+
+	online := m.join(t)
+	machinePasswords()
+	// The administrator resets NAS$'s password, as before an offline join's
+	// takeover.
+	const handed = "Nas-Handed-Passw0rd"
+	secret["the offline join's password"] = []byte(handed)
+	m.dc.SetComputerPassword(t, "NAS", []byte(handed))
+	offline := handOverOffline(t, m, handed)
+	m.succeeded(t, "the offline join", offline)
+	machinePasswords()
+	rotation := m.post(t, "rotate-machine-password", "")
+	m.succeeded(t, "the rotation", rotation)
+	machinePasswords()
+	caughtUp(t, m.h)
+
+	s := &authNode{h: m.h}
+	s.addr, _ = m.h.Node().Addrs()
+	alice, _ := s.createUser(t, "", `{"spec":{"name":"alice","uid":5001,"email":"`+email+`"}}`, "k-alice")
+	if r := s.setPassword(t, "", alice, alicePW); r.status != http.StatusOK {
+		t.Fatalf("alice's :set-password: answered %d %s, want 200", r.status, r.body)
+	}
+	caughtUp(t, m.h)
+	local, err := signInNTLM(t, m.h, "alice", alicePW)
+	if err != nil || local.Identity.Evidence.Principal != alice {
+		t.Fatalf("local alice's NTLM sign-in: bound %v, %v; want %v, nil", local.Identity.Evidence.Principal, err, alice)
+	}
+	passed, err := m.passThrough(t)
+	if err != nil || passed.Identity.Evidence.Principal.IsZero() {
+		t.Fatalf("CORP\\alice passed through: bound %v, %v; want a principal, nil", passed.Identity.Evidence.Principal, err)
+	}
+	for name, res := range map[string]identity.SignInResult{"local": local, "pass-through": passed} {
+		if len(res.Keys.Session) == 0 {
+			t.Fatalf("the %s sign-in returned no session key", name)
+		}
+		secret["the "+name+" session key"] = res.Keys.Session
+	}
+	nt := md4.New()
+	for _, c := range utf16.Encode([]rune(alicePW)) {
+		nt.Write([]byte{byte(c), byte(c >> 8)})
+	}
+	secret["alice's NT hash"] = nt.Sum(nil)
+
+	// Positive control: the search below reads what the node recorded.
+	lines := strings.Split(logged.String(), "\n")
+	var logons int
+	for _, l := range lines {
+		if strings.Contains(l, `msg="identity: logon"`) && strings.Contains(l, "mechanism=ntlm") {
+			logons++
+		}
+	}
+	if logons != 2 {
+		t.Errorf("NTLM logon lines in the node's log: got %d, want 2, one per sign-in", logons)
+	}
+	if err := ops.read(t.Context(), m.kv); err != nil {
+		t.Fatalf("scan the operation records: %v", err)
+	}
+	rows := ops.all()
+	for what, id := range map[string]entity.OperationID{"online join": online, "offline join": offline, "rotation": rotation} {
+		if !slices.ContainsFunc(rows, func(row []byte) bool { return bytes.HasPrefix(row, append([]byte{keys.KindOP}, id[:]...)) }) {
+			t.Errorf("the %s's operation record %v: not among the %d read, want found", what, uuid.UUID(id), len(rows))
+		}
+	}
+
+	for name, b := range secret {
+		for enc, v := range encodings(b) {
+			for i, l := range lines {
+				if strings.Contains(l, v) {
+					t.Errorf("%s, %s, in log line %d: %s", name, enc, i, l)
+				}
+			}
+			for _, row := range rows {
+				if bytes.Contains(row, []byte(v)) {
+					t.Errorf("%s, %s, in a stored operation record: %q", name, enc, row)
+				}
+			}
+		}
+	}
+}
+
+// handOverOffline seals password as the machine password's next version,
+// handed over, and starts an offline join of NAS$ taking the installation
+// over at that version, as the API's join-domain route does: the composed
+// node hands the API no sealer, so the route answers 503 to an offline join.
+func handOverOffline(t *testing.T, m *machine, password string) entity.OperationID {
+	t.Helper()
+	in := m.installation(t)
+	sec, err := m.p.Seal(t.Context(), secrets.Protocol, entity.SecretMachinePassword, in.MachinePasswordOwner(), in.MachinePassword,
+		[]byte(password), secrets.Meta{HandedOver: true})
+	if err != nil {
+		t.Fatalf("seal the offline join's password: %v", err)
+	}
+	params, err := json.Marshal(apiv1.JoinDomainParams{JoinDomainSpec: apiv1.JoinDomainSpec{Mode: apiv1.JoinOffline, Account: "NAS$", Takeover: true},
+		Version: sec.Version})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := entity.Operation{ID: entity.OperationID(uuid.New()), Kind: string(apiv1.OpJoinDomain), Target: entity.ResourceRef{Kind: entity.ResourceInstallation, ID: in.ID[:]},
+		Account: entity.NewUser(), State: entity.OpRunning, Params: params}
+	err = m.h.Store().ControlPlane().Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		if err := tx.PutSecret(sec, sec.Version-1); err != nil {
+			return err
+		}
+		_, err := tx.PutOperation(op, 0)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("hand the offline join over: %v", err)
+	}
+	return op.ID
+}
+
+// opRows is every distinct operation record read, key and value as the KV
+// holds them.
+type opRows struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+// read adds every operation record raw now holds.
+func (o *opRows) read(ctx context.Context, raw kv.KV) error {
+	return raw.View(ctx, func(r kv.Reader) error {
+		for kvp, err := range r.Scan([]byte{keys.KindOP}, nil) {
+			if err != nil {
+				return err
+			}
+			o.mu.Lock()
+			o.seen[string(kvp.Key)+string(kvp.Value)] = true
+			o.mu.Unlock()
+		}
+		return nil
+	})
+}
+
+func (o *opRows) all() [][]byte {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var rows [][]byte
+	for row := range o.seen {
+		rows = append(rows, []byte(row))
+	}
+	return rows
+}
+
+// encodings is b raw, in hex lower and upper case, and in base64 standard
+// and URL-safe, padded and not.
+func encodings(b []byte) map[string]string {
+	return map[string]string{
+		"raw": string(b), "hex": hex.EncodeToString(b), "HEX": strings.ToUpper(hex.EncodeToString(b)),
+		"base64": base64.StdEncoding.EncodeToString(b), "raw base64": base64.RawStdEncoding.EncodeToString(b),
+		"base64url": base64.URLEncoding.EncodeToString(b), "raw base64url": base64.RawURLEncoding.EncodeToString(b),
+	}
 }
