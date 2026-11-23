@@ -134,17 +134,26 @@ type Headroom struct {
 	// section 6, which promises only the open reserve whole at the next open:
 	// on disk nothing tells a record drawn at the limit from the same kind
 	// appended below it, so an open cannot recount the draws the segments it
-	// adopted still hold. Those records still sit in their segments, and the
-	// pool remakes the headroom's spares at the open asking only the
-	// read-only check, never the maximum. The ceiling: a journal at its limit
-	// that is restarted while repack cannot retire those segments can append
-	// up to another headroom's worth of header-only records past its maximum
-	// per restart, about 13 MiB at the defaults, without bound across
-	// restarts. The open's own records are bounded by the open reserve in the
-	// recovery pass itself; their loss records also draw here, by the Open
-	// class, at a limit the open reached. Overturned by a footprint seen above
-	// the maximum after restarts, or by a ruling that the drawing side
-	// persists across an open.
+	// adopted still hold. The footprint does not overrun for it: the pool
+	// makes every spare inside the maximum, and a header-only record appended
+	// into an existing segment moves no footprint. The ceiling runs the other
+	// way. The headroom spares the drawn records rolled into before the
+	// restart are segments now, which the pool cannot make again inside the
+	// maximum, while the ledger reads whole; and the open re-adopts its
+	// spares in the pool's fill order, headroom first, so a reserve spare may
+	// come back as a headroom one. So after a restart at the limit Admit
+	// admits records whose roll — each stream's first after the open, and
+	// any once its active segment fills — finds neither a content nor a
+	// headroom spare, and the stream refuses it naming LimitHeadroom, the
+	// refusal the headroom's per-stream sizing exists to keep away, while
+	// HeadroomBytes reads nearly whole. It lasts until a retirement frees a
+	// segment the pool remakes as a headroom spare, its first class. The
+	// open's own records are bounded by the open reserve in the recovery pass
+	// itself; their loss records also draw here, by the Open class, at a
+	// limit the open reached. Overturned by recomputing the ledger at open
+	// from the headroom spares actually ready, by a ruling that the drawing
+	// side persists across an open, or by a restart at the limit seen
+	// refusing a roll that way in the field.
 	//
 	// decision: what the ledger drew comes back only through Credit, when a
 	// retirement takes the segment that holds the records, and at the limit

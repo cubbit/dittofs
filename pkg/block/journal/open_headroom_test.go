@@ -96,6 +96,74 @@ func TestRestartResetsTheHeadroomPin(t *testing.T) {
 	}
 }
 
+// TestRestartAtTheLimitRefusesTheRollPin pins the ceiling of the ledger's
+// restart decision rather than guarding a change: a journal at its maximum
+// whose removals rolled into its headroom spares is restarted, the ledger
+// starts empty and reads whole, but the spares those rolls took are segments
+// now, which the pool cannot make again inside the maximum. Each stream's
+// first removal after the restart rolls — a fresh stream holds no active
+// segment — and once the spares the open re-adopted are taken the next roll
+// finds neither a content nor a headroom spare and is refused naming the
+// headroom, though the ledger, which never refused it, reads nearly whole. It must change with the
+// decision: once the open recounts the ledger from the headroom spares
+// actually ready, the refusal comes from the ledger, or not at all.
+func TestRestartAtTheLimitRefusesTheRollPin(t *testing.T) {
+	f := journaltest.NewWith(t, func(s *journal.Settings) { s.Streams = headroomStreams })
+	whole := f.J.Stats().HeadroomBytes
+	h := f.Share(0)
+	fillToMaximum(t, h, journaltest.File(0))
+	// One removal of each of files spread over every stream, at the
+	// maximum: each stream's first rolls into a headroom spare, well above
+	// half the headroom.
+	for k := range 64 {
+		if _, err := h.Deallocate(t.Context(), journaltest.File(1+k), journal.Extent{Off: 0, Len: 4096}); err != nil {
+			t.Fatalf("Deallocate of file %d at the journal's maximum: %v", k, err)
+		}
+	}
+	// Content fills what the removals left of every stream's active segment —
+	// the headroom spares its rolls took — so the open's early seal of those
+	// segments returns no tail worth a segment.
+	for _, size := range []int{4096, 64} {
+		for k := range 64 {
+			id := journaltest.File(1 + k)
+			for off := int64(1 << 40); ; off += int64(size) {
+				_, err := h.WriteAt(t.Context(), id, off, make([]byte, size), 0)
+				var ns *journal.NoSpaceError
+				if errors.As(err, &ns) && ns.Limit == journal.LimitJournal {
+					break
+				}
+				if err != nil {
+					t.Fatalf("a %d-byte write of file %d at the maximum: %v", size, k, err)
+				}
+			}
+		}
+	}
+	f.Reopen()
+	if got := f.J.Stats().HeadroomBytes; got != whole {
+		t.Fatalf("HeadroomBytes = %d after the restart, want %d, the ledger whole", got, whole)
+	}
+	// Removals over every stream: each stream rolls on its first, and once
+	// the headroom spares left over from before the restart are taken the
+	// next roll is refused, a few records into a ledger that reads nearly
+	// whole.
+	h = f.Share(0)
+	for i := int64(0); i < 64; i++ {
+		_, err := h.Deallocate(t.Context(), journaltest.File(int(1+i)), journal.Extent{Off: 1<<30 + i*8192, Len: 4096})
+		if err == nil {
+			continue
+		}
+		var ns *journal.NoSpaceError
+		if !errors.As(err, &ns) || ns.Limit != journal.LimitHeadroom {
+			t.Fatalf("removal %d after the restart = %v, want admitted or the roll refused naming the headroom", i, err)
+		}
+		if got := f.J.Stats().HeadroomBytes; got <= whole/2 {
+			t.Fatalf("HeadroomBytes = %d at the refusal, want above half of %d: the ledger, not the roll, refused", got, whole)
+		}
+		return
+	}
+	t.Fatal("64 removals over every stream after the restart were all admitted, want a roll refused naming the headroom")
+}
+
 // headroomStreams is the append streams the per-stream headroom checks open
 // with: more than the one segment the fixture's headroom records fill, so a
 // headroom sized by its records alone falls short of one spare per stream.
