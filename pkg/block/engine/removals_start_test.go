@@ -455,27 +455,6 @@ func (r *rig) listed(t *testing.T) []kvstore.UnfinishedRemoval {
 	return out
 }
 
-// truncated creates a file of size bytes committed in the store and cuts it
-// to size to in the journal only, as a crash after the journal step leaves it,
-// and returns the version of the truncate.
-func (r *rig) truncated(
-	t *testing.T,
-	name string,
-	size, to int64,
-) (entity.FileID, journal.Version) {
-	t.Helper()
-
-	_, f := r.newFile(t, name)
-	r.commitSize(t, f, size)
-
-	v, err := r.jh.Truncate(t.Context(), journal.NewFileID(f), to)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return f, v
-}
-
 // A truncate the crash cut off is applied by step 3, which writes its removal
 // record, and step 4 lists the record the replay just wrote: the loop runs its
 // phase 2 once and prunes it at its own version. A listing before the replay
