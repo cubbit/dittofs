@@ -69,14 +69,13 @@ const (
 func ntHash(password []byte) []byte {
 	b := make([]byte, 0, 2*len(password)) // a UTF-8 byte makes at most one UTF-16 unit
 	defer clear(b[:cap(b)])
+	var units [2]uint16
+	defer clear(units[:])
 	for p := password; len(p) > 0; {
 		r, n := utf8.DecodeRune(p)
 		p = p[n:]
-		if r1, r2 := utf16.EncodeRune(r); r1 != utf8.RuneError {
-			b = binary.LittleEndian.AppendUint16(b, uint16(r1))
-			b = binary.LittleEndian.AppendUint16(b, uint16(r2))
-		} else {
-			b = binary.LittleEndian.AppendUint16(b, uint16(r))
+		for _, u := range utf16.AppendRune(units[:0], r) {
+			b = binary.LittleEndian.AppendUint16(b, u)
 		}
 	}
 	m := md4.New()

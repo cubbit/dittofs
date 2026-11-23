@@ -206,12 +206,13 @@ func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.Sy
 			}
 		}
 		if len(undecodable)+len(malformed) > 0 {
-			// Only names the journal in a warning, so a record that is
-			// missing or does not decode leaves the device unnamed.
-			if b, ok, err := get(tx, journalKey(j)); err != nil {
-				return err
-			} else if rec, derr := decodeJournal(b); ok && derr == nil {
-				device = string(rec.Device)
+			// The device only names the journal in a warning, so a record
+			// that is missing, does not decode or cannot be read leaves it
+			// unnamed rather than failing the generation raise.
+			if b, ok, gerr := get(tx, journalKey(j)); gerr == nil && ok {
+				if rec, derr := decodeJournal(b); derr == nil {
+					device = string(rec.Device)
+				}
 			}
 		}
 

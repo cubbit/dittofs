@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -1325,5 +1327,47 @@ func TestTagsWithSharesChangedBetweenBatches(t *testing.T) {
 		if g, in := got[sh.ID]; in != ok || g != w {
 			t.Errorf("share 0x%02x: %+v, answered %v; want %+v, answered %v", b, g, in, w, ok)
 		}
+	}
+}
+
+// A skipped sync mark's warning names the journal's device only as a label:
+// when J‖journal cannot be read, SyncMarks still raises the open generation
+// and answers, and the warning names the device as "".
+func TestSyncMarksLabelReadFailureFailsNothing(t *testing.T) {
+	ctx := context.Background()
+	var faults *kvtest.FaultKV
+	s := lifecycleStore(t, func(db kv.KV) kv.KV {
+		faults = kvtest.NewFaultKV(db)
+
+		return faults
+	})
+	j := [16]byte{9}
+	if err := s.RecordJournal(ctx, j, entity.NodeID{1}, "/journal/dev0"); err != nil {
+		t.Fatalf("record journal %x: %v", j, err)
+	}
+	short := append(syncMarksPrefix(j), 7) // too short for a stream: skipped and deleted
+	if err := s.kv.Update(ctx, func(tx kv.Txn) error { return tx.Set(short, []byte{1}) }); err != nil {
+		t.Fatalf("store a malformed mark key: %v", err)
+	}
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{
+		Op: kvtest.OpGet, Key: keys.Describe(journalKey(j)),
+		Action: sim.FaultAction{Err: errors.New("injected label read failure")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	faults.SetFault(sched)
+
+	var logs bytes.Buffer
+	_, gen, err := s.Lifecycle().WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))).SyncMarks(ctx, j)
+	if err != nil || gen != 1 {
+		t.Fatalf("SyncMarks with J‖journal unreadable = generation %d, %v; want 1, nil", gen, err)
+	}
+	if !strings.Contains(logs.String(), `"device":"","key":"07"`) {
+		t.Errorf("the warning %q, want the malformed key logged with device \"\"", logs.String())
+	}
+	faults.SetFault(nil)
+	if _, gen, err := s.Lifecycle().SyncMarks(ctx, j); err != nil || gen != 2 {
+		t.Errorf("the next SyncMarks = generation %d, %v; want 2, the failed label read's raise kept", gen, err)
 	}
 }

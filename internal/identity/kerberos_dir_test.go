@@ -239,30 +239,53 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 // RFC 18 §3.4's refresh on a sign-in: alice, reached by a krb row linked for
 // her SID, signs in past the TTL once the directory renamed her entry to
 // alicia, and the resolution after it, inside the TTL, finds her record named
-// alicia. Catches the sign-in's enabled read filling the cache without
-// refreshing the record, which hides the rename for one more TTL.
+// alicia; once the directory deleted her entry instead, the sign-in is
+// refused with outcome disabled and her record keeps its name. Catches the
+// sign-in's enabled read filling the cache without refreshing the record,
+// which hides the rename for one more TTL, and a gone entry's empty answer
+// refreshing it.
 func TestKerberosSignInRefreshesTheRecord(t *testing.T) {
-	e := newAD(t)
-	ctx := context.Background()
-	realm := e.kerberos(t)
-	dn := e.d.AddUser(t, "alice", nil)
-	logon := e.logonOf(t, "alice")
-	alice := e.signedIn(t, realm, "alice")
-	u := e.record(t, alice)
-	u.IDs = append(u.IDs, linkedKrbID("alice@CORP.EXAMPLE", logon.DomainSID+"-"+strconv.FormatUint(uint64(logon.UserRID), 10)))
-	if _, err := e.st.ControlPlane().PutUser(ctx, u, u.Generation, entity.Alloc{}); err != nil {
-		t.Fatal(err)
-	}
-	e.d.Modify(dn, map[string][][]byte{"sAMAccountName": attr("alicia")})
-	e.clock.Advance(5*time.Minute + time.Second)
-	if res, err := e.s.SignIn(ctx, e.ticket(realm, "alice", logon)); err != nil || res.Identity.Evidence.Principal != alice {
-		t.Fatalf("alice's sign-in by her krb row bound %v, %v; want %v", res.Identity.Evidence.Principal, err, alice)
-	}
-	if _, err := e.resolveAs(alice, fileShare()); err != nil {
-		t.Fatalf("resolve alice after the sign-in: %v", err)
-	}
-	if got := e.record(t, alice).Name; got != "alicia" {
-		t.Errorf("alice's stored name after a sign-in and a resolution past the rename %q, want %q", got, "alicia")
+	for _, tc := range []struct {
+		name    string
+		change  func(e *dirPrincipals, dn string)
+		outcome string // the sign-in's
+		want    string // the stored name after it
+	}{
+		{"renamed", func(e *dirPrincipals, dn string) {
+			e.d.Modify(dn, map[string][][]byte{"sAMAccountName": attr("alicia")})
+		}, "ok", "alicia"},
+		{"deleted", func(e *dirPrincipals, dn string) { e.d.Delete(dn) }, "disabled", "alice"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newAD(t)
+			ctx := context.Background()
+			realm := e.kerberos(t)
+			dn := e.d.AddUser(t, "alice", nil)
+			logon := e.logonOf(t, "alice")
+			alice := e.signedIn(t, realm, "alice")
+			u := e.record(t, alice)
+			u.IDs = append(u.IDs, linkedKrbID("alice@CORP.EXAMPLE", logon.DomainSID+"-"+strconv.FormatUint(uint64(logon.UserRID), 10)))
+			if _, err := e.st.ControlPlane().PutUser(ctx, u, u.Generation, entity.Alloc{}); err != nil {
+				t.Fatal(err)
+			}
+			tc.change(e, dn)
+			e.clock.Advance(5*time.Minute + time.Second)
+			res, oc, err := e.s.SignInOutcome(ctx, e.ticket(realm, "alice", logon))
+			if oc != tc.outcome {
+				t.Fatalf("alice's sign-in by her krb row: outcome %q, %v; want %q", oc, err, tc.outcome)
+			}
+			if oc == "ok" {
+				if got := res.Identity.Evidence.Principal; got != alice {
+					t.Fatalf("alice's sign-in by her krb row bound %v, want %v", got, alice)
+				}
+				if _, err := e.resolveAs(alice, fileShare()); err != nil {
+					t.Fatalf("resolve alice after the sign-in: %v", err)
+				}
+			}
+			if got := e.record(t, alice).Name; got != tc.want {
+				t.Errorf("alice's stored name after the sign-in %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
