@@ -396,26 +396,25 @@ adapters:
 
 ### Control plane API TLS
 
-The control plane REST API (default port `8080`) carries the highest-value credentials in the
+The management REST API (default port `8080`) carries the highest-value credentials in the
 system. It binds to `127.0.0.1` (loopback only) by default — a fresh `dfs start` does not
 expose credentials off-host.
 
 Any deployment that accepts connections from another machine (multi-host, Kubernetes) should set
-`controlplane.host: 0.0.0.0` and pair it with TLS:
+`api.listen` to a non-loopback address and pair it with TLS. The API serves an address that
+is not loopback only over TLS, so a start without both files is refused:
 
 ```yaml
-controlplane:
-  host: 0.0.0.0
+api:
+  listen: ["0.0.0.0:8080"]
   tls:
     cert_file: /etc/dittofs/tls/tls.crt
     key_file: /etc/dittofs/tls/tls.key
-    client_ca: /etc/dittofs/tls/ca.crt   # optional — mutual TLS
-    min_version: "1.2"                    # "1.2" (default) or "1.3"
 ```
 
-DittoFS loads the files and hot-reloads them on rotation. It does not generate self-signed
-certificates or perform ACME. Setting `cert_file` without `key_file` (or vice versa), or
-`client_ca` without a server cert, is a fatal startup error.
+DittoFS does not generate self-signed certificates or perform ACME. v2 has no mutual TLS or
+minimum-version key for the API; see [Configuration](configuration.md#5-api-server) for
+the keys it reads.
 
 **Recommended deployment model:**
 

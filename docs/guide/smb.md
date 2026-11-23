@@ -542,7 +542,7 @@ See [./security.md](./security.md) for detailed Kerberos security considerations
 ## User, Group and Permission Configuration
 
 SMB uses the same user/group store as all other DittoFS protocols. Users, groups and their
-share permissions live in the control-plane database and are managed through `dfsctl` — they are
+share permissions live in the metadata store and are managed through `dfsctl` — they are
 not declared in a config file.
 
 ```bash

@@ -189,11 +189,11 @@ scoop install dfsctl    # client CLI
 ```
 
 When installed via the system package managers, the server runs under systemd as the `dfs`
-service. Set the admin password before the first start with the
-`DITTOFS_ADMIN_INITIAL_PASSWORD` environment variable (see the
-[README](../../README.md#first-run--admin-password)). Under systemd the server's stdout is
-not a terminal, so an auto-generated password would **not** be shown or written to the
-service log — pre-setting it is the only way to know the credential.
+service. Run `dfs init` before the first start, handing it the admin password with
+`--admin-password-file` or `--admin-password-env` (see the
+[README](../../README.md#first-run--admin-password)). With neither, `dfs init` prints a
+generated password once to its standard output and never to the log, so run it where
+you can read that output; `dfs reset-admin`, with the node stopped, prints a new one.
 
 ## Docker
 
@@ -204,19 +204,23 @@ Pre-built multi-architecture images (`linux/amd64`, `linux/arm64`) are published
 ```bash
 docker pull marmos91c/dittofs:latest
 
-# Create a config file first
-mkdir -p ~/.config/dittofs
-docker run --rm -v ~/.config/dittofs:/config \
-  marmos91c/dittofs:latest init --config /config/config.yaml
+# Write ~/.config/dittofs/config.yaml first (see below), then initialize the
+# installation on the volumes, handing init the admin password
+docker run --rm \
+  -e DFS_ADMIN_PASSWORD=my-secure-password \
+  -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
+  -v dittofs-metadata:/data/metadata \
+  -v dittofs-blocks:/data/blocks \
+  marmos91c/dittofs:latest init --config /config/config.yaml \
+  --admin-password-env DFS_ADMIN_PASSWORD
 
-# Run the server (set the admin password via env var — you can't read interactive output)
+# Run the server
 docker run -d \
   --name dittofs \
   -p 12049:12049 \
   -p 12445:12445 \
   -p 8080:8080 \
   -p 9090:9090 \
-  -e DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password \
   -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
   -v dittofs-metadata:/data/metadata \
   -v dittofs-blocks:/data/blocks \
@@ -225,8 +229,8 @@ docker run -d \
   marmos91c/dittofs:latest
 
 curl http://localhost:8080/health
-# Always set DITTOFS_ADMIN_INITIAL_PASSWORD (above): the container's stdout is a pipe, so an
-# auto-generated password is NOT printed to `docker logs` and cannot be recovered.
+# Without --admin-password-env, init prints a generated password once, to this
+# terminal only: it never reaches the log or `docker logs`.
 ```
 
 `dittofs-blocks` carries the journal, which holds the only copy of every byte that has not
