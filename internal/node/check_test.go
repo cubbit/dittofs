@@ -178,14 +178,9 @@ func concrete(path string) string {
 // The document says each route admits the least role RFC 23 §5.2 gives it,
 // every documented route has one, and every route there is documented; each
 // action is a row of §4.1's table, on that row's resource, its role the
-// operation kind's exactly where the row says so.
-// Then every route is called as each role, a signed-in account of that
-// role: a caller below the least role is refused, 404 where its role may not
-// know of what the route reaches, as the audit, and 403 forbidden where it
-// may; a caller holding the role is not refused 403 forbidden, whatever else
-// the call's empty body and made-up IDs answer.
+// operation kind's exactly where the row says so. TestWiredRoleSweep calls
+// every route as each role.
 func TestEveryRouteByRole(t *testing.T) {
-	s := newAuthNode(t)
 	ops := documented(t)
 	seen := map[string]bool{}
 	for _, op := range ops {
@@ -216,27 +211,6 @@ func TestEveryRouteByRole(t *testing.T) {
 	for k := range leastRole {
 		if !seen[k] {
 			t.Errorf("%s has a least role in this test and is not documented", k)
-		}
-	}
-	for _, role := range []entity.APIRole{entity.RoleViewer, entity.RoleOperator, entity.RoleAdmin} {
-		_, tk := s.h.SignedIn(t, s.addr, "caller-"+role.String(), role)
-		for _, op := range ops {
-			need := leastRole[op.key()]
-			if need == entity.RoleNone {
-				continue // public, so no role is refused it
-			}
-			r := s.send(t, op.method, concrete(op.path), tk.Access, nil)
-			what := role.String() + " " + op.key()
-			switch {
-			case role >= need:
-				if r.status == http.StatusForbidden && r.problem(t).Code == apiv1.CodeForbidden {
-					t.Errorf("%s: answered %d %s; want no refusal by role", what, r.status, r.body)
-				}
-			case role < unreadable[op.key()]:
-				wantStatus(t, what, r, http.StatusNotFound, codeNotFound)
-			default:
-				wantStatus(t, what, r, http.StatusForbidden, apiv1.CodeForbidden)
-			}
 		}
 	}
 }
