@@ -2914,10 +2914,9 @@ func TestRFC28C_APartlySupersededRecordIsStillChecked(t *testing.T) {
 	}
 
 	// A second reopen appends no other loss record for R: the record the
-	// first open appended answers for the drop, the second finds it — a
-	// loss record on disk that names R, whole — and reports nothing new,
-	// R withholds whole under it and the rotten rest confines nowhere on
-	// either reopen. The count stays over the directory's bytes.
+	// first open appended answers for the drop on disk — the second finds
+	// it — and R withholds whole under it and the rotten rest confines
+	// nowhere on either reopen. The count stays over the directory's bytes.
 	generation := s.LossGeneration
 	f.Reopen()
 	after := f.J.Stats()
@@ -2927,13 +2926,25 @@ func TestRFC28C_APartlySupersededRecordIsStillChecked(t *testing.T) {
 	if after.LossGeneration != generation {
 		t.Fatalf("a second reopen raised the loss generation from %d to %d, appending another loss record for R", generation, after.LossGeneration)
 	}
-	// The fresh instance numbers its own events from its own zero, so a
-	// re-report would carry the same SeqNum as the first open's and no
-	// comparison across the two rings can tell it apart: the second
-	// reopen's ring must hold nothing at all, the piece dedup answering
-	// the place the first open's loss record already took.
-	if len(after.Losses) != 0 {
-		t.Fatalf("a second reopen reported %+v as new; the first open's loss record for R answers for it", after.Losses)
+	// Reading A: no reader ever took the first open's loss events away —
+	// every read this row made of them answered nobody — so its placed
+	// claim retired with it, and the second reopen places the loss record
+	// it found on disk found at open again. The fresh instance numbers its
+	// own events from its own zero, and nothing raised anything, so the
+	// loss still reads as found, never as new.
+	for _, ev := range after.Losses {
+		if ev.File != id || !ev.AtOpen {
+			t.Fatalf("a second reopen reported %+v, want only the loss the first open's record named, still found at open", ev)
+		}
+	}
+	var again []journal.LossEvent
+	for _, ev := range after.Losses {
+		if ev.Reason == journal.LossCorrupt {
+			again = append(again, ev)
+		}
+	}
+	if len(again) != 1 || again[0].Extent != kept {
+		t.Fatalf("a second reopen reported the corrupt losses %+v, want the kept run's alone again", again)
 	}
 }
 
@@ -3093,18 +3104,22 @@ func TestRFC28C_AnOpenAtAnExhaustedHeadroom(t *testing.T) {
 		}
 	}
 
-	// A second open finds the loss record on disk and answers nothing new
-	// with it: the piece it names was taken by the open that appended it, so
-	// the reopen places it back into no ring, raises no generation and
-	// appends no second record — the loss the caller still owes is settled
-	// through the marker the rebuild replays, not a fresh event.
+	// A second open finds the loss record on disk and places it found at
+	// open again: the piece it names was taken by the open that appended it,
+	// but no reader ever took that open's event away — every read this row
+	// made of it answered nobody, Reading A — so the claim retired with it
+	// and the reopen publishes the loss into its own ring, raising no
+	// generation and appending no second record. The loss the caller still
+	// owes settles through the marker the rebuild replays, not a fresh
+	// raise.
 	gen := f.J.Stats().LossGeneration
 	f.Reopen()
 	if got := f.J.Stats().LossGeneration; got != gen {
 		t.Fatalf("the generation after the second open = %d, want the %d the first raised: the found loss record raises nothing", got, gen)
 	}
-	if got := len(f.J.Stats().Losses); got != 0 {
-		t.Fatalf("the second open's ring holds %d losses, want none: the piece the loss record names was taken by the open that appended it", got)
+	losses2 := f.J.Stats().Losses
+	if len(losses2) != 1 || !losses2[0].AtOpen || losses2[0].Extent != ev.Extent {
+		t.Fatalf("the second open's ring = %+v, want the loss record's loss placed found at open again", losses2)
 	}
 	yielded = 0
 	for ch, err := range f.Share(share).Since(t.Context(), file, journal.Version{}) {
