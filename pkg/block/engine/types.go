@@ -46,10 +46,6 @@ type Stats struct {
 	StabilityPoints int64
 	// WriteRefusals is engine_write_refusals_total.
 	WriteRefusals int64
-	// SharePasses is the passes a refusal of a share's own limit started over
-	// the share's scope, the refusals that joined one not counted. No series
-	// exports it yet: RFC 25 names none for it.
-	SharePasses int64
 	// PendingExistenceOps is engine_pending_existence_ops' sum: the
 	// operations the existence commits committed.
 	PendingExistenceOps int64

@@ -404,7 +404,7 @@ func (e *Engine) relieved(
 	// for at most a tenth of the time left to its deadline.
 	var serr error
 	if r.limit == journal.LimitShare {
-		p := e.passFor(b, r)
+		p := e.passFor(b)
 		if !e.awaitPass(ctx, b, p) {
 			return e.answeredAs(b, err, r, row{delay: vfserr.DelayCapacity}), false
 		}

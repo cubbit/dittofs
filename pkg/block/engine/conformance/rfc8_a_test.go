@@ -825,15 +825,6 @@ func putSecond(
 	return err
 }
 
-// clockDeadline is a context whose deadline is read on the engine's clock: the
-// context it wraps never ends by it in real time.
-type clockDeadline struct {
-	context.Context
-	at time.Time
-}
-
-func (c clockDeadline) Deadline() (time.Time, bool) { return c.at, true }
-
 // passBound is the deadline putSecondAtBound gives its write on the engine's
 // clock. Its tenth, the most a share-limit refusal waits for the share's pass,
 // is a length no other wait of the engine asks the clock for, so the armed
@@ -847,7 +838,7 @@ func putSecondAtBound(t *testing.T, f *enginetest.Fixture, id entity.FileID, off
 	t.Helper()
 
 	armed := f.Clock.Armed(passBound / 10)
-	ctx := clockDeadline{Context: t.Context(), at: f.Clock.Now().Add(passBound)}
+	ctx := enginetest.ClockDeadline{Context: t.Context(), At: f.Clock.Now().Add(passBound)}
 	got := make(chan error, 1)
 
 	go func() {

@@ -21,7 +21,7 @@ const conditionJournalFull = "journal_full"
 type step uint8
 
 const (
-	stepNone   step = iota // nothing ran: the next refusal repacks by the scope
+	stepNone   step = iota // nothing ran: the next refusal repacks by the scope (journal-wide limits only)
 	stepRepack             // the scoped repack ran: the next refusal runs the last step
 	stepLast               // the last step ran: the next refusal is answered
 )
@@ -230,9 +230,8 @@ func (e *Engine) relieve(ctx context.Context, b *binding, r refusal, at *step) e
 // while its sync has not begun; one that comes later waits for the next pass.
 type sharePass struct {
 	done    chan struct{}
-	err     error              // set before done closes: nil to retry, else what the refusal maps
-	syncing bool               // under the passes' mu: the sync began, so a refusal now waits for the next
-	cancel  context.CancelFunc // ends the pass, set once it starts
+	err     error // set before done closes: nil to retry, else what the refusal maps
+	syncing bool  // under the passes' mu: the sync began, so a refusal now waits for the next
 }
 
 // passSlot is a share's pass in flight and the one queued behind it.
@@ -240,15 +239,15 @@ type passSlot struct{ cur, next *sharePass }
 
 // sharePasses are the share passes, at most one in flight and one queued per
 // share, run under the engine's lifetime rather than any caller's: ctx is
-// what Close cancels and wg what it joins. closed is set under mu when Close
-// stops them and ended holds the shares whose passes Unbind or Drop is
-// stopping, so no pass starts for them after the join.
+// what Close cancels and wg what it joins, and closed, set under mu when
+// Close stops them, keeps any from starting after the join. Each pass is
+// also work of its share's gate, so Unbind waits for it. started, nil in
+// production, counts every pass started once a test sets it.
 type sharePasses struct {
 	mu      sync.Mutex
 	closed  bool
 	slots   map[*binding]*passSlot
-	ended   map[*binding]bool
-	started atomic.Int64 // the passes started, which Stats reports
+	started *atomic.Int64
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -262,11 +261,11 @@ func endedPass(err error) *sharePass {
 	return p
 }
 
-// passFor is the pass a refusal of b's share limit, by r, waits for: the
-// pass in flight while its sync has not begun, else the one queued behind it,
-// queued now if none is, else a new one, started now. Once Close has stopped
-// the passes, or Unbind or Drop the share's, it is a pass already ended with
-// the journal closed.
+// passFor is the pass a refusal of b's share limit waits for: the pass in
+// flight while its sync has not begun, else the one queued behind it, queued
+// now if none is, else a new one, started now. Once Close has stopped the
+// passes, or Unbind has shut the share's gate, it is a pass already ended
+// with the journal closed.
 //
 // decision: a refusal that arrives once the pass's sync has begun does not
 // join it: a write served after that sync, such as a small overwrite, holds a
@@ -274,25 +273,25 @@ func endedPass(err error) *sharePass {
 // would count it as nothing and answer no space. It waits for the next pass,
 // which syncs it. Overturned if the journal's sync reports which records it
 // covered, so a joiner could tell whether its share's writes were among them.
-func (e *Engine) passFor(b *binding, r refusal) *sharePass {
+func (e *Engine) passFor(b *binding) *sharePass {
 	ps := &e.passing
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	if ps.closed || ps.ended[b] {
-		return endedPass(journal.ErrClosed)
-	}
-
 	sl := ps.slots[b]
 	switch {
 	case sl == nil:
+		if ps.closed || !b.gate.enter() {
+			return endedPass(journal.ErrClosed)
+		}
+
 		if ps.slots == nil {
 			ps.slots = map[*binding]*passSlot{}
 		}
 
 		sl = &passSlot{cur: &sharePass{done: make(chan struct{})}}
 		ps.slots[b] = sl
-		e.startPass(b, r, sl.cur)
+		e.startPass(b, sl.cur)
 
 		return sl.cur
 	case !sl.cur.syncing:
@@ -304,17 +303,32 @@ func (e *Engine) passFor(b *binding, r refusal) *sharePass {
 	return sl.next
 }
 
-// startPass runs p over b's scope in the background. ps.mu is held.
-func (e *Engine) startPass(b *binding, r refusal, p *sharePass) {
+// startPass runs p over b's scope in the background, as one unit of b's gate
+// that the caller has entered and the pass withdraws when it ends. The shut
+// of the gate cancels it, so Unbind's wait for the gate's work ends it, and a
+// pass that Close cancelled ends with the journal closed. ps.mu is held.
+func (e *Engine) startPass(b *binding, p *sharePass) {
 	ps := &e.passing
 
-	var ctx context.Context
-	ctx, p.cancel = context.WithCancel(ps.ctx)
-	ps.started.Add(1)
+	if ps.started != nil {
+		ps.started.Add(1)
+	}
 	ps.wg.Add(1)
 
 	go func() {
 		defer ps.wg.Done()
+		defer b.gate.leave()
+
+		ctx, cancel := context.WithCancel(ps.ctx)
+		ended := make(chan struct{})
+
+		go func() {
+			select {
+			case <-b.gate.shutdown():
+				cancel()
+			case <-ended:
+			}
+		}()
 
 		if h := e.seams.passing.Load(); h != nil {
 			(*h)()
@@ -324,8 +338,13 @@ func (e *Engine) startPass(b *binding, r refusal, p *sharePass) {
 		p.syncing = true
 		ps.mu.Unlock()
 
-		err := e.sharePass(ctx, b, r)
-		p.cancel()
+		err := e.sharePass(ctx, b)
+		close(ended)
+		cancel()
+
+		if ps.ctx.Err() != nil {
+			err = journal.ErrClosed
+		}
 
 		ps.mu.Lock()
 		sl := ps.slots[b]
@@ -335,13 +354,13 @@ func (e *Engine) startPass(b *binding, r refusal, p *sharePass) {
 		switch {
 		case next == nil:
 			delete(ps.slots, b)
-		case ps.closed || ps.ended[b]:
+		case ps.closed || !b.gate.enter():
 			delete(ps.slots, b)
 			next.err = journal.ErrClosed
 			close(next.done)
 		default:
 			sl.cur = next
-			e.startPass(b, r, next)
+			e.startPass(b, next)
 		}
 		ps.mu.Unlock()
 
@@ -356,13 +375,11 @@ func (e *Engine) startPass(b *binding, r refusal, p *sharePass) {
 // after the sync, active segments included, are above zero: a share of live,
 // synced bytes is left untouched, and superseded bytes that sit only in an
 // active segment are still sealed and freed.
-func (e *Engine) sharePass(ctx context.Context, b *binding, r refusal) error {
-	scope, bound := e.scopeOf(b, r)
-
-	err := e.syncScope(ctx, b, bound)
+func (e *Engine) sharePass(ctx context.Context, b *binding) error {
+	err := e.syncScope(ctx, b, []*binding{b})
 	if !errors.Is(err, journal.ErrClosed) && ctx.Err() == nil &&
 		b.j.Stats().Shares[b.share.Tag].UnreclaimedBytes > 0 {
-		if serr := e.repack(ctx, b, scope); err == nil {
+		if serr := e.repack(ctx, b, journal.RepackScope{Share: b.share.Tag}); err == nil {
 			err = serr
 		}
 	}
@@ -374,12 +391,17 @@ func (e *Engine) sharePass(ctx context.Context, b *binding, r refusal) error {
 // waits for its share's pass: a tenth of the 30 s default request deadline.
 //
 // decision: a context with no deadline is given the 30 s default request
-// deadline, the one stopDefault is tied to, so it waits 3 s, then answers
-// ErrDelay (DelayCapacity), rather than without limit: a held or slow sync
-// would otherwise park the caller for as long as it lasts, while a pass that
-// nothing holds ends well inside 3 s and the write is still served in one
-// call. Overturned if RFC 8 or RFC 23 sets another default request deadline.
-const passWaitNoDeadline = stopDefault / 10
+// deadline, so it waits 3 s, then answers ErrDelay (DelayCapacity), rather
+// than without limit: a held or slow sync would otherwise park the caller for
+// as long as it lasts, while a pass that nothing holds ends well inside 3 s
+// and the write is still served in one call. The bound has a ceiling: every
+// call and retry goes through passFor and awaitPass again and reads the
+// figures only after a pass it joined ended inside its wait, so a share whose
+// sync takes longer than the wait answers ErrDelay (DelayCapacity) to every
+// write and every retry while its passes run back to back. Overturned if RFC
+// 8 or RFC 23 sets another default request deadline, or if a measured share
+// pass p95 comes above the bound.
+const passWaitNoDeadline = 3 * time.Second
 
 // awaitPass waits for p to end and reports whether it did: at most a tenth of
 // the time left to ctx's deadline by the engine's clock, or
@@ -406,41 +428,6 @@ func (e *Engine) awaitPass(ctx context.Context, b *binding, p *sharePass) bool {
 	}
 
 	return false
-}
-
-// endPasses cancels b's share pass in flight, fails the one queued behind it
-// and waits, within ctx, for the first to end, so the share's handle is not
-// closed under it (RFC 8 §2.5). Unbind and Drop call it once the share's
-// calls have drained, so no refusal starts another.
-func (e *Engine) endPasses(ctx context.Context, b *binding) error {
-	ps := &e.passing
-	ps.mu.Lock()
-
-	if ps.ended == nil {
-		ps.ended = map[*binding]bool{}
-	}
-	ps.ended[b] = true
-
-	var cur *sharePass
-	if sl := ps.slots[b]; sl != nil {
-		cur = sl.cur
-		cur.cancel()
-	}
-	ps.mu.Unlock()
-
-	if cur != nil {
-		select {
-		case <-cur.done:
-		case <-ctx.Done():
-			return fmt.Errorf("engine: share %v: waiting for its capacity pass: %w", b.share.ID, ctx.Err())
-		}
-	}
-
-	ps.mu.Lock()
-	delete(ps.ended, b)
-	ps.mu.Unlock()
-
-	return nil
 }
 
 // stopPasses cancels the share passes in flight and joins them; none starts

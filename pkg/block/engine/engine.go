@@ -444,7 +444,6 @@ func (e *Engine) counters(s *Stats, table bindings) {
 	s.SelfFences = e.fence.fences.Load()
 	s.StabilityPoints = e.stabilityPoints.Load()
 	s.WriteRefusals = e.refusals.Load()
-	s.SharePasses = e.passing.started.Load()
 	s.PendingExistenceOps = e.pendingApplied.Load()
 	s.GroupCommitSplits = e.splits.Load()
 	s.Reads = map[string]int64{}

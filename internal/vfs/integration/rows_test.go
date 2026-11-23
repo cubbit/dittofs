@@ -84,15 +84,6 @@ func (c *composition) write(t *testing.T, call vfs.Call, h vfs.Handle, off int64
 	return c.fs.Write(ctx, call, vfs.Anonymous(h), off, p, vfs.Unstable)
 }
 
-// clockDeadline is a context whose deadline is read on the engine's clock: the
-// context it wraps never ends by it in real time.
-type clockDeadline struct {
-	context.Context
-	at time.Time
-}
-
-func (c clockDeadline) Deadline() (time.Time, bool) { return c.at, true }
-
 // passBound is the deadline writeAtBound gives its write on the engine's
 // clock; its tenth, the most a share-limit refusal waits for the share's
 // pass, is a length no other wait of the engine asks the clock for.
@@ -105,7 +96,7 @@ const passBound = 10*time.Second + 70*time.Millisecond
 func (c *composition) writeAtBound(t *testing.T, h vfs.Handle, p []byte) error {
 	t.Helper()
 	armed := c.Clock.Armed(passBound / 10)
-	ctx := clockDeadline{Context: t.Context(), at: c.Clock.Now().Add(passBound)}
+	ctx := enginetest.ClockDeadline{Context: t.Context(), At: c.Clock.Now().Add(passBound)}
 	got := make(chan error, 1)
 	go func() {
 		_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, p, vfs.Unstable)

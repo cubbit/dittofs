@@ -188,3 +188,13 @@ func (u *Unit) BindShare(t *testing.T, name string, ns entity.NamespaceID) entit
 	}
 	return s.ID
 }
+
+// ClockDeadline is a context whose deadline, At, is read on the engine's
+// test clock: the context it wraps never ends by it in real time.
+type ClockDeadline struct {
+	context.Context
+	At time.Time
+}
+
+// Deadline is At.
+func (c ClockDeadline) Deadline() (time.Time, bool) { return c.At, true }

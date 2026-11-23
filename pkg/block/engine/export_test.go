@@ -489,6 +489,18 @@ func (e *Engine) OnRefused(f func()) {
 	e.seams.refused.Store(&f)
 }
 
+// TrackSharePassesForTest counts every share pass started from now on, for
+// SharePassesStarted. Call it before any refusal of a share's own limit.
+func (e *Engine) TrackSharePassesForTest() {
+	e.passing.started = &atomic.Int64{}
+}
+
+// SharePassesStarted is how many share passes started since
+// TrackSharePassesForTest, the refusals that joined one not counted.
+func (e *Engine) SharePassesStarted() int64 {
+	return e.passing.started.Load()
+}
+
 // OnSharePass sets f to run when a share pass has started and before its
 // sync begins: a refusal that arrives while f blocks joins the pass.
 func (e *Engine) OnSharePass(f func()) {

@@ -167,9 +167,12 @@ func (u *unit) heldBeforePhase1(t *testing.T, h *hookedHandle, src, dst entity.F
 	return func() { released.Do(func() { close(hold) }) }, errc
 }
 
-// A reservation the journal refuses fails the clone with the mapped error
-// before its journal step: both registrations are gone, the destination
-// reads its prior content, and the journal saw no CloneTarget.
+// A reservation the journal refuses for a journal-wide limit fails the clone
+// with the mapped error before its journal step: both registrations are gone,
+// the destination reads its prior content, and the journal saw no
+// CloneTarget. A share's own limit is not a row: its pass relieves the
+// refusal, and the fake refuses one Reserve only, so the retried clone is
+// served.
 func TestARefusedReservationChangesNothing(t *testing.T) {
 	u := clonedUnit(t)
 	src := u.committedFile(t, "src", fill(2*mib, 's'))
