@@ -78,6 +78,11 @@ func (d *Durability) RaiseMarks(marks []core.SyncMark) {
 // figure holds stays, and the stream's next sync in its open segment raises
 // it.
 //
+// ponytail: a mark proved while its segment seals is dropped, because the
+// stream reports no open segment then, so the figure stays on the segment
+// before until a named sync in the next one. Upgrade when the stream reports
+// the last segment it took, so the order holds while it seals.
+//
 // decision: neither segment ids nor sequence numbers order marks across
 // segments. An id says when a segment was made, not when its records were
 // appended, a spare made early being used after a copy segment made later;

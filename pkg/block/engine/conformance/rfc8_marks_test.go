@@ -11,7 +11,7 @@ import (
 
 // RFC 8 §5.2: the group commit records the journal's sync marks. Over the real
 // journal, a commit that waits on a recorded mark leaves the store holding the
-// marks the journal serves, and the next start hands them back to Open.
+// marks the journal serves, and Open is handed them at the next start.
 func TestRFC8_TheGroupCommitRecordsTheJournalsMarks(t *testing.T) {
 	f := enginetest.New(t)
 	_, id := f.File("a")
