@@ -74,13 +74,17 @@ func (d *Durability) RaiseMarks(marks []core.SyncMark) {
 // to now is later, since a stream only moves forward: a copy the open or a
 // failed window made lands in the segment the stream takes next, and a
 // segment the stream left is behind it. When neither mark is in the open
-// segment, the later record by sequence number is later, then the higher
-// segment id.
+// segment the stream is past both, and nothing orders them: the entry the
+// figure holds stays, and the stream's next sync in its open segment raises
+// it.
 //
-// decision: segment ids order nothing here: an id says when a segment was
-// made, not when its records were appended, and a spare made early is used
-// after a copy segment made later. Overturned if a stream can append to a
-// segment other than the one it reports open.
+// decision: neither segment ids nor sequence numbers order marks across
+// segments. An id says when a segment was made, not when its records were
+// appended, a spare made early being used after a copy segment made later;
+// and a re-appended copy keeps its record's number, so a copy's mark carries a
+// lower one than the ended segment's last. A mark that the open segment cannot
+// place is therefore never taken over what is held. Overturned if a stream
+// can append to a segment other than the one it reports open.
 func (d *Durability) markNewer(a, b core.SyncMark) bool {
 	if a.Segment == b.Segment {
 		if a.Through != b.Through {
@@ -99,10 +103,7 @@ func (d *Durability) markNewer(a, b core.SyncMark) bool {
 			return false
 		}
 	}
-	if a.Sequence != b.Sequence {
-		return a.Sequence > b.Sequence
-	}
-	return a.Segment > b.Segment
+	return false
 }
 
 // openSegmentOf is the segment the stream appends to, false before Start, for

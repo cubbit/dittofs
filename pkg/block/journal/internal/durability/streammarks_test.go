@@ -62,10 +62,10 @@ func TestMarksIgnoreAFailedSync(t *testing.T) {
 }
 
 // TestSeedMarksIsACopyAndRaiseNeverLowers covers the figure's own rules on a
-// layer with no stream bound, where the order falls back to the record's
-// sequence number: the seed is copied both ways, a mark naming no later
-// record than its stream's entry changes nothing, a later one replaces it,
-// whatever its segment's id, and a stream with no entry gains one.
+// layer with no stream bound, where no segment is open and a mark in another
+// segment never replaces the entry: the seed is copied both ways, a mark in
+// the entry's segment replaces it only when synced through further, and a
+// stream with no entry gains one.
 func TestSeedMarksIsACopyAndRaiseNeverLowers(t *testing.T) {
 	d := &Durability{}
 	m0 := core.SyncMark{Stream: 0, Segment: 5, Through: 100, Offset: 90, Sequence: 7}
@@ -76,17 +76,17 @@ func TestSeedMarksIsACopyAndRaiseNeverLowers(t *testing.T) {
 	got[0].Sequence = 98
 	wantMarks(t, "a seed and a read are copies", d, m0)
 
+	more := core.SyncMark{Stream: 0, Segment: 5, Through: 200, Offset: 190, Sequence: 7}
 	for _, c := range []struct {
 		name string
 		m    core.SyncMark
 		want core.SyncMark
 	}{
-		{"an earlier record", core.SyncMark{Stream: 0, Segment: 9, Through: 900, Offset: 800, Sequence: 6}, m0},
+		{"a later record in another segment", core.SyncMark{Stream: 0, Segment: 6, Through: 10, Offset: 9, Sequence: 99}, m0},
+		{"an earlier segment", core.SyncMark{Stream: 0, Segment: 4, Through: 900, Offset: 800, Sequence: 99}, m0},
 		{"the same mark", m0, m0},
-		{"the same record, its copy in an earlier segment", core.SyncMark{Stream: 0, Segment: 4, Through: 900, Offset: 800, Sequence: 7}, m0},
-		{"the same record, synced through less", core.SyncMark{Stream: 0, Segment: 5, Through: 50, Offset: 40, Sequence: 7}, m0},
-		{"the same record, synced through more", core.SyncMark{Stream: 0, Segment: 5, Through: 200, Offset: 190, Sequence: 7}, core.SyncMark{Stream: 0, Segment: 5, Through: 200, Offset: 190, Sequence: 7}},
-		{"a later record in a lower segment", core.SyncMark{Stream: 0, Segment: 3, Through: 10, Offset: 9, Sequence: 8}, core.SyncMark{Stream: 0, Segment: 3, Through: 10, Offset: 9, Sequence: 8}},
+		{"the same segment, synced through less", core.SyncMark{Stream: 0, Segment: 5, Through: 50, Offset: 40, Sequence: 99}, m0},
+		{"the same segment, synced through more", more, more},
 	} {
 		d.RaiseMarks([]core.SyncMark{c.m})
 		wantMarks(t, c.name, d, c.want)
@@ -191,4 +191,12 @@ func TestMarksOrderByPositionNotBySequence(t *testing.T) {
 	wantMarks(t, "a mark in the open segment over one in a segment of a higher id", r.d, here)
 	r.d.RaiseMarks([]core.SyncMark{{Stream: 0, Segment: x + 7, Through: 900, Offset: 900, Sequence: 99}})
 	wantMarks(t, "a straggler in a segment the stream left", r.d, here)
+
+	// A copy's mark carries a lower sequence number than the ended segment's
+	// last, and once the stream is past both segments nothing orders them: a
+	// recorded mark of the ended segment, arriving after the copy's segment
+	// sealed, leaves the entry on the copy.
+	r.d.SeedMarks([]core.SyncMark{{Stream: 0, Segment: x + 2, Through: 100, Offset: 100, Sequence: 30}})
+	r.d.RaiseMarks([]core.SyncMark{{Stream: 0, Segment: x + 1, Through: 500, Offset: 500, Sequence: 50}})
+	wantMarks(t, "a mark of an ended segment once the stream is past both", r.d, core.SyncMark{Stream: 0, Segment: x + 2, Through: 100, Offset: 100, Sequence: 30})
 }
