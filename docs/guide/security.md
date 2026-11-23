@@ -419,7 +419,11 @@ the keys it reads.
 
 - **Kubernetes / internet-facing edge:** terminate TLS at an ingress, service mesh, or reverse
   proxy (NGINX) in front of DittoFS.
-- **Direct `dfsctl` access / non-Kubernetes hosts:** use DittoFS native TLS or mTLS.
+- **Direct `dfsctl` access / non-Kubernetes hosts:** use DittoFS native TLS. `dfsctl` presents
+  no client certificate: it trusts the server through `--cacert` and signs in with a password or
+  an API token. A credentials file from an older `dfsctl` loses its `client_cert`,
+  `client_key`, `expires_at` and `preferences` fields on the next save, and one holding
+  `tls_skip_verify: true` is refused until that field is removed.
 
 `dfsctl` TLS is captured once at login and reused by every later command:
 
