@@ -1027,8 +1027,9 @@ var signingKeyFiles = []string{"auth/rotate.go", "auth/tokens.go"}
 // write a secret version, each by its file, its receiver's type ("" for
 // none) and its name: secretSetting.put, which writes a remote store's
 // credential and the identity keytab, handOver, an offline join's
-// machine password, and writePassword, a password's hash and NT hash, which
-// alone also prunes the versions below the ones it writes. The store refuses each under the signing key's kind or
+// machine password, and WritePassword, a password's hash and NT hash. Only a
+// row with prunes set may also call PruneSecret, the versions below the ones
+// it writes; WritePassword's is the one such row. The store refuses each under the signing key's kind or
 // owner, and every secretSetting literal is checked to name a constant kind
 // other than the signing key's.
 //
@@ -1045,7 +1046,7 @@ var credentialWrites = []struct {
 }{
 	{"res_secrets.go", "secretSetting", "put", false},
 	{"res_domain.go", "", "handOver", false},
-	{"auth/password.go", "", "writePassword", true},
+	{"auth/password.go", "", "WritePassword", true},
 }
 
 // isCredentialWrite reports whether fd, declared in file, a path under the
@@ -1101,9 +1102,11 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 		}
 	}
 	kind := ent.Scope().Lookup("SecretKey")
-	if field == nil || kind == nil {
-		return nil, errors.New("entity declares no Installation struct with a SigningKey field, or no SecretKey")
+	hashes := []types.Object{ent.Scope().Lookup("SecretPassword"), ent.Scope().Lookup("SecretNTHash")}
+	if field == nil || kind == nil || hashes[0] == nil || hashes[1] == nil {
+		return nil, errors.New("entity declares no Installation struct with a SigningKey field, or no SecretKey, SecretPassword or SecretNTHash")
 	}
+	refused := append([]types.Object{kind}, hashes...)
 	sub := strings.TrimPrefix(strings.TrimPrefix(path, module+"internal/node/api"), "/")
 	var bad []string
 	for _, f := range files {
@@ -1120,8 +1123,8 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 				exempt, prunes = isCredentialWrite(file, fd)
 			}
 			ast.Inspect(d, func(n ast.Node) bool {
-				if lit, ok := n.(*ast.CompositeLit); ok && sub == "" && !secretKindAllowed(info, lit, kind) {
-					bad = append(bad, file+":"+strconv.Itoa(fset.Position(lit.Pos()).Line)+" builds a secretSetting whose kind is SecretKey or no constant")
+				if lit, ok := n.(*ast.CompositeLit); ok && sub == "" && !secretKindAllowed(info, lit, refused) {
+					bad = append(bad, file+":"+strconv.Itoa(fset.Position(lit.Pos()).Line)+" builds a secretSetting whose kind is SecretKey, a password hash's or no constant")
 				}
 				id, ok := n.(*ast.Ident)
 				if !ok {
@@ -1150,9 +1153,10 @@ func signingKeyReaches(dir, path string) ([]string, error) {
 
 // secretKindAllowed reports whether lit, when it builds a secretSetting,
 // whose put credentialWrites exempts, sets its kind to a constant other than
-// key's value, the signing key's kind; a literal of any other type is
+// each of refused, the signing key's kind and a password's two hash kinds,
+// which only the password write writes; a literal of any other type is
 // allowed. A kind left unset is the zero kind, which is no secret's.
-func secretKindAllowed(info *types.Info, lit *ast.CompositeLit, key types.Object) bool {
+func secretKindAllowed(info *types.Info, lit *ast.CompositeLit, refused []types.Object) bool {
 	named, ok := info.Types[lit].Type.(*types.Named)
 	if !ok || named.Obj().Name() != "secretSetting" {
 		return true
@@ -1163,7 +1167,9 @@ func secretKindAllowed(info *types.Info, lit *ast.CompositeLit, key types.Object
 			continue
 		}
 		v := info.Types[kv.Value].Value
-		return v != nil && !constant.Compare(v, token.EQL, key.(*types.Const).Val())
+		return v != nil && !slices.ContainsFunc(refused, func(k types.Object) bool {
+			return constant.Compare(v, token.EQL, k.(*types.Const).Val())
+		})
 	}
 	return true
 }
@@ -1181,8 +1187,9 @@ func isMethod(o types.Object) bool {
 // each, and so is a PutSecret outside the credential write's own
 // declaration: in a function of its name in another file, in a method of
 // its name, and in a closure at package level after it; so is a handOver
-// method in the offline join's file, a secretSetting.put in another file,
-// and a secretSetting literal whose kind is the signing key's or no
+// method in the offline join's file, a secretSetting.put in another file, a
+// PruneSecret in a credential write that may not prune, and a secretSetting
+// literal whose kind is the signing key's, a password hash's or no
 // constant.
 func TestNoRouteWritesTheSigningKey(t *testing.T) {
 	var dirs []string
@@ -1208,13 +1215,17 @@ func TestNoRouteWritesTheSigningKey(t *testing.T) {
 		t.Fatalf("the planted route: %v", err)
 	}
 	want := []string{
-		"res_domain.go:14 calls PutSecret",
-		"res_secrets.go:14 calls PutSecret",
-		"res_secrets.go:21 calls PutSecret",
-		"res_secrets.go:26 calls PutSecret",
-		"res_secrets.go:32 builds a secretSetting whose kind is SecretKey or no constant",
-		"res_secrets.go:32 uses entity.SecretKey",
-		"res_secrets.go:33 builds a secretSetting whose kind is SecretKey or no constant",
+		"res_domain.go:18 calls PutSecret",
+		"res_domain.go:8 calls PruneSecret",
+		"res_secrets.go:10 calls PruneSecret",
+		"res_secrets.go:18 calls PutSecret",
+		"res_secrets.go:25 calls PutSecret",
+		"res_secrets.go:30 calls PutSecret",
+		"res_secrets.go:37 builds a secretSetting whose kind is SecretKey, a password hash's or no constant",
+		"res_secrets.go:37 uses entity.SecretKey",
+		"res_secrets.go:38 builds a secretSetting whose kind is SecretKey, a password hash's or no constant",
+		"res_secrets.go:40 builds a secretSetting whose kind is SecretKey, a password hash's or no constant",
+		"res_secrets.go:41 builds a secretSetting whose kind is SecretKey, a password hash's or no constant",
 		"routes.go:12 uses Installation.SigningKey",
 		"routes.go:16 uses entity.SecretKey",
 		"routes.go:18 calls PutSecret",
@@ -1404,7 +1415,10 @@ func apiExports(dir, path string) ([]string, error) {
 // with and their Claims, the sign-in service the node builds, Service,
 // NewService and its Deps, SignIn, Refresh, Authenticate and Refused, the
 // password writes, ChangePassword, SealPassword, SetPassword and the
-// PasswordSet between the last two, the
+// PasswordSet between the last two, the shared seal and write the
+// break-glass reset also makes, SealPassword, WritePassword and its
+// WriteOpts, and identity.ntlm's key, NTLMKey, its decoder, NTLM, and its
+// read, ReadNTLM, the
 // Audited they answer, the credential a caller presented and the Session it
 // names, ErrThrottled, which the problem table answers,
 // the KeyVersion the node opens the key's
@@ -1423,12 +1437,13 @@ func TestAPIExports(t *testing.T) {
 			"CallerFrom", "Claims", "Clock", "Clock.Now", "CredentialKind", "CredentialNone", "CredentialSession", "Deps", "Drain",
 			"ErrThrottled", "Installation",
 			"KeyVersion", "KeyVersion.Format", "KeyVersion.LogValue", "KeyVersion.MarshalJSON", "KeyVersion.MarshalYAML",
-			"KeyVersion.String", "KeyVersions", "KeyVersions.Versions", "Local", "NewService", "NewTokens", "PasswordSet", "Principals", "Public",
-			"QuotaEvents", "ResetAccount", "Right", "RotationProgress", "RotationStep", "SealSigningKey", "Sealer",
+			"KeyVersion.String", "KeyVersions", "KeyVersions.Versions", "Local", "NTLM", "NTLMKey", "NewService", "NewTokens", "PasswordSet",
+			"Principals", "Public",
+			"QuotaEvents", "ReadNTLM", "ResetAccount", "Right", "RotationProgress", "RotationStep", "SealPassword", "SealSigningKey", "Sealer",
 			"Sealer.Seal", "Self", "Service", "Service.Authenticate", "Service.ChangePassword", "Service.Refresh", "Service.Refused",
 			"Service.SealPassword", "Service.SetPassword", "Service.SignIn", "Shares", "Stores",
 			"Tokens", "Tokens.Close", "Tokens.Format", "Tokens.Issue", "Tokens.LogValue", "Tokens.SigningKey",
-			"Tokens.String", "Tokens.Verify", "View", "With", "WithLocal", "Writer", "Writer.Write",
+			"Tokens.String", "Tokens.Verify", "View", "With", "WithLocal", "WriteOpts", "WritePassword", "Writer", "Writer.Write",
 		}},
 		{"testdata/arch/api-exports", "internal/node/api", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},
 	} {

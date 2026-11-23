@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"reflect"
 
@@ -55,8 +56,15 @@ var authRoutes = []route{
 func credential[B any](h func(signIns, context.Context, entity.AuditRecord, B) (apiv1.Tokens, auth.Audited, error), refuses ...error) adapter {
 	return adapter{form: formCall, body: reflect.TypeFor[B](), out: reflect.TypeFor[apiv1.Tokens](), refuses: refuses,
 		run: func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
-			rq, err := decodeRequest[B](r, id)
+			// The body holds a password or a token: it is cleared once
+			// decoded, on every path out.
+			b, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
+			defer clear(b)
 			if err != nil {
+				return answer{}, &fieldError{detail: err.Error()}
+			}
+			rq := request[B]{ID: id}
+			if err := decode(b, &rq.Body); err != nil {
 				return answer{}, err
 			}
 			if s.d.Credentials == nil {

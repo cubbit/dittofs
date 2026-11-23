@@ -41,8 +41,7 @@ type Deps struct {
 	Store    store
 	Accounts accountCheck
 	Tokens   *Tokens
-	// Sealer seals a password's hashes before the write that stores them;
-	// nil, every password write answers ErrUnavailable.
+	// Sealer seals a password's hashes before the write that stores them.
 	Sealer Sealer
 	// Settings is the api section as the node holds it now, read at each
 	// sign-in, so a live api.session_lifetime reaches the next session.
