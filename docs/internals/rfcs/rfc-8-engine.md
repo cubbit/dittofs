@@ -270,18 +270,19 @@ from being either:
   sequences rather than stores them: they flow from the journal
   through the carver to the syncer and back, and a write is a journal append
   and an acknowledgement ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)). No payload is copied through engine state.
-- **Nothing on the request path spans shares or files, but four named points.**
+- **Nothing on the request path spans shares or files, but five named points.**
   The engine **MUST NOT** hold a lock, a queue or any other serialisation point
   shared by more than one file, or by more than one share, across I/O or a wait
   on the path of a write, a read or a commit. The request path shares exactly
-  four things, each bounded: the device journal's append stream and its sync,
+  five things, each bounded: the device journal's append stream and its sync,
   which every file of the journal uses by design ([RFC 1 §5](rfc-1-journal.md#5.%20Durability%20and%20ordering)); the
   journal's group existence commit, bounded at `G` files and split on conflict,
   which only a stability point covering an overwrite waits on, and joins rather
   than issues ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)); the
   capacity reservation, an atomic counter taken without a lock ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)); and
   the version limit trigger's per-journal counters, atomics taken without a lock
-  ([§2.7](#2.7%20The%20version%20limit)).
+  ([§2.7](#2.7%20The%20version%20limit)); and a capacity refusal's pass per share, which only a refused
+  write waits on, at most a tenth of the time left to its deadline ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)).
   Per-file state is keyed by file and per-share state by share ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)).
   Background work runs per journal ([§6.1](#6.1%20The%20work%20queue)), and the events that feed it
   never block the request that posts them. The table of storage bindings is read
@@ -527,7 +528,8 @@ the share with `ErrStale`. `Unbind` moves the binding to `removing` and
 **MUST**, in this order: admit no new call, clone, copy, offload pass or removal
 batch for the share, other than the offload of the hold marks below and the
 phase-2 batches of a clone the join below waits on; join every call admitted before the refusal, every clone with the
-share on either side, and every pass and batch in flight; cancel every
+share on either side, and every offload pass, removal batch and capacity
+refusal's pass in flight; cancel every
 asynchronous copy reading from the share, whatever share it writes
 ([RFC 14 §2.7](rfc-14-open-state.md#2.7%20Copy)); cancel the metadata reconcile's visit of the
 share's tag ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 7), wait for it, and count the tag's files visited, as
@@ -1140,7 +1142,7 @@ running.
    that last group commit, and its pending operations, the removal's or the
    clone's included, are left for recovery ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches), [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)).
 3. Cancel the other background loops, then join them: the age tick, the
-   rescan, eviction, the reseed and the retried opens of a journal refused at
+   rescan, eviction, the reseed, a capacity refusal's pass and the retried opens of a journal refused at
    `Start`: the 30 s retry of unsuitable storage and the 60 s retry of an
    unread range, the latter with any acknowledgement it is running, which
    resumes as an operation at the next start.
@@ -3392,16 +3394,18 @@ reported pass returns what it did not report to Dirty.
 **Eviction and repack are not work-queue work.** Each journal runs one eviction
 loop, started at start step 7 ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)), which calls `evict` and `repackDue`
 and runs the journal's `Release` and `Repack` itself; the refusal path in `capacity.go` runs
-them inline under the caller's deadline ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)). Neither needs the queue's keys:
+them inline under the caller's deadline, and a share's limit in the share's pass under the
+engine's lifetime ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)). Neither needs the queue's keys:
 `Release` refuses an unset bit, and two repacks never select the same segment
 ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)), so a refusal racing the loop costs copy work, never
 correctness.
 
-> ponytail: concurrent refusals on one journal each run their own scoped repack,
-> and the loop runs another beside them; the journal keeps them on disjoint
-> segments, but their copy bandwidth adds up. Upgrade to one repack in flight per
-> (journal, scope) that later refusals wait on when repack bytes copied per byte
-> freed rises under a refusal storm in the B3 benchmark ([§15.4](#15.4%20Benchmarks)).
+> ponytail: concurrent refusals of a journal's own capacity each run their own
+> repack, beside the shares' passes and the loop's eviction repack; the journal
+> keeps them on disjoint segments, but their copy bandwidth adds up. Upgrade to
+> one repack in flight per journal that those refusals and eviction join, as a
+> share's pass is joined, when repack bytes copied per byte freed rises under a
+> refusal storm in the B3 benchmark ([§15.4](#15.4%20Benchmarks)).
 
 ### 10.1 Eviction is chosen here, and needs no new record
 
@@ -3460,12 +3464,17 @@ The journal refuses a write it cannot reserve for, and does not evict for itself
    ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)), and §4.4's per-segment accounting reports no unreclaimed
    bytes; [RFC 1 §10](rfc-1-journal.md#10.%20Open%20questions) records both. A seal marker draws
    on the reserved headroom, so a journal at its limit still takes it
-   ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). The scope's sync and repack run as one pass per scope,
-   under the engine's lifetime rather than the caller's, which later refusals join; the pass
-   repacks only when the figures after its sync show unreclaimed bytes. A refusal waits for it
-   at most a tenth of its deadline, and then answers `ErrDelay`, as rule 6 of §1 has a delay
-   that would outlast the deadline do; a pass that ends in time leaves the refusal to decide
-   from the figures read after it.
+   ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)). A share-limit refusal's sync and repack run as one pass per
+   share, under the engine's lifetime rather than the caller's, which a later refusal joins
+   while the pass's sync has not begun; a refusal that arrives after starts the next pass when
+   this one ends. A refusal of the journal's own capacity keeps its own sync and repack. The
+   pass repacks only when the scope's unreclaimed bytes, active segments included, are above
+   zero after its sync. A refusal waits for it at most a tenth of the time left to its
+   deadline, then answers `ErrDelay` (`DelayCapacity`), as a refusal that would outlast the
+   deadline does ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)); a refusal with no deadline
+   waits at most 3 s, a tenth of the 30 s default request deadline
+   ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). A pass that ends in time leaves the refusal to decide from the
+   figures read after it.
 
 **One table decides every capacity refusal.** [RFC 0](rfc-0-data-lifecycle.md), [RFC 1](rfc-1-journal.md), RFC 17 and the
 protocol RFCs cite it rather than restate it. The cause of a put-unhealthy store
@@ -4124,6 +4133,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§10](#10.%20Local%20space) occupancy triggers eviction | Fill the journal to its maximum with filled, offloaded content and nothing dirty or released. Assert eviction starts and a write succeeds; an engine triggering on dirty plus unreclaimed bytes sees no pressure and the write is refused. |
 | [§10.3](#10.3%20Repack%20is%20triggered%20here) scoped repack | Put share A at its limit with 10 GiB unreclaimed spread over segments 90 % live with share B's data, and other segments emptier. Assert the refusal's repack, scoped to A, frees A's space and A's write succeeds. A journal-wide repack picks the emptier segments and A stays refused. |
 | [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here) refusal loop | Fill to capacity with offloaded content spread over every segment. Assert a write succeeds after the engine evicts and repacks. Repeat with dirty content and the remote available; assert the engine offloads, evicts, repacks and accepts. An engine that evicts without repacking frees nothing. |
+| [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here) one pass per share | Hold a share's pass before its sync begins and refuse two writes to different files of the share at its limit: assert one sync and one repack serve both. Cancel the first caller's context: assert the pass runs on and the second refusal decides from it. Hold the sync and advance the test clock: assert each refusal answers `ErrDelay` (`DelayCapacity`) once a tenth of the time left to its deadline has passed, and one with no deadline at 3 s. Let the sync leave the share no unreclaimed bytes, active segments included: assert no repack runs. With a pass's sync begun, overwrite part of a synced file and refuse a write: assert the refusal waits for the next pass, which syncs the overwrite, and is never answered `ErrNoSpace` from the first. An engine that syncs per refusal, or runs the pass under the caller's context, fails the first two. |
 | [§10.3](#10.3%20Repack%20is%20triggered%20here) repack reserve | Fill one share to its limit with dirty bytes and another share's segments with released bytes. Assert repack of those segments proceeds and frees space for a third share's writes. A repack that reserves against its share's limit is refused. |
 | [§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) pacing law | Hold *M* half-way between *S* and *L* at a measured drain rate *r*; write *n* bytes. Assert the delay is *n* / 2*r* within 10 %, and zero below *S*. |
 | [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) group commit | Run 64 writers with `fsync` while `chmod` hits random files of the same journal. Assert no `fsync` waits on a conflict of another file beyond the split bound. Make one file's File record undecodable: assert the other files' overwrite flushes succeed, that file alone answers `ErrDelay`, and a health condition names it. |
