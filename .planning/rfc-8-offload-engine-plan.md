@@ -294,7 +294,7 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
    Here: the real journal on a real directory with its crash seam, for durability, recovery and the
    offloaded-bit ledger; `kvstore` for what an offload, intent or removal transaction commits and
    conflicts on; a real S3-compatible endpoint, the LocalStack with HTTPS in `integration` that the RFC
-   4 plan's epic 3 brings, for remote semantics, a test that needs it waiting on it and never counting
+   4 plan's epic 3 brings (a test reads `LOCALSTACK_HTTPS_ENDPOINT`), for remote semantics, a test that needs it waiting on it and never counting
    a skip as coverage; RFC 3's in-memory store only where
    RFC 3's suite holds it.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). RFC 8's markers go at the sites that
@@ -696,7 +696,9 @@ per-block reporting" go green at S3.
 - Capture: guards in file-identity order, sync and existence commit, `OffloadMany` with each file's
   `Through`, the captured namespace and chunk-ID key.
 - Carve: one `Cut` per maximal stretch, `realEnd`, `consumed`, widening to re-tile, the age's forced
-  final cut; the `carver_` series; RFC 2 §10.1's consumer checks.
+  final cut; the `carver_` series; RFC 2 §10.1's consumer checks, among them each chunk's all-zero
+  flag set from the bytes `emit` hands over and never set on a chunk with a non-zero byte, since a wrong
+  flag makes a zero ref no block stores.
 - Assemble: every chunk carried, zero refs, early close within `K` (the key budget `kvstore` computes at open, `budget.go`, which gains an accessor here), one flow and namespace per block
   (RFC 2 §5.3), as S1a agrees the inputs.
 - Intent: the stale-namespace refusal, the chain pinned, the name minted once per attempt from a
@@ -877,25 +879,37 @@ engine's read and write tests run with and without transforms (the RFC 4 plan's 
 "§11.5 full journal with the store unreachable" and the RFC 22 plan's "§16.5 remote outage on reads"
 rows pass on a composed node in `e2e`; the journal plan's system scenarios left to this part run in
 `e2e`; #4276's row is closed by the registry refusing the in-memory remote kind outside tests;
-`materialtest` passes against the RFC 4 store.
+`materialtest` passes against the RFC 4 store; the node builds the syncer before the engine and stops
+it after, as RFC 8 §2.6 orders.
 
 **Expected content:**
 - The store adapter: RFC 4's codec with RFC 5's chain over the share's store, errors mapped onto
-  RFC 3's values with the quota and size causes, the past-the-end range wrap, connections spread across
-  the store's addresses (D5); `syncertest` run against it.
+  RFC 3's values with the quota and size causes, checked by a table of each dialect's recorded error
+  replies (S3, GCS, R2, MinIO), since LocalStack emulates none of `SlowDown`, 429, `QuotaExceeded` or
+  413; the past-the-end range wrap, connections spread across the store's addresses (D5); `syncertest`
+  run against it.
 - The syncer built once and closed after the engine; remote stores registered per configuration, one
-  client per store configuration, ref-counted, with their probe keys.
+  client per store configuration, ref-counted, with their probe keys; until the RFC 4 plan's epic 8
+  derives it, each client is built with the limit `upload_workers + fetch_workers + 1` (the syncer's two
+  pools and the probe; GC's bound joins with RFC 9), never lower, and its constructor refuses a limit of
+  0 or less.
 - `Deps.Carver`, `Syncer`, `Refs`, `Watchdog` from the root; `*Engine` and the syncer's conditions added to the health evaluator; the node's stats fetch (`internal/node/stats.go`, `engine.Stats` only today) widened to the syncer's `Stats`.
 - Each component's collectors and alert rules registered in `internal/node`, with RFC 8 §11.1's
-  offload conditions and `offload_age_exceeded` (RFC 25 §7).
+  offload conditions and `offload_age_exceeded`, and RFC 3's `store_put_unhealthy` and
+  `store_get_unhealthy` (RFC 25 §7).
 - RFC 13 Appendix B's keys this part reads and the remote store's keys from `pkg/remote`, reloadable
   as that appendix says; the registry's refusal of the in-memory remote kind outside tests.
 - Each component's settings section added to the node's table (`newTable`): the syncer's, and the
-  carver's `Target`, which the RFC 2 plan's epic 3 declares and validates in `pkg/carver`; `Target`
-  waits on RFC 13 naming its key.
-- The material provider's health source registered with the evaluator; RFC 5's `materialtest` run
-  against the RFC 4 store, which holds the `keys` object.
-- The import walk's flips for `enginewire`'s edges (rule 7).
+  carver's `Target`, which the RFC 2 plan's epic 3 declares and validates in `pkg/carver`, with the
+  RFC 13 plan's Appendix B check (`TestAppendixBMatchesTheTable`) passing with each; `Target` waits on
+  RFC 13 naming its key.
+- The material provider's health source (`material_unavailable`) registered with the evaluator;
+  RFC 5's `materialtest` `keys`-object suite run in `integration` against the RFC 4 store; the
+  provider wired with the key-record view `kvstore` implements beside that store, and the namespace
+  converted from `entity.NamespaceID` to `transform.NamespaceID`, since the transforms import no other
+  component.
+- The import walk's flips for `enginewire`'s edges to the remote tier, its codec and the transforms
+  (rule 7).
 - The engine's read and write tests with and without transforms.
 - The RFC 21 and RFC 22 remote-outage rows and the journal plan's system scenarios on the composed
   node: cold reads after eviction and a restart, its reference workloads, capacity and durability
