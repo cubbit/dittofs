@@ -656,6 +656,7 @@ type Materials interface {
 	// any open chain, waits for encodes in flight that hold it, then checks
 	// the census, all under one fence, and erases every copy (§5.3). A master
 	// key or export key that a retained export names is ErrMaterialInUse.
+	// It lands with its first caller (§5.3).
 	Remove(ctx context.Context, id MaterialID) error
 }
 
@@ -685,13 +686,27 @@ func MaxDecodeLen(n int) int
 // LengthOf composes the transforms' LengthOf; false if any one is false.
 func (c *Chain) LengthOf(n int) (int, bool)
 
-// ID is the chain ID (§2.8) for namespace ns, from each transform's ID,
-// LengthKey and ns's current material.
-func (c *Chain) ID(ns NamespaceID) [32]byte
+// Pin fixes the chain and namespace ns's current material for one block, from
+// the mint of its name to its commit or abandonment (RFC 8 §6.6): the block's
+// chain ID, bounds and bodies all come from the pin, however the configuration
+// or the current material changes meanwhile (§2.8). It fails with the
+// provider's error when the current material cannot be read.
+func (c *Chain) Pin(ctx context.Context, ns NamespaceID) (*Attempt, error)
+
+// Attempt is one pinned chain. The engine releases it when the block commits
+// or is abandoned.
+type Attempt struct{ /* ... */ }
+
+// ID is the chain ID (§2.8), from each transform's ID, LengthKey and the
+// pinned material.
+func (a *Attempt) ID() [32]byte
+func (a *Attempt) MaxEncodedLen(n int) int
+func (a *Attempt) LengthOf(n int) (int, bool)
 
 // Encode writes the envelope and returns the body with one Encoded per applied
 // transform, which the codec collects into the block's census (§5.3).
-func (c *Chain) Encode(ctx context.Context, ns NamespaceID, dst []byte, hash [32]byte, plain []byte) ([]byte, []Encoded, error)
+func (a *Attempt) Encode(ctx context.Context, dst []byte, hash [32]byte, plain []byte) ([]byte, []Encoded, error)
+func (a *Attempt) Release()
 
 // Decode undoes the envelope's transforms. census is the block record's
 // (§5.3): a body naming material outside it is ErrMalformed.
@@ -883,6 +898,13 @@ and material.
   key that wraps it can still unwrap it. Only destroying that master key makes
   those copies useless, and [Appendix B.2](#B.2%20Keys) refuses that while a retained export
   names it.
+
+**Removal lands with its first caller.** `Remove`, its fence and its count of
+encodes in flight are built with the first act that destroys material: GC's
+retirement relocation ([RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy))
+or an operator's destroy ([RFC 23](rfc-23-control-plane.md)), whichever comes
+first. Until then no material is destroyed by this installation, and a pin
+([§3.1](#3.1%20Interfaces)) only fixes a block's chain.
 
 **A drained namespace's keys go last, all or none.** When a namespace no share
 names is drained ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), its keys are removed by this same rule once its
@@ -1590,7 +1612,8 @@ writes the whole object again at the next sequence first; and after its own
 `keys` put, before it puts any version sealed under a key that put added, it
 reads back once more and requires its own sequence. Every `Recheck` pass of the
 namespace's store, and of a mutable location's store, reads its object back
-the same way and re-puts it under the lock when it lags
+the same way and re-puts it under the lock when it lags; this read-back lands
+with `Recheck`'s first caller, GC ([RFC 9](rfc-9-gc.md))
 ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). A late landing is then repaired within one recheck period; at an
 immutable location it is only an older version, which the ordering below
 passes over. A destroy owns its puts as a rotation does: it makes the bucket's
@@ -1734,7 +1757,9 @@ There are three rotations, and they cost different things:
   version that differs from its record is a health condition naming the
   backup. Each location's re-seal first brings its `keys` object up to date
   ([B.2](#B.2%20Keys)). It **SHOULD** rotate with the master key, and **MUST** be rotatable on
-  request when thought exposed.
+  request when thought exposed. It lands with its first caller, catalog backups
+  ([RFC 26](rfc-26-catalog-backups.md)): until then a namespace has its first export
+  key only, and every `keys` object already names it, so nothing migrates.
 
 **An export key is retired per location.** At the rotation the old key becomes
 `retiring`, and its key record holds its **pending set**: every location
