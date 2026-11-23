@@ -35,12 +35,13 @@ func (s *Service) CreateAPIToken(tx entity.ControlPlaneTx, u entity.User, expire
 }
 
 // apiToken resolves raw as an API token: refused when it is no token
-// newRefresh could have made, when no token's hash is its, and when it has
-// expired, by the node's clock as a session's expiry is (see session).
+// newRefresh could have made, counted as any malformed token is, and when
+// no token's hash is its or it has expired, by the node's clock as a
+// session's expiry is (see session).
 func (s *Service) apiToken(ctx context.Context, raw string) (credential, error) {
 	hash, ok := refreshHash(raw)
 	if !ok {
-		return credential{}, s.Refused("api_token")
+		return credential{}, s.Refused("token")
 	}
 	t, found, err := s.d.Store.APITokenByHash(ctx, hash)
 	switch {
