@@ -534,6 +534,9 @@ func TestSyncReturnsNoMarkForRecordsInSealedOrRetiredSegments(t *testing.T) {
 	if len(answered.marks) != 0 {
 		t.Errorf("Sync returned marks %+v, want none: the retired record's segment answers sealed (gone from the registry), the newer record's is sealed, so no named record can be proved", answered.marks)
 	}
+	if got := r.d.Marks(); len(got) != 0 {
+		t.Errorf("Marks() = %+v after a Sync that returned no mark, want the figure untouched", got)
+	}
 }
 
 // TestSyncReturnsNoMarkForARecordCorruptDropsMidWait covers: a record Corrupt
