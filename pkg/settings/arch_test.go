@@ -38,6 +38,7 @@ var frozenExports = []string{
 	"func SecretRef(field string, kind entity.SecretKind) Option",
 	"func FormatVersion(field string) Option",
 	"func OverrideOnly(fields ...string) Option",
+	"func SelfKey() Option",
 	"type Table []Section",
 	"func (Table).Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, " +
 		"holds HoldsContent) error",

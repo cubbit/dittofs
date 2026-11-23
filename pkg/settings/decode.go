@@ -106,9 +106,10 @@ type fault struct {
 }
 
 // decode overlays one scope level's rows on base, a deep copy of it, into
-// T: each row's key is sec's prefix and a declared json name, matched
-// exactly, and its value is read strictly by the field's Go type. The first
-// refused row ends the decode.
+// T: each row's key is sec's prefix and a declared json name, or the prefix
+// alone when SelfKey declares the section, matched exactly, and its value
+// is read strictly by the field's Go type. The first refused row ends the
+// decode.
 func decode[T any](
 	sec *Section,
 	base T,
@@ -125,6 +126,10 @@ func decode[T any](
 
 	for _, f := range fields {
 		key := sec.prefix + "." + f.name
+		if sec.selfKey {
+			key = sec.prefix
+		}
+
 		keys = append(keys, key)
 		byKey[key] = f.index
 	}

@@ -93,12 +93,17 @@ type Section struct {
 	// series are the refusal counters WithMetrics gave this section's table:
 	// nil on a table no registry was given, whose refusals count nothing.
 	series *refusalSeries
+	// selfKey marks a section whose one field's key is the prefix itself,
+	// declared with the SelfKey option.
+	selfKey bool
 }
 
 // field is one key of a section: its binding class, whether it names how to
-// reach a remote store's content, and the field's path in the section's type.
+// reach a remote store's content, its json name in the section's type, and
+// the field's path in the section's type.
 type field struct {
 	key   string
+	name  string
 	class Class
 	store bool
 	index []int
@@ -125,6 +130,7 @@ const (
 	optSecretRef
 	optFormatVersion
 	optKeyRole
+	optSelfKey
 )
 
 // classes are the class tag's spellings, RFC 13 §5's words as written.
@@ -145,7 +151,9 @@ var classes = map[string]Class{
 // field T does not have, on OverrideOnly outside an Override scope, on a write
 // role other than operator and admin, on a KeyRole that does not rank above
 // the section's final write role, on a CheckTx of another type than T, on
-// the zero Scope, and on an empty prefix or one ending in a dot. An option's
+// the zero Scope, and on an empty prefix or one ending in a dot, and, with
+// SelfKey, on a second SelfKey option, a per-thing scope or setting fields
+// that do not number one. An option's
 // field is a Go field name, resolved as Go's selector resolves it, the
 // shallowest field of that name, so a typo fails the table's first test
 // instead of leaving a key unchecked.
@@ -162,6 +170,12 @@ var classes = map[string]Class{
 // on a FormatVersion name that is no setting field and on two FormatVersion
 // options in one section: either would leave its gate silent, and a
 // declaration error must fail the table's first test.
+//
+// SelfKey declares the section's own prefix as its one field's key, with no
+// field name after it, as RFC 13's Appendix B writes connection_limit: the
+// section's setting fields must number one, since a second would sit on the
+// same key, and its scope cannot be per thing, whose keys carry the name of
+// the thing between the prefix and the field.
 //
 // T's Validate may print the value it refuses, as RFC 13 §6's "got 70000"
 // does, but never the value of a field declared with SecretRef, which may
@@ -199,6 +213,27 @@ func Of[T interface{ Validate() error }](
 		refuse("no scope: declare it with At, PerThing or Override")
 	}
 
+	// SelfKey is read here, before the walk it changes. A per-thing section
+	// can never hold one: its keys carry the name of the thing between the
+	// prefix and the field.
+	selfKey := false
+
+	for _, o := range opts {
+		if o.kind != optSelfKey {
+			continue
+		}
+
+		if selfKey {
+			refuse("SelfKey given twice")
+		}
+
+		if scope.form == formPerThing {
+			refuse("SelfKey with a per-thing scope")
+		}
+
+		selfKey = true
+	}
+
 	typ := reflect.TypeFor[T]()
 	if typ.Kind() != reflect.Struct {
 		refuse("%v is not a struct", typ)
@@ -209,6 +244,7 @@ func Of[T interface{ Validate() error }](
 		typ:       typ,
 		scope:     scope,
 		def:       clone(def),
+		selfKey:   selfKey,
 		writeRole: entity.RoleOperator,
 		decodeAny: func(
 			sec *Section,
@@ -267,6 +303,10 @@ func Of[T interface{ Validate() error }](
 			}
 
 			key := prefix + "." + name
+			if sec.selfKey {
+				key = prefix
+			}
+
 			if first, dup := byKey[key]; dup {
 				refuse("fields %s and %s share the key %s", first, sf.Name, key)
 			}
@@ -275,6 +315,7 @@ func Of[T interface{ Validate() error }](
 			byPath[fmt.Sprint(at)] = key
 			sec.fields = append(sec.fields, field{
 				key:   key,
+				name:  name,
 				class: class,
 				store: locatedTag,
 				index: at,
@@ -282,6 +323,12 @@ func Of[T interface{ Validate() error }](
 		}
 	}
 	walk(typ, nil)
+
+	// A SelfKey section is one field: a second one reaches the walk's
+	// shared-key panic, and a section with none names no key at all.
+	if selfKey && len(sec.fields) != 1 {
+		refuse("SelfKey names one field, %d declared", len(sec.fields))
+	}
 
 	keyOf := func(option, goName string) (string, reflect.Type) {
 		sf, found := typ.FieldByName(goName)
@@ -454,6 +501,22 @@ func FormatVersion(field string) Option {
 		kind:   optFormatVersion,
 		fields: []string{field},
 	}
+}
+
+// SelfKey declares the section's own prefix as its one field's key, with no
+// field name after it, as RFC 13's Appendix B writes connection_limit. Of
+// panics on a section whose setting fields do not number one, since a second
+// would sit on the same key, and on SelfKey with a per-thing scope, whose
+// keys carry
+// the name of the thing between the prefix and the field.
+//
+// decision: built for the one bare key a node declares today,
+// connection_limit; the other keys RFC 13's Appendix B writes without a
+// prefix do not fit it, atime being per share, upload_workers sharing a row
+// with fetch_workers, and the rest having no section yet. Withdraw the
+// option once Of can declare a bare key some cheaper way.
+func SelfKey() Option {
+	return Option{kind: optSelfKey}
 }
 
 // rank orders the write roles by an explicit table, never by the role's
