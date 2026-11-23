@@ -2972,4 +2972,31 @@ func TestPoolHoldOnFullDevice(t *testing.T) {
 			t.Fatalf("Hold over an EIO pool = %v, want the spare limit's NoSpaceError", err)
 		}
 	})
+
+	// The device's answer comes only from the shortage branch: a ready spare
+	// is still served on a full device, and only a hold the pool falls short
+	// for answers ENOSPC.
+	t.Run("a ready spare serves despite the state", func(t *testing.T) {
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+		p.Start()
+		t.Cleanup(p.Stop)
+		awaitCounters(t, "a content spare made", p, func(c segment.PoolCounters) bool { return c.Spares == 1 })
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		held, err := p.Hold(1)
+		if err != nil {
+			t.Fatalf("a hold over the ready spare: %v", err)
+		}
+		// The hold rode above the target, so the refill tried to make it up
+		// and found the device full.
+		awaitDeviceFull(t, true, p)
+		if _, err := p.Hold(1); !errors.Is(err, syscall.ENOSPC) {
+			t.Fatalf("a hold over the spare the other hold keeps: %v, want the device's ENOSPC", err)
+		}
+		held.Close()
+		if _, err := p.Hold(1); err != nil {
+			t.Fatalf("a hold over a ready spare on a full device: %v, want it served", err)
+		}
+	})
 }
