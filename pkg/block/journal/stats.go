@@ -37,12 +37,12 @@ func (j *Journal) Stats() Stats {
 	s.Counters.TornTails += uint64(r.TornTails)
 	s.Counters.ScanResyncs += uint64(r.ScanResyncs)
 	s.Counters.SyncReappendedBytes += uint64(r.ReappendedBytes)
-	// The recovered marks, copied per call as every map of the answer is:
-	// one entry per stream, and never a walk of the placements each one
-	// names.
-	if n := len(j.opened.marks); n > 0 {
-		s.SyncMarks = make(map[uint32]SyncMark, n)
-		for _, m := range j.opened.marks {
+	// The streams' marks, copied per call as every map of the answer is: one
+	// entry per stream, read from the figure the durability layer keeps, and
+	// never a walk of the placements each one names.
+	if marks := j.core.Durability().Marks(); len(marks) > 0 {
+		s.SyncMarks = make(map[uint32]SyncMark, len(marks))
+		for _, m := range marks {
 			s.SyncMarks[m.Stream] = m
 		}
 	}
@@ -200,20 +200,13 @@ type Stats struct {
 	// verify. Kind: gauge.
 	DamagedSegments int
 
-	// SyncMarks holds, per append stream, the mark of what the journal's
-	// open recovered of it: its synced-through offset and the end and
-	// sequence number of the stream's last verifying record, a copy the
-	// open re-appended counted at where that copy verifies now. Kind: value.
-	//
-	// decision: the entry is the open's settle, held as it is until the
-	// journal closes. RFC 1's field names the SyncMark of the stream's last
-	// completed sync, which the group commit reads off this figure between
-	// the open and the stream's next sync — and past that first sync the
-	// running journal does not raise it, for the marks its own Sync returns
-	// belong to the caller that asked for them and nothing maintains a
-	// per-stream figure to fold them into. Withdrawn when the durability
-	// layer keeps the last mark of every stream's completed sync, which the
-	// open seeds with what it recovered.
+	// SyncMarks holds, per append stream, the mark of its last completed
+	// sync: its synced-through offset, and the end and sequence number of the
+	// last record that sync covered for a caller that named it. Until the
+	// stream's next sync after an open it is what that open recovered of it,
+	// a copy the open re-appended counted at where that copy verifies now. It
+	// only rises: a failed sync raises nothing, and after MarksRecorded(m) the
+	// stream's entry is never older than m. Kind: value.
 	SyncMarks map[uint32]SyncMark
 
 	// LastSyncError is the most recent sync failure; nil when no sync has

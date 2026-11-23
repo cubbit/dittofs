@@ -71,9 +71,8 @@ type openedFigures struct {
 
 	// marks answers, one per stream the run recovered records of, the mark
 	// of what it recovered: filled once, at the emptying that settles the
-	// placements the open leaves, and served back by Stats as the figure it
-	// is. Nothing raises it past the open — the running journal's own syncs
-	// answer their marks to the caller that asked for them.
+	// placements the open leaves, and handed to the durability layer as the
+	// seed of the figure each stream's syncs then raise.
 	marks []SyncMark
 }
 
@@ -87,6 +86,7 @@ func newJournal(c *datapath.Core) *Journal {
 func newRecoveredJournal(c *datapath.Core, opened openedFigures) *Journal {
 	j := newJournal(c)
 	j.opened = opened
+	c.Durability().SeedMarks(opened.marks)
 	return j
 }
 
