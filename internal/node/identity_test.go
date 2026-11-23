@@ -3,7 +3,9 @@ package node_test
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,14 +16,17 @@ import (
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
 	vfs "github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 	"github.com/google/uuid"
 )
 
@@ -311,4 +316,92 @@ func TestADisableAppliesAtOnceOnTheWritingNode(t *testing.T) {
 	if _, err := h.Node().Service().StatFS(t.Context(), call, root); !errors.Is(err, vfserr.ErrAccess) {
 		t.Errorf("bob's call once his disable answered, the clock never moved: got %v, want ErrAccess", err)
 	}
+}
+
+// A user the API created and gave a password signs in by NTLMv2 through the
+// filesystem and opens the root of a share granting her read-write: alice is
+// created with a uid through POST /users, her password set by an admin's
+// :set-password, and an NTLMv2 response computed from that password binds
+// her principal, whose open of the share's root its grant admits.
+func TestAUserTheAPICreatedSignsInByNTLMAndOpens(t *testing.T) {
+	s := newAuthNode(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	alice, _ := s.createUser(t, admin, `{"spec":{"name":"alice","uid":5001}}`, "k-alice")
+	if r := s.setPassword(t, admin, alice, "alice's password"); r.status != http.StatusOK {
+		t.Fatalf("alice's :set-password: answered %d %s, want 200", r.status, r.body)
+	}
+	sh := addShare(t, s.h)
+	if _, err := s.h.Store().ControlPlane().SetGrant(t.Context(), entity.ShareGrant{Share: sh.ID, Principal: alice, Access: entity.AccessReadWrite}, 0); err != nil {
+		t.Fatalf("grant alice the share: %v", err)
+	}
+	caughtUp(t, s.h)
+
+	res, err := signInNTLM(t, s.h, "alice", "alice's password")
+	if err != nil || res.Identity.Evidence.Principal != alice {
+		t.Fatalf("alice's NTLM sign-in with the password :set-password set: bound %v, %v; want %v, nil", res.Identity.Evidence.Principal, err, alice)
+	}
+	call := vfs.Call{Identity: res.Identity, Protocol: entity.ProtocolSMB}
+	info := vfs.ClientInfo{Protocol: entity.ProtocolSMB, Name: []byte("alice-pc"), Boot: [8]byte{1}, Recovery: entity.RecoverReconnect}
+	if call.Client, _, err = s.h.Node().Service().Connect(t.Context(), call, info, &vfstest.Callbacks{}); err != nil {
+		t.Fatalf("connect alice's client: %v", err)
+	}
+	// The share's root, 0755 and not hers, admits her to read it only, so the
+	// open asks to read; her grant is what admits her to the share at all.
+	if _, err := s.h.Node().Service().Open(t.Context(), call, vfs.OpenRequest{
+		H: entity.NewHandle(sh.ID, sh.Root), Disposition: vfs.OpenExisting, Access: entity.ReadData,
+	}); err != nil {
+		t.Errorf("alice's open of the root of the share granting her read-write: %v, want admitted", err)
+	}
+}
+
+// The API refuses a password to a directory user and stores nothing: dave,
+// minted from the in-memory directory by a proven caller's Find, is refused
+// :set-password 400 invalid, and the store holds the same secret rows and
+// the same record of dave as before it.
+func TestTheAPIRefusesADirectoryUsersPassword(t *testing.T) {
+	d := identitytest.NewDirectory("DC=corp,DC=example")
+	d.AddUser(t, "dave", nil)
+	var raw kv.KV
+	s := newAuthNode(t, nodetest.InMemory(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		raw = cfg.KV
+		return node.NewWithDirectory(d.Dial, nil)(cfg)
+	}))
+	// Through the store: the composed node hands the API no settings table,
+	// so the settings route refuses the directory record.
+	directoryRecord(t, s.h, sealer(t, s.h), d, "KORP")
+	caughtUp(t, s.h)
+	proven := vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofSecret}}
+	dave, err := s.h.Node().Service().Find(t.Context(), proven, vfs.Spelling{Scheme: vfs.SchemeQualified, Text: `KORP\dave`})
+	if err != nil || dave.IsZero() {
+		t.Fatalf(`Find(KORP\dave) once the directory record applied: got %v, %v; want a minted principal`, dave, err)
+	}
+	before, sealed := s.stored(t, dave), secretRows(t, raw)
+
+	admin := s.tokens(t, "admin", adminPassword).Access
+	wantStatus(t, "a minted directory user's :set-password", s.setPassword(t, admin, dave, "a password"), http.StatusBadRequest, "invalid")
+	if after := s.stored(t, dave); !reflect.DeepEqual(after, before) {
+		t.Errorf("dave's record after the refused :set-password: %+v, want it unchanged, %+v", after, before)
+	}
+	if after := secretRows(t, raw); !maps.Equal(after, sealed) {
+		t.Errorf("secret rows after the refused :set-password: %d, want the %d before it, unchanged", len(after), len(sealed))
+	}
+}
+
+// secretRows is every secret row the KV holds, key to value.
+func secretRows(t *testing.T, raw kv.KV) map[string]string {
+	t.Helper()
+	rows := map[string]string{}
+	err := raw.View(t.Context(), func(r kv.Reader) error {
+		for kvp, err := range r.Scan([]byte{keys.KindSEC}, nil) {
+			if err != nil {
+				return err
+			}
+			rows[string(kvp.Key)] = string(kvp.Value)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan the secret rows: %v", err)
+	}
+	return rows
 }
