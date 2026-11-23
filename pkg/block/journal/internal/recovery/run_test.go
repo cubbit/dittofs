@@ -690,3 +690,20 @@ func TestTakenSegment_JudgesHeaderSlots(t *testing.T) {
 		})
 	}
 }
+
+// TestTakenSegment_FailsClosedOverAReadItCannotFinish pins the row's other
+// half: a slot the bounded read cannot finish answers taken, however
+// innocent its bytes might be, for unread is not proven empty and a caller
+// that sees no taken segment would record the identity and open without an
+// operator (RFC 28 section 3.4).
+func TestTakenSegment_FailsClosedOverAReadItCannotFinish(t *testing.T) {
+	r := newRig(t)
+	// An all-zero slot — the finished spare's own shape — over a read that
+	// fails with EIO every time, past the bound.
+	r.write(format.SegmentName(2), make([]byte, format.SegmentHeaderSize))
+	r.failReads(format.SegmentName(2), 0)
+
+	if got := TakenSegment(context.Background(), r.runDeps(), []string{format.SegmentName(2)}); !got {
+		t.Errorf("TakenSegment over a slot the bound could not read = %v, want true: unread is not proven empty", got)
+	}
+}

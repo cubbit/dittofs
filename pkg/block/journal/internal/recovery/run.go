@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"math"
 	"runtime"
@@ -540,9 +541,12 @@ func agreeingIdentity(ctx context.Context, deps Deps, rd *reader) core.JournalID
 // <id>.seg file, its name no different from a taken segment's, and its
 // header slot is all zero. Each slot is read through the open's retry
 // bound like every other read, and only the bytes the read returned are
-// judged: a short, empty or unreadable file, like a garbage or zero slot,
-// is nobody's take. The decode is against the zero identity, so any header
-// that verifies counts, whichever journal it names.
+// judged: a short, empty, garbage or zero slot is nobody's take. A read
+// the bound could not finish answers taken, for unread is not proven
+// empty, and a caller that sees no taken segment gets to record the
+// identity and open without an operator (RFC 28 section 3.4). The decode
+// is against the zero identity, so any header that verifies counts,
+// whichever journal it names.
 func TakenSegment(ctx context.Context, deps Deps, names []string) bool {
 	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
 	for _, name := range names {
@@ -554,8 +558,11 @@ func TakenSegment(ctx context.Context, deps Deps, names []string) bool {
 		}
 		b := make([]byte, format.SegmentHeaderSize)
 		n, rerr := rd.ReadAt(name, b, 0)
+		if errors.Is(rerr, fs.ErrNotExist) {
+			continue // no file at the name: nothing to read, nobody's take
+		}
 		if rerr != nil && !errors.Is(rerr, io.EOF) {
-			continue
+			return true // unread is not proven empty: count the slot as taken
 		}
 		b = b[:n]
 		if !anyHeaderByte(b) {

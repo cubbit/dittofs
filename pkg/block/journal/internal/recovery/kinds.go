@@ -700,9 +700,9 @@ func (ks *kindState) verifyRemainders(rd *reader, identity core.JournalID, scs [
 // ponytail: the read walks each newest segment's sync-proven records
 // linearly, one body per record, so an open pays about one extra read of
 // that segment's proven prefix per stream — bounded by the newest segment
-// per stream, never by the WAL's history. Upgrade to a numeric-offset index
-// when an open span over a large newest segment shows the body pass in a
-// profile.
+// per stream, never by the WAL's history. The cost is the extra body reads,
+// so the upgrade cuts those: verify each record lazily, on its first read
+// past the open, when a profile shows the open's body pass in one.
 func (ks *kindState) confineRotten(rd *reader, identity core.JournalID, scans []segmentScan) error {
 	for i := range scans {
 		sc := &scans[i]
