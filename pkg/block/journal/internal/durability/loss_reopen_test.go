@@ -534,7 +534,7 @@ func TestServedEventsStayServedPastTheRingWrap(t *testing.T) {
 // TestAGapRestartsTheServedWindow pins the restart half of the served window,
 // the unsafe direction the join alone would hide: one read serves event 1,
 // then the ring wraps unread past events 2..5, and a second read arrives over
-// the gap and restarts the window. 2..5 must come back, unheld by no read: a
+// the gap and restarts the window. 2..5 must come back, reached by no read: a
 // window that joined across the gap would count them served, and a reopen
 // would hide losses nobody was told about. 1 does too: one interval cannot
 // hold both reads, so a gap re-reports, never hides — the duplicate the
