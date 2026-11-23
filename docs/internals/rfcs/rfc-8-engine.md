@@ -1863,8 +1863,12 @@ older content served as newer.
   open whose `Stats.SyncMarks` it read, and commits only if `og`, read tracked,
   still equals it, so it never overwrites the marks of a later open. The key
   is the open's alone: lease renewals do not touch it.
-  A stored mark that does not decode is logged as a codec error, left out of what
-  `SyncMarks` returns with no error, handed to `Open` as absent, and overwritten by the next group commit that carries its stream: the marks only find a loss, and correctness rests on the `reconcile`
+  A stored mark that does not decode is logged with its journal and stream, left
+  out of what `SyncMarks` returns with no error, and handed to `Open` as absent.
+  One whose value does not decode is overwritten by the next group commit that
+  carries its stream, if any; one whose key does not decode is deleted by
+  `SyncMarks` in the transaction that reads it, since no marks write would
+  replace it: the marks only find a loss, and correctness rests on the `reconcile`
   record ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). A marks error never splits a batch or blames a file: the
   engine retries the batch's existence at once without the marks, and only then
   handles the marks. On `ErrSyncMarks` the marks are retried alone, backed off, and
