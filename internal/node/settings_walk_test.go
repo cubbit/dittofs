@@ -1433,6 +1433,10 @@ func TestRestartChangeIsPendingNotApplied(t *testing.T) {
 			hasRef(tr.s.RestartPending, want)
 	})
 
+	if got := series(t, h, "dittofs_node_restart_pending", ""); got != 1 {
+		t.Errorf("restart pending series with boots.halt pending: got %v, want 1", got)
+	}
+
 	mu.Lock()
 	got := calls
 	mu.Unlock()
@@ -1460,6 +1464,10 @@ func TestRestartChangeIsPendingNotApplied(t *testing.T) {
 	turnAt(t, h, ch, "the status holding no restart-pending record", func(tr statusTurn) bool {
 		return len(tr.s.RestartPending) == 0
 	})
+
+	if got := series(t, h, "dittofs_node_restart_pending", ""); got != 0 {
+		t.Errorf("restart pending series once boots.halt is back: got %v, want 0", got)
+	}
 }
 
 // A next-write change is published and applies nothing: the writer that
@@ -1523,7 +1531,13 @@ func TestNextWriteChangeReadByTheNextWrite(t *testing.T) {
 // A live section the node holds no way to is refused on change and never
 // reported applied: no component exists for it, so no report claims one ran
 // the change. An api change in the same pass, read at use, applies.
-func TestLiveSectionWithNoPathIsRefused(t *testing.T) {
+func TestLiveSectionWithNoPathIsRefused(t *testing.T) { noPathRefused(t, false) }
+
+// An entry holding neither an apply nor a read at use is no way either: the
+// section is refused the same, never read as read at use.
+func TestEmptyReachIsRefused(t *testing.T) { noPathRefused(t, true) }
+
+func noPathRefused(t *testing.T, empty bool) {
 	h, _ := servedFaulted(t)
 	declareSections(t, h)
 	ch := watchStatus(h)
@@ -1531,6 +1545,7 @@ func TestLiveSectionWithNoPathIsRefused(t *testing.T) {
 	h.Node().DeclareSections(node.Declared{
 		Prefix:  "orphan",
 		Section: settings.Of("orphan", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
+		Empty:   empty,
 	})
 	started(t, h)
 	caughtUp(t, h)

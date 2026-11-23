@@ -486,7 +486,7 @@ func (n *Node) routeSettings(
 
 	for _, prefix := range slices.Sorted(maps.Keys(run)) {
 		path, ok := r.reaches[prefix]
-		if !ok {
+		if !ok || (path.apply == nil && !path.atUse) {
 			cur = cur.Keep(prefix, nil).Keep(prefix, prev)
 			held[prefix] = true
 			out = append(out, w.holdRefusals(prefix, gen, false, errNoWay, changes)...)
@@ -494,7 +494,7 @@ func (n *Node) routeSettings(
 			continue
 		}
 
-		if path.atUse || path.apply == nil {
+		if path.atUse {
 			continue
 		}
 

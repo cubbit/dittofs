@@ -175,12 +175,15 @@ func (n *Node) Applied(ctx context.Context) error { return n.applied(ctx) }
 // snapshot the walk is about to publish and refusing the section whole on
 // its error. AtUse marks a section read where its component uses it, so no
 // apply runs for it. A section with neither is one the node holds no way
-// to: its live keys' changes refuse. Call DeclareSections before Start.
+// to: its live keys' changes refuse. Empty records that section's entry
+// anyway, holding neither, the way a component that declares its reach but
+// sets no way would. Call DeclareSections before Start.
 type Declared struct {
 	Prefix  string
 	Section setting.Section
 	Apply   func(*setting.Snapshot) error
 	AtUse   bool
+	Empty   bool
 }
 
 // DeclareSections declares the settings sections of the components a test
@@ -199,6 +202,12 @@ func (n *Node) DeclareSections(secs ...Declared) {
 
 		if s.AtUse {
 			n.rec.reaches[s.Prefix] = reach{atUse: true}
+
+			continue
+		}
+
+		if s.Empty {
+			n.rec.reaches[s.Prefix] = reach{}
 		}
 	}
 }

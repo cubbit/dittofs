@@ -282,5 +282,6 @@ func (s nodeSeries) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(reconcileErrors, prometheus.CounterValue, float64(s.n.rec.errors[k].Load()), kind)
 		ch <- prometheus.MustNewConstMetric(generationLag, prometheus.GaugeValue, lag[k].Seconds(), kind)
 	}
-	ch <- prometheus.MustNewConstMetric(restartPending, prometheus.GaugeValue, 0)
+	_, _, pending := s.n.rec.report()
+	ch <- prometheus.MustNewConstMetric(restartPending, prometheus.GaugeValue, float64(len(pending)))
 }
