@@ -193,7 +193,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R19 | A directory principal's enabled state is read through the directory cache on every proof: a Kerberos sign-in of a directory account the directory disables, or answers "no such entry" for, fails `ErrLogonFailure` with logon outcome `disabled`, and fails `ErrUnavailable` once the cache can answer neither fresh nor within the grace | MUST | §3.4, §3.7, §5.3 | T8.5 |
 | R20 | A PAC keeps no disabled directory account in: disabled in the directory past the TTL, refused; the directory down past the TTL and the grace, refused; the entry deleted, refused with outcome `disabled` | test row | §10 "disabled directory account" | T8.5 at sign-in; E6's T6.11 at resolution |
 | R21 | One pass-through sign-in's identity work, its directory queries, mints, wait for the secure channel and call to the domain controller, stops at 20 seconds with `ErrUnavailable`; an NTLM session's directory groups follow the directory past the TTL with no generation change | bound | §5.1; §10 "directory deadline" | T8.7 for the pass-through's share of the bound; E6's T6.11 for the groups and for a resolution's bound |
-| R22 | A sign-in whose mint would take a row another principal holds fails, binds no principal and leaves the holder's record unchanged; two concurrent mints of one entry bind one principal | test row | §4.1; §10 "mint conflict" | T8.5 |
+| R22 | A sign-in whose entry carries a uid or gid another principal holds is minted with an allocated one, counted, binds no principal of the holder's and leaves the holder's record unchanged; two concurrent mints of one entry bind one principal | test row | §4.1; §10 "mint conflict" | T8.5 |
 | R23 | A store error while mapping a PAC's deny-only SID fails the call; it is never resolved without the deny | test row | §9.1 ID8; §10 "deny-only lookup error" | held by E3's T3.4 (a `sid` fault while mapping a deny-only SID refuses the call) and E5's T5.7 |
 | R24 | A directory principal holds no local password: the API refuses to set one and stores nothing, `NewHashes` refuses it `ErrInvalid` and a local NTLM sign-in naming one is refused | MUST NOT | §3.5, §5.5; §10 "no local password for a directory user" | T8.9 for the API's refusal (§3.5, §5.5); E2's T2.6 and E4's T4.2 for the row's two halves |
 | R25 | With a directory and no pass-through, an NTLM sign-in for a user only in the directory is `ErrLogonFailure` and yields no session | test row | §5.5; §10 "NTLM without a domain controller" | held by E4's T4.2: a minted directory principal refused locally (its R9), an unminted one an unknown name |
@@ -488,8 +488,9 @@ test/integration/ad-dc/
     the clock past the TTL: her next sign-in `ErrLogonFailure`, outcome `disabled` at E4's sink; the
     directory down past TTL and grace: `ErrUnavailable`; the entry deleted: `ErrLogonFailure`,
     outcome `disabled` (catches the PAC keeping a disabled account in, R19, R20);
-  - "mint conflict": alice minted, bob's entry given another SID and alice's `uidNumber`: his
-    sign-in fails, bob bound to nothing, alice's record byte-equal; two concurrent sign-ins of one
+  - "mint conflict": alice minted, bob's entry given another SID and alice's `uidNumber`: bob
+    signs in with an allocated uid, `identity_mints_remapped_total` counts it, alice's record
+    byte-equal; two concurrent sign-ins of one
     unminted entry, the first's mint commit held by a `FaultKV` delay until the second has read
     the entry: one principal (catches a lost mint bound to whoever holds the row, R22);
   - the acceptance criterion: a local principal with a `krb` link signs in through E5's test
