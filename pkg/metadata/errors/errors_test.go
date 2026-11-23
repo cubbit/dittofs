@@ -28,14 +28,11 @@ func TestErrorCodeString(t *testing.T) {
 		{ErrInvalidHandle, "InvalidHandle"},
 		{ErrStaleHandle, "StaleHandle"},
 		{ErrLocked, "Locked"},
-		{ErrLockNotFound, "LockNotFound"},
 		{ErrPrivilegeRequired, "PrivilegeRequired"},
 		{ErrNameTooLong, "NameTooLong"},
 		{ErrDeadlock, "Deadlock"},
 		{ErrGracePeriod, "GracePeriod"},
-		{ErrLockLimitExceeded, "LockLimitExceeded"},
 		{ErrLockConflict, "LockConflict"},
-		{ErrConnectionLimitReached, "ConnectionLimitReached"},
 		{ErrConflict, "Conflict"},
 		{ErrCrossShare, "CrossShare"},
 	}
@@ -96,8 +93,6 @@ func TestFactoryFunctions(t *testing.T) {
 		{"PermissionDenied", NewPermissionDeniedError("/x"), ErrPermissionDenied, "/x", "permission denied"},
 		{"IsDirectory", NewIsDirectoryError("/x"), ErrIsDirectory, "/x", "is a directory"},
 		{"NotDirectory", NewNotDirectoryError("/x"), ErrNotDirectory, "/x", "not a directory"},
-		{"InvalidHandle", NewInvalidHandleError(), ErrInvalidHandle, "", "invalid file handle"},
-		{"StaleHandle", NewStaleHandleError("myshare"), ErrStaleHandle, "", `no store configured for share "myshare"`},
 		{"NotEmpty", NewNotEmptyError("/x"), ErrNotEmpty, "/x", "directory not empty"},
 		{"AlreadyExists", NewAlreadyExistsError("/x"), ErrAlreadyExists, "/x", "already exists"},
 		{"Conflict", NewConflictError("memory UpdateAttrs", "dup"), ErrConflict, "", "memory UpdateAttrs: dup"},
@@ -106,7 +101,6 @@ func TestFactoryFunctions(t *testing.T) {
 		{"QuotaExceeded", NewQuotaExceededError("/x"), ErrQuotaExceeded, "/x", "disk quota exceeded"},
 		{"PrivilegeRequired", NewPrivilegeRequiredError("chown"), ErrPrivilegeRequired, "", "operation requires root privileges: chown"},
 		{"NameTooLong", NewNameTooLongError("/x"), ErrNameTooLong, "/x", "name too long"},
-		{"ConnectionLimit", NewConnectionLimitError("nfs", 5), ErrConnectionLimitReached, "", "connection limit reached for nfs adapter (max: 5)"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -133,36 +127,19 @@ type classifier struct {
 var classifiers = []classifier{
 	{"IsNotFoundError", IsNotFoundError},
 	{"IsAlreadyExistsError", IsAlreadyExistsError},
-	{"IsLockConflictError", IsLockConflictError},
-	{"IsDeadlockError", IsDeadlockError},
-	{"IsGracePeriodError", IsGracePeriodError},
-	{"IsLockLimitError", IsLockLimitError},
 	{"IsConflictError", IsConflictError},
-	{"IsInvalidHandleError", IsInvalidHandleError},
-	{"IsStaleHandleError", IsStaleHandleError},
 }
 
 // For each code, exactly the expected set of classifiers must return true.
-// This pins the code->predicate mapping, including the two arms that match
-// more than one code (NotFound also matches LockNotFound; LockConflict also
-// matches Locked).
+// This pins the code->predicate mapping.
 func TestClassifiers(t *testing.T) {
 	// code -> set of classifier names expected to return true
 	expect := map[ErrorCode]map[string]bool{
-		ErrNotFound:          {"IsNotFoundError": true},
-		ErrLockNotFound:      {"IsNotFoundError": true},
-		ErrAlreadyExists:     {"IsAlreadyExistsError": true},
-		ErrLocked:            {"IsLockConflictError": true},
-		ErrLockConflict:      {"IsLockConflictError": true},
-		ErrDeadlock:          {"IsDeadlockError": true},
-		ErrGracePeriod:       {"IsGracePeriodError": true},
-		ErrLockLimitExceeded: {"IsLockLimitError": true},
-		ErrConflict:          {"IsConflictError": true},
-		ErrInvalidHandle:     {"IsInvalidHandleError": true},
-		ErrStaleHandle:       {"IsStaleHandleError": true},
-		// ErrCrossShare maps to no classifier: it is a wire-code only, so
-		// its expected set is all-false. Extending the walk to it would
-		// force an empty row here — not worth forcing.
+		ErrNotFound:      {"IsNotFoundError": true},
+		ErrAlreadyExists: {"IsAlreadyExistsError": true},
+		ErrConflict:      {"IsConflictError": true},
+		// Every other code maps to no classifier, so its expected set is
+		// all-false.
 		// errCodeSentinel is excluded: it is a bound, not an arm, and
 		// want[nil] would nil-map to all-false anyway.
 	}
@@ -229,8 +206,5 @@ func TestConflictOwnerIDRoundTrips(t *testing.T) {
 	}
 	if got.ConflictOwnerID != "owner-42" {
 		t.Errorf("ConflictOwnerID = %q, want %q", got.ConflictOwnerID, "owner-42")
-	}
-	if !IsLockConflictError(wrapped) {
-		t.Error("ErrLocked should classify as lock conflict")
 	}
 }

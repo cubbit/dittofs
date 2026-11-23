@@ -116,8 +116,8 @@ func TestImportRule(t *testing.T) {
 
 // TestImportRuleRefusesPreviousAndFilesystem pins the rule's edges: the
 // previous components, the filesystem's package and open state are refused,
-// while the metadata packages the engine needs, below the previous metadata
-// service, and the filesystem's errors are allowed.
+// while the metadata packages the engine needs and the filesystem's errors
+// are allowed.
 func TestImportRuleRefusesPreviousAndFilesystem(t *testing.T) {
 	for _, c := range []struct {
 		path    string
