@@ -557,11 +557,19 @@ the user's read fails `reserve` first: a sign-in answering `503`,
 **Subtask T5.8 estimate: 1.5 man-days.**
 
 - **Track:** C. **Depends on:** T5.7.
-- **Covers:** R2, R13, R17, R38, R39.
-- **Deliverables:** in `apitokens.go`: creation for a service account, the token shown once and
+- **Covers:** R2, R13, R14 (the API-token half), R15, R17, R38, R39.
+- **Deliverables:** in `apitokens.go`: creation for an account holding a role, a service account
+  or one that signs in by password (RFC 23 §12's "§5.3 revocation" row has one account hold both a
+  session and an API token), by the account itself or by an admin, the token shown once and
   stored as its hash, its expiry capped by `api.token_max_lifetime`, its `Created` from `tx.Now()`
   raised to `NotBefore`; listing an account's tokens; revocation; the per-call check reading the
-  token's record in place of a session. Consumed by E6.
+  token's record in place of a session, an access token told from an API token by its form (a JWT
+  holds dots, base64url none). The routes are `GET` and `POST /api/v1/users/{id}/api-tokens` and
+  `DELETE /api/v1/users/{id}/api-tokens/{sub}`, right `Self`, another account's tokens `404` to a
+  caller below admin; creation is keyless and answers `200`; a token is never rewritten, so its tag,
+  which a revocation's `If-Match` names, is always 1. Sign-in, refresh and the password change
+  refuse an `Idempotency-Key` `400` here too (R38), which their adapter did not before. Consumed by
+  E6.
 - **Acceptance criteria:**
   - A token asked for past the maximum lifetime is refused.
 - **Tests:** over the harness: create, call, revoke, call refused (R17); a token past its expiry on
