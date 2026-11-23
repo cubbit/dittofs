@@ -54,6 +54,14 @@ var installation = entity.SettingScope{Kind: entity.ScopeInstallation}
 // read applied. Overturned by a walk that decodes a section with its
 // refused rows dropped and Validate naming the field it refuses, or if a
 // refused setting must ever stop sign-in outright.
+//
+// decision: identity reads snap as Read built it, before the settings walk
+// publishes it (keepSettings), which puts a refused section's last value back
+// and so would hand identity no error, or no directory for a section that
+// never ran; and the walk names none of identity's two sections' rows, as the
+// refusals above report them under the generation c, so no row is reported
+// twice. Withdrawn when a component's apply no longer reads its own refused
+// section from the walk's raw snapshot.
 func (n *Node) applyIdentity(ctx context.Context, c kvstore.Counters, snap *settings.Snapshot) ([]refusal, error) {
 	node := n.cfg.Bootstrap.Node.ID
 	last := n.identity.Applied()

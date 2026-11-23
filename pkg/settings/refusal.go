@@ -63,3 +63,28 @@ func (t Table) PrefixOf(key string) string {
 
 	return sec.prefix
 }
+
+// Reads reports whether the section that claims s's key reads the row s at
+// its scope: the row a walk that reports refusals names, never one Read
+// skips, a row at a scope kind its section does not have, a field an
+// OverrideOnly option does not name, a per-thing row that names no thing, or
+// a key no section claims.
+//
+// ponytail: the index is built per call, as PrefixOf's is; see its marker.
+func (t Table) Reads(s entity.Setting) bool {
+	sec, ok := t.index().lookup(s.Key)
+	if !ok {
+		return false
+	}
+
+	if !reads(sec, s) {
+		return false
+	}
+
+	if sec.scope.form == formPerThing {
+		_, _, ok = splitThing(sec.prefix, s.Key)
+		return ok
+	}
+
+	return true
+}

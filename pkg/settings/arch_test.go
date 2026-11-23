@@ -47,6 +47,7 @@ var frozenExports = []string{
 	"func Refusals(err error) iter.Seq2[entity.SettingScope, string]",
 	"func (Table).PrefixOf(key string) string",
 	"func (Table).WithMetrics(m *metrics.Registry) Table",
+	"func (Table).Reads(s entity.Setting) bool",
 	"type Snapshot struct{}",
 	"func (*Snapshot).Keep(section string, prev *Snapshot) *Snapshot",
 	"func (*Snapshot).Stored(section string) bool",
