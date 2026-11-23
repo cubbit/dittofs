@@ -129,7 +129,7 @@ and title and not copied.
 | R9 | Names resolve to IDs with the list filters | MUST | RFC 23 §7, §4.1 | T6.3 |
 | R10 | A write reads before it writes and echoes the `ETag` it read, opaque, in `If-Match` | MUST | RFC 23 §7, §4.4 | T6.3 |
 | R11 | On `412` the CLI shows the difference and stops rather than retrying | MUST | RFC 23 §7 | T6.3 |
-| R12 | A command sends one idempotency key on every call that takes one, and none on sign-in, refresh, the password change, `:set-password` or API-token creation | MUST | RFC 23 §7, §4.5 | T6.2, T6.5 |
+| R12 | A command sends one idempotency key on every call that takes one, and none on sign-in, refresh, the password change, sign-out, `:set-password` or API-token creation | MUST | RFC 23 §7, §4.5 | T6.2, T6.5 |
 | R13 | For an operation the CLI prints its ID and, with `--wait`, follows it to its end with `?wait=` | MUST | RFC 23 §7, §4.6 | T6.3 |
 | R14 | An interrupted wait resumes with `operation wait <id>` from any machine | MUST | RFC 23 §7 | T6.3 |
 
@@ -304,7 +304,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   save by rename, and the token source over the locked file (D4, D6); contexts holding a URL or the
   local socket's path, the account and `--cacert` (R5); `login` (a password from a prompt or
   `--password-file`, or `--token-file` for an API token) and `password change`, each a credential
-  call with no idempotency key, and `logout`, which sends one (R8, R12); `login`'s
+  call with no idempotency key, and `logout`, whose sign-out the server also takes keyless,
+  since its idempotency record is keyed by account (R8, R12); `login`'s
   `-p`/`--password` flag deleted (D5): T6.1 deleted only `login`'s `--client-cert`, `--client-key`
   and `--tls-skip-verify` flags, leaving `-p` to this subtask; the file `0600` in a `0700` directory (R6).
   `internal/cli/prompt/password.go` is kept for this subtask and takes a writer, but it still runs
@@ -324,8 +325,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   refused (R5); the file's mode `0600` and its directory's `0700` read back, and on Windows the
   file's ACL granting only the user (R6); a stored `tls_skip_verify: true` refused naming the field
   (D7); a must-change account refused `password_change_required`, `password change`, then the
-  command succeeding (R8); `login` and `password change` each succeeding, which the server refuses
-  `400` had a key been sent, and `logout` succeeding with one (R12).
+  command succeeding (R8); `login`, `password change` and `logout` each succeeding, which the
+  server refuses `400` had a key been sent (R12).
 
 ### T6.3 Name resolution, read-modify-write, operations and the shared suite
 
