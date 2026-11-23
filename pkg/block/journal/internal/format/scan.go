@@ -1,6 +1,7 @@
 package format
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -534,7 +535,7 @@ func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err e
 			wEnd := sc.cur + sc.have // the bytes in hand; never past the size
 			if wEnd > p+8 {
 				held := sc.window[p+8-sc.cur : wEnd-sc.cur]
-				if i := slices.IndexFunc(held, func(c byte) bool { return c != 0 }); i >= 0 {
+				if i := firstNonZero(held); i >= 0 {
 					// A zero run that ends inside the window: land on the
 					// first slot whose own first read reaches the first byte
 					// that is not zero — a torn or a failed large write leaves
@@ -565,6 +566,26 @@ func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err e
 	}
 	return end, found, zeroRun, nil
 }
+
+// firstNonZero is the index of the first byte of b that is not zero, or -1
+// when every byte is. The zero consume runs it over each window of a
+// segment's unwritten remainder, so it compares whole blocks against zeros,
+// which the runtime does many bytes at a time, and looks at single bytes only
+// inside the first block that differs.
+func firstNonZero(b []byte) int {
+	for off := 0; off < len(b); off += len(zeroBlock) {
+		c := b[off:min(off+len(zeroBlock), len(b))]
+		if !bytes.Equal(c, zeroBlock[:len(c)]) {
+			return off + slices.IndexFunc(c, func(x byte) bool { return x != 0 })
+		}
+	}
+	return -1
+}
+
+// zeroBlock is the zeros firstNonZero compares a block against. Nothing may
+// write it: concurrent scans share it, and a non-zero byte here would make
+// every block holding that byte read as zeros.
+var zeroBlock [4096]byte
 
 // zeroSlot tells whether the bytes one slot holds — the min(8, size-p) bytes
 // it holds past p, always at least one, for every caller passes p < size —
