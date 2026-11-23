@@ -504,7 +504,7 @@ test/engine/known.yaml                  E12
   the in-memory journal, each held to its own suite, as RFC 8 §2.8 and §6.3's checks say; no
   engine-side double is written. Prior art: none found. Epics 15 and 16.
 - **D5 — the RFC 3 store adapter is built here, in `enginewire`**, as the cross-plan contract settled
-  (RFC 3's epic 10 folds into epic 21). RFC 3 §1.3 and RFC 8 §2.1 say the engine supplies it by composing RFC 4's codec and
+  (the RFC 3 plan's real-backend run folds into epic 21). RFC 3 §1.3 and RFC 8 §2.1 say the engine supplies it by composing RFC 4's codec and
   RFC 5's chain over the share's remote store, mapping their errors onto RFC 3's values; this plan
   places that composition in `enginewire` and builds it in epic 21, against S1b to S1d, with the
   past-the-end range wrap and connections spread across the store's addresses. Prior art:
