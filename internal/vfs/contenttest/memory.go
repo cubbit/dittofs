@@ -295,7 +295,11 @@ func (m *Memory) commit(ctx context.Context, s entity.ShareID, f entity.FileID, 
 		}
 		switch {
 		case o.cut != 0:
-			if err := x.Remove(ctx, s, f, 0, kvstore.RemoveOp{Version: p.Version, Kind: o.cut, Extent: o.x, Time: o.at}, pending); err != nil {
+			r := kvstore.RemoveOp{Version: p.Version, Kind: o.cut, Extent: o.x, Time: o.at}
+			if !o.mtime {
+				r.Suspend = entity.TimeModify
+			}
+			if err := x.Remove(ctx, s, f, 0, r, pending); err != nil {
 				return err
 			}
 			pending = nil
@@ -373,7 +377,7 @@ func (m *Memory) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 		return err
 	}
 	fl := m.file(f)
-	o := op{truncate: true, size: size, mtime: true}
+	o := op{truncate: true, size: size, mtime: engine.Suspended(ctx)&entity.TimeModify == 0}
 	if size < int64(len(fl.b)) {
 		fl.b, fl.data = fl.b[:size], fl.data[:size]
 		o.cut, o.x = entity.RemoveTruncate, entity.ExtentOf(size, entity.EndOfFile)
@@ -400,7 +404,7 @@ func (m *Memory) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 	from, to := min(off, int64(len(fl.b))), min(off+n, int64(len(fl.b)))
 	clear(fl.b[from:to])
 	clear(fl.data[from:to])
-	m.stage(j, fl, op{cut: entity.RemoveDeallocate, x: entity.Extent{Offset: off, Length: n}})
+	m.stage(j, fl, op{cut: entity.RemoveDeallocate, x: entity.Extent{Offset: off, Length: n}, mtime: engine.Suspended(ctx)&entity.TimeModify == 0})
 	return nil
 }
 
@@ -492,6 +496,7 @@ func (m *Memory) Copy(ctx context.Context, srcShare entity.ShareID, src entity.F
 		return 0, err
 	}
 	from, to := m.file(src), m.file(dst)
+	mtime := engine.Suspended(ctx)&entity.TimeModify == 0
 	var n int64
 	for _, x := range xs {
 		if x.SrcOff+x.Len > int64(len(from.b)) {
@@ -511,16 +516,16 @@ func (m *Memory) Copy(ctx context.Context, srcShare entity.ShareID, src entity.F
 				run++
 			}
 			if to.data[at] {
-				m.stage(j, to, op{size: run, x: entity.ExtentOf(at, run), mtime: true})
+				m.stage(j, to, op{size: run, x: entity.ExtentOf(at, run), mtime: mtime})
 				size, staged = max(size, run), true
 			}
 			at = run
 		}
 		switch {
 		case end > size:
-			m.stage(j, to, op{grow: true, size: end, mtime: true})
+			m.stage(j, to, op{grow: true, size: end, mtime: mtime})
 		case !staged: // all hole within the file: it still moves the times
-			m.stage(j, to, op{mtime: true})
+			m.stage(j, to, op{mtime: mtime})
 		}
 		n += x.Len
 	}
