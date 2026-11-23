@@ -455,8 +455,8 @@ func TestWiredGrants(t *testing.T) {
 			t.Fatalf("put the machine: %v", err)
 		}
 		r = put(m.ID, "read")
-		if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "invalid_argument" {
-			t.Errorf("PUT a machine's grant: answered %d %q, want 400 invalid_argument", r.status, p.Code)
+		if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "invalid" {
+			t.Errorf("PUT a machine's grant: answered %d %q, want 400 invalid", r.status, p.Code)
 		}
 		if _, found, err := w.h.Store().ControlPlane().ShareGrant(t.Context(), sh.ID, m); err != nil || found {
 			t.Errorf("the machine's grant after its refused PUT: found %v (%v), want none written", found, err)
@@ -1407,7 +1407,7 @@ func TestWiredErrorTable(t *testing.T) {
 			}, 409, apiv1.CodeLastAdmin},
 			{"a machine granted", func() authReply {
 				return w.send(t, http.MethodPut, grantPath(sh.ID, machine.ID), op, json.RawMessage(`{"spec":{"access":"read"}}`), "If-None-Match", "*")
-			}, 400, "invalid_argument"},
+			}, 400, "invalid"},
 			{"a call before the password changes", func() authReply { return w.send(t, http.MethodGet, "/api/v1/shares", hank, nil) }, 403, apiv1.CodePasswordChangeRequired},
 		} {
 			wantStatus(t, c.what, c.send(), c.status, c.code)

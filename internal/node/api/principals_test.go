@@ -267,7 +267,7 @@ func (s *served) groupsOf(t *testing.T, id string) []string {
 // A none grant is stored and read back as none, apart from no grant, which
 // reads 404. A user's grant deleted is gone while its group's stays, so its
 // group decides again. A grant naming a machine principal is refused 400
-// and writes nothing.
+// invalid and writes nothing.
 func TestGrants(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	share, loc := s.createShare(t, "builds", s.namespace(t))
@@ -304,8 +304,8 @@ func TestGrants(t *testing.T) {
 
 	m := s.machine(t)
 	r := s.do(t, http.MethodPut, at(m.String()), `{"spec":{"access":"read"}}`, "If-None-Match", "*")
-	if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "invalid_argument" {
-		t.Errorf("PUT a machine's grant: answered %d %+v, want the store's 400 invalid_argument", r.status, p)
+	if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "invalid" {
+		t.Errorf("PUT a machine's grant: answered %d %+v, want 400 invalid", r.status, p)
 	}
 	if _, ok := s.grantOf(t, share, m.String()); ok {
 		t.Error("the store holds the machine's refused grant")
