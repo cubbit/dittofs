@@ -424,20 +424,22 @@ func secretRows(t *testing.T, raw kv.KV) map[string]string {
 // the node wrote, its logon lines among them, and every operation record
 // stored at the end of each runner turn and at the end, read raw, is then
 // searched for alice's password, her NT hash, the session keys her sign-ins
-// returned, every machine password version set and her e-mail address, each
-// raw, in hex and in base64. The online join's administrator credential is
+// returned, every machine password version set and her e-mail address, in
+// each form encodings names. The online join's administrator credential is
 // not searched for.
 func TestNoSecretInWhatTheNodeRecords(t *testing.T) {
 	var logged syncBuffer
 	ops := &opRows{seen: map[string]bool{}}
 	// A cursor a later step overwrites was stored all the same, so the
 	// records are read at the end of every turn, not only at the end; no
-	// operation runs before the node has started and raw is set.
+	// operation runs before the node has started and raw is set. A record
+	// as the API first wrote it is not read: the turn that runs its first
+	// step writes over it before the read.
 	var raw atomic.Pointer[kvtest.FaultKV]
 	m := newMachineLogged(t, &logged, false, func(n *node.Node) {
 		n.OnRunnerTurn(func() {
 			if kv := raw.Load(); kv != nil {
-				_ = ops.read(context.Background(), kv) // the read at the end reports a failing scan
+				ops.keep(ops.read(context.Background(), kv))
 			}
 		})
 	})
@@ -469,9 +471,14 @@ func TestNoSecretInWhatTheNodeRecords(t *testing.T) {
 	m.succeeded(t, "the rotation", rotation)
 	machinePasswords()
 	caughtUp(t, m.h)
+	if err := ops.failed(); err != nil {
+		t.Fatalf("scan the operation records at a runner turn: %v", err)
+	}
 
 	s := &authNode{h: m.h}
-	s.addr, _ = m.h.Node().Addrs()
+	if s.addr, _ = m.h.Node().Addrs(); s.addr == "" {
+		t.Fatal("the node's API address once started: empty, want the address it bound")
+	}
 	alice, _ := s.createUser(t, "", `{"spec":{"name":"alice","uid":5001,"email":"`+email+`"}}`, "k-alice")
 	if r := s.setPassword(t, "", alice, alicePW); r.status != http.StatusOK {
 		t.Fatalf("alice's :set-password: answered %d %s, want 200", r.status, r.body)
@@ -567,10 +574,27 @@ func handOverOffline(t *testing.T, m *machine, password string) entity.Operation
 }
 
 // opRows is every distinct operation record read, key and value as the KV
-// holds them.
+// holds them, and the first error a read at a runner turn answered.
 type opRows struct {
 	mu   sync.Mutex
 	seen map[string]bool
+	err  error
+}
+
+// keep records err if it is the first a read at a runner turn answered.
+func (o *opRows) keep(err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.err == nil {
+		o.err = err
+	}
+}
+
+// failed is the first error a read at a runner turn answered.
+func (o *opRows) failed() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.err
 }
 
 // read adds every operation record raw now holds.
@@ -598,12 +622,14 @@ func (o *opRows) all() [][]byte {
 	return rows
 }
 
-// encodings is b raw, in hex lower and upper case, and in base64 standard
-// and URL-safe, padded and not.
+// encodings is b raw, in hex lower and upper case, in base64 standard and
+// URL-safe unpadded, which padded output contains, and in the two forms Go
+// writes a byte slice in: quoted with Go escapes, as slog's text handler
+// does, and as decimal bytes, as fmt does.
 func encodings(b []byte) map[string]string {
 	return map[string]string{
 		"raw": string(b), "hex": hex.EncodeToString(b), "HEX": strings.ToUpper(hex.EncodeToString(b)),
-		"base64": base64.StdEncoding.EncodeToString(b), "raw base64": base64.RawStdEncoding.EncodeToString(b),
-		"base64url": base64.URLEncoding.EncodeToString(b), "raw base64url": base64.RawURLEncoding.EncodeToString(b),
+		"base64": base64.RawStdEncoding.EncodeToString(b), "base64url": base64.RawURLEncoding.EncodeToString(b),
+		"quoted": strings.Trim(strconv.Quote(string(b)), `"`), "decimal": strings.Trim(fmt.Sprint(b), "[]"),
 	}
 }
