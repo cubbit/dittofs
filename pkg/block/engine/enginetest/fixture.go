@@ -128,7 +128,9 @@ type Fixture struct {
 	commitGate atomic.Pointer[gate]
 	// startGate, once set by HoldNextStart, holds the next engine start.
 	startGate atomic.Pointer[gate]
-	handles   sync.Map // journal.ShareTag → the handle the running engine opened on it
+	handles   sync.Map                          // journal.ShareTag → the handle the running engine opened on it
+	opened    atomic.Pointer[engine.Journal]    // the journal the running engine opened, nil over the fake
+	handedIn  atomic.Pointer[[]entity.SyncMark] // the marks the last Open was handed
 
 	kv      *failingKV                // the store's kv.KV, failing Updates when a test asks
 	batches atomic.Pointer[batchHold] // holds every removal batch at its span while set
@@ -832,6 +834,33 @@ func (f *Fixture) addSecond() {
 	f.SecondRoot = root
 }
 
+// OpenedWithMarks is the sync marks the last Open of the real journal was
+// handed: what the store recorded for it when the engine started.
+func (f *Fixture) OpenedWithMarks() []entity.SyncMark {
+	f.t.Helper()
+
+	m := f.handedIn.Load()
+	if m == nil {
+		f.t.Fatal("fixture: no real journal was opened")
+	}
+
+	return *m
+}
+
+// JournalSyncMarks is the sync marks of the journal the running engine opened,
+// as it serves them to the group commit, for a row that compares them with
+// what the store recorded. It fails the row over the fake journal.
+func (f *Fixture) JournalSyncMarks() []entity.SyncMark {
+	f.t.Helper()
+
+	j := f.opened.Load()
+	if j == nil {
+		f.t.Fatal("fixture: no real journal is open")
+	}
+
+	return (*j).SyncMarks()
+}
+
 // HandleOf is the handle the running engine opened on tag.
 func (f *Fixture) HandleOf(tag journal.ShareTag) engine.Handle {
 	f.t.Helper()
@@ -899,6 +928,7 @@ func (f *Fixture) start() {
 			f.fake.Reopen()
 			return f.fake, nil
 		}
+		f.handedIn.Store(&marks)
 		j, err := open(ctx, dir, floor, expect, marks)
 		if err != nil {
 			return nil, err
@@ -907,7 +937,9 @@ func (f *Fixture) start() {
 			_ = j.Close()
 			return nil, err
 		}
-		return wrapJournal(j, crashed, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
+		wj := wrapJournal(j, crashed, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) })
+		f.opened.Store(&wj)
+		return wj, nil
 	}
 	d.Existence = fencedExistence{Existence: d.Existence, crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate, commitGate: &f.commitGate}
 	d.Content = fencedContent{Content: d.Content, crashed: f.crashed}
