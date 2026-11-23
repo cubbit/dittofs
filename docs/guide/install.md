@@ -231,8 +231,10 @@ curl http://localhost:8080/health
 
 `dittofs-blocks` carries the journal, which holds the only copy of every byte that has not
 reached the block store yet — never leave it in the container's writable layer. These
-volumes only receive data if the config points at them: set `metadata.badger.path` to
-`/data/metadata` and list `/data/blocks` under `journals`. The container starts with no stores
+volumes only receive data if the config points at directories on them, never at their
+mount points: set `metadata.badger.path` to `/data/metadata/store` and list
+`/data/blocks/journal` under `journals` (the image creates that directory; `dfs init` needs
+it to exist). The container starts with no stores
 and no shares; create them with `dfsctl` (see the [CLI reference](cli.md)) or use the
 Compose stack below, which does it for you.
 

@@ -4,8 +4,7 @@
 #
 # This file alone does not start a node: `dfs init` and `dfs start` also need
 # node.id and the storage key (keys.storage), and the API serves off loopback
-# only with a certificate (api.tls). The compose stack's move to them, and to
-# `dfs init` as its own step, is its own change.
+# only with a certificate (api.tls).
 
 logging:
   # Defaults to a file under the state directory; `docker compose logs` reads stdout.
@@ -13,10 +12,13 @@ logging:
 
 metadata:
   badger:
-    # The compose file's metadata volume.
-    path: "/data/metadata"
+    # A directory on the compose file's metadata volume, never its mount point:
+    # `dfs init` creates it.
+    path: "/data/metadata/store"
 
 journals:
-  # The compose file's journal volume. The journal holds the only copy of every
-  # byte written, so it never lives in the container's writable layer.
-  - path: "/data/blocks"
+  # A directory on the compose file's journal volume, never its mount point.
+  # `dfs init` needs it to exist; the image creates it, so a named volume starts
+  # with it. The journal holds the only copy of every byte written, so it never
+  # lives in the container's writable layer.
+  - path: "/data/blocks/journal"
