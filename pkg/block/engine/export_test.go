@@ -889,6 +889,32 @@ func SettledForTest(l journal.Limit, left int64, others bool) bool {
 // journal_full clears.
 const DeviceRoomBytes = deviceRoomBytes
 
+// OnFullCheck runs f each time the group commit's loop has judged the room
+// of a refusal that raised journal_full.
+func (e *Engine) OnFullCheck(f func()) { e.fullChecked.Store(&f) }
+
+// FullJudgedForTest reports whether the group commit's loop of share s's
+// journal has judged the room of the latest refusal that raised
+// journal_full, and so waits for the clock before judging it again.
+func (e *Engine) FullJudgedForTest(s entity.ShareID) bool {
+	c := &e.table()[s].gc.cap
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.full != nil && !c.checkAt.IsZero()
+}
+
+// RoomPendingForTest reports whether the latest refusal of share s's journal
+// that raised journal_full waits for room, as one naming the device or the
+// maximum does, for the group commit's loop to judge.
+func (e *Engine) RoomPendingForTest(s entity.ShareID) bool {
+	c := &e.table()[s].gc.cap
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.full != nil
+}
+
 // RaiseFullForTest runs the raise of journal_full for a refusal of share s's
 // journal by its headroom, as a refused write does.
 func (e *Engine) RaiseFullForTest(s entity.ShareID) {

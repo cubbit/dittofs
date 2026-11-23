@@ -1492,6 +1492,46 @@ func atTheMaximum(t *testing.T) *segUnit {
 	return s
 }
 
+// roomJudge arms u's engine to report each judge of journal_full's room by
+// the group commit's loop, and waits until the loop has judged the refusal
+// of share sh, so the next judge waits for the clock.
+func roomJudge(t *testing.T, u *unit, sh engine.Share) <-chan struct{} {
+	t.Helper()
+
+	ch := make(chan struct{}, 1)
+	u.e.OnFullCheck(func() {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	})
+
+	// Polling the loop's own state: the judge at the refusal's wake runs on
+	// the loop's goroutine, and nothing else moves until the clock does.
+	for deadline := time.Now().Add(bound); !u.e.FullJudgedForTest(sh.ID); {
+		if time.Now().After(deadline) {
+			t.Fatal("the group commit's loop never judged the refusal's room")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	return ch
+}
+
+// rejudge advances u's clock to the loop's next judge of journal_full's
+// room and waits for that judge, which reads the figures as they are now.
+func rejudge(t *testing.T, u *unit, judged <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-judged: // a signal of the judge roomJudge waited for
+	default:
+	}
+
+	u.clock.Advance(time.Second)
+	within(t, "the loop's judge of journal_full's room a second later", judged)
+}
+
 // journal_full raised at the maximum clears once storage retired since the
 // refusal and any rise of the maximum reach what the refusal lacked, with
 // nothing written; less leaves it up.
@@ -1518,7 +1558,9 @@ func TestJournalFullAtTheMaximumClearsOnRoom(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := atTheMaximum(t)
+			judged := roomJudge(t, s.unit, s.a)
 			c.room(t, s)
+			rejudge(t, s.unit, judged)
 
 			if n := len(fullConds(s.e)); n != c.want {
 				t.Errorf("%d journal_full conditions after %s, want %d", n, c.name, c.want)
@@ -1528,14 +1570,19 @@ func TestJournalFullAtTheMaximumClearsOnRoom(t *testing.T) {
 }
 
 // A headroom refusal is cleared by an unreserved write, never by room under
-// the maximum.
+// the maximum: the group commit's loop has no room of it to judge.
 func TestJournalFullAfterAHeadroomRefusalIgnoresTheMaximum(t *testing.T) {
 	s := newSegUnit(t, 1<<20, 300)
 	s.refuse(t, journal.LimitHeadroom)
 
 	_ = s.put(t.Context(), s.a, entity.NewFileID(), 0, 1, 'x')
 
+	if s.e.RoomPendingForTest(s.a.ID) {
+		t.Fatal("a headroom refusal waits for the loop to judge its room, want an unreserved write")
+	}
+
 	s.j.SetMaxBytes(1 << 30)
+	s.clock.Advance(time.Minute)
 
 	if n := len(fullConds(s.e)); n != 1 {
 		t.Errorf("%d journal_full conditions after a headroom refusal and a raised maximum, want 1", n)
@@ -1584,11 +1631,14 @@ func TestJournalFullOnAFullDeviceClearsOnRoom(t *testing.T) {
 				t.Fatalf("a write on a full device: %v, want ErrNoSpace", err)
 			}
 
+			judged := roomJudge(t, u, u.share)
+
 			if n := len(fullConds(u.e)); n != 1 {
 				t.Fatalf("%d journal_full conditions on a full device with no room, want 1", n)
 			}
 
 			c.room(t, u, &free)
+			rejudge(t, u, judged)
 
 			if n := len(fullConds(u.e)); n != c.want {
 				t.Errorf("%d journal_full conditions after %s, want %d", n, c.name, c.want)

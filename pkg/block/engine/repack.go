@@ -45,11 +45,13 @@ type capState struct {
 	lines    refusalLimiter
 
 	// full is the latest refusal that raised journal_full when it named the
-	// device or the maximum, nil otherwise or once room cleared it. mu orders
-	// a raise against a clear on room, so a clear judged on an older refusal
-	// never drops the condition a newer one raised.
-	mu   sync.Mutex
-	full *refusalNote
+	// device or the maximum, nil otherwise or once room cleared it, and
+	// checkAt when the group commit's loop next judges its room: zero, at
+	// once. mu orders a raise against a clear on room, so a clear judged on an
+	// older refusal never drops the condition a newer one raised.
+	mu      sync.Mutex
+	full    *refusalNote
+	checkAt time.Time
 }
 
 // refusalNote is what a journal_full refusal lacked and the journal's figures
@@ -366,11 +368,16 @@ func (e *Engine) raiseFull(b *binding, r refusal, err error) {
 			r, n.missing, n.unit, n.used, n.maxBytes, n.freed, n.headroom, n.extents, n.extentAt,
 		),
 	}, time.Time{})
-	c.full = nil
+	c.full, c.checkAt = nil, time.Time{}
 	if r.device || r.limit == journal.LimitJournal {
 		c.full = n
 	}
+	judge := c.full != nil
 	c.mu.Unlock()
+
+	if judge {
+		b.gc.poke() // the loop judges the room at this wake, then every fullRecheck
+	}
 
 	// The flag follows the raise, so a write accepted between the two finds
 	// the flag false and leaves the condition up; the next accepted write,
@@ -383,7 +390,8 @@ func (e *Engine) raiseFull(b *binding, r refusal, err error) {
 // headroom: below half the headroom every unreserved content write is refused,
 // so one accepted outside a reservation shows the headroom has room again. No
 // other accepted write clears it (RFC 8 §11.1): a refusal of the device or the
-// maximum clears when Stats finds its limit has room again (clearFullOnRoom).
+// maximum clears when the group commit's loop finds its limit has room again
+// (checkFull).
 func (e *Engine) acceptedWrite(b *binding) {
 	// A load first: a write on every accepted call must not take the cache
 	// line exclusively while the flag is false, which it nearly always is.
@@ -433,25 +441,61 @@ func (n *refusalNote) roomAgain(st journal.Stats, free func() (int64, error)) bo
 	return gained+max(st.MaxBytes-n.maxBytes, 0) >= max(n.missing, 1)
 }
 
-// clearFullOnRoom clears journal_full for b's journal when its latest
-// refusal named the device or the maximum and that limit has room again. Its
-// journal and free-space reads run outside the lock, so a raise meanwhile
-// replaces the note and the clear, judged on the older one, is dropped.
-func (e *Engine) clearFullOnRoom(b *binding) {
-	c := &b.gc.cap
+// fullRecheck is how often the group commit's loop judges the room of a
+// standing refusal that named the device or the maximum.
+const fullRecheck = time.Second
+
+// fullDue is how long from now until the loop judges the room of the latest
+// refusal that named the device or the maximum: zero when it is due, -1 when
+// none stands.
+func (g *groupCommit) fullDue(now time.Time) time.Duration {
+	c := &g.cap
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.full == nil {
+		return -1
+	}
+
+	return max(c.checkAt.Sub(now), 0)
+}
+
+// checkFull judges whether the limit the latest refusal named, the device or
+// the maximum, has room again, and clears journal_full if so; otherwise it
+// judges again fullRecheck later. It runs on the group commit's loop, so
+// Stats reads only the condition and makes no I/O for it. Its journal and
+// free-space reads run outside the lock, so a raise meanwhile replaces the
+// note and the verdict, judged on the older one, is dropped.
+//
+// ponytail: the check rides on the group commit's loop, which wakes for it
+// at the refusal and then every fullRecheck while a refusal of the device or
+// the maximum stands, idle or not; a store stall holds the loop inside a
+// commit, so the clear can lag by a stall. Upgrade to the work queue's age
+// tick (RFC 8 §2.5 step 7) when the second part builds it.
+func (g *groupCommit) checkFull() {
+	e, c := g.e, &g.cap
 	c.mu.Lock()
 	n := c.full
 	c.mu.Unlock()
 
-	if n == nil || !n.roomAgain(b.j.Stats(), func() (int64, error) { return e.d.FreeSpace(e.d.Devices[0]) }) {
+	if n == nil {
 		return
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	room := n.roomAgain(g.j.Stats(), func() (int64, error) { return e.d.FreeSpace(e.d.Devices[0]) })
 
+	c.mu.Lock()
 	if c.full == n {
-		c.full = nil
-		e.conds.clear(condKey{conditionJournalFull, b.gc})
+		if room {
+			c.full = nil
+			e.conds.clear(condKey{conditionJournalFull, g})
+		} else {
+			c.checkAt = e.d.Clock.Now().Add(fullRecheck)
+		}
+	}
+	c.mu.Unlock()
+
+	if h := e.fullChecked.Load(); h != nil {
+		(*h)()
 	}
 }
