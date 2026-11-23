@@ -16,10 +16,12 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 const batchSpan = "engine.removal_batch"
@@ -82,10 +84,8 @@ func (g *batchLog) drain() {
 	}
 }
 
-// startContent is the store's content view recording each file's phase 2 and
-// prune, and listing the removals in extra after the store's own. A file in
-// synthetic has no record in the store: its phase 2 and prune are answered
-// here and never reach it.
+// startContent is the store's content view recording each phase 2, prune and
+// listing that reaches the store, and failing them when a test asks.
 type startContent struct {
 	engine.Content
 
@@ -93,8 +93,6 @@ type startContent struct {
 	resumes   map[entity.FileID]int
 	prunes    map[entity.FileID][]entity.JournalVersion
 	listed    []entity.ShareID
-	extra     map[entity.ShareID][]kvstore.UnfinishedRemoval
-	synthetic map[entity.FileID]bool
 	frozen    bool  // Resume and PruneRemovals answer an error and count nothing
 	failPrune int   // the next PruneRemovals calls answer pruneErr, leaving the store as it was
 	pruneErr  error // what a failing PruneRemovals answers; errPruneFailed when nil
@@ -104,11 +102,9 @@ type startContent struct {
 
 func newStartContent() *startContent {
 	return &startContent{
-		resumes:   map[entity.FileID]int{},
-		prunes:    map[entity.FileID][]entity.JournalVersion{},
-		extra:     map[entity.ShareID][]kvstore.UnfinishedRemoval{},
-		synthetic: map[entity.FileID]bool{},
-		attempts:  map[entity.FileID]int{},
+		resumes:  map[entity.FileID]int{},
+		prunes:   map[entity.FileID][]entity.JournalVersion{},
+		attempts: map[entity.FileID]int{},
 	}
 }
 
@@ -119,29 +115,16 @@ func (c *startContent) UnfinishedRemovals(
 ) iter.Seq2[kvstore.UnfinishedRemoval, error] {
 	c.mu.Lock()
 	c.listed = append(c.listed, share)
-	extra := slices.Clone(c.extra[share])
 	listErr := c.listErr
 	c.mu.Unlock()
 
-	return func(yield func(kvstore.UnfinishedRemoval, error) bool) {
-		if listErr != nil {
+	if listErr != nil {
+		return func(yield func(kvstore.UnfinishedRemoval, error) bool) {
 			yield(kvstore.UnfinishedRemoval{}, listErr)
-
-			return
-		}
-
-		for u, err := range c.Content.UnfinishedRemovals(ctx, share, shard) {
-			if !yield(u, err) {
-				return
-			}
-		}
-
-		for _, u := range extra {
-			if !yield(u, nil) {
-				return
-			}
 		}
 	}
+
+	return c.Content.UnfinishedRemovals(ctx, share, shard)
 }
 
 func (c *startContent) Resume(
@@ -152,7 +135,6 @@ func (c *startContent) Resume(
 	c.mu.Lock()
 	frozen := c.frozen
 	c.resumes[file]++
-	fake := c.synthetic[file]
 
 	if frozen {
 		c.resumes[file]--
@@ -162,10 +144,6 @@ func (c *startContent) Resume(
 
 	if frozen {
 		return false, errFrozen
-	}
-
-	if fake {
-		return false, nil
 	}
 
 	return c.Content.Resume(ctx, share, file)
@@ -178,7 +156,7 @@ func (c *startContent) PruneRemovals(
 	atOrBelow entity.JournalVersion,
 ) error {
 	c.mu.Lock()
-	fake, frozen := c.synthetic[file], c.frozen
+	frozen := c.frozen
 	fail := !frozen && c.failPrune > 0
 
 	if !frozen {
@@ -203,10 +181,8 @@ func (c *startContent) PruneRemovals(
 		return errPruneFailed
 	}
 
-	if !fake {
-		if err := c.Content.PruneRemovals(ctx, share, file, atOrBelow); err != nil {
-			return err
-		}
+	if err := c.Content.PruneRemovals(ctx, share, file, atOrBelow); err != nil {
+		return err
 	}
 
 	c.mu.Lock()
@@ -337,6 +313,159 @@ func (r *rig) keysOf(t *testing.T, f entity.FileID) []string {
 	return out
 }
 
+// fileIn creates an empty file named name in share sh's root, granting the
+// rig's admin the share first when it is not share one.
+func (r *rig) fileIn(t *testing.T, sh engine.Share, name string) entity.FileID {
+	t.Helper()
+
+	ctx := t.Context()
+
+	if sh.ID != r.fs.Share.ID {
+		g := entity.ShareGrant{Share: sh.ID, Principal: r.fs.Admin.Principal, Access: entity.AccessAdmin}
+		if _, err := r.fs.Store.ControlPlane().SetGrant(ctx, g, 0); err != nil && !errors.Is(err, entity.ErrGenerationMismatch) {
+			t.Fatal(err)
+		}
+	}
+
+	root, _, err := r.fs.Store.Files().Root(ctx, r.fs.Admin, sh.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, f := r.fs.Create(t, r.fs.Admin, root, name, kvstore.Regular(0o644))
+
+	return f.ID
+}
+
+// sizeIn commits existence of a write of [0, size) for file f of share sh at
+// version 1, as commitSize does for share one.
+func (r *rig) sizeIn(t *testing.T, sh entity.ShareID, f entity.FileID, size int64) {
+	t.Helper()
+
+	pending := []kvstore.PendingExistence{{
+		Share: sh,
+		File:  f,
+		Ops: []kvstore.PendingOp{{
+			Version: entity.VersionOf(1),
+			Kind:    kvstore.OpWrite,
+			Extent:  entity.Extent{Length: size},
+			Mtime:   committed,
+			Ctime:   committed,
+		}},
+	}}
+
+	failed, err := r.fs.Store.Existence().Commit(t.Context(), pending, nil)
+	if err != nil || failed[f] != nil {
+		t.Fatalf("commit size %d: %v, %v", size, err, failed[f])
+	}
+}
+
+// truncateAt writes phase 1 of a truncate of file f of share sh to its
+// length less 4096, at version v, through the store, as the write path does:
+// the store then holds the truncate's removal record, not done.
+func (r *rig) truncateAt(t *testing.T, sh entity.ShareID, f entity.FileID, v entity.JournalVersion) {
+	t.Helper()
+
+	size, err := r.fs.Store.Existence().Size(t.Context(), sh, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	op := kvstore.RemoveOp{
+		Version: v,
+		Kind:    entity.RemoveTruncate,
+		Extent:  entity.Extent{Offset: size - 4096, Length: 4096},
+		Time:    committed,
+	}
+
+	if err := r.fs.Store.Existence().Remove(t.Context(), sh, f, 0, op, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// removalIn creates a file of 8192 bytes in share sh and truncates it at
+// version v through the store, leaving its removal record not done.
+func (r *rig) removalIn(t *testing.T, sh engine.Share, name string, v entity.JournalVersion) entity.FileID {
+	t.Helper()
+
+	f := r.fileIn(t, sh, name)
+	r.sizeIn(t, sh.ID, f, 8192)
+	r.truncateAt(t, sh.ID, f, v)
+
+	return f
+}
+
+// cloneInto writes phase 1 of a clone of [4096, 8192) of a new file of
+// share src onto [8192, 12288) of file f of share one at version v, through
+// the store, as the clone's phase 1 does: the store then holds the clone's
+// removal record, not done, and a hold on the source. It returns the spec.
+func (r *rig) cloneInto(t *testing.T, src engine.Share, f entity.FileID, v entity.JournalVersion) entity.CloneSpec {
+	t.Helper()
+
+	from := r.fileIn(t, src, "source of "+fname(f))
+	r.sizeIn(t, src.ID, from, 8192)
+
+	spec := entity.CloneSpec{
+		SrcShare: src.ID,
+		Src:      from,
+		SrcOff:   4096,
+		DstOff:   8192,
+		Len:      4096,
+		AsOf:     entity.VersionOf(1),
+	}
+
+	op := kvstore.CloneOp{Share: r.one.ID, File: f, Spec: spec, Version: v, Time: committed}
+	if err := r.fs.Store.Existence().Clone(t.Context(), op, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	return spec
+}
+
+// sibling adds a share named name counting content in share one's
+// namespaces, so the store takes a clone between the two, and returns it as
+// the engine binds it. Start is not handed it unless a test hands it.
+func (r *rig) sibling(t *testing.T, name string) engine.Share {
+	t.Helper()
+
+	one, _, err := r.fs.Store.ShareIndex().Share(t.Context(), r.one.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sh := entity.Share{
+		ID:         entity.NewShareID(),
+		Name:       name,
+		Path:       "/" + name,
+		Root:       entity.NewFileID(),
+		Namespaces: one.Namespaces,
+		Write:      one.Write,
+	}
+
+	if _, err := r.fs.Store.ControlPlane().PutShare(t.Context(), sh, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	return enginetest.ShareOf(t, r.fs.Store, sh.ID, 1<<30)
+}
+
+// listed is the unfinished removals the store lists for share one's shard.
+func (r *rig) listed(t *testing.T) []kvstore.UnfinishedRemoval {
+	t.Helper()
+
+	var out []kvstore.UnfinishedRemoval
+
+	for u, err := range r.fs.Store.Content().UnfinishedRemovals(t.Context(), r.one.ID, uint64(r.one.Shard)) {
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		out = append(out, u)
+	}
+
+	return out
+}
+
 // truncated creates a file of size bytes committed in the store and cuts it
 // to size to in the journal only, as a crash after the journal step leaves it,
 // and returns the version of the truncate.
@@ -409,19 +538,8 @@ func TestStartPostsTenThousandRemovalsAndRunsNoBatchBeforeItReturns(t *testing.T
 	want := make(map[entity.FileID]entity.JournalVersion, n)
 
 	for i := range n {
-		f := entity.NewFileID()
-		v := entity.VersionOf(uint64(i + 1))
-
-		r.content.synthetic[f] = true
-		r.content.extra[r.one.ID] = append(r.content.extra[r.one.ID], kvstore.UnfinishedRemoval{
-			File:    f,
-			Version: v,
-			Removal: entity.Removal{
-				Version: v,
-				Kind:    entity.RemoveTruncate,
-			},
-		})
-		want[f] = v
+		v := entity.VersionOf(uint64(i + 2))
+		want[r.removalIn(t, r.one, fmt.Sprintf("f%d", i), v)] = v
 	}
 
 	r.atRestart()
@@ -477,26 +595,17 @@ func TestStartPostsTenThousandRemovalsAndRunsNoBatchBeforeItReturns(t *testing.T
 // rebuild.
 func TestAClonedRemovalIsHandedToTheHookAndNotPosted(t *testing.T) {
 	r := newRig(t)
-	f := entity.NewFileID()
+	f := r.newFile2(t, "dst")
 	v := entity.VersionOf(7)
+	spec := r.cloneInto(t, r.one, f, v)
 
-	spec := &entity.CloneSpec{
-		SrcShare: r.one.ID,
-		Src:      entity.NewFileID(),
-		SrcOff:   4096,
-		DstOff:   8192,
-		Len:      4096,
-		AsOf:     entity.VersionOf(3),
-	}
-	rec := entity.Removal{
-		Version: v,
-		Extent:  entity.ExtentOf(8192, 12288),
-		Kind:    entity.RemoveClone,
-		Clone:   spec,
+	recs := r.listed(t)
+	if len(recs) != 1 || recs[0].File != f || recs[0].Removal.Kind != entity.RemoveClone ||
+		recs[0].Removal.Clone == nil || *recs[0].Removal.Clone != spec {
+		t.Fatalf("setup: the store lists %+v, want the clone's one removal of spec %+v", recs, spec)
 	}
 
-	r.content.synthetic[f] = true
-	r.content.extra[r.one.ID] = []kvstore.UnfinishedRemoval{{File: f, Version: v, Removal: rec}}
+	rec := recs[0].Removal
 
 	type handed struct {
 		share entity.ShareID
@@ -538,20 +647,19 @@ func TestAClonedRemovalIsHandedToTheHookAndNotPosted(t *testing.T) {
 // removal is, and the rebuild is not handed it.
 func TestADoneCloneIsPrunedAndNotHanded(t *testing.T) {
 	r := newRig(t)
-	f := entity.NewFileID()
+	f := r.newFile2(t, "dst")
 	v := entity.VersionOf(7)
+	r.cloneInto(t, r.one, f, v)
 
-	r.content.synthetic[f] = true
-	r.content.extra[r.one.ID] = []kvstore.UnfinishedRemoval{{
-		File:    f,
-		Version: v,
-		Removal: entity.Removal{
-			Version: v,
-			Kind:    entity.RemoveClone,
-			Done:    true,
-			Clone:   &entity.CloneSpec{},
-		},
-	}}
+	// The clone's phase 2 ran to its end and the process died before the
+	// prune.
+	if _, err := r.fs.Store.Content().Resume(t.Context(), r.one.ID, f); err != nil {
+		t.Fatal(err)
+	}
+
+	if recs := r.listed(t); len(recs) != 1 || !recs[0].Removal.Done {
+		t.Fatalf("setup: the store lists %+v, want the clone's one removal, done", recs)
+	}
 
 	handed := 0
 
@@ -582,19 +690,8 @@ func TestADoneCloneIsPrunedAndNotHanded(t *testing.T) {
 // nothing.
 func TestACloneRemovalOfAnUnservedSourceFailsStart(t *testing.T) {
 	r := newRig(t)
-	f := entity.NewFileID()
-	v := entity.VersionOf(7)
-
-	r.content.synthetic[f] = true
-	r.content.extra[r.one.ID] = []kvstore.UnfinishedRemoval{{
-		File:    f,
-		Version: v,
-		Removal: entity.Removal{
-			Version: v,
-			Kind:    entity.RemoveClone,
-			Clone:   &entity.CloneSpec{},
-		},
-	}}
+	f := r.newFile2(t, "dst")
+	r.cloneInto(t, r.sibling(t, "unserved"), f, entity.VersionOf(7))
 
 	r.atRestart()
 
@@ -811,19 +908,21 @@ func TestARemovalDoneButNotPrunedIsPrunedAtRestart(t *testing.T) {
 
 // A plain removal older than a clone not done, in one file, is left pending:
 // nothing is posted for the file, the clone is handed to the rebuild, the
-// store keeps both records, and the file reads as the truncate left it.
+// store keeps both records not done, and a read of the file waits for the
+// clone, as the store answers it while the clone is pending, rather than
+// reading a removal half run.
 func TestAPlainRemovalOlderThanAnUnfinishedCloneIsLeftPendingAndReadsStayCorrect(t *testing.T) {
 	r := newRig(t)
-	f, v := r.truncated(t, "a", 8192, 4096)
-	cv := entity.VersionOf(500)
-	rec := entity.Removal{
-		Version: cv,
-		Extent:  entity.ExtentOf(4096, 8192),
-		Kind:    entity.RemoveClone,
-		Clone:   &entity.CloneSpec{},
+	f := r.removalIn(t, r.one, "a", entity.VersionOf(2))
+	cv := entity.VersionOf(3)
+	r.cloneInto(t, r.one, f, cv)
+
+	recs := r.listed(t)
+	if len(recs) != 2 || recs[1].Removal.Kind != entity.RemoveClone {
+		t.Fatalf("setup: the store lists %+v, want the truncate's removal and then the clone's", recs)
 	}
 
-	r.content.extra[r.one.ID] = []kvstore.UnfinishedRemoval{{File: f, Version: cv, Removal: rec}}
+	rec := recs[1].Removal
 
 	var handed []entity.Removal
 
@@ -850,17 +949,19 @@ func TestAPlainRemovalOlderThanAnUnfinishedCloneIsLeftPendingAndReadsStayCorrect
 	r.wantRemovals(
 		t,
 		entity.File{Shard: 0},
-		[]kvstore.UnfinishedRemoval{{File: f, Version: jver(v)}},
+		[]kvstore.UnfinishedRemoval{{File: f, Version: entity.VersionOf(2)}, {File: f, Version: cv}},
 	)
 
-	sp, err := r.e.Allocation(t.Context(), r.one.ID, f, 0)
-	if err != nil || sp.Offset != 0 || sp.Length != 4096 || sp.Class != entity.Uncarved {
-		t.Errorf("Allocation(0) = %+v, %v, want [0, 4096) uncarved", sp, err)
+	for _, u := range r.listed(t) {
+		if u.Removal.Done {
+			t.Errorf("the removal at %v is done, want both left pending", u.Version)
+		}
 	}
 
-	sp, err = r.e.Allocation(t.Context(), r.one.ID, f, 4096)
-	if err != nil || sp.Offset != 4096 || sp.Length != 0 || sp.Class != entity.Hole {
-		t.Errorf("Allocation(4096) = %+v, %v, want a hole at 4096", sp, err)
+	for _, off := range []int64{0, 4096} {
+		if _, err := r.e.Allocation(t.Context(), r.one.ID, f, off); !isDelay(err, vfserr.DelayClone) {
+			t.Errorf("Allocation(%d) = %v, want ErrDelay(DelayClone) while the clone is pending", off, err)
+		}
 	}
 }
 
@@ -868,22 +969,21 @@ func TestAPlainRemovalOlderThanAnUnfinishedCloneIsLeftPendingAndReadsStayCorrect
 // newest version listed.
 func TestOneFileWithManyRemovalsIsOneItemPrunedAtTheNewest(t *testing.T) {
 	r := newRig(t)
-	f := entity.NewFileID()
+	f := r.newFile2(t, "a")
+	r.commitSize(t, f, 16384)
 
-	r.content.synthetic[f] = true
+	// The first removal's phase 2 ran to its end; the two after it did not.
+	r.truncateAt(t, r.one.ID, f, entity.VersionOf(2))
 
-	for i, done := range []bool{true, false, false} {
-		v := entity.VersionOf(uint64(i + 1))
+	if _, err := r.fs.Store.Content().Resume(t.Context(), r.one.ID, f); err != nil {
+		t.Fatal(err)
+	}
 
-		r.content.extra[r.one.ID] = append(r.content.extra[r.one.ID], kvstore.UnfinishedRemoval{
-			File:    f,
-			Version: v,
-			Removal: entity.Removal{
-				Version: v,
-				Kind:    entity.RemoveTruncate,
-				Done:    done,
-			},
-		})
+	r.truncateAt(t, r.one.ID, f, entity.VersionOf(3))
+	r.truncateAt(t, r.one.ID, f, entity.VersionOf(4))
+
+	if recs := r.listed(t); len(recs) != 3 || !recs[0].Removal.Done || recs[1].Removal.Done || recs[2].Removal.Done {
+		t.Fatalf("setup: the store lists %+v, want three removals, the first alone done", recs)
 	}
 
 	r.begin(t)
@@ -895,8 +995,8 @@ func TestOneFileWithManyRemovalsIsOneItemPrunedAtTheNewest(t *testing.T) {
 		t.Errorf("Resume ran %d times, want 1", n)
 	}
 
-	if p := r.content.prunedAt(f); !slices.Equal(p, []entity.JournalVersion{entity.VersionOf(3)}) {
-		t.Errorf("pruned at %v, want exactly one prune at version 3", p)
+	if p := r.content.prunedAt(f); !slices.Equal(p, []entity.JournalVersion{entity.VersionOf(4)}) {
+		t.Errorf("pruned at %v, want exactly one prune at version 4", p)
 	}
 
 	if n := r.e.RemovalsPending(); n != 0 {
@@ -908,28 +1008,12 @@ func TestOneFileWithManyRemovalsIsOneItemPrunedAtTheNewest(t *testing.T) {
 // reached offloaded is not listed, as it has no binding to run them on.
 func TestStartPostsTheRemovalsOfEveryServedShare(t *testing.T) {
 	r := newRig(t)
-	gone := r.removing(t, "gone", entity.TagOffloaded).ID
-	one, two, off := entity.NewFileID(), entity.NewFileID(), entity.NewFileID()
-
-	files := map[entity.ShareID]entity.FileID{
-		r.one.ID: one,
-		r.two.ID: two,
-		gone:     off,
-	}
-
-	for share, f := range files {
-		v := entity.VersionOf(1)
-
-		r.content.synthetic[f] = true
-		r.content.extra[share] = []kvstore.UnfinishedRemoval{{
-			File:    f,
-			Version: v,
-			Removal: entity.Removal{
-				Version: v,
-				Kind:    entity.RemoveTruncate,
-			},
-		}}
-	}
+	gone := enginetest.AddShare(t, r.fs.Store, "gone", 1<<30)
+	v := entity.VersionOf(2)
+	one := r.removalIn(t, r.one, "one", v)
+	two := r.removalIn(t, r.two, "two", v)
+	off := r.removalIn(t, gone, "off", v)
+	removeShare(t, r.fs.Store, gone, entity.TagOffloaded)
 
 	r.begin(t)
 	r.wantPosted(t, 2)
@@ -1108,28 +1192,21 @@ func TestAListingErrorFailsStartAndClosesTheJournal(t *testing.T) {
 // last one listed or not: a file listed after it must not let Start go on.
 func TestACloneRemovalFollowedByAnotherFileFailsStart(t *testing.T) {
 	r := newRig(t)
-	clone, plain := entity.NewFileID(), entity.NewFileID()
 	v := entity.VersionOf(7)
 
-	r.content.synthetic[clone], r.content.synthetic[plain] = true, true
-	r.content.extra[r.one.ID] = []kvstore.UnfinishedRemoval{
-		{
-			File:    clone,
-			Version: v,
-			Removal: entity.Removal{
-				Version: v,
-				Kind:    entity.RemoveClone,
-				Clone:   &entity.CloneSpec{},
-			},
-		},
-		{
-			File:    plain,
-			Version: v,
-			Removal: entity.Removal{
-				Version: v,
-				Kind:    entity.RemoveTruncate,
-			},
-		},
+	// The index lists a shard's removals in file order: the clone's file is
+	// the lesser, so the plain removal is listed after it.
+	clone, plain := r.newFile2(t, "a"), r.newFile2(t, "b")
+	if bytes.Compare(clone[:], plain[:]) > 0 {
+		clone, plain = plain, clone
+	}
+
+	r.cloneInto(t, r.sibling(t, "unserved"), clone, v)
+	r.sizeIn(t, r.one.ID, plain, 8192)
+	r.truncateAt(t, r.one.ID, plain, v)
+
+	if recs := r.listed(t); len(recs) != 2 || recs[0].File != clone || recs[1].File != plain {
+		t.Fatalf("setup: the store lists %+v, want the clone's removal and then the plain one", recs)
 	}
 
 	r.atRestart()
@@ -1146,19 +1223,14 @@ func TestACloneRemovalFollowedByAnotherFileFailsStart(t *testing.T) {
 // conflict or error).
 func TestAPruneConflictIsCountedAsAConflict(t *testing.T) {
 	r := newRig(t)
-	f := entity.NewFileID()
-	v := entity.VersionOf(7)
+	f := r.removalIn(t, r.one, "a", entity.VersionOf(7))
 
-	r.content.synthetic[f] = true
-	r.content.extra[r.one.ID] = []kvstore.UnfinishedRemoval{{
-		File:    f,
-		Version: v,
-		Removal: entity.Removal{
-			Version: v,
-			Kind:    entity.RemoveTruncate,
-			Done:    true,
-		},
-	}}
+	// The removal's phase 2 ran to its end and the process died before the
+	// prune.
+	if _, err := r.fs.Store.Content().Resume(t.Context(), r.one.ID, f); err != nil {
+		t.Fatal(err)
+	}
+
 	r.content.failPrune = 1
 	r.content.pruneErr = kvstore.ErrConflict
 
