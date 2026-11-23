@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
@@ -279,10 +280,11 @@ func TestCrashBeforeTheShareListReadServesTheCreatedShare(t *testing.T) {
 // 10⁵ once that ponytail is replaced.
 const deletedFiles = 50
 
-// §3.2 delete: a share's deletion, the node killed during its files phase
-// once the operation reads Done above 0, reads back after the restart as the
-// same operation, Done never below what it read before the kill, and ends
-// succeeded. A second delete, under a key of its own, is refused 409 stale.
+// §3.2 delete: a share's deletion, the node killed with its files phase half
+// done, some of the share's file rows dropped and some left, reads back after
+// the restart as the same operation, Done never below what it read before the
+// kill, and ends succeeded with no file row left. A second delete, under a
+// key of its own, is refused 409 stale.
 func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("the deletion drops its files one batch a second")
@@ -317,8 +319,9 @@ func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 	})
 
 	// Every scan of the share's file rows is a batch of step 4, the files
-	// phase: the second scan is held.
+	// phase: the second scan is held, after the first batch dropped its rows.
 	files := keys.ID([]byte{keys.KindF}, share.ID[:])
+	seeded := fileRows(t, config, files)
 	c := serve(t, config, hold(kvtest.OpScan, files, 2, nil))
 	id := share.ID.String()
 	poll(t, c, "the share served", func(ctx context.Context) (client.Tagged[apiv1.ShareSpec, apiv1.ShareStatus], error) {
@@ -342,6 +345,9 @@ func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 		t.Fatalf("a second DELETE /shares/%s under a new key: %v, want 409 stale", id, err)
 	}
 	c.kill(t)
+	if left := fileRows(t, config, files); left == 0 || left >= seeded {
+		t.Fatalf("share %s's file rows at the kill: %d left of %d, want some dropped and some left", id, left, seeded)
+	}
 
 	c = serve(t, config)
 	last, sawRunning := before, false
@@ -368,4 +374,35 @@ func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 		t.Errorf("GET /shares/%s once its deletion succeeded: %v, want 404", id, err)
 	}
 	c.stop(t)
+	if left := fileRows(t, config, files); left != 0 {
+		t.Errorf("share %s's file rows once its deletion succeeded: %d left, want none", id, left)
+	}
+}
+
+// fileRows counts the records under prefix in the metadata store of the
+// installation whose bootstrap is config, with no node holding it open.
+func fileRows(t *testing.T, config string, prefix []byte) int {
+	t.Helper()
+	db, err := badgerkv.Open(badgerkv.Options{Dir: filepath.Join(filepath.Dir(config), "store"), NodeID: testNode})
+	if err != nil {
+		t.Fatalf("open the metadata store to count its file rows: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close the counted store: %v", err)
+		}
+	}()
+	n := 0
+	if err := db.View(t.Context(), func(r kv.Reader) error {
+		for _, err := range r.Scan(prefix, nil) {
+			if err != nil {
+				return err
+			}
+			n++
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("count the file rows under %x: %v", prefix, err)
+	}
+	return n
 }
