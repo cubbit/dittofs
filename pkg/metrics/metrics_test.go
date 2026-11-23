@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,101 +8,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
-
-// fakeProvider returns a fixed snapshot for deterministic assertions.
-type fakeProvider struct{ snap Snapshot }
-
-func (f fakeProvider) MetricsSnapshot(context.Context) Snapshot { return f.snap }
-
-func newTestMetrics(t *testing.T, snap Snapshot) *Metrics {
-	t.Helper()
-	m := New("v-test", "abc123")
-	m.RegisterProvider(fakeProvider{snap: snap})
-	return m
-}
-
-func TestRuntimeCollector_EmitsExpectedSeries(t *testing.T) {
-	snap := Snapshot{
-		Shares: []ShareSnapshot{{
-			Name:          "alpha",
-			DiskUsedBytes: 1024,
-			DiskMaxBytes:  4096,
-			UnsyncedBytes: 512,
-			FailedSyncs:   3,
-			RemoteHealthy: true,
-			HasRemote:     true,
-			LogicalBytes:  2000,
-			FileCount:     7,
-			SnapshotsHeld: 2,
-		}},
-		Quotas: []QuotaSnapshot{{
-			Scope: "user", Principal: "1000", Share: "alpha",
-			UsedBytes: 50, LimitBytes: 100, UsedInodes: 5, LimitInodes: 10,
-		}},
-	}
-	m := newTestMetrics(t, snap)
-
-	expected := `
-# HELP dittofs_localstore_disk_used_bytes Local block-store disk bytes in use.
-# TYPE dittofs_localstore_disk_used_bytes gauge
-dittofs_localstore_disk_used_bytes{share="alpha"} 1024
-# HELP dittofs_sync_pending_bytes On-disk bytes present locally but not yet mirrored to the remote (data at risk).
-# TYPE dittofs_sync_pending_bytes gauge
-dittofs_sync_pending_bytes{share="alpha"} 512
-# HELP dittofs_remote_up Whether the remote backend is currently healthy (1) or not (0).
-# TYPE dittofs_remote_up gauge
-dittofs_remote_up{share="alpha"} 1
-# HELP dittofs_quota_used_bytes Bytes used by a quota principal.
-# TYPE dittofs_quota_used_bytes gauge
-dittofs_quota_used_bytes{principal="1000",scope="user",share="alpha"} 50
-`
-	if err := testutil.GatherAndCompare(m.Registry(), strings.NewReader(expected),
-		"dittofs_localstore_disk_used_bytes",
-		"dittofs_sync_pending_bytes",
-		"dittofs_remote_up",
-		"dittofs_quota_used_bytes",
-	); err != nil {
-		t.Fatalf("unexpected metrics: %v", err)
-	}
-}
-
-// The append-log pressure budget (max_log_bytes) is exposed as a gauge, and the
-// removed in-memory budget gauge keeps emitting 0 for back-compat.
-func TestRuntimeCollector_AppendLogLimitGauge(t *testing.T) {
-	m := newTestMetrics(t, Snapshot{Shares: []ShareSnapshot{{
-		Name:                "alpha",
-		AppendLogLimitBytes: 1 << 30,
-		MemMaxBytes:         0,
-	}}})
-
-	expected := `
-# HELP dittofs_localstore_append_log_limit_bytes Local block-store append-log pressure budget in bytes (max_log_bytes); writes block with ErrPressureTimeout above this.
-# TYPE dittofs_localstore_append_log_limit_bytes gauge
-dittofs_localstore_append_log_limit_bytes{share="alpha"} 1.073741824e+09
-# HELP dittofs_localstore_memory_limit_bytes Deprecated: always 0; the in-memory budget was removed. See dittofs_localstore_append_log_limit_bytes.
-# TYPE dittofs_localstore_memory_limit_bytes gauge
-dittofs_localstore_memory_limit_bytes{share="alpha"} 0
-`
-	if err := testutil.GatherAndCompare(m.Registry(), strings.NewReader(expected),
-		"dittofs_localstore_append_log_limit_bytes",
-		"dittofs_localstore_memory_limit_bytes",
-	); err != nil {
-		t.Fatalf("unexpected metrics: %v", err)
-	}
-}
-
-// Sync/remote series must be suppressed for local-only shares (no remote).
-func TestRuntimeCollector_LocalOnlyShareSkipsSyncSeries(t *testing.T) {
-	m := newTestMetrics(t, Snapshot{Shares: []ShareSnapshot{{
-		Name: "local", DiskUsedBytes: 10, HasRemote: false, UnsyncedBytes: 99,
-	}}})
-	if got := testutil.CollectAndCount(m.Registry(), "dittofs_sync_pending_bytes"); got != 0 {
-		t.Fatalf("expected no sync_pending_bytes series for local-only share, got %d", got)
-	}
-	if got := testutil.CollectAndCount(m.Registry(), "dittofs_localstore_disk_used_bytes"); got != 1 {
-		t.Fatalf("expected disk_used_bytes for local-only share, got %d", got)
-	}
-}
 
 func TestBuildInfoPresent(t *testing.T) {
 	m := New("v1.2.3", "deadbeef")
@@ -118,7 +22,7 @@ dittofs_build_info{commit="deadbeef",version="v1.2.3"} 1
 }
 
 func TestHandlerServesText(t *testing.T) {
-	m := newTestMetrics(t, Snapshot{})
+	m := New("v-test", "abc123")
 	srv := httptest.NewServer(m.Handler())
 	defer srv.Close()
 
@@ -129,51 +33,5 @@ func TestHandlerServesText(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
-	}
-}
-
-// A share whose residency could not be determined must still report a safety
-// gauge, but must NOT publish byte counts: zeros there are indistinguishable
-// from a clean, fully-local share, which is the one wrong answer this signal
-// cannot afford to give.
-func TestRuntimeCollector_UnknownOfflineShareOmitsByteGauges(t *testing.T) {
-	m := newTestMetrics(t, Snapshot{Shares: []ShareSnapshot{{
-		Name: "unknowable", HasRemote: true,
-		Offline: OfflineSnapshot{Safe: false, Known: false},
-	}}})
-	if got := testutil.CollectAndCount(m.Registry(), "dittofs_offline_remote_only_bytes"); got != 0 {
-		t.Errorf("unknown share published remote_only_bytes (%d series), want none", got)
-	}
-	if got := testutil.CollectAndCount(m.Registry(), "dittofs_offline_remote_only_ranges"); got != 0 {
-		t.Errorf("unknown share published remote_only_ranges (%d series), want none", got)
-	}
-	if got := testutil.CollectAndCount(m.Registry(), "dittofs_offline_safe"); got != 1 {
-		t.Fatalf("expected one offline_safe series, got %d", got)
-	}
-	if err := testutil.CollectAndCompare(m.Registry(), strings.NewReader(`
-# HELP dittofs_offline_safe Whether every byte the share holds can be served with the remote unreachable (1) or not (0). A share whose residency cannot be determined reports 0.
-# TYPE dittofs_offline_safe gauge
-dittofs_offline_safe{share="unknowable"} 0
-`), "dittofs_offline_safe"); err != nil {
-		t.Fatalf("unexpected offline_safe value: %v", err)
-	}
-}
-
-// A share whose residency IS known publishes both byte gauges alongside the
-// safety verdict, so an operator can see how far from safe it is.
-func TestRuntimeCollector_KnownOfflineShareEmitsByteGauges(t *testing.T) {
-	m := newTestMetrics(t, Snapshot{Shares: []ShareSnapshot{{
-		Name: "known", HasRemote: true,
-		Offline: OfflineSnapshot{Safe: false, Known: true, RemoteOnlyBytes: 4096, RemoteOnlyRanges: 2},
-	}}})
-	if err := testutil.CollectAndCompare(m.Registry(), strings.NewReader(`
-# HELP dittofs_offline_remote_only_bytes Bytes the local tier no longer holds and would have to fetch from the remote to serve.
-# TYPE dittofs_offline_remote_only_bytes gauge
-dittofs_offline_remote_only_bytes{share="known"} 4096
-# HELP dittofs_offline_remote_only_ranges Number of separate ranges those remote-only bytes span.
-# TYPE dittofs_offline_remote_only_ranges gauge
-dittofs_offline_remote_only_ranges{share="known"} 2
-`), "dittofs_offline_remote_only_bytes", "dittofs_offline_remote_only_ranges"); err != nil {
-		t.Fatalf("unexpected byte gauges: %v", err)
 	}
 }

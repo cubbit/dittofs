@@ -1,3 +1,7 @@
+// Package metrics provides the DittoFS Prometheus metrics surface: an owned
+// registry, typed instruments registered against it, and the /metrics HTTP
+// handler. It imports nothing from the runtime, so instrumented packages can
+// depend on it without an import cycle.
 package metrics
 
 import (
@@ -48,13 +52,6 @@ func New(version, commit string) *Metrics {
 	reg.MustRegister(buildInfo)
 
 	return &Metrics{registry: reg, specs: map[string]Spec{}}
-}
-
-// RegisterProvider wires a read-through collector backed by p. The collector
-// calls p.MetricsSnapshot once per scrape and emits the result as ConstMetrics.
-// Safe to call once after New.
-func (m *Metrics) RegisterProvider(p Provider) {
-	m.registry.MustRegister(newRuntimeCollector(p))
 }
 
 // Registry returns the owned registry (for tests and for advanced wiring).
