@@ -94,11 +94,42 @@ func (m *Maker) drawID() core.SegmentID {
 // class out of it — and the spare is never taken: a failed make leaves no
 // spare in the ledger, or one its retirement, not a stream, unlinks.
 func (m *Maker) Make() (core.SegmentID, error) {
+	return m.makeUnder(m.max)
+}
+
+// MakeOverMax is Make with one segment cap of room past the maximum: the
+// read-only probe's one spare, kept as the reopen's first, which a journal
+// filled to its maximum must still be able to make.
+//
+// decision: the probe's spare may take the footprint one cap past the
+// maximum. That departs on purpose from RFC 1 §6, where creating a segment,
+// a spare included, reserves its cap against the maximum: §5.4 says only that
+// the probe "tries to make a spare" and does not cover a full journal, which
+// lives off recycling, which a read-only journal does not run, so a spare
+// held to the maximum is never made and the journal stays read-only after its
+// device recovers. This fills that gap and is an open question for the RFC's
+// owner. The probe holds at most one spare, so the overshoot is one cap,
+// carried into the reopen, where the admission refuses content until
+// retirement brings the footprint back under. Its ceiling: one failed make
+// whose cleanup unlink also fails leaves its reservation standing until
+// something retires the leftover, which a read-only journal may never do, so
+// every later probe is refused at max plus a cap and logs a warning every
+// probe interval, and the journal stays read-only until something outside it
+// reopens it. Overturned by the RFC owner's ruling, by a reopen over the
+// maximum seen to refuse what it must serve, or by such a stranded
+// reservation seen in the field, either of which would take the spare from a
+// reserve held inside the maximum instead.
+func (m *Maker) MakeOverMax() (core.SegmentID, error) {
+	return m.makeUnder(m.max + m.set.cap)
+}
+
+// makeUnder makes one spare, reserving it against max.
+func (m *Maker) makeUnder(max int64) (core.SegmentID, error) {
 	// The reservation sits before any storage is touched, so a refusal owns
 	// no I/O at all, and it is the ledger's own critical section that decides
 	// against the maximum, so two makes near it never both pass.
 	id := m.drawID()
-	if err := m.set.AddSpare(id, m.max); err != nil {
+	if err := m.set.AddSpare(id, max); err != nil {
 		return 0, fmt.Errorf("segment: making %d: reserve: %w", id, err)
 	}
 	if err := m.make(id); err != nil {

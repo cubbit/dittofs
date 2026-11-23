@@ -70,7 +70,7 @@ type copyFixture struct {
 	// pass's own.
 	deferred func(core.SegmentID) []reclaim.DeferredLoss
 	admit    func(capacity.RecordClass) (capacity.Draw, error)
-	drawn    func(capacity.Draw)
+	drawn    func(capacity.Draw, core.SegmentID)
 	crashed  bool // set by a test that crashes the seam; read by the cleanup
 	clock    core.Clock
 }
@@ -116,7 +116,7 @@ func newCopyFixtureBounded(t *testing.T, tracer core.Tracer, maxBytes int64, hea
 		SegmentCap:      copySegCap,
 		MaxBytes:        maxBytes,
 		HeadroomRecords: headroomRecords,
-		Targets:         segment.Targets{Content: 1, Reserve: 1, Headroom: 1},
+		Targets:         segment.Targets{Content: 1, Reserve: 1, Headroom: copyStreams},
 	}, datapath.State{Index: ix, Counters: counters})
 	if err != nil {
 		t.Fatalf("datapath.New: %v", err)

@@ -1630,14 +1630,15 @@ func TestPoolAHoldClosedDuringAMakeLeavesTheTarget(t *testing.T) {
 }
 
 // TestPoolWantRecycleReservesTheShortestClassFirst: a recycle's spare is
-// reserved in the first class short of its target, in the refill's own order —
-// headroom, then reserve, then content — and the reservation counts against
+// reserved in the first class short of its target — the reserve, then the
+// headroom, then content, the reserve ahead of the refill's own order — and
+// the reservation counts against
 // the next one, so two reservations against a target of one give one true and
 // one false. No class short and a stopped pool answer false.
 func TestPoolWantRecycleReservesTheShortestClassFirst(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	t.Run("the refill's order", func(t *testing.T) {
+	t.Run("the reserve first", func(t *testing.T) {
 		// No class is short: nothing to reserve.
 		_, _, _, empty := poolOf(t, segment.Targets{Content: 0, Headroom: 0, Reserve: 0}, noMax, 0, nil)
 		if _, ok := empty.WantRecycleForTest(); ok {
@@ -1661,36 +1662,36 @@ func TestPoolWantRecycleReservesTheShortestClassFirst(t *testing.T) {
 			t.Fatalf("after the giveback no recycle was wanted for the headroom, want it short again: %v", c)
 		}
 
-		// The reserve is wanted after the headroom, which the outstanding
-		// reservation above fills: over targets the headroom's and the
-		// reserve's, the reserve answers once the headroom's slot is taken.
-		_, _, _, res := poolOf(t, segment.Targets{Content: 0, Headroom: 1, Reserve: 2}, noMax, 0, nil)
-		if c, ok := res.WantRecycleForTest(); !ok || c != segment.Headroom {
-			t.Fatalf("a recycle was wanted for %v over a short headroom, want Headroom", c)
+		// The headroom is wanted after the reserve, which the outstanding
+		// reservation fills: over targets the reserve's and the headroom's,
+		// the headroom answers once the reserve's slot is taken.
+		_, _, _, res := poolOf(t, segment.Targets{Content: 0, Headroom: 2, Reserve: 1}, noMax, 0, nil)
+		if c, ok := res.WantRecycleForTest(); !ok || c != segment.Reserve {
+			t.Fatalf("a recycle was wanted for %v over a short reserve, want Reserve", c)
 		}
-		res.RecycleFailedForTest(segment.Headroom)
+		res.RecycleFailedForTest(segment.Reserve)
 		c, ok := res.WantRecycleForTest()
-		if !ok || c != segment.Headroom {
-			t.Fatalf("after the giveback a recycle was wanted for %v, want the short headroom again", c)
-		}
-		// The headroom's slot stays reserved: the reserve answers next.
-		c, ok = res.WantRecycleForTest()
 		if !ok || c != segment.Reserve {
-			t.Fatalf("a recycle was wanted for %v over a short reserve the headroom's reservation leaves, want Reserve", c)
+			t.Fatalf("after the giveback a recycle was wanted for %v, want the short reserve again", c)
+		}
+		// The reserve's slot stays reserved: the headroom answers next.
+		c, ok = res.WantRecycleForTest()
+		if !ok || c != segment.Headroom {
+			t.Fatalf("a recycle was wanted for %v over a short headroom the reserve's reservation leaves, want Headroom", c)
 		}
 
-		// Content rides last: once the headroom's and the reserve's slots are
+		// Content rides last: once the reserve's and the headroom's slots are
 		// reserved against them, the content class answers.
 		_, _, _, con := poolOf(t, segment.Targets{Content: 2, Headroom: 1, Reserve: 1}, noMax, 0, nil)
-		if c, ok := con.WantRecycleForTest(); !ok || c != segment.Headroom {
-			t.Fatalf("a recycle was wanted for %v over a short headroom, want Headroom", c)
-		}
 		if c, ok := con.WantRecycleForTest(); !ok || c != segment.Reserve {
-			t.Fatalf("a recycle was wanted for %v over the reserve the headroom's reservation leaves, want Reserve", c)
+			t.Fatalf("a recycle was wanted for %v over a short reserve, want Reserve", c)
+		}
+		if c, ok := con.WantRecycleForTest(); !ok || c != segment.Headroom {
+			t.Fatalf("a recycle was wanted for %v over the headroom the reserve's reservation leaves, want Headroom", c)
 		}
 		c, ok = con.WantRecycleForTest()
 		if !ok || c != segment.Content {
-			t.Fatalf("a recycle was wanted for %v with the headroom and the reserve reserved, want Content", c)
+			t.Fatalf("a recycle was wanted for %v with the reserve and the headroom reserved, want Content", c)
 		}
 	})
 
@@ -2389,9 +2390,10 @@ func TestPoolAnAbandonedAskIsClearedByTheSpareThatCoversIt(t *testing.T) {
 // count has grown — the class of the make that completed — so the sequence
 // the leaves read off is the fill order the refill itself ran in. The last
 // make's class is the one each class's total is still short of at the end.
-// AdoptClasses over the same Targets must return that same sequence, for the
-// classes the spares phase records are the ones the pool's own worker would
-// have filled.
+// AdoptClasses over the same Targets must return that same set of classes
+// with the reserve's moved first: the spares phase records the classes the
+// pool's own worker would have filled, adopting into the reserve before the
+// headroom (see AdoptClasses).
 func TestTargetsAdoptClassesFollowsTheRefillsFillOrder(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -2493,8 +2495,11 @@ func TestTargetsAdoptClassesFollowsTheRefillsFillOrder(t *testing.T) {
 				t.Fatalf("the last make filled %d classes, want the one each class was short of: %+v", missing, final)
 			}
 
-			if got := row.t.AdoptClasses(len(seq)); !slices.Equal(got, seq) {
-				t.Errorf("AdoptClasses over %d adoptions got %v, want %v, the classes the refill itself made its spares in", len(seq), got, seq)
+			want := slices.Concat(
+				slices.DeleteFunc(slices.Clone(seq), func(c segment.Class) bool { return c != segment.Reserve }),
+				slices.DeleteFunc(slices.Clone(seq), func(c segment.Class) bool { return c == segment.Reserve }))
+			if got := row.t.AdoptClasses(len(seq)); !slices.Equal(got, want) {
+				t.Errorf("AdoptClasses over %d adoptions got %v, want %v, the classes the refill itself made its spares in with the reserve's first", len(seq), got, want)
 			}
 			p.Stop()
 		})
@@ -2502,11 +2507,10 @@ func TestTargetsAdoptClassesFollowsTheRefillsFillOrder(t *testing.T) {
 }
 
 // TestTargetsAdoptClassesNamesTheFillOrder pins the fill order the spares
-// phase reads through the one method that owns it: the headroom first, then
-// the repack reserve, then the content class, and every spare past every
-// target takes the content class — the order the pool's own refill fills a
-// short pool in, so a re-adopted spare lands in the class its own worker
-// would have made it in.
+// phase reads through the one method that owns it: the repack reserve first,
+// then the headroom, then the content class, and every spare past every
+// target takes the content class — the refill's classes with the reserve
+// moved ahead of the headroom.
 func TestTargetsAdoptClassesNamesTheFillOrder(t *testing.T) {
 	same := segment.Targets{Content: 2, Headroom: 1, Reserve: 1}
 	for _, row := range []struct {
@@ -2516,10 +2520,10 @@ func TestTargetsAdoptClassesNamesTheFillOrder(t *testing.T) {
 		want []segment.Class
 	}{
 		{"none adopted", same, 0, nil},
-		{"the headroom first", same, 1, []segment.Class{segment.Headroom}},
-		{"then the repack reserve", same, 2, []segment.Class{segment.Headroom, segment.Reserve}},
+		{"the repack reserve first", same, 1, []segment.Class{segment.Reserve}},
+		{"then the headroom", same, 2, []segment.Class{segment.Reserve, segment.Headroom}},
 		{"then the content class", same, 4,
-			[]segment.Class{segment.Headroom, segment.Reserve, segment.Content, segment.Content}},
+			[]segment.Class{segment.Reserve, segment.Headroom, segment.Content, segment.Content}},
 		{"every spare past every target takes the content class", segment.Targets{}, 3,
 			[]segment.Class{segment.Content, segment.Content, segment.Content}},
 	} {
@@ -2926,4 +2930,74 @@ func TestPoolCheckAfterAMakeLandsPastStop(t *testing.T) {
 	if c := p.Counters(); c.Spares != 1 {
 		t.Fatalf("after a make landed past Stop Counters.Spares = %d, want the 1 spare the make landed", c.Spares)
 	}
+}
+
+// TestPoolHoldOnFullDevice: a reservation's hold on a pool whose make failed
+// ENOSPC answers the device's ENOSPC, as the roll does, never the retryable
+// spare limit a caller would retry forever; a pool whose make failed with EIO
+// still answers the spare limit, since no device is full. It catches a hold
+// that reads no device-full state, and one that reads it for any failure.
+func TestPoolHoldOnFullDevice(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("ENOSPC answers ENOSPC", func(t *testing.T) {
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+		t.Cleanup(p.Stop)
+		awaitDeviceFull(t, true, p)
+		_, err := p.Hold(1)
+		if !errors.Is(err, syscall.ENOSPC) {
+			t.Fatalf("Hold on a full device = %v, want the device's ENOSPC", err)
+		}
+		var ns *core.NoSpaceError
+		if errors.As(err, &ns) || errors.Is(err, core.ErrNoSpace) {
+			t.Fatalf("Hold on a full device = %v, want no NoSpaceError and no ErrNoSpace", err)
+		}
+	})
+
+	t.Run("EIO answers the spare limit", func(t *testing.T) {
+		h := &logRecorder{}
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, slog.New(h))
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+		t.Cleanup(p.Stop)
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 1)
+		_, err := p.Hold(1)
+		var ns *core.NoSpaceError
+		if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
+			t.Fatalf("Hold over an EIO pool = %v, want the spare limit's NoSpaceError", err)
+		}
+	})
+
+	// The device's answer comes only from the shortage branch: a ready spare
+	// is still served on a full device, and only a hold the pool falls short
+	// for answers ENOSPC.
+	t.Run("a ready spare serves despite the state", func(t *testing.T) {
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+		p.Start()
+		t.Cleanup(p.Stop)
+		awaitCounters(t, "a content spare made", p, func(c segment.PoolCounters) bool { return c.Spares == 1 })
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		held, err := p.Hold(1)
+		if err != nil {
+			t.Fatalf("a hold over the ready spare: %v", err)
+		}
+		// The hold rode above the target, so the refill tried to make it up
+		// and found the device full.
+		awaitDeviceFull(t, true, p)
+		if _, err := p.Hold(1); !errors.Is(err, syscall.ENOSPC) {
+			t.Fatalf("a hold over the spare the other hold keeps: %v, want the device's ENOSPC", err)
+		}
+		held.Close()
+		if _, err := p.Hold(1); err != nil {
+			t.Fatalf("a hold over a ready spare on a full device: %v, want it served", err)
+		}
+	})
 }

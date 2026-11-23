@@ -119,6 +119,9 @@ func (st *stream) finishCorrupt(job corruptJob) {
 // its own over the piece's extent. A Lose error is logged by Lose and the drop
 // stands, so it is dropped here.
 func (d *Durability) runCorrupt(job corruptJob) {
+	if d.beforeCorruptLoss != nil {
+		d.beforeCorruptLoss()
+	}
 	for _, l := range job.losses {
 		d.lose(l)
 	}

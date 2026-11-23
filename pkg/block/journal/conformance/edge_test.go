@@ -44,18 +44,14 @@ func writeStatsOf(s journal.Stats) writeStats {
 	return writeStats{s.ExtentCount, s.HeldBytes, s.DirtyBytes, s.NextVersion}
 }
 
-// TestEdge_ZeroLengthWrite checks that an empty write appends nothing, and
-// that its file holds the bytes it did: no record reaches a segment, no count
-// the stats keep moves save the version counter when a nil return draws from
-// it, Since yields no change wherever the empty write falls.
+// TestEdge_ZeroLengthWrite checks that an empty write is accepted, appends
+// nothing and returns the zero Version, and that its file holds the bytes it
+// did: no record reaches a segment, no count the stats keep moves, the version
+// counter included, and Since yields no change wherever the empty write falls.
 //
-// decision: the format refuses a zero length only for Deallocate and
-// CloneTarget. This check accepts a zero-length write returning nil, which
-// draws a version, or ErrZeroLength, and holds the journal to appending
-// nothing under either: the refused outcome leaves every stat where it was,
-// the accepted one moves the counter by exactly the versions it drew, and no
-// bytes move under either. Overturned once the written interface names the
-// write's outcome.
+// The format refuses a zero length only for Deallocate and CloneTarget; a
+// zero-length write is accepted, draws no version and returns the zero
+// Version, so ErrZeroLength is not an outcome of a write.
 func TestEdge_ZeroLengthWrite(t *testing.T) {
 	f := journaltest.New(t)
 
@@ -67,44 +63,23 @@ func TestEdge_ZeroLengthWrite(t *testing.T) {
 
 		before := writeStatsOf(f.J.Stats())
 		writes := segmentWrites(t, f)
-		// The counter's floor before any empty write: an accepted one moves
-		// NextVersion by exactly the versions it drew, so the rise is
-		// measured on the counter half, whose byte-for-byte floor is not a
-		// Version the journal issued.
-		floor := f.J.Stats().NextVersion.Counter
 
-		drawn := 0
 		for _, off := range []int64{0, 2048} {
-			pre := writeStatsOf(f.J.Stats())
 			got, err := h.WriteAt(t.Context(), id, off, nil, 0)
 			stub(t, "WriteAt", err)
 			if err != nil {
-				if !errors.Is(err, journal.ErrZeroLength) {
-					t.Fatalf("share %d: an empty write at %d returned %v, want nil or ErrZeroLength", k, off, err)
-				}
-				if post := writeStatsOf(f.J.Stats()); post != pre {
-					t.Fatalf("share %d: an empty write refused with ErrZeroLength moved the stats from %+v to %+v", k, pre, post)
-				}
-				continue
+				t.Fatalf("share %d: an empty write at %d returned %v, want nil", k, off, err)
 			}
-			drawn++
-			if got.Compare(v) <= 0 {
-				t.Fatalf("share %d: an empty write at %d drew version %v, not above the write before it (%v)", k, off, got, v)
-			}
-			if got.Compare(pre.nextVersion) < 0 {
-				t.Fatalf("share %d: an empty write at %d drew version %v, below the counter's floor before it (%v)", k, off, got, pre.nextVersion)
+			if got != (journal.Version{}) {
+				t.Fatalf("share %d: an empty write at %d returned version %v, want the zero Version", k, off, got)
 			}
 		}
 
 		if after := segmentWrites(t, f); after != writes {
 			t.Fatalf("share %d: %d write calls reached segments over two empty writes, want none", k, after-writes)
 		}
-		got := writeStatsOf(f.J.Stats())
-		if got.extentCount != before.extentCount || got.dirtyBytes != before.dirtyBytes || got.heldBytes != before.heldBytes {
-			t.Fatalf("share %d: two empty writes moved the stats for %d drawn versions from %+v to %+v", k, drawn, before, got)
-		}
-		if rose := got.nextVersion.Counter - floor; rose != uint64(drawn) {
-			t.Fatalf("share %d: two empty writes drew %d versions but moved the counter by %d", k, drawn, rose)
+		if got := writeStatsOf(f.J.Stats()); got != before {
+			t.Fatalf("share %d: two empty writes moved the stats from %+v to %+v", k, before, got)
 		}
 		if cs := since(t, h, id, v); len(cs) != 0 {
 			t.Fatalf("share %d: two empty writes yielded %+v since the write before them", k, cs)
@@ -1276,16 +1251,6 @@ func TestEdge_ReservationExactFitJournal(t *testing.T) {
 // journal's no-space refusal, and that the fault cleared the journal writes
 // again, the journal's own maximum never reached.
 func TestEdge_FilesystemENOSPCIsNotErrNoSpace(t *testing.T) {
-	// decision: the check waits on the roll path answering a full device
-	// with the filesystem's ENOSPC — which no take reads yet: the pool keeps
-	// the state a spare's make failed with ENOSPC set, and a content write
-	// on a full device answers the spare limit alone, so the check's own
-	// bounded retry, built to end at the first refusal that is not the
-	// spare pool's, never leaves the spare refusal and would spend its
-	// every attempt. The skip withdraws when a write on a full device
-	// answers the device's error rather than the pool's.
-	t.Skip("a content write on a full device answers the spare limit: no take reads the pool's device-full state yet")
-
 	const chunk = 256 << 10
 	f := journaltest.New(t)
 	h, id := f.Share(0), journaltest.File(5)
@@ -1314,7 +1279,7 @@ func TestEdge_FilesystemENOSPCIsNotErrNoSpace(t *testing.T) {
 	// Overturned once a seam point names the refill's failure.
 	var err error
 	for range 2 * journaltest.FixtureMaxBytes / chunk {
-		_, err = tryWrite(t, h, id, at, pattern("over", chunk))
+		_, err = h.WriteAt(t.Context(), id, at, pattern("over", chunk), 0)
 		var ns *journal.NoSpaceError
 		if errors.As(err, &ns) && ns.Limit == journal.LimitSpare {
 			f.Advance(journal.SyncBound)
@@ -1542,7 +1507,8 @@ func TestEdge_SyncFailsThenSucceeds(t *testing.T) {
 
 // TestEdge_RecordsWithoutBytesAtMaximum checks that a journal at its maximum
 // still takes the records that carry no bytes — one truncate, one delete,
-// one release with its mark, and an idle seal — none refused for space, each
+// one release with its mark, and the seal the delete's roll makes — none
+// refused for space, each
 // drawn on the headroom and each visible in what it changed, while the
 // other share's file is untouched and still reads.
 func TestEdge_RecordsWithoutBytesAtMaximum(t *testing.T) {
@@ -1583,6 +1549,14 @@ func TestEdge_RecordsWithoutBytesAtMaximum(t *testing.T) {
 	if afterDelete <= afterTruncate {
 		t.Fatalf("HeadroomDraws did not rise over a delete at the maximum")
 	}
+	// The seal: the delete's record does not fit the full segment its stream
+	// filled to the maximum, so the stream seals that segment, footer and
+	// all, and rolls into the headroom. An idle seal cannot stand in here:
+	// the headroom segment the removals roll into holds only header-only
+	// records, which the idle sealer leaves active.
+	if got := f.J.Stats().Sealed; got <= s.Sealed {
+		t.Fatalf("Sealed = %d after a delete at the maximum, want above the %d before it: the full segment sealed at the roll", got, s.Sealed)
+	}
 	w := ws[0]
 	try("MarkOffloaded", f.Share(w.share).MarkOffloaded(t.Context(), w.id, []journal.Extent{w.extent}, w.version, w.version))
 	afterMark := f.J.Stats().Counters.HeadroomDraws
@@ -1595,9 +1569,6 @@ func TestEdge_RecordsWithoutBytesAtMaximum(t *testing.T) {
 		t.Fatalf("HeadroomDraws did not rise over a release at the maximum")
 	}
 
-	sealed := f.J.Stats().Sealed
-	f.Advance(2 * journaltest.IdleSealAge)
-	eventually(t, "no seal was made at the journal's maximum", func() bool { return f.J.Stats().Sealed > sealed })
 	for _, seg := range f.J.Inspect().Segments() {
 		if seg.Failed {
 			t.Fatalf("segment %d failed an append at the journal's maximum", seg.ID)

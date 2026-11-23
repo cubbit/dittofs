@@ -80,8 +80,8 @@ func TestAFailedWindowsLossRefusedAtTheHeadroomIsLeftForTheNextOpen(t *testing.T
 	if err != nil {
 		t.Fatalf("drawing the headroom's drawing side: %v", err)
 	}
-	h.Drawn(spent)
-	fr.d.SetLossAdmission(func(atOpen bool) (func(placed bool), error) {
+	h.Drawn(spent, 1)
+	fr.d.SetLossAdmission(func(atOpen bool) (func(placed core.SegmentID), error) {
 		class := capacity.Loss
 		if atOpen {
 			class = capacity.Open
@@ -90,9 +90,9 @@ func TestAFailedWindowsLossRefusedAtTheHeadroomIsLeftForTheNextOpen(t *testing.T
 		if err != nil {
 			return nil, err
 		}
-		return func(placed bool) {
-			if placed {
-				h.Drawn(draw)
+		return func(placed core.SegmentID) {
+			if placed != 0 {
+				h.Drawn(draw, placed)
 				return
 			}
 			h.Refund(draw)

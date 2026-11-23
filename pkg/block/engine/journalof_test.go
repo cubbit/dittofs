@@ -31,7 +31,10 @@ func TestJournalOfServesTheJournalsMarks(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
 	clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	opts := []journal.Option{journaltest.SuitableMount(), journal.WithClock(clock)}
+	// Two append streams: at the default sixteen a journal makes a content and
+	// a headroom spare per stream at the 256 MiB cap, 8.25 GiB the first
+	// write waits on.
+	opts := []journal.Option{journaltest.SuitableMount(), journal.WithClock(clock), journal.WithSettings(journal.Settings{Streams: 2})}
 	id, err := journal.Init(ctx, dir, journal.InstallationID{1}, opts...)
 	if err != nil {
 		t.Fatalf("journal init: %v", err)

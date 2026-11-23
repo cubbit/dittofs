@@ -129,7 +129,12 @@ func (l *losses) raiseAll() {
 // journal.ErrJournalReadOnly and wraps the cause the journal entered with, so
 // nothing commits existence or a removal over it (RFC 8 §2.5, §11.2). The two
 // are told apart by undid: the journal refuses bare only a Sync of a file
-// whose removal it undid.
+// whose removal it undid. That rests on the journal's public contract on a
+// read-only journal — a file with an undone header-only removal record gets
+// the bare ErrJournalReadOnly on every Sync, and a file whose records were
+// synced before the transition gets nil with its mark — and on the engine's
+// removal guard serialising removals on a file, so the undone record a bare
+// refusal names is this removal's own.
 //
 // decision: the refusal does not rest on the Sync's own answer. The journal
 // answers nil to a Sync whose records were all synced before the transition,
