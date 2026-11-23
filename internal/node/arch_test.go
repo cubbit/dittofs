@@ -497,10 +497,18 @@ func settingsImports(_ string, files []fileImports) ([]string, error) {
 // GenerateWeakKeyFile, whose key file protects its master key at the lowest
 // cost a key file may record: only a test, or a package of test helpers
 // whose name ends in test, may write one. That name is exempt only because
-// no binary links a package of the module whose name ends in test, so each
-// one the binaries under cmd link is reported too. It walks root itself,
-// ignoring files: it reads each file's references, not its imports, so a
-// shared import snapshot serves it nothing; its parse is of whole files.
+// no binary under cmd, as built on the host, links a package of the module
+// whose name ends in test, so each one they link is reported too. It walks
+// root itself, ignoring files: it reads each file's references, not its
+// imports, so a shared import snapshot serves it nothing; its parse is of
+// whole files.
+//
+// decision: the link check lists only ./cmd/... for the host's GOOS, GOARCH
+// and build tags. Mains outside cmd (test/spec-citations, scripts, the
+// */gen and *gen generators) and builds for another GOOS or under another tag are not
+// checked; none of them ships to a user. Widen it when a binary that ships
+// is built from outside cmd, or a file that ships carries a GOOS or tag
+// constraint that could link a test-named package the host build does not.
 func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 	bad, err := linkedTestPackages(root)
 	if err != nil {
@@ -563,6 +571,8 @@ func linkedTestPackages(root string) ([]string, error) {
 	}
 	cmd := exec.Command("go", "list", "-deps", "-f", "{{if and .Module .Module.Main}}{{.Name}} {{.Dir}}{{end}}", "./cmd/...")
 	cmd.Dir = abs
+	// The planted trees are modules of their own, outside any workspace.
+	cmd.Env = append(os.Environ(), "GOWORK=off")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -571,7 +581,7 @@ func linkedTestPackages(root string) ([]string, error) {
 	}
 	var bad []string
 	for line := range strings.Lines(string(out)) {
-		name, dir, _ := strings.Cut(strings.TrimSpace(line), " ")
+		name, dir, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
 		if !strings.HasSuffix(name, "test") {
 			continue
 		}
@@ -632,6 +642,7 @@ func TestImportRules(t *testing.T) {
 			}},
 		{"who writes a weak key file", weakKeyCallers, "weak-key",
 			[]string{
+				"internal/dot/dot.go references GenerateWeakKeyFile",
 				"internal/install/weak.go references GenerateWeakKeyFile",
 				"pkg/attest is named attest and linked into a binary",
 				"pkg/store/store.go references GenerateWeakKeyFile",
