@@ -41,36 +41,52 @@ func Dial(server, cacert string, opts ...client.Option) (*client.Client, error) 
 // credentials file's lock, which every other dfsctl waits on.
 const refreshBound = 30 * time.Second
 
-// NewClient returns a client of the current context's server and that
-// context's name. Every call carries the context's token; one the server
-// refuses 401 is refreshed through the credentials file under Locked.
-func NewClient(env Env) (*client.Client, string, error) {
+// Target is the context a client was built from: its name, and the context
+// as it read then.
+type Target struct {
+	Name    string
+	Dialled credentials.Context
+}
+
+// SameTarget reports whether now, a context read later, still names what
+// dialled named: the same server, CA bundle and account name, and, for an
+// API token, which carries no account name dfsctl can read, the same token.
+// A session's tokens are not compared, since a refresh rotates them. So two
+// sessions of one account on one server are one target.
+func SameTarget(now, dialled credentials.Context) bool {
+	if now.ServerURL != dialled.ServerURL || now.CACert != dialled.CACert || now.Username != dialled.Username {
+		return false
+	}
+	return dialled.RefreshToken != "" || now.AccessToken == dialled.AccessToken
+}
+
+// NewClient returns a client of the current context's server and the
+// context it was built from. Every call carries the context's token; one the
+// server refuses 401 is refreshed through the credentials file under Locked.
+func NewClient(env Env) (*client.Client, Target, error) {
 	s, err := credentials.Read(env.ConfigPath)
 	if err != nil {
-		return nil, "", err
+		return nil, Target{}, err
 	}
-	name := s.GetCurrentContextName()
 	cur, err := s.GetCurrentContext()
 	if err != nil || cur.AccessToken == "" {
-		return nil, "", credentials.ErrNotLoggedIn
+		return nil, Target{}, credentials.ErrNotLoggedIn
 	}
-	src := &fileTokens{env: env, name: name, dialled: *cur, access: cur.AccessToken}
+	t := Target{Name: s.GetCurrentContextName(), Dialled: *cur}
+	src := &fileTokens{env: env, target: t, access: cur.AccessToken}
 	c, err := Dial(cur.ServerURL, cur.CACert, client.WithTokenSource(src))
 	if err != nil {
-		return nil, "", err
+		return nil, Target{}, err
 	}
 	src.c = c
-	return c, name, nil
+	return c, t, nil
 }
 
 // fileTokens is the token source of one context in the credentials file.
 type fileTokens struct {
-	env  Env
-	name string
-	c    *client.Client
-	// dialled is the context as the client was built from it; only its
-	// server, CA bundle and account are compared.
-	dialled credentials.Context
+	env    Env
+	target Target
+	c      *client.Client
 
 	mu     sync.Mutex
 	access string
@@ -83,36 +99,37 @@ func (s *fileTokens) Token(context.Context) (string, error) {
 }
 
 // Refresh takes the credentials file's lock and reads the context again. A
-// context that no longer names the server, CA bundle and account the client
-// was built for is refused, so no token reaches a server it was not issued
-// by. A token there other than failed is another command's refresh, used as
+// context that is no longer the client's target (SameTarget) is refused, so
+// no token reaches a server it was not issued by, nor goes on as another
+// API token. A token there other than failed is another command's refresh, used as
 // it is, which only saves this command a refresh of its own; otherwise the
 // context's refresh token is exchanged, once and within refreshBound, and
 // the new pair saved before the lock is released.
 func (s *fileTokens) Refresh(ctx context.Context, failed string) (string, error) {
+	name := s.target.Name
 	err := Locked(ctx, s.env, func(st *credentials.Store) error {
-		cur, err := st.GetContext(s.name)
+		cur, err := st.GetContext(name)
 		if err != nil || cur.AccessToken == "" {
 			return credentials.ErrNotLoggedIn
 		}
-		if cur.ServerURL != s.dialled.ServerURL || cur.CACert != s.dialled.CACert || cur.Username != s.dialled.Username {
-			return fmt.Errorf("context %q changed since this command started; run it again", s.name)
+		if !SameTarget(*cur, s.target.Dialled) {
+			return fmt.Errorf("context %q changed since this command started; run it again", name)
 		}
 		if cur.AccessToken != failed {
 			s.set(cur.AccessToken)
 			return nil
 		}
 		if cur.RefreshToken == "" {
-			return fmt.Errorf("context %q: the server refused its API token; run 'dfsctl login' again", s.name)
+			return fmt.Errorf("context %q: the server refused its API token; run 'dfsctl login' again", name)
 		}
 		rctx, cancel := context.WithTimeout(ctx, refreshBound)
 		defer cancel()
 		tk, err := s.c.Refresh(rctx, cur.RefreshToken)
 		if err != nil {
-			return fmt.Errorf("context %q: refreshing the session: %w; run 'dfsctl login' again", s.name, err)
+			return fmt.Errorf("context %q: refreshing the session: %w; run 'dfsctl login' again", name, err)
 		}
 		s.set(tk.Access)
-		return st.SetTokens(s.name, tk.Access, tk.Refresh)
+		return st.SetTokens(name, tk.Access, tk.Refresh)
 	})
 	if err != nil {
 		return "", err

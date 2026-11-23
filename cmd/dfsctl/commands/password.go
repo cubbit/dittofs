@@ -48,7 +48,7 @@ func runPasswordChange(cmd *cobra.Command, env cmdutil.Env) error {
 	if cur, err := snap.GetCurrentContext(); err == nil && cur.AccessToken != "" && cur.RefreshToken == "" {
 		return fmt.Errorf("%s: context %q holds an API token; it has no password to change", cmd.CommandPath(), snap.GetCurrentContextName())
 	}
-	c, name, err := cmdutil.NewClient(env)
+	c, target, err := cmdutil.NewClient(env)
 	if err != nil {
 		return err
 	}
@@ -74,8 +74,14 @@ func runPasswordChange(cmd *cobra.Command, env cmdutil.Env) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
 	}
+	// The change's tokens are saved only to the context the change was sent
+	// for: one signed in elsewhere meanwhile keeps its own.
 	if err := cmdutil.Locked(cmd.Context(), env, func(st *credentials.Store) error {
-		return st.SetTokens(name, tk.Access, tk.Refresh)
+		now, err := st.GetContext(target.Name)
+		if err != nil || !cmdutil.SameTarget(*now, target.Dialled) {
+			return fmt.Errorf("%s: the password changed, but context %q changed meanwhile; run 'dfsctl login' again", cmd.CommandPath(), target.Name)
+		}
+		return st.SetTokens(target.Name, tk.Access, tk.Refresh)
 	}); err != nil {
 		return err
 	}

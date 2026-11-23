@@ -52,7 +52,15 @@ func runLogout(cmd *cobra.Command, env cmdutil.Env) error {
 			_, _ = fmt.Fprintf(env.Err, "The server did not end the session: %v\n", err)
 		}
 	}
-	if err := cmdutil.Locked(cmd.Context(), env, func(st *credentials.Store) error { return st.SetTokens(name, "", "") }); err != nil {
+	// The tokens are cleared only if the context still names what was
+	// signed out: a login made meanwhile keeps its new session.
+	if err := cmdutil.Locked(cmd.Context(), env, func(st *credentials.Store) error {
+		now, err := st.GetContext(name)
+		if err != nil || !cmdutil.SameTarget(*now, *cur) {
+			return fmt.Errorf("%s: context %q changed meanwhile; its new sign-in is kept", cmd.CommandPath(), name)
+		}
+		return st.SetTokens(name, "", "")
+	}); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(env.Out, "Logged out from context: %s\n", name)

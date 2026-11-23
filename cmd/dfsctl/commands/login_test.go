@@ -15,12 +15,10 @@ import (
 	"net/http/httputil"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -39,23 +37,15 @@ import (
 // API, and exits 0 if it was answered.
 const childConfig = "DFSCTL_TEST_CHILD_CONFIG"
 
-// childHold, set in a process's environment, makes the test binary a
-// process that takes the lock of the credentials file it names, as main
-// runs a command, under a context an interrupt ends; says "locked" on
-// stdout; and holds the lock until it is interrupted.
-const childHold = "DFSCTL_TEST_CHILD_HOLD"
+// childMain, set in a process's environment, makes the test binary a dfsctl
+// process run through Main, signal handling included, with the arguments it
+// holds one per line; the credentials file is the default one under the
+// process's configuration directory.
+const childMain = "DFSCTL_TEST_MAIN"
 
 func TestMain(m *testing.M) {
-	if path := os.Getenv(childHold); path != "" {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		err := credentials.Update(ctx, path, nil, func(*credentials.Store) error {
-			fmt.Println("locked")
-			<-ctx.Done()
-			return ctx.Err()
-		})
-		_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	if args := os.Getenv(childMain); args != "" {
+		os.Exit(Main(strings.Split(args, "\n")))
 	}
 	if path := os.Getenv(childConfig); path != "" {
 		err := health(context.Background(), cmdutil.Env{Err: os.Stderr, ConfigPath: path})
@@ -134,6 +124,69 @@ func (n *testNode) expire(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// holdingProxy is an http front on 127.0.0.1 passing every request to n's
+// socket but the first POST to path, which it holds, having closed reached,
+// until release is called or the request ends; one that ends first is never
+// passed on.
+func (n *testNode) holdingProxy(t *testing.T, path string) (url string, reached <-chan struct{}, release func()) {
+	t.Helper()
+	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", n.socket)
+	}}
+	t.Cleanup(tr.CloseIdleConnections)
+	rp := &httputil.ReverseProxy{Transport: tr, Rewrite: func(r *httputil.ProxyRequest) {
+		r.Out.URL.Scheme, r.Out.URL.Host = "http", "node"
+	}}
+	at, held := make(chan struct{}), make(chan struct{})
+	var first, once sync.Once
+	release = func() { once.Do(func() { close(held) }) }
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hold := false
+		if r.Method == http.MethodPost && r.URL.Path == path {
+			first.Do(func() { hold = true })
+		}
+		if hold {
+			close(at)
+			select {
+			case <-held:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		rp.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(release)
+	return srv.URL, at, release
+}
+
+// apiToken creates an API token of p, bearing session's access token, and
+// returns it.
+func (n *testNode) apiToken(t *testing.T, p entity.Principal, session string) string {
+	t.Helper()
+	body, _ := json.Marshal(apiv1.APITokenSpec{Expires: n.h.Clock().Now().Add(24 * time.Hour)})
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		"http://node/api/v1/users/"+uuid.UUID(p.ID).String()+"/api-tokens", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+session)
+	req.Header.Set("Content-Type", "application/json")
+	hc := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", n.socket)
+	}}}
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var tok apiv1.APIToken
+	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil || resp.StatusCode != http.StatusOK || tok.Status.Token == "" {
+		t.Fatalf("create an API token: status %d, %v, want 200 and a token", resp.StatusCode, err)
+	}
+	return tok.Status.Token
 }
 
 // newEnv is an invocation's environment over a credentials file of the
@@ -446,29 +499,10 @@ func TestLoginWithAPIToken(t *testing.T) {
 	env := newEnv(t, "", false)
 	session := n.login(t, env, "pat", "pat's password")
 
-	body, _ := json.Marshal(apiv1.APITokenSpec{Expires: n.h.Clock().Now().Add(24 * time.Hour)})
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
-		"http://node/api/v1/users/"+uuid.UUID(p.ID).String()+"/api-tokens", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer "+session.AccessToken)
-	req.Header.Set("Content-Type", "application/json")
-	hc := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, "unix", n.socket)
-	}}}
-	resp, err := hc.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var tok apiv1.APIToken
-	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil || resp.StatusCode != http.StatusOK || tok.Status.Token == "" {
-		t.Fatalf("create an API token: status %d, %v, want 200 and a token", resp.StatusCode, err)
-	}
+	token := n.apiToken(t, p, session.AccessToken)
 
-	mustRun(t, env, "login", "-c", "ci", "--server", n.socket, "--token-file", file(t, "token", tok.Status.Token+"\n"))
-	if c := stored(t, env, "ci"); c.AccessToken != tok.Status.Token || c.RefreshToken != "" {
+	mustRun(t, env, "login", "-c", "ci", "--server", n.socket, "--token-file", file(t, "token", token+"\n"))
+	if c := stored(t, env, "ci"); c.AccessToken != token || c.RefreshToken != "" {
 		t.Errorf("the API token's context: %+v, want the token and no refresh token", c)
 	}
 	if err := health(t.Context(), env); err != nil {
@@ -488,8 +522,8 @@ func TestLoginWithAPIToken(t *testing.T) {
 	// The token replaces pat's session in the context pat signed in to:
 	// the account name is not kept beside a token that may be another's,
 	// and there is no password to change.
-	mustRun(t, env, "login", "-c", "default", "--token-file", file(t, "token2", tok.Status.Token))
-	if c := stored(t, env, "default"); c.Username != "" || c.AccessToken != tok.Status.Token || c.RefreshToken != "" {
+	mustRun(t, env, "login", "-c", "default", "--token-file", file(t, "token2", token))
+	if c := stored(t, env, "default"); c.Username != "" || c.AccessToken != token || c.RefreshToken != "" {
 		t.Errorf("the context after an API-token login over pat's session: %+v, want the token and no account", c)
 	}
 	if _, _, err := dfsctl(env, "password", "change"); err == nil || !strings.Contains(err.Error(), "API token") {
@@ -538,47 +572,62 @@ func TestRefreshRefusesAChangedContext(t *testing.T) {
 	}
 }
 
-// An interrupted command releases the credentials file's lock: a process
-// holding it is sent SIGINT, and the lock is then taken at once, with no
-// temporary file left beside the credentials file.
-func TestInterruptReleasesTheLock(t *testing.T) {
+// An interrupted command returns rather than dies, through Main's signal
+// handling: password change, its refresh held under the credentials file's
+// lock, is sent SIGINT; it exits 1 naming the interrupt, its lock is then
+// taken at once, no temporary file is left, and the file and the session are
+// as they were, since the held refresh never reached the node.
+func TestInterruptedCommandReturnsAndReleasesTheLock(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("no SIGINT to send a process on Windows")
 	}
-	path := filepath.Join(t.TempDir(), "dfsctl", "config.json")
+	n := startNode(t)
+	n.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	url, reached, _ := n.holdingProxy(t, "/api/v1/auth/refresh")
+	env := newEnv(t, "", false)
+	mustRun(t, env, "login", "--server", url, "-u", "pat", "--password-file", file(t, "pw", "pat's password"))
+	before := stored(t, env, "default")
+
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	child := exec.CommandContext(ctx, os.Args[0])
-	child.Env = append(os.Environ(), childHold+"="+path)
-	out, err := child.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	args := []string{"password", "change", "--current-password-file", file(t, "cur", "pat's password"), "--new-password-file", file(t, "new", "next one")}
+	child.Env = append(os.Environ(), childMain+"="+strings.Join(args, "\n"), "XDG_CONFIG_HOME="+filepath.Dir(filepath.Dir(env.ConfigPath)))
+	var stderr bytes.Buffer
+	child.Stderr = &stderr
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if line, err := bufio.NewReader(out).ReadString('\n'); err != nil || line != "locked\n" {
-		t.Fatalf("the child holding the lock said %q, %v, want locked", line, err)
+	select {
+	case <-reached:
+	case <-ctx.Done():
+		t.Fatalf("waiting for the child's refresh: %v (stderr %q)", ctx.Err(), stderr.String())
 	}
 	if err := child.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
 	_ = child.Wait()
+	if code := child.ProcessState.ExitCode(); code != 1 || !strings.Contains(stderr.String(), "interrupt signal received") {
+		t.Errorf("the interrupted command: exit %d, stderr %q, want exit 1 naming the interrupt, not killed", code, stderr.String())
+	}
 	waited := false
-	if err := credentials.Update(ctx, path, func(string) { waited = true }, func(*credentials.Store) error { return nil }); err != nil {
+	if err := credentials.Update(ctx, env.ConfigPath, func(string) { waited = true }, func(*credentials.Store) error { return nil }); err != nil {
 		t.Fatalf("taking the lock after the interrupt: %v", err)
 	}
 	if waited {
 		t.Error("the lock was still held after its holder was interrupted, want it released")
 	}
-	entries, err := os.ReadDir(filepath.Dir(path))
+	entries, err := os.ReadDir(filepath.Dir(env.ConfigPath))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if e.Name() != "config.json.lock" {
-			t.Errorf("%s left beside the credentials file, want only its lock", e.Name())
+		if e.Name() != "config.json" && e.Name() != "config.json.lock" {
+			t.Errorf("%s left beside the credentials file, want only the file and its lock", e.Name())
 		}
+	}
+	if after := stored(t, env, "default"); after != before {
+		t.Errorf("the context after the interrupt: %+v, want it unchanged %+v", after, before)
 	}
 }
 
@@ -589,5 +638,83 @@ func TestLoginRefusesHostPort(t *testing.T) {
 	_, _, err := dfsctl(env, "login", "--server", "localhost:8080", "-u", "pat", "--password-file", file(t, "pw", "x"))
 	if err == nil || !strings.Contains(err.Error(), `"localhost:8080"`) {
 		t.Errorf("login --server localhost:8080: %v, want it refused naming the server", err)
+	}
+}
+
+// A password change saves its tokens only to the context it was sent for:
+// a login to node 2 made while node 1 answers the change keeps node 2's
+// tokens, and the change says the context changed.
+func TestPasswordChangeKeepsAContextChangedMeanwhile(t *testing.T) {
+	n1, n2 := startNode(t), startNode(t)
+	n1.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	n2.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	url, reached, release := n1.holdingProxy(t, "/api/v1/auth/password")
+	env := newEnv(t, "", false)
+	mustRun(t, env, "login", "--server", url, "-u", "pat", "--password-file", file(t, "pw", "pat's password"))
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := dfsctl(env, "password", "change", "--current-password-file", file(t, "cur", "pat's password"),
+			"--new-password-file", file(t, "new", "next one"))
+		done <- err
+	}()
+	<-reached
+	other := n2.login(t, env, "pat", "pat's password")
+	release()
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "changed meanwhile") {
+		t.Errorf("a password change whose context moved to node 2: %v, want it refused as changed meanwhile", err)
+	}
+	if c := stored(t, env, "default"); c != other {
+		t.Errorf("the context after the change: %+v, want node 2's login %+v kept", c, other)
+	}
+}
+
+// logout clears the tokens only of the context it signed out: a login to
+// node 2 made while node 1 answers the sign-out keeps its new session.
+func TestLogoutKeepsAContextChangedMeanwhile(t *testing.T) {
+	n1, n2 := startNode(t), startNode(t)
+	n1.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	n2.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	url, reached, release := n1.holdingProxy(t, "/api/v1/auth/sign-out")
+	env := newEnv(t, "", false)
+	mustRun(t, env, "login", "--server", url, "-u", "pat", "--password-file", file(t, "pw", "pat's password"))
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := dfsctl(env, "logout")
+		done <- err
+	}()
+	<-reached
+	other := n2.login(t, env, "pat", "pat's password")
+	release()
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "changed meanwhile") {
+		t.Errorf("a logout whose context moved to node 2: %v, want it refused as changed meanwhile", err)
+	}
+	if c := stored(t, env, "default"); c != other {
+		t.Errorf("the context after the logout: %+v, want node 2's login %+v kept", c, other)
+	}
+}
+
+// A refresh of an API-token context refuses a context signed in meanwhile
+// with another API token, on the same server, rather than go on as it: an
+// API token names no account dfsctl can compare, so the token is compared.
+func TestRefreshRefusesAnotherAPIToken(t *testing.T) {
+	n := startNode(t)
+	p := n.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	env := newEnv(t, "", false)
+	token := n.apiToken(t, p, n.login(t, env, "pat", "pat's password").AccessToken)
+	err := credentials.Update(t.Context(), env.ConfigPath, nil, func(s *credentials.Store) error {
+		return s.SetContext("ci", &credentials.Context{ServerURL: n.socket, AccessToken: "a token the server refuses"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := cmdutil.NewClient(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, env, "login", "-c", "ci", "--server", n.socket, "--token-file", file(t, "token", token))
+	if _, err := c.Health(t.Context()); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Errorf("a call refused 401 after its context took another API token: %v, want it refused as changed", err)
 	}
 }
