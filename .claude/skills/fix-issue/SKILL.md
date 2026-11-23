@@ -73,9 +73,10 @@ Then read the specific code. `docs/internals/architecture.md` is the map;
 `superpowers:systematic-debugging` for a stubborn bug.
 
 Respect the invariants in `CLAUDE.md` — protocol handlers stay protocol-only,
-every op carries an `*metadata.AuthContext`, file handles are opaque, block
-stores are per-share, errors are `metadata.ExportError` values. A fix that
-violates one of these will be correct and still get rejected.
+file handles are opaque, block stores are per-share, the store's `*StoreError`
+codes reach adapters only as `pkg/vfs/vfserr` sentinels (`storeErr`,
+`internal/vfs/errors.go`). A fix that violates one of these will be correct and
+still get rejected.
 
 **For protocol questions, go to the source of truth** — guessing at wire
 behaviour is how interop bugs are born:

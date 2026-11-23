@@ -343,7 +343,6 @@ suites:
           - internal/adapter/**
           - pkg/adapter/**
           - pkg/metadata/**
-          - internal/auth/**
           - internal/identity/**            # the identity server: sign-in and resolution
           - pkg/identity/**                 # identity's contract
           - pkg/auth/**

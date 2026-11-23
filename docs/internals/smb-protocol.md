@@ -848,8 +848,8 @@ When authentication fails and guest access is enabled:
 ## Cross-Protocol Behaviour
 
 DittoFS supports simultaneous NFS and SMB access to the same files and directories. This
-section documents how the protocols interact through the unified LockManager in
-`pkg/metadata/lock/`.
+section documents how the protocols interact through the cross-protocol lock table,
+`pkg/openstate`.
 
 ### Cross-Protocol Behaviour Matrix
 

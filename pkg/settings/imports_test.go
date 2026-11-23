@@ -18,7 +18,6 @@ import (
 var storePackages = []string{
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore",
 	"github.com/cubbit/dittofs/pkg/metadata/kv",
-	"github.com/cubbit/dittofs/pkg/metadata/store",
 }
 
 // storeImports lists each store package dir's non-test .go files, plus the

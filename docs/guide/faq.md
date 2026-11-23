@@ -208,7 +208,7 @@ Triggers:
   run. Remote (block) store commands return as resource commands of the v2
   management API.
 
-See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
+See [RFC 9](../internals/rfcs/rfc-9-gc.md)
 and [CONFIGURATION.md](configuration.md) for the full design and every
 `gc.*` knob.
 
@@ -367,8 +367,7 @@ Caveats:
   deletions to bypass the bin entirely.
 
 See [CONFIGURATION.md](configuration.md#recycle-bin-trash) for the
-per-share settings, and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
-for the recycle-trap design.
+per-share settings.
 
 ### How do I enable debug logging?
 

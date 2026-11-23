@@ -211,16 +211,16 @@ func TestProblemAnswers(t *testing.T) {
 		{status: 404}: {"not_found"},
 		{status: 409}: {"managed", "not_cancellable", "last_admin", "not_a_copy", "joined", "stale", "cross_project", "tags_exhausted", "exist",
 			"not_empty", "read_only", "no_space", "quota", "range_not_locked", "delete_pending", "state", "cross", "incomplete",
-			"already_exists", "quota_exceeded", "stale_handle", "lock_not_found", "newer_schema", "bound_setting", "format_version",
+			"already_exists", "quota_exceeded", "stale_handle", "newer_schema", "bound_setting", "format_version",
 			"unproven", "wrong_kind", "kind_changed"},
 		{status: 409, retryable: true}: {"operation_running", "delay", "moving", "rehoming", "locked", "share_violation", "blocked",
-			"deadlock", "lock_limit_exceeded", "lock_conflict", "conflict"},
+			"deadlock", "lock_conflict", "conflict"},
 		{status: 412}:                  {"generation_mismatch"},
 		{status: 422}:                  {"idempotency_mismatch"},
 		{status: 428}:                  {"precondition_required"},
 		{status: 429, retryable: true}: {"throttled"},
 		{status: 500}:                  {"inconsistent", "bad_row", "lost", "corrupt", "io", "file_open", "io_error", "uncommitted_version", "wrong_role"},
-		{status: 503, retryable: true}: {"starting", "unavailable", "grace", "grace_period", "connection_limit_reached", "closed"},
+		{status: 503, retryable: true}: {"starting", "unavailable", "grace", "grace_period", "closed"},
 	}
 	byCode := map[apiv1.Code]answerOf{}
 	for a, codes := range want {

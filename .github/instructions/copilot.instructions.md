@@ -60,7 +60,7 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 - ✅ NFS auxiliary protocols (NLM, NSM, Portmap) in internal/protocol/{nlm,nsm,portmap}/
 
 **Store Layer (pkg/metadata/, pkg/blockstore/):**
-- ✅ Metadata stores handle: permissions, file structure, attributes (pkg/metadata/store/badger/)
+- ✅ Metadata stores handle: permissions, file structure, attributes (pkg/metadata/kvstore over a pkg/metadata/kv backend)
 - ✅ Block stores handle: file data read/write operations via local + remote backends (pkg/blockstore/)
 - ✅ Verify two-phase write pattern: PrepareWrite → BlockStore.WriteAt → CommitWrite
 - ✅ Check thread safety (mutexes, atomic operations)
@@ -91,11 +91,7 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 - ✅ Nil checks: validate pointer dereferences
 
 **DittoFS-Specific Patterns:**
-- ✅ Use `metadata.HandleToINode()` for directory entry IDs (NOT custom generation)
-- ✅ Use `metadata.EncodeShareHandle()` / `metadata.DecodeFileHandle()` consistently
-- ✅ Use shared helper functions from `pkg/metadata/types.go`
-- ✅ Use error factory functions from `pkg/metadata/errors.go` and `pkg/metadata/errors/errors.go`
-- ✅ Implement `ReadBlockRange` on block stores for efficient partial reads
+- ✅ The store returns `*StoreError` values built by the factory functions in `pkg/metadata/errors/errors.go`; the filesystem service maps them to `pkg/vfs/vfserr` sentinels in `storeErr` (`internal/vfs/errors.go`)
 
 **Concurrency Safety:**
 - ✅ Check for data races (maps, slices accessed by multiple goroutines)

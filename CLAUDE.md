@@ -113,7 +113,8 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
 
 1. **Protocol handlers handle only protocol concerns.** XDR/SMB wire encoding, framing,
    dispatch, type conversion. Permission checks, file ops, and directory traversal belong in
-   `pkg/metadata/` and the store implementations. Don't inline business logic into handlers.
+   the filesystem service (`internal/vfs`) and the store (`pkg/metadata/kvstore`). Don't inline
+   business logic into handlers.
 
 2. **On this branch the v1 adapters and their share gates are gone.** The NFS and SMB
    adapters, their `AuthContext` builders, and the runtime's share-access, netgroup and
@@ -142,11 +143,14 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
    branch no protocol WRITE handler exists yet
    ([Data path](docs/internals/architecture.md#data-path)); `develop` keeps the v1 rule.
 
-6. **Error codes:** return `metadata.ExportError` values (`ErrNotDirectory`, `ErrNoEntity`,
-   `ErrAccess`, `ErrExist`, `ErrNotEmpty`, …). Log expected errors at `Debug`, unexpected at `Error`.
+6. **Error codes:** the store returns `*StoreError` values from `pkg/metadata/errors` (codes
+   `ErrNotFound`, `ErrNotDirectory`, `ErrAccessDenied`, …). The filesystem service maps them to the
+   `pkg/vfs/vfserr` sentinels (`ErrNotFound`, `ErrNotDir`, `ErrAccess`, `ErrExist`, `ErrNotEmpty`,
+   …) in `storeErr` (`internal/vfs/errors.go`), and each adapter maps those to its own. Log
+   expected errors at `Debug`, unexpected at `Error`.
 
-7. **Store contracts** live in `pkg/metadata/storetest/` — any new metadata backend must pass
-   that conformance suite. Block stores have exactly one suite,
+7. **Store contracts:** a new key-value backend passes `pkg/metadata/kv/kvtest`'s suite, and the
+   store over it `pkg/metadata/kvstore/kvstoretest`'s. Block stores have exactly one suite,
    `blockstoretest.RemoteBlockStoreConformance`, and it covers only the block-keyed
    `remote.RemoteBlockStore` surface. There is **no hash-keyed suite**: the CAS `block.Store`
    interface and its `BlockStoreConformance` were deleted. The journal and the engine carry their
@@ -170,8 +174,8 @@ collaborators:
 - Put the logic in a function of its inputs, and test that function. Keep the I/O at the edge,
   in a thin layer.
 - Take a dependency as a small interface the consumer declares, and test against a **real**
-  implementation of it: the memory metadata or block store, `t.TempDir()`, a listener on
-  `127.0.0.1:0`, an in-memory SQLite control-plane store.
+  implementation of it: the memory block store, `t.TempDir()`, a listener on `127.0.0.1:0`, a
+  Badger key-value store, in memory or under `t.TempDir()`.
 
 Only three kinds of test double are allowed:
 
@@ -269,7 +273,7 @@ entry (§4.7 fails a run whose known failure passes).
 server for the key provider, and a real S3-compatible endpoint. Postgres is gone: the stores are
 Badger, and FoundationDB for a cluster, so don't add a Postgres test. CI starts no S3 endpoint
 yet, so a test that needs one skips in every run and guards nothing until one is wired in; don't
-count it as coverage. Badger under `t.TempDir()` and in-memory SQLite are real implementations, and their
+count it as coverage. Badger under `t.TempDir()` is a real implementation, and its
 tests run untagged. Durability and ordering changes need a test on a real filesystem with
 the crash simulated beneath the code under test (RFC 1 §1.3), because a memory backend proves
 nothing about fsync or a crash. A backend the host lacks is a skip that names the environment
@@ -342,16 +346,15 @@ A `ponytail:` comment marks a **knowingly-simple implementation**, naming its ce
 the upgrade path that would justify replacing it:
 
 ```go
-// ponytail: a covered read scans O(n) keys once; a hole or nested overlap adds
-// a second full scan, O(n log n) sorting and at most O(n) row loads. Upgrade to
-// a numeric offset index, which costs migrating the existing decimal keys, when
-// a payload's row count makes those per-hole row loads show up in a profile.
-func (s *BadgerMetadataStore) GetFileChunkAtOffset(...)
+// ponytail: decides each right of want on its own, up to 32 decisions over
+// one snapshot, each reading the ACL again. Compute the granted mask in one
+// walk of the grant, flags and ACL when MAXIMAL_ACCESS shows in a profile.
+func (f Files) Granted(ctx context.Context, id entity.Identity, h, via entity.Handle, want entity.AccessMask) (entity.AccessMask, error) {
 ```
 
 They are a **debt ledger, not TODOs**: each one records a decision that was correct at the
 time along with the evidence that would overturn it. They appear throughout the codebase,
-mostly in `pkg/block/engine`, `pkg/block/journal` and `pkg/metadata/store`.
+mostly in `pkg/block/engine`, `pkg/block/journal` and `pkg/metadata/kvstore`.
 
 This is the one sanctioned exception to the "no external references" rule above — the
 prefix is what makes the set harvestable as a group. Keep the marker when editing nearby

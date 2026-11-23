@@ -553,7 +553,7 @@ On FoundationDB, `test/fdb/cluster.sh up` starts a one-process cluster in Docker
 
 ## 15. Against today's store
 
-*The new store next to `pkg/metadata/store/badger` and the metadata service the server runs today, measured on 13 and 15 Oct 2026.*
+*The new store next to v1's Badger store and the metadata service the server ran then, measured on 13 and 15 Oct 2026. Both have since been deleted.*
 
 The new store is faster at almost everything a client does, most of all lookup, rename and parallel creates. A single client creating files on disk is slightly slower than the old store syncing every commit, and the old store's relaxed mode, which the server ships with, matches it on disk. It also lacks large parts of today's functionality: the open-state service, quota enforcement, backups, migration, credentials and the block engine's content model.
 

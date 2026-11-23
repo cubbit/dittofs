@@ -903,7 +903,7 @@ sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport localhost
 ## Real NFSv3 NLM lock testing (network-namespace isolation)
 
 DittoFS coordinates byte-range locks across NFSv3 NLM, NFSv4 and SMB through a single
-cross-protocol lock manager (`pkg/metadata/lock/manager.go`). Proving this end to end with a
+cross-protocol lock table (`pkg/openstate`). Proving this end to end with a
 **real kernel NFSv3 client** (not the `nolock` mount option, which makes the kernel resolve locks
 locally and never contact the server) takes a specific harness. This section explains why, and how
 the e2e suite does it.
