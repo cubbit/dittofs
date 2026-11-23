@@ -253,10 +253,12 @@ func (e *dirPrincipals) keytab(t *testing.T, name string) *identitytest.Realm {
 // PAC's SID names is gone; the label is read without writing. alice minted,
 // then her entry deleted or renamed: a ticket of another realm whose PAC
 // carries her SID is refused logon_failure, sending no directory query and
-// writing nothing, not even her new name; and in the directory's realm, her
-// deleted entry's own query failing past the TTL plus the grace, the refusal
-// stays logon_failure. Catches a foreign ticket reaching the directory or
-// writing a record, and a failed read labelled disabled.
+// writing nothing, not even her new name; in the directory's realm, her
+// renamed entry, which the label reads by its ID and finds enabled, is
+// refused logon_failure writing nothing either; and her deleted entry's own
+// query failing past the TTL plus the grace, the refusal stays logon_failure.
+// Catches a foreign ticket reaching the directory, the label's read writing a
+// record, and a failed read labelled disabled.
 func TestKerberosSignInGoneLabel(t *testing.T) {
 	grace := identity.DefaultSettings().DirectoryStaleGrace
 	for _, tc := range []struct {
@@ -270,6 +272,9 @@ func TestKerberosSignInGoneLabel(t *testing.T) {
 		{"another realm, entry renamed", func(e *dirPrincipals, dn string) {
 			e.d.Modify(dn, map[string][][]byte{"sAMAccountName": attr("alicia")})
 		}, 5*time.Minute + time.Second, "", "TRUST.EXAMPLE"},
+		{"the directory's realm, entry renamed", func(e *dirPrincipals, dn string) {
+			e.d.Modify(dn, map[string][][]byte{"sAMAccountName": attr("alicia")})
+		}, 5*time.Minute + time.Second, "", ""},
 		{"the entry's query failing", func(e *dirPrincipals, dn string) { e.d.Delete(dn) }, 5*time.Minute + grace + time.Second, "(objectGUID=*", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
