@@ -258,15 +258,15 @@ func stopped(err error) error {
 // (v1) layout, beside the devices: `blocks` in the store directory's parent.
 //
 // decision: v1 kept its data under `<state dir>/blocks` unless its
-// blockstore.journal.path said otherwise. That key is gone, and the loader
-// does not yet fill in the store's path (metadata.badger.path stays empty
-// until the file sets it), so the root is derived from the store's path:
-// `blocks` beside it. It is v1's default root only when the file writes the
-// store at `<state dir>/metadata`; with the store anywhere else the probe can
-// miss a default v1 layout. A layout found there refuses a start before
-// anything opens. The check takes one extra root, so the store directory's
-// parent itself and a custom v1 root stay unprobed until the start check
-// takes more than one.
+// blockstore.journal.path said otherwise. That key is gone, so the root is
+// derived from the store's path, which the file or
+// `DITTOFS_METADATA_BADGER_PATH` sets, or the loader defaulting it to
+// `<state dir>/metadata`: `blocks` beside it. It is v1's default root when
+// the store sits at `<state dir>/metadata`; with the store anywhere else the
+// probe can miss a default v1 layout. A layout found there refuses a start
+// before anything opens. The check takes one extra root, so the store
+// directory's parent itself and a custom v1 root stay unprobed until the
+// start check takes more than one.
 // Without an absolute store path with a parent below the root (a store at
 // /x would probe /blocks), the first device stands in, probed twice with no
 // effect, and "" is left for no device at all, which the check refuses

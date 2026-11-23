@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
@@ -468,8 +469,12 @@ func writeV1Layout(t *testing.T, root string) {
 // dfs start looks for a pre-journal (v1) layout on each journal device and in
 // `blocks` beside the store directory, v1's default root: a layout there
 // refuses naming it. The working directory and a state directory unrelated to
-// the store are not read, so a start over no installation answers its own
-// verdict and not a v1 one.
+// the store are not read, so the check answers these rows with its own
+// verdict and not a v1 one, and a row without a layout on a probed root
+// asserts on the check itself, which runs before anything opens: a whole
+// start over no installation goes on to open the journal, whose platform
+// check a host with an unsuitable mount fails, and the row would skip on
+// every run there.
 //
 // The store directory's own parent is not read either, because the start
 // check takes one extra root; there is no row for that gap, so a check that
@@ -507,22 +512,35 @@ func TestStartProbesV1Layouts(t *testing.T) {
 				}
 			}
 
-			// Without a v1 layout the start goes on to open the journal in
-			// roots["device"], under the platform's own check, so a host whose
-			// mount that check refuses skips the row, as installation does.
-			if !tc.refused {
-				scratch := filepath.Join(dir, "scratch")
-				if err := os.Mkdir(scratch, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := journal.Init(t.Context(), scratch, [16]byte{1}); errors.Is(err, journal.ErrUnsuitableStorage) {
-					t.Skipf("the journal's platform check refuses the mount holding %s (%v); set TMPDIR to a directory on a suitable mount", dir, err)
-				} else if err != nil {
-					t.Fatalf("journal init on the scratch directory: %v", err)
-				}
-			}
-
 			writeV1Layout(t, roots[tc.at])
+
+			if !tc.refused {
+				// The start passes the check the same roots the rows give it,
+				// and the mount it is handed suits the host, as the node's
+				// own journal options channel does.
+				store := filepath.Join(dir, "store")
+				devices := []string{roots["device"]}
+
+				err := node.Preflight(t.Context(), store, v1ProbeRoot(store, devices),
+					devices, newSystemClock(), journaltest.SuitableMount())
+				if err == nil ||
+					!strings.Contains(err.Error(), "the node is not initialised") {
+					t.Errorf(
+						"the start check with a v1 layout %s: %v, want the not-initialised verdict",
+						tc.name, err,
+					)
+				}
+
+				if err != nil &&
+					strings.Contains(err.Error(), "the node's journals are in v1 state") {
+					t.Errorf(
+						"the start check with a v1 layout %s: %v, want no v1 verdict",
+						tc.name, err,
+					)
+				}
+
+				return
+			}
 
 			file := bootstrapFile{
 				store:   filepath.Join(dir, "store"),
@@ -546,22 +564,16 @@ func TestStartProbesV1Layouts(t *testing.T) {
 				t.Fatalf("dfs start: exit 0, output:\n%s\nwant a refusal", out)
 			}
 
-			v1 := strings.Contains(out, "the node's journals are in v1 state")
-			if v1 != tc.refused {
+			if !strings.Contains(out, "the node's journals are in v1 state") {
 				t.Errorf(
-					"dfs start with a v1 layout %s: v1 refusal %v, want %v; output:\n%s",
-					tc.name, v1, tc.refused, out,
+					"dfs start with a v1 layout %s: want the v1 refusal; output:\n%s",
+					tc.name, out,
 				)
 			}
 
 			named := filepath.Join(roots[tc.at], "shares", "s", "journal")
-			if tc.refused && !strings.Contains(out, named) {
+			if !strings.Contains(out, named) {
 				t.Errorf("dfs start: the refusal does not name %s:\n%s", named, out)
-			}
-
-			const verdict = "the start check: the node is not initialised"
-			if !tc.refused && !strings.Contains(out, verdict) {
-				t.Errorf("dfs start: want the not-initialised verdict, output:\n%s", out)
 			}
 		})
 	}
