@@ -67,7 +67,7 @@ sudo launchctl disable system/com.apple.smbd
 
 #### Single binary
 
-Set the ports in `config.yaml` (or via `DITTOFS_*` env vars), then grant the
+Set the ports in `config.yaml`, then grant the
 binary permission to bind low ports.
 
 ```yaml
@@ -79,14 +79,6 @@ adapters:
       port: 111        # enables NFSv3 client auto-discovery
   smb:
     port: 445
-```
-
-```bash
-# Equivalent env vars
-export DITTOFS_ADAPTERS_NFS_PORT=2049
-export DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=true
-export DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=111
-export DITTOFS_ADAPTERS_SMB_PORT=445
 ```
 
 Binding a port below 1024 needs privilege. Either run as root, or — preferred —
@@ -107,10 +99,6 @@ directly. Set the adapter ports to the standard values and publish them 1:1:
 
 ```bash
 docker run -d \
-  -e DITTOFS_ADAPTERS_NFS_PORT=2049 \
-  -e DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=true \
-  -e DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=111 \
-  -e DITTOFS_ADAPTERS_SMB_PORT=445 \
   -p 2049:2049 -p 445:445 -p 111:111/tcp -p 111:111/udp \
   -p 8080:8080 \
   marmos91c/dittofs:latest
@@ -312,7 +300,7 @@ with root kept as root, so a client claiming root over NFS writes as root withou
 password. Every published port is therefore bound to `127.0.0.1`; reaching the stack from
 another host means removing that prefix in `docker-compose.yml`, and an unattended export
 on a shared network is not what these defaults are for. Override
-`DITTOFS_ADMIN_INITIAL_PASSWORD` and `DITTOFS_CONTROLPLANE_SECRET` first. Localstack
+`COMPOSE_ADMIN_PASSWORD` first. Localstack
 publishes no host port at all.
 
 `docker compose down` stops the stack and keeps the volumes; `docker compose down -v`
