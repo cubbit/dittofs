@@ -37,7 +37,8 @@ Related RFCs, with how far each is in scope:
 
 **Programme.** The umbrella issue #5488, "offload: RFC 2–5 and the engine's offload part", release
 v1.1. Roadmap epic: #3619. The work builds on the journal-only engine
-(`.planning/rfc-8-journal-only-engine-plan.md`), and takes over #4276's syncer half. The
+(`.planning/rfc-8-journal-only-engine-plan.md`). #4276's syncer half, composing the syncer in the
+node, is RFC 8 offload plan epic 21's, which closes #4276's row; this plan builds what it composes. The
 synchronisation points shared across #5488 are the RFC 8 offload plan's, and this plan cites them
 by name. GC (RFC 9, roadmap #3620) is planned later.
 
@@ -58,8 +59,8 @@ version.
 smaller package split. Adversarial, correctness and simplification passes ran, followed by a
 five-lens review of all five #5488 plans. Every finding is folded in.
 
-**Pending the user's answer.** One question, Q1 (§6). It is on the list for the RFC 8 offload
-plan's S1b review.
+**Pending the user's answer.** Q1 (§6), on the list for the RFC 8 offload plan's S1b review; and
+the alert rules' form (O7).
 
 ---
 
@@ -87,10 +88,24 @@ plan calls it **the store adapter**, so it is not confused with the engine's `*e
   - RFC 24 §6.2's CPU token;
   - running `syncertest`'s conformance suite against the adapter in `integration`.
 
-  Epic 21 also builds the root's single syncer, passes it the per-worker memory inputs (D7), opens
-  one flow per share, and registers this plan's collector and conditions in `internal/node`.
-- **RFC 8 offload plan, epic 15.** It holds RFC 5's chain pin from Mint to Commit or Abandon, so
-  every attempt of one `Upload` encodes under one chain (Q1).
+  Epic 21 also builds the root's single syncer, registers each store, passes it the per-worker
+  memory inputs (D7), and registers this plan's collector and conditions in `internal/node`.
+- **The engine's calls on the syncer, by RFC 8 offload plan epic.** The engine calls none today:
+  `Deps` in `pkg/block/engine/deps.go` has no `Syncer`, and `imports_test.go`'s allowlist names no
+  `pkg/syncer` (D1).
+  - Epic 15: `Upload`, the pipeline's Put step, between `kvstore`'s `Content.Intend` and
+    `Content.Commit` (`pkg/metadata/kvstore/offload.go`), or `Blocks.Abandon`
+    (`pkg/metadata/kvstore/blocks.go`). It holds RFC 5's chain pin from Mint to Commit or Abandon,
+    so every attempt of one `Upload` encodes under one chain (Q1), and it bounds a pass by
+    `upload_workers` block targets, a key epic 8 declares.
+  - Epic 16: a share's flow, opened at `Bind` and closed at `Drop` and `Close`.
+  - Epic 17: `Fetch` per missing extent of a carved run, and `Prefetch` from the speculator's
+    read-ahead.
+  - Epic 20: `Flow.Healthy` and `Flow.Health`, read as the share's per-direction health.
+- **The journal's offload half is not a seam of this plan.** `Offload`, `OffloadMany`,
+  `MarkOffloaded` and `Release` return `ErrNotImplemented` on `feat/storage-v2`
+  (`pkg/block/journal/offload.go`) until the journal plan's epic 9b. That gates RFC 8 offload plan
+  S6 and its first end-to-end pass, never an epic here: the syncer never calls the journal.
 - **RFC 4 plan.** Epic 3 delivers LocalStack with HTTPS in `integration`, which B5 needs. The
   codec owns the codec part of RFC 3 §2.2's memory-bound row.
 - **RFC 2 and RFC 5 plans.** The chunk-count cap, the block target, `MaxEncodedLen` and
@@ -121,10 +136,12 @@ RFC 3 §8.6's suites paragraph, amended here, places the checks:
   21;
 - the fuzz targets in RFC 2's nightly `fuzz` suite;
 - the benchmarks in `syncer-bench`;
-- the soak in `engine-soak`.
+- the soak in `engine-soak`, under RFC 8 offload plan epic 22.
 
-None of these suites keeps a `known.yaml`, so each test lands green, with the epic that makes it
-pass.
+None of the suites this plan's own tests run in keeps a `known.yaml`, so each test lands green,
+with the epic that makes it pass. `engine-soak` keeps one (`test/engine/soak-known.yaml`), but the
+soak and its entries are epic 22's. The `fuzz` suite does not exist yet; RFC 2 plan epic 2
+registers it.
 
 ### 1.3 What epic 1 must deliver
 
@@ -142,7 +159,8 @@ undefined, which epic 1 settles.
 
 ### 1.4 What epic 2 must deliver
 
-**The suite.** No suite this plan uses keeps a `known.yaml`, so no test lands red. The §1.5
+**The suite.** No suite this plan's own tests run in keeps a `known.yaml` (§1.2), so no test lands
+red. The §1.5
 instruction's clause that epic issues must exist before E2 lands is there for `known.yaml`
 entries, so it binds nothing here.
 
@@ -236,8 +254,9 @@ entries, so it binds nothing here.
    the `Stats` fields it fills, and the syncer opens no spans (D5). The bridge is epic 8's, in
    `pkg/syncer/series` (D4):
    - the collector under the `syncer_` prefix (RFC 25 §2.1, §2.8);
-   - the conditions `store_put_unhealthy` and `store_get_unhealthy` (RFC 25 §3.9);
-   - their alert rules (RFC 25 §7).
+   - the conditions `store_put_unhealthy` and `store_get_unhealthy` (RFC 25 §3.9), as a
+     `health.Source` over `health.ScopeStore` (`pkg/health/evaluator.go`);
+   - their alert rules (RFC 25 §7), in the form O7 leaves open.
 
    RFC 8 offload plan epic 21 registers them.
 4. **Profiling.** Tests and benchmarks run under `internal/prof`'s leak check. Two hot paths carry
@@ -253,8 +272,8 @@ entries, so it binds nothing here.
    - a throttle limit and a count in flight, at `Stats`' busy workers per store, never at the
      in-memory store's own record, which the store adapter cannot export;
    - every other counter, at `Stats`.
-6. **Known failures shrink.** No suite this plan uses keeps a `known.yaml` (§1.4), so this rule
-   binds no epic.
+6. **Known failures shrink.** No suite this plan's own tests run in keeps a `known.yaml` (§1.2), so
+   this rule binds no epic.
 7. **v2 ignores v1.** No epic imports, copies from or depends on the behaviour of `pkg/block/syncer`,
    `pkg/block/remote` or `pkg/block/blockcodec`.
    - Epic 1's import test checks each syncer package on its own, under amended RFC 0 §1.2. It
@@ -336,6 +355,7 @@ flowchart TD
   S2 -. "the Stats type" .-> E8["E8 Integration: the syncer's own"]
   E6 & E7 & E5 --> S3(["S3 syncer complete over the in-memory Store"]):::sync
   S3 --> E9["E9 E2E green"]
+  S3 -. "the syncer and its in-memory Store" .-> X5(["RFC 8 offload plan S5 offload components built"]):::sync
   X(["RFC 8 offload plan S7 store adapter and node composition built"]):::sync -. "B5" .-> E9
   L(["RFC 4 plan epic 3: LocalStack with HTTPS"]):::sync -. "B5" .-> E9
   classDef blocker stroke:#c0392b,stroke-width:3px
@@ -351,7 +371,8 @@ flowchart TD
   the fault wrapper exists. S2 unblocks epics 3, 4 and 5, and epic 8, which needs only the `Stats`
   type.
 - **S3 — the syncer complete over the in-memory `Store`.** Every RFC 3 §7 row that epics 1 and 3 to
-  7 name is green in `unit`. S3 unblocks epic 9.
+  7 name is green in `unit`. S3 unblocks epic 9. It is also the syncer's share of RFC 8 offload plan
+  S5, which gates that plan's S3, the end of its epic 16.
 - **RFC 8 offload plan S7, store adapter and node composition built.** External. It unblocks B5 in
   epic 9.
 - **RFC 4 plan epic 3, LocalStack with HTTPS.** External. It unblocks B5 against the emulator.
@@ -411,7 +432,9 @@ pkg/syncer/                       RFC 3 §1.3's surface; Syncer, Flow, Config, C
 
 **D1. v2 lives at `pkg/syncer`.**
 - The user decided on new top-level paths for #5488's components, so no epic waits on #5484.
-- The import-test entries the engine needs are the RFC 8 offload plan's.
+- The import-test entries the engine needs are the RFC 8 offload plan's: today
+  `pkg/block/engine/imports_test.go` allows no `pkg/syncer` and refuses v1's `pkg/block/syncer`, and
+  RFC 8 offload plan epic 21 adds `enginewire`'s edge.
 - **Prior art.** `pkg/openstate` and `pkg/vfs`, the same top-level layout (in this repository).
 - **Applied by** epic 1.
 
@@ -422,7 +445,8 @@ pkg/syncer/                       RFC 3 §1.3's surface; Syncer, Flow, Config, C
 - **Prior art.** The journal's conformance suite; Go's `testing/fstest.TestFS`.
 - **Applied by** epic 2.
 
-**D3. Time comes from a `Clock` the syncer declares: RFC 8 §2.1's `Now`, `Elapsed` and `After`.**
+**D3. Time comes from a `Clock` the syncer declares: RFC 8 §2.1's `Now`, `Elapsed` and `After`,
+the same three methods as the engine's `Clock` (`pkg/block/engine/deps.go`).**
 - Tests use `pkg/sim`'s `TestClock`, which moves only on `Advance`.
 - RFC 3 §1.4 says time "advances only when every task is blocked". To meet that, a test advances
   only after the syncer reports itself idle, through a per-instance hook set from `export_test.go`.
@@ -436,8 +460,10 @@ pkg/syncer/                       RFC 3 §1.3's surface; Syncer, Flow, Config, C
   epic 21 registers them.
 - RFC 3 §2.12 keeps `pkg/syncer` itself free of any metrics library, so they live in a subpackage.
 - The collector reads a `Stats` function. The node's deadlined, single-flight fetch (RFC 25 §2.8)
-  wraps that function when epic 21 registers it.
-- **Prior art.** The journal's series, exported by the node from the journal's `Stats`.
+  wraps that function when epic 21 registers it. That fetch, `snapshot` in
+  `internal/node/stats.go`, serves only `func() engine.Stats` today, so epic 21 widens it.
+- **Prior art.** The journal's series, which the node itself builds from the journal's `Stats`
+  (`journalSeries`, `internal/node/stats.go`); here the component owns its collector instead.
 - **Applied by** epic 8.
 
 **D5. The syncer opens no spans, and its configuration holds no tracer.**
@@ -672,10 +698,13 @@ RFC 25 §3.9's `store_put_unhealthy` and `store_get_unhealthy` rows and their al
 
 **Done when:**
 - the settings section declares its row as RFC 13 Appendix B states it, so the RFC 13 plan's D3
-  check passes once epic 21 adds the section to the node's table;
+  check (`internal/node/appendixb_test.go`) passes once epic 21 adds the section to the node's
+  table (`newTable`, `internal/node/settings.go`);
 - the collector, over a `Stats` function the test supplies, emits every RFC 3 §2.12 series as RFC
   25 §2.1 and §2.5 require;
-- the two conditions follow RFC 25 §3.9's severity for each cause.
+- the two conditions carry RFC 25 §3.9's cause for each direction. `health.Condition` has no
+  severity field (the `ponytail:` on `Evaluator`, `pkg/health/evaluator.go`), so §3.9's severity
+  per cause waits on §6.1's row.
 
 **Expected content:**
 - `pkg/syncer/settings.go`.
@@ -747,7 +776,12 @@ valid, but it does not say where the measurement lives. Pins epic 1.
   `Stats` without defining them. It spells the directions both `Put`/`Get` and `DirPut`/`DirGet`.
   And it gives `Flow` no id, although RFC 3 §2.12 reports flows by id. Epic 1 settles each one: the
   names as RFC 3 §1.3 uses them, `Hash` as `[32]byte`, `Put`/`Get`, and an `ID` on `Flow`. It
-  proposes these to RFC 3's author as wording fixes.
+  proposes these to RFC 3's author as wording fixes. `BlockName` is a `[32]byte` of its own,
+  like `entity.BlockName` (`pkg/metadata/entity/content.go`), which the syncer cannot import.
+- **O7. The repository has no alert rules.** None exist on `feat/storage-v2`, and no plan chooses
+  their form: the RFC 1 plan's §6 row and the RFC 23 plan's §6.1 row hold theirs for an RFC 25 plan
+  that is not written. RFC 8 offload plan epic 21 registers every component's rules, so epic 8
+  writes the syncer's in the form epic 21 registers. That form is pending the user.
 
 ### 6.1 Deferral ledger
 
@@ -762,7 +796,8 @@ What this plan knowingly does not build. Each row names the section that defers 
 | The pool sizing tool (RFC 3 §2.11) | no operator needs it in v1.1; RFC 24 §7.2 sizes the defaults | RFC 23 plan | an operator needs pool sizes past the defaults |
 | The store adapter, its error mapping and past-the-end wrap (O1), `ProbeKey`, spreading connections across addresses, the CPU token, the root's syncer, registering epic 8's series and settings, and the conformance suite run against the adapter (§1.1) | composition | RFC 8 offload plan, epic 21 | that epic |
 | The soak (RFC 3 §8.1) | one soak for the composed node | RFC 8 offload plan, epic 22 (`engine-soak`) | that epic |
-| The codec's part of RFC 3 §7.2's "§2.2 memory bound" row (epic 7) | the codec is behind the store adapter | RFC 4 plan | its codec epic |
+| The codec's part of RFC 3 §7.2's "§2.2 memory bound" row (epic 7) | the codec is behind the store adapter | RFC 4 plan, epic 6 (the block codec) | that epic |
+| RFC 25 §3.9's severity per cause on `store_put_unhealthy` and `store_get_unhealthy` (epic 8) | `health.Condition` carries no severity; the `ponytail:` on `pkg/health`'s `Evaluator` names RFC 25's plan as its upgrade | unowned | a plan takes RFC 25's registry, or `pkg/health` gains severity |
 | RFC 0 §1.4's single-node checks (§1.4) | they run on the composed node | RFC 8 offload plan | its conformance epics |
 | RFC 24's transfers size passed to the syncer (D6) | `pkg/resources` has no `Split` | unowned | a plan takes RFC 24 §7, or the root sizes its pools |
 | Hedged cold reads (RFC 3 §9, "Deferred") | not measured | unowned | a cold-read latency measurement asks for it |
