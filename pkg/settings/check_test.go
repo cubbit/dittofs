@@ -579,8 +579,10 @@ func TestCheckRoleDelete(t *testing.T) {
 
 // A key role raises the write role of that key alone, first value included:
 // an operator is refused the put and the delete of the key KeyRole names,
-// every role below the named one too, while the section's other keys stay
-// an operator's and an admin writes the key as any other.
+// while the section's other keys stay an operator's and an admin writes the
+// key as any other. The roles below operator are refused by the section's
+// own gate before the key gate is reached, so that loop pins the section's
+// gate, not this one.
 func TestCheckKeyRoleGate(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 

@@ -192,7 +192,7 @@ func TestCheckRefusesOperatorOnAdminKeys(t *testing.T) {
 	//
 	// decision: the keytab's change case is left to a test that can seal
 	// one, since the role gate the case exercises is the same one either
-	// way.
+	// way. Withdraw once a helper here can seal a keytab secret.
 	store := func(value string) {
 		t.Helper()
 
@@ -216,7 +216,7 @@ func TestCheckRefusesOperatorOnAdminKeys(t *testing.T) {
 
 	store("false")
 
-	err := checkPut("identity.ntlm", "false")
+	err := checkPut("identity.ntlm", "true")
 	if !errors.Is(err, settings.ErrForbidden) {
 		t.Errorf("an operator's change of identity.ntlm: err = %v, want ErrForbidden", err)
 	}
