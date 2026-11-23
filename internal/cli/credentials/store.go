@@ -1,4 +1,5 @@
-// Package credentials provides credential storage and context management for dfsctl.
+// Package credentials keeps dfsctl's contexts: for each named context, the
+// server it reaches, the account signed in and the tokens it holds.
 package credentials
 
 import (
@@ -8,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"time"
 )
 
 const (
@@ -31,89 +31,75 @@ var (
 	ErrNotLoggedIn = errors.New("not logged in - run 'dfsctl login' first")
 )
 
-// Context represents a connection context to a DittoFS server.
+// Context is one server and the account signed in to it.
 type Context struct {
-	ServerURL    string    `json:"server_url"`
-	Username     string    `json:"username,omitempty"`
-	AccessToken  string    `json:"access_token,omitempty"`
-	RefreshToken string    `json:"refresh_token,omitempty"`
-	ExpiresAt    time.Time `json:"expires_at,omitempty"`
-
-	// TLS material captured at login and reused by every later command. Paths
-	// are stored (not contents) so the files are re-read each run and survive
-	// certbot/cert-manager rotation; the paths must stay readable.
-	CACert        string `json:"ca_cert,omitempty"`
-	ClientCert    string `json:"client_cert,omitempty"`
-	ClientKey     string `json:"client_key,omitempty"`
-	TLSSkipVerify bool   `json:"tls_skip_verify,omitempty"`
-}
-
-// IsExpired returns true if the access token has expired.
-func (c *Context) IsExpired() bool {
-	if c.ExpiresAt.IsZero() {
-		return true
-	}
-	// Consider expired if within 60 seconds of expiration
-	return time.Now().Add(60 * time.Second).After(c.ExpiresAt)
-}
-
-// HasRefreshToken returns true if a refresh token is available.
-func (c *Context) HasRefreshToken() bool {
-	return c.RefreshToken != ""
-}
-
-// Preferences represents user preferences.
-type Preferences struct {
-	DefaultOutput string `json:"default_output,omitempty"` // table, json, yaml
-	Color         string `json:"color,omitempty"`          // auto, always, never
-	Editor        string `json:"editor,omitempty"`
+	// ServerURL is an https URL, an http URL on a loopback address, or the
+	// path of a node's local socket.
+	ServerURL string `json:"server_url"`
+	Username  string `json:"username,omitempty"`
+	// AccessToken is the token every call carries: a session's access token,
+	// or an API token, which has no RefreshToken.
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	// CACert is the path of a PEM bundle of the CAs the server's certificate
+	// is checked against, re-read on every run so a rotated bundle is picked
+	// up; empty for the system's roots.
+	CACert string `json:"ca_cert,omitempty"`
 }
 
 // Config represents the complete dfsctl configuration.
 type Config struct {
 	CurrentContext string              `json:"current_context"`
 	Contexts       map[string]*Context `json:"contexts"`
-	Preferences    Preferences         `json:"preferences,omitempty"`
 }
 
-// Store manages credential storage and retrieval.
+// Store is the credentials file at one path, as it was read.
 type Store struct {
 	configPath string
 	config     *Config
 }
 
-// NewStore creates a new credential store.
-func NewStore() (*Store, error) {
-	configPath, err := getConfigPath()
+// NewStoreAt reads the credentials file at path; a missing file is an empty
+// store. A file a context of which still says tls_skip_verify is refused:
+// ignoring the field would start verifying a server its user chose not to.
+func NewStoreAt(path string) (*Store, error) {
+	s := &Store{configPath: path, config: &Config{Contexts: map[string]*Context{}}}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return s, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-
-	store := &Store{
-		configPath: configPath,
+	if err := json.Unmarshal(data, s.config); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-
-	// Load existing config or create new
-	if err := store.load(); err != nil {
-		// If file doesn't exist, create empty config
-		if os.IsNotExist(err) {
-			store.config = &Config{
-				Contexts: make(map[string]*Context),
-			}
-		} else {
-			return nil, err
+	if s.config.Contexts == nil {
+		s.config.Contexts = map[string]*Context{}
+	}
+	var old struct {
+		Contexts map[string]struct {
+			TLSSkipVerify bool `json:"tls_skip_verify"`
+		} `json:"contexts"`
+	}
+	if err := json.Unmarshal(data, &old); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	for name, c := range old.Contexts {
+		if c.TLSSkipVerify {
+			return nil, fmt.Errorf("%s: context %q holds tls_skip_verify, which dfsctl no longer honours; remove the field and log in again with --cacert naming the server's CA", path, name)
 		}
 	}
-
-	return store, nil
+	return s, nil
 }
 
-// getConfigPath returns the path to the config file.
-func getConfigPath() (string, error) {
+// DefaultPath is the credentials file's path: config.json under dfsctl in
+// the user's configuration directory, %APPDATA% on Windows and
+// $XDG_CONFIG_HOME or ~/.config elsewhere.
+func DefaultPath() (string, error) {
 	var configHome string
 
 	if runtime.GOOS == "windows" {
-		// On Windows, use %APPDATA%\dfsctl
 		configHome = os.Getenv("APPDATA")
 		if configHome == "" {
 			home, err := os.UserHomeDir()
@@ -123,7 +109,6 @@ func getConfigPath() (string, error) {
 			configHome = filepath.Join(home, "AppData", "Roaming")
 		}
 	} else {
-		// On Unix, use XDG_CONFIG_HOME or ~/.config
 		configHome = os.Getenv("XDG_CONFIG_HOME")
 		if configHome == "" {
 			home, err := os.UserHomeDir()
@@ -137,31 +122,38 @@ func getConfigPath() (string, error) {
 	return filepath.Join(configHome, DefaultConfigDir, ConfigFileName), nil
 }
 
-// load reads the config from disk.
-func (s *Store) load() error {
-	data, err := os.ReadFile(s.configPath)
-	if err != nil {
-		return err
-	}
-
-	s.config = &Config{}
-	return json.Unmarshal(data, s.config)
-}
-
-// save writes the config to disk.
+// save writes the config to a temporary file beside it, readable by its
+// owner only, and renames that into place, so a reader never sees half a
+// file. The directory is created 0700 when missing.
 func (s *Store) save() error {
-	// Ensure directory exists
 	dir := filepath.Dir(s.configPath)
 	if err := os.MkdirAll(dir, DirPermissions); err != nil {
 		return fmt.Errorf("cannot create config directory: %w", err)
 	}
-
 	data, err := json.MarshalIndent(s.config, "", "  ")
 	if err != nil {
 		return err
 	}
-
-	return os.WriteFile(s.configPath, data, FilePermissions)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(s.configPath)+".*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Chmod(FilePermissions)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.configPath)
 }
 
 // GetCurrentContext returns the current context.
@@ -201,12 +193,11 @@ func (s *Store) ListContexts() []string {
 	return names
 }
 
-// SetContext creates or updates a context.
+// SetContext creates or replaces the context name, makes it the current
+// one, and saves.
 func (s *Store) SetContext(name string, ctx *Context) error {
-	if s.config.Contexts == nil {
-		s.config.Contexts = make(map[string]*Context)
-	}
 	s.config.Contexts[name] = ctx
+	s.config.CurrentContext = name
 	return s.save()
 }
 
@@ -251,52 +242,12 @@ func (s *Store) DeleteContext(name string) error {
 	return s.save()
 }
 
-// UpdateTokens updates the tokens for the current context.
-func (s *Store) UpdateTokens(accessToken, refreshToken string, expiresAt time.Time) error {
-	ctx, err := s.GetCurrentContext()
-	if err != nil {
-		return err
+// SetTokens replaces the tokens of the context name and saves.
+func (s *Store) SetTokens(name, access, refresh string) error {
+	ctx, ok := s.config.Contexts[name]
+	if !ok {
+		return ErrContextNotFound
 	}
-
-	ctx.AccessToken = accessToken
-	ctx.RefreshToken = refreshToken
-	ctx.ExpiresAt = expiresAt
-
+	ctx.AccessToken, ctx.RefreshToken = access, refresh
 	return s.save()
-}
-
-// ClearCurrentContext clears credentials from the current context (logout).
-func (s *Store) ClearCurrentContext() error {
-	ctx, err := s.GetCurrentContext()
-	if err != nil {
-		return err
-	}
-
-	ctx.AccessToken = ""
-	ctx.RefreshToken = ""
-	ctx.ExpiresAt = time.Time{}
-
-	return s.save()
-}
-
-// GetPreferences returns the user preferences.
-func (s *Store) GetPreferences() Preferences {
-	return s.config.Preferences
-}
-
-// SetPreferences updates the user preferences.
-func (s *Store) SetPreferences(prefs Preferences) error {
-	s.config.Preferences = prefs
-	return s.save()
-}
-
-// ConfigPath returns the path to the config file.
-func (s *Store) ConfigPath() string {
-	return s.configPath
-}
-
-// GenerateContextName generates a unique context name from server URL.
-func GenerateContextName(serverURL string) string {
-	// Simple approach: use "default" for first context, then derive from URL
-	return "default"
 }

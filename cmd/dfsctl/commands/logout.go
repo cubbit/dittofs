@@ -3,20 +3,22 @@ package commands
 import (
 	"fmt"
 
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
 	"github.com/spf13/cobra"
 )
 
-func newLogoutCmd() *cobra.Command {
+func newLogoutCmd(env cmdutil.Env) *cobra.Command {
 	logoutCmd := &cobra.Command{
 		Use:   "logout",
 		Short: "Clear stored credentials",
-		Long: `Clear stored credentials for the current context.
+		Long: `End the current context's session and clear its tokens.
 
-Removes the access and refresh tokens from the active context in
-~/.config/dfsctl/config.json but preserves the server URL and context name so
-you can re-authenticate quickly with dfsctl login. To switch between contexts
-or remove a context entirely, use the dfsctl context subcommand.
+The server is asked to end the session, then the tokens are removed from the
+context, which keeps its server, account and CA bundle so dfsctl login signs in
+again with only a password. A context signed in with an API token only forgets
+the token, which stays valid until it is revoked. To switch between contexts or
+remove one entirely, use the context subcommand.
 
 Examples:
   # Logout from the current context (clears tokens, keeps server URL)
@@ -24,29 +26,35 @@ Examples:
 
   # Logout then immediately log back in as a different user
   dfsctl logout && dfsctl login --username operator`,
-		RunE: runLogout,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error { return runLogout(cmd, env) },
 	}
 	return logoutCmd
 }
 
-func runLogout(cmd *cobra.Command, args []string) error {
-	// Load credential store
-	store, err := credentials.NewStore()
+func runLogout(cmd *cobra.Command, env cmdutil.Env) error {
+	s, err := credentials.NewStoreAt(env.ConfigPath)
 	if err != nil {
-		return fmt.Errorf("failed to initialize credential store: %w", err)
+		return err
 	}
-
-	// Check if there's a current context
-	contextName := store.GetCurrentContextName()
-	if contextName == "" {
+	name := s.GetCurrentContextName()
+	cur, err := s.GetCurrentContext()
+	if err != nil {
 		return fmt.Errorf("not logged in - no current context")
 	}
-
-	// Clear credentials for current context
-	if err := store.ClearCurrentContext(); err != nil {
-		return fmt.Errorf("failed to clear credentials: %w", err)
+	// The sign-out runs outside the lock, which a refresh it needs takes.
+	if cur.RefreshToken != "" {
+		c, _, err := cmdutil.NewClient(env)
+		if err == nil {
+			err = c.SignOut(cmd.Context())
+		}
+		if err != nil {
+			_, _ = fmt.Fprintf(env.Err, "The server did not end the session: %v\n", err)
+		}
 	}
-
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Logged out from context: %s\n", contextName)
+	if err := cmdutil.Locked(cmd.Context(), env, func(st *credentials.Store) error { return st.SetTokens(name, "", "") }); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(env.Out, "Logged out from context: %s\n", name)
 	return nil
 }

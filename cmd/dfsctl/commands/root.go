@@ -41,16 +41,15 @@ Use "dfsctl [command] --help" for more information about a command.`,
 	root.SetOut(env.Out)
 	root.SetErr(env.Err)
 
-	root.PersistentFlags().String("server", "", "Server URL (overrides stored credential)")
 	root.PersistentFlags().StringP("output", "o", "table", "Output format (table|json|yaml)")
 	root.PersistentFlags().Bool("no-color", false, "Disable colored output")
 	root.PersistentFlags().BoolP("verbose", "v", false, "Enable verbose output")
-	root.PersistentFlags().String("cacert", "", "Path to a PEM CA bundle trusted for the server certificate (overrides stored)")
 
 	root.AddCommand(
 		newVersionCmd(),
-		newLoginCmd(),
-		newLogoutCmd(),
+		newLoginCmd(env),
+		newLogoutCmd(env),
+		newPasswordCmd(env),
 		newStatusCmd(),
 		ctxcmd.New(env),
 		usercmd.New(),

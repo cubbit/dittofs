@@ -28,10 +28,10 @@ Examples:
   # Remove a context that is no longer needed
   dfsctl context remove staging`,
 	}
-	cmd.AddCommand(newListCmd())
-	cmd.AddCommand(newUseCmd())
-	cmd.AddCommand(newCurrentCmd())
-	cmd.AddCommand(newRenameCmd())
+	cmd.AddCommand(newListCmd(env))
+	cmd.AddCommand(newUseCmd(env))
+	cmd.AddCommand(newCurrentCmd(env))
+	cmd.AddCommand(newRenameCmd(env))
 	cmd.AddCommand(newRemoveCmd(env))
 	return cmd
 }

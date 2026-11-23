@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newCurrentCmd() *cobra.Command {
+func newCurrentCmd(env cmdutil.Env) *cobra.Command {
 	currentCmd := &cobra.Command{
 		Use:   "current",
 		Short: "Show current context",
@@ -22,14 +22,14 @@ Examples:
 
   # Get the active context as JSON for scripting
   dfsctl context current --output json`,
-		RunE: runContextCurrent,
+		RunE: func(cmd *cobra.Command, args []string) error { return runContextCurrent(cmd, env, args) },
 	}
 	return currentCmd
 }
 
-func runContextCurrent(cmd *cobra.Command, args []string) error {
+func runContextCurrent(cmd *cobra.Command, env cmdutil.Env, args []string) error {
 	// Load credential store
-	store, err := credentials.NewStore()
+	store, err := credentials.NewStoreAt(env.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize credential store: %w", err)
 	}
@@ -52,7 +52,7 @@ func runContextCurrent(cmd *cobra.Command, args []string) error {
 		Current:   true,
 		ServerURL: ctx.ServerURL,
 		Username:  ctx.Username,
-		LoggedIn:  ctx.AccessToken != "" && !ctx.IsExpired(),
+		LoggedIn:  ctx.AccessToken != "",
 	}
 
 	return cmdutil.PrintOutput(cmd, info, false, "", ContextList{info})
