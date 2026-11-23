@@ -98,11 +98,11 @@ already done, and what remains is smaller and different:
 | --- | --- | --- | --- | --- | --- |
 | 1 | **v1 refused in one sentence** | a v1 Badger store recognised at start and at init; one refusal wording for all three v1 finds | 2 | 2 | — |
 | 2 | **Delete the v1 store** | the seven packages, `go.mod`, the internal docs and CLAUDE.md; the user docs' metadata sections | 3 | 3 | — |
-| 3 | **FoundationDB selectable in `dfs`** | a `foundationdb` build tag; bootstrap to `fdbkv` options with TLS; the start check without a store directory; init and start on a cluster of their own | 4 | 6 | E4 |
+| 3 | **FoundationDB selectable in `dfs`** | a `foundationdb` build tag; bootstrap to `fdbkv` options with TLS; the start check without a store directory; init and start on a cluster of their own | 4 | 6.5 | E4 |
 | 4 | **FoundationDB release packaging** | the release hook; an image and two Linux tarballs built with FoundationDB; a smoke test of the image; install docs | 4 | 5 | — |
-| | **Total** | | **13** | **16** | |
+| | **Total** | | **13** | **16.5** | |
 
-**Plan estimate: 13 subtasks, 16 man-days.**
+**Plan estimate: 13 subtasks, 16.5 man-days.**
 
 ## 3. Dependencies, blockers and the split
 
@@ -111,6 +111,10 @@ already done, and what remains is smaller and different:
   order.
 - E3 T3.3 waits for Marco's answer to D4, because it changes `node.Preflight`, RFC 23 §2.1's
   surface. The RFC edit lands on `develop` first and is then cherry-picked.
+- E3 T3.3 also needs E1 T1.1. Its row "a key that is not the installation's answers
+  unidentifiable" needs T1.1's `Open`: today `Open` answers `ErrNotInitialised` whenever the
+  format record is missing (`store.go:139-140`). E1 and E3 may go to different people (below), so
+  T1.1 merges first.
 - E3 T3.2 touches `pkg/bootstrap`, RFC 13 epic 2's code (Victor), to require `cluster_file`.
   It is agreed with him, or lands as an epic 2 follow-up of his.
 - E4 needs E3 T3.1, because the image is built with the tag. The release workflow, GoReleaser, the
@@ -162,26 +166,42 @@ already done, and what remains is smaller and different:
      GitHub releases, so a package could not declare that dependency (see the deferral ledger);
    - macOS and Windows keep only the static build.
 4. **How does the start check work without a store directory?** **Recommended:** `Preflight`
-   takes the store's state from the host instead of a directory: present, absent, or
-   unidentifiable with its error. `internal/node` exports the type and its three values
-   (`StoreState`: `StorePresent`, `StoreAbsent`, `StoreUnidentifiable`, today the unexported
-   `storeState`, `internal/node/preflight.go:23-29`), and the directory probe as `ProbeStoreDir`
-   (today `probeStore`, `:111`), which the Badger host calls.
+   takes the store as one of two things, and `internal/node` exports nothing new. RFC 23 §2.1's
+   `decision:` (:515-521) allows `New`, `Start`, `Stop` and `Preflight` only.
+
+   ```go
+   // Exactly one of dir and store is set: the Badger store's directory, or the
+   // FoundationDB store's opened KV. The other parameters are unchanged.
+   func Preflight(ctx context.Context, dir string, store kv.KV, v1Root string, devices []string, clock engine.Clock, opts ...journal.Option) error
+   ```
+
+   - **With `dir`**, `Preflight` probes the directory as today (`probeStore`,
+     `internal/node/preflight.go:111`).
+   - **With `store`**, it calls `kvstore.Open` on it and classifies the answer itself: none is
+     present, `ErrNotInitialised` is absent, and `ErrForeignStore` or `ErrFormat` is
+     unidentifiable. The classification stays in `internal/node`; `cmd/dfs` classifies nothing
+     and reads no key.
    - The FoundationDB host opens `fdbkv` once, with the one `fdbkv.Options` T3.2 builds from the
-     bootstrap. It then classifies `kvstore.Open`'s answer: none is present, `ErrNotInitialised`
-     is absent, and `ErrForeignStore` or `ErrFormat` is unidentifiable. Any other error refuses
-     the start. The format record's layout stays in `kvstore` alone: `cmd/dfs` reads no key.
-   - The same KV is then handed to `node.New`, so one open and one option set serve both.
-   - That open is safe because the cluster is the installation's own (D7). The clock ceiling it
-     writes lands in that installation's keyspace, and it is the one key `Init` tolerates.
-     FoundationDB has no single-writer lock and no unclean-close state.
+     bootstrap. It hands that KV to `Preflight` and then the same KV to `node.New`.
+   - That open is safe on the installation's own cluster (D7): the clock ceiling it writes
+     (`fdbkv.go:101-108`) lands in that installation's keyspace, and it is the one key `Init`
+     tolerates. On a foreign cluster it is not: the key lands in someone else's keyspace before
+     the check refuses, although RFC 23 :477 says the check creates nothing. T3.3 records this with
+     a `decision:` marker at the FoundationDB branch, as `badgerkv.go:71-78` does for Badger, and
+     the deferral ledger holds the row that would retire it.
    - `decide` is unchanged.
-   - RFC 23 §2.1 is edited: the signature, and its sentence that `Preflight` is the check "the host
-     runs before it opens the metadata store's KV", since a host whose store has no directory opens
-     the KV first. The edit lands on `develop` before T3.3.
-   The alternative is to skip the store probe when there is no directory and let `kvstore.Open`
-   answer. It is rejected: it loses "metadata store lost", which RFC 13 §2.2 requires when the
-   journals name an installation and the store holds none.
+   - RFC 23 is edited in three places:
+     - §2.1's signature;
+     - §2.1's sentence that `Preflight` is the check "the host runs before it opens the metadata
+       store's KV";
+     - §2 step 2 (:289-293), "before anything opens … and nothing was opened".
+
+     The last two are false for a host whose store has no directory, which opens the KV first.
+     The edit lands on `develop` before T3.3.
+
+   The alternative is to skip the store probe when there is no directory and let `node.New`'s
+   `kvstore.Open` answer. It is rejected: it loses "metadata store lost", which RFC 13 §2.2
+   requires when the journals name an installation and the store holds none.
 5. **One refusal sentence for v1.** **Recommended:** each of the three v1 finds (plan §1) refuses
    with `refusing to start: <what was found> at <path> is from v1; upgrading from v1 is not
    supported: start a new installation with dfs init on empty storage`. Over a Badger store,
@@ -281,7 +301,7 @@ the contract that replaces `storetest`.
 
 ### Epic 3 — FoundationDB selectable in `dfs`
 
-**Epic 3 estimate: 4 subtasks, 6 man-days.**
+**Epic 3 estimate: 4 subtasks, 6.5 man-days.**
 
 RFC 13 Appendix C (`metadata.backend`, `metadata.foundationdb.*`), RFC 16 §4.1 (the backend
 contract) and §3.2 (`Init`, `Open`), RFC 23 §2.1 (`Preflight`, `Config.KV`), RFC 29 §4.1 and §4.8.
@@ -289,14 +309,15 @@ contract) and §3.2 (`Init`, `Open`), RFC 23 §2.1 (`Preflight`, `Config.KV`), R
 Every cluster test of this epic runs in `foundationdb.yml`, named in an anchored `-run` list.
 - **The existing suites job** keeps its shared cluster, where each suite works under its own
   prefix.
-- **A new installation job** has a cluster of its own (D7). Its tests run with
-  `-tags=foundationdb -p 1`, and each clears the whole keyspace in `t.Cleanup`, since each test
-  is an installation that owns the cluster.
+- **A new installation job** has a cluster of its own (D7). T3.1 creates it; T3.3 and T3.4 add
+  to it. Its tests run with `-tags=foundationdb -p 1`, and each clears the whole keyspace in
+  `t.Cleanup` with T3.3's `fdbkvtest.ClearAll`, since each test is an installation that owns the
+  cluster.
 
 A test that finds no cluster skips, naming `DITTOFS_FDB_CLUSTER_FILE`. None of this epic's tests
 lives only in a job that has none.
 
-- **T3.1 — the build tag and the backend switch (1.5 md).**
+- **T3.1 — the build tag, the backend switch and the installation job (2 md).**
   - D2's tag goes on `fdbkv`, `fdbkvtest` and `pkg/metadata/kvstore/suite_fdb_test.go`.
   - `openKV` returns `kv.KV` plus `Close`, in place of `*badgerkv.Store`, and dispatches on
     `metadata.backend`; FoundationDB's case lives in `kv_foundationdb.go` under the tag.
@@ -304,11 +325,17 @@ lives only in a job that has none.
     Today it refuses every FoundationDB bootstrap before `openKV` dispatches.
   - CI: `-tags=foundationdb` on both of `foundationdb.yml`'s package runs, `fdbkv` and `kvstore`,
     in `lint-go`'s vet list and in CodeQL; the unit job's FoundationDB client step goes.
+  - CI: the installation job in `foundationdb.yml`, with its own `test/fdb/cluster.sh up 1` and an
+    anchored `-run` list over `./cmd/dfs/commands/`.
+  - CI: `cmd/dfs/commands/**` and `internal/node/preflight.go` added to the workflow's `kv` path
+    filter (`foundationdb.yml:37-47`). Without them, a pull request that changes only
+    `kv_foundationdb.go` or the start check runs none of T3.3's or T3.4's tests.
 
   Tests:
   - `TestStartRefusesTheStore`'s "backend not badger" row now expects a build without the tag to
     name the FoundationDB build. Its "no store path" row (`start_test.go:426`) stays, for Badger;
-  - `TestCheckKVFoundationDBNeedsNoBadgerPath`, tagged, in the installation job's list;
+  - `TestCheckKVFoundationDBNeedsNoBadgerPath`, tagged, the first entry in the installation
+    job's list;
   - a CI step in the unit job, with no FoundationDB client installed: `CGO_ENABLED=1 go build ./...`
     and `go vet ./...` succeed. It fails today, as plan §1 shows.
 - **T3.2 — bootstrap to `fdbkv` options (1.5 md).**
@@ -331,16 +358,18 @@ lives only in a job that has none.
 
   A TLS-enabled cluster is deferred.
 - **T3.3 — the start check without a store directory (1.5 md, after D4).**
-  - This implements D4: `StoreState` and `ProbeStoreDir` exported, and `Preflight` taking the
-    state.
-  - The Badger host calls `ProbeStoreDir`. The FoundationDB host classifies `kvstore.Open`'s
-    answer over its one open.
-  - It creates the installation job, with its own `test/fdb/cluster.sh up 1`, running
-    `./internal/node/` with `-tags=foundationdb`.
+  - This implements D4: `Preflight` takes a directory or an opened KV, and classifies the KV's
+    `kvstore.Open` answer itself. `internal/node` exports nothing new.
+  - The Badger host passes the directory. The FoundationDB host passes its one open KV.
+  - A `decision:` marker at the KV branch: over a foreign cluster, the open has already written
+    this node's clock ceiling before the check refuses (D4).
+  - `fdbkvtest.ClearAll` clears the whole cluster's keyspace. `Open` swaps a nil prefix for a
+    fresh one, and `clearPrefix` cannot clear an empty prefix (`fdbkvtest.go:28,52`).
+  - It adds `./internal/node/` and its names to the installation job's run list.
 
   Tests in `internal/node`:
   - `preflight_internal_test.go`'s `decide` rows unchanged;
-  - `Preflight` rows for each `StoreState` given directly;
+  - `Preflight` rows refusing a call with both or neither of `dir` and `store` set;
   - `TestPreflightOnFoundationDB`, in the installation job's list, with four rows:
     - an empty cluster answers "not initialised";
     - a journal naming an installation over an empty cluster answers "metadata store lost";
@@ -352,8 +381,10 @@ lives only in a job that has none.
     - `dfs init`;
     - `dfs start` until the node is ready, then SIGTERM, exit zero;
     - a second `dfs init`, refused as finished.
-  - `TestInitRefusesAForeignClusterOnFoundationDB`: a key the installation did not write makes
-    `dfs init` refuse with `ErrForeignStore`'s wording, never D5's v1 sentence.
+  - `TestStartAndInitRefuseAForeignClusterOnFoundationDB`: a key the installation did not write
+    makes both `dfs start` and `dfs init` refuse with `ErrForeignStore`'s wording, never D5's v1
+    sentence. Afterwards the cluster's keys are the foreign key plus this node's clock ceiling,
+    and nothing else (D4's `decision:`).
 
   The protocol suites stay on `badger-s3` (D1).
 
@@ -431,6 +462,7 @@ this epic implements: one image and two Linux tarballs.
 | `metadata.foundationdb.prefix`, so several installations share one cluster (D7) | an installation owns its whole cluster: less surface, and no release-1 user shares one; the key needs an RFC 13 Appendix C edit before any code | RFC 13 (rif) | an operator needing a shared cluster |
 | `packages.dfs-foundationdb` in the flake: `buildGoModule` with `tags = [ "foundationdb" ]` and nixpkgs' `foundationdb`, Linux only (D3) | D3 ships one image and two tarballs; nix users build from the dev shell, which already holds the client (`flake.nix:299-302`) | unowned | a nix user asks for the package |
 | A `latest-foundationdb` image tag beside `<tag>-foundationdb` (D3) | D3 names one tag per release; a moving tag is a second promise to keep | unowned | a user asks to track the newest FoundationDB image |
+| The start check over a FoundationDB cluster without opening it through `fdbkv.Open`, which would retire the clock ceiling it writes into a foreign cluster before refusing it (`fdbkv.go:101-108`, D4) | `Open` raises the ceiling before it returns, so no `Now` precedes a durable ceiling; a read-only open would need its own path through `fdbkv` | unowned | an operator reports the stray key, or the `metadata.foundationdb.prefix` row lands and a cluster can hold other installations |
 | The start check reading a Badger store without opening it, which would retire `badgerkv`'s ceiling write over a v1 store (`badgerkv.go:71-78`) | Badger cannot open read-only after an unclean close | unowned | Badger opens read-only after an unclean close |
 
 ## 7. RFC coverage
