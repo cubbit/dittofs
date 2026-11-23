@@ -848,7 +848,14 @@ func TestCounted_MixedChoreography(t *testing.T) {
 		want string
 	}{
 		{"never syncs", fakeCase{design: designNeverSyncs}, "less durable than written"},
-		{"failing write", fakeCase{design: designFailsWrite}, "opening write"},
+		// The failing write is the next round's opening interval, but the
+		// greeting select can meet errs and done ready together — the
+		// goroutine closes done right after reporting — so the run fails it
+		// at the opening-write fatal or hands it to the teardown's last-call
+		// one. Both sites name the stream's own error, so that is what the
+		// row pins: whichever schedule runs, the design is failed and its
+		// error surfaced.
+		{"failing write", fakeCase{design: designFailsWrite}, "the fake stream's write failed"},
 		{"failing sync", fakeCase{design: designFailsSync}, "measured Sync"},
 		// The chasing design: the run's first measured window fails the
 		// bound — its own record and three fed intervals against the
