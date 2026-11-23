@@ -13,6 +13,7 @@ import (
 	pid "github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/secrets"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -124,8 +125,8 @@ func TestKerberosSignInDisabledDirectoryAccount(t *testing.T) {
 // RFC 18 §10's "PAC bound to the record", its reuse clause: bob minted at
 // his first sign-in, deleted in the directory and recreated under his name
 // with a new SID, signs in with the new SID's PAC: a new principal or
-// refused, never the old one. Catches a reused name bound to the old person
-// through step 3.
+// refused ErrLogonFailure, never the old one. Catches a reused name bound to
+// the old person through step 3, and a refusal of another class.
 func TestKerberosSignInReusedDirectoryName(t *testing.T) {
 	e := newAD(t)
 	realm := e.kerberos(t)
@@ -135,17 +136,25 @@ func TestKerberosSignInReusedDirectoryName(t *testing.T) {
 	e.d.AddUser(t, "bob", nil)
 	e.clock.Advance(5*time.Minute + time.Second) // past bob's cached answer
 	res, err := e.s.SignIn(context.Background(), e.ticket(realm, "bob", e.logonOf(t, "bob")))
-	if err == nil && res.Identity.Evidence.Principal == old {
-		t.Fatalf("the new bob bound the old bob's principal %v", old)
+	switch got := res.Identity.Evidence.Principal; {
+	case err != nil && !errors.Is(err, vfserr.ErrLogonFailure):
+		t.Errorf("the new bob's sign-in = %v, want a new principal or ErrLogonFailure", err)
+	case err != nil && got != (entity.Principal{}):
+		t.Errorf("the new bob refused %v, yet bound %v", err, got)
+	case err == nil && got == old:
+		t.Errorf("the new bob bound the old bob's principal %v", old)
 	}
 }
 
-// RFC 18 §10's "mint conflict": alice minted, bob's entry holding another SID
-// and alice's uidNumber signs in: bob is bound to no principal of alice's,
-// alice's record is byte-equal and keeps her uid. Two concurrent sign-ins of
-// one unminted entry, each mint's commit held until both have planned
-// theirs, bind one principal. Catches a lost mint bound to whoever holds the
-// row.
+// Part of RFC 18 §10's "mint conflict", not the row: alice minted, bob's
+// entry holding another SID and alice's uidNumber signs in, and bob is bound
+// to no principal of alice's while alice's record stays byte-equal with her
+// uid. The row's own claim, that bob's sign-in fails, is not checked: today
+// the mint gives bob an allocated uid (dirSpellings), and that clause stays
+// open until RFC 18 settles between the two. A refusal must be
+// ErrLogonFailure binding nothing. Two concurrent sign-ins of one unminted
+// entry, each mint's commit held until both have planned theirs, bind one
+// principal. Catches a lost mint bound to whoever holds the row.
 func TestKerberosSignInMintConflict(t *testing.T) {
 	t.Run("a held uidNumber", func(t *testing.T) {
 		e := newAD(t)
@@ -155,8 +164,13 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 		before := e.record(t, alice)
 		e.d.AddUser(t, "bob", map[string][][]byte{"uidNumber": attr("3000")})
 		res, err := e.s.SignIn(context.Background(), e.ticket(realm, "bob", e.logonOf(t, "bob")))
-		if err == nil {
-			bob := res.Identity.Evidence.Principal
+		bob := res.Identity.Evidence.Principal
+		switch {
+		case err != nil && !errors.Is(err, vfserr.ErrLogonFailure):
+			t.Errorf("bob's sign-in = %v, want a principal or ErrLogonFailure", err)
+		case err != nil && bob != (entity.Principal{}):
+			t.Errorf("bob refused %v, yet bound %v", err, bob)
+		case err == nil:
 			if bob == alice {
 				t.Fatalf("bob bound alice's principal %v", alice)
 			}
@@ -180,6 +194,8 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 		var mu sync.Mutex
 		held := 0
 		arrived, release := make(chan struct{}, 2), make(chan struct{})
+		releaseOnce := sync.OnceFunc(func() { close(release) })
+		defer releaseOnce() // a backstop's Fatal leaves no mint parked
 		e.s.OnCreate(func(entity.MintBatch) {
 			mu.Lock()
 			held++
@@ -206,7 +222,7 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 				t.Fatal("two mints did not both reach their commit")
 			}
 		}
-		close(release)
+		releaseOnce()
 		wg.Wait()
 		for i, err := range errs {
 			if err != nil {
@@ -217,4 +233,69 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 			t.Errorf("carol bound %v and %v, want one principal", ps[0], ps[1])
 		}
 	})
+}
+
+// keytab applies a keytab of a realm named name for cifs/nas.corp.example in
+// place of the State's, and returns the realm.
+func (e *dirPrincipals) keytab(t *testing.T, name string) *identitytest.Realm {
+	t.Helper()
+	realm := identitytest.NewRealm(name, "cifs/nas.corp.example")
+	st := *e.s.Applied()
+	st.Keytab = []secrets.Version{{Number: 1, Value: realm.Keytab()}}
+	if err := e.s.Apply(st); err != nil {
+		t.Fatal(err)
+	}
+	return realm
+}
+
+// A ticket that maps to no principal is labelled disabled only when its
+// realm is the directory's and the directory answers that the entry its
+// PAC's SID names is gone; the label is read without writing. alice minted,
+// then her entry deleted or renamed: a ticket of another realm whose PAC
+// carries her SID is refused logon_failure, sending no directory query and
+// writing nothing, not even her new name; and in the directory's realm, her
+// deleted entry's own query failing past the TTL plus the grace, the refusal
+// stays logon_failure. Catches a foreign ticket reaching the directory or
+// writing a record, and a failed read labelled disabled.
+func TestKerberosSignInGoneLabel(t *testing.T) {
+	grace := identity.DefaultSettings().DirectoryStaleGrace
+	for _, tc := range []struct {
+		name   string
+		change func(e *dirPrincipals, dn string)
+		after  time.Duration
+		fault  string // the searches failed before the sign-in; none for ""
+		realm  string // the ticket's realm; the directory's for ""
+	}{
+		{"another realm, entry deleted", func(e *dirPrincipals, dn string) { e.d.Delete(dn) }, 5*time.Minute + time.Second, "", "TRUST.EXAMPLE"},
+		{"another realm, entry renamed", func(e *dirPrincipals, dn string) {
+			e.d.Modify(dn, map[string][][]byte{"sAMAccountName": attr("alicia")})
+		}, 5*time.Minute + time.Second, "", "TRUST.EXAMPLE"},
+		{"the entry's query failing", func(e *dirPrincipals, dn string) { e.d.Delete(dn) }, 5*time.Minute + grace + time.Second, "(objectGUID=*", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newAD(t)
+			ctx := context.Background()
+			realm := e.kerberos(t)
+			dn := e.d.AddUser(t, "alice", nil)
+			logon := e.logonOf(t, "alice")
+			e.signedIn(t, realm, "alice")
+			tc.change(e, dn)
+			if tc.realm != "" {
+				realm = e.keytab(t, tc.realm)
+			}
+			if tc.fault != "" {
+				e.fail(t, sim.Rule{Op: "search", Key: tc.fault, Action: sim.FaultAction{Err: errors.New("injected directory fault")}})
+			}
+			e.clock.Advance(tc.after)
+			sent, pgen := len(e.f.Queries()), e.pgen(t)
+			res, oc, err := e.s.SignInOutcome(ctx, e.ticket(realm, "alice", logon))
+			refused(t, "alice's sign-in", res, oc, err, vfserr.ErrLogonFailure, "logon_failure")
+			if q := e.f.Queries()[sent:]; tc.realm != "" && len(q) != 0 {
+				t.Errorf("searches for a ticket of %s %v, want none", tc.realm, q)
+			}
+			if got := e.pgen(t); got != pgen {
+				t.Errorf("PGEN %d after the refused sign-in, want %d unchanged", got, pgen)
+			}
+		})
+	}
 }
