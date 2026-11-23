@@ -49,32 +49,20 @@ func (j *Journal) Stats() Stats {
 	return s
 }
 
-// LossGeneration returns the directory's loss generation alone — the same
-// figure Stats serves as LossGeneration — without building the Stats and
-// without the loss ring. A reader the journal runs on its own schedule (the
-// engine's verifier, one sample per write and per Commit) polls the
-// generation far more often than any client drains the ring, and Stats's
-// ring copy marks the journal's published losses served to a reader — so a
-// generation-only poll serves no ring, for the losses it never read must
-// stay reportable to the first reader that does. After Close it answers
-// zero, as Stats answers its zero Stats.
-func (j *Journal) LossGeneration() uint64 {
+// Losses returns the journal's published loss events, oldest first, and is
+// the read that takes them away: the drain or poll that consumes them marks
+// them served, so an in-process reopen of the journal publishes again only
+// the losses no genuine read reached — the losses found at open its ring
+// re-places, exactly RFC 1 section 3.8's restart clause inside one process.
+// Stats reports the same events as a figure and marks nothing served, for
+// its callers — the metrics export, an engine's startup reads — are not the
+// reader the losses belong to. After Close it answers nil, as Stats answers
+// its zero Stats.
+func (j *Journal) Losses() []LossEvent {
 	if j.closed.Load() || j.core == nil {
-		return 0
+		return nil
 	}
-	return j.core.Durability().Generation()
-}
-
-// ReadOnlyState returns whether the journal refuses writes and why — the
-// same figure Stats serves — without building the Stats and without the
-// loss ring, for the same reason LossGeneration serves its own readers
-// alone: the engine's own fence and close-stall checks run on their own
-// schedule, and may not take the ring's events away from any client drain.
-func (j *Journal) ReadOnlyState() ReadOnlyState {
-	if j.closed.Load() || j.core == nil {
-		return ReadOnlyState{}
-	}
-	return j.core.Durability().ReadOnlyState()
+	return j.core.Durability().Losses()
 }
 
 // statsFrom converts the core's statistics to the public shape. Maps and

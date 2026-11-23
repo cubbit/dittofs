@@ -126,7 +126,7 @@ func (f *assembledJournal) lossRecords(t *testing.T) []core.Seq {
 func lossEvents(t *testing.T, j *Journal, reason core.LossReason) []core.LossEvent {
 	t.Helper()
 	var out []core.LossEvent
-	for _, ev := range j.Stats().Losses {
+	for _, ev := range j.Losses() {
 		if ev.Reason == reason {
 			out = append(out, ev)
 		}

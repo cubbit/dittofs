@@ -484,22 +484,29 @@ type Durability struct {
 	stop sync.Once
 	wg   sync.WaitGroup
 
-	// dead marks an instance whose unread piece claims retire: set as Stop
-	// begins, before the workers join, for past that point no reader can
-	// reach the ring any more. A claim one of its Loses took in the
-	// registry's pieces then holds only as far as the reach below says a
-	// reader got, so a later open of the journal takes the pieces over
-	// whose events reached no reader and re-reports the losses they name.
-	dead atomic.Bool
+	// reach is this instance's word to the registry on who read its ring,
+	// read by the claims a Stop of the instance left behind: dead retires
+	// them to the served window, the events a genuine reader's copy last
+	// carried.
+	reach reach
+}
 
-	// servedThrough is the event number a reader's copy of this instance's
-	// ring last reached, zero while no reader took a non-empty copy away.
-	// A reader that carries event N off has answered every loss up to it,
-	// so a dead instance's claim on the loss event E published holds only
-	// while servedThrough >= E; a loss that published no event of its own
-	// — a reported loss, whose report another of the instance's events
-	// carried — is answered with the reach alone, zero saying nothing was.
-	servedThrough atomic.Uint64
+// reach is a Durability's word to the per-process registry on who read the
+// instance's loss ring. The registry holds it for the life of the process —
+// a stopped journal's claims read it long past the instance itself — so it
+// carries no more than the two answers those claims ask.
+type reach struct {
+	// dead is set as Stop begins, before the workers join: past that point
+	// the instance serves no caller its events, so the served window is the
+	// only question a claim's retirement has left.
+	dead atomic.Bool
+	// servedFrom and servedThrough bound the events a genuine reader's copy
+	// of the ring last carried: how far the reader got, and where the copy
+	// began — the ring keeps only the newest LossRingSize events, so a copy
+	// that begins later than an event was published never carried it, and
+	// the window's from keeps the from answering nothing for it. Both zero
+	// while no reader took a non-empty copy away.
+	servedFrom, servedThrough atomic.Uint64
 }
 
 // New returns a Durability. A nil Clock, Domains, Index, Counters or MarkLoss is a
@@ -1033,37 +1040,47 @@ func (d *Durability) pushRingLocked(ev core.LossEvent) core.LossEvent {
 }
 
 // lossesLocked returns a copy of this instance's ring, oldest first, the
-// caller holding lmu. A read that takes events away records the number its
-// copy reached as the instance's served-through frontier: the losses it
-// held were answered, so the piece claims their Loses hold in the
-// registry's pieces survive the instance as far as that. A read of an
-// empty ring serves nothing, and the frontier does not move.
-//
-// decision: a genuine client read of the ring — the Stats Part a poll
-// consumes, the engine's loss drain — advances the served-through
-// frontier and keeps the piece claims alive past their instance as far
-// as each claim's own event, and the per-write/commit generation and
-// read-only readers reach here no longer: the journal's LossGeneration
-// and ReadOnlyState accessors serve them alone. The internal figure
-// readers that still build a Part — an engine's shares discovery and
-// sweeps, a per-refusal reserve figure, the repack ladder's figures,
-// the journal-full note — advance it too: they run at maintenance
-// frequency, and the error's direction is fail-safe, for a claim held
-// too long only suppresses a re-report, it never publishes anything
-// twice. Overturned by a production case where a figure read precedes a
-// crash and a loss a client would have relayed on went un-republished at
-// the reopen: those readers then take accessors of their own figures too.
+// caller holding lmu. It serves figures alone and marks nothing served: the
+// readers it answers — the Stats Part, the journal's figures — are never the
+// reader the losses belong to, and the reach below is what decides which
+// losses were answered.
 func (d *Durability) lossesLocked() []core.LossEvent {
 	out := make([]core.LossEvent, d.count)
 	for i := range out {
 		out[i] = d.ring[(d.head+i)%core.LossRingSize]
 	}
-	if d.count > 0 {
-		// The copy holds every event the ring held, so the reader reached
-		// the newest number this instance ever issued.
-		d.servedThrough.Store(d.nextEvent)
-	}
 	return out
+}
+
+// Losses is the genuine read of this instance's ring: a copy of its events,
+// oldest first, whose events the caller takes away. The window the copy
+// carried — through its newest, from its oldest — joins the reach, so the
+// claims a Lose took in the registry's pieces survive this instance exactly
+// as far as a reader was answered for the loss each claim's event published.
+// A read of an empty ring serves nothing, and the window does not move.
+//
+// decision: only this read advances the served window. Stats reports the
+// ring without moving it, for its callers are figures — the metrics export,
+// an engine's startup reads, the poll Stats serves — and a figure read moved
+// ahead of the engine's drain or a client's poll would mark the events it
+// copied served, keeping an in-process reopen from publishing the losses
+// found at open to the one reader they were for, suppressing a report nobody
+// delivered. Overturned by a figure the loss reporting itself needs — that
+// reader takes its genuine read of its own.
+func (d *Durability) Losses() []core.LossEvent {
+	d.lmu.Lock()
+	defer d.lmu.Unlock()
+	if d.count > 0 {
+		// The copy carries exactly the events the ring holds, so the reader
+		// was answered for those alone: the through is how far the reader
+		// got, and the from keeps the window from answering the events the
+		// ring had already overwritten — a poller that knows it missed them
+		// has still not read them — whose claims then survive, and a reopen
+		// places the losses they name found at open again.
+		d.reach.servedThrough.Store(d.nextEvent)
+		d.reach.servedFrom.Store(d.nextEvent - uint64(d.count) + 1)
+	}
+	return d.lossesLocked()
 }
 
 // Stats returns the counters kept at each sync, without walking the ledger. A
@@ -1143,7 +1160,7 @@ func (d *Durability) Stop() {
 		// pieces over — the takeover clearing the Reported the dead
 		// report still credited — and republishes the losses into the
 		// open's own fresh ring, which is what that ring is for.
-		d.dead.Store(true)
+		d.reach.dead.Store(true)
 		d.mu.Lock()
 		d.stopped = true
 		d.mu.Unlock()
@@ -1168,19 +1185,28 @@ func (d *Durability) Stop() {
 
 // claimsDead reports whether this instance has begun stopping, so no reader
 // reaches its ring from this point on.
-func (d *Durability) claimsDead() bool { return d.dead.Load() }
+func (d *Durability) claimsDead() bool { return d.reach.dead.Load() }
 
 // claimServed answers whether the loss a claim on one of this instance's
-// Loses took was answered by a reader: the ring's read reached the event the
-// claim's loss published. A loss that published no event of its own — a
-// reported one, whose report another of the instance's events carried — is
-// answered with any read of the ring at all.
+// Loses took was answered by a reader: a genuine read's copy carried the
+// event the claim's loss published. The window's from keeps the answer honest
+// where the ring had overwritten the event before the read — a copy that
+// never carried it answered nothing for it, whatever the reader knows it
+// missed — so a claim on an overwritten event survives its instance, and a
+// reopen places the loss it names found at open again.
+//
+// decision: a loss that published no event of its own — a reported one,
+// whose report another of the instance's events carried — is answered by any
+// genuine read at all, for the event that carried its report is not known to
+// the claim. The answer can then retire such a claim on a copy that held no
+// carrying event, which errs toward a reopen re-reporting the loss found at
+// open, never toward hiding one nobody read.
 func (d *Durability) claimServed(ev uint64) bool {
-	s := d.servedThrough.Load()
+	from, through := d.reach.servedFrom.Load(), d.reach.servedThrough.Load()
 	if ev == 0 {
-		return s > 0
+		return through > 0
 	}
-	return s >= ev
+	return ev >= from && ev <= through
 }
 
 // target is the last unsynced record of one file in one segment of a stream.

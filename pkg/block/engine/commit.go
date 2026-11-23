@@ -239,17 +239,19 @@ type primary struct {
 // no two inputs cancel and no input is left out: it changes exactly when one of
 // them does, never with the clock. Revisit if the verifier must be decoded back
 // into its inputs.
+//
+// ponytail: every sample reads the journal's Stats() for its loss generation,
+// one call per write and per Commit. Stats no longer touches the loss ring's
+// served window, so the sample is only a cost, and a journal call returning
+// the generation alone cuts it — add one if a profile shows Stats() on the
+// write path.
 func (e *Engine) verifier(b *binding) vfserr.Verifier {
 	var in [16 + 8 + 16 + 8 + 8]byte
 	copy(in[0:16], b.primary.node[:])
 	binary.BigEndian.PutUint64(in[16:24], b.primary.nodeEpoch)
 	copy(in[24:40], e.instance[:])
 	binary.BigEndian.PutUint64(in[40:48], b.incarnation)
-	// The generation sample reads the generation accessor alone: the
-	// verifier runs on every write and Commit, and a full Stats here would
-	// mark the journal's loss ring served at the first sample after any
-	// loss, keeping a reopen from re-placing it as found at open.
-	binary.BigEndian.PutUint64(in[48:56], b.j.LossGeneration())
+	binary.BigEndian.PutUint64(in[48:56], b.j.Stats().LossGeneration)
 	sum := sha256.Sum256(in[:])
 	var v vfserr.Verifier
 	copy(v[:], sum[:])

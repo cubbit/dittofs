@@ -289,21 +289,13 @@ func (j *FakeJournal) Stats() journal.Stats {
 	return s
 }
 
-// LossGeneration returns the generation Stats reports, on the access the
-// engine's own readers use so they serve no loss ring.
-func (j *FakeJournal) LossGeneration() uint64 {
+// Losses returns the losses Stats reports, on the read the engine's drain
+// uses — the one that takes the events away, the genuine reader the journal
+// marks served. The fake keeps no served state, so it changes nothing.
+func (j *FakeJournal) Losses() []journal.LossEvent {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return j.gen
-}
-
-// ReadOnlyState returns the read-only state Stats reports, on the accessor
-// the engine's own readers use so they serve no loss ring. The name sits
-// beside ReadOnly, which stages the state, not reads it.
-func (j *FakeJournal) ReadOnlyState() journal.ReadOnlyState {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return j.readOnly
+	return slices.Clone(j.losses)
 }
 
 // headroomRefusal reports whether err is a refusal naming the headroom, which

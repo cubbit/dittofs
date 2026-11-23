@@ -191,10 +191,10 @@ func TestATakeoverOfADeadUnreadClaimRepublishes(t *testing.T) {
 		if _, err := e.d.Lose(ctx, l); err == nil {
 			t.Fatalf("the dead instance's Lose over closed streams: succeeded, want the refused append")
 		}
-		// A reader reaches the stopped instance's ring — its Stats still
-		// stands in this process — and carries the report away: the reach,
-		// not the moment of it, is what the claim asks.
-		if got := e.d.Stats().Losses; len(got) != 1 {
+		// A reader reaches the stopped instance's ring — its genuine read
+		// still stands in this process — and carries the report away. The
+		// reach, not the moment of it, is what the claim asks.
+		if got := e.d.Losses(); len(got) != 1 {
 			t.Fatalf("the stopped instance's ring = %+v, want the one refused append's event", got)
 		}
 
@@ -293,7 +293,7 @@ func TestAFailureAReporterOnlyTheRingCouldCarryRepublishesOnceClosed(t *testing.
 	if _, err := e2.d.Lose(ctx, l2); err == nil {
 		t.Fatalf("the live instance's Lose over closed storage: succeeded, want the refused append")
 	}
-	if got := e2.d.Stats().Losses; len(got) != 1 {
+	if got := e2.d.Losses(); len(got) != 1 {
 		t.Fatalf("the instance's ring = %+v, want the one refused record's event", got)
 	}
 	e2.d.Stop()

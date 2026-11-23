@@ -283,7 +283,7 @@ func (e *Engine) fenceGate(b *binding) error {
 	if err == nil {
 		return nil
 	}
-	if ro := b.j.ReadOnlyState(); ro.ReadOnly {
+	if ro := b.j.Stats().ReadOnly; ro.ReadOnly {
 		return e.journalErr(readOnly(ro))
 	}
 	return err

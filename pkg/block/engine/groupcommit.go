@@ -339,7 +339,7 @@ func (g *groupCommit) commitAll(b *stopBound) bool {
 	// one re-runs the steps and overrides the backoff again. Overturned if a
 	// cooler schedule is measured to land commits the immediate retry misses.
 	for {
-		if ro := g.j.ReadOnlyState(); ro.ReadOnly {
+		if ro := g.j.Stats().ReadOnly; ro.ReadOnly {
 			g.e.d.Logger.Warn("close left a read-only journal's pending existence to the next start",
 				"err", ro.Err)
 
@@ -1297,7 +1297,7 @@ func (e *Engine) commitThrough(ctx context.Context, b *binding, f entity.FileID,
 		if lost {
 			return errLost
 		}
-		if ro := b.j.ReadOnlyState(); ro.ReadOnly {
+		if ro := b.j.Stats().ReadOnly; ro.ReadOnly {
 			return e.journalErr(readOnly(ro))
 		}
 		// A removal holding f's guard commits f's operations below it in its
