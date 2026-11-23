@@ -146,15 +146,14 @@ func TestKerberosSignInReusedDirectoryName(t *testing.T) {
 	}
 }
 
-// Part of RFC 18 §10's "mint conflict", not the row: alice minted, bob's
-// entry holding another SID and alice's uidNumber signs in, and bob is bound
-// to no principal of alice's while alice's record stays byte-equal with her
-// uid. The row's own claim, that bob's sign-in fails, is not checked: today
-// the mint gives bob an allocated uid (dirSpellings), and that clause stays
-// open until RFC 18 settles between the two. A refusal must be
-// ErrLogonFailure binding nothing. Two concurrent sign-ins of one unminted
-// entry, each mint's commit held until both have planned theirs, bind one
-// principal. Catches a lost mint bound to whoever holds the row.
+// RFC 18 §10's "mint conflict": alice minted, bob's entry holding another SID
+// and alice's uidNumber signs in with an allocated uid in place of hers, as
+// an entry with 0 or 65534 does, bound to no principal of alice's, counted in
+// identity_mints_remapped_total, while alice's record stays byte-equal with
+// her uid. Two concurrent sign-ins of one unminted entry, each mint's commit
+// held until both have planned theirs, bind one principal. Catches a held
+// number refusing the mint or reaching bob, and a lost mint bound to whoever
+// holds the row.
 func TestKerberosSignInMintConflict(t *testing.T) {
 	t.Run("a held uidNumber", func(t *testing.T) {
 		e := newAD(t)
@@ -165,18 +164,18 @@ func TestKerberosSignInMintConflict(t *testing.T) {
 		e.d.AddUser(t, "bob", map[string][][]byte{"uidNumber": attr("3000")})
 		res, err := e.s.SignIn(context.Background(), e.ticket(realm, "bob", e.logonOf(t, "bob")))
 		bob := res.Identity.Evidence.Principal
-		switch {
-		case err != nil && !errors.Is(err, vfserr.ErrLogonFailure):
-			t.Errorf("bob's sign-in = %v, want a principal or ErrLogonFailure", err)
-		case err != nil && bob != (entity.Principal{}):
-			t.Errorf("bob refused %v, yet bound %v", err, bob)
-		case err == nil:
-			if bob == alice {
-				t.Fatalf("bob bound alice's principal %v", alice)
-			}
-			if got := e.num(t, bob, pid.SchemeUID); got == 3000 {
-				t.Errorf("bob's uid %d, want any but alice's 3000", got)
-			}
+		if err != nil {
+			t.Fatalf("bob's sign-in with alice's uidNumber = %v, want a principal with an allocated uid", err)
+		}
+		if bob == alice {
+			t.Fatalf("bob bound alice's principal %v", alice)
+		}
+		rng := entity.DefaultIDRange
+		if got := e.num(t, bob, pid.SchemeUID); got < rng.Lo || got > rng.Hi {
+			t.Errorf("bob's uid %d, want one allocated from [%d, %d], not alice's 3000", got, rng.Lo, rng.Hi)
+		}
+		if got := e.counter(t, "identity_mints_remapped_total", "kind", "user"); got != 1 {
+			t.Errorf("identity_mints_remapped_total{kind=user} after bob's mint %v, want 1", got)
 		}
 		if after := e.record(t, alice); !reflect.DeepEqual(after, before) {
 			t.Errorf("alice's record after bob's sign-in %+v, want %+v unchanged", after, before)
