@@ -57,6 +57,15 @@ type UserResource struct {
 	Resource[apiv1.UserSpec, struct{}]
 }
 
+// SetPassword is POST /users/{id}:set-password: it sets the password of the
+// user id names, whose sessions and tokens are refused from then on. It is
+// sent with no idempotency key, which the server refuses on it.
+func (r UserResource) SetPassword(ctx context.Context, id string, password []byte) error {
+	_, err := r.c.write(ctx, http.MethodPost, r.path+"/"+url.PathEscape(id)+":set-password",
+		apiv1.SetPassword{Password: string(password)}, "", []CallOption{WithoutIdempotencyKey()})
+	return err
+}
+
 // Create creates a user of spec, returning the operation it started, or the
 // user.
 func (r UserResource) Create(ctx context.Context, spec apiv1.UserSpec, opts ...CallOption) (Result[apiv1.UserSpec, struct{}], error) {

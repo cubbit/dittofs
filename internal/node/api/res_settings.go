@@ -217,7 +217,7 @@ func settingRoutes() []route {
 		var desc string
 		if sc.path == "/api/v1/settings" {
 			may = apiv1.OpNTHashDelete
-			desc = "A write of " + ntlmKey + " takes the admin role, whatever x-dittofs-role names for every other key."
+			desc = "A write of " + auth.NTLMKey + " takes the admin role, whatever x-dittofs-role names for every other key."
 		}
 		// The key is the audit target, which an index key holds, so it is
 		// bounded before any record is written for it.

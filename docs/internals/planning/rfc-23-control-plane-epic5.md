@@ -144,7 +144,7 @@ them.
 | R11 | The access token is a signed JWT naming the account's principal, the session and an expiry 15 min ahead, and carries no role | MUST | RFC 23 §5.3 | T5.3 |
 | R12 | The access token is HS256, signed with `golang-jwt`, its `kid` naming the signing key's version, so a token signed before a rotation still verifies | MUST | RFC 23 plan §4.2 D3 | T5.3 |
 | R13 | On every call the API refuses a disabled or deleted account, a revoked session, and a token issued before the account's not-before time: an access token by its issue time, a refresh or an API token by its session's or its own creation time | MUST | RFC 23 §5.3, CP10 | T5.5, T5.6, T5.8 |
-| R14 | An issue or creation time is the store time of the write that issued the token or created the session, raised to the account's not-before when that is later; times compare in whole seconds; a raise sets not-before to the whole second after its commit | MUST | RFC 23 §5.3; RFC 16 §2.3 (`Session`, `APIToken`) | T5.5, T5.7 |
+| R14 | An issue or creation time is the store time of the write that issued the token or created the session, raised to the account's not-before when that is later; times compare in whole seconds; a raise sets not-before to the whole second after its commit, or past the not-before it held when that is later, so two raises in one second both end what came before them | MUST | RFC 23 §5.3; RFC 16 §2.3 (`Session`, `APIToken`) | T5.5, T5.7 |
 | R15 | Changing a role raises no not-before: the account's sessions and API tokens survive it, and its new role applies on the next call | MUST | RFC 23 §5.3 | T5.6, T5.8 |
 | R16 | The refresh token is opaque and random, kept only as its hash in a session that expires `api.session_lifetime` after sign-in; each use returns a new one and invalidates the old, and presenting an invalidated one revokes the whole session | MUST | RFC 23 §5.3; RFC 16 §2.3 (`Session`) | T5.5 |
 | R17 | An API token is opaque and random, shown once at creation, kept only as its hash, with an expiry no later than `api.token_max_lifetime`, and checked as an access token is, with its record in place of the session | MUST | RFC 23 §5.3; RFC 16 §2.3 (`APIToken`) | T5.8 |
@@ -522,14 +522,21 @@ the user's read fails `reserve` first: a sign-in answering `503`,
   returns one, under the protocol role, both before one `Write` that reads `identity.ntlm` tracked and
   refuses a moved revision, puts both versions, prunes the previous ones with `tx.PruneSecret`,
   raises `NotBefore` from `tx.Now()`, clears must-change and creates the answered session;
-  `:set-password` with the same write and `resetAccount`; no other route writes a hash; the client's
-  `ChangePassword`, sent with refresh off as T5.5's `SignIn` is. Consumed by
+  `:set-password` with the same write and `ResetAccount`; no other route writes a hash; the client's
+  `ChangePassword`, sent with refresh off as T5.5's `SignIn` is. An account written between the
+  check of the current password and the write answers `503` `unavailable`, its raise taken back,
+  never a settled failure; a moved `identity.ntlm` seals the change again, up to 3 times, while
+  `:set-password` answers `503` `unavailable`. The seal and the write are one, `auth.SealPassword`
+  and `auth.WritePassword`, which T5.10's `reset-admin` makes too, with must-change set. Consumed by
   E6 and E7.
 - **Acceptance criteria:**
   - After a change, the session that made it refreshes no more, and the answered one does.
-  - An NTLM-off committed while a change is held after its read leaves no NT hash stored.
+  - An NTLM-off committed while a change is held after its read leaves no NT hash stored, and so
+    does the NT-hash deletion run in the same window, which answers the change `503` or its tokens,
+    never `401`.
 - **Tests:** over the harness and the real identity: both sessions after a change (R36); a refresh
-  and an API-token call made before the change refused after it (R14); no current password refused
+  made before the change refused after it, and a change's session refused after a `:set-password`
+  in the same second (R14; the API-token half is T5.8's); no current password refused
   (R34); a must-change account changing its password and then reaching other routes (R35); three
   failed current-password checks and two sign-ins from one address, the next of either `429` (R31,
   R32); `:set-password` resetting a raised count (R29); the old password hash's and the old NT hash's versions gone, for a user holding a file spelling
@@ -539,7 +546,11 @@ the user's read fails `reserve` first: a sign-in answering `503`,
   keys and the captured log holding neither password (R39); with NTLM on, after `POST /auth/password`,
   identity's `SignIn` verifying an NTLMv2 AUTHENTICATE for the new password and refusing one for the
   old (R37, at the consumer of the NT hash); an operator setting an admin's
-  password refused (R8).
+  password refused `404` `not_found`, the account hidden from it (T5.6), its generation and its
+  password's version unchanged (R8); an account written while a change or a `:set-password` is held
+  after its seal answered `503`, nothing written, the change settling no failure; an empty new
+  password refused `400`, a change's raising no count and a `:set-password`'s leaving the version
+  unchanged; a directory principal's `:set-password` refused `400`.
 
 ### T5.8 API tokens
 
@@ -558,7 +569,8 @@ the user's read fails `reserve` first: a sign-in answering `503`,
   sign-in for the service account refused (R2); an API token surviving its account's demotion
   (R15); the raw keys holding only the hash (R39); one table
   test over sign-in, refresh, the password change, `:set-password` and token creation, each refusing
-  an `Idempotency-Key` `400` and leaving no idempotency record (R38).
+  an `Idempotency-Key` `400` and leaving no idempotency record (R38); an API token created before a
+  password change refused after it (R14).
 
 ### T5.9 Signing-key rotation
 

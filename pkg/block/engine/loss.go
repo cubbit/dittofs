@@ -436,7 +436,7 @@ func (e *Engine) LossSeq(s entity.ShareID, f entity.FileID) uint64 {
 // It runs to the end whatever its caller does, so no uncommitted write is
 // left without its Done.
 func (e *Engine) lostWhole(j Journal) {
-	g := e.groupCommitFor(j)
+	g := e.groupCommitFor(j, marks{})
 	g.losses.mu.Lock()
 	g.losses.raiseAll()
 	g.losses.mu.Unlock()

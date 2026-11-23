@@ -12,6 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // ntlmStore is a control plane over an in-memory Badger, its installation
@@ -136,17 +137,19 @@ func TestNTLMRule(t *testing.T) {
 }
 
 // ntlmOn reads no record as the default, on, and decodes a record as a JSON
-// bool, as identity does: only false is off, and a value that is no bool is
-// on.
+// bool; a value that is no bool is refused unavailable, as identity refuses
+// it, never read as on or off.
 func TestNTLMOn(t *testing.T) {
 	for _, tc := range []struct {
-		value string
-		ok    bool
-		want  bool
-	}{{"", false, true}, {"true", true, true}, {"false", true, false}, {" false ", true, false},
-		{`"false"`, true, true}, {"0", true, true}, {"false false", true, true}} {
-		if got := ntlmOn(entity.Setting{Value: []byte(tc.value)}, tc.ok); got != tc.want {
-			t.Errorf("ntlmOn(%q, %v) = %v, want %v", tc.value, tc.ok, got, tc.want)
+		value   string
+		ok      bool
+		want    bool
+		refused bool
+	}{{"", false, true, false}, {"true", true, true, false}, {"false", true, false, false}, {" false ", true, false, false},
+		{`"false"`, true, false, true}, {"0", true, false, true}, {"false false", true, false, true}} {
+		got, err := ntlmOn(entity.Setting{Value: []byte(tc.value)}, tc.ok)
+		if got != tc.want || (err != nil) != tc.refused || tc.refused && !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("ntlmOn(%q, %v) = %v, %v; want %v, refused %v", tc.value, tc.ok, got, err, tc.want, tc.refused)
 		}
 	}
 }
@@ -179,7 +182,7 @@ func TestNTLMWrite(t *testing.T) {
 			return err
 		}
 	}
-	putOff := put(scope, ntlmKey, "false")
+	putOff := put(scope, auth.NTLMKey, "false")
 	readBack := func(cp kvstore.ControlPlane) (entity.Installation, entity.Setting) {
 		var in entity.Installation
 		var s entity.Setting
@@ -187,7 +190,7 @@ func TestNTLMWrite(t *testing.T) {
 			if in, err = tx.Installation(); err != nil {
 				return err
 			}
-			s, _, err = tx.Setting(scope, ntlmKey)
+			s, _, err = tx.Setting(scope, auth.NTLMKey)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -211,7 +214,7 @@ func TestNTLMWrite(t *testing.T) {
 			scope entity.SettingScope
 			key   string
 		}{
-			{"a node's identity.ntlm", entity.SettingScope{Kind: entity.ScopeNode, ID: uuid.New()}, ntlmKey},
+			{"a node's identity.ntlm", entity.SettingScope{Kind: entity.ScopeNode, ID: uuid.New()}, auth.NTLMKey},
 			{"another installation key", scope, "identity.netbios_name"},
 		} {
 			cp := ntlmStore(t)
@@ -233,7 +236,7 @@ func TestNTLMWrite(t *testing.T) {
 	if err := cp.Write(t.Context(), entity.WriteMeta{}, put(scope, "identity.netbios_name", `"NAS"`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(cp, scope, ntlmKey, putOff); err != nil {
+	if err := run(cp, scope, auth.NTLMKey, putOff); err != nil {
 		t.Fatalf("turn-off from on: %v", err)
 	}
 	ops := operations(cp)
@@ -244,7 +247,7 @@ func TestNTLMWrite(t *testing.T) {
 	if in.NTLMOff.Off == 0 || in.NTLMOff.Off != s.Position || s.Generation != s.Position {
 		t.Errorf("Off %d, record generation %d, want both the settings generation the put raised, %d", in.NTLMOff.Off, s.Generation, s.Position)
 	}
-	if err := run(cp, scope, ntlmKey, putOff); err != nil {
+	if err := run(cp, scope, auth.NTLMKey, putOff); err != nil {
 		t.Errorf("turn-off while off with the deletion running: %v", err)
 	}
 	if ops := operations(cp); len(ops) != 1 {
@@ -261,7 +264,7 @@ func TestNTLMWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := fresh.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-		return ntlmWrite(asAdmin(t), tx, func(apiv1.OpKind, entity.ResourceRef) error { return nil }, scope, ntlmKey, func() error { return nil })
+		return ntlmWrite(asAdmin(t), tx, func(apiv1.OpKind, entity.ResourceRef) error { return nil }, scope, auth.NTLMKey, func() error { return nil })
 	})
 	if p, _ := problemOf(err); p.Code != apiv1.CodeOperationRunning {
 		t.Errorf("a write leaving no record with NTLM off and no deletion completed: %v, want 409 operation_running", err)

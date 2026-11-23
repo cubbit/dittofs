@@ -1097,3 +1097,24 @@ func TestAPIOnlyAccountGainsNoFileIdentity(t *testing.T) {
 		t.Errorf("an account created with a role and a Kerberos name: no uid, want one allocated")
 	}
 }
+
+// A stored identity.ntlm that holds no bool is repaired by an admin's put of
+// a valid value: answered 200, the stored value valid.
+func TestMalformedNTLMRepairedByAPut(t *testing.T) {
+	s := serve(t, as(entity.RoleAdmin, false), func(d *api.Deps) { d.Settings = settings.Table{identity.Section()} })
+	scope := entity.SettingScope{Kind: entity.ScopeInstallation}
+	gen := s.putSetting(t, scope, "identity.ntlm", `"garbled"`)
+	tag := strconv.Quote(strconv.FormatUint(gen, 10))
+	r := s.do(t, http.MethodPut, "/api/v1/settings/identity.ntlm", `{"spec":{"value":true}}`, "If-Match", tag, "Idempotency-Key", "ntlm-repair")
+	if r.status != http.StatusOK {
+		t.Fatalf("a put of identity.ntlm true over a malformed value: answered %d %s, want 200", r.status, r.body)
+	}
+	for st, err := range s.store.Settings(t.Context(), scope) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Key == "identity.ntlm" && string(st.Value) != "true" {
+			t.Errorf("the stored identity.ntlm after the repair: %q, want true", st.Value)
+		}
+	}
+}

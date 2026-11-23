@@ -285,8 +285,9 @@ func (f *fix) ntAccount(pk keyprovider.KeyProvider, old string) (entity.User, en
 // a new NT hash of the generated password, sealed under the protocol key,
 // the old version pruned, and with no protocol key the reset refuses,
 // naming keys.protocol, and changes nothing. With identity.ntlm false it
-// gets none: an NT hash it held is overwritten and named no more, so the old
-// password's resolves nowhere, and one holding none needs no protocol key.
+// gets none: an NT hash it held is named no more and left, unchanged, to the
+// NT-hash deletion turning NTLM off starts, and one holding none needs no
+// protocol key.
 func TestResetAdminNTHash(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -348,15 +349,9 @@ func TestResetAdminNTHash(t *testing.T) {
 				if !tc.holds {
 					return
 				}
-				oldHash, _ := pid.NewHashes(u, []byte(old), pid.NTLMSetting{On: true})
 				vs, err := p.Versions(ctx, secrets.Protocol, entity.SecretNTHash, owner, u.NTHash)
-				if err != nil {
-					t.Fatalf("versions of the old NT hash: %v", err)
-				}
-				for _, v := range vs {
-					if bytes.Equal(v.Value, oldHash.NTHash) {
-						t.Errorf("the old NT hash after the reset: version %d still holds it, want it resolvable nowhere", v.Number)
-					}
+				if err != nil || len(vs) != 1 || vs[0].Number != 1 {
+					t.Errorf("the old NT hash after the reset: versions %v, %v; want version 1 alone, left to the deletion", vs, err)
 				}
 				return
 			}

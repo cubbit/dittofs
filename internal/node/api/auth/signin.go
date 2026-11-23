@@ -84,26 +84,15 @@ func (s *Service) signIn(ctx context.Context, rec entity.AuditRecord, in apiv1.S
 	if err != nil {
 		return apiv1.Tokens{}, AuditedNothing, unavailable(err)
 	}
-	// The record the password is checked against, whose generation the
-	// success's write requires unchanged.
-	u, aerr := s.d.Accounts.Account(ctx, p)
-	verr := s.d.Accounts.VerifyPassword(ctx, p, password)
-	for _, err := range []error{aerr, verr} {
-		if err != nil && !errors.Is(err, vfserr.ErrLogonFailure) {
-			return apiv1.Tokens{}, AuditedNothing, unavailable(errors.Join(err, unreserve(ctx, s.d.Store, c)))
-		}
-	}
 	rec.Actor = p
 	rec.Target = entity.ResourceRef{Kind: entity.ResourceSession}
 	failed := rec
 	failed.Outcome = []byte("refused: " + apiv1.CodeUnauthenticated)
-	if aerr != nil || verr != nil {
-		if err := s.d.Store.Write(ctx, entity.WriteMeta{Audit: &failed}, func(tx entity.ControlPlaneTx) error {
-			return settleFailure(tx, c)
-		}); err != nil {
-			return apiv1.Tokens{}, AuditedNothing, unavailable(err)
-		}
-		return apiv1.Tokens{}, AuditedRefused, vfserr.ErrLogonFailure
+	// The record the password is checked against, whose generation the
+	// success's write requires unchanged.
+	u, audited, err := s.checked(ctx, c, p, password, failed)
+	if err != nil {
+		return apiv1.Tokens{}, audited, err
 	}
 	refresh, hash := newRefresh()
 	var sess entity.Session
@@ -141,6 +130,31 @@ func (s *Service) signIn(ctx context.Context, rec entity.AuditRecord, in apiv1.S
 	}
 	t, err := tokens(s.d.Tokens.signer(k), p, sess.ID, sess.Created, refresh, mustChange)
 	return t, AuditedApplied, err
+}
+
+// checked checks password as p's, for the attempt c counted: p's record
+// and its password are read through Accounts, and a store that cannot
+// answer either takes back c's raise of its source and answers
+// ErrUnavailable, auditing nothing. A refusal settles c as a failure in a
+// write auditing failed, and answers ErrLogonFailure. On a success it
+// returns the record, writing nothing.
+func (s *Service) checked(ctx context.Context, c counted, p entity.Principal, password []byte, failed entity.AuditRecord) (entity.User, Audited, error) {
+	u, aerr := s.d.Accounts.Account(ctx, p)
+	verr := s.d.Accounts.VerifyPassword(ctx, p, password)
+	for _, err := range []error{aerr, verr} {
+		if err != nil && !errors.Is(err, vfserr.ErrLogonFailure) {
+			return entity.User{}, AuditedNothing, unavailable(errors.Join(err, unreserve(ctx, s.d.Store, c)))
+		}
+	}
+	if aerr == nil && verr == nil {
+		return u, AuditedNothing, nil
+	}
+	if err := s.d.Store.Write(ctx, entity.WriteMeta{Audit: &failed}, func(tx entity.ControlPlaneTx) error {
+		return settleFailure(tx, c)
+	}); err != nil {
+		return entity.User{}, AuditedNothing, unavailable(err)
+	}
+	return entity.User{}, AuditedRefused, vfserr.ErrLogonFailure
 }
 
 // unreserve takes back the raise of an attempt the store could not check, in

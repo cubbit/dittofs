@@ -2,15 +2,11 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
-
-// ntlmKey is the setting that turns NTLM sign-in on and off.
-const ntlmKey = "identity.ntlm"
 
 // ntlmRight is the right a write of the installation's identity.ntlm asks,
 // and so the right that starts the NT-hash deletion, which only that write
@@ -18,12 +14,11 @@ const ntlmKey = "identity.ntlm"
 const ntlmRight = auth.Installation
 
 // ntlmOn reports whether the installation's identity.ntlm record s, ok
-// false for none, leaves NTLM on, its value decoded as identity decodes it,
-// a JSON bool: none, and a value that is no bool, which the settings table
-// refuses, leave the default, on.
-func ntlmOn(s entity.Setting, ok bool) bool {
-	var on bool
-	return !ok || json.Unmarshal(s.Value, &on) != nil || on
+// false for none, leaves NTLM on, as auth.NTLM decodes it, refusing a value
+// that is no bool.
+func ntlmOn(s entity.Setting, ok bool) (bool, error) {
+	n, err := auth.NTLM(s, ok)
+	return n.On, err
 }
 
 // ntlmWrite runs write, a write of key at scope inside tx, and, for the
@@ -37,7 +32,7 @@ func ntlmWrite(ctx context.Context, tx entity.ControlPlaneTx, start func(apiv1.O
 	// installation scope only; the settings table's scope check is what
 	// refuses, or leaves inert, the key at any other scope. Overturned if the
 	// table admits identity.ntlm at another scope that identity reads.
-	if scope.Kind != entity.ScopeInstallation || key != ntlmKey {
+	if scope.Kind != entity.ScopeInstallation || key != auth.NTLMKey {
 		return write()
 	}
 	// decision: identity.ntlm takes the installation right, an admin's, as
@@ -46,7 +41,7 @@ func ntlmWrite(ctx context.Context, tx entity.ControlPlaneTx, start func(apiv1.O
 	// turning it off starts the irreversible deletion of every NT hash.
 	// Overturned if the role table gives sign-in settings to an operator.
 	if c, _ := auth.CallerFrom(ctx); !holds(c, ntlmRight) {
-		return &refusal{code: apiv1.CodeForbidden, detail: "only an admin writes " + ntlmKey}
+		return &refusal{code: apiv1.CodeForbidden, detail: "only an admin writes " + auth.NTLMKey}
 	}
 	old, had, err := tx.Setting(scope, key)
 	if err != nil {
@@ -59,7 +54,18 @@ func ntlmWrite(ctx context.Context, tx entity.ControlPlaneTx, start func(apiv1.O
 	if err != nil {
 		return err
 	}
-	begin, err := ntlmRule(tx, ntlmOn(old, had), ntlmOn(now, has), now.Position) // a delete leaves no record, and NTLM on, so no Off
+	// decision: a malformed old value reads as on, identity's default, here
+	// alone, so a write of a valid value repairs the record; every other read
+	// refuses it, as identity does.
+	was, err := ntlmOn(old, had)
+	if err != nil {
+		was = true
+	}
+	on, err := ntlmOn(now, has)
+	if err != nil {
+		return err
+	}
+	begin, err := ntlmRule(tx, was, on, now.Position) // a delete leaves no record, and NTLM on, so no Off
 	if err != nil || !begin {
 		return err
 	}

@@ -195,8 +195,8 @@ type probeLifecycle struct {
 	*probe
 }
 
-func (l probeLifecycle) SyncMarks(context.Context, [16]byte) ([]entity.SyncMark, kvstore.OpenGen, error) {
-	return nil, 0, l.call()
+func (l probeLifecycle) SyncMarks(context.Context, [16]byte) ([]entity.SyncMark, kvstore.OpenGen, [][]byte, error) {
+	return nil, 0, nil, l.call()
 }
 
 func (l probeLifecycle) RaiseVersionLimits(context.Context, map[entity.ShareID]entity.JournalVersion) error {
@@ -232,7 +232,7 @@ var fencedCalls = map[string]func(ctx context.Context, p *probe) error{
 		return fencedContent{probeContent{probe: p}, p.f}.PruneRemovals(ctx, entity.ShareID{}, entity.FileID{}, entity.JournalVersion{})
 	},
 	"Lifecycle.SyncMarks": func(ctx context.Context, p *probe) error {
-		_, _, err := fencedLifecycle{probeLifecycle{probe: p}, p.f}.SyncMarks(ctx, [16]byte{})
+		_, _, _, err := fencedLifecycle{probeLifecycle{probe: p}, p.f}.SyncMarks(ctx, [16]byte{})
 		return err
 	},
 	"Lifecycle.RaiseVersionLimits": func(ctx context.Context, p *probe) error {

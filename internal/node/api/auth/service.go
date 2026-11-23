@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"iter"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -27,11 +28,12 @@ type accountCheck interface {
 }
 
 // store is the control plane as sign-in reaches it: the counts, the
-// sessions read untracked, and the write.
+// sessions and the settings read untracked, and the write.
 type store interface {
 	signInStore
 	Session(ctx context.Context, id [16]byte) (entity.Session, bool, error)
 	SessionByRefresh(ctx context.Context, hash [32]byte) (entity.Session, bool, error)
+	Settings(ctx context.Context, scope entity.SettingScope) iter.Seq2[entity.Setting, error]
 }
 
 // Deps is what a Service is built from.
@@ -39,6 +41,8 @@ type Deps struct {
 	Store    store
 	Accounts accountCheck
 	Tokens   *Tokens
+	// Sealer seals a password's hashes before the write that stores them.
+	Sealer Sealer
 	// Settings is the api section as the node holds it now, read at each
 	// sign-in, so a live api.session_lifetime reaches the next session.
 	Settings func() apisettings.Settings

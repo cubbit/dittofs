@@ -350,7 +350,7 @@ func (e *Engine) limitAndPublish(
 		vl:          vl,
 		h:           h,
 		incarnation: inc,
-		gc:          e.groupCommitFor(vl.j),
+		gc:          e.groupCommitFor(vl.j, vl.open),
 		seq:         e.opened.Add(1),
 	}
 	b.state.Store(uint32(s.State))

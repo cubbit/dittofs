@@ -30,14 +30,32 @@ func (c *Client) SignOut(ctx context.Context) error {
 	return err
 }
 
+// ChangePassword changes the password of the account the client's source
+// signs in, presenting its current one, and returns the tokens of the
+// session the change opens; every earlier session of the account, the
+// source's included, refreshes no more. It is sent once, with no idempotency
+// key, and its 401 is a refused current password, returned as it is and
+// never refreshed.
+func (c *Client) ChangePassword(ctx context.Context, current, next []byte) (apiv1.Tokens, error) {
+	return c.credentialCall(ctx, call{path: "/api/v1/auth/password", noRefresh: true},
+		apiv1.PasswordChange{Current: string(current), New: string(next)})
+}
+
 // credential sends a sign-in or a refresh carrying body and decodes the
 // tokens it answers.
 func (c *Client) credential(ctx context.Context, path string, body any) (apiv1.Tokens, error) {
+	return c.credentialCall(ctx, call{path: path, credential: true}, body)
+}
+
+// credentialCall sends cl, a POST with no idempotency key, carrying body and
+// decodes the tokens it answers.
+func (c *Client) credentialCall(ctx context.Context, cl call, body any) (apiv1.Tokens, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return apiv1.Tokens{}, err
 	}
-	rp, err := c.do(ctx, call{method: http.MethodPost, path: path, body: b, noKey: true, credential: true})
+	cl.method, cl.body, cl.noKey = http.MethodPost, b, true
+	rp, err := c.do(ctx, cl)
 	if err != nil {
 		return apiv1.Tokens{}, err
 	}

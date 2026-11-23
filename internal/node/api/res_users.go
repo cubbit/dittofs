@@ -475,3 +475,50 @@ func withKerberos(tx entity.ControlPlaneTx, start func(apiv1.OpKind, entity.Reso
 	}
 	return append(out, link.id), nil
 }
+
+// passwords is what the write adapter knows of a user's password, which
+// :set-password writes: a user the caller may not know of is hidden as the
+// users row hides it, and the commit raises the principals generation. The
+// document read stands for the password by the record's generation, which
+// the set moves, so its audit change is password: set and holds nothing of
+// the password.
+var passwords = writing[apiv1.SetPassword]{kind: entity.ResourceUser, raises: true, hidden: users.hidden,
+	secret: func(path string) bool { return path == "password" },
+	read: func(tx entity.ControlPlaneTx, id [16]byte, _ string) (apiv1.SetPassword, uint64, bool, error) {
+		u, ok, err := tx.User(userAt(id))
+		return apiv1.SetPassword{Password: strconv.FormatUint(u.Generation, 10)}, u.Generation, ok, err
+	}}
+
+// sealPassword is :set-password's pre-write step: the user's new password
+// sealed as identity's NewHashes derives it, before the write. A user that
+// does not exist or is marked deleted is 404, and so is one the caller may
+// not know of, an account with a role to a caller below admin; a directory
+// principal and an empty password are 400; each before anything is sealed.
+func sealPassword(ctx context.Context, rq request[apiv1.SetPassword]) (auth.PasswordSet, error) {
+	pw := []byte(rq.Body.Password)
+	defer clear(pw)
+	if rq.d.Credentials == nil {
+		return auth.PasswordSet{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node signs no caller in"}
+	}
+	u, ok, err := rq.d.Store.User(ctx, userAt(rq.ID))
+	switch {
+	case err != nil:
+		return auth.PasswordSet{}, err
+	case !ok || u.Deleted:
+		return auth.PasswordSet{}, errNotFound
+	case hiddenFrom(ctx, u):
+		return auth.PasswordSet{}, errHidden
+	}
+	return rq.d.Credentials.SealPassword(ctx, u, pw)
+}
+
+// setPassword is POST /users/{id}:set-password: the password the step
+// sealed written, its NT hash with it or none, the previous versions of both
+// pruned, the user's not-before raised, so every session and token it holds
+// is refused from the write on, its must-change cleared and its sign-in
+// count reset. A user written since the step, or identity.ntlm since, is 503
+// to retry, so no NT hash derived while NTLM was on is written after it was
+// turned off.
+func setPassword(_ context.Context, rq request[apiv1.SetPassword], ps auth.PasswordSet, tx entity.ControlPlaneTx) (none, [16]byte, error) {
+	return none{}, rq.ID, rq.d.Credentials.SetPassword(tx, ps)
+}
