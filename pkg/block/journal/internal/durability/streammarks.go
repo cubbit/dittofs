@@ -65,10 +65,21 @@ func (d *Durability) RaiseMarks(marks []core.SyncMark) {
 	}
 }
 
-// markNewer reports that a is a later mark of a stream than b: in a later
-// segment, or in the same one synced through further, or, at the same
-// offset, ending the later record.
+// markNewer reports that a is a later mark of a stream than b: it names a
+// later record, by sequence number, or, naming the same one, the copy in a
+// later segment, or the same segment synced through further.
+//
+// decision: sequence numbers order a stream's marks, not segment ids. A
+// segment id says when the segment was made, not when its records were
+// appended: a spare made early is used after a copy segment made later, so a
+// new record can sit in a lower segment than the open's recovered mark names,
+// and an order by segment would keep the older mark for good. Overturned if
+// a record can ever be appended with a lower sequence number than one already
+// synced on its stream.
 func markNewer(a, b core.SyncMark) bool {
+	if a.Sequence != b.Sequence {
+		return a.Sequence > b.Sequence
+	}
 	if a.Segment != b.Segment {
 		return a.Segment > b.Segment
 	}

@@ -62,8 +62,8 @@ func TestMarksIgnoreAFailedSync(t *testing.T) {
 }
 
 // TestSeedMarksIsACopyAndRaiseNeverLowers covers the figure's own rules: the
-// seed is copied both ways, a mark not newer than its stream's entry changes
-// nothing, a newer one replaces it, and a stream with no entry gains one.
+// seed is copied both ways, a mark naming no later record than its stream's
+// entry changes nothing, a later one replaces it, whatever its segment's id, and a stream with no entry gains one.
 func TestSeedMarksIsACopyAndRaiseNeverLowers(t *testing.T) {
 	d := &Durability{}
 	m0 := core.SyncMark{Stream: 0, Segment: 5, Through: 100, Offset: 90, Sequence: 7}
@@ -79,11 +79,12 @@ func TestSeedMarksIsACopyAndRaiseNeverLowers(t *testing.T) {
 		m    core.SyncMark
 		want core.SyncMark
 	}{
-		{"an earlier segment", core.SyncMark{Stream: 0, Segment: 4, Through: 900, Offset: 800, Sequence: 1}, m0},
-		{"the same segment, synced through less", core.SyncMark{Stream: 0, Segment: 5, Through: 50, Offset: 40, Sequence: 1}, m0},
+		{"an earlier record", core.SyncMark{Stream: 0, Segment: 9, Through: 900, Offset: 800, Sequence: 6}, m0},
 		{"the same mark", m0, m0},
-		{"the same segment, synced through more", core.SyncMark{Stream: 0, Segment: 5, Through: 200, Offset: 190, Sequence: 8}, core.SyncMark{Stream: 0, Segment: 5, Through: 200, Offset: 190, Sequence: 8}},
-		{"a later segment", core.SyncMark{Stream: 0, Segment: 6, Through: 10, Offset: 9, Sequence: 9}, core.SyncMark{Stream: 0, Segment: 6, Through: 10, Offset: 9, Sequence: 9}},
+		{"the same record, its copy in an earlier segment", core.SyncMark{Stream: 0, Segment: 4, Through: 900, Offset: 800, Sequence: 7}, m0},
+		{"the same record, synced through less", core.SyncMark{Stream: 0, Segment: 5, Through: 50, Offset: 40, Sequence: 7}, m0},
+		{"the same record, synced through more", core.SyncMark{Stream: 0, Segment: 5, Through: 200, Offset: 190, Sequence: 7}, core.SyncMark{Stream: 0, Segment: 5, Through: 200, Offset: 190, Sequence: 7}},
+		{"a later record in a lower segment", core.SyncMark{Stream: 0, Segment: 3, Through: 10, Offset: 9, Sequence: 8}, core.SyncMark{Stream: 0, Segment: 3, Through: 10, Offset: 9, Sequence: 8}},
 	} {
 		d.RaiseMarks([]core.SyncMark{c.m})
 		wantMarks(t, c.name, d, c.want)
