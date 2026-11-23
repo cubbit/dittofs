@@ -18,6 +18,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/pac"
 	"github.com/jcmturner/gokrb5/v8/types"
 
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
@@ -329,7 +330,7 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 		// second to every share with an everyone grant. Revisit if a
 		// deployment is shown to need cross-realm users with no directory,
 		// and then as a share-scoped option.
-		if s.dirAccountGone(ctx, st, logon) {
+		if s.dirAccountGone(ctx, st, enc.CRealm, logon) {
 			return identity.SignInResult{}, outcomeDisabled, errDisabled
 		}
 		return identity.SignInResult{}, outcomeLogonFailure, logonFailure("no principal for the ticket's client")
@@ -354,16 +355,19 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 	// KDC knew at issue, and a ticket outlives a disable by up to its 10
 	// hours. A local principal holds no dir spelling and asks the directory
 	// nothing. Pass-through needs no such read, the domain controller
-	// refusing a disabled account itself. Overturned if the cost of a query
-	// per sign-in past the TTL shows up, when the answer step 3 already read
-	// could serve.
+	// refusing a disabled account itself. Overturned if the directory ever
+	// pushes a disable to the node, so the read can wait for resolution.
+	//
+	// ponytail: past the TTL a sign-in mapped by step 3 asks the directory
+	// twice, by name and then by entry ID, each under its own 20-second
+	// bound. Read the enabled state from step 3's answer when the second
+	// query shows up in sign-in latency or the directory's load.
 	if id, ok := dirEntryID(u); ok {
-		var r *refusal
-		switch _, _, err := s.dirStep(ctx, st, p, id, identity.Evidence{}, false); {
-		case errors.As(err, &r) && r.reason == reasonDisabled:
-			return identity.SignInResult{}, outcomeDisabled, errDisabled
+		switch disabled, err := s.dirDisabled(ctx, st, id); {
 		case err != nil:
 			return identity.SignInResult{}, outcomeUnavailable, err
+		case disabled:
+			return identity.SignInResult{}, outcomeDisabled, errDisabled
 		}
 	}
 	ev := identity.Evidence{Name: name, Principal: p, Expires: enc.EndTime, SIDs: sids, DenyOnly: denyOnly}
@@ -440,14 +444,40 @@ func (s *Server) kerberosPrincipal(ctx context.Context, st *State, name string, 
 	return p, false, err
 }
 
-// dirAccountGone reports whether logon, a verified PAC's logon information,
-// names by its user SID a directory principal whose entry the directory,
-// read through the cache, shows disabled or gone: the account RFC 18 §3.7
-// calls disabled, whose name §4.2's step 3 no longer finds. It only picks
-// the refusal's outcome, and any fault reading it reports false, so the
-// sign-in is refused all the same.
-func (s *Server) dirAccountGone(ctx context.Context, st *State, logon *pac.KerbValidationInfo) bool {
-	if logon == nil || st.Directory == nil {
+// dirDisabled reads the entry whose entry ID is entryID through st's
+// directory cache, under its own 20-second bound, and reports whether the
+// directory shows it disabled or holds no such entry, which RFC 18 §3.7
+// reads as disabled for a principal it once minted. An entry the cache can
+// answer neither fresh nor within the stale grace is ErrUnavailable. It
+// writes nothing: no record is refreshed from the answer.
+func (s *Server) dirDisabled(ctx context.Context, st *State, entryID []byte) (bool, error) {
+	if st.dir == nil {
+		return false, fmt.Errorf("%w: identity: a directory principal with no directory", vfserr.ErrUnavailable)
+	}
+	ctx, cancel := directory.Bounded(ctx, s.deps.Clock, directoryBound, errDirectoryBound)
+	defer cancel()
+	e, _, err := st.dir.lookupEntry(ctx, directory.ByEntryID, entryID, st.Settings.DirectoryStaleGrace, false)
+	if err != nil {
+		if !errors.Is(err, vfserr.ErrUnavailable) {
+			err = fmt.Errorf("%w: %w", vfserr.ErrUnavailable, err)
+		}
+		return false, err
+	}
+	return !e.found || !e.ans.Enabled, nil
+}
+
+// dirAccountGone picks the outcome of a refused ticket of realm, whose
+// client name §4.2 mapped to no principal: true when realm is the
+// directory's, compared case and all as step 3 compares it, and logon, its
+// verified PAC's logon information, names by its user SID a directory
+// principal whose entry dirDisabled reports disabled or gone, the account
+// RFC 18 §3.7 calls disabled, whose name step 3 no longer finds. The ticket
+// is refused either way; any fault reading the store or the directory
+// reports false, so the outcome stays logon_failure. It writes nothing, and
+// its directory read takes a second 20-second bound after step 3's, so a
+// refused sign-in may wait for both.
+func (s *Server) dirAccountGone(ctx context.Context, st *State, realm string, logon *pac.KerbValidationInfo) bool {
+	if logon == nil || st.dir == nil || realm != st.Directory.Realm {
 		return false
 	}
 	p, ok, err := bySID(ctx, s.deps.Store.Principals(), pacUserSID(logon))
@@ -462,9 +492,8 @@ func (s *Server) dirAccountGone(ctx context.Context, st *State, logon *pac.KerbV
 	if !ok {
 		return false
 	}
-	var r *refusal
-	_, _, err = s.dirStep(ctx, st, p, id, identity.Evidence{}, false)
-	return errors.As(err, &r) && r.reason == reasonDisabled
+	disabled, err := s.dirDisabled(ctx, st, id)
+	return err == nil && disabled
 }
 
 // bindPAC checks a verified PAC's user SID against u, the record §4.2
