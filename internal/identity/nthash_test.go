@@ -235,6 +235,9 @@ func TestNTHashDeleteRunsToDone(t *testing.T) {
 				}
 				var p apiv1.Progress
 				res, p = d.mustTurn(&op)
+				if res.More == res.Done {
+					t.Errorf("turn %d: More %v with Done %v, want More exactly while work is left", turns, res.More, res.Done)
+				}
 				if p.Done < last || p.Done-last > 256 || p.Total != -1 {
 					t.Errorf("turn %d: progress %d of %d after %d; want at most 256 more, of -1", turns, p.Done, p.Total, last)
 				}

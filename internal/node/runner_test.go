@@ -211,6 +211,23 @@ func failUpdates(n int, err error) sim.Rule {
 	return sim.Rule{Op: kvtest.OpUpdate, Key: "*", Count: n, Action: sim.FaultAction{Err: err}}
 }
 
+// answersMore has each of steps' answers checked: More exactly while work
+// is left, so a turn with work left is followed at once.
+func answersMore(t *testing.T, steps map[string]stepRow) map[string]stepRow {
+	for kind, row := range steps {
+		run := row.run
+		row.run = func(ctx context.Context, op entity.Operation) (step.StepResult, error) {
+			res, err := run(ctx, op)
+			if err == nil && res.More == res.Done {
+				t.Errorf("%s step: More %v with Done %v, want More exactly while work is left", kind, res.More, res.Done)
+			}
+			return res, err
+		}
+		steps[kind] = row
+	}
+	return steps
+}
+
 // A user's deletion stopped between two batches, its store closed and
 // reopened under a new runner, resumes from the records and ends succeeded
 // with no row naming the user or her secret left, and another user's grant
@@ -254,7 +271,7 @@ func TestUserDeletionResumesAcrossRestart(t *testing.T) {
 	}
 	op := b.deleteUser(alice, gen)
 
-	b.at(b.runner(nil), 0)
+	b.at(b.runner(answersMore(t, operationSteps(b.store.Nodes()))), 0)
 	if got := b.read(op.ID).State; got != entity.OpRunning {
 		t.Fatalf("deletion after its first batch: got %v, want running", got)
 	}
@@ -263,7 +280,7 @@ func TestUserDeletionResumesAcrossRestart(t *testing.T) {
 	}
 
 	b.restart()
-	b.at(b.runner(nil), time.Second)
+	b.at(b.runner(answersMore(t, operationSteps(b.store.Nodes()))), time.Second)
 	if got := b.read(op.ID); got.State != entity.OpSucceeded {
 		t.Fatalf("deletion resumed after a restart: got %v, want succeeded", got.State)
 	}
