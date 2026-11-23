@@ -143,10 +143,23 @@ func (n *Node) applyConnLimit(snap *settings.Snapshot, wk settingsRead) ([]refus
 	return nil, nil
 }
 
+// checkPortsFor is an adapter section's write check over the port rule: the
+// section CheckTx runs it with the section's effective value at the write's
+// scope, on the node serving the API (RFC 13 section 6).
+func checkPortsFor[T asettings.Settings](
+	node entity.NodeID,
+) func(entity.ControlPlaneTx, settings.Write, T) error {
+	return func(tx entity.ControlPlaneTx, w settings.Write, effective T) error {
+		return checkPorts(tx, w, node, effective.Common().Port)
+	}
+}
+
 // newTable is the node's one settings table: every section the node declares,
 // which reconcile reads and the API's write check judges a write by. Each
-// component's section joins it with the component.
-func newTable() settings.Table {
+// component's section joins it with the component; the adapters' sections
+// carry the port rule, which judges a written port against the other
+// adapter's on the node serving the API (RFC 13 section 6).
+func newTable(node entity.NodeID) settings.Table {
 	return settings.Table{
 		settings.Of("api", settings.At(entity.ScopeInstallation), apisettings.Defaults(),
 			settings.WriteRole(entity.RoleAdmin)),
@@ -156,10 +169,12 @@ func newTable() settings.Table {
 		identity.DirectorySection(),
 		settings.Of(adaptersNFS, settings.Override(entity.ScopeInstallation, entity.ScopeNode),
 			nfsSection{NFS: asettings.DefaultNFS()},
-			settings.OverrideOnly("Port", "Enabled")),
+			settings.OverrideOnly("Port", "Enabled"),
+			settings.CheckTx(checkPortsFor[nfsSection](node))),
 		settings.Of(adaptersSMB, settings.Override(entity.ScopeInstallation, entity.ScopeNode),
 			smbSection{SMB: asettings.DefaultSMB()},
-			settings.OverrideOnly("Port", "Enabled")),
+			settings.OverrideOnly("Port", "Enabled"),
+			settings.CheckTx(checkPortsFor[smbSection](node))),
 		settings.Of(connectionLimitKey, settings.At(entity.ScopeNode),
 			connLimitSection{Limit: connectionLimit}, settings.SelfKey()),
 	}

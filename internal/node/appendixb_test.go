@@ -663,7 +663,7 @@ func TestAppendixBMatchesTheTable(t *testing.T) {
 		t.Fatalf("parse Appendix B: %v", err)
 	}
 
-	failures, reported := compareAppendixB(t, rows, newTable())
+	failures, reported := compareAppendixB(t, rows, newTable(probeNode))
 	if len(failures) > 0 {
 		t.Errorf("the table and Appendix B disagree:\n%s", strings.Join(failures, "\n"))
 	}
@@ -764,7 +764,7 @@ func TestAppendixBAdapterRowsDriftFails(t *testing.T) {
 				t.Fatalf("parse Appendix B: %v", err)
 			}
 
-			failures, _ := compareAppendixB(t, rows, newTable())
+			failures, _ := compareAppendixB(t, rows, newTable(probeNode))
 			if got := failedKeys(failures); !slices.Equal(got, tc.want) {
 				t.Errorf("failures %q, want the keys %v", failures, tc.want)
 			}
@@ -903,7 +903,7 @@ var refusingSeeds = []entity.Setting{
 func TestNoRefusalPrintsAReference(t *testing.T) {
 	t.Parallel()
 
-	refs, failures := refLeaks(t, newTable(), refusingSeeds)
+	refs, failures := refLeaks(t, newTable(probeNode), refusingSeeds)
 	if len(failures) > 0 {
 		t.Errorf("reference search:\n%s", strings.Join(failures, "\n"))
 	}

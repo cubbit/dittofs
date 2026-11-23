@@ -250,8 +250,9 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	// table refuses both count on the node itself, RFC 13 §8's series, never
 	// in a registry the exporter does not scrape.
 	n := &Node{
-		cfg:   cfg,
-		rec:   newReconciler(newTable().WithMetrics(cfg.Metrics), newReaches()),
+		cfg: cfg,
+		rec: newReconciler(
+			newTable(cfg.Bootstrap.Node.ID).WithMetrics(cfg.Metrics), newReaches()),
 		sweep: newSweeper(),
 	}
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV, settingSchema()); err != nil {
