@@ -108,7 +108,7 @@ func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
 	if got := all(t, cp.Sessions(ctx, u.Principal)); len(got) != 0 {
 		t.Errorf("a marked user's sessions: got %v, want none", got)
 	}
-	if got := all(t, cp.APITokens(ctx, u.Principal)); len(got) != 0 {
+	if got := all(t, cp.APITokens(ctx, u.Principal, [16]byte{})); len(got) != 0 {
 		t.Errorf("a marked user's tokens: got %v, want none", got)
 	}
 	for name, err := range map[string]error{

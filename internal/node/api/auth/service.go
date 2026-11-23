@@ -33,6 +33,7 @@ type store interface {
 	signInStore
 	Session(ctx context.Context, id [16]byte) (entity.Session, bool, error)
 	SessionByRefresh(ctx context.Context, hash [32]byte) (entity.Session, bool, error)
+	APITokenByHash(ctx context.Context, hash [32]byte) (entity.APIToken, bool, error)
 	Settings(ctx context.Context, scope entity.SettingScope) iter.Seq2[entity.Setting, error]
 }
 

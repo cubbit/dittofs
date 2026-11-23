@@ -24,13 +24,14 @@ type Caller struct {
 	MustChange bool
 }
 
-// CredentialKind is what a caller presented: no credential, or a session's
-// access token.
+// CredentialKind is what a caller presented: no credential, a session's
+// access token, or an API token.
 type CredentialKind uint8
 
 const (
 	CredentialNone CredentialKind = iota
 	CredentialSession
+	CredentialAPIToken
 )
 
 // Session is the session c authenticated under, false for a caller that

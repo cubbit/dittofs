@@ -383,7 +383,9 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 - **Deliverables:** `user create|list|get|update|delete|set-password` (`--email`, an empty value
   clearing it; `--uid`, `--gid`; the password from a prompt or a file, sent with no idempotency
   key); `group create|list|get|update|delete|add-member|remove-member`;
-  `netgroup create|list|get|update|delete`; `token create|list|revoke`, `create` sent with no key and
+  `netgroup create|list|get|update|delete`; `token create|list|revoke` (the routes are under the
+  caller's own user ID, which no route gives a non-admin today: a role holder is hidden from
+  `/users` below admin and `Tokens` carries no principal, so one must be added), `create` sent with no key and
   the token printed once; `installation rotate-signing-key`; their `clisuite` rows; `cli.md`
   regenerated. Consumed by E7.
 - **Acceptance criteria:**

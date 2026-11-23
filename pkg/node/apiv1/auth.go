@@ -82,7 +82,10 @@ func (SetPassword) LogValue() slog.Value { return redacted }
 
 func (s SetPassword) Format(f fmt.State, _ rune) { show(f, s.LogValue()) }
 
-// APITokenSpec is what a service account's API token is created with: its
+// APIToken is one of an account's API tokens.
+type APIToken = Resource[APITokenSpec, APITokenStatus]
+
+// APITokenSpec is what an account's API token is created with: its
 // expiry, no later than api.token_max_lifetime from its creation.
 type APITokenSpec struct {
 	Expires time.Time `json:"expires"`
