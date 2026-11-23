@@ -155,3 +155,33 @@ func TestNewProvider_MissingKind(t *testing.T) {
 		t.Fatalf("missing kind: want ErrInvalidConfig, got %v", err)
 	}
 }
+
+// A weak key file records the lowest cost a key file may and opens with its
+// passphrase, as a default one does.
+func TestGenerateWeakKeyFileOpensAtTheFloor(t *testing.T) {
+	b, err := GenerateWeakKeyFile(testPassphrase)
+	if err != nil {
+		t.Fatalf("GenerateWeakKeyFile: %v", err)
+	}
+	kf, err := decodeKeyFile(b)
+	if err != nil {
+		t.Fatalf("decode the weak key file: %v", err)
+	}
+	if kf.KDF.Time != minArgonTime || kf.KDF.MemoryKiB != minArgonMemoryKiB {
+		t.Errorf("weak key file's cost: got time %d memory %d KiB, want %d and %d", kf.KDF.Time, kf.KDF.MemoryKiB, minArgonTime, minArgonMemoryKiB)
+	}
+	if _, err := unwrapMasterKey(kf, testPassphrase); err != nil {
+		t.Errorf("unwrap the weak key file with its passphrase: %v", err)
+	}
+	b, err = GenerateKeyFile(testPassphrase)
+	if err != nil {
+		t.Fatalf("GenerateKeyFile: %v", err)
+	}
+	def, err := decodeKeyFile(b)
+	if err != nil {
+		t.Fatalf("decode a default key file: %v", err)
+	}
+	if def.KDF.Time != 3 || def.KDF.MemoryKiB != 64*1024 {
+		t.Errorf("default key file's cost: got time %d memory %d KiB, want 3 and 65536", def.KDF.Time, def.KDF.MemoryKiB)
+	}
+}
