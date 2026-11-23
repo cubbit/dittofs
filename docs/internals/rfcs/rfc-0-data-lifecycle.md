@@ -615,14 +615,15 @@ it owns no component's internals.
 ### 1.2 Component autonomy
 
 A component **MUST NOT** import another component in this set. The composition
-root, the node (`node.New`), is the one exception: it builds the components,
+root, the node (`node.New`), is the first exception: it builds the components,
 imports them, and is imported by none of them ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)).
 
 Two more import edges are allowed, each named here and nowhere else:
 
-- the engine's wiring (`enginewire`, [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)), which builds
-  the content components for the node and the engine's checks alike, imports the carver, the
-  syncer, the remote block store and the transforms;
+- the engine's wiring (`enginewire`, [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) and
+  [§2.8](rfc-8-engine.md#2.8%20Package%20layout)), which builds the content components for the node and
+  the engine's checks alike, imports the carver, the syncer, the remote tier's block codec and
+  block store, and the transforms;
 - the remote tier's block codec imports the transforms, whose chain it applies to every body
   ([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms)).
 
@@ -1492,7 +1493,7 @@ These hold across components. No component can enforce any of them alone.
 | **I3** | A remote block is never deleted while a referenced chunk's record locates the chunk in it. |
 | **I4** | Fill never overwrites content the journal holds. |
 | **I5** | That content is offloaded is reported, never inferred. |
-| **I6** | No component imports another component in this set, except the composition root, the node, which composes them ([§1.2](#1.2%20Component%20autonomy)). Adapters import only the filesystem service ([RFC 17](rfc-17-vfs.md)). |
+| **I6** | No component imports another component in this set, except along the edges [§1.2](#1.2%20Component%20autonomy) names: the composition root, the node, which composes them; the engine's wiring; and the remote tier's block codec to the transforms. Adapters import only the filesystem service ([RFC 17](rfc-17-vfs.md)). |
 | **I7** | Every stored record has a named reclamation path that holds at the record's maximum size. |
 | **I8** | A serialization conflict is retried within the caller's deadline, never surfaced as an I/O error; one still unresolved at the deadline answers retry-later ([§9.2](#9.2%20Conflicts%20and%20their%20retries)). |
 | **I9** | A block name is minted by one put attempt and put by no other; a remote object is deleted only when no block record not yet `deleted` and no put intent names it. |

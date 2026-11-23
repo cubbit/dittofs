@@ -321,7 +321,7 @@ The engine **MUST NOT**:
 ### 2.1 Content composition
 
 The process's one composition root is `node.New` ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)), and
-it alone names concrete component types. This section specifies what it builds
+it alone names concrete component types, with the engine's wiring it builds through. This section specifies what it builds
 for content, on every node: one **journal per device**, the
 syncer, block metadata's view, and one engine over them with a binding per share
 ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). Everything else holds a concrete type where there is one
@@ -330,7 +330,9 @@ implementation — `*vfs.Filesystem` holds `*engine.Engine`
 [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) requires one: the engine declares one per component it calls, in
 `Deps` ([§2.6](#2.6%20Dependencies%20and%20wiring)). Adapters hold only `vfs.Service`, and the gateway behind it never
 reaches the engine. [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)'s import rule binds the components composed; the
-composition code imports them and nothing imports it.
+composition code imports them and nothing imports it. `node.New` builds the content components
+through the engine's wiring, `enginewire` ([§2.8](#2.8%20Package%20layout)), which the engine's own checks use
+to compose the same components and which RFC 0 §1.2 names as an allowed import edge.
 
 **Every share has a remote block store.** The root **MUST** refuse to add a share
 whose configuration names no remote block store, with an error naming the share.
@@ -1345,6 +1347,7 @@ pkg/engine/            the engine (this RFC)
   queue.go                   the engine's two sources for the shared work scheduler, per journal (§6.1)
   offload/                   the pipeline state machine (§6.3–§6.8): capture, carve, assemble, intent, put, commit, report
   arch_test.go               §15.3's architecture test
+  enginewire/                builds the content components for the node and the engine's checks (§2.1)
 pkg/workqueue/               the shared work scheduler (§6.1.1), used by the engine and GC
 ```
 
@@ -1353,7 +1356,7 @@ While v1 existed they were `pkg/block/enginev2` and `pkg/block/journalv2`; the
 suffix was in Go package and import paths only, and metric, span and log names
 say `engine` and `journal` from the start.
 
-`offload/` is the one subpackage. It is the largest state machine, and its tests
+Besides the wiring, `offload/` is the one subpackage. It is the largest state machine, and its tests
 import only in-memory implementations of the offer, the carver, a flow and block metadata's views, each held to its
 component's conformance suite, so the import
 rule enforces its boundary.
