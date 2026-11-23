@@ -1124,22 +1124,10 @@ func TestStartReplaysEveryServedShare(t *testing.T) {
 	r.write(t, f1, 0, 4096, writeMtime)
 	r.writeOn(t, r.handle(t, r.two.Tag), f2, 0, 8192, writeMtime)
 
-	removed := entity.NewShareID()
-	r.lc.removed = map[entity.ShareID]entity.TagRecord{
-		removed: {
-			Tag:   92,
-			State: entity.TagOffloaded,
-		},
-	}
-	r.seed(t, 92)
+	handed := r.removing(t, "removed", entity.TagOffloaded)
+	r.seed(t, handed.Tag)
 
 	r.atRestart()
-
-	handed := engine.Share{
-		ID:    removed,
-		Tag:   92,
-		State: engine.Serving,
-	}
 
 	func() {
 		defer func() {

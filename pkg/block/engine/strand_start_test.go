@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -105,19 +106,11 @@ func TestStartStrandsTheTagNoShareRecordNames(t *testing.T) {
 func TestATagAShareRecordNamesIsNeverStranded(t *testing.T) {
 	r := newRig(t)
 
-	r.lc.removed = map[entity.ShareID]entity.TagRecord{
-		entity.NewShareID(): {
-			Tag:   70,
-			State: entity.TagServing,
-		},
-		entity.NewShareID(): {
-			Tag:   71,
-			State: entity.TagOffloaded,
-		},
-	}
+	unhanded := enginetest.AddShare(t, r.fs.Store, "unhanded", 1<<30)
+	offloaded := r.removing(t, "offloaded", entity.TagOffloaded)
 
-	r.leaveTag(t, 70, 4096, 0)
-	r.leaveTag(t, 71, 4096, 0)
+	r.leaveTag(t, unhanded.Tag, 4096, 0)
+	r.leaveTag(t, offloaded.Tag, 4096, 0)
 	r.begin(t)
 
 	if got := r.j.Stranded(); len(got) != 0 {
@@ -130,9 +123,7 @@ func TestATagAShareRecordNamesIsNeverStranded(t *testing.T) {
 func TestAnAttachedTagTheStoreDoesNotNameIsNotStranded(t *testing.T) {
 	r := newRig(t)
 
-	r.lc.hidden = map[entity.ShareID]bool{
-		r.two.ID: true,
-	}
+	removed(t, r.fs.Store, r.two)
 
 	r.leaveTag(t, r.two.Tag, 4096, 0)
 	r.begin(t)

@@ -102,38 +102,39 @@ func TestDropClosesTheHandleThenForgetsAndKeepsTheBindingRemoved(t *testing.T) {
 // A Drop of a share Start left removed closes no handle and forgets its tag
 // once; the share still answers ErrStale.
 func TestDropOfAShareStartLeftRemovedForgetsItsTagWithNoHandle(t *testing.T) {
-	s, _, offloaded := startedWithRemovals(t)
+	s, w := startedWithRemovals(t)
+	offloaded, tag := w.offloaded.ID, w.offloaded.Tag
 	f := entity.NewFileID()
 
 	if _, err := s.e.Draw(t.Context(), offloaded, f); !isStale(err) {
 		t.Fatalf("Draw before Drop = %v, want exactly ErrStale", err)
 	}
 
-	if err := s.e.Drop(t.Context(), offloaded, 92); err != nil {
+	if err := s.e.Drop(t.Context(), offloaded, tag); err != nil {
 		t.Fatalf("Drop = %v, want nil", err)
 	}
 
 	log := s.j.log()
 
-	if got := countOf(log, "forget 92"); got != 1 {
-		t.Errorf("forget 92 ran %d times in %v, want 1", got, log)
+	if got := countOf(log, fmt.Sprintf("forget %d", tag)); got != 1 {
+		t.Errorf("forget %d ran %d times in %v, want 1", tag, got, log)
 	}
 
-	if s.j.called("close handle 92") {
+	if s.j.called(fmt.Sprintf("close handle %d", tag)) {
 		t.Errorf("Drop closed a handle of the removed share: %v", log)
 	}
 
-	if _, ok := s.j.Stats().Shares[92]; ok {
-		t.Error("the journal still names tag 92 after Drop")
+	if _, ok := s.j.Stats().Shares[tag]; ok {
+		t.Errorf("the journal still names tag %d after Drop", tag)
 	}
 
-	h, err := s.j.FakeJournal.Share(92, 0, journal.Version{})
+	h, err := s.j.FakeJournal.Share(tag, 0, journal.Version{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	for id := range h.Files() {
-		t.Errorf("the journal still holds file %v of tag 92 after Drop", id)
+		t.Errorf("the journal still holds file %v of tag %d after Drop", id, tag)
 	}
 
 	if _, err := s.e.Draw(t.Context(), offloaded, f); !isStale(err) {

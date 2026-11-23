@@ -908,15 +908,8 @@ func TestOneFileWithManyRemovalsIsOneItemPrunedAtTheNewest(t *testing.T) {
 // reached offloaded is not listed, as it has no binding to run them on.
 func TestStartPostsTheRemovalsOfEveryServedShare(t *testing.T) {
 	r := newRig(t)
-	gone := entity.NewShareID()
+	gone := r.removing(t, "gone", entity.TagOffloaded).ID
 	one, two, off := entity.NewFileID(), entity.NewFileID(), entity.NewFileID()
-
-	r.lc.removed = map[entity.ShareID]entity.TagRecord{
-		gone: {
-			Tag:   9,
-			State: entity.TagOffloaded,
-		},
-	}
 
 	files := map[entity.ShareID]entity.FileID{
 		r.one.ID: one,

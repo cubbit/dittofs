@@ -352,14 +352,94 @@ func (s *starter) seed(t *testing.T, tag journal.ShareTag) {
 	}
 }
 
+// removing adds a share named name to the store and takes its removal
+// through the store's steps until its tag reads state, recording each
+// shard's step as the node's removal does, and returns the share as the
+// engine bound it before the removal.
+func (s *starter) removing(t *testing.T, name string, state entity.TagState) engine.Share {
+	t.Helper()
+
+	sh := enginetest.AddShare(t, s.fs.Store, name, 1<<30)
+	removeShare(t, s.fs.Store, sh, state)
+
+	return sh
+}
+
+// removeShare takes share sh's removal in st through its steps until its tag
+// reads state, recording each shard's step as the node's removal does.
+func removeShare(t *testing.T, st *kvstore.Store, sh engine.Share, state entity.TagState) {
+	t.Helper()
+
+	ctx := t.Context()
+
+	rec, _, err := st.ShareIndex().Share(ctx, sh.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.ControlPlane().DeleteShare(ctx, sh.ID, entity.SnapshotsDelete, rec.Generation); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 100 {
+		got, err := st.Lifecycle().TagState(ctx, sh.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got == state {
+			return
+		}
+
+		step, done, err := st.Nodes().ContinueRemoval(ctx, sh.ID)
+		if err != nil || done {
+			t.Fatalf("share %v's removal: step %d, done %v, %v; want it short of %v", sh.ID, step, done, err, state)
+		}
+
+		if reached, ok := map[uint8]entity.TagState{3: entity.TagOffloaded, 4: entity.TagForgotten}[step]; ok {
+			if err := st.Nodes().RecordShardRemoval(ctx, sh.ID, sh.Shard, reached); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	t.Fatalf("share %v's removal never reached %v", sh.ID, state)
+}
+
+// removed runs share sh's removal in st to its end, recording each shard's
+// step as the node's removal does, so the store holds no record of it.
+func removed(t *testing.T, st *kvstore.Store, sh engine.Share) {
+	t.Helper()
+
+	removeShare(t, st, sh, entity.TagForgotten)
+
+	ctx := t.Context()
+
+	for range 100 {
+		step, done, err := st.Nodes().ContinueRemoval(ctx, sh.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if done {
+			return
+		}
+
+		for shardDone := step != 4; !shardDone; {
+			if shardDone, err = st.Nodes().ContinueShardRemoval(ctx, sh.ID, sh.Shard); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	t.Fatalf("share %v's removal never finished", sh.ID)
+}
+
 // startLifecycle is the store's lifecycle view with each call named in fail
-// failing with its error, and the share records in removed added to what
-// Tags answers, as the removal's steps would record them.
+// failing with its error.
 type startLifecycle struct {
 	engine.Lifecycle
 	fail      map[string]error
-	removed   map[entity.ShareID]entity.TagRecord
-	hidden    map[entity.ShareID]bool // shares Tags leaves out, as a store with no record of them
 	raiseGate atomic.Pointer[gate]
 	counts    *kv.Counting            // the store's counts, when the test reads the raise's
 	raises    []kv.UpdateCounts       // the Updates of each RaiseAtStart, when counts is set
@@ -433,20 +513,7 @@ func (l *startLifecycle) Tags(ctx context.Context) (map[entity.ShareID]entity.Ta
 		return nil, err
 	}
 
-	tags, err := l.Lifecycle.Tags(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	for id, r := range l.removed {
-		tags[id] = r
-	}
-
-	for id := range l.hidden {
-		delete(tags, id)
-	}
-
-	return tags, nil
+	return l.Lifecycle.Tags(ctx)
 }
 
 func (l *startLifecycle) VersionLimits(
@@ -990,18 +1057,8 @@ func TestStartRefusesALostJournalByName(t *testing.T) {
 			s := newStarter(t)
 			s.openErr = c.err
 			unhanded := enginetest.AddShare(t, s.fs.Store, "three", 1<<30)
-			forgotten := entity.NewShareID()
-			offloaded := entity.NewShareID()
-			s.lc.removed = map[entity.ShareID]entity.TagRecord{
-				forgotten: {
-					Tag:   91,
-					State: entity.TagForgotten,
-				},
-				offloaded: {
-					Tag:   92,
-					State: entity.TagOffloaded,
-				},
-			}
+			forgotten := s.removing(t, "forgotten", entity.TagForgotten).ID
+			offloaded := s.removing(t, "offloaded", entity.TagOffloaded).ID
 
 			refused := []engine.Share{s.one, s.two, unhanded}
 			before := map[entity.ShardID]entity.Shard{}
@@ -1243,8 +1300,6 @@ func TestStartFailsOnACheckError(t *testing.T) {
 // handle and the journal it opened, and publishes nothing; a store read that
 // fails before Open fails Start before any journal is opened.
 func TestAFailedStartClosesInReverse(t *testing.T) {
-	const forgottenTag = 9
-
 	for _, c := range []struct {
 		name   string
 		store  string // the lifecycle call that fails
@@ -1257,7 +1312,7 @@ func TestAFailedStartClosesInReverse(t *testing.T) {
 		{name: "Tags", store: "Tags"},
 		{name: "VersionLimits", store: "VersionLimits"},
 		{name: "VersionFloor", floor: true},
-		{name: "Forget", call: fmt.Sprintf("forget %d", forgottenTag), opened: true, closes: []string{"close journal"}},
+		{name: "Forget", call: "forget", opened: true, closes: []string{"close journal"}},
 		{name: "second Share", call: "share 0", opened: true},
 		{name: "RaiseVersionLimits", store: "RaiseVersionLimits", opened: true},
 		{name: "SetVersionLimit", call: "limit", opened: true},
@@ -1276,14 +1331,13 @@ func TestAFailedStartClosesInReverse(t *testing.T) {
 				s.lc.fail = map[string]error{c.store: errInjected}
 			}
 
-			forgotten := entity.NewShareID()
-			s.lc.removed = map[entity.ShareID]entity.TagRecord{
-				forgotten: {
-					Tag:   forgottenTag,
-					State: entity.TagForgotten,
-				},
+			gone := s.removing(t, "forgotten", entity.TagForgotten)
+			forgotten := gone.ID
+			s.seed(t, gone.Tag)
+
+			if c.call == "forget" {
+				c.call = fmt.Sprintf("forget %d", gone.Tag)
 			}
-			s.seed(t, forgottenTag)
 
 			one, two := s.one.Tag, s.two.Tag
 			closes := c.closes
@@ -1335,82 +1389,74 @@ func TestAFailedStartClosesInReverse(t *testing.T) {
 // share attaches, wherever the journal still names it; one whose removal
 // reads offloaded is not attached and not forgotten; both answer ErrStale.
 func TestStartForgetsFinishedRemovalsAndAttachesNoRemovedShare(t *testing.T) {
-	s, forgotten, offloaded := startedWithRemovals(t)
+	s, w := startedWithRemovals(t)
 
 	log := s.j.log()
-	forgetAt := slices.Index(log, "forget 91")
+	forget := fmt.Sprintf("forget %d", w.forgotten.Tag)
+	forgetAt := slices.Index(log, forget)
 	firstShare := slices.IndexFunc(log, func(call string) bool {
 		return strings.HasPrefix(call, "share ")
 	})
 
 	if forgetAt < 0 || firstShare < 0 || forgetAt > firstShare {
-		t.Errorf("calls %v, want forget 91 before the first share", log)
+		t.Errorf("calls %v, want %s before the first share", log, forget)
 	}
 
-	for _, call := range []string{"share 92", "forget 92", "forget 93"} {
+	for _, call := range []string{
+		fmt.Sprintf("share %d", w.offloaded.Tag),
+		fmt.Sprintf("forget %d", w.offloaded.Tag),
+		fmt.Sprintf("forget %d", w.gone.Tag),
+	} {
 		if s.j.called(call) {
 			t.Errorf("calls %v include %q", log, call)
 		}
 	}
 
-	for _, id := range []entity.ShareID{forgotten, offloaded} {
+	for _, id := range []entity.ShareID{w.forgotten.ID, w.offloaded.ID} {
 		if err := s.e.BindingOf(id); !errors.Is(err, vfserr.ErrStale) {
 			t.Errorf("removed share %v's binding = %v, want ErrStale", id, err)
 		}
 	}
 }
 
+// removals is the shares startedWithRemovals takes through their removal.
+type removals struct {
+	forgotten engine.Share // forgotten, its tag still in the journal
+	offloaded engine.Share // offloaded, its tag in the journal, handed to Start
+	gone      engine.Share // forgotten, its tag no longer in the journal
+}
+
 // startedWithRemovals starts an engine whose store records two shares being
 // removed, one forgotten with its tag still in the journal and one
 // offloaded, and a third forgotten tag the journal no longer names. The
 // offloaded share is handed to Start too.
-func startedWithRemovals(t *testing.T) (s *starter, forgotten, offloaded entity.ShareID) {
+func startedWithRemovals(t *testing.T) (*starter, removals) {
 	t.Helper()
 
-	s = newStarter(t)
-	forgotten = entity.NewShareID()
-	offloaded = entity.NewShareID()
-	s.lc.removed = map[entity.ShareID]entity.TagRecord{
-		forgotten: {
-			Tag:   91,
-			State: entity.TagForgotten,
-		},
-		offloaded: {
-			Tag:   92,
-			State: entity.TagOffloaded,
-		},
-		entity.NewShareID(): {
-			Tag:   93,
-			State: entity.TagForgotten,
-		},
+	s := newStarter(t)
+	w := removals{
+		forgotten: s.removing(t, "forgotten", entity.TagForgotten),
+		offloaded: s.removing(t, "offloaded", entity.TagOffloaded),
+		gone:      s.removing(t, "gone", entity.TagForgotten),
 	}
-	s.seed(t, 91)
-	s.seed(t, 92)
+	s.seed(t, w.forgotten.Tag)
+	s.seed(t, w.offloaded.Tag)
 
-	handed := engine.Share{
-		ID:    offloaded,
-		Tag:   92,
-		State: engine.Serving,
-	}
-
-	if err := s.e.Start(t.Context(), []engine.Share{s.one, handed}); err != nil {
+	if err := s.e.Start(t.Context(), []engine.Share{s.one, w.offloaded}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	return s, forgotten, offloaded
+	return s, w
 }
 
 // A Bind of a share being removed answers ErrStale, opens no handle and
 // changes nothing, never a state change that reports it served.
 func TestBindOfARemovedShareIsStale(t *testing.T) {
-	s, forgotten, offloaded := startedWithRemovals(t)
+	s, w := startedWithRemovals(t)
 	table := s.e.TableForTest()
 	shares := len(s.j.shareCalls())
 
-	for _, sh := range []engine.Share{
-		{ID: forgotten, Tag: 91, State: engine.Serving},
-		{ID: offloaded, Tag: 92, State: engine.Serving},
-	} {
+	for _, sh := range []engine.Share{w.forgotten, w.offloaded} {
 		if err := s.e.Bind(t.Context(), sh); !errors.Is(err, vfserr.ErrStale) {
 			t.Errorf("Bind of removed share %v = %v, want ErrStale", sh.ID, err)
 		}
@@ -1625,13 +1671,7 @@ func TestNoWriteBeforeTheVersionLimit(t *testing.T) {
 // raised, and opens a new one on any other.
 func TestStartRaisesEveryServedShard(t *testing.T) {
 	s := newStarter(t)
-	gone := enginetest.AddShare(t, s.fs.Store, "gone", 1<<30)
-	s.lc.removed = map[entity.ShareID]entity.TagRecord{
-		gone.ID: {
-			Tag:   uint32(gone.Tag),
-			State: entity.TagOffloaded,
-		},
-	}
+	gone := s.removing(t, "gone", entity.TagOffloaded)
 
 	// The store's first share, left out of Start, is on shard 0: a raise or a
 	// record of the removed binding's zero shard shows on it.

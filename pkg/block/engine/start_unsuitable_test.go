@@ -223,13 +223,8 @@ func TestStartLeavesAnUnsuitableJournalsSharesUnattached(t *testing.T) {
 // ErrUnavailable would not be retried, and the tag would stay in the journal.
 func TestADropOfARemovedSharesTagWaitsForTheRetriedOpen(t *testing.T) {
 	s := newStarter(t)
-	removed := entity.NewShareID()
-	s.lc.removed = map[entity.ShareID]entity.TagRecord{
-		removed: {
-			Tag:   91,
-			State: entity.TagOffloaded,
-		},
-	}
+	gone := s.removing(t, "removed", entity.TagOffloaded)
+	removed := gone.ID
 	s.openErr = unsuitable()
 	s.closeAtEnd(t)
 
@@ -237,7 +232,7 @@ func TestADropOfARemovedSharesTagWaitsForTheRetriedOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.e.Drop(t.Context(), removed, 91); !isDelay(err, vfserr.DelayFrozen) {
+	if err := s.e.Drop(t.Context(), removed, gone.Tag); !isDelay(err, vfserr.DelayFrozen) {
 		t.Errorf("Drop of a removed share while unattached = %v, want ErrDelay(DelayFrozen)", err)
 	}
 
