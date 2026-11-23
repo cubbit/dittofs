@@ -29,6 +29,7 @@ var testOnlyEnvNames = []string{
 	"DITTOFS_AD_DC_PAC_OUT",
 	"DITTOFS_AD_DC_NAME_PREFIX",
 	"DITTOFS_BENCH_SCALE",
+	"DITTOFS_MIT_PAC_OUT",
 }
 
 // notExportedEnvNames are the allowed names the start, the key provider and

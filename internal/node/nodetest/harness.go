@@ -139,7 +139,7 @@ func New(t testing.TB, opts ...Option) *Harness {
 	h.openKV(t)
 	var env string
 	if o.password != "" {
-		env = "DITTOFS_NODETEST_ADMIN_PASSWORD"
+		env = "NODETEST_ADMIN_PASSWORD"
 		t.Setenv(env, o.password)
 	}
 	err := install.Run(ctx, install.Deps{
