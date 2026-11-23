@@ -72,7 +72,7 @@ retry channel with `vfserr.ErrFileOpen`, landed from `feat/enginev2-delete-retry
 
 ### 1.3 Names used here
 
-- **E1**, epic 1, interfaces: `pkg/block/engine`'s exported surface, `Deps` and its
+- **E1**, epic 1, interfaces: `pkg/engine`'s exported surface, `Deps` and its
   interfaces, frozen at S1.
 - **E2**, epic 2, red e2e suite and test foundations: `engine-conformance` with its
   `known.yaml`, the fixture over the real journal and `kvstore`, the fault-injecting
@@ -126,7 +126,7 @@ retry channel with `vfserr.ErrFileOpen`, landed from `feat/enginev2-delete-retry
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   the engine's one import test, a walk over every package of `pkg/engine` with
    one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
    `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
    engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
@@ -305,7 +305,7 @@ Only what the RFC leaves to the code. Ids are stable; a missing number became a 
 ## 5. Target tree
 
 ```text
-pkg/block/engine/
+pkg/engine/
   remove.go         T5.1  the guard, the in-flight mark, Truncate, the shared phase 1 (D1–D4, D8–D10)
                     T5.2  Deallocate
                     T5.4  Delete, the retry channel, the abort routine (D6, D7)
