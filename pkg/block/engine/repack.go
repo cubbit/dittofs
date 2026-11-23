@@ -439,7 +439,12 @@ func (n *refusalNote) roomAgain(st journal.Stats, free func() (int64, error)) bo
 		return err == nil && f >= deviceRoomBytes
 	}
 
-	if st.MaxBytes <= 0 {
+	// decision: a removed maximum counts only while the journal reports
+	// segments, because a closed journal answers the zero Stats, which reads
+	// as unbounded too. No path judges a closed journal today, as the group
+	// commits stop before the journals close, so no test reaches this; the
+	// guard keeps a refusal standing if a judge ever outlives its journal.
+	if st.MaxBytes <= 0 && st.Segments > 0 {
 		return true // the maximum was removed: the journal is unbounded
 	}
 

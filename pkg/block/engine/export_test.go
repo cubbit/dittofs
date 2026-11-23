@@ -909,22 +909,6 @@ func (e *Engine) FullJudgedForTest(s entity.ShareID) bool {
 	return c.full != nil && !c.checkAt.IsZero()
 }
 
-// DueNowForTest puts file f of share s on its journal's due set, asked for
-// now, as a stability point does, without waiting for the batch.
-func (e *Engine) DueNowForTest(s entity.ShareID, f entity.FileID) {
-	b := e.table()[s]
-	g := b.gc
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	d := g.due[f]
-	if d == nil {
-		d = &dueFile{b: b, oldest: e.d.Clock.Now()}
-		g.due[f] = d
-	}
-	d.now = true
-}
-
 // RoomPendingForTest reports whether the latest refusal of share s's journal
 // that raised journal_full waits for room, as one naming the device or the
 // maximum does, for the group commit's loop to judge.

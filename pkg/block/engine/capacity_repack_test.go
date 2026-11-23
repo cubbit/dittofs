@@ -1704,6 +1704,12 @@ func TestJournalFullClearsUnderSteadyLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Each write falls due on the pass after it, as the loop advances the
+	// clock past the existence age.
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Nanosecond, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+
 	f := u.create(t, "busy")
 	batches := make(chan struct{}, 1)
 	var stopped atomic.Bool
@@ -1719,7 +1725,7 @@ func TestJournalFullClearsUnderSteadyLoad(t *testing.T) {
 			return
 		}
 		_, _ = u.e.Write(t.Context(), u.share.ID, f, 0, []byte("y"), engine.WriteOpts{Done: func() {}})
-		u.e.DueNowForTest(u.share.ID, f)
+		u.clock.Advance(time.Nanosecond)
 	})
 	u.write(t, f, 0, []byte("y")) // wakes the loop, which runs the load from then on
 	within(t, "a batch of the steady load", batches)

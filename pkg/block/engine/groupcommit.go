@@ -456,7 +456,7 @@ func (g *groupCommit) run() {
 		start := g.e.d.Clock.Now()
 		// The room of a refusal is judged before the take, so files falling
 		// due on every pass do not keep journal_full up on a journal with
-		// room again, as the marks ride on the batch.
+		// room again: the marks ride on the batch; the judge runs before it.
 		if g.fullDue(start) == 0 {
 			g.checkFull()
 		}
