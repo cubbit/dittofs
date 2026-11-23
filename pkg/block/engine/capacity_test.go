@@ -464,6 +464,11 @@ func TestRefusalsAreCountedAndLoggedOncePerMinutePerShare(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Bytes neither share's pass can free, so each refusal settles retry-later.
+	u.j.SegmentCap(segBytes, 0)
+	u.j.AddFailed(u.share.Tag, 5, true)
+	u.j.AddFailed(other.Tag, 5, true)
+
 	if err := u.j.Refuse(enginetest.CallWriteAt, refusalErr(journal.LimitShare)); err != nil {
 		t.Fatal(err)
 	}
@@ -720,6 +725,9 @@ func TestRefusalLogNamesTheStaleFigure(t *testing.T) {
 	u := newUnit(t, func(d *engine.Deps) {
 		d.Logger = slog.New(slog.NewTextHandler(&logged, nil))
 	})
+
+	u.j.SegmentCap(segBytes, 0)
+	u.j.AddFailed(u.share.Tag, 5, true) // bytes the pass cannot free: the refusal settles retry-later
 
 	err := &journal.NoSpaceError{Limit: journal.LimitShare, Missing: 1, Unit: journal.UnitBytes, Stale: 4242}
 	if rerr := u.j.Refuse(enginetest.CallWriteAt, err); rerr != nil {

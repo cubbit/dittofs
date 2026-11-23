@@ -84,6 +84,41 @@ func (c *composition) write(t *testing.T, call vfs.Call, h vfs.Handle, off int64
 	return c.fs.Write(ctx, call, vfs.Anonymous(h), off, p, vfs.Unstable)
 }
 
+// passBound is the deadline writeAtBound gives its write on the engine's
+// clock; its tenth, the most a share-limit refusal waits for the share's
+// pass, is a length no other wait of the engine asks the clock for.
+const passBound = 10*time.Second + 70*time.Millisecond
+
+// writeAtBound writes p at 0 of h as the administrator under a deadline of
+// passBound on the engine's clock, which it moves past a tenth of that once
+// the refusal waits for the share's pass: the answer a refusal gives at its
+// bound.
+func (c *composition) writeAtBound(t *testing.T, h vfs.Handle, p []byte) error {
+	t.Helper()
+	armed := c.Clock.Armed(passBound / 10)
+	ctx := enginetest.ClockDeadline{Context: t.Context(), At: c.Clock.Now().Add(passBound)}
+	got := make(chan error, 1)
+	go func() {
+		_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(h), 0, p, vfs.Unstable)
+		got <- err
+	}()
+	select {
+	case <-armed:
+	case err := <-got:
+		return err
+	case <-time.After(bound):
+		t.Fatal("the refused write never waited for the share's pass")
+	}
+	c.Clock.Advance(passBound / 10)
+	select {
+	case err := <-got:
+		return err
+	case <-time.After(bound):
+		t.Fatal("the refused write was not answered at its bound")
+	}
+	return nil
+}
+
 // read is what the file h names holds over [off, off+n), read as the
 // administrator.
 func (c *composition) read(t *testing.T, h vfs.Handle, off int64, n int) []byte {
@@ -228,7 +263,7 @@ func v20(t *testing.T, opts ...enginetest.Option) {
 			t.Fatal("the write past the limit started no repack")
 		}
 		second := bytes.Repeat([]byte{'d'}, 3*mib/2)
-		_, err := c.write(t, c.admin, g, 0, second)
+		err := c.writeAtBound(t, g, second)
 		if !errors.Is(err, &vfs.Delay{Cause: vfs.DelayCapacity}) || errors.Is(err, vfs.ErrNoSpace) {
 			t.Errorf("a write refused while the repack runs: %v, want ErrDelay (DelayCapacity)", err)
 		}

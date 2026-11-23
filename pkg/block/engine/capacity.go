@@ -399,9 +399,22 @@ func (e *Engine) relieved(
 	}
 
 	// The last step syncs, then repacks; the retry's own refusal reads what
-	// is left. (The share's first pass may already have run at a budget of
-	// no bytes: a scope the prefigures name empty is charged nothing.)
-	if serr := e.relieve(ctx, b, r, at); serr != nil {
+	// is left. A share's own limit runs it as the share's pass, which the
+	// refusal joins before its sync begins, or else waits for the next one,
+	// for at most a tenth of the time left to its deadline.
+	var serr error
+	if r.limit == journal.LimitShare {
+		p := e.passFor(b)
+		if !e.awaitPass(ctx, b, p) {
+			return e.answeredAs(b, err, r, row{delay: vfserr.DelayCapacity}), false
+		}
+
+		serr, *at = p.err, stepLast
+	} else {
+		serr = e.relieve(ctx, b, r, at)
+	}
+
+	if serr != nil {
 		if errors.Is(serr, journal.ErrClosed) {
 			return e.journalErr(serr), false
 		}

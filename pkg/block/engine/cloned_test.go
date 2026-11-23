@@ -167,14 +167,17 @@ func (u *unit) heldBeforePhase1(t *testing.T, h *hookedHandle, src, dst entity.F
 	return func() { released.Do(func() { close(hold) }) }, errc
 }
 
-// A reservation the journal refuses fails the clone with the mapped error
-// before its journal step: both registrations are gone, the destination
-// reads its prior content, and the journal saw no CloneTarget.
+// A reservation the journal refuses for a journal-wide limit fails the clone
+// with the mapped error before its journal step: both registrations are gone,
+// the destination reads its prior content, and the journal saw no
+// CloneTarget. A share's own limit is not a row: its pass relieves the
+// refusal, and the fake refuses one Reserve only, so the retried clone is
+// served.
 func TestARefusedReservationChangesNothing(t *testing.T) {
 	u := clonedUnit(t)
 	src := u.committedFile(t, "src", fill(2*mib, 's'))
 	dst := u.committedFile(t, "dst", fill(2*mib, 'd'))
-	u.j.RefuseReserve(&journal.NoSpaceError{Limit: journal.LimitShare, Missing: 1, Unit: journal.UnitBytes})
+	u.j.RefuseReserve(&journal.NoSpaceError{Limit: journal.LimitJournal, Missing: 1, Unit: journal.UnitBytes})
 	err := u.e.Clone(t.Context(), u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: 2 * mib})
 	if !isDelay(err, vfserr.DelayCapacity) {
 		t.Fatalf("a refused reservation: %v, want DelayCapacity", err)
