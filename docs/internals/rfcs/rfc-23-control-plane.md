@@ -1428,7 +1428,12 @@ against, and every node computes the same digest:
 Sign-in, refresh, `POST /auth/password`, `:set-password`, API-token creation and
 `join-domain`, online or offline, **MUST NOT** carry an `Idempotency-Key` — one is refused `400` — and the server
 records neither their digest nor their answer, so no token, password or digest
-of one is kept anywhere but §5.3's hashes. A retry is a new call:
+of one is kept anywhere but §5.3's hashes. **Sign-out** carries no
+`Idempotency-Key` either, refused `400` the same way, for another reason: an
+idempotency record is keyed by the account, so a key one session's sign-out
+used would answer another session's sign-out from the first one's record and
+leave that session live; a retried sign-out that applied is refused `401`,
+its session gone. A retry is a new call:
 
 - a retried **sign-in** opens a second session; the first expires unused;
 - a retried **refresh** presents the token the lost answer rotated, so §5.3's
