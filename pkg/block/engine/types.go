@@ -96,10 +96,12 @@ type suspendedKey struct{}
 // than a parameter of each of the four calls, which every caller of them
 // would pass as none. Make it a parameter if a second option joins it.
 //
-// decision: the mask is held in memory only. A clone's copies record it, as
-// a suspended write does, but a removal or a clone replayed or rebuilt at a
-// start moves the modification time, since the journal's removal and clone
-// records carry none. Overturned once they do.
+// decision: the mask is held in memory only, so a truncate, deallocate or
+// clone replayed or rebuilt at a start, a grow included (stageGrow), moves
+// the modification time, and a rebuilt clone's copies move it too
+// (rebuildMarker): the journal's removal and clone records carry no mask,
+// and a copy's record is not told from a client write there. Overturned once
+// they carry one.
 func WithSuspended(ctx context.Context, m entity.TimeMask) context.Context {
 	return context.WithValue(ctx, suspendedKey{}, m)
 }

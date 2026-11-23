@@ -120,6 +120,8 @@ func (e *Engine) rebuildMarker(ctx context.Context, o *opened, b *binding, f ent
 		}
 
 		copied := s.extent.Off >= dx.Off && opEnd(s.extent) <= opEnd(dx)
+		// decision: a rebuilt copy moves the modification time whatever its
+		// clone suspended, as the journal records no mask; see WithSuspended.
 		fe.insert(pendingOp{version: s.version, kind: opWrite, extent: s.extent, at: r.at,
 			setsMtime: true, lost: s.lost, over: s.over, copy: copied})
 
