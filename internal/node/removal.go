@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -67,8 +68,17 @@ func deletionProgress(context.Context, entity.Operation) apiv1.Progress {
 // operation's target the share's ID. Each turn runs one batch of the removal
 // with Nodes.ContinueRemoval and acts on the step it answers: at 3 it ends
 // the share's live state on this node, at 4 it forgets the share's tag and
-// drops a batch of its files, and done ends the operation. It keeps no
-// cursor: the removal's own records hold where it stands.
+// drops a batch of its files, and done ends the operation. The removal's own
+// records hold where it stands; its cursor is the step the last batch
+// answered, so a batch can tell whether it moved.
+//
+// decision: a batch answers More only when it moved, so a removal held where
+// no batch moves it waits the runner's interval between batches rather than
+// running them back to back: at 3, when it reached the step; at 4, when it
+// reached the step, forgot the tag or left files to drop, so the batch that
+// drops the last files answers none and the removal waits one interval
+// before step 5; past 4, always, since those batches walk rows that never
+// hold the walk, so each moves the removal's cursor or its step.
 //
 // decision: a share that is not being removed, and a target that names no
 // share, fail the operation rather than retry it, as a principal's deletion
@@ -80,17 +90,19 @@ func (n *Node) shareDeletion(ctx context.Context, op entity.Operation) (step.Ste
 	}
 	id := entity.ShareID(op.Target.ID)
 	at, done, err := n.meta.Nodes().ContinueRemoval(ctx, id)
+	reached := !bytes.Equal(op.Step, []byte{at})
 	switch {
 	case err != nil:
 		return step.StepResult{}, failInvalid(err)
 	case done:
 		return step.StepResult{Done: true}, nil
 	case at == 3:
-		return step.StepResult{More: true}, n.removeShare(ctx, id)
+		return step.StepResult{Next: []byte{at}, More: reached}, n.removeShare(ctx, id)
 	case at == 4:
-		return step.StepResult{More: true}, failInvalid(n.dropFiles(ctx, id))
+		moved, err := n.dropFiles(ctx, id)
+		return step.StepResult{Next: []byte{at}, More: reached || moved}, failInvalid(err)
 	}
-	return step.StepResult{More: true}, nil
+	return step.StepResult{Next: []byte{at}, More: true}, nil
 }
 
 // dropFiles is a turn of step 4 of share id's removal on this node. Until
@@ -101,7 +113,8 @@ func (n *Node) shareDeletion(ctx context.Context, op entity.Operation) (step.Ste
 // Each later turn drops one batch of the shard's files with
 // Nodes.ContinueShardRemoval. Each part is idempotent: a crash between the
 // drop and the record drops again, and a record already made changes
-// nothing.
+// nothing. It reports whether the turn moved the removal: the tag forgotten,
+// or files left to drop after its batch.
 //
 // decision: the engine's Drop is not bounded on the node's clock, as the
 // store calls are: it waits only for the share's own work, which step 3's
@@ -116,15 +129,12 @@ func (n *Node) shareDeletion(ctx context.Context, op entity.Operation) (step.Ste
 // replicated per-shard forget sent to every replica, and the tag kept while
 // any other shard of the share the node serves has not recorded one; build
 // those once a share has more than one shard or a shard more than one node.
-// Steps 3 and 4 then also stop answering More while they wait on another
-// node's record, since the shareDeletion step answers More on the premise
-// that this node does their work, and would otherwise turn back to back.
-func (n *Node) dropFiles(ctx context.Context, id entity.ShareID) error {
+func (n *Node) dropFiles(ctx context.Context, id entity.ShareID) (moved bool, err error) {
 	var (
 		sh entity.Share
 		st entity.TagState
 	)
-	_, err := n.bounded(ctx, func(ctx context.Context) (err error) {
+	_, err = n.bounded(ctx, func(ctx context.Context) (err error) {
 		if sh, _, err = n.meta.ShareIndex().Share(ctx, id); err != nil {
 			return err
 		}
@@ -132,23 +142,24 @@ func (n *Node) dropFiles(ctx context.Context, id entity.ShareID) error {
 		return err
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	nodes := n.meta.Nodes()
 	if st == entity.TagForgotten {
-		_, err = n.bounded(ctx, func(ctx context.Context) error {
-			_, err := nodes.ContinueShardRemoval(ctx, id, sh.Shard)
+		var done bool
+		_, err = n.bounded(ctx, func(ctx context.Context) (err error) {
+			done, err = nodes.ContinueShardRemoval(ctx, id, sh.Shard)
 			return err
 		})
-		return err
+		return !done, err
 	}
 	if err := n.engine.Drop(ctx, id, journal.ShareTag(sh.Tag)); err != nil {
-		return err
+		return false, err
 	}
 	_, err = n.bounded(ctx, func(ctx context.Context) error {
 		return nodes.RecordShardRemoval(ctx, id, sh.Shard, entity.TagForgotten)
 	})
-	return err
+	return true, err
 }
 
 // failInvalid has an invalid argument from the store, or a secret version

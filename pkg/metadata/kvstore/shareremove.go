@@ -277,7 +277,7 @@ func (s *Store) removalBatch(tx kv.Txn, share entity.ShareID) (step uint8, done 
 	if err != nil || !ok {
 		return 0, err == nil, err
 	}
-	n, finished := max(1, (s.k-2)/batchItemKeys), false
+	n, finished, from := max(1, (s.k-2)/batchItemKeys), false, st.Cursor
 	switch st.Step {
 	case stepMarked:
 		// ponytail: step 2 has nothing to do, since no snapshot record exists
@@ -339,6 +339,10 @@ func (s *Store) removalBatch(tx kv.Txn, share entity.ShareID) (step uint8, done 
 	}
 	if finished {
 		st.Step, st.Cursor = st.Step+1, nil
+	} else if bytes.Equal(st.Cursor, from) {
+		// A walk held at its first row moved nothing, so the record stays as
+		// it is.
+		return removalSteps[st.Step], false, nil
 	}
 	return removalSteps[st.Step], false, tx.Set(shareKey(share, keys.SSt), encodeState(st))
 }
