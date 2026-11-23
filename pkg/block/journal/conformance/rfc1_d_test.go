@@ -368,9 +368,14 @@ func TestRFC1D_MetricsAreReachable(t *testing.T) {
 		t.Fatal("SyncFailures is zero after a sync failed at storage")
 	}
 
-	// A corrupt dirty extent.
+	// A corrupt dirty extent. The read queues the drop for the stream's
+	// worker and returns before it, so the counter is read once the
+	// worker's bump settles: a bounded poll of the rise is the assertion.
+	corruptBefore := f.J.Stats().Counters.CorruptExtentsDataLoss
 	loseDirty(t, f, 1)
-	if got := f.J.Stats().Counters.CorruptExtentsDataLoss; got == 0 {
+	if !settles(func() bool {
+		return f.J.Stats().Counters.CorruptExtentsDataLoss > corruptBefore
+	}) {
 		t.Fatal("CorruptExtentsDataLoss is zero after a dirty extent was read corrupt")
 	}
 
