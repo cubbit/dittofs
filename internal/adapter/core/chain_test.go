@@ -331,23 +331,34 @@ func (f *gatedFlow) Admit(ctx context.Context, h core.Header) (func(), error) {
 // error no row maps, and nothing logs at error.
 func TestAChainMembersAdmissionTheCloseEndsIsNoError(t *testing.T) {
 	for _, c := range []struct {
-		name  string
-		serve func(s *served)
+		name string
+		// serve returns once the reader it may start has returned, which the
+		// case calls after the pipeline's Wait.
+		serve func(s *served) (joinReader func())
 	}{
-		{"its second member", func(s *served) {
+		{"its second member", func(s *served) func() {
 			s.serve(echoIn(80, 7), echoIn(81, 7))
 			if r := s.recvOne(); r.ID != 80 {
 				s.t.Fatalf("the first record is %+v, want the first Echo, sent before the second waits", r)
 			}
+			return func() {}
 		}},
-		{"its first member", func(s *served) {
+		{"its first member", func(s *served) func() {
 			// A lone Echo takes the one admission that passes.
 			s.serve(echoIn(80, 7))
 			if r := s.recvOne(); r.ID != 80 {
 				s.t.Fatalf("the first record is %+v, want the lone Echo", r)
 			}
 			// The reader's goroutine, which the chain's first admission holds.
-			go s.serve(echoIn(81, 7), echoIn(82, 7))
+			// An admission the close ends gives its record back on the
+			// reader, which the pipeline's Wait does not count, so the case
+			// joins the reader before the seam reads the receive budget.
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				s.serve(echoIn(81, 7), echoIn(82, 7))
+			}()
+			return func() { <-done }
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -359,12 +370,13 @@ func TestAChainMembersAdmissionTheCloseEndsIsNoError(t *testing.T) {
 					st.Flow = flow
 				})
 				flow.armed.Store(true)
-				c.serve(s)
+				joinReader := c.serve(s)
 				synctest.Wait()
 				s.p.Close()
 				if err := s.p.Wait(context.Background()); err != nil {
 					t.Fatal(err)
 				}
+				joinReader()
 				got, _ := scrape(t, m)
 				for _, k := range []string{
 					"adapter_unmapped_errors_total{protocol=" + testproto.Name + "}",
