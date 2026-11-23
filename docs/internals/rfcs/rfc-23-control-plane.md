@@ -490,7 +490,7 @@ func (n *Node) Stop(ctx context.Context) error  // §2.2's stop: the components 
 // start meets two of its refusals most often: a store never initialised, and a
 // bootstrap with no journal device. Exactly one of storeDir and store is set,
 // and Preflight never closes store: the host hands the same KV to New.
-func Preflight(ctx context.Context, storeDir string, store kv.KV, v1dir string, devices []string, clock Clock, opts ...journal.Option) error
+func Preflight(ctx context.Context, storeDir string, store kv.KV, v1Root string, devices []string, clock Clock, opts ...journal.Option) error
 
 // Config is what the host supplies and the node cannot build.
 type Config struct {

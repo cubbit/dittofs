@@ -389,7 +389,7 @@ registers no suite and no group, and changes no `lint-go` tag.
     never called by production" stays a review rule.
 11. **A symbol is exported only if RFC 23's interface uses it.** The exported surface is:
     - `internal/node`'s `New`, `Start`, `Stop`, `Config` and `Preflight`, the start check the
-      host runs before it opens the store;
+      host runs over the store's directory, or its opened KV when it has none;
     - `pkg/node/apiv1`'s wire types;
     - the client, `pkg/node/apiv1/client`;
     - kvstore's view methods.
