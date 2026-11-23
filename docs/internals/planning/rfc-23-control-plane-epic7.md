@@ -337,9 +337,11 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
   while content exists; E4's settings, adapter, remote-store and namespace success paths through
   the API, and E6's refusal rows for them flipped to success; D3's seeding moved onto the API and
   its marker removed.
-  R13's applied and secret halves for the settings-backed writes (a setting at every scope, an
-  adapter, a remote store, a namespace, a store's credential): each moved from the waiting writes
-  of T7.3's `sweepApplied` into its applied writes, its audit record checked for no credential.
+  R13's applied and secret halves for the writes the settings table still refuses (a setting at
+  every scope, an adapter, a namespace's create, a store credential's delete), the store create
+  and a store's first credential: each moved from the waiting writes of T7.3's `sweepApplied`
+  into its applied writes, its audit record checked for no credential. The store create is sent
+  with no `Idempotency-Key`, as it carries its credential.
 - **Acceptance criteria:**
   - Each row passes with `Check` wired, and no fixture or row seeds through the store any more.
 - **Tests:** the rows (catch a missed generation lost for good, R17; "applied" inferred from the
@@ -422,10 +424,14 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
 - A consumer-side row for the `krb` link (a PAC-bearing ticket binding the linked local user, refused once the directory account is recreated) needs a Kerberos sign-in this unit tier cannot make; it belongs to the RFC 18 plan's epic 8 or E8's `e2e/kerberos`.
 - RFC 23's plan §5 epic 7 still says the cancelled state is written into the operation's record; RFC 23 §4.1 gives the deletion no cancel, so that clause goes when the plan is next revised.
 - T7.3 as built differs from its text in these places.
-  - R13's applied half reaches today only the routes that can succeed on this node. The
-    settings-backed writes wait on X3 and move to T7.5, a store's first credential on the store's
-    capability check besides; the keytab's routes wait on the secret
-    provider the node does not yet hand its API and move to T7.6; `:cancel`'s waits on the first
+  - R13's applied half reaches today only the routes that can succeed on this node. Since the
+    node hands its API its settings table (#5472), a store's and a namespace's delete are applied
+    here. A setting's write and delete at every scope, an adapter's write, a namespace's create and
+    a store credential's delete are still refused `unknown_key`, the node's table holding no
+    section that reads their keys, and wait with T7.5; a store's first credential waits on the
+    store's capability check; the store create, which seals its credential, and the keytab's
+    routes wait on the secret provider the node does not yet hand its API, the store create with
+    T7.5 and the keytab with T7.6; `:cancel`'s waits on the first
     cancellable operation kind (§6.1 of the plan). Each waits in `sweepApplied` as a write that
     must still answer its current refusal, so it fails the day the route succeeds. The directory's
     actions (`resolve-principal`, `test-directory`, `join-domain`, `rotate-machine-password`) start
@@ -433,8 +439,12 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
   - R13's secret half is shown here only for what today's applied routes carry: the passwords of
     `:set-password` and `POST /auth/password`, an API token, the bearer of each call, and the
     online join's administrator password, none of them found in an audit record. The routes that
-    write a stored secret (a store's credential, the keytab) are waiting ones, so their secret half
-    moves to T7.5 and T7.6 with their applied halves.
+    write a stored secret (a store's create and its credential, the keytab) are waiting ones, so
+    their secret half moves to T7.5 and T7.6 with their applied halves.
+  - The store create takes no `Idempotency-Key` since #5472, as a call carrying a credential. RFC
+    23 §4.5's rule covers it, but the list of such calls there names sign-in, refresh,
+    `POST /auth/password`, `:set-password`, API-token creation and `join-domain`, not the store
+    create; the RFC's list gains it at its next revision.
   - R15 is held by the API's `TestGrants`, which needs no wiring; T7.3's error table keeps the
     machine grant, refused `400` `invalid` since the grant's write refuses a machine principal
     itself.
