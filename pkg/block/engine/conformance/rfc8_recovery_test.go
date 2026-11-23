@@ -537,9 +537,12 @@ func TestRFC8A_ALossNoDrainReachedIsReportedAtTheReopen(t *testing.T) {
 	f.FailNextWindow()
 
 	// The journal's own timer sync fails the window and publishes the loss
-	// events live; no engine sync ever reads them.
-	f.Clock.Advance(time.Second)
+	// events live; no engine sync ever reads them. The clock moves inside the
+	// poll: the worker's stamp pass reads the clock on its own goroutine, so
+	// advancing once before waiting can arm the timer past a time the frozen
+	// clock never reaches, and the poll re-arms on every miss.
 	eventually(t, "the journal's timer sync fails the window", func() bool {
+		f.Clock.Advance(time.Second)
 		for _, j := range f.E.Stats().Journals {
 			if j.Stats.Counters.SyncFailures > 0 && len(j.Stats.Losses) > 0 {
 				return true
