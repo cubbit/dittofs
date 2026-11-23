@@ -2273,7 +2273,8 @@ The scheduler **MUST**:
   store slows no other: GC's tenant is a namespace, whose store is one
   ([RFC 9 §3.6](rfc-9-gc.md#3.6%20Failures%20resolve%20on%20their%20own)), and the engine's sources register `Rate` 0, since the
   syncer paces puts ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
-  `Rate` pacing lands with its first caller, GC's sources; until then a source registers `Rate` 0.
+  `Rate` pacing, and with it the pace a `Throttled` result lowers, lands with its first caller,
+  GC's sources; until then a source registers `Rate` 0, and `Throttled` backs its key off as `Retry` does.
 
 > decision: no tenant borrows another's reservation. Borrowing would make a
 > tenant's room depend on how full the others are, and taking the entries back
@@ -3785,7 +3786,7 @@ removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)
 | `Overlay(share, file)` | size, times and version of the journal's uncommitted operations of the file, replayed in version order, and whether any is pending ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) |
 | `Allocation(share, file, off)` | [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) |
 | `PrepareCut(shard)`, `CommitCut(shard)` | the snapshot cut, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
-| `PreWarm(share, files)` | one page of a pre-warm, [§7.4](#7.4%20The%20speculator); it and the speculator's pre-warm land with their first caller, RFC 23's pre-warm action |
+| `PreWarm(share, files)` | one page of a pre-warm, [§7.4](#7.4%20The%20speculator); it and the speculator's pre-warm land with their first caller, an operator's pre-warm action, which no RFC specifies yet |
 | `WaitOffloaded()` | [§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) |
 | `Stats()` | per share and journal, conditions included, [§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) |
 
@@ -4208,7 +4209,7 @@ change and each real service daily.
 
 | # | Measures | Setup | Target |
 | --- | --- | --- | --- |
-| B1 | offload throughput | sustained writes of non-deduplicating data larger than the journal | offloaded MiB/s ≥ 80% of the sizing tool's raw figure ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) for the same store and pool sizes |
+| B1 | offload throughput | sustained writes of non-deduplicating data larger than the journal | offloaded MiB/s ≥ 80% of raw puts of the same block size on the same store at the same pool sizes, measured at the same time |
 | B2 | small files | create, write and close 10^4 and 10^5 files of 64 KiB | files/s within 20% across directory sizes; puts per file ≤ 64 KiB / block target, rounded up |
 | B3 | pacing | B1 below and above the soft threshold ([§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)) | p99 submission latency ≤ 50 ms, max ≤ 500 ms, offloaded throughput within 10% of B1 |
 | B4 | cold reads | random 4 KiB and sequential reads of evicted content | random: one request per read, p99 ≤ 2 store round trips; sequential: bytes fetched per byte read ≤ 1.1 |
