@@ -114,7 +114,7 @@ it, in the part this epic owns.
 | --- | --- | --- | --- | --- |
 | R1 | The harness's server fixture initialises its installation with `dfs init` and starts it with `dfs start`, for the cells E8 runs | MUST | RFC 23 plan §5 epic 7 | T7.1 |
 | R2 | Long work is an operation whose progress is the owning component's durable cursor; it survives a crash and is readable through the API | invariant | RFC 23 §10 (CP7) | T7.2 |
-| R3 | `§3.2 delete`: a share with 10⁵ files (seeded at 50 until the runner runs a step again at once while it reports work left, a row of [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger)), the node killed during the "files" phase once `Done` > 0 and restarted, reports the same operation `running` with `Done` at least that value and rising, and ends `succeeded`; a second delete with a new key answers `409` `stale` | test row | RFC 23 §12 | T7.2 |
+| R3 | `§3.2 delete`: a share with 10⁵ files (seeded at 1000 until the shard's drop keeps its last key, a row of [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger)), the node killed during the "files" phase once `Done` > 0 and restarted, reports the same operation `running` with `Done` at least that value and rising, and ends `succeeded`; a second delete with a new key answers `409` `stale` | test row | RFC 23 §12 | T7.2 |
 | R4 | `§2.1 API writes only records`, its crash half: a share create committed, the node killed before it reads the share list and restarted, serves the share | test row | RFC 23 §12 | T7.2 |
 
 **One fully wired node**
@@ -267,8 +267,8 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 - **Covers:** R2, R3, R4.
 - **Deliverables:** `cmd/dfs/commands/crash_unix_test.go`, beside E3's `dfs start` child test
   (D1): the child test; `§3.2 delete`, the share's files seeded through the metadata store's
-  view, 50 of them until the runner runs a step again at once while it reports work left (10⁵
-  waits on that; a row of the plan's deferral ledger),
+  view, 1000 of them until the shard's drop keeps its last key (10⁵ waits on that; a row of the
+  plan's deferral ledger),
   its delete started through the API, the child held at the removal's next batch once the
   operation's `Done` > 0, killed, restarted, and the operation polled to `succeeded`, skipped under
   `testing.Short()`; `§2.1`'s crash half, the child held at the reconcile's read of the share list
