@@ -18,6 +18,7 @@ type filter struct {
 	value []byte   // equality's value
 	parts [][]byte // substrings' pieces: initial, any..., final; an empty first or last is absent
 	mask  uint64   // the bits bit and's integer must hold
+	fold  bool     // equality and substrings compare as text, case-insensitively
 }
 
 // parseFilter parses s, which must be one whole filter. It reads equality,
@@ -111,15 +112,16 @@ func parseItem(s string) (filter, error) {
 		}
 		parts[i] = v
 	}
+	fold := !binaryAttr(attr)
 	if len(parts) == 1 {
-		return filter{op: '=', attr: attr, value: parts[0]}, nil
+		return filter{op: '=', attr: attr, value: parts[0], fold: fold}, nil
 	}
 	for _, p := range parts[1 : len(parts)-1] {
 		if len(p) == 0 {
 			return filter{}, fmt.Errorf("item %q holds two * in a row", s)
 		}
 	}
-	return filter{op: 's', attr: attr, parts: parts}, nil
+	return filter{op: 's', attr: attr, parts: parts, fold: fold}, nil
 }
 
 // unescape reads an assertion value: \xx is the byte xx, and an unescaped
@@ -196,9 +198,8 @@ func (f filter) match(e *entry, d *Directory) bool {
 		}
 		return false
 	}
-	fold := !binaryAttr(f.attr)
 	for _, v := range e.get(f.attr) {
-		if f.op == '=' && equal(v, f.value, fold) || f.op == 's' && substrings(v, f.parts, fold) {
+		if f.op == '=' && equal(v, f.value, f.fold) || f.op == 's' && substrings(v, f.parts, f.fold) {
 			return true
 		}
 	}
