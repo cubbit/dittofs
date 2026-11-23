@@ -3,12 +3,14 @@ package engine
 // The journal's Share and Reserve return its concrete handle and reservation,
 // and Go does not accept a concrete result for a method whose interface
 // declares an interface result, so JournalOf wraps those two calls to pass
-// the journal as the engine's Journal. It also stands in for the sync marks
-// the engine cannot act on yet, and drops the ones the journal's Sync does
-// return. Every other method is the journal's own.
+// the journal as the engine's Journal. It also converts the journal's sync
+// marks to the metadata store's, which the two spell alike. Every other method
+// is the journal's own.
 
 import (
+	"cmp"
 	"context"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -35,26 +37,44 @@ func (j journalOf) Share(tag journal.ShareTag, limit int64, floor journal.Versio
 	return journalHandle{h}, nil
 }
 
-// decision: the journal's Sync returns its per-stream marks now and
-// Stats.SyncMarks exists, but the figure is the open's recovered marks, fixed
-// until close and not following each completed sync, and the journal's own
-// MarksRecorded -- what the group commit hands its recorded marks -- does not
-// exist, so over the real journal the engine still records none and no
-// stability point waits on one. These two stubs and journalHandle.Sync's drop
-// of the marks stand in for all of it and withdraw together once the journal
-// keeps a per-stream figure that follows every sync: wiring Stats.SyncMarks
-// in before then would have the group commit write the open's mark back over
-// a later sync's on every commit, and real marks reaching marksWait
-// (commit.go) while g.marks.recorded comes from this stub would wait on a
-// mark nothing ever records, blocking the stability point forever.
-func (journalOf) SyncMarks() []entity.SyncMark    { return nil }
-func (journalOf) MarksRecorded([]entity.SyncMark) {}
+// SyncMarks is the mark of each append stream's last completed sync, the
+// journal's Stats.SyncMarks, ordered by stream.
+//
+// ponytail: a whole Stats is built to read the marks, once per group commit.
+// Upgrade to a journal call that answers the marks alone when the commit rate
+// shows the rest of the answer in a profile.
+func (j journalOf) SyncMarks() []entity.SyncMark {
+	m := j.Journal.Stats().SyncMarks
+	out := make([]entity.SyncMark, 0, len(m))
+	for _, mark := range m {
+		out = append(out, entity.SyncMark(mark))
+	}
+	slices.SortFunc(out, func(a, b entity.SyncMark) int { return cmp.Compare(a.Stream, b.Stream) })
+	return out
+}
+
+// MarksRecorded hands the journal the marks a committed metadata transaction
+// recorded.
+func (j journalOf) MarksRecorded(marks []entity.SyncMark) {
+	m := make([]journal.SyncMark, len(marks))
+	for i, mark := range marks {
+		m[i] = journal.SyncMark(mark)
+	}
+	j.Journal.MarksRecorded(m)
+}
 
 type journalHandle struct{ *journal.Handle }
 
 func (h journalHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
-	_, err := h.Handle.Sync(ctx, ids...)
-	return nil, err
+	marks, err := h.Handle.Sync(ctx, ids...)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]entity.SyncMark, len(marks))
+	for i, mark := range marks {
+		out[i] = entity.SyncMark(mark)
+	}
+	return out, nil
 }
 
 func (h journalHandle) Reserve(n int64, writes int) (Reservation, error) {
