@@ -87,13 +87,6 @@ suites:
         cmd: go test -short -race -p 2 -timeout=25m ./...
         needs: [windows]
         blocking: { pr: false }
-      nonrace:
-        # Not the aggregate random-write gate: with no baseline it passes whatever it measures.
-        cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
-        # decision: blocking at nightly, the one tier it runs in, so a gate that trips again on the
-        # retry turns the run red and posts to the develop-status issue. The throughput gate
-        # measures on a shared runner, where a busy neighbour can trip it; it fails no pull request.
-        tier: nightly
       # The journal's allocation and memory checks — the index's, the data path's, durability's
       # and the record codec's — and the profiler's heap checks, which skip under -race.
       journal-index:

@@ -64,7 +64,7 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 
 - **Suite:** one entry in `test/suites.yaml`: the command, the format its results come in, its
   tier, what it needs and the fixture it runs against. The table below lists each one.
-- **Option:** a named variant of a suite, such as `unit/nonrace` or `smbtorture/kerberos`. Each
+- **Option:** a named variant of a suite, such as `unit/windows` or `smbtorture/kerberos`. Each
   option is also a flag of `dt run`: `dt run smbtorture --kerberos`.
 - **Matrix:** the axes a suite runs across, such as the storage profile and the NFS version.
 - **Shard:** a suite's tests dealt over N cells, so a long suite fits a runner's time budget.
@@ -91,7 +91,7 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 | `lint-go` | `go mod verify`, `gofmt -s`, `go vet` with every build tag, spec citations, the pinned tests, golangci-lint (the "Go Checks" job) | pr | any machine |
 | `lint-repo` | `dt docs --check`, `dt doctor`, the harness's own tests, the commit checks (the "Repo Checks" job) | pr | any machine |
 | `shellcheck` | every tracked shell script, at `--severity=warning` (the "ShellCheck" job) | pr | any machine |
-| `unit` | `go test -race` over every package; `-short` on pull requests | pr | any machine; `unit/windows` on Windows, `unit/nonrace` nightly |
+| `unit` | `go test -race` over every package; `-short` on pull requests | pr | any machine; `unit/windows` on Windows |
 | `journal-conformance` | the journal's conformance checks, behind their own tag: they fail until the journal they check is written, each a known failure | pr | any machine |
 | `engine-conformance` | the engine's conformance checks against the real journal, behind their own tag, red until the engine and journal calls they need land | pr | any machine |
 | `engine-soak` | the crash-and-restart soak over the composed engine, a short fixed list of seeds | pr | any machine |
@@ -229,7 +229,7 @@ test/harness/bin/dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...]
 
 ```bash
 test/harness/bin/dt run unit                                   # one suite, every cell
-test/harness/bin/dt run unit --nonrace                         # an option, as a flag
+test/harness/bin/dt run unit --journal-index                   # an option, as a flag
 test/harness/bin/dt run pjdfstest/badger-s3/4.1                # one cell
 test/harness/bin/dt run pynfs/badger-s3                        # every cell under a name: both NFSv4 minor versions
 test/harness/bin/dt run smbtorture/badger-s3/shard-1           # one shard
@@ -673,9 +673,6 @@ test/harness/bin/dt run unit --changed            # what a pull request runs
 test/harness/bin/dt run unit --packages ./pkg/metadata/...,./internal/adapter/nfs/...
 go test ./pkg/metadata/...                        # plain go test works for a quick loop
 ```
-
-`unit/nonrace` runs two performance gate tests without the race detector, which would distort
-what they measure. It runs nightly.
 
 **Integration.**
 
@@ -1257,7 +1254,6 @@ Flags:
       --knfsd                        run the suite's knfsd option
       --macos                        run the suite's macos option
       --no-color                     don't color the results, as NO_COLOR set does; without either, they're colored on a terminal
-      --nonrace                      run the suite's nonrace option
       --only strings                 run only these suites of the group
       --packages strings             test only these packages, where a suite's commands take {packages}: they replace the patterns and --changed's selection
       --parallel int                 run up to N cells at once; cells that conflict, as two on one fixed port, still run one at a time (default 1)

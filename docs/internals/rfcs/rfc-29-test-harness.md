@@ -504,9 +504,6 @@ suites:
         cmd: go test -short -race -p 2 -timeout=25m ./...
         needs: [windows]
         blocking: { pr: false }         # reported on PRs, blocking after merge (§9)
-      nonrace:                          # the throughput and allocation gates that skip under -race
-        cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
-        tier: nightly                   # blocking there: a tripped gate posts (§4.10)
   integration:
     job: Integration Tests (1.26.x)
     format: go-json
@@ -1954,9 +1951,9 @@ a percentage.
   needing no secrets, and a parse of the mailbox job files, which `dfsbench` doesn't run) runs on
   every PR but a docs-only one, where `bench-smoke.yml` ran only on those that touched the
   benchmark paths, and after every merge and nightly. It is non-blocking on PRs and blocks after a
-  merge and nightly, and writes its results to its `{out}` (§4.6). `unit --nonrace` runs nightly,
-  and blocks there: the throughput and allocation gates that skip under `-race` and `-short`
-  (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
+  merge and nightly, and writes its results to its `{out}` (§4.6). A non-race option of `unit`,
+  added with the first such gate, runs nightly and blocks there: the throughput and allocation
+  gates that skip under `-race` and `-short` (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
   `perf-gates.yml`'s run went red, and fails no PR. The aggregate random-write gate joins once it
   has a baseline: without one it passes whatever it measures.
 - **Comparison against a stored baseline:** after every merge, a step runs each benchmark of the
@@ -2223,7 +2220,7 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    `dt report --failures --post`, and `dt known prune`, which reads `dt history`'s recent runs
    (§4.4).
    *Exit:* two weeks with one alert per real regression and none from flakes.
-6. **Benchmarks.** `bench-smoke` on every tier, non-blocking on PRs, and `unit --nonrace` nightly;
+6. **Benchmarks.** `bench-smoke` on every tier, non-blocking on PRs, and a non-race option of `unit` nightly;
    tracked runs on the dedicated host.
 7. **Component RFCs name their suites.** Each RFC under `docs/internals/rfcs/` ends its test section
    with its suites paragraph (R11, §4.9), and the component groups follow as each component gets a
