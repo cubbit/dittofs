@@ -308,9 +308,11 @@ func (s *dirState) takePiece(d *Durability, dropped core.Seq, ext core.Extent) b
 }
 
 // named reports whether a Lose or a Place of this journal identity took the
-// piece k and still answers for it: a claim whose record landed or is
+// piece k and still answers for it. A claim whose record landed or is
 // deferred holds while its instance lives or as far as a reader reached the
-// event the take published — placed and lost claims on the one rule. A kept
+// event the take published; a placed claim answers true regardless, for the
+// record it names was on the disk when the take took it, so no open owes the
+// piece an append however unread its placement went. A kept
 // failed claim — one whose record never landed, marked unplaced — answers
 // for nothing however far its ring was read, for it owns no record at all:
 // the piece is still owed, and the pass plans its record. The ceiling this

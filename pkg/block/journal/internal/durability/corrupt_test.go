@@ -3,6 +3,7 @@ package durability
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"slices"
 	"strings"
@@ -1055,16 +1056,51 @@ func TestASyncSnapshottingItsCorruptDebtRacesTheQueueNothing(t *testing.T) {
 	w := cr.write(t, f, 0, "aaaa")
 	cr.corrupt(t, w.c)
 
+	// The writer's steps run without the test's t helpers on its stack, each
+	// error relayed to the channel the test goroutine reads after the join:
+	// a t.Fatalf in the writer would end the wrong goroutine's run.
 	var done atomic.Bool
 	syncs := new(atomic.Int64)
-	dones := make(chan struct{})
+	failing := make(chan error, 1)
 	go func() {
+		defer close(failing)
 		for !done.Load() {
-			w := cr.write(t, f, 4096*(syncs.Load()+1), "gggg")
-			cr.corrupt(t, w.c)
+			v, err := cr.d.counters.Draw()
+			if err != nil {
+				failing <- err
+				return
+			}
+			seq, err := cr.d.counters.NextSeq()
+			if err != nil {
+				failing <- err
+				return
+			}
+			x := core.Extent{Off: 4096 * (syncs.Load() + 1), Len: 4}
+			cr.lastSeq.Store(uint64(seq))
+			unlock := cr.domains.Lock(f)
+			p, err := cr.streams.For(f).Append(format.RecordHeader{
+				Kind: format.KindWrite, File: f, Extent: x, Seq: seq, Version: v, Tag: 1,
+			}, format.RecordBody{Payload: []byte("gggg"), MTime: 1})
+			if err == nil {
+				_, err = cr.ix.WriteRetain(1, f, index.Placed{
+					Extent: x, Record: index.RecordAt{Segment: p.Loc.Segment, Offset: uint32(p.Loc.Off)}, Version: v,
+				}, seq)
+			}
+			unlock()
+			if err != nil {
+				failing <- err
+				return
+			}
+			out, err := cr.d.Corrupt(context.Background(), Corruption{
+				Share: 1, File: f, Record: index.RecordAt{Segment: p.Loc.Segment, Offset: uint32(p.Loc.Off)},
+				Seq: seq, Version: v, Extent: x,
+			})
+			if err != nil || out.Kind != CorruptDropped {
+				failing <- fmt.Errorf("Corrupt = %+v, %v, want Dropped and nil", out, err)
+				return
+			}
 			syncs.Add(1)
 		}
-		close(dones)
 	}()
 	for range 100 {
 		if _, err := cr.d.Sync(context.Background(), f); err != nil {
@@ -1072,7 +1108,9 @@ func TestASyncSnapshottingItsCorruptDebtRacesTheQueueNothing(t *testing.T) {
 		}
 	}
 	done.Store(true)
-	<-dones
+	if err := <-failing; err != nil {
+		t.Fatalf("the writer beside the Sync loop: %v", err)
+	}
 	if syncs.Load() == 0 {
 		t.Fatalf("the writer dropped nothing beside the Sync loop")
 	}

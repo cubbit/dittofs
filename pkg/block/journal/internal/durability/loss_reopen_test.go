@@ -378,9 +378,11 @@ func TestALossNobodyReadIsStillFoundAtOpenAtTheThirdReopen(t *testing.T) {
 
 // TestNamedAnswersThePieceOnlyThroughADeliveredReport pins named's ceiling:
 // the answer the open's pass reads keeps a record the disk already names
-// only as long as the claim that took it was answered — the taking instance
-// alive, a reader reached its event, or the record a Place found. A claim
-// that stopped before any reader took its event retires, so named answers
+// through a claim that still stands: its taking instance alive, a reader
+// reached its event, or the claim placed over a record a Place found on
+// disk, which answers however unread its placement went. A claim that is
+// none of those — stopped before any reader took its event — retires, so
+// named answers
 // false and the pass plans the record again: the directory gains a second
 // loss record for the piece, the report the dead claim held never having
 // been delivered. Both records name one piece and the take dedup releases
