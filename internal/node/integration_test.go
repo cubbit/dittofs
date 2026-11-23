@@ -302,7 +302,10 @@ func TestWiredOperatorReachesNoAdminCredential(t *testing.T) {
 		}
 		// Each body is one the route accepts from an admin, so only the
 		// operator's role refuses it: the admin's tokens are hidden from it, as
-		// the admin's record is, and the keytab's PUT is an admin's.
+		// the admin's record is, and the keytab's PUT is an admin's. The
+		// settings table's per-key role refuses the keytab to an operator too,
+		// naming the key; the route refuses it first, naming none, and this row
+		// holds the route's check.
 		for _, c := range []struct {
 			method, path string
 			body         any
@@ -313,7 +316,11 @@ func TestWiredOperatorReachesNoAdminCredential(t *testing.T) {
 			{http.MethodPost, admin + "/api-tokens", apiv1.APITokenSpec{Expires: w.h.Clock().Now().Add(time.Hour)}, nil, http.StatusNotFound, codeNotFound},
 			{http.MethodPut, "/api/v1/installation/keytab", map[string]any{"spec": map[string]any{"value": keytabOf(t, "cifs/nas.ad.example")}}, []string{"If-None-Match", "*"}, http.StatusForbidden, apiv1.CodeForbidden},
 		} {
-			wantStatus(t, "the operator's "+c.method+" "+c.path, w.send(t, c.method, c.path, w.operator.token, c.body, c.hdr...), c.status, c.code)
+			r := w.send(t, c.method, c.path, w.operator.token, c.body, c.hdr...)
+			wantStatus(t, "the operator's "+c.method+" "+c.path, r, c.status, c.code)
+			if p := r.problem(t); p.Field != "" {
+				t.Errorf("the operator's %s %s: refused naming %s, want the route's refusal, naming no field", c.method, c.path, p.Field)
+			}
 		}
 		// An operator holds these routes: what each reaches is checked by the
 		// versions below, not by its answer.
