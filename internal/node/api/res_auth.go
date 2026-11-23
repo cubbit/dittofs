@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -32,9 +33,9 @@ type signIns interface {
 // while its password must change, and answers the tokens of the session it
 // opens; sign-out ends the caller's own session.
 var authRoutes = []route{
-	{method: http.MethodPost, pattern: "/api/v1/auth/sign-in", right: auth.Public, serve: credential(signIns.SignIn, vfserr.ErrLogonFailure, auth.ErrThrottled)},
-	{method: http.MethodPost, pattern: "/api/v1/auth/refresh", right: auth.Public, serve: credential(signIns.Refresh, vfserr.ErrLogonFailure)},
-	{method: http.MethodPost, pattern: "/api/v1/auth/password", kind: entity.ResourceUser, right: auth.Self, mustChange: true,
+	{method: http.MethodPost, pattern: "/api/v1/auth/sign-in", right: auth.Public, keyless: true, serve: credential(signIns.SignIn, vfserr.ErrLogonFailure, auth.ErrThrottled)},
+	{method: http.MethodPost, pattern: "/api/v1/auth/refresh", right: auth.Public, keyless: true, serve: credential(signIns.Refresh, vfserr.ErrLogonFailure)},
+	{method: http.MethodPost, pattern: "/api/v1/auth/password", kind: entity.ResourceUser, right: auth.Self, mustChange: true, keyless: true,
 		serve: credential(signIns.ChangePassword, vfserr.ErrLogonFailure, auth.ErrThrottled, vfserr.ErrInvalid)},
 	// Sign-out takes no key: the idempotency record is keyed by account, so
 	// a key one session used would answer another session's sign-out from
@@ -46,8 +47,10 @@ var authRoutes = []route{
 // credential adapts sign-in, refresh or the password change: a call
 // answering the tokens h issues, or refused with one of refuses by the
 // credential it carries; each audit record h wrote is counted by its
-// outcome. One carrying an Idempotency-Key is refused 400 before its body
-// is read.
+// outcome. On a keyless row, which every one is, a call carrying an
+// Idempotency-Key is refused 400 before its body is read. A refusal before h
+// of a caller that authenticated, the password change's, is audited against
+// the caller's account, as h audits its own.
 //
 // decision: credential calls keep no idempotency record (RFC 23 §4.5),
 // because replaying their answer means storing a usable credential for the
@@ -58,9 +61,19 @@ var authRoutes = []route{
 // then give refresh a short reuse grace, not a stored answer.
 func credential[B any](h func(signIns, context.Context, entity.AuditRecord, B) (apiv1.Tokens, auth.Audited, error), refuses ...error) adapter {
 	return adapter{form: formCall, body: reflect.TypeFor[B](), out: reflect.TypeFor[apiv1.Tokens](), refuses: refuses,
-		run: func(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
-			if r.Header.Get("Idempotency-Key") != "" {
-				return answer{}, &fieldError{field: "Idempotency-Key", detail: "this call carries a credential, so it keeps no idempotency record and takes no key"}
+		run: func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (_ answer, err error) {
+			called := false // h audits its own refusals
+			if c, authed := auth.CallerFrom(ctx); authed {
+				defer func() {
+					if err != nil && !called {
+						rec := s.auditOf(ctx, r)
+						rec.Target = entity.ResourceRef{Kind: entity.ResourceUser, ID: c.Principal.ID[:]}
+						s.refuse(ctx, rec, err)
+					}
+				}()
+			}
+			if rt.keyless && r.Header.Get("Idempotency-Key") != "" {
+				return answer{}, errCredentialKey
 			}
 			// The body holds a password or a token: it is cleared once
 			// decoded, on every path out.
@@ -76,6 +89,7 @@ func credential[B any](h func(signIns, context.Context, entity.AuditRecord, B) (
 			if s.d.Credentials == nil {
 				return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node signs no caller in"}
 			}
+			called = true
 			t, audited, err := h(s.d.Credentials, ctx, s.auditOf(ctx, r), rq.Body)
 			if audited != auth.AuditedNothing {
 				s.audits.WithLabelValues(string(audited)).Inc()
@@ -90,6 +104,9 @@ func credential[B any](h func(signIns, context.Context, entity.AuditRecord, B) (
 var sessions = writing[none]{kind: entity.ResourceSession,
 	self: func(ctx context.Context, _ Deps) ([16]byte, error) {
 		c, _ := auth.CallerFrom(ctx)
+		if c.Kind == auth.CredentialAPIToken {
+			return [16]byte{}, fmt.Errorf("%w: an API token is not signed out; it ends only by its revocation", vfserr.ErrInvalid)
+		}
 		id, _ := c.Session()
 		return id, nil
 	},

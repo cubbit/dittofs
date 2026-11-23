@@ -64,12 +64,12 @@ func (s *authNode) serviceAccount(t *testing.T, name string, role entity.APIRole
 	return u.Principal
 }
 
-// rawStore is every key and value kv holds.
-func rawStore(t *testing.T, db kv.KV) [][]byte {
+// rawStore is every key and value db holds under prefix, nil for all.
+func rawStore(t *testing.T, db kv.KV, prefix []byte) [][]byte {
 	t.Helper()
 	var out [][]byte
 	err := db.View(t.Context(), func(r kv.Reader) error {
-		for kvp, err := range r.Scan(nil, nil) {
+		for kvp, err := range r.Scan(prefix, nil) {
 			if err != nil {
 				return err
 			}
@@ -131,7 +131,7 @@ func TestAPITokenExpiry(t *testing.T) {
 	now := s.h.Clock().Now()
 	wantStatus(t, "a token past the maximum lifetime", s.createToken(t, admin, svc, now.Add(366*24*time.Hour)), http.StatusBadRequest, "invalid")
 	wantStatus(t, "a token already expired", s.createToken(t, admin, svc, now.Add(-time.Hour)), http.StatusBadRequest, "invalid")
-	for tk, err := range s.h.Store().ControlPlane().APITokens(t.Context(), svc) {
+	for tk, err := range s.h.Store().ControlPlane().APITokens(t.Context(), svc, [16]byte{}) {
 		t.Errorf("a token stored after the refused creations: %+v, %v", tk, err)
 	}
 	tok := s.newToken(t, admin, svc, now.Add(time.Hour))
@@ -184,10 +184,10 @@ func TestAPITokenSurvivesDemotion(t *testing.T) {
 	svc := s.serviceAccount(t, "deployer", entity.RoleOperator)
 	tok := s.newToken(t, admin, svc, s.h.Clock().Now().Add(time.Hour)).Status.Token
 	operatorCall := func() authReply {
-		return s.send(t, http.MethodPost, "/api/v1/shares", tok, struct{}{}, "Idempotency-Key", uuid.NewString())
+		return s.send(t, http.MethodPost, "/api/v1/groups", tok, map[string]apiv1.GroupSpec{"spec": {Name: "g-" + uuid.NewString()[:8]}}, "Idempotency-Key", uuid.NewString())
 	}
-	if r := operatorCall(); r.status == http.StatusForbidden || r.status == http.StatusUnauthorized {
-		t.Fatalf("an operator's call as an operator: answered %d %s, want no refusal by role", r.status, r.body)
+	if r := operatorCall(); r.status != http.StatusCreated {
+		t.Fatalf("an operator's call as an operator: answered %d %s, want 201", r.status, r.body)
 	}
 	s.change(t, svc, func(tx entity.ControlPlaneTx, u *entity.User) error {
 		u.Role = entity.RoleViewer
@@ -216,28 +216,151 @@ func TestAPITokensOfAnotherAccount(t *testing.T) {
 	if r := s.list(t, tok.Status.Token); r.status != http.StatusOK {
 		t.Errorf("a call with the token the operator could not revoke: answered %d %s, want 200", r.status, r.body)
 	}
-	s.newToken(t, tok.Status.Token, svc, s.h.Clock().Now().Add(time.Hour))
 	nobody := s.serviceAccount(t, "files-only", entity.RoleNone)
 	wantStatus(t, "a token for a user holding no role", s.createToken(t, admin, nobody, s.h.Clock().Now().Add(time.Hour)), http.StatusBadRequest, "invalid")
+}
+
+// An operator revoking another account's token through its own path, the
+// token's ID under the operator's account, is refused as a token that
+// account does not hold, and the token still answers.
+func TestAPITokenRevokedOnlyUnderItsAccount(t *testing.T) {
+	s := newAuthNode(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	svc := s.serviceAccount(t, "backup", entity.RoleViewer)
+	olga, op := s.h.SignedIn(t, s.addr, "olga", entity.RoleOperator)
+	tok := s.newToken(t, admin, svc, s.h.Clock().Now().Add(time.Hour))
+	wantStatus(t, "an operator revoking another's token under its own account", s.revokeToken(t, op.Access, olga, tok.ID),
+		http.StatusPreconditionFailed, apiv1.CodeGenerationMismatch)
+	if r := s.list(t, tok.Status.Token); r.status != http.StatusOK {
+		t.Errorf("a call with the token after the refused revocation: answered %d %s, want 200", r.status, r.body)
+	}
+}
+
+// refusedAudits counts the store's audit records with outcome refused:
+// invalid targeting kind.
+func (s *authNode) refusedAudits(t *testing.T, kind entity.ResourceKind) int {
+	t.Helper()
+	n := 0
+	for _, a := range s.audits(t) {
+		if a.Target.Kind == kind && string(a.Outcome) == "refused: invalid" {
+			n++
+		}
+	}
+	return n
+}
+
+// A creation is refused 400 invalid, audited, and stores nothing: presented
+// with an API token, so a token mints no successor; by an admin for another
+// account that holds a password, which is no service account; and for a
+// disabled account. The account itself, signed in, creates its own.
+func TestAPITokenCreationRefusals(t *testing.T) {
+	s := newAuthNode(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	svc := s.serviceAccount(t, "backup", entity.RoleViewer)
+	pat := s.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	off := s.serviceAccount(t, "off", entity.RoleViewer)
+	s.change(t, off, func(tx entity.ControlPlaneTx, u *entity.User) error {
+		u.Disabled = true
+		_, err := tx.PutUser(*u, u.Generation, entity.Alloc{})
+		return err
+	})
+	tok := s.newToken(t, admin, svc, s.h.Clock().Now().Add(time.Hour))
+	at := s.h.Clock().Now().Add(time.Hour)
+	for _, tc := range []struct {
+		what, bearer string
+		p            entity.Principal
+	}{
+		{"a creation presented with an API token", tok.Status.Token, svc},
+		{"an admin creating a token for an account holding a password", admin, pat},
+		{"a token for a disabled account", admin, off},
+	} {
+		before := s.refusedAudits(t, entity.ResourceAPIToken)
+		wantStatus(t, tc.what, s.createToken(t, tc.bearer, tc.p, at), http.StatusBadRequest, "invalid")
+		if got := s.refusedAudits(t, entity.ResourceAPIToken) - before; got != 1 {
+			t.Errorf("%s: %d refused audit records, want 1", tc.what, got)
+		}
+	}
+	for _, p := range []entity.Principal{pat, off} {
+		for tk, err := range s.h.Store().ControlPlane().APITokens(t.Context(), p, [16]byte{}) {
+			t.Errorf("a token stored after a refused creation: %+v, %v", tk, err)
+		}
+	}
+	patTk := s.tokens(t, "pat", "pat's password")
+	s.newToken(t, patTk.Access, pat, at)
+}
+
+// Signing out with an API token is refused 400 invalid and audited, and the
+// token still answers: a token ends only by its revocation.
+func TestSignOutWithAnAPITokenRefused(t *testing.T) {
+	s := newAuthNode(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	svc := s.serviceAccount(t, "backup", entity.RoleViewer)
+	tok := s.newToken(t, admin, svc, s.h.Clock().Now().Add(time.Hour)).Status.Token
+	before := s.refusedAudits(t, entity.ResourceSession)
+	wantStatus(t, "a sign-out with an API token", s.send(t, http.MethodPost, "/api/v1/auth/sign-out", tok, nil), http.StatusBadRequest, "invalid")
+	if got := s.refusedAudits(t, entity.ResourceSession) - before; got != 1 {
+		t.Errorf("the refused sign-out: %d refused audit records, want 1", got)
+	}
+	if r := s.list(t, tok); r.status != http.StatusOK {
+		t.Errorf("a call with the token after the refused sign-out: answered %d %s, want 200", r.status, r.body)
+	}
+}
+
+// A token expiring at its creation time is refused; one a second later is
+// not. The store's time is pinned to the clock's whole second first, so the
+// creation's time is known.
+func TestAPITokenExpiringAtCreation(t *testing.T) {
+	s := newAuthNode(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	svc := s.serviceAccount(t, "backup", entity.RoleViewer)
+	first := s.newToken(t, admin, svc, s.h.Clock().Now().Add(time.Hour))
+	storeReached(t, s.h, first.Status.Created)
+	wantStatus(t, "a token expiring at its creation", s.createToken(t, admin, svc, first.Status.Created), http.StatusBadRequest, "invalid")
+}
+
+// A deleted account's tokens answer 404, to a list, a creation and a
+// revocation alike.
+func TestAPITokensOfADeletedAccount(t *testing.T) {
+	s := newAuthNode(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	svc := s.serviceAccount(t, "backup", entity.RoleViewer)
+	tok := s.newToken(t, admin, svc, s.h.Clock().Now().Add(time.Hour))
+	got := s.send(t, http.MethodGet, userPath(svc), admin, nil)
+	if r := s.send(t, http.MethodDelete, userPath(svc), admin, nil, "Idempotency-Key", uuid.NewString(), "If-Match", got.header.Get("ETag")); r.status != http.StatusAccepted {
+		t.Fatalf("delete the account: answered %d %s, want 202", r.status, r.body)
+	}
+	wantStatus(t, "a deleted account's token list", s.send(t, http.MethodGet, tokensPath(svc), admin, nil), http.StatusNotFound, codeNotFound)
+	wantStatus(t, "a deleted account's token creation", s.createToken(t, admin, svc, s.h.Clock().Now().Add(time.Hour)), http.StatusNotFound, codeNotFound)
+	wantStatus(t, "a deleted account's token revocation", s.revokeToken(t, admin, svc, tok.ID), http.StatusNotFound, codeNotFound)
+}
+
+// A creation's audit record targets the new token by its ID, applied, and
+// no audit record holds the token.
+func TestAPITokenCreationAudited(t *testing.T) {
+	s := newAuthNode(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	svc := s.serviceAccount(t, "backup", entity.RoleViewer)
+	tok := s.newToken(t, admin, svc, s.h.Clock().Now().Add(time.Hour))
+	id := uuid.MustParse(tok.ID)
+	found := false
+	for _, a := range s.audits(t) {
+		if a.Target.Kind == entity.ResourceAPIToken && bytes.Equal(a.Target.ID, id[:]) && string(a.Outcome) == "applied" {
+			found = true
+		}
+		b, _ := json.Marshal(a)
+		if bytes.Contains(b, []byte(tok.Status.Token)) {
+			t.Errorf("audit record %s holds the token", b)
+		}
+	}
+	if !found {
+		t.Errorf("no applied audit record targets the token %s", tok.ID)
+	}
 }
 
 // idempotencyRows is how many idempotency records db holds.
 func idempotencyRows(t *testing.T, db kv.KV) int {
 	t.Helper()
-	n := 0
-	err := db.View(t.Context(), func(r kv.Reader) error {
-		for _, err := range r.Scan([]byte{keys.KindIK}, nil) {
-			if err != nil {
-				return err
-			}
-			n++
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return n
+	return len(rawStore(t, db, []byte{keys.KindIK})) / 2
 }
 
 // Every call that carries or issues a credential refuses an Idempotency-Key
@@ -260,12 +383,19 @@ func TestCredentialCallsTakeNoIdempotencyKey(t *testing.T) {
 		{"refresh", http.MethodPost, "/api/v1/auth/refresh", "", apiv1.Refresh{Token: adminTk.Refresh}},
 		{"the password change", http.MethodPost, passwordPath, patTk.Access, apiv1.PasswordChange{Current: "pat's password", New: "pat's next password"}},
 		{":set-password", http.MethodPost, userPath(pat) + ":set-password", adminTk.Access, apiv1.SetPassword{Password: "set by the admin"}},
-		{"API-token creation", http.MethodPost, tokensPath(pat), adminTk.Access, apiv1.APITokenSpec{Expires: s.h.Clock().Now().Add(time.Hour)}},
+		{"API-token creation", http.MethodPost, tokensPath(pat), patTk.Access, apiv1.APITokenSpec{Expires: s.h.Clock().Now().Add(time.Hour)}},
 	} {
 		key := "credential-key-" + string(rune('a'+i)) + "-5c1e9"
+		audits := len(s.audits(t))
 		wantStatus(t, tc.what+" with an Idempotency-Key", s.send(t, tc.method, tc.path, tc.bearer, tc.body, "Idempotency-Key", key), http.StatusBadRequest, "invalid")
 		if n := idempotencyRows(t, raw); n != 0 {
 			t.Errorf("%s with an Idempotency-Key: the store holds %d idempotency records, want none", tc.what, n)
+		}
+		if tc.path == passwordPath {
+			recs := s.audits(t)[audits:]
+			if len(recs) != 1 || string(recs[0].Outcome) != "refused: invalid" || recs[0].Target.Kind != entity.ResourceUser || !bytes.Equal(recs[0].Target.ID, pat.ID[:]) {
+				t.Errorf("the password change with an Idempotency-Key: audit records %+v, want one refused: invalid targeting pat", recs)
+			}
 		}
 	}
 	if r := s.list(t, patTk.Access); r.status != http.StatusOK {
@@ -273,8 +403,8 @@ func TestCredentialCallsTakeNoIdempotencyKey(t *testing.T) {
 	}
 	// A revocation takes a key and records it, so the count above sees a
 	// record when there is one.
-	tok := s.newToken(t, adminTk.Access, pat, s.h.Clock().Now().Add(time.Hour))
-	if r := s.revokeToken(t, adminTk.Access, pat, tok.ID); r.status != http.StatusOK {
+	tok := s.newToken(t, patTk.Access, pat, s.h.Clock().Now().Add(time.Hour))
+	if r := s.revokeToken(t, patTk.Access, pat, tok.ID); r.status != http.StatusOK {
 		t.Fatalf("revoke a token: answered %d %s, want 200", r.status, r.body)
 	}
 	if n := idempotencyRows(t, raw); n != 1 {
@@ -303,7 +433,7 @@ func TestAPITokensReachNeitherStoreNorLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the token %q is not base64url: %v", tok.Status.Token, err)
 	}
-	stored := rawStore(t, raw)
+	stored := rawStore(t, raw, nil)
 	if holds(stored, []byte(tok.Status.Token)) || holds(stored, secret) {
 		t.Error("the store holds the token")
 	}
@@ -313,5 +443,43 @@ func TestAPITokensReachNeitherStoreNorLog(t *testing.T) {
 	hash := sha256.Sum256(secret)
 	if !holds(stored, hash[:]) {
 		t.Error("the store holds no hash of the token")
+	}
+}
+
+// An account's tokens list a page at a time, each page resuming after the
+// last, every token once.
+func TestAPITokensListByPage(t *testing.T) {
+	s := newAuthNode(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	svc := s.serviceAccount(t, "backup", entity.RoleViewer)
+	want := map[string]bool{}
+	for range 3 {
+		want[s.newToken(t, admin, svc, s.h.Clock().Now().Add(time.Hour)).ID] = true
+	}
+	got := map[string]int{}
+	for path, pages := tokensPath(svc)+"?limit=1", 0; path != ""; pages++ {
+		if pages > 3 {
+			t.Fatalf("still paging after %d pages", pages)
+		}
+		r := s.send(t, http.MethodGet, path, admin, nil)
+		var page apiv1.Page[apiv1.APIToken]
+		if err := json.Unmarshal(r.body, &page); r.status != http.StatusOK || err != nil {
+			t.Fatalf("a page of tokens: answered %d %s (%v), want 200", r.status, r.body, err)
+		}
+		for _, tk := range page.Items {
+			got[tk.ID]++
+		}
+		path = ""
+		if page.Next != "" {
+			path = tokensPath(svc) + "?limit=1&after=" + page.Next
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("tokens listed: %v, want each of %v once", got, want)
+	}
+	for id, n := range got {
+		if !want[id] || n != 1 {
+			t.Errorf("token %s listed %d times, want once and only if created", id, n)
+		}
 	}
 }

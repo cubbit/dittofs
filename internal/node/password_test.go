@@ -537,19 +537,7 @@ func TestPasswordsReachNeitherStoreNorLog(t *testing.T) {
 	if r := s.setPassword(t, admin, p, "pat-third-4b7a9"); r.status != http.StatusOK {
 		t.Fatalf(":set-password: answered %d %s, want 200", r.status, r.body)
 	}
-	var stored [][]byte
-	err := raw.View(t.Context(), func(r kv.Reader) error {
-		for kvp, err := range r.Scan(nil, nil) {
-			if err != nil {
-				return err
-			}
-			stored = append(stored, slices.Clone(kvp.Key), slices.Clone(kvp.Value))
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	stored := rawStore(t, raw, nil)
 	for _, pw := range []string{"pat-first-1d0c5", "pat-second-8e2f1", "pat-third-4b7a9"} {
 		if slices.ContainsFunc(stored, func(b []byte) bool { return bytes.Contains(b, []byte(pw)) }) {
 			t.Errorf("the store holds the password %q", pw)

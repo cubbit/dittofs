@@ -25,9 +25,9 @@ type reads interface {
 	// deleted.
 	Users(ctx context.Context, after string) iter.Seq2[entity.User, error]
 	User(ctx context.Context, p entity.Principal) (entity.User, bool, error)
-	// APITokens lists an account's API tokens in ID order; a deleted or
-	// marked account has none.
-	APITokens(ctx context.Context, account entity.Principal) iter.Seq2[entity.APIToken, error]
+	// APITokens lists an account's API tokens in ID order, after the ID
+	// after; a deleted or marked account has none.
+	APITokens(ctx context.Context, account entity.Principal, after [16]byte) iter.Seq2[entity.APIToken, error]
 	Groups(ctx context.Context, after string) iter.Seq2[entity.Group, error]
 	Group(ctx context.Context, p entity.Principal) (entity.Group, bool, error)
 	// ShareGrant is the grant naming p's ID on a share; Quotas lists a

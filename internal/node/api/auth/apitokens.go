@@ -16,11 +16,14 @@ import (
 // refresh token is: opaque, random, and no JWT, so Authenticate tells the two
 // apart by its form. Its creation time is tx's store time raised to u's
 // not-before, as a session's is. An account holding no role, whom a token
-// would admit to nothing, and an expiry not after the creation time or later
+// would admit to nothing, a disabled account, and an expiry not after the creation time or later
 // than api.token_max_lifetime after it, are refused ErrInvalid.
 func (s *Service) CreateAPIToken(tx entity.ControlPlaneTx, u entity.User, expires time.Time) (entity.APIToken, string, error) {
-	if u.Role == entity.RoleNone {
+	switch {
+	case u.Role == entity.RoleNone:
 		return entity.APIToken{}, "", fmt.Errorf("%w: an API token is created for an account holding a role", vfserr.ErrInvalid)
+	case u.Disabled:
+		return entity.APIToken{}, "", fmt.Errorf("%w: an API token is created for no disabled account", vfserr.ErrInvalid)
 	}
 	created := issuedAt(tx.Now(), u.NotBefore)
 	maxLife := s.d.Settings().TokenMaxLifetime
@@ -36,8 +39,14 @@ func (s *Service) CreateAPIToken(tx entity.ControlPlaneTx, u entity.User, expire
 
 // apiToken resolves raw as an API token: refused when it is no token
 // newRefresh could have made, counted as any malformed token is, and when
-// no token's hash is its or it has expired, by the node's clock as a
-// session's expiry is (see session).
+// no token's hash is its or it has expired.
+//
+// decision: a token's expiry is compared with the node's clock, since a read
+// outside a write has no store time; the creation write checked it against
+// store time. The two part by at most the store's ceiling, about 2 s, so a
+// token can be refused that much early, or accepted that much late after the
+// clock steps back. Withdraw it when the store offers a Now readable outside
+// a write.
 func (s *Service) apiToken(ctx context.Context, raw string) (credential, error) {
 	hash, ok := refreshHash(raw)
 	if !ok {
