@@ -95,7 +95,8 @@ func TestHaltLeavesOpenWhatAStuckPartUses(t *testing.T) {
 // again, then closes the store and the key.
 func TestStopRetriesAPartWhoseStopFailed(t *testing.T) {
 	// decision: serial, because localKey sets the key passphrase with
-	// t.Setenv, which a parallel test may not call.
+	// t.Setenv, which a parallel test may not call. Withdraw it once localKey
+	// uses the harness's passphrase.
 	db, err := badgerkv.Open(badgerkv.Options{})
 	if err != nil {
 		t.Fatal(err)

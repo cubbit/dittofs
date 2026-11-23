@@ -821,7 +821,7 @@ func parsePackage(fset *token.FileSet, dir string) ([]*ast.File, error) {
 var exportImporter = sync.OnceValues(func() (*token.FileSet, types.Importer) {
 	fset := token.NewFileSet()
 	exports := sync.OnceValues(exportFiles)
-	return fset, importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+	return fset, &lockedImporter{imp: importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
 		files, err := exports()
 		if err != nil {
 			return nil, err
@@ -830,8 +830,21 @@ var exportImporter = sync.OnceValues(func() (*token.FileSet, types.Importer) {
 			return nil, fmt.Errorf("no export data for %s", path)
 		}
 		return os.Open(files[path])
-	})
+	})}
 })
+
+// lockedImporter imports one package at a time: the gc importer fills a
+// package map with no lock of its own, and the arch tests run in parallel.
+type lockedImporter struct {
+	mu  sync.Mutex
+	imp types.Importer
+}
+
+func (l *lockedImporter) Import(path string) (*types.Package, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.imp.Import(path)
+}
 
 // exportFiles lists the export data file of each package under
 // internal/node, of the metadata store's, and of every package they import,
@@ -1009,8 +1022,7 @@ func methodValues(dir, path string, writers map[string]*types.Signature) ([]stri
 // another, in a func field, the store's view itself, and a node taking a
 // store method as a value are caught.
 func TestAPIWritesOnlyThroughWrite(t *testing.T) {
-	// decision: serial, because it type-checks through exportImporter,
-	// which is shared and not safe for concurrent use.
+	t.Parallel()
 	writers, err := storeWriters()
 	if err != nil {
 		t.Fatal(err)
@@ -1333,8 +1345,7 @@ func isMethod(o types.Object) bool {
 // literal whose kind is the signing key's, a password hash's or no
 // constant.
 func TestNoRouteWritesTheSigningKey(t *testing.T) {
-	// decision: serial, because it type-checks through exportImporter,
-	// which is shared and not safe for concurrent use.
+	t.Parallel()
 	var dirs []string
 	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
@@ -1420,8 +1431,7 @@ func setsAudit(e ast.Expr) bool {
 // from auth with no audit record, a nil one or a variable that may be nil
 // are caught; auth's sign-in count, writing none, is not.
 func TestWritesThroughTheAdapter(t *testing.T) {
-	// decision: serial, because it type-checks through exportImporter,
-	// which is shared and not safe for concurrent use.
+	t.Parallel()
 	var dirs []string
 	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
@@ -1497,8 +1507,7 @@ func lifecycleCalls(dir, path string) ([]string, error) {
 // the one enginewire ships; a node calling the table's or the engine's own
 // Start, Stop or Close is caught.
 func TestNodeStartsThroughEnginewire(t *testing.T) {
-	// decision: serial, because it type-checks through exportImporter,
-	// which is shared and not safe for concurrent use.
+	t.Parallel()
 	wire := module + "pkg/block/engine/enginewire."
 	for _, tc := range []struct {
 		dir  string
@@ -1573,8 +1582,7 @@ func apiExports(dir, path string) ([]string, error) {
 // parameters take, Clock, KeyVersions, Sealer and Writer; and nothing else;
 // a planted extra method is caught.
 func TestAPIExports(t *testing.T) {
-	// decision: serial, because it type-checks through exportImporter,
-	// which is shared and not safe for concurrent use.
+	t.Parallel()
 	want := []string{"Deps", "New", "OpenAPI", "Server", "Server.Start", "Server.Stop"}
 	for _, tc := range []struct {
 		dir, path string

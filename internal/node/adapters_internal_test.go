@@ -115,7 +115,8 @@ type rig struct {
 // anything. Both adapters are stopped at the test's end, before the check.
 //
 // decision: a test that builds a rig stays serial, because the leak check is
-// prof.Watch's, which a parallel test beside it would fail.
+// prof.Watch's, which a parallel test beside it would fail. Withdraw it once
+// the leak check moves to the end of the test binary.
 func newRig(t *testing.T, taken ...uint16) *rig {
 	t.Helper()
 	b, _ := newBudgets()

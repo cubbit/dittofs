@@ -817,7 +817,8 @@ func TestPreflight(t *testing.T) {
 // device and misadvise an operator whose process is merely stopping.
 func TestPreflightCancelDuringTheProbes(t *testing.T) {
 	// decision: serial, because it sets the package's afterDeviceOpen hook,
-	// which every node's start check reads.
+	// which every node's start check reads. Withdraw it once the hook is per
+	// node.
 	parent := t.TempDir()
 	store := filepath.Join(parent, "store")
 	d1 := filepath.Join(parent, "device-one")
