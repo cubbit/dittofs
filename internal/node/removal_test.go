@@ -580,3 +580,42 @@ func TestARemovalsHungStoreFailsStartAtItsStep(t *testing.T) {
 		})
 	}
 }
+
+// A share of 1000 files, about 3000 rows and 150 batches of step 4, marked
+// deleted before the start, is deleted on a clock that never moves past the
+// start: each turn whose step reported work left is followed by the next at
+// once, so the deletion is not paced at a turn a second.
+func TestAShareDeletionRunsItsBatchesAtOnce(t *testing.T) {
+	const files = 1000
+	h := nodetest.New(t, nodetest.Watch())
+	configure(t, h, storeA)
+	sh := createShare(t, h, "a", storeA)
+	createFiles(t, h, sh, files)
+	turned := make(chan struct{}, 1)
+	var turns atomic.Int64
+	h.Node().OnRunnerTurn(func() {
+		turns.Add(1)
+		select {
+		case turned <- struct{}{}:
+		default:
+		}
+	})
+	op := deleteShare(t, h, sh)
+	began := time.Now()
+	started(t, h)
+	at := h.Clock().Elapsed()
+	// decision: the wall-time bound is only a backstop against a hang; the
+	// assertion is that the clock never moved, as the old pace needed a
+	// second of it per batch.
+	for opState(t, h, op.ID) != entity.OpSucceeded {
+		select {
+		case <-turned:
+		case <-time.After(2 * time.Minute):
+			t.Fatalf("share deletion of %d files: %v after %d turns and %v, want succeeded with the clock never moved", files, opState(t, h, op.ID), turns.Load(), time.Since(began))
+		}
+	}
+	if moved := h.Clock().Elapsed() - at; moved != 0 {
+		t.Errorf("share deletion of %d files: the clock moved %v, want none", files, moved)
+	}
+	t.Logf("share deletion of %d files: %d runner turns in %v", files, turns.Load(), time.Since(began))
+}
