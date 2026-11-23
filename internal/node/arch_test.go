@@ -689,8 +689,8 @@ func TestNoComponentImports(t *testing.T) {
 }
 
 // typeCheck type-checks the package whose non-test sources for this host's
-// platform are in dir as import path path, with every import read from
-// source.
+// platform are in dir as import path path, with every import read from the
+// export data exportImporter lists.
 func typeCheck(dir, path string) (*types.Package, []*ast.File, *types.Info, error) {
 	fset, imp := exportImporter()
 	files, err := parsePackage(fset, dir)
