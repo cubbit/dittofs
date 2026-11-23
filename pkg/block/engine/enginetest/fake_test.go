@@ -407,6 +407,54 @@ func TestFakeStrandRecordsTheTagAndForgetsItAtAReopen(t *testing.T) {
 	}
 }
 
+// A read-only journal refuses a write and reports the state until a reopen,
+// after which it writes again and reports nothing: RFC 1 §5.4 ends the state
+// with a reopen.
+//
+// decision: this runs over the fake alone, not over the real journal as
+// TestShareAgreesWithTheJournal does, because the real journal turns
+// read-only only through storage faults at its seam, which the journal's own
+// conformance row for the rule (TestRFC1B_ReadOnlyStopsTheDrain) drives and
+// this package cannot reach. Run it over both if the journal gains a way to
+// turn read-only on cue.
+func TestFakeReadOnlyEndsAtAReopen(t *testing.T) {
+	j := NewFakeJournal()
+	if err := j.SetVersionLimit(ver(1 << 40)); err != nil {
+		t.Fatal(err)
+	}
+
+	j.ReadOnly(syscall.EROFS)
+
+	write := func() error {
+		h, err := j.Share(1, 0, journal.Version{})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = h.WriteAt(t.Context(), fileA, 0, []byte("x"), 0)
+
+		return err
+	}
+
+	if err := write(); !errors.Is(err, journal.ErrJournalReadOnly) {
+		t.Errorf("WriteAt on a read-only journal = %v, want journal.ErrJournalReadOnly", err)
+	}
+
+	if !j.Stats().ReadOnly.ReadOnly {
+		t.Error("Stats reports the read-only journal writable, want read-only")
+	}
+
+	j.Reopen()
+
+	if err := write(); err != nil {
+		t.Errorf("WriteAt after a reopen = %v, want nil", err)
+	}
+
+	if ro := j.Stats().ReadOnly; ro.ReadOnly {
+		t.Errorf("Stats after a reopen reports %+v, want writable", ro)
+	}
+}
+
 // A tag's dirty bytes are its held bytes less those marked offloaded, as
 // RFC 1 §3.7 has them (dirty is at most held).
 func TestFakeStatsReportsDirtyBytesBelowHeld(t *testing.T) {

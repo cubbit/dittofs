@@ -3,6 +3,7 @@ package kvstoretest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -28,6 +29,56 @@ func CreateShare(ctx context.Context, cp kvstore.ControlPlane, sh entity.Share) 
 		return err
 	})
 	return gen, err
+}
+
+// stepTags is the tag state a share's removal records for each of its shards
+// at the step ContinueRemoval reports, as the node's removal records it.
+var stepTags = map[uint8]entity.TagState{3: entity.TagOffloaded, 4: entity.TagForgotten}
+
+// RemoveShareUntil removes share id, on shard, and drives its removal
+// through the store's steps until its tag reads state, recording the shard's
+// step as the node's removal does; a zero state runs the removal to its end,
+// dropping the shard's files at step 4, so the store holds no record of it.
+func RemoveShareUntil(ctx context.Context, st *kvstore.Store, id entity.ShareID, shard entity.ShardID, state entity.TagState) error {
+	sh, _, err := st.ShareIndex().Share(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := st.ControlPlane().DeleteShare(ctx, id, entity.SnapshotsDelete, sh.Generation); err != nil {
+		return err
+	}
+	for range 1000 {
+		if state != 0 {
+			got, err := st.Lifecycle().TagState(ctx, id)
+			if err != nil || got == state {
+				return err
+			}
+		}
+		step, done, err := st.Nodes().ContinueRemoval(ctx, id)
+		if err != nil {
+			return err
+		}
+		if done {
+			if state == 0 {
+				return nil
+			}
+			return fmt.Errorf("kvstoretest: share %v's removal ended short of %v", id, state)
+		}
+		if reached, ok := stepTags[step]; ok {
+			if err := st.Nodes().RecordShardRemoval(ctx, id, shard, reached); err != nil {
+				return err
+			}
+		}
+		for shardDone := state != 0 || step != 4; !shardDone; {
+			if shardDone, err = st.Nodes().ContinueShardRemoval(ctx, id, shard); err != nil {
+				return err
+			}
+		}
+	}
+	if state == 0 {
+		return fmt.Errorf("kvstoretest: share %v's removal never finished", id)
+	}
+	return fmt.Errorf("kvstoretest: share %v's removal never reached %v", id, state)
 }
 
 // inNamespace puts a namespace on testStore and returns sh naming it.

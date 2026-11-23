@@ -1646,7 +1646,7 @@ func TestCloseOfAReadOnlyJournalLeavesItsPendingExistenceToTheNextStart(t *testi
 		pending[fname(f)] = entity.JournalVersion(r.e.Pending(f)[0].Version.Bytes())
 	}
 
-	r.j.ro.Store(&journal.ReadOnlyState{ReadOnly: true, Err: syscall.EROFS})
+	r.j.ReadOnly(syscall.EROFS)
 
 	mark := len(r.j.log())
 	waiting := joinOf(r.e, "the last group commit")
@@ -1681,8 +1681,7 @@ func TestCloseOfAReadOnlyJournalLeavesItsPendingExistenceToTheNextStart(t *testi
 		t.Errorf("closes %v, want %v", got, want)
 	}
 
-	// The reopened journal writes again.
-	r.j.ro.Store(nil)
+	// The restart reopens the journal, which ends its read-only state.
 	r.restart(t)
 
 	mark = len(r.j.log())
@@ -1711,5 +1710,11 @@ func TestCloseOfAReadOnlyJournalLeavesItsPendingExistenceToTheNextStart(t *testi
 
 	if !maps.Equal(got, pending) {
 		t.Errorf("the restart re-applied %v, want exactly the pending writes %v", got, pending)
+	}
+
+	// The reopened journal writes again.
+	_, f := r.newFile(t, "after")
+	if _, err := r.e.Write(ctx, r.one.ID, f, 0, fill(8, 'a'), opts); err != nil {
+		t.Errorf("a write after the reopen = %v, want nil", err)
 	}
 }

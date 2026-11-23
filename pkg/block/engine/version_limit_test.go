@@ -803,14 +803,8 @@ func TestBindRaisesEveryShareWithinTrigger(t *testing.T) {
 
 // A removed binding in the table does not stop the raise of the others.
 func TestRaiseSkipsRemovedBinding(t *testing.T) {
-	removed := entity.NewShareID()
 	s := newStarter(t, withBlock(testBlock))
-	s.lc.removed = map[entity.ShareID]entity.TagRecord{
-		removed: {
-			Tag:   99,
-			State: entity.TagOffloaded,
-		},
-	}
+	removed := s.removing(t, "removed", entity.TagOffloaded).ID
 	s.e.TrackRaisesForTest()
 	applyAge(t, s, time.Second)
 

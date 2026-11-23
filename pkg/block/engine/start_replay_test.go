@@ -56,9 +56,11 @@ func settleCall(f entity.FileID, v journal.Version) string {
 	return fmt.Sprintf("settle %s %s", fname(f), vname(v))
 }
 
-// logExistence wraps the store's existence view: it logs each Commit and
-// Remove in the journal's call log, keeps what they were handed, and holds or
-// fails them when a test asks.
+// logExistence wraps the store's existence view twice over: a pass-through
+// record of each Commit and Remove, in the journal's call log and with what
+// they were handed, which never answers in the store's place; and a fault
+// wrapper, which holds a call at a gate or fails it, whole or per file
+// without writing, when a test asks.
 type logExistence struct {
 	engine.Existence
 	j *logJournal
@@ -314,14 +316,14 @@ func (r *rig) newFile(t *testing.T, name string) (entity.Handle, entity.FileID) 
 }
 
 // commitSize commits existence of a write of [0, size) for file f of share
-// one at version 1, below every version the journal draws, as a start that
+// sh at version 1, below every version the journal draws, as a start that
 // found the file at that size would.
-func (r *rig) commitSize(t *testing.T, f entity.FileID, size int64) {
+func (r *rig) commitSize(t *testing.T, sh entity.ShareID, f entity.FileID, size int64) {
 	t.Helper()
 
 	pending := []kvstore.PendingExistence{
 		{
-			Share: r.one.ID,
+			Share: sh,
 			File:  f,
 			Ops: []kvstore.PendingOp{
 				{
@@ -656,7 +658,7 @@ func TestStartReplaysInVersionOrder(t *testing.T) {
 func TestStartAppliesATruncateTheCrashCut(t *testing.T) {
 	r := newRig(t)
 	h, f := r.newFile(t, "a")
-	r.commitSize(t, f, 8192)
+	r.commitSize(t, r.one.ID, f, 8192)
 
 	v2, err := r.jh.Truncate(t.Context(), journal.NewFileID(f), 4096)
 	if err != nil {
@@ -714,7 +716,7 @@ func (r *rig) wantRemovals(t *testing.T, f entity.File, want []kvstore.Unfinishe
 func TestStartAppliesADeallocateTheCrashCut(t *testing.T) {
 	r := newRig(t)
 	h, f := r.newFile(t, "a")
-	r.commitSize(t, f, 12288)
+	r.commitSize(t, r.one.ID, f, 12288)
 
 	x := journal.Extent{Off: 4096, Len: 4096}
 
@@ -1124,22 +1126,10 @@ func TestStartReplaysEveryServedShare(t *testing.T) {
 	r.write(t, f1, 0, 4096, writeMtime)
 	r.writeOn(t, r.handle(t, r.two.Tag), f2, 0, 8192, writeMtime)
 
-	removed := entity.NewShareID()
-	r.lc.removed = map[entity.ShareID]entity.TagRecord{
-		removed: {
-			Tag:   92,
-			State: entity.TagOffloaded,
-		},
-	}
-	r.seed(t, 92)
+	handed := r.removing(t, "removed", entity.TagOffloaded)
+	r.seed(t, handed.Tag)
 
 	r.atRestart()
-
-	handed := engine.Share{
-		ID:    removed,
-		Tag:   92,
-		State: engine.Serving,
-	}
 
 	func() {
 		defer func() {
@@ -1442,7 +1432,7 @@ func TestStartDoesNotRaiseTheLossSequenceOfAnAbortedRelease(t *testing.T) {
 func TestStartSettlesARemovalTheStoreRefuses(t *testing.T) {
 	r := newRig(t)
 	h, f := r.newFile(t, "a")
-	r.commitSize(t, f, 8192)
+	r.commitSize(t, r.one.ID, f, 8192)
 
 	v2, err := r.jh.Truncate(t.Context(), journal.NewFileID(f), 4096)
 	if err != nil {
@@ -1686,7 +1676,7 @@ func TestReplayLeavesNoEntryAndCallsNoDone(t *testing.T) {
 func TestAFailedSecondCommitSettlesOnlyTheFirst(t *testing.T) {
 	r := newRig(t)
 	h, f := r.newFile(t, "a")
-	r.commitSize(t, f, 8192)
+	r.commitSize(t, r.one.ID, f, 8192)
 
 	id := journal.NewFileID(f)
 	v1 := r.write(t, f, 0, 4096, writeMtime)
@@ -1740,7 +1730,7 @@ func TestAFailedSecondCommitSettlesOnlyTheFirst(t *testing.T) {
 func TestStartReplaysATruncateUpWithTheRestartsTime(t *testing.T) {
 	r := newRig(t)
 	h, f := r.newFile(t, "a")
-	r.commitSize(t, f, 4096)
+	r.commitSize(t, r.one.ID, f, 4096)
 
 	v2, err := r.jh.Truncate(t.Context(), journal.NewFileID(f), 8192)
 	if err != nil {
@@ -1823,7 +1813,7 @@ func TestALossFoundAtOpenRaisesTheSequenceOnce(t *testing.T) {
 func TestStartTracksTheSizeAcrossTruncates(t *testing.T) {
 	r := newRig(t)
 	h, f := r.newFile(t, "a")
-	r.commitSize(t, f, 8192)
+	r.commitSize(t, r.one.ID, f, 8192)
 
 	id := journal.NewFileID(f)
 	v1 := r.write(t, f, 0, 4096, writeMtime)
@@ -1938,7 +1928,7 @@ func TestAFailedSyncFailsStartBeforeAnyCommitOrSettle(t *testing.T) {
 			name: "a truncate",
 			make: func(t *testing.T, r *rig) entity.FileID {
 				_, f := r.newFile(t, "a")
-				r.commitSize(t, f, 8192)
+				r.commitSize(t, r.one.ID, f, 8192)
 
 				if _, err := r.jh.Truncate(t.Context(), journal.NewFileID(f), 4096); err != nil {
 					t.Fatal(err)
@@ -2010,7 +2000,7 @@ func TestStartCommitsTwoLossesOfOneWriteInOffsetOrder(t *testing.T) {
 func TestStartSettlesARemovalWhoseFileTheStoreFindsGone(t *testing.T) {
 	r := newRig(t)
 	h, f := r.newFile(t, "a")
-	r.commitSize(t, f, 8192)
+	r.commitSize(t, r.one.ID, f, 8192)
 
 	v2, err := r.jh.Truncate(t.Context(), journal.NewFileID(f), 4096)
 	if err != nil {
