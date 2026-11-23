@@ -1730,7 +1730,14 @@ after a loss, each client resends its recent unstable writes once.
   ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), and where the ring reports events
   missed, raises the sequence of every file of that journal; a drain between a
   raise and its event misses the event until the next one, the write verifier
-  already carrying the raise.
+  already carrying the raise. The drain is the journal's genuine loss reader:
+  its `Losses` read takes the events away, marking them served
+  ([RFC 1 §3.8](rfc-1-journal.md#3.8%20Loss%20events)), so an in-process reopen of a journal —
+  the suppression lives in the process's memory, a restart re-places every
+  loss record on disk — places found at open what no drain reached, except
+  that a read after a gap of overwritten events can leave an earlier read's
+  events to be reported again, and a `Stats` figure of the ring, which marks
+  nothing, never answers for the client's losses.
   **A device lost whole raises every attached file's sequence.** A journal
   device that dies under the running process, or a journal found missing or
   foreign at open whose loss an operator acknowledges ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1), writes
