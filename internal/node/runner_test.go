@@ -797,7 +797,7 @@ func TestRunTurnsAtOnceWhileAStepHasWorkLeft(t *testing.T) {
 	b.operation(entity.Operation{Kind: "other", Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{2}}, State: entity.OpRunning})
 	const atOnce = 50
 	waited := make(chan struct{})
-	r.turned = func() {
+	r.turned = func(context.Context) {
 		switch turns.Add(1) {
 		case atOnce:
 			more = false // the next turn reports no work left
@@ -839,7 +839,7 @@ func TestRunWithWorkLeftReturnsWhenItsContextEnds(t *testing.T) {
 	}}})
 	b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning})
 	turns := 0
-	r.turned = func() {
+	r.turned = func(context.Context) {
 		if turns++; turns == 3 {
 			cancel()
 		}

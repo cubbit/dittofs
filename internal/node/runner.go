@@ -56,9 +56,9 @@ type runner struct {
 	steps   map[string]stepRow
 	retries map[entity.OperationID]retry
 
-	// turned, when set, is called after each turn, once the wait for the
-	// next, if any, is set on the clock.
-	turned func()
+	// turned, when set, is called with run's context after each turn, once
+	// the wait for the next, if any, is set on the clock.
+	turned func(ctx context.Context)
 
 	mu      sync.Mutex
 	refused map[string]bool // the kinds found with no step
@@ -90,20 +90,20 @@ func (r *runner) progressOf(ctx context.Context, op entity.Operation) apiv1.Prog
 // decision: a turn that follows at once still drives every operation listed,
 // one step each, so a long deletion moves no faster than any other operation
 // that has work left and starves none; an operation waiting on its own
-// schedule or a retry is asked again, which its step answers at once. A
-// step ctx interrupted reports no work left, so a Stop ends the runner after
-// that step, however much work is left.
+// schedule or a retry is asked again, which its step answers at once. No
+// turn starts once ctx has ended, so a Stop ends the runner after the step it
+// interrupts, however much work is left.
 func (r *runner) run(ctx context.Context, loop *health.Loop) {
 	now := make(chan struct{})
 	close(now)
-	for {
+	for ctx.Err() == nil {
 		next := (<-chan struct{})(now)
 		if !r.turn(ctx) {
 			next = r.clock.After(runInterval)
 		}
 		loop.Turn()
 		if r.turned != nil {
-			r.turned()
+			r.turned(ctx)
 		}
 		select {
 		case <-ctx.Done():

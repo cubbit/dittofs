@@ -190,9 +190,10 @@ func (n *Node) Wake() {
 	}
 }
 
-// OnRunnerTurn has the operation runner call turned after each turn, once
-// the wait for the next is set on the node's clock. Call it before Start.
-func (n *Node) OnRunnerTurn(turned func()) { n.runner.turned = turned }
+// OnRunnerTurn has the operation runner call turned after each turn, with
+// the runner's context, once the wait for the next, if any, is set on the
+// node's clock. Call it before Start.
+func (n *Node) OnRunnerTurn(turned func(ctx context.Context)) { n.runner.turned = turned }
 
 // OnStatus has the status writer call turned at the end of each turn with
 // the status it built and whether it committed it. Call it before Start.

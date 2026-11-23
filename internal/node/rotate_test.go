@@ -1,6 +1,7 @@
 package node_test
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -164,7 +165,7 @@ func TestRotationProgressReadsThroughTheAPI(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(admin)))
 	op, _ := startRotation(t, h)
 	turned := make(chan struct{}, 64)
-	h.Node().OnRunnerTurn(func() {
+	h.Node().OnRunnerTurn(func(context.Context) {
 		select {
 		case turned <- struct{}{}:
 		default:
