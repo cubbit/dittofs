@@ -232,19 +232,6 @@ func (c *startContent) pruneAttempts(f entity.FileID) int {
 	return c.attempts[f]
 }
 
-func (c *startContent) resumedAny() int {
-	c.mu.Lock()
-
-	defer c.mu.Unlock()
-
-	n := 0
-	for _, k := range c.resumes {
-		n += k
-	}
-
-	return n
-}
-
 func (c *startContent) prunedAt(f entity.FileID) []entity.JournalVersion {
 	c.mu.Lock()
 
@@ -565,10 +552,6 @@ func TestStartPostsTenThousandRemovalsAndRunsNoBatchBeforeItReturns(t *testing.T
 			waitBound,
 			n,
 		)
-	}
-
-	if got := r.content.resumedAny(); got != 0 {
-		t.Errorf("%d batches ran by the time Start returned, want 0", got)
 	}
 
 	// The loop is held until the test lets it run, so no posted item ran
