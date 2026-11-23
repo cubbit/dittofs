@@ -313,12 +313,9 @@ ls: cannot access 'file.txt': Stale file handle
    sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
    ```
 
-2. **For persistent handles, back the share with an on-disk BadgerDB store (not in-memory).**
-   The CLI no longer creates metadata stores.
-   ```bash
-   ./dfsctl share create --name /export --metadata persistent \
-     --block-store persistent-blocks
-   ```
+2. **For persistent handles, keep `metadata.backend: badger` with a `metadata.badger.path`
+   on disk.** v2 has no per-share stores to choose; see
+   [Choosing stores](choosing-stores.md).
 
 3. **Clear client NFS cache (Linux):**
    ```bash
@@ -611,16 +608,6 @@ sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export 
 Kerberos:
 ```bash
 dfsctl share nfs-config set /export --allow-auth-sys true --require-kerberos false
-```
-
-### "metadata store not found"
-
-**Cause:** Share references a non-existent metadata store.
-
-**Solution:** Ensure both stores exist before creating the share. The CLI no
-longer creates stores.
-```bash
-./dfsctl share create --name /export --metadata my-store --block-store my-blocks
 ```
 
 ### NFSv4 Session Issues

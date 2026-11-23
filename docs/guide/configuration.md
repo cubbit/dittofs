@@ -68,7 +68,7 @@ Controls log output behavior:
 
 ```yaml
 logging:
-  level: "INFO"           # DEBUG, INFO, WARN, ERROR
+  level: "info"           # debug, info, warn, error (lowercase only)
   format: "text"          # text, json
   output: "stdout"        # stdout, stderr, or file path
 ```
@@ -262,16 +262,16 @@ metadata:
 |-----|------|---------|-------------|
 | `metadata.backend` | `badger` or `foundationdb` | `badger` | Which store. Only the block it names is read: a key of the other block is refused at load. |
 | `metadata.badger.path` | absolute path | none (see below) | Badger's directory. |
-| `metadata.foundationdb.cluster_file` | absolute path | none | FoundationDB's cluster file. |
+| `metadata.foundationdb.cluster_file` | absolute path | required with `backend: foundationdb` | FoundationDB's cluster file. |
 | `metadata.foundationdb.tls.cert_file`, `.key_file`, `.ca_file` | absolute paths | none | The client certificate, its key and the CA file. Name the three together or none. |
 
 Each key's environment name is `DITTOFS_` and the key in upper case, its dots
 as underscores: `DITTOFS_METADATA_BACKEND`, `DITTOFS_METADATA_BADGER_PATH`,
 `DITTOFS_METADATA_FOUNDATIONDB_CLUSTER_FILE`, and so on.
 
-**This build opens Badger only.** The loader and `dfs config validate` accept
-`backend: foundationdb` and its keys, but `dfs init` and `dfs start` refuse it
-before opening anything:
+**Only a build with the `foundationdb` tag opens FoundationDB.** The loader and
+`dfs config validate` accept `backend: foundationdb` and its keys in every build, but in
+one without the tag `dfs init` and `dfs start` refuse it before opening anything:
 
 ```
 metadata.backend "foundationdb" is not one this build opens; it opens badger
@@ -492,8 +492,7 @@ read from `DITTOFS_ADAPTERS_*` environment variables.
 Require encrypted SMB traffic for a particular share with `--encrypt-data`:
 
 ```bash
-dfsctl share create --name /secure --metadata default \
-  --block-store s3-remote --encrypt-data
+dfsctl share create --name /secure --encrypt-data
 ```
 
 See the [SMB security model](security.md#smb-encryption) for protocol-level
@@ -728,67 +727,33 @@ job.
 ## Metrics (Prometheus)
 
 DittoFS exposes a Prometheus `/metrics` endpoint on a **dedicated listener**,
-separate from the control-plane API and the protocol adapters. It is **opt-in
-and disabled by default**. When enabled it serves the standard Go/process
-collectors plus the DittoFS instruments (request RED metrics per adapter,
-connection counts, sync/remote/local-store/quota gauges, and snapshot
-timestamps).
+separate from the management API and the protocol adapters. It is **on by
+default, on loopback only**. It serves the standard Go/process collectors plus
+the DittoFS instruments (request RED metrics per adapter, connection counts,
+sync/remote/local-store/quota gauges).
 
 ```yaml
 # Top-level metrics block (NOT nested under `server:`).
 metrics:
-  enabled: true            # opt-in; default false
-  host: 127.0.0.1          # bind interface; default loopback only
-  port: 9090               # default 9090
-  path: /metrics           # default /metrics
-  auth: none               # "none" (default) or "token"
-  token_file: ""           # path to a file holding the Bearer token (auth: token)
-  tls:                     # optional; reuses the control-plane TLS shape
-    cert_file: ""
-    key_file: ""
-    client_ca: ""          # set for mTLS
-    min_version: "1.2"     # minimum TLS version: "1.2" (default) or "1.3"
+  listen: 127.0.0.1:9090   # ip:port, or "off" to turn the listener off
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `enabled` | `false` | Turn the metrics listener on. |
-| `host` | `127.0.0.1` | Bind interface. Binds loopback by default; set `0.0.0.0` to expose it deliberately (pair with a firewall/NetworkPolicy). |
-| `port` | `9090` | TCP port for the endpoint. |
-| `path` | `/metrics` | HTTP path. Must start with `/`. |
-| `auth` | `none` | `none` (rely on bind host + network policy) or `token` (require a Bearer token). |
-| `token_file` | | File whose trimmed contents are the expected Bearer token. Required when `auth: token`. |
-| `tls.cert_file` / `tls.key_file` | | Serve the endpoint over HTTPS. |
-| `tls.client_ca` | | Require + verify client certificates (mTLS). |
-| `tls.min_version` | `1.2` | Minimum negotiated TLS version: `1.2` or `1.3`. |
+`metrics.listen` is the only key of the block. It is an `ip:port` with an IP
+literal, and `off` disables the listener; the default is `127.0.0.1:9090`. v1's
+`enabled`, `host`, `port`, `path`, `auth`, `token_file` and `tls.*` keys are
+gone, and a file that carries them is refused as unknown. The endpoint has no
+Bearer-token auth of its own: it serves under the `api.tls` certificate on an
+address that is not loopback (see [§5](#5-api-server)).
 
 > **Security**: the endpoint binds `127.0.0.1` by default so it is not reachable
-> off-host without an explicit `host` change. In production prefer one of:
-> bind loopback and scrape via a sidecar; restrict with a firewall/NetworkPolicy;
-> or enable `auth: token` (and/or TLS). Never expose `0.0.0.0` unauthenticated on
-> an untrusted network.
+> off-host without an explicit `metrics.listen` change. In production prefer to
+> bind loopback and scrape via a sidecar, or restrict the address with a
+> firewall/NetworkPolicy. Never expose it on `0.0.0.0` on an untrusted network.
 
-### Environment variable overrides
-
-Every key is overridable with the `DITTOFS_METRICS_*` prefix:
-
-| Variable | Maps to |
-|----------|---------|
-| `DITTOFS_METRICS_ENABLED` | `metrics.enabled` |
-| `DITTOFS_METRICS_HOST` | `metrics.host` |
-| `DITTOFS_METRICS_PORT` | `metrics.port` |
-| `DITTOFS_METRICS_PATH` | `metrics.path` |
-| `DITTOFS_METRICS_AUTH` | `metrics.auth` |
-| `DITTOFS_METRICS_TOKEN_FILE` | `metrics.token_file` |
-| `DITTOFS_METRICS_TLS_CERT_FILE` | `metrics.tls.cert_file` |
-| `DITTOFS_METRICS_TLS_KEY_FILE` | `metrics.tls.key_file` |
-| `DITTOFS_METRICS_TLS_CLIENT_CA` | `metrics.tls.client_ca` |
-| `DITTOFS_METRICS_TLS_MIN_VERSION` | `metrics.tls.min_version` |
+The environment override is `DITTOFS_METRICS_LISTEN`:
 
 ```bash
-export DITTOFS_METRICS_ENABLED=true
-export DITTOFS_METRICS_HOST=0.0.0.0
-export DITTOFS_METRICS_PORT=9090
+export DITTOFS_METRICS_LISTEN=0.0.0.0:9090
 ```
 
 ### Ownership model
@@ -816,10 +781,6 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["dittofs-host:9090"]
-    # When auth: token is enabled:
-    # authorization:
-    #   type: Bearer
-    #   credentials_file: /etc/prometheus/dittofs-token
 ```
 
 ### Scraping (Kubernetes via the operator)
@@ -1034,14 +995,11 @@ Server config file with minimal settings:
 
 ```yaml
 logging:
-  level: INFO
+  level: info
 ```
 
-Then create the share via CLI:
-
-```bash
-./dfsctl share create --name /export --metadata default --block-store default-blocks
-```
+Then create the share with `dfsctl share create --name /export` (not available until the
+CLI is rebuilt on the v2 API).
 
 ### Development Setup
 
@@ -1049,13 +1007,11 @@ Fast iteration with in-memory stores:
 
 ```yaml
 logging:
-  level: DEBUG
+  level: debug
   format: text
 ```
 
-```bash
-./dfsctl share create --name /export --metadata dev-memory --block-store dev-blocks
-```
+Then create the share with `dfsctl share create --name /export`.
 
 ### Production Setup
 
@@ -1071,23 +1027,24 @@ metrics:
   listen: 127.0.0.1:9090
 ```
 
-Then create the share via CLI:
+Then create the share and grant permissions (not available until the CLI is rebuilt on
+the v2 API):
 
 ```bash
-# Create share and grant permissions
-./dfsctl share create --name /export --metadata prod-badger --block-store prod-s3
+./dfsctl share create --name /export
 ./dfsctl share permission grant /export --user alice --level read-write
 ```
 
 ### Multi-Share with Different Backends
 
-Different shares using different storage backends:
+In v2 every share lives in the node's one metadata store and journal, so shares do not
+pick backends; they differ in permissions (not available until the CLI is rebuilt on the
+v2 API):
 
 ```bash
-# Create shares with different backends
-./dfsctl share create --name /temp --metadata fast-memory --block-store mem-blocks
-./dfsctl share create --name /cloud --metadata persistent-badger --block-store cloud-s3
-./dfsctl share create --name /public --metadata persistent-badger --block-store cloud-s3
+./dfsctl share create --name /temp
+./dfsctl share create --name /cloud
+./dfsctl share create --name /public
 
 # Grant permissions
 ./dfsctl share permission grant /temp --user alice --level read-write

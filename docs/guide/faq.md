@@ -181,17 +181,10 @@ See [NFS.md](nfs.md) and [SMB.md](smb.md) for more details.
 
 ### Can I have multiple shares with different backends?
 
-Yes! This is a core feature. Each share names its own stores. The CLI no
-longer creates stores: remote (block) stores return as resource commands of
-the v2 management API.
-
-```bash
-# Create shares referencing different stores
-./dfsctl share create --name /temp --metadata fast-memory \
-  --block-store scratch
-./dfsctl share create --name /archive --metadata persistent-db \
-  --block-store cloud-s3
-```
+Not in v2. A node keeps every share in its one metadata store and journal, so a share
+does not name its own stores; shares differ in permissions, squash mode and the like.
+v1 shares named a metadata and a block store each; see
+[Upgrading from v1](upgrading-from-v1.md).
 
 See [CONFIGURATION.md](configuration.md) for more examples.
 
