@@ -892,8 +892,8 @@ properties of chunks.*
 
 **Input**, per pass: the chunks the carver emits for each run of the offer, in
 file order and then file after file — each chunk's file, offset, length and hash,
-and whether it is all zeros; a dedup lookup, passed in as a function
-([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); the block target, the format's chunk-count cap `N`, and
+and whether it is all zeros; once deduplication is re-added, a dedup lookup,
+passed in as a function ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); the block target, the format's chunk-count cap `N`, and
 the age of the oldest byte of each chunk.
 
 **Output**, per chunk, one of three dispositions, and a sequence of block plans:
@@ -901,7 +901,7 @@ the age of the oldest byte of each chunk.
 | The chunk | Disposition | In a block |
 | --- | --- | --- |
 | all zeros | a **zero ref**: no chunk, reported as a hole ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)) | no |
-| the dedup lookup finds it | **adopted**: a ref to the stored chunk | no |
+| the dedup lookup finds it, once it exists | **adopted**: a ref to the stored chunk | no |
 | otherwise | **carried** | yes, in the pending plan |
 
 A **block plan** lists, for each carried chunk in block order, its hash and where
@@ -916,6 +916,11 @@ type Assembler interface {
 	Finish(now time.Time) (last *BlockPlan, held bool)
 }
 ```
+
+The lookup lands with its first caller, the dedup oracle
+([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); until then no chunk is adopted, and the
+fold carries every chunk that is not all zeros. The signature above shows it as
+it will be then; the first release's `Add` takes no lookup.
 
 The assembler does no I/O but the lookup it is handed, keeps nothing between
 passes, and **MUST NOT** survive its pass. A lookup error carries the chunk
@@ -1043,12 +1048,12 @@ Each check is a pure function of a chunk stream, a lookup over a map of stored c
 | --- | --- |
 | P1, P2, P4 | Fold random chunk streams, and a run of 5,000 chunks of 1 KiB between holes. Assert every block ends on a chunk, overshoots the target by at most one chunk, and holds at most `N` chunks. |
 | P3 zero chunks | Fold a stream with all-zero chunks. Assert none is in a plan and each is a zero ref. |
-| P5 carried bytes | Fold a stream in which the lookup finds 90 % of the chunks. Assert every block but the last reaches the target in carried bytes. |
+| P5 carried bytes (with the lookup) | Fold a stream in which the lookup finds 90 % of the chunks. Assert every block but the last reaches the target in carried bytes. |
 | P6 repeats | Repeat one chunk three times in one block's span, and once more past the block's end. Assert the first block carries it once with three refs, and the second block carries it again. |
 | [§5.3](#5.3%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from) packing | Fold 10³ files of 64 KiB. Assert ⌈total / target⌉ plans, each file's chunks contiguous in one plan or split only at a block end. |
 | [§5.4](#5.4%20The%20short%20last%20block) short last block | Finish a pass short of the target with its oldest chunk young, then old. Assert it is held, then put. |
 | [§5.5](#5.5%20A%20pending%20block%20is%20a%20plan%2C%20not%20a%20buffer) no bytes | Fold 1 GiB of chunks. Assert the assembler's memory is independent of chunk size, and the slices `emit` handed over are not retained. |
-| lookup error | Make the lookup fail. Assert every chunk is carried. |
+| lookup error (with the lookup) | Make the lookup fail. Assert every chunk is carried. |
 | P2 no short block mid-pass | Fold a pass of many files whose chunks end between blocks at every possible point, with no count-cap closure; assert every block but the last reaches the target. An assembler that closes a block at a file's end puts short blocks mid-pass. |
 | block target range | Configure a block target of 512 KiB, of 128 MiB, and of exactly 1 MiB and 64 MiB; assert the first two are refused at startup and nothing is assembled, and the last two are accepted. |
 
@@ -1349,11 +1354,14 @@ chose ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 Tiers are those of [the RFC index](rfc-index.md#Test%20tiers). Per change, only counts, which give the
 same answer on any runner:
 
-- **golden vectors** unchanged, chunks and names, on two architectures;
+- **golden vectors** unchanged, chunks and names; the second architecture runs
+  them nightly ([§10.6](#10.6%20Recording%20results));
 - **allocations**: neither `NextBoundary` nor `Cut` makes any ([§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed));
 - **average chunk size** over 256 MiB of seeded random input, within 10% of
   `Target` at every profile;
-- **edit stability** (K4) on the fixed corpus, at or above the target of [§10.5](#10.5%20Performance%20targets).
+- **edit stability** on a seeded synthetic input with bytes inserted near its
+  start. K4 on the fixed corpus needs the corpus fetched, which no check may do
+  ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction)), so it runs by hand with K5.
 
 A warm-up that crept back over the whole chunk ([§3.4](#3.4%20How%20far%20back%20a%20decision%20looks)) changes no output, so no
 count sees it. K1 after merge does: the boundary search falls from over 20×
@@ -1388,7 +1396,7 @@ the same box differs by more across those than across commits.
 
 **Suites.** §9's chunker, carver, name and consumer rows, §5.7's assembler checks and §10's golden
 vectors, differential, property and fault tests run in `unit`, and an allocation count the race
-detector skews joins the named gates of `unit/nonrace`. No suite runs yet §9.1's K1 to K5 on the
+detector skews runs in an option of `unit` named for the carver, on every pull request. No suite runs yet §9.1's K1 to K5 on the
 reference box, fuzzing past the seed corpus, or the golden vectors on a second CPU architecture.
 
 ## 11. Open questions
