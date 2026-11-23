@@ -1755,7 +1755,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | An exported `node.Records` interface (RFC 23 §2.1) | the node holds kvstore's views directly, and epic 2's `Store.Nodes()` serves its reads and background calls; an interface with one implementation is a stub | unowned | a second implementation, such as a multi-node test's |
 | `node.Config.Transport` (RFC 23 §2.1, epic 1's D2) | it is nil on one node, and nothing reads it | RFC 15, with the cluster rows | a second node |
 | `node.Config.Fault`, the fault seam (RFC 23 §2.1, RFC 8 §2.1; epic 1's D2) | no component's `Deps` takes a fault seam; the store's faults come through the KV, which `kvtest` wraps | unowned | a component's `Deps` takes a fault seam |
-| `§3.2 delete`'s 10⁵ files: epic 7's T7.2 seeds 50 (epic 7's R3, the runner's `ponytail:` on `run`) | the runner moves an operation one step a turn, a turn a second, and a batch of step 4 drops about 21 rows, so 10⁵ files take about 4 hours | unowned | the runner runs a step again at once while it reports work left |
+| `§3.2 delete`'s 10⁵ files: epic 7's T7.2 seeds 50 (epic 7's R3, the `ponytail:` on `ContinueShardRemoval`) | the runner now runs a step again at once while it reports work left, but each batch of step 4 rescans from the share's first file key over the rows earlier batches deleted, so the drop grows with the square of the files: under `-race` 4000 files do not end inside the crash row's 60 s child bound | unowned | the shard's drop keeps its last key in the rm row, ending the quadratic rescan |
 
 ## 7. RFC coverage
 

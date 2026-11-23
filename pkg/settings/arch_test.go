@@ -45,6 +45,7 @@ var frozenExports = []string{
 	"func (Table).DecodeBound(b []byte) (map[string]json.RawMessage, error)",
 	"func Refusals(err error) iter.Seq2[entity.SettingScope, string]",
 	"func (Table).PrefixOf(key string) string",
+	"func (Table).WithMetrics(m *metrics.Registry) Table",
 	"type Snapshot struct{}",
 	"func (*Snapshot).Keep(section string, prev *Snapshot) *Snapshot",
 	"func (*Snapshot).Stored(section string) bool",

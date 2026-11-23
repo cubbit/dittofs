@@ -113,6 +113,10 @@ type rig struct {
 // newRig builds the slots on loopback, refusing the ports taken, its leak
 // check armed over the node's budgets: called before the test starts
 // anything. Both adapters are stopped at the test's end, before the check.
+//
+// decision: a test that builds a rig stays serial, because the leak check is
+// prof.Watch's, which a parallel test beside it would fail. Withdraw it once
+// the leak check moves to the end of the test binary.
 func newRig(t *testing.T, taken ...uint16) *rig {
 	t.Helper()
 	b, _ := newBudgets()
@@ -421,6 +425,9 @@ func TestALiveSettingReachesOnlyConnectionsAcceptedAfterIt(t *testing.T) {
 // the change has a NULL answered after it. Applied again, the change does
 // nothing: a connection on the new port stays open (RFC 23 §2.3, §3.4).
 func TestAPortChangeRebuildsThatAdapterAlone(t *testing.T) {
+	// decision: serial, because it picks a free loopback port, releases it and
+	// binds it again later; a parallel test's own port-0 listener could take it
+	// in between. Run it in parallel once the port is held until the bind.
 	rg := newRig(t)
 	if r := rg.nfs.apply(t.Context(), rg.loop, 0, true, nfsAt(0)); r != nil {
 		t.Fatalf("enable nfs: refused %s", r.rec.Error)
@@ -463,6 +470,9 @@ func TestAPortChangeRebuildsThatAdapterAlone(t *testing.T) {
 // open, and a sidecar failing every Sync is not failed. Once the records
 // moved back and the port is freed, the change applies (RFC 23 §2.3).
 func TestAPortChangeOntoAHeldPortFallsBack(t *testing.T) {
+	// decision: serial, because it picks a free loopback port, releases it and
+	// binds it again later; a parallel test's own port-0 listener could take it
+	// in between. Run it in parallel once the port is held until the bind.
 	rg := newRig(t)
 	port := freePort(t)
 	held, free := heldPort(t)
@@ -510,6 +520,9 @@ func TestAPortChangeOntoAHeldPortFallsBack(t *testing.T) {
 // disable is applied, not answered with that refusal, and SMB's port refuses
 // a dial (RFC 23 §2.3).
 func TestADisableAfterARefusalStopsTheAdapter(t *testing.T) {
+	// decision: serial, because it picks a free loopback port, releases it and
+	// binds it again later; a parallel test's own port-0 listener could take it
+	// in between. Run it in parallel once the port is held until the bind.
 	rg := newRig(t)
 	held, _ := heldPort(t)
 	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
@@ -531,6 +544,9 @@ func TestADisableAfterARefusalStopsTheAdapter(t *testing.T) {
 // adapter_refused naming it, and a disable then clears it: the condition
 // stands only for an enabled adapter nothing serves (RFC 20 §3.7).
 func TestADisableClearsAnAdapterRefused(t *testing.T) {
+	// decision: serial, because it picks a free loopback port, releases it and
+	// binds it again later; a parallel test's own port-0 listener could take it
+	// in between. Run it in parallel once the port is held until the bind.
 	rg := newRig(t)
 	held, _ := heldPort(t)
 	refused := func() bool {
@@ -555,6 +571,9 @@ func TestADisableClearsAnAdapterRefused(t *testing.T) {
 // An enable on a port the test holds, with nothing serving SMB, is refused
 // and retried, and the retry serves once the port is freed (RFC 23 §2.3).
 func TestAnEnableOnAHeldPortIsRetried(t *testing.T) {
+	// decision: serial, because it picks a free loopback port, releases it and
+	// binds it again later; a parallel test's own port-0 listener could take it
+	// in between. Run it in parallel once the port is held until the bind.
 	rg := newRig(t)
 	held, free := heldPort(t)
 	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(held)); r == nil || !r.retry {
@@ -588,6 +607,9 @@ func (f failingStart) Start(ctx context.Context) error {
 // that last served, so nothing serves SMB, and the change is refused and
 // retried (RFC 23 §2.3).
 func TestAPortChangeWhoseFallbackFailsIsRetried(t *testing.T) {
+	// decision: serial, because it picks a free loopback port, releases it and
+	// binds it again later; a parallel test's own port-0 listener could take it
+	// in between. Run it in parallel once the port is held until the bind.
 	rg := newRig(t)
 	var fails atomic.Bool
 	build := rg.smb.build
@@ -614,6 +636,9 @@ func TestAPortChangeWhoseFallbackFailsIsRetried(t *testing.T) {
 // not retried, and the old adapter serves on its old port, its connection
 // open (RFC 23 §2.3: New accepts the settings before the old one drains).
 func TestARefusedNewLeavesTheOldAdapterServing(t *testing.T) {
+	// decision: serial, because it picks a free loopback port, releases it and
+	// binds it again later; a parallel test's own port-0 listener could take it
+	// in between. Run it in parallel once the port is held until the bind.
 	rg := newRig(t)
 	port := freePort(t)
 	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(port)); r != nil {
@@ -641,6 +666,9 @@ func TestARefusedNewLeavesTheOldAdapterServing(t *testing.T) {
 // socket on loopback holds it: SMB serves on, at its old port, its
 // connection open, and the API's port refuses a dial (RFC 13 §6).
 func TestTheAPIsPortIsRefused(t *testing.T) {
+	// decision: serial, because it picks a free loopback port, releases it and
+	// binds it again later; a parallel test's own port-0 listener could take it
+	// in between. Run it in parallel once the port is held until the bind.
 	api := freePort(t)
 	rg := newRig(t, api)
 	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
@@ -824,6 +852,7 @@ func TestAnOutcomeIsReadWhileTheCallsStoreIt(t *testing.T) {
 // literal that does not parse is refused, all of them together, naming the
 // key and its index but never the value (RFC 13 §6, Appendix C).
 func TestListenAddrs(t *testing.T) {
+	t.Parallel()
 	any4, any6 := netip.IPv4Unspecified(), netip.IPv6Unspecified()
 	for _, tc := range []struct {
 		name   string

@@ -466,7 +466,7 @@ func TestNoSecretInWhatTheNodeRecords(t *testing.T) {
 	// step writes over it before the read.
 	var raw atomic.Pointer[kvtest.FaultKV]
 	m := newMachineLogged(t, &logged, false, func(n *node.Node) {
-		n.OnRunnerTurn(func() {
+		n.OnRunnerTurn(func(context.Context) {
 			if kv := raw.Load(); kv != nil {
 				ops.keep(ops.read(context.Background(), kv))
 			}

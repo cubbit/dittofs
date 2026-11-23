@@ -9,6 +9,7 @@ import (
 
 // journalPaths hands the engine every journal directory, in order.
 func TestJournalPathsKeepsEveryJournalInOrder(t *testing.T) {
+	t.Parallel()
 	journals := []bootstrap.Journal{{Path: "/data/j1"}, {Path: "/data/j2"}}
 
 	got := journalPaths(journals)

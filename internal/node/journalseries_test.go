@@ -154,6 +154,7 @@ func absentField(key string) bool {
 // carries a written reason. The day a field is added with no series, or a
 // reason is held for a field that has landed, this fails on its assertion.
 func TestJournalStatsEveryFieldHasASeries(t *testing.T) {
+	t.Parallel()
 	answered := answeredBy(t)
 	shapes := []struct {
 		ty     reflect.Type
@@ -316,6 +317,7 @@ func expect(t *testing.T, scr map[string]map[string]float64, series string, want
 // from the snapshot, labelled with the journal's hex identity; the text the
 // error and read-only figures carry stays out of the labels.
 func TestJournalSeriesReadTheirFields(t *testing.T) {
+	t.Parallel()
 	s := statsSnapshot()
 	c := collectorFor(oneJournal(s))
 	scr := scrapeOf(t, c)
@@ -477,6 +479,7 @@ func cutLabels(labels, n string) (string, bool) {
 // share, never the journal's map; the journal's map feeds every other
 // figure, and for an unattached tag the sum alone.
 func TestJournalSeriesSharesWorstNAndSum(t *testing.T) {
+	t.Parallel()
 	s := statsSnapshot()
 	js := engine.JournalStats{ID: journalID, Stats: s}
 	// Attached shares numbered with the index, each holding i+1 dirty KiB
@@ -584,6 +587,7 @@ func shareSet(t *testing.T, rows []shareSample, series string) map[string]bool {
 // Start or after Close — exports no series: a zero snapshot would read as
 // healthy, so the nil entry is skipped whole.
 func TestJournalSeriesClosedJournalExportsNothing(t *testing.T) {
+	t.Parallel()
 	st := engine.Stats{Journals: map[string]engine.JournalStats{
 		"refused": {ID: journalID, Stats: nil, TagShares: map[journal.ShareTag]entity.ShareID{}},
 	}}

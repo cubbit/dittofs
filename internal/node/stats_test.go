@@ -21,6 +21,7 @@ import (
 // its Stats at each scrape, not copied once: a figure that moved between two
 // scrapes shows at the second.
 func TestEngineSeriesReadAtScrape(t *testing.T) {
+	t.Parallel()
 	s := engine.Stats{Reads: map[string]int64{}, RemovalRuns: map[string]int64{}}
 	c := engineSeries{snap: testSnapshot(func() engine.Stats { return s })}
 	scrape := func(n int) string {
@@ -75,6 +76,7 @@ dittofs_engine_write_refusals_total N
 // identity and name, their cause and their detail: the node's, each journal's
 // and each share's.
 func TestEngineConditions(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("store committed nothing for 30 s")
 	s := engine.Stats{
 		Node: engine.NodeStats{Conditions: []engine.Condition{{Name: "node_fenced", Subject: engine.Subject{Scope: engine.ScopeNode, ID: "n1"}, Cause: cause, Detail: "fenced"}}},
@@ -105,6 +107,7 @@ func TestEngineConditions(t *testing.T) {
 // Only a pointer to the engine's adapter is a health.Source: Remove finds a
 // source by identity, and a value holding a func can't be compared.
 func TestEngineConditionsIsAPointerSource(t *testing.T) {
+	t.Parallel()
 	src := reflect.TypeFor[health.Source]()
 	if reflect.TypeFor[engineConditions]().Implements(src) {
 		t.Error("engineConditions as a value implements health.Source, want only *engineConditions")
@@ -125,6 +128,7 @@ func testSnapshot(stats func() engine.Stats) *snapshot {
 // status writer's next consumption of the evaluator names the omission,
 // while the export omits the series and counts the scrape.
 func TestEngineConditionsDeadlinedRaisesUnavailability(t *testing.T) {
+	t.Parallel()
 	block := make(chan struct{})
 	entered := make(chan struct{})
 	var once sync.Once
@@ -174,6 +178,7 @@ func TestEngineConditionsDeadlinedRaisesUnavailability(t *testing.T) {
 // and once after the answers — the after is the deterministic half, since
 // every caller has then answered through the one flight.
 func TestSnapshotOneWedgedFlightAnswersAllCallers(t *testing.T) {
+	t.Parallel()
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
 	var entered atomic.Int32

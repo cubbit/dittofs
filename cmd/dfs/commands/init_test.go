@@ -9,7 +9,9 @@ import (
 
 	"github.com/cubbit/dittofs/internal/install"
 	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
@@ -124,5 +126,45 @@ func TestInitThenAgain(t *testing.T) {
 	}
 	if out, err := runDfs("init", "--config", config); !errors.Is(err, install.ErrInstalled) || out != "" {
 		t.Errorf("second dfs init: got %q, %v; want nothing printed and ErrInstalled", out, err)
+	}
+}
+
+// Over a v1 Badger store at metadata.badger.path, dfs init refuses with the
+// v1 sentence naming the directory, printing nothing, leaving v1's keys as
+// they were and the journal directory empty.
+func TestInitRefusesAV1MetadataStore(t *testing.T) {
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	store := filepath.Join(dir, "store")
+	writeV1Store(t, store)
+	out, err := runDfs("init", "--config", config)
+	if want := v1Sentence("a metadata store", store); err == nil || err.Error() != want || out != "" {
+		t.Errorf("dfs init over a v1 store: got %q, %v; want nothing printed and %q", out, err, want)
+	}
+	checkV1Store(t, store)
+	if ents, err := os.ReadDir(filepath.Join(dir, "device")); err != nil || len(ents) != 0 {
+		t.Errorf("journal directory after the refusal: %d entries, %v; want it empty", len(ents), err)
+	}
+}
+
+// Over a store kvstore.Init created that has since lost its format record,
+// dfs init refuses it as foreign, never with the v1 sentence: its keys are
+// this format's records.
+func TestInitRefusesAStoreThatLostItsFormatRecord(t *testing.T) {
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	db, err := badgerkv.Open(badgerkv.Options{Dir: filepath.Join(dir, "store"), NodeID: testNode})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = kvstore.Init(t.Context(), db, [16]byte{1})
+	if err == nil {
+		err = db.Update(t.Context(), func(tx kv.Txn) error { return tx.Delete(keys.Format) })
+	}
+	if err = errors.Join(err, db.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runDfs("init", "--config", config); !errors.Is(err, kvstore.ErrForeignStore) || strings.Contains(err.Error(), "from v1") {
+		t.Errorf("dfs init over a store that lost its format record: got %v, want ErrForeignStore's wording, never the v1 sentence", err)
 	}
 }

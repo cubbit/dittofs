@@ -185,14 +185,23 @@ func TestRFC8A_RecoveryReappliesInVersionOrder(t *testing.T) {
 func TestRFC8A_SyncedLossReadsLost(t *testing.T) {
 	f := enginetest.New(t)
 	h, id := f.File("a")
+	_, other := f.File("b")
 	p := bytes.Repeat([]byte("lost"), 1024)
 
+	write(t, f, other, 0, []byte("committed"))
 	write(t, f, id, 0, p)
 
-	// Synced, not committed: the loss record stays above the file's applied
+	// A fresh file's Commit waits for no recorded mark, so another file's
+	// group commit after the sync records the stream's mark, which covers a's
+	// record and is handed to the open as the proof it synced. a's own
+	// existence stays uncommitted: the loss record stays above its applied
 	// version, so the replay yields it (RFC 8 §2.5 step 3).
-	if _, err := f.Handle().Sync(t.Context(), journal.NewFileID(id)); err != nil {
-		t.Fatalf("Sync: %v", err)
+	if _, _, err := f.E.Commit(t.Context(), f.Share.ID, id, 0, 0); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	if err := f.E.CommitExistence(t.Context(), f.Share.ID, other); err != nil {
+		t.Fatalf("CommitExistence: %v", err)
 	}
 
 	corrupt(t, f, p)

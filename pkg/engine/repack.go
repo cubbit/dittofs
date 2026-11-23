@@ -509,10 +509,24 @@ func (e *Engine) stepOK(b *binding) {
 // that take no further append, of the share's tag for its own limit and of the
 // journal otherwise. A failed segment counts whether or not its window has
 // resolved, and one a running pass selected still counts (RFC 8 §10.2).
+//
+// The share's own UnreclaimedEndedBytes counts its records in those segments
+// live or not, so for a share it is bounded by the share's unreclaimed bytes
+// and the journal's ended unreclaimed bytes, both of which leave live bytes
+// out: a share whose ended segments hold only live bytes has nothing left.
+//
+// decision: the bound is an upper one. A share with dead bytes only in an
+// active segment, beside live bytes in ended ones, while another share has
+// dead bytes in ended segments, still reads above zero; its next pass seals
+// and frees those dead bytes, so the answer turns to no space by the
+// following refusal rather than delaying for ever. Replaced by an exact
+// figure if the journal comes to count a share's live bytes per segment.
 func (e *Engine) left(b *binding, r refusal) int64 {
 	st := b.j.Stats()
 	if r.limit == journal.LimitShare {
-		return st.Shares[b.share.Tag].UnreclaimedEndedBytes
+		ss := st.Shares[b.share.Tag]
+
+		return min(ss.UnreclaimedEndedBytes, ss.UnreclaimedBytes, st.UnreclaimedEndedBytes)
 	}
 
 	return st.UnreclaimedEndedBytes
