@@ -481,6 +481,59 @@ func settingsImports(root string) ([]string, error) {
 	return bad, err
 }
 
+// weakKeyCallers returns each non-test file under root that calls
+// GenerateWeakKeyFile, whose key file protects its master key at the lowest
+// cost a key file may record: only a test, or a package of test helpers
+// whose name ends in test, may write one.
+func weakKeyCallers(root string) ([]string, error) {
+	var bad []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != root && (d.Name() == "testdata" || strings.HasPrefix(d.Name(), ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		if strings.HasSuffix(f.Name.Name, "test") {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			var name string
+			switch fn := ast.Unparen(call.Fun).(type) {
+			case *ast.Ident:
+				name = fn.Name
+			case *ast.SelectorExpr:
+				name = fn.Sel.Name
+			}
+			if name == "GenerateWeakKeyFile" {
+				bad = append(bad, filepath.ToSlash(rel)+" calls GenerateWeakKeyFile")
+			}
+			return true
+		})
+		return nil
+	})
+	slices.Sort(bad)
+	return bad, err
+}
+
 // Each import rule reports nothing over the module and exactly the violation
 // planted in its testdata tree, beside the allowed look-alikes planted with it.
 func TestImportRules(t *testing.T) {
@@ -520,6 +573,8 @@ func TestImportRules(t *testing.T) {
 				"pkg/node/apiv1 imports github.com/spf13/cobra outside the standard library",
 				"pkg/node/apiv1/client imports github.com/google/uuid outside the standard library",
 			}},
+		{"who writes a weak key file", weakKeyCallers, "weak-key",
+			[]string{"pkg/store/store.go calls GenerateWeakKeyFile"}},
 		{"the API settings' imports", settingsImports, "settings-leaf",
 			[]string{"internal/node/api/apisettings/settings.go imports " + module + "pkg/node/apiv1"}},
 	} {
