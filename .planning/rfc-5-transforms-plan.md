@@ -32,7 +32,7 @@ and RFC 5 now says so where each is specified. Related RFCs, with how far each i
   [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) (§1.5 rules 6 and 10).
 - **Out**, each a §6.1 row: RFC 9 (GC's retirement relocation, the drain, `Recheck`), RFC 26
   (catalog backups and their key machinery), RFC 27 (moves and re-homes), RFC 11 (fencing a node
-  that cannot be reached), RFC 23's destroy operation.
+  that cannot be reached), an operator's destroy, which RFC 23 does not yet specify.
 
 **Tracks.** A, B and C, with no owner (§3.4).
 
@@ -66,11 +66,15 @@ integration epics touch no v1 code (§1.5 rule 7).
   material from a block name's mint to its commit or abandonment; the attempt carries the chain
   ID, the bounds and `Encode`, and `Release`. The RFC 8 offload plan's epic 15 holds it (D10).
 - **§3.1 and §5.3, removal lands with its first caller**, GC's retirement or an operator's
-  destroy.
+  destroy, an operation RFC 23 does not yet specify; its fence waits for open pins, not
+  encodes (§5.3, T13).
 - **Appendix B.3, the export key's next generation lands with catalog backups**; every `keys`
   object names the first export key from the start, so nothing migrates.
 - **Appendix B.2, the `keys` object's read-back on `Recheck` lands with `Recheck`'s first
   caller**, GC.
+- **Appendix B.1, the periodic primary-version read lands with GC's recheck period**; until
+  then the provider reads it when the configuration opens.
+- **§2.8, a block's chain ID is its pin's.**
 
 **Pending the user's answer.** Three design questions (§6, Q2 to Q4) are written in place with
 the recommended option and marked "pending the user's answer", and two amendments to other RFCs
@@ -136,7 +140,9 @@ The exported surface of `pkg/transform`, frozen at S1, which is the RFC 8 offloa
 - The injection point RFC 25 §8 asks for: `NewChain` takes the root's metrics registry and
   logger (D2).
 - The two calls the RFC 8 offload plan makes besides the chain: the salvage-key wrap (D16) and
-  the destroyed-material notice (D17), on `material`'s provider, with stub bodies.
+  the destroyed-material notice (D17), declared in `pkg/transform` next to `Materials`, each a
+  one-method interface the engine holds; `material`'s provider (epics 6 and 8) and the
+  in-memory `Materials` (epics 2 and 8) implement them.
 - The component's import test (§1.5 rule 7).
 
 It declares no internal interface: the provider's custody seam has one consumer and lands with
@@ -376,17 +382,18 @@ this plan cites them by its names.
   engine holds the pin from mint to commit or abandonment and writes the census at commit (its
   epic 15), the `Census` view exists (its epic 19), the engine calls the salvage-key wrap (its
   epic 20) and the destroyed-material notice (its epic 18), and the node registers this
-  component's collectors and alert rules (its epic 21). Unblocks epic 10, which is planned after
-  it, and epic 11.
+  component's collectors, alert rules and the provider's `health.Source` for
+  `material_unavailable`, and runs `materialtest`'s `keys`-object suite against RFC 4's store in
+  `integration` (its epic 21). Unblocks epic 10, which is planned after it, and epic 11.
 
 Seams the offload contract fixes between this plan and the others:
 
 | Plan | It builds | It calls of this plan |
 | --- | --- | --- |
-| RFC 2 | the keyed BLAKE3 chunk ID (RFC 2 §4.1), the keyed gear table (RFC 2 §3.2, §6), RFC 5 §8.2 T17 and its last Appendix B.2 row (a plan keyed under another namespace); the one vector script and test corpus (its epic 2), which this plan's vectors join; the nightly `fuzz` suite (its epic 2) | nothing: the engine passes it the keys (below) |
+| RFC 2 | the keyed BLAKE3 chunk ID (RFC 2 §4.1), the keyed gear table (RFC 2 §3.2, §6), RFC 5 §8.2 T17's half that the same file in two namespaces gives disjoint chunk IDs (its epic 4); the one vector script and test corpus (its epic 2), which this plan's vectors join; the nightly `fuzz` suite (its epic 2) | nothing: the engine passes it the keys (below) |
 | RFC 3 | its `Descriptor` and `MaterialRef`, the census entry opaque to the syncer, and its own `ErrMaterialUnavailable` and `ErrMaterialDestroyed` (RFC 3 §1.3) | nothing: its memory bound is sized by the engine and the codec (below) |
 | RFC 4 | the block codec, which writes the census into the header (RFC 4 §3.2 to §3.4) and owns RFC 3 §2.2's memory-bound row on the codec's part; `PutControl` and `GetControl` (RFC 4 §4.13); LocalStack over HTTPS in `integration` (its epic 3) | `Attempt.Encode`, `Chain.Decode`, `MaxDecodeLen`, the stage count and the 255-byte material ID that bound the header census |
-| RFC 8 offload | the pin's holder and the census at commit (epic 15), the `Census` view (epic 19), the destroyed-material handling (epic 18), the salvage export (epic 20), the store adapter, its error mapping and the node's registration of collectors and alert rules (epic 21) | `NewChain`, `Chain.Pin` and `Attempt.Release`, `MaxDecodeLen` for the syncer's memory bound, `Materials.Current` and `Get` for the chunk-ID and chunking keys it hands the carver, the salvage-key wrap, the destroyed-material notice, the `keys`-object store interface (D8) |
+| RFC 8 offload | the pin's holder and the census at commit (epic 15), and there the refusal of a plan keyed under another namespace's key (RFC 5 §8.2 T17's other half, its last Appendix B.2 row: epic 15's Intent step), the `Census` view (epic 19), the destroyed-material handling (epic 18), the salvage export (epic 20), the store adapter, its error mapping and the node's registration of collectors and alert rules (epic 21) | `NewChain`, `Chain.Pin` and `Attempt.Release`, `MaxDecodeLen` for the syncer's memory bound, `Materials.Current` and `Get` for the chunk-ID and chunking keys it hands the carver, the salvage-key wrap, the destroyed-material notice, the `keys`-object store interface (D8) |
 
 ### 3.3 Blockers
 
@@ -425,7 +432,8 @@ Seams the offload contract fixes between this plan and the others:
 On `feat/storage-v2`:
 
 ```text
-pkg/transform/                 E1 the RFC 5 §3.1 surface, the import test; E3 registry,
+pkg/transform/                 E1 the RFC 5 §3.1 surface, the salvage-key wrap and notice
+                               interfaces, the import test; E3 registry,
                                envelope, Chain, Pin, chain ID, census view, the series of
                                RFC 5 §6; E9 settings.go, the store configuration's keys
 pkg/transform/transformtest/   E2 the transform conformance suite, the vector loader
@@ -462,8 +470,12 @@ filled in epic 3.
 **D3. AES-256-GCM-SIV is an internal `cipher.AEAD` of this repository, `internal/siv`, built
 on `crypto/aes` and ported, with attribution, from an Apache-2 implementation rather than written
 from scratch, pending the user's answer (Q2).** The standard library and `x/crypto` have none.
-Its POLYVAL multiply is constant time, as the standard library's generic GHASH is, never a
-table lookup indexed by key bits. It is pinned by RFC 8452's Appendix C vectors and by the
+Its POLYVAL multiply is constant time: carry-less multiplication by masking, BearSSL's
+`ghash_ctmul64` technique, with no table lookup indexed by key or data bits. The standard
+library is not the model: Go 1.26's generic GHASH, the toolchain `feat/storage-v2` pins, is
+table-driven and documented variable-time (`crypto/internal/fips140/aes/gcm/ghash.go`); Go 1.27
+switched it to BearSSL's masking. Epic 5's document names the ported source, and its review
+checks the multiply. It is pinned by RFC 8452's Appendix C vectors and by the
 independent golden vectors (D11), and RFC 5 §5.4's fixtures decide any later swap of
 implementation. Both the chunk seal (epic 5) and the key-file wrap (epic 6) use it. Prior art:
 BoringSSL and Tink implement it themselves; the Go implementations found are third-party
@@ -520,8 +532,8 @@ RFC 9's plan (§6.1). Prior art: none found. Applies in epic 8.
 §3.1 now says. `Chain.Pin` reads the namespace's current material once and returns the
 `Attempt` whose chain ID, bounds and encodes use it; the RFC 8 offload plan's epic 15 holds the
 attempt across the measuring pass, the put, its retries and RFC 3's per-upload measurement, and
-releases it at commit or abandonment. In v1.1 the pin counts nothing: the count of encodes in
-flight is `Remove`'s fence, which lands with `Remove` (§6.1). Prior art: a snapshot of
+releases it at commit or abandonment. In v1.1 the pin counts nothing: the count of open pins
+is `Remove`'s fence (RFC 5 §5.3 as amended), which lands with `Remove` (§6.1). Prior art: a snapshot of
 configuration taken per request, as a database transaction pins its schema version (from
 memory). Applies in epics 1 and 3.
 
@@ -556,16 +568,19 @@ data key; verify a key file's escrow; the destroy lands with its first caller, �
 §4.1's actions table names none of them. Epic 9 adds them with their `dfsctl` commands and
 regenerates `docs/guide/cli.md`. Prior art: RFC 23's own `rotate-signing-key`. Applies in epic 9.
 
-**D16. The salvage-key wrap is one provider call**: it draws a fresh data key, wraps it under
+**D16. The salvage-key wrap is one call, declared in `pkg/transform` and implemented by the
+provider**: it draws a fresh data key, wraps it under
 the installation's current master key with associated data naming the salvage export, and
 returns the key and its stored wrap (RFC 5 Appendix B.2, "A salvage key seals one salvage
 export"). It belongs to no namespace, so it writes no key record; the RFC 8 offload plan's epic
 20 writes the wrap beside the export. Prior art: none found. Applies in epic 6.
 
-**D17. The destroyed-material notice is a provider call the engine polls**, returning the
-material IDs the provider has found destroyed since a cursor: a key record in state `destroyed`,
-or a master key the key service reports destroyed or compromised, which destroys every key it
-wraps. A poll, not a callback, so the engine's own loop decides when to clear offloaded bits
+**D17. The destroyed-material notice is a call the engine polls**, declared in `pkg/transform`
+and implemented by the provider, returning the material IDs the provider has found destroyed
+since a cursor: a key record in state `destroyed`, or a master key the key service reports
+destroyed, which destroys every key it wraps. A key the service reports compromised still
+decrypts, so it is not destroyed: RFC 5 Appendix B.4 gives `ErrMaterialDestroyed` only for
+material lost for good. A poll, not a callback, so the engine's own loop decides when to clear offloaded bits
 (RFC 8 §10.4) and nothing runs inside the provider's lock. The in-memory `Materials` implements it
 under `materialtest`. Prior art: a change feed read by cursor, as the metadata store's own
 generation counters (from memory). Applies in epic 8.
@@ -599,7 +614,8 @@ the import test passes on the empty tree and fails on a planted v1 import.
 - §3.1's types, interfaces, `Register`, `Chain` with `Pin` and `Attempt`, `NewChain`,
   `MaxDecodeLen`, `Config` and the errors, with doc comments citing the RFC.
 - `NamespaceID` aliased to `entity.NamespaceID`, and the chain's `Deps` (D2).
-- The salvage-key wrap (D16) and the destroyed-material notice (D17) signatures on the provider.
+- The salvage-key wrap (D16) and the destroyed-material notice (D17), declared in
+  `pkg/transform` next to `Materials`.
 - `pkg/transform`'s import test (§1.5 rule 7).
 
 ### Epic 2 — Test foundations ⛔
@@ -710,8 +726,10 @@ the gauge at 0); RFC 5 §8.1's T18 rows (altered AAD, a record copied to another
 §8.1 T22's stored wrap for the key file; the fingerprint part of RFC 5 §8.1's Appendix B.1
 golden-vector row; RFC 5 §8.2's T14 provider half; the provider half of RFC 5 §8.2 T7
 (`ErrUnknownMaterial` for a key never given, with a condition naming the ID); RFC 5 §8.2 T18's
-key creation, escrow and `storage`-key rows; RFC 13 §9's "§7 namespace keys", "§7 chunk-ID key"
-and "§7 key table" rows, which RFC 13's plan hands to this one; a crash torn beneath key creation
+key creation, escrow and `storage`-key rows; RFC 13 §9's "§7 namespace keys" and "§7 chunk-ID
+key" rows, and the "§7 key table" row's non-encrypting-namespace and escrow clauses, which RFC
+13's plan hands to this one (its data-key rotation clause is epic 8's, its catalog-backup restore,
+export-key rotation and master-key destroy clauses are RFC 26's, §6.1); a crash torn beneath key creation
 leaves no wrap in use without its committed record (§1.5 rule 8); a salvage key unwraps only
 under its master key and associated data.
 
@@ -760,9 +778,10 @@ Appendix B.4's destroyed material as the provider reports it (D17).
 **Done when:** RFC 5 §8.2's Appendix B.2 rows, the bucket's half only (a failed bucket put keeps
 the old key current; a late put of sequence 7 is repaired at 9 by the next writer; a key-file
 master-key rotation without escrow refused); RFC 5 §8.2's Appendix B.1 key-service rows, but their
-destroy-check clauses (an in-place rotation re-wraps; a retargeted alias the same; a rotation
-while nothing is written, at the next period), if the harness's server can rotate in place (O9);
-a crash torn beneath a rotation leaves the old key current; the notice reports a destroyed key
+destroy-check clauses and the periodic read (an in-place rotation re-wraps; a retargeted alias
+the same; a rotation while nothing is written, at the next open), if the harness's server can
+rotate in place (O9); RFC 13 §9's "§7 key table" row's data-key rotation clause; a crash torn
+beneath a rotation leaves the old key current; the notice reports a destroyed key
 record and a master key the key service reports destroyed, on the in-memory `Materials` and on
 the provider, under `materialtest`.
 
@@ -772,7 +791,8 @@ the provider, under `materialtest`.
   crash-seam test.
 - The `keys` object (D8): its store interface and `materialtest`'s suite and in-memory store,
   the writer under the key lock, MAC, read-back and repair; fuzzed decode.
-- The primary-version recheck that starts a master-key rotation.
+- The primary-version read at open that starts a master-key rotation; its periodic read is
+  GC's (§6.1).
 - The destroyed-material notice (D17).
 
 ### Epic 9 — Integration
@@ -848,7 +868,8 @@ option; the pull request lists them under "Decision needed".
 
 - **Q2. Where AES-256-GCM-SIV comes from.**
   - (a) **Recommended, written in place.** An internal `cipher.AEAD` built on `crypto/aes`, ported
-    with attribution from an Apache-2 implementation, with a constant-time POLYVAL, about 300 lines,
+    with attribution from an Apache-2 implementation, with a constant-time POLYVAL by masking
+    (D3; not the variable-time table of Go 1.26's generic GHASH), about 300 lines,
     gated by RFC 8452's vectors and the independent golden vectors (D3). Example:
     `siv.New(key []byte) (cipher.AEAD, error)`.
   - (b) A third-party module exposing `cipher.AEAD` (candidates from memory, not checked:
@@ -917,14 +938,15 @@ agrees.
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
-| `Materials.Remove`, its fence and its count of encodes in flight; RFC 5 §8.2's T13 rows; the census check before removal; erasure of every copy (§6 Q1, D10, RFC 5 §5.3 as amended) | no caller in v1.1: GC's retirement or an operator's destroy is the first | RFC 9 | RFC 9's plan starts, or RFC 23's destroy operation lands first |
-| The operator's destroy operation and its `dfsctl` command (D15) | `Remove` lands with it or before it | RFC 23 | RFC 9's plan starts or an operator needs to destroy a key |
+| `Materials.Remove`, its fence and its count of open pins; RFC 5 §8.2's T13 rows; the census check before removal; erasure of every copy (§6 Q1, D10, RFC 5 §5.3 as amended) | no caller in v1.1: GC's retirement or an operator's destroy is the first | RFC 9 | RFC 9's plan starts, or an operator's destroy is specified first |
+| The operator's destroy operation and its `dfsctl` command (D15) | RFC 23 does not specify it; `Remove` lands with it or before it | unowned | RFC 9's plan starts or an operator needs to destroy a key |
+| The periodic primary-version read of RFC 5 Appendix B.1 (as amended), and the "at the next period" clause of its key-service row | RFC 5 ties it to GC's recheck period (RFC 9 §7.5); in v1.1 the provider reads it at open only | RFC 9 | RFC 9's plan starts |
 | Retirement relocation, its walk and where the retiring set is recorded; RFC 5 §8.2's §5.2 row and §5.3's retirement half (D9) | GC is planned later (#5488) | RFC 9 (roadmap #3620) | RFC 9's plan starts |
 | A drained namespace's key removal under the check token (RFC 5 §5.3) | RFC 9 §7.6's drain runs it | RFC 9 (roadmap #3620) | RFC 9's plan starts |
 | The `keys` object's read-back on each `Recheck` pass (RFC 5 Appendix B.2 as amended; O10) | `Recheck` has no caller in v1.1 (RFC 4 §4.11: only GC runs it) | RFC 9 | RFC 9's plan starts |
 | Appendix B.1's export cryptography (frames, header, MACs, state and progress keys) and RFC 5 §8.1 T22's export vectors (§6 Q1, §1.5 rule 12) | no consumer before catalog backups exist | RFC 26 | RFC 26's plan starts |
-| The export key's next generation and its per-location retirement, re-seal and pending sets; the backup locations' `keys` objects; the master-key destroy check over locations; `ErrMaterialInUse`; RFC 5 §8.2's T19 and Appendix B.3 rows, its Appendix B.2 rows' location halves, the destroy-check clauses of its Appendix B.1 key-service rows; the escrow refusal at backup-policy creation (§6 Q1, RFC 5 Appendix B.3 as amended) | they write and read backup locations | RFC 26 | RFC 26's plan starts |
-| The recovery import of key records from `keys` objects, and RFC 5 §8.2 T18's "every chunk verifies from the bucket alone" (§6 Q1) | RFC 26 §2.3's import reads them | RFC 26 | RFC 26's plan starts |
+| The export key's next generation and its per-location retirement, re-seal and pending sets; the backup locations' `keys` objects; the master-key destroy check over locations; `ErrMaterialInUse`; RFC 5 §8.2's T19 and Appendix B.3 rows, its Appendix B.2 rows' location halves, the destroy-check clauses of its Appendix B.1 key-service rows; the escrow refusal at backup-policy creation; RFC 13 §9's "§7 key table" row's export-key rotation and master-key destroy clauses (§6 Q1, RFC 5 Appendix B.3 as amended) | they write and read backup locations | RFC 26 | RFC 26's plan starts |
+| The recovery import of key records from `keys` objects, RFC 5 §8.2 T18's "every chunk verifies from the bucket alone", and RFC 13 §9's "§7 key table" row's catalog-backup restore on a fresh host (§6 Q1) | RFC 26 §2.3's import reads them | RFC 26 | RFC 26's plan starts |
 | Re-home and move key handling and move pins (RFC 5 Appendix B.2's last paragraphs, RFC 27 §2.4, §2.7) | moves are not in this programme | RFC 27 | RFC 27's plan starts |
 | Removal with two nodes holding the key, and fencing a node that cannot be reached (RFC 5 §5.3, T13's two-node row) | single node first | unowned: RFC 11 has no plan | RFC 11's plan starts |
 | A cloud key service taking associated data as a string map, and RFC 5 §8.1 T22's string-map half (D14, §6 Q3) | the harness runs KMIP only | unowned | an operator asks for a cloud key service |
@@ -968,7 +990,8 @@ agrees.
 | RFC 16 §4.2, `NS‖ns‖drain` | §6.1 (RFC 9) |
 | RFC 6 §2.3 (block-record census) | the RFC 8 offload plan's epics 15 and 19; E10 reads it |
 | RFC 25 §2.1, §3.9, §7, §8 | E3, E6, E9 |
-| RFC 2 §4.1, §4.2, §6 (keyed IDs, gear table, chain ID in the name), with RFC 5 §8.2 T17 and its last Appendix B.2 row | RFC 2's plan (§3.2) |
+| RFC 2 §4.1, §4.2, §6 (keyed IDs, gear table, chain ID in the name), with RFC 5 §8.2 T17's disjoint-IDs half | RFC 2's plan, epic 4 (§3.2) |
+| RFC 5 §8.2 T17's other half and its last Appendix B.2 row (a plan refused under another namespace's key) | the RFC 8 offload plan, epic 15 (§3.2) |
 | RFC 3 §1.3, §2.2 (census entry, errors, memory bound) | RFC 3's and RFC 4's plans (§3.2) |
 | RFC 4 §3.2 to §3.4, §4.11, §4.13 | RFC 4's plan (S1c); `Recheck` §6.1 |
 | RFC 8 §2.4, §2.5, §2.6, §6.3, §6.6, §10.4 | the RFC 8 offload plan (S7) |
