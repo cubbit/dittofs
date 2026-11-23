@@ -143,8 +143,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 		return opened{}, err
 	}
 
-	vl := newVersionLimit(j)
-	vl.open = marks{journal: id, gen: gen}
+	vl := newVersionLimit(j, marks{journal: id, gen: gen})
 	o := opened{
 		journal: vl,
 		id:      expect,
@@ -867,9 +866,10 @@ type versionLimit struct {
 	changed chan struct{}
 }
 
-// newVersionLimit is the version limit of journal j, its raise lock free.
-func newVersionLimit(j Journal) *versionLimit {
-	return &versionLimit{j: j, lock: make(chan struct{}, 1), changed: make(chan struct{})}
+// newVersionLimit is the version limit of journal j for the open whose
+// identity and open generation are open, its raise lock free.
+func newVersionLimit(j Journal, open marks) *versionLimit {
+	return &versionLimit{j: j, open: open, lock: make(chan struct{}, 1), changed: make(chan struct{})}
 }
 
 // acquire takes the raise lock, or gives up with ctx's error when ctx ends

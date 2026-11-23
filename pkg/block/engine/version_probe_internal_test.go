@@ -60,5 +60,5 @@ func newVersionLimitProbe(tb testing.TB, shares int) (*Engine, *versionLimit) {
 	}
 
 	e := &Engine{d: Deps{Clock: sim.NewTestClock(time.Time{})}, block: 64}
-	return e, newVersionLimit(JournalOf(j))
+	return e, newVersionLimit(JournalOf(j), marks{})
 }

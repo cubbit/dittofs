@@ -45,7 +45,7 @@ func (e *Engine) SetJournalsForTest(js ...Journal) {
 	vls := make([]*versionLimit, 0, len(js))
 
 	for _, j := range js {
-		vl := newVersionLimit(j)
+		vl := newVersionLimit(j, marks{})
 		vl.last.Store(j.Stats().VersionLimit.Counter)
 		vls = append(vls, vl)
 	}
