@@ -1293,6 +1293,14 @@ func Continue(deps Deps, state State, beforeRetire func(*Core) error) (*Core, er
 // segments cover the worst case; at k = 1 that is one spare per stream. The
 // cost is a spare at the segment cap per stream: 16 streams at the default
 // 256 MiB cap hold 4 GiB, where the default 65,536 records fill one segment.
+// On the device that cost lands at the first open after the sizing grew:
+// the open's spares go from 18 (16 content, one headroom, one reserve,
+// 4.5 GiB) to 33 (8.25 GiB), and the refill makes the headroom class first.
+// A device that held the 18 but cannot hold the 33 meets ENOSPC on the
+// content spares, the pool's device-full state is set, and from then on a
+// reservation whose hold falls short is answered the hard ENOSPC of a full
+// device instead of the retryable spare limit, until room is made. Nothing
+// warns at open: the storage layer reads no free space to compare.
 // Overturned by a configuration that opens far more streams than it rolls at
 // once at the maximum, which would rather share headroom segments across
 // streams.
