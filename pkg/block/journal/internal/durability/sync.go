@@ -1081,8 +1081,11 @@ func (d *Durability) lossesLocked() []core.LossEvent {
 // oldest first, whose events the caller takes away. The window the copy
 // carried — through its newest, from its oldest — joins the reach, so the
 // claims a Lose took in the registry's pieces survive this instance exactly
-// as far as a reader was answered for the loss each claim's event published.
-// A read of an empty ring serves nothing, and the window does not move.
+// as far as a reader was answered for the loss each claim's event published
+// — bar the gap exception below: a read that arrives over events the ring
+// overwrote unread restarts the window, and the marker at that branch names
+// what that costs. A read of an empty ring serves nothing, and the window
+// does not move.
 //
 // decision: only this read advances the served window. Stats reports the
 // ring without moving it, for its callers are figures — the metrics export,

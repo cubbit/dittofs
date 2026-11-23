@@ -2,6 +2,7 @@ package durability_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -535,8 +536,9 @@ func TestServedEventsStayServedPastTheRingWrap(t *testing.T) {
 // the unsafe direction the join alone would hide: one read serves event 1,
 // then the ring wraps unread past events 2..5, and a second read arrives over
 // the gap and restarts the window. 2..5 must come back, reached by no read: a
-// window that joined across the gap would count them served, and a reopen
-// would hide losses nobody was told about. 1 does too: one interval cannot
+// window that joined across the gap, or one that answered for the wrong
+// ones, would count a loss the reader never saw served, and a reopen would
+// hide losses nobody was told about. 1 does too: one interval cannot
 // hold both reads, so a gap re-reports, never hides — the duplicate the
 // restart's decision errs toward (see Losses).
 func TestAGapRestartsTheServedWindow(t *testing.T) {
@@ -549,7 +551,7 @@ func TestAGapRestartsTheServedWindow(t *testing.T) {
 		seqs[i] = core.Seq(100 + i)
 		ev, err := e.d.Lose(ctx, loss(seqs[i]))
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("Lose of the piece with seq %d at %d: %v", seqs[i], i, err)
 		}
 		events[i] = ev
 		if i == 0 {
@@ -562,7 +564,24 @@ func TestAGapRestartsTheServedWindow(t *testing.T) {
 	for i, ev := range events {
 		reopen.Place(ev, seqs[i])
 	}
-	if got := reopen.Stats().Losses; len(got) != 5 {
-		t.Fatalf("the reopen published %d found-at-open events, want 5: events 2..5 no read carried, and event 1, which the gap restart re-reports: %+v", len(got), got)
+	// Exactly the five the ring overwrote or the gap dropped — the four no
+	// read carried and the one the restart re-reports — each by the only
+	// name that survives the re-placement: the Lose's write counter, which
+	// loss(seq) stamps and the reopen's ring renumbering leaves alone. The
+	// ring's own sequence numbers renumber every placed event, so five of
+	// anything would compare equal on them; the counters name the records,
+	// and none of the two hundred fifty-six the second read served beside
+	// them may stand in for the ones it should not hide.
+	want := []uint64{200, 201, 202, 203, 204} // the counters of seqs 100..104
+	got := reopen.Stats().Losses
+	var counters []uint64
+	for _, ev := range got {
+		if !ev.AtOpen {
+			t.Fatalf("the reopen published %+v, not marked found at open", ev)
+		}
+		counters = append(counters, ev.Version.Counter)
+	}
+	if !slices.Equal(counters, want) {
+		t.Fatalf("the re-placed events carry the write counters %v, want exactly %v: the four events no read carried and event 100's, which the gap restart re-reports — a counter the window did not want names a loss the second read served and the restart hid", counters, want)
 	}
 }
