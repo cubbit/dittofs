@@ -2,7 +2,9 @@ package prompt
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -32,7 +34,7 @@ func TestParseConfirm(t *testing.T) {
 // ends with no answer aborts rather than taking the default.
 func TestConfirm(t *testing.T) {
 	var out bytes.Buffer
-	got, err := Confirm(strings.NewReader("y"), &out, "Remove it?", false)
+	got, err := Confirm(t.Context(), strings.NewReader("y"), &out, "Remove it?", false)
 	if err != nil || !got {
 		t.Errorf("Confirm(\"y\" then EOF): got %v, %v, want true, nil", got, err)
 	}
@@ -40,7 +42,25 @@ func TestConfirm(t *testing.T) {
 		t.Errorf("prompt: got %q, want %q", out.String(), "Remove it? [y/N] ")
 	}
 
-	if _, err := Confirm(strings.NewReader(""), &out, "Remove it?", true); !errors.Is(err, ErrAborted) {
+	if _, err := Confirm(t.Context(), strings.NewReader(""), &out, "Remove it?", true); !errors.Is(err, ErrAborted) {
 		t.Errorf("Confirm(empty reader): got %v, want ErrAborted", err)
+	}
+}
+
+// A confirmation whose context ends returns the context's cause, though
+// nobody answered and the reader never ends.
+func TestConfirmEndsWithItsContext(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	ctx, cancel := context.WithCancelCause(t.Context())
+	interrupted := errors.New("interrupted")
+	done := make(chan error, 1)
+	go func() {
+		_, err := Confirm(ctx, pr, io.Discard, "Remove it?", false)
+		done <- err
+	}()
+	cancel(interrupted)
+	if err := <-done; !errors.Is(err, interrupted) {
+		t.Errorf("Confirm after its context ended: %v, want the context's cause", err)
 	}
 }
