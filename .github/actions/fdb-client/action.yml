@@ -1,8 +1,8 @@
 name: FoundationDB client
 description: >
-  Install FoundationDB's client library and headers. A Linux build with cgo
-  compiles the fdbkv backend, which links libfdb_c, so every Linux job that
-  compiles the whole tree with cgo (vet, lint, tests, CodeQL) needs them.
+  Install FoundationDB's client library and headers. The fdbkv backend links
+  libfdb_c and builds only with the foundationdb tag, so every job that
+  compiles with that tag (vet, lint, CodeQL, the FoundationDB tests) needs them.
 
 runs:
   using: composite

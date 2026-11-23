@@ -72,7 +72,7 @@ jobs:
         uses: ./.github/actions/go-cache
         with:
           go-version-file: k8s/dittofs-operator/go.mod
-      # Autobuild compiles fdbkv, which links libfdb_c on Linux.
+      # Autobuild compiles fdbkv, under its foundationdb tag, which links libfdb_c.
       - name: Install the FoundationDB client
         if: matrix.language == 'go'
         uses: ./.github/actions/fdb-client
@@ -88,6 +88,9 @@ jobs:
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4
+        # The FoundationDB backend builds only with its tag.
+        env:
+          GOFLAGS: -tags=foundationdb
 
       # The category names each language's results in the code-scanning API.
       # These match the ones the previous configuration used, which is what

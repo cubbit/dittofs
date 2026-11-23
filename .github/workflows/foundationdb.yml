@@ -67,7 +67,7 @@ jobs:
         if: github.event_name != 'pull_request' || steps.filter.outputs.kv == 'true'
         run: >
           DITTOFS_FDB_CLUSTER_FILE="$HOME/.cache/dittofs-fdb/data/fdb.cluster"
-          go test -race -count=1 -timeout=20m
+          go test -tags=foundationdb -race -count=1 -timeout=20m
           -run '^(TestConformance|TestNowAcrossNodes|TestUnknownCommitOutcomeNotReapplied|TestSweepClearsOnlyOldMarks|TestOpenIsolatesAndClears|TestStoreConformanceFDB|TestStoreConformanceFDBFrozenClock|FuzzNamespaceFDB|TestScanSkipsTheBackendsOwnRows)$'
           ./pkg/metadata/kv/fdbkv/... ./pkg/metadata/kvstore/
 
