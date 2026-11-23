@@ -47,17 +47,26 @@ func TestMarksFollowEachSuccessfulSync(t *testing.T) {
 }
 
 // TestMarksIgnoreAFailedSync covers a window that failed: the Sync answers a
-// SyncError with no marks, and the figure stays what the open seeded.
+// SyncError with no marks, and the figure stays where it was even though the
+// call names a second file whose record an earlier sync already covered, a
+// file marksOf still has a mark for.
 func TestMarksIgnoreAFailedSync(t *testing.T) {
 	prof.Watch(t, prof.Options{})
-	fr := newFailRig(t, nil)
-	seed := core.SyncMark{Stream: 0, Segment: 1, Through: 100, Offset: 90, Sequence: 3}
+	fr := newFailRig(t, func(fr *failRig) { fr.setLatest() })
+	f, g := file(1), file(2)
+	gloc, _ := fr.publish(t, g, 0, "gggg")
+	covered, err := fr.d.Sync(context.Background(), g)
+	if err != nil || len(covered) != 1 {
+		t.Fatalf("the first Sync of the file to be covered = %+v, %v, want its one mark", covered, err)
+	}
+	// The figure goes back behind the covered record's mark, so a mark taken
+	// from the failed call would be a rise.
+	seed := core.SyncMark{Stream: 0, Segment: uint64(gloc.Segment), Through: 1, Offset: 1, Sequence: 0}
 	fr.d.SeedMarks([]core.SyncMark{seed})
-	f := file(1)
-	loc, _ := fr.publish(t, f, 0, "aaaa")
 
-	fr.failSyncOf(t, loc.Segment, errors.New("sync boom"))
-	wantSyncError(t, mustReturn(t, "Sync", fr.syncAsync(context.Background(), f)), loc.Segment, f)
+	floc, _ := fr.publish(t, f, 0, "ffff")
+	fr.failSyncOf(t, floc.Segment, errors.New("sync boom"))
+	wantSyncError(t, mustReturn(t, "Sync", fr.syncAsync(context.Background(), f, g)), floc.Segment, f)
 	wantMarks(t, "after the failed sync", fr.d, seed)
 }
 
