@@ -128,7 +128,7 @@ already done, and what remains is smaller and different:
   and merges before the first tag cut from a tree holding `fdbkv`, since that tag's release job
   fails today (plan §1).
 - If D1 is answered "not in release 1", E3 and E4 move to the cluster stage, and stage 4 is E1 and
-  E2 alone, 6.75 man-days, or 5.25 if D8 is also answered no.
+  E2 alone, 6.75 man-days.
 - **D7, settled in review: an installation owns its whole FoundationDB cluster.** The store opens
   `fdbkv` with no key prefix, so `Init`'s scan (`store.go:108-115`) and T3.3's probe read the whole
   cluster, and any key another user wrote there is foreign. The bootstrap gains no prefix key.
@@ -256,9 +256,8 @@ already done, and what remains is smaller and different:
    them. Deleting them also drops `github.com/pierrec/lz4/v4`, which only
    `middleware/compression` imports. The conflict: RFC 8 plan rule 7 ends "v1 is not touched: it is
    deleted at the cutover" (`.planning/rfc-8-journal-only-engine-plan.md:357`), while the 3 Nov
-   decision is to delete v1 "as soon as nothing live depends on it". **Recommended: yes, as T2.4**
-   (1.5 md). If the answer is no, T2.4 moves to the cutover's ledger, and the plan is 13
-   subtasks, 17.25 man-days.
+   decision is to delete v1 "as soon as nothing live depends on it". **Answered yes** (Marco,
+   2026-11-23): the block tier goes in stage 4, as T2.4 (1.5 md).
 
 ## 5. The epics in detail
 
@@ -359,8 +358,8 @@ the contract that replaces `storetest`.
     which no longer exist.
   - `docker/config.yaml` is rewritten in v2 keys, so `dfs config validate --config
     docker/config.yaml` passes; it now fails on `controlplane.host` and `database.sqlite.path`.
-    The compose file's v1 bootstrap (`docker/bootstrap.sh`) stays the v2 image story's.
-- **T2.4 — delete the v1 block tier (1.5 md, if D8 says yes).**
+    The compose file's v1 bootstrap (`docker/bootstrap.sh`) stays: see the ledger.
+- **T2.4 — delete the v1 block tier (1.5 md).**
   - Delete D8's packages, `pkg/netutil` and `pkg/schedule`, and run `go mod tidy`, which drops
     `pierrec/lz4/v4`.
   - The `unit` suite's `nonrace` option (`test/suites.yaml:90-92`) runs two tests in `./pkg/block/`
@@ -561,6 +560,8 @@ this epic implements: one image and two Linux tarballs.
 | A `latest-foundationdb` image tag beside `<tag>-foundationdb` (D3) | D3 names one tag per release; a moving tag is a second promise to keep | unowned | a user asks to track the newest FoundationDB image |
 | The start check over a FoundationDB cluster without opening it through `fdbkv.Open`, which would retire the clock ceiling it writes into a foreign cluster before refusing it (`fdbkv.go:101-108`, D4) | `Open` raises the ceiling before it returns, so no `Now` precedes a durable ceiling; a read-only open would need its own path through `fdbkv` | unowned | an operator reports the stray key, or the `metadata.foundationdb.prefix` row lands and a cluster can hold other installations |
 | The start check reading a Badger store without opening it, which would retire `badgerkv`'s ceiling write over a v1 store (`badgerkv.go:71-78`) | Badger cannot open read-only after an unclean close | unowned | Badger opens read-only after an unclean close |
+| The compose file's v1 bootstrap, `docker/bootstrap.sh` and its `docker-compose.yml` service | it drives v1's API; the v2 image needs `dfs init` as an explicit step first | RFC 23's plan, its D13 | the v2 image or compose work |
+| Dismantling `pkg/block` completely: `pkg/block/engine` (with `enginetest` and `enginewire`) to `pkg/engine`, and `pkg/block/journal` (with its `internal/` and `journaltest/` trees) to `pkg/journal`, so no `pkg/block` directory remains; the same PR updates every file naming the path (about 177 outside `pkg/block`: Go imports, CLAUDE.md, `test/suites.yaml`, the RFCs and the plans) | once T2.4 lands the level adds nothing, but the move touches every engine and journal import, so it is its own mechanical PR | #3119, a separate PR | T2.4 merged |
 
 ## 7. RFC coverage
 
