@@ -1,87 +1,43 @@
 # Choosing Stores
 
-A DittoFS share is assembled from a **metadata store** (where file/directory metadata
-lives) and a **block store** (where file content lives). There is also one **control-plane
-database** per server (separate from any share). This guide helps you pick each one. For
-the exact config keys and CLI flags, see [Configuration](configuration.md).
+A DittoFS node keeps file and directory metadata, and every control-plane record, in one
+**metadata store**, and file content in a **journal** on its own devices. This guide says
+what there is to pick. For the exact config keys and CLI flags, see
+[Configuration](configuration.md).
 
-> **Three different things — don't confuse them:**
+> **Two different things — don't confuse them:**
 > | Layer | What it holds | Choices | Configured by |
 > |-------|---------------|---------|---------------|
-> | Control-plane database | Users, shares, permissions, policies | `sqlite`, `postgres` | `database.*` in config |
-> | Metadata store (per share) | Inodes, names, attrs, ACLs, dedup index | `badger` (on disk or `in_memory`) | not created from the CLI |
-> | Block store (per share) | File content (chunks) | `s3`, `memory` | no CLI command today; returns as a resource of the v2 management API |
-> | Journal (per share) | Writes not yet offloaded to the block store | none — always on disk | `journals` devices in config |
+> | Metadata store (per node) | Inodes, names, attributes, ACLs; users, groups, shares, permissions | `badger` (on disk); `foundationdb` is configured but not yet selectable | `metadata.*` in config |
+> | Journal (per node) | File content | none — always on disk | `journals` devices in config |
 
-## Metadata store (per share)
+## Metadata store (per node)
 
-This is the hot path for every `lookup`, `getattr`, `readdir`, and `create`. `badger` is
-the only metadata store type. It is the backend for single-node deployments, and in
-in-memory mode for tests. A distributed transactional key-value store — TiKV is the
-preferred one — is the planned backend for multi-node deployments; it is not implemented
-yet.
+This is the hot path for every `lookup`, `getattr`, `readdir`, and `create`, and it also
+holds the control plane's records: there is no separate control-plane database.
+`metadata.backend` picks the store:
 
-| Mode | Durable? | Concurrency | When to choose |
-|------|----------|-------------|----------------|
-| `badger` with `path` | ✅ embedded LSM on disk | single process | **Default.** Single-node servers |
-| `badger` with `in_memory: true` | ❌ lost on restart | single process | Tests and throwaway servers |
+| Backend | Durable? | Nodes | Status |
+|---------|----------|-------|--------|
+| `badger` | ✅ embedded LSM on disk, at `metadata.badger.path` | one | **Default**, and the only one this build opens |
+| `foundationdb` | ✅ a FoundationDB cluster, named by `metadata.foundationdb.cluster_file` | several | Configured, but `dfs init` and `dfs start` refuse it today |
 
 **Best practices**
 
-- **Badger** auto-sizes its block/index caches from available RAM (cgroup-aware in
-  containers). For large metadata sets, watch the cache hit ratio and set
-  `block_cache_mb` / `index_cache_mb` explicitly if it drops. Each
-  isolated share can run its own Badger instance.
-- **In-memory** mode (`--in-memory`, no path) keeps nothing across
-  restarts. Never use it for data you want back.
+- Put `metadata.badger.path` on fast local storage, in a directory on the volume rather
+  than at its mount point.
+- There is no in-memory mode and no cache-size knob: v1's `in_memory` stores and
+  `block_cache_mb` / `index_cache_mb` are gone.
+- A v1 metadata store is not opened; see [Upgrading from v1](upgrading-from-v1.md).
 
-## Block store (per share)
+## File content
 
-Content is split into content-addressed chunks (FastCDC chunking + BLAKE3 hashing,
-**dedup is always on**, no toggle). Every share has exactly **one block store** — the
-durable home for its content — and an on-disk **journal** in front of it. The journal is
-not a store you choose: it is provisioned automatically from the node's `journals` devices,
-absorbs writes, and hands them to an async syncer that offloads them to the block store.
-
-| Type | Latency | Capacity | Durability | When to choose |
-|------|---------|----------|------------|----------------|
-| `s3` | network | effectively unlimited | ✅ off-box, replicated by provider | **Default.** Durable, scalable backing store |
-| `memory` | lowest | RAM-bound | ❌ ephemeral | Tests only |
-
-**Best practices**
-
-- Run **`s3`** for real workloads: writes hit the journal first and sync to S3 in the
-  background; reads are served from the journal and fetched from S3 on miss.
-- Size the journal to your hot set with the per-share `--journal-size`. Leaving it unset
-  means no configured ceiling.
-- DittoFS speaks the **S3 API**, so [Cubbit DS3](https://www.cubbit.io/) (a DittoFS sponsor),
-  MinIO, Ceph RGW, GCS (set `force_path_style: false`), Backblaze B2, Wasabi, DigitalOcean
-  Spaces, Alibaba OSS, Oracle OCI, Storj, etc. all work —
-  see the provider tables in [Configuration § Block Store](configuration.md#6-block-store-configuration).
-- Dedup happens automatically across files in a share; identical content is stored once.
-- Pick a **commit acknowledgement** per share (`journal` or `block-store`; see the
-  [durability guide](durability.md)) — it sets how far a write must land before an NFS
-  COMMIT or SMB Flush is acknowledged.
-- To migrate a legacy block layout to the content-addressed layout, see
-  [Block store migration](block-store-migration.md).
-- To move a share off a removed metadata store type (`postgres`, `sqlite`,
-  `memory`), see [Metadata store migration](metadata-store-migration.md).
-
-## Control-plane database
-
-One per server, holds users/shares/permissions/policies — **not** file data.
-
-| Type | When to choose |
-|------|----------------|
-| `sqlite` | **Default.** Single binary, nothing extra to run. |
-| `postgres` | Multiple server replicas or you already operate Postgres. |
-
-## A typical setup
-
-```bash
-# Durable single-node share: badger metadata, S3 backing
-dfsctl share create --name /export --metadata default --block-store s3-remote
-```
+The engine keeps every share's content in the journal, on the node's `journals` devices,
+and no remote block store is wired to it yet: v1's `s3` and `memory` block stores, its
+content-addressed chunking and deduplication, and its syncer are deleted. There is nothing
+to choose: give the node fast local devices ([Sizing](sizing.md)). The remote tier returns
+with [RFC 4](../internals/rfcs/rfc-4-remote-tier.md). A v1 block layout is not read; see
+[Block store migration](block-store-migration.md).
 
 Building a custom backend instead of choosing a built-in one? See
 [Implementing stores](../internals/implementing-stores.md).
