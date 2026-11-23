@@ -39,8 +39,10 @@ const appliedWait = time.Second
 // its tag, ok false when there is none; whether its commit raises the principals or settings
 // generation; whether the row is a POST action that changes the spec, and so
 // carries If-Match as a PUT does; secret, which names the fields of the
-// body whose values its audit record holds only as "set", nil for none; and
-// auditAs, the name its audit record's change gives the body's spec, empty
+// body whose values its audit record holds only as "set", nil for none;
+// keyedSecret, which names them for the one key the request's path held,
+// asking the server's Deps what that key is; and auditAs, the name its
+// audit record's change gives the body's spec, empty
 // keeping spec, for a record written as part of another resource's.
 // The operation a write starts, if any, is its row's.
 type writing[B any] struct {
@@ -53,11 +55,38 @@ type writing[B any] struct {
 	raises      bool
 	changesSpec bool
 	secret      func(path string) bool
+	keyedSecret func(d Deps, sub, path string) bool
 	auditAs     string
 	// self, when set, is the ID of the one record a path naming no ID
 	// reaches, such as the installation's, which its audit records and its
 	// handler's request name.
 	self func(context.Context, Deps) ([16]byte, error)
+}
+
+// sealingStep is a pre-write step's result that can say it sealed a secret:
+// any resource whose step seals one in its own result is audited as a write
+// that set it, with no row of write's own naming that resource.
+type sealingStep interface{ sealed() bool }
+
+// secretMarker is what change names a field a secret with, for the {sub}
+// one request's path held: the keyed form, which asks what that key
+// declares, else the whole-body one, nil when the body's fields need no
+// such name.
+//
+// decision: the keyed form marks the audit alone and its row clears no
+// body, since a resource keyed by {sub} takes a secret at one key and
+// plain values at every other one, so a body-wide secret row there would
+// wipe and mark the values its answers state; the key's own step clears the
+// value it sealed. Overturned if a keyed row ever holds a body whose plain
+// fields no answer ever carries.
+func (w writing[B]) secretMarker(d Deps, sub string) func(string) bool {
+	if w.keyedSecret != nil {
+		return func(path string) bool {
+			return w.keyedSecret(d, sub, path)
+		}
+	}
+
+	return w.secret
 }
 
 // write adapts a write. Its checks run in this order: a query parameter its
@@ -89,6 +118,13 @@ type writing[B any] struct {
 // spare a step that a stale write wastes. Overturned if a step is costly
 // enough, or has an effect outside the write, that running it for a stale
 // write matters.
+//
+// decision: a write whose step seals a secret does so before the role the
+// settings table judges, since the one audited Write is what judges the
+// role; the price is a wrap of the provider's key on every refused write
+// that reaches the sealer. Overturned when a wrap's cost shows in a
+// profile, such as with a KMS backed provider: read the caller's role
+// before the step then.
 //
 // The answer, 200 with what h returns and the record's tag as its ETag, or
 // 201 with a Location naming the record for a POST on a collection, or, for
@@ -277,7 +313,15 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			if err != nil {
 				return err
 			}
-			if rec.Change, err = change(present(doc, ok), present(after, exists), w.auditAs, w.secret); err != nil {
+			// A write whose step sealed a secret names its field as set even
+			// when its row's bytes did not move, since the version the step
+			// sealed is the change itself, and no row bytes are ever its.
+			step, _ := any(in).(sealingStep)
+			sealed := step != nil && step.sealed()
+			beforeDoc, afterDoc := present(doc, ok), present(after, exists)
+
+			if rec.Change, err = change(beforeDoc, afterDoc, w.auditAs,
+				w.secretMarker(s.d, sub), sealed); err != nil {
 				return err
 			}
 			rec.Target.ID = rt.ref(wrote, sub)
@@ -518,8 +562,11 @@ func present(doc any, ok bool) any {
 // does named by its dotted path with its old and new values, or with "set"
 // when secret names the path, nil when nothing does; a nil side, a record
 // that does not exist, has every field null. A spec is named as, when as is
-// not empty.
-func change(old, new any, as string, secret func(path string) bool) ([]byte, error) {
+// not empty. A write that sealed a secret, set, names a secret path as set
+// whether or not it moved, so the version its step sealed is named: the
+// secret's reference alone is what a row holds, and a new version of it
+// leaves the row's bytes as they were.
+func change(old, new any, as string, secret func(path string) bool, set bool) ([]byte, error) {
 	o, err := asJSON(old)
 	if err != nil {
 		return nil, err
@@ -535,7 +582,7 @@ func change(old, new any, as string, secret func(path string) bool) ([]byte, err
 		}
 	}
 	out := map[string]any{}
-	diff("", o, n, secret, out)
+	diff("", o, n, secret, set, out)
 	if len(out) == 0 {
 		return nil, nil
 	}
@@ -550,9 +597,9 @@ func asJSON(v any) (any, error) {
 	return decodeAny(b)
 }
 
-func diff(path string, o, n any, secret func(string) bool, out map[string]any) {
+func diff(path string, o, n any, secret func(string) bool, set bool, out map[string]any) {
 	if path != "" && secret != nil && secret(path) {
-		if !reflect.DeepEqual(o, n) {
+		if set || !reflect.DeepEqual(o, n) {
 			out[path] = "set"
 		}
 		return
@@ -578,11 +625,11 @@ func diff(path string, o, n any, secret func(string) bool, out map[string]any) {
 		return path + "." + k
 	}
 	for k, v := range om {
-		diff(at(k), v, nm[k], secret, out)
+		diff(at(k), v, nm[k], secret, set, out)
 	}
 	for k, v := range nm {
 		if _, ok := om[k]; !ok {
-			diff(at(k), nil, v, secret, out)
+			diff(at(k), nil, v, secret, set, out)
 		}
 	}
 }
