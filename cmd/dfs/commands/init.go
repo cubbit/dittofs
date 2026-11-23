@@ -11,6 +11,7 @@ import (
 	"github.com/cubbit/dittofs/internal/install"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 func newInitCmd() *cobra.Command {
@@ -87,7 +88,7 @@ func runInit(cmd *cobra.Command, _ []string) (err error) {
 		return fmt.Errorf("opening the metadata store: %w", err)
 	}
 	defer func() { err = errors.Join(err, kv.Close()) }()
-	return install.Run(ctx, install.Deps{
+	err = install.Run(ctx, install.Deps{
 		Bootstrap:    cfg,
 		KV:           kv,
 		StorageKey:   key,
@@ -97,4 +98,12 @@ func runInit(cmd *cobra.Command, _ []string) (err error) {
 		Out:          cmd.OutOrStdout(),
 		Logger:       slog.Default(),
 	})
+	// decision: a store whose first key has one of v1's prefixes is refused
+	// as v1's over Badger only, as the node refuses it. This format's records
+	// with the format record lost, and any store over another backend, keep
+	// ErrForeignStore's own wording: neither is v1's to clear.
+	if b := cfg.Metadata.Backend; errors.Is(err, kvstore.ErrV1Store) && (b == "" || b == "badger") {
+		return refuseV1Found(cfg.Metadata.Badger.Path, "a metadata store")
+	}
+	return err
 }

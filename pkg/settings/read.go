@@ -163,6 +163,12 @@ func Read(
 
 		if err := e.err(); err != nil {
 			refused[sec.prefix] = err
+
+			// One counted refusal per refused section per pass, its reason
+			// the first the reasons table finds in the section's joined
+			// refusals, so a section that stays refused counts again on
+			// every read.
+			sec.raise(err)
 		}
 	}
 

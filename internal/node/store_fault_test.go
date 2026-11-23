@@ -14,6 +14,7 @@ import (
 )
 
 func TestStoreFaultReportsAnIncident(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	clock := sim.NewTestClock(time.Unix(0, 0))
 	n := &Node{cfg: Config{Clock: clock, Logger: slog.New(slog.NewJSONHandler(&output, nil))}}

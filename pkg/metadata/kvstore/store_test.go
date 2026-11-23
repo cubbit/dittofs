@@ -60,8 +60,8 @@ func TestOpenRefusesAForeignStore(t *testing.T) {
 			set(t, db, []byte(key), []byte("v1 record"))
 			before := keysHash(t, db)
 			_, err := Open(ctx, db)
-			if !errors.Is(err, ErrForeignStore) || errors.Is(err, ErrNotInitialised) {
-				t.Fatalf("Open over a store holding the v1 key %q: %v, want ErrForeignStore", key, err)
+			if !errors.Is(err, ErrV1Store) || !errors.Is(err, ErrForeignStore) || errors.Is(err, ErrNotInitialised) {
+				t.Fatalf("Open over a store holding the v1 key %q: %v, want ErrV1Store and ErrForeignStore", key, err)
 			}
 			if !strings.Contains(err.Error(), key) {
 				t.Errorf("Open's refusal over %q: %v, want it to name the key", key, err)
@@ -221,8 +221,8 @@ func TestInitRefusesAStoreHoldingThisFormatsRecords(t *testing.T) {
 	}
 	before := keysHash(t, db)
 	err := Init(ctx, db, uuid.New())
-	if !errors.Is(err, ErrForeignStore) {
-		t.Fatalf("Init over a store holding a File row and no format record: %v, want ErrForeignStore", err)
+	if !errors.Is(err, ErrForeignStore) || errors.Is(err, ErrV1Store) {
+		t.Fatalf("Init over a store holding a File row and no format record: %v, want ErrForeignStore, never ErrV1Store", err)
 	}
 	if after := keysHash(t, db); after != before {
 		t.Errorf("Init refused over a File row committed records after it: hash %s after %s before, want the refusal to commit nothing", after, before)
@@ -244,12 +244,28 @@ func TestInitRefusesAV1Store(t *testing.T) {
 			}
 			before := keysHash(t, db)
 			err := Init(ctx, db, uuid.New())
-			if !errors.Is(err, ErrForeignStore) {
-				t.Fatalf("Init over a store holding the v1 key %q: %v, want ErrForeignStore", key, err)
+			if !errors.Is(err, ErrV1Store) || !errors.Is(err, ErrForeignStore) {
+				t.Fatalf("Init over a store holding the v1 key %q: %v, want ErrV1Store and ErrForeignStore", key, err)
 			}
 			if after := keysHash(t, db); after != before {
 				t.Errorf("Init refused over %q committed records after it: hash %s after %s before, want the refusal to commit nothing", key, after, before)
 			}
 		})
+	}
+}
+
+// Open over a store Init created that has since lost its format record
+// refuses it as foreign, never as v1's: its keys are this format's records.
+func TestOpenRefusesAStoreThatLostItsFormatRecord(t *testing.T) {
+	ctx := context.Background()
+	db := openBadger(t, t.TempDir())
+	if err := Init(ctx, db, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(ctx, func(tx kv.Txn) error { return tx.Delete(keys.Format) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(ctx, db); !errors.Is(err, ErrForeignStore) || errors.Is(err, ErrV1Store) {
+		t.Fatalf("Open over a store that lost its format record: %v, want ErrForeignStore, never ErrV1Store", err)
 	}
 }

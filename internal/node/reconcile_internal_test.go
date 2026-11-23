@@ -14,6 +14,7 @@ import (
 // read or a refusal to retry, and on neither when nothing moved, so a
 // refusal not to retry waits for its counter to move.
 func TestDue(t *testing.T) {
+	t.Parallel()
 	seen := kvstore.Counters{Settings: 5, ShareList: 5, Principals: 5}
 	for _, tc := range []struct {
 		name          string
@@ -39,6 +40,7 @@ func TestDue(t *testing.T) {
 // state change bound; run again over the running set its binds leave, it
 // binds nothing.
 func TestPlanShares(t *testing.T) {
+	t.Parallel()
 	share := func(name string, state entity.ShareState, pos uint64) entity.Share {
 		return entity.Share{ID: entity.NewShareID(), Name: name, State: state, Position: pos}
 	}
@@ -86,6 +88,7 @@ func TestPlanShares(t *testing.T) {
 // The backoff starts at firstRetry, doubles to lastRetry and stays there,
 // and ends once a pass needs no retry.
 func TestBackoff(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		last  time.Duration
 		again bool
