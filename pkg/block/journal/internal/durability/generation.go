@@ -34,21 +34,19 @@ import (
 // owns.
 //
 // The failed list and the pieces a Lose or a Place has taken live here with
-// the generation. A piece's claim is its taker's: a Place's never dies, so a
-// later open does not re-report a loss record one open already read off the
-// disk, and a Lose's retires with the instance that took it, when the
-// instance stops before any reader reached the event the loss published —
-// its ring died unread up to that event, so nothing answered for the loss
-// it published — letting a reopen take the piece over and place the record
-// as found at open again (RFC 1 section 3.8: at open, every loss record
-// still on disk enters the ring, marked as found at open — a reopen's open
-// included). A Lose whose loss's event a reader took away holds for the
-// life of the directory, whatever became of the instance, and only as far
-// as the reach: a later loss of the same instance, published past the
-// reader and never taken away, retires its own claim. The ring of
-// published events does not live here: it is the Durability's own, so a
-// reopen starts an empty one and no live drain of one instance re-reads
-// another's history.
+// the generation. A piece's claim is its taker's, and every claim retires on
+// the same terms — when the instance that took it stopped before any reader
+// reached the event the take published: its ring died unread up to that
+// event, so nothing answered for the loss it published, letting a reopen
+// take the piece over and place the record as found at open again (RFC 1
+// section 3.8: at open, every loss record still on disk enters the ring,
+// marked as found at open — a reopen's open included). A claim whose event
+// a reader took away holds for the life of the directory, whatever became
+// of the instance, and only as far as the reach: a later loss of the same
+// instance, published past the reader and never taken away, retires its
+// own claim. The ring of published events does not live here: it is the
+// Durability's own, so a reopen starts an empty one and no live drain of
+// one instance re-reads another's history.
 var registry = struct {
 	// decision: mu is a leaf mutex over dirs, held for one map lookup or
 	// insert and never across I/O; it is outside the six lock domains.
@@ -76,12 +74,12 @@ type dirState struct {
 	failed []failedWord
 
 	// pieces holds every (dropped seq, extent) a Lose or a Place on the
-	// directory has taken, each with the claim that took it — a Place's
-	// claim (the disk's own record backs it) never dies, while a Lose's is
-	// the taking Durability's, and retires with it when no reader reached
-	// the event its loss published — so one piece of a dropped record is
-	// reported once, while another piece of the same record, which a
-	// reconcile can drop alone, is reported on its own.
+	// directory has taken, each with the claim that took it — the taking
+	// Durability's, placed or lost alike — which retires with it when no
+	// reader reached the event the take published, so one piece of a
+	// dropped record is reported once while the report was genuinely
+	// delivered, while another piece of the same record, which a reconcile
+	// can drop alone, is reported on its own.
 	//
 	// ponytail: it grows by one entry per piece lost for the life of the
 	// process and is never pruned, so it follows the number of loss records
@@ -135,16 +133,19 @@ type dirKey struct {
 	id   core.JournalID
 }
 
-// claim is one taken piece's holder: the Durability whose Lose took it —
-// its claim retires when the instance stops and no reader reached the event
-// its loss published into its ring, for then nothing answered for the loss
-// it published — or a Place, whose claim the record on the disk already
-// names, so it never dies. A placed claim holds no instance: every later
-// open of the journal reads the same record the disk keeps.
+// claim is one taken piece's holder: the Durability whose Lose or Place
+// took it, whose claim retires when the instance stops and no reader
+// reached the event the take published into its ring, for then nothing
+// answered for the loss it published. The record on the disk keeps backing
+// a placed claim's piece whatever the claim does, and only the REPORTING of
+// it is at stake: a placed claim that retires lets a later open publish the
+// record found at open again, which is the reader that reopen's ring is
+// for.
 type claim struct {
 	d *Durability
-	// placed marks a Place's claim, which names no instance: the record on
-	// disk backs it forever.
+	// placed marks a Place's claim: the record the disk names is on it
+	// already, so a reopen of it owes no append, and only its publication
+	// is what the claim answers for.
 	placed bool
 	// unplaced marks a kept claim whose record never landed: the append
 	// that would own one failed while the instance was already stopping,
@@ -161,24 +162,27 @@ type claim struct {
 	ev uint64
 }
 
-// heldLocked answers whether the claim on k still bars d from taking it: a
-// Place's claim never dies, the caller's own earlier take holds as this
-// instance's report, a live instance's Lose holds while the ring it
-// published to can still be read, and a stopped instance's Lose holds as
-// far as a reader reached the event its loss published — the events a read
-// took away were answered, so a re-report could only duplicate what that
-// reader received, while the events past the reach answered nothing. s.mu
-// is held by the caller.
+// heldLocked answers whether the claim on k still bars d from taking it:
+// the caller's own earlier take holds as this instance's report, a live
+// instance's claim holds while the ring it published to can still be read,
+// and a stopped instance's claim holds as far as a reader reached the
+// event the take published — the events a read took away were answered,
+// so a re-report could only duplicate what that reader received, while
+// the events past the reach answered nothing. s.mu is held by the caller.
 //
-// decision: only a stopped instance's unread Lose claims retire — no
-// reader reached the event the loss published, so no one was answered for
-// it — and each claim retires on its own event alone, for the reach says
-// per loss which reports a reader took away. That is what serves an
-// in-process reopen: RFC 1 section 3.8 places every loss record still on
-// disk in the ring at every open, marked found at open, and the section
+// decision: only a stopped instance's unread claims retire — no reader
+// reached the event the take published, so no one was answered for it —
+// placed or lost alike, and each claim retires on its own event alone, for
+// the reach says per loss which reports a reader took away. A placement a
+// reader reached is the one claim that never dies, while an unread
+// placement retires with its instance so a later open reports the record
+// found at open to the reader that reopen's ring is for; a loss nobody
+// read must not leave the ring by the third reopen. That is what serves
+// an in-process reopen: RFC 1 section 3.8 places every loss record still
+// on disk in the ring at every open, marked found at open, and the section
 // 9.4 row has a first reopen place the record the dead instance took
 // while only a later reopen does not report it as new. A live instance's
-// Lose still bars a second journal instance on one directory, which must
+// claim still bars a second journal instance on one directory, which must
 // not re-publish what a ring still readable already answered. The owner
 // rules the other way → revert to take-only suppression and amend RFC 1
 // section 3.8 to a restart-only reading.
@@ -198,17 +202,16 @@ func (s *dirState) heldLocked(k piece, d *Durability) bool {
 	}
 	// The same-instance arm holds placed or not, live or stopped: the
 	// earlier take is this instance's own report.
-	return c.placed || c.d == d || !c.d.claimsDead() || c.d.claimServed(c.ev)
+	return c.d == d || !c.d.claimsDead() || c.d.claimServed(c.ev)
 }
 
 // setClaimEvent records that the claim d holds on k published ev into d's
 // ring, so the claim, past d's stop, holds only as far as a reader reached
-// that event. A claim replaced before the record keeps its own event, and a
-// placed one never carries one.
+// that event. A claim replaced before the record keeps its own event.
 func (s *dirState) setClaimEvent(k piece, d *Durability, ev uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.pieces[k]; ok && c.d == d && !c.placed {
+	if c, ok := s.pieces[k]; ok && c.d == d {
 		c.ev = ev
 		s.pieces[k] = c
 	}
@@ -228,7 +231,7 @@ func (s *dirState) markUnplaced(k piece, d *Durability) {
 }
 
 // takeoverLocked replaces the retired claim on k — one whose instance
-// stopped before any reader reached the event its loss published — with c.
+// stopped before any reader reached the event its take published — with c.
 // The unsynced hold on k
 // ends for a Lose, which appends the record now: the take's caller pays the
 // debt the hold names. A Place keeps the hold, for the record the open
@@ -244,19 +247,20 @@ func (s *dirState) takeoverLocked(k piece, c claim) {
 }
 
 // take records that the piece k was reported on the journal by d, reporting
-// false when a claim that still holds — a Place's, the Lose of d itself,
-// of an instance still live, or of one whose loss's event a reader took
-// away — already had it. The call that took the piece is the one that
-// reports it: a later call says only that the piece was named before, and
-// never that its record is on disk. The Lose of an instance stopped before
-// any reader reached its loss's event is taken over, for its claim retired
-// with it: the loss it took is this take's to report, and takeover reports
-// the same, so the caller learns the only report the loss had answered
-// nothing. An unplaced claim — a kept failed one, whose record never
-// landed, so it bars the take for nobody — is taken over the same way,
-// and its takeover reports the reach of the dead ring alone: a reader
-// that reached the event leaves the suppression its report already
-// carried standing, while the record the claim never owned is still owed.
+// false when a claim that still holds — the Lose of d itself, of an
+// instance still live, or of one whose take's event a reader took away, a
+// placement a reader reached among them — already had it. The call that
+// took the piece is the one that reports it: a later call says only that
+// the piece was named before, and never that its record is on disk. The
+// Lose of an instance stopped before any reader reached its take's event
+// is taken over, for its claim retired with it: the loss it took is this
+// take's to report, and takeover reports the same, so the caller learns
+// the only report the loss had answered nothing. A dead unread placed
+// claim is taken over the same way, its found-at-open report having
+// answered nothing, and any takeover reports the reach of the dead ring
+// alone: a reader that reached the event leaves the suppression its
+// report already carried standing, while the record the claim never owned
+// is still owed.
 // The take also answers whether the claim it overtook held an
 // unsynced record — a debt the caller's own append now pays, so a failure
 // of that append re-holds the piece, never releasing it as though nothing
@@ -270,11 +274,10 @@ func (s *dirState) take(k piece, d *Durability) (took, takeover, unsyncedDebt bo
 	c, had := s.pieces[k]
 	_, unsyncedDebt = s.unsynced[k]
 	s.takeoverLocked(k, claim{d: d})
-	// A claim that reaches the take published its loss unread: only a
-	// kept unplaced claim sits here with its ring still served, and that
-	// one's word is the suppression the caller's Reported already
-	// carries.
-	return true, had && !c.placed && !c.d.claimServed(c.ev), unsyncedDebt
+	// A claim that reaches the take published its report unread, kept
+	// unplaced ones with rings still served beyond it among them: their
+	// word is the suppression the caller's Reported already carries.
+	return true, had && !c.d.claimServed(c.ev), unsyncedDebt
 }
 
 // takePiece takes the piece of the loss record an open's Place found on
@@ -284,8 +287,11 @@ func (s *dirState) take(k piece, d *Durability) (took, takeover, unsyncedDebt bo
 // its record is on disk. The Lose of an instance stopped before any reader
 // reached its loss's event is taken over as a Place's — no reader was ever
 // answered for that loss, so the record the open found is placed anew,
-// found at open — and the claim that replaces it never dies, answering
-// every later open. The unsynced hold the dead claim carried stays: the
+// found at open, into the taking instance's own ring — and the claim that
+// replaces it is that instance's, retiring on the same terms as any other:
+// a placement a reader reached answers every later open, while an unread
+// one retires with its instance and a later open reports the loss found
+// at open again. The unsynced hold the dead claim carried stays: the
 // record it named never landed durable, so the open's pass still owes the
 // append, which clears the hold when its own Lose retakes the piece.
 func (s *dirState) takePiece(d *Durability, dropped core.Seq, ext core.Extent) bool {
@@ -295,7 +301,7 @@ func (s *dirState) takePiece(d *Durability, dropped core.Seq, ext core.Extent) b
 	if s.heldLocked(k, d) {
 		return false
 	}
-	s.takeoverLocked(k, claim{placed: true})
+	s.takeoverLocked(k, claim{d: d, placed: true})
 	return true
 }
 

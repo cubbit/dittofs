@@ -539,14 +539,22 @@ func (d *Durability) EndDeferral(seg core.SegmentID, l Loss) bool {
 // the piece over: the record the disk names is
 // published here, into this instance's own fresh ring, as found at open —
 // the ruling that makes the found-at-open ring serve a reopen in one
-// process — after which the Place claim that replaced it answers every
-// later open. The event's Synced is kept as the caller set it.
+// process — and the placed claim answers every later open as far as this
+// placement's own event was read: a reader that reached it answers for
+// the loss for good, while an instance that stopped before any reader
+// did leaves the piece to a later open, which reports the loss found at
+// open again. The event's Synced is kept as the caller set it.
 func (d *Durability) Place(ev core.LossEvent, dropped core.Seq) {
 	if !d.dir.takePiece(d, dropped, ev.Extent) {
 		return
 	}
 	ev.AtOpen = true
 	d.lmu.Lock()
-	d.pushRingLocked(ev)
+	published := d.pushRingLocked(ev)
 	d.lmu.Unlock()
+	// The placed claim carries the event this placement published into
+	// this instance's own ring, so it retires on the same terms as a
+	// Lose's: past this instance's stop it holds only as far as a reader
+	// reached that event.
+	d.dir.setClaimEvent(piece{dropped, ev.Extent}, d, published.SeqNum)
 }

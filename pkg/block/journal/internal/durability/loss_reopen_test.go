@@ -310,3 +310,68 @@ func TestAFailureAReporterOnlyTheRingCouldCarryRepublishesOnceClosed(t *testing.
 		t.Fatalf("Lose of a served report = %+v, %v, want the zero event over the refused append: the reached report keeps its event suppressed while the owed record is still re-appended", ev2, err2)
 	}
 }
+
+// TestALossNobodyReadIsStillFoundAtOpenAtTheThirdReopen pins the placed
+// claim's retirement at Reading A's third reopen: instance A loses a piece
+// and no reader takes its event, reopen B places the record found at open
+// and no reader takes B's event either, and the third reopen places the
+// same record again — a Place's claim retires with its instance unread as a
+// Lose's does, so a loss nobody had read never leaves the ring. A piece
+// whose placement a reader did reach keeps its suppression at every later
+// open, which is the one claim that never dies.
+func TestALossNobodyReadIsStillFoundAtOpenAtTheThirdReopen(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+
+	// A: two pieces lost unread, their events into A's own ring.
+	unread := loss(11)
+	evUnread, err := e.d.Lose(ctx, unread)
+	if err != nil {
+		t.Fatalf("the first instance's Lose of the unread piece: %v", err)
+	}
+	if evUnread == (core.LossEvent{}) {
+		t.Fatalf("the unread piece's Lose published no event: %+v", evUnread)
+	}
+	read := loss(12)
+	evRead, err := e.d.Lose(ctx, read)
+	if err != nil {
+		t.Fatalf("the first instance's Lose of the read piece: %v", err)
+	}
+	if evRead == (core.LossEvent{}) {
+		t.Fatalf("the read piece's Lose published no event: %+v", evRead)
+	}
+	// A stops with no reader having reached either event.
+	e.d.Stop()
+
+	// B, the first reopen: each record the open finds on disk is placed
+	// found at open, into B's own ring. The read placement's event is
+	// carried away by a genuine reader — the drain this test stands in for
+	// — and then the other piece places, its event landing past the read.
+	B := e.newDurability()
+	B.Place(evRead, read.Seq)
+	if got := B.Losses(); len(got) != 1 || !got[0].AtOpen {
+		t.Fatalf("the first reopen's ring after placing the read piece = %+v, want its one found-at-open event", got)
+	}
+	B.Place(evUnread, unread.Seq)
+	if got := B.Stats().Losses; len(got) != 2 {
+		t.Fatalf("the first reopen's ring = %+v, want its two found-at-open events", got)
+	}
+	// B stops: the read placement's event was answered, the unread one's
+	// was not.
+	B.Stop()
+
+	// C, the third reopen: the unread piece's record is placed found at
+	// open again — B's claim on it retired with B, for no reader reached
+	// its event — while the piece whose placement was read stays
+	// suppressed: its claim is the one that never dies.
+	C := e.newDurability()
+	C.Place(evUnread, unread.Seq)
+	C.Place(evRead, read.Seq)
+	got := C.Stats().Losses
+	if len(got) != 1 || !got[0].AtOpen || got[0].Extent != unread.Extent {
+		t.Fatalf("the third reopen's ring = %+v, want the unread piece's record alone, still found at open", got)
+	}
+	if lh, _ := e.lossRecords(); len(lh) != 2 {
+		t.Fatalf("%d loss records on disk across three reopens, want the two", len(lh))
+	}
+}
