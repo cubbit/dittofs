@@ -3,6 +3,7 @@
 package commands
 
 import (
+	"context"
 	"errors"
 
 	"github.com/cubbit/dittofs/pkg/bootstrap"
@@ -14,6 +15,6 @@ const foundationDB = false
 
 // openFoundationDB refuses: checkKV refuses the backend first, so no command
 // reaches here.
-func openFoundationDB(*bootstrap.Bootstrap, systemClock) (kv.KV, error) {
+func openFoundationDB(context.Context, *bootstrap.Bootstrap, systemClock) (kv.KV, error) {
 	return nil, errors.New(noFoundationDB)
 }

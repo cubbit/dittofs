@@ -82,7 +82,7 @@ func runInit(cmd *cobra.Command, _ []string) (err error) {
 	}
 	defer func() { err = errors.Join(err, key.Close()) }()
 	clock := newSystemClock()
-	kv, err := openKV(cfg, clock)
+	kv, err := openKV(ctx, cfg, clock)
 	if err != nil {
 		return fmt.Errorf("opening the metadata store: %w", err)
 	}

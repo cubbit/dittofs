@@ -35,7 +35,7 @@ func Open(tb testing.TB, opts fdbkv.Options) *fdbkv.Store {
 	if opts.Prefix == nil {
 		opts.Prefix = Prefix()
 	}
-	s, err := fdbkv.Open(opts)
+	s, err := fdbkv.Open(tb.Context(), opts)
 	if err != nil {
 		tb.Fatal(err)
 	}

@@ -24,7 +24,7 @@ func TestUnknownCommitOutcomeNotReapplied(t *testing.T) {
 		t.Skip("no FoundationDB: run through test/fdb/cluster.sh test, which sets DITTOFS_FDB_CLUSTER_FILE")
 	}
 	prefix := fmt.Appendf(nil, "test/%d-unknown/", time.Now().UnixNano())
-	s, err := Open(Options{ClusterFile: cf, Prefix: prefix})
+	s, err := Open(t.Context(), Options{ClusterFile: cf, Prefix: prefix})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestSweepClearsOnlyOldMarks(t *testing.T) {
 		t.Skip("no FoundationDB: run through test/fdb/cluster.sh test, which sets DITTOFS_FDB_CLUSTER_FILE")
 	}
 	prefix := fmt.Appendf(nil, "test/%d-sweep/", time.Now().UnixNano())
-	s, err := Open(Options{ClusterFile: cf, Prefix: prefix})
+	s, err := Open(t.Context(), Options{ClusterFile: cf, Prefix: prefix})
 	if err != nil {
 		t.Fatal(err)
 	}
