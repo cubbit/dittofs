@@ -84,7 +84,7 @@ func (f *assembledJournal) failedJournal(t *testing.T, n int) (failed []core.Seq
 		if err != nil {
 			t.Fatalf("read the directory's failed list: %v", err)
 		}
-		failed = seqs
+		failed = failedSeqsOf(seqs)
 		return len(failed) == n
 	})
 	f.seam.SetFault(nil)

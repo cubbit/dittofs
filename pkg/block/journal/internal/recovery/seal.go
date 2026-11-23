@@ -479,14 +479,18 @@ func planOpenLosses(st State, named, unsynced func(seq core.Seq, ext core.Extent
 		}
 		reserve--
 		plan = append(plan, durability.Loss{
-			Share:    rd.Ev.Share,
-			File:     rd.Ev.File,
-			Extent:   rd.Ev.Extent,
-			Version:  rd.Ev.Version,
-			Seq:      rd.Dropped,
-			Reason:   core.LossFailedWindow,
-			AtOpen:   true,
-			Reported: true,
+			Share:   rd.Ev.Share,
+			File:    rd.Ev.File,
+			Extent:  rd.Ev.Extent,
+			Version: rd.Ev.Version,
+			Seq:     rd.Dropped,
+			Reason:  core.LossFailedWindow,
+			AtOpen:  true,
+			// The word the failed list's entry carries: the report is
+			// honoured only while the failing instance lives or a reader
+			// reached the event it published, so a loss a closed unread
+			// ring never answered is re-published here.
+			Reported: rd.Reported,
 		})
 	}
 	for _, c := range st.Tails.Corrupt {

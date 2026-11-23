@@ -106,7 +106,7 @@ type credential struct {
 }
 
 // Authenticate answers who r is: the credential its bearer token presents,
-// resolved, then the account it names admitted as its record is now. Each
+// an access token or an API token, resolved, then the account it names admitted as its record is now. Each
 // refusal is ErrLogonFailure, counted by its reason; a store or a signing
 // key that cannot be read answers ErrUnavailable.
 func (s *Service) Authenticate(r *http.Request) (Caller, error) {
@@ -117,7 +117,13 @@ func (s *Service) Authenticate(r *http.Request) (Caller, error) {
 	if len(h) <= len(scheme) || !strings.EqualFold(h[:len(scheme)], scheme) {
 		return Caller{}, s.Refused("missing")
 	}
-	cred, err := s.session(ctx, h[len(scheme):])
+	// An access token is a JWT, whose parts are joined by dots; an API
+	// token is base64url, which holds none.
+	raw, resolve := h[len(scheme):], s.session
+	if !strings.Contains(raw, ".") {
+		resolve = s.apiToken
+	}
+	cred, err := resolve(ctx, raw)
 	if err != nil {
 		return Caller{}, err
 	}

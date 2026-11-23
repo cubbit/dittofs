@@ -158,12 +158,14 @@ func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment cor
 //
 // decision: the bodies are skipped because the two checksums are separate —
 // the header verifies on its own, so a scan can trust a record's boundaries
-// without reading its payload, and each live payload is
-// verified whole where it is handed out instead: recovery's own body reads,
-// which re-read and verify each record they use. Overturned the day the
-// format rules that a scan verifies every live payload at open; until then,
-// a header-only walk that re-read its bodies would pay exactly the body I/O
-// this function exists to skip.
+// without reading its payload — and a record's bytes are verified whole
+// wherever they are handed out: by this walk's callers' own body reads, and
+// at open for the newest segment of each stream, whose sync-proven payloads
+// the kinds pass reads once after the walk (recovery/kinds.go); every other
+// segment's stay unread until its reader reaches them. Overturned the day
+// the format rules that the scan itself verifies every live payload at
+// open; until then, a header-only walk that re-read its bodies would pay
+// exactly the body I/O this function exists to skip.
 func ScanSegmentHeaders(r io.ReaderAt, size int64, identity core.JournalID, segment core.SegmentID) (Scan, error) {
 	return scan(r, size, identity, segment, true)
 }

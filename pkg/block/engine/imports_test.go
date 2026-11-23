@@ -54,6 +54,10 @@ var allowed = map[string][]string{
 	"go.opentelemetry.io/otel/codes":               {"enginewire"},
 	"go.opentelemetry.io/otel/sdk/trace":           {wireTests},
 	"go.opentelemetry.io/otel/sdk/trace/tracetest": {wireTests},
+	// The engine reads a full device's free space on Windows through the
+	// system package the journal's platform layer already uses, rather than
+	// wrapping the Win32 call by hand.
+	"golang.org/x/sys/windows": {"."},
 }
 
 // unitTests names the engine's external test package, whose unit

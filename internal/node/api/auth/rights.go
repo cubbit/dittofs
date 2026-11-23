@@ -11,7 +11,7 @@ const (
 	Shares                    // shares, grants, export policies, quotas, snapshots, policies, backups, restores
 	Stores                    // remote stores, namespaces, adapters, settings, netgroups, and the secrets they name
 	Principals                // users and groups that hold no role
-	Accounts                  // accounts with a role, roles, others' service tokens
+	Accounts                  // accounts with a role, roles; others' API tokens, a service account's created, any account's listed and revoked
 	Drain                     // drain a node
 	Installation              // raise a format version, decommission a node, state a location lost or a journal range unreadable, re-home, move, rotate the signing key
 	Audit                     // read the audit, and the access, admin and logon event streams

@@ -602,3 +602,108 @@ func TestReadFormat_DecodesAWholeFile(t *testing.T) {
 			ff.Identity, ff.Installation, journalID, install)
 	}
 }
+
+// TestTakenSegment_JudgesHeaderSlots pins TakenSegment's table: only bytes
+// a verifying segment header — or a foreign journal's, which verifies under
+// the identity it names — answers taken; a taken-less directory however
+// many spare, short, garbage or empty files it holds answers false, and a
+// spare's name is never a segment's: bytes at it count nothing however they
+// read.
+func TestTakenSegment_JudgesHeaderSlots(t *testing.T) {
+	valid := raw.SegmentHeader{Identity: journalID, ID: 2}.Bytes()
+	foreign := raw.SegmentHeader{Identity: core.JournalID{'f', 'r', 'e', 'e'}, ID: 2}.Bytes()
+
+	cases := []struct {
+		name  string
+		files map[string][]byte
+		names []string
+		want  bool
+	}{
+		{
+			name:  "a verifying header is taken",
+			files: map[string][]byte{format.SegmentName(2): valid},
+			names: []string{format.SegmentName(2)},
+			want:  true,
+		},
+		{
+			name:  "a foreign journal's verifying header counts the same",
+			files: map[string][]byte{format.SegmentName(2): foreign},
+			names: []string{format.SegmentName(2)},
+			want:  true,
+		},
+		{
+			name: "a finished spare's zero slot answers nothing",
+			files: map[string][]byte{format.SegmentName(2): make([]byte, format.SegmentHeaderSize),
+				format.SegmentName(3): valid},
+			names: []string{format.SegmentName(2)},
+			want:  false,
+		},
+		{
+			name: "a garbage slot answers nothing beside a taking header",
+			files: map[string][]byte{format.SegmentName(2): bytes.Repeat([]byte{0xff}, format.SegmentHeaderSize),
+				format.SegmentName(3): valid},
+			names: []string{format.SegmentName(2), format.SegmentName(3)},
+			want:  true,
+		},
+		{
+			name:  "a short file answers nothing",
+			files: map[string][]byte{format.SegmentName(2): valid[:10]},
+			names: []string{format.SegmentName(2)},
+			want:  false,
+		},
+		{
+			name:  "a full-size garbage slot alone answers nothing",
+			files: map[string][]byte{format.SegmentName(2): bytes.Repeat([]byte{0xff}, format.SegmentHeaderSize)},
+			names: []string{format.SegmentName(2)},
+			want:  false,
+		},
+		{
+			name:  "an empty file answers nothing",
+			files: map[string][]byte{format.SegmentName(2): {}},
+			names: []string{format.SegmentName(2)},
+			want:  false,
+		},
+		{
+			name:  "a file no directory holds answers nothing",
+			files: map[string][]byte{},
+			names: []string{format.SegmentName(2)},
+			want:  false,
+		},
+		{
+			name:  "a spare's name is never a segment's",
+			files: map[string][]byte{format.SpareName(2): valid},
+			names: []string{format.SpareName(2)},
+			want:  false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRig(t)
+			for name, b := range c.files {
+				r.write(name, b)
+			}
+			got := TakenSegment(context.Background(), r.runDeps(), c.names)
+			if got != c.want {
+				t.Errorf("TakenSegment over %v = %v, want %v", c.names, got, c.want)
+			}
+		})
+	}
+}
+
+// TestTakenSegment_FailsClosedOverAReadItCannotFinish pins the row's other
+// half: a slot the bounded read cannot finish answers taken, however
+// innocent its bytes might be, for unread is not proven empty and a caller
+// that sees no taken segment would record the identity and open without an
+// operator (RFC 28 section 3.4).
+func TestTakenSegment_FailsClosedOverAReadItCannotFinish(t *testing.T) {
+	r := newRig(t)
+	// An all-zero slot — the finished spare's own shape — over a read that
+	// fails with EIO every time, past the bound.
+	r.write(format.SegmentName(2), make([]byte, format.SegmentHeaderSize))
+	r.failReads(format.SegmentName(2), 0)
+
+	if got := TakenSegment(context.Background(), r.runDeps(), []string{format.SegmentName(2)}); !got {
+		t.Errorf("TakenSegment over a slot the bound could not read = %v, want true: unread is not proven empty", got)
+	}
+}

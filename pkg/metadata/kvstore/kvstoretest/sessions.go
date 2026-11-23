@@ -242,9 +242,16 @@ func testAPITokens(t *testing.T, kvo Opener) {
 	if got, ok, err := cp.APIToken(ctx, tok.ID); err != nil || !ok || got != tok {
 		t.Errorf("token by ID: got %+v, %v, %v; want %+v", got, ok, err, tok)
 	}
-	if got := all(t, cp.APITokens(ctx, alice)); len(got) != 1 || got[0] != tok {
+	if got := all(t, cp.APITokens(ctx, alice, [16]byte{})); len(got) != 1 || got[0] != tok {
 		t.Errorf("alice's tokens: got %+v, want only %+v", got, tok)
 	}
+	later := tok
+	later.ID, later.Hash = [16]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, [32]byte{9}
+	must(t, cp.PutAPIToken(ctx, later))
+	if got := all(t, cp.APITokens(ctx, alice, tok.ID)); len(got) != 1 || got[0] != later {
+		t.Errorf("alice's tokens after %x: got %+v, want only %+v", tok.ID, got, later)
+	}
+	must(t, cp.DeleteAPIToken(ctx, later.ID))
 	again := tok
 	again.Hash = [32]byte{8}
 	if err := cp.PutAPIToken(ctx, again); !isCode(err, merrs.ErrAlreadyExists) {
@@ -258,7 +265,7 @@ func testAPITokens(t *testing.T, kvo Opener) {
 	if _, ok, err := cp.APITokenByHash(ctx, tok.Hash); err != nil || ok {
 		t.Errorf("deleted token by hash: found %v, %v; want absent", ok, err)
 	}
-	if got := all(t, cp.APITokens(ctx, alice)); len(got) != 0 {
+	if got := all(t, cp.APITokens(ctx, alice, [16]byte{})); len(got) != 0 {
 		t.Errorf("alice's tokens after the deletion: got %d, want 0", len(got))
 	}
 	if _, ok, err := cp.APIToken(ctx, tok.ID); err != nil || ok {

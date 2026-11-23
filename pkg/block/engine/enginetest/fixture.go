@@ -128,7 +128,9 @@ type Fixture struct {
 	commitGate atomic.Pointer[gate]
 	// startGate, once set by HoldNextStart, holds the next engine start.
 	startGate atomic.Pointer[gate]
-	handles   sync.Map // journal.ShareTag → the handle the running engine opened on it
+	handles   sync.Map                          // journal.ShareTag → the handle the running engine opened on it
+	opened    atomic.Pointer[engine.Journal]    // the journal the running engine opened, nil over the fake
+	handedIn  atomic.Pointer[[]entity.SyncMark] // the marks the last Open was handed
 
 	kv      *failingKV                // the store's kv.KV, failing Updates when a test asks
 	batches atomic.Pointer[batchHold] // holds every removal batch at its span while set
@@ -139,6 +141,7 @@ type Fixture struct {
 	compose  func(*Fixture, *engine.Engine) Service // builds the service each process start composes; nil for none
 	settings journal.Settings                       // the settings every open of the journal in Dir takes
 	block    uint64                                 // the engine's version block; zero is its default
+	free     func(dir string) (int64, error)        // the engine's free-space read; nil asks the filesystem
 	svc      Service                                // the service running now, built by compose
 	serving  bool                                   // svc was started and is not yet stopped
 }
@@ -505,6 +508,13 @@ func WithVersionBlock(n uint64) Option {
 	return func(f *Fixture) { f.block = n }
 }
 
+// WithFreeSpace has every engine the fixture builds read the free space of
+// the journal directory's filesystem through free, so a row that fills the
+// device through the seam reports the room it gives back.
+func WithFreeSpace(free func(dir string) (int64, error)) Option {
+	return func(f *Fixture) { f.free = free }
+}
+
 // journalOnly fails a control that acts on the journal in Dir, which
 // WithFakeJournal leaves unread.
 func (f *Fixture) journalOnly(what string) {
@@ -832,6 +842,33 @@ func (f *Fixture) addSecond() {
 	f.SecondRoot = root
 }
 
+// OpenedWithMarks is the sync marks the last Open of the real journal was
+// handed: what the store recorded for it when the engine started.
+func (f *Fixture) OpenedWithMarks() []entity.SyncMark {
+	f.t.Helper()
+
+	m := f.handedIn.Load()
+	if m == nil {
+		f.t.Fatal("fixture: no real journal was opened")
+	}
+
+	return *m
+}
+
+// JournalSyncMarks is the sync marks of the journal the running engine opened,
+// as it serves them to the group commit, for a row that compares them with
+// what the store recorded. It fails the row over the fake journal.
+func (f *Fixture) JournalSyncMarks() []entity.SyncMark {
+	f.t.Helper()
+
+	j := f.opened.Load()
+	if j == nil {
+		f.t.Fatal("fixture: no real journal is open")
+	}
+
+	return (*j).SyncMarks()
+}
+
 // HandleOf is the handle the running engine opened on tag.
 func (f *Fixture) HandleOf(tag journal.ShareTag) engine.Handle {
 	f.t.Helper()
@@ -883,6 +920,7 @@ func (f *Fixture) start() {
 	}
 	f.Opens = opens
 	d.VersionBlock = f.block
+	d.FreeSpace = f.free
 	open := d.Open
 	crashed := f.crashed
 	// decision: the refuse and fake-journal branches answer without the
@@ -899,6 +937,7 @@ func (f *Fixture) start() {
 			f.fake.Reopen()
 			return f.fake, nil
 		}
+		f.handedIn.Store(&marks)
 		j, err := open(ctx, dir, floor, expect, marks)
 		if err != nil {
 			return nil, err
@@ -907,7 +946,9 @@ func (f *Fixture) start() {
 			_ = j.Close()
 			return nil, err
 		}
-		return wrapJournal(j, crashed, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
+		wj := wrapJournal(j, crashed, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) })
+		f.opened.Store(&wj)
+		return wj, nil
 	}
 	d.Existence = fencedExistence{Existence: d.Existence, crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate, commitGate: &f.commitGate}
 	d.Content = fencedContent{Content: d.Content, crashed: f.crashed}

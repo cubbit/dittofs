@@ -49,7 +49,11 @@ type SegmentRow struct {
 func (c *Core) Segments() []SegmentRow {
 	damaged := map[core.SegmentID]bool{}
 	var retired []SegmentRow
-	for _, d := range c.dur.Stats().Segments {
+	// The damaged rows alone, not the whole Part a Stats call builds: a
+	// segment listing answers no loss, and every copy of the loss ring
+	// marks the instance's published losses served.
+	_, damagedRows := c.dur.DamagedReport()
+	for _, d := range damagedRows {
 		damaged[d.Segment] = true
 		if d.Retired {
 			retired = append(retired, SegmentRow{ID: d.Segment, Damaged: true, Retired: true})

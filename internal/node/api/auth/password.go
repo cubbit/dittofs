@@ -40,10 +40,10 @@ const sealTries = 3
 // decision: a record that holds no JSON bool is refused, ErrUnavailable,
 // never read as on or off, because identity refuses it too and keeps
 // running the value it last applied, which this read cannot know. So a
-// password set and a write of identity.ntlm are refused while such a record
-// is stored; the settings table refuses writing one, so only a store
-// written around it holds one. Overturned if identity ever reads such a
-// record as a value.
+// password set is refused while such a record is stored, until an admin's
+// write of identity.ntlm repairs it, the one read that takes it as on; the
+// settings table refuses writing one, so only a store written around it
+// holds one. Overturned if identity ever reads such a record as a value.
 func NTLM(s entity.Setting, ok bool) (identity.NTLMSetting, error) {
 	if !ok {
 		return identity.NTLMSetting{On: true}, nil
@@ -221,15 +221,26 @@ func WritePassword(tx entity.ControlPlaneTx, ps PasswordSet, o WriteOpts) (befor
 	return before, after, nil
 }
 
-// passwordChange is a password write's audit change: the password, and the
-// NT hash when one was sealed, as "set", never their values.
-func passwordChange(ps PasswordSet) []byte {
-	c := map[string]string{"password": "set"}
-	if ps.nt.Version != 0 {
+// PasswordChange is a password write's audit change, from the account
+// before and after WritePassword, in the API's form: a secret field as
+// "set", never its value; an NT hash the account stops naming as its old
+// reference and null; and must-change and not-before as their old and new
+// values.
+func PasswordChange(before, after entity.User) ([]byte, error) {
+	c := map[string]any{"password": "set"}
+	switch {
+	case after.NTHash != (entity.SecretRef{}):
 		c["nt_hash"] = "set"
+	case before.NTHash != (entity.SecretRef{}):
+		// The reference in a UUID's text form, written out by hand: the API's
+		// packages may not import a UUID library.
+		c["nt_hash"] = [2]any{fmt.Sprintf("%x-%x-%x-%x-%x", before.NTHash[:4], before.NTHash[4:6], before.NTHash[6:8], before.NTHash[8:10], before.NTHash[10:]), nil}
 	}
-	b, _ := json.Marshal(c) // a map of strings always encodes
-	return b
+	if before.MustChange != after.MustChange {
+		c["must_change"] = [2]any{before.MustChange, after.MustChange}
+	}
+	c["not_before"] = [2]any{before.NotBefore, after.NotBefore}
+	return json.Marshal(c)
 }
 
 // ChangePassword is POST /auth/password: the caller's own password changed,
@@ -253,10 +264,10 @@ func passwordChange(ps PasswordSet) []byte {
 // decision: an account written between the check and the write answers
 // ErrUnavailable, its attempt's raise taken back, never a settled failure:
 // the current password was right, and what moved the account is the
-// NT-hash deletion or a caller holding the Principals right, which can set
-// the password anyway. The client signs in again or retries. Overturned if a
-// write by the account itself can land in that window and must be told
-// apart.
+// NT-hash deletion, a caller holding the Principals right, which can set
+// the password anyway, or the account's own concurrent change, whose retry
+// is then refused as the current password is no longer current. The client
+// signs in again or retries. Overturned if a 503 here must tell those apart.
 func (s *Service) ChangePassword(ctx context.Context, rec entity.AuditRecord, in apiv1.PasswordChange) (apiv1.Tokens, Audited, error) {
 	current, next := []byte(in.Current), []byte(in.New)
 	defer clear(current)
@@ -316,8 +327,12 @@ func (s *Service) ChangePassword(ctx context.Context, rec entity.AuditRecord, in
 			if err != nil {
 				return err
 			}
+			change, err := PasswordChange(before, after)
+			if err != nil {
+				return err
+			}
 			out = rec
-			out.Before, out.After, out.Change, out.Outcome = before.Generation, after.Generation, passwordChange(ps), []byte("applied")
+			out.Before, out.After, out.Change, out.Outcome = before.Generation, after.Generation, change, []byte("applied")
 			if err := takeBackSuccess(tx, cnt); err != nil {
 				return err
 			}

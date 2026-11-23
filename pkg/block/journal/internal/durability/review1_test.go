@@ -200,8 +200,11 @@ func TestASyncThatEndsEarlyStillReportsTheMarksItTook(t *testing.T) {
 	// taken before g's stream answers.
 	ids := []core.FileID{f, h}
 	ws := []work{
-		{st: r.d.made[0], ids: ids, targets: r.d.made[0].targetsOf(ids)},
-		{st: st1, ids: ids, targets: st1.targetsOf(ids)},
+		{st: r.d.made[0], ids: ids},
+		{st: st1, ids: ids},
+	}
+	for i := range ws {
+		ws[i].targets, ws[i].owed = ws[i].st.targetsOf(ids)
 	}
 	err := r.d.await(context.Background(), ws, true)
 	var se *core.SyncError

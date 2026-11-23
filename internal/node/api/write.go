@@ -25,6 +25,10 @@ import (
 // maxKey bounds an Idempotency-Key, in bytes.
 const maxKey = 255
 
+// errCredentialKey refuses an Idempotency-Key on a keyless row, one whose
+// call carries or issues a credential.
+var errCredentialKey = &fieldError{field: "Idempotency-Key", detail: "this call carries a credential, so it keeps no idempotency record and takes no key"}
+
 // appliedWait bounds how long a write raising the principals or settings
 // generation waits for the node to apply it.
 const appliedWait = time.Second
@@ -143,7 +147,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		case len(key) > maxKey:
 			return answer{}, &fieldError{field: "Idempotency-Key", detail: "longer than " + strconv.Itoa(maxKey) + " bytes"}
 		case key != "" && rt.keyless:
-			return answer{}, &fieldError{field: "Idempotency-Key", detail: "this call carries a credential, so it keeps no idempotency record and takes no key"}
+			return answer{}, errCredentialKey
 		}
 		rq := request[B]{ID: id, Sub: sub, Query: r.URL.Query()}
 		prepared := false
