@@ -127,7 +127,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("opening the metadata store: %w", err)
 	}
-	var store kv.KV = db
+	store := db
 	if wrap, ok := base.Value(kvKey{}).(func(kv.KV) kv.KV); ok {
 		store = wrap(store)
 	}

@@ -48,17 +48,28 @@ func Open(tb testing.TB, opts fdbkv.Options) *fdbkv.Store {
 	return s
 }
 
+// ClearAll removes every key below the system keys on the cluster clusterFile
+// names, for a test that, as an installation does, owns the whole cluster.
+func ClearAll(tb testing.TB, clusterFile string) {
+	clearRange(tb, clusterFile, nil, []byte{0xff})
+}
+
 // clearPrefix removes everything under the test's prefix.
 func clearPrefix(tb testing.TB, opts fdbkv.Options) {
-	db, err := fdb.OpenDatabase(opts.ClusterFile)
+	end, _ := fdb.Strinc(opts.Prefix)
+	clearRange(tb, opts.ClusterFile, opts.Prefix, end)
+}
+
+// clearRange removes the keys from begin up to end.
+func clearRange(tb testing.TB, clusterFile string, begin, end []byte) {
+	db, err := fdb.OpenDatabase(clusterFile)
 	if err != nil {
 		tb.Error(err)
 		return
 	}
 	// The client's handle for this cluster file is shared; it stays open.
-	end, _ := fdb.Strinc(opts.Prefix)
 	if _, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(opts.Prefix), End: fdb.Key(end)})
+		tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(begin), End: fdb.Key(end)})
 		return nil, nil
 	}); err != nil {
 		tb.Error(err)

@@ -416,13 +416,13 @@ func TestStartRefusesTheStore(t *testing.T) {
 		b    func(dir string) bootstrapFile
 		want string
 	}{
-		{"backend not badger", func(dir string) bootstrapFile {
+		{"foundationdb in a build without it", func(dir string) bootstrapFile {
 			return bootstrapFile{
 				backend: "foundationdb",
 				journal: filepath.Join(dir, "device"),
 				node:    nodeUUID,
 			}
-		}, `metadata.backend "foundationdb" is not one this build opens; it opens badger`},
+		}, `metadata.backend "foundationdb" is opened only by a build with the foundationdb tag`},
 		{"no store path", func(dir string) bootstrapFile {
 			return bootstrapFile{journal: filepath.Join(dir, "device"), node: nodeUUID}
 		}, "metadata.badger.path is not set"},
@@ -435,6 +435,9 @@ func TestStartRefusesTheStore(t *testing.T) {
 		}, "the start check: the node is not initialised"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if foundationDB && strings.Contains(tc.name, "foundationdb") {
+				t.Skip("this build opens foundationdb")
+			}
 			dir := t.TempDir()
 			root := NewRoot()
 			root.SetOut(io.Discard)
