@@ -233,22 +233,16 @@ func refused(s entity.Share, retry bool, err error) refusal {
 // not c's. The walk is then published for the components that read the
 // snapshot (keepSettings), whose refusals, the sections no component's apply
 // reports, are returned with identity's, the secrets pass running between the
-// walk and identity, holding what it refuses before any component runs. Once
-// start step 9 has run it calls
-// each adapter's slot too, handing it loop to report idle on while it waits on
-// a drain, and returns the slots' refusals with them.
+// walk and identity, holding what it refuses before any component runs. Each
+// adapter's section is then read from the published snapshot into its slot's
+// want, and once start step 9 has run it calls each slot too, handing it loop
+// to report idle on while it waits on a drain, and returns the slots'
+// refusals with them, at the generation of the walk published.
 //
 // ponytail: apply hands the engine RFC 13 Appendix B's defaults whatever c
 // says, as no settings record carries the engine's values yet, and refuses
 // nothing. Read the engine's section from the pass's one walk, as identity
 // does, once a settings record carries what the engine reads.
-//
-// ponytail: each slot is handed what the node's tests set, and nothing else
-// enables an adapter, as no settings record carries an adapter's section
-// yet. Read each adapter's section from the pass's one walk with the
-// snapshot's Get once it has a body, so every component of a pass runs one
-// view of the settings, and hand the adapters the generation of the walk
-// published, not the one the pass read.
 func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop) ([]refusal, error) {
 	if n.rec.applying != nil {
 		n.rec.applying(c)
@@ -280,10 +274,14 @@ func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop)
 		return nil, fmt.Errorf("the settings walk: %w", err)
 	}
 	refusals = append(refusals, kept...)
+
+	n.wantAdapters(n.rec.snapshot.Load())
+
 	if !n.adapting {
 		return refusals, nil
 	}
-	return append(refusals, n.applyAdapters(ctx, loop, c.Settings)...), nil
+
+	return append(refusals, n.applyAdapters(ctx, loop, wk.at.Settings)...), nil
 }
 
 // backoff is the wait before the next pass on the backoff, given its last

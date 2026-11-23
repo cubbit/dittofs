@@ -50,6 +50,29 @@ func settingSchema() kvstore.Option {
 	return kvstore.SettingSchema(settings.Versions()[entity.FormatSettings].Max)
 }
 
+// wantAdapters reads each adapter's section from the published snapshot into
+// its slot's want. A section the node refused keeps there what it last ran,
+// so its adapter does too; one refused since the node started has no value,
+// and leaves its adapter disabled, never run on defaults a row refuses. The
+// settings walk reports the refused rows (keepSettings).
+func (n *Node) wantAdapters(snap *settings.Snapshot) {
+	node := n.cfg.Bootstrap.Node.ID
+
+	if nfs, err := settings.Get[nfsSection](snap, adaptersNFS, node); err == nil {
+		n.nfs.want.Store(&desired[asettings.NFS]{
+			enabled:  nfs.Enabled,
+			settings: nfs.NFS,
+		})
+	}
+
+	if smb, err := settings.Get[smbSection](snap, adaptersSMB, node); err == nil {
+		n.smb.want.Store(&desired[asettings.SMB]{
+			enabled:  smb.Enabled,
+			settings: smb.SMB,
+		})
+	}
+}
+
 // newTable is the node's one settings table: every section the node declares,
 // which reconcile reads and the API's write check judges a write by. Each
 // component's section joins it with the component.
@@ -92,11 +115,21 @@ type reach struct {
 	apply func(*settings.Snapshot) error
 	// atUse is set when the component reads the section where it uses it.
 	atUse bool
+	// rebuilds is set when the component runs a restart-class change itself,
+	// by building itself anew, so none of the section waits for the node's
+	// restart.
+	rebuilds bool
 }
 
 // usedAt is the reach of a section its component reads where it uses it.
 func usedAt() reach {
 	return reach{atUse: true}
+}
+
+// rebuilt is the reach of an adapter's section: read at use, and rebuilt by
+// its slot for a restart-class change.
+func rebuilt() reach {
+	return reach{atUse: true, rebuilds: true}
 }
 
 // newReaches is the node's map from each declared section to how its
@@ -107,9 +140,10 @@ func usedAt() reach {
 // moment, so a change reaches its reader at its next operation and no apply
 // runs for them.
 //
-// The adapters' sections are marked read at use only until a component runs
-// from them: nothing does yet, and without an entry the router would refuse
-// each as applied by nothing.
+// The adapters' sections are read at use too: each pass reads them into the
+// slots' wants before it calls them (wantAdapters). A slot rebuilds its
+// adapter for a new port itself, so that restart-class key is never pending
+// (RFC 23 §2.3, RFC 20 §3.6).
 //
 // decision: api is read at use though the node serves no sign-in and issues
 // no token yet, so no reader exists: its routes, which load the published
@@ -120,7 +154,7 @@ func newReaches() map[string]reach {
 	return map[string]reach{
 		"api":       usedAt(),
 		"audit":     usedAt(),
-		adaptersNFS: usedAt(),
-		adaptersSMB: usedAt(),
+		adaptersNFS: rebuilt(),
+		adaptersSMB: rebuilt(),
 	}
 }

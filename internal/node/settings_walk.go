@@ -437,7 +437,8 @@ var errNoWay = errors.New("the section has no way to its component")
 //     component holding the reference resolves it at that apply, within the
 //     live bound; identity's sections apart, which every apply reads again;
 //   - a restart-class change lands in the restart-pending set, read against
-//     what each section first runs, and leaves it once that value is back;
+//     what each section first runs, and leaves it once that value is back,
+//     but for a section whose component rebuilds for it, an adapter's port;
 //   - a next-write change goes nowhere: the published snapshot carries it,
 //     and the component's next write reads it.
 //
@@ -601,7 +602,7 @@ func (n *Node) routeSettings(
 	var pending []entity.ResourceRef
 
 	for _, ch := range settings.Diff(r.ran, cur) {
-		if ch.Class != settings.Restart {
+		if ch.Class != settings.Restart || r.reaches[ch.Section].rebuilds {
 			continue
 		}
 

@@ -349,9 +349,9 @@ func TestTheConnectionsAreEachAdaptersOpenNow(t *testing.T) {
 	addr, _ := h.Node().Addrs()
 	path := connectionsPath(h.NodeID())
 	nfsPort, smbPort := freePort(t), freePort(t)
-	h.Node().SetNFS(true, nfsAt(nfsPort))
-	h.Node().SetSMB(true, smbAt(smbPort))
-	applied(t, h, storeA)
+	writeRows(t, h,
+		allRows(adapterRows("adapters.nfs", true, nfsPort),
+			adapterRows("adapters.smb", true, smbPort)))
 
 	before := time.Now()
 	nfs, smb := client(t, nfsPort), client(t, smbPort)
@@ -390,8 +390,9 @@ func TestTheConnectionsAreEachAdaptersOpenNow(t *testing.T) {
 func TestTheConnectionsPageByCursor(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(caller(entity.RoleViewer))))
 	nfsPort, smbPort := freePort(t), freePort(t)
-	h.Node().SetNFS(true, nfsAt(nfsPort))
-	h.Node().SetSMB(true, smbAt(smbPort))
+	putSettings(t, h,
+		allRows(adapterRows("adapters.nfs", true, nfsPort),
+			adapterRows("adapters.smb", true, smbPort)))
 	started(t, h)
 	addr, _ := h.Node().Addrs()
 	path := connectionsPath(h.NodeID())
@@ -469,7 +470,7 @@ func TestTheConnectionsOfAnotherNodeAreNotFound(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(caller(entity.RoleViewer))))
 	release := make(chan struct{})
 	h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return heldConnections{a, release} })
-	h.Node().SetSMB(true, smbAt(0))
+	putSettings(t, h, adapterRows("adapters.smb", true, freePort(t)))
 	started(t, h)
 	t.Cleanup(func() { close(release) }) // before Stop, which a read still held would hold
 	addr, _ := h.Node().Addrs()
@@ -527,7 +528,7 @@ func TestTheConnectionsAreReadWhileTheStoreRefuses(t *testing.T) {
 		return node.NewAuthenticating(caller(entity.RoleViewer))(cfg)
 	}))
 	smbPort := freePort(t)
-	h.Node().SetSMB(true, smbAt(smbPort))
+	putSettings(t, h, adapterRows("adapters.smb", true, smbPort))
 	started(t, h)
 	addr, _ := h.Node().Addrs()
 	path := connectionsPath(h.NodeID())

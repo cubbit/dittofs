@@ -1,14 +1,17 @@
 package node_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,11 +21,11 @@ import (
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/adapter"
-	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -30,22 +33,100 @@ import (
 
 // The adapters in the node's start and stop: the real adapters nfs.New and
 // smb.New build, bound on loopback as nodetest's bootstrap names it, what
-// apply hands their slots set through the node's hooks.
+// apply hands their slots from the settings' rows, one walk of the settings
+// a pass reads.
 
 var ready = answer{http.StatusOK, "ready"}
 
-// smbAt is SMB's defaults at port; the node supplies the addresses.
-func smbAt(port uint16) settings.SMB {
-	s := settings.DefaultSMB()
-	s.Port = port
-	return s
+// adapterRows is the rows whose section runs the adapter at port, enabled or not,
+// as a settings write leaves them: the walk reads them over the section's
+// defaults.
+func adapterRows(prefix string, enabled bool, port uint16) map[string]string {
+	return map[string]string{
+		prefix + ".enabled": strconv.FormatBool(enabled),
+		prefix + ".port":    strconv.Itoa(int(port)),
+	}
 }
 
-// nfsAt is NFS's defaults at port; the node supplies the addresses.
-func nfsAt(port uint16) settings.NFS {
-	s := settings.DefaultNFS()
-	s.Port = port
-	return s
+// allRows is the rows of several sections' writes in one map, as one write
+// no pass can read half of.
+func allRows(rows ...map[string]string) map[string]string {
+	out := map[string]string{}
+
+	for _, r := range rows {
+		maps.Copy(out, r)
+	}
+
+	return out
+}
+
+// writeRows writes each row beneath the table's check, in one transaction,
+// and has the node apply the settings generation it moved, as the wait a
+// write on this node makes.
+func writeRows(t *testing.T, h *nodetest.Harness, rows map[string]string) {
+	t.Helper()
+	putSettings(t, h, rows)
+
+	if err := h.Node().Applied(t.Context()); err != nil {
+		t.Fatalf("Applied: %v", err)
+	}
+}
+
+// writeNodeRows writes each of the node's own rows beneath the table's
+// check, in one transaction, and has the node apply the settings generation
+// it moved, as writeRows does the installation's.
+func writeNodeRows(t *testing.T, h *nodetest.Harness, rows map[string]string) {
+	t.Helper()
+	putNodeSettings(t, h, rows)
+
+	if err := h.Node().Applied(t.Context()); err != nil {
+		t.Fatalf("Applied: %v", err)
+	}
+}
+
+// putNodeSettings writes each of the node's own rows, key to value, in one
+// transaction, as putSettings writes the installation's.
+func putNodeSettings(t *testing.T, h *nodetest.Harness, rows map[string]string) {
+	t.Helper()
+
+	scope := entity.SettingScope{Kind: entity.ScopeNode, ID: h.NodeID()}
+
+	err := h.Store().ControlPlane().
+		Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+			for key, value := range rows {
+				old, _, err := tx.Setting(scope, key)
+				if err != nil {
+					return err
+				}
+
+				setting := entity.Setting{Scope: scope, Key: key, Value: []byte(value)}
+				if _, err := tx.PutSetting(setting, old.Generation); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("put the node's %v: %v", rows, err)
+	}
+}
+
+// dialFrom connects to port on target with local as its source address, as a
+// machine with several addresses sends, closed when the test ends.
+func dialFrom(t *testing.T, local, target string, port uint16) net.Conn {
+	t.Helper()
+
+	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(local)}, Timeout: 5 * time.Second}
+
+	c, err := d.Dial("tcp", net.JoinHostPort(target, strconv.Itoa(int(port))))
+	if err != nil {
+		t.Fatalf("dialing port %d from %s: %v", port, local, err)
+	}
+
+	t.Cleanup(func() { _ = c.Close() })
+
+	return c
 }
 
 // freePort is a loopback port no listener holds.
@@ -207,8 +288,7 @@ func hears(t *testing.T, stopped <-chan struct{}, what string) {
 // generation moves, and reconcile is woken.
 func rebuild(t *testing.T, h *nodetest.Harness, port uint16) {
 	t.Helper()
-	h.Node().SetSMB(true, smbAt(port))
-	configure(t, h, storeA)
+	putSettings(t, h, adapterRows("adapters.smb", true, port))
 	h.Node().Wake()
 }
 
@@ -234,11 +314,22 @@ func TestAnAdapterListensOnlyFromTheAdaptersStep(t *testing.T) {
 		defer mu.Unlock()
 		steps = append(steps, step{name, l})
 	})))
-	h.Node().SetSMB(true, smbAt(port))
+	putSettings(t, h, adapterRows("adapters.smb", true, port))
 	started(t, h)
 
-	want := []step{{"refuse", false}, {"listeners", false}, {"register", false}, {"apply", false}, {"engine", false},
-		{"identity", false}, {"filesystem", false}, {"runner", false}, {"first reconcile", false}, {"adapters", true}, {"reconcile", true}}
+	want := []step{
+		{"refuse", false},
+		{"listeners", false},
+		{"register", false},
+		{"apply", false},
+		{"engine", false},
+		{"identity", false},
+		{"filesystem", false},
+		{"runner", false},
+		{"first reconcile", false},
+		{"adapters", true},
+		{"reconcile", true},
+	}
 	mu.Lock()
 	got := slices.Clone(steps)
 	mu.Unlock()
@@ -273,8 +364,8 @@ func TestAnAdapterRefusedAtStartIsRetriedUntilItServes(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = held.Close() })
 	port, nfs := uint16(held.Addr().(*net.TCPAddr).Port), freePort(t)
-	h.Node().SetNFS(true, nfsAt(nfs))
-	h.Node().SetSMB(true, smbAt(port))
+	putSettings(t, h, adapterRows("adapters.nfs", true, nfs))
+	putSettings(t, h, adapterRows("adapters.smb", true, port))
 	started(t, h)
 
 	api, _ := h.Node().Addrs()
@@ -327,8 +418,8 @@ func TestStopSyncsTheEmptySetThenStopsEveryAdapter(t *testing.T) {
 	side := newHoldingSidecar()
 	h.Node().SetSidecar(side)
 	h.Node().OnAdapter(b.keep)
-	h.Node().SetNFS(true, nfsAt(0))
-	h.Node().SetSMB(true, smbAt(0))
+	putSettings(t, h, adapterRows("adapters.nfs", true, 0))
+	putSettings(t, h, adapterRows("adapters.smb", true, 0))
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -380,10 +471,10 @@ func TestADrainPastItsBoundLeavesTheFilesystemOpen(t *testing.T) {
 		}
 		return a
 	})
-	h.Node().SetNFS(true, nfsAt(0))
-	smb := smbAt(0)
-	smb.DrainTimeout = 100 * time.Second
-	h.Node().SetSMB(true, smb)
+	putSettings(t, h, adapterRows("adapters.nfs", true, 0))
+	smb := adapterRows("adapters.smb", true, 0)
+	smb["adapters.smb.drain_timeout"] = `"100s"`
+	putSettings(t, h, smb)
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -434,10 +525,10 @@ func TestTheAdaptersDrainUntilTheDeadline(t *testing.T) {
 		}
 		return a
 	})
-	h.Node().SetNFS(true, nfsAt(0))
-	smb := smbAt(0)
-	smb.DrainTimeout = 100 * time.Second
-	h.Node().SetSMB(true, smb)
+	putSettings(t, h, adapterRows("adapters.nfs", true, 0))
+	smb := adapterRows("adapters.smb", true, 0)
+	smb["adapters.smb.drain_timeout"] = `"100s"`
+	putSettings(t, h, smb)
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -485,7 +576,7 @@ func TestARebuildWaitingOnADrainKeepsTheNodeLive(t *testing.T) {
 	stoppedSMB, release := make(chan struct{}, 4), make(chan struct{})
 	h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return heldStop{a, stoppedSMB, release} })
 	from, to := freePort(t), freePort(t)
-	h.Node().SetSMB(true, smbAt(from))
+	putSettings(t, h, adapterRows("adapters.smb", true, from))
 	started(t, h)
 	end := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(end)
@@ -523,8 +614,9 @@ func TestAStopJoinsTheDrainOfARebuild(t *testing.T) {
 		}
 		return a
 	})
-	to := freePort(t)
-	h.Node().SetSMB(true, smbAt(0))
+
+	from, to := freePort(t), freePort(t)
+	putSettings(t, h, adapterRows("adapters.smb", true, from))
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -560,8 +652,8 @@ func TestARebuildsSyncEndsByTheDrainDeadline(t *testing.T) {
 	side := &waitingSidecar{entered: make(chan struct{}, 1)}
 	h.Node().SetSidecar(side)
 	nfs, from, to := freePort(t), freePort(t), freePort(t)
-	h.Node().SetNFS(true, nfsAt(nfs))
-	h.Node().SetSMB(true, smbAt(from))
+	putSettings(t, h, adapterRows("adapters.nfs", true, nfs))
+	putSettings(t, h, adapterRows("adapters.smb", true, from))
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -600,7 +692,7 @@ func TestAPassHeldPastItsBoundLeavesTheAdaptersOpen(t *testing.T) {
 	h = nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewStepping(s.stepped)))
 	side := newHoldingSidecar()
 	h.Node().SetSidecar(side)
-	h.Node().SetSMB(true, smbAt(0))
+	putSettings(t, h, adapterRows("adapters.smb", true, 0))
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -608,10 +700,7 @@ func TestAPassHeldPastItsBoundLeavesTheAdaptersOpen(t *testing.T) {
 	t.Cleanup(end)
 
 	side.cue.Store(true)
-	next := smbAt(0)
-	next.IdleTimeout += time.Minute
-	h.Node().SetSMB(true, next)
-	configure(t, h, storeA)
+	putSettings(t, h, map[string]string{"adapters.smb.idle_timeout": `"16m"`})
 	h.Node().Wake()
 	side.held(t, "the live change")
 	stopped := make(chan error, 1)
@@ -689,7 +778,7 @@ func TestAnUnsetAdaptersListenBindsEveryInterface(t *testing.T) {
 		return node.New(cfg)
 	}))
 	h.Node().OnAdapter(b.keep)
-	h.Node().SetSMB(true, smbAt(0))
+	putSettings(t, h, adapterRows("adapters.smb", true, 0))
 	started(t, h)
 
 	var got []netip.Addr
@@ -712,8 +801,8 @@ func TestAnAdapterOnTheAPIsOrTheMetricsPortIsRefused(t *testing.T) {
 		cfg.Bootstrap.Metrics.Listen = metAddr
 		return node.New(cfg)
 	}))
-	h.Node().SetNFS(true, nfsAt(netip.MustParseAddrPort(apiAddr).Port()))
-	h.Node().SetSMB(true, smbAt(netip.MustParseAddrPort(metAddr).Port()))
+	putSettings(t, h, adapterRows("adapters.nfs", true, netip.MustParseAddrPort(apiAddr).Port()))
+	putSettings(t, h, adapterRows("adapters.smb", true, netip.MustParseAddrPort(metAddr).Port()))
 	started(t, h)
 
 	refused := h.Node().Refused()
@@ -810,16 +899,6 @@ func heldPort(t *testing.T) (uint16, net.Listener) {
 	return uint16(l.Addr().(*net.TCPAddr).Port), l
 }
 
-// applied moves the settings generation, giving store a setting, and waits
-// until the node has applied it, as a write on the node does.
-func applied(t *testing.T, h *nodetest.Harness, store [16]byte) {
-	t.Helper()
-	configure(t, h, store)
-	if err := h.Node().Applied(t.Context()); err != nil {
-		t.Fatalf("Applied: %v", err)
-	}
-}
-
 // An adapter refused at configured, SMB on a port the test holds, raises
 // adapter_refused on the node naming SMB, its cause the bind's error, and
 // leaves the node ready; once the port is freed and SMB serves, the status
@@ -828,7 +907,7 @@ func TestAnAdapterRefusedAtConfiguredRaisesAdapterRefusedUntilItServes(t *testin
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(admin)))
 	turns := watchStatus(h)
 	port, held := heldPort(t)
-	h.Node().SetSMB(true, smbAt(port))
+	putSettings(t, h, adapterRows("adapters.smb", true, port))
 	started(t, h)
 
 	refused := storedCondition{Name: "adapter_refused", Scope: "node", ID: nodeID(h), Subject: "smb"}
@@ -871,14 +950,13 @@ func TestARefusalRaisesNoAdapterRefusedWhileServingOrDisabled(t *testing.T) {
 	var stopFails atomic.Bool
 	h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return failingStop{a, &stopFails} })
 	port := freePort(t)
-	h.Node().SetSMB(true, smbAt(port))
+	putSettings(t, h, adapterRows("adapters.smb", true, port))
 	started(t, h)
 	api, _ := h.Node().Addrs()
 	named := func(c apiv1.Condition) bool { return c.Name == "adapter_refused" }
 
 	other, _ := heldPort(t)
-	h.Node().SetSMB(true, smbAt(other))
-	applied(t, h, storeA)
+	writeRows(t, h, adapterRows("adapters.smb", true, other))
 	if got := h.Node().Refused(); len(got) != 1 || string(got[0].Record.ID) != "smb" || !listens(port) {
 		t.Fatalf("SMB's port changed to a held one: refused %s, its old port %d taking a dial %t; want smb refused, serving on its old port", describe(got), port, listens(port))
 	}
@@ -887,8 +965,7 @@ func TestARefusalRaisesNoAdapterRefusedWhileServingOrDisabled(t *testing.T) {
 	}
 
 	stopFails.Store(true)
-	h.Node().SetSMB(false, smbAt(port))
-	applied(t, h, storeB)
+	writeRows(t, h, adapterRows("adapters.smb", false, port))
 	if got := h.Node().Refused(); len(got) != 1 || string(got[0].Record.ID) != "smb" || listens(port) {
 		t.Fatalf("SMB disabled, its Stop failing: refused %s, its port %d taking a dial %t; want smb refused, stopped", describe(got), port, listens(port))
 	}
@@ -908,11 +985,7 @@ func TestALostListenerTurnsTheNodeNotReady(t *testing.T) {
 			turns := watchStatus(h)
 			var cue atomic.Bool
 			h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return lostListener{a, &cue} })
-			if protocol == "nfs" {
-				h.Node().SetNFS(true, nfsAt(0))
-			} else {
-				h.Node().SetSMB(true, smbAt(0))
-			}
+			putSettings(t, h, adapterRows("adapters."+protocol, true, 0))
 			started(t, h)
 			api, _ := h.Node().Addrs()
 
@@ -943,8 +1016,8 @@ func TestAFailingSidecarFailsOnlyItself(t *testing.T) {
 	side.cue.Store(true)
 	h.Node().SetSidecar(side)
 	nfs, smb := freePort(t), freePort(t)
-	h.Node().SetNFS(true, nfsAt(nfs))
-	h.Node().SetSMB(true, smbAt(smb))
+	putSettings(t, h, adapterRows("adapters.nfs", true, nfs))
+	putSettings(t, h, adapterRows("adapters.smb", true, smb))
 	started(t, h)
 	api, _ := h.Node().Addrs()
 
@@ -976,7 +1049,7 @@ func TestARebuildLeavesTheNodeReady(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	stoppedSMB, release := make(chan struct{}, 2), make(chan struct{})
 	h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return heldStop{a, stoppedSMB, release} })
-	h.Node().SetSMB(true, smbAt(0))
+	putSettings(t, h, adapterRows("adapters.smb", true, freePort(t)))
 	started(t, h)
 	end := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(end)
@@ -1019,13 +1092,12 @@ func TestTheStatusCarriesEachAdaptersState(t *testing.T) {
 		return a
 	})
 	ch := watchStatus(h)
-	h.Node().SetSMB(true, smbAt(0))
+	putSettings(t, h, adapterRows("adapters.smb", true, freePort(t)))
 	started(t, h)
 	t.Cleanup(func() { close(release) }) // before the node's Stop, which runs after it
 	turnAt(t, h, ch, "SMB serving, NFS disabled", statesAre("nfs stopped", "smb serving"))
 
-	h.Node().SetSMB(false, smbAt(0))
-	configure(t, h, [16]byte{0: 's', 15: 1})
+	putSettings(t, h, adapterRows("adapters.smb", false, 0))
 	h.Node().Wake()
 	hears(t, stopped, "SMB disabled")
 	if tr := turnAt(t, h, ch, "SMB's drain held", statesAre("nfs stopped", "smb draining")); adapterOf(tr.s, "smb").Port != 0 {
@@ -1040,8 +1112,7 @@ func TestTheStatusCarriesEachAdaptersState(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = held.Close() })
-	h.Node().SetNFS(true, nfsAt(uint16(held.Addr().(*net.TCPAddr).Port)))
-	configure(t, h, [16]byte{0: 's', 15: 2})
+	putSettings(t, h, adapterRows("adapters.nfs", true, uint16(held.Addr().(*net.TCPAddr).Port)))
 	h.Node().Wake()
 	caughtUp(t, h)
 	turnAt(t, h, ch, "NFS refused on a held port", statesAre("nfs configured", "smb stopped"))
@@ -1070,7 +1141,7 @@ func TestTheStatusCarriesTheGenerationEachAdapterRuns(t *testing.T) {
 	h.Node().OnAdapter(b.keep)
 	ch := watchStatus(h)
 	configure(t, h, storeA) // a settings generation above zero
-	h.Node().SetSMB(true, smbAt(0))
+	putSettings(t, h, adapterRows("adapters.smb", true, freePort(t)))
 	started(t, h)
 	servingAt := func(gen uint64) func(statusTurn) bool {
 		return func(tr statusTurn) bool {
@@ -1087,8 +1158,7 @@ func TestTheStatusCarriesTheGenerationEachAdapterRuns(t *testing.T) {
 	turnAt(t, h, ch, "a pass at a newer settings generation", servingAt(runs))
 
 	api, _ := h.Node().Addrs()
-	h.Node().SetSMB(true, smbAt(netip.MustParseAddrPort(api).Port()))
-	configure(t, h, [16]byte{0: 's', 15: 4})
+	putSettings(t, h, adapterRows("adapters.smb", true, netip.MustParseAddrPort(api).Port()))
 	h.Node().Wake()
 	caughtUp(t, h)
 	refusedAt := counters(t, h).Settings
@@ -1115,7 +1185,7 @@ func TestTheStatusAndTheAPINameThePortEachAdapterBound(t *testing.T) {
 	var b built
 	h.Node().OnAdapter(b.keep)
 	ch := watchStatus(h)
-	h.Node().SetSMB(true, smbAt(0))
+	putSettings(t, h, adapterRows("adapters.smb", true, 0))
 	started(t, h)
 	api, _ := h.Node().Addrs()
 	bound := func() uint16 {
@@ -1155,8 +1225,7 @@ func TestTheStatusAndTheAPINameThePortEachAdapterBound(t *testing.T) {
 	portsAre("SMB serving at port 0", turnAt(t, h, ch, "SMB serving at the port it picked", serving(picked)), picked)
 
 	moved := freePort(t)
-	h.Node().SetSMB(true, smbAt(moved))
-	configure(t, h, [16]byte{0: 's', 15: 5})
+	putSettings(t, h, adapterRows("adapters.smb", true, moved))
 	h.Node().Wake()
 	caughtUp(t, h)
 	if got := bound(); got != moved {
@@ -1164,8 +1233,7 @@ func TestTheStatusAndTheAPINameThePortEachAdapterBound(t *testing.T) {
 	}
 	portsAre("SMB moved", turnAt(t, h, ch, "SMB serving at the port it moved to", serving(moved)), moved)
 
-	h.Node().SetSMB(false, smbAt(moved))
-	configure(t, h, [16]byte{0: 's', 15: 6})
+	putSettings(t, h, adapterRows("adapters.smb", false, moved))
 	h.Node().Wake()
 	caughtUp(t, h)
 	portsAre("SMB disabled", turnAt(t, h, ch, "SMB stopped", func(tr statusTurn) bool {
@@ -1187,10 +1255,8 @@ func TestARestartedNodeReadsReadyOnlyOnceItsStatusIsThisStarts(t *testing.T) {
 		return node.NewAuthenticating(admin)(cfg)
 	}))
 	var b built
-	serve := func() {
-		h.Node().OnAdapter(b.keep)
-		h.Node().SetSMB(true, smbAt(0))
-	}
+	// The rows stay in the store across the restart.
+	serve := func() { h.Node().OnAdapter(b.keep) }
 	bound := func() uint16 {
 		t.Helper()
 		at := b.last("smb").Addrs()[adapter.Socket{Service: "smb", Network: "tcp"}]
@@ -1210,6 +1276,7 @@ func TestARestartedNodeReadsReadyOnlyOnceItsStatusIsThisStarts(t *testing.T) {
 	}
 
 	serve()
+	putSettings(t, h, adapterRows("adapters.smb", true, 0))
 	started(t, h)
 	api, _ := h.Node().Addrs()
 	last := bound()
@@ -1262,4 +1329,326 @@ func TestARestartedNodeReadsReadyOnlyOnceItsStatusIsThisStarts(t *testing.T) {
 	if got, want := smbPort(api), bound(); got != want {
 		t.Errorf("the restarted node, ready: the API names SMB's port %d, want %d, the one this start bound, not the last start's %d", got, want, last)
 	}
+}
+
+// The rows on the settings table run the adapters, and only them: the enabled
+// row set starts SMB serving, one set false stops it, and one set again has
+// it serving once more (RFC 20 section 3.1, RFC 23 section 2.3).
+func TestEnableDisableByRows(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	port := freePort(t)
+	putSettings(t, h, adapterRows("adapters.smb", true, port))
+	started(t, h)
+
+	if !listens(port) {
+		t.Fatalf("the enabled row set: SMB's port %d takes no dial, want it serving", port)
+	}
+
+	writeRows(t, h, adapterRows("adapters.smb", false, port))
+
+	if listens(port) {
+		t.Errorf(
+			"the enabled row set false: SMB's port %d still takes a dial, want it stopped",
+			port,
+		)
+	}
+
+	writeRows(t, h, adapterRows("adapters.smb", true, port))
+
+	if !listens(port) {
+		t.Errorf(
+			"the enabled row set again: SMB's port %d takes no dial, want a new adapter serving",
+			port,
+		)
+	}
+}
+
+// The port row is a restart-class change read from the walk at every pass:
+// SMB moves to the port the row names, its old port refusing, while an NFS
+// connection opened before keeps being answered, one adapter alone changing
+// (RFC 23 section 3.4).
+func TestPortRowMovesAdapter(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	nfs, from, to := freePort(t), freePort(t), freePort(t)
+	putSettings(t, h,
+		allRows(adapterRows("adapters.nfs", true, nfs), adapterRows("adapters.smb", true, from)))
+	started(t, h)
+	client := dialled(t, nfs)
+	ch := watchStatus(h)
+
+	putSettings(t, h, adapterRows("adapters.smb", true, to))
+	h.Node().Wake()
+	caughtUp(t, h)
+
+	gen := counters(t, h).Settings
+	tr := turnAt(t, h, ch, "the status holding the port row's generation",
+		func(tr statusTurn) bool { return tr.s.Settings == gen })
+
+	if len(tr.s.RestartPending) != 0 {
+		t.Errorf("restart pending once SMB moved: %d records, want none, its slot rebuilt it",
+			len(tr.s.RestartPending))
+	}
+
+	if !listens(to) {
+		t.Errorf("the port row: SMB's new port %d takes no dial, want SMB serving there", to)
+	}
+
+	if listens(from) {
+		t.Errorf("after the move SMB's old port %d takes a dial, want it refusing", from)
+	}
+
+	if err := node.Negotiate(dialled(t, to), 1); err != nil {
+		t.Errorf("a NEGOTIATE on the port the row names: %v", err)
+	}
+
+	if _, err := node.Null(client, 1, 3); err != nil {
+		t.Errorf("an NFSv3 NULL on the connection opened before the move: %v", err)
+	}
+}
+
+// The port row moved onto a port a listener holds is refused, named on SMB's
+// record, and SMB keeps serving on the port it served on (RFC 23 section 2.3,
+// RFC 13 section 6).
+func TestHeldPortRowRefused(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	port := freePort(t)
+	held, _ := heldPort(t)
+	putSettings(t, h, adapterRows("adapters.smb", true, port))
+	started(t, h)
+
+	writeRows(t, h, adapterRows("adapters.smb", true, held))
+
+	refused := h.Node().Refused()
+
+	want := entity.ResourceRef{Kind: entity.ResourceAdapter, ID: []byte("smb")}
+	if len(refused) != 1 || refused[0].Record.Kind != want.Kind ||
+		!bytes.Equal(refused[0].Record.ID, want.ID) {
+		t.Fatalf(
+			"the port row onto a held port: %s, want SMB's adapter record refused",
+			describe(refused),
+		)
+	}
+
+	if !listens(port) {
+		t.Errorf("after the refusal SMB's port %d takes no dial, want it serving on the old port",
+			port)
+	}
+}
+
+// RFC 5531's number the NFS NULL calls read as PROG_MISMATCH.
+const progMismatch = 2
+
+// The versions row is live, read at every pass and handed the running adapter
+// by Reconfigure: a connection accepted after its Max was lowered is refused
+// the version it asks, PROG_MISMATCH naming the range served, while one
+// accepted before keeps the versions it had (RFC 20 section 3.6).
+func TestVersionsRowLive(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	port := freePort(t)
+	putSettings(t, h, adapterRows("adapters.nfs", true, port))
+	started(t, h)
+	before := dialled(t, port)
+
+	if _, err := node.Null(before, 1, 3); err != nil {
+		t.Fatalf("an NFSv3 NULL before the row: %v", err)
+	}
+
+	writeRows(t, h, map[string]string{"adapters.nfs.versions": `{"min":"3","max":"3"}`})
+
+	got, err := node.Null(dialled(t, port), 2, 4)
+	if err != nil || !slices.Equal(got, []uint32{progMismatch, 3, 3}) {
+		t.Errorf("an NFSv4 NULL on a connection accepted after: %v, %v; want PROG_MISMATCH",
+			got, err)
+	}
+
+	got, err = node.Null(before, 3, 4)
+	if err != nil || len(got) == 0 || got[0] == progMismatch {
+		t.Errorf(
+			"an NFSv4 NULL on the connection accepted before: %v, %v; want answered, not refused",
+			got,
+			err,
+		)
+	}
+}
+
+// namesOnly fails the test unless refused names the records want, each once,
+// and no other.
+func namesOnly(
+	t *testing.T,
+	what string,
+	refused []entity.RefusedRecord,
+	want ...entity.ResourceRef,
+) {
+	t.Helper()
+
+	got := make([]entity.ResourceRef, len(refused))
+	for i, r := range refused {
+		got[i] = r.Record
+	}
+
+	ok := len(got) == len(want)
+	for _, ref := range want {
+		ok = ok && hasRef(got, ref)
+	}
+
+	if !ok {
+		t.Fatalf("%s: %s, want the records %v and no other", what, describe(refused), want)
+	}
+}
+
+// A row the section's own shape refuses keeps the adapter serving on its last
+// good settings: nothing is handed the defaults in the refused value's place,
+// the walk's refusal is reported on the setting's record, and, retried by no
+// pass on its own, it waits for the settings generation to move (RFC 13
+// section 6, RFC 23 section 2.3).
+func TestRefusedSectionKeepsRunning(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+
+	var applies atomic.Int64
+
+	h.Node().OnApply(func(kvstore.Counters) { applies.Add(1) })
+
+	port := freePort(t)
+
+	putSettings(t, h, adapterRows("adapters.smb", true, port))
+	started(t, h)
+	client := dialled(t, port)
+
+	writeRows(t, h, map[string]string{"adapters.smb.drain_timeout": `"1s"`})
+
+	refused := h.Node().Refused()
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+
+	namesOnly(t, "a drain_timeout row the section refuses", refused,
+		entity.SettingRef(installation, "adapters.smb.drain_timeout"),
+		entity.SettingRef(installation, "adapters.smb.enabled"),
+		entity.SettingRef(installation, "adapters.smb.port"))
+
+	if !strings.Contains(string(refused[0].Error), "DrainTimeout") {
+		t.Errorf("the refusal of the drain_timeout row: %s, want it naming the field it refuses",
+			refused[0].Error)
+	}
+
+	if err := node.Negotiate(client, 1); err != nil {
+		t.Errorf("a NEGOTIATE once the row is refused: %v, want SMB still serving", err)
+	}
+
+	refusedAt, settled := refused[0].Generation, applies.Load()
+
+	for range 3 {
+		moved := h.Node().Moved()
+
+		h.Clock().Advance(time.Second)
+
+		select {
+		case <-moved:
+		case <-time.After(10 * time.Second):
+			t.Fatal("no reconcile pass within 10 s of the clock advancing 1 s")
+		}
+	}
+
+	if got := applies.Load(); got != settled {
+		t.Errorf("%d applies once the row stood refused, want %d, none: it is not retried",
+			got, settled)
+	}
+
+	refused = h.Node().Refused()
+	if len(refused) != 3 || refused[0].Generation != refusedAt {
+		t.Errorf(
+			"after the clock advanced: %s, want the three refusals at generation %d, unchanged",
+			describe(refused), refusedAt)
+	}
+}
+
+// A row the node's own record writes and its shape refuses is reported on
+// that record, at the node's scope, beside the installation's rows of the
+// section the node's value is read over, as the walk names every row of a
+// value it refuses, and the adapter keeps serving on its last good settings
+// (RFC 23 section 2.4, RFC 13 section 6).
+func TestARefusedNodeRowIsReportedOnTheNodeRecord(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	port := freePort(t)
+	putSettings(t, h, adapterRows("adapters.smb", true, port))
+	started(t, h)
+	client := dialled(t, port)
+
+	writeNodeRows(t, h, map[string]string{"adapters.smb.enabled": `not json`})
+
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+	namesOnly(t, "a row the node wrote and the walk refused", h.Node().Refused(),
+		entity.SettingRef(
+			entity.SettingScope{Kind: entity.ScopeNode, ID: h.NodeID()}, "adapters.smb.enabled"),
+		entity.SettingRef(installation, "adapters.smb.enabled"),
+		entity.SettingRef(installation, "adapters.smb.port"))
+
+	if err := node.Negotiate(client, 1); err != nil {
+		t.Errorf("a NEGOTIATE once the node's row is refused: %v, want SMB still serving", err)
+	}
+}
+
+// With no row of theirs, neither adapter is built or listens:
+// the node's own API is all a node with no enabled adapter serves (RFC 20
+// section 3.6, RFC 23 section 2.2).
+func TestAdaptersOffByDefault(t *testing.T) {
+	var b built
+
+	newRecording := func(cfg node.Config) (*node.Node, error) {
+		n, err := node.New(cfg)
+		if err == nil {
+			n.OnAdapter(b.keep)
+		}
+
+		return n, err
+	}
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(newRecording))
+	ch := watchStatus(h)
+	started(t, h)
+	api, _ := h.Node().Addrs()
+
+	if got := get(t, api, "/health/ready"); got != ready {
+		t.Errorf("readiness with no adapter enabled: got %+v, want ready", got)
+	}
+
+	builtAdapters := map[string]adapter.Adapter{"nfs": b.last("nfs"), "smb": b.last("smb")}
+
+	for protocol, a := range builtAdapters {
+		if a != nil {
+			t.Errorf("the %s adapter was built with no row of its section, want none", protocol)
+		}
+	}
+
+	if got := h.Node().Refused(); len(got) != 0 {
+		t.Errorf("with no adapter enabled: %s, want no refusal", describe(got))
+	}
+
+	turnAt(t, h, ch, "written with no adapter enabled, both stopped",
+		func(tr statusTurn) bool { return tr.wrote && statesAre("nfs stopped", "smb stopped")(tr) })
+}
+
+// connected dials from local, its NEGOTIATE answered, and holds the
+// connection open for the node to count, closed when the test ends.
+func connected(t *testing.T, id uint64, local, target string, port uint16) net.Conn {
+	t.Helper()
+	c := dialFrom(t, local, target, port)
+
+	if err := node.Negotiate(c, id); err != nil {
+		t.Errorf("a NEGOTIATE from %s under message ID %d: %v", local, id, err)
+	}
+
+	return c
+}
+
+// dialled is an open connection to port on loopback, closed when the test
+// ends.
+func dialled(t *testing.T, port uint16) net.Conn {
+	t.Helper()
+
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial port %d: %v", port, err)
+	}
+
+	t.Cleanup(func() { _ = c.Close() })
+
+	return c
 }
