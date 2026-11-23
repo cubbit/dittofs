@@ -145,11 +145,11 @@ func New(t testing.TB, opts ...Option) *Harness {
 // generated holds the storage and protocol key files every harness writes,
 // by name, generated once for the test binary: each costs a key derivation,
 // slow under the race detector, and no test needs two harnesses' keys to
-// differ.
+// differ. They are weak, so each open the node makes costs little too.
 var generated = sync.OnceValues(func() (map[string][]byte, error) {
 	keys := map[string][]byte{}
 	for _, name := range []string{"storage.key", "protocol.key"} {
-		b, err := keyprovider.GenerateKeyFile(passphrase)
+		b, err := keyprovider.GenerateWeakKeyFile(passphrase)
 		if err != nil {
 			return nil, err
 		}
