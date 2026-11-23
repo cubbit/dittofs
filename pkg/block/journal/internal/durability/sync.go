@@ -487,8 +487,10 @@ type Durability struct {
 	// reach is this instance's word to the registry on who read its ring,
 	// read by the claims a Stop of the instance left behind: dead retires
 	// them to the served window, the events a genuine reader's copy last
-	// carried.
-	reach reach
+	// carried. It is allocated on its own, for the registry's claims hold
+	// it alone — an embedded value would keep the whole Durability, extent
+	// index included, alive behind it past the instance's life.
+	reach *reach
 }
 
 // reach is a Durability's word to the per-process registry on who read the
@@ -533,6 +535,7 @@ func New(cfg Config) (*Durability, error) {
 		log = slog.New(slog.DiscardHandler)
 	}
 	d := &Durability{
+		reach:    &reach{},
 		clock:    cfg.Clock,
 		domains:  cfg.Domains,
 		tracer:   cfg.Tracer,

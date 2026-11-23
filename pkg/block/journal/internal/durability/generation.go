@@ -192,7 +192,7 @@ func (s *dirState) heldLocked(k piece, d *Durability) bool {
 	if !ok {
 		return false
 	}
-	r := &d.reach
+	r := d.reach
 	// An unplaced claim bars no other taker: the record it names never
 	// landed, so the piece is still owed, and the claim's word is read by
 	// the takeover that follows, never by the hold. Its own instance it
@@ -213,7 +213,7 @@ func (s *dirState) heldLocked(k piece, d *Durability) bool {
 func (s *dirState) setClaimEvent(k piece, d *Durability, ev uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.pieces[k]; ok && c.r == &d.reach {
+	if c, ok := s.pieces[k]; ok && c.r == d.reach {
 		c.ev = ev
 		s.pieces[k] = c
 	}
@@ -226,7 +226,7 @@ func (s *dirState) setClaimEvent(k piece, d *Durability, ev uint64) {
 func (s *dirState) markUnplaced(k piece, d *Durability) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.pieces[k]; ok && c.r == &d.reach && !c.placed {
+	if c, ok := s.pieces[k]; ok && c.r == d.reach && !c.placed {
 		c.unplaced = true
 		s.pieces[k] = c
 	}
@@ -275,7 +275,7 @@ func (s *dirState) take(k piece, d *Durability) (took, takeover, unsyncedDebt bo
 	}
 	c, had := s.pieces[k]
 	_, unsyncedDebt = s.unsynced[k]
-	s.takeoverLocked(k, claim{r: &d.reach})
+	s.takeoverLocked(k, claim{r: d.reach})
 	// A claim that reaches the take published its report unread, kept
 	// unplaced ones with rings still served beyond it among them: their
 	// word is the suppression the caller's Reported already carries.
@@ -303,7 +303,7 @@ func (s *dirState) takePiece(d *Durability, dropped core.Seq, ext core.Extent) b
 	if s.heldLocked(k, d) {
 		return false
 	}
-	s.takeoverLocked(k, claim{r: &d.reach, placed: true})
+	s.takeoverLocked(k, claim{r: d.reach, placed: true})
 	return true
 }
 
@@ -436,7 +436,7 @@ func (s *dirState) addFailed(seq core.Seq, d *Durability, ev uint64) {
 	}
 	var r *reach // nil for a read-only refusal, which reports through itself
 	if d != nil {
-		r = &d.reach
+		r = d.reach
 	}
 	s.failed = append(s.failed, failedWord{seq: seq, r: r, ev: ev})
 }
