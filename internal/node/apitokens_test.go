@@ -251,8 +251,8 @@ func (s *authNode) refusedAudits(t *testing.T, kind entity.ResourceKind) int {
 
 // A creation is refused 400 invalid, audited, and stores nothing: presented
 // with an API token, so a token mints no successor; by an admin for another
-// account that holds a password, which is no service account; and for a
-// disabled account. The account itself, signed in, creates its own.
+// account that holds a password, or a protocol spelling, which is no
+// service account; and for a disabled account. The account itself, signed in, creates its own.
 func TestAPITokenCreationRefusals(t *testing.T) {
 	s := newAuthNode(t)
 	admin := s.tokens(t, "admin", adminPassword).Access
@@ -261,6 +261,14 @@ func TestAPITokenCreationRefusals(t *testing.T) {
 	off := s.serviceAccount(t, "off", entity.RoleViewer)
 	s.change(t, off, func(tx entity.ControlPlaneTx, u *entity.User) error {
 		u.Disabled = true
+		_, err := tx.PutUser(*u, u.Generation, entity.Alloc{})
+		return err
+	})
+	// carol signs in through the directory: no password, but a Kerberos
+	// spelling, so no service account.
+	carol := s.serviceAccount(t, "carol", entity.RoleAdmin)
+	s.change(t, carol, func(tx entity.ControlPlaneTx, u *entity.User) error {
+		u.IDs = entity.ProtocolIDs{{Scheme: entity.SchemeKerberos, Value: "carol@EXAMPLE.COM"}}
 		_, err := tx.PutUser(*u, u.Generation, entity.Alloc{})
 		return err
 	})
@@ -273,6 +281,7 @@ func TestAPITokenCreationRefusals(t *testing.T) {
 		{"a creation presented with an API token", tok.Status.Token, svc},
 		{"an admin creating a token for an account holding a password", admin, pat},
 		{"a token for a disabled account", admin, off},
+		{"an admin creating a token for an account with a protocol spelling and no password", admin, carol},
 	} {
 		before := s.refusedAudits(t, entity.ResourceAPIToken)
 		wantStatus(t, tc.what, s.createToken(t, tc.bearer, tc.p, at), http.StatusBadRequest, "invalid")
@@ -280,7 +289,7 @@ func TestAPITokenCreationRefusals(t *testing.T) {
 			t.Errorf("%s: %d refused audit records, want 1", tc.what, got)
 		}
 	}
-	for _, p := range []entity.Principal{pat, off} {
+	for _, p := range []entity.Principal{pat, off, carol} {
 		for tk, err := range s.h.Store().ControlPlane().APITokens(t.Context(), p, [16]byte{}) {
 			t.Errorf("a token stored after a refused creation: %+v, %v", tk, err)
 		}

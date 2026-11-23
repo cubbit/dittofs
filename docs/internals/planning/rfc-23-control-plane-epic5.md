@@ -561,8 +561,8 @@ the user's read fails `reserve` first: a sign-in answering `503`,
 - **Deliverables:** in `apitokens.go`: creation for an enabled account holding a role, a service
   account or one that signs in by password (RFC 23 §12's "§5.3 revocation" row has one account hold
   both a session and an API token); each account creates, lists and revokes its own tokens, and an
-  admin creates one for another account only when it is a service account (a role and no
-  password), and lists and revokes any account's, a `decision:` at the check since that is wider
+  admin creates one for another account only when it is a service account (a role, no
+  password and no protocol spelling, R2), and lists and revokes any account's, a `decision:` at the check since that is wider
   than §5.2's "service tokens of others" in the direction that only ends credentials; a creation
   presented with an API token is refused `400` `invalid`, so a token mints no successor, and so is
   a sign-out presented with one, an API token ending only by its revocation; the token shown once

@@ -14,7 +14,8 @@ import (
 
 // apiTokenRoutes are an account's API tokens: created, listed and revoked
 // by the account itself, and by an admin; an admin creates one for another
-// account only when that account is a service account. Creation answers the
+// account only when that account is a service account, one holding no
+// password and no protocol spelling. Creation answers the
 // token, the one time it is shown, so it takes no Idempotency-Key and keeps
 // no record of its answer.
 var apiTokenRoutes = []route{
@@ -106,7 +107,8 @@ func apiTokenOf(t entity.APIToken, token string) apiv1.APIToken {
 // createAPIToken is POST /users/{id}/api-tokens: a token for the account,
 // expiring when the spec says, answered with the token itself, which no
 // later read shows. A caller creates its own; another account's only an
-// admin does, and only for a service account, one holding no password.
+// admin does, and only for a service account, one holding no password and no
+// protocol spelling.
 //
 // decision: a caller that presented an API token creates none, so a token
 // cannot mint its successor: without it, a one-minute token makes one of the
@@ -126,8 +128,8 @@ func createAPIToken(ctx context.Context, rq request[apiv1.APITokenSpec], _ struc
 	if err != nil {
 		return apiv1.APIToken{}, rq.ID, err
 	}
-	if u.Principal != c.Principal && u.Password != (entity.SecretRef{}) {
-		return apiv1.APIToken{}, rq.ID, fmt.Errorf("%w: another account's API token is created only for a service account, one holding no password", vfserr.ErrInvalid)
+	if u.Principal != c.Principal && (u.Password != (entity.SecretRef{}) || len(u.IDs) != 0) {
+		return apiv1.APIToken{}, rq.ID, fmt.Errorf("%w: another account's API token is created only for a service account, one holding no password and no protocol spelling", vfserr.ErrInvalid)
 	}
 	t, token, err := rq.d.Credentials.CreateAPIToken(tx, u, rq.Body.Expires)
 	if err != nil {
