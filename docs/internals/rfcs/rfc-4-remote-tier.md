@@ -674,6 +674,19 @@ capability check ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%2
 `DeleteVersions` do what [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) says; on an immutable one they return
 `ErrInvalid` for every name without sending a request.
 
+**Some calls land with their first caller.** Two groups of this interface have no caller in the
+first release that offloads, and each lands with the caller that first needs it, its signatures
+as written here. The calls a backup location's stores make — `PutVersion`, `GetVersion`,
+`Retention`, `ExtendRetention`, `PutControlVersion`, `ExtendControlRetention`,
+`GetControlVersion`, `PutObject`, `GetObject`, `ObjectRetention`, `ExtendObjectRetention`,
+`DeleteObjects`, `ListObjects` — with the `immutable` mode and its admission
+([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes), [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location)), land with RFC 26's copier and restore; until then a store
+refuses to open in `immutable` mode. `Settings`, `RecheckSetting`, `VersionsPage` and
+`DeleteVersions` land with GC's `Recheck` pass ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), their one caller
+([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)); until then a service setting that drifts after a store opened goes unseen until
+the store is next opened, whose capability check reads it again. Each consumer declares the
+methods it uses ([§1.2](#1.2%20A%20contract%2C%20not%20a%20component)), so neither group's arrival changes a caller.
+
 ```go
 // Cause says why a store refused (ErrDenied), so a caller can choose between
 // waiting and failing a write as out of space (RFC 8 §10.2).
@@ -1767,9 +1780,10 @@ with every result.
 | List of 100,000 blocks | requests, peak memory | one per page of the caller's `n` (1,000, and 500 through `Small`), and at most one page held |
 
 **Suites.** §7.1's rows against the in-memory store and §7.3's codec tests run in `unit`, and §7.1
-in full against the local emulator under §7.2's fault transport in `integration`. No suite runs yet
-the nightly pass against each production service, the per-service lab rows, §7.5's benchmarks or
-fuzzing past the seed corpus.
+in full against the local emulator under §7.2's fault transport in `integration`. The codec's fuzz
+targets run past their seed corpus nightly in the shared fuzz suite the carver registers, and
+§7.5's steady-load connection row in the engine's soak suite. No suite runs yet the nightly pass
+against each production service, the per-service lab rows or §7.5's other benchmarks.
 
 ## 8. Decisions and open questions
 
