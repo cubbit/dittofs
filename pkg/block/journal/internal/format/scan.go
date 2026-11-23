@@ -582,7 +582,9 @@ func firstNonZero(b []byte) int {
 	return -1
 }
 
-// zeroBlock is the zeros firstNonZero compares a block against.
+// zeroBlock is the zeros firstNonZero compares a block against. Nothing may
+// write it: concurrent scans share it, and a non-zero byte here would make
+// every block holding that byte read as zeros.
 var zeroBlock [4096]byte
 
 // zeroSlot tells whether the bytes one slot holds — the min(8, size-p) bytes
