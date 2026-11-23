@@ -196,7 +196,7 @@ already done, and what remains is smaller and different:
      KV branch only receives a KV that was already written to. The deferral ledger holds the row
      that would retire the write.
    - `decide` is unchanged.
-   - RFC 23 is edited in two places, on `develop` before T3.3:
+   - The RFCs are edited in four places, on `develop` before T3.3 and then cherry-picked:
      - §2.1's signature, and the whole `Preflight` description above it (:473-479). That includes
        "before it opens the metadata store's KV", "creates nothing", and the "**(cluster)**: a
        cluster node's store has no directory" sentence, which described the rejected alternative.
@@ -207,9 +207,22 @@ already done, and what remains is smaller and different:
        > and a pre-journal (v1) layout on a device or at the configured pre-journal root, it
        > refuses naming what it found. It creates nothing, except that opening a store with no
        > directory writes the node's clock ceiling first, also into a foreign cluster it then
-       > refuses.
-     - §2 step 2 (:289-293), "before anything opens … and nothing was opened". This is false for
-       a host whose store has no directory, which opens the KV first.
+       > refuses. A first start meets two of its refusals most often: a store never initialised,
+       > and a bootstrap with no journal device.
+
+       The last sentence is kept as it stands.
+     - RFC 23 §2 step 2 (:289-293), "before anything opens … and nothing was opened". This is
+       false for a host whose store has no directory, which opens the KV first.
+     - RFC 23 §2's `run` sketch (:303-309). It calls `node.Preflight(...)` with "nothing was opened:
+       the start check refused" (:305-306) and opens the KV only after it, `kv.Open(boot.Store)`
+       (:308). For a store with no directory, the sketch moves the open before the check, passes
+       the KV to `Preflight`, and closes it on the refusal.
+     - RFC 13 §2.2's verification row (`rfc-13-configuration.md:1000` on `develop`, :994 on
+       `feat/storage-v2`). It reads "Start a node against an empty metadata store and empty journal
+       directories: assert it refuses, creating nothing." Under D7, an empty FoundationDB cluster
+       is that empty store, and RFC 16 §4.1 makes the ceiling write necessary, since FoundationDB's
+       read version is not a timestamp. The row becomes: "…assert it refuses, creating nothing but,
+       on a store with no directory, the node's clock ceiling."
 
    The alternative is to skip the store probe when there is no directory and let `node.New`'s
    `kvstore.Open` answer. It is rejected: it loses "metadata store lost", which RFC 13 §2.2
