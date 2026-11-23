@@ -565,19 +565,22 @@ test/integration/ad-dc/
 
 - **Track:** the team. **Depends on:** T8.6. E6's T6.11; E7's pass-through.
 - **Covers:** R21.
-- **Deliverables:** two tests in `internal/identity/integration_test.go`.
+- **Deliverables:** two tests in `internal/identity/passthrough_bound_test.go`.
 - **Acceptance criteria:**
   - The bound holds a pass-through sign-in whose own directory work is under 20 seconds.
   - The bound holds a sign-in whose directory queries alone pass 20 seconds.
 - **Tests:** in `internal/identity`, over the memory KV store, the in-memory directory and domain
   controller and the injected clock:
-  - a cold pass-through sign-in of a user in 3 groups, every directory query delayed 4 seconds
-    through the fault wrapper: it succeeds with the domain controller answering at once (the
-    control: the directory's share alone stays under the bound), and fails `ErrUnavailable` at 20
-    seconds on the clock, nothing minted, with the domain controller's answer delayed 15 seconds
-    (catches the pass-through's wait and call counted outside the bound, R21);
+  - a cold pass-through sign-in of a user in 3 groups, every directory query delayed 3.5 seconds
+    through the fault wrapper (a cold sign-in asks five, so 17.5 seconds): it succeeds with the
+    domain controller answering at once (the control: the directory's share alone stays under the
+    bound), and fails `ErrUnavailable` at 20 seconds on the clock, nothing minted, with the domain
+    controller's answer delayed 4 seconds, under the call's own 5-second bound (catches the
+    pass-through's wait and call counted outside the bound, R21); and with every directory
+    operation delayed 4.5 seconds, the call starts at 18 seconds and the bound ends it at 20
+    (catches a bound that does not end the call in flight);
   - RFC 18 §10's "directory deadline" sign-in clause: a cold pass-through sign-in of a user in 300
-    groups, each directory query delayed 4 seconds, the domain controller answering at once: it
+    groups, each directory query delayed 4.5 seconds, the domain controller answering at once: it
     fails `ErrUnavailable` at 20 seconds on the clock, and nothing is minted (catches the deadline
     applied only to the secure-channel wait and the call, which lets the sign-in run for 20
     minutes, R21). E6's T6.11 holds a resolution's bound, not a sign-in's.

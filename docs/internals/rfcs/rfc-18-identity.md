@@ -2444,6 +2444,7 @@ alice's still signs in as alice.
 | Mints whose name another principal held (§4.1) | `identity_mints_unnamed_total{kind}`: `user`, `group` | counter |
 | Directory mints whose `uidNumber` or `gidNumber` was 0 or 65534 and got an allocated ID (§2.3) | `identity_mints_remapped_total{kind}`: `user`, `group` | counter |
 | Directory principals left without a name by a rename (§5.1) | `identity_renames_unnamed_total{kind}`: `user`, `group` | counter |
+| Refreshes of a directory principal's name or e-mail that resolution could not write and served the caller anyway (§5.1) | `identity_directory_refresh_failures_total{kind}`: `user`, `group` | counter |
 | Rotation confirms whose key version number differs from the tag (§3.5) | `identity_machine_key_version_mismatches_total` | counter |
 | Unmapped spellings | `identity_unmapped_total{scheme}`: `uid`, `gid`, `sid`, `owner` | counter |
 | SIDs dropped from a PAC or pass-through reply (§3.4) | `identity_pac_sids_dropped_total{reason}`: `own_domain`, `builtin`, `user`, `other_domain`, `well_known` | counter |
