@@ -45,7 +45,7 @@ type Directory struct {
 	base      string // the naming context
 	domainSID []byte // the naming context's objectSid
 
-	mu          sync.Mutex
+	mu          sync.RWMutex      // a search reads under RLock; every writer takes Lock
 	entries     map[string]*entry // by DN, lower-cased
 	passwords   map[string][]byte // by DN, lower-cased
 	nextRID     uint32
@@ -296,9 +296,9 @@ func (c *memConn) Bind(ctx context.Context, name string, password []byte) error 
 	if err := c.check(ctx); err != nil {
 		return err
 	}
-	c.d.mu.Lock()
+	c.d.mu.RLock()
 	want, ok := c.d.passwords[strings.ToLower(name)]
-	c.d.mu.Unlock()
+	c.d.mu.RUnlock()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -346,8 +346,10 @@ func (c *memConn) Search(ctx context.Context, req directory.Request) (directory.
 		return directory.Result{}, fmt.Errorf("identitytest: no such object %q", req.Base)
 	}
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	// A search only reads: tokenGroups builds its member index as a local, so
+	// concurrent searches do not queue on each other.
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	if _, ok := d.entries[strings.ToLower(req.Base)]; !ok {
 		return directory.Result{}, fmt.Errorf("identitytest: no such object %q", req.Base)
 	}
@@ -430,7 +432,7 @@ func (c *memConn) check(ctx context.Context) error {
 
 // selected copies the entry with the attributes attrs names, or all of them
 // when it names none: a stored one whole, one asked as attr;range=<lo>-<hi|*>
-// as that range, and tokenGroups constructed; d.mu is held.
+// as that range, and tokenGroups constructed; d.mu is held, for reading at least.
 func (d *Directory) selected(e *entry, attrs []string) (directory.Entry, error) {
 	out := directory.Entry{DN: e.dn, Attrs: map[string][][]byte{}}
 	for k, vs := range e.attrs {
@@ -479,7 +481,7 @@ func clone(vs [][]byte) [][]byte {
 
 // tokenGroups is the SIDs of every security group e belongs to, through
 // member links or its primaryGroupID, directly or through other security
-// groups, each once; none once HideTokenGroups was called; d.mu is held. A
+// groups, each once; none once HideTokenGroups was called; d.mu is held, for reading at least. A
 // distribution group is neither held nor followed, as a security token
 // holds no distribution group.
 func (d *Directory) tokenGroups(e *entry) [][]byte {
