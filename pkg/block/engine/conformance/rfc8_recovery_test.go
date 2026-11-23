@@ -485,7 +485,10 @@ func TestRFC8A_RemovalDoneNotPrunedIsPrunedAtRestart(t *testing.T) {
 // reopen would re-report the loss as new, the duplicate RFC 1 §9.4's row
 // rules out.
 func TestRFC8A_ALossTheDrainServedIsNotRefoundAtTheReopen(t *testing.T) {
-	f := enginetest.New(t)
+	// A 1 MiB segment cap: FailNextWindow's stale reads make each recovery
+	// scan of a segment quadratic in its size, and the row reads the
+	// reopen's claims, not cap-scale behaviour.
+	f := enginetest.New(t, enginetest.WithSegmentCap(mib))
 	_, id := f.File("a")
 
 	// The dirty extent: a write whose window the journal fails drops it and
@@ -520,7 +523,8 @@ func TestRFC8A_ALossTheDrainServedIsNotRefoundAtTheReopen(t *testing.T) {
 // public surface when the journal places one — the answer the row's
 // revert-check rests on it being able to give.
 func TestRFC8A_ALossNoDrainReachedIsReportedAtTheReopen(t *testing.T) {
-	f := enginetest.New(t)
+	// As above: the reopen scans small segments, never cap-scale ones.
+	f := enginetest.New(t, enginetest.WithSegmentCap(mib))
 	_, id := f.File("a")
 	p := bytes.Repeat([]byte("lost"), 1024)
 
