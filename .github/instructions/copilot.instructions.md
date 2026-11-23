@@ -91,11 +91,7 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 - ✅ Nil checks: validate pointer dereferences
 
 **DittoFS-Specific Patterns:**
-- ✅ Use `metadata.HandleToINode()` for directory entry IDs (NOT custom generation)
-- ✅ Use `metadata.EncodeShareHandle()` / `metadata.DecodeFileHandle()` consistently
-- ✅ Use shared helper functions from `pkg/metadata/types.go`
-- ✅ Use error factory functions from `pkg/metadata/errors.go` and `pkg/metadata/errors/errors.go`
-- ✅ Implement `ReadBlockRange` on block stores for efficient partial reads
+- ✅ The store returns `*StoreError` values built by the factory functions in `pkg/metadata/errors/errors.go`; the filesystem service maps them to `pkg/vfs/vfserr` sentinels in `storeErr` (`internal/vfs/errors.go`)
 
 **Concurrency Safety:**
 - ✅ Check for data races (maps, slices accessed by multiple goroutines)

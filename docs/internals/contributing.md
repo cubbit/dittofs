@@ -255,53 +255,11 @@ See [IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation
 
 ### Adding a new metadata error code
 
-Every `ErrorCode` of `pkg/metadata/errors` that should surface to NFS and/or SMB clients is
-mapped to protocol-specific status codes by the per-package `StatusFor`
-switch in the adapter types packages (`internal/adapter/nfs/types`,
-`internal/adapter/nfs/v4/types`, `internal/adapter/smb/types`). Adding a
-new code is a one-edit-per-package contract — the enum-walk test in each
-package fails loudly if a switch arm or expectation row is missing.
-
-1. **Declare the constant** — add the new value in
-   `pkg/metadata/errors/errors.go`.
-
-2. **Add the switch arm + expectation row in each types package** —
-   extend the `StatusFor` switch and the `expected` table in
-   `statusfor_test.go` for every package whose protocol should observe
-   the code:
-
-   ```go
-   case merrs.ErrFooBar:
-       return nfs3types.NFS3ErrXXX
-   ```
-
-   The enum-walk test (`TestStatusFor_EnumWalk`) iterates the full
-   `ErrorCode` range and fails if either the arm or the expectation row
-   is missing.
-
-3. **SMB lock-context override (if applicable)** — if the code has
-   different semantics in SMB2 LOCK requests versus general I/O, give it
-   an arm in `smb/types`'s `StatusForLock` (and a row in the lock
-   expectation table). `StatusForLockErr` consults the lock switch;
-   `StatusForErr` consults the general one.
-
-4. **Add a test case** — pick the right tier:
-   - **E2E tier** (triggerable via real NFS/SMB file operations): add a
-     trigger helper in `test/e2e/helpers/error_triggers.go` and a row in
-     `TestCrossProtocol_ErrorConformance` in
-     `test/e2e/cross_protocol_test.go`. Expected errnos are derived at
-     runtime from `nfs/types.StatusForErr` / `smb/types.StatusForErr` —
-     you do not hand-transcribe protocol codes into the test table.
-   - **Unit tier** (exotic codes — quota, grace-period, deadlock,
-     connection-limits): add the code to the expectation table in the
-     relevant `statusfor_test.go`. `TestStatusFor_EnumWalk` picks it up
-     automatically and asserts every switch returns the expected value.
-   - **Not sure which tier**: the enum-walk test fails on any code
-     missing an expectation row, so the tier decision cannot leave the
-     code uncovered.
-
-6. **Run the test suite** — `go test -race ./internal/adapter/common/...`
-   must stay green.
+To add a store error code, declare it in `pkg/metadata/errors/errors.go`, before
+`errCodeSentinel` and with a `String` arm, and give it a row in `storeCodes`
+(`internal/vfs/errors.go`), which maps it to one of the `pkg/vfs/vfserr` sentinels. An unmapped
+code answers `ErrUnavailable`, a retry. The node API answers store codes from its own table in
+`internal/node/api/problems.go`; `TestProblemTableIsTotal` fails on a code without a row there.
 
 ### Adding a New Protocol Adapter
 
@@ -409,16 +367,10 @@ func HandleLookup(ctx *AuthContext, dirHandle, name string) {
 
 ### Error Handling
 
-Return `*StoreError` values from `pkg/metadata/errors`:
-
-```go
-// Examples from pkg/metadata/errors/errors.go
-ErrNotDirectory      // NFS3ERR_NOTDIR
-ErrNotFound          // NFS3ERR_NOENT
-ErrAccessDenied      // NFS3ERR_ACCES
-ErrAlreadyExists     // NFS3ERR_EXIST
-ErrNotEmpty          // NFS3ERR_NOTEMPTY
-```
+The store returns `*StoreError` values from `pkg/metadata/errors` (codes `ErrNotFound`,
+`ErrNotDirectory`, `ErrAccessDenied`, …). The filesystem service maps them to the
+`pkg/vfs/vfserr` sentinels (`ErrNotFound`, `ErrNotDir`, `ErrAccess`, `ErrExist`, `ErrNotEmpty`, …)
+in `storeErr` (`internal/vfs/errors.go`), and each adapter maps those to its own status codes.
 
 Log appropriately:
 - `logger.Debug()`: Expected/normal errors (permission denied, file not found)

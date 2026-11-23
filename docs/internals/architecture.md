@@ -521,7 +521,6 @@ dittofs/
 │   ├── controlplane/api/         # API implementation
 │   │   ├── handlers/             # HTTP handlers with centralized error mapping
 │   │   └── middleware/           # Auth middleware
-│   ├── auth/                     # Kerberos/Netlogon service internals
 │   ├── cli/                      # CLI output formatting
 │   ├── logger/                   # Logging utilities
 │   └── ...                       # tlsconfig/, pathutil/, bytesize/

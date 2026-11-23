@@ -143,9 +143,11 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
    branch no protocol WRITE handler exists yet
    ([Data path](docs/internals/architecture.md#data-path)); `develop` keeps the v1 rule.
 
-6. **Error codes:** return `*StoreError` values from `pkg/metadata/errors` (codes `ErrNotFound`,
-   `ErrNotDirectory`, `ErrAccessDenied`, `ErrAlreadyExists`, `ErrNotEmpty`, …). Log expected errors
-   at `Debug`, unexpected at `Error`.
+6. **Error codes:** the store returns `*StoreError` values from `pkg/metadata/errors` (codes
+   `ErrNotFound`, `ErrNotDirectory`, `ErrAccessDenied`, …). The filesystem service maps them to the
+   `pkg/vfs/vfserr` sentinels (`ErrNotFound`, `ErrNotDir`, `ErrAccess`, `ErrExist`, `ErrNotEmpty`,
+   …) in `storeErr` (`internal/vfs/errors.go`), and each adapter maps those to its own. Log
+   expected errors at `Debug`, unexpected at `Error`.
 
 7. **Store contracts:** a new key-value backend passes `pkg/metadata/kv/kvtest`'s suite, and the
    store over it `pkg/metadata/kvstore/kvstoretest`'s. Block stores have exactly one suite,
@@ -172,8 +174,8 @@ collaborators:
 - Put the logic in a function of its inputs, and test that function. Keep the I/O at the edge,
   in a thin layer.
 - Take a dependency as a small interface the consumer declares, and test against a **real**
-  implementation of it: the memory metadata or block store, `t.TempDir()`, a listener on
-  `127.0.0.1:0`, a Badger key-value store under `t.TempDir()`.
+  implementation of it: the memory block store, `t.TempDir()`, a listener on `127.0.0.1:0`, a
+  Badger key-value store, in memory or under `t.TempDir()`.
 
 Only three kinds of test double are allowed:
 
@@ -344,11 +346,10 @@ A `ponytail:` comment marks a **knowingly-simple implementation**, naming its ce
 the upgrade path that would justify replacing it:
 
 ```go
-// ponytail: a covered read scans O(n) keys once; a hole or nested overlap adds
-// a second full scan, O(n log n) sorting and at most O(n) row loads. Upgrade to
-// a numeric offset index, which costs migrating the existing decimal keys, when
-// a payload's row count makes those per-hole row loads show up in a profile.
-func (s *BadgerMetadataStore) GetFileChunkAtOffset(...)
+// ponytail: decides each right of want on its own, up to 32 decisions over
+// one snapshot, each reading the ACL again. Compute the granted mask in one
+// walk of the grant, flags and ACL when MAXIMAL_ACCESS shows in a profile.
+func (f Files) Granted(ctx context.Context, id entity.Identity, h, via entity.Handle, want entity.AccessMask) (entity.AccessMask, error) {
 ```
 
 They are a **debt ledger, not TODOs**: each one records a decision that was correct at the
