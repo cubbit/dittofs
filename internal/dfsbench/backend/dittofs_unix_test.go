@@ -23,7 +23,8 @@ import (
 // renamed admin-password flag of dfs init, or dfs start losing its
 // passphrase, fails here instead of at every managed cell. It builds dfs,
 // runs the setup's exact init argv over the files writeDittofsInit wrote,
-// then the exact start argv, each through env(1) as the setup runs them, and
+// then the exact start argv, each through env(1): the setup runs init the
+// same way and joins the start argv into its sh -c line. It then
 // waits for the started server to accept on the two listen addresses the
 // test adds to the configuration, ports it picks so nothing binds a fixed
 // one. A host without a go toolchain, or one whose mount the journal's
