@@ -120,7 +120,7 @@ set for it.
 | --- | --- | --- | --- | --- |
 | R1 | An installation is created by the explicit initialisation step, never by a start: a start opens what exists and creates neither a store nor a journal | MUST | RFC 13 §2.2 | T6.3 |
 | R2 | The initialise-if-empty option is given on the command line, never as a key or a `DITTOFS_` name, exists for development and tests only, and is off by default; only with it set does a start on empty storage create an installation | MUST NOT | RFC 13 §2.2, §9 | T6.1, T6.3 |
-| R3 | A start against an empty metadata store and empty journal directories refuses, creating nothing | test row | RFC 13 §9 | T6.3 |
+| R3 | A start against an empty metadata store and empty journal directories refuses, creating nothing but, on a store with no directory, the node's clock ceiling | test row | RFC 13 §9 | T6.3 |
 | R4 | After the step, the store's Installation record and every journal's `format` file carry one installation ID | test row | RFC 13 §9 | T6.3 |
 | R5 | Every journal directory holds one `node-id`; a start with two that differ refuses, naming both | MUST | RFC 13 §2.2, §9 | T6.3 |
 | R6 | With every copy deleted and no identity in the host's file, the start refuses and generates none | MUST | RFC 13 §2.2, §9 | T6.3 |
