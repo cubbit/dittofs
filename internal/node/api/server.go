@@ -109,7 +109,8 @@ type Deps struct {
 	// Tracer opens each call's span; nil, the no-op tracer.
 	Tracer trace.Tracer
 	// Settings is the settings table, which judges every write of a
-	// setting; nil, every settings-backed write is refused 503.
+	// setting; nil, every settings-backed write is refused 503, a secret's
+	// set before it is sealed.
 	Settings settingsTable
 	// Sealer seals a secret's value before the write that stores it; nil,
 	// every write of a secret answers 503. A typed nil, a nil pointer in the

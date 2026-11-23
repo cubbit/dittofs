@@ -125,12 +125,10 @@ func (ss secretSetting) writing(kind entity.ResourceKind) writing[apiv1.Credenti
 // seal is the secret's pre-write step: the value sealed as the first version
 // of a new reference, under its kind's role, then cleared. A set on a
 // record that does not exist is refused 404 first, then one on a record
-// that holds the secret 409, then a value check refuses, then,
-// with no sealer, the set is refused 503, each before anything is written.
-//
-// ponytail: the node hands in no sealer yet, so neither a store's credential
-// nor the keytab reaches these routes in production; test the set end to
-// end once the node hands in the secret provider.
+// that holds the secret 409, then a value check refuses, then, with no
+// settings table or no sealer, the set is refused 503, each before anything
+// is sealed or written: with no table the setting naming the secret would be
+// refused, so no seal is spent on a write that cannot land.
 func (ss secretSetting) seal(ctx context.Context, rq request[apiv1.Credential]) (sealedSecret, error) {
 	v := rq.Body.Spec.Value
 	defer clear(v)
@@ -152,6 +150,9 @@ func (ss secretSetting) seal(ctx context.Context, rq request[apiv1.Credential]) 
 		if out.inTx, err = ss.check(ctx, rq.d, v); err != nil {
 			return sealedSecret{}, err
 		}
+	}
+	if rq.d.Settings == nil {
+		return sealedSecret{}, errNoTable
 	}
 	if rq.d.Sealer == nil {
 		return sealedSecret{}, errNoSealer

@@ -3,7 +3,6 @@ package node
 import (
 	"context"
 
-	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/secrets"
 )
@@ -40,7 +39,3 @@ func newAuthSealer(p *secrets.Provider) authSealer { return authSealer{providerS
 func (s authSealer) Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte) (entity.Secret, error) {
 	return s.providerSealer.Seal(ctx, kind, owner, ref, value, false)
 }
-
-// The secret provider, through providerSealer, is what the API's Deps
-// takes, once the node builds it.
-var _ = api.Deps{Sealer: providerSealer{}}

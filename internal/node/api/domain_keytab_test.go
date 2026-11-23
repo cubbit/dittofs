@@ -397,9 +397,9 @@ func TestKeytabRouteRefusals(t *testing.T) {
 // A keytab identity's check refuses, and one holding a key for a name the
 // computer account holds in the directory's realm, compared with ASCII
 // letters folded, are each refused before anything is written; with a
-// sealer, the empty settings table refuses the setting naming any other,
-// one for the account's name in another realm among them, so no version is
-// written either. The keytab's bytes are found nowhere.
+// sealer but no settings table, any other, one for the account's name in
+// another realm among them, is refused 503 before it is sealed, so no
+// version is written either. The keytab's bytes are found nowhere.
 func TestKeytabRoute(t *testing.T) {
 	good := keytabOf(t, "cifs/nas.ad.example", etypeID.AES256_CTS_HMAC_SHA1_96)
 	d := serveDomain(t, true)
