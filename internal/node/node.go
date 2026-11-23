@@ -338,6 +338,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	steps[string(apiv1.OpRotateMachinePassword)] = stepRow{run: n.identity.RotateStep, progress: n.identity.RotateProgress, failed: n.identity.RotateFailed}
 	steps[string(apiv1.OpResolvePrincipal)] = stepRow{run: n.identity.ResolvePrincipalStep, progress: n.identity.ResolvePrincipalProgress}
 	steps[string(apiv1.OpTestDirectory)] = stepRow{run: n.identity.TestDirectoryStep, progress: n.identity.TestDirectoryProgress}
+	steps[string(apiv1.OpNTHashDelete)] = stepRow{run: n.identity.NTHashDeleteStep, progress: n.identity.NTHashDeleteProgress}
 	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node.ID, cfg.Logger, steps)
 	n.watchdog = health.NewWatchdog(cfg.Clock)
 	n.sidecars = sidecar.New()
