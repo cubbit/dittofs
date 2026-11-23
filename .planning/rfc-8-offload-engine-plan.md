@@ -312,7 +312,6 @@ flowchart TD
   E14 --> E16
   E14 -. "Pressure event" .-> E18
   E14 -. "tenants and Rebuild, start step 6" .-> E19
-  E14 -. "scheduler stats, work_queue_stalled" .-> E21
   E16 -. "re-offers the reseed gates" .-> E19
   E16 -. "pass outcomes, offload health" .-> E21
   E17 -. "speculation cancelled on pressure" .-> E18
@@ -384,6 +383,7 @@ names are fixed so the RFC 2 to RFC 5 plans can cite them.
   mark eviction keeps), and E19 through track C's order only.
 - **E19** blocks E20: the reconcile runs inside the reseed (RFC 8 §2.5 step 7).
 - **E18, E20 and E21** block E22 through S4.
+- **E22** blocks E23: the burn-down runs over the composed node.
 - **S5 (external)** blocks S3, and with it E16's finish, and E22.
 - **S6 (external)** blocks E20's rows over the real journal, and E23.
 
@@ -403,6 +403,8 @@ names are fixed so the RFC 2 to RFC 5 plans can cite them.
   offload source, about 39 man-days into track A, against about 29 into track B; epic 15's last
   subtasks (O6's per-file count, the abandoned intents) fill the gap. Track C's epic 19 waits on epic
   14's tenants and epic 16's passes; it starts with the reseed's marks and unmarks, which need neither.
+  Track A's epic 21 reads epic 16's pass outcomes, which land about 10 man-days after track A
+  reaches it; its drain metrics and salvage export, which need no pass, come first.
   Track A ends about 14 man-days before tracks B and C; it takes the `Store` adapter's preparation for
   epic 22 (D5) once S1c and S1d are agreed.
 
@@ -441,12 +443,12 @@ test/engine/known.yaml                  E12
 - **D1 — epics numbered from 11.** The first part used epics 1 to 10 and labels `rfc-8-epic-1` to
   `rfc-8-epic-10`, so this plan starts at 11: epic 11 takes E1's role, epic 12 E2's, epics 13 to 21
   are the middle epics, epic 22 the integration and epic 23 E2E green. Labels are `rfc-8-epic-11` to
-  `rfc-8-epic-23` and epic documents `rfc-8-offload-engine-epic<k>.md`. Subtask ids (`T11.1`…) cannot
-  collide with the first part's; a pull request still names the plan's slug, `RFC 8 offload-engine
-  T15.2`, as `pr-opening` asks when an RFC has two plans. Prior art: none found; the repository's
+  `rfc-8-epic-23` and epic documents `rfc-8-offload-engine-epic<k>.md`. Subtask ids (`T<e>.<n>` with `<e>` from 11) cannot
+  collide with the first part's; a pull request still names the plan's slug, `RFC 8 offload-engine`
+  before its ids, as `pr-opening` asks when an RFC has two plans. Prior art: none found; the repository's
   own convention. Applied by every epic.
 - **D2 — code lands on `feat/storage-v2`.** The engine and the journal live there; the plan lands on
-  `develop`. Prior art: the first part. Every epic.
+  `develop`. Prior art: none found; the first part did the same. Every epic.
 - **D3 — `pkg/sched` is built here, whole.** RFC 8 §6.1.1 specifies it once for the engine and GC
   and §2.8 places it; the engine is its first consumer and GC, planned later, instantiates it
   unchanged. Prior art: Kubernetes client-go's workqueue keeps a key in one worker at a time and marks
@@ -465,7 +467,7 @@ test/engine/known.yaml                  E12
   because the scheduler's liveness turn (RFC 25 §3.5) has no `Stats` form; `Metrics` stays out, as
   the first part decided (its §6 point 14), and the root keeps adapting `Stats`. `pkg/health` and
   `pkg/metrics` now exist on `feat/storage-v2`; moving the engine onto `pkg/metrics` stays the first
-  part's ledger row. Prior art: RFC 8 §2.1's declaration rule. Epics 11 and 21.
+  part's ledger row. Prior art: none found. Epics 11 and 21.
 - **D7 — snapshot-hold ordering is RFC 12's.** The Commit step copies each extent's `Cut` into the
   ref's `born` as RFC 8 §6.3 says, since the ref is persisted; "a held version commits first" and "a
   run splits at a live hold mark" are left to RFC 12, as no hold mark exists before RFC 12 cuts.
@@ -479,11 +481,10 @@ test/engine/known.yaml                  E12
 - **D9 — single node only.** Every shard is primary here, so the primary-only post filter is the
   identity, a stale-epoch refusal (O7) cannot arise, and the handover and lease-loss drains are the
   cluster stage's. `CancelTenant` and `WaitTenant` are built, since `Unbind` and `Drop` use them.
-  Prior art: RFC 0 §1.4's single-node profile. Epics 14 and 16; §6.1.
+  Prior art: none found. Epics 14 and 16; §6.1.
 - **D10 — the stand-ins go with their replacements.** Epic 14 deletes the first part's removal loop
   and its `ponytail:`; epic 18 deletes the repack-at-refusal `ponytail:` and the `decision:` that dirty
-  bytes free nothing, which turns #5318's three rows green. Prior art: the first part's ledger. Epics
-  14 and 18.
+  bytes free nothing, which turns #5318's three rows green. Prior art: none found. Epics 14 and 18.
 - **D11 — a lost journal served again reads an acknowledgement record** — *pending the user's answer*
   (§6 point 2). RFC 8 §2.5 has an operator acknowledge a lost journal, but neither RFC 8 §12.1 nor RFC
   23 names the call. Proposed: RFC 23 adds a node action that writes the acknowledgement in the store,
@@ -850,6 +851,7 @@ benchmark has a recorded baseline against localstack.
 | The node's upload drain calling `WaitOffloaded` (D13) | `drain` is RFC 30's, deferred by the RFC 23 plan | RFC 30's plan | that plan adds the verb |
 | The lost-journal acknowledgement's node action (D11, §6 point 2) | RFC 23 names no such action | RFC 23's plan | the user's answer to §6 point 2 |
 | Fuzz or model targets for the queue's keys and the pacing law (rule 2, RFC 8 §15.3's `ponytail:`) | tables check them | unowned | a table check misses a bug a random input would have found |
+| An eviction loop woken by the journal's occupancy crossing its target, not a fixed tick (§4.3) | the fixed tick's lag is covered by the inline refusal path | unowned | B3 shows refusals a sooner eviction would have avoided |
 | §11.2's metadata-store-lost row and the salvage's recovery-import side (epic 21) | RFC 26's | RFC 26 | the recovery import is built |
 
 ## 7. RFC coverage
