@@ -117,7 +117,12 @@ func settle(t *testing.T, f *enginetest.Fixture, h entity.Handle, done func(enti
 // into the source held as capacity, are RFC 8's second part's, which composes
 // the remote tier; what start reserves is not in the engine's Stats.
 func TestRFC8A_CloneResumedAtAFullLimit(t *testing.T) {
-	f := enginetest.New(t, enginetest.WithSegmentCap(mib))
+	// The row quiesces its share's journal by construction: one segment
+	// wide enough to hold the whole fill, so nothing rolls mid-fill and the
+	// settled refusal never meets an ended segment the share-limit pass
+	// could mistake for something to free. A wait on the figure cannot do
+	// this: it clears only through the refusal the fill triggers.
+	f := enginetest.New(t, enginetest.WithSegmentCap(8*mib))
 	ctx := t.Context()
 
 	const n = 64 << 10
