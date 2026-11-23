@@ -19,13 +19,15 @@ import (
 // The benchmarks below measure a directory principal's cold resolution, the
 // latency of its directory queries and its mints together, against a
 // directory whose every search the fault wrapper delays 5, 20 and 50
-// milliseconds on the wall clock. They are the measurement the directory
-// cache's in-flight bound and the client's SID batch size wait on. Each
+// milliseconds on the wall clock. The fault delays every search by the same
+// amount whatever its filter, so the figures say what the queries' count and
+// concurrency cost, not what a filter of many terms costs. Each
 // iteration's entries are added, and its users minted, with the timer
 // stopped and the directory answering at once; only the resolution runs
 // timed, under the delay, after the clock is moved past every cached
-// answer's TTL and stale grace, so the closure the mint of the user cached,
-// his entry and the domain's SID are all asked again. A resolution that
+// answer's TTL and stale grace, so the closure the mint of the user cached
+// and his entry are asked again; the domain's SID is not, the client holds
+// it for its life. A resolution that
 // fails, past its 20-second bound among other refusals, fails the run.
 
 // benchDelays are the delays every search is given.
@@ -47,8 +49,8 @@ func (*wallClock) After(d time.Duration) <-chan struct{} {
 // dirBench is a server on the wall clock over the in-memory directory.
 type dirBench struct {
 	*dirPrincipals
-	clock *wallClock
-	n     int // numbers each iteration's entries apart
+	wall *wallClock // the promoted clock field is the test clock, nil here
+	n    int        // numbers each iteration's entries apart
 }
 
 // delay delays every later search d; zero lets every search through at once.
@@ -58,7 +60,7 @@ func (e *dirBench) delay(b *testing.B, d time.Duration) {
 		e.fault.cur.Store(nil)
 		return
 	}
-	s, err := sim.NewSchedule(1, e.clock, sim.Rule{Op: "search", Key: "*", Action: sim.FaultAction{Delay: d}})
+	s, err := sim.NewSchedule(1, e.wall, sim.Rule{Op: "search", Key: "*", Action: sim.FaultAction{Delay: d}})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -94,22 +96,23 @@ func (e *dirBench) resolve(proof pid.ProofKind, ev pid.Evidence) error {
 // benchDirectory runs, for each delay, one untimed warm-up and then b.N
 // timed resolutions, each over the entries setup adds: setup returns the
 // resolution, the DNs to delete once it has run and how many groups the
-// resolution must mint, so the directory stays
-// the same size whatever b.N is. The warm-up reads the domain's SID and
+// resolution must mint. The directory is back to its size after each one,
+// though the minted users and groups stay in the store, which grows with
+// b.N. The warm-up reads the domain's SID and
 // mints Domain Users, which every later resolution finds cached and minted.
 func benchDirectory(b *testing.B, setup func(b *testing.B, e *dirBench) (op func() error, added []string, mints int)) {
 	for _, d := range benchDelays {
 		b.Run("delay="+d.String(), func(b *testing.B) {
 			st, inst := dirStore(b)
 			clock := &wallClock{}
-			e := &dirBench{dirPrincipals: newDirPrincipalsOn(b, st, inst, directory.SchemaAD, clock), clock: clock}
+			e := &dirBench{dirPrincipals: newDirPrincipalsOn(b, st, inst, directory.SchemaAD, clock), wall: clock}
 			// Past the 5-minute TTL and the stale grace, every cached answer is asked again.
 			age := 5*time.Minute + identity.DefaultSettings().DirectoryStaleGrace + time.Second
 			iteration := func(timed bool) {
 				e.n++
 				op, added, mints := setup(b, e)
 				before := e.counter(b, "identity_mints_total", "kind", "group")
-				clock.skew.Add(int64(age))
+				e.wall.skew.Add(int64(age))
 				e.delay(b, d)
 				if timed {
 					b.StartTimer()
@@ -122,7 +125,11 @@ func benchDirectory(b *testing.B, setup func(b *testing.B, e *dirBench) (op func
 				}
 				e.delay(b, 0)
 				if err != nil {
-					b.Fatalf("resolution with every search delayed %v = %v after %v, want a caller within the 20-second bound", d, err, took)
+					b.Fatalf("resolution with every search delayed %v = %v after %v, want it to succeed within the 20-second bound", d, err, took)
+				}
+				// A resolution that asked the directory nothing, or whose searches the rule missed, runs undelayed.
+				if took < d {
+					b.Fatalf("resolution took %v with every search delayed %v: no search reached the delay", took, d)
 				}
 				// A closure served from the cache would mint nothing: the resolution was not cold.
 				if got := e.counter(b, "identity_mints_total", "kind", "group") - before; got != float64(mints) {
@@ -192,21 +199,22 @@ func BenchmarkDirectoryFirstSignIns(b *testing.B) {
 
 // A ticket's cold resolution whose PAC carries 1 024 SIDs: Domain Users and
 // 1 023 groups of the domain no principal holds, asked of the directory in
-// batches and minted.
+// batches and minted. It measures a ticket of that size at the current batch
+// size: every search is delayed alike, so it does not price the filter.
 func BenchmarkDirectoryPACSIDs(b *testing.B) {
 	benchDirectory(b, func(b *testing.B, e *dirBench) (func() error, []string, int) {
 		dns, ps := e.users(b, 1)
 		domain := e.d.DomainSID()
 		sids := make([]pid.SID, 0, 1024)
 		added := []string{string(dns[0])}
-		for rid := range uint32(1024) {
-			if rid > 0 {
-				// RIDs well above the directory's own, which count up from 1 100.
-				rid = uint32(10_000_000+e.n*1024) + rid
-				added = append(added, e.d.AddGroup(b, fmt.Sprintf("p%d.%d", e.n, rid), map[string][][]byte{"objectSid": {directory.WithRID(domain, rid)}}))
-			} else {
-				rid = 513 // Domain Users
-			}
+		rids := []uint32{513} // Domain Users, which the directory holds already
+		for i := range uint32(1023) {
+			// RIDs well above the directory's own, which count up from 1 100.
+			rid := uint32(10_000_000+e.n*1024) + i
+			added = append(added, e.d.AddGroup(b, fmt.Sprintf("p%d.%d", e.n, rid), map[string][][]byte{"objectSid": {directory.WithRID(domain, rid)}}))
+			rids = append(rids, rid)
+		}
+		for _, rid := range rids {
 			v, _, err := sid.DecodeSID(directory.WithRID(domain, rid))
 			if err != nil {
 				b.Fatal(err)
