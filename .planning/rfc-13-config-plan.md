@@ -533,7 +533,7 @@ level (RFC 13 §2.2), so it stays a bootstrap key.
 The list cannot drift. An epic 2 test scans the repository by content, not by extension, every file
 outside `_test.go` that holds a `DITTOFS_` name (Go, shell with or without a `.sh`, Compose,
 `docker/`, and Markdown but `docs/internals/`, `.planning/` and `CHANGELOG.md`, which name v1's variables on
-purpose), and fails on a name that is neither a bootstrap key nor allowed, so a guide such as
+purpose), and fails on a name that is neither a bootstrap key nor allowed, nor one of the names only tests and scripts read, which the test lists and `dfs start` never reads, so a guide such as
 `README.md` or `docs/guide/` that still tells a user to set a refused variable fails it and epic 2
 corrects it. It exempts a bare
 `DITTOFS_` prefix literal (its own, `checkEnviron`'s, the fixture's), `renamed_keys.go`'s
@@ -1535,6 +1535,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate checks the active versions only and gains the namespace comparison when the key exists, and epic 3's unit test declares one of its own until then | RFC 4 | a plan of RFC 4 declares the key |
 | "§5.1 bound"'s "no content, accepted" half at a namespace and a share scope (epic 5's D6; epic 6's R17) | a namespace holds content for its whole life and a share scope answers an error, since no read in the transaction says what either holds | unowned | the drain is readable in the transaction (D6's own withdrawal), or a share-scope bound setting is declared |
 | "§5.5 dead node"'s single-node sentence as written, an older binary starting on a store a newer one opened (epic 6's D6) | each format has one version, so no older range exists to build | unowned | a format gains a second version, beside the `raise-format` row |
+| The call of `Bootstrap.Validate` in `dfs start` (epic 2's §1.2 and R34) | no RFC 23 task carries it, T3.9 and T3.10 having merged without it; `Validate` is where R34's owner and mode check of a runtime directory a service manager gives (`RUNTIME_DIRECTORY`) lives, which `MakeRuntimeDir` returns without checking | unowned | an RFC 23 task places the call |
 | the settings table's adapters' rows, which RFC 20's plan's deferral ledger gave this plan | the adapters' section type is RFC 20's T7.6's | RFC 20 plan, its T7.6 | that subtask |
 
 ## 7. RFC coverage

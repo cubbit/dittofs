@@ -270,7 +270,7 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
   launcher drops, in this epic, each name the scan refuses, whichever file holds it, so no list of
   files is kept. The scan keeps one more list inside its test: `DITTOFS_MODEL_SEEDS`,
   `DITTOFS_MODEL_SEED_BASE`, `DITTOFS_SOAK_DURATION`, `DITTOFS_AD_DC_PAC_OUT`,
-  `DITTOFS_AD_DC_NAME_PREFIX` and `DITTOFS_BENCH_SCALE`, which only tests and scripts read. The
+  `DITTOFS_AD_DC_NAME_PREFIX`, `DITTOFS_BENCH_SCALE` and `DITTOFS_MIT_PAC_OUT`, which only tests and scripts read. The
   host's allowed names do not hold them, and a name leaves the list when its last user does. The first-password name, `DITTOFS_ADMIN_INITIAL_PASSWORD`, is dropped with the others: until E6 moves each launcher
   to `dfs init`, it starts no server, and `dfsbench`, the first measure of v2 against v1, moves in
   this epic once `dfs init` exists (S4). The exemptions of the test are a bare `DITTOFS_` prefix
@@ -513,7 +513,7 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   with no passphrase in `environ` refuses whatever the host's variable holds (catches a provider
   that reads the process's environment); a state directory that is a symlink, one writable by
   others and one owned by another user each refuse, `STATE_DIRECTORY`, `XDG_STATE_HOME` and `HOME` given in `environ` choose the directory (catches a
-  lookup that reads the process's environment), `STATE_DIRECTORY=/s1:/s2` resolves to `/s1`, asserted on the resolved path since neither directory need exist (catches a lookup that takes the whole value), and so does `RUNTIME_DIRECTORY=/r1:/r2` to `/r1`, a state directory owned by root loads (catches a check that accepts the node's user alone), a symlink planted at the fallback runtime path refuses (R34), and `MakeRuntimeDir` makes the fallback mode
+  lookup that reads the process's environment), `STATE_DIRECTORY=/s1:/s2` resolves to `/s1`, asserted on the resolved path since neither directory need exist (catches a lookup that takes the whole value), and so does `RUNTIME_DIRECTORY=/r1:/r2` to `/r1`, a state directory owned by root loads (catches a check that accepts the node's user alone), a symlink planted at the fallback runtime path refuses (R34), a runtime directory writable by group, and one owned by another user, each refuse (catches a check of the symlink alone), with none of `STATE_DIRECTORY`, `XDG_STATE_HOME` and `HOME` in `environ`, and the process's own `HOME` empty, `Validate` and `MakeRuntimeDir` each refuse naming `HOME` (catches a fallback to the temporary directory), a relative value of each of the five variables, and a relative first entry of a list, each refuse naming the variable (catches a path that depends on the directory the process started from), and `MakeRuntimeDir` makes the fallback mode
   `0700`.
 
 ### T2.5 Kubernetes' service links
