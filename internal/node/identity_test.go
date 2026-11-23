@@ -596,6 +596,6 @@ func encodings(b []byte) map[string]string {
 	return map[string]string{
 		"raw": string(b), "hex": hex.EncodeToString(b), "HEX": strings.ToUpper(hex.EncodeToString(b)),
 		"base64": base64.RawStdEncoding.EncodeToString(b), "base64url": base64.RawURLEncoding.EncodeToString(b),
-		"quoted": strings.Trim(strconv.Quote(string(b)), `"`), "decimal": strings.Trim(fmt.Sprint(b), "[]"),
+		"quoted": strings.Trim(strconv.Quote(string(b)), `"`), "decimal": strings.Trim(fmt.Sprintf("%d", b), "[]"),
 	}
 }
