@@ -890,8 +890,13 @@ func SettledForTest(l journal.Limit, left int64, others bool) bool {
 const DeviceRoomBytes = deviceRoomBytes
 
 // OnFullCheck runs f each time the group commit's loop has judged the room
-// of a refusal that raised journal_full.
+// of a refusal that raised journal_full, under the lock that judge took, so
+// f must not block on the engine.
 func (e *Engine) OnFullCheck(f func()) { e.fullChecked.Store(&f) }
+
+// OnFullJudging runs f in each judge of journal_full's room, after its
+// reads and before its verdict, so a test can raise a refusal in between.
+func (e *Engine) OnFullJudging(f func()) { e.fullJudging.Store(&f) }
 
 // FullJudgedForTest reports whether the group commit's loop of share s's
 // journal has judged the room of the latest refusal that raised

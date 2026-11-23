@@ -288,6 +288,8 @@ func (j *FakeJournal) segStats(s *journal.Stats) {
 			continue
 		}
 
+		s.Segments++
+
 		for tag, n := range seg.rec {
 			st := shares[tag]
 			st.UsedBytes += n

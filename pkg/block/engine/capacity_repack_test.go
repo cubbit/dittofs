@@ -1466,14 +1466,63 @@ func TestAFullyWrittenReservationSettlesNoSpace(t *testing.T) {
 	}
 }
 
-// atTheMaximum is a segUnit whose roll was refused at a maximum of 300 bytes,
-// lacking a segment of 100, with a failed segment whose unresolved window
-// keeps repack off it until the test resolves it, after the refusal.
-func atTheMaximum(t *testing.T) *segUnit {
+// fullJudges arms u's engine to signal each judge of journal_full's room by
+// the group commit's loop. The signal is sent under the judge's lock, so a
+// test that hears it reads the state that judge left.
+func fullJudges(u *unit) <-chan struct{} {
+	ch := make(chan struct{}, 64)
+	u.e.OnFullCheck(func() {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	})
+
+	return ch
+}
+
+// awaitJudged waits, judge by judge, until the loop has judged the latest
+// refusal of share sh; nothing judges it again until the clock moves.
+func awaitJudged(t *testing.T, u *unit, sh engine.Share, judged <-chan struct{}) {
 	t.Helper()
 
-	s := newSegUnit(t, 1<<20, 300)
+	for !u.e.FullJudgedForTest(sh.ID) {
+		within(t, "the loop's judge of the refusal's room", judged)
+	}
+}
+
+// drain drops the signals of the judges already run.
+func drain(judged <-chan struct{}) {
+	for {
+		select {
+		case <-judged:
+		default:
+			return
+		}
+	}
+}
+
+// rejudge advances u's clock to the loop's next judge of journal_full's
+// room and waits for that judge, which reads the figures as they are now.
+// The latest refusal must have been judged (awaitJudged).
+func rejudge(t *testing.T, u *unit, judged <-chan struct{}) {
+	t.Helper()
+
+	drain(judged)
+	u.clock.Advance(time.Second)
+	within(t, "the loop's judge of journal_full's room a second later", judged)
+}
+
+// atTheMaximum is a segUnit whose roll was refused at a maximum of 300 bytes,
+// lacking a segment of 100, with a failed segment whose unresolved window
+// keeps repack off it until the test resolves it, after the refusal; the
+// loop has judged the refusal once, and judged signals each judge.
+func atTheMaximum(t *testing.T) (s *segUnit, judged <-chan struct{}) {
+	t.Helper()
+
+	s = newSegUnit(t, 1<<20, 300)
 	s.j.AddFailed(s.a.Tag, 50, true)
+	judged = fullJudges(s.unit)
 
 	f1, f2 := entity.NewFileID(), entity.NewFileID()
 	s.stream(f2, 1)
@@ -1489,53 +1538,25 @@ func atTheMaximum(t *testing.T) *segUnit {
 		t.Fatalf("journal_full after the refusal = %v, want one lacking 100 bytes", got)
 	}
 
-	return s
-}
+	awaitJudged(t, s.unit, s.a, judged)
 
-// roomJudge arms u's engine to report each judge of journal_full's room by
-// the group commit's loop, and waits until the loop has judged the refusal
-// of share sh, so the next judge waits for the clock.
-func roomJudge(t *testing.T, u *unit, sh engine.Share) <-chan struct{} {
-	t.Helper()
-
-	ch := make(chan struct{}, 1)
-	u.e.OnFullCheck(func() {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	})
-
-	// Polling the loop's own state: the judge at the refusal's wake runs on
-	// the loop's goroutine, and nothing else moves until the clock does.
-	for deadline := time.Now().Add(bound); !u.e.FullJudgedForTest(sh.ID); {
-		if time.Now().After(deadline) {
-			t.Fatal("the group commit's loop never judged the refusal's room")
-		}
-		time.Sleep(time.Millisecond)
-	}
-
-	return ch
-}
-
-// rejudge advances u's clock to the loop's next judge of journal_full's
-// room and waits for that judge, which reads the figures as they are now.
-func rejudge(t *testing.T, u *unit, judged <-chan struct{}) {
-	t.Helper()
-
-	select {
-	case <-judged: // a signal of the judge roomJudge waited for
-	default:
-	}
-
-	u.clock.Advance(time.Second)
-	within(t, "the loop's judge of journal_full's room a second later", judged)
+	return s, judged
 }
 
 // journal_full raised at the maximum clears once storage retired since the
-// refusal and any rise of the maximum reach what the refusal lacked, with
-// nothing written; less leaves it up.
+// refusal and any change of the maximum reach what the refusal lacked, with
+// nothing written; less leaves it up, and so does a lowered maximum that
+// takes back what was freed.
 func TestJournalFullAtTheMaximumClearsOnRoom(t *testing.T) {
+	repack := func(t *testing.T, s *segUnit) {
+		s.j.ResolveWindows()
+
+		freed, err := s.j.Repack(t.Context(), 1<<20, journal.RepackScope{})
+		if err != nil || freed != segBytes {
+			t.Fatalf("Repack freed %d, %v; want %d", freed, err, segBytes)
+		}
+	}
+
 	for _, c := range []struct {
 		name string
 		room func(t *testing.T, s *segUnit)
@@ -1547,18 +1568,17 @@ func TestJournalFullAtTheMaximumClearsOnRoom(t *testing.T) {
 		{"the maximum raised by what it lacked", func(_ *testing.T, s *segUnit) {
 			s.j.SetMaxBytes(400)
 		}, 0},
-		{"a segment freed by repack", func(t *testing.T, s *segUnit) {
-			s.j.ResolveWindows()
-
-			freed, err := s.j.Repack(t.Context(), 1<<20, journal.RepackScope{})
-			if err != nil || freed != segBytes {
-				t.Fatalf("Repack freed %d, %v; want %d", freed, err, segBytes)
-			}
+		{"the maximum removed", func(_ *testing.T, s *segUnit) {
+			s.j.SetMaxBytes(0)
 		}, 0},
+		{"a segment freed by repack", repack, 0},
+		{"a segment freed and the maximum lowered by one", func(t *testing.T, s *segUnit) {
+			repack(t, s)
+			s.j.SetMaxBytes(200)
+		}, 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			s := atTheMaximum(t)
-			judged := roomJudge(t, s.unit, s.a)
+			s, judged := atTheMaximum(t)
 			c.room(t, s)
 			rejudge(t, s.unit, judged)
 
@@ -1573,9 +1593,12 @@ func TestJournalFullAtTheMaximumClearsOnRoom(t *testing.T) {
 // the maximum: the group commit's loop has no room of it to judge.
 func TestJournalFullAfterAHeadroomRefusalIgnoresTheMaximum(t *testing.T) {
 	s := newSegUnit(t, 1<<20, 300)
+	judged := fullJudges(s.unit)
 	s.refuse(t, journal.LimitHeadroom)
 
-	_ = s.put(t.Context(), s.a, entity.NewFileID(), 0, 1, 'x')
+	if err := s.put(t.Context(), s.a, entity.NewFileID(), 0, 1, 'x'); !errors.Is(err, vfserr.ErrNoSpace) {
+		t.Fatalf("a write after a headroom refusal: %v, want ErrNoSpace", err)
+	}
 
 	if s.e.RoomPendingForTest(s.a.ID) {
 		t.Fatal("a headroom refusal waits for the loop to judge its room, want an unreserved write")
@@ -1584,8 +1607,55 @@ func TestJournalFullAfterAHeadroomRefusalIgnoresTheMaximum(t *testing.T) {
 	s.j.SetMaxBytes(1 << 30)
 	s.clock.Advance(time.Minute)
 
+	// No clock can show a judge that never runs: the bounded wait is the
+	// assertion.
+	select {
+	case <-judged:
+		t.Error("the loop judged the room of a headroom refusal")
+	case <-time.After(100 * time.Millisecond):
+	}
+
 	if n := len(fullConds(s.e)); n != 1 {
 		t.Errorf("%d journal_full conditions after a headroom refusal and a raised maximum, want 1", n)
+	}
+}
+
+// fullDeviceUnit is a unit over segments of a device's room, with a write
+// refused on a full device and that refusal judged once by the loop; free
+// is the free space the engine reads, and judged signals each judge.
+func fullDeviceUnit(t *testing.T) (u *unit, free *atomic.Int64, judged <-chan struct{}) {
+	t.Helper()
+
+	free = &atomic.Int64{}
+	u = newUnit(t, func(d *engine.Deps) {
+		d.FreeSpace = func(string) (int64, error) { return free.Load(), nil }
+	})
+	u.j.SegmentCap(engine.DeviceRoomBytes, 0)
+	judged = fullJudges(u)
+
+	if err := u.j.Refuse(enginetest.CallWriteAt, fullDevice()); err != nil {
+		t.Fatal(err)
+	}
+
+	refuseOnFullDevice(t, u)
+	awaitJudged(t, u, u.share, judged)
+
+	return u, free, judged
+}
+
+// refuseOnFullDevice writes once on u's full device, which must be refused
+// and raise journal_full.
+func refuseOnFullDevice(t *testing.T, u *unit) {
+	t.Helper()
+
+	_, err := u.e.Write(t.Context(), u.share.ID, entity.NewFileID(), 0, []byte("x"),
+		engine.WriteOpts{Done: func() {}})
+	if !errors.Is(err, vfserr.ErrNoSpace) {
+		t.Fatalf("a write on a full device: %v, want ErrNoSpace", err)
+	}
+
+	if n := len(fullConds(u.e)); n != 1 {
+		t.Fatalf("%d journal_full conditions on a full device with no room, want 1", n)
 	}
 }
 
@@ -1614,35 +1684,86 @@ func TestJournalFullOnAFullDeviceClearsOnRoom(t *testing.T) {
 		}, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			var free atomic.Int64
-
-			u := newUnit(t, func(d *engine.Deps) {
-				d.FreeSpace = func(string) (int64, error) { return free.Load(), nil }
-			})
-			u.j.SegmentCap(engine.DeviceRoomBytes, 0)
-
-			if err := u.j.Refuse(enginetest.CallWriteAt, fullDevice()); err != nil {
-				t.Fatal(err)
-			}
-
-			_, err := u.e.Write(t.Context(), u.share.ID, entity.NewFileID(), 0, []byte("x"),
-				engine.WriteOpts{Done: func() {}})
-			if !errors.Is(err, vfserr.ErrNoSpace) {
-				t.Fatalf("a write on a full device: %v, want ErrNoSpace", err)
-			}
-
-			judged := roomJudge(t, u, u.share)
-
-			if n := len(fullConds(u.e)); n != 1 {
-				t.Fatalf("%d journal_full conditions on a full device with no room, want 1", n)
-			}
-
-			c.room(t, u, &free)
+			u, free, judged := fullDeviceUnit(t)
+			c.room(t, u, free)
 			rejudge(t, u, judged)
 
 			if n := len(fullConds(u.e)); n != c.want {
 				t.Errorf("%d journal_full conditions after %s, want %d", n, c.name, c.want)
 			}
 		})
+	}
+}
+
+// With a file due on every pass of the group commit's loop, so each pass
+// commits a batch, journal_full still clears once the device has room.
+func TestJournalFullClearsUnderSteadyLoad(t *testing.T) {
+	u, free, judged := fullDeviceUnit(t)
+
+	if err := u.j.Refuse(enginetest.CallWriteAt, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Each write falls due on the pass after it, as the loop advances the
+	// clock past the existence age.
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Nanosecond, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+
+	f := u.create(t, "busy")
+	batches := make(chan struct{}, 1)
+	var stopped atomic.Bool
+	t.Cleanup(func() { stopped.Store(true) })
+	u.e.OnTake(func() {
+		select {
+		case batches <- struct{}{}:
+		default:
+		}
+	})
+	u.e.OnLoop(func() {
+		if stopped.Load() {
+			return
+		}
+		_, _ = u.e.Write(t.Context(), u.share.ID, f, 0, []byte("y"), engine.WriteOpts{Done: func() {}})
+		u.clock.Advance(time.Nanosecond)
+	})
+	u.write(t, f, 0, []byte("y")) // wakes the loop, which runs the load from then on
+	within(t, "a batch of the steady load", batches)
+
+	free.Store(engine.DeviceRoomBytes)
+	drain(judged)
+	u.clock.Advance(time.Second)
+
+	for len(fullConds(u.e)) != 0 {
+		within(t, "a judge of journal_full's room under steady load", judged)
+	}
+}
+
+// A judge that read room for an older refusal never clears the condition a
+// newer one raised meanwhile: the verdict is dropped.
+func TestJournalFullAnOlderVerdictKeepsANewerRefusal(t *testing.T) {
+	u, free, judged := fullDeviceUnit(t)
+
+	paused, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	u.e.OnFullJudging(func() {
+		once.Do(func() {
+			close(paused)
+			<-release
+		})
+	})
+
+	free.Store(engine.DeviceRoomBytes)
+	drain(judged)
+	u.clock.Advance(time.Second)
+	within(t, "the judge that read room, paused before its verdict", paused)
+
+	free.Store(0) // the device filled again
+	refuseOnFullDevice(t, u)
+	close(release)
+	within(t, "the paused judge's verdict", judged)
+
+	if n := len(fullConds(u.e)); n != 1 {
+		t.Errorf("%d journal_full conditions after an older verdict of room, want the newer refusal's 1", n)
 	}
 }
