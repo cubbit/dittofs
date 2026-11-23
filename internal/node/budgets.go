@@ -20,7 +20,9 @@ import (
 // soft limit to fifteen sixteenths of it, exporting memory_limit_bytes,
 // raising memory_limit_below_floors and bounding connection_limit by half
 // the open-file limit too, once pkg/resources has Detect and SplitFor
-// (RFC 24 §2.7).
+// (RFC 24 §2.7). The connectionLimit constant is read in two places:
+// applyConnLimit, as the bound this node's row is refused above, and
+// newTable, as the section's default; a derived limit must reach both.
 const (
 	poolCeiling     = 512 << 20
 	connectionLimit = 4096

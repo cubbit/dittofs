@@ -233,11 +233,12 @@ func refused(s entity.Share, retry bool, err error) refusal {
 // not c's. The walk is then published for the components that read the
 // snapshot (keepSettings), whose refusals, the sections no component's apply
 // reports, are returned with identity's, the secrets pass running between the
-// walk and identity, holding what it refuses before any component runs. Each
-// adapter's section is then read from the published snapshot into its slot's
-// want, and once start step 9 has run it calls each slot too, handing it loop
-// to report idle on while it waits on a drain, and returns the slots'
-// refusals with them, at the generation of the walk published.
+// walk and identity, holding what it refuses before any component runs. The
+// node's connection_limit and then each adapter's section are read from the
+// published snapshot, the latter into its slot's want, and once start step 9
+// has run it calls each slot too, handing it loop to report idle on while it
+// waits on a drain, and returns the slots' refusals with them, at the
+// generation of the walk published.
 //
 // ponytail: apply hands the engine RFC 13 Appendix B's defaults whatever c
 // says, as no settings record carries the engine's values yet, and refuses
@@ -275,7 +276,16 @@ func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop)
 	}
 	refusals = append(refusals, kept...)
 
-	n.wantAdapters(n.rec.snapshot.Load())
+	published := n.rec.snapshot.Load()
+
+	limit, err := n.applyConnLimit(published, wk)
+	if err != nil {
+		return nil, err
+	}
+
+	refusals = append(refusals, limit...)
+
+	n.wantAdapters(published)
 
 	if !n.adapting {
 		return refusals, nil

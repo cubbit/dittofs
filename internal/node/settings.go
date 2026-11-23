@@ -1,6 +1,8 @@
 package node
 
 import (
+	"fmt"
+
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/node/api/apisettings"
 	asettings "github.com/cubbit/dittofs/pkg/adapter/settings"
@@ -9,10 +11,12 @@ import (
 	"github.com/cubbit/dittofs/pkg/settings"
 )
 
-// The adapters' sections' prefixes in the settings table.
+// The adapters' sections' prefixes in the settings table, and the node's
+// connection limit's own key.
 const (
-	adaptersNFS = "adapters.nfs"
-	adaptersSMB = "adapters.smb"
+	adaptersNFS        = "adapters.nfs"
+	adaptersSMB        = "adapters.smb"
+	connectionLimitKey = "connection_limit"
 )
 
 // nfsSection is the NFS adapter's part of the settings table: the protocol's
@@ -51,8 +55,8 @@ func settingSchema() kvstore.Option {
 }
 
 // wantAdapters reads each adapter's section from the published snapshot into
-// its slot's want. A section the node refused keeps there what it last ran,
-// so its adapter does too; one refused since the node started has no value,
+// its slot's want. A section the node refused keeps there what was last
+// published, so its slot is asked for that again; one refused since the node started has no value,
 // and leaves its adapter disabled, never run on defaults a row refuses. The
 // settings walk reports the refused rows (keepSettings).
 func (n *Node) wantAdapters(snap *settings.Snapshot) {
@@ -73,6 +77,72 @@ func (n *Node) wantAdapters(snap *settings.Snapshot) {
 	}
 }
 
+// connLimitSection is the node's connection_limit row of the settings table:
+// one field whose key is the section's own name, as SelfKey declares it,
+// the most connections a node's adapters hold at once, a quarter of it per
+// address (RFC 13 Appendix B, RFC 24 section 4.4). Validate checks the
+// shape alone, an integer at least 1: the bound derived from this host is
+// the node's own check, which a shape check cannot see (RFC 13 section 6).
+type connLimitSection struct {
+	Limit int `json:"limit" class:"live"`
+}
+
+// Validate refuses only a value out of shape, printing it and never the key,
+// which the refusal's own line already names (RFC 13 section 6).
+func (s connLimitSection) Validate() error {
+	if s.Limit < 1 {
+		return fmt.Errorf("a count of connections must be at least 1, got %d", s.Limit)
+	}
+
+	return nil
+}
+
+// applyConnLimit sets the node's connection count to the connection_limit of
+// the published snapshot. A value above the bound derived for this host,
+// which Validate cannot see, is the node's own refusal: until the start has
+// reached the adapters' step the apply fails, refusing the start, naming the
+// key and the bound; once the node serves, the row is reported refused and
+// the last limit set stands, waiting for the store to change (RFC 13
+// section 6, RFC 24 section 4.4). A row the shape refuses is the settings
+// walk's to report, once: the section keeps what was last published, which
+// may be a value above the bound, so it is not judged again.
+//
+// decision: a row the shape refuses at start does not fail the start, as no
+// refused section does: the section holds no value, so the derived limit the
+// count was built with serves, and the status carries the refused row until
+// the store is repaired. This is an accepted deviation from RFC 13 section
+// 6's never a default, taken over failing the start on a corrupt stored row.
+// Overturned if a node must fail its start on such a row.
+//
+// decision: the router publishes a value above the bound, as it publishes
+// every section read at use, so the snapshot holds it while the count keeps
+// the last limit. No other component reads the section. An apply in the node's map
+// would keep it out, but its refusal is retried on the backoff and cannot
+// fail the start.
+func (n *Node) applyConnLimit(snap *settings.Snapshot, wk settingsRead) ([]refusal, error) {
+	if _, ok := wk.refused[connectionLimitKey]; ok {
+		return nil, nil
+	}
+
+	v, err := settings.Get[connLimitSection](snap, connectionLimitKey, n.cfg.Bootstrap.Node.ID)
+	if err != nil {
+		return nil, nil
+	}
+
+	if v.Limit > connectionLimit {
+		tooHigh := fmt.Errorf("%d is above this node's derived bound %d", v.Limit, connectionLimit)
+		if !n.adapting {
+			return nil, fmt.Errorf("%s: %w", connectionLimitKey, tooHigh)
+		}
+
+		return wk.walk.holdRefusals(connectionLimitKey, wk.at.Settings, false, tooHigh, nil), nil
+	}
+
+	n.budgets.Conns.SetLimit(v.Limit)
+
+	return nil, nil
+}
+
 // newTable is the node's one settings table: every section the node declares,
 // which reconcile reads and the API's write check judges a write by. Each
 // component's section joins it with the component.
@@ -90,6 +160,8 @@ func newTable() settings.Table {
 		settings.Of(adaptersSMB, settings.Override(entity.ScopeInstallation, entity.ScopeNode),
 			smbSection{SMB: asettings.DefaultSMB()},
 			settings.OverrideOnly("Port", "Enabled")),
+		settings.Of(connectionLimitKey, settings.At(entity.ScopeNode),
+			connLimitSection{Limit: connectionLimit}, settings.SelfKey()),
 	}
 }
 
@@ -140,6 +212,9 @@ func rebuilt() reach {
 // moment, so a change reaches its reader at its next operation and no apply
 // runs for them.
 //
+// connection_limit is read at use by each pass, which sets the node's
+// connection count from it (applyConnLimit).
+//
 // The adapters' sections are read at use too: each pass reads them into the
 // slots' wants before it calls them (wantAdapters). A slot rebuilds its
 // adapter for a new port itself, so that restart-class key is never pending
@@ -156,5 +231,7 @@ func newReaches() map[string]reach {
 		"audit":     usedAt(),
 		adaptersNFS: rebuilt(),
 		adaptersSMB: rebuilt(),
+
+		connectionLimitKey: usedAt(),
 	}
 }

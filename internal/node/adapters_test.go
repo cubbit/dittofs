@@ -1638,6 +1638,61 @@ func connected(t *testing.T, id uint64, local, target string, port uint16) net.C
 	return c
 }
 
+// connection_limit above the node's bound fails the node's start, the first
+// apply naming the key and the bound (RFC 13 section 6, RFC 24 section 4.4).
+func TestLimitAboveBoundAtStart(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	putNodeSettings(t, h, map[string]string{"connection_limit": "4097"})
+	err := h.Node().Start(t.Context())
+	t.Cleanup(func() {
+		if err := h.Node().Stop(context.Background()); err != nil {
+			t.Errorf("Stop after a failed Start: %v", err)
+		}
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "connection_limit") ||
+		!strings.Contains(err.Error(), "4096") {
+		t.Fatalf("Start with connection_limit 4,097: %v, want the key and the bound named", err)
+	}
+}
+
+// connection_limit written beneath the check with a value the shape refuses,
+// as a record that predates the rule: the start is not failed, the row is
+// never applied, it is reported refused on the node's exact record and the
+// status carries it, and the derived limit serves: a connection is answered
+// where the row's zero would close every accept (RFC 13 section 6; the
+// start keeping the derived limit is an accepted deviation from the never a
+// default rule, see the decision on applyConnLimit).
+func TestLimitShapeRefusedAtStartKeepsTheDerivedLimit(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	port := freePort(t)
+	putSettings(t, h, adapterRows("adapters.smb", true, port))
+	putNodeSettings(t, h, map[string]string{"connection_limit": "0"})
+	ch := watchStatus(h)
+	started(t, h)
+
+	ofNode := entity.SettingRef(
+		entity.SettingScope{Kind: entity.ScopeNode, ID: h.NodeID()}, "connection_limit")
+
+	refused := h.Node().Refused()
+	if len(refused) != 1 || refused[0].Record.Kind != ofNode.Kind ||
+		!bytes.Equal(refused[0].Record.ID, ofNode.ID) {
+		t.Fatalf("a connection_limit row the shape refuses: %s, want the node's record refused",
+			describe(refused))
+	}
+
+	turnAt(t, h, ch, "carrying the refused row the start did not apply", func(tr statusTurn) bool {
+		return tr.wrote && slices.ContainsFunc(tr.s.Refused, func(r entity.RefusedRecord) bool {
+			return r.Record.Kind == ofNode.Kind && bytes.Equal(r.Record.ID, ofNode.ID)
+		})
+	})
+
+	if err := node.Negotiate(dialled(t, port), 1); err != nil {
+		t.Errorf("a NEGOTIATE under the derived limit: %v, want the refused row never applied",
+			err)
+	}
+}
+
 // dialled is an open connection to port on loopback, closed when the test
 // ends.
 func dialled(t *testing.T, port uint16) net.Conn {
