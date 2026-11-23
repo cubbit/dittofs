@@ -1398,7 +1398,7 @@ walk can produce is omitted.
 | `RejectedSegments` | gauge | segments not attached ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
 | `ReadOnly` | value | whether the journal is read-only, the error that made it so, whether a spare has since been made, and the check the last probe found failing, if any ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)) |
 | `Recovery` | value | how many segments the last open read by catalog and by scan, how long it took, the segments holding a range that names no record, and whether a metadata reconcile is owed, whether its ranges are counted yet, and if so why it is owed (a snapshot hold, an ending that appended no record, a settling step the headroom refused, or the reconcile not yet done); set by an unsettled `reconcile` record, cleared when the reconcile settles ([§3.3](#3.3%20Offload)) ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
-| `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
+| `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)); a `Stats` read reports them as a figure and marks nothing served — `Losses` is the genuine read whose call does ([§3.8](#3.8%20Loss%20events)) |
 | `LossGeneration` | value | raised as [§3.8](#3.8%20Loss%20events) lists: a corrupt or acknowledged-unreadable loss not yet offloaded, a failed sync window, once on turning read-only ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)), and once per uncounted range that names no record; never on a stale, `superseded` or offloaded corrupt loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
 | `TagConflicts` | value | files recovery rebuilt under two tags, each with both tags; every call on them is refused until one tag is forgotten ([§3](#3.%20Interface)) |
 | `Shares` | per share | every tag that holds a record, attached or not, tag 0 excepted ([§3](#3.%20Interface)), with `Limit`, `UsedBytes` — the record bytes of the share's records still on disk —, `ReservedBytes`, `HeldBytes`, `DirtyBytes` and `UnreclaimedBytes` for each share ([§6](#6.%20Capacity)) |
@@ -1493,7 +1493,17 @@ reconcile-retained, is the exception: no window holds it again ([§3.3](#3.3%20O
 index, unless a snapshot hold keeps it ([§3.11](#3.11%20Snapshot%20holds)).
 
 At open, every loss record still on disk is placed in the ring, marked as found
-at open, so a restart does not hide a loss nobody had read. A loss record is
+at open, so a restart does not hide a loss nobody had read. What one read means
+is settled: `Losses` is the genuine read, the read whose call marks the events
+its copy carried served, and a reopen — a restart or a reopen in one process —
+places found at open exactly the loss records the ended instance's genuine
+reader never took away, so the first reopen reports a loss nobody read and a
+later reopen past a genuine read does not report it as new, which the
+[§9.4](#9.4%20The%20checks) row separates. Every other read of the ring, `Stats`'s included, is
+a figure that marks nothing served: a figure read moved ahead of the reader the
+losses belong to would suppress a report nobody delivered, and the engine's
+commit drain is the one genuine caller ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
+A loss record is
 dropped by the same per-extent test as a removal record ([§7.2](#7.2%20Repack)): once no segment
 still on disk holds a record of its file over its extent at or below the pair of
 the record it names, neither that record nor a copy of it can come back. Recovery that drops a record as
