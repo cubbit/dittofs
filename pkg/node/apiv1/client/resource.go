@@ -15,6 +15,9 @@ import (
 type Resource[S, T any] struct {
 	c    *Client
 	path string
+	// keyless is a create whose route carries or issues a credential, a
+	// store's, so it goes with no idempotency key.
+	keyless bool
 }
 
 // Singleton is a resource that is part of another, one per resource of its
@@ -55,8 +58,12 @@ func (r Resource[S, T]) Get(ctx context.Context, id string) (Tagged[S, T], error
 	return tagged[S, T](r.c.do(ctx, call{method: http.MethodGet, path: r.at(id)}))
 }
 
-// Create creates a resource of spec.
+// Create creates a resource of spec; a keyless resource, a store's, goes
+// with no idempotency key, as its spec carries its credential.
 func (r Resource[S, T]) Create(ctx context.Context, spec S, opts ...CallOption) (Tagged[S, T], error) {
+	if r.keyless {
+		opts = append(opts, WithoutIdempotencyKey())
+	}
 	return tagged[S, T](r.c.write(ctx, http.MethodPost, r.path, map[string]any{"spec": spec}, "", opts))
 }
 

@@ -20,6 +20,20 @@ import (
 
 var installation = entity.SettingScope{Kind: entity.ScopeInstallation}
 
+// refRow is a reference row's stored value: the JSON list of the ref's 16
+// bytes, the form a settings table's strict decode reads a reference field
+// from, as the sealing routes write it.
+func refRow(t *testing.T, ref entity.SecretRef) string {
+	t.Helper()
+
+	b, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatalf("marshal the reference row: %v", err)
+	}
+
+	return string(b)
+}
+
 // putSetting writes a setting through the store and returns its generation,
 // as a write the settings table admitted would leave it.
 func (s *served) putSetting(t *testing.T, scope entity.SettingScope, key, value string) uint64 {
@@ -87,10 +101,10 @@ func (s *served) written(t *testing.T, scopes ...entity.SettingScope) string {
 
 // Every settings-backed write, of a setting at two scopes, a setting's
 // delete, an adapter, a remote store, a namespace and a store's credential,
-// is refused 400 naming the first key the empty settings table judges, as
-// operator and as admin, and commits nothing: no counter moves, no
-// namespace or setting appears or goes, and its audit record is a refusal.
-func TestSettingsBackedWritesRefusedByTheEmptyTable(t *testing.T) {
+// is refused 503 naming the node's missing table, as operator and as admin,
+// and commits nothing: no counter moves, no namespace or setting appears or
+// goes, and its audit record is a refusal.
+func TestSettingsBackedWritesRefusedWithNoTable(t *testing.T) {
 	node := uuid.New()
 	for _, role := range []entity.APIRole{entity.RoleOperator, entity.RoleAdmin} {
 		t.Run(role.String(), func(t *testing.T) { settingsBackedRefused(t, role, node) })
@@ -103,9 +117,16 @@ func settingsBackedRefused(t *testing.T, role entity.APIRole, node uuid.UUID) {
 	stScope := entity.SettingScope{Kind: entity.ScopeRemote, ID: st}
 	knob := s.putSetting(t, installation, "gc.schedule", `"daily"`)
 	cred := entity.SecretRef(uuid.New())
-	s.putSetting(t, stScope, "remote.credential", strconv.Quote(uuid.UUID(cred).String()))
-	if err := s.store.PutSecret(t.Context(), entity.Secret{ID: cred, Kind: entity.SecretRemoteCredential, Version: 1,
-		Owner: entity.SecretOwner{Scope: stScope, Key: "remote.credential"}, Value: []byte("sealed")}, 0); err != nil {
+	s.putSetting(t, stScope, "remote.credential", refRow(t, cred))
+	secret := entity.Secret{
+		ID:      cred,
+		Kind:    entity.SecretRemoteCredential,
+		Version: 1,
+		Owner:   entity.SecretOwner{Scope: stScope, Key: "remote.credential"},
+		Value:   []byte("sealed"),
+	}
+
+	if err := s.store.PutSecret(t.Context(), secret, 0); err != nil {
 		t.Fatalf("put secret: %v", err)
 	}
 	ids := uuid.UUID(st).String()
@@ -114,35 +135,86 @@ func settingsBackedRefused(t *testing.T, role entity.APIRole, node uuid.UUID) {
 	}
 	emptyNS := s.namespace(t)
 	for _, tc := range []struct {
-		name, method, path, body, key string
-		hdr                           []string
+		name, method, path, body string
+		hdr                      []string
 	}{
-		{"setting at installation scope", http.MethodPut, "/api/v1/settings/adapters.nfs.port", `{"spec":{"value":12049}}`, "adapters.nfs.port",
-			[]string{"If-None-Match", "*"}},
-		{"setting at node scope", http.MethodPut, "/api/v1/nodes/" + node.String() + "/settings/adapters.nfs.port", `{"spec":{"value":2049}}`, "adapters.nfs.port",
-			[]string{"If-None-Match", "*"}},
-		{"setting's delete", http.MethodDelete, "/api/v1/settings/gc.schedule", "", "gc.schedule",
-			[]string{"If-Match", strconv.Quote(strconv.FormatUint(knob, 10)), "Idempotency-Key", "del-knob"}},
-		{"adapter", http.MethodPut, "/api/v1/adapters/smb", `{"spec":{"enabled":true,"settings":{"port":12445}}}`, "adapters.smb.enabled",
-			[]string{"If-Match", `"0"`}},
-		{"remote store", http.MethodPost, "/api/v1/stores", `{"spec":{"settings":{"remote.endpoint":"https://s3.example","remote.bucket":"b"}}}`, "remote.bucket",
-			[]string{"Idempotency-Key", "store"}},
-		{"namespace", http.MethodPost, "/api/v1/namespaces", `{"spec":{"store":"` + ids + `","settings":{"namespace.prefix":"p/"}}}`, "namespace.prefix",
-			[]string{"Idempotency-Key", "ns"}},
-		{"namespace delete with no setting at its scope", http.MethodDelete, "/api/v1/namespaces/" + emptyNS, "", "namespace",
-			[]string{"If-Match", `"1"`, "Idempotency-Key", "del-ns"}},
-		{"store's credential delete", http.MethodDelete, "/api/v1/stores/" + ids + "/credential", "", "remote.credential",
-			[]string{"If-Match", `"1"`, "Idempotency-Key", "del-cred"}},
+		{
+			"setting at installation scope",
+			http.MethodPut,
+			"/api/v1/settings/adapters.nfs.port",
+			`{"spec":{"value":12049}}`,
+			[]string{"If-None-Match", "*"},
+		},
+		{
+			"setting at node scope",
+			http.MethodPut,
+			"/api/v1/nodes/" + node.String() + "/settings/adapters.nfs.port",
+			`{"spec":{"value":2049}}`,
+			[]string{"If-None-Match", "*"},
+		},
+		{
+			"setting's delete",
+			http.MethodDelete,
+			"/api/v1/settings/gc.schedule",
+			"",
+			[]string{
+				"If-Match", strconv.Quote(strconv.FormatUint(knob, 10)),
+				"Idempotency-Key", "del-knob",
+			},
+		},
+		{
+			"adapter",
+			http.MethodPut,
+			"/api/v1/adapters/smb",
+			`{"spec":{"enabled":true,"settings":{"port":12445}}}`,
+			[]string{"If-Match", `"0"`},
+		},
+		{
+			"remote store",
+			http.MethodPost,
+			"/api/v1/stores",
+			`{"spec":{"settings":{"remote.endpoint":"https://s3.example","remote.bucket":"b"}}}`,
+			nil,
+		},
+		{
+			"namespace",
+			http.MethodPost,
+			"/api/v1/namespaces",
+			`{"spec":{"store":"` + ids + `","settings":{"namespace.prefix":"p/"}}}`,
+			[]string{"Idempotency-Key", "ns"},
+		},
+		{
+			"namespace delete with no setting at its scope",
+			http.MethodDelete,
+			"/api/v1/namespaces/" + emptyNS,
+			"",
+			[]string{"If-Match", `"1"`, "Idempotency-Key", "del-ns"},
+		},
+		{
+			"store's credential delete",
+			http.MethodDelete,
+			"/api/v1/stores/" + ids + "/credential",
+			"",
+			[]string{"If-Match", `"1"`, "Idempotency-Key", "del-cred"},
+		},
 	} {
-		before, audits := s.written(t, installation, stScope, entity.SettingScope{Kind: entity.ScopeNode, ID: node}), len(s.audits(t))
+		nodeScope := entity.SettingScope{Kind: entity.ScopeNode, ID: node}
+		before := s.written(t, installation, stScope, nodeScope)
+		audits := len(s.audits(t))
 		r := s.do(t, tc.method, tc.path, tc.body, tc.hdr...)
-		if r.status != http.StatusBadRequest {
-			t.Fatalf("%s as %s: answered %d %s, want 400", tc.name, role, r.status, r.body)
+		if r.status != http.StatusServiceUnavailable {
+			t.Fatalf("%s as %s: answered %d %s, want 503", tc.name, role, r.status, r.body)
 		}
-		if p := r.problem(t); p.Code != "unknown_key" || p.Field != tc.key {
-			t.Errorf("%s as %s: code %q field %q, want unknown_key naming %s", tc.name, role, p.Code, p.Field, tc.key)
+
+		if p := r.problem(t); p.Code != apiv1.CodeUnavailable {
+			t.Errorf(
+				"%s as %s: code %q, want unavailable naming the missing table",
+				tc.name, role, p.Code)
 		}
-		if after := s.written(t, installation, stScope, entity.SettingScope{Kind: entity.ScopeNode, ID: node}); after != before {
+
+		after := s.written(t, installation, stScope, nodeScope)
+
+		if after != before {
 			t.Errorf("%s as %s: the store changed:\n got %s\nwant %s", tc.name, role, after, before)
 		}
 		if as := s.audits(t); len(as) != audits+1 || string(as[len(as)-1].Outcome) == "applied" {
@@ -160,7 +232,7 @@ func TestStoreCredentialReadsAsReferenceAndVersion(t *testing.T) {
 	scope := entity.SettingScope{Kind: entity.ScopeRemote, ID: st}
 	gen := s.putSetting(t, scope, "remote.endpoint", `"https://s3.other"`)
 	ref := entity.SecretRef(uuid.New())
-	s.putSetting(t, scope, "remote.credential", strconv.Quote(uuid.UUID(ref).String()))
+	s.putSetting(t, scope, "remote.credential", refRow(t, ref))
 	owner := entity.SecretOwner{Scope: scope, Key: "remote.credential"}
 	for v := uint64(1); v <= 2; v++ {
 		if err := s.store.PutSecret(t.Context(), entity.Secret{ID: ref, Kind: entity.SecretRemoteCredential, Version: v, Owner: owner, Value: []byte("sealed-value-" + strconv.FormatUint(v, 10))}, v-1); err != nil {
@@ -175,9 +247,22 @@ func TestStoreCredentialReadsAsReferenceAndVersion(t *testing.T) {
 	if err := json.Unmarshal(r.body, &got); err != nil {
 		t.Fatalf("store %s: %v", r.body, err)
 	}
-	want := &apiv1.SecretRef{Ref: uuid.UUID(ref).String(), Version: 2}
-	if got.Spec.Credential == nil || *got.Spec.Credential != *want {
-		t.Errorf("store's credential %+v, want %+v", got.Spec.Credential, want)
+
+	want := &apiv1.StoreCredential{Ref: uuid.UUID(ref).String(), Version: 2}
+	if got.Spec.Credential == nil {
+		t.Fatalf("store's credential is nil, want %+v", want)
+	}
+
+	if got.Spec.Credential.Ref != want.Ref || got.Spec.Credential.Version != want.Version {
+		t.Errorf(
+			"store's credential %+v, want reference %s at version %d",
+			got.Spec.Credential, want.Ref, want.Version)
+	}
+
+	if got.Spec.Credential.Value != nil {
+		t.Errorf(
+			"store's credential answers its value %q, want none",
+			got.Spec.Credential.Value)
 	}
 	if ep := string(got.Spec.Settings["remote.endpoint"]); ep != `"https://s3.other"` || len(got.Spec.Settings) != 1 {
 		t.Errorf("store's settings %s, want the endpoint alone", got.Spec.Settings)
@@ -197,8 +282,9 @@ func TestStoreCredentialReadsAsReferenceAndVersion(t *testing.T) {
 
 // A remote store a namespace names is refused deletion, 409 not_empty,
 // before any of its settings is judged, and keeps its endpoint; once the
-// namespace is gone, the same delete reaches the settings table. A
-// namespace a share names is refused deletion and kept.
+// namespace is gone, the same delete is refused 503, since this node hands
+// in no settings table. A namespace a share names is refused deletion and
+// kept.
 func TestStoreAndNamespaceDeletesRefusedWhileNamed(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	st := s.remoteStore(t)
@@ -222,8 +308,11 @@ func TestStoreAndNamespaceDeletesRefusedWhileNamed(t *testing.T) {
 		t.Fatalf("delete namespace: %v", err)
 	}
 	r = s.do(t, http.MethodDelete, path, "", "If-Match", tag, "Idempotency-Key", "del-2")
-	if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "unknown_key" || p.Field != "remote.endpoint" {
-		t.Errorf("DELETE of a store no namespace names: answered %d %s, want the settings table's 400 naming remote.endpoint", r.status, r.body)
+
+	p := r.problem(t)
+
+	if r.status != http.StatusServiceUnavailable || p.Code != apiv1.CodeUnavailable {
+		t.Errorf("DELETE of a store no namespace names: %d %s, want 503", r.status, r.body)
 	}
 
 	other := s.namespace(t)
@@ -319,9 +408,12 @@ func TestCredentialSetOverOneRefused(t *testing.T) {
 	st := s.remoteStore(t)
 	scope := entity.SettingScope{Kind: entity.ScopeRemote, ID: st}
 	ref := entity.SecretRef(uuid.New())
-	s.putSetting(t, scope, "remote.credential", strconv.Quote(uuid.UUID(ref).String()))
-	if err := s.store.PutSecret(t.Context(), entity.Secret{ID: ref, Kind: entity.SecretRemoteCredential, Version: 1,
-		Owner: entity.SecretOwner{Scope: scope, Key: "remote.credential"}, Value: []byte("sealed")}, 0); err != nil {
+	s.putSetting(t, scope, "remote.credential", refRow(t, ref))
+
+	if err := s.store.PutSecret(t.Context(), entity.Secret{
+		ID: ref, Kind: entity.SecretRemoteCredential, Version: 1,
+		Owner: entity.SecretOwner{Scope: scope, Key: "remote.credential"}, Value: []byte("sealed"),
+	}, 0); err != nil {
 		t.Fatalf("put secret: %v", err)
 	}
 	before := s.written(t, scope)
@@ -427,7 +519,7 @@ func TestCredentialSetRunsTheCapabilityCheck(t *testing.T) {
 			path := "/api/v1/stores/" + st.String() + "/credential"
 			if tc.held {
 				ref := entity.SecretRef(uuid.New())
-				s.putSetting(t, scope, "remote.credential", strconv.Quote(uuid.UUID(ref).String()))
+				s.putSetting(t, scope, "remote.credential", refRow(t, ref))
 				if err := s.store.PutSecret(t.Context(), entity.Secret{ID: ref, Kind: entity.SecretRemoteCredential, Version: 1,
 					Owner: entity.SecretOwner{Scope: scope, Key: "remote.credential"}, Value: []byte("sealed")}, 0); err != nil {
 					t.Fatalf("put secret: %v", err)
