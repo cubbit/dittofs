@@ -101,7 +101,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	v1Root := v1ProbeRoot(cfg.Metadata.Badger.Path, devices)
 
 	stage(base, stagePreflight, ctx)
-	err = preflight(ctx, cfg.Metadata.Badger.Path, v1Root, devices, clock)
+	err = node.Preflight(ctx, cfg.Metadata.Badger.Path, v1Root, devices, clock)
 	stage(base, stagePreflightReturned, ctx)
 	if err != nil {
 		// A check the signal cancelled ends the start on the signal: nothing
@@ -253,10 +253,6 @@ func stopped(err error) error {
 	}
 	return nil
 }
-
-// preflight is the node's start check. The tests call it through this name,
-// because start.go is the one file of this package that may import the node.
-var preflight = node.Preflight
 
 // v1ProbeRoot is the one extra root the start check reads for a pre-journal
 // (v1) layout, beside the devices: `blocks` in the store directory's parent.

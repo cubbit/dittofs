@@ -17,6 +17,7 @@ import (
 	"github.com/cubbit/dittofs/internal/install"
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
@@ -328,4 +329,12 @@ func (h failOnBudget) Handle(ctx context.Context, r slog.Record) error {
 		h.t.Errorf("nodetest: %s: %s", r.Message, strings.Join(attrs, " "))
 	}
 	return h.Handler.Handle(ctx, r)
+}
+
+// Preflight runs the node's start check with a mount that suits the host, so
+// a test of what the check reads does not depend on the mount of the machine
+// it runs on. The tests of dfs start call it here because only start.go may
+// import the node in that package.
+func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, clock engine.Clock) error {
+	return node.Preflight(ctx, storeDir, v1Root, devices, clock, journaltest.SuitableMount())
 }

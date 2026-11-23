@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
@@ -520,8 +521,8 @@ func TestStartProbesV1Layouts(t *testing.T) {
 				store := filepath.Join(dir, "store")
 				devices := []string{roots["device"]}
 
-				err := preflight(t.Context(), store, v1ProbeRoot(store, devices),
-					devices, newSystemClock(), journaltest.SuitableMount())
+				err := nodetest.Preflight(t.Context(), store, v1ProbeRoot(store, devices),
+					devices, newSystemClock())
 				if err == nil ||
 					!strings.Contains(err.Error(), "the node is not initialised") {
 					t.Errorf(
