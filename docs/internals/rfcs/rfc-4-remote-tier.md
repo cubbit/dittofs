@@ -140,7 +140,9 @@ disk file), receives 64 KiB overwrites all day.
   life, because a name is never written with different bytes.
 - A store does not open on a service missing a feature it relies on, or on a
   bucket whose versioning or expiry rules would keep or delete blocks behind its
-  back; a setting that drifts later stops puts and deletes until it is fixed. The
+  back; once GC's `Recheck` runs ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), a setting that drifts later stops
+  puts and deletes until it is fixed; before that pass lands, drift is seen only
+  when the store is next opened ([§4.1](#4.1%20Interface)). The
   one store that opens on a versioned, object-locked bucket is a backup location
   configured `immutable`, which then requires those settings, never deletes,
   sets a capped retain-until on every put, and keeps every version of its
@@ -177,7 +179,10 @@ Outcome: the operator sees "quota" and frees space; reads never stop.
 
 Outcome: GC clears a record only for a name whose result reads `nil` in a reply.
 
-**Someone turns on versioning for `dfs-data` after N1 opened it.**
+**Someone turns on versioning for `dfs-data` after N1 opened it, once GC's `Recheck` runs.**
+
+Until the `Recheck` calls land with GC ([§4.1](#4.1%20Interface)), no step from 2 on happens: the
+change goes unseen until N1 next opens the store, whose capability check refuses it.
 
 1. N1's store opened against an unversioned bucket, which the capability check
    verified ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
@@ -682,10 +687,13 @@ as written here. The calls a backup location's stores make — `PutVersion`, `Ge
 `DeleteObjects`, `ListObjects` — with the `immutable` mode and its admission
 ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes), [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location)), land with RFC 26's copier and restore; until then a store
 refuses to open in `immutable` mode. `Settings`, `RecheckSetting`, `VersionsPage` and
-`DeleteVersions` land with GC's `Recheck` pass ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), their one caller
-([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)); until then a service setting that drifts after a store opened goes unseen until
-the store is next opened, whose capability check reads it again. Each consumer declares the
-methods it uses ([§1.2](#1.2%20A%20contract%2C%20not%20a%20component)), so neither group's arrival changes a caller.
+`DeleteVersions` land with GC's `Recheck` pass ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), their caller for a namespace's
+store ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)); a backup location's `Recheck` callers come with RFC 26's. Until then a
+service setting that drifts after a store opened goes unseen until the store is next opened,
+whose capability check reads it again: an expiry rule added in between deletes blocks, and a
+node that never restarts sees it only when a read returns `ErrNotFound`. Each consumer declares
+the methods it uses ([§1.2](#1.2%20A%20contract%2C%20not%20a%20component)), so neither group's arrival changes a caller that uses only the
+others; the conformance suite, which takes the whole `Store`, gains their rows with them.
 
 ```go
 // Cause says why a store refused (ErrDenied), so a caller can choose between
@@ -1781,9 +1789,9 @@ with every result.
 
 **Suites.** §7.1's rows against the in-memory store and §7.3's codec tests run in `unit`, and §7.1
 in full against the local emulator under §7.2's fault transport in `integration`. The codec's fuzz
-targets run past their seed corpus nightly in the shared fuzz suite the carver registers, and
-§7.5's steady-load connection row in the engine's soak suite. No suite runs yet the nightly pass
-against each production service, the per-service lab rows or §7.5's other benchmarks.
+targets run past their seed corpus nightly in the shared fuzz suite the carver registers. No
+suite runs yet the nightly pass against each production service, the per-service lab rows or
+§7.5's benchmarks.
 
 ## 8. Decisions and open questions
 
