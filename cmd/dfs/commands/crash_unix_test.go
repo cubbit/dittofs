@@ -271,14 +271,17 @@ func TestCrashBeforeTheShareListReadServesTheCreatedShare(t *testing.T) {
 	c.stop(t)
 }
 
-// deletedFiles is how many files the share the deletion row removes holds.
+// deletedFiles is how many files the share the deletion row removes holds:
+// enough that the drop after the restart outlasts the first read of the
+// operation, which must find it running.
 //
-// ponytail: RFC 23's row seeds 10⁵ files, which at the runner's pace, set
-// by the ponytail on its run loop, take about 4 hours to drop; 50 files are
-// 151 rows under the share's file prefix, 8 batches of step 4, so the files
-// phase spans several turns and the drop ends inside the child's bound. Seed
-// 10⁵ once that ponytail is replaced.
-const deletedFiles = 50
+// ponytail: RFC 23's row seeds 10⁵ files. Each batch of step 4 scans from the
+// share's first file key, over the rows earlier batches deleted, so the drop
+// grows with the square of the files: under -race 2000 files take about 40 s
+// of the child's bound, and 4000 do not end inside it. Seed 10⁵ once the
+// shard's drop keeps its last key, as the ponytail on ContinueShardRemoval
+// says.
+const deletedFiles = 1000
 
 // §3.2 delete: a share's deletion, the node killed with its files phase half
 // done, some of the share's file rows dropped and some left, reads back after
@@ -287,7 +290,7 @@ const deletedFiles = 50
 // key of its own, is refused 409 stale.
 func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 	if testing.Short() {
-		t.Skip("the deletion drops its files one batch a second")
+		t.Skip("seeding and dropping the deletion's files takes about a minute")
 	}
 	share := entity.Share{ID: entity.NewShareID(), Name: "doomed", Path: "/doomed", Root: entity.NewFileID()}
 	config, _ := crashInstall(t, func(st *kvstore.Store, ns entity.NamespaceID) {
