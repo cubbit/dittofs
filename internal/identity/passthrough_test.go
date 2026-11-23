@@ -35,21 +35,30 @@ type ptFixture struct {
 	st     *kvstore.Store
 	d      *identitytest.DomainController
 	f      *identitytest.FaultyDomainController
+	dir    *identitytest.Directory
 	dirf   *switched
 	clock  *sim.TestClock
 	reg    *metrics.Registry
 	logons *logonRecorder
 	domain string // the domain's SID
 	alice  sid.SID
+	userDN string // alice's entry in the directory
 	bind   string // the directory's bind name
 }
 
 func newPassThrough(t *testing.T, rules ...sim.Rule) *ptFixture {
 	t.Helper()
 	prof.Watch(t, prof.Options{})
+	return newPassThroughUnwatched(t, rules...)
+}
+
+// newPassThroughUnwatched is newPassThrough without prof's watch, for a test
+// that builds the fixture inside a synctest bubble and watches outside it.
+func newPassThroughUnwatched(t *testing.T, rules ...sim.Rule) *ptFixture {
+	t.Helper()
 	st, _ := dirStore(t)
-	fx := &ptFixture{st: st, dirf: &switched{}, clock: sim.NewTestClock(mt0), reg: metrics.New("test", "test"), logons: &logonRecorder{}}
 	dir := identitytest.NewDirectory("DC=corp,DC=example")
+	fx := &ptFixture{st: st, dir: dir, dirf: &switched{}, clock: sim.NewTestClock(mt0), reg: metrics.New("test", "test"), logons: &logonRecorder{}}
 	domain, _, err := sid.DecodeSID(dir.DomainSID())
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +70,7 @@ func newPassThrough(t *testing.T, rules ...sim.Rule) *ptFixture {
 	fx.alice = fx.d.AddUser(t, "alice", alicePW)
 	var aliceSID bytes.Buffer
 	sid.EncodeSID(&aliceSID, &fx.alice)
-	dir.AddUser(t, "alice", map[string][][]byte{"objectSid": {aliceSID.Bytes()}})
+	fx.userDN = dir.AddUser(t, "alice", map[string][][]byte{"objectSid": {aliceSID.Bytes()}})
 	// The domain's Guest, as every domain holds one, so a reply naming it
 	// finds an entry to mint.
 	dir.AddUser(t, "Guest", map[string][][]byte{"objectSid": {directory.WithRID(dir.DomainSID(), 501)}})
