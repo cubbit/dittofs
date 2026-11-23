@@ -101,8 +101,10 @@ type Targets struct {
 // reserve's spare, counted like the re-appends' borrowed headroom — is not
 // built: it collides with the same open's emptying, which draws that
 // reserve spare, and it overrules Pool.Take's rule that a class falls back to
-// no other, which needs an RFC ruling. Overturned by that ruling, or by an
-// open seen refusing that way.
+// no other, which is a question for the owner of RFC 1 section 6, filed as
+// its own issue (the open's loss records falling back to the reserve spare,
+// or deferred as RFC 28 section 3.3 defers drops past the open reserve).
+// Overturned by that ruling, or by an open seen refusing that way.
 //
 // decision: the counting starts at the headroom, not at the reconcile spare
 // — a re-adopted spare counts toward the reconcile spare's quota while the
@@ -1360,6 +1362,10 @@ func (p *Pool) refill() bool {
 			p.mu.Unlock()
 			return false
 		}
+		// The headroom before the reserve here, the other way from a
+		// recycle (see wantRecycle): a recycle is a retirement's segment and
+		// returns the reserve what repack spent, while this pass makes a
+		// spare where the device has room.
 		// decision: the headroom and the reserve fill before the content
 		// class, because they are what keeps a full journal able to free
 		// space — the records that return space roll into them — so a pass
