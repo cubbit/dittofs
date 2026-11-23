@@ -139,6 +139,7 @@ type Fixture struct {
 	compose  func(*Fixture, *engine.Engine) Service // builds the service each process start composes; nil for none
 	settings journal.Settings                       // the settings every open of the journal in Dir takes
 	block    uint64                                 // the engine's version block; zero is its default
+	free     func(dir string) (int64, error)        // the engine's free-space read; nil asks the filesystem
 	svc      Service                                // the service running now, built by compose
 	serving  bool                                   // svc was started and is not yet stopped
 }
@@ -503,6 +504,13 @@ func WithSegmentCap(n int64) Option {
 // §2.7's 2²⁴, so a row reaches a raise in a few versions.
 func WithVersionBlock(n uint64) Option {
 	return func(f *Fixture) { f.block = n }
+}
+
+// WithFreeSpace has every engine the fixture builds read the free space of
+// the journal directory's filesystem through free, so a row that fills the
+// device through the seam reports the room it gives back.
+func WithFreeSpace(free func(dir string) (int64, error)) Option {
+	return func(f *Fixture) { f.free = free }
 }
 
 // journalOnly fails a control that acts on the journal in Dir, which
@@ -883,6 +891,7 @@ func (f *Fixture) start() {
 	}
 	f.Opens = opens
 	d.VersionBlock = f.block
+	d.FreeSpace = f.free
 	open := d.Open
 	crashed := f.crashed
 	// decision: the refuse and fake-journal branches answer without the

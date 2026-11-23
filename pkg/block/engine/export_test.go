@@ -885,6 +885,10 @@ func SettledForTest(l journal.Limit, left int64, others bool) bool {
 	return !settled(refusal{limit: l}, left, others).noSpace
 }
 
+// DeviceRoomBytes is the free space a full device must regain before
+// journal_full clears.
+const DeviceRoomBytes = deviceRoomBytes
+
 // RaiseFullForTest runs the raise of journal_full for a refusal of share s's
 // journal by its headroom, as a refused write does.
 func (e *Engine) RaiseFullForTest(s entity.ShareID) {

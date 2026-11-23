@@ -172,6 +172,9 @@ func New(d Deps) (*Engine, error) {
 		stopping: make(chan struct{}),
 		block:    cmp.Or(d.VersionBlock, defaultVersionBlock),
 	}
+	if e.d.FreeSpace == nil {
+		e.d.FreeSpace = freeSpace
+	}
 	e.conflictBound.Store(int64(time.Second))
 	e.raising.ctx, e.raising.cancel = context.WithCancel(context.Background())
 	e.retrying.ctx, e.retrying.cancel = context.WithCancel(context.Background())
@@ -358,10 +361,15 @@ func (e *Engine) startOver(ctx context.Context, shares []Share, u *undo) (opened
 // current and the condition clears once the journal takes writes again. It
 // evaluates the self-fence, as a write's gate does.
 //
+// It clears journal_full once the limit its latest refusal named, the device
+// or the maximum, has room again, so a journal nobody writes to clears too.
+//
 // It is a read: of the engine's locks it takes only the lifecycle mutex,
-// which no content call takes, and the condition set's, which is held for no
-// call; it reads the share table and the counters without a lock and makes
-// no I/O beyond each journal's Stats.
+// which no content call takes, the condition set's, which is held for no
+// call, and each journal's refusal lock, held for no call either; it reads
+// the share table and the counters without a lock and makes no I/O beyond
+// each journal's Stats and, while journal_full stands for a full device, the
+// free space of the journal directory's filesystem.
 func (e *Engine) Stats() Stats {
 	e.mu.Lock()
 	s := e.health.clone()
@@ -369,6 +377,14 @@ func (e *Engine) Stats() Stats {
 	e.mu.Unlock()
 
 	table := e.table()
+	seen := map[*groupCommit]bool{}
+	for _, b := range table {
+		if b.removed || b.gc == nil || seen[b.gc] {
+			continue
+		}
+		seen[b.gc] = true
+		e.clearFullOnRoom(b)
+	}
 	conds := e.conds.current(e.d.Clock.Now())
 
 	for _, j := range js { // Start serves one device: journals[0] is Devices[0]'s

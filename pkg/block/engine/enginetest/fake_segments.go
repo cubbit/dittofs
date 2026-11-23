@@ -67,6 +67,15 @@ func (j *FakeJournal) SegmentCap(capBytes, max int64) {
 	}
 }
 
+// SetMaxBytes sets the journal's maximum to n bytes allocated, as a raise of
+// it does (zero: none).
+func (j *FakeJournal) SetMaxBytes(n int64) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	j.sm.max = n
+}
+
 // StreamOf puts the records of file id on stream s.
 func (j *FakeJournal) StreamOf(id journal.FileID, s uint32) {
 	j.mu.Lock()

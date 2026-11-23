@@ -591,6 +591,19 @@ func (d *deviceFull) fired() int {
 	return d.refused
 }
 
+// free is the free space the device reports: none while it refuses, and
+// room for many segments once it does not.
+func (d *deviceFull) free(string) (int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.on {
+		return 0, nil
+	}
+
+	return 1 << 40, nil
+}
+
 func (d *deviceFull) set(on bool) {
 	d.mu.Lock()
 	d.on = on
@@ -603,12 +616,12 @@ func (d *deviceFull) set(on bool) {
 // write into an allocated segment is accepted and clears, with nothing
 // written, once the device has room.
 func TestRFC8B_JournalFullOnAFullDevice(t *testing.T) {
-	f := enginetest.New(t, enginetest.WithSegmentCap(mib))
+	full := &deviceFull{}
+	f := enginetest.New(t, enginetest.WithSegmentCap(mib), enginetest.WithFreeSpace(full.free))
 	_, id := f.File("a")
 
 	write(t, f, id, 0, []byte("x"))
 
-	full := &deviceFull{}
 	f.Seam.SetFault(full)
 	full.set(true)
 	t.Cleanup(func() { full.set(false) })

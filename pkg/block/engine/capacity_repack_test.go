@@ -1465,3 +1465,134 @@ func TestAFullyWrittenReservationSettlesNoSpace(t *testing.T) {
 		t.Errorf("a refusal over a share whose reservation fully landed: %v, want ErrNoSpace", err)
 	}
 }
+
+// atTheMaximum is a segUnit whose roll was refused at a maximum of 300 bytes,
+// lacking a segment of 100, with a failed segment whose unresolved window
+// keeps repack off it until the test resolves it, after the refusal.
+func atTheMaximum(t *testing.T) *segUnit {
+	t.Helper()
+
+	s := newSegUnit(t, 1<<20, 300)
+	s.j.AddFailed(s.a.Tag, 50, true)
+
+	f1, f2 := entity.NewFileID(), entity.NewFileID()
+	s.stream(f2, 1)
+	s.must(t, s.a, f1, 0, 60, 'a')
+	s.must(t, s.a, f2, 0, 60, 'b')
+
+	if err := s.put(t.Context(), s.a, f1, 100, 60, 'c'); err == nil {
+		t.Fatal("a roll at the maximum was served")
+	}
+
+	got := fullConds(s.e)
+	if len(got) != 1 || !strings.Contains(got[0].Detail, "lacking 100 bytes") {
+		t.Fatalf("journal_full after the refusal = %v, want one lacking 100 bytes", got)
+	}
+
+	return s
+}
+
+// journal_full raised at the maximum clears once storage retired since the
+// refusal and any rise of the maximum reach what the refusal lacked, with
+// nothing written; less leaves it up.
+func TestJournalFullAtTheMaximumClearsOnRoom(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		room func(t *testing.T, s *segUnit)
+		want int
+	}{
+		{"the maximum raised by less than it lacked", func(_ *testing.T, s *segUnit) {
+			s.j.SetMaxBytes(350)
+		}, 1},
+		{"the maximum raised by what it lacked", func(_ *testing.T, s *segUnit) {
+			s.j.SetMaxBytes(400)
+		}, 0},
+		{"a segment freed by repack", func(t *testing.T, s *segUnit) {
+			s.j.ResolveWindows()
+
+			freed, err := s.j.Repack(t.Context(), 1<<20, journal.RepackScope{})
+			if err != nil || freed != segBytes {
+				t.Fatalf("Repack freed %d, %v; want %d", freed, err, segBytes)
+			}
+		}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := atTheMaximum(t)
+			c.room(t, s)
+
+			if n := len(fullConds(s.e)); n != c.want {
+				t.Errorf("%d journal_full conditions after %s, want %d", n, c.name, c.want)
+			}
+		})
+	}
+}
+
+// A headroom refusal is cleared by an unreserved write, never by room under
+// the maximum.
+func TestJournalFullAfterAHeadroomRefusalIgnoresTheMaximum(t *testing.T) {
+	s := newSegUnit(t, 1<<20, 300)
+	s.refuse(t, journal.LimitHeadroom)
+
+	_ = s.put(t.Context(), s.a, entity.NewFileID(), 0, 1, 'x')
+
+	s.j.SetMaxBytes(1 << 30)
+
+	if n := len(fullConds(s.e)); n != 1 {
+		t.Errorf("%d journal_full conditions after a headroom refusal and a raised maximum, want 1", n)
+	}
+}
+
+// journal_full raised for a full device clears once the journal directory's
+// filesystem has a segment's cap free, or a retirement returned one, with
+// nothing written; less free space leaves it up.
+func TestJournalFullOnAFullDeviceClearsOnRoom(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		room func(t *testing.T, u *unit, free *atomic.Int64)
+		want int
+	}{
+		{"free space short of a segment", func(_ *testing.T, _ *unit, free *atomic.Int64) {
+			free.Store(engine.DeviceRoomBytes - 1)
+		}, 1},
+		{"a segment's cap free", func(_ *testing.T, _ *unit, free *atomic.Int64) {
+			free.Store(engine.DeviceRoomBytes)
+		}, 0},
+		{"a segment retired", func(t *testing.T, u *unit, _ *atomic.Int64) {
+			u.j.AddFailed(u.share.Tag, 1, false)
+
+			freed, err := u.j.Repack(t.Context(), 1<<20, journal.RepackScope{})
+			if err != nil || freed != engine.DeviceRoomBytes {
+				t.Fatalf("Repack freed %d, %v; want %d", freed, err, engine.DeviceRoomBytes)
+			}
+		}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var free atomic.Int64
+
+			u := newUnit(t, func(d *engine.Deps) {
+				d.FreeSpace = func(string) (int64, error) { return free.Load(), nil }
+			})
+			u.j.SegmentCap(engine.DeviceRoomBytes, 0)
+
+			if err := u.j.Refuse(enginetest.CallWriteAt, fullDevice()); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := u.e.Write(t.Context(), u.share.ID, entity.NewFileID(), 0, []byte("x"),
+				engine.WriteOpts{Done: func() {}})
+			if !errors.Is(err, vfserr.ErrNoSpace) {
+				t.Fatalf("a write on a full device: %v, want ErrNoSpace", err)
+			}
+
+			if n := len(fullConds(u.e)); n != 1 {
+				t.Fatalf("%d journal_full conditions on a full device with no room, want 1", n)
+			}
+
+			c.room(t, u, &free)
+
+			if n := len(fullConds(u.e)); n != c.want {
+				t.Errorf("%d journal_full conditions after %s, want %d", n, c.name, c.want)
+			}
+		})
+	}
+}
