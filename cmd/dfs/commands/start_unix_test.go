@@ -29,12 +29,12 @@ var apiAddr = regexp.MustCompile(`node: listening api=(\S+)`)
 // stopped.
 const stopping = "dfs: stopped"
 
-// listening starts dfs start over an installation under t.TempDir() and
-// returns it with the API address its log names, the log so far, and the
-// rest of its output, delivered once the child ends.
-func listening(t *testing.T) (cmd *exec.Cmd, addr, log string, rest <-chan string) {
+// listening starts dfs start over the bootstrap at config and returns it
+// with the API address its log names, the log so far, and the rest of its
+// output, delivered once the child ends.
+func listening(t *testing.T, config string) (cmd *exec.Cmd, addr, log string, rest <-chan string) {
 	t.Helper()
-	cmd, out := startChild(t, installed(t, t.TempDir()))
+	cmd, out := startChild(t, config)
 	lines := bufio.NewScanner(out)
 	var b strings.Builder
 	for addr == "" && lines.Scan() {
@@ -57,7 +57,17 @@ func listening(t *testing.T) (cmd *exec.Cmd, addr, log string, rest <-chan strin
 // Over an initialised installation, dfs start answers ready, logging the
 // address it bound, and on SIGTERM stops and exits zero.
 func TestStartServesUntilSIGTERM(t *testing.T) {
-	cmd, addr, log, rest := listening(t)
+	if out := serveUntilSIGTERM(t, installed(t, t.TempDir())); strings.Contains(out, endedOnSignal) {
+		t.Errorf("dfs start on SIGTERM after ready logged %q, want it only for a start the signal ended:\n%s", endedOnSignal, out)
+	}
+}
+
+// serveUntilSIGTERM runs dfs start over the bootstrap at config until it
+// answers ready, then sends it SIGTERM and fails the test unless it stops
+// and exits zero. It returns the child's output.
+func serveUntilSIGTERM(t *testing.T, config string) string {
+	t.Helper()
+	cmd, addr, log, rest := listening(t, config)
 	// Readiness is polled until it answers ready; the child's bound ends a
 	// child that never does, and the poll with it.
 	for readiness(t, addr) != "ready" {
@@ -70,9 +80,7 @@ func TestStartServesUntilSIGTERM(t *testing.T) {
 	if code := cmd.ProcessState.ExitCode(); code != 0 || !strings.Contains(tail, stopping) {
 		t.Fatalf("dfs start on SIGTERM: exit %d, want 0 after logging %q:\n%s%s", code, stopping, log, tail)
 	}
-	if strings.Contains(tail, endedOnSignal) {
-		t.Errorf("dfs start on SIGTERM after ready logged %q, want it only for a start the signal ended:\n%s%s", endedOnSignal, log, tail)
-	}
+	return log + tail
 }
 
 // endedOnSignal is the record dfs logs when the termination signal, not a

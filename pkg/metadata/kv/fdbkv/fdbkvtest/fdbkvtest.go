@@ -54,6 +54,32 @@ func ClearAll(tb testing.TB, clusterFile string) {
 	clearRange(tb, clusterFile, nil, []byte{0xff})
 }
 
+// Keys returns every key below the system keys on the cluster clusterFile
+// names, in order, as they stand: fdbkv's own rows included, no prefix
+// stripped.
+func Keys(tb testing.TB, clusterFile string) [][]byte {
+	tb.Helper()
+	db, err := database(clusterFile)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	ks, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+		kvs, err := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(nil), End: fdb.Key{0xff}}, fdb.RangeOptions{}).GetSliceWithError()
+		if err != nil {
+			return nil, err
+		}
+		ks := make([][]byte, len(kvs))
+		for i, kv := range kvs {
+			ks[i] = kv.Key
+		}
+		return ks, nil
+	})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return ks.([][]byte)
+}
+
 // clearPrefix removes everything under the test's prefix.
 func clearPrefix(tb testing.TB, opts fdbkv.Options) {
 	end, _ := fdb.Strinc(opts.Prefix)
@@ -62,7 +88,7 @@ func clearPrefix(tb testing.TB, opts fdbkv.Options) {
 
 // clearRange removes the keys from begin up to end.
 func clearRange(tb testing.TB, clusterFile string, begin, end []byte) {
-	db, err := fdb.OpenDatabase(clusterFile)
+	db, err := database(clusterFile)
 	if err != nil {
 		tb.Error(err)
 		return
@@ -74,4 +100,17 @@ func clearRange(tb testing.TB, clusterFile string, begin, end []byte) {
 	}); err != nil {
 		tb.Error(err)
 	}
+}
+
+// database opens the cluster clusterFile names, first selecting fdbkv's
+// client API version when nothing in this process has: a test may read or
+// write the cluster before it opens a store. Should the two versions drift,
+// fdbkv.Open fails on the one selected here.
+func database(clusterFile string) (fdb.Database, error) {
+	if _, err := fdb.GetAPIVersion(); err != nil {
+		if err := fdb.APIVersion(730); err != nil {
+			return fdb.Database{}, err
+		}
+	}
+	return fdb.OpenDatabase(clusterFile)
 }
