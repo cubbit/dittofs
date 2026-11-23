@@ -30,6 +30,10 @@ type Subject struct {
 	// so a case that needs another file left alone commits it first. nil:
 	// the cases that need a loss are skipped, naming it.
 	Lose func(t *testing.T, f entity.FileID)
+	// Times reads file f's committed modification and change times from the
+	// store Content commits to. nil: the case reading them is skipped,
+	// naming it.
+	Times func(t *testing.T, f entity.FileID) (modify, change time.Time)
 }
 
 // Run runs the suite against the Content newSubject builds: a fresh one for
@@ -258,20 +262,65 @@ func aSuspendedModifyTimeIsLeftAlone(t *testing.T, s Subject) {
 	}
 }
 
-// A growing truncate whose context suspends the modification time
-// (engine.WithSuspended) moves the change time only. A shrinking truncate, a
-// deallocate and a clone commit the file's existence in the engine, leaving
-// no overlay to read, so the suite holds only the grow, which stays pending.
+// A truncate, down or up, a deallocate, a clone and a copy whose context
+// suspends the modification time (engine.WithSuspended) commit their change
+// time and leave the modification time the file had; with nothing suspended
+// each moves both.
 func aSuspendedContentChangeLeavesTheModifyTimeAlone(t *testing.T, s Subject) {
-	f := s.File(t)
-	s.write(t, f, 0, "a")
-	first := s.Clock.Now()
-	s.Clock.Advance(time.Second)
-	if err := s.Content.Truncate(engine.WithSuspended(t.Context(), entity.TimeModify), s.Share, f, 8); err != nil {
-		t.Fatal(err)
+	if s.Times == nil {
+		t.Skip("the subject reads no committed times (Subject.Times)")
 	}
-	if o, pending := s.overlay(t, f); !pending || !o.Mtime.Equal(first) || !o.Ctime.Equal(s.Clock.Now()) {
-		t.Errorf("after a grow suspending mtime, Overlay pending %v, mtime %v, ctime %v; want true, %v, %v", pending, o.Mtime, o.Ctime, first, s.Clock.Now())
+	ops := []struct {
+		name string
+		do   func(ctx context.Context, src, f entity.FileID) error
+	}{
+		{"truncate down", func(ctx context.Context, _, f entity.FileID) error { return s.Content.Truncate(ctx, s.Share, f, 1) }},
+		{"truncate up", func(ctx context.Context, _, f entity.FileID) error { return s.Content.Truncate(ctx, s.Share, f, 100) }},
+		{"deallocate", func(ctx context.Context, _, f entity.FileID) error {
+			return s.Content.Deallocate(ctx, s.Share, f, 0, 1)
+		}},
+		{"clone", func(ctx context.Context, src, f entity.FileID) error {
+			return s.Content.Clone(ctx, s.Share, src, s.Share, f, vfs.Extent{Len: 2})
+		}},
+		{"copy", func(ctx context.Context, src, f entity.FileID) error {
+			_, err := s.Content.Copy(ctx, s.Share, src, s.Share, f, []vfs.Extent{{DstOff: 8, Len: 2}})
+			return err
+		}},
+	}
+	s.Clock.Advance(time.Since(s.Clock.Now()) + time.Hour) // past the store's own time of each create
+	for _, c := range ops {
+		for _, suspend := range []entity.TimeMask{entity.TimeModify, 0} {
+			src, f := s.File(t), s.File(t)
+			s.write(t, src, 0, "xy")
+			s.write(t, f, 0, "abcd")
+			for _, g := range []entity.FileID{src, f} {
+				if err := s.Content.CommitExistence(t.Context(), s.Share, g); err != nil {
+					t.Fatal(err)
+				}
+			}
+			modify, _ := s.Times(t, f)
+			s.Clock.Advance(time.Minute)
+			at := s.Clock.Now()
+			ctx, cancel := context.WithTimeout(engine.WithSuspended(t.Context(), suspend), 5*time.Second)
+			err := c.do(ctx, src, f)
+			cancel()
+			if err != nil {
+				t.Fatalf("%s suspending %v: %v", c.name, suspend, err)
+			}
+			if err := s.Content.AwaitClones(t.Context(), f); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Content.CommitExistence(t.Context(), s.Share, f); err != nil {
+				t.Fatal(err)
+			}
+			want := at
+			if suspend != 0 {
+				want = modify
+			}
+			if gotM, gotC := s.Times(t, f); !gotM.Equal(want) || !gotC.Equal(at) {
+				t.Errorf("after a %s suspending %v: modify %v, change %v; want modify %v, change %v", c.name, suspend, gotM, gotC, want, at)
+			}
+		}
 	}
 }
 

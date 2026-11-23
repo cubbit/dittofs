@@ -43,6 +43,13 @@ func TestContentSuite(t *testing.T) {
 			Lose: func(_ *testing.T, f entity.FileID) {
 				u.J.FailSync(journal.NewFileID(f), journal.Extent{Off: 0, Len: math.MaxInt64})
 			},
+			Times: func(t *testing.T, f entity.FileID) (time.Time, time.Time) {
+				r, err := u.FS.Store.Files().Get(t.Context(), u.FS.Admin, entity.NewHandle(u.Share.ID, f))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return r.Modify, r.Change
+			},
 		}
 	})
 }

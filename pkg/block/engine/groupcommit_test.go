@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -1259,69 +1258,4 @@ func TestAClockPastTheAgeWhileTheTimerIsArmedCommits(t *testing.T) {
 	u.write(t, f, 0, []byte("abc"))
 	// The clock never moves again, so the bound is the assertion.
 	eventually(t, "the write is committed without another advance", func() bool { return !u.e.HasEntry(f) })
-}
-
-// A truncate, down or up, a deallocate, a clone and a copy whose context
-// suspends the modification time commit their change time and leave the
-// modification time the file had; with nothing suspended each moves both.
-func TestASuspendedContentChangeCommitsItsChangeTimeAlone(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		do   func(ctx context.Context, u *unit, src, f entity.FileID) error
-	}{
-		{"truncate down", func(ctx context.Context, u *unit, _, f entity.FileID) error {
-			return u.e.Truncate(ctx, u.share.ID, f, 1)
-		}},
-		{"truncate up", func(ctx context.Context, u *unit, _, f entity.FileID) error {
-			return u.e.Truncate(ctx, u.share.ID, f, 100)
-		}},
-		{"deallocate", func(ctx context.Context, u *unit, _, f entity.FileID) error {
-			return u.e.Deallocate(ctx, u.share.ID, f, 0, 1)
-		}},
-		{"clone", func(ctx context.Context, u *unit, src, f entity.FileID) error {
-			return u.e.Clone(ctx, u.share.ID, src, u.share.ID, f, vfserr.Extent{Len: 2})
-		}},
-		{"copy", func(ctx context.Context, u *unit, src, f entity.FileID) error {
-			_, err := u.e.Copy(ctx, u.share.ID, src, u.share.ID, f, []vfserr.Extent{{DstOff: 8, Len: 2}})
-			return err
-		}},
-	} {
-		for _, suspend := range []entity.TimeMask{entity.TimeModify, 0} {
-			t.Run(fmt.Sprintf("%s suspending %v", c.name, suspend), func(t *testing.T) {
-				u := clonedUnit(t)
-				u.clock.Advance(time.Since(u.clock.Now()) + time.Hour) // past the store's own time of the create
-				src := u.committedFile(t, "src", []byte("xy"))
-				f := u.committedFile(t, "f", []byte("abcd"))
-				h := entity.NewHandle(u.share.ID, f)
-				before, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
-				if err != nil {
-					t.Fatal(err)
-				}
-				u.clock.Advance(time.Minute)
-				at := u.clock.Now()
-				ctx, cancel := context.WithTimeout(engine.WithSuspended(t.Context(), suspend), 5*time.Second)
-				defer cancel()
-				if err := c.do(ctx, u, src, f); err != nil {
-					t.Fatalf("%s: %v", c.name, err)
-				}
-				if err := u.e.AwaitClones(t.Context(), f); err != nil {
-					t.Fatal(err)
-				}
-				if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
-					t.Fatal(err)
-				}
-				got, err := u.fs.Store.Files().Get(t.Context(), u.fs.Admin, h)
-				if err != nil {
-					t.Fatal(err)
-				}
-				wantModify := at
-				if suspend != 0 {
-					wantModify = before.Modify
-				}
-				if !got.Modify.Equal(wantModify) || !got.Change.Equal(at) {
-					t.Errorf("after a %s suspending %v: modify %v, change %v; want modify %v, change %v", c.name, suspend, got.Modify, got.Change, wantModify, at)
-				}
-			})
-		}
-	}
 }
