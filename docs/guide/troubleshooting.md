@@ -302,8 +302,8 @@ ls: cannot access 'file.txt': Stale file handle
 **Causes:**
 - Server was restarted with an in-memory metadata store (handles lost)
 - File was deleted while client held a handle
-- Metadata backend was changed, for example when a share moved off a removed
-  metadata store type ([Metadata store migration](metadata-store-migration.md))
+- The node was pointed at a different metadata store, for example a new
+  installation started in place of a v1 one ([Upgrading from v1](upgrading-from-v1.md))
 
 **Solutions:**
 

@@ -18,7 +18,6 @@ const Namespace = "dittofs"
 // testable and isolated.
 type Metrics struct {
 	registry *prometheus.Registry
-	in       *instruments
 
 	specsMu sync.Mutex
 	specs   map[string]Spec // the first spec registered under each name, for register's comparisons
@@ -48,7 +47,7 @@ func New(version, commit string) *Metrics {
 	buildInfo.Set(1)
 	reg.MustRegister(buildInfo)
 
-	return &Metrics{registry: reg, in: newInstruments(reg), specs: map[string]Spec{}}
+	return &Metrics{registry: reg, specs: map[string]Spec{}}
 }
 
 // RegisterProvider wires a read-through collector backed by p. The collector
