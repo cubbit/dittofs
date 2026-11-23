@@ -25,8 +25,8 @@ and RFC 5 now says so where each is specified. Related RFCs, with how far each i
   build and epic 10 here reads.
 - **Only the parts RFC 5 cannot work without**, a default this plan took (O1):
   [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §4.2's namespace key records
-  (`NS‖ns‖key‖kind‖keyID`) and key lock (`NS‖ns‖keyseq‖target`), as a view of
-  `pkg/metadata/kvstore` (epic 6).
+  (`NS‖ns‖key‖kind‖keyID`) and key lock (`NS‖ns‖keyseq‖target`), as a view `material`
+  declares and `pkg/metadata/kvstore` implements (epic 6, D7).
 - **Constraints only, by the rule of the observability and test RFCs:**
   [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) (§1.5 rule 3) and
   [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) (§1.5 rules 6 and 10).
@@ -56,7 +56,7 @@ integration epics touch no v1 code (§1.5 rule 7).
 
 **Where the code lands.** The plan and its RFC amendments land on `develop`. The code lands on
 `feat/storage-v2`, where the engine v2, `pkg/keyprovider`, `pkg/secrets`, `pkg/settings` and
-`entity.NamespaceID` live (`develop` has none of them).
+`pkg/metadata/kvstore` live (`develop` has none of them).
 
 **Defaults used from the skill's inputs:** dashboards none; output path
 `.planning/rfc-5-transforms-plan.md`.
@@ -97,7 +97,7 @@ What replaces what:
 | `pkg/block/middleware` (the decorator chain over the v1 remote store) | `pkg/transform`'s `Chain`, run inside RFC 4's block codec | v1 deleted by stage 4 (its plan's D8) |
 | `pkg/block/middleware/compression` (zstd and LZ4, a marker per layer) | `pkg/transform/compress`, the two compressors of RFC 5 Appendix A | v1 deleted by stage 4; `pierrec/lz4/v4` kept for epic 4 (D4) |
 | `pkg/block/middleware/encryption` (a random data key per chunk under AES-GCM) | `pkg/transform/encrypt`, the transform of RFC 5 Appendix B | v1 deleted by stage 4 |
-| `pkg/keyprovider` (RFC 13's custody of the `storage` wrapping key; its KMIP provider fetches the key out of the server) | `pkg/transform/material` and `material/kmip`, master keys that never leave a key service | `pkg/keyprovider` stays RFC 13's; its key-file format and KMIP transport are shared (D5, D14) |
+| `pkg/keyprovider` (RFC 13's custody of the `storage` wrapping key; its KMIP provider fetches the key out of the server) | `pkg/transform/material` and `material/kmip`, master keys that never leave a key service | `pkg/keyprovider` stays RFC 13's, its exported surface unchanged; its key-file format and KMIP transport move to `internal/keyfile` and `internal/kmipwire`, which both import (D5, D14) |
 | the per-remote `encryption.key` configuration blob | the store configuration's `transforms`, `materials` and `require` keys (RFC 5 §3.2), in RFC 13's settings | v1 deleted with its store |
 
 **Dependency limits.** The plan keeps `pierrec/lz4/v4` (D4) and adds no dependency, pending
@@ -136,7 +136,8 @@ The exported surface of `pkg/transform`, frozen at S1, which is the RFC 8 offloa
   `Encoded`, `MaterialID`, `Materials`, `Factory`, `Register`, `Chain` with `Pin` and its
   `Attempt`, `NewChain`, `MaxDecodeLen`, `Config` and the error values, with stub bodies.
   `Materials.Remove` is declared and documented as landing with its first caller (§6.1).
-- `NamespaceID` as an alias of `entity.NamespaceID`.
+- `NamespaceID`, a `[16]byte` of its own as `entity.NamespaceID` is, which the engine's wiring
+  converts: the transforms import no metadata package (§1.5 rule 7).
 - The injection point RFC 25 §8 asks for: `NewChain` takes the root's metrics registry and
   logger (D2).
 - The two calls the RFC 8 offload plan makes besides the chain: the salvage-key wrap (D16) and
@@ -265,20 +266,26 @@ registered (§1.2).
    RFC 8 offload plan, follows `CLAUDE.md`, "Writing tests", "By kind".
 7. **v2 ignores v1, and imports only what RFC 0 §1.2 allows.** RFC 0 §1.2, as the RFC 8 offload
    plan's pull request amends it, names the component imports allowed: the remote codec and the
-   engine's wiring import `pkg/transform`; `pkg/transform` imports no other offload component,
-   so it declares the small interface through which the `keys` object is stored and the wiring
-   passes RFC 4's store in (D8). Epic 1 adds `pkg/transform`'s import test, which checks every
-   package of the tree on its own against an allowlist (the standard library, `x/crypto`, the
-   compression, BLAKE3 and KMIP modules, `pkg/metadata/entity`, `pkg/metadata/kvstore`,
-   `pkg/metrics`, `pkg/health`, `pkg/keyprovider`, `internal/kmipwire`), and fails on any v1
-   path or offload component. v1 is not touched: its deletion is stage 4's.
+   engine's wiring import `pkg/transform`, and "the transforms import no other component". The
+   metadata store (RFC 16) and configuration (RFC 13) are components of the RFC index, so
+   `pkg/transform` imports neither `pkg/metadata/...` nor `pkg/keyprovider`: it declares what it
+   needs as interfaces of its own, which the wiring supplies — the key-record view (D7) and the
+   `keys`-object store (D8) — and shares code with `pkg/keyprovider` only through `internal/`
+   packages (D5, D14). Epic 1 adds `pkg/transform`'s import test, which checks every package of
+   the tree on its own, test packages included, against an allowlist: the standard library,
+   `x/crypto`, the compression, BLAKE3 and KMIP modules, `internal/keyfile`, `internal/kmipwire`,
+   and the machinery RFC 13 §4 and RFC 25 §8 have every component declare against
+   (`pkg/settings`, `pkg/metrics`, `pkg/health`), as the RFC 3 and RFC 4 plans allow it. It
+   fails on any v1 path or other component. v1 is not touched: stage 4 deleted it.
 8. **Real dependencies for properties of those dependencies** (`CLAUDE.md`, "Writing tests").
    Here: a real KMIP server, the harness's `service:kmip`, for the key service (RFC 5 §8.1's
-   key-management row, in `integration`); the real metadata store, Badger under `t.TempDir()`
-   or the memory KV, for key records and the key lock. Key creation, escrow and rotation are
-   ordering claims (a key record committed before the wrap or key is used, a key current only
-   after the bucket's put): each has a crash-seam test with `pkg/metadata/kv/kvtest`'s fault
-   wrapper tearing or crashing the commit beneath it (epics 6 and 8). The bucket's `keys`
+   key-management row, in `integration`); the real metadata store for key records and the key
+   lock, through kvstore's conformance run of the key-record suite (D7) over Badger under
+   `t.TempDir()`, the memory KV and, where that suite runs, FoundationDB. Key creation, escrow
+   and rotation are ordering claims (a key record committed before the wrap or key is used, a
+   key current only after the bucket's put): each has a crash-seam row in that suite, with
+   `pkg/metadata/kv/kvtest`'s fault wrapper tearing or crashing the commit beneath it (epics 6
+   and 8). The bucket's `keys`
    object is tested against `materialtest`'s verified in-memory store of it; the RFC 8 offload
    plan's epic 21 runs the same suite against RFC 4's store in `integration`, with LocalStack
    over HTTPS from the RFC 4 plan's epic 3.
@@ -386,14 +393,15 @@ this plan cites them by its names.
   `material_unavailable`, and runs `materialtest`'s `keys`-object suite against RFC 4's store in
   `integration` (its epic 21). Unblocks epic 10, which is planned after it, and epic 11.
 
-Seams the offload contract fixes between this plan and the others:
+Seams between this plan and the others, the offload contract's and RFC 13's:
 
 | Plan | It builds | It calls of this plan |
 | --- | --- | --- |
 | RFC 2 | the keyed BLAKE3 chunk ID (RFC 2 §4.1), the keyed gear table (RFC 2 §3.2, §6), RFC 5 §8.2 T17's half that the same file in two namespaces gives disjoint chunk IDs (its epic 4); the one vector script and test corpus (its epic 2), which this plan's vectors join; the nightly `fuzz` suite (its epic 2) | nothing: the engine passes it the keys (below) |
 | RFC 3 | its `Descriptor` and `MaterialRef`, the census entry opaque to the syncer, and its own `ErrMaterialUnavailable` and `ErrMaterialDestroyed` (RFC 3 §1.3) | nothing: its memory bound is sized by the engine and the codec (below) |
 | RFC 4 | the block codec, which writes the census into the header (RFC 4 §3.2 to §3.4) and owns RFC 3 §2.2's memory-bound row on the codec's part; `PutControl` and `GetControl` (RFC 4 §4.13); LocalStack over HTTPS in `integration` (its epic 3) | `Attempt.Encode`, `Chain.Decode`, `MaxDecodeLen`, the stage count and the 255-byte material ID that bound the header census |
-| RFC 8 offload | the pin's holder and the census at commit (epic 15), and there the refusal of a plan keyed under another namespace's key (RFC 5 §8.2 T17's other half, its last Appendix B.2 row: epic 15's Intent step), the `Census` view (epic 19), the destroyed-material handling (epic 18), the salvage export (epic 20), the store adapter, its error mapping and the node's registration of collectors and alert rules (epic 21) | `NewChain`, `Chain.Pin` and `Attempt.Release`, `MaxDecodeLen` for the syncer's memory bound, `Materials.Current` and `Get` for the chunk-ID and chunking keys it hands the carver, the salvage-key wrap, the destroyed-material notice, the `keys`-object store interface (D8) |
+| RFC 13 | `pkg/keyprovider`, whose exported surface does not change: epic 6 moves its key-file format to `internal/keyfile` and epic 7 its KMIP transport to `internal/kmipwire` (D5, D14); its importers (`pkg/secrets`, `internal/install`, `cmd/dfs`) are not touched, and its `kmip_integration_test.go` still runs over the moved transport | nothing: `pkg/transform` does not import it |
+| RFC 8 offload | the pin's holder and the census at commit (epic 15), and there the refusal of a plan keyed under another namespace's key (RFC 5 §8.2 T17's other half, its last Appendix B.2 row: epic 15's Intent step), the `Census` view (epic 19), the destroyed-material handling (epic 18), the salvage export (epic 20), the store adapter, its error mapping and the node's registration of collectors and alert rules (epic 21) | `NewChain`, `Chain.Pin` and `Attempt.Release`, `MaxDecodeLen` for the syncer's memory bound, `Materials.Current` and `Get` for the chunk-ID and chunking keys it hands the carver, the salvage-key wrap, the destroyed-material notice; its wiring supplies the `keys`-object store (D8) and the key-record view (D7) |
 
 ### 3.3 Blockers
 
@@ -438,17 +446,20 @@ pkg/transform/                 E1 the RFC 5 §3.1 surface, the salvage-key wrap 
                                RFC 5 §6; E9 settings.go, the store configuration's keys
 pkg/transform/transformtest/   E2 the transform conformance suite, the vector loader
 pkg/transform/materialtest/    E2 the Materials conformance suite, the in-memory Materials;
-                               E6 the custody suite; E8 the keys-object suite and store
+                               E6 the custody suite, the key-record suite and its in-memory
+                               view; E8 the keys-object suite and store
 pkg/transform/compress/        E4 zstd and LZ4
 pkg/transform/encrypt/         E5 the AES-256-GCM-SIV transform and its derivations
 pkg/transform/internal/siv/    E5 AES-256-GCM-SIV as a cipher.AEAD (Q2)
-pkg/transform/material/        E6 the provider, the stored wrap, key-file custody, escrow,
+pkg/transform/material/        E6 the provider, the key-record view it declares (D7), the
+                               stored wrap, key-file custody, escrow,
                                namespace key creation, the salvage-key wrap; E8 rotation,
                                the keys object, the destroyed-material notice
 pkg/transform/material/kmip/   E7 key-service custody over KMIP
+internal/keyfile/              E6 the key-file format moved out of pkg/keyprovider (D5)
 internal/kmipwire/             E7 the KMIP transport moved out of pkg/keyprovider (D14)
-pkg/metadata/kvstore/          E6 the key-record view (RFC 16 §4.2's NS‖ns‖key and
-                               NS‖ns‖keyseq rows)
+pkg/metadata/kvstore/          E6 material's key-record view over RFC 16 §4.2's NS‖ns‖key
+                               and NS‖ns‖keyseq rows, run under the key-record suite
 pkg/metadata/kv/keys/          E6 the keyseq subtag beside NSKey
 ```
 
@@ -492,8 +503,10 @@ libraries. Applies in epic 4.
 `pkg/keyprovider` is RFC 13's custody of the `storage` wrapping key, which must never wrap a
 namespace key (RFC 5 Appendix B.2, "No storage-key fallback"), and its KMIP provider fetches the
 key out of the server, which Appendix B.1 forbids for a master key. A key-file master key is read
-in `pkg/keyprovider`'s passphrase-protected format, under RFC 13 Appendix C's passphrase, through
-one exported loader epic 6 adds to `pkg/keyprovider`; the wrap itself is RFC 5 Appendix B.1's.
+in `pkg/keyprovider`'s passphrase-protected format, under RFC 13 Appendix C's passphrase. Epic 6
+moves that format's reader to `internal/keyfile`, which both packages import, since
+`material` may not import RFC 13's package (§1.5 rule 7); `pkg/keyprovider`'s exported surface
+and its tests do not change. The wrap itself is RFC 5 Appendix B.1's.
 Prior art: HashiCorp Vault's seal wrappers and the AWS Encryption SDK's keyrings separate key
 custody from the data format (from memory). Applies in epics 6 and 7.
 
@@ -505,14 +518,22 @@ provider, and lands with it (§1.5 rule 12). Each implementation passes `materia
 custody suite, which lands with the interface in epic 6, the key service running it at the
 integration tier. Prior art: as D5. Applies in epic 6.
 
-**D7. Key records are a view of `pkg/metadata/kvstore`**, written in the store's own
-transactions, as the other RFC 16 records are; the provider holds unwrapped namespace keys in
-process memory, per namespace. Prior art: the other `kvstore` views on `feat/storage-v2`.
+**D7. Key records are a view `material` declares and the metadata store implements.** The
+transforms import no other component (§1.5 rule 7), so `material` declares the calls it needs,
+named for the need: read a namespace's key records, create its keys in one transaction, and
+rewrite them under the `keyseq` key lock. `pkg/metadata/kvstore` implements it in the store's
+own transactions, and the engine's wiring passes it in, as RFC 14 §11.1 defines `OpenRecords`
+for the store to implement (RFC 16 §3). Its suite is in `materialtest` with a verified
+in-memory view; kvstore's conformance run calls the same suite, so Badger, the memory KV and
+FoundationDB all run the key-record and key-lock rows, the lock's conflict under FoundationDB
+included. Stage 7's rename of `kvstore` to `pkg/metadata` moves only the implementation. The
+provider holds unwrapped namespace keys in process memory, per namespace. Prior art: RFC 14's
+`OpenRecords`, the other consumer-declared view. Applies in epic 6.
 Applies in epic 6.
 
 **D8. The `keys` object is a versioned binary record, stored through an interface `material`
 declares.** Its bytes: a format version, the namespace ID, the sequence, the export key ID, the
-key records as `kvstore` encodes them, and the keys MAC of Appendix B.1. RFC 5 fixes what the
+key records in RFC 16 §4.3's codec, as the key-record view (D7) reads them, and the keys MAC of Appendix B.1. RFC 5 fixes what the
 MAC covers and RFC 4 §4.13 the object's role, but neither its bytes. Settled now, the export key
 ID included though only the first export key exists in v1.1, because a recovery import
 (RFC 26 §2.3) reads it from every bucket written from the first namespace on: a change later is
@@ -613,7 +634,7 @@ the import test passes on the empty tree and fails on a planted v1 import.
 **Expected content:**
 - §3.1's types, interfaces, `Register`, `Chain` with `Pin` and `Attempt`, `NewChain`,
   `MaxDecodeLen`, `Config` and the errors, with doc comments citing the RFC.
-- `NamespaceID` aliased to `entity.NamespaceID`, and the chain's `Deps` (D2).
+- `NamespaceID` as its own `[16]byte`, and the chain's `Deps` (D2).
 - The salvage-key wrap (D16) and the destroyed-material notice (D17), declared in
   `pkg/transform` next to `Materials`.
 - `pkg/transform`'s import test (§1.5 rule 7).
@@ -734,8 +755,10 @@ leaves no wrap in use without its committed record (§1.5 rule 8); a salvage key
 under its master key and associated data.
 
 **Expected content:**
-- The `kvstore` key-record view (D7), fuzzed decode, and the `keyseq` subtag with its row in
-  `pkg/metadata/kv/keys`' table.
+- The key-record view `material` declares, its suite and in-memory view in `materialtest`, and
+  its `kvstore` implementation under kvstore's conformance run (D7), fuzzed decode, and the
+  `keyseq` subtag with its row in `pkg/metadata/kv/keys`' table.
+- The key-file format's reader moved to `internal/keyfile` (D5).
 - The stored wrap and the key-file custody (D5, D6), with the custody interface and its suite.
 - The escrow check and `ErrNotEscrowed`.
 - `Current` and `Get`: fingerprints, the three failure classes, namespace scoping, the cache.
