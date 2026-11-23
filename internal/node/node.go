@@ -245,7 +245,15 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 		return nil, err
 	}
 
-	n := &Node{cfg: cfg, rec: newReconciler(newTable(), newReaches()), sweep: newSweeper()}
+	// The node builds its own settings table with its refusal series registered
+	// under the node's registry: a walk that refuses a section and a write the
+	// table refuses both count on the node itself, RFC 13 §8's series, never
+	// in a registry the exporter does not scrape.
+	n := &Node{
+		cfg:   cfg,
+		rec:   newReconciler(newTable().WithMetrics(cfg.Metrics), newReaches()),
+		sweep: newSweeper(),
+	}
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		// decision: over Badger a store whose first key has one of v1's
 		// prefixes is v1's, the only program that wrote one at

@@ -101,6 +101,7 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 | `settings-gen-bench` | the commit rate of eight concurrent secret writers with the settings generation's raise and without it, RFC 13 plan §4.3's trigger | manual | any machine, with `DITTOFS_BENCH_DIR` |
 | `settings-scan-bench` | the reconcile's walk and diff at 10⁴ shares' settings, sparse and dense, against RFC 13 plan §4.3's 100 ms | manual | any machine, with `DITTOFS_BENCH_DIR` |
 | `settings-scan-smoke` | the reconcile scan benchmark once per change at `-benchtime=1x`, non-blocking | pr | any machine |
+| `reconcile-settings-smoke` | the reconcile benchmark's settings case, the whole settings reconcile, once per change at `-benchtime=1x`, non-blocking | pr | any machine |
 | `adapter-conformance` | the adapters' conformance specifications, behind their own tag | pr | any machine |
 | `integration` | `-tags=integration` tests against real services | pr | Docker with Postgres and KMIP up; `integration/portmap` needs a Linux host with rpcbind |
 | `operator` | the Kubernetes operator: `make test`, `make lint`, manifests, kustomize | pr | any machine with `make` and `kubectl` |

@@ -137,6 +137,7 @@ jobs:
                 or .suite == "engine-conformance" or .suite == "engine-soak"
                 or .suite == "adapter-conformance"
                 or .suite == "settings-scan-smoke"
+                or .suite == "reconcile-settings-smoke"
                 or IN(.name; "unit/windows", "integration/ad-dc", "integration/kerberos", "bench-smoke"))
               | .slug = (.name | gsub("/"; "-")) | .nix = ((.tools // []) | map(".#" + .) | join(" "))
               | .job_timeout_minutes = .timeout_minutes + 15]' "$RUNNER_TEMP/plan.json" > "$RUNNER_TEMP/cells.json"
