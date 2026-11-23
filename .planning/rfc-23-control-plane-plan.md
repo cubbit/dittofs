@@ -709,8 +709,9 @@ Client eviction is O9.
 built on its pid and log files go:
 - `config`, `version` and `completion` stay as they are: of v1, `config` imports `pkg/config`,
   which epic 1 strips and the RFC 13 plan's epic 2 moves onto `pkg/bootstrap` with it, and, for
-  `config show`, `internal/cli/output`, `internal/sysinfo` and `pkg/block`, which stay; the other
-  two import nothing of this module;
+  `config show`, `internal/cli/output`, which stays. `internal/sysinfo` goes with the v1 Badger
+  store, its only other importer (the stage 4 plan's T2.1), and `config show` no longer imports
+  it or `pkg/block`; the other two import nothing of this module;
 - `start --foreground` becomes `start`, and `--pid-file` and `--log-file` go with daemon mode:
   the node logs where its logger writes, and a script takes the pid from its shell. Epic 1 drops
   the three flags from every caller and rewrites the tests that assert them; its T1.3 and T1.4
