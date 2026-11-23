@@ -24,8 +24,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
-// apiVersion is the client API this package is written against, 7.3's.
-const apiVersion = 730
+// APIVersion is the client API this package is written against, 7.3's;
+// a test that opens the cluster beside a store selects the same one.
+const APIVersion = 730
 
 // Options configures a Store.
 type Options struct {
@@ -73,7 +74,7 @@ type TLS struct {
 	CertFile, KeyFile, CAFile string
 }
 
-var apiOnce = sync.OnceValue(func() error { return fdb.APIVersion(apiVersion) })
+var apiOnce = sync.OnceValue(func() error { return fdb.APIVersion(APIVersion) })
 
 // network is the TLS the first Open gave the client. TLS files are options of
 // the process's one client network, which reads them once, when it starts:
@@ -130,7 +131,7 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 		}
 	}
 	if err := apiOnce(); err != nil {
-		return nil, fmt.Errorf("fdbkv: client API %d: %w", apiVersion, err)
+		return nil, fmt.Errorf("fdbkv: client API %d: %w", APIVersion, err)
 	}
 	if err := setTLS(opts.TLS); err != nil {
 		return nil, err

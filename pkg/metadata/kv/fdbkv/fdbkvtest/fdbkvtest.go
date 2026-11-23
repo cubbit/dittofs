@@ -104,11 +104,10 @@ func clearRange(tb testing.TB, clusterFile string, begin, end []byte) {
 
 // database opens the cluster clusterFile names, first selecting fdbkv's
 // client API version when nothing in this process has: a test may read or
-// write the cluster before it opens a store. Should the two versions drift,
-// fdbkv.Open fails on the one selected here.
+// write the cluster before it opens a store.
 func database(clusterFile string) (fdb.Database, error) {
 	if _, err := fdb.GetAPIVersion(); err != nil {
-		if err := fdb.APIVersion(730); err != nil {
+		if err := fdb.APIVersion(fdbkv.APIVersion); err != nil {
 			return fdb.Database{}, err
 		}
 	}
