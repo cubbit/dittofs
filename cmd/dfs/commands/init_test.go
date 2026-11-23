@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/install"
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )

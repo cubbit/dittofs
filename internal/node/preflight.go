@@ -15,8 +15,8 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/cubbit/dittofs/pkg/block/engine"
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/journal"
 )
 
 // What the probe of the metadata store's directory found.

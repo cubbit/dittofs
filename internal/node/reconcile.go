@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity"
-	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
+	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"

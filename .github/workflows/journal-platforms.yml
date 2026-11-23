@@ -54,7 +54,7 @@ jobs:
         with:
           filters: |
             journal:
-              - 'pkg/block/journal/**'
+              - 'pkg/journal/**'
               - 'internal/prof/**'
               - 'pkg/sim/**'
               - 'go.mod'
@@ -75,7 +75,7 @@ jobs:
       - name: Run the journal tests
         if: github.event_name != 'pull_request' || steps.filter.outputs.journal == 'true'
         shell: bash
-        run: go test -race -count=1 -p 2 -timeout=25m ./pkg/block/journal/... ./internal/prof/...
+        run: go test -race -count=1 -p 2 -timeout=25m ./pkg/journal/... ./internal/prof/...
 
       # Only a push run saves: a pull request run reads its base branch's
       # entries and every run reads the default branch's, while what a pull

@@ -33,7 +33,7 @@ DITTOFS_BENCH_DIR=$dir DITTOFS_BENCH_SCALE=small go test -count=10 -benchtime=1x
 	-o "$out/$group.test" -outputdir "$out" \
 	-cpuprofile "$group.cpu" -mutexprofile "$group.mutex" -mutexprofilefraction "$mutex_fraction" \
 	-blockprofile "$group.block" -blockprofilerate "$block_rate" -memprofile "$group.heap" \
-	./pkg/block/journal/conformance/ > "$out/$group.txt"
+	./pkg/journal/conformance/ > "$out/$group.txt"
 status=$?
 rm -f "$out/$group.test"
 cat "$out/$group.txt"

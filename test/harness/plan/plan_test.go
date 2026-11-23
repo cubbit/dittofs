@@ -304,7 +304,7 @@ func TestChangedPaths(t *testing.T) {
 	if got := plan("docs/guide/x.md", "README.md", "test/e2e/README.md"); len(got) != 0 {
 		t.Errorf("docs-only change planned %v", got)
 	}
-	if got := plan("pkg/block/engine/flush.go"); slices.Contains(got, "e2e/kerberos") || slices.Contains(got, "e2e/cross-protocol") || !slices.Contains(got, "unit") {
+	if got := plan("pkg/engine/flush.go"); slices.Contains(got, "e2e/kerberos") || slices.Contains(got, "e2e/cross-protocol") || !slices.Contains(got, "unit") {
 		t.Errorf("a block change: %v", got)
 	}
 

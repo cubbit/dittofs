@@ -10,15 +10,15 @@ import (
 	"time"
 
 	filesystem "github.com/cubbit/dittofs/internal/vfs"
-	"github.com/cubbit/dittofs/pkg/block/engine"
-	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // copyChunk is the engine's copy chunk under the fixture's clone_max_len: it
-// must match copyChunk in pkg/block/engine/clone.go.
+// must match copyChunk in pkg/engine/clone.go.
 const copyChunk = 64 << 20
 
 // backstop is a generous real-time bound on a wait that must end, so a wrong
