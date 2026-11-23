@@ -9,7 +9,9 @@ import (
 
 	"github.com/cubbit/dittofs/internal/install"
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
@@ -142,5 +144,27 @@ func TestInitRefusesAV1MetadataStore(t *testing.T) {
 	checkV1Store(t, store)
 	if ents, err := os.ReadDir(filepath.Join(dir, "device")); err != nil || len(ents) != 0 {
 		t.Errorf("journal directory after the refusal: %d entries, %v; want it empty", len(ents), err)
+	}
+}
+
+// Over a store kvstore.Init created that has since lost its format record,
+// dfs init refuses it as foreign, never with the v1 sentence: its keys are
+// this format's records.
+func TestInitRefusesAStoreThatLostItsFormatRecord(t *testing.T) {
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	db, err := badgerkv.Open(badgerkv.Options{Dir: filepath.Join(dir, "store"), NodeID: testNode})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = kvstore.Init(t.Context(), db, [16]byte{1})
+	if err == nil {
+		err = db.Update(t.Context(), func(tx kv.Txn) error { return tx.Delete(keys.Format) })
+	}
+	if err = errors.Join(err, db.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runDfs("init", "--config", config); !errors.Is(err, kvstore.ErrForeignStore) || strings.Contains(err.Error(), "from v1") {
+		t.Errorf("dfs init over a store that lost its format record: got %v, want ErrForeignStore's wording, never the v1 sentence", err)
 	}
 }

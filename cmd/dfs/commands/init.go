@@ -98,12 +98,11 @@ func runInit(cmd *cobra.Command, _ []string) (err error) {
 		Out:          cmd.OutOrStdout(),
 		Logger:       slog.Default(),
 	})
-	// decision: a foreign store is refused as v1's without asking the
-	// backend, because checkKV admits only Badger, and a Badger directory
-	// holding keys with no format record was written by v1. Withdraw it when
-	// checkKV admits a backend v1 never ran on, whose foreign store keeps
-	// ErrForeignStore's own wording.
-	if errors.Is(err, kvstore.ErrForeignStore) {
+	// decision: a store whose first key has one of v1's prefixes is refused
+	// as v1's over Badger only, as the node refuses it. This format's records
+	// with the format record lost, and any store over another backend, keep
+	// ErrForeignStore's own wording: neither is v1's to clear.
+	if b := cfg.Metadata.Backend; errors.Is(err, kvstore.ErrV1Store) && (b == "" || b == "badger") {
 		return refuseV1Found(cfg.Metadata.Badger.Path, "a metadata store")
 	}
 	return err

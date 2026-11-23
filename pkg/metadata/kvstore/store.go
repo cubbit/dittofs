@@ -1,6 +1,7 @@
 package kvstore
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,7 +19,26 @@ var (
 	ErrInitialised    = errors.New("kvstore: store already initialised")
 	ErrFormat         = errors.New("kvstore: store format not supported")
 	ErrForeignStore   = errors.New("kvstore: store holds a foreign backend's keys")
+	// ErrV1Store is the ErrForeignStore whose first key is one v1's Badger
+	// store wrote; a refusal that is ErrV1Store is ErrForeignStore too.
+	ErrV1Store = errors.New("kvstore: store holds v1's keys")
 )
+
+// v1Prefixes is every key prefix v1's Badger metadata store wrote, from its
+// first commit to its deletion, with its two single keys, srvepoch and
+// srvclean. Each starts with a lowercase letter, which no kind of this
+// format's keys is, so a match is never one of this format's records.
+var v1Prefixes = []string{
+	"block:", "br:", "c:", "cap:", "cfg:", "chunk-blocks:", "chunk:", "cn:", "crec:",
+	"d:", "dh:", "f:", "fb-file:", "fb-hash:", "fb-local:", "fb:", "fm:", "fmt:",
+	"fsmeta:", "hmap:", "l:", "li:", "lkclient:", "lkfile:", "lkowner:", "lock:",
+	"m:", "nsm:", "obj-chunks:", "obj:", "p:", "pl:", "qu:", "ro:", "s:",
+	"srvclean", "srvepoch", "synced:", "w:",
+}
+
+func isV1Key(k []byte) bool {
+	return slices.ContainsFunc(v1Prefixes, func(p string) bool { return bytes.HasPrefix(k, []byte(p)) })
+}
 
 // MinFormat and MaxFormat are the store formats this binary reads and
 // writes, the range a node registers for the store format. Format n names
@@ -114,7 +134,9 @@ func Init(ctx context.Context, db kv.KV, install [16]byte) error {
 }
 
 // refuseForeign answers ErrForeignStore, naming the first key that is not a
-// clock ceiling, over a store with no format record.
+// clock ceiling, over a store with no format record: ErrV1Store as well when
+// that key has one of v1's prefixes, so this format's records with the format
+// record lost are never answered as v1's.
 //
 // decision: Init and Open refuse every key but the clock ceiling a store's
 // own Open leaves in whatever directory it opened — v1's text keys and this
@@ -133,6 +155,9 @@ func refuseForeign(r kv.Reader) error {
 		}
 		ceil := k.Key
 		if len(ceil) != 1+keys.IDLen+1 || ceil[0] != keys.KindN || ceil[len(ceil)-1] != keys.NClk {
+			if isV1Key(k.Key) {
+				return fmt.Errorf("%w: %w: key %q is v1's", ErrV1Store, ErrForeignStore, k.Key)
+			}
 			return fmt.Errorf("%w: key %q names a record a new installation must not overwrite", ErrForeignStore, k.Key)
 		}
 	}

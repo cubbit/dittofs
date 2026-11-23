@@ -18,6 +18,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -123,8 +124,8 @@ func TestNewRefusesAV1Store(t *testing.T) {
 				Logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
 			})
 			switch {
-			case tc.v1 && (err == nil || err.Error() != sentence):
-				t.Errorf("New over a v1 store, backend %q: got %v, want %q", tc.backend, err, sentence)
+			case tc.v1 && (err == nil || err.Error() != sentence || !errors.Is(err, kvstore.ErrV1Store)):
+				t.Errorf("New over a v1 store, backend %q: got %v, want %q, still kvstore.ErrV1Store", tc.backend, err, sentence)
 			case !tc.v1 && (!errors.Is(err, kvstore.ErrForeignStore) || strings.Contains(err.Error(), "from v1")):
 				t.Errorf("New over a foreign store, backend %q: got %v, want ErrForeignStore's wording, never the v1 sentence", tc.backend, err)
 			}
@@ -132,6 +133,32 @@ func TestNewRefusesAV1Store(t *testing.T) {
 				t.Error("the KV after a refused New: a View succeeded, want it closed")
 			}
 		})
+	}
+}
+
+// New over a Badger store kvstore.Init created that has since lost its format
+// record refuses it as foreign, never with the v1 sentence: its keys are this
+// format's records, holding an Installation an operator must not be told to
+// start over from.
+func TestNewRefusesAStoreThatLostItsFormatRecord(t *testing.T) {
+	db, err := badgerkv.Open(badgerkv.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kvstore.Init(t.Context(), db, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(t.Context(), func(tx kv.Txn) error { return tx.Delete(keys.Format) }); err != nil {
+		t.Fatal(err)
+	}
+	b := listening("127.0.0.1:0", "127.0.0.1:0")
+	b.Metadata.Badger.Path = "/the store"
+	_, err = node.New(node.Config{
+		Bootstrap: b, KV: db, Clock: sim.NewTestClock(time.Unix(0, 0)), Metrics: metrics.New("test", "test"),
+		Logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
+	})
+	if !errors.Is(err, kvstore.ErrForeignStore) || strings.Contains(err.Error(), "from v1") {
+		t.Errorf("New over a store that lost its format record: got %v, want ErrForeignStore's wording, never the v1 sentence", err)
 	}
 }
 

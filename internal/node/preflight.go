@@ -67,13 +67,20 @@ var (
 	errNoStoreDir = errors.New("the store's directory is not set")
 )
 
-// refuseV1 is the one sentence a start or an initialisation refuses v1 data
+// refuseV1Found is the one sentence a start or an initialisation refuses v1 data
 // with, whatever it found: the pre-journal block layout here, a v1 Badger
 // store in New. dfs's own refusal of v1's control-plane database writes the
 // same sentence, in cmd/dfs/commands, whose tests pin it as these do.
-func refuseV1(path, found string) error {
+func refuseV1Found(path, found string) error {
 	return fmt.Errorf("%w: %s at %s is from v1; upgrading from v1 is not supported: start a new installation with dfs init on empty storage", errV1State, found, path)
 }
+
+// v1Store is New's refusal of a v1 Badger store: the v1 sentence, still
+// kvstore.ErrV1Store and ErrForeignStore underneath.
+type v1Store struct{ sentence, store error }
+
+func (e v1Store) Error() string   { return e.sentence.Error() }
+func (e v1Store) Unwrap() []error { return []error{e.sentence, e.store} }
 
 // manifestName is Badger's MANIFEST, the mark of a store Open created.
 const manifestName = "MANIFEST"
@@ -230,7 +237,7 @@ func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, c
 // checks reorders which advice that operator gets.
 func decide(f startFacts) error {
 	if f.V1 != "" {
-		return refuseV1(f.V1, "a pre-journal block layout")
+		return refuseV1Found(f.V1, "a pre-journal block layout")
 	}
 	if f.Store == storePresent {
 		// decision: a present store settles the start check on its own and
