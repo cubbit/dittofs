@@ -27,7 +27,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
-	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	apiclient "github.com/cubbit/dittofs/pkg/node/apiv1/client"
 	"github.com/cubbit/dittofs/pkg/secrets"
@@ -645,40 +644,66 @@ func TestSessionCreatedAtStoreTime(t *testing.T) {
 }
 
 // A checked sign-in makes exactly two Updates, the count and its
-// settlement, whether it succeeds or fails. The node's first status and
-// sweep turns, which commit at its start, are waited out first; the clock
-// stands still, so neither turns again.
+// settlement, whether it succeeds or fails. Only the Updates that write a
+// sign-in count or a session are counted, so a turn of the node's own loops,
+// or of anything else on the store, committing during the sign-in is not.
 func TestCheckedSignInCommitsTwice(t *testing.T) {
-	var counting *kv.Counting
+	writes := &signInWrites{}
 	h := nodetest.New(t, nodetest.Watch(), nodetest.AdminPassword(adminPassword), withKV(func(inner kv.KV) kv.KV {
-		counting = &kv.Counting{KV: inner}
-		return counting
+		writes.KV = inner
+		return writes
 	}))
-	status, swept := make(chan struct{}), make(chan struct{})
-	statusOnce, sweptOnce := sync.OnceFunc(func() { close(status) }), sync.OnceFunc(func() { close(swept) })
-	h.Node().OnStatus(func(entity.NodeStatus, bool) { statusOnce() })
-	h.Node().OnSweep(func([]kvstore.Swept) { sweptOnce() })
 	started(t, h)
-	for _, ch := range []chan struct{}{status, swept} {
-		select {
-		case <-ch:
-		case <-time.After(10 * time.Second):
-			t.Fatal("the node's first status or sweep turn did not end within 10 s")
-		}
-	}
 	addr, _ := h.Node().Addrs()
 	s := &authNode{h: h, addr: addr}
 	for _, tc := range []struct {
 		what, password string
 		status         int
 	}{{"a success", adminPassword, http.StatusOK}, {"a failure", "wrong", http.StatusUnauthorized}} {
-		counting.TakeUpdates()
+		writes.n.Store(0)
 		if r := s.signIn(t, "admin", tc.password); r.status != tc.status {
 			t.Errorf("%s: answered %d %s, want %d", tc.what, r.status, r.body, tc.status)
 		}
-		if got := counting.TakeUpdates().Updates; got != 2 {
-			t.Errorf("%s: %d Updates, want 2", tc.what, got)
+		if got := writes.n.Load(); got != 2 {
+			t.Errorf("%s: %d Updates writing a sign-in count or a session, want 2", tc.what, got)
 		}
+	}
+}
+
+// signInWrites passes every Update through and counts those whose final
+// attempt set or deleted a sign-in count or a session key, committed or not:
+// each write of a sign-in writes one of them, and no loop of the node does
+// while the clock stands still, as none of them is due for the sweep.
+type signInWrites struct {
+	kv.KV
+	n atomic.Int32
+}
+
+func (w *signInWrites) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	var wrote bool
+	err := w.KV.Update(ctx, func(tx kv.Txn) error {
+		wrote = false
+		return fn(signInTxn{tx, &wrote})
+	})
+	if wrote {
+		w.n.Add(1)
+	}
+	return err
+}
+
+// signInTxn is a Txn that notes a Set or Delete of a sign-in count or a
+// session key.
+type signInTxn struct {
+	kv.Txn
+	wrote *bool
+}
+
+func (t signInTxn) Set(key, value []byte) error { t.note(key); return t.Txn.Set(key, value) }
+func (t signInTxn) Delete(key []byte) error     { t.note(key); return t.Txn.Delete(key) }
+
+func (t signInTxn) note(key []byte) {
+	if len(key) > 0 && (key[0] == keys.KindSF || key[0] == keys.KindSS) {
+		*t.wrote = true
 	}
 }
 
