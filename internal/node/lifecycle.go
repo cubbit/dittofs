@@ -349,18 +349,18 @@ func (n *Node) openListeners(context.Context) error {
 	return nil
 }
 
-// register writes the node's record, naming its API address.
-//
-// ponytail: the record carries no format version ranges, as no shared format
-// is versioned yet, so no registration is refused for them. Add the ranges
-// once a format nodes share is.
+// register writes the node's record through the version gate, naming its
+// API address: the record's ranges are this binary's for every shared
+// format, and the start is refused in the registration's transaction when
+// the installation holds an active version outside them, naming the format
+// and both versions (RFC 13 §5.5). Once the registration passed, the
+// registry holds each format's active version and range.
 func (n *Node) register(ctx context.Context) error {
-	_, err := n.meta.Nodes().RegisterNode(ctx, entity.Node{
+	return bootstrap.Register(ctx, n.meta, entity.Node{
 		ID:      n.cfg.Bootstrap.Node.ID,
 		Address: n.life.api.String(),
 		Roles:   entity.NodeRoleProtocol | entity.NodeRoleStorage,
-	})
-	return err
+	}, n.cfg.Metrics)
 }
 
 // readRecords reads the counters and the shares, keeping those reconcile
