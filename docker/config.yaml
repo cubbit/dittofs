@@ -1,26 +1,22 @@
-# Server configuration for the repository's docker-compose.yml. Only the
-# settings that differ from the built-in defaults are listed.
+# Server configuration for the repository's docker-compose.yml, in this
+# release's keys. Only the settings that differ from the built-in defaults are
+# listed.
 #
-# The JWT secret and the initial admin password arrive from the compose file
-# through DITTOFS_CONTROLPLANE_SECRET and DITTOFS_ADMIN_INITIAL_PASSWORD, so no
-# credential is written here.
+# This file alone does not start a node: `dfs init` and `dfs start` also need
+# node.id and the storage key (keys.storage), and the API serves off loopback
+# only with a certificate (api.tls). The compose stack's move to them, and to
+# `dfs init` as its own step, is its own change.
 
 logging:
   # Defaults to a file under the state directory; `docker compose logs` reads stdout.
   output: "stdout"
 
-controlplane:
-  # Reached from outside the container. The compose file publishes it on the
-  # host loopback only.
-  host: "0.0.0.0"
+metadata:
+  badger:
+    # The compose file's metadata volume.
+    path: "/data/metadata"
 
-database:
-  sqlite:
-    # Defaults under the container's home directory, which no volume backs.
-    path: "/data/state/controlplane.db"
-
-blockstore:
-  journal:
-    # Root under which each share gets its own journal directory. Holds the only
-    # copy of every byte that has not reached the block store yet.
-    path: "/data/blocks"
+journals:
+  # The compose file's journal volume. The journal holds the only copy of every
+  # byte written, so it never lives in the container's writable layer.
+  - path: "/data/blocks"
