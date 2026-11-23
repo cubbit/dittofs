@@ -40,6 +40,8 @@ var frozenExports = []string{
 	"type Table []Section",
 	"func (Table).Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, " +
 		"holds HoldsContent) error",
+	"func Refusals(err error) iter.Seq2[entity.SettingScope, string]",
+	"func (Table).PrefixOf(key string) string",
 	"type Snapshot struct{}",
 	"func (*Snapshot).Keep(section string, prev *Snapshot) *Snapshot",
 	"func (*Snapshot).Stored(section string) bool",

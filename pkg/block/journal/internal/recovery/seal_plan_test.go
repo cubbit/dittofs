@@ -25,7 +25,19 @@ func planFailed(seq uint64) ReadOnlyDrop {
 			Version: core.Version{Counter: seq},
 		},
 		Dropped: core.Seq(seq),
+		// The stands-word: the failing read-only journal lives in this
+		// process, its ring still readable.
+		Reported: true,
 	}
+}
+
+// unreportedFailedDrop is one failed-leg row whose report nobody answered:
+// the failing instance stopped before any reader reached its event, so the
+// planner's re-append publishes the loss instead of holding it back.
+func unreportedFailedDrop(seq uint64) ReadOnlyDrop {
+	d := planFailed(seq)
+	d.Reported = false
+	return d
 }
 
 // planCorrupt is one corrupt drop of the table: a rotted record of seq the
@@ -66,9 +78,10 @@ func planCorrupt(seg, seq uint64) corruptRecord {
 //     and the proof's corrupt lists — is one plan entry.
 func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 	type wanted struct {
-		seq    core.Seq
-		failed bool           // the failed leg planned it; the corrupt leg otherwise
-		defers core.SegmentID // the segment a deferred corrupt drop defers against; zero appends
+		seq      core.Seq
+		failed   bool           // the failed leg planned it; the corrupt leg otherwise
+		reported bool           // the suppression the failed leg's entry still carries
+		defers   core.SegmentID // the segment a deferred corrupt drop defers against; zero appends
 	}
 	cases := []struct {
 		name     string
@@ -84,14 +97,14 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 			failed:  []ReadOnlyDrop{planFailed(10), planFailed(11)},
 			corrupt: []corruptRecord{planCorrupt(951, 12)},
 			reserve: 3,
-			want:    []wanted{{10, true, 0}, {11, true, 0}, {12, false, 0}},
+			want:    []wanted{{10, true, true, 0}, {11, true, true, 0}, {12, false, true, 0}},
 		},
 		{
 			name:    "one record less defers the corrupt drop",
 			failed:  []ReadOnlyDrop{planFailed(10), planFailed(11)},
 			corrupt: []corruptRecord{planCorrupt(951, 12)},
 			reserve: 2,
-			want:    []wanted{{10, true, 0}, {11, true, 0}, {12, false, 951}},
+			want:    []wanted{{10, true, true, 0}, {11, true, true, 0}, {12, false, true, 951}},
 		},
 		{
 			// The failed leg's records take the reserve whole before any
@@ -101,7 +114,7 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 			failed:  []ReadOnlyDrop{planFailed(10)},
 			corrupt: []corruptRecord{planCorrupt(951, 12)},
 			reserve: 1,
-			want:    []wanted{{10, true, 0}, {12, false, 951}},
+			want:    []wanted{{10, true, true, 0}, {12, false, true, 951}},
 		},
 		{
 			name:   "a corrupt twin of a failed piece past the reserve defers nothing",
@@ -112,14 +125,14 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 			// open's failed list, never a deferral of this one.
 			corrupt: []corruptRecord{planCorrupt(951, 11)},
 			reserve: 1,
-			want:    []wanted{{10, true, 0}},
+			want:    []wanted{{10, true, true, 0}},
 		},
 		{
 			name:    "a corrupt twin of a failed piece the reserve held plans no second",
 			failed:  []ReadOnlyDrop{planFailed(10)},
 			corrupt: []corruptRecord{planCorrupt(951, 10)},
 			reserve: 1,
-			want:    []wanted{{10, true, 0}},
+			want:    []wanted{{10, true, true, 0}},
 		},
 		{
 			name:    "a piece a disk record already names plans nothing",
@@ -137,7 +150,7 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 			reserve:  2,
 			named:    []core.Seq{12, 13},
 			unsynced: []core.Seq{12},
-			want:     []wanted{{12, false, 0}},
+			want:     []wanted{{12, false, true, 0}},
 		},
 		{
 			// Past the reserve such a piece defers like any unnamed drop,
@@ -147,7 +160,18 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 			reserve:  0,
 			named:    []core.Seq{12},
 			unsynced: []core.Seq{12},
-			want:     []wanted{{12, false, 951}},
+			want:     []wanted{{12, false, true, 951}},
+		},
+		{
+			// The registry's word on the failed entry drives the
+			// suppression: a failure whose reporter stopped before any
+			// reader reached its event plans the loss published, not
+			// suppressed — the open that re-appends the record the
+			// failure owed republishes it itself.
+			name:    "a failed record whose report nobody answered plans its republish",
+			failed:  []ReadOnlyDrop{unreportedFailedDrop(10)},
+			reserve: 1,
+			want:    []wanted{{10, true, false, 0}},
 		},
 		{
 			// The failed leg's piece is the failed list's to answer, not the
@@ -164,7 +188,7 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 			// lists, as the marks' and the proof's each answer one drop.
 			corrupt: []corruptRecord{planCorrupt(950, 12), planCorrupt(951, 12)},
 			reserve: 2,
-			want:    []wanted{{12, false, 0}},
+			want:    []wanted{{12, false, true, 0}},
 		},
 	}
 	for _, c := range cases {
@@ -193,8 +217,8 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 				if got.Seq != w.seq {
 					t.Errorf("plan entry %d = seq %d, want %d", i, got.Seq, w.seq)
 				}
-				if w.failed && (got.Reason != core.LossFailedWindow || !got.Reported) {
-					t.Errorf("plan entry %d = %+v, want the failed leg's: reason %d and reported", i, got, core.LossFailedWindow)
+				if w.failed && (got.Reason != core.LossFailedWindow || got.Reported != w.reported) {
+					t.Errorf("plan entry %d = %+v, want the failed leg's: reason %d and the entry's own reported %t", i, got, core.LossFailedWindow, w.reported)
 				}
 				// A corrupt-leg piece a placed but unsynced record holds was
 				// published by the failed placement: it appends reported and

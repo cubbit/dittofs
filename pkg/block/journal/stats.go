@@ -37,16 +37,32 @@ func (j *Journal) Stats() Stats {
 	s.Counters.TornTails += uint64(r.TornTails)
 	s.Counters.ScanResyncs += uint64(r.ScanResyncs)
 	s.Counters.SyncReappendedBytes += uint64(r.ReappendedBytes)
-	// The recovered marks, copied per call as every map of the answer is:
-	// one entry per stream, and never a walk of the placements each one
-	// names.
-	if n := len(j.opened.marks); n > 0 {
-		s.SyncMarks = make(map[uint32]SyncMark, n)
-		for _, m := range j.opened.marks {
+	// The streams' marks, copied per call as every map of the answer is: one
+	// entry per stream, read from the figure the durability layer keeps, and
+	// never a walk of the placements each one names.
+	if marks := j.core.Durability().Marks(); len(marks) > 0 {
+		s.SyncMarks = make(map[uint32]SyncMark, len(marks))
+		for _, m := range marks {
 			s.SyncMarks[m.Stream] = m
 		}
 	}
 	return s
+}
+
+// Losses returns the journal's published loss events, oldest first, and is
+// the read that takes them away: the drain or poll that consumes them marks
+// them served, so an in-process reopen of the journal publishes again only
+// the losses no genuine read reached — the losses found at open its ring
+// re-places, exactly RFC 1 section 3.8's restart clause inside one process.
+// Stats reports the same events as a figure and marks nothing served, for
+// its callers — the metrics export, an engine's startup reads — are not the
+// reader the losses belong to. After Close it answers nil, as Stats answers
+// its zero Stats.
+func (j *Journal) Losses() []LossEvent {
+	if j.closed.Load() || j.core == nil {
+		return nil
+	}
+	return j.core.Durability().Losses()
 }
 
 // statsFrom converts the core's statistics to the public shape. Maps and
@@ -200,20 +216,14 @@ type Stats struct {
 	// verify. Kind: gauge.
 	DamagedSegments int
 
-	// SyncMarks holds, per append stream, the mark of what the journal's
-	// open recovered of it: its synced-through offset and the end and
-	// sequence number of the stream's last verifying record, a copy the
-	// open re-appended counted at where that copy verifies now. Kind: value.
-	//
-	// decision: the entry is the open's settle, held as it is until the
-	// journal closes. RFC 1's field names the SyncMark of the stream's last
-	// completed sync, which the group commit reads off this figure between
-	// the open and the stream's next sync — and past that first sync the
-	// running journal does not raise it, for the marks its own Sync returns
-	// belong to the caller that asked for them and nothing maintains a
-	// per-stream figure to fold them into. Withdrawn when the durability
-	// layer keeps the last mark of every stream's completed sync, which the
-	// open seeds with what it recovered.
+	// SyncMarks holds, per append stream, the mark of the last Sync that
+	// named a file of it: its synced-through offset, and the end and sequence
+	// number of the record it covered. Until the stream's next such Sync after
+	// an open it is what that open recovered of it, a copy the open
+	// re-appended counted at where that copy verifies now. It only rises: a
+	// failed sync raises nothing, nor does a sync no caller named a file for,
+	// and a Sync's mark replaces the entry only when the stream's own order
+	// puts it later (see the durability layer's figure). Kind: value.
 	SyncMarks map[uint32]SyncMark
 
 	// LastSyncError is the most recent sync failure; nil when no sync has

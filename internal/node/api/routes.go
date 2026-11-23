@@ -247,9 +247,9 @@ var baseRoutes = []route{
 	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "rotate-machine-password", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpRotateMachinePassword, serve: action(prepareRotate)},
 }
 
-// routes is the whole table: the rows above, sign-in's, and the generic
+// routes is the whole table: the rows above, sign-in's, API tokens', and the generic
 // setting resource's rows at each scope.
-var routes = slices.Concat(baseRoutes, authRoutes, settingRoutes())
+var routes = slices.Concat(baseRoutes, authRoutes, apiTokenRoutes, settingRoutes())
 
 // version answers the API's major versions and nothing else.
 func version(context.Context, Deps, request[none]) (apiv1.Version, error) {

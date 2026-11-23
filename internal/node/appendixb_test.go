@@ -666,8 +666,33 @@ func refLeaks(t *testing.T, tb settings.Table, refusing []entity.Setting) (refs 
 		t.Fatal(err)
 	}
 
+	// A marker row that a probe stored is the reference the next probe's
+	// write is judged whole with, so each key is probed over the same clean
+	// store the first was: the markers a section's reference fields leave
+	// are removed before every probe and put back once the sweep ends, for
+	// the refusal search below, which reads each section with them stored.
+	marks := make(map[string]entity.Setting)
+	removeMarks := func() {
+		for key, row := range marks {
+			err := cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+				cur, _, err := tx.Setting(row.Scope, key)
+				if err != nil {
+					return err
+				}
+
+				return tx.DeleteSetting(row.Scope, key, cur.Generation)
+			})
+			if err != nil {
+				t.Fatalf("remove the probe's %s row: %v", key, err)
+			}
+		}
+	}
+
 	refs = make(map[string][]string)
+
 	for _, k := range tableKeys(t, st, tb) {
+		removeMarks()
+
 		for _, v := range [][]byte{arr, str} {
 			row := entity.Setting{Scope: k.Scope, Key: k.Key, Value: v, Schema: schema}
 			err := cp.Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
@@ -677,9 +702,14 @@ func refLeaks(t *testing.T, tb settings.Table, refusing []entity.Setting) (refs 
 				continue
 			}
 			putBeneathCheck(t, st, row)
+			marks[k.Key] = row
 			refs[k.Section] = append(refs[k.Section], k.Key)
 			break
 		}
+	}
+
+	for _, row := range marks {
+		putBeneathCheck(t, st, row)
 	}
 
 	for _, row := range refusing {

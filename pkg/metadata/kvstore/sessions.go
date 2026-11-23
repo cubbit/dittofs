@@ -562,10 +562,16 @@ func (c ControlPlane) APITokenByHash(ctx context.Context, hash [32]byte) (t enti
 	return t, found, err
 }
 
-// APITokens lists an account's tokens; a deleted or marked account has none.
-func (c ControlPlane) APITokens(ctx context.Context, account entity.Principal) iter.Seq2[entity.APIToken, error] {
+// APITokens lists an account's tokens in ID order, resuming after the token
+// after; the zero ID starts at the first. A deleted or marked account has
+// none.
+func (c ControlPlane) APITokens(ctx context.Context, account entity.Principal, after [16]byte) iter.Seq2[entity.APIToken, error] {
 	prefix := accountTokensPrefix(account)
-	return ofLiveAccount(ctx, c.s.kv, account, pages(ctx, c.s.kv, prefix, nil, func(r kv.Reader, row kv.KeyValue) (entity.APIToken, error) {
+	var cursor []byte
+	if after != ([16]byte{}) {
+		cursor = accountTokenKey(account, after)
+	}
+	return ofLiveAccount(ctx, c.s.kv, account, pages(ctx, c.s.kv, prefix, cursor, func(r kv.Reader, row kv.KeyValue) (entity.APIToken, error) {
 		id := [16]byte(row.Key[len(prefix):])
 		b, err := r.Get(tokenKey(id))
 		if err != nil {

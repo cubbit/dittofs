@@ -1,5 +1,5 @@
 // Package apisettings is the management API's own settings, two sections: the
-// api section, how long a sign-in's session and a service account's API token
+// api section, how long a sign-in's session and an account's API token
 // may last, and the audit section, how long the audit is kept.
 package apisettings
 

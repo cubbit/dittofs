@@ -383,6 +383,9 @@ func TestSyncMarkFollowsAReAppendedRecord(t *testing.T) {
 	origSeg.Store(uint64(a.Segment))
 	seq := core.Seq(fr.lastSeq.Load())
 	fr.failSyncKeepingPages(t, a.Segment, errors.New("sync boom"))
+	// The figure holds the ended segment's last mark, as a stream whose last
+	// sync was there would.
+	fr.d.SeedMarks([]core.SyncMark{{Stream: 0, Segment: uint64(a.Segment), Through: a.Off + a.Len, Offset: a.Off + a.Len, Sequence: uint64(seq)}})
 
 	syncing := fr.syncMarksAsync(context.Background(), f)
 	awaitGate(t, "the park after the copy's sync", reached)
@@ -409,6 +412,9 @@ func TestSyncMarkFollowsAReAppendedRecord(t *testing.T) {
 	if answered.marks[0].Segment == uint64(a.Segment) {
 		t.Errorf("the mark names the ended segment %d, want the copy's %d", a.Segment, h.Segment)
 	}
+	// The figure the group commit records moves from the ended segment to the
+	// copy's, though the copy keeps its record's sequence number.
+	wantMarks(t, "the figure after the copy's sync", fr.d, answered.marks[0])
 }
 
 // TestSyncMarksAFileSyncedEarlier covers: a Sync naming a file with nothing
@@ -533,6 +539,9 @@ func TestSyncReturnsNoMarkForRecordsInSealedOrRetiredSegments(t *testing.T) {
 	}
 	if len(answered.marks) != 0 {
 		t.Errorf("Sync returned marks %+v, want none: the retired record's segment answers sealed (gone from the registry), the newer record's is sealed, so no named record can be proved", answered.marks)
+	}
+	if got := r.d.Marks(); len(got) != 0 {
+		t.Errorf("Marks() = %+v after a Sync that returned no mark, want the figure untouched", got)
 	}
 }
 

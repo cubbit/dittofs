@@ -510,9 +510,9 @@ rfc28 / 4.2 / C / "a recovery seal holds no catalog of a range":
   owner: epic 7
   reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
 rfc28 / 4.2 / C / "a mark proves only up to `Through`":
-  tests: [TestRFC1A_SyncMarksNameTheRecordsTheyProve, TestRFC28C_AMarkProvesOnlyUpToThrough]
-  owner: '#4173'
-  reason: 'Sync names its marks now, and the test checks what each one claims: the stream, the segment, the record''s end and its sequence, read against the placed record''s own header. The rest of the row needs the journal-level Stats.SyncMarks and MarksRecorded the marks work still owes [#4173], so a group commit can record one, and the open''s use of a recorded mark -- cutting a scanned tail at `Through`, counting a lost tail, running the reconcile -- which is epic 7''s recovery.'
+  tests: [TestRFC1A_SyncMarksNameTheRecordsTheyProve, TestRFC28C_AMarkProvesOnlyUpToThrough, TestRFC1A_StatsSyncMarksCoverWhatSyncReturned]
+  owner: epic 7
+  reason: 'Sync names its marks, and the journal serves each stream''s last one as Stats.SyncMarks, which follows every sync, and takes MarksRecorded; the tests check what each mark claims and that the served entry covers what Sync returned. What remains is the open''s use of a recorded mark -- cutting a scanned tail at `Through`, counting a lost tail, running the reconcile -- which is epic 7''s recovery.'
 rfc28 / 4.2 / C / "a counted range is not counted again":
   owner: epic 7
   reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'

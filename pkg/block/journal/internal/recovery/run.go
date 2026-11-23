@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"math"
 	"runtime"
@@ -32,7 +33,7 @@ type Deps struct {
 	// layer's FailedFor answers it before any layer of the open is built —
 	// not a call the rebuild makes back into that layer; nil is no failed
 	// list.
-	Failed []core.Seq
+	Failed []durability.Failed
 
 	// ExtentLimit is the index entry bound the rebuilt index carries into
 	// the journal's later writes. Zero is no bound. A rebuild over the bound
@@ -533,4 +534,44 @@ func agreeingIdentity(ctx context.Context, deps Deps, rd *reader) core.JournalID
 		agree = h.Identity
 	}
 	return agree
+}
+
+// TakenSegment reports whether at least one segment file in names holds the
+// header a take wrote. A finished spare answers false: it lives as its own
+// <id>.seg file, its name no different from a taken segment's, and its
+// header slot is all zero. Each slot is read through the open's retry
+// bound like every other read, and only the bytes the read returned are
+// judged: a short, empty, garbage or zero slot is nobody's take. A read
+// the bound could not finish answers taken, for unread is not proven
+// empty, and a caller that sees no taken segment gets to record the
+// identity and open without an operator (RFC 28 section 3.4). The decode
+// is against the zero identity, so any header that verifies counts,
+// whichever journal it names.
+func TakenSegment(ctx context.Context, deps Deps, names []string) bool {
+	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return false
+		}
+		if kind, _ := format.ClassifyName(name); kind != format.NameSegment {
+			continue
+		}
+		b := make([]byte, format.SegmentHeaderSize)
+		n, rerr := rd.ReadAt(name, b, 0)
+		if errors.Is(rerr, fs.ErrNotExist) {
+			continue // no file at the name: nothing to read, nobody's take
+		}
+		if rerr != nil && !errors.Is(rerr, io.EOF) {
+			return true // unread is not proven empty: count the slot as taken
+		}
+		b = b[:n]
+		if !anyHeaderByte(b) {
+			continue // a spare nobody took: an all-zero, short or empty slot
+		}
+		if _, derr := format.DecodeSegmentHeader(b, core.JournalID{}); derr == nil || errors.Is(derr, format.ErrForeign) {
+			return true
+		}
+		// damaged, or a version this binary does not read: nobody's take
+	}
+	return false
 }

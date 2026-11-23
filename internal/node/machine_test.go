@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -80,6 +82,13 @@ type machine struct {
 // starts it.
 func newMachine(t *testing.T, onDisk bool, before ...func(*node.Node)) *machine {
 	t.Helper()
+	return newMachineLogged(t, nil, onDisk, before...)
+}
+
+// newMachineLogged is newMachine whose node also logs every line, debug
+// included, as text to log, when it is set.
+func newMachineLogged(t *testing.T, log io.Writer, onDisk bool, before ...func(*node.Node)) *machine {
+	t.Helper()
 	dir := identitytest.NewDirectory("DC=corp,DC=example")
 	domain, _, err := sid.DecodeSID(dir.DomainSID())
 	if err != nil {
@@ -106,6 +115,9 @@ func newMachine(t *testing.T, onDisk bool, before ...func(*node.Node)) *machine 
 	opts := []nodetest.Option{nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		m.kv = kvtest.NewFaultKV(cfg.KV)
 		cfg.KV = m.kv
+		if log != nil {
+			cfg.Logger = slog.New(slog.NewMultiHandler(cfg.Logger.Handler(), slog.NewTextHandler(log, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		}
 		return build(cfg)
 	})}
 	if !onDisk {
@@ -179,9 +191,9 @@ func (m *machine) succeeded(t *testing.T, what string, id entity.OperationID) {
 	}
 }
 
-// join joins the installation online as NAS$ through the API and waits for
-// the join to succeed.
-func (m *machine) join(t *testing.T) {
+// join joins the installation online as NAS$ through the API, waits for
+// the join to succeed, and returns its operation's ID.
+func (m *machine) join(t *testing.T) entity.OperationID {
 	t.Helper()
 	adm := m.dc.Admin()
 	body, err := json.Marshal(apiv1.JoinDomain{
@@ -191,8 +203,10 @@ func (m *machine) join(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.succeeded(t, "the online join", m.post(t, "join-domain", string(body)))
+	id := m.post(t, "join-domain", string(body))
+	m.succeeded(t, "the online join", id)
 	caughtUp(t, m.h)
+	return id
 }
 
 // passThrough signs alice in as CORP\alice through the node's filesystem

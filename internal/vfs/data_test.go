@@ -173,7 +173,9 @@ func TestALockIsOrderedWhollyBeforeOrAfterAWrite(t *testing.T) {
 			}
 			locked <- err
 		}()
-		time.Sleep(20 * time.Millisecond)
+		until(t, "the lock waiting for the write's admission lock", func() bool {
+			return s.locks.Waiters(lockorder.Set{Admit: []lockorder.Key{lockorder.Key(fileOf(h))}}) > 0
+		})
 		staged.Store(true)
 	})
 	_, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("x"), vfs.Unstable)
@@ -604,7 +606,11 @@ func TestADataChangesWCCIsReadInOneHold(t *testing.T) {
 			defer close(answered)
 			w, err = change(h)
 		}()
-		time.Sleep(20 * time.Millisecond)
+		// Every overlay read the change makes before the lock is made once
+		// it waits there, so none of them follows the staging below.
+		until(t, name+" waiting for the accept lock", func() bool {
+			return s.locks.Waiters(lockorder.Set{Accept: []lockorder.Key{lockorder.Key(id)}}) > 0
+		})
 		_, _ = s.engine.Write(ctx, h.Share(), id, 0, []byte("staged while held"), WriteOpts{})
 		unlock()
 		<-answered

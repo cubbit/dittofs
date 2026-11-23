@@ -382,3 +382,31 @@ func windowAnswer(t *testing.T, k int, f *journaltest.Fixture, what string, mark
 		t.Fatalf("share %d: %s returned %d marks over the re-appended window, want the one of the copy", k, what, len(marks))
 	}
 }
+
+// TestRFC1A_StatsSyncMarksCoverWhatSyncReturned covers the figure the group
+// commit records: after each Sync that returns a mark, the journal's own
+// Stats.SyncMarks names that stream in the same segment, synced through at
+// least as far, so the recorded mark covers the returned one, and
+// MarksRecorded of it leaves the entry where it was.
+func TestRFC1A_StatsSyncMarksCoverWhatSyncReturned(t *testing.T) {
+	f := journaltest.New(t)
+	h := f.Share(0)
+	id := journaltest.File(0)
+	for i := range 3 {
+		write(t, h, id, int64(i)*4096, distinct(60+i, 4096))
+		marks, err := h.Sync(t.Context(), id)
+		stub(t, "Sync", err)
+		if err != nil || len(marks) != 1 {
+			t.Fatalf("sync %d: %+v, %v, want the stream's one mark", i, marks, err)
+		}
+		r := marks[0]
+		got, ok := f.J.Stats().SyncMarks[r.Stream]
+		if !ok || got.Segment != r.Segment || got.Through < r.Through {
+			t.Fatalf("after sync %d Stats().SyncMarks[%d] = %+v (present %v), want an entry in segment %d synced through at least %d", i, r.Stream, got, ok, r.Segment, r.Through)
+		}
+		f.J.MarksRecorded([]journal.SyncMark{got})
+		if again := f.J.Stats().SyncMarks[r.Stream]; again != got {
+			t.Fatalf("after MarksRecorded of the entry, Stats names %+v, want %+v unchanged", again, got)
+		}
+	}
+}

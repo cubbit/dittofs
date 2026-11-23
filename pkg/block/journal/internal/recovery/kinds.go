@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
@@ -48,6 +49,13 @@ type ReadOnlyDrop struct {
 	// version and share tag, with the reason a failed sync window takes.
 	Ev      core.LossEvent
 	Dropped core.Seq
+
+	// Reported says the failing instance's report of this loss still
+	// stands — it lives, its ring readable, or a reader reached the event
+	// its failing Lose published — so the planner that re-appends the
+	// record honours the suppression while it holds, and re-publishes the
+	// loss while nothing at all answered for it.
+	Reported bool
 
 	// Segments holds every segment still holding the record. Filled by the
 	// feed.
@@ -194,6 +202,13 @@ type kindState struct {
 	// read-only journal failed earlier in this process.
 	failed map[core.Seq]bool
 
+	// failedReported holds, per failed seq, the registry's word on whether
+	// the failing instance's report still stands — it lives, its ring
+	// readable, or a reader reached the event its failing Lose published —
+	// so the planner that owes the record honours the report while it
+	// stands and re-publishes the loss while nothing answered for it.
+	failedReported map[core.Seq]bool
+
 	// pieces holds the (dropped, extent) pairs already delivered, so two
 	// identical loss records — a copy carried forward — report one loss.
 	pieces map[lossPiece]bool
@@ -251,19 +266,21 @@ type lossPiece struct {
 // no file, refuses the open naming its segment and its offset. A body that
 // fails its checksum never reached the pass: a lost loss record errs toward
 // fetching the extent again.
-func decodeAsides(rd *reader, identity core.JournalID, failed []core.Seq, scs []segmentScan) (kindState, error) {
+func decodeAsides(rd *reader, identity core.JournalID, failed []durability.Failed, scs []segmentScan) (kindState, error) {
 	ks := kindState{
-		whole:       map[core.Seq]bool{},
-		superseded:  map[core.Seq]supersededLoss{},
-		forget:      map[core.ShareTag]core.Seq{},
-		failed:      map[core.Seq]bool{},
-		pieces:      map[lossPiece]bool{},
-		confined:    map[index.RecordAt]bool{},
-		copies:      map[copyKey][]index.RecordAt{},
-		kindResults: kindResults{WithheldAt: map[index.RecordAt]bool{}},
+		whole:          map[core.Seq]bool{},
+		superseded:     map[core.Seq]supersededLoss{},
+		forget:         map[core.ShareTag]core.Seq{},
+		failed:         map[core.Seq]bool{},
+		failedReported: map[core.Seq]bool{},
+		pieces:         map[lossPiece]bool{},
+		confined:       map[index.RecordAt]bool{},
+		copies:         map[copyKey][]index.RecordAt{},
+		kindResults:    kindResults{WithheldAt: map[index.RecordAt]bool{}},
 	}
-	for _, seq := range failed {
-		ks.failed[seq] = true
+	for _, f := range failed {
+		ks.failed[f.Seq] = true
+		ks.failedReported[f.Seq] = f.Reported
 	}
 
 	var (
@@ -588,9 +605,10 @@ func keptRuns(e core.Extent, cuts []core.Extent) []core.Extent {
 // over the buffered records between the decode pass and the tail's classing:
 // every write and fill a synced superseded loss names keeps a run outside
 // the union of the loss extents only by feeding clipped, so its whole
-// payload is read through the open's reader and verified here — the one
-// content payload an open checks, for a record whose kept bytes would never
-// meet a serving read that verifies them.
+// payload is read through the open's reader and verified here — beside the
+// newest-segment sync-proven reads the fold below makes (confineRotten),
+// one of an open's content-payload checks, for a record whose kept bytes
+// would never meet a serving read that verifies them.
 //
 // The record that fails confines its kept runs as corrupt drops on its own
 // scan — one per run, each carrying the run's extent over the record's own
@@ -653,6 +671,80 @@ func (ks *kindState) verifyRemainders(rd *reader, identity core.JournalID, scs [
 						core.ErrCorrupt, rec.Segment, kind, rec.At),
 				})
 			}
+		}
+	}
+	return nil
+}
+
+// confineRotten reads, for the newest segment of each stream alone, the
+// payload of every write and fill the segment itself proves synced — a
+// record whose whole end a verifying record's synced-through reaches, or a
+// segment sealed below its marker — and confines each one whose body fails
+// its checksum, filing one corrupt drop with the synced flag the proof
+// carried (the classing's corrupt arm reports it: damaged, a loss record
+// appended at open, no cut, the segment's fate the classing's verdicts
+// alone). The bytes a sync answered for can rot, and no serving read may
+// ever reach a record the journal reported lost, so the open itself is the
+// only reader that can catch them. A record ending past the synced-through
+// is left wholly to the tail proof, whose candidates are exactly those and
+// whose first reads answer them; the mark-proven arm there stays the
+// caller's acknowledged half of the same rule.
+//
+// The fold runs after the kinds pass, and the records the kinds themselves
+// name are left to their rules: a seq a synced loss record supersedes the
+// remainder pass owns, for it read the record's kept run itself and
+// confined exactly that, and a record a rule withholds whole feeds nothing
+// and serves nothing — a fold that judged it would file a fresh drop at
+// every open for a record no read would ever serve.
+//
+// ponytail: the read walks each newest segment's sync-proven records
+// linearly, one body per record, so an open pays about one extra read of
+// that segment's proven prefix per stream — bounded by the newest segment
+// per stream, never by the WAL's history. The cost is the extra body reads,
+// so the upgrade cuts those: verify each record lazily, on its first read
+// past the open, when a profile shows the open's body pass in one.
+func (ks *kindState) confineRotten(rd *reader, identity core.JournalID, scans []segmentScan) error {
+	for i := range scans {
+		sc := &scans[i]
+		if !sc.Newest || len(sc.Records) == 0 {
+			continue
+		}
+		for _, rec := range sc.Records {
+			if rec.Kind != index.RecWrite && rec.Kind != index.RecFill {
+				continue
+			}
+			// Only a record the segment proves synced whole is the open's
+			// to judge here. Everything ending past the synced-through the
+			// tail proof reads; a seal proves the whole records area, whose
+			// every record ends below the marker.
+			end := int64(rec.At) + format.RecordSize(fedFormatKind(rec.Kind), rec.Len)
+			if !sc.Sealed && end > sc.SyncedThrough {
+				continue
+			}
+			at := index.RecordAt{Segment: rec.Segment, Offset: rec.At}
+			if _, named := ks.superseded[rec.Numbers.Seq]; named || ks.confined[at] || ks.withheldWhole(rec) {
+				continue
+			}
+			verified, err := verifyContentBody(rd, identity, rec)
+			if err != nil {
+				return err
+			}
+			if verified {
+				continue
+			}
+			kind := fedFormatKind(rec.Kind)
+			ks.confined[at] = true
+			sc.Dropped = append(sc.Dropped, droppedRecord{
+				Header: format.RecordHeader{
+					Kind: kind, Segment: rec.Segment, File: rec.File,
+					Extent:  core.Extent{Off: rec.Off, Len: rec.Len},
+					Seq:     rec.Numbers.Seq,
+					Version: rec.Numbers.Version, Tag: rec.Tag, Offset: int64(rec.At),
+				},
+				Synced: true,
+				Err: fmt.Errorf("%w: segment %d: the %s at %d fails its payload checksum at open",
+					core.ErrCorrupt, rec.Segment, kind, rec.At),
+			})
 		}
 	}
 	return nil
@@ -735,14 +827,24 @@ func keptHome(tl tails) func(core.SegmentID, int64) bool {
 // subtractCopies is the bad-copy half of the copies rule, run once the tail's
 // classing has judged every drop: a corrupt drop an equal-sequence record
 // another scan holds in a home the open keeps — keptHome's one policy, which
-// keeps a record below a torn tail's cut like any intact segment's — is
-// removed from Corrupt, for the live copy serves what the drop guarded and
-// the loss record a later open would append for it would drop a record a
-// twin contradicts. Damaged is not touched: the classing's verdict on the
-// segment stands whatever serves in its place, and the tail phases cut and
-// report by it.
+// keeps a record below a torn tail's cut like any intact segment's — or in a
+// home the open ends, whose every fed record the emptying copies out whole
+// to a home it keeps, is removed from Corrupt, for the live or carried copy
+// serves what the drop guarded and the loss record a later open would append
+// for it would drop a record a twin contradicts. Damaged is not touched: the
+// classing's verdict on the segment stands whatever serves in its place, and
+// the tail phases cut and report by it.
 func (ks *kindState) subtractCopies(scans []segmentScan, tl tails) []corruptRecord {
 	kept := keptHome(tl)
+	// lives is every segment the open empties whole: each record of it
+	// that feeds is carried to the copy the emptying writes, whatever its
+	// home's own fate.
+	lives := map[core.SegmentID]bool{}
+	for _, f := range tl.Fates {
+		if f.Kind == fateEnded {
+			lives[f.ID] = true
+		}
+	}
 	// live is every seq a surviving home holds a FED record of, in
 	// whichever segment: the one membership test below, not one per drop.
 	// A location the remainder pass confined never joins, for the open
@@ -753,8 +855,8 @@ func (ks *kindState) subtractCopies(scans []segmentScan, tl tails) []corruptReco
 	var live map[core.Seq][]core.SegmentID
 	for i := range scans {
 		for _, rec := range scans[i].Records {
-			if !kept(rec.Segment, int64(rec.At)) {
-				continue // the open ends this record's home
+			if !kept(rec.Segment, int64(rec.At)) && !lives[rec.Segment] {
+				continue // the open keeps neither this record's home nor a carry of it
 			}
 			if ks.confined[index.RecordAt{Segment: rec.Segment, Offset: rec.At}] {
 				continue // the open confined this copy: it fed nothing
@@ -869,9 +971,12 @@ func sortedCopyKeys(m map[copyKey][]index.RecordAt) []copyKey {
 }
 
 // verifyContentBody reads one buffered content record's header and whole body
-// through the open's bound and verifies both, the only read of a content
-// payload an open makes. It answers whether the record verified; a read the
-// bound did not clear returns as its own error and never as a verdict.
+// through the open's bound and verifies both. The remainder pass reads the
+// one payload a superseded record keeps feeding, this fold reads each
+// sync-proven write and fill the newest segment of a stream holds, and
+// every other content payload an open serves is verified by the read that
+// hands it out. It answers whether the record verified; a read the bound
+// did not clear returns as its own error and never as a verdict.
 func verifyContentBody(rd *reader, identity core.JournalID, rec index.Record) (bool, error) {
 	name := format.SegmentName(rec.Segment)
 	hb := make([]byte, format.RecordHeaderSize)
@@ -1027,6 +1132,7 @@ func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 					Reason:  core.LossFailedWindow,
 				},
 				Dropped:  seq,
+				Reported: ks.failedReported[seq],
 				Segments: []core.SegmentID{rec.Segment},
 			})
 			f.drops[seq] = len(ks.ReadOnlyDrops) - 1

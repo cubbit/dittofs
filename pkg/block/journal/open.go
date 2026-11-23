@@ -302,7 +302,23 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 	}
 
 	if expect == (JournalID{}) || expect != ff.Identity {
-		return nil, &IdentityError{Found: ff.Identity, Installation: ff.Installation, Segments: hasSegment}
+		// decision: Segments answers over header slots, never over a name's
+		// shape, because a finished spare is a segment file — the pool
+		// renames it to its own <id>.seg name at make time — and RFC 28
+		// §3.4 says only that "the error also says whether the directory
+		// holds any segment", undefined against spares.
+		// TestRFC28C_JournalGone pins the taken-only reading: a segment
+		// counts once a stream took it — taken exactly when its header
+		// verifies. The ceiling: an open refused before recovery can read
+		// no more than slot bytes, so a header a sync never reached reads
+		// as a spare and answers false.
+		return nil, &IdentityError{Found: ff.Identity, Installation: ff.Installation,
+			Segments: recovery.TakenSegment(ctx, recovery.Deps{
+				FS:     cfg.Storage,
+				Clock:  cfg.Clock,
+				Tracer: cfg.Tracer,
+				Log:    cfg.Logger,
+			}, names)}
 	}
 	s := resolveDefaults(cfg.Settings)
 	if hasSegment {

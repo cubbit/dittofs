@@ -198,7 +198,11 @@ func (d *Durability) failFile(st *stream, win uint64, f core.FileID, entries []e
 			d.loseRecord(e, dropped)
 		}
 		if ro && !isLoss(e.w) {
-			d.dir.addFailed(e.w.Seq)
+			// The read-only failure's report is the refusal itself, the
+			// one every Sync naming the file returns to its writer, so
+			// the entry names no reporter: its report stands whatever
+			// became of any ring.
+			d.dir.addFailed(e.w.Seq, nil, 0)
 		}
 	}
 }

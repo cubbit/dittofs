@@ -118,17 +118,16 @@ func (t Table) Check(
 		return nil
 	}
 
-	effective, err := sec.after(tx, w, declared, thing)
+	effective, holders, err := sec.after(tx, w, declared, thing)
 	if err != nil {
 		return err
 	}
 
 	// A plaintext typed into a reference field never reaches a Validate that
-	// prints it: the write is refused before Validate runs, and its value is
-	// never printed.
-	if _, ref := sec.secretRefs[declared]; ref && w.put != nil {
-		return refuse(w.Scope, w.Key,
-			"a reference is set by the secrets API, not by value", ErrSecretRef)
+	// prints it: the reference gate runs before Validate, and its refusals
+	// name the field, never the value (RFC 13 §6).
+	if err := sec.checkSecretRefs(tx, effective, thing, holders); err != nil {
+		return err
 	}
 
 	if err := effective.(interface{ Validate() error }).Validate(); err != nil {
@@ -182,16 +181,23 @@ func newer(scope entity.SettingScope, key string, schema uint32) error {
 // through tx, one tracked point read each, so a concurrent write of any row
 // it judged makes the write retry; a put's row takes the place of the stored
 // one, and a delete drops it; any other stored row of a newer schema refuses
-// the write. A delete of a key the section does not declare reads
-// that row too, and never judges its schema, so a newer binary's row stays
-// removable.
+// the write. The returned holders map names, for every field a SecretRef
+// option declares, the narrowest row of the chain that sets it, with its
+// true Scope and Key, the row the reference gate judges the owner against.
+// A delete of a key the section does not declare reads that row too, and
+// never judges its schema, so a newer binary's row stays removable.
 func (sec *Section) after(
 	tx entity.ControlPlaneTx,
 	w Write,
 	declared, thing string,
-) (any, error) {
+) (any, map[string]entity.Setting, error) {
 	value := sec.def
 	set := make(map[string]bool, len(sec.fields))
+
+	var holders map[string]entity.Setting
+	if len(sec.secretRefs) > 0 {
+		holders = make(map[string]entity.Setting, len(sec.secretRefs))
+	}
 
 	for _, scope := range sec.chain(w.Scope) {
 		var rows []entity.Setting
@@ -201,7 +207,7 @@ func (sec *Section) after(
 
 			row, found, err := tx.Setting(scope, key)
 			if err != nil {
-				return nil, fmt.Errorf("settings: read %s at %s: %w", key, scope.Kind, err)
+				return nil, nil, fmt.Errorf("settings: read %s at %s: %w", key, scope.Kind, err)
 			}
 
 			// The write's own row is replaced or removed, never read for
@@ -213,7 +219,7 @@ func (sec *Section) after(
 					row = *w.put
 				}
 			} else if found && row.Schema > maxSchema() {
-				return nil, newer(scope, key, row.Schema)
+				return nil, nil, newer(scope, key, row.Schema)
 			}
 
 			if !found {
@@ -229,6 +235,18 @@ func (sec *Section) after(
 				continue
 			}
 
+			// The holder is recorded while the row still holds its written
+			// key, before the decode relabels it to the declared one, so
+			// the reference gate compares the owner the sealing routes name.
+			// The two keys differ only in a per-thing section, whose written
+			// key carries the thing, and no section of that form declares a
+			// reference today, so no test tells them apart yet.
+			if holders != nil {
+				if _, named := sec.secretRefs[f.key]; named {
+					holders[f.key] = row
+				}
+			}
+
 			row.Key = f.key
 			rows = append(rows, row)
 			set[f.key] = true
@@ -236,7 +254,7 @@ func (sec *Section) after(
 
 		decoded, err := sec.decodeAny(sec, value, scope, rows)
 		if err != nil {
-			return nil, sec.inThing(err, thing)
+			return nil, nil, sec.inThing(err, thing)
 		}
 
 		value = decoded
@@ -244,7 +262,7 @@ func (sec *Section) after(
 
 	if w.deletes && !sec.declares(declared) {
 		if _, _, err := tx.Setting(w.Scope, w.Key); err != nil {
-			return nil, fmt.Errorf("settings: read %q at %s: %w", w.Key, w.Scope.Kind, err)
+			return nil, nil, fmt.Errorf("settings: read %q at %s: %w", w.Key, w.Scope.Kind, err)
 		}
 	}
 
@@ -258,10 +276,10 @@ func (sec *Section) after(
 	}
 
 	if len(missing) > 0 {
-		return nil, errors.Join(missing...)
+		return nil, nil, errors.Join(missing...)
 	}
 
-	return value, nil
+	return value, holders, nil
 }
 
 // chain is the scopes whose rows make the effective value at scope, widest

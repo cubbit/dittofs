@@ -1393,29 +1393,21 @@ func rollTakesSpare(t *testing.T, f *journaltest.Fixture, spares []string) {
 	}
 }
 
-// rollSynced writes 64 KiB records on file 0 through share 0, each synced,
-// until one lands in a new segment, and returns that segment; the write that
-// rolled is not synced.
-func rollSynced(t *testing.T, f *journaltest.Fixture) journal.SegmentID {
+// takeUnsynced writes one 64 KiB record on file 0 at off through share s
+// and returns the segment the write's whole extent landed in, without
+// syncing anything: the take the write rolls into is returned with its
+// header and its first record both unsynced, the shape a crash makes
+// record-less. The entry answering the take is the one covering the
+// write's last byte: a fresh take is the only segment whose record the
+// write lands in, and a probe of the write's start would answer nothing
+// of it.
+func takeUnsynced(t *testing.T, f *journaltest.Fixture, s, i int, off int64) journal.SegmentID {
 	t.Helper()
 
 	const size = 64 << 10
-	id := journaltest.File(0)
-	var first journal.SegmentID
-	for n := 0; n <= 2*journaltest.FixtureSegmentCap/size; n++ {
-		off := int64(n) * size
-		write(t, f.Share(0), id, off, pattern(fmtTag("q", 0, 0, off), size))
-		seg := entryAt(t, f, id, off).Location.Segment
-		if n == 0 {
-			first = seg
-		}
-		if seg != first {
-			return seg
-		}
-		syncFiles(t, f.Share(0), id)
-	}
-	t.Fatalf("%d bytes of records never rolled a segment of %d", 2*journaltest.FixtureSegmentCap, journaltest.FixtureSegmentCap)
-	return 0
+	id := journaltest.File(i)
+	write(t, f.Share(s), id, off, pattern(fmtTag("q", s, i, off), size))
+	return entryAt(t, f, id, off+size-1).Location.Segment
 }
 
 // TestRFC28C_SparesAreReAdopted checks that a crash costs no spare: every
@@ -1427,7 +1419,11 @@ func rollSynced(t *testing.T, f *journaltest.Fixture) journal.SegmentID {
 func TestRFC28C_SparesAreReAdopted(t *testing.T) {
 	// A take's refill is awaited and the journal reopened, so the pool is
 	// at its target as the open counts it and no spare-making is in flight
-	// when the pool is read.
+	// when the pool is read. The settle after the reopen is owed too: the
+	// row's one write fills a segment whole and spills, so the row takes
+	// twice and the helper awaits one refill; a second refill the close or
+	// the crash loses would cost the pool a spare it could only make again
+	// — the create and allocate wantReadopted refuses.
 	f := journaltest.New(t)
 	awaitSettledSpare(t, f, func() { writeSynced(t, f, 0, 2, 0, journaltest.FixtureSegmentCap) })
 	f.Reopen()
@@ -1439,15 +1435,30 @@ func TestRFC28C_SparesAreReAdopted(t *testing.T) {
 	wantReadopted(t, f, before)
 	rollTakesSpare(t, f, before.spares)
 
-	// Spare-making is parked, so no spare is made between the take and
-	// the crash, and the pool is as it was before the take. The create and
-	// allocate counts are taken once the parked spare maker was released
-	// into the crashed storage, so only the open's own calls are compared.
+	// The take is the rolled one over a proven seal: file 1's record and
+	// file 0's first, both synced, are sealed by the reopen — the open's
+	// own cut-and-seal, whose shrunken accounting a baseline drawn before
+	// it would misread as a loss — so the write the row then makes rolls
+	// over its sealed predecessor into a take whose predecessor's seal is
+	// proven. That take's first record is left unsynced, and spare-making
+	// is parked, so no spare is made between the take and the crash: the
+	// crash drops the take's header and its record together, and the
+	// taken segment comes back record-less, its cap still charged either
+	// way — the baseline the row drew is what the open re-derives.
+	//
+	// The parked spare maker is released into the crashed storage before
+	// the reopen: its make dies there — the only call it reaches is
+	// counted — so its create and allocate are folded into the counts the
+	// open is compared against, and only the open's own calls remain.
 	g := journaltest.NewUnwatched(t)
 	other := writeSynced(t, g, 1, 1, 0, 64<<10)
+	writeSynced(t, g, 0, 0, 0, 64<<10)
+	g.WaitSpares()
+	g.Reopen()
+	g.WaitSpares()
 	before = poolNow(t, g)
 	held := g.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
-	taken := rollSynced(t, g)
+	taken := takeUnsynced(t, g, 0, 0, 64<<10)
 	if err := g.Seam.Crash(); err != nil {
 		t.Fatalf("crash: %v", err)
 	}
@@ -2554,12 +2565,13 @@ func TestRFC28C_UnidentifiedDirectory(t *testing.T) {
 // recorded it opens empty and serves; and that with a segment taken it is
 // still refused, the segment reported.
 //
-// decision: the row's crash is what leaves the identity unrecorded; the
-// fixture, which is that caller, closes cleanly instead, since the open finds
-// the format file either way and a crash would drop only unsynced records,
-// of which there are none.
+// decision: the state the crash leaves is built without one: NewBare runs
+// Init and opens nothing, so the directory holds only the format file Init
+// wrote, no spare made and no record ever acknowledged — where a fixture
+// that opened would leave finished spares behind, segment files whose
+// slots are zero and must not count as the check's segments.
 func TestRFC28C_InterruptedInit(t *testing.T) {
-	f := journaltest.New(t)
+	f := journaltest.NewBare(t)
 	wantIdentityError(t, f.TryReopenAs(journal.JournalID{}), f.ID(), journaltest.FixtureInstall, false)
 
 	if err := f.TryReopenAs(f.ID()); err != nil {
@@ -2902,10 +2914,9 @@ func TestRFC28C_APartlySupersededRecordIsStillChecked(t *testing.T) {
 	}
 
 	// A second reopen appends no other loss record for R: the record the
-	// first open appended answers for the drop, the second finds it — a
-	// loss record on disk that names R, whole — and reports nothing new,
-	// R withholds whole under it and the rotten rest confines nowhere on
-	// either reopen. The count stays over the directory's bytes.
+	// first open appended answers for the drop on disk — the second finds
+	// it — and R withholds whole under it and the rotten rest confines
+	// nowhere on either reopen. The count stays over the directory's bytes.
 	generation := s.LossGeneration
 	f.Reopen()
 	after := f.J.Stats()
@@ -2915,13 +2926,25 @@ func TestRFC28C_APartlySupersededRecordIsStillChecked(t *testing.T) {
 	if after.LossGeneration != generation {
 		t.Fatalf("a second reopen raised the loss generation from %d to %d, appending another loss record for R", generation, after.LossGeneration)
 	}
-	// The fresh instance numbers its own events from its own zero, so a
-	// re-report would carry the same SeqNum as the first open's and no
-	// comparison across the two rings can tell it apart: the second
-	// reopen's ring must hold nothing at all, the piece dedup answering
-	// the place the first open's loss record already took.
-	if len(after.Losses) != 0 {
-		t.Fatalf("a second reopen reported %+v as new; the first open's loss record for R answers for it", after.Losses)
+	// Reading A: no reader ever took the first open's loss events away —
+	// every read this row made of them answered nobody — so its placed
+	// claim retired with it, and the second reopen places the loss record
+	// it found on disk found at open again. The fresh instance numbers its
+	// own events from its own zero, and nothing raised anything, so the
+	// loss still reads as found, never as new.
+	for _, ev := range after.Losses {
+		if ev.File != id || !ev.AtOpen {
+			t.Fatalf("a second reopen reported %+v, want only the loss the first open's record named, still found at open", ev)
+		}
+	}
+	var again []journal.LossEvent
+	for _, ev := range after.Losses {
+		if ev.Reason == journal.LossCorrupt {
+			again = append(again, ev)
+		}
+	}
+	if len(again) != 1 || again[0].Extent != kept {
+		t.Fatalf("a second reopen reported the corrupt losses %+v, want the kept run's alone again", again)
 	}
 }
 
@@ -3081,18 +3104,22 @@ func TestRFC28C_AnOpenAtAnExhaustedHeadroom(t *testing.T) {
 		}
 	}
 
-	// A second open finds the loss record on disk and answers nothing new
-	// with it: the piece it names was taken by the open that appended it, so
-	// the reopen places it back into no ring, raises no generation and
-	// appends no second record — the loss the caller still owes is settled
-	// through the marker the rebuild replays, not a fresh event.
+	// A second open finds the loss record on disk and places it found at
+	// open again: the piece it names was taken by the open that appended it,
+	// but no reader ever took that open's event away — every read this row
+	// made of it answered nobody, Reading A — so the claim retired with it
+	// and the reopen publishes the loss into its own ring, raising no
+	// generation and appending no second record. The loss the caller still
+	// owes settles through the marker the rebuild replays, not a fresh
+	// raise.
 	gen := f.J.Stats().LossGeneration
 	f.Reopen()
 	if got := f.J.Stats().LossGeneration; got != gen {
 		t.Fatalf("the generation after the second open = %d, want the %d the first raised: the found loss record raises nothing", got, gen)
 	}
-	if got := len(f.J.Stats().Losses); got != 0 {
-		t.Fatalf("the second open's ring holds %d losses, want none: the piece the loss record names was taken by the open that appended it", got)
+	losses2 := f.J.Stats().Losses
+	if len(losses2) != 1 || !losses2[0].AtOpen || losses2[0].Extent != ev.Extent {
+		t.Fatalf("the second open's ring = %+v, want the loss record's loss placed found at open again", losses2)
 	}
 	yielded = 0
 	for ch, err := range f.Share(share).Since(t.Context(), file, journal.Version{}) {

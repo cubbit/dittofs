@@ -454,6 +454,12 @@ func (g *groupCommit) run() {
 			(*h)()
 		}
 		start := g.e.d.Clock.Now()
+		// The room of a refusal is judged before the take, so files falling
+		// due on every pass do not keep journal_full up on a journal with
+		// room again: the marks ride on the batch; the judge runs before it.
+		if g.fullDue(start) == 0 {
+			g.checkFull()
+		}
 		batch, last, wait := g.take()
 		if h := g.e.hooks.taken.Load(); h != nil && len(batch) > 0 {
 			(*h)()
@@ -471,6 +477,12 @@ func (g *groupCommit) run() {
 			continue
 		case mw > 0 && (wait < 0 || mw < wait):
 			wait = mw
+		}
+		switch fw := g.fullDue(start); {
+		case fw == 0: // a refusal raised since the judge above
+			continue
+		case fw > 0 && (wait < 0 || fw < wait):
+			wait = fw
 		}
 		var timer <-chan struct{}
 		if wait >= 0 {

@@ -80,7 +80,8 @@ func TestSupersededBytesAreUnreclaimedFromTheSync(t *testing.T) {
 }
 
 // A share-scoped pass seals the active segment holding the share's unreclaimed
-// bytes, selects it and retires it, returning its allocation.
+// bytes, selects it and retires it, returning its allocation; the retired
+// segment no longer counts among the segments.
 func TestScopedRepackSealsAndRetires(t *testing.T) {
 	j, h := segFake(t, 0)
 	overwrite(t, h, fileA)
@@ -94,6 +95,10 @@ func TestScopedRepackSealsAndRetires(t *testing.T) {
 	if freed != 80 || s.UnreclaimedBytes != 0 || s.Shares[1].UnreclaimedEndedBytes != 0 {
 		t.Errorf("freed %d unreclaimed %d ended %d, want 80, 0, 0: an early seal returns its tail",
 			freed, s.UnreclaimedBytes, s.Shares[1].UnreclaimedEndedBytes)
+	}
+
+	if s.Segments != 1 {
+		t.Errorf("Segments = %d after the retirement, want 1: the copy's active segment only", s.Segments)
 	}
 }
 
