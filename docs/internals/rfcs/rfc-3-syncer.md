@@ -758,11 +758,11 @@ release that ships the syncer, and lands with the caller that first needs it, ne
 | --- | --- |
 | `FetchRaw`, `UploadRaw`, `FetchVersion`, and `Store`'s `GetVersion`, `PutRaw` and `GetRaw`; the staging budget ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) | a copying backup, a restore or `Verify` ([RFC 26](rfc-26-catalog-backups.md)); GC's relocation ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)); a re-home ([RFC 27](rfc-27-namespace-migration.md)) |
 | `Small` | a backup location's calls ([RFC 26](rfc-26-catalog-backups.md)); a `Recheck` pass ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
-| `SetDrift` and `ErrDrift` | GC's `Recheck` ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); until then a drifted bucket setting goes unseen |
+| `SetDrift` and `ErrDrift` | GC's `Recheck` ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); until then a bucket setting changed after the store opened is seen only at its next open ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), and a put into the drifted store may be expired or kept as a version nothing deletes ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | a registration with `PutProbe` false, refused until then | an immutable backup location ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) |
-| the sizing tool ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) | an operator's need to size the pools beyond the defaults, which the node's transfers pool already reduces ([RFC 24 §7.2](rfc-24-resources.md#7.2%20The%20syncer%20and%20staging)) |
+| the sizing tool ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) | an operator's need to size the pools beyond the defaults. Until the node passes the syncer its transfers pool's size, the defaults are not reduced to fit it ([RFC 24 §7.2](rfc-24-resources.md#7.2%20The%20syncer%20and%20staging)) |
 
-Each obligation below on what lands later binds from the release that brings its caller. `Register`
+Each obligation in this RFC on what lands later binds from the release that brings its caller. `Register`
 takes `Probes` from the first release, so a later caller changes no signature.
 
 ### 1.4 It is testable on its own
@@ -1499,8 +1499,8 @@ The syncer exposes exactly two settings, both process-wide:
 
 | Setting | Sizes | Default |
 | --- | --- | --- |
-| `upload_workers` | the uploader's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
-| `fetch_workers` | the fetcher's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
+| `upload_workers` | the uploader's pool | proposal: 128 |
+| `fetch_workers` | the fetcher's pool | proposal: 128 |
 
 Unset, both are reduced in equal proportion to fit the node's transfers pool, at
 least eight each (RFC 24 §7.2).
@@ -2017,7 +2017,7 @@ peak memory, and a result is recorded with the revision it measured.
 | B2 | scheduler cost | one transfer dispatched with 1, 10, 100 and 1,000 flows waiting | flat: DRR is O(1) per dispatch ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
 | B3 | fairness under load | one flow saturating uploads on a slow store; a second issuing fetches | the second flow's p99 wait within one round; the first never above its cap |
 | B4 | joined fetches | N readers on one cold chunk | one transfer, whatever N ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
-| B5 | the real link | the syncer over a local emulator of the remote service and over a real service, and raw calls on the same store at the same pool size | within a few percent of the raw calls; the gap is what the syncer costs on a real link |
+| B5 | the real link | the syncer over a local emulator of the remote service and over a real service, and raw calls on the same store at the same pool size: the store's own `Put` and `Get`, encoding and checksum included, called directly at the configured `upload_workers` and `fetch_workers` | within a few percent of the raw calls; the gap is what the syncer costs on a real link |
 
 Benchmarks run after a change merges and never gate one; what gates a change
 instead is in [§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing). B5 needs a real store and credentials, and runs where those are.
@@ -2150,8 +2150,8 @@ B4 is a count, not a speed, and is fully checked in CI.
 ### 8.6 Recording results
 
 Beside what [the RFC index](rfc-index.md#Test%20tiers) asks every result to record: the backend and its
-region, round-trip time, bandwidth, block size, the pool sizes and the sizing
-tool's raw figures; for B1–B4, the in-memory store's simulated latency and per-byte time.
+region, round-trip time, bandwidth, block size, the pool sizes and the raw
+calls' throughput (B5); for B1–B4, the in-memory store's simulated latency and per-byte time.
 
 **Suites.** §7's Group A and B checks against the in-memory store and its fault wrapper and §8's model, memory,
 import, fault-sweep and counted checks run in `unit`, and an allocation count the race detector skews
