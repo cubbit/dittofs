@@ -33,7 +33,8 @@ Cited, not owned: RFC 2203 for the RPCSEC_GSS messages, RFC 4121 for the per-mes
 - E3's T3.1 (`Route` builds `r.Call`), T3.2 (the scripted client), T3.3 (the duplicate-request
   cache) and T3.4 (every table's shared rows), which T13.5 and T13.7 extend.
 - For T13.7's rows only: E4's T4.4 and T4.6 (`GETATTR`, `MNT`), E5's T5.1, T5.4, T5.5 and T5.8
-  (`PUTFH`, `GETATTR`, `SETATTR`, `READ`), E7's T7.2 (the owner schemes a `chown` parses under).
+  (`PUTFH`, `GETATTR`, `SETATTR`, `READ`), E7's T7.2 (the owner schemes a `chown` parses under),
+  E11's T11.1 (NLM's and NSM's error tables, which T13.7 adds rows to).
 - **S5**, the composed in-process node, for T13.8 only.
 
 **Blocks:** E16, which runs `e2e/kerberos` with the Linux kernel client once E15 has turned the
@@ -83,9 +84,10 @@ two rows, on the composed node.
 - `ErrWrongSecurity`'s rows: E3's T3.4 (`AUTH_TOOWEAK` in the NFSv3-family tables) and E5's T5.1
   (`NFS4ERR_WRONGSEC`). This epic drives them with a Kerberos caller below a share's level (R29).
 - `SECINFO` and `SECINFO_NO_NAME`, which list the `krb5` pseudo-flavours: E5's T5.1.
-- The back channel's security, where `RPCSEC_GSS` is not offered (RFC 21 §3.4): E8 and E10.
+- The back channel's security, where `RPCSEC_GSS` is not offered (RFC 21 §3.4): E8's T8.4 (its D11)
+  and E10's T10.2.
 - `ErrNotNegotiated`, `ErrNoSession` and `ErrNoTree` in NFSv4's members' table, which turn on what
-  a session means for an NFSv4.1 member: E8 (§9, assumption 2).
+  a session means for an NFSv4.1 member: E8's T8.5, by its D6.
 - The `e2e/kerberos` rows with the Linux kernel client, `tar xpf` of §8.1's row among them, and the
   Kerberos halves of RFC 18 §10's rows E7 runs over `AUTH_SYS`: E16, after E15.
 - "disable takes effect"'s SMB half: the RFC 22 implementation plan, and E16 for the row whole.
@@ -105,7 +107,7 @@ two rows, on the composed node.
   duplicate-request cache (T3.3) and every table's shared rows (T3.4).
 - **E4**, NFSv3 and MOUNT. **E5**, the NFSv4 namespace, attributes and data path. **E7**, identity's
   NFS side, with its owner schemes (T7.2). **E8**, clients and sessions. **E10**, delegations and the
-  back channel. **E13**, this epic. **E14**, the capture diffs against knfsd. **E15**, integration
+  back channel. **E11**, NLM, NSM and the datagram path. **E12**, the NFSv4.2 operations. **E13**, this epic. **E14**, the capture diffs against knfsd. **E15**, integration
   with the node, which turns the NFS suites on. **E16**, E2E green.
 - **S0**, the shared test pieces the RFC 22 implementation plan's epic 2 builds, `adaptertest/golden`
   among them.
@@ -589,13 +591,13 @@ test/pcap-corpus/nfs-gss/
 
 **Subtask T13.7 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** T13.6, T4.4, T4.6, T5.1, T5.4, T5.5, T5.8, T7.2.
+- **Track:** B. **Depends on:** T13.6, T4.4, T4.6, T5.1, T5.4, T5.5, T5.8, T7.2, T11.1.
 - **Covers:** R19, R29, R30, R35, R36.
 - **Deliverables:**
   - `protocol.ErrorTable`'s rows for `ErrExpired`, `ErrNotNegotiated`, `ErrNoSession` and
     `ErrNoTree` in the NFSv3, MOUNT, NLM and NSM tables, and `ErrExpired` in `ops/v4/errors.go`, as
-    D12 writes them (Q1), each with its golden reply; the RFC 21 §11.5 pull request proposing Q1's
-    text.
+    D12 writes them (Q1), each with its golden reply; Q1's RFC 21 §11.5 text goes in batch two's
+    one RFC 21 pull request (§9).
   - Loopback rows in `nfs_gss_test.go`, on `memory.New` with users holding Kerberos names of
     `identitytest.Realm`: §13's §6.3 `sec=krb5` step, after E4's `AUTH_SYS` `MNT`; a `krb5` call on
     a share whose `MinProtection` is `Integrity`, over NFSv3 and NFSv4.0, and the same at `krb5i`;
@@ -649,6 +651,7 @@ flowchart TD
   T13_5 --> C1(["after T13.5: krb5 contexts over loopback"]):::sync
   T13_5 --> T13_6["T13.6 krb5i and krb5p"]
   T13_6 --> T13_7["T13.7 Rows a Kerberos caller meets"]
+  E11(["E11 T11.1 NLM and NSM tables"]):::sync --> T13_7
   T13_5 --> T13_8["T13.8 RFC 18's rows on the composed node"]
   S5(["S5 composed in-process node"]):::sync --> T13_8
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -727,27 +730,34 @@ Questions pending the user's answer. Each recommended option is written in place
     held: needs a service call RFC 17 lacks, and keys can arrive after start, so it would refuse a
     node an operator is about to fix.
 
-Assumptions on epics broken down in parallel or on other plans:
+Assumptions on other plans, and what is settled with the other epics' documents:
 
 1. S6c makes `memory.New`'s `SignIn` accept tickets of a test realm, as the RFC 22 implementation
    plan's T4.3 has `gsstest`'s initiator "accepted through `memory.New`'s `SignIn`"; today
    `identitymem` passes no secrets and answers `ErrUnavailable`. If it does not, T13.5 adds a keytab
    option to `memory.New`, about 0.5 man-days inside its figure.
-2. E8 writes `ErrNotNegotiated`, `ErrNoSession` and `ErrNoTree` in NFSv4's members' table, with what
-   a session means for an NFSv4.1 member; E3's §1.2 gave all four to "E8 and E13". If E8's document
-   leaves them, T13.7 writes them at the fault.
+2. Settled with E8's document: its T8.5 writes `ErrNotNegotiated`, `ErrNoSession` and `ErrNoTree`
+   in NFSv4's members' table by its D6 (`NFS4ERR_OP_NOT_IN_SESSION` for `ErrNoSession`, the fault for
+   the other two); E3's §1.2 gave all four to "E8 and E13", and this epic writes `ErrExpired` in
+   every table and the three in the NFSv3, MOUNT, NLM and NSM tables (T13.7).
 3. S6c's `gsstest` Kerberos initiator exposes the context it sets up, so T13.3 can give it the
    initiator's `MIC`, `Wrap`, `Unwrap` and `VerifyMIC`.
 4. S5's `nodetest` takes a keytab as `identity.keytab` and an injected clock that the identity
    server's `State` follows, as E7's T7.6 assumes it takes a directory; if not, T13.8's rows move to
-   E16 with the composed node's other identity rows.
-5. E14's scripts reach Kerberos through T13.5's `nfsclient` calls; E14's document is written in
-   parallel and is not checked against this one.
+   E16's T16.3, which accepts them with the composed node's other identity rows, and this figure
+   falls by T13.8's.
+5. Settled with E14's document: E14 writes no Kerberos script, since its scripts speak only
+   `AUTH_SYS` (its §9, point 3); T13.5's `RPCSEC_GSS` side of `nfsclient` is the trigger its
+   proposed ledger row names. E16's T16.3 drives the composed node's Kerberos rows through T13.5's
+   calls.
 
 Gaps, not questions:
 
 - The figure is 19.5 man-days against 16: T13.1's capture with a KDC, T13.3's sealing that `gokrb5`
   lacks (D11), and T13.8's composed-node rows were not separate items before.
 - E3's T3.3 cache key changes in T13.5 (D7); E3's document names no GSS field because none existed.
-- Which pull request carries which RFC change: Q3's RFC 20 §4.4 change goes with PR 2; Q1's RFC 21
-  §11.5 row with PR 4; Q2's RFC 18 §3.8 sentence with this document's pull request, if agreed.
+- Which pull request carries which RFC change: Q3's RFC 20 §4.4 `VerifyMIC` joins the programme's one
+  RFC 20 pull request, opened by E3's Q2, unless S6c has added the field first; PR 2 waits for it.
+  Q1's RFC 21 §11.5 row goes in batch two's one RFC 21 pull request, opened with E8's document pull
+  request, beside E8's, E11's and E12's §11.5 cells. Q2's RFC 18 §3.8 sentence goes in this
+  document's pull request, if agreed.
