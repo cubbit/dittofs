@@ -670,7 +670,8 @@ func newNames(svc vfs.Service, c vfs.Call) translate.Names // unexported
   non-administrator steps; a `GETATTR` of a large `acl` in an NFSv4.1 session whose
   `ca_maxresponsesize` cannot carry it. The administrator's steps need a proven caller, which only
   `RPCSEC_GSS` brings: they run on `nfsharness` in T6.3 and over the wire in E16's T16.3, after E13.
-  Consumed by E16's T16.9, which runs the same rows on the composed node.
+  No later subtask consumes it: E16's T16.9 runs RFC 19 §9's rows through both adapters instead of
+  rerunning these on the composed node (E16's §9, point 2).
 - **Acceptance criteria:**
   - The non-administrator steps of the three rows pass over loopback on the versions each names.
   - The large `acl` is answered `NFS4ERR_REP_TOO_BIG`, never with fewer entries.
