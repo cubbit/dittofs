@@ -1186,6 +1186,7 @@ func hasRef(refs []entity.ResourceRef, ref entity.ResourceRef) bool {
 func TestSettingsRefusalNamesEveryRowOfItsInstance(t *testing.T) {
 	h, f := servedFaulted(t)
 	declareSections(t, h)
+	ch := watchStatus(h)
 	armed := armWaits(h)
 	started(t, h)
 	configure(t, h, storeA)
@@ -1237,6 +1238,13 @@ func TestSettingsRefusalNamesEveryRowOfItsInstance(t *testing.T) {
 	// reads applied here, alone.
 	twoPath := "/api/v1/shares/" + entity.ShareID(two.ID).String() + "/settings/delta.b"
 
+	// The API reads the stored status, which the status writer's own turn
+	// writes after the pass, not the pass itself.
+	now := counters(t, h)
+	turnAt(t, h, ch, "the status holding the refusals", func(tr statusTurn) bool {
+		return tr.s.Settings == now.Settings
+	})
+
 	if a := appliedAtOf(t, h, twoPath); a != (apiv1.Applied{Nodes: 1, Of: 1}) {
 		t.Errorf(
 			"delta.b of share two applied: got %d of %d, want 1 of 1, its instance fine",
@@ -1252,6 +1260,7 @@ func TestSettingsRefusalNamesEveryRowOfItsInstance(t *testing.T) {
 func TestSettingsOverrideRefusalNamesTheWideRowToo(t *testing.T) {
 	h, f := servedFaulted(t)
 	declareSections(t, h)
+	ch := watchStatus(h)
 	armed := armWaits(h)
 	started(t, h)
 
@@ -1298,6 +1307,13 @@ func TestSettingsOverrideRefusalNamesTheWideRowToo(t *testing.T) {
 			describe(refused),
 		)
 	}
+
+	// A status still at the generation before the change would read 0 of 1
+	// too, refusal or none, so the count is read once the status covers it.
+	now := counters(t, h)
+	turnAt(t, h, ch, "the status holding the refusals", func(tr statusTurn) bool {
+		return tr.s.Settings == now.Settings
+	})
 
 	if a := appliedOf(t, h, "alpha.level"); a != (apiv1.Applied{Nodes: 0, Of: 1}) {
 		t.Errorf(
