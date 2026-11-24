@@ -11,6 +11,12 @@
 #   test/fdb/cluster.sh test ...    go test from the repository root, with the
 #                                   client library on the cgo paths and
 #                                   DITTOFS_FDB_CLUSTER_FILE set
+#   test/fdb/cluster.sh smoke IMAGE run a Dockerfile.foundationdb image's dfs
+#                                   init, then dfs start until it is ready, then
+#                                   stop it; the cluster must be up and own
+#                                   nothing yet, since the installation owns it.
+#                                   The journal gets a loop-mounted ext4 made
+#                                   with sudo, or SMOKE_BLOCKS if set
 #
 # Host networking, so the cluster file's 127.0.0.1 addresses are the ones the
 # test client dials. That works on Linux only; on macOS run it inside a Linux
@@ -86,6 +92,105 @@ up() {
     return 1
 }
 
+# smoke proves the image's libfdb_c loads and serves an installation on this
+# cluster: dfs init, dfs start until /health/ready answers ready, and a SIGTERM
+# that stops it with exit 0. Any step failing fails it. start takes init's
+# volumes and its bind mount of the journal's directory, so it finds what init
+# wrote; host networking reaches the cluster file's 127.0.0.1 addresses.
+smoke() {
+    local image=$1 port=18080 conf="$DATA/smoke" ready="" code
+    # decision: the journal gets a loop-mounted ext4 of its own at
+    # /data/blocks rather than the image's anonymous volume, because the
+    # journal refuses every disk mount of the hosted runners, amd64 and arm64
+    # alike: one root ext4 mounted nobarrier behind /var/lib/docker,
+    # RUNNER_TEMP, /tmp, the workspace and /mnt. The loop mount reports no
+    # nobarrier, so the platform check accepts it, though its syncs still land
+    # on that disk: the smoke proves the image's libfdb_c loads and an
+    # installation serves, not durability. It needs sudo, which the hosted
+    # runners give. SMOKE_BLOCKS names a directory to use instead, on
+    # a mount the journal accepts, holding an empty journal directory the
+    # image's user 65532 can write; the smoke leaves it as it is.
+    # Globals, not locals: the EXIT trap reads them after smoke has returned.
+    blocks="${SMOKE_BLOCKS:-}" img=""
+    if [[ -z "$blocks" ]]; then
+        blocks="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dittofs-smoke-blocks"
+        img="$blocks.img"
+    fi
+    # As the image's user: a fixed name, removed before and after, so a run
+    # that failed half-way leaves nothing for the next.
+    local run=("$RUNTIME" run --network host -e DITTOFS_ENCRYPTION_PASSPHRASE=smoke-passphrase)
+    clean() {
+        "$RUNTIME" rm -f -v dittofs-smoke-start dittofs-smoke-init >/dev/null 2>&1 || true
+        if [[ -n "$img" ]]; then
+            if mountpoint -q "$blocks"; then sudo umount "$blocks" || true; fi
+            rm -f "$img"
+            rmdir "$blocks" 2>/dev/null || true
+        fi
+    }
+    clean
+    trap clean EXIT
+    if [[ -n "$img" ]]; then
+        mkdir -p "$blocks"
+        truncate -s 1G "$img"
+        mkfs.ext4 -q "$img"
+        sudo mount -o loop "$img" "$blocks"
+        # The bind mount hides the journal directory the image creates, and
+        # init does not create it.
+        sudo mkdir "$blocks/journal"
+        sudo chown -R 65532:65532 "$blocks"
+    fi
+    echo "smoke: journal directory $blocks is on $(findmnt -no FSTYPE,OPTIONS -T "$blocks")"
+    mkdir -p "$conf"
+    cp "$DATA/fdb.cluster" "$conf/fdb.cluster"
+    cat >"$conf/config.yaml" <<EOF
+logging:
+  output: stderr
+node:
+  id: 00112233-4455-6677-8899-aabbccddeeff
+metadata:
+  backend: foundationdb
+  foundationdb:
+    cluster_file: /config/fdb.cluster
+journals:
+  - path: /data/blocks/journal
+keys:
+  storage:
+    kind: local
+    local:
+      file: /data/state/storage.key
+api:
+  listen: ['127.0.0.1:$port']
+metrics:
+  listen: '127.0.0.1:0'
+adapters:
+  listen: ['127.0.0.1']
+EOF
+    chmod 0755 "$conf"
+    chmod 0644 "$conf"/*
+    "${run[@]}" --name dittofs-smoke-init -v "$conf:/config:ro" -v "$blocks:/data/blocks" \
+        "$image" init --config /config/config.yaml
+    "${run[@]}" -d --name dittofs-smoke-start --volumes-from dittofs-smoke-init "$image" >/dev/null
+    for _ in $(seq 1 120); do
+        ready="$(curl -fsS "http://127.0.0.1:$port/health/ready" 2>/dev/null || true)"
+        [[ "$ready" == ready ]] && break
+        [[ "$("$RUNTIME" inspect -f '{{.State.Running}}' dittofs-smoke-start)" == true ]] || break
+        sleep 1
+    done
+    if [[ "$ready" != ready ]]; then
+        "$RUNTIME" logs dittofs-smoke-start >&2
+        echo "smoke: dfs start never answered ready on /health/ready (last answer: '$ready')" >&2
+        return 1
+    fi
+    "$RUNTIME" stop -t 60 dittofs-smoke-start >/dev/null
+    code="$("$RUNTIME" inspect -f '{{.State.ExitCode}}' dittofs-smoke-start)"
+    if [[ "$code" != 0 ]] || ! "$RUNTIME" logs dittofs-smoke-start 2>&1 | grep -q "dfs: stopped"; then
+        "$RUNTIME" logs dittofs-smoke-start >&2
+        echo "smoke: dfs start on SIGTERM exited $code; want 0 after logging 'dfs: stopped'" >&2
+        return 1
+    fi
+    echo "smoke: $image initialised, served ready and stopped cleanly on FoundationDB $VERSION"
+}
+
 # Created here, as the user: a bind mount of a missing directory would have the
 # container runtime create it as root, and nothing after could write to it.
 mkdir -p "$DATA"
@@ -108,8 +213,9 @@ test)
     export DITTOFS_FDB_CLUSTER_FILE="${DITTOFS_FDB_CLUSTER_FILE:-$DATA/fdb.cluster}"
     cd "$ROOT" && exec go test "$@"
     ;;
+smoke) smoke "${2:?image}" ;;
 *)
-    sed -n '2,17p' "$0"
+    sed -n '2,23p' "$0"
     exit 2
     ;;
 esac
