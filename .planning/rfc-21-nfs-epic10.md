@@ -13,7 +13,7 @@ administrator's revoke *(1 node)*", and Appendix D's `DELEGRETURN`, `WANT_DELEGA
 [RFC 20](../docs/internals/rfcs/rfc-20-adapters.md) §3.3's NFS callbacks, §4.7's `Conn.Send`,
 `Conn.Keep` and `RoleRelease` as `DELEGRETURN` and the drain use them;
 [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §3.1's `ChannelDown` and §3.2's back-channel and
-callback rules, with their §8 row, for the service's half of amendment A2;
+callback rules, with their §6 row, for the service's half of amendment A2;
 [RFC 14](../docs/internals/rfcs/rfc-14-open-state.md) §5.1, §5.4 and §5.5 for what a delegation is
 and when one is offered or asked back;
 [RFC 24](../docs/internals/rfcs/rfc-24-resources.md) §5.1's "callbacks to clients" row and §6.1 for
@@ -22,7 +22,7 @@ a pending callback. Every citation is `develop`'s text, which holds amendment A2
 Cited, not owned: RFC 8881 §20 for the callback program's bytes, §18.16 for `open_delegation4`,
 §18.39 for `GET_DIR_DELEGATION`; RFC 5531 for the RPC reply; RFC 20 §2.5's layout of `ops/cb`.
 **Track:** A.
-**Epic 10 estimate: 9 subtasks, 23 man-days.**
+**Epic 10 estimate: 9 subtasks, 23.5 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state and members' table (T1.1,
 T1.2), E2's `nfsharness` (T2.2) and knfsd's `nfs41/` delegation capture with its `CB_RECALL` (T2.3).
 **S4**, an NFSv4.1 session over loopback, for every loopback row. **S2b**, met: amendment A2 is in
@@ -183,7 +183,7 @@ so that subtasks and tests can cite them.
 | R11 | Read and write delegations are offered to NFSv4.1 and NFSv4.2 clients under RFC 14 §5.4, and the client's `OPEN4_SHARE_ACCESS_WANT_*` flags are honoured | MUST | RFC 21 §5.3 | T10.4 |
 | R12 | Every NFSv4.0 `OPEN` returns `OPEN_DELEGATE_NONE`, and the server makes no connection to the client's callback address | MUST | RFC 21 §5.3, §13 ("§5.3 no v4.0 delegations") | T10.4 |
 | R13 | A read delegation is a read grant and a write delegation a read and write grant; neither is ever a handle grant | invariant | RFC 21 §5.3, §11.4, §12 (N14); RFC 14 §5.1 | T10.4 |
-| R14 | The `OPEN4_SHARE_ACCESS_WANT_*` flags are not access: they ask for a grant, and change neither `Access` nor `Deny` | MUST | RFC 21 §11.4 (access and deny) | T10.4 |
+| R14 | Withdrawn: the `OPEN4_SHARE_ACCESS_WANT_*` flags kept out of `Access` and `Deny` is E9's R17, met by T9.4's `share_access` translation, which hands this epic the want value alone | MUST | RFC 21 §11.4 (access and deny); E9's R17 | — |
 | R15 | `CB_RECALL` is the recall: `RecallGrant` with no session and no openers sends it for the delegation on the client's back channel | MUST | RFC 21 §5.3; RFC 17 §3.2; RFC 20 §3.3 | T10.3, T10.4 |
 | R16 | `DELEGRETURN` is `AckRecall` to `GrantNone`; an unasked one is a return, and `ErrState` (`NoRecall`), never met, is answered the fault by its own row | MUST | RFC 21 §11.4, §11.5, App. D | T10.4 |
 | R17 | `DELEGRETURN` is a release, served while draining | MUST | RFC 21 §11.5 (what runs while draining); RFC 20 §4.7 | T10.4 |
@@ -212,13 +212,14 @@ so that subtasks and tests can cite them.
 | R30 | A `Connect` that re-registers a back channel clears `Reach.Down` through `Rebind`, on the node that marked it down as on any other, a single node included | MUST | RFC 17 §3.2; RFC 21 §3.4 | T10.5 |
 | R31 | While `Reach.Down` is set, the client's next `SEQUENCE` reply sets `SEQ4_STATUS_CB_PATH_DOWN` | MUST | RFC 21 §3.4, §11.4 | T10.6 |
 | R32 | While the path is down no delegation is offered to the client; once a re-bind clears it, one is offered again | MUST NOT | RFC 21 §3.4, §13 ("§3.4 path down"); RFC 14 §5.4 | T10.6 |
-| R33 | A lost back channel is offered no grant until re-registered, on one node too: after `ChannelDown`, `Record` shows `Reach.Down` and the next open is offered no delegation; the next `Connect` clears it; a `ChannelDown` from a node the record no longer names changes nothing | test row | RFC 17 §8 (§3.2's lost back channel row) | T10.5 |
+| R33 | A lost back channel is offered no grant until re-registered, on one node too: after `ChannelDown`, `Record` shows `Reach.Down` and the next open is offered no delegation; the next `Connect` clears it; a `ChannelDown` from a node the record no longer names changes nothing | test row | RFC 17 §6 (§3.2's lost back channel row) | T10.5 |
+| R35 | A closing connection's back-channel cleanup, its release of the back channel and any `ChannelDown` it makes, completes before a back channel of the same client is bound again on this node, so a late `ChannelDown` never marks down the path a rebind has just re-registered | MUST | RFC 20 §3.2 ("Cleanup comes before reconnect"); RFC 17 §3.2 | T10.2, T10.6 |
 
 **Draining**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R34 | The drain against Linux's compounds, on the only node stopping: `SEQUENCE`, `PUTFH`, `GETATTR`, `CLOSE`, and the same with `DELEGRETURN`, run whole; NFSv4.0's `PUTFH`, `GETATTR` of `fsid` and `fs_locations`, `RENEW` is answered in full; `EXCHANGE_ID` gets no reply; `SEQUENCE` under NFSv4.0 is `NFS4ERR_OP_ILLEGAL`; `SEQUENCE`, `PUTFH`, `WRITE` gets no reply, not a results array cut short, and its slot keeps its previous sequence ID and reply, so its retransmission is refused again, never `NFS4ERR_RETRY_UNCACHED_REP`; `SEQUENCE`, `PUTFH`, `CLOSE`, `PUTFH`, `READ` gets no reply and runs nothing; a compound whose `CLOSE` ran before the drain began runs whole and is answered | test row | RFC 21 §11.6, §7.4; RFC 20 §4.7 | T10.9 |
+| R34 | The drain against Linux's compounds, on the only node stopping: `SEQUENCE`, `PUTFH`, `GETATTR`, `CLOSE`, and the same with `DELEGRETURN`, run whole; NFSv4.0's `PUTFH`, `GETATTR` of `fsid` and `fs_locations`, `RENEW` is answered in full; `EXCHANGE_ID` gets no reply; `SEQUENCE` under NFSv4.0 is `NFS4ERR_OP_ILLEGAL`; `SEQUENCE`, `PUTFH`, `WRITE` gets no reply, not a results array cut short, and its slot keeps its previous sequence ID and reply, so its retransmission is refused again, never `NFS4ERR_RETRY_UNCACHED_REP`; `SEQUENCE`, `PUTFH`, `CLOSE`, `PUTFH`, `READ` gets no reply and runs nothing, the first file stays open, and its retransmission is refused the same way, never `NFS4ERR_BAD_STATEID`; a compound whose `CLOSE` ran before the drain began runs whole and is answered | test row | RFC 21 §11.6, §7.4; RFC 20 §4.7 | T10.9 |
 
 ## 4. Decisions this epic takes
 
@@ -253,7 +254,9 @@ so that subtasks and tests can cite them.
   queue and its deadline and gives the adapter no queue of its own (R5), so a `Send` that finds
   every slot busy, or the writer refusing, returns the error the service counts as no answer. A
   `decision:` marker at `BackChannel.Send`, overturned if delegations are seen revoked because 16
-  slots were busy with a slow client's answers.
+  slots were busy with a slow client's answers. A client that never answers on a live connection
+  keeps its slots busy (D3), so every later callback to it fails at once and its recalls are revoked
+  at their deadline, the outcome RFC 21 §3.4 gives a callback with nowhere to go.
 - **D5. Where `SEQUENCE` reads `Reach.Down`. Pending the user's answer** (Q2). `ClientStatus` has no
   field for it, so `Renew` does not report it. Recommended: E8's renewal step, which calls `Renew` at
   most once per renewal interval, also reads `Record` then and keeps `Reach.Down` with the cached
@@ -265,9 +268,9 @@ so that subtasks and tests can cite them.
 - **D6. The want flags.** `OPEN4_SHARE_ACCESS_WANT_NO_PREFERENCE`, `WANT_ANY_DELEG` and
   `WANT_WRITE_DELEG` ask for read and write, `WANT_READ_DELEG` for read, `WANT_NO_DELEG` and
   `WANT_CANCEL` for none; the push and signal flags are hints and never answered, since nothing
-  pushes a delegation or signals one available. A want code RFC 8881 does not define is
-  `NFS4ERR_INVAL`, as an access value outside the protocol's set is (RFC 21 §11.4). Under minor
-  version 0 the want is none whatever the bits. An `OPEN` that asked for a delegation by name and
+  pushes a delegation or signals one available. E9's T9.4 has already refused a want code RFC 8881
+  does not define, and any want bit under NFSv4.0, `NFS4ERR_INVAL` (its D8 and R17), so the mapping
+  sees only defined codes; under minor version 0 it sees none, and the want is none. An `OPEN` that asked for a delegation by name and
   got none is answered `OPEN_DELEGATE_NONE_EXT`, `WND4_NOT_WANTED` for `WANT_NO_DELEG` and
   `WANT_CANCEL` and `WND4_CONTENTION` otherwise, with neither push nor signal promised; one that
   stated no preference, `OPEN_DELEGATE_NONE`. Prior art: knfsd answers `WND4_CONTENTION` or
@@ -308,6 +311,24 @@ so that subtasks and tests can cite them.
   open state already reads (kind 1), past a recall's deadline. No marker: the method's doc comment
   says what it drives.
 
+- **D14. The connection's close is `Stages.OnClose`, and a path-down is ordered before the next
+  bind.** E8 records the bound connections but learns of no close; RFC 20 §4.7 gives every
+  connection the hook, `Stages.OnClose`, which NFS's `Protocol.NewConn` builds per connection, and
+  says a connection's `OnClose` drops its reference to each session it carried. T10.2 sets it to a
+  closure that calls `Unbind` for each `BackChannel` the connection is bound to; no `core` change and
+  no RFC change. When an `Unbind` leaves none of the client's sessions on this node with a bound
+  connection, T10.6's `ChannelDown` runs inside the same `OnClose`, under its 30 s context, while
+  the closure holds a per-client back-channel lock that T10.2's `Bind` also takes; a
+  `CREATE_SESSION`, `BIND_CONN_TO_SESSION` or `BACKCHANNEL_CTL` binds before it calls `Connect`, so
+  its `Rebind` lands after the `ChannelDown` and clears it (R35). RFC 20 §3.2 keys that wait by the
+  session; it is per client here because `ChannelDown` is the client's. A `ChannelDown` still failing
+  when the context ends is dropped, not handed to `Deps.Retry`: the path stays up in the record,
+  recalls fail at once on the dead channel and are revoked at their deadline, as RFC 21 §3.4 has a
+  callback with nowhere to go. A `decision:` marker at `Bind` on the lock held across a service call,
+  which blocks only that client's binds; overturned if a bind is seen waiting on a slow
+  `ChannelDown` in a profile. Prior art: knfsd marks the callback path down from its transport's
+  close callback (`nfsd4_conn_lost`, from memory).
+
 ## 5. Target tree
 
 ```text
@@ -316,7 +337,7 @@ pkg/vfs/
   service.go                       T10.5  Clients.ChannelDown, OpChannelDown
   vfstest/mutations.go, null.go, faults.go   T10.5  ChannelDown
   vfstest/callbacks.go             T10.3  RecallGrant's handle, under Q1
-  vfstest/suite/clients.go         T10.5  RFC 17 §8's lost back channel row
+  vfstest/suite/clients.go         T10.5  RFC 17 §6's lost back channel row
   vfstest/memory/memory.go         T10.7  Revoke (Clock is E9's T9.7)
 internal/vfs/
   clients.go                       T10.5  ChannelDown, Connect's Rebind, the decision rewritten
@@ -330,7 +351,8 @@ internal/adapter/nfs/
     call_fuzz_test.go              T10.1  FuzzParseReply
     testdata/golden/               T10.1, T10.4  knfsd-nfs41-cb-*.hex, rfc-cb-recall-any-*.hex, delegation types
   protocol/
-    backchannel.go                 T10.2  E8's BackChannel: slots, CB_SEQUENCE, Send, Reply, Keep in Bind
+    backchannel.go                 T10.2  E8's BackChannel: slots, CB_SEQUENCE, Send, Reply, Keep and the client's lock in Bind
+    protocol.go                    T10.2  NewConn's Stages.OnClose unbinding the connection (D14)
     stages.go                      T10.2  Route hands a reply to its connection's back channel
   ops/
     cb/types.go                    T10.1  generated CB_COMPOUND, CB_SEQUENCE, CB_RECALL, CB_RECALL_ANY
@@ -393,10 +415,10 @@ internal/adapter/adaptertest/nfsclient/
 
 ### T10.2 The back channel
 
-**Subtask T10.2 estimate: 3.5 man-days.**
+**Subtask T10.2 estimate: 3.75 man-days.**
 
 - **Track:** A. **Depends on:** T10.1, S4, T8.4, T8.9.
-- **Covers:** R1, R4, R5, R6, R7, R8.
+- **Covers:** R1, R4, R5, R6, R7, R8, R35.
 - **Deliverables:** `protocol/backchannel.go`:
   ```go
   // Send and Reply extend E8's BackChannel (T8.4), whose NewBackChannel, Bind and
@@ -408,7 +430,9 @@ internal/adapter/adaptertest/nfsclient/
   `ErrNoBackChannel` and `ErrNoSlot` for D4's failures. E8's `CREATE_SESSION` with
   `CREATE_SESSION4_FLAG_CONN_BACK_CHAN` (T8.4), and its `BIND_CONN_TO_SESSION` and `BACKCHANNEL_CTL`
   (T8.9), call `NewBackChannel` and `Bind` with what they accepted; this subtask calls `Unbind` when a
-  bound connection closes. `stages.go`'s `Route` hands a
+  bound connection closes, from the `Stages.OnClose` that `protocol.NewConn` builds for it (D14),
+  freeing the slots of the calls sent on that connection, and makes `Bind` take the client's
+  back-channel lock (R35). `stages.go`'s `Route` hands a
   reply on a connection that carries a back channel to its `Reply` and drops it, as it drops any
   message that is not a call; a reply matching no call is dropped too. An outstanding call is a slot
   record, not a goroutine. Consumed by T10.3 and T10.6.
@@ -429,7 +453,8 @@ internal/adapter/adaptertest/nfsclient/
   credential other than the one asked, R6, a call on another connection, R1); `Send` returning with
   the reply unread (catches a wait for the answer, R4); the sequence ID after an answer and after a
   close (catch D3's rules broken); the third `Send` (catches a queue, R5, or a slot past the grant,
-  R7); `runtime.NumGoroutine` unchanged across 16 outstanding calls (catches a goroutine per call,
+  R7); the client closing its only bound connection, then a `Send` failing `ErrNoBackChannel`
+  (catches no `OnClose` reaching `Unbind`, D14); `runtime.NumGoroutine` unchanged across 16 outstanding calls (catches a goroutine per call,
   R5); the idle timeout (catches a back channel left without `Keep`, R8); a reply whose XID matches
   no call, dropped with no answer and the connection still serving (catches a reply routed as a
   call). No test double.
@@ -484,10 +509,11 @@ internal/adapter/adaptertest/nfsclient/
 **Subtask T10.4 estimate: 3 man-days.**
 
 - **Track:** A. **Depends on:** T10.3, T9.3, T9.4, T9.9.
-- **Covers:** R11, R12, R13, R14, R15, R16, R17, R18, R19.
+- **Covers:** R11, R12, R13, R15, R16, R17, R18, R19.
 - **Deliverables:**
-  - `ops/v4/open_deleg.go`: `func want(minor uint32, shareAccess uint32) (vfs.GrantKind, error)`, a
-    pure, total function over the want bits (D6), never giving a handle grant; `func
+  - `ops/v4/open_deleg.go`: `func want(minor uint32, w uint32) vfs.GrantKind`, a pure, total
+    function over the want value T9.4 split from `share_access` and already checked (D6), never
+    giving a handle grant; `func
     delegation(g *vfs.CachingGrant, wanted bool, w vfs.GrantKind) openDelegation4` encoding
     `OPEN_DELEGATE_READ`, `OPEN_DELEGATE_WRITE`, `OPEN_DELEGATE_NONE` or `OPEN_DELEGATE_NONE_EXT`
     (D6, D7). E9's `OPEN` passes `want`'s kind as `OpenRequest.Want` and encodes `delegation`'s answer
@@ -511,12 +537,10 @@ internal/adapter/adaptertest/nfsclient/
     `DELEGRETURN`, the second's retry is granted.
   - An NFSv4.0 client with a callback address the test listens on opens the file read-only, then for
     write: `OPEN_DELEGATE_NONE` both times, and nothing connects to the address.
-  - Every want code, generated, maps to a kind or `NFS4ERR_INVAL`, never a handle grant, and never
-    changes `Access` or `Deny`.
+  - Every want code T9.4 passes, under each minor version, maps to a kind, never a handle grant.
 - **Tests:** at `want` and `delegation`, which E9's `OPEN` calls: the golden file (catches a kind
-  mapped differently, R11, R13), and a property test over all 32-bit share-access values that the
-  access and deny bits `OPEN` passes are those without the want bits (catches a want bit read as
-  access, R14). On `nfsharness` over `memory.New` with two proven principals of one client: alice's
+  mapped differently, R11, R13), and a loop over every defined want code under minor versions 0, 1
+  and 2 (catches a handle grant, R13, or a delegation wanted under NFSv4.0, R12). On `nfsharness` over `memory.New` with two proven principals of one client: alice's
   `OPEN` of a 0644 file she owns with a read delegation, then bob's `READ` under its stateid served
   and his `WRITE` `NFS4ERR_ACCESS`, and another client's `READ` under it `NFS4ERR_BAD_STATEID` (catch
   delegation I/O not reauthorised, or served for another client, R18); `DELEGRETURN` with `seqid` 2
@@ -543,10 +567,10 @@ internal/adapter/adaptertest/nfsclient/
     `Rebind` with this node after `Connect` succeeds. The file's `decision:` keeps its zero node ID
     and loses its sentence that nothing calls `ChannelDown` or `Rebind`.
   - `vfstest.Mutations` recording it, `vfstest.Null` and `vfstest.Faults` passing it through.
-  - `vfstest/suite`: RFC 17 §8's lost back channel row.
+  - `vfstest/suite`: RFC 17 §6's lost back channel row.
   Consumed by T10.6 and, through `memory.New`, every row after it.
 - **Acceptance criteria:**
-  - RFC 17 §8's row passes against `internal/vfs` over the memory store.
+  - RFC 17 §6's row passes against `internal/vfs` over the memory store.
   - A `ChannelDown` from a record naming another node changes nothing.
 - **Tests:** the suite row, at the service every adapter calls: after `ChannelDown`, `Record` shows
   `Reach.Down` and an `Open` asking for a read grant gets none; after `Connect`, `Record` shows it
@@ -554,18 +578,20 @@ internal/adapter/adaptertest/nfsclient/
   that leaves it set, R30, R33); a record whose `Reach.Callback` names another node, written through
   the memory store, unchanged by `ChannelDown` (catches a report racing a rebind, R29); a
   `ChannelDown` after `Destroy` is `StaleClient` (R29). No test double: the memory store is kind 2.
-- **Rules:** rule 9, `internal/vfs/clients.go`'s `decision:` rewritten; rule 11, `ChannelDown` is
-  RFC 17 §3.1's.
+- **Rules:** rule 9, `internal/vfs/clients.go`'s `decision:` rewritten, and a `decision:` at the
+  node check, which reads `Record` before open state's `ChannelDown` and so is not atomic with it,
+  safe on one node only (§9, gap 5); rule 11, `ChannelDown` is RFC 17 §3.1's.
 
 ### T10.6 The path down on the wire
 
-**Subtask T10.6 estimate: 2.5 man-days.**
+**Subtask T10.6 estimate: 2.75 man-days.**
 
 - **Track:** A. **Depends on:** T10.3, T10.4, T10.5, T8.6.
-- **Covers:** R2, R28, R31, R32.
+- **Covers:** R2, R28, R31, R32, R35.
 - **Deliverables:**
   - `callbacks.go`: when `Unbind` answers that the client's last back-channel connection on this
-    node closed, `ChannelDown` for the client, and the cached `ClientStatus` dropped (D5).
+    node closed, `ChannelDown` for the client inside the `OnClose` and under the client's
+    back-channel lock (D14), and the cached `ClientStatus` dropped (D5).
   - T8.6's renewal step reading `Reach.Down` with `ClientStatus` (D5, under Q2), and
     `ops/v4/sequence.go` setting `SEQ4_STATUS_CB_PATH_DOWN` while it is set.
   - The loopback row "§3.4 path down", with a delegation offered again after the re-bind.
@@ -582,9 +608,13 @@ internal/adapter/adaptertest/nfsclient/
   (catches `ChannelDown` never called, R28, or the flag not set, R31); the `OPEN` while down (catches
   a delegation offered with no path, R32); the re-bind, the `OPEN` after it and its recall (catch a
   path never cleared, R32, or a recall on the old connection, R2); the second connection kept
-  (catches a path marked down while one connection lives, D2). `vfstest.Mutations` shows one
-  `ChannelDown`. No test double.
-- **Rules:** rule 3, `nfs_cb_path_down_total` as §1.2 says; rule 9, D2's and D5's `decision:`
+  (catches a path marked down while one connection lives, D2); the only back-channel connection
+  closed with its `ChannelDown` held in the service by `vfstest.Faults`' delay (kind 3), a
+  `BIND_CONN_TO_SESSION` sent on a new connection meanwhile, then the delay released: the next
+  `SEQUENCE` carries no `SEQ4_STATUS_CB_PATH_DOWN` and the next `OPEN` is offered a delegation
+  (catches a late `ChannelDown` landing after the rebind, R35). `vfstest.Mutations` shows one
+  `ChannelDown` per close. No test double.
+- **Rules:** rule 3, `nfs_cb_path_down_total` as §1.2 says; rule 9, D2's, D5's and D14's `decision:`
   markers.
 
 ### T10.7 Revocations
@@ -664,7 +694,8 @@ internal/adapter/adaptertest/nfsclient/
     `Stop` begun, then released: the whole compound runs and is answered.
 - **Tests:** the steps above at the replies the scripted client reads, and at `vfstest.Mutations`
   (catch a release refused while draining, R17, a results array cut short under `NFS4_OK`, a slot
-  advanced by a compound that ran nothing, a `CLOSE` applied with its reply unsent, R34);
+  advanced by a compound that ran nothing, a `CLOSE` applied with its reply unsent, or a
+  retransmission of the `CLOSE`, `READ` compound answered `NFS4ERR_BAD_STATEID`, R34);
   `vfstest.Faults`' delay is kind 3. The step with `NFS4ERR_MOVED` needs a gateway named by
   `MoveTarget`, which one node never has: the deferral ledger's row for the cluster's parts.
 - **Rules:** rule 4, `adaptertest.CheckLeaks` after `Stop`; rule 14, the cluster step named.
@@ -696,12 +727,13 @@ to T10.9 are tests over what T10.4 offers and can run in any order.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T10.1, T10.2, T10.3 | 8 | — | the server calling the client, from the bytes to the callbacks the service makes |
-| 2 | T10.4 | 3 | PR 1 | delegations offered, recalled and returned end to end |
-| 3 | T10.5, T10.6 | 4.5 | PR 2 | the path down, the service's half and the wire's; T10.5 can open beside PR 1 |
-| 4 | T10.7, T10.8, T10.9 | 7.5 | PR 2 | the rows over delegations: revocations, locks in a recall, the budget, the drain |
+| 1 | T10.1 | 2 | — | the callback program's bytes and the call codec in `wire`, which E11's T11.2 waits on and which needs no session |
+| 2 | T10.2, T10.3 | 6.25 | PR 1 | the server calling the client, from the back channel to the callbacks the service makes |
+| 3 | T10.4 | 3 | PR 2 | delegations offered, recalled and returned end to end |
+| 4 | T10.5, T10.6 | 4.75 | PR 3 | the path down, the service's half and the wire's; T10.5 can open beside PR 1 |
+| 5 | T10.7, T10.8, T10.9 | 7.5 | PR 3 | the rows over delegations: revocations, locks in a recall, the budget, the drain |
 
-A suggestion only: one pull request per subtask works as well; PR 3 and PR 4 can be open at once.
+A suggestion only: one pull request per subtask works as well; PR 4 and PR 5 can be open at once.
 
 ## 9. Open points
 
@@ -721,12 +753,17 @@ Questions pending the user's answer. Each recommended option is written in place
     (cluster).
 - **Q2. Where `SEQUENCE` reads `Reach.Down`** (D5). `ClientStatus` has no field for it.
   - (a) **Recommended:** E8's renewal step reads `Record` with `Renew`, once per renewal interval,
-    and this node's `ChannelDown` and re-registration drop the cache. No RFC change; one more read
-    per client per interval; another node's report up to 10 s late.
+    and this node's `ChannelDown` and re-registration drop the cache. One more read per client per
+    interval; another node's report up to 10 s late. But RFC 21 §11.4 ends "the adapter reads the
+    record through the service on every decision that needs it and never answers from a copy it
+    holds", and `Reach.Down` is the record's, not `ClientStatus`'s, so (a) needs a sentence in RFC 21
+    §3.4 allowing the flag one renewal interval stale, in the same RFC 21 pull request as Q3's;
+    on one node the answer is exact either way.
   - (b) RFC 14 §11.3's `ClientStatus` gains `ChannelDown bool`, reported by `Renew` from what open
     state already holds of `Reach.Down`, with RFC 17 §3.2's `ClientStatus` paragraph amended; no
     extra read, the same staleness, a change to open state and two RFCs.
-  - (c) `SEQUENCE` reads `Record` every time: exact, one store read per compound.
+  - (c) `SEQUENCE` reads `Record` every time: exact and within RFC 21 §11.4 as written, one store
+    read per compound.
 - **Q3. `WANT_DELEGATION`'s answer** (D8). RFC 21 Appendix D says "answered as this RFC says", and
   RFC 21 does not say.
   - (a) **Recommended:** `NFS4ERR_NOTSUPP` through E5's one handler, with the sentence "`WANT_DELEGATION`
@@ -751,6 +788,19 @@ Gaps, not questions:
 3. **The drain's `NFS4ERR_MOVED` step** needs a gateway `MoveTarget` names, which a single node never
    has: the deferral ledger's row "RFC 21's (cluster) parts", `fs_locations` naming another gateway.
 
+4. **Only the client's own principal moves its path** (RFC 17 §3.2): T10.5's `Connect` calls open
+   state's `Rebind`, which refuses a stranger only on a record with `Protect` set (`ErrNotYours`),
+   not RFC 17's `ClientInUse` for a caller who neither owns the record nor holds a session under it.
+   On one node `Rebind` never moves the path, which always names the zero node, so nothing is
+   exposed; the refusal binds where a `Connect` moves the path to another node, under the deferral
+   ledger's row "RFC 21's (cluster) parts", which does not name it yet: a pull request against the
+   RFC 21 implementation plan adds it when the user asks.
+5. **T10.5's node check is not atomic with the write.** `internal/vfs` reads `Record`, then calls
+   open state's `ChannelDown`, which takes no node (RFC 14's signature); a rebind through another
+   node between the two would be marked down. On one node `Reach.Callback` is always the zero node,
+   so it cannot happen; the same cluster row owns moving the check under open state's client step.
+   A `decision:` marker at T10.5's check says so.
+
 What this epic takes from other epics, settled with their documents:
 
 - **E8:** T8.1's per-client callbacks value in `nfs/callbacks.go`, registered at `Connect`, holding
@@ -759,7 +809,9 @@ What this epic takes from other epics, settled with their documents:
   `csa_sec_parms` (`AUTH_NONE` or `AUTH_SYS` and its body), the granted back-channel slot count and
   the bound connections, with `NewBackChannel`, `Bind` and `Unbind`, which T8.4's `CREATE_SESSION`
   and T8.9's `BIND_CONN_TO_SESSION` and `BACKCHANNEL_CTL` call; one type, which T10.2 extends rather
-  than a second. T8.6's renewal step caching `ClientStatus` once per renewal interval, which T10.6
+  than a second. Those three handlers call `Bind` before their `Connect`, which D14's ordering of
+  a path-down before the rebind needs; E8 learns of no connection's close, which T10.2 takes from
+  `Stages.OnClose` (D14). T8.6's renewal step caching `ClientStatus` once per renewal interval, which T10.6
   extends under Q2.
 - **E9:** T9.4's `OPEN` passing `OpenRequest.Want` and encoding T10.4's `open_delegation4`; T9.3's
   stateid codec giving a grant-typed stateid's `GrantID` and its `ErrState` (`Revoked`) row by
