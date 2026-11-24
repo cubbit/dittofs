@@ -29,14 +29,26 @@ func TestBenchRunDeadlinePassesDuringLockWait(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFile %s: %v", lockFile, err)
 	}
-	t.Cleanup(func() { f.Close() })
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
 		t.Fatalf("Flock %s: %v", lockFile, err)
 	}
+	// The holder releases into a channel, and the cleanup joins it before
+	// closing the file: the close and the unlock touch one descriptor from
+	// one place, never concurrently.
+	released := make(chan error, 1)
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		released <- syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	}()
+	t.Cleanup(func() {
+		if err := <-released; err != nil {
+			t.Errorf("Flock %s unlock: %v", lockFile, err)
+		}
+		if err := f.Close(); err != nil {
+			t.Errorf("Close %s: %v", lockFile, err)
+		}
+	})
 
 	env := map[string]string{
 		"BENCH_RUN_ROOT":   root,
