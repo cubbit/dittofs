@@ -39,7 +39,9 @@ fixture (T4.11); **E3**'s scripted client (T3.2) and `core`'s own refusals in NF
 **Blocks:** E6, whose ACL attributes ride T5.3's `fattr4` and T5.4's and T5.5's `GETATTR` and
 `SETATTR`; E9, whose `OPEN` takes the current filehandle T5.1's operations set and whose stateids
 extend T5.5's stateid function; E12, whose `READ_PLUS` reuses T5.8's hook and whose attributes join
-T5.4's encoder; S4, whose namespace half is T5.9's; E16, which runs these rows end to end.
+T5.4's encoder; S4, whose namespace half is T5.9's; E16, which runs these rows end to end. E12's
+T12.4 edits this epic's `write.go`, `setattr.go` and `remove.go`, and E9's T9.9 extends its
+`read.go`, `write.go` and `setattr.go`.
 
 ---
 
@@ -88,23 +90,23 @@ rows named in §3.
   `who` in an ACE, and `mode_umask` and `acl` in `suppattr_exclcreat`: E6, which adds them to
   T5.3's attribute struct and T5.4's `supported_attrs`.
 - Every stateid but the two special ones that name no open: the current stateid, open, lock and
-  delegation stateids, their principal check and their per-request drain roles (E9, E10). Until
+  delegation stateids, their principal check and their per-request drain roles (E9's T9.3, E10). Until
   E9, a `READ`, `WRITE` or `SETATTR` quoting one is `NFS4ERR_BAD_STATEID` (D3).
 - `OPEN`, its exclusive create's `CreateVerifier`, an `OPEN` of a delete-pending file, and the
   "§11.3 read-only marker" row, which needs an `OPEN` for write: E9. This epic answers the
   delete-pending and read-only refusals its own operations meet (R36, R42).
-- The session's reply budget: E8 sets `protocol.State`'s `MaxReply` in `SEQUENCE` and makes A1's
-  runner change; T5.8's hook reads it. The NFSv4.1 session steps of the §2.3 row: E8.
+- The session's reply budget: E8's T8.7 sets `protocol.State`'s `MaxReply` in `SEQUENCE` and makes
+  A1's runner change; T5.8's hook reads it. The NFSv4.1 session steps of the §2.3 row: E8.
 - `core`'s own refusals in NFSv4's tables, `ErrNoFH`, `ErrMoved` and `ErrDraining` among them: E3.
-  The drain test: E10. `fs_locations` naming another gateway on a drain is a (cluster) part, in the
+  The drain test: E10's T10.9. `fs_locations` naming another gateway on a drain is a (cluster) part, in the
   plan's deferral ledger, row "RFC 21's (cluster) parts".
-- `WANT_DELEGATION` and `GET_DIR_DELEGATION`: E10. `ALLOCATE`, `IO_ADVISE`, `WRITE_SAME`,
-  `COPY_NOTIFY`, `LAYOUTERROR`, `LAYOUTSTATS` and the xattr operations: E12. Advertising no pNFS
-  role in `EXCHANGE_ID` (N20's other half): E8.
+- `WANT_DELEGATION` and `GET_DIR_DELEGATION`: E10's T10.8. `ALLOCATE` (T12.7), `IO_ADVISE`,
+  `WRITE_SAME`, `COPY_NOTIFY`, `LAYOUTERROR`, `LAYOUTSTATS` (T12.7) and the xattr operations
+  (T12.6): E12. Advertising no pNFS role in `EXCHANGE_ID` (N20's other half): E8's T8.3.
 - NFSv3's halves of the rows this epic shares with E4 ("App. B directory link count", "§9.2 change
   info", N7, N8, N19): E4. RFC 21 §13's "§8.1 ctime" as written, an SMB client and an NFSv3
-  `GETATTR` (§9, point 5), pynfs's attribute tests, and "§9.1 loss verifier", which needs a loss
-  below the service: E16.
+  `GETATTR` (§9, point 5; E16's T16.6, R49), pynfs's attribute tests, and "§9.1 loss verifier",
+  which needs a loss below the service (E16's T16.2, R18): E16.
 - Snapshots over NFS (a snapshot's `fsid`, its root's `mounted_on_fileid`, `NFS4ERR_ROFS`): the
   plan's deferral ledger, row "Snapshots over NFS". The namespace move over NFS: row "The
   namespace move over NFS". A batched `Spell`: row "A batched `Spell`".
@@ -311,7 +313,7 @@ snapshots (§1.2).
   which maps all zeros to `vfs.Anonymous(h)`, all ones to the same for `READ` and to
   `NFS4ERR_BAD_STATEID` for `WRITE` and `SETATTR` (RFC 8881 §8.2.3, from memory), and every other
   value to `NFS4ERR_BAD_STATEID`, which is rule 1's answer to a stateid never issued, and no stateid
-  can be issued before E9's `OPEN`. E9 extends that one function with the rest. A `decision:`
+  can be issued before E9's `OPEN`. E9's T9.3 owns that one function and extends it with the rest. A `decision:`
   marker at the function names, in the code's own terms, what overturns it: stateids issued by
   `OPEN`.
 - **D4. The owner scheme is picked by the call's proof kind.** `Spell` takes no `Call`, so
@@ -972,7 +974,7 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
    the row lands in this epic's `errors.go` with T5.1's error rows, at no extra figure.
 5. **Where the plan and the RFC's rows disagree, proposed as a plan edit in this document's pull
    request.** The plan names RFC 21 §13's "§8.1 ctime" in this epic's done-when, but the row asserts
-   an NFSv3 `GETATTR` after an SMB client's write, so it is E16's, as E4's §1.2 also has it; this
+   an NFSv3 `GETATTR` after an SMB client's write, so it is E16's (T16.6), as E4's §1.2 also has it; this
    epic keeps the NFSv4 check as R28's. The plan gives delete pending and the read-only marker to
    E9, and §9.1 to E4, but this epic's operations meet `ErrDeletePending` and the read-only marker's
    `ErrAccess`, and serve NFSv4's `WRITE` and `COMMIT`, so their rows and stability mapping are here
