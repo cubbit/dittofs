@@ -50,8 +50,11 @@ var frozenExports = []string{
 	"func (Table).WithMetrics(m *metrics.Registry) Table",
 	"func (Table).Reads(s entity.Setting) (prefix string, ok bool)",
 	"type Snapshot struct{}",
+	"type SecretUse struct{Section string; Key string; Scope entity.SettingScope; " +
+		"Kind entity.SecretKind; Ref entity.SecretRef}",
 	"func (*Snapshot).Keep(section string, prev *Snapshot) *Snapshot",
 	"func (*Snapshot).Stored(section string) bool",
+	"func (*Snapshot).Secrets() []SecretUse",
 	"func RefusedRows(err error) []entity.SettingKey",
 	"func Read(ctx context.Context, r entity.SettingsReader, " +
 		"table Table, node entity.NodeID) (*Snapshot, map[string]error, error)",

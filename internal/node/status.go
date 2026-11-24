@@ -111,6 +111,12 @@ func (n *Node) statusTurn(ctx context.Context) {
 	} else {
 		w.fault.summarize(ctx, n, stepStatus)
 	}
+	// The status the store last committed is the one the node reports: once
+	// it holds a reference at the version the pass read, the old versions
+	// below it may go (RFC 13 §7).
+	if w.last != nil && bytes.Equal(b, w.last) {
+		n.pruneSecrets(ctx, s.Secrets)
+	}
 	if w.turned != nil {
 		w.turned(s, wrote)
 	}
@@ -128,10 +134,8 @@ func (n *Node) statusTurn(ctx context.Context) {
 // lists every change it did not apply. Report per-record positions if a
 // component ever applies records out of order.
 //
-// ponytail: the secret versions are identity's keytab alone, as no other
-// component holds a secret's versions yet; and the claim generation is zero,
-// as no namespace is claimed. Fill each with the component that first holds
-// or claims it.
+// ponytail: the claim generation is zero, as no namespace is claimed. Fill
+// it with the component that first claims one.
 func (n *Node) nodeStatus() entity.NodeStatus {
 	pos, refused, pending := n.rec.report()
 	for _, kind := range n.runner.refusedKinds() {
@@ -144,7 +148,7 @@ func (n *Node) nodeStatus() entity.NodeStatus {
 		Principals:     pos.Principals,
 		Refused:        refused,
 		RestartPending: pending,
-		Secrets:        n.identitySecrets(),
+		Secrets:        n.statusSecrets(),
 		Conditions:     encodeConditions(n.health.Conditions(nil)),
 		Adapters:       []entity.AdapterStatus{n.nfs.status(), n.smb.status()},
 	}
@@ -269,8 +273,19 @@ var (
 	generationLag      = prometheus.NewDesc("dittofs_config_generation_lag_seconds", "How long the counter has been read above the position reconciled through.", []string{"kind"}, nil)
 )
 
+// secretsBehind is the count of secret references the node reports at a
+// version below the store's current one (RFC 13 §8), named by none of them.
+var secretsBehind = prometheus.NewDesc(
+	"dittofs_config_secrets_behind",
+	"Secret references this node holds at an older version than the current one.",
+	nil,
+	nil,
+)
+
 func (nodeSeries) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{reconciledPosition, reconcileErrors, restartPending, generationLag} {
+	for _, d := range []*prometheus.Desc{
+		reconciledPosition, reconcileErrors, restartPending, secretsBehind, generationLag,
+	} {
 		ch <- d
 	}
 }
@@ -284,4 +299,7 @@ func (s nodeSeries) Collect(ch chan<- prometheus.Metric) {
 	}
 	_, _, pending := s.n.rec.report()
 	ch <- prometheus.MustNewConstMetric(restartPending, prometheus.GaugeValue, float64(len(pending)))
+
+	ch <- prometheus.MustNewConstMetric(
+		secretsBehind, prometheus.GaugeValue, float64(s.n.secretsBehind()))
 }
