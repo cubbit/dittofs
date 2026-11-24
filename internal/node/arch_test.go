@@ -418,11 +418,17 @@ func enginewireImporters(_ string, files []fileImports) ([]string, error) {
 	return bad, nil
 }
 
-// cliRoots are where the CLI's dependency closure starts: the binary's main
+// cliRoots are where the CLI's dependency closure starts, with every package
+// under pkg/node/apiv1, whose imports the rule also bounds: the binary's main
 // package, not every package under it, so a package only tests import, such
 // as the shared suite over the harness, is not counted; and cliAllowed what
 // of this module it may reach: neither the metadata or block stores, nor the
 // control-plane server, nor anything that reads the host's bootstrap.
+//
+// decision: the closure follows what the binary links, from its main
+// package, so a package under cmd/dfsctl that main never imports is not
+// checked: the binary cannot reach what it does not link. Overturned if
+// another binary is ever built from a package under cmd/dfsctl.
 var (
 	cliRoots   = []string{"cmd/dfsctl", "pkg/node/apiv1", "pkg/node/apiv1/client"}
 	cliAllowed = []string{"cmd/dfsctl", "pkg/node/apiv1", "pkg/node/apiv1/client", "internal/cli"}
@@ -445,7 +451,7 @@ func cliClosure(_ string, files []fileImports) ([]string, error) {
 	var bad, queue []string
 	seen := map[string]bool{}
 	for dir := range pkgs {
-		if slices.Contains(cliRoots, dir) {
+		if slices.Contains(cliRoots, dir) || under(dir, "pkg/node/apiv1") {
 			seen[dir] = true
 			queue = append(queue, dir)
 		}

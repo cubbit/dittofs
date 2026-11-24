@@ -70,12 +70,8 @@ func toYAML(v any) ([]byte, error) {
 		return nil, err
 	}
 	var out bytes.Buffer
-	enc := yaml.NewEncoder(&out)
-	enc.SetIndent(2)
-	if err := enc.Encode(tree); err != nil {
-		return nil, err
-	}
-	return out.Bytes(), enc.Close()
+	err = output.PrintYAML(&out, tree)
+	return out.Bytes(), err
 }
 
 // BoolToYesNo converts a boolean to "yes" or "no" string.

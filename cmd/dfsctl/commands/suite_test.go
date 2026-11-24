@@ -11,5 +11,7 @@ import (
 // The shared suite's rows, each through a root built in this process, over
 // a node the harness starts.
 func TestSuiteInProcess(t *testing.T) {
-	clisuite.Run(t, clisuite.InProcess(cmdutil.Env{ConfigPath: filepath.Join(t.TempDir(), "dfsctl", "config.json")}), clisuite.Start(t))
+	clisuite.Run(t, func(t *testing.T) clisuite.Runner {
+		return clisuite.InProcess(cmdutil.Env{ConfigPath: filepath.Join(t.TempDir(), "dfsctl", "config.json")})
+	}, clisuite.Start(t))
 }

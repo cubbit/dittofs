@@ -31,6 +31,9 @@ func Resolve[S, T any](cmd *cobra.Command, r client.Resource[S, T], kind string,
 	if id, _ := cmd.Flags().GetString("id"); id != "" {
 		return id, nil
 	}
+	if len(args) != 1 {
+		return "", fmt.Errorf("%s: name the %s by its name or by --id, exactly one", cmd.CommandPath(), kind)
+	}
 	name := args[0]
 	var ids []string
 	for res, err := range r.List(cmd.Context(), url.Values{"name": {name}}) {

@@ -172,11 +172,13 @@ this epic's part is that every command reaches the API through that client and n
   prefix. No marker. Prior art: kubectl takes names only (from memory).
 - **D3, the `412` diff is of the spec as YAML.** On `412` the command reads the resource again and
   prints a unified diff, through `github.com/pmezard/go-difflib` (already in `go.mod`), between the
-  spec it read and the one the server now holds, and exits non-zero. The write is a JSON merge
-  patch of what the command changed in the spec, under the `ETag` it read, since a share's route
-  takes `PATCH` only and a field the command empties must be cleared, not left as it was; YAML, the
-  diff's and `-o yaml`'s, goes through the spec's JSON, so its keys are the API's field names. No
-  marker. Prior art: `kubectl apply`'s conflict report (from memory).
+  spec it read and the one the server now holds, and exits non-zero. The write is the route's:
+  `cmdutil.ByPatch` sends a JSON merge patch of what the command changed, so a field it empties is
+  cleared rather than left as it was (a share's route takes `PATCH` only), `cmdutil.ByPut` the
+  whole spec (a netgroup's takes `PUT` only), and a write that may start an operation, a user's,
+  passes its own `cmdutil.Write`, answering `client.Result`; a change that changes nothing writes
+  nothing. YAML, the diff's and `-o yaml`'s, goes through the spec's JSON, so its keys are the API's
+  field names. No marker. Prior art: `kubectl apply`'s conflict report (from memory).
 - **D4, every change to the credentials file runs under the operating system's lock on a file
   beside it.** `credentials.Update(ctx, path, waiting, fn)` opens `<config>.lock` and takes an
   exclusive lock on it without waiting (`flock(LOCK_EX|LOCK_NB)` on Unix, `LockFileEx` with
@@ -212,7 +214,8 @@ this epic's part is that every command reaches the API through that client and n
 - **D8, the shared suite is a package outside the binary.** `cmd/dfsctl/internal/clisuite` holds the
   command rows and `Run(t, Runner, Server)`, where a `Runner` takes arguments and returns stdout,
   stderr and the exit status; only tests import it, so `go list -deps ./cmd/dfsctl` never names it.
-  E6's tests pass an in-process `NewRoot` against the harness; E7 passes a child `dfsctl`. Each row
+  E6's tests pass an in-process `NewRoot` against the harness; E7 passes a child `dfsctl`, so E7's
+  test of it lives under `cmd/dfsctl`, the only tree that may import an internal package there. Each row
   is marked harness-only (it advances the injected clock or writes through the store) or child-safe;
   E7 runs the child-safe rows. Consumed by E7. No marker.
 - **D9, a settings-backed write is tested as its refusal.** Until X3 hands in the settings table,
@@ -349,8 +352,9 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   `cmdutil.Wait`; `operation get|list|wait|cancel`; `-o table|json|yaml` through
   `internal/cli/output`; `clisuite` with its runner and its first rows (D8); a pause hook in
   `cmdutil.Update`, between its read and its write, set per instance from `export_test.go`.
-  `clisuite.Run(t, Runner, Server)` signs the runner in to `Server`'s address as its admin
-  account; `Server.Harness` is nil for a server the test did not start, which skips a harness-only
+  `clisuite.Run(t, func(*testing.T) Runner, Server)` gives each row a runner of its own over a
+  credentials file of its own, signed in to `Server`'s address as its admin account, so a row that
+  ends a session ends none of another's; `Server.Harness` is nil for a server the test did not start, which skips a harness-only
   row, and `Server.Settle` waits for an operation to end, advancing the injected clock only when
   there is one, so a row over an ended operation stays child-safe. Consumed by T6.4–T6.6 and E7.
 - **Acceptance criteria:**

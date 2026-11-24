@@ -8,7 +8,6 @@ import (
 	"net/url"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/spf13/cobra"
 )
 
@@ -110,7 +109,7 @@ func newListCmd(env cmdutil.Env) *cobra.Command {
 				}
 				ops = append(ops, op)
 			}
-			return cmdutil.PrintOutput(cmd, []apiv1.Operation(ops), len(ops) == 0, "No operations.", ops)
+			return cmdutil.PrintOutput(cmd, ops, len(ops) == 0, "No operations.", ops)
 		},
 	}
 	cmd.Flags().String("state", "", "Only the operations not ended in this state (pending|running|cancelling)")

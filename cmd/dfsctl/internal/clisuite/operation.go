@@ -19,7 +19,7 @@ import (
 func operationRows() []row {
 	return []row{
 		{name: "operation get -o json and -o yaml decode to the operation", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
-			op := s.Settle(t, c, Operation(t, c))
+			op := s.Settle(t, c, startOperation(t, c))
 			want, err := c.Operation(t.Context(), op.ID)
 			if err != nil {
 				t.Fatalf("read operation %s: %v", op.ID, err)
@@ -36,7 +36,7 @@ func operationRows() []row {
 			}
 		}},
 		{name: "operation list -o table heads its declared columns", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
-			op := s.Settle(t, c, Operation(t, c))
+			op := s.Settle(t, c, startOperation(t, c))
 			out := mustRun(t, run, "operation", "list")
 			lines := strings.Split(strings.TrimSpace(out), "\n")
 			if got, want := strings.Fields(lines[0]), (cmdutil.Operations{}).Headers(); !reflect.DeepEqual(got, want) {
@@ -47,7 +47,7 @@ func operationRows() []row {
 			}
 		}},
 		{name: "operation wait of an ended operation prints it and exits 0", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
-			op := s.Settle(t, c, Operation(t, c))
+			op := s.Settle(t, c, startOperation(t, c))
 			out := mustRun(t, run, "operation", "wait", op.ID, "-o", "json")
 			got, err := decode("json", out)
 			if err != nil || got.ID != op.ID || got.State != apiv1.OpSucceeded {
@@ -55,7 +55,7 @@ func operationRows() []row {
 			}
 		}},
 		{name: "operation cancel of a kind with no cancel is refused", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
-			op := s.Settle(t, c, Operation(t, c))
+			op := s.Settle(t, c, startOperation(t, c))
 			_, errOut, status := run(t.Context(), "operation", "cancel", op.ID)
 			if status == 0 || !strings.Contains(errOut, string(apiv1.CodeNotCancellable)) {
 				t.Errorf("operation cancel %s: status %d, stderr %q, want non-zero and %s", op.ID, status, errOut, apiv1.CodeNotCancellable)

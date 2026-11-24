@@ -33,8 +33,9 @@ type Runner func(ctx context.Context, args ...string) (stdout, stderr string, st
 func InProcess(env cmdutil.Env) Runner {
 	return func(ctx context.Context, args ...string) (string, string, int) {
 		var out, errOut bytes.Buffer
-		env.Out, env.Err = &out, &errOut
-		status := commands.Run(ctx, env, args)
+		e := env
+		e.Out, e.Err = &out, &errOut
+		status := commands.Run(ctx, e, args)
 		return out.String(), errOut.String(), status
 	}
 }
@@ -104,8 +105,8 @@ func (s Server) Client(t *testing.T) *client.Client {
 	return c
 }
 
-// session is a session's access token, which it never refreshes: no row
-// advances the clock past its lifetime.
+// session is a session's access token, which it never refreshes: a row's
+// session outlives the row, which advances the node's clock by seconds.
 type session string
 
 func (k session) Token(context.Context) (string, error) { return string(k), nil }
@@ -113,10 +114,29 @@ func (session) Refresh(context.Context, string) (string, error) {
 	return "", errors.New("clisuite: the suite's own session is not refreshed")
 }
 
-// Settle waits until op ends and returns it as it ended. On a harness's
-// node it advances the node's clock a second at a time meanwhile, since
-// nothing else moves that clock; on another server the operation ends on
-// its own.
+// Await returns what done answers, failing the test as what when it has
+// not answered a minute on. On a harness's node it advances the node's
+// clock a second at a time meanwhile, since nothing else moves that clock;
+// on another server what done waits for happens on its own.
+func Await[T any](t *testing.T, s Server, what string, done <-chan T) T {
+	t.Helper()
+	deadline := time.After(time.Minute)
+	for {
+		select {
+		case v := <-done:
+			return v
+		case <-deadline:
+			t.Fatalf("clisuite: %s: not ended a minute on", what)
+		case <-time.After(10 * time.Millisecond):
+			// Polling done's answer, a second of the node's clock a poll.
+			if s.Harness != nil {
+				s.Harness.Clock().Advance(time.Second)
+			}
+		}
+	}
+}
+
+// Settle waits until op ends and returns it as it ended.
 func (s Server) Settle(t *testing.T, c *client.Client, op apiv1.Operation) apiv1.Operation {
 	t.Helper()
 	type waited struct {
@@ -128,28 +148,16 @@ func (s Server) Settle(t *testing.T, c *client.Client, op apiv1.Operation) apiv1
 		o, err := c.Wait(t.Context(), op)
 		done <- waited{o, err}
 	}()
-	deadline := time.After(time.Minute)
-	for {
-		select {
-		case w := <-done:
-			if w.err != nil {
-				t.Fatalf("clisuite: wait for operation %s: %v", op.ID, w.err)
-			}
-			return w.op
-		case <-deadline:
-			t.Fatalf("clisuite: operation %s still %s a minute on, want it ended", op.ID, op.State)
-		case <-time.After(10 * time.Millisecond):
-			// Polling the wait's end, a second of the node's clock a poll.
-			if s.Harness != nil {
-				s.Harness.Clock().Advance(time.Second)
-			}
-		}
+	w := Await(t, s, "the wait for operation "+op.ID, done)
+	if w.err != nil {
+		t.Fatalf("clisuite: wait for operation %s: %v (last read %s)", op.ID, w.err, w.op.State)
 	}
+	return w.op
 }
 
-// Operation starts an operation on s, a group's deletion, and returns it as
-// the deletion answered it.
-func Operation(t *testing.T, c *client.Client) apiv1.Operation {
+// startOperation starts an operation on the server, a group's deletion,
+// and returns it as the deletion answered it.
+func startOperation(t *testing.T, c *client.Client) apiv1.Operation {
 	t.Helper()
 	g, err := c.Groups().Create(t.Context(), apiv1.GroupSpec{Name: "g-" + uuid.NewString()[:8]})
 	if err != nil {
@@ -170,17 +178,21 @@ type row struct {
 	run         func(t *testing.T, run Runner, s Server, c *client.Client)
 }
 
-// Run signs run in to s and runs every row as a subtest, a harness-only
-// row only when s has a harness.
-func Run(t *testing.T, run Runner, s Server) {
-	s.Login(t, run)
-	c := s.Client(t)
+// Run runs every row as a subtest against s, a harness-only row only when s
+// has a harness, each through a runner newRunner makes for it, over a
+// credentials file of its own, signed in to s, and with a session of its
+// own for its setup and reads, so a row that ends a session ends none of
+// another row's. Rows share the server, so each names what it creates
+// uniquely.
+func Run(t *testing.T, newRunner func(*testing.T) Runner, s Server) {
 	for _, r := range rows() {
 		t.Run(r.name, func(t *testing.T) {
 			if r.harnessOnly && s.Harness == nil {
 				t.Skip("harness-only: the server is not a node the test started")
 			}
-			r.run(t, run, s, c)
+			run := newRunner(t)
+			s.Login(t, run)
+			r.run(t, run, s, s.Client(t))
 		})
 	}
 }
