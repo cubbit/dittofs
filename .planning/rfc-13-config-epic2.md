@@ -150,7 +150,7 @@ set for it.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R12 | The roles are `protocol` and `storage`, both; one alone refuses the start | MUST | RFC 13 §2.2 (roles row); RFC 15 §2.2 | T2.4 |
-| R13 | Both roles' wrapping keys are named, and their key IDs differ; a copied key file or a link to one is the same key and refuses | MUST | RFC 13 §2.2 (wrapping-key row), §7 ("Two wrapping keys": both named), Appendix C ("the two roles name two different keys", #4486); what different means is D9's | T2.4 |
+| R13 | Both roles' wrapping keys are named, and their key IDs differ, compared without unwrapping the keys: a local key file's `master_key_id`, a KMIP key's `KeyUID` with its endpoint, since a uid is scoped to its server (D9); a copied key file or a link to one is the same key and refuses | MUST | RFC 13 §2.2 (wrapping-key row), §7 ("Two wrapping keys": both named), Appendix C ("the two roles name two different keys", #4486); what different means is D9's | T2.4 |
 | R14 | An `api.listen` or `metrics.listen` address off loopback (an IP outside `127.0.0.0/8` and `::1`, so a host name and `0.0.0.0` are off loopback, though a name is refused first as not an IP literal) needs `api.tls.cert_file` and `api.tls.key_file` | MUST | RFC 23 §5.3; RFC 13 Appendix C (#4486) | T2.4 |
 | R33 | A repeated role in `node.roles` is refused, not deduplicated | MUST | RFC 13 Appendix C (node.roles, #4486) | T2.4 |
 | R34 | The state directory is `$STATE_DIRECTORY`, else `$XDG_STATE_HOME/dittofs`, else `$HOME/.local/state/dittofs`, and with none of the three set the start refuses, naming `HOME`, rather than use a directory under the temporary directory, which another user could have made first; the runtime directory is `$RUNTIME_DIRECTORY`, else `$XDG_RUNTIME_DIR/dittofs`, else a directory under the state directory that only the node's user owns, mode `0700`, all read from `environ` (D2), a colon-separated value read for its first entry, and the defaults of `metadata.badger.path`, `logging.output` and `api.socket` follow them; a state directory that exists and is a symlink, owned by neither the node's user nor root, or writable by others refuses the start, and so does a runtime directory that exists and is a symlink, is not owned by the node's user, or is writable by group or others, since it holds `dfs.sock`; a relative value of any of these variables, or a relative first entry of a list, refuses the start too, naming the variable, since it would depend on the directory the process started from | MUST | RFC 13 Appendix C ("The state and runtime directories", #4486); RFC 13 epic 1's R22 (E2 makes the fallback directory) | T2.4 |
@@ -281,17 +281,23 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
   `pkg/config`'s loader keeps its path search under the new name, so "config"
   names one thing, and its decoder is D10's. An unknown key and a v1 key refuse the start; the v1 table (T2.3) names each
   replacement. No marker.
-- **D9, two different keys means two different key IDs.** RFC 13's Appendix C has both roles name
-  two different keys (the `keys.<role>.kind` row) and `dfs config validate` check the rule (#4486),
-  but says no more about what different means. A copied key file, or a link to one, holds the same
-  key, so two roles on it pass a check by file or path and collapse the split without a refusal.
-  `Validate` loads both keys and compares their current key IDs, as `keyprovider` reports them, so a
-  copy and a link to one are the same key and refuse. The local provider reads
-  `DITTOFS_ENCRYPTION_PASSPHRASE` with `os.Getenv` (`newLocalProvider`), which would make `Validate`
-  read the process's environment against D2, so T2.4 adds `keyprovider.NewProviderWithPassphrase(ctx,
-  cfg, passphrase)`, which `NewProvider` calls with `os.Getenv`'s value, and `Validate` calls it with
-  the value in its `environ`. `Config` gains no field, so no passphrase is ever serialised. No
-  marker.
+- **D9, two different keys means two different key IDs, compared without unwrapping the keys.**
+  RFC 13's Appendix C has both roles name two different keys (the `keys.<role>.kind` row) and
+  `dfs config validate` check the rule (#4486), but says no more about what different means. A
+  copied key file, or a link to one, holds the same key, so two roles on it pass a check by
+  file or path and collapse the split without a refusal. `Validate` compares the two roles'
+  key IDs without unwrapping the keys: a local key file's `master_key_id`, which its body
+  records beside the wrapped key, and a KMIP key's `KeyUID` with its endpoint, since a uid is
+  scoped to its server and two servers can use one uid. A copy and a link to one carry the
+  same ID, so the comparison refuses them as the same key, and `dfs config validate` and
+  `dfs config show` run no argon2id pass (m=64 MiB per local key file) and touch no key
+  server, needing neither the passphrase nor a reachable key server. The unwrap stays in the
+  start, which has the passphrase and the endpoint anyway. `keyprovider.NewProvider` reads
+  `DITTOFS_ENCRYPTION_PASSPHRASE` with `os.Getenv`, which would read the process's environment
+  against D2, so the start calls `keyprovider.NewProviderWithPassphrase(ctx, cfg,
+  passphrase)`, which takes the passphrase from its caller: the value in the start's `environ`,
+  where `NewProvider` passes `os.Getenv`'s. `Config` gains no field, so no
+  passphrase is ever serialised. No marker.
 - **D10, the decode is strict.** RFC 13 §6 refuses a value of the wrong type and never replaces
   it, but viper's decoder runs with `WeaklyTypedInput` on (viper v1.21.0, `viper.go:988`), which
   turns a scalar into a one-element list, `"1"` or `"t"` into `true` and a number into a string,
@@ -495,8 +501,12 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
 - **Track:** A. **Depends on:** T2.1.
 - **Covers:** R12, R13, R14, R33, R34.
 - **Deliverables:** `Bootstrap.Validate`: both roles, a repeated one refused; both wrapping keys
-  named, loaded through `keyprovider.NewProviderWithPassphrase`, which takes the passphrase from
-  `Validate`'s `environ` and not from the process (D9), and their current key IDs compared; certificate and key when
+  named, and their key IDs compared without unwrapping the keys (D9): a local key file's
+  `master_key_id`, read from its body, and a KMIP key's `KeyUID` with its endpoint, so `Validate`
+  runs no argon2id pass and touches no key server and the passphrase plays no part in it; the
+  unwrap is not `Validate`'s, but the start's, through
+  `keyprovider.NewProviderWithPassphrase`, which takes the passphrase from the start's `environ`
+  and not from the process (D9); certificate and key when
   an `api.listen` or `metrics.listen` address is not loopback; the two directories resolved from
   `environ`, the existing state directory and the existing runtime directory checked (R34); `MakeRuntimeDir`, which makes the runtime fallback with
   mode `0700` and which `dfs start` calls after its refusals and before the socket binds, never `Validate`; RFC 23's T4.3 binds `dfs.sock` in it.
@@ -504,14 +514,17 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
 - **Tests:** `roles: [storage]` and `roles: [protocol, protocol]` each refuse (the second catches a
   comparison that dedups a repeated role); one role's key missing refuses; two roles naming one key
   file, then a copy of it, then a symbolic link to it, each refuses (catches a check by path rather
-  than by key ID); `api.listen: 0.0.0.0:8080`, `[::]:8080` and `metrics.listen: 0.0.0.0:9090` with no
+  than by key ID); two KMIP roles naming one `key_uid` at one endpoint refuse, and the same
+  `key_uid` at two endpoints passes (catches a comparison that ignores the endpoint, where two
+  servers can use one uid); `api.listen: 0.0.0.0:8080`, `[::]:8080` and `metrics.listen: 0.0.0.0:9090` with no
   certificate refuse, so does an `api.listen` list whose first entry is loopback and second is not (catches a check that reads the first entry alone), and `127.0.0.1:8080` passes; `api.listen: localhost:8080` is refused, a listen
   host being an IP literal, which catches a check that resolves names, since one that did would see
-  loopback here and let the start pass. Key files are real `keyprovider` local files under
-  `t.TempDir()`. A test calls `Validate` with the passphrase in `environ` on a host where
-  `DITTOFS_ENCRYPTION_PASSPHRASE` is unset, and the keys load, with `t.Parallel()`; the same call
-  with no passphrase in `environ` refuses whatever the host's variable holds (catches a provider
-  that reads the process's environment); a state directory that is a symlink, one writable by
+  loopback here and let the start pass. Key files are read for their IDs and never unwrapped, so no test runs an argon2id
+  pass: two passphrase key files compare their IDs with no
+  `DITTOFS_ENCRYPTION_PASSPHRASE` in `environ` and no key server reachable, `t.Parallel()`
+  (catches a comparison that grew an unwrap, which only a start pays for, and one that grew a
+  key server call), a local key file that cannot be read and one whose body names no ID each refuse
+  (catches a comparison that takes silence for identity); a state directory that is a symlink, one writable by
   others and one owned by another user each refuse, `STATE_DIRECTORY`, `XDG_STATE_HOME` and `HOME` given in `environ` choose the directory (catches a
   lookup that reads the process's environment), `STATE_DIRECTORY=/s1:/s2` resolves to `/s1`, asserted on the resolved path since neither directory need exist (catches a lookup that takes the whole value), and so does `RUNTIME_DIRECTORY=/r1:/r2` to `/r1`, a state directory owned by root loads (catches a check that accepts the node's user alone), a symlink planted at the fallback runtime path refuses (R34), a runtime directory writable by group, and one owned by another user, each refuse (catches a check of the symlink alone), with none of `STATE_DIRECTORY`, `XDG_STATE_HOME` and `HOME` in `environ`, and the process's own `HOME` empty, `Validate` and `MakeRuntimeDir` each refuse naming `HOME` (catches a fallback to the temporary directory), a relative value of each of the five variables, and a relative first entry of a list, each refuse naming the variable (catches a path that depends on the directory the process started from), and `MakeRuntimeDir` makes the fallback mode
   `0700`.
@@ -569,7 +582,11 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   `show` prints the file it read, both directories and the socket path; on a file setting `metadata.foundationdb.tls.cert_file` it prints the path and never the
   file's content; `show` on a file with one key set and the rest defaulted prints `file` for the
   first and `default` for the others, and a key set by a variable prints the variable's name, all
-  through the `Load` path the start uses (catches a `show` with its own precedence logic); `DITTOFS_METADATA_BADGER_PATH=/s3cr3t/badger` set, and `show`'s output holds the variable's name and never `s3cr3t` (catches a `show` that prints an environment value); `validate` over a file whose runtime directory does not exist leaves no directory behind (R34: the start makes the fallback, `validate` starts nothing);
+  through the `Load` path the start uses (catches a `show` with its own precedence logic); `show`
+  on a bootstrap whose two roles name one passphrase key file, with no
+  `DITTOFS_ENCRYPTION_PASSPHRASE` in the environment, prints the whole bootstrap (catches a
+  `show` that grows a key load, which would pay the passphrase and the argon2id pass that
+  neither `show` nor D9's ID comparison needs); `DITTOFS_METADATA_BADGER_PATH=/s3cr3t/badger` set, and `show`'s output holds the variable's name and never `s3cr3t` (catches a `show` that prints an environment value); `validate` over a file whose runtime directory does not exist leaves no directory behind (R34: the start makes the fallback, `validate` starts nothing);
   `schema`'s property set equals Appendix C's keys (catches a field added without its schema).
 
 ### T2.8 The version gate
@@ -663,7 +680,9 @@ The least certain estimates are T2.6, whose launchers and guides are known only 
 ## 9. Open points
 
 - **What "two different keys" means is D9's.** RFC 13 has both roles name two different keys but
-  leaves "different" unsaid, so this epic reads it as different key IDs, a copy or a link to a key
+  leaves "different" unsaid, so this epic reads it as different key IDs, compared without
+  unwrapping the keys (a local key file's `master_key_id`, a KMIP key's `KeyUID` with its
+  endpoint), a copy or a link to a key
   file being the same key. RFC 13 gains the sentence, or the rule stays this epic's.
 - **No epic declares the namespace setting for the block format version (D12).** RFC 4's plan
   declares the key when it runs, and a deferral ledger row carries it. The gate gains the

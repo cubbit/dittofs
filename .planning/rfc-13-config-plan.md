@@ -1160,7 +1160,8 @@ value; D7's drift test passes.
   `docs/guide/cli.md` regenerated.
 - The roles flag on `Bootstrap`, and `Load` refusing a value other than both roles (RFC 13 §2.2,
   RFC 15 §2.2); and `Load` refusing a bootstrap whose two wrapping keys are not both present, or
-  whose key IDs, as `keyprovider` reports them once loaded, are the same, since RFC 13 §7's role
+  whose key IDs are the same, compared without unwrapping the keys: a local key file's
+  `master_key_id`, a KMIP key's `KeyUID` with its endpoint (E2's D9), since RFC 13 §7's role
   split would collapse; a copied key file or a symbolic link to one is the same key.
 - Kubernetes' service links allowed by name and value shape, a bootstrap key still winning (D7),
   with a test feeding `checkEnviron` the full set a pod gets for a CR named `dittofs`, its `-api`,
