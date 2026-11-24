@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -72,7 +73,7 @@ func TestWiredShareCreateWithItsCommitFaulted(t *testing.T) {
 				outcomes[rec.Outcome]++
 			}
 		}
-		if want := map[string]int{"refused: unavailable": 1}; !mapsEqual(outcomes, want) {
+		if want := map[string]int{"refused: unavailable": 1}; !maps.Equal(outcomes, want) {
 			t.Errorf("audit records of the two faulted creates, by outcome: %v, want %v: the first refusal alone, the second's record unwritable", outcomes, want)
 		}
 
@@ -85,18 +86,6 @@ func TestWiredShareCreateWithItsCommitFaulted(t *testing.T) {
 			t.Errorf("shares bound after a full reconcile: %v, want %v, no binding for either faulted create", got, bound)
 		}
 	})
-}
-
-func mapsEqual(a, b map[string]int) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
 }
 
 // §2.2 order, its API clause: an operation readable before Stop reads
@@ -327,11 +316,22 @@ func TestWiredOperatorReachesNoAdminCredential(t *testing.T) {
 				t.Errorf("the operator's %s %s: refused naming %s, want the route's refusal, naming no field", c.method, c.path, p.Field)
 			}
 		}
-		// An operator holds these routes: what each reaches is checked by the
-		// versions below, not by its answer.
-		w.send(t, http.MethodPut, "/api/v1/stores/"+uuid.UUID(storeA).String()+"/credential", w.operator.token,
-			map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("taken over")}}, "If-None-Match", "*")
-		w.send(t, http.MethodPost, "/api/v1/auth/password", w.operator.token, apiv1.PasswordChange{Current: adminPassword, New: "taken over"})
+		// An operator holds these routes. The store credential's PUT is
+		// refused today, as asserted, so the row fails the day it applies and
+		// needs a write that does. The password change is an operator's own,
+		// with its current password: it applies, to that operator's record,
+		// and the versions below show it reached nothing else.
+		wantStatus(t, "the operator's PUT of a store credential", w.send(t, http.MethodPut, "/api/v1/stores/"+uuid.UUID(storeA).String()+"/credential", w.operator.token,
+			map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("taken over")}}, "If-None-Match", "*"), http.StatusNotFound, codeNotFound)
+		const opPassword = "the operator's password"
+		op := w.h.Account(t, "changing-operator", opPassword, entity.RoleOperator)
+		opBefore := versionOf(t, w.authNode, w.stored(t, op).Password)
+		if r := w.send(t, http.MethodPost, "/api/v1/auth/password", w.tokens(t, "changing-operator", opPassword).Access, apiv1.PasswordChange{Current: opPassword, New: "taken over"}); r.status != http.StatusOK {
+			t.Errorf("the operator's change of its own password: answered %d %s, want 200", r.status, r.body)
+		}
+		if got := versionOf(t, w.authNode, w.stored(t, op).Password); got == opBefore {
+			t.Errorf("the operator's password version after its change: %d, want it changed from %d", got, opBefore)
+		}
 
 		after := w.stored(t, w.admin.p)
 		if after.Disabled != before.Disabled || after.Email != before.Email || after.Generation != before.Generation {
