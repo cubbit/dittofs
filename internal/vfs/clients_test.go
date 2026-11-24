@@ -1030,6 +1030,7 @@ func TestEveryOpenStateErrorIsMapped(t *testing.T) {
 		{openstate.ErrClientBusy, state(vfs.StateClientBusy)},
 		{openstate.ErrNoRecall, state(vfs.StateNoRecall)},
 		{openstate.ErrNoReclaim, state(vfs.StateNoReclaim)},
+		{openstate.ErrNoGrace, state(vfs.StateNoGrace)},
 		{openstate.ErrReclaimConflict, state(vfs.StateReclaimConflict)},
 		{openstate.ErrBadSeqID, state(vfs.StateBadSeqID)},
 		{openstate.ErrLocksHeld, state(vfs.StateLocksHeld)},
