@@ -502,11 +502,16 @@ func settingsImports(_ string, files []fileImports) ([]string, error) {
 }
 
 // weakKeyCallers returns each non-test file under root that references
-// GenerateWeakKeyFile, whose key file protects its master key at the lowest
-// cost a key file may record: only a test, or a package of test helpers
-// whose name ends in test, may write one. That name is exempt only because
-// no binary under cmd, as built on the host, links a package of the module
-// whose name ends in test, so each one they link is reported too. It walks
+// keyprovider's GenerateWeakKeyFile, once per file, whose key file protects
+// its master key at the lowest cost a key file may record: only a test, or a
+// package of test helpers whose name ends in test, may write one. A name is
+// keyprovider's when it is selected from an import of keyprovider, under any
+// name, or is bare in a file that dot-imports it or in keyprovider itself;
+// a field, a method or a local of that name elsewhere is not. A name ending
+// in test is reserved for test helpers across the module: it is exempt only
+// because no binary under cmd, as built on the host, links a package of the
+// module whose name ends in test, so each one they link is reported too,
+// whether or not it references the function. It walks
 // root itself, ignoring files: it reads each file's references, not its
 // imports, so a shared import snapshot serves it nothing; its parse is of
 // whole files.
@@ -518,6 +523,8 @@ func settingsImports(_ string, files []fileImports) ([]string, error) {
 // ship and may link test helpers. Widen it when a shipped binary is added,
 // when the release turns cgo on or adds a GOOS, or when a file that ships
 // carries a GOARCH or tag constraint that could link a test-named package.
+// The build tags are set empty on go list's command line, which overrides a
+// -tags in GOFLAGS, from the environment or from go env -w alike.
 func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 	bad, err := linkedTestPackages(root)
 	if err != nil {
@@ -547,33 +554,63 @@ func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		// Every use of the name counts, a value as much as a call, qualified
-		// or bare through a dot-import; only the declaring package's own
-		// declaration of it is not a use.
-		ast.Inspect(f, func(n ast.Node) bool {
-			switch x := n.(type) {
-			case *ast.FuncDecl:
-				if x.Body != nil {
-					ast.Inspect(x.Body, func(n ast.Node) bool { return use(n, rel, &bad) })
-				}
-				return false
-			default:
-				return use(n, rel, &bad)
-			}
-		})
+		// Every use of keyprovider's name counts, a value as much as a call;
+		// only the declaring package's own declaration of it is not a use.
+		if refersToWeakKey(f, path.Dir(filepath.ToSlash(rel)) == "pkg/keyprovider") {
+			bad = append(bad, filepath.ToSlash(rel)+" references GenerateWeakKeyFile")
+		}
 		return nil
 	})
 	slices.Sort(bad)
 	return bad, err
 }
 
-// use reports n when it is the name GenerateWeakKeyFile: a selector's Sel
-// and a bare name are both identifiers, so each use is one report.
-func use(n ast.Node, rel string, bad *[]string) bool {
-	if id, ok := n.(*ast.Ident); ok && id.Name == "GenerateWeakKeyFile" {
-		*bad = append(*bad, filepath.ToSlash(rel)+" references GenerateWeakKeyFile")
+// keyproviderPath is the package that declares GenerateWeakKeyFile.
+const keyproviderPath = module + "pkg/keyprovider"
+
+// refersToWeakKey reports whether f uses keyprovider's GenerateWeakKeyFile:
+// selected from a name f imports keyprovider under, or bare when f
+// dot-imports it or, self, is keyprovider's own file.
+func refersToWeakKey(f *ast.File, self bool) bool {
+	names, bare := map[string]bool{}, self
+	for _, imp := range f.Imports {
+		if p, err := strconv.Unquote(imp.Path.Value); err != nil || p != keyproviderPath {
+			continue
+		}
+		switch {
+		case imp.Name == nil:
+			names["keyprovider"] = true
+		case imp.Name.Name == ".":
+			bare = true
+		default:
+			names[imp.Name.Name] = true
+		}
 	}
-	return true
+	found := false
+	var visit func(n ast.Node) bool
+	visit = func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncDecl:
+			if x.Body != nil {
+				ast.Inspect(x.Body, visit)
+			}
+			return false
+		case *ast.SelectorExpr:
+			if id, ok := x.X.(*ast.Ident); ok && names[id.Name] && x.Sel.Name == "GenerateWeakKeyFile" {
+				found = true
+			}
+			// Sel is a field or a method of whatever X is, never a bare name.
+			ast.Inspect(x.X, visit)
+			return false
+		case *ast.Ident:
+			if bare && x.Name == "GenerateWeakKeyFile" {
+				found = true
+			}
+		}
+		return !found
+	}
+	ast.Inspect(f, visit)
+	return found
 }
 
 // shippedGOOS are the systems the release builds dfs and dfsctl for.
@@ -588,7 +625,7 @@ func linkedTestPackages(root string) ([]string, error) {
 	}
 	seen := map[string]bool{}
 	for _, goos := range shippedGOOS {
-		cmd := exec.Command("go", "list", "-deps", "-f", "{{if and .Module .Module.Main}}{{.Name}} {{.Dir}}{{end}}", "./cmd/dfs", "./cmd/dfsctl")
+		cmd := exec.Command("go", "list", "-tags=", "-deps", "-f", "{{if and .Module .Module.Main}}{{.Name}} {{.Dir}}{{end}}", "./cmd/dfs", "./cmd/dfsctl")
 		cmd.Dir = abs
 		// The planted trees are modules of their own, outside any workspace.
 		// cmd.Environ sets PWD to cmd.Dir, so go list reports .Dir under abs
@@ -613,6 +650,20 @@ func linkedTestPackages(root string) ([]string, error) {
 		}
 	}
 	return slices.Collect(maps.Keys(seen)), nil
+}
+
+// The weak-key rule's link check builds dfs and dfsctl as the release does,
+// with no tags, whatever GOFLAGS the caller's environment holds: a package
+// linked only under a tag the caller sets is not reported.
+func TestWeakKeyLinkCheckIgnoresGOFLAGS(t *testing.T) {
+	t.Setenv("GOFLAGS", "-tags=weakkeytagged")
+	got, err := linkedTestPackages(filepath.Join("testdata", "arch", "weak-key"))
+	if err != nil {
+		t.Fatalf("the link check under GOFLAGS=-tags=weakkeytagged: %v", err)
+	}
+	if i := slices.IndexFunc(got, func(s string) bool { return strings.HasPrefix(s, "pkg/tagtest ") }); i >= 0 {
+		t.Errorf("the link check under GOFLAGS=-tags=weakkeytagged: got %q, want pkg/tagtest, linked only under that tag, not reported", got[i])
+	}
 }
 
 // Each import rule reports nothing over the module and exactly the violation
@@ -663,10 +714,12 @@ func TestImportRules(t *testing.T) {
 			}},
 		{"who writes a weak key file", weakKeyCallers, "weak-key",
 			[]string{
+				"internal/alias/alias.go references GenerateWeakKeyFile",
 				"internal/dot/dot.go references GenerateWeakKeyFile",
 				"internal/dotvalue/value.go references GenerateWeakKeyFile",
 				"internal/install/weak.go references GenerateWeakKeyFile",
 				"pkg/attest is named attest and linked into a binary",
+				"pkg/keyprovider/keyprovider.go references GenerateWeakKeyFile",
 				"pkg/store/store.go references GenerateWeakKeyFile",
 				"pkg/wintest is named wintest and linked into a binary",
 			}},
