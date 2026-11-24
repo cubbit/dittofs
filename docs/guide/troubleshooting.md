@@ -203,15 +203,8 @@ traffic even reaches the server. Apple confirmed this is "works as intended".
 
 **Solution - use dfsctl (handles this automatically):**
 
-The `dfsctl share mount` command automatically handles this by using `sudo -u $SUDO_USER`
-to mount as your user instead of root:
-
-```bash
-# This works - mount owned by your user, not root
-sudo dfsctl share mount --protocol smb export /mnt/share
-```
-
-**Alternative - mount to user directory without sudo:**
+`dfsctl share mount` runs `mount_smbfs` as you, never through `sudo`, so the mount
+is yours. Run dfsctl as yourself and mount to a directory you own:
 ```bash
 mkdir -p ~/mnt/share
 dfsctl share mount --protocol smb export ~/mnt/share
@@ -223,8 +216,8 @@ dfsctl share mount --protocol smb export ~/mnt/share
 sudo -u $USER mount_smbfs //user:pass@localhost:12445/export /mnt/share
 ```
 
-**Note:** This is a macOS-specific issue. On Linux, `dfsctl share mount` uses uid/gid
-options which work correctly.
+**Note:** This is a macOS-specific issue. On Linux, `dfsctl share mount` runs `mount.cifs`
+through `sudo` with your uid and gid, which work correctly.
 
 See [Known Limitations](faq.md#macos-mount-owner-only-access) for details.
 

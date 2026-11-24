@@ -144,18 +144,17 @@ suffix), see [Running on standard ports (production)](install.md#running-on-stan
 
 ### Using dfsctl (Recommended)
 
-`dfsctl share mount` handles platform-specific mount options automatically:
+`dfsctl share mount` handles platform-specific mount options automatically. Run it
+as yourself, not under `sudo`: it reads your login, and runs the mount command
+through `sudo` itself where that needs root (`--dry-run` prints the command):
 
 ```bash
-# macOS - Mount to user directory (recommended, no sudo needed)
+# macOS - mount_smbfs runs as you, so mount to a directory you own
 mkdir -p ~/mnt/dittofs
 dfsctl share mount --protocol smb export ~/mnt/dittofs
 
-# macOS - Mount to system directory (requires sudo)
-sudo dfsctl share mount --protocol smb export /mnt/smb
-
-# Linux - Mount with sudo (owner set to your user automatically)
-sudo dfsctl share mount --protocol smb export /mnt/smb
+# Linux - mount.cifs runs through sudo, the mount owned by your uid and gid
+dfsctl share mount --protocol smb export /mnt/smb
 
 # Unmount
 sudo umount /mnt/smb  # or: diskutil unmount ~/mnt/dittofs (macOS)
@@ -169,15 +168,8 @@ macOS restricts SMB mounts so that **only the mount owner can access files**, re
 Unix permissions. Even with 0777 permissions, non-owner users get "Permission denied". Apple
 confirmed this is "works as intended".
 
-**How dfsctl handles this**: When you run `sudo dfsctl share mount`, it automatically uses
-`sudo -u $SUDO_USER` to mount as your user (not root):
-
-```bash
-# Works correctly - mount owned by your user
-sudo dfsctl share mount --protocol smb export /mnt/share
-```
-
-**Alternative - mount without sudo** (to a user-owned directory):
+**How dfsctl handles this**: `dfsctl share mount` runs `mount_smbfs` as you, never
+through `sudo`, so the mount is yours. Mount to a directory you own:
 
 ```bash
 mkdir -p ~/mnt/dittofs

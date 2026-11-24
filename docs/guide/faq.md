@@ -474,7 +474,7 @@ carries a current timestamp.
 |--------|--------|
 | Handled by dfsctl | Apple security restriction - only mount owner can access |
 
-macOS restricts SMB mount access to the mount owner regardless of Unix permissions. When using `sudo dfsctl share mount`, it automatically uses `sudo -u $SUDO_USER` to mount as your user. See [SMB.md](smb.md) for workarounds.
+macOS restricts SMB mount access to the mount owner regardless of Unix permissions. `dfsctl share mount` runs `mount_smbfs` as you, never through `sudo`, so the mount is yours; run dfsctl as yourself, not under `sudo`. See [SMB.md](smb.md) for workarounds.
 
 ### Storage Backend Limitations
 

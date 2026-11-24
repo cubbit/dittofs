@@ -272,18 +272,19 @@ the convenience wrapper first, then the raw `mount` command for each version.
 ### The easy way: `dfsctl share mount`
 
 `dfsctl share mount` resolves the server's NFS port, picks the right options for
-your platform, and runs `mount` for you. The `--nfs-version` flag selects the
+your platform, and runs `mount` for you through `sudo`; run dfsctl itself as
+yourself, not under `sudo`, since it reads your login. The `--nfs-version` flag selects the
 protocol version (default **3**):
 
 ```bash
 # NFSv4.1 (recommended) — locking just works, no portmapper needed
-sudo dfsctl share mount my-share /mnt/point --protocol nfs --nfs-version 4.1
+dfsctl share mount my-share /mnt/point --protocol nfs --nfs-version 4.1
 
 # NFSv3 (the default if --nfs-version is omitted)
-sudo dfsctl share mount my-share /mnt/point --protocol nfs
+dfsctl share mount my-share /mnt/point --protocol nfs
 
 # NFSv4.2 — for sparse files / reflink
-sudo dfsctl share mount my-share /mnt/point --protocol nfs --nfs-version 4.2
+dfsctl share mount my-share /mnt/point --protocol nfs --nfs-version 4.2
 ```
 
 Accepted `--nfs-version` values are `3`, `4`, `4.0`, `4.1`, and `4.2`. The

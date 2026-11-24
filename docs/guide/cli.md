@@ -1809,9 +1809,12 @@ Mount a share on this host over NFS or SMB
 Mount a share at a mount point on this host, over NFS or SMB, from the server
 the current context names, on the port its adapter's record gives.
 
-The command runs the host's own mount command, which typically needs root.
-For SMB that command asks for the password itself; dfsctl never handles it.
---dry-run prints the command instead of running it.
+Run dfsctl as yourself, not under sudo: it reads your login, and runs the
+host's mount command through sudo itself where that needs root. A macOS SMB
+mount runs as you, since macOS lets only a mount's owner reach its files, and
+a Linux SMB mount is made for your uid and gid. For SMB the mount command asks
+for the password itself; dfsctl never handles it. --dry-run prints the
+command, sudo included, instead of running it.
 
 ```
 dfsctl share mount [share] <mountpoint> [flags]
@@ -1821,13 +1824,13 @@ dfsctl share mount [share] <mountpoint> [flags]
 
 ```bash
 # Mount over NFS
-sudo dfsctl share mount archive /mnt/archive --protocol nfs
+dfsctl share mount archive /mnt/archive --protocol nfs
 
 # Mount over NFSv4.1
-sudo dfsctl share mount archive /mnt/archive --protocol nfs --nfs-version 4.1
+dfsctl share mount archive /mnt/archive --protocol nfs --nfs-version 4.1
 
 # Mount over SMB as alice
-sudo dfsctl share mount archive /mnt/archive --protocol smb --username alice
+dfsctl share mount archive /mnt/archive --protocol smb --username alice
 
 # Map a drive on Windows
 dfsctl share mount archive Z: --protocol smb
