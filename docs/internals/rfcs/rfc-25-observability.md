@@ -728,6 +728,8 @@ row.
 | `namespace_unclaimed` | [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim), [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop) | namespace, naming the answer: copy, foreign, pending or unread | unhealthy: a copy's shares serve reads only and wait for an operator's `:accept-copy`; the others' shares are not attached | page at once; `pending` and `unread` only after 5 min |
 | `clock_unsynchronised` | [RFC 0 §10](rfc-0-data-lifecycle.md#10.%20Failure%20model) | node | degraded | ticket |
 | `material_unavailable` | [RFC 5 §6](rfc-5-transforms.md#6.%20Observability) | namespace | unhealthy: behaves as an unavailable remote | page at 5 min |
+| `material_unknown` | [RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures), [Appendix B.4](rfc-5-transforms.md#B.4%20Losing%20a%20key%20loses%20the%20data) | namespace, naming the material ID the census lists and the provider was never given | unhealthy: behaves as an unavailable remote | page at 5 min |
+| `material_destroyed` | [RFC 5 Appendix B.4](rfc-5-transforms.md#B.4%20Losing%20a%20key%20loses%20the%20data) | namespace, naming the material ID | unhealthy, `data_loss`: every remote-only chunk it covered is Lost | page at once |
 | `config_generation_behind` | [RFC 13 §8](rfc-13-configuration.md#8.%20Observability) | node | degraded, past the 5 s propagation bound | ticket at 5 min |
 | `provisioning_refused` | [RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) | node | degraded | ticket |
 | `gc_hold`, `gc_deletion_backlog` | [RFC 9 §10](rfc-9-gc.md#10.%20Observability) | namespace | degraded | ticket |
@@ -1161,7 +1163,9 @@ rediscover both.
   `namespace_nlink_underflow_total`, `blockmeta_underflow_total`,
   `gc_verify_refusals_total`, `engine_ledger_mismatches_total`,
   `codec_verify_failures_total` net of the syncer's recovered re-gets
-  ([RFC 4 §4.12](rfc-4-remote-tier.md#4.12%20What%20a%20store%20makes%20observable)).
+  ([RFC 4 §4.12](rfc-4-remote-tier.md#4.12%20What%20a%20store%20makes%20observable)),
+  `transform_decode_failures_total{error="malformed"}`
+  ([RFC 5 §6](rfc-5-transforms.md#6.%20Observability)).
 - **nothing** — information: grace, drains, snapshots running.
 
 Each condition's class and delay are in the registry (§3.9). An alert names the

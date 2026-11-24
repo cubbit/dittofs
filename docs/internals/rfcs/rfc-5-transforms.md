@@ -62,7 +62,7 @@ chunk, as the block is encoded ([RFC 4](rfc-4-remote-tier.md)).
 ### The problem, in one example
 
 The `profiles` share stores its blocks in the bucket `dfs-data`, with a chain of
-compression (zstd) then encryption (AES-256-GCM-SIV, under a key belonging to
+compression (zstd) then encryption (AES-256-GCM, under a key belonging to
 the share's namespace in the bucket). The namespace was created encrypting, and
 the operator turned compression on with it explicitly, accepting the size leak
 ([Appendix A](#Appendix%20A%20%E2%80%94%20compression)); a chain that encrypts leaves compression off unless told.
@@ -952,13 +952,14 @@ blocks neither verifiable nor restorable.
 
 A transform ID names an algorithm and its body format, not a library. So:
 
-- **A new algorithm is a new transform.** Moving from AES-256-GCM-SIV to another
-  deterministic AEAD — AES-SIV, or one standardised later — registers a
+- **A new algorithm is a new transform.** Moving from AES-256-GCM to another
+  AEAD — AES-256-GCM-SIV once a standard library ships it, or one standardised
+  later — registers a
   transform with a new ID, in the same stage, and its own material kind. The move is then [§5.1](#5.1%20Configuration%20governs%20the%20next%20write)
   and [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census): put it in the chain, and old bodies stay readable through their
   envelopes until relocation retires the old transform.
 - **A new library for the same algorithm is not a change.** Replacing the
-  library that implements AES-256-GCM-SIV keeps the ID, provided it produces
+  library that implements AES-256-GCM (Go's `crypto/cipher`) keeps the ID, provided it produces
   identical bodies. The transform's fixtures ([§4](#4.%20Writing%20a%20custom%20transform), item 7) decide, and a library
   that fails them is a new format version or a new transform, never a silent
   swap.
@@ -1039,9 +1040,9 @@ alike. A new transform gets it by registering.
 | [§2.7](#2.7%20Failures) | For an authenticating transform: decode chunk A's body with chunk B's hash: `ErrMalformed`. A body naming destroyed material: `ErrMaterialDestroyed`. |
 | T9 | Encode every round-trip input twice, and from two chains built from the same configuration: identical bodies. Where `LengthOf` answers, the body's length equals it. |
 | T9 | Encode every fixture input with its recorded settings and material: exactly the recorded body. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Two different chunks under one key get different salts; one chunk under two data keys gets two different bodies. Two different inputs under one plaintext hash (the same chunk compressed at two levels, or declined then compressed) encrypt to bodies that both decode and share no keystream: XOR of the two ciphertexts is not XOR of the two inputs. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Two different chunks under one key get different salts; one chunk under two data keys gets two different bodies. Two different inputs under one plaintext hash (the same chunk compressed at two levels, or declined then compressed) encrypt to bodies that both decode, carry different nonces and share no keystream: XOR of the two ciphertexts is not XOR of the two inputs. The key-file provider at a wrap count of 2³² − 1 for a master key makes one more wrap and refuses the next. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Every derivation label of Appendix B.1 is distinct, and each is pinned by a golden vector. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Golden vectors, from an independent implementation working from Appendix B.1's length and field tables alone: the salt key, salt and chunk key for a fixed data key and plaintext hash; one chunk body with its AAD; one fingerprint; the keyed gear table's first and last 8 bytes. Each derived key is 32 bytes, and an implementation deriving with `salt` as an empty string instead of 32 zero bytes gets the same key — RFC 5869 treats both alike — while one using a 16-byte `L` gets a 16-byte prefix of the right key, which the length check refuses, and one prefixing `info` gets a different key. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Golden vectors, from an independent implementation working from Appendix B.1's length and field tables alone: the salt key, salt, chunk key, nonce key and nonce for a fixed data key, plaintext hash and input; one chunk body with its AAD; one fingerprint; the keyed gear table's first and last 8 bytes. Each derived key is 32 bytes, and an implementation deriving with `salt` as an empty string instead of 32 zero bytes gets the same key — RFC 5869 treats both alike — while one using a 16-byte `L` gets a 16-byte prefix of the right key, which the length check refuses, and one prefixing `info` gets a different key. |
 | T22 | Golden vectors, from an independent implementation, for the frame key, MAC key and state key derivations, one sealed frame, each of the four export MACs, one state MAC, and one stored wrap per provider kind: the key file's, and a key service's against a fake service that records the authenticated data it is sent, once as bytes and once as a string map. Write an export of two sections of three frames each: all six nonces differ. Move a frame to the other section at the same frame index, or swap two sections: the read fails. A design whose nonce is the frame index alone gives two equal nonces here. |
 | T18 | Unwrap a wrapped key record after changing its namespace ID, its kind or its key ID in the AAD: each fails. Copy one namespace's wrapped data key into another namespace's key records: it does not unwrap there. |
 | [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | Replace a key under its ID with different bytes: the provider refuses it (`ErrMaterialUnavailable`, availability gauge 0), and no body is decoded or written with it. |
@@ -1055,14 +1056,14 @@ alike. A new transform gets it by registering.
 | T11 | A chain listing transforms out of stage order, two of one stage, or one twice fails to build, and nothing is written. |
 | T3 | Write under chain A, reconfigure to chain B (a transform removed, another added), read everything back. |
 | T3 | A declined chunk's envelope omits the transform, and decodes. |
-| T15 | With a namespace holding content, remove the encryption transform from its configuration's chain, and add one to a non-encrypting configuration: both refused, nothing written. Replace AES-256-GCM-SIV by a second encryption transform: allowed, and every older body still decodes. Plant a body without the encrypt stage in an encrypting namespace: `ErrMalformed`. |
+| T15 | With a namespace holding content, remove the encryption transform from its configuration's chain, and add one to a non-encrypting configuration: both refused, nothing written. Replace AES-256-GCM by a second encryption transform: allowed, and every older body still decodes. Plant a body without the encrypt stage in an encrypting namespace: `ErrMalformed`. |
 | T16 | Build a chain of compression and encryption without `with_encryption: accept`: refused. With it: built. The default chain of an encrypting namespace has no compress stage. |
 | T17 | The same file written into two namespaces yields disjoint chunk IDs; the IDs in a block header, chunk record and export match no unkeyed hash of the plaintext; a golden vector pins the keyed derivation. |
 | T14 | Two namespaces on one store configuration: a read in one asking for a material ID of the other gets `ErrMalformed` from the census view, and the provider records no call; `Current` of one never returns the other's key. |
 | T7 | A body whose census lists a key the provider was never given: `ErrMaterialUnavailable` with a configuration condition naming the ID, retried, never `ErrCorrupt`; load the key and the read succeeds. |
 | T13 | Remove a key while two nodes hold it unwrapped in cache: after `Remove` returns, neither node can encode or decode with it, the key record keeps only ID, fingerprint and `destroyed`, and a decode naming it returns `ErrMaterialDestroyed`. |
 | [§2.4](#2.4%20Every%20body%20records%20what%20was%20applied) | Envelopes with an unknown version, an unregistered ID, a duplicate ID, two IDs of one stage, or IDs out of stage order: `ErrMalformed` before any decode runs. A ranged get of one body decodes without the block header. |
-| [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | With `require: [aes-gcm-siv]`, a body without it is `ErrMalformed`; without `require`, it decodes. |
+| [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | With `require: [aes-gcm]`, a body without it is `ErrMalformed`; without `require`, it decodes. |
 | T12 | A body naming a material ID the store holds but its block record's census does not list: `ErrMalformed`, and the provider records no call. |
 | T13 | Start a put under key K and hold it mid-encode; retire K concurrently: removal waits for the put, then finds K in the census and refuses. Make K not current first: an encode starting after the fence uses the new key. |
 | [§3.1](#3.1%20Interfaces) | Write parity-protected bodies, remove parity from the chain, restart: the read-side bound still admits them and they decode. |
@@ -1199,20 +1200,23 @@ needs material: a namespace's data keys, of kind `data-key`.
 Keys are layered ([Appendix B.2](#B.2%20Keys)): master keys, held by the provider, wrap one or
 more **data keys** per namespace. A chunk is sealed under a key derived from the
 namespace's current data key and a salt derived from the chunk's hash, with
-AES-256-GCM-SIV (IETF RFC 8452), a deterministic, nonce-misuse-resistant AEAD:
+AES-256-GCM (NIST SP 800-38D) from the standard library, under a nonce derived
+from the exact bytes it seals:
 
 ```
 salt key  = HKDF-SHA256(data key, salt = none, info = "dittofs chunk salt v2"), 32 bytes
 salt      = HMAC-SHA256(salt key, plaintext hash), 32 bytes
 chunk key = HKDF-SHA256(data key, salt = salt, info = "dittofs chunk key v2"), 32 bytes
-body      = AES-256-GCM-SIV(chunk key, nonce = 12 zero bytes, input,
-                            AAD = transform ID ‖ version ‖ data key ID ‖ plaintext hash)
+nonce key = HKDF-SHA256(data key, salt = salt, info = "dittofs chunk nonce v1"), 32 bytes
+nonce     = first 12 bytes of HMAC-SHA256(nonce key, input)
+body      = nonce ‖ AES-256-GCM(chunk key, nonce, input,
+                                AAD = transform ID ‖ version ‖ data key ID ‖ plaintext hash)
 ```
 
 `input` is what reaches the encrypt stage: the compressed chunk, or the chunk
 itself when compression declined or is off.
 
-![Encrypting one chunk: the master key unwraps per-namespace data, chunk-ID and chunking keys; the data key seals the chunk with AES-256-GCM-SIV, the chunk-ID key keys the chunk IDs block headers carry, the chunking key keys boundaries](img/rfc5t-key-derivation.svg)
+![Encrypting one chunk: the master key unwraps per-namespace data, chunk-ID and chunking keys; the data key seals the chunk with AES-256-GCM, the chunk-ID key keys the chunk IDs block headers carry, the chunking key keys boundaries](img/rfc5t-key-derivation.svg)
 
 **Every derivation has its own versioned label.** Nothing derived from a key is
 derived under a label another derivation uses:
@@ -1221,6 +1225,7 @@ derived under a label another derivation uses:
 | --- | --- | --- |
 | `dittofs chunk salt v2` | data key | the salt key |
 | `dittofs chunk key v2` | data key and salt | the chunk key |
+| `dittofs chunk nonce v1` | data key and salt | the key the chunk's nonce is an HMAC under |
 | `dittofs chunking key v1` | chunking key | keyed boundaries, encrypting namespaces only ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)) |
 | `dittofs export frame v1` | export key and the export's salt | the key sealing each frame of an export ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)) |
 | `dittofs export mac v1` | export key and the export's salt | the key authenticating an export's clear part, header, sections and trailer |
@@ -1236,12 +1241,12 @@ as a chunk, and every value below has a golden vector ([§8.1](#8.1%20Transform%
 export salt = 32 bytes from a cryptographic random source, per export, in its clear part
 frame key   = HKDF-SHA256(export key, salt = export salt, info = "dittofs export frame v1"), 32 bytes
 mac key     = HKDF-SHA256(export key, salt = export salt, info = "dittofs export mac v1"), 32 bytes
-frame       = AES-256-GCM-SIV(frame key,
+frame       = AES-256-GCM(frame key,
                 nonce = section index (4 bytes, big-endian) ‖ frame index (8 bytes, big-endian),
                 records,
                 AAD = export salt ‖ section index ‖ section type ‖ frame index)
 clear MAC   = HMAC-SHA256(mac key, "clear" ‖ every byte of the clear part before it)
-sealed header = AES-256-GCM-SIV(frame key,
+sealed header = AES-256-GCM(frame key,
                 nonce = 0xFFFFFFFF (4 bytes) ‖ 0 (8 bytes),
                 header, AAD = export salt ‖ "header")
 header MAC  = HMAC-SHA256(mac key, "header" ‖ clear MAC ‖ sealed header)
@@ -1272,15 +1277,15 @@ vector:
 | Value | Bytes | How |
 | --- | --- | --- |
 | master key, data key, chunking key, chunk-ID key, export key | 32 | drawn from a cryptographic random source when created or rotated; never derived |
-| every HKDF-SHA256 output: salt key, chunk key, frame key, mac key, state key, progress key | 32 | IETF RFC 5869 with `L = 32`; `salt = none` means RFC 5869's default, 32 zero bytes; `info` is the label's ASCII bytes alone, with no length prefix and no terminator |
+| every HKDF-SHA256 output: salt key, chunk key, nonce key, frame key, mac key, state key, progress key | 32 | IETF RFC 5869 with `L = 32`; `salt = none` means RFC 5869's default, 32 zero bytes; `info` is the label's ASCII bytes alone, with no length prefix and no terminator |
 | salt, every MAC, fingerprint | 32 | HMAC-SHA256, full output, never truncated |
 | plaintext hash, chunk ID | 32 | the keyed BLAKE3 chunk ID ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)) |
 | keyed gear table | 2,048 | BLAKE3 keyed mode under the chunking key, over the ASCII label `dittofs chunking key v1` ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)) |
-| AES-256-GCM-SIV nonce | 12 | the chunk's is 12 zero bytes; a frame's and the header's as below; a key wrap's random |
-| AES-256-GCM-SIV tag | 16 | appended to the ciphertext |
+| AES-256-GCM nonce | 12 | the chunk's is the first 12 bytes of its HMAC, stored before the ciphertext; a frame's and the header's as below; a key wrap's random, stored before the ciphertext |
+| AES-256-GCM tag | 16 | appended to the ciphertext, full length, never truncated |
 
-A value computed over **one** field — the salt over the plaintext hash, a
-fingerprint over its label — takes that field's bytes alone, with no prefix;
+A value computed over **one** field — the salt over the plaintext hash, the
+chunk's nonce over its input, a fingerprint over its label — takes that field's bytes alone, with no prefix;
 the prefix rule above applies wherever two or more fields are joined. The
 joined inputs are, field by field:
 
@@ -1370,22 +1375,37 @@ every progress version under an older key as no base and copy those blocks
 afresh. Progress is never re-sealed: its loss costs one copy's work per
 rotation, not a backup.
 
-The nonce is unique per frame within one export, since a section index and a
-frame index never repeat together, and every export draws its own salt, so its
-frame key is its own; GCM-SIV is chosen anyway, so a repeat would leak only that
-two frames were equal, never the key stream or the authentication key. A frame
-index that restarted per section under one key and one nonce field would repeat
-across sections, which under a nonce-based AEAD reveals the key stream and lets a
-reader forge frames. Every export's clear part names the ID of the export key
+**No frame key seals two plaintexts under one nonce**, the rule AES-GCM holds
+only if its caller does: a repeat reveals the XOR of the two plaintexts and the
+authentication key, so a reader could forge frames. The nonce is unique per
+frame within one export, since a section index and a frame index never repeat
+together, and the header's section index 2³² − 1 names no section. Every export
+draws its own salt, so its frame key is its own. A writer **MUST** seal each
+frame, and the header, exactly once under one salt: a copy that restarts or
+resumes writes a new export under a new salt, and never re-seals a frame whose
+records changed under the salt it already used. A frame index that restarted
+per section under one key and one nonce field would repeat across sections,
+which is why the nonce carries the section index too. Every export's clear part names the ID of the export key
 that seals it and the IDs of every master key whose wrapping it carries
 ([Appendix B.2](#B.2%20Keys)).
 
 **Key wrap.** A namespace key is stored only wrapped under a master key:
 
 ```
-wrapped = AES-256-GCM-SIV(master key, nonce = 12 bytes from a cryptographic random source,
-                          key bytes, AAD = namespace ID ‖ kind ‖ key ID)
+wrapped = nonce ‖ AES-256-GCM(master key, nonce = 12 bytes from a cryptographic random source,
+                              key bytes, AAD = namespace ID ‖ kind ‖ key ID)
 ```
+
+**A master key makes at most 2³² wraps.** A random 96-bit nonce stays unique
+under one key with the margin NIST SP 800-38D §8.3 requires only up to 2³²
+invocations. The key-file provider enforces it: it keeps a count of wraps per
+master-key ID beside the key records, raised by a conditional write before the
+wrap's bytes are used, so a crash can only overcount, and refuses a wrap at 2³² with an error asking for a
+master-key rotation ([B.3](#B.3%20Rotation)). A wrap is made only when a key
+record is written — a key created, a data key rotated, a master key re-wrapping
+every record — so at 10⁴ namespaces with a few keys each and every write
+retried the count stays below 2²⁰. A key service draws its own nonces and keeps
+its own bound.
 
 That is the key-file provider's wrap. A key-service provider asks the service
 to wrap instead, and the service returns its own opaque ciphertext, with its own
@@ -1420,7 +1440,7 @@ under the old version, which still unwraps them. Under a name that stays the sam
 versions, nothing would re-wrap, and destroying an old version in the service
 would silently make every record and export wrapped under it unopenable, past
 any check here. The AAD reaches each provider's input as follows: the key
-file passes the AAD bytes to AES-256-GCM-SIV; a service that takes
+file passes the AAD bytes to AES-256-GCM; a service that takes
 authenticated data as bytes gets the same bytes; a service that takes it as a
 string map gets the one entry `dittofs-wrap-aad` → the AAD bytes in lowercase
 hex, and nothing else. A profile for a service **MUST** name which of the two it
@@ -1441,10 +1461,13 @@ In plain terms:
   stage's output, which can differ for the same chunk: a new compression level,
   a chunk declined once and compressed later, a compression library upgrade, or
   a relocation, which re-encodes by design ([§5.2](#5.2%20Relocation%20re-encodes)). Two different inputs under
-  one key and one fixed nonce are exactly what a nonce-based AEAD must never see.
-  AES-GCM-SIV derives its internal IV from the key, the nonce and the exact bytes
-  encrypted, so two different inputs get two unrelated keystreams, and the most
-  a repeat leaks is that two inputs were identical.
+  one key and one nonce are exactly what AES-GCM must never see: their XOR
+  and the authentication key would leak. So the nonce is an HMAC of the exact
+  bytes sealed, under a key only the data key derives: two different inputs
+  get two unrelated nonces (equal with probability 2⁻⁹⁶ per pair, and one chunk
+  key sees a handful of inputs at most), and the most a repeat leaks is that two
+  inputs were identical. A zero nonce would be safe only if a chunk key sealed
+  one input ever, which compression and relocation break.
 - **deterministic, as [§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk) requires.** The same input under one data key
   encrypts identically. The salt is an HMAC under a key only the data key
   derives, so no one without it can compute the salt.
@@ -1459,9 +1482,10 @@ In plain terms:
   stored: `Decode` derives it again from the hash it is given.
 
 **Its header:** version (1 byte), data key ID length (1 byte), data key ID. Then
-the ciphertext and its 16-byte tag. `MaxEncodedLen(n) = n + 273`, the worst case
-with a 255-byte key ID: 1 + 1 + 255 + 16. `LengthOf(n)` is exact: `n + 18` plus
-the current data key ID's length. The data key's (ID, fingerprint) is in the
+the 12-byte nonce, the ciphertext and its 16-byte tag. `MaxEncodedLen(n) = n + 285`,
+the worst case with a 255-byte key ID: 1 + 1 + 255 + 12 + 16. `LengthOf(n)` is
+exact: `n + 30` plus the current data key ID's length. `Decode` reads the nonce
+from the body; the tag authenticates it with the rest. The data key's (ID, fingerprint) is in the
 chain ID ([§2.8](#2.8%20The%20chain%20ID)) as material, and the stage has no length-affecting setting, so its
 `LengthKey` is empty (*k* = 0).
 
@@ -1897,7 +1921,11 @@ holding it commits ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20dirty%
 Without this, destroying a key would also let eviction drop the one readable copy
 of every chunk it covered.
 
-Each of these is a health condition of the store, not only a log line.
+Each of these is a health condition of the store, not only a log line:
+`material_unavailable` for material the provider cannot return now,
+`material_unknown` for material the census lists and the provider was never
+given, and `material_destroyed`, with `data_loss`, for material lost for good
+([RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condition%20registry)).
 
 ### B.5 What a bucket reader still learns
 
@@ -2016,7 +2044,7 @@ Descriptive, for the refactor.
 | D2 | Decoding is bounded by the chunk maximum (T4) | the declared-size ceiling is 64 MiB against a 16 MiB chunk maximum, the buffer is allocated before decoding, and the zstd window is unbounded |
 | D3 | The stage order is fixed, and a chain or envelope out of it is refused ([§2.3](#2.3%20The%20chain%20order%20is%20fixed)) | compression then encryption is fixed in code, as specified, but nothing refuses a stored body layered otherwise, since there is no envelope (D1) |
 | D4 | Reading needs only the registry and keys (T3) | decoders exist only for configured layers: disabling compression fails every compressed body, enabling encryption rejects existing plaintext bodies, and disabling encryption is refused |
-| D5 | Chunks are sealed with AES-256-GCM-SIV under a key derived from a per-namespace data key wrapped by a master key, and every header field is authenticated ([Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted), [Appendix B.2](#B.2%20Keys)) | a random data key per chunk is wrapped under the master key with AES-GCM; frame fields are outside the AAD, and nothing counts the master key's nonces |
+| D5 | Chunks are sealed with AES-256-GCM under a key derived from a per-namespace data key wrapped by a master key, and every header field is authenticated ([Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted), [Appendix B.2](#B.2%20Keys)) | a random data key per chunk is wrapped under the master key with AES-GCM; frame fields are outside the AAD, and nothing counts the master key's nonces |
 | D6 | Relocation re-encodes ([§5.2](#5.2%20Relocation%20re-encodes)) | relocation copies encrypted bodies unchanged |
 | D7 | No transform error crosses the codec (T8) | encryption and compression errors reach callers as their own types |
 | D8 | The hash is checked once, in the codec (T6) | each consumer re-hashes; relocation does not |

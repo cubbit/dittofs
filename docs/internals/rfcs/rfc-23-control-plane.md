@@ -1163,6 +1163,9 @@ this table is all of them:
 | `rebuild-reverse-index` | share | `operator` | yes | [RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt) |
 | `raise-format` | installation | `admin` | no | [RFC 13 §5.5](rfc-13-configuration.md#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) |
 | `rotate-signing-key` | installation | `admin` | yes | §5.3 |
+| `rotate-data-key` | namespace | `admin` | yes | [RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation) |
+| `rotate-master-key` | remote store | `admin` | yes | [RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation) |
+| `verify-escrow` | remote store | `admin` | no | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) |
 | `reload-provisioning` | node | `admin` | yes | [RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) |
 | `set-password` | user | `operator`; `admin` for an account with a role | no | §3.5, [RFC 18 §8](rfc-18-identity.md#8.%20Management-API%20users) |
 | `drain` | node | `operator` | yes | [RFC 30 §5.2](rfc-30-kubernetes.md#5.2%20Scale-down%20is%20a%20drain) |
@@ -1452,7 +1455,7 @@ changed. A client **MUST** reuse a key across its own retries of one action and
 
 Work that does not finish in one transaction — a share's removal, a user's
 deletion, a clone, a restore, a backup, a re-home, a move, a credential
-rotation, a signing-key rotation, the NT hashes' deletion, an index rebuild, a copy's acceptance, a location's loss — is an **operation**. Its call commits the work's
+rotation, a signing-key rotation, a data-key or master-key rotation, the NT hashes' deletion, an index rebuild, a copy's acceptance, a location's loss — is an **operation**. Its call commits the work's
 first durable step and answers `202 Accepted` with `Location:
 /api/v1/operations/{id}` and the operation's body.
 
@@ -1488,7 +1491,7 @@ type Progress struct {
   re-home by RFC 27's — and resumes as that RFC says after a crash or failover.
   The operation record **MUST NOT** choose a driver for such work. Its progress
   is read from the owner's durable cursor, so a restart loses none of it.
-- **Work no component drives on its own** — a credential or signing-key rotation, GC's index
+- **Work no component drives on its own** — a credential, signing-key, data-key or master-key rotation, GC's index
   rebuilds, a new namespace's first claim and a copy's acceptance, a provisioning reload — is driven by the operation runner (§2.2) of a
   node, under a claim in the operation record: (node, node epoch,
   expiry), the expiry 30 s ahead and renewed every 10 s, both fixed.

@@ -9,9 +9,9 @@
 <rect width="900" height="300" fill="#ffffff"/>
 <text x="16" y="26" class="t">One body, for a chunk that was compressed, then encrypted.</text>
 <text x="16" y="46" class="s">Each transform owns only what is inside its own box; the chain owns the envelope.</text>
-<rect x="16" y="70" width="180" height="60" rx="3" class="env"/><text x="28" y="92" class="h">envelope</text><text x="28" y="112" class="m">v1 ‖ 2 ‖ zstd ‖ gcm-siv</text>
+<rect x="16" y="70" width="180" height="60" rx="3" class="env"/><text x="28" y="92" class="h">envelope</text><text x="28" y="112" class="m">v1 ‖ 2 ‖ zstd ‖ aes-gcm</text>
 <rect x="196" y="70" width="688" height="60" rx="3" class="k"/><text x="208" y="92" class="h">encrypt's output</text>
-<rect x="306" y="78" width="130" height="44" rx="3" class="k"/><text x="316" y="97" class="m">header</text><text x="316" y="113" class="s">version, key ID</text>
+<rect x="306" y="78" width="130" height="44" rx="3" class="k"/><text x="316" y="97" class="m">header</text><text x="316" y="113" class="s">version, key ID, nonce</text>
 <rect x="446" y="78" width="430" height="44" rx="3" class="a"/><text x="456" y="97" class="h">compress's output, sealed</text>
 <rect x="640" y="84" width="96" height="32" rx="3" class="a"/><text x="650" y="104" class="m">header</text>
 <rect x="742" y="84" width="126" height="32" rx="3" class="p"/><text x="752" y="104" class="l">the chunk</text>

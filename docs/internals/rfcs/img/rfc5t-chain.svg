@@ -14,7 +14,7 @@
 <path d="M128 118H158" class="ar"/>
 <rect x="160" y="96" width="140" height="44" rx="3" class="a"/><text x="172" y="116" class="h">1 compress</text><text x="172" y="131" class="s">declines if no gain</text>
 <path d="M300 118H330" class="ar"/>
-<rect x="332" y="96" width="140" height="44" rx="3" class="k"/><text x="344" y="116" class="h">2 encrypt</text><text x="344" y="131" class="s">GCM-SIV</text>
+<rect x="332" y="96" width="140" height="44" rx="3" class="k"/><text x="344" y="116" class="h">2 encrypt</text><text x="344" y="131" class="s">AES-GCM</text>
 <path d="M472 118H502" class="ar"/>
 <rect x="504" y="96" width="140" height="44" rx="3" class="c"/><text x="516" y="116" class="h">3 redundancy</text><text x="516" y="131" class="s">optional</text>
 <path d="M644 118H674" class="ar"/>

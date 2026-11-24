@@ -50,7 +50,7 @@
 <text x="688" y="128" class="s">blocks</text>
 <text x="386" y="156" class="s">in dependency order, records in key order, so an importer</text>
 <text x="386" y="172" class="s">holds one frame and writes as it reads; frames of at most</text>
-<text x="386" y="188" class="s">4 MiB, AES-256-GCM-SIV, nonce the section and frame index.</text>
+<text x="386" y="188" class="s">4 MiB, AES-256-GCM, nonce the section and frame index.</text>
 <text x="386" y="204" class="s">Amber: the manifest, in a backup-copy export only.</text>
 <text x="754" y="124" class="s">the trailer MAC is</text>
 <text x="754" y="140" class="s">the export's identity,</text>
