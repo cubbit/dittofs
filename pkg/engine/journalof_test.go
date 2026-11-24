@@ -4,11 +4,9 @@ import (
 	"errors"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest"
-	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // A refused Share or Reserve answers a nil interface, never one holding a nil
@@ -29,25 +27,11 @@ func TestRefusalAnswersNil(t *testing.T) {
 // in SyncMarks, and MarksRecorded of it leaves that entry where it was.
 func TestJournalOfServesTheJournalsMarks(t *testing.T) {
 	ctx := t.Context()
-	dir := t.TempDir()
-	clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	// Two append streams: at the default sixteen a journal makes a content and
-	// a headroom spare per stream at the 256 MiB cap, 8.25 GiB the first
-	// write waits on.
-	opts := []journal.Option{journaltest.SuitableMount(), journal.WithClock(clock), journal.WithSettings(journal.Settings{Streams: 2})}
-	id, err := journal.Init(ctx, dir, journal.InstallationID{1}, opts...)
-	if err != nil {
-		t.Fatalf("journal init: %v", err)
-	}
-	raw, err := journal.Open(ctx, dir, journal.Version{}, id, nil, opts...)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = raw.Close() })
-	if err := raw.SetVersionLimit(journal.Version{Counter: 1 << 20}); err != nil {
-		t.Fatalf("SetVersionLimit: %v", err)
-	}
-	j := JournalOf(raw)
+	// The fixture opens a journal with small segments, a version limit and its
+	// spares made, so the first write finds a spare and the retry below does not
+	// spin.
+	fix := journaltest.New(t)
+	j := JournalOf(fix.J)
 	if got := j.SyncMarks(); len(got) != 0 {
 		t.Fatalf("SyncMarks = %+v before any sync, want none", got)
 	}
@@ -56,7 +40,7 @@ func TestJournalOfServesTheJournalsMarks(t *testing.T) {
 		t.Fatalf("Share: %v", err)
 	}
 	f := journal.NewFileID([16]byte{'m'})
-	if err := journaltest.RetrySpare(func() error {
+	if err := fix.RetrySpare(func() error {
 		_, err := h.WriteAt(ctx, f, 0, []byte("a record the sync proves"), 0)
 		return err
 	}); err != nil {
