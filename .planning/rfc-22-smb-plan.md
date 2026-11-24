@@ -720,6 +720,12 @@ RFC sections: RFC 20 §4.7's `Request.State`, §4.8 (one table for every dialect
 
 **Epic 2 estimate: 5 subtasks, 11 man-days.**
 
+**Built by RFC 21's plan.** [RFC 21's plan](rfc-21-nfs-plan.md)'s epic 2 builds, and prices, the
+pieces both adapters share (its T2.4, T2.5, T2.6) and the protocol-neutral handler runner (its
+T2.2). So T2.1 below keeps only SMB's harness, over that runner and `vfstest.Mutations`' record;
+T2.2 keeps only the Samba captures, cut with `adaptertest/golden`; T2.3 is RFC 21's T2.6. The
+figure above still counts the moved work, until this epic is broken down.
+
 What every SMB test stands on (§1.4), and, beside E3, what the service owes this pull request's
 amendments and plan gaps 23 and 25 before T6.1, T8.1, T8.5 and those gaps' rows rely on it (T2.4,
 3.5 man-days, and T2.5, 1 man-day after S2b).

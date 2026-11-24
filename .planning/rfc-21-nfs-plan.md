@@ -31,8 +31,8 @@ again. This plan deletes nothing. Related RFCs, with how far each is in scope:
   sessions' records, stateids, delegations, grace and NLM locks against the state the service
   holds, and the one kind it lacks, `NoGrace` (E2). RFC 14 itself is constraints.
 - [RFC 22](../docs/internals/rfcs/rfc-22-smb.md), SMB: **out**, but RPCSEC_GSS builds on [RFC 22's
-  plan](rfc-22-smb-plan.md)'s epic 4, `gss`, for the Kerberos acceptor (S6c), and this plan's tests
-  use the three pieces that plan's epic 2 builds for both adapters (S0).
+  plan](rfc-22-smb-plan.md)'s epic 4, `gss`, for the Kerberos acceptor (S6c), and this plan's E2
+  builds the three test pieces both adapters share (S0), which that plan's epic 2 was to build.
 - [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md), [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md),
   [RFC 24](../docs/internals/rfcs/rfc-24-resources.md), [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) and
   [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md): constraints, or the rules every epic follows (§1.5).
@@ -64,7 +64,7 @@ and what the epic builds.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). The target
 branch is `feat/storage-v2`; the plan document lands on `develop` and is cherry-picked, as the
 other planning documents are. External dependencies: RFC 20's plan (its scaffold, landed; its epic
-7 for S5 and S7), RFC 22's plan's epic 2 (S0) and epic 4 (`gss`, S6c), RFC 18's plan (#4058): its
+7 for S5 and S7), RFC 22's plan's epic 4 (`gss`, S6c), RFC 18's plan (#4058): its
 S2 for `Spell`, `Find` and resolution (S6a), its E5 for Kerberos (S6b); RFC 17's service on
 `feat/storage-v2`, with its plan's piece 13, the held clone wait, reaching the branch with the next
 sync (#4239); RFC 13's settings (#4059).
@@ -176,10 +176,10 @@ client in E16:
 namespace-move rows of §7.4, the rows no suite runs yet (xfstests, pynfs's reboot tests; RFC 21
 §13's suites paragraph) and a remote outage on the composed node, each parked in §6.6.
 
-**Test components.** From RFC 22's plan's epic 2 (S0), the three pieces it builds for both
-adapters: `vfstest.Mutations` keeping each call's reference and answer, `adaptertest/golden`, and
-the import test's call-site and file-size rules. That epic's handler harness decodes `smb/wire`'s
-header and is SMB's. Here: NFS's handler harness and knfsd's captures (E2), the import test's NFS
+**Test components.** The three pieces both adapters share (S0), built in E2: `vfstest.Mutations`
+keeping each call's reference and answer, `adaptertest/golden`, and the import test's call-site and
+file-size rules. SMB's handler harness, over E2's runner, stays RFC 22's plan's epic 2. Here also:
+NFS's handler harness and knfsd's captures (E2), the import test's NFS
 entry files (E4 and E5, with the calls they name), the scripted client (E3); `gsstest`'s initiators
 come with RFC 22's plan's `gss` (S6c).
 
@@ -311,7 +311,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | NFS surface | request state; `ops/v4`'s handler set, `COMPOUND` row and members' table | 3 | 3.75 | team | all |
-| E2 ⛔ | Test foundations | NFS's handler harness over the runner it lifts from SMB's; knfsd captures; the service's `NoGrace` | 3 | 7.5 | team | E3 to E14 |
+| E2 ⛔ | Test foundations | the shared test pieces (S0); the handler runner and NFS's harness over it; knfsd captures; the service's `NoGrace` | 6 | 14.75 | team | E3 to E14 |
 | E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 7 | 17 | A | E8, E13, E14; S3 and S4 |
 | E4 | NFSv3 and MOUNT | every NFSv3 procedure, `fattr3`, `sattr3` and WCC, cookies, stability, `FSINFO`, MOUNT; A3's service half after S2b | 10 | 26 | B | S3; E11, partly; E16 |
 | E5 | NFSv4 namespace, attributes and data | file-handle operations, the pseudo-filesystem, `SECINFO`, `fattr4` and Appendix B, `ACCESS`, name operations, `READDIR`, stateless I/O | 8 | 23 | C | E6, E9; E12, partly; S4 |
@@ -326,13 +326,12 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
-| | **Total** | | **95** | **260.75** | | |
+| | **Total** | | **98** | **268** | | |
 
-**Plan estimate: 95 subtasks, 260.75 man-days, not counting epic 15.**
+**Plan estimate: 98 subtasks, 268 man-days, not counting epic 15.**
 
 Nor E16's burn-down of the three NFS suites, which waits for E15 as E15 waits for S7 (§6.2, point
-6), nor the rows parked in §6.6's deferral ledger, nor the three test pieces RFC 22's plan prices
-(§6.2, point 1).
+6), nor the rows parked in §6.6's deferral ledger.
 
 The estimate `N = round(3148 / 400) = 8` against twelve middle epics. RFC 21 serves five RPC
 programs over four versions, with about sixty NFSv4 operations and thirty NFSv3 and auxiliary
@@ -351,7 +350,7 @@ Legend: ⛔ blocks every epic after it; 🔀 waits for or opens a synchronisatio
 flowchart TD
   E1["E1 NFS surface ⛔"]:::blocker --> S1(["S1 NFS surface frozen"]):::sync
   S1 --> E2["E2 Test foundations ⛔"]:::blocker --> S2(["S2 NFS test foundations in CI"]):::sync
-  S0(["S0 RFC 22 plan E2: Mutations, golden helper, import rules"]):::sync --> S2
+  E2 --> S0(["S0 shared test pieces, built in E2: Mutations, golden helper, import rules"]):::sync --> S2
   subgraph A["Track A"]
     E3["E3 RPC layer"] --> E8["E8 Clients and sessions 🔀"]:::sync --> E10["E10 Delegations, back channel"]
     E14["E14 Capture diffs 🔀"]:::sync
@@ -402,16 +401,15 @@ flowchart TD
 RFC 20's plan's S1 to S3 already hold on `feat/storage-v2`: `core`'s surface is frozen, the import
 test runs, and NFS's scaffold answers every procedure over loopback through `core`.
 
-- **🔀 S0 the shared test pieces** (outside: RFC 22's plan's epic 2). `vfstest.Mutations` keeping
-  each call's reference and answer, the `adaptertest/golden` helper, and the import test's
-  call-site and file-size rules. That epic's handler harness is SMB's; NFS's is E2's,
-  `adaptertest/nfsharness`, a thin wrapper over the protocol-neutral runner E2 lifts out of SMB's
-  harness into `adaptertest`. If this plan starts first, its E2 builds the three pieces and the
-  runner at their figure in that plan (§6.2, point 1).
-  Unblocks S2.
+- **S0 the shared test pieces** (in E2, for both adapters). `vfstest.Mutations` keeping each call's
+  reference and answer, the `adaptertest/golden` helper, and the import test's call-site and
+  file-size rules, built here because RFC 22's plan's epic 2, which was to build them, has no owner
+  (§6.2, point 1). NFS's handler harness is E2's, `adaptertest/nfsharness`, a thin wrapper over the
+  protocol-neutral runner E2 builds in `adaptertest`; SMB's harness, over the same runner, stays
+  RFC 22's plan's epic 2. Unblocks S2, and that epic's harness and captures.
 - **S1 NFS surface frozen** (after E1). The request state and `ops/v4`'s `COMPOUND` row and
   members' table compile, with loopback rows. Unblocks E2.
-- **S2 NFS test foundations in CI** (after E2 and S0). NFS's handler harness runs an NFSv3 row and
+- **S2 NFS test foundations in CI** (after E2, S0 included). NFS's handler harness runs an NFSv3 row and
   an NFSv4 compound member on `memory.New`, golden files load from knfsd's captures, and `pkg/vfs`
   answers `NoGrace`. Unblocks every middle epic.
 - **🔀 S2b amendments A1 to A3 agreed** (met: #5166 merged them into RFC 20 and RFC 17).
@@ -442,7 +440,7 @@ test runs, and NFS's scaffold answers every procedure over loopback through `cor
 | Epic | Blocks | Why |
 | --- | --- | --- |
 | ⛔ E1 | E2, and through it every epic | the request state and `COMPOUND` row every NFSv4 epic writes against |
-| 🔀 S0 | S2 | the call record, golden helper and import-test rules every NFS test uses |
+| S0 | S2 | the call record, golden helper and import-test rules every NFS test uses |
 | ⛔ E2 | E3, E4, E5, E7, E11 and E12 through S2, and through them the rest | NFS's handler harness, knfsd's golden files, `NoGrace` |
 | E3 | E8, E13, E14; S3 and S4 | E8 extends E3's `Replay` stage; the `Security` stage RPCSEC_GSS joins; the scripted client every loopback row and capture script needs |
 | E4 | S3; E11, partly; E16 | an NFSv3 mount over loopback needs its procedures and MOUNT; A3's admission exemption |
@@ -481,12 +479,12 @@ Figures are man-days from S2.
   it, then ACL attributes, then NFSv4.2. E9 runs on `memory.New` from 23, after E8's callbacks value
   at 21, and its loopback rows wait for S4 at 45; E6 starts at 48 with E7 done; E12 last, with E8's
   slot count and E9's stateids in. 73 man-days.
-- **The team.** E1 and E2 before the tracks; E15 at S7; E16 after the tracks. E1, E2 and E16, 36.75
-  man-days, are the difference between the tracks' 224 and the plan's 260.75.
+- **The team.** E1 and E2 before the tracks; E15 at S7; E16 after the tracks. E1, E2 and E16, 44
+  man-days, are the difference between the tracks' 224 and the plan's 268.
 
-**The first mount.** By D12, an NFSv3 mount over `AUTH_SYS` comes first: E1 to E4 and E7, about 70.25
-man-days of plan work, the critical path E1 → E2 → E4 → E7, 53.25 man-days in series, then S5, S7 and
-E15 for `dfs`. An NFSv4.1 mount, Linux's default, needs E1, E2, E3, E5, E7, E8 and E9, about 120.25
+**The first mount.** By D12, an NFSv3 mount over `AUTH_SYS` comes first: E1 to E4 and E7, about 77.5
+man-days of plan work, the critical path E1 → E2 → E4 → E7, 60.5 man-days in series, then S5, S7 and
+E15 for `dfs`. An NFSv4.1 mount, Linux's default, needs E1, E2, E3, E5, E7, E8 and E9, about 127.5
 man-days, E7 included since a `Claimed` caller answers `ErrAccess` on the composed node without it
 (§6.3, point 2); its critical path runs through track A to S4 at 45 and track C's E9 to 48, from S2.
 
@@ -502,10 +500,10 @@ pkg/adapter/
 internal/adapter/
   translate/                  E6: RFC 19 §5.1's NFSv4 ACL functions; created by whichever of E6 and RFC 22's plan's descriptor epic lands first
   adaptertest/
-    golden/                   RFC 22's plan's E2: golden files cut from captures
+    golden/                   E2: golden files cut from captures, for both adapters
     nfsclient/                E3: the scripted client (RFC 20 §8.2)
-    imports_test.go           RFC 20's E2 and RFC 22's plan's E2; E4 and E5: NFS's entry files
-    nfsharness/               E2: NFS's handler harness over the runner E2 lifts from SMB's harness into adaptertest; a v3 row and a COMPOUND member on memory.New
+    imports_test.go           RFC 20's E2; E2: entry call sites and file sizes; E4 and E5: NFS's entry files
+    nfsharness/               E2: NFS's handler harness over the runner E2 builds in adaptertest; a v3 row and a COMPOUND member on memory.New
   nfs/
     nfs.go                    RFC 20's E6: New; E11 adds the UDP listener
     callbacks.go              E8 type, reached by ops/ through a Handlers field New sets (D13); E9 (Revoked for state), E10 (RecallGrant, RecallAny, Revoked for grants), E11 (LockWaitOver, Revoked for NLM)
@@ -663,13 +661,14 @@ loopback with its tag echoed.
 
 ### Epic 2 — Test foundations ⛔
 
-**Epic 2 estimate: 3 subtasks, 7.5 man-days.**
+**Epic 2 estimate: 6 subtasks, 14.75 man-days.**
 
-What NFS's tests need beyond S0's three shared pieces (§1.4): NFS's handler harness, knfsd's
-captures, and the one service change every NFSv4 reclaim row needs, `NoGrace`. No red suite is
+What NFS's tests need (§1.4): S0's three shared pieces, built here for both adapters; NFS's handler
+harness, knfsd's captures, and the one service change every NFSv4 reclaim row needs, `NoGrace`. No red suite is
 registered, and nothing here waits on an amendment.
 
-**Owns:** RFC 20 §5.4's captures for NFS, §7.2's handler tests for NFS; RFC 17 §4.3's `NoGrace` kind
+**Owns:** RFC 20 §5.4's captures for NFS, §7.2's handler tests for NFS and the call record both
+adapters read, §2.5's `golden/`, §7.1's entry call sites and 800-line allowlist; RFC 17 §4.3's `NoGrace` kind
 and RFC 14 §4.2's answer (#5090 2.2).
 
 **Done when:** the harness's own test fails on a second mutating call and on a wrong reply byte, for
@@ -678,13 +677,14 @@ program area; `memory.New` answers a reclaim from a client with nothing left to 
 (`NoGrace`), per RFC 14 §4.2, and one still owing reclaims `NoReclaim`.
 
 **Expected content:**
-- The runner of RFC 22's plan's SMB handler harness lifted into `adaptertest`, naming no protocol,
-  and SMB's harness calling it.
+- S0: `vfstest.Mutations` keeping each call's reference and answer, `adaptertest/golden`, and the
+  import test's call-site and file-size rules.
+- The handler runner in `adaptertest`, naming no protocol, shaped for SMB's harness to call.
 - NFS's handler harness, `adaptertest/nfsharness`, a thin wrapper over that runner: request bytes
   through one table row, and through one member inside a `COMPOUND`, against `memory.New`, errors
-  through `vfstest.Faults`, the one-call rule from S0's `vfstest.Mutations` record, reply bytes
+  through `vfstest.Faults`, the one-call rule from `vfstest.Mutations`' record, reply bytes
   compared.
-- knfsd captures per program area (D6), cut into golden files through S0's `adaptertest/golden`.
+- knfsd captures per program area (D6), cut into golden files through `adaptertest/golden`.
 - `openstate.ErrNoGrace` and `vfs.StateNoGrace`, answered where RFC 14 §4.2 says, in place of
   `NoReclaim`.
 
@@ -1185,14 +1185,16 @@ follows the RFC as written.
 
 ### 6.2 Programme and ownership
 
-1. **Pieces both adapters share, priced once in RFC 22's plan.** Its test-foundations epic
-   (`vfstest.Mutations` keeping each call's reference and answer, `adaptertest/golden`, the import
-   test's call-site and file-size rules; its handler harness is SMB's, and E2 lifts its runner into
-   `adaptertest` and builds NFS's over it), its negotiation epic (the
+1. **Pieces both adapters share, priced once.** The test pieces (`vfstest.Mutations` keeping each
+   call's reference and answer, `adaptertest/golden`, the import test's call-site and file-size
+   rules) and the handler runner are this plan's, in E2: RFC 22's plan's epic 2, which was to
+   build them, has no owner, and this plan builds them, agreed with Marco on 24 Nov; that epic
+   keeps SMB's handler harness and Samba's captures. RFC 22's plan prices the rest: its
+   negotiation epic (the
    totality helper in `core`'s `errors.go`), its descriptor epic (`translate`'s package shape) and
    its wire-test epic (the differential runner, which E14 does without, over `pcap-diff.sh`). If
-   this plan starts first, its E2 or E16 builds the piece it needs and that plan's figure moves with
-   it; pending a decision on #3119 if both start at once.
+   this plan starts first, the epic here that needs one of those builds it and that plan's figure
+   moves with it; pending a decision on #3119 if both start at once.
 2. **`gss`'s owner** (RFC 22's plan, its §6.2 point 2; RFC 20's plan's risk 5). E13 depends on RFC
    22's plan's epic 4 (S6c) and adds RFC 4121's `Wrap` and `Unwrap` to `gss`, a row RFC 20's plan's
    ledger gives this plan. If `gss` gets an RFC of its own, `Wrap` and `Unwrap` move with it.
@@ -1224,8 +1226,8 @@ follows the RFC as written.
 3. **Three amendments gate rows in four epics.** S2b is outside the plan; if late, E8's session
    budget on a `READ`, E10's path down, and E4's Kerberos-only `MNT` and E11's admission at `Claimed`
    wait, each with its handler built and its row parked; no ⛔ epic waits on S2b.
-4. **S0 is another plan's epic.** If RFC 22's plan's test foundations come late, S2 waits for them or
-   this plan builds them (§6.2, point 1), adding their figure here.
+4. **S0 is built here.** E2 builds the three shared pieces and the runner (§6.2, point 1), their
+   figure in E2's, so S2 waits on no other plan.
 
 ### 6.4 RFC 20's ledger rows for NFS
 
@@ -1251,9 +1253,9 @@ Each row is one of [RFC 20's plan](rfc-20-adapters-plan.md)'s deferral ledger (i
 | each request's `vfs.Call` and `Identity` from NFS's credential | E3 |
 | `fattr4`'s `attrlist4` decoded into one optional field per attribute | E5 |
 | the encoder's `resources.Buf` segment for XDR's generator | E4 (NFSv3 `READ`), used by E5 |
-| the import test's entry call sites and 800-line allowlist | the rules S0's; NFS's entry files E4 and E5 |
+| the import test's entry call sites and 800-line allowlist | the rules E2's (S0); NFS's entry files E4 and E5 |
 | the import test's cases for shared packages (`translate`, `gss` reached from NFS) | E6 (`translate`), E13 (`gss`) |
-| scripted client and a shared golden helper | E3 (client); the helper S0's |
+| scripted client and a shared golden helper | E3 (client); the helper E2's (S0) |
 | cross-protocol rows | E16, jointly with RFC 22's plan |
 | end-to-end rows: drain, slow client, reconnect, cancel, order, Kerberos, TLS | E16 |
 | wire tests against knfsd | E14 |
@@ -1362,7 +1364,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | RFC 20 §5.3, §5.4, §6.10 (codecs, gates) | E4, E5; benchmarks E16 |
 | RFC 20 §5.5 (TLS) | E3 |
 | RFC 20 §6.3 (`Flow` for NFS) | E8 |
-| RFC 20 §7.1, §7.2 | S0; NFS's entry files E4, E5 |
+| RFC 20 §7.1, §7.2 | E2 (S0); NFS's entry files E4, E5 |
 | RFC 20 §7.4, §7.5 | E16 |
 | RFC 20 §8, Appendix C | E14 |
 | RFC 20 §10 | rule 3 |
