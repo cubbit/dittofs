@@ -331,9 +331,10 @@ flowchart TD
   E3 -. "write check, tracked reads" .-> R18(["RFC 18's epic 6"]):::sync
   S3(["S3 RFC 23's node reconciles and its write path exists: its epics 3 and 4"]):::sync
   R2 --> S3
-  E2 & E3 & E4 --> E5["E5 Integration"]
+  E2 & E4 --> E5["E5 Integration"]
+  E3 -- "all but T3.10's swap" --> E5
   S3 -. "partly" .-> E5
-  E5 -. "partly: T3.10 waits for T5.2 and T5.3" .-> E3
+  E5 -. "partly: T3.10's swap waits for T5.2 and T5.3" .-> E3
   E2 -. "X1 in RFC 23's plan: dfs start, dfs init, MakeRuntimeDir" .-> R35(["RFC 23's epics 3, 4 and 5"]):::sync
   E4 -. "X1: pkg/secrets, dfs init's first password" .-> R5(["RFC 23's epics 4 and 5"]):::sync
   S4(["S4 RFC 23's dfs init exists"]):::sync --> E6["E6 E2E green"]
@@ -376,12 +377,12 @@ flowchart TD
 | Epic | Blocks | Why |
 | --- | --- | --- |
 | E1 ⛔ | every epic | Every epic builds on the frozen surface. |
-| E2, E3, E4 | E5 | Integration wires all three into the node and the API. |
+| E2, E3 (partly: not T3.10's swap), E4 | E5 | Integration wires all three into the node and the API. |
 | E1 | RFC 18's plan's epic 2 (S1) | Identity's `Deps` gain the frozen `pkg/secrets` surface there. |
 | E4 | RFC 18's plan's epic 2 (S2) | Identity seals and resolves its secrets here. |
 | E3 | RFC 18's plan's epic 6, partly | The NetBIOS cross-check is a tracked read through `Check`; the rest does not wait. Turning `identity.ntlm` back on is refused by #4050's settings route, not by a validator (RFC 18 plan's A13). |
 | E4 | E3, partly | Two of `Check`'s tests, D9's credential reference repointed at a freshly sealed `remote credential` and D10's reference to a secret of another kind or owner, need sealed secrets; the rest of E3 does not wait. |
-| E5 | E3, partly | T3.10's swaps in `walkSettings` and in T5.3's apply wait for T5.2 and T5.3 to merge, since they write those calls; the rest of T3.10, and T5.2 and T5.3, do not wait. |
+| E5 | E3, partly | T3.10's swap in `walkSettings` and `routeSettings` waits for T5.2 and T5.3 to merge, since they write those calls; the rest of T3.10, and T5.2 and T5.3, do not wait. |
 | E2 | E3, partly | The newer-schema refusal and the block format gate read the binary's registered ranges in `pkg/settings/versions.go`, which epic 2's version gate subtask adds; E3's T3.3 imports the shared strict parser epic 2's T2.1 creates; the rest of E3 does not wait. |
 | E5 | E6 | E2E green runs the wired server. |
 | RFC 23's epic 2 (outside) | E2 and E4, partly | The version gate adds a node's ranges to RFC 23's `Node` record, `WriteMissingNodeIDs` reads RFC 16's `JournalID`, and `Prune` reads the versions a node holds from its `NodeStatus`. Everything else in both epics starts at S1. |
@@ -663,12 +664,12 @@ Each carries a `ponytail:` marker at the code site:
   D7), restarted if `CFGGEN` moved during it (RFC 23 §2.3); only the scopes holding a row above the
   reconciled position, or whose row count moved, are decoded and diffed (epic 3's T3.10). T3.9's
   benchmark put the full read and diff past the first trigger, a tenth of the poll period, 100 ms:
-  279 ms sparse and 563 ms dense at 10⁴ shares. The walk alone is about a fifth of that full pass
-  in bytes and allocations, so T3.10 decodes less instead of adding an index; the ledger's row for
-  the index moved to RFC 16 (§6.1).
+  279 ms sparse and 563 ms dense at 10⁴ shares. On a quiet machine the walk alone takes 47 ms and
+  89 ms against 298 ms and 595 ms for the full pass (#5563, RFC 23 §13 item 5), so T3.10 decodes
+  less instead of adding an index. The ledger's row for the index moved to RFC 16 (§6.1).
   - *Ceiling:* the walk alone at the settings count of 10⁴ shares, once per one-second poll while
     writes keep the generation moving; the trigger is the walk's time passing 100 ms, measured by
-    epic 3's `BenchmarkReconcileScan` `walk` case (T3.10), or its restarts stalling the reconciled position under steady writes;
+    epic 3's `BenchmarkReconcileScan` `walk` case (T3.10);
     epic 5 grows RFC 23's `BenchmarkReconcile` (#4688) with the settings rows and the secrets pass
     and judges the full figure. Every `Secret` write raises the generation too, so a password
     change costs every node one such walk, with nothing to decode.
@@ -975,14 +976,14 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 	// decision: a secret resolved here is read after the second CFGGEN read, so it can be newer than gen, the generation reported; the next poll walks again and the position only lags. Overturned if a consumer needs the secret version applied to equal the reported generation.
 	for section, err := range n.resolveSecrets(ctx, cur) { // before any section applies: a moved or deleted
 		n.refused(section, err) // secret resolved again; one that fails (wrong kind, unwrap, a retired key gone)
-		cur = n.holdOrKeep(section, cur) // fails closed: held at start, else keeps its last snapshot
+		cur = n.holdOrKeep(section, cur) // fails closed: held at start, else the whole section keeps its last snapshot, Keep(section, nil).Keep(section, prev)
 	}
 	for _, ch := range pass.Diff(prev, cur) { // Diff(prev, cur) after the Keeps above, computed over what Advance rebuilt and every kept or held section; a nil prev: every key
 		switch ch.Class {
 		case settings.Live, settings.Bound: // a bound change got here only past Check's refusal
 			if err := n.reconfigure(ch.Section, cur); err != nil {
 				n.refused(ch.Section, err) // stops only that section, reported refused (RFC 13 §6, RFC 23 §2.4)
-				cur = n.holdOrKeep(ch.Section, cur) // held at start, else keeps the snapshot it last ran
+				cur = n.holdOrKeep(ch.Section, cur) // held at start, else the whole section keeps the snapshot it last ran
 			}
 		case settings.Restart:
 			if !n.rebuild(ch.Section, cur) { // an adapter's port: a new adapter (settings.SMB's note)
@@ -1541,7 +1542,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys |
 | The cluster rules: §5's two-step restart value, §5.4 and §5.5 across nodes, the two-node §9 rows; a lagging node refusing the raise (header, §4.3's `ponytail:`, O1, §1.4) | single node only | RFC 15 | a second node |
 | Pruning an old secret version once every node's status reports the new one (§4.3's `ponytail:`) | a node that is down keeps its last report and holds the prune back | RFC 15 | a second node |
-| An index by (kind, position) for reconcile's settings read, with a removal entry per delete and its pruning (§4.3's `ponytail:`) | epic 3's T3.10 decodes only the changed scopes and keeps the one walk of every row, with no new key | RFC 16 | the walk alone passes 100 ms in epic 3's benchmark, or its restarts stall the reconciled position (RFC 23 §13 item 5) |
+| An index by (kind, position) for reconcile's settings read, with a removal entry per delete and its pruning (§4.3's `ponytail:`) | epic 3's T3.10 decodes only the changed scopes and keeps the one walk of every row, with no new key | RFC 16 | the walk alone passes 100 ms in epic 3's benchmark (RFC 23 §13 item 5) |
 | The cross-component rule, RFC 13 §6's example (§4.3's `ponytail:`) | its second setting, `migration.freeze_timeout`, does not exist | unowned | that setting is declared |
 | A per-role passphrase variable for key files (§4.3's `ponytail:`) | `keyprovider` reads one variable | unowned | two roles need distinct passphrases |
 | The replacement of `kmip_fake_test.go`'s canned KMIP server, a fake that passes a conformance suite; the canned server itself moves with `keyprovider` (D5, E1's D3) | the move changes no line of it, so the "no canned stub" rule does not fire on it | unowned | the fake's first change, or its first new caller |
