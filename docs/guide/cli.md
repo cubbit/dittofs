@@ -1816,6 +1816,10 @@ a Linux SMB mount is made for your uid and gid. For SMB the mount command asks
 for the password itself; dfsctl never handles it. --dry-run prints the
 command, sudo included, instead of running it.
 
+An SMB mount on Windows from any port but 445 needs net use's /TCPPORT,
+which Windows 11 24H2 and Windows Server 2025 are the first to have, and an
+administrator prompt.
+
 ```
 dfsctl share mount [share] <mountpoint> [flags]
 ```

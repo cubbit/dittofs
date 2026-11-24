@@ -93,6 +93,9 @@ func newSetCmd(env cmdutil.Env) *cobra.Command {
 		Long: `Set a quota's limits, creating the quota when there is none; a limit whose
 flag is not given keeps its value.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := checkLimits(cmd); err != nil {
+				return err
+			}
 			c, _, err := cmdutil.NewClient(env)
 			if err != nil {
 				return err
@@ -131,6 +134,21 @@ flag is not given keeps its value.`,
 	cmd.Flags().Duration("grace", 0, "How long the soft limits may be passed before they are refused")
 	cmd.MarkFlagsOneRequired("hard-bytes", "hard-files", "soft-bytes", "soft-files", "advisory-bytes", "advisory-files", "grace")
 	return cmd
+}
+
+// checkLimits refuses a negative limit or grace, and a grace that is not
+// whole seconds, which the quota would otherwise store truncated.
+func checkLimits(cmd *cobra.Command) error {
+	f := cmd.Flags()
+	for _, flag := range []string{"hard-bytes", "hard-files", "soft-bytes", "soft-files", "advisory-bytes", "advisory-files"} {
+		if v, _ := f.GetInt64(flag); v < 0 {
+			return fmt.Errorf("%s: --%s %d: want 0 or more", cmd.CommandPath(), flag, v)
+		}
+	}
+	if g, _ := f.GetDuration("grace"); g < 0 || g%time.Second != 0 {
+		return fmt.Errorf("%s: --grace %s: want whole seconds, 0 or more", cmd.CommandPath(), g)
+	}
+	return nil
 }
 
 func newRemoveCmd(env cmdutil.Env) *cobra.Command {

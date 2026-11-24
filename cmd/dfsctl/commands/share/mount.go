@@ -42,6 +42,10 @@ a Linux SMB mount is made for your uid and gid. For SMB the mount command asks
 for the password itself; dfsctl never handles it. --dry-run prints the
 command, sudo included, instead of running it.
 
+An SMB mount on Windows from any port but 445 needs net use's /TCPPORT,
+which Windows 11 24H2 and Windows Server 2025 are the first to have, and an
+administrator prompt.
+
 Examples:
   # Mount over NFS
   dfsctl share mount archive /mnt/archive --protocol nfs
@@ -159,7 +163,7 @@ func adapterPort(cmd *cobra.Command, c *client.Client, protocol string) (int, er
 // system, the protocol, the server's host and the adapter's port, the
 // share, its NFS path or its SMB name, the mount point, the NFS version,
 // the SMB user, whether a command that needs root runs through sudo, and
-// the uid and gid of the caller a Linux SMB mount is made for.
+// the uid and gid of the caller a mount.cifs mount is made for.
 type mount struct {
 	GOOS, Protocol, Host string
 	Port                 int
@@ -171,7 +175,7 @@ type mount struct {
 
 // asCaller fills in how m runs for the process dfsctl is, of effective uid
 // euid and of uid and gid: as root, the mount command runs as it is; as
-// anyone else, through sudo, a Linux SMB mount made for uid and gid. A
+// anyone else, through sudo, a mount.cifs mount made for uid and gid. A
 // dfsctl run under sudo, sudoUser set, is refused: it would read root's
 // login, or, with HOME kept, rewrite the caller's credentials file as root.
 func asCaller(m *mount, euid, uid, gid int, sudoUser string) error {
@@ -199,11 +203,11 @@ func mountLine(m mount) ([]string, error) {
 	case "nfs/linux", "nfs/darwin":
 		return sudo(m, "mount", "-t", "nfs", "-o", nfsOptions(m), host+":"+m.Share, m.Point), nil
 	case "nfs/windows":
-		// The Windows NFS client mounts only from the standard port.
+		// This NFS client takes no port option: it mounts only from 2049.
 		if m.Port != 2049 {
 			return nil, fmt.Errorf("the Windows NFS client mounts only from port 2049, and the NFS adapter serves %d", m.Port)
 		}
-		return []string{"mount", "-o", "mtype=hard,nolock", `\\` + m.Host + strings.ReplaceAll(m.Share, "/", `\`), m.Point}, nil
+		return []string{"mount", "-o", "mtype=hard,nolock", `\\` + uncHost(m.Host) + strings.ReplaceAll(m.Share, "/", `\`), m.Point}, nil
 	case "smb/linux", "smb/darwin", "smb/windows":
 		if m.User == "" {
 			return nil, fmt.Errorf("an SMB mount needs a user: name it with --username")
@@ -217,22 +221,33 @@ func mountLine(m mount) ([]string, error) {
 		if strings.ContainsAny(m.User, ",=") {
 			return nil, fmt.Errorf("an SMB user for mount.cifs holds no comma or equals sign: %q", m.User)
 		}
-		opts := "vers=2.1,port=" + strconv.Itoa(m.Port) + ",username=" + m.User
+		// 3.0 is the first dialect that can seal, which a policy may require.
+		opts := "vers=3.1.1,port=" + strconv.Itoa(m.Port) + ",username=" + m.User
 		if m.UID != "" {
 			opts += ",uid=" + m.UID + ",gid=" + m.GID
 		}
 		return sudo(m, "mount", "-t", "cifs", "-o", opts, "//"+host+"/"+m.Share, m.Point), nil
 	case "darwin":
-		// macOS lets only a mount's owner reach its files, so mount_smbfs
-		// runs as the caller, never through sudo.
-		u := url.URL{Scheme: "smb", User: url.User(m.User), Host: host + ":" + strconv.Itoa(m.Port), Path: "/" + m.Share}
+		// Only an smbfs mount's owner reaches its files, so mount_smbfs runs
+		// as the caller, never through sudo. It reads a domain login as
+		// DOMAIN;name.
+		u := url.URL{Scheme: "smb", User: url.User(strings.Replace(m.User, `\`, ";", 1)), Host: host + ":" + strconv.Itoa(m.Port), Path: "/" + m.Share}
 		return []string{"mount_smbfs", u.String(), m.Point}, nil
 	}
-	line := []string{"net", "use", m.Point, `\\` + m.Host + `\` + m.Share, "/user:" + m.User, "*"}
+	line := []string{"net", "use", m.Point, `\\` + uncHost(m.Host) + `\` + m.Share, "/user:" + m.User, "*"}
 	if m.Port != 445 {
 		line = append(line, "/TCPPORT:"+strconv.Itoa(m.Port))
 	}
 	return line, nil
+}
+
+// uncHost is host as a UNC path names it: an IPv6 address, which a UNC
+// path cannot hold, in its ipv6-literal.net form.
+func uncHost(host string) string {
+	if !strings.Contains(host, ":") {
+		return host
+	}
+	return strings.NewReplacer(":", "-", "%", "s").Replace(host) + ".ipv6-literal.net"
 }
 
 // sudo is line, run through sudo when m says a command that needs root does.
@@ -244,19 +259,23 @@ func sudo(m mount, line ...string) []string {
 }
 
 // nfsOptions is an NFS mount's -o: NFSv3 names the MOUNT protocol's port,
-// the adapter's own, and on Linux takes nolock, since its locking needs a
-// portmapper; NFSv4 carries both in its protocol. actimeo=0 shows a change
-// at once, and macOS needs resvport.
+// the adapter's own, and keeps its locks local (nolock, or locallocks where
+// mount_nfs spells it so), since NLM needs a portmapper the server does not
+// run; NFSv4 carries both in its protocol. actimeo=0 shows a change at once,
+// and a client that binds a reserved port only when asked gets resvport.
 func nfsOptions(m mount) string {
 	opts := "nfsvers=" + m.NFSVersion + ",tcp,port=" + strconv.Itoa(m.Port)
 	if !strings.HasPrefix(m.NFSVersion, "4") {
 		opts += ",mountport=" + strconv.Itoa(m.Port)
 	}
 	opts += ",actimeo=0"
+	v3 := !strings.HasPrefix(m.NFSVersion, "4")
 	switch {
+	case m.GOOS == "darwin" && v3:
+		opts += ",resvport,locallocks"
 	case m.GOOS == "darwin":
 		opts += ",resvport"
-	case !strings.HasPrefix(m.NFSVersion, "4"):
+	case v3:
 		opts += ",nolock"
 	}
 	return opts

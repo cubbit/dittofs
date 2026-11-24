@@ -21,23 +21,31 @@ func TestMountLine(t *testing.T) {
 		{"nfs v4.1 on linux", mount{GOOS: "linux", Protocol: "nfs", Host: "dfs.example", Port: 2049, Share: "/archive", Point: "/mnt/a", NFSVersion: "4.1"},
 			"mount -t nfs -o nfsvers=4.1,tcp,port=2049,actimeo=0 dfs.example:/archive /mnt/a"},
 		{"nfs v3 on macOS", mount{GOOS: "darwin", Protocol: "nfs", Host: "dfs.example", Port: 12049, Share: "/archive", Point: "/mnt/a", NFSVersion: "3"},
-			"mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,actimeo=0,resvport dfs.example:/archive /mnt/a"},
+			"mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,actimeo=0,resvport,locallocks dfs.example:/archive /mnt/a"},
 		{"nfs over IPv6", mount{GOOS: "linux", Protocol: "nfs", Host: "::1", Port: 2049, Share: "/archive", Point: "/mnt/a", NFSVersion: "4"},
 			"mount -t nfs -o nfsvers=4,tcp,port=2049,actimeo=0 [::1]:/archive /mnt/a"},
 		{"nfs on Windows", mount{GOOS: "windows", Protocol: "nfs", Host: "dfs.example", Port: 2049, Share: "/team/archive", Point: "Z:", NFSVersion: "3"},
 			`mount -o mtype=hard,nolock \\dfs.example\team\archive Z:`},
 		{"smb on linux", mount{GOOS: "linux", Protocol: "smb", Host: "dfs.example", Port: 1445, Share: "archive", Point: "/mnt/a", User: "alice"},
-			"mount -t cifs -o vers=2.1,port=1445,username=alice //dfs.example/archive /mnt/a"},
+			"mount -t cifs -o vers=3.1.1,port=1445,username=alice //dfs.example/archive /mnt/a"},
 		{"smb on macOS", mount{GOOS: "darwin", Protocol: "smb", Host: "dfs.example", Port: 1445, Share: "archive", Point: "/mnt/a", User: "a b"},
 			"mount_smbfs smb://a%20b@dfs.example:1445/archive /mnt/a"},
 		{"nfs through sudo", mount{GOOS: "linux", Protocol: "nfs", Host: "dfs.example", Port: 2049, Share: "/archive", Point: "/mnt/a", NFSVersion: "4", Sudo: true},
 			"sudo mount -t nfs -o nfsvers=4,tcp,port=2049,actimeo=0 dfs.example:/archive /mnt/a"},
 		{"smb on linux through sudo", mount{GOOS: "linux", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "/mnt/a", User: "alice", Sudo: true, UID: "501", GID: "20"},
-			"sudo mount -t cifs -o vers=2.1,port=445,username=alice,uid=501,gid=20 //dfs.example/archive /mnt/a"},
+			"sudo mount -t cifs -o vers=3.1.1,port=445,username=alice,uid=501,gid=20 //dfs.example/archive /mnt/a"},
 		{"smb on macOS runs as the caller", mount{GOOS: "darwin", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "/mnt/a", User: "alice", Sudo: true, UID: "501", GID: "20"},
 			"mount_smbfs smb://alice@dfs.example:445/archive /mnt/a"},
 		{"smb on Windows", mount{GOOS: "windows", Protocol: "smb", Host: "dfs.example", Port: 1445, Share: "archive", Point: "Z:", User: "alice"},
 			`net use Z: \\dfs.example\archive /user:alice * /TCPPORT:1445`},
+		{"nfs v4 on macOS", mount{GOOS: "darwin", Protocol: "nfs", Host: "dfs.example", Port: 2049, Share: "/archive", Point: "/mnt/a", NFSVersion: "4"},
+			"mount -t nfs -o nfsvers=4,tcp,port=2049,actimeo=0,resvport dfs.example:/archive /mnt/a"},
+		{"smb on macOS as a domain user", mount{GOOS: "darwin", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "/mnt/a", User: `CORP\bob`},
+			"mount_smbfs smb://CORP;bob@dfs.example:445/archive /mnt/a"},
+		{"smb on Windows over IPv6", mount{GOOS: "windows", Protocol: "smb", Host: "fd00::5", Port: 445, Share: "archive", Point: "Z:", User: "alice"},
+			`net use Z: \\fd00--5.ipv6-literal.net\archive /user:alice *`},
+		{"nfs on Windows over IPv6", mount{GOOS: "windows", Protocol: "nfs", Host: "fe80::1%4", Port: 2049, Share: "/archive", Point: "Z:", NFSVersion: "3"},
+			`mount -o mtype=hard,nolock \\fe80--1s4.ipv6-literal.net\archive Z:`},
 		{"smb on Windows on 445", mount{GOOS: "windows", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "Z:", User: "alice"},
 			`net use Z: \\dfs.example\archive /user:alice *`},
 	} {
@@ -50,7 +58,7 @@ func TestMountLine(t *testing.T) {
 
 // dfsctl run as a user runs the mount command through sudo, for that
 // user's uid and gid; run as root it runs it as it is; run under sudo it is
-// refused, since it would read root's login; on Windows nothing changes.
+// refused, since it would read root's login; a host with no sudo changes nothing.
 func TestAsCaller(t *testing.T) {
 	for _, tc := range []struct {
 		name           string

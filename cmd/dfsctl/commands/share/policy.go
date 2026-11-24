@@ -164,6 +164,9 @@ func newPolicyWriteCmd(env cmdutil.Env, verb, short string, whole bool) *cobra.C
 	policyFlags(cmd)
 	if whole {
 		requirePolicy(cmd)
+	} else {
+		cmd.MarkFlagsOneRequired("flavor", "min-proof", "min-protection", "read-only", "client", "squash",
+			"smb-encrypt", "smb-hidden", "smb-continuously-available")
 	}
 	return cmd
 }
