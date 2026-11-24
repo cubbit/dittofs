@@ -35,10 +35,12 @@ row drives. **S2b**, met, for A1.
 **Blocks:**
 - E9, which builds on T8.1's callbacks value (its `Revoked` for opens and locks) and on T8.3's and
   T8.10's client IDs, and whose loopback rows need S4;
-- E10, whose back channel is T8.4's session's, whose `RecallGrant` and `RecallAny` fill T8.1's
-  value, and whose `SEQ4_STATUS_CB_PATH_DOWN` joins T8.6's flags;
-- E11, which writes T8.2's NLM arm of the `Adapter` bytes and fills T8.1's `LockWaitOver`;
-- E12, whose hold budget reads T8.5's granted slot count;
+- E10, whose T10.2 adds the slot table, `Send` and `Reply` to T8.4's `BackChannel`, whose
+  `RecallGrant` and `RecallAny` (T10.3) fill T8.1's value, and whose `SEQ4_STATUS_CB_PATH_DOWN`
+  (T10.6) joins T8.6's flags;
+- E11, whose T11.3 writes T8.2's NLM arm of the `Adapter` bytes, adds `nlm.Handlers`' callbacks
+  field and fills T8.1's `LockWaitOver` and NLM `Revoked`;
+- E12, whose hold budget (T12.4) reads T8.4's granted slot count, `Session.Fore.Slots`;
 - **S4**, an NFSv4.1 session over loopback, which T8.8 opens with E3 and E5, and through it the
   loopback rows of E6, E9, E10 and E12.
 
@@ -91,19 +93,24 @@ their error rows and golden files; `core`'s third ask of a member's `Bound` hook
   racing renew *(1 node)*" and "§3.5 confirm"'s step of a rebooted client holding a lock.
 - `CB_COMPOUND` on the back channel, the callbacks value's `RecallGrant`, `RecallAny` and `Revoked`
   for grants, `SEQ4_STATUS_CB_PATH_DOWN`, A2's `ChannelDown` and its clearing at a re-bind, and the
-  drain test against Linux's compounds: E10. This epic registers the back channel and keeps its
-  attributes and security for E10 to send on.
+  drain test against Linux's compounds: E10. This epic builds each session's `BackChannel` (T8.4):
+  its callback program, credential, granted slot count and bound connections, with
+  `NewBackChannel`, `Bind` and `Unbind`, which `CREATE_SESSION` (T8.4) and `BIND_CONN_TO_SESSION`
+  and `BACKCHANNEL_CTL` (T8.9) call. E10's T10.2 adds its slot table, `Send` and `Reply` to the same
+  type, makes `Bind` take the connection's `Keep`, and calls `Unbind` when a bound connection
+  closes.
 - NLM and NSM, the callbacks value's `LockWaitOver` and NLM `Revoked`, and `nlm.Handlers`' field
-  for the callbacks value: E11, which writes the NLM arm T8.2 defines.
-- The hold budget per session, from T8.5's slot count: E12.
+  for the callbacks value: E11's T11.3, which writes the NLM arm T8.2 defines.
+- The hold budget per session, from T8.4's slot count: E12's T12.4.
 - `RPCSEC_GSS`, a machine principal's Kerberos sign-in and `ErrExpired`'s row: E13. "no file
-  spelling"'s step with a Kerberos machine principal, on `e2e/kerberos`: E16.
+  spelling"'s step with a Kerberos machine principal: E16's T16.3, on the composed node.
 - `lease_time`, `supported_attrs` without the layout attributes and the not-supported layout and
   device operations: E5 (T5.4, T5.8); this epic's "§3.3 no pNFS on one node" row runs them over
   loopback.
 - pynfs's session, slot and replay steps of "§3.1, §3.2 sessions *(1 node)*" and "§3.2 reply
   cache", "§5.4 NFSv4.0 signal", "§5.4 single-node restart" and every row needing the composed
-  node or a kernel client: E16.
+  node or a kernel client: E16, the restart rows in its T16.4 and pynfs's steps in its burn-down,
+  planned after E15.
 - The (cluster) steps: `Rebind` on another node, session trunking across nodes, a node epoch in
   each session reference and the re-listing of `Reach.Sessions` at a new node epoch, the lease
   owner on another node: the RFC 21 implementation plan's deferral ledger, row "RFC 21's (cluster)
@@ -137,6 +144,8 @@ their error rows and golden files; `core`'s third ask of a member's `Bound` hook
 - **A1**, the amendment to RFC 20 §4.3 and §4.7: the compound runner asks each member's `Bound`
   hook once more just before it runs. **A2**, the amendment to RFC 17 §3.1: `ChannelDown`, and
   `Connect` clearing it; E10's.
+- **E14**, the capture diffs against knfsd. **E15**, the integration with the node, which turns
+  the NFS suites on.
 
 ## 2. How the general rules apply
 
@@ -155,7 +164,7 @@ cited by number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T8.2, T8.3, T8.4, T8.8, T8.10 | golden files written by hand from RFC 8881's and RFC 7530's XDR or cut from E2's knfsd NFSv4.1 captures, never from the encoder under test; real TCP over loopback; an adapter restart as a second `nfs.New` over the same `memory.New` |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.1, T8.2, T8.3, T8.4, T8.5, T8.6, T8.7 | RFC 21 §3.1's two `ponytail:` notes, 8 KiB cached replies and 64 slots, at the grant; `decision:` markers for D1 to D13 at their sites; `core/compound.go`'s `ponytail:` on the one ask removed with A1 |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer, so T8.1's not-yet-built methods have no test of their own |
-| rule 11, a symbol is exported only if an interface uses it | T8.1, T8.2, T8.4, T8.5 | exported: `wire.ClientRec` and its codec for `ops/v4` and E11's `ops/nlm`; `protocol.Sessions`, `Session`, `SessionID`, `Pending` and `Channel` for `ops/v4`; `v4.Handlers`' new fields for `nfs.go`; `adaptertest.FlowConformance` for each protocol's `Flow`. `core` gains none but through RFC 20 first (Q2, Q3) |
+| rule 11, a symbol is exported only if an interface uses it | T8.1, T8.2, T8.4, T8.5 | exported: `wire.ClientRec` and its codec for `ops/v4` and E11's `ops/nlm`; `protocol.Sessions`, `Session`, `SessionID`, `Pending`, `Channel` and `BackChannel` for `ops/v4`; `v4.Handlers`' new fields for `nfs.go`; `adaptertest.FlowConformance` for each protocol's `Flow`. `core` gains none but through RFC 20 first (Q2, Q3) |
 | rule 12, each subtask creates only what it declares | all | the callbacks value lands with `CREATE_SESSION`'s `Connect`, its first caller, in the same pull request; `nlm.Handlers`' field waits for E11's first NLM row (§9); each operation's row lands with its handler and golden files |
 | rule 13, translate, never decide | all | each handler makes at most one mutating service call; `CREATE_SESSION`'s sequence check is RFC 21 §3.5's own rule over the record's bytes, which open state never reads; the slot table is the adapter's by RFC 21 Appendix D; confirm, ownership and busy checks are the service's |
 | rule 14, nothing deferred is lost | all | §1.2 names the owner of each part of an obligation this epic leaves out; §9 names the gaps |
@@ -171,7 +180,7 @@ numbered so that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R1 | The adapter hands the service one callbacks value per client at `Connect`, a small per-client value that knows the client's connection and nothing about files, implemented once for NFS | MUST | RFC 20 §3.3 | T8.1, T8.4 |
 | R2 | The `Adapter` bytes start with the adapter's own version byte; a node that cannot read a version refuses the request rather than misreading it | MUST | RFC 21 §11.4 | T8.2 |
-| R3 | The `Adapter` bytes hold the minor version that confirmed the record, the one-slot `CREATE_SESSION` replay (the last `csa_sequence` applied and its reply), `SP4_MACH_CRED`'s `spo_must_enforce` and `spo_must_allow` as sent, for NFSv4.0 the callback address and program (`cb_client4`, `callback_ident`), and for an NLM host its `mon_name` and `priv` cookie | MUST | RFC 21 §11.4, §12 (N18, N27) | T8.2 |
+| R3 | The `Adapter` bytes hold the minor version that confirmed the record, the one-slot `CREATE_SESSION` replay (the last `csa_sequence` applied and its reply), `SP4_MACH_CRED`'s `spo_must_enforce` and `spo_must_allow` as sent, for NFSv4.0 the callback address and program (`cb_client4`, `callback_ident`), and for an NLM host its `mon_name`, `priv` cookie and the address its restart notice goes to | MUST | RFC 21 §6.2, §11.4, §12 (N18, N27) | T8.2 |
 | R4 | The adapter's durable state lives only in the record's `Adapter` bytes, written in the step of the change it belongs to and over the bytes the adapter read; it reads the record through the service on every decision that needs it and never answers from a copy it holds | invariant | RFC 21 §11.4, §12 (N10, N27) | T8.2, T8.4 |
 | R5 | The `Adapter`-bytes decoder is fuzzed with truncated, corrupt, older- and newer-version bytes: no panic, and either a valid value or a refusal, never one that decodes to other state | MUST | RFC 21 §11.6 (every decoder is fuzzed), §13 (§11.4 decoders fuzzed *(1 node)*) | T8.2 |
 
@@ -395,7 +404,7 @@ internal/adapter/nfs/
     fuzz_test.go                 T8.2  FuzzClientRec
     testdata/golden/rfc-nfs4-*.hex, knfsd-nfs4-*.hex  T8.2 to T8.10
   protocol/
-    sessions.go                  T8.3  Sessions, Pending; T8.4  Session, Channel, create and end; T8.6  renewal
+    sessions.go                  T8.3  Sessions, Pending; T8.4  Session, Channel, BackChannel, create and end; T8.6  renewal
     flow.go                      T8.5  NFS's Flow
     replay.go                    T8.5  a slot's lookup and store beside E3's cache
     stages.go                    T8.5  the header reads SEQUENCE; Route sets Session, Client, the session level
@@ -467,6 +476,8 @@ internal/adapter/nfs/
   type ClientRecNLM struct {
   	MonName string   // at most 1024 bytes
   	Priv    [16]byte
+  	Host    []byte   // the host's address, 4 or 16 bytes: where SM_NOTIFY goes (RFC 21 §6.2)
+  	Server  []byte   // the address its calls arrived on, 4 or 16 bytes: SM_NOTIFY leaves from it
   }
   var ErrRecTruncated, ErrRecCorrupt, ErrRecVersion error // §11.7's reasons
   func AppendClientRec(dst []byte, r *ClientRec) []byte
@@ -474,7 +485,7 @@ internal/adapter/nfs/
   ```
   with the generated codec, golden files written by hand from the layout, and `FuzzClientRec`
   against a second decoder written in the test. Consumed by T8.3, T8.4 and T8.10, which write and
-  read the NFSv4 arm, E11, which writes the NLM arm, and E10, which reads the callback.
+  read the NFSv4 arm, E11's T11.3, which writes the NLM arm, and E10, which reads the callback.
 - **Acceptance criteria:**
   - Each golden file decodes to its value and the value encodes to its bytes.
   - A first byte other than 1 is `ErrRecVersion`; a body cut anywhere `ErrRecTruncated`; bytes left
@@ -555,11 +566,12 @@ internal/adapter/nfs/
     ```go
     type SessionID [16]byte
     type Channel struct{ Slots, MaxRequest, MaxResponse, MaxCached, MaxOps uint32 } // as granted
-    type BackChannel struct {
-    	Program uint32
-    	Sec     wire.Auth   // AUTH_NONE or AUTH_SYS (D11)
-    	Conn    *core.Conn  // the connection bound for callbacks; E10 sends on it
-    }
+    // BackChannel is one session's back channel on this node. E10's T10.2 adds its slot
+    // table, Send and Reply in protocol/backchannel.go.
+    type BackChannel struct{ /* program, credential, granted slots, bound connections in order */ }
+    func NewBackChannel(id SessionID, minor, prog, flavour uint32, cred []byte, slots uint32) *BackChannel // AUTH_NONE or AUTH_SYS (D11)
+    func (b *BackChannel) Bind(c *core.Conn)               // the latest bound connection is the one called on
+    func (b *BackChannel) Unbind(c *core.Conn) (last bool) // last: no connection left
     type Session struct {
     	ID     SessionID
     	Ref    vfs.SessionRef
@@ -582,7 +594,8 @@ internal/adapter/nfs/
     `CONN_BACK_CHAN`, `Connect` again before the reply; drain role none. `nfs.go` builds the registry
     and hands it to `protocol.New` and the handlers. T8.1's `Revoked` arm for `RevokedLeaseExpired`
     calling `EndClient`.
-  - Consumed by T8.5 (`Get`, the slots), T8.6, T8.9, E10 (`Back`) and E12 (`Fore.Slots`).
+  - Consumed by T8.5 (`Get`, the slots), T8.6, T8.9 (`Bind`, `Unbind`), E10's T10.2, which extends
+    `BackChannel`, and E12's T12.4 (`Fore.Slots`).
 - **Acceptance criteria:**
   - A confirming `CREATE_SESSION` calls `Connect` with the proposal and T8.1's value, then
     `AddSession`, and its reply grants min(ask, 64) fore slots, min(ask, 16) back slots,
@@ -755,7 +768,8 @@ internal/adapter/nfs/
 - **Deliverables:** `destroy_session.go` (`End`, and at the node's last, `Disconnect` with `Last`
   and the entry's `Gen`, deciding again on a newer one; drain role release), `destroy_clientid.go`
   (`Destroy`; drain role release), `bind_conn_to_session.go` and `backchannel_ctl.go` (the
-  connection bound, `Connect` again when the back channel moves; `NFS4ERR_BADSESSION` for a
+  connection bound through T8.4's `Bind` and `Unbind`, `Connect` again when the back channel moves;
+  `NFS4ERR_BADSESSION` for a
   session this node does not hold); a failing `Disconnect` handed to `Deps.Retry`, which this
   subtask adds to `pkg/adapter/deps.go` if RFC 22's plan has not (§9); the `ClientBusy` row, and
   `NotYours` for `DESTROY_CLIENTID` as `NFS4ERR_WRONG_CRED`. Consumed by E10 (the back channel's
@@ -887,20 +901,34 @@ Questions pending the user's answer. Each recommended option is written in place
 Gaps and assumptions, not questions:
 
 - **The surface is put for approval**: §5's tree and the signatures in T8.1 to T8.5's Deliverables.
-- **`nlm.Handlers`' callbacks field** moves to E11, with the first NLM row that calls `Connect`; the
+- **`nlm.Handlers`' callbacks field** moves to E11's T11.3, the first NLM row that calls `Connect`; the
   RFC 21 implementation plan's D13 names it beside `v4.Handlers`' as this epic's, but `ops/nlm` has
   no `Handlers` before E11 (E3's T3.4), and rule 12 forbids a field ahead of its caller.
 - **`Deps.Retry`** is the RFC 22 implementation plan's, with the first session registry that calls
   it; if it has not landed, T8.9 adds the field and its stop after the adapters, about 0.5 man-days
   inside its figure.
 - **E2's document names E8 for `NFS4ERR_NO_GRACE`.** `ReclaimComplete` does not answer `NoGrace`,
-  and no other operation of this epic reclaims, so E9's `OPEN` and `LOCK` reclaims carry the row.
-- **Assumed of the epics broken down in parallel**, from the RFC 21 implementation plan's §5: E9 adds `Revoked` for
-  opens and locks and the NFSv4.0 stateful operations' renewal and `Record` read, and uses T8.10's
-  `StaleClient` row; E10 sends on `Session.Back`, adds `SEQ4_STATUS_CB_PATH_DOWN` to T8.6's flags
-  and rewrites `internal/vfs/clients.go`'s `decision:` with A2; E11 writes T8.2's NLM arm as
-  defined and adds `nlm.Handlers`' field; E12 reads `Session.Fore.Slots` for its hold budget; E13
-  never offers `RPCSEC_GSS` on the back channel (R29).
+  and no other operation of this epic reclaims, so E9's T9.4 carries the row with `OPEN`'s reclaims.
+  The NFSv4 rows of `ErrNoSession`, `ErrNotNegotiated` and `ErrNoTree` are T8.5's, as E13 expects;
+  E13's T13.7 writes them in the NFSv3, MOUNT, NLM and NSM tables.
+- **What the epics after this one take, settled with their documents:** E9's T9.7 adds `Revoked`
+  for opens and locks, its T9.4 reads `ClientRecNFS4.Minor` and its NFSv4.0 operations use T8.10's
+  `StaleClient` row; E10's T10.2 extends T8.4's `BackChannel` and sends on `Session.Back`, its
+  T10.6 adds `SEQ4_STATUS_CB_PATH_DOWN` to T8.6's flags and its T10.5 rewrites
+  `internal/vfs/clients.go`'s `decision:` with A2; E11's T11.3 writes T8.2's NLM arm, the host's
+  and server's addresses included, and adds `nlm.Handlers`' field; E12's T12.4 reads
+  `Session.Fore.Slots` and adds its count of held calls to `Session`; E13 never offers `RPCSEC_GSS`
+  on the back channel (R29). `memory.New`'s clock, which no test here needs (the registry has its
+  own, D13), is exported by E9's T9.7.
+- **E11's Q5, `priv`.** E11 asks whether RFC 21 drops `priv` from §6.2 and §11.4. T8.2 keeps the
+  field as RFC 21 has it; if the answer drops it, T8.2 drops it before any record is written.
+- **Which pull request carries which RFC amendment.** Q1's `Deps.Server`, Q2's `Invocation.Bound`
+  and Q3's `Conn.SetSession` go in the programme's one RFC 20 pull request, which E3's Q2 opens
+  for `Conn.Remote` and E11's Q2 joins with `Conn.Local`; if that one has merged, this epic's
+  document pull request opens the next and later epics join it. Q4's RFC 21 §11.4 sentence goes in
+  batch two's one RFC 21 pull request, opened with this document's pull request, which also
+  carries E10's, E11's, E12's, E13's, E14's and E16's RFC 21 text (each document's §9 names its
+  own).
 - **The node epoch** in a `SessionRef`, and RFC 21 §11.4's re-listing at each new node epoch, are
   (cluster), the deferral ledger's row "RFC 21's (cluster) parts"; on one node both are zero.
 - **The metric series** named in §1.2 wait for the RFC 21 implementation plan's §6.1, point 4.
