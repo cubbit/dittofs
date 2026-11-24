@@ -96,50 +96,107 @@ func (w *walkWait) await(t *testing.T) {
 	}
 }
 
-// armWaits answers once for each wait reconcile's loop sets on the node's
-// clock, which is once at the loop's start and once after each pass it
-// released, failed or not, ended. Call it before Start.
-func armWaits(h *nodetest.Harness) <-chan struct{} {
-	ch := make(chan struct{}, 256)
-
-	h.Node().OnReconcileWait(func() { ch <- struct{}{} })
-
-	return ch
+// passes follows reconcile's loop through its two hooks: arms counts the
+// waits it sets on the node's clock, once at its start and once after each
+// pass, failed or not, and starts the passes it begins. The hooks take mu, so
+// a helper holding it sees the loop either parked, with arms one above starts
+// and its wait set, or inside a pass, and the loop cannot move between the
+// helper's look and its Advance.
+type passes struct {
+	mu     sync.Mutex
+	arms   int
+	starts int
+	moved  chan struct{}
 }
 
-// waitsSettled answers for every wait reconcile armed so far, so each
-// walkTurn after it answers for its own pass alone.
-func waitsSettled(t *testing.T, armed <-chan struct{}) {
-	t.Helper()
+// armWaits follows reconcile's loop for waitsSettled and walkTurn. Call it
+// before Start.
+func armWaits(h *nodetest.Harness) *passes {
+	p := &passes{moved: make(chan struct{}, 1)}
+	note := func(count *int) {
+		p.mu.Lock()
+		*count++
+		p.mu.Unlock()
 
-	select {
-	case <-armed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("reconcile armed no wait within 10 s")
+		select {
+		case p.moved <- struct{}{}:
+		default:
+		}
 	}
 
+	h.Node().OnReconcileWait(func() { note(&p.arms) })
+	h.Node().OnReconcilePass(func() { note(&p.starts) })
+
+	return p
+}
+
+// until answers once done holds of the loop's counts, calling step, with mu
+// held, each time it does not. It fails the test if the loop moves no
+// further within limit.
+func (p *passes) until(
+	t *testing.T,
+	limit time.Duration,
+	what string,
+	done func(arms, starts int) bool,
+	step func(arms, starts int),
+) {
+	t.Helper()
+
 	for {
-		select {
-		case <-armed:
-		default:
+		p.mu.Lock()
+		if done(p.arms, p.starts) {
+			p.mu.Unlock()
 			return
+		}
+		step(p.arms, p.starts)
+		p.mu.Unlock()
+
+		select {
+		case <-p.moved:
+		case <-time.After(limit):
+			t.Fatal(what)
 		}
 	}
 }
 
-// walkTurn advances the node's clock a second and answers once the reconcile
-// pass the advance releases has ended, however long the store it read took
-// and whether it failed: the loop arms its next wait only after the pass.
-func walkTurn(t *testing.T, h *nodetest.Harness, armed <-chan struct{}) {
+// parked reports the loop waiting on the clock: it has set a wait, and every
+// pass it began has ended.
+func parked(arms, starts int) bool { return arms > 0 && arms == starts+1 }
+
+// waitsSettled answers once reconcile's loop is parked: it has set a wait
+// and no pass is running.
+func waitsSettled(t *testing.T, armed *passes) {
 	t.Helper()
 
-	h.Clock().Advance(time.Second)
+	armed.until(t, 10*time.Second, "reconcile parked on no wait within 10 s",
+		func(arms, starts int) bool { return parked(arms, starts) },
+		func(int, int) {},
+	)
+}
 
-	select {
-	case <-armed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("no reconcile pass within 30 s")
-	}
+// walkTurn answers once a reconcile pass that began after its call has
+// ended, however long the store it read took and whether it failed. A pass
+// already running when the test wrote may have read before the write, so it
+// is waited out and not counted. The clock is advanced only while the loop
+// is parked, a second, which releases exactly the one pass.
+func walkTurn(t *testing.T, h *nodetest.Harness, armed *passes) {
+	t.Helper()
+
+	armed.mu.Lock()
+	after := armed.starts
+	armed.mu.Unlock()
+
+	advanced := false
+
+	armed.until(t, 30*time.Second, "no reconcile pass within 30 s",
+		func(arms, starts int) bool { return starts > after && parked(arms, starts) },
+		func(arms, starts int) {
+			if parked(arms, starts) && !advanced {
+				h.Clock().Advance(time.Second)
+				advanced = true
+			}
+		},
+	)
 }
 
 // walkTuning is the settings shape of each section these tests declares: one
