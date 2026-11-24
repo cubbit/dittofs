@@ -67,7 +67,7 @@ Two binaries drive it:
 | **Authentication** | AUTH_UNIX + Kerberos (RPCSEC_GSS) for NFS; NTLM + Kerberos (SPNEGO) for SMB |
 | **Active Directory** | Kerberos service keytab for AD-issued tickets; optional machine account (offline or online domain join) for NTLM pass-through; LDAP idmap (`idmap_ad` / `idmap_rid`) maps AD users and nested groups to the same Unix UID/GID over SMB and NFS |
 | **Cross-protocol coordination** | Bidirectional lease/delegation breaks between SMB and NFS |
-| **Metadata stores** | BadgerDB, on disk — one per node. FoundationDB, for multi-node, is configured but not yet selectable |
+| **Metadata stores** | BadgerDB, on disk — one per node. FoundationDB, for multi-node, in the `-foundationdb` image and tarballs |
 | **Block stores** | S3, memory. One per share, fronted by an on-disk journal. Per-share isolation, async sync |
 | **Client-side encryption** | Per-remote envelope encryption (AES-256-GCM / ChaCha20-Poly1305 / XChaCha20-Poly1305) |
 | **Share snapshots** | Not yet: v1's snapshots are gone, and [RFC 12](docs/internals/rfcs/rfc-12-snapshots.md) designs the new ones |

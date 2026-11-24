@@ -8,7 +8,7 @@ what there is to pick. For the exact config keys and CLI flags, see
 > **Two different things — don't confuse them:**
 > | Layer | What it holds | Choices | Configured by |
 > |-------|---------------|---------|---------------|
-> | Metadata store (per node) | Inodes, names, attributes, ACLs; users, groups, shares, permissions | `badger` (on disk); `foundationdb` is configured but not yet selectable | `metadata.*` in config |
+> | Metadata store (per node) | Inodes, names, attributes, ACLs; users, groups, shares, permissions | `badger` (on disk); `foundationdb`, in a build with the `foundationdb` tag | `metadata.*` in config |
 > | Journal (per node) | File content | none — always on disk | `journals` devices in config |
 
 ## Metadata store (per node)
@@ -19,8 +19,8 @@ holds the control plane's records: there is no separate control-plane database.
 
 | Backend | Durable? | Nodes | Status |
 |---------|----------|-------|--------|
-| `badger` | ✅ embedded LSM on disk, at `metadata.badger.path` | one | **Default**, and the only one this build opens |
-| `foundationdb` | ✅ a FoundationDB cluster, named by `metadata.foundationdb.cluster_file` | several | Configured, but `dfs init` and `dfs start` refuse it today |
+| `badger` | ✅ embedded LSM on disk, at `metadata.badger.path` | one | **Default** |
+| `foundationdb` | ✅ a FoundationDB cluster, named by `metadata.foundationdb.cluster_file` | several | Opened only by a build with the `foundationdb` tag: the `-foundationdb` image and tarballs ([Deployment](install.md#foundationdb-metadata)) |
 
 **Best practices**
 
