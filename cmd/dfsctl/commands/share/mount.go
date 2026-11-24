@@ -1,66 +1,207 @@
 package share
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 	"github.com/spf13/cobra"
 )
 
-func newMountCmd() *cobra.Command {
-	mountCmd := &cobra.Command{
-		Use:   "mount [share] [mountpoint]",
-		Short: "Mount a share via NFS or SMB",
-		Long: `Mount a DittoFS share at a local mount point using NFS or SMB protocol.
+// defaultPorts is each adapter's port when its record names none: the
+// adapter settings' defaults, which dfsctl may not link, so a test holds
+// the two equal.
+var defaultPorts = map[string]int{"nfs": 12049, "smb": 12445}
 
-For SMB mounts, credentials are resolved in order:
+func newMountCmd(env cmdutil.Env) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "mount [share] <mountpoint>",
+		Short: "Mount a share on this host over NFS or SMB",
+		Long: `Mount a share at a mount point on this host, over NFS or SMB, from the server
+the current context names, on the port its adapter's record gives.
 
-1. --username/--password flags
-2. DITTOFS_PASSWORD environment variable (for password)
-3. Current login context username
-4. Interactive password prompt
-
-Mount commands typically require sudo/root privileges on Unix systems.
-
-Platform differences for SMB with sudo:
-
-- Linux: mount owner set to your user via uid/gid options (default mode 0755)
-- macOS: mount owned by root (uid/gid removed in Catalina), default mode 0777
-- macOS alternative: mount to ~/mnt without sudo for a user-owned mount
-- Windows: uses 'net use' to map network drives (e.g. dfsctl share mount /export --protocol smb Z:)
+The command runs the host's own mount command, which typically needs root.
+For SMB that command asks for the password itself; dfsctl never handles it.
+--dry-run prints the command instead of running it.
 
 Examples:
-  # Mount via NFS
-  dfsctl share mount /export --protocol nfs /mnt/dittofs
+  # Mount over NFS
+  sudo dfsctl share mount archive /mnt/archive --protocol nfs
 
-  # Mount via SMB
-  dfsctl share mount /export --protocol smb /mnt/dittofs
+  # Mount over NFSv4.1
+  sudo dfsctl share mount archive /mnt/archive --protocol nfs --nfs-version 4.1
 
-  # Mount via SMB with explicit credentials
-  dfsctl share mount /export --protocol smb --username alice /mnt/dittofs
+  # Mount over SMB as alice
+  sudo dfsctl share mount archive /mnt/archive --protocol smb --username alice
 
-  # Mount via SMB with password from environment
-  DITTOFS_PASSWORD=secret dfsctl share mount /export --protocol smb /mnt/dittofs
-
-  # Mount to user directory without sudo (macOS only, recommended)
-  mkdir -p ~/mnt/dittofs && dfsctl share mount /export --protocol smb ~/mnt/dittofs`,
+  # Map a drive on Windows
+  dfsctl share mount archive Z: --protocol smb`,
 		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) < 2 {
-				return fmt.Errorf("requires share path and mount point\n\nUsage: dfsctl share mount [share] [mountpoint] --protocol <nfs|smb>\n\nExample: dfsctl share mount --protocol nfs /export /mnt/dittofs")
+			want := 2
+			if id, _ := cmd.Flags().GetString("id"); id != "" {
+				want = 1
 			}
-			if len(args) > 2 {
-				return fmt.Errorf("accepts 2 args, received %d", len(args))
+			if len(args) != want {
+				return fmt.Errorf("%s: name the share by its name or by --id, exactly one, and the mount point", cmd.CommandPath())
 			}
 			return nil
 		},
-		RunE: cmdutil.Unavailable,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, target, err := cmdutil.NewClient(env)
+			if err != nil {
+				return err
+			}
+			path := cmd.CommandPath()
+			id, err := cmdutil.Resolve(cmd, c.Shares(), "share", args[:len(args)-1])
+			if err != nil {
+				return err
+			}
+			sh, err := c.Shares().Get(cmd.Context(), id)
+			if err != nil {
+				return fmt.Errorf("%s: share %s: %w", path, id, err)
+			}
+			m := mount{GOOS: runtime.GOOS, Host: "localhost", Share: sh.Spec.Path, Point: args[len(args)-1]}
+			m.Protocol, _ = cmd.Flags().GetString("protocol")
+			m.NFSVersion, _ = cmd.Flags().GetString("nfs-version")
+			m.User, _ = cmd.Flags().GetString("username")
+			if m.User == "" {
+				m.User = target.Dialled.Username
+			}
+			if m.Protocol == "smb" {
+				m.Share = sh.Spec.Name
+			}
+			// A context naming a local socket has no host: the server is this one.
+			if u, err := url.Parse(target.Dialled.ServerURL); err == nil && u.Hostname() != "" {
+				m.Host = u.Hostname()
+			}
+			if m.Port, err = adapterPort(cmd, c, m.Protocol); err != nil {
+				return err
+			}
+			line, err := mountLine(m)
+			if err != nil {
+				return fmt.Errorf("%s: %w", path, err)
+			}
+			if dry, _ := cmd.Flags().GetBool("dry-run"); dry {
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), strings.Join(line, " "))
+				return err
+			}
+			// decision: share mount is the one command that does more than call
+			// the API: it runs the host's mount command. It reads only the share
+			// and its adapter through the API, and no store or bootstrap, so the
+			// CLI still links nothing of the server.
+			x := exec.CommandContext(cmd.Context(), line[0], line[1:]...)
+			x.Stdin, x.Stdout, x.Stderr = env.In, cmd.OutOrStdout(), cmd.ErrOrStderr()
+			if err := x.Run(); err != nil {
+				return fmt.Errorf("%s: %s: %w", path, strings.Join(line, " "), err)
+			}
+			return nil
+		},
 	}
-	mountCmd.Flags().StringP("protocol", "p", "", "Protocol to use (nfs or smb) (required)")
-	mountCmd.Flags().StringP("username", "u", "", "Username for SMB mount (defaults to login username)")
-	mountCmd.Flags().StringP("password", "P", "", "Password for SMB mount (will prompt if not provided)")
-	mountCmd.Flags().String("nfs-version", "3", "NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper")
-	mountCmd.Flags().String("file-mode", "", "File permissions for SMB mount (octal; default 0755 on Linux, 0777 on macOS)")
-	mountCmd.Flags().String("dir-mode", "", "Directory permissions for SMB mount (octal; default 0755 on Linux, 0777 on macOS)")
-	_ = mountCmd.MarkFlagRequired("protocol")
-	return mountCmd
+	cmd.Flags().String("id", "", "The share's ID, in place of its name")
+	cmd.Flags().StringP("protocol", "p", "", "The protocol to mount over: nfs or smb")
+	cmd.Flags().String("nfs-version", "3", "The NFS version: 3, 4, 4.0, 4.1 or 4.2")
+	cmd.Flags().StringP("username", "u", "", "The SMB user; the current context's account when not given")
+	cmd.Flags().Bool("dry-run", false, "Print the mount command instead of running it")
+	_ = cmd.MarkFlagRequired("protocol")
+	return cmd
+}
+
+// adapterPort is the port protocol's adapter record names, or the adapter's
+// default when it names none.
+//
+// decision: the port is the installation's record, not a node override:
+// dfsctl does not know which node the host it mounts from is.
+func adapterPort(cmd *cobra.Command, c *client.Client, protocol string) (int, error) {
+	port, ok := defaultPorts[protocol]
+	if !ok {
+		return 0, fmt.Errorf("%s: --protocol %q: want nfs or smb", cmd.CommandPath(), protocol)
+	}
+	a, err := c.Adapters().Get(cmd.Context(), protocol)
+	if err != nil {
+		return 0, fmt.Errorf("%s: the %s adapter: %w", cmd.CommandPath(), protocol, err)
+	}
+	if raw, ok := a.Spec.Settings["port"]; ok {
+		if err := json.Unmarshal(raw, &port); err != nil {
+			return 0, fmt.Errorf("%s: the %s adapter's port %s: %w", cmd.CommandPath(), protocol, raw, err)
+		}
+	}
+	return port, nil
+}
+
+// mount is what a mount command is built from: the host's operating
+// system, the protocol, the server's host and the adapter's port, the
+// share, its NFS path or its SMB name, the mount point, the NFS version
+// and the SMB user.
+type mount struct {
+	GOOS, Protocol, Host string
+	Port                 int
+	Share, Point         string
+	NFSVersion, User     string
+}
+
+// mountLine is the command line that mounts m on m.GOOS. No line carries
+// a password: an SMB mount asks for it itself.
+func mountLine(m mount) ([]string, error) {
+	host := m.Host
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	switch m.Protocol + "/" + m.GOOS {
+	case "nfs/linux", "nfs/darwin":
+		return []string{"mount", "-t", "nfs", "-o", nfsOptions(m), host + ":" + m.Share, m.Point}, nil
+	case "nfs/windows":
+		// The Windows NFS client mounts only from the standard port.
+		if m.Port != 2049 {
+			return nil, fmt.Errorf("the Windows NFS client mounts only from port 2049, and the NFS adapter serves %d", m.Port)
+		}
+		return []string{"mount", "-o", "mtype=hard,nolock", `\\` + m.Host + strings.ReplaceAll(m.Share, "/", `\`), m.Point}, nil
+	case "smb/linux", "smb/darwin", "smb/windows":
+		if m.User == "" {
+			return nil, fmt.Errorf("an SMB mount needs a user: name it with --username")
+		}
+	default:
+		return nil, fmt.Errorf("mounting over %q on %s is not supported", m.Protocol, m.GOOS)
+	}
+	switch m.GOOS {
+	case "linux":
+		// mount.cifs splits its options on commas.
+		if strings.ContainsAny(m.User, ",=") {
+			return nil, fmt.Errorf("an SMB user for mount.cifs holds no comma or equals sign: %q", m.User)
+		}
+		return []string{"mount", "-t", "cifs", "-o", "vers=2.1,port=" + strconv.Itoa(m.Port) + ",username=" + m.User,
+			"//" + host + "/" + m.Share, m.Point}, nil
+	case "darwin":
+		u := url.URL{Scheme: "smb", User: url.User(m.User), Host: host + ":" + strconv.Itoa(m.Port), Path: "/" + m.Share}
+		return []string{"mount_smbfs", u.String(), m.Point}, nil
+	}
+	line := []string{"net", "use", m.Point, `\\` + m.Host + `\` + m.Share, "/user:" + m.User, "*"}
+	if m.Port != 445 {
+		line = append(line, "/TCPPORT:"+strconv.Itoa(m.Port))
+	}
+	return line, nil
+}
+
+// nfsOptions is an NFS mount's -o: NFSv3 names the MOUNT protocol's port,
+// the adapter's own, and on Linux takes nolock, since its locking needs a
+// portmapper; NFSv4 carries both in its protocol. actimeo=0 shows a change
+// at once, and macOS needs resvport.
+func nfsOptions(m mount) string {
+	opts := "nfsvers=" + m.NFSVersion + ",tcp,port=" + strconv.Itoa(m.Port)
+	if !strings.HasPrefix(m.NFSVersion, "4") {
+		opts += ",mountport=" + strconv.Itoa(m.Port)
+	}
+	opts += ",actimeo=0"
+	switch {
+	case m.GOOS == "darwin":
+		opts += ",resvport"
+	case !strings.HasPrefix(m.NFSVersion, "4"):
+		opts += ",nolock"
+	}
+	return opts
 }
