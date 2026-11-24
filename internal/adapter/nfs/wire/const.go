@@ -22,14 +22,10 @@ const (
 	ProcCompound uint32 = 1
 )
 
-// The program statuses the adapter's tables answer with, from RFC 1813
-// section 2.6 and RFC 7530 section 13: NFSv3's and NFSv4's fault, and a
-// COMPOUND's minor version not served (RFC 21 section 11.5).
-const (
-	NFS3ErrServerFault       uint32 = 10006
-	NFS4ErrServerFault       uint32 = 10006
-	NFS4ErrMinorVersMismatch uint32 = 10021
-)
+// NFS3ErrServerFault is NFSv3's fault, NFS3ERR_SERVERFAULT (RFC 1813 section
+// 2.6), which NFSv3's table answers an error no row names with (RFC 21
+// section 11.5).
+const NFS3ErrServerFault uint32 = 10006
 
 // The message types, reply states, accept states, reject states, auth stats
 // and flavours are RFC 5531's section 9 and Appendix A, and RFC 2203's.

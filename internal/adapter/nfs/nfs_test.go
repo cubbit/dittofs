@@ -18,13 +18,15 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/internal/adapter/nfs/protocol"
-	"github.com/cubbit/dittofs/internal/adapter/nfs/wire"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
+
+// nfs4ErrMinorVersMismatch is NFS4ERR_MINOR_VERS_MISMATCH (RFC 7530 section 13).
+const nfs4ErrMinorVersMismatch = 10021
 
 // The numbers the tests write and read, written here from the specifications
 // rather than taken from the wire package: RFC 5531 section 9 and Appendix A,
@@ -300,8 +302,8 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 			call(3, progNFS, 3, 0, append(words(authSys), opaque(sys)...)),
 			words(3, 1, 1, 1, authBadCred)}, // REPLY, MSG_DENIED, AUTH_ERROR
 		{"a COMPOUND of minor version 3 from the version 4 table", "nfs4",
-			call(4, progNFS, 4, 1, none, append(tag, words(3, 0)...)...),                        // COMPOUND: tag, minor version, no operations
-			append(append(accepted(4, 0, wire.NFS4ErrMinorVersMismatch), tag...), words(0)...)}, // SUCCESS, the status, the tag, no results
+			call(4, progNFS, 4, 1, none, append(tag, words(3, 0)...)...),                   // COMPOUND: tag, minor version, no operations
+			append(append(accepted(4, 0, nfs4ErrMinorVersMismatch), tag...), words(0)...)}, // SUCCESS, the status, the tag, no results
 		{"a verifier past the record", "nfs3",
 			words(5, 0, 2, progNFS, 3, 0, authNone, 0, authNone, 8), accepted(5, garbageArgs)},
 		{"a NULL after it", "nfs3",
@@ -383,7 +385,7 @@ func golden(t *testing.T, name string) []byte {
 // under nfs4. A procedure is its structs and one core.Row line.
 func TestANullRowAnswersAsTheReferenceServer(t *testing.T) {
 	d := leakChecked(t)
-	v4 := core.NewOpTable(tables().V4.Errors, false,
+	v4 := core.NewOpTable(tables(d).V4.Errors, false,
 		core.Row[void, void](0, "null", core.NeedsNothing,
 			func(context.Context, *core.Request, void) (void, error) { return void{}, nil }))
 	v4.Protocol = "nfs4"
@@ -489,35 +491,62 @@ func TestTwoAdaptersServeTheirOwnRanges(t *testing.T) {
 	}
 }
 
-// Each program's table maps what the loopback tests leave unreached:
-// arguments that do not decode, which only a row decodes, an error no row
-// names, which is its program's fault, and a procedure NFSv4's table lacks
-// (RFC 21 section 11.5).
+// Each program's table maps what the loopback tests leave unreached, each
+// row by minor version where NFSv4's differ: arguments that do not decode,
+// which only a row decodes, an error no row names, which is its program's
+// fault, a procedure NFSv4's table lacks, a COMPOUND past the cap or whose
+// reply is too big, NFSv4.0 answering NFS4ERR_RESOURCE for both, and, in
+// NFSv4's members' table, a member that does not decode, names a code no row
+// serves or one its minor version does not define (RFC 21 section 11.5).
 func TestEachTableMapsCoresRefusals(t *testing.T) {
 	adaptertest.CheckLeaks(t, nil)
 	// accept is an RPC accept state's status, as the header stage encodes it:
 	// 1 in the two high bits.
 	accept := func(state uint32) core.Status { return core.Status(1<<30 | state) }
-	const serverFault = 10006 // NFS3ERR_SERVERFAULT and NFS4ERR_SERVERFAULT
-	ts := tables()
+	// The nfsstat4 values, from RFC 7530 section 13 and RFC 8881 section 15.
+	const (
+		serverFault  = 10006 // NFS3ERR_SERVERFAULT and NFS4ERR_SERVERFAULT
+		notSupp      = 10004 // NFS4ERR_NOTSUPP
+		resource     = 10018 // NFS4ERR_RESOURCE
+		badXDR       = 10036 // NFS4ERR_BADXDR
+		opIllegal    = 10044 // NFS4ERR_OP_ILLEGAL
+		repTooBig    = 10066 // NFS4ERR_REP_TOO_BIG
+		tooManyOps   = 10070 // NFS4ERR_TOO_MANY_OPS
+		compoundProc = 1
+	)
+	ts := tables(adapter.Deps{})
+	members := ts.V4.Ops[compoundProc].Members
 	other := errors.New("an error no row names")
 	for _, tc := range []struct {
 		name  string
 		table *core.OpTable
 		err   error
+		minor core.Version
 		want  core.Status
 	}{
-		{"NFSv3's decode", ts.V3, core.ErrDecode, accept(garbageArgs)},
-		{"NFSv3's fault", ts.V3, other, serverFault},
-		{"NFSv4's not supported", ts.V4, core.ErrNotSupported, accept(procUnavail)},
-		{"NFSv4's decode", ts.V4, core.ErrDecode, accept(garbageArgs)},
-		{"NFSv4's fault", ts.V4, other, serverFault},
-		{"MOUNT's decode", ts.Mount, core.ErrDecode, accept(garbageArgs)},
-		{"MOUNT's fault", ts.Mount, other, accept(systemErr)},
-		{"NLM's fault", ts.NLM, other, accept(systemErr)},
-		{"NSM's fault", ts.NSM, other, accept(systemErr)},
+		{"NFSv3's decode", ts.V3, core.ErrDecode, 0, accept(garbageArgs)},
+		{"NFSv3's fault", ts.V3, other, 0, serverFault},
+		{"NFSv4's not supported", ts.V4, core.ErrNotSupported, 0, accept(procUnavail)},
+		{"NFSv4's decode", ts.V4, core.ErrDecode, 1, accept(garbageArgs)},
+		{"NFSv4's fault", ts.V4, other, 1, serverFault},
+		{"NFSv4's minor version", ts.V4, core.ErrVersion, 3, nfs4ErrMinorVersMismatch},
+		{"NFSv4.0's cap", ts.V4, core.ErrTooLong, 0, resource},
+		{"NFSv4.1's cap", ts.V4, core.ErrTooLong, 1, tooManyOps},
+		{"NFSv4.2's cap", ts.V4, core.ErrTooLong, 2, tooManyOps},
+		{"NFSv4.0's reply too big", ts.V4, core.ErrReplyTooBig, 0, resource},
+		{"NFSv4.1's reply too big", ts.V4, core.ErrReplyTooBig, 1, repTooBig},
+		{"NFSv4.2's reply too big", ts.V4, core.ErrReplyTooBig, 2, repTooBig},
+		{"an NFSv4.0 member's decode", members, core.ErrDecode, 0, badXDR},
+		{"an NFSv4.2 member's decode", members, core.ErrDecode, 2, badXDR},
+		{"an NFSv4 member no row serves", members, core.ErrNotSupported, 1, notSupp},
+		{"an NFSv4 member its minor version lacks", members, core.ErrVersion, 0, opIllegal},
+		{"an NFSv4 member's fault", members, other, 1, serverFault},
+		{"MOUNT's decode", ts.Mount, core.ErrDecode, 0, accept(garbageArgs)},
+		{"MOUNT's fault", ts.Mount, other, 0, accept(systemErr)},
+		{"NLM's fault", ts.NLM, other, 0, accept(systemErr)},
+		{"NSM's fault", ts.NSM, other, 0, accept(systemErr)},
 	} {
-		if got, _, _ := tc.table.Errors.Map(tc.err, nil, 0); got != tc.want {
+		if got, _, _ := tc.table.Errors.Map(tc.err, nil, tc.minor); got != tc.want {
 			t.Errorf("%s: %#x, want %#x", tc.name, uint32(got), uint32(tc.want))
 		}
 	}

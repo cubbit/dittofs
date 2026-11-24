@@ -18,6 +18,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
+// nfs4ErrMinorVersMismatch is NFS4ERR_MINOR_VERS_MISMATCH (RFC 7530 section 13).
+const nfs4ErrMinorVersMismatch uint32 = 10021
+
 // tables builds one empty table per program, so a routed table is a pointer the
 // test can compare.
 func tables() (Tables, *core.ErrorTable) {
@@ -376,7 +379,7 @@ func TestTheMinorVersions(t *testing.T) {
 		t.Fatalf("minor 2: %p, %v; want the version 4 table and ErrVersion", table, err)
 	}
 	out := &resources.Buf{}
-	if err := s.Encode(h, core.Status(wire.NFS4ErrMinorVersMismatch), out); err != nil {
+	if err := s.Encode(h, core.Status(nfs4ErrMinorVersMismatch), out); err != nil {
 		t.Fatal(err)
 	}
 	if len(out.B) != 24+4+4+8+4 {
@@ -600,7 +603,7 @@ func TestReplyLenBoundsEncode(t *testing.T) {
 			core.Status(wire.StatusProgram), statusProgUnavail, statusProgMismatch, statusRPCMismatch, statusAuthCred, statusAuthVerf,
 			core.Status(wire.StatusAccept | wire.AcceptGarbageArgs), core.Status(wire.StatusAccept | wire.AcceptSystemErr),
 		}, false},
-		{"a five-byte-tag COMPOUND", compoundCall(0, "abcde"), []core.Status{0, core.Status(wire.NFS4ErrMinorVersMismatch)}, true},
+		{"a five-byte-tag COMPOUND", compoundCall(0, "abcde"), []core.Status{0, core.Status(nfs4ErrMinorVersMismatch)}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h, err := decode(t, s, c.body)
@@ -641,7 +644,7 @@ func TestReplyLenBoundsEncode(t *testing.T) {
 func FuzzReplyLenBoundsEncode(f *testing.F) {
 	f.Add(call(wire.ProgNFS, 3), uint32(statusProgMismatch))
 	f.Add(nullCall(wire.ProgNFS, 3, 0, wire.AuthSys, authSys("host", 1000, 1000, 4, 24), wire.AuthNone, nil, nil), uint32(statusAuthCred))
-	f.Add(compoundCall(0, "abcde"), wire.NFS4ErrMinorVersMismatch)
+	f.Add(compoundCall(0, "abcde"), nfs4ErrMinorVersMismatch)
 	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
 	f.Fuzz(func(t *testing.T, body []byte, st uint32) {
 		h, _ := s.Decode(&resources.Buf{B: body}, 0)

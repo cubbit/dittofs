@@ -14,6 +14,9 @@ import (
 	"github.com/cubbit/dittofs/internal/prof"
 )
 
+// nfs4ErrMinorVersMismatch is NFS4ERR_MINOR_VERS_MISMATCH (RFC 7530 section 13).
+const nfs4ErrMinorVersMismatch = 10021
+
 // readGolden reads testdata/golden/name.hex: its bytes as hex digits, a # to
 // the end of its line a comment.
 func readGolden(t testing.TB, name string) []byte {
@@ -561,7 +564,7 @@ func TestReplies(t *testing.T) {
 		{"deny-rpc-mismatch", wire.AppendDenied(nil, 0x33b50de8, true, 0)},
 		{"deny-auth-badcred", wire.AppendDenied(nil, 0x33b50de8, false, wire.AuthBadCred)},
 		{"deny-auth-badverf", wire.AppendDenied(nil, 0x33b50de8, false, wire.AuthBadVerf)},
-		{"compound-minor-mismatch", wire.AppendCompoundStatus(nil, wire.NFS4ErrMinorVersMismatch, []byte("abcde"), 0)},
+		{"compound-minor-mismatch", wire.AppendCompoundStatus(nil, nfs4ErrMinorVersMismatch, []byte("abcde"), 0)},
 		{"compound-two-results", wire.AppendCompoundStatus(nil, 0, []byte("abcde"), 2)},
 	} {
 		t.Run(c.golden, func(t *testing.T) {
