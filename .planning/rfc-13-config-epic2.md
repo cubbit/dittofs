@@ -231,7 +231,12 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
   (`pkg/metadata/entity/node.go:28-32` on `feat/storage-v2`, #4527), but no value of `Format` and
   no `Installation.Active` (RFC 16 §2.3's `map[Format]uint32`). The gate is their first reader, so
   T2.8 declares the values (store, journal, block, settings schema) and `Active`, with its codec,
-  and leaves `Format` and `VersionRange` as they are. No marker.
+  and leaves `Format` and `VersionRange` as they are. A registered format with no `Active`
+  entry has no active version written for it: the start passes and registers its ranges, and
+  the entry appears only when the control plane's gate raises one, which no open of the store
+  does (RFC 16 §2.3); `format_active_version` holds no label until then for the journal, block
+  and settings formats, since an empty map is a fresh installation's, while the store format's
+  label always holds the store's own version. No marker.
 - **D7, the host's file keeps its path and its loader, and the environment is scanned.** The path
   is `$XDG_CONFIG_HOME/dittofs/config.yaml` when that is set, else `~/.config/dittofs/config.yaml`, with `--config`, or else `DITTOFS_CONFIG`, naming another,
   through the existing viper loader renamed into `pkg/bootstrap`; `DITTOFS_CONFIG` is new code,
@@ -632,7 +637,7 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   each refusal (catches a registration committed before the comparison, RFC 23 §2.2 step 3); a `Register` under an older active version keeps it and the
   record holds only its ranges after (catches a gate that upgrades, R25); after `Register`, the node record's
   `Formats` holds each format's range and equals `pkg/settings/versions.go`'s table, the store format's equal to `MinFormat` and `MaxFormat`
-  (catches a registration dropped or a range off by one, R22, or a table the gate does not read); an `Installation.Active` entry for a `Format` value this binary does not register, written through kvstore and read back, refuses naming the format (catches a gate that loops over its own ranges and skips it, and an `Active` codec that drops a key it does not know, as an older binary meets after a downgrade); the three series read from the
+  (catches a registration dropped or a range off by one, R22, or a table the gate does not read); an `Installation.Active` entry for a `Format` value this binary does not register, written through kvstore and read back, refuses naming the format (catches a gate that loops over its own ranges and skips it, and an `Active` codec that drops a key it does not know, as an older binary meets after a downgrade); no `Active` entry for a format this binary registers starts and registers its ranges, writing nothing but the node record, leaving the installation record as it was, the journal, block and settings formats' `format_active_version` labels absent until a raise writes one, and the store format's label holding the store's own version (catches a gate that invents a zero active version or refuses a fresh installation's sparse record, D6); an `Active` list cut short, written through kvstore, refuses naming the installation record and the decode error, the node record left as it was (catches a gate that swallows a decode error and starts, or rewrites the record); the three series read from the
   registry after `Register` (R26). No test calls a raise: none exists (§1.2). A store with its `\x00format` raised past `MaxFormat` is refused by `node.New` before the gate runs: RFC 23's T3.10 tests it through a start.
 
 ### T2.9 `dfsbench` on `dfs init`
