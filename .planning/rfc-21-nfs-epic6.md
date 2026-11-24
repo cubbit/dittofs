@@ -58,7 +58,7 @@ service half of an amendment (D1), then the translation, then the attributes.
 The service half (D1): each list's flags with defaulted, the parts a read names, an ACL set and a
 mode mask in an attribute change, a umask and an ACL set in a create. `translate`'s `Names`
 interface and NFSv4 functions, `ops/v4`'s `Names` over `Spell` and `Find`, their property tests
-and fuzz target, and the import rule for `translate`. The `acl`, `dacl`, `sacl`, `aclsupport` and
+and fuzz target. The `acl`, `dacl`, `sacl`, `aclsupport` and
 `mode_umask` rows of E5's attribute table, `mode` with an ACL and `mode_set_masked`, the ACL
 attributes at create, and the `ErrUnknownPrincipal` row for a `who` (RFC 20 §4.5, NFSv4).
 
@@ -76,6 +76,8 @@ attributes at create, and the `ErrUnknownPrincipal` row for a `who` (RFC 20 §4.
 - Recording `acl_set_refused_total`, `acl_set_normalised_total`, `acl_who_sid_fallback_total` and
   `adapter_translation_refused_total{reason="attribute"}`: whoever §6.1 point 4 of the plan names,
   pending Marco (§9, point 4). This epic returns the counts and reasons they need.
+- The import test's rule for `translate` (RFC 20 §2.3): E4's T4.4, which creates the package and
+  adds the rule with it; this epic's functions are held to it.
 - A batched `Spell`: the plan's deferral ledger row "A batched `Spell`", owned by RFC 17.
 - The compound's reply budget that answers `NFS4ERR_REP_TOO_BIG`, and NFSv4.0's answer to a reply
   over the record cap: E1, E3 and E8. This epic only runs its row for `acl` (T6.5).
@@ -85,7 +87,8 @@ attributes at create, and the `ErrUnknownPrincipal` row for a `who` (RFC 20 §4.
 - **E1**, the NFS surface: `protocol.State` and the NFSv4 members' table.
 - **E3**, the RPC layer, with the scripted client every loopback row uses (T3.2).
 - **E4**, NFSv3 and MOUNT, which builds the service half of an RFC 17 amendment its plan agreed,
-  the precedent D2 follows, and creates `internal/adapter/translate` (T4.4).
+  the precedent D2 follows, and creates `internal/adapter/translate` with the import test's rule
+  for it (T4.4).
 - **E5**, the NFSv4 namespace, attributes and data path: the `fattr4` struct (T5.3), `GETATTR`
   (T5.4), `SETATTR`, `VERIFY` and `NVERIFY` (T5.5), `CREATE` (T5.6), `owner` and `owner_group`.
 - **E7**, identity's NFS side: a `Claimed` caller resolved (T7.1), the owner schemes (T7.2), D4's
@@ -148,8 +151,8 @@ subtasks and tests can cite them.
 | R10 | A set RFC 19 refuses is refused whole and nothing is stored: a `who` no principal holds is `NFS4ERR_BADOWNER`, so the translation returns the lookup's `ErrUnknownPrincipal` for it rather than `ErrInvalid`; another entry type, a list over the limit, a deny naming a well-known principal that matches no caller, and `acl` with `dacl` or `sacl` are `NFS4ERR_INVAL` | MUST | RFC 21 §11.3 ("Refusals"); RFC 19 §2.8 | T6.2, T6.3 |
 | R11 | A lookup failing with an error other than "no principal holds this spelling" fails the set with that error, never `ErrInvalid` | MUST | RFC 19 §2.8; §5.1 (`Names` passes every error through) | T6.2 |
 | R12 | A set is never accepted with an entry left out, but for an entry naming a deleted principal (the null SID), which is left out and counted | MUST NOT | RFC 19 §2.8, §5.2 | T6.2 |
-| R13 | `ACLFromNFSv4` returns what a set cleared or replaced to fit the model (`Normalised`) and a refusal's reason among `kind`, `principal`, `limit`, `deny_unmatched` and `generic`, and `NFSv4FromACL` how many entries it spelled by SID, for the adapter to count as `acl_set_refused_total`, `acl_set_normalised_total` and `acl_who_sid_fallback_total` | MUST | RFC 19 §5.1, §8 | T6.2 |
-| R14 | `translate` imports only neutral types, and both adapters import it | MUST | RFC 20 §2.3; RFC 19 §5.1 | T6.2 |
+| R13 | `ACLFromNFSv4` returns what a set cleared or replaced to fit the model (`Normalised`) and a refusal's reason among `kind`, `principal`, `limit`, `deny_unmatched` and `generic`, `principal` carried by a `who` no principal holds, which still unwraps to `ErrUnknownPrincipal`, and `NFSv4FromACL` how many entries it spelled by SID, for the adapter to count as `acl_set_refused_total`, `acl_set_normalised_total` and `acl_who_sid_fallback_total` | MUST | RFC 19 §5.1, §8 | T6.2 |
+| R14 | `translate` imports only neutral types, and both adapters import it; enforced by the import test's rule E4's T4.4 adds | MUST | RFC 20 §2.3; RFC 19 §5.1 | T6.2 |
 
 **`who`**
 
@@ -184,7 +187,7 @@ subtasks and tests can cite them.
 | R33 | An `acl` or `dacl` in an `OPEN` or `CREATE`'s attributes sets the new file's access list only; its audit list is the inherited one unless the caller holds the system-security right and sends `sacl` or audit entries | MUST | RFC 21 §11.3 ("At create"); RFC 19 §4.4 | T6.1, T6.4 |
 | R34 | `mode_umask` (NFSv4.2) is settable at create only: the mode is masked by the umask when the parent holds no inheritable entry, and the umask ignored when it does, so the create never adds an entry the inherited ACL lacked | MUST | RFC 21 §11.3 ("umask"), Appendix B; RFC 19 §4.4 | T6.1, T6.4 |
 | R49 | A create carrying `acl` or `dacl` takes the new file's permission bits from that access list, as `Mode` reads it, and only setuid, setgid and sticky from the sent `mode`; `mode_umask` is ignored, so the mode and the ACL never disagree | MUST | RFC 21 §11.3 ("With `mode`", "umask", "At create"); RFC 19 §4.3, §4.4 | T6.1, T6.4 |
-| R46 | `suppattr_exclcreat` names `mode`, `mode_umask`, `owner`, `owner_group`, `acl` and the `time_*_set` attributes; those an `EXCLUSIVE4_1` open carries are applied by the create's own transaction and leave the verifier in place | MUST | RFC 21 Appendix B, §11.3 ("Exclusive create") | T6.4 |
+| R46 | `suppattr_exclcreat` names `mode`, `mode_umask`, `owner`, `owner_group`, `acl` and the `time_*_set` attributes, `mode_umask` on NFSv4.2 only, the one minor version it exists on; those an `EXCLUSIVE4_1` open carries are applied by the create's own transaction and leave the verifier in place | MUST | RFC 21 Appendix B, §11.3 ("Exclusive create") | T6.4 |
 | R35 | A handler makes at most one mutating service call: a `SETATTR` or a create carrying ACL attributes, with `mode`, `owner` or `owner_group` or without, is one call | MUST | RFC 20 §4.3; RFC 21 §11.3 ("With `mode`", "At create") | T6.1, T6.3, T6.4 |
 | R36 | Over NFSv4.1 and 4.2, a reply that cannot carry the list whole fails `NFS4ERR_REP_TOO_BIG`; a read never returns a shorter `acl` | MUST | RFC 19 §2.8, §9 ("§2.8 server-built lists") | T6.5 |
 | R37 | Audit entries are read or changed only by an administrator, on every minor version | invariant | RFC 21 §12 (N16, its audit half) | T6.3, T6.5 |
@@ -250,15 +253,19 @@ which are the service's and E16's.
   builds the service half of the amendment its plan agreed, T6.1 builds D1's once it is agreed, in
   `pkg/metadata`, `pkg/vfs` and `internal/vfs`. `internal/adapter/translate` already exists by
   then: E4's T4.4 creates it with the functions NFSv3 and NFSv4 share, and T6.2 adds RFC 19's NFSv4
-  functions and `Names` to it, with the import test's rule that it holds only neutral-type
-  functions both adapters import, which no earlier epic adds.
+  functions and `Names` to it. T4.4 also adds the import test's rule for the package (both
+  adapters may import it, and it imports only neutral types), since its first pull request would
+  fail that test without it; this epic adds nothing to the test.
 - **D3. `Names` split: fixed spellings in `translate`, lookups in `ops/v4`.** RFC 19 §5.1 makes
   `Names` RFC 18's mapping bound to one call's caller, through `vfs.Service`. `translate` declares
   the interface with only the methods NFS calls, `Who` and `PrincipalByWho`, each taking a
   `context.Context` since `Spell` and `Find` do; `SID` and `PrincipalBySID` come with RFC 22's
   descriptor epic, their first caller (rule 12). `translate` also holds the names that need no
   lookup: `OWNER@`, `GROUP@`, `EVERYONE@`, `AUTHENTICATED@`, `NETWORK@`, `ANONYMOUS@`, root's `0`
-  without the group flag, the four unmodelled names and the null SID. With the group flag, `0` is
+  without the group flag, the four unmodelled names, and on a set the null SID: a `who` of
+  `S-1-0-0@` and any domain is recognised and its entry left out and counted (R12), since the SID
+  names nobody in any domain and the entry is dropped either way. On a read the null SID is
+  `Spell`'s, through `Who` (D4), which knows the domain; `translate` never spells it. With the group flag, `0` is
   gid 0 and goes to `Find` under `SchemeWhoGroup` like any other group (R48). `ops/v4/names.go` implements the rest over `Spell`
   and `Find` bound to the call: for a claimed or anonymous caller, `SchemeUID` or `SchemeGID`
   printed in decimal, falling back to E7's `SchemeWho` (D4) for a principal with no number; for a
@@ -290,15 +297,20 @@ which are the service's and E16's.
   them IDs as what overturns it. A departure from RFC 19 §2.8, so pending Marco (§9, point 3).
 - **D7. Where the translation is tested.** RFC 21 §11.6 tests translations as pure functions with
   no service, and RFC 19 §9 forbids a round trip without the store as evidence for Z8; both hold
-  here. The tables that need no lookup (types, rights, flags, the fold, the refusals and their
-  reasons, the fixed names) run in `translate` on its own. The round-trip property and
-  `FuzzACLFromNFSv4` run in `ops/v4`, beside `newNames`, with a `Names` over one `memory.New` the
+  here. The tables that need no lookup (types, rights, flags, the refusals and their reasons but
+  `principal`, the fixed names) run in `translate` on its own. The owner fold and its near misses
+  need one, since CREATOR OWNER and CREATOR GROUP are SIDs at the domain (R18) that `Find`
+  resolves, so they run in `ops/v4` with the `principal` refusal, the round-trip property and
+  `FuzzACLFromNFSv4`, beside `newNames`, with a `Names` over one `memory.New` the
   target builds once, since `translate` holds no `Names` of its own and a fake one is a double no
   suite holds (CLAUDE.md, "Writing tests"). The fuzz input is turned into entries and an
   `aclflag4` by a small generator, its `who`s drawn from special names, SIDs and owner strings. The
   invariant: no panic; the error is `ErrInvalid`, `ErrUnknownPrincipal` or the lookup's error;
   otherwise `NFSv4FromACL` of the set spells the input back, less cleared bits and deleted-principal
-  entries, with the owner pair folded. Seeds are the entries of `test/pcap-corpus/nfsv4-acl`'s
+  entries, with the owner pair folded. The round-trip property draws only ACLs the model holds
+  (no unfolded owner pair, which a set folds), and goes through the store: `ACLFromNFSv4`'s set
+  written by `SetAttr` and read back by `GetACL`, so `acl`, which carries no list flags, is
+  compared with the flags the store kept (R28). Seeds are the entries of `test/pcap-corpus/nfsv4-acl`'s
   knfsd `SETATTR`. Prior art: RFC 20 §5.4's second decoder. No marker.
 - **D8. The ACL attributes are fields of E5's `fattr4` struct.** Each is a field of the struct E5's
   T5.3 declares, tagged with its attribute number (`attr=N`) and its first minor version (`since=`)
@@ -327,8 +339,6 @@ internal/adapter/translate/       the package E4's T4.4 creates
   names.go                     T6.2  the Names interface, the who spellings that need no lookup
   nfsv4.go                     T6.2  NFSv4ACE, Attr, Normalised, RefusedError, NFSv4FromACL, ACLFromNFSv4
   nfsv4_test.go                T6.2  the tables that need no lookup
-internal/adapter/adaptertest/
-  imports_test.go              T6.2  nfs and smb may import translate; translate imports only neutral types
 internal/adapter/nfs/ops/v4/
   names.go                     T6.2  Names over Spell and Find bound to a call, the scheme by proof kind
   names_test.go                T6.2  every principal kind's who and back, on memory.New
@@ -376,7 +386,7 @@ type Names interface { // RFC 19 §5.1's NFS half; SID and PrincipalBySID come w
 type Attr uint8 // AttrACL, AttrDACL, AttrSACL
 type NFSv4ACE struct { Type, Flags, Mask uint32; Who string }
 type Normalised struct{ MaskBits, EntryFlags, DeletedPrincipals int } // NullDACL comes with SMB
-type RefusedError struct{ Reason string } // kind, principal, limit, deny_unmatched, generic; wraps ErrInvalid
+type RefusedError struct{ Reason string; Err error } // kind, limit, deny_unmatched, generic wrap ErrInvalid; principal wraps the lookup's ErrUnknownPrincipal
 func NFSv4FromACL(ctx context.Context, a vfs.ACL, attr Attr, n Names) (v []NFSv4ACE, flags uint32, sidWhos int, err error)
 func ACLFromNFSv4(ctx context.Context, v []NFSv4ACE, flags uint32, attr Attr, n Names) (vfs.ACLSet, Normalised, error)
 ```
@@ -470,7 +480,7 @@ func newNames(svc vfs.Service, c vfs.Call) translate.Names // unexported
   - In `internal/adapter/translate`, which E4's T4.4 created (D2), `Names` (D3) and the spellings that need no lookup:
     the special principals, root as `0` without the group flag (R48), `INTERACTIVE@`, `BATCH@`,
     `DIALUP@` and `SERVICE@` as
-    `ErrInvalid` (D6), the null SID recognised.
+    `ErrInvalid` (D6), the null SID recognised on a set (D3).
   - `NFSv4ACE`, `Attr`, `Normalised`, `RefusedError`, `NFSv4FromACL` and `ACLFromNFSv4` (§5): the
     four types; rights with bits outside the entry rights cleared and counted and generic bits
     refused (D5); flags by name, unknown ones cleared and counted; the group flag; the owner pair
@@ -478,19 +488,19 @@ func newNames(svc vfs.Service, c vfs.Call) translate.Names // unexported
     `dacl` and `sacl` and not for `acl`; `acl` naming `ACLAudit` when it carries audit entries and
     `ACLAuditIfHeld` when it carries none; a `dacl` holding an audit or alarm entry, or a `sacl` an
     allow or deny entry, refused with the reason `kind` (R47); the null SID's entry left out and
-    counted; every refusal
-    `ErrInvalid` with its reason, `ErrUnknownPrincipal` or the lookup's error.
+    counted; every refusal a
+    `RefusedError` with its reason, wrapping `ErrInvalid`, or for a `who` no principal holds
+    `ErrUnknownPrincipal` with the reason `principal`; any other lookup error passed through.
   - `ops/v4`'s unexported `newNames`, bound to one call (D3, D4), with RFC 21 §11.3's `decision:`
     on the SID `who` at its `Who`.
-  - The import rule: `nfs` and `smb` packages may import `translate`, and a `translate` package
-    importing anything but `pkg/vfs` and the standard library fails, naming the import.
   - `FuzzACLFromNFSv4` (D7).
 
   Consumed by T6.3 and T6.4, and by RFC 22's descriptor epic, which adds its functions to the package.
 - **Acceptance criteria:**
-  - For every ACL of a generated corpus (both lists, every kind, flags, special and named
-    principals, an owner pair), `ACLFromNFSv4` of `NFSv4FromACL` gives back the ACL, for `acl` and
-    for `dacl` with `sacl`.
+  - For every ACL of a generated corpus the model holds (both lists, every kind, flags, special
+    and named principals, an owner pair already folded), `NFSv4FromACL`, then `ACLFromNFSv4`, then
+    `SetAttr` and `GetACL` on `memory.New` give back the ACL: whole for `dacl` with `sacl`, and for
+    `acl` both lists' entries with the list flags as stored before the set.
   - Every well-known principal, a user, a group, root, anonymous and a deleted principal spell and,
     where RFC 21 §11.3 gives a set a meaning, resolve back to the same principal; on a claimed call
     a user is its decimal uid, on a proven call `name@domain`.
@@ -502,21 +512,24 @@ func newNames(svc vfs.Service, c vfs.Call) translate.Names // unexported
 - **Tests:** in `translate`, the tables that need no lookup: one entry for each type, each right,
   each flag and each refused input, with the refusal's reason (catches a type mapped to a default,
   R2, a reserved bit stored, R3, a generic bit cleared, R4, a flag copied byte for byte, R5, a
-  refusal with no reason, R13); the owner pair and its near misses (catches a fold RFC 22 would not
-  make, or none, R8); the fixed names both ways (catches a special name mapped to another
+  refusal with no reason, R13); the null SID at two domains on a set, left out and counted
+  (catches it refused for its domain, R12); the fixed names both ways (catches a special name mapped to another
   principal, R16, R17, an unmodelled name resolved, R22); a `dacl` with an audit entry and a `sacl`
   with an allow entry, each refused with the reason `kind` (catches an entry of the other list
-  dropped, R47). In `adaptertest`, the import rule's two
-  cases, with a fixture under `testdata/imports` that imports a store (catch a translation
-  importing beyond neutral types, and an adapter refused it, R14). In `ops/v4`, on `memory.New`'s
+  dropped, R47). R14 is held by the import test's rule E4's
+  T4.4 adds, which fails T6.2's pull request if `translate` imports beyond neutral types. In `ops/v4`, on `memory.New`'s
   `Spell` and `Find` (kind 2), with users and groups added: every principal kind of RFC 21 §11.3's
   `who` table spelled and resolved back (catches a principal with no `who`, R15, a row spelled
   wrong, R18 to R20); a group and a user holding the same number, with the group flag set and
   clear (catches the flag ignored, R6, R21); `0` with the group flag resolved to gid 0's group, and
-  root spelled `0` without it (catches gid 0 read as root, R48); a `Find` failing through `vfstest.Faults` (kind 3)
+  root spelled `0` without it (catches gid 0 read as root, R48); the owner pair and its near misses, with
+  CREATOR OWNER and CREATOR GROUP resolved by `Find` (catches a fold RFC 22 would not make, or
+  none, R8); a `who` no principal holds, refused `ErrUnknownPrincipal` with the reason `principal`
+  (catches `acl_set_refused_total{reason="principal"}` never counted, R10, R13); a `Find` failing
+  through `vfstest.Faults` (kind 3)
   (catches a lookup error turned into `ErrInvalid`, R11, R10); the round-trip property over the
-  generated corpus (catches any change of kind, right, order or flag meaning, R1, R7, R9, and
-  `acl`'s parts naming its flags, R28); a null-SID entry (catches it refused or kept, R12);
+  generated corpus, through `SetAttr` and `GetACL` (catches any change of kind, right, order or
+  flag meaning, R1, R7, R9, and `acl`'s set naming its flags, R28); a null-SID entry (catches it refused or kept, R12);
   `FuzzACLFromNFSv4` with its seeds under `testdata/fuzz` (catches a panic or a refusal by another
   error, R41); the property that every input maps to an `ACLSet` or a named refusal (catches a
   default, R42).
@@ -585,7 +598,8 @@ func newNames(svc vfs.Service, c vfs.Call) translate.Names // unexported
   `NFS4ERR_INVAL` in a `SETATTR`, as RFC 8275 has it from memory); `acl`, `dacl` and `sacl` in
   `CREATE`'s and `OPEN`'s create attributes, decoded through T6.3's rows into `CreateArgs.ACL`, and
   `mode_umask` into `CreateArgs.Umask`, by one function E5's `CREATE` and E9's `OPEN` call; `acl`
-  and `mode_umask` added to `suppattr_exclcreat`. Consumed by T6.5 and E16.
+  added to `suppattr_exclcreat` on NFSv4.1 and 4.2, and `mode_umask` on 4.2 only, since 4.1
+  refuses it. Consumed by T6.5 and E16.
 - **Acceptance criteria:**
   - RFC 21 §13's "App. B `mode_umask` *(1 node)*" passes on `nfsharness`, for `CREATE` of a
     directory and `OPEN` of a file.
@@ -600,8 +614,9 @@ func newNames(svc vfs.Service, c vfs.Call) translate.Names // unexported
   R34); an `OPEN(CREATE)` with `mode` 0644, `mode_umask` 022 and a `dacl` granting `GROUP@` write
   data, its `mode` read back group-writable and its `dacl` as sent (catches the mode and the ACL
   left disagreeing, R49); the create-time ACL row (catches the inherited audit list replaced, R33, R44); the
-  `EXCLUSIVE4_1` open and its retransmission, and `suppattr_exclcreat` read (catch the ACL applied
-  by a later `SetAttrs` that clears the verifier, or missing from the list, R46); one mutating call
+  `EXCLUSIVE4_1` open and its retransmission, and `suppattr_exclcreat` read on 4.1 and 4.2 (catch the ACL
+  applied by a later `SetAttrs` that clears the verifier, missing from the list, or `mode_umask`
+  advertised to 4.1, R46); one mutating call
   each, from `vfstest.Mutations` (R35).
 - **Rules:** rule 12: the shared function lands with its two callers, E5's `CREATE` and E9's
   `OPEN`.
@@ -694,7 +709,7 @@ A suggestion only: one pull request per subtask works as well.
    `acl_who_sid_fallback_total` to that question, with this epic and RFC 22's descriptor epic as
    their producers. T6.2 returns the counts and reasons either way.
 5. **Interfaces taken from other epics.** Settled with their documents: E4's T4.4 creates
-   `translate`, and the import test's rule for the package is this epic's alone (T6.2); E5's T5.3
+   `translate` and adds the import test's rule for it, so T6.2 only adds functions; E5's T5.3
    declares the `fattr4` struct whose tagged fields give `supported_attrs`, `VERIFY` and `NVERIFY`
    (E5's D2), T5.5's `SETATTR` and T5.6's `CREATE` make one service call from the decoded
    attributes, and E5's D17 leaves `mode_umask` and `acl` for this epic to add to
@@ -705,17 +720,21 @@ A suggestion only: one pull request per subtask works as well.
    this epic extends, with `EXCLUSIVE4_1`'s attributes applied by the create; E8's session with a
    settable `ca_maxresponsesize`, for T6.5. If either settles another shape, this document follows
    it by a revision.
-8. **Which pull request carries which RFC amendment.** The ACL amendment's own pull request (point
+6. **Which pull request carries which RFC amendment.** The ACL amendment's own pull request (point
    1) carries the RFC 17 §3.0 and §3.1 text (`GetACL`'s parts, `AttrChange.ACL` and `ModeMask`,
-   `CreateArgs.Umask` and `ACL`), RFC 7 §2.6 and §11.1, and RFC 19 §5.1's signatures and §2.8's
-   error for an unknown `who`. E4's document pull request adds `CreateArgs.Unchecked` to RFC 17
-   §3.1 beside this one's `CreateArgs` fields, and a server-time choice on `Attrs`, not on
+   `CreateArgs.Umask` and `ACL`), RFC 7 §2.6 and §11.1, RFC 19 §5.1's signatures and §2.8's
+   error for an unknown `who`, and RFC 21 Appendix D's rows that name the calls: `SETATTR` as one
+   `SetAttr` carrying `AttrChange.ACL` and `ModeMask` in place of "`SetAttr` (and `SetACL` for
+   `acl`)", `GETATTR`, `VERIFY` and `NVERIFY` reading `GetACL` by parts for `acl`, `dacl` and
+   `sacl`, and `CREATE` and `OPEN` carrying `CreateArgs.ACL` and `Umask`. E4's document pull
+   request adds `CreateArgs.Unchecked` to RFC 17 §3.1 beside this one's `CreateArgs` fields, and a server-time choice on `Attrs`, not on
    `AttrChange`'s new fields; whichever lands second adds its fields beside the other's. RFC 18's
    `who` schemes are in E7's pull request (point 2); RFC 19 §8's counters wait on point 4.
-6. **`mode_umask` outside a create.** RFC 21 says only "settable at create only"; the
+7. **`mode_umask` outside a create.** RFC 21 says only "settable at create only"; the
    `NFS4ERR_INVAL` for a `SETATTR` carrying it is RFC 8275's, cited from memory, to be checked
    against RFC 8275 §3 when T6.4 starts.
-7. **The figure against the plan's.** The plan prices this epic at 5 subtasks and 12 man-days
-   without the service half; T6.1 adds 5 man-days, and the RFC 19 §9 halves T6.3 carries about 1
-   more. If RFC 22's descriptor epic builds the service half first (D2), this epic is 12.5
-   man-days.
+8. **The figure against the plan's.** The plan prices this epic at 5 subtasks and 12 man-days
+   without the service half. The 18.25 here are those 12, T6.1's 5.25, 0.5 for the RFC 19 §9
+   halves T6.3 carries, and 0.5 for the misplaced-entry refusal (R47) and the create's mode taken
+   from its ACL (R49) in T6.2 and T6.4. If RFC 22's descriptor epic builds the service half first
+   (D2), this epic is 13 man-days.
