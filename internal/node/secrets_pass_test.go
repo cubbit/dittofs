@@ -506,6 +506,11 @@ func TestTheReportedVersionNeverPassesTheHeldOne(t *testing.T) {
 		t.Fatal("no apply resolved the first value within 30 s")
 	}
 
+	// The pass records the held version after the apply returns, before the
+	// positions move at the pass's end: wait for the positions before any
+	// status turn is asked for the version.
+	caughtUp(t, h)
+
 	// The second version seals only once the component holds the first: the
 	// pass has read the first version already.
 	seal(
