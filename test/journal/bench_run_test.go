@@ -30,6 +30,10 @@ func benchRun(t *testing.T, env map[string]string, args ...string) (code int, st
 	for k, v := range env {
 		cmdEnv = append(cmdEnv, k+"="+v)
 	}
+	// git must never find the repository this test runs in: if the script's
+	// cd into BENCH_CHECKOUT ever regresses, its git steps run here.
+	wd, _ := os.Getwd()
+	cmdEnv = append(cmdEnv, "GIT_CEILING_DIRECTORIES="+filepath.Dir(wd))
 	cmd.Env = cmdEnv
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
