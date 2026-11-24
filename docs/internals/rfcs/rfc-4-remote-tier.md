@@ -1678,7 +1678,7 @@ in-memory store).
 | [§4.7](#4.7%20Health%20is%20one%20probe%20call) | The put probe fails while the namespace is read-only, and succeeds on the next call once write access returns; the get probe succeeds throughout. Revoke access to the store's own prefix only: both probes of that direction fail although a neighbouring prefix stays accessible. | |
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer every request with the service's throttling reply: each call fails with `ErrThrottled`, which also matches `ErrTransient`. | |
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that answers `404` to the first get after a successful put of the name: the get fails, and the capability check of a service that does so refuses the open. | T |
-| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer each request with every status from 100 to 599, with known and unknown error codes, and with a body that does not parse: each call wraps exactly one sentinel, and a response checksum mismatch on a get is `ErrTransient`, never `ErrCorrupt`. | T |
+| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer each request with every status from 100 to 599 but the 2xx successes ([§7.2](#7.2%20Fault%20transport)), with known and unknown error codes, and with a body that does not parse: each call wraps exactly one sentinel, and a response checksum mismatch on a get is `ErrTransient`, never `ErrCorrupt`. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A bucket that stores what the check wrote in an archive storage class, or holds a tiering rule with an archive tier whose filter could match the prefix: open fails naming it, and `Recheck` fails when either appears later. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Turn versioning on after open: `Recheck` fails, GC issues no delete, and the syncer refuses puts while gets still succeed; turn it off: the next `Recheck` clears both. Count `Recheck` calls over an hour: exactly one per GC recheck period, none from a GC pass. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A suspended store with an object version left behind: `Recheck` lists versions and fails; after the repair writes the proof, ten further `Recheck` calls list no versions and pass. Enable versioning again: the proof is emptied, and the next suspended `Recheck` lists again. | T |
@@ -1761,8 +1761,8 @@ with those faults, so these profiles are the negative tests.
 | Service | Expected | When |
 | --- | --- | --- |
 | In-memory store | passes the rows of [§7.1](#7.1%20Conformance%20suite) not marked T | every change |
-| A local emulator of the remote service, current version, under the fault transport | passes [§7.1](#7.1%20Conformance%20suite) and the capability check | every change |
-| Each supported production service ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) | passes the capability check and [§7.1](#7.1%20Conformance%20suite) | nightly, in a disposable namespace |
+| A local emulator of the remote service, current version, under the fault transport | passes every row of [§7.1](#7.1%20Conformance%20suite) whose setting it holds, and the capability check | every change |
+| Each supported production service ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) | passes the capability check and [§7.1](#7.1%20Conformance%20suite) | nightly, in a disposable namespace, and a fresh bucket for each row that needs a bucket setting |
 
 A row of [§7.1](#7.1%20Conformance%20suite) on a bucket setting the local emulator cannot hold ([§7.2](#7.2%20Fault%20transport)) runs in
 the production row instead, against a fresh bucket with the setting applied for
@@ -1805,11 +1805,11 @@ with every result.
 | Health probe | requests | exactly one |
 | List of 100,000 blocks | requests, peak memory | one per page of the caller's `n` (1,000, and 500 through `Small`), and at most one page held |
 
-**Suites.** §7.1's rows against the in-memory store and §7.3's codec tests run in `unit`, and §7.1
-in full against the local emulator under §7.2's fault transport in `integration`. The codec's fuzz
-targets run past their seed corpus nightly in the shared fuzz suite the carver registers. No
-suite runs yet the nightly pass against each production service, the per-service lab rows or
-§7.5's benchmarks.
+**Suites.** §7.1's rows against the in-memory store and §7.3's codec tests run in `unit`, and every
+§7.1 row whose setting the local emulator holds runs against it under §7.2's fault transport in
+`integration`. No suite runs yet the nightly pass against each production service, the
+per-service lab rows, §7.5's benchmarks or fuzzing past the seed corpus; the codec's fuzz targets
+join the shared nightly fuzz suite once the carver's plan registers it.
 
 ## 8. Decisions and open questions
 
