@@ -5,11 +5,13 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 )
@@ -61,6 +63,57 @@ func operationRows() []row {
 				t.Errorf("operation cancel %s: status %d, stderr %q, want non-zero and %s", op.ID, status, errOut, apiv1.CodeNotCancellable)
 			}
 		}},
+		{name: "operation wait of an operation that ended failed or cancelled exits non-zero", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
+			for _, tc := range []struct {
+				state entity.OpState
+				want  string
+			}{{entity.OpFailed, "failed"}, {entity.OpCancelled, "was cancelled"}} {
+				op := s.ended(t, tc.state)
+				out, errOut, status := run(t.Context(), "operation", "wait", op.ID, "-o", "json")
+				if status == 0 || !strings.Contains(errOut, "operation "+op.ID+" "+tc.want) {
+					t.Errorf("operation wait of an operation ended %s: status %d, stderr %q, want non-zero naming it %s", tc.want, status, errOut, tc.want)
+				}
+				if got, err := decode("json", out); err != nil || got.ID != op.ID {
+					t.Errorf("operation wait of an operation ended %s: printed %q (%v), want the operation", tc.want, out, err)
+				}
+			}
+		}},
+		{name: "operation wait refused by the server mid-wait gives no resume hint", harnessOnly: true, run: func(t *testing.T, _ Runner, s Server, c *client.Client) {
+			// An operation of a kind the node has no step for stays pending,
+			// so its poll ends only when its wait does.
+			id := entity.OperationID(uuid.New())
+			if _, err := s.Harness.Store().ControlPlane().PutOperation(t.Context(), entity.Operation{ID: id, Kind: "clisuite.never",
+				Target: entity.ResourceRef{Kind: entity.ResourceGroup, ID: id[:]}, Account: entity.NewUser(), State: entity.OpPending}, 0); err != nil {
+				t.Fatalf("store an operation: %v", err)
+			}
+			watcher := "w-" + uuid.NewString()[:8]
+			s.Harness.Account(t, watcher, "the watcher's password", entity.RoleViewer)
+			w := s
+			w.User, w.Password = watcher, "the watcher's password"
+			run := s.newRunner(t)
+			w.Login(t, run)
+			base := s.Harness.Clock().Pending()
+			type answered struct {
+				errOut string
+				status int
+			}
+			done := make(chan answered, 1)
+			go func() {
+				_, errOut, status := run(t.Context(), "operation", "wait", uuid.UUID(id).String())
+				done <- answered{errOut, status}
+			}()
+			// Polling until the wait's poll has parked on the node's clock.
+			for end := time.Now().Add(time.Minute); s.Harness.Clock().Pending() <= base; time.Sleep(time.Millisecond) {
+				if time.Now().After(end) {
+					t.Fatal("the wait's poll did not park within a minute")
+				}
+			}
+			s.demote(t, watcher)
+			a := Await(t, s, "the wait refused once its account lost its role", done)
+			if a.status == 0 || strings.Contains(a.errOut, "resumes the wait") || !strings.Contains(a.errOut, "waiting for operation") {
+				t.Errorf("operation wait refused mid-wait: status %d, stderr %q, want non-zero, the refusal and no resume hint", a.status, a.errOut)
+			}
+		}},
 		{name: "operation get of an unknown ID is refused naming it", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
 			id := uuid.NewString()
 			_, errOut, status := run(t.Context(), "operation", "get", id)
@@ -97,4 +150,34 @@ func decode(format, out string) (apiv1.Operation, error) {
 		}
 	}
 	return op, json.Unmarshal(b, &op)
+}
+
+// ended stores an operation already ended in state, as only a runner's
+// failure or a cancel would end one, and returns it as the client reads it.
+func (s Server) ended(t *testing.T, state entity.OpState) apiv1.Operation {
+	t.Helper()
+	id := entity.OperationID(uuid.New())
+	op := entity.Operation{ID: id, Kind: string(apiv1.OpGroupDelete), Target: entity.ResourceRef{Kind: entity.ResourceGroup, ID: id[:]},
+		Account: entity.NewUser(), State: state}
+	if state == entity.OpFailed {
+		op.Error = []byte(`{"status":500,"title":"ended by the test","retryable":false,"request_id":"clisuite"}`)
+	}
+	if _, err := s.Harness.Store().ControlPlane().PutOperation(t.Context(), op, 0); err != nil {
+		t.Fatalf("store an operation ended %v: %v", state, err)
+	}
+	return apiv1.Operation{ID: uuid.UUID(id).String()}
+}
+
+// demote takes every role from the account named name.
+func (s Server) demote(t *testing.T, name string) {
+	t.Helper()
+	cp := s.Harness.Store().ControlPlane()
+	u, _, err := cp.UserNamed(t.Context(), name)
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	u.Role = entity.RoleNone
+	if _, err := cp.PutUser(t.Context(), u, u.Generation, entity.Alloc{}); err != nil {
+		t.Fatalf("demote %s: %v", name, err)
+	}
 }

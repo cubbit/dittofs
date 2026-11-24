@@ -50,6 +50,8 @@ type Server struct {
 	// Harness is the node's harness when the server is one the test started,
 	// and nil otherwise, when a harness-only row is skipped.
 	Harness *nodetest.Harness
+	// newRunner is Run's, for a row that signs in an account of its own.
+	newRunner func(*testing.T) Runner
 }
 
 // Start starts a node over an in-memory store, its API on a local socket,
@@ -188,6 +190,7 @@ type row struct {
 // share the server, so each names what it creates uniquely. A row's name
 // starts with its noun.
 func Run(t *testing.T, newRunner func(*testing.T) Runner, s Server, noun string) {
+	s.newRunner = newRunner
 	ran := 0
 	t.Cleanup(func() {
 		if ran == 0 {

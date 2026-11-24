@@ -369,7 +369,11 @@ func TestDeleteWaitsOnlyWithWait(t *testing.T) {
 // credentials file, follows the operation to its end.
 func TestInterruptedWaitResumes(t *testing.T) {
 	f := newFixture(t)
-	out, err := run(t.Context(), f.env, "sh", "delete", "builds", "-o", "json")
+	// Nothing advances the node's clock here, so a delete that waited would
+	// end only with this bound, failing on its error.
+	bounded, stop := context.WithTimeout(t.Context(), 30*time.Second)
+	defer stop()
+	out, err := run(bounded, f.env, "sh", "delete", "builds", "-o", "json")
 	var op apiv1.Operation
 	if err != nil || json.Unmarshal([]byte(out), &op) != nil || op.ID == "" {
 		t.Fatalf("share delete builds -o json: got %q, %v, want its operation", out, err)

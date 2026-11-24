@@ -47,16 +47,17 @@ func Follow(cmd *cobra.Command, c *client.Client, op *apiv1.Operation) error {
 // refusing one that ended failed or cancelled. A wait that ends first, cmd's
 // context ending or a poll failing to reach the server, leaves the operation
 // running and is refused naming the command that resumes it, from this
-// machine or another; a poll the server refuses is refused as it is.
+// machine or another; a poll the server refuses 4xx is refused as it is.
 func Wait(cmd *cobra.Command, c *client.Client, op apiv1.Operation) error {
 	path := cmd.CommandPath()
 	ended, err := c.Wait(cmd.Context(), op)
 	if err != nil {
 		if cmd.Context().Err() != nil {
 			err = cmd.Context().Err()
-		} else if p := (*apiv1.Problem)(nil); errors.As(err, &p) {
-			// A refusal, the operation gone or the caller refused, which a
-			// resumed wait would meet again.
+		} else if p := (*apiv1.Problem)(nil); errors.As(err, &p) && p.Status < 500 {
+			// A refusal of the request, the operation gone or the caller
+			// refused, which a resumed wait would meet again; a 5xx, such as
+			// a node restarting, keeps the hint.
 			return fmt.Errorf("%s: waiting for operation %s: %w", path, op.ID, err)
 		}
 		return fmt.Errorf("%s: waiting for operation %s: %w; it goes on, and 'dfsctl operation wait %s' resumes the wait", path, op.ID, err, op.ID)
