@@ -171,7 +171,7 @@ the metadata store.
 
 # 3. Create a share and grant access. The CLI no longer creates stores, so
 # --namespace names a namespace that already exists.
-./dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write
+./dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write --client ::/0=read-write
 ./dfsctl grant set export --user $(whoami) --access read-write
 
 # 4. Mount it
