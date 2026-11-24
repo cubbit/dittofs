@@ -682,11 +682,12 @@ func TestAKerberosLinkThroughTheAPIAsksTheDirectory(t *testing.T) {
 	}
 }
 
-// A keytab reference whose secret cannot be read is reported refused, the
-// identity settings written beside it still apply, and identity keeps the
-// keytab it ran before: a ticket under it still signs in, and it is reported
-// in force under its own reference.
-func TestAnUnreadableKeytabIsRefusedAlone(t *testing.T) {
+// A keytab reference whose secret cannot be read holds identity's whole
+// section and is reported refused with it, the rows written beside it held
+// with it: identity keeps what it last ran, the NetBIOS row beside the
+// broken keytab included, and a ticket under the last keytab still signs in,
+// reported in force under its own reference.
+func TestAnUnreadableKeytabHoldsItsSection(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch(), nodetest.InMemory())
 	p := sealer(t, h)
 	realm := identitytest.NewRealm("TEST.REALM", krbService)
@@ -698,8 +699,23 @@ func TestAnUnreadableKeytabIsRefusedAlone(t *testing.T) {
 	putSetting(t, h, "identity.keytab", refJSON(entity.SecretRef(uuid.New())))
 	putSetting(t, h, "identity.netbios_name", `"AFTER"`)
 	refusedUntil(t, h, "identity.keytab")
-	if got, err := h.Node().ComputerName(); err != nil || got != "AFTER" {
-		t.Errorf("NetBIOS name written beside an unreadable keytab: got %q, %v, want AFTER", got, err)
+
+	if got, err := h.Node().ComputerName(); err != nil || got != "DITTOFS" {
+		t.Errorf(
+			"NetBIOS name written beside an unreadable keytab: got %q, %v,"+
+				" want the last run's, DITTOFS, held by the broken keytab",
+			got,
+			err,
+		)
+	}
+
+	named := entity.SettingRef(installationScope, "identity.netbios_name")
+	if !hasRef(rowsOf(h.Node().Refused()), named) {
+		t.Errorf(
+			"the NetBIOS row beside an unreadable keytab: not among the refusals,"+
+				" want %s held with its section",
+			named,
+		)
 	}
 	if res, err := signInKerberos(t, h, realm, nil, 0); err != nil || res.Identity.Evidence.Principal != alice.Principal {
 		t.Errorf("alice's ticket under the last keytab, beside an unreadable one: bound %v, %v; want alice, nil", res.Identity.Evidence.Principal, err)
