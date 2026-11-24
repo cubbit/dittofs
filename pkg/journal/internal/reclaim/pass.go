@@ -49,8 +49,8 @@ type Outcome struct {
 // index step, end the deferrals the unit's carry owes, and hand the source to
 // the retirer — bounded by a budget of the bytes its units append, content
 // copies and carried records alike, and driven by the caller (RFC 1 §7.2).
-// A Pass is safe for concurrent use: two Run calls claim their
-// sources through the selector, which never hands one segment to two.
+// A Pass is safe for concurrent use: two Run calls claim their sources
+// through the selector, which never hands one segment to two.
 type Pass struct {
 	sel  *Selector
 	cop  *Copier
@@ -158,27 +158,28 @@ func (p *Pass) stoppedNow() bool {
 }
 
 // Run runs one pass of units inside scope, appending at most budget bytes —
-// the payload its content copies move and the records its carries place,
-// counted the way the reserve's own charge counts them — and no more than
-// the repack reserve held when the pass began, whichever is
-// smaller: the budget and the reserve clamp the pass's selection, never a unit in flight — the check runs
-// before the next unit starts, and a unit whose copies exceed the budget
-// started completes (RFC 1 §3), so a caller's budget smaller than one segment
-// gets one unit's worth of copies and one retirement, never half a unit. A
-// unit whose expected copies do not fit what is left of the reserve is not
-// started: the pass returns what it did, and the next call, once the
-// retirements have returned the reserve whole, runs it. The pass never waits
-// for the reserve itself. A
-// budget of zero or less runs no unit. The context is checked before any
-// state change — a refused pass selects nothing, appends nothing, releases
-// nothing — and between units: a pass cancelled there returns after the unit
-// in flight. The pass stops when no candidate remains, when the budget is
-// reached, on its context's error, or on the error of a unit that cannot
-// complete — a permanently failing unit ends the pass, its claim released,
-// never retried within the same call. Every source a unit of this run chose
-// not to hand over stays excluded from the run's own selection: the unit
-// hands its claim to the run, which holds it open — no later Select offers
-// the segment again — and releases it when the run ends.
+// the payload its content copies move and the records its carries place, the
+// records counted by their whole length, as the reserve's charge counts
+// them — and no more than the repack reserve held when the pass
+// began, whichever is smaller: the budget and the reserve clamp the pass's
+// selection, never a unit in flight — the check runs before the next
+// unit starts, and a unit whose copies exceed the budget started completes
+// (RFC 1 §3), so a caller's budget smaller than one segment gets one unit's
+// worth of copies and one retirement, never half a unit. A unit whose
+// expected copies do not fit what is left of the reserve is not started:
+// the pass returns what it did, and the next call, once the retirements
+// have returned the reserve whole, runs it. The pass never waits for the
+// reserve itself. A budget of zero or less runs no unit. The context is
+// checked before any state change — a refused pass selects nothing,
+// appends nothing, releases nothing — and between units: a pass cancelled
+// there returns after the unit in flight. The pass stops when no candidate
+// remains, when the budget is reached, on its context's error, or on the
+// error of a unit that cannot complete — a permanently failing unit ends
+// the pass, its claim released, never retried within the same call.
+// Every source a unit of this run chose not to hand over stays excluded
+// from the run's own selection: the unit hands its claim to the run, which
+// holds it open — no later Select offers the segment again — and releases it
+// when the run ends.
 //
 // decision: the exclusion is the run's own claim, never the selector's pin
 // set — the pins are the offer protocol's, and a run's unpin would delete an
@@ -354,9 +355,9 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 		addMove(cr.Rec.File, index.RepointMove{Window: covered(cr.Rec), From: cr.From, To: cr.To})
 	}
 	for _, dc := range carry.Deferred {
-		// Each deferred loss record the pass appended counts the same way,
-		// before the repoint can strand it: the repoint failure path returns
-		// 0, and the loss record's bytes must not vanish with it.
+		// Each deferred loss record the pass appended counts the same way;
+		// like every abandon path, a failed repoint below reports none of
+		// them.
 		bytes += int64(dc.Loc.Len)
 	}
 	for _, file := range files {

@@ -1025,9 +1025,9 @@ func (c *Core) Retire(id core.SegmentID, reason segment.Reason) (segment.Retirem
 // core.ErrClosed having completed the unit in flight. The bytes the pass's
 // units appended — content copies, carried records and deferred loss
 // records alike — are added to the repacked_bytes counter, and a tracer
-// sees one repack_pass span
-// carrying the pass's segments, bytes and freed figures. It returns freed,
-// the storage the pass's retirements returned through the executor.
+// sees one repack_pass span carrying the pass's segments, bytes and freed
+// figures. It returns freed, the storage the pass's retirements returned
+// through the executor.
 //
 // decision: the span is opened with the pass's own outcome rather than
 // around its work, because a tracer takes its attributes at the span's start

@@ -23,11 +23,13 @@ func FuzzModelRepack(f *testing.F) {
 	for _, seed := range []uint64{7, 11, 21, 37} {
 		f.Add(encodeSteps(model.GenerateWithin(seed, 16, model.RepackOps), model.RepackOps))
 	}
-	// This draw once drove a repack pass that never finished, because the
-	// records a carry moved never counted against the pass budget and the
-	// pass re-selected the very segments its own carries sealed. Every carried
-	// record counts now, so the pass over these steps is bounded; steps past
-	// the decoder's maxFuzzSteps live in TestModel_RepackHeavyDraws.
+	// This entry is the decoder's maxFuzzSteps slice of the seed-3 shape,
+	// whose full 200-step draw once drove a repack pass that never finished:
+	// the records a carry moved never counted against the pass budget, so
+	// the pass re-selected the very segments its own carries sealed. Every
+	// carried record counts now, so the pass over these steps is bounded;
+	// the 200-step draw itself is pinned at full length by
+	// TestModel_RepackHeavyDraws in this file.
 	f.Add(encodeSteps(model.GenerateWithin(3, 64, model.RepackOps), model.RepackOps))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		prof.Watch(t, prof.Options{})
@@ -65,8 +67,8 @@ func losingCrashes(steps []model.Step) []model.Step {
 // moved never counted against the pass budget, so the pass re-selected the
 // very segments its own carries sealed and never finished. Every carried
 // record counts now, so the draws run bounded and stay in the count; a draw
-// that ever hangs again fails the suite by its test timeout, not by
-// an exclusion from the count.
+// that ever hangs again fails the suite by its timeout rather than being
+// left out of the count.
 const forgetSeeds = 24
 
 // forgetSteps is the length of each of those draws.
