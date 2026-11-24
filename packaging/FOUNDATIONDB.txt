@@ -1,0 +1,16 @@
+dfs built with the foundationdb tag
+===================================
+
+This dfs can keep its metadata in a FoundationDB cluster
+(metadata.backend: foundationdb) as well as in Badger.
+
+It links FoundationDB's client library, libfdb_c.so, which this archive does
+not carry. Install the FoundationDB 7.3 client first: the foundationdb-clients
+7.3 package from https://github.com/apple/foundationdb/releases, which puts
+libfdb_c.so in /usr/lib. A 7.3 client reaches only a 7.3 cluster.
+
+The binary needs glibc 2.34 or later (Debian 12, Ubuntu 22.04, RHEL 9 or newer).
+
+metadata.foundationdb.cluster_file names the cluster file, usually
+/etc/foundationdb/fdb.cluster. An installation owns its whole cluster: the
+cluster must hold no other data.

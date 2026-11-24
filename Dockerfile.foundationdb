@@ -48,6 +48,11 @@ RUN CGO_ENABLED=1 go build -tags foundationdb \
     -o dfs \
     cmd/dfs/main.go
 
+# The binary alone, for the release tarballs: build with --target binary and
+# --output type=local to get it without the image.
+FROM scratch AS binary
+COPY --from=builder /build/dfs /dfs
+
 # Runtime stage
 FROM debian:bookworm-slim
 
