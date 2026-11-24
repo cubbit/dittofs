@@ -903,7 +903,8 @@ internal/vfs/
   T7.1: S4's namespace half over NFSv4.0, `PUTROOTFH`, `LOOKUP` of
   a share's path, `GETATTR`, and `LOOKUPP` back to the pseudo directory; RFC 21 §13's rows of §3's
   last table; R28's own check; each NFSv4.1 code this epic adds a row for, sent under NFSv4.0,
-  answered `NFS4ERR_OP_ILLEGAL`. Consumed by S4 and by E16, which reruns them on the composed node.
+  answered `NFS4ERR_OP_ILLEGAL`. Consumed by S4; E16 reruns none of them on the composed node, since
+  no row asks for it (E16's §9, point 2).
 - **Acceptance criteria:**
   - "§2.3 a compound's reply under the record cap"'s NFSv4.0 steps pass on a file of 2 MiB and one
     of 4 KiB, created through the service on `memory.New` before the test, since NFSv4 creates a
