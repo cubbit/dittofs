@@ -800,8 +800,8 @@ internal/node (reconcile)               T3.10 walkSettings calls Advance, routeS
 - **Acceptance criteria:**
   - `scan_above` under 100 ms at 10⁴ shares, sparse and dense, the median of ten runs on one
     machine. `scan_above` holds the store walk, so a dense `walk` past 100 ms makes the criterion
-    unmeetable, and `scan_above` can pass it with the walk under it too: in either case T3.10
-    does not close, the index's trigger has fired and RFC 16's index replaces it. `walk` is
+    unmeetable, and `scan_above` can pass 100 ms while the walk stays under it: in either case
+    T3.10 does not close, the index's trigger has fired and RFC 16's index replaces it. `walk` is
     reported beside `scan_above`.
   - Over a seeded sequence of writes, `Advance` and `Read` with `Diff` give snapshots that diff
     empty both ways, the same changes in the same order and the same refused sections; the
