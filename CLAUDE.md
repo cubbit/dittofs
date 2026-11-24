@@ -24,6 +24,7 @@ Two binaries: `dfs` (server, `cmd/dfs/`) and `dfsctl` (REST client, `cmd/dfsctl/
 - `docs/internals/debugging.md` — SMB/NFS pcap-diff interop playbook
 - `docs/guide/faq.md` — known limitations (ETXTBSY, POSIX gaps, single-node)
 - `docs/internals/contributing.md` — dev workflow
+- `.planning/` — implementation plans and epic breakdowns (RFC → plan → epics). New planning documents go here, never under `docs/`
 
 ## Finding your way around the code
 
@@ -56,6 +57,8 @@ answer: switch to `rg`, don't re-word it three times.
 Greps that stay cheap: scope to the package directory rather than the repo root,
 `rg -l` first when you only need the file set, `-g '!*_test.go'` when tests are
 drowning the signal, and `-B2 -A2` instead of reading the whole file afterwards.
+`rg` skips dot-directories, so a repo-wide search misses the plans: name `.planning/`
+explicitly or pass `--hidden`.
 
 Rebuilding is opt-in per machine: run `graphify update .` after changing code.
 `graphify hook install` can automate it with a `post-commit` and a `post-checkout`
@@ -387,7 +390,7 @@ changing the line.
 
 ### Deferral ledgers
 
-The same ledger, kept by a plan. Every implementation plan in `docs/internals/planning/` ends
+The same ledger, kept by a plan. Every RFC implementation plan, `.planning/rfc-*-plan.md`, ends
 §6 with a table, `| Deferred | Why | Owner | Trigger |`: what the plan knowingly does
 not build, why, who owns it later, and the event that brings it back. The owner is an RFC,
 another plan (or one of its epics) or a programme stage, or `unowned` when none is yet; never
