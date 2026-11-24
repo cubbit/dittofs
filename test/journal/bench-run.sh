@@ -1,6 +1,8 @@
 #!/bin/sh
 # One entry of the dedicated host's scheduled bench runs: bench-run.sh small|full|prune.
-# small and full each run one collection pass under $BENCH_RUN_ROOT, whose folders also
+# small and full want the run in a dedicated checkout: each moves its tree to
+# the branch tip before anything is recorded. Each runs one collection pass
+# under $BENCH_RUN_ROOT, whose folders also
 # hold the dt results tree; prune removes the run folders of either kind a month old
 # (find compares whole days, so only a full 31 days is old enough) and nothing else.
 # An unknown word is a usage error and an unset BENCH_RUN_ROOT
@@ -26,29 +28,38 @@ small | full)
 	# it). The exemption is worth only what running hot costs — take on the
 	# host check before pointing this script at a host without /proc.
 	if [ -r /proc/loadavg ]; then
-		deadline=$(( $(date +%s) + ${BENCH_QUIET_MAX_WAIT:-14400} ))
+		deadline=$(( $(date +%s) + ${BENCH_QUIET_LOAD_MAX_WAIT:-14400} ))
 		while [ "$(cut -d' ' -f1 /proc/loadavg | cut -d. -f1)" -ge "${BENCH_QUIET_LOAD:-4}" ]; do
-			[ "$(date +%s)" -lt "$deadline" ] || { echo "host not quiet under ${BENCH_QUIET_LOAD:-4} within ${BENCH_QUIET_MAX_WAIT:-14400}s" >&2; exit 2; }
+			[ "$(date +%s)" -lt "$deadline" ] || { echo "host not quiet under ${BENCH_QUIET_LOAD:-4} within ${BENCH_QUIET_LOAD_MAX_WAIT:-14400}s" >&2; exit 2; }
 			sleep 300
 		done
 	fi
 	# One bench run at a time: a lock held past its wait refuses the run
 	# rather than racing the other kind over the same host.
+	# decision: an unset BENCH_LOCK takes no lock and runs anyway — the
+	# scheduled environment always sets it, and a hand run has no host lock
+	# to take. The exemption is worth only what a forgotten cron env costs
+	# (an overlap the lock exists to prevent); refuse unset instead if the
+	# host ever shows one.
 	if [ -n "${BENCH_LOCK:-}" ]; then
 		exec 9>"$BENCH_LOCK"
 		flock -w "${BENCH_LOCK_WAIT:-7200}" 9 || { echo "lock $BENCH_LOCK not free within ${BENCH_LOCK_WAIT:-7200}s" >&2; exit 2; }
 	fi
 
-	# Update before anything is recorded: a fetch failure aborts here, so no
-	# run folder is ever filed against a stale commit. Uncommitted work in
-	# this dedicated checkout is not kept.
+	# Update before anything is recorded: a fetch or checkout failure aborts
+	# here, so no run folder is ever filed against a stale commit. The
+	# branch is hardcoded because these scripts retire with it once it
+	# reaches develop — nothing outlives the branch to point elsewhere.
+	# Uncommitted work in this dedicated checkout is not kept.
 	git fetch origin feat/storage-v2 || { echo "git fetch failed" >&2; exit 2; }
-	git reset --hard FETCH_HEAD || { echo "git reset failed" >&2; exit 2; }
+	# Detached at the tip, never onto the branch: a hand run must not find
+	# its worktree's branch ref moved.
+	git checkout -f --detach FETCH_HEAD || { echo "git checkout failed" >&2; exit 2; }
 
 	# The previous folder of the kind feeds benchstat; it is read before the
 	# run dir exists so it can never be the run itself.
 	prev=
-	[ -d "$BENCH_RUN_ROOT/$kind" ] && prev=$(ls -1dt "$BENCH_RUN_ROOT/$kind"/*/ | sed -n 1p)
+	[ -d "$BENCH_RUN_ROOT/$kind" ] && prev=$(ls -1dt "$BENCH_RUN_ROOT/$kind"/*/ 2>/dev/null | sed -n 1p)
 	rundir=$BENCH_RUN_ROOT/$kind/$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short=12 HEAD)
 	mkdir -p "$rundir" || exit 2
 	git rev-parse HEAD >"$rundir/commit.txt"
@@ -75,11 +86,13 @@ small | full)
 	fi
 
 	# benchstat runs only when the binary exists and a previous run of the
-	# kind does; otherwise the run completes without benchstat.txt.
+	# kind does; otherwise the run completes without benchstat.txt. A failing
+	# benchstat reaches the run's status: the half-written benchstat.txt may
+	# stay behind, the exit status says what happened.
 	if command -v benchstat >/dev/null && [ -n "$prev" ]; then
 		for f in bench.txt j1.txt j2.txt j3.txt; do
 			[ -f "$prev/$f" ] && [ -f "$rundir/$f" ] || continue
-			{ echo "### $f"; benchstat -ignore commit "$prev/$f" "$rundir/$f"; } >>"$rundir/benchstat.txt"
+			{ echo "### $f"; benchstat -ignore commit "$prev/$f" "$rundir/$f"; } >>"$rundir/benchstat.txt" || s=$?
 		done
 	fi
 
@@ -94,8 +107,10 @@ small | full)
 	;;
 prune)
 	test -n "${BENCH_RUN_ROOT:-}" || { echo "set BENCH_RUN_ROOT to the root holding run folders" >&2; exit 2; }
-	# Only this script's own kinds are pruned; the results tree and anything else a
-	# hand run left under the root survives whatever its age. A missing kind directory
+	# Only this script's own kinds are pruned; $BENCH_RUN_ROOT/.dt-results
+	# (dt's own run dirs) is deliberately outside this retention and survives,
+	# like anything else a hand run left under the root, whatever its age.
+	# A missing kind directory
 	# skips, so an empty or fresh root prunes nothing and still exits 0; a kind whose
 	# find fails sets rc, the other kind still prunes, and the failure leaves in the status.
 	rc=0

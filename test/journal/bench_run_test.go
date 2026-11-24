@@ -159,18 +159,27 @@ func TestBenchRunPruneEmptyRunRoot(t *testing.T) {
 	}
 }
 
-// benchExport runs bench-export.sh with the env cut to PATH alone plus whatever
-// the case sets, so nothing ambient (an authenticated gh, a stray BENCH_EXPORT_DEST
-// or BENCH_FRESHNESS_DAYS) can reach the script, and returns exit status, stdout,
-// stderr. The freshness decision tests rely on gh failing in this env the way it
-// fails on a machine that never logged in.
+// benchExport runs bench-export.sh with the env cut to PATH, a fresh gh config
+// dir and no token, plus whatever the case sets, so nothing ambient (an
+// authenticated gh, a stray BENCH_EXPORT_DEST or BENCH_FRESHNESS_DAYS) can reach
+// the script, and returns exit status, stdout, stderr. The freshness decision
+// tests rely on gh failing in this env the way it fails on a machine that never
+// logged in.
 func benchExport(t *testing.T, env map[string]string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", append([]string{"bench-export.sh"}, args...)...)
 	cmdEnv := []string{"PATH=/bin"}
 	for k, v := range env {
+		if k == "GH_TOKEN" || k == "GH_CONFIG_DIR" {
+			continue
+		}
 		cmdEnv = append(cmdEnv, k+"="+v)
 	}
+	// A fresh gh config dir and no token make the subprocess unauthenticated
+	// even where a merged-usr PATH finds a real gh binary: the refusal the
+	// freshness tests assert on must come from the script, not from ambient
+	// login. The env is filtered, not faked — gh itself still runs, if present.
+	cmdEnv = append(cmdEnv, "GH_CONFIG_DIR="+t.TempDir())
 	cmd.Env = cmdEnv
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out

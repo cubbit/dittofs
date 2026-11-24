@@ -3,11 +3,14 @@
 # into $BENCH_EXPORT_DEST/$(basename DIR) with aws s3 sync, and bench-export.sh
 # --freshness DIR exits 0 while DIR's newest entry is younger than
 # $BENCH_FRESHNESS_DAYS nights (default 2); otherwise it raises one gh issue,
-# skipping while one is already open. Retention: the local run folders go after
-# 31 days (bench-run.sh prune), the bucket copy is kept. Targets the Linux
-# bench host — the threshold leans on GNU date -d. A refused or failed run
-# exits non-zero and leaves what it created in place, never retried, never
-# swallowed.
+# skipping while one is already open. Retention: the local run folders go only
+# after a full 31 days (bench-run.sh prune; find compares whole days), the
+# bucket copy is kept. A relative DIR resolves against the repo root once the
+# script cd's there, so callers pass an absolute path; a --freshness DIR that
+# does not exist reads as stale — a dead collection must alert, never look
+# healthy. The threshold leans on a date that accepts -d relative dates. A
+# refused or failed run exits non-zero and leaves what it created in place,
+# never retried, never swallowed.
 set -u
 cd "$(dirname "$0")/../.." || exit 2
 
@@ -39,10 +42,12 @@ case $1 in
 	# would make even an empty dir read fresh.
 	[ -n "$newest" ] && [ "$newest" -nt "$ref" ] && { rm -f "$ref"; exit 0; }
 	rm -f "$ref"
-	# stale: one issue, never a second while one is open
-	gh issue list --state open --search "bench-data-stale in:title" >/dev/null 2>&1 ||
+	# stale: one issue, never a second while one is open. The open list is
+	# captured once — a second, unguarded call could fail empty and raise a
+	# duplicate alert.
+	open=$(gh issue list --state open --search "bench-data-stale in:title" 2>/dev/null) ||
 		{ echo "gh issue list failed (gh missing or not authenticated)" >&2; exit 2; }
-	gh issue list --state open --search "bench-data-stale in:title" | grep -q . && exit 0
+	[ -z "$open" ] || exit 0
 	gh issue create \
 		--title "journal bench data: no run in ${BENCH_FRESHNESS_DAYS:-2} nights (bench-data-stale)" \
 		--body "newest run folder in $dir: ${newest:-none} — raised by the bench host's freshness check" \
