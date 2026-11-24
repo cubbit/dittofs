@@ -21,13 +21,15 @@ const foundationDB = true
 const foundationDBOpenTimeout = 30 * time.Second
 
 // openFoundationDB opens the cluster metadata.foundationdb.cluster_file names,
-// with no key prefix: an installation owns its whole cluster.
+// over the TLS files metadata.foundationdb.tls names, with no key prefix: an
+// installation owns its whole cluster.
 func openFoundationDB(ctx context.Context, cfg *bootstrap.Bootstrap, clock systemClock) (kv.KV, error) {
 	ctx, cancel := context.WithTimeout(ctx, foundationDBOpenTimeout)
 	defer cancel()
 	cf := cfg.Metadata.FoundationDB.ClusterFile
 	db, err := fdbkv.Open(ctx, fdbkv.Options{
 		ClusterFile: cf,
+		TLS:         fdbkv.TLS(cfg.Metadata.FoundationDB.TLS),
 		NodeID:      cfg.Node.ID,
 		Clock:       clock.Now,
 	})

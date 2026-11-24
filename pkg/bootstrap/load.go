@@ -598,6 +598,17 @@ func relate(values map[string]*chosen, rep *report) {
 				refuse(c, "read only with metadata.backend: "+name+"; remove it")
 			}
 		}
+
+		// The client would read its own default cluster file in place of an
+		// unset one, so the key is required, refused where the backend is set.
+		if cf := values["metadata.foundationdb.cluster_file"]; backend == "foundationdb" && !cf.set {
+			name := cf.spec.key
+			if b.where == whereEnvironment {
+				name = cf.spec.envName()
+			}
+
+			rep.add(b.where, name, "required with metadata.backend: foundationdb")
+		}
 	}
 
 	for _, role := range []string{"protocol", "storage"} {

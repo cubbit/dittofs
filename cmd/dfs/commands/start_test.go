@@ -271,6 +271,9 @@ func (b bootstrapFile) write(t *testing.T, dir string) string {
 	if b.backend != "" {
 		fmt.Fprintf(&body, "  backend: %s\n", b.backend)
 	}
+	if b.backend == "foundationdb" { // the loader requires its cluster file
+		fmt.Fprintf(&body, "  foundationdb:\n    cluster_file: '%s'\n", filepath.Join(dir, "fdb.cluster"))
+	}
 	if b.store != "" {
 		fmt.Fprintf(&body, "  badger:\n    path: '%s'\n", b.store)
 	}
