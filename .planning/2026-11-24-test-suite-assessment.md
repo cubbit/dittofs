@@ -1,0 +1,432 @@
+# Plan: a faster and leaner unit test suite
+
+Status: proposal for team discussion · Base: `feat/storage-v2` at `6af2141c6` · 2026-11-24
+
+## TL;DR
+
+We asked two questions: *are we running too many unit tests?* and *are they why CI is slow?*
+We measured on an idle machine and ran mutation testing on one package. The answers:
+
+1. **The number of tests is not why CI is slow.** 78% of our unit tests finish in under
+   0.1 s, and together they cost 99 s. CI is slow because the job is **CPU-bound on a 4-core
+   runner**, and the **race detector doubles the test time**. Coverage costs nothing, and the
+   build is small.
+2. **Some tests are duplicated, but not in the way a count suggests.** Mutation testing shows
+   that many tests overlap. Most of the overlap is *one rule written as several tests*, which
+   we can merge. Very few tests are useless.
+3. **Mutation testing is a good tool for review, not a gate.** It finds real gaps (39 surviving
+   mutants in one package, some of them equivalent) and gives a reviewer a concrete question for every new test.
+
+**What we ask the team to decide** (details in §6):
+
+| # | Decision | Effort |
+| --- | --- | --- |
+| 1 | Split the unit job into 3–4 parallel jobs (shards) | dt change + workflow |
+| 2 | Use a cheap Argon2 cost in tests, with a guard that production keeps the real one | 1 PR |
+| 3 | Run single-goroutine heavy tests (architecture, oracle) without `-race` | 1–2 PRs |
+| 4 | One trial PR that merges duplicate tests and fills gaps in `pkg/journal/internal/format` | 1 PR |
+| 5 | Add one rule to CLAUDE.md "Writing tests" | 1 PR |
+| 6 | Open issues for two tests that fail without `-race` and one timing-sensitive test (§5) | 3 issues |
+
+---
+
+## 1. Where the time goes
+
+### 1.1 Many tests, little time
+
+The unit suite (`go test -race -short`, as CI runs it on a PR) on a dedicated, idle 32-core
+machine:
+
+```mermaid
+xychart-beta
+    title "Unit tests by duration: count vs time"
+    x-axis ["< 0.1 s", "0.1–1 s", "1–10 s", "≥ 10 s"]
+    y-axis "share (%)" 0 --> 80
+    bar [78, 19, 3, 0.2]
+    line [8, 33, 41, 18]
+```
+
+*Bars: share of tests. Line: share of test time.*
+
+| Test duration | Tests | Time | Share of time |
+| --- | --- | --- | --- |
+| under 0.1 s | 5,563 | 99 s | 8% |
+| 0.1 – 1 s | 1,341 | 417 s | 33% |
+| 1 – 10 s | 226 | 524 s | 41% |
+| 10 s or more | 12 | 230 s | 18% |
+
+Deleting half of the fast tests would save about 50 seconds of CPU. That is not a lever.
+
+The 12 slowest tests are mostly the architecture "export freeze" tests
+(`TestBootstrapExports` 35 s, `TestSecretsExports` 27 s, `TestSettingsExports` 23 s), one
+large-N test (`TestStartPostsTenThousandRemovalsAndRunsNoBatchBeforeItReturns`, 30 s) and
+a crash-replay test (`TestCrashAfterEachWriteThenRerun`, 19 s).
+
+> **Measure on an idle machine.** A first run on a busy laptop (load ≈ 160) reported 279
+> tests over 10 s and blamed Argon2 for 30% of the suite. That was the load, not the tests.
+
+### 1.2 Why CI takes 20 minutes
+
+The same suite takes **175 s** on 32 idle cores and **15–21 min** in the "Run the suite"
+step on CI. The CI runner is `ubuntu-latest`, which has **4 vCPU** for a public repository.
+
+```mermaid
+flowchart LR
+    A["go test -race -coverprofile<br/>~200 test binaries"] --> B["compile + link<br/>(race + coverage instrumented)"]
+    B --> C["run tests<br/>race detector:<br/>×2 test time overall,<br/>up to ×22 in some packages"]
+    C --> D["4 vCPU runner:<br/>everything queues"]
+```
+
+On 4 cores the time splits like this (measured on the VM, pinned to 4 cores with `taskset`):
+
+| Variant | Wall time |
+| --- | --- |
+| As CI runs it (`-race -coverprofile`), cold build cache ¹ | 760 s |
+| Same, warm build cache | 386 s |
+| Compile and link only (`-run=^$`), cold | 136 s |
+| Without `-race`, cold | 267 s |
+| Without `-race` and without coverage, cold | 259 s |
+
+¹ This run had a busier machine beside it, which makes it slower than the others. CI's
+suite step takes 884–1,260 s, so the VM reproduces CI well. The other four ran together.
+
+Compared within the same batch:
+
+- **The race detector doubles test time.** The sum of package times is 1,380 s with `-race`
+  and 710 s without. Under heavier load the factor was 3.
+- **Coverage costs nothing we can measure** (710 s against 703 s).
+- **The build is small:** 136 s cold, and the job already restores a build cache.
+
+The race cost is concentrated in a few packages:
+
+| Package | With `-race` | Without | Factor |
+| --- | --- | --- | --- |
+| `pkg/journal/internal/index` | 265 s | 12 s | ×22 |
+| `pkg/journal/journaltest/model` | 36 s | 2 s | ×16 |
+| `pkg/openstate` | 60 s | 5 s | ×12 |
+| `internal/dfsbench/backend` | 64 s | 9 s | ×7 |
+| `internal/identity` | 286 s | 90 s | ×3 |
+| all packages | 2,159 s | 710 s | ×3 |
+
+A package with a high factor and tests that run in one goroutine (an oracle or a model
+check, for example) pays for race detection it cannot use.
+
+### 1.3 The heavy packages: Argon2 and the race detector
+
+CPU profiles of the slowest packages (`go test -race -cpuprofile`, idle machine):
+
+| Package | Wall | In Argon2 | In the race detector |
+| --- | --- | --- | --- |
+| `internal/identity` (slowest package) | 127 s | 41% | 50% |
+| `internal/install` | 23 s | 37% | ~48% |
+| `pkg/secrets` | 29 s | 29% | ~45% |
+
+Tests hash passwords with the production Argon2 cost: 19 MiB of memory and 2 passes
+(`pkg/identity/hashes.go`). Under the race detector, each hash is very expensive.
+
+The race detector's share in `internal/identity` has no Go caller in the profile. It runs on
+a runtime system thread. We thought it was the detector's work on Argon2's 19 MiB
+allocations, but the 4-core runs refute it: `internal/identity` is only 3× slower under
+`-race`, which is ordinary. Argon2 matters for another reason: without `-race`,
+`internal/identity` is still the slowest package (90 s), so it sets a floor for any shard.
+
+---
+
+## 2. Where the duplication is
+
+### 2.1 How we measured it
+
+**Mutation testing** changes one operator in the production code (a *mutant*), for example
+`<` into `<=`, and runs the tests. If a test fails, the test *kills* the mutant. If no test
+fails, the mutant *survives*: some behaviour has no test.
+
+We used the 5 operator types that the Go tool `gremlins` enables by default: arithmetic,
+boundary (`<` ↔ `<=`), negation (`==` ↔ `!=`), `++` ↔ `--`, and inverted negatives. A small
+driver ran the **whole package once per mutant** and recorded **every test that failed**.
+This gives a matrix: which test kills which mutant. `gremlins` itself reports only a total.
+
+From the matrix we can see, for each test, whether it kills a mutant that **no other test**
+kills. If it does not, the test overlaps with others.
+
+```mermaid
+flowchart LR
+    M1["mutant 1"] --- T1["test A"]
+    M1 --- T2["test B"]
+    M2["mutant 2"] --- T2
+    M3["mutant 3"] --- T3["test C"]
+    T3 -. "unique kill" .- M3
+    T1 -. "no unique kill:<br/>B covers it" .- M1
+```
+
+### 2.2 Result for `pkg/journal/internal/format`
+
+| | Value |
+| --- | --- |
+| Tests (92 `Test` + 7 `Fuzz`) | 99 |
+| Mutants | 335 |
+| Mutation score (killed / covered and viable) | 88% (290 of 329) |
+| Surviving mutants (gaps) | 39 |
+| Tests that kill no mutant | 10 |
+| Tests whose every kill another test also makes | 78 |
+| Tests with at least one unique kill | 11 |
+| Smallest set found that keeps every kill (greedy) | 19 of 99 |
+
+### 2.3 How to read it: three kinds of "extra" test
+
+**1. One rule written as several tests: merge them.** Six tests check the same contract:
+"`AppendX` appends after what is already in the buffer, and does not overwrite it".
+
+```go
+// Today: six tests like this one, in five files.
+func TestAppendSealMarkerAppendsToDst(t *testing.T) {
+	prefix := []byte{0xee, 0xbe, 0xef}
+	golden := readGolden(t, "seal")
+	if got := AppendSealMarker(slices.Clone(prefix), testIdentity, testSealMarker); !bytes.Equal(got, append(slices.Clone(prefix), golden...)) {
+		t.Errorf("AppendSealMarker with a prefix =\n% x\nwant the prefix then the golden file\n% x", got, append(prefix, golden...))
+	}
+}
+
+// Proposed: one table, one case per encoder, each case named in the failure.
+func TestAppendersAppendToDst(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		golden string
+		append func([]byte) []byte
+	}{
+		{"seal marker", "seal", func(b []byte) []byte { return AppendSealMarker(b, testIdentity, testSealMarker) }},
+		{"segment header", "segheader_pred", func(b []byte) []byte { return AppendSegmentHeader(b, testSegmentHeader) }},
+		// … format file, record, catalog entry, trailer
+	} {
+		t.Run(c.name, func(t *testing.T) { /* same check as today */ })
+	}
+}
+```
+
+The six tests kill mutants (`TestAppendRecordAppendsToDst` kills 25), but none of those
+kills is unique: the golden-file tests catch the same changes. Their own value is the
+append contract, and one table checks it as well as six tests do.
+
+**2. Tests the operators cannot judge: keep them.** A test that "kills no mutant" is not
+useless. In `format`, 10 tests kill none, and they check things that no `<`/`+`/`==` change
+can break:
+
+- the RFC 3720 CRC test vectors (`TestCRC32CMatchesTheRFC3720Vectors`);
+- the golden names of the record kinds (`TestRecordGoldenKindNames`);
+- that error classes stay distinct (`TestRecordErrorClassesAreDistinct`);
+- that segment names sort as their IDs do (`TestSegmentNameSortsAsItsIdDoes`).
+
+These tests pin data and contracts, not arithmetic. A reviewer keeps them.
+
+**The 78 tests with no unique kill are where real duplication may hide.** Each one needs a
+person to read it and name the test that covers it, as §4.2 describes. The greedy cover of
+19 tests shows the floor: 19 tests kill all 290 mutants. It is not a target, because those
+19 do not check the contracts above.
+
+**3. Gaps: write the missing test.** A surviving mutant is a behaviour no test checks. For
+example, in `catalog.go:87`:
+
+```go
+if e.RecordOffset > math.MaxUint32 {   // mutant: ">" → ">=" survives
+	panic(...)
+}
+```
+
+No test uses an offset of exactly `MaxUint32`, so nothing pins the boundary. Some survivors
+are *equivalent mutants*, which no test can kill. For example, `catalog.go:127` guards a
+footer of more than `72 × MaxUint32` bytes, which no test can build. A reviewer marks those
+as equivalent and moves on.
+
+### 2.4 Concurrent packages need a different reading
+
+We also started `pkg/journal/internal/segment` (360 tests, 737 mutants). After 215 mutants,
+**25% of them made the tests hang**, not fail. The first version of the driver could not say
+which test caught a hang, so we stopped the run and do not report its numbers.
+
+This is expected. `segment` is about ordering and concurrency, and the 5 operators do not
+reach those properties. The matrix is reliable for packages like `format` (pure encoding and
+decoding), and not yet for concurrent ones.
+
+---
+
+## 3. What published practice says
+
+- **Ratios are a first guess, not a target.** Google suggests about 70/20/10
+  unit/integration/end-to-end ([Google Testing Blog, 2015][g1]), and later about 80/15/5
+  ([Software Engineering at Google, ch. 11][swe11]).
+- **Coverage is a weak measure. Mutation is a stronger one.** With suite size held equal,
+  coverage correlates only weakly with finding faults ([Inozemtseva & Holmes, 2014][ih]).
+  Google shows surviving mutants on the *changed lines* in code review, with no score
+  threshold ([Petrović et al., 2018][gm]).
+- **Reduce a suite by killed mutants, not by coverage.** Reduction by coverage loses fault
+  detection ([Shi et al., 2014][shi]).
+- **Tests that mirror the implementation make code rigid** and catch few bugs
+  ([Change-detector tests][cd]).
+- **Fast CI runs fewer tests per change, not fewer tests.** Meta's predictive selection
+  halves the cost and still catches 99.9% of faulty changes ([Machalica et al., 2019][meta]).
+
+[g1]: https://testing.googleblog.com/2015/04/just-say-no-to-more-end-to-end-tests.html
+[swe11]: https://abseil.io/resources/swe-book/html/ch11.html
+[ih]: https://www.cs.ubc.ca/~rtholmes/papers/icse_2014_inozemtseva.pdf
+[gm]: https://research.google/pubs/state-of-mutation-testing-at-google/
+[shi]: https://mir.cs.illinois.edu/awshi2/publications/FSE2014.pdf
+[cd]: https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html
+[meta]: https://arxiv.org/abs/1810.05286
+
+---
+
+## 4. Proposal
+
+### 4.1 Track A: make CI faster
+
+| Step | Change | Gain | Gate |
+| --- | --- | --- | --- |
+| A1 | **Shard the unit job.** | wall time ÷ ~3 on full runs | none |
+| A2 | **Cheap Argon2 cost in tests.** | ~5–7% of CPU; lowers the slowest package | none |
+| A3 | **Architecture tests once, without `-race`.** | ~5% | none |
+| A4 | **Single-goroutine heavy tests without `-race`.** | up to ~15% of CPU | read each test first |
+
+**A1 — shard the unit job.** `dt` already has `shards:`, but it splits a list of named tests,
+and the unit cell has package patterns instead. The split must happen in `dt run`, after
+`--changed` has narrowed the packages: the cell carries only "shard *i* of *n*", and `dt run`
+divides the `go list` result. A package list written into `suites.yaml` would go stale.
+
+What the change must also do:
+
+- **No package falls out.** A test asserts that the union of the shards equals `go list` of
+  the unit patterns.
+- **Required check.** "Unit Tests (1.26.x)" is a required check. Either the ruleset moves to
+  the shard names, or a small fan-in job keeps the old name.
+- **Coverage.** Each shard uploads its own profile, and Codecov merges them per commit.
+- **Limit.** Sharding helps full runs (merge queue, pushes to the branch) most. A PR already
+  runs only the changed packages (`--changed`). The slowest package, `internal/identity`,
+  sets a floor for any shard, so A2 should land first.
+
+**A2 — cheap Argon2 cost in tests.** Follow the pattern `pkg/keyprovider` already uses:
+`GenerateWeakKeyFile` is a cheap variant, and an architecture rule
+(`internal/node/arch_test.go`) fails if production code calls it.
+
+- Add a weak variant beside `identity.NewHashes`, used only by test helpers
+  (`internal/node/nodetest`), and add it to the same architecture rule.
+- A stored hash carries its own parameters (`$argon2id$v=..$m=..,t=..,p=..`), and
+  verification reads them back. So a cheap hash also verifies cheaply, and nothing else
+  changes.
+- One test builds a hash through the production path and asserts `m=19456,t=2`. Before the
+  PR merges, swap the default for the weak one and show this test fails.
+- **Do not touch** the dummy hash in `internal/identity/server.go`. It makes a sign-in for an
+  unknown user take as long as one for a real user, so its cost must always follow the real
+  one.
+
+**A3 — architecture tests once, without `-race`.** They run today twice: once in the
+`unit/whole-tree` cell and once in `unit`. They type-check source in one goroutine, so the
+race detector has nothing to find in them. Skip them when the race detector is on, as the
+allocation tests already do (a runtime check, not a build tag, with a `decision:` marker),
+and keep the non-race run.
+
+**A4 — single-goroutine heavy tests without `-race`.** The race cost sits in a few packages
+(§1.2). Some of their slow tests are oracle or model checks that run in one goroutine, such
+as `TestSegmentBytesMatchWalk` (60,000 steps against an oracle). Such a test skips under
+`-race` (the `prof.RaceEnabled` check, with a `decision:` marker) and runs in a non-race
+cell. Read each test first: a test that starts goroutines keeps `-race`.
+
+**`-race` stays on the PR run for the concurrent code** (journal, engine, node, protocol
+adapters). A race found only at night lands after the merge. Coverage stays too: it costs
+nothing.
+
+**Not in Track A:** the Go build cache. The unit job already restores it
+(`.github/actions/go-cache`). Its key changes only with `go.sum`, so it can go stale; that
+is worth a look, but it is a separate question.
+
+### 4.2 Track B: one trial dedup PR in `format`
+
+One PR in `pkg/journal/internal/format`:
+
+1. Merge the six `…AppendsToDst` tests into one table-driven test.
+2. Read each test that has no unique kill (§2.2), and merge or delete it **only** when you
+   can name the other test that covers it. The PR lists those pairs.
+3. Write tests for the surviving mutants that are not equivalent.
+4. Re-run the matrix: the new suite must kill at least what the old one killed.
+
+Rules for merging into a table:
+
+- each case has its own `t.Run` name, and its failure message names the input;
+- a case whose setup differs stays a separate test;
+- a test with `t.Parallel()` keeps it, and cases share no fixture.
+
+If the PR removes a useful share of lines, we repeat it in the other dense packages. If not,
+we stop.
+
+### 4.3 Track C: one rule for new tests
+
+Add this to CLAUDE.md, "Writing tests", as part of the existing rule "A test must be able to
+fail":
+
+> **Say what a new test guards.** In the PR, name either a behaviour that no other test
+> checks (a surviving mutant it kills is the best evidence), or a property mutation cannot
+> reach: a contract such as append-to-prefix, an error identity, an ordering, or a
+> concurrency, crash or durability property. One rule over several inputs is one
+> table-driven test. Fuzz targets and tests that land red as known failures are exempt,
+> since their own rules govern them.
+
+A reviewer can check this without running a tool: the PR says what each test guards. For a
+change to existing code, `gremlins unleash --diff origin/feat/storage-v2 ./<pkg>` lists the
+surviving mutants on the changed lines. Run it by hand when you review.
+
+---
+
+## 5. Method and limits
+
+- **Timing.** One idle 32-core VM (Scaleway COMPUTE3-X32C-64G), Go 1.26.10, a non-root user,
+  `go test -race -short -json`. The 4-core variants use `taskset -c 0-3`. CI numbers come
+  from the last runs on `feat/storage-v2`.
+- **Test count.** The run reported 7,142 top-level tests, against 7,728 `func Test` in the
+  tree. The rest are outside the unit package patterns (`k8s/`, `bench/`), behind build tags,
+  or skipped under `-short`.
+- **Mutation.** 5 operators, no `-race`, `GOMAXPROCS=4`, a timeout of 5× the package's
+  baseline time. The driver uses `go test`'s own `-timeout`, so a hang names the test that
+  hung. After a panic or a hang, it re-runs the tests that had not run yet, so every test
+  runs against every mutant. In `format`, 133 of 335 mutants needed such a rerun, and 3 hung.
+  A first version without reruns over-counted unique kills (19 instead of 11).
+- **Validity limits.**
+  - Without `-race`, a mutant that only creates a data race may survive.
+  - The 5 operators do not delete statements or change calls. "Kills no mutant" is
+    therefore a question for a reviewer, never a verdict.
+  - The "smallest set" is greedy, so it is an upper bound on the minimum, not the minimum.
+  - Each result comes from one run.
+- **Side finding 1: two tests pass only under `-race`.** On the idle VM, without `-race`,
+  `TestComposeAdaptsTheTracerToTheJournal` (`pkg/engine/enginewire`) failed 5 of 5 runs and
+  `TestJournalOfServesTheJournalsMarks` (`pkg/engine`) 2 of 5, both with `journal: no
+  space: refused by the version limit`. With `-race` they passed 5 of 5. CI runs the unit
+  suite only with `-race`, so CI never sees this. The cause is not known yet.
+- **Side finding 2.** On 4 busy cores, `TestDevTracingShutsDownWithinItsBound`
+  (`cmd/dfs/commands/tracing_test.go:129`) failed: the shutdown waited 10.5 s, bound 5 s. It is a
+  timing-sensitive test that a slow runner can break.
+- **Not done.** No mutation matrix for a concurrent package. No profile of the CI runner
+  itself.
+
+---
+
+## 6. Decisions and deferrals
+
+### Questions for the team
+
+1. Do we shard the unit job, and into how many jobs? Do we move the required check or keep
+   a fan-in job?
+2. Do we accept a weak Argon2 cost in test helpers, guarded like `GenerateWeakKeyFile`?
+3. May single-goroutine heavy tests (architecture, oracle, model) skip under `-race` and run
+   in a non-race cell?
+4. Do we run the trial dedup PR in `format`?
+5. Do we add the Track C rule to CLAUDE.md?
+6. What is the target for the unit job? Under 10 minutes?
+7. Do we open issues for the side findings in §5: two tests that pass only under `-race`, and
+   one timing-sensitive tracing test?
+
+### Deferral ledger
+
+| Deferred | Why | Owner | Trigger |
+| --- | --- | --- | --- |
+| Dedup in packages beyond `format` | The trial PR must show the gain first | unowned | Track B trial merged with a useful line reduction |
+| A CI job that runs `gremlins --diff` on every PR | The manual use must prove useful first; `gremlins` runs only the package's own tests, so it is noisy where a consumer package holds the test | unowned | Reviewers use it by hand on 3+ PRs and ask for it |
+| A scheduled kill-matrix suite (`dt`, `tier: manual`) | The driver needs its own tests, and hang attribution in concurrent packages | unowned | Track B extends beyond `format` |
+| Test selection from the dependency graph, beyond `--changed` | Sharding may be enough | unowned | The unit job is still over 10 min after A1 and A2 |
+| The Go build-cache key (changes only with `go.sum`) | Outside the test suite itself | unowned | A cache-hit measurement shows frequent cold builds |
+| Removing the 291 `time.Sleep` calls in tests | Done as tests are touched, per CLAUDE.md | unowned | A flake traced to a sleep |
