@@ -82,17 +82,20 @@ integration epics touch no v1 code (§1.5 rule 7).
   input under `dittofs chunk nonce v2`, so a later format version that keeps the labels cannot
   give one ciphertext two tags; the wrap call raises one server-wide count per master key
   (`MKW‖masterKeyID`, added to RFC 16 §4.2), so every namespace's wraps, the salvage-key wrap
-  and the escrow check's test record all count; and the provider refuses a master key whose ID
-  or fingerprint matches the `storage` key's.
+  and the escrow check's test record all count, and a key-file master key is current in one
+  installation only; and the provider refuses a master key whose ID or fingerprint matches the
+  `storage` key's.
 - **Appendix B, AES-256-GCM in place of AES-256-GCM-SIV** (Q2, D3): a chunk's nonce is an HMAC of its AAD
   and input, stored in the body (`MaxEncodedLen(n) = n + 285`); each export frame is sealed once
   per salt; a key-file master key makes at most 2³² wraps; §5.4, T15, the `require` example,
   the vector rows and RFC 26 §3.1's summary follow.
 - **RFC 25 §3.9 and §7** gain `material_unknown`, `material_destroyed` and the `malformed`
-  ticket (A1); **RFC 23 §4.1 and §4.6** gain the key operations (A3).
+  ticket (A1); **RFC 23 §4.1 and §4.6** gain the key operations (A3); **RFC 16 §4.2** gains
+  the wrap count's row and **RFC 27 §2.4** the move's refusal under a shared master key (A4).
 
 **Answered by the user.** The design questions Q1 to Q4 are answered and written in place (§6),
-and the amendments to RFC 23 and RFC 25 they need (A1, A3) are in this pull request.
+and the amendments to RFC 23 and RFC 25 they need (A1, A3) are in this pull request, as is A4,
+from the review of the key material.
 
 ## 1. Introduction
 
@@ -959,6 +962,12 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
   `rotate-master-key` (remote store), both `admin` operations, and `verify-escrow` (remote
   store, `admin`, not an operation); §4.6 lists the two rotations as operation-runner work.
 
+- **A4. RFC 16 §4.2 and RFC 27 §2.4.** RFC 16 gains the server-wide `MKW‖masterKeyID` row,
+  kind 0x4D, the count of wraps under one master-key version (RFC 5 Appendix B.1). RFC 27's
+  importer refuses to publish a move while its current master key's ID or fingerprint matches
+  a master key the export names, since two installations wrapping under one key keep two
+  counts.
+
 (A2, the pin, is RFC 5's own and is in this pull request.)
 
 **Open points.**
@@ -996,7 +1005,7 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
 | Appendix B.1's export cryptography (frames, header, MACs, state and progress keys) and RFC 5 §8.1 T22's export vectors (§6 Q1, §1.5 rule 12) | no consumer before catalog backups exist | RFC 26 | RFC 26's plan starts |
 | The export key's next generation and its per-location retirement, re-seal and pending sets; the backup locations' `keys` objects; the master-key destroy check over locations; `ErrMaterialInUse`; RFC 5 §8.2's T19 and Appendix B.3 rows, its Appendix B.2 rows' location halves, the destroy-check clauses of its Appendix B.1 key-service rows; the escrow refusal at backup-policy creation; RFC 13 §9's "§7 key table" row's export-key rotation and master-key destroy clauses (§6 Q1, RFC 5 Appendix B.3 as amended) | they write and read backup locations | RFC 26 | RFC 26's plan starts |
 | The recovery import of key records from `keys` objects, RFC 5 §8.2 T18's "every chunk verifies from the bucket alone", and RFC 13 §9's "§7 key table" row's catalog-backup restore on a fresh host (§6 Q1) | RFC 26 §2.3's import reads them | RFC 26 | RFC 26's plan starts |
-| Re-home and move key handling and move pins (RFC 5 Appendix B.2's last paragraphs, RFC 27 §2.4, §2.7) | moves are not in this programme | RFC 27 | RFC 27's plan starts |
+| Re-home and move key handling and move pins, the publish refused under a shared master key among them (RFC 5 Appendix B.2's last paragraphs, RFC 27 §2.4, §2.7) | moves are not in this programme | RFC 27 | RFC 27's plan starts |
 | Removal with two nodes holding the key, and fencing a node that cannot be reached (RFC 5 §5.3, T13's two-node row) | single node first | unowned: RFC 11 has no plan | RFC 11's plan starts |
 | A cloud key service taking associated data as a string map, and RFC 5 §8.1 T22's string-map half (D14, §6 Q3) | the harness runs KMIP only | unowned | an operator asks for a cloud key service |
 | A transform whose bound grows with its settings (D13) | none ships | unowned | such a transform is proposed |
@@ -1036,7 +1045,7 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
 | RFC 5 Appendix D | — (v1, deleted by stage 4); its bug rows in §1.4 |
 | RFC 0 §1.2 (as the RFC 8 offload plan amends it) | E1 (import test) |
 | RFC 16 §4.2, `NS‖ns‖key‖kind‖keyID` and `NS‖ns‖keyseq‖target` | E6, E8 |
-| RFC 16 §4.2, `MKW‖masterKeyID` (amended in this pull request) | E6 |
+| RFC 16 §4.2, `MKW‖masterKeyID` (A4) | E6 |
 | RFC 16 §4.2, `NS‖ns‖drain` | §6.1 (RFC 9) |
 | RFC 6 §2.3 (block-record census) | the RFC 8 offload plan's epics 15 and 19; E10 reads it |
 | RFC 25 §2.1, §3.9, §7, §8 | E3, E6, E9 |

@@ -801,7 +801,11 @@ chunking key its new writes chunk differently from every block A wrote.
 **B re-wraps what it imports; A keeps what it exported under.** At publish, B
 **MUST** re-wrap every imported key record under its own current master key
 ([RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)), in the publishing transaction, so after a move no key record
-of B's depends on a master key A may rotate away and destroy. A **MUST**, when
+of B's depends on a master key A may rotate away and destroy. B **MUST** refuse
+the publish, naming the key, while its current master key's ID or fingerprint
+matches a master key the export names: both installations would then wrap
+under one key, each with its own count of wraps ([RFC 5 Appendix B.1](rfc-5-transforms.md#B.1%20How%20a%20chunk%20is%20encrypted)),
+so B publishes once its own master key is rotated. A **MUST**, when
 it writes a move's export, record a durable **export pin** naming each master
 key the export's wrappings use, and its material provider **MUST** refuse to
 destroy a pinned master key with `ErrMaterialInUse` until an operator releases

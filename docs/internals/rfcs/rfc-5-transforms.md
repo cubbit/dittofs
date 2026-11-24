@@ -1408,7 +1408,15 @@ every namespace under one key add up. Every wrap counts: each key record written
 (a key created, a data key rotated, a master key re-wrapping every record), a
 salvage key's wrap, and the escrow check's test record ([B.2](#B.2%20Keys)).
 At 10⁴ namespaces with a few keys each, every write retried, and salvage
-exports and escrow checks rare, the count stays below 2²⁰. A key service draws its own nonces and keeps
+exports and escrow checks rare, the count stays below 2²⁰.
+The count is exact only while one installation wraps under the key, so a
+key-file master key **MUST** be current in one installation only. A move's
+importer refuses to publish while its current master key is one the export
+names ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)). A recovery import on a fresh host takes over
+the lost installation's master key with a count of 0, which undercounts by the
+wraps that installation made; below 2²⁰ wraps per installation, 2¹² such
+recoveries under one key would reach 2³², and a master-key rotation after a
+recovery ends the undercount. A key service draws its own nonces and keeps
 its own bound.
 
 That is the key-file provider's wrap. A key-service provider asks the service
@@ -1736,8 +1744,9 @@ immutable ones included.
 
 **The check is per installation, and a move pins as well.** An installation that
 imports a namespace re-wraps every imported key record under its own master key
-before it publishes ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)), so from then on the two installations
-share no master key in use. The exporting installation keeps a durable pin per
+before it publishes ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)), and refuses to publish while its current master key
+is one the export names, so from then on the two installations share no master
+key in use. The exporting installation keeps a durable pin per
 move naming every master key the moved export carried, and refuses to destroy
 one (`ErrMaterialInUse`, naming the move) until an operator releases the pin.
 Without it, an installation that rotated away from a shared key and saw its own
