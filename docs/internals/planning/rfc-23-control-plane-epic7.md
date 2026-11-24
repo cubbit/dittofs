@@ -455,6 +455,16 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
     clause runs where the host routes that address to loopback (Linux; macOS with an `lo0` alias).
   - R6 holds, but the node's API stays open past §2.2's step 3: Stop closes its listeners after the
     engine. #5469 owns that.
+- T7.6 as built differs from its text in these places.
+  - Its rows run on RFC 18's machine node (`newMachine` in `machine_test.go`), which wires
+    `identitytest`'s directory and domain controller through `NewWithDialers`; T7.3's `newWired`
+    builds through `node.New`, which dials the network ones. R26's row needs no directory and runs
+    on the signed-in node `newAuthNode` builds.
+  - The grant by directory name is driven through the API by the test, `resolve-principal` and then
+    the grant's `PUT` under the ID its result names; the CLI's grant by name (T6.4) runs the same
+    two calls.
+  - The keyless rule is shown falsifiable on the node by one online join sent with an
+    `Idempotency-Key`, refused `400` and leaving no record.
 - E3's T3.9 stop-bound exit test may move to this epic's fixture (§1.2); E3 decides when T3.9
   lands.
 - The proposals to RFC 23's plan that this document leaves to a later pull request: §5 epic 7's
