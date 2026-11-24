@@ -2876,6 +2876,19 @@ released — and a crash would then drop the filled bytes ([§4.3](#4.3%20Versio
 keeps the original's sequence number and content version, and where both are on
 disk after a crash they are equal and either decides the same way.
 
+**A record and its carried copy hold neither segment.** While a carried
+header-only record and its original are both on disk and registered
+([§4.3](#4.3%20Versions)), the
+record's liveness **MUST** hold neither segment: a registration holds the
+segment it names only while that placement is the record's only one. The
+source may therefore be retired before the removal
+or loss it carries is droppable — the copy owns the record's wait ([§5.1](#5.1%20Ordering%20rules))
+— and when one placement's segment leaves the journal the survivor's
+registration holds its segment again, so the record is never without a
+placement somewhere. A rebuild that finds both registered decides the same
+way, and one that finds a single placement, whichever it is, holds it: two
+hold neither, one holds again.
+
 **The source is verified whole before any part is copied.** Repack **MUST** read
 the source record's whole payload and verify its payload checksum before copying
 any part of it ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)). A record that does not verify is dropped as corrupt
@@ -2913,7 +2926,9 @@ still settles it, synced with the copies before the source segment is retired,
 and appends no loss record for it. It is copied like any live record, into the
 pass's target. A segment is
 **held** while it backs a held or retained extent, holds a live one of these
-records, holds a dropped record whose loss an open deferred ([§6](#6.%20Capacity)), or was ended by a
+records (except, while both are on disk and registered, a record carried from it
+and its original, which hold neither segment, [§7.2](#7.2%20Repack)), holds a dropped
+record whose loss an open deferred ([§6](#6.%20Capacity)), or was ended by a
 failure whose copies nothing on disk proves yet ([§3.1](#3.1%20Write)); repack
 copies such records forward like held content, a deferred loss as its loss
 record, and a segment that is not held is retired ([§7.1](#7.1%20Releasing%20storage)).
