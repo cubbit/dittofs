@@ -158,3 +158,61 @@ func TestBenchRunPruneEmptyRunRoot(t *testing.T) {
 		t.Errorf("prune on an empty root: got %d entries under root, want 0 created by prune", len(entries))
 	}
 }
+
+// benchExport runs bench-export.sh with the env cut to PATH alone plus whatever
+// the case sets, so nothing ambient (an authenticated gh, a stray BENCH_EXPORT_DEST
+// or BENCH_FRESHNESS_DAYS) can reach the script, and returns exit status, stdout,
+// stderr. The freshness decision tests rely on gh failing in this env the way it
+// fails on a machine that never logged in.
+func benchExport(t *testing.T, env map[string]string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", append([]string{"bench-export.sh"}, args...)...)
+	cmdEnv := []string{"PATH=/bin"}
+	for k, v := range env {
+		cmdEnv = append(cmdEnv, k+"="+v)
+	}
+	cmd.Env = cmdEnv
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("bench-export.sh %s: %v", strings.Join(args, " "), err)
+		}
+		code = exitErr.ExitCode()
+	}
+	return code, out.String(), errBuf.String()
+}
+
+func TestBenchExportUsage(t *testing.T) {
+	code, _, stderr := benchExport(t, nil)
+	if code != 2 {
+		t.Errorf("bench-export.sh with no arguments: exit status got %d, want 2", code)
+	}
+	if !strings.Contains(stderr, "usage: bench-export.sh") {
+		t.Errorf("bench-export.sh with no arguments: stderr got %q, want it to contain \"usage: bench-export.sh\"", stderr)
+	}
+}
+
+func TestBenchExportRequiresDest(t *testing.T) {
+	dir := t.TempDir()
+	code, _, stderr := benchExport(t, nil, dir)
+	if code != 2 {
+		t.Errorf("bench-export.sh %s without BENCH_EXPORT_DEST: exit status got %d, want 2", dir, code)
+	}
+	if !strings.Contains(stderr, "set BENCH_EXPORT_DEST") {
+		t.Errorf("bench-export.sh %s without BENCH_EXPORT_DEST: stderr got %q, want it to contain \"set BENCH_EXPORT_DEST\"", dir, stderr)
+	}
+}
+
+func TestBenchExportMissingDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "absent")
+	code, _, stderr := benchExport(t, map[string]string{"BENCH_EXPORT_DEST": "s3://bench-bucket/runs"}, dir)
+	if code != 2 {
+		t.Errorf("bench-export.sh %s with BENCH_EXPORT_DEST set: exit status got %d, want 2", dir, code)
+	}
+	if !strings.Contains(stderr, "no such run directory") {
+		t.Errorf("bench-export.sh %s with BENCH_EXPORT_DEST set: stderr got %q, want it to contain \"no such run directory\"", dir, stderr)
+	}
+}
