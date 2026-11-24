@@ -2,8 +2,6 @@ package clisuite
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -70,8 +68,8 @@ func installationRows() []row {
 				t.Errorf("audit list --actor %s: got %d records, want one of group %s's create", s.User, len(got), mine.ID)
 			}
 		}},
-		{name: "domain actions end failed with no directory wired", run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
-			pw := passwordFile(t)
+		{name: "domain actions end failed with no directory wired", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
+			pw := secretFile(t, "a password\n")
 			for _, args := range [][]string{
 				{"domain", "resolve", `CORP\bob`},
 				{"domain", "test"},
@@ -86,27 +84,27 @@ func installationRows() []row {
 			}
 		}},
 		{name: "domain actions send their arguments", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
-			pw := passwordFile(t)
+			pw := secretFile(t, "a password\n")
 			// Each argument is one the server refuses before it starts
 			// anything, naming the field it arrived in.
 			long := strings.Repeat("x", 2048)
 			for _, tc := range []struct {
-				args  []string
-				field string
+				args          []string
+				field, detail string
 			}{
-				{[]string{"domain", "resolve", long}, "name"},
-				{[]string{"domain", "resolve", "--sid", "not-a-sid"}, "sid"},
-				{[]string{"domain", "join", "--user", "administrator", "--dns-host-name", "host", "--password-file", pw}, "spec.dns_host_name"},
-				{[]string{"domain", "join", "--offline", "--account", long, "--password-file", pw}, "spec.account"},
+				{[]string{"domain", "resolve", long}, "name", "at most "},
+				{[]string{"domain", "resolve", "--sid", "not-a-sid"}, "sid", "not a SID"},
+				{[]string{"domain", "join", "--user", "administrator", "--dns-host-name", "host", "--password-file", pw}, "spec.dns_host_name", "not a DNS host name"},
+				{[]string{"domain", "join", "--offline", "--account", long, "--password-file", pw}, "spec.account", "at most "},
 			} {
 				_, errOut, status := run(t.Context(), tc.args...)
-				if status == 0 || !strings.Contains(errOut, "400 ") || !strings.Contains(errOut, "(field "+tc.field+")") {
-					t.Errorf("dfsctl %s: status %d, stderr %q, want non-zero and the server's 400 naming %s", strings.Join(tc.args[:2], " "), status, errOut, tc.field)
+				if status == 0 || !strings.Contains(errOut, "400 ") || !strings.Contains(errOut, tc.detail) || !strings.Contains(errOut, "(field "+tc.field+")") {
+					t.Errorf("dfsctl %s: status %d, stderr %q, want non-zero and the server's 400 naming %s: %s", strings.Join(tc.args[:2], " "), status, errOut, tc.field, tc.detail)
 				}
 			}
 		}},
-		{name: "domain join sends no idempotency key, online or offline", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
-			pw := passwordFile(t)
+		{name: "domain join sends no idempotency key, online or offline", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
+			pw := secretFile(t, "a password\n")
 			for _, args := range [][]string{
 				{"domain", "join", "--user", "administrator", "--password-file", pw},
 				{"domain", "join", "--offline", "--account", "FILESRV", "--password-file", pw},
@@ -115,7 +113,7 @@ func installationRows() []row {
 			} {
 				s.waited(t, run, args...)
 			}
-			keys := map[string]bool{}
+			seen, keys := map[string]int{}, map[string]bool{}
 			for r, err := range c.Audit(t.Context(), nil) {
 				if err != nil {
 					t.Fatalf("read the audit: %v", err)
@@ -129,9 +127,13 @@ func installationRows() []row {
 				}
 				for _, verb := range []string{"join-domain", "rotate-machine-password"} {
 					if strings.HasSuffix(req.Path, ":"+verb) {
+						seen[verb]++
 						keys[verb] = keys[verb] || req.IdempotencyKey != ""
 					}
 				}
+			}
+			if seen["join-domain"] < 2 {
+				t.Errorf("domain join: %d audited requests, want the online and the offline join", seen["join-domain"])
 			}
 			if keys["join-domain"] {
 				t.Error("domain join: an audited request carried an idempotency key, want none")
@@ -155,16 +157,6 @@ func installationRows() []row {
 			}
 		}},
 	}
-}
-
-// passwordFile is a file holding a password, for a --password-file flag.
-func passwordFile(t *testing.T) string {
-	t.Helper()
-	pw := filepath.Join(t.TempDir(), "pw")
-	if err := os.WriteFile(pw, []byte("a password\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return pw
 }
 
 // waited runs args with --wait to the end of the operation the command

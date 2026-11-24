@@ -2,8 +2,6 @@ package clisuite
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -21,23 +19,17 @@ import (
 // writes are rows of their refusal.
 func storeRows() []row {
 	return []row{
-		{name: "setting writes the settings table does not declare print the refusal and exit non-zero", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
-			store := s.putStore(t)
-			cred := filepath.Join(t.TempDir(), "cred")
-			if err := os.WriteFile(cred, []byte("the store's credential\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			for _, args := range [][]string{
-				{"setting", "set", "installation", "clisuite.undeclared", "1"},
-				{"adapter", "set", "nfs", "--enabled"},
-				{"store", "create", "--setting", "remote.endpoint=https://s3.example.com", "--credential-file", cred},
-				{"namespace", "create", "--store", store, "--setting", "namespace.prefix=builds/"},
-			} {
-				_, errOut, status := run(t.Context(), args...)
-				if status == 0 || !strings.Contains(errOut, "400 ") || !strings.Contains(errOut, "dfsctl "+strings.Join(args[:2], " ")) {
-					t.Errorf("dfsctl %s: status %d, stderr %q, want non-zero, the command and the server's 400", strings.Join(args, " "), status, errOut)
-				}
-			}
+		{name: "setting set of a key the settings table does not declare prints the refusal and exits non-zero", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
+			refused(t, run, "unknown_key", "setting", "set", "installation", "clisuite.undeclared", "1")
+		}},
+		{name: "adapter set prints the refusal until the settings table declares the adapters", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
+			refused(t, run, "unknown_key", "adapter", "set", "nfs", "--enabled")
+		}},
+		{name: "store create prints the refusal until the settings table declares the remote store", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
+			refused(t, run, "unknown_key", "store", "create", "--setting", "remote.endpoint=https://s3.example.com", "--credential-file", secretFile(t, "a password\n"))
+		}},
+		{name: "namespace create prints the refusal until the settings table declares the namespace", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
+			refused(t, run, "unknown_key", "namespace", "create", "--store", s.putStore(t), "--setting", "namespace.prefix=builds/")
 		}},
 		{name: "setting get reads a record at the installation's scope and at a node's", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
 			key := "clisuite.k" + uuid.NewString()[:8]
@@ -57,7 +49,7 @@ func storeRows() []row {
 				}
 			}
 		}},
-		{name: "setting set, get and unset a declared key", run: func(t *testing.T, run Runner, _ Server, c *client.Client) {
+		{name: "setting set, get and unset a declared key", harnessOnly: true, run: func(t *testing.T, run Runner, _ Server, c *client.Client) {
 			const key = "audit.retention"
 			for _, v := range []string{"10000h", "10001h"} {
 				mustRun(t, run, "setting", "set", "installation", key, v)
@@ -91,11 +83,7 @@ func storeRows() []row {
 		}},
 		{name: "store set-credential prints the server's refusal until the store's capability check is built", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
 			id := s.putStore(t)
-			cred := filepath.Join(t.TempDir(), "cred")
-			if err := os.WriteFile(cred, []byte("the store's credential\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			_, errOut, status := run(t.Context(), "store", "set-credential", id, "--credential-file", cred)
+			_, errOut, status := run(t.Context(), "store", "set-credential", id, "--credential-file", secretFile(t, "a password\n"))
 			if status == 0 || !strings.Contains(errOut, "409 ") || !strings.Contains(errOut, id) {
 				t.Errorf("store set-credential %s: status %d, stderr %q, want non-zero, the store and the server's 409", id, status, errOut)
 			}
@@ -150,6 +138,16 @@ func (s Server) putStore(t *testing.T) string {
 		t.Fatalf("put a remote store: %v", err)
 	}
 	return id.String()
+}
+
+// refused runs args, which the server refuses 400 with code, and fails the
+// test unless the command exits non-zero printing itself and that refusal.
+func refused(t *testing.T, run Runner, code string, args ...string) {
+	t.Helper()
+	_, errOut, status := run(t.Context(), args...)
+	if want := "dfsctl " + strings.Join(args[:2], " ") + ": "; status == 0 || !strings.Contains(errOut, want) || !strings.Contains(errOut, "400 "+code+": ") {
+		t.Errorf("dfsctl %s: status %d, stderr %q, want non-zero, %q and the server's 400 %s", strings.Join(args, " "), status, errOut, want, code)
+	}
 }
 
 // decodeJSON decodes out, a resource dfsctl printed as JSON, into v.
