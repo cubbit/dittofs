@@ -19,7 +19,7 @@ A4 and RFC 21 §11.2's cache, which closed RFC 21's former open question 5, and 
 Cited, not owned: RFC 5531 for the RPC message, RFC 9289 for the `AUTH_TLS` probe, RFC 17 §3.0's
 `Call` and §4.9's admission, RFC 20 §2.5's layout of `ops/`.
 **Track:** A.
-**Epic 3 estimate: 6 subtasks, 18.5 man-days.**
+**Epic 3 estimate: 6 subtasks, 18.75 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state, NFSv4 table and golden-file
 vector check, E2's knfsd captures cut into golden files, and S0's `vfstest.Mutations`. It builds on
 what RFC 20's epics already landed on `feat/storage-v2`: `core`'s pipeline and `ReplayCache` stage,
@@ -53,7 +53,8 @@ NFS epics is written against.
 - over loopback through `core`, `adaptertest/nfsclient` sends exactly the bytes a script gives it and
   reads each reply: `NULL` is answered in NFS v3 and v4, MOUNT v3, NLM v4 and NSM v1, and §13's
   refused credentials are each `AUTH_BADCRED` with no mutating call reaching `memory.New`;
-- a retransmission of a cacheable NFSv3 call, or of an NFSv4.0 `COMPOUND`, from the same address,
+- a retransmission of a cacheable NFSv3 call, or of an NFSv4.0 `COMPOUND` that ran a cacheable member,
+  from the same address,
   on another connection, is answered its first reply byte for byte, and the service is called once;
 - with `adapters.nfs.tls.mode` `opportunistic` or `require`, a client's `AUTH_TLS` probe upgrades its
   connection to TLS 1.3, nothing after the probe is readable as RPC, a certificate replaced on disk
@@ -81,7 +82,8 @@ their `NULL` rows, and `ops/v4`'s `NULL`; the error rows of §3; the TLS configu
 - `r.Call.Client`, set by a row's `Resolve` for NFSv4.0 and NLM: E9 and E11. `r.Call.Session`, a
   session's `Level` and `SEQUENCE` read before dispatch: E8.
 - The slots and reply caches of NFSv4.1 sessions in the `Replay` stage: E8. Each NFSv3 row's
-  `Cacheable` column, and the `REMOVE` retransmission row over loopback: E4, with each row.
+  `Cacheable` column, and the `REMOVE` retransmission row over loopback: E4, with each row. Each
+  NFSv4.0 member's `Cacheable` column: the epic that adds the member (E5, E9), with its row.
 - `ErrWrongSecurity`'s NFSv4 row and `SECINFO`: E5. `ErrUnknownPrincipal`'s rows: E4 for NFSv3's
   cell, E5 and E6 for NFSv4. `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree` and `ErrExpired`: E8 and
   E13, with the session and GSS tables, as RFC 21 §11.5 says.
@@ -159,7 +161,7 @@ subtasks and tests can cite them.
 | R5 | The `Identity` and `r.Call` are built afresh for each request by the router, never by a handler; a `COMPOUND`'s members read the `r.Call` its route built | MUST | RFC 20 §4.4 | T3.1 |
 | R6 | `r.Call` holds the `Identity` and the request's `Protocol`; `Client` and `Session` are left zero for the rows and the session that set them | MUST | RFC 20 §4.4 (the `Call`) | T3.1 |
 | R7 | The adapter maps no principal to ids, applies no squash and decides no privilege: a claimed uid 0 reaches the service as the claim it is, for RFC 18's root principal to be resolved there | MUST NOT | RFC 20 §4.4; RFC 21 §11.1 (root, what a claim reaches) | T3.1 |
-| R8 | A credential whose body does not decode inside its opaque, an `AUTH_SYS` credential past RFC 5531's limits (more than 16 gids, a machine name over 255 bytes, bytes left after the group list), and every flavour but `AUTH_NONE`, `AUTH_SYS` and `RPCSEC_GSS` is rejected `AUTH_BADCRED` and runs nothing; none is ever treated as anonymous. Already enforced at the stage and the decoder by the scaffold's tests T3.2 names; this epic adds §13's row over loopback (R9) | MUST | RFC 21 §11.1 (refused credentials); RFC 18 §3.2 | T3.2 |
+| R8 | A credential whose body does not decode inside its opaque, an `AUTH_SYS` credential past RFC 5531's limits (more than 16 gids, a machine name over 255 bytes, bytes left after the group list), and every flavour but `AUTH_NONE`, `AUTH_SYS` and `RPCSEC_GSS` is rejected `AUTH_BADCRED` and runs nothing; none is ever treated as anonymous. The one exception is R30's probe, a `NULL` under `AUTH_TLS` on a connection whose mode is not off and that has not upgraded (D7). Already enforced at the stage and the decoder by the scaffold's tests T3.2 names; this epic adds §13's row over loopback (R9) | MUST | RFC 21 §11.1 (refused credentials), §2.2 (NFS over TLS); RFC 18 §3.2 | T3.2, T3.6 |
 | R9 | §13's row: a truncated `AUTH_SYS` credential, one with 17 gids, one with a 256-byte machine name, an `AUTH_DH` and an unknown flavour, each rejected `AUTH_BADCRED`, nothing created | test row | RFC 21 §13 (§11.1 refused credentials *(1 node)*) | T3.2 |
 | R10 | The `AUTH_SYS` body's decoder has its own fuzz target: no panic, every read inside the buffer, and a decoded value that matches a second decoder written by hand | MUST | RFC 20 §5.4 | T3.1 |
 | R11 | Where a credential is judged: decoding the header only bounds the credential and verifier, one past the record or past 400 bytes answered `GARBAGE_ARGS`; a call whose RPC version is not 2 is answered `RPC_MISMATCH` with neither read; the flavour and an `AUTH_SYS` body are judged at route; a verifier other than an empty `AUTH_NONE` beside `AUTH_NONE` or `AUTH_SYS` is `AUTH_BADVERF`. Already enforced at the stage by the scaffold's tests T3.2 names; this epic adds each over loopback | MUST | RFC 21 §11.1 (where they are judged), §11.5 (malformed calls) | T3.2 |
@@ -175,10 +177,10 @@ subtasks and tests can cite them.
 | R16 | The fault is `NFS3ERR_SERVERFAULT` in NFSv3's table, `NFS4ERR_SERVERFAULT` in NFSv4's, and `SYSTEM_ERR` in the stages' table and in MOUNT's, NLM's and NSM's, wherever each table lives | MUST | RFC 21 §11.5 (the fault status) | T3.4 |
 | R17 | `ErrNotSupported` is `PROC_UNAVAIL` and `ErrDecode` `GARBAGE_ARGS` in every program's table, wherever each table lives | MUST | RFC 21 §11.5 (`core`'s own refusals) | T3.4 |
 | R18 | `ErrNoFH` is `NFS4ERR_NOFILEHANDLE` in the NFSv4 members' table | MUST | RFC 21 §11.5 (`core`'s own refusals) | T3.4 |
-| R19 | `ErrMoved` is `NFS4ERR_MOVED` for the NFSv4 operations that use the current filehandle, in a row naming them in `Ops`; `ErrDraining`, and `ErrMoved` for any other NFSv4 operation and in NFSv3's, MOUNT's and NLM's tables, send no reply. This epic writes the rows; E10 runs the drain against Linux's compounds | MUST | RFC 21 §11.5 (`core`'s own refusals), §7.4 | T3.4 |
+| R19 | `ErrMoved` is `NFS4ERR_MOVED` for the NFSv4 operations that use the current filehandle, in a row naming them in `Ops`; `ErrDraining`, and `ErrMoved` for any other NFSv4 operation and in NFSv3's, MOUNT's and NLM's tables, send no reply, in every NFSv3-family table: NSM's too, which RFC 21 §11.5 does not name but which has no move signal either (§9). This epic writes the rows; E10 runs the drain against Linux's compounds | MUST | RFC 21 §11.5 (`core`'s own refusals), §7.4 | T3.4 |
 | R20 | `ErrNotLast`, `ErrTooManyPending` and `ErrCancelled`, which never reach NFS, map to each table's fault | MUST | RFC 21 §11.5 (what runs while draining) | T3.4 |
 | R21 | `ErrWrongSecurity` over NFSv3 and its auxiliary programs rejects the RPC with the `auth_stat` `AUTH_TOOWEAK` | MUST | RFC 21 §10, §11.1 (export flavour policy), §11.5 (`ErrWrongSecurity`) | T3.4 |
-| R22 | `ErrLogonFailure`, never met by an operation, is the fault in each table: `NFS4ERR_SERVERFAULT`, `NFS3ERR_SERVERFAULT`, and NLM's `SYSTEM_ERR` | MUST | RFC 21 §11.5 (`ErrLogonFailure`); RFC 20 §4.5 | T3.4 |
+| R22 | `ErrLogonFailure`, never met by an operation, is the fault in each table: `NFS4ERR_SERVERFAULT`, `NFS3ERR_SERVERFAULT`, and `SYSTEM_ERR` in NLM's, MOUNT's and NSM's, each table's fault as R16 gives it (§11.5's row names NFSv3's and NLM's) | MUST | RFC 21 §11.5 (`ErrLogonFailure`, the fault status); RFC 20 §4.5 | T3.4 |
 
 **The duplicate-request cache**
 
@@ -187,7 +189,7 @@ subtasks and tests can cite them.
 | R23 | A gateway node keeps a duplicate-request cache for NFSv3 and NFSv4.0 in NFS's `Replay` stage, a bounded set of replies in the node's memory keyed by (client address, XID, procedure, checksum of the arguments), and answers a retransmission the reply its first send was given instead of running it again | MUST | RFC 21 §11.2; RFC 20 §4.7 (the Replay row) | T3.3 |
 | R24 | The key never names the connection: a retransmission on another connection from the same address is answered from the cache | MUST | RFC 21 §11.2 | T3.3 |
 | R25 | The cache is not durable and the service's dedup is not widened: a retransmission after its entry was evicted, or after a restart, runs again | invariant | RFC 21 §11.2 | T3.3 |
-| R26 | `Lookup` returns a fresh copy of the cached reply charged to a reply reservation of its size that waits under the request's context; `Store` keeps its own clear copy, taken before `Wrap`, of a cacheable row's reply only. MOUNT, NLM and NSM have no cache, and an NFSv4.1 or later `COMPOUND` is not this cache's | MUST | RFC 20 §4.7 (`ReplayCache`, the Replay row) | T3.3 |
+| R26 | `Lookup` returns a fresh copy of the cached reply charged to a reply reservation of its size that waits under the request's context; `Store` keeps its own clear copy, taken before `Wrap`, of a cacheable row's reply only, and of a `COMPOUND` only when a member that ran has a cacheable row (D5, Q5). MOUNT, NLM and NSM have no cache, and an NFSv4.1 or later `COMPOUND` is not this cache's | MUST | RFC 20 §4.7 (`ReplayCache`, the Replay row); RFC 21 §11.2 (a retransmitted `REMOVE` or `CREATE`) | T3.3 |
 | R27 | A hit is counted by `core` as `adapter_replay_hits_total{protocol="nfs3"}`, as `core` counts every replay hit; RFC 21 §11.7's row names a session's slot, and this cache's hits are counted the same way | MUST | RFC 21 §11.7; RFC 20 §10.1 | T3.3 |
 | R42 | A call `Route` would refuse is never answered from the cache: its RPC version, flavour, `AUTH_SYS` body and verifier are judged as `Route` judges them before the cache is read, and a refusal is a miss, answered as its first send would be; a refused call is never stored | invariant | RFC 21 §11.1 (where they are judged), §11.2, §12 (N26) | T3.3 |
 
@@ -266,9 +268,12 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   flavour, the `AUTH_SYS` body against RFC 5531's limits and the verifier, and a refusal is a miss:
   `Route` then refuses the retransmission as it refused, or would have refused, the first send
   (R42). Keying on those fields instead would still answer a call whose credential `Route` refuses
-  once its first send had been admitted under another. Only NFS v3 calls and NFSv4 `COMPOUND`s of minor version 0 are looked up or stored;
-  the `COMPOUND` row is marked `Cacheable`, and `Store` skips a later minor version, which E8's slots
-  take. `Lookup` charges its copy to the reply pool of `Deps.Budgets`, which `nfs.New` hands
+  once its first send had been admitted under another. Only NFS v3 calls and NFSv4 `COMPOUND`s of minor version 0 are looked up or stored,
+  and `Store` skips a later minor version, which E8's slots take. The `COMPOUND` row is not marked
+  `Cacheable`: `core`'s compound runner stores a `COMPOUND`'s reply when a member that ran has a
+  `Cacheable` row, one condition in `compound.go` amended into RFC 20 §4.7 (Q5), so GETATTRs, LOOKUPs
+  and small READs do not turn the 4096 entries over and evict the `CREATE` and `REMOVE` replies the
+  cache exists for (RFC 21 §11.2). `Lookup` charges its copy to the reply pool of `Deps.Budgets`, which `nfs.New` hands
   `protocol.New`. Prior art: knfsd's DRC keys on address, XID, procedure, program, version and a
   checksum of the arguments' first bytes, and drops a retransmission still in progress (from
   memory). Two `ponytail:` markers: on the one lock, shard by key when T3.3's mutex profile or a
@@ -482,18 +487,20 @@ internal/adapter/adaptertest/nfsclient/
 
 ### T3.3 The `Replay` stage and its duplicate-request cache
 
-**Subtask T3.3 estimate: 3 man-days.**
+**Subtask T3.3 estimate: 3.25 man-days.**
 
 - **Track:** A. **Depends on:** T3.1, T3.2.
 - **Covers:** R3, R23, R24, R25, R26, R27, R40 (retry identities), R42, R43 (the key's TLS state).
 - **Deliverables:** `protocol/replay.go`: the cache of D5, implementing `core.ReplayCache`, set as
   every connection's `Stages.Replay` by `NewConn`; `protocol.New(t Tables, b *resources.Budgets)`,
-  `nfs.go` passing `Deps.Budgets`; the `COMPOUND` row's `Cacheable` set in `ops/v4`. Consumed by
+  `nfs.go` passing `Deps.Budgets`; `core`'s compound runner storing a `COMPOUND` when a member that
+  ran is `Cacheable` (D5, Q5). Consumed by
   `core`'s pipeline, by E4's cacheable rows and by E8, which adds a session's slots beside it.
   Golden files of calls and the key each gives (§11.6's retry-identity table).
 - **Acceptance criteria:**
   - A cacheable NFS v3 call sent twice with one XID from one address, on two connections, is
-    answered twice with the same bytes and calls the service once; so is an NFSv4.0 `COMPOUND`.
+    answered twice with the same bytes and calls the service once; so is an NFSv4.0 `COMPOUND` whose member is cacheable, while one whose
+    members are not is never stored.
   - The same XID with other arguments, another uid, another procedure or from another address runs;
     the same call with another `AUTH_SYS` stamp hits; a MOUNT, NLM or NSM call and an NFSv4.1
     `COMPOUND` are never stored.
@@ -507,7 +514,8 @@ internal/adapter/adaptertest/nfsclient/
   each call under `AUTH_NONE` to a share granting everyone, so admission passes before E7's T7.1:
   the two sends on two connections give one entry in `vfstest.Mutations`, identical replies, and
   `adapter_replay_hits_total{protocol="nfs3"}` up by one, for each (catch a key on the connection,
-  R24, a second run, R23, a hit not counted, R27, the `COMPOUND` row left uncacheable); the same at
+  R24, a second run, R23, a hit not counted, R27, a cacheable member's `COMPOUND` left unstored);
+  the same with an uncacheable member gives two entries (catches every `COMPOUND` stored, D5); the same at
   minor version 1 gives two entries (catches a session's compound cached here, R26); the second send
   from `127.0.0.2` through `DialFrom` gives two entries (catches the key's address dropped between
   `Conn.Remote` and the cache, R23); a cacheable call answered, then resent with the same XID and
@@ -519,7 +527,8 @@ internal/adapter/adaptertest/nfsclient/
   connection's TLS state changed misses (catches a TLS reply answered in plaintext, R43); the
   eviction and size cases (catch an unbounded cache, R25); a `Lookup` whose reply reservation cannot
   be had before an ended context returns `ErrDelay` of `DelayResources` (catches an uncharged copy,
-  R26); the retry-identity golden table (R40). The mutex and block profiles under 64 connections are
+  R26); the retry-identity golden table (R40). The entries' expected lifetime under a measured mix of NFSv3 and NFSv4.0 replies, and the mutex
+  and block profiles under 64 connections, are
   reported in the pull request (rule 4). No test double.
 - **Rules:** rule 9's two `ponytail:` markers of D5.
 
@@ -607,7 +616,7 @@ internal/adapter/adaptertest/nfsclient/
 **Subtask T3.6 estimate: 3.5 man-days.**
 
 - **Track:** A. **Depends on:** T3.4, T3.5.
-- **Covers:** R30, R31, R33, R34, R35, R36, R37, R38, R43, R44, R45.
+- **Covers:** R8 (the probe's exception), R30, R31, R33, R34, R35, R36, R37, R38, R43, R44, R45.
 - **Deliverables:** `stages.go`: `Decode` asking `StartTLS` for the probe (a `NULL` under `AUTH_TLS`,
   mode not off, not yet upgraded), `Route` admitting it, the probe's `Encode` writing the
   `STARTTLS` verifier and so confirming the upgrade (D7); `Decode` closing under `require`, before the cache is read, any call before the upgrade but the
@@ -662,22 +671,23 @@ flowchart TD
   T3_4 & T3_5 --> T3_6["T3.6 NFS over TLS"]
   T3_2 --> C1(["after T3.2: loopback rows run"]):::sync
   T3_3 --> C2(["after T3.3: E8 extends the Replay stage"]):::sync
-  T3_4 --> C3(["after T3.4: S3 needs only E4"]):::sync
+  T3_4 --> C3(["after T3.4: E4's and E11's rows reach their tables"]):::sync
+  T3_3 & T3_6 --> S3(["S3 needs all of E3, and E4"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
 T3.1 and T3.2 come first: every handler's loopback rows read T3.1's `r.Call` and run on T3.2's
 client. T3.3 follows on the same path because it is what E8, on this track's critical path, extends.
 T3.4 gives E4, E5, E10 and E11 their tables and rows. T3.5 waits for nothing but is needed only by
-T3.6, which nothing else in the programme waits for, so it comes last although it is the epic's
-riskiest subtask; it can run beside any of the others.
+T3.6, which E16's TLS row consumes and S3 waits for, as it waits for the whole epic; so T3.6 comes
+last although it is the epic's riskiest subtask, and T3.5 can run beside any of the others.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T3.1, T3.2 | 5 | — | the caller every handler receives, and the client every loopback row is written on, tested together over loopback |
-| 2 | T3.3 | 3 | PR 1 | the duplicate-request cache, the piece E8 extends |
+| 2 | T3.3 | 3.25 | PR 1 | the duplicate-request cache, the piece E8 extends |
 | 3 | T3.4 | 3.5 | PR 1 | every program's table in its package, with `NULL` and every refusal of `core` and of the caller |
 | 4 | T3.5, T3.6 | 7 | PR 3 | NFS over TLS, from `core`'s upgrade to the probe and the certificates; T3.5 can open beside PR 1 |
 
@@ -722,6 +732,16 @@ Questions pending the user's answer. Each recommended option is written in place
   - (a) **Recommended:** `ProtocolNLM`, since its one served call acts on NLM hosts' records.
   - (b) `ProtocolNFSv3`, so NSM meets the share's full minimums; harmless today, since NSM names no
     share.
+- **Q5. Which NFSv4.0 `COMPOUND`s the cache stores** (D5). With the whole `COMPOUND` row
+  `Cacheable`, every reply up to 8 KiB goes in, and at about 2000 compounds a second the 4096
+  entries turn over in about 2 s, so a `REMOVE` retransmitted after a 3 s timeout runs again.
+  - (a) **Recommended:** the row unmarked, and `core`'s compound runner storing a reply when a member
+    that ran has a `Cacheable` row; one condition in `compound.go`, with RFC 20 §4.7's
+    `if op.Cacheable` sentence amended in Q2's pull request, and each NFSv4.0 member's column set by
+    the epic that adds it (E5, E9). knfsd caches NFSv4.0 compounds whole (from memory), but its
+    cache is sized by memory rather than a fixed count.
+  - (b) The whole row `Cacheable`, as RFC 20 §4.7 reads today, with the entry count raised until
+    T3.3's measured lifetime passes a client's retransmission timeout; the bound grows with it.
 
 Gaps, not questions:
 
@@ -733,9 +753,16 @@ Gaps, not questions:
   request proposes its NFSv3 row (E4's §9, point 3), and E4's T4.3 adds it once agreed; E16's
   totality test fails until it has one.
 - Which pull request carries which RFC amendment: Q2's RFC 20 pull request carries `Conn.Remote`
-  in §4.7, §5.5's `StartTLS` sentence and RFC 21 §11's "once per member" clause; Q3's sentence goes
-  in this document's pull request against RFC 21 §2.2; Q1's option (a) rewords RFC 20 §4.4. No other
+  in §4.7, §5.5's `StartTLS` sentence and RFC 21 §11's "once per member" clause, and Q5's sentence of §4.7; Q3's sentence goes
+  in this document's pull request against RFC 21 §2.2, with §11.5's NSM and MOUNT cases below; Q1's option (a) rewords RFC 20 §4.4. No other
   epic's pull request touches these sections: E5's touches RFC 20 §4.10, E4's and E5's other rows of
   RFC 21 §11.5.
+- RFC 21 §11.5 sends `ErrMoved` to no reply in NFSv3's, MOUNT's and NLM's tables and names
+  `ErrLogonFailure`'s fault for NFSv3 and NLM only; NSM and MOUNT follow the same rule (R16, R19,
+  R22), and this document's pull request adds them to §11.5's text.
+- The RFC 21 implementation plan's E3 row and section give 7 subtasks and 17 man-days; this
+  document carves the same outline into 6 subtasks and 18.75 man-days (the `Security` stage and
+  malformed calls sit in T3.1 and T3.2, `wire`'s decoder in T3.2). The plan's row and total follow
+  in a pull request against the plan.
 - E8 owns the NFSv4.1 reply cache, which shares T3.3's stage: if E8 finds `core`'s `ReplayCache`
   cannot hold both behind one `Stages.Replay`, the split is E8's to propose.
