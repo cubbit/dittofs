@@ -16,9 +16,9 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 	"go.opentelemetry.io/otel/codes"

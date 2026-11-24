@@ -22,7 +22,7 @@ try() {
   git reset -q --hard "$base"
 }
 try "docs change" docs/internals/testing.md
-try "block store change" pkg/block/engine/engine.go
+try "block store change" pkg/engine/engine.go
 try "SMB adapter change" internal/adapter/smb/channel_sequence.go
 git log -1 --format='worktree back at %h'
 git status --short

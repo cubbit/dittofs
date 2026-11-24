@@ -19,7 +19,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter/nfs"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/adapter/smb"
-	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metrics"

@@ -16,8 +16,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/bootstrap/internal/dirsync"
+	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 

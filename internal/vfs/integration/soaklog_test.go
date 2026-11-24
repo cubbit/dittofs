@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/step"
-	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"

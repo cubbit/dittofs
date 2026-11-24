@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/block/engine"
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

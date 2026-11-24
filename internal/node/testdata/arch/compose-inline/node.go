@@ -2,8 +2,8 @@
 package node
 
 import (
-	"github.com/cubbit/dittofs/pkg/block/engine"
-	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 )
 
 var _ enginewire.Params

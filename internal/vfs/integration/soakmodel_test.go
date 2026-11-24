@@ -36,7 +36,7 @@ type soakOp struct {
 	verifier vfs.Verifier // an unstable write's verifier, which a Commit must match to acknowledge it
 	// grow marks a truncate that sets the size at or above the one the file's
 	// operations leave. The engine answers it before any sync, and its group
-	// commit commits it lazily (pkg/block/engine/remove.go, Truncate), so it
+	// commit commits it lazily (pkg/engine/remove.go, Truncate), so it
 	// is acknowledged by a later Commit, as an unstable write is.
 	grow bool
 	// acked is set once the client was told the op is durable: a stable

@@ -64,7 +64,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
         ▼                   ▼
 ┌────────────────┐  ┌──────────────────────┐
 │   Metadata     │  │ Per-Share BlockStore │
-│     Stores     │  │  pkg/block/     │
+│     Stores     │  │  pkg/engine, journal │
 │                │  │                      │
 │  - BadgerDB    │  │  ┌──────────────┐    │
 │    (on disk or │  │  │   Journal    │    │
@@ -123,8 +123,8 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
   - `kerberos/`: Kerberos `Provider` — keytab and krb5.conf state with hot-reload
   - `sid/`: Windows SID types, encoding, and cross-protocol mapping
 
-**5. Block storage** (`pkg/block/`)
-- `engine/`: the engine (RFC 8) over `journal/`, the journal (RFC 1). The node builds it and `vfs.Service` over it; adapters reach it only through `vfs.Service` (see [Data path](#data-path)).
+**5. Block storage** (`pkg/engine/`, `pkg/journal/`)
+- `pkg/engine/`: the engine (RFC 8) over `pkg/journal/`, the journal (RFC 1). The node builds it and `vfs.Service` over it; adapters reach it only through `vfs.Service` (see [Data path](#data-path)).
 
 **6. Metadata store** (`pkg/metadata/`, [RFC 16](rfcs/rfc-16-metadata-store.md))
 - `kvstore/`: the store over a `kv.KV` — the records, their keys and codecs,
@@ -149,8 +149,8 @@ is still parsed and validated, but the node reads it only at preflight, to
 detect a v1 state layout (`probeV1State`, `internal/node/preflight.go`); shares
 keep no state directory beneath it.
 
-The engine (`pkg/block/engine`, [RFC 8](rfcs/rfc-8-engine.md)) and the journal
-(`pkg/block/journal`, [RFC 1](rfcs/rfc-1-journal.md)) are built and tested on
+The engine (`pkg/engine`, [RFC 8](rfcs/rfc-8-engine.md)) and the journal
+(`pkg/journal`, [RFC 1](rfcs/rfc-1-journal.md)) are built and tested on
 their own, behind the `engine_conformance` and `journal_conformance` tags.
 
 ## Share Snapshots

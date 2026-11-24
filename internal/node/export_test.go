@@ -17,7 +17,7 @@ import (
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
-	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/keyprovider"

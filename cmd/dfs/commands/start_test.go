@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/nodetest"
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"

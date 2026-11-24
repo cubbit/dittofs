@@ -1,0 +1,1947 @@
+package engine_test
+
+import (
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"maps"
+	"runtime"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
+)
+
+// startDevice is the one journal device of a start test.
+const startDevice = "dev"
+
+// starter is the engine composed for a start test, not yet started: over a
+// fake journal that logs every call the engine makes on it, the real store on
+// an in-memory kv.KV holding two shares, and a Deps.Open the test answers.
+type starter struct {
+	granted map[entity.ShareID]bool // shares the admin holds a grant on, for write
+	e       *engine.Engine
+	fs      *kvstoretest.FS
+	j       *logJournal
+	lc      *startLifecycle
+	logs    logRecorder
+	one     engine.Share // the store's first share
+	two     engine.Share // a second share of the store
+	id      journal.JournalID
+
+	deps  engine.Deps    // what the engine was built from, for a restart over the same store
+	more  []engine.Share // the shares withShares adds, started with one and two
+	spare engine.Share   // a share withSpare adds before Start, which Start does not bind
+	clock *sim.TestClock // the engine's clock
+
+	tb *openstate.Table // the open-state table withOpenState runs, new at each restart
+
+	mu      sync.Mutex
+	opens   []openCall
+	openErr error // what Open answers in place of the journal
+	gate    *gate // holds the next Open at it, once
+	fresh   bool  // each Open after the first answers a new fake journal
+	opened  bool  // Open answered a journal once
+
+	journalClosed bool // the test closed the journal itself, so the engine's Close reports it
+}
+
+// openCall is one call of Deps.Open.
+type openCall struct {
+	dir    string
+	floor  journal.Version
+	expect journal.JournalID
+	marks  []entity.SyncMark
+}
+
+// starterConfig is what a test asks of newStarter.
+type starterConfig struct {
+	noRecord bool
+	noApply  bool
+	spare    bool
+	shares   int
+	deps     func(*engine.Deps)
+	store    kvstoretest.Opener
+	fresh    bool
+	open     bool // holds clones in a real open-state table, as withOpenState asks
+}
+
+// starterOption is one thing a test asks of newStarter.
+type starterOption func(*starterConfig)
+
+// noRecord leaves the device with no journal recorded in the store.
+func noRecord() starterOption {
+	return func(c *starterConfig) {
+		c.noRecord = true
+	}
+}
+
+// withStore builds the starter's store over the kv.KV open returns.
+func withStore(open kvstoretest.Opener) starterOption {
+	return func(c *starterConfig) {
+		c.store = open
+	}
+}
+
+// freshJournals has each Open after the first answer a new fake journal, as
+// a Start run again after one that failed and closed the journal needs.
+func freshJournals() starterOption {
+	return func(c *starterConfig) {
+		c.fresh = true
+	}
+}
+
+// noApply builds the engine with no settings applied.
+func noApply() starterOption {
+	return func(c *starterConfig) {
+		c.noApply = true
+	}
+}
+
+// withShares adds n shares to the store, started with the first two.
+func withShares(n int) starterOption {
+	return func(c *starterConfig) {
+		c.shares = n
+	}
+}
+
+// withSpare adds a share that Start does not bind, for a test to bind.
+func withSpare() starterOption {
+	return func(c *starterConfig) {
+		c.spare = true
+	}
+}
+
+// withStartDeps changes the engine's Deps before New, after any change an
+// earlier option asked.
+func withStartDeps(f func(*engine.Deps)) starterOption {
+	return func(c *starterConfig) {
+		prev := c.deps
+		c.deps = func(d *engine.Deps) {
+			if prev != nil {
+				prev(d)
+			}
+			f(d)
+		}
+	}
+}
+
+func newStarter(t *testing.T, opts ...starterOption) *starter {
+	t.Helper()
+	prof.Watch(t, prof.Options{})
+
+	var c starterConfig
+
+	for _, o := range opts {
+		o(&c)
+	}
+
+	s := &starter{
+		j: &logJournal{
+			FakeJournal: enginetest.NewFakeJournal(),
+		},
+		logs:  newLogRecorder(),
+		id:    journal.JournalID{'A'},
+		fresh: c.fresh,
+		clock: sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+	}
+
+	open := kvstoretest.Opener(memKV)
+
+	if c.store != nil {
+		open = c.store
+	}
+
+	s.fs = kvstoretest.NewFS(t, open)
+	s.lc = &startLifecycle{
+		Lifecycle: s.fs.Store.Lifecycle(),
+	}
+	s.one = enginetest.ShareOf(t, s.fs.Store, s.fs.Share.ID, 1<<30)
+	s.two = enginetest.AddShare(t, s.fs.Store, "two", 1<<30)
+
+	for i := range c.shares {
+		s.more = append(s.more, enginetest.AddShare(t, s.fs.Store, fmt.Sprintf("more%d", i), 1<<30))
+	}
+
+	if c.spare {
+		s.spare = enginetest.AddShare(t, s.fs.Store, "spare", 1<<30)
+	}
+
+	s.clock = sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	if !c.noRecord {
+		err := s.fs.Store.RecordJournal(t.Context(), s.id, entity.NodeID{1}, entity.JournalDir(startDevice))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	d := engine.Deps{
+		Node:      entity.NodeID{1},
+		Devices:   []string{startDevice},
+		Open:      s.open,
+		Existence: s.fs.Store.Existence(),
+		Content:   s.fs.Store.Content(),
+		Lifecycle: s.lc,
+		Holds:     noHolds{},
+		Clock:     s.clock,
+		Logger:    slog.New(s.logs),
+		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
+			return ctx, func(error) {
+			}
+		},
+	}
+
+	if c.open {
+		d.Holds = s.openState(t)
+	}
+
+	if c.deps != nil {
+		c.deps(&d)
+	}
+
+	s.deps = d
+
+	e, err := engine.New(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(e.CloseGroupCommits)
+
+	if !c.noApply {
+		if err := e.Apply(enginetest.Settings); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s.e = e
+
+	return s
+}
+
+// open is the starter's Deps.Open: it records the call, holds it at the gate
+// when one is set, and answers the fake journal or openErr.
+func (s *starter) open(_ context.Context, dir string, floor journal.Version, expect journal.JournalID, marks []entity.SyncMark) (engine.Journal, error) {
+	s.mu.Lock()
+	s.opens = append(s.opens, openCall{dir, floor, expect, marks})
+	g, err := s.gate, s.openErr
+	s.gate = nil
+
+	if s.fresh && s.opened {
+		s.j = &logJournal{
+			FakeJournal: enginetest.NewFakeJournal(),
+		}
+	}
+
+	s.opened = true
+	j := s.j
+	s.mu.Unlock()
+
+	if g != nil {
+		close(g.entered)
+		<-g.release
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if err := j.add("open"); err != nil {
+		return nil, err
+	}
+
+	return j, nil
+}
+
+// openCalls is every Open call so far.
+func (s *starter) openCalls() []openCall {
+	s.mu.Lock()
+
+	defer s.mu.Unlock()
+
+	return slices.Clone(s.opens)
+}
+
+// start starts the engine with the starter's two shares.
+func (s *starter) start(t *testing.T) error {
+	t.Helper()
+
+	return s.e.Start(t.Context(), append([]engine.Share{s.one, s.two}, s.more...))
+}
+
+// write writes one byte to a file the store holds a record of, so the
+// existence commit of the write succeeds and a later Close can drain it.
+func (s *starter) write(t *testing.T, id entity.ShareID) error {
+	t.Helper()
+
+	sh, _, err := s.fs.Store.ShareIndex().Share(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.mu.Lock()
+	if !s.granted[id] && id != s.fs.Share.ID {
+		g := entity.ShareGrant{Share: id, Principal: s.fs.Admin.Principal, Access: entity.AccessAdmin}
+		if _, err := s.fs.Store.ControlPlane().SetGrant(t.Context(), g, 0); err != nil {
+			s.mu.Unlock()
+			t.Fatal(err)
+		}
+	}
+
+	if s.granted == nil {
+		s.granted = make(map[entity.ShareID]bool)
+	}
+
+	s.granted[id] = true
+	s.mu.Unlock()
+
+	_, made := s.fs.Create(t, s.fs.Admin, entity.NewHandle(id, sh.Root), entity.NewFileID().String(), kvstore.Regular(0o644))
+
+	opts := engine.WriteOpts{
+		Done: func() {
+		},
+	}
+	_, err = s.e.Write(t.Context(), id, made.ID, 0, []byte("x"), opts)
+
+	return err
+}
+
+// seed leaves tag holding one byte in the fake journal, with no handle of it
+// open, as a share the journal served before the restart does.
+func (s *starter) seed(t *testing.T, tag journal.ShareTag) {
+	t.Helper()
+
+	j := s.j.FakeJournal
+
+	if err := j.SetVersionLimit(journal.Version{Counter: 1 << 40}); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := j.Share(tag, 0, journal.Version{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := journal.NewFileID(entity.NewFileID())
+
+	if _, err := h.WriteAt(t.Context(), f, 0, []byte("x"), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// removing adds a share named name to the store and takes its removal
+// through the store's steps until its tag reads state, recording each
+// shard's step as the node's removal does, and returns the share as the
+// engine bound it before the removal.
+func (s *starter) removing(t *testing.T, name string, state entity.TagState) engine.Share {
+	t.Helper()
+
+	sh := enginetest.AddShare(t, s.fs.Store, name, 1<<30)
+	removeShare(t, s.fs.Store, sh, state)
+
+	return sh
+}
+
+// removeShare drives share sh's removal in st until its tag reads state, or
+// to its end when state is zero, as kvstoretest.RemoveShareUntil does.
+func removeShare(t *testing.T, st *kvstore.Store, sh engine.Share, state entity.TagState) {
+	t.Helper()
+
+	if err := kvstoretest.RemoveShareUntil(t.Context(), st, sh.ID, sh.Shard, state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// startLifecycle is the store's lifecycle view, wrapped twice over: a
+// pass-through record of every RaiseVersionLimits call that gets past fail,
+// the ones failRaises fails or a gate holds included, and of the Updates
+// each RaiseAtStart made, which never answers in the store's
+// place; and a fault wrapper, which fails the calls named in fail or planned
+// with failRaises, holds a call at a gate, and leaves the shards in drop out
+// of RaiseAtStart's answer, as a store whose answer lost them, on cue.
+type startLifecycle struct {
+	engine.Lifecycle
+	fail      map[string]error
+	raiseGate atomic.Pointer[gate]
+	counts    *kv.Counting            // the store's counts, when the test reads the raise's
+	raises    []kv.UpdateCounts       // the Updates of each RaiseAtStart, when counts is set
+	drop      map[entity.ShardID]bool // shards left out of RaiseAtStart's answer
+
+	// hold holds the next RaiseVersionLimits that names its share, any call
+	// when the share is zero, before the store sees it, once.
+	hold atomic.Pointer[heldRaise]
+
+	mu     sync.Mutex
+	plan   []error     // the next RaiseVersionLimits calls fail with these, in order; nil passes
+	limits []raiseCall // every RaiseVersionLimits call, in order
+
+	// onRaise, when set before the first call, is called with the number of
+	// RaiseVersionLimits calls made so far as each one begins, after it is
+	// recorded.
+	onRaise func(calls int)
+
+	// untilCancel makes a call wait for its context to end, or for this
+	// channel to close, and then for this channel, before it answers the
+	// context's error.
+	untilCancel chan struct{}
+}
+
+// heldRaise is a gate for the next RaiseVersionLimits naming share.
+type heldRaise struct {
+	g     *gate
+	share entity.ShareID
+}
+
+// raiseCall is one RaiseVersionLimits call: the shares it named, and the
+// stack of the goroutine that made it.
+type raiseCall struct {
+	shares []entity.ShareID
+	stack  string
+	ctxErr error // the context's error as the call began
+	ctx    context.Context
+	to     map[entity.ShareID]entity.JournalVersion
+}
+
+// failRaises makes the next RaiseVersionLimits calls answer errs, in order.
+func (l *startLifecycle) failRaises(errs ...error) {
+	l.mu.Lock()
+	l.plan = append(l.plan, errs...)
+	l.mu.Unlock()
+}
+
+// raiseCalls is every RaiseVersionLimits call so far.
+func (l *startLifecycle) raiseCalls() []raiseCall {
+	l.mu.Lock()
+
+	defer l.mu.Unlock()
+
+	return slices.Clone(l.limits)
+}
+
+func (l *startLifecycle) JournalID(
+	ctx context.Context,
+	node entity.NodeID,
+	device entity.JournalDir,
+) ([16]byte, error) {
+	if err := l.fail["JournalID"]; err != nil {
+		return [16]byte{}, err
+	}
+
+	return l.Lifecycle.JournalID(ctx, node, device)
+}
+
+func (l *startLifecycle) Tags(ctx context.Context) (map[entity.ShareID]entity.TagRecord, error) {
+	if err := l.fail["Tags"]; err != nil {
+		return nil, err
+	}
+
+	return l.Lifecycle.Tags(ctx)
+}
+
+func (l *startLifecycle) VersionLimits(
+	ctx context.Context,
+	shares []entity.ShareID,
+) (map[entity.ShareID]entity.JournalVersion, error) {
+	if err := l.fail["VersionLimits"]; err != nil {
+		return nil, err
+	}
+
+	return l.Lifecycle.VersionLimits(ctx, shares)
+}
+
+func (l *startLifecycle) RaiseVersionLimits(ctx context.Context, to map[entity.ShareID]entity.JournalVersion) error {
+	if err := l.fail["RaiseVersionLimits"]; err != nil {
+		return err
+	}
+
+	buf := make([]byte, 1<<16)
+	call := raiseCall{
+		shares: slices.Collect(maps.Keys(to)),
+		stack:  string(buf[:runtime.Stack(buf, false)]),
+		ctxErr: ctx.Err(),
+		ctx:    ctx,
+		to:     maps.Clone(to),
+	}
+
+	l.mu.Lock()
+	l.limits = append(l.limits, call)
+	n := len(l.limits)
+
+	var planned error
+
+	if len(l.plan) > 0 {
+		planned = l.plan[0]
+		l.plan = l.plan[1:]
+	}
+
+	l.mu.Unlock()
+
+	if l.onRaise != nil {
+		l.onRaise(n)
+	}
+
+	if h := l.hold.Load(); h != nil {
+		_, named := to[h.share]
+
+		if (h.share.IsZero() || named) && l.hold.CompareAndSwap(h, nil) {
+			close(h.g.entered)
+			<-h.g.release
+		}
+	}
+
+	if l.untilCancel != nil {
+		select {
+		case <-ctx.Done():
+		case <-l.untilCancel:
+		}
+
+		<-l.untilCancel
+
+		return ctx.Err()
+	}
+
+	if planned != nil {
+		return planned
+	}
+
+	return l.Lifecycle.RaiseVersionLimits(ctx, to)
+}
+
+// RaiseAtStart holds the call at the raise gate armed, once. When counts is
+// set, it drops the Updates made before the call and keeps the ones the call
+// made, whether it succeeds or fails, so a test reads the raise's
+// transactions apart from start step 1's. It leaves the shards in drop out of
+// the answer, after the store raised them.
+func (l *startLifecycle) RaiseAtStart(
+	ctx context.Context,
+	shards []entity.ShardID,
+) (map[entity.ShardID]uint64, error) {
+	if g := l.raiseGate.Swap(nil); g != nil {
+		close(g.entered)
+		<-g.release
+	}
+
+	if l.counts != nil {
+		l.counts.TakeUpdates()
+	}
+
+	incs, err := l.Lifecycle.RaiseAtStart(ctx, shards)
+
+	if l.counts != nil {
+		l.raises = append(l.raises, l.counts.TakeUpdates())
+	}
+
+	for id := range l.drop {
+		delete(incs, id)
+	}
+
+	return incs, err
+}
+
+// limitKV is a kv.KV whose transactions hold at most entries keys, so the
+// store built over it computes a small key budget K.
+type limitKV struct {
+	kv.KV
+	entries int
+}
+
+func (l limitKV) Limits() kv.TxnLimits {
+	lim := l.KV.Limits()
+	lim.TxnEntries = l.entries
+
+	return lim
+}
+
+// shardOf reads shard id's record from the starter's store.
+func (s *starter) shardOf(t *testing.T, id entity.ShardID) entity.Shard {
+	t.Helper()
+
+	sh, err := s.fs.Store.Shard(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return sh
+}
+
+// logJournal is the engine's view of a fake journal, wrapped twice over: a
+// pass-through record of each call the engine makes on it, and on the handles
+// it returns, in order, which never answers in the journal's place; and a
+// fault wrapper, which fails a call named in fail with its error and holds
+// the next SetVersionLimit at the gate armed, once, or the handles' writes
+// while held is set (by hold).
+type logJournal struct {
+	*enginetest.FakeJournal
+	fail      map[string]error
+	limitGate atomic.Pointer[gate]
+	held      atomic.Pointer[chan struct{}]          // while set, WriteAt, Truncate and Reserve wait on it
+	onStrand  func(journal.ShareTag)                 // a test's hook: run at each Strand call
+	onSync    atomic.Pointer[func([]journal.FileID)] // a test's hook: run at each Sync on a handle, before the journal's
+
+	mu     sync.Mutex
+	calls  []string
+	shared []sharedCall
+}
+
+// sharedCall is one Share the engine made.
+type sharedCall struct {
+	tag   journal.ShareTag
+	limit int64
+	floor journal.Version
+}
+
+// add records call, then answers the fault fail arms for it, if any, in the
+// journal's place: the call is recorded whether or not it is failed.
+func (j *logJournal) add(call string) error {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	j.calls = append(j.calls, call)
+
+	return j.fail[call]
+}
+
+// hold has every WriteAt, Truncate and Reserve of the journal's handles wait,
+// from now on, until the returned release is called, which a test's end also
+// does. A call made before hold is not held.
+func (j *logJournal) hold(t *testing.T) (release func()) {
+	t.Helper()
+
+	c := make(chan struct{})
+	j.held.Store(&c)
+
+	var once sync.Once
+
+	release = func() {
+		once.Do(func() {
+			j.held.Store(nil)
+			close(c)
+		})
+	}
+
+	t.Cleanup(release)
+
+	return release
+}
+
+// waitHold waits while hold is in force.
+func (j *logJournal) waitHold() {
+	if c := j.held.Load(); c != nil {
+		<-*c
+	}
+}
+
+// log is every call logged so far.
+func (j *logJournal) log() []string {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	return slices.Clone(j.calls)
+}
+
+// called reports whether call was logged.
+func (j *logJournal) called(call string) bool {
+	return slices.Contains(j.log(), call)
+}
+
+func (j *logJournal) Share(
+	tag journal.ShareTag,
+	limit int64,
+	floor journal.Version,
+) (engine.Handle, error) {
+	if err := j.add(fmt.Sprintf("share %d", tag)); err != nil {
+		return nil, err
+	}
+
+	h, err := j.FakeJournal.Share(tag, limit, floor)
+	if err != nil {
+		return nil, err
+	}
+
+	j.mu.Lock()
+	j.shared = append(j.shared, sharedCall{tag, limit, floor})
+	j.mu.Unlock()
+
+	lh := &logHandle{
+		Handle: h,
+		j:      j,
+		tag:    tag,
+	}
+
+	return lh, nil
+}
+
+func (j *logJournal) Forget(ctx context.Context, tag journal.ShareTag) error {
+	if err := j.add(fmt.Sprintf("forget %d", tag)); err != nil {
+		return err
+	}
+
+	return j.FakeJournal.Forget(ctx, tag)
+}
+
+func (j *logJournal) Strand(tag journal.ShareTag) error {
+	if err := j.add(fmt.Sprintf("strand %d", tag)); err != nil {
+		return err
+	}
+
+	if f := j.onStrand; f != nil {
+		f(tag)
+	}
+
+	return j.FakeJournal.Strand(tag)
+}
+
+func (j *logJournal) SetVersionLimit(mark journal.Version) error {
+	if err := j.add("limit"); err != nil {
+		return err
+	}
+
+	if g := j.limitGate.Swap(nil); g != nil {
+		close(g.entered)
+		<-g.release
+	}
+
+	return j.FakeJournal.SetVersionLimit(mark)
+}
+
+func (j *logJournal) Draw() (journal.Version, error) {
+	if err := j.add("draw"); err != nil {
+		return journal.Version{}, err
+	}
+
+	return j.FakeJournal.Draw()
+}
+
+func (j *logJournal) Close() error {
+	if err := j.add("close journal"); err != nil {
+		return err
+	}
+
+	return j.FakeJournal.Close()
+}
+
+// shareCalls is every Share the engine made.
+func (j *logJournal) shareCalls() []sharedCall {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	return slices.Clone(j.shared)
+}
+
+// logHandle logs its writes and its Close.
+type logHandle struct {
+	engine.Handle
+	j   *logJournal
+	tag journal.ShareTag
+}
+
+func (h *logHandle) WriteAt(
+	ctx context.Context,
+	id journal.FileID,
+	off int64,
+	p []byte,
+	mtime int64,
+) (journal.Version, error) {
+	h.j.waitHold()
+
+	if err := h.j.add(fmt.Sprintf("write %d", h.tag)); err != nil {
+		return journal.Version{}, err
+	}
+
+	return h.Handle.WriteAt(ctx, id, off, p, mtime)
+}
+
+func (h *logHandle) Truncate(
+	ctx context.Context,
+	id journal.FileID,
+	size int64,
+) (journal.Version, error) {
+	h.j.waitHold()
+
+	return h.Handle.Truncate(ctx, id, size)
+}
+
+func (h *logHandle) Reserve(n int64, writes int) (engine.Reservation, error) {
+	h.j.waitHold()
+
+	return h.Handle.Reserve(n, writes)
+}
+
+func (h *logHandle) Close() error {
+	if err := h.j.add(fmt.Sprintf("close handle %d", h.tag)); err != nil {
+		return err
+	}
+
+	return h.Handle.Close()
+}
+
+// journalLost reports whether st raises journal_lost for the start device.
+func journalLost(st engine.Stats) bool {
+	for _, c := range st.Journals[startDevice].Conditions {
+		if c.Name == "journal_lost" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Start opens the device's journal with the identity the store records
+// for it and the floor the store's versions give: the larger of a share's
+// version floor and its version limit. This checks only what Open is handed;
+// that the journal then issues above it is the conformance row on a device
+// loss, over the real journal.
+func TestStartOpensWithTheRecordedIdentityAndFloor(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		floor, limit uint64 // offsets above the store's floor
+	}{
+		{"the limit is larger", 1e12, 2e12},
+		{"the floor is larger", 2e12, 1e12},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStarter(t)
+			ctx := t.Context()
+			_, file := s.fs.Create(t, s.fs.Admin, s.fs.Root, "f", kvstore.Regular(0o644))
+
+			base, err := s.fs.Store.Content().VersionFloor(ctx, []entity.ShareID{s.one.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ex := entity.VersionOf(base.Counter() + c.floor)
+			lim := entity.VersionOf(base.Counter() + c.limit)
+			commitShareAt(t, s.fs, s.one.ID, file.ID, ex)
+
+			to := map[entity.ShareID]entity.JournalVersion{
+				s.one.ID: lim,
+			}
+
+			if err := s.fs.Store.Lifecycle().RaiseVersionLimits(ctx, to); err != nil {
+				t.Fatal(err)
+			}
+
+			floor, err := s.fs.Store.Content().VersionFloor(ctx, []entity.ShareID{s.one.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			want := entity.MaxVersion(floor, lim)
+
+			if err := s.start(t); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+
+			opens := s.openCalls()
+			if len(opens) != 1 {
+				t.Fatalf("Open was called %d times, want once", len(opens))
+			}
+
+			if opens[0].dir != startDevice || opens[0].expect != s.id {
+				t.Errorf("Open(%q, expect %x), want (%q, the recorded %x)", opens[0].dir, opens[0].expect, startDevice, s.id)
+			}
+
+			if opens[0].floor.Counter != want.Counter() {
+				t.Errorf("Open got floor %d, want the larger of floor and limit, %d", opens[0].floor.Counter, want.Counter())
+			}
+		})
+	}
+}
+
+// RFC 8 §2.5 step 1 and §5.2: Start opens the journal with the sync marks
+// the group commit recorded before the restart, and the group commit of the
+// new open records its own marks under the open generation Start raised, so
+// the open after it reads those.
+func TestStartOpensWithTheRecordedSyncMarks(t *testing.T) {
+	s := newStarter(t, freshJournals())
+	ctx := t.Context()
+
+	// commit writes n bytes to a new file of share one and commits its
+	// existence, which syncs the journal and records its marks.
+	commit := func(e *engine.Engine, name string, n int) {
+		t.Helper()
+		_, f := s.fs.Create(t, s.fs.Admin, s.fs.Root, name, kvstore.Regular(0o644))
+		if _, err := e.Write(ctx, s.one.ID, f.ID, 0, make([]byte, n), engine.WriteOpts{}); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		if err := e.CommitExistence(ctx, s.one.ID, f.ID); err != nil {
+			t.Fatalf("commit %s: %v", name, err)
+		}
+	}
+	// restart closes e and starts a new engine over the same store.
+	restart := func(e *engine.Engine) *engine.Engine {
+		t.Helper()
+		if err := e.Close(ctx); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		next, err := engine.New(s.deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(next.CloseGroupCommits)
+		if err := next.Apply(enginetest.Settings); err != nil {
+			t.Fatal(err)
+		}
+		if err := next.Start(ctx, []engine.Share{s.one, s.two}); err != nil {
+			t.Fatalf("Start after the restart: %v", err)
+		}
+		return next
+	}
+
+	if err := s.start(t); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	commit(s.e, "a", 1)
+	first := s.j.RecordedMarks()
+	if len(first) == 0 {
+		t.Fatal("the first open recorded no marks")
+	}
+
+	e := restart(s.e)
+	if got := s.openCalls()[1].marks; !slices.Equal(got, first) {
+		t.Errorf("the second Open got marks %v, want the recorded %v", got, first)
+	}
+
+	s.mu.Lock()
+	second := s.j
+	s.mu.Unlock()
+	commit(e, "b", 3)
+	want := second.RecordedMarks()
+	if len(want) == 0 || slices.Equal(want, first) {
+		t.Fatalf("the second open recorded %v, want marks other than the first's %v", want, first)
+	}
+
+	_ = restart(e)
+	if got := s.openCalls()[2].marks; !slices.Equal(got, want) {
+		t.Errorf("the third Open got marks %v, want the %v the second open recorded", got, want)
+	}
+}
+
+// commitShareAt commits existence for file of share at v, so the share's
+// version floor is at least v.
+func commitShareAt(t *testing.T, fs *kvstoretest.FS, share entity.ShareID, file entity.FileID, v entity.JournalVersion) {
+	t.Helper()
+
+	now := time.Now()
+	pending := []kvstore.PendingExistence{
+		{
+			Share: share,
+			File:  file,
+			Ops: []kvstore.PendingOp{
+				{
+					Version: v,
+					Kind:    kvstore.OpWrite,
+					Extent:  entity.Extent{Length: 4096},
+					Mtime:   now,
+					Ctime:   now,
+				},
+			},
+		},
+	}
+
+	failed, err := fs.Store.Existence().Commit(t.Context(), pending, nil)
+	if err != nil || failed[file] != nil {
+		t.Fatalf("commit existence at %v: %v, %v", v, err, failed[file])
+	}
+}
+
+// A device whose recorded journal is missing, foreign or unidentifiable
+// has every share on it refused by name, with its device, a share the store
+// records and Start was not handed included, and journal_lost raised, and
+// Start succeeds. The directory is opened once and nothing else is done on
+// it. A refused share answers ErrDelay with DelayFrozen, never ErrStale, and
+// its refusal is logged at Warn with the share and the device; a share being
+// removed is not named refused and still answers ErrStale.
+func TestStartRefusesALostJournalByName(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		err  error
+	}{
+		{"missing", journal.ErrNoJournal},
+		{"foreign", &journal.IdentityError{Found: journal.JournalID{'B'}}},
+		{"unidentified", journal.ErrUnidentified},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStarter(t)
+			s.openErr = c.err
+			unhanded := enginetest.AddShare(t, s.fs.Store, "three", 1<<30)
+			forgotten := s.removing(t, "forgotten", entity.TagForgotten).ID
+			offloaded := s.removing(t, "offloaded", entity.TagOffloaded).ID
+
+			refused := []engine.Share{s.one, s.two, unhanded}
+			before := map[entity.ShardID]entity.Shard{}
+
+			for _, sh := range refused {
+				before[sh.Shard] = s.shardOf(t, sh.Shard)
+			}
+
+			if err := s.start(t); err != nil {
+				t.Fatalf("Start with a lost journal = %v, want nil", err)
+			}
+
+			// A refused share's shard is not raised: its late attach raises
+			// it in the start form, which a raise here would turn into the
+			// attach form, keeping this start's grace instance.
+			for _, sh := range refused {
+				got, want := s.shardOf(t, sh.Shard), before[sh.Shard]
+
+				if got.Incarnation != want.Incarnation || got.GraceInstance != want.GraceInstance {
+					t.Errorf(
+						"refused share %v's shard %d: incarnation %d, grace instance %d; want %d and %d, unraised",
+						sh.ID,
+						sh.Shard,
+						got.Incarnation,
+						got.GraceInstance,
+						want.Incarnation,
+						want.GraceInstance,
+					)
+				}
+
+				if s.e.RaisedForTest(sh.Shard) {
+					t.Errorf("refused share %v's shard %d recorded as raised", sh.ID, sh.Shard)
+				}
+			}
+
+			st := s.e.Stats()
+
+			for _, sh := range refused {
+				got := st.Shares[sh.ID]
+
+				if got.Device != startDevice || !errors.Is(got.Refused, engine.ErrJournalLost) || !errors.Is(got.Refused, c.err) {
+					t.Errorf("share %v: device %q, refused %v; want %q, the lost journal's %v", sh.ID, got.Device, got.Refused, startDevice, c.err)
+				}
+
+				if !warned(s.logs, sh.ID, startDevice) {
+					t.Errorf("share %v: no Warn naming it and its device", sh.ID)
+				}
+			}
+
+			for _, id := range []entity.ShareID{forgotten, offloaded} {
+				if got, ok := st.Shares[id]; ok {
+					t.Errorf("removed share %v is named refused: %+v", id, got)
+				}
+			}
+
+			if !journalLost(st) {
+				t.Errorf("journal conditions %+v, want journal_lost", st.Journals[startDevice])
+			}
+
+			want := engine.Subject{
+				Scope: engine.ScopeJournal,
+				ID:    hex.EncodeToString(s.id[:]),
+				Name:  startDevice,
+			}
+
+			for _, cond := range st.Journals[startDevice].Conditions {
+				if cond.Subject != want {
+					t.Errorf("condition %s is about %+v, want the recorded journal %+v", cond.Name, cond.Subject, want)
+				}
+			}
+
+			if n := len(s.openCalls()); n != 1 {
+				t.Errorf("Open was called %d times, want once", n)
+			}
+
+			if log := s.j.log(); len(log) != 0 {
+				t.Errorf("calls on the refused journal: %v, want none", log)
+			}
+
+			if err := s.write(t, s.one.ID); !isDelay(err, vfserr.DelayFrozen) {
+				t.Errorf("a write on the refused share = %v, want ErrDelay(DelayFrozen)", err)
+			}
+
+			for _, id := range []entity.ShareID{forgotten, offloaded} {
+				if err := s.e.BindingOf(id); !errors.Is(err, vfserr.ErrStale) {
+					t.Errorf("removed share %v's binding = %v, want ErrStale", id, err)
+				}
+			}
+		})
+	}
+}
+
+// What Stats returns is the caller's: changing its maps or its condition
+// lists changes nothing the engine reports next.
+func TestStatsIsACopy(t *testing.T) {
+	s := newStarter(t)
+	s.openErr = journal.ErrNoJournal
+
+	if err := s.start(t); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	mine := s.e.Stats()
+	clear(mine.Shares)
+	mine.Journals[startDevice].Conditions[0].Name = "changed"
+
+	if st := s.e.Stats(); len(st.Shares) == 0 || !journalLost(st) {
+		t.Errorf("after the caller changed its copy, Stats is %+v", st)
+	}
+}
+
+// warned reports whether a Warn record names share and device.
+func warned(logs logRecorder, share entity.ShareID, device string) bool {
+	for _, r := range logs.warnings() {
+		if attr(r, "share") == share.String() && attr(r, "device") == device {
+			return true
+		}
+	}
+
+	return false
+}
+
+// With no journal recorded for the device and one in its directory, the
+// device's shares are refused by name as not recorded, the refusal names the
+// identity and installation the directory holds, journal_lost is not raised,
+// and Start succeeds: the journal is foreign, or of this installation and
+// not recorded, never a lost device.
+func TestStartRefusesAJournalNotRecorded(t *testing.T) {
+	s := newStarter(t, noRecord())
+	found := &journal.IdentityError{
+		Found:        journal.JournalID{'B'},
+		Installation: journal.InstallationID{'I'},
+		Segments:     true,
+	}
+	s.openErr = found
+
+	if err := s.start(t); err != nil {
+		t.Fatalf("Start with a journal not recorded = %v, want nil", err)
+	}
+
+	st := s.e.Stats()
+	got := st.Shares[s.one.ID]
+
+	var ie *journal.IdentityError
+
+	if !errors.Is(got.Refused, engine.ErrNotRecorded) || !errors.As(got.Refused, &ie) {
+		t.Fatalf("refused %v, want not recorded, naming the identity", got.Refused)
+	}
+
+	if ie.Found != found.Found || ie.Installation != found.Installation || got.Device != startDevice {
+		t.Errorf("refusal names %x of %x on %q, want %x of %x on %q", ie.Found, ie.Installation, got.Device, found.Found, found.Installation, startDevice)
+	}
+
+	if journalLost(st) {
+		t.Error("journal_lost raised for a journal not recorded")
+	}
+
+	if s.openCalls()[0].expect != (journal.JournalID{}) {
+		t.Errorf("Open expected %x, want zero", s.openCalls()[0].expect)
+	}
+}
+
+// With no journal recorded for the device and none in its directory,
+// Start fails as uninitialised, refusing nothing and attaching nothing, and
+// leaves the engine as built, so a later Start runs.
+func TestStartFailsOnAnUninitialisedDevice(t *testing.T) {
+	s := newStarter(t, noRecord())
+	s.openErr = journal.ErrNoJournal
+
+	err := s.start(t)
+	if !errors.Is(err, journal.ErrNoJournal) {
+		t.Fatalf("Start on an uninitialised device = %v, want it to fail with ErrNoJournal", err)
+	}
+
+	if st := s.e.Stats(); len(st.Shares) != 0 {
+		t.Errorf("shares reported %v, want none", st.Shares)
+	}
+
+	if err := s.e.BindingOf(s.one.ID); !isDelay(err, vfserr.DelayFrozen) {
+		t.Errorf("the share's binding after a failed Start: %v, want none", err)
+	}
+
+	s.openErr = nil
+
+	err = s.fs.Store.RecordJournal(t.Context(), s.id, entity.NodeID{1}, entity.JournalDir(startDevice))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.start(t); err != nil {
+		t.Errorf("Start again after a failed one = %v, want it to run as on a new engine", err)
+	}
+}
+
+// With no journal recorded for the device and segments with no format
+// file in its directory, the device's shares are refused by name and Start
+// succeeds: the device holds data no journal identifies, never an
+// uninitialised one.
+func TestStartRefusesAnUnidentifiedDirectory(t *testing.T) {
+	s := newStarter(t, noRecord())
+	s.openErr = journal.ErrUnidentified
+
+	if err := s.start(t); err != nil {
+		t.Fatalf("Start over segments with no format file = %v, want nil", err)
+	}
+
+	st := s.e.Stats()
+
+	if got := st.Shares[s.one.ID]; !errors.Is(got.Refused, engine.ErrUnidentified) || got.Device != startDevice {
+		t.Errorf("share refused %v on %q, want unidentified on %q", got.Refused, got.Device, startDevice)
+	}
+
+	if journalLost(st) {
+		t.Error("journal_lost raised for a journal not recorded")
+	}
+}
+
+// An error Open meets in a check, rather than a refusal it makes, fails
+// Start, which refuses no share for it.
+func TestStartFailsOnACheckError(t *testing.T) {
+	s := newStarter(t)
+	ioErr := &fs.PathError{
+		Op:   "statfs",
+		Path: startDevice,
+		Err:  errors.New("input/output error"),
+	}
+	s.openErr = ioErr
+
+	if err := s.start(t); !errors.Is(err, ioErr) {
+		t.Fatalf("Start on a check's error = %v, want it to fail with that error", err)
+	}
+
+	if st := s.e.Stats(); len(st.Shares) != 0 || journalLost(st) {
+		t.Errorf("stats %+v, want no refusal and no condition", st)
+	}
+}
+
+// A step of Start that fails returns its error, closes in reverse every
+// handle and the journal it opened, and publishes nothing; a store read that
+// fails before Open fails Start before any journal is opened.
+func TestAFailedStartClosesInReverse(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		store  string // the lifecycle call that fails
+		floor  bool   // the version floor read fails
+		call   string // the journal call that fails, by its log name; "forget" is the forgotten share's, whose tag the store gives once the share is made
+		opened bool   // the journal was opened
+		closes []string
+	}{
+		{name: "JournalID", store: "JournalID"},
+		{name: "Tags", store: "Tags"},
+		{name: "VersionLimits", store: "VersionLimits"},
+		{name: "VersionFloor", floor: true},
+		{name: "Forget", call: "forget", opened: true, closes: []string{"close journal"}},
+		{name: "second Share", call: "share 0", opened: true},
+		{name: "RaiseVersionLimits", store: "RaiseVersionLimits", opened: true},
+		{name: "SetVersionLimit", call: "limit", opened: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStarter(t, withStartDeps(func(d *engine.Deps) {
+				if c.floor {
+					d.Content = faultContent{
+						Content: d.Content,
+						err:     errInjected,
+					}
+				}
+			}))
+
+			if c.store != "" {
+				s.lc.fail = map[string]error{c.store: errInjected}
+			}
+
+			gone := s.removing(t, "forgotten", entity.TagForgotten)
+			forgotten := gone.ID
+			s.seed(t, gone.Tag)
+
+			if c.call == "forget" {
+				c.call = fmt.Sprintf("forget %d", gone.Tag)
+			}
+
+			one, two := s.one.Tag, s.two.Tag
+			closes := c.closes
+
+			if c.call == "share 0" {
+				c.call = fmt.Sprintf("share %d", two)
+				closes = []string{fmt.Sprintf("close handle %d", one), "close journal"}
+			}
+
+			if closes == nil && c.opened {
+				closes = []string{fmt.Sprintf("close handle %d", two), fmt.Sprintf("close handle %d", one), "close journal"}
+			}
+
+			if c.call != "" {
+				s.j.fail = map[string]error{c.call: errInjected}
+			}
+
+			err := s.start(t)
+			if !errors.Is(err, errInjected) {
+				t.Fatalf("Start = %v, want the injected failure", err)
+			}
+
+			if !c.opened && len(s.openCalls()) != 0 {
+				t.Errorf("Open was called after the store failed")
+			}
+
+			var got []string
+
+			for _, call := range s.j.log() {
+				if strings.HasPrefix(call, "close") {
+					got = append(got, call)
+				}
+			}
+
+			if !slices.Equal(got, closes) {
+				t.Errorf("closes %v, want %v", got, closes)
+			}
+
+			for _, id := range []entity.ShareID{s.one.ID, forgotten} {
+				if err := s.e.BindingOf(id); !isDelay(err, vfserr.DelayFrozen) {
+					t.Errorf("share %v's binding after a failed Start: %v, want none", id, err)
+				}
+			}
+		})
+	}
+}
+
+// A share whose removal reads forgotten has its tag forgotten before any
+// share attaches, wherever the journal still names it; one whose removal
+// reads offloaded is not attached and not forgotten; both answer ErrStale.
+func TestStartForgetsFinishedRemovalsAndAttachesNoRemovedShare(t *testing.T) {
+	s, w := startedWithRemovals(t)
+
+	log := s.j.log()
+	forget := fmt.Sprintf("forget %d", w.forgotten.Tag)
+	forgetAt := slices.Index(log, forget)
+	firstShare := slices.IndexFunc(log, func(call string) bool {
+		return strings.HasPrefix(call, "share ")
+	})
+
+	if forgetAt < 0 || firstShare < 0 || forgetAt > firstShare {
+		t.Errorf("calls %v, want %s before the first share", log, forget)
+	}
+
+	for _, call := range []string{
+		fmt.Sprintf("share %d", w.offloaded.Tag),
+		fmt.Sprintf("forget %d", w.offloaded.Tag),
+		fmt.Sprintf("forget %d", w.gone.Tag),
+	} {
+		if s.j.called(call) {
+			t.Errorf("calls %v include %q", log, call)
+		}
+	}
+
+	for _, id := range []entity.ShareID{w.forgotten.ID, w.offloaded.ID} {
+		if err := s.e.BindingOf(id); !errors.Is(err, vfserr.ErrStale) {
+			t.Errorf("removed share %v's binding = %v, want ErrStale", id, err)
+		}
+	}
+}
+
+// removals is the shares startedWithRemovals takes through their removal.
+type removals struct {
+	forgotten engine.Share // forgotten, its tag still in the journal
+	offloaded engine.Share // offloaded, its tag in the journal, handed to Start
+	gone      engine.Share // forgotten, its tag no longer in the journal
+}
+
+// startedWithRemovals starts an engine whose store records two shares being
+// removed, one forgotten with its tag still in the journal and one
+// offloaded, and a third forgotten tag the journal no longer names. The
+// offloaded share is handed to Start too.
+func startedWithRemovals(t *testing.T) (*starter, removals) {
+	t.Helper()
+
+	s := newStarter(t)
+	w := removals{
+		forgotten: s.removing(t, "forgotten", entity.TagForgotten),
+		offloaded: s.removing(t, "offloaded", entity.TagOffloaded),
+		gone:      s.removing(t, "gone", entity.TagForgotten),
+	}
+	s.seed(t, w.forgotten.Tag)
+	s.seed(t, w.offloaded.Tag)
+
+	if err := s.e.Start(t.Context(), []engine.Share{s.one, w.offloaded}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	return s, w
+}
+
+// A Bind of a share being removed answers ErrStale, opens no handle and
+// changes nothing, never a state change that reports it served.
+func TestBindOfARemovedShareIsStale(t *testing.T) {
+	s, w := startedWithRemovals(t)
+	table := s.e.TableForTest()
+	shares := len(s.j.shareCalls())
+
+	for _, sh := range []engine.Share{w.forgotten, w.offloaded} {
+		if err := s.e.Bind(t.Context(), sh); !errors.Is(err, vfserr.ErrStale) {
+			t.Errorf("Bind of removed share %v = %v, want ErrStale", sh.ID, err)
+		}
+	}
+
+	if n := len(s.j.shareCalls()); n != shares {
+		t.Errorf("Bind opened %d handles", n-shares)
+	}
+
+	if s.e.TableForTest() != table {
+		t.Error("Bind swapped the share table")
+	}
+}
+
+// While Start runs, Bind, Unbind and Drop answer ErrDelay with
+// DelayFrozen, the share not attached yet, and Bind attaches nothing.
+func TestLifecycleCallsDuringStartAreDelayed(t *testing.T) {
+	s := newStarter(t)
+	g := newGate(t)
+	s.gate = g
+	done := make(chan error, 1)
+
+	go func() {
+		done <- s.start(t)
+	}()
+
+	select {
+	case <-g.entered:
+	case err := <-done:
+		t.Fatalf("Start returned %v before it opened the journal", err)
+	}
+
+	if err := s.e.Bind(t.Context(), s.one); !isDelay(err, vfserr.DelayFrozen) {
+		t.Errorf("Bind during Start = %v, want ErrDelay(DelayFrozen)", err)
+	}
+
+	if err := s.e.Unbind(t.Context(), s.one.ID, false); !isDelay(err, vfserr.DelayFrozen) {
+		t.Errorf("Unbind during Start = %v, want ErrDelay(DelayFrozen)", err)
+	}
+
+	if err := s.e.Drop(t.Context(), s.one.ID, s.one.Tag); !isDelay(err, vfserr.DelayFrozen) {
+		t.Errorf("Drop during Start = %v, want ErrDelay(DelayFrozen)", err)
+	}
+
+	if n := len(s.j.shareCalls()); n != 0 {
+		t.Errorf("%d Share calls while Open was held", n)
+	}
+
+	g.open()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+}
+
+// A second Start after one that succeeded is refused, and opens nothing.
+func TestASecondStartIsRefused(t *testing.T) {
+	s := newStarter(t)
+
+	if err := s.start(t); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	table := s.e.TableForTest()
+
+	if err := s.start(t); !errors.Is(err, engine.ErrStarted) {
+		t.Errorf("a second Start = %v, want the already-started refusal", err)
+	}
+
+	if n := len(s.openCalls()); n != 1 {
+		t.Errorf("Open was called %d times, want once", n)
+	}
+
+	if s.e.TableForTest() != table {
+		t.Error("the second Start swapped the share table")
+	}
+}
+
+// A Start while one runs is refused and opens nothing, and the first goes
+// on to serve.
+func TestAStartWhileOneRunsIsRefused(t *testing.T) {
+	s := newStarter(t)
+	g := newGate(t)
+	s.gate = g
+	done := make(chan error, 1)
+
+	go func() {
+		done <- s.start(t)
+	}()
+
+	select {
+	case <-g.entered:
+	case err := <-done:
+		t.Fatalf("Start returned %v before it opened the journal", err)
+	}
+
+	if err := s.start(t); !errors.Is(err, engine.ErrStarted) {
+		t.Errorf("a Start while one runs = %v, want the already-started refusal", err)
+	}
+
+	g.open()
+
+	if err := <-done; err != nil {
+		t.Fatalf("the first Start: %v", err)
+	}
+
+	if n := len(s.openCalls()); n != 1 {
+		t.Errorf("Open was called %d times, want once", n)
+	}
+
+	if err := s.e.BindingOf(s.one.ID); err != nil {
+		t.Errorf("share %v after the first Start: %v, want bound", s.one.ID, err)
+	}
+}
+
+// With more than one journal device Start fails as not built, as no
+// shard record names its share's journal yet, and opens nothing.
+func TestStartRefusesMoreThanOneDevice(t *testing.T) {
+	s := newStarter(t, withStartDeps(func(d *engine.Deps) {
+		d.Devices = []string{startDevice, "other"}
+	}))
+
+	if err := s.start(t); !errors.Is(err, engine.ErrUnbuilt) {
+		t.Errorf("Start over two devices = %v, want the unbuilt refusal", err)
+	}
+
+	if n := len(s.openCalls()); n != 0 {
+		t.Errorf("Open was called %d times, want never", n)
+	}
+}
+
+// No share is served before its journal has its version limit: until
+// SetVersionLimit returns a write answers ErrDelay with DelayFrozen and
+// reaches no journal, and by then every served share's limit is committed
+// in the store, a block above the journal's next version. Each served share
+// then has one handle with its own tag and limit, and writes.
+func TestNoWriteBeforeTheVersionLimit(t *testing.T) {
+	s := newStarter(t)
+	s.seed(t, 99) // the journal has a limit that is not its next version
+	g := newGate(t)
+	s.j.limitGate.Store(g)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- s.start(t)
+	}()
+
+	select {
+	case <-g.entered:
+	case err := <-done:
+		t.Fatalf("Start returned %v before it set the version limit", err)
+	}
+
+	if err := s.write(t, s.one.ID); !isDelay(err, vfserr.DelayFrozen) {
+		t.Errorf("a write before SetVersionLimit = %v, want ErrDelay(DelayFrozen)", err)
+	}
+
+	for _, call := range s.j.log() {
+		if strings.HasPrefix(call, "write") || call == "draw" {
+			t.Errorf("%q before SetVersionLimit", call)
+		}
+	}
+
+	limits, err := s.fs.Store.Lifecycle().VersionLimits(t.Context(), []entity.ShareID{s.one.ID, s.two.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st := s.j.Stats()
+	want := st.NextVersion.Counter + 1<<24
+
+	if st.VersionLimit == st.NextVersion {
+		t.Fatalf("setup: the journal's limit is its next version, %d", st.NextVersion.Counter)
+	}
+
+	for id, l := range limits {
+		if l.Counter() < want {
+			t.Errorf("share %v's committed limit %d is below the journal's limit to be, %d", id, l.Counter(), want)
+		}
+	}
+
+	g.open()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if got := s.j.Stats().VersionLimit.Counter; got != want {
+		t.Errorf("the journal's limit after Start is %d, want a block above the next version, %d", got, want)
+	}
+
+	calls := s.j.shareCalls()
+	if len(calls) != 2 {
+		t.Fatalf("Share calls %v, want one per served share", calls)
+	}
+
+	for i, sh := range []engine.Share{s.one, s.two} {
+		if c := calls[i]; c.tag != sh.Tag || c.limit != sh.Limit {
+			t.Errorf("Share(%d, %d), want the share's (%d, %d)", c.tag, c.limit, sh.Tag, sh.Limit)
+		}
+	}
+
+	if err := s.write(t, s.one.ID); err != nil {
+		t.Errorf("a write after Start: %v", err)
+	}
+}
+
+// Start raises the shard of every share step 1 attached, in the start form,
+// and puts the incarnation it wrote on each binding; it raises no shard of a
+// share being removed, nor shard 0, which a removed binding's zero shard
+// would name. A Bind after it keeps the grace instance of a shard Start
+// raised, and opens a new one on any other.
+func TestStartRaisesEveryServedShard(t *testing.T) {
+	s := newStarter(t)
+	gone := s.removing(t, "gone", entity.TagOffloaded)
+
+	// The store's first share, left out of Start, is on shard 0: a raise or a
+	// record of the removed binding's zero shard shows on it.
+	if s.one.Shard != 0 {
+		t.Fatalf("setup: the store's first share is on shard %d, want 0", s.one.Shard)
+	}
+
+	if err := s.e.Start(t.Context(), []engine.Share{s.two, gone}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	got := s.shardOf(t, s.two.Shard)
+
+	if got.Incarnation != 1 || got.GraceInstance != 1 {
+		t.Errorf("served shard %d after Start: incarnation %d, grace instance %d; want 1 and 1",
+			s.two.Shard, got.Incarnation, got.GraceInstance)
+	}
+
+	if inc := s.e.IncarnationForTest(s.two.ID); inc != got.Incarnation {
+		t.Errorf(
+			"the served share's binding holds incarnation %d, the store %d",
+			inc,
+			got.Incarnation,
+		)
+	}
+
+	for _, id := range []entity.ShardID{gone.Shard, s.one.Shard} {
+		if got := s.shardOf(t, id); got.Incarnation != 0 || got.GraceInstance != 0 {
+			t.Errorf(
+				"unserved shard %d after Start: incarnation %d, grace instance %d; want 0 and 0",
+				id,
+				got.Incarnation,
+				got.GraceInstance,
+			)
+		}
+	}
+
+	for _, c := range []struct {
+		name  string
+		shard entity.ShardID
+		tag   journal.ShareTag
+		want  entity.Shard
+	}{
+		{
+			name:  "a shard Start raised keeps its grace instance",
+			shard: s.two.Shard,
+			tag:   201,
+			want: entity.Shard{
+				Incarnation:   2,
+				GraceInstance: 1,
+			},
+		},
+		{
+			name:  "a removed share's shard opens a new one",
+			shard: gone.Shard,
+			tag:   202,
+			want: entity.Shard{
+				Incarnation:   1,
+				GraceInstance: 1,
+			},
+		},
+		{
+			name:  "shard 0, which Start did not serve, opens a new one",
+			shard: s.one.Shard,
+			tag:   203,
+			want: entity.Shard{
+				Incarnation:   1,
+				GraceInstance: 1,
+			},
+		},
+	} {
+		sh := engine.Share{
+			ID:    entity.NewShareID(),
+			Tag:   c.tag,
+			Shard: c.shard,
+			Limit: 1 << 30,
+			State: engine.Serving,
+		}
+
+		if err := s.e.Bind(t.Context(), sh); err != nil {
+			t.Fatalf("%s: Bind: %v", c.name, err)
+		}
+
+		got := s.shardOf(t, c.shard)
+
+		if got.Incarnation != c.want.Incarnation || got.GraceInstance != c.want.GraceInstance {
+			t.Errorf(
+				"%s: shard %d after the Bind: incarnation %d, grace instance %d; want %d and %d",
+				c.name,
+				c.shard,
+				got.Incarnation,
+				got.GraceInstance,
+				c.want.Incarnation,
+				c.want.GraceInstance,
+			)
+		}
+	}
+}
+
+// No write answers while the start raise has not returned: the shares are
+// published only after it, so a write in the meantime is told to retry and
+// gets no verifier.
+func TestNoVerifierBeforeTheRaiseCommits(t *testing.T) {
+	s := newStarter(t)
+	g := newGate(t)
+	s.lc.raiseGate.Store(g)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- s.start(t)
+	}()
+
+	select {
+	case <-g.entered:
+	case err := <-done:
+		t.Fatalf("Start returned %v before it raised the incarnations", err)
+	}
+
+	if err := s.write(t, s.one.ID); !isDelay(err, vfserr.DelayFrozen) {
+		t.Errorf("a write while the raise is held = %v, want ErrDelay(DelayFrozen)", err)
+	}
+
+	g.open()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := s.write(t, s.one.ID); err != nil {
+		t.Errorf("a write after Start: %v", err)
+	}
+}
+
+// A start raise that fails between two of its transactions fails Start,
+// which closes what it opened and records no shard as raised; Start run
+// again raises every shard once more, the ones the first attempt raised
+// included, in as many transactions as K takes.
+func TestAFailedStartRaiseIsRedoneWhole(t *testing.T) {
+	const k = 7 // the key budget over limitKV: 12 entries less the 5 a batch's fixed records take
+
+	var (
+		faults *kvtest.FaultKV
+		counts *kv.Counting
+	)
+
+	s := newStarter(t, freshJournals(), withStore(func(tb testing.TB) kv.KV {
+		counts = &kv.Counting{
+			KV: limitKV{
+				KV:      memKV(tb),
+				entries: 12,
+			},
+		}
+		faults = kvtest.NewFaultKV(counts)
+
+		return faults
+	}))
+	s.lc.counts = counts
+	ctx := t.Context()
+
+	shares := []engine.Share{s.one, s.two}
+
+	for i := range 2*k + 1 - len(shares) {
+		sh := enginetest.AddShare(t, s.fs.Store, fmt.Sprintf("share%d", i), 1<<30)
+		shares = append(shares, sh)
+	}
+
+	ids := make([]entity.ShardID, len(shares))
+	before := map[entity.ShardID]entity.Shard{}
+
+	for i, sh := range shares {
+		ids[i] = sh.Shard
+		before[sh.Shard] = s.shardOf(t, sh.Shard)
+	}
+
+	slices.Sort(ids)
+
+	// The store raises the shards in this order, k a transaction: failing
+	// the write of the first shard of the second fails that transaction.
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{
+		Op:    kvtest.OpSet,
+		Key:   fmt.Sprintf("SH‖%d", ids[k]),
+		Count: 1,
+		Action: sim.FaultAction{
+			Err: errInjected,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	faults.SetFault(sched)
+
+	if err := s.e.Start(ctx, shares); !errors.Is(err, errInjected) {
+		t.Fatalf("Start = %v, want the injected failure", err)
+	}
+
+	after := map[entity.ShardID]entity.Shard{}
+
+	for i, id := range ids {
+		got := s.shardOf(t, id)
+		after[id] = got
+		want := before[id]
+
+		if i < k {
+			want.Incarnation++
+			want.GraceInstance = want.Incarnation
+		}
+
+		if got.Incarnation != want.Incarnation || got.GraceInstance != want.GraceInstance {
+			t.Errorf(
+				"shard %d, transaction %d, after the failed Start: "+
+					"incarnation %d, grace instance %d; want %d and %d",
+				id,
+				i/k+1,
+				got.Incarnation,
+				got.GraceInstance,
+				want.Incarnation,
+				want.GraceInstance,
+			)
+		}
+	}
+
+	var closes []string
+
+	for i := len(shares) - 1; i >= 0; i-- {
+		closes = append(closes, fmt.Sprintf("close handle %d", shares[i].Tag))
+	}
+
+	closes = append(closes, "close journal")
+
+	var got []string
+
+	for _, call := range s.j.log() {
+		if strings.HasPrefix(call, "close") {
+			got = append(got, call)
+		}
+	}
+
+	if !slices.Equal(got, closes) {
+		t.Errorf("closes %v, want %v", got, closes)
+	}
+
+	for _, sh := range shares {
+		if err := s.e.BindingOf(sh.ID); !isDelay(err, vfserr.DelayFrozen) {
+			t.Errorf("share %v's binding after a failed Start: %v, want none", sh.ID, err)
+		}
+	}
+
+	for _, id := range ids[:k] {
+		if s.e.RaisedForTest(id) {
+			t.Errorf("shard %d recorded as raised after a failed Start", id)
+		}
+	}
+
+	failed := kv.UpdateCounts{
+		Updates:    2,
+		MostWrites: k,
+	}
+
+	if len(s.lc.raises) != 1 || s.lc.raises[0] != failed {
+		t.Errorf("the failed raise's Updates %v, want one call of %+v", s.lc.raises, failed)
+	}
+
+	if err := s.e.Start(ctx, shares); err != nil {
+		t.Fatalf("Start again: %v", err)
+	}
+
+	for _, id := range ids {
+		got := s.shardOf(t, id)
+		want := after[id].Incarnation + 1
+
+		if got.Incarnation != want || got.GraceInstance != want {
+			t.Errorf(
+				"shard %d after Start ran again: incarnation %d, grace instance %d; want %d and %d",
+				id,
+				got.Incarnation,
+				got.GraceInstance,
+				want,
+				want,
+			)
+		}
+	}
+
+	if len(s.lc.raises) != 2 {
+		t.Fatalf("raise calls %v, want two", s.lc.raises)
+	}
+
+	if r := s.lc.raises[1]; r.Updates != 3 || r.MostWrites > k {
+		t.Errorf("the raise's Updates %+v, want 3, none writing more than %d keys", r, k)
+	}
+}
+
+// A served shard the start raise answers no incarnation for fails Start,
+// naming the shard: bound at incarnation 0, its verifier and grace instance
+// would repeat. Start closes what it opened in reverse and records no shard
+// as raised.
+func TestStartFailsOnAShardTheRaiseDidNotAnswer(t *testing.T) {
+	s := newStarter(t)
+	s.lc.drop = map[entity.ShardID]bool{
+		s.two.Shard: true,
+	}
+
+	err := s.start(t)
+	if !errors.Is(err, engine.ErrNotRaised) {
+		t.Fatalf("Start = %v, want ErrNotRaised", err)
+	}
+
+	if want := fmt.Sprintf("shard %d", s.two.Shard); !strings.Contains(err.Error(), want) {
+		t.Errorf("Start = %v, want it to name %s", err, want)
+	}
+
+	closes := []string{
+		fmt.Sprintf("close handle %d", s.two.Tag),
+		fmt.Sprintf("close handle %d", s.one.Tag),
+		"close journal",
+	}
+
+	var got []string
+
+	for _, call := range s.j.log() {
+		if strings.HasPrefix(call, "close") {
+			got = append(got, call)
+		}
+	}
+
+	if !slices.Equal(got, closes) {
+		t.Errorf("closes %v, want %v", got, closes)
+	}
+
+	for _, sh := range []engine.Share{s.one, s.two} {
+		if err := s.e.BindingOf(sh.ID); !isDelay(err, vfserr.DelayFrozen) {
+			t.Errorf("share %v's binding after a failed Start: %v, want none", sh.ID, err)
+		}
+
+		if s.e.RaisedForTest(sh.Shard) {
+			t.Errorf("shard %d recorded as raised after a failed Start", sh.Shard)
+		}
+	}
+}

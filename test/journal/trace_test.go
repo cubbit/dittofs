@@ -17,7 +17,7 @@ import (
 
 const (
 	rfcs        = "../../docs/internals/rfcs/"
-	conformance = "../../pkg/block/journal/conformance"
+	conformance = "../../pkg/journal/conformance"
 )
 
 // traceEntry maps one RFC row to the conformance tests that check it, to the epic that

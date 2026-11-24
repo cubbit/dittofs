@@ -22,7 +22,7 @@ var network = []string{"net", "crypto/tls", "golang.org/x/net", "google.golang.o
 // below is what admit, pseudofs, lockorder and quota never import: each reaches the
 // store only through the narrow reads it declares beside its own code. The
 // store's value types, entity, are no read, and they may name them.
-var below = []string{module + "pkg/metadata", module + "pkg/block", module + "pkg/openstate"}
+var below = []string{module + "pkg/metadata", module + "pkg/engine", module + "pkg/journal", module + "pkg/openstate"}
 
 // values is the one package under below they may import.
 const values = module + "pkg/metadata/entity"
@@ -125,7 +125,7 @@ func TestArchitectureCheckReportsEachSeededViolation(t *testing.T) {
 		"methodvalue.go: calls Authorize outside authz",
 		"network.go: imports network code net",
 		"pkgadapter.go: imports an adapter, " + module + "pkg/adapter/nfs",
-		"pseudofs/engine.go: imports " + module + "pkg/block/engine below its declared reads",
+		"pseudofs/engine.go: imports " + module + "pkg/engine below its declared reads",
 		"quota/store.go: imports " + module + "pkg/metadata below its declared reads",
 		"tls.go: imports network code crypto/tls",
 		"xnet.go: imports network code golang.org/x/net/http2",

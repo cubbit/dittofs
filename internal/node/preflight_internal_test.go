@@ -16,10 +16,10 @@ import (
 
 	badger "github.com/dgraph-io/badger/v4"
 
-	"github.com/cubbit/dittofs/pkg/block/engine"
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/raw"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
