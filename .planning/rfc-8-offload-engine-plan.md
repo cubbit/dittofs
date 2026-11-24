@@ -919,7 +919,7 @@ engine's read and write tests run with and without transforms (the RFC 4 plan's 
 "§11.5 full journal with the store unreachable" and the RFC 22 plan's "§16.5 remote outage on reads"
 rows pass on a composed node in `e2e`; the journal plan's system scenarios left to this part run in
 `e2e`; #4276's row is closed by the registry refusing the in-memory remote kind outside tests;
-`materialtest` passes against the RFC 4 store; the node builds the syncer before the engine and stops
+`materialtest` passes against the RFC 4 store, and its key-record suite against `kvstore`; the node builds the syncer before the engine and stops
 it after, as RFC 8 §2.6 orders.
 
 **Expected content:**
@@ -966,7 +966,11 @@ it after, as RFC 8 §2.6 orders.
   Tested on its own (arrival order, the count, a waiter holding nothing else) and through the codec
   with a count of one.
 - The material provider's health source (`material_unavailable`) registered with the evaluator;
-  RFC 5's `materialtest` `keys`-object suite run in `integration` against the RFC 4 store; the
+  RFC 5's `materialtest` `keys`-object suite run in `integration` against the RFC 4 store, and its
+  key-record suite run from `enginewire`'s tests against `kvstore` over Badger under `t.TempDir()`, the
+  memory KV and FoundationDB where it runs, since `kvstore` may not import `pkg/transform` (the RFC 5
+  plan's D7; `enginewire`'s RFC 0 §1.2 edge to the transforms covers `materialtest`, flipped with the
+  transforms below); the
   provider wired in `enginewire` with the key-record view `kvstore` implements beside that store, and the namespace
   converted from `entity.NamespaceID` to `transform.NamespaceID`, since the transforms import no other
   component.
@@ -1098,7 +1102,7 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 2 §2, §2.4, §3.6, §3.7, §4.2, §4.3, §5.1, §5.3, §10.1 | 11 (S1a), 15 (Carve, Assemble, minting, consumer checks), 16 (§3.6, §3.7, D11) |
 | RFC 3 §1.3, §2.8 | 11 (S1b), 16 (flows), 17 (fetch, prefetch), 20 (health), 21 (registration) |
 | RFC 4 §3, §4.1, §4.8, §4.11 | 11 (S1c), 21 (the store adapter) |
-| RFC 5 §2.7, §2.8, Appendix B.2 | 11 (S1d), 17 (destroyed material read Lost), 18 (`Unmark`), 20 (salvage sealing), 21 (chain, `materialtest` against the RFC 4 store) |
+| RFC 5 §2.7, §2.8, Appendix B.2 | 11 (S1d), 17 (destroyed material read Lost), 18 (`Unmark`), 20 (salvage sealing), 21 (chain, `materialtest` against the RFC 4 store and its key-record suite against `kvstore`) |
 | RFC 1 §3 (offload calls, salvage), §3.3, §3.4, §3.5, §7.2 | constraints: 15 to 20 call them |
 | RFC 6 §7.6, §8.1, §10.1; RFC 16 §3.1 | constraints: 15 (intents, commits), 17 (covering), 19 (`Refs`, `Versions`) |
 | RFC 13 Appendix B | 11 (keys), 21 (loading; the components' sections in `newTable`, `Target` once RFC 13 names its key) |
