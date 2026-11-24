@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,9 +16,8 @@ import (
 // unless the case sets it, so the guard is tested against a real inheritance.
 func benchRun(t *testing.T, env map[string]string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
-	cmd := exec.Command("/bin/sh", append([]string{"bench-run.sh"}, args...)...)
 	// go test runs this package in test/journal, so "." is where the script lives.
-	cmd.Dir = "."
+	cmd := exec.Command("/bin/sh", append([]string{"bench-run.sh"}, args...)...)
 	cmdEnv := make([]string, 0, len(os.Environ())+len(env))
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "BENCH_RUN_ROOT=") {
@@ -33,8 +33,8 @@ func benchRun(t *testing.T, env map[string]string, args ...string) (code int, st
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
-		exitErr, ok := err.(*exec.ExitError)
-		if !ok {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
 			t.Fatalf("bench-run.sh %s: %v", strings.Join(args, " "), err)
 		}
 		code = exitErr.ExitCode()
@@ -115,6 +115,32 @@ func TestBenchRunPruneRemovesOnlyOldRunFolders(t *testing.T) {
 		if _, err := os.Stat(dir); err != nil {
 			t.Errorf("prune: %s not present, want it kept (err %v)", dir, err)
 		}
+	}
+}
+
+func TestBenchRunPruneRequiresRunRoot(t *testing.T) {
+	code, _, stderr := benchRun(t, nil, "prune")
+	if code != 2 {
+		t.Errorf("prune without BENCH_RUN_ROOT: exit status got %d, want 2", code)
+	}
+	if !strings.Contains(stderr, "set BENCH_RUN_ROOT") {
+		t.Errorf("prune without BENCH_RUN_ROOT: stderr got %q, want it to contain \"set BENCH_RUN_ROOT\"", stderr)
+	}
+}
+
+func TestBenchRunPruneMissingKindDirs(t *testing.T) {
+	root := t.TempDir()
+	// A root other things live under, but neither pruned kind ever having run.
+	resultsTree := filepath.Join(root, ".dt-results", "old-c")
+	if err := os.MkdirAll(resultsTree, 0o755); err != nil {
+		t.Fatalf("MkdirAll %s: %v", resultsTree, err)
+	}
+	code, _, stderr := benchRun(t, map[string]string{"BENCH_RUN_ROOT": root}, "prune")
+	if code != 0 {
+		t.Errorf("prune with neither small/ nor full/ present: exit status got %d, want 0 (stderr %q)", code, stderr)
+	}
+	if _, err := os.Stat(resultsTree); err != nil {
+		t.Errorf("prune with neither small/ nor full/ present: .dt-results was touched, want it untouched (err %v)", err)
 	}
 }
 
