@@ -1019,13 +1019,15 @@ func (c *Core) Retire(id core.SegmentID, reason segment.Reason) (segment.Retirem
 }
 
 // Repack runs one repack pass over the core: units of one source segment
-// each, bounded by a budget of copied bytes, aimed at the scope the caller
-// names. A done context is answered before anything changes; a pass the
-// core's close interrupts between its units returns core.ErrClosed having
-// completed the unit in flight. The bytes the pass's copies moved are added
-// to the repacked_bytes counter, and a tracer sees one repack_pass span
-// carrying the pass's segments, bytes and freed figures. It returns freed,
-// the storage the pass's retirements returned through the executor.
+// each, bounded by a budget of the bytes its units append, aimed at the
+// scope the caller names. A done context is answered before anything
+// changes; a pass the core's close interrupts between its units returns
+// core.ErrClosed having completed the unit in flight. The bytes the pass's
+// units appended — content copies, carried records and deferred loss
+// records alike — are added to the repacked_bytes counter, and a tracer
+// sees one repack_pass span carrying the pass's segments, bytes and freed
+// figures. It returns freed, the storage the pass's retirements returned
+// through the executor.
 //
 // decision: the span is opened with the pass's own outcome rather than
 // around its work, because a tracer takes its attributes at the span's start
