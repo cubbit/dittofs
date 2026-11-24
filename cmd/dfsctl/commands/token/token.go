@@ -4,6 +4,7 @@
 package token
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"time"
@@ -81,7 +82,7 @@ func tokensOf(cmd *cobra.Command, env cmdutil.Env) (client.APITokenResource, err
 			return none, err
 		}
 	} else if id == "" {
-		return none, fmt.Errorf("%s: context %q names no account ID, as one signed in with an API token or by an older dfsctl does; pass --user, or run 'dfsctl login' again", cmd.CommandPath(), target.Name)
+		return none, fmt.Errorf("%s: context %q names no account ID: it was signed in with an API token, or the server answered its sign-in with none; pass --user", cmd.CommandPath(), target.Name)
 	}
 	return c.APITokens(id), nil
 }
@@ -102,6 +103,10 @@ once: as a table, stdout holds the token alone, so it can be written to a file;
 			if err != nil {
 				return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
 			}
+			in, _ := cmd.Flags().GetDuration("expires-in")
+			if in <= 0 {
+				return fmt.Errorf("%s: --expires-in %s: a token's lifetime must be positive", cmd.CommandPath(), in)
+			}
 			tokens, err := tokensOf(cmd, env)
 			if err != nil {
 				return err
@@ -110,8 +115,16 @@ once: as a table, stdout holds the token alone, so it can be written to a file;
 			if env.Now != nil {
 				now = env.Now
 			}
-			in, _ := cmd.Flags().GetDuration("expires-in")
+			// decision: the API takes an absolute expiry, which the server
+			// checks against its own clock, so a clock here running ahead of
+			// the server's refuses a token at api.token_max_lifetime and one
+			// behind refuses a very short one. The skew is named in the
+			// refusal rather than corrected; overturned if the API takes a
+			// lifetime in place of the expiry.
 			t, err := tokens.Create(cmd.Context(), apiv1.APITokenSpec{Expires: now().Add(in).Truncate(time.Second)})
+			if p := (*apiv1.Problem)(nil); errors.As(err, &p) && p.Field == "spec.expires" {
+				return fmt.Errorf("%s: --expires-in %s: the server refused the expiry it gives, which must fall after the server's time and within its api.token_max_lifetime; this machine's clock running ahead of or behind the server's can refuse one near either bound: %w", cmd.CommandPath(), in, err)
+			}
 			if err != nil {
 				return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
 			}

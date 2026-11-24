@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"net/http"
@@ -132,6 +133,9 @@ func createAPIToken(ctx context.Context, rq request[apiv1.APITokenSpec], _ struc
 		return apiv1.APIToken{}, rq.ID, fmt.Errorf("%w: another account's API token is created only for a service account, one holding no password and no protocol spelling", vfserr.ErrInvalid)
 	}
 	t, token, err := rq.d.Credentials.CreateAPIToken(tx, u, rq.Body.Expires)
+	if e := (*auth.ExpiryError)(nil); errors.As(err, &e) {
+		return apiv1.APIToken{}, rq.ID, &fieldError{field: "spec.expires", detail: e.Detail}
+	}
 	if err != nil {
 		return apiv1.APIToken{}, rq.ID, err
 	}

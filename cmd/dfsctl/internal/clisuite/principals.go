@@ -179,6 +179,19 @@ func principalRows() []row {
 				t.Errorf("group list with the revoked token: status %d, stderr %q, want it refused %s", status, errOut, apiv1.CodeUnauthenticated)
 			}
 		}},
+		{name: "token create refuses a lifetime not positive, and one past the maximum naming the clock", run: func(t *testing.T, run Runner, _ Server, c *client.Client) {
+			for in, shown := range map[string]string{"0s": "0s", "-1h": "-1h0m0s"} {
+				want := "--expires-in " + shown + ": a token's lifetime must be positive"
+				if _, errOut, status := run(t.Context(), "token", "create", "--expires-in", in); status == 0 || !strings.Contains(errOut, want) {
+					t.Errorf("token create --expires-in %s: status %d, stderr %q, want %q", in, status, errOut, want)
+				}
+			}
+			// A day past the default api.token_max_lifetime of 365 days.
+			want := "--expires-in 8784h0m0s: the server refused the expiry it gives, which must fall after the server's time and within its api.token_max_lifetime; this machine's clock"
+			if _, errOut, status := run(t.Context(), "token", "create", "--expires-in", "8784h"); status == 0 || !strings.Contains(errOut, want) {
+				t.Errorf("token create --expires-in 8784h: status %d, stderr %q, want %q", status, errOut, want)
+			}
+		}},
 		{name: "token create --user makes an admin a service account's token", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
 			svc := unique("svc")
 			if _, err := c.Users().Create(t.Context(), apiv1.UserSpec{Name: svc, Role: apiv1.RoleViewer}); err != nil {

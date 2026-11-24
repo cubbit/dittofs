@@ -17,7 +17,8 @@ import (
 // apart by its form. Its creation time is tx's store time raised to u's
 // not-before, as a session's is. An account holding no role, whom a token
 // would admit to nothing, a disabled account, and an expiry not after the creation time or later
-// than api.token_max_lifetime after it, are refused ErrInvalid.
+// than api.token_max_lifetime after it, are refused ErrInvalid, the expiry as
+// an *ExpiryError.
 func (s *Service) CreateAPIToken(tx entity.ControlPlaneTx, u entity.User, expires time.Time) (entity.APIToken, string, error) {
 	switch {
 	case u.Role == entity.RoleNone:
@@ -28,14 +29,21 @@ func (s *Service) CreateAPIToken(tx entity.ControlPlaneTx, u entity.User, expire
 	created := issuedAt(tx.Now(), u.NotBefore)
 	maxLife := s.d.Settings().TokenMaxLifetime
 	if !expires.After(created) || expires.After(created.Add(maxLife)) {
-		return entity.APIToken{}, "", fmt.Errorf("%w: spec.expires: %s is not after the token's creation at %s and within api.token_max_lifetime, %s, of it",
-			vfserr.ErrInvalid, expires.Format(time.RFC3339), created.Format(time.RFC3339), maxLife)
+		return entity.APIToken{}, "", &ExpiryError{Detail: fmt.Sprintf("%s is not after the token's creation at %s and within api.token_max_lifetime, %s, of it",
+			expires.Format(time.RFC3339), created.Format(time.RFC3339), maxLife)}
 	}
 	raw, hash := newRefresh()
 	t := entity.APIToken{Account: u.Principal, Hash: hash, Created: created, Expires: expires}
 	_, _ = rand.Read(t.ID[:]) // crypto/rand.Read never fails
 	return t, raw, tx.PutAPIToken(t)
 }
+
+// ExpiryError refuses an API token's expiry, Detail saying why in terms a
+// caller may read: the times and the lifetime, nothing secret.
+type ExpiryError struct{ Detail string }
+
+func (e *ExpiryError) Error() string { return "invalid spec.expires: " + e.Detail }
+func (e *ExpiryError) Unwrap() error { return vfserr.ErrInvalid }
 
 // apiToken resolves raw as an API token: refused when it is no token
 // newRefresh could have made, counted as any malformed token is, and when
