@@ -15,8 +15,10 @@ rules §8.4 says the divergence list follows); the `test/pcap-corpus` README's l
 **Epic 14 estimate: 3 subtasks, 6.75 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E2's recipe for running knfsd in a client
 network namespace and its captures in `test/pcap-corpus/`; **E3**'s scripted client,
-`adaptertest/nfsclient` (E3's T3.2); and, for the DittoFS side of every diff, **S5**, the composed
-in-process node.
+`adaptertest/nfsclient` (E3's T3.2), and the `NULL` rows of its loopback server (T3.4); and, for the
+DittoFS side of every diff, **S5**, the composed in-process node, serving what the three entries'
+scripts send: E5's `fs_locations` (T5.4), E8's lease and `SEQUENCE` (T8.6), E9's `OPEN` and `LOCK`
+(T9.4, T9.8).
 **Blocks:** E16, which runs the capture diffs with the rest and answers §13's rows "§2.2 TCP only"
 and "§5.1 no courtesy" end to end.
 
@@ -75,6 +77,9 @@ script, committed.
   runs knfsd in a client network namespace (`test/nfs-mount/netns.sh`).
 - **E3**, epic 3, the RPC layer: the scripted client, `adaptertest/nfsclient`, and the loopback
   server its rows start.
+- **E5**, epic 5, the NFSv4 namespace, attributes and data path, with `fs_locations`.
+- **E8**, epic 8, clients and sessions, with the lease. **E9**, epic 9, opens, stateids and locks.
+- **E10**, epic 10, delegations and the back channel.
 - **E11**, epic 11, NLM, NSM and the datagram path.
 - **E12**, epic 12, the NFSv4.2 operations.
 - **E13**, epic 13, RPCSEC_GSS.
@@ -253,7 +258,7 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
 
 **Subtask T14.1 estimate: 2.5 man-days.**
 
-- **Track:** A. **Depends on:** S2.
+- **Track:** A. **Depends on:** S2, T3.2, T3.4.
 - **Covers:** R1, R2, R3, R4, R5, R7, R8, R9, R10, R11, R18, R20, R21, R22.
 - **Deliverables:**
   - `nfswire/xdr.go`: a writer (unsigned 32 and 64-bit integers, fixed and variable opaques with
@@ -359,7 +364,9 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
 
 **Subtask T14.3 estimate: 2.25 man-days.**
 
-- **Track:** A. **Depends on:** T14.1, S5.
+- **Track:** A. **Depends on:** T14.1, S5, T5.4, T8.6, T9.4, T9.8. T5.4 answers `referral`'s
+  `fs_locations` on the node; T8.6, T9.4 and T9.8 answer `courtesy-lease`'s `SEQUENCE`, `OPEN` and
+  `LOCK`.
 - **Covers:** R3, R4, R12, R13, R14, R15, R16, R17.
 - **Deliverables:**
   - `diverge.go`: the entry type, the loader of `divergences.yaml`, and
@@ -408,7 +415,9 @@ flowchart TD
   S2(["S2 test foundations in CI"]):::sync --> T14_1["T14.1 Runner, wrapper, first script"]
   T14_1 --> C1(["after T14.1: a script recorded and diffed against knfsd"]):::sync
   T14_1 --> T14_2["T14.2 Area scripts"]
+  E3(["E3: T3.2 scripted client, T3.4 NULL rows"]):::sync --> T14_1
   S5(["S5 composed in-process node"]):::sync --> T14_3["T14.3 Divergence list and its entries"]
+  EN(["E5 T5.4, E8 T8.6, E9 T9.4 and T9.8 on the node"]):::sync --> T14_3
   T14_1 --> T14_3
   T14_2 --> C2(["after T14.2: every area recorded"]):::sync
   T14_3 --> C3(["after T14.3: the three entries hold on the node"]):::sync
@@ -423,9 +432,9 @@ T14.1: E16 can call `nfs-wire.sh`; after T14.3: the epic's done condition holds.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T14.1 | 2.5 | S2 | the runner, the wrapper, the tool fixes and one recorded script, proving the path end to end |
+| 1 | T14.1 | 2.5 | S2, E3's T3.2 and T3.4 | the runner, the wrapper, the tool fixes and one recorded script, proving the path end to end |
 | 2 | T14.2 | 2 | PR 1 | the area scripts and their recordings, mostly data |
-| 3 | T14.3 | 2.25 | PR 1, S5 | the divergence check and its three entries, which need the node |
+| 3 | T14.3 | 2.25 | PR 1, S5, E5's T5.4, E8's T8.6, E9's T9.4 and T9.8 | the divergence check and its three entries, which need the node |
 
 A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can be open at once.
 
@@ -442,18 +451,22 @@ A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can
    flavour `AUTH_TOOWEAK` where knfsd answers `NFS3ERR_ACCES`, and §9.3 answers `ALLOCATE`
    `NFS4ERR_NOTSUPP`. Both are decisions with a stated rule, and a script that provoked either
    would be red with no entry. The scripts avoid them; the list holds the three RFC 21 §13 names.
-   Proposed: RFC 21 §13's sentence names these two as entries too, by a pull request to RFC 21.
+   Proposed: RFC 21 §13's sentence names these two as entries too, in batch two's one RFC 21 pull
+   request, opened with E8's document pull request.
 3. **Areas with no script, which RFC 20 §8.5 asks for.** Kerberos's security exchange (R6's one
    script runs with security on: `tls-probe` is the only one, since a Kerberos script needs S6b and
-   S6c and a scripted client that speaks `RPCSEC_GSS`, which E13's tests build in part); delegation
-   grants (a script needs a back channel the scripted client does not serve); NLM and NSM (E11);
-   NFSv4.2's operations (E12). Proposed: a row for each in the RFC 21 implementation plan's §6.6
-   deferral ledger, owner the epic that builds the missing piece, trigger that piece, by a pull
-   request to the plan, which this document does not make.
+   S6c and a scripted client that speaks `RPCSEC_GSS`, which E13's T13.5 adds to `nfsclient`);
+   delegation grants (a script needs the scripted client to answer a back channel, as E10's T10.2
+   tests do); NLM and NSM (E11's T11.2 `nfsclient.Host` and its rows); NFSv4.2's operations (E12's
+   T12.8). Proposed: a row for each in the RFC 21 implementation plan's §6.6 deferral ledger, owner
+   the epic that builds the missing piece, trigger that subtask, by a pull request to the plan,
+   which this document does not make.
 4. **A script per status (R19).** The scripts provoke the statuses of their areas; RFC 20 §8.5's
    rule that a new status in an error table gets a script has no check. Proposed: E16's totality
    test (RFC 20 §7.3) lists each status no script provokes, which needs each script to declare the
-   statuses it expects; ask the owner of E16 before this epic's scripts fix the declaration.
+   statuses it expects. E16's document does not take it: its T16.11 totality test reads the
+   tables, not the scripts. Pending the user's answer; until then the scripts declare operations
+   only (T14.2).
 5. **S5's node.** T14.3 assumes `nodetest` serves NFS on a TCP address a script can reach, with a
    share an `AUTH_SYS` caller may use, and is started from a test with a `testing.TB`. It does not
    assume the node's clock can be advanced; if it can, the DittoFS side of `courtesy-lease` advances
