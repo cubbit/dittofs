@@ -180,7 +180,8 @@ it (D6).
     9); a store whose encryption cannot load writes nothing (its D9, epic 11); a provider failure
     at start leaves the journal serving (its D10, epic 11, with the RFC 8 offload plan);
   - Wycheproof's `aes_gcm_test.json` for the standard library's AES-256-GCM as the transform
-    calls it, a tag failure that writes nothing into `dst`, and two inputs under one chunk key
+    calls it, a tag failure that returns an error and no plaintext and leaves no unauthenticated plaintext in
+    `dst` (`cipher.AEAD.Open` may overwrite `dst` on failure; the standard library's GCM zeroes it), and two inputs under one chunk key
     getting two nonces, and one input under two versions in the AAD getting two nonces (epic 5);
   - N concurrent rotations of one namespace leave exactly one current key; the notice's cursor
     survives a restart; a master-key re-wrap of 10⁴ records resumes after a crash (epic 8);
@@ -324,7 +325,9 @@ registered (§1.2).
     an independent implementation, never by the code it checks (D11), and `transformtest` is
     proved against a broken transform (§1.4).
 11. **A symbol is exported only if RFC 5's interface or a consumer outside the package uses
-    it.** Everything epic 1 exports is frozen at S1. The provider's operations are exported by
+    it.** Everything epic 1 exports is frozen at S1, with one known widening: `Materials.Remove`
+    lands with its first caller (§1.3, RFC 5 §3.1), which adds it to the interface and to every
+    implementation then, the in-memory `Materials` and the provider. The provider's operations are exported by
     the epic that builds them and frozen when epic 9 first calls them.
 12. **Each subtask creates only what it declares.** No empty package and no stub without a
     caller; a package, an option or a test helper lands with its first consumer. A piece with no
