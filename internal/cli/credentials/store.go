@@ -43,6 +43,10 @@ type Context struct {
 	// path of a node's local socket.
 	ServerURL string `json:"server_url"`
 	Username  string `json:"username,omitempty"`
+	// UserID is the account's ID as a password sign-in answered it, which
+	// the commands on the caller's own API tokens name it by; empty for an
+	// API token, which names its account to the server only.
+	UserID string `json:"user_id,omitempty"`
 	// AccessToken is the token every call carries: a session's access token,
 	// or an API token, which has no RefreshToken.
 	AccessToken  string `json:"access_token,omitempty"`

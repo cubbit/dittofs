@@ -1653,7 +1653,8 @@ func apiExports(dir, path string) ([]string, error) {
 // WriteOpts, and identity.ntlm's key, NTLMKey, its decoder, NTLM, and its
 // read, ReadNTLM, the
 // Audited they answer, the credential a caller presented and the Session it
-// names, ErrThrottled, which the problem table answers,
+// names, ErrThrottled, which the problem table answers, ExpiryError, which
+// the API token route answers as a refused spec.expires,
 // the KeyVersion the node opens the key's
 // versions as, RotationStep and RotationProgress, and the interfaces their
 // parameters take, Clock, KeyVersions, Sealer and Writer; and nothing else;
@@ -1669,7 +1670,7 @@ func TestAPIExports(t *testing.T) {
 		{"api/auth", "internal/node/api/auth", []string{
 			"Accounts", "Allowed", "Audit", "Audited", "AuditedApplied", "AuditedNothing", "AuditedRefused", "Caller", "Caller.Session",
 			"CallerFrom", "Claims", "Clock", "Clock.Now", "CredentialAPIToken", "CredentialKind", "CredentialNone", "CredentialSession", "Deps", "Drain",
-			"ErrThrottled", "Installation",
+			"ErrThrottled", "ExpiryError", "ExpiryError.Error", "ExpiryError.Unwrap", "Installation",
 			"KeyVersion", "KeyVersion.Format", "KeyVersion.LogValue", "KeyVersion.MarshalJSON", "KeyVersion.MarshalYAML",
 			"KeyVersion.String", "KeyVersions", "KeyVersions.Versions", "Local", "NTLM", "NTLMKey", "NewService", "NewTokens", "PasswordChange", "PasswordSet",
 			"Principals", "Public",

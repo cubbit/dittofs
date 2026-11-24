@@ -136,14 +136,15 @@ func issuedAt(now, notBefore time.Time) time.Time {
 }
 
 // tokens is the answer of a sign-in or a refresh: an access token signed
-// with k, read before the write, and issued at iat, its expiry, and refresh.
+// with k, read before the write, and issued at iat, its expiry, refresh, and
+// the ID of p, the account.
 // It reads nothing, so once the write has committed nothing can fail it.
 func tokens(k KeyVersion, p entity.Principal, session [16]byte, iat time.Time, refresh string, mustChange bool) (apiv1.Tokens, error) {
 	access, err := sign(k, p, session, iat)
 	if err != nil {
 		return apiv1.Tokens{}, unavailable(err)
 	}
-	return apiv1.Tokens{Access: access, Refresh: refresh, ExpiresAt: iat.Add(accessLife), MustChange: mustChange}, nil
+	return apiv1.Tokens{Access: access, Refresh: refresh, ExpiresAt: iat.Add(accessLife), MustChange: mustChange, UserID: p.ID.String()}, nil
 }
 
 // unavailable is err, a store or signing-key read that failed, as a store

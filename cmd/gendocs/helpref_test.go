@@ -454,7 +454,7 @@ func TestCheckerAcceptsAndRejects(t *testing.T) {
 	}
 
 	reject := []string{
-		"`dfsctl user update alice`",                   // it is `user edit`
+		"`dfsctl user edit alice`",                     // it is `user update`
 		"`dfs config init`",                            // it is `dfs init`
 		"`dfsctl quota list --kind remote`",            // no such flag
 		"`dfs init --admin`",                           // no such flag

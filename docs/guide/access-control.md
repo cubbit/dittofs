@@ -65,7 +65,8 @@ To make a share writable by a specific principal, set the **share owner** at cre
 ```bash
 # alice owns /home-alice: she can create files at its root.
 # (Grant her export access too — the two layers are separate.)
-dfsctl user create --username alice --uid 1000 --gid 1000 --password ...
+dfsctl user create alice --uid 1000
+dfsctl user set-password alice
 dfsctl share create --name /home-alice --owner alice
 dfsctl share permission grant /home-alice --user alice --level read-write
 ```

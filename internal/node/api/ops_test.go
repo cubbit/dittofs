@@ -170,8 +170,8 @@ func TestCancel(t *testing.T) {
 		}
 	}
 	role.Store(uint32(entity.RoleOperator))
-	// The test row :sweep starts share.delete for operator; no row starts a
-	// signing key's rotation, which asks for admin; the NT-hash deletion is
+	// The test row :sweep starts share.delete for operator; the signing key's
+	// rotation is started by an admin's row, so it asks for admin; the NT-hash deletion is
 	// started only by identity.ntlm's admin-only write, so it asks for admin
 	// too, though the settings row that may start it is an operator's.
 	for _, tc := range []struct {

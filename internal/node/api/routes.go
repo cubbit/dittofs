@@ -251,6 +251,7 @@ var baseRoutes = []route{
 	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "resolve-principal", kind: entity.ResourceInstallation, right: auth.Principals, starts: apiv1.OpResolvePrincipal, serve: action(prepareResolve)},
 	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "test-directory", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpTestDirectory, serve: action(identityDrives)},
 	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "join-domain", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpJoinDomain, keyless: true, serve: action(prepareJoin)},
+	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "rotate-signing-key", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpRotateSigningKey, serve: action[none](nil)},
 	{method: http.MethodPost, pattern: "/api/v1/installation", verb: "rotate-machine-password", kind: entity.ResourceInstallation, right: auth.Installation, starts: apiv1.OpRotateMachinePassword, serve: action(prepareRotate)},
 }
 

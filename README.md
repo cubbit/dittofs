@@ -161,13 +161,13 @@ the metadata store.
 # clear it here, every other command (including `user create` below) is
 # rejected with HTTP 403:
 #   account "admin" must set a new password before performing other operations;
-#   run 'dfsctl user change-password' (as "admin") to set one
+#   run 'dfsctl password change' (as "admin") to set one
 # This forced change is skipped when you handed `dfs init` the password with
 # --admin-password-file or --admin-password-env (see above).
-./dfsctl user change-password
+./dfsctl password change
 
 # 2. Create a user mapped to your host UID (needed for NFS write access)
-./dfsctl user create --username $(whoami) --host-uid
+./dfsctl user create $(whoami) --uid $(id -u)
 
 # 3. Create a share and grant access. The CLI no longer creates stores, so
 # --metadata and --block-store name stores that already exist.
@@ -192,7 +192,8 @@ echo "Hello DittoFS!" > /mnt/nfs/hello.txt
 SMB always requires user authentication:
 
 ```bash
-./dfsctl user create --username alice            # password prompted
+./dfsctl user create alice
+./dfsctl user set-password alice                  # password prompted
 ./dfsctl share permission grant /export --user alice --level read-write
 
 # Linux (use a credentials file — never put passwords on the command line)

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -215,5 +216,5 @@ func Run(t *testing.T, newRunner func(*testing.T) Runner, s Server, noun string)
 
 // rows is every row of the suite.
 func rows() []row {
-	return operationRows()
+	return slices.Concat(operationRows(), principalRows())
 }

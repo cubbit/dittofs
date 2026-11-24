@@ -137,7 +137,7 @@ func runLogin(cmd *cobra.Command, env cmdutil.Env) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
 		}
-		next.AccessToken, next.RefreshToken, mustChange = tk.Access, tk.Refresh, tk.MustChange
+		next.AccessToken, next.RefreshToken, next.UserID, mustChange = tk.Access, tk.Refresh, tk.UserID, tk.MustChange
 	}
 
 	if err := cmdutil.Locked(cmd.Context(), env, func(st *credentials.Store) error { return st.SetContext(name, next) }); err != nil {

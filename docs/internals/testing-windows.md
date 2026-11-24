@@ -95,7 +95,8 @@ go build -o dfsctl ./cmd/dfsctl
 ./dfsctl share create --name /smbbasic --metadata test-meta --block-store test-blocks
 
 # 4. Create a test user
-./dfsctl user create --username testuser    # enter password when prompted
+./dfsctl user create testuser
+./dfsctl user set-password testuser    # enter password when prompted
 
 # 5. Grant permissions
 ./dfsctl share permission grant /smbbasic --user testuser --level read-write
