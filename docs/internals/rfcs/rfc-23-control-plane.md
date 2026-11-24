@@ -1814,7 +1814,10 @@ second store.
   secret — or, if none is given, generates 24 random bytes, encodes them, and
   prints them once to the step's own standard output, never to a log. A file
   may hold at most 4 KiB, its trailing newline counted; a longer one is
-  refused before the step writes anything.
+  refused before the step writes anything. When the reference is
+  `--admin-password-env <name>`, the step removes that variable from the
+  environment its bootstrap scan reads, so a `DITTOFS_` name holding the
+  password is never read as a setting.
 - **It must be changed.** A generated password marks the account
   **must-change**. Until it changes, a sign-in returns a token that permits only
   `POST /auth/password` and sign-out; every other call is refused `403`
