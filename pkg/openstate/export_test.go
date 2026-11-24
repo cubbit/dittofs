@@ -215,8 +215,8 @@ func (t *Table) check() error {
 // no entry holds or setting a count, whose invariants check does not judge.
 var unchecked sync.Map
 
-// checked fails t if tab's invariants do not hold once the case is done,
-// unless tab was stopped first, as a restart stops it.
+// checked stops tab once the case is done and fails t if its invariants do
+// not hold, unless the case stopped it first, as a restart stops it.
 func checked(t *testing.T, tab *Table) {
 	t.Cleanup(func() {
 		tab.cmu.Lock()
@@ -225,7 +225,10 @@ func checked(t *testing.T, tab *Table) {
 		if _, raw := unchecked.Load(tab); stopped || raw || t.Failed() {
 			return
 		}
-		tab.later.Wait() // the serving a CloneClose left to run is a step like any call
+		// check reads the indexes and the entries apart, so a sweep a clock
+		// advance fired must finish first: Stop cancels it and waits for it,
+		// and for the serving a CloneClose left to run.
+		tab.Stop()
 		if err := tab.check(); err != nil {
 			t.Error(err)
 		}
