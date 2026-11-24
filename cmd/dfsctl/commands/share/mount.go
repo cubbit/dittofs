@@ -35,19 +35,22 @@ func newMountCmd(env cmdutil.Env) *cobra.Command {
 		Long: `Mount a share at a mount point on this host, over NFS or SMB, from the server
 the current context names, on the port its adapter's record gives.
 
-The command runs the host's own mount command, which typically needs root.
-For SMB that command asks for the password itself; dfsctl never handles it.
---dry-run prints the command instead of running it.
+Run dfsctl as yourself, not under sudo: it reads your login, and runs the
+host's mount command through sudo itself where that needs root. A macOS SMB
+mount runs as you, since macOS lets only a mount's owner reach its files, and
+a Linux SMB mount is made for your uid and gid. For SMB the mount command asks
+for the password itself; dfsctl never handles it. --dry-run prints the
+command, sudo included, instead of running it.
 
 Examples:
   # Mount over NFS
-  sudo dfsctl share mount archive /mnt/archive --protocol nfs
+  dfsctl share mount archive /mnt/archive --protocol nfs
 
   # Mount over NFSv4.1
-  sudo dfsctl share mount archive /mnt/archive --protocol nfs --nfs-version 4.1
+  dfsctl share mount archive /mnt/archive --protocol nfs --nfs-version 4.1
 
   # Mount over SMB as alice
-  sudo dfsctl share mount archive /mnt/archive --protocol smb --username alice
+  dfsctl share mount archive /mnt/archive --protocol smb --username alice
 
   # Map a drive on Windows
   dfsctl share mount archive Z: --protocol smb`,
@@ -82,8 +85,8 @@ Examples:
 			if m.User == "" {
 				m.User = target.Dialled.Username
 			}
-			if os.Geteuid() == 0 {
-				m.SudoUser, m.UID, m.GID = os.Getenv("SUDO_USER"), os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID")
+			if err := asCaller(&m, os.Geteuid(), os.Getuid(), os.Getgid(), os.Getenv("SUDO_USER")); err != nil {
+				return fmt.Errorf("%s: %w", path, err)
 			}
 			if m.Protocol == "smb" {
 				m.Share = sh.Spec.Name
@@ -152,14 +155,34 @@ func adapterPort(cmd *cobra.Command, c *client.Client, protocol string) (int, er
 // mount is what a mount command is built from: the host's operating
 // system, the protocol, the server's host and the adapter's port, the
 // share, its NFS path or its SMB name, the mount point, the NFS version,
-// the SMB user, and, when dfsctl runs as root under sudo, the invoking
-// user's name, uid and gid, whom an SMB mount is made for.
+// the SMB user, whether a command that needs root runs through sudo, and
+// the uid and gid of the caller a Linux SMB mount is made for.
 type mount struct {
 	GOOS, Protocol, Host string
 	Port                 int
 	Share, Point         string
 	NFSVersion, User     string
-	SudoUser, UID, GID   string
+	Sudo                 bool
+	UID, GID             string
+}
+
+// asCaller fills in how m runs for the process dfsctl is, of effective uid
+// euid and of uid and gid: as root, the mount command runs as it is; as
+// anyone else, through sudo, a Linux SMB mount made for uid and gid. A
+// dfsctl run under sudo, sudoUser set, is refused: it would read root's
+// login, or, with HOME kept, rewrite the caller's credentials file as root.
+func asCaller(m *mount, euid, uid, gid int, sudoUser string) error {
+	if m.GOOS == "windows" {
+		return nil
+	}
+	if euid == 0 {
+		if sudoUser != "" {
+			return fmt.Errorf("run dfsctl share mount as yourself, not under sudo: it runs the mount command through sudo itself")
+		}
+		return nil
+	}
+	m.Sudo, m.UID, m.GID = true, strconv.Itoa(uid), strconv.Itoa(gid)
+	return nil
 }
 
 // mountLine is the command line that mounts m on m.GOOS. No line carries
@@ -171,7 +194,7 @@ func mountLine(m mount) ([]string, error) {
 	}
 	switch m.Protocol + "/" + m.GOOS {
 	case "nfs/linux", "nfs/darwin":
-		return []string{"mount", "-t", "nfs", "-o", nfsOptions(m), host + ":" + m.Share, m.Point}, nil
+		return sudo(m, "mount", "-t", "nfs", "-o", nfsOptions(m), host+":"+m.Share, m.Point), nil
 	case "nfs/windows":
 		// The Windows NFS client mounts only from the standard port.
 		if m.Port != 2049 {
@@ -195,22 +218,26 @@ func mountLine(m mount) ([]string, error) {
 		if m.UID != "" {
 			opts += ",uid=" + m.UID + ",gid=" + m.GID
 		}
-		return []string{"mount", "-t", "cifs", "-o", opts, "//" + host + "/" + m.Share, m.Point}, nil
+		return sudo(m, "mount", "-t", "cifs", "-o", opts, "//"+host+"/"+m.Share, m.Point), nil
 	case "darwin":
+		// macOS lets only a mount's owner reach its files, so mount_smbfs
+		// runs as the caller, never through sudo.
 		u := url.URL{Scheme: "smb", User: url.User(m.User), Host: host + ":" + strconv.Itoa(m.Port), Path: "/" + m.Share}
-		line := []string{"mount_smbfs", u.String(), m.Point}
-		// macOS lets only a mount's owner reach its files, so a mount made
-		// under sudo is made as the user who ran sudo.
-		if m.SudoUser != "" {
-			line = append([]string{"sudo", "-u", m.SudoUser}, line...)
-		}
-		return line, nil
+		return []string{"mount_smbfs", u.String(), m.Point}, nil
 	}
 	line := []string{"net", "use", m.Point, `\\` + m.Host + `\` + m.Share, "/user:" + m.User, "*"}
 	if m.Port != 445 {
 		line = append(line, "/TCPPORT:"+strconv.Itoa(m.Port))
 	}
 	return line, nil
+}
+
+// sudo is line, run through sudo when m says a command that needs root does.
+func sudo(m mount, line ...string) []string {
+	if m.Sudo {
+		return append([]string{"sudo"}, line...)
+	}
+	return line
 }
 
 // nfsOptions is an NFS mount's -o: NFSv3 names the MOUNT protocol's port,
