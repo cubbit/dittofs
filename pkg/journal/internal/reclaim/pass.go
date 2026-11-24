@@ -33,10 +33,11 @@ type Retirer interface {
 	Retire(id core.SegmentID, reason segment.Reason) (segment.Retirement, error)
 }
 
-// Outcome is what one pass did: how many units it ran, the payload bytes its
-// copies moved and the storage its retirements returned. The units a pass ran
-// count once each, whatever each ended in: freed stays zero for a unit whose
-// source it did not retire.
+// Outcome is what one pass did: how many units it ran, the bytes its units
+// appended — the payload its content copies moved and the records its
+// carries placed — and the storage its retirements returned. The units a
+// pass ran count once each, whatever each ended in: freed stays zero for a
+// unit whose source it did not retire.
 type Outcome struct {
 	Segments int
 	Bytes    int64
@@ -46,8 +47,9 @@ type Outcome struct {
 // Pass is the repack pass: units of one source segment each — select, copy,
 // carry, wait for the copies to be durable, repoint each file's pieces in one
 // index step, end the deferrals the unit's carry owes, and hand the source to
-// the retirer — bounded by a budget of copied bytes and driven by the caller
-// (RFC 1 §7.2). A Pass is safe for concurrent use: two Run calls claim their
+// the retirer — bounded by a budget of the bytes its units append, content
+// copies and carried records alike, and driven by the caller (RFC 1 §7.2).
+// A Pass is safe for concurrent use: two Run calls claim their
 // sources through the selector, which never hands one segment to two.
 type Pass struct {
 	sel  *Selector
@@ -155,8 +157,10 @@ func (p *Pass) stoppedNow() bool {
 	return p.stopped
 }
 
-// Run runs one pass of units inside scope, copying at most budget bytes and
-// no more than the repack reserve held when the pass began, whichever is
+// Run runs one pass of units inside scope, appending at most budget bytes —
+// the payload its content copies move and the records its carries place,
+// counted the way the reserve's own charge counts them — and no more than
+// the repack reserve held when the pass began, whichever is
 // smaller: the budget and the reserve clamp the pass's selection, never a unit in flight — the check runs
 // before the next unit starts, and a unit whose copies exceed the budget
 // started completes (RFC 1 §3), so a caller's budget smaller than one segment
@@ -228,7 +232,7 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 			return out, core.ErrClosed
 		}
 		// decision: the budget clamps the selection, never a unit in
-		// flight. The check takes the bytes already copied against the
+		// flight. The check takes the bytes already appended against the
 		// caller's budget and stops before the next unit, so one unit
 		// always runs for a positive budget and completes whatever it
 		// copied — the retirement's one-per-reserve test leans on a
@@ -340,10 +344,20 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 		bytes += cp.Extent.Len
 	}
 	for _, cr := range carry.Carried {
+		// A carried record's bytes join the unit's answer beside the copies':
+		// the pass appended them, and a contentless source owes its budget
+		// them alone — the reserve's count already charges both alike.
+		bytes += int64(cr.Rec.Loc.Len)
 		if cr.Rec.File == (core.FileID{}) {
 			continue
 		}
 		addMove(cr.Rec.File, index.RepointMove{Window: covered(cr.Rec), From: cr.From, To: cr.To})
+	}
+	for _, dc := range carry.Deferred {
+		// Each deferred loss record the pass appended counts the same way,
+		// before the repoint can strand it: the repoint failure path returns
+		// 0, and the loss record's bytes must not vanish with it.
+		bytes += int64(dc.Loc.Len)
 	}
 	for _, file := range files {
 		_, hd, rerr := p.ix.RepointFile(file, moves[file])

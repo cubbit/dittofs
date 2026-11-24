@@ -408,6 +408,34 @@ func TestPassBudgetStops(t *testing.T) {
 	}
 }
 
+// TestPassBudgetCountsCarriedRecords runs a pass over a sealed source holding
+// nothing but a registered, unsettled removal record: no content exists for
+// Copy to move, so the unit's whole output is the carry's record, and the
+// bytes the pass appends — RepackedBytes — must count it. A pass that reports
+// no bytes for such a unit never reaches its budget and re-selects the
+// segments its own carries seal, chasing itself forever.
+func TestPassBudgetCountsCarriedRecords(t *testing.T) {
+	p := newPassFixture(t)
+	file := copyFile(1)
+	rec, _, _, _ := p.f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, false)
+	// The core's own pass reads its own tracker, so the planted record
+	// registers there the way the writer's removal path would; the settle
+	// stays untaken, keeping the marker over and the record live.
+	p.f.core.Liveness().Register(rec)
+	seg := rec.Seg
+	p.f.sealSource(t, file)
+	p.f.waitSpares(t)
+	before := p.f.core.Stats().Counters.RepackedBytes
+	if _, err := p.repack(t.Context(), 1<<20, seg); err != nil {
+		t.Fatalf("repack: %v", err)
+	}
+	gain := p.f.core.Stats().Counters.RepackedBytes - before
+	if gain == 0 {
+		t.Fatalf("RepackedBytes gained %d, want the carried removal record's bytes > 0: a contentless source otherwise reports no copied bytes and its pass never reaches a budget", gain)
+	}
+}
+
 // TestPassCancelledBetweenUnitsReturnsAfterTheUnitInFlight cancels a pass
 // while its one in-flight unit blocks in its retirement's directory sync:
 // the unit completes — its source retired, freed returned — and the pass
