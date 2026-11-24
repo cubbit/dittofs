@@ -49,7 +49,7 @@ func Follow(cmd *cobra.Command, c *client.Client, op *apiv1.Operation) error {
 func WaitFor(cmd *cobra.Command, c *client.Client, id string) error {
 	op, err := c.Operation(cmd.Context(), id)
 	if err != nil {
-		return waitFailed(cmd, id, err)
+		return waitFailed(cmd, id, err, false)
 	}
 	return Wait(cmd, c, op)
 }
@@ -64,7 +64,7 @@ func Wait(cmd *cobra.Command, c *client.Client, op apiv1.Operation) error {
 	path := cmd.CommandPath()
 	ended, err := c.Wait(cmd.Context(), op)
 	if err != nil {
-		return waitFailed(cmd, op.ID, err)
+		return waitFailed(cmd, op.ID, err, true)
 	}
 	if err := PrintOutput(cmd, ended, false, "", Operations{ended}); err != nil {
 		return err
@@ -88,16 +88,22 @@ func endedErr(path string, ended apiv1.Operation) error {
 }
 
 // waitFailed is the refusal of a wait for the operation id names that err
-// ended, cmd's context's error in its place once that context has ended,
-// with the hint that resumes the wait only when resumable holds.
-func waitFailed(cmd *cobra.Command, id string, err error) error {
-	if cmd.Context().Err() != nil {
-		err = cmd.Context().Err()
+// ended, cmd's context's error in its place once that context has ended and
+// err is not a refusal a resumed wait would meet again. Only when resumable
+// holds does it carry the hint that resumes the wait, and it says the
+// operation goes on only when read, a read of it having answered.
+func waitFailed(cmd *cobra.Command, id string, err error, read bool) error {
+	if ce := cmd.Context().Err(); ce != nil && resumable(err) {
+		err = ce
 	}
-	if !resumable(err) {
-		return fmt.Errorf("%s: waiting for operation %s: %w", cmd.CommandPath(), id, err)
+	path := cmd.CommandPath()
+	switch {
+	case !resumable(err):
+		return fmt.Errorf("%s: waiting for operation %s: %w", path, id, err)
+	case !read:
+		return fmt.Errorf("%s: waiting for operation %s: %w; 'dfsctl operation wait %s' tries again", path, id, err, id)
 	}
-	return fmt.Errorf("%s: waiting for operation %s: %w; it goes on, and 'dfsctl operation wait %s' resumes the wait", cmd.CommandPath(), id, err, id)
+	return fmt.Errorf("%s: waiting for operation %s: %w; it goes on, and 'dfsctl operation wait %s' resumes the wait", path, id, err, id)
 }
 
 // resumable reports whether a resumed wait may get past err: not past a

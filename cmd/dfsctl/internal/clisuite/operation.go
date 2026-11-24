@@ -76,7 +76,7 @@ func operationRows() []row {
 				}
 			}
 		}},
-		{name: "operation wait refused by the server mid-wait gives no resume hint", harnessOnly: true, run: func(t *testing.T, _ Runner, s Server, c *client.Client) {
+		{name: "operation wait refused by the server at a poll gives no resume hint", harnessOnly: true, run: func(t *testing.T, _ Runner, s Server, c *client.Client) {
 			// An operation of a kind the node has no step for stays pending,
 			// so its poll ends only when its wait does.
 			id := entity.OperationID(uuid.New())

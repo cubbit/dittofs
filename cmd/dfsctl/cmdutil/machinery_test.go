@@ -397,16 +397,17 @@ func TestDeleteWaitsOnlyWithWait(t *testing.T) {
 	}
 }
 
-// A wait interrupted before its first read of the operation is refused as
-// one interrupted at a poll is, naming the command that resumes it.
+// A wait interrupted before its first read of the operation is refused
+// naming the command that tries it again, and claims no operation goes on,
+// since none was read.
 func TestWaitInterruptedAtItsReadResumes(t *testing.T) {
 	f := newFixture(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	id := uuid.NewString()
-	want := "'dfsctl operation wait " + id + "' resumes the wait"
-	if _, err := run(ctx, f.env, "operation", "wait", id); err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("operation wait under an ended context: got %v, want an error naming %q", err, want)
+	want := "'dfsctl operation wait " + id + "' tries again"
+	if _, err := run(ctx, f.env, "operation", "wait", id); err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "goes on") {
+		t.Errorf("operation wait under an ended context: got %v, want an error naming %q and no claim the operation goes on", err, want)
 	}
 }
 

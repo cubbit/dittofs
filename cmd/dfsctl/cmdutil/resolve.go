@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
@@ -55,7 +56,7 @@ func ByName[S, T any](cmd *cobra.Command, r client.Resource[S, T], kind, name st
 		if !ok {
 			return "", fmt.Errorf("%s: dfsctl cannot check the name of a %s; name it by --id", cmd.CommandPath(), kind)
 		}
-		if !strings.EqualFold(got, name) {
+		if !sameName(got, name) {
 			return "", fmt.Errorf("%s: asked for the %s named %q, the server listed %s named %q; refusing to act on it", cmd.CommandPath(), kind, name, res.ID, got)
 		}
 		ids = append(ids, res.ID)
@@ -69,15 +70,26 @@ func ByName[S, T any](cmd *cobra.Command, r client.Resource[S, T], kind, name st
 	return "", fmt.Errorf("%s: %d %ss named %q, want one", cmd.CommandPath(), len(ids), kind, name)
 }
 
-// nameOf is the name spec declares, for each kind Resolve resolves by name.
+// sameName reports whether the listed name got is the asked name, under
+// strings.EqualFold; a name that is not UTF-8 must match byte for byte,
+// since EqualFold reads each invalid byte as U+FFFD, joining names the
+// server keys apart.
 //
 // decision: a listed name is compared with the asked one under
 // strings.EqualFold, not under the server's own folds, which dfsctl does not
 // link: a share's name is unique under an upcase table and a user's or a
 // group's under a frozen simple case folding. Each pair either fold maps
-// together EqualFold also holds equal (TestFoldsStayWithinEqualFold), so
+// together EqualFold also holds equal, so
 // the check refuses no name the server matched. Overturned if a fold ever
 // maps a pair EqualFold keeps apart.
+func sameName(got, name string) bool {
+	if !utf8.ValidString(name) || !utf8.ValidString(got) {
+		return got == name
+	}
+	return strings.EqualFold(got, name)
+}
+
+// nameOf is the name spec declares, for each kind Resolve resolves by name.
 func nameOf(spec any) (string, bool) {
 	switch s := spec.(type) {
 	case apiv1.ShareSpec:

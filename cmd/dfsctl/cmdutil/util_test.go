@@ -260,3 +260,40 @@ func TestNameOf(t *testing.T) {
 		}
 	}
 }
+
+// A refusal a resumed wait would meet again keeps its cause and gets no
+// hint even when the context ended as it arrived; an error a resumed wait
+// may get past is reported as the interrupt.
+func TestWaitFailedUnderAnEndedContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	cmd := &cobra.Command{Use: "wait"}
+	cmd.SetContext(ctx)
+	gone := waitFailed(cmd, "op", &apiv1.Problem{Status: http.StatusNotFound, Title: "Not Found"}, true)
+	if !strings.Contains(gone.Error(), "404") || strings.Contains(gone.Error(), "resumes the wait") {
+		t.Errorf("waitFailed of a 404 under an ended context: got %v, want the 404 and no resume hint", gone)
+	}
+	lost := waitFailed(cmd, "op", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true)
+	if !errors.Is(lost, context.Canceled) || !strings.Contains(lost.Error(), "resumes the wait") {
+		t.Errorf("waitFailed of a dial failure under an ended context: got %v, want context.Canceled with the resume hint", lost)
+	}
+}
+
+// A listed name is the asked one under case folding, but a name that is not
+// UTF-8 only byte for byte.
+func TestSameName(t *testing.T) {
+	for _, tc := range []struct {
+		got, name string
+		want      bool
+	}{
+		{"builds", "BUILDS", true},
+		{"builds", "staging", false},
+		{"a\xff", "a\xff", true},
+		{"a\xff", "a\xfe", false},
+		{"a\uFFFD", "a\xfe", false},
+	} {
+		if got := sameName(tc.got, tc.name); got != tc.want {
+			t.Errorf("sameName(%q, %q): got %v, want %v", tc.got, tc.name, got, tc.want)
+		}
+	}
+}
