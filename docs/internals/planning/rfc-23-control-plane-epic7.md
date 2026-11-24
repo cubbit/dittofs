@@ -441,9 +441,8 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
     store's create and its credential) are waiting ones, so their secret half moves to T7.5 with
     their applied halves.
   - The store create takes no `Idempotency-Key` since #5472, as a call carrying a credential. RFC
-    23 §4.5's rule covers it, but the list of such calls there names sign-in, refresh,
-    `POST /auth/password`, `:set-password`, API-token creation and `join-domain`, not the store
-    create; the RFC's list gains it at its next revision.
+    23 §4.5's rule covers it, but its list of such calls does not name it; the plan's §6.1
+    deferral ledger holds that edit, owned by RFC 23.
   - R15 is held by the API's `TestGrants`, which needs no wiring; T7.3's error table keeps the
     machine grant, refused `400` `invalid` since the grant's write refuses a machine principal
     itself.
