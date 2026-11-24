@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,16 @@ func TestPrintOutput(t *testing.T) {
 		t.Errorf("PrintOutput -o table: got %q, want the header NAME and the row bar", buf.String())
 	}
 
+	// The API's wire types name their fields for JSON only; YAML prints
+	// those names.
+	cmd, buf = newCmd("yaml")
+	spec := struct {
+		CaseSensitivity string `json:"case_sensitivity"`
+	}{"sensitive"}
+	if err := PrintOutput(cmd, spec, false, "", nil); err != nil || buf.String() != "case_sensitivity: sensitive\n" {
+		t.Errorf("PrintOutput -o yaml of a JSON-tagged struct: got %q (%v), want %q", buf.String(), err, "case_sensitivity: sensitive\n")
+	}
+
 	if err := PrintOutput(func() *cobra.Command { c, _ := newCmd("xml"); return c }(), nil, false, "", renderer); err == nil {
 		t.Error("PrintOutput -o xml: got no error, want the format refused")
 	}
@@ -153,5 +164,28 @@ func TestRunDeleteWithConfirmation(t *testing.T) {
 				t.Errorf("stderr: got %q, want %q", stderr.String(), tt.wantStderr)
 			}
 		})
+	}
+}
+
+// The merge patch from one spec to another names each changed field, nulls
+// each removed one, recurses into an object both hold, and leaves out what
+// is unchanged.
+func TestMergePatch(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		a, b map[string]any
+		want map[string]any
+	}{
+		{"unchanged", map[string]any{"path": "/a"}, map[string]any{"path": "/a"}, map[string]any{}},
+		{"changed", map[string]any{"path": "/a", "name": "n"}, map[string]any{"path": "/b", "name": "n"}, map[string]any{"path": "/b"}},
+		{"removed", map[string]any{"email": "a@b"}, map[string]any{}, map[string]any{"email": nil}},
+		{"added", map[string]any{}, map[string]any{"gid": 7.0}, map[string]any{"gid": 7.0}},
+		{"nested", map[string]any{"o": map[string]any{"x": 1.0, "y": 2.0}}, map[string]any{"o": map[string]any{"x": 1.0, "y": 3.0}},
+			map[string]any{"o": map[string]any{"y": 3.0}}},
+		{"list replaced whole", map[string]any{"l": []any{"a"}}, map[string]any{"l": []any{"a", "b"}}, map[string]any{"l": []any{"a", "b"}}},
+	} {
+		if got := mergePatch(tt.a, tt.b); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("mergePatch %s: got %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }

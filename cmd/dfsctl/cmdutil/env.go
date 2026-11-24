@@ -13,4 +13,7 @@ type Env struct {
 	// Interactive says a person is at In. Without one, a command that would
 	// prompt refuses instead, naming the flag that answers the prompt.
 	Interactive bool
+
+	// afterRead, when set, runs in Update between its read and its write.
+	afterRead func()
 }

@@ -446,6 +446,11 @@ Global flags:
     - [`dfsctl group remove-user`](#dfsctl-group-remove-user) — Remove a user from a group
   - [`dfsctl login`](#dfsctl-login) — Authenticate with DittoFS server
   - [`dfsctl logout`](#dfsctl-logout) — Clear stored credentials
+  - [`dfsctl operation`](#dfsctl-operation) — Follow long-running operations
+    - [`dfsctl operation cancel`](#dfsctl-operation-cancel) — Cancel an operation
+    - [`dfsctl operation get`](#dfsctl-operation-get) — Show an operation
+    - [`dfsctl operation list`](#dfsctl-operation-list) — List operations
+    - [`dfsctl operation wait`](#dfsctl-operation-wait) — Wait for an operation to end
   - [`dfsctl password`](#dfsctl-password) — Manage your own password
     - [`dfsctl password change`](#dfsctl-password-change) — Change the signed-in account's password
   - [`dfsctl quota`](#dfsctl-quota) — Per-identity quota management
@@ -1127,6 +1132,114 @@ dfsctl logout
 
 # Logout then immediately log back in as a different user
 dfsctl logout && dfsctl login --username operator
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl operation`
+
+Follow long-running operations
+
+Read, list, wait for and cancel operations.
+
+A command whose work outlasts its call, such as a deletion, starts an operation
+and prints its ID; with --wait it follows the operation to its end. A wait that
+is interrupted leaves the operation running, and 'dfsctl operation wait <id>'
+resumes it, from this machine or any other signed in to the same server.
+
+```
+dfsctl operation [flags]
+```
+
+**Examples:**
+
+```bash
+# List the operations running
+dfsctl operation list --state running
+
+# Wait for an operation to end
+dfsctl operation wait 1a92dcf1-bdbb-49eb-acc1-a78ef6b4e5f1
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl operation cancel`
+
+Cancel an operation
+
+```
+dfsctl operation cancel <id> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl operation get`
+
+Show an operation
+
+```
+dfsctl operation get <id> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl operation list`
+
+List operations
+
+```
+dfsctl operation list [flags]
+```
+
+Flags:
+
+```
+      --state string   Only the operations not ended in this state (pending|running|cancelling)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl operation wait`
+
+Wait for an operation to end
+
+Wait for an operation to end and print it as it ended.
+
+The command exits non-zero when the operation failed or was cancelled, and
+when the wait itself is interrupted, which leaves the operation running.
+
+```
+dfsctl operation wait <id> [flags]
 ```
 
 Global flags:
