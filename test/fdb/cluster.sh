@@ -16,9 +16,8 @@
 #                                   stop it; the cluster must be up and own
 #                                   nothing yet, since the installation owns it.
 #                                   The journal lives in DITTOFS_SMOKE_BLOCKS
-#                                   (default dittofs-smoke-blocks in RUNNER_TEMP,
-#                                   else TMPDIR, else /tmp), emptied before the
-#                                   run and removed after it
+#                                   (default /dev/shm/dittofs-smoke-blocks),
+#                                   emptied before the run and removed after it
 #
 # Host networking, so the cluster file's 127.0.0.1 addresses are the ones the
 # test client dials. That works on Linux only; on macOS run it inside a Linux
@@ -101,12 +100,17 @@ up() {
 # wrote; host networking reaches the cluster file's 127.0.0.1 addresses.
 smoke() {
     local image=$1 port=18080 conf="$DATA/smoke" ready="" code
-    # decision: the journal gets a host directory rather than the image's
-    # anonymous /data/blocks volume, because the journal refuses a mount the
-    # container runtime's storage may sit on (nobarrier on the hosted runners'
-    # disk, a Btrfs directory that is not a subvolume). PLACEHOLDER
+    # decision: the journal gets a host directory on /dev/shm rather than the
+    # image's anonymous /data/blocks volume, because the journal refuses the
+    # mounts a runtime's volumes sit on here: the hosted runners, amd64 and
+    # arm64 alike, have one ext4 disk mounted nobarrier behind /var/lib/docker,
+    # RUNNER_TEMP, /tmp, the workspace and /mnt, and a Btrfs volume directory
+    # is not a subvolume. A tmpfs is not one the journal checks, and the smoke
+    # proves the image reaches FoundationDB, not the journal's durability.
+    # Point DITTOFS_SMOKE_BLOCKS elsewhere if a runner gains a disk the
+    # journal accepts and the smoke should cover it.
     # Global, not local: the EXIT trap reads it after smoke has returned.
-    blocks="${DITTOFS_SMOKE_BLOCKS:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dittofs-smoke-blocks}"
+    blocks="${DITTOFS_SMOKE_BLOCKS:-/dev/shm/dittofs-smoke-blocks}"
     # As the image's user: a fixed name, removed before and after, so a run
     # that failed half-way leaves nothing for the next. The journal's files
     # belong to the image's user, so they are removed from inside a container.
@@ -123,8 +127,9 @@ smoke() {
     trap clean EXIT
     # 0777 so the image's user 65532 can write it without a chown, which
     # would need root on the host.
-    mkdir -p "$blocks"
-    chmod 0777 "$blocks"
+    # init expects the journal's directory to exist, as the image creates it.
+    mkdir -p "$blocks/journal"
+    chmod 0777 "$blocks" "$blocks/journal"
     echo "smoke: journal directory $blocks is on $(findmnt -no FSTYPE,OPTIONS -T "$blocks")"
     mkdir -p "$conf"
     cp "$DATA/fdb.cluster" "$conf/fdb.cluster"
@@ -201,7 +206,7 @@ test)
     ;;
 smoke) smoke "${2:?image}" ;;
 *)
-    sed -n '2,25p' "$0"
+    sed -n '2,24p' "$0"
     exit 2
     ;;
 esac

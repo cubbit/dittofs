@@ -182,17 +182,3 @@ jobs:
       - name: Run the image's init and start on FoundationDB
         if: github.event_name != 'pull_request' || steps.filter.outputs.image == 'true'
         run: test/fdb/cluster.sh smoke dittofs-foundationdb:smoke
-
-  mount-probe:
-    name: Mount probe (${{ matrix.runner }})
-    strategy:
-      matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - run: |
-          echo "TMPDIR=${TMPDIR:-} RUNNER_TEMP=$RUNNER_TEMP GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          for d in "$RUNNER_TEMP" /tmp "$GITHUB_WORKSPACE" /home/runner/work /mnt "$HOME" /var/lib/docker; do
-            echo "$d: $(findmnt -no SOURCE,FSTYPE,OPTIONS -T "$d" 2>&1)"
-          done
-          grep -E ' (/|/mnt|/tmp) ' /proc/self/mountinfo
