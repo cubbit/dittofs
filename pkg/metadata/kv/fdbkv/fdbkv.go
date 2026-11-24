@@ -24,9 +24,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
-// APIVersion is the client API this package is written against, 7.3's;
-// a test that opens the cluster beside a store selects the same one.
-const APIVersion = 730
+// apiVersion is the client API this package is written against, 7.3's.
+const apiVersion = 730
 
 // Options configures a Store.
 type Options struct {
@@ -74,7 +73,7 @@ type TLS struct {
 	CertFile, KeyFile, CAFile string
 }
 
-var apiOnce = sync.OnceValue(func() error { return fdb.APIVersion(APIVersion) })
+var apiOnce = sync.OnceValue(func() error { return fdb.APIVersion(apiVersion) })
 
 // network is the TLS the first Open gave the client. TLS files are options of
 // the process's one client network, which reads them once, when it starts:
@@ -83,6 +82,17 @@ var network struct {
 	sync.Mutex
 	set bool
 	tls TLS
+}
+
+// StartClient selects the client API and gives the process's one client
+// network t's TLS files, as Open does first: code that opens the cluster
+// beside a store, before any Open, calls it so a later Open naming other
+// files is refused rather than run without them.
+func StartClient(t TLS) error {
+	if err := apiOnce(); err != nil {
+		return fmt.Errorf("fdbkv: client API %d: %w", apiVersion, err)
+	}
+	return setTLS(t)
 }
 
 // setTLS gives the client t's files, once per process, and refuses an Open
@@ -130,10 +140,7 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 			return nil, fmt.Errorf("fdbkv: TLS file: %w", err)
 		}
 	}
-	if err := apiOnce(); err != nil {
-		return nil, fmt.Errorf("fdbkv: client API %d: %w", APIVersion, err)
-	}
-	if err := setTLS(opts.TLS); err != nil {
+	if err := StartClient(opts.TLS); err != nil {
 		return nil, err
 	}
 	db, err := fdb.OpenDatabase(opts.ClusterFile)

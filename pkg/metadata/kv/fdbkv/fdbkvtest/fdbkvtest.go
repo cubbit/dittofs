@@ -102,14 +102,13 @@ func clearRange(tb testing.TB, clusterFile string, begin, end []byte) {
 	}
 }
 
-// database opens the cluster clusterFile names, first selecting fdbkv's
-// client API version when nothing in this process has: a test may read or
-// write the cluster before it opens a store.
+// database opens the cluster clusterFile names through fdbkv's own client
+// setup, without TLS, as the tests' clusters run: a test may read or write
+// the cluster before it opens a store, and an Open naming TLS files after
+// that is refused, never run without them.
 func database(clusterFile string) (fdb.Database, error) {
-	if _, err := fdb.GetAPIVersion(); err != nil {
-		if err := fdb.APIVersion(fdbkv.APIVersion); err != nil {
-			return fdb.Database{}, err
-		}
+	if err := fdbkv.StartClient(fdbkv.TLS{}); err != nil {
+		return fdb.Database{}, err
 	}
 	return fdb.OpenDatabase(clusterFile)
 }
