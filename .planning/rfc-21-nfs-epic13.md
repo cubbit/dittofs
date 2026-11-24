@@ -130,12 +130,12 @@ cited by number and title and not copied.
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the table as a state machine on an injected clock (kind 1, D6); the stage on golden vectors and capture vectors with no socket; loopback rows through `core` on `memory.New` (kind 2) with `vfstest.Mutations`, a recording wrapper that passes each call through; `gsstest`'s Kerberos initiator and `identitytest.Realm`'s tickets, real Kerberos messages under test keys; RFC 18's rows on `nodetest`. No other double |
 | rule 2, fuzz tests where relevant | T13.2, T13.3 | `FuzzGSSCred` over the credential and the control and protected bodies, against a second decoder written by hand from RFC 2203 and re-encoding each decoded value (R32); `FuzzWrapToken` and `FuzzMICToken` over RFC 4121's token parsing in `gss`, seeded with the capture's tokens, against a token parser written in the test from RFC 4121 §4.2.6's layout, with the same re-encode check |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T13.4 | no recorder in NFS code; `nfs_gss_contexts` is §1.2's; no attribute or log line added here carries a principal, a handle or an address (RFC 25 §5.4) |
-| rule 4, profiling: leaks, allocations and contention | T13.3, T13.4, T13.5, T13.6 | the table's mutex and block profiles under 64 connections and 1 000 contexts, reported in T13.4's pull request; every loopback test ends with `adaptertest.CheckLeaks`; at `krb5i` and `krb5p`, `MIC`, `VerifyMIC`, `Wrap` and `Unwrap` allocate the same bytes per call for a 4 KiB and a 1 MiB message, so none copies it (R23, D11) |
+| rule 4, profiling: leaks, allocations and contention | T13.3, T13.4, T13.5, T13.6, T13.7, T13.8 | the table's mutex and block profiles under 64 connections and 1 000 contexts, reported in T13.4's pull request; T13.5's, T13.7's and T13.8's loopback tests end with `adaptertest.CheckLeaks`; at `krb5i` and `krb5p`, `MIC`, `VerifyMIC`, `Wrap` and `Unwrap` allocate the same bytes per call for a 4 KiB and a 1 MiB message, so none copies it (R23, D11) |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T13.5, T13.6, T13.7, T13.8 | the `Identity` asserted on the `r.Call` a handler receives over loopback, the window and eviction on the replies a client reads, a forged call on `vfstest.Mutations` staying empty, each reply's verifier checked by the client that reads it |
 | rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover |
 | rule 7, v2 ignores v1 | all | `develop`'s `rpc/gss` per-message code is the one piece RFC 20 Appendix B keeps, and RFC 22's plan leaves its `Wrap` and `Unwrap` here: T13.3 lifts it into `gss`, keeping its token layout, rotation, key usages and flags and replacing its `gokrb5` crypto calls, which copy the message (D11), and T13.4 lifts its `sequence.go` window (D5); nothing else from `develop`'s adapter, behaviour from RFC 21 §10, RFC 2203 and RFC 4121 |
 | rule 8, real dependencies for properties of those dependencies | T13.1, T13.2, T13.3, T13.6 | knfsd's captures with the Linux client and a real KDC, decrypted under the test realm's committed keytab (D13); RFC 2203's layouts written by hand; RFC 4121's tokens checked against the Linux client's and knfsd's; real TCP over loopback. A real KDC with a kernel client runs at `e2e/kerberos`, E16's |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T13.4, T13.5, T13.6, T13.7 | RFC 21 §10's `ponytail:` on the cap and idle timeout at the table's constants; the `decision:` markers of §4 at their sites; `stages.go`'s marker on `RPCSEC_GSS` removed with the refusal it explains |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T13.3, T13.4, T13.5, T13.7 | RFC 21 §10's `ponytail:` on the cap and idle timeout at the table's constants; the `decision:` markers of §4 at their sites; `stages.go`'s marker on `RPCSEC_GSS` removed with the refusal it explains |
 | rule 10, a test must be able to fail | all | each test names the break it catches; a forged call is asserted on the table's state and on the service never called, not only on the status |
 | rule 11, a symbol is exported only if an interface uses it | T13.2, T13.3, T13.5 | `gss.Context`'s `Wrap`, `Unwrap` and `VerifyMIC` for `nfs/protocol` (RFC 20 §4.4, Q3); `wire`'s GSS codec for `nfs/protocol` and `nfsclient`; `nfsclient`'s GSS calls for every later Kerberos row; nothing else |
 | rule 12, each subtask creates only what it declares | all | the codec lands with its fuzz target and its first consumer's vectors; the table with its state-machine tests before the stage that drives it; the control table with `INIT`, its first row |
@@ -343,7 +343,7 @@ are the authenticator's and already tested at its Tier 1; `SECINFO`'s flavours (
   place and returns the plaintext as a slice of the token, handling a nonzero right rotation count
   on receipt. If S6c's `MIC` is built on `gokrb5`'s `MICToken`, T13.3 replaces its body with the
   in-place checksum, keeping its signature; `VerifyMIC` exposes S6c's check of a peer's MIC token,
-  which RFC 22's plan's T4.4 builds for SPNEGO, on the same checksum. Received tokens' sequence numbers are not checked:
+  which S6c's T4.4 (RFC 22's plan) builds for SPNEGO, on the same checksum. Received tokens' sequence numbers are not checked:
   `RPCSEC_GSS` keeps its own window (R6) and its clients ask for no GSS replay or sequence detection.
   Each context's sent tokens take their sequence number from an atomic counter, so workers wrap in
   parallel (R23). The direction is a parameter, so `gsstest`'s initiator uses the same code with the
@@ -515,8 +515,9 @@ test/pcap-corpus/
 
 - **Track:** B. **Depends on:** S6c.
 - **Covers:** R1, R2, R3, R4, R5, R6, R9, R11.
-- **Deliverables:** `protocol/gss.go`'s table, unexported, built by `protocol.New` and shared by
-  every connection of the adapter:
+- **Deliverables:** `protocol/gss.go`'s table, unexported, shared by every connection of the
+  adapter, and the `Clock` it takes (D6), built here on a test clock; T13.5 has `protocol.New`
+  build it and take the clock:
   ```go
   type gssContext struct { /* handle, *gss.Context, its principal, the window (D5), idle time */ }
   func newGSSTable(b *resources.Budget, c Clock, max int) *gssTable
@@ -695,7 +696,7 @@ test/pcap-corpus/
 
 **Subtask T13.7 estimate: 2.75 man-days.**
 
-- **Track:** B. **Depends on:** T13.6, T4.4, T4.6, T5.1, T5.4, T5.5, T5.8, T7.2, T11.1.
+- **Track:** B. **Depends on:** T13.6, E4's T4.4 and T4.6, E5's T5.1, T5.4, T5.5, T5.8, T7.2, T11.1.
 - **Covers:** R19, R29, R30, R35, R36.
 - **Deliverables:**
   - `protocol.ErrorTable`'s rows for `ErrExpired`, `ErrNotNegotiated`, `ErrNoSession` and
