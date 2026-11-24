@@ -326,14 +326,14 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 | 15 | **The offload pipeline** ⛔ | `offload/`: Capture to Mark over the store's existing calls; the chain pin; `encodings` at commit; O1 to O8 but O7, O1's crash leg over the real journal | 8 | 28 | B | 16 |
 | 16 | **Passes and the bindings' remote side** ⛔ | the pass registry, §8.3, a share's flow, namespace and pause, chunking settings; S3 | 6 | 19 | B | 17, 18, 19, 20 |
 | 17 | **Remote reads, fill and speculation** | the carved row, verified streaming, re-resolution, chunk or block, `fill`, read-ahead, clone adoption | 7 | 23 | C | 18 |
-| 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material | 8 | 26.5 | B | 19, 21 |
+| 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 8 | 27.5 | B | 19, 21 |
 | 19 | **Restart and the metadata reconcile** | start steps 6 and 7, the reseed and its gates, re-offer, a lost journal served again, the reconcile and `Bind`'s takeover, the `Census` view | 12 | 43 | C | 21 |
 | 20 | **Health, drain and salvage** | per-direction health and drift, the offload conditions, §11.4 and `WaitOffloaded`, the salvage export | 6 | 18 | A | 21 |
-| 21 | **Integration: the node composes offload** | the store adapter and its suite, clients per store configuration, the components' collectors, settings sections, keys and alerts, `materialtest` against the RFC 4 store, the import flips, system scenarios; S7 | 9 | 27 | team | 22 |
+| 21 | **Integration: the node composes offload** | the store adapter and its suite, clients per store configuration, the components' collectors, settings sections, keys and alerts, `materialtest` against the RFC 4 store, the CPU token, the import flips, system scenarios; S7 | 10 | 30 | team | 22 |
 | 22 | **E2E green** 🔀 | burn `known.yaml` down, the soak with remote faults, B1 to B4, B6, B8, and B5, B7, B9 with offload; provisional (§6 point 2) | 6 | 18.5 | team | release |
-| | **Total** | | **88** | **273.5** | | |
+| | **Total** | | **89** | **277.5** | | |
 
-**Plan estimate: 88 subtasks, 273.5 man-days.**
+**Plan estimate: 89 subtasks, 277.5 man-days.**
 
 RFC 8 is 4,229 lines, which gives N = 11, clamped to 8. This part covers about half of it in eight
 cohesive areas, matching N: the scheduler, the queue, the pipeline, passes, remote reads, local space,
@@ -400,7 +400,7 @@ documents and merged surfaces, not on #5484.
 | Point | Name | What it is |
 | --- | --- | --- |
 | S1a | carver interface agreed | = the RFC 2 plan's S1. RFC 2 folds its open assembler inputs (key budget, lookup, all-zero flag, age) into its epic 1, so its S1 is final. |
-| S1b | syncer interface agreed | = the RFC 3 plan's S1: a joint review of the written signatures with this plan's authors. No compile check. |
+| S1b | syncer interface agreed | = the RFC 3 plan's S1: a joint review of the written signatures with this plan's authors, `Store.Put(ctx, name, src, m *Measure) (Stored, error)` among them (RFC 3 Q1, answered). No compile check. |
 | S1c | remote store contract agreed | = the RFC 4 plan's S1, including the codec's encode and decode calls. |
 | S1d | transform pipeline agreed | = the RFC 5 plan's S1, including the chain pin and release calls, the salvage-key wrap and the destroyed-material notice. |
 | S3 | a pass runs end to end | internal to this plan; the RFC 2 plan's S3 cites it. |
@@ -772,7 +772,7 @@ S4, S5's) deferred with `PreWarm` (§6.1); RFC 8 E9, E10, E14, E25, E34 hold.
 
 ### Epic 18 — Local space with offload
 
-**Epic 18 estimate: 8 subtasks, 26.5 man-days.**
+**Epic 18 estimate: 8 subtasks, 27.5 man-days.**
 
 Eviction, pacing and the refusal table's first two rows whole, now that offload drains dirty bytes;
 the first part's capacity stand-ins go (D10). **Owns:** RFC 8 §3.1's `evict`, `repackDue` and
@@ -797,6 +797,8 @@ stays green; RFC 8 E3, E11, E33 hold.
   later refusal joins while the pass's sync has not begun) and its bounded wait unchanged.
 - `admit` and the pacing law, with `engine.pace` spans and RFC 8 §10.2.1's `decision:`.
 - Destroyed material clearing the offloaded bit through `Unmark`, from S1d's signal.
+- At Commit, an attempt whose pinned material the destroyed-material notice has named since the pin
+  abandoned and its extents offered again under current material (RFC 8 §10.4 as amended).
 - Eviction never gated by locks, opens or snapshots; a retention pin honoured as policy; a
   `decision:` at `evict` that it trusts the offloaded bit while bucket-setting drift goes undetected
   (§6.1's drift row), withdrawn when `Recheck` runs.
@@ -812,7 +814,7 @@ S6's `DropOlder` and `Reconciled`; until then it is built over the in-memory jou
 over the real one. **Owns:** RFC 8 §2.5 steps 6 and 7 (the reseed and the reconcile, but the replica
 clauses, D9), the restart re-offer and intent abandonment before serving, the late attach's steps 6
 and 7, §2.3's reconcile clauses in `Unbind`, §2.5's `Bind` takeover of the reconcile's handle, the
-operator's acknowledgement (§6 point 1), §11.2's crash row, `journal_unreconciled`; RFC 16 §3.1's
+operator's acknowledgement (§6 point 1: the record bound to the lost `JournalID`, its `Lifecycle` read and its consumption at `RecordJournal`), §11.2's crash row, `journal_unreconciled`; RFC 16 §3.1's
 `Refs` and the `Census` view, RFC 6 §10.1's `Versions`. **Done when:** RFC 8 §15.1's "§2.5 restart re-offer", "§2.5 reseed
 gates offer and eviction", "§2.5 journal gone" and "§2.5 attach after a device loss" (the
 acknowledgement), "§2.5 unsuitable journal at start", "§2.5 unread range at start", "§2.5 metadata
@@ -866,14 +868,14 @@ hold.
 
 ### Epic 21 — Integration: the node composes offload
 
-**Epic 21 estimate: 9 subtasks, 27 man-days.**
+**Epic 21 estimate: 10 subtasks, 30 man-days.**
 
 `enginewire` and `node.New` compose what epics 11 to 20 built with the four components (S5), as RFC 8
 §2.6's build and stop order says. Its end is S7. **Owns:** RFC 8 §2.1's root obligations (the store
 adapter, D5), §2.6's order; RFC 23 §2.1 and §2.2 for the syncer and the remote stores; RFC 13
 Appendix B for this part's keys, the components' settings sections and the remote store's keys, which
 the RFC 4 plan moves into `pkg/remote`; RFC 25 §7 for registering its alert rules and every
-component's; amended RFC 0 §1.2's import edges. **Done when:** S7: the store
+component's; RFC 24 §6.2's CPU token; amended RFC 0 §1.2's import edges. **Done when:** S7: the store
 adapter passes `syncertest`'s conformance suite in `integration`; RFC 8 E5 holds through the node; the
 engine's read and write tests run with and without transforms (the RFC 4 plan's row); the RFC 21 plan's
 "§11.5 full journal with the store unreachable" and the RFC 22 plan's "§16.5 remote outage on reads"
@@ -903,9 +905,15 @@ it after, as RFC 8 §2.6 orders.
   carver's `Target`, which the RFC 2 plan's epic 3 declares and validates in `pkg/carver`, with the
   RFC 13 plan's Appendix B check (`TestAppendixBMatchesTheTable`) passing with each; `Target` waits on
   RFC 13 naming its key.
+- RFC 24 §6.2's CPU token built in the node: a FIFO weighted semaphore of three quarters of the
+  runtime's parallelism read at start, at least one, with §6.2's `decision:` and two `ponytail:`s; the
+  root passes it to the RFC 4 codec, which takes one token to encode or hash each chunk on the
+  background path and returns it before its next network wait; a demand read's decode takes none.
+  Tested on its own (arrival order, the count, a waiter holding nothing else) and through the codec
+  with a count of one.
 - The material provider's health source (`material_unavailable`) registered with the evaluator;
   RFC 5's `materialtest` `keys`-object suite run in `integration` against the RFC 4 store; the
-  provider wired with the key-record view `kvstore` implements beside that store, and the namespace
+  provider wired in `enginewire` with the key-record view `kvstore` implements beside that store, and the namespace
   converted from `entity.NamespaceID` to `transform.NamespaceID`, since the transforms import no other
   component.
 - The import walk's flips for `enginewire`'s edges to the remote tier, its codec and the transforms
@@ -940,19 +948,16 @@ proposed targets: the first real-service run does (§6.1).
 
 ## 6. Risks and open points
 
-**Pending the user's answer**
-1. **Proposed RFC amendment: how a lost journal's acknowledgement reaches the engine.** RFC 8 §2.5
-   requires an operator to acknowledge a lost journal before its shares serve again, and neither RFC 8
-   §12.1 nor RFC 23 names the call. Options: (a) RFC 23 §4 gains an admin-only node action writing a
-   store record that names the device and the lost journal's expected `JournalID`, RFC 16 §3's
-   `Lifecycle` and RFC 8 §2.1's table gain its read at start step 1 and at a retried attach, and the
-   record applies only to that recorded journal, never to one "not recorded", and is consumed once the
-   new journal is recorded, so it cannot acknowledge a later loss on the same device (recommended: the
-   shape of `acknowledge-unreadable`, whose `expect JournalID` it follows, and the engine stays the
-   store's reader); (b)
-   an engine method the node calls; (c) leave the acknowledgement half of the two rows to the RFC 23
-   plan and build nothing here. Pending the user's answer; until then the plan follows the RFC as
-   written and (a)'s engine half stands in epic 19's estimate.
+**Decided**
+1. **How a lost journal's acknowledgement reaches the engine (decided: a store record).** RFC 8 §2.5
+   as amended: the acknowledgement is a store record naming the device and the lost journal's
+   `JournalID`, the identity the store records for that device. The engine reads it through
+   `Lifecycle` at start step 1 and at each retried open; it applies only to that recorded journal,
+   never to one not recorded, and is consumed when the new journal's `RecordJournal` commits, so it
+   cannot acknowledge a later loss on the same device. Epic 19 builds the record in `kvstore`, its
+   `Lifecycle` read and the engine's use of it; the admin-only node action that writes it, shaped as
+   `acknowledge-unreadable`, is the RFC 23 plan's (§6.1). RFC 16 §3 and RFC 23 §4 still have to name
+   the read and the action; RFC 8 marks both a proposal.
 
 **Risks**
 2. **Late components or journal halves.** The fixture keeps every new row red at one check until S5
@@ -982,7 +987,7 @@ proposed targets: the first real-service run does (§6.1).
 | `PreWarm` and the speculator's pre-warm, and the pre-warm legs of §15.1's "§9.1 no pre-clone fill" and §7.4's S2, S4 and S5 (D12; RFC 8 §12.1 as amended) | no caller in v1.1 | unowned (no RFC specifies a pre-warm action) | a pre-warm action is specified |
 | Positive-rate pacing in `pkg/workqueue`, and the pace a `Throttled` result lowers (D12; RFC 8 §6.1.1 as amended) | the engine's sources register `Rate` 0, and GC is planned later | RFC 9 | GC's sources land |
 | The node's upload drain calling `WaitOffloaded` (D12) | `drain` is RFC 30's, deferred by the RFC 23 plan | RFC 30's plan | that plan adds the verb |
-| The lost-journal acknowledgement's node action (§6 point 1) | RFC 23 names no such action | RFC 23's plan | the user's answer to §6 point 1 |
+| The lost-journal acknowledgement's admin-only node action, writing the record epic 19 reads (§6 point 1) | RFC 23 §4 names no such action yet; until it does an operator has no call that writes the record | RFC 23's plan | RFC 23 §4 names the action |
 | The benchmarks run per change against an emulator (§6 point 4) | CI starts no S3 endpoint | unowned | CI starts an S3 endpoint |
 | §15.4's daily runs against each real service, and the real-service baselines that replace its proposed targets (its `decision:`) | CI holds no real-service credentials and runs no daily cell | unowned | CI gains a daily cell with real-service credentials |
 | An eviction loop woken by the journal's occupancy crossing its target, not a fixed tick (§4.3) | the fixed tick's lag is covered by the inline refusal path | unowned | B3 shows refusals a sooner eviction would have avoided |
@@ -1042,5 +1047,6 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 13 Appendix B | 11 (keys), 21 (loading; the components' sections in `newTable`, `Target` once RFC 13 names its key) |
 | RFC 14 §9.3 | 18 (L9) |
 | RFC 23 §2.1, §2.2 | 21 |
+| RFC 24 §6.2 | 21 (the CPU token, passed to the RFC 4 codec) |
 | RFC 25 §2.1, §2.5, §3.5, §3.9, §7, §8.2 | rule 3; 13 (watchdog), 20 (conditions, `health.Source`), 21 (every component's alert rules, the evaluator, the material provider's health source) |
 | RFC 29 §4.7, §4.11 | 12, rules 1, 6, 8 |
