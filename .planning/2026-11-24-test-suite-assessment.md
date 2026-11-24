@@ -308,8 +308,8 @@ divides the `go list` result. A package list written into `suites.yaml` would go
 
 What the change must also do:
 
-- **An RFC 29 amendment first.** RFC 29's `shards` splits a cell's `tests` (§4.2 field
-  table), so sharding by package changes the harness spec. Amend the RFC before the `dt`
+- **An RFC 29 amendment first.** RFC 29's `shards` splits a cell's `tests` (§4.1, the
+  registry), so sharding by package changes the harness spec. Amend the RFC before the `dt`
   change.
 
 - **No package falls out.** A test asserts that the union of the shards equals `go list` of
@@ -350,7 +350,8 @@ What the change must also do:
   would get past it. So the weak variant is reachable **only by a direct call from test
   code**, never through configuration.
 - **What A2 does not reach.** `internal/identity`'s own tests hash at production cost
-  directly (`pid.NewHashes`, in 14 places), and every `identity.New` computes the dummy hash
+  directly (`pid.NewHashes`, six calls, two of them in the `withPassword` and `withNTHash`
+  helpers that run once per seeded user), and every `identity.New` computes the dummy hash
   below at production cost. So A2 lowers `internal/install`, `pkg/secrets` and the node
   tests, but `internal/identity` stays near its floor. Its tests could call a weak variant
   directly; the dummy hash stays.
@@ -361,8 +362,8 @@ What the change must also do:
 **A3 — export tests from compiled export data.** The three slowest export tests
 (`TestBootstrapExports`, `TestSecretsExports`, `TestSettingsExports`) type-check whole
 packages from source (`importer.ForCompiler(…, "source", nil)`, for example in
-`pkg/bootstrap/arch_test.go`). #5473 moved `TestImportRules` to compiled export data, and in
-#5465 that took it from 4 min 50 s to 6.4 s on CI. The same switch makes these three cheap
+`pkg/bootstrap/arch_test.go`). #5473 moved `TestImportRules` to compiled export data. #5465
+records it at 4 min 50 s on CI before, and 6.4 s in a local run with `-race` after. The same switch makes these three cheap
 in every run, with or without `-race`, so they need no skip and no new cell.
 
 **A4 — single-goroutine heavy tests without `-race`.** The race cost sits in a few packages
@@ -478,8 +479,8 @@ surviving mutants on the changed lines. Run it by hand when you review.
    and model tests skip under `-race` when a non-race cell runs them?
 4. Do we run the trial dedup PR in `format`?
 5. Do we add the Track C rule to CLAUDE.md?
-6. What is the target for the unit job? RFC 29 sets the PR tier at 20 minutes or less, so
-   10 minutes on a full run leaves room inside it.
+6. What is the target for the unit job? RFC 29 §4.3 sets the PR tier's budget at p90 ≤ 20 min
+   wall clock, so 10 minutes on a full run leaves room inside it.
 
 
 ### Deferral ledger
