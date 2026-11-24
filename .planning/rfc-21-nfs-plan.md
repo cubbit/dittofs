@@ -312,7 +312,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | NFS surface | request state; `ops/v4`'s handler set, `COMPOUND` row and members' table | 3 | 3.75 | team | all |
 | E2 ⛔ | Test foundations | NFS's handler harness over the runner it lifts from SMB's; knfsd captures; the service's `NoGrace` | 3 | 7.5 | team | E3 to E14 |
-| E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 7 | 17 | A | E8, E13, E14; S3 and S4 |
+| E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 6 | 19.5 | A | E8, E13, E14; S3 and S4 |
 | E4 | NFSv3 and MOUNT | every NFSv3 procedure, `fattr3`, `sattr3` and WCC, cookies, stability, `FSINFO`, MOUNT; A3's service half after S2b | 10 | 26 | B | S3; E11, partly; E16 |
 | E5 | NFSv4 namespace, attributes and data | file-handle operations, the pseudo-filesystem, `SECINFO`, `fattr4` and Appendix B, `ACCESS`, name operations, `READDIR`, stateless I/O | 8 | 23 | C | E6, E9; E12, partly; S4 |
 | E6 | NFSv4 ACL attributes | `translate`'s NFSv4 functions, `acl`, `dacl`, `sacl`, `aclsupport`, `who`, `mode_umask` | 5 | 12 | C | E16 |
@@ -326,9 +326,9 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
-| | **Total** | | **95** | **260.75** | | |
+| | **Total** | | **94** | **263.25** | | |
 
-**Plan estimate: 95 subtasks, 260.75 man-days, not counting epic 15.**
+**Plan estimate: 94 subtasks, 263.25 man-days, not counting epic 15.**
 
 Nor E16's burn-down of the three NFS suites, which waits for E15 as E15 waits for S7 (§6.2, point
 6), nor the rows parked in §6.6's deferral ledger, nor the three test pieces RFC 22's plan prices
@@ -444,7 +444,7 @@ test runs, and NFS's scaffold answers every procedure over loopback through `cor
 | ⛔ E1 | E2, and through it every epic | the request state and `COMPOUND` row every NFSv4 epic writes against |
 | 🔀 S0 | S2 | the call record, golden helper and import-test rules every NFS test uses |
 | ⛔ E2 | E3, E4, E5, E7, E11 and E12 through S2, and through them the rest | NFS's handler harness, knfsd's golden files, `NoGrace` |
-| E3 | E8, E13, E14; S3 and S4 | E8 extends E3's `Replay` stage; the `Security` stage RPCSEC_GSS joins; the scripted client every loopback row and capture script needs |
+| E3 | E8, E13, E14; S3 and S4 | E8 extends E3's `Replay` stage; RPCSEC_GSS joins the credentials `Route` builds an `Identity` from; the scripted client every loopback row and capture script needs |
 | E4 | S3; E11, partly; E16 | an NFSv3 mount over loopback needs its procedures and MOUNT; A3's admission exemption |
 | E5 | E6, E9; E12, partly; S4 | ACL attributes ride `GETATTR` and `SETATTR`'s `fattr4`; `OPEN` resolves the current file handle; `READ_PLUS` uses the `READ` hook |
 | E6 | E16 | its rows end to end |
@@ -472,7 +472,8 @@ Figures are man-days from S2.
   man-days in, at 21, before track C's E9 needs them and well before track B's E11 at 42. E10 starts
   at 45, as track C's E9 brings `OPEN`. E14's scripts use E3's scripted client against knfsd and its
   DittoFS side waits for S5; the track ends at 71, nine before track B, and fills with E16's
-  in-process rows as their epics allow. 71 man-days.
+  in-process rows as their epics allow. 73.5 man-days, the 2.5 E3's breakdown added not yet moved
+  into the figures above.
 - **Track B: E4, E7, E11, E13.** NFSv3 and MOUNT, then identity's NFS side, then NLM and NSM, then
   RPCSEC_GSS. E4 comes first so S3 holds at 26 (D12); E7 follows, ending at 42, before track C reaches
   E6 at 48; E13 starts at 64 and needs S6c, RFC 22's plan's `gss`, and S6b for its signed-in rows,
@@ -482,7 +483,7 @@ Figures are man-days from S2.
   at 21, and its loopback rows wait for S4 at 45; E6 starts at 48 with E7 done; E12 last, with E8's
   slot count and E9's stateids in. 73 man-days.
 - **The team.** E1 and E2 before the tracks; E15 at S7; E16 after the tracks. E1, E2 and E16, 36.75
-  man-days, are the difference between the tracks' 224 and the plan's 260.75.
+  man-days, are the difference between the tracks' 226.5 and the plan's 263.25.
 
 **The first mount.** By D12, an NFSv3 mount over `AUTH_SYS` comes first: E1 to E4 and E7, about 70.25
 man-days of plan work, the critical path E1 → E2 → E4 → E7, 53.25 man-days in series, then S5, S7 and
@@ -690,7 +691,7 @@ program area; `memory.New` answers a reclaim from a client with nothing left to 
 
 ### Epic 3 — The RPC layer
 
-**Epic 3 estimate: 7 subtasks, 17 man-days.**
+**Epic 3 estimate: 6 subtasks, 19.5 man-days.**
 
 Everything a call meets before a handler: its credential as an `Identity` and a `vfs.Call`, `NULL`
 and the TLS upgrade, the replay check, and the status every error of the stages and of `core` is
@@ -708,9 +709,10 @@ from the reply stored for its first send, on header vectors without a socket (D1
 over loopback being E4's.
 
 **Expected content:**
-- The `AUTH_NONE` and `AUTH_SYS` `Security` stage: each call's `Identity` and `vfs.Call`, the
-  source address, refused credentials and verifiers; the scaffold's interim `AUTH_BADCRED` for an
-  `RPCSEC_GSS` credential (`protocol/stages.go`'s `checkAuth`) kept until E13 withdraws it.
+- `AUTH_NONE` and `AUTH_SYS` built into an `Identity` at route, with no `Security` stage since
+  nothing is verified: each call's `Identity` and `vfs.Call`, the source address, refused
+  credentials and verifiers; the scaffold's interim `AUTH_BADCRED` for an `RPCSEC_GSS` credential
+  (`protocol/stages.go`'s `checkAuth`) kept until E13 withdraws it.
 - `NULL` for every program; the `AUTH_TLS` probe, `StartTLS`, the `opportunistic` and `require`
   modes, certificates loaded by `New` and `Reconfigure` (RFC 20's plan's TLS row; develop's code, rule
   7).
@@ -720,8 +722,8 @@ over loopback being E4's.
 - Malformed calls: `RPC_MISMATCH` before the credential, `GARBAGE_ARGS`, `PROG_MISMATCH` with the
   range; `protocol/served.go`'s copies of `wire`'s program constants removed.
 - NFS's `Replay` stage, with D10's duplicate-request cache, which E8 extends with sessions' slots.
-- `wire`'s call header and reply decoder; the scripted client (D5), with loopback rows of all the
-  above.
+- The scripted client (D5), holding the call encoder and reply decoder until E10 moves them into
+  `wire`, with loopback rows of all the above; NFS's `AUTH_TOOWEAK` row for `ErrWrongSecurity`.
 
 ### Epic 4 — NFSv3 and MOUNT
 
@@ -1036,8 +1038,9 @@ steps, "§6.3 `MNT` on a Kerberos-only share *(1 node)*"'s `sec=krb5` step (afte
   `gsstest`'s initiator (S6c).
 - `krb5i` and `krb5p` through RFC 4121's `Wrap` and `Unwrap`, added to `gss`.
 - Header MIC verification, `DESTROY`, `CREDPROBLEM`, `CTXPROBLEM`, `MAXSEQ`, ticket expiry.
-- `ErrWrongSecurity` as `NFS4ERR_WRONGSEC` and NFSv3's `AUTH_TOOWEAK`; the `require_kerberos` boot
-  refusal (RFC 20's plan's ledger); the `ErrNotNegotiated`, `ErrNoSession` and `ErrExpired` rows.
+- `ErrWrongSecurity` driven with a Kerberos caller through E3's `AUTH_TOOWEAK` row and E5's
+  `NFS4ERR_WRONGSEC` row; the `require_kerberos` boot refusal (RFC 20's plan's ledger); the
+  `ErrNotNegotiated`, `ErrNoSession` and `ErrExpired` rows.
 - Rows on `memory.New` with injected sign-in errors from S6c; rows where `SignIn` succeeds after S6b.
 - knfsd's captures of `RPCSEC_GSS` exchanges at `krb5`, `krb5i` and `krb5p` against a KDC, cut into
   golden files as E2's are, which E2 leaves out.
