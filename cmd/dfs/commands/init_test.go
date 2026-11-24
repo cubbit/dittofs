@@ -1,14 +1,17 @@
 package commands
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/install"
 	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
@@ -192,5 +195,139 @@ func TestInitPasswordEnvDittofsName(t *testing.T) {
 				t.Fatalf("dfs init --admin-password-env %s: got %q, %v; want it initialised, nothing printed", name, out, err)
 			}
 		})
+	}
+}
+
+// skipUnsuitableJournalMount skips the test when the journal's platform
+// check refuses the mount holding dir.
+func skipUnsuitableJournalMount(t *testing.T, dir string) {
+	t.Helper()
+	scratch := filepath.Join(dir, "scratch")
+	if err := os.Mkdir(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Init(t.Context(), scratch, [16]byte{1}); errors.Is(err, journal.ErrUnsuitableStorage) {
+		t.Skipf("the journal's platform check refuses the mount holding %s (%v); set TMPDIR to a directory on a suitable mount", dir, err)
+	} else if err != nil {
+		t.Fatalf("journal init on the scratch directory: %v", err)
+	}
+}
+
+// keyFileConfig writes a bootstrap under dir whose storage key file,
+// returned second, does not exist yet.
+func keyFileConfig(t *testing.T, dir string) (string, string) {
+	t.Helper()
+	dev := filepath.Join(dir, "device")
+	if err := os.Mkdir(dev, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "keys", "storage.key")
+	if err := os.Mkdir(filepath.Dir(key), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return bootstrapFile{store: filepath.Join(dir, "store"), journal: dev, node: nodeUUID, key: key}.write(t, dir), key
+}
+
+// With keys.storage.local.file naming no file, dfs init creates it with
+// mode 0600, holding a master key the passphrase opens, prints once where
+// it is and that it must be copied off the host, and initialises the
+// installation; a second run prints nothing of the key file.
+func TestInitCreatesTheStorageKeyFile(t *testing.T) {
+	dir := t.TempDir()
+	skipUnsuitableJournalMount(t, dir)
+	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", storagePassphrase)
+	config, key := keyFileConfig(t, dir)
+	out, err := runDfs("init", "--config", config)
+	if err != nil {
+		t.Fatalf("dfs init: %v", err)
+	}
+	if n := strings.Count(out, "created the storage key file "+key); n != 1 || strings.Count(out, "Copy it off this host") != 1 {
+		t.Errorf("dfs init output %q: key file notice printed %d times, want once with the copy-off-host warning", out, n)
+	}
+	fi, err := os.Stat(key)
+	if err != nil {
+		t.Fatalf("stat the key file: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("key file mode: got %v, want 0600", fi.Mode().Perm())
+	}
+	p, err := keyprovider.NewProviderWithPassphrase(t.Context(), keyprovider.Config{Kind: keyprovider.KindLocal, File: key}, storagePassphrase)
+	if err != nil {
+		t.Fatalf("open the created key file with the passphrase: %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if ents, err := os.ReadDir(filepath.Dir(key)); err != nil || len(ents) != 1 {
+		t.Errorf("key directory after init: %d entries, %v; want only the key file", len(ents), err)
+	}
+	if out, err := runDfs("init", "--config", config); !errors.Is(err, install.ErrInstalled) || out != "" {
+		t.Errorf("second dfs init: got %q, %v; want nothing printed and ErrInstalled", out, err)
+	}
+}
+
+// An existing storage key file is used as it is: dfs init initialises the
+// installation with it, leaving its bytes and mtime unchanged and printing
+// nothing of it.
+func TestInitUsesAnExistingStorageKeyFile(t *testing.T) {
+	dir := t.TempDir()
+	skipUnsuitableJournalMount(t, dir)
+	config := initConfig(t, dir)
+	key := filepath.Join(dir, "storage.key")
+	past := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(key, past, past); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := runDfs("init", "--config", config)
+	if err != nil {
+		t.Fatalf("dfs init: %v", err)
+	}
+	if strings.Contains(out, "storage key file") {
+		t.Errorf("dfs init output %q: want no key file notice for an existing file", out)
+	}
+	after, err := os.ReadFile(key)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Errorf("key file after init: %v, changed %v; want it byte-identical", err, !bytes.Equal(after, before))
+	}
+	if fi, err := os.Stat(key); err != nil || !fi.ModTime().Equal(past) {
+		t.Errorf("key file mtime after init: got %v, %v; want %v", fi.ModTime(), err, past)
+	}
+}
+
+// With no passphrase set and no key file, dfs init refuses, naming
+// DITTOFS_ENCRYPTION_PASSPHRASE, printing nothing and creating no file.
+func TestInitKeyFileNeedsThePassphrase(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", "")
+	config, key := keyFileConfig(t, dir)
+	out, err := runDfs("init", "--config", config)
+	if !errors.Is(err, keyprovider.ErrPassphraseMissing) || !strings.Contains(err.Error(), "DITTOFS_ENCRYPTION_PASSPHRASE") || out != "" {
+		t.Errorf("dfs init without a passphrase: got %q, %v; want nothing printed and ErrPassphraseMissing naming the variable", out, err)
+	}
+	if ents, err := os.ReadDir(filepath.Dir(key)); err != nil || len(ents) != 0 {
+		t.Errorf("key directory after the refusal: %d entries, %v; want it empty", len(ents), err)
+	}
+}
+
+// An existing key file the passphrase does not open is refused as the
+// provider refuses it, and left as it was.
+func TestInitRefusesAKeyFileTheWrongPassphraseCannotOpen(t *testing.T) {
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	key := filepath.Join(dir, "storage.key")
+	before, err := os.ReadFile(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", "not the passphrase")
+	if out, err := runDfs("init", "--config", config); !errors.Is(err, keyprovider.ErrUnwrapFailed) || !strings.Contains(err.Error(), "opening the storage key") || out != "" {
+		t.Errorf("dfs init with the wrong passphrase: got %q, %v; want nothing printed and ErrUnwrapFailed opening the storage key", out, err)
+	}
+	if after, err := os.ReadFile(key); err != nil || !bytes.Equal(after, before) {
+		t.Errorf("key file after the refusal: %v, changed %v; want it byte-identical", err, !bytes.Equal(after, before))
 	}
 }

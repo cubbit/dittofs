@@ -28,6 +28,12 @@ The administrator's first password is read from a file or an environment
 variable. With neither, a password is generated and printed once to standard
 output, never to the log, and must be changed at the first sign-in.
 
+When keys.storage.local.file names a file that does not exist, init creates
+it, a master key wrapped under DITTOFS_ENCRYPTION_PASSPHRASE, and prints once
+where it is: copy it off the host, since losing it or the passphrase loses
+the data. An existing file is used, never overwritten. With the passphrase
+unset, init refuses.
+
 Run again after an interruption, init finishes what the interrupted run left;
 over a finished installation it refuses and changes nothing.
 
@@ -85,6 +91,16 @@ func runInit(cmd *cobra.Command, _ []string) (err error) {
 	}
 	if cfg.Keys.Storage.Kind == "" {
 		return errors.New("keys.storage is not set: the administrator's password and the signing key are sealed under it")
+	}
+	if file := cfg.Keys.Storage.Local.File; cfg.Keys.Storage.Kind == keyprovider.KindLocal {
+		created, err := keyprovider.CreateKeyFile(file, os.Getenv("DITTOFS_ENCRYPTION_PASSPHRASE"))
+		if err != nil {
+			return err
+		}
+		if created {
+			fmt.Fprintf(cmd.OutOrStdout(), "created the storage key file %s\n"+
+				"Copy it off this host now and keep its passphrase: losing either loses the data, and nothing recovers it.\n", file)
+		}
 	}
 	key, err := keyprovider.NewProvider(ctx, cfg.Keys.Storage.Provider())
 	if err != nil {
