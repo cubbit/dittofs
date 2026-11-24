@@ -332,6 +332,11 @@ program on every run (R4). The message prints the shrunk trace and its text seed
 original. `journaltest/model/shrink.go` drops chunks the same way and then halves each step's
 length (§2.1); it also stops at a 5 minute deadline, which the harness does not keep.
 
+Shrinking runs only for a failure the harness reports in its own process. A hang (§4.4) and a
+panic on a goroutine the component started (§8) end the process first, so their crashers arrive
+unshrunk. One is shrunk by hand, or by replaying each candidate program in a subprocess per
+attempt and keeping the ones that still end the process the same way.
+
 ## 6. The oracle
 
 ### 6.1 The step loop
