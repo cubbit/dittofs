@@ -1,6 +1,7 @@
 package cmdutil_test
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -38,7 +39,7 @@ func TestSetCreatesOnlyWhatIsAbsent(t *testing.T) {
 	if paused != 1 {
 		t.Fatalf("the pause after the read ran %d times, want once", paused)
 	}
-	if err == nil || !strings.Contains(err.Error(), "was written since it was read absent, so nothing was written") {
+	if !cmdutil.HasStatus(err, http.StatusPreconditionFailed) || !strings.Contains(err.Error(), "was written since it was read absent, so nothing was written") {
 		t.Fatalf("dfsctl %s racing a create: got %v, want the 412 refused", strings.Join(args, " "), err)
 	}
 	if got := access(); got != "read" {

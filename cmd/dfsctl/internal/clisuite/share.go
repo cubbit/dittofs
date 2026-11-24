@@ -46,9 +46,9 @@ func (s Server) share(t *testing.T, c *client.Client) client.Tagged[apiv1.ShareS
 	return sh
 }
 
-// decodeFormat reads out, a value printed as format, json or yaml, the YAML
+// decodePrinted reads out, a value printed as format, json or yaml, the YAML
 // through JSON as dfsctl prints it.
-func decodeFormat[T any](format, out string) (T, error) {
+func decodePrinted[T any](format, out string) (T, error) {
 	var v T
 	b := []byte(out)
 	if format == "yaml" {
@@ -64,9 +64,9 @@ func decodeFormat[T any](format, out string) (T, error) {
 	return v, json.Unmarshal(b, &v)
 }
 
-// refused runs args and fails the test unless the command exits non-zero
+// refusedNaming runs args and fails the test unless the command exits non-zero
 // with every one of want in its stderr.
-func refused(t *testing.T, run Runner, want []string, args ...string) {
+func refusedNaming(t *testing.T, run Runner, want []string, args ...string) {
 	t.Helper()
 	_, errOut, status := run(t.Context(), args...)
 	if status == 0 {
@@ -107,7 +107,7 @@ func shareRows() []row {
 				t.Errorf("share create %s: export policy %+v, want flavours [sys], squash all and clients %+v", name, p.Spec, want)
 			}
 			for _, format := range []string{"json", "yaml"} {
-				sh, err := decodeFormat[apiv1.Share](format, mustRun(t, run, "share", "get", name, "-o", format))
+				sh, err := decodePrinted[apiv1.Share](format, mustRun(t, run, "share", "get", name, "-o", format))
 				if err != nil || sh.ID != got[0].ID || sh.Spec != got[0].Spec {
 					t.Errorf("share get %s -o %s: got %+v (%v), want %+v", name, format, sh, err, got[0])
 				}
@@ -151,7 +151,7 @@ func shareRows() []row {
 			if r.status != 0 {
 				t.Fatalf("share delete --wait: status %d, stderr %q, want 0", r.status, r.errOut)
 			}
-			if op, err := decode("json", r.out); err != nil || op.State != apiv1.OpSucceeded || op.Kind != apiv1.OpShareDelete {
+			if op, err := decodePrinted[apiv1.Operation]("json", r.out); err != nil || op.State != apiv1.OpSucceeded || op.Kind != apiv1.OpShareDelete {
 				t.Errorf("share delete --wait: printed %+v (%v), want the share's deletion succeeded", op, err)
 			}
 			if _, err := c.Shares().Get(t.Context(), sh.ID); !cmdutil.HasStatus(err, http.StatusNotFound) {
@@ -181,7 +181,7 @@ func shareRows() []row {
 			if got := policy(); !reflect.DeepEqual(got, want) {
 				t.Errorf("share export-policy set: the server holds %+v, want %+v", got, want)
 			}
-			p, err := decodeFormat[apiv1.ExportPolicy]("json", mustRun(t, run, "share", "export-policy", "get", sh.Spec.Name, "-o", "json"))
+			p, err := decodePrinted[apiv1.ExportPolicy]("json", mustRun(t, run, "share", "export-policy", "get", sh.Spec.Name, "-o", "json"))
 			if err != nil || !reflect.DeepEqual(p.Spec, want) {
 				t.Errorf("share export-policy get: printed %+v (%v), want %+v", p.Spec, err, want)
 			}
@@ -193,13 +193,16 @@ func shareRows() []row {
 				t.Fatalf("put the SMB adapter's port: %v", err)
 			}
 			out := mustRun(t, run, "share", "mount", sh.Spec.Name, "/mnt/x", "--protocol", "smb", "-u", "alice", "--dry-run")
-			if !strings.Contains(out, "1445") || !strings.Contains(out, sh.Spec.Name) {
+			// The port as each platform's line spells it: Linux's port=,
+			// macOS's URL, Windows' /TCPPORT:.
+			port := strings.Contains(out, "port=1445,") || strings.Contains(out, ":1445/") || strings.Contains(out, "/TCPPORT:1445")
+			if !port || !strings.Contains(out, sh.Spec.Name) {
 				t.Errorf("share mount --protocol smb: printed %q, want the share's name and the port 1445", out)
 			}
 		}},
 		{name: "share get of a name no share holds is refused naming it", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
 			name := uniq("absent")
-			refused(t, run, []string{name}, "share", "get", name)
+			refusedNaming(t, run, []string{name}, "share", "get", name)
 		}},
 	}
 }
