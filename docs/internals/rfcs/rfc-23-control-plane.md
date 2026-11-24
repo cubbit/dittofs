@@ -2160,7 +2160,7 @@ in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi
    (100 ms), where reading and diffing every row takes 298 ms and 595 ms. The walk
    alone is 47 ms and 89 ms. From now on the measure is the settings reconcile
    benchmark of RFC 13's plan (its epic 3), `BenchmarkReconcileScan`: its
-   `scan_above` case for the pass, and its `walk` case, whose passing 100 ms
+   `scan_above` case for the pass, and its `walk` case, either passing 100 ms
    brings the index back. The walk's own progress is unmeasured too: while writes
    raise the settings generation faster than a walk of many pages ends, §2.3 discards every walk and
    the node's reconciled position stops until the writes pause. Whether the

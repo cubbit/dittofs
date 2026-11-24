@@ -667,9 +667,9 @@ Each carries a `ponytail:` marker at the code site:
   279 ms sparse and 563 ms dense at 10⁴ shares. On a quiet machine the walk alone takes 47 ms and
   89 ms against 298 ms and 595 ms for the full pass (#5563, RFC 23 §13 item 5), so T3.10 decodes
   less instead of adding an index. The ledger's row for the index moved to RFC 16 (§6.1).
-  - *Ceiling:* the walk alone at the settings count of 10⁴ shares, once per one-second poll while
-    writes keep the generation moving; the trigger is the walk's time passing 100 ms, measured by
-    epic 3's `BenchmarkReconcileScan` `walk` case (T3.10);
+  - *Ceiling:* the walk, or the pass `scan_above` times, at the settings count of 10⁴ shares, once
+    per one-second poll while writes keep the generation moving; the trigger is the `walk` or
+    `scan_above` case of epic 3's `BenchmarkReconcileScan` passing 100 ms (T3.10);
     epic 5 grows RFC 23's `BenchmarkReconcile` (#4688) with the settings rows and the secrets pass
     and judges the full figure. Every `Secret` write raises the generation too, so a password
     change costs every node one such walk, with nothing to decode.
@@ -1273,7 +1273,8 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
 - D11's `decision:` note at `Check`.
 - `config_refused_total` and `config_bound_refusals_total`.
 - `Advance`: reconcile's pass that decodes and diffs only the scopes with a row above the reconciled
-  position, through the same walk, its snapshot, changes and refusals those of `Read` and `Diff` (§4.3).
+  position, through the same walk (§4.3), its snapshot, changes and refusals those of `Read` and
+  `Diff`, except one case, a value `json.Marshal` cannot encode (epic 3's D7).
 
 ### Epic 4 — Secrets
 
@@ -1542,7 +1543,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys |
 | The cluster rules: §5's two-step restart value, §5.4 and §5.5 across nodes, the two-node §9 rows; a lagging node refusing the raise (header, §4.3's `ponytail:`, O1, §1.4) | single node only | RFC 15 | a second node |
 | Pruning an old secret version once every node's status reports the new one (§4.3's `ponytail:`) | a node that is down keeps its last report and holds the prune back | RFC 15 | a second node |
-| An index by (kind, position) for reconcile's settings read, with a removal entry per delete and its pruning (§4.3's `ponytail:`) | epic 3's T3.10 decodes only the changed scopes and keeps the one walk of every row, with no new key | RFC 16 | the walk alone passes 100 ms in epic 3's benchmark (RFC 23 §13 item 5) |
+| An index by (kind, position) for reconcile's settings read, with a removal entry per delete and its pruning (§4.3's `ponytail:`) | epic 3's T3.10 decodes only the changed scopes and keeps the one walk of every row, with no new key | RFC 16 | the `walk` or `scan_above` case passes 100 ms in epic 3's benchmark (RFC 23 §13 item 5) |
 | The cross-component rule, RFC 13 §6's example (§4.3's `ponytail:`) | its second setting, `migration.freeze_timeout`, does not exist | unowned | that setting is declared |
 | A per-role passphrase variable for key files (§4.3's `ponytail:`) | `keyprovider` reads one variable | unowned | two roles need distinct passphrases |
 | The replacement of `kmip_fake_test.go`'s canned KMIP server, a fake that passes a conformance suite; the canned server itself moves with `keyprovider` (D5, E1's D3) | the move changes no line of it, so the "no canned stub" rule does not fire on it | unowned | the fake's first change, or its first new caller |

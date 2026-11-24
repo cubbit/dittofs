@@ -350,7 +350,8 @@ leaves the `decision:` note only.
   changed, so one reconfigure fewer, never one more. RFC 23 §2.3's "reads every scope's settings ...
   through `AllSettings`" stays true. An index by (kind, position) would make a pass cheaper again,
   but needs an RFC 16 key, a removal entry on every delete path and its pruning: the plan's ledger
-  gives it to RFC 16, with the walk's own time as its trigger. `Advance` is this epic's third
+  gives it to RFC 16, with the `walk` or `scan_above` case passing 100 ms as its trigger.
+  `Advance` is this epic's third
   exception to E1's freeze, with its `Pass`, after D6's `FormatVersion` and T3.9's `WithMetrics`:
   T3.10 adds both to the export pin. T3.10 makes the swap, `settings.Read` in reconcile's
   `walkSettings` and the `Diff` calls in `routeSettings`, once E5's T5.2 and T5.3 have merged,
@@ -510,7 +511,8 @@ internal/node (reconcile)               T3.10 walkSettings calls Advance, routeS
   trigger, the scan's time passing a tenth of the poll's one second (100 ms, measured in T3.9's
   benchmark), and its upgrade path, reading only the records above the reconciled position, with
   an index by position (RFC 13's plan, §4.3). T3.10 moves the marker to `Advance` (D7), where the
-  trigger becomes the store walk alone, `BenchmarkReconcileScan`'s `walk` case, passing 100 ms.
+  trigger becomes `BenchmarkReconcileScan`'s `walk` case (the store walk alone) or its
+  `scan_above` case passing 100 ms.
 - **Acceptance criteria:**
   - One bad row refuses its section and no other.
   - `Get` on a refused section returns its error, never the default.
@@ -750,8 +752,9 @@ internal/node (reconcile)               T3.10 walkSettings calls Advance, routeS
   per refused write. The `manual` run's figures, the sparse and the dense case, land in the
   subtask's pull request. E5 judges R30's 100 ms ceiling on the full figure (D3), so the bound has
   one judge until T3.10, whose `scan_above` case is judged against the same ceiling. The full figure
-  past the ceiling is what T3.10 answers. From T3.10 on, the index's trigger is the store walk
-  alone, `BenchmarkReconcileScan`'s `walk` case, passing 100 ms.
+  past the ceiling is what T3.10 answers. From T3.10 on, the index's trigger is
+  `BenchmarkReconcileScan`'s `walk` case (the store walk alone) or its `scan_above` case passing
+  100 ms.
 - **Tests:** each series read from the registry after the refusal that raises it; the closed list
   checked: every one of E1's errors raises the series under its own `reason` and its section's
   prefix, an unknown key under the one fixed value whatever its spelling, and a marker value in a
@@ -774,29 +777,32 @@ internal/node (reconcile)               T3.10 walkSettings calls Advance, routeS
   installation's and node's rows held for the whole pass and handed to every narrow rebuild; an
   `Override` section whose wide scope is kept rebuilding every instance; a row whose key does not
   parse skipped as `Read` skips it, without closing the scope it sits in; only the kept levels
-  built, into copies of their sections' entries, the rest the previous snapshot's; `pass.Diff(was,
-  cur)` equal to `Diff(was, cur)` except D7's one exception, diffing only the rebuilt instances of a section whose two entries
+  (every level of every section at a kept scope instance) built, into copies of their sections'
+  entries, the rest the previous snapshot's; `pass.Diff(was, cur)` equal to `Diff(was, cur)` except
+  D7's one exception, diffing only the rebuilt instances of a section whose two entries
   are the pointers `Advance` read and wrote, nothing for an untouched section shared by pointer, and
   the whole of any other (kept or held), in `Diff`'s order; the refused map the previous one with
   each kept section's recomputed, every refused section counted once per pass as `Read` counts it.
   The snapshot keeps each scope instance's row count and the sorted scopes. `Advance` and `Pass` in
   the export pin; the test hook on the `Table` instance. The `ponytail:` marker moves from `Read` to
   `Advance`: one walk of every row per pass, only the changed scopes decoded; upgrade to an index by
-  (kind, position) in RFC 16 once the walk alone, `BenchmarkReconcileScan`'s `walk` case, passes
+  (kind, position) in RFC 16 once `BenchmarkReconcileScan`'s `walk` or `scan_above` case passes
   100 ms. In `walkSettings` (package `internal/node`, E5's T5.2, merged first), the swap:
   `settings.Read` becomes `settings.Advance`, the last walk's raw snapshot and its `CFGGEN` kept for the
   next pass, a walk the generation moved under discarded with `at` unchanged. In `routeSettings`
   (E5's T5.3, merged first), each `Diff` call (against the previous snapshot, and against what
-  each section first ran, `r.ran`) becomes `pass.Diff`, after the `Keep` calls.
+  each section first ran, `r.ran`) becomes `pass.Diff` where it stands: after `keepSettings`' `Keep`
+  calls, before the apply holds.
   `BenchmarkReconcileScan` gains `scan_above`, `Advance` from the fixture's previous
   snapshot, with the same guards, and `walk`, the store walk alone through `SettingsReader` with no
-  decode, which is the index's trigger; the `walk` case fails itself when the rows it counted differ
-  from the fixture's, like T3.9's guards.
+  decode, which with `scan_above` is the index's trigger; the `walk` case fails itself when the rows
+  it counted differ from the fixture's, like T3.9's guards.
 - **Acceptance criteria:**
   - `scan_above` under 100 ms at 10⁴ shares, sparse and dense, the median of ten runs on one
     machine. `scan_above` holds the store walk, so a dense `walk` past 100 ms makes the criterion
-    unmeetable: T3.10 then does not close, the index's trigger has fired and RFC 16's index
-    replaces it. `walk` is reported beside `scan_above`.
+    unmeetable, and `scan_above` can pass it with the walk under it too: in either case T3.10
+    does not close, the index's trigger has fired and RFC 16's index replaces it. `walk` is
+    reported beside `scan_above`.
   - Over a seeded sequence of writes, `Advance` and `Read` with `Diff` give snapshots that diff
     empty both ways, the same changes in the same order and the same refused sections; the
     sequence's sections hold no value `json.Marshal` cannot encode (D7's one exception).

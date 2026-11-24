@@ -215,7 +215,7 @@ deferral ledger set for it.
 | --- | --- | --- | --- | --- |
 | R29 | `config_secrets_behind` counts the secrets this node holds at an older version than the current one, and carries no label naming a secret | MUST | RFC 13 §8 | T5.8 |
 | R30 | Every RFC 13 §8 series but the provisioning pair is on the node's registry, and no metric is labelled by record or by secret | MUST | RFC 13 §8 | T5.9 |
-| R31 | The full reconcile, the settings walk, `Diff` and the secrets pass, is measured at 10⁴ shares' settings and judged against the 100 ms ceiling of the walk's `ponytail:` | bound | RFC 13's plan, §4.3 ("Reconcile re-reads every setting"), §4.4 (reconcile on `settings.Diff`) | T5.9 |
+| R31 | The full reconcile, the settings walk, `Diff` and the secrets pass, is measured at 10⁴ shares' settings and judged against the 100 ms ceiling of the walk's `ponytail:` | bound | RFC 13's plan, §4.3 ("Reconcile walks every setting when the generation moves, and decodes only what changed"), §4.4 (reconcile on `settings.Diff`) | T5.9 |
 
 Key words in the owned sections this epic does not carry: §5's "**(cluster)**" two-step value is
 RFC 15's (the plan's O1); §6's "Some bounds are the host's" is the component's own check,
@@ -672,8 +672,8 @@ internal/node/series_test.go                T5.9  RFC 13 §8's series on the reg
 - **Deliverables:** `BenchmarkReconcile` (#4688) grown with a case at 10⁴ shares' settings, E3's
   sparse fixture over the node's table and test sections, and 16 references for the secrets pass,
   timed from the commit to the end of the pass; its figure in the pull request against the 100 ms
-  ceiling (the index's trigger is not this figure but the store walk alone, epic 3's
-  `BenchmarkReconcileScan` `walk` case, passing 100 ms); the call
+  ceiling (the index's trigger is not this figure but epic 3's `BenchmarkReconcileScan`, its
+  `walk` or `scan_above` case passing 100 ms); the call
   `(Table).WithMetrics(registry)` on the node's table, built in `node.New`; `series_test.go`
   reading the node's registry after a start and after a refused write through the settings route.
 - **Acceptance criteria:**
