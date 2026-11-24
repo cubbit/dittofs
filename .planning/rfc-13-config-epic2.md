@@ -160,10 +160,10 @@ set for it.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R15 | `node-id` is 24 bytes: magic `DNI1`, the 16-byte identity, CRC32C over the first 20; any other length, magic or checksum does not parse | MUST | RFC 28 §2.1 | T2.2 |
-| R16 | A copy is written to `node-id.tmp`, synced, renamed, and the directory synced; a `node-id.tmp` is ignored and overwritten by the next write | MUST | RFC 28 §2.1; RFC 13 §2.2 | T2.2 |
-| R17 | A start reads every copy and compares them as parsed identities; a copy that does not parse refuses, naming its directory, and is never taken as missing or written over | MUST | RFC 13 §2.2 (node-identity row) | T2.2 |
+| R16 | A copy is written to `node-id.tmp`, created exclusively and never through a symbolic link, a leftover removed first, synced, then published by a link that replaces no `node-id` that is already there, and the directory synced; a leftover `node-id.tmp` is ignored | MUST | RFC 28 §2.1; RFC 13 §2.2 | T2.2 |
+| R17 | A start reads every copy and compares them as parsed identities, never following a symbolic link and reading at most one byte past the layout, so a longer copy is refused without being read whole; a copy that does not parse, is not a regular file, or whose read fails refuses, naming its directory, and is never taken as missing or written over; only a missing copy counts as missing | MUST | RFC 13 §2.2 (node-identity row) | T2.2 |
 | R18 | A start refuses, naming the directories, if two copies differ, if no copy exists and the file names no identity, or if a copy differs from the file's identity | MUST | RFC 13 §2.2 (node-identity row) | T2.2 |
-| R19 | Nothing rewrites a copy | invariant | RFC 13 §2.2 (node-identity row) | T2.2 |
+| R19 | Nothing rewrites a copy, and a copy that appears while a missing one is written survives: the write that lost the publish takes it when it names the same identity and refuses when it does not | invariant | RFC 13 §2.2 (node-identity row) | T2.2 |
 | R20 | A missing copy is written, logged, only into a directory whose `format` names the journal the store records at `JD‖node‖device` for this node and device; a directory whose journal is not recorded gets none | MUST | RFC 13 §2.2 (node-identity row) | T2.2 |
 | R21 | Initialisation generates the identity once and writes it into each directory after its `Init`; a rerun adopts a copy only from a directory whose `format` carries the installation's ID, refuses one that does not parse or two that differ, and takes nothing from another installation's directory | MUST | RFC 13 §2.2 (node-identity row) | T2.2 |
 
@@ -437,9 +437,11 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
 - **Deliverables:** `journal.ReadFormat` (D4); the `node-id` codec; `NodeID`, which reads and compares every copy before the
   store opens and writes nothing; `InitNodeID`, for `dfs init` and a recovery import, adopting a
   copy only from a directory of this installation; `WriteMissingNodeIDs`, writing through
-  `node-id.tmp`, sync, rename and directory sync, only beside a journal the store records for this
-  node and device, logging each write, through a small interface of the calls it makes (create, write, sync, rename,
-  sync the directory), implemented over `os`; `journaltest/kit`'s `Seam` provides a `storage.FS`
+  `node-id.tmp` created exclusively and never through a symbolic link, a leftover removed
+  first, then the sync, a link that replaces no copy that is already there, and the directory
+  sync, only beside a journal the store records for this node and device, logging each write,
+  through a small interface of the calls it makes (remove, create, write, sync, link, sync
+  the directory), implemented over `os`; `journaltest/kit`'s `Seam` provides a `storage.FS`
   that is internal to the journal package, so the tests wrap it in an adapter of that interface.
   `FuzzNodeID`.
 - **Acceptance criteria:**
@@ -455,17 +457,28 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   bug, which `FuzzNodeID`'s re-encode cannot see); a 23-byte and a 25-byte copy, another magic and a
   bad checksum each fail to parse (catches a length or magic check dropped); a copy differing from
   the file's `node.id` refuses; a `node-id.tmp` beside a good copy is ignored (catches a leftover
-  taken as a copy); a directory lacking its copy, beside a journal the store records for this node and device, gets it from `WriteMissingNodeIDs`, and the write is logged, and a node that lost every copy starts once the host's file names its identity (R20's positive case; catches a write that never happens, which every row that asserts no copy cannot see); a replaced device's empty directory gets no copy from `WriteMissingNodeIDs`,
+  taken as a copy); a copy that cannot be read, and a FIFO at `node-id`, each refuse, naming
+  the directory, and neither hangs the start, the copy left as it was (catches an unread read
+  taken for missing, where only a missing copy counts, and a blocking open); a copy past the
+  layout, read no further than one byte past it, refuses without being read whole (catches a
+  read that trusts the file's own length); a symbolic link at `node-id`, and one at
+  `node-id.tmp`, are never followed and each refuses, naming the directory (catches a copy
+  read through a link, and a temporary created through one); a `node-id` that
+  appears between the read that found no copy and the publish survives: the write that lost
+  the publish re-reads it, takes it when it names the same identity and refuses
+  when it does not, and the copy is never replaced (catches a publish that replaces a copy,
+  and one that takes the loser's identity); a directory lacking its copy, beside a journal the store records for this node and device, gets it from `WriteMissingNodeIDs`, and the write is logged, and a node that lost every copy starts once the host's file names its identity (R20's positive case; catches a write that never happens, which every row that asserts no copy cannot see); a replaced device's empty directory gets no copy from `WriteMissingNodeIDs`,
   its re-initialisation's `Init` then succeeds, and `InitNodeID` then writes its copy (catches a
   copy written early, which makes `Init` refuse a directory holding an entry); every copy deleted
   and a new identity named in the host's file: `WriteMissingNodeIDs` writes no copy, since the
   store records no journal under the new identity (catches a write for a journal not recorded); a
   rerun of `InitNodeID` adopts the copy of a directory of this installation and takes none from
   another's (catches a rerun that adopts a foreign identity); a crash simulated through the seam
-  after the temporary file's write, after its sync, after the rename and after the directory sync
+  after the temporary file's write, after its sync, after the link and after the directory sync
   leaves no `node-id` (which `WriteMissingNodeIDs` writes again) or a whole one, and the leftover
-  `node-id.tmp` is overwritten by the next write (catches a missing sync or a rename before the
-  sync); `FuzzNodeID` seeded with those.
+  `node-id.tmp` is removed before the next write's own temporary is created (catches a missing
+  sync or a publish before the sync, and a leftover whose next write follows it);
+  `FuzzNodeID` seeded with those.
 
 ### T2.3 The refused v1 keys and the environment scan
 
