@@ -1105,3 +1105,10 @@
   issue: '#3379'
   message: 'stub: Hold'
 
+- test: TestSoakRemovalChurnDrains
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'The soak''s removal churn — truncates and deletes cut into the overwrite walk — wedges the journal at capacity: the sealed, index-empty segments the removals leave hold removal records that wait on another such segment''s durable retirement to drop, the pool stands no spare a repack pass could copy into, and every write answers the limits for good. Needs the retirement path to drop a removal record at its source''s own retirement, so the wait-for cycles the sealed residue forms break and the drain the leg asserts runs.'
+  issue: '#5110'
+  message: 'sealed segments hold no index bytes'
