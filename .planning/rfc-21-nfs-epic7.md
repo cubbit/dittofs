@@ -157,7 +157,7 @@ cited by number and title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Tier 1 rows run in `internal/identity`, over the real store, `identitytest`'s directory (kind 2, held to `directorysuite`), the test realm's tickets and the injected clock (kind 1). The filesystem's rows run in `internal/vfs`, over the real identity server. A store fault comes from `kvtest.FaultKV` and a directory fault from `identitytest`'s fault wrapper (kind 3). T7.6 runs on `nodetest`, with E3's scripted client. No other double is used |
 | rule 2, fuzz tests where relevant | T7.2, T7.3 | `FuzzOwnerString` covers the owner-string parser, seeded with names, decimals, other domains and malformed strings (R35), and T7.3 adds `S-…@domain` seeds. Nothing else here decodes a peer's bytes |
-| rule 3, observability follows RFC 25 and RFC 20 §10 | T7.1, T7.2, T7.3, T7.4 | Only identity's own series, RFC 18 §9.2's: `identity_unmapped_total` gains `owner`, `identity_resolution_refusals_total` gains `lookup_cap`, and `identity_directory_lookups_total` gains the questions `uid` and `gid`. No NFS code records anything. No label carries a uid, a name, an owner string or an address |
+| rule 3, observability follows RFC 25 and RFC 20 §10 | T7.1, T7.2, T7.3, T7.4 | Only identity's own series, RFC 18 §9.2's: `identity_unmapped_total` gains `owner`, which T7.3's `who` misses share with `sid` (R55), `identity_resolution_refusals_total` gains `lookup_cap`, and `identity_directory_lookups_total` gains the questions `uid` and `gid`. No NFS code records anything. No label carries a uid, a name, an owner string or an address |
 | rule 4, profiling: leaks, allocations and contention | T7.6 | T7.6 ends with RFC 20's leak check. The two cap tables are touched on a caller-cache miss only, on no hot path. T7.4's concurrent `-race` test is their check |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | A claimed caller is asserted where the filesystem's permission check reads it: a write refused, a `chown` not permitted, a file's group. It is never asserted on the `Caller` alone. Owner strings are asserted where `Spell` and `Find` answer the adapter, and T7.6 at the NFSv3 reply |
 | rule 6, known failures shrink | none | no row of `pynfs`, `cthon04` or `nfstest` is run |
@@ -165,7 +165,7 @@ cited by number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T7.4, T7.6 | T7.4's new suite rows also run against a real LDAP directory, in `integration/ad-dc`; T7.6 runs through real TCP on loopback |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | all | RFC 18's own `decision:` notes go at their sites: §3.2's default for `ManageGIDs`, §4.3's unmapped uid, §4.5's numeric owners and §5.5's mint from a claim, plus §7.3's `ponytail:` on the two caps. This epic's markers are listed in §4. `resolve.go`'s `ponytail:` refusing a claimed identity is withdrawn, and `names.go`'s `decision:` deferring two schemes is narrowed to `oidc` |
 | rule 10, a test must be able to fail | all | each test names the change that fails it; the table test of the five steps fails on any cell of the claimed branch |
-| rule 11, a symbol is exported only if an interface uses it | T7.2, T7.3, T7.4, T7.5 | Exported, each with what uses it: `identity.SchemeOwnerGroup` and its `vfs` alias, for E5; `identity.SchemeWho` and `SchemeWhoGroup` and their `vfs` aliases, for E6; `directory.ByUID` and `directory.ByGID`, for `internal/identity`; `ExportPolicy.ManageGIDs` and `SharePolicy.ManageGIDs`, for the store, the API and resolution; the API spec's `manage_gids`, for operators. Nothing else is exported |
+| rule 11, a symbol is exported only if an interface uses it | T7.2, T7.3, T7.4, T7.5 | Exported, each with what uses it: `identity.SchemeOwnerGroup` and its `vfs` alias, for E5; `identity.SchemeWho` and `SchemeWhoGroup` and their `vfs` aliases, for E6; `directory.ByUID` and `directory.ByGID`, for `internal/identity`; `ExportPolicy.ManageGIDs` and `SharePolicy.ManageGIDs`, for the store, the API and resolution; the API spec's `manage_gids`, for operators; `identity.Settings.NFS4Domain` (`nfs4_domain`), for the settings table that `Section` declares, and so for the settings API and operators. Nothing else is exported |
 | rule 12, each subtask creates only what it declares | all | the directory's two questions land in T7.4 with the mints that consume them, and the caps with the lookups they bound |
 | rule 13, translate, never decide | T7.2 | identity decides every mapping; the adapter only picks the scheme from the proof it reports (D1) |
 | rule 14, nothing deferred is lost | all | every half left out is named, with its owner, in §1.2 |
@@ -239,6 +239,7 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
 | R36 | An owner string no principal holds is counted `identity_unmapped_total{scheme="owner"}`, in either owner scheme | MUST | §9.2 | T7.2 |
 | R51 | The `who` schemes spell a principal as the owner schemes do, `name@domain` or the decimal number of one minted without a name; a principal that has a SID and no owner string by the SID's string form at the domain, `S-…@domain`; and a deleted principal as the null SID, `S-1-0-0@domain` | MUST | RFC 21 §11.3 (`who`); RFC 19 §5.2; §4.5 | T7.3 |
 | R52 | On a find, a `who` of the form `S-…@domain` with a well-formed SID resolves by that SID; any other through §4.5's rules, in the user or group namespace the scheme names | MUST | RFC 21 §11.3 (`who`); §4.5 | T7.3 |
+| R55 | A `who` no principal holds is counted as RFC 18 §9.2's labels allow: `identity_unmapped_total{scheme="sid"}` for a well-formed `S-…@domain`, `scheme="owner"` for any other | MUST | §9.2; RFC 21 §11.3 (`who`) | T7.3 |
 
 **Conformance rows**
 
@@ -393,7 +394,7 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
   - Tier 1 rows, and each row's identity half, run in `internal/identity`.
   - A row's file-operation half runs in `internal/vfs`, with the filesystem built over the real
     identity server, as its tests already do. A new claimed helper sits beside the proven `as`,
-    which stays as it is.
+    which keeps its behaviour; only its comment saying claims are refused is corrected (T7.1).
   - T7.6 covers only the Tier 2 rows where the adapter's address, status or credential plumbing can
     fail on its own (R50).
   - The Kerberos-over-NFS and NFSv4 halves are E13's and E16's (§1.2).
@@ -426,7 +427,7 @@ internal/identity/
   names.go                 T7.2  deferred() serves them; identity_unmapped_total's owner label
   settings.go, server.go   T7.2  identity.nfs4_domain, its check, its default derived at Apply
   owner_test.go            T7.2  spellings, finds, the domain's default; FuzzOwnerString
-  names_test.go            T7.2  TestDeferredSchemes's unknown scheme moved past SchemeOwnerGroup
+  names_test.go            T7.2  TestDeferredSchemes's unknown scheme moved past SchemeOwnerGroup; T7.3 past SchemeWhoGroup
   claimcap.go              T7.4  the per-address lookup cap over the throttle's table, the per-node mint cap
   dircache.go              T7.4  the uid and gid question labels
   claimed_dir_test.go      T7.4  lookup cap, AUTH_SYS from the directory, mint from a claim, directory faults
@@ -434,7 +435,7 @@ internal/identity/directory/
   client.go, filter.go     T7.4  the ByUID and ByGID keys, filtering on uidNumber and gidNumber
 pkg/identity/
   names.go                 T7.2  SchemeOwnerGroup (D2); T7.3 SchemeWho, SchemeWhoGroup (D13)
-  identity_test.go         T7.2  the Stored table gains it
+  identity_test.go         T7.2  the Stored table gains SchemeOwnerGroup; T7.3 SchemeWho, SchemeWhoGroup
   identitytest/directorysuite.go, filter.go  T7.4  exact numeric queries, held to the real directory
 pkg/vfs/types.go           T7.2  the SchemeOwnerGroup alias; T7.3 the SchemeWho and SchemeWhoGroup aliases
 pkg/metadata/entity/
@@ -445,6 +446,7 @@ pkg/metadata/kvstore/
 pkg/node/apiv1/exportpolicy.go, internal/node/api/res_export_policies.go  T7.5  manage_gids
 internal/vfs/
   claimed_test.go          T7.1  the rows' file-operation halves; T7.4 and T7.5 add theirs
+  shares_test.go           T7.1  the claimed helper beside as; as's comment on claims corrected
 internal/node/
   nfs_identity_test.go     T7.6  the AUTH_SYS rows through NFSv3 on nodetest
 docs/guide/identity.md     T7.2  identity.nfs4_domain
@@ -595,14 +597,15 @@ docs/internals/rfcs/
 **Subtask T7.3 estimate: 1.5 man-days.**
 
 - **Track:** B. **Depends on:** T7.2.
-- **Covers:** R34, R35, R51, R52.
+- **Covers:** R34, R35, R51, R52, R55.
 - **Deliverables:**
   - `pkg/identity`'s `SchemeWho` and `SchemeWhoGroup`, appended after `SchemeOwnerGroup`, and their
     aliases in `pkg/vfs/types.go`; the `Stored` table and `TestDeferredSchemes` follow.
   - `owner.go`: `Spell` of either `who` scheme, first as the owner scheme, then by the principal's
     SID at the domain, then the null SID for a principal no record holds; `Find` of either, the owner
     schemes' rules for a name or a decimal, and a well-formed `S-…@domain` through the SID index, in
-    users or groups as the scheme says (D13).
+    users or groups as the scheme says (D13). A miss is counted under `sid` for an `S-…@domain` and
+    under `owner` otherwise (R55).
   - `FuzzOwnerString`'s parser and seeds extended to `S-…@domain`.
   - The RFC 18 §2.2, §4.1 and §4.5 text for the two schemes, in the RFC pull request (§9, point 2).
 
@@ -617,6 +620,8 @@ docs/internals/rfcs/
   - In `internal/identity`, at `Spell` and `Find`, one table for each, beside T7.2's (catches a
     principal with a SID left unspelled, a deleted principal answered an error, a SID resolved in
     the wrong namespace; R51, R52).
+  - The counter read after a miss of an unknown name and of an unknown SID in each `who` scheme
+    (catches a `who` miss not counted, or counted under the wrong label, R55).
   - `kvtest.FaultKV` failing the SID index (catches an outage answered `ErrUnknownPrincipal`, R34).
   - `FuzzOwnerString` with the new seeds (R35).
   - No double but `kvtest.FaultKV` (kind 3).
@@ -672,7 +677,10 @@ docs/internals/rfcs/
     - "lookup cap", counting queries through `identity_directory_lookups_total{question="uid"}`
       (R44, R24);
     - "`AUTH_SYS` from the directory" (R45);
-    - "mint from a claim, guarded": the 500 uids sent from 50 addresses by concurrent goroutines
+    - "mint from a claim, guarded": the 10^4 uids the directory lacks sent from 100 addresses in
+      distinct throttle units, 100 each within the minute, so no unit passes its lookup cap and each
+      call acts as anonymous rather than being refused (a single address would be refused from the
+      101st, R19); then the 500 uids sent from 50 addresses by concurrent goroutines
       under `-race`, the mint count read from `identity_mints_total{kind="user"}`; then rename,
       disable and delete, each past the TTL (R46);
     - a gid the directory holds (catches a gid never asked, R16);
@@ -821,7 +829,7 @@ RFC text of T7.2, T7.3 and T7.5 goes in one RFC pull request on `develop` (§9, 
      both at S2, or that track B takes T7.1 before E4's loopback rows and track C takes T7.2 before
      E5's attributes, rather than running E4 first in full as the RFC 21 implementation plan's D12
      orders.
-   - Pending the user's answer. The epic's figure, 6 subtasks and 18 man-days with T7.3, also
+   - Pending the user's answer. The epic's figure, 6 subtasks and 19 man-days with T7.3, also
      differs from the plan's 5 and 16; the plan is changed only if the user asks.
 2. **One RFC pull request on `develop`.** It carries:
    - D2's `SchemeOwnerGroup`, in RFC 18 §2.2 and §4.1;
