@@ -30,11 +30,12 @@ func seeds(f *testing.F, add func(b []byte)) {
 }
 
 // FuzzCompound holds the COMPOUND row's decoder to the header's parse, an
-// independent decoder: for any call wire.ParseCall accepts as a COMPOUND, the
-// decoder takes no more than its arguments and, where it decodes, reads the
-// header's minor version, the head it echoes carries wire.Call.Tag's tag and
-// its count is the word after the minor version; ILLEGAL's decoder takes exactly the bytes after it (RFC 20
-// section 5.4, RFC 21 section 11).
+// independent decoder, for any call wire.ParseCall accepts as a COMPOUND. The
+// decoder takes no more than the call's arguments. Where it decodes, it reads
+// the header's minor version, and its count is the word after that minor
+// version. The head it echoes carries wire.Call.Tag's tag. ILLEGAL's decoder
+// takes exactly the bytes the COMPOUND row leaves (RFC 20 section 5.4, RFC 21
+// section 11).
 func FuzzCompound(f *testing.F) {
 	seeds(f, func(b []byte) { f.Add(b) })
 	illegal := Table(&Handlers{}).Ops[wire.ProcCompound].Members.Ops[opIllegal]
@@ -68,10 +69,10 @@ func FuzzCompound(f *testing.F) {
 			t.Fatalf("the COMPOUND row reads a count of %d, the word after the minor version is %d", inv.Count, want)
 		}
 		out := &resources.Buf{}
-		if err := inv.EncodeHead(out, 10044, 3, core.Version(minor)); err != nil {
+		if err := inv.EncodeHead(out, core.Status(wire.NFS4ErrOpIllegal), 3, core.Version(minor)); err != nil {
 			t.Fatal(err)
 		}
-		if want := wire.AppendCompoundStatus(nil, 10044, tag, 3); !bytes.Equal(out.B, want) {
+		if want := wire.AppendCompoundStatus(nil, wire.NFS4ErrOpIllegal, tag, 3); !bytes.Equal(out.B, want) {
 			t.Fatalf("the head echoes %x, the header's tag gives %x", out.B, want)
 		}
 		rest := args[n:]
