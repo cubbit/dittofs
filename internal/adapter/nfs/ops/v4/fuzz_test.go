@@ -31,9 +31,9 @@ func seeds(f *testing.F, add func(b []byte)) {
 
 // FuzzCompound holds the COMPOUND row's decoder to the header's parse, an
 // independent decoder: for any call wire.ParseCall accepts as a COMPOUND, the
-// decoder takes no more than its arguments and, where it decodes, the head it
-// echoes carries wire.Call.Tag's tag and its count is the word after the
-// minor version; ILLEGAL's decoder takes exactly the bytes after it (RFC 20
+// decoder takes no more than its arguments and, where it decodes, reads the
+// header's minor version, the head it echoes carries wire.Call.Tag's tag and
+// its count is the word after the minor version; ILLEGAL's decoder takes exactly the bytes after it (RFC 20
 // section 5.4, RFC 21 section 11).
 func FuzzCompound(f *testing.F) {
 	seeds(f, func(b []byte) { f.Add(b) })
@@ -51,6 +51,10 @@ func FuzzCompound(f *testing.F) {
 		inv, n, err := decodeCompound(args, core.Version(minor))
 		if err != nil {
 			return
+		}
+		var a compoundArgs
+		if _, err := a.DecodeWire(args, core.Version(minor)); err != nil || int(a.Minor) != minor {
+			t.Fatalf("the COMPOUND row's arguments read a minor version of %d (%v), the header's is %d", a.Minor, err, minor)
 		}
 		if n < 0 || n > len(args) {
 			t.Fatalf("the COMPOUND row took %d bytes of %d", n, len(args))
@@ -87,7 +91,10 @@ type codec interface {
 // first picks among every struct the generator wrote a codec for, at the
 // minor version its second names: what decodes takes no more than the bytes,
 // and re-encodes to bytes that decode, whole, to the same value (RFC 20
-// section 5.4). Seeded with every golden file for every struct.
+// section 5.4). Seeded with every golden file for every struct. A round trip
+// alone passes where encoder and decoder share a bug: the generator's runtime
+// is held to a second decoder by wire's own FuzzCodec, and these structs'
+// bytes by the golden files the loopback tests compare.
 func FuzzCodec(f *testing.F) {
 	kinds := len(codecTypes())
 	seeds(f, func(b []byte) {

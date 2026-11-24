@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"context"
+	"encoding/binary"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,9 +14,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter"
 )
 
-// goldenCalls is every golden file that holds one whole RPC call, its record
-// mark stripped: a reply, a codec vector or a record with its mark is no call
-// and reaches no row. File names are not read, so a capture counts the moment
+// goldenCalls is every golden file that holds one whole RPC call, past a
+// record mark that frames the whole file: a reply or a codec vector is no
+// call and reaches no row. File names are not read, so a capture counts the moment
 // it is cut.
 func goldenCalls(t *testing.T) [][]byte {
 	t.Helper()
@@ -26,6 +27,11 @@ func goldenCalls(t *testing.T) [][]byte {
 	var calls [][]byte
 	for _, f := range files {
 		b := golden(t, strings.TrimSuffix(filepath.Base(f), ".hex"))
+		// A capture cut with its record mark counts too: a last fragment's
+		// mark whose length is the rest of the file is stripped.
+		if len(b) >= 4 && b[0]&0x80 != 0 && int(binary.BigEndian.Uint32(b)&^lastFragment) == len(b)-4 {
+			b = b[4:]
+		}
 		if c, err := wire.ParseCall(b); err == nil && c.RPCVersion() == 2 {
 			calls = append(calls, b)
 		}
@@ -118,11 +124,15 @@ func TestEveryRowHasAVector(t *testing.T) {
 }
 
 // The check names a row no golden call reaches, a NULL on NFSv3 here, and
-// only that row: a check that passed vacuously would pass the tree too.
+// only that row: GETATTR beside it is reached by nfs-v3-getattr-call, a
+// golden file that keeps its record mark. A check that passed vacuously, or
+// skipped a file cut with its mark, would pass the tree too.
 func TestTheVectorCheckNamesAnUnreachedRow(t *testing.T) {
 	ts := tables(adapter.Deps{})
 	ts.V3 = core.NewOpTable(ts.V3.Errors, false,
 		core.Row[void, void](0, "null", core.NeedsNothing,
+			func(context.Context, *core.Request, void) (void, error) { return void{}, nil }),
+		core.Row[void, void](1, "getattr", core.NeedsNothing,
 			func(context.Context, *core.Request, void) (void, error) { return void{}, nil }))
 	ts.V3.Protocol = "nfs3"
 	if got := unreached(ts, goldenCalls(t)); !slices.Equal(got, []string{"nfs3 null"}) {
