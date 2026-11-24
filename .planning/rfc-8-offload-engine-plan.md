@@ -305,7 +305,8 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
    applies to, test packages included. Each entry is flipped with its first consumer (rule 12): epic 15
    the carver and RFC 3's syncer with its in-memory store and fault wrapper for `offload/`'s tests,
    which import them directly (rule 1), and the carver for `enginewire`, which builds it for the
-   fixture; epic 16 the syncer and its in-memory store for `enginewire`; epic 21 the remote tier, its
+   fixture; epic 16 the syncer and its in-memory store for `enginewire` and for its external tests,
+   where the RFC 3 plan's B5 runs behind `syncer_bench`; epic 21 the remote tier, its
    codec and the transforms.
 8. **Real dependencies for properties of those dependencies**, as `CLAUDE.md`'s "Writing tests" says.
    Here: the real journal on a real directory with its crash seam, for durability, recovery and the
@@ -901,11 +902,13 @@ hold.
 §2.6's build and stop order says. Its end is S7. **Owns:** RFC 8 §2.1's root obligations (the store
 adapter, D5), §2.6's order; RFC 23 §2.1 and §2.2 for the syncer and the remote stores; RFC 13
 Appendix B for this part's keys, the components' settings sections and the remote store's keys, which
-the RFC 4 plan moves into `pkg/remote`; RFC 25 §7 for registering its alert rules and every
-component's; RFC 24 §6.2's CPU token; amended RFC 0 §1.2's import edges. **Done when:** S7: the store
+the RFC 4 plan moves into `pkg/remote`; RFC 25 §7 for writing and registering its alert rules and
+every component's; RFC 24 §6.2's CPU token; amended RFC 0 §1.2's import edges. **Done when:** S7: the store
 adapter passes `syncertest`'s conformance suite in `integration`, and `syncertest`'s real-backend
 suite (RFC 3 §8.1: the Group A and lifecycle checks) passes against the adapter over LocalStack
-(`LOCALSTACK_HTTPS_ENDPOINT`) behind a fault proxy, in `integration`; RFC 8 E5 holds through the node; the
+(`LOCALSTACK_HTTPS_ENDPOINT`) behind a fault proxy, in `integration`, given the fault proxy's control
+and the adapter's checksum modes as the RFC 3 plan's D2 has the suite take them, a row the adapter
+cannot give skipped by name; RFC 8 E5 holds through the node; the
 engine's read and write tests run with and without transforms (the RFC 4 plan's row); the RFC 21 plan's
 "§11.5 full journal with the store unreachable" and the RFC 22 plan's "§16.5 remote outage on reads"
 rows pass on a composed node in `e2e`; the journal plan's system scenarios left to this part run in
@@ -931,7 +934,8 @@ it after, as RFC 8 §2.6 orders.
   `internal/node/stats.go`), each flow id in `syncer.Stats` mapped to the share that opened it (epic
   16 opens one per share); `pkg/syncer/series` exports only the summed gauges.
 - `Deps.Carver`, `Syncer`, `Refs`, `Watchdog` from the root; `*Engine` and the syncer's conditions added to the health evaluator; the node's stats fetch (`internal/node/stats.go`, `engine.Stats` only today) widened to the syncer's `Stats`.
-- Each component's collectors and alert rules registered in `internal/node`, with RFC 8 §11.1's
+- Each component's collectors registered, and every component's alert rules written and registered,
+  in `internal/node`, with RFC 8 §11.1's
   offload conditions and `offload_age_exceeded`, and RFC 3's `store_put_unhealthy` and
   `store_get_unhealthy` (RFC 25 §7).
 - RFC 13 Appendix B's keys this part reads and the remote store's keys from `pkg/remote`, reloadable
@@ -945,7 +949,9 @@ it after, as RFC 8 §2.6 orders.
 - RFC 24 §6.2's CPU token built in the node: a FIFO weighted semaphore of three quarters of the
   runtime's parallelism read at start, at least one, with §6.2's `decision:` and two `ponytail:`s; the
   root passes it to the RFC 4 codec, which takes one token to encode or hash each chunk on the
-  background path and returns it before its next network wait; a demand read's decode takes none.
+  background path and returns it before its next network wait. The codec's decoder takes the same
+  optional token (the RFC 4 plan's D3): a background decode passes it, and a demand read's decode
+  passes none.
   Tested on its own (arrival order, the count, a waiter holding nothing else) and through the codec
   with a count of one.
 - The material provider's health source (`material_unavailable`) registered with the evaluator;
@@ -974,8 +980,10 @@ proposed targets: the first real-service run does (§6.1).
 **Expected content:**
 - The burn-down, each row green over the real journal, its entry removed.
 - The soak in the existing `engine-soak` suite (`test/engine/soak-known.yaml`), extended with remote
-  faults at every pipeline step and partitions to the store and metadata; the RFC 3 and RFC 4 plans run
-  no soak of their own.
+  faults at every pipeline step and partitions to the store and metadata; and a nightly option of it
+  against LocalStack that runs for hours with outages on a cycle, as RFC 3 §8.1 asks, asserting that
+  tasks, connections, `inflight_bytes` and queue depth return to idle after each outage. The RFC 3 and
+  RFC 4 plans run no soak of their own.
 - B1 to B4, B6 and B8 in the existing `engine-bench` manual cell against LocalStack, clocks stopped at
   `WaitOffloaded`, stage occupancy reported; baselines taken with `-count=10` and compared with
   `benchstat` on the same host.
@@ -1010,9 +1018,8 @@ proposed targets: the first real-service run does (§6.1).
    on one recorded baseline to compare against (§6.1).
 5. **The read-only journal's reopen** stays unowned in the first part's ledger (RFC 8 E42). It runs
    this part's reseed when it lands; nothing here schedules the reopen itself.
-6. **The form of an alert rule is open.** Epic 21 registers every component's alert rules in
-   `internal/node`, and each component plan writes its own in the form epic 21 registers; no RFC 25
-   plan fixes that form yet, so the first component to write a rule and epic 21 agree it.
+6. **The form of an alert rule is open.** Epic 21 writes and registers every component's alert rules
+   in `internal/node`; no RFC 25 plan fixes their form yet, so epic 21 settles it with its first rule.
 
 ### 6.1 Deferral ledger
 
