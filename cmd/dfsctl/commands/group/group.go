@@ -230,11 +230,17 @@ func newMemberCmd(env cmdutil.Env, verb, short string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			members := c.Members(gid)
+			// A membership's tag is fixed, so a 412 says only that it exists
+			// already, or that it does not.
+			members, refused := c.Members(gid), "already a member of"
 			if verb == "add-member" {
 				_, err = members.Put(cmd.Context(), uid, struct{}{}, "*")
 			} else {
 				_, err = members.Delete(cmd.Context(), uid, memberTag)
+				refused = "not a member of"
+			}
+			if cmdutil.IsPreconditionFailed(err) {
+				return fmt.Errorf("%s: user %q is %s group %q", cmd.CommandPath(), args[1], refused, args[0])
 			}
 			if err != nil {
 				return fmt.Errorf("%s: user %q in group %q: %w", cmd.CommandPath(), args[1], args[0], err)

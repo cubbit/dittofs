@@ -162,7 +162,13 @@ func newRevokeCmd(env cmdutil.Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := tokens.Delete(cmd.Context(), args[0], tokenTag); err != nil {
+			_, err = tokens.Delete(cmd.Context(), args[0], tokenTag)
+			// A token's tag is fixed, so a 412 says only that the account
+			// holds no token of that ID.
+			if cmdutil.IsPreconditionFailed(err) {
+				return fmt.Errorf("%s: no API token %s for this account", cmd.CommandPath(), args[0])
+			}
+			if err != nil {
 				return fmt.Errorf("%s: API token %s: %w", cmd.CommandPath(), args[0], err)
 			}
 			return nil

@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/cubbit/dittofs/internal/cli/prompt"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -72,6 +74,13 @@ func toYAML(v any) ([]byte, error) {
 	var out bytes.Buffer
 	err = output.PrintYAML(&out, tree)
 	return out.Bytes(), err
+}
+
+// IsPreconditionFailed reports whether the server refused err 412: the
+// record's tag was not the one the write named, or no record holds it.
+func IsPreconditionFailed(err error) bool {
+	p := (*apiv1.Problem)(nil)
+	return errors.As(err, &p) && p.Status == http.StatusPreconditionFailed
 }
 
 // BoolToYesNo converts a boolean to "yes" or "no" string.
