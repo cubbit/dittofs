@@ -1001,9 +1001,10 @@ RFC 21 §9.3's subset of NFSv4.2: holes, server-side copy and clone, extended at
 
 **Owns:** RFC 21 §9.3, §9.4, Appendix C; the hold budget per session.
 
-**Done when:** RFC 21 §13's "§9.3 copy and clone" single-node steps, "§9.3 hold budget *(1 node)*",
-"§9.4 copies are synchronous", "§2.3 a compound's reply under the record cap"'s NFSv4.2 `READ_PLUS`
-step; N22. The held clone wait's rows need RFC 17's plan's piece 13 on the branch (§6.2, point 5).
+**Done when:** RFC 21 §13's "§9.3 copy and clone" single-node steps that need no running clone,
+"§9.3 hold budget *(1 node)*"'s adapter half with the clone's wait staged, "§9.4 copies are
+synchronous", "§2.3 a compound's reply under the record cap"'s NFSv4.2 `READ_PLUS` step; N22's
+translations. The steps that need a clone the engine runs, and N22's held I/O, are E16's.
 
 **Expected content:**
 - `DEALLOCATE`, `SEEK`, `READ_PLUS` with its `Bound` hook.
@@ -1097,7 +1098,9 @@ close-to-open and WCC *(1 node)*", "§5.4 single-node restart", "§5.2, §5.4 lo
 node)*", "§5.4 NFSv4.0 signal" on a restart of the one node, "§5.1 revoke across a restart *(1
 node)*"'s NFSv4 steps, "§6.1 NLM grace" and "§6"'s
 `SM_NOTIFY` step on a restart of the one node, "§5.3 lock recall", "§5.3 handle-cached deny mode",
-"§9.3 NFSv4.2"'s non-xfstests steps; after E15, `pynfs`, `cthon04` and `nfstest` at their expected
+"§9.3 NFSv4.2"'s non-xfstests steps, "§9.3 copy and clone"'s steps that need a clone the engine runs
+and its Linux `cp` step, "§9.3 hold budget *(1 node)*" on a running `CLONE`, N22's held I/O (the held
+clone wait needs RFC 17's plan's piece 13 on the branch, §6.2, point 5); after E15, `pynfs`, `cthon04` and `nfstest` at their expected
 failures, the pynfs steps of "§3.1, §3.2 sessions *(1 node)*", "§3.2 reply cache", "§4.2 v4.0
 owners *(1 node)*" and "§5.2 stateids *(1 node)*" among them.
 
@@ -1343,7 +1346,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | §11.5 (errors) | E3 (`core`'s refusals, status layers), each handler epic (its rows), E10 (drain), E16 (totality); D4 in E4 |
 | §11.6 (testing) | golden vectors: E3, E4, E5; fuzz targets: E6, E8, E9, E11; drain test: E10; total mapping and cross-protocol: E16 |
 | §11.7, §14 (monitoring, observability) | rule 3; the recorder of §14's series and §11.7's three: §6.1, point 4 |
-| §12 (invariants) | N1: E3, E11; N2: E8 (one node); N3: E8, E13; N4: E9; N5: E8; N6: E10 (one node); N7: E4, E5; N8: E4, E5; N9: E5; N10: rule 13, E8; N11: E8; N12: E9; N13: E8, E16; N14: E10, E16; N15: E11; N16: E5, E6; N17: E4, E16; N18: E8; N19: E4, E5; N20: E8; N21: E11; N22: E12; N23: E4, E16; N24: E9, E10, E16; N25: §6.6 (RFC 27); N26: E3, every translation; N27: E8 |
+| §12 (invariants) | N1: E3, E11; N2: E8 (one node); N3: E8, E13; N4: E9; N5: E8; N6: E10 (one node); N7: E4, E5; N8: E4, E5; N9: E5; N10: rule 13, E8; N11: E8; N12: E9; N13: E8, E16; N14: E10, E16; N15: E11; N16: E5, E6; N17: E4, E16; N18: E8; N19: E4, E5; N20: E8; N21: E11; N22: E12, E16; N23: E4, E16; N24: E9, E10, E16; N25: §6.6 (RFC 27); N26: E3, every translation; N27: E8 |
 | §13 (conformance) | each row in the epic whose **Done when** names it; cluster steps: §6.6 |
 | §15 (open questions) | q5: D10 (§6.1, point 6); the others not planned |
 | Appendix A | non-normative |
