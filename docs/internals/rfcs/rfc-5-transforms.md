@@ -415,7 +415,7 @@ configuration never share a data key or a chunk-ID key, so a
 lookup without the namespace could return another tenant's key. Removing a transform from the chain therefore stops it for new
 writes but keeps its material, and bodies written under it stay readable.
 Removing material is a separate act, allowed only once the census shows nothing
-uses it and no encode in flight is using it ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
+uses it and no open pin ([§3.1](#3.1%20Interfaces)) holds it ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
 
 **Material carries a fingerprint.** Each piece of material is stored with its ID
 and a **fingerprint** of its content, `HMAC-SHA256(material, "dittofs key check
@@ -743,8 +743,12 @@ from the provider, for an ID the census does list, is reported as
 `ErrMaterialUnavailable` with a configuration health condition
 ([§2.7](#2.7%20Failures)), never as `ErrMalformed`.
 
-Two bounds size everything downstream. `Chain.MaxEncodedLen` of the chunk
-maximum bounds what this chain writes: the largest encoded block on a put. A
+Two bounds size everything downstream. `Attempt.MaxEncodedLen` of the chunk
+maximum bounds what one pinned block writes, and a block keeps encoding under
+the chain it pinned after the configuration changes, so the largest encoded
+block on a put is the maximum of `Attempt.MaxEncodedLen` over the open
+attempts, never the current chain's bound alone. The put side sizes by that
+maximum ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). A
 read may meet a body any earlier chain wrote, so the read side — the syncer's
 memory bound ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), the block header's bound ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) and the
 per-body length check before allocating — uses `MaxDecodeLen`, the maximum over
