@@ -1047,7 +1047,8 @@ steps, "§6.3 `MNT` on a Kerberos-only share *(1 node)*"'s `sec=krb5` step (afte
 **Epic 14 estimate: 4 subtasks, 8.25 man-days.**
 
 RFC 20 §8's differential runs for NFS, over the tools `test/pcap-corpus/` already has: `pcap-diff.sh`
-and `normalize.py`, which already drop stateids, verifiers, client IDs and sequence IDs. The DittoFS
+and `normalize.py`, which drop stateids, verifiers, client IDs and sequence IDs; this epic keeps a
+stateid's `seqid` and the special stateids, and labels NFS's statuses (the epic document's D3). The DittoFS
 side waits for S5.
 
 **Owns:** RFC 20 §8 and Appendix C for NFS; RFC 21 §13's wire-test paragraph (the NFS divergence
