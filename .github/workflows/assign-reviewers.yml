@@ -49,7 +49,7 @@ jobs:
           # touches the journal (a journal test fix on top of a harness PR).
           # Withdraw this if a stacked PR is ever where a journal change itself
           # needs a reviewer other than Lucian.
-          known="didimelli llucian-iws rif viquitorreis marmos91 simonebaracchi"
+          known="didimelli llucian-iws rif viquitorreis marmos91 simonebaracchi AntonioBusillo"
           lower_pr=$(gh api "repos/$REPO/pulls?head=$OWNER:$BASE&state=open" --jq '.[0].number // empty')
           if [ -n "$lower_pr" ]; then
             inherited=$( {
@@ -65,12 +65,13 @@ jobs:
           fi
 
           case "$AUTHOR" in
-            didimelli)      pool="rif viquitorreis marmos91" ;;
-            llucian-iws)    pool="rif viquitorreis simonebaracchi" ;;
-            rif)            pool="llucian-iws viquitorreis marmos91 didimelli" ;;
-            viquitorreis)   pool="rif simonebaracchi llucian-iws" ;;
-            marmos91)       pool="simonebaracchi llucian-iws didimelli" ;;
-            simonebaracchi) pool="marmos91 llucian-iws viquitorreis" ;;
+            didimelli)      pool="rif viquitorreis marmos91 AntonioBusillo" ;;
+            llucian-iws)    pool="rif viquitorreis simonebaracchi AntonioBusillo" ;;
+            rif)            pool="llucian-iws viquitorreis marmos91 didimelli AntonioBusillo" ;;
+            viquitorreis)   pool="rif simonebaracchi llucian-iws AntonioBusillo" ;;
+            marmos91)       pool="simonebaracchi llucian-iws didimelli AntonioBusillo" ;;
+            simonebaracchi) pool="marmos91 llucian-iws viquitorreis AntonioBusillo" ;;
+            AntonioBusillo) pool="marmos91 rif simonebaracchi" ;;
           esac
 
           # Lucian does not review Radu's journal changes.
