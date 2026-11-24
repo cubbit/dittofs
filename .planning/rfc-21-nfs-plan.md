@@ -1302,6 +1302,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | The `grace` and `nfs_clients` API endpoints (RFC 20's plan's ledger, §6.4) | RFC 23 defines no such endpoint, and RFC 23's plan (#4050) builds none | unowned | RFC 23 adds an endpoint over RFC 14's grace and client records |
 | `CB_NOTIFY_LOCK` (D9) | RFC 21 §5.5 makes it optional; the poll decides | unowned | a supported client shown to wait on it rather than poll |
 | A batched `Spell` (§4.3) | one call per owner and group is enough until measured | RFC 17 | a benchmark shows `READDIRPLUS` bound by `Spell` calls |
+| RFC 18 §10's "`AUTH_SYS` from the directory", "mint from a claim, guarded" and "`ManageGIDs`" over NFSv4 (E7, its §9, point 9) | E7's T7.6 runs them over NFSv3 on the composed node and resolution is the same for every NFS version, so E16 declines a second run over NFSv4, and E7 cannot run one without waiting for E5's compound and E8's sessions | unowned | an NFSv4 path that resolves or answers a claimed caller apart from NFSv3's |
 | A request ID from NFS's retry identity, `vfs.WithRequestID` (RFC 21 §11.2) | its reader is the gateway, which RFC 20's plan's ledger gives the cluster stage | the cluster stage | the gateway is built |
 | The user guide's NFS pages (E15) | they describe v1 until the adapter serves through `dfs` | cutover (stage 7), as RFC 20's plan's ledger has the docs | stage 7 |
 

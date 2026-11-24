@@ -38,8 +38,8 @@ in-process node.
   refused `ErrAccess` (§9, point 1). It resolves the `Claimed` `Identity` E3's T3.1 builds.
 - E5, whose T5.4 and T5.5 spell and parse `owner` and `owner_group` through T7.2's schemes, and
   E6, whose T6.2 spells and parses `who` through T7.3's.
-- E16, which runs the Kerberos and NFSv4 halves of the rows this epic runs over `AUTH_SYS`: T16.3
-  (E16's R23 and R24) and T16.8 (E16's R25).
+- E16, which runs the Kerberos and NFSv4 halves of the rows this epic runs over `AUTH_SYS`, but for
+  the three §1.2 names: T16.3 (E16's R23 and R24) and T16.8 (E16's R25).
 
 ---
 
@@ -125,7 +125,12 @@ deferred, in one RFC pull request on `develop`.
 
   This epic runs their Kerberos side against the filesystem, with a ticket `SignIn` accepts.
 - **Tier 2 rows over NFSv4, and "error is not "unknown"" on the composed node.** The latter needs a
-  store fault below a running node. Both are E16's T16.3 (E16's R23 and R24).
+  store fault below a running node. Both are E16's T16.3 (E16's R23 and R24), but for three rows'
+  NFSv4 halves: "`AUTH_SYS` from the directory", "mint from a claim, guarded" and "`ManageGIDs`".
+  E16 declines them (its §1.2), since T7.6 runs them over NFSv3 and resolution is the same for
+  every NFS version; this epic cannot run them over NFSv4 without T7.6 waiting for E5's compound
+  and E8's sessions. They are a row of the RFC 21 implementation plan's deferral ledger (§6.6),
+  owned `unowned`, which this document's pull request adds (§9, point 9).
 - **Other rows' NFS steps.** "no file spelling"'s `SP4_MACH_CRED` step is E8's T8.9 (E8's R55), and
   its Kerberos machine-principal step E16's T16.3 (E16's R66). "expiry" and "disable takes effect"'s GSS half
   are E13's T13.8.
@@ -838,7 +843,8 @@ docs/internals/rfcs/
   - The run ends with the leak check, `adaptertest.CheckLeaks`.
   - No double: the node is real, and the directory is the in-memory one its suite holds (kind 2).
 - **Rules:** rule 14: the rows' Kerberos and NFSv4 halves, and "error is not "unknown"" on the node,
-  are E16's T16.3 and T16.8 (§1.2).
+  are E16's T16.3 and T16.8, but for three rows' NFSv4 halves, which are the plan's deferral
+  ledger's (§1.2).
 
 ## 7. Order of work
 
@@ -957,3 +963,11 @@ RFC text of T7.2, T7.3 and T7.5 goes in one RFC pull request on `develop` (§9, 
    `decision:` marker. (b), recommended: on a `root` share, gid 0 is also dropped from a claimed
    caller's groups, as Linux's `root_squash` squashes it, with the §6.2 amendment in the RFC pull
    request. Either is a condition in T7.1, within its estimate.
+9. **Three rows' NFSv4 halves have no owner.** E16's document declines the NFSv4 halves of
+   "`AUTH_SYS` from the directory", "mint from a claim, guarded" and "`ManageGIDs`": T7.6 runs
+   them over NFSv3 on the composed node, E3's T3.1 decodes the credential the same way for every
+   NFS version, and NFSv4's statuses for their answers are E5's table rows. Running them here over
+   NFSv4 would make T7.6, which ends this epic, wait for E5's compound and E8's sessions, for a run
+   that catches nothing the NFSv3 one misses. So this document's pull request adds a row to the
+   RFC 21 implementation plan's §6.6, owned `unowned`, brought back by an NFSv4 path that resolves
+   or answers a claimed caller apart from NFSv3's.
