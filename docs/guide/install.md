@@ -335,8 +335,9 @@ The image is published for `linux/amd64` and `linux/arm64` under the tag `<relea
 the same ports, volumes and health check as the default image, plus one volume:
 
 - `/etc/foundationdb`: put the cluster file `fdb.cluster` here, and name it as
-  `metadata.foundationdb.cluster_file`. The directory is writable by `dfs` because the client
-  rewrites the cluster file when the cluster's coordinators change, so do not mount it read-only.
+  `metadata.foundationdb.cluster_file`. The client rewrites the cluster file when the cluster's
+  coordinators change, so mount a directory there that user `65532` can write, not the file
+  alone and not read-only.
 
 ### The tarball
 
@@ -344,7 +345,8 @@ the same ports, volumes and health check as the default image, plus one volume:
 are on the release page, listed in the release's `checksums.txt` like every other asset. Each holds
 the `dfs` binary, the README, the LICENSE and a `FOUNDATIONDB.txt` note. It does **not**
 carry `libfdb_c.so`: install the `foundationdb-clients` 7.3 package from
-[FoundationDB's releases](https://github.com/apple/foundationdb/releases), which puts it in `/usr/lib`.
+[FoundationDB's releases](https://github.com/apple/foundationdb/releases). The deb puts it in
+`/usr/lib` and the rpm in `/usr/lib64`, both on the default library path.
 
 ```bash
 sha256sum -c --ignore-missing checksums.txt
@@ -379,25 +381,31 @@ keys:
 The journals stay on local disk: FoundationDB holds the metadata, not the journal. See
 [Configuration](configuration.md#foundationdb-metadata) for every key.
 
-<!-- TODO(marco): dfs init creates it, or document how to make it -->
-A `local` key file has to exist and be readable before `dfs init` runs; this paragraph
-will say whether `dfs init` creates it or how to create it. Until then, see
-[Encryption: local key files](encryption.md#local-key-files).
+Both key files are unlocked with `DITTOFS_ENCRYPTION_PASSPHRASE`, which `dfs init` and
+`dfs start` both need. `dfs init` creates the storage key file over a new cluster, and prints
+once where it is; copy it off the host, as
+[Encryption: local key files](encryption.md#local-key-files) says. Its directory has to exist and
+be writable. The protocol key file is not created by `init`: write it first, with the helper that
+section shows.
 
 Then, with the tarball's binary:
 
 ```bash
+export DITTOFS_ENCRYPTION_PASSPHRASE=...   # the key files' passphrase
 ./dfs init --config /etc/dittofs/config.yaml --admin-password-env DFS_ADMIN_PASSWORD
 ./dfs start --config /etc/dittofs/config.yaml
 ```
 
-or with the image, as for the [default image](#single-container) with the cluster file mounted
-and no metadata volume:
+or with the image, as for the [default image](#single-container) with no metadata volume, the
+cluster file's directory mounted, and the key files' directory mounted where the configuration
+names them. Both host directories must be writable by user `65532`:
 
 ```bash
 docker run --rm -e DFS_ADMIN_PASSWORD=my-secure-password \
+  -e DITTOFS_ENCRYPTION_PASSPHRASE \
   -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
-  -v ./fdb.cluster:/etc/foundationdb/fdb.cluster \
+  -v ./foundationdb:/etc/foundationdb \
+  -v ./keys:/config/keys \
   -v dittofs-blocks:/data/blocks \
   marmos91c/dittofs:vX.Y.Z-foundationdb init --config /config/config.yaml \
   --admin-password-env DFS_ADMIN_PASSWORD
@@ -407,8 +415,10 @@ Run the server the same way with `start`, the ports and the other volumes of
 [Single container](#single-container). `init` and `start` wait up to 30 seconds for the cluster, and
 a wrong cluster file ends in a refusal naming it rather than a hang.
 
-TLS between `dfs` and the cluster (`metadata.foundationdb.tls.*`) is read by the loader, but
-`dfs init` and `dfs start` refuse a configuration that names it until the client is given the files.
+For a cluster that requires TLS, name the client's certificate, its key and the CA file under
+`metadata.foundationdb.tls` (see [Configuration](configuration.md#foundationdb-metadata)). In the
+image, mount them read-only and name their paths inside the container. A file that is missing is
+refused, named, before `dfs` connects.
 
 ## Kubernetes operator
 
