@@ -290,13 +290,13 @@ Out of scope, each named in O1:
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 7 | 8.75 | team | every epic |
 | E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 9 | 18.5 | A | E5; partly E3; RFC 23's epics 3, 4 and 5 (its X1) |
-| E3 | Settings | a delete, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19 | B | E5; partly RFC 18's plan's epic 6 |
+| E3 | Settings | a delete, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark, the reconcile decoding only the changed scopes | 10 | 22 | B | E5; partly RFC 18's plan's epic 6 |
 | E4 | Secrets | `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epics 4 and 5 (its X1) |
-| E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; RFC 23's integration epic (its X3) |
+| E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; partly E3; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty, off by default; the launchers on `dfs init` and the images' `init` as an explicit step, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
-| | **Total** | | **42** | **80.75** | | |
+| | **Total** | | **43** | **83.75** | | |
 
-**Plan estimate: 42 subtasks, 80.75 man-days.**
+**Plan estimate: 43 subtasks, 83.75 man-days.**
 
 The skill's estimate for RFC 13's 1,221 lines is 3 middle epics (`round(1221 / 400)`), and this plan
 has 3.
@@ -331,8 +331,10 @@ flowchart TD
   E3 -. "write check, tracked reads" .-> R18(["RFC 18's epic 6"]):::sync
   S3(["S3 RFC 23's node reconciles and its write path exists: its epics 3 and 4"]):::sync
   R2 --> S3
-  E2 & E3 & E4 --> E5["E5 Integration"]
+  E2 & E4 --> E5["E5 Integration"]
+  E3 -- "all but T3.10's swap" --> E5
   S3 -. "partly" .-> E5
+  E5 -. "partly: T3.10's swap waits for T5.2 and T5.3" .-> E3
   E2 -. "X1 in RFC 23's plan: dfs start, dfs init, MakeRuntimeDir" .-> R35(["RFC 23's epics 3, 4 and 5"]):::sync
   E4 -. "X1: pkg/secrets, dfs init's first password" .-> R5(["RFC 23's epics 4 and 5"]):::sync
   S4(["S4 RFC 23's dfs init exists"]):::sync --> E6["E6 E2E green"]
@@ -375,11 +377,12 @@ flowchart TD
 | Epic | Blocks | Why |
 | --- | --- | --- |
 | E1 ⛔ | every epic | Every epic builds on the frozen surface. |
-| E2, E3, E4 | E5 | Integration wires all three into the node and the API. |
+| E2, E3 (partly: not T3.10's swap), E4 | E5 | Integration wires all three into the node and the API. |
 | E1 | RFC 18's plan's epic 2 (S1) | Identity's `Deps` gain the frozen `pkg/secrets` surface there. |
 | E4 | RFC 18's plan's epic 2 (S2) | Identity seals and resolves its secrets here. |
 | E3 | RFC 18's plan's epic 6, partly | The NetBIOS cross-check is a tracked read through `Check`; the rest does not wait. Turning `identity.ntlm` back on is refused by #4050's settings route, not by a validator (RFC 18 plan's A13). |
 | E4 | E3, partly | Two of `Check`'s tests, D9's credential reference repointed at a freshly sealed `remote credential` and D10's reference to a secret of another kind or owner, need sealed secrets; the rest of E3 does not wait. |
+| E5 | E3, partly | T3.10's swap in `walkSettings` and `routeSettings` waits for T5.2 and T5.3 to merge, since they write those calls; the rest of T3.10, and T5.2 and T5.3, do not wait. |
 | E2 | E3, partly | The newer-schema refusal and the block format gate read the binary's registered ranges in `pkg/settings/versions.go`, which epic 2's version gate subtask adds; E3's T3.3 imports the shared strict parser epic 2's T2.1 creates; the rest of E3 does not wait. |
 | E5 | E6 | E2E green runs the wired server. |
 | RFC 23's epic 2 (outside) | E2 and E4, partly | The version gate adds a node's ranges to RFC 23's `Node` record, `WriteMissingNodeIDs` reads RFC 16's `JournalID`, and `Prune` reads the versions a node holds from its `NodeStatus`. Everything else in both epics starts at S1. |
@@ -656,17 +659,22 @@ the raise, which carries such a rename as a reseal under the new owner.
 
 Each carries a `ponytail:` marker at the code site:
 
-- **Reconcile re-reads every setting when the generation moves.** A walk of `CFG` across every
-  scope in pages of 256 per move, through `Nodes.AllSettings` (RFC 23's epic 2, D7), restarted if
-  `CFGGEN` moved during it (RFC 23 §2.3).
-  - *Ceiling:* the walk and the diff at the settings count of 10⁴ shares, once per one-second poll
-    while writes keep the generation moving; the trigger is their time passing a tenth of that
-    poll period, 100 ms, measured in epic 3's benchmark; epic 5 grows RFC 23's `BenchmarkReconcile`
-    (#4688) with the settings rows and the secrets pass and judges the full figure. Every `Secret`
-    write raises the generation too, so a password change costs every node one such walk.
-  - *Upgrade path:* read only the records above the reconciled position, with an index by position
-    (RFC 23 §13 item 5).
-  - *Epic:* 3.
+- **Reconcile walks every setting when the generation moves, and decodes only what changed.** A walk
+  of `CFG` across every scope in pages of 256 per move, through `Nodes.AllSettings` (RFC 23's epic 2,
+  D7), restarted if `CFGGEN` moved during it (RFC 23 §2.3); only the scopes holding a row above the
+  reconciled position, or whose row count moved, are decoded and diffed (epic 3's T3.10). T3.9's
+  benchmark put the full read and diff past the first trigger, a tenth of the poll period, 100 ms:
+  279 ms sparse and 563 ms dense at 10⁴ shares. On a quiet machine the walk alone takes 47 ms and
+  89 ms against 298 ms and 595 ms for the full pass (#5563, RFC 23 §13 item 5), so T3.10 decodes
+  less instead of adding an index. The ledger's row for the index moved to RFC 16 (§6.1).
+  - *Ceiling:* the walk, or the pass `scan_above` times, at the settings count of 10⁴ shares, once
+    per one-second poll while writes keep the generation moving; the trigger is the `walk` or
+    `scan_above` case of epic 3's `BenchmarkReconcileScan` passing 100 ms (T3.10);
+    epic 5 grows RFC 23's `BenchmarkReconcile` (#4688) with the settings rows and the secrets pass
+    and judges the full figure. Every `Secret` write raises the generation too, so a password
+    change costs every node one such walk, with nothing to decode.
+  - *Upgrade path:* an index by (kind, position) in RFC 16 (RFC 23 §13 item 5).
+  - *Epic:* 3 (T3.10).
 - **The version gate is one comparison per format.** On one node, a start refuses when an active
   version lies outside the binary's range, and nothing else; a namespace's block format version
   waits with its key (§6.1). No call raises a version, since each format has one so far: a test raises one by writing
@@ -725,7 +733,7 @@ Each carries a `ponytail:` marker at the code site:
     sign-in benchmark, whose password check resolves a `Secret`, or the RFC 18 plan's NTLM sign-in,
     which resolves an NT hash, with the read's share past a tenth of their time.
   - *Upgrade path:* a cache of opened values keyed by reference, which reconcile replaces for each
-    reference a `Secret` write moved, with the index by position above, so a hit reads no record
+    reference a `Secret` write moved, with the index by (kind, position) §6.1 defers to RFC 16, so a hit reads no record
     (a `SecretRef` names no version, so a key with one would still read the record to learn the
     current one); an entry is dropped when its reference is pruned or deleted. The kinds that
     path resolves are a password hash and an NT hash, which today no node keeps (above), so caching
@@ -945,14 +953,18 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cur, bad, err := settings.Read(ctx, n.nodes, node.Settings, n.id) // n.nodes is the node view Store.Nodes() gives (RFC 23's epic 2, D7), not the API's ControlPlane; ponytail: every scope's settings, read in pages, per move (§4.3)
+	// n.nodes is the node view Store.Nodes() gives (RFC 23's epic 2, D7), not the API's ControlPlane; n.raw and n.at are the
+	// last walk's own snapshot, before any Keep, and the CFGGEN it was read at (epic 3's D7)
+	raw, pass, bad, err := settings.Advance(ctx, n.nodes, node.Settings, n.id, n.raw, n.at) // ponytail: every scope's settings, read in pages, per move, only the changed scopes decoded (§4.3)
 	if err != nil {
 		return err // the walk itself failed; nothing is decoded yet
 	}
 	if again, err := n.settingsGeneration(ctx); err != nil || again != gen {
 		return err // each page is its own transaction: a write between two moved CFGGEN, so the walk is discarded and nothing reported; the next poll sees the counter ahead and walks again
 	}
-	prev := n.settings.Load() // *settings.Snapshot; nil before the first reconcile
+	n.raw, n.at = raw, gen // the next pass decodes only what moved above gen; its refusals are the store's, never Keep's
+	prev := n.settings.Load() // *settings.Snapshot, the published one the components run; nil before the first reconcile
+	cur := raw
 	for section, err := range bad { // decoded per section: an undecodable or newer-schema row stops only its own
 		n.refused(section, err)
 		if !n.started(section) { // the first reconcile has no snapshot to keep: never start on defaults
@@ -964,14 +976,14 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 	// decision: a secret resolved here is read after the second CFGGEN read, so it can be newer than gen, the generation reported; the next poll walks again and the position only lags. Overturned if a consumer needs the secret version applied to equal the reported generation.
 	for section, err := range n.resolveSecrets(ctx, cur) { // before any section applies: a moved or deleted
 		n.refused(section, err) // secret resolved again; one that fails (wrong kind, unwrap, a retired key gone)
-		cur = n.holdOrKeep(section, cur) // fails closed: held at start, else keeps its last snapshot
+		cur = n.holdOrKeep(section, cur) // fails closed: held at start, else the whole section keeps its last snapshot, Keep(section, nil).Keep(section, prev)
 	}
-	for _, ch := range settings.Diff(prev, cur) { // a nil prev: every key is a change
+	for _, ch := range pass.Diff(prev, cur) { // Diff(prev, cur) after the Keeps above, computed over what Advance rebuilt and every kept or held section; a nil prev: every key
 		switch ch.Class {
 		case settings.Live, settings.Bound: // a bound change got here only past Check's refusal
 			if err := n.reconfigure(ch.Section, cur); err != nil {
 				n.refused(ch.Section, err) // stops only that section, reported refused (RFC 13 §6, RFC 23 §2.4)
-				cur = n.holdOrKeep(ch.Section, cur) // held at start, else keeps the snapshot it last ran
+				cur = n.holdOrKeep(ch.Section, cur) // held at start, else the whole section keeps the snapshot it last ran
 			}
 		case settings.Restart:
 			if !n.rebuild(ch.Section, cur) { // an adapter's port: a new adapter (settings.SMB's note)
@@ -1194,7 +1206,7 @@ value; D7's drift test passes.
 
 ### Epic 3 — Settings
 
-**Epic 3 estimate: 9 subtasks, 19 man-days.**
+**Epic 3 estimate: 10 subtasks, 22 man-days.**
 
 Settings are rows at their scope. A component's effective value is read through one call. A write is
 checked by the component's own rules, and a change is classified for reconcile.
@@ -1262,6 +1274,9 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
 - `Diff`, `Keep` and the classes: live, restart, next write, bound.
 - D11's `decision:` note at `Check`.
 - `config_refused_total` and `config_bound_refusals_total`.
+- `Advance`: reconcile's pass that decodes and diffs only the scopes with a row above the reconciled
+  position, through the same walk (§4.3), its snapshot, changes and refusals those of `Read` and
+  `Diff`, except one case, a value `json.Marshal` cannot encode (epic 3's D7).
 
 ### Epic 4 — Secrets
 
@@ -1530,7 +1545,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys |
 | The cluster rules: §5's two-step restart value, §5.4 and §5.5 across nodes, the two-node §9 rows; a lagging node refusing the raise (header, §4.3's `ponytail:`, O1, §1.4) | single node only | RFC 15 | a second node |
 | Pruning an old secret version once every node's status reports the new one (§4.3's `ponytail:`) | a node that is down keeps its last report and holds the prune back | RFC 15 | a second node |
-| Reconcile reading only records above its position, with an index by position (§4.3's `ponytail:`) | one paged walk of `CFG` per generation move | unowned | the walk shows at the settings count of 10⁴ shares |
+| An index by (kind, position) for reconcile's settings read, with a removal entry per delete and its pruning (§4.3's `ponytail:`) | epic 3's T3.10 decodes only the changed scopes and keeps the one walk of every row, with no new key | RFC 16 | the `walk` or `scan_above` case passes 100 ms in epic 3's benchmark (RFC 23 §13 item 5) |
 | The cross-component rule, RFC 13 §6's example (§4.3's `ponytail:`) | its second setting, `migration.freeze_timeout`, does not exist | unowned | that setting is declared |
 | A per-role passphrase variable for key files (§4.3's `ponytail:`) | `keyprovider` reads one variable | unowned | two roles need distinct passphrases |
 | The replacement of `kmip_fake_test.go`'s canned KMIP server, a fake that passes a conformance suite; the canned server itself moves with `keyprovider` (D5, E1's D3) | the move changes no line of it, so the "no canned stub" rule does not fire on it | unowned | the fake's first change, or its first new caller |
@@ -1546,7 +1561,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | The key that holds a namespace's block format version (epic 2's version gate, D12; epic 3's `Check` row; RFC 13 §5.4) | RFC 13 §5.4 makes it a namespace setting and no plan declares the key; epic 2's gate checks the active versions only and gains the namespace comparison when the key exists, and epic 3's unit test declares one of its own until then | RFC 4 | a plan of RFC 4 declares the key |
 | "§5.1 bound"'s "no content, accepted" half at a namespace and a share scope (epic 5's D6; epic 6's R17) | a namespace holds content for its whole life and a share scope answers an error, since no read in the transaction says what either holds | unowned | the drain is readable in the transaction (D6's own withdrawal), or a share-scope bound setting is declared |
 | "§5.5 dead node"'s single-node sentence as written, an older binary starting on a store a newer one opened (epic 6's D6) | each format has one version, so no older range exists to build | unowned | a format gains a second version, beside the `raise-format` row |
-| The call of `Bootstrap.Validate` in `dfs start` (epic 2's §1.2 and R34) | no RFC 23 task carries it, T3.9 and T3.10 having merged without it; `Validate` is where R34's owner and mode check of a runtime directory a service manager gives (`RUNTIME_DIRECTORY`) lives, which `MakeRuntimeDir` returns without checking | unowned | an RFC 23 task places the call |
+| The call of `Bootstrap.Validate` in `dfs start` (epic 2's §1.2 and R34) | no RFC 23 task carries it, RFC 23's T3.9 and T3.10 having merged without it; `Validate` is where R34's owner and mode check of a runtime directory a service manager gives (`RUNTIME_DIRECTORY`) lives, which `MakeRuntimeDir` returns without checking | unowned | an RFC 23 task places the call |
 | the settings table's adapters' rows, which RFC 20's plan's deferral ledger gave this plan | the adapters' section type is RFC 20's T7.6's | RFC 20 plan, its T7.6 | that subtask |
 
 ## 7. RFC coverage
