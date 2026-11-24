@@ -293,12 +293,24 @@ func TestStartAndInitRefuseAForeignClusterOnFoundationDB(t *testing.T) {
 	}
 	before := records()
 
+	// start runs as a child, bounded by childBound: a check that stopped
+	// refusing would serve, and fail here at the bound's kill, not at the
+	// package's timeout.
+	code, startOut := runChild(t, config)
+	_, initErr := runDfs("init", "--config", config)
+	if code == 0 {
+		t.Errorf("dfs start on a cluster holding %q: exit 0; want a refusal:\n%s", foreign, startOut)
+	}
+	refusals := map[string]string{"start": startOut}
+	if initErr != nil {
+		refusals["init"] = initErr.Error()
+	}
 	for _, command := range []string{"start", "init"} {
-		_, err := runDfs(command, "--config", config)
-		if err == nil || !strings.Contains(err.Error(), kvstore.ErrForeignStore.Error()) || !strings.Contains(err.Error(), string(foreign)) {
-			t.Errorf("dfs %s on a cluster holding %q: %v; want the foreign store's refusal naming the key", command, foreign, err)
-		} else if strings.Contains(err.Error(), "v1") {
-			t.Errorf("dfs %s on a cluster holding %q: %v; want no mention of v1", command, foreign, err)
+		got := refusals[command]
+		if !strings.Contains(got, kvstore.ErrForeignStore.Error()) || !strings.Contains(got, string(foreign)) {
+			t.Errorf("dfs %s on a cluster holding %q: %q; want the foreign store's refusal naming the key", command, foreign, got)
+		} else if strings.Contains(got, "v1") {
+			t.Errorf("dfs %s on a cluster holding %q: %q; want no mention of v1", command, foreign, got)
 		}
 	}
 
