@@ -12,13 +12,14 @@ Cited, not owned: RFC 20 §5.4 (the reference captures are the source of golden 
 E2's); [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.7 (known-failure grading, whose
 rules §8.4 says the divergence list follows); the `test/pcap-corpus` README's layout.
 **Track:** A.
-**Epic 14 estimate: 3 subtasks, 7 man-days.**
+**Epic 14 estimate: 4 subtasks, 8.25 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E2's recipe for running knfsd in a client
 network namespace and its captures in `test/pcap-corpus/`; **E3**'s scripted client,
 `adaptertest/nfsclient` (E3's T3.2), and the `NULL` rows of its loopback server (T3.4); and, for the
 DittoFS side of every diff, **S5**, the composed in-process node, serving what the three entries'
-scripts send: E5's `fs_locations` (T5.4), E8's lease and `SEQUENCE` (T8.6), E9's `OPEN` and `LOCK`
-(T9.4, T9.8).
+scripts send: E5's `fs_locations` (T5.4), E8's `SEQUENCE` and lease (T8.5, T8.6), E9's `OPEN` and
+`LOCK` (T9.4, T9.8); and, for every other script on the node (T14.4), the handlers those scripts
+call, listed there.
 **Blocks:** E16, whose in-process rows encode their calls with T14.1's XDR writer and reader
 (pending E16's Q5). No suite runs the diffs (§1.2), so nothing else waits on them.
 
@@ -69,8 +70,9 @@ script, committed.
 - NLM's and NSM's UDP exception (RFC 21 §2.2): a UDP probe here sends NFS and MOUNT only, which
   never answer there; NLM and NSM answer over UDP on both servers once E11's datagram listener
   lands.
-- Areas with no script here, listed in §9 point 3: Kerberos's security exchange, delegation grants,
-  NLM and NSM, NFSv4.2 and a script per status of every error table.
+- Areas with no script here, listed in §9 point 3: Kerberos's security exchange, the TLS handshake
+  after `tls-probe`'s `AUTH_TLS` probe, delegation grants, NLM and NSM, NFSv4.2 and a script per
+  status of every error table.
 
 ### 1.3 Names used here
 
@@ -105,13 +107,13 @@ cited by number and title and not copied.
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T14.1, T14.3 | the skeleton tests feed PDML to `normalize.py`, which `pcap-diff.sh` consumes; the divergence check reads the diff `pcap-diff.sh` writes, and its list is the file the run loads |
 | rule 6, known failures shrink | none | no suite with a `known.yaml` is registered; the divergence list is §8.4's own mechanism and is not a `known.yaml` |
 | rule 7, v2 ignores v1 | all | the reference is the Linux server; scripts come from RFC 1813, RFC 7530, RFC 8881 and RFC 5531, never from `develop`'s adapter |
-| rule 8, real dependencies for properties of those dependencies | T14.1, T14.2, T14.3 | real knfsd, real TCP and UDP, real `tcpdump` and `tshark` for the recordings; the composed node for the DittoFS side |
+| rule 8, real dependencies for properties of those dependencies | T14.1, T14.2, T14.3, T14.4 | real knfsd, real TCP and UDP, real `tcpdump` and `tshark` for the recordings; the composed node for the DittoFS side |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T14.1, T14.3 | D3's and D5's `ponytail:` markers and D4's `decision:` marker at their code sites |
 | rule 10, a test must be able to fail | all | each test names the change it catches; the checks that need knfsd are run by hand and say so |
 | rule 11, a symbol is exported only if an interface uses it | T14.1 | `nfswire`'s XDR writer and reader, for E16's in-process rows (pending E16's Q5); nothing else: `nfswire`'s tests are in the package and `nfs-wire.sh` calls `go test` |
 | rule 12, each subtask creates only what it declares | all | the XDR helper arrives with the first script; the checker with the first entry; node mode with S5's run |
 | rule 13, translate, never decide | none | no handler is touched |
-| rule 14, nothing deferred is lost | T14.1, T14.2 | the areas without a script and the Kerberos exchange are named in §1.2 and §9 with their owners or a proposed ledger row |
+| rule 14, nothing deferred is lost | T14.1, T14.2, T14.4 | the areas without a script, the Kerberos exchange and the TLS handshake are named in §1.2 and §9 and are rows of the plan's §6.6 deferral ledger; a difference the node shows beyond the three entries is reported to its area's epic |
 
 ## 3. Requirements and invariants
 
@@ -186,8 +188,15 @@ already reads).
   `client_ns_exec`, with the target `10.51.0.1`, so the script's calls cross the bridge as a
   remote client's do. There is one `tcpdump` wrapper, not two: T14.1 moves the capture start and
   stop of E2's `nfs-record.sh` into two functions of a sourced `test/pcap-corpus/capture.sh`,
-  which both scripts call. The DittoFS side of T14.3 runs on the host's loopback, outside any
-  namespace, since the node is in the test's own process. Prior art: RFC 20
+  which both scripts call. The capture is filtered on client 1's address, not on a port, so it
+  holds the NFS calls and MOUNT's, whose port is not NFS's: the recipe pins `mountd` to a fixed
+  port in `nfs.conf` (`[mountd] port=`), passed as `NFSWIRE_MOUNT_TARGET`, and the dissector hint
+  names both ports. Root is used only to enter the namespace and to start `tcpdump`, which drops to
+  the invoking user (`-Z`); the `go test` runs as that user. `--script` must name a registered
+  script (`[a-z0-9-]+`) before it becomes a file name. The host's `nfs.conf`, lease and exports are
+  restored by a trap; the export is limited to the namespace subnet. The DittoFS side of T14.3 runs
+  on the host's loopback, outside any namespace, since the node is in the test's own process.
+  Prior art: RFC 20
   Appendix C's `tcpdump` and dissector run; the corpus's recipes in `nfsv4-acl/CAPTURE.md`. No
   marker: the corpus README records it.
 - **D3. The diff stays `pcap-diff.sh`'s structural skeleton, with three fixes, and is weaker than RFC
@@ -206,14 +215,20 @@ already reads).
   `rpc` for NFS, on both TCP and UDP); `KEEP_ENUM`'s list extended to every status and procedure
   field NFS's recordings carry, since it names only `nfs.opcode` and `nfs.status` (the per-operation
   status of NFSv4): the compound's status, `nfs.nfsstat4`, is in the committed `nfsv4-acl` skeleton
-  with no label, and NFSv3's and MOUNT's procedure and status fields have names of their own,
-  `nfs.procedure_v3` and `nfs.nfsstat3` among them (from memory, confirmed on the first recording);
-  and R9's rule for a stateid. A `ponytail:` marker at `normalize.py`'s header names the ceiling: a
+  with no label, NFSv3's and MOUNT's procedure and status fields have names of their own,
+  `nfs.procedure_v3` and `nfs.nfsstat3` among them, and RPC's reply fields (`rpc.msgtyp`,
+  `rpc.replystat`, `rpc.state_accept`, `rpc.state_reject`) carry a refusal no program status shows
+  (names from memory, each checked against `tshark -G fields` and the first recording), with
+  `nfs-wire.sh` passing `--proto rpc --proto nfs --proto mount`; and R9's rule for a stateid, keyed
+  by the path under `nfs.stateid`, since `nfs.seqid` also names an open-owner's sequence. An enum
+  label is `tshark`'s display text (`ACCESS (3), [Allowed: RD LU …]`), so each committed `.skel`
+  starts with the `tshark` version that wrote it, and `nfs-wire.sh diff` exits 2 when its own
+  version differs. A `ponytail:` marker at `normalize.py`'s header names the ceiling: a
   wrong size, a reordered listing, a handle used in the wrong request or a status answered to the
   wrong one of several like requests passes unseen unless it makes an (operation, status) pair
   occur on one side only. The
   upgrade is a per-packet ordered skeleton keyed by the RPC transaction ID, with tokens numbered
-  by first appearance, about 1.5 man-days, to be built when a divergence of that class is found by
+  by first appearance, about 1.5 man-days more, to be built when a divergence of that class is found by
   other means or RFC 20 §8.2 is held to its words. The question is in §9 point 1. Prior art: RFC 20
   Appendix C compares `tshark`'s decoded fields with a small matcher; Wireshark's own dissector
   tests compare decoded fields per packet (from memory).
@@ -221,7 +236,8 @@ already reads).
   one operation's path, on both sides.** `test/pcap-corpus/nfs-wire/divergences.yaml` holds
   entries of `script`, `field`, `reference` and `dittofs` (an enum label, or `absent`), `rule` (an
   RFC 21 section) and `note`. `field` is the skeleton path of the operation, or of the attribute,
-  that differs (`nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)`), never a single leaf: a
+  that differs (`nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)`), or of the RPC reply for a reply
+  that never comes (`udp-null`'s `NULL` has no program fields), never a single leaf: a
   `SEQUENCE` answered `NFS4_OK` carries result fields that one answered `NFS4ERR_BADSESSION` does
   not, and those lines differ too. The check takes the unified diff of a script's two skeletons:
   every `-` line and every `+` line must fall under the `field` prefix of one entry of that script,
@@ -229,8 +245,10 @@ already reads).
   `reference` value on the `-` side or in its `dittofs` value on the `+` side, and fails as "no
   longer differs" otherwise, since D3's set can hide one of the two when another request of the
   same operation shows it on both sides (R14, R15). A difference under another operation, or a
-  line on the side its values do not name, is not excused. A load that finds an entry with no
-  `rule` fails (R13). A `decision:` marker at the prefix match says that an entry excuses its
+  line on the side its values do not name, is not excused. The load is strict: it fails on an
+  entry with no `rule` (R13), an unknown key, a second entry for the same `(script, field)`, and a
+  `field` above an operation's or the RPC reply's path, since an `absent` entry on `nfs` would
+  excuse everything. A `decision:` marker at the prefix match says that an entry excuses its
   operation's whole subtree in its one script, which is what a status that changes the reply's
   shape and a reply that never comes both need, and that it is withdrawn if an entry is found
   masking a second difference of that operation in its script. R16 has no check: `note` says where the reference
@@ -249,7 +267,7 @@ already reads).
   `udp-null` script opens a UDP socket, sends one `NULL` call of NFS and one of MOUNT without a
   record mark, and reads for a bounded time; no reply within it is the DittoFS answer. knfsd's UDP
   is switched on in the recording host's `nfs.conf`, since it is off by default (RFC 21's Appendix A
-  says so of knfsd). The socket is a deliberate copy of what E11's `nfsclient.DialUDP` (T11.10)
+  says so for NFSv4). The socket is a deliberate copy of what E11's `nfsclient.DialUDP` (T11.10)
   will offer: a dozen lines, against making T14.3 wait for E11's datagram listener. If T11.10 has
   landed when T14.3 starts, the script uses `DialUDP` instead. Prior art: RFC 21 §13's "§2.2 TCP
   only" row probes the same way.
@@ -287,7 +305,7 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
 
 ### T14.1 The script runner, the recording wrapper and the first script
 
-**Subtask T14.1 estimate: 2.75 man-days.**
+**Subtask T14.1 estimate: 3 man-days.**
 
 - **Track:** A. **Depends on:** S2, T3.2, T3.4.
 - **Covers:** R1, R2, R3, R4, R5, R7, R8, R9, R10, R11, R18, R20, R21, R22.
@@ -318,28 +336,38 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
     the output directory and leaves both captures, both skeletons and the diff there. Consumed by
     T14.2 and T14.3.
   - `pcap-diff.sh`: `--candidate-dissector` (default `nbss`, so SMB's callers are unchanged), applied
-    to the candidate's port on TCP and UDP; `--skeleton-dir`. `normalize.py`: a stateid's `seqid`
-    kept as a value, an ordinary stateid's `other` dropped, the special stateids kept whole (R9);
-    `KEEP_ENUM` extended with the compound's status `nfs.nfsstat4` and with the field names that
-    E2's `nfs3/` recording shows for NFSv3's and MOUNT's procedure and status (D3), read from that
-    recording, not from memory; the normalised names stay a list of field names (R10).
-    `normalize_test.sh`, run from
-    `lint-repo`; `README.md`'s NFS recipe, which no longer says `--candidate-port` alone decodes
-    NFS.
+    to the candidate's port on TCP and UDP; `--skeleton-dir`; exit 2, checked before `tshark` runs,
+    on a capture that is missing, and exit 2 on a skeleton with no fields, since today a `tshark`
+    failure surfaces as `normalize.py`'s parse error, exit 1, and a capture where nothing decodes
+    is "structurally identical (0 fields)", exit 0. `normalize.py`: a stateid's `seqid` kept as a
+    value, an ordinary stateid's `other` dropped, the special stateids kept whole, matched by the
+    path under `nfs.stateid` (R9); `KEEP_ENUM` extended with the compound's status `nfs.nfsstat4`,
+    with the field names that E2's `nfs3/` recording shows for NFSv3's and MOUNT's procedure and
+    status, and with RPC's reply fields (D3), read from that recording and `tshark -G fields`, not
+    from memory; the normalised names stay a list of field names (R10). `normalize_test.sh`, run
+    from `lint-repo`; `README.md`'s NFS recipe and `nfsv4-acl/CAPTURE.md`'s, which no longer say
+    `--candidate-port` alone decodes NFS; `nfsv4-acl`'s two `.skel` files regenerated from their
+    captures, since the stateid rule and the new labels change them.
   - `suites.yaml`: `wirediff` in `lint-go`'s tag list; `normalize_test.sh` in `lint-repo`'s list.
-  - `nfs-wire/CAPTURE.md` with the recipe (kernel version, `exports` line, namespace, the
-    `tcpdump` interface, `nfs.conf`) and `mount-null`'s `reference.pcap` and `reference.skel`.
+  - The recording host's setup, scripted in `nfs-wire.sh` and restored by its trap (D2): UDP on,
+    `nfsv4leasetime`, `mountd`'s port, an export with `refer=`, `tlshd`.
+  - `nfs-wire/CAPTURE.md` with the recipe (kernel and `tshark` versions, `exports` line, namespace,
+    the `tcpdump` filter, `nfs.conf`), the check made before a capture is committed (no host name,
+    user name or uid of the recording machine in it), and `mount-null`'s `reference.pcap` and
+    `reference.skel`.
 - **Acceptance criteria:**
   - `mount-null` run against knfsd twice gives two skeletons `pcap-diff.sh` calls identical: no
     transaction ID, handle or time leaks into the skeleton (recorded in `CAPTURE.md`).
-  - `record` against a closed port exits nonzero and names the target; `diff` with a missing
-    capture exits 2, as `pcap-diff.sh` does; nothing in either skips.
+  - `record` against a closed port exits nonzero and names the target; a missing capture exits 2,
+    checked before `pcap-diff.sh` runs, and a skeleton with no fields fails; nothing in either
+    skips.
   - With `--candidate-dissector rpc --candidate-port N` a capture of E3's loopback server has NFS
     fields in its skeleton; without the option, SMB's callers behave as before.
-  - The skeleton of a stateid with another `seqid` differs; one with another `other` does not; a
-    stateid of all zeros differs from an ordinary one.
-  - Two replies that differ only in an NFSv3 status, in a MOUNT status or in a compound's status
-    give skeletons that differ; `mount-null`'s skeleton carries a label for every NFSv3 and MOUNT
+  - The skeleton of a stateid with another `seqid` differs; one with another `other` does not; the
+    current stateid (`seqid` 1, `other` all zeros) differs from an ordinary stateid of `seqid` 1.
+  - Two replies that differ only in an NFSv3 status, in a MOUNT status, in a compound's status or
+    in an RPC accept status give skeletons that differ; an `MNT` of an unexported path answered OK
+    differs from one refused; `mount-null`'s skeleton carries a label for every NFSv3 and MOUNT
     procedure it calls.
 - **Tests:**
   - `xdr_test.go`, at the writer the scripts call: RFC 4506's examples encode to their bytes and
@@ -354,14 +382,16 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
     R1, R3); a run against a closed port returns an error (catches a run that skips or swallows
     the failure, R22). The server is real, so no double.
   - `normalize_test.sh`, at `normalize.py`, which `pcap-diff.sh` feeds: PDML fixtures that differ in
-    a stateid's `seqid`, in its `other`, and in a special stateid (catch `seqid` dropped, `other`
-    compared, a special stateid masked, R9); a fixture whose message carries a normalised name
+    a stateid's `seqid`, in its `other`, and between the current stateid and an ordinary one of
+    `seqid` 1 (catch `seqid` dropped, `other` compared, a special stateid masked, R9), and in an
+    open-owner's `nfs.seqid` outside a stateid (catches the rule applied by name, not path); a
+    capture with nothing decoded (catches an empty skeleton passing); a fixture whose message carries a normalised name
     beside a compared status, which must keep the status (catches a rule that masks the message,
     R10); the profile's list read for any entry that is a protocol name (catches a message-wide
     rule); fixtures cut from E2's `nfs3/` recording and from a compound reply, differing only in an
-    NFSv3 status, a MOUNT status and a compound status (catch a status field `KEEP_ENUM` does not
-    name, under which the four `v3-*` scripts would compare no status at all, R11). Data fixtures,
-    no double.
+    NFSv3 status, a MOUNT status, a compound status and an RPC accept status, and an unexported
+    `MNT` answered OK against one refused (catch a status field `KEEP_ENUM` does not name, under
+    which the four `v3-*` scripts would compare no status at all, R11). Data fixtures, no double.
   - By hand at recording, and said so in `CAPTURE.md`: the self-diff of two knfsd recordings
     (catches a volatile value left in, R8, in part); a `diff` of `mount-null` against another
     script's recording, which must exit 1 and leave both captures, both skeletons and the diff in
@@ -372,7 +402,7 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
 
 ### T14.2 The area scripts
 
-**Subtask T14.2 estimate: 2 man-days.**
+**Subtask T14.2 estimate: 3 man-days.**
 
 - **Track:** A. **Depends on:** T14.1.
 - **Covers:** R3, R4, R5, R6, R18, R19.
@@ -391,9 +421,10 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
     `v4-readdir` (`READDIR` at `maxcount` edges, `NFS4ERR_TOOSMALL`); `v4-notsupp` (each operation
     both servers answer `NFS4ERR_NOTSUPP`, listed from knfsd's recording, with `ALLOCATE` left out
     since RFC 21 §9.3 makes DittoFS differ there); `tls-probe` (a `NULL` call with the `AUTH_TLS`
-    flavour, RFC 9289's probe, whose reply is the security exchange R6 names).
+    flavour, RFC 9289's probe; it upgrades nothing, so it compares the RPC half of the exchange
+    R6 names, and the TLS handshake after it is §9 point 3's).
   - `scripts_test.go`: a script declares the operation labels it covers.
-  - Consumed by T14.3, which runs them against the node, and, once the deferral ledger's row "A
+  - Consumed by T14.4, which runs them against the node, and, once the deferral ledger's row "A
     suite running E14's capture diffs" is answered, by that suite.
 - **Acceptance criteria:**
   - Each script runs against knfsd twice with identical skeletons (the self-diff of T14.1).
@@ -411,25 +442,28 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
 
 ### T14.3 The divergence list and its three entries
 
-**Subtask T14.3 estimate: 2.25 man-days.**
+**Subtask T14.3 estimate: 1.75 man-days.**
 
-- **Track:** A. **Depends on:** T14.1, S5, T5.4, T8.6, T9.4, T9.8. T5.4 answers `referral`'s
-  `fs_locations` on the node; T8.6, T9.4 and T9.8 answer `courtesy-lease`'s `SEQUENCE`, `OPEN` and
-  `LOCK`.
+- **Track:** A. **Depends on:** T14.1, S5, T5.4, T8.5, T8.6, T9.4, T9.8. T5.4 answers `referral`'s
+  `fs_locations` on the node; T8.5 and T8.6 answer `courtesy-lease`'s `SEQUENCE` and its lease,
+  T9.4 and T9.8 its `OPEN` and `LOCK`.
 - **Covers:** R3, R4, R12, R13, R14, R15, R16, R17.
 - **Deliverables:**
   - `diverge.go`: the entry type, the loader of `divergences.yaml`, and
-    `check(script, diff, entries)`, which returns every unexcused line and every entry whose lines
-    are not both in the diff (D4). Consumed by `TestCheckDivergences` and by `nfs-wire.sh diff`
+    `check(script, diff, entries)`, which returns every unexcused line and every entry with no line
+    of its values in the diff (D4). Consumed by `TestCheckDivergences` and by `nfs-wire.sh diff`
     through it.
   - `divergences.yaml`, three entries, each excusing one operation's path (D4): `udp-null`, no
-    reply over UDP to NFS's and MOUNT's `NULL` (DittoFS's side `absent`), RFC 21 §2.2;
+    reply over UDP to NFS's and MOUNT's `NULL` (DittoFS's side `absent`), RFC 21 §2.2, its `field`
+    the RPC reply's path;
     `courtesy-lease`, a client whose lease ran out with an open and a lock and no conflict, whose
     next `SEQUENCE` knfsd answers `NFS4_OK`, keeping it as a courtesy client, and DittoFS
     `NFS4ERR_BADSESSION`, RFC 21 §5.1, its `field` the `SEQUENCE` operation's path so the result
     fields only an `NFS4_OK` reply carries fall under it; `referral`, a `LOOKUP` of directory `ref`
-    and a `GETATTR` of its `fs_locations`, with no `GETFH` after the `LOOKUP`, so knfsd's
-    `NFS4ERR_MOVED` for a handle inside a referral (from memory) is not provoked; knfsd lists a
+    and a `GETATTR` of `fs_locations` alone, with no `GETFH` after the `LOOKUP`: RFC 7530 §8.7.1
+    answers that `GETFH` `NFS4ERR_MOVED`, and §8.3.1 answers a `GETATTR` in an absent file system
+    `NFS4ERR_MOVED` unless its mask holds `fs_locations` and trims any attribute it cannot serve
+    there, so neither is provoked and no second field differs; knfsd lists a
     location and DittoFS none, RFC 21 §7.4 ("every other time the attribute lists no location"),
     its `field` the `fs_locations` attribute's path. `ref` is in both starting trees, not created by
     the script, which sends the same bytes to either server: on knfsd it is the directory the
@@ -441,9 +475,11 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
     from memory; the entries hold the values the recordings show. The three scripts of
     `scripts_diverge.go` and their knfsd recordings are part of it.
   - `diverge_wire_test.go`, tag `wirediff`: `TestRunOnNode`, the DittoFS side, starts `nodetest`'s
-    node (S5), runs `NFSWIRE_SCRIPT` against it and writes the port it served on beside the capture;
-    `nfs-wire.sh record --target node` captures the loopback interface with no port filter, since the
-    port is known only once the node is up, and `diff` passes that port as `--candidate-port`.
+    node (S5), writes the port it serves on beside the capture, waits for `nfs-wire.sh` to write
+    that its capture has started, then runs `NFSWIRE_SCRIPT` against it; `nfs-wire.sh record
+    --target node` starts `tcpdump` on loopback filtered on that port, TCP and UDP, so neither the
+    ICMP port-unreachable `udp-null` provokes nor other loopback traffic enters it, and `diff`
+    passes that port as `--candidate-port`.
     `TestCheckDivergences` reads the two skeletons and the script's name from the environment and
     runs `check`; `nfs-wire.sh diff` ends by calling it.
   - `testdata/diverge/`: skeleton fixtures and entry files for the unit tests.
@@ -452,9 +488,6 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
     §7.4; a file with an entry that names no rule does not load.
   - On the S5 node each of the three scripts diffs against knfsd with every difference under its
     entry, and the same diff with the list empty is red.
-  - Every script of T14.1 and T14.2 runs against the node and is diffed against its knfsd
-    recording; `CAPTURE.md` notes each result, and a difference outside the three entries is
-    reported to the epic that owns its area (§9, point 2), never added as an entry.
   - An entry whose difference is gone fails the run, naming the entry; a difference no entry names
     fails, naming the line; an entry of another script excuses nothing.
   - A difference on an entry's field in the other direction (the values swapped) is not excused.
@@ -462,7 +495,9 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
   - `diverge_test.go`, at `check`, which the live run calls, over skeleton fixtures that are data:
     an excused diff passes; a diff with one extra line fails, naming it (R14); identical skeletons
     with an entry fail as "no longer differs" (R15); an entry for another script excuses nothing
-    (R14); swapped values are not excused; a file with an entry and no rule does not load (R13);
+    (R14); swapped values are not excused; a file with an entry and no rule does not load (R13),
+    nor one with an unknown key, a duplicate `(script, field)` or an `absent` entry on `nfs`
+    (catches a list that excuses more than one operation, R14);
     an entry excuses the subtree under its operation's path on both sides and not a sibling
     operation, with a `SEQUENCE` fixture whose `NFS4_OK` result fields appear on one side only
     (D4's marker). No double.
@@ -470,9 +505,26 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
     §5.1 and §7.4 (catches an entry dropped or its rule changed, R17).
   - The live check on the node, run by hand from S5 and noted in `CAPTURE.md`, since only a run of
     both servers shows an entry's two values.
-- **Rules:** rule 9: D4's `decision:` marker and D5's `ponytail:` marker at the lease wait; rule 14:
-  a difference the node shows beyond the three is reported to the epic that owns its area (§9
-  point 2).
+- **Rules:** rule 9: D4's `decision:` marker and D5's `ponytail:` marker at the lease wait.
+
+### T14.4 Every script on the node
+
+**Subtask T14.4 estimate: 0.5 man-days.**
+
+- **Track:** A. **Depends on:** T14.2, T14.3, T3.6, T4.4, T4.5, T4.6, T4.8, T4.9, T4.10, T4.11,
+  T4.12, T5.7, T5.8, T8.3, T8.4, T8.5, T8.6, T8.9, T9.4, T9.6, T9.8, T9.10, T12.7. These serve
+  what the scripts of T14.1 and T14.2 call on the node: E3's NFS over TLS for `tls-probe`, E4's
+  NFSv3 procedures and MOUNT, E5's `READDIR` and not-supported rows, E8's sessions, E9's opens,
+  locks and stateid tests, and E12's not-supported set.
+- **Covers:** R12, R18.
+- **Deliverables:** each script of T14.1 and T14.2 run against the S5 node through `nfs-wire.sh
+  record --target node` and diffed against its knfsd recording; `CAPTURE.md` notes each result.
+- **Acceptance criteria:**
+  - Every script has a noted result; a difference outside the three entries is reported to the
+    epic that owns its area (§9 point 2), never added as an entry.
+- **Tests:** none of its own: the runs use T14.1's wrapper and T14.3's check, whose tests are
+  theirs, by hand on the recording host.
+- **Rules:** rule 14: a difference the node shows beyond the three is reported to its area's epic.
 
 ## 7. Order of work
 
@@ -483,24 +535,31 @@ flowchart TD
   T14_1 --> T14_2["T14.2 Area scripts"]
   E3(["E3: T3.2 scripted client, T3.4 NULL rows"]):::sync --> T14_1
   S5(["S5 composed in-process node"]):::sync --> T14_3["T14.3 Divergence list and its entries"]
-  EN(["E5 T5.4, E8 T8.6, E9 T9.4 and T9.8 on the node"]):::sync --> T14_3
+  EN(["E5 T5.4, E8 T8.5 and T8.6, E9 T9.4 and T9.8 on the node"]):::sync --> T14_3
   T14_1 --> T14_3
   T14_2 --> C2(["after T14.2: every area recorded"]):::sync
   T14_3 --> C3(["after T14.3: the three entries hold on the node"]):::sync
+  T14_2 --> T14_4["T14.4 Every script on the node"]
+  T14_3 --> T14_4
+  EH(["the handlers the scripts call: E3, E4, E5, E8, E9, E12 (T14.4)"]):::sync --> T14_4
+  T14_4 --> C4(["after T14.4: every area diffed on the node"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T14.1 is the blocker: both later subtasks run scripts through it. T14.2 comes before T14.3 because
-it needs only knfsd and so can run before S5, while T14.3 waits for the node. Checkpoint after
-T14.1: E16 can call `nfs-wire.sh`; after T14.3: the epic's done condition holds.
+T14.1 is the blocker: every later subtask runs scripts through it. T14.2 comes before T14.3 because
+it needs only knfsd and so can run before S5, while T14.3 waits for the node. T14.4 waits for the
+handlers every script calls, so it comes last; nothing waits on it. Checkpoint after T14.1: E16 can
+build its calls with `nfswire`'s `Writer` and `Reader`; after T14.3: the plan's done condition
+holds; after T14.4: every area is diffed on the node.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T14.1 | 2.75 | S2, E3's T3.2 and T3.4 | the runner, the wrapper, the tool fixes and one recorded script, proving the path end to end |
-| 2 | T14.2 | 2 | PR 1 | the area scripts and their recordings, mostly data |
-| 3 | T14.3 | 2.25 | PR 1, S5, E5's T5.4, E8's T8.6, E9's T9.4 and T9.8 | the divergence check and its three entries, which need the node |
+| 1 | T14.1 | 3 | S2, E3's T3.2 and T3.4 | the runner, the wrapper, the tool fixes and one recorded script, proving the path end to end |
+| 2 | T14.2 | 3 | PR 1 | the area scripts and their recordings, mostly data |
+| 3 | T14.3 | 1.75 | PR 1, S5, E5's T5.4, E8's T8.5 and T8.6, E9's T9.4 and T9.8 | the divergence check and its three entries, which need the node |
+| 4 | T14.4 | 0.5 | PR 2, PR 3, the handlers T14.4 lists | notes in `CAPTURE.md`, once every handler a script calls is on the node |
 
 A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can be open at once.
 
@@ -514,7 +573,7 @@ A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can
    can answer `OK` to a request on one side and `NOENT` on the other and still diff clean. This
    epic builds the NFS fixes and leaves R2, R8 and R11 met in part, with a `ponytail:` marker.
    Options: (a) as written, the gap named at the marker; (b) build the ordered, tokenised skeleton
-   in T14.1, keyed by the RPC transaction ID, which becomes about 4.25 man-days; (c) amend RFC 20
+   in T14.1, keyed by the RPC transaction ID, which becomes about 4.5 man-days; (c) amend RFC 20
    §8.2 and §8.3 to the weaker rule; (d) a per-packet skeleton in capture order, one block of
    lines per call and per reply, with no tokens: the scripts send their calls one at a time, so
    capture order aligns requests and every status is compared against its own request's, about
@@ -532,9 +591,11 @@ A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can
    S6c and a scripted client that speaks `RPCSEC_GSS`, which E13's T13.5 adds to `nfsclient`);
    delegation grants (a script needs the scripted client to answer a back channel, as E10's T10.2
    tests do); NLM and NSM (E11's T11.2 `nfsclient.Host` and its rows); NFSv4.2's operations (E12's
-   T12.8). Proposed: a row for each in the RFC 21 implementation plan's §6.6 deferral ledger, owner
-   the epic that builds the missing piece, trigger that subtask, by a pull request to the plan,
-   which this document does not make.
+   T12.8); and the TLS handshake after `tls-probe`'s probe, whose fields are each side's TLS
+   library's (`tlshd`'s GnuTLS against Go's `crypto/tls`) rather than NFS's, so a diff of them
+   would be red with no RFC 21 rule to cite. Each is a row of the RFC 21 implementation plan's §6.6
+   deferral ledger, added by this pull request, owner `unowned` until a stage or RFC takes it,
+   trigger the subtask that builds the missing piece.
 4. **A script per status (R19).** The scripts provoke the statuses of their areas; RFC 20 §8.5's
    rule that a new status in an error table gets a script has no check. Proposed: E16's totality
    test (RFC 20 §7.3) lists each status no script provokes, which needs each script to declare the
@@ -546,15 +607,20 @@ A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can
    already passes its `Harness.Clock` to the node as its `Clock`; if that clock reaches the lease,
    the DittoFS side of `courtesy-lease` advances it and the wait of D5 stays on knfsd's side alone.
 6. **The recording host.** Root, a kernel of 5.19 or later (courtesy clients), `nfs.conf` with UDP
-   on, an export with `refer=`, `tlshd` and a kernel of 6.5 or later for `tls-probe`, `tshark` and
-   `tcpdump`. Each recording names the kernel and what the host could not do, and a recording that
-   cannot be made is a gap in `CAPTURE.md`, not a skipped script.
-7. **The estimate.** The RFC 21 implementation plan holds this epic at 2 subtasks and 4 man-days.
-   The breakdown is 3 subtasks and 7: the plan's figure leaves out the tool fixes, the XDR helper
-   with its fuzz target and nine scripts with a recording each. The plan is changed only when the
-   user asks, through a pull request.
+   on and `mountd`'s port pinned, an export with `refer=` limited to the namespace subnet, `tlshd`
+   and a kernel of 6.5 or later for `tls-probe`, `tshark` and `tcpdump`; `nfs-wire.sh` sets these
+   and restores them in a trap (T14.1). Each recording names the kernel, the `tshark` version and
+   what the host could not do, and a recording that cannot be made is a gap in `CAPTURE.md`, not a
+   skipped script.
+7. **The estimate.** The RFC 21 implementation plan held this epic at 2 subtasks and 4 man-days.
+   The breakdown is 4 subtasks and 8.25: the plan's figure leaves out the tool fixes, the XDR
+   helper with its fuzz target, the recording host's setup, nine scripts with a recording each and
+   their run on the node. This pull request sets the plan's E14 row and heading to it; the
+   programme totals reconcile when the breakdown pull requests merge.
 8. **The XDR helper's second consumer, open for review (E16's Q5).** E16's in-process rows
    run from `internal/node`, where the `ops` packages' generated structs, unexported, cannot be
    reached. Recommended, written in place: T14.1 exports `nfswire`'s `Writer` and `Reader` and E16
    builds its calls with them; the alternative, exporting the generated structs, changes rule 11
-   for every handler epic. Either way this epic's figure does not move.
+   for every handler epic. Either way this epic's figure does not move: the argument builders
+   E16's calls need, about 1 man-day, are E16's work and are priced in its figure once its Q5 is
+   answered.
