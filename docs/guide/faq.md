@@ -120,7 +120,7 @@ The lack of FUSE overhead and optimized Go implementation provides competitive p
 Yes. The metadata store is Badger, on disk, in the directory `metadata.badger.path`
 names; there is no in-memory mode. A FoundationDB backend is configured with
 `metadata.backend: foundationdb`, for multi-node deployments, and only a build with the
-`foundationdb` tag opens it ([Deployment](install.md#foundationdb-metadata)). See [Configuration § Metadata](configuration.md#7-metadata-configuration).
+`foundationdb` tag opens it ([Deployment](install.md#foundationdb-metadata)). See [Configuration § FoundationDB metadata](configuration.md#foundationdb-metadata).
 
 A metadata store written by a v1 release is not opened: see
 [Upgrading from v1](upgrading-from-v1.md).
