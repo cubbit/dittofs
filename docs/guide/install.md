@@ -450,6 +450,8 @@ sudo systemctl daemon-reload
 
 ```bash
 docker volume rm dittofs-metadata dittofs-blocks
+# an upgraded v1 host also has these
+docker volume rm dittofs-state dittofs-cache
 # or, with Compose
 docker compose down -v
 ```

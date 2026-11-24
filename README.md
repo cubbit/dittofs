@@ -64,7 +64,7 @@ Two binaries drive it:
 | **SMB leases & oplocks** | Leases V2 with directory leasing; oplocks; byte-range locks |
 | **SMB durable handles** | V1 and V2 for session resilience |
 | **SMB security descriptors** | Windows ACL mapping via a shared cross-protocol ACL model |
-| **Authentication** | AUTH_UNIX + Kerberos (RPCSEC_GSS) for NFS; NTLM + Kerberos (SPNEGO) for SMB |
+| **Authentication** | AUTH_UNIX for NFS (Kerberos over RPCSEC_GSS not served yet); NTLM + Kerberos (SPNEGO) for SMB |
 | **Active Directory** | Kerberos service keytab for AD-issued tickets; optional machine account (offline or online domain join) for NTLM pass-through; LDAP idmap (`idmap_ad` / `idmap_rid`) maps AD users and nested groups to the same Unix UID/GID over SMB and NFS |
 | **Cross-protocol coordination** | Bidirectional lease/delegation breaks between SMB and NFS |
 | **Metadata stores** | BadgerDB, on disk — one per node. FoundationDB, for multi-node, is configured but not yet selectable |
@@ -302,12 +302,12 @@ the benchmarks, [bench/README.md](bench/README.md).
 
 DittoFS is experimental and has not been professionally audited.
 
-- **Authentication:** AUTH_UNIX and Kerberos (RPCSEC_GSS) for NFS; NTLM and Kerberos
+- **Authentication:** AUTH_UNIX for NFS (Kerberos over RPCSEC_GSS is not served yet); NTLM and Kerberos
   (SPNEGO) for SMB. AD domain users can authenticate directly against a directory —
   see [docs/guide/identity.md](docs/guide/identity.md).
-- **Transport encryption:** SMB3 encrypts its transport (AES-GCM/CCM). NFS supports
-  NFS-over-TLS (RFC 9289) and Kerberos privacy (`krb5p`); without either, run NFS over a VPN
-  or a trusted network.
+- **Transport encryption:** SMB3 encrypts its transport (AES-GCM/CCM). NFS-over-TLS
+  (RFC 9289) and Kerberos privacy (`krb5p`) are not served yet, so run NFS over a VPN or a
+  trusted network.
 - **At-rest:** optional client-side per-remote envelope encryption protects block content in
   the remote store. See [docs/guide/encryption.md](docs/guide/encryption.md).
 

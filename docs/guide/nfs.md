@@ -66,7 +66,7 @@ DittoFS implements **NFSv3**, **NFSv4.0**, **NFSv4.1**, and **NFSv4.2**.
 | Version | Key Features |
 |---------|--------------|
 | NFSv3 | Stateless, 64-bit file sizes, TCP, async writes, WCC |
-| NFSv4.0 | Stateful, ACLs, compound operations, RPCSEC_GSS (Kerberos) |
+| NFSv4.0 | Stateful, ACLs, compound operations (RPCSEC_GSS is not served yet) |
 | NFSv4.1 | Sessions, backchannel, directory delegations with CB_NOTIFY |
 | NFSv4.2 | Sparse files (ALLOCATE, DEALLOCATE, SEEK, READ_PLUS), server-side CLONE/reflink (RFC 7862) + extended attributes (RFC 8276) |
 
@@ -83,7 +83,7 @@ side restricts which one a client may pick. Pick based on what you need:
 | You want… | Use | Why |
 |-----------|-----|-----|
 | The simplest setup, no extra config | **NFSv4.1** | One TCP port, in-protocol locking, no MOUNT/NLM/NSM/portmapper to wire up. The recommended default for new mounts. |
-| ACLs, Kerberos (`sec=krb5`), or NFS-over-TLS | **NFSv4.0+** | These features are NFSv4-only. NFSv3 has none of them. |
+| ACLs | **NFSv4.0+** | NFSv4-only; NFSv3 has none. Kerberos (`sec=krb5`) and NFS-over-TLS are NFSv4-only too, and neither is served yet. |
 | Sparse files (ALLOCATE/DEALLOCATE/SEEK/READ_PLUS) or reflink/CLONE | **NFSv4.2** | Those operations were added in 4.2. (Inter-server `OP_COPY` is *not* implemented.) |
 | Maximum client compatibility / legacy clients | **NFSv3** | Works everywhere, but byte-range locking needs the NLM/NSM side-channel (UDP + portmapper on 111 — see [NFSv3 File Locking](#nfsv3-file-locking-nlmnsm)). |
 
@@ -98,8 +98,8 @@ side restricts which one a client may pick. Pick based on what you need:
   always pass the version (and port) explicitly anyway.
 - **macOS** has a mature NFSv3 client and a more limited NFSv4 client. NFSv3 is
   the best-trodden path on macOS; some macOS releases negotiate only up to
-  `vers=4.0`. macOS has **no** NFS-over-TLS client — use Kerberos or a network
-  tunnel for confidentiality.
+  `vers=4.0`. macOS has **no** NFS-over-TLS client; use a network tunnel for
+  confidentiality.
 
 ### How a version is negotiated
 
@@ -547,6 +547,10 @@ NFSv3 for share-wide access levels set via `default_permission`.
 
 ## Kerberos Exports (sec=krb5)
 
+> **Not served yet.** v2 answers every RPCSEC_GSS call with `AUTH_BADCRED` until its GSS stage
+> is built, so a `sec=krb5`, `krb5i` or `krb5p` mount fails today. The rest of this section
+> describes the design and cannot be used yet.
+
 NFSv4.0 and NFSv4.1 can authenticate with Kerberos via RPCSEC_GSS. The server
 verifies the client's Kerberos ticket against a keytab and maps the
 authenticated principal to a DittoFS identity for permission checks.
@@ -637,7 +641,7 @@ idmap mount and access files as that user with no extra configuration.
 ## NFS-over-TLS (RFC 9289)
 
 > **Not served yet.** v2 refuses every adapter TLS `mode` except `off` until StartTLS is built, so
-> NFS traffic is not encrypted today; use Kerberos (`sec=krb5p`) or a network tunnel. The rest of
+> NFS traffic is not encrypted today; use a network tunnel (a VPN or WireGuard). The rest of
 > this section describes the design and cannot be used yet.
 
 The design is to encrypt NFS wire traffic with TLS 1.3, using the opportunistic `AUTH_TLS` STARTTLS mechanism from RFC 9289. A client opens TCP and sends a `NULL` RPC with `auth_flavor = AUTH_TLS (7)`; the server replies with the 8-octet `"STARTTLS"` verifier, then both perform a TLS 1.3 handshake on the **same** connection. All subsequent RPC traffic is encrypted. Because Go performs the handshake and crypto in userspace, no kernel TLS (`kTLS`) or `tlshd` daemon is needed on the server.

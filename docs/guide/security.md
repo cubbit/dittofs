@@ -68,7 +68,7 @@ For the internal mechanism design and threat model, see
 ## Remaining limitations
 
 - No formal security audit performed
-- NFS-over-TLS (RFC 9289) is not served yet: every adapter TLS mode but `off` is refused until StartTLS is built. Once served, it requires a client that supports RFC 9289 (`xprtsec=tls`); macOS has no such client (use Kerberos or a network tunnel instead)
+- NFS-over-TLS (RFC 9289) is not served yet: every adapter TLS mode but `off` is refused until StartTLS is built. Once served, it requires a client that supports RFC 9289 (`xprtsec=tls`); macOS has no such client (use a network tunnel instead)
 - No encryption at rest
 - No audit logging for file operations
 
@@ -77,6 +77,10 @@ For the internal mechanism design and threat model, see
 ## Authentication
 
 ### NFS: RPCSEC_GSS (Kerberos)
+
+> **Not served yet.** v2 answers every RPCSEC_GSS call with `AUTH_BADCRED` until its GSS stage
+> is built, so a `sec=krb5`, `krb5i` or `krb5p` mount fails today. The rest of this section
+> describes the design and cannot be used yet.
 
 DittoFS implements RPCSEC_GSS per RFC 2203, enabling Kerberos-based strong authentication for
 NFSv4 clients. This is the recommended authentication method for any deployment outside of a
@@ -388,7 +392,7 @@ Mutual TLS is not available on the REST API.
 - Future: DittoFS only loads cert files; issuance and renewal are the platform's
   responsibility.
 - **Client support (future):** Linux `mount -o vers=4.1,xprtsec=tls` needs `tlshd` + `CONFIG_NET_HANDSHAKE`
-  (RHEL 9.x / kernel 6.7+). macOS has no NFS-over-TLS client — use Kerberos or a VPN tunnel.
+  (RHEL 9.x / kernel 6.7+). macOS has no NFS-over-TLS client — use a VPN tunnel.
 
 ### Control plane API TLS
 
