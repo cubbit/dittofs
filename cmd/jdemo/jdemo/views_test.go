@@ -2,6 +2,7 @@ package jdemo
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,8 +64,8 @@ func TestFileSystemViewListsSegments(t *testing.T) {
 func TestIndexViewAnswersRealRows(t *testing.T) {
 	// The flip T7.6 made: Inspect().File answers the live index's rows,
 	// not a refusal. The returned entry names the same record the dump
-	// walk reads — segment 3, offset 48 — the two views agree on the
-	// truth of where hello world lives.
+	// walk reads, so the two views agree on where hello world lives:
+	// the expected segment and offset come from the scanner, not a constant.
 	base := t.TempDir()
 	dir := filepath.Join(base, "journal")
 	d, out := newTestDemo(t, dir, "")
@@ -79,13 +80,14 @@ func TestIndexViewAnswersRealRows(t *testing.T) {
 	if _, err := h.WriteAt(context.Background(), StoryFile, 0, []byte("hello world"), 0); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+	_, rec, _ := findWrite(t, d)
 	d.viewIndex()
 	screen := out.String()
 	for _, want := range []string{
-		"held",        // the entry's kind
-		"0–11",        // its extent
-		"v1",          // its version
-		"record 3@48", // its backing record, where the dump walks to it
+		"held", // the entry's kind
+		"0–11", // its extent
+		"v1",   // its version
+		fmt.Sprintf("record %d@%d", rec.Segment, rec.Offset), // its backing record, where the dump walks to it
 	} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("index view after a write lacks %q:\n%s", want, screen)
