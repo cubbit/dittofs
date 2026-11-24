@@ -351,6 +351,16 @@ release:
     # dfsctl (client CLI)
     curl -sfL https://github.com/cubbit/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
     ```
+
+    **FoundationDB metadata (Linux):** only these builds open `metadata.backend: foundationdb`.
+    They need the FoundationDB 7.3 client and a 7.3 cluster; see the [deployment guide](https://github.com/cubbit/dittofs/blob/{{ .Tag }}/docs/guide/install.md#foundationdb-metadata).
+    ```bash
+    # the image
+    docker pull marmos91c/dittofs:{{ .Tag }}-foundationdb
+
+    # dfs, for x86_64 or arm64 (libfdb_c.so comes from the foundationdb-clients 7.3 package)
+    curl -sfL https://github.com/cubbit/dittofs/releases/download/{{ .Tag }}/dfs-foundationdb_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
+    ```
   extra_files:
     - glob: scripts/install.sh
     - glob: dist-foundationdb/*.tar.gz
@@ -385,3 +395,4 @@ release:
     - `marmos91c/dittofs:latest` - Latest stable release
     - `marmos91c/dittofs:v{{ .Major }}` - Latest v{{ .Major }}.x.x
     - `marmos91c/dittofs:v{{ .Major }}.{{ .Minor }}` - Latest v{{ .Major }}.{{ .Minor }}.x
+    - `marmos91c/dittofs:{{ .Tag }}-foundationdb` - This version, built with the FoundationDB metadata backend

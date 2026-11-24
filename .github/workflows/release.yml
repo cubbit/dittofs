@@ -65,6 +65,20 @@ jobs:
           pattern: foundationdb-tarball-*
           merge-multiple: true
 
+      # The download passes when no artifact matches, and GoReleaser does not
+      # fail on an empty dist-foundationdb, so a rerun after the artifacts
+      # expired would publish a release without them.
+      - name: Check the FoundationDB tarballs
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          shopt -s nullglob
+          got=(dist-foundationdb/*)
+          want=("dist-foundationdb/dfs-foundationdb_${TAG#v}_Linux_arm64.tar.gz" "dist-foundationdb/dfs-foundationdb_${TAG#v}_Linux_x86_64.tar.gz")
+          if [ "${got[*]}" != "${want[*]}" ]; then
+            echo "::error::dist-foundationdb holds '${got[*]}', want '${want[*]}': if the tarball artifacts expired, rerun all jobs"
+            exit 1
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@9a127d869fb706213d29cdf8eef3a4ea2b869415 # v7
         with:
@@ -229,7 +243,7 @@ jobs:
           name: foundationdb-tarball-${{ matrix.arch }}
           path: ${{ runner.temp }}/out/*.tar.gz
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   # dfs with the foundationdb tag, as <tag>-foundationdb. cgo links libfdb_c,
   # so each platform builds on a native runner rather than under QEMU, and
@@ -300,7 +314,7 @@ jobs:
           name: foundationdb-digest-${{ strategy.job-index }}
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   # Tags the two platform images as one, only once GoReleaser's job (and the
   # tests its before-hook runs) has passed, so a failed release names no image.
@@ -332,8 +346,13 @@ jobs:
         working-directory: ${{ runner.temp }}/digests
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
+          shopt -s nullglob
           sources=()
           for digest in *; do sources+=("marmos91c/dittofs@sha256:${digest}"); done
+          if [ "${#sources[@]}" -ne 2 ]; then
+            echo "::error::found ${#sources[@]} platform digests, want 2: if the digest artifacts expired, rerun all jobs"
+            exit 1
+          fi
           docker buildx imagetools create -t "marmos91c/dittofs:${TAG}-foundationdb" "${sources[@]}"
           docker buildx imagetools inspect "marmos91c/dittofs:${TAG}-foundationdb"
 
