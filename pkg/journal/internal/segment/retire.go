@@ -156,6 +156,10 @@ type Retirer struct {
 	// passHook is the instance's test hook, run by the worker at the end of
 	// every pass; nil in production.
 	passHook func()
+	// retireHook runs inside Retire after the read-only check, immediately
+	// before the ledger's claim: where a test takes the claim a racing
+	// retirement would. Nil in production.
+	retireHook func(core.SegmentID, Reason)
 }
 
 // NewRetirer returns the executor over c's dependencies. A nil Set, Cache,
@@ -231,6 +235,10 @@ func (r *Retirer) Retire(id core.SegmentID, reason Reason) (Retirement, error) {
 		}
 	}
 
+	if r.retireHook != nil {
+		r.retireHook(id, reason)
+	}
+
 	st, full, err := r.cfg.Set.ClaimRetirement(id)
 	if err != nil {
 		return Retirement{}, err
@@ -287,6 +295,20 @@ func (r *Retirer) Retire(id core.SegmentID, reason Reason) (Retirement, error) {
 	}
 	return ret, err
 }
+
+// SetRetireHook installs the test seam that runs inside Retire after the
+// read-only check and before the ledger's claim, so a test can take the
+// claim a racing retirement takes in production. It is per-instance and nil
+// by default, and it must be installed before any Retire can reach the
+// retirer concurrently — in a running core, before anything is queued for
+// retirement — because the fire site reads the field without a lock.
+//
+// decision: no production wiring ever installs the hook; the reclaim pass
+// tests are what hold its signature, and their contract is the install
+// before a concurrent Retire could read it. Overturned if production ever
+// needs to observe retirements: then the field becomes an atomic and the
+// setter gains a production caller.
+func (r *Retirer) SetRetireHook(f func(core.SegmentID, Reason)) { r.retireHook = f }
 
 // reasonState is the state the reason names. The pairs are exactly two, and
 // nothing between them is served: NotHeld is the seal's reason, ReasonEnded

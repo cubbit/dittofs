@@ -157,7 +157,7 @@ func sealedStore(t *testing.T) (*kvstore.Store, *secrets.Provider, entity.Secret
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}
+	owner := entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory.bind_credential"}
 	var ref entity.SecretRef
 	ref[0] = 1
 	sec, err := p.Seal(ctx, secrets.Protocol, entity.SecretDirectoryCredential, owner, ref, []byte(adAdminPassword), secrets.Meta{})

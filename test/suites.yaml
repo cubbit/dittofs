@@ -56,6 +56,8 @@ suites:
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
       - test/go-cache-push-only.sh             # only a push run saves to the Actions cache
+      # Plans moved to .planning/; a change cut before the move would recreate the old folder.
+      - { sh: 'f=$(git ls-files docs/internals/planning | grep -vxF docs/internals/planning/README.md); test -z "$f" || { echo "move to .planning/: $f"; exit 1; }; git ls-files --error-unmatch docs/internals/planning/README.md >/dev/null' }
       - go test ./test/harness/...              # dt's own tests
       - go test ./test/journal/                 # every journal RFC row maps to a test or an owner
   # Every shell script: the *.sh files, and the executables without an extension whose first

@@ -1,6 +1,6 @@
 ---
 name: rfc-to-epic-plan
-description: Turn a DittoFS RFC (docs/internals/rfcs/rfc-*.md) into an implementation plan split into epics and subtasks, each epic estimated in man-days, with blockers, synchronisation points and a split across the team, written to docs/internals/planning/. Use whenever an RFC is to be broken down, planned, split into epics or subtasks, or handed to the team ("plan RFC 12", "split rfc-8 into epics", "make the epic plan for the engine RFC"). Not for expanding a single epic of an existing plan into detailed subtasks (use epic-breakdown).
+description: Turn a DittoFS RFC (docs/internals/rfcs/rfc-*.md) into an implementation plan split into epics and subtasks, each epic estimated in man-days, with blockers, synchronisation points and a split across the team, written to .planning/. Use whenever an RFC is to be broken down, planned, split into epics or subtasks, or handed to the team ("plan RFC 12", "split rfc-8 into epics", "make the epic plan for the engine RFC"). Not for expanding a single epic of an existing plan into detailed subtasks (use epic-breakdown).
 ---
 
 # From an RFC to an epic plan
@@ -41,8 +41,8 @@ issue titles. **`<e>` is its number without the letter (`7`)**, and is the only 
 subtask id: `T<e>.<n>`. For an epic with no letter the two are the same.
 
 **When an id is cited.** A subtask id is *cited* once it appears in a pull request, an
-issue, or a document under `docs/internals/planning/` other than the epic document being
-written and the plan it details (`rg -n 'T<e>\.<n>\b' docs/internals/planning -g
+issue, or a document under `.planning/` other than the epic document being
+written and the plan it details (`rg -n 'T<e>\.<n>\b' .planning -g
 '!<plan>' -g '!<this-doc>'`): epic documents name each other's subtasks. An older plan
 that numbers its expected content does not make those ids cited, since they are an
 outline the breakdown is free to renumber.
@@ -105,10 +105,10 @@ marked as having one, and the plan's header states each default that was used.
 | 4 | Related RFCs and how far each is in scope | **required** | propose the `depends_on` list, then ask, for each: *in scope*, *only the parts this RFC cannot work without*, or *constraints only* |
 | 5 | Where v2 lives (package path and name) | default: proposed by you in §4.1 of the plan, flagged as an open point | |
 | 6 | Tracks | fixed: three tracks named **A, B and C** (Step 2), with no owner | do not ask; who works which track is decided outside the plan |
-| 7 | Target branch and external dependencies (PRs or other plans that must land first) | default: none known, listed as an open point | check `docs/internals/planning/` for plans this RFC depends on |
+| 7 | Target branch and external dependencies (PRs or other plans that must land first) | default: none known, listed as an open point | check `.planning/` for plans this RFC depends on |
 | 8 | The programme this RFC belongs to: an umbrella issue or plan that stages the work, assigns owners, and says which existing code is being replaced | **required** | ask for the link, then read its latest decisions; if there is none, say so in the header |
 | 9 | Dashboards | default: **no**, unless the RFC asks for them | the RFC's named alerts are alert rules (RFC 25 §7) in the integration epic, not a dashboard epic |
-| 10 | Output path | default: `docs/internals/planning/rfc-<n>-<slug>-plan.md` | **if any `rfc-<n>-*-plan.md` already exists, stop and ask** whether to revise it, replace it or write elsewhere: someone may be working from it, and a second plan for the RFC would reuse its epic numbers and `rfc-<n>-epic-<k>` labels |
+| 10 | Output path | default: `.planning/rfc-<n>-<slug>-plan.md` | **if any `rfc-<n>-*-plan.md` already exists, stop and ask** whether to revise it, replace it or write elsewhere: someone may be working from it, and a second plan for the RFC would reuse its epic numbers and `rfc-<n>-epic-<k>` labels |
 | 11 | RFC `status: deferred` | **ask** | plan the whole RFC, or only the hooks the RFC says must exist before it is built? |
 
 ## Step 1 — Read
@@ -118,7 +118,7 @@ marked as having one, and the plan's header states each default that was used.
 - If there is a v1, read its package's exported surface and its callers. You need this to
   write §1.1's table of what replaces what and to scope the integration epic. You do **not** need it to
   design v2: v2 ignores v1 (rule 7).
-- Read the existing plans in `docs/internals/planning/` that this RFC touches, and align
+- Read the existing plans in `.planning/` that this RFC touches, and align
   with them. Where you diverge, say so as an open point.
 - Read the programme from Step 0 #8: its stages, who owns each, and what each stage
   replaces. Never plan integration against code a later stage deletes.

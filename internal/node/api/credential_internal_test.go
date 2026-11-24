@@ -19,7 +19,7 @@ func TestCredentialAuditHoldsSet(t *testing.T) {
 		name     string
 		old, new any
 	}{{"a first credential", nil, nu}, {"a credential replaced", old, nu}, {"a credential removed", old, nil}} {
-		b, err := change(tc.old, tc.new, credentials.auditAs, credentials.secret)
+		b, err := change(tc.old, tc.new, credentials.auditAs, credentials.secret, false)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}

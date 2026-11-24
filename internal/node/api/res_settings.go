@@ -14,14 +14,18 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/settings"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // settingsTable is the settings table the node hands in: the components'
 // validators, by key prefix, which judge a setting's write inside its
-// transaction, and the codec that records a namespace's bound settings.
+// transaction, the codec that records a namespace's bound settings, and the
+// declaration of which keys name a secret, which the write and the read of
+// such a key follow.
 type settingsTable interface {
 	Check(tx entity.ControlPlaneTx, caller entity.APIRole, w settings.Write, holds settings.HoldsContent) error
 	Bound(rows []entity.Setting) ([]byte, error)
+	SecretKind(key string) (entity.SecretKind, bool)
 }
 
 var _ settingsTable = settings.Table{}
@@ -165,6 +169,11 @@ func createSettings(
 
 // deleteSetting removes key's value at scope under expect, judged by the
 // settings table first.
+//
+// ponytail: a key naming a secret removes only its row here, and the
+// secret's sealed versions outlive it, since the secret provider's Delete
+// takes no transaction; delete them in this one once it does, as the API's
+// other secret deletes will.
 func deleteSetting(ctx context.Context, d Deps, tx entity.ControlPlaneTx, scope entity.SettingScope, key string, expect uint64) error {
 	if err := checkSetting(ctx, d, tx, key, func() settings.Write { return settings.Delete(scope, key) }); err != nil {
 		return err
@@ -313,11 +322,23 @@ func settingRoutes() []route {
 		// An installation setting's put may start the NT-hash deletion,
 		// which identity.ntlm's rule starts; a delete turns NTLM on, which
 		// starts none.
+
+		// Each method takes its own sentence: a put of a key naming a
+		// secret states its value while a delete and a get take none, and a
+		// get answers the secret's reference and version.
 		var may apiv1.OpKind
-		var desc string
+
+		var desc, getDesc, putDesc string
+
 		if sc.path == "/api/v1/settings" {
 			may = apiv1.OpNTHashDelete
-			desc = "A write of " + auth.NTLMKey + " takes the admin role, whatever x-dittofs-role names for every other key."
+			desc = "A write of " + auth.NTLMKey + " takes the admin role, whatever " +
+				"x-dittofs-role names for every other key."
+			putDesc = desc + " A key the settings table declares a secret's " +
+				"reference takes its value as a JSON string, seals it, and holds " +
+				"the secret's reference and version, never its value."
+			getDesc = "A key the settings table declares a secret's reference answers " +
+				"the secret's reference and version, never its value."
 		}
 		// The key is the audit target, which an index key holds, so it is
 		// bounded before any record is written for it.
@@ -329,6 +350,15 @@ func settingRoutes() []route {
 		}
 		w := writing[settingDoc]{
 			kind: entity.ResourceSetting, raises: true,
+			keyedSecret: func(d Deps, sub, path string) bool {
+				if path != "spec.value" || d.Settings == nil {
+					return false
+				}
+
+				_, named := d.Settings.SecretKind(sub)
+
+				return named
+			},
 			read: func(tx entity.ControlPlaneTx, id [16]byte, key string) (settingDoc, uint64, bool, error) {
 				if via, ok := ownKeys[key]; ok {
 					return settingDoc{}, 0, false, &fieldError{field: key, detail: "written by " + via}
@@ -347,24 +377,19 @@ func settingRoutes() []route {
 		}
 		path := sc.path + "/{sub}"
 		out = append(out,
-			route{method: http.MethodGet, pattern: path, kind: entity.ResourceSetting, right: auth.View, target: target, sub: subSetting, serve: watch(settingRead(sc.scope))},
-			route{method: http.MethodPut, pattern: path, kind: entity.ResourceSetting, right: sc.right, mayStart: may, target: target, sub: subSetting, desc: desc, serve: write(w, nil,
-				func(ctx context.Context, rq request[settingDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Setting, [16]byte, error) {
-					v := rq.Body.Spec.Value
-					if len(v) == 0 || string(v) == "null" {
-						return apiv1.Setting{}, rq.ID, &fieldError{field: "spec.value", detail: "a put states the value; a DELETE resets the setting to its default"}
-					}
-					var gen uint64
-					st := entity.Setting{Scope: sc.scope(rq.ID), Key: rq.Sub, Value: v}
-					if err := netbiosRule(tx, st.Scope, st.Key); err != nil {
-						return apiv1.Setting{}, rq.ID, err
-					}
-					err := ntlmWrite(ctx, tx, rq.start, st.Scope, st.Key, func() (err error) {
-						gen, err = putSetting(ctx, rq.d, tx, st, rq.Expect)
-						return err
-					})
-					return apiv1.Setting{ID: rq.Sub, Generation: gen, Spec: apiv1.SettingSpec{Value: v}}, rq.ID, err
-				})},
+			route{
+				method: http.MethodGet, pattern: path, kind: entity.ResourceSetting,
+				right: auth.View, target: target, sub: subSetting, desc: getDesc,
+				serve: watch(settingRead(sc.scope)),
+			},
+			route{
+				method: http.MethodPut, pattern: path, kind: entity.ResourceSetting,
+				right: sc.right, mayStart: may, target: target, sub: subSetting, desc: putDesc,
+				serve: write(w,
+					func(ctx context.Context, rq request[settingDoc]) (settingStep, error) {
+						return sealSetting(ctx, sc.scope(rq.ID), rq)
+					}, putSettingDoc),
+			},
 			route{method: http.MethodDelete, pattern: path, kind: entity.ResourceSetting, right: sc.right, target: target, sub: subSetting, desc: desc, serve: write(tagsOf(w), nil,
 				func(ctx context.Context, rq request[none], _ struct{}, tx entity.ControlPlaneTx) (none, [16]byte, error) {
 					scope := sc.scope(rq.ID)
@@ -378,6 +403,206 @@ func settingRoutes() []route {
 		)
 	}
 	return out
+}
+
+// settingStep is the settings resource's pre-write step's result: the scope
+// the request's path names, and, for a key the table declares a secret's
+// reference, the sealed version and whether the scope then held no row
+// naming its reference, so the write re-reads the row against what the step
+// saw.
+type settingStep struct {
+	scope  entity.SettingScope
+	secret entity.Secret
+	fresh  bool
+}
+
+// sealed reports whether the step sealed a version for the key the request
+// named, false for a plain setting's write.
+func (s settingStep) sealed() bool {
+	return s.secret.ID != (entity.SecretRef{})
+}
+
+// sealSetting is the settings resource's pre-write step: a key the table
+// declares a secret's reference takes its value as a JSON string, its UTF-8
+// bytes sealed under the kind the table declares, the secret owned by the
+// setting that names it, as the first version of a fresh reference when the
+// scope holds no row, or the next version of the reference the row names
+// (RFC 13 §7). The decoded value and its byte copy clear from the step on,
+// on every path out, so a refusal clears them too; the read's raw body is
+// write.go's own recorded decision to clear or leave, a keyed row leaving
+// it. A key only a resource's own route writes is
+// refused before anything is sealed, and a value that is no JSON string, or
+// an empty one, is refused before anything is read of it; a node with no
+// sealer is refused 503 before the row is read. Every other key, and a node
+// that hands in no table, seals nothing here: the write's transaction gives
+// those their answer, as it did before the step existed.
+func sealSetting(
+	ctx context.Context,
+	scope entity.SettingScope,
+	rq request[settingDoc],
+) (settingStep, error) {
+	step := settingStep{scope: scope}
+
+	if rq.d.Settings == nil {
+		return step, nil
+	}
+
+	kind, named := rq.d.Settings.SecretKind(rq.Sub)
+	if !named {
+		return step, nil
+	}
+
+	if via, ok := ownKeys[rq.Sub]; ok {
+		return settingStep{}, &fieldError{field: rq.Sub, detail: "written by " + via}
+	}
+
+	v := rq.Body.Spec.Value
+
+	defer clear(v)
+
+	var s string
+
+	if err := json.Unmarshal(v, &s); err != nil {
+		return settingStep{}, &fieldError{
+			field: "spec.value", detail: "a secret states its value as a JSON string",
+		}
+	}
+
+	if s == "" {
+		return settingStep{}, &fieldError{field: "spec.value", detail: "a secret states its value"}
+	}
+
+	if rq.d.Sealer == nil {
+		return settingStep{}, errNoSealer
+	}
+
+	all, err := scopeSettings(ctx, rq.d.Store, scope)
+	if err != nil {
+		return settingStep{}, err
+	}
+
+	ref := entity.SecretRef(entity.NewShareID())
+
+	step.fresh = true
+
+	if row, held := all[rq.Sub]; held {
+		stored, err := refFrom(row.Value)
+		if err != nil {
+			return settingStep{}, &componentError{
+				field:  rq.Sub,
+				detail: "the stored value is not a secret reference",
+				err:    vfserr.ErrCorrupt,
+			}
+		}
+
+		ref, step.fresh = stored, false
+	}
+
+	owner := entity.SecretOwner{Scope: scope, Key: rq.Sub}
+
+	// The byte copy of the decoded string clears too: the string itself is
+	// immutable and stays for the collector.
+	value := []byte(s)
+
+	defer clear(value)
+
+	if step.secret, err = rq.d.Sealer.Seal(ctx, kind, owner, ref, value, false); err != nil {
+		return settingStep{}, err
+	}
+
+	return step, nil
+}
+
+// staleSeal refuses a write whose row changed between its step and its
+// transaction: the sealed version would commit beside a row that no longer
+// reads as the step read it, so the write is refused and the caller writes
+// again.
+func staleSeal(key string) error {
+	return &componentError{
+		field: key, detail: "the row changed since the value was sealed; write it again",
+		err: vfserr.ErrStale,
+	}
+}
+
+// putSettingDoc is the settings resource's PUT: a key the table declares a
+// secret's reference writes the version its step sealed beside the row
+// naming it, the row re-read in the transaction so one that changed since
+// the step refuses the write, and the row judged by the settings table under
+// the caller's role, so the reference names a version judged with the
+// caller's own authority. Every other key writes its stated value under the
+// write's own rules, unchanged.
+func putSettingDoc(
+	ctx context.Context,
+	rq request[settingDoc],
+	in settingStep,
+	tx entity.ControlPlaneTx,
+) (apiv1.Setting, [16]byte, error) {
+	if !in.sealed() {
+		v := rq.Body.Spec.Value
+		if len(v) == 0 || string(v) == "null" {
+			return apiv1.Setting{}, rq.ID, &fieldError{
+				field:  "spec.value",
+				detail: "a put states the value; a DELETE resets the setting to its default",
+			}
+		}
+
+		st := entity.Setting{Scope: in.scope, Key: rq.Sub, Value: v}
+
+		if err := netbiosRule(tx, st.Scope, st.Key); err != nil {
+			return apiv1.Setting{}, rq.ID, err
+		}
+
+		var gen uint64
+
+		err := ntlmWrite(ctx, tx, rq.start, st.Scope, st.Key, func() (err error) {
+			gen, err = putSetting(ctx, rq.d, tx, st, rq.Expect)
+
+			return err
+		})
+
+		return apiv1.Setting{ID: rq.Sub, Generation: gen, Spec: apiv1.SettingSpec{Value: v}},
+			rq.ID, err
+	}
+
+	row, ok, err := tx.Setting(in.scope, rq.Sub)
+	if err != nil {
+		return apiv1.Setting{}, rq.ID, err
+	}
+
+	// The row re-read in the write's transaction must read as the step read
+	// it: a row the scope gained since, or lost since, or pointed at
+	// another reference, names a version the step sealed for none of it.
+	switch {
+	case ok == in.fresh:
+		return apiv1.Setting{}, rq.ID, staleSeal(rq.Sub)
+	case ok:
+		if r, err := refFrom(row.Value); err != nil || r != in.secret.ID {
+			return apiv1.Setting{}, rq.ID, staleSeal(rq.Sub)
+		}
+	}
+
+	if err := tx.PutSecret(in.secret, in.secret.Version-1); err != nil {
+		return apiv1.Setting{}, rq.ID, err
+	}
+
+	gen, err := putSetting(ctx, rq.d, tx, entity.Setting{
+		Scope: in.scope,
+		Key:   rq.Sub,
+		Value: refValue(in.secret.ID),
+	}, rq.Expect)
+	if err != nil {
+		return apiv1.Setting{}, rq.ID, err
+	}
+
+	ref, err := json.Marshal(apiv1.SecretRef{
+		Ref: idString(in.secret.ID), Version: in.secret.Version,
+	})
+	if err != nil {
+		return apiv1.Setting{}, rq.ID, err
+	}
+
+	return apiv1.Setting{ID: rq.Sub, Generation: gen, Spec: apiv1.SettingSpec{Value: ref}},
+		rq.ID, nil
 }
 
 // settingRead is GET of a setting at the scope its path names, its
@@ -399,16 +624,56 @@ func settingRead(scope func([16]byte) entity.SettingScope) watching[apiv1.Settin
 			if !ok {
 				return apiv1.Setting{}, errNotFound
 			}
+
+			value := s.Value
+
+			if d.Settings != nil {
+				if _, named := d.Settings.SecretKind(rq.Sub); named {
+					if value, err = secretRefValue(ctx, d, s); err != nil {
+						return apiv1.Setting{}, err
+					}
+				}
+			}
+
 			pp := perPage{}
 			if pp.statuses, err = d.Nodes.RegisteredStatuses(ctx); err != nil {
 				return apiv1.Setting{}, err
 			}
 			a := pp.applied(entity.SettingRef(s.Scope, s.Key), s.Position, func(st entity.NodeStatus) uint64 { return st.Settings })
-			return apiv1.Setting{ID: s.Key, Generation: s.Generation, Spec: apiv1.SettingSpec{Value: s.Value}, Status: apiv1.SettingStatus{Applied: &a}}, nil
+
+			return apiv1.Setting{
+				ID: s.Key, Generation: s.Generation, Spec: apiv1.SettingSpec{Value: value},
+				Status: apiv1.SettingStatus{Applied: &a},
+			}, nil
 		},
 		tag: func(s apiv1.Setting) uint64 { return s.Generation },
 		until: changes(func(first, now apiv1.Setting) bool {
 			return first.Generation != now.Generation
 		}),
 	}
+}
+
+// secretRefValue is what a setting naming a secret answers as its value: the
+// secret's reference and its current version, never the sealed value,
+// as RFC 23 §4.2 reads it, "Secrets are never read. A secret-bearing field
+// reads as its reference and version". A row naming no reference, or one
+// naming no secret, is
+// refused rather than answered, so a broken reference never reads as an
+// empty secret.
+func secretRefValue(ctx context.Context, d Deps, s entity.Setting) ([]byte, error) {
+	ref, err := refFrom(s.Value)
+	if err != nil {
+		return nil, &componentError{
+			field:  s.Key,
+			detail: "the stored value is not a secret reference",
+			err:    vfserr.ErrCorrupt,
+		}
+	}
+
+	sec, err := d.Store.Secret(ctx, ref, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(apiv1.SecretRef{Ref: idString(ref), Version: sec.Version})
 }

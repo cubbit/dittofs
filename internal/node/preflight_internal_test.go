@@ -801,7 +801,7 @@ func TestPreflight(t *testing.T) {
 			} else {
 				defer cancel()
 			}
-			var store kv.KV
+			var open func(context.Context) (kv.KV, error)
 			if r.withKV {
 				// Outside parent, whose tree the row hashes: Badger's own
 				// files are no part of the check's storage.
@@ -810,9 +810,9 @@ func TestPreflight(t *testing.T) {
 					t.Fatalf("open the KV: %v", err)
 				}
 				t.Cleanup(func() { _ = db.Close() })
-				store = db
+				open = opened(db)
 			}
-			got := Preflight(ctx, storeDir, store, v1Root, devices, clock, journaltest.SuitableMount())
+			got := Preflight(ctx, storeDir, open, v1Root, devices, clock, journaltest.SuitableMount())
 			if r.postRun != nil {
 				r.postRun(t, storeDir, devices)
 			}
@@ -939,9 +939,13 @@ func kvRows() []kvRow {
 			},
 		},
 		{
-			name:    "a format record that does not decode passes",
-			journal: true,
-			store:   func(t *testing.T, db kv.KV) { setKey(t, db, keys.Format, []byte{0xff}) },
+			// A damaged store, not a newer one: the check names it rather
+			// than leave the node's open to call it a format to upgrade to.
+			name:     "a format record that does not decode is unidentifiable",
+			journal:  true,
+			store:    func(t *testing.T, db kv.KV) { setKey(t, db, keys.Format, []byte{0xff}) },
+			want:     errUnidentifiable,
+			contains: "format record does not decode",
 		},
 	}
 }
@@ -959,7 +963,7 @@ func (r kvRow) run(t *testing.T, db kv.KV) {
 	} else {
 		makeDir(t, dir)
 	}
-	got := Preflight(t.Context(), "", db, filepath.Join(t.TempDir(), "blocks"), []string{dir},
+	got := Preflight(t.Context(), "", opened(db), filepath.Join(t.TempDir(), "blocks"), []string{dir},
 		sim.NewTestClock(time.Unix(0, 0)), journaltest.SuitableMount())
 	if !errors.Is(got, r.want) || (r.want == nil && got != nil) {
 		t.Fatalf("Preflight over the KV: got %v, want %v", got, r.want)
@@ -981,6 +985,11 @@ func TestPreflightOverAKV(t *testing.T) {
 			r.run(t, memKV(t))
 		})
 	}
+}
+
+// opened is the opener of db, a store already open.
+func opened(db kv.KV) func(context.Context) (kv.KV, error) {
+	return func(context.Context) (kv.KV, error) { return db, nil }
 }
 
 // memKV is a Badger store in memory, closed when the test ends.
@@ -1052,7 +1061,7 @@ func TestPreflightWhenTheStoreReadFails(t *testing.T) {
 			}
 			dir := filepath.Join(parent, "device")
 			initJournal(t, dir, kvInstall)
-			got := Preflight(ctx, "", db, filepath.Join(parent, "blocks"), []string{dir},
+			got := Preflight(ctx, "", opened(db), filepath.Join(parent, "blocks"), []string{dir},
 				sim.NewTestClock(time.Unix(0, 0)), journaltest.SuitableMount())
 			if !errors.Is(got, r.want) {
 				t.Fatalf("Preflight over a failing read: got %v, want %v", got, r.want)
@@ -1063,5 +1072,97 @@ func TestPreflightWhenTheStoreReadFails(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The store with no directory opens only once the wiring and the v1 layout
+// have passed: each refusal answers before the open, whose failure would
+// otherwise be the verdict, and an open that fails is the check's answer.
+func TestPreflightOpensAfterTheLocalRefusals(t *testing.T) {
+	errOpen := errors.New("the cluster did not answer the open")
+	failOpen := func(context.Context) (kv.KV, error) { return nil, errOpen }
+	for _, r := range []struct {
+		name string
+		// v1 plants a v1 layout under the check's journal root.
+		v1 bool
+		// noDevice hands the check no journal device.
+		noDevice bool
+		want     error
+	}{
+		{name: "a v1 layout", v1: true, want: errV1State},
+		{name: "no device over a v1 layout", v1: true, noDevice: true, want: errNoDevice},
+		{name: "the open's own error", want: errOpen},
+	} {
+		t.Run(r.name, func(t *testing.T) {
+			parent := t.TempDir()
+			if r.v1 {
+				writeFile(t, filepath.Join(parent, "blocks", "shares", "s1", "blobs", "f1"), "v1 data")
+			}
+			var devices []string
+			if !r.noDevice {
+				dir := filepath.Join(parent, "device")
+				initJournal(t, dir, kvInstall)
+				devices = []string{dir}
+			}
+			got := Preflight(t.Context(), "", failOpen, filepath.Join(parent, "blocks"), devices,
+				sim.NewTestClock(time.Unix(0, 0)), journaltest.SuitableMount())
+			if !errors.Is(got, r.want) {
+				t.Fatalf("Preflight with an open that fails: got %v, want %v", got, r.want)
+			}
+		})
+	}
+}
+
+// hungView is a store whose reads never answer: each View waits for its
+// context to end and returns the context's error, as a backend does over a
+// cluster lost after it opened.
+type hungView struct{ kv.KV }
+
+func (h hungView) View(ctx context.Context, _ func(kv.Reader) error) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// The start check's store read gives up once its limit passes on the
+// check's clock rather than waiting on a store that stopped answering, and
+// says so: no verdict on the store.
+func TestProbeKVGivesUpAtItsLimit(t *testing.T) {
+	const limit = 30 * time.Second
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	armed := clock.Armed(limit)
+	type result struct {
+		state       storeState
+		why, failed error
+	}
+	done := make(chan result, 1)
+	go func() {
+		state, why, failed := probeKV(t.Context(), hungView{memKV(t)}, clock, limit)
+		done <- result{state, why, failed}
+	}()
+	select {
+	case <-armed:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("probeKV did not wait %s on the check's clock within 10s, want its limit armed there", limit)
+	}
+	clock.Advance(limit - time.Nanosecond)
+	select {
+	case r := <-done:
+		t.Fatalf("probeKV over a store that never answers returned %v before its limit passed, want it still waiting", r.failed)
+	default:
+	}
+	clock.Advance(time.Nanosecond)
+	var r result
+	select {
+	case r = <-done:
+	// A bounded wait is the backstop: the limit already passed on the
+	// clock, so a read that ignores it fails here.
+	case <-time.After(10 * time.Second):
+		t.Fatal("probeKV over a store that never answers did not return once its limit passed on the clock")
+	}
+	if !errors.Is(r.failed, context.DeadlineExceeded) || !strings.Contains(r.failed.Error(), "no answer within 30s") {
+		t.Fatalf("probeKV over a store that never answers: failed %v, want the limit's deadline named", r.failed)
+	}
+	if r.state != storeUnidentifiable || r.why != nil {
+		t.Fatalf("probeKV over a store that never answers: state %v, why %v, want unidentifiable and no verdict", r.state, r.why)
 	}
 }

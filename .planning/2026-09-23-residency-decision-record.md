@@ -437,8 +437,8 @@ shutdown-ordering bug independent of everything above, and worth its own fix.
 
 ## 10. Impact on the Wave 4 plan
 
-`.planning/2026-09-22-block-simplification-PLAN.md` stays valid; its ordering
-changes, and it gains a wave in front.
+`9255091ca:.planning/2026-09-22-block-simplification-PLAN.md` (since deleted) stayed valid; its ordering
+changed, and it gained a wave in front.
 
 **New, and ahead of everything else — the production fix. Ships alone, on its own
 PR, with no refactor attached:**

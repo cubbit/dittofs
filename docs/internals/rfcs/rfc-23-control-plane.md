@@ -291,7 +291,8 @@ cluster is several over one replicated store.
    journal devices the bootstrap names, it refuses, naming the reason. A store
    with a directory is checked before anything opens, and a refusal leaves
    nothing opened. A store with no directory, such as FoundationDB's, is opened
-   first and checked through that KV, which a refusal closes.
+   by the check through the host's opener, only once the wiring and the v1
+   layout have passed, and checked through that KV, which a refusal closes.
 3. It builds the `Config` (§2.1) from the bootstrap: the bootstrap, the key-value
    store the metadata store opens on, the transport (none on one node), the
    clock, the fault seam, the metrics registry and the logger.
@@ -304,10 +305,15 @@ cluster is several over one replicated store.
 func run(ctx context.Context) error {
 	boot := config.LoadBootstrap()               // the host's file or environment
 	var db kv.KV                                 // a store with a directory opens after the check
+	var open func(context.Context) (kv.KV, error)
 	if boot.Store.Dir == "" {
-		db = kv.Open(boot.Store)                 // a store with no directory: the check reads its KV
+		open = func(ctx context.Context) (kv.KV, error) { // a store with no directory: the check opens it, after its local refusals, and reads its KV
+			var err error
+			db, err = kv.Open(ctx, boot.Store)
+			return db, err
+		}
 	}
-	if err := node.Preflight(ctx, boot.Store.Dir, db, boot.V1Root(), boot.Devices(), systemClock{}); err != nil {
+	if err := node.Preflight(ctx, boot.Store.Dir, open, boot.V1Root(), boot.Devices(), systemClock{}); err != nil {
 		if db != nil {
 			db.Close()                           // the one thing opened
 		}
@@ -482,15 +488,17 @@ func (n *Node) Start(ctx context.Context) error // §2.2's start, then reconcile
 func (n *Node) Stop(ctx context.Context) error  // §2.2's stop: the components in reverse build order
 
 // Preflight is the start check. Over the store, which is a directory or, on a
-// store with no directory, the KV the host has opened, and the journal devices
-// the bootstrap names, and a pre-journal (v1) layout on a device or at the
-// configured pre-journal root, it refuses naming what it found. It creates
-// nothing, except that opening a store with no directory writes the node's
-// clock ceiling first, also into a foreign cluster it then refuses. A first
-// start meets two of its refusals most often: a store never initialised, and a
-// bootstrap with no journal device. Exactly one of storeDir and store is set,
-// and Preflight never closes store: the host hands the same KV to New.
-func Preflight(ctx context.Context, storeDir string, store kv.KV, v1Root string, devices []string, clock Clock, opts ...journal.Option) error
+// store with no directory, the KV the host's opener returns, and the journal
+// devices the bootstrap names, and a pre-journal (v1) layout on a device or at
+// the configured pre-journal root, it refuses naming what it found. It calls
+// openKV only once the wiring and the v1 layout have passed, so a v1 host never
+// reaches the store's host. It creates nothing, except that opening a store
+// with no directory writes the node's clock ceiling first, also into a foreign
+// cluster it then refuses. A first start meets two of its refusals most often:
+// a store never initialised, and a bootstrap with no journal device. Exactly
+// one of storeDir and openKV is set, and Preflight never closes the KV openKV
+// returns: the host keeps it and hands the same KV to New.
+func Preflight(ctx context.Context, storeDir string, openKV func(context.Context) (kv.KV, error), v1Root string, devices []string, clock Clock, opts ...journal.Option) error
 
 // Config is what the host supplies and the node cannot build.
 type Config struct {

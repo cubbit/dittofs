@@ -1176,7 +1176,9 @@ var signingKeyFiles = []string{"auth/rotate.go", "auth/tokens.go"}
 // credentialWrites are the API's functions outside signingKeyFiles that may
 // write a secret version, each by its file, its receiver's type ("" for
 // none) and its name: secretSetting.put, which writes a remote store's
-// credential and the identity keytab, handOver, an offline join's machine
+// credential and the identity keytab, putSettingDoc, which writes the
+// version a setting's key sealed beside the row naming it, handOver, an
+// offline join's machine
 // password, WritePassword, a password's hash and NT hash, and createStore,
 // which writes a remote store's first credential beside the settings rows
 // it is judged with. Only a row with prunes set may also call PruneSecret,
@@ -1197,6 +1199,7 @@ var credentialWrites = []struct {
 	prunes           bool
 }{
 	{"res_secrets.go", "secretSetting", "put", false},
+	{"res_settings.go", "", "putSettingDoc", false},
 	{"res_domain.go", "", "handOver", false},
 	{"auth/password.go", "", "WritePassword", true},
 	{"res_stores.go", "", "createStore", false},
