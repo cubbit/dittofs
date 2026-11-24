@@ -110,6 +110,9 @@ func covers(pos, c kvstore.Counters) bool {
 // reconciled through the counters as they are now. After each second it
 // waits for a pass to end, or a second of real time for a loop waiting on a
 // longer backoff, so the clock never runs ahead of a pass's store calls.
+// It can answer before the loop sets its next wait, so an Advance right
+// after it may release nothing: a test that needs the loop parked follows it
+// with waitsSettled.
 func caughtUp(t *testing.T, h *nodetest.Harness) {
 	t.Helper()
 	c := counters(t, h)

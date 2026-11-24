@@ -549,6 +549,7 @@ var cfgScan = keys.Describe([]byte{keys.KindCFG})
 func TestSettingsWalkRepeatedOnAMovedGeneration(t *testing.T) {
 	h, f := faulted(t)
 	declareSections(t, h)
+	armed := armWaits(h)
 	ch := watchStatus(h)
 	started(t, h)
 
@@ -575,7 +576,9 @@ func TestSettingsWalkRepeatedOnAMovedGeneration(t *testing.T) {
 	})
 	defer held.Advance(time.Hour) // a failed test's Stop finds no scan held
 
-	// The pass reads this change in its counters, before its walk.
+	// The pass reads this change in its counters, before its walk. The loop
+	// is parked first, so the one Advance releases that pass.
+	waitsSettled(t, armed)
 	walkAt(t, h, entity.SettingScope{Kind: entity.ScopeInstallation}, "beta", 6)
 	h.Clock().Advance(time.Second)
 	wait(t, "the walk held in its second page", func() bool { return held.Pending() == 1 })
