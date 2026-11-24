@@ -44,7 +44,7 @@ scope:
 this plan is that owner. Roadmap epic #4078.
 
 **Divergence from the planning skill.** There is no test-foundations epic, by the user's standing
-decision for these plans. The leak check (`pkg/block/journal/journaltest/prof`, `internal/prof` once
+decision for these plans. The leak check (`pkg/journal/journaltest/prof`, `internal/prof` once
 #4000 lands) and the KV fault wrapper (`pkg/metadata/kv/kvtest`) exist. The in-memory directory and
 domain controller land in the epics that build their real counterparts, each held by its own
 conformance suite. The §1.5 instruction, copied verbatim, says epic issues exist before "E2's pull
@@ -481,7 +481,7 @@ proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `Fu
 **The known-failure mechanism.** None. No suite RFC 18 names keeps a `known.yaml`.
 
 **The test components:**
-- the leak check, `pkg/block/journal/journaltest/prof` (`internal/prof` once #4000 lands);
+- the leak check, `pkg/journal/journaltest/prof` (`internal/prof` once #4000 lands);
 - `pkg/metadata/kv/kvtest`'s fault wrapper, for the store errors §10's rows inject;
 - `pkg/identity/identitytest`'s in-memory directory (epic 6) and domain controller (epic 7), each
   standing in where D11 says. Each lands with its real counterpart, held by the same conformance

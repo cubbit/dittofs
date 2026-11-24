@@ -2802,7 +2802,7 @@ primary from a local one" a checked claim rather than a design intention.
 against any factory, a filesystem or a gateway, one file per area of §3.1 — clients, names, attributes,
 data, locking, shares — plus `crossproto.go`, the cross-protocol scenarios,
 driven by `Call` values of different `Protocol` with no adapter, and
-`faults.go`, as `pkg/metadata/storetest` does for stores. It is how the
+`faults.go`, as `pkg/metadata/kvstore/kvstoretest` does for stores. It is how the
 service is tested end to end before any adapter calls it. Its doubles are the three kinds
 [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) allows. A test that needs a
 `Service` uses an in-memory filesystem, `memory.New` (in `vfstest/memory`, apart from `vfstest`,
@@ -2915,7 +2915,7 @@ tree working:
 | 0 | the neutral value types (§3.0) and errors out of `pkg/metadata` into `pkg/vfs` | nothing yet: the adapters keep importing `pkg/metadata` until RFC 20's plan, stage 5, deletes them |
 | 1 | `vfs.Service` and `vfs.New` with its lifecycle (§2.5), the filesystem delegating to today's `metadata.Service`; `vfstest`'s `Faults` and `Callbacks`; the integration tier's harness | nothing: this is the harness every later slice tests against |
 | 2 | shares, identity and admission: `Root`, `SecInfo`, `ListShares` and the pseudo-filesystem into the service; a cross-protocol test that a quiesced or netgroup-restricted share is refused on every entry path | the four admission paths and three auth-context builders, `v4/pseudofs`, `shareEntryStatus`, the NFSv3 permission cache; closes #3040 and E-01. An adapter's own admission check stays until every operation on its path calls the service: removed earlier, it fails open |
-| 3 | the filesystem reaches today's lock manager through RFC 14 §11.3's seven views, served by a shim over the manager, so `Write`'s `CheckIO` and every other open-state call go through one seam. RFC 14's open state is built new, and its `*openstate.Table` then replaces the shim behind the same views | nothing yet; `pkg/metadata/lock` is deleted once the table replaces it, never ported, and none of its lock persistence carries forward |
+| 3 | the filesystem reaches open state through RFC 14 §11.3's seven views, served by `*openstate.Table`, so `Write`'s `CheckIO` and every other open-state call go through one seam. RFC 14's open state is built new | nothing; the v1 `pkg/metadata/lock` is deleted, never ported, and none of its lock persistence carries forward |
 | 4 | `Write`, `Read` and `Commit`, with the attempt deadline and the write verifier — the four copies of the write sequence become §5.1, returning `WCC` | the adapters' copies and the payload-scope call sites |
 | 5 | `Open` and `Close`: deny modes, delete on close, releases | the six deny-mode sites; closes E-08 and #2927 |
 | 6 | range-list `Lock` and `Unlock`, then `Copy` and `Clone` | the copychunk loops, `common/clone.go` |

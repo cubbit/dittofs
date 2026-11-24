@@ -218,7 +218,7 @@ epic leaves.
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   v1's journal (`pkg/block/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
+   v1's journal (`pkg/journal` until #3645 deleted it). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
@@ -552,7 +552,7 @@ epic leaves.
 ## 5. Target tree
 
 ```text
-pkg/block/journal/
+pkg/journal/
   repack.go             T9.7   Repack delegates to internal/reclaim
   share.go              T9.10, T9.11   Forget and Strand delegate to internal/datapath
   inspect.go            T9.9   Inspector.Segments
@@ -848,7 +848,7 @@ copy, and a split would leave a copy path no test can drive.
   durable-unlink report (T5.9); E8's `Close` (T8.12); C2 of E7a (after its T7.13), whose `Open`
   the crash tests reopen through.
 - **Covers:** R3, R5, R16, R22, R26, R35–R40, R46, R48–R51, R64, R65, R67–R69.
-- **Deliverables:** `internal/reclaim/pass.go` and `pkg/block/journal/repack.go`:
+- **Deliverables:** `internal/reclaim/pass.go` and `pkg/journal/repack.go`:
   `Repack(ctx, budget, scope)` checks the context first, then runs units (D9): select one
   segment, copy and carry, wait for the copies to be durable, repoint under each file's index
   (held and retained entries that still name the source piece now name the copy, as one step per

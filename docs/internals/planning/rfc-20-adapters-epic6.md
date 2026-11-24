@@ -348,7 +348,7 @@ reads, so every loopback test fails.
   is 5 bytes, not a multiple of 4, which checks the 3 bytes of XDR padding after it too (RFC
   4506 §4.11). Each file names the capture and the frame. They live under each `wire`
   package's `testdata/golden/` as hex with comments, read by a helper in its tests. No marker:
-  test data. Prior art: `pkg/block/journal/internal/format`'s `readGolden`.
+  test data. Prior art: `pkg/journal/internal/format`'s `readGolden`.
 - **D4, a scaffold reply grants one credit.** RFC 22 §3.3's grant (what the client asks, at
   least 1, up to the connection's target) needs the credit count that the RFC 22 plan's `Flow`
   (its T3.6) keeps. **`wire`'s reply encoder takes the grant as an argument; the header stage

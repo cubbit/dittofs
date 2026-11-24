@@ -32,7 +32,7 @@ journal v2 team, Davide (`didimelli`) and Vitor (`viquitorreis`), coordinated by
 epic 11 is superseded by this plan (§6, point 1). Stage 3 replaces nothing that a later stage deletes: today's engine
 keeps serving `develop` until the cutover (stage 7), and this part is composed by no root
 before `node.New`, which RFC 23's plan's epic 3 (#4050) builds.
-**Naming:** **v1** was the engine before this plan, `pkg/block/engine` until #3645 deleted it on `feat/storage-v2`, over one journal per
+**Naming:** **v1** was the engine before this plan, `pkg/engine` until #3645 deleted it on `feat/storage-v2`, over one journal per
 share and payload-keyed chunk rows. **v2** is the engine RFC 8 describes, built here, first as
 `pkg/block/enginev2`, as #3543 agreed (point 7). #3645 deleted v1 and
 renamed `enginev2` and `journalv2` to `engine` and `journal`; the suffix was only ever in Go
@@ -62,7 +62,7 @@ before any file is served. It lets the filesystem service (`*vfs.Filesystem`, st
 a real engine at RFC 17 §8's integration tier, with files that live in the journal and
 survive a restart, before any offload exists.
 
-| | v1 (`pkg/block/engine` until #3645) | v2 (this part) |
+| | v1 (`pkg/engine` until #3645) | v2 (this part) |
 | --- | --- | --- |
 | Journal | one per share, v1's format | one per device, journal v2, a `Handle` per share (RFC 8 §2.3) |
 | Metadata | payload-keyed chunk rows, a global hash index, the carve commit inside metadata transactions | RFC 6's `Existence` and `Content` views of the RFC 16 store, keyed by journal versions |
@@ -111,7 +111,7 @@ on the journal (§3.3).
 
 ### 1.3 What epic 1 must deliver
 
-The exported surface of `pkg/block/engine`, frozen at S1, and the `Content` contract agreed
+The exported surface of `pkg/engine`, frozen at S1, and the `Content` contract agreed
 with stage 2:
 
 - `Engine`, `New(Deps)`, `Apply(Settings)`, `Start`, `Close`, `Bind`, `Unbind`, `Drop`,
@@ -177,7 +177,7 @@ the rest:
 
 **The suite and its registration.** The red tests go in the engine's own conformance suite,
 which #3522's suites paragraph for RFC 8 calls for (RFC 29 R11):
-`pkg/block/engine/conformance`, behind the build tag `engine_conformance`, registered as
+`pkg/engine/conformance`, behind the build tag `engine_conformance`, registered as
 `engine-conformance` in `test/suites.yaml` as `journal-conformance` is: `format: go-json`,
 `go test -race -tags=engine_conformance`, `tier: pr` and `known: test/engine/known.yaml`, in a new `engine` group (RFC 29 §4.9). The
 tag joins `lint-go`'s `go vet -tags=…` list, or no check would compile the suite. Each red
@@ -345,7 +345,7 @@ harness (`journaltest/prof`) wired to the fixture.
    test over the real journal that starts red sits in that suite behind its build tag, never
    in `unit`, which keeps no known list.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1, enforced by
-   the engine's one import test, a walk over every package of `pkg/block/engine` with
+   the engine's one import test, a walk over every package of `pkg/engine` with
    one allowlist, which also refuses `pkg/vfs`: no package imports `pkg/block/syncer`,
    `pkg/block/carver`, `pkg/block/remote` or the v1 metadata service `pkg/metadata`; v1's
    engine and journal are gone on `feat/storage-v2` since #3645. The walk checks every package on its own, so its
@@ -388,7 +388,7 @@ harness (`journaltest/prof`) wired to the fixture.
 
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **Interfaces** ⛔ | `pkg/block/engine`'s surface, `Deps` narrowed to this part, the engine over `pkg/vfs/vfserr`; the `Content` contract agreed with stage 2 | 5 | 8 | team | **everything** |
+| 1 | **Interfaces** ⛔ | `pkg/engine`'s surface, `Deps` narrowed to this part, the engine over `pkg/vfs/vfserr`; the `Content` contract agreed with stage 2 | 5 | 8 | team | **everything** |
 | 2 | **Red e2e suite and test foundations** ⛔ | `engine-conformance` registered red, 45 rows, the fixture, a fault-injecting `kv.KV`, the in-memory journal | 9 | 29.5 | team | **all testing** in 3 to 10 |
 | 3 | **Write, read and overlay** ⛔ | per-file state, `Write`, `Draw`, `Overlay`, `Read`'s resolution, `Allocation` | 6 | 13 | A | 4, 8 |
 | 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 23 | B | 5, 6, 7, 8 |
@@ -539,7 +539,7 @@ flowchart TD
 ## 4. Directory layout proposed for epic 1
 
 ```text
-pkg/block/engine/                      E1: the package (pkg/block/enginev2 until #3645)
+pkg/engine/                      E1: the package (pkg/block/enginev2 until #3645)
   doc.go engine.go                     E1 (New, Apply, stubs); E6 (Start, Close)
   deps.go                              E1: Deps and the interfaces it holds
   types.go                             E1: Settings, Share, WriteOpts, Overlay, Stats, Tracer
@@ -1056,7 +1056,7 @@ owned: RFC 17 §8's integration tier for the engine's side; RFC 8 §12.1's singl
   the cluster's), registered red here. V22's copy and clone cases and V26 wait on stage 2
   piece 11, which needs S3, not all of stage 3, and is done when they pass, so piece 11
   turns them green and drops their entries (rule 6); T9.4 turns the rest green. The rows import
-  `internal/vfs`, so they live in a package outside `pkg/block/engine` (rule 7), which
+  `internal/vfs`, so they live in a package outside `pkg/engine` (rule 7), which
   T9.4 adds to `engine-conformance`'s `cmd`, behind its tag and listed in its `known.yaml`.
 - T9.5 The composition's observability: the spans `engine.sync` and
   `engine.existence_commit` recorded through the composed service, and a condition the
