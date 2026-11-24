@@ -151,21 +151,21 @@ mount.nfs: access denied by server while mounting
 3. **Check the export's client allowlist.** If the share has a netgroup attached,
    only matching client addresses may mount it:
    ```bash
-   dfsctl share nfs-config show /export
+   dfsctl share export-policy get /export
    ```
    Clear the association to allow all clients:
    ```bash
-   dfsctl share nfs-config set /export --netgroup ""
+   dfsctl share export-policy update export --client 0.0.0.0/0=read-write --client ::/0=read-write
    ```
 
 4. **Verify the export's auth-flavor policy.** A share that requires Kerberos
    refuses an AUTH_SYS mount:
    ```bash
-   dfsctl share nfs-config show /export
+   dfsctl share export-policy get /export
    ```
    For development over AUTH_SYS:
    ```bash
-   dfsctl share nfs-config set /export --allow-auth-sys true --require-kerberos false
+   dfsctl share export-policy update /export --flavor sys --min-proof none
    ```
 
 ### No such file or directory
@@ -242,11 +242,11 @@ touch: cannot touch 'file.txt': Permission denied
 1. **Check the share's squash mode.** If clients are being squashed to guest,
    every operation runs as the anonymous identity:
    ```bash
-   dfsctl share nfs-config show /export
+   dfsctl share export-policy get /export
    ```
    For development, stop squashing root (or all clients):
    ```bash
-   dfsctl share nfs-config set /export --squash none
+   dfsctl share export-policy update /export --squash none
    ```
 
 2. **Verify the root directory's permissions on the backing store.** The export
@@ -277,11 +277,11 @@ touch: cannot touch 'file.txt': Read-only file system
 
 1. **Check whether the share is read-only:**
    ```bash
-   dfsctl share show /export
+   dfsctl share get /export
    ```
    Clear it to allow writes:
    ```bash
-   dfsctl share edit /export --read-only false
+   dfsctl share export-policy update export --read-only=false
    ```
 
 2. **Verify mount options:**
@@ -607,7 +607,7 @@ sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export 
 **Solution:** Allow the AUTH_SYS flavor on the export, or set the client up for
 Kerberos:
 ```bash
-dfsctl share nfs-config set /export --allow-auth-sys true --require-kerberos false
+dfsctl share export-policy update /export --flavor sys --min-proof none
 ```
 
 ### NFSv4 Session Issues

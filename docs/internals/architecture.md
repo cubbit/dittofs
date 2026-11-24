@@ -392,7 +392,7 @@ No custom code required - configure via CLI:
 
 ```bash
 # Create a share referencing the stores
-./dfsctl share create --name /export --metadata default-meta --block-store default-blocks
+./dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write
 ```
 
 ### Implementing Custom Store Backends

@@ -92,14 +92,14 @@ go build -o dfsctl ./cmd/dfsctl
 ./dfs start
 
 # 3. Create a test share (the CLI no longer creates stores)
-./dfsctl share create --name /smbbasic --metadata test-meta --block-store test-blocks
+./dfsctl share create smbbasic --path /smbbasic --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write
 
 # 4. Create a test user
 ./dfsctl user create testuser
 ./dfsctl user set-password testuser    # enter password when prompted
 
 # 5. Grant permissions
-./dfsctl share permission grant /smbbasic --user testuser --level read-write
+./dfsctl grant set smbbasic --user testuser --access read-write
 ```
 
 Connect from the Windows VM:

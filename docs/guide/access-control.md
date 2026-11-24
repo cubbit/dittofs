@@ -10,14 +10,11 @@ For a full glossary of terms (ACL, ACE, DACL, SID, security descriptor, etc.) se
 
 Access to a file is decided by **two independent layers**, both of which must allow the operation. This mirrors how enterprise NAS appliances (Windows Server, TrueNAS, Synology) separate *share permissions* from *filesystem permissions*.
 
-1. **Share permissions (the export gate).** A coarse, per-share grant that decides *whether a principal may touch the export at all*, and at what ceiling (`none` / `read` / `read-write` / `admin`). This is the `--default-permission` on the share plus per-user/group grants:
+1. **Share permissions (the export gate).** A coarse, per-share grant that decides *whether a principal may touch the export at all*, and at what ceiling (`none` / `read` / `read-write` / `admin`). A principal with no grant, and none through its groups, is refused:
 
    ```bash
-   # Default for principals with no explicit grant (secure default: none)
-   dfsctl share create --name /data --default-permission none
-
    # Grant alice read-write access to the export
-   dfsctl share permission grant /data --user alice --level read-write
+   dfsctl grant set data --user alice --access read-write
    ```
 
    A grant **only opens the gate**. It does not modify any file's owner, mode, or ACL.
@@ -30,8 +27,7 @@ Access to a file is decided by **two independent layers**, both of which must al
    object if one exists, otherwise to the directory. The resolved SID is stored.
 
    ```bash
-   dfsctl share permission grant /data --group 'CUBBIT\Cubbit'    --level read-write
-   dfsctl share permission grant /data --sid   S-1-5-21-...-1104  --level read
+   dfsctl grant set data --directory 'CUBBIT\Cubbit' --access read-write
    ```
 
    At the gate, a Kerberos login is matched against SID grants by its **PAC user
@@ -60,22 +56,19 @@ Access to a file is decided by **two independent layers**, both of which must al
 
 A new share's **root directory** is created with a secure mode (`0755`) owned by `root`. Because the two layers are independent, granting a user `read-write` does **not**, by itself, let them create files *at the share root* — POSIX still applies, and only the owner (or root) can write a `0755` directory.
 
-To make a share writable by a specific principal, set the **share owner** at creation:
+No `dfsctl` command sets the root's owner yet; root (or an ACL) has to give a principal write access at the root. The grant only lets the principal in:
 
 ```bash
-# alice owns /home-alice: she can create files at its root.
-# (Grant her export access too — the two layers are separate.)
+# alice may enter home-alice; writing at its root still needs POSIX or an ACL to allow it.
 dfsctl user create alice --uid 1000
 dfsctl user set-password alice
-dfsctl share create --name /home-alice --owner alice
-dfsctl share permission grant /home-alice --user alice --level read-write
+dfsctl grant set home-alice --user alice --access read-write
 ```
 
-- `--owner` sets the UID/GID that owns the share's **root directory**. It defaults to `root` (UID/GID 0) when omitted.
 - The owner can write at the root via normal POSIX rules. Other principals are governed by the root's mode/ACL plus their share grant.
 
-> **Heads-up — this surprises people.** `share permission grant alice read-write` lets alice *into* the share but does **not** let her create files at the root unless she owns it (or it is group-/world-writable, or an ACL grants her). This is deliberate POSIX layering, not a bug. Common patterns:
-> - make alice the **owner** (`--owner alice`) for a single-owner share;
+> **Heads-up — this surprises people.** `grant set <share> --user alice --access read-write` lets alice *into* the share but does **not** let her create files at the root unless she owns it (or it is group-/world-writable, or an ACL grants her). This is deliberate POSIX layering, not a bug. Common patterns:
+> - have root give alice the share root (`chown` over a mount) for a single-owner share;
 > - have the owner/admin create **subdirectories** with appropriate modes for other users to work in;
 > - set an explicit **ACL** on the root (see below) granting the desired principals.
 

@@ -236,7 +236,7 @@ an encrypted session.
   `NEGOTIATE`. Recommended for production with sensitive data.
 
 **Per-share encryption:** individual shares can require encryption via `--encrypt-data`
-(`dfsctl share create --encrypt-data`). This forces encryption on that tree regardless of the
+(`dfsctl share export-policy update <share> --smb-encrypt`). This forces encryption on that tree regardless of the
 global mode.
 
 **Recommended production YAML:**
@@ -289,7 +289,7 @@ cannot be created or edited; netgroups already stored in the control-plane
 database are kept. One is attached to a share with:
 
 ```bash
-dfsctl share nfs-config set /export --netgroup trusted-net
+dfsctl share export-policy update export --client @trusted-net=read-write
 ```
 
 The netgroup is enforced on both NFS versions and on SMB, on paths that do not
@@ -317,8 +317,8 @@ Remount is what re-reads the allowlist on v3.
 
 Which authentication flavors an export accepts is a separate policy from the
 client allowlist. Unlike the address gate, the flavor gate *is* re-checked per
-operation on both versions: set it with `--allow-auth-sys` /
-`--require-kerberos` on the same `dfsctl share nfs-config set` command, and see
+operation on both versions: set it with `--flavor`, `--min-proof` and
+`--min-protection` on the same `dfsctl share export-policy update` command, and see
 [configuration](configuration.md) for the Kerberos floor.
 
 ### Identity mapping
@@ -336,20 +336,20 @@ grant.
 All squash — every client's *file-level* identity is anonymous:
 
 ```bash
-dfsctl share nfs-config set /export --squash all_to_guest
+dfsctl share export-policy update /export --squash all
 ```
 
 Root squash — root (UID 0) is mapped to anonymous for file checks, everyone else passes through:
 
 ```bash
-dfsctl share nfs-config set /export --squash root_to_guest
+dfsctl share export-policy update /export --squash root
 ```
 
 No squashing — client UIDs pass through unchanged; use only on trusted networks
 or with Kerberos:
 
 ```bash
-dfsctl share nfs-config set /export --squash none
+dfsctl share export-policy update /export --squash none
 ```
 
 The full set of modes is `none`, `root_to_admin`, `root_to_guest`,
@@ -358,7 +358,7 @@ The full set of modes is `none`, `root_to_admin`, `root_to_guest`,
 ### Read-only shares
 
 ```bash
-dfsctl share edit /export --read-only true
+dfsctl share export-policy update export --read-only
 ```
 
 A read-only share fails write and create operations with `EROFS`
@@ -590,7 +590,7 @@ kerberos:
 # Shares and their squash mode live in the control plane, not this file.
 # Create them once:
 #
-#   dfsctl share create --name /export --metadata default --block-store default \
+#   dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write \
 #     --read-only --squash root_to_guest
 #
 # This build serves no file protocol, so it reads no adapter block here.

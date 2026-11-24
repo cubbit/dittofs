@@ -487,6 +487,17 @@ A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can
   they land, `test/scenarios`' `41-smb-dedup-delete-original-gc-xs.sh` (`system drain-uploads`,
   `store block gc`) and `72-smb-snapshot-s3-down-s.sh` cannot be rebuilt; the `system` suite that
   runs them is already off on `feat/storage-v2`.
+- **T6.4 as built.** `cmdutil.Set` is `Update` for a resource a write creates (a grant, a
+  quota): absent, it writes the zero spec the change fills in with `If-None-Match: *`, and a `412`
+  there refuses with nothing written. `cmdutil.ByName` is `Resolve`'s name lookup, and
+  `cmdutil.Principal` resolves `--user`, `--group` or `--directory`, the last through
+  `resolve-principal`, waited on (D12). `quota` with no principal flag is the share's own quota;
+  `quota remove` puts all-zero limits, which the server deletes. `share export-policy set` writes
+  by `PUT`, `update` by `PATCH`. `share mount` reads the installation's adapter record, not a node
+  override, since dfsctl does not know which node it mounts from, falling back to the adapter's
+  default port, which a test holds equal to the adapter settings' default; it passes no SMB
+  password, leaving the host's mount command to ask, and `--dry-run` prints the line, which is how
+  the suite checks R18 without root.
 - **Names this document uses from open pull requests:** E4's `Resource`, `Action`, `Wait`,
   `WithoutIdempotencyKey` and `GET /api/v1/health` (#4337); E5's credential routes and API tokens
   (#4338); E3's `nodetest.New` and its injected clock (#4336).

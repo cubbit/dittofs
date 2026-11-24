@@ -40,14 +40,13 @@ bounded by the round-trip to the block store rather than by the local disk. Choo
 it for a share whose acknowledged writes must outlive the node; leave it at
 `journal` otherwise.
 
-`dfsctl share show <name>` prints the setting in force as a **Commit Ack** row,
+`dfsctl share get <name>` prints the setting in force as a **Commit Ack** row,
 spelled out ("journal (survives host crash)" / "block-store (survives device
 loss)"), and the share JSON carries it as `commit_ack`. This is a promise an
 operator cannot infer by watching the system behave, so check it there rather than
 guessing from latency.
 
-Set it with `--commit-ack journal|block-store` on `dfsctl share create` or
-`dfsctl share edit` (`commit_ack` in the share JSON). An unrecognised value is
+It is the share's `commit_ack` field; no `dfsctl` command sets it yet. An unrecognised value is
 refused rather than resolved to the default, so a typo cannot quietly hand back
 a weaker promise than the one asked for. A share that sets nothing takes the
 `journal` default, or whatever the upgrade carry-over described above gave it.
@@ -64,9 +63,7 @@ hard crash can lose the last ~100 ms of size/mtime updates, not the bytes.
 it. That coupling is deliberate: the fast path is the point of the setting.
 
 Like `commit_ack`, it is carried over from the old `writeback` bool on upgrade,
-and it is set the same way: `--relaxed-metadata-commit` on `dfsctl share create`
-or `dfsctl share edit`. The flag is only sent when named, so leaving it off keeps
-whatever the share already promised rather than quietly relaxing it.
+and, like it, no `dfsctl` command sets it yet.
 
 There is no data-corruption risk on either axis: on restart,
 `reconcileMetadataSizeFromJournal` repairs each file's metadata size from the

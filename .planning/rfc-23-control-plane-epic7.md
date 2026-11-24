@@ -361,6 +361,9 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
   Also, through the API over the same directory, E6's success paths, which `nodetest` cannot
   reach: a grant by directory name runs `resolve-principal` and grants the ID it returned (E6's
   R16), and `resolve-principal` and `test-directory` end `succeeded`.
+  The test drives the two calls the CLI makes; the CLI's side is E6's T6.4, whose `clisuite`
+  row `grant set by a directory name with no directory …` sends `resolve-principal` with the name
+  through `dfsctl grant set --directory` and checks that nothing is granted when it fails.
 - **Acceptance criteria:**
   - Neither join leaves an idempotency record, and neither credential is found raw where CP11
     names.

@@ -170,9 +170,9 @@ the metadata store.
 ./dfsctl user create $(whoami) --uid $(id -u)
 
 # 3. Create a share and grant access. The CLI no longer creates stores, so
-# --metadata and --block-store name stores that already exist.
-./dfsctl share create --name /export --metadata default --block-store s3-remote
-./dfsctl share permission grant /export --user $(whoami) --level read-write
+# --namespace names a namespace that already exists.
+./dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write
+./dfsctl grant set export --user $(whoami) --access read-write
 
 # 4. Mount it
 # Linux:
@@ -194,7 +194,7 @@ SMB always requires user authentication:
 ```bash
 ./dfsctl user create alice
 ./dfsctl user set-password alice                  # password prompted
-./dfsctl share permission grant /export --user alice --level read-write
+./dfsctl grant set export --user alice --access read-write
 
 # Linux (use a credentials file — never put passwords on the command line)
 sudo mount -t cifs //localhost/export /mnt/smb \

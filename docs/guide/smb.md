@@ -321,7 +321,7 @@ adapters:
 Per-share encryption:
 
 ```bash
-dfsctl share edit sensitive --encrypt-data true
+dfsctl share export-policy update sensitive --smb-encrypt
 ```
 
 `encrypt-data` is a share attribute, set through the REST API (`dfsctl`) rather than a config
@@ -504,7 +504,7 @@ session. A client gets a guest session only by asking for one.
 
 A share's access policy (`require_kerberos`, `allow_auth_sys`,
 `min_kerberos_level` and the netgroup client allowlist, set with
-`dfsctl share nfs-config set`) applies to SMB as well as NFS. It is checked at
+`dfsctl share export-policy update`) applies to SMB as well as NFS. It is checked at
 TREE_CONNECT and again on every request on the tree, so a policy change, a
 re-authentication with a weaker proof, or a channel bound from another address
 takes effect on the next request. A refusal is `STATUS_ACCESS_DENIED`. The
@@ -553,7 +553,7 @@ dfsctl group create editors --gid 1000
 dfsctl group add-member editors alice
 
 # Grant a group read-write access to a share
-dfsctl share permission grant /export --group editors --level read-write
+dfsctl grant set export --group editors --access read-write
 ```
 
 Permission levels: `none`, `read`, `read-write`, `admin`.

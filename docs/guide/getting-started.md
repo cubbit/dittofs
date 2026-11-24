@@ -108,8 +108,8 @@ share and no separate control-plane database. See [Choosing stores](choosing-sto
 ## 6. Create a share and grant access
 
 ```bash
-dfsctl share create --name /export --metadata default --block-store s3-remote
-dfsctl share permission grant /export --user $(whoami) --level read-write
+dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write
+dfsctl grant set export --user $(whoami) --access read-write
 ```
 
 `--metadata` and `--block-store` name the released server's per-share stores; this
@@ -157,7 +157,7 @@ SMB always requires user authentication:
 ```bash
 dfsctl user create alice
 dfsctl user set-password alice                # password prompted
-dfsctl share permission grant /export --user alice --level read-write
+dfsctl grant set export --user alice --access read-write
 
 # Linux: keep alice's password in a private credentials file, never on the command line
 printf 'username=alice\npassword=ALICE_PASSWORD\n' > ~/.smbcredentials
