@@ -346,5 +346,5 @@ func (h failOnBudget) Handle(ctx context.Context, r slog.Record) error {
 // it runs on. The tests of dfs start call it here because only start.go may
 // import the node in that package.
 func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, clock engine.Clock) error {
-	return node.Preflight(ctx, storeDir, v1Root, devices, clock, journaltest.SuitableMount())
+	return node.Preflight(ctx, storeDir, nil, v1Root, devices, clock, journaltest.SuitableMount())
 }
