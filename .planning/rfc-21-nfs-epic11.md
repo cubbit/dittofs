@@ -21,7 +21,7 @@ Cited, not owned: RFC 1813's NLM v4 and NSM appendices and the Open Group's XNFS
 structures, RFC 1833 for the port mapper's `GETPORT`, RFC 17 §4.9's admission (amendment A3, built by
 E4), RFC 18 §5.4.
 **Track:** B.
-**Epic 11 estimate: 11 subtasks, 29.5 man-days.**
+**Epic 11 estimate: 11 subtasks, 29.75 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E2's `nfsharness` on `memory.New` and knfsd's
 NLM and NSM captures (`test/pcap-corpus/nlm/`) cut into golden files. From the epics on other tracks,
 before the subtasks that name them: E3's T3.2, the scripted client and its call encoder, and T3.4,
@@ -194,7 +194,7 @@ that subtasks and tests can cite them.
 | R30 | Every NLM procedure and `*_MSG` form is admitted at `Claimed` on a share whose `MinProof` is higher, its caller still resolved and gated | MUST | RFC 21 §6.1; RFC 17 §4.9 | T11.11 |
 | R31 | During grace a lock that is no reclaim is `NLM4_DENIED_GRACE_PERIOD`, and a request with `reclaim` set is a reclaim | MUST | RFC 21 §6.1, §5.4 (the table) | T11.1, T11.3 |
 | R32 | An `NLMPROC4_TEST` refused by an NFSv4 or SMB lock reports a holder with `svid` 0 and an empty `oh`: an internal owner never reaches the wire | MUST NOT | RFC 21 §6.1, §5.5 | T11.3 |
-| R33 | An NLM lock on a file under another client's delegation, while the recall runs, is `NLM4_BLOCKED` with a waiter if blocking and `NLM4_DENIED_GRACE_PERIOD` if not, never `NLM4_DENIED` | MUST | RFC 21 §6.1, §5.3 | T11.1, T11.4 |
+| R33 | An NLM lock on a file under another client's delegation, while the recall runs, is `NLM4_BLOCKED` with a waiter if blocking, and `NLM4_DENIED_GRACE_PERIOD` if not and for an `NLMPROC4_TEST`, never `NLM4_DENIED` | MUST | RFC 21 §6.1, §5.3 | T11.1, T11.4 |
 
 **Blocking locks and grants**
 
@@ -232,6 +232,7 @@ that subtasks and tests can cite them.
 | R48 | Golden files for NLM's `svid` and `oh` table and for NLM's §11.5 rows assert NLM → neutral → NLM gives the golden neutral value and back the golden wire value | test row | RFC 21 §11.6 ("§11.1–§11.5 golden vectors") | T11.1 |
 | R49 | The translation of an NLM lock request into a `LockReq` is fuzzed, seeded with truncated and corrupt requests: no panic, and a valid request or a refusal | test row | RFC 21 §11.6 ("§11.4 decoders fuzzed") | T11.1 |
 | R50 | While draining, NLM's `UNLOCK` and `CANCEL` run as releases and every other NLM procedure is refused with the drain's error | MUST | RFC 21 §11.5 ("What runs while draining") | T11.3, T11.4 |
+| R58 | A retransmitted or duplicated NLM request, which no duplicate-request cache answers, runs again and leaves the state one delivery leaves: a repeated blocking `LOCK` keeps its one waiter and its place, so the host is sent one `NLMPROC4_GRANTED` | invariant | RFC 21 §11.2 (the cache is NFSv3's and NFSv4.0's), §6.1; RFC 14 §2.10 (a repeat keeps the waiter's place) | T11.4, T11.10 |
 
 **RFC 21 §13's rows, and RFC 19's**
 
@@ -350,6 +351,17 @@ that subtasks and tests can cite them.
 - **D16. `NM_LOCK` is not served.** RFC 21 lists it nowhere, so it is answered `PROC_UNAVAIL` as every
   procedure NLM's table lacks; **pending the user's answer** (Q6). A `decision:` marker at the table,
   overturned if a supported client sends it.
+
+- **D17. NLM has no duplicate-request cache, over UDP as over TCP.** RFC 21 §11.2's cache holds
+  NFSv3's and NFSv4.0's replies only (E3's D5 stores nothing else), so a datagram the network
+  duplicates or the host retransmits runs again. `TEST`, `UNLOCK`, `CANCEL` and a repeated `LOCK` of
+  one owner over one range are idempotent, and a repeated blocking `LOCK` keeps the service's one
+  waiter (RFC 14 §2.10) and overwrites its own entry of D6, so one `GRANTED` goes out (R58). What is
+  not idempotent is a `LOCK` delayed past the host's own `UNLOCK` of that range, which takes the lock
+  again for an owner that no longer thinks it holds it, until the host's next `FREE_ALL`, `SM_NOTIFY`
+  or `UNLOCK`. A `decision:` marker at the UDP listener's row, overturned if such a lock is seen
+  outliving its owner, then answered by an NLM entry in the cache. Prior art: knfsd's reply cache is
+  nfsd's alone and lockd keeps none (from memory).
 
 ## 5. Target tree
 
@@ -520,7 +532,7 @@ pkg/vfs/, pkg/openstate/, internal/vfs/   T11.8  Revocation.State; a start's rep
 **Subtask T11.4 estimate: 3.5 man-days.**
 
 - **Track:** B. **Depends on:** T11.3, T11.2.
-- **Covers:** R10, R13, R14, R33, R34, R35, R36, R37, R38, R39, R50.
+- **Covers:** R10, R13, R14, R33, R34, R35, R36, R37, R38, R39, R50, R58.
 - **Deliverables:**
   - `ops/nlm/waiting.go`: the waiting-request table of D6, with its `GetAttr` before a blocking
     `LOCK`; `LOCK` with `block` set as a callback waiter; `cancel.go`, `CancelLock` then the answer of
@@ -542,9 +554,11 @@ pkg/vfs/, pkg/openstate/, internal/vfs/   T11.8  Revocation.State; a start's rep
   the request's connection or with another handle, R10, R38); the paused `CancelLock` (catches a
   cancel answered first, R37); a `Host` scripted to refuse, then to stay silent (catch a silence
   reported as a refusal, R39, and a refusal ignored, R38); the drain's error leaving `CANCEL` to run
-  (R50); a waiter kept across a `memory.New`
-  `LockWaitOver(granted=false)` sends nothing (R36); a lock on a delegated file answered
-  `NLM4_BLOCKED`, granted when the recall ends (R33, R34); `-race` with 64 hosts blocking on one range
+  (R50); a waiter `memory.New` ends with `LockWaitOver(granted=false)`, its entry dropped and
+  nothing sent to `Host` (R36); on a delegated file, a blocking `LOCK` answered `NLM4_BLOCKED` and
+  granted when the recall ends, a non-blocking `LOCK` and a `TEST` each `NLM4_DENIED_GRACE_PERIOD`
+  (R33, R34); a blocking `LOCK` sent twice before its grant, one `GRANTED` at `Host` (catches a
+  second waiter or a second entry, R58); `-race` with 64 hosts blocking on one range
   and released in turn, its mutex and block profiles reported (rule 4). That no adapter timer drops a
   waiter is checked in T11.11's 5-minute step on the composed node's clock (R35).
 - **Rules:** rule 9's markers of D6, D7 and D8; rule 4's profiles.
@@ -649,18 +663,20 @@ pkg/vfs/, pkg/openstate/, internal/vfs/   T11.8  Revocation.State; a start's rep
   - With the queue full, a datagram is dropped and the next one after a drain is answered.
   - A taken UDP port fails `Start`, and the TCP listener it was started with is closed again.
 - **Tests:** on `testproto` over real UDP on loopback: request and reply (R5); a test hook pausing the
-  workers, set per instance from `export_test.go`, filling the queue and asserting the 257th datagram
-  unanswered and the server serving after (catches an unbounded queue, R4); the taken port (catches a
+  workers, set per instance from `export_test.go`, the hook reporting how many datagrams the paused
+  workers took, then the queue filled: the first datagram past those and the queue's 256 is never
+  answered once the workers resume, every earlier one is, and the server serves after (catches an
+  unbounded queue, R4); the taken port (catches a
   partial start, R6); `Addrs` and a `Reconfigure` adding `127.0.0.2` (R7); leak checks after `Stop`.
   No test double.
 - **Rules:** rule 9's markers of D13; rule 4's leak check on the queue's goroutines.
 
 ### T11.10 NFS's UDP listener
 
-**Subtask T11.10 estimate: 1.5 man-days.**
+**Subtask T11.10 estimate: 1.75 man-days.**
 
 - **Track:** B. **Depends on:** T11.9, T11.3.
-- **Covers:** R1, R2, R3, R51.
+- **Covers:** R1, R2, R3, R51, R58.
 - **Deliverables:** `nfs.go`'s second listener, `nlm` and `nsm` over `udp` on the TCP listener's port,
   over `protocol.New` with NLM's and NSM's tables only; the stages' row of D14; `nfsclient.DialUDP`.
   Consumed by hosts locking over UDP and E16.
@@ -668,10 +684,13 @@ pkg/vfs/, pkg/openstate/, internal/vfs/   T11.8  Revocation.State; a start's rep
   - Over UDP, NLM's and NSM's `NULL` and an NLM `TEST` are answered; NFS's and MOUNT's `NULL` get
     nothing.
   - Under a range of `4.1` only, NLM's `NULL` by UDP gets nothing either.
+  - A `LOCK` and an `UNLOCK` datagram each sent twice leave the lock state one of each leaves.
 - **Tests:** over loopback by `DialUDP`: the four `NULL`s and `TEST` (catch a listener left serving
   NFS, R1, or not serving NLM, R2); the 4.x range (catches the unit split, R3). An absent reply is a
-  bounded wait, the comment saying so, since no clock can be injected into a socket.
-- **Rules:** rule 9: `nfs.go`'s comment rewritten.
+  bounded wait, the comment saying so, since no clock can be injected into a socket; the duplicated
+  `LOCK` and `UNLOCK` datagrams, the state read from `memory.New` (catches a duplicate refused or
+  taken as a second owner, R58).
+- **Rules:** rule 9: `nfs.go`'s comment rewritten, and D17's `decision:` at the row.
 
 ### T11.11 RFC 21 §13's NLM rows, and RFC 19's
 
@@ -731,8 +750,8 @@ path. T11.11 closes the epic once S3 holds, its restart row once S5 does.
 | 1 | T11.1, T11.2 | 6 | E10's T10.1 | the NLM translations and the outbound client every handler and callback builds on |
 | 2 | T11.3, T11.4, T11.5 | 8.5 | PR 1 | NLM locking end to end: a host's client, its locks, a blocked lock granted, the asynchronous forms |
 | 3 | T11.6, T11.7, T11.8 | 7 | PR 2 | share reservations and NSM's notices, the service half once Q1 is agreed |
-| 4 | T11.9, T11.10 | 5.5 | PR 1 | the datagram path, from `core`'s listener to NLM and NSM over UDP; open beside PR 2 |
-| 5 | T11.11 | 2.5 | PR 3, PR 4 | the RFC's rows over loopback and on the composed node |
+| 4 | T11.9 | 4 | PR 1 | `core`'s datagram listener, which needs only `Conn.Local`; open beside PR 2 |
+| 5 | T11.10, T11.11 | 4.25 | PR 3, PR 4 | NLM and NSM over UDP, which serves T11.3's rows, and the RFC's rows over loopback and on the composed node |
 
 A suggestion only: one pull request per subtask works as well; PR 2 and PR 4 can be open at once.
 
