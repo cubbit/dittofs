@@ -65,11 +65,17 @@ Examples:
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			path := cmd.CommandPath()
+			// The sudo refusal runs before the client exists: a refreshed
+			// token would otherwise be saved as root into the caller's file.
+			m := mount{GOOS: runtime.GOOS, Host: "localhost", Point: args[len(args)-1]}
+			if err := asCaller(&m, os.Geteuid(), os.Getuid(), os.Getgid(), os.Getenv("SUDO_USER")); err != nil {
+				return fmt.Errorf("%s: %w", path, err)
+			}
 			c, target, err := cmdutil.NewClient(env)
 			if err != nil {
 				return err
 			}
-			path := cmd.CommandPath()
 			id, err := cmdutil.Resolve(cmd, c.Shares(), "share", args[:len(args)-1])
 			if err != nil {
 				return err
@@ -78,15 +84,12 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("%s: share %s: %w", path, id, err)
 			}
-			m := mount{GOOS: runtime.GOOS, Host: "localhost", Share: sh.Spec.Path, Point: args[len(args)-1]}
+			m.Share = sh.Spec.Path
 			m.Protocol, _ = cmd.Flags().GetString("protocol")
 			m.NFSVersion, _ = cmd.Flags().GetString("nfs-version")
 			m.User, _ = cmd.Flags().GetString("username")
 			if m.User == "" {
 				m.User = target.Dialled.Username
-			}
-			if err := asCaller(&m, os.Geteuid(), os.Getuid(), os.Getgid(), os.Getenv("SUDO_USER")); err != nil {
-				return fmt.Errorf("%s: %w", path, err)
 			}
 			if m.Protocol == "smb" {
 				m.Share = sh.Spec.Name
