@@ -1187,6 +1187,7 @@ func TestSettingsRefusalNamesEveryRowOfItsInstance(t *testing.T) {
 	h, f := servedFaulted(t)
 	declareSections(t, h)
 	armed := armWaits(h)
+	ch := watchStatus(h)
 	started(t, h)
 	configure(t, h, storeA)
 	one := createShare(t, h, "one", storeA)
@@ -1209,6 +1210,18 @@ func TestSettingsRefusalNamesEveryRowOfItsInstance(t *testing.T) {
 
 	walkTurn(t, h, armed)
 
+	// The API reads the stored status, which the status writer's own turn
+	// writes after the pass, not the pass itself; a turn whose write failed
+	// or is still running stores nothing.
+	drain(ch)
+	now := counters(t, h)
+	turnAt(t, h, ch, "the status holding the refusals stored", func(tr statusTurn) bool {
+		return tr.s.Settings == now.Settings && readStatus(t, h).Settings == now.Settings
+	})
+
+	// A pass the turns' advances released may still run, but it publishes
+	// its refusals in one assignment under the lock Refused reads, over the
+	// same corrupt row, so the reads below see one whole pass's set.
 	refused := h.Node().Refused()
 
 	want := []entity.ResourceRef{
@@ -1253,6 +1266,7 @@ func TestSettingsOverrideRefusalNamesTheWideRowToo(t *testing.T) {
 	h, f := servedFaulted(t)
 	declareSections(t, h)
 	armed := armWaits(h)
+	ch := watchStatus(h)
 	started(t, h)
 
 	node := entity.SettingScope{Kind: entity.ScopeNode, ID: h.NodeID()}
@@ -1268,7 +1282,18 @@ func TestSettingsOverrideRefusalNamesTheWideRowToo(t *testing.T) {
 	babble(t, f, node, "alpha.level")
 	walkAt(t, h, installation, "alpha", 7)
 	walkTurn(t, h, armed)
+	// A status still at the generation before the change would read 0 of 1
+	// too, refusal or none, so the count is read once the status covers it.
+	drain(ch)
+	now := counters(t, h)
+	turnAt(t, h, ch, "the status holding the refusals stored", func(tr statusTurn) bool {
+		return tr.s.Settings == now.Settings && readStatus(t, h).Settings == now.Settings
+	})
 
+	// A pass the turns' advances released may still run, but it publishes
+	// its snapshot in one atomic store and its refusals in one assignment
+	// under the lock Refused reads, over the same corrupt row, so the reads
+	// below see one whole pass's values.
 	got, err := runLevel(t, h, h.Node().Settings(), "alpha")
 
 	if err != nil || got != 9 {
