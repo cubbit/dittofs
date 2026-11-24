@@ -162,8 +162,9 @@ metadata:
   hold nothing else.
 - `metadata.badger.*` is refused beside it, and `metadata.foundationdb.*` beside `badger`.
 - `metadata.foundationdb.tls.cert_file`, `key_file` and `ca_file` are named together or not at all,
-  and each file is the credential, never a value in this file. Today `dfs init` and `dfs start`
-  refuse a bootstrap that names them: the client is not given them yet.
+  and each file is the credential, never a value in this file. Named, they are the client's TLS
+  files: `dfs init` and `dfs start` connect over TLS, and refuse a file that is missing, naming
+  it, before they connect. Unnamed, the client connects without TLS.
 - `dfs init` and `dfs start` wait up to 30 seconds to connect.
 
 ## The environment
