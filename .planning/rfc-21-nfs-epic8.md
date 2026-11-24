@@ -213,7 +213,7 @@ numbered so that subtasks and tests can cite them.
 | R22 | A session is charged to the connection-state pool its fixed session cost, a fixed slot cost per slot of each channel and its fore channel's reply cache, slots times the cached size, decided on the sum; every slot the client retires releases its charge | MUST | RFC 24 §4.5 | T8.4, T8.5 |
 | R23 | `ca_maxoperations` is the lesser of the ask and the compound cap of 128; a `COMPOUND` on the session longer than granted is refused `NFS4ERR_TOO_MANY_OPS` before any of its operations runs | MUST | RFC 21 §3.1, §11.5 (the compound cap) | T8.4, T8.7 |
 | R24 | `ca_maxresponsesize_cached` is the lesser of the ask and 8 KiB, so a session's fore-channel cache never exceeds 64 × 8 KiB | bound | RFC 21 §3.1, §12 (N11) | T8.4 |
-| R25 | `ca_maxrequestsize` and `ca_maxresponsesize` derive from the one transfer size: at most the record cap, 1 MiB and 4 KiB | MUST | RFC 21 §2.3 | T8.4 |
+| R25 | `ca_maxrequestsize` and `ca_maxresponsesize` derive from the one transfer size: at most the record cap, `1 MiB + 4 KiB` | MUST | RFC 21 §2.3 | T8.4 |
 | R26 | `CREATE_SESSION` is sequenced by the record's one-slot replay: a `csa_sequence` equal to the stored one is answered the stored reply and writes nothing; one more builds the session and calls `AddSession` with the bytes read and the new sequence and reply in one step, the confirming case comparing the `Pending` proposal's sequence; `RecordChanged` drops the built session, rereads and decides again; any other is `NFS4ERR_SEQ_MISORDERED` | MUST | RFC 21 §3.5, §11.4 (`AddSession`), §11.5 (`RecordChanged`) | T8.4 |
 | R27 | The reply cache is held in the memory of the node that holds the session and never written to the store or replicated; sessions are never stored | MUST NOT | RFC 21 §3.2, §12 (N3) | T8.4, T8.5 |
 | R28 | A session is bound only to this node's connections: a `BIND_CONN_TO_SESSION` or `SEQUENCE` naming a session this node does not hold, one lost with a restart included, is `NFS4ERR_BADSESSION`; binding several connections to one session here is allowed | MUST | RFC 21 §3.2, §3.3, §12 (N3) | T8.5, T8.9 |
@@ -302,7 +302,7 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
 - **D2. The `Adapter` bytes' layout.** Version 1 is one byte followed by an XDR union on the
   record's kind, an NFSv4 arm (the confirming minor version, the `CREATE_SESSION` replay, the two
   `SP4_MACH_CRED` bitmaps, an optional NFSv4.0 callback) and an NLM arm (`mon_name` up to NSM's 1024
-  bytes, the 16-byte `priv`), written by `wire`'s generator from tagged structs, so E11's fields are
+  bytes, the 16-byte `priv`, and the `Host` and `Server` addresses SM_NOTIFY needs, 4 or 16 bytes each), written by `wire`'s generator from tagged structs, so E11's fields are
   settled before any record is written (a field added later is a new version every node must read).
   A decode fails as one of three named reasons, `truncated`, `corrupt` or `unknown_version`, §11.7's
   `reason` values; a request whose record does not decode answers the fault,
@@ -320,7 +320,10 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
 - **D3. The Pending table.** A confirm's proposal, its client ID and confirm as the service
   answered, the minor version, `eir_sequenceid` (`Confirm`'s low 32 bits), the `ClientInfo` and
   `Adapter` bytes the confirm registers, lives in the session registry of the node that answered,
-  keyed by owner name, one per name, a later proposal replacing it (RFC 14 §2.9's rule 2), dropped
+  keyed by the client ID the proposal answered, with an index by owner name so a name holds one, a
+  later proposal replacing it (RFC 14 §2.9's rule 2); `Confirm` and `Drop` take the client ID, since
+  `SETCLIENTID_CONFIRM` carries only the client ID and confirm verifier and `CREATE_SESSION` only
+  `csa_clientid`, dropped
   one lease period after it was made by a sweep on the registry's injected clock, which releases
   its pool charge (never lazily at the next confirm), and charged a fixed cost to the
   connection-state pool, `NFS4ERR_DELAY` when it cannot be. It is bounded by RFC 14's own caps
@@ -328,8 +331,8 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   that answered, and `Propose` answers `ErrDelay` past them. A confirm reads the proposal and drops
   it only once its write succeeded, so a confirm answered `NFS4ERR_DELAY` finds it again on resend
   (RFC 21 §3.5's order). `Record` returns a `Pending` only for a
-  name with a record, so the confirming `CREATE_SESSION` of a new client finds its proposal only
-  here. Prior art: knfsd holds unconfirmed clients in memory (from memory). A `decision:` marker at
+  name with a record, so the confirming `CREATE_SESSION` or `SETCLIENTID_CONFIRM` of a new client
+  finds its proposal only here, by the client ID it names. Prior art: knfsd holds unconfirmed clients in memory (from memory). A `decision:` marker at
   the table, overturned with RFC 14 §2.9's own trigger.
 - **D4. Server owner and scope.** `so_major_id` and `server_scope` are the installation's ID (RFC 16
   §2.3's `Installation`), and `so_minor_id` the node's own, both read once at `New`. Neither reaches
@@ -385,9 +388,9 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   node, the clock reading of its last `Renew` and the `ClientStatus` it answered; a `SEQUENCE` calls
   `Renew` only when a renewal interval, 10 s, has passed, and otherwise sets its flags from the
   status kept, which RFC 14 §4.1 lets be one interval stale. A `RECLAIM_COMPLETE` the service
-  accepts drops the status kept, so the next `SEQUENCE` calls `Renew` and stops carrying
-  `SEQ4_STATUS_RESTART_RECLAIM_NEEDED` (R46): a stale flag after it would send a Linux client into
-  a second reclaim answered `NFS4ERR_NO_GRACE`. E9's `FREE_STATEID` may drop it the same way; a
+  accepts clears the reclaim flag in the status kept, with no new `Renew` (R44), so the next
+  `SEQUENCE` stops carrying `SEQ4_STATUS_RESTART_RECLAIM_NEEDED` (R46): a stale flag after it would send a Linux client into
+  a second reclaim answered `NFS4ERR_NO_GRACE`. E9's `FREE_STATEID` may clear its flag the same way; a
   revoked-state flag kept one interval after its cause is freed costs the client one `TEST_STATEID`.
   Each session accumulates the
   `GraceRef`s its replies showed, for `RECLAIM_COMPLETE`. Prior art: RFC 14 §4.1's renewal interval.
@@ -513,7 +516,9 @@ internal/adapter/nfs/
 - **Acceptance criteria:**
   - Each golden file decodes to its value and the value encodes to its bytes.
   - A first byte other than 1 is `ErrRecVersion`; a body cut anywhere `ErrRecTruncated`; bytes left
-    over, a kind outside the two or a `mon_name` past 1024 bytes `ErrRecCorrupt`.
+    over, a kind outside the two, a `mon_name` past 1024 bytes, a `NetID` past 16 bytes, an `Addr`
+    past 64, a bitmap past 3 words, or a `Host` or `Server` of a length other than 4 or 16
+    `ErrRecCorrupt`.
 - **Tests:** at `DecodeClientRec`, which every reader of a record calls: the golden table (catches
   a field moved or dropped, R3); a version 2 byte before a valid body refused (catches a newer
   version read as this one, R2); `FuzzClientRec`, seeded with the golden files, each cut short, one
@@ -542,8 +547,8 @@ internal/adapter/nfs/
     type Sessions struct{ /* the Pending table; T8.4 adds the sessions */ }
     func NewSessions(b *resources.Budgets, clk Clock, rnd io.Reader) *Sessions
     func (s *Sessions) Propose(name []byte, p Pending) error           // replaces the name's earlier; ErrDelay of DelayResources
-        func (s *Sessions) Confirm(name []byte, cl vfs.ClientID) (Pending, bool) // reads it, if unexpired
-    func (s *Sessions) Drop(name []byte, cl vfs.ClientID)                     // once the confirm's write succeeded
+    func (s *Sessions) Confirm(cl vfs.ClientID) (Pending, bool) // reads it, if unexpired
+    func (s *Sessions) Drop(cl vfs.ClientID)                     // once the confirm's write succeeded
     ```
   - `ops/v4/exchange_id.go`: `Record` first where the name is known, then `Propose` for a new owner
     or a new verifier, or the existing client ID for a confirmed owner, verifier and principal; the
@@ -562,8 +567,11 @@ internal/adapter/nfs/
   - A confirmed owner's `EXCHANGE_ID` with its verifier and principal answers its client ID with
     `CONFIRMED_R` and calls nothing that writes.
   - From another principal, `NFS4ERR_CLID_INUSE`, and the table holds no proposal for the name.
+  - `Confirm` with the client ID of a new owner's proposal, the only thing its confirm carries,
+    finds it; after a second proposal for the same name, `Confirm` with the first's client ID finds
+    nothing (D3).
   - `SP4_SSV` is `NFS4ERR_ENCR_ALG_UNSUPP`; `SP4_MACH_CRED` sets `Protect`.
-    - A proposal is gone one lease period later on the injected clock, its pool charge released.
+  - A proposal is gone one lease period later on the injected clock, its pool charge released.
   - A record whose `Adapter` bytes start with version 2 is `NFS4ERR_SERVERFAULT`, the record unchanged.
 - **Tests:** at the `EXCHANGE_ID` member on `nfsharness` over `memory.New`, as a client reads the
   reply: the three cases above against golden replies (catch a proposal that writes, R6, a
@@ -618,7 +626,7 @@ internal/adapter/nfs/
     func (s *Sessions) EndClient(cl vfs.ClientID)    // every session of the client, for an expiry
     ```
     and the per-client step R31's decisions run under.
-    - `ops/v4/create_session.go`: `Record`, or the Pending table for a new client's confirm (D3),
+  - `ops/v4/create_session.go`: `Record`, or the Pending table for a new client's confirm (D3),
     dropped with `Drop` only after `AddSession` succeeded; under `SP4_MACH_CRED` the owner check of
     Q4 on the new and the replay path (R15);
     R26's decision over the bytes' replay; the confirming case's `Connect` naming the proposal, with
@@ -633,13 +641,13 @@ internal/adapter/nfs/
 - **Acceptance criteria:**
   - A confirming `CREATE_SESSION` calls `Connect` with the proposal and T8.1's value, then
     `AddSession`, and its reply grants min(ask, 64) fore slots, min(ask, 16) back slots,
-    min(ask, 8 KiB) cached, min(ask, 128) operations, min(ask, 1 MiB and 4 KiB) for each size.
+    min(ask, 8 KiB) cached, min(ask, 128) operations, min(ask, `1 MiB + 4 KiB`) for each size.
   - With the connection-state pool holding room for three slots, a session asking 64 is granted
     three; with room for none, `NFS4ERR_DELAY` and nothing written.
   - A replay of the same `csa_sequence` answers the stored reply byte for byte and calls nothing
     that writes; two ahead is `NFS4ERR_SEQ_MISORDERED`; a confirm from another principal
     `NFS4ERR_CLID_INUSE` and the proposal kept.
-    - An `AddSession` answered `RecordChanged` (a second adapter applied the same sequence first) is
+  - An `AddSession` answered `RecordChanged` (a second adapter applied the same sequence first) is
     answered the winner's reply, with one session.
   - A confirming `CREATE_SESSION` whose `AddSession` is answered `ErrDelay` once is
     `NFS4ERR_DELAY`; its resend finds the proposal and leaves exactly one session.
@@ -743,7 +751,7 @@ internal/adapter/nfs/
   - With `vfstest.Faults` answering `Renew` a status with each flag, each `SEQUENCE` reply carries
     exactly that flag.
   - `RECLAIM_COMPLETE` names the instances the session's replies showed, and only those; the next
-    `SEQUENCE`, inside the same renewal interval, calls `Renew` again and carries the flag no more.
+    `SEQUENCE`, inside the same renewal interval, carries the flag no more and calls no `Renew`.
   - A client whose `Renew` answers `StaleClient`, or whose callbacks value received
     `RevokedLeaseExpired`, has its next `SEQUENCE` answered `NFS4ERR_BADSESSION`.
 - **Tests:** at the `SEQUENCE` member on `nfsharness` over `memory.New`: the renewal count read from
@@ -753,8 +761,9 @@ internal/adapter/nfs/
   of kind 3 (catch a flag read from the wrong field or one cleared early, R46); `RECLAIM_COMPLETE`
   after two `SEQUENCE`s that showed different instances, the call's argument read from
   `vfstest.Mutations` (catches a reclaim completed for an instance never shown, R47), then a
-  `SEQUENCE` before the interval ends, `Renew` answering no reclaim owed (catches the flag served
-  from the status kept, R46); the two expiry
+  `SEQUENCE` before the interval ends, its reply without the flag and no second `Renew` in
+  `vfstest.Mutations` (catches the flag served from the status kept, R46, or a renewal it forces,
+  R44); the two expiry
   paths (catch an expired session served, R48); `RECLAIM_COMPLETE` refused by a drain (R61). No test
   double.
 - **Rules:** rule 9's `decision:` marker for D10.
