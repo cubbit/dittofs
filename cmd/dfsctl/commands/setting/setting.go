@@ -104,7 +104,11 @@ Examples:
 			if err != nil {
 				return err
 			}
-			key, value := args[1], cmdutil.JSONValue(args[2])
+			key := args[1]
+			value, err := cmdutil.JSONValue(args[2])
+			if err != nil {
+				return fmt.Errorf("%s: setting %s: %w", cmd.CommandPath(), key, err)
+			}
 			put := func(ctx context.Context, key string, spec apiv1.SettingSpec, _ map[string]any, etag string) (client.Result[apiv1.SettingSpec, apiv1.SettingStatus], error) {
 				return r.Put(ctx, key, spec, etag)
 			}

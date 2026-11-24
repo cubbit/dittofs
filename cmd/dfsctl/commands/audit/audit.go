@@ -19,7 +19,10 @@ func table(rs ...apiv1.AuditRecord) cmdutil.Table {
 	for _, r := range rs {
 		actor := r.ActorName
 		if actor == "" {
-			actor = r.Actor.Kind + ":" + r.Actor.ID
+			actor = r.Actor.Kind // an actor with no ID, the schedule, as --actor spells it
+			if r.Actor.ID != "" {
+				actor += ":" + r.Actor.ID
+			}
 		}
 		t = append(t, []string{r.Time.Format(time.RFC3339), actor, r.Target.Kind + ":" + r.Target.ID, r.Outcome})
 	}
@@ -39,7 +42,8 @@ func New(env cmdutil.Env) *cobra.Command {
 and whether the action was applied, refused or started an operation.
 
 --actor names a user by name, or any account as kind:id, or the schedule as
-schedule; --target names a resource as kind:id; --from and --to are RFC 3339
+schedule. A user named schedule, or whose name holds ':', is named as
+user:<id>. --target names a resource as kind:id; --from and --to are RFC 3339
 times.
 
 Examples:
@@ -79,7 +83,7 @@ Examples:
 			return cmdutil.PrintOutput(cmd, all, len(all) == 0, "No audit records.", table(all...))
 		},
 	}
-	list.Flags().String("actor", "", "Only the records of this account: a user's name, kind:id or schedule")
+	list.Flags().String("actor", "", "Only the records of this account: a user's name, kind:id or schedule (a user named schedule or with ':' in its name as user:<id>)")
 	list.Flags().String("target", "", "Only the records of this resource, as kind:id")
 	list.Flags().String("from", "", "Only the records at or after this RFC 3339 time")
 	list.Flags().String("to", "", "Only the records before this RFC 3339 time")

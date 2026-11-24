@@ -202,7 +202,7 @@ func TestSettings(t *testing.T) {
 			t.Errorf("Settings %s: got %s, want %s", k, got[k], want)
 		}
 	}
-	for _, bad := range []string{"novalue", "=v"} {
+	for _, bad := range []string{"novalue", "=v", "port=null", "port= null "} {
 		if _, err := Settings([]string{bad}); err == nil || !strings.Contains(err.Error(), bad) {
 			t.Errorf("Settings %q: got %v, want a refusal naming it", bad, err)
 		}

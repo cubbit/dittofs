@@ -44,6 +44,9 @@ Examples:
 			if len(args) == 1 {
 				p.Name = args[0]
 			}
+			if (p.Name == "") == (p.SID == "") {
+				return fmt.Errorf("%s: takes a principal's name or --sid, exactly one", cmd.CommandPath())
+			}
 			return run(cmd, env, "resolve-principal", p)
 		},
 	}

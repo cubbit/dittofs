@@ -26,6 +26,9 @@ func installationRows() []row {
 				}
 				want = append(want, n.ID)
 			}
+			if len(want) == 0 {
+				t.Fatal("list the nodes: got none, want at least the server's own")
+			}
 			if s.Harness != nil {
 				if id := uuid.UUID(s.Harness.NodeID()).String(); len(want) != 1 || want[0] != id {
 					t.Fatalf("the harness's nodes: got %v, want [%s]", want, id)
@@ -80,6 +83,13 @@ func installationRows() []row {
 				errOut, status := s.waited(t, run, args...)
 				if status == 0 || !strings.Contains(errOut, "dfsctl "+strings.Join(args[:2], " ")+": operation ") || !strings.Contains(errOut, " failed") {
 					t.Errorf("dfsctl %s --wait: status %d, stderr %q, want non-zero and its operation failed", strings.Join(args, " "), status, errOut)
+				}
+			}
+		}},
+		{name: "domain resolve with neither a name nor --sid, or both, is refused before the server", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
+			for _, args := range [][]string{{"domain", "resolve"}, {"domain", "resolve", `CORP\bob`, "--sid", "S-1-5-21-1-2-3-1104"}} {
+				if _, errOut, status := run(t.Context(), args...); status == 0 || strings.Contains(errOut, "400 ") || !strings.Contains(errOut, "name or --sid, exactly one") {
+					t.Errorf("dfsctl %s: status %d, stderr %q, want non-zero naming the one of name and --sid it takes", strings.Join(args, " "), status, errOut)
 				}
 			}
 		}},
