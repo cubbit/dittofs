@@ -171,16 +171,22 @@ func (m *machine) post(t *testing.T, verb, body string) entity.OperationID {
 // ended turns the node until operation id has ended, and returns it.
 func (m *machine) ended(t *testing.T, id entity.OperationID) entity.Operation {
 	t.Helper()
+	return ended(t, m.h, id)
+}
+
+// ended turns h's node until operation id has ended, and returns it.
+func ended(t *testing.T, h *nodetest.Harness, id entity.OperationID) entity.Operation {
+	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		op := operation(t, m.h, id)
+		op := operation(t, h, id)
 		if op.State == entity.OpSucceeded || op.State == entity.OpFailed {
 			return op
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("operation %s within 30 s: %v at step %s, want it ended", op.Kind, op.State, op.Step)
 		}
-		turn(m.h)
+		turn(h)
 	}
 }
 
@@ -215,6 +221,13 @@ func (m *machine) join(t *testing.T) entity.OperationID {
 // operation's ID.
 func (m *machine) joinOffline(t *testing.T, password string, takeover bool) entity.OperationID {
 	t.Helper()
+	return m.post(t, "join-domain", offlineJoinBody(t, password, takeover))
+}
+
+// offlineJoinBody is the body of an offline join of NAS$ handing over
+// password, taking the installation over if takeover.
+func offlineJoinBody(t *testing.T, password string, takeover bool) string {
+	t.Helper()
 	body, err := json.Marshal(apiv1.JoinDomain{
 		Spec:       apiv1.JoinDomainSpec{Mode: apiv1.JoinOffline, Account: "NAS$", Takeover: takeover},
 		Credential: apiv1.JoinCredential{Password: []byte(password)},
@@ -222,7 +235,7 @@ func (m *machine) joinOffline(t *testing.T, password string, takeover bool) enti
 	if err != nil {
 		t.Fatal(err)
 	}
-	return m.post(t, "join-domain", string(body))
+	return string(body)
 }
 
 // passThrough signs alice in as CORP\alice through the node's filesystem

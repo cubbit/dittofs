@@ -1,9 +1,11 @@
 package node_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net"
 	"net/http"
@@ -25,6 +27,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -682,4 +685,226 @@ func TestWiredErrorTable(t *testing.T) {
 			t.Errorf("dittofs_api_unmapped_errors_total after the error table: %v, want 0", n)
 		}
 	})
+}
+
+// §4.5 idempotency, its domain clauses, on the composed node over
+// identitytest's directory and domain controller: an online join carrying
+// an Idempotency-Key is refused 400; one without joins; an offline join
+// taking the installation over, retried while it runs, is refused 409
+// operation_running and writes no new version of the machine password.
+// Neither join leaves an idempotency record, though a test-directory sent
+// with a key leaves one. The offline join's password opens from the machine
+// password's secret while the join runs, and neither it nor the online
+// join's administrator password is found, in any form encodings names, in
+// a row the store held at a runner turn or at the end, operation and audit
+// records among them, in a log line, or in a metric. Catches a credential
+// kept in a replay record, or written by a retry.
+func TestWiredDomainJoinsKeepNoCredential(t *testing.T) {
+	var logged syncBuffer
+	rows := &kvRows{seen: map[string]bool{}}
+	// A row a later write replaces was stored all the same, so the store is
+	// read at the end of every runner turn, not only at the end.
+	var raw atomic.Pointer[kvtest.FaultKV]
+	m := newMachineLogged(t, &logged, false, func(n *node.Node) {
+		n.OnRunnerTurn(func(context.Context) {
+			if kv := raw.Load(); kv != nil {
+				rows.keep(rows.read(context.Background(), kv))
+			}
+		})
+	})
+	raw.Store(m.kv)
+	addr, _ := m.h.Node().Addrs()
+	adm := m.dc.Admin()
+	keyed, err := json.Marshal(apiv1.JoinDomain{
+		Spec:       apiv1.JoinDomainSpec{Mode: apiv1.JoinOnline, Account: "NAS", DNSHostName: "nas.corp.example"},
+		Credential: apiv1.JoinCredential{User: adm.User, Password: adm.Password},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := answeredIn(t, "an online join with a key", send(t.Context(), addr, http.MethodPost, "/api/v1/installation:join-domain", string(keyed), idemKey()...))
+	if r.status != http.StatusBadRequest {
+		t.Errorf("an online join carrying an Idempotency-Key: answered %d %s, want 400", r.status, r.body)
+	}
+	ik := []byte{keys.KindIK}
+	noRecord := func(after string) {
+		t.Helper()
+		if got := rawRows(t, m.kv, ik); len(got) != 0 {
+			t.Errorf("idempotency records after %s: %d, want none", after, len(got))
+		}
+	}
+	noRecord("the keyed online join")
+	online := m.join(t)
+
+	// The administrator resets NAS$'s password, as before an offline join's
+	// takeover, and no controller answers, so the join runs until they do.
+	const handed = "Nas-Handed-Passw0rd"
+	m.dc.SetComputerPassword(t, "NAS", []byte(handed))
+	unreachable := errors.New("no controller answers")
+	m.faults.set("lookup", unreachable)
+	m.faults.set("dial", unreachable)
+	offline := m.joinOffline(t, handed, true)
+	if v := m.password(t); !bytes.Equal(v.Value, []byte(handed)) {
+		t.Fatalf("the machine password's version %d while the offline join runs: does not open to the handed password", v.Number)
+	}
+	cp := m.h.Store().ControlPlane()
+	ref := m.installation(t).MachinePassword
+	before, err := cp.Secret(t.Context(), ref, 0)
+	if err != nil {
+		t.Fatalf("the machine password while the offline join runs: %v", err)
+	}
+	r = answeredIn(t, "the retried offline join", send(t.Context(), addr, http.MethodPost, "/api/v1/installation:join-domain", offlineJoinBody(t, handed, true)))
+	var p apiv1.Problem
+	if r.status != http.StatusConflict || json.Unmarshal(r.body, &p) != nil || p.Code != apiv1.CodeOperationRunning || !slices.Contains(p.Names, uuid.UUID(offline).String()) {
+		t.Errorf("the offline join retried while it runs: answered %d %s, want 409 operation_running naming %v", r.status, r.body, uuid.UUID(offline))
+	}
+	if after, err := cp.Secret(t.Context(), ref, 0); err != nil || after.Version != before.Version {
+		t.Errorf("the machine password after the retry: version %d (%v), want %d, no new version", after.Version, err, before.Version)
+	}
+	m.faults.set("lookup", nil)
+	m.faults.set("dial", nil)
+	m.succeeded(t, "the offline join", offline)
+	caughtUp(t, m.h)
+
+	noRecord("both joins")
+	// Positive control: a call sent with a key leaves the record the scan
+	// reads.
+	m.succeeded(t, "a test-directory", m.post(t, "test-directory", ""))
+	if got := rawRows(t, m.kv, ik); len(got) != 1 {
+		t.Errorf("idempotency records after a test-directory sent with a key: %d, want 1", len(got))
+	}
+
+	if err := rows.failed(); err != nil {
+		t.Fatalf("scan the store at a runner turn: %v", err)
+	}
+	if err := rows.read(t.Context(), m.kv); err != nil {
+		t.Fatalf("scan the store: %v", err)
+	}
+	stored := rows.all()
+	for what, id := range map[string]entity.OperationID{"online join": online, "offline join": offline} {
+		if !slices.ContainsFunc(stored, func(row []byte) bool { return bytes.HasPrefix(row, append([]byte{keys.KindOP}, id[:]...)) }) {
+			t.Errorf("the %s's operation record %v: not among the %d rows read, want found", what, uuid.UUID(id), len(stored))
+		}
+	}
+	if !slices.ContainsFunc(stored, func(row []byte) bool { return len(row) > 0 && row[0] == keys.KindAU }) {
+		t.Errorf("audit records among the %d rows read: none, want the joins'", len(stored))
+	}
+	fams, err := m.h.Metrics().Registry().Gather()
+	if err != nil || len(fams) == 0 {
+		t.Fatalf("gather the node's metrics: %d families, %v; want some", len(fams), err)
+	}
+	var series []string
+	for _, f := range fams {
+		series = append(series, f.String())
+	}
+	lines := strings.Split(logged.String(), "\n")
+	if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "account=NAS$") }) {
+		t.Errorf("log lines naming NAS$: none among %d, want the joins' lines in the log searched", len(lines))
+	}
+
+	for name, b := range map[string][]byte{"the online join's administrator password": adm.Password, "the offline join's password": []byte(handed)} {
+		for enc, v := range encodings(b) {
+			for i, l := range lines {
+				if strings.Contains(l, v) {
+					t.Errorf("%s, %s, in log line %d: %s", name, enc, i, l)
+				}
+			}
+			for _, row := range stored {
+				if bytes.Contains(row, []byte(v)) {
+					t.Errorf("%s, %s, in a stored row: %q", name, enc, row)
+				}
+			}
+			for _, s := range series {
+				if strings.Contains(s, v) {
+					t.Errorf("%s, %s, in a metric: %s", name, enc, s)
+				}
+			}
+		}
+	}
+}
+
+// §4.1, NTLM back on, its consumer: once the NT hashes' deletion has
+// completed and identity.ntlm is on again, alice's NTLMv2 sign-in through
+// the composed node's SignIn, with the password she had before the
+// deletion, is refused ErrLogonFailure, and accepted once an admin's
+// :set-password sets it again. Catches a rule that accepts NTLM on again
+// while leaving a usable NT hash.
+func TestWiredNTLMOnAgainNeedsThePasswordSet(t *testing.T) {
+	s := newAuthNode(t)
+	admin := s.tokens(t, "admin", adminPassword).Access
+	alice, _ := s.createUser(t, admin, `{"spec":{"name":"alice","uid":5001}}`, "k-alice")
+	const pw = "alice's password"
+	if r := s.setPassword(t, admin, alice, pw); r.status != http.StatusOK {
+		t.Fatalf("alice's :set-password: answered %d %s, want 200", r.status, r.body)
+	}
+	caughtUp(t, s.h)
+	signedIn(t, s.h, "before identity.ntlm is turned off", "alice", pw, alice)
+
+	const ntlm = "/api/v1/settings/identity.ntlm"
+	off := s.send(t, http.MethodPut, ntlm, admin, json.RawMessage(`{"spec":{"value":false}}`), "If-None-Match", "*", "Idempotency-Key", "ntlm-off")
+	loc := off.header.Get("Location")
+	id, err := uuid.Parse(strings.TrimPrefix(loc, "/api/v1/operations/"))
+	if off.status != http.StatusAccepted || err != nil {
+		t.Fatalf("PUT identity.ntlm off: answered %d %s at %q, want 202 with the deletion's Location", off.status, off.body, loc)
+	}
+	if op := ended(t, s.h, entity.OperationID(id)); op.State != entity.OpSucceeded {
+		t.Fatalf("the NT hashes' deletion: ended %v with %s, want succeeded", op.State, op.Error)
+	}
+	cur := s.send(t, http.MethodGet, ntlm, admin, nil)
+	on := s.send(t, http.MethodPut, ntlm, admin, json.RawMessage(`{"spec":{"value":true}}`), "If-Match", cur.header.Get("ETag"), "Idempotency-Key", "ntlm-on")
+	if on.status != http.StatusOK {
+		t.Fatalf("PUT identity.ntlm on once the deletion completed: answered %d %s, want 200", on.status, on.body)
+	}
+	caughtUp(t, s.h)
+	refusedSignIn(t, s.h, "with NTLM on again and the password set before the deletion", "alice", pw)
+
+	if r := s.setPassword(t, admin, alice, pw); r.status != http.StatusOK {
+		t.Fatalf("alice's :set-password once NTLM is on again: answered %d %s, want 200", r.status, r.body)
+	}
+	caughtUp(t, s.h)
+	signedIn(t, s.h, "once :set-password set the password again", "alice", pw, alice)
+}
+
+// A grant by directory name, as the CLI makes one, on the composed node over
+// identitytest's directory: resolve-principal of CORP\alice ends succeeded,
+// read through GET /api/v1/operations/{id}, answering a user's ID; a grant
+// PUT under that ID reads back from the share; and a test-directory ends
+// succeeded, the directory reached. Catches a resolve that answers no ID,
+// or one the grant's write refuses.
+func TestWiredGrantByDirectoryName(t *testing.T) {
+	m := newMachine(t, false)
+	addr, _ := m.h.Node().Addrs()
+	result := func(what string, id entity.OperationID, into any) {
+		t.Helper()
+		m.succeeded(t, what, id)
+		r := answeredIn(t, "GET "+what, send(t.Context(), addr, http.MethodGet, "/api/v1/operations/"+uuid.UUID(id).String(), ""))
+		var op apiv1.Operation
+		if r.status != http.StatusOK || json.Unmarshal(r.body, &op) != nil || op.State != apiv1.OpSucceeded || json.Unmarshal(op.Result, into) != nil {
+			t.Fatalf("GET %s: answered %d %s, want it succeeded with its result", what, r.status, r.body)
+		}
+	}
+
+	var p apiv1.Principal
+	result("resolve-principal of CORP\\alice", m.post(t, "resolve-principal", `{"name":"CORP\\alice"}`), &p)
+	if p.Kind != "user" || p.ID == "" {
+		t.Fatalf("resolve-principal of CORP\\alice: answered %+v, want a user's ID", p)
+	}
+	sh := addShare(t, m.h)
+	grant := "/api/v1/shares/" + sh.ID.String() + "/grants/" + p.ID
+	if r := answeredIn(t, "PUT the grant", send(t.Context(), addr, http.MethodPut, grant, `{"spec":{"access":"read"}}`, "If-None-Match", "*")); r.status != http.StatusOK {
+		t.Fatalf("PUT a grant to the resolved ID: answered %d %s, want 200", r.status, r.body)
+	}
+	var g apiv1.Grant
+	if r := answeredIn(t, "GET the grant", send(t.Context(), addr, http.MethodGet, grant, "")); r.status != http.StatusOK || json.Unmarshal(r.body, &g) != nil || g.Spec.Access != "read" {
+		t.Errorf("GET the grant to the resolved ID: answered %d %s, want 200 read", r.status, r.body)
+	}
+
+	var td struct {
+		Reached bool   `json:"reached"`
+		Error   string `json:"error"`
+	}
+	result("test-directory", m.post(t, "test-directory", ""), &td)
+	if !td.Reached {
+		t.Errorf("test-directory's result: %+v, want the directory reached", td)
+	}
 }

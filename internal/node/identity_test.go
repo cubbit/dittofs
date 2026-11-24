@@ -459,7 +459,7 @@ func changedKeys(before, after map[string]string) []string {
 // not searched for.
 func TestNoSecretInWhatTheNodeRecords(t *testing.T) {
 	var logged syncBuffer
-	ops := &opRows{seen: map[string]bool{}}
+	ops := &kvRows{prefix: []byte{keys.KindOP}, seen: map[string]bool{}}
 	// A cursor a later step overwrites was stored all the same, so the
 	// records are read at the end of every turn, not only at the end; no
 	// operation runs before the node has started and raw is set. A record
@@ -571,16 +571,17 @@ func TestNoSecretInWhatTheNodeRecords(t *testing.T) {
 	}
 }
 
-// opRows is every distinct operation record read, key and value as the KV
+// kvRows is every distinct row under prefix read, key and value as the KV
 // holds them, and the first error a read at a runner turn answered.
-type opRows struct {
-	mu   sync.Mutex
-	seen map[string]bool
-	err  error
+type kvRows struct {
+	prefix []byte
+	mu     sync.Mutex
+	seen   map[string]bool
+	err    error
 }
 
 // keep records err if it is the first a read at a runner turn answered.
-func (o *opRows) keep(err error) {
+func (o *kvRows) keep(err error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.err == nil {
@@ -589,16 +590,16 @@ func (o *opRows) keep(err error) {
 }
 
 // failed is the first error a read at a runner turn answered.
-func (o *opRows) failed() error {
+func (o *kvRows) failed() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.err
 }
 
-// read adds every operation record raw now holds.
-func (o *opRows) read(ctx context.Context, raw kv.KV) error {
+// read adds every row under prefix raw now holds.
+func (o *kvRows) read(ctx context.Context, raw kv.KV) error {
 	return raw.View(ctx, func(r kv.Reader) error {
-		for kvp, err := range r.Scan([]byte{keys.KindOP}, nil) {
+		for kvp, err := range r.Scan(o.prefix, nil) {
 			if err != nil {
 				return err
 			}
@@ -610,7 +611,7 @@ func (o *opRows) read(ctx context.Context, raw kv.KV) error {
 	})
 }
 
-func (o *opRows) all() [][]byte {
+func (o *kvRows) all() [][]byte {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	var rows [][]byte
