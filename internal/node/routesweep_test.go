@@ -581,6 +581,7 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		// A join is refused while a rotation runs; the rotation is ended
 		// failed, as a node with no domain controller leaves it.
 		w.endOperation(t, idOf(r), entity.OpFailed)
+		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:rotate-signing-key", path: "/api/v1/installation:rotate-signing-key", hdr: idemKey()})
 		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:test-directory", path: "/api/v1/installation:test-directory", hdr: idemKey()})
 		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:resolve-principal", path: "/api/v1/installation:resolve-principal", body: apiv1.ResolvePrincipalParams{Name: "bob@AD.EXAMPLE"}, hdr: idemKey()})
 		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:join-domain", path: "/api/v1/installation:join-domain", secrets: []string{joinPassword, base64.StdEncoding.EncodeToString([]byte(joinPassword))},
