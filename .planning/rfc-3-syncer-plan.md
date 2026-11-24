@@ -42,8 +42,8 @@ node, is RFC 8 offload plan epic 21's, which closes #4276's row; this plan build
 synchronisation points shared across #5488 are the RFC 8 offload plan's, and this plan cites them
 by name. GC (RFC 9, roadmap #3620) is planned later.
 
-**Naming.** v1 is `pkg/block/syncer` and the rest of the v1 block tier, which #3119's stage 4
-deletes (PR #5484). v2 is the syncer RFC 3 describes, built at the new path `pkg/syncer`. v2
+**Naming.** v1 was `pkg/block/syncer` and the rest of the v1 block tier, which #3119's stage 4
+deleted (PR #5484, merged 23 Nov; `pkg/block` is gone from `feat/storage-v2`). v2 is the syncer RFC 3 describes, built at the new path `pkg/syncer`. v2
 ignores v1 (rule 7), and no epic touches v1 code or waits on #5484.
 
 **Transition policy.** New installations only (#3119). No metric, log key or setting carries a
@@ -105,8 +105,8 @@ plan calls it **the store adapter**, so it is not confused with the engine's `*e
     read-ahead.
   - Epic 20: `Flow.Healthy` and `Flow.Health`, read as the share's per-direction health.
 - **The journal's offload half is not a seam of this plan.** `Offload`, `OffloadMany`,
-  `MarkOffloaded` and `Release` return `ErrNotImplemented` on `feat/storage-v2`
-  (`pkg/block/journal/offload.go`) until the journal plan's epic 9b. That gates RFC 8 offload plan
+  `MarkOffloaded`, `Unmark` and `Release` return `ErrNotImplemented` on `feat/storage-v2`
+  (`pkg/journal/offload.go`) until the journal plan's epic 9b. That gates RFC 8 offload plan
   S6 and its first end-to-end pass, never an epic here: the syncer never calls the journal.
 - **RFC 4 plan.** Epic 3 delivers LocalStack with HTTPS in `integration`, at
   `LOCALSTACK_HTTPS_ENDPOINT` (the shared `LOCALSTACK_ENDPOINT` stays plain HTTP), which B5 needs. The
@@ -139,7 +139,9 @@ RFC 3 §8.6's suites paragraph, amended here, places the checks:
   under RFC 8 offload plan epic 21;
 - the fuzz targets in RFC 2's nightly `fuzz` suite;
 - the benchmarks in `syncer-bench`;
-- the soak in `engine-soak`, under RFC 8 offload plan epic 22.
+- the soak in a nightly, hours-long cell against LocalStack with outages on a cycle (RFC 3 §8.1),
+  under RFC 8 offload plan epic 22: `engine-soak` today is a `tier: pr` cell of 20 minutes with no
+  emulator, which cannot hold it.
 
 None of the suites this plan's own tests run in keeps a `known.yaml`, so each test lands green,
 with the epic that makes it pass. `engine-soak` keeps one (`test/engine/soak-known.yaml`), but the
@@ -272,8 +274,10 @@ entries, so it binds nothing here.
    enables through `Syncer` and `Flow`, under `-race`. A value is tested where it is consumed
    (`CLAUDE.md`, "Verifying a change"):
    - a health cause, at `Flow.Health`;
-   - a throttle limit and a count in flight, at `Stats`' busy workers per store, never at the
-     in-memory store's own record, which the store adapter cannot export;
+   - a throttle limit and a count in flight, at the in-memory store's own record of calls in flight
+     and their peak (RFC 3 §1.4, §8.4), so a store call that outlives its worker, such as attempt 1's
+     `Put` still running when a slow-tail retry dispatches attempt 2, is counted; the real-backend
+     suite, whose store adapter exports no such record, asserts them at `Stats`' busy workers;
    - every other counter, at `Stats`.
 6. **Known failures shrink.** No suite this plan's own tests run in keeps a `known.yaml` (§1.2), so
    this rule binds no epic.
@@ -281,9 +285,11 @@ entries, so it binds nothing here.
    `pkg/block/remote` or `pkg/block/blockcodec`.
    - Epic 1's import test checks each syncer package on its own, under amended RFC 0 §1.2. It
      allows:
-     - `pkg/syncer`: the standard library, plus `pkg/sim` in its tests;
+     - `pkg/syncer`: the standard library, plus `pkg/sim`, `pkg/syncer/syncertest` and
+       `internal/prof` in its external test package (rules 1 and 4, `bench_test.go`), as
+       `TestImportRule`'s allowlist does for the engine's;
      - `pkg/syncer/internal/sched` and `pkg/syncer/internal/health`: the standard library, plus
-       `pkg/sim` in their tests;
+       `pkg/sim` and `internal/prof` in their tests;
      - `pkg/syncer/syncertest`: `pkg/syncer`, `pkg/sim` and `internal/prof`;
      - `pkg/syncer/series`: `pkg/syncer`, `pkg/metrics`, `pkg/health` and the metrics client
        library;
@@ -439,6 +445,9 @@ pkg/syncer/                       RFC 3 §1.3's surface; Syncer, Flow, Config, C
   series/                         collector, conditions                                       (E8)
   section/                        upload_workers, fetch_workers                               (E8)
   bench_test.go                   B1 to B4, behind syncer_bench                               (E9)
+pkg/engine/enginewire/
+  syncer_bench_test.go            B5 over the store adapter, behind syncer_bench; written by
+                                  epic 9, beside the adapter rule 7 keeps out of pkg/syncer   (E9)
 ```
 
 ### 4.2 Decisions
@@ -446,7 +455,7 @@ pkg/syncer/                       RFC 3 §1.3's surface; Syncer, Flow, Config, C
 **D1. v2 lives at `pkg/syncer`.**
 - The user decided on new top-level paths for #5488's components, so no epic waits on #5484.
 - The import-test entries the engine needs are the RFC 8 offload plan's: today the engine's import
-  test (`TestImportRule`) allows no `pkg/syncer` and refuses v1's `pkg/block/syncer`, and RFC 8
+  test (`TestImportRule`) allows no `pkg/syncer`, and RFC 8
   offload plan epic 16 adds `enginewire`'s edge to `pkg/syncer`, with its first consumer.
 - **Prior art.** `pkg/openstate` and `pkg/vfs`, the same top-level layout (in this repository).
 - **Applied by** epic 1.
@@ -459,7 +468,10 @@ pkg/syncer/                       RFC 3 §1.3's surface; Syncer, Flow, Config, C
   §7.1) and the lifecycle checks, as a suite over a `Store` the caller passes. This plan runs it over the
   in-memory `Store`; RFC 8 offload plan epic 21 runs it over the store adapter against LocalStack
   behind a fault proxy (RFC 3 §8.1, §8.6). It drives `Syncer` and `Flow` only, so it needs no
-  unexported code. Epic 3 lands it with the lifecycle rows, and epics 4 and 6 add their §7.1 rows.
+  unexported code. Beside the `Store`, the caller passes the faults it can inject and the checksum
+  modes it can select: the fault wrapper here, the fault proxy in epic 21. A row needing a fault or
+  mode the caller cannot give (a dropped response to a committed put, a byte flipped on the first
+  get only, a past-the-end refusal) is skipped by name and reported, never passed. Epic 3 lands it with the lifecycle rows, and epics 4 and 6 add their §7.1 rows.
 - **Prior art.** The journal's conformance suite; Go's `testing/fstest.TestFS`.
 - **Applied by** epics 2, 3, 4 and 6.
 
@@ -532,10 +544,12 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
 ### 4.3 Knowingly simple implementations
 
 - **The slow-tail percentile** (epic 4). `ponytail:` a ring per store and direction holds the
-  first-byte samples of the last 60 s, at most 64 times the half's pool (8,192 at 128 workers);
-  past that the window is shorter than 60 s. The 90th percentile is recomputed by selection at most
-  once a second, O(n) each time. Upgrade to a streaming quantile sketch when a CPU profile of the
-  nightly engine soak shows the selection, or a store's rate fills the ring in under 60 s.
+  first-byte samples of the last 60 s, at most 300 times the half's pool (38,400 at 128 workers):
+  60 s at RFC 3's ~200 ms per 4 MiB transfer with every worker busy, so a full pool's rate
+  stays inside 60 s. Past that the window is shorter than 60 s. The 90th percentile is recomputed
+  by selection at most once a second, O(n) each time. Upgrade to per-second buckets over 60 s when
+  a CPU profile of the nightly engine soak shows the selection, or a store's rate fills the ring in
+  under 60 s.
 - **The conformance suite has no rows for versions or raw objects** (epic 2). `ponytail:` the
   in-memory `Store` holds neither, because both land with their first caller (RFC 3 §1.3). The
   suite's rows for `GetVersion`, `PutRaw` and `GetRaw`, and the store's support for them, land
@@ -600,7 +614,7 @@ which epics 4 and 6 complete.
 - RFC 3 §7.2's rows "§2.1 one limiter", "§2.3 backpressure", "§2.9 no starvation", "§2.9 fair by
   worker-time", "§2.9 waiter share", "§2.9 bounded queue", "§2.9 store level", "§2.9 lone flow",
   "§2.9 classes", "§2.9 eviction", "§2.9 waiter bound" and "§1.3 lifecycle" pass;
-- "§1.3 unregister" passes too, its probe half once epic 5 lands;
+- "§1.3 unregister" passes for its flows, health state and counters (its probe half is epic 5's);
 - RFC 3 S1, S3, S13, S17 (all but the throttle limit), S18, S20 and S22 hold in the model comparison
   after every dispatch;
 - RFC 3 §8.4's "scheduler work per dispatch", "peak in flight", "fairness", "waiters" and "waiters
@@ -668,6 +682,7 @@ admission.
   traffic stands in", "§2.8 shared probe", "§2.8 logging", "§2.8 denial backoff", "§2.8 flap
   hold-down", "§2.8 failure window", "§2.8 per direction", "§2.8 window re-trip" and "§1.3 destroyed
   material" pass;
+- "§1.3 unregister"'s probe half passes: an unregistered store's probes stop;
 - "§2.8 cause per direction" passes for its four causes that are not drift;
 - RFC 3 S14, S15, S16, S19's health half, S26, S27 and S28 hold;
 - RFC 3 §8.2's "Probes" cases are reached, along with "a store that turns unhealthy while transfers
@@ -787,7 +802,8 @@ RFC 3 §9's first open question.
 
 **Expected content:**
 - B1 to B4, with `b.ReportAllocs()`.
-- B5.
+- B5, in `pkg/engine/enginewire`'s external tests behind `syncer_bench` (§4.1), which
+  `syncer-bench` runs with B1 to B4.
 - `syncer-bench` (`manual`, no `known.yaml`) and the `syncer` group registered in
   `test/suites.yaml`, its tag in `lint-go`'s list, and `dt docs` run.
 - Each fixed value RFC 3 §9 calls a proposal, either confirmed or with a pull request to RFC 3
@@ -834,7 +850,7 @@ What this plan knowingly does not build. Each row names the section that defers 
 | A registration with `PutProbe` false, and RFC 3 §7.2's "§2.8 no put probe" row, S25 (epics 1, 5) | its caller is an immutable backup location | RFC 26 plan | RFC 26's plan starts |
 | The pool sizing tool (RFC 3 §2.11) | no operator needs it in v1.1; the defaults of RFC 3 §2.10 hold, not reduced to the transfers pool while D6's row stands | unowned | an operator needs pool sizes past the defaults |
 | The store adapter, its error mapping and past-the-end wrap (O1), `ProbeKey`, spreading connections across addresses, the CPU token, the root's syncer, registering epic 8's series and settings, the per-flow queue gauges by share (D4), and the conformance suite and RFC 3 §8.1's real-backend checks run against the adapter behind a fault proxy (§1.1, D2) | composition | RFC 8 offload plan, epic 21 | RFC 8 offload plan epic 21 lands |
-| The soak (RFC 3 §8.1) | one soak for the composed node | RFC 8 offload plan, epic 22 (`engine-soak`) | RFC 8 offload plan epic 22 lands |
+| The soak (RFC 3 §8.1): hours, nightly, against LocalStack with outages on a cycle | one soak for the composed node; `engine-soak` is a 20-minute `tier: pr` cell with no emulator | RFC 8 offload plan, epic 22 (a nightly cell or option of `engine-soak`) | RFC 8 offload plan epic 22 lands |
 | The codec's part of RFC 3 §7.2's "§2.2 memory bound" row (epic 7) | the codec is behind the store adapter | RFC 4 plan, epic 6 (the block codec) | RFC 4 plan epic 6 lands |
 | RFC 25 §3.9's severity per cause on `store_put_unhealthy` and `store_get_unhealthy` (epic 8) | `health.Condition` carries no severity; the `ponytail:` on `pkg/health`'s `Evaluator` names RFC 25's plan as its upgrade | unowned | a plan takes RFC 25's registry, or `pkg/health` gains severity |
 | RFC 0 §1.4's single-node checks (§1.4): the composition root building and stopping the syncer in order | they run on the composed node | RFC 8 offload plan, epic 21 | RFC 8 offload plan epic 21 lands |
