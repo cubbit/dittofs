@@ -23,7 +23,13 @@ func FuzzModelRepack(f *testing.F) {
 	for _, seed := range []uint64{7, 11, 21, 37} {
 		f.Add(encodeSteps(model.GenerateWithin(seed, 16, model.RepackOps), model.RepackOps))
 	}
-	f.Add(encodeSteps(model.GenerateWithin(3, 64, model.RepackOps), model.RepackOps))
+	// A pass-bound regression pin: at 200 steps this draw once drove a repack
+	// pass that never finished, because the records a carry moved never
+	// counted against the pass budget and the pass re-selected the very
+	// segments its own carries sealed. Every carried record counts now, so the
+	// draw runs bounded; the 64-step entry it replaces drew the same steps as
+	// this one's prefix and covered nothing past it.
+	f.Add(encodeSteps(model.GenerateWithin(3, 200, model.RepackOps), model.RepackOps))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		prof.Watch(t, prof.Options{})
 		steps := decodeSteps(data, model.RepackOps)
@@ -55,12 +61,14 @@ func losingCrashes(steps []model.Step) []model.Step {
 
 // forgetSeeds is how many fixed seeds TestModel_RepackAndForget draws.
 //
-// decision: the seeds are the first twenty, not every one up to a larger
-// bound, because a few draws (22 and 24 among them) drive a repack pass to a
-// segment count at which its registry scans no longer return in test time,
-// with or without a forget in the draw. The twenty hold no such draw; widen
-// the count once the pass's scans stop growing with the ledger.
-const forgetSeeds = 20
+// decision: the seeds used to stop at twenty because draws 22 and 24 hung:
+// their repack pass manufactured the scale itself — the records a carry
+// moved never counted against the pass budget, so the pass re-selected the
+// very segments its own carries sealed and never finished. Every carried
+// record counts now, so the draws run bounded and stay in the count; a draw
+// that ever hangs again fails the suite by its test timeout, not by
+// an exclusion from the count.
+const forgetSeeds = 24
 
 // forgetSteps is the length of each of those draws.
 const forgetSteps = 64
