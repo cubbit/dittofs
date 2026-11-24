@@ -21,9 +21,10 @@ func newTestRoot() (*cobra.Command, *bytes.Buffer) {
 
 // Every v1 command dfsctl still lists refuses, naming itself, until the CLI is
 // rebuilt on the v2 API; the commands that work locally (context, completion,
-// version, login, logout, password) are left out of the walk.
+// version) and those already rebuilt (login, logout, password, operation) are
+// left out of the walk.
 func TestV1CommandsRefuse(t *testing.T) {
-	kept := map[string]bool{"context": true, "completion": true, "version": true, "logout": true, "login": true, "password": true, "help": true}
+	kept := map[string]bool{"context": true, "completion": true, "version": true, "logout": true, "login": true, "password": true, "operation": true, "help": true}
 	root, _ := newTestRoot()
 	refused := 0
 	var walk func(c *cobra.Command)

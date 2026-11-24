@@ -11,6 +11,7 @@ import (
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	ctxcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/context"
 	groupcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/group"
+	operationcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/operation"
 	quotacmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/quota"
 	sharecmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/share"
 	usercmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/user"
@@ -62,6 +63,7 @@ Use "dfsctl [command] --help" for more information about a command.`,
 		groupcmd.New(),
 		sharecmd.New(),
 		quotacmd.New(),
+		operationcmd.New(env),
 		newCompletionCmd(),
 	)
 

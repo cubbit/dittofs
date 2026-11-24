@@ -418,7 +418,9 @@ func enginewireImporters(_ string, files []fileImports) ([]string, error) {
 	return bad, nil
 }
 
-// cliRoots are where the CLI's dependency closure starts, and cliAllowed what
+// cliRoots are where the CLI's dependency closure starts: the binary's main
+// package, not every package under it, so a package only tests import, such
+// as the shared suite over the harness, is not counted; and cliAllowed what
 // of this module it may reach: neither the metadata or block stores, nor the
 // control-plane server, nor anything that reads the host's bootstrap.
 var (
@@ -443,7 +445,7 @@ func cliClosure(_ string, files []fileImports) ([]string, error) {
 	var bad, queue []string
 	seen := map[string]bool{}
 	for dir := range pkgs {
-		if slices.ContainsFunc(cliRoots, func(r string) bool { return under(dir, r) }) {
+		if slices.Contains(cliRoots, dir) {
 			seen[dir] = true
 			queue = append(queue, dir)
 		}

@@ -2,12 +2,15 @@
 package cmdutil
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/cubbit/dittofs/internal/cli/prompt"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // Unavailable is the body of every v1 command dfsctl still lists: it refuses,
@@ -39,7 +42,12 @@ func PrintOutput(cmd *cobra.Command, data any, isEmpty bool, emptyMsg string, ta
 	case output.FormatJSON:
 		return output.PrintJSON(w, data)
 	case output.FormatYAML:
-		return output.PrintYAML(w, data)
+		b, err := toYAML(data)
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(b)
+		return err
 	default:
 		if isEmpty {
 			_, _ = fmt.Fprintln(w, emptyMsg)
@@ -47,6 +55,27 @@ func PrintOutput(cmd *cobra.Command, data any, isEmpty bool, emptyMsg string, ta
 		}
 		return output.PrintTable(w, tableRenderer)
 	}
+}
+
+// toYAML is v as YAML, through its JSON, so the API's wire types, which name
+// their fields for JSON only, print under the names the API gives them, each
+// mapping's keys sorted.
+func toYAML(v any) ([]byte, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var tree any
+	if err := yaml.Unmarshal(b, &tree); err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(tree); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), enc.Close()
 }
 
 // BoolToYesNo converts a boolean to "yes" or "no" string.

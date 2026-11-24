@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -153,5 +154,28 @@ func TestRunDeleteWithConfirmation(t *testing.T) {
 				t.Errorf("stderr: got %q, want %q", stderr.String(), tt.wantStderr)
 			}
 		})
+	}
+}
+
+// The merge patch from one spec to another names each changed field, nulls
+// each removed one, recurses into an object both hold, and leaves out what
+// is unchanged.
+func TestMergePatch(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		a, b map[string]any
+		want map[string]any
+	}{
+		{"unchanged", map[string]any{"path": "/a"}, map[string]any{"path": "/a"}, map[string]any{}},
+		{"changed", map[string]any{"path": "/a", "name": "n"}, map[string]any{"path": "/b", "name": "n"}, map[string]any{"path": "/b"}},
+		{"removed", map[string]any{"email": "a@b"}, map[string]any{}, map[string]any{"email": nil}},
+		{"added", map[string]any{}, map[string]any{"gid": 7.0}, map[string]any{"gid": 7.0}},
+		{"nested", map[string]any{"o": map[string]any{"x": 1.0, "y": 2.0}}, map[string]any{"o": map[string]any{"x": 1.0, "y": 3.0}},
+			map[string]any{"o": map[string]any{"y": 3.0}}},
+		{"list replaced whole", map[string]any{"l": []any{"a"}}, map[string]any{"l": []any{"a", "b"}}, map[string]any{"l": []any{"a", "b"}}},
+	} {
+		if got := mergePatch(tt.a, tt.b); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("mergePatch %s: got %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }
