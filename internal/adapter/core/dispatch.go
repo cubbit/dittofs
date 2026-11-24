@@ -429,8 +429,8 @@ type Request struct {
 	Level   Needs    // what this message's session and tree reached; Op.Needs is checked against it
 	Conn    *Conn    // what a handler keeps state on (Keep) and the stages send callbacks on
 	// State is the protocol's own: SMB's session, tree, capabilities and
-	// FileId table and the chain's current open; NFS's session and current
-	// filehandle. The Router sets it, from prev for a related member; core
+	// FileId table and the chain's current open; NFS's current and saved
+	// filehandle and stateid, and the session's reply budget. The Router sets it, from prev for a related member; core
 	// carries it and never reads it.
 	State any
 
