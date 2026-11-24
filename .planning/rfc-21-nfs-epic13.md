@@ -20,7 +20,7 @@ and "disable takes effect"'s GSS half. Every clause cited reads the same on `dev
 Cited, not owned: RFC 2203 for the RPCSEC_GSS messages, RFC 4121 for the per-message tokens, RFC
 5531 for `auth_stat`, RFC 17 §4.9's admission, RFC 24's connection-state pool.
 **Track:** B.
-**Epic 13 estimate: 8 subtasks, 19.5 man-days.**
+**Epic 13 estimate: 8 subtasks, 20.5 man-days.**
 **Depends on:**
 - **S2**, NFS's test foundations in CI, with E2's capture recipe, which T13.1 extends to a KDC.
 - **S6c**, the RFC 22 implementation plan's epic 4: `gss`'s `Context`, `Exchanges`, the Kerberos
@@ -125,9 +125,9 @@ cited by number and title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the table as a state machine on an injected clock (kind 1, D6); the stage on golden vectors and capture vectors with no socket; loopback rows through `core` on `memory.New` (kind 2) with `vfstest.Mutations`, a recording wrapper that passes each call through; `gsstest`'s Kerberos initiator and `identitytest.Realm`'s tickets, real Kerberos messages under test keys; RFC 18's rows on `nodetest`. No other double |
-| rule 2, fuzz tests where relevant | T13.2, T13.3 | `FuzzGSSCred` over the credential and the control and protected bodies, against a second decoder written by hand from RFC 2203 (R32); `FuzzWrapToken` and `FuzzMICToken` over RFC 4121's token parsing in `gss`, seeded with the capture's tokens |
+| rule 2, fuzz tests where relevant | T13.2, T13.3 | `FuzzGSSCred` over the credential and the control and protected bodies, against a second decoder written by hand from RFC 2203 and re-encoding each decoded value (R32); `FuzzWrapToken` and `FuzzMICToken` over RFC 4121's token parsing in `gss`, seeded with the capture's tokens, with the same re-encode check |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T13.4 | no recorder in NFS code; `nfs_gss_contexts` is §1.2's; no attribute or log line added here carries a principal, a handle or an address (RFC 25 §5.4) |
-| rule 4, profiling: leaks, allocations and contention | T13.4, T13.5, T13.6 | the table's mutex and block profiles under 64 connections and 1 000 contexts, reported in T13.4's pull request; every loopback test ends with `adaptertest.CheckLeaks`; `krb5p`'s `Unwrap` and `Wrap` allocate nothing per call past the token (R23) |
+| rule 4, profiling: leaks, allocations and contention | T13.3, T13.4, T13.5, T13.6 | the table's mutex and block profiles under 64 connections and 1 000 contexts, reported in T13.4's pull request; every loopback test ends with `adaptertest.CheckLeaks`; at `krb5i` and `krb5p`, `MIC`, `VerifyMIC`, `Wrap` and `Unwrap` allocate the same bytes per call for a 4 KiB and a 1 MiB message, so none copies it (R23, D11) |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T13.5, T13.6, T13.7, T13.8 | the `Identity` asserted on the `r.Call` a handler receives over loopback, the window and eviction on the replies a client reads, a forged call on `vfstest.Mutations` staying empty, each reply's verifier checked by the client that reads it |
 | rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover |
 | rule 7, v2 ignores v1 | all | nothing from `develop`'s `rpc/gss`; behaviour from RFC 21 §10, RFC 2203 and RFC 4121; the GSS per-message code RFC 20 Appendix B keeps is `gss`'s, moved there by S6c |
@@ -159,7 +159,7 @@ subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R6 | The window is 128. A call whose sequence number is below the window, or already seen within it, is dropped unanswered; one above it advances the window once its verifier checksum passes | MUST | RFC 21 §10 | T13.4, T13.5 |
-| R7 | A call whose verifier checksum fails is rejected `RPCSEC_GSS_CREDPROBLEM` and leaves the window, and the context's idle time, as they were | MUST | RFC 21 §10 | T13.4, T13.5 |
+| R7 | A call whose verifier checksum fails is rejected `RPCSEC_GSS_CREDPROBLEM` and leaves the window, and the context's idle time, as they were | MUST | RFC 21 §10 | T13.5 |
 | R8 | Neither a dropped nor a rejected call runs | MUST | RFC 21 §10 | T13.5 |
 | R9 | A call on a context past its ticket's end time, or with a sequence number at or above `MAXSEQ`, deletes the context and is answered `RPCSEC_GSS_CTXPROBLEM`; both are checked only after the header MIC verifies. Over NFS this is the expired-credential answer RFC 18 §3.1 asks for; the release calls RFC 18 §3.8 lets through are Q2's | MUST | RFC 21 §10; RFC 18 §3.1, §3.8 | T13.4, T13.5 |
 | R10 | `RPCSEC_GSS_DESTROY` needs a valid header MIC and an in-window sequence number; one without either is refused and the context kept | MUST | RFC 21 §10 | T13.5 |
@@ -190,7 +190,7 @@ subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R22 | The `Security` stage checks the header verifier and the sequence window and writes the reply verifier; at `krb5i` it checks the body's checksum and strips it, and appends the checksum to the results; at `krb5p` it decrypts the body and encrypts the results | MUST | RFC 20 §5.5 (the transforms table), §4.4 (step 3); RFC 21 §10 | T13.5, T13.6 |
-| R23 | Unwrap runs on the reader, Wrap on the worker; both write into the buffer they read from, never a further copy | MUST | RFC 20 §5.5 | T13.6 |
+| R23 | Unwrap runs on the reader, Wrap on the worker; both write into the buffer they read from, never a further copy | MUST | RFC 20 §5.5 | T13.3, T13.6 |
 | R24 | A failed integrity or privacy check is `GARBAGE_ARGS`, an accepted reply whose verifier is the checksum of the request's sequence number under the context its header verifier proved, with no results: signed, and not sealed | MUST | RFC 20 §5.5 | T13.6 |
 | R25 | A refusal at unwrap comes back with its header and §5.5's verdict: `RPCSEC_GSS_CREDPROBLEM` carries no verifier; a refusal after unwrap is wrapped under the header `Unwrap` returned, as any reply is; `Unwrap` returns a header or an error, never neither | MUST | RFC 20 §4.7 (`Security`), §5.5 | T13.5 |
 | R26 | `ReplyLen` covers the transform `Wrap` adds in place, so a reply's reservation holds its wrapped size | MUST | RFC 20 §4.7 (`HeaderCodec.ReplyLen`) | T13.6 |
@@ -204,7 +204,7 @@ subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R31 | The credential's decoder, and the control and protected bodies', check every length against the bytes remaining and the cap before they allocate or read | MUST | RFC 20 §5.2 | T13.2 |
-| R32 | The `RPCSEC_GSS` credential and `gss`'s Kerberos tokens each have a fuzz target: no panic, no read or allocation past the buffer or the cap, and a decoded value checked against a second decoder written by hand | MUST | RFC 20 §5.4 | T13.2, T13.3 |
+| R32 | The `RPCSEC_GSS` credential and `gss`'s Kerberos tokens each have a fuzz target: no panic, no read or allocation past the buffer or the cap, a decoded value that re-encodes to bytes decoding to the same value, and a decoded value checked against a second decoder written by hand | MUST | RFC 20 §5.4 | T13.2, T13.3 |
 | R33 | Golden vectors come from the specifications' examples or from captures of the reference server, never only from the codec under test | MUST | RFC 20 §5.4 | T13.1, T13.2, T13.3 |
 
 **The RFCs' rows**
@@ -283,14 +283,19 @@ are the authenticator's and already tested at its Tier 1; `SECINFO`'s flavours (
   hit is wrapped under the retransmission's own header, as `core` wraps every cached copy. Prior
   art: knfsd looks up its DRC after the GSS layer has unwrapped the call (from memory). A `decision:`
   marker at the key.
-- **D8. A context's charge is its size, and a pool that refuses with nothing to evict drops the
-  call.** Each context reserves from `Budgets.Connection` its fixed size plus its evidence's name
-  and SIDs, released when it is deleted. A refused reservation evicts as R4 says and retries once;
-  if the table holds nothing to evict, the `INIT` is dropped unanswered, so the client's
-  retransmission is its retry once the pool frees: RPC has no retry-later answer for `INIT`, and
-  `CREDPROBLEM` would end the client's attempt. Prior art: none found. A `decision:` marker at the
-  drop, overturned if a supported client is shown to give up on a dropped `INIT` sooner than on a
-  refusal.
+- **D8. A context is charged before `SignIn`, and a pool that refuses with nothing to evict drops
+  the `INIT` before `SignIn` sees it.** Each context reserves from `Budgets.Connection` its fixed size
+  plus a bound on its evidence's name and SIDs computed from the `INIT` token's length, since both are
+  decoded from the ticket inside it; once `SignIn` returns, the reservation is trimmed to the
+  evidence's real size, and it is released when the context is deleted or the exchange fails. A
+  refused reservation evicts as R4 says and retries once; if the table holds nothing to evict, the
+  `INIT` is dropped unanswered before its AP-REQ reaches `SignIn`, so the replay cache (RFC 18 §3.3)
+  has not seen the authenticator and the client's retransmission, which carries the same AP-REQ, is
+  its retry once the pool frees: RPC has no retry-later answer for `INIT`, and `CREDPROBLEM` would end
+  the client's attempt. Charging after `SignIn` would put the authenticator in the replay cache first,
+  and the retransmission would then be refused `CREDPROBLEM` anyway. Prior art: none found. A
+  `decision:` marker at the drop, overturned if a supported client is shown to give up on a dropped
+  `INIT` sooner than on a refusal.
 - **D9. The GSS `Identity` is built by `gss.Identity`.** `Route` calls RFC 20 §4.4's
   `gss.Identity(c, nil, proto, addr)` with the context `Unwrap` attached to the header and sets
   `Protection` from the credential's service, whatever E3's Q1 decides for `AUTH_SYS`. Prior art:
@@ -301,18 +306,30 @@ are the authenticator's and already tested at its Tier 1; `SECINFO`'s flavours (
   `rpc_gss_init_res` (from memory), which E14's diff will show as a divergence. A `decision:`
   marker at the control table's rows, overturned if a supported client is shown to retry a
   `CREDPROBLEM` where it would give up on the major status.
-- **D11. `Wrap`, `Unwrap` and `VerifyMIC` on `gokrb5`'s primitives, with neither RFC 4121 sequence
-  check.** `gss` already builds on `gokrb5`, whose `gssapi` package parses MIC and unsealed Wrap
-  tokens but cannot seal, so `krb5p`'s `Wrap` and `Unwrap` encrypt and decrypt with `gokrb5`'s
-  `crypto` under RFC 4121's key usages, the token header and checksum framed by hand, handling a
-  nonzero right rotation count on receipt. Received tokens' sequence numbers are not checked:
-  `RPCSEC_GSS` keeps its own window (R6) and its clients ask for no GSS replay or sequence
-  detection. Each context's sent tokens take their sequence number from an atomic counter, so
-  workers wrap in parallel (R23). The direction is a parameter, so `gsstest`'s initiator uses the
-  same code with the initiator's key usages. `VerifyMIC` is Q3's. Prior art: MIT's `k5sealv3.c`
-  and `k5unsealiov.c` (from memory); `gokrb5`'s `gssapi.WrapToken` supports integrity only (from
-  memory). A `decision:` marker on the sequence check left out, overturned if a client is ever seen
-  asking for GSS sequence detection.
+- **D11. `MIC`, `VerifyMIC`, `Wrap` and `Unwrap` in place over the standard library, with `gokrb5`
+  deriving the keys once per context, and neither RFC 4121 sequence check.** `gokrb5`'s per-message
+  code copies the whole message on every call (read the code, v8.4.4): `rfc3962.EncryptMessage`
+  builds the plaintext with `append(c, message...)` and derives the key on every call,
+  `aescts.Encrypt` copies the plaintext again, and `MICToken`'s checksum and `common.GetHash` copy the
+  payload twice; its `gssapi.WrapToken` cannot seal at all. RFC 20 §5.5 has both directions write into
+  the buffer they read from (R23), so `gss` uses `gokrb5` only to derive the context's RFC 4121 keys
+  (Kc, Ke, Ki for each direction's key usages), once, when the context is made, and writes AES-CTS
+  (RFC 3962) and HMAC-SHA1-96 in place over `crypto/aes`, `crypto/cipher` and `crypto/hmac`: CBC over
+  the message where it lies, ciphertext stealing over the last two blocks in a 32-byte scratch, the
+  checksum fed the message and then the token header, never a copy of both. `Wrap` takes the
+  message with the token header and confounder reserved before it and the trailer within capacity,
+  as `ReplyLen` reserves them (R26), and returns the token in the same array; `Unwrap` decrypts in
+  place and returns the plaintext as a slice of the token, handling a nonzero right rotation count
+  on receipt. If S6c's `MIC` is built on `gokrb5`'s `MICToken`, T13.3 replaces its body with the
+  in-place checksum, keeping its signature. Received tokens' sequence numbers are not checked:
+  `RPCSEC_GSS` keeps its own window (R6) and its clients ask for no GSS replay or sequence detection.
+  Each context's sent tokens take their sequence number from an atomic counter, so workers wrap in
+  parallel (R23). The direction is a parameter, so `gsstest`'s initiator uses the same code with the
+  initiator's key usages. `VerifyMIC` is Q3's. Prior art: MIT's `k5sealv3iov.c` and
+  `k5unsealiov.c`, which encrypt and checksum IOVs in place (from memory). A `decision:` marker on
+  the sequence check left out, overturned if a client is ever seen asking for GSS sequence
+  detection; a `ponytail:` marker on the hand-written AES-CTS, replaced if `gokrb5` or the standard
+  library gains an in-place one.
 - **D12. `ErrExpired` and the session errors' rows.** **Pending the user's answer** (Q1): written
   as Q1's recommended option, `RPCSEC_GSS_CTXPROBLEM` in the NFSv3-family tables and
   `NFS4ERR_DELAY` in NFSv4's, `ErrNotNegotiated`, `ErrNoSession` and `ErrNoTree` at the fault in the
@@ -328,7 +345,8 @@ are the authenticator's and already tested at its Tier 1; `SECINFO`'s flavours (
 
 ```text
 internal/adapter/gss/
-  wrap.go                 T13.3  Wrap, Unwrap (RFC 4121 §4.2.6.2), VerifyMIC (Q3); the direction parameter
+  wrap.go                 T13.3  Wrap, Unwrap (RFC 4121 §4.2.6.2), MIC's body, VerifyMIC (Q3); the direction parameter
+  cts.go                  T13.3  AES-CTS and HMAC-SHA1-96 in place; the keys derived once per context (D11)
   wrap_test.go            T13.3  vectors, capture tokens
   fuzz_test.go            T13.3  FuzzWrapToken, FuzzMICToken
   gsstest/                T13.3  the initiator's MIC, Wrap and Unwrap
@@ -337,7 +355,7 @@ internal/adapter/nfs/
   export_test.go          T13.5  an adapter on a test clock
   nfs_gss_test.go         T13.5, T13.6, T13.7  loopback rows
   wire/
-    gss.go                T13.2  the credential, rpc_gss_init_arg and _res, the integrity and privacy bodies, the auth_stat values, MAXSEQ
+    gss.go                T13.2  the credential and its encoder, rpc_gss_init_arg and _res, the integrity and privacy bodies, the auth_stat values, MAXSEQ
     fuzz_test.go          T13.2  FuzzGSSCred
     testdata/golden/      T13.1  rpcsec-gss-*.hex cut from the capture; T13.2
   protocol/
@@ -402,6 +420,7 @@ test/pcap-corpus/nfs-gss/
   	Handle  []byte // into the record, at most 400 bytes with the rest of the body
   }
   func DecodeGSSCred(body []byte) (GSSCred, error)
+  func AppendGSSCred(dst []byte, c GSSCred) []byte
   func DecodeGSSInitArg(args []byte) (token []byte, err error)
   func AppendGSSInitRes(dst, handle []byte, major, minor, window uint32, token []byte) []byte
   func GSSIntegBody(args []byte) (body, checksum []byte, err error) // rpc_gss_integ_data
@@ -409,8 +428,9 @@ test/pcap-corpus/nfs-gss/
   ```
   with the constants `GSSProcData` … `GSSProcDestroy`, `GSSSvcNone` … `GSSSvcPrivacy`,
   `AuthCredProblem` (13) and `AuthCtxProblem` (14) of RFC 5531's `auth_stat`, and `GSSMaxSeq` (`0x80000000`). `FuzzGSSCred` over
-  the four decoders, against a second decoder written in the test from RFC 2203 §5. Consumed by
-  T13.5's stage and control table, and by `nfsclient`'s GSS side.
+  the four decoders, against a second decoder written in the test from RFC 2203 §5, each decoded
+  value re-encoded and decoded again to the same value. Consumed by T13.5's stage and control table,
+  and by `nfsclient`'s GSS side, which encodes its credentials with `AppendGSSCred`.
 - **Acceptance criteria:**
   - Each captured credential and body decodes to the fields `tshark` reads in it.
   - A credential of version other than 1, a handle running past its opaque, bytes left after the
@@ -418,40 +438,49 @@ test/pcap-corpus/nfs-gss/
     allocated.
 - **Tests:** at the decoders T13.5 calls: the capture's golden files, and hand-written ones from
   RFC 2203 for `CONTINUE_INIT` and `DESTROY` if the capture lacks them (catch a field out of place,
-  R33); the refusals above (catch a length read past the buffer, R31); `FuzzGSSCred` (R32). No test
-  double.
+  R33); the refusals above (catch a length read past the buffer, R31); `FuzzGSSCred` (catches a field
+  the decoder drops or misreads that a re-encode exposes, R32). No test double.
 - **Rules:** rule 2's target; rule 11, exported for `nfs/protocol` and `nfsclient`.
 
 ### T13.3 RFC 4121's `Wrap`, `Unwrap` and `VerifyMIC` in `gss`
 
-**Subtask T13.3 estimate: 2.5 man-days.**
+**Subtask T13.3 estimate: 3.5 man-days.**
 
 - **Track:** B. **Depends on:** S6c, T13.1.
-- **Covers:** R27, R28, R32, R33.
+- **Covers:** R23, R27, R28, R32, R33.
 - **Deliverables:** in `gss`, beside S6c's `MIC`, on `gss.Context`:
   ```go
-  Wrap      func(msg []byte) ([]byte, error)      // RFC 4121 §4.2.6.2, sealed: krb5p
+  Wrap      func(msg []byte) ([]byte, error)      // RFC 4121 §4.2.6.2, sealed in place: krb5p (D11)
   Unwrap    func(tok []byte) ([]byte, error)      // in place: the plaintext is a slice of tok
   VerifyMIC func(msg, tok []byte) error          // a peer's MIC token (Q3)
   ```
-  over one implementation taking the direction (D11), so `gsstest`'s Kerberos initiator gains its
-  side of the three and of `MIC`; the RFC 20 §4.4 pull request for `VerifyMIC` (Q3); `FuzzWrapToken`
-  and `FuzzMICToken`. Consumed by T13.5 (the header verifier and the reply verifier), T13.6
+  over one implementation taking the direction (D11), on keys `gokrb5` derives once per context and
+  AES-CTS and HMAC-SHA1-96 written in place over the standard library, with `MIC`'s body moved onto
+  the same checksum if S6c's copies the message, so `gsstest`'s Kerberos initiator gains its side of
+  the three and of `MIC`; the RFC 20 §4.4 pull request for `VerifyMIC` (Q3); `FuzzWrapToken` and
+  `FuzzMICToken`, each re-encoding a parsed token's header and checksum to the same bytes. Consumed by T13.5 (the header verifier and the reply verifier), T13.6
   (`krb5i` and `krb5p`) and `nfsclient`'s GSS side through `gsstest`.
 - **Acceptance criteria:**
-  - The Linux client's MIC and Wrap tokens in T13.1's capture verify and unwrap under the session
-    key its ticket carries, and knfsd's verify at the initiator.
+  - The Linux client's MIC and Wrap tokens in T13.1's capture verify and unwrap under the context
+    key RFC 18 §3.1 names, taken from the capture: the acceptor's subkey when knfsd's AP-REP sends
+    one, else the authenticator's subkey, else the ticket's session key; knfsd's verify at the
+    initiator under the same key.
   - A token whose checksum, token ID, flags or filler is altered is refused; one with a nonzero
     right rotation count unwraps.
   - `Wrap` then `Unwrap` in the other direction gives the message back; a token of the acceptor's
     direction is refused where the initiator's is expected.
+  - `MIC`, `VerifyMIC`, `Wrap` and `Unwrap` allocate the same bytes per call for a 4 KiB and a 1 MiB
+    message.
 - **Tests:** at `Context`, which T13.5 and T13.6 call: RFC 3962's AES vectors through the key
-  derivation and the published RFC 4121 token vectors RFC 20 §4.4 names (catch a wrong key usage or
-  a checksum over the wrong bytes, R28); the capture's tokens, the session key read from the
-  captured ticket under T13.1's keytab (catch a token Linux sends that `gss` refuses, R33, and a
-  keytab of another realm or version committed with the capture); the altered tokens (catch a check skipped); `FuzzWrapToken` and `FuzzMICToken`
-  (R32). No test double: the capture's tokens are a real peer's.
-- **Rules:** rule 9's `decision:` marker for D11; rule 11, the three fields for `nfs/protocol`,
+  derivation and its AES-CTS vectors, one per length class, through the in-place cipher (catch a
+  stolen block misplaced), and the published RFC 4121 token vectors RFC 20 §4.4 names (catch a wrong key usage or
+  a checksum over the wrong bytes, R28); the capture's tokens, the context key read from the
+  capture's AP-REQ and AP-REP under T13.1's keytab by RFC 18 §3.1's choice (catch a token Linux
+  sends that `gss` refuses, R33, a context key chosen otherwise than RFC 18 §3.1 says, and a keytab
+  of another realm or version committed with the capture); the altered tokens (catch a check
+  skipped); `testing.Benchmark`'s bytes per operation for each of the four at 4 KiB and 1 MiB, equal
+  (catches a copy of the message, R23); `FuzzWrapToken` and `FuzzMICToken` (R32). No test double: the capture's tokens are a real peer's.
+- **Rules:** rule 9's `decision:` and `ponytail:` markers for D11; rule 4, the allocation check; rule 11, the three fields for `nfs/protocol`,
   after the RFC 20 change.
 
 ### T13.4 The context table
@@ -459,13 +488,14 @@ test/pcap-corpus/nfs-gss/
 **Subtask T13.4 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** S6c.
-- **Covers:** R1, R2, R3, R4, R5, R6, R7, R9, R11.
+- **Covers:** R1, R2, R3, R4, R5, R6, R9, R11.
 - **Deliverables:** `protocol/gss.go`'s table, unexported, built by `protocol.New` and shared by
   every connection of the adapter:
   ```go
   type gssContext struct { /* handle, *gss.Context, its principal, the window (D5), idle time */ }
   func newGSSTable(b *resources.Budget, c Clock, max int) *gssTable
-  func (t *gssTable) insert(g *gss.Context) (handle [16]byte, err error) // D3, D4, D8
+  func (t *gssTable) reserve(tokenLen int) (*reservation, error)             // before SignIn: evicts, then refuses (D8)
+  func (t *gssTable) insert(r *reservation, g *gss.Context) (handle [16]byte) // trims the charge to the evidence (D3, D4, D8)
   func (t *gssTable) get(handle []byte) (*gssContext, bool)              // evicts the idle first
   func (t *gssTable) delete(handle []byte)
   func (c *gssContext) check(seq uint32, now time.Time) verdict          // after the header MIC: run, drop, or ctxProblem
@@ -478,8 +508,8 @@ test/pcap-corpus/nfs-gss/
     used context, and the global least recently used only when that principal holds none.
   - A context idle 8 hours on the clock is gone at the next `insert` or `get`; `check` alone moves
     its idle time and its place in either list, and a `get` moves neither.
-  - With the budget too small for one more context and nothing to evict, `insert` refuses and
-    charges nothing (D8).
+  - With the budget too small for one more context and nothing to evict, `reserve` refuses and
+    charges nothing; `insert` leaves charged only the context's real size (D8).
   - In the window: a repeated or too-old number drops; one above advances it; one at or above
     `MAXSEQ`, or past the ticket's end, deletes the context.
   - Every deletion releases its reservation: the budget is back to zero once the table is empty.
@@ -489,8 +519,8 @@ test/pcap-corpus/nfs-gss/
   drop, R6, a `get` that reorders a list, which leaves an idle context behind a fresher one at the
   tail, R5); the budget sized to four contexts, with two principals (catches eviction by insertion
   order, R3, R4); a budget below one context on an empty table (catches a context held
-  uncharged, R3, D8); a `check` the caller never reaches for a failed MIC leaving the window and idle
-  time as they were, read back (R7); `MAXSEQ` and the ticket's end (R9); the budget's balance after
+  uncharged, R3, D8); a reservation trimmed by `insert`, the budget read back (catches the bound kept
+  as the charge, D8); `MAXSEQ` and the ticket's end (R9); the budget's balance after
   every deletion (catches a leaked charge, R3). A `-race` run of 64 goroutines over 1 000 contexts
   reports the mutex and block profiles (rule 4). No test double.
 - **Rules:** rule 9's `ponytail:` markers of RFC 21 §10 and D4, and D8's `decision:`; rule 3, the
@@ -511,7 +541,8 @@ test/pcap-corpus/nfs-gss/
     for an unknown handle or a failed MIC, `CTXPROBLEM` for an ended context, a drop through a
     no-reply row of `Stages.Errors`; its `Wrap` writes the reply verifier, the `MIC` of the
     sequence number.
-  - The control table (D2): `INIT` and `CONTINUE_INIT` through `gss.Exchanges.Step` with S6c's
+  - The control table (D2): `INIT` reserving its context's charge first (D8), then `INIT` and
+    `CONTINUE_INIT` through `gss.Exchanges.Step` with S6c's
     Kerberos mechanism, whose `SignIn` names the NFS service, the NFS transport and the
     connection's address; on success a context in T13.4's table and RFC 2203's `rpc_gss_init_res`
     with the window 128 and the AP-REP, its verifier the `MIC` of the window; `DESTROY` deleting the
@@ -552,9 +583,10 @@ test/pcap-corpus/nfs-gss/
     rejected call run, R8);
   - one call's bytes sent twice, then a fresh call: the only reply read is the fresh call's, and
     `vfstest.Mutations` holds one entry (catches a replayed sequence number run or answered, R6, R8);
-  - an `INIT` with the table's budget spent and nothing to evict, then a fresh call: no reply to the
-    `INIT` and no context added (catches a refusal that ends the client's attempt, or a context
-    held uncharged, D8);
+  - an `INIT` with the table's budget spent and nothing to evict: no reply and no context added;
+    then the pool freed and the same `INIT`'s bytes sent again, as a client retransmits it: a
+    context is set up (catches a refusal that ends the client's attempt, a context held uncharged,
+    or a charge taken after `SignIn`, whose replay cache then refuses the retransmission, D8);
   - two contexts sending one XID and the same arguments: two entries in `vfstest.Mutations`; one
     context retransmitting under a new sequence number: one (catch a cache key without the
     context, R18, or one that misses a retransmission, D7);
@@ -600,8 +632,8 @@ test/pcap-corpus/nfs-gss/
 - **Tests:** the stage on golden and captured vectors with no socket: each message kind through
   `Unwrap` and `Wrap` and back (catch a transform missing for one kind, R28); the captured calls
   (catch a body framed otherwise than Linux frames it, R22); the flipped byte at each service
-  (catches an unchecked body, R24); `testing.AllocsPerRun` over `Unwrap` and `Wrap` at `krb5p`
-  (catches a copy, R23); over loopback, a `READ` of the largest size at `krb5p` (catches a
+  (catches an unchecked body, R24); the stage's bytes per call at `krb5i` and `krb5p`, equal for a 4 KiB
+  and a 1 MiB body, since `krb5i`'s checksum covers a whole `READ` reply (catches a copy, R23); over loopback, a `READ` of the largest size at `krb5p` (catches a
   reservation short of the wrapped reply, R26) and the `Identity` at each service (R16). No test
   double.
 - **Rules:** rule 4, the allocation check; rule 8, the captured calls.
@@ -690,7 +722,7 @@ before track B reaches this epic.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T13.1, T13.2 | 3 | — | the reference capture and the codec its vectors anchor |
-| 2 | T13.3 | 2.5 | PR 1, S6c | `gss`'s per-message tokens, with the RFC 20 §4.4 change, reviewed by `gss`'s owners |
+| 2 | T13.3 | 3.5 | PR 1, S6c | `gss`'s per-message tokens, with the RFC 20 §4.4 change, reviewed by `gss`'s owners |
 | 3 | T13.4, T13.5 | 7.5 | PR 1, PR 2 | the table and the stage that drives it: Kerberos at `krb5` end to end |
 | 4 | T13.6, T13.7 | 5 | PR 3 | integrity and privacy, and the rows that need them, with the RFC 21 §11.5 change |
 | 5 | T13.8 | 1.5 | PR 3, S5 | RFC 18's rows on the composed node |
@@ -774,14 +806,14 @@ Assumptions on other plans, and what is settled with the other epics' documents:
 
 Gaps, not questions:
 
-- The figure is 19.5 man-days against 16: T13.1's capture with a KDC, T13.3's sealing that `gokrb5`
-  lacks (D11), and T13.8's composed-node rows were not separate items before.
+- The figure is 20.5 man-days against 16: T13.1's capture with a KDC, T13.3's in-place sealing
+  and checksums that `gokrb5` lacks (D11), and T13.8's composed-node rows were not separate items before.
 - E3's T3.3 cache key changes in T13.5 (D7); E3's document names no GSS field because none existed.
 - Which pull request carries which RFC change: Q3's RFC 20 §4.4 `VerifyMIC` joins the programme's one
   RFC 20 pull request, opened by E3's Q2, unless S6c has added the field first; PR 2 waits for it.
   Q1's RFC 21 §11.5 row goes in batch two's one RFC 21 pull request, opened with E8's document pull
-  request, beside E8's, E11's and E12's §11.5 cells. Q2's RFC 18 §3.8 sentence goes in this
-  document's pull request, if agreed. D1 reads RFC 20 §4.7's stage-table row "GSS where the
+  request, beside E8's, E11's and E12's §11.5 cells. Q2's RFC 18 §3.8 sentence goes in batch
+  two's one RFC 18 pull request on develop, if agreed. D1 reads RFC 20 §4.7's stage-table row "GSS where the
   flavour is `RPCSEC_GSS`, else nil" per call, since the flavour is a call's and the stages a
   connection's; the row's rewording, "GSS on every connection, passing a call of another flavour
   unchanged", joins the same RFC 20 pull request as Q3.
