@@ -430,8 +430,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 - **Track:** A. **Depends on:** T6.3; E4 (stores, namespaces, secrets, adapters, settings, nodes, the
   audit, the domain's routes, `GET /api/v1/health`).
 - **Covers:** R3, R17.
-- **Deliverables:** `store create|get|delete|set-credential` (the credential from a
-  prompt or a file); `namespace create|list|get|delete`; `adapter get|set`;
+- **Deliverables:** `store create|get|delete|set-credential` (`create`'s credential, which
+  it may go without, from a file; `set-credential`'s from a prompt or a file); `namespace create|list|get|delete`; `adapter get|set`;
   `setting get|set|unset <scope> <key>`; `node list|get`; `audit list` with its filters;
   `domain resolve|test|join|rotate-machine-password`, `join` online or `--offline`, neither sending
   a key; `status`, reading `GET /api/v1/health`; their `clisuite` rows; `cli.md` regenerated.

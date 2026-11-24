@@ -632,7 +632,8 @@ List the audit records the filters admit, oldest first: who acted, on what,
 and whether the action was applied, refused or started an operation.
 
 --actor names a user by name, or any account as kind:id, or the schedule as
-schedule; --target names a resource as kind:id; --from and --to are RFC 3339
+schedule. A user named schedule, or whose name holds ':', is named as
+user:<id>. --target names a resource as kind:id; --from and --to are RFC 3339
 times.
 
 ```
@@ -652,7 +653,7 @@ dfsctl audit list --target share:0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b
 Flags:
 
 ```
-      --actor string    Only the records of this account: a user's name, kind:id or schedule
+      --actor string    Only the records of this account: a user's name, kind:id or schedule (a user named schedule or with ':' in its name as user:<id>)
       --from string     Only the records at or after this RFC 3339 time
       --target string   Only the records of this resource, as kind:id
       --to string       Only the records before this RFC 3339 time
