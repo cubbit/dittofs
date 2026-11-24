@@ -126,3 +126,6 @@ docker-compose.override.yml
 
 # Obsidian vault settings
 .obsidian/
+
+# The FoundationDB tarballs the release job downloads before GoReleaser runs
+/dist-foundationdb/

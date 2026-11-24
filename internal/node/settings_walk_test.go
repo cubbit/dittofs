@@ -96,50 +96,111 @@ func (w *walkWait) await(t *testing.T) {
 	}
 }
 
-// armWaits answers once for each wait reconcile's loop sets on the node's
-// clock, which is once at the loop's start and once after each pass it
-// released, failed or not, ended. Call it before Start.
-func armWaits(h *nodetest.Harness) <-chan struct{} {
-	ch := make(chan struct{}, 256)
-
-	h.Node().OnReconcileWait(func() { ch <- struct{}{} })
-
-	return ch
+// passes follows reconcile's loop through its two hooks: arms counts the
+// waits it sets on the node's clock, once at its start and once after each
+// pass, failed or not, and starts the passes it begins. The hooks take mu, so
+// the counts cannot change while a helper holds it. They show the loop parked
+// (arms one above starts) also in the moment after an Advance released a pass
+// and before the pass began, so a helper that needs a pass of its own waits
+// for starts to rise, never for parked alone.
+type passes struct {
+	mu     sync.Mutex
+	arms   int
+	starts int
+	moved  chan struct{}
 }
 
-// waitsSettled answers for every wait reconcile armed so far, so each
-// walkTurn after it answers for its own pass alone.
-func waitsSettled(t *testing.T, armed <-chan struct{}) {
-	t.Helper()
+// armWaits follows reconcile's loop for waitsSettled, passBegun and walkTurn.
+// Call it before Start.
+func armWaits(h *nodetest.Harness) *passes {
+	p := &passes{moved: make(chan struct{}, 1)}
+	note := func(count *int) {
+		p.mu.Lock()
+		*count++
+		p.mu.Unlock()
 
-	select {
-	case <-armed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("reconcile armed no wait within 10 s")
+		select {
+		case p.moved <- struct{}{}:
+		default:
+		}
 	}
 
+	h.Node().OnReconcileWait(func() { note(&p.arms) })
+	h.Node().OnReconcilePass(func() { note(&p.starts) })
+
+	return p
+}
+
+// until answers once done holds of the loop's counts. done runs with mu held,
+// so the loop cannot count anything between its look and what it does, such
+// as an Advance. It fails the test if the counts do not move within limit.
+func (p *passes) until(t *testing.T, limit time.Duration, what string, done func(arms, starts int) bool) {
+	t.Helper()
+
 	for {
-		select {
-		case <-armed:
-		default:
+		p.mu.Lock()
+		ok, arms, starts := done(p.arms, p.starts), p.arms, p.starts
+		p.mu.Unlock()
+
+		if ok {
 			return
+		}
+
+		select {
+		case <-p.moved:
+		case <-time.After(limit):
+			t.Fatalf("%s: the loop's counts stayed at %d waits set and %d passes begun for %v", what, arms, starts, limit)
 		}
 	}
 }
 
-// walkTurn advances the node's clock a second and answers once the reconcile
-// pass the advance releases has ended, however long the store it read took
-// and whether it failed: the loop arms its next wait only after the pass.
-func walkTurn(t *testing.T, h *nodetest.Harness, armed <-chan struct{}) {
+// parked reports the loop's counts with a wait set after every pass it began.
+func parked(arms, starts int) bool { return arms == starts+1 }
+
+// waitsSettled answers once every pass reconcile's loop began has ended and
+// it has set its next wait.
+func waitsSettled(t *testing.T, armed *passes) {
 	t.Helper()
 
-	h.Clock().Advance(time.Second)
+	armed.until(t, 10*time.Second, "reconcile set no wait after its last pass", parked)
+}
 
-	select {
-	case <-armed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("no reconcile pass within 30 s")
-	}
+// passBegun answers once a reconcile pass that began after its call has
+// begun. A pass already running when the test wrote may have read before the
+// write, so it is not counted. The clock is advanced a second, once, while the
+// counts show the loop parked: that releases the next pass unless an earlier
+// Advance released it already, and that pass counts too, as it begins after
+// the call. A loop on a backoff longer than a second is not released.
+func passBegun(t *testing.T, h *nodetest.Harness, armed *passes) {
+	t.Helper()
+
+	armed.mu.Lock()
+	after := armed.starts
+	armed.mu.Unlock()
+
+	advanced := false
+
+	armed.until(t, 30*time.Second, "no reconcile pass began", func(arms, starts int) bool {
+		if starts > after {
+			return true
+		}
+
+		if parked(arms, starts) && !advanced {
+			h.Clock().Advance(time.Second)
+			advanced = true
+		}
+
+		return false
+	})
+}
+
+// walkTurn answers once a reconcile pass that began after its call has
+// ended, however long the store it read took and whether it failed.
+func walkTurn(t *testing.T, h *nodetest.Harness, armed *passes) {
+	t.Helper()
+
+	passBegun(t, h, armed)
+	armed.until(t, 30*time.Second, "the reconcile pass did not end", parked)
 }
 
 // walkTuning is the settings shape of each section these tests declares: one
@@ -492,6 +553,7 @@ var cfgScan = keys.Describe([]byte{keys.KindCFG})
 func TestSettingsWalkRepeatedOnAMovedGeneration(t *testing.T) {
 	h, f := faulted(t)
 	declareSections(t, h)
+	armed := armWaits(h)
 	ch := watchStatus(h)
 	started(t, h)
 
@@ -520,7 +582,7 @@ func TestSettingsWalkRepeatedOnAMovedGeneration(t *testing.T) {
 
 	// The pass reads this change in its counters, before its walk.
 	walkAt(t, h, entity.SettingScope{Kind: entity.ScopeInstallation}, "beta", 6)
-	h.Clock().Advance(time.Second)
+	passBegun(t, h, armed)
 	wait(t, "the walk held in its second page", func() bool { return held.Pending() == 1 })
 	// This change lands between the walk's first page and its held second.
 	walkAt(t, h, entity.SettingScope{Kind: entity.ScopeNode, ID: h.NodeID()}, "alpha", 5)
