@@ -16,7 +16,7 @@
 #                                   stop it; the cluster must be up and own
 #                                   nothing yet, since the installation owns it.
 #                                   The journal gets a loop-mounted ext4 made
-#                                   with sudo, or DITTOFS_SMOKE_BLOCKS if set
+#                                   with sudo, or SMOKE_BLOCKS if set
 #
 # Host networking, so the cluster file's 127.0.0.1 addresses are the ones the
 # test client dials. That works on Linux only; on macOS run it inside a Linux
@@ -107,11 +107,11 @@ smoke() {
     # nobarrier, so the platform check accepts it, though its syncs still land
     # on that disk: the smoke proves the image's libfdb_c loads and an
     # installation serves, not durability. It needs sudo, which the hosted
-    # runners give. DITTOFS_SMOKE_BLOCKS names a directory to use instead, on
+    # runners give. SMOKE_BLOCKS names a directory to use instead, on
     # a mount the journal accepts, holding an empty journal directory the
     # image's user 65532 can write; the smoke leaves it as it is.
     # Globals, not locals: the EXIT trap reads them after smoke has returned.
-    blocks="${DITTOFS_SMOKE_BLOCKS:-}" img=""
+    blocks="${SMOKE_BLOCKS:-}" img=""
     if [[ -z "$blocks" ]]; then
         blocks="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dittofs-smoke-blocks"
         img="$blocks.img"
