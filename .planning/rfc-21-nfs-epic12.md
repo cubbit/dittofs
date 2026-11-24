@@ -17,7 +17,7 @@ cherry-pick of RFC changes.
 Cited, not owned: RFC 7862 and RFC 8276 for the bytes, operation codes and status values; RFC 8
 §9.1 for what a clone does below the service.
 **Track:** C.
-**Epic 12 estimate: 8 subtasks, 20 man-days.**
+**Epic 12 estimate: 8 subtasks, 19.75 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state and members' table,
 E2's `nfsharness` and the `nfs42/` area of knfsd's captures, S0's `vfstest.Mutations`. Beyond S2,
 pieces of five epics, each named by id where a subtask takes it (§9, point 5): **E5**'s current
@@ -304,8 +304,9 @@ subtasks and tests can cite them.
   `lxa_maxcount` is `NFS4ERR_TOOSMALL` (RFC 8276 §8.4.3.3). The order is the service's: `Xattrs`
   answers names in byte order, a case T12.6 adds to `vfstest/suite`. A `ponytail:` marker names
   the ceiling: a set or removal between two pages can repeat or skip one name, or end the listing
-  early; RFC 13 bounds a file at 1024 xattrs, so a listing rarely takes a second page. Upgrade to a cookie of the last name's digest when a
-  client is seen paging a list that changes. Prior art: knfsd's cookie counts the names already
+  early; the store bounds a file at 128 xattrs (RFC 13 says 1024, §9 point 10), so a listing
+  rarely takes a second page. Upgrade to a cookie of the last name's digest when a client is
+  seen paging a list that changes. Prior art: knfsd's cookie counts the names already
   returned (from memory).
 - **D7. An xattr's wire name is its stored name, compared byte for byte (pending the user's
   answer, §9 point 4).** RFC 8276 names carry no namespace prefix and Linux maps them to `user.*`
@@ -330,16 +331,21 @@ subtasks and tests can cite them.
   `entity.ErrStale`, which the service answers `ErrStale` (`pkg/metadata/kvstore`'s `fileIn`,
   `internal/vfs`'s `storeErr`), so a file removed under the call is `NFS4ERR_STALE`, and
   `ErrNotFound` from those two calls is the name alone; T12.6 tests it at the reply, and RFC 17's
-  pull request states it beside D8's refusals. `ErrInvalid` names no cause
-  (E5's D14), so no RFC yet says which `SetXattr` refusal is a value too large: the service
-  validates no xattr name and applies no bound today (`internal/vfs`'s `SetXattr`). Batch two's
-  RFC 17 pull request (§9 points 2 and 7) has `SetXattr` refuse an empty name or one holding
-  a NUL (`ErrInvalid`) and one past the share's name length limit (`ErrNameTooLong`), as RFC 7
-  §3.2 refuses an entry name, a
-  value past RFC 13's bound `ErrInvalid` with cause `TooBig`, and a file's xattr past RFC 13's
-  count `ErrNoSpace`; T12.6 builds that in `internal/vfs`. The rows are then: cause `TooBig`
+  pull request states it beside D8's refusals. The store already bounds a set
+  (`pkg/metadata/kvstore`'s `Files.SetXattr`, fixed constants under a `ponytail:` marker until
+  they become share settings): a name that is empty, holds a NUL or passes 255 bytes is
+  `entity.ErrInvalidName`, a value past 64 KiB (`maxXattrValue`) and a file's 129th xattr
+  (`maxXattrs`, 128; replacing a held name is not counted) are each `ErrInvalidArgument`, and
+  `internal/vfs`'s `storeErr` answers all three `ErrInvalid` with no cause (E5's D14). So the
+  refusals exist, but the adapter cannot tell a value too large from a bad name or a full file.
+  Batch two's RFC 17 pull request (§9 points 2 and 7) names them apart, as RFC 7 §3.2 refuses an
+  entry name: an empty name or one holding a NUL stays `ErrInvalid`, a name past the limit
+  becomes `ErrNameTooLong`, a value past the bound `ErrInvalid` with cause `TooBig`, and a file's
+  xattr past the count `ErrNoSpace`; T12.6 retags the store's three refusals and gives
+  `storeErr` the cause, adding no bound of its own. The rows are then: cause `TooBig`
   `NFS4ERR_XATTR2BIG`, any other `ErrInvalid` `NFS4ERR_INVAL`, `ErrNameTooLong`
   `NFS4ERR_NAMETOOLONG` and `ErrNoSpace` `NFS4ERR_NOSPC`, all in RFC 8276's SETXATTR error list.
+  Which count is right, the store's 128 or RFC 13's 1024, is §9 point 10; D8's rows hold either.
   RFC 21 §11.5's rows gain these cells by amendment; until agreed, a `decision:` marker at the
   rows names the departure.
 - **D9. `GETXATTR`'s reply bound is 64 KiB of value plus its result's fixed words.** A member's
@@ -360,10 +366,11 @@ subtasks and tests can cite them.
   stub (from memory). No marker.
 - **D11. `GETXATTR` and `LISTXATTRS` read every value.** RFC 17 §3.1 offers only `Xattrs`, which
   answers each name with its value, so one `GETXATTR` of a 4-byte value or one `LISTXATTRS` page
-  reads every value the file holds, up to 64 MiB at RFC 13's bounds (1024 values of 64 KiB), and a
-  compound can repeat it. A `ponytail:` marker at `getxattr.go` names that ceiling; upgrade to an
-  RFC 17 read by name and a names-only listing when a profile of an xattr-heavy workload shows
-  `Xattrs`' bytes, or a share raises RFC 13's bounds. Prior art: Linux reads one xattr by name
+  reads every value the file holds, up to 8 MiB at the store's bounds (128 values of 64 KiB;
+  64 MiB if the count becomes RFC 13's 1024, §9 point 10), and a compound can repeat it. A
+  `ponytail:` marker at `getxattr.go` names that ceiling; upgrade to an RFC 17 read by name and a
+  names-only listing when a profile of an xattr-heavy workload shows `Xattrs`' bytes, or the
+  bounds become share settings a share raises. Prior art: Linux reads one xattr by name
   (`getxattr(2)`) and lists names without values (`listxattr(2)`).
 
 ## 5. Target tree
@@ -401,8 +408,10 @@ internal/vfs/
   data.go                            T12.1  Seek answering eof under its admission lock
   hold.go                            T12.4  held asking the gate at its first wait
   copy.go, filesystem.go             T12.2  the verifier through Copy
-  attrs.go                           T12.6  SetXattr's name and bound refusals (D8)
+  errors.go                          T12.6  storeErr's TooBig cause on a value too large (D8)
   contenttest/memory.go, faults.go, suite.go   T12.2
+pkg/metadata/kvstore/
+  attrs.go                           T12.6  SetXattr's three refusals retagged (D8)
 pkg/engine/
   clone.go                           T12.2  Copy samples the verifier
 ```
@@ -628,14 +637,16 @@ pkg/engine/
 
 ### T12.6 Extended attributes
 
-**Subtask T12.6 estimate: 3.75 man-days.**
+**Subtask T12.6 estimate: 3.5 man-days.**
 
-- **Track:** C. **Depends on:** T5.1, T5.6. Also batch two's RFC 17 pull request, for D8's `SetXattr`
-  refusals (§9 point 2).
+- **Track:** C. **Depends on:** T5.1, T5.6. Also batch two's RFC 17 pull request, for the causes D8's
+  `SetXattr` refusals carry (§9 point 2).
 - **Covers:** R24, R25, R26, R27, R28, R29, R30, R31.
-- **Deliverables:** `internal/vfs`'s `SetXattr` refusing a name, a value past RFC 13's bound and
-  a file's xattr past its count as D8 has them, once batch two's RFC 17 pull request settles them
-  (§9 point 2), with its cases in `internal/vfs`'s own tests; `vfstest/suite`'s case of `Xattrs`
+- **Deliverables:** the store's existing `SetXattr` refusals told apart as D8 has them, once
+  batch two's RFC 17 pull request settles them (§9 point 2): `pkg/metadata/kvstore`'s name past
+  255 bytes `entity.ErrNameTooLong` and its 129th xattr a no-space refusal, and `internal/vfs`'s
+  `storeErr` answering its value past 64 KiB `ErrInvalid` with cause `TooBig`, no new bound, with
+  cases in both packages' own tests; `vfstest/suite`'s case of `Xattrs`
   answering names in byte order (D6). `getxattr.go`: one `Xattrs`, the named value or
   `NFS4ERR_NOXATTR` (D8), its bound 64 KiB with D9's marker, D11's marker; `setxattr.go`: one `SetXattr` on `vfs.Target{H: current}`, the
   option through a total function into `XattrMode`, an unknown one `NFS4ERR_INVAL` with no call,
@@ -655,8 +666,8 @@ pkg/engine/
     `lxa_maxcount` too small for the first name `NFS4ERR_TOOSMALL`.
   - `REMOVEXATTR` of an absent name is `NFS4ERR_NOXATTR`; of a present one, its `change_info4`
     moves.
-  - A value past the share's bound is `NFS4ERR_XATTR2BIG` and nothing is stored; one of exactly
-    64 KiB is set and read back whole by `GETXATTR`.
+  - A value past the store's 64 KiB bound is `NFS4ERR_XATTR2BIG` and nothing is stored; one of
+    exactly 64 KiB is set and read back whole by `GETXATTR`.
   - A `REMOVEXATTR` and a `SETXATTR` of `Replace` on a file removed between `PUTFH` and the
     operation are `NFS4ERR_STALE`, never `NFS4ERR_NOXATTR`.
   - `foo` and `FOO` set over NFS are two xattrs, each `GETXATTR` answering its own value.
@@ -667,9 +678,10 @@ pkg/engine/
   `GETATTR` refused before it runs (catches the count clamped, R26); the option as a table over
   every value (R31); `ErrAccess` on `SetXattr` through `vfstest.Faults`, `NFS4ERR_ACCESS`; a
   table of `SETXATTR` inputs on `memory.New`, an empty name, one holding a NUL, one past the
-  name length limit, a value one byte past the bound and the file's 1025th xattr, answered
+  name length limit (256 bytes), a value one byte past 64 KiB and the file's 129th xattr, answered
   `NFS4ERR_INVAL`, `NFS4ERR_INVAL`, `NFS4ERR_NAMETOOLONG`, `NFS4ERR_XATTR2BIG` and
-  `NFS4ERR_NOSPC`, nothing stored (catches every `ErrInvalid` answered `XATTR2BIG`, R27); `foo`
+  `NFS4ERR_NOSPC`, nothing stored (catches every `ErrInvalid` answered `XATTR2BIG`, or all three answered `INVAL` as the
+  store tags them today, R27); `foo`
   then `FOO`, and the SMB case listing both through an SMB `Call` (catches a fold in the NFS
   path, D7); the 64 KiB value read back (catches a reservation that covers the whole result,
   D9); the file removed by a second client between `PUTFH` and `REMOVEXATTR` (catches a gone file
@@ -784,7 +796,7 @@ the composed node.
 | 1 | T12.1 | 2.25 | E5's T5.1 and T5.5, batch two's RFC 17 pull request | `SEEK` and `DEALLOCATE`, the hole operations the rest builds on, with `Seek`'s end of file |
 | 2 | T12.2 | 2 | the user's answer on §9, point 1, batch two's RFC 17 pull request | a service and engine change, reviewed by their owners apart from the adapter |
 | 3 | T12.3, T12.4 | 6.25 | PRs 1 and 2, batch two's RFC 17 pull request, E5's T5.6 and T5.8, E8's T8.4 and T8.5, E9's T9.6 | copy and clone, then the budget that bounds what waits behind them |
-| 4 | T12.5, T12.6, T12.7 | 7 | PR 1, batch two's RFC 17 pull request, E4's T4.2, E8's T8.7 | `READ_PLUS`, the xattrs and the not-supported rows: the rest of the operation set |
+| 4 | T12.5, T12.6, T12.7 | 6.75 | PR 1, batch two's RFC 17 pull request, E4's T4.2, E8's T8.7 | `READ_PLUS`, the xattrs and the not-supported rows: the rest of the operation set |
 | 5 | T12.8 | 2.5 | PRs 3 and 4, S4, E3's T3.2, E7's T7.1 | every row over loopback |
 
 A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can be open at once,
@@ -810,11 +822,12 @@ and PR 4 beside PR 3.
    carried by batch two's one RFC 21 pull request, opened with E8's document pull request; (b) keep §11.5 as written, so Linux's `getfattr` of an
    absent name reads `ENOENT` rather than `ENODATA` (from memory), which breaks tools that test for
    `ENODATA`. (a) is recommended. Either way, no RFC says which names `SetXattr` refuses or what
-   it answers past RFC 13's value and count bounds, and the service checks none of them, so (a)
-   also carries D8's RFC 17 text in batch two's RFC 17 pull request (point 7): the name refused
-   as RFC 7 §3.2 refuses an entry name, a value too large `ErrInvalid` with cause `TooBig`, the
-   1025th xattr `ErrNoSpace`; 0.5 man-days in T12.6. Without it, `ErrInvalid` stays causeless and
-   T12.6 answers it `NFS4ERR_INVAL` for every cause.
+   it answers past its value and count bounds. The store already refuses all three (a bad name, a
+   value past 64 KiB, a file's 129th xattr), each as a causeless `ErrInvalid`, so (a) also carries
+   D8's RFC 17 text in batch two's RFC 17 pull request (point 7): a name too long
+   `ErrNameTooLong`, a value too large `ErrInvalid` with cause `TooBig`, the xattr past the count
+   `ErrNoSpace`; 0.25 man-days in T12.6 to retag the store's refusals and carry the cause. Without
+   it, `ErrInvalid` stays causeless and T12.6 answers all three `NFS4ERR_INVAL`.
 3. **The running-clone steps on the composed node, pending the user's answer; this document's
    pull request carries the plan's edit for (a)**, in its Epic 12 and Epic 16 **Done when** and
    §7's N22 row. The plan names RFC 21 §13's "§9.3 copy and
@@ -860,8 +873,9 @@ and PR 4 beside PR 3.
    1's (b), the figure is 16.75; with point 8's (b) as well, 16.25. 20 after the review that
    added the paused copy to the verifier's test (T12.2, 0.25), two-user refusal tests (T12.3 and
    T12.6, 0.25 each), the `READ_PLUS` benchmark D5's trigger reads (T12.5, 0.25) and the service's
-   xattr name and bound refusals (T12.6, 0.5): with point 1's (b) 18, with point 8's (b) as well
-   17.5, with point 2's (b) 0.5 less again. The plan's Epic 12 row still reads 13; its programme
+   xattr name and bound refusals (T12.6, 0.5). 19.75 once those refusals were found already in
+   the store, leaving T12.6 only their causes (0.25 rather than 0.5): with point 1's (b) 17.75,
+   with point 8's (b) as well 17.25, with point 2's (b) 0.25 less again. The plan's Epic 12 row still reads 13; its programme
    totals reconcile when the breakdown pull requests merge, and this document leaves them alone.
 7. **Which pull request carries which RFC amendment.** Batch two's one RFC 17 pull request, with
    E9's D1, E10's Q1 and E11's Q1, opened before E9's PR 1, carries four of this epic's: point 1's
@@ -888,3 +902,13 @@ and PR 4 beside PR 3.
    the conversion rule, and it spans E1's codec and E4's and E5's I/O as much as this epic's
    operations, so it is left to the plan as an unowned follow-up rather than settled here; this
    epic's handlers apply whatever rule that settles, with no rule of their own.
+10. **How many xattrs a file holds, and where the bound lives (D6, D8, D11), pending the user's
+    answer.** RFC 13's settings table bounds a file at 1024 xattrs, a share setting, while the
+    store refuses the 129th (`maxXattrs` = 128 in `pkg/metadata/kvstore`'s `attrs.go`), a fixed
+    constant whose `ponytail:` marker says it becomes a share setting once settings reach the
+    namespace. The value bound agrees (64 KiB both). Options: (a) RFC 13 is amended to 128, which
+    keeps the release that deletes a file's xattrs a small bounded transaction; (b) the store is
+    raised to 1024, eight times the rows that release deletes in one transaction. Either way the
+    bound is a share setting in the end, read by the store. This epic holds either: D8's rows do
+    not name the number, and D11's ceiling is 8 MiB at 128 or 64 MiB at 1024. It is not this
+    epic's to settle, and T12.6's tests take whichever count the store answers.
