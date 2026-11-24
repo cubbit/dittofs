@@ -1411,7 +1411,7 @@ uses when the configuration opens and, once GC runs, every GC recheck period
 ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); until GC lands, an in-place rotation is seen at the
 next open. A primary version other than the one its current records name
 starts that master-key rotation. A read that fails is retried at the next
-period and changes nothing; until a rotation runs, the records stay wrapped
+period, or until GC lands at the next open, and changes nothing; until a rotation runs, the records stay wrapped
 under the old version, which still unwraps them. Under a name that stays the same across
 versions, nothing would re-wrap, and destroying an old version in the service
 would silently make every record and export wrapped under it unopenable, past
@@ -1617,9 +1617,10 @@ writes the whole object again at the next sequence first; and after its own
 `keys` put, before it puts any version sealed under a key that put added, it
 reads back once more and requires its own sequence. Every `Recheck` pass of the
 namespace's store, and of a mutable location's store, reads its object back
-the same way and re-puts it under the lock when it lags; this read-back lands
-with `Recheck`'s first caller, GC ([RFC 9](rfc-9-gc.md))
-([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). A late landing is then repaired within one recheck period; at an
+the same way and re-puts it under the lock when it lags
+([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)); this read-back lands with `Recheck`'s first caller, GC
+([RFC 9](rfc-9-gc.md)). A late landing is then repaired within one recheck period, and
+until GC lands by the object's next writer, which reads it back first; at an
 immutable location it is only an older version, which the ordering below
 passes over. A destroy owns its puts as a rotation does: it makes the bucket's
 put and returns once it has succeeded, leaving each location's put to the next

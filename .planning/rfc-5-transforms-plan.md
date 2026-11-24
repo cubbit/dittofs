@@ -135,8 +135,8 @@ The exported surface of `pkg/transform`, frozen at S1, which is the RFC 8 offloa
 - RFC 5 §3.1's symbols as amended here: the ID and stage types and constants, `Transform`,
   `Encoded`, `MaterialID`, `Materials`, `Factory`, `Register`, `Chain` with `Pin` and its
   `Attempt`, `NewChain`, `MaxDecodeLen`, `Config` and the error values, with stub bodies.
-  `Materials.Remove` is declared and documented as landing with its first caller (§6.1); every
-  implementation's `Remove` returns `errors.ErrUnsupported` until then, and nothing calls it.
+  `Materials.Remove` is not declared: RFC 5 §3.1 as amended has it land with its first caller,
+  which adds it to the interface (§6.1, §1.5 rule 12).
 - `NamespaceID`, a `[16]byte` of its own as `entity.NamespaceID` is, which the engine's wiring
   converts: the transforms import no metadata package (§1.5 rule 7).
 - The injection point RFC 25 §8 asks for: `NewChain` takes the root's metrics registry and
@@ -279,8 +279,8 @@ registered (§1.2).
    needs as interfaces of its own, which the wiring supplies — the key-record view (D7) and the
    `keys`-object store (D8) — and shares code with `pkg/keyprovider` only through `internal/`
    packages (D5, D14). Epic 1 adds `pkg/transform`'s import test, which checks every package of
-   the tree on its own, test packages included, against an allowlist: the standard library,
-   `x/crypto`, the compression, BLAKE3 and KMIP modules, `internal/keyfile`, `internal/kmipwire`,
+   the tree on its own, test packages included, against an allowlist: the tree's own packages
+   (`pkg/transform/...`, `internal/siv` among them), the standard library, `x/crypto`, the compression, BLAKE3 and KMIP modules, `internal/keyfile`, `internal/kmipwire`,
    and the machinery RFC 13 §4 and RFC 25 §8 have every component declare against
    (`pkg/settings`, `pkg/metrics`, `pkg/health`), as the RFC 3 and RFC 4 plans allow it. It
    fails on any v1 path or other component. v1 is not touched: stage 4 deleted it.
@@ -486,7 +486,7 @@ transform gets them without writing any. Prior art: RFC 25 §8.1 itself; the Pro
 practice of registering collectors on an injected registry (from memory). Applies in epic 1,
 filled in epic 3.
 
-**D3. AES-256-GCM-SIV is an internal `cipher.AEAD` of this repository, `internal/siv`, built
+**D3. AES-256-GCM-SIV is an internal `cipher.AEAD` of the transforms, `pkg/transform/internal/siv`, built
 on `crypto/aes` and ported, with attribution, from an Apache-2 implementation rather than written
 from scratch, pending the user's answer (Q2).** The standard library and `x/crypto` have none.
 Its POLYVAL multiply is constant time: carry-less multiplication by masking, BearSSL's
@@ -537,7 +537,6 @@ FoundationDB all run the key-record and key-lock rows, the lock's conflict under
 included. Stage 7's rename of `kvstore` to `pkg/metadata` moves only the implementation. The
 provider holds unwrapped namespace keys in process memory, per namespace. Prior art: RFC 14's
 `OpenRecords`, the other consumer-declared view. Applies in epic 6.
-Applies in epic 6.
 
 **D8. The `keys` object is a versioned binary record, stored through an interface `material`
 declares.** Its bytes: a format version, the namespace ID, the sequence, the export key ID, the
@@ -741,7 +740,7 @@ Appendix B.1's salt and keystream row, its distinct-labels row and the chunk par
 golden-vector row; RFC 8452 Appendix C's vectors; RFC 5 §8.3's per-transform benchmark.
 
 **Expected content:**
-- `internal/siv` (D3, Q2), ported with a constant-time POLYVAL, with RFC 8452's vectors and a
+- `pkg/transform/internal/siv` (D3, Q2), ported with a constant-time POLYVAL, with RFC 8452's vectors and a
   fuzz against the golden vectors.
 - The salt key, salt and chunk key derivations, and the chunk AAD, against the vectors; the
   salt key is derived once per data key and cached with it, while the chunk key, new per chunk,
