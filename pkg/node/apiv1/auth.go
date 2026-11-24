@@ -39,13 +39,16 @@ func (s SignIn) Format(f fmt.State, _ rune) { show(f, s.LogValue()) }
 
 // Tokens answers a sign-in, a refresh and a password change: an access token
 // to present on each call, when it expires, the refresh token that gets the
-// next pair, and whether the account must change its password before any
-// call but that change and sign-out.
+// next pair, whether the account must change its password before any call
+// but that change and sign-out, and the account's user ID, which names it in
+// the routes under /users/{id} that it may call on itself, such as its API
+// tokens', where a caller below admin cannot look its own ID up by name.
 type Tokens struct {
 	Access     string    `json:"access_token"`
 	ExpiresAt  time.Time `json:"expires_at"`
 	Refresh    string    `json:"refresh_token"`
 	MustChange bool      `json:"must_change"`
+	UserID     string    `json:"user_id"`
 }
 
 func (Tokens) LogValue() slog.Value { return redacted }

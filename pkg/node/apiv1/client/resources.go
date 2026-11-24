@@ -85,6 +85,13 @@ func (r UserResource) Patch(ctx context.Context, id string, patch any, etag stri
 	return result[apiv1.UserSpec, struct{}](r.c.write(ctx, http.MethodPatch, r.at(id), patch, etag, nil))
 }
 
+// APITokens is the API tokens of the user whose ID is user: listed, created
+// and deleted. A create goes with no idempotency key and answers the token,
+// the one time it is shown. No route serves its Get, Put, Patch or Action.
+func (c *Client) APITokens(user string) Resource[apiv1.APITokenSpec, apiv1.APITokenStatus] {
+	return Resource[apiv1.APITokenSpec, apiv1.APITokenStatus]{c: c, path: "/api/v1/users/" + url.PathEscape(user) + "/api-tokens", keyless: true}
+}
+
 // Groups is the groups. A delete starts an operation. No route serves its
 // Action.
 func (c *Client) Groups() Resource[apiv1.GroupSpec, struct{}] {

@@ -84,12 +84,12 @@ var leastRole = func() map[string]entity.APIRole {
 			"PUT /api/v1/stores/{id}/settings/{sub}", "POST /api/v1/users", "DELETE /api/v1/users/{id}",
 			"PATCH /api/v1/users/{id}", "PUT /api/v1/users/{id}", "POST /api/v1/users/{id}:set-password",
 		},
-		// The audit; the keytab, the installation's right (§3.5); and the
-		// directory's actions but resolve-principal.
+		// The audit; the keytab, the installation's right (§3.5); the signing
+		// key's rotation; and the directory's actions but resolve-principal.
 		entity.RoleAdmin: {
 			"GET /api/v1/audit", "DELETE /api/v1/installation/keytab", "PUT /api/v1/installation/keytab",
 			"POST /api/v1/installation:join-domain", "POST /api/v1/installation:rotate-machine-password",
-			"POST /api/v1/installation:test-directory",
+			"POST /api/v1/installation:rotate-signing-key", "POST /api/v1/installation:test-directory",
 		},
 	}
 	out := map[string]entity.APIRole{}
