@@ -73,7 +73,7 @@ byte slice and a closure.
 | --- | --- |
 | `pkg/block/chunker` | `pkg/carver/internal/chunker` (D1, D2) |
 | `pkg/block/carver`, block assembly included (RFC 2 Appendix A, last row) | `pkg/carver` and `pkg/carver/assembler` (D1) |
-| the chunk profile per share, from the host file (RFC 13 Appendix A, row C1) | `Target` per namespace, a bound setting (RFC 13 Appendix B): its settings section declared in `pkg/carver/section` by epic 3, its validator calling the carver's settings constructor, added to the node's table by the RFC 8 offload plan's epic 21 |
+| the chunk profile per share, from the host file (RFC 13 Appendix A, row C1) | `Target` per namespace, a bound setting (RFC 13 Appendix B): its settings section declared in `pkg/carver/section` by epic 3, its validator calling epic 1's check of a `Target` alone, added to the node's table by the RFC 8 offload plan's epic 21 |
 | `blockstore.journal.chunk_size`, `.chunk_max` | dropped (RFC 13 Appendix C's dropped keys) |
 | on-disk content cut by v1 | none: new installations only |
 
@@ -103,7 +103,9 @@ pipeline supplies (D3): the key budget `K` with each chunk's worst-case keys (RF
 amended), the lookup (deferred), the all-zero flag and each chunk's age.
 
 - `carver`: the settings value built from a namespace's `Target`, its encryption flag, its
-  chunking key and its chunk-ID key (RFC 2 §3.2, §3.7, §4.1, §6; D4); `Cut` (§1.2, §2.1, §2.2,
+  chunking key and its chunk-ID key (RFC 2 §3.2, §3.7, §4.1, §6; D4); the check of a `Target`
+  alone (§3.7's three `Target` refusals), which the settings constructor calls and `Target`'s
+  settings section calls with no key material (epic 3); `Cut` (§1.2, §2.1, §2.2,
   §2.4); `Chunk` (§1.2); the chunk-ID function and the block name (§4.1, §4.2), which the RFC 8
   pipeline calls and hands to RFC 4's codec as functions, for its read checks (RFC 4 §3.4) and
   its whole-block read (D9);
@@ -418,16 +420,18 @@ pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
   would pass `K` (RFC 2 P2, A7 as amended): the pipeline cutting a plan after the fold instead
   would duplicate P1's chunk boundaries in the engine. The engine must read `K`: `kvstore`
   computes it at open from the backend's limits and exports no accessor
-  (`pkg/metadata/kvstore/budget.go:75`, `store.go:166` on `feat/storage-v2`); the RFC 8 offload
+  (`pkg/metadata/kvstore/budget.go:75`, `store.go:207` on `feat/storage-v2`); the RFC 8 offload
   plan's epic 15 adds the accessor and is its first reader ("early close within `K`"). Prior
   art: none found. Applied by epics 1 and 5.
 - **D4. The settings constructor takes the encryption flag beside the keys**, since the carver
   cannot otherwise know it for RFC 2 §3.2's refusal of a keyed table. It refuses a chunking key
   without encryption and encryption without a key, and builds the table itself, so no
   inconsistent pair can be built (C10's cutter half). Both keys are `[32]byte`, and it refuses an
-  all-zero chunk-ID key (RFC 2 §3.7 as amended): with `lukechampine.com/blake3`, a nil key gives
-  the plain unkeyed hash, so a key that was never drawn would cut unkeyed IDs that §4.1 forbids
-  and only a migration undoes. The constructor's fuzz target asserts the refusal. Prior art: none
+  all-zero chunk-ID key (RFC 2 §3.7 as amended): the zero key is what a key that was never drawn
+  looks like, and it is public, so every ID cut under it is computable by anyone and only a
+  migration undoes it. With a `[32]byte` key, `key[:]` is never nil, so
+  `lukechampine.com/blake3`'s `New(32, key[:])` hashes keyed under the zero key, not unkeyed: a
+  test of the refusal must not expect the unkeyed hash. The constructor's fuzz target asserts the refusal. Prior art: none
   found. Applied by epics 1 and 3.
 - **D5. A reader that makes no progress 100 times in a row fails `Cut` with `io.ErrNoProgress`**
   (RFC 2 §10.2 leaves the bound open). Prior art: `bufio.Reader`, the same bound and error (from
@@ -513,14 +517,15 @@ and the cutter's refusal); `Target`'s settings section. **Done when:** RFC 2 §9
 rows; B1 to B5 (§3.1); C2, C3, C10's cutter half, and C4's bounds on what the chunker returns
 (§8); §10.4's counts for the chunker; §10.2's settings edge cases; `Target`'s settings section
 declares its row as RFC 13 Appendix B states it, namespace-scoped and bound, in
-`pkg/carver/section`, and validates it through the carver's settings constructor, so the RFC 13 plan's Appendix B check (`TestAppendixBMatchesTheTable`) passes once
+`pkg/carver/section`, and validates it through epic 1's check of a `Target` alone, so the RFC 13 plan's Appendix B check (`TestAppendixBMatchesTheTable`) passes once
 the RFC 8 offload plan's epic 21 adds the section to the node's table (§6 point 2).
 
 **Expected content:**
 - The settings derivation and refusal, an all-zero chunk-ID key among the refusals with its fuzz
   target (RFC 2 §3.7 as amended, D4), and the mask derived from `Target` with its start-up check.
 - `Target`'s settings section in `pkg/carver/section`, namespace-scoped and bound, its validator
-  calling the carver's settings constructor, as the RFC 3 plan does for the syncer's in
+  calling the check of a `Target` alone, since a settings validator holds no key material (the
+  keys are RFC 5's key table), as the RFC 3 plan does for the syncer's in
   `pkg/syncer/section`. The sibling may import `pkg/settings`, which imports
   `pkg/metadata/entity` and `kvstore` on `feat/storage-v2`; `pkg/carver` stays the standard
   library and BLAKE3 (RFC 2 §1.1, rule 7). Once the node's table
@@ -588,9 +593,9 @@ on the K5 corpus and the default `Target` is frozen in RFC 2 and RFC 13 Appendix
 **Epic 7 estimate: 5 subtasks, 8.5 man-days.**
 
 What no per-change suite runs (RFC 2 §10.6's last sentence). **Owns:** RFC 2 §9.1, §10.5, §10.6.
-**Done when:** K1 to K3 run nightly after merge on two CPU architectures, each failing below its
-§10.5 ratio to BLAKE3 measured in the same run, and are recorded on the reference box with
-§10.6's fields; K4 and K5 recorded by hand on the reference box over D7's corpus; the golden
+**Done when:** K1 to K3 run nightly after merge on the reference box, each failing below its
+§10.5 ratio to BLAKE3 measured in the same run, and recorded there with §10.6's fields, and are
+recorded, not gated, on the second architecture; K4 and K5 recorded by hand on the reference box over D7's corpus; the golden
 vectors and allocation counts green on the second architecture nightly; D8's full sizes run
 nightly; RFC 2's suites paragraph names each new suite.
 
@@ -603,7 +608,10 @@ nightly; RFC 2's suites paragraph names each new suite.
   2×, under the 10× target. The host runs develop's latest commit, so the series starts when the
   carver reaches develop.
 - `carver-bench`'s `arm64` option, nightly on the harness's `macos` host, arm64
-  (`needs: [macos]`): the same K1 to K3 ratio checks, the golden vectors and the allocation counts.
+  (`needs: [macos]`): the golden vectors and the allocation counts, gated; K1 to K3 recorded and
+  not checked, as `journal-bench-data` records its figures, since K2's 90 % target sits about 6 %
+  under the 96 % measured on arm64 (RFC 2 Appendix A.2), a margin a noisy neighbour on the shared
+  hosted runner crosses with no code change.
 - `carver-bench`'s `corpus` option, `tier: manual`: K4 and K5 over D7's corpus, reported against
   §10.5, since a check may not fetch (RFC 2 §1.3).
 - D8's full-size sweep in a nightly cell.
@@ -621,8 +629,8 @@ nightly; RFC 2's suites paragraph names each new suite.
      the measurements behind §3.2 and §3.4, and drop the table.
 2. **`Target` has no key in RFC 13 yet**: RFC 13's plan gives the block target to RFC 4 and the
    keys to RFC 5, and leaves an undeclared Appendix B section to its component's plan. Epic 3
-   declares the section in `pkg/carver/section`, validated through the carver's settings
-   constructor; the RFC 8 offload plan's epic 21 adds
+   declares the section in `pkg/carver/section`, validated through the check of a `Target`
+   alone; the RFC 8 offload plan's epic 21 adds
    it to the node's table (§6.1). The Appendix B check reads a key only in RFC 13's key form,
    lower case and dotted (`internal/node/appendixb_test.go:49`), and fails a table key with no row
    (`:514`). Appendix B's row writes `Target`, which is not one, so epic 21's step waits on RFC 13
