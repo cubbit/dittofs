@@ -14,3 +14,5 @@
 - { suite: unit, test: TestApplyFailureKeepsEveryInstance, issue: "#5595", expires: 2026-12-08 }
 - { suite: unit, test: TestSettingsInstanceRefusalNamesOnlyItsInstance, issue: "#5595", expires: 2026-12-08 }
 - { suite: unit, test: TestSettingsRefusalNamesNoLookAlikeSection, issue: "#5595", expires: 2026-12-08 }
+- { suite: unit, test: TestSettingsRefusalNeverNamesASkippedRow, issue: "#5595", expires: 2026-12-08 }
+- { suite: unit, test: TestSettingsRefusalNeverNamesAnotherNodesRow, issue: "#5595", expires: 2026-12-08 }
