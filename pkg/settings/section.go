@@ -540,3 +540,19 @@ func rank(r entity.APIRole) int {
 // key one section declares that another's prefix takes, make it panic,
 // naming both.
 type Table []Section
+
+// SecretKind answers the kind of secret the table declares key names a
+// reference to, and whether it declares it one, resolved as Check resolves
+// the writes it judges, a per-thing key included: false for a key no section
+// takes, a section's plain field, or a per-thing key with no thing, so such
+// a key writes and reads as the plain setting it is.
+func (t Table) SecretKind(key string) (entity.SecretKind, bool) {
+	sec, declared, _, found := t.index().resolve(key)
+	if !found {
+		return 0, false
+	}
+
+	kind, named := sec.secretRefs[declared]
+
+	return kind, named
+}
