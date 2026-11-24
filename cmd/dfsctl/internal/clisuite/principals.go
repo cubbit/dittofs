@@ -1,7 +1,11 @@
 package clisuite
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,14 +26,16 @@ func principalRows() []row {
 	return []row{
 		{name: "user create, update and update --email \"\" set, keep and clear the address", run: func(t *testing.T, run Runner, _ Server, c *client.Client) {
 			name := unique("u")
-			mustRun(t, run, "user", "create", name, "--uid", "41000", "--email", name+"@example.com")
+			uid := uniqueID()
+			mustRun(t, run, "user", "create", name, "--uid", fmt.Sprint(uid), "--email", name+"@example.com", "--role", "viewer")
 			u := userNamed(t, c, name)
-			if u.Spec.Email != name+"@example.com" || u.Spec.UID == nil || *u.Spec.UID != 41000 {
-				t.Fatalf("user create %s: read back email %q uid %v, want %s@example.com and 41000", name, u.Spec.Email, u.Spec.UID, name)
+			if u.Spec.Email != name+"@example.com" || u.Spec.UID == nil || *u.Spec.UID != uid || u.Spec.Role != apiv1.RoleViewer {
+				t.Fatalf("user create %s: read back email %q uid %s role %q, want %s@example.com, %d and viewer", name, u.Spec.Email, id32(u.Spec.UID), u.Spec.Role, name, uid)
 			}
-			mustRun(t, run, "user", "update", name, "--disabled")
-			if u = userNamed(t, c, name); !u.Spec.Disabled || u.Spec.Email != name+"@example.com" {
-				t.Errorf("user update --disabled: read back disabled %v email %q, want true and the address kept", u.Spec.Disabled, u.Spec.Email)
+			mustRun(t, run, "user", "update", name, "--disabled", "--uid", fmt.Sprint(uid+1), "--role", "")
+			if u = userNamed(t, c, name); !u.Spec.Disabled || u.Spec.UID == nil || *u.Spec.UID != uid+1 || u.Spec.Role != "" || u.Spec.Email != name+"@example.com" {
+				t.Errorf("user update --disabled --uid %d --role \"\": read back disabled %v uid %s role %q email %q, want true, %d, none and the address kept",
+					uid+1, u.Spec.Disabled, id32(u.Spec.UID), u.Spec.Role, u.Spec.Email, uid+1)
 			}
 			mustRun(t, run, "user", "update", name, "--email", "")
 			if u = userNamed(t, c, name); u.Spec.Email != "" || !u.Spec.Disabled {
@@ -73,17 +79,21 @@ func principalRows() []row {
 			if op := decodeAs[apiv1.Operation](t, out); op.State != apiv1.OpSucceeded {
 				t.Errorf("user delete %s --wait: printed %+v, want its deletion succeeded", name, op)
 			}
-			if _, errOut, status := run(t.Context(), "user", "get", name); status == 0 || !strings.Contains(errOut, name) {
-				t.Errorf("user get %s after its deletion: status %d, stderr %q, want it refused naming it", name, status, errOut)
+			if _, errOut, status := run(t.Context(), "user", "get", name); status == 0 || !strings.Contains(errOut, fmt.Sprintf("no user named %q", name)) {
+				t.Errorf("user get %s after its deletion: status %d, stderr %q, want no user of that name", name, status, errOut)
 			}
 		}},
 		{name: "group create, update and delete --wait", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
 			name := unique("g")
-			mustRun(t, run, "group", "create", name, "--gid", "42000")
-			mustRun(t, run, "group", "update", name, "--gid", "42001")
+			gid := uniqueID()
+			mustRun(t, run, "group", "create", name, "--gid", fmt.Sprint(gid))
+			mustRun(t, run, "group", "update", name, "--gid", fmt.Sprint(gid+1))
 			g := decodeAs[apiv1.Group](t, mustRun(t, run, "group", "get", name, "-o", "json"))
-			if g.Spec.GID == nil || *g.Spec.GID != 42001 {
-				t.Errorf("group get %s after update --gid 42001: gid %v, want 42001", name, g.Spec.GID)
+			if g.Spec.GID == nil || *g.Spec.GID != gid+1 {
+				t.Errorf("group get %s after update --gid %d: gid %s, want %d", name, gid+1, id32(g.Spec.GID), gid+1)
+			}
+			if out := mustRun(t, run, "group", "list"); !strings.Contains(out, g.ID) {
+				t.Errorf("group list: got %q, want a row for %s", out, g.ID)
 			}
 			out, errOut, status := s.awaitRun(t, run, "group", "delete", name, "--force", "--wait", "-o", "json")
 			if status != 0 {
@@ -92,8 +102,8 @@ func principalRows() []row {
 			if op := decodeAs[apiv1.Operation](t, out); op.State != apiv1.OpSucceeded {
 				t.Errorf("group delete %s --wait: printed %+v, want its deletion succeeded", name, op)
 			}
-			if _, _, status := run(t.Context(), "group", "get", name); status == 0 {
-				t.Errorf("group get %s after its deletion: status 0, want it refused", name)
+			if _, errOut, status := run(t.Context(), "group", "get", name); status == 0 || !strings.Contains(errOut, fmt.Sprintf("no group named %q", name)) {
+				t.Errorf("group get %s after its deletion: status %d, stderr %q, want no group of that name", name, status, errOut)
 			}
 		}},
 		{name: "group add-member adds the user once and remove-member removes it once", run: func(t *testing.T, run Runner, _ Server, c *client.Client) {
@@ -101,14 +111,16 @@ func principalRows() []row {
 			mustRun(t, run, "group", "create", g)
 			mustRun(t, run, "user", "create", u)
 			mustRun(t, run, "group", "add-member", g, u)
-			// The membership is read back as the API answers a second add of
-			// it, refused while it exists.
-			if _, _, status := run(t.Context(), "group", "add-member", g, u); status == 0 {
-				t.Errorf("group add-member %s %s a second time: status 0, want it refused as a member already", g, u)
+			// A membership has no read route, so it is read back as the API
+			// answers a second add or removal: refused 412 while it exists, and
+			// once it is gone.
+			mismatch := string(apiv1.CodeGenerationMismatch)
+			if _, errOut, status := run(t.Context(), "group", "add-member", g, u); status == 0 || !strings.Contains(errOut, mismatch) {
+				t.Errorf("group add-member %s %s a second time: status %d, stderr %q, want %s, a member already", g, u, status, errOut, mismatch)
 			}
 			mustRun(t, run, "group", "remove-member", g, u)
-			if _, _, status := run(t.Context(), "group", "remove-member", g, u); status == 0 {
-				t.Errorf("group remove-member %s %s a second time: status 0, want it refused as no member", g, u)
+			if _, errOut, status := run(t.Context(), "group", "remove-member", g, u); status == 0 || !strings.Contains(errOut, mismatch) {
+				t.Errorf("group remove-member %s %s a second time: status %d, stderr %q, want %s, no member", g, u, status, errOut, mismatch)
 			}
 			mustRun(t, run, "group", "add-member", g, u)
 		}},
@@ -119,13 +131,19 @@ func principalRows() []row {
 			if want := []string{"10.0.0.7", "10.1.0.0/16"}; got.ID != name || !slices.Equal(got.Spec.Members, want) {
 				t.Errorf("netgroup get %s: got %+v, want members %q", name, got, want)
 			}
+			if _, errOut, status := run(t.Context(), "netgroup", "update", name); status == 0 || !strings.Contains(errOut, "member") {
+				t.Errorf("netgroup update %s with no --member: status %d, stderr %q, want it refused naming --member", name, status, errOut)
+			}
 			mustRun(t, run, "netgroup", "update", name, "--member", "build1.example.com")
 			if n, err := c.Netgroups().Get(t.Context(), name); err != nil || !slices.Equal(n.Spec.Members, []string{"build1.example.com"}) {
 				t.Errorf("netgroup %s after update: %+v, %v, want only build1.example.com", name, n.Spec.Members, err)
 			}
+			if out := mustRun(t, run, "netgroup", "list"); !strings.Contains(out, name) {
+				t.Errorf("netgroup list: got %q, want a row for %s", out, name)
+			}
 			mustRun(t, run, "netgroup", "delete", name, "--force")
-			if _, err := c.Netgroups().Get(t.Context(), name); err == nil {
-				t.Errorf("netgroup %s after delete: still read", name)
+			if _, err := c.Netgroups().Get(t.Context(), name); !isStatus(err, http.StatusNotFound) {
+				t.Errorf("netgroup %s after delete: read answered %v, want 404", name, err)
 			}
 		}},
 		{name: "token create signs a context in through login --token-file until token revoke", run: func(t *testing.T, _ Runner, s Server, c *client.Client) {
@@ -148,9 +166,12 @@ func principalRows() []row {
 			if len(ts) != 1 || ts[0].Status.Token != "" {
 				t.Fatalf("token list: got %+v, want the one token, not showing it", ts)
 			}
+			if got, want := ts[0].Spec.Expires, ts[0].Status.Created.Add(time.Hour); got.Before(want.Add(-time.Minute)) || got.After(want.Add(time.Minute)) {
+				t.Errorf("token create --expires-in 1h: expires %v, want an hour after its creation, %v", got, want)
+			}
 			mustRun(t, run, "token", "revoke", ts[0].ID)
-			if _, errOut, status := withToken(t.Context(), "group", "list"); status == 0 {
-				t.Errorf("group list with the revoked token: status 0, stderr %q, want it refused", errOut)
+			if _, errOut, status := withToken(t.Context(), "group", "list"); status == 0 || !strings.Contains(errOut, string(apiv1.CodeUnauthenticated)) {
+				t.Errorf("group list with the revoked token: status %d, stderr %q, want it refused %s", status, errOut, apiv1.CodeUnauthenticated)
 			}
 		}},
 		{name: "token create --user makes an admin a service account's token", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
@@ -168,24 +189,14 @@ func principalRows() []row {
 			}
 		}},
 		{name: "installation rotate-signing-key --wait ends succeeded", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
-			done := start(t, run, "installation", "rotate-signing-key", "--wait", "-o", "json")
 			// The rotation ends once the tokens the old key signed have
-			// expired, 15 minutes of the node's clock after its switch, so
-			// the clock moves five seconds a poll. No more: the store's time,
-			// which a refreshed token is issued at, follows the clock up to a
-			// real second late, and a hundred polls of a larger step would
-			// leave a token the command refreshes expired on arrival.
-			var a answered
-			for deadline, ended := time.After(time.Minute), false; !ended; {
-				select {
-				case a = <-done:
-					ended = true
-				case <-deadline:
-					t.Fatal("installation rotate-signing-key --wait: not ended a minute on")
-				case <-time.After(10 * time.Millisecond):
-					s.Harness.Clock().Advance(5 * time.Second)
-				}
-			}
+			// expired, 15 minutes of the node's clock after its switch, which
+			// Await reaches a second a poll. A token the command refreshes is
+			// issued at the store's time, which trails the clock while its
+			// ceiling waits on a real one-second ticker; a raise stalled for
+			// about nine real seconds, a hundred clock seconds each, would leave
+			// it expired on arrival, so that stall bounds this row.
+			a := Await(t, s, "the signing key's rotation", start(t, run, "installation", "rotate-signing-key", "--wait", "-o", "json"))
 			if a.status != 0 {
 				t.Fatalf("installation rotate-signing-key --wait: status %d, stderr %q, want 0", a.status, a.errOut)
 			}
@@ -198,6 +209,28 @@ func principalRows() []row {
 
 // unique is a name starting with prefix that no other row's names.
 func unique(prefix string) string { return prefix + "-" + uuid.NewString()[:8] }
+
+// uniqueID is a uid or gid, an even one in [100000, 2^31), that no other
+// row names but by a collision of 30 random bits, so a rerun against a
+// server that keeps its users finds it free.
+func uniqueID() uint32 {
+	u := uuid.New()
+	return 100000 + (binary.BigEndian.Uint32(u[:4])%(1<<30))*2
+}
+
+// id32 is an optional uid or gid as text, "none" when it is absent.
+func id32(p *uint32) string {
+	if p == nil {
+		return "none"
+	}
+	return fmt.Sprint(*p)
+}
+
+// isStatus reports whether err is a problem the server answered with status.
+func isStatus(err error, status int) bool {
+	var p *apiv1.Problem
+	return errors.As(err, &p) && p.Status == status
+}
 
 // userNamed reads the user named name through c.
 func userNamed(t *testing.T, c *client.Client, name string) apiv1.User {
