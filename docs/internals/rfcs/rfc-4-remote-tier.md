@@ -1763,7 +1763,7 @@ are the negative tests.
 
 | Service | Expected | When |
 | --- | --- | --- |
-| In-memory store | passes the rows of [§7.1](#7.1%20Conformance%20suite) not marked T | every change |
+| In-memory store | passes the rows of [§7.1](#7.1%20Conformance%20suite) not marked T that need no client, codec, service permission or throttling service | every change |
 | A local emulator of the remote service, current version, under the fault transport | passes every row of [§7.1](#7.1%20Conformance%20suite) whose setting it holds, and the capability check | every change |
 | Each supported production service ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) | passes the capability check and [§7.1](#7.1%20Conformance%20suite) | nightly, in a disposable namespace, and a fresh bucket for each row that needs a bucket setting |
 
