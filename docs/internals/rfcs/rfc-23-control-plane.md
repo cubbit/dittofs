@@ -1668,7 +1668,9 @@ second store.
   ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)), never through `vfs`: the account's password hash is a
   `Secret` sealed under the `storage` wrapping key, which every API node opens
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). It returns an
-  **access token** and a **refresh token**. A disabled or deleted account
+  **access token** and a **refresh token**, and the account's ID, which names it
+  in the routes under `/users/{id}` it may call on itself, such as its API
+  tokens'. A disabled or deleted account
   ([RFC 18 §3.7](rfc-18-identity.md#3.7%20Disabled%20and%20deleted%20principals)) cannot sign in, and the refusal does not say which.
 - **The access token** is a signed JWT (RFC 7519) naming the account's principal,
   the session and an expiry 15 min ahead, a fixed value. It carries no role. On every call the

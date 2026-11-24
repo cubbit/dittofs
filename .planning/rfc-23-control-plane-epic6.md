@@ -402,13 +402,17 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   tokens, the signing key's rotation).
 - **Covers:** R3, R12, R15.
 - **Deliverables:** `user create|list|get|update|delete|set-password` (`--email`, an empty value
-  clearing it; `--uid`, `--gid`; the password from a prompt or a file, sent with no idempotency
-  key); `group create|list|get|update|delete|add-member|remove-member`;
+  clearing it; `--uid`, `--role`, `--disabled`, the user spec's fields, which hold no gid; the
+  password from a prompt or a file, sent with no idempotency key);
+  `group create|list|get|update|delete|add-member|remove-member`;
   `netgroup create|list|get|update|delete`; `token create|list|revoke` (the routes are under the
-  caller's own user ID, which no route gives a non-admin today: a role holder is hidden from
-  `/users` below admin and `Tokens` carries no principal, so one must be added), `create` sent with no key and
-  the token printed once; `installation rotate-signing-key`; their `clisuite` rows; `cli.md`
-  regenerated. Consumed by E7.
+  account's user ID, which no route gives a non-admin: a role holder is hidden from `/users` below
+  admin, so `Tokens` gains `user_id`, which `login` keeps in the context, and `--user` names
+  another account by its name), `create` sent with no key and the token printed once;
+  `installation rotate-signing-key`, on `POST /installation:rotate-signing-key`, the route E5's
+  T5.9 step was built for and no epic added; their `clisuite` rows; `cli.md` regenerated. A
+  membership and an API token have no read route, so `remove-member` and `token revoke` send the
+  one tag each ever has, `"1"`, with a `decision:` marker each. Consumed by E7.
 - **Acceptance criteria:**
   - `user update --email ""` clears the address.
   - A token from `token create` signs a context in through `login --token-file`.
