@@ -91,6 +91,7 @@ const (
 	StateOldState        = vfserr.StateOldState
 	StateBadState        = vfserr.StateBadState
 	StateNoReclaim       = vfserr.StateNoReclaim
+	StateNoGrace         = vfserr.StateNoGrace
 	StateReclaimConflict = vfserr.StateReclaimConflict
 	StateLocksHeld       = vfserr.StateLocksHeld
 	StateBadSeqID        = vfserr.StateBadSeqID

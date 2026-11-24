@@ -359,10 +359,14 @@ func (t *Table) raiseNotice(ctx context.Context) error {
 }
 
 // admit admits a request of who for state in shard s, a reclaim or not, and
-// reports whether s is in grace. A shard not begun is ErrDelay; a client
-// that owes a reclaim it must connect again for is ErrStaleClient; in grace
-// a request that is no reclaim is ErrGrace, and a reclaim by a client the
-// shard's records did not name, or that finished, ErrNoReclaim.
+// reports whether s is in grace. A shard not begun is ErrDelay. A reclaim
+// is judged on its client first: from one that owes no reclaim anywhere
+// (owesLocked) it is ErrNoGrace, whatever the shard. A client that owes a
+// reclaim it must connect again for is ErrStaleClient; in grace a request
+// that is no reclaim is ErrGrace; a reclaim from a client that still owes
+// elsewhere, in a dropped shard or in one in grace whose records did not
+// name it or that it finished, is ErrNoReclaim, which refuses that reclaim
+// alone.
 //
 // decision: a shard not begun answers ErrDelay, a retry, since the service
 // begins every shard it serves before it answers, so a request there races a
@@ -374,6 +378,8 @@ func (t *Table) admit(who Caller, s ShardID, reclaim bool) (bool, error) {
 	switch {
 	case sh == nil:
 		return false, &DelayError{DelayFrozen}
+	case reclaim && !t.owesLocked(who.Client):
+		return false, ErrNoGrace
 	case sh.dropped && reclaim:
 		return false, ErrNoReclaim
 	case sh.dropped:
@@ -419,6 +425,33 @@ func (t *Table) owedLocked(c entity.ClientID) []GraceRef {
 		}
 	}
 	return owed
+}
+
+// owesLocked reports whether client c still owes a reclaim: a shard in grace
+// waits on it, having been named by its records when the grace began, and c
+// has not finished there. A client that recovers by status finishes by a
+// ReclaimComplete naming the shard's instance, never by Done alone, which a
+// join or a confirm sets; one that recovers by refusal or by notice never
+// finishes; an end, a reboot or a revoke drops c from every grace. The
+// caller holds cmu.
+//
+// decision: a reclaim is refused on the client, not per shard or state, as
+// an NFSv4.1 client answered NFS4ERR_NO_GRACE once ends its reclaim
+// everywhere. It is judged from the client records each shard read once,
+// as its grace began, not from the client's own record: a client this table
+// has not known since a restart reads nothing more, and one with no record
+// was named by no shard and owes nothing. A shard this table does not serve
+// waits on nobody here, as a single node begins every shard it serves
+// before it answers. Read the client's marks if a shard is found to be
+// taken over while its clients reclaim elsewhere.
+func (t *Table) owesLocked(c entity.ClientID) bool {
+	now := t.d.Clock.Elapsed()
+	for _, sh := range t.shards {
+		if _, ok := sh.reclaim[c]; ok && sh.inGrace(now) {
+			return true
+		}
+	}
+	return false
 }
 
 // staleClient is ErrStaleClient for a client c that must connect again, as

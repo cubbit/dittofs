@@ -45,8 +45,28 @@ func (f *fixture) renew(t *testing.T, cs ...Caller) {
 
 func in(s ShardID) FileKey { return FileKey{Shard: s, ID: entity.NewFileID()} }
 
+// oweElsewhere leaves each client owing a reclaim in shard 9, of a share of
+// its own, as a loss there does: each holds a lock in it, then the shard is
+// begun under a new grace instance. A reclaim in another shard is then
+// judged by that shard and the state it holds, as one from a client still
+// reclaiming.
+func (f *fixture) oweElsewhere(t *testing.T, cs ...Caller) {
+	t.Helper()
+	serve := func() {
+		if err := f.Recovery().ServeShard(ctx, entity.ShareID{9}, 9, instances.Add(1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	serve()
+	for _, c := range cs {
+		f.mustLock(t, c, in(9), LockReq{Owner: owner(c, "elsewhere"), Ranges: []LockRange{x(0, 1)}})
+	}
+	serve()
+}
+
 // After a restart only a reclaim is granted, by a client the shard's records
-// name, and none that conflicts with one reclaimed before it; every other
+// name, and none that conflicts with one reclaimed before it; a client they
+// name nowhere has nothing to reclaim, ErrNoGrace; every other
 // request for state is ErrGrace, a file nobody held included, until grace
 // ends on its own a lease period after it began.
 func TestGraceAdmitsOnlyReclaims(t *testing.T) {
@@ -88,8 +108,8 @@ func TestGraceAdmitsOnlyReclaims(t *testing.T) {
 		t.Errorf("a reclaimed open denying the write c reclaimed: %v, want ErrReclaimConflict", err)
 	}
 	e := g.caller(t, nfsAs("e", entity.RecoverStatus))
-	if _, err := g.open(e, file, OpenRequest{Access: rd, Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
-		t.Errorf("a reclaim by a client the records do not name: %v, want ErrNoReclaim", err)
+	if _, err := g.open(e, file, OpenRequest{Access: rd, Reclaim: true}); !errors.Is(err, ErrNoGrace) {
+		t.Errorf("a reclaim by a client the records do not name: %v, want ErrNoGrace", err)
 	}
 
 	g.pass(t, leasePeriod-time.Second, c.Client, d.Client)
@@ -437,13 +457,15 @@ func TestShardLossToldToHosts(t *testing.T) {
 		t.Errorf("a host's new lock in grace: %v, want ErrGrace", err)
 	}
 	again := g.host(t, "gone", 1)
-	if _, err := g.lock(again, file, LockReq{Owner: owner(again, "p"), Ranges: []LockRange{x(20, 10)}, Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
-		t.Errorf("the revoked host's reclaim: %v, want ErrNoReclaim", err)
+	if _, err := g.lock(again, file, LockReq{Owner: owner(again, "p"), Ranges: []LockRange{x(20, 10)}, Reclaim: true}); !errors.Is(err, ErrNoGrace) {
+		t.Errorf("the revoked host's reclaim: %v, want ErrNoGrace", err)
 	}
 }
 
 // A revoked client's shard list is emptied, so after a restart its reclaim
-// is refused rather than taking back the lock another client took since.
+// is ErrNoGrace rather than taking back the lock another client took since.
+// Its next ordinary open lists the shard again, so a later restart lets it
+// reclaim that open.
 func TestRevokedClientReclaimsNothing(t *testing.T) {
 	f := newFixture(t)
 	x1, y := f.caller(t, nfsAs("x", entity.RecoverStatus)), f.caller(t, nfsAs("y", entity.RecoverStatus))
@@ -456,16 +478,136 @@ func TestRevokedClientReclaimsNothing(t *testing.T) {
 
 	g := f.restart(t)
 	g.renew(t, x1, y)
-	if _, err := g.lock(x1, file, LockReq{Owner: owner(x1, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
-		t.Errorf("the revoked client's reclaim: %v, want ErrNoReclaim", err)
+	if _, err := g.lock(x1, file, LockReq{Owner: owner(x1, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); !errors.Is(err, ErrNoGrace) {
+		t.Errorf("the revoked client's reclaim: %v, want ErrNoGrace", err)
 	}
 	g.mustLock(t, y, file, LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
 	// A revoke in grace ends the client's reclaim there too.
 	if err := g.Revoke(ctx, y.Client); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.lock(y, file, LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
-		t.Errorf("a reclaim after a revoke in grace: %v, want ErrNoReclaim", err)
+	if _, err := g.lock(y, file, LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); !errors.Is(err, ErrNoGrace) {
+		t.Errorf("a reclaim after a revoke in grace: %v, want ErrNoGrace", err)
+	}
+
+	g.pass(t, leasePeriod, x1.Client)
+	if _, err := g.lock(x1, file, LockReq{Owner: owner(x1, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); !errors.Is(err, ErrNoGrace) {
+		t.Errorf("the revoked client's reclaim after grace: %v, want ErrNoGrace", err)
+	}
+	later := in(5)
+	g.mustOpen(t, x1, later, OpenRequest{Access: rd, Owner: owner(x1, "oo")})
+	h := g.restart(t)
+	h.renew(t, x1)
+	if _, err := h.open(x1, later, OpenRequest{Access: rd, Owner: owner(x1, "oo"), Reclaim: true}); err != nil {
+		t.Errorf("the revoked client's reclaim of the open it took after the revoke: %v, want granted", err)
+	}
+}
+
+// A reclaim of an open, a delegation or a lock from a client with nothing
+// to reclaim is ErrNoGrace, in grace and after: one whose record was lost
+// before the restart, and one whose record lists no shard.
+func TestNoGraceForAClientListedNowhere(t *testing.T) {
+	f := newFixture(t)
+	lost, d := f.caller(t, nfsAs("lost", entity.RecoverStatus)), f.caller(t, nfsAs("d", entity.RecoverStatus))
+	file := in(5)
+	f.mustOpen(t, lost, file, OpenRequest{Access: rd, Owner: owner(lost, "oo")})
+	f.mustLock(t, lost, file, LockReq{Owner: owner(lost, "lo"), Ranges: []LockRange{x(0, 10)}})
+	f.mustOpen(t, d, in(5), OpenRequest{Access: rd}) // keeps the shard in grace
+	if err := f.fs.Store.Clients().Delete(ctx, lost.Client); err != nil {
+		t.Fatal(err)
+	}
+
+	g := f.restart(t)
+	idle := g.caller(t, nfsAs("idle", entity.RecoverStatus))
+	reclaims := func(when string) {
+		t.Helper()
+		for _, c := range []Caller{lost, idle} {
+			for what, err := range map[string]error{
+				"an open": func() error {
+					_, err := g.open(c, file, OpenRequest{Access: rd, Owner: owner(c, "oo"), Reclaim: true})
+					return err
+				}(),
+				"a delegation": func() error {
+					_, err := g.open(c, file, OpenRequest{Access: rd, Owner: owner(c, "oo"), Want: GrantRead, Reclaim: true})
+					return err
+				}(),
+				"a lock": errOf(g.lock(c, file, LockReq{Owner: owner(c, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})),
+			} {
+				if !errors.Is(err, ErrNoGrace) {
+					t.Errorf("client %d's reclaim of %s %s: %v, want ErrNoGrace", c.Client, what, when, err)
+				}
+			}
+		}
+	}
+	reclaims("in grace")
+	g.pass(t, leasePeriod, d.Client, idle.Client)
+	reclaims("after grace")
+}
+
+// A client that finished one shard's grace instance and still owes another
+// is refused a reclaim in the first for that shard alone, ErrNoReclaim, and
+// reclaims in the second; once it has completed every instance it owed, its
+// next reclaim anywhere is ErrNoGrace.
+func TestNoGraceOnceEveryInstanceIsFinished(t *testing.T) {
+	f := newFixture(t)
+	c, d := f.caller(t, nfsAs("c", entity.RecoverStatus)), f.caller(t, nfsAs("d", entity.RecoverStatus))
+	a, b := in(5), in(7)
+	f.mustOpen(t, c, a, OpenRequest{Access: rd, Owner: owner(c, "oo")})
+	f.mustLock(t, c, b, LockReq{Owner: owner(c, "lo"), Ranges: []LockRange{x(0, 10)}})
+	f.mustOpen(t, d, in(5), OpenRequest{Access: rd}) // keeps both shards in grace
+	f.mustOpen(t, d, in(7), OpenRequest{Access: rd})
+
+	g := f.restart(t)
+	g.renew(t, c, d)
+	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{5, g.shards[5].instance}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.open(c, a, OpenRequest{Access: rd, Owner: owner(c, "oo"), Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
+		t.Errorf("a reclaim in the shard c finished, owing another: %v, want ErrNoReclaim", err)
+	}
+	g.mustLock(t, c, b, LockReq{Owner: owner(c, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
+	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{7, g.shards[7].instance}}); err != nil {
+		t.Fatal(err)
+	}
+	for what, err := range map[string]error{
+		"an open in shard 5": func() error {
+			_, err := g.open(c, a, OpenRequest{Access: rd, Owner: owner(c, "oo"), Reclaim: true})
+			return err
+		}(),
+		"the lock it holds in shard 7": errOf(g.lock(c, b, LockReq{Owner: owner(c, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})),
+		"a lock in shard 0, unlisted":  errOf(g.lock(c, in(0), LockReq{Owner: owner(c, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})),
+	} {
+		if !errors.Is(err, ErrNoGrace) {
+			t.Errorf("after completing every instance, a reclaim of %s: %v, want ErrNoGrace", what, err)
+		}
+	}
+}
+
+// A client that recovers by refusal or by notice never finishes, so it
+// reclaims while a shard it holds state in is in grace, though a confirm
+// raised its Done and it sent a completion naming the instance.
+func TestNoGraceNeverForRefusalOrNotice(t *testing.T) {
+	f := newFixture(t)
+	cl := nfsAs("c40", entity.RecoverRefusal)
+	c, h := f.caller(t, cl), f.host(t, "h", 1)
+	file := in(5)
+	f.mustOpen(t, c, file, OpenRequest{Access: rd, Owner: owner(c, "oo")})
+	f.mustLock(t, h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
+
+	g := f.restart(t)
+	g.connect(t, cl)
+	g.renew(t, c, h)
+	inst := []GraceRef{{5, g.shards[5].instance}}
+	for _, who := range []Caller{c, h} {
+		if err := g.Recovery().ReclaimComplete(ctx, who, inst); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := g.open(c, file, OpenRequest{Access: rd, Owner: owner(c, "oo"), Reclaim: true}); err != nil {
+		t.Errorf("the NFSv4.0 client's reclaim after confirming again: %v, want granted", err)
+	}
+	if _, err := g.lock(h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); err != nil {
+		t.Errorf("the NLM host's reclaim: %v, want granted", err)
 	}
 }
 
@@ -504,13 +646,15 @@ func TestMissJudgedByGraceInstance(t *testing.T) {
 	}
 }
 
-// A reclaim in a shard that lost nothing is answered with what the client
-// still holds, its delegation included, and refused for more than it holds;
+// A reclaim in a shard that lost nothing, from a client still owing a
+// reclaim elsewhere, is answered with what the client still holds, its
+// delegation included, and refused for more than it holds;
 // in grace a reclaimed open is offered no delegation, the shard having lost
 // its grants, and its owner needs no confirm.
 func TestReclaimWhereNothingWasLost(t *testing.T) {
 	f := newFixture(t)
 	c := f.caller(t, nfsAs("c", entity.RecoverStatus))
+	f.oweElsewhere(t, c)
 	file := in(5)
 	res, err := f.Opens().Open(ctx, c, file, OpenRequest{Access: rd, Owner: owner(c, "oo"), Want: GrantRead})
 	if err != nil || res.Grant == nil {
@@ -732,6 +876,7 @@ func TestGraceRefusedLockAdvancesItsOwner(t *testing.T) {
 func TestHeldLockReclaimAdvancesItsOwner(t *testing.T) {
 	f := newFixture(t)
 	c := f.caller(t, nfsAs("c", entity.RecoverStatus))
+	f.oweElsewhere(t, c)
 	file := in(5)
 	oo, lo := owner(c, "oo"), owner(c, "lo")
 	o := f.mustOpen(t, c, file, OpenRequest{Access: rd | wr, Owner: oo, Seqs: num(1)})
@@ -751,7 +896,8 @@ func TestHeldLockReclaimAdvancesItsOwner(t *testing.T) {
 }
 
 // A reclaim admitted in grace that reaches its file's step after grace has
-// ended is judged as one sent after it: of state not held, ErrNoReclaim.
+// ended is judged as one sent after it: from a client that then owes no
+// reclaim, ErrNoGrace.
 func TestReclaimLandingAfterGrace(t *testing.T) {
 	f := newFixture(t)
 	c := f.caller(t, nfsAs("c", entity.RecoverStatus))
@@ -783,8 +929,8 @@ func TestReclaimLandingAfterGrace(t *testing.T) {
 	}
 	g.clock.advance(leasePeriod / 2) // grace ends while the reclaim waits for the step
 	close(release)
-	if err := <-done; !errors.Is(err, ErrNoReclaim) {
-		t.Errorf("a reclaim admitted in grace landing after it: %v, want ErrNoReclaim", err)
+	if err := <-done; !errors.Is(err, ErrNoGrace) {
+		t.Errorf("a reclaim admitted in grace landing after it: %v, want ErrNoGrace", err)
 	}
 	wg.Wait()
 }
@@ -795,6 +941,7 @@ func TestReclaimLandingAfterGrace(t *testing.T) {
 func TestHeldReclaimSettlesAnOfferedGrant(t *testing.T) {
 	f := newFixture(t)
 	a, h := f.host(t, "a", 1), f.host(t, "h", 1)
+	f.oweElsewhere(t, h)
 	file := anyFile()
 	f.mustLock(t, a, file, LockReq{Owner: owner(a, "a"), Ranges: []LockRange{x(0, 10)}})
 	f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{x(0, 10)}, Wait: WaitCallback})
@@ -818,6 +965,7 @@ func TestHeldReclaimSettlesAnOfferedGrant(t *testing.T) {
 func TestStackingHeldReclaimLeavesAnOfferedGrantWhole(t *testing.T) {
 	f := newFixture(t)
 	h := f.host(t, "h", 1)
+	f.oweElsewhere(t, h)
 	ho := LockOwner{Client: h.Client, Name: []byte("h"), Stack: true}
 	file := anyFile()
 	f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{sh(30, 5)}}) // keeps h's record once [0,10) goes
@@ -984,7 +1132,10 @@ func TestShardNotBegunDelaysIOAndChanges(t *testing.T) {
 // lock granted through it does.
 func TestHeldLockReclaimThroughItsOpenAnswersTheLockOwner(t *testing.T) {
 	f := newFixture(t)
-	c := f.caller(t, nfsAs("c", entity.RecoverRefusal))
+	cl := nfsAs("c", entity.RecoverRefusal)
+	c := f.caller(t, cl)
+	f.oweElsewhere(t, c)
+	f.connect(t, cl) // confirms again, owing shard 9 still
 	file := in(5)
 	oo, lo := owner(c, "oo"), owner(c, "lo")
 	o := f.mustOpen(t, c, file, OpenRequest{Access: rd | wr, Owner: oo, Seqs: num(1)})
@@ -1046,6 +1197,7 @@ func TestIdleHostRecordGoesAfterGrace(t *testing.T) {
 func TestHeldReclaimOfMoreIsRefused(t *testing.T) {
 	f := newFixture(t)
 	c := f.caller(t, nfsAs("c", entity.RecoverStatus))
+	f.oweElsewhere(t, c)
 	file := in(5)
 	o := f.mustOpen(t, c, file, OpenRequest{Access: rd | wr, Owner: owner(c, "oo")})
 	f.mustLock(t, c, file, LockReq{Owner: owner(c, "lo"), Open: refOf(o), Ranges: []LockRange{x(0, 10)}})
@@ -1137,19 +1289,32 @@ func TestDropShare(t *testing.T) {
 }
 
 // DropShare in grace ends the grace with the state: a reclaim there is
-// ErrNoReclaim, as nothing is left to reclaim.
+// ErrNoGrace from a client that held state only in the share, as it has
+// nothing left to reclaim, and ErrNoReclaim from one still owing a reclaim
+// in another share.
 func TestDropShareInGrace(t *testing.T) {
 	f := newFixture(t)
-	a := f.caller(t, nfsAs("a", entity.RecoverStatus))
+	a, b := f.caller(t, nfsAs("a", entity.RecoverStatus)), f.caller(t, nfsAs("b", entity.RecoverStatus))
 	file := in(1)
 	f.mustOpen(t, a, file, OpenRequest{Access: rd, Owner: owner(a, "oo")})
+	f.mustOpen(t, b, file, OpenRequest{Access: rd, Owner: owner(b, "oo")})
+	if err := f.Recovery().ServeShard(ctx, entity.ShareID{9}, 9, instances.Add(1)); err != nil {
+		t.Fatal(err)
+	}
+	f.mustLock(t, b, in(9), LockReq{Owner: owner(b, "lo"), Ranges: []LockRange{x(0, 1)}})
 	g := f.restart(t)
-	g.renew(t, a)
+	if err := g.Recovery().ServeShard(ctx, entity.ShareID{9}, 9, instances.Add(1)); err != nil {
+		t.Fatal(err)
+	}
+	g.renew(t, a, b)
 	if err := g.Recovery().DropShare(ctx, f.fs.Share.ID, netip.Addr{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.open(a, file, OpenRequest{Access: rd, Owner: owner(a, "oo"), Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
-		t.Errorf("a reclaim in the dropped share: %v, want ErrNoReclaim", err)
+	if _, err := g.open(a, file, OpenRequest{Access: rd, Owner: owner(a, "oo"), Reclaim: true}); !errors.Is(err, ErrNoGrace) {
+		t.Errorf("a reclaim in the dropped share from a client owing nothing: %v, want ErrNoGrace", err)
+	}
+	if _, err := g.open(b, file, OpenRequest{Access: rd, Owner: owner(b, "oo"), Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
+		t.Errorf("a reclaim in the dropped share from a client owing in another: %v, want ErrNoReclaim", err)
 	}
 }
 
@@ -1235,6 +1400,7 @@ func (b *blockingRand) Read(p []byte) (int, error) {
 func TestDropShareRefusesARacingLock(t *testing.T) {
 	f := newFixture(t)
 	a := f.caller(t, nfs("a", 1, entity.NewUser()))
+	f.oweElsewhere(t, a)
 	held, file := in(1), in(1)
 	f.mustLock(t, a, held, LockReq{Owner: owner(a, "lo"), Ranges: []LockRange{x(0, 10)}})
 	rnd := &blockingRand{entered: make(chan struct{}), released: make(chan struct{}), r: newSeeded(t.Name())}
@@ -1470,7 +1636,7 @@ func TestRefusedExpiryReleasesNothing(t *testing.T) {
 }
 
 // A revoke whose record write is refused releases nothing, as an expiry's:
-// after a restart the revoked client's reclaim is refused, and the lock's new
+// after a restart the revoked client's reclaim is ErrNoGrace, and the lock's new
 // holder reclaims it.
 func TestRefusedRevokeReleasesNothing(t *testing.T) {
 	fs, st := failingFS(t)
@@ -1495,8 +1661,8 @@ func TestRefusedRevokeReleasesNothing(t *testing.T) {
 
 	g := f.restart(t)
 	g.renew(t, x1, y)
-	if _, err := g.lock(x1, file, LockReq{Owner: owner(x1, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
-		t.Errorf("the revoked client's reclaim after the restart: %v, want ErrNoReclaim", err)
+	if _, err := g.lock(x1, file, LockReq{Owner: owner(x1, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); !errors.Is(err, ErrNoGrace) {
+		t.Errorf("the revoked client's reclaim after the restart: %v, want ErrNoGrace", err)
 	}
 	g.mustLock(t, y, file, LockReq{Owner: owner(y, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
 }

@@ -25,7 +25,15 @@ var (
 	ErrInvalid           = errors.New("openstate: request out of bounds")
 	ErrDelay             = errors.New("openstate: retry later")
 	ErrGrace             = errors.New("openstate: in grace period")
-	ErrNoReclaim         = errors.New("openstate: nothing to reclaim in this shard")
+	// ErrNoReclaim refuses one reclaim from a client that still owes
+	// reclaims somewhere: in a shard its record does not list, a dropped
+	// one, or of state the shard does not hold; and a reconnect whose open
+	// is gone, in grace or not. The client goes on reclaiming the rest.
+	ErrNoReclaim = errors.New("openstate: nothing to reclaim in this shard")
+	// ErrNoGrace refuses a reclaim from a client with nothing left to
+	// reclaim: no shard its record lists is in a grace instance it has not
+	// finished. It is judged on the client, before the shard's own checks.
+	ErrNoGrace = errors.New("openstate: the client has nothing left to reclaim")
 
 	ErrReclaimConflict = errors.New("openstate: reclaim conflicts with state already reclaimed")
 	ErrStopped         = errors.New("openstate: table not started, or stopped")
