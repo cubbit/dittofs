@@ -25,16 +25,18 @@ node)*" row for its `AUTH_SYS` steps. Every clause cited reads the same on `deve
 Cited, not owned: [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §3.0's `Call` row (`Spell` acts for
 no caller) and §4.9's admission steps; RFC 8881 §5.9 for numeric owner strings.
 **Track:** B.
-**Epic 7 estimate: 5 subtasks, 16.5 man-days.**
-**Depends on:** nothing in this programme for T7.1 to T7.4. They are service code that no NFS
+**Epic 7 estimate: 6 subtasks, 18 man-days.**
+**Depends on:** nothing in this programme for T7.1 to T7.5. They are service code that no NFS
 package reaches except through `vfs.Service`, and they build on what RFC 18's plan landed on
-`feat/storage-v2`, listed in §1.1, so **S6a** and **S6b** already hold. T7.5 waits for **S3** (E3's
-scripted client, and E4's NFSv3 and MOUNT over loopback) and for **S5**, the composed in-process
-node.
+`feat/storage-v2`, listed in §1.1, so **S6a** and **S6b** already hold. T7.6 waits for **S3** (E3's
+scripted client, T3.2, and E4's NFSv3 and MOUNT over loopback, T4.7) and for **S5**, the composed
+in-process node.
 **Blocks:**
-- S3, and every NFS handler test that calls as an `AUTH_SYS` user on `memory.New` (E4's, E5's, E8's,
-  E9's and E11's): until T7.1 lands, each is refused `ErrAccess` (§9, point 1).
-- E5 and E6, which spell and parse owner strings through T7.2's schemes.
+- S3, and every NFS test whose `AUTH_SYS` call reaches admission on `memory.New`: E4's T4.7 and
+  T4.10's loopback row, E5's T5.4 and T5.9, and E8's, E9's and E11's. Until T7.1 lands, each is
+  refused `ErrAccess` (§9, point 1). It resolves the `Claimed` `Identity` E3's T3.1 builds.
+- E5, whose T5.4 and T5.5 spell and parse `owner` and `owner_group` through T7.2's schemes, and
+  E6, whose T6.2 spells and parses `who` through T7.3's.
 - E16, which runs the Kerberos and NFSv4 halves of the rows this epic runs over `AUTH_SYS`.
 
 ---
@@ -60,7 +62,8 @@ admission, `Spell` and `Find`.
   - past either cap, the call is refused retryably and never mapped to anonymous;
 - a share whose export policy sets `ManageGIDs` replaces the claimed gids with the mapped
   principal's closure, and the setting is reachable through the API;
-- `Spell` and `Find` serve owner strings under `identity.nfs4_domain`, and `FuzzOwnerString` runs;
+- `Spell` and `Find` serve owner strings and `who` strings under `identity.nfs4_domain`, and
+  `FuzzOwnerString` runs;
 - RFC 18 §10's `AUTH_SYS` rows pass against the filesystem with the real identity server, and the
   rows that exercise the adapter pass again through NFSv3 on the composed node.
 
@@ -68,7 +71,7 @@ admission, `Spell` and `Find`.
 
 The claimed path through resolution's five steps; the directory's questions by `uidNumber` and
 `gidNumber`; the two caps and their refusals; `ManageGIDs`, from the export policy record to the
-API; the owner schemes, their setting and the fuzz target; RFC 18 §10's rows listed above, at the
+API; the owner schemes, the `who` schemes, their setting and the fuzz target; RFC 18 §10's rows listed above, at the
 filesystem layer and, through NFSv3, on the composed node; and the RFC text that calls these pieces
 deferred, in one RFC pull request on `develop`.
 
@@ -129,11 +132,11 @@ deferred, in one RFC pull request on `develop`.
 ### 1.3 Names used here
 
 - **E3**, the RPC layer. Its `AUTH_SYS` and `AUTH_NONE` `Security` stage builds the `Identity` this
-  epic resolves, and its scripted client is what T7.5 drives.
-- **E4**, NFSv3 and MOUNT: the procedures T7.5's rows call, and `sattr3`'s owner fields.
+  epic resolves, and its scripted client is what T7.6 drives.
+- **E4**, NFSv3 and MOUNT: the procedures T7.6's rows call, and `sattr3`'s owner fields.
 - **E5**, the NFSv4 namespace, attributes and data path: `owner` and `owner_group` through `Spell`
   and `Find`.
-- **E6**, the NFSv4 ACL attributes: `who` through `Spell` and `Find`.
+- **E6**, the NFSv4 ACL attributes: `who` through `Spell` and `Find`, under T7.3's schemes.
 - **E8**, clients and sessions. **E9**, opens, stateids and locks. **E11**, NLM, NSM and the datagram
   path. **E13**, RPCSEC_GSS: Kerberos over NFS.
 - **E16**, E2E green: the in-process, end-to-end and restart rows the middle epics leave.
@@ -151,18 +154,18 @@ cited by number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Tier 1 rows run in `internal/identity`, over the real store, `identitytest`'s directory (kind 2, held to `directorysuite`), the test realm's tickets and the injected clock (kind 1). The filesystem's rows run in `internal/vfs`, over the real identity server. A store fault comes from `kvtest.FaultKV` and a directory fault from `identitytest`'s fault wrapper (kind 3). T7.5 runs on `nodetest`, with E3's scripted client. No other double is used |
-| rule 2, fuzz tests where relevant | T7.2 | `FuzzOwnerString` covers the owner-string parser, seeded with names, decimals, other domains and malformed strings (R35). Nothing else here decodes a peer's bytes |
-| rule 3, observability follows RFC 25 and RFC 20 §10 | T7.1, T7.2, T7.3 | Only identity's own series, RFC 18 §9.2's: `identity_unmapped_total` gains `owner`, `identity_resolution_refusals_total` gains `lookup_cap`, and `identity_directory_lookups_total` gains the questions `uid` and `gid`. No NFS code records anything. No label carries a uid, a name, an owner string or an address |
-| rule 4, profiling: leaks, allocations and contention | T7.5 | T7.5 ends with RFC 20's leak check. The two cap tables are touched on a caller-cache miss only, on no hot path. T7.3's concurrent `-race` test is their check |
-| rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | A claimed caller is asserted where the filesystem's permission check reads it: a write refused, a `chown` not permitted, a file's group. It is never asserted on the `Caller` alone. Owner strings are asserted where `Spell` and `Find` answer the adapter, and T7.5 at the NFSv3 reply |
+| rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Tier 1 rows run in `internal/identity`, over the real store, `identitytest`'s directory (kind 2, held to `directorysuite`), the test realm's tickets and the injected clock (kind 1). The filesystem's rows run in `internal/vfs`, over the real identity server. A store fault comes from `kvtest.FaultKV` and a directory fault from `identitytest`'s fault wrapper (kind 3). T7.6 runs on `nodetest`, with E3's scripted client. No other double is used |
+| rule 2, fuzz tests where relevant | T7.2, T7.3 | `FuzzOwnerString` covers the owner-string parser, seeded with names, decimals, other domains and malformed strings (R35), and T7.3 adds `S-…@domain` seeds. Nothing else here decodes a peer's bytes |
+| rule 3, observability follows RFC 25 and RFC 20 §10 | T7.1, T7.2, T7.3, T7.4 | Only identity's own series, RFC 18 §9.2's: `identity_unmapped_total` gains `owner`, `identity_resolution_refusals_total` gains `lookup_cap`, and `identity_directory_lookups_total` gains the questions `uid` and `gid`. No NFS code records anything. No label carries a uid, a name, an owner string or an address |
+| rule 4, profiling: leaks, allocations and contention | T7.6 | T7.6 ends with RFC 20's leak check. The two cap tables are touched on a caller-cache miss only, on no hot path. T7.4's concurrent `-race` test is their check |
+| rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | A claimed caller is asserted where the filesystem's permission check reads it: a write refused, a `chown` not permitted, a file's group. It is never asserted on the `Caller` alone. Owner strings are asserted where `Spell` and `Find` answer the adapter, and T7.6 at the NFSv3 reply |
 | rule 6, known failures shrink | none | no row of `pynfs`, `cthon04` or `nfstest` is run |
 | rule 7, v2 ignores v1 | all | nothing of `develop`'s identity mapping is copied; behaviour comes from RFC 18 |
-| rule 8, real dependencies for properties of those dependencies | T7.3, T7.5 | T7.3's new suite rows also run against a real LDAP directory, in `integration/ad-dc`; T7.5 runs through real TCP on loopback |
+| rule 8, real dependencies for properties of those dependencies | T7.4, T7.6 | T7.4's new suite rows also run against a real LDAP directory, in `integration/ad-dc`; T7.6 runs through real TCP on loopback |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | all | RFC 18's own `decision:` notes go at their sites: §3.2's default for `ManageGIDs`, §4.3's unmapped uid, §4.5's numeric owners and §5.5's mint from a claim, plus §7.3's `ponytail:` on the two caps. This epic's markers are listed in §4. `resolve.go`'s `ponytail:` refusing a claimed identity is withdrawn, and `names.go`'s `decision:` deferring two schemes is narrowed to `oidc` |
 | rule 10, a test must be able to fail | all | each test names the change that fails it; the table test of the five steps fails on any cell of the claimed branch |
-| rule 11, a symbol is exported only if an interface uses it | T7.2, T7.3, T7.4 | Exported, each with what uses it: `identity.SchemeOwnerGroup` and its `vfs` alias, for E5 and E6; `directory.ByUID` and `directory.ByGID`, for `internal/identity`; `ExportPolicy.ManageGIDs` and `SharePolicy.ManageGIDs`, for the store, the API and resolution; the API spec's `manage_gids`, for operators. Nothing else is exported |
-| rule 12, each subtask creates only what it declares | all | the directory's two questions land in T7.3 with the mints that consume them, and the caps with the lookups they bound |
+| rule 11, a symbol is exported only if an interface uses it | T7.2, T7.3, T7.4, T7.5 | Exported, each with what uses it: `identity.SchemeOwnerGroup` and its `vfs` alias, for E5; `identity.SchemeWho` and `SchemeWhoGroup` and their `vfs` aliases, for E6; `directory.ByUID` and `directory.ByGID`, for `internal/identity`; `ExportPolicy.ManageGIDs` and `SharePolicy.ManageGIDs`, for the store, the API and resolution; the API spec's `manage_gids`, for operators. Nothing else is exported |
+| rule 12, each subtask creates only what it declares | all | the directory's two questions land in T7.4 with the mints that consume them, and the caps with the lookups they bound |
 | rule 13, translate, never decide | T7.2 | identity decides every mapping; the adapter only picks the scheme from the proof it reports (D1) |
 | rule 14, nothing deferred is lost | all | every half left out is named, with its owner, in §1.2 |
 
@@ -177,7 +180,7 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
 | --- | --- | --- | --- | --- |
 | R1 | An `AUTH_SYS` caller's uid and gids are taken as sent and mapped through the `uid` and `gid` indexes; nothing about them is verified, and a `Claimed` caller never signs in | MUST | §3.2, §4.3 | T7.1 |
 | R2 | uid and gid 0 map to root, and 65534 to anonymous; a claimed uid 0 maps to RFC 18's root principal | MUST | §4.3; RFC 21 §11.1 ("Root") | T7.1 |
-| R3 | An `AUTH_SYS` uid with no principal behind it, after the directory lookup where one is configured, maps to anonymous at mapping time, before any squash: `Mapped` is the anonymous principal, the caller acts as the share's `Anonymous` as a `None` caller does, and the call is counted `identity_unmapped_total{scheme="uid"}` | MUST | §4.3, §6.1 | T7.1, T7.3 |
+| R3 | An `AUTH_SYS` uid with no principal behind it, after the directory lookup where one is configured, maps to anonymous at mapping time, before any squash: `Mapped` is the anonymous principal, the caller acts as the share's `Anonymous` as a `None` caller does, and the call is counted `identity_unmapped_total{scheme="uid"}` | MUST | §4.3, §6.1 | T7.1, T7.4 |
 | R4 | A claimed uid held by a disabled principal is refused `ErrAccess`, and never acted on as anonymous | MUST NOT | §6.1, §3.7 | T7.1 |
 | R5 | A call that names no share is mapped under the installation's defaults, never under a share's mapping, and runs the map step alone | MUST | §4.3, §6.1 | T7.1 |
 | R6 | A credential gid with no principal is no group at all: it is dropped from the caller's groups, and a create falls back to the principal's primary group | MUST | §4.3, §6.1; RFC 21 §11.1 ("The credential's group") | T7.1 |
@@ -200,25 +203,25 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R16 | With a directory configured, a claimed uid or gid with no row is asked of the directory by `uidNumber` or `gidNumber` | MUST | §4.3 | T7.3 |
-| R17 | An entry that answers is minted as a directory principal, and the caller acts as it, not `authenticated` | MUST | §4.3, §5.5 | T7.3 |
-| R18 | A record is minted only on the directory's word: a uid the directory does not know acts as anonymous and writes nothing | MUST NOT | §5.5 (guard 1) | T7.3 |
-| R19 | The directory lookups a `Claimed` caller triggers are at most 100 a minute per client address; past that, the call is refused with a retryable error and never mapped to anonymous | bound | §4.3, §7.3 | T7.3 |
-| R20 | The records a `Claimed` caller's lookup mints are at most 100 a minute per node, whatever the client; past that, the call is refused with a retryable error, never mapped to anonymous, and nothing is written | bound | §5.5 (guard 2), §7.3 | T7.3 |
-| R21 | A record a claimed caller reaches is bound to the entry's permanent ID, never to its name; it is refreshed on the directory cache's TTL, and disabled when the directory says the entry is disabled or answers that it is gone | MUST | §5.5 (guard 3) | T7.1, T7.3 |
-| R22 | A directory principal's uid and gid are the entry's `uidNumber` and `gidNumber` when it has them, else allocated; they are written once, with the principal, and never recomputed | MUST | §4.3 | T7.3 |
-| R23 | A caller that used a directory answer is served from the cache at most the directory's TTL after it was built (`Fresh`); a caller with a zero `Fresh` is not stored | MUST | §7.1 | T7.1, T7.3 |
-| R24 | A call refused at the per-address cap is counted `identity_resolution_refusals_total{reason="lookup_cap"}`; a claimed uid or gid asked of the directory is counted under `identity_directory_lookups_total`'s questions `uid` and `gid` | MUST | §9.2 | T7.3 |
-| R25 | A directory error during a claimed lookup, or an answer neither fresh nor within the stale grace, is `ErrUnavailable`: it is never "no such entry", never anonymous, and nothing is written | MUST NOT | §5.3, §5.4 | T7.3 |
+| R16 | With a directory configured, a claimed uid or gid with no row is asked of the directory by `uidNumber` or `gidNumber` | MUST | §4.3 | T7.4 |
+| R17 | An entry that answers is minted as a directory principal, and the caller acts as it, not `authenticated` | MUST | §4.3, §5.5 | T7.4 |
+| R18 | A record is minted only on the directory's word: a uid the directory does not know acts as anonymous and writes nothing | MUST NOT | §5.5 (guard 1) | T7.4 |
+| R19 | The directory lookups a `Claimed` caller triggers are at most 100 a minute per client address; past that, the call is refused with a retryable error and never mapped to anonymous | bound | §4.3, §7.3 | T7.4 |
+| R20 | The records a `Claimed` caller's lookup mints are at most 100 a minute per node, whatever the client; past that, the call is refused with a retryable error, never mapped to anonymous, and nothing is written | bound | §5.5 (guard 2), §7.3 | T7.4 |
+| R21 | A record a claimed caller reaches is bound to the entry's permanent ID, never to its name; it is refreshed on the directory cache's TTL, and disabled when the directory says the entry is disabled or answers that it is gone | MUST | §5.5 (guard 3) | T7.1, T7.4 |
+| R22 | A directory principal's uid and gid are the entry's `uidNumber` and `gidNumber` when it has them, else allocated; they are written once, with the principal, and never recomputed | MUST | §4.3 | T7.4 |
+| R23 | A caller that used a directory answer is served from the cache at most the directory's TTL after it was built (`Fresh`); a caller with a zero `Fresh` is not stored | MUST | §7.1 | T7.1, T7.4 |
+| R24 | A call refused at the per-address cap is counted `identity_resolution_refusals_total{reason="lookup_cap"}`; a claimed uid or gid asked of the directory is counted under `identity_directory_lookups_total`'s questions `uid` and `gid` | MUST | §9.2 | T7.4 |
+| R25 | A directory error during a claimed lookup, or an answer neither fresh nor within the stale grace, is `ErrUnavailable`: it is never "no such entry", never anonymous, and nothing is written | MUST NOT | §5.3, §5.4 | T7.4 |
 
 **`ManageGIDs`**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R26 | A share's export policy carries `ManageGIDs`, off by default | MUST | RFC 16 §2.3 (`ExportPolicy`); §3.2 | T7.4 |
-| R27 | With `ManageGIDs`, a claimed caller's groups are the closure of the mapped principal's memberships (for a directory principal, including the directory's groups), in place of the credential's gids | MUST | §3.2, §6.3 | T7.4 |
-| R28 | That closure is computed whole, or the call fails | MUST | §6.3 | T7.4 |
-| R29 | The caller cache's key carries `ManageGIDs`, as a field of the share's policy, and the share's `ExportPolicy.Version` | MUST | §7.1 | T7.4 |
+| R26 | A share's export policy carries `ManageGIDs`, off by default | MUST | RFC 16 §2.3 (`ExportPolicy`); §3.2 | T7.5 |
+| R27 | With `ManageGIDs`, a claimed caller's groups are the closure of the mapped principal's memberships (for a directory principal, including the directory's groups), in place of the credential's gids | MUST | §3.2, §6.3 | T7.5 |
+| R28 | That closure is computed whole, or the call fails | MUST | §6.3 | T7.5 |
+| R29 | The caller cache's key carries `ManageGIDs`, as a field of the share's policy, and the share's `ExportPolicy.Version` | MUST | §7.1 | T7.5 |
 
 **Owner strings**
 
@@ -231,25 +234,27 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
 | R34 | A lookup error other than "not found" reaches the adapter as itself, never as `ErrUnknownPrincipal`, so the adapter answers a server failure | MUST NOT | §4.1 | T7.2 |
 | R35 | `FuzzOwnerString` never panics, never allocates more than the input's size times a constant, and decode∘encode is the identity on whatever decodes | test row | §10 (Fuzz) | T7.2 |
 | R36 | An owner string no principal holds is counted `identity_unmapped_total{scheme="owner"}`, in either owner scheme | MUST | §9.2 | T7.2 |
+| R51 | The `who` schemes spell a principal as the owner schemes do, `name@domain` or the decimal number of one minted without a name; a principal that has a SID and no owner string by the SID's string form at the domain, `S-…@domain`; and a deleted principal as the null SID, `S-1-0-0@domain` | MUST | RFC 21 §11.3 (`who`); RFC 19 §5.2; §4.5 | T7.3 |
+| R52 | On a find, a `who` of the form `S-…@domain` with a well-formed SID resolves by that SID; any other through §4.5's rules, in the user or group namespace the scheme names | MUST | RFC 21 §11.3 (`who`); §4.5 | T7.3 |
 
 **Conformance rows**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R37 | "one uid, two proofs": two directory users with no uid get different allocated uids. alice reads over Kerberos a file whose ACL grants `Finance` only: granted. From another host, over `AUTH_SYS`, alice's uid with no gids: refused, not `authenticated`, and the caller cache missed | test row | §10 | T7.3, T7.5 |
-| R38 | "client in the key": hosts A, B and C, which a share admits read-write, read-only and not at all, send identical `AUTH_SYS` claims. A writes, B's writes are refused `ErrReadOnly`, C is refused admission, and no call hit an entry another host built | test row | §10 | T7.3, T7.5 |
-| R39 | "root"'s `AUTH_SYS` clauses: with `Squash = none`, uid 0 with no user record can `chown`, and a file root creates is owned by root; with `Squash = root`, refused | test row | §10 | T7.1, T7.5 |
+| R37 | "one uid, two proofs": two directory users with no uid get different allocated uids. alice reads over Kerberos a file whose ACL grants `Finance` only: granted. From another host, over `AUTH_SYS`, alice's uid with no gids: refused, not `authenticated`, and the caller cache missed | test row | §10 | T7.4, T7.6 |
+| R38 | "client in the key": hosts A, B and C, which a share admits read-write, read-only and not at all, send identical `AUTH_SYS` claims. A writes, B's writes are refused `ErrReadOnly`, C is refused admission, and no call hit an entry another host built | test row | §10 | T7.4, T7.6 |
+| R39 | "root"'s `AUTH_SYS` clauses: with `Squash = none`, uid 0 with no user record can `chown`, and a file root creates is owned by root; with `Squash = root`, refused | test row | §10 | T7.1, T7.6 |
 | R40 | "error is not "unknown"": a store error on the `uid` index during an `AUTH_SYS` call to a share whose everyone grant is `read-write` is a retryable error, and nothing is created | test row | §10 | T7.1 |
 | R41 | "squash order follows the proof"'s `AUTH_SYS` half: `Squash = all`, alice granted `read-write`, everyone `read`. A write claiming alice's uid is refused | test row | §10 | T7.1 |
 | R42 | "admin needs proof"'s `AUTH_SYS` half: a grant names uid 1500 `admin`. Over `AUTH_SYS` as uid 1500, a read of another user's mode-0600 file is refused | test row | §10 | T7.1 |
 | R43 | "owner strings" at the service: a proven `chown` to `alice@corp.example` succeeds, and to `alice@other.example` is refused as unknown; a file owned by a deleted user has no owner spelling | test row | §10 | T7.2 |
-| R44 | "lookup cap": one address sends 101 distinct unknown uids in a minute. At most 100 directory queries go out; the rest are refused retryably, and none is mapped to anonymous | test row | §10 | T7.3 |
-| R45 | "`AUTH_SYS` from the directory": the `uidNumber` of a directory entry with no record makes the caller that entry's minted principal, not `authenticated` | test row | §10 | T7.3, T7.5 |
-| R46 | "mint from a claim, guarded": each of 10^4 uids the directory lacks acts as anonymous and writes nothing. 500 uids it holds, sent from 50 addresses at once, mint no more than the node cap a minute; the rest are refused retryably, never as anonymous. A renamed entry keeps its `PrincipalID`, with the new name, after the TTL. A disabled entry and a deleted entry are refused after the TTL | test row | §10 | T7.3, T7.5 |
-| R47 | "`ManageGIDs`": a user in 20 store groups calls over `AUTH_SYS`, and a file whose ACL grants only the 20th group is granted | test row | §10 | T7.4, T7.5 |
+| R44 | "lookup cap": one address sends 101 distinct unknown uids in a minute. At most 100 directory queries go out; the rest are refused retryably, and none is mapped to anonymous | test row | §10 | T7.4 |
+| R45 | "`AUTH_SYS` from the directory": the `uidNumber` of a directory entry with no record makes the caller that entry's minted principal, not `authenticated` | test row | §10 | T7.4, T7.6 |
+| R46 | "mint from a claim, guarded": each of 10^4 uids the directory lacks acts as anonymous and writes nothing. 500 uids it holds, sent from 50 addresses at once, mint no more than the node cap a minute; the rest are refused retryably, never as anonymous. A renamed entry keeps its `PrincipalID`, with the new name, after the TTL. A disabled entry and a deleted entry are refused after the TTL | test row | §10 | T7.4, T7.6 |
+| R47 | "`ManageGIDs`": a user in 20 store groups calls over `AUTH_SYS`, and a file whose ACL grants only the 20th group is granted | test row | §10 | T7.5, T7.6 |
 | R48 | RFC 21 "§8.1 privilege *(1 node)*"'s `AUTH_SYS` steps at the service: `Squash=root`, and a grant naming uid 1500 `admin`. As uid 1500, a `chown` of another user's file is not permitted, and a read of their mode-0600 file is refused; as root, the caller is squashed | test row | RFC 21 §13 | T7.1 |
 | R49 | Resolution's five steps run as one table-driven test over proof kind × squash × grant × no file spelling, with the `Claimed` kind included | test row | §10 (Unit) | T7.1 |
-| R50 | Of the Tier 2 rows above, "one uid, two proofs"' `AUTH_SYS` step, "client in the key", "root", "`AUTH_SYS` from the directory", "mint from a claim, guarded" and "`ManageGIDs`" run through the NFS adapter on the composed single-node harness | test row | §10 (tiers) | T7.5 |
+| R50 | Of the Tier 2 rows above, "one uid, two proofs"' `AUTH_SYS` step, "client in the key", "root", "`AUTH_SYS` from the directory", "mint from a claim, guarded" and "`ManageGIDs`" run through the NFS adapter on the composed single-node harness | test row | §10 (tiers) | T7.6 |
 
 **Not obligations of this epic:**
 - §3.2's machine name and stamp, which `Claims` cannot carry, and its refused credentials: E3's.
@@ -341,7 +346,7 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
     a directory principal already minted (one Kerberos signed in, say), so that its enabled state
     follows the directory (R21) and its `Fresh` is bounded by the answers it used (R23). Without this
     step, a user disabled in the directory would still be admitted over `AUTH_SYS`.
-  - `dirStep` reads the directory groups only under `ManageGIDs` (T7.4), since without it a claim's
+  - `dirStep` reads the directory groups only under `ManageGIDs` (T7.5), since without it a claim's
     groups are the claimed gids. A mint's own batch is `dirPrincipal`'s.
   - Prior art: none, beyond RFC 18 §5.5's guard 3.
 - **D9. `Find` of a uid or gid never asks the directory.** RFC 18 §4.3's directory lookup is for a
@@ -359,7 +364,7 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
   vector that changes without one.
   - No release has created a store yet. The krb spelling's linked SID was added to version 1 in the
     same way (#4807), with a `decision:` marker at `putLinked`.
-  - T7.4 appends a bool after `Version`, updates the export policy's golden vector in
+  - T7.5 appends a bool after `Version`, updates the export policy's golden vector in
     `codecs_test.go`, and leaves the same kind of `decision:` marker at `encodePolicy`: a policy
     written before the change fails to decode, closed. The marker is withdrawn once a release creates
     stores, after which the next field is a version 2 codec and a format bump.
@@ -369,49 +374,65 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
   - A row's file-operation half runs in `internal/vfs`, with the filesystem built over the real
     identity server, as its tests already do. A new claimed helper sits beside the proven `as`,
     which stays as it is.
-  - T7.5 covers only the Tier 2 rows where the adapter's address, status or credential plumbing can
+  - T7.6 covers only the Tier 2 rows where the adapter's address, status or credential plumbing can
     fail on its own (R50).
   - The Kerberos-over-NFS and NFSv4 halves are E13's and E16's (§1.2).
   - Prior art: RFC 18 §10's "Who stands in for what".
+- **D13. The `who` strings are identity's, in two schemes of their own.** RFC 21 §11.3 spells a
+  principal with no owner string by its SID at RFC 18 §4.5's domain, which the adapter can neither
+  read (RFC 20 §2.3) nor format, since `pkg/vfs` exports no SID codec.
+  - T7.3 adds `SchemeWho` and `SchemeWhoGroup` after `SchemeOwnerGroup`: `Spell` answers what the
+    owner scheme answers, else `S-…@domain`, else, for a principal no record holds, `S-1-0-0@domain`;
+    `Find` takes what the owner schemes take, plus `S-…@domain` by its SID, in users or in groups as
+    the scheme says, so RFC 18 §4.5's parsing keeps one copy.
+  - They are schemes of their own because RFC 18 §4.5 has `Spell` answer `ErrUnknownPrincipal` for
+    a principal with no owner spelling, which `owner` shows as `65534`, while `who` must spell it.
+  - E6 asked for them (its D4); this epic builds them, beside the owner schemes and their domain.
+    Changing them after E6's T6.2 lands rewrites its `Names`.
+  - Prior art: `nfsidmap` resolves an ACE's `who` through the same idmapper as `owner` (from
+    memory); no server found that spells a SID there.
+  - The RFC 18 §4.5 text goes in this epic's RFC pull request (§9, point 2), pending the user's
+    answer (§9, point 3).
 
 ## 5. Target tree
 
 ```text
 internal/identity/
-  claimed.go               T7.1  a claim mapped: uid, gid, root, anonymous, groups; T7.3 asks the directory and mints
+  claimed.go               T7.1  a claim mapped: uid, gid, root, anonymous, groups; T7.4 asks the directory and mints
   resolve.go               T7.1  the claimed branch of the five steps, its ponytail withdrawn, dirStep for a claimed
-                                 directory principal; T7.4 ManageGIDs' closure in place of the claimed gids
+                                 directory principal; T7.5 ManageGIDs' closure in place of the claimed gids
   claimed_test.go          T7.1  the five-step table with Claimed; the rows' identity halves
-  owner.go                 T7.2  the two owner schemes: parse, spell, find
+  owner.go                 T7.2  the two owner schemes: parse, spell, find; T7.3 the two who schemes
   names.go                 T7.2  deferred() serves them; identity_unmapped_total's owner label
   settings.go, server.go   T7.2  identity.nfs4_domain, its check, its default derived at Apply
   owner_test.go            T7.2  spellings, finds, the domain's default; FuzzOwnerString
   names_test.go            T7.2  TestDeferredSchemes's unknown scheme moved past SchemeOwnerGroup
-  claimcap.go              T7.3  the per-address lookup cap over the throttle's table, the per-node mint cap
-  dircache.go              T7.3  the uid and gid question labels
-  claimed_dir_test.go      T7.3  lookup cap, AUTH_SYS from the directory, mint from a claim, directory faults
+  claimcap.go              T7.4  the per-address lookup cap over the throttle's table, the per-node mint cap
+  dircache.go              T7.4  the uid and gid question labels
+  claimed_dir_test.go      T7.4  lookup cap, AUTH_SYS from the directory, mint from a claim, directory faults
 internal/identity/directory/
-  client.go, filter.go     T7.3  the ByUID and ByGID keys, filtering on uidNumber and gidNumber
+  client.go, filter.go     T7.4  the ByUID and ByGID keys, filtering on uidNumber and gidNumber
 pkg/identity/
-  names.go                 T7.2  SchemeOwnerGroup (D2)
+  names.go                 T7.2  SchemeOwnerGroup (D2); T7.3 SchemeWho, SchemeWhoGroup (D13)
   identity_test.go         T7.2  the Stored table gains it
-  identitytest/directorysuite.go, filter.go  T7.3  exact numeric queries, held to the real directory
-pkg/vfs/types.go           T7.2  the SchemeOwnerGroup alias
+  identitytest/directorysuite.go, filter.go  T7.4  exact numeric queries, held to the real directory
+pkg/vfs/types.go           T7.2  the SchemeOwnerGroup alias; T7.3 the SchemeWho and SchemeWhoGroup aliases
 pkg/metadata/entity/
-  control.go               T7.4  ExportPolicy.ManageGIDs, SharePolicy.ManageGIDs
+  control.go               T7.5  ExportPolicy.ManageGIDs, SharePolicy.ManageGIDs
 pkg/metadata/kvstore/
-  codecs.go, codecs_test.go     T7.4  the field and the golden vector (D11)
-  kvstoretest/controlplane.go   T7.4  the field round-trips, raises Version and reaches SharePolicy
-pkg/node/apiv1/exportpolicy.go, internal/node/api/res_export_policies.go  T7.4  manage_gids
+  codecs.go, codecs_test.go     T7.5  the field and the golden vector (D11)
+  kvstoretest/controlplane.go   T7.5  the field round-trips, raises Version and reaches SharePolicy
+pkg/node/apiv1/exportpolicy.go, internal/node/api/res_export_policies.go  T7.5  manage_gids
 internal/vfs/
-  claimed_test.go          T7.1  the rows' file-operation halves; T7.3 and T7.4 add theirs
+  claimed_test.go          T7.1  the rows' file-operation halves; T7.4 and T7.5 add theirs
 internal/node/
-  nfs_identity_test.go     T7.5  the AUTH_SYS rows through NFSv3 on nodetest
+  nfs_identity_test.go     T7.6  the AUTH_SYS rows through NFSv3 on nodetest
 docs/guide/identity.md     T7.2  identity.nfs4_domain
 docs/internals/rfcs/
   rfc-18-identity.md       T7.2  §2.2 and §4.1 gain SchemeOwnerGroup, §4.5 the scheme chosen by the adapter;
-                                 T7.4 the "deferred" notes of §3.2, §5.5, §6.3, §7.1 and §10 rewritten
-  rfc-16-metadata-store.md T7.4  ManageGIDs in §2.3's ExportPolicy and §3's SharePolicy
+                                 T7.3 §2.2, §4.1 and §4.5 gain the who schemes;
+                                 T7.5 the "deferred" notes of §3.2, §5.5, §6.3, §7.1 and §10 rewritten
+  rfc-16-metadata-store.md T7.5  ManageGIDs in §2.3's ExportPolicy and §3's SharePolicy
 ```
 
 ## 6. Subtasks
@@ -431,7 +452,7 @@ docs/internals/rfcs/
     - the primary gid, and each supplementary gid, to its holder, skipping any no principal holds,
       counted under `gid`.
 
-    It is unexported, and is consumed by `resolve.go`, T7.3 and T7.4.
+    It is unexported, and is consumed by `resolve.go`, T7.4 and T7.5.
   - `resolve.go`: the claimed branch through every step.
     - Squash comes first (R10), then collect (R8), then the grant, read for the squashed principal
       and unauthenticated; the flags make the caller privileged only as unsquashed root.
@@ -444,9 +465,10 @@ docs/internals/rfcs/
     proven `as`, whose comment about claims being refused is corrected.
 
   Consumed by:
-  - E3's `Security` stage and S3's loopback rows;
-  - every NFS handler epic's `AUTH_SYS` rows on `memory.New`;
-  - T7.3, T7.4 and T7.5.
+  - S3's loopback rows (E4's T4.7), E4's T4.10 and E5's T5.4 and T5.9, which resolve the
+    `Identity` E3's T3.1 builds;
+  - every other NFS epic's `AUTH_SYS` calls that reach admission on `memory.New`;
+  - T7.4, T7.5 and T7.6.
 - **Acceptance criteria:**
   - A claim of a stored user's uid resolves to that user. Its `Group` is the holder of its gid, and
     its groups are the mapped gids. A gid that no principal holds is in neither, and a file the
@@ -510,7 +532,8 @@ docs/internals/rfcs/
   - The RFC 18 §2.2, §4.1 and §4.5 text for it and for D1, in the RFC pull request (§9, point 2).
   - `FuzzOwnerString` in `internal/identity`, with its seeds.
 
-  Consumed by E5 (`owner` and `owner_group` on `GETATTR` and `SETATTR`) and E6 (`who`).
+  Consumed by T7.3, which spells and parses `who` on top of it, and E5's T5.4 and T5.5 (`owner`
+  and `owner_group` on `GETATTR` and `SETATTR`).
 - **Acceptance criteria:**
   - Where the domain is `corp.example`, `alice@corp.example` and `ALICE@CORP.EXAMPLE` both find
     alice. `alice@other.example` and `alice` are `ErrUnknownPrincipal`, counted under `owner`.
@@ -542,9 +565,42 @@ docs/internals/rfcs/
     constant; and a parsed name or number spells back to a string that parses to the same value.
   - No double but `kvtest.FaultKV` (kind 3).
 
-### T7.3 Claimed lookups and mints, under the guards
+### T7.3 The `who` schemes
 
-**Subtask T7.3 estimate: 4.5 man-days.**
+**Subtask T7.3 estimate: 1.5 man-days.**
+
+- **Track:** B. **Depends on:** T7.2.
+- **Covers:** R34, R35, R51, R52.
+- **Deliverables:**
+  - `pkg/identity`'s `SchemeWho` and `SchemeWhoGroup`, appended after `SchemeOwnerGroup`, and their
+    aliases in `pkg/vfs/types.go`; the `Stored` table and `TestDeferredSchemes` follow.
+  - `owner.go`: `Spell` of either `who` scheme, first as the owner scheme, then by the principal's
+    SID at the domain, then the null SID for a principal no record holds; `Find` of either, the owner
+    schemes' rules for a name or a decimal, and a well-formed `S-…@domain` through the SID index, in
+    users or groups as the scheme says (D13).
+  - `FuzzOwnerString`'s parser and seeds extended to `S-…@domain`.
+  - The RFC 18 §2.2, §4.1 and §4.5 text for the two schemes, in the RFC pull request (§9, point 2).
+
+  Consumed by E6's T6.2 (`ops/v4`'s `Names`, for every `who` spelled by name or by SID).
+- **Acceptance criteria:**
+  - A user alice spells `alice@corp.example`; a principal minted without a name its number; a
+    well-known principal with no number `S-1-3-4@corp.example`; a deleted one `S-1-0-0@corp.example`.
+  - `S-1-5-21-…-1104@corp.example` finds the principal holding that SID, in the scheme of its kind,
+    and a SID no principal holds is `ErrUnknownPrincipal`; a malformed SID is read as a name.
+  - A store error on the SID index passes through as itself.
+- **Tests:**
+  - In `internal/identity`, at `Spell` and `Find`, one table for each, beside T7.2's (catches a
+    principal with a SID left unspelled, a deleted principal answered an error, a SID resolved in
+    the wrong namespace; R51, R52).
+  - `kvtest.FaultKV` failing the SID index (catches an outage answered `ErrUnknownPrincipal`, R34).
+  - `FuzzOwnerString` with the new seeds (R35).
+  - No double but `kvtest.FaultKV` (kind 3).
+- **Rules:** rule 9: D13 needs no marker, since the amended RFC states the rule; rule 12: the
+  schemes land with E6's T6.2 named as their consumer.
+
+### T7.4 Claimed lookups and mints, under the guards
+
+**Subtask T7.4 estimate: 4.5 man-days.**
 
 - **Track:** B. **Depends on:** T7.1.
 - **Covers:** R3, R16–R24, R37, R38, R44–R46, R25.
@@ -563,7 +619,7 @@ docs/internals/rfcs/
     counted under `lookup_cap`, with RFC 18 §7.3's `ponytail:` on the constants and this epic's
     markers.
 
-  Consumed by T7.4 and T7.5.
+  Consumed by T7.5 and T7.6.
 - **Acceptance criteria:**
   - A `uidNumber` the directory holds and the store does not makes the caller that entry's minted
     principal, unauthenticated. A `uidNumber` the directory does not hold acts as anonymous and
@@ -603,11 +659,11 @@ docs/internals/rfcs/
   - Doubles: `identitytest`'s directory (kind 2, held to `directorysuite`) and its fault wrapper
     (kind 3); the injected clock (kind 1).
 
-### T7.4 `ManageGIDs`
+### T7.5 `ManageGIDs`
 
-**Subtask T7.4 estimate: 2.5 man-days.**
+**Subtask T7.5 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** T7.3.
+- **Track:** B. **Depends on:** T7.4.
 - **Covers:** R26–R29, R47.
 - **Deliverables:**
   - `entity.ExportPolicy.ManageGIDs` and `SharePolicy.ManageGIDs`, copied by
@@ -624,7 +680,7 @@ docs/internals/rfcs/
   - The RFC 16 §2.3 and §3 fields, and the RFC 18 §3.2, §5.5, §6.3, §7.1 and §10 sentences that call
     `ManageGIDs` deferred, rewritten in the RFC pull request (§9, point 2).
 
-  Consumed by T7.5, and by operators through the API.
+  Consumed by T7.6, and by operators through the API.
 - **Acceptance criteria:**
   - A new policy has `ManageGIDs` off, and a claim's groups are its gids. Turned on, the same call's
     groups are the user's closure, and the claimed gids are ignored.
@@ -643,15 +699,16 @@ docs/internals/rfcs/
     R26).
   - In `internal/node/api`, a `PUT` then a `GET` of `manage_gids` (catches an API that drops it).
 
-### T7.5 The `AUTH_SYS` rows through NFSv3 on the composed node
+### T7.6 The `AUTH_SYS` rows through NFSv3 on the composed node
 
-**Subtask T7.5 estimate: 2 man-days.**
+**Subtask T7.6 estimate: 2 man-days.**
 
-- **Track:** B. **Depends on:** T7.4, S3, S5.
+- **Track:** B. **Depends on:** T7.5, S3, S5, T3.2.
 - **Covers:** R37–R39, R45–R47, R50.
 - **Deliverables:** `internal/node/nfs_identity_test.go`, on `nodetest`, with `identitytest`'s
-  directory as the installation's directory (§9, point 6). It drives E3's scripted client over
-  `AUTH_SYS` from `127.0.0.1`, `127.0.0.2` and `127.0.0.3`: `MNT`, then E4's `GETATTR`, `SETATTR`,
+  directory as the installation's directory (§9, point 6). It drives E3's scripted client (T3.2:
+  `nfsclient.DialFrom` from `127.0.0.1`, `127.0.0.2` and `127.0.0.3`, then `Do` with
+  `nfsclient.AuthSys`, the arguments and replies coded by E4's generated structs): `MNT`, then E4's `GETATTR`, `SETATTR`,
   `CREATE`, `READ` and `WRITE`. No later subtask consumes it: it ends the epic.
 - **Acceptance criteria:** each row's `AUTH_SYS` steps get the NFSv3 status that E4's table gives
   the service's answer:
@@ -676,50 +733,58 @@ flowchart TD
   T7_1["T7.1 Claimed callers resolved"]
   T7_2["T7.2 The owner schemes"]
   T7_1 --> C1(["after T7.1: AUTH_SYS callers resolve; S3's rows can pass"]):::sync
-  T7_2 --> C2(["after T7.2: owner strings for E5 and E6"]):::sync
-  T7_1 --> T7_3["T7.3 Claimed lookups and mints"]
-  T7_3 --> T7_4["T7.4 ManageGIDs"]
-  T7_4 --> C3(["after T7.4: every row passes at the service"]):::sync
-  S3(["S3 an NFSv3 mount over loopback"]):::sync
+  T7_2 --> C2(["after T7.2: owner strings for E5"]):::sync
+  T7_2 --> T7_3["T7.3 The who schemes"]
+  T7_3 --> C4(["after T7.3: who strings for E6"]):::sync
+  T7_1 --> T7_4["T7.4 Claimed lookups and mints"]
+  T7_4 --> T7_5["T7.5 ManageGIDs"]
+  T7_5 --> C3(["after T7.5: every row passes at the service"]):::sync
+  S3(["S3 an NFSv3 mount over loopback: T4.7"]):::sync
+  T3_2(["E3's T3.2 scripted client"]):::sync
   S5(["S5 composed in-process node"]):::sync
-  T7_4 & S3 & S5 --> T7_5["T7.5 AUTH_SYS rows through NFSv3"]
+  T7_5 & S3 & S5 & T3_2 --> T7_6["T7.6 AUTH_SYS rows through NFSv3"]
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T7.1 and T7.2 block other epics, so they go first: T7.1 blocks S3 and every `AUTH_SYS` handler test
-on `memory.New`, and T7.2 blocks E5's and E6's owner strings. T7.1 goes before T7.2 because S3 is on
-the first mount's critical path. T7.3 and T7.4 follow T7.1's path, and T7.5 waits for S3 and S5.
-Checkpoints fall after T7.1, after T7.2, and after T7.4.
+T7.1, T7.2 and T7.3 block other epics, so they go first: T7.1 blocks S3 and every `AUTH_SYS` test
+that reaches admission on `memory.New`, T7.2 blocks E5's owner strings, and T7.3 E6's `who`. T7.1
+goes before T7.2 because S3 is on the first mount's critical path. T7.4 and T7.5 follow T7.1's path,
+and T7.6 waits for S3 and S5. Checkpoints fall after T7.1, after T7.2, after T7.3, and after T7.5.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T7.1 | 4.5 | — | `AUTH_SYS` resolution with its rows at the service: what S3 needs |
-| 2 | T7.2 | 3 | — | the owner schemes E5 and E6 pin |
-| 3 | T7.3 | 4.5 | PR 1 | the directory's two questions and the mints they lead to, under both caps |
-| 4 | T7.4 | 2.5 | PR 3 | `ManageGIDs`, from the record through the API to resolution |
-| 5 | T7.5 | 2 | PR 4, S3, S5 | the rows through NFSv3, once a node serves it |
+| 2 | T7.2, T7.3 | 4.5 | — | the owner and `who` schemes E5 and E6 pin, with one parser |
+| 3 | T7.4 | 4.5 | PR 1 | the directory's two questions and the mints they lead to, under both caps |
+| 4 | T7.5 | 2.5 | PR 3 | `ManageGIDs`, from the record through the API to resolution |
+| 5 | T7.6 | 2 | PR 4, S3, S5 | the rows through NFSv3, once a node serves it |
 
 A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can be open at once. The
-RFC text of T7.2 and T7.4 goes in one RFC pull request on `develop` (§9, point 2).
+RFC text of T7.2, T7.3 and T7.5 goes in one RFC pull request on `develop` (§9, point 2).
 
 ## 9. Open points
 
 1. **S3 and E5 need T7.1 and T7.2 before track B reaches this epic.**
    - Until T7.1 lands, `memory.New`'s identity server refuses a `Claimed` caller `ErrAccess`. So
-     S3's `AUTH_SYS` rows fail before then, as does every handler test of E4, E5, E8, E9 and E11
-     that calls as an `AUTH_SYS` user.
-   - E5's `fattr4` owners need T7.2's schemes. E5 runs on track C from S2, while track B starts this
-     epic after E4.
+     S3's `AUTH_SYS` rows fail before then (E4's T4.7 and T4.10's loopback row, which name T7.1 in
+     their dependencies), as does E5's T5.9 over loopback, T5.4's `owner` on an `AUTH_SYS` call, and
+     every test of E8, E9 and E11 whose `AUTH_SYS` call reaches admission. E3's rows that need a call
+     admitted send `AUTH_NONE` until then.
+   - E5's `fattr4` owners need T7.2's schemes (E5's T5.4 and T5.5). E5 runs on track C from S2,
+     while track B starts this epic after E4. E6's T6.2 needs T7.3, which track B reaches well before
+     track C reaches E6.
    - Neither T7.1 nor T7.2 needs anything from S2 or E4. The recommendation is that the team lands
      both at S2, or that track B takes T7.1 before E4's loopback rows and track C takes T7.2 before
      E5's attributes, rather than running E4 first in full as the RFC 21 implementation plan's D12
      orders.
-   - Pending the user's answer. The epic's figure, 5 subtasks and 16.5 man-days, also differs from
-     the plan's 5 and 16; the plan is changed only if the user asks.
+   - Pending the user's answer. The epic's figure, 6 subtasks and 18 man-days with T7.3, also
+     differs from the plan's 5 and 16; the plan is changed only if the user asks.
 2. **One RFC pull request on `develop`.** It carries:
    - D2's `SchemeOwnerGroup`, in RFC 18 §2.2 and §4.1;
+   - D13's `SchemeWho` and `SchemeWhoGroup`, in RFC 18 §2.2, §4.1 and §4.5, which E6's D4 asked
+     for; no other epic's pull request touches RFC 18;
    - D1's sentence in RFC 18 §4.5;
    - `ManageGIDs` in RFC 16 §2.3's `ExportPolicy` and §3's `SharePolicy`;
    - the rewriting of RFC 18 §3.2, §5.5, §6.3, §7.1 and §10's notes that call `ManageGIDs` deferred.
@@ -732,24 +797,29 @@ RFC text of T7.2 and T7.4 goes in one RFC pull request on `develop` (§9, point 
      every installation with private groups, this finds the user alice for an `owner_group` of
      `alice@domain`.
    - (c) `Spelling` gains a kind field: a change to RFC 18 §4.1's type that every scheme would carry.
+   - The same choice holds for D13's `who` schemes: under (b) or (c) they become one scheme as well.
 4. **The export policy's encoding** (D11), pending the user's answer.
    - (a), recommended: the field appended to version 1 in place, with the golden vector updated and
      a `decision:` marker, as #4807 did. Every store written before the change refuses its policies,
      and no release has created one.
    - (b) a version 2 codec, decoding version 1 as `ManageGIDs` off, with a store format bump through
      RFC 16 §4.6's gate. About half a man-day more, and the first format bump on the branch.
-5. **`dfsctl`'s flag.** Whichever lands second of T7.4 and the RFC 23 implementation plan's epic 6
+5. **`dfsctl`'s flag.** Whichever lands second of T7.5 and the RFC 23 implementation plan's epic 6
    adds it. If epic 6 lands second, its `share export-policy` command is built over the API spec,
    which by then carries `manage_gids`.
-6. **Assumed of the epics being broken down in parallel:**
-   - E3's `Security` stage builds a `Claimed` `Identity` carrying the credential's uid, gid and gids,
-     with the source address in `Client`, and an `AUTH_NONE` one as `None` (RFC 21 §11.1). Its
-     scripted client can bind a loopback source address of its choice: the whole of 127/8 routes on
-     Linux, the host the e2e and nodetest runs use.
-   - E4 and E5 answer `ErrUnavailable` as `NFS3ERR_JUKEBOX` and `NFS4ERR_DELAY`, and E4 maps
-     `ErrUnknownPrincipal` from a `sattr3` to `NFS3ERR_INVAL`.
-   - E5 and E6 ask `SchemeOwner` or `SchemeOwnerGroup` on a proven call, and the uid or gid scheme
-     on a claimed one (D1). They show `ErrUnknownPrincipal` as `nobody@domain` or `65534`.
-   - T7.5 assumes `nodetest` can take `identitytest`'s directory as the installation's directory
-     record. If it cannot when S5 holds, T7.5's directory rows run in `integration/ad-dc` against
+6. **What the other epics give this one, as their documents state it:**
+   - E3's T3.1 builds, at route (E3 has no `Security` stage for `AUTH_SYS`, its D1), a `Claimed`
+     `Identity` carrying the credential's uid, gid and gids as `Claims`, with the source address in
+     `Identity.Client`, and an `AUTH_NONE` one as `None` (RFC 21 §11.1). E3's T3.2 gives the
+     scripted client `nfsclient.DialFrom`, which binds a loopback source address: the whole of 127/8
+     routes on Linux, the host the e2e and nodetest runs use.
+   - E4 maps `ErrUnknownPrincipal` from a `sattr3` to `NFS3ERR_INVAL` (its R28). `ErrUnavailable`
+     off a read, which this epic's caps and store errors answer, has no row in RFC 21 §11.5; E4's
+     RFC 21 pull request proposes `NFS3ERR_JUKEBOX` and `NFS4ERR_DELAY` for it (E4 §9), and until
+     it is agreed T7.6's cap step expects the row's status, not a fault.
+   - E5's D4 and E6's D3 ask `SchemeOwner` or `SchemeOwnerGroup`, or `SchemeWho` or
+     `SchemeWhoGroup`, on a proven call, and the uid or gid scheme on a claimed one (D1). E5 shows
+     `ErrUnknownPrincipal` as `65534`.
+   - T7.6 assumes `nodetest` can take `identitytest`'s directory as the installation's directory
+     record. If it cannot when S5 holds, T7.6's directory rows run in `integration/ad-dc` against
      the real directory instead, and the rest stay on `nodetest`.
