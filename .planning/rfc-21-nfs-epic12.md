@@ -24,9 +24,10 @@ pieces of five epics, each named by id where a subtask takes it (§9, point 5): 
 and saved filehandles (T5.1), `stateid.go` (T5.5), `change_info4` from a `WCC` (T5.6), the `READ`
 row's `Bound` hook, its short-read rows and `vfstest.Faults`' `Tear` (T5.8), and its one
 not-supported handler (T5.8, E5's D13); **E4**'s `Attach` for a reply's data segment (T4.2);
-**E9**'s stateids, which extend `stateid.go` to open, lock and delegation stateids, and its
-`CLOSE`; **E8**'s `SEQUENCE`, which resolves `r.Call.Session`, and its session registry, which
-holds each session's fore-channel slot count; **E3**'s scripted client (T3.2) and **E7**'s
+**E9**'s stateids, which extend `stateid.go` to open, lock and delegation stateids (T9.3, T9.9),
+and its `CLOSE` (T9.6); **E8**'s session registry, which holds each session's fore-channel slot
+count, `Session.Fore.Slots` (T8.4), its `SEQUENCE`, whose `Route` resolves `r.Call.Session` (T8.5),
+and A1's runner change with the session's `MaxReply` (T8.7); **E3**'s scripted client (T3.2) and **E7**'s
 resolution of a `Claimed` caller (T7.1), for the loopback rows, which also need **S4**.
 **Blocks:** E16, which runs this epic's rows on the composed node, the steps that need a clone
 the engine really runs among them, and RFC 21 §13's "§9.3 NFSv4.2" row with xfstests.
@@ -72,11 +73,11 @@ its call sites in the operations RFC 21 §9.3 lists; the hold a held call carrie
   `XAWRITE` and `XALIST` at minor version 2: E5 (its T5.4 and T5.5). `mode_umask`: E6.
 - The layout and device operations' `NFS4ERR_NOTSUPP` (N20): E5. `CB_OFFLOAD`, never sent, has
   nothing to build.
-- Open, lock and delegation stateids, their principal check and drain roles per request: E9 and
-  E10. This epic's operations take their stateids through `stateid.go`, which answers the two
+- Open, lock and delegation stateids, their principal check and drain roles per request: E9 (T9.3,
+  T9.9) and E10 (T10.4). This epic's operations take their stateids through `stateid.go`, which answers the two
   special stateids from E5 on and the rest once E9 extends it.
 - A session's slot count, `SEQUENCE`, and A1's runner change through which a `READ_PLUS`'s hook
-  reads the session's budget: E8.
+  reads the session's budget: E8 (T8.4, T8.5, T8.7).
 - NFSv3's and NFSv4.0's hold, the request's remaining deadline: `core` already passes it
   (`internal/adapter/core/middleware.go`'s `withHold`); this epic only lowers it to zero in a
   session past its budget.
@@ -85,7 +86,8 @@ its call sites in the operations RFC 21 §9.3 lists; the hold a held call carrie
   it, a `COPY` of 4 GiB against a continuous writer, a Lost run carried to the destination, a
   crash mid-clone, Linux `cp` falling back after `NFS4ERR_XDEV`, an NFSv3 write held until the
   clone ends; and N22's held-I/O half. `memory.New`'s content completes a clone at once and holds
-  nothing behind it, so these run on the composed node: E16 (§9, point 3, a proposed edit).
+  nothing behind it, so these run on the composed node: E16, its T16.5 for the node's steps and
+  N22's held I/O, its T16.7 for Linux `cp` (§9, point 3, a proposed edit).
   RFC 21 §13's "§9.3 NFSv4.2" row: E16, its xfstests steps in the plan's deferral ledger, row
   "RFC 21 §13's rows no suite runs".
 - `CLONE` across shards (`ErrCross` of `OtherShard`): a (cluster) part, in the plan's deferral
@@ -118,6 +120,7 @@ its call sites in the operations RFC 21 §9.3 lists; the hold a held call carrie
 - **S2**, NFS's test foundations in CI, after E2 and S0: what this epic starts from.
 - **S4**, an NFSv4.1 session over loopback, after E3, E5 and E8.
 - **S5**, the composed in-process node, on which E16 runs the rows this epic cannot.
+- **E11**, NLM, NSM and the datagram path, whose amendments share batch two's RFC pull requests.
 
 ## 2. How the general rules apply
 
@@ -443,9 +446,8 @@ pkg/engine/
 
 **Subtask T12.4 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T12.1, T12.3, T5.5, T5.6, T5.8. Also E8's `SEQUENCE` and session
-  registry, which resolve `r.Call.Session` to a session with its fore-channel slot count, and
-  E9's `CLOSE` (§9, point 5).
+- **Track:** C. **Depends on:** T12.1, T12.3, T5.5, T5.6, T5.8, T8.4, T8.5, T9.6. T8.4 and T8.5
+  resolve `r.Call.Session` to a session with its fore-channel slot count; T9.6 is `CLOSE`.
 - **Covers:** R20, R21, R22, R23.
 - **Deliverables:** in `protocol/sessions.go`, on E8's session, a count of held calls and
   ```go
@@ -456,8 +458,10 @@ pkg/engine/
   ```
   `ops/v4/hold.go`: `held(ctx, r) (context.Context, func())`, which in a session takes a place and
   keeps `core`'s hold, or past the places returns `vfs.WithHold(ctx, 0)`, and outside a session
-  returns ctx unchanged, with D3's `ponytail:`; its calls in `write.go`, `setattr.go` (a `size`
-  set only), `remove.go`, `close.go`, `deallocate.go`, `copy.go` and `clone.go`. `vfstest.Faults`'
+  returns ctx unchanged, with D3's `ponytail:`; its calls in `deallocate.go`, `copy.go` and
+  `clone.go`, and in other epics' handlers once they have landed, the edit this subtask's alone:
+  E5's `write.go` (T5.8), `setattr.go` for a `size` set only (T5.5) and `remove.go` (T5.6), and E9's
+  `close.go` (T9.6). Neither E5 nor E9 adds a hold call of its own. `vfstest.Faults`'
   `Hold` reports the hold its held call's context carried, `func (h *Hold) Bound() (max
   time.Duration, ok bool)`, read from `vfs.Hold` as the call arrives. `core`'s `withHold` `decision:` rewritten: NFSv4.1's bound is lowered per call by the NFS
   adapter. Consumed by T12.8, and by the operations above.
@@ -488,7 +492,7 @@ pkg/engine/
 
 **Subtask T12.5 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T12.1, T5.5, T5.8, T4.2.
+- **Track:** C. **Depends on:** T12.1, T5.5, T5.8, T4.2, T8.7.
 - **Covers:** R4, R5, R6, R7, R28, R29, R30.
 - **Deliverables:** `read_plus.go`: E5's `READ` hook lowered by one segment's header (D5); the
   segment from `Seek` and `Read` (D5), the data in a segment `Attach` lends; `ErrPastEnd` answered
@@ -572,8 +576,8 @@ pkg/engine/
 
 **Subtask T12.8 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T12.1, T12.3, T12.4, T12.5, T12.6, T12.7, T3.2, T7.1. Also S4 and
-  A1's runner change in E8.
+- **Track:** C. **Depends on:** T12.1, T12.3, T12.4, T12.5, T12.6, T12.7, T3.2, T7.1, T8.7. Also
+  S4.
 - **Covers:** R15, R16, R28, R32, R33, R34, R35.
 - **Deliverables:** `ops/v4/loopback42_test.go`, through `core` over loopback on `memory.New`,
   wrapped by `vfstest.Faults` where a step injects, sent by E3's scripted client in an NFSv4.2
@@ -607,8 +611,8 @@ flowchart TD
   S2(["S2 NFS test foundations in CI"]):::sync
   E5(["E5: T5.1 filehandles, T5.5 stateid.go, T5.6 change_info4, T5.8 READ hook, Tear, not-supported handler"]):::sync
   E4(["E4: T4.2 Attach"]):::sync
-  E8(["E8: SEQUENCE, session registry, A1; S4"]):::sync
-  E9(["E9: stateids, CLOSE"]):::sync
+  E8(["E8: T8.4 session registry, T8.5 SEQUENCE, T8.7 A1; S4"]):::sync
+  E9(["E9: T9.3 and T9.9 stateids, T9.6 CLOSE"]):::sync
   E3(["E3: T3.2 scripted client; E7: T7.1"]):::sync
   E5 --> T12_1["T12.1 SEEK and DEALLOCATE"]
   S2 --> T12_2["T12.2 A copy's verifier from the service"]
@@ -618,6 +622,7 @@ flowchart TD
   E8 -. "session, slot count" .-> T12_4
   E9 -. "CLOSE" .-> T12_4
   T12_1 --> T12_5["T12.5 READ_PLUS"]
+  E8 -. "A1, MaxReply" .-> T12_5
   E4 --> T12_5
   E5 --> T12_6["T12.6 Extended attributes"]
   E5 --> T12_7["T12.7 Not-supported set, offload"]
@@ -645,8 +650,8 @@ on `memory.New` through `nfsharness`; after T12.8, E16 can rerun the rows on the
 | --- | --- | --- | --- | --- |
 | 1 | T12.1 | 2 | E5's T5.1 and T5.5 | `SEEK` and `DEALLOCATE`, the hole operations the rest builds on |
 | 2 | T12.2 | 1.75 | the user's answer on §9, point 1 | a service and engine change, reviewed by their owners apart from the adapter |
-| 3 | T12.3, T12.4 | 5.5 | PRs 1 and 2, E5's T5.6 and T5.8, E8's session registry, E9's `CLOSE` | copy and clone, then the budget that bounds what waits behind them |
-| 4 | T12.5, T12.6, T12.7 | 6 | PR 1, E4's T4.2 | `READ_PLUS`, the xattrs and the not-supported rows: the rest of the operation set |
+| 3 | T12.3, T12.4 | 5.5 | PRs 1 and 2, E5's T5.6 and T5.8, E8's T8.4 and T8.5, E9's T9.6 | copy and clone, then the budget that bounds what waits behind them |
+| 4 | T12.5, T12.6, T12.7 | 6 | PR 1, E4's T4.2, E8's T8.7 | `READ_PLUS`, the xattrs and the not-supported rows: the rest of the operation set |
 | 5 | T12.8 | 2.5 | PRs 3 and 4, S4, E3's T3.2, E7's T7.1 | every row over loopback |
 
 A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can be open at once,
@@ -669,7 +674,7 @@ and PR 4 beside PR 3.
    `NFS4ERR_NOENT` and `ErrInvalid` `NFS4ERR_INVAL` for every operation, while RFC 8276 answers an
    absent xattr `NFS4ERR_NOXATTR` and a value too large `NFS4ERR_XATTR2BIG` (from memory). Options:
    (a) as D8, rows naming the xattr operations, with an RFC 21 §11.5 amendment adding the cells,
-   carried by this document's pull request; (b) keep §11.5 as written, so Linux's `getfattr` of an
+   carried by batch two's one RFC 21 pull request, opened with E8's document pull request; (b) keep §11.5 as written, so Linux's `getfattr` of an
    absent name reads `ENOENT` rather than `ENODATA` (from memory), which breaks tools that test for
    `ENODATA`. (a) is recommended.
 3. **The running-clone steps on the composed node, proposed as an edit to the plan in this
@@ -680,19 +685,23 @@ and PR 4 beside PR 3.
    move to E16, on the composed node, and this epic runs the adapter's half (R32, R33); (b) this
    epic builds them over a composed service of its own, `internal/vfs` over the engine, which an
    adapter test cannot import, so that would be a test package outside the adapter, about 2
-   man-days more and a second copy of what S5 builds. (a) is recommended.
+   man-days more and a second copy of what S5 builds. (a) is recommended, and E16's document
+   takes the steps: its R61 and R63 (the node's steps, the NFSv4.1 hold budget) and R64 (N22's
+   held I/O) in T16.5, its R62 (Linux `cp` after `NFS4ERR_XDEV`) in T16.7; R41 there already holds
+   the NFSv3 hold step.
 4. **An xattr's stored name (D7), pending the user's answer.** RFC 21 §9.3 has NFS reach the records
    SMB's extended attributes reach. Options: (a) as D7, the wire name stored unchanged, as SMB
    stores its EA name, so `user.foo` on a Linux client and `foo` over SMB are one record; (b) a
    `user.` prefix added by the adapter, leaving room for other namespaces in the store, so SMB
    would have to add the same prefix, an RFC 22 change. (a) is recommended: RFC 7 §2.7's store
    holds no namespace, and RFC 21 §8.2 serves no other.
-5. **What this epic takes from the epics broken down beside it, assumed from the plan.** E8: a
-   session reached from `r.Call.Session` through its registry in `protocol/sessions.go`, holding
-   its granted fore-channel slot count, on which T12.4 adds its count and `Hold`; `SEQUENCE` setting
-   `protocol.State`'s `MaxReply`; A1's runner change; S4. E9: `stateid.go` extended to open, lock
-   and delegation stateids, which this epic's handlers call unchanged, and `close.go`, which T12.4
-   edits. If E9's `CLOSE` lands after T12.4, E9 calls `held` there itself. E5, from its document:
+5. **What this epic takes from other epics, settled with their documents.** E8: T8.4's
+   `protocol.Session`, reached from `r.Call.Session` (set by T8.5's `Route`) through `Sessions.Get`,
+   holding its granted fore-channel slot count `Fore.Slots`, on which T12.4 adds its count and
+   `Hold`; T8.7's `SEQUENCE` setting `protocol.State`'s `MaxReply` and A1's runner change; S4 (T8.8).
+   E9: `stateid.go` extended to open, lock and delegation stateids (T9.3, T9.9), which this epic's
+   handlers call unchanged, and T9.6's `close.go`, which T12.4 edits after T9.6 lands; E9 adds no
+   hold call of its own. E5, from its document:
    T5.1, T5.5, T5.6 and T5.8, including `Tear` and the not-supported handler, and its I/O rows of
    `ErrLocked` and `ErrShareViolation`, to which T12.1, T12.3 and T12.5 add their operations. E4:
    T4.2's `Attach`, for `READ_PLUS`'s data inside an array of unions; if the generator's segment
@@ -701,3 +710,8 @@ and PR 4 beside PR 3.
    for the verifier (T12.2, 1.75), counted no edit of other epics' handlers for the budget, and
    priced the xattrs and the not-supported rows lightly; the loopback rows are as the plan had
    them. With §9 point 1's (b), the figure is 16.
+7. **Which pull request carries which RFC amendment.** Point 1's (a), RFC 17 §3.0's `CopyResult`
+   and `Copy` with RFC 8 §12.1, goes in batch two's one RFC 17 pull request, with E9's D1, E10's Q1
+   and E11's Q1, opened before E9's PR 1; T12.2 waits for it. Point 2's §11.5 cells, and point 1's
+   §9.3 text if (b) is chosen, go in batch two's one RFC 21 pull request. Point 3's edit is to the
+   RFC 21 implementation plan, not an RFC.
