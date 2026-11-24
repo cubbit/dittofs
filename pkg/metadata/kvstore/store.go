@@ -18,7 +18,10 @@ var (
 	ErrNotInitialised = errors.New("kvstore: store not initialised")
 	ErrInitialised    = errors.New("kvstore: store already initialised")
 	ErrFormat         = errors.New("kvstore: store format not supported")
-	ErrForeignStore   = errors.New("kvstore: store holds a foreign backend's keys")
+	// ErrFormatRecord is a format record that does not decode: a damaged
+	// store, not one a newer binary reads, so it is not ErrFormat.
+	ErrFormatRecord = errors.New("kvstore: the store's format record does not decode")
+	ErrForeignStore = errors.New("kvstore: store holds a foreign backend's keys")
 	// ErrV1Store is the ErrForeignStore whose first key is one v1's Badger
 	// store wrote; a refusal that is ErrV1Store is ErrForeignStore too.
 	ErrV1Store = errors.New("kvstore: store holds v1's keys")
@@ -165,8 +168,8 @@ func refuseForeign(r kv.Reader) error {
 }
 
 // Open reads the format record before any other key and refuses, with
-// ErrFormat, a store whose record does not decode or whose format or fold
-// rules this binary does not implement. With no format
+// ErrFormatRecord, a store whose record does not decode and, with ErrFormat,
+// one whose format or fold rules this binary does not implement. With no format
 // record it answers ErrForeignStore over a store holding any key but a clock
 // ceiling, and ErrNotInitialised otherwise. It never rewrites the record: a
 // store's format is raised only by the control plane's gate, so an older
@@ -185,7 +188,7 @@ func Open(ctx context.Context, db kv.KV) (*Store, error) {
 			return err
 		}
 		if f, err = decodeFormat(b); err != nil {
-			return fmt.Errorf("%w: the format record does not decode: %w", ErrFormat, err)
+			return fmt.Errorf("%w: %w", ErrFormatRecord, err)
 		}
 		return nil
 	})

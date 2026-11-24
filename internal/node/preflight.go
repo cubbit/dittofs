@@ -4,8 +4,8 @@ package node
 // storage names what it found instead of creating anything. decide turns the
 // facts the probes gathered — the v1 layouts, the store, each journal device
 // — into that one verdict, and nothing under the node's storage is opened,
-// created or changed to gather them: a store with no directory arrives
-// already opened by its host, and is only read.
+// created or changed to gather them: a store with no directory is opened by
+// its host's opener, once the local refusals have passed, and is only read.
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/journal"
@@ -68,8 +69,8 @@ var (
 	errNoClock = errors.New("the start check's clock is missing")
 	// errNoDevice answers a start whose bootstrap names no journal device.
 	errNoDevice  = errors.New("no journal device: the bootstrap names none, and a node keeps its journals on a device of its own")
-	errNoStore   = errors.New("the store is not set: the start check takes its directory or its opened KV")
-	errTwoStores = errors.New("the store is set twice: the start check takes its directory or its opened KV, not both")
+	errNoStore   = errors.New("the store is not set: the start check takes its directory or its opener")
+	errTwoStores = errors.New("the store is set twice: the start check takes its directory or its opener, not both")
 )
 
 // refuseV1Found is the one sentence a start or an initialisation refuses v1 data
@@ -113,13 +114,29 @@ func probeV1State(root string) string {
 	return ""
 }
 
+// probeV1 returns the first pre-journal (v1) layout probeV1State finds at a
+// device or at v1Root, "" for none. An empty root is skipped: it would read
+// the working directory.
+func probeV1(v1Root string, devices []string) string {
+	for _, root := range append(slices.Clone(devices), v1Root) {
+		if root == "" {
+			continue
+		}
+		if p := probeV1State(root); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
 // probeStore stats the store directory: present, absent, unidentifiable.
 // fs.ErrNotExist or an empty directory means absent; a directory holding
 // MANIFEST means present; any other directory or stat error means
 // unidentifiable, returned with the error that says why.
 //
-// ponytail: a MANIFEST with no format record is left to the store's own
-// Open and Init to refuse. Upgrade to a read-only open, once the backend
+// ponytail: a MANIFEST with no format record, or with one that does not
+// decode, is left to the store's own Open and Init to refuse, as probeKV
+// refuses it over a store with no directory. Upgrade to a read-only open, once the backend
 // tolerates one after an unclean close.
 //
 // decision: a directory whose only entry is a volume's own lost+found is the
@@ -161,27 +178,47 @@ func probeStore(storeDir string) (storeState, error) {
 	return storeUnidentifiable, errors.New("no Badger MANIFEST")
 }
 
+// storeReadTimeout bounds the start check's read of a store with no
+// directory, as dfs bounds the open before it: a cluster lost between the
+// two would otherwise leave the start waiting for it until a signal.
+const storeReadTimeout = 30 * time.Second
+
 // probeKV classifies kvstore.Open's answer over db, a store with no
-// directory that its host opened: a store present; ErrNotInitialised absent;
-// ErrForeignStore unidentifiable, returned with that error. Any other error,
-// a transport's or the backend's limits', is no verdict on the store: it is
-// returned as failed, with the state unidentifiable, and refuses the start as
-// it stands.
+// directory that its host opened, read within limit on clock: a store present;
+// ErrNotInitialised absent; ErrForeignStore and ErrFormatRecord
+// unidentifiable, returned with that error. Any other error, a transport's,
+// a read that outlived limit, or the backend's limits', is no verdict on the
+// store: it is returned as failed, with the state unidentifiable, and
+// refuses the start as it stands.
 //
 // decision: a store whose format record this binary does not read, ErrFormat,
 // is present, as a Badger directory holding the same store is to probeStore:
 // the check passes and the node's own open refuses it naming the format, on
 // either backend. Overturned when the start check is to name the format
-// itself, which it would then have to do over a directory too.
-func probeKV(ctx context.Context, db kv.KV) (state storeState, why, failed error) {
-	_, err := kvstore.Open(ctx, db)
+// itself, which it would then have to do over a directory too. A record
+// that does not decode is no format a binary reads: the check names it.
+func probeKV(ctx context.Context, db kv.KV, clock engine.Clock, limit time.Duration) (state storeState, why, failed error) {
+	rctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	expired := clock.After(limit)
+	go func() {
+		select {
+		case <-expired:
+			cancel(context.DeadlineExceeded)
+		case <-rctx.Done():
+		}
+	}()
+	_, err := kvstore.Open(rctx, db)
 	switch {
 	case err == nil, errors.Is(err, kvstore.ErrFormat):
 		return storePresent, nil, nil
 	case errors.Is(err, kvstore.ErrNotInitialised):
 		return storeAbsent, nil, nil
-	case errors.Is(err, kvstore.ErrForeignStore):
+	case errors.Is(err, kvstore.ErrForeignStore), errors.Is(err, kvstore.ErrFormatRecord):
 		return storeUnidentifiable, err, nil
+	case ctx.Err() == nil && rctx.Err() != nil:
+		// The backend may answer the deadline as an error of its own.
+		return storeUnidentifiable, nil, fmt.Errorf("reading the metadata store: no answer within %s: %w: %w", limit, context.Cause(rctx), err)
 	}
 	return storeUnidentifiable, nil, fmt.Errorf("reading the metadata store: %w", err)
 }
@@ -194,9 +231,11 @@ var afterDeviceOpen func()
 
 // Preflight checks that the store and the journal devices a start finds are
 // the ones its installation wrote. The store is exactly one of dir, the
-// Badger store's directory, probed before anything opens it, and store, the
-// KV of a store with no directory, which its host opened and still owns:
-// Preflight reads it and never closes it. A pre-journal (v1) local layout,
+// Badger store's directory, probed before anything opens it, and openKV, the
+// opener of a store with no directory. Preflight calls openKV only once the
+// wiring and the v1 layout have passed, so a refused start never reaches the
+// store's host, and reads the KV it returns but never closes it: openKV's
+// caller owns it. A pre-journal (v1) local layout,
 // at a device or at the journal root the blockstore's configuration names,
 // is refused naming the path; a present store passes; an absent store with
 // the journals that name an installation is the store lost; nothing else is
@@ -205,7 +244,7 @@ var afterDeviceOpen func()
 // device's journal open — a test hands the platform check a mount it knows
 // suits the host, exactly as the node's own journal options channel does —
 // and a start hands none: the real platform check stands.
-func Preflight(ctx context.Context, storeDir string, store kv.KV, v1Root string, devices []string, clock engine.Clock, opts ...journal.Option) error {
+func Preflight(ctx context.Context, storeDir string, openKV func(context.Context) (kv.KV, error), v1Root string, devices []string, clock engine.Clock, opts ...journal.Option) error {
 	switch {
 	case ctx.Err() != nil:
 		// A canceled context is the caller's answer, never a device verdict:
@@ -217,9 +256,9 @@ func Preflight(ctx context.Context, storeDir string, store kv.KV, v1Root string,
 		// device unidentifiable, and an empty store directory is the root
 		// of the very filesystem the caller configured.
 		return errNoClock
-	case storeDir == "" && store == nil:
+	case storeDir == "" && openKV == nil:
 		return errNoStore
-	case storeDir != "" && store != nil:
+	case storeDir != "" && openKV != nil:
 		return errTwoStores
 	case len(devices) == 0:
 		// decision: a bootstrap that names no journal device is a missing
@@ -231,28 +270,26 @@ func Preflight(ctx context.Context, storeDir string, store kv.KV, v1Root string,
 		// say — that would let the probes answer first.
 		return errNoDevice
 	}
-	facts := startFacts{StoreDir: storeDir}
-	for _, root := range append(slices.Clone(devices), v1Root) {
-		if p := probeV1State(root); p != "" {
-			facts.V1 = p
-			break
-		}
+	facts := startFacts{StoreDir: storeDir, V1: probeV1(v1Root, devices)}
+	if facts.V1 != "" {
+		// The v1 layout outranks every verdict on the store, so the store is
+		// neither opened nor read: a v1 host never reaches a cluster.
+		return decide(facts)
 	}
 	var state storeState
 	var err error
-	if store != nil {
+	if openKV != nil {
+		store, openErr := openKV(ctx)
+		if openErr != nil {
+			return openErr
+		}
 		var failed error
-		if state, err, failed = probeKV(ctx, store); failed != nil {
+		if state, err, failed = probeKV(ctx, store, clock, storeReadTimeout); failed != nil {
 			// A backend may report a read its caller canceled as an error of
 			// its own, FoundationDB's as a deadline: the context's error is
 			// the answer instead, as it is for the device probes.
 			if err := ctx.Err(); err != nil {
 				return err
-			}
-			// The v1 layout outranks a read that failed, as it outranks
-			// every verdict on the store.
-			if facts.V1 != "" {
-				return decide(facts)
 			}
 			return failed
 		}

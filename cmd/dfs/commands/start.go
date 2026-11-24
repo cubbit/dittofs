@@ -46,8 +46,9 @@ Examples:
 // runStart reads the bootstrap, refuses v1's control-plane database, runs the
 // start check over the store and journals it finds, opens the metadata
 // store's KV, builds and starts the node, and stops it on SIGINT or SIGTERM.
-// A store with no directory, FoundationDB's, is opened before the check,
-// which reads it. Each error names the step that failed.
+// A store with no directory, FoundationDB's, is opened by the check, after
+// its v1 refusal, which reads only local directories, and is read by it.
+// Each error names the step that failed.
 func runStart(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 	// The handler is installed first, so a signal while the store opens or
@@ -109,24 +110,31 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		}
 	}()
 	storeDir := cfg.Metadata.Badger.Path
+	var open func(context.Context) (kv.KV, error)
 	if cfg.Metadata.Backend == "foundationdb" {
-		// A cluster has no directory to probe: the check reads the store
-		// through the KV the node then takes.
+		// A cluster has no directory to probe: the check opens the store,
+		// once its local refusals have passed, so a v1 host never reaches
+		// the cluster or writes this node's clock ceiling to it, and reads
+		// it through the KV the node then takes.
 		storeDir = ""
-		if store, err = openStore(ctx, base, cfg, clock); err != nil {
-			return err
+		open = func(ctx context.Context) (kv.KV, error) {
+			stage(base, stageOpen, ctx)
+			var err error
+			if store, err = openStore(ctx, base, cfg, clock); err == nil {
+				stage(base, stageOpened, ctx)
+			}
+			return store, err
 		}
 	}
 
-	v1Root := v1ProbeRoot(cfg.Metadata.Badger.Path, devices)
-
 	stage(base, stagePreflight, ctx)
-	err = node.Preflight(ctx, storeDir, store, v1Root, devices, clock)
+	err = node.Preflight(ctx, storeDir, open, v1ProbeRoot(cfg.Metadata.Badger.Path, devices), devices, clock)
 	stage(base, stagePreflightReturned, ctx)
 	if err != nil {
-		// A check the signal cancelled ends the start on the signal: the
-		// only thing open is a store with no directory, which the return
-		// closes, so the command exits zero as a stopped start does. A
+		// A check the signal cancelled, its store's open included, ends the
+		// start on the signal: the only thing open is a store with no
+		// directory, which the return closes, so the command exits zero as
+		// a stopped start does. A
 		// refusal of the check's own exits non-zero under a signal too.
 		if ctx.Err() != nil && base.Err() == nil && onlyCanceled(err) {
 			slog.Info("dfs: the start ended on a termination signal", "err", err)
@@ -196,12 +204,19 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	return answer(startErr, ended, stopErr)
 }
 
-// openStore opens the metadata store's KV and wraps it in base's kvKey hook,
-// if any, so every reader of the store, the start check included, sees the
-// wrapped KV.
+// openStore opens the metadata store's KV, answering ctx's error for an open
+// ctx ended, and wraps it in base's kvKey hook, if any, so every reader of
+// the store, the start check included, sees the wrapped KV.
 func openStore(ctx, base context.Context, cfg *bootstrap.Bootstrap, clock systemClock) (kv.KV, error) {
 	store, err := openKV(ctx, cfg, clock)
 	if err != nil {
+		// A backend may report an open its caller canceled as an error of
+		// its own, FoundationDB's as a deadline: the context's error is the
+		// answer instead, as it is for the start check's store read, and
+		// the backend's own stays in the message.
+		if ctx.Err() != nil {
+			err = fmt.Errorf("%w (the backend answered: %v)", ctx.Err(), err)
+		}
 		return nil, fmt.Errorf("opening the metadata store: %w", err)
 	}
 	if wrap, ok := base.Value(kvKey{}).(func(kv.KV) kv.KV); ok {
@@ -223,10 +238,13 @@ type stageKey struct{}
 // sets none.
 type kvKey struct{}
 
-// The stages a stageKey hook is called at: before the start check and once
-// it returned, and before Start and once it returned, each "returned" stage
-// before the command reads whether a signal arrived.
+// The stages a stageKey hook is called at: before the start check, as it
+// opens a store with no directory and once that open succeeded, and once the
+// check returned, and before Start and once it returned, each "returned"
+// stage before the command reads whether a signal arrived.
 const (
+	stageOpen              = "open"
+	stageOpened            = "opened"
 	stagePreflight         = "preflight"
 	stagePreflightReturned = "preflight-returned"
 	stageStart             = "start"
