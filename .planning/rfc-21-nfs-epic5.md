@@ -25,7 +25,7 @@ of RFC changes.
 Cited, not owned: RFC 8881, RFC 7530 and RFC 7862 for the bytes, attribute numbers and status
 values; RFC 20 §2.5's layout of `ops/`.
 **Track:** C.
-**Epic 5 estimate: 9 subtasks, 23.75 man-days.**
+**Epic 5 estimate: 9 subtasks, 24.25 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state (`protocol.State`,
 `SetFH`) and NFSv4 table with its members' table, E2's `nfsharness` and knfsd's captures cut into
 golden files, S0's `vfstest.Mutations` and golden helper. Beyond S2, pieces of three epics broken
@@ -206,7 +206,7 @@ subtasks and tests can cite them.
 | R23 | `fh_expire_type` is `FH4_PERSISTENT`; `unique_handles` and `homogeneous` are true; a released file's handle is `NFS4ERR_STALE` | MUST | RFC 21 §7.1, App. B | T5.1, T5.4 |
 | R24 | `owner` and `owner_group` are RFC 18 §4.5's owner strings for the call's proof kind, `name@domain` with proof `Secret` or above and the decimal uid or gid with `Claimed` or `None`, and the decimal form on any proof for a principal minted without a name; a principal `Spell` cannot spell is never an error | MUST | RFC 21 §11.3, §11.5 (`ErrUnknownPrincipal`), App. B; RFC 18 §4.5 | T5.4 |
 | R69 | An owner or group is written `65534` only when it has neither a name nor a uid or gid: one the name scheme cannot spell is written in its decimal form first. A `SETATTR` sending back the `owner` or `owner_group` a `GETATTR` gives for the file's current owner or group leaves it unchanged, `65534` included | MUST | RFC 18 §4.5; RFC 21 §11.3 | T5.4, T5.5 |
-| R25 | The share's attributes come from where Appendix B says: `case_insensitive`, `case_preserving`, `maxname`, `maxlink`, `no_trunc`, `chown_restricted` and `cansettime` from `Capabilities` and the share's case rule; `time_delta` from `Capabilities.TimeGranularity`; `files_*`, `space_avail`, `space_free` and `space_total` from `StatFS`; `quota_avail_hard`, `quota_avail_soft` and `quota_used` from `Quota` for the caller's principal; `xattr_support` true where `Capabilities.Xattrs`; `clone_blksize` 0; `suppattr_exclcreat` the part of its list this epic serves | MUST | RFC 21 App. B | T5.4 |
+| R25 | The share's attributes come from where Appendix B says: `case_insensitive`, `case_preserving`, `maxname`, `maxlink`, `no_trunc`, `chown_restricted` and `cansettime` from `Capabilities` and the share's case rule; `time_delta` from `Capabilities.TimeGranularity`; `files_*`, `space_avail`, `space_free` and `space_total` from `StatFS`; `quota_avail_hard`, `quota_avail_soft` and `quota_used` from `Quota` for the caller's principal, found as D19 says; `xattr_support` true where `Capabilities.Xattrs`; `clone_blksize` 0; `suppattr_exclcreat` the part of its list this epic serves | MUST | RFC 21 App. B | T5.4 |
 | R26 | `fs_charset_cap` follows the share's name rule: on a case-sensitive `posix` share `FSCHARSET_CAP4_CONTAINS_NON_UTF8` set and `FSCHARSET_CAP4_ALLOWS_ONLY_UTF8` clear; under the `windows` rule or on any case-insensitive share the reverse | MUST | RFC 21 §7.3, App. B | T5.2, T5.4 |
 | R27 | `lease_time` is 90 s | MUST | RFC 21 §5.1 | T5.4 |
 | R28 | `time_metadata` reports the file's `Change`, which moves on every change whatever an SMB client suspended on its own open | invariant | RFC 21 §8.1, §11.3, §12 (N16) | T5.4, T5.9 |
@@ -218,6 +218,7 @@ subtasks and tests can cite them.
 | R34 | `ACCESS` is `Access`: the bits reported are those `Access` grants of the bits asked, each bit reporting the rights §8.1's table gives it on a file and on a directory | MUST | RFC 21 §8.1 | T5.5 |
 | R35 | A bit with no right on the file's type is never reported; `XAREAD`, `XAWRITE` and `XALIST` are never reported on a minor version before 2 | MUST NOT | RFC 21 §8.1 | T5.5 |
 | R36 | A `WRITE`, a `SETATTR` of `size`, and a `REMOVE` or a `RENAME` over a file an SMB client marked read-only are `NFS4ERR_ACCESS`, and `ACCESS` reports no `MODIFY` or `EXTEND` for it | MUST | RFC 21 §11.3 (read-only marker), §11.5 (`ErrAccess`) | T5.5, T5.6, T5.8 |
+| R70 | A `VERIFY` or `NVERIFY` naming a write-only attribute (`time_access_set`, `time_modify_set`) or `rdattr_error` is `NFS4ERR_INVAL`, checked before any attribute is compared | MUST | RFC 8881 §18.15.3, §18.31.3 (from memory); RFC 21 §8.1 | T5.5 |
 | R37 | A `GETATTR`, and a `READDIR`'s attribute request, naming an attribute not served answers without it, never refused | MUST | RFC 21 §8.2, App. B | T5.4, T5.7 |
 | R38 | A pseudo directory reports a filesystem's attributes as a share does, from what the service answers for it: a name limit, case rules, a time granularity and its character-set capability | MUST | RFC 21 §7.4, App. B (`fileid`, `mounted_on_fileid`, `rawdev`: pseudo-filesystem per RFC 17 §4.9) | T5.2, T5.4 |
 
@@ -232,7 +233,7 @@ subtasks and tests can cite them.
 | R43 | A `REMOVE` or `RENAME` of a file an SMB open denies delete to is `ErrShareViolation`, answered `NFS4ERR_FILE_OPEN` | MUST | RFC 21 §11.5 (`ErrShareViolation`) | T5.6 |
 | R44 | An NFS `RENAME` of a directory, or `REMOVE` of an empty one, is not refused because a file below it is open: the adapter adds no check of its own | MUST NOT | RFC 21 §7.3 | T5.6 |
 | R45 | `READDIR` is `ReadDir`, asking for each entry's `File` and handle when attributes are asked | MUST | RFC 21 §11.3 (listings), App. D | T5.7 |
-| R46 | The cookie is the service's cursor, the digest RFC 7 orders the last entry returned by, unchanged, so a resume on any node returns the entries after it; its top bit is clear | MUST | RFC 21 §7.2, §12 (N8) | T5.7 |
+| R46 | The cookie is the service's cursor, the digest RFC 7 orders the last entry returned by, unchanged, so a resume on any node returns the entries after it; its top bit is clear, and it is never 0, 1 or 2, the cookies NFS reserves, which the service's digest never takes | MUST | RFC 21 §7.2, §12 (N8); RFC 7 §3.5; RFC 17 §3.0 (`Cursor`) | T5.7 |
 | R47 | A reply never ends inside a collision chain: it ends before the chain or holds all of it, and a chain that does not fit the client's `maxcount` at all is `NFS4ERR_TOOSMALL` | MUST NOT | RFC 21 §7.2, §12 (N8) | T5.7 |
 | R48 | The cookie verifier is a constant of the share; one other than the share's is `NFS4ERR_NOT_SAME`, and a zero verifier with a non-zero cookie is accepted | MUST | RFC 21 §7.2, §12 (N8) | T5.7 |
 | R49 | A `READDIR`'s `maxcount` is not clamped to the room, as a `READ`'s count is: a compound whose `READDIR`, with the operations around it, would pass the cap is refused | MUST NOT | RFC 21 §2.3 (`READDIR` decision) | T5.7, T5.9 |
@@ -287,9 +288,15 @@ snapshots (§1.2).
   T5.7 tags its entries with it and builds no kind of its own; `READDIR`'s own `Bound` clamps the
   reply to its `maxcount`. No marker here: E4's D1 leaves it at the tag.
 - **D2. `fattr4` is a struct of optional fields tagged by attribute number.** A struct tagged
-  `xdr:"bitmap"` holds its `attrmask` as a `[]uint32` tagged `max=N`, as `wire`'s test codec's
-  `FAttr` already does, and one pointer field per attribute tagged `attr=N`, with the existing
-  `since=` tag for the minor version it is served from. The generator writes its decode as the mask,
+  `xdr:"bitmap"` holds its `attrmask` in a fixed `[3]uint32`, which holds every attribute number up
+  to NFSv4.2's highest, and one value field per attribute tagged `attr=N`, never a pointer, with the
+  existing `since=` tag for the minor version it is served from. The mask is the presence record: a
+  field is present when its bit is set, so filling a reply sets bits and values in a struct the
+  handler holds by value, and nothing escapes to the heap; a variable-length value (an owner string)
+  is a slice into the receive buffer on decode and into the reply's storage on encode. A word of the
+  mask past the third is read and must be zero in a value the client sent (else `errAttrNotSupp`),
+  and is dropped from an attribute request. This is what keeps R60's gate at 0 allocations; `wire`'s
+  test codec's `FAttr`, a `[]uint32` mask, is test data and stays as it is. The generator writes its decode as the mask,
   then `attrlist4`'s length, then each field whose bit is set, in bit order, the bit test inline in
   the generated code, and its encode the reverse, setting a bit for each field present. In a value
   the client sent (`SETATTR`, `CREATE`, `VERIFY`), a bit with no field, or one not served at the
@@ -305,7 +312,8 @@ snapshots (§1.2).
   `NFS4ERR_BAD_STATEID` for `WRITE` and `SETATTR` (RFC 8881 §8.2.3, from memory), and every other
   value to `NFS4ERR_BAD_STATEID`, which is rule 1's answer to a stateid never issued, and no stateid
   can be issued before E9's `OPEN`. E9 extends that one function with the rest. A `decision:`
-  marker at the function names E9 as its owner.
+  marker at the function names, in the code's own terms, what overturns it: stateids issued by
+  `OPEN`.
 - **D4. The owner scheme is picked by the call's proof kind.** `Spell` takes no `Call`, so
   `GETATTR` asks for `SchemeOwner` when the call's proof is `Secret` or above and for `SchemeUID`
   or `SchemeGID` when it is `Claimed` or `None`, as RFC 18 §4.5 divides them; a `SETATTR` of
@@ -339,7 +347,9 @@ snapshots (§1.2).
   client sent from the file's `GetAttr` answer, with the same encoder `GETATTR` uses, and compares
   them with the client's `attrlist4` byte for byte, answering `NFS4ERR_NOT_SAME` or `NFS4ERR_SAME`;
   an attribute it does not serve is `NFS4ERR_ATTRNOTSUPP`, as RFC 8881 §18.31 has it (from
-  memory). Prior art: knfsd's `nfsd4_verify` compares the encoded buffers (from memory). A
+  memory), and a write-only attribute or `rdattr_error` in the client's mask is `NFS4ERR_INVAL`
+  before anything is compared (R70), since `GETATTR`'s encoder never writes them and an `NVERIFY`
+  would otherwise compare them unequal and let the compound run on. Prior art: knfsd's `nfsd4_verify` compares the encoded buffers (from memory). A
   `decision:` marker: an attribute with two encodings of one value, such as an owner string, can
   compare unequal; overturned if a client is seen relying on `VERIFY` of `owner`. The two
   operations share that comparison in `verify.go`, each in its own file otherwise.
@@ -430,19 +440,37 @@ snapshots (§1.2).
   `maxlink` is 2^32 − 1, `Nlink`'s range; `no_trunc`, `chown_restricted` and `cansettime` are true,
   as RFC 7 refuses a long name, keeps ownership changes to the privileged and stores a client time;
   `space_total` is the share's or project's hard limit where one is set, and with none 2^63 − 1,
-  `space_avail` and `space_free` that less `Usage`, and `files_*` likewise from the file quota, the
-  figures E4's `FSSTAT` reports (E4's D10), so `df` reads the same over both versions. A
+  `space_avail` and `space_free` that less `Usage`, floored at 0 (`max(0, limit - usage)`), and
+  `files_*` likewise from the file quota, the figures E4's `FSSTAT` reports (E4's D10), so `df` reads
+  the same over both versions. The floor matters because a limit is written apart from the counted
+  usage: lowered below it, the unsigned difference would wrap and report a full share as nearly
+  empty. A
   `decision:` marker at the encoder, overturned when the service reports a capacity, the one RFC 17
   `FilesystemInfo` field E4's D10 names as its upgrade too.
   Prior art: knfsd answers `space_*` from the exported filesystem's `statfs` (from memory).
   `suppattr_exclcreat` lists `mode`, `owner`, `owner_group` and the `time_*_set` attributes; E6 adds
   `mode_umask` and `acl`.
 - **D18. A listing's filesystem attributes per share.** In a pseudo directory every entry is
-  another share's root, so `READDIR` asking for `mounted_on_fileid` or a filesystem attribute calls
-  `StatFS` once per share its entries name, kept for the request, and once for a share's own
-  directory. A `ponytail:` marker names the ceiling, one `StatFS` per share listed in a pseudo
+  another share's root, so `READDIR` asking for a filesystem attribute calls `StatFS` once per share
+  its entries name, kept for the request, and once for a share's own directory; asking for
+  `mounted_on_fileid` alone calls it only for an entry that is a share's root (`File.IsRoot()`),
+  since every other entry reports its `fileid` (D12). The Linux client asks for
+  `mounted_on_fileid` in its default bitmaps (from memory), so a listing of an ordinary directory
+  makes no `StatFS` for it. A `ponytail:` marker names the ceiling, one `StatFS` per share listed in a pseudo
   directory, and the upgrade, the pseudo-filesystem's answers carried on its `DirEntry`, when a
   pseudo directory of many shares shows in a profile.
+- **D19. The principal a quota attribute is asked for.** `Quota` refuses the zero principal
+  `ErrInvalid`, and a `Claimed` call carries none (`Evidence.Principal` is zero below
+  `ProofSecret`), so a `GETATTR` of a quota attribute finds the caller's principal first: at
+  `ProofSecret` and above it is `Evidence.Principal`; at `ProofClaimed` it is `Find` of the decimal
+  `Claims.UID` under `SchemeUID`, a lookup RFC 20 §4.3 leaves outside the one-call rule; at
+  `ProofNone`, or when `Find` answers `ErrUnknownPrincipal`, there is none, and the three quota
+  attributes are left out of the reply's mask while the rest is answered `NFS4_OK`, as for an
+  attribute not served (R37), never failing the whole `GETATTR`. A `decision:` marker names the
+  ceiling: a squashed caller is reported its own uid's quota, not the squashed identity's, since
+  squashing is the service's; overturned when RFC 17's `Quota` takes the call's own resolved
+  principal for a zero `p`. Prior art: knfsd answers the quota attributes from the caller's uid
+  (from memory).
 
 ## 5. Target tree
 
@@ -466,6 +494,7 @@ internal/adapter/nfs/
     handlers.go                T5.8  the not-supported handler (D13)
     errors.go                  T5.1, T5.4, T5.5, T5.6, T5.8  the service errors' rows
     fuzz_test.go               T5.3, T5.5  FuzzAttrs
+    codec_test.go              T5.3  no codec declared outside the generated file (R3)
     loopback_test.go           T5.9
   wire/testdata/golden/
     rfc-nfs4-*.hex             T5.1, T5.4 to T5.8  where no capture holds the operation or the row
@@ -506,8 +535,9 @@ internal/vfs/
   - `Root` or `SecInfo` called from a file of `ops/v4` other than the three entry files fails the
     import test, naming the file.
 - **Tests:** on `nfsharness` against `memory.New`, each member with the state its case builds:
-  `PUTFH` of a released file's handle followed by `GETATTR`, the `GETATTR` answering
-  `NFS4ERR_STALE` and `PUTFH` succeeding (catches a handle checked at entry, R7); `LOOKUP` of a
+  `PUTFH` of a released directory's handle followed by `LOOKUP`, the `LOOKUP` answering
+  `NFS4ERR_STALE` and `PUTFH` succeeding (catches a handle checked at entry, R7), so the case needs
+  no operation of a later subtask; `LOOKUP` of a
   share's mount from the pseudo-root answering the share's root handle, and of a removed share's
   path `NFS4ERR_NOENT` (catches an adapter-side pseudo table, R6, R12); `SECINFO` on a pseudo
   directory above a Kerberos-only share and one admitting `AUTH_SYS`, the reply listing both
@@ -540,7 +570,10 @@ internal/vfs/
     `UTF8Only` false on a case-sensitive `posix` share and true otherwise; `StatFS` of `/a` reports
     D12's fixed capabilities.
   - `Lookup` of `..` at the share's root answers `/a`'s handle for NFSv4 and the root itself for
-    NFSv3; at the pseudo-root, `ErrNotFound`.
+    NFSv3; at the pseudo-root, from an NFSv4 call, `ErrNotFound`, where `feat/storage-v2`'s
+    `pseudoChild` answers the pseudo-root itself: a deliberate change, since RFC 8881 §18.14.3 has
+    `LOOKUPP` at the root of the server's namespace answer `NFS4ERR_NOENT` (from memory), and a
+    call of another protocol keeps today's answer.
   - `SecInfo` of `/a` with an empty name answers what it answers for `a` from the pseudo-root; of
     the share's root with `..`, `/a`'s flavours.
   - `/a`'s `File` with two shares below it reports `Subdirs` 2.
@@ -553,15 +586,17 @@ internal/vfs/
 
 ### T5.3 `fattr4` in the generator
 
-**Subtask T5.3 estimate: 2 man-days.**
+**Subtask T5.3 estimate: 2.25 man-days.**
 
 - **Track:** C. **Depends on:** S2.
-- **Covers:** R1, R2, R4.
+- **Covers:** R1, R2, R3, R4.
 - **Deliverables:** the generator's `xdr:"bitmap"` kind with its fields tagged `attr=N` and
   `since=` (D2), the bit tests inline in the generated code, no new runtime; a bitmap type in
   `wire`'s `codec_types_test.go`; `ops/v4`'s `attrs.go` declaring the `fattr4` struct with a field
-  for every attribute T5.4 encodes and T5.5 decodes, with `errAttrNotSupp`; `FuzzAttrs` in `ops/v4`
-  over the decode. Consumed by T5.4, T5.5 (the translation, and `FuzzAttrs`' second leg), T5.6
+  for every attribute T5.4 encodes and T5.5 decodes, by value with the mask in a fixed array (D2),
+  with `errAttrNotSupp`; `FuzzAttrs` in `ops/v4` over the decode; `codec_test.go`, which parses
+  `ops/v4` and fails on a method of the generated codec's names declared outside the generated
+  file, naming it. Consumed by T5.4, T5.5 (the translation, and `FuzzAttrs`' second leg), T5.6
   (`createattrs`), T5.7 (an entry's attributes), and E6 and E12, which add their fields.
 - **Acceptance criteria:**
   - Decoding a mask with bits 1, 4 and 33 set reads three fields in that order, and encoding them
@@ -573,19 +608,23 @@ internal/vfs/
   generated codec against a second decoder written by hand from RFC 8881 §3.3.15 and §7, seeded with
   the `GETATTR` and `SETATTR` arguments and replies of knfsd's captures and `wire`'s
   `codec-setattr-args.hex` (catches a field read out of bit order, R2, R4). `FuzzAttrs`' decode leg:
-  no panic, every read inside the bytes (R4). No test double.
+  no panic, every read inside the bytes (R4). `codec_test.go` with a handler of its test data
+  declaring its own decode, failing and naming the file (catches a procedure with a codec of its
+  own, R3); T5.7's `dirlist4` is the first consumer of a generated list kind it guards. No test
+  double.
 - **Rules:** rule 2: the two targets; rule 9: D2's `decision:` marker.
 
 ### T5.4 `GETATTR` and every Appendix B attribute
 
-**Subtask T5.4 estimate: 3.75 man-days.**
+**Subtask T5.4 estimate: 4 man-days.**
 
 - **Track:** C. **Depends on:** T5.2, T5.3, T7.1, T7.2. T7.1 and T7.2 only for the `owner` rows:
   an `AUTH_SYS` call admitted, and `name@domain` spelled; the rest does not wait.
 - **Covers:** R5, R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24, R25, R26, R27, R28,
   R29, R37, R38, R60, R62, R64, R69.
 - **Deliverables:** `getattr.go`: `GetAttr` of the current filehandle, then `StatFS` only when a
-  filesystem attribute or `mounted_on_fileid` is asked, `Quota` only for a quota attribute, and
+  filesystem attribute is asked, or `mounted_on_fileid` on a share's root (`File.IsRoot()`, D18),
+  `Quota` only for a quota attribute, with the caller's principal found as D19 says, and
   `Spell` for `owner` and `owner_group` (D4); its drain role, context. `attrs.go`'s encoder from a
   `File`, its share's `FilesystemInfo` and the request's minor version: the request's `bitmap4`
   masked by what is served (R37), `supported_attrs` per minor version, every REQUIRED attribute,
@@ -607,6 +646,9 @@ internal/vfs/
   - `owner` on an `AUTH_SYS` call is a decimal uid; on a proven call, a principal with a uid and no
     name is its decimal uid; `65534` only when `Spell` refuses both schemes.
   - Decode and encode of `GETATTR` allocate nothing.
+  - With usage above a lowered limit, `space_avail`, `space_free` and `files_avail` are 0.
+  - `quota_used` over `AUTH_SYS` reports the claimed uid's usage; for a uid no principal holds, the
+    reply is `NFS4_OK` without the quota attributes.
 - **Tests:** on `nfsharness` against `memory.New`: a file with every field set, its `GETATTR`
   reply compared with the hand-written attribute table's golden file, each field from the RFC's
   XDR (catches a field mapped from the wrong source, R21, R22, R5); `supported_attrs` per minor
@@ -624,9 +666,11 @@ internal/vfs/
   a principal minted with uid 2000 and no name answered `2000`, not `65534` (catches the decimal
   fallback skipped, R69); `name@domain`
   for a proven call, and `owner_group` under `SchemeOwnerGroup` (catches a group spelled from the
-  user scheme, R24). `AllocsPerRun` at 0 for decode and encode (catches an allocation, R60). No test
-  double.
-- **Rules:** rule 4: the allocation gate; rule 9: D4's, D5's, D6's, D16's and D17's markers.
+  user scheme, R24). `AllocsPerRun` at 0 for decode and encode (catches an allocation, R60). A share
+  whose limit is set below its usage on `memory.New` (catches the free figures wrapping, R25);
+  `GETATTR` of `quota_used` over `AUTH_SYS` for a minted uid and for an unknown one (catches the
+  zero principal passed and the whole `GETATTR` failing, R25). No test double.
+- **Rules:** rule 4: the allocation gate; rule 9: D4's, D5's, D6's, D16's, D17's and D19's markers.
 
 ### T5.5 `SETATTR`, `VERIFY`, `NVERIFY` and `ACCESS`
 
@@ -634,7 +678,7 @@ internal/vfs/
 
 - **Track:** C. **Depends on:** T5.4, T4.4, T4.8, T7.2. T7.2 only for the `owner` and `owner_group`
   rows.
-- **Covers:** R5, R29, R30, R31, R32, R33, R34, R35, R36, R51, R62, R69.
+- **Covers:** R5, R29, R30, R31, R32, R33, R34, R35, R36, R51, R62, R69, R70.
 - **Deliverables:** `attrs.go`'s translation from the decoded `fattr4` to `vfs.Attrs`, total, a
   read-only attribute's set refused `NFS4ERR_INVAL` and an unserved one `NFS4ERR_ATTRNOTSUPP`,
   `SET_TO_SERVER_TIME4` through E4's server-time choice (T4.4), owner strings through `Find` (D4), which RFC 20 §4.3 leaves outside the one-call rule and E2's runner
@@ -661,7 +705,7 @@ internal/vfs/
   - `ACCESS` asking every bit of a directory reports `LOOKUP` and `DELETE` where granted and never
     `EXECUTE`; of a file, never `LOOKUP` or `DELETE`; `XAREAD` only at minor version 2.
   - `VERIFY` of the file's own `size` succeeds, of another `NFS4ERR_NOT_SAME`; `NVERIFY` the
-    reverse.
+    reverse; either naming `time_modify_set` or `rdattr_error` is `NFS4ERR_INVAL`.
 - **Tests:** on `nfsharness` against `memory.New`: each case above, the one-call rule checked by
   the harness, `Find` exempted by the request's owner string (catches a second mutating call, R30);
   the stateid cases (catches `SETATTR` under a stateid read as anonymous, R51); a property test of
@@ -673,7 +717,9 @@ internal/vfs/
   `vfstest.Faults` answering `NFS4ERR_PERM` (R32); a `GETATTR` of `owner` then a `SETATTR` sending it
   back, on a file whose owner spells as `65534`, with the owner read again unchanged (catches a
   round trip that hands the file to nobody, R69); `FuzzAttrs` from bytes through the translation,
-  a value or a named refusal (catches a default for an unknown value, R33). No test double.
+  a value or a named refusal (catches a default for an unknown value, R33); `NVERIFY` of
+  `time_modify_set` followed by a `REMOVE` in one compound, answered `NFS4ERR_INVAL` with the file
+  still there (catches a write-only attribute compared, R70). No test double.
 - **Rules:** rule 9: D3's and D7's markers; rule 13: `ACCESS` reports the service's answer, never
   a mode check of its own.
 
@@ -715,7 +761,7 @@ internal/vfs/
 
 **Subtask T5.7 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T5.4, T4.6, T4.11.
+- **Track:** C. **Depends on:** T5.4, T4.4, T4.6, T4.11.
 - **Covers:** R3, R5, R13, R37, R45, R46, R47, R48, R49, R50.
 - **Deliverables:** `readdir.go`: the row with its own `Bound`, `maxcount` unclamped with RFC 21
   §2.3's `decision:`; its reply's `dirlist4` tagged with E4's list kind (T4.6, D1); one `ReadDir`
@@ -725,8 +771,8 @@ internal/vfs/
   answered through `rdattr_error` or failing the `READDIR` with `NFS4ERR_ACCESS` (R50). Golden files
   from knfsd's captures. Consumed by T5.9 and E16.
 - **Acceptance criteria:**
-  - Each entry's cookie is its `DirEntry.Cursor`; resuming from the last one returns the entries
-    after it.
+  - Each entry's cookie is its `DirEntry.Cursor`, never 0, 1 or 2; resuming from the last one
+    returns the entries after it.
   - With two names sharing a digest, a `maxcount` that ends between them ends the page before the
     pair, and a `maxcount` that holds neither is `NFS4ERR_TOOSMALL`.
   - A verifier other than the share's with a non-zero cookie is `NFS4ERR_NOT_SAME`; a zero one is
@@ -804,8 +850,9 @@ internal/vfs/
   last table; R28's own check; each NFSv4.1 code this epic adds a row for, sent under NFSv4.0,
   answered `NFS4ERR_OP_ILLEGAL`. Consumed by S4 and by E16, which reruns them on the composed node.
 - **Acceptance criteria:**
-  - "§2.3 a compound's reply under the record cap"'s NFSv4.0 steps pass on a file of 2 MiB and 4
-    KiB written by `WRITE` under the all-zeros stateid, `adapter_reads_shortened_total` rising by
+  - "§2.3 a compound's reply under the record cap"'s NFSv4.0 steps pass on a file of 2 MiB and one
+    of 4 KiB, created through the service on `memory.New` before the test, since NFSv4 creates a
+    regular file only through E9's `OPEN`, then written by `WRITE` under the all-zeros stateid, `adapter_reads_shortened_total` rising by
     one per short `READ`.
   - "§8 attributes"' single-node steps pass on a `posix` and a `windows` share.
   - "App. B directory link count *(1 node)*"'s NFSv4 steps pass, the file in it made by `CREATE`
@@ -840,7 +887,7 @@ flowchart TD
   E7 -. "T7.2: owner rows" .-> T5_5
   T5_5 --> T5_6["T5.6 Name operations, change_info4"]
   T5_4 --> T5_7["T5.7 READDIR"]
-  E4 -- "T4.6, T4.11" --> T5_7
+  E4 -- "T4.4, T4.6, T4.11" --> T5_7
   T5_1 & T5_5 --> T5_8["T5.8 READ, WRITE, COMMIT, not-supported rows"]
   E4 -- "T4.2" --> T5_8
   T5_1 --> C1(["after T5.1: E9 can set the current filehandle"]):::sync
@@ -867,9 +914,9 @@ the translation, and E9 can extend `stateid.go`; after T5.9, S4's namespace half
 | --- | --- | --- | --- | --- |
 | 1 | T5.1 | 2.5 | — | the walk into a share, the blocker of E9 and S4 |
 | 2 | T5.2 | 2 | the user's answer on D12 | a service change, reviewed by the service's owners apart from the adapter |
-| 3 | T5.3, T5.4 | 5.75 | PR 2 | `fattr4` and its first consumer, `GETATTR`, with the allocation gate and the attribute table's golden file |
-| 4 | T5.5, T5.6 | 5.5 | PR 3, E4's T4.4 and T4.8 | the attribute translation, the stateid function, and the operations that set attributes and names |
-| 5 | T5.7, T5.8, T5.9 | 8.25 | PR 4, E4's T4.2, T4.6 and T4.11, E3's T3.2 and T3.4, E7's T7.1 | listings and I/O, then every row over loopback |
+| 3 | T5.3, T5.4 | 6.25 | PR 2 | `fattr4` and its first consumer, `GETATTR`, with the allocation gate and the attribute table's golden file |
+| 4 | T5.5, T5.6 | 5.25 | PR 3, E4's T4.4 and T4.8 | the attribute translation, the stateid function, and the operations that set attributes and names |
+| 5 | T5.7, T5.8, T5.9 | 8.25 | PR 1, PR 4, E4's T4.2, T4.6 and T4.11, E3's T3.2 and T3.4, E7's T7.1 | listings and I/O, then every row over loopback |
 
 A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can be open at once.
 
