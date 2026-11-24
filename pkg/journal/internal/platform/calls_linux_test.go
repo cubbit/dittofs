@@ -44,6 +44,8 @@ func TestSyscallTableIsReal(t *testing.T) {
 		{"getdents", "unix.Getdents", got.getdents, unix.Getdents},
 		{"fiemap", "fiemapIoctl", got.fiemap, fiemapIoctl},
 		{"lseek", "unix.Seek", got.lseek, unix.Seek},
+		{"uname", "unix.Uname", got.uname, unix.Uname},
+		{"readlink", "unix.Readlink", got.readlink, unix.Readlink},
 	}
 
 	if n := reflect.TypeOf(calls{}).NumField(); n != len(pins) {
@@ -104,6 +106,11 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"DT_CHR":                   true,
 		"DT_BLK":                   true,
 		"Dirent":                   true,
+		// The device number's decode, arithmetic on the fstat answer the
+		// probe passes as data, and the struct the uname entry fills.
+		"Major":   true,
+		"Minor":   true,
+		"Utsname": true,
 
 		// Windows: constants, the handle, overlapped and file information
 		// types, the conversion of a path to UTF-16, which makes no system
