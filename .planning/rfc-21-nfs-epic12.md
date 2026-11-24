@@ -169,7 +169,7 @@ subtasks and tests can cite them.
 | R9 | `CLONE` passes its whole range as one extent and is answered only once `Clone` has returned | MUST | RFC 21 §9.3 (`CLONE` is atomic), §12 (N22) | T12.3 |
 | R10 | `COPY` answers the bytes `Copy` reports as `wr_count`, a short count at the deadline included, and never more | MUST | RFC 21 §9.3 (`COPY` is not atomic), §12 (N22) | T12.3 |
 | R11 | A count of 0 is first turned into the source's size less `ca_src_offset`, so a copy from the end of the file is an empty copy answered `NFS4_OK` with `wr_count` 0; a range ending past the source's size is `NFS4ERR_INVAL` before anything is copied | MUST | RFC 21 §9.3 (`COPY` is not atomic) | T12.3 |
-| R12 | A `COPY`'s `wr_committed` is `UNSTABLE4`, with the write verifier of §9.1 | MUST | RFC 21 §9.3; RFC 17 §3.0 (`CopyResult`), §5.8 | T12.2, T12.3 |
+| R12 | A `COPY`'s `wr_committed` is `UNSTABLE4`, with the write verifier of §9.1 | MUST | RFC 21 §9.3, §12 (N23); RFC 17 §3.0 (`CopyResult`), §5.8 | T12.2, T12.3 |
 | R13 | Every `COPY` is answered synchronously, `ca_synchronous` false included: no copy stateid is issued | MUST | RFC 21 §9.4 | T12.3 |
 | R14 | `OFFLOAD_STATUS` and `OFFLOAD_CANCEL` are answered `NFS4ERR_BAD_STATEID` by the adapter, with no service call | MUST | RFC 21 §9.4, App. C, App. D | T12.7 |
 | R15 | A `COPY` or `CLONE` of overlapping ranges of one file, and a `CLONE` longer than `clone_max_len`, are `NFS4ERR_INVAL` and change nothing | MUST | RFC 21 §9.3, §11.5 (`ErrInvalid`), §12 (N22) | T12.3, T12.8 |
@@ -212,7 +212,7 @@ subtasks and tests can cite them.
 | R32 | "§9.3 copy and clone"'s steps on one node that need no running clone: a `CLONE` and a `COPY` of one file onto an overlapping range of itself `NFS4ERR_INVAL` and the file unchanged, a `CLONE` one byte over `clone_max_len` `NFS4ERR_INVAL`, and a `COPY` and a `CLONE` between namespaces `NFS4ERR_XDEV` | test row | RFC 21 §13 | T12.8 |
 | R33 | "§9.3 hold budget *(1 node)*"'s adapter half: on a session of 16 fore-channel slots with 8 writes in flight, at most 4 carry a non-zero `WithHold`, the others none and `NFS4ERR_DELAY` at once, a `READ` of another file served meanwhile; on a session of 2 slots, one; over NFSv3, a write carries its remaining deadline | test row | RFC 21 §13 | T12.8 |
 | R34 | "§9.4 copies are synchronous": a `COPY` with `ca_synchronous` false answered synchronously with no copy stateid, a short `wr_count` at the deadline from which a resent `COPY` finishes, and `OFFLOAD_STATUS` of any stateid `NFS4ERR_BAD_STATEID` | test row | RFC 21 §13 | T12.8 |
-| R35 | "§2.3 a compound's reply under the record cap"'s NFSv4.2 step: `SEQUENCE, PUTFH, READ_PLUS(1 MiB)` and the fixed-size `GETATTR`s, the `READ_PLUS` answered short, and `adapter_reads_shortened_total` rising by one | test row | RFC 21 §13 | T12.8 |
+| R35 | "§2.3 a compound's reply under the record cap"'s NFSv4.2 step: `SEQUENCE, PUTFH, READ_PLUS(1 MiB)` and the fixed-size `GETATTR`s, the `READ_PLUS` answered short, with at least one byte and end of file false, each `GETATTR` answered, and `adapter_reads_shortened_total` rising by one | test row | RFC 21 §13 | T12.8 |
 
 ## 4. Decisions this epic takes
 
@@ -229,10 +229,12 @@ subtasks and tests can cite them.
 - **D2. A count of 0 is resolved by a `GetAttr` of the source.** RFC 21 §9.3 turns a `COPY`'s
   count of 0 into the source's size less `ca_src_offset`, and RFC 7862 gives `CLONE`'s count of 0
   the same meaning (from memory). `Copy` and `Clone` take explicit extents, so the handler reads
-  the source's size with one `GetAttr`, which makes no change, and passes `size − offset`: an
-  empty range passes no extent, which `Copy` answers once judged with a count of 0, and a negative
-  one passes as given, which the service refuses `ErrInvalid`, as RFC 7862 refuses an offset past
-  the size. A `decision:` marker says a source grown between the two calls is copied to its old
+  the source's size with one `GetAttr`, which makes no change, and passes one extent of
+  `max(size − offset, 0)` bytes, for `Copy` as for `Clone`, which takes exactly one: from the size
+  it is an empty extent ending at the size, answered with a count of 0, and from past the size an
+  empty extent ending past it, which the service refuses `ErrInvalid` (RFC 17 §5.9 step 2), as RFC
+  7862 refuses an offset past the size; the handler judges no range. A `decision:` marker says a
+  source grown between the two calls is copied to its old
   size, which is what the client saw, and a source truncated between them ends the copy short or
   refused by the service, as any truncate racing a copy does. Overturned if RFC 17's `Extent`
   gains a to-the-end length. Prior art: none checked.
@@ -394,9 +396,9 @@ pkg/engine/
     between the copy and the `Commit` answers another.
 - **Tests:** in `contenttest`'s conformance suite, which the engine and `Memory` both pass: a
   copy then a loss then a `Commit`, the verifiers differing (catches a verifier sampled after the
-  sync, or a constant); in `internal/vfs`'s tests, `CopyResult.Verifier` equal to the engine's
-  (catches the service dropping it). No test double: the conformance suite holds `Memory` to the
-  engine.
+  sync, or a constant). The service passing it through is asserted at its consumer, T12.3's `COPY`
+  and `COMMIT` over `nfsharness`, not in `internal/vfs` (rule 5). No test double: the conformance
+  suite holds `Memory` to the engine.
 - **Rules:** rule 11: `Verifier` exported for both adapters; rule 9: D1's `decision:` at the
   field.
 
@@ -424,18 +426,24 @@ pkg/engine/
   - A `COPY` with `ca_synchronous` false is answered the same way, with no callback ID.
   - A `COPY` torn to 64 KiB answers `wr_count` 64 KiB and `NFS4_OK`.
   - A `COPY` of count 0 from offset 10 of a 100-byte file copies 90 bytes; from offset 100 answers
-    `NFS4_OK` and 0; from offset 101 `NFS4ERR_INVAL`.
+    `NFS4_OK` and 0; from offset 101 `NFS4ERR_INVAL`. A `CLONE` of count 0 from offset 10 clones 90
+    bytes as one extent, and from offset 100 answers `NFS4_OK` (D2).
+  - A `COPY` then a `COMMIT` of the destination answer one verifier.
   - A `COPY` or `CLONE` of one file onto an overlapping range of itself is `NFS4ERR_INVAL` and the
     file reads unchanged.
   - A `COPY` naming a source server is `NFS4ERR_NOTSUPP`, and no service call is made.
 - **Tests:** on `nfsharness` against `memory.New`: each criterion, reply bytes compared (catch
   the count answered as asked rather than copied, R10, a `FILE_SYNC4` or zero verifier, R12, a
-  copy stateid issued, R13, a count of 0 passed through, R11, the overlap checked in the handler
+  copy stateid issued, R13, a count of 0 passed through, R11, a `CLONE` of count 0 sent as no
+  extent, which the service refuses, D2, the overlap checked in the handler
   or not at all, which `Mutations` shows as no call or a changed file, R15); `ErrCross` of
   `CrossNamespace`, `ErrIncomplete`, `ErrIO` and `ErrDelay` of `DelayClone` injected on `Copy` and
   on `Clone` through `vfstest.Faults`, answered `NFS4ERR_XDEV`, `NFS4ERR_IO`, `NFS4ERR_IO` and
   `NFS4ERR_DELAY` (R16, R17); `ErrLocked` on `Copy`, `NFS4ERR_LOCKED`; `CLONE` reaching `Clone`
   with exactly one extent of the asked length (catches a clone split into chunks, R9); a `COPY`
+  then a `COMMIT` of the destination, the two verifiers compared as the client compares them
+  (catches a verifier that is not the one `COMMIT` answers, the service dropping `Verifier` on the
+  way included, R12, N23); a `COPY`
   with no saved filehandle `NFS4ERR_NOFILEHANDLE`; `Tear`'s own test, a copy cut to n answering n.
   The one-call rule from `Mutations`, `GetAttr` making no change. No test double beyond
   `vfstest.Faults` and its `Tear`.
@@ -619,9 +627,11 @@ flowchart TD
   T12_2 --> T12_3["T12.3 COPY and CLONE"]
   E5 --> T12_3
   T12_1 & T12_3 --> T12_4["T12.4 The hold budget per session"]
+  E5 -- "write.go, setattr.go, remove.go" --> T12_4
   E8 -. "session, slot count" .-> T12_4
   E9 -. "CLOSE" .-> T12_4
   T12_1 --> T12_5["T12.5 READ_PLUS"]
+  E5 -- "READ hook" --> T12_5
   E8 -. "A1, MaxReply" .-> T12_5
   E4 --> T12_5
   E5 --> T12_6["T12.6 Extended attributes"]
