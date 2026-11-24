@@ -65,9 +65,13 @@ integration epics touch no v1 code (§1.5 rule 7).
 - **§3.1, the pin.** `Chain.Pin` returns an `Attempt` that fixes the chain and the current
   material from a block name's mint to its commit or abandonment; the attempt carries the chain
   ID, the bounds and `Encode`, and `Release`. The RFC 8 offload plan's epic 15 holds it (D10).
-  The largest encoded block on a put is the maximum `Attempt.MaxEncodedLen` over open attempts,
-  not the current chain's bound (RFC 3 §2.2 follows, amended in the RFC 3 plan's pull request),
-  and §2.5's removal waits for no open pin, as §5.3 does.
+  `Pin` reads `Current` once for each material kind a transform declares (`Kinds`) and passes
+  those IDs to each transform's `MaxEncodedLen`, `LengthOf` and `Encode`, so a rotation after
+  the pin changes neither the bodies nor their lengths; `Chain.MaxEncodedLen` and
+  `Chain.LengthOf` go, since only an attempt knows its material. The largest encoded block on a
+  put is the maximum `Attempt.MaxEncodedLen` over open attempts, which changes at run time, so
+  the put side's pool is sized once by `MaxDecodeLen(Max)` (RFC 3 §2.2 follows, amended in the
+  RFC 3 plan's pull request), and §2.5's removal waits for no open pin, as §5.3 does.
 - **§3.1 and §5.3, removal lands with its first caller**, GC's retirement or an operator's
   destroy, an operation RFC 23 does not yet specify; its fence waits for open pins, not
   encodes (§5.3, T13).
@@ -75,8 +79,9 @@ integration epics touch no v1 code (§1.5 rule 7).
   object names the first export key from the start, so nothing migrates.
 - **Appendix B.2, the `keys` object's read-back on `Recheck` lands with `Recheck`'s first
   caller**, GC.
-- **Appendix B.1, the periodic primary-version read lands with GC's recheck period**; until
-  then the provider reads it when the configuration opens.
+- **Appendix B.1, the periodic primary-version read runs on the provider's own ticker** at
+  GC's recheck period until GC lands, and at open, so an in-place rotation is not left unseen
+  until the next open.
 - **§2.8, a block's chain ID is its pin's.**
 - **Appendix B.1 and B.2, the key material's review:** a chunk's nonce is an HMAC of its AAD and
   input under `dittofs chunk nonce v2`, so a later format version that keeps the labels cannot
@@ -305,7 +310,7 @@ registered (§1.2).
 8. **Real dependencies for properties of those dependencies** (`CLAUDE.md`, "Writing tests").
    Here: a real KMIP server, the harness's `service:kmip`, for the key service (RFC 5 §8.1's
    key-management row, in `integration`); the real metadata store for key records and the key
-   lock, through kvstore's conformance run of the key-record suite (D7) over Badger under
+   lock, through the engine's wiring tests running the key-record suite (D7) over Badger under
    `t.TempDir()`, the memory KV and, where that suite runs, FoundationDB. Key creation, escrow
    and rotation are ordering claims (a key record committed before the wrap or key is used, a
    key current only after the bucket's put): each has a crash-seam row in that suite, with
@@ -553,12 +558,14 @@ integration tier. Prior art: as D5. Applies in epic 6.
 transforms import no other component (§1.5 rule 7), so `material` declares the calls it needs,
 named for the need: read a namespace's key records, create its keys in one transaction, and
 rewrite them under the `keyseq` key lock, and raise a master key's wrap count (D3) by a
-conditional write. `pkg/metadata/kvstore` implements it in the store's
-own transactions, and the engine's wiring passes it in, as RFC 14 §11.1 defines `OpenRecords`
-for the store to implement (RFC 16 §3). Its suite is in `materialtest` with a verified
-in-memory view; kvstore's conformance run calls the same suite, so Badger, the memory KV and
+conditional write. Its calls take and return plain types only (byte slices, `[16]byte`
+namespace IDs, strings, integers, the key records in RFC 16 §4.3's codec as bytes), so
+`pkg/metadata/kvstore` satisfies it in the store's own transactions without importing
+`pkg/transform`, which RFC 0 §1.2 forbids it (§1.5 rule 7); the engine's wiring passes it in.
+Its suite is in `materialtest` with a verified in-memory view. The engine's wiring tests, which
+may import both packages, run the same suite against kvstore, so Badger, the memory KV and
 FoundationDB all run the key-record and key-lock rows, the lock's conflict under FoundationDB
-included. Stage 7's rename of `kvstore` to `pkg/metadata` moves only the implementation. The
+included; kvstore's own conformance run does not call it. Stage 7's rename of `kvstore` to `pkg/metadata` moves only the implementation. The
 provider holds unwrapped namespace keys in process memory, per namespace. Prior art: RFC 14's
 `OpenRecords`, the other consumer-declared view. Applies in epic 6.
 
@@ -742,7 +749,7 @@ The two shipped compressors.
 **Owns:** RFC 5 Appendix A.
 **Done when:** `transformtest` passes for zstd and LZ4 with their fixtures; Appendix A's level
 range refused at build; the Appendix D rows of §1.4 placed here; RFC 5 §8.3's per-transform,
-compression-ratio and `Chain.MaxEncodedLen`-against-the-largest-body benchmarks over the RFC 2
+compression-ratio and `Attempt.MaxEncodedLen`-against-the-largest-body benchmarks over the RFC 2
 plan's corpus.
 
 **Expected content:**
@@ -771,8 +778,9 @@ per-transform benchmark.
 - The salt key, salt, chunk key, nonce key and nonce derivations, and the chunk AAD, against the
   vectors; the salt key is derived once per data key and cached with it, while the chunk key,
   new per chunk, pays its AES key schedule each time.
-- `Encode` and `Decode` asking `Materials` for the current and the named data key; kind refusal
-  at construction.
+- `Kinds` returning `data-key`; `Encode` sealing under the pinned data key it is passed and
+  `Decode` under the data key a body names, each getting the key's content from `Materials.Get`;
+  `LengthOf` and `MaxEncodedLen` exact under the pinned key ID; kind refusal at construction.
 - The fixture (D12) and the series.
 
 ### Epic 6 — Namespace keys and the provider
@@ -801,7 +809,8 @@ under its master key and associated data; RFC 5 §8.1's wrap-count row (one wrap
 
 **Expected content:**
 - The key-record view `material` declares, its suite and in-memory view in `materialtest`, and
-  its `kvstore` implementation under kvstore's conformance run (D7), fuzzed decode, and the
+  its `kvstore` implementation, in plain types, under the engine's wiring tests' run of that
+  suite (D7), fuzzed decode, and the
   `keyseq` subtag with its row in `pkg/metadata/kv/keys`' table.
 - The key-file format's reader moved to `internal/keyfile` (D5).
 - The stored wrap and the key-file custody (D5, D6), with the custody interface and its suite;
@@ -856,7 +865,7 @@ Appendix B.4's destroyed material as the provider reports it (D17).
 the old key current; a late put of sequence 7 is repaired at 9 by the next writer; a key-file
 master-key rotation without escrow refused); RFC 5 §8.2's Appendix B.1 key-service rows, but their
 destroy-check clauses and the periodic read (an in-place rotation re-wraps; a retargeted alias
-the same; a rotation while nothing is written, at the next open), if the harness's server can
+the same; a rotation while nothing is written, at the next period), if the harness's server can
 rotate in place (O9); RFC 13 §9's "§7 key table" row's data-key rotation clause; a crash torn
 beneath a rotation leaves the old key current; the notice reports a destroyed key
 record and a master key the key service reports destroyed, on the in-memory `Materials` and on
@@ -868,8 +877,8 @@ the provider, under `materialtest`.
   crash-seam test.
 - The `keys` object (D8): its store interface and `materialtest`'s suite and in-memory store,
   the writer under the key lock, MAC, read-back and repair; fuzzed decode.
-- The primary-version read at open that starts a master-key rotation; its periodic read is
-  GC's (§6.1).
+- The primary-version read that starts a master-key rotation: at open, and on the provider's
+  own ticker at RFC 9 §7.5's fixed period until GC's recheck pass takes it over (§6.1).
 - The destroyed-material notice (D17).
 
 ### Epic 9 — Integration
@@ -958,8 +967,10 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
 
 - **A1. RFC 25 §3.9 and §7.** The registry gains `material_unknown` (namespace, unhealthy:
   behaves as an unavailable remote, page at 5 min) and `material_destroyed` (namespace,
-  `data_loss`, page at once), and §7's ticket list gains
-  `transform_decode_failures_total{error="malformed"}`. RFC 5 Appendix B.4 names the three
+  `data_loss` while a census entry or journal-held chunk depends on the material, clearing once
+  none does, page at once), and §7's ticket list gains
+  `transform_decode_failures_total{error="malformed"}`, net of the syncer's recovered re-gets.
+  RFC 5 Appendix B.4 names the three
   material conditions.
 - **A3. RFC 23 §4.1 and §4.6.** The actions table gains `rotate-data-key` (namespace) and
   `rotate-master-key` (remote store), both `admin` operations, and `verify-escrow` (remote
@@ -1001,7 +1012,7 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
 | --- | --- | --- | --- |
 | `Materials.Remove`, its fence and its count of open pins; RFC 5 §8.2's T13 rows; the census check before removal; erasure of every copy (§6 Q1, D10, RFC 5 §5.3 as amended) | no caller in v1.1: GC's retirement or an operator's destroy is the first | RFC 9 | RFC 9's plan starts, or an operator's destroy is specified first |
 | The operator's destroy operation and its `dfsctl` command (D15) | RFC 23 does not specify it; `Remove` lands with it or before it | unowned | RFC 9's plan starts or an operator needs to destroy a key |
-| The periodic primary-version read of RFC 5 Appendix B.1 (as amended), and the "at the next period" clause of its key-service row | RFC 5 ties it to GC's recheck period (RFC 9 §7.5); in v1.1 the provider reads it at open only | RFC 9 | RFC 9's plan starts |
+| Moving the periodic primary-version read of RFC 5 Appendix B.1 (as amended) from the provider's own ticker into GC's recheck pass | in v1.1 the provider runs it on its own ticker at RFC 9 §7.5's period, since GC does not run yet | RFC 9 | RFC 9's plan starts |
 | Retirement relocation, its walk and where the retiring set is recorded; RFC 5 §8.2's §5.2 row and §5.3's retirement half (D9) | GC is planned later (#5488) | RFC 9 (roadmap #3620) | RFC 9's plan starts |
 | A drained namespace's key removal under the check token (RFC 5 §5.3) | RFC 9 §7.6's drain runs it | RFC 9 (roadmap #3620) | RFC 9's plan starts |
 | The `keys` object's read-back on each `Recheck` pass (RFC 5 Appendix B.2 as amended; O10) | `Recheck` has no caller in v1.1 (RFC 4 §4.11: only GC runs it) | RFC 9 | RFC 9's plan starts |
