@@ -18,6 +18,9 @@ import (
 )
 
 // settingsPage is the rows of one page of the settings walk, RFC 23 §2.3's 256.
+// It must equal kvstore's unexported pageSize: the walk arms its bound once
+// per settingsPage rows to match one store page read, so changing only one of
+// the two shifts which reads the bound covers.
 const settingsPage = 256
 
 // settingsWalk is one settings walk's read of the store: the node view's own,
