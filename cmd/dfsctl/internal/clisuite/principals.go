@@ -114,13 +114,14 @@ func principalRows() []row {
 			// A membership has no read route, so it is read back as the API
 			// answers a second add or removal: refused 412 while it exists, and
 			// once it is gone.
-			mismatch := string(apiv1.CodeGenerationMismatch)
-			if _, errOut, status := run(t.Context(), "group", "add-member", g, u); status == 0 || !strings.Contains(errOut, mismatch) {
-				t.Errorf("group add-member %s %s a second time: status %d, stderr %q, want %s, a member already", g, u, status, errOut, mismatch)
+			already := fmt.Sprintf("user %q is already a member of group %q", u, g)
+			if _, errOut, status := run(t.Context(), "group", "add-member", g, u); status == 0 || !strings.Contains(errOut, already) {
+				t.Errorf("group add-member %s %s a second time: status %d, stderr %q, want %q", g, u, status, errOut, already)
 			}
 			mustRun(t, run, "group", "remove-member", g, u)
-			if _, errOut, status := run(t.Context(), "group", "remove-member", g, u); status == 0 || !strings.Contains(errOut, mismatch) {
-				t.Errorf("group remove-member %s %s a second time: status %d, stderr %q, want %s, no member", g, u, status, errOut, mismatch)
+			notMember := fmt.Sprintf("user %q is not a member of group %q", u, g)
+			if _, errOut, status := run(t.Context(), "group", "remove-member", g, u); status == 0 || !strings.Contains(errOut, notMember) {
+				t.Errorf("group remove-member %s %s a second time: status %d, stderr %q, want %q", g, u, status, errOut, notMember)
 			}
 			mustRun(t, run, "group", "add-member", g, u)
 		}},
@@ -170,6 +171,10 @@ func principalRows() []row {
 				t.Errorf("token create --expires-in 1h: expires %v, want an hour after its creation, %v", got, want)
 			}
 			mustRun(t, run, "token", "revoke", ts[0].ID)
+			none := "no API token " + ts[0].ID + " for this account"
+			if _, errOut, status := run(t.Context(), "token", "revoke", ts[0].ID); status == 0 || !strings.Contains(errOut, none) {
+				t.Errorf("token revoke %s a second time: status %d, stderr %q, want %q", ts[0].ID, status, errOut, none)
+			}
 			if _, errOut, status := withToken(t.Context(), "group", "list"); status == 0 || !strings.Contains(errOut, string(apiv1.CodeUnauthenticated)) {
 				t.Errorf("group list with the revoked token: status %d, stderr %q, want it refused %s", status, errOut, apiv1.CodeUnauthenticated)
 			}
