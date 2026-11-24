@@ -346,16 +346,16 @@ registered (§1.2).
 | E2 ⛔ | Test foundations | `transformtest` with its broken-transform check, `materialtest` with the in-memory `Materials`, RFC 5's golden vectors, the catalogue | 4 | 9.5 | team | E3 to E8 |
 | E3 | The chain | registry, envelope, chain build and refusals, the pin, composed encode and decode with bounds, the census view, `require`, the chain ID, §6's series, the allocation option | 7 | 15 | A | E9; partly E4, E8 |
 | E4 | Compression | zstd and LZ4, their header, decline, window cap, fixtures, ratio benchmarks | 4 | 8.5 | A | E9 |
-| E5 | Encryption | AES-256-GCM from the standard library, the chunk derivations, nonce and AAD, the header, kind refusal, fixtures and vectors | 4 | 8 | B | E9; partly E6 |
-| E6 | Namespace keys and the provider | key-record view, stored wrap and its wrap count, key-file custody, escrow, `Materials` with fingerprints and its three failures, namespace key creation, the salvage-key wrap, B.6's gauges, the custody suite | 8 | 18 | C | E8, E9; partly E7 |
+| E5 | Encryption | AES-256-GCM from the standard library, the chunk derivations, nonce and AAD, the header, kind refusal, fixtures and vectors | 4 | 8.5 | B | E9; partly E6 |
+| E6 | Namespace keys and the provider | key-record view, stored wrap and its wrap count, key-file custody, escrow, `Materials` with fingerprints and its three failures, namespace key creation, the salvage-key wrap, B.6's gauges, the custody suite | 8 | 19 | C | E8, E9; partly E7 |
 | E7 | Key-service custody | KMIP wrap and unwrap through the server with AAD, version-qualified IDs, the primary version, the real-server row's provider half | 4 | 7 | B | E9; partly E8 |
-| E8 | Rotation and the destroyed-material notice | master and data key rotation in the bucket, the `keys` object, the notice | 5 | 10 | C | E9 |
+| E8 | Rotation and the destroyed-material notice | master and data key rotation in the bucket, the `keys` object, the notice, the primary-version ticker | 5 | 11 | C | E9 |
 | E9 | Integration | settings keys and the bound `encrypts`, the key operations, collectors and alert rules, error mapping, namespace key creation | 5 | 12 | team | E10, E11 |
 | E10 🔀 | Integration, the census | `transform_census_blocks` and the census per material | planned after S7 | planned after S7 | team | — |
 | E11 🔀 | E2E green | RFC 5's codec and engine rows, the put and get benchmark | 6 | 10 | team | — |
-| | **Total** | | **50** | **101.5** | | |
+| | **Total** | | **50** | **104** | | |
 
-**Plan estimate: 50 subtasks, 101.5 man-days, not counting epic 10.**
+**Plan estimate: 50 subtasks, 104 man-days, not counting epic 10.**
 
 The skill's estimate for RFC 5's 1,999 lines is 5 middle epics (`round(1999 / 400)`); this plan
 has 6. Master-key custody through a key service shares no state with the namespace key records
@@ -760,7 +760,7 @@ plan's corpus.
 
 ### Epic 5 — Encryption
 
-**Epic 5 estimate: 4 subtasks, 8 man-days.**
+**Epic 5 estimate: 4 subtasks, 8.5 man-days.**
 
 The shipped encryption transform, which needs a namespace's data key.
 
@@ -785,7 +785,7 @@ per-transform benchmark.
 
 ### Epic 6 — Namespace keys and the provider
 
-**Epic 6 estimate: 8 subtasks, 18 man-days.**
+**Epic 6 estimate: 8 subtasks, 19 man-days.**
 
 The provider that implements `Materials` for a store configuration, over key records in the
 metadata store and master keys in a key file.
@@ -853,7 +853,7 @@ wrap for a key service, as bytes (the string-map half is §6.1's, Q3).
 
 ### Epic 8 — Rotation and the destroyed-material notice
 
-**Epic 8 estimate: 5 subtasks, 10 man-days.**
+**Epic 8 estimate: 5 subtasks, 11 man-days.**
 
 Keys changing over time in the bucket, and the notice the engine reads when material is gone
 for good.
