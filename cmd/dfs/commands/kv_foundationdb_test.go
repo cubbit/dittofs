@@ -213,7 +213,8 @@ func TestStartClosesTheStoreOnFoundationDB(t *testing.T) {
 }
 
 // ownCluster is the cluster file of the FoundationDB cluster the test owns,
-// as an installation does, cleared of every key when the test ends. Without
+// as an installation does, cleared of every key before the test and when it
+// ends: a run killed before its cleanup leaves no keys behind. Without
 // one, or without DITTOFS_FDB_OWN_CLUSTER to say no other test shares it,
 // the test is skipped.
 func ownCluster(t *testing.T) string {
@@ -222,9 +223,10 @@ func ownCluster(t *testing.T) string {
 	if cf == "" {
 		t.Skip("no FoundationDB: run through test/fdb/cluster.sh test, which sets DITTOFS_FDB_CLUSTER_FILE")
 	}
-	if os.Getenv("DITTOFS_FDB_OWN_CLUSTER") == "" {
+	if !ownFDBCluster {
 		t.Skip("clears the whole cluster: set DITTOFS_FDB_OWN_CLUSTER=1 on a cluster of its own, with -p 1")
 	}
+	fdbkvtest.ClearAll(t, cf)
 	t.Cleanup(func() { fdbkvtest.ClearAll(t, cf) })
 	return cf
 }
@@ -301,7 +303,9 @@ func TestStartAndInitRefuseAForeignClusterOnFoundationDB(t *testing.T) {
 	if code == 0 {
 		t.Errorf("dfs start on a cluster holding %q: exit 0; want a refusal:\n%s", foreign, startOut)
 	}
-	refusals := map[string]string{"start": startOut}
+	// Only the error line: the rest of the child's log holds paths, which
+	// may hold anything, "v1" included.
+	refusals := map[string]string{"start": errorLine(startOut)}
 	if initErr != nil {
 		refusals["init"] = initErr.Error()
 	}
@@ -320,4 +324,15 @@ func TestStartAndInitRefuseAForeignClusterOnFoundationDB(t *testing.T) {
 	if got := records(); !slices.EqualFunc(got, want, bytes.Equal) {
 		t.Fatalf("the cluster's keys after the refusals: %q; want those before them, %q, plus this node's clock ceiling %q, nothing else", got, before, ceiling)
 	}
+}
+
+// errorLine is what follows "Error: " on the line dfs prints its error on,
+// "" when out holds none.
+func errorLine(out string) string {
+	for line := range strings.Lines(out) {
+		if after, ok := strings.CutPrefix(line, "Error: "); ok {
+			return strings.TrimSuffix(after, "\n")
+		}
+	}
+	return ""
 }
