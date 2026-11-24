@@ -22,7 +22,7 @@ a pending callback. Every citation is `develop`'s text, which holds amendment A2
 Cited, not owned: RFC 8881 §20 for the callback program's bytes, §18.16 for `open_delegation4`,
 §18.39 for `GET_DIR_DELEGATION`; RFC 5531 for the RPC reply; RFC 20 §2.5's layout of `ops/cb`.
 **Track:** A.
-**Epic 10 estimate: 9 subtasks, 26 man-days.**
+**Epic 10 estimate: 9 subtasks, 26.5 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state and members' table (T1.1,
 T1.2), E2's `nfsharness` (T2.2) and knfsd's `nfs41/` delegation capture with its `CB_RECALL` (T2.3).
 **S4**, an NFSv4.1 session over loopback, for every loopback row. **S2b**, met: amendment A2 is in
@@ -261,13 +261,19 @@ so that subtasks and tests can cite them.
   (§2.10.6.1.2), so:
   - a slot's sequence ID advances only on a `CB_SEQUENCE` result of `NFS4_OK`, or on
     `NFS4ERR_RETRY_UNCACHED_REP` to a resent call, which proves the client ran it;
+  - `NFS4ERR_BADSLOT` and `NFS4ERR_SEQ_MISORDERED` say the client's view of the slot differs from
+    ours, and a resend at that ID would fail the same way, so they retire the slot for the back
+    channel's life and fail that callback; a back channel whose slots are all retired is silent
+    (D4, D15), and a new session's back channel starts with fresh slots;
   - any other `CB_SEQUENCE` error, and an RPC-level refusal (`PROG_UNAVAIL`, `MSG_DENIED` and the
     like) where `CB_SEQUENCE` never ran, frees the slot with its sequence ID unchanged and fails
     that callback;
-  - a call unanswered when its connection closes keeps its slot and its encoded bytes, and is resent
-    unchanged, the same sequence ID, as the first thing sent on the back channel's next bound
-    connection (§2.10.6.2 lets a requester re-send only after a disconnect); its slot is free only
-    once that resend is answered. knfsd resends the callback the same way (from memory).
+  - a call unanswered when its connection closes keeps its slot and its encoded arguments, and is
+    resent with the same slot, sequence ID and arguments, under a new XID from the next
+    connection's allocator, since XIDs are per connection and the old one may be another call's
+    there, as the first thing sent on the back channel's next bound connection (§2.10.6.2 lets a
+    requester re-send only after a disconnect); its slot is free only once that resend is answered.
+    knfsd resends the callback the same way (from memory).
   The slot record holds the bytes, so the bound stays the slot count (R5, R7). A `decision:` marker
   at the slot table on the empty referring-call lists, overturned if a client is seen misordering a
   recall against the `OPEN` reply that granted it.
@@ -282,8 +288,9 @@ so that subtasks and tests can cite them.
   until the client binds again, which re-registers through `Connect` and so is another route. A
   `decision:` marker at `BackChannel.Send`, overturned if a delegation is seen revoked at its
   deadline while its recall waited for a slot. A client that never answers on a live connection
-  keeps its slots busy (D3); once every slot has been outstanding past the 35 s callback deadline
-  the back channel is silent, its callbacks fail and R28's `ChannelDown` runs (T10.6), so recalls
+  keeps its slots busy (D3); once every slot has been outstanding past the 35 s callback deadline,
+  or retired (D3), the back channel is silent: `Send` fails `ErrChannelSilent`, and the registry's
+  sweep, not a `Send`, notices it and makes R28's `ChannelDown` (D15, T10.6), so recalls
   are revoked at their deadline, the outcome RFC 21 §3.4 gives a callback with nowhere to go, and no
   delegation is offered until a re-bind.
 - **D5. Where `SEQUENCE` reads `Reach.Down`. Pending the user's answer** (Q2). `ClientStatus` has no
@@ -366,10 +373,11 @@ so that subtasks and tests can cite them.
   `CREATE_SESSION`, `BIND_CONN_TO_SESSION` or `BACKCHANNEL_CTL` binds before it calls `Connect`, so
   its `Rebind` lands after the `ChannelDown` and clears it (R35). RFC 20 §3.2 keys that wait by the
   session; it is per client here because `ChannelDown` is the client's. A `ChannelDown` still failing
-  when the context ends is dropped, not handed to `Deps.Retry`: the path stays up in the record,
-  recalls fail at once on the dead channel and are revoked at their deadline, as RFC 21 §3.4 has a
-  callback with nowhere to go; the drop is logged at `Warn` with the client ID and no address
-  (rule 3). A connection the server closes itself, in `Stop`, makes no `ChannelDown`: a stopping
+  when the context ends is left owed to the registry's sweep (D15), which repeats it under the same
+  lock until it succeeds or a `Bind` of the client clears it, so the record does not keep offering
+  delegations on a dead path (R32); it is not handed to `Deps.Retry`, whose repeats that lock would
+  not order before a re-bind's `Rebind` (R35). Each failure is logged at `Warn` with the client ID
+  and no address (rule 3). A connection the server closes itself, in `Stop`, makes no `ChannelDown`: a stopping
   node offers no grant (`OPEN` is refused while draining) and RFC 21 §3.4 counts the node's loss as
   the path down, so one service write per connection inside the 30 s grace would only make stop
   time grow with the clients; a `decision:` marker at the `OnClose` says so, overturned if a
@@ -377,6 +385,21 @@ so that subtasks and tests can cite them.
   `decision:` marker at `Bind` on the lock held across a service call, which blocks only that
   client's binds; overturned if a bind is seen waiting on a slow `ChannelDown` in a profile. Prior art: knfsd marks the callback path down from its transport's
   close callback (`nfsd4_conn_lost`, from memory).
+- **D15. The silent check and an owed `ChannelDown` run on the registry's sweep.** A silent back
+  channel (D4) shows only in `Send`, and after the callback deadline the service may send nothing
+  more, so a check inside `Send` might never run. E8's session registry already sweeps on its
+  injected clock (E8's D3, the Pending expiry); T10.6 adds two per-client steps to it, under the
+  client's back-channel lock and a detached 30 s context, as `OnClose`'s (D14): a back channel
+  found silent is unbound from its connections (without closing them, releasing their `Keep`) and
+  the client's `ChannelDown` becomes owed; an owed `ChannelDown` is made, and stays owed until it
+  succeeds or a `Bind` of the client, which takes the same lock, clears it. `RecallGrant` and
+  `RecallAny` make no service call: they answer `ErrChannelSilent` and leave the `ChannelDown` to
+  the sweep, so no mutating call re-enters the service from inside its sink, nor runs under the
+  recall's own short context. Prior art: knfsd's laundromat runs its periodic client checks the
+  same way (from memory). A `decision:` marker at the sweep names the ceiling: a silent client's
+  path, or a failed `ChannelDown`, reaches the record up to one sweep period late, and an `OPEN` in
+  that window may be offered a delegation that is revoked at its deadline; overturned if that is
+  seen, when the check would run on the `SEQUENCE` before the `OPEN`.
 
 ## 5. Target tree
 
@@ -395,7 +418,7 @@ internal/vfs/
   clients.go                       T10.5  ChannelDown, Connect's Rebind, the decision rewritten
   sink.go                          T10.3  RecallGrant's handle, under Q1
 internal/adapter/nfs/
-  callbacks.go                     T10.3  RecallGrant, RecallAny, Notify, LockWaitOver, Revoked for grants and an administrator's revoke; T10.6  ChannelDown when no working back channel is left
+  callbacks.go                     T10.3  RecallGrant, RecallAny, Notify, LockWaitOver, Revoked for grants and an administrator's revoke; T10.6  ChannelDown when no working back channel is left, the sweep's silent check and owed ChannelDown (D15)
   delegation_test.go               T10.4, T10.6, T10.7, T10.8  loopback rows
   drain_test.go                    T10.9  the drain against Linux's compounds
   wire/
@@ -483,15 +506,15 @@ internal/adapter/adaptertest/nfsclient/
   `CREATE_SESSION4_FLAG_CONN_BACK_CHAN` (T8.4), and its `BIND_CONN_TO_SESSION` and `BACKCHANNEL_CTL`
   (T8.9), call `NewBackChannel` and `Bind` with what they accepted; this subtask calls `Unbind` when a
   bound connection closes, from the `Stages.OnClose` that `protocol.NewConn` builds for it (D14),
-  freeing the slots of the calls sent on that connection, and makes `Bind` take the client's
+  keeping each unanswered call's slot and arguments for D3's resend, and makes `Bind` take the client's
   back-channel lock (R35). A call's XID comes from one allocator per connection, since one
   connection can carry several back channels (D14); `stages.go`'s `Route` matches a reply by
   (connection, XID) to the `BackChannel` that sent it and hands it to its `Reply`, and drops any
   other reply, as it drops any message that is not a call. `Reply` frees the slot only when the
   `CB_SEQUENCE` result names that call's session, slot and sequence ID, and drops a reply that does
   not; either drop is logged at `Debug`, with no address (rule 3). A slot advances, keeps its
-  sequence ID, or keeps its call for a resend as D3 says, and the resends go first on the next
-  `Bind`. An outstanding call is a slot record, not a goroutine. Consumed by T10.3 and T10.6.
+  sequence ID, retires, or keeps its call for a resend as D3 says, and the resends go first on the
+  next `Bind`, each under a new XID from that connection's allocator. An outstanding call is a slot record, not a goroutine. Consumed by T10.3 and T10.6.
 - **Acceptance criteria:**
   - Over loopback, a session created with a back channel and slot count 2 receives, on its
     connection, a `CB_COMPOUND` to the session's callback program whose `CB_SEQUENCE` names its
@@ -516,7 +539,11 @@ internal/adapter/adaptertest/nfsclient/
   call). D3's rules, each at the bytes the scripted client reads: a call whose reply is lost, the
   connection closed, a new one bound: the same call is resent first with the same sequence ID, the
   client answers it, and the next recall on that slot carries the next ID and succeeds (catches a
-  different call sent on a reused ID, answered `NFS4ERR_RETRY_UNCACHED_REP`); one call answered
+  different call sent on a reused ID, answered `NFS4ERR_RETRY_UNCACHED_REP`, or a slot freed at
+  the close); the resend carrying an XID the new connection's allocator issued, with a second call
+  sent there meanwhile and each answer freeing its own slot (catches a carried XID matching another
+  call's reply); one call answered `NFS4ERR_SEQ_MISORDERED`, then the next call going on the other
+  slot and never on that one (catches a slot that fails the same way forever); one call answered
   `PROG_UNAVAIL`, then the next call on that slot carries the same sequence ID and succeeds
   (catches a slot advanced past a call the client never ran, which never converges). Reply routing:
   two sessions on one connection, each with a call outstanding, each answer freeing its own
@@ -537,7 +564,8 @@ internal/adapter/adaptertest/nfsclient/
   - `RecallGrant`: `CB_RECALL` of the delegation's stateid and file handle (D1, D7) through the
     latest bound session's `BackChannel` (D2), answering `sent` once queued; `sent` false and a nil
     error when no slot is free, so the service resends it (D4); the error when no back channel is
-    live or it is silent (R3, D4), the silent case after T10.6's `ChannelDown`.
+    live or it is silent (R3, D4), `ErrChannelSilent` with no service call, the `ChannelDown` left
+    to the sweep (D15).
   - `RecallAny`: `CB_RECALL_ANY` with `craa_objects_to_keep` the service's `keep` and the read and
     write delegation types in its mask; nil and nothing sent for an NFSv4.0 client.
   - `Notify`: nil and nothing sent (R23). `LockWaitOver` for an NFSv4 client: nothing sent, neither
@@ -666,7 +694,7 @@ internal/adapter/adaptertest/nfsclient/
 
 ### T10.6 The path down on the wire
 
-**Subtask T10.6 estimate: 3.5 man-days.**
+**Subtask T10.6 estimate: 4 man-days.**
 
 - **Track:** A. **Depends on:** T10.3, T10.4, T10.5, T8.6.
 - **Covers:** R2, R28, R31, R32, R35.
@@ -677,11 +705,11 @@ internal/adapter/adaptertest/nfsclient/
     connection's close, from its `OnClose`; E8's `DESTROY_SESSION` of the session holding it, whose
     session end this subtask makes `Unbind` each of the session's back-channel connections; E8's
     `BIND_CONN_TO_SESSION` re-binding a connection for the fore channel only, which `Unbind`s it
-    from the back channel; and a silent back channel, which `Send` reports with `ErrChannelSilent`
-    once every slot has been outstanding past the 35 s callback deadline on the server's clock, and
-    `RecallGrant` or `RecallAny` then unbinds the session's connections from the back channel
-    (without closing them, and releasing their `Keep`) and makes the `ChannelDown` before it
-    returns the error, inside its own context's deadline (R4). A connection the server closes in
+    from the back channel; and a silent back channel, every slot outstanding past the 35 s callback
+    deadline on the server's clock or retired (D3), which the registry's sweep finds whether or not
+    another `Send` comes, unbinding the session's connections from the back channel (without
+    closing them, and releasing their `Keep`). The sweep also repeats a `ChannelDown` that failed
+    until it succeeds or a `Bind` clears it (D15). A connection the server closes in
     `Stop` makes no `ChannelDown` (D14).
   - Under Q2's recommended answer, `ClientStatus.ChannelDown` in `pkg/openstate`, reported by
     `Renew` from `known[c].down`, and T8.6's renewal step keeping it with the cached `ClientStatus`
@@ -709,14 +737,18 @@ internal/adapter/adaptertest/nfsclient/
   closed with its `ChannelDown` held in the service by `vfstest.Faults`' delay (kind 3), a
   `BIND_CONN_TO_SESSION` sent on a new connection meanwhile, then the delay released: the next
   `SEQUENCE` carries no `SEQ4_STATUS_CB_PATH_DOWN` and the next `OPEN` is offered a delegation
-  (catches a late `ChannelDown` landing after the rebind, R35). `vfstest.Mutations` shows one
+  (catches a late `ChannelDown` landing after the rebind, R35). The close's `ChannelDown` failed
+  once through `vfstest.Faults`, then the clock advanced one sweep period: the next `OPEN` is
+  offered no delegation; the same failure followed by a `BIND_CONN_TO_SESSION` before the sweep:
+  no `ChannelDown` after the `Rebind` in `vfstest.Mutations` (catch a dropped `ChannelDown`, R32, or
+  a repeat landing after a re-bind, R35). `vfstest.Mutations` shows one
   `ChannelDown` per close. R28's other causes, each asserted on the next `SEQUENCE`'s
   `SEQ4_STATUS_CB_PATH_DOWN` and the next `OPEN` offered no delegation: the `DESTROY_SESSION`, the
-  fore-only re-bind, and the silent client, its clock advanced past the callback deadline with its
-  slots unanswered (catch a path left up with no working back channel, R28, RFC 14 §5.4). `Stop`
+  fore-only re-bind, and the silent client, its clock advanced past the callback deadline and one
+  sweep period with its slots unanswered and no further recall sent (catch a path left up with no working back channel, R28, RFC 14 §5.4). `Stop`
   with a back channel bound: `vfstest.Mutations` shows no `ChannelDown` (catches a service write per
   connection on a planned stop, D14). No test double.
-- **Rules:** rule 3, `nfs_cb_path_down_total` as §1.2 says; rule 9, D2's, D5's and D14's `decision:`
+- **Rules:** rule 3, `nfs_cb_path_down_total` as §1.2 says; rule 9, D2's, D5's, D14's and D15's `decision:`
   markers.
 
 ### T10.7 Revocations
@@ -843,7 +875,7 @@ to T10.9 are tests over what T10.4 offers and can run in any order.
 | 1 | T10.1 | 2 | — | the callback program's bytes and the call codec in `wire`, which E11's T11.2 waits on and which needs no session |
 | 2 | T10.2, T10.3 | 7.5 | PR 1 | the server calling the client, from the back channel to the callbacks the service makes |
 | 3 | T10.4 | 3 | PR 2 | delegations offered, recalled and returned end to end |
-| 4 | T10.5, T10.6 | 5.75 | PR 3 | the path down, the service's half and the wire's; T10.5 can open beside PR 1 |
+| 4 | T10.5, T10.6 | 6.25 | PR 3 | the path down, the service's half and the wire's; T10.5 can open beside PR 1 |
 | 5 | T10.7, T10.8, T10.9 | 7.75 | PR 3 | the rows over delegations: revocations, locks in a recall, the budget, the drain |
 
 A suggestion only: one pull request per subtask works as well; PR 4 and PR 5 can be open at once.
