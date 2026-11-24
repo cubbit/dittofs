@@ -17,9 +17,80 @@ fi
 case $1 in
 small | full)
 	test -n "${BENCH_RUN_ROOT:-}" || { echo "set BENCH_RUN_ROOT to the root holding run folders" >&2; exit 2; }
-	# Placeholder: exiting 2 refuses the scheduled run loudly rather than
-	# recording an empty one.
-	exit 2
+	kind=$1
+
+	# A load that never drops under the threshold within the budget refuses
+	# the run instead of running hot.
+	# decision: a missing or unreadable /proc/loadavg skips the quiet wait
+	# and runs immediately (a dev machine has no /proc; the bench host has
+	# it). The exemption is worth only what running hot costs — take on the
+	# host check before pointing this script at a host without /proc.
+	if [ -r /proc/loadavg ]; then
+		deadline=$(( $(date +%s) + ${BENCH_QUIET_MAX_WAIT:-14400} ))
+		while [ "$(cut -d' ' -f1 /proc/loadavg | cut -d. -f1)" -ge "${BENCH_QUIET_LOAD:-4}" ]; do
+			[ "$(date +%s)" -lt "$deadline" ] || { echo "host not quiet under ${BENCH_QUIET_LOAD:-4} within ${BENCH_QUIET_MAX_WAIT:-14400}s" >&2; exit 2; }
+			sleep 300
+		done
+	fi
+	# One bench run at a time: a lock held past its wait refuses the run
+	# rather than racing the other kind over the same host.
+	if [ -n "${BENCH_LOCK:-}" ]; then
+		exec 9>"$BENCH_LOCK"
+		flock -w "${BENCH_LOCK_WAIT:-7200}" 9 || { echo "lock $BENCH_LOCK not free within ${BENCH_LOCK_WAIT:-7200}s" >&2; exit 2; }
+	fi
+
+	# Update before anything is recorded: a fetch failure aborts here, so no
+	# run folder is ever filed against a stale commit. Uncommitted work in
+	# this dedicated checkout is not kept.
+	git fetch origin feat/storage-v2 || { echo "git fetch failed" >&2; exit 2; }
+	git reset --hard FETCH_HEAD || { echo "git reset failed" >&2; exit 2; }
+
+	# The previous folder of the kind feeds benchstat; it is read before the
+	# run dir exists so it can never be the run itself.
+	prev=
+	[ -d "$BENCH_RUN_ROOT/$kind" ] && prev=$(ls -1dt "$BENCH_RUN_ROOT/$kind"/*/ | sed -n 1p)
+	rundir=$BENCH_RUN_ROOT/$kind/$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short=12 HEAD)
+	mkdir -p "$rundir" || exit 2
+	git rev-parse HEAD >"$rundir/commit.txt"
+
+	s=0
+	if [ "$kind" = small ]; then
+		# Three collection groups; one group's failure is recorded and the
+		# later groups still run.
+		for g in j1 j2 j3; do
+			sh test/journal/bench-data.sh "$g" "$rundir" || s=$?
+		done
+	else
+		JOURNAL_BENCH_COUNT=10 sh test/harness/bin/dt run journal-bench \
+			--results "$BENCH_RUN_ROOT/.dt-results" >"$rundir/dt.log" 2>&1
+		s=$?
+		cat "$rundir/dt.log"
+		out=$(sed -n 's/^results: //p' "$rundir/dt.log" | tail -1)
+		# Losing the figures to a missing trailer or result file must not
+		# leave the run looking complete.
+		if ! { [ -n "$out" ] && cp "$out/journal-bench/bench.txt" "$rundir/bench.txt"; }; then
+			echo "no dt trailer or no bench.txt to copy from $out" >&2
+			s=1
+		fi
+	fi
+
+	# benchstat runs only when the binary exists and a previous run of the
+	# kind does; otherwise the run completes without benchstat.txt.
+	if command -v benchstat >/dev/null && [ -n "$prev" ]; then
+		for f in bench.txt j1.txt j2.txt j3.txt; do
+			[ -f "$prev/$f" ] && [ -f "$rundir/$f" ] || continue
+			{ echo "### $f"; benchstat -ignore commit "$prev/$f" "$rundir/$f"; } >>"$rundir/benchstat.txt"
+		done
+	fi
+
+	# An export failure leaves the run folder in place and its status in the
+	# run's exit, alongside any earlier failure.
+	if [ -n "${BENCH_EXPORT_DEST:-}" ]; then
+		sh test/journal/bench-export.sh "$rundir" || s=$?
+	fi
+	# A prune failure leaves in the run's status, like the export's does.
+	sh test/journal/bench-run.sh prune || s=$?
+	exit "$s"
 	;;
 prune)
 	test -n "${BENCH_RUN_ROOT:-}" || { echo "set BENCH_RUN_ROOT to the root holding run folders" >&2; exit 2; }
