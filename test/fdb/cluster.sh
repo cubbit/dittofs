@@ -15,9 +15,8 @@
 #                                   init, then dfs start until it is ready, then
 #                                   stop it; the cluster must be up and own
 #                                   nothing yet, since the installation owns it.
-#                                   The journal lives in DITTOFS_SMOKE_BLOCKS
-#                                   (default /dev/shm/dittofs-smoke-blocks),
-#                                   emptied before the run and removed after it
+#                                   The journal gets a loop-mounted ext4 made
+#                                   with sudo, or DITTOFS_SMOKE_BLOCKS if set
 #
 # Host networking, so the cluster file's 127.0.0.1 addresses are the ones the
 # test client dials. That works on Linux only; on macOS run it inside a Linux
@@ -100,36 +99,46 @@ up() {
 # wrote; host networking reaches the cluster file's 127.0.0.1 addresses.
 smoke() {
     local image=$1 port=18080 conf="$DATA/smoke" ready="" code
-    # decision: the journal gets a host directory on /dev/shm rather than the
-    # image's anonymous /data/blocks volume, because the journal refuses the
-    # mounts a runtime's volumes sit on here: the hosted runners, amd64 and
-    # arm64 alike, have one ext4 disk mounted nobarrier behind /var/lib/docker,
-    # RUNNER_TEMP, /tmp, the workspace and /mnt, and a Btrfs volume directory
-    # is not a subvolume. A tmpfs is not one the journal checks, and the smoke
-    # proves the image reaches FoundationDB, not the journal's durability.
-    # Point DITTOFS_SMOKE_BLOCKS elsewhere if a runner gains a disk the
-    # journal accepts and the smoke should cover it.
-    # Global, not local: the EXIT trap reads it after smoke has returned.
-    blocks="${DITTOFS_SMOKE_BLOCKS:-/dev/shm/dittofs-smoke-blocks}"
+    # decision: the journal gets a loop-mounted ext4 of its own at
+    # /data/blocks rather than the image's anonymous volume, because the
+    # journal refuses every disk mount of the hosted runners, amd64 and arm64
+    # alike: one root ext4 mounted nobarrier behind /var/lib/docker,
+    # RUNNER_TEMP, /tmp, the workspace and /mnt. The loop mount reports no
+    # nobarrier, so the platform check accepts it, though its syncs still land
+    # on that disk: the smoke proves the image's libfdb_c loads and an
+    # installation serves, not durability. It needs sudo, which the hosted
+    # runners give. DITTOFS_SMOKE_BLOCKS names a directory to use instead, on
+    # a mount the journal accepts, holding an empty journal directory the
+    # image's user 65532 can write; the smoke leaves it as it is.
+    # Globals, not locals: the EXIT trap reads them after smoke has returned.
+    blocks="${DITTOFS_SMOKE_BLOCKS:-}" img=""
+    if [[ -z "$blocks" ]]; then
+        blocks="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dittofs-smoke-blocks"
+        img="$blocks.img"
+    fi
     # As the image's user: a fixed name, removed before and after, so a run
-    # that failed half-way leaves nothing for the next. The journal's files
-    # belong to the image's user, so they are removed from inside a container.
+    # that failed half-way leaves nothing for the next.
     local run=("$RUNTIME" run --network host -e DITTOFS_ENCRYPTION_PASSPHRASE=smoke-passphrase)
     clean() {
         "$RUNTIME" rm -f -v dittofs-smoke-start dittofs-smoke-init >/dev/null 2>&1 || true
-        if [[ -d "$blocks" ]]; then
-            "$RUNTIME" run --rm -v "$blocks:/d" docker.io/library/busybox:1.37 \
-                find /d -mindepth 1 -delete >/dev/null 2>&1 || true
+        if [[ -n "$img" ]]; then
+            if mountpoint -q "$blocks"; then sudo umount "$blocks" || true; fi
+            rm -f "$img"
             rmdir "$blocks" 2>/dev/null || true
         fi
     }
     clean
     trap clean EXIT
-    # 0777 so the image's user 65532 can write it without a chown, which
-    # would need root on the host.
-    # init expects the journal's directory to exist, as the image creates it.
-    mkdir -p "$blocks/journal"
-    chmod 0777 "$blocks" "$blocks/journal"
+    if [[ -n "$img" ]]; then
+        mkdir -p "$blocks"
+        truncate -s 1G "$img"
+        mkfs.ext4 -q "$img"
+        sudo mount -o loop "$img" "$blocks"
+        # The bind mount hides the journal directory the image creates, and
+        # init does not create it.
+        sudo mkdir "$blocks/journal"
+        sudo chown -R 65532:65532 "$blocks"
+    fi
     echo "smoke: journal directory $blocks is on $(findmnt -no FSTYPE,OPTIONS -T "$blocks")"
     mkdir -p "$conf"
     cp "$DATA/fdb.cluster" "$conf/fdb.cluster"
@@ -206,7 +215,7 @@ test)
     ;;
 smoke) smoke "${2:?image}" ;;
 *)
-    sed -n '2,24p' "$0"
+    sed -n '2,23p' "$0"
     exit 2
     ;;
 esac
