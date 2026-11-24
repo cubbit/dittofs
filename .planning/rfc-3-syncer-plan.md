@@ -522,8 +522,10 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
   them.
 - The syncer derives from them the bound and the largest encoded block, which is the quantum's
   size (RFC 3 §2.9).
-- The upload input is the largest `Attempt.MaxEncodedLen` an open attempt may hold, not the current
-  chain's: under a chain pin a block can encode under an older chain (RFC 3 §2.2, RFC 5 §3.1).
+- The bound is fixed at start: RFC 8 offload plan epic 21 computes it once, from the largest `Max`
+  RFC 2 §3.7 admits and `MaxDecodeLen(Max)` over every registered transform, and both halves use it
+  (amended RFC 3 §2.2). A chain changed on its next write, a chain pin held on an older chain, or a
+  namespace added at runtime cannot exceed it, so nothing updates it.
 - **Prior art.** None found.
 - **Applied by** epic 1.
 
@@ -537,9 +539,21 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
 - Not chosen: the store adapter caching the measurement by name, which leaks one entry per failed
   upload since nothing tells it when `Upload` has returned; and re-measuring on every attempt,
   which turns RFC 3 §2.4's bound of 20 reads of `src` into 12 plus 3 per throttled attempt.
+- `Put` fills the `Measure` only once every measuring pass of the attempt has completed, so an
+  attempt cancelled between MD5 mode's two passes leaves it empty and the retry measures again
+  (amended RFC 3 §1.3, §2.4; its case is in §7.1's "§3.4 measuring pass" row, epic 4).
 - **Prior art.** From memory: the AWS SDKs compute a body's checksum once per request and reuse
   it across their retries.
 - **Applied by** epics 1 and 4.
+
+**D9. A past-the-end refusal is an `ErrCorrupt` carrying `Malformed`.**
+- RFC 3 §2.4 re-gets a chunk that failed verification once, and reports a range refused as past the
+  end at once. Amended RFC 3 §1.3 declares `Malformed interface{ Malformed() bool }`, set on such an
+  `ErrCorrupt`, as `DeniedQuota` and `DeniedSize` are on `ErrDenied`.
+- Epic 1 declares it before S1; epic 2's in-memory `Store` and RFC 8 offload plan epic 21's error
+  mapping set it; epic 6's fetch reads it.
+- **Prior art.** `DeniedQuota` and `DeniedSize` in the same surface.
+- **Applied by** epics 1, 2 and 6.
 
 ### 4.3 Knowingly simple implementations
 
@@ -572,9 +586,11 @@ set.
 - the S1 review has agreed the signatures.
 
 **Expected content:**
-- `Store`, its value types (`Measure` among them, D8) and its error values, with O6's names.
+- `Store`, its value types (`Measure` among them, D8), its error values and `Malformed` (D9), with
+  O6's names.
 - `Syncer`'s constructor and configuration (D7, D6, D3), and the registry and flow calls. A
-  registration with `PutProbe` false is refused, behind a `decision:` marker naming its first caller.
+  registration with `PutProbe` or `GetProbe` false is refused, behind a `decision:` marker naming
+  its first caller, so no direction can go unprobed before S25's expiry lands.
 - `Flow` and its methods.
 - `Stats`.
 - The import test.
@@ -733,8 +749,8 @@ Epic 7 delivers the checks that span both halves.
 (D6).
 
 **Done when:**
-- the syncer's part of RFC 3 §7.2's "§2.2 memory bound" row passes, with the fetcher's bound taken
-  from D7's `MaxDecodeLen` input (the codec's part is RFC 4's, §6.1);
+- the syncer's part of RFC 3 §7.2's "§2.2 memory bound" row passes, with both halves' bound taken
+  from D7's fixed `MaxDecodeLen(Max)` input (the codec's part is RFC 4's, §6.1);
 - RFC 3 S2 and S7 hold;
 - RFC 3 §8.4's "allocations" count passes in `unit/syncer-allocs`;
 - RFC 3 §8.3's sweep runs;
@@ -813,9 +829,7 @@ RFC 3 §9's first open question.
 
 **Open points.**
 
-- **O1. The past-the-end error kind.** RFC 3 §7.1's "§2.4 verification re-get" row expects
-  "`ErrCorrupt` of kind `malformed`", which RFC 3 §1.3's set does not have. The syncer passes the
-  wrapped error through, and RFC 8 offload plan epic 21 wraps it.
+- **O1. The past-the-end error kind. Settled as D9**: amended RFC 3 §1.3 declares `Malformed`.
 - **O2. The least certain estimates.**
   - Epic 3: the scheduler's rules interact.
   - Epic 6: join, re-home and detach under `-race`.
@@ -847,9 +861,9 @@ What this plan knowingly does not build. Each row names the section that defers 
 | `FetchRaw`, `UploadRaw`, `FetchVersion`; `Store`'s `GetVersion`, `PutRaw`, `GetRaw`; the staging budget and its spill; RFC 3 §7.2's "§1.3 raw transfer" and "§2.2 copy staging" rows, and S24; the in-memory `Store`'s versions and raw objects; how a caller reaches the staging budget, this plan's former Q2 (header, §4.3) | no caller in v1.1; amended RFC 3 §1.3 | RFC 26 plan; RFC 9 plan for relocation; RFC 27 plan for re-home | that RFC's plan starts, or its first caller lands |
 | `Small`, its two fixed values in RFC 3 §2.10 (the small-call bound and the small-body cap) and RFC 3 §7.2's "§1.3 small-body cap" row (header, epic 3) | no caller in v1.1 | RFC 26 plan; RFC 9 plan for `Recheck` | as above |
 | `SetDrift`, `ErrDrift`, RFC 3 §7.2's "§2.8 drift condition" row and the drift case of "§2.8 cause per direction"; until then a bucket setting changed after the store opened is seen only at its next open (RFC 4 §4.11), and a put into the drifted store may be expired or kept as a version nothing deletes (RFC 3 §2.8); epic 8's FAQ line says so (epics 5, 8) | its one caller is GC's `Recheck` | RFC 9 plan | RFC 9's plan starts |
-| A registration with `PutProbe` false, and RFC 3 §7.2's "§2.8 no put probe" row, S25 (epics 1, 5) | its caller is an immutable backup location | RFC 26 plan | RFC 26's plan starts |
+| A registration with `PutProbe` or `GetProbe` false, and RFC 3 §7.2's "§2.8 no put probe" row, S25 (epics 1, 5) | its caller is an immutable backup location | RFC 26 plan | RFC 26's plan starts |
 | The pool sizing tool (RFC 3 §2.11) | no operator needs it in v1.1; the defaults of RFC 3 §2.10 hold, not reduced to the transfers pool while D6's row stands | unowned | an operator needs pool sizes past the defaults |
-| The store adapter, its error mapping and past-the-end wrap (O1), `ProbeKey`, spreading connections across addresses, the CPU token, the root's syncer, registering epic 8's series and settings, the per-flow queue gauges by share (D4), and the conformance suite and RFC 3 §8.1's real-backend checks run against the adapter behind a fault proxy (§1.1, D2) | composition | RFC 8 offload plan, epic 21 | RFC 8 offload plan epic 21 lands |
+| The store adapter, its error mapping and setting `Malformed` on a past-the-end refusal (D9), computing D7's fixed bound, `ProbeKey`, spreading connections across addresses, the CPU token, the root's syncer, registering epic 8's series and settings, the per-flow queue gauges by share (D4), and the conformance suite and RFC 3 §8.1's real-backend checks run against the adapter behind a fault proxy (§1.1, D2) | composition | RFC 8 offload plan, epic 21 | RFC 8 offload plan epic 21 lands |
 | The soak (RFC 3 §8.1): hours, nightly, against LocalStack with outages on a cycle | one soak for the composed node; `engine-soak` is a 20-minute `tier: pr` cell with no emulator | RFC 8 offload plan, epic 22 (a nightly cell or option of `engine-soak`) | RFC 8 offload plan epic 22 lands |
 | The codec's part of RFC 3 §7.2's "§2.2 memory bound" row (epic 7) | the codec is behind the store adapter | RFC 4 plan, epic 6 (the block codec) | RFC 4 plan epic 6 lands |
 | RFC 25 §3.9's severity per cause on `store_put_unhealthy` and `store_get_unhealthy` (epic 8) | `health.Condition` carries no severity; the `ponytail:` on `pkg/health`'s `Evaluator` names RFC 25's plan as its upgrade | unowned | a plan takes RFC 25's registry, or `pkg/health` gains severity |
