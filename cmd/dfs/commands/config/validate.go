@@ -1,10 +1,10 @@
 package config
 
 import (
-	"bufio"
+	"context"
 	"fmt"
+	"io"
 	"os"
-	"strings"
 
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/spf13/cobra"
@@ -14,9 +14,15 @@ func newValidateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "validate",
 		Short: "Validate configuration file",
-		Long: `Validate the DittoFS configuration file.
+		Long: `Validate the DittoFS configuration file and environment.
 
-Checks for syntax errors, missing required fields, and invalid values.
+Runs the load a start runs, then the checks of the host: both roles, the
+journals, the two wrapping keys (each key file is opened with
+DITTOFS_ENCRYPTION_PASSPHRASE), the API's certificate off loopback, the socket
+path and the state and runtime directories. It refuses what they refuse, one
+line per refusal, and starts nothing: no directory is created.
+
+The file is --config, else the one DITTOFS_CONFIG names, else the default.
 
 Examples:
   # Validate default config
@@ -30,75 +36,34 @@ Examples:
 
 func runConfigValidate(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
-	out := cmd.OutOrStdout()
 
-	cfg, err := bootstrap.MustLoad(configPath, os.Environ())
+	return runValidate(cmd.Context(), configPath, os.Environ(), cmd.OutOrStdout())
+}
+
+// runValidate makes the two calls a start will make on its file and environ,
+// Load then Validate, and returns the first refusal unchanged: a start that
+// fails to load never reaches the second. It never makes the runtime
+// directory, which only a start may create.
+//
+// decision: validate runs Validate, which dfs start does not call yet, so
+// for the host's checks it refuses a host a start would still run on. A
+// check that refuses only here is still a host the node cannot serve from.
+func runValidate(ctx context.Context, configPath string, environ []string, out io.Writer) error {
+	loaded, err := bootstrap.LoadWithSources(configPath, environ)
 	if err != nil {
 		return err
 	}
 
-	displayPath := configPath
-	if displayPath == "" {
-		displayPath = bootstrap.GetDefaultConfigPath()
+	if err := loaded.Validate(ctx, environ); err != nil {
+		return err
 	}
 
-	var warnings []string
-
-	if legacyWarnings := checkLegacyPayloadKey(displayPath); len(legacyWarnings) > 0 {
-		warnings = append(warnings, legacyWarnings...)
+	file := loaded.File
+	if file == "" {
+		file = "none"
 	}
 
-	_, _ = fmt.Fprintf(out, "Configuration file: %s\n", displayPath)
-	if len(warnings) > 0 {
-		// Do not print a bare "OK" when warnings are present: a warning
-		// means the config loads but carries a key the server ignores.
-		// Surfacing the count keeps `config validate` honest for an
-		// operator eyeballing the output before `dfs start`.
-		_, _ = fmt.Fprintf(out, "Validation: OK (with %d warning(s))\n", len(warnings))
-		_, _ = fmt.Fprintln(out, "\nWarnings:")
-		for _, w := range warnings {
-			_, _ = fmt.Fprintf(out, "  - %s\n", w)
-		}
-	} else {
-		_, _ = fmt.Fprintln(out, "Validation: OK")
-	}
-
-	_, _ = fmt.Fprintf(out, "\nConfiguration summary:\n")
-	_, _ = fmt.Fprintf(out, "  Log level:       %s\n", cfg.Logging.Level)
-	_, _ = fmt.Fprintf(out, "  Journal path:    %s\n", cfg.Blockstore.Journal.Path)
+	_, _ = fmt.Fprintf(out, "Configuration file: %s\nValidation: OK\n", file)
 
 	return nil
-}
-
-// checkLegacyPayloadKey scans a config file for the deprecated 'payload:' YAML key.
-// Returns warnings if legacy keys are found.
-func checkLegacyPayloadKey(configPath string) []string {
-	f, err := os.Open(configPath)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = f.Close() }()
-
-	var warnings []string
-	scanner := bufio.NewScanner(f)
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		// Detect top-level or nested 'payload:' or 'payload_store:' keys
-		if strings.HasPrefix(trimmed, "payload:") {
-			warnings = append(warnings, fmt.Sprintf(
-				"Line %d: Config key 'payload' has been renamed to 'block_store'. "+
-					"Please update your config file. See docs/guide/configuration.md for the new format.",
-				lineNum))
-		} else if strings.HasPrefix(trimmed, "payload_store:") {
-			warnings = append(warnings, fmt.Sprintf(
-				"Line %d: Config key 'payload_store' is no longer used. "+
-					"Shares are now managed via dfsctl, and each one names its block store "+
-					"with --block-store. See docs/guide/configuration.md for the new format.",
-				lineNum))
-		}
-	}
-	return warnings
 }

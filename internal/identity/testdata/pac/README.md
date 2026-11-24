@@ -42,7 +42,7 @@ information.
 
 To recapture, with Docker, from the repository root:
 
-    DITTOFS_KERBEROS_PAC_OUT=$PWD/internal/identity/testdata/pac \
+    DITTOFS_MIT_PAC_OUT=$PWD/internal/identity/testdata/pac \
       go test -tags=kerberos -count=1 -v -run '^TestMITPACCapture$' ./test/integration/kerberos/
 
 Every run creates a new realm, so the keys and times change.

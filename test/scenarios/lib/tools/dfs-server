@@ -10,7 +10,7 @@ set -euo pipefail
 case "$1" in
 start)
     shift
-    env DITTOFS_LOGGING_OUTPUT=stdout DITTOFS_ADMIN_INITIAL_PASSWORD=admin-secret "$@" dfs start >>/logs/dfs.log 2>&1 </dev/null &
+    env DITTOFS_LOGGING_OUTPUT=stdout "$@" dfs start >>/logs/dfs.log 2>&1 </dev/null &
     for _ in $(seq 1 60); do
         dfsctl login --server http://127.0.0.1:8080 --username admin --password admin-secret >/dev/null 2>&1 && exit 0
         sleep 1

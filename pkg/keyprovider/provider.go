@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 )
 
 // KeyProvider holds a master key and wraps / unwraps per-block data keys
@@ -122,12 +123,25 @@ var (
 	ErrKeyStateUnusable = errors.New("keyprovider: key state unusable")
 )
 
-// NewProvider constructs a KeyProvider from the parsed Config. Dispatch
-// is by Kind; unknown kinds return ErrInvalidConfig.
+// NewProvider constructs a KeyProvider from the parsed Config, with the
+// passphrase the process environment holds. Dispatch is by Kind; unknown
+// kinds return ErrInvalidConfig.
 func NewProvider(ctx context.Context, cfg Config) (KeyProvider, error) {
+	return NewProviderWithPassphrase(ctx, cfg, os.Getenv(localPassphraseEnv))
+}
+
+// NewProviderWithPassphrase constructs a KeyProvider from the parsed Config
+// and the passphrase the caller holds, the passphrase that unwraps the
+// local key file. Dispatch is by Kind; unknown kinds return
+// ErrInvalidConfig.
+func NewProviderWithPassphrase(
+	ctx context.Context,
+	cfg Config,
+	passphrase string,
+) (KeyProvider, error) {
 	switch cfg.Kind {
 	case KindLocal:
-		return newLocalProvider(cfg)
+		return newLocalProvider(cfg, passphrase)
 	case KindKMIP:
 		return newKMIPProvider(ctx, cfg)
 	case "":

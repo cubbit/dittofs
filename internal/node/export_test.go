@@ -27,6 +27,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/secrets"
+	setting "github.com/cubbit/dittofs/pkg/settings"
 	pvfs "github.com/cubbit/dittofs/pkg/vfs"
 	"slices"
 	"sync"
@@ -155,8 +156,65 @@ func (n *Node) OnReconcileWait(waiting func()) { n.rec.waiting = waiting }
 // identity, before identity's Apply. Call it before Start.
 func (n *Node) OnIdentityApply(handing func(iidentity.State)) { n.rec.handing = handing }
 
+// OnSettingsWalkWait has the node call walking each time the settings walk
+// arms its bound to wait on the store for its next row, with the rows it has
+// received so far: a page's first wait is at 0, the next at the page's size.
+// Call it before Start.
+func (n *Node) OnSettingsWalkWait(walking func(seen int)) { n.rec.walking = walking }
+
 // Applied is the wait a write on this node makes.
 func (n *Node) Applied(ctx context.Context) error { return n.applied(ctx) }
+
+// Declared is one test-declared settings section with the way its changes
+// reach the component the test stands in for. Prefix names the section
+// Section declares, the same string its declaration gives it, and must
+// match it: Section carries no exported prefix, and one that names no
+// declared section leaves it with no path, so a change of it refuses and
+// the test fails. Apply is the component's apply, which the node calls once
+// a pass with a live or bound change of the section, handing it the
+// snapshot the walk is about to publish and refusing the section whole on
+// its error. AtUse marks a section read where its component uses it, so no
+// apply runs for it. A section with neither is one the node holds no way
+// to: its live keys' changes refuse. Empty records that section's entry
+// anyway, holding neither, the way a component that declares its reach but
+// sets no way would. Call DeclareSections before Start.
+type Declared struct {
+	Prefix  string
+	Section setting.Section
+	Apply   func(*setting.Snapshot) error
+	AtUse   bool
+	Empty   bool
+}
+
+// DeclareSections declares the settings sections of the components a test
+// stands in for, each with the way its changes reach its component, beside
+// the ones the node's own components declare, so the walk reads and the
+// snapshot holds a section the test needs and the table lacks. Call it
+// before Start.
+func (n *Node) DeclareSections(secs ...Declared) {
+	for _, s := range secs {
+		n.rec.table = append(n.rec.table, s.Section)
+		if s.Apply != nil {
+			n.rec.reaches[s.Prefix] = reach{apply: s.Apply}
+
+			continue
+		}
+
+		if s.AtUse {
+			n.rec.reaches[s.Prefix] = reach{atUse: true}
+
+			continue
+		}
+
+		if s.Empty {
+			n.rec.reaches[s.Prefix] = reach{}
+		}
+	}
+}
+
+// Settings is the snapshot the settings walks have published, the one a
+// component reads what it runs from at use; nil before the first walk.
+func (n *Node) Settings() *setting.Snapshot { return n.rec.snapshot.Load() }
 
 // Positions is the counters the node has reconciled through.
 func (n *Node) Positions() kvstore.Counters {
@@ -177,7 +235,7 @@ func (n *Node) Woken() bool { return len(n.rec.wake) == 1 }
 
 // Refused is the records the node refused, the shares' first.
 func (n *Node) Refused() []entity.RefusedRecord {
-	_, refused := n.rec.report()
+	_, refused, _ := n.rec.report()
 	return refused
 }
 

@@ -38,8 +38,17 @@ const (
 // reconciler is reconcile's state: the running set and the counters the
 // node has acted on, and the wake a write on this node sends.
 type reconciler struct {
-	// table is the node's settings table, which the settings walk reads by.
+	// table is the node's settings table: every section the node declares
+	// and the components of a test stand in for, which the settings walk
+	// reads by, one section's rows at a time.
 	table settings.Table
+	// reaches is how each declared section's component reaches a change of
+	// it: an apply the node calls, or a read at use.
+	reaches map[string]reach
+	// snapshot is the settings the walks have published, the one a
+	// component reads what it runs from at use: loaded whole, with no lock
+	// shared with the walk.
+	snapshot atomic.Pointer[settings.Snapshot]
 	// wake has one slot, so a wake sent while a pass runs is kept and runs
 	// one more pass after it.
 	wake chan struct{}
@@ -57,16 +66,34 @@ type reconciler struct {
 	applying func(kvstore.Counters)
 	waiting  func()
 	handing  func(identity.State)
+	// walking, when set, is called by the settings walk each time it waits on
+	// the store for its next row, with the rows it has received.
+	walking func(seen int)
 
 	// Read and written by Start's steps and then by the loop alone.
 	seen  kvstore.Counters // the counters the last pass acted on
 	again bool             // a read failed, or a refusal asked to be retried: the next pass acts on every kind
+	// ran is the settings each section first ran, the value its
+	// restart-class keys are read pending against. The first walk a section
+	// runs grows it; a restart-class change stays in the pending set until
+	// the value it first ran is back, or the node restarts, which starts
+	// the set from none.
+	//
+	// ranOnce is which sections ran once. Like seen, both are written by
+	// the walks alone: Start's first and then the loop's.
+	ran     *settings.Snapshot
+	ranOnce map[string]bool
 
 	mu sync.Mutex
 	// pos is the counters the node has reconciled through: acted on every
 	// change up to each, applied or refused.
 	pos   kvstore.Counters
 	moved chan struct{} // closed when pos moves, then replaced
+	// restart is the restart-pending set: each record whose restart-class
+	// key holds a value other than what its section first runs, waiting
+	// for the restart that runs it. Written by each walk, read by the
+	// status through report, under the same lock as the rest of it.
+	restart []entity.ResourceRef
 	// running is the running set: each share as the engine binds it.
 	running map[entity.ShareID]entity.Share
 	// gone is every share a removal has unbound, which a share pass that
@@ -88,16 +115,18 @@ type reconciler struct {
 	errors [len(counterKinds)]atomic.Uint64
 }
 
-// report is the counters the node has reconciled through and the records
-// it refused, the shares' first, read together.
-func (r *reconciler) report() (kvstore.Counters, []entity.RefusedRecord) {
+// report is the counters the node has reconciled through, the records it
+// refused, the shares' first, then the applies', and the restart-pending set,
+// read together under one lock, so the whole report is of one pass.
+func (r *reconciler) report() (kvstore.Counters, []entity.RefusedRecord, []entity.ResourceRef) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []entity.RefusedRecord
 	for _, f := range append(slices.Clone(r.shares), r.applied...) {
 		out = append(out, f.rec)
 	}
-	return r.pos, out
+
+	return r.pos, out, slices.Clone(r.restart)
 }
 
 // read notes the counters c a pass read at now: each above the position
@@ -160,9 +189,12 @@ func (r *reconciler) notGone(refusals []refusal) []refusal {
 	})
 }
 
-func newReconciler(table settings.Table) reconciler {
-	return reconciler{table: table, wake: make(chan struct{}, 1), moved: make(chan struct{}),
-		running: map[entity.ShareID]entity.Share{}, gone: map[entity.ShareID]bool{}}
+func newReconciler(table settings.Table, reaches map[string]reach) reconciler {
+	return reconciler{
+		table: table, reaches: reaches, ranOnce: map[string]bool{},
+		wake: make(chan struct{}, 1), moved: make(chan struct{}),
+		running: map[entity.ShareID]entity.Share{}, gone: map[entity.ShareID]bool{},
+	}
 }
 
 // refusal is a record the node did not apply, and whether to try it again on
@@ -184,12 +216,16 @@ func refused(s entity.Share, retry bool, err error) refusal {
 	}}
 }
 
-// apply hands each component the settings it reads, at counters c, and
-// returns the records it refused: the engine, then identity, handed the
-// principals generation and one walk of the settings (walkSettings). Once
-// start step 9 has run it calls each adapter's slot too, handing it loop to
-// report idle on while it waits on a drain, and returns the slots' refusals
-// with identity's.
+// apply hands each component the settings it reads and returns the records it
+// refused: the engine, then identity, handed the principals generation of c
+// and the settings of one walk (walkSettings), read at the walk's own
+// counters, wk.at, which a write may have moved past c, so the refusal
+// records identity and the walk raise carry the settings generation of wk.at,
+// not c's. The walk is then published for the components that read the
+// snapshot (keepSettings), whose refusals, the sections no component's apply
+// reports, are returned with identity's. Once start step 9 has run it calls
+// each adapter's slot too, handing it loop to report idle on while it waits on
+// a drain, and returns the slots' refusals with them.
 //
 // ponytail: apply hands the engine RFC 13 Appendix B's defaults whatever c
 // says, as no settings record carries the engine's values yet, and refuses
@@ -200,7 +236,8 @@ func refused(s entity.Share, retry bool, err error) refusal {
 // enables an adapter, as no settings record carries an adapter's section
 // yet. Read each adapter's section from the pass's one walk with the
 // snapshot's Get once it has a body, so every component of a pass runs one
-// view of the settings.
+// view of the settings, and hand the adapters the generation of the walk
+// published, not the one the pass read.
 func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop) ([]refusal, error) {
 	if n.rec.applying != nil {
 		n.rec.applying(c)
@@ -208,48 +245,23 @@ func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop)
 	if err := n.engine.Apply(engineDefaults); err != nil {
 		return nil, err
 	}
-	at, snap, err := n.walkSettings(ctx)
+	wk, err := n.walkSettings(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("identity: the settings walk: %w", err)
 	}
-	refusals, err := n.applyIdentity(ctx, at, snap)
+	refusals, err := n.applyIdentity(ctx, wk.at, wk.snap)
 	if err != nil {
 		return nil, fmt.Errorf("identity: %w", err)
 	}
+	kept, err := n.keepSettings(ctx, wk)
+	if err != nil {
+		return nil, fmt.Errorf("the settings walk: %w", err)
+	}
+	refusals = append(refusals, kept...)
 	if !n.adapting {
 		return refusals, nil
 	}
 	return append(refusals, n.applyAdapters(ctx, loop, c.Settings)...), nil
-}
-
-// walkSettings is one walk of the settings, and the counters read before it,
-// during which the settings generation did not move. The counters are read
-// right before each walk and again after it; a walk the generation moved
-// under is discarded and walked again, since the walk reads each page in its
-// own transaction and could mix two states of the store. While writes keep
-// moving the generation the call waits, and ends only with ctx, as a pass's
-// position stalls (RFC 23 §2.3).
-func (n *Node) walkSettings(ctx context.Context) (kvstore.Counters, *settings.Snapshot, error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return kvstore.Counters{}, nil, err
-		}
-		c, err := n.counters(ctx)
-		if err != nil {
-			return kvstore.Counters{}, nil, err
-		}
-		snap, _, err := settings.Read(ctx, n.meta.Nodes(), n.rec.table, n.cfg.Bootstrap.Node.ID)
-		if err != nil {
-			return kvstore.Counters{}, nil, err
-		}
-		after, err := n.counters(ctx)
-		if err != nil {
-			return kvstore.Counters{}, nil, err
-		}
-		if after.Settings == c.Settings {
-			return c, snap, nil
-		}
-	}
 }
 
 // backoff is the wait before the next pass on the backoff, given its last
@@ -358,22 +370,26 @@ func (n *Node) readShares(ctx context.Context) ([]entity.Share, func(entity.Shar
 
 // bounded runs f, a store call, with a context that ends once storeBound
 // passes on the node's clock, and answers f's error, or a timeout once the
-// bound passed without f answering. f's answer is then dropped, and so is
-// what it writes after, so a store that ignores its context holds no pass
-// past the bound: f writes its results only into what the caller reads once
-// bounded answered nil. With the timeout it also answers the channel f
-// answers on once it returns, for a caller whose call may still commit.
+// bound passed without f answering, or ctx's error once ctx ended first, so a
+// Stop that cancels the caller is not held by its hung call. f's answer is
+// then dropped, and so is what it writes after, so a store that ignores its
+// context holds no pass past the bound: f writes its results only into what
+// the caller reads once bounded answered nil. With the timeout or ctx's end
+// it also answers the channel f answers on once it returns, for a caller whose
+// call may still commit.
 func (n *Node) bounded(ctx context.Context, f func(context.Context) error) (running <-chan error, err error) {
 	bound := n.cfg.Clock.After(storeBound)
-	ctx, cancel := context.WithCancel(ctx)
+	call, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- f(ctx) }()
+	go func() { done <- f(call) }()
 	select {
 	case err := <-done:
 		return nil, err
 	case <-bound:
 		return done, fmt.Errorf("the store did not answer within %v", storeBound)
+	case <-ctx.Done():
+		return done, ctx.Err()
 	}
 }
 
@@ -457,10 +473,12 @@ func (n *Node) pass(ctx context.Context, loop *health.Loop) error {
 		r.again = true
 		return sharesErr
 	}
+
 	r.seen = c
 	r.mu.Lock()
 	retry := func(f refusal) bool { return f.retry }
-	r.again = slices.ContainsFunc(r.shares, retry) || slices.ContainsFunc(r.applied, retry)
+	r.again = slices.ContainsFunc(r.shares, retry) ||
+		slices.ContainsFunc(r.applied, retry)
 	r.pos = c
 	r.above = [len(counterKinds)]bool{}
 	close(r.moved)
