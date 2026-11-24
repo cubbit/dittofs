@@ -544,7 +544,12 @@ func TestLostTailRefusedRetriesBurnNothing(t *testing.T) {
 // dropped serve again as held. The mark is the one proof the slot held a
 // synced record, so its bytes are a range that names no record below the
 // mark's Through, and the open refuses with ErrOpenRefused naming the range
-// — writing nothing, for the check runs before any writing phase.
+// — writing nothing, for the check runs before any writing phase. The
+// refusal is held up by two checks: the lost-tail check behind the raise
+// would refuse this fixture too, its mark naming the same record with no
+// verifying copy anywhere, so ErrOpenRefused alone proves neither. The
+// message checks below pin the marked-range check as the one that answered,
+// and are the only thing that fails if it stops refusing.
 func TestATornTruncateBelowItsMarkRefusesTheOpen(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
