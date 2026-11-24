@@ -939,9 +939,13 @@ func kvRows() []kvRow {
 			},
 		},
 		{
-			name:    "a format record that does not decode passes",
-			journal: true,
-			store:   func(t *testing.T, db kv.KV) { setKey(t, db, keys.Format, []byte{0xff}) },
+			// A damaged store, not a newer one: the check names it rather
+			// than leave the node's open to call it a format to upgrade to.
+			name:     "a format record that does not decode is unidentifiable",
+			journal:  true,
+			store:    func(t *testing.T, db kv.KV) { setKey(t, db, keys.Format, []byte{0xff}) },
+			want:     errUnidentifiable,
+			contains: "format record does not decode",
 		},
 	}
 }
@@ -1063,5 +1067,43 @@ func TestPreflightWhenTheStoreReadFails(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// hungView is a store whose reads never answer: each View waits for its
+// context to end and returns the context's error, as a backend does over a
+// cluster lost after it opened.
+type hungView struct{ kv.KV }
+
+func (h hungView) View(ctx context.Context, _ func(kv.Reader) error) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// The start check's store read gives up at its limit rather than waiting on a
+// store that stopped answering, and says so: no verdict on the store.
+func TestProbeKVGivesUpAtItsLimit(t *testing.T) {
+	type result struct {
+		state       storeState
+		why, failed error
+	}
+	done := make(chan result, 1)
+	go func() {
+		state, why, failed := probeKV(t.Context(), hungView{memKV(t)}, 50*time.Millisecond)
+		done <- result{state, why, failed}
+	}()
+	var r result
+	select {
+	case r = <-done:
+	// A bounded wait is the assertion: far past the limit, so a read that
+	// ignores it fails here.
+	case <-time.After(10 * time.Second):
+		t.Fatal("probeKV over a store that never answers did not return 10s after its 50ms limit")
+	}
+	if !errors.Is(r.failed, context.DeadlineExceeded) || !strings.Contains(r.failed.Error(), "no answer within 50ms") {
+		t.Fatalf("probeKV over a store that never answers: failed %v, want the limit's deadline named", r.failed)
+	}
+	if r.state != storeUnidentifiable || r.why != nil {
+		t.Fatalf("probeKV over a store that never answers: state %v, why %v, want unidentifiable and no verdict", r.state, r.why)
 	}
 }

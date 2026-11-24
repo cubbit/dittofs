@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/journal"
@@ -113,6 +114,32 @@ func probeV1State(root string) string {
 	return ""
 }
 
+// probeV1 returns the first pre-journal (v1) layout probeV1State finds at a
+// device or at v1Root, "" for none. An empty root is skipped: it would read
+// the working directory.
+func probeV1(v1Root string, devices []string) string {
+	for _, root := range append(slices.Clone(devices), v1Root) {
+		if root == "" {
+			continue
+		}
+		if p := probeV1State(root); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// RefuseV1 is the start check's v1 refusal on its own: it reads only the
+// devices and v1Root, so a start runs it before it opens a store with no
+// directory, and a v1 host is refused before the store's host is reached or
+// written. Preflight runs the same probe, first among its verdicts.
+func RefuseV1(v1Root string, devices []string) error {
+	if p := probeV1(v1Root, devices); p != "" {
+		return refuseV1Found(p, "a pre-journal block layout")
+	}
+	return nil
+}
+
 // probeStore stats the store directory: present, absent, unidentifiable.
 // fs.ErrNotExist or an empty directory means absent; a directory holding
 // MANIFEST means present; any other directory or stat error means
@@ -161,27 +188,39 @@ func probeStore(storeDir string) (storeState, error) {
 	return storeUnidentifiable, errors.New("no Badger MANIFEST")
 }
 
+// storeReadTimeout bounds the start check's read of a store with no
+// directory, as dfs bounds the open before it: a cluster lost between the
+// two would otherwise leave the start waiting for it until a signal.
+const storeReadTimeout = 30 * time.Second
+
 // probeKV classifies kvstore.Open's answer over db, a store with no
-// directory that its host opened: a store present; ErrNotInitialised absent;
-// ErrForeignStore unidentifiable, returned with that error. Any other error,
-// a transport's or the backend's limits', is no verdict on the store: it is
-// returned as failed, with the state unidentifiable, and refuses the start as
-// it stands.
+// directory that its host opened, read within limit: a store present;
+// ErrNotInitialised absent; ErrForeignStore and ErrFormatRecord
+// unidentifiable, returned with that error. Any other error, a transport's,
+// a read that outlived limit, or the backend's limits', is no verdict on the
+// store: it is returned as failed, with the state unidentifiable, and
+// refuses the start as it stands.
 //
 // decision: a store whose format record this binary does not read, ErrFormat,
 // is present, as a Badger directory holding the same store is to probeStore:
 // the check passes and the node's own open refuses it naming the format, on
 // either backend. Overturned when the start check is to name the format
-// itself, which it would then have to do over a directory too.
-func probeKV(ctx context.Context, db kv.KV) (state storeState, why, failed error) {
-	_, err := kvstore.Open(ctx, db)
+// itself, which it would then have to do over a directory too. A record
+// that does not decode is no format a binary reads: the check names it.
+func probeKV(ctx context.Context, db kv.KV, limit time.Duration) (state storeState, why, failed error) {
+	rctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	_, err := kvstore.Open(rctx, db)
 	switch {
 	case err == nil, errors.Is(err, kvstore.ErrFormat):
 		return storePresent, nil, nil
 	case errors.Is(err, kvstore.ErrNotInitialised):
 		return storeAbsent, nil, nil
-	case errors.Is(err, kvstore.ErrForeignStore):
+	case errors.Is(err, kvstore.ErrForeignStore), errors.Is(err, kvstore.ErrFormatRecord):
 		return storeUnidentifiable, err, nil
+	case ctx.Err() == nil && rctx.Err() != nil:
+		// The backend may answer the deadline as an error of its own.
+		return storeUnidentifiable, nil, fmt.Errorf("reading the metadata store: no answer within %s: %w: %w", limit, rctx.Err(), err)
 	}
 	return storeUnidentifiable, nil, fmt.Errorf("reading the metadata store: %w", err)
 }
@@ -231,18 +270,12 @@ func Preflight(ctx context.Context, storeDir string, store kv.KV, v1Root string,
 		// say — that would let the probes answer first.
 		return errNoDevice
 	}
-	facts := startFacts{StoreDir: storeDir}
-	for _, root := range append(slices.Clone(devices), v1Root) {
-		if p := probeV1State(root); p != "" {
-			facts.V1 = p
-			break
-		}
-	}
+	facts := startFacts{StoreDir: storeDir, V1: probeV1(v1Root, devices)}
 	var state storeState
 	var err error
 	if store != nil {
 		var failed error
-		if state, err, failed = probeKV(ctx, store); failed != nil {
+		if state, err, failed = probeKV(ctx, store, storeReadTimeout); failed != nil {
 			// A backend may report a read its caller canceled as an error of
 			// its own, FoundationDB's as a deadline: the context's error is
 			// the answer instead, as it is for the device probes.
