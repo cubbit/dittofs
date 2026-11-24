@@ -1092,7 +1092,8 @@ node, a kernel client, a restart or both adapters; RFC 19 §9's NFS rows end to 
 
 **Done when:** RFC 21 §11.6's "§11.1–§11.5 total mapping" over every table, "§6.1 NLM against SMB"
 and "§11.4 SMB deny-write against an NFS write open"; RFC 21 §13's single-node rows and steps: "§11.5
-full journal" (its remote-outage step parked, §6.6), "§9.1 stability", "§9.1 loss verifier", "§9.2
+full journal" (its remote-outage step parked, §6.6), "§9.1 stability", "§9.1 loss verifier", "§9.1
+failed stable write *(1 node)*" on the composed node (E4 runs its adapter half), "§9.2
 close-to-open and WCC *(1 node)*", "§5.4 single-node restart", "§5.2, §5.4 lock across a restart *(1
 node)*", "§5.4 NFSv4.0 signal" on a restart of the one node, "§5.1 revoke across a restart *(1
 node)*"'s NFSv4 steps, "§6.1 NLM grace" and "§6"'s
@@ -1293,6 +1294,8 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | RFC 21's (cluster) parts: `Rebind` on another node (§3.4), session trunking and `BADSESSION` across nodes (§3.3), the pNFS flags and layouts (§3.3), NFSv4.0 owner sequences across shards (§4.2), a stateid carried by a batch move (§5.2), `fs_locations` naming another gateway on a drain (§7.4), `CLONE` across shards (§11.5), the cross-node steps of RFC 21 §13 (header; §1.4) | a single node has no second node; RFC 21 §13 defers a row's cross-node steps with the cluster | the cluster stage | a share served by more than one node |
 | The layout stateid's type tag (§6.1, point 5; #5090 (c)) | `pkg/vfs`'s codec tags open, lock state and delegation only, and layouts are (cluster) | the cluster stage, with pNFS (RFC 15 §5.1) | pNFS layouts are built |
 | rquota (RFC 21 Appendix D's `GETQUOTA`; header) | the user's decision: no supported use needs it; a call stays `PROG_UNAVAIL` | unowned | a deployment needs `quota` reporting on NFS clients |
+| `MNT` below a share's root: `MNT` of a path under a share's path, which knfsd mounts (E4's §9, point 6) | `Root` matches a share's path exactly, so the path is `MNT3ERR_NOENT` | unowned | a deployment mounting below a share's root |
+| MOUNT versions 1 and 2, for `showmount -e` (E4's §9, point 7) | RFC 21 §2.1 serves MOUNT v3 alone | RFC 21, by an amendment to §2.1 | `showmount -e` seen failing against a node |
 | The namespace move over NFS: §7.4's address move, `SM_NOTIFY` from B, the NFS-only grace (§1.4) | needs RFC 27's move | RFC 27's plan, not written yet | RFC 27's move is built |
 | Snapshots over NFS: a snapshot's `fsid`, its root's `mounted_on_fileid`, `NFS4ERR_ROFS` there (RFC 21 §7.1) | `Snapshots` answers an empty list until RFC 12's store view | the stage that builds RFC 12's store view | RFC 12's store view answers `Snapshots` |
 | The port mapper answering on UDP and TCP, rpcbind registration (RFC 21 §2.2) | sidecars, which RFC 20's plan's ledger gives the cutover | cutover (stage 7) | stage 7 |
