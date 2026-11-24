@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"slices"
@@ -30,10 +31,11 @@ variable. With neither, a password is generated and printed once to standard
 output, never to the log, and must be changed at the first sign-in.
 
 When keys.storage.local.file names a file that does not exist and the
-metadata store is not yet initialised, init creates it, a master key wrapped under DITTOFS_ENCRYPTION_PASSPHRASE, and prints once
-where it is: copy it off the host, since losing it or the passphrase loses
-the data. An existing file is used, never overwritten. With the passphrase
-unset, init refuses.
+metadata store is not yet initialised, init creates it, a master key
+wrapped under DITTOFS_ENCRYPTION_PASSPHRASE, and prints once where it is:
+copy it off the host, since losing it or the passphrase loses the data. An
+existing file is used, never overwritten. With the passphrase unset, init
+refuses.
 
 Run again after an interruption, init finishes what the interrupted run left;
 over a finished installation it refuses and changes nothing.
@@ -93,23 +95,49 @@ func runInit(cmd *cobra.Command, _ []string) (err error) {
 	if cfg.Keys.Storage.Kind == "" {
 		return errors.New("keys.storage is not set: the administrator's password and the signing key are sealed under it")
 	}
-	clock := newSystemClock()
-	kv, err := openKV(ctx, cfg, clock)
-	if err != nil {
-		return fmt.Errorf("opening the metadata store: %w", err)
-	}
-	defer func() { err = errors.Join(err, kv.Close()) }()
+	// The storage key is checked before the metadata store opens, so a
+	// refused key leaves no store directory behind and is reported ahead of
+	// any store or journal error: an existing key is opened now, and a key
+	// file still to create needs the passphrase.
 	var key keyprovider.KeyProvider
 	defer func() {
 		if key != nil {
 			err = errors.Join(err, key.Close())
 		}
 	}()
+	keyFile, passphrase := "", os.Getenv("DITTOFS_ENCRYPTION_PASSPHRASE")
+	if cfg.Keys.Storage.Kind == keyprovider.KindLocal {
+		keyFile = cfg.Keys.Storage.Local.File
+	}
+	if _, serr := os.Lstat(keyFile); keyFile == "" || !errors.Is(serr, fs.ErrNotExist) {
+		k, err := keyprovider.NewProvider(ctx, cfg.Keys.Storage.Provider())
+		if err != nil {
+			return fmt.Errorf("opening the storage key: %w", err)
+		}
+		key = k
+	} else if passphrase == "" {
+		return fmt.Errorf("creating the key file %s: %w", keyFile, keyprovider.ErrPassphraseMissing)
+	}
+	clock := newSystemClock()
+	kv, err := openKV(ctx, cfg, clock)
+	if err != nil {
+		return fmt.Errorf("opening the metadata store: %w", err)
+	}
+	defer func() { err = errors.Join(err, kv.Close()) }()
+	created := false
 	storageKey := func(ctx context.Context, fresh bool) (keyprovider.KeyProvider, error) {
-		if keyFile := cfg.Keys.Storage.Local.File; fresh && cfg.Keys.Storage.Kind == keyprovider.KindLocal {
-			created, err := keyprovider.CreateKeyFile(keyFile, os.Getenv("DITTOFS_ENCRYPTION_PASSPHRASE"))
-			// A file linked in place is announced even when a later step
-			// fails: the next run finds it and creates nothing to announce.
+		if key != nil {
+			return key, nil
+		}
+		if fresh {
+			var err error
+			created, err = keyprovider.CreateKeyFile(keyFile, passphrase)
+			// decision: a file linked in place is announced even when a
+			// later step fails, but a run stopped between the link and this
+			// notice leaves a file no later run announces: the rerun finds
+			// a file it cannot tell from one the operator placed, and
+			// announces neither. Overturned if init records which key file
+			// it created, so a rerun can name it.
 			if created {
 				_, perr := fmt.Fprintf(cmd.OutOrStdout(), "created the storage key file %s\n"+
 					"Copy it off this host now and keep its passphrase: losing either loses the data, and nothing recovers it.\n", keyFile)
@@ -136,6 +164,13 @@ func runInit(cmd *cobra.Command, _ []string) (err error) {
 		Out:          cmd.OutOrStdout(),
 		Logger:       slog.Default(),
 	})
+	// decision: the key file this run created is left in place, never
+	// removed: another init on this host may have found it and initialised
+	// the store under it, and removing a key the store uses loses the data.
+	// The operator, who knows which runs there were, removes it.
+	if created && errors.Is(err, install.ErrConcurrentInit) {
+		return fmt.Errorf("%w: unless the run that initialised the store used the key file %s this run created, remove that file and every copy of it, put that run's key file in its place, and run dfs init again", err, keyFile)
+	}
 	// decision: a store whose first key has one of v1's prefixes is refused
 	// as v1's over Badger only, as the node refuses it. This format's records
 	// with the format record lost, and any store over another backend, keep

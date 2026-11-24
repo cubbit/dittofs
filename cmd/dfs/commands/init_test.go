@@ -300,9 +300,11 @@ func TestInitUsesAnExistingStorageKeyFile(t *testing.T) {
 }
 
 // With no passphrase set and no key file, dfs init refuses, naming
-// DITTOFS_ENCRYPTION_PASSPHRASE, printing nothing and creating no file.
+// DITTOFS_ENCRYPTION_PASSPHRASE, printing nothing and creating no file and
+// no metadata store.
 func TestInitKeyFileNeedsThePassphrase(t *testing.T) {
 	dir := t.TempDir()
+	skipUnsuitableJournalMount(t, dir)
 	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", "")
 	config, key := keyFileConfig(t, dir)
 	out, err := runDfs("init", "--config", config)
@@ -312,12 +314,22 @@ func TestInitKeyFileNeedsThePassphrase(t *testing.T) {
 	if ents, err := os.ReadDir(filepath.Dir(key)); err != nil || len(ents) != 0 {
 		t.Errorf("key directory after the refusal: %d entries, %v; want it empty", len(ents), err)
 	}
+	noStore(t, dir)
+}
+
+// noStore fails t when a run left the metadata store's directory under dir.
+func noStore(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := os.Lstat(filepath.Join(dir, "store")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("metadata store directory after the refusal: stat %v; want it never created", err)
+	}
 }
 
 // An existing key file the passphrase does not open is refused as the
-// provider refuses it, and left as it was.
+// provider refuses it, before the metadata store opens, and left as it was.
 func TestInitRefusesAKeyFileTheWrongPassphraseCannotOpen(t *testing.T) {
 	dir := t.TempDir()
+	skipUnsuitableJournalMount(t, dir)
 	config := initConfig(t, dir)
 	key := filepath.Join(dir, "storage.key")
 	before, err := os.ReadFile(key)
@@ -331,6 +343,7 @@ func TestInitRefusesAKeyFileTheWrongPassphraseCannotOpen(t *testing.T) {
 	if after, err := os.ReadFile(key); err != nil || !bytes.Equal(after, before) {
 		t.Errorf("key file after the refusal: %v, changed %v; want it byte-identical", err, !bytes.Equal(after, before))
 	}
+	noStore(t, dir)
 }
 
 // dfs init creates the storage key file only over a store not yet
