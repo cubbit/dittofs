@@ -11,3 +11,6 @@
 - { suite: unit, test: TestPassACopyFailureCountsTheCopiesItLanded, issue: "#5202", expires: 2027-02-18 }
 - { suite: engine-soak, test: TestSoak/seed=1, issue: "#4711", expires: 2027-02-15 }
 - { suite: engine-soak, test: TestSoak/seed=2, issue: "#4711", expires: 2027-02-15 }
+- { suite: unit, test: TestApplyFailureKeepsEveryInstance, issue: "#5595", expires: 2026-12-08 }
+- { suite: unit, test: TestSettingsInstanceRefusalNamesOnlyItsInstance, issue: "#5595", expires: 2026-12-08 }
+- { suite: unit, test: TestSettingsRefusalNamesNoLookAlikeSection, issue: "#5595", expires: 2026-12-08 }
