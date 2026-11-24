@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 )
@@ -44,22 +45,29 @@ func installationRows() []row {
 				}
 			}
 		}},
-		{name: "audit list --actor shows the record of a change the actor made", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
-			g, err := c.Groups().Create(t.Context(), apiv1.GroupSpec{Name: "g-" + uuid.NewString()[:8]})
+		{name: "audit list --actor shows the records of the actor's changes and of no one else's", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
+			mine, err := c.Groups().Create(t.Context(), apiv1.GroupSpec{Name: "g-" + uuid.NewString()[:8]})
 			if err != nil {
 				t.Fatalf("create a group: %v", err)
+			}
+			other := s
+			other.User, other.Password = "o-"+uuid.NewString()[:8], "the other's password"
+			s.Harness.Account(t, other.User, other.Password, entity.RoleAdmin)
+			theirs, err := other.Client(t).Groups().Create(t.Context(), apiv1.GroupSpec{Name: "g-" + uuid.NewString()[:8]})
+			if err != nil {
+				t.Fatalf("create a group as %s: %v", other.User, err)
 			}
 			var got []apiv1.AuditRecord
 			decodeJSON(t, mustRun(t, run, "audit", "list", "--actor", s.User, "-o", "json"), &got)
 			found := false
 			for _, r := range got {
-				if r.ActorName != s.User {
-					t.Errorf("audit list --actor %s: got a record of %q", s.User, r.ActorName)
+				if r.ActorName != s.User || r.Target.ID == theirs.ID {
+					t.Errorf("audit list --actor %s: got a record of %q on %s:%s", s.User, r.ActorName, r.Target.Kind, r.Target.ID)
 				}
-				found = found || r.Target.ID == g.ID
+				found = found || r.Target.ID == mine.ID
 			}
 			if !found {
-				t.Errorf("audit list --actor %s: got %d records, want one of group %s's create", s.User, len(got), g.ID)
+				t.Errorf("audit list --actor %s: got %d records, want one of group %s's create", s.User, len(got), mine.ID)
 			}
 		}},
 		{name: "domain actions end failed with no directory wired", run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
