@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newListCmd() *cobra.Command {
+func newListCmd(env cmdutil.Env) *cobra.Command {
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all configured contexts",
@@ -22,7 +22,7 @@ Examples:
 
   # List contexts as JSON for scripting
   dfsctl context list -o json`,
-		RunE: runContextList,
+		RunE: func(cmd *cobra.Command, args []string) error { return runContextList(cmd, env, args) },
 	}
 	return listCmd
 }
@@ -57,8 +57,8 @@ func (cl ContextList) Rows() [][]string {
 	return rows
 }
 
-func runContextList(cmd *cobra.Command, args []string) error {
-	store, err := credentials.NewStore()
+func runContextList(cmd *cobra.Command, env cmdutil.Env, args []string) error {
+	store, err := credentials.Read(env.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize credential store: %w", err)
 	}
@@ -78,7 +78,7 @@ func runContextList(cmd *cobra.Command, args []string) error {
 			Current:   name == currentContext,
 			ServerURL: ctx.ServerURL,
 			Username:  ctx.Username,
-			LoggedIn:  ctx.AccessToken != "" && !ctx.IsExpired(),
+			LoggedIn:  ctx.AccessToken != "",
 		}
 		contexts = append(contexts, info)
 	}

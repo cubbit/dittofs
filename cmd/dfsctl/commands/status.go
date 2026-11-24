@@ -22,10 +22,7 @@ Examples:
   dfsctl status
 
   # Emit machine-readable JSON output
-  dfsctl status -o json
-
-  # Check a specific server without logging in (token fetched from stored context)
-  dfsctl status --server http://dfs.example.com:8080`, RunE: cmdutil.Unavailable,
+  dfsctl status -o json`, RunE: cmdutil.Unavailable,
 	}
 	return statusCmd
 }

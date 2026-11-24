@@ -20,7 +20,6 @@ require (
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jcmturner/gofork v1.7.6
 	github.com/jcmturner/gokrb5/v8 v8.4.4
-	github.com/manifoldco/promptui v0.9.0
 	github.com/oiweiwei/go-msrpc v1.6.4
 	github.com/oiweiwei/gokrb5.fork/v9 v9.0.8 // indirect
 	github.com/olekukonko/tablewriter v1.1.5
@@ -45,7 +44,6 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
-	github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e // indirect
 	github.com/clipperhouse/displaywidth v0.10.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.6.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect

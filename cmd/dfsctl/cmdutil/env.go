@@ -8,6 +8,8 @@ import "io"
 type Env struct {
 	In       io.Reader
 	Out, Err io.Writer
+	// ConfigPath is the credentials file's path.
+	ConfigPath string
 	// Interactive says a person is at In. Without one, a command that would
 	// prompt refuses instead, naming the flag that answers the prompt.
 	Interactive bool

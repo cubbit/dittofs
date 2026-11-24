@@ -21,9 +21,9 @@ func newTestRoot() (*cobra.Command, *bytes.Buffer) {
 
 // Every v1 command dfsctl still lists refuses, naming itself, until the CLI is
 // rebuilt on the v2 API; the commands that work locally (context, completion,
-// version, logout) are left out of the walk.
+// version, login, logout, password) are left out of the walk.
 func TestV1CommandsRefuse(t *testing.T) {
-	kept := map[string]bool{"context": true, "completion": true, "version": true, "logout": true, "help": true}
+	kept := map[string]bool{"context": true, "completion": true, "version": true, "logout": true, "login": true, "password": true, "help": true}
 	root, _ := newTestRoot()
 	refused := 0
 	var walk func(c *cobra.Command)
@@ -95,14 +95,14 @@ func TestRemovedCommandsAbsent(t *testing.T) {
 	}
 
 	root, _ := newTestRoot()
-	for _, f := range []string{"token", "client-cert", "client-key", "tls-skip-verify"} {
+	for _, f := range []string{"token", "server", "cacert", "client-cert", "client-key", "tls-skip-verify"} {
 		if root.PersistentFlags().Lookup(f) != nil {
 			t.Errorf("global flag --%s: got it defined, want it absent", f)
 		}
 	}
 	trash := []string{"enable-trash", "trash-retention-days", "trash-restrict-empty-to-admin", "trash-max-size", "trash-exclude"}
 	for path, flags := range map[string][]string{
-		"login":        {"client-cert", "client-key", "tls-skip-verify"},
+		"login":        {"client-cert", "client-key", "tls-skip-verify", "password"},
 		"share create": trash,
 		"share edit":   trash,
 	} {
@@ -122,7 +122,7 @@ func TestRemovedCommandsAbsent(t *testing.T) {
 // leaving Env.Out empty.
 func TestRunPrintsErrorToEnvErr(t *testing.T) {
 	var out, errOut bytes.Buffer
-	status := Run(cmdutil.Env{In: strings.NewReader(""), Out: &out, Err: &errOut}, []string{"share", "unmount"})
+	status := Run(t.Context(), cmdutil.Env{In: strings.NewReader(""), Out: &out, Err: &errOut}, []string{"share", "unmount"})
 	if status != 1 {
 		t.Errorf("status: got %d, want 1", status)
 	}
@@ -137,7 +137,7 @@ func TestRunPrintsErrorToEnvErr(t *testing.T) {
 // A command's output lands in the Env the root was built with.
 func TestVersionWritesToEnvOut(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if status := Run(cmdutil.Env{In: strings.NewReader(""), Out: &out, Err: &errOut}, []string{"version", "--short"}); status != 0 {
+	if status := Run(t.Context(), cmdutil.Env{In: strings.NewReader(""), Out: &out, Err: &errOut}, []string{"version", "--short"}); status != 0 {
 		t.Fatalf("dfsctl version --short: got status %d (stderr %q), want 0", status, errOut.String())
 	}
 	if out.String() != Version+"\n" {

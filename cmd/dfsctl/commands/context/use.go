@@ -3,11 +3,12 @@ package context
 import (
 	"fmt"
 
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
 	"github.com/spf13/cobra"
 )
 
-func newUseCmd() *cobra.Command {
+func newUseCmd(env cmdutil.Env) *cobra.Command {
 	useCmd := &cobra.Command{
 		Use:   "use <name>",
 		Short: "Switch to a different context",
@@ -22,22 +23,15 @@ Examples:
   # Switch to a local development server context
   dfsctl context use local-dev`,
 		Args: cobra.ExactArgs(1),
-		RunE: runContextUse,
+		RunE: func(cmd *cobra.Command, args []string) error { return runContextUse(cmd, env, args) },
 	}
 	return useCmd
 }
 
-func runContextUse(cmd *cobra.Command, args []string) error {
+func runContextUse(cmd *cobra.Command, env cmdutil.Env, args []string) error {
 	contextName := args[0]
 
-	// Load credential store
-	store, err := credentials.NewStore()
-	if err != nil {
-		return fmt.Errorf("failed to initialize credential store: %w", err)
-	}
-
-	// Switch context
-	if err := store.UseContext(contextName); err != nil {
+	if err := cmdutil.Locked(cmd.Context(), env, func(s *credentials.Store) error { return s.UseContext(contextName) }); err != nil {
 		if err == credentials.ErrContextNotFound {
 			return fmt.Errorf("context '%s' not found\n\n"+
 				"List available contexts:\n"+

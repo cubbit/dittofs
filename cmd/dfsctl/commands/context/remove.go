@@ -32,7 +32,7 @@ Examples:
 func runContextRemove(cmd *cobra.Command, env cmdutil.Env, args []string) error {
 	contextName := args[0]
 
-	store, err := credentials.NewStore()
+	store, err := credentials.Read(env.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize credential store: %w", err)
 	}
@@ -46,6 +46,6 @@ func runContextRemove(cmd *cobra.Command, env cmdutil.Env, args []string) error 
 
 	force, _ := cmd.Flags().GetBool("force")
 	return cmdutil.RunDeleteWithConfirmation(cmd, env, "Context", contextName, force, func() error {
-		return store.DeleteContext(contextName)
+		return cmdutil.Locked(cmd.Context(), env, func(s *credentials.Store) error { return s.DeleteContext(contextName) })
 	})
 }
