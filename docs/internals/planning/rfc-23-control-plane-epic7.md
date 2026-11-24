@@ -456,15 +456,16 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
   - R6 holds, but the node's API stays open past §2.2's step 3: Stop closes its listeners after the
     engine. #5469 owns that.
 - T7.6 as built differs from its text in these places.
-  - Its rows run on RFC 18's machine node (`newMachine` in `machine_test.go`), which wires
-    `identitytest`'s directory and domain controller through `NewWithDialers`; T7.3's `newWired`
-    builds through `node.New`, which dials the network ones. R26's row needs no directory and runs
-    on the signed-in node `newAuthNode` builds.
-  - The grant by directory name is driven through the API by the test, `resolve-principal` and then
-    the grant's `PUT` under the ID its result names; the CLI's grant by name (T6.4) runs the same
-    two calls.
-  - The keyless rule is shown falsifiable on the node by one online join sent with an
-    `Idempotency-Key`, refused `400` and leaving no record.
+  - Its directory rows run on RFC 18's machine node (`newMachine` in `machine_test.go`), which
+    builds through `NewWithDialers` over `identitytest`'s directory and domain controller, seeds
+    the directory's settings and tees the log, and whose API takes every caller as an admin, so
+    these rows test no role; T7.3's rows hold the roles. R26's row needs no directory and runs on
+    the signed-in node `newAuthNode` builds.
+  - The grant by directory name is driven through the API by the test: `resolve-principal`, then
+    the grant's `PUT` under the ID its result names. The CLI's grant by name (T6.4) is not built
+    yet; when it is, it is to make the same two calls, and its `clisuite` row tests R16.
+  - The keyless rule is shown falsifiable on the node by a join of each mode sent with an
+    `Idempotency-Key`, refused `400` naming the key and leaving no record.
 - E3's T3.9 stop-bound exit test may move to this epic's fixture (§1.2); E3 decides when T3.9
   lands.
 - The proposals to RFC 23's plan that this document leaves to a later pull request: §5 epic 7's

@@ -151,6 +151,22 @@ func turn(h *nodetest.Harness) {
 	}
 }
 
+// ended turns h's node until operation id has ended, and returns it.
+func ended(t *testing.T, h *nodetest.Harness, id entity.OperationID) entity.Operation {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		op := operation(t, h, id)
+		if op.State == entity.OpSucceeded || op.State == entity.OpFailed {
+			return op
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation %s within 30 s: %v at step %s, want it ended", op.Kind, op.State, op.Step)
+		}
+		turn(h)
+	}
+}
+
 func started(t testing.TB, h *nodetest.Harness) {
 	t.Helper()
 	if err := h.Node().Start(t.Context()); err != nil {

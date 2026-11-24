@@ -174,22 +174,6 @@ func (m *machine) ended(t *testing.T, id entity.OperationID) entity.Operation {
 	return ended(t, m.h, id)
 }
 
-// ended turns h's node until operation id has ended, and returns it.
-func ended(t *testing.T, h *nodetest.Harness, id entity.OperationID) entity.Operation {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		op := operation(t, h, id)
-		if op.State == entity.OpSucceeded || op.State == entity.OpFailed {
-			return op
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("operation %s within 30 s: %v at step %s, want it ended", op.Kind, op.State, op.Step)
-		}
-		turn(h)
-	}
-}
-
 // succeeded wants operation id to end succeeded.
 func (m *machine) succeeded(t *testing.T, what string, id entity.OperationID) {
 	t.Helper()

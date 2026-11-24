@@ -571,8 +571,8 @@ func TestNoSecretInWhatTheNodeRecords(t *testing.T) {
 	}
 }
 
-// kvRows is every distinct row under prefix read, key and value as the KV
-// holds them, and the first error a read at a runner turn answered.
+// kvRows is every distinct row under prefix read, every row when it is nil,
+// key and value as the KV holds them, and the first error a read at a runner turn answered.
 type kvRows struct {
 	prefix []byte
 	mu     sync.Mutex
@@ -619,6 +619,18 @@ func (o *kvRows) all() [][]byte {
 		rows = append(rows, []byte(row))
 	}
 	return rows
+}
+
+// passwordForms is pw as given, in UTF-16LE as NTLM and the domain
+// controller's calls carry it, and its NT hash, MD4 of that.
+func passwordForms(pw []byte) map[string][]byte {
+	var u []byte
+	for _, c := range utf16.Encode([]rune(string(pw))) {
+		u = append(u, byte(c), byte(c>>8))
+	}
+	nt := md4.New()
+	nt.Write(u)
+	return map[string][]byte{"as given": pw, "UTF-16LE": u, "NT hash": nt.Sum(nil)}
 }
 
 // encodings is b raw, in hex lower and upper case, in base64 standard and
