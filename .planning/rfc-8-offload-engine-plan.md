@@ -698,7 +698,10 @@ per-block reporting" go green at S3.
 - Carve: one `Cut` per maximal stretch, `realEnd`, `consumed`, widening to re-tile, the age's forced
   final cut; the `carver_` series; RFC 2 §10.1's consumer checks, among them each chunk's all-zero
   flag set from the bytes `emit` hands over and never set on a chunk with a non-zero byte, since a wrong
-  flag makes a zero ref no block stores.
+  flag makes a zero ref no block stores. Each chunk's age is its file's oldest dirty write
+  (`Handle.DirtyFiles`), with a `ponytail:` at the assignment naming the ceiling (a short block may go
+  out before it must) and the upgrade, a time per extent, which the RFC 2 plan's §6.1 ledger gives the
+  journal plan (the epic after 9b).
 - Assemble: every chunk carried, zero refs, early close within `K` (the key budget `kvstore` computes at open, `budget.go`, which gains an accessor here), one flow and namespace per block
   (RFC 2 §5.3), as S1a agrees the inputs.
 - Intent: the stale-namespace refusal, the chain pinned, the name minted once per attempt from a
@@ -876,7 +879,9 @@ adapter, D5), §2.6's order; RFC 23 §2.1 and §2.2 for the syncer and the remot
 Appendix B for this part's keys, the components' settings sections and the remote store's keys, which
 the RFC 4 plan moves into `pkg/remote`; RFC 25 §7 for registering its alert rules and every
 component's; RFC 24 §6.2's CPU token; amended RFC 0 §1.2's import edges. **Done when:** S7: the store
-adapter passes `syncertest`'s conformance suite in `integration`; RFC 8 E5 holds through the node; the
+adapter passes `syncertest`'s conformance suite in `integration`, and `syncertest`'s real-backend
+suite (RFC 3 §8.1: the Group A and lifecycle checks) passes against the adapter over LocalStack
+(`LOCALSTACK_HTTPS_ENDPOINT`) behind a fault proxy, in `integration`; RFC 8 E5 holds through the node; the
 engine's read and write tests run with and without transforms (the RFC 4 plan's row); the RFC 21 plan's
 "§11.5 full journal with the store unreachable" and the RFC 22 plan's "§16.5 remote outage on reads"
 rows pass on a composed node in `e2e`; the journal plan's system scenarios left to this part run in
@@ -894,15 +899,23 @@ it after, as RFC 8 §2.6 orders.
   client per store configuration, ref-counted, with their probe keys; until the RFC 4 plan's epic 8
   derives it, each client is built with the limit `upload_workers + fetch_workers + 1` (the syncer's two
   pools and the probe; GC's bound joins with RFC 9), never lower, and its constructor refuses a limit of
-  0 or less.
+  0 or less. The uploader's encoded bound passed to the syncer is the largest
+  `Attempt.MaxEncodedLen(Max)` an open attempt may hold, not the current chain's (RFC 3 §2.2 as
+  amended), since a pin outlives a chain change.
+- The syncer's per-flow queue gauges (`syncer_queue_depth`, `syncer_waiters`) exported by share under
+  RFC 25 §2.5's worst-n rule through the node's per-share path (`shareGaugeSpec`,
+  `internal/node/stats.go`), each flow id in `syncer.Stats` mapped to the share that opened it (epic
+  16 opens one per share); `pkg/syncer/series` exports only the summed gauges.
 - `Deps.Carver`, `Syncer`, `Refs`, `Watchdog` from the root; `*Engine` and the syncer's conditions added to the health evaluator; the node's stats fetch (`internal/node/stats.go`, `engine.Stats` only today) widened to the syncer's `Stats`.
 - Each component's collectors and alert rules registered in `internal/node`, with RFC 8 §11.1's
   offload conditions and `offload_age_exceeded`, and RFC 3's `store_put_unhealthy` and
   `store_get_unhealthy` (RFC 25 §7).
 - RFC 13 Appendix B's keys this part reads and the remote store's keys from `pkg/remote`, reloadable
   as that appendix says; the registry's refusal of the in-memory remote kind outside tests.
-- Each component's settings section added to the node's table (`newTable`): the syncer's, and the
-  carver's `Target`, which the RFC 2 plan's epic 3 declares and validates in `pkg/carver`, with the
+- Each component's settings section added to the node's table (`newTable`): the syncer's, from
+  `pkg/syncer/section`, and the carver's `Target`, from `pkg/carver/section`, which the RFC 2 plan's
+  epic 3 declares and validates (each its own package, since `pkg/settings` imports
+  `pkg/metadata/entity`), with the
   RFC 13 plan's Appendix B check (`TestAppendixBMatchesTheTable`) passing with each; `Target` waits on
   RFC 13 naming its key.
 - RFC 24 §6.2's CPU token built in the node: a FIFO weighted semaphore of three quarters of the
