@@ -33,8 +33,8 @@ var configFields = []string{"Bootstrap", "KV", "Clock", "Metrics", "Logger", "Tr
 
 // nodeExports returns the violations of the node's surface in the package
 // whose sources are in dir: an exported package-level declaration other than
-// New, Node, Config, Preflight and RefuseV1; an exported method of Node
-// other than Start and Stop, or of another exported type, a method of an unexported type being no part
+// New, Node, Config and Preflight; an exported method of Node other than Start and Stop,
+// or of another exported type, a method of an unexported type being no part
 // of the surface;
 // a field Node embeds, whose methods it would promote, or exports; a Config
 // whose fields are not exactly configFields; a method whose receiver it cannot
@@ -46,7 +46,7 @@ func nodeExports(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	want := map[string]bool{"New": false, "Node": false, "Config": false, "Preflight": false, "RefuseV1": false, "Node.Start": false, "Node.Stop": false}
+	want := map[string]bool{"New": false, "Node": false, "Config": false, "Preflight": false, "Node.Start": false, "Node.Stop": false}
 	var bad []string
 	note := func(name string) {
 		if _, ok := want[name]; ok {
@@ -142,8 +142,8 @@ func structViolations(s *ast.TypeSpec) []string {
 	return bad
 }
 
-// The node exports New, Node, Config, Preflight and RefuseV1, and Node's
-// Start and Stop, and nothing else; each planted tree, holding one violation, is caught.
+// The node exports New, Node, Config and Preflight, and Node's Start and
+// Stop, and nothing else; each planted tree, holding one violation, is caught.
 func TestNodeExports(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

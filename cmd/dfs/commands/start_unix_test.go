@@ -191,6 +191,20 @@ func TestStartRefusesNoJournalDevice(t *testing.T) {
 		{"over a store", func(t *testing.T) (string, string) {
 			return installedNoDevice(t)
 		}},
+		// The missing device is a wiring refusal, answered before the v1
+		// probe reads the storage it would refuse over.
+		{"over a v1 layout beside the store", func(t *testing.T) (string, string) {
+			dir := t.TempDir()
+			blobs := filepath.Join(dir, "blocks", "shares", "s1", "blobs")
+			if err := os.MkdirAll(blobs, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(blobs, "f1"), []byte("v1 data"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			store := filepath.Join(dir, "store")
+			return store, bootstrapFile{store: store, node: nodeUUID}.write(t, dir)
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, config := tc.prepare(t)
@@ -202,7 +216,7 @@ func TestStartRefusesNoJournalDevice(t *testing.T) {
 			if code == 0 || !strings.Contains(out, "Error: the start check: no journal device") {
 				t.Fatalf("dfs start with no journal device (%s): exit %d, output:\n%s\nwant non-zero naming the start check's refusal", tc.name, code, out)
 			}
-			if _, err := os.Stat(store); !errors.Is(err, os.ErrNotExist) && tc.name == "without a store directory" {
+			if _, err := os.Stat(store); !errors.Is(err, os.ErrNotExist) && tc.name != "over a store" {
 				t.Errorf("the store directory %s exists after the refusal (%v), want none: the refusal creates nothing", store, err)
 			}
 		})

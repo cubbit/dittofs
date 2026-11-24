@@ -102,7 +102,10 @@ func TestOpenKVGivesUpOnAnUnreachableCluster(t *testing.T) {
 // dfs start over a cluster no one answers: nothing listens on port 1, so the
 // open would wait out its 30 s bound. A v1 layout on the device is refused
 // before the store opens, and a SIGTERM as the open begins stops the start,
-// exiting zero; both answer well inside that bound, with no cluster.
+// exiting zero; both answer well inside that bound, with no cluster. The
+// signal lands before the backend's open is called, which then runs its
+// first read under a context already ended: nothing marks the moment the
+// open starts waiting on the cluster, so the row cannot land it later.
 func TestStartBeforeTheClusterAnswers(t *testing.T) {
 	for _, r := range []struct {
 		name string
@@ -115,7 +118,7 @@ func TestStartBeforeTheClusterAnswers(t *testing.T) {
 		want string
 	}{
 		{name: "a v1 layout is refused before the open", v1: true, want: "the start check: refusing to start: "},
-		{name: "a SIGTERM during the open", signalAt: stageOpen},
+		{name: "a SIGTERM as the open begins", signalAt: stageOpen},
 	} {
 		t.Run(r.name, func(t *testing.T) {
 			t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -205,10 +208,16 @@ func (s *sigtermInView) View(ctx context.Context, fn func(kv.Reader) error) erro
 		}
 		<-ctx.Done()
 		// The backend cancels its transaction from a goroutine of its own:
-		// poll the condition itself, a read that fails.
+		// poll the condition itself, a read that fails, with a generous
+		// deadline as the backstop.
+		deadline := time.Now().Add(20 * time.Second)
 		for {
 			if _, err := r.Get([]byte("probe")); err != nil && !errors.Is(err, kv.ErrNotFound) {
 				break
+			}
+			if time.Now().After(deadline) {
+				s.t.Errorf("a read in a View whose context ended still answered 20s later, want it to fail once the backend canceled its transaction")
+				return errors.New("the backend never canceled the read")
 			}
 			time.Sleep(time.Millisecond)
 		}

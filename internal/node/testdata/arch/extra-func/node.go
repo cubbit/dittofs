@@ -26,5 +26,3 @@ func (n *Node) helper() {}
 func Extra() {}
 
 func Preflight() {}
-
-func RefuseV1() {}

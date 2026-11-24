@@ -26,5 +26,3 @@ func (n *Node) helper() {}
 func (n *Node) Pause() {}
 
 func Preflight() {}
-
-func RefuseV1() {}
