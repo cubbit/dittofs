@@ -27,14 +27,16 @@ saved stateids (T1.1) and NFSv4 members' table (T1.2), E2's `nfsharness` (T2.2) 
 `NoGrace` (T2.1), S0's `vfstest.Mutations`. Beyond S2: **E5**'s `SetFH` users and the walk to a
 file (T5.1), `stateid.go` and `SETATTR` (T5.5), `createattrs` (T5.6), and `READ` and `WRITE`
 (T5.8); **E8**'s pieces landed first: the callbacks value in `nfs/callbacks.go` with its
-`Handlers` field, and the `Adapter` bytes codec that names the minor version a client was
-confirmed under, then `SETCLIENTID`, its confirm and `RENEW` for NFSv4.0 rows, and `EXCHANGE_ID`,
-`CREATE_SESSION`, `SEQUENCE` and `DESTROY_CLIENTID` for NFSv4.1 rows (§9, point 4, names what is
-assumed of it); **E3**'s scripted client (T3.2) and `core`'s refusals in NFSv4's tables (T3.4);
+`v4.Handlers` field (T8.1), and the `Adapter` bytes codec whose `ClientRecNFS4.Minor` names the
+minor version a client was confirmed under (T8.2), then `SETCLIENTID`, its confirm, `RENEW` and the
+`StaleClient` row (T8.10) for NFSv4.0 rows, and `EXCHANGE_ID` (T8.3), `CREATE_SESSION` (T8.4),
+`SEQUENCE` (T8.5) and `DESTROY_CLIENTID` (T8.9) for NFSv4.1 rows (§9, point 4); **E3**'s scripted client (T3.2) and `core`'s refusals in NFSv4's tables (T3.4);
 **E7**'s resolution of a `Claimed` caller (T7.1), without which an `AUTH_SYS` call is refused at
 admission; **S4** for the NFSv4.1 loopback rows of T9.11.
-**Blocks:** E10, whose delegations are offered with T9.4's `OPEN` and whose `DELEGRETURN` and
-revoked answers use T9.3's stateids; E12, whose `COPY` and `CLONE` take T9.3's and T9.9's stateids;
+**Blocks:** E10, whose delegations are offered with T9.4's `OPEN` (E10's T10.4) and whose
+`DELEGRETURN` and revoked answers use T9.3's stateids and T9.10's operations (T10.4, T10.7), and
+whose T10.7 advances the `memory.Service.Clock` T9.7 exports; E12, whose `COPY` and `CLONE` (T12.3)
+take T9.3's and T9.9's stateids and whose hold budget (T12.4) adds its call to T9.6's `CLOSE`;
 E6's T6.4, which adds `acl` and `mode_umask` to T9.5's create attributes; E16, which runs pynfs's
 open, lock and stateid tests and the restart rows.
 
@@ -79,18 +81,20 @@ targets of the stateid translation, `share_access` and `share_deny`, and a `LOCK
   grant, `DELEGRETURN`, `CB_RECALL`, an `OPEN` reclaiming a delegation, the delegation-stateid
   steps of RFC 21 §13's "§5.2 stateids *(1 node)*" (the recall timeout) and "§5.2 delegation
   stateid", an administrator's revoke and its `SEQUENCE` flags, and the drain test against Linux's
-  compounds: E10. This epic decodes the want bits and refuses an invalid one (D8) and maps
-  `ErrState` (`Revoked`) in both its causes (T9.3); E10 makes a delegation and tests what it
-  answers.
+  compounds: E10 (T10.4, T10.7, T10.9). This epic decodes the want bits and refuses an invalid
+  one (D8), maps `ErrState` (`Revoked`) in both its causes (T9.3) and serves `READ`, `WRITE` and
+  `SETATTR` under a delegation stateid (T9.9); E10 makes a delegation and tests what it answers.
 - `SETCLIENTID`, `SETCLIENTID_CONFIRM`, `EXCHANGE_ID`, `CREATE_SESSION`, `SEQUENCE`, `RENEW`,
   `DESTROY_CLIENTID` and `RECLAIM_COMPLETE`, the lease, the `SEQ4_STATUS` flags, the NFSv4.0
-  stale-client-ID signal and the `StaleClient` and `ClientInUse` rows: E8. This epic runs the rows
+  stale-client-ID signal and the `StaleClient` and `ClientInUse` rows: E8 (T8.3 to T8.6, T8.9,
+  T8.10). This epic runs the rows
   of §13 that need an open or a lock beside them (R52 to R55).
 - NLM's locks and NSM, and the NLM steps of "§5.5, §6.1 conflict holder": E11.
 - The restart rows ("§5.4 single-node restart", "§5.2, §5.4 lock across a restart *(1 node)*",
   "§5.4 NFSv4.0 signal", "§5.1 revoke across a restart *(1 node)*"'s NFSv4 steps), the lock recall
   with NLM and SMB ("§5.3 lock recall"), the handle-cached deny mode, pynfs's open, lock and
-  stateid tests, and the totality test of every table: E16.
+  stateid tests, and the totality test of every table: E16 (T16.4, T16.5, T16.6, T16.11; pynfs's
+  tests in its burn-down, planned after E15).
 - `READ`, `WRITE` and `SETATTR` under the all-zeros and all-ones stateids, and the I/O rows of
   `ErrLocked` and `ErrShareViolation`: E5. `REMOVE`, `RENAME` and `CREATE` meeting delete pending
   or the read-only marker: E5.
@@ -128,6 +132,7 @@ targets of the stateid translation, `share_access` and `share_deny`, and a `LOCK
   `adaptertest/golden`, the import test's call-site rules.
 - **S2**, NFS's test foundations in CI, after E2 and S0: what this epic starts from.
 - **S4**, an NFSv4.1 session over loopback, after E3, E5 and E8: what T9.11's NFSv4.1 rows need.
+- **E15**, the integration with the node, which turns the NFS suites on.
 
 ## 2. How the general rules apply
 
@@ -379,6 +384,8 @@ internal/adapter/nfs/
   protocol/
     owners.go                  T9.7  NFSv4.0 owners' last replies (D3)
   callbacks.go                 T9.7  (E8's) Revoked for opens and locks (D9)
+pkg/vfs/vfstest/memory/
+  memory.go                    T9.7  Service.Clock
   wire/testdata/golden/
     rfc-nfs4-*.hex             T9.3, T9.4, T9.6, T9.8, T9.10  where no capture holds the operation or the row
 pkg/openstate/
@@ -489,21 +496,21 @@ internal/vfs/
 
 **Subtask T9.4 estimate: 3.5 man-days.**
 
-- **Track:** C. **Depends on:** T9.3, T5.1, E8. E8 for its callbacks value and `Adapter` bytes only.
+- **Track:** C. **Depends on:** T9.3, T5.1, T8.2. T8.2 for the `Adapter` bytes codec only.
 - **Covers:** R7, R16, R17, R18, R20, R21, R22, R25, R42, R43, R44, R45, R47, R48.
 - **Deliverables:** `open.go`: the `share_access` and `share_deny` translation into `Access`,
   `Deny` and the want value (D8); the claims into an `OpenRequest` by name or by handle (`Via`),
   `Reclaim` for `CLAIM_PREVIOUS`, `CLAIM_DELEGATE_PREV` and `CLAIM_DELEG_PREV_FH` (D7), the
   delegation-current claims as opens of the same file; the open owner as `OpenRequest.Owner`, the
   v4.0 seqid as `Seqs`; over NFSv4.0, `Resolve` setting `Call.Client` from the open owner's client
-  ID and the handler reading `Record`'s minor version through E8's `Adapter` bytes codec first
+  ID and the handler reading `Record`'s `ClientRecNFS4.Minor` through T8.2's `DecodeClientRec` first
   (R7); one `Open`; the reply's stateid, `OPEN4_RESULT_CONFIRM` from `Confirm`,
   `OPEN4_RESULT_LOCKTYPE_POSIX`, `change_info4` from the result's `Dir`, `OPEN_DELEGATE_NONE`;
   the new file made current with its stateid; the drain role, a flush for the delegation-current
   claims and none otherwise; the rows of `ErrShareViolation` (`NFS4ERR_SHARE_DENIED`), `NoGrace`,
   `NoReclaim` and `ReclaimConflict`; `FuzzShareAccess`; golden files of `share_access` and
   `share_deny` pairs and claim types. Opens with no create only: the create is T9.5. Consumed by
-  T9.5 to T9.11, E10, which offers delegations here, and E6's T6.4 through T9.5.
+  T9.5 to T9.11, E10's T10.4, which offers delegations here, and E6's T6.4 through T9.5.
 - **Acceptance criteria:**
   - Each access and deny pair, under NFSv4.0 and NFSv4.1, reaches `Open` as the golden neutral
     pair; a deny of `OPEN4_SHARE_DENY_BOTH` denies read and write, never delete; a want bit under
@@ -578,7 +585,7 @@ internal/vfs/
 
 **Subtask T9.7 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T9.6, T9.2.
+- **Track:** C. **Depends on:** T9.6, T9.2, T8.1.
 - **Covers:** R26, R27, R29.
 - **Deliverables:** `protocol/owners.go`:
   ```go
@@ -603,7 +610,9 @@ internal/vfs/
   `New` building one table from `Deps.Budgets` and setting it on `v4.Handlers`; `OPEN`,
   `OPEN_CONFIRM`, `OPEN_DOWNGRADE`, `CLOSE` and, once T9.8 lands, `LOCK` and `LOCKU` asking `Last`
   first under NFSv4.0 and keeping their answer when it is outside RFC 21 §4.2's exempt list; the
-  callbacks value's `Revoked` calling `DropClient` (D9). Consumed by T9.8, T9.11 and E16.
+  callbacks value's `Revoked` calling `DropClient` (D9). `pkg/vfs/vfstest/memory`'s
+  `Service.Clock`, the test clock its open state already reads (kind 1), exported for the lease
+  expiry below. Consumed by T9.8, T9.11, E10's T10.7, which advances the same clock, and E16.
 - **Acceptance criteria:**
   - A `CLOSE` sent twice at one seqid is answered twice alike, with one `Close` in the call record.
   - An `OPEN` refused `NFS4ERR_ACCESS` and retransmitted is answered `NFS4ERR_ACCESS` from the
@@ -721,11 +730,11 @@ internal/vfs/
 
 **Subtask T9.11 estimate: 3.5 man-days.**
 
-- **Track:** C. **Depends on:** T9.5, T9.9, T9.10, T3.2, T7.1, S4.
+- **Track:** C. **Depends on:** T9.5, T9.9, T9.10, T3.2, T7.1, T8.9, T8.10, S4.
 - **Covers:** R2, R49, R50, R51, R52, R53, R54, R55, R56.
 - **Deliverables:** `loopback_test.go`'s rows by the scripted client through `core` to
-  `memory.New`: NFSv4.0 over E8's `SETCLIENTID` and its confirm, NFSv4.1 after S4; the lease run
-  out on `memory.New`'s clock (§9, point 4). Consumed by E16, which runs pynfs's tests of the same
+  `memory.New`: NFSv4.0 over E8's `SETCLIENTID` and its confirm (T8.10), NFSv4.1 after S4; the
+  lease run out on T9.7's `memory.Service.Clock`. Consumed by E16, which runs pynfs's tests of the same
   rows.
 - **Acceptance criteria:**
   - "§4.2 v4.0 owners *(1 node)*"'s scripted-client steps (R49).
@@ -747,7 +756,7 @@ internal/vfs/
 flowchart TD
   S2(["S2 NFS test foundations in CI"]):::sync
   E5(["E5: T5.1 current filehandle, T5.5 stateid.go and SETATTR, T5.6 createattrs, T5.8 READ and WRITE"]):::sync
-  E8(["E8: callbacks value, Adapter bytes, client IDs and sessions"]):::sync
+  E8(["E8: T8.1 callbacks value, T8.2 Adapter bytes, T8.9 and T8.10 client IDs"]):::sync
   E3(["E3: T3.2 scripted client, T3.4 core's refusals"]):::sync
   E7(["E7: T7.1 Claimed callers"]):::sync
   S4(["S4 an NFSv4.1 session over loopback"]):::sync
@@ -756,6 +765,7 @@ flowchart TD
   S2 & E5 --> T9_3["T9.3 Every stateid, the open-state rows"]
   T9_3 --> T9_4["T9.4 OPEN: access, deny, claims, owners"]
   E8 --> T9_4
+  E8 --> T9_7
   T9_4 --> T9_5["T9.5 OPEN's create"]
   T9_4 & T9_1 --> T9_6["T9.6 OPEN_CONFIRM, OPEN_DOWNGRADE, CLOSE"]
   T9_6 & T9_2 --> T9_7["T9.7 NFSv4.0 owners' last replies"]
@@ -765,7 +775,7 @@ flowchart TD
   T9_4 --> C1(["after T9.4: E10 can offer delegations with OPEN"]):::sync
   T9_5 --> C2(["after T9.5: E6's T6.4 can add acl and mode_umask"]):::sync
   T9_5 & T9_9 & T9_10 --> T9_11["T9.11 Loopback rows"]
-  E3 & E7 & S4 --> T9_11
+  E3 & E7 & E8 & S4 --> T9_11
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -782,10 +792,10 @@ E12's `COPY` and `CLONE` can take open stateids.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T9.1, T9.2 | 5.5 | the user's answer on D1 | the service's half with its RFC 17 amendment, reviewed by the service's owners apart from the adapter |
-| 2 | T9.3, T9.4, T9.5 | 7.5 | E5's T5.1, T5.5 and T5.6, E8's callbacks value and `Adapter` bytes | stateids and `OPEN`, the path E10 and E6 wait on |
+| 2 | T9.3, T9.4, T9.5 | 7.5 | E5's T5.1, T5.5 and T5.6, E8's T8.2 | stateids and `OPEN`, the path E10 and E6 wait on |
 | 3 | T9.6, T9.7 | 4.5 | PRs 1 and 2 | NFSv4.0's owners: confirm, downgrade, close and their replay |
 | 4 | T9.8, T9.9, T9.10 | 7.5 | PR 3, E5's T5.8 | locks and the I/O and stateid operations over them |
-| 5 | T9.11 | 3.5 | PR 4, E3's T3.2, E7's T7.1, S4 | every row over loopback |
+| 5 | T9.11 | 3.5 | PR 4, E3's T3.2, E7's T7.1, E8's T8.9 and T8.10, S4 | every row over loopback |
 
 A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can be open at once.
 
@@ -811,15 +821,14 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
    delegation is recalled; if it shows a `WRITE` under an open stateid held up by the drain, the
    fix is an RFC 17 read of whether a reference's open is under a recall, which `Role` then calls,
    a change outside this epic.
-4. **What this epic takes from E8, which is broken down beside it.** Assumed, from E8's content as
-   the RFC 21 implementation plan states it: the callbacks value in `nfs/callbacks.go`, reached
-   through a `v4.Handlers` field, with a `Revoked` method this epic fills for opens and locks (D9);
-   the `Adapter` bytes codec naming the minor version that confirmed a record, which T9.4 and
-   T9.8 read; `SETCLIENTID`, `SETCLIENTID_CONFIRM`, `RENEW`, `EXCHANGE_ID`, `CREATE_SESSION`,
-   `SEQUENCE`, `DESTROY_SESSION` and `DESTROY_CLIENTID` rows, which T9.11's rows drive; and
-   `memory.New`'s clock reachable from a test, which E8's lease rows need first. If E8 does not
-   expose the clock, T9.7 adds it to `memory.New` (one field, 0.25 man-days inside its figure).
-   If E8 settles another shape for any of these, this document follows it by a revision.
+4. **What this epic takes from E8, settled with its document.** T8.1's callbacks value in
+   `nfs/callbacks.go`, reached through `v4.Handlers.Callbacks`, whose `Revoked` this epic fills for
+   opens and locks (T9.7, D9); T8.2's `wire.DecodeClientRec`, whose `ClientRecNFS4.Minor` T9.4 and
+   T9.8 read; T8.10's `SETCLIENTID`, `SETCLIENTID_CONFIRM`, `RENEW` and `StaleClient` row, T8.3's
+   `EXCHANGE_ID`, T8.4's `CREATE_SESSION`, T8.5's `SEQUENCE` and T8.9's `DESTROY_SESSION` and
+   `DESTROY_CLIENTID`, which T9.11's rows drive; and `NoGrace`'s row, which E8 leaves to T9.4. E8's
+   registry runs on its own clock, so nothing of E8 exports `memory.New`'s: T9.7 adds
+   `memory.Service.Clock` (one field, 0.25 man-days inside its figure), and E10's T10.7 uses it.
 5. **Where this document departs from the RFC 21 implementation plan, proposed as a plan edit in
    this document's pull request.** D3 keys NFSv4.0 owners' last replies by the state a request
    names, since a stateid-only request carries no owner; the plan's D8 says (client, owner). The
@@ -831,10 +840,16 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
    `READ` and `WRITE` with their allocation gates (T5.8); E3's `nfsclient` (T3.2) and the
    `NOTSUPP` and `ILLEGAL` rows (T3.4); E7's T7.1, without which every `AUTH_SYS` call T9.8 and
    T9.11 make as bob and alice is refused at admission.
-7. **E10's, E11's and E12's expectations, assumed.** E10 builds delegations on T9.4's `OPEN` and
-   T9.8's `ErrDelay` row; E11 builds NLM on the same service locks, and T9.8's D4 must name its
-   holder blank; E12 takes T9.3's and T9.9's references for `COPY` and `CLONE`. Each is being
-   broken down beside this one, and a shape they settle otherwise is followed by a revision.
-8. **Which pull request carries which RFC amendment.** PR 1 carries D1's RFC 17 §3.0 and §3.1
-   text, once agreed; no other RFC text changes here. D6, D7, D10 and D11 decide what RFC 21 leaves
-   open and stay at their code sites as `decision:` markers.
+7. **E10's, E11's and E12's expectations, settled with their documents.** E10's T10.4 builds
+   delegations on T9.4's `OPEN` (D8's want value) and T9.3's stateid codec, its T10.7 on T9.10's
+   `TEST_STATEID` and `FREE_STATEID`, its T10.8 on T9.8's `LOCK`, `LOCKT` and `ErrDelay` row, and
+   its T10.9 on T9.6's `CLOSE` and T9.9's `READ`; the delegation-stateid arm of `READ`, `WRITE` and
+   `SETATTR` is T9.9's, and E10 runs "§5.2 delegation stateid" over it. E11 builds NLM on the same
+   service locks, and T9.8's D4 names its holder blank. E12's T12.3 takes T9.3's and T9.9's
+   references for `COPY` and `CLONE`, and its T12.4 adds its `held` call to T9.6's `close.go`, after
+   T9.6 lands; nothing of the hold budget is this epic's.
+8. **Which pull request carries which RFC amendment.** D1's RFC 17 §3.0 and §3.1 text goes in
+   batch two's one RFC 17 pull request, with E10's Q1, E11's Q1 and E12's D1, each once agreed;
+   it is opened before this epic's PR 1, the first of the four to change what `pkg/vfs` promises.
+   No RFC 21 text changes here. D6, D7, D10 and D11 decide what RFC 21 leaves open and stay at their
+   code sites as `decision:` markers.
