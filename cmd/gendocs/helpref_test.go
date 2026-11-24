@@ -437,7 +437,7 @@ func TestCheckerAcceptsAndRejects(t *testing.T) {
 	accept := []string{
 		"`dfsctl quota set /archive --scope user --id 1000`",
 		"`dfsctl -o json share list`",
-		"`dfsctl --server https://host:8443 share list`",
+		"`dfsctl --output json share list`",
 		"`dfs start`",
 		"`dfsctl share show <share>`",
 		"dfsctl is the REST client for a running dfs instance",

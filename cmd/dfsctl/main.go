@@ -3,9 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/cmd/dfsctl/commands"
-	"golang.org/x/term"
 )
 
 // Build-time variables injected via ldflags
@@ -19,11 +17,5 @@ func main() {
 	commands.Version = version
 	commands.Commit = commit
 	commands.Date = date
-
-	os.Exit(commands.Run(cmdutil.Env{
-		In:          os.Stdin,
-		Out:         os.Stdout,
-		Err:         os.Stderr,
-		Interactive: term.IsTerminal(int(os.Stdin.Fd())),
-	}, os.Args[1:]))
+	os.Exit(commands.Main(os.Args[1:]))
 }

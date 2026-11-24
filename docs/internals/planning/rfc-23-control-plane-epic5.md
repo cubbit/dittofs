@@ -216,7 +216,7 @@ them.
   view, `APISignIn`, the sealer, `apisettings.Settings`, the clock and the registry), whose methods
   take decoded values and return results and errors; it never imports `internal/node/api`. Its
   sign-in, refresh and password change are rows on E4's call adapter; `:set-password`, token
-  creation and revocation, and sign-out (which sends a key, E4's R67) on the write adapter. `node.New` sets
+  creation and revocation, and sign-out (keyless, as RFC 23 §4.5 and E4's R67 say) on the write adapter. `node.New` sets
   `Deps.Authenticate` to `Service.Authenticate`, which reads the request's peer address and E4's
   local-socket mark. Its throttle error answers `RetryAfter()`, which E4's problem writer turns
   into the header. No marker. Prior art: Vault's `logical` backends behind its `http` layer (from
