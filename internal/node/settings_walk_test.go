@@ -2530,6 +2530,10 @@ func TestRemovedShareChangesDiscarded(t *testing.T) {
 		)
 	}
 
+	// The pass records its position after the walk returns: wait for the
+	// positions before any status turn is asked for the generation.
+	caughtUp(t, h)
+
 	gen := counters(t, h).Settings
 	turnAt(t, h, ch, "the status past the deleted rows", func(tr statusTurn) bool {
 		return tr.s.Settings == gen && len(tr.s.RestartPending) == 0

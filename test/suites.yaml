@@ -238,12 +238,20 @@ suites:
   # under t.TempDir(), so TMPDIR is pointed at DITTOFS_BENCH_DIR, a directory on the device under
   # test: on tmpfs the fsyncs a bind waits on vanish and the figures are not comparable. A cold
   # pass at 10⁴ shares allocates about 22 GB, so run it on a host that holds that.
+  # The settings case of this benchmark is the whole settings reconcile a live settings change
+  # waits on, shares pass included, guarded so its figure answers only a pass which refused
+  # nothing and published the change. Its figure is read against the plan's 100 ms ceiling of
+  # the walk, a tenth of the one-second settings poll, by hand and goes in the PR; the cell
+  # itself only fails a broken pass. Every one of the ten counts seeds its own 10⁴ share
+  # fixture, about twenty seconds of seeding a count on an idle host and up to five
+  # minutes with the machine loaded, so the timeout keeps its headroom over cold and
+  # churn alone.
   # An explicit -timeout, as go test would otherwise stop a benchmark binary at 10 minutes; the cell's limit sits above it.
   reconcile-bench:
     cmd:
-      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -benchtime=1x -timeout=175m -run ^$ -bench ^BenchmarkReconcile$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -benchtime=1x -timeout=230m -run ^$ -bench ^BenchmarkReconcile$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
-    timeout: { test: 180m, cell: 190m }
+    timeout: { test: 240m, cell: 250m }
   # Admission's caller cache at 10⁴ callers on 25 shares with the identity State's serial
   # raised once a second: warm Ticket callers, and Secret callers, which carry no freshness and
   # so resolve on every call. Reports ns/op, allocs/op, p99-ns, reads/s, reads/op, misses/op, raises and misses/raise; compare
@@ -322,6 +330,26 @@ suites:
       - { sh: 'go test -count=1 -benchtime=1x -timeout=25m -run ^$ -bench ^BenchmarkReconcileScan$ ./pkg/settings/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: pr
     blocking: { pr: false }
+  # The settings case of the reconcile benchmark once per change at -benchtime=1x. The case fails
+  # itself on a pass that refused, never reached the commit or did not publish the change, and
+  # prints its figure to bench.txt; the figure read against the walk's ceiling, a tenth of the
+  # settings poll's second, goes into the PR by hand. The cell compares no number and posts
+  # nothing.
+  # The whole fixture is seeded and held before the timer: the run holds about 540 MB at its
+  # peak and takes minutes, so an explicit -timeout, as go test would otherwise stop a benchmark
+  # binary at 10 minutes. No -race: it changes the figure. The cell's output is plain text (the
+  # default format, not go-json), so a failing b.Fatalf line lands in bench.txt readable, as
+  # settings-scan-smoke's is.
+  # decision: non-blocking on pull requests, as settings-scan-smoke is: the seeding costs minutes
+  # of an unattended runner, and a failing run reports without holding the merge.
+  # decision: no known: file. A benchmark that refuses to run is a finding to fix.
+  reconcile-settings-smoke:
+    cmd:
+      - sh: |
+          go test -count=1 -benchtime=1x -timeout=25m -run '^$' -bench '^BenchmarkReconcile$/^settings$' ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s
+    tier: pr
+    blocking: { pr: false }
+    timeout: { test: 25m, cell: 30m }
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
   # epic that fills its stub, and each failure is a known one.
   adapter-conformance:
