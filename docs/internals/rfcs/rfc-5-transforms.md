@@ -293,7 +293,7 @@ A transform **MUST** be:
   stored ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). Two attempts, or two builds, need not agree for any name
   to stay right; the transform's fixtures ([§4](#4.%20Writing%20a%20custom%20transform), item 7) still hold its
   output fixed across builds within one format version;
-- **honest about length**: `LengthOf(n)` returns the exact body length for an
+- **honest about length**: `LengthOf(n)` returns the exact body length, under the material it is given, for an
   `n`-byte input and whether that is known without encoding. Encryption, parity
   and the identity know it; compression does not. When every transform in the
   chain knows it, a put is encoded once; otherwise it takes a measuring pass
@@ -606,22 +606,31 @@ type Transform interface {
 	ID() ID
 	Stage() Stage
 
-	// MaxEncodedLen is the largest body Encode can produce from n bytes.
-	MaxEncodedLen(n int) int
+	// Kinds are the material kinds Encode uses (§2.5), which Pin reads as
+	// current for the namespace; none for a transform that uses no material.
+	Kinds() []string
 
-	// LengthOf is the exact body length for n bytes, and whether it is known
-	// without encoding. A declined chunk is never known in advance.
-	LengthOf(n int) (int, bool)
+	// MaxEncodedLen is the largest body Encode can produce from n bytes under
+	// material m, the pinned material of this transform's kinds. A nil m asks
+	// for the bound under any material, which MaxDecodeLen uses.
+	MaxEncodedLen(n int, m []MaterialID) int
+
+	// LengthOf is the exact body length for n bytes under material m, and
+	// whether it is known without encoding. A declined chunk is never known in
+	// advance.
+	LengthOf(n int, m []MaterialID) (int, bool)
 
 	// LengthKey encodes, canonically, the settings that decide the body's
 	// length: this transform's part of the chain ID. The chain ID adds the
 	// transform ID, format version and material itself (§2.8).
 	LengthKey() []byte
 
-	// Encode transforms plain, deterministically (§2.1), for namespace ns.
+	// Encode transforms plain, deterministically (§2.1), for namespace ns,
+	// under material m, the attempt's pinned material: it gets that material's
+	// content from Materials.Get and never asks for the current material.
 	// Applied=false declines the chunk: plain passes on unchanged. hash is the
 	// chunk ID, for transforms that bind to it or derive from it.
-	Encode(ctx context.Context, ns NamespaceID, dst []byte, hash [32]byte, plain []byte) (Encoded, error)
+	Encode(ctx context.Context, ns NamespaceID, m []MaterialID, dst []byte, hash [32]byte, plain []byte) (Encoded, error)
 
 	// Decode inverts Encode. It never produces more than max bytes, and asks m
 	// only for material the block's census lists (§2.5).
@@ -678,22 +687,18 @@ type Chain struct{ /* ... */ }
 // transforms of one stage, or a list out of stage order (§2.3).
 func NewChain(ctx context.Context, cfg []Config, m Materials) (*Chain, error)
 
-// MaxEncodedLen composes the transforms' bounds, in stage order, plus the
-// envelope. It sizes writes.
-func (c *Chain) MaxEncodedLen(n int) int
-
 // MaxDecodeLen is the largest body any registered transforms could have
-// written from n bytes, one per stage, plus the envelope. It sizes reads.
+// written from n bytes under any material, one per stage, plus the envelope.
+// It sizes reads, and the put side's buffers (§3.1, below).
 func MaxDecodeLen(n int) int
-
-// LengthOf composes the transforms' LengthOf; false if any one is false.
-func (c *Chain) LengthOf(n int) (int, bool)
 
 // Pin fixes the chain and namespace ns's current material for one block, from
 // the mint of its name to its commit or abandonment (RFC 8 §6.6): the block's
 // chain ID, bounds and bodies all come from the pin, however the configuration
-// or the current material changes meanwhile (§2.8). It fails with the
-// provider's error when the current material cannot be read.
+// or the current material changes meanwhile (§2.8). It reads Current once for
+// each kind a transform declares, and passes that material to the transform's
+// MaxEncodedLen, LengthOf and Encode. It fails with the provider's error when
+// the current material cannot be read.
 func (c *Chain) Pin(ctx context.Context, ns NamespaceID) (*Attempt, error)
 
 // Attempt is one pinned chain. The engine releases it when the block commits
@@ -703,7 +708,13 @@ type Attempt struct{ /* ... */ }
 // ID is the chain ID (§2.8), from each transform's ID, LengthKey and the
 // pinned material.
 func (a *Attempt) ID() [32]byte
+
+// MaxEncodedLen composes the transforms' bounds under the pinned material, in
+// stage order, plus the envelope.
 func (a *Attempt) MaxEncodedLen(n int) int
+
+// LengthOf composes the transforms' LengthOf under the pinned material; false
+// if any one is false. It is exact for the bodies this attempt encodes.
 func (a *Attempt) LengthOf(n int) (int, bool)
 
 // Encode writes the envelope and returns the body with one Encoded per applied
@@ -747,8 +758,12 @@ Two bounds size everything downstream. `Attempt.MaxEncodedLen` of the chunk
 maximum bounds what one pinned block writes, and a block keeps encoding under
 the chain it pinned after the configuration changes, so the largest encoded
 block on a put is the maximum of `Attempt.MaxEncodedLen` over the open
-attempts, never the current chain's bound alone. The put side sizes by that
-maximum ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). A
+attempts, never the current chain's bound alone. That maximum changes at run
+time, which a pool sized once cannot follow, so the put side, like the read
+side, is sized once when the process starts by `MaxDecodeLen(Max)`, `Max` the
+largest chunk maximum [RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) admits; it bounds every chain that can
+be pinned, and nothing updates it at run time
+([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). A
 read may meet a body any earlier chain wrote, so the read side — the syncer's
 memory bound ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), the block header's bound ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) and the
 per-body length check before allocating — uses `MaxDecodeLen`, the maximum over
@@ -982,7 +997,7 @@ without writing any: the chain exports them around each call.
 | chunks encoded, labelled `applied` = `true` or `false` | `transform_chunks_total` | counter |
 | bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is what the transform costs or saves | `transform_bytes_total` | counter |
 | time per call, by direction | `transform_seconds` | histogram |
-| decode failures, labelled `error` = `malformed`, `material_unavailable`, `unknown_material`, `material_destroyed` or `too_large`. `malformed`, `unknown_material` and `material_destroyed` are alerts | `transform_decode_failures_total` | counter |
+| decode failures, labelled `error` = `malformed`, `material_unavailable`, `unknown_material`, `material_destroyed` or `too_large`. `malformed`, `unknown_material` and `material_destroyed` are alerts, `malformed` net of the failures the syncer's single re-get recovered ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20makes%20observable)), as `codec_verify_failures_total` is | `transform_decode_failures_total` | counter |
 | bodies written per transform ID and version, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)); the census per material is read through the management API, not exported, so rotations add no series | `transform_census_blocks` | gauge |
 
 A chain that fails to build logs the transform and the reason at `Error` and
@@ -1109,7 +1124,7 @@ corpus, chunk size distribution and CPU with each result.
 | Each transform, encode and decode | MB/s per core | report, per transform, against the previous run |
 | The chain around its transforms | overhead | within 2% of the sum of its transforms' own times, median of 10 runs |
 | Envelope size | bytes per chunk | 2 + 2n |
-| `Chain.MaxEncodedLen` against the largest body seen | ratio | at most 1: the declared bound is never exceeded on any corpus |
+| `Attempt.MaxEncodedLen` against the largest body seen | ratio | at most 1: the declared bound is never exceeded on any corpus |
 | Compression ratio per corpus | bytes out / in | report; tracked against the previous run |
 | A put and a whole-block get with the default chain | MB/s | within 10% of the same without a chain, on the reference link, or the chain is what the link waits on and pool sizing must say so ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 
@@ -1443,11 +1458,13 @@ old version can be destroyed in the service only once the destroy check of
 [B.2](#B.2%20Keys) passes for its own ID. **The provider does not wait for a wrap to notice
 it.** A namespace whose keys never change wraps nothing, so the provider reads
 the service's current primary version of each master key the configuration
-uses when the configuration opens and, once GC runs, every GC recheck period
-([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); until GC lands, an in-place rotation is seen at the
-next open. A primary version other than the one its current records name
-starts that master-key rotation. A read that fails changes nothing. Until GC
-lands it is retried at the next open; after that, at the next period; until a rotation runs, the records stay wrapped
+uses when the configuration opens and then every GC recheck period
+([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). The read needs only the period from GC, not GC itself:
+until GC lands, the provider runs it on a ticker of its own at that same fixed
+period, so an in-place rotation is never left unseen until the next open. A
+primary version other than the one its current records name starts that
+master-key rotation. A read that fails changes nothing and is retried at the
+next period; until a rotation runs, the records stay wrapped
 under the old version, which still unwraps them. Under a name that stays the same across
 versions, nothing would re-wrap, and destroying an old version in the service
 would silently make every record and export wrapped under it unopenable, past
@@ -1500,9 +1517,10 @@ In plain terms:
   stored: `Decode` derives it again from the hash it is given.
 
 **Its header:** version (1 byte), data key ID length (1 byte), data key ID. Then
-the 12-byte nonce, the ciphertext and its 16-byte tag. `MaxEncodedLen(n) = n + 285`,
-the worst case with a 255-byte key ID: 1 + 1 + 255 + 12 + 16. `LengthOf(n)` is
-exact: `n + 30` plus the current data key ID's length. `Decode` reads the nonce
+the 12-byte nonce, the ciphertext and its 16-byte tag. Under the pinned data key,
+`MaxEncodedLen` and `LengthOf` are both exact: `n + 30` plus that key ID's
+length. Under any material, `MaxEncodedLen(n) = n + 285`, the worst case with a
+255-byte key ID: 1 + 1 + 255 + 12 + 16. `Decode` reads the nonce
 from the body; the tag authenticates it with the rest. The data key's (ID, fingerprint) is in the
 chain ID ([§2.8](#2.8%20The%20chain%20ID)) as material, and the stage has no length-affecting setting, so its
 `LengthKey` is empty (*k* = 0).
@@ -1762,9 +1780,11 @@ namespace and its key IDs with each offer it reads, so a plan formed before the
 switch cannot commit IDs of the old namespace into the new one
 ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 
-Encryption asks the store configuration's `Materials` for the namespace's
-current data key when it encodes and for the data key a body names when it
-decodes; the provider unwraps it with the master key that wrapped it. Every piece
+Encryption encodes under the data key its attempt pinned ([§3.1](#3.1%20Interfaces)), which
+`Pin` read as the namespace's current data key once, so a rotation after the pin
+changes neither the block's bodies nor their lengths; it decodes with the data
+key a body names. It gets either key's content from the store configuration's
+`Materials`; the provider unwraps it with the master key that wrapped it. Every piece
 of material carries its fingerprint ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)), checked after unwrapping.
 
 The key records keep every key ID the namespace has ever issued, marking one
@@ -1948,6 +1968,7 @@ Each of these is a health condition of the store, not only a log line:
 `material_unavailable` for material the provider cannot return now,
 `material_unknown` for material the census lists and the provider was never
 given, and `material_destroyed`, with `data_loss`, for material lost for good
+while a chunk still depends on it, clearing once none does
 ([RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condition%20registry)).
 
 ### B.5 What a bucket reader still learns
