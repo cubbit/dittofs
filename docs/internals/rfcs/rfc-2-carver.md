@@ -927,9 +927,8 @@ type Assembler interface {
 
 The lookup lands with its first caller, the dedup oracle
 ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); until then no chunk is adopted, and the
-fold carries every chunk that is not all zeros. The signature above is the first
-release's: `Add` takes no lookup and cannot fail. The lookup and its error are
-added with the oracle.
+fold carries every chunk that is not all zeros. In the first release `Add` takes
+no lookup and cannot fail; the lookup and its error are added with the oracle.
 
 The assembler does no I/O but, once it exists, the lookup it is handed, keeps nothing between
 passes, and **MUST NOT** survive its pass. Once there is a lookup, a lookup error carries the chunk
@@ -1057,6 +1056,7 @@ Each check is a pure function of a chunk stream and settings; the two rows marke
 | --- | --- |
 | P1, P2, P4 | Fold random chunk streams, and a run of 5,000 chunks of 1 KiB between holes. Assert every block ends on a chunk, overshoots the target by at most one chunk, and holds at most `N` chunks. |
 | P3 zero chunks | Fold a stream with all-zero chunks. Assert none is in a plan and each is a zero ref. |
+| P5 zero refs | Fold a stream of carried chunks between runs of all-zero chunks. Assert every block but the last reaches the target in carried bytes. |
 | P5 carried bytes (with the lookup) | Fold a stream in which the lookup finds 90 % of the chunks. Assert every block but the last reaches the target in carried bytes. |
 | P6 repeats | Repeat one chunk three times in one block's span, and once more past the block's end. Assert the first block carries it once with three refs, and the second block carries it again. |
 | [§5.3](#5.3%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from) packing | Fold 10³ files of 64 KiB. Assert ⌈total / target⌉ plans, each file's chunks contiguous in one plan or split only at a block end. |
@@ -1369,8 +1369,7 @@ same answer on any runner:
 - **allocations**: neither `NextBoundary` nor `Cut` makes any ([§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed));
 - **average chunk size** over 256 MiB of seeded random input, within 10% of
   `Target` at every profile;
-- **edit stability** on a seeded synthetic input with one byte inserted near its
-  start, at every profile: every chunk shared except the one or two around the edit. K4 on the fixed corpus needs the corpus fetched, which no check may do
+- **edit stability**: [§9](#9.%20Conformance)'s B4 row, at every profile. K4 on the fixed corpus needs the corpus fetched, which no check may do
   ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction)), so it runs by hand with K5.
 
 A warm-up that crept back over the whole chunk ([§3.4](#3.4%20How%20far%20back%20a%20decision%20looks)) changes no output, so no
@@ -1406,8 +1405,8 @@ the same box differs by more across those than across commits.
 
 **Suites.** §9's chunker, carver, name and consumer rows, §5.7's assembler checks but the two that need the lookup, and §10's golden
 vectors, differential, property and fault tests run in `unit`, and an allocation count the race
-detector skews runs in an option of `unit` named for the carver, on every pull request; its tests skip under the race detector, so that option is the only place they count. §9.1's K1 to K3 on the
-reference box, fuzzing past the seed corpus, and the golden vectors on a second CPU architecture are planned to run nightly, and K4 and K5 by hand, in a suite named for the carver that is not registered yet; until it is, no suite runs them.
+detector skews is planned to run in an option of `unit` named for the carver, on every pull request; its tests skip under the race detector, so that option will be the only place they count. Fuzzing past the seed corpus is planned for a shared nightly fuzz suite. §9.1's K1 to K3 on the
+reference box and the golden vectors on a second CPU architecture are planned to run nightly, and K4 and K5 by hand, in a suite named for the carver. None of these is registered yet; until each is, no suite runs what it holds.
 
 ## 11. Open questions
 
