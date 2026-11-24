@@ -84,6 +84,16 @@ func TestPrintOutput(t *testing.T) {
 		t.Errorf("PrintOutput -o table: got %q, want the header NAME and the row bar", buf.String())
 	}
 
+	// The API's wire types name their fields for JSON only; YAML prints
+	// those names.
+	cmd, buf = newCmd("yaml")
+	spec := struct {
+		CaseSensitivity string `json:"case_sensitivity"`
+	}{"sensitive"}
+	if err := PrintOutput(cmd, spec, false, "", nil); err != nil || buf.String() != "case_sensitivity: sensitive\n" {
+		t.Errorf("PrintOutput -o yaml of a JSON-tagged struct: got %q (%v), want %q", buf.String(), err, "case_sensitivity: sensitive\n")
+	}
+
 	if err := PrintOutput(func() *cobra.Command { c, _ := newCmd("xml"); return c }(), nil, false, "", renderer); err == nil {
 		t.Error("PrintOutput -o xml: got no error, want the format refused")
 	}
