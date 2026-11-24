@@ -244,7 +244,7 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
    Epic 1's import test enforces RFC 2 §1.1, which is stricter: every package of the tree, its
    allowlist naming each exception per package, test packages included: `pkg/carver/section`
    is the one carver package allowed `pkg/settings`, and `pkg/carver` never imports the
-   back. Amended RFC 0 §1.2
+   section. Amended RFC 0 §1.2
    allows the engine's wiring to import the carver, never the other way. v1 is deleted by #5484.
 8. **Real dependencies for properties of those dependencies** (`CLAUDE.md`, "Writing tests").
    Three checks need the real thing: the golden vectors on a second CPU architecture (RFC 2 §10.1
