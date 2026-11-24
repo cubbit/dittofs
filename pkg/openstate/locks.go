@@ -1273,14 +1273,11 @@ func (t *Table) dropIdle(ctx context.Context, c entity.ClientID) {
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
 	t.cmu.Lock()
-	now := t.d.Clock.Elapsed()
-	for _, sh := range t.shards {
-		if _, ok := sh.reclaim[c]; ok && sh.inGrace(now) {
-			t.cmu.Unlock()
-			return // a grace still waits on its reclaim
-		}
-	}
+	owes := t.owesLocked(c)
 	t.cmu.Unlock()
+	if owes {
+		return // a grace still waits on its reclaim
+	}
 	t.idx.Lock()
 	idle := !t.holdsAnyLocked(c)
 	if idle {

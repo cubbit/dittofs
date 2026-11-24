@@ -160,3 +160,30 @@ func cloneInto(fill func(ctx context.Context, s *memory.Service, src vfs.Handle)
 		return err
 	}
 }
+
+// A connected client holding no state has nothing to reclaim: its reclaim
+// is the service's own NoGrace kind, not NoReclaim, so an adapter answers it
+// without judging grace itself.
+func TestAReclaimFromAClientOwingNothingIsNoGrace(t *testing.T) {
+	s := memory.New(t)
+	ctx, c := t.Context(), s.Admin()
+	h, _ := s.Store.Create(t, s.Store.Admin, s.Store.Root, "f", kvstore.Regular(0o644))
+	info := vfs.ClientInfo{Protocol: entity.ProtocolNFSv4, Name: []byte("client"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}
+	p, err := s.Propose(ctx, c, info)
+	must(t, err)
+	info.Proposal = &p
+	id, _, err := s.Connect(ctx, c, info, &vfstest.Callbacks{})
+	must(t, err)
+	c.Protocol, c.Client, c.Session = entity.ProtocolNFSv4, id, vfs.SessionRef{ID: 1}
+	req := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData, Owner: vfs.LockOwner{Client: id, Name: []byte("owner")}, Reclaim: true}
+	if _, err := s.Open(ctx, c, req); !errors.Is(err, &vfs.StateError{Kind: vfs.StateNoGrace}) {
+		t.Errorf("a reclaim from a client owing nothing: %v, want StateError NoGrace", err)
+	}
+}
+
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}

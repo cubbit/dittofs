@@ -343,6 +343,9 @@ var reportedByApply = []string{identity.SectionName, identity.DirectorySectionNa
 // value when it never ran, and its rows are refused at the generation the walk
 // read, naming the rows the refusal claims, except a section reportedByApply.
 // It returns those refusals and the ones routing raised, which the pass reports with the apply's.
+// A section whose reference the secrets pass refused keeps that too, its
+// rows refused the same way, and the versions the pass read are held per
+// reference at what each section then ran.
 //
 // decision: a refusal no row the walk kept answers, as a required key with no
 // row at all, publishes no record: no row names it, so the node reports no
@@ -351,9 +354,14 @@ var reportedByApply = []string{identity.SectionName, identity.DirectorySectionNa
 // ran reads as unconfigured through the snapshot, never defaulted and never
 // refused. Withdrawn when the node's report must name a refusal no row
 // answers for.
-func (n *Node) keepSettings(ctx context.Context, wk settingsRead) ([]refusal, error) {
+func (n *Node) keepSettings(
+	ctx context.Context,
+	wk settingsRead,
+	pass secretsRead,
+	identityRefusals []refusal,
+) ([]refusal, error) {
 	r := &n.rec
-	cur, prev := wk.snap, r.snapshot.Load()
+	cur, prev := pass.snap, r.snapshot.Load()
 
 	var out []refusal
 
@@ -365,16 +373,37 @@ func (n *Node) keepSettings(ctx context.Context, wk settingsRead) ([]refusal, er
 		}
 	}
 
-	cur, rejected, pending, err := n.routeSettings(ctx, cur, prev, wk.refused, wk.walk, wk.at.Settings)
+	// A reference that does not open holds its section whole, its rows
+	// refused at the walk's generation, identity's sections with the rest:
+	// the walk's refusals skipped those, so the pass answers for both.
+	for _, prefix := range slices.Sorted(maps.Keys(pass.refused)) {
+		out = append(out,
+			wk.walk.holdRefusals(prefix, wk.at.Settings, false, pass.refused[prefix], nil)...)
+	}
+
+	cur, rejected, withheld, pending, err := n.routeSettings(
+		ctx, cur, prev, wk.refused, pass, wk.walk, wk.at.Settings)
 	if err != nil {
 		return nil, err
 	}
 
 	out = append(out, rejected...)
 
+	for prefix := range pass.refused {
+		withheld[prefix] = true
+	}
+
+	for _, f := range identityRefusals {
+		if prefix := n.sectionOf(f.rec.Record); prefix != "" {
+			withheld[prefix] = true
+		}
+	}
+
 	r.snapshot.Store(cur)
 	r.mu.Lock()
 	r.restart = pending
+
+	n.heldSecretsGrow(pass, withheld, cur)
 	r.mu.Unlock()
 
 	return out, nil
@@ -395,7 +424,7 @@ var errNoWay = errors.New("the section has no way to its component")
 
 // routeSettings sends each change of the walk's snapshot against prev down
 // its class's path (RFC 13 §5) and answers the snapshot to publish, the
-// refusals it raised and the restart-pending set:
+// refusals it raised, the sections it held back and the restart-pending set:
 //
 //   - a live or bound change goes to its section's path, one apply per
 //     section a pass whatever their number, handing it the snapshot the walk
@@ -403,6 +432,10 @@ var errNoWay = errors.New("the section has no way to its component")
 //     the backoff; a section read at use has nothing to run, its reader
 //     loading the published snapshot at its next operation; a section with
 //     neither is refused the same way and never runs the change;
+//   - a reference whose version the secrets pass found moved, whatever the
+//     diff lists, runs its section's path the same way (RFC 13 §7): the
+//     component holding the reference resolves it at that apply, within the
+//     live bound; identity's sections apart, which every apply reads again;
 //   - a restart-class change lands in the restart-pending set, read against
 //     what each section first runs, and leaves it once that value is back;
 //   - a next-write change goes nowhere: the published snapshot carries it,
@@ -426,9 +459,10 @@ func (n *Node) routeSettings(
 	ctx context.Context,
 	cur, prev *settings.Snapshot,
 	refused map[string]error,
+	pass secretsRead,
 	w *settingsWalk,
 	gen uint64,
-) (*settings.Snapshot, []refusal, []entity.ResourceRef, error) {
+) (*settings.Snapshot, []refusal, map[string]bool, []entity.ResourceRef, error) {
 	r := &n.rec
 
 	// The shares that still exist, read once for the first share a change
@@ -466,10 +500,15 @@ func (n *Node) routeSettings(
 	changes := settings.Diff(prev, cur)
 
 	// The sections with a live or bound change, which run their path this
-	// pass, however many of their keys changed.
+	// pass, however many of their keys changed, and those whose reference's
+	// version moved, whatever the diff lists.
 	run := map[string]bool{}
 
 	for _, ch := range changes {
+		if pass.refused[ch.Section] != nil {
+			continue
+		}
+
 		if ch.Class != settings.Live && ch.Class != settings.Bound {
 			continue
 		}
@@ -480,7 +519,7 @@ func (n *Node) routeSettings(
 
 		ok, err := exists(ch.Scope)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 
 		if !ok {
@@ -488,6 +527,23 @@ func (n *Node) routeSettings(
 		}
 
 		run[ch.Section] = true
+	}
+
+	for _, prefix := range slices.Sorted(maps.Keys(pass.moved)) {
+		if run[prefix] || slices.Contains(reportedByApply, prefix) {
+			continue
+		}
+
+		ok, err := exists(pass.moved[prefix])
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+
+		if !ok {
+			continue
+		}
+
+		run[prefix] = true
 	}
 
 	// held is the sections this pass holds at what they last ran: an apply
@@ -526,7 +582,7 @@ func (n *Node) routeSettings(
 	ran := map[string]bool{}
 
 	for _, ch := range changes {
-		if refused[ch.Section] == nil && !held[ch.Section] {
+		if refused[ch.Section] == nil && !held[ch.Section] && pass.refused[ch.Section] == nil {
 			ran[ch.Section] = true
 		}
 	}
@@ -551,7 +607,7 @@ func (n *Node) routeSettings(
 
 		ok, err := exists(ch.Scope)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 
 		if !ok {
@@ -561,5 +617,5 @@ func (n *Node) routeSettings(
 		pending = append(pending, entity.SettingRef(ch.Scope, ch.Key))
 	}
 
-	return cur, out, pending, nil
+	return cur, out, held, pending, nil
 }

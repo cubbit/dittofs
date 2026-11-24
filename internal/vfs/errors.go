@@ -100,6 +100,7 @@ var openCodes = []struct {
 	{openstate.ErrClientBusy, &vfs.StateError{Kind: vfs.StateClientBusy}},
 	{openstate.ErrNoRecall, &vfs.StateError{Kind: vfs.StateNoRecall}},
 	{openstate.ErrNoReclaim, &vfs.StateError{Kind: vfs.StateNoReclaim}},
+	{openstate.ErrNoGrace, &vfs.StateError{Kind: vfs.StateNoGrace}},
 	{openstate.ErrReclaimConflict, &vfs.StateError{Kind: vfs.StateReclaimConflict}},
 	{openstate.ErrBadSeqID, &vfs.StateError{Kind: vfs.StateBadSeqID}},
 	{openstate.ErrLocksHeld, &vfs.StateError{Kind: vfs.StateLocksHeld}},

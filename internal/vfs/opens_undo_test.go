@@ -310,8 +310,9 @@ func TestAFailedReconnectClosesAsCloseDoes(t *testing.T) {
 	}
 }
 
-// A reclaim in a shard that lost nothing is answered with the open its owner
-// holds; when that answer fails, the open stays as it was, with its locks,
+// A reclaim in a shard that lost nothing, from a client still owing a
+// reclaim elsewhere, is answered with the open its owner holds; when that
+// answer fails, the open stays as it was, with its locks,
 // and the owner's retried reclaim and its close still find it.
 func TestAFailedReclaimKeepsTheHeldOpen(t *testing.T) {
 	n := newNames(t)
@@ -328,6 +329,13 @@ func TestAFailedReclaimKeepsTheHeldOpen(t *testing.T) {
 	lock := openstate.LockReq{Owner: openstate.LockOwner{Client: c.Client, Name: []byte("lock-owner")}, Open: held.Ref, Ranges: []openstate.LockRange{{ByteRange: rg, Exclusive: true}}}
 	_, err = n.tab.Locks().Lock(ctx, who, keyOf(f), lock)
 	n.must(t, err)
+	// The client holds an open in another share's shard, which then loses
+	// its state: it owes a reclaim there.
+	elsewhere := openstate.FileKey{Share: entity.ShareID{9}, Shard: 9, ID: entity.NewFileID()}
+	n.must(t, n.tab.Recovery().ServeShard(ctx, elsewhere.Share, elsewhere.Shard, 1))
+	_, err = n.tab.Opens().Open(ctx, who, elsewhere, openstate.OpenRequest{Access: entity.ReadData, Owner: owner})
+	n.must(t, err)
+	n.must(t, n.tab.Recovery().ServeShard(ctx, elsewhere.Share, elsewhere.Shard, 2))
 	n.fail(contenttest.OpOverlay, errors.New("journal read failed"))
 	req.Reclaim = true
 	if _, err := n.Open(ctx, c, req); err == nil {

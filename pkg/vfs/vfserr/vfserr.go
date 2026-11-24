@@ -202,7 +202,8 @@ const (
 	StateStaleState                           // state that may have been lost with its shard's open state
 	StateOldState                             // a stateid seqid older than the state's
 	StateBadState                             // a reference whose record is missing: expired, freed, a removed or moved share's, never issued
-	StateNoReclaim                            // a reclaim in a shard the client's record does not list
+	StateNoReclaim                            // one reclaim refused while its client still owes reclaims: a shard its record does not list, state the shard does not hold, or a reconnect whose open is gone
+	StateNoGrace                              // a reclaim from a client with nothing left to reclaim: no shard its record lists is in a grace instance it has not finished
 	StateReclaimConflict                      // a reclaim conflicting with one already reclaimed in this grace
 	StateLocksHeld                            // an owner released, or a lock state freed, still holding locks
 	StateBadSeqID                             // an owner sequence out of order
@@ -217,7 +218,7 @@ const (
 var stateKinds = [...]string{
 	StateClientInUse: "client in use", StateClientBusy: "client busy", StateRecordChanged: "record changed",
 	StateAdapterVersion: "adapter version", StateStaleClient: "stale client", StateStaleState: "stale state",
-	StateOldState: "old state", StateBadState: "bad state", StateNoReclaim: "no reclaim",
+	StateOldState: "old state", StateBadState: "bad state", StateNoReclaim: "no reclaim", StateNoGrace: "no grace",
 	StateReclaimConflict: "reclaim conflict", StateLocksHeld: "locks held", StateBadSeqID: "bad seqid",
 	StateNoRecall: "no recall", StateCreateInUse: "create in use", StateNotYours: "not yours", StateRevoked: "revoked",
 }

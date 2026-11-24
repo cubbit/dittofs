@@ -11,21 +11,44 @@ import (
 // role a secret's kind is sealed under.
 type providerSealer struct{ p *secrets.Provider }
 
-// Seal seals value under the role of kind: protocol for authentication's
-// secrets, storage for every other; handedOver marks an offline join's
-// machine password.
+// roleOfKind is the role a secret's kind is sealed under: protocol for
+// authentication's secrets, storage for every other.
 //
 // decision: the role is read off the kind here as RFC 13 §7's table gives
 // it, since the provider exports no lookup; a drift from the provider's own
-// table fails closed, since its Seal refuses a role a kind is not sealed
-// under. Overturned if the provider exports its table.
-func (s providerSealer) Seal(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte, handedOver bool) (entity.Secret, error) {
-	role := secrets.Storage
+// table fails closed, since its Seal and its reads refuse a role a kind is
+// not sealed under. Overturned if the provider exports its table.
+func roleOfKind(kind entity.SecretKind) secrets.Role {
 	switch kind {
-	case entity.SecretNTHash, entity.SecretKeytab, entity.SecretMachinePassword, entity.SecretDirectoryCredential:
-		role = secrets.Protocol
+	case entity.SecretNTHash,
+		entity.SecretKeytab,
+		entity.SecretMachinePassword,
+		entity.SecretDirectoryCredential:
+		return secrets.Protocol
 	}
-	return s.p.Seal(ctx, role, kind, owner, ref, value, secrets.Meta{HandedOver: handedOver})
+
+	return secrets.Storage
+}
+
+// Seal seals value under the role of kind, handedOver marking an offline
+// join's machine password.
+func (s providerSealer) Seal(
+	ctx context.Context,
+	kind entity.SecretKind,
+	owner entity.SecretOwner,
+	ref entity.SecretRef,
+	value []byte,
+	handedOver bool,
+) (entity.Secret, error) {
+	return s.p.Seal(
+		ctx,
+		roleOfKind(kind),
+		kind,
+		owner,
+		ref,
+		value,
+		secrets.Meta{HandedOver: handedOver},
+	)
 }
 
 // authSealer is providerSealer as auth seals with it, the signing key's
