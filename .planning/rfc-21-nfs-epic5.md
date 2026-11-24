@@ -25,7 +25,7 @@ of RFC changes.
 Cited, not owned: RFC 8881, RFC 7530 and RFC 7862 for the bytes, attribute numbers and status
 values; RFC 20 §2.5's layout of `ops/`.
 **Track:** C.
-**Epic 5 estimate: 9 subtasks, 23.25 man-days.**
+**Epic 5 estimate: 9 subtasks, 23.75 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state (`protocol.State`,
 `SetFH`) and NFSv4 table with its members' table, E2's `nfsharness` and knfsd's captures cut into
 golden files, S0's `vfstest.Mutations` and golden helper. Beyond S2, pieces of three epics broken
@@ -205,6 +205,7 @@ subtasks and tests can cite them.
 | R22 | `fileid` is the stored `Number`, never the `FileID` the handle carries, which no field of any reply carries; a named stream is never reached | MUST NOT | RFC 21 §7.1, §11.3 | T5.4 |
 | R23 | `fh_expire_type` is `FH4_PERSISTENT`; `unique_handles` and `homogeneous` are true; a released file's handle is `NFS4ERR_STALE` | MUST | RFC 21 §7.1, App. B | T5.1, T5.4 |
 | R24 | `owner` and `owner_group` are RFC 18 §4.5's owner strings for the call's proof kind, `name@domain` with proof `Secret` or above and the decimal uid or gid with `Claimed` or `None`, and the decimal form on any proof for a principal minted without a name; a principal `Spell` cannot spell is never an error | MUST | RFC 21 §11.3, §11.5 (`ErrUnknownPrincipal`), App. B; RFC 18 §4.5 | T5.4 |
+| R69 | An owner or group is written `65534` only when it has neither a name nor a uid or gid: one the name scheme cannot spell is written in its decimal form first. A `SETATTR` sending back the `owner` or `owner_group` a `GETATTR` gives for the file's current owner or group leaves it unchanged, `65534` included | MUST | RFC 18 §4.5; RFC 21 §11.3 | T5.4, T5.5 |
 | R25 | The share's attributes come from where Appendix B says: `case_insensitive`, `case_preserving`, `maxname`, `maxlink`, `no_trunc`, `chown_restricted` and `cansettime` from `Capabilities` and the share's case rule; `time_delta` from `Capabilities.TimeGranularity`; `files_*`, `space_avail`, `space_free` and `space_total` from `StatFS`; `quota_avail_hard`, `quota_avail_soft` and `quota_used` from `Quota` for the caller's principal; `xattr_support` true where `Capabilities.Xattrs`; `clone_blksize` 0; `suppattr_exclcreat` the part of its list this epic serves | MUST | RFC 21 App. B | T5.4 |
 | R26 | `fs_charset_cap` follows the share's name rule: on a case-sensitive `posix` share `FSCHARSET_CAP4_CONTAINS_NON_UTF8` set and `FSCHARSET_CAP4_ALLOWS_ONLY_UTF8` clear; under the `windows` rule or on any case-insensitive share the reverse | MUST | RFC 21 §7.3, App. B | T5.2, T5.4 |
 | R27 | `lease_time` is 90 s | MUST | RFC 21 §5.1 | T5.4 |
@@ -310,8 +311,13 @@ snapshots (§1.2).
   or `SchemeGID` when it is `Claimed` or `None`, as RFC 18 §4.5 divides them; a `SETATTR` of
   `owner` asks `Find` for the string under `SchemeOwner` and of `owner_group` under
   `SchemeOwnerGroup`, E7's T7.2 schemes (E7's D2), which map a decimal string by number whatever the
-  proof; a proven `GETATTR` of `owner_group` spells under `SchemeOwnerGroup` likewise. `Spell`'s `ErrUnknownPrincipal`, a principal with no
-  spelling, is written `65534`, which RFC 18 §4.5 allows on any proof, so it is never an error;
+  proof; a proven `GETATTR` of `owner_group` spells under `SchemeOwnerGroup` likewise. `Spell`'s
+  `ErrUnknownPrincipal` under `SchemeOwner` or `SchemeOwnerGroup` is asked again under `SchemeUID`
+  or `SchemeGID`, the decimal form RFC 18 §4.5 allows on any proof, and only a principal neither
+  spells is written `65534`, so it is never an error (R69). `65534` reads back as a principal of its
+  own, so a `SETATTR` of `owner` or `owner_group` reading `65534` first spells the file's current
+  owner or group as this `GETATTR` would, and drops the attribute from the change when they match:
+  sending back what `GETATTR` showed changes no owner;
   any other error of `Spell` is answered by its §11.5 row, so until E7's T7.2 a `GETATTR` of
   `owner` on a `Secret` caller is `NFS4ERR_INVAL`, which only a Kerberos caller (E13) meets. One `Spell` per
   owner and group, with no adapter cache, which RFC 21 §11.1 forbids: a `ponytail:` marker names the
@@ -572,12 +578,12 @@ internal/vfs/
 
 ### T5.4 `GETATTR` and every Appendix B attribute
 
-**Subtask T5.4 estimate: 3.5 man-days.**
+**Subtask T5.4 estimate: 3.75 man-days.**
 
 - **Track:** C. **Depends on:** T5.2, T5.3, T7.1, T7.2. T7.1 and T7.2 only for the `owner` rows:
   an `AUTH_SYS` call admitted, and `name@domain` spelled; the rest does not wait.
 - **Covers:** R5, R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24, R25, R26, R27, R28,
-  R29, R37, R38, R60, R62, R64.
+  R29, R37, R38, R60, R62, R64, R69.
 - **Deliverables:** `getattr.go`: `GetAttr` of the current filehandle, then `StatFS` only when a
   filesystem attribute or `mounted_on_fileid` is asked, `Quota` only for a quota attribute, and
   `Spell` for `owner` and `owner_group` (D4); its drain role, context. `attrs.go`'s encoder from a
@@ -598,7 +604,8 @@ internal/vfs/
   - Every field of §11.3's NFSv4 column encodes from its `File` field; `fileid` is `Number`, and
     no encoded byte equals the handle's `FileID`.
   - A directory with `Subdirs` −1 reports `numlinks` 2, one with 3 reports 5.
-  - `owner` on an `AUTH_SYS` call is a decimal uid; `Spell`'s `ErrUnknownPrincipal` is `65534`.
+  - `owner` on an `AUTH_SYS` call is a decimal uid; on a proven call, a principal with a uid and no
+    name is its decimal uid; `65534` only when `Spell` refuses both schemes.
   - Decode and encode of `GETATTR` allocate nothing.
 - **Tests:** on `nfsharness` against `memory.New`: a file with every field set, its `GETATTR`
   reply compared with the hand-written attribute table's golden file, each field from the RFC's
@@ -613,7 +620,9 @@ internal/vfs/
   moved, and a `SETATTR` changing nothing then `GETATTR` showing it unmoved (catches a `change`
   built from anything but `Version`, R18); `fs_locations` empty (R15); `owner` over `AUTH_SYS` as
   `SchemeUID` answers on `memory.New`, and `Spell` refused `ErrUnknownPrincipal` through
-  `vfstest.Faults` written `65534` (catches the refusal answered as an error, R24); `name@domain`
+  `vfstest.Faults` written `65534` (catches the refusal answered as an error, R24); on a proven call,
+  a principal minted with uid 2000 and no name answered `2000`, not `65534` (catches the decimal
+  fallback skipped, R69); `name@domain`
   for a proven call, and `owner_group` under `SchemeOwnerGroup` (catches a group spelled from the
   user scheme, R24). `AllocsPerRun` at 0 for decode and encode (catches an allocation, R60). No test
   double.
@@ -621,11 +630,11 @@ internal/vfs/
 
 ### T5.5 `SETATTR`, `VERIFY`, `NVERIFY` and `ACCESS`
 
-**Subtask T5.5 estimate: 2.5 man-days.**
+**Subtask T5.5 estimate: 2.75 man-days.**
 
 - **Track:** C. **Depends on:** T5.4, T4.4, T4.8, T7.2. T7.2 only for the `owner` and `owner_group`
   rows.
-- **Covers:** R5, R29, R30, R31, R32, R33, R34, R35, R36, R51, R62.
+- **Covers:** R5, R29, R30, R31, R32, R33, R34, R35, R36, R51, R62, R69.
 - **Deliverables:** `attrs.go`'s translation from the decoded `fattr4` to `vfs.Attrs`, total, a
   read-only attribute's set refused `NFS4ERR_INVAL` and an unserved one `NFS4ERR_ATTRNOTSUPP`,
   `SET_TO_SERVER_TIME4` through E4's server-time choice (T4.4), owner strings through `Find` (D4), which RFC 20 §4.3 leaves outside the one-call rule and E2's runner
@@ -645,6 +654,8 @@ internal/vfs/
     reaches `SetAttr` as one change, the server-time arm as a server-chosen time and the client
     arm as given.
   - An `owner` naming no principal is `NFS4ERR_BADOWNER` and `SetAttr` is not called.
+  - A `SETATTR` of `owner` `65534` on a file whose owner `GETATTR` shows as `65534` leaves the owner
+    unchanged; on a file owned by uid 1000 it changes it.
   - A `SETATTR` of `size` under the all-ones stateid, or under any stateid but all zeros, is
     `NFS4ERR_BAD_STATEID` with no call.
   - `ACCESS` asking every bit of a directory reports `LOOKUP` and `DELETE` where granted and never
@@ -659,7 +670,9 @@ internal/vfs/
   shared bit `translate` maps unlike §8.1's table, whose fix then goes in `translate`); `ACCESS` on a file the read-only marker
   holds, answered without `MODIFY` and `EXTEND` (catches a mask computed in the adapter, R36, R34);
   `SETATTR` of `size` on that file `NFS4ERR_ACCESS` (R36); `ErrPerm` injected on `SetAttr` through
-  `vfstest.Faults` answering `NFS4ERR_PERM` (R32); `FuzzAttrs` from bytes through the translation,
+  `vfstest.Faults` answering `NFS4ERR_PERM` (R32); a `GETATTR` of `owner` then a `SETATTR` sending it
+  back, on a file whose owner spells as `65534`, with the owner read again unchanged (catches a
+  round trip that hands the file to nobody, R69); `FuzzAttrs` from bytes through the translation,
   a value or a named refusal (catches a default for an unknown value, R33). No test double.
 - **Rules:** rule 9: D3's and D7's markers; rule 13: `ACCESS` reports the service's answer, never
   a mode check of its own.
@@ -854,8 +867,8 @@ the translation, and E9 can extend `stateid.go`; after T5.9, S4's namespace half
 | --- | --- | --- | --- | --- |
 | 1 | T5.1 | 2.5 | — | the walk into a share, the blocker of E9 and S4 |
 | 2 | T5.2 | 2 | the user's answer on D12 | a service change, reviewed by the service's owners apart from the adapter |
-| 3 | T5.3, T5.4 | 5.5 | PR 2 | `fattr4` and its first consumer, `GETATTR`, with the allocation gate and the attribute table's golden file |
-| 4 | T5.5, T5.6 | 5 | PR 3, E4's T4.4 and T4.8 | the attribute translation, the stateid function, and the operations that set attributes and names |
+| 3 | T5.3, T5.4 | 5.75 | PR 2 | `fattr4` and its first consumer, `GETATTR`, with the allocation gate and the attribute table's golden file |
+| 4 | T5.5, T5.6 | 5.5 | PR 3, E4's T4.4 and T4.8 | the attribute translation, the stateid function, and the operations that set attributes and names |
 | 5 | T5.7, T5.8, T5.9 | 8.25 | PR 4, E4's T4.2, T4.6 and T4.11, E3's T3.2 and T3.4, E7's T7.1 | listings and I/O, then every row over loopback |
 
 A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can be open at once.
