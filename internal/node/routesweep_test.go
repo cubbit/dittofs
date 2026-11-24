@@ -328,6 +328,9 @@ func generationsHeld(t *testing.T, d wiredWrite, rec apiv1.AuditRecord) {
 			}
 		}
 	}
+	if method == http.MethodPost && !strings.Contains(d.path, ":") && !strings.HasPrefix(d.path, "/api/v1/auth/") && rec.Before != 0 {
+		t.Errorf("%s: audited generation before %d, want 0 for a record it created", what, rec.Before)
+	}
 	switch n, ok := tagIn(d.reply.header.Get("ETag")); {
 	case ok && rec.After != n:
 		t.Errorf("%s: audited generation after %d, want %d, its answer's ETag", what, rec.After, n)
