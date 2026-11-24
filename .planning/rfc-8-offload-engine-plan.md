@@ -954,7 +954,7 @@ it after, as RFC 8 §2.6 orders.
   runtime's parallelism read at start, at least one, with §6.2's `decision:` and two `ponytail:`s; the
   root passes it to the RFC 4 codec, which takes one token to encode or hash each chunk on the
   background path and returns it before its next network wait. The codec's decoder takes the same
-  optional token (the RFC 4 plan's D3): a background decode passes it, and a demand read's or a
+  optional token (the RFC 4 plan's D3): only GC's verification passes it, and a demand read's or a
   read-ahead's decode passes none (RFC 24 §6.2 as amended).
   Tested on its own (arrival order, the count, a waiter holding nothing else) and through the codec
   with a count of one.
