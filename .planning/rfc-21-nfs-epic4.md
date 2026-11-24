@@ -88,11 +88,13 @@ over loopback where they name the wire.
 - The NFSv4 procedures, `fattr4` and the NFSv4 `ACCESS`, which reuse this epic's `translate`
   functions and linked lists: E5. RFC 19's ACL translation in `translate`: E6's T6.2. The
   import test's rule for the package is T4.4's, since `ops/v3` imports it first.
-- End-to-end, cross-protocol and composed-node rows: the read-only marker over SMB and NFS, §8.1's
-  ctime, §9.1's stability and loss verifier and the failed stable write on the composed node,
-  §9.2's two-node change-info step and close-to-open steps with a kernel client, §9.3's NFSv3 hold
-  step, cthon04 and nfstest over NFSv3, and the totality test of every error table across tables:
-  E16. The pipeline micro benchmark: E16.
+- End-to-end, cross-protocol and composed-node rows, all E16's: the read-only marker over SMB and
+  NFS and §8.1's ctime (T16.6), §9.1's stability and loss verifier and the failed stable write on
+  the composed node (T16.2), §9.2's close-to-open steps with a kernel client (T16.7), §9.3's NFSv3
+  hold step (T16.5, R41), the totality test of every error table across tables (T16.11) and the
+  pipeline micro benchmark (T16.12). cthon04 and nfstest over NFSv3 go to E16's burn-down of known
+  failures, which has no subtask yet. §9.2's two-node change-info step is the RFC 21
+  implementation plan's deferral ledger row "RFC 21's (cluster) parts", not E16's.
 - Snapshots over NFS, their `fsid` and `NFS3ERR_ROFS` there: the RFC 21 implementation plan's §6.6
   deferral ledger, "Snapshots over NFS".
 - The port mapper and rpcbind registration: the same ledger, "The port mapper answering on UDP
@@ -231,7 +233,7 @@ subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R33 | In every `wcc_data`, `before` is absent for a directory, always, and for a file present only when it was captured in the hold of the file's accept lock that accepted the operation: the adapter writes `before` exactly when the service returned one | MUST | RFC 21 §9.2, §11.3 (Change info), §12 (N19) | T4.4, T4.5, T4.9, T4.10 |
 | R34 | `change` has no NFSv3 field: an NFSv3 client validates by `ctime` and `mtime`, which are reported as the service answers them | invariant | RFC 21 §11.3 (`Version`), §12 (N7) | T4.4 |
-| R35 | §13's "§9.2 change info", its NFSv3 step run on one node: 64 parallel creates in one directory over NFSv3, and no `wcc_data` for the directory carries `before`; the step across two nodes is E16's | test row | RFC 21 §13 | T4.9 |
+| R35 | §13's "§9.2 change info", its NFSv3 step run on one node: 64 parallel creates in one directory over NFSv3, and no `wcc_data` for the directory carries `before`; the step across two nodes is the deferral ledger's row "RFC 21's (cluster) parts" | test row | RFC 21 §13 | T4.9 |
 | R36 | §13's "§9.2 close-to-open and WCC *(1 node)*", its NFSv3 step: two NFSv3 clients write one file in parallel, 10^4 writes each, and every reply carrying `before` equals the previous write's `after` | test row | RFC 21 §13, §12 (N19) | T4.7 |
 
 **Data**
@@ -533,7 +535,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   `ErrQuota` by scope, and, once their RFC 21 text is agreed
   (§9, point 3), `ErrReplyTooBig`'s and `ErrUnavailable`'s rows; the golden file of every row; `columns_test.go`, holding each row's `Role` and `Cacheable` against
   D12 and D13, which each later subtask extends with its rows. Consumed by every later subtask's
-  handler and E16's totality test.
+  handler and E16's totality test (T16.11).
 - **Acceptance criteria:**
   - Every error of `vfs.Errors()` maps to one status or the fault in NFSv3's table.
   - `ErrDelay` of every cause, `DelayResources` and `DelayCommit` included, is `NFS3ERR_JUKEBOX`.
@@ -609,7 +611,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   cap, R13); each stability (catches `DATA_SYNC` echoed, R37); a `WRITE` failed
   `&vfs.Delay{Cause: vfs.DelayCommit}` by `vfstest.Faults` (kind 3) answered `NFS3ERR_JUKEBOX`, then
   resent and read back (the adapter's half of R41 and R39; the service's half, a failed sync
-  answering `DelayCommit`, is RFC 17's V25 test, and the composed-node run E16's); an unstable
+  answering `DelayCommit`, is RFC 17's V25 test, and the composed-node run E16's T16.2); an unstable
   `WRITE`, `memory.New`'s `Content.Lose` of the file, and a `COMMIT` answered success with a
   verifier other than the `WRITE`'s (catches a verifier cached or a loss answered as an error,
   R38); the short-read function over each error with and without bytes read (R42); a `COMMIT` and a
