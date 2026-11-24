@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -184,8 +185,7 @@ func TestAStallHoldsWhileItsRetryRuns(t *testing.T) {
 		return itemRetry
 	}})
 	go l.run()
-	t.Cleanup(func() { l.halt(nil) })
-	t.Cleanup(func() { close(release) }) // runs first, so the halt's join does not wait on the held run
+	t.Cleanup(func() { close(release); l.halt(nil) })
 	// One backoff at a time until the retry after the stall runs: the loop may
 	// arm its timer after an Advance, which that Advance then missed.
 	for deadline := time.Now().Add(5 * time.Second); ; {
@@ -202,6 +202,9 @@ func TestAStallHoldsWhileItsRetryRuns(t *testing.T) {
 	}
 	if !l.stalledOn(f) {
 		t.Error("stalledOn is false while the stalled item's retry runs, want true until a run finishes or advances it")
+	}
+	if !slices.ContainsFunc(e.conds.current(clock.Now()), func(c Condition) bool { return c.Name == conditionRemovalStalled }) {
+		t.Error("the removal_stalled condition is cleared while the stalled item's retry runs, want raised until a run finishes or advances it")
 	}
 }
 

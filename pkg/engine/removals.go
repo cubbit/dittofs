@@ -59,7 +59,12 @@ type loopItem struct {
 	queued    time.Time // when it was first enqueued
 	notBefore time.Time
 	fails     int
-	stalled   atomic.Bool // set by the loop while the item runs, read by stalledOn meanwhile
+	// stalled is written by the loop while the item runs, outside l.mu, or by
+	// halt or dropShare once the item left the loop, and read by stalledOn.
+	// It is set after the removal_stalled condition is raised and cleared
+	// before it is, so stalledOn true implies the condition is in Stats,
+	// never the reverse.
+	stalled atomic.Bool
 }
 
 // removalLoop runs one journal's removal work.
