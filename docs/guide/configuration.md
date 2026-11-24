@@ -15,6 +15,7 @@ kept in its metadata store, never in this file.
 - [The file](#the-file)
 - [The state and runtime directories](#the-state-and-runtime-directories)
 - [The keys](#the-keys)
+- [FoundationDB metadata](#foundationdb-metadata)
 - [The environment](#the-environment)
 - [Refusals](#refusals)
 - [The commands](#the-commands)
@@ -140,6 +141,30 @@ Every key of the file, with its type and default. `<role>` is `protocol` or
 
 A key file's passphrase is read from `DITTOFS_ENCRYPTION_PASSPHRASE`, one for
 every key file of the node.
+
+## FoundationDB metadata
+
+`metadata.backend: foundationdb` keeps the metadata, and the control plane's records, in a
+FoundationDB 7.3 cluster instead of a Badger directory. It is opened only by a `dfs` built with the
+`foundationdb` tag (the `-foundationdb` image and tarballs; see
+[Deployment](install.md#foundationdb-metadata)); any other build refuses it, naming the tag.
+
+```yaml
+metadata:
+  backend: foundationdb
+  foundationdb:
+    cluster_file: /etc/foundationdb/fdb.cluster
+```
+
+- `metadata.foundationdb.cluster_file` is required: an empty one is refused rather than reading
+  the client's default cluster.
+- An installation owns its whole cluster. The keys are written with no prefix, so the cluster must
+  hold nothing else.
+- `metadata.badger.*` is refused beside it, and `metadata.foundationdb.*` beside `badger`.
+- `metadata.foundationdb.tls.cert_file`, `key_file` and `ca_file` are named together or not at all,
+  and each file is the credential, never a value in this file. Today `dfs init` and `dfs start`
+  refuse a bootstrap that names them: the client is not given them yet.
+- `dfs init` and `dfs start` wait up to 30 seconds to connect.
 
 ## The environment
 

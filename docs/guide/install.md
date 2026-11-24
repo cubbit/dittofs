@@ -307,6 +307,109 @@ publishes no host port at all.
 discards them too. Running `up` again re-runs the provisioning, which skips whatever is
 already there.
 
+## FoundationDB metadata
+
+The default build keeps its metadata in Badger, on one node's disk. To keep it in a
+FoundationDB cluster (`metadata.backend: foundationdb`) you need a `dfs` built with the
+`foundationdb` tag, which links FoundationDB's client library. Releases publish two such
+builds next to the default ones: an image and two tarballs. The package managers, the
+quick install script and the default image do not carry it: a `dfs` without the tag
+refuses `metadata.backend: foundationdb` at `dfs init` and `dfs start`, naming the tag.
+
+**Requirements:**
+
+- A FoundationDB **7.3** cluster, and its cluster file (usually `/etc/foundationdb/fdb.cluster`).
+  The client is 7.3 too, and a 7.3 client reaches only a 7.3 cluster.
+- **An installation owns its whole cluster.** `dfs` writes with no key prefix, so the cluster
+  must hold no other data, and no second installation may share it.
+- Linux. The tarballs need glibc 2.34 or later (Debian 12, Ubuntu 22.04, RHEL 9 or newer).
+
+### The image
+
+```bash
+docker pull marmos91c/dittofs:vX.Y.Z-foundationdb
+```
+
+The image is published for `linux/amd64` and `linux/arm64` under the tag `<release tag>-foundationdb`
+(`vX.Y.Z-foundationdb`). It carries the 7.3 client, runs as the non-root user `65532`, and has
+the same ports, volumes and health check as the default image, plus one volume:
+
+- `/etc/foundationdb`: put the cluster file `fdb.cluster` here, and name it as
+  `metadata.foundationdb.cluster_file`. The directory is writable by `dfs` because the client
+  rewrites the cluster file when the cluster's coordinators change, so do not mount it read-only.
+
+### The tarball
+
+`dfs-foundationdb_<version>_Linux_x86_64.tar.gz` and `dfs-foundationdb_<version>_Linux_arm64.tar.gz`
+are on the release page, listed in the release's `checksums.txt` like every other asset. Each holds
+the `dfs` binary, the README, the LICENSE and a `FOUNDATIONDB.txt` note. It does **not**
+carry `libfdb_c.so`: install the `foundationdb-clients` 7.3 package from
+[FoundationDB's releases](https://github.com/apple/foundationdb/releases), which puts it in `/usr/lib`.
+
+```bash
+sha256sum -c --ignore-missing checksums.txt
+tar -xzf dfs-foundationdb_<version>_Linux_x86_64.tar.gz
+```
+
+### Configure, initialize, start
+
+Select the backend and name the cluster file. Only the `metadata.foundationdb` block is read
+with `foundationdb`, and a `metadata.badger` key beside it is refused:
+
+```yaml
+node:
+  id: 7c0f3a52-9d4e-4b8e-8a31-5b6f2f0e9c11   # a UUID of your own
+metadata:
+  backend: foundationdb
+  foundationdb:
+    cluster_file: /etc/foundationdb/fdb.cluster
+journals:
+  - path: /data/blocks/journal
+keys:
+  protocol:
+    kind: local
+    local:
+      file: /config/keys/protocol.key
+  storage:
+    kind: local
+    local:
+      file: /config/keys/storage.key
+```
+
+The journals stay on local disk: FoundationDB holds the metadata, not the journal. See
+[Configuration](configuration.md#foundationdb-metadata) for every key.
+
+<!-- TODO(marco): dfs init creates it, or document how to make it -->
+A `local` key file has to exist and be readable before `dfs init` runs; this paragraph
+will say whether `dfs init` creates it or how to create it. Until then, see
+[Encryption: local key files](encryption.md#local-key-files).
+
+Then, with the tarball's binary:
+
+```bash
+./dfs init --config /etc/dittofs/config.yaml --admin-password-env DFS_ADMIN_PASSWORD
+./dfs start --config /etc/dittofs/config.yaml
+```
+
+or with the image, as for the [default image](#single-container) with the cluster file mounted
+and no metadata volume:
+
+```bash
+docker run --rm -e DFS_ADMIN_PASSWORD=my-secure-password \
+  -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
+  -v ./fdb.cluster:/etc/foundationdb/fdb.cluster \
+  -v dittofs-blocks:/data/blocks \
+  marmos91c/dittofs:vX.Y.Z-foundationdb init --config /config/config.yaml \
+  --admin-password-env DFS_ADMIN_PASSWORD
+```
+
+Run the server the same way with `start`, the ports and the other volumes of
+[Single container](#single-container). `init` and `start` wait up to 30 seconds for the cluster, and
+a wrong cluster file ends in a refusal naming it rather than a hang.
+
+TLS between `dfs` and the cluster (`metadata.foundationdb.tls.*`) is read by the loader, but
+`dfs init` and `dfs start` refuse a configuration that names it until the client is given the files.
+
 ## Kubernetes operator
 
 DittoFS has an official operator that manages the deployment lifecycle, configuration via
