@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -14,10 +15,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// defaultPorts is each adapter's port when its record names none: the
-// adapter settings' defaults, which dfsctl may not link, so a test holds
-// the two equal.
-var defaultPorts = map[string]int{"nfs": 12049, "smb": 12445}
+// defaultPort is protocol's adapter's port when its record names none: the
+// adapter settings' default, which dfsctl may not link, so a test holds the
+// two equal.
+func defaultPort(protocol string) (int, bool) {
+	switch protocol {
+	case "nfs":
+		return 12049, true
+	case "smb":
+		return 12445, true
+	}
+	return 0, false
+}
 
 func newMountCmd(env cmdutil.Env) *cobra.Command {
 	cmd := &cobra.Command{
@@ -73,6 +82,9 @@ Examples:
 			if m.User == "" {
 				m.User = target.Dialled.Username
 			}
+			if os.Geteuid() == 0 {
+				m.SudoUser, m.UID, m.GID = os.Getenv("SUDO_USER"), os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID")
+			}
 			if m.Protocol == "smb" {
 				m.Share = sh.Spec.Name
 			}
@@ -118,7 +130,7 @@ Examples:
 // decision: the port is the installation's record, not a node override:
 // dfsctl does not know which node the host it mounts from is.
 func adapterPort(cmd *cobra.Command, c *client.Client, protocol string) (int, error) {
-	port, ok := defaultPorts[protocol]
+	port, ok := defaultPort(protocol)
 	if !ok {
 		return 0, fmt.Errorf("%s: --protocol %q: want nfs or smb", cmd.CommandPath(), protocol)
 	}
@@ -136,13 +148,15 @@ func adapterPort(cmd *cobra.Command, c *client.Client, protocol string) (int, er
 
 // mount is what a mount command is built from: the host's operating
 // system, the protocol, the server's host and the adapter's port, the
-// share, its NFS path or its SMB name, the mount point, the NFS version
-// and the SMB user.
+// share, its NFS path or its SMB name, the mount point, the NFS version,
+// the SMB user, and, when dfsctl runs as root under sudo, the invoking
+// user's name, uid and gid, whom an SMB mount is made for.
 type mount struct {
 	GOOS, Protocol, Host string
 	Port                 int
 	Share, Point         string
 	NFSVersion, User     string
+	SudoUser, UID, GID   string
 }
 
 // mountLine is the command line that mounts m on m.GOOS. No line carries
@@ -174,11 +188,20 @@ func mountLine(m mount) ([]string, error) {
 		if strings.ContainsAny(m.User, ",=") {
 			return nil, fmt.Errorf("an SMB user for mount.cifs holds no comma or equals sign: %q", m.User)
 		}
-		return []string{"mount", "-t", "cifs", "-o", "vers=2.1,port=" + strconv.Itoa(m.Port) + ",username=" + m.User,
-			"//" + host + "/" + m.Share, m.Point}, nil
+		opts := "vers=2.1,port=" + strconv.Itoa(m.Port) + ",username=" + m.User
+		if m.UID != "" {
+			opts += ",uid=" + m.UID + ",gid=" + m.GID
+		}
+		return []string{"mount", "-t", "cifs", "-o", opts, "//" + host + "/" + m.Share, m.Point}, nil
 	case "darwin":
 		u := url.URL{Scheme: "smb", User: url.User(m.User), Host: host + ":" + strconv.Itoa(m.Port), Path: "/" + m.Share}
-		return []string{"mount_smbfs", u.String(), m.Point}, nil
+		line := []string{"mount_smbfs", u.String(), m.Point}
+		// macOS lets only a mount's owner reach its files, so a mount made
+		// under sudo is made as the user who ran sudo.
+		if m.SudoUser != "" {
+			line = append([]string{"sudo", "-u", m.SudoUser}, line...)
+		}
+		return line, nil
 	}
 	line := []string{"net", "use", m.Point, `\\` + m.Host + `\` + m.Share, "/user:" + m.User, "*"}
 	if m.Port != 445 {
