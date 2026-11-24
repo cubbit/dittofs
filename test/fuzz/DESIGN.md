@@ -10,7 +10,11 @@ after every step. The per-component targets build on it; they are not designed h
 
 The rules every target follows ("How every fuzz test here is written" and "The oracle" in the
 roadmap epic) are restated in §1 as requirements on the harness. Where this document and those
-rules differ, the rules win and this document is wrong.
+rules differ, the rules win and this document is wrong. §6.2 states the one exception.
+
+This harness is for operation sequences. A target of a decoder of untrusted bytes (a wire codec,
+a token parser, a key file), which checks how the decoder refuses what it must refuse, is outside
+it: it is a plain `testing.F` target under the repository's rule for decoders (CLAUDE.md, "Fuzz").
 
 ## Summary
 
@@ -27,9 +31,10 @@ rules differ, the rules win and this document is wrong.
   `write(file=2, off=4096, len=512, pattern=0x3a)`. The same text is the failure message, the
   seed format (`f.Add(fuzz.Seed(target, "…"))`) and the replay format, and it round-trips.
 - **The model is a set of states.** Without faults the set has one member and the comparison is
-  exact. A fault expands it to every outcome the contract allows; the real component's
-  observation then narrows it back. An empty set is the bug. A model keeps durable and
-  volatile state apart only once a fault needs it; until then a single state is enough (§6.2).
+  exact. The model takes the real component's result and continues from the state it allows;
+  a read-back after a fault narrows any choice the contract left open. An empty set is the
+  bug. A model keeps durable and volatile state apart only once a fault needs it; until then a
+  single state is enough (§6.2).
 - **Faults are operations.** Arming a torn write, failing a sync, crashing and restarting, a
   remote error or a delay is a row of the same table, picked by the same opcode byte.
 - **Coverage is checked, not promised.** The target names the interfaces it implements and
@@ -49,8 +54,8 @@ From the issue and the roadmap epic, as they bind the harness:
 | R3 | A mutated byte changes at most one operation or one parameter. | §4.1 |
 | R4 | Decoding is deterministic, and so is the run. | §4.4, §6 |
 | R5 | The decoded sequence prints as a human-readable trace that goes into the failure message. | §5 |
-| R6 | Each step runs against the component and the model; one comparison hook supplied by the test checks results and observable state after every step. | §6 |
-| R7 | With faults, the model computes the allowed outcomes and the real component must be in one of them; the model then narrows to it. | §6.2 |
+| R6 | Each step runs against the component and the model; after every step the model checks the component's result and one read-back hook supplied by the test checks observable state. | §6 |
+| R7 | With faults, the model checks that the real component's outcome is one the contract allows; a read-back after the fault narrows the set to the component's state, and candidates persist only where no read-back can tell them apart. | §6.2 |
 | R8 | The table covers every method of every interface the component implements and every fault injector of its collaborators; an omission is listed with why. | §7 |
 | R9 | The harness checks no panic, no deadlock (bounded step), no goroutine leak; the test adds its own invariants. | §8 |
 | R10 | Seeds are written as readable operation lists and encoded by a helper, so they survive a change of encoding. | §5.2 |
@@ -79,9 +84,25 @@ The import path is `github.com/cubbit/dittofs/test/fuzz` and the package name is
 imported only from `_test.go` files: production code never depends on it. It carries no build
 tag, so `go vet` and the linter see it and lint-go's tag list does not change.
 
-The targets themselves live next to the component they fuzz (`pkg/block/journal/fuzz_test.go`,
-`pkg/block/engine/fuzz_test.go`), in the component's package, so they can reach
-`export_test.go` hooks. Their corpora live where Go puts them, `testdata/fuzz/<FuzzName>/`.
+The targets themselves live next to the component they fuzz, in the component's package, so
+they can reach `export_test.go` hooks: `pkg/journal/fuzz_test.go` and `pkg/engine/fuzz_test.go` on
+`feat/storage-v2`, where both are written (`develop` has the packages under `pkg/block/`). Their corpora
+live where Go puts them, `testdata/fuzz/<FuzzName>/`.
+
+### 2.1 The journal's model harness
+
+`feat/storage-v2` already has a model-based harness for the journal,
+`pkg/journal/journaltest/model`: a step decoder for the fuzzer's bytes, a readable corpus text
+(`corpus.go`), shrinking to a short corpus file (`shrink.go`), crash steps, and `Compare` after
+every step. `FuzzModel` (`journaltest/model/fuzz_test.go`) and `FuzzModelDataPath`,
+`FuzzModelRepack` and `FuzzModelForget` (`pkg/journal/conformance`, with their own step decoder)
+run on it. Its model is driven by
+the journal's result (§6.2), which is the form this harness takes.
+
+The journal target keeps that model and drives it through this harness: its operations become a
+`Target`'s table, its corpus files become text seeds (§5.2), and its own step decoder and corpus
+format are retired once the journal target runs here. Its shrinking moves into the harness
+(§5.3). So the journal has one harness and one seed format, and the model is not written twice.
 
 ## 3. Declaring a target
 
@@ -100,9 +121,9 @@ type Target[R, M any] struct {
     NewReal  func(env *Env) (R, error)
     NewModel func() M
 
-    // Compare is the one comparison hook: after a step, does the real component's
-    // result and observable state match this candidate model state? (§6)
-    Compare  func(step Step, got Result, real R, want Result, model M) error
+    // Compare is the one read-back hook: after a step, does the real component's
+    // observable state match this candidate model state? (§6)
+    Compare  func(step Step, got Result, real R, model M) error
 
     // Key identifies a model state, so equal candidates collapse (§6.2).
     Key      func(M) string
@@ -123,20 +144,20 @@ type Op[R, M any] struct {
     Params []Param
 
     Real  func(env *Env, r R, a Args) Result
-    // Model returns every outcome the contract allows. One outcome for an operation
-    // that cannot be affected by an armed fault; several when it can (§6.2).
-    Model func(m M, a Args) []Outcome[M]
-}
-
-type Outcome[M any] struct {
-    Result Result
-    State  M
+    // Model takes the real component's result and returns the model states the
+    // contract allows after it, or an error when the contract does not allow that
+    // result. One state when the result pins it; several only when it does not (§6.2).
+    // A fault step's Real reads back what the fault may have changed and returns it
+    // in its Result, so that result pins the state.
+    Model func(m M, a Args, got Result) ([]M, error)
 }
 ```
 
 `Result` is a small comparable value: the operation's return values reduced to what the
 contract defines (bytes read, a size, an error *class* such as `ErrNoEntity`, never an error
-string), produced by the target's own `Real` and `Model` functions.
+string), produced by the target's own `Real`. For a fault step it also carries what `Real` read
+back of the state the fault may have changed (§6.2), reduced to what the model needs to pick
+one state.
 
 `Env` is what the harness hands the real side: the deterministic `Clock` (§6.4), the fault
 `Switch` (§6.3), a `TempDir` for components that need a real filesystem, `Cleanup`, and the
@@ -211,7 +232,9 @@ mutator's choice rather than the encoding's.
 
 Faults should be rarer than writes, and a crash every other step makes deep states
 unreachable. An operation's `Weight` sets how many of the 256 opcode values map to it,
-apportioned by largest remainder, every operation getting at least one. The table is computed
+apportioned by largest remainder, every operation getting at least one. That is impossible past
+256 operations, so a target declaring more is refused when it is built, the same way §3.2 refuses
+an oversized domain; weights may sum past 256, since apportioning scales them. The table is computed
 once per target and is a pure function of the declaration, so it is part of the encoding:
 changing a weight changes which bytes mean which operation (§5.2 covers what that does to the
 corpus).
@@ -223,6 +246,12 @@ target follows §6.4: the harness runs every step on the calling goroutine, in o
 injected clock, and the component's background work is driven by operations rather than by
 timers. `fuzz.Deterministic(t, target, data)` runs an input twice and fails if the two traces
 of results differ; the seed replay uses it (§10.1).
+
+A step that hangs on the calling goroutine cannot be interrupted, and a watchdog goroutine
+cannot fail the test, since `FailNow` must run on the test's goroutine. So a step past its bound
+is not reported like a panic: the watchdog dumps every goroutine's stack with the trace and ends
+the process (§8). The Go fuzzer then records the input as a crasher, as it does for a panic on a
+goroutine the component started.
 
 ## 5. The trace
 
@@ -249,8 +278,7 @@ what failed:
 ```text
 fuzz: FuzzJournal: step #04 read: no allowed state matches
   got:  512 bytes, pattern 0x00@4096
-  want one of:
-    512 bytes, pattern 0x3a@4096      (write #00 kept)
+  closest candidate: model: read of a durable write returned other bytes (write #00)
   candidate states before the step: 1
   seed: fuzz.Seed(target, `write(file=2, off=4096, len=512, pattern=0x3a)
 fault(op=fsync, kind=fail)
@@ -293,6 +321,17 @@ The round-trip `Parse(Print(Decode(b)))` equals `Decode(b)` for every `b`, and
 `Decode(Seed(text))` prints as `text` (after normalising whitespace) for every valid `text`.
 Both are tested (§10.1).
 
+### 5.3 Shrinking
+
+The Go fuzzer minimises bytes and knows nothing of steps, so a failing program can stay
+`MaxSteps` long. On a failure the harness shrinks the program by steps: it drops chunks of
+steps, halving the chunk size down to one and starting again while any drop still fails the same
+way, then moves each kept parameter toward its domain's first value the same way. It stops after
+a fixed number of attempts, never a wall-clock deadline, so the same failure shrinks to the same
+program on every run (R4). The message prints the shrunk trace and its text seed beside the
+original. `journaltest/model/shrink.go` drops chunks the same way and then halves each step's
+length (§2.1); it also stops at a 5 minute deadline, which the harness does not keep.
+
 ## 6. The oracle
 
 ### 6.1 The step loop
@@ -303,42 +342,61 @@ states  := { NewModel() }
 for each step in Decode(data):
     got     := op.Real(env, real, args)          // bounded, panics recovered (§8)
     next    := {}
-    for m in states:
-        for o in op.Model(m, args):
-            if Compare(step, got, real, o.Result, o.State) == nil:
-                next[Key(o.State)] = o.State
-    if next is empty: fail with trace and the closest candidate's Compare error
+    for m in states:                             // in Key order
+        cands, err := op.Model(m, args, got)     // the states allowed after got
+        if err != nil: keep err as this candidate's failure; continue
+        for c in cands:
+            if Compare(step, got, real, c) == nil:
+                next[Key(c)] = c
+    if next is empty: fail with trace and the closest candidate's error
     states  := next
     check Invariants(real)
 teardown; check goroutines (§8)
 ```
 
-`Compare` is the target's only comparison hook. It compares the step's results and whatever
-observable state the target chooses to read back (data in the touched range, sizes, listings).
+Candidates are kept and visited in `Key` order, never in map order, so the closest candidate's
+error and the order of `Compare`'s read-backs are the same on every run (R4).
+
+`Model` checks the step's result; `Compare` is the target's only read-back hook. It compares
+whatever observable state the target chooses to read back (data in the touched range, sizes, listings).
 Reading back must use operations the contract defines as side-effect free; if a read-back can
 change state (a read that hydrates a cache), it is a step of its own instead, so the model sees
 it.
 
 ### 6.2 Faults and the state set
 
-Without faults `Model` returns one outcome, `states` stays a singleton, and the comparison is
+Without faults `Model` returns one state, `states` stays a singleton, and the comparison is
 exact, as the epic requires.
 
-The model keeps every piece of state as **durable** (guaranteed to survive) or **volatile**
-(acknowledged, not yet guaranteed). When an operation can be affected by a fault, its `Model`
-returns every outcome the contract allows: after a crash, every subset of the volatile changes
-kept on top of the durable state, all-or-nothing per operation where the contract demands it;
-after a failed operation, both "took effect" and "did not". The real component's observation
-selects among them, and the set narrows to the outcomes it is consistent with.
+**The model is driven by the observation.** `Model` takes what the real component returned,
+checks that the contract allows it, and continues from the state that result implies. Where the
+contract leaves a choice to the component (which unsynced writes survive a crash, whether a
+failed operation took effect), the model accepts any allowed outcome and continues from the one
+the component took. A model that enumerated every allowed outcome up front would keep every
+subset of the volatile changes after a crash: 2^n candidates, so 7 unsynced writes before a
+`crash()`, an ordinary program, would pass the cap. Enumeration stays available for an
+operation whose result does not pin the state.
 
-The harness does not insist on narrowing to one state at once: an observation may not
-distinguish two candidates (a crash that may or may not have kept a write nobody has read
-yet). Both stay until a later step tells them apart. Two limits keep that tractable:
+**A fault step reads back what it left unknown.** The `Real` of a fault step reads back the
+state the fault may have changed and returns it in its `Result`, as `journaltest/model` compares
+every share after `Reopen` before any other call on a file the crash left unknown. `Model` then
+sees which allowed outcome the component took, checks it, and returns that one state, so the set
+narrows at the fault step itself, as the epic's oracle says, without enumerating the subsets.
+
+**The exception to the epic.** The epic says the model "narrows its state to the one the real
+component chose, so the comparison is exact again from the next operation on". Where no
+read-back can tell two candidates apart (a state the contract keeps unobservable until a later
+step), both stay until a later step separates them. This is the one place this document departs
+from the epic's oracle sentence. Driving the model by the observation, rather than having it
+compute every outcome up front, follows the same oracle in another order and is not a second
+exception. Two limits keep it tractable:
 
 - `Key` collapses equal candidates, so the set holds distinct states only.
-- The set is capped (default 64). A step that would exceed it fails the run with the trace,
-  as a target bug: the model is expanding outcomes the domains make indistinguishable, and the
-  fix is smaller domains or an earlier read-back, not a larger cap.
+- The set is capped (default 64). With the observation driving the model, the cap bounds only
+  what is truly ambiguous, not every crash. A step that would exceed it fails the run with the
+  trace, as a target bug: the fix is an earlier read-back or smaller domains, not a larger cap.
+  `journaltest/model` has a bound of the same kind: 16 undecided releases, marks and settled
+  markers per file after a crash (`maxUncertain`, `crash.go`).
 
 An outcome outside the set — durable data lost, a write half applied where the contract
 forbids it, data that was never written — leaves `next` empty and is reported.
@@ -346,7 +404,7 @@ forbids it, data that was never written — leaves `next` empty and is reported.
 **The durable/volatile split is not required up front.** A model needs more than one truth
 only where its component can legitimately end up in more than one state. A target whose
 component has no crash or sync fault yet, or none whose outcome is ambiguous, keeps a single
-state, its `Model` returns one outcome, and the set stays a singleton. The harness is the same
+state, its `Model` returns one state, and the set stays a singleton. The harness is the same
 either way. A model gains the split when a fault that needs it is added to the target, not
 before.
 
@@ -417,7 +475,8 @@ The harness checks these itself, for every input:
   process; the Go fuzzer still records the input as a crasher.
 - **No deadlock.** Each step runs with `StepBound` as a backstop. The clock is the injected one,
   so the bound measures nothing about the component's timing: it exists only to turn a hang
-  into a failure with a trace. Where the bound is hit, the failure dumps all goroutine stacks.
+  into a failure with a trace. Where the bound is hit, a watchdog goroutine prints the trace and
+  every goroutine's stack and ends the process (§4.4); the fuzzer records the input as a crasher.
   This is the one wall-clock wait in the harness, and the code says so at the site.
 - **No goroutine leak.** After teardown, the goroutines that did not exist before `NewReal`
   must be gone. The check snapshots goroutine stacks before and after, ignores the runtime's and
@@ -452,9 +511,10 @@ through its own check method.
 | `TestMutationLocality` | For sampled inputs, every byte position and several values, changing that byte changes at most one step, and only the opcode or one parameter of it. |
 | `TestTraceRoundTrip` | `Parse(Print(Decode(b))) == Decode(b)` for sampled `b`, and `Decode(Seed(text))` prints as `text` for a set of programs. |
 | `TestSeedRejectsOutOfDomain` | A seed with a value outside its domain, an unknown operation or an unknown parameter is an error naming it. |
-| `TestWeights` | The opcode table gives every operation at least one byte and is proportional to the weights within one. |
-| `TestStateSetNarrows` | With a model that returns two outcomes, an observation matching one narrows the set to it, one matching both keeps both, one matching neither fails. |
-| `TestInvariantsCatch` | A step that panics, a step that blocks past its bound and a step that leaves a goroutine each fail with the trace. |
+| `TestWeights` | The opcode table gives every operation at least one byte and is proportional to the weights within one; a declaration of more than 256 operations is refused. |
+| `TestStateSetNarrows` | With a model that returns two states for a result, a read-back matching one narrows the set to it, one matching both keeps both, one matching neither fails; a result the model refuses fails; candidates are visited in `Key` order. |
+| `TestInvariantsCatch` | A step that panics and a step that leaves a goroutine each fail with the trace. A step that blocks past its bound, run in a subprocess, ends that process with the trace and every goroutine's stack on its output. |
+| `TestShrink` | A failing program of `MaxSteps` steps with one step that matters shrinks to that step, and the shrunk text seed fails the same way. |
 | `TestCoverageCheck` | A target missing an interface method, missing a fault point, or naming a non-existent one fails the check with the name. |
 
 Each of these is verified by breaking what it guards (CLAUDE.md, "Verifying a change").
@@ -467,8 +527,8 @@ Each of these is verified by breaking what it guards (CLAUDE.md, "Verifying a ch
   memory, and has `Put`, `Get`, `Delete`, `Sync`, `Compact`, and `Close`/`Open` for restart.
   It writes through a filesystem wrapper with two fault points, `write` (torn) and `fsync`
   (fail), and a crash that drops unsynced bytes.
-- **The model:** a map with each key's value marked durable or volatile, returning the allowed
-  outcome set on `crash()` and on a failed `fsync`.
+- **The model:** a map with each key's value marked durable or volatile, taking the component's
+  result on `crash()` and on a failed `fsync` and continuing from the state it allows.
 - **The planted bug:** a constructor option, not a package variable, that makes recovery stop
   one record early. `TestExampleFindsPlantedBug` runs `fuzz.Exec` over inputs from a seeded
   random source and asserts that one fails within a fixed budget, and that its trace names the
@@ -480,7 +540,8 @@ Each of these is verified by breaking what it guards (CLAUDE.md, "Verifying a ch
 
 - **Replay**, on every `go test` in the unit suite: each target's seeds and committed crashers
   run as subtests of `FuzzXxx`. No tag, no registry change.
-- **Fuzzing**, by hand: `go test -run '^$' -fuzz '^FuzzJournal$' -fuzztime 10m ./pkg/block/journal`.
+- **Fuzzing**, by hand: `go test -run '^$' -fuzz '^FuzzJournal$' -fuzztime 10m ./pkg/journal` (the
+  `feat/storage-v2` path).
   A crasher lands in `testdata/fuzz/FuzzJournal/`, is committed with its text seed (§5.2), and
   becomes a regression test.
 - **`DITTOFS_FUZZ_TRACE=1`** prints the trace of every input replayed, for reading a corpus.
@@ -492,8 +553,12 @@ Each of these is verified by breaking what it guards (CLAUDE.md, "Verifying a ch
   and a periodic full read-back runs as an operation; the journal target will tell.
 - **The state-set cap.** 64 is a guess. The journal's crash model, with several volatile
   writes per file, is the first that can approach it.
-- **A scheduled campaign.** Whether a `fuzz` suite runs each target for a fixed time nightly,
-  and how its crashers reach a pull request, is decided once two targets exist.
+- **A scheduled campaign.** A `fuzz` suite that runs each target for a fixed time, a short run on
+  the packages a pull request changes and a longer one at night with the corpus kept between
+  runs, is proposed as its own task of the roadmap (§13). `feat/storage-v2` already has 70 native
+  targets, decoders included, that no suite runs past their seeds. The repository is public, so that
+  task also decides where a crasher of a decoder a network peer reaches is run and kept: never in a
+  public log until its fix is public.
 
 ## 13. Deferred
 
@@ -501,5 +566,5 @@ Each of these is verified by breaking what it guards (CLAUDE.md, "Verifying a ch
 |---|---|---|---|
 | Fault wrappers for the filesystem and the remote store | They wrap interfaces the harness does not own; each lives with its package | fuzz: journal, fuzz: engine | The component target is started |
 | Making background work steppable in the journal and engine | Component change, not harness | fuzz: journal, fuzz: engine | The component target is started |
-| A scheduled fuzzing suite in `test/suites.yaml` | Needs targets to run and a measured cost per run | unowned | Two component targets merged |
+| A scheduled fuzzing suite in `test/suites.yaml` | Needs targets to run and a measured cost per run | fuzz: running the targets (a task of the roadmap, proposed) | Now on `feat/storage-v2`, whose 70 targets already exist; on `develop`, two component targets merged |
 | A conversion tool from crasher bytes to text seeds across table changes | `DITTOFS_FUZZ_TRACE` and hand conversion suffice while the corpora are small | unowned | A table change invalidates more than a handful of crashers |
