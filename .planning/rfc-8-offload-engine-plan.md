@@ -342,20 +342,20 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | 11 | **Interfaces** ⛔ | `Settings` keys, `WaitOffloaded`, `pkg/workqueue`'s surface; the component signatures agreed at S1a to S1d | 5 | 9.5 | team | **everything** |
-| 12 | **Red rows and test foundations** ⛔ | 50 rows in `engine-conformance`, red; the fixture's component options | 8 | 26 | team | **all testing** in 13 to 22 |
+| 12 | **Red rows and test foundations** ⛔ | 50 rows in `engine-conformance`, red; the fixture's component options | 7 | 24 | team | **all testing** in 13 to 22 |
 | 13 | **The shared work scheduler** ⛔ | `pkg/workqueue`: keys and states, batches, backoff, reservations, fairness, watchdog turns | 7 | 20 | A | 14 |
 | 14 | **The work queue** ⛔ | the offload and removal sources, the four events, the age tick, the rescan, the first part's removal loop moved onto the scheduler; the rebuild's decoders fuzzed | 6 | 15 | A | 16, 18, 19, 20 |
-| 15 | **The offload pipeline** ⛔ | `offload/`: Capture to Mark over the store's existing calls; the chain pin; `encodings` at commit; O1 to O8 but O7, O1's crash leg over the real journal | 8 | 28 | B | 16 |
-| 16 | **Passes and the bindings' remote side** ⛔ | the pass registry, §8.3, a share's flow, namespace and pause, chunking settings; S3 | 6 | 19 | B | 17, 18, 19, 20 |
+| 15 | **The offload pipeline** ⛔ | `offload/`: Capture to Mark over the store's existing calls; the chain pin; `encodings` at commit; O1 to O8 but O7, O1's crash leg over the real journal | 8 | 31 | B | 16 |
+| 16 | **Passes and the bindings' remote side** ⛔ | the pass registry, §8.3, a share's flow, namespace and pause, chunking settings; S3 | 6 | 19.75 | B | 17, 18, 19, 20 |
 | 17 | **Remote reads, fill and speculation** | the carved row, verified streaming, re-resolution, chunk or block, `fill`, read-ahead, clone adoption | 7 | 23 | C | 18 |
-| 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 8 | 27.5 | B | 19, 21 |
+| 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 8 | 29 | B | 19, 21 |
 | 19 | **Restart and the metadata reconcile** | start steps 6 and 7, the reseed and its gates, re-offer, a lost journal served again, the reconcile and `Bind`'s takeover, the `Census` view | 12 | 43 | C | 21 |
 | 20 | **Health, drain and salvage** | per-direction health and drift, the offload conditions, §11.4 and `WaitOffloaded`, the salvage export | 6 | 18 | A | 21 |
-| 21 | **Integration: the node composes offload** | the store adapter and its suite, clients per store configuration, the components' collectors, settings sections, keys and alerts, `materialtest` against the RFC 4 store, the CPU token, the import flips, system scenarios; S7 | 10 | 30 | team | 22 |
-| 22 | **E2E green** 🔀 | burn `known.yaml` down, the soak with remote faults, B1 to B4, B6, B8, and B5, B7, B9 with offload; provisional (§6 point 2) | 6 | 18.5 | team | release |
-| | **Total** | | **89** | **277.5** | | |
+| 21 | **Integration: the node composes offload** | the store adapter and its suite, clients per store configuration, the components' collectors, settings sections, keys and alerts, `materialtest` against the RFC 4 store, the CPU token, the import flips, system scenarios; S7 | 11 | 38.5 | team | 22 |
+| 22 | **E2E green** 🔀 | burn `known.yaml` down, the soak with remote faults, B1 to B4, B6, B8, and B5, B7, B9 with offload; provisional (§6 point 2) | 7 | 21.5 | team | release |
+| | **Total** | | **90** | **292.25** | | |
 
-**Plan estimate: 89 subtasks, 277.5 man-days.**
+**Plan estimate: 90 subtasks, 292.25 man-days.**
 
 RFC 8 is 4,229 lines, which gives N = 11, clamped to 8. This part covers about half of it in eight
 cohesive areas, matching N: the scheduler, the queue, the pipeline, passes, remote reads, local space,
@@ -509,7 +509,7 @@ What each point means for this plan's epics:
   start step 7 starts; it starts with the reseed's marks and unmarks over the in-memory journal, which
   need none of them, and takes start step 7 last.
 - **The critical path** runs E11, E12, E13, E14, E16, E18, then E19's start step 7, S4, E21 and E22:
-  track A's 35 man-days to the offload source outlast epic 15's 28. S5's first half (the carver, RFC 3's
+  track A's 35 man-days to the offload source outlast epic 15's 31. S5's first half (the carver, RFC 3's
   syncer and its in-memory store) and S6 lie on it whenever they land after epic 14 ends, since epic
   15 and S3 wait on them.
 
@@ -635,7 +635,7 @@ S1d, and RFC 8 §15.3's "§2.1 declared interfaces" row stays green.
 
 ### Epic 12 — Red rows and test foundations ⛔
 
-**Epic 12 estimate: 8 subtasks, 26 man-days.**
+**Epic 12 estimate: 7 subtasks, 24 man-days.**
 
 §1.4 whole: 50 rows written red over the fixture and listed in `known.yaml`, #5318's four entries
 re-pointed, and the fixture's options for the new components. **Owns:** RFC 8 §15.1 to §15.3 for the
@@ -702,7 +702,7 @@ instances, and "§8.1 removal wedge" turns green with the undecodable ref.
 
 ### Epic 15 — The offload pipeline ⛔
 
-**Epic 15 estimate: 8 subtasks, 28 man-days.**
+**Epic 15 estimate: 8 subtasks, 31 man-days.**
 
 `offload/`, the state machine per pass, with a sub-machine per block from Intent on, over the
 components' real implementations (D4). Its Capture state takes the files' guards through a function the
@@ -748,7 +748,7 @@ Its four §15.1 rows run a pass end to end, so they are epic 16's to turn green 
 
 ### Epic 16 — Passes and the bindings' remote side ⛔
 
-**Epic 16 estimate: 6 subtasks, 19 man-days.**
+**Epic 16 estimate: 6 subtasks, 19.75 man-days.**
 
 The engine runs epic 15's pipeline as the offload source's runs, and each binding gains its remote
 side. The fixture's syncer option is made real here, which with S5 and S6 is S3, and the red rows'
@@ -803,7 +803,7 @@ S4, S5's) deferred with `PreWarm` (§6.1); RFC 8 E9, E10, E14, E25, E34 hold.
 
 ### Epic 18 — Local space with offload
 
-**Epic 18 estimate: 8 subtasks, 27.5 man-days.**
+**Epic 18 estimate: 8 subtasks, 29 man-days.**
 
 Eviction, pacing and the refusal table's first two rows whole, now that offload drains dirty bytes;
 the first part's capacity stand-ins go (D10). **Owns:** RFC 8 §3.1's `evict`, `repackDue` and
@@ -902,7 +902,7 @@ hold.
 
 ### Epic 21 — Integration: the node composes offload
 
-**Epic 21 estimate: 10 subtasks, 30 man-days.**
+**Epic 21 estimate: 11 subtasks, 38.5 man-days.**
 
 `enginewire` and `node.New` compose what epics 11 to 20 built with the four components (S5), as RFC 8
 §2.6's build and stop order says. Its end is S7. **Owns:** RFC 8 §2.1's root obligations (the store
@@ -983,7 +983,7 @@ it after, as RFC 8 §2.6 orders.
 
 ### Epic 22 — E2E green 🔀
 
-**Epic 22 estimate: 6 subtasks, 18.5 man-days.**
+**Epic 22 estimate: 7 subtasks, 21.5 man-days.**
 
 `test/engine/known.yaml` burnt down to empty of this part's entries, as S5 and S6 land, and the
 benchmarks RFC 8 §15.4 names. Its size follows the components' and the journal's, not this part's
