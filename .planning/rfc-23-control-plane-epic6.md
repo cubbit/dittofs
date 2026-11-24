@@ -177,10 +177,12 @@ this epic's part is that every command reaches the API through that client and n
   spec it read and the one the server now holds, and exits non-zero. The write is the route's:
   `cmdutil.ByPatch` sends a JSON merge patch of what the command changed, so a field it empties is
   cleared rather than left as it was (a share's route takes `PATCH` only), `cmdutil.ByPut` the
-  whole spec (a netgroup's takes `PUT` only), and a write that may start an operation, a user's,
+  whole spec as this dfsctl decoded it (a netgroup's takes `PUT` only), so against a newer server a
+  field this dfsctl does not know is sent empty and reset, and a write that may start an operation, a user's,
   passes its own `cmdutil.Write`, answering `client.Result`; a change that changes nothing writes
   nothing. YAML, the diff's and `-o yaml`'s, goes through the spec's JSON, so its keys are the API's
-  field names. No marker. Prior art: `kubectl apply`'s conflict report (from memory).
+  field names. Marker: `decision:` at `cmdutil.ByPut`, for the reset field. Prior art: `kubectl
+  apply`'s conflict report (from memory).
 - **D4, every change to the credentials file runs under the operating system's lock on a file
   beside it.** `credentials.Update(ctx, path, waiting, fn)` opens `<config>.lock` and takes an
   exclusive lock on it without waiting (`flock(LOCK_EX|LOCK_NB)` on Unix, `LockFileEx` with

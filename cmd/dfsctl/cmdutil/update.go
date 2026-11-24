@@ -39,6 +39,13 @@ func ByPatch[S, T any](r interface {
 
 // ByPut is the Write of a route that takes only PUT, the whole spec, and
 // answers the resource.
+//
+// decision: the spec sent is the one this dfsctl decoded, so against a newer
+// server a field this dfsctl does not know is sent empty and the server
+// resets it; a dfsctl and a server of one build share the apiv1 types and
+// lose nothing. Overturned once a dfsctl is supported against a server newer
+// than itself: keep the read's raw spec and overlay the change, or write by
+// PATCH.
 func ByPut[S, T any](r interface {
 	Put(ctx context.Context, id string, spec S, etag string) (client.Tagged[S, T], error)
 }) Write[S, T] {
