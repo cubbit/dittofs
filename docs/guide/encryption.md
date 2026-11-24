@@ -48,7 +48,19 @@ Only the block `kind` names is read: a key of the other block is refused at load
 A key file is protected by a passphrase, read **only** from the
 `DITTOFS_ENCRYPTION_PASSPHRASE` environment variable, one for every key file of
 the node. The file's key is derived from it with Argon2id (m = 64 MiB, t = 3,
-p = 4). There is no subcommand that writes a key file; call the Go helper:
+p = 4).
+
+`dfs init` creates the storage key file: when `keys.storage.local.file` names a
+file that does not exist and the metadata store is not yet initialised, it
+writes a new master key there, wrapped under the
+passphrase, with mode 0600, and prints once where the file is. **Copy the file
+off the host and keep the passphrase**: losing either loses every key it wraps,
+and with them the data, and nothing recovers it. An existing file is used and
+never overwritten. With `DITTOFS_ENCRYPTION_PASSPHRASE` unset, `dfs init`
+refuses.
+
+Any other key file, such as the next key of a rotation, is written with the Go
+helper:
 
 ```go
 import "github.com/cubbit/dittofs/pkg/keyprovider"

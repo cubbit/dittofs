@@ -103,7 +103,7 @@ func readOp(b []byte) (uint32, int, error) {
 // bytes, which its own failure vectors show; such a row would need core to
 // skip the reply under NFS4ERR_OP_ILLEGAL.
 func encodeResult(out *resources.Buf, op uint32, s core.Status, v core.Version) error {
-	if s == nfs4ErrOpIllegal || !defined(op) {
+	if s == core.Status(wire.NFS4ErrOpIllegal) || !defined(op) {
 		op = opIllegal
 	}
 	return (&resultHead{Op: op, Status: uint32(s)}).EncodeWire(v, out)

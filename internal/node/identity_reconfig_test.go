@@ -274,7 +274,11 @@ func directoryRecord(t *testing.T, h *nodetest.Harness, p *secrets.Provider, d *
 	t.Helper()
 	name, pw := d.Account()
 	ref := entity.SecretRef(uuid.New())
-	seal(t, h, p, secrets.Protocol, entity.SecretDirectoryCredential, entity.SecretOwner{Scope: installationScope, Key: "identity.directory"}, ref, pw)
+	seal(t, h, p, secrets.Protocol, entity.SecretDirectoryCredential,
+		entity.SecretOwner{
+			Scope: installationScope,
+			Key:   "identity.directory.bind_credential",
+		}, ref, pw)
 	for k, v := range map[string]string{
 		"address": "ldaps://dc.corp.example", "base": "DC=corp,DC=example", "bind_name": name,
 		"realm": "CORP.EXAMPLE", "netbios_domain": domain,

@@ -408,6 +408,113 @@ func TestPassBudgetStops(t *testing.T) {
 	}
 }
 
+// TestPassBudgetCountsCarriedRecords runs a pass over a sealed source holding
+// nothing but a registered, unsettled removal record: no content exists for
+// Copy to move, so the unit's whole output is the carry's record, and the
+// bytes the pass appends — RepackedBytes — must count it. A pass that reports
+// no bytes for such a unit never reaches its budget and re-selects the
+// segments its own carries seal, chasing itself forever.
+func TestPassBudgetCountsCarriedRecords(t *testing.T) {
+	p := newPassFixture(t)
+	file := copyFile(1)
+	rec, _, _, _ := p.f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, false)
+	// The core's own pass reads its own tracker, so the planted record
+	// registers there the way the writer's removal path would; the settle
+	// stays untaken, keeping the marker over and the record live.
+	p.f.core.Liveness().Register(rec)
+	seg := rec.Seg
+	p.f.sealSource(t, file)
+	p.f.waitSpares(t)
+	before := p.f.core.Stats().Counters.RepackedBytes
+	if _, err := p.repack(t.Context(), 1<<20, seg); err != nil {
+		t.Fatalf("repack: %v", err)
+	}
+	gain := p.f.core.Stats().Counters.RepackedBytes - before
+	if gain == 0 {
+		t.Fatalf("RepackedBytes gained %d, want the carried removal record's bytes > 0: a contentless source otherwise reports no copied bytes and its pass never reaches a budget", gain)
+	}
+}
+
+// TestPassBudgetStopsAtCarriedRecords runs a pass of budget one byte over two
+// sealed sources beside each other: the least-live one holds only a
+// registered, unsettled removal record — no content exists for Copy to move,
+// so its unit's whole output is the record the carry places, and the source
+// stays held by its record's original registration — and the other holds a
+// plain write. The carried record's bytes reach the budget, so the pass stops
+// after the first unit: the content source is left standing, un-repacked and
+// unretired. A pass whose carried records report no bytes never reaches a
+// budget smaller than a record and runs unit after unit.
+func TestPassBudgetStopsAtCarriedRecords(t *testing.T) {
+	p := newPassFixture(t)
+	fa, fb := passFilesOnDistinctStreams(p.f)
+	ra, _, _, _ := p.f.plantRemoval(t, copyTag, fa, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, false)
+	// The core's own pass reads its own tracker, so the planted record
+	// registers there the way the writer's removal path would; the settle
+	// stays untaken, keeping the marker over and the record live.
+	p.f.core.Liveness().Register(ra)
+	bare := ra.Seg
+	p.f.sealSource(t, fa)
+	p.f.waitSpares(t)
+	content := p.plantSealed(t, fb, []byte("the write whose source the budget must never reach"))
+	p.f.waitSpares(t)
+
+	before := p.f.core.Stats().Counters.RepackedBytes
+	if _, err := p.repack(t.Context(), 1, bare, content); err != nil {
+		t.Fatalf("repack on a one-byte budget over a carried record: %v", err)
+	}
+	gain := p.f.core.Stats().Counters.RepackedBytes - before
+	if gain == 0 {
+		t.Fatalf("RepackedBytes gained %d, want the carried removal record's bytes > 0: a contentless source otherwise reports no bytes and its pass never reaches a budget", gain)
+	}
+	if p.setGone(content) {
+		t.Fatal("the content source left the set too, want the carried record's bytes to reach the budget and stop the pass before its unit ever starts")
+	}
+}
+
+// TestPassBudgetCountsDeferredLossRecords pins the deferred leg of the budget
+// beside the carried one: a sealed source whose only unit output is the loss
+// record a deferred loss promises — a settled removal with no live
+// registration beside it, so no content copy and no carried record — must
+// report the record's bytes. A pass whose deferred records answer no bytes is
+// the livelock's other half: a source whose whole output is deferred never
+// reaches its budget.
+func TestPassBudgetCountsDeferredLossRecords(t *testing.T) {
+	p := newPassFixture(t)
+	d := p.f.core.Durability()
+	file := copyFile(8)
+	// A settled removal fills the stream's active segment and settles, so the
+	// sealed source holds one dead-weight record nothing carries and the
+	// unit's whole output is the deferred loss record below.
+	rem, _, seq, v := p.f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, true)
+	src := rem.Seg
+	p.f.sealSource(t, file)
+	// The stream keeps an active segment beyond the sealed source, so the
+	// deferred loss record appends into it without a roll and the pool makes
+	// nothing behind the pass.
+	p.retainActivity(t, p.f.core.Streams().IndexFor(file), file)
+	l := durability.Loss{
+		Share: copyTag, File: file, Extent: core.Extent{Off: 8 << 10, Len: 64},
+		Version: v, Seq: seq + 1000, Reason: core.LossStale, Deferred: true, Seg: src,
+	}
+	if _, err := d.Lose(t.Context(), l); err != nil {
+		t.Fatalf("planting the deferred loss: %v", err)
+	}
+	p.f.core.Liveness().SetDeferred(src, true)
+	p.f.waitSpares(t)
+
+	before := p.f.core.Stats().Counters.RepackedBytes
+	if _, err := p.repack(t.Context(), 1<<20, src); err != nil {
+		t.Fatalf("repack over a deferred loss: %v", err)
+	}
+	gain := p.f.core.Stats().Counters.RepackedBytes - before
+	if gain == 0 {
+		t.Fatalf("RepackedBytes gained %d, want the deferred loss record's bytes > 0: a source whose whole output is deferred otherwise reports no bytes and never reaches a budget", gain)
+	}
+}
+
 // TestPassCancelledBetweenUnitsReturnsAfterTheUnitInFlight cancels a pass
 // while its one in-flight unit blocks in its retirement's directory sync:
 // the unit completes — its source retired, freed returned — and the pass
@@ -1220,5 +1327,126 @@ func TestPassDeclinesAnOwedEndUntilItsTake(t *testing.T) {
 		t.Fatalf("Repack over the taken end: %v", err)
 	} else if freed == 0 || !p.setGone(src) {
 		t.Fatalf("Repack over the taken end freed %d with the segment left in the set=%v, want the unit to retire it", freed, !p.setGone(src))
+	}
+}
+
+// TestPassAHandOverRefusedForAnotherRetirementFreesNothing re-creates, inside
+// one goroutine, the race a repack runs against in production: the retirement
+// worker — to which a forget's drop of a segment the tag's records left empty
+// offers it, or a queued recycle of its own — takes the source's claim in the
+// gap between the unit's own release of it and the retirer's ledger claim.
+// RFC 1 §7.1 retires a not-held segment by the journal on its own, without
+// waiting for the repack that selected it, so the refused hand-over must
+// answer a visit that freed nothing and leave the source to the holder, whose
+// own retirement reports the bytes; an error here fails the whole Repack.
+func TestPassAHandOverRefusedForAnotherRetirementFreesNothing(t *testing.T) {
+	p := newPassFixture(t)
+	file := copyFile(4)
+	const payload = "the record whose hand-over another retirement claims"
+
+	// The other retirement in the race, fired where the forget's drop offers
+	// the segment to the worker, which takes the claim: Retire's own claim
+	// below then answers ErrClaimed. The claim attempt races the fixture's
+	// live reclaim worker, whose prompt can take the segment's claim between
+	// the unit's release and the hook — either holder refuses the hand-over
+	// the same way — so the test asserts the hook fired, not that its Claim
+	// won. One fire only — the later explicit retirement below must claim
+	// unimpeded. Installed before the plant, as the seam's own contract asks:
+	// the fixture's live reclaim worker can fire the hook on its own goroutine
+	// while the plant still runs, so both the id the hook waits for and its
+	// one-fire flag are written and read as atomics, ordered against the
+	// plant's store — a plain pair answers -race the day a worker Retire
+	// overlaps the plant.
+	var segA atomic.Uint64
+	var fired atomic.Bool
+	p.f.core.Retirer().SetRetireHook(func(id core.SegmentID, _ segment.Reason) {
+		if uint64(id) != segA.Load() || !fired.CompareAndSwap(false, true) {
+			return
+		}
+		_ = p.f.set.Claim(id)
+	})
+	t.Cleanup(func() { p.f.set.Release(core.SegmentID(segA.Load())) })
+	segA.Store(uint64(p.plantSealed(t, file, []byte(payload))))
+	seg := core.SegmentID(segA.Load())
+
+	freedBefore := p.f.core.Stats().Counters.FreedBytes
+	freed, err := p.repack(context.Background(), copySegCap*8, seg)
+	if err != nil {
+		t.Fatalf("Repack whose hand-over another retirement claimed: %v", err)
+	}
+	if freed != 0 {
+		t.Fatalf("Repack freed %d, want 0: the refused hand-over is a visit that frees nothing", freed)
+	}
+	if !fired.Load() {
+		t.Fatal("the hook never fired for the source's hand-over, want it where the forget's drop offers the segment to the retirement worker in the race")
+	}
+	if p.setGone(seg) {
+		t.Fatal("the source left the set, want a refused hand-over to keep it for the claim's holder")
+	}
+
+	// The holder lets go and the source is retired: explicitly here, or by
+	// the worker's tick inside the release-to-call gap — the hand-over's own
+	// race one leg further. ErrNotInSet, a retirement that already finished,
+	// is the one leg the pass's own tolerance answers, and the freed counter
+	// below credits either path; ErrClaimed stays fatal, for a worker that
+	// took the claim again is a wait this tail does not pin.
+	p.f.set.Release(seg)
+	_, rerr := p.f.core.Retirer().Retire(seg, segment.NotHeld)
+	if rerr != nil && !errors.Is(rerr, segment.ErrNotInSet) {
+		t.Fatalf("the holding retirement after the pass: %v", rerr)
+	}
+	// Bounded wait: the retiree raises the freed counter after it removes
+	// the segment from the set, so the first read can catch the gain still
+	// at zero in that in-flight window; the wait polls the counter itself.
+	var gain uint64
+	for n := 0; ; n++ {
+		gain = p.freedGain(freedBefore)
+		if gain > 0 {
+			break
+		}
+		if time.Duration(n)*5*time.Millisecond >= copyWait {
+			t.Fatalf("the source's retirement freed %d, want the source's storage: the bytes belong to whoever retires the segment", gain)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !p.setGone(seg) {
+		t.Fatal("the holding retirement left the source in the set, want it unlinked where the pass could not")
+	}
+	got := p.readAll(t, file, 0, int64(len(payload)))
+	if string(got) != payload {
+		t.Fatalf("the record after the refused hand-over and the holder's retirement = %q, want %q", got, payload)
+	}
+}
+
+// TestPassAHandOverAfterAnotherRetirementFinishedFreesNothing pins the other
+// leg of the hand-over race: the other retirement completes whole inside the
+// gap between the unit's claim release and the retirer's ledger claim, so the
+// hand-over answers ErrNotInSet — which the ledger itself counted as a double
+// retire — and the visit frees nothing and reports no error: the completed
+// retirement's bytes already stand on its own answer.
+func TestPassAHandOverAfterAnotherRetirementFinishedFreesNothing(t *testing.T) {
+	p := newPassFixture(t)
+	// The other retirement in the race, fired where a forget's drop offers
+	// the segment to the worker: it finishes the retirement there, ahead of
+	// Retire's own claim below. Installed before the plant, as the seam's own
+	// contract asks: the fixture's live reclaim worker can fire the hook on
+	// its own goroutine while the plant still runs, so both the id the hook
+	// waits for and its one-fire flag are written and read as atomics,
+	// ordered against the plant's store.
+	var segA atomic.Uint64
+	var fired atomic.Bool
+	p.f.core.Retirer().SetRetireHook(func(id core.SegmentID, r segment.Reason) {
+		if uint64(id) != segA.Load() || !fired.CompareAndSwap(false, true) {
+			return
+		}
+		if _, err := p.f.core.Retirer().Retire(id, r); err != nil {
+			t.Errorf("the other retirement: %v", err)
+		}
+	})
+	segA.Store(uint64(p.plantSealed(t, copyFile(4), []byte("a record another retirement removes first"))))
+	seg := core.SegmentID(segA.Load())
+	freed, err := p.repack(context.Background(), copySegCap*8, seg)
+	if err != nil || freed != 0 || !fired.Load() || !p.setGone(seg) {
+		t.Fatalf("Repack after another retirement finished: freed %d, err %v, fired %v, gone %v; want 0, nil, true, true", freed, err, fired.Load(), p.setGone(seg))
 	}
 }

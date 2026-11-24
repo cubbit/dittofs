@@ -85,7 +85,10 @@ func newPassThroughUnwatched(t *testing.T, rules ...sim.Rule) *ptFixture {
 	p := protocolSecrets(t, st)
 	var pw []byte
 	fx.bind, pw = dir.Account()
-	owner := entity.SecretOwner{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "identity.directory"}
+	owner := entity.SecretOwner{
+		Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
+		Key:   identity.DirectoryBindCredentialKey,
+	}
 	var ref entity.SecretRef
 	ref[0] = 1
 	sec, err := p.Seal(context.Background(), secrets.Protocol, entity.SecretDirectoryCredential, owner, ref, pw, secrets.Meta{})

@@ -5479,6 +5479,7 @@
         "x-dittofs-waits-applied": true
       },
       "get": {
+        "description": "A key the settings table declares a secret's reference answers the secret's reference and version, never its value.",
         "operationId": "settings_get",
         "parameters": [
           {
@@ -5565,7 +5566,7 @@
         "x-dittofs-role": "viewer"
       },
       "put": {
-        "description": "A write of identity.ntlm takes the admin role, whatever x-dittofs-role names for every other key.",
+        "description": "A write of identity.ntlm takes the admin role, whatever x-dittofs-role names for every other key. A key the settings table declares a secret's reference takes its value as a JSON string, seals it, and holds the secret's reference and version, never its value.",
         "operationId": "settings_put",
         "parameters": [
           {
