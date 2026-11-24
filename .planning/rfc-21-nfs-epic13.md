@@ -253,8 +253,12 @@ are the authenticator's and already tested at its Tier 1; `SECINFO`'s flavours (
 - **D4. The table: one mutex over a map, a global list and a list per principal.** `Insert`, `Get`
   and `Delete` are O(1): the map by handle, a `container/list` least-recently-used list over every
   context, and one per principal, so R4's eviction takes the principal's tail, else the global
-  tail. The idle eviction is lazy: every `Insert` and `Get` first evicts from the global tail while
-  its context has been idle 8 hours, so no sweeper runs and an idle context is never served. The
+  tail. Only `check`, which runs once the header MIC has verified, moves a context to the front of
+  both lists, with its idle time; `Get` finds a context without reordering anything, since its
+  handle travels in the clear, so a forged call neither keeps a context alive nor protects it from
+  eviction, and the global list stays ordered by idle time. The idle eviction is lazy and relies on
+  that order: every `Insert` and `Get` first evicts from the global tail while its context has been
+  idle 8 hours, so no sweeper runs and an idle context is never served. The
   window lives in each context under the context's own mutex, so calls on two contexts contend only
   on the map. A `ponytail:` marker at the mutex: one lock over the table, shard it by handle when
   T13.4's mutex profile, or a later one, shows contention. Prior art: knfsd's `rsc` cache, a hash
@@ -266,7 +270,11 @@ are the authenticator's and already tested at its Tier 1; `SECINFO`'s flavours (
 - **D6. The table's clock is an input.** `protocol.New` takes a `Clock` (`Now() time.Time`) beside
   E3's budgets; `nfs.New` passes the host's clock, and a test builds its adapter with its own clock
   per instance through `export_test.go`, so idle eviction and ticket ends are driven, never slept
-  for. Prior art: `internal/identity`'s and `internal/vfs`'s own `Clock` interfaces. No marker.
+  for. `core` judges the same ticket end once more per request (`pipeline.expired`, RFC 20 §4.4 step
+  2) on its own clock, which only `core`'s tests can set, so the adapter's tests mint tickets whose
+  end lies well past the host's time and advance only the table's clock past it: the stage then
+  refuses at unwrap before `core` reads anything. In production both are the host's clock. Prior
+  art: `internal/identity`'s and `internal/vfs`'s own `Clock` interfaces. No marker.
 - **D7. The duplicate-request cache keys a GSS call by its context.** E3's D5 key hashes the
   credential's flavour and an `AUTH_SYS` caller's ids; for an `RPCSEC_GSS` call it hashes the
   context's handle and the credential's service instead, and the arguments as `Unwrap` left them,
@@ -370,11 +378,11 @@ test/pcap-corpus/nfs-gss/
   - `CAPTURE.md` reproduces the capture from a clean host with the commands it lists.
   - Each golden file names its message and decodes with `tshark`'s RPCSEC_GSS dissector to the
     fields its name says.
-  - The ticket in the captured `INIT` decrypts under the committed keytab.
+  - The ticket in the captured `INIT` decrypts under the committed keytab, which T13.3's capture
+    test does first: a keytab of another realm or version fails it there, so `wire` imports no
+    Kerberos library to check it twice.
 - **Tests:** `TestParseCaptured`, E2's, loads the new files (catches a file cut from another
-  program); a test in `wire` that decrypts the captured ticket under the keytab with `gokrb5`
-  (catches a keytab of another realm or version, which would leave T13.3's checks vacuous). No test
-  double.
+  program). No test double.
 - **Rules:** rule 8, the Linux client and knfsd against a real KDC; rule 7, knfsd, never
   `develop`'s adapter. The script runs by hand, as E2's does.
 
@@ -439,8 +447,9 @@ test/pcap-corpus/nfs-gss/
     direction is refused where the initiator's is expected.
 - **Tests:** at `Context`, which T13.5 and T13.6 call: RFC 3962's AES vectors through the key
   derivation and the published RFC 4121 token vectors RFC 20 §4.4 names (catch a wrong key usage or
-  a checksum over the wrong bytes, R28); the capture's tokens (catch a token Linux sends that `gss`
-  refuses, R33); the altered tokens (catch a check skipped); `FuzzWrapToken` and `FuzzMICToken`
+  a checksum over the wrong bytes, R28); the capture's tokens, the session key read from the
+  captured ticket under T13.1's keytab (catch a token Linux sends that `gss` refuses, R33, and a
+  keytab of another realm or version committed with the capture); the altered tokens (catch a check skipped); `FuzzWrapToken` and `FuzzMICToken`
   (R32). No test double: the capture's tokens are a real peer's.
 - **Rules:** rule 9's `decision:` marker for D11; rule 11, the three fields for `nfs/protocol`,
   after the RFC 20 change.
@@ -468,15 +477,19 @@ test/pcap-corpus/nfs-gss/
   - The 10 001st context, or one the budget refuses, evicts the inserting principal's least recently
     used context, and the global least recently used only when that principal holds none.
   - A context idle 8 hours on the clock is gone at the next `insert` or `get`; `check` alone moves
-    its idle time.
+    its idle time and its place in either list, and a `get` moves neither.
+  - With the budget too small for one more context and nothing to evict, `insert` refuses and
+    charges nothing (D8).
   - In the window: a repeated or too-old number drops; one above advances it; one at or above
     `MAXSEQ`, or past the ticket's end, deletes the context.
   - Every deletion releases its reservation: the budget is back to zero once the table is empty.
 - **Tests:** at the table T13.5 drives, on an injected clock (kind 1): a property test of random
   `insert`, `get`, `check` and clock steps against a model of RFC 21 §10's rules (catch an eviction
   of another principal's context, R4, a context served past 8 hours, R5, a window advanced by a
-  drop, R6); the budget sized to four contexts, with two principals (catches eviction by insertion
-  order, R3, R4); a `check` the caller never reaches for a failed MIC leaving the window and idle
+  drop, R6, a `get` that reorders a list, which leaves an idle context behind a fresher one at the
+  tail, R5); the budget sized to four contexts, with two principals (catches eviction by insertion
+  order, R3, R4); a budget below one context on an empty table (catches a context held
+  uncharged, R3, D8); a `check` the caller never reaches for a failed MIC leaving the window and idle
   time as they were, read back (R7); `MAXSEQ` and the ticket's end (R9); the budget's balance after
   every deletion (catches a leaked charge, R3). A `-race` run of 64 goroutines over 1 000 contexts
   reports the mutex and block profiles (rule 4). No test double.
@@ -537,6 +550,11 @@ test/pcap-corpus/nfs-gss/
     leaving `vfstest.Mutations` empty (catch an unauthenticated teardown, R10, a window moved by a
     forgery, R7, one principal evicting another, R4, a context keyed by connection, R2, a dropped or
     rejected call run, R8);
+  - one call's bytes sent twice, then a fresh call: the only reply read is the fresh call's, and
+    `vfstest.Mutations` holds one entry (catches a replayed sequence number run or answered, R6, R8);
+  - an `INIT` with the table's budget spent and nothing to evict, then a fresh call: no reply to the
+    `INIT` and no context added (catches a refusal that ends the client's attempt, or a context
+    held uncharged, D8);
   - two contexts sending one XID and the same arguments: two entries in `vfstest.Mutations`; one
     context retransmitting under a new sequence number: one (catch a cache key without the
     context, R18, or one that misses a retransmission, D7);
@@ -546,8 +564,9 @@ test/pcap-corpus/nfs-gss/
   - the second adapter (catches a stored context, R1, R15);
   - the user's Kerberos name moved to another principal after `INIT`: the next call on the context
     still carries the first principal (catches a name mapped again, R14);
-  - every `CREDPROBLEM` reply read with an `AUTH_NONE` verifier (catches a refusal signed under a
-    key nothing proved, R25).
+  - every `CREDPROBLEM` reply decoded as a denied reply, `AUTH_ERROR` with its `auth_stat`, which
+    carries no verifier (RFC 5531 §9), and nothing after it (catches a refusal sent as an accepted
+    reply or signed under a key nothing proved, R25).
   - R12's clause that no adapter package reads a keytab is held by RFC 20's import test, which
     refuses `internal/identity` to every NFS package; R15's that no key reaches the core, by
     `Identity`, which has no key field.
@@ -648,10 +667,12 @@ flowchart TD
   T13_1 --> T13_3
   S6c --> T13_4["T13.4 Context table"]
   T13_2 & T13_3 & T13_4 --> T13_5["T13.5 Security stage and control procedures at krb5"]
+  E3(["E3: T3.1 to T3.4"]):::sync --> T13_5
   T13_5 --> C1(["after T13.5: krb5 contexts over loopback"]):::sync
   T13_5 --> T13_6["T13.6 krb5i and krb5p"]
   T13_6 --> T13_7["T13.7 Rows a Kerberos caller meets"]
   E11(["E11 T11.1 NLM and NSM tables"]):::sync --> T13_7
+  Eops(["E4: T4.4, T4.6; E5: T5.1, T5.4, T5.5, T5.8; E7: T7.2"]):::sync --> T13_7
   T13_5 --> T13_8["T13.8 RFC 18's rows on the composed node"]
   S5(["S5 composed in-process node"]):::sync --> T13_8
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -760,4 +781,7 @@ Gaps, not questions:
   RFC 20 pull request, opened by E3's Q2, unless S6c has added the field first; PR 2 waits for it.
   Q1's RFC 21 §11.5 row goes in batch two's one RFC 21 pull request, opened with E8's document pull
   request, beside E8's, E11's and E12's §11.5 cells. Q2's RFC 18 §3.8 sentence goes in this
-  document's pull request, if agreed.
+  document's pull request, if agreed. D1 reads RFC 20 §4.7's stage-table row "GSS where the
+  flavour is `RPCSEC_GSS`, else nil" per call, since the flavour is a call's and the stages a
+  connection's; the row's rewording, "GSS on every connection, passing a call of another flavour
+  unchanged", joins the same RFC 20 pull request as Q3.
