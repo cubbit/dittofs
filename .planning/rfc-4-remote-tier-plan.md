@@ -5,7 +5,9 @@ whole (its status is `draft`, not `deferred`), less what has no caller in v1.1: 
 the store contract, the in-memory store, the S3-compatible store with its capability check, the
 fault transport, and the tests and benchmarks of §7. What waits for its first caller (a backup
 location's calls and the `immutable` mode, for RFC 26; the `Recheck` calls, for RFC 9) is
-deferred, and RFC 4 §4.1 is amended in this plan's pull request to say so (§6.1). Related RFCs,
+deferred, and RFC 4 §4.1 is amended in this plan's pull request to say so (§6.1); the same
+pull request amends §4.3 for RFC 3's `*Measure` (D3) and §7.1, §7.2 and §7.4 so the fault
+transport never pretends a setting (D7). Related RFCs,
 each **constraints only**, and each of RFC 2, 3 and 5 with a plan of its own written at the same
 time:
 - [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md), the data lifecycle: the vocabulary,
@@ -226,7 +228,8 @@ fault transport is epic 3's.
    one body from its range alone (RFC 4 §7.3's fuzz and ranged-body rows), and that what it
    decodes re-encodes to bytes that decode to the same value, or
    agrees with the hand-written golden block of `testdata/v1`; and the `Content-Range` reader
-   (§4.4), whose parsed range must re-format to an equal range. Each target joins the one
+   (§4.4), whose parsed range must re-format to an equal range; epic 6 builds the codec's
+   targets, epic 4 the `Content-Range` reader's. Each target joins the one
    nightly `fuzz` suite the RFC 2 plan's epic 2 registers, and RFC 4's suites paragraph names
    it (amended in this pull request). The SDK parses the service's XML replies; the store's
    judgements over the SDK's types are table-tested, not fuzzed.
@@ -248,8 +251,11 @@ fault transport is epic 3's.
    heap checks. Allocations-per-op assertions, in `unit`'s `remote-allocs` option at `tier:
    pr` (epic 6 registers it), whose command runs without `-race`, as `unit`'s `adapter-allocs`
    does, since the race detector shifts allocation counts and empties `sync.Pool`: the codec's
-   per-chunk encode and verify; the S3 `Put` stream, which holds the header and one chunk and
-   never the block (§3.2, §4.3); one `List` page (§4.6).
+   per-chunk encode and verify. The S3 `Put` stream, which holds the header and one chunk and
+   never the block (§3.2, §4.3), and one `List` page (§4.6) need a real endpoint, so their
+   assertions run in `integration`'s `s3-allocs` option (`needs: [docker,
+   "service:localstack"]`, `tier: pr`; `integration` already runs without `-race`), which epic
+   4 registers with its first such test; nothing answers in the service's place.
 5. **Public interface and internals.** Tests cover the packages' internal functions and the
    behaviour through `remote.Store` and the codec's surface, under `-race`. Test at the layer
    that **consumes** a value (`CLAUDE.md`, "Verifying a change"): a checksum the store sends is
@@ -325,7 +331,6 @@ plans' tests reuse. The fifth and sixth, the backup location's calls and its adm
 ```mermaid
 flowchart TD
   E1["E1 Interfaces ⛔"]:::blocker --> S1(["S1 = RFC 8 offload plan S1c remote store contract agreed"]):::sync
-  Q1(["RFC 3 plan Q1: *Measure on Put"]):::sync -. "S1's Put" .-> S1
   S1 --> E2["E2 Conformance suite ⛔"]:::blocker --> RS2(["R4-S2 suite and in-memory store in CI"]):::sync
   subgraph A["Track A"]
     E6["E6 Block codec ⛔"]:::blocker
@@ -338,6 +343,7 @@ flowchart TD
   end
   RS2 --> E3 & E4
   S1 --> E6
+  E4 -. "ranged-flip row" .-> E6
   R5(["RFC 5 plan epic 3: the chain and its envelope"]):::sync -. "round trip" .-> E6
   E3 -- "LocalStack, request faults, for T rows" --> E4
   E4 -- "client, errors, put and get" --> E5
@@ -363,9 +369,9 @@ same numbers for other points.
 
 - **S1 🔀 = RFC 8 offload plan S1c remote store contract agreed** (end of epic 1). `pkg/remote`'s
   contract and the codec's encode and decode calls (D3), reviewed by the team and by the
-  authors of the RFC 3 and RFC 8 offload plans, whose code consumes them. Its freeze of `Put`
-  waits on the RFC 3 plan's open Q1 (`*Measure` on `Store.Put`), whose answer may change the
-  call S1 freezes (D3). Epics 2 and 6 start here, and so does the keys half of epic 7.
+  authors of the RFC 3 and RFC 8 offload plans, whose code consumes them. The RFC 3 plan's Q1
+  is answered (`Put(ctx, name, src, m *Measure) (Stored, error)`, D3), so S1 waits on nothing
+  outside this plan. Epics 2 and 6 start here, and so does the keys half of epic 7.
 - **R4-S2 🔀 Suite and in-memory store in CI** (end of epic 2). The conformance suite runs green
   against the in-memory store in `unit`. Epics 3 and 4 start here.
 - **R4-S3 🔀 Store and codec complete** (epics 3 to 6 done). Every row of RFC 4 §7.1 and §7.3
@@ -381,7 +387,9 @@ same numbers for other points.
 - **E3** blocks E4 and E5: `integration` reaches LocalStack through it, and their rows marked T
   run over its faults. E4 builds its behaviour against a local `dt services up localstack`
   first, so only its `integration` runs and T rows wait.
-- **E4** blocks E5: the check runs on the client, the error table, put and get.
+- **E4** blocks E5: the check runs on the client, the error table, put and get. It also blocks
+  epic 6's last subtask only, the §4.4 ranged-flip row, which needs the S3 store under the fault
+  transport; the rest of epic 6 starts at S1.
 - **E5** blocks E7: the refused open reported as a field error.
 - **E6** blocks RFC 8 offload plan epic 21, which wires the codec into the store adapter (RFC 8
   offload plan D5); its epic 15 runs over the in-memory components and does not wait.
@@ -466,9 +474,15 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   header and checks it on read. The chain it encodes under is pinned by RFC 8 offload plan epic
   15 from mint to commit or abandon, so a measuring pass and the send use one chain. Prior art:
   the architect pass proposed this shape independently; restic's `Repository.LoadBlob` verifies
-  by its blob ID after decryption (from memory). The store's `Put` frozen at S1 waits on the
-  RFC 3 plan's open Q1 (`*Measure` on `Store.Put`): its recommended answer changes the call's
-  signature, so S1 is not reached before Q1 is answered. Applied by epics 1 and 6.
+  by its blob ID after decryption (from memory). The RFC 3 plan's Q1 is answered: RFC 3's
+  `Store.Put` is `Put(ctx, name, src, m *Measure) (Stored, error)`, and RFC 4 §4.3, as amended
+  in this pull request, keeps the measured lengths and checksum in that `*Measure` across one
+  `Upload`'s retries. So the encoder's plan is a value its caller can hold and hand back: a
+  retry streams from it without measuring again, and `remote.Store` keeps nothing across calls
+  (§4.9). The encoder takes RFC 24 §6.2's CPU token as an input, a one-method acquire it
+  declares: it takes one per chunk it encodes or hashes and returns it before the next network
+  write; RFC 8 offload plan epic 21 builds the token in the node, and decoding, on the request
+  path, takes none. Applied by epics 1 and 6.
 - **D4. The in-memory store is a mutable namespace store, with an injected clock for
   `ModTime`.** Its consumers are the conformance suite's unmarked rows and the other offload
   plans' unit tests (the RFC 5 plan's `keys` object), none of which reads a version. Prior art:
@@ -487,8 +501,7 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   Prior art: rclone sizes its HTTP transport from `--transfers` and `--checkers` (from
   memory). Applied by epics 4 and 8.
 - **D7. The fault transport only fails, delays or tears what the real service does; a setting
-  is set, never pretended** — *pending the user's answer* (§6 point 8), since RFC 4 §7.2 lists
-  reporting a storage class and pretending a bucket setting among the transport's faults. It wraps
+  is set, never pretended**, as RFC 4 §7.2, amended in this pull request, says. It wraps
   the client's real `http.RoundTripper` and, on `pkg/sim`'s
   schedule and clock (through methods it declares in standard-library types, as the RFC index's
   test harness item 1 asks), drops, delays or fails a request with a chosen status and code (a
@@ -497,7 +510,9 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   tears a reply's range short, and holds new keys out of a listing reply. It never answers a
   request in the service's place with a success. A bucket setting a §7.1 row needs (versioning,
   lifecycle rules, default encryption, tiering) is applied for real to a fresh LocalStack bucket
-  created for that row; what LocalStack cannot hold is §6 point 4's. Prior art: none found for
+  created for that row; a row on a setting LocalStack cannot hold (§6 point 4) runs against a
+  real bucket in epic 9, by hand until CI holds credentials (§6.1), as amended RFC 4 §7.4 says,
+  so it guards no pull request meanwhile. Prior art: none found for
   S3 in Go; `toxiproxy` injects at TCP level, below the request (from memory). Applied by epic 3.
 - **D8. Timing waits use the injected clock.** The check's bounded re-list (Appendix C.4,
   step 4) is advanced on the clock, never slept. Prior art: the engine's and the journal's use
@@ -512,7 +527,11 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   (`test/harness/fixture/s3.go` through `http.DefaultClient`, and
   `test/e2e/framework/containers.go`, which hands it to v1's store); epic 3 adds a second
   variable, `LOCALSTACK_HTTPS_ENDPOINT`, to the same `needs` entry, and the certificate the
-  container serves, read from it, as the client's trusted root. The client's settings carry an
+  container serves, read from it, as the client's trusted root. CI's check (`curl -k`, falling
+  back to plain HTTP) proves neither the listener nor the certificate's names, so epic 3's first
+  subtask measures it: a Go client trusting only the served certificate dials the variable's
+  host. If the certificate does not cover `127.0.0.1`, the variable names a host it does cover,
+  resolving to the container. The client's settings carry an
   optional set of trusted roots (none: the system's), which a self-hosted service with a
   private CA needs anyway, and no setting skips verification: a case in epic 4 opens against
   the HTTPS listener without its root and requires the open refused. Prior art: none needed.
@@ -615,6 +634,8 @@ against the S3 store; RFC 4 §7.4's emulator row for these; RFC
   ETag comparison (quoted and unquoted, upper and lower case) and `List` cases for an empty
   page marked truncated and for a prefix with non-ASCII and percent-encoded bytes.
 - The `remote_` collectors and §4.12's logs.
+- The `Content-Range` reader's fuzz target (rule 2), and `integration`'s `s3-allocs` option with
+  the `Put` stream's and `List` page's allocation assertions (rule 4).
 
 ### Epic 5 — Capability check and health ⛔
 
@@ -648,16 +669,20 @@ naming its missing caller (D11).
 
 The codec of D3, on the format of D2. **Owns:** RFC 4 §3.1 to §3.5, §4.3's measuring pass and
 checksum, §4.12's `codec_` rows, and the codec's part of RFC 3 §2.2's memory bound (the header
-bound and the largest encoded block it reports). **Done when:** RFC 4 §7.3's rows but the
+bound and the largest encoded block it reports, on the put side the maximum of
+`Attempt.MaxEncodedLen` over the open attempts, never the current chain's `MaxEncodedLen`: a pin
+lives from Mint to Commit or Abandon and can outlive a chain change, RFC 5 §3.1). **Done when:** RFC 4 §7.3's rows but the
 engine's transforms-on-and-off row (§6.1); §7.1's §3.2 census row but its recovery half
-(§6.1); §7.1's §4.4 ranged-flip half, over the in-memory store in `unit` and over LocalStack
-under epic 3's fault transport in `integration`, the syncer's re-get excepted (§6.1); the codec's
-part of RFC 3 §2.2's memory-bound row; R1 to R4,
+(§6.1); §7.1's §4.4 ranged-flip half, over LocalStack under epic 3's fault transport in
+`integration`, the syncer's re-get excepted (§6.1), as its last subtask once epic 4's store
+exists (§3.3); the codec's part of RFC 3 §2.2's memory-bound row; R1 to R4,
 R14 and R15.
 
 **Expected content:**
 - The layout of D2, its header bound, and the refusals before allocation (§3.2).
-- Encode from declared or measured lengths through RFC 5's `Chain`, with D5's combine (§4.3).
+- Encode from declared or measured lengths through RFC 5's `Chain`, with D5's combine (§4.3),
+  from a plan its caller holds across retries in RFC 3's `*Measure` (D3).
+- RFC 24 §6.2's CPU token taken per chunk encoded or hashed, as an input (D3).
 - Whole-block and ranged reads, verified as §3.4 says.
 - The version gate (§3.5) and the golden block of `testdata/v1/`.
 - The decoder's fuzz target (rule 2), the `codec_` collectors, and `unit`'s `remote-allocs`
@@ -710,7 +735,7 @@ service Appendix B measures and recorded in Appendix B, the nightly run left to 
 credentials row; §7.1's §4.7 prefix-revoke half and the §4.11 settings LocalStack cannot hold
 (§6 point 4) against a real bucket; §7.5's benchmarks running after each merge against
 LocalStack, the steady-load row's connection count asserted, and a run against one service
-recorded by hand; the codec's fuzz targets running nightly in the `fuzz` suite.
+recorded by hand; the codec's and the `Content-Range` reader's fuzz targets running nightly in the `fuzz` suite.
 
 **Expected content:**
 - The `remote` group's service cell, `tier: manual` until CI holds credentials (§6.1), running
@@ -722,7 +747,7 @@ recorded by hand; the codec's fuzz targets running nightly in the `fuzz` suite.
   `-count=10` and `benchstat` on one host for any comparison across runs.
 - §7.5's steady-load row in that cell: ten minutes at a fixed pool size, asserting the
   connections epic 4's dialer opened stay at most the pool size plus the closes it counted.
-- The fuzz targets joined to RFC 2 plan epic 2's `fuzz` suite.
+- The codec's and the `Content-Range` reader's fuzz targets joined to RFC 2 plan epic 2's `fuzz` suite.
 
 ## 6. Risks and open points
 
@@ -734,8 +759,8 @@ recorded by hand; the codec's fuzz targets running nightly in the `fuzz` suite.
 2. **RFC 4 §7.4's in-memory row** — *pending the user's answer*. It says the in-memory store
    passes every §7.1 row not marked T, but four unmarked rows need a client, a throttling
    service, the codec or per-prefix rights (§1.4). Proposed RFC 4 amendment to §7.4's first
-   row: "passes the rows of §7.1 not marked T that need no client, codec or service
-   permission". Until agreed, epic 2 claims the row as so amended and §1.4 names the four.
+   row: "passes the rows of §7.1 not marked T that need no client, codec, service
+   permission or throttling service". Until agreed, epic 2 claims the row as so amended and §1.4 names the four.
 3. **The nightly service row needs credentials in CI.** A disposable bucket per service and a
    secret per credential, which CI has none of; epic 9 asks for them. Until then the row runs
    by hand (§6.1).
@@ -762,17 +787,6 @@ recorded by hand; the codec's fuzz targets running nightly in the `fuzz` suite.
    plan owns the synchronisation points, the RFC 3 `Store` adapter and its error mapping, the
    client holding, the registration of this component's keys, collectors and alert rules, the
    chain pin and the census's persistence, and the RFC 0 §1.2 amendment.
-8. **The fault transport's pretended settings** — *pending the user's answer*. RFC 4 §7.2
-   lists, among the transport's faults, "report a storage class, or pretend a bucket setting
-   … is on or off", which answers a request in the service's place with a success: a canned
-   answer `CLAUDE.md`'s "Writing tests" bans. D7 sets each setting for real on a fresh
-   LocalStack bucket instead. Options: (a) amend RFC 4 §7.2 to "applies a bucket setting for
-   real to a fresh bucket, and never answers a request in the service's place", and say in
-   §7.4 that a T row on a setting the local emulator cannot hold (§6 point 4) runs against a
-   real bucket, by hand until CI holds credentials (point 3), so it does not guard pull
-   requests meanwhile; (b) build the two knobs as §7.2 words them, behind a `decision:` marker
-   naming the exception to `CLAUDE.md`. Recommended: (a). Until answered, epic 3 builds no
-   success-shaped answer, and the rows on an unheld setting wait for the answer.
 
 ### 6.1 Deferral ledger
 
@@ -790,6 +804,7 @@ recorded by hand; the codec's fuzz targets running nightly in the `fuzz` suite.
 | RFC 13 §9's "§5.4 format version" row, its two-node half (epic 7 takes the single-node part) | v1.1 runs one node | RFC 15, as the RFC 13 plan's ledger has it | a second node |
 | A remote store's credential set through the API running the capability check, and its proven endpoint (the RFC 13 plan's D9 row) | API wiring of the check epic 5 builds | RFC 23 | epic 5 lands |
 | The nightly service row and §7.5's daily run against a service, in CI rather than by hand (§6 point 3) | CI holds no service credentials | unowned | a disposable bucket and credential per service exist as CI secrets |
+| §7.1's T rows on a bucket setting LocalStack cannot hold (§6 point 4: the archive storage class and the archive tiering rule as measured in epic 3), run in CI rather than by hand against a real bucket (RFC 4 §7.2 and §7.4 as amended; D7) | CI holds no service credentials, and the transport never pretends a setting | unowned | a disposable bucket and credential per service exist as CI secrets, or a LocalStack release holds the setting |
 
 ## 7. RFC coverage
 
