@@ -1,0 +1,116 @@
+# Dockerfile.foundationdb - dfs built with the foundationdb tag, so it can open
+# a FoundationDB metadata store as well as Badger.
+#
+# cgo links Apple's libfdb_c, which is built for glibc only, so both stages are
+# Debian rather than Alpine. Build it on a native host for each platform: the
+# builder runs on the target platform, since cross-compiling cgo would need a
+# cross toolchain and a libfdb_c for the other architecture.
+
+ARG FDB_VERSION=7.3.77
+
+# Build stage
+FROM golang:1.26.10-bookworm AS builder
+
+ARG TARGETARCH
+ARG FDB_VERSION
+# The SHA-256 of foundationdb-clients_<FDB_VERSION>-1_<arch>.deb, the same
+# package and digests .github/actions/fdb-client installs: change them together.
+ARG FDB_SHA256_AMD64=b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254
+ARG FDB_SHA256_ARM64=b3a5dd972ffd37c1d5dc0c29ffa00e2169bcac62c0186571acced8b006af7cc2
+
+# Build arguments for version info (injected by the release workflow)
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+RUN set -eu; \
+    case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
+      amd64) arch=amd64 sum="$FDB_SHA256_AMD64" ;; \
+      arm64) arch=aarch64 sum="$FDB_SHA256_ARM64" ;; \
+      *) echo "no foundationdb-clients package for ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    deb="foundationdb-clients_${FDB_VERSION}-1_${arch}.deb"; \
+    curl -fsSL -o "/tmp/$deb" "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/$deb"; \
+    echo "$sum  /tmp/$deb" | sha256sum -c -; \
+    dpkg -i "/tmp/$deb"; \
+    rm "/tmp/$deb"
+
+WORKDIR /build
+
+# Copy dependency files first for better layer caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=1 go build -tags foundationdb \
+    -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${BUILD_DATE}" \
+    -o dfs \
+    cmd/dfs/main.go
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+# OCI Image Labels
+LABEL org.opencontainers.image.title="DittoFS (FoundationDB)" \
+      org.opencontainers.image.description="Modular virtual filesystem with pluggable storage backends, built with the FoundationDB metadata backend" \
+      org.opencontainers.image.url="https://github.com/cubbit/dittofs" \
+      org.opencontainers.image.source="https://github.com/cubbit/dittofs" \
+      org.opencontainers.image.vendor="Marco Moschettini" \
+      org.opencontainers.image.licenses="MIT"
+
+# ca-certificates for HTTPS (S3, etc.), wget for the health check, and the
+# non-root user of the Alpine image, with the same IDs.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates tzdata wget && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g 65532 dittofs && \
+    useradd -u 65532 -g dittofs -d /app -M -s /usr/sbin/nologin dittofs
+
+# The client library from the builder's package, the one dfs was linked against.
+COPY --from=builder /usr/lib/libfdb_c.so /usr/lib/libfdb_c.so
+
+WORKDIR /app
+
+COPY --from=builder --chown=65532:65532 /build/dfs /app/dfs
+
+# /etc/foundationdb is writable by dfs because the client rewrites the cluster
+# file when the cluster's coordinators change.
+RUN mkdir -p /data/metadata /data/blocks/journal /data/cache /data/state /config /etc/foundationdb && \
+    chown -R 65532:65532 /app /data /config /etc/foundationdb
+
+# Run as non-root user
+USER 65532:65532
+
+# Expose ports:
+# - 12049: NFS server (default)
+# - 12445: SMB server (default)
+# - 8080: REST API (health checks, management)
+# - 9090: Prometheus metrics endpoint. Opt-in and loopback-bound by default,
+#         so publishing this port alone exposes nothing: enable metrics and set
+#         their host to 0.0.0.0 for it to be reachable from outside the container.
+# - 5353/udp: mDNS / DNS-SD network discovery (macOS Finder, Linux Avahi)
+# - 3702/udp: WS-Discovery (Windows Explorer Network)
+# - 5357/tcp: WS-Discovery device metadata (HTTP)
+# Note: multicast discovery (5353/3702) only works on the host LAN / hostNetwork;
+# it does not traverse standard container/K8s overlay networks.
+EXPOSE 12049/tcp 12445/tcp 8080/tcp 9090/tcp 5353/udp 3702/udp 5357/tcp
+
+# Volume mounts:
+# - /data/metadata: Metadata store when metadata.backend is badger
+# - /data/blocks: Journal root (the only copy of bytes not yet offloaded)
+# - /data/cache: Cache and WAL directory
+# - /data/state: Control plane database
+# - /config: Configuration file location
+# - /etc/foundationdb: the cluster file, fdb.cluster, which
+#   metadata.foundationdb.cluster_file names when metadata.backend is foundationdb
+VOLUME ["/data/metadata", "/data/blocks", "/data/cache", "/data/state", "/config", "/etc/foundationdb"]
+
+# Health check on the API's liveness probe. The API is served over TLS on
+# every address but loopback, and the certificate names the host rather than
+# localhost, so it is not verified.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider --no-check-certificate https://localhost:8080/health/live || exit 1
+
+ENTRYPOINT ["/app/dfs"]
+CMD ["start", "--config", "/config/config.yaml"]
