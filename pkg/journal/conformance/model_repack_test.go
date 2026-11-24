@@ -23,13 +23,12 @@ func FuzzModelRepack(f *testing.F) {
 	for _, seed := range []uint64{7, 11, 21, 37} {
 		f.Add(encodeSteps(model.GenerateWithin(seed, 16, model.RepackOps), model.RepackOps))
 	}
-	// A pass-bound regression pin: at 200 steps this draw once drove a repack
-	// pass that never finished, because the records a carry moved never
-	// counted against the pass budget and the pass re-selected the very
-	// segments its own carries sealed. Every carried record counts now, so the
-	// draw runs bounded; the 64-step entry it replaces drew the same steps as
-	// this one's prefix and covered nothing past it.
-	f.Add(encodeSteps(model.GenerateWithin(3, 200, model.RepackOps), model.RepackOps))
+	// This draw once drove a repack pass that never finished, because the
+	// records a carry moved never counted against the pass budget and the
+	// pass re-selected the very segments its own carries sealed. Every carried
+	// record counts now, so the pass over these steps is bounded; steps past
+	// the decoder's maxFuzzSteps live in TestModel_RepackHeavyDraws.
+	f.Add(encodeSteps(model.GenerateWithin(3, 64, model.RepackOps), model.RepackOps))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		prof.Watch(t, prof.Options{})
 		steps := decodeSteps(data, model.RepackOps)
@@ -85,6 +84,22 @@ func TestModel_RepackAndForget(t *testing.T) {
 		model.CheckDataPath(t, fmt.Sprintf("forget-seed-%d.txt", seed), steps, open,
 			fmt.Sprintf("drawn from seed %d, %d steps", seed, forgetSteps))
 	}
+}
+
+// TestModel_RepackHeavyDraws runs the one fixed draw that outgrows the fuzz
+// corpus at its full length: 200 steps from seed 3, past the decoder's
+// maxFuzzSteps cap, the draw whose repack pass once never finished because the
+// records a carry moved never counted against the pass budget and the pass
+// re-selected the very segments its own carries sealed. Every carried record
+// counts now, so the pass over this draw is bounded and the run fails only on
+// a divergence from the reference model.
+func TestModel_RepackHeavyDraws(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	open, _ := journaltest.DataPathTargets(t)
+	steps := losingCrashes(model.GenerateWithin(3, 200, model.RepackOps))
+	model.CheckDataPath(t, "repack-heavy-seed-3.txt", steps, open,
+		"drawn from seed 3, 200 steps")
 }
 
 // FuzzModelForget is FuzzModelRepack with the forget of a share's tag among
