@@ -503,12 +503,13 @@ func settingsImports(_ string, files []fileImports) ([]string, error) {
 // imports, so a shared import snapshot serves it nothing; its parse is of
 // whole files.
 //
-// decision: the link check lists only ./cmd/... for the host's GOOS, GOARCH
-// and build tags. Mains outside cmd (test/spec-citations, scripts, the
-// */gen and *gen generators) and builds for another GOOS or under another tag are not
-// checked; none of them ships to a user. Widen it when a binary that ships
-// is built from outside cmd, or a file that ships carries a GOOS or tag
-// constraint that could link a test-named package the host build does not.
+// decision: the link check lists the two binaries that ship, ./cmd/dfs and
+// ./cmd/dfsctl, as they are released: once per shipped GOOS, with cgo off,
+// on the host's GOARCH and with no build tags. The other mains (the rest of
+// cmd, test/spec-citations, scripts, the */gen and *gen generators) do not
+// ship and may link test helpers. Widen it when a shipped binary is added,
+// when the release turns cgo on or adds a GOOS, or when a file that ships
+// carries a GOARCH or tag constraint that could link a test-named package.
 func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 	bad, err := linkedTestPackages(root)
 	if err != nil {
@@ -538,23 +539,19 @@ func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		// Any qualified reference counts, a value as much as a call; a bare
-		// name counts only when called, as through a dot-import, so the
-		// declaring package's own declaration is not one.
+		// Every use of the name counts, a value as much as a call, qualified
+		// or bare through a dot-import; only the declaring package's own
+		// declaration of it is not a use.
 		ast.Inspect(f, func(n ast.Node) bool {
-			var name string
 			switch x := n.(type) {
-			case *ast.SelectorExpr:
-				name = x.Sel.Name
-			case *ast.CallExpr:
-				if id, ok := ast.Unparen(x.Fun).(*ast.Ident); ok {
-					name = id.Name
+			case *ast.FuncDecl:
+				if x.Body != nil {
+					ast.Inspect(x.Body, func(n ast.Node) bool { return use(n, rel, &bad) })
 				}
+				return false
+			default:
+				return use(n, rel, &bad)
 			}
-			if name == "GenerateWeakKeyFile" {
-				bad = append(bad, filepath.ToSlash(rel)+" references GenerateWeakKeyFile")
-			}
-			return true
 		})
 		return nil
 	})
@@ -562,36 +559,52 @@ func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 	return bad, err
 }
 
+// use reports n when it is the name GenerateWeakKeyFile: a selector's Sel
+// and a bare name are both identifiers, so each use is one report.
+func use(n ast.Node, rel string, bad *[]string) bool {
+	if id, ok := n.(*ast.Ident); ok && id.Name == "GenerateWeakKeyFile" {
+		*bad = append(*bad, filepath.ToSlash(rel)+" references GenerateWeakKeyFile")
+	}
+	return true
+}
+
+// shippedGOOS are the systems the release builds dfs and dfsctl for.
+var shippedGOOS = []string{"linux", "darwin", "windows"}
+
 // linkedTestPackages returns each package of the module rooted at root whose
-// name ends in test and which a binary under root's cmd links.
+// name ends in test and which dfs or dfsctl links, for any shipped GOOS.
 func linkedTestPackages(root string) ([]string, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command("go", "list", "-deps", "-f", "{{if and .Module .Module.Main}}{{.Name}} {{.Dir}}{{end}}", "./cmd/...")
-	cmd.Dir = abs
-	// The planted trees are modules of their own, outside any workspace.
-	cmd.Env = append(os.Environ(), "GOWORK=off")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("go list -deps ./cmd/...: %w: %s", err, stderr.String())
-	}
-	var bad []string
-	for line := range strings.Lines(string(out)) {
-		name, dir, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
-		if !strings.HasSuffix(name, "test") {
-			continue
-		}
-		rel, err := filepath.Rel(abs, dir)
+	seen := map[string]bool{}
+	for _, goos := range shippedGOOS {
+		cmd := exec.Command("go", "list", "-deps", "-f", "{{if and .Module .Module.Main}}{{.Name}} {{.Dir}}{{end}}", "./cmd/dfs", "./cmd/dfsctl")
+		cmd.Dir = abs
+		// The planted trees are modules of their own, outside any workspace.
+		// cmd.Environ sets PWD to cmd.Dir, so go list reports .Dir under abs
+		// even when root is reached through a symlink.
+		cmd.Env = append(cmd.Environ(), "GOWORK=off", "GOOS="+goos, "CGO_ENABLED=0")
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("go list -deps ./cmd/dfs ./cmd/dfsctl for %s: %w: %s", goos, err, stderr.String())
 		}
-		bad = append(bad, filepath.ToSlash(rel)+" is named "+name+" and linked into a binary")
+		for line := range strings.Lines(string(out)) {
+			name, dir, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
+			if !strings.HasSuffix(name, "test") {
+				continue
+			}
+			rel, err := filepath.Rel(abs, dir)
+			if err != nil {
+				return nil, err
+			}
+			seen[filepath.ToSlash(rel)+" is named "+name+" and linked into a binary"] = true
+		}
 	}
-	return bad, nil
+	return slices.Collect(maps.Keys(seen)), nil
 }
 
 // Each import rule reports nothing over the module and exactly the violation
@@ -643,9 +656,11 @@ func TestImportRules(t *testing.T) {
 		{"who writes a weak key file", weakKeyCallers, "weak-key",
 			[]string{
 				"internal/dot/dot.go references GenerateWeakKeyFile",
+				"internal/dotvalue/value.go references GenerateWeakKeyFile",
 				"internal/install/weak.go references GenerateWeakKeyFile",
 				"pkg/attest is named attest and linked into a binary",
 				"pkg/store/store.go references GenerateWeakKeyFile",
+				"pkg/wintest is named wintest and linked into a binary",
 			}},
 		{"the API settings' imports", settingsImports, "settings-leaf",
 			[]string{"internal/node/api/apisettings/settings.go imports " + module + "pkg/node/apiv1"}},
