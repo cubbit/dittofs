@@ -3,7 +3,9 @@ package cmdutil
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 	"github.com/spf13/cobra"
 )
@@ -26,7 +28,10 @@ func NameOrID(cmd *cobra.Command, kind string) {
 // filter admits for the positional name. A name that matches nothing is
 // refused naming it; an ID that names nothing is refused by the call that
 // uses it. A positional argument is always a name, never an ID, since a
-// name may spell another resource's ID.
+// name may spell another resource's ID. A listed resource whose own name is
+// not the one asked for is refused rather than counted, so a list that
+// ignored or loosened the filter never resolves a name to another
+// resource, which a delete would then remove.
 func Resolve[S, T any](cmd *cobra.Command, r client.Resource[S, T], kind string, args []string) (string, error) {
 	if id, _ := cmd.Flags().GetString("id"); id != "" {
 		return id, nil
@@ -46,6 +51,13 @@ func ByName[S, T any](cmd *cobra.Command, r client.Resource[S, T], kind, name st
 		if err != nil {
 			return "", fmt.Errorf("%s: finding the %s named %q: %w", cmd.CommandPath(), kind, name, err)
 		}
+		got, ok := nameOf(res.Spec)
+		if !ok {
+			return "", fmt.Errorf("%s: dfsctl cannot check the name of a %s; name it by --id", cmd.CommandPath(), kind)
+		}
+		if !strings.EqualFold(got, name) {
+			return "", fmt.Errorf("%s: asked for the %s named %q, the server listed %s named %q; refusing to act on it", cmd.CommandPath(), kind, name, res.ID, got)
+		}
 		ids = append(ids, res.ID)
 	}
 	switch len(ids) {
@@ -55,4 +67,25 @@ func ByName[S, T any](cmd *cobra.Command, r client.Resource[S, T], kind, name st
 		return ids[0], nil
 	}
 	return "", fmt.Errorf("%s: %d %ss named %q, want one", cmd.CommandPath(), len(ids), kind, name)
+}
+
+// nameOf is the name spec declares, for each kind Resolve resolves by name.
+//
+// decision: a listed name is compared with the asked one under
+// strings.EqualFold, not under the server's own folds, which dfsctl does not
+// link: a share's name is unique under an upcase table and a user's or a
+// group's under a frozen simple case folding. Each pair either fold maps
+// together EqualFold also holds equal (TestFoldsStayWithinEqualFold), so
+// the check refuses no name the server matched. Overturned if a fold ever
+// maps a pair EqualFold keeps apart.
+func nameOf(spec any) (string, bool) {
+	switch s := spec.(type) {
+	case apiv1.ShareSpec:
+		return s.Name, true
+	case apiv1.UserSpec:
+		return s.Name, true
+	case apiv1.GroupSpec:
+		return s.Name, true
+	}
+	return "", false
 }

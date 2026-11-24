@@ -5,6 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -237,6 +241,50 @@ func TestUpdateRefusesWhatNamesNothing(t *testing.T) {
 	if got := f.path(t); got != "/builds" {
 		t.Errorf("the share's path after the refusals: got %q, want /builds", got)
 	}
+}
+
+// A name is matched as the server matches it, so a case variant names the
+// share; and a listing that ignored the name filter, which a proxy dropping
+// ?name= stands in for, is refused rather than counted: a delete of a name
+// that matches nothing never deletes the one share the listing held.
+func TestResolveChecksTheListedName(t *testing.T) {
+	f := newFixture(t)
+	if _, err := run(t.Context(), f.env, "sh", "update", "BUILDS", "--path", "/upper", "-o", "json"); err != nil {
+		t.Fatalf("sh update BUILDS: %v, want the share builds resolved", err)
+	}
+	if got := f.path(t); got != "/upper" {
+		t.Errorf("the share after sh update BUILDS: path %q, want /upper", got)
+	}
+
+	p := f.srv
+	p.Addr = filterDropping(t, f.srv.Addr)
+	env := cmdutil.Env{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard, ConfigPath: filepath.Join(t.TempDir(), "dfsctl", "config.json")}
+	p.Login(t, clisuite.InProcess(env))
+	want := `dfsctl sh delete: asked for the share named "staging", the server listed ` + f.share.ID + ` named "builds"`
+	if _, err := run(t.Context(), env, "sh", "delete", "staging"); err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("sh delete staging through a listing that ignores ?name=: got %v, want an error starting %q", err, want)
+	}
+	if sh, err := f.c.Shares().Get(t.Context(), f.share.ID); err != nil || sh.Status.State != f.share.Status.State {
+		t.Errorf("the share builds after sh delete staging: %+v (%v), want it as it was", sh.Status, err)
+	}
+}
+
+// filterDropping serves the API of the node on the socket at sock on a
+// loopback URL it returns, every request passed through with its ?name=
+// removed: a fault standing in for a list route that ignores its filter.
+func filterDropping(t *testing.T, sock string) string {
+	t.Helper()
+	tr := &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+	}}
+	srv := httptest.NewServer(&httputil.ReverseProxy{Transport: tr, Rewrite: func(r *httputil.ProxyRequest) {
+		r.Out.URL.Scheme, r.Out.URL.Host = "http", "socket"
+		q := r.Out.URL.Query()
+		q.Del("name")
+		r.Out.URL.RawQuery = q.Encode()
+	}})
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 // A resource changed between the update's read and its write is refused
