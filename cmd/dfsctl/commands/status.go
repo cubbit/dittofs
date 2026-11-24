@@ -1,28 +1,48 @@
 package commands
 
 import (
+	"fmt"
+
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
 
-func newStatusCmd() *cobra.Command {
-	statusCmd := &cobra.Command{
+func newStatusCmd(env cmdutil.Env) *cobra.Command {
+	return &cobra.Command{
 		Use:   "status",
-		Short: "Show server status",
-		Long: `Display the status of the connected DittoFS server.
-
-Calls the /health endpoint on the server configured in the current context and
-reports whether the server is running, how long it has been up, and whether the
-control-plane database is reachable. When a valid token is present, per-entity
-detail (shares, stores) is fetched from the API and rendered as a
-color-coded table. Use -o json or -o yaml for machine-readable output.
+		Short: "Show the node's readiness and the installation's health",
+		Long: `Show the readiness of the node the current context names, ready, starting,
+draining or not_ready, and every health condition it holds, its own and the
+installation's. Use -o json or -o yaml for machine-readable output.
 
 Examples:
-  # Show status of the currently active server
+  # Show the status of the current context's node
   dfsctl status
 
   # Emit machine-readable JSON output
-  dfsctl status -o json`, RunE: cmdutil.Unavailable,
+  dfsctl status -o json`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, _, err := cmdutil.NewClient(env)
+			if err != nil {
+				return err
+			}
+			h, err := c.Health(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
+			}
+			t := cmdutil.Table{{"READY", "CONDITION", "SCOPE", "SUBJECT", "CAUSE", "DETAIL"}}
+			if len(h.Conditions) == 0 {
+				t = append(t, []string{h.Ready, "", "", "", "", ""})
+			}
+			for _, cd := range h.Conditions {
+				subject := cd.Subject
+				if subject == "" {
+					subject = cd.ID
+				}
+				t = append(t, []string{h.Ready, cd.Name, cd.Scope, subject, cd.Cause, cd.Detail})
+			}
+			return cmdutil.PrintOutput(cmd, h, false, "", t)
+		},
 	}
-	return statusCmd
 }

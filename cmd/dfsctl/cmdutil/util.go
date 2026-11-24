@@ -134,3 +134,13 @@ func RunDeleteWithConfirmation(cmd *cobra.Command, env Env, resourceType, name s
 	printSuccess(cmd, fmt.Sprintf("%s '%s' removed successfully", resourceType, name))
 	return nil
 }
+
+// Table is a table built in place: its first row the headers, the others
+// its rows.
+type Table [][]string
+
+// Headers implements output.TableRenderer.
+func (t Table) Headers() []string { return t[0] }
+
+// Rows implements output.TableRenderer.
+func (t Table) Rows() [][]string { return t[1:] }
