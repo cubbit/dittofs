@@ -40,13 +40,14 @@ type Stateid struct {
 	Other [12]byte
 }
 
-// SetFH makes fh r's current filehandle, the one way a member sets it: the
-// current stateid becomes the all-zeros special stateid, as an operation that
-// changes the filehandle and returns no stateid sets it (RFC 8881 section
-// 16.2.3.1.2), which a zero Stateid with HasStateid false stands for; NeedsFH
-// is raised in r.Level, whose other bits stay, so a row needing a current
-// filehandle runs after it. r is a COMPOUND's request, whose State the router
-// set.
+// SetFH makes fh r's current filehandle, as every member that puts a new
+// filehandle does: the current stateid becomes the all-zeros special stateid,
+// as an operation that changes the filehandle and returns no stateid sets it
+// (RFC 8881 section 16.2.3.1.2), which a zero Stateid with HasStateid false
+// stands for; NeedsFH is raised in r.Level, whose other bits stay, so a row
+// needing a current filehandle runs after it. RESTOREFH does not use it: it
+// copies Saved into Cur, stateid included, and raises NeedsFH itself. r is a
+// COMPOUND's request, whose State the router set.
 func SetFH(r *core.Request, fh vfs.Handle) {
 	r.State.(*State).Cur = Current{FH: fh}
 	r.Level |= core.NeedsFH
