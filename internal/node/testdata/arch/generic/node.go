@@ -28,3 +28,5 @@ type box[T any] struct{}
 func (b *box[T]) Open() {}
 
 func Preflight() {}
+
+func RefuseV1() {}

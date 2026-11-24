@@ -27,3 +27,5 @@ func (n *Node) Stop(ctx context.Context) error { return nil }
 func (n *Node) helper() {}
 
 func Preflight() {}
+
+func RefuseV1() {}
