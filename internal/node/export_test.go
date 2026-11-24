@@ -157,9 +157,9 @@ func (n *Node) OnReconcileWait(waiting func()) { n.rec.waiting = waiting }
 func (n *Node) OnIdentityApply(handing func(iidentity.State)) { n.rec.handing = handing }
 
 // OnSettingsWalkWait has the node call walking each time the settings walk
-// arms its bound to wait on the store for its next row, with the rows it has
-// received so far: a page's first wait is at 0, the next at the page's size.
-// Call it before Start.
+// arms its bound for its next page of the store, once per page, with the
+// rows it has received so far: at 0, then at each 256 rows. Call it before
+// Start.
 func (n *Node) OnSettingsWalkWait(walking func(seen int)) { n.rec.walking = walking }
 
 // Applied is the wait a write on this node makes.
