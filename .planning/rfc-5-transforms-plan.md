@@ -78,8 +78,14 @@ integration epics touch no v1 code (§1.5 rule 7).
 - **Appendix B.1, the periodic primary-version read lands with GC's recheck period**; until
   then the provider reads it when the configuration opens.
 - **§2.8, a block's chain ID is its pin's.**
-- **Appendix B, AES-256-GCM in place of AES-256-GCM-SIV** (Q2, D3): a chunk's nonce is an HMAC of
-  its input, stored in the body (`MaxEncodedLen(n) = n + 285`); each export frame is sealed once
+- **Appendix B.1 and B.2, the key material's review:** a chunk's nonce is an HMAC of its AAD and
+  input under `dittofs chunk nonce v2`, so a later format version that keeps the labels cannot
+  give one ciphertext two tags; the wrap call raises one server-wide count per master key
+  (`MKW‖masterKeyID`, added to RFC 16 §4.2), so every namespace's wraps, the salvage-key wrap
+  and the escrow check's test record all count; and the provider refuses a master key whose ID
+  or fingerprint matches the `storage` key's.
+- **Appendix B, AES-256-GCM in place of AES-256-GCM-SIV** (Q2, D3): a chunk's nonce is an HMAC of its AAD
+  and input, stored in the body (`MaxEncodedLen(n) = n + 285`); each export frame is sealed once
   per salt; a key-file master key makes at most 2³² wraps; §5.4, T15, the `require` example,
   the vector rows and RFC 26 §3.1's summary follow.
 - **RFC 25 §3.9 and §7** gain `material_unknown`, `material_destroyed` and the `malformed`
@@ -172,7 +178,7 @@ it (D6).
     at start leaves the journal serving (its D10, epic 11, with the RFC 8 offload plan);
   - Wycheproof's `aes_gcm_test.json` for the standard library's AES-256-GCM as the transform
     calls it, a tag failure that writes nothing into `dst`, and two inputs under one chunk key
-    getting two nonces (epic 5);
+    getting two nonces, and one input under two versions in the AAD getting two nonces (epic 5);
   - N concurrent rotations of one namespace leave exactly one current key; the notice's cursor
     survives a restart; a master-key re-wrap of 10⁴ records resumes after a crash (epic 8);
   - decompression bombs for zstd and LZ4 as fuzz seeds (epic 4);
@@ -475,8 +481,8 @@ pkg/transform/material/kmip/   E7 key-service custody over KMIP
 internal/keyfile/              E6 the key-file format moved out of pkg/keyprovider (D5)
 internal/kmipwire/             E7 the KMIP transport moved out of pkg/keyprovider (D14)
 pkg/metadata/kvstore/          E6 material's key-record view over RFC 16 §4.2's NS‖ns‖key
-                               and NS‖ns‖keyseq rows, run under the key-record suite
-pkg/metadata/kv/keys/          E6 the keyseq subtag beside NSKey
+                               and NS‖ns‖keyseq rows and the MKW wrap count, run under the key-record suite
+pkg/metadata/kv/keys/          E6 the keyseq subtag beside NSKey, and the MKW kind (0x4D)
 ```
 
 ### 4.2 Decisions
@@ -497,12 +503,12 @@ filled in epic 3.
 **D3. AES-256-GCM comes from the standard library, `crypto/aes` and `crypto/cipher`, as the user
 answered (Q2): a commonly supported algorithm and no implementation of our own.** RFC 5 Appendix B
 is amended to match, and each use keeps GCM's one rule, never one key and nonce for two different
-plaintexts. A chunk's nonce is an HMAC of the exact bytes sealed under a key the data key derives,
+plaintexts. A chunk's nonce is an HMAC of its AAD and the exact bytes sealed, under a key the data key derives,
 stored in the body, because one chunk key does see different inputs (a new compression level, a
 declined chunk compressed later, a relocation), so a zero nonce would repeat. A frame's nonce is
 its section and frame index under a frame key the export's own salt derives, and each frame is
-sealed once per salt. A key-file wrap's nonce is random, so the provider counts wraps per master
-key and refuses past 2³² (NIST SP 800-38D §8.3). No use needed XChaCha20-Poly1305. Both the
+sealed once per salt. A key-file wrap's nonce is random, so the wrap call itself counts every wrap
+per master key, in one server-wide `MKW‖masterKeyID` row of RFC 16 §4.2, and refuses past 2³² (NIST SP 800-38D §8.3). No use needed XChaCha20-Poly1305. Both the
 chunk seal (epic 5) and the key-file wrap (epic 6) call `cipher.NewGCM`. Prior art: TLS 1.3 and
 SSH run AES-GCM with a counter nonce; a nonce from a PRF of the message is the SIV construction's
 idea, here over two standard primitives (from memory). Applies in epics 5 and 6.
@@ -521,7 +527,11 @@ key out of the server, which Appendix B.1 forbids for a master key. A key-file m
 in `pkg/keyprovider`'s passphrase-protected format, under RFC 13 Appendix C's passphrase. Epic 6
 moves that format's reader to `internal/keyfile`, which both packages import, since
 `material` may not import RFC 13's package (§1.5 rule 7); `pkg/keyprovider`'s exported surface
-and its tests do not change. The wrap itself is RFC 5 Appendix B.1's.
+and its tests do not change. The wrap itself is RFC 5 Appendix B.1's. Since a master-key file
+and the `storage` key file share a format and a passphrase, nothing in the file tells them apart:
+the engine's wiring passes the `storage` key's ID and fingerprint in the provider's `Deps`, and
+the provider refuses a master key whose ID or fingerprint matches (RFC 5 Appendix B.2, "No
+storage-key fallback"). A fingerprint is one-way, so `material` still holds no `storage` key.
 Prior art: HashiCorp Vault's seal wrappers and the AWS Encryption SDK's keyrings separate key
 custody from the data format (from memory). Applies in epics 6 and 7.
 
@@ -536,7 +546,8 @@ integration tier. Prior art: as D5. Applies in epic 6.
 **D7. Key records are a view `material` declares and the metadata store implements.** The
 transforms import no other component (§1.5 rule 7), so `material` declares the calls it needs,
 named for the need: read a namespace's key records, create its keys in one transaction, and
-rewrite them under the `keyseq` key lock. `pkg/metadata/kvstore` implements it in the store's
+rewrite them under the `keyseq` key lock, and raise a master key's wrap count (D3) by a
+conditional write. `pkg/metadata/kvstore` implements it in the store's
 own transactions, and the engine's wiring passes it in, as RFC 14 §11.1 defines `OpenRecords`
 for the store to implement (RFC 16 §3). Its suite is in `materialtest` with a verified
 in-memory view; kvstore's conformance run calls the same suite, so Badger, the memory KV and
@@ -609,7 +620,8 @@ regenerates `docs/guide/cli.md`. Prior art: RFC 23's own `rotate-signing-key`. A
 provider**: it draws a fresh data key, wraps it under
 the installation's current master key with associated data naming the salvage export, and
 returns the key and its stored wrap (RFC 5 Appendix B.2, "A salvage key seals one salvage
-export"). It belongs to no namespace, so it writes no key record; the RFC 8 offload plan's epic
+export"). It belongs to no namespace, so it writes no key record, but its wrap raises the master key's
+count like any other (D3); the RFC 8 offload plan's epic
 20 writes the wrap beside the export. Prior art: none found. Applies in epic 6.
 
 **D17. The destroyed-material notice is a call the engine polls**, declared in `pkg/transform`
@@ -787,12 +799,16 @@ under its master key and associated data; RFC 5 §8.1's wrap-count row (one wrap
   `keyseq` subtag with its row in `pkg/metadata/kv/keys`' table.
 - The key-file format's reader moved to `internal/keyfile` (D5).
 - The stored wrap and the key-file custody (D5, D6), with the custody interface and its suite;
-  the per-master-key wrap count beside the key records, raised before a wrap is used (D3).
+  the per-master-key wrap count, one server-wide `MKW‖masterKeyID` row (RFC 16 §4.2), raised
+  inside the wrap call before its bytes are used, so key records, the salvage-key wrap and the
+  escrow check's test record all count (D3).
 - The escrow check and `ErrNotEscrowed`.
 - `Current` and `Get`: fingerprints, the three failure classes, namespace scoping, the cache.
 - Namespace key creation per Appendix B.2's table, the clear chunk-ID key included, with its
   crash-seam test.
 - The salvage-key wrap (D16).
+- The refusal of a master key whose ID or fingerprint matches the `storage` key's, which the
+  wiring passes in the provider's `Deps` (D5).
 - The two gauges, and the provider as a `health.Source` for `material_unavailable`.
 
 ### Epic 7 — Key-service custody
@@ -923,7 +939,7 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
 
 - **Q2. The cipher is AES-256-GCM from the standard library** (D3): a commonly supported
   algorithm, no implementation of our own. RFC 5 Appendix B is amended in this pull request: a
-  chunk's nonce is an HMAC of its input, stored in the body; a frame is sealed once per salt; a
+  chunk's nonce is an HMAC of its AAD and input, stored in the body; a frame is sealed once per salt; a
   key-file master key makes at most 2³² random-nonce wraps, counted by the provider. Example:
   `aead, _ := cipher.NewGCM(block); body = aead.Seal(nonce, nonce, input, aad)`.
 - **Q3. KMIP only** (D14); a cloud key service is a §6.1 row. Example:
@@ -1020,6 +1036,7 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
 | RFC 5 Appendix D | — (v1, deleted by stage 4); its bug rows in §1.4 |
 | RFC 0 §1.2 (as the RFC 8 offload plan amends it) | E1 (import test) |
 | RFC 16 §4.2, `NS‖ns‖key‖kind‖keyID` and `NS‖ns‖keyseq‖target` | E6, E8 |
+| RFC 16 §4.2, `MKW‖masterKeyID` (amended in this pull request) | E6 |
 | RFC 16 §4.2, `NS‖ns‖drain` | §6.1 (RFC 9) |
 | RFC 6 §2.3 (block-record census) | the RFC 8 offload plan's epics 15 and 19; E10 reads it |
 | RFC 25 §2.1, §3.9, §7, §8 | E3, E6, E9 |

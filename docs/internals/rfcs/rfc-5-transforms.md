@@ -1040,9 +1040,9 @@ alike. A new transform gets it by registering.
 | [§2.7](#2.7%20Failures) | For an authenticating transform: decode chunk A's body with chunk B's hash: `ErrMalformed`. A body naming destroyed material: `ErrMaterialDestroyed`. |
 | T9 | Encode every round-trip input twice, and from two chains built from the same configuration: identical bodies. Where `LengthOf` answers, the body's length equals it. |
 | T9 | Encode every fixture input with its recorded settings and material: exactly the recorded body. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Two different chunks under one key get different salts; one chunk under two data keys gets two different bodies. Two different inputs under one plaintext hash (the same chunk compressed at two levels, or declined then compressed) encrypt to bodies that both decode, carry different nonces and share no keystream: XOR of the two ciphertexts is not XOR of the two inputs. The key-file provider at a wrap count of 2³² − 1 for a master key makes one more wrap and refuses the next. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Two different chunks under one key get different salts; one chunk under two data keys gets two different bodies. Two different inputs under one plaintext hash (the same chunk compressed at two levels, or declined then compressed) encrypt to bodies that both decode, carry different nonces and share no keystream: XOR of the two ciphertexts is not XOR of the two inputs. One input under one data key, sealed with two versions in the AAD, gets two different nonces. The key-file provider at a wrap count of 2³² − 1 for a master key makes one more wrap and refuses the next, counted across two namespaces; a salvage-key wrap and an escrow check's test record each raise the count by one. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Every derivation label of Appendix B.1 is distinct, and each is pinned by a golden vector. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Golden vectors, from an independent implementation working from Appendix B.1's length and field tables alone: the salt key, salt, chunk key, nonce key and nonce for a fixed data key, plaintext hash and input; one chunk body with its AAD; one fingerprint; the keyed gear table's first and last 8 bytes. Each derived key is 32 bytes, and an implementation deriving with `salt` as an empty string instead of 32 zero bytes gets the same key — RFC 5869 treats both alike — while one using a 16-byte `L` gets a 16-byte prefix of the right key, which the length check refuses, and one prefixing `info` gets a different key. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Golden vectors, from an independent implementation working from Appendix B.1's length and field tables alone: the salt key, salt, chunk key, nonce key and nonce for a fixed data key, plaintext hash, version and input; one chunk body with its AAD; one fingerprint; the keyed gear table's first and last 8 bytes. Each derived key is 32 bytes, and an implementation deriving with `salt` as an empty string instead of 32 zero bytes gets the same key — RFC 5869 treats both alike — while one using a 16-byte `L` gets a 16-byte prefix of the right key, which the length check refuses, and one prefixing `info` gets a different key. |
 | T22 | Golden vectors, from an independent implementation, for the frame key, MAC key and state key derivations, one sealed frame, each of the four export MACs, one state MAC, and one stored wrap per provider kind: the key file's, and a key service's against a fake service that records the authenticated data it is sent, once as bytes and once as a string map. Write an export of two sections of three frames each: all six nonces differ. Move a frame to the other section at the same frame index, or swap two sections: the read fails. A design whose nonce is the frame index alone gives two equal nonces here. |
 | T18 | Unwrap a wrapped key record after changing its namespace ID, its kind or its key ID in the AAD: each fails. Copy one namespace's wrapped data key into another namespace's key records: it does not unwrap there. |
 | [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | Replace a key under its ID with different bytes: the provider refuses it (`ErrMaterialUnavailable`, availability gauge 0), and no body is decoded or written with it. |
@@ -1078,7 +1078,7 @@ alike. A new transform gets it by registering.
 | [Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) | With encryption on, write a known file: no unkeyed hash of its chunks appears anywhere in the stored block, the header's chunk IDs equal block metadata's, and every read still verifies. With encryption off, the header lists chunk IDs, none of which equals an unkeyed hash of the file's chunks. |
 | T19 | Rotate a master key while a retained export carries the old wrapping: destroying the old key is refused with `ErrMaterialInUse` naming the backup; expire the backup and the destroy succeeds. A design that checks only the key records destroys it and leaves the backup unopenable. Make one backup location unreachable: the destroy is refused naming it. Move the namespace to a second installation sharing the key service: the importer re-wraps every key record under its own master key before publish, and the exporter refuses to destroy the old key until an operator releases the move's pin. |
 | [Appendix B.3](#B.3%20Rotation) | Rotate the export key: the next export is sealed under the new key, names both IDs in its clear part and carries the old key wrapped; importing it alone opens an export sealed under the old key. Destroying the old export key while a retained export names it is refused. |
-| T18 | Create a non-encrypting namespace: its chunk-ID key is in its key control object in the clear, it has no chunking key, and its boundaries equal the unkeyed table's. Remove the master key and the metadata store: every chunk still verifies from the bucket alone. On a key-file provider without verified escrow, creating an encrypting namespace or a backup policy is refused with `ErrNotEscrowed`; after the escrow check passes, both succeed. A namespace key offered for wrapping under the `storage` wrapping key is refused. |
+| T18 | Create a non-encrypting namespace: its chunk-ID key is in its key control object in the clear, it has no chunking key, and its boundaries equal the unkeyed table's. Remove the master key and the metadata store: every chunk still verifies from the bucket alone. On a key-file provider without verified escrow, creating an encrypting namespace or a backup policy is refused with `ErrNotEscrowed`; after the escrow check passes, both succeed. A namespace key offered for wrapping under the `storage` wrapping key is refused, and so is a key-file master key holding the `storage` key's bytes under another ID. |
 | T20 | Destroy a data key while the journal still holds some chunks its blocks cover: a decode of a remote-only chunk returns `ErrMaterialDestroyed`, the codec's verification-failure counter does not move, the engine reports those chunks Lost; the chunks still held locally are not evicted, are offloaded again under the current key, and read back. |
 | T21 | Encode a block of an encrypting namespace: no unkeyed hash of any of its chunks appears in its bytes; its header's chunk IDs are the keyed ones block metadata records, and ranged reads at block metadata's ranges still verify. Scan the block for the clear envelope: every body's offset and length is found, as [B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) states, so no test or text claims lengths hidden. |
 | [Appendix B.2](#B.2%20Keys) | Rotate the data key after the last catalog backup, relocate that backup's blocks under it, then lose the metadata store: the recovery import loads the new key records from the bucket's `keys` object and every file reads back. Fail the put to one backup location during a rotation: the new key becomes current once the bucket's `keys` put succeeds, and the next version written at that location waits until its `keys` object holds every key record. Fail the bucket's `keys` put: the old key stays current. Rotate a key-file master key without its escrow check: refused with `ErrNotEscrowed`. |
@@ -1207,8 +1207,8 @@ from the exact bytes it seals:
 salt key  = HKDF-SHA256(data key, salt = none, info = "dittofs chunk salt v2"), 32 bytes
 salt      = HMAC-SHA256(salt key, plaintext hash), 32 bytes
 chunk key = HKDF-SHA256(data key, salt = salt, info = "dittofs chunk key v2"), 32 bytes
-nonce key = HKDF-SHA256(data key, salt = salt, info = "dittofs chunk nonce v1"), 32 bytes
-nonce     = first 12 bytes of HMAC-SHA256(nonce key, input)
+nonce key = HKDF-SHA256(data key, salt = salt, info = "dittofs chunk nonce v2"), 32 bytes
+nonce     = first 12 bytes of HMAC-SHA256(nonce key, AAD ‖ input)
 body      = nonce ‖ AES-256-GCM(chunk key, nonce, input,
                                 AAD = transform ID ‖ version ‖ data key ID ‖ plaintext hash)
 ```
@@ -1225,7 +1225,7 @@ derived under a label another derivation uses:
 | --- | --- | --- |
 | `dittofs chunk salt v2` | data key | the salt key |
 | `dittofs chunk key v2` | data key and salt | the chunk key |
-| `dittofs chunk nonce v1` | data key and salt | the key the chunk's nonce is an HMAC under |
+| `dittofs chunk nonce v2` | data key and salt | the key the chunk's nonce is an HMAC under |
 | `dittofs chunking key v1` | chunking key | keyed boundaries, encrypting namespaces only ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)) |
 | `dittofs export frame v1` | export key and the export's salt | the key sealing each frame of an export ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)) |
 | `dittofs export mac v1` | export key and the export's salt | the key authenticating an export's clear part, header, sections and trailer |
@@ -1284,14 +1284,14 @@ vector:
 | AES-256-GCM nonce | 12 | the chunk's is the first 12 bytes of its HMAC, stored before the ciphertext; a frame's and the header's as below; a key wrap's random, stored before the ciphertext |
 | AES-256-GCM tag | 16 | appended to the ciphertext, full length, never truncated |
 
-A value computed over **one** field — the salt over the plaintext hash, the
-chunk's nonce over its input, a fingerprint over its label — takes that field's bytes alone, with no prefix;
+A value computed over **one** field — the salt over the plaintext hash, a fingerprint over its label — takes that field's bytes alone, with no prefix;
 the prefix rule above applies wherever two or more fields are joined. The
 joined inputs are, field by field:
 
 | Input | Fields, in order |
 | --- | --- |
 | chunk AAD | transform ID (2 bytes, big-endian) ‖ version (1 byte) ‖ data key ID (4-byte length, bytes) ‖ plaintext hash (4-byte length, 32 bytes) |
+| chunk nonce input | chunk AAD (4-byte length, its bytes) ‖ input (4-byte length, its bytes) |
 | frame AAD | export salt (4-byte length, 32 bytes) ‖ section index (4 bytes) ‖ section type (1 byte) ‖ frame index (8 bytes) |
 | header AAD | export salt (4-byte length, 32 bytes) ‖ `header` (4-byte length, ASCII) |
 | each MAC | its literal label (`clear`, `header`, `section`, `trailer`; 4-byte length, ASCII) first, then its fields as listed, each integer at its stated width and each other field length-prefixed |
@@ -1398,13 +1398,17 @@ wrapped = nonce ‖ AES-256-GCM(master key, nonce = 12 bytes from a cryptographi
 
 **A master key makes at most 2³² wraps.** A random 96-bit nonce stays unique
 under one key with the margin NIST SP 800-38D §8.3 requires only up to 2³²
-invocations. The key-file provider enforces it: it keeps a count of wraps per
-master-key ID beside the key records, raised by a conditional write before the
-wrap's bytes are used, so a crash can only overcount, and refuses a wrap at 2³² with an error asking for a
-master-key rotation ([B.3](#B.3%20Rotation)). A wrap is made only when a key
-record is written — a key created, a data key rotated, a master key re-wrapping
-every record — so at 10⁴ namespaces with a few keys each and every write
-retried the count stays below 2²⁰. A key service draws its own nonces and keeps
+invocations. The key-file provider enforces it inside the wrap call itself: every wrap
+under a master key first raises that key's count of wraps by a conditional
+write, before the wrap's bytes are used, so a crash can only overcount, and the
+call refuses a wrap at 2³² with an error asking for a master-key rotation
+([B.3](#B.3%20Rotation)). The count is one server-wide row per master-key
+version (`MKW‖masterKeyID`, [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), not one per namespace, so the wraps of
+every namespace under one key add up. Every wrap counts: each key record written
+(a key created, a data key rotated, a master key re-wrapping every record), a
+salvage key's wrap, and the escrow check's test record ([B.2](#B.2%20Keys)).
+At 10⁴ namespaces with a few keys each, every write retried, and salvage
+exports and escrow checks rare, the count stays below 2²⁰. A key service draws its own nonces and keeps
 its own bound.
 
 That is the key-file provider's wrap. A key-service provider asks the service
@@ -1462,11 +1466,17 @@ In plain terms:
   a chunk declined once and compressed later, a compression library upgrade, or
   a relocation, which re-encodes by design ([§5.2](#5.2%20Relocation%20re-encodes)). Two different inputs under
   one key and one nonce are exactly what AES-GCM must never see: their XOR
-  and the authentication key would leak. So the nonce is an HMAC of the exact
-  bytes sealed, under a key only the data key derives: two different inputs
-  get two unrelated nonces (equal with probability 2⁻⁹⁶ per pair, and one chunk
-  key sees a handful of inputs at most), and the most a repeat leaks is that two
-  inputs were identical. A zero nonce would be safe only if a chunk key sealed
+  and the authentication key would leak. So the nonce is an HMAC of the chunk's
+  AAD and the exact bytes sealed, under a key only the data key derives: two
+  different inputs get two unrelated nonces (equal with probability 2⁻⁹⁶ per
+  pair, and one chunk key sees a handful of inputs at most). The AAD is in the
+  HMAC because neither key depends on it. A later format version that keeps
+  these labels changes only the AAD's version byte, and one input sealed under
+  one key and one nonce with two AADs is one ciphertext with two tags: GCM's
+  authentication key follows from them, and forged bodies then pass the tag.
+  With the AAD in the HMAC, a nonce repeats only where the AAD and the input
+  both repeat, which seals the same body again, and the most a repeat leaks is
+  that two bodies sealed one input under one AAD. A zero nonce would be safe only if a chunk key sealed
   one input ever, which compression and relocation break.
 - **deterministic, as [§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk) requires.** The same input under one data key
   encrypts identically. The salt is an HMAC under a key only the data key
@@ -1574,7 +1584,11 @@ of its store configuration. The `storage` wrapping key
 ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), which seals remote-tier credentials in the metadata store,
 **MUST NOT** wrap a namespace key: it lives on the host, so an export wrapped
 under it would restore only on the host that made it, which is the one place a
-backup is not needed.
+backup is not needed. The provider enforces it without holding the
+`storage` key: the wiring passes it that key's ID and fingerprint
+([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)), and the provider refuses a master key whose ID or
+fingerprint matches. So a master-key file that holds the `storage` key's bytes
+under another ID is refused too.
 
 **Where wrapped keys live.** Each namespace key is a **key record** in the
 metadata store, under the namespace's prefix: its kind, ID, fingerprint, the ID

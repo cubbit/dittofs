@@ -2091,6 +2091,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `RS‖partition` | (cluster) repair scheduler lease per partition of the shard-ID hash, with its epoch ([RFC 10 §7.4](rfc-10-journal-replication.md#7.4%20Repair)) |
 | | `MV‖giving‖receiving` | move record: the cursor of a move of files from the giving shard to the receiving one, one per pair, so a crashed move resumes and several moves out of one shard run at once ([RFC 11 §4](rfc-11-ownership.md#4.%20Moving%20files%20and%20primaries)) |
 | | `MKP‖masterKeyID‖ns‖moveID` | export pin, keyed by the version-qualified master key ID: a master key version the export of a move of namespace `ns` to another installation carried a wrapping under; while one exists the material provider refuses to destroy that key, and only an operator's `ReleasePin` deletes it ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)) |
+| | `MKW‖masterKeyID` | wrap count, keyed by the version-qualified master key ID: the number of wraps made under that master key version, every namespace's together, raised by a conditional write inside the wrap call before the wrap's bytes are used, so a crash can only overcount; the key-file provider refuses a wrap at 2³² ([RFC 5 Appendix B.1](rfc-5-transforms.md#B.1%20How%20a%20chunk%20is%20encrypted)) |
 | | `SLOT` | (cluster) slot table: the fixed slot count and each slot's ordered nodes, primary first, in distinct failure domains, weighted by node capacity; one per installation, changed only by compare-and-swap ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)) |
 | | `CFG‖scope‖key` | Setting. A backup location's record ([RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record)) is one, and carries two system fields the control plane writes when it creates the record: the put-integrity outcome, and the **location health object's identity** — the version of `<location>control/health` at an immutable location, the nonce written in it at a mutable one ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)) |
 | | `CFGGEN` | settings generation: one installation-wide counter, raised in the transaction of every `Setting` or `Secret` change and every write of `Installation.Join`; every node point-reads it each second and re-reads the records when it moved ([RFC 13 §5](rfc-13-configuration.md#5.%20Binding%20classes)) |
@@ -2224,7 +2225,7 @@ are the prefix's. No separator byte is written.
 - **Byte string**: an entry's folded key, an xattr name, an idempotency key (`IK`), an operation kind (`OPR`), a user, group, share
   or netgroup name, a path, a journal directory (`JD`'s `device`), a setting key, a SID, a Kerberos principal, a
   client owner, a backup location's name (`NS‖ns‖bk‖location`, and `NS‖ns‖keyseq‖target`, empty for the namespace's own object), a namespace key ID (up to 255 bytes, [RFC 5](rfc-5-transforms.md)), a master key ID
-  (`MKP`'s `masterKeyID`, [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)): each `0x00` byte written as `0x00 0xFF`, then the two-byte
+  (`MKP`'s and `MKW`'s `masterKeyID`, [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)): each `0x00` byte written as `0x00 0xFF`, then the two-byte
   terminator `0x00 0x01`. Inside a string `0x00` is always followed by `0xFF`,
   so the terminator cannot occur there: no string's encoding is a prefix of
   another's, whatever component follows. A string sorts before every longer
@@ -2250,7 +2251,7 @@ are the prefix's. No separator byte is written.
 | Store | `\x00` 0x00, followed by the bytes `format`; nothing else is under 0x00 |
 | Per file, per share | `F` 0x01, `S` 0x02 |
 | Per namespace | `C` 0x10, `CR` 0x11, `B` 0x12, `BR` 0x13, `BD` 0x14, `BC` 0x15, `I` 0x16, `NS` 0x17 |
-| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `IDS` 0x3A, `PGEN` 0x3B, `OP` 0x3C, `OPR` 0x3D, `IK` 0x3E, `XP` 0x3F, `SS` 0x40, `SSH` 0x41, `AT` 0x42, `ATH` 0x43, `ATA` 0x44, `AU` 0x45, `AUX` 0x46, `AUC` 0x47, `JD` 0x48, `SF` 0x49, `UA` 0x4A, `NSR` 0x4B, `SSA` 0x4C; 0x39 retired |
+| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `IDS` 0x3A, `PGEN` 0x3B, `OP` 0x3C, `OPR` 0x3D, `IK` 0x3E, `XP` 0x3F, `SS` 0x40, `SSH` 0x41, `AT` 0x42, `ATH` 0x43, `ATA` 0x44, `AU` 0x45, `AUX` 0x46, `AUC` 0x47, `JD` 0x48, `SF` 0x49, `UA` 0x4A, `NSR` 0x4B, `SSA` 0x4C, `MKW` 0x4D; 0x39 retired |
 
 | Under | Sub-kind codes |
 | --- | --- |

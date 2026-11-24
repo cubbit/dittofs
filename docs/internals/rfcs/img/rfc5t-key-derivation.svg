@@ -16,7 +16,7 @@
 <rect x="238" y="132" width="200" height="30" rx="3" class="k"/><text x="248" y="152" class="m">namespace chunking key</text>
 <text x="238" y="182" class="s">each stored wrapped, with a fingerprint</text>
 <path d="M438 79H488" class="ar"/>
-<rect x="490" y="60" width="394" height="42" rx="3" class="p"/><text x="502" y="78" class="h">AES-256-GCM (standard library)</text><text x="502" y="94" class="s">nonce an HMAC of the exact bytes sealed, so any input is safe</text>
+<rect x="490" y="60" width="394" height="42" rx="3" class="p"/><text x="502" y="78" class="h">AES-256-GCM (standard library)</text><text x="502" y="94" class="s">nonce an HMAC of the AAD and the bytes sealed</text>
 <path d="M438 113H488" class="ar"/>
 <rect x="490" y="106" width="394" height="30" rx="3" class="c"/><text x="502" y="126" class="s">keys the chunk IDs block headers carry (BLAKE3 keyed)</text>
 <path d="M438 147H488" class="ar"/>
@@ -24,7 +24,7 @@
 <text x="16" y="220" class="h">Why not AES-GCM with a fixed nonce</text>
 <text x="16" y="240" class="l">A key derived from the chunk hash assumed one input per key. But encryption seals compression's output, which changes for</text>
 <text x="16" y="258" class="l">the same chunk when the level changes, a declined chunk is later compressed, or the library is upgraded — and relocation</text>
-<text x="16" y="276" class="l">re-encodes by design. Two inputs under one key and nonce leak their XOR and the authentication key. A nonce keyed on the input is</text>
-<text x="16" y="294" class="l">the same for equal inputs and unrelated for different ones.</text>
+<text x="16" y="276" class="l">re-encodes by design. Two inputs under one key and nonce leak their XOR and the authentication key. The nonce is</text>
+<text x="16" y="294" class="l">an HMAC of the AAD and the input: the same for equal pairs, unrelated for different ones.</text>
 <text x="16" y="330" class="s">Rotating a master key re-wraps the namespace keys and rewrites no data. Rotating the data key is new material, retired by census.</text>
 </svg>
