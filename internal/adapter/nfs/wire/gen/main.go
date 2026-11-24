@@ -7,6 +7,9 @@
 //
 //	//go:generate go run <dir>/nfs/wire/gen -o codec_gen.go read.go write.go
 //
+// With -types, it also writes a test file listing those structs, which the
+// package's fuzz target round-trips.
+//
 // A field's Go type states its fixed form: uint32, uint64, int64, bool, or a
 // type named over one (an enum); [N]byte, a fixed-length opaque; [N] of one of
 // those, a fixed-length array; a struct declared beside it; *T of such a
@@ -27,6 +30,7 @@ import (
 
 func main() {
 	out := flag.String("o", "", "the file to write, in the inputs' directory")
+	types := flag.String("types", "", "a test file to write besides, listing every struct the codec is for")
 	flag.Parse()
 	if *out == "" || flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "usage: gen -o codec_gen.go file.go...")
@@ -38,6 +42,16 @@ func main() {
 		os.Exit(1)
 	}
 	if err := os.WriteFile(*out, src, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if *types == "" {
+		return
+	}
+	if src, err = generateTypes(".", flag.Args()); err == nil {
+		err = os.WriteFile(*types, src, 0o644)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
