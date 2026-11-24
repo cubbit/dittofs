@@ -398,7 +398,7 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   - A quoted boolean and a scalar where a list is declared are refused, naming the key and the
     type, and no key takes a default in place of a refused value.
 - **Tests:** table tests over files under `t.TempDir()`, one row per refusal, asserting the exact
-  line (catches a refusal that drops its rule or its hint); a key in another case refused naming the declared key, `LOGGING.LEVEL` giving `logging.level` (D3, D1; catches a hint taken by edit distance alone, which that key is past); an unknown key more than two edits from every declared one still names the closest (D1; catches a cap on the distance); an unknown key one edit from a declared one whose value is a passphrase (`keys.storage.local.passphrse: s3cr3t`) refuses with D1's hint naming the closest declared key, and `s3cr3t` appears nowhere in the report (catches a "did you mean" line that echoes the value, which no refusal may print, R4);
+  line (catches a refusal that drops its rule or its hint); a key in another case refused naming the declared key, `LOGGING.LEVEL` giving `logging.level` (D3, D1; catches a hint taken by edit distance alone, which that key is past); an unknown key more than two edits from every declared one still names the closest (D1; catches a cap on the distance);
   `/data/j1/` refused and `/data/j1` accepted (catches a loader that cleans silently); the
   precedence of `--config` over `DITTOFS_CONFIG` over the default, and of a variable over the
   file; a file naming two journals with `DITTOFS_JOURNALS=/data/j3` set loads `/data/j3` alone
@@ -471,9 +471,9 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   the directory, and neither hangs the start, the copy left as it was (catches an unread read
   taken for missing, where only a missing copy counts, and a blocking open); a copy past the
   layout, read no further than one byte past it, refuses without being read whole (catches a
-  read that trusts the file's own length); a symbolic link at `node-id`, and one at
-  `node-id.tmp`, are never followed and each refuses, naming the directory (catches a copy
-  read through a link, and a temporary created through one); a `node-id` that
+  read that trusts the file's own length); a symbolic link at `node-id` is never followed and refuses, naming the directory, and one at
+  `node-id.tmp` is removed, its target left untouched, and the copy is written (catches a copy
+  read through a link, and a temporary written through one); a `node-id` that
   appears between the read that found no copy and the publish survives: the write that lost
   the publish re-reads it, takes it when it names the same identity and refuses
   when it does not, and the copy is never replaced (catches a publish that replaces a copy,
@@ -509,7 +509,7 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   - A bootstrap key under an allowed prefix is read as the key.
 - **Tests:** one row per allowed name and prefix; `DITTOFS_CONTROLPLANE_SECRET=s3cr3t` refuses,
   naming its replacement, and the output does not contain `s3cr3t` (catches a refusal that prints
-  the value, R4); RFC 13 §9's "§2.2 no host override" row: `DITTOFS_ADAPTERS_SMB_PORT` set, the
+  the value, R4); `DITTOFS_ENCRYPTION_PASSPHRSE=s3cr3t`, one edit from the allowed passphrase name, refuses as unknown with a "did you mean" naming a declared key's variable, not `DITTOFS_ENCRYPTION_PASSPHRASE`, and `s3cr3t` appears nowhere in the report (catches a "did you mean" line that echoes the value, which no refusal may print, R4); RFC 13 §9's "§2.2 no host override" row: `DITTOFS_ADAPTERS_SMB_PORT` set, the
   start refused and nothing applied; a v1 key in the host's file, `database.type: sqlite`, refuses,
   naming `metadata.backend` and not printing the value (catches a table read only for variables, and a
   v1 key lost among the unknown ones); one row per key the table retires, asserting the replacement it
