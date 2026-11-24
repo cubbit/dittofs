@@ -91,7 +91,7 @@ over loopback where they name the wire.
 - End-to-end, cross-protocol and composed-node rows, all E16's: the read-only marker over SMB and
   NFS and §8.1's ctime (T16.6), §9.1's stability and loss verifier and the failed stable write on
   the composed node (T16.2), §9.2's close-to-open steps with a kernel client (T16.7), §9.3's NFSv3
-  hold step (T16.5, R41), the totality test of every error table across tables (T16.11) and the
+  hold step (T16.14, R41), the totality test of every error table across tables (T16.11) and the
   pipeline micro benchmark (T16.12). cthon04 and nfstest over NFSv3 go to E16's burn-down of known
   failures, which has no subtask yet. §9.2's two-node change-info step is the RFC 21
   implementation plan's deferral ledger row "RFC 21's (cluster) parts", not E16's.
