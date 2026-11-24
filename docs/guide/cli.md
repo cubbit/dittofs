@@ -2849,7 +2849,8 @@ Create, read and delete remote stores, and set a store's credential.
 
 A remote store is where namespaces keep their content: its endpoint, bucket and
 the rest are its settings, and its credential is a secret the server seals and
-never prints. A store's setting changes through 'dfsctl setting set store:<id>'.
+never prints. A store's endpoint is fixed at its creation; its other settings
+change through 'dfsctl setting set store:<id>'.
 
 ```
 dfsctl store [flags]
