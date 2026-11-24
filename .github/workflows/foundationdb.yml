@@ -144,3 +144,41 @@ jobs:
           go test -tags=foundationdb -race -p 1 -count=1 -timeout=20m
           -run '^(TestCheckKVFoundationDBNeedsNoBadgerPath|TestOpenKVPassesTheTLSFiles|TestOpenKVGivesUpOnAnUnreachableCluster|TestOpenKVOpensFoundationDB|TestStartClosesTheStoreOnFoundationDB|TestPreflightOnFoundationDB|TestInitStartStopOnFoundationDB|TestStartAndInitRefuseAForeignClusterOnFoundationDB)$'
           ./cmd/dfs/commands/ ./internal/node/
+
+  # The release image's dfs init and dfs start on a cluster of its own, which
+  # the installation owns: this proves the image's libfdb_c loads and speaks
+  # to a 7.3 server. release.yml runs the same smoke before it pushes.
+  image:
+    name: FoundationDB image smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check for image changes
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            image:
+              - 'Dockerfile.foundationdb'
+              - '.github/workflows/release.yml'
+              - '.goreleaser.yml'
+              - 'pkg/metadata/kv/fdbkv/**'
+              - 'test/fdb/**'
+              - '.github/workflows/foundationdb.yml'
+
+      - name: Build the image
+        if: github.event_name != 'pull_request' || steps.filter.outputs.image == 'true'
+        run: docker build -f Dockerfile.foundationdb -t dittofs-foundationdb:smoke .
+
+      - name: Start a one-process FoundationDB
+        if: github.event_name != 'pull_request' || steps.filter.outputs.image == 'true'
+        run: test/fdb/cluster.sh up 1
+
+      - name: Run the image's init and start on FoundationDB
+        if: github.event_name != 'pull_request' || steps.filter.outputs.image == 'true'
+        run: test/fdb/cluster.sh smoke dittofs-foundationdb:smoke

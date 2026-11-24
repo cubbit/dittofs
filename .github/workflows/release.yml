@@ -233,7 +233,9 @@ jobs:
 
   # dfs with the foundationdb tag, as <tag>-foundationdb. cgo links libfdb_c,
   # so each platform builds on a native runner rather than under QEMU, and
-  # pushes its image by digest alone; the manifest job below names them.
+  # pushes its image by digest alone; the manifest job below names them. Each
+  # platform's image passes the smoke on a cluster of its own before it is
+  # pushed, so an image that cannot reach FoundationDB never leaves the runner.
   image-foundationdb:
     name: FoundationDB image (${{ matrix.platform }})
     strategy:
@@ -269,6 +271,31 @@ jobs:
             echo "VERSION=${TAG#v}"
             echo "DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
+
+      # Loaded into the runner's Docker for the smoke; the push below builds
+      # from the same builder's cache, so it pushes what was smoked.
+      - name: Build the image for the smoke
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: ./Dockerfile.foundationdb
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.VERSION }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.version.outputs.DATE }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.VERSION }}
+            org.opencontainers.image.created=${{ steps.version.outputs.DATE }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          load: true
+          tags: dittofs-foundationdb:smoke
+
+      - name: Start a one-process FoundationDB
+        run: test/fdb/cluster.sh up 1
+
+      - name: Run the image's init and start on FoundationDB
+        run: test/fdb/cluster.sh smoke dittofs-foundationdb:smoke
 
       - name: Build and push by digest
         id: build
