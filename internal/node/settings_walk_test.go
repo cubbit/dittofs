@@ -1219,6 +1219,9 @@ func TestSettingsRefusalNamesEveryRowOfItsInstance(t *testing.T) {
 		return tr.s.Settings == now.Settings && readStatus(t, h).Settings == now.Settings
 	})
 
+	// A pass the turns' advances released may still run, but it publishes
+	// its refusals in one assignment under the lock Refused reads, over the
+	// same corrupt row, so the reads below see one whole pass's set.
 	refused := h.Node().Refused()
 
 	want := []entity.ResourceRef{
@@ -1287,6 +1290,10 @@ func TestSettingsOverrideRefusalNamesTheWideRowToo(t *testing.T) {
 		return tr.s.Settings == now.Settings && readStatus(t, h).Settings == now.Settings
 	})
 
+	// A pass the turns' advances released may still run, but it publishes
+	// its snapshot in one atomic store and its refusals in one assignment
+	// under the lock Refused reads, over the same corrupt row, so the reads
+	// below see one whole pass's values.
 	got, err := runLevel(t, h, h.Node().Settings(), "alpha")
 
 	if err != nil || got != 9 {
