@@ -1,10 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"iter"
 	"maps"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -15,7 +19,9 @@ import (
 // every store has, and the reference to its credential's secret.
 //
 // ponytail: a remote store exists, and is tagged, by its endpoint setting,
-// and a write of it audits that setting alone, since the store keeps no
+// and a write of it, a PATCH among them, audits that setting and its
+// credential alone, so a PATCH of only another setting moves no ETag and
+// its audit record names no change, since the store keeps no
 // record of a remote store but its settings and a write's transaction reads a
 // setting by its key only. Read the store's own record once an RFC 16
 // amendment adds one, and take the two keys from the settings table once it
@@ -278,4 +284,172 @@ var store = watching[apiv1.Store]{
 	until: changes(func(first, now apiv1.Store) bool {
 		return first.Generation != now.Generation
 	}),
+}
+
+// storeList is GET /stores: every remote store in ID order, each as its GET
+// answers it, found by its endpoint setting among every scope's settings.
+//
+// decision: the listing reads the settings in the store's key order, scope
+// kind first, so it starts at the remote scopes, after the store the cursor
+// names, and ends at the first setting of another kind. A store whose
+// settings change kind order would break it, and its settings reader's
+// contract would change with it.
+//
+// ponytail: each store is read again whole, its settings and its
+// credential's version, so a page costs one read per store beside the
+// listing's. Read a store from the listing's own rows once a page's reads
+// show in a profile.
+var storeList = listing[apiv1.Store, apiv1.Store]{
+	records: func(ctx context.Context, d Deps, after []byte, _ map[string]string) iter.Seq2[apiv1.Store, error] {
+		return func(yield func(apiv1.Store, error) bool) {
+			from := entity.SettingKey{Scope: storeScope([16]byte{})}
+			if after != nil {
+				var id [16]byte
+				copy(id[:], after)
+				from = entity.SettingKey{Scope: storeScope(id), Key: storeEndpoint}
+			}
+			for s, err := range d.Nodes.AllSettings(ctx, from) {
+				var v apiv1.Store
+				switch {
+				case err == nil && s.Scope.Kind != entity.ScopeRemote:
+					return
+				case err == nil && s.Key != storeEndpoint:
+					continue
+				case err == nil:
+					v, err = store.read(ctx, d, request[none]{ID: s.Scope.ID})
+					if errors.Is(err, errNotFound) {
+						continue // deleted since the listing read its endpoint
+					}
+				}
+				if !yield(v, err) || err != nil {
+					return
+				}
+			}
+		}
+	},
+	key: func(s apiv1.Store) []byte {
+		id, _ := entity.ParseShareID(s.ID)
+		return bytes.Clone(id[:])
+	},
+	item: func(s apiv1.Store, _ perPage) apiv1.Store { return s },
+}
+
+// storePatch is PATCH /stores/{id}'s pre-write step's result: the settings
+// the patch names, a JSON null for one it removes; the store's settings as
+// the step read them, which the answer is built from; and the credential the
+// patch states, sealed.
+type storePatch struct {
+	settings map[string]json.RawMessage
+	had      map[string]entity.Setting
+	cred     *sealedSecret
+}
+
+// prepareStorePatch is PATCH /stores/{id}'s pre-write step, which sees the
+// patch: a removed endpoint or a credential named as a setting is refused
+// 400, a store with no endpoint 404, and a credential the patch states goes
+// through the credential's own set, its capability check among its
+// refusals, and is sealed, as PUT /stores/{id}/credential seals it.
+func prepareStorePatch(ctx context.Context, rq request[storeDoc]) (storePatch, error) {
+	spec := rq.Body.Spec
+	if c := spec.Credential; c != nil {
+		defer clear(c.Value) // on every path out, a refusal's among them
+	}
+	if v, ok := spec.Settings[storeEndpoint]; ok && string(v) == "null" {
+		return storePatch{}, &fieldError{field: "spec.settings." + storeEndpoint, detail: "a remote store states its endpoint"}
+	}
+	if _, ok := spec.Settings[storeCredential]; ok {
+		return storePatch{}, &fieldError{field: "spec.settings." + storeCredential, detail: "a patch states its credential as spec.credential"}
+	}
+	had, err := scopeSettings(ctx, rq.d.Store, storeScope(rq.ID))
+	if err != nil {
+		return storePatch{}, err
+	}
+	if _, ok := had[storeEndpoint]; !ok {
+		return storePatch{}, errNotFound
+	}
+	out := storePatch{settings: spec.Settings, had: had}
+	if c := spec.Credential; c != nil {
+		switch {
+		case c.Ref != "" || c.Version != 0:
+			return storePatch{}, &fieldError{field: "spec.credential", detail: "a patch states its value, never its reference or version"}
+		case len(c.Value) == 0:
+			return storePatch{}, &fieldError{field: "spec.credential.value", detail: "a credential states its value"}
+		}
+		in, err := storeCredentials.seal(ctx, request[apiv1.Credential]{ID: rq.ID, d: rq.d, Body: apiv1.Credential{Spec: apiv1.CredentialSpec{Value: c.Value}}})
+		if err != nil {
+			return storePatch{}, err
+		}
+		out.cred = &in
+	}
+	return out, nil
+}
+
+// patchStore is PATCH /stores/{id}: the credential the step sealed written
+// as its own set writes it, then each setting the patch names written, or
+// removed for a null, at the store's scope, each judged by the settings
+// table, which refuses a bound one 409 bound_setting while a namespace names
+// the store and a change of how the store is reached 409 unproven until its
+// capability check is built (RFC 13 §5.1, §5.2). A patch that removes the
+// credential is refused 400: the credential's DELETE removes it. Its answer
+// is the store's settings as the step read them with the patch applied,
+// and its credential as reference and version.
+//
+// ponytail: a setting written at the store's scope between the step's read
+// and the commit is missing from the answer, though not from the store;
+// build the answer in the transaction once it can list a scope.
+func patchStore(ctx context.Context, rq request[storeDoc], in storePatch, tx entity.ControlPlaneTx) (apiv1.Store, [16]byte, error) {
+	scope := storeScope(rq.ID)
+	var cred *apiv1.StoreCredential
+	switch {
+	case in.cred != nil:
+		ref, _, err := storeCredentials.put(ctx, request[apiv1.Credential]{ID: rq.ID, d: rq.d}, *in.cred, tx)
+		if err != nil {
+			return apiv1.Store{}, rq.ID, err
+		}
+		cred = &apiv1.StoreCredential{Ref: ref.Ref, Version: ref.Version}
+	case rq.Body.Spec.Credential == nil:
+		// The merged spec lost the credential the store holds: the patch
+		// removed it.
+		held, err := credentialIn(tx, scope)
+		if err != nil {
+			return apiv1.Store{}, rq.ID, err
+		}
+		if held != nil {
+			return apiv1.Store{}, rq.ID, &fieldError{field: "spec.credential", detail: "removed by DELETE /api/v1/stores/{id}/credential"}
+		}
+	}
+	puts, gone := map[string]json.RawMessage{}, []string{}
+	for k, v := range in.settings {
+		if string(v) == "null" {
+			gone = append(gone, k)
+		} else {
+			puts[k] = v
+		}
+	}
+	slices.Sort(gone)
+	if err := putSettings(ctx, rq.d, tx, scope, puts); err != nil {
+		return apiv1.Store{}, rq.ID, err
+	}
+	if err := deleteSettings(ctx, rq.d, tx, scope, gone); err != nil {
+		return apiv1.Store{}, rq.ID, err
+	}
+	out := apiv1.StoreSpec{Settings: map[string]json.RawMessage{}}
+	for k, s := range in.had {
+		if k != storeCredential {
+			out.Settings[k] = s.Value
+		}
+	}
+	maps.Copy(out.Settings, puts)
+	for _, k := range gone {
+		delete(out.Settings, k)
+	}
+	out.Credential = cred
+	if c, ok := in.had[storeCredential]; ok && cred == nil {
+		var err error
+		if out.Credential, err = secretRefOf(ctx, rq.d, c); err != nil {
+			return apiv1.Store{}, rq.ID, err
+		}
+	}
+	_, gen, _, err := stores.read(tx, rq.ID, "")
+	return apiv1.Store{ID: idString(rq.ID), Generation: gen, Spec: out}, rq.ID, err
 }

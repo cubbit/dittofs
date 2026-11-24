@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"iter"
 	"maps"
 	"slices"
 	"strings"
@@ -159,4 +160,24 @@ var adapterRead = watching[apiv1.Adapter]{
 	until: changes(func(first, now apiv1.Adapter) bool {
 		return first.Generation != now.Generation
 	}),
+}
+
+// adapterList is GET /adapters: every protocol's adapter in protocol order,
+// each as its GET answers it.
+var adapterList = listing[apiv1.Adapter, apiv1.Adapter]{
+	records: func(ctx context.Context, d Deps, after []byte, _ map[string]string) iter.Seq2[apiv1.Adapter, error] {
+		return func(yield func(apiv1.Adapter, error) bool) {
+			for _, p := range protocols {
+				if p <= string(after) {
+					continue
+				}
+				a, err := adapterRead.read(ctx, d, request[none]{Sub: p})
+				if !yield(a, err) || err != nil {
+					return
+				}
+			}
+		}
+	},
+	key:  func(a apiv1.Adapter) []byte { return []byte(a.ID) },
+	item: func(a apiv1.Adapter, _ perPage) apiv1.Adapter { return a },
 }
