@@ -17,7 +17,7 @@ cherry-pick of RFC changes.
 Cited, not owned: RFC 7862 and RFC 8276 for the bytes, operation codes and status values; RFC 8
 §9.1 for what a clone does below the service.
 **Track:** C.
-**Epic 12 estimate: 8 subtasks, 18.5 man-days.**
+**Epic 12 estimate: 8 subtasks, 20 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state and members' table,
 E2's `nfsharness` and the `nfs42/` area of knfsd's captures, S0's `vfstest.Mutations`. Beyond S2,
 pieces of five epics, each named by id where a subtask takes it (§9, point 5): **E5**'s current
@@ -95,7 +95,11 @@ its call sites in the operations RFC 21 §9.3 lists; the hold a held call carrie
   ledger, row "RFC 21's (cluster) parts". Asynchronous `COPY` and its copy state: RFC 21 §9.4
   decides it is not offered.
 - `ALLOCATE` served: RFC 21 §9.3's `decision:` refuses it until a lower RFC defines a per-file
-  reservation; no row is owed.
+  reservation; no row is owed. The user guide's lines advertising v1's `ALLOCATE`
+  (`README.md`'s NFSv4.2 row, `docs/guide/nfs.md`'s NFSv4.2 rows) are E15's, at the cutover, in
+  the plan's deferral ledger, row "The user guide's NFS pages (E15)".
+- An SMB set whose name folds onto two stored xattrs that NFS made differing only in case (D7):
+  the RFC 22 implementation plan's open point 20, the case-insensitive `XattrMode`, its epic 8.
 
 ### 1.3 Names used here
 
@@ -132,7 +136,7 @@ cited by number and title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each handler on `nfsharness` against `memory.New` (kind 2), errors through `vfstest.Faults` (kind 3), a short copy through `Tear` (kind 3), calls kept in flight through `Faults.Hold` (kind 3), which reports the hold each carried and, through `Hold.Clone`, stages a wait behind a clone through the session's gate, the one-call rule from S0's `vfstest.Mutations`; T12.2's service change in `internal/vfs`'s and `contenttest`'s own suites; the budget as a pure function of its count; no other double |
 | rule 2, fuzz tests where relevant | none new | every struct this epic adds is generated and so already in E1's `FuzzCodec`, against `wire`'s second decoder; its translations (`sa_what`, `SETXATTR`'s option, a `LISTXATTRS` cookie) are total functions of one decoded integer each, held by table tests over every value (R31) rather than a target of their own |
-| rule 3, observability follows RFC 25 and RFC 20 §10 | all | no recorder in NFS code; each row named after its operation, so `core` names its span and `op` label; `adapter_reads_shortened_total` is `core`'s and counts a short `READ_PLUS` with no NFS code (R7); no label, attribute or log line carries an xattr name, a path or an owner |
+| rule 3, observability follows RFC 25 and RFC 20 §10 | all | no recorder in NFS code; each row named after its operation, so `core` names its span and `op` label; `adapter_reads_shortened_total` is `core`'s and counts a short `READ_PLUS` with no NFS code (R6, R35); no label, attribute or log line carries an xattr name, a path or an owner |
 | rule 4, profiling: leaks, allocations and contention | T12.4, T12.8 | every loopback test ends with `adaptertest.CheckLeaks`; T12.4's count on the session registry's sessions reports its mutex and block profiles under 64 writers on one session; no `READ_PLUS` gate, since RFC 20 §6.10 names `READ`, `WRITE` and `GETATTR` only |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each translation asserted on the reply bytes a client decodes, through `nfsharness` or the scripted client; the hold asserted on the context the service receives, the layer that waits on it; the copy's verifier on the `COPY` reply a client compares with its `COMMIT`'s |
 | rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover, and nothing here is listed in a `known.yaml` |
@@ -195,7 +199,7 @@ subtasks and tests can cite them.
 | R24 | `GETXATTR` and `LISTXATTRS` are `Xattrs`, `SETXATTR` `SetXattr` and `REMOVEXATTR` `RemoveXattr`, in the user namespace only, reaching the same records SMB's extended attributes reach | MUST | RFC 21 §9.3, App. C, App. D | T12.6 |
 | R25 | `SETXATTR`'s option maps to `XattrMode`'s `Create`, `Replace` or `Either`; any other value is a named refusal, never a default | MUST | RFC 17 §3.0 (`XattrMode`); RFC 21 §12 (N26) | T12.6 |
 | R26 | A `LISTXATTRS`'s `lxa_maxcount` is not clamped to the room: a compound whose `LISTXATTRS`, with the operations around it, would pass the cap is refused | MUST NOT | RFC 21 §2.3 (`LISTXATTRS` decision) | T12.6 |
-| R27 | A `GETXATTR`, `SETXATTR` of `Replace` or `REMOVEXATTR` of a name the file does not hold, and a `SETXATTR` whose value passes the service's bound, are answered the statuses RFC 8276 defines for each, not `NFS4ERR_NOENT` or `NFS4ERR_INVAL` (pending the user's answer, §9 point 2) | MUST | RFC 21 App. C; RFC 17 §3.1; RFC 8276, cited | T12.6 |
+| R27 | A `GETXATTR`, `SETXATTR` of `Replace` or `REMOVEXATTR` of a name the file does not hold, and a `SETXATTR` whose value passes the service's bound, are answered the statuses RFC 8276 defines for each, not `NFS4ERR_NOENT` or `NFS4ERR_INVAL`; a name the service refuses (empty, holding a NUL, past the name length limit) and a file's xattr past its count bound are each answered their own status, never `NFS4ERR_XATTR2BIG` (pending the user's answer, §9 point 2) | MUST | RFC 21 App. C; RFC 17 §3.1; RFC 13 (xattr bounds); RFC 8276, cited | T12.6 |
 
 **Rows, versions and roles**
 
@@ -277,49 +281,79 @@ subtasks and tests can cite them.
   (from memory).
 - **D5. A `READ_PLUS` answers one segment.** From its offset it asks `Seek` for a hole: data
   before it is one data segment, read with one `Read` into a segment `Attach` lends, its end of
-  file `Read`'s; a hole at the offset is one hole segment up to `Seek`'s next data, not at end of
-  file, so a hole reaching the end is confirmed by the client's next `READ_PLUS`. A `Seek` past the
+  file `Read`'s; a hole at the offset is one hole segment up to `Seek`'s next data, clamped to the
+  count, not at end of file, so a hole reaching the end is confirmed by the client's next
+  `READ_PLUS`. A `Seek` past the
   end (`ErrPastEnd`) is answered end of file with no segment, as RFC 7862 answers a read there
   (from memory). The `Bound` hook is E5's `READ` hook with the count lowered by one segment's
   header, so the clamp and the session budget are one function. A `ponytail:` marker names the
   ceiling: a file of many small holes reads one segment a round trip; upgrade to a segment list
-  filling the count when a benchmark on sparse files shows the round trips.
+  filling the count when T12.5's benchmark, a sparse file read whole by `READ_PLUS` against
+  `READ`, shows `READ_PLUS` taking more round trips per byte than `READ`. Linux's NFSv4.2 client
+  sends `READ_PLUS` for ordinary reads (from memory), so the ceiling is met in normal use.
   Prior art: knfsd's `READ_PLUS` encodes a data or hole segment per extent up to the count (from
   memory).
 - **D6. A `LISTXATTRS` cookie is the index of the next name** in `Xattrs`' name order, 0 to start;
-  one past the list is `NFS4ERR_BAD_COOKIE` and a first name that does not fit `lxa_maxcount`
-  `NFS4ERR_TOOSMALL` (RFC 8276, from memory). A `ponytail:` marker names the ceiling: a set or
-  removal between two pages can repeat or skip one name; RFC 13 bounds a file at 1024 xattrs, so
-  a listing rarely takes a second page. Upgrade to a cookie of the last name's digest when a
+  a cookie at or past the list's end answers an empty page at end of list, never
+  `NFS4ERR_BAD_COOKIE`, since a removal between pages moves a valid cookie there and RFC 8276
+  §8.4.3.4 asks the server to avoid failing a listing; a first name that does not fit
+  `lxa_maxcount` is `NFS4ERR_TOOSMALL` (RFC 8276 §8.4.3.3). The order is the service's: `Xattrs`
+  answers names in byte order, a case T12.6 adds to `vfstest/suite`. A `ponytail:` marker names
+  the ceiling: a set or removal between two pages can repeat or skip one name, or end the listing
+  early; RFC 13 bounds a file at 1024 xattrs, so a listing rarely takes a second page. Upgrade to a cookie of the last name's digest when a
   client is seen paging a list that changes. Prior art: knfsd's cookie counts the names already
   returned (from memory).
-- **D7. An xattr's wire name is its stored name (pending the user's answer, §9 point 4).** RFC 8276
-  names carry no namespace prefix and Linux maps them to `user.*` on the client (from memory);
-  SMB's extended attributes carry none either. So the name passes unchanged to `Xattrs`,
-  `SetXattr` and `RemoveXattr`, and every stored xattr is listed. No marker: RFC 21 §9.3 states
-  the rule, and changing the stored form later would change what SMB reads too. Prior art: knfsd
+- **D7. An xattr's wire name is its stored name, compared byte for byte (pending the user's
+  answer, §9 point 4).** RFC 8276 names carry no namespace prefix and Linux maps them to `user.*`
+  on the client (from memory); SMB's extended attributes carry none either. So the name passes
+  unchanged to `Xattrs`, `SetXattr` and `RemoveXattr`, and every stored xattr is listed. NFS
+  names are case-sensitive: RFC 8276 §8.1 says the server "MUST NOT interpret the contents of
+  xattrkey4", and the service compares names byte for byte, so `foo` and `FOO` set over NFS are
+  two records, and SMB, which folds EA names (RFC 22 §9.5), lists both. What an SMB set folding
+  onto both does is the SMB side's (§1.2). A `decision:` marker at `setxattr.go` names the rule,
+  its ceiling, that a share both protocols write can hold two EAs Windows treats as one, and that
+  under it a future security-namespace label (RFC 21 §8.2) would be listed and writable over NFS
+  like any other name; overturned if RFC 22's fold moves into the service for every caller. Prior art: knfsd
   prefixes `user.` before calling the local filesystem (from memory), which has other namespaces;
   RFC 7's store has none.
 - **D8. Xattr refusals by operation (pending the user's answer, §9 point 2).** RFC 21 §11.5 maps
   `ErrNotFound` to `NFS4ERR_NOENT` and `ErrInvalid` to `NFS4ERR_INVAL`, while RFC 8276 answers an
   absent name `NFS4ERR_NOXATTR` and a value too large `NFS4ERR_XATTR2BIG` (from memory). This
   epic adds rows naming the xattr operations that win there: `ErrNotFound` from `SetXattr` or
-  `RemoveXattr` is `NFS4ERR_NOXATTR`, `ErrInvalid` from `SetXattr` `NFS4ERR_XATTR2BIG`, and a
-  `GETXATTR` of a name `Xattrs` does not list `NFS4ERR_NOXATTR`, answered by the handler, which
-  found it absent. RFC 21 §11.5's rows gain these cells by amendment; until agreed, a `decision:`
-  marker at the rows names the departure.
+  `RemoveXattr` is `NFS4ERR_NOXATTR`, and a `GETXATTR` of a name `Xattrs` does not list
+  `NFS4ERR_NOXATTR`, answered by the handler, which found it absent. `ErrInvalid` names no cause
+  (E5's D14), so no RFC yet says which `SetXattr` refusal is a value too large: the service
+  validates no xattr name and applies no bound today (`internal/vfs`'s `SetXattr`). Batch two's
+  RFC 17 pull request (§9 points 2 and 7) has `SetXattr` refuse an empty name or one holding
+  a NUL (`ErrInvalid`) and one past the share's name length limit (`ErrNameTooLong`), as RFC 7
+  §3.2 refuses an entry name, a
+  value past RFC 13's bound `ErrInvalid` with cause `TooBig`, and a file's xattr past RFC 13's
+  count `ErrNoSpace`; T12.6 builds that in `internal/vfs`. The rows are then: cause `TooBig`
+  `NFS4ERR_XATTR2BIG`, any other `ErrInvalid` `NFS4ERR_INVAL`, `ErrNameTooLong`
+  `NFS4ERR_NAMETOOLONG` and `ErrNoSpace` `NFS4ERR_NOSPC`, all in RFC 8276's SETXATTR error list.
+  RFC 21 §11.5's rows gain these cells by amendment; until agreed, a `decision:` marker at the
+  rows names the departure.
 - **D9. `GETXATTR`'s reply bound is 64 KiB.** A member's bound is fixed before it runs, and the
   value's size is not known before it is read; RFC 13's xattr value bound defaults to 64 KiB,
   Linux's own. A `decision:` marker names the ceiling: a share whose bound is raised past 64 KiB
   answers a larger value `NFS4ERR_XATTR2BIG` rather than passing the reservation. Overturned by a
-  bound read from the share's settings when RFC 13's bound is raised. Prior art: Linux's
-  `XATTR_SIZE_MAX` (from memory).
+  bound read from the share's settings when RFC 13's bound is raised. RFC 13's 64 KiB is one byte
+  past what SMB's `FILE_FULL_EA_INFORMATION` can carry (a 16-bit length, 65535): a value of
+  exactly 64 KiB set over NFS is one SMB cannot list, which §9 point 4 raises for RFC 13 and the
+  RFC 22 plan, not changed here. Prior art: Linux's `XATTR_SIZE_MAX` (from memory).
 - **D10. The not-supported rows share E5's one handler.** `ALLOCATE`, `COPY_NOTIFY`, `IO_ADVISE`,
   `WRITE_SAME`, `LAYOUTERROR` and `LAYOUTSTATS` point at E5's not-supported handler (E5's D13); an
   inter-server `COPY`, one whose `ca_source_server` names any server, is refused by `COPY`'s own
   handler before any call. `OFFLOAD_STATUS` and `OFFLOAD_CANCEL` share one handler answering
   `NFS4ERR_BAD_STATEID`. Prior art: knfsd's operation table points unsupported operations at one
   stub (from memory). No marker.
+- **D11. `GETXATTR` and `LISTXATTRS` read every value.** RFC 17 §3.1 offers only `Xattrs`, which
+  answers each name with its value, so one `GETXATTR` of a 4-byte value or one `LISTXATTRS` page
+  reads every value the file holds, up to 64 MiB at RFC 13's bounds (1024 values of 64 KiB), and a
+  compound can repeat it. A `ponytail:` marker at `getxattr.go` names that ceiling; upgrade to an
+  RFC 17 read by name and a names-only listing when a profile of an xattr-heavy workload shows
+  `Xattrs`' bytes, or a share raises RFC 13's bounds. Prior art: Linux reads one xattr by name
+  (`getxattr(2)`) and lists names without values (`listxattr(2)`).
 
 ## 5. Target tree
 
@@ -332,7 +366,7 @@ internal/adapter/nfs/
     hold.go                          T12.4  the helper putting the session's gate on each listed call (D3)
     write.go, setattr.go, remove.go  T12.4  E5's handlers, taking a place
     close.go                         T12.4  E9's handler, taking a place
-    read_plus.go                     T12.5
+    read_plus.go                     T12.5  and its benchmark beside READ (D5's trigger)
     getxattr.go, setxattr.go, listxattrs.go, removexattr.go   T12.6
     offload.go                       T12.7  OFFLOAD_STATUS, OFFLOAD_CANCEL
     table.go                         T12.1, T12.3, T12.5 to T12.7  the rows, minor version 2; ALLOCATE's row with RFC 21 §9.3's decision
@@ -351,10 +385,12 @@ pkg/vfs/
   vfstest/faults.go                  T12.1  Seek's eof; T12.3  Tear on OpCopy: the count cut short;
                                      T12.4  Hold.Bound, and Hold.Clone: a held call waiting as behind a clone, through the gate
   vfstest/mutations.go, null.go      T12.1  Seek's eof
+  vfstest/suite/suite.go             T12.6  Xattrs answering names in byte order
 internal/vfs/
   data.go                            T12.1  Seek answering eof under its admission lock
   hold.go                            T12.4  held asking the gate at its first wait
   copy.go, filesystem.go             T12.2  the verifier through Copy
+  attrs.go                           T12.6  SetXattr's name and bound refusals (D8)
   contenttest/memory.go, faults.go, suite.go   T12.2
 pkg/engine/
   clone.go                           T12.2  Copy samples the verifier
@@ -396,13 +432,15 @@ pkg/engine/
   table (catches a default for an unknown one, R31); `ErrLocked` and `ErrDelay` of `DelayClone`
   injected on `Deallocate` through `vfstest.Faults`, `NFS4ERR_LOCKED` and `NFS4ERR_DELAY` (catch
   `DEALLOCATE` missing from the I/O rows); one mutating call from `Mutations` (the harness's
-  check); each row's `Role` and minor versions read from the table (R28, R29); the golden files
-  (R30). No test double beyond `vfstest.Faults`.
+  check); as bob on alice's 0600 file, `SEEK` and `DEALLOCATE` `NFS4ERR_ACCESS` with nothing
+  changed, on `memory.New` with two users (catches the wrong handle or `Call` passed, which an
+  injected `ErrAccess` cannot); each row's `Role` and minor versions read from the table (R28,
+  R29); the golden files (R30). No test double beyond `vfstest.Faults`.
 - **Rules:** rule 13: a hole and the end of file only from `Seek`.
 
 ### T12.2 A copy's write verifier from the service
 
-**Subtask T12.2 estimate: 1.75 man-days.**
+**Subtask T12.2 estimate: 2 man-days.**
 
 - **Track:** C. **Depends on:** S2. Pending the user's answer to §9, point 1: if the answer is
   RFC 21's amendment instead, this subtask is dropped and T12.3 answers as that amendment says.
@@ -411,14 +449,19 @@ pkg/engine/
   interface's `Copy` in `internal/vfs/filesystem.go` returning `(int64, vfs.Verifier, error)`,
   sampled before the first chunk is staged as `Write` samples its own (D1), in `pkg/engine`'s
   `Copy`, `contenttest.Memory` and `contenttest.FaultContent`; `internal/vfs`'s `Copy` passing it
-  through. The pull request carries the RFC 17 §3.0 and RFC 8 §12.1 text. Consumed by T12.3, and by
+  through. `contenttest.Subject` gains `PauseCopy`, beside `Lose`: a hook that holds a copy after
+  its first chunk is staged until released, set per instance, from `export_test.go` for the
+  engine and on `Memory` for itself; nil skips the case, naming it. The pull request carries the RFC 17 §3.0 and RFC 8 §12.1 text. Consumed by T12.3, and by
   RFC 22's copychunk, which ignores it.
 - **Acceptance criteria:**
-  - A copy's verifier equals a `Write`'s before any loss, and a `Commit` after a loss staged
-    between the copy and the `Commit` answers another.
+  - A copy's verifier equals a `Write`'s before any loss, and a copy held after its first chunk
+    is staged, then a loss, then the copy finishing and a `Commit`, answers a verifier the
+    `Commit`'s differs from.
 - **Tests:** in `contenttest`'s conformance suite, which the engine and `Memory` both pass: a
-  copy then a loss then a `Commit`, the verifiers differing (catches a verifier sampled after the
-  sync, or a constant). The service passing it through is asserted at its consumer, T12.3's `COPY`
+  copy held through `PauseCopy` after its first chunk is staged, a loss, then the copy finishing
+  and a `Commit`, the copy's verifier differing from the `Commit`'s (catches a verifier sampled
+  at the copy's end, or a constant); with no loss, the two equal (catches a verifier drawn fresh
+  per copy). The service passing it through is asserted at its consumer, T12.3's `COPY`
   and `COMMIT` over `nfsharness`, not in `internal/vfs` (rule 5). No test double: the conformance
   suite holds `Memory` to the engine.
 - **Rules:** rule 11: `Verifier` exported for both adapters; rule 9: D1's `decision:` at the
@@ -426,7 +469,7 @@ pkg/engine/
 
 ### T12.3 `COPY` and `CLONE`
 
-**Subtask T12.3 estimate: 3 man-days.**
+**Subtask T12.3 estimate: 3.25 man-days.**
 
 - **Track:** C. **Depends on:** T12.2, T5.1, T5.5, T5.8.
 - **Covers:** R8, R9, R10, R11, R12, R13, R15, R16, R17, R18, R28, R29, R30, R31.
@@ -467,6 +510,10 @@ pkg/engine/
   (catches a verifier that is not the one `COMMIT` answers, the service dropping `Verifier` on the
   way included, R12, N23); a `COPY`
   with no saved filehandle `NFS4ERR_NOFILEHANDLE`; `Tear`'s own test, a copy cut to n answering n.
+  On `memory.New` with two users, as a table: bob's `COPY` and `CLONE` from alice's 0600 file,
+  and bob's `COPY` into alice's 0644 file, each `NFS4ERR_ACCESS` with both files unchanged
+  (catches the current filehandle passed as the source, or the wrong `Call`, which an injected
+  `ErrAccess` cannot).
   The one-call rule from `Mutations`, `GetAttr` making no change. No test double beyond
   `vfstest.Faults` and its `Tear`.
 - **Rules:** rule 9: D2's marker, RFC 21 §9.4's `decision:`; rule 11: `Tear` on `OpCopy` for
@@ -533,7 +580,7 @@ pkg/engine/
 
 ### T12.5 `READ_PLUS`
 
-**Subtask T12.5 estimate: 2.5 man-days.**
+**Subtask T12.5 estimate: 2.75 man-days.**
 
 - **Track:** C. **Depends on:** T12.1, T5.5, T5.8, T4.2, T8.7.
 - **Covers:** R4, R5, R6, R7, R28, R29, R30.
@@ -544,7 +591,8 @@ pkg/engine/
   from RFC 7862, since E2's captures hold no `READ_PLUS`. Consumed by T12.8.
 - **Acceptance criteria:**
   - A file of data alone answers one data segment and end of file.
-  - From inside a hole followed by data, one hole segment to the data, not at end of file.
+  - From inside a hole followed by data, one hole segment to the data, not at end of file; with
+    the data past the count, the segment ends at the count.
   - From inside data followed by a hole, one data segment up to the hole, not at end of file.
   - From a trailing hole, one hole segment to the size; the next `READ_PLUS`, from the size,
     answers end of file with no segment.
@@ -558,22 +606,30 @@ pkg/engine/
   from `Seek`, R5, an end of file answered inside a file, R5); the hook as a function of room and
   state (catches a count past the room or a zero count, R6); `Read` torn through `Tear` with each
   of the four errors (catches zero padding or a lost short read, R7); the data segment the very
-  buffer `Read` filled (catches a copy); `Role` and minor versions from the table (R28, R29). No
-  test double beyond `vfstest.Faults` and its `Tear`.
-- **Rules:** rule 9: D5's marker.
+  buffer `Read` filled (catches a copy); as bob on alice's 0600 file, `NFS4ERR_ACCESS` on
+  `memory.New` with two users; `Role` and minor versions from the table (R28, R29). D5's
+  trigger as a benchmark on `nfsharness`: a 64 MiB file of 64 KiB data runs and 4 KiB holes read
+  whole by `READ_PLUS` and by `READ`, reporting round trips per MiB for each. No test double
+  beyond `vfstest.Faults` and its `Tear`.
+- **Rules:** rule 9: D5's marker and its trigger's benchmark.
 
 ### T12.6 Extended attributes
 
-**Subtask T12.6 estimate: 3 man-days.**
+**Subtask T12.6 estimate: 3.75 man-days.**
 
-- **Track:** C. **Depends on:** T5.1, T5.6.
+- **Track:** C. **Depends on:** T5.1, T5.6. Also batch two's RFC 17 pull request, for D8's `SetXattr`
+  refusals (§9 point 2).
 - **Covers:** R24, R25, R26, R27, R28, R29, R30, R31.
-- **Deliverables:** `getxattr.go`: one `Xattrs`, the named value or `NFS4ERR_NOXATTR` (D8), its
-  bound 64 KiB with D9's marker; `setxattr.go`: one `SetXattr` on `vfs.Target{H: current}`, the
+- **Deliverables:** `internal/vfs`'s `SetXattr` refusing a name, a value past RFC 13's bound and
+  a file's xattr past its count as D8 has them, once batch two's RFC 17 pull request settles them
+  (§9 point 2), with its cases in `internal/vfs`'s own tests; `vfstest/suite`'s case of `Xattrs`
+  answering names in byte order (D6). `getxattr.go`: one `Xattrs`, the named value or
+  `NFS4ERR_NOXATTR` (D8), its bound 64 KiB with D9's marker, D11's marker; `setxattr.go`: one `SetXattr` on `vfs.Target{H: current}`, the
   option through a total function into `XattrMode`, an unknown one `NFS4ERR_INVAL` with no call,
-  `change_info4` from the `WCC` through E5's T5.6; `listxattrs.go`: one `Xattrs`, D6's cookie, the
+  D7's `decision:`, `change_info4` from the file's own `WCC`, the one `SetXattr` answers, through
+  E5's T5.6 conversion; `listxattrs.go`: one `Xattrs`, D6's cookie, the
   names that fit `lxa_maxcount`, end of list, RFC 21 §2.3's `decision:` at its unclamped hook;
-  `removexattr.go`: one `RemoveXattr`, `change_info4`. Names passed unchanged (D7). Rows at minor
+  `removexattr.go`: one `RemoveXattr`, `change_info4` from its file's `WCC` as `SETXATTR`'s. Names passed unchanged (D7). Rows at minor
   version 2, drain role none; D8's rows in `errors.go`. Golden files from knfsd's `nfs42/` xattr
   captures. Consumed by T12.8.
 - **Acceptance criteria:**
@@ -581,19 +637,28 @@ pkg/engine/
     `Replace` of an absent name `NFS4ERR_NOXATTR`; `Either` sets both ways.
   - An xattr set through `SetXattr` as an SMB call is read by `GETXATTR` under the same name.
   - `LISTXATTRS` of 10 names with a `lxa_maxcount` holding 4 answers 4 and a cookie from which the
-    next call answers the next names, the last page at end of list; a cookie past the list is
-    `NFS4ERR_BAD_COOKIE`; a `lxa_maxcount` too small for the first name `NFS4ERR_TOOSMALL`.
+    next call answers the next names, the last page at end of list; a cookie at or past the
+    list's end, a removal between pages included, answers an empty page at end of list; a
+    `lxa_maxcount` too small for the first name `NFS4ERR_TOOSMALL`.
   - `REMOVEXATTR` of an absent name is `NFS4ERR_NOXATTR`; of a present one, its `change_info4`
     moves.
   - A value past the share's bound is `NFS4ERR_XATTR2BIG` and nothing is stored.
+  - `foo` and `FOO` set over NFS are two xattrs, each `GETXATTR` answering its own value.
 - **Tests:** on `nfsharness` against `memory.New`: each criterion, reply bytes compared (catch an
   absent name answered `NFS4ERR_NOENT`, R27, a mode mapped wrongly, R25, a cookie that repeats or
   skips on a static list, R31); the SMB case through the service with an SMB `Call` (catches a
   name prefixed or stripped, R24); a `COMPOUND` of `LISTXATTRS` with a 1 MiB `lxa_maxcount` and a
   `GETATTR` refused before it runs (catches the count clamped, R26); the option as a table over
-  every value (R31); `ErrAccess` on `SetXattr` through `vfstest.Faults`, `NFS4ERR_ACCESS`. No test
+  every value (R31); `ErrAccess` on `SetXattr` through `vfstest.Faults`, `NFS4ERR_ACCESS`; a
+  table of `SETXATTR` inputs on `memory.New`, an empty name, one holding a NUL, one past the
+  name length limit, a value one byte past the bound and the file's 1025th xattr, answered
+  `NFS4ERR_INVAL`, `NFS4ERR_INVAL`, `NFS4ERR_NAMETOOLONG`, `NFS4ERR_XATTR2BIG` and
+  `NFS4ERR_NOSPC`, nothing stored (catches every `ErrInvalid` answered `XATTR2BIG`, R27); `foo`
+  then `FOO`, and the SMB case listing both through an SMB `Call` (catches a fold in the NFS
+  path, D7); as bob on alice's 0600 file, each of the four operations `NFS4ERR_ACCESS` and
+  nothing changed, on `memory.New` with two users (catches the wrong handle or `Call`). No test
   double beyond `vfstest.Faults`.
-- **Rules:** rule 9: D6's, D8's and D9's markers, RFC 21 §2.3's `decision:`.
+- **Rules:** rule 9: D6's, D7's, D8's, D9's and D11's markers, RFC 21 §2.3's `decision:`.
 
 ### T12.7 The not-supported set and the offload operations
 
@@ -695,9 +760,9 @@ on `memory.New` through `nfsharness`; after T12.8, E16 can rerun the rows on the
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T12.1 | 2.25 | E5's T5.1 and T5.5, batch two's RFC 17 pull request | `SEEK` and `DEALLOCATE`, the hole operations the rest builds on, with `Seek`'s end of file |
-| 2 | T12.2 | 1.75 | the user's answer on §9, point 1 | a service and engine change, reviewed by their owners apart from the adapter |
-| 3 | T12.3, T12.4 | 6 | PRs 1 and 2, E5's T5.6 and T5.8, E8's T8.4 and T8.5, E9's T9.6 | copy and clone, then the budget that bounds what waits behind them |
-| 4 | T12.5, T12.6, T12.7 | 6 | PR 1, E4's T4.2, E8's T8.7 | `READ_PLUS`, the xattrs and the not-supported rows: the rest of the operation set |
+| 2 | T12.2 | 2 | the user's answer on §9, point 1 | a service and engine change, reviewed by their owners apart from the adapter |
+| 3 | T12.3, T12.4 | 6.25 | PRs 1 and 2, E5's T5.6 and T5.8, E8's T8.4 and T8.5, E9's T9.6 | copy and clone, then the budget that bounds what waits behind them |
+| 4 | T12.5, T12.6, T12.7 | 7 | PR 1, batch two's RFC 17 pull request, E4's T4.2, E8's T8.7 | `READ_PLUS`, the xattrs and the not-supported rows: the rest of the operation set |
 | 5 | T12.8 | 2.5 | PRs 3 and 4, S4, E3's T3.2, E7's T7.1 | every row over loopback |
 
 A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can be open at once,
@@ -722,7 +787,12 @@ and PR 4 beside PR 3.
    (a) as D8, rows naming the xattr operations, with an RFC 21 §11.5 amendment adding the cells,
    carried by batch two's one RFC 21 pull request, opened with E8's document pull request; (b) keep §11.5 as written, so Linux's `getfattr` of an
    absent name reads `ENOENT` rather than `ENODATA` (from memory), which breaks tools that test for
-   `ENODATA`. (a) is recommended.
+   `ENODATA`. (a) is recommended. Either way, no RFC says which names `SetXattr` refuses or what
+   it answers past RFC 13's value and count bounds, and the service checks none of them, so (a)
+   also carries D8's RFC 17 text in batch two's RFC 17 pull request (point 7): the name refused
+   as RFC 7 §3.2 refuses an entry name, a value too large `ErrInvalid` with cause `TooBig`, the
+   1025th xattr `ErrNoSpace`; 0.5 man-days in T12.6. Without it, `ErrInvalid` stays causeless and
+   T12.6 answers it `NFS4ERR_INVAL` for every cause.
 3. **The running-clone steps on the composed node, pending the user's answer; this document's
    pull request carries the plan's edit for (a)**, in its Epic 12 and Epic 16 **Done when** and
    §7's N22 row. The plan names RFC 21 §13's "§9.3 copy and
@@ -741,7 +811,15 @@ and PR 4 beside PR 3.
    stores its EA name, so `user.foo` on a Linux client and `foo` over SMB are one record; (b) a
    `user.` prefix added by the adapter, leaving room for other namespaces in the store, so SMB
    would have to add the same prefix, an RFC 22 change. (a) is recommended: RFC 7 §2.7's store
-   holds no namespace, and RFC 21 §8.2 serves no other.
+   holds no namespace, and RFC 21 §8.2 serves no other. Under (a), case: RFC 22 §9.5 folds EA
+   names on SMB while RFC 8276 §8.1 forbids the server to interpret an xattr name, so NFS stays
+   byte for byte (D7) and `foo` and `FOO` can be two records SMB lists both of. The other options
+   were a `SetXattr` refusing (`ErrExist`) a name that folds onto another stored one, which
+   interprets the name and fails a Linux `setfattr` a local filesystem accepts, or the service
+   folding for every caller, as v1's resolver did, which rewrites what an NFS client stored. What
+   an SMB set folding onto two records does is for the RFC 22 plan's open point 20, its epic 8.
+   That plan should also note that RFC 13's 64 KiB value bound is one byte past what SMB's 16-bit
+   EA length carries (D9).
 5. **What this epic takes from other epics, settled with their documents.** E8: T8.4's
    `protocol.Session`, reached from `r.Call.Session` (set by T8.5's `Route`) through `Sessions.Get`,
    holding its granted fore-channel slot count `Fore.Slots`, on which T12.4 adds its count and
@@ -753,17 +831,23 @@ and PR 4 beside PR 3.
    `ErrLocked` and `ErrShareViolation`, to which T12.1, T12.3 and T12.5 add their operations. E4:
    T4.2's `Attach`, for `READ_PLUS`'s data inside an array of unions; if the generator's segment
    field does not reach a union arm, T12.5 adds that case to the generator, about 0.5 man-days.
-6. **The estimate against the plan's 13 man-days.** 18.5: the plan's figure had no service change
+6. **The estimate against the plan's 13 man-days.** 18.5 at first: the plan's figure had no service change
    for the verifier (T12.2, 1.75), for `Seek`'s end of file (in T12.1, 0.25) or for the wait gate
    (in T12.4, 0.5), counted no edit of other epics' handlers for the budget, and priced the xattrs
    and the not-supported rows lightly; the loopback rows are as the plan had them. With §9 point
-   1's (b), the figure is 16.75; with point 8's (b) as well, 16.25.
+   1's (b), the figure is 16.75; with point 8's (b) as well, 16.25. 20 after the review that
+   added the paused copy to the verifier's test (T12.2, 0.25), two-user refusal tests (T12.3 and
+   T12.6, 0.25 each), the `READ_PLUS` benchmark D5's trigger reads (T12.5, 0.25) and the service's
+   xattr name and bound refusals (T12.6, 0.5): with point 1's (b) 18, with point 8's (b) as well
+   17.5, with point 2's (b) 0.5 less again. The plan's Epic 12 row still reads 13; its programme
+   totals reconcile when the breakdown pull requests merge, and this document leaves them alone.
 7. **Which pull request carries which RFC amendment.** Batch two's one RFC 17 pull request, with
-   E9's D1, E10's Q1 and E11's Q1, opened before E9's PR 1, carries three of this epic's: point 1's
+   E9's D1, E10's Q1 and E11's Q1, opened before E9's PR 1, carries four of this epic's: point 1's
    (a), RFC 17 §3.0's `CopyResult` and `Copy` with RFC 8 §12.1, for T12.2; `Seek` answering
    `(off int64, eof bool, err error)` in RFC 17 §3.1 and §5.2 (D4), for T12.1, pending the user's
    answer, since the alternative, a `Read` of no byte after `Seek` in the handler, is the sequence
-   rule 13 forbids; and point 8's (a), the wait gate in RFC 17 §5.9, for T12.4. Each subtask waits
+   rule 13 forbids; point 8's (a), the wait gate in RFC 17 §5.9, for T12.4; and point 2's
+   `SetXattr` refusals (D8), for T12.6. Each subtask waits
    for it. Point 2's §11.5 cells, and point 1's and point 8's §9.3 text if (b) is chosen, go in
    batch two's one RFC 21 pull request. Point 3's edit is to the RFC 21 implementation plan, not
    an RFC.
@@ -777,3 +861,8 @@ and PR 4 beside PR 3.
    `NFS4ERR_DELAY` at once (on 16 slots, a fifth write while 4 others are in flight), and every
    `CLOSE` counted where RFC 21 names the last. (a) is recommended: it is the rule RFC 21 states,
    and the service still counts nothing.
+9. **Wire offsets past `int64`.** An NFSv4 offset or count is a `uint64`, and one of 2⁶³ or more
+   turns negative as an `int64` extent (D2's `max(size − offset, 0)` among them). No epic states
+   the conversion rule, and it spans E1's codec and E4's and E5's I/O as much as this epic's
+   operations, so it is left to the plan as an unowned follow-up rather than settled here; this
+   epic's handlers apply whatever rule that settles, with no rule of their own.
