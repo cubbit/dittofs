@@ -4,6 +4,7 @@ package conformance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -110,6 +111,12 @@ func TestModel_RepackHeavyDraws(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := model.RunDataPath(ctx, tgt, steps); err != nil {
+		// A divergence pays the second run the shrink needs — covered by no
+		// deadline, for its steps answer in seconds — while the deadline keeps
+		// a draw that never finishes failing this test.
+		if errors.Is(err, model.ErrDiverged) {
+			model.CheckDataPath(t, "repack-heavy-seed-3.txt", steps, open, "drawn from seed 3, 200 steps")
+		}
 		t.Fatalf("the 200-step heavy repack draw: %v", err)
 	}
 }
