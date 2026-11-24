@@ -152,6 +152,10 @@ func (n *Node) OnApply(applying func(kvstore.Counters)) { n.rec.applying = apply
 // is set on the node's clock. Call it before Start.
 func (n *Node) OnReconcileWait(waiting func()) { n.rec.waiting = waiting }
 
+// OnReconcilePass has reconcile's loop call passing once as each pass
+// starts, before the pass reads anything. Call it before Start.
+func (n *Node) OnReconcilePass(passing func()) { n.rec.passing = passing }
+
 // OnIdentityApply has the node call handing with each State it hands
 // identity, before identity's Apply. Call it before Start.
 func (n *Node) OnIdentityApply(handing func(iidentity.State)) { n.rec.handing = handing }
