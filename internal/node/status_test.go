@@ -36,8 +36,17 @@ type statusTurn struct {
 // returns. Call it before Start.
 func watchStatus(h *nodetest.Harness) <-chan statusTurn {
 	ch := make(chan statusTurn, 1024)
-	h.Node().OnStatus(func(s entity.NodeStatus, wrote bool) { ch <- statusTurn{s, wrote} })
+	h.Node().OnStatus(func(s entity.NodeStatus, wrote bool) { offer(ch, statusTurn{s, wrote}) })
 	return ch
+}
+
+// offer delivers tr on ch unless ch is full, so a status writer whose turns
+// no test reads any more is never blocked, and Stop never waits on it.
+func offer(ch chan<- statusTurn, tr statusTurn) {
+	select {
+	case ch <- tr:
+	default:
+	}
 }
 
 // awaitTurn waits for the next status turn.
@@ -426,10 +435,14 @@ func awaitWait(t *testing.T, waited <-chan struct{}, after string) {
 // status once the lag passes 5 s, not before; once the pass goes on, both
 // clear and the position series reaches the counter.
 func TestStatusRaisesBehindOnAFrozenApply(t *testing.T) {
+	// Only a pass that read past the settings counter as it stood before
+	// the change is held: one a store watch starts before the change
+	// commits goes on with the old counters.
 	var frozen atomic.Bool
+	var past uint64
 	reached, release := make(chan kvstore.Counters, 1), make(chan struct{})
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewPausing(func(c kvstore.Counters) {
-		if frozen.Load() {
+		if frozen.Load() && c.Settings > past {
 			reached <- c
 			<-release
 		}
@@ -444,6 +457,7 @@ func TestStatusRaisesBehindOnAFrozenApply(t *testing.T) {
 	awaitTurn(t, ch)
 	before := h.Node().Positions().Settings
 
+	past = counters(t, h).Settings
 	frozen.Store(true)
 	configure(t, h, storeA)
 	want := counters(t, h).Settings
