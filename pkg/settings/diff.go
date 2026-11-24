@@ -222,7 +222,9 @@ func changes(sec *Section, scope entity.SettingScope, thing string, v values) []
 	var out []Change
 
 	for _, f := range sec.fields {
-		name := f.key[len(sec.prefix)+1:]
+		// The field's json name is what the value's object holds it under;
+		// a selfkey section's key is the prefix, which has no suffix to cut.
+		name := f.name
 
 		if !every && bytes.Equal(prev[name], cur[name]) {
 			continue

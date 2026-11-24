@@ -33,7 +33,7 @@ There are **two kinds of account**, and #1528 only removes one of them:
 |---|---|---|
 | Who | The **one native DittoFS admin** | AD users (alice, bob, Administrator) |
 | Auth | Local password → `dfsctl login` / dashboard | Kerberos ticket from the domain |
-| Created how | Auto-provisioned at first server start (`DITTOFS_ADMIN_INITIAL_PASSWORD`) | **Never created in DittoFS** |
+| Created how | Created by `dfs init`, which takes its password from `--admin-password-file` or `--admin-password-env` | **Never created in DittoFS** |
 | Used for | Configure LDAP + create grants (once) | Mount shares |
 
 So the workflow is: **sign in once as the native admin to wire up LDAP and
@@ -112,10 +112,11 @@ kerberos:
   dns_domain: "cubbit.local"
 ```
 
-Start the server (the native admin password is provisioned on first start):
+Initialise the node (this creates the native admin, with the password read from a file)
+and start the server:
 
 ```powershell
-$env:DITTOFS_ADMIN_INITIAL_PASSWORD = "<choose-a-strong-admin-password>"
+dfs init --config C:\dittofs\config.yaml --admin-password-file C:\dittofs\admin-password.txt
 dfs start --config C:\dittofs\config.yaml
 ```
 

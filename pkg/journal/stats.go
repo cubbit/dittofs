@@ -51,9 +51,11 @@ func (j *Journal) Stats() Stats {
 
 // Losses returns the journal's published loss events, oldest first, and is
 // the read that takes them away: the drain or poll that consumes them marks
-// them served, so an in-process reopen of the journal publishes again only
-// the losses no genuine read reached — the losses found at open its ring
-// re-places, exactly RFC 1 section 3.8's restart clause inside one process.
+// them served, so an in-process reopen of the journal publishes again the
+// losses no genuine read reached — the losses found at open its ring
+// re-places, RFC 1 section 3.8's stance inside one process — except that a
+// read after a gap of overwritten events can leave an earlier read's
+// events to be reported again.
 // Stats reports the same events as a figure and marks nothing served, for
 // its callers — the metrics export, an engine's startup reads — are not the
 // reader the losses belong to. After Close it answers nil, as Stats answers

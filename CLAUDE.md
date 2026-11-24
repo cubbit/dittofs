@@ -92,7 +92,7 @@ go run ./cmd/gendocs
 go run ./cmd/genopenapi
 
 # Run server with debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 Default NFS port is `12049` (not 2049). Server config lives at `~/.config/dittofs/config.yaml`

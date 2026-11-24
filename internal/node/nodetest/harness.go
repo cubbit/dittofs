@@ -18,6 +18,7 @@ import (
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
+	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
@@ -33,14 +34,24 @@ var start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 var nodeID = entity.NodeID{'n', 'o', 'd', 'e'}
 
-// journalOptions is what the harness opens its journals with: a suitable
-// mount and two append streams. At the default sixteen, a journal makes a
-// content and a headroom spare per stream at the 256 MiB cap, 8.25 GiB per
-// open, which tests running in parallel would multiply past a CI disk; two
-// streams make five. A test's own WithSettings, appended after, replaces it.
-// A fresh slice each call, so a test appending to one aliases no other.
+// segmentCap is the size of every segment of the harness's journal.
+const segmentCap = 1 << 20
+
+// journalOptions is what the harness opens its journals with, at the
+// install's journal init and at every open: a suitable mount, two append
+// streams, and segments of segmentCap rather than the format's 256 MiB. An
+// open walks each stream's newest segment whole, and a journal makes a content
+// and a headroom spare per stream, so both scale with the cap and the streams:
+// at the default sixteen streams and 256 MiB, 8.25 GiB per open, which tests
+// running in parallel would multiply past a CI disk. The idle sealer's
+// threshold scales with the cap, a sixteenth of it, as the journal's and the
+// engine's fixtures scale theirs. A test's own WithSettings, appended after,
+// replaces it. A fresh slice each call, so a test appending to one aliases no
+// other.
 func journalOptions() []journal.Option {
-	return []journal.Option{journaltest.SuitableMount(), journal.WithSettings(journal.Settings{Streams: 2})}
+	s := journal.Settings{Streams: 2, IdleSealBytes: segmentCap / 16}
+	journaltest.SetSegmentCap(&s, segmentCap)
+	return []journal.Option{journaltest.SuitableMount(), journal.WithSettings(s)}
 }
 
 // passphrase opens the harness's storage and protocol key files.
@@ -139,7 +150,7 @@ func New(t testing.TB, opts ...Option) *Harness {
 	h.openKV(t)
 	var env string
 	if o.password != "" {
-		env = "DITTOFS_NODETEST_ADMIN_PASSWORD"
+		env = "NODETEST_ADMIN_PASSWORD"
 		t.Setenv(env, o.password)
 	}
 	err := install.Run(ctx, install.Deps{
@@ -328,4 +339,12 @@ func (h failOnBudget) Handle(ctx context.Context, r slog.Record) error {
 		h.t.Errorf("nodetest: %s: %s", r.Message, strings.Join(attrs, " "))
 	}
 	return h.Handler.Handle(ctx, r)
+}
+
+// Preflight runs the node's start check with a mount that suits the host, so
+// a test of what the check reads does not depend on the mount of the machine
+// it runs on. The tests of dfs start call it here because only start.go may
+// import the node in that package.
+func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, clock engine.Clock) error {
+	return node.Preflight(ctx, storeDir, v1Root, devices, clock, journaltest.SuitableMount())
 }

@@ -3019,6 +3019,11 @@ which calls the journal's `Delete`, never its `Release`, which evicts
    none, whatever the extent's size: every ref over the extent is dropped or
    narrowed in phase 2 ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). A deallocate's phase 1 does write one
    hole: the extent's merged hole, at *v*, under the merged hole's own start key ([§8.2](#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros)).
+   A truncate's or deallocate's phase 1 moves the file's change time, and its
+   modification time unless the call's suspended times (`WithSuspended`) name Modify: the times the open it
+   came through suspended, as a write's `Suspend` does ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)). The mask
+   is held in memory only, since the journal's removal record carries none, so
+   a truncate or deallocate replayed at a start moves Modify whatever it suspended ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 4. Release the guard, `Settle(id, v)`, post `RemovalPending(file)` ([§6.1](#6.1%20The%20work%20queue)),
    and return. A pending release has returned its retry channel already, and
    runs this step once its retried phase 1 commits.
@@ -3329,7 +3334,10 @@ refusal of the first chunk returns the error.
    — left to phase 2's batches ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)), and raises the destination's
    `MaxSpan` to the extent's length, the longest hole a batch can write
    there, joined holes included. A crash between the two leaves the clone's
-   journal marker, from which start rebuilds the clone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Release the
+   journal marker, from which start rebuilds the clone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). As a truncate's or
+   deallocate's does ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), phase 1 leaves the destination's modification time
+   alone when the call's suspended times name Modify; a clone rebuilt at a
+   start moves it, the journal's clone marker carrying no mask. Release the
    guard and `Settle(dst, v)`.
 5. **Phase 2**, once `Hold` has taken over the source's open ([§2.6](#2.6%20Dependencies%20and%20wiring)), batches within the key budget `K` through `Resume`, metadata only:
    each resolves its source extent by the covering lookup ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)).
@@ -3780,6 +3788,7 @@ removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)
 | `Truncate(share, file, size)`, `Deallocate(share, file, off, n)`, `Delete(share, file)` | [§8](#8.%20Truncate%2C%20deallocate%20and%20release) |
 | `Clone(srcShare, src, dstShare, dst, x)`, `Copy(srcShare, src, dstShare, dst, xs)` | [§9](#9.%20Clone) |
 | `WithAdmitted(ctx, hook)`, `Admitted(ctx)` | the hook `Clone`, and each chunk of `Copy`, calls on the calling goroutine with none of the engine's locks held: on a new clone once its admission's refusals have passed and it holds its registrations, before step 1; on a join once it has found the running clone, which may already have changed the destination. A retry of a done clone answers without calling it. Its error refuses the call, changing nothing; on a copy's later chunk it ends the copy short. `Admitted` runs it, for another `Content` to call at the same point. [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) |
+| `WithSuspended(ctx, m)`, `Suspended(ctx)` | the times `Truncate`, `Deallocate`, `Clone` and `Copy` leave alone, those the calling open suspended, as a write's `Suspend` is; of them only Modify is one these calls move, and the change time moves whatever `m` names. `Suspended` answers none for a ctx that carries none, for another `Content` to read at the same calls. [§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches), [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write) |
 | `Overlay(share, file)` | size, times and version of the journal's uncommitted operations of the file, replayed in version order, and whether any is pending ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) |
 | `Allocation(share, file, off)` | [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) |
 | `PrepareCut(shard)`, `CommitCut(shard)` | the snapshot cut, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
@@ -3877,6 +3886,11 @@ func (e *Engine) Allocation(ctx context.Context, s ShareID, f FileID, off int64)
 func WithAdmitted(ctx context.Context, admitted func() error) context.Context
 // Admitted runs the hook ctx carries, if any, and answers its error.
 func Admitted(ctx context.Context) error
+// WithSuspended returns ctx carrying m, the times a Truncate, Deallocate, Clone
+// or Copy called with it leaves alone; only Modify is one they move.
+func WithSuspended(ctx context.Context, m TimeMask) context.Context
+// Suspended answers the times ctx carries, none when it carries none.
+func Suspended(ctx context.Context) TimeMask
 
 // Control: node-local.
 func (e *Engine) PrepareCut(ctx context.Context, shard ShardID) error              // RFC 12 §2.3 prepare, gate open

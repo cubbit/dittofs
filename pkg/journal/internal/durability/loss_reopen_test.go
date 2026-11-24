@@ -2,6 +2,7 @@ package durability_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/journal/internal/core"
@@ -423,11 +424,12 @@ func TestNamedAnswersThePieceOnlyThroughADeliveredReport(t *testing.T) {
 
 // TestAnOverwrittenEventAGenuineReadNeverCarriedStaysUnserved pins the
 // served window's clamp: the ring keeps the newest core.LossRingSize events,
-// and a genuine read answers for the events its copy carried alone. The
-// events the ring had overwritten before the read — a poller that knows it
-// missed them has still not read them — stay answered by nobody, so their
+// and the one genuine read answers for the events its copy carried alone.
+// The events the ring had overwritten before any read — a poller that knows
+// it missed them has still not read them — stay answered by nobody, so their
 // claims survive their instance and the reopen places the losses they name
-// found at open again, while every event the copy carried stays suppressed.
+// found at open again, while every event the copy carried stays suppressed
+// past its own overwriting (TestServedEventsStayServedPastTheRingWrap below).
 func TestAnOverwrittenEventAGenuineReadNeverCarriedStaysUnserved(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
@@ -478,5 +480,108 @@ func TestAnOverwrittenEventAGenuineReadNeverCarriedStaysUnserved(t *testing.T) {
 		if ev.Version.Counter < 200 || ev.Version.Counter >= 204 {
 			t.Fatalf("the reopen published %+v, want only one of the four overwritten pieces", ev)
 		}
+	}
+}
+
+// TestServedEventsStayServedPastTheRingWrap pins the served window's join: the
+// drain reads the ring after every Loses, so each read is contiguous with the
+// window so far and keeps its earlier start. An event an earlier read served
+// keeps that answer even once the ring has wrapped past it — the claims
+// retired by its read stay retired — so an in-process reopen places the
+// losses they name found at open never again, the duplicate RFC 1 §9.4's row
+// rules out. The clamp's other side, the events no copy ever carried, stays
+// with the test above.
+func TestServedEventsStayServedPastTheRingWrap(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+
+	// Four more losses than the ring holds, each its own piece, and the
+	// drain's genuine read serving every event at once: the writes each
+	// land in a ring a reader already drained.
+	n := core.LossRingSize + 4
+	seqs := make([]core.Seq, n)
+	events := make([]core.LossEvent, n)
+	for i := range events {
+		seqs[i] = core.Seq(100 + i)
+		ev, err := e.d.Lose(ctx, loss(seqs[i]))
+		if err != nil {
+			t.Fatalf("Lose of the piece at %d: %v", i, err)
+		}
+		if ev == (core.LossEvent{}) {
+			t.Fatalf("the piece at %d published no event", i)
+		}
+		events[i] = ev
+		if got := e.d.Losses(); len(got) != i+1 && len(got) != core.LossRingSize {
+			t.Fatalf("the drain after the piece at %d carried %d events, want every published one the ring still holds", i, len(got))
+		}
+	}
+
+	// The wrap: the ring holds the newest LossRingSize events, the first
+	// four overwritten — by reads each of which carried them away.
+	e.d.Stop()
+
+	// The reopen reads what the disk holds and re-places each record a
+	// surviving claim lets through. Every event was served, so no claim
+	// survived the wrap: no loss is published found at open again.
+	reopen := e.newDurability()
+	for i, ev := range events {
+		reopen.Place(ev, seqs[i])
+	}
+	if got := reopen.Stats().Losses; len(got) != 0 {
+		t.Fatalf("the reopen published %d found-at-open events, want 0: every published event was served by a read before the wrap, so no claim survived its instance %v", len(got), got)
+	}
+}
+
+// TestAGapRestartsTheServedWindow pins the restart half of the served window,
+// the unsafe direction the join alone would hide: one read serves event 1,
+// then the ring wraps unread past events 2..5, and a second read arrives over
+// the gap and restarts the window. 2..5 must come back, reached by no read: a
+// window that joined across the gap, or one that answered for the wrong
+// ones, would count a loss the reader never saw served, and a reopen would
+// hide losses nobody was told about. 1 does too: one interval cannot
+// hold both reads, so a gap re-reports, never hides — the duplicate the
+// restart's decision errs toward (see Losses).
+func TestAGapRestartsTheServedWindow(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	n := core.LossRingSize + 5
+	seqs := make([]core.Seq, n)
+	events := make([]core.LossEvent, n)
+	for i := range events {
+		seqs[i] = core.Seq(100 + i)
+		ev, err := e.d.Lose(ctx, loss(seqs[i]))
+		if err != nil {
+			t.Fatalf("Lose of the piece with seq %d at %d: %v", seqs[i], i, err)
+		}
+		events[i] = ev
+		if i == 0 {
+			e.d.Losses()
+		}
+	}
+	e.d.Losses()
+	e.d.Stop()
+	reopen := e.newDurability()
+	for i, ev := range events {
+		reopen.Place(ev, seqs[i])
+	}
+	// Exactly the five the ring overwrote or the gap dropped — the four no
+	// read carried and the one the restart re-reports — each by the only
+	// name that survives the re-placement: the Lose's write counter, which
+	// loss(seq) stamps and the reopen's ring renumbering leaves alone. The
+	// ring's own sequence numbers renumber every placed event, so five of
+	// anything would compare equal on them; the counters name the records,
+	// and none of the two hundred fifty-six the second read served beside
+	// them may stand in for the ones it should not hide.
+	want := []uint64{200, 201, 202, 203, 204} // the counters of seqs 100..104
+	got := reopen.Stats().Losses
+	var counters []uint64
+	for _, ev := range got {
+		if !ev.AtOpen {
+			t.Fatalf("the reopen published %+v, not marked found at open", ev)
+		}
+		counters = append(counters, ev.Version.Counter)
+	}
+	if !slices.Equal(counters, want) {
+		t.Fatalf("the re-placed events carry the write counters %v, want exactly %v: the four events no read carried and event 100's, which the gap restart re-reports — a counter the window did not want names a loss the second read served and the restart hid", counters, want)
 	}
 }

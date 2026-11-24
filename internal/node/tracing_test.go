@@ -129,9 +129,10 @@ func refused(err error) bool {
 // 6 MiB; a chunk refused before that is written again. A capacity answer is
 // not a refusal at the journal's limit by its shape: a pool still making its
 // next spare answers the same retry-later, so done says which refusal the
-// caller waits for. The bound on the wait is a real-time backstop, never the
-// assertion.
-func fillUntilRefused(t *testing.T, h *nodetest.Harness, shID entity.ShareID, fileID entity.FileID, done func() bool) {
+// caller waits for, and what names it. When done is what the caller tests, as
+// a repack pass's span is, the 60s bound on the wait is that check: its
+// failure names what never came.
+func fillUntilRefused(t *testing.T, h *nodetest.Harness, shID entity.ShareID, fileID entity.FileID, what string, done func() bool) {
 	t.Helper()
 	const chunk = 256 << 10
 	deadline := time.Now().Add(60 * time.Second)
@@ -148,7 +149,7 @@ func fillUntilRefused(t *testing.T, h *nodetest.Harness, shID entity.ShareID, fi
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("write %d was refused for 60s and the fill's end never came: %v", i, err)
+			t.Fatalf("write %d was refused for 60s and the fill's end (%s) never came: %v", i, what, err)
 		}
 	}
 	t.Fatal("128 writes of 256 KiB into a journal of 6 MiB were never refused, want the fill to reach the journal's limit")
@@ -202,7 +203,9 @@ func writeSpared(t *testing.T, h *nodetest.Harness, s entity.ShareID, f entity.F
 // produce a span of their own, and every span a journal opens names its
 // journal: each carries the identity the metrics export labels the same
 // journal with. The drives are bounded by their own outcomes — the commit
-// returns, the fill loop stops at its first refusal — never by a sleep.
+// returns, the fill loop stops at the first repack pass's span — never by a
+// sleep. The fill fails if that span never comes, so it is the repack pass's
+// check.
 func TestTheJournalTracesItsOperations(t *testing.T) {
 	t.Parallel()
 	h, sr := traced(t, fillMax)
@@ -227,7 +230,7 @@ func TestTheJournalTracesItsOperations(t *testing.T) {
 		t.Errorf("one committed write produced %d journal.sync spans so far, want exactly 1", syncs)
 	}
 
-	fillUntilRefused(t, h, sh.ID, file.ID, repacked(t, sr))
+	fillUntilRefused(t, h, sh.ID, file.ID, "a journal.repack_pass span", repacked(t, sr))
 
 	const hexLen = 32 // hex of the journal's 16-byte identity
 	seen := map[string]int{}
@@ -271,7 +274,7 @@ func TestTheJournalTracesItsOperations(t *testing.T) {
 	if refusals == 0 {
 		t.Error("no journal.reserve_refused span to hold to the refusal, want the fill's")
 	}
-	for _, name := range []string{"journal.sync", "journal.reserve_refused", "journal.repack_pass"} {
+	for _, name := range []string{"journal.sync", "journal.reserve_refused"} {
 		if seen[name] < 1 {
 			t.Errorf("no span of op %s after the drives, want at least the one each of them ran", name)
 		}
@@ -305,7 +308,7 @@ func TestTheJournalRunsUntracedWithoutATracer(t *testing.T) {
 	if err := jcommit(t, h, sh.ID, file.ID); err != nil {
 		t.Fatalf("a committed write over an untraced journal: %v, want it done, never blocked", err)
 	}
-	fillUntilRefused(t, h, sh.ID, file.ID, counted(t, h))
+	fillUntilRefused(t, h, sh.ID, file.ID, "one more counted refusal", counted(t, h))
 }
 
 // The logger the node hands its journals names the journal in every line the

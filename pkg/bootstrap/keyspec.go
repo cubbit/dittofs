@@ -38,7 +38,6 @@ const (
 	kindSizeMiB                // a size, a whole number of MiB of at least 1MiB
 	kindDays                   // a duration, a whole number of days
 	kindDuration               // a duration
-	kindLegacyPath             // blockstore.journal.path, read as before
 )
 
 // keySpec is one key of RFC 13 Appendix C: its name, how it is written, its
@@ -73,8 +72,8 @@ func roleKeys(role string) []keySpec {
 	}
 }
 
-// keySpecs are RFC 13 Appendix C's keys, in its table's order, then the v1
-// key the bootstrap still reads. A "did you mean" tie goes to the first.
+// keySpecs are RFC 13 Appendix C's keys, in its table's order. A "did you
+// mean" tie goes to the first.
 var keySpecs = slices.Concat(
 	[]keySpec{
 		{key: "node.id", kind: kindUUID, def: entity.NodeID{}},
@@ -111,9 +110,6 @@ var keySpecs = slices.Concat(
 	},
 	roleKeys("protocol"),
 	roleKeys("storage"),
-	[]keySpec{
-		{key: "blockstore.journal.path", kind: kindLegacyPath, def: ""},
-	},
 )
 
 // specByKey indexes keySpecs; blocks holds every prefix of a declared key,
@@ -136,17 +132,29 @@ var specByKey, blocks = func() (map[string]*keySpec, map[string]bool) {
 	return byKey, prefixes
 }()
 
-// envName is the key's variable: DITTOFS_, then the key in upper case with
-// its dots as underscores.
-func (s *keySpec) envName() string {
-	return "DITTOFS_" + strings.ToUpper(strings.ReplaceAll(s.key, ".", "_"))
+// variableOf is a dotted key's variable: DITTOFS_, then the key in upper
+// case with its dots as underscores.
+func variableOf(key string) string {
+	return envPrefix + strings.ToUpper(strings.ReplaceAll(key, ".", "_"))
 }
 
-// defaultValue is the key's value when no source sets it. logging.output's
-// follows the state directory.
-func (s *keySpec) defaultValue() any {
-	if s.key == "logging.output" {
-		return getDefaultLogPath()
+// envName is the key's variable.
+func (s *keySpec) envName() string {
+	return variableOf(s.key)
+}
+
+// defaultValue is the key's value when no source sets it. The environment's
+// two directories carry three defaults: metadata.badger.path is the state
+// directory's metadata, logging.output its log, api.socket the runtime
+// directory's socket.
+func (s *keySpec) defaultValue(dirs resolvedDirs) any {
+	switch s.key {
+	case "metadata.badger.path":
+		return filepath.Join(dirs.state, "metadata")
+	case "logging.output":
+		return filepath.Join(dirs.state, "dittofs.log")
+	case "api.socket":
+		return filepath.Join(dirs.runtime, "dfs.sock")
 	}
 
 	if l, ok := s.def.([]string); ok {
@@ -429,7 +437,7 @@ func (c check) count(i int) bool {
 // of strings, and returns the value in its field's type.
 func (s *keySpec) check(v any, c check) (any, bool) {
 	switch s.kind {
-	case kindString, kindLegacyPath:
+	case kindString:
 		return v, true
 	case kindEnum:
 		return v, c.enum(s, v.(string))

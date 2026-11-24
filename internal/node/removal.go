@@ -151,7 +151,10 @@ func (n *Node) dropFiles(ctx context.Context, id entity.ShareID) (moved bool, er
 			done, err = nodes.ContinueShardRemoval(ctx, id, sh.Shard)
 			return err
 		})
-		return !done, err
+		if err != nil {
+			return false, err
+		}
+		return !done, nil
 	}
 	if err := n.engine.Drop(ctx, id, journal.ShareTag(sh.Tag)); err != nil {
 		return false, err
@@ -306,5 +309,8 @@ func (n *Node) readRemoving(ctx context.Context) ([]entity.Share, error) {
 		got = shares
 		return nil
 	})
-	return got, err
+	if err != nil {
+		return nil, err
+	}
+	return got, nil
 }

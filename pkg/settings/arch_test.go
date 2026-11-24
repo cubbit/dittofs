@@ -38,6 +38,7 @@ var frozenExports = []string{
 	"func SecretRef(field string, kind entity.SecretKind) Option",
 	"func FormatVersion(field string) Option",
 	"func OverrideOnly(fields ...string) Option",
+	"func SelfKey() Option",
 	"type Table []Section",
 	"func (Table).Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, " +
 		"holds HoldsContent) error",
@@ -46,6 +47,7 @@ var frozenExports = []string{
 	"func Refusals(err error) iter.Seq2[entity.SettingScope, string]",
 	"func (Table).PrefixOf(key string) string",
 	"func (Table).WithMetrics(m *metrics.Registry) Table",
+	"func (Table).Reads(s entity.Setting) (prefix string, ok bool)",
 	"type Snapshot struct{}",
 	"func (*Snapshot).Keep(section string, prev *Snapshot) *Snapshot",
 	"func (*Snapshot).Stored(section string) bool",

@@ -30,8 +30,8 @@ func writeKeyFile(t *testing.T, passphrase string) string {
 func newLocalForTest(t *testing.T) *localProvider {
 	t.Helper()
 	path := writeKeyFile(t, testPassphrase)
-	t.Setenv(localPassphraseEnv, testPassphrase)
-	p, err := newLocalProvider(Config{Kind: KindLocal, File: path})
+
+	p, err := newLocalProvider(Config{Kind: KindLocal, File: path}, testPassphrase)
 	if err != nil {
 		t.Fatalf("newLocalProvider: %v", err)
 	}
@@ -101,8 +101,8 @@ func TestLocal_WrongMasterKeyID(t *testing.T) {
 
 func TestLocal_MissingPassphrase(t *testing.T) {
 	path := writeKeyFile(t, testPassphrase)
-	t.Setenv(localPassphraseEnv, "")
-	_, err := newLocalProvider(Config{Kind: KindLocal, File: path})
+
+	_, err := newLocalProvider(Config{Kind: KindLocal, File: path}, "")
 	if !errors.Is(err, ErrPassphraseMissing) {
 		t.Fatalf("missing passphrase: want ErrPassphraseMissing, got %v", err)
 	}
@@ -110,8 +110,8 @@ func TestLocal_MissingPassphrase(t *testing.T) {
 
 func TestLocal_WrongPassphrase(t *testing.T) {
 	path := writeKeyFile(t, testPassphrase)
-	t.Setenv(localPassphraseEnv, "wrong-pass")
-	_, err := newLocalProvider(Config{Kind: KindLocal, File: path})
+
+	_, err := newLocalProvider(Config{Kind: KindLocal, File: path}, "wrong-pass")
 	if !errors.Is(err, ErrUnwrapFailed) {
 		t.Fatalf("wrong passphrase: want ErrUnwrapFailed, got %v", err)
 	}
@@ -122,8 +122,8 @@ func TestLocal_CorruptPEM(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not a pem block"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	t.Setenv(localPassphraseEnv, testPassphrase)
-	_, err := newLocalProvider(Config{Kind: KindLocal, File: path})
+
+	_, err := newLocalProvider(Config{Kind: KindLocal, File: path}, testPassphrase)
 	if !errors.Is(err, ErrKeyFileCorrupt) {
 		t.Fatalf("corrupt PEM: want ErrKeyFileCorrupt, got %v", err)
 	}

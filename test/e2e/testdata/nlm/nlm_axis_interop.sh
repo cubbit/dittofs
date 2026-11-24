@@ -63,7 +63,7 @@ ip netns exec cns ping -c1 -W2 $SIP >/dev/null 2>&1 && log "veth up" || { log "v
 
 # --- 2. server (dfs) in sns with a private /run + rpcbind ------------------
 cat > "$WORK/config.yaml" <<CFG
-logging: {level: INFO, format: text, output: stdout}
+logging: {level: info, format: text, output: stdout}
 controlplane:
   port: $API
   jwt: {secret: "test-secret-key-for-e2e-testing-only-must-be-32-chars"}
@@ -75,7 +75,6 @@ ip netns exec sns unshare --mount bash -c "
   mkdir -p /run/rpcbind /run/sendsigs.omit.d
   rpcbind
   sleep 0.5
-  export DITTOFS_ADMIN_INITIAL_PASSWORD=$PW
   exec $DFS start --config $WORK/config.yaml
 " >"$WORK/dfs.out" 2>&1 &
 

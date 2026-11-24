@@ -253,9 +253,11 @@ func (e *Engine) drain(b *binding) journal.ReadOnlyState {
 	windowFailed := false
 	// The drain is the journal's genuine loss reader: its read takes the
 	// events away, marking them served, so an in-process reopen of the
-	// journal re-places found at open exactly what no drain reached. Stats
-	// reports the same events as a figure and marks nothing, so no other
-	// engine poll answers for a client's losses.
+	// journal re-places found at open what no drain reached, except that a
+	// read after a gap of overwritten events can leave an earlier read's
+	// events to be reported again. Stats reports the same events as a
+	// figure and marks nothing, so no other engine poll answers for a
+	// client's losses.
 	events := b.j.Losses()
 	st := b.j.Stats()
 	for _, ev := range events {

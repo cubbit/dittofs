@@ -244,7 +244,8 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	if err != nil {
 		return nil, err
 	}
-	n := &Node{cfg: cfg, rec: newReconciler(newTable()), sweep: newSweeper()}
+
+	n := &Node{cfg: cfg, rec: newReconciler(newTable(), newReaches()), sweep: newSweeper()}
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		// decision: over Badger a store whose first key has one of v1's
 		// prefixes is v1's, the only program that wrote one at
@@ -372,8 +373,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	// decision: the API is handed no tracer, as Config's tracer is the
 	// journals', not the API's: the API's own tracer is RFC 23's own wiring,
 	// fed from Config once it lands, so the API's spans go to the no-op
-	// tracer. An empty api.socket serves no local socket: the bootstrap gives
-	// it no default path yet.
+	// tracer. An empty api.socket serves no local socket.
 	n.api = api.New(api.Deps{
 		Ready:        n.readiness,
 		Served:       n.life.served.Load,

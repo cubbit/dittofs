@@ -5,8 +5,7 @@ default-user fallback — limiting both **bytes** and **inodes (file count)**. E
 has a **soft** threshold, a **hard** ceiling, and a **grace** window between them.
 
 > Quotas are managed live on a running server via `dfsctl` (or the REST API). There is no
-> config-file or Kubernetes CRD form. The full reference is in
-> [Configuration § Shares](configuration.md#8-shares-exports).
+> config-file or Kubernetes CRD form.
 
 ## Set a quota
 
@@ -46,14 +45,15 @@ dfsctl quota remove /export --scope user --id 1000
   by file owner UID/GID, and stored durably alongside the files they account for — updated
   in the same transaction that writes the file, and read back at startup rather than
   recomputed, so start-up cost does not grow with the number of files. A `chown` moves a file's
-  usage between identities. Shares that name the same metadata store are served by one
-  store instance, but their usage is still counted separately: one share's bytes never
-  count against another share's quota, and `df` on a share reports only that share.
+  usage between identities. Every share lives in the node's one metadata store, but
+  each share's usage is counted separately: one share's bytes never count against
+  another share's quota, and `df` on a share reports only that share.
 - **Best-effort.** Under heavy concurrent writes an identity may briefly exceed a limit
   before usage catches up — normal for a userspace NFS/SMB server.
 
-Quota limits live in the control-plane database and are also reachable via the REST API
-at `/api/v1/shares/{name}/quotas`.
+Quota limits live in the metadata store, beside the node's other records (there is no
+separate control-plane database), and are also reachable via the REST API at
+`/api/v1/shares/{id}/quotas`.
 
 ## Repairing a drifted usage figure
 

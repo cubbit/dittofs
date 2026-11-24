@@ -70,7 +70,7 @@ Two binaries drive it:
 | **Metadata stores** | BadgerDB, on disk — one per node. FoundationDB, for multi-node, is configured but not yet selectable |
 | **Block stores** | S3, memory. One per share, fronted by an on-disk journal. Per-share isolation, async sync |
 | **Client-side encryption** | Per-remote envelope encryption (AES-256-GCM / ChaCha20-Poly1305 / XChaCha20-Poly1305) |
-| **Share snapshots** | Point-in-time reference holds (no data copy) with restore |
+| **Share snapshots** | Not yet: v1's snapshots are gone, and [RFC 12](docs/internals/rfcs/rfc-12-snapshots.md) designs the new ones |
 | **Control plane** | Unified users/groups, share permissions, REST API with JWT auth |
 | **Observability** | Prometheus metrics endpoint, structured JSON logging |
 | **Deployment** | Single static binary; Docker images; Kubernetes operator |
@@ -162,9 +162,8 @@ the metadata store.
 # rejected with HTTP 403:
 #   account "admin" must set a new password before performing other operations;
 #   run 'dfsctl user change-password' (as "admin") to set one
-# This forced change is skipped automatically when you set your own
-# DITTOFS_ADMIN_INITIAL_PASSWORD at first start, and can be disabled entirely
-# via controlplane.require_initial_password_change: false (see docs/guide/configuration.md).
+# This forced change is skipped when you handed `dfs init` the password with
+# --admin-password-file or --admin-password-env (see above).
 ./dfsctl user change-password
 
 # 2. Create a user mapped to your host UID (needed for NFS write access)

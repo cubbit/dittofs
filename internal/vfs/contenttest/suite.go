@@ -299,7 +299,13 @@ func aSuspendedContentChangeLeavesTheModifyTimeAlone(t *testing.T, s Subject) {
 				}
 			}
 			modify, _ := s.Times(t, f)
-			s.Clock.Advance(time.Minute)
+			// The whole row moves the clock less than the engine's 30s
+			// self-fence (fenceAfter): 5 ops × 2 masks × 1s here. A removal or
+			// clone from the first case may still hold a store transaction in
+			// the background at the last, and a jump past the fence reads as a
+			// stalled store, answering the commit below a delay. An op added
+			// to the row must keep that total under the fence.
+			s.Clock.Advance(time.Second)
 			at := s.Clock.Now()
 			ctx, cancel := context.WithTimeout(engine.WithSuspended(t.Context(), suspend), 5*time.Second)
 			err := c.do(ctx, src, f)

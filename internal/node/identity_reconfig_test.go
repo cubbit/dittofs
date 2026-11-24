@@ -241,6 +241,14 @@ func TestARefusedIdentitySectionKeepsTheLastAndReportsIt(t *testing.T) {
 	if r, _ := refusedSetting(s.Refused, "identity.netbios_name"); r.Generation != gen || !strings.Contains(string(r.Error), "identity.netbios_name") {
 		t.Errorf("the refusal of identity.netbios_name: generation %d, error %s; want generation %d and an error naming identity.netbios_name", r.Generation, r.Error, gen)
 	}
+	// The settings walk names none of identity's sections' rows, so the row
+	// is reported once, by identity's apply.
+	ref := entity.SettingRef(installationScope, "identity.netbios_name")
+	if n := len(slices.DeleteFunc(slices.Clone(h.Node().Refused()), func(r entity.RefusedRecord) bool {
+		return r.Record.Kind != ref.Kind || string(r.Record.ID) != string(ref.ID)
+	})); n != 1 {
+		t.Errorf("records refused for identity.netbios_name: got %d, want 1", n)
+	}
 	addr, _ := h.Node().Addrs()
 	var got apiv1.Setting
 	getJSON(t, addr, "/api/v1/settings/identity.netbios_name", &got)
