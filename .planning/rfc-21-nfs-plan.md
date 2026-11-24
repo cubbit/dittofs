@@ -320,7 +320,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E8 🔀 | Clients and sessions | the callbacks value and the `Adapter` bytes first; `EXCHANGE_ID`, `SETCLIENTID`, confirms, `CREATE_SESSION`, `SEQUENCE`'s slots and reply cache, the session registry, lease and reclaim signals; A1's runner change after S2b | 10 | 28 | A | E10; E9, E11 and E12, partly; S4 |
 | E9 | Opens, stateids and locks | `OPEN` and its claims, stateid rules, NFSv4.0 owner sequences, `LOCK`, `LOCKT`, `LOCKU`, `TEST_STATEID`, `FREE_STATEID`, drain roles per request | 8 | 25 | C | E10 and E12, partly; E16 |
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 8 | 22 | A | E16 |
-| E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
+| E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants sent, `SM_NOTIFY`, `DialClient`'s network | 12 | 32 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
 | E13 🔀 | RPCSEC_GSS | the context table as NFS's `Security` stage over `gss`, `krb5`, `krb5i`, `krb5p` | 6 | 16 | B | E16 |
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
@@ -627,9 +627,9 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
 
 ### 4.3 Knowingly simple implementations
 
-- **NLM grants resent by one timer each** (E11): a `time.AfterFunc` per granted lock awaiting its
-  acknowledgement (RFC 21 §6.1's resend). Ceiling: thousands of unacknowledged grants at once.
-  Upgrade to one timing wheel per adapter when a profile shows timer churn.
+- **One `GETPORT` per NLM grant** (E11): the host's port mapper is asked before every `GRANTED`,
+  nothing cached per host (the service, not the adapter, resends a grant). Ceiling: a port mapper
+  round trip per grant. Upgrade to a cache per host when a profile shows them.
 - **The reply cache keeps whole reply copies** (E8): a slot's cached reply is copied out of the
   pooled reply buffer, at most 8 KiB (RFC 21 §3.1), rather than holding a reference. Ceiling: 512 KiB
   per session copied. Upgrade to a held `resources.Buf` when a profile shows the copy.
@@ -965,7 +965,7 @@ scripted client; N6's single-node half, N14's NFSv4 half.
 
 ### Epic 11 — NLM, NSM and the datagram path 🔀
 
-**Epic 11 estimate: 7 subtasks, 22 man-days.**
+**Epic 11 estimate: 12 subtasks, 32 man-days.**
 
 NFSv3's locking side protocols, over TCP and UDP, and the calls the server makes to an NLM host.
 
@@ -984,8 +984,8 @@ through NLM; N1's UDP half, N15, N21.
 - NLM v4's codecs and procedures: `TEST`, `LOCK`, `CANCEL`, `UNLOCK`, `SHARE`, `UNSHARE`, `FREE_ALL`,
   their `*_MSG` forms; the host bound to its address; `StaleClient` connected afresh; admission at
   `Claimed` through E4's half of A3, after S2b.
-- Blocking locks: `LockWaitOver`, `GRANTED` resent until answered, a cancel answered after
-  `CancelLock`.
+- Blocking locks: `LockWaitOver`, one `GRANTED` sent per call (the service resends it until
+  answered), a cancel answered after `CancelLock`.
 - `rpcclient` (D1): `GETPORT` at the host's port mapper, a connection from the floating address
   through `Deps.DialClient`, its network argument added to `pkg/adapter/deps.go` as RFC 20 §3.4 has
   it, `*_RES` replies.
