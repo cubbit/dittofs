@@ -22,10 +22,11 @@ Appendix B's `identity.nfs4_domain` row; and [RFC 21](../docs/internals/rfcs/rfc
 "Root", "The credential's group" and "What a claim reaches" bullets, with §13's "§8.1 privilege *(1
 node)*" row for its `AUTH_SYS` steps. Every clause cited reads the same on `develop` and on
 `feat/storage-v2`.
+Also [RFC 19](../docs/internals/rfcs/rfc-19-authorization.md) §5.2, for the `who` spellings (R51).
 Cited, not owned: [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §3.0's `Call` row (`Spell` acts for
 no caller) and §4.9's admission steps; RFC 8881 §5.9 for numeric owner strings.
 **Track:** B.
-**Epic 7 estimate: 6 subtasks, 19 man-days.**
+**Epic 7 estimate: 6 subtasks, 19.5 man-days.**
 **Depends on:** nothing in this programme for T7.1 to T7.5. They are service code that no NFS
 package reaches except through `vfs.Service`, and they build on what RFC 18's plan landed on
 `feat/storage-v2`, listed in §1.1, so **S6a** and **S6b** already hold. T7.6 waits for **S3** (E3's
@@ -38,7 +39,7 @@ in-process node.
 - E5, whose T5.4 and T5.5 spell and parse `owner` and `owner_group` through T7.2's schemes, and
   E6, whose T6.2 spells and parses `who` through T7.3's.
 - E16, which runs the Kerberos and NFSv4 halves of the rows this epic runs over `AUTH_SYS`: T16.3
-  (R23, R24) and T16.8 (R25).
+  (E16's R23 and R24) and T16.8 (E16's R25).
 
 ---
 
@@ -80,9 +81,11 @@ deferred, in one RFC pull request on `develop`.
 
 - `identity.Identity`, with `ProofClaimed` and `Claims`. `Identity.Key()` keys every claimed uid
   and gid, with the primary gid kept apart (`pkg/identity/key.go`).
-- Admission's caller cache, keyed on the whole `SharePolicy`, the read-only cause, `Caller.Built`,
-  and the client address where a client rule decided (`internal/vfs/admission.go`, `callers.go`).
-  It does not store a caller whose `Fresh` is zero.
+- Admission's caller cache, keyed on the whole `SharePolicy`, the read-only cause and the client
+  address where a client rule decided, and serving an entry only when its `Caller.Built` is the
+  current `State`'s serial (`internal/vfs/admission.go`, `callers.go`). It does not store a caller
+  whose `Fresh` is zero, which a local principal's is for every unproven caller (`resolve.go`'s
+  `decision:` on `Fresh`): an `AUTH_SYS` call mapped to a local user resolves on every call.
 - Resolution through `Deps.Identity`. This came with #5373, which deleted
   `internal/vfs/admit/resolve.go` and its `mapID`; the `decision:` markers that file held on a
   claimed caller's gids and on claimed uid 0 went with it.
@@ -106,13 +109,14 @@ deferred, in one RFC pull request on `develop`.
   - `fattr4`'s `owner` and `owner_group` are E5's, and `who` is E6's.
   - Each of them chooses the scheme by the call's proof kind (D1), and shows a principal `Spell`
     cannot spell by its decimal uid or gid where it has one, else as `65534`, never as
-    `nobody@domain` (D5).
+    `nobody@domain` (D5, pending §9, point 7).
   - Encoding every principal through `Spell` and `Find`, and deriving none from another (RFC 18
     §4.1), is E4's, E5's and E6's, and RFC 20's import test checks it.
   - Answering a lookup error as a server failure is E4's and E5's error tables (RFC 18 §4.1).
   - A `sattr3` uid or gid goes through `Find` in E4, with its `NFS3ERR_INVAL`.
-- **`ErrLogonFailure`'s NFS rows.** Only `SignIn` answers it, and that is built (S6b). Over NFS,
-  only an RPCSEC_GSS context's creation signs in, so the rows are E13's. The service half of
+- **`ErrLogonFailure`'s NFS rows.** The plan gives this epic their service half, but only `SignIn`
+  answers it, and that half was built by RFC 18's plan (S6b). Over NFS, only an RPCSEC_GSS
+  context's creation signs in, so the rows' wire half is E13's. The service half of
   `ErrUnknownPrincipal`'s rows is this epic's: R32 and R33.
 - **The Kerberos halves over NFS.** These need RPCSEC_GSS (E13) and run end to end in E16's T16.3 and T16.8:
   - "one uid, two proofs"' `sec=krb5` read;
@@ -121,9 +125,9 @@ deferred, in one RFC pull request on `develop`.
 
   This epic runs their Kerberos side against the filesystem, with a ticket `SignIn` accepts.
 - **Tier 2 rows over NFSv4, and "error is not "unknown"" on the composed node.** The latter needs a
-  store fault below a running node. Both are E16's T16.3 (R23, R24).
-- **Other rows' NFS steps.** "no file spelling"'s `SP4_MACH_CRED` step is E8's T8.9 (R55), and its
-  Kerberos machine-principal step E16's T16.3 (R66). "expiry" and "disable takes effect"'s GSS half
+  store fault below a running node. Both are E16's T16.3 (E16's R23 and R24).
+- **Other rows' NFS steps.** "no file spelling"'s `SP4_MACH_CRED` step is E8's T8.9 (E8's R55), and
+  its Kerberos machine-principal step E16's T16.3 (E16's R66). "expiry" and "disable takes effect"'s GSS half
   are E13's T13.8.
 - **Clauses of this epic's rows that other code already holds:**
   - "one uid, two proofs"' operator write giving bob alice's uid is RFC 16's conformance suite's;
@@ -134,7 +138,7 @@ deferred, in one RFC pull request on `develop`.
 
 ### 1.3 Names used here
 
-- **E3**, the RPC layer. Its `AUTH_SYS` and `AUTH_NONE` `Security` stage builds the `Identity` this
+- **E3**, the RPC layer. Its T3.1 builds, at route, the `AUTH_SYS` or `AUTH_NONE` `Identity` this
   epic resolves, and its scripted client is what T7.6 drives.
 - **E4**, NFSv3 and MOUNT: the procedures T7.6's rows call, and `sattr3`'s owner fields.
 - **E5**, the NFSv4 namespace, attributes and data path: `owner` and `owner_group` through `Spell`
@@ -160,7 +164,7 @@ cited by number and title and not copied.
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Tier 1 rows run in `internal/identity`, over the real store, `identitytest`'s directory (kind 2, held to `directorysuite`), the test realm's tickets and the injected clock (kind 1). The filesystem's rows run in `internal/vfs`, over the real identity server. A store fault comes from `kvtest.FaultKV` and a directory fault from `identitytest`'s fault wrapper (kind 3). T7.6 runs on `nodetest`, with E3's scripted client. No other double is used |
 | rule 2, fuzz tests where relevant | T7.2, T7.3 | `FuzzOwnerString` covers the owner-string parser, seeded with names, decimals, other domains and malformed strings (R35), and T7.3 adds `S-…@domain` seeds. Nothing else here decodes a peer's bytes |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T7.1, T7.2, T7.3, T7.4 | Only identity's own series, RFC 18 §9.2's: `identity_unmapped_total` gains `owner`, which T7.3's `who` misses share with `sid` (R55), `identity_resolution_refusals_total` gains `lookup_cap`, and `identity_directory_lookups_total` gains the questions `uid` and `gid`. No NFS code records anything. No label carries a uid, a name, an owner string or an address |
-| rule 4, profiling: leaks, allocations and contention | T7.6 | T7.6 ends with RFC 20's leak check. The two cap tables are touched on a caller-cache miss only, on no hot path. T7.4's concurrent `-race` test is their check |
+| rule 4, profiling: leaks, allocations and contention | T7.1, T7.4, T7.6 | T7.6 ends with RFC 20's leak check. The two cap tables are touched only when a claimed uid or gid reaches the directory, on no hot path; T7.4's concurrent `-race` test is their check. A claimed caller mapped to a local user is never cached (§1.1), so every such `AUTH_SYS` call resolves in full: T7.1 adds a `proof=Claimed` case, mapped to a local user, to `BenchmarkAdmissionCallers` |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | A claimed caller is asserted where the filesystem's permission check reads it: a write refused, a `chown` not permitted, a file's group. It is never asserted on the `Caller` alone. Owner strings are asserted where `Spell` and `Find` answer the adapter, and T7.6 at the NFSv3 reply |
 | rule 6, known failures shrink | none | no row of `pynfs`, `cthon04` or `nfstest` is run |
 | rule 7, v2 ignores v1 | all | nothing of `develop`'s identity mapping is copied; behaviour comes from RFC 18 |
@@ -196,7 +200,7 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R10 | A claimed identity is squashed first, and its grant is read for the squashed principal: on an `all` share its access is the `Anonymous` principal's own grant if it has one, else the everyone grant, and per-user grants decide nothing | MUST | §6.2 | T7.1 |
-| R11 | A `root` squash replaces a caller mapped to root by a claimed uid 0; a squashed claimed caller carries no group of the principal it replaced, and all its flags are false | MUST | §6.2 | T7.1 |
+| R11 | A `root` squash replaces a caller mapped to root by a claimed uid 0; a squashed claimed caller carries no group, SID or name of the principal it replaced (its groups are `Anonymous`'s own), and all its flags are false | MUST | §6.2 | T7.1 |
 | R12 | A deleted `Anonymous` fails closed: a claimed call the policy would squash, or one acting as anonymous, is refused | MUST | §6.2 | T7.1 |
 | R13 | A `Claimed` caller is never `authenticated`, an `admin` grant confers nothing on it, and the grant naming authenticated users never matches it | MUST NOT | §3.2, §6.4, §6.5; RFC 21 §11.1 ("What a claim reaches") | T7.1 |
 | R14 | A claimed caller mapped to root and unsquashed is `Privileged`; no other claimed caller is | MUST | §6.5 | T7.1 |
@@ -211,8 +215,8 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
 | R18 | A record is minted only on the directory's word: a uid the directory does not know acts as anonymous and writes nothing | MUST NOT | §5.5 (guard 1) | T7.4 |
 | R19 | The directory lookups a `Claimed` caller triggers are at most 100 in any 60 seconds per client address; past that, a call needing a lookup for its uid or primary gid is refused with a retryable error and never mapped to anonymous (a supplementary gid is R53's) | bound | §4.3, §7.3 | T7.4 |
 | R20 | The records a `Claimed` caller's lookup mints are at most 100 in any 60 seconds per node, whatever the client, each user and each group counted; past that, the call is refused with a retryable error, never mapped to anonymous, and nothing is written | bound | §5.5 (guard 2), §7.3 | T7.4 |
-| R53 | Past the lookup cap, a claimed supplementary gid that no principal holds is left out of the caller's groups, uncharged, rather than refusing the call; a gid a principal holds is never left out, and a caller built with a gid left out is not cached | MUST | §4.3, §7.1, §7.3 | T7.4 |
-| R54 | A user whose closure's unminted groups do not all fit the mint cap's room is minted with those that fit, and the rest on its later calls as the cap admits them; a user is refused only when the cap has no room for its own record | MUST | §5.5 (guard 2), §7.3 | T7.4 |
+| R53 | Past the lookup cap, a claimed supplementary gid that no principal holds is left out of the caller's groups, uncharged, rather than refusing the call; a gid a principal holds is never left out, and a caller built with a gid left out is not cached. Amends §7.3, which refuses the call: pending Marco (D6, §9, point 7) | decision | D6; amends §7.3 | T7.4 |
+| R54 | A user is minted only with its whole closure. While its closure's unminted groups and its own record do not all fit the mint cap's room, the groups that fit are minted and the call is refused retryably, writing nothing past the cap; the user is minted on the call whose remainder fits. Every record a `Claimed` caller's resolution mints counts, through `dirPrincipal` or `dirStep`; a proven sign-in's mints do not | MUST | §2.5, §5.4, §5.5 (guard 2), §7.3 | T7.4, T7.5 |
 | R21 | A record a claimed caller reaches is bound to the entry's permanent ID, never to its name; it is refreshed on the directory cache's TTL, and disabled when the directory says the entry is disabled or answers that it is gone | MUST | §5.5 (guard 3) | T7.1, T7.4 |
 | R22 | A directory principal's uid and gid are the entry's `uidNumber` and `gidNumber` when it has them, else allocated; they are written once, with the principal, and never recomputed | MUST | §4.3 | T7.4 |
 | R23 | A caller that used a directory answer is served from the cache at most the directory's TTL after it was built (`Fresh`); a caller with a zero `Fresh` is not stored | MUST | §7.1 | T7.1, T7.4 |
@@ -234,10 +238,10 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
 | --- | --- | --- | --- | --- |
 | R30 | The domain is `identity.nfs4_domain`, an installation setting applied live; by default it is the keytab's first realm in lower case, or `localdomain` with none | MUST | §4.5; RFC 13 Appendix B | T7.2 |
 | R31 | The owner scheme spells a principal with a name as `name@domain`, and a principal minted without a name as its decimal uid or gid. Which scheme a call reads, and so the decimal form for a `Claimed` or `None` call, is E5's and E6's (D1) | MUST | §4.5, §4.1 | T7.2 |
-| R32 | A principal with no owner spelling is `ErrUnknownPrincipal` from `Spell`, which the adapter shows by its decimal uid or gid where it has one, else as `65534`; never as `nobody@domain`, which `Find` resolves through a local user named `nobody` (D5) | MUST | §4.5 | T7.2 |
+| R32 | A principal with no owner spelling is `ErrUnknownPrincipal` from `Spell`, which the adapter shows by its decimal uid or gid where it has one, else as `65534`; never as `nobody@domain`, which `Find` resolves through a local user named `nobody` (D5). §4.5 allows `65534`, but §10's "owner strings" row asserts `nobody@…`: the RFC change is pending Marco (§9, point 7) | decision | D5; amends §4.5 and §10 ("owner strings") | T7.2 |
 | R33 | A string `name@domain` whose domain equals `identity.nfs4_domain`, compared case-insensitively, maps by name (§4.6); a decimal string maps by uid or gid, whatever the proof; any other string, including a name in another domain, is `ErrUnknownPrincipal` | MUST | §4.5 | T7.2 |
-| R34 | A lookup error other than "not found" reaches the adapter as itself, never as `ErrUnknownPrincipal`, so the adapter answers a server failure | MUST NOT | §4.1 | T7.2 |
-| R35 | `FuzzOwnerString` never panics, never allocates more than the input's size times a constant, and decode∘encode is the identity on whatever decodes | test row | §10 (Fuzz) | T7.2 |
+| R34 | A lookup error other than "not found" reaches the adapter as itself, never as `ErrUnknownPrincipal`, so the adapter answers a server failure | MUST NOT | §4.1 | T7.2, T7.3 |
+| R35 | `FuzzOwnerString` never panics, never allocates more than the input's size times a constant, and decode∘encode is the identity on whatever decodes: a string that parses spells back to the same string, since only canonical forms parse | test row | §10 (Fuzz) | T7.2, T7.3 |
 | R36 | An owner string no principal holds is counted `identity_unmapped_total{scheme="owner"}`, in either owner scheme | MUST | §9.2 | T7.2 |
 | R51 | The `who` schemes spell a principal as the owner schemes do, `name@domain` or the decimal number of one minted without a name; a principal that has a SID and no owner string by the SID's string form at the domain, `S-…@domain`; and a deleted principal as the null SID, `S-1-0-0@domain` | MUST | RFC 21 §11.3 (`who`); RFC 19 §5.2; §4.5 | T7.3 |
 | R52 | On a find, a `who` of the form `S-…@domain` with a well-formed SID resolves by that SID; any other through §4.5's rules, in the user or group namespace the scheme names | MUST | RFC 21 §11.3 (`who`); §4.5 | T7.3 |
@@ -253,7 +257,7 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
 | R40 | "error is not "unknown"": a store error on the `uid` index during an `AUTH_SYS` call to a share whose everyone grant is `read-write` is a retryable error, and nothing is created | test row | §10 | T7.1 |
 | R41 | "squash order follows the proof"'s `AUTH_SYS` half: `Squash = all`, alice granted `read-write`, everyone `read`. A write claiming alice's uid is refused | test row | §10 | T7.1 |
 | R42 | "admin needs proof"'s `AUTH_SYS` half: a grant names uid 1500 `admin`. Over `AUTH_SYS` as uid 1500, a read of another user's mode-0600 file is refused | test row | §10 | T7.1 |
-| R43 | "owner strings" at the service: a proven `chown` to `alice@corp.example` succeeds, and to `alice@other.example` is refused as unknown; a file owned by a deleted user has no owner spelling | test row | §10 | T7.2 |
+| R43 | "owner strings" at the service: a proven `chown` to `alice@corp.example` succeeds, and to `alice@other.example` is refused as unknown; a file owned by a deleted user has no owner spelling, which the adapter writes `65534` rather than the row's `nobody@…` (R32, pending §9, point 7) | test row | §10 | T7.2 |
 | R44 | "lookup cap": one address sends 101 distinct unknown uids in a minute. At most 100 directory queries go out; the rest are refused retryably, and none is mapped to anonymous | test row | §10 | T7.4 |
 | R45 | "`AUTH_SYS` from the directory": the `uidNumber` of a directory entry with no record makes the caller that entry's minted principal, not `authenticated` | test row | §10 | T7.4, T7.6 |
 | R46 | "mint from a claim, guarded": each of 10^4 uids the directory lacks acts as anonymous and writes nothing. 500 uids it holds, sent from 50 addresses at once, mint no more than the node cap a minute; the rest are refused retryably, never as anonymous. A renamed entry keeps its `PrincipalID`, with the new name, after the TTL. A disabled entry and a deleted entry are refused after the TTL | test row | §10 | T7.4, T7.6 |
@@ -322,13 +326,26 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
   §11.3's `0` for root. `Find` maps both back through the reserved IDs. A `decision:` marker says
   that anonymous is not spelled `nobody@domain` because a local user named `nobody` would capture
   that name; it is overturned if a client is shown to need the name.
+  - The same holds for a principal with no owner spelling, a deleted owner included (R32). RFC 18
+    §4.5 allows `65534` there, but §10's "owner strings" row asserts `nobody@…`, so the RFC pull
+    request amends that row and drops §4.5's `nobody@domain` alternative, pending Marco (§9,
+    point 7).
 - **D6. The lookup cap.**
   - It is keyed on `throttleUnit` of the client address, as the logon throttle is (an IPv4
-    address, or an IPv6 /64), in a table bounded like the throttle's.
+    address, or an IPv6 /64), in a table of at most 65 536 units. A new unit in a full table evicts
+    the least recently charged unit whose newest charge is 60 seconds old or more, whose ring bounds
+    nothing; when none is, it evicts the least recently charged unit, counted, so no client fills
+    the table to refuse others, as the throttle's `decision:` on a full table has it. Only that
+    second eviction resets a live ring, and only once 65 536 units are charging at once, when the
+    flood already exceeds what one unit's reset adds.
+  - A `Claimed` caller's key in admission's caller cache carries the client address, as a client
+    rule's does, so a call never joins another address's resolution and is never served its
+    `lookup_cap` refusal (`admission.go`). A local user's claimed caller is never cached anyway,
+    and a directory principal's is cached once per host.
   - It is charged once for each claimed uid or gid that reaches the directory. A fresh answer in the
     directory cache costs nothing, so a client that repeats one unknown uid is not refused.
-  - Past the cap, a supplementary gid no principal holds is not asked and not charged: it is left out
-    of the caller's groups and counted `identity_unmapped_total{scheme="gid"}`, as T7.1 counts a gid
+  - Past the cap, a supplementary gid no principal holds is not asked and not charged, pending Marco
+    since RFC 18 §7.3 refuses the call (§9, point 7): it is left out of the caller's groups and counted `identity_unmapped_total{scheme="gid"}`, as T7.1 counts a gid
     no principal holds, and the caller is built with a zero `Fresh`, so it is not cached and the next
     call asks again (R53). Only the uid and the primary gid refuse the call. So a host whose users
     carry local gids the directory lacks does not use up its window on them and then refuse every
@@ -341,25 +358,29 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
     admits a lookup only when the oldest of them is at least 60 seconds old, so no 60 seconds ever
     hold more than 100 lookups (R19). A fixed window would admit 200 across its boundary, and a token
     bucket of 100 refilling at 100 a minute up to 199 in a minute.
-  - A refusal is `ErrUnavailable`, which NFS answers as `NFS3ERR_JUKEBOX` or `NFS4ERR_DELAY`, and is
-    counted under `lookup_cap`.
-  - A `ponytail:` marker says that the ring costs 100 timestamps per tracked unit, bounded by the
-    table; move to a counter per second, summed over the last 60, if the table's memory shows in a
-    profile.
+  - A refusal is `ErrUnavailable`, identity's retryable error, counted under `lookup_cap`. NFS
+    answers it as the server fault, `NFS3ERR_SERVERFAULT` or `NFS4ERR_SERVERFAULT`: RFC 21 §11.5
+    maps `ErrUnavailable` only on a read, and RFC 18 §4.1 has no row for it (E4's §9, point 3; E5's
+    §9, point 4).
+  - A `ponytail:` marker says that the ring costs 100 eight-byte timestamps per unit, about 52 MB
+    with the table full; move to a counter per second, summed over the last 60, if the table's
+    memory shows in a profile.
   - Prior art: the logon throttle, `internal/identity/throttle.go`.
 - **D7. The mint cap.**
   - It is one node-wide ring of the same shape, charged once for each record minted, user or group,
     so no 60 seconds mint more than 100 records (R20). `dirPrincipal` mints a user together with its
     closure's not-yet-minted groups in one batch, and a batch is charged for every record in it.
-  - A user whose batch does not fit the room left is minted with as many of its closure's unminted
-    groups as fit, in the directory's order; the rest are minted on the user's later calls, each
-    charged, as the ring admits them (R54). Its record marks the closure incomplete, so the next
-    resolution asks for it again rather than serving the cached caller, and the user is refused only
-    when the ring has no room for its own record. So a user in more than 100 groups stays mintable,
-    over several minutes.
-  - A `decision:` marker states this and why it holds: until its closure is complete the caller
-    lacks only the grants of groups no principal holds yet, which no ACL can name, so it escapes no
-    deny entry; it is overturned if an ACL can ever name a group the node has not minted.
+  - A user whose batch does not fit the room left is not minted: as many of its closure's unminted
+    groups as fit are minted, in the directory's order, each charged, and the call is refused
+    retryably. Its next call finds those groups held, so its batch is smaller; the user is minted,
+    with its whole closure, on the call whose remainder fits (R54). Nothing records the shortfall:
+    the user has no record until then, so its next call asks the directory as any unknown uid does.
+    So a user in more than 100 groups stays mintable over several minutes, and no caller is ever
+    resolved with part of its closure (RFC 18 §2.5, §5.4).
+  - Every record a `Claimed` caller's resolution mints is charged, through `dirPrincipal` or through
+    `dirStep`'s `mintDir`, which under `ManageGIDs` (T7.5) mints the directory groups a claimed
+    directory principal has gained; a `dirStep` batch that does not fit is handled the same way. A
+    proven sign-in's mints, through the same functions, are not charged.
   - The mint cap's refusal is counted under `lookup_cap` too, since RFC 18 §9.2 names no other
     reason. A `decision:` marker names this, and the reason to add one: a dashboard that must tell
     the two caps apart.
@@ -416,6 +437,10 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
     memory); no server found that spells a SID there.
   - The RFC 18 §4.5 text goes in this epic's RFC pull request (§9, point 2), pending the user's
     answer (§9, point 3).
+- **D14. A claimed gid 0 under a `root` squash, pending Marco.** RFC 18 §6.2 squashes on `root` only
+  a caller mapped to root, so uid 1000 claiming gids `[0]` keeps root's group on a `root` share;
+  Linux's `root_squash` also squashes gid 0 (from memory). T7.1 builds whichever §9, point 8
+  settles, with a `decision:` marker at the squash naming the rule and its ceiling.
 
 ## 5. Target tree
 
@@ -449,6 +474,8 @@ pkg/node/apiv1/exportpolicy.go, internal/node/api/res_export_policies.go  T7.5  
 internal/vfs/
   claimed_test.go          T7.1  the rows' file-operation halves; T7.4 and T7.5 add theirs
   shares_test.go           T7.1  the claimed helper beside as; as's comment on claims corrected
+  callers_bench_test.go    T7.1  BenchmarkAdmissionCallers' proof=Claimed case
+  admission.go             T7.4  a Claimed caller's key carries the client address
 internal/node/
   nfs_identity_test.go     T7.6  the AUTH_SYS rows through NFSv3 on nodetest
 docs/guide/identity.md     T7.2  identity.nfs4_domain
@@ -482,11 +509,14 @@ docs/internals/rfcs/
       and unauthenticated; the flags make the caller privileged only as unsquashed root.
     - `dirStep` runs, without groups, for a claimed caller mapped to a directory principal (D8).
     - A call naming no share maps alone (R5).
-    - The `ponytail:` refusing a claimed identity is withdrawn, and RFC 18 §3.2's, §4.3's and §6.2's
-      `decision:` notes are placed at their sites.
+    - The `ponytail:` refusing a claimed identity is withdrawn, and RFC 18 §3.2's and §4.3's
+      `decision:` notes are placed at their sites; §6.2's squash order already has its marker in
+      `resolve.go`. D14's marker goes at the squash.
   - `TestNoAnonymousPrincipalFailsClosed`'s claimed cases are rewritten: a claim of an unmapped uid
     now carries the fail-closed case. A claimed helper is added beside `internal/vfs/shares_test.go`'s
     proven `as`, whose comment about claims being refused is corrected.
+  - `BenchmarkAdmissionCallers` gains `proof=Claimed`, a claim of a local user's uid, which is never
+    cached (rule 4).
 
   Consumed by:
   - S3's loopback rows (E4's T4.7), E4's T4.10 and E5's T5.4 and T5.9, which resolve the
@@ -510,7 +540,11 @@ docs/internals/rfcs/
   - In `internal/identity`, at `Resolve`, which admission calls:
     - the five-step table over proof kind × squash × grant × no file spelling, with every `Claimed`
       cell added (R49). Each cell fails if the claimed branch reads the grant before the squash,
-      keeps the mapped principal's groups after a squash, or sets a flag (catches R10, R11, R13, R14);
+      keeps the mapped principal's groups after a squash, sets a flag, sets `Group` on a squashed or
+      unclaimed caller, or gives a `None` caller anything but `Anonymous` (catches R7, R9, R10, R11,
+      R13, R14);
+    - `TestNoAnonymousPrincipalFailsClosed`, rewritten, with `Anonymous` deleted (catches a claimed
+      call acting as no one rather than refused, R12);
     - on an `all` share granting alice read-write, `Anonymous` read-only and everyone nothing, a
       claim of alice's uid reads and is refused a write; with `Anonymous`'s grant removed and
       everyone granted read-write, the same claim writes (catches `Anonymous`'s own grant skipped for
@@ -529,6 +563,9 @@ docs/internals/rfcs/
       half and RFC 21 §8.1's `AUTH_SYS` steps: a `chown` refused `ErrPerm`, a mode-0600 read refused
       `ErrAccess`, root squashed (R39, R42, R48);
     - "squash order follows the proof"'s `AUTH_SYS` half (R41);
+    - `Squash = all`: a claim of the uid of a minted directory principal that holds a SID, reading a
+      file whose ACL grants only an entry keyed on that SID: refused; with
+      `Squash = none`: granted (catches a squash that keeps the replaced principal's SID, R11);
     - "error is not "unknown"", the fault on the `uid` index, with the directory listed after it
       unchanged (R40);
     - a create's group with a mapped and an unmapped gid (catches a gid no principal holds kept as a
@@ -546,7 +583,13 @@ docs/internals/rfcs/
   - `Settings.NFS4Domain` (`json:"nfs4_domain" class:"live"`) with its check; the `State`'s domain,
     derived at `Apply` (D4); `docs/guide/identity.md`'s entry for it.
   - `owner.go`:
-    - a pure parser that reads an owner string as a name in the domain, a decimal number, or neither;
+    - a pure parser that reads an owner string as a name in the domain, a decimal number, or neither.
+      A string with no `@` is a number only in canonical decimal (digits, no leading zero but `0`
+      itself, at most `4294967295`), checked by spelling the parsed value back and comparing; any
+      other is neither. A string with an `@` splits at its last `@`, which the domain's character
+      set cannot hold: an empty name or an empty domain is neither, and the name part is always a
+      name, so `1500@corp.example` names the user `1500`, never uid 1500 (RFC 8881 §5.9's numeric
+      form carries no domain, from memory). So every string that parses spells back to itself;
     - `Spell` and `Find` of `SchemeOwner`, for users, and `SchemeOwnerGroup`, for groups (D2). A
       principal spells as its name in the domain, or as its decimal number (D1, D5).
     - `Find` goes through the name index under RFC 18 §4.6's comparison, refusing an API-only
@@ -590,8 +633,11 @@ docs/internals/rfcs/
   - In `internal/vfs`, "owner strings"' service steps: a proven `SetAttr` of the owner found from
     `alice@corp.example` succeeds; `Find` of `alice@other.example` is refused; and `Spell` of a
     deleted owner is `ErrUnknownPrincipal` (R32, R43).
+  - The parser's table: a leading or trailing `@`, an empty name, `1500@corp.example`, `01500`,
+    `+1500` and `4294967296` (catches a non-canonical decimal or a domain-qualified number read as a
+    number, R33, R35).
   - `FuzzOwnerString` (R35): it never panics; its allocation stays within the input's length times a
-    constant; and a parsed name or number spells back to a string that parses to the same value.
+    constant; and a string that parses spells back to the same string.
   - No double but `kvtest.FaultKV` (kind 3).
 
 ### T7.3 The `who` schemes
@@ -632,7 +678,7 @@ docs/internals/rfcs/
 
 ### T7.4 Claimed lookups and mints, under the guards
 
-**Subtask T7.4 estimate: 5.5 man-days.**
+**Subtask T7.4 estimate: 6 man-days.**
 
 - **Track:** B. **Depends on:** T7.1.
 - **Covers:** R3, R16–R24, R37, R38, R44–R46, R25, R53, R54.
@@ -646,12 +692,14 @@ docs/internals/rfcs/
   - `claimed.go`: a claimed uid or gid with no row is asked of the directory, and its entry minted
     through `dirPrincipal`, which keeps the entry's numbers or allocates (R22). A directory error,
     or an answer beyond the grace, is `ErrUnavailable` (R25). An ambiguous answer is refused (D10).
-  - `claimcap.go`: the per-address lookup cap (D6), over the throttle's table and unit, and the
-    per-node mint cap (D7), each a ring of the last 100 charge times. Both run on the injected clock.
-    `claimed.go` leaving out, past the lookup cap, a supplementary gid no principal holds (D6), and
-    minting a closure in part when the mint cap's room is short (D7). Each refusal is `ErrUnavailable`,
-    counted under `lookup_cap`, with RFC 18 §7.3's `ponytail:` on the constants and this epic's
-    markers.
+  - `claimcap.go`: the per-address lookup cap (D6), over the throttle's unit, in a table of its own
+    that evicts an idle unit first, and the per-node mint cap (D7), each a ring of the last 100
+    charge times. Both run on the injected clock. `claimed.go` leaving out, past the lookup cap, a
+    supplementary gid no principal holds (D6, or refusing the call, as §9, point 7 settles), and,
+    when the mint cap's room is short, minting the closure's groups that fit and refusing the call
+    (D7). Each refusal is `ErrUnavailable`, counted under `lookup_cap`, with RFC 18 §7.3's
+    `ponytail:` on the constants and this epic's markers.
+  - `internal/vfs/admission.go`: a `Claimed` caller's key carries the client address (D6).
 
   Consumed by T7.5 and T7.6.
 - **Acceptance criteria:**
@@ -666,9 +714,12 @@ docs/internals/rfcs/
     holds is admitted as that user without those groups, no query sent for them; the next call,
     once the ring has room, asks for them.
   - Within 60 seconds, the node's 101st minted record is refused and writes nothing; room freed 60
-    seconds later mints again. A user in 300 directory groups, in a ring with room for 100, is
-    minted with 99 of them; its later calls mint the rest as room frees, and no 60 seconds mint more
-    than 100 records.
+    seconds later mints again. A user in 300 directory groups, in an empty ring, has 100 of its
+    groups minted and its call refused; its calls as room frees mint the next 100 and the next 100,
+    each refused, and the call after that mints the user and resolves it with all 300. No 60
+    seconds mint more than 100 records, and no call resolves it with fewer.
+  - A Kerberos sign-in of a directory user in 300 groups, with the mint cap's ring full, mints the
+    user and its whole closure at once, uncharged.
   - With the directory failing, a claimed unknown uid is `ErrUnavailable` and writes nothing.
   - A minted entry that is renamed, disabled or deleted in the directory is followed, refused, or
     refused, respectively, once the TTL has passed on the injected clock.
@@ -688,12 +739,17 @@ docs/internals/rfcs/
     - a gid the directory holds (catches a gid never asked, R16);
     - the lookup ring's boundary case above (catches a fixed window or a token bucket, which admit
       more than 100 in some 60 seconds, R19);
-    - the stored user's claim with ten unknown gids past the cap, admitted without them, and read
-      back from `vfs_caller_cache_misses_total` as not cached (catches the call refused for a
-      supplementary gid, or the short caller cached, R53);
-    - a user in 300 groups, with `identity_mints_total` read after each call (catches the cap charged
-      per lookup rather than per record, R20, and a user refused for a closure larger than the
-      room, R54);
+    - a minted directory principal's claim with ten unknown gids past the cap, admitted without them,
+      then the same claim again, read from `vfs_caller_cache_misses_total` as a second miss (catches
+      the call refused for a supplementary gid, or the short caller cached, R53; a local user would
+      not show it, since it is never cached);
+    - a user in 300 groups, with `identity_mints_total` read after each call and the caller's
+      groups after the last (catches the cap charged per lookup rather than per record, R20, a user
+      resolved with part of its closure, or one never mintable, R54);
+    - the Kerberos sign-in above, with `identity_mints_total` read (catches the cap applied to a
+      proven sign-in through the shared `dirPrincipal`, R54);
+    - a full lookup-cap table: a new unit evicts an idle unit before a charging one (catches a live
+      ring reset while an idle one is held, R19);
     - `identitytest`'s directory fault wrapper failing the query, within and past the grace
       (catches a directory error mapped to "no such entry", R25).
 
@@ -702,6 +758,9 @@ docs/internals/rfcs/
   - In `internal/vfs`, with a claimed uid of a directory principal, whose caller has a non-zero
     `Fresh` and so is cached:
     - "client in the key", reading `vfs_caller_cache_hits_total` for no hit across hosts (R38);
+    - host A at its lookup cap and host B sending the same claim, B's call held in A's flight by the
+      cache's waiting hook: B is resolved, not refused (catches a refusal shared across addresses,
+      D6);
     - "one uid, two proofs": alice signed in with a test realm ticket, in `Finance` through the
       directory, then alice's uid claimed with no gids from another host, refused, with a miss in
       `vfs_caller_cache_misses_total` (R37);
@@ -714,7 +773,7 @@ docs/internals/rfcs/
 **Subtask T7.5 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** T7.4.
-- **Covers:** R26–R29, R47.
+- **Covers:** R26–R29, R47, R54.
 - **Deliverables:**
   - `entity.ExportPolicy.ManageGIDs` and `SharePolicy.ManageGIDs`, copied by
     `ExportPolicy.SharePolicy`, which puts the flag in the caller cache's key.
@@ -726,7 +785,7 @@ docs/internals/rfcs/
     command over this spec, carries the flag (§9, point 5).
   - Resolution's collect step: with `ManageGIDs`, the mapped principal's closure through `closure`,
     plus, for a directory principal, the directory's groups through `dirStep`, with the group cap
-    applying (R28). RFC 18 §3.2's `decision:` note on the default goes at the field.
+    applying (R28), and the groups `dirStep` mints charged to the mint cap (R54). RFC 18 §3.2's `decision:` note on the default goes at the field.
   - The RFC 16 §2.3 and §3 fields, and the RFC 18 §3.2, §5.5, §6.3, §7.1 and §10 sentences that call
     `ManageGIDs` deferred, rewritten in the RFC pull request (§9, point 2).
 
@@ -744,7 +803,10 @@ docs/internals/rfcs/
     - a directory principal's directory group granting the read (R27);
     - the field turned on between two calls of a cached claimed directory caller, read through
       `vfs_caller_cache_misses_total` (catches a cache that serves the old groups, R29);
-    - a fault on a membership read (R28).
+    - a fault on a membership read (R28);
+    - a claimed directory principal whose directory groups grow by 150 between two calls, the mint
+      cap's ring otherwise empty: the call is refused until all 150 are minted, never resolved
+      with part of them (catches `dirStep`'s mints left uncharged, R20, R54).
   - In `kvstore`, the suite's round trip and the golden vector (catches a field the codec drops,
     R26).
   - In `internal/node/api`, a `PUT` then a `GET` of `manage_gids` (catches an API that drops it).
@@ -765,13 +827,13 @@ docs/internals/rfcs/
   - `NFS3ERR_ACCES` for a refused read;
   - `NFS3ERR_PERM` for a refused `chown`;
   - `NFS3ERR_ROFS` for host B's write;
-  - `NFS3ERR_JUKEBOX` past the mint cap;
+  - `NFS3ERR_SERVERFAULT` past the mint cap (D6);
   - `MNT`'s refusal for host C.
 - **Tests:**
   - Through the adapter: R37's `AUTH_SYS` step, R38, R39, R45, R46 and R47. R46's cap step sends 60
     directory users with no group from `127.0.0.1` and 60 from `127.0.0.2`, so neither address
     reaches its lookup cap and only the node's mint cap can refuse: at most 100 are minted, and the
-    rest are answered `NFS3ERR_JUKEBOX`.
+    rest are answered `NFS3ERR_SERVERFAULT`.
   - Each fails as its service-level counterpart does when the resolution rule it checks is broken.
   - The run ends with the leak check, `adaptertest.CheckLeaks`.
   - No double: the node is real, and the directory is the in-memory one its suite holds (kind 2).
@@ -809,7 +871,7 @@ and T7.6 waits for S3 and S5. Checkpoints fall after T7.1, after T7.2, after T7.
 | --- | --- | --- | --- | --- |
 | 1 | T7.1 | 4.5 | — | `AUTH_SYS` resolution with its rows at the service: what S3 needs |
 | 2 | T7.2, T7.3 | 4.5 | — | the owner and `who` schemes E5 and E6 pin, with one parser |
-| 3 | T7.4 | 5.5 | PR 1 | the directory's two questions and the mints they lead to, under both caps |
+| 3 | T7.4 | 6 | PR 1 | the directory's two questions and the mints they lead to, under both caps |
 | 4 | T7.5 | 2.5 | PR 3 | `ManageGIDs`, from the record through the API to resolution |
 | 5 | T7.6 | 2 | PR 4, S3, S5 | the rows through NFSv3, once a node serves it |
 
@@ -831,13 +893,16 @@ RFC text of T7.2, T7.3 and T7.5 goes in one RFC pull request on `develop` (§9, 
      both at S2, or that track B takes T7.1 before E4's loopback rows and track C takes T7.2 before
      E5's attributes, rather than running E4 first in full as the RFC 21 implementation plan's D12
      orders.
-   - Pending the user's answer. The epic's figure, 6 subtasks and 19 man-days with T7.3, also
+   - Pending the user's answer. The epic's figure, 6 subtasks and 19.5 man-days with T7.3, also
      differs from the plan's 5 and 16; the plan is changed only if the user asks.
 2. **One RFC pull request on `develop`.** It carries:
    - D2's `SchemeOwnerGroup`, in RFC 18 §2.2 and §4.1;
    - D13's `SchemeWho` and `SchemeWhoGroup`, in RFC 18 §2.2, §4.1 and §4.5, which E6's D4 asked
      for; no other epic's pull request touches RFC 18;
    - D1's sentence in RFC 18 §4.5;
+   - if point 7 settles them so: §4.5's `nobody@domain` dropped and §10's "owner strings" row
+     asserting `65534` (R32), and §7.3's lookup-cap row leaving out a supplementary gid (R53);
+   - if point 8 settles it so, §6.2's `root` row squashing a claimed gid 0;
    - `ManageGIDs` in RFC 16 §2.3's `ExportPolicy` and §3's `SharePolicy`;
    - the rewriting of RFC 18 §3.2, §5.5, §6.3, §7.1 and §10's notes that call `ManageGIDs` deferred.
 
@@ -866,12 +931,29 @@ RFC text of T7.2, T7.3 and T7.5 goes in one RFC pull request on `develop` (§9, 
      scripted client `nfsclient.DialFrom`, which binds a loopback source address: the whole of 127/8
      routes on Linux, the host the e2e and nodetest runs use.
    - E4 maps `ErrUnknownPrincipal` from a `sattr3` to `NFS3ERR_INVAL` (its R28). `ErrUnavailable`
-     off a read, which this epic's caps and store errors answer, has no row in RFC 21 §11.5; E4's
-     RFC 21 pull request proposes `NFS3ERR_JUKEBOX` and `NFS4ERR_DELAY` for it (E4 §9), and until
-     it is agreed T7.6's cap step expects the row's status, not a fault.
+     off a read, which this epic's caps and store errors answer, has no row in RFC 21 §11.5, and
+     RFC 18 §4.1 has a lookup error reach the client as a server failure, so E4 and E5 answer it as
+     the fault, `NFS3ERR_SERVERFAULT` and `NFS4ERR_SERVERFAULT` (E4's §9, point 3; E5's §9, point
+     4), and T7.6's cap step expects `NFS3ERR_SERVERFAULT`.
    - E5's D4 and E6's D3 ask `SchemeOwner` or `SchemeOwnerGroup`, or `SchemeWho` or
      `SchemeWhoGroup`, on a proven call, and the uid or gid scheme on a claimed one (D1). E5 shows
      `ErrUnknownPrincipal` as `65534`.
    - T7.6 assumes `nodetest` can take `identitytest`'s directory as the installation's directory
      record. If it cannot when S5 holds, T7.6's directory rows run in `integration/ad-dc` against
      the real directory instead, and the rest stay on `nodetest`.
+7. **Three requirements that amend RFC 18**, pending Marco.
+   - R32, a principal with no owner spelling (a deleted owner included). (a), recommended: the
+     adapter writes its number, else `65534`, and the RFC pull request amends §4.5 and §10's "owner
+     strings" row to say so (D5). (b) §10 as written: `nobody@domain` on a proven call, with `Find`
+     reserving the name `nobody` for anonymous so a local user cannot capture it; E5's D4 changes.
+   - R53, a supplementary gid past the lookup cap. (a), recommended: left out, uncharged, with a
+     §7.3 amendment (D6). (b) §7.3 as written: the call is refused. Its cost is small, since the
+     directory cache keeps a "no such entry" answer for 30 seconds, so one repeated unknown gid is
+     charged at most twice a minute; only a host whose users carry many distinct unknown gids is
+     refused.
+   - R54 needs none: a user is minted only with its whole closure (D7).
+8. **A claimed gid 0 under a `root` squash** (D14), pending Marco. (a) §6.2 as written: only a
+   caller mapped to root is squashed, and a non-root uid claiming gid 0 keeps root's group, with a
+   `decision:` marker. (b), recommended: on a `root` share, gid 0 is also dropped from a claimed
+   caller's groups, as Linux's `root_squash` squashes it, with the §6.2 amendment in the RFC pull
+   request. Either is a condition in T7.1, within its estimate.
