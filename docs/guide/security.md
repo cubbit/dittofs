@@ -336,20 +336,20 @@ grant.
 All squash — every client's *file-level* identity is anonymous:
 
 ```bash
-dfsctl share export-policy update /export --squash all
+dfsctl share export-policy update export --squash all
 ```
 
 Root squash — root (UID 0) is mapped to anonymous for file checks, everyone else passes through:
 
 ```bash
-dfsctl share export-policy update /export --squash root
+dfsctl share export-policy update export --squash root
 ```
 
 No squashing — client UIDs pass through unchanged; use only on trusted networks
 or with Kerberos:
 
 ```bash
-dfsctl share export-policy update /export --squash none
+dfsctl share export-policy update export --squash none
 ```
 
 The full set of modes is `none`, `root_to_admin`, `root_to_guest`,

@@ -178,7 +178,7 @@ dfsctl grant set ditto --directory 'CUBBIT\Cubbit' --access read-write
 # Domain Admins → admin (full control)
 dfsctl grant set ditto --directory 'CUBBIT\Domain Admins' --access admin
 
-dfsctl grant list ditto     # shows each grant + resolved SID
+dfsctl grant list ditto     # shows each grant: principal ID and access
 ```
 
 **Pro dashboard:** **Access Control → Shares → <share> → Grant**, type the AD

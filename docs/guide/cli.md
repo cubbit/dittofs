@@ -814,10 +814,11 @@ dfsctl grant remove [share] [flags]
 Flags:
 
 ```
-      --directory string   A directory principal's qualified name, DOMAIN\name
-      --group string       The group's name
-      --id string          The share's ID, in place of its name
-      --user string        The user's name
+      --directory string      A directory principal's qualified name, DOMAIN\name
+      --group string          The group's name
+      --id string             The share's ID, in place of its name
+      --principal-id string   The principal's ID, as a listing prints it
+      --user string           The user's name
 ```
 
 Global flags:
@@ -839,11 +840,12 @@ dfsctl grant set [share] [flags]
 Flags:
 
 ```
-      --access string      The access: none, read, read-write or admin
-      --directory string   A directory principal's qualified name, DOMAIN\name
-      --group string       The group's name
-      --id string          The share's ID, in place of its name
-      --user string        The user's name
+      --access string         The access: none, read, read-write or admin
+      --directory string      A directory principal's qualified name, DOMAIN\name
+      --group string          The group's name
+      --id string             The share's ID, in place of its name
+      --principal-id string   The principal's ID, as a listing prints it
+      --user string           The user's name
 ```
 
 Global flags:
@@ -1486,9 +1488,10 @@ dfsctl quota remove [share] [flags]
 Flags:
 
 ```
-      --group string   The group's name
-      --id string      The share's ID, in place of its name
-      --user string    The user's name
+      --group string          The group's name
+      --id string             The share's ID, in place of its name
+      --principal-id string   The principal's ID, as a listing prints it
+      --user string           The user's name
 ```
 
 Global flags:
@@ -1513,16 +1516,17 @@ dfsctl quota set [share] [flags]
 Flags:
 
 ```
-      --advisory-bytes int   The advisory limit on bytes, 0 for none
-      --advisory-files int   The advisory limit on files, 0 for none
-      --grace duration       How long the soft limits may be passed before they are refused
-      --group string         The group's name
-      --hard-bytes int       The hard limit on bytes, 0 for none
-      --hard-files int       The hard limit on files, 0 for none
-      --id string            The share's ID, in place of its name
-      --soft-bytes int       The soft limit on bytes, 0 for none
-      --soft-files int       The soft limit on files, 0 for none
-      --user string          The user's name
+      --advisory-bytes int    The advisory limit on bytes, 0 for none
+      --advisory-files int    The advisory limit on files, 0 for none
+      --grace duration        How long the soft limits may be passed before they are refused
+      --group string          The group's name
+      --hard-bytes int        The hard limit on bytes, 0 for none
+      --hard-files int        The hard limit on files, 0 for none
+      --id string             The share's ID, in place of its name
+      --principal-id string   The principal's ID, as a listing prints it
+      --soft-bytes int        The soft limit on bytes, 0 for none
+      --soft-files int        The soft limit on files, 0 for none
+      --user string           The user's name
 ```
 
 Global flags:
@@ -1541,7 +1545,7 @@ Create, read, change, quiesce, resume and delete shares, set their export
 policies and mount them on this host.
 
 A share is named by its name, the one an SMB client tree-connects to, or by
---id. Grants and quotas on a share are the grant and quota commands.
+--id. grants and quotas on a share are the grant and quota commands.
 
 ```
 dfsctl share [flags]
@@ -1645,8 +1649,8 @@ Read and write a share's export policy
 Read and write a share's export policy: who it admits, with which proof and
 protection, how it squashes identities, and its SMB flags.
 
-'set' writes the whole policy, a field whose flag is not given taken back to
-its default; 'update' changes only the fields whose flags are given.
+'set' writes the whole policy, --flavor and --client required, any other field
+whose flag is not given taken back to its default; 'update' changes only the fields whose flags are given.
 
 ```
 dfsctl share export-policy [flags]

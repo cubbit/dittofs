@@ -40,16 +40,9 @@ bounded by the round-trip to the block store rather than by the local disk. Choo
 it for a share whose acknowledged writes must outlive the node; leave it at
 `journal` otherwise.
 
-`dfsctl share get <name>` prints the setting in force as a **Commit Ack** row,
-spelled out ("journal (survives host crash)" / "block-store (survives device
-loss)"), and the share JSON carries it as `commit_ack`. This is a promise an
-operator cannot infer by watching the system behave, so check it there rather than
-guessing from latency.
-
-It is the share's `commit_ack` field; no `dfsctl` command sets it yet. An unrecognised value is
-refused rather than resolved to the default, so a typo cannot quietly hand back
-a weaker promise than the one asked for. A share that sets nothing takes the
-`journal` default, or whatever the upgrade carry-over described above gave it.
+The v2 API carries no `commit_ack` on a share yet, so neither the API nor
+`dfsctl` shows or sets it; a share takes the `journal` default, or whatever the
+upgrade carry-over described above gave it.
 
 ### Axis 2 — relaxed metadata commit (`relaxed_metadata_commit`)
 

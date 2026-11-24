@@ -149,13 +149,13 @@ suffix), see [Running on standard ports (production)](install.md#running-on-stan
 ```bash
 # macOS - Mount to user directory (recommended, no sudo needed)
 mkdir -p ~/mnt/dittofs
-dfsctl share mount --protocol smb /export ~/mnt/dittofs
+dfsctl share mount --protocol smb export ~/mnt/dittofs
 
 # macOS - Mount to system directory (requires sudo)
-sudo dfsctl share mount --protocol smb /export /mnt/smb
+sudo dfsctl share mount --protocol smb export /mnt/smb
 
 # Linux - Mount with sudo (owner set to your user automatically)
-sudo dfsctl share mount --protocol smb /export /mnt/smb
+sudo dfsctl share mount --protocol smb export /mnt/smb
 
 # Unmount
 sudo umount /mnt/smb  # or: diskutil unmount ~/mnt/dittofs (macOS)
@@ -174,14 +174,14 @@ confirmed this is "works as intended".
 
 ```bash
 # Works correctly - mount owned by your user
-sudo dfsctl share mount --protocol smb /export /mnt/share
+sudo dfsctl share mount --protocol smb export /mnt/share
 ```
 
 **Alternative - mount without sudo** (to a user-owned directory):
 
 ```bash
 mkdir -p ~/mnt/dittofs
-dfsctl share mount --protocol smb /export ~/mnt/dittofs
+dfsctl share mount --protocol smb export ~/mnt/dittofs
 # No sudo needed; directory permissions default to 0755
 ```
 

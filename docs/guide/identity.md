@@ -305,7 +305,7 @@ dfsctl grant set ditto --directory 'CUBBIT\Cubbit' --access read-write
 dfsctl grant set ditto --directory 'CUBBIT\alice' --access read
 
 
-dfsctl grant list ditto     # shows each grant + its resolved SID
+dfsctl grant list ditto     # shows each grant: principal ID and access
 ```
 
 Grants are additive (highest matching level wins) and apply on both SMB (matched
