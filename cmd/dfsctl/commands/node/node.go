@@ -36,7 +36,7 @@ binary it runs, its failure domain, and whether a takeover marked it lapsed.`,
 			if err != nil {
 				return err
 			}
-			var all []apiv1.Node
+			all := []apiv1.Node{}
 			for n, err := range c.Nodes().List(cmd.Context(), nil) {
 				if err != nil {
 					return fmt.Errorf("%s: %w", cmd.CommandPath(), err)

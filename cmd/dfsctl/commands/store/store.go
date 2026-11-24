@@ -29,8 +29,8 @@ func table(s ...apiv1.Store) cmdutil.Table {
 
 // New returns the store command. A remote store has no name, so each
 // command takes its ID. No route lists the stores or changes a store's
-// spec: its settings change one by one through 'dfsctl setting set
-// store:<id>'.
+// spec: its settings but the endpoint and the credential change one by one
+// through 'dfsctl setting set store:<id>'.
 func New(env cmdutil.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "store",
@@ -39,7 +39,8 @@ func New(env cmdutil.Env) *cobra.Command {
 
 A remote store is where namespaces keep their content: its endpoint, bucket and
 the rest are its settings, and its credential is a secret the server seals and
-never prints. A store's setting changes through 'dfsctl setting set store:<id>'.
+never prints. A store's endpoint is fixed at its creation; its other settings
+change through 'dfsctl setting set store:<id>'.
 
 Examples:
   # Create a store, its credential read from a file
@@ -151,12 +152,12 @@ writes it.`,
 			if err != nil {
 				return err
 			}
-			// The credential is tagged by its store.
-			st, err := c.Stores().Get(cmd.Context(), args[0])
-			if err != nil {
-				return fmt.Errorf("%s: store %s: %w", cmd.CommandPath(), args[0], err)
-			}
-			ref, _, err := c.SetStoreCredential(cmd.Context(), args[0], v, st.ETag)
+			// decision: the credential is set under If-None-Match "*", a first
+			// set, since its tag is the secret's version, which no read answers;
+			// a set over a credential the store holds is a rotation, which the
+			// server refuses until rotation is an operation. Send the
+			// credential's own tag once a read answers it.
+			ref, _, err := c.SetStoreCredential(cmd.Context(), args[0], v, "*")
 			if err != nil {
 				return fmt.Errorf("%s: store %s: %w", cmd.CommandPath(), args[0], err)
 			}

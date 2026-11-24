@@ -44,9 +44,6 @@ Examples:
 			if len(args) == 1 {
 				p.Name = args[0]
 			}
-			if (p.Name == "") == (p.SID == "") {
-				return fmt.Errorf("%s: name the principal as DOMAIN\\name or by --sid, exactly one", cmd.CommandPath())
-			}
 			return run(cmd, env, "resolve-principal", p)
 		},
 	}
@@ -84,6 +81,8 @@ the server keeps no record of the request.`,
 			body.Spec.DNSHostName, _ = cmd.Flags().GetString("dns-host-name")
 			body.Spec.Takeover, _ = cmd.Flags().GetBool("takeover")
 			body.Credential.User, _ = cmd.Flags().GetString("user")
+			// Before the password's prompt, which the server's own refusal
+			// of the same would come after.
 			switch {
 			case offline && body.Credential.User != "":
 				return fmt.Errorf("%s: --user names an online join's administrator; an offline join takes only the computer account's password", cmd.CommandPath())

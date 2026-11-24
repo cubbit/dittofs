@@ -105,25 +105,21 @@ Examples:
 				return err
 			}
 			key, value := args[1], cmdutil.JSONValue(args[2])
-			var res client.Result[apiv1.SettingSpec, apiv1.SettingStatus]
-			_, err = r.Get(cmd.Context(), key)
+			put := func(ctx context.Context, key string, spec apiv1.SettingSpec, _ map[string]any, etag string) (client.Result[apiv1.SettingSpec, apiv1.SettingStatus], error) {
+				return r.Put(ctx, key, spec, etag)
+			}
+			res, err := cmdutil.Update(cmd, env, r, put, "setting", key, func(s *apiv1.SettingSpec) error {
+				s.Value = value
+				return nil
+			})
 			if p := (*apiv1.Problem)(nil); errors.As(err, &p) && p.Status == http.StatusNotFound {
 				// Not set at this scope: create it, refused if it is set since.
-				res, err = r.Put(cmd.Context(), key, apiv1.SettingSpec{Value: value}, "*")
+				if res, err = r.Put(cmd.Context(), key, apiv1.SettingSpec{Value: value}, "*"); err != nil {
+					err = fmt.Errorf("%s: setting %s at %s: %w", cmd.CommandPath(), key, args[0], err)
+				}
 			}
 			if err != nil {
-				return fmt.Errorf("%s: setting %s at %s: %w", cmd.CommandPath(), key, args[0], err)
-			}
-			if res.Operation == nil && res.Resource == nil {
-				res, err = cmdutil.Update(cmd, env, r, func(ctx context.Context, key string, spec apiv1.SettingSpec, _ map[string]any, etag string) (client.Result[apiv1.SettingSpec, apiv1.SettingStatus], error) {
-					return r.Put(ctx, key, spec, etag)
-				}, "setting", key, func(s *apiv1.SettingSpec) error {
-					s.Value = value
-					return nil
-				})
-				if err != nil {
-					return err
-				}
+				return err
 			}
 			if res.Operation != nil {
 				return cmdutil.Follow(cmd, c, res.Operation)

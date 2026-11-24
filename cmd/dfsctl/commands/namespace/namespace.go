@@ -78,7 +78,7 @@ string.`,
 			if err != nil {
 				return err
 			}
-			var all []apiv1.Namespace
+			all := []apiv1.Namespace{}
 			for n, err := range c.Namespaces().List(cmd.Context(), nil) {
 				if err != nil {
 					return fmt.Errorf("%s: %w", cmd.CommandPath(), err)

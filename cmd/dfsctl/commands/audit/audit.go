@@ -69,7 +69,7 @@ Examples:
 				}
 				filter.Set("actor", "user:"+id)
 			}
-			var all []apiv1.AuditRecord
+			all := []apiv1.AuditRecord{}
 			for r, err := range c.Audit(cmd.Context(), filter) {
 				if err != nil {
 					return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
