@@ -175,6 +175,11 @@ func TestWiredRefusedShareReadsRefused(t *testing.T) {
 			return n, err
 		})
 		sh := createShare(t, w.h, "nowhere", storeB)
+		// The pass that refuses the share can outlast many status turns on
+		// a loaded host, so wait for reconcile to pass the share's position
+		// first, then drop the turns that wait released.
+		caughtUp(t, w.h)
+		drain(ch)
 		// The API counts a node's refusal once the node's status has reached
 		// the share's position and lists it refused: the turn that holds both
 		// has committed it, or carries an earlier commit equal to it.
