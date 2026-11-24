@@ -621,7 +621,8 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
   constant of the share, fixed at its creation; `vfs.File.Share` carries the `ShareID`, which a
   share keeps for its life (RFC 16 §2.3), so the adapter derives the verifier from the listed
   directory's `File` with no `pkg/vfs` change and no handle parsed; `vfs.Page` carries no directory
-  `File`, so a listing whose entries carry none costs a `GetAttr` of the directory (§4.3). Overturned if a share's ID can ever change while
+  `File`, so a listing costs a `GetAttr` of the directory per page, since a pseudo directory's
+  entries carry other shares' `File`s (E5's D9; §4.3). Overturned if a share's ID can ever change while
   its listings persist, or two shares' IDs can fold to one verifier a client compares across them.
   Prior art: knfsd's verifier is a constant of the export (from memory). Applied in E4, E5.
 
@@ -634,8 +635,7 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
   pooled reply buffer, at most 8 KiB (RFC 21 §3.1), rather than holding a reference. Ceiling: 512 KiB
   per session copied. Upgrade to a held `resources.Buf` when a profile shows the copy.
 - **A `GetAttr` of the directory per listing for its cookie verifier** (E4, E5; D16): `vfs.Page`
-  carries no directory `File`. Ceiling: one extra service call per `READDIR` page whose entries
-  carry no `File`. Upgrade by a directory `File` on `vfs.Page`, an RFC 17 change, when a benchmark
+  carries no directory `File`. Ceiling: one extra service call per `READDIR` page. Upgrade by a directory `File` on `vfs.Page`, an RFC 17 change, when a benchmark
   shows the extra call.
 - **One `Spell` call per owner and group in a `GETATTR`** (E5, E6): no adapter cache, as RFC 21 §11.1
   forbids one; the service's caches answer. Ceiling: a `READDIRPLUS` of 10^4 entries is 2·10^4 calls.
@@ -766,24 +766,26 @@ The NFSv4 operations that need no client state: the file handle, the pseudo-file
 names, listings and I/O under the anonymous stateids.
 
 **Owns:** RFC 21 §2.3's NFSv4 sizes and the `READ` hook, §7.1, §7.2 and §7.3 for NFSv4, §7.4's
-single-node part, §8 other than §11.3's ACL attributes, §9.2's NFSv4 rules, §11.3's NFSv4 column
-and rules other than exclusive create and delete pending, Appendix B; Appendix D's file-handle, name,
+single-node part, §8 other than §11.3's ACL attributes, §5.2's two special stateids that name no
+open, §9.1's and §9.2's NFSv4 rules, §11.3's NFSv4 column and rules other than exclusive create,
+with delete pending and the read-only marker as its own operations meet them, Appendix B; Appendix D's file-handle, name,
 attribute, listing and I/O rows; RFC 20 §4.10's NFS entry files for `PUTROOTFH` and `SecInfo`.
 
 **Done when:** RFC 21 §13's "§2.3 a compound's reply under the record cap"'s NFSv4.0 steps, "§8
-attributes"'s single-node steps, "App. B directory link count *(1 node)*"'s NFSv4 half, "§8.1
-ctime", "§9.2 change info"'s NFSv4 steps on one node; §11.6's golden vectors for the NFSv4 attribute
+attributes"'s single-node steps, "App. B directory link count *(1 node)*"'s NFSv4 half, "§9.2
+change info"'s NFSv4 steps on one node; §11.6's golden vectors for the NFSv4 attribute
 table; N7, N9, N16's ctime half, N19's NFSv4 half.
 
 **Expected content:**
-- The generator's linked-list replies (`READDIR`), as `wire/gen/gen.go` names them.
+- `READDIR`'s linked-list reply, through E4's generator kind (E4's T4.6).
 - `PUTFH`, `PUTROOTFH`, `PUTPUBFH`, `GETFH`, `SAVEFH`, `RESTOREFH`, `LOOKUP`, `LOOKUPP`, the pseudo
   filesystem's attributes, `SECINFO`, `SECINFO_NO_NAME`; their import-test entry files.
 - `fattr4`'s `attrlist4` decoded into one optional field per attribute (RFC 20's plan's ledger) and
   every Appendix B attribute encoded, owner strings through `Spell`, `fs_charset_cap`.
 - `GETATTR`, `SETATTR`, `VERIFY`, `NVERIFY`, `ACCESS`, with the 0-allocation gate on `GETATTR`.
 - `CREATE`, `LINK`, `REMOVE`, `RENAME`, `READLINK`, with `change_info4`.
-- `READDIR`: cookies, `maxcount` unclamped, the verifier (D16).
+- `READDIR`: cookies, `maxcount` unclamped, the verifier (D16), from the directory's `GetAttr` on
+  every page.
 - `READ`, `WRITE`, `COMMIT` under the all-zeros and all-ones stateids; the `READ` row's `Bound`
   hook; the not-supported rows (D14).
 - Over loopback, each NFSv4.1 code this epic adds a row for (`SECINFO_NO_NAME` among them) sent
@@ -903,8 +905,9 @@ signal, N18, N20, N27; the `FlowControl` conformance check; RFC 20 §10.1's
 The state a client takes through an open: open stateids and their sequence, NFSv4.0 owners,
 byte-range locks, and the rules a stateid is checked by.
 
-**Owns:** RFC 21 §4.2, §5.2 other than `RECLAIM_COMPLETE`, §5.5, §11.3's exclusive create and delete
-pending, §11.4's opens, access and deny, locks and sequences rows; §11.5's drain roles of the
+**Owns:** RFC 21 §4.2, §5.2 other than `RECLAIM_COMPLETE` and E5's two special stateids that name no
+open, §5.5, §11.3's exclusive create and the `OPEN` halves of delete pending and the read-only
+marker, §11.4's opens, access and deny, locks and sequences rows; §11.5's drain roles of the
 operations it builds, per request; Appendix D's open, lock and stateid rows; D8.
 
 **Done when:** RFC 21 §13's "§4.2 v4.0 owners *(1 node)*" and "§5.2 stateids *(1 node)*" by the
@@ -919,7 +922,8 @@ reboot racing renew *(1 node)*", the "§3.5 confirm" step of a rebooted client h
 - `OPEN`: claim types, create modes and exclusive verifiers, access and deny, `Confirm`; NFSv4.0's
   `Record` read first.
 - `OPEN_CONFIRM`, `OPEN_DOWNGRADE`, `CLOSE`.
-- Stateids: the six rules, the special stateids, the current stateid, `TEST_STATEID`,
+- Stateids: the six rules, the special stateids within an open's context, extending E5's stateid
+  function, the current stateid, `TEST_STATEID`,
   `FREE_STATEID`, `FreeState` on an NFSv4.0 client's behalf.
 - NFSv4.0 owner sequences and owners' last replies (D8).
 - `LOCK`, `LOCKT`, `LOCKU`, `RELEASE_LOCKOWNER`: one range, `LOCK4denied`, blocking polls.
@@ -1096,7 +1100,7 @@ full journal" (its remote-outage step parked, §6.6), "§9.1 stability", "§9.1 
 close-to-open and WCC *(1 node)*", "§5.4 single-node restart", "§5.2, §5.4 lock across a restart *(1
 node)*", "§5.4 NFSv4.0 signal" on a restart of the one node, "§5.1 revoke across a restart *(1
 node)*"'s NFSv4 steps, "§6.1 NLM grace" and "§6"'s
-`SM_NOTIFY` step on a restart of the one node, "§5.3 lock recall", "§5.3 handle-cached deny mode",
+`SM_NOTIFY` step on a restart of the one node, "§5.3 lock recall", "§5.3 handle-cached deny mode", "§8.1 ctime",
 "§9.3 NFSv4.2"'s non-xfstests steps; after E15, `pynfs`, `cthon04` and `nfstest` at their expected
 failures, the pynfs steps of "§3.1, §3.2 sessions *(1 node)*", "§3.2 reply cache", "§4.2 v4.0
 owners *(1 node)*" and "§5.2 stateids *(1 node)*" among them.
@@ -1338,7 +1342,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | §11 (decoding) | E1 (compound row), E3 (credential), E4 and E5 (generator) |
 | §11.1 (identity) | E3; `RPCSEC_GSS`: E13; resolution: E7 |
 | §11.2 (request identity) | E3 (D10's key); the request ID: §6.6 |
-| §11.3 (namespace) | E4 (NFSv3), E5 (NFSv4), E6 (ACLs), E9 (exclusive create, delete pending, read-only marker) |
+| §11.3 (namespace) | E4 (NFSv3), E5 (NFSv4, delete pending and the read-only marker on its operations), E6 (ACLs), E9 (exclusive create; delete pending and the read-only marker on `OPEN`) |
 | §11.4 (open state) | E8 (clients, `Adapter` bytes), E9 (opens, locks), E10 (grants), E11 (NLM) |
 | §11.5 (errors) | E3 (`core`'s refusals, status layers), each handler epic (its rows), E10 (drain), E16 (totality); D4 in E4 |
 | §11.6 (testing) | golden vectors: E3, E4, E5; fuzz targets: E6, E8, E9, E11; drain test: E10; total mapping and cross-protocol: E16 |
