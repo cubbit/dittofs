@@ -25,13 +25,10 @@ func FuzzModelRepack(f *testing.F) {
 	for _, seed := range []uint64{7, 11, 21, 37} {
 		f.Add(encodeSteps(model.GenerateWithin(seed, 16, model.RepackOps), model.RepackOps))
 	}
-	// This entry is the decoder's maxFuzzSteps slice of the seed-3 shape,
-	// whose full 200-step draw once drove a repack pass that never finished:
-	// the records a carry moved never counted against the pass budget, so
-	// the pass re-selected the very segments its own carries sealed. Every
-	// carried record counts now, so the pass over these steps is bounded;
-	// the 200-step draw itself is pinned at full length by
-	// TestModel_RepackHeavyDraws in this file.
+	// This entry is the decoder's maxFuzzSteps slice of the seed-3 shape:
+	// it steers the fuzzer into the neighbourhood of the heavy draw, whose
+	// full 200-step length the decoder's cap cannot reach and
+	// TestModel_RepackHeavyDraws in this file runs whole.
 	f.Add(encodeSteps(model.GenerateWithin(3, 64, model.RepackOps), model.RepackOps))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		prof.Watch(t, prof.Options{})
@@ -64,13 +61,12 @@ func losingCrashes(steps []model.Step) []model.Step {
 
 // forgetSeeds is how many fixed seeds TestModel_RepackAndForget draws.
 //
-// decision: the seeds used to stop at twenty because draws 22 and 24 hung:
-// their repack pass manufactured the scale itself — the records a carry
-// moved never counted against the pass budget, so the pass re-selected the
-// very segments its own carries sealed and never finished. Every carried
-// record counts now, so the draws run bounded and stay in the count; a draw
-// that ever hangs again fails the suite by its timeout rather than being
-// left out of the count.
+// decision: the count is the whole sweep of the seeds' draws, and no draw is
+// left out of it for running long, so a draw that ever becomes unbounded
+// fails the suite by its own run instead of hiding behind a quietly
+// shortened count. Overturned only by a draw whose bounded run costs more
+// than the suite's budget: then the draw moves under a deadline of its own,
+// never out of the count.
 const forgetSeeds = 24
 
 // forgetSteps is the length of each of those draws.

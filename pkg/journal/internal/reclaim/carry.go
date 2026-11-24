@@ -488,6 +488,12 @@ func (t *Tracker) relearnReleased(seg core.SegmentID) {
 // record's file there before the registry — so the scan grows with the
 // segment's files, never with the whole ledger. A segment no state exists
 // for answers nothing.
+//
+// ponytail: the walk costs the records of the segment's named files, not
+// the segment's own — segState.files never shrinks and a file's registry
+// entry keeps its records of every segment — so one shared file makes the
+// walk long. Replace with a per-segment records index when a carry of a
+// many-file segment shows in a profile.
 func (t *Tracker) registeredIn(seg core.SegmentID) []Rec {
 	t.rm.Lock()
 	st := t.stateOf(seg)

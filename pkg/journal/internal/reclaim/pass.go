@@ -158,8 +158,8 @@ func (p *Pass) stoppedNow() bool {
 }
 
 // Run runs one pass of units inside scope, appending at most budget bytes —
-// the payload its content copies move and the records its carries place, the
-// records counted by their whole length, as the reserve's charge counts
+// the payload its content copies move, and its carried and deferred records
+// by their whole length, the records the way the reserve's charge counts
 // them — and no more than the repack reserve held when the pass
 // began, whichever is smaller: the budget and the reserve clamp the pass's
 // selection, never a unit in flight — the check runs before the next
