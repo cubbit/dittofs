@@ -164,8 +164,9 @@ func refuseForeign(r kv.Reader) error {
 	return nil
 }
 
-// Open reads the format record before any other key and refuses a store
-// whose format or fold rules this binary does not implement. With no format
+// Open reads the format record before any other key and refuses, with
+// ErrFormat, a store whose record does not decode or whose format or fold
+// rules this binary does not implement. With no format
 // record it answers ErrForeignStore over a store holding any key but a clock
 // ceiling, and ErrNotInitialised otherwise. It never rewrites the record: a
 // store's format is raised only by the control plane's gate, so an older
@@ -183,8 +184,10 @@ func Open(ctx context.Context, db kv.KV) (*Store, error) {
 		if err != nil {
 			return err
 		}
-		f, err = decodeFormat(b)
-		return err
+		if f, err = decodeFormat(b); err != nil {
+			return fmt.Errorf("%w: the format record does not decode: %w", ErrFormat, err)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err

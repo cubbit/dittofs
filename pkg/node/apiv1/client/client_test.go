@@ -126,7 +126,7 @@ func TestNew(t *testing.T) {
 		{"http://127.0.0.2:8080/", true},
 		{"http://[::1]:8080", true},
 		{"/run/dittofs/api.sock", true},
-		{"run/api.sock", true},
+		{"run/api.sock", false},
 		{"http://localhost:8080/", false},
 		{"http://dfs.example:8080", false},
 		{"http://10.0.0.1:8080", false},

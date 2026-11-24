@@ -3,11 +3,12 @@ package context
 import (
 	"fmt"
 
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
 	"github.com/spf13/cobra"
 )
 
-func newRenameCmd() *cobra.Command {
+func newRenameCmd(env cmdutil.Env) *cobra.Command {
 	renameCmd := &cobra.Command{
 		Use:   "rename <old-name> <new-name>",
 		Short: "Rename a context",
@@ -22,23 +23,16 @@ Examples:
   # Rename a development context to something more descriptive
   dfsctl context rename dev local-dev`,
 		Args: cobra.ExactArgs(2),
-		RunE: runContextRename,
+		RunE: func(cmd *cobra.Command, args []string) error { return runContextRename(cmd, env, args) },
 	}
 	return renameCmd
 }
 
-func runContextRename(cmd *cobra.Command, args []string) error {
+func runContextRename(cmd *cobra.Command, env cmdutil.Env, args []string) error {
 	oldName := args[0]
 	newName := args[1]
 
-	// Load credential store
-	store, err := credentials.NewStore()
-	if err != nil {
-		return fmt.Errorf("failed to initialize credential store: %w", err)
-	}
-
-	// Rename context
-	if err := store.RenameContext(oldName, newName); err != nil {
+	if err := cmdutil.Locked(cmd.Context(), env, func(s *credentials.Store) error { return s.RenameContext(oldName, newName) }); err != nil {
 		if err == credentials.ErrContextNotFound {
 			return fmt.Errorf("context '%s' not found", oldName)
 		}

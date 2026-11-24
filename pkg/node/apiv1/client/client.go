@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -69,7 +70,7 @@ func WithClock(clock Clock) Option { return func(c *Client) { c.clock = clock } 
 
 // New returns a client of server: an https URL, an http URL whose host is a
 // loopback address, either with no path but "/" and no credentials, query
-// or fragment; or the path of a node's local socket, which holds a "/". It
+// or fragment; or the absolute path of a node's local socket. It
 // contacts nothing until its first call, and follows no redirect: an answer
 // 3xx is a refusal.
 func New(server string, opts ...Option) (*Client, error) {
@@ -91,9 +92,9 @@ func New(server string, opts ...Option) (*Client, error) {
 	for _, opt := range opts {
 		opt(c)
 	}
-	refused := fmt.Errorf("client: %q is neither an https URL, an http URL on a loopback address, nor a socket's path", server)
+	refused := fmt.Errorf("client: %q is neither an https URL, an http URL on a loopback address, nor a socket's absolute path", server)
 	if !strings.Contains(server, "://") {
-		if !strings.Contains(server, "/") {
+		if !filepath.IsAbs(server) {
 			return nil, refused
 		}
 		tr.Proxy = nil

@@ -2,9 +2,10 @@ package node
 
 // What a start refuses to serve over: a start over absent or contradictory
 // storage names what it found instead of creating anything. decide turns the
-// facts the probes gathered — the v1 layouts, the store directory, each
-// journal device — into that one verdict, and nothing under the node's
-// storage is opened, created or changed to gather them.
+// facts the probes gathered — the v1 layouts, the store, each journal device
+// — into that one verdict, and nothing under the node's storage is opened,
+// created or changed to gather them: a store with no directory arrives
+// already opened by its host, and is only read.
 
 import (
 	"context"
@@ -17,9 +18,11 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
-// What the probe of the metadata store's directory found.
+// What the probe of the metadata store found.
 type storeState int
 
 const (
@@ -41,7 +44,8 @@ type startFacts struct {
 	// V1 names a journal of the old layout, anywhere the start looks.
 	V1 string
 	// Store is the metadata store's state; StoreErr carries its probe's error
-	// when the state is unidentifiable, nil otherwise.
+	// when the state is unidentifiable, nil otherwise. StoreDir is the
+	// store's directory, "" for a store with none.
 	Store    storeState
 	StoreErr error
 	StoreDir string
@@ -63,8 +67,9 @@ var (
 var (
 	errNoClock = errors.New("the start check's clock is missing")
 	// errNoDevice answers a start whose bootstrap names no journal device.
-	errNoDevice   = errors.New("no journal device: the bootstrap names none, and a node keeps its journals on a device of its own")
-	errNoStoreDir = errors.New("the store's directory is not set")
+	errNoDevice  = errors.New("no journal device: the bootstrap names none, and a node keeps its journals on a device of its own")
+	errNoStore   = errors.New("the store is not set: the start check takes its directory or its opened KV")
+	errTwoStores = errors.New("the store is set twice: the start check takes its directory or its opened KV, not both")
 )
 
 // refuseV1Found is the one sentence a start or an initialisation refuses v1 data
@@ -156,23 +161,51 @@ func probeStore(storeDir string) (storeState, error) {
 	return storeUnidentifiable, errors.New("no Badger MANIFEST")
 }
 
+// probeKV classifies kvstore.Open's answer over db, a store with no
+// directory that its host opened: a store present; ErrNotInitialised absent;
+// ErrForeignStore unidentifiable, returned with that error. Any other error,
+// a transport's or the backend's limits', is no verdict on the store: it is
+// returned as failed, with the state unidentifiable, and refuses the start as
+// it stands.
+//
+// decision: a store whose format record this binary does not read, ErrFormat,
+// is present, as a Badger directory holding the same store is to probeStore:
+// the check passes and the node's own open refuses it naming the format, on
+// either backend. Overturned when the start check is to name the format
+// itself, which it would then have to do over a directory too.
+func probeKV(ctx context.Context, db kv.KV) (state storeState, why, failed error) {
+	_, err := kvstore.Open(ctx, db)
+	switch {
+	case err == nil, errors.Is(err, kvstore.ErrFormat):
+		return storePresent, nil, nil
+	case errors.Is(err, kvstore.ErrNotInitialised):
+		return storeAbsent, nil, nil
+	case errors.Is(err, kvstore.ErrForeignStore):
+		return storeUnidentifiable, err, nil
+	}
+	return storeUnidentifiable, nil, fmt.Errorf("reading the metadata store: %w", err)
+}
+
 // afterDeviceOpen runs after each device's journal opens, in device order;
 // a test replaces it so a row can end its context mid-probe. Production
 // leaves it unset. It is package-level because Preflight has no instance to
 // hang it on: a row that sets it must not run while another does.
 var afterDeviceOpen func()
 
-// Preflight checks, before anything opens, that the store and the journal
-// devices a start finds are the ones its installation wrote: a pre-journal
-// (v1) local layout, at a device or at the journal root the blockstore's
-// configuration names, is refused naming the path; a present Badger store
-// passes; an absent store with the journals that name an installation is the
-// store lost; nothing else is initialised or identifiable. It creates,
-// changes and removes nothing, and builds no component. opts reach each
+// Preflight checks that the store and the journal devices a start finds are
+// the ones its installation wrote. The store is exactly one of dir, the
+// Badger store's directory, probed before anything opens it, and store, the
+// KV of a store with no directory, which its host opened and still owns:
+// Preflight reads it and never closes it. A pre-journal (v1) local layout,
+// at a device or at the journal root the blockstore's configuration names,
+// is refused naming the path; a present store passes; an absent store with
+// the journals that name an installation is the store lost; nothing else is
+// initialised or identifiable. It creates, changes and removes nothing, and
+// builds no component. opts reach each
 // device's journal open — a test hands the platform check a mount it knows
 // suits the host, exactly as the node's own journal options channel does —
 // and a start hands none: the real platform check stands.
-func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, clock engine.Clock, opts ...journal.Option) error {
+func Preflight(ctx context.Context, storeDir string, store kv.KV, v1Root string, devices []string, clock engine.Clock, opts ...journal.Option) error {
 	switch {
 	case ctx.Err() != nil:
 		// A canceled context is the caller's answer, never a device verdict:
@@ -184,8 +217,10 @@ func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, c
 		// device unidentifiable, and an empty store directory is the root
 		// of the very filesystem the caller configured.
 		return errNoClock
-	case storeDir == "":
-		return errNoStoreDir
+	case storeDir == "" && store == nil:
+		return errNoStore
+	case storeDir != "" && store != nil:
+		return errTwoStores
 	case len(devices) == 0:
 		// decision: a bootstrap that names no journal device is a missing
 		// wiring piece, refused before any probe runs: a deviceless start
@@ -203,7 +238,27 @@ func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, c
 			break
 		}
 	}
-	state, err := probeStore(storeDir)
+	var state storeState
+	var err error
+	if store != nil {
+		var failed error
+		if state, err, failed = probeKV(ctx, store); failed != nil {
+			// A backend may report a read its caller canceled as an error of
+			// its own, FoundationDB's as a deadline: the context's error is
+			// the answer instead, as it is for the device probes.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// The v1 layout outranks a read that failed, as it outranks
+			// every verdict on the store.
+			if facts.V1 != "" {
+				return decide(facts)
+			}
+			return failed
+		}
+	} else {
+		state, err = probeStore(storeDir)
+	}
 	if state != storeAbsent {
 		// The device probes cannot change a present or an unidentifiable
 		// verdict, so they do not run: a present store already identifies the
@@ -249,7 +304,11 @@ func decide(f startFacts) error {
 		return nil
 	}
 	if f.Store == storeUnidentifiable {
-		return fmt.Errorf("%w: the metadata store in %s cannot be identified: %v", errUnidentifiable, f.StoreDir, f.StoreErr)
+		where := ""
+		if f.StoreDir != "" {
+			where = " in " + f.StoreDir
+		}
+		return fmt.Errorf("%w: the metadata store%s cannot be identified: %v", errUnidentifiable, where, f.StoreErr)
 	}
 	var (
 		first    *journal.IdentityError // the first device's journal identity, by device order
@@ -280,5 +339,9 @@ func decide(f startFacts) error {
 	if segments {
 		held = ", while its segments still live on the devices"
 	}
-	return fmt.Errorf("%w: the store volume at %s holds none of installation %x the devices name — the journal at %s carries identity %x%s; check the store volume's mount first, then restore it from a backup, which loses every write since that backup", errStoreLost, f.StoreDir, first.Installation, firstDir, first.Found, held)
+	store, check := "the metadata store", "check that the bootstrap names the installation's store first"
+	if f.StoreDir != "" {
+		store, check = "the store volume at "+f.StoreDir, "check the store volume's mount first"
+	}
+	return fmt.Errorf("%w: %s holds none of installation %x the devices name — the journal at %s carries identity %x%s; %s, then restore it from a backup, which loses every write since that backup", errStoreLost, store, first.Installation, firstDir, first.Found, held, check)
 }

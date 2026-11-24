@@ -98,7 +98,7 @@ and title and not copied.
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T6.2 | the lock file is tested with two real `dfsctl` processes on one credentials file; `--cacert` on a real TLS listener |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T6.2, T6.4 | D4's lock and D11's mount exception carry a `decision:` marker each; D12's grant wait one too |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | the lock test fails with the lock removed; the package-state test fails on a new package variable; the removed commands are checked absent, not merely refused |
-| rule 11, a symbol is exported only if RFC 23's interface uses it | T6.1, T6.2 | `NewRoot`, `cmdutil.Env` and each noun's `New` are exported only across packages under `cmd/dfsctl`, which nothing outside imports but `cmd/gendocs` (D1); `credentials.NewStoreAt` for the same reason; the client edits are E4's |
+| rule 11, a symbol is exported only if RFC 23's interface uses it | T6.1, T6.2 | `NewRoot`, `cmdutil.Env` and each noun's `New` are exported only across packages under `cmd/dfsctl`, which nothing outside imports but `cmd/gendocs` (D1); `credentials.Read` and `credentials.Update` for the same reason; the client edits are E4's |
 | rule 12, each subtask creates only what it declares | all | a noun package moves to `New(env)` in the subtask that rebuilds it; `clisuite` lands with its first rows |
 
 ## 3. Requirements and invariants
@@ -129,7 +129,7 @@ and title and not copied.
 | R9 | Names resolve to IDs with the list filters | MUST | RFC 23 §7, §4.1 | T6.3 |
 | R10 | A write reads before it writes and echoes the `ETag` it read, opaque, in `If-Match` | MUST | RFC 23 §7, §4.4 | T6.3 |
 | R11 | On `412` the CLI shows the difference and stops rather than retrying | MUST | RFC 23 §7 | T6.3 |
-| R12 | A command sends one idempotency key on every call that takes one, and none on sign-in, refresh, the password change, `:set-password` or API-token creation | MUST | RFC 23 §7, §4.5 | T6.2, T6.5 |
+| R12 | A command sends one idempotency key on every call that takes one, and none on sign-in, refresh, the password change, sign-out, `:set-password` or API-token creation | MUST | RFC 23 §7, §4.5 | T6.2, T6.5 |
 | R13 | For an operation the CLI prints its ID and, with `--wait`, follows it to its end with `?wait=` | MUST | RFC 23 §7, §4.6 | T6.3 |
 | R14 | An interrupted wait resumes with `operation wait <id>` from any machine | MUST | RFC 23 §7 | T6.3 |
 
@@ -161,7 +161,7 @@ this epic's part is that every command reaches the API through that client and n
   `cmd/dfsctl` declares a package-level variable but the build's version, which `-ldflags` set:
   lower-case `version`, `commit` and `date` in `cmd/dfsctl` (main), where the linker writes them,
   and exported `Version`, `Commit` and `Date` in `cmd/dfsctl/commands`, which main copies them
-  into; each set is allowed only in its own directory. `cmdutil.Flags` goes. `credentials.NewStoreAt(path)` replaces the store's
+  into; each set is allowed only in its own directory. `cmdutil.Flags` goes. `credentials.Read(path)` and `credentials.Update` replace the store's
   fixed path, for `ConfigPath`. `internal/cli/prompt` takes its reader from `Env.In` in place of
   `promptui`'s `os.Stdin`; with `Interactive` false a command that would prompt refuses, naming the
   `--…-file` flag to use, which also suits a later MCP subcommand. These exports cross only packages
@@ -174,15 +174,22 @@ this epic's part is that every command reaches the API through that client and n
   prints a unified diff, through `github.com/pmezard/go-difflib` (already in `go.mod`), between the
   spec it read and the one the server now holds, and exits non-zero. No marker. Prior art:
   `kubectl apply`'s conflict report (from memory).
-- **D4, every change to the credentials file runs under a lock file beside it.** `<config>.lock`,
-  created with `O_CREATE|O_EXCL` (the standard library, the same on every OS, and blocking no
-  reader, unlike `LockFileEx`), held across load, change and save, by `login`, `logout`,
-  `context` changes and a refresh; a save writes a temporary file and renames it into place. The
-  CLI decides that a token has expired only by a `401`, never by its own clock, so `ExpiresAt` and
-  `IsExpired` go. A command that gets `401` takes the lock, re-reads the file, refreshes only if the
-  token it holds is still the one that failed, and saves the new pair. `decision:` at the lock: a
-  lock left by a killed process blocks until removed by hand, named in the error; withdraw it for a
-  lease if that bites. Prior art: git's `index.lock` (from memory).
+- **D4, every change to the credentials file runs under the operating system's lock on a file
+  beside it.** `credentials.Update(ctx, path, waiting, fn)` opens `<config>.lock` and takes an
+  exclusive lock on it without waiting (`flock(LOCK_EX|LOCK_NB)` on Unix, `LockFileEx` with
+  `LOCKFILE_FAIL_IMMEDIATELY` on Windows, both from `golang.org/x/sys`), polling while another
+  process holds it, and holds it across load, change and save, by `login`, `logout`, `context`
+  changes and a refresh; a save writes a temporary file and renames it into place. An unlocked
+  read (`credentials.Read`) answers a view with no method that writes. The lock is the OS's, not a
+  file created `O_EXCL`, because the OS releases it when its holder exits however it exits, so an
+  interrupted or killed dfsctl never leaves every later one waiting; `LockFileEx`'s mandatory lock
+  blocks no reader here, since it is taken on the `.lock` file, which nothing else opens. The lock
+  file itself may stay. The CLI decides that a token has expired only by a `401`, never by its own
+  clock, so `ExpiresAt` and `IsExpired` go. A command that gets `401` takes the lock, re-reads the
+  file, refuses a context that no longer names the server, CA bundle and account it dialled,
+  refreshes only if the token it holds is still the one that failed, within a 30 s bound, and
+  saves the new pair. No marker. Prior art: git's `index.lock` (from memory), which this departs
+  from for the stale-lock reason.
 - **D5, a secret never comes from a flag value.** A password, a domain administrator's credential,
   an offline join's password, a remote store's credential and an API token are read from a prompt,
   or from a file named by a `--…-file` flag; the global `--token` goes, `login --token-file` takes
@@ -261,10 +268,10 @@ cmd/dfsctl/
     idmap/ identityprovider/ netlogon/
     trash/ system/ settings/ switch_user.go T6.1  deleted (D7)
   cmdutil/
-    env.go client.go lock.go               T6.2  Env, the client builder, the token source, D4
+    env.go client.go lock.go               T6.2  Env, the client builder, the token source, the wait message
     resolve.go update.go wait.go           T6.3
   internal/clisuite/                       T6.3  the shared rows and Run (D8)
-internal/cli/credentials/                  T6.2  NewStoreAt; mTLS and skip-verify fields gone
+internal/cli/credentials/                  T6.2  Read, Update and the OS lock (D4); mTLS and skip-verify fields gone
 internal/cli/prompt/                       T6.1  reads Env.In
 cmd/gendocs/                               T6.1  builds NewRoot
 docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
@@ -299,33 +306,34 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 - **Track:** A. **Depends on:** T6.1; E4 (the client, with §9's edits); E5 (sign-in, refresh,
   sign-out, the password change, API tokens).
 - **Covers:** R5, R6, R7, R8, R12, R20.
-- **Deliverables:** `credentials.NewStoreAt`, the mTLS and skip-verify fields gone and a stored
+- **Deliverables:** `credentials.Read` and `credentials.Update`, the mTLS and skip-verify fields gone and a stored
   `tls_skip_verify: true` refused on load (D7), `ExpiresAt` gone (D4); `cmdutil`'s lock file, the
   save by rename, and the token source over the locked file (D4, D6); contexts holding a URL or the
   local socket's path, the account and `--cacert` (R5); `login` (a password from a prompt or
   `--password-file`, or `--token-file` for an API token) and `password change`, each a credential
-  call with no idempotency key, and `logout`, which sends one (R8, R12); `login`'s
+  call with no idempotency key, and `logout`, whose sign-out the server also takes keyless,
+  since its idempotency record is keyed by account (R8, R12); `login`'s
   `-p`/`--password` flag deleted (D5): T6.1 deleted only `login`'s `--client-cert`, `--client-key`
   and `--tls-skip-verify` flags, leaving `-p` to this subtask; the file `0600` in a `0700` directory (R6).
-  `internal/cli/prompt/password.go` is kept for this subtask and takes a writer, but it still runs
-  on promptui: chaining two prompts on one reader (`PasswordWithConfirmation`) loses input to
-  readline's read-ahead, and promptui races under `-race`. `login` and `password change` read the
-  password through one `bufio.Reader` per invocation, or `golang.org/x/term.ReadPassword` on a
-  terminal. Consumed by every later subtask.
+  `internal/cli/prompt/password.go` goes, with `promptui`: chaining two prompts on one reader
+  loses input to readline's read-ahead, and promptui races under `-race`. `login` and `password
+  change` read the password through one `bufio.Reader` per invocation, or
+  `golang.org/x/term.ReadPassword` on a terminal, which an interrupt leaves with its echo restored.
+  Consumed by every later subtask.
 - **Acceptance criteria:**
   - Two commands refreshing one context at once both succeed and the session survives.
   - A command after the access token's expiry succeeds and leaves the file holding the new pair.
 - **Tests:** against the harness, the clock injected: `login`, the clock advanced past the access
   token's lifetime, a command succeeding and the file holding a new refresh token; the lock test:
-  the test holds `<config>.lock`, starts two `dfsctl` processes after the expiry, waits until both
+  the test holds the lock on `<config>.lock`, starts two `dfsctl` processes after the expiry, waits until both
   are blocked on it, releases it, and asserts both succeed and a third command is still signed in,
   failing with the lock removed (R20, rule 8); a context naming the harness's local socket (R5); a
   context with `--cacert` against a real TLS listener the harness starts, and the same without it
   refused (R5); the file's mode `0600` and its directory's `0700` read back, and on Windows the
   file's ACL granting only the user (R6); a stored `tls_skip_verify: true` refused naming the field
   (D7); a must-change account refused `password_change_required`, `password change`, then the
-  command succeeding (R8); `login` and `password change` each succeeding, which the server refuses
-  `400` had a key been sent, and `logout` succeeding with one (R12).
+  command succeeding (R8); `login`, `password change` and `logout` each succeeding, which the
+  server refuses `400` had a key been sent (R12).
 
 ### T6.3 Name resolution, read-modify-write, operations and the shared suite
 

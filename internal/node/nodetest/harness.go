@@ -75,6 +75,7 @@ type options struct {
 	inMemory bool
 	newNode  func(node.Config) (*node.Node, error)
 	password string
+	socket   string
 }
 
 // AdminPassword has New give the administrator password as its first
@@ -97,6 +98,11 @@ func Watch() Option { return func(o *options) { o.watch = true } }
 // InMemory keeps Badger in memory rather than on disk. Such a harness
 // cannot Restart: nothing outlives the KV it closes.
 func InMemory() Option { return func(o *options) { o.inMemory = true } }
+
+// APISocket has the node serve its API on the local socket at path too, as
+// the bootstrap's api.socket does, for a test outside the node, which may
+// not build its configuration itself.
+func APISocket(path string) Option { return func(o *options) { o.socket = path } }
 
 // WithNew is the constructor New and Restart build the node through;
 // without it they call node.New.
@@ -135,6 +141,7 @@ func New(t testing.TB, opts ...Option) *Harness {
 	b := bootstrap.Bootstrap{Journals: []bootstrap.Journal{{Path: dev}}}
 	b.Node.ID = nodeID
 	b.API.Listen = []string{"127.0.0.1:0"}
+	b.API.Socket = o.socket
 	b.Metrics.Listen = "127.0.0.1:0"
 	b.Adapters.Listen = []string{"127.0.0.1"}
 	b.Keys.Storage.Kind = keyprovider.KindLocal
@@ -346,5 +353,5 @@ func (h failOnBudget) Handle(ctx context.Context, r slog.Record) error {
 // it runs on. The tests of dfs start call it here because only start.go may
 // import the node in that package.
 func Preflight(ctx context.Context, storeDir, v1Root string, devices []string, clock engine.Clock) error {
-	return node.Preflight(ctx, storeDir, v1Root, devices, clock, journaltest.SuitableMount())
+	return node.Preflight(ctx, storeDir, nil, v1Root, devices, clock, journaltest.SuitableMount())
 }
