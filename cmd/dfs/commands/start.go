@@ -120,7 +120,9 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		open = func(ctx context.Context) (kv.KV, error) {
 			stage(base, stageOpen, ctx)
 			var err error
-			store, err = openStore(ctx, base, cfg, clock)
+			if store, err = openStore(ctx, base, cfg, clock); err == nil {
+				stage(base, stageOpened, ctx)
+			}
 			return store, err
 		}
 	}
@@ -237,11 +239,12 @@ type stageKey struct{}
 type kvKey struct{}
 
 // The stages a stageKey hook is called at: before the start check, as it
-// opens a store with no directory, and once it returned, and before Start and
-// once it returned, each "returned" stage before the command reads whether a
-// signal arrived.
+// opens a store with no directory and once that open succeeded, and once the
+// check returned, and before Start and once it returned, each "returned"
+// stage before the command reads whether a signal arrived.
 const (
 	stageOpen              = "open"
+	stageOpened            = "opened"
 	stagePreflight         = "preflight"
 	stagePreflightReturned = "preflight-returned"
 	stageStart             = "start"

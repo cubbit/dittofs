@@ -290,9 +290,10 @@ func TestStartClosesTheStoreOnFoundationDB(t *testing.T) {
 		want string
 	}{
 		{name: "the check refuses", want: "the start check: the node is not initialised"},
-		// The signal lands before the check reads the store, so the start
-		// ends on it and exits zero, with the store it opened closed.
-		{name: "a SIGTERM during the check", signalAt: stagePreflight},
+		// The signal lands once the check opened the store and before it
+		// reads it, so the start ends on it and exits zero, with the store
+		// it opened closed.
+		{name: "a SIGTERM during the check", signalAt: stageOpened},
 		// The read fails with FoundationDB's own error, which the check
 		// answers as the signal's: the start exits zero.
 		{name: "a SIGTERM during the check's store read", signalInRead: true},
