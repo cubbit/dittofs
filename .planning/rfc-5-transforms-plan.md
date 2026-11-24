@@ -793,7 +793,7 @@ metadata store and master keys in a key file.
 **Owns:** RFC 5 §2.5 (the provider's obligations), Appendix B.1's key wrap and stored wrap,
 Appendix B.2's key table as namespace creation applies it, its escrow rule, its "no storage-key
 fallback" and its salvage key, Appendix B.4's distinctions at the provider, Appendix B.6's two
-gauges; RFC 16 §4.2's key-record and key-lock rows.
+gauges; RFC 16 §4.2's key-record and key-lock rows and its `MKW‖masterKeyID` wrap count (A4).
 **Done when:** the provider passes `materialtest`; RFC 5 §8.1's §2.5 row (a replaced key refused,
 the gauge at 0); RFC 5 §8.1's T18 rows (altered AAD, a record copied to another namespace); RFC 5
 §8.1 T22's stored wrap for the key file; the fingerprint part of RFC 5 §8.1's Appendix B.1
@@ -955,7 +955,8 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
 - **Q2. The cipher is AES-256-GCM from the standard library** (D3): a commonly supported
   algorithm, no implementation of our own. RFC 5 Appendix B is amended in this pull request: a
   chunk's nonce is an HMAC of its AAD and input, stored in the body; a frame is sealed once per salt; a
-  key-file master key makes at most 2³² random-nonce wraps, counted by the provider. Example:
+  key-file master key makes at most 2³² random-nonce wraps, counted inside the wrap call in one
+  server-wide row per master key. Example:
   `aead, _ := cipher.NewGCM(block); body = aead.Seal(nonce, nonce, input, aad)`.
 - **Q3. KMIP only** (D14); a cloud key service is a §6.1 row. Example:
   `materials: {provider: kmip, endpoint: …, key: …}`.
