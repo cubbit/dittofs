@@ -22,17 +22,20 @@ a pending callback. Every citation is `develop`'s text, which holds amendment A2
 Cited, not owned: RFC 8881 §20 for the callback program's bytes, §18.16 for `open_delegation4`,
 §18.39 for `GET_DIR_DELEGATION`; RFC 5531 for the RPC reply; RFC 20 §2.5's layout of `ops/cb`.
 **Track:** A.
-**Epic 10 estimate: 9 subtasks, 23.5 man-days.**
+**Epic 10 estimate: 9 subtasks, 23 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state and members' table (T1.1,
 T1.2), E2's `nfsharness` (T2.2) and knfsd's `nfs41/` delegation capture with its `CB_RECALL` (T2.3).
 **S4**, an NFSv4.1 session over loopback, for every loopback row. **S2b**, met: amendment A2 is in
-RFC 17. Beyond them, pieces of epics broken down beside this one, each named in the subtask that
-takes it and listed as assumptions in §9: **E3**'s scripted client with its call encoder and reply
-decoder (T3.2, its D11) and its drain rows (T3.4); **E8**'s callbacks value and `Handlers` field,
-its session registry with each session's back-channel connections, callback program, security and
-slot count, and its `SEQUENCE` flags from `ClientStatus`; **E9**'s `OPEN`, its stateid codec and
-rules, `TEST_STATEID`, `FREE_STATEID`, `LOCK` and `LOCKT`, and the `ErrState` (`Revoked`) row;
-**E5**'s `READ`, `WRITE` and `SETATTR`, its not-supported handler (T5.8) and its `ErrDelay` row.
+RFC 17. Beyond them, pieces of other epics, each named by id in the subtask that takes it and
+settled in §9: **E3**'s scripted client with its call encoder and reply decoder (T3.2, its D11) and
+its drain rows (T3.4); **E8**'s callbacks value and `v4.Handlers` field (T8.1), its session
+registry with each session's `BackChannel`, which records the callback program, credential, slot
+count and bound connections (T8.4) and which `BIND_CONN_TO_SESSION` and `BACKCHANNEL_CTL` rebind
+(T8.9), and its renewal step's `SEQUENCE` flags from `ClientStatus` (T8.6); **E9**'s stateid codec
+and the `ErrState` (`Revoked`) row (T9.3), `OPEN` with D8's want value (T9.4), `CLOSE` (T9.6),
+`memory.Service.Clock` (T9.7), `LOCK` and `LOCKT` (T9.8), I/O under a delegation stateid (T9.9),
+`TEST_STATEID` and `FREE_STATEID` (T9.10); **E5**'s not-supported handler and `ErrDelay` row
+(T5.8).
 **Blocks:** E16, whose suites, end-to-end rows and the "§5.3 lock recall" and "§5.3 handle-cached
 deny mode" rows run over this epic's delegations.
 
@@ -66,23 +69,28 @@ every operation it names exists.
 ### 1.1 In scope
 
 `ops/cb`, the callback program's generated structs; the call encoder and reply decoder in `wire`,
-moved there from `nfsclient`; `protocol`'s back channel and the router's hand-off of a reply to it;
+moved there from `nfsclient`; the slot table, `Send` and `Reply` of E8's `BackChannel`, and the
+router's hand-off of a reply to it;
 the callbacks value's `RecallGrant`, `RecallAny`, `Notify` and `LockWaitOver` for an NFSv4 client and
 `Revoked` for a grant and an administrator's revoke; `OPEN`'s delegation half, `DELEGRETURN`,
 `GET_DIR_DELEGATION` and `WANT_DELEGATION`'s rows; I/O under a delegation stateid; `ChannelDown` in
 `pkg/vfs`, `internal/vfs` and `vfstest`, and `Connect` clearing `Reach.Down`; `SEQUENCE`'s
-`SEQ4_STATUS_CB_PATH_DOWN`; `memory.New`'s clock and an administrator's revoke for tests; the
+`SEQ4_STATUS_CB_PATH_DOWN`; an administrator's revoke on `memory.New` for tests; the
 loopback and handler rows named in §3, and the drain test.
 
 ### 1.2 Out of scope
 
 - `CREATE_SESSION`'s and `BIND_CONN_TO_SESSION`'s binding of a back channel, its security choice
   among `csa_sec_parms` and its slot count, `BACKCHANNEL_CTL`, and the re-registration through
-  `Connect`: E8. This epic sends on what E8 records.
+  `Connect`: E8 (T8.4, T8.9). E8's T8.4 also builds the session's `BackChannel` with
+  `NewBackChannel`, `Bind` and `Unbind`; this epic adds its slot table, `Send` and `Reply`, and
+  sends on what E8 records.
 - `OPEN` itself, its claim types (`CLAIM_DELEGATE_CUR` and `CLAIM_DELEG_CUR_FH` among them), the
   stateid codec and rules 1 to 5, `TEST_STATEID`, `FREE_STATEID`, `FreeState` on an NFSv4.0 client's
-  behalf, the `ErrState` (`Revoked`) row, and the per-request drain roles of `WRITE`, `LOCK` and
-  `OPEN`: E9. `SEQUENCE`'s revoked-state flags from `ClientStatus`: E8.
+  behalf, the `ErrState` (`Revoked`) row, the `READ`, `WRITE` and `SETATTR` arm for a delegation
+  stateid, and the per-request drain roles of `WRITE`, `LOCK` and `OPEN`: E9 (T9.3, T9.4, T9.9,
+  T9.10). `SEQUENCE`'s revoked-state flags from `ClientStatus`: E8's T8.6. `memory.New`'s clock:
+  E9's T9.7.
 - The fence after a missed recall, the grant budget's count and when a grant is offered: the
   service's (RFC 14 §5.3 to §5.5), held by open state's own suite.
 - §13's "§5.3 lock recall" with NLM and SMB, "§5.3 handle-cached deny mode", and "§5.2 delegation
@@ -124,6 +132,7 @@ loopback and handler rows named in §3, and the drain test.
 - **S6b**, Kerberos sign-in, the RFC 18 implementation plan's epic 5, behind `SignIn`.
 - **A2**, the amendment to RFC 17 §3.1 and §3.2: `ChannelDown`, and `Connect` clearing a downed back
   channel.
+- **E12**, the NFSv4.2 operations, whose hold budget runs in the same sessions.
 
 ## 2. How the general rules apply
 
@@ -142,7 +151,7 @@ cited by number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T10.1, T10.2, T10.4 | `CB_COMPOUND` golden files cut from knfsd's capture, or written by hand from RFC 8881 §20, never vectors the encoder under test made; real TCP over loopback for the back channel |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T10.2, T10.3, T10.4, T10.5, T10.6, T10.8 | RFC 21 §5.3's `decision:` notes, no delegations for NFSv4.0 and no directory delegations, at `OPEN`'s want mapping and `GET_DIR_DELEGATION`'s handler; the `decision:` markers §4 names; `internal/vfs/clients.go`'s `decision:` rewritten (T10.5) |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer |
-| rule 11, a symbol is exported only if an interface uses it | T10.1, T10.2, T10.5 | `ops/cb`'s structs for `protocol` and `nfs`; `wire.AppendCall` and `ParseReply` for `nfsclient`, `protocol` and E11's `rpcclient`; `protocol.BackChannel` for `nfs` and E8's `ops/v4` members; `vfs.Clients.ChannelDown` and `OpChannelDown` through A2, already in RFC 17 §3.1; under Q1, `RecallGrant`'s handle through an RFC 17 pull request first |
+| rule 11, a symbol is exported only if an interface uses it | T10.1, T10.2, T10.5 | `ops/cb`'s structs for `protocol` and `nfs`; `wire.AppendCall` and `ParseReply` for `nfsclient`, `protocol` and E11's `rpcclient`; `Send` and `Reply` on E8's `protocol.BackChannel` for `nfs`; `vfs.Clients.ChannelDown` and `OpChannelDown` through A2, already in RFC 17 §3.1; under Q1, `RecallGrant`'s handle through an RFC 17 pull request first |
 | rule 12, each subtask creates only what it declares | all | `ops/cb` holds only the operations sent; the call codec moves into `wire` with its first server-side sender; no callbacks method is filled before the subtask that sends it |
 | rule 13, translate, never decide | T10.3, T10.4, T10.6 | the want flags, `open_delegation4` and a delegation stateid's I/O are pure translations; whether a grant is offered, recalled, revoked or fenced is the service's; `DELEGRETURN` makes one mutating call, `AckRecall`; `ChannelDown` is made outside any handler, on a connection's close |
 | rule 14, nothing deferred is lost | all | §1.2 names the owner of each part of an obligation this epic leaves out; §9 the gaps |
@@ -291,13 +300,13 @@ so that subtasks and tests can cite them.
   `decision:` marker at `Revoked`, overturned if NFS ever holds a request on a grant.
 - **D12. The call encoder and reply decoder move into `wire/call.go`** from `nfsclient`, as E3's D11
   foresees, when the back channel sends its first call; `nfsclient` keeps its surface and calls them.
-  E11's `rpcclient` uses the same pair, so whichever of E10 and E11 lands first moves them, and the
-  other only uses them. No marker.
-- **D13. `memory.New` exposes its clock and an administrator's revoke.** `memory.Service.Clock` is
-  the test clock its open state already reads (kind 1), so a test advances it past a recall's
-  deadline; `memory.Service.Revoke(ctx, cl)` calls open state's `Revoke`, the real path an
-  administrator's revoke takes, which no `vfs.Service` method reaches yet (§9, gap 1). No marker:
-  the methods' doc comments say what they drive.
+  T10.1 moves them: it is this epic's first subtask, done before E11's T11.2, which only uses them.
+  No marker.
+- **D13. `memory.New` exposes an administrator's revoke.** `memory.Service.Revoke(ctx, cl)` calls
+  open state's `Revoke`, the real path an administrator's revoke takes, which no `vfs.Service`
+  method reaches yet (§9, gap 1). A test advances E9's `memory.Service.Clock` (T9.7), the test clock
+  open state already reads (kind 1), past a recall's deadline. No marker: the method's doc comment
+  says what it drives.
 
 ## 5. Target tree
 
@@ -308,7 +317,7 @@ pkg/vfs/
   vfstest/mutations.go, null.go, faults.go   T10.5  ChannelDown
   vfstest/callbacks.go             T10.3  RecallGrant's handle, under Q1
   vfstest/suite/clients.go         T10.5  RFC 17 §8's lost back channel row
-  vfstest/memory/memory.go         T10.7  Clock, Revoke
+  vfstest/memory/memory.go         T10.7  Revoke (Clock is E9's T9.7)
 internal/vfs/
   clients.go                       T10.5  ChannelDown, Connect's Rebind, the decision rewritten
   sink.go                          T10.3  RecallGrant's handle, under Q1
@@ -321,7 +330,7 @@ internal/adapter/nfs/
     call_fuzz_test.go              T10.1  FuzzParseReply
     testdata/golden/               T10.1, T10.4  knfsd-nfs41-cb-*.hex, rfc-cb-recall-any-*.hex, delegation types
   protocol/
-    backchannel.go                 T10.2  BackChannel: connections, slots, CB_SEQUENCE, Send, Reply
+    backchannel.go                 T10.2  E8's BackChannel: slots, CB_SEQUENCE, Send, Reply, Keep in Bind
     stages.go                      T10.2  Route hands a reply to its connection's back channel
   ops/
     cb/types.go                    T10.1  generated CB_COMPOUND, CB_SEQUENCE, CB_RECALL, CB_RECALL_ANY
@@ -367,7 +376,7 @@ internal/adapter/adaptertest/nfsclient/
     func ParseReply(rec []byte) (Reply, error)                                     // one record's reply; ErrNotReply for a call
     ```
     `nfsclient`'s `Auth` and `Reply` become aliases of these, its surface unchanged. Consumed by
-    `nfsclient`, T10.2 and E11's `rpcclient`.
+    `nfsclient`, T10.2 and E11's `rpcclient` (T11.2).
   - `wire/call_fuzz_test.go`: `FuzzParseReply` against a second decoder written in the test from
     RFC 5531 §9: no panic, every length inside the record, and the two decoders agreeing.
   - Golden files: knfsd's `CB_COMPOUND` call and reply cut from E2's `nfs41/` delegation capture
@@ -386,24 +395,23 @@ internal/adapter/adaptertest/nfsclient/
 
 **Subtask T10.2 estimate: 3.5 man-days.**
 
-- **Track:** A. **Depends on:** T10.1, S4, E8's session registry.
+- **Track:** A. **Depends on:** T10.1, S4, T8.4, T8.9.
 - **Covers:** R1, R4, R5, R6, R7, R8.
 - **Deliverables:** `protocol/backchannel.go`:
   ```go
-  // BackChannel is one session's back channel on this node.
-  type BackChannel struct{ /* bound connections in order, slot table, program, credential */ }
-  func NewBackChannel(sess [16]byte, minor uint32, prog uint32, cred wire.Auth, slots int) *BackChannel
-  func (b *BackChannel) Bind(c *core.Conn)   // takes Keep on c
-  func (b *BackChannel) Unbind(c *core.Conn) (last bool) // releases Keep; last: no connection left
+  // Send and Reply extend E8's BackChannel (T8.4), whose NewBackChannel, Bind and
+  // Unbind keep the program, credential, granted slots and bound connections.
   func (b *BackChannel) Send(ctx context.Context, ops []cb.NfsCbArgop4) error // CB_SEQUENCE first, on the latest live connection, once queued
   func (b *BackChannel) Reply(c *core.Conn, r wire.Reply) bool // an answer to one of b's calls: frees its slot
   ```
+  the slot table; T8.4's `Bind` taking `Keep` on the connection and `Unbind` releasing it;
   `ErrNoBackChannel` and `ErrNoSlot` for D4's failures. E8's `CREATE_SESSION` with
-  `CREATE_SESSION4_FLAG_CONN_BACK_CHAN`, and its `BIND_CONN_TO_SESSION`, call `NewBackChannel` and
-  `Bind` with what they accepted; E8's connection close calls `Unbind`. `stages.go`'s `Route` hands a
+  `CREATE_SESSION4_FLAG_CONN_BACK_CHAN` (T8.4), and its `BIND_CONN_TO_SESSION` and `BACKCHANNEL_CTL`
+  (T8.9), call `NewBackChannel` and `Bind` with what they accepted; this subtask calls `Unbind` when a
+  bound connection closes. `stages.go`'s `Route` hands a
   reply on a connection that carries a back channel to its `Reply` and drops it, as it drops any
   message that is not a call; a reply matching no call is dropped too. An outstanding call is a slot
-  record, not a goroutine. Consumed by T10.3, T10.6 and E8.
+  record, not a goroutine. Consumed by T10.3 and T10.6.
 - **Acceptance criteria:**
   - Over loopback, a session created with a back channel and slot count 2 receives, on its
     connection, a `CB_COMPOUND` to the session's callback program whose `CB_SEQUENCE` names its
@@ -432,9 +440,9 @@ internal/adapter/adaptertest/nfsclient/
 
 **Subtask T10.3 estimate: 2.5 man-days.**
 
-- **Track:** A. **Depends on:** T10.2, E8's callbacks value.
+- **Track:** A. **Depends on:** T10.2, T8.1.
 - **Covers:** R1, R2, R3, R4, R9, R15, R20, R23, R25, R27.
-- **Deliverables:** in `nfs/callbacks.go`, on E8's per-client value, which holds the client's
+- **Deliverables:** in `nfs/callbacks.go`, on T8.1's per-client value, which holds the client's
   sessions on this node:
   - `RecallGrant`: `CB_RECALL` of the delegation's stateid and file handle (D1, D7) through the
     latest bound session's `BackChannel` (D2), answering `sent` once queued, and the error when no
@@ -443,8 +451,8 @@ internal/adapter/adaptertest/nfsclient/
     write delegation types in its mask; nil and nothing sent for an NFSv4.0 client.
   - `Notify`: nil and nothing sent (R23). `LockWaitOver` for an NFSv4 client: nothing sent, neither
     refused nor an error (D10).
-  - `Revoked` with `RevokedGrant` or `RevokedByAdmin`: nothing ended (D11). E9 adds the state
-    reasons; E11 NLM's.
+  - `Revoked` with `RevokedGrant` or `RevokedByAdmin`: nothing ended (D11). E9's T9.7 adds the
+    state reasons; E11's T11.3 NLM's.
   - Under Q1's recommended answer, the RFC 17 §3.2 pull request first, then `RecallGrant`'s handle in
     `pkg/vfs/callbacks.go`, minted in `internal/vfs/sink.go`, and carried by `vfstest.Callbacks`,
     `vfstest.CallbackFaults` and `internal/vfs`'s test helper.
@@ -473,10 +481,9 @@ internal/adapter/adaptertest/nfsclient/
 
 ### T10.4 Delegations offered, recalled and returned
 
-**Subtask T10.4 estimate: 3.5 man-days.**
+**Subtask T10.4 estimate: 3 man-days.**
 
-- **Track:** A. **Depends on:** T10.3, E9's `OPEN` and stateid codec, E5's `READ`, `WRITE` and
-  `SETATTR`.
+- **Track:** A. **Depends on:** T10.3, T9.3, T9.4, T9.9.
 - **Covers:** R11, R12, R13, R14, R15, R16, R17, R18, R19.
 - **Deliverables:**
   - `ops/v4/open_deleg.go`: `func want(minor uint32, shareAccess uint32) (vfs.GrantKind, error)`, a
@@ -488,8 +495,9 @@ internal/adapter/adaptertest/nfsclient/
   - `ops/v4/delegreturn.go`: `DELEGRETURN`, one `AckRecall` to `GrantNone` with the stateid's
     `GrantID`, `Role` `RoleRelease`, a delegation `seqid` other than 0 and 1 refused
     `NFS4ERR_BAD_STATEID` before the call (R19).
-  - The `READ`, `WRITE` and `SETATTR` arm for a stateid of the grant type: `vfs.Delegated(g, fh)`
-    with the current filehandle, no other check in the adapter (R18).
+  - "§5.2 delegation stateid" over a delegation `OPEN` offered: the `READ`, `WRITE` and `SETATTR`
+    arm for a stateid of the grant type is E9's T9.9, `vfs.Delegated(g, fh)` with the current
+    filehandle and no other check in the adapter (R18); this subtask runs the row over it.
   - `ops/v4/errors.go`: `ErrState` (`NoRecall`) at `NFS4ERR_SERVERFAULT`, by its own row.
   - The golden file of §11.6's delegation types: each want code and its `GrantKind`, each grant and
     its `open_delegation4`, NFS → neutral → NFS.
@@ -553,12 +561,12 @@ internal/adapter/adaptertest/nfsclient/
 
 **Subtask T10.6 estimate: 2.5 man-days.**
 
-- **Track:** A. **Depends on:** T10.3, T10.4, T10.5, E8's `SEQUENCE` flags.
+- **Track:** A. **Depends on:** T10.3, T10.4, T10.5, T8.6.
 - **Covers:** R2, R28, R31, R32.
 - **Deliverables:**
   - `callbacks.go`: when `Unbind` answers that the client's last back-channel connection on this
     node closed, `ChannelDown` for the client, and the cached `ClientStatus` dropped (D5).
-  - E8's renewal step reading `Reach.Down` with `ClientStatus` (D5, under Q2), and
+  - T8.6's renewal step reading `Reach.Down` with `ClientStatus` (D5, under Q2), and
     `ops/v4/sequence.go` setting `SEQ4_STATUS_CB_PATH_DOWN` while it is set.
   - The loopback row "§3.4 path down", with a delegation offered again after the re-bind.
   Consumed by E16.
@@ -583,14 +591,13 @@ internal/adapter/adaptertest/nfsclient/
 
 **Subtask T10.7 estimate: 3 man-days.**
 
-- **Track:** A. **Depends on:** T10.4, E9's `TEST_STATEID`, `FREE_STATEID` and `ErrState` (`Revoked`)
-  row, E8's `SEQUENCE` flags.
+- **Track:** A. **Depends on:** T10.4, T9.3, T9.7, T9.10, T8.6.
 - **Covers:** R25, R26, R27.
 - **Deliverables:**
-  - `pkg/vfs/vfstest/memory`: `Service.Clock`, the test clock its open state reads, and
-    `Service.Revoke(ctx context.Context, cl vfs.ClientID) error` over open state's `Revoke` (D13).
+  - `pkg/vfs/vfstest/memory`: `Service.Revoke(ctx context.Context, cl vfs.ClientID) error` over open
+    state's `Revoke` (D13); the clock is T9.7's `Service.Clock`.
   - The loopback rows "§5.3 revoked delegation *(1 node)*", "§5.2 stateids *(1 node)*"'s
-    recall-timeout step and "§5.1 administrator's revoke *(1 node)*", its NFSv4.0 steps over E9's
+    recall-timeout step and "§5.1 administrator's revoke *(1 node)*", its NFSv4.0 steps over T9.9's
     `FreeState` on the client's behalf.
   Consumed by E16.
 - **Acceptance criteria:**
@@ -617,7 +624,7 @@ internal/adapter/adaptertest/nfsclient/
 
 **Subtask T10.8 estimate: 2 man-days.**
 
-- **Track:** A. **Depends on:** T10.4, E9's `LOCK` and `LOCKT`, E5's T5.8.
+- **Track:** A. **Depends on:** T10.4, T9.8, T5.8.
 - **Covers:** R20, R21, R22, R24.
 - **Deliverables:**
   - `ops/v4/getdirdeleg.go`: `GET_DIR_DELEGATION` answering `GDD4_UNAVAIL`, `will_signal_deleg_avail`
@@ -646,7 +653,7 @@ internal/adapter/adaptertest/nfsclient/
 
 **Subtask T10.9 estimate: 2.5 man-days.**
 
-- **Track:** A. **Depends on:** T10.4, E3's T3.4, E9's `CLOSE` and `READ`.
+- **Track:** A. **Depends on:** T10.4, T3.4, T9.6, T9.9.
 - **Covers:** R17, R34.
 - **Deliverables:** `nfs/drain_test.go`: RFC 21 §11.6's drain test over loopback through `core` on
   `memory.New`, the node drained by `core.Server`'s `Stop` under a context that keeps it draining,
@@ -690,7 +697,7 @@ to T10.9 are tests over what T10.4 offers and can run in any order.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T10.1, T10.2, T10.3 | 8 | — | the server calling the client, from the bytes to the callbacks the service makes |
-| 2 | T10.4 | 3.5 | PR 1 | delegations offered, recalled and returned end to end |
+| 2 | T10.4 | 3 | PR 1 | delegations offered, recalled and returned end to end |
 | 3 | T10.5, T10.6 | 4.5 | PR 2 | the path down, the service's half and the wire's; T10.5 can open beside PR 1 |
 | 4 | T10.7, T10.8, T10.9 | 7.5 | PR 2 | the rows over delegations: revocations, locks in a recall, the budget, the drain |
 
@@ -724,7 +731,8 @@ Questions pending the user's answer. Each recommended option is written in place
   RFC 21 does not say.
   - (a) **Recommended:** `NFS4ERR_NOTSUPP` through E5's one handler, with the sentence "`WANT_DELEGATION`
     is not supported: a client asks for a delegation with `OPEN`'s want flags" proposed for RFC 21
-    §5.3 in this document's pull request. RFC 8881 makes the operation optional; knfsd does not
+    §5.3 in batch two's one RFC 21 pull request, opened with E8's document pull request. RFC 8881
+    makes the operation optional; knfsd does not
     serve it (from memory).
   - (b) Serve it as a want on an open the client already holds, through a new RFC 17 call, since
     `Open` is the only way a grant is offered; more service surface for an operation Linux does not
@@ -738,23 +746,29 @@ Gaps, not questions:
    revoke nor its owner; a row of its own, or that row widened, comes through a pull request against
    the RFC 21 implementation plan when the user asks for it.
 2. **"§5.2 delegation stateid" under Kerberos.** T10.4 runs it at the handler with two proven
-   principals; the wire row under Kerberos is assumed to be E16's, at `e2e/kerberos`, with E13 and
-   S6b.
+   principals; the row under Kerberos over the wire is E16's T16.3, on the composed node with E13's
+   `RPCSEC_GSS` client.
 3. **The drain's `NFS4ERR_MOVED` step** needs a gateway `MoveTarget` names, which a single node never
    has: the deferral ledger's row "RFC 21's (cluster) parts", `fs_locations` naming another gateway.
 
-What this epic takes from epics broken down beside it, assumed until their documents settle it:
+What this epic takes from other epics, settled with their documents:
 
-- **E8:** a per-client callbacks value in `nfs/callbacks.go`, registered at `Connect`, holding the
-  client's sessions on this node, with methods answering "not built" until their epic; each session
-  recording its back channel's callback program, its security from `csa_sec_parms` (`AUTH_NONE` or
-  `AUTH_SYS` and its body) and its granted back-channel slot count, and calling T10.2's
-  `NewBackChannel`, `Bind` and `Unbind` at `CREATE_SESSION`, `BIND_CONN_TO_SESSION` and a
-  connection's close; its renewal step caching `ClientStatus` once per renewal interval, which T10.6
+- **E8:** T8.1's per-client callbacks value in `nfs/callbacks.go`, registered at `Connect`, holding
+  the client's sessions on this node, its methods answering "not built" until their epic; T8.4's
+  `BackChannel` on each session, recording the callback program, the credential D11 picks from
+  `csa_sec_parms` (`AUTH_NONE` or `AUTH_SYS` and its body), the granted back-channel slot count and
+  the bound connections, with `NewBackChannel`, `Bind` and `Unbind`, which T8.4's `CREATE_SESSION`
+  and T8.9's `BIND_CONN_TO_SESSION` and `BACKCHANNEL_CTL` call; one type, which T10.2 extends rather
+  than a second. T8.6's renewal step caching `ClientStatus` once per renewal interval, which T10.6
   extends under Q2.
-- **E9:** `OPEN` passing `OpenRequest.Want` and encoding T10.4's `open_delegation4`; the stateid
-  codec giving a grant-typed stateid's `GrantID`; the `ErrState` (`Revoked`) row by cause;
-  `TEST_STATEID`, `FREE_STATEID`, `LOCK`, `LOCKT`, `CLOSE` and `FreeState` on an NFSv4.0 client's
-  behalf; the per-request drain roles of `WRITE`, `LOCK` and `OPEN`.
-- **E11:** uses `wire.AppendCall` and `ParseReply` (D12); if it lands first, it moves them and
-  T10.1 only uses them, its figure 0.5 man-days lower.
+- **E9:** T9.4's `OPEN` passing `OpenRequest.Want` and encoding T10.4's `open_delegation4`; T9.3's
+  stateid codec giving a grant-typed stateid's `GrantID` and its `ErrState` (`Revoked`) row by
+  cause; T9.9's I/O under a delegation stateid and its `FreeState` on an NFSv4.0 client's behalf;
+  T9.10's `TEST_STATEID` and `FREE_STATEID`; T9.8's `LOCK` and `LOCKT`; T9.6's `CLOSE`; T9.7's
+  `memory.Service.Clock`; the per-request drain roles of `WRITE`, `LOCK` and `OPEN`.
+- **E11:** T11.2 uses `wire.AppendCall` and `ParseReply` from T10.1 (D12) and moves nothing.
+
+Which pull request carries which RFC amendment: Q1's RFC 17 §3.2 `RecallGrant` goes in batch two's
+one RFC 17 pull request, with E9's D1, E11's Q1 and E12's D1, opened before E9's PR 1; T10.3's
+`pkg/vfs` change waits for it (rule 11). Q3's RFC 21 §5.3 sentence goes in batch two's one RFC 21
+pull request. Q2's option (b) would add RFC 14 §11.3 and RFC 17 §3.2 to those.
