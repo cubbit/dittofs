@@ -78,11 +78,15 @@ integration epics touch no v1 code (§1.5 rule 7).
 - **Appendix B.1, the periodic primary-version read lands with GC's recheck period**; until
   then the provider reads it when the configuration opens.
 - **§2.8, a block's chain ID is its pin's.**
+- **Appendix B, AES-256-GCM in place of AES-256-GCM-SIV** (Q2, D3): a chunk's nonce is an HMAC of
+  its input, stored in the body (`MaxEncodedLen(n) = n + 285`); each export frame is sealed once
+  per salt; a key-file master key makes at most 2³² wraps; §5.4, T15, the `require` example,
+  the vector rows and RFC 26 §3.1's summary follow.
+- **RFC 25 §3.9 and §7** gain `material_unknown`, `material_destroyed` and the `malformed`
+  ticket (A1); **RFC 23 §4.1 and §4.6** gain the key operations (A3).
 
-**Pending the user's answer.** Three design questions (§6, Q2 to Q4) are written in place with
-the recommended option and marked "pending the user's answer", and two amendments to other RFCs
-(A1, A3) are proposed; the plan follows those RFCs as written until they are agreed. The pull
-request stays a draft until they are settled.
+**Answered by the user.** The design questions Q1 to Q4 are answered and written in place (§6),
+and the amendments to RFC 23 and RFC 25 they need (A1, A3) are in this pull request.
 
 ## 1. Introduction
 
@@ -104,7 +108,7 @@ What replaces what:
 | the per-remote `encryption.key` configuration blob | the store configuration's `transforms`, `materials` and `require` keys (RFC 5 §3.2), in RFC 13's settings | v1 deleted with its store |
 
 **Dependency limits.** Epic 4 adds back `pierrec/lz4/v4` and makes `klauspost/compress` direct
-again, both v1 dependencies stage 4 dropped (D4); nothing else is added, pending Q2: AES-256-GCM-SIV is in neither the standard library nor `golang.org/x/crypto`.
+again, both v1 dependencies stage 4 dropped (D4); nothing else is added: AES-256-GCM is the standard library's (D3).
 
 ### 1.2 How the plan is organised
 
@@ -166,8 +170,9 @@ it (D6).
     off between a write and a read (its D4, epic 3; turning encryption on is T15's refusal, epic
     9); a store whose encryption cannot load writes nothing (its D9, epic 11); a provider failure
     at start leaves the journal serving (its D10, epic 11, with the RFC 8 offload plan);
-  - RFC 8452's Appendix C vectors and Wycheproof's `aes_gcm_siv_test.json` for AES-256-GCM-SIV,
-    and a tag failure that writes nothing into `dst` (epic 5);
+  - Wycheproof's `aes_gcm_test.json` for the standard library's AES-256-GCM as the transform
+    calls it, a tag failure that writes nothing into `dst`, and two inputs under one chunk key
+    getting two nonces (epic 5);
   - N concurrent rotations of one namespace leave exactly one current key; the notice's cursor
     survives a restart; a master-key re-wrap of 10⁴ records resumes after a crash (epic 8);
   - decompression bombs for zstd and LZ4 as fuzz seeds (epic 4);
@@ -283,7 +288,7 @@ registered (§1.2).
    `keys`-object store (D8) — and shares code with `pkg/keyprovider` only through `internal/`
    packages (D5, D14). Epic 1 adds `pkg/transform`'s import test, which checks every package of
    the tree on its own, test packages included, against an allowlist: the tree's own packages
-   (`pkg/transform/...`, `internal/siv` among them), the standard library, `x/crypto`, the compression, BLAKE3 and KMIP modules, `internal/keyfile`, `internal/kmipwire`,
+   (`pkg/transform/...`), the standard library, `x/crypto`, the compression, BLAKE3 and KMIP modules, `internal/keyfile`, `internal/kmipwire`,
    and the machinery RFC 13 §4 and RFC 25 §8 have every component declare against
    (`pkg/settings`, `pkg/metrics`, `pkg/health`), as the RFC 3 and RFC 4 plans allow it. It
    fails on any v1 path or other component. v1 is not touched: stage 4 deleted it.
@@ -324,16 +329,16 @@ registered (§1.2).
 | E2 ⛔ | Test foundations | `transformtest` with its broken-transform check, `materialtest` with the in-memory `Materials`, RFC 5's golden vectors, the catalogue | 4 | 9.5 | team | E3 to E8 |
 | E3 | The chain | registry, envelope, chain build and refusals, the pin, composed encode and decode with bounds, the census view, `require`, the chain ID, §6's series, the allocation option | 7 | 15 | A | E9; partly E4, E8 |
 | E4 | Compression | zstd and LZ4, their header, decline, window cap, fixtures, ratio benchmarks | 4 | 8.5 | A | E9 |
-| E5 | Encryption | AES-256-GCM-SIV, the chunk derivations and AAD, the header, kind refusal, fixtures and vectors | 5 | 11 | B | E9; partly E6 |
-| E6 | Namespace keys and the provider | key-record view, stored wrap, key-file custody, escrow, `Materials` with fingerprints and its three failures, namespace key creation, the salvage-key wrap, B.6's gauges, the custody suite | 8 | 17.5 | C | E8, E9; partly E7 |
+| E5 | Encryption | AES-256-GCM from the standard library, the chunk derivations, nonce and AAD, the header, kind refusal, fixtures and vectors | 4 | 8 | B | E9; partly E6 |
+| E6 | Namespace keys and the provider | key-record view, stored wrap and its wrap count, key-file custody, escrow, `Materials` with fingerprints and its three failures, namespace key creation, the salvage-key wrap, B.6's gauges, the custody suite | 8 | 18 | C | E8, E9; partly E7 |
 | E7 | Key-service custody | KMIP wrap and unwrap through the server with AAD, version-qualified IDs, the primary version, the real-server row's provider half | 4 | 7 | B | E9; partly E8 |
 | E8 | Rotation and the destroyed-material notice | master and data key rotation in the bucket, the `keys` object, the notice | 5 | 10 | C | E9 |
 | E9 | Integration | settings keys and the bound `encrypts`, the key operations, collectors and alert rules, error mapping, namespace key creation | 5 | 12 | team | E10, E11 |
 | E10 🔀 | Integration, the census | `transform_census_blocks` and the census per material | planned after S7 | planned after S7 | team | — |
 | E11 🔀 | E2E green | RFC 5's codec and engine rows, the put and get benchmark | 6 | 10 | team | — |
-| | **Total** | | **51** | **104** | | |
+| | **Total** | | **50** | **101.5** | | |
 
-**Plan estimate: 51 subtasks, 104 man-days, not counting epic 10.**
+**Plan estimate: 50 subtasks, 101.5 man-days, not counting epic 10.**
 
 The skill's estimate for RFC 5's 1,999 lines is 5 middle epics (`round(1999 / 400)`); this plan
 has 6. Master-key custody through a key service shares no state with the namespace key records
@@ -368,7 +373,7 @@ flowchart TD
   S2 --> E3 & E4 & E5 & E6
   E3 -. "registry for conformance" .-> E4
   E3 -. "chain ID for data-key rotation" .-> E8
-  E5 -. "GCM-SIV for the key-file wrap" .-> E6
+  E5 -. "the AEAD call for the key-file wrap" .-> E6
   E6 -. "custody interface" .-> E7
   E7 -. "primary version for re-wrap" .-> E8
   S1c(["RFC 8 offload plan S1c, remote store contract agreed"]):::sync -. "keys role" .-> E8
@@ -424,7 +429,7 @@ Seams between this plan and the others, the offload contract's and RFC 13's:
 | RFC 2 plan epic 2 | E2, partly; E4, partly | RFC 5's vectors join its script; the ratio benchmarks use its corpus |
 | E3 | E4, partly; E8, partly; E9 | `Register` and the registry's `MaxDecodeLen` hold a compressor's registration; a data-key rotation's new chain ID is epic 3's; epic 9 validates settings with `NewChain` |
 | E4 | E9 | epic 9 validates the compress stage's settings with the registered compressors |
-| E5 | E6, partly; E9 | the key-file wrap uses the same AES-256-GCM-SIV (D3) |
+| E5 | E6, partly; E9 | the key-file wrap calls AES-256-GCM as epic 5 does (D3) |
 | E6 | E7, partly; E8; E9 | epic 7 implements the custody interface epic 6 declares (D6); epic 8 rotates epic 6's records |
 | E7 | E8, partly; E9 | a key service's new primary version starts epic 8's master-key re-wrap |
 | E8 | E9 | the operator's operations call rotation |
@@ -461,8 +466,7 @@ pkg/transform/materialtest/    E2 the Materials conformance suite, the in-memory
                                E6 the custody suite, the key-record suite and its in-memory
                                view; E8 the keys-object suite and store
 pkg/transform/compress/        E4 zstd and LZ4
-pkg/transform/encrypt/         E5 the AES-256-GCM-SIV transform and its derivations
-pkg/transform/internal/siv/    E5 AES-256-GCM-SIV as a cipher.AEAD (Q2)
+pkg/transform/encrypt/         E5 the AES-256-GCM transform and its derivations
 pkg/transform/material/        E6 the provider, the key-record view it declares (D7), the
                                stored wrap, key-file custody, escrow,
                                namespace key creation, the salvage-key wrap; E8 rotation,
@@ -490,19 +494,18 @@ transform gets them without writing any. Prior art: RFC 25 §8.1 itself; the Pro
 practice of registering collectors on an injected registry (from memory). Applies in epic 1,
 filled in epic 3.
 
-**D3. AES-256-GCM-SIV is an internal `cipher.AEAD` of the transforms, `pkg/transform/internal/siv`, built
-on `crypto/aes` and ported, with attribution, from an Apache-2 implementation rather than written
-from scratch, pending the user's answer (Q2).** The standard library and `x/crypto` have none.
-Its POLYVAL multiply is constant time: carry-less multiplication by masking, BearSSL's
-`ghash_ctmul64` technique, with no table lookup indexed by key or data bits. The standard
-library is not the model: Go 1.26's generic GHASH, the toolchain `feat/storage-v2` pins, is
-table-driven and documented variable-time (`crypto/internal/fips140/aes/gcm/ghash.go`); Go 1.27
-switched it to BearSSL's masking. Epic 5's document names the ported source, and its review
-checks the multiply. It is pinned by RFC 8452's Appendix C vectors and by the
-independent golden vectors (D11), and RFC 5 §5.4's fixtures decide any later swap of
-implementation. Both the chunk seal (epic 5) and the key-file wrap (epic 6) use it. Prior art:
-BoringSSL and Tink implement it themselves; the Go implementations found are third-party
-(from memory, not checked). Applies in epic 5.
+**D3. AES-256-GCM comes from the standard library, `crypto/aes` and `crypto/cipher`, as the user
+answered (Q2): a commonly supported algorithm and no implementation of our own.** RFC 5 Appendix B
+is amended to match, and each use keeps GCM's one rule, never one key and nonce for two different
+plaintexts. A chunk's nonce is an HMAC of the exact bytes sealed under a key the data key derives,
+stored in the body, because one chunk key does see different inputs (a new compression level, a
+declined chunk compressed later, a relocation), so a zero nonce would repeat. A frame's nonce is
+its section and frame index under a frame key the export's own salt derives, and each frame is
+sealed once per salt. A key-file wrap's nonce is random, so the provider counts wraps per master
+key and refuses past 2³² (NIST SP 800-38D §8.3). No use needed XChaCha20-Poly1305. Both the
+chunk seal (epic 5) and the key-file wrap (epic 6) call `cipher.NewGCM`. Prior art: TLS 1.3 and
+SSH run AES-GCM with a counter nonce; a nonce from a PRF of the message is the SIV construction's
+idea, here over two standard primitives (from memory). Applies in epics 5 and 6.
 
 **D4. zstd from `klauspost/compress`, LZ4 from `pierrec/lz4/v4`, as v1 used them.** Stage 4
 deleted v1's `middleware/compression`, their only importer, so `feat/storage-v2`'s `go.mod` no
@@ -572,9 +575,9 @@ configuration taken per request, as a database transaction pins its schema versi
 memory). Applies in epics 1 and 3.
 
 **D11. The golden vectors come from a second implementation**, RFC 5's part of the one vector
-script the RFC 2 plan's epic 2 owns (Python's `cryptography` for AES-GCM-SIV, HKDF and HMAC, and
+script the RFC 2 plan's epic 2 owns (Python's `cryptography` for AES-GCM, HKDF and HMAC, and
 `blake3`), computed from RFC 5's tables alone and checked in with its output. CI does not run
-it; the Go tests read its output. Prior art: Wycheproof and RFC 8452's own vectors (from memory).
+it; the Go tests read its output. Prior art: Wycheproof's vectors (from memory).
 Applies in epic 2.
 
 **D12. Fixtures are per transform and per format version**, under the transform's own
@@ -587,7 +590,7 @@ transforms' bounds are independent of their settings. A transform whose bound gr
 setting (Appendix C's parity) declares its largest at registration; that is epic 3's open point
 for the first such transform. Prior art: none found. Applies in epic 3.
 
-**D14. The key service speaks KMIP only, with associated data as bytes, pending the user's answer
+**D14. The key service speaks KMIP only, with associated data as bytes, as the user answered
 (Q3), over the transport `pkg/keyprovider` already has.** Its round trip, TLS setup, message
 read and key-state mapping move to `internal/kmipwire`, which both providers import; epic 7 adds
 only the encrypt and decrypt payloads with associated data and the primary-version read. RFC 5
@@ -597,7 +600,7 @@ authenticated encryption parameters; AWS KMS's encryption context is the string-
 memory). Applies in epic 7.
 
 **D15. The operator's key operations are RFC 23 operations on the store configuration and the
-namespace, pending the user's answer (Q4) and A3.** RFC 5 names the acts (rotate a master or
+namespace, as the user answered (Q4), with A3 in this pull request.** RFC 5 names the acts (rotate a master or
 data key; verify a key file's escrow; the destroy lands with its first caller, §6.1) and RFC 23
 §4.1's actions table names none of them. Epic 9 adds them with their `dfsctl` commands and
 regenerates `docs/guide/cli.md`. Prior art: RFC 23's own `rotate-signing-key`. Applies in epic 9.
@@ -632,10 +635,6 @@ generation counters (from memory). Applies in epic 8.
   10⁴ namespaces costs a handshake per unwrap or re-wrap (not measured). Upgrade to a pooled
   connection with a concurrency bound when a cold start or a rotation shows the handshakes in a
   profile. Epic 7.
-- **POLYVAL in pure Go.** `ponytail:` no carry-less-multiply instruction path (CLMUL, PMULL);
-  epic 5's per-transform benchmark (RFC 5 §8.3) gives its MB/s against Q2. Upgrade to an
-  assembly path when that benchmark, or epic 11's put benchmark, shows encryption the bottleneck.
-  Epic 5.
 - **zstd levels collapse onto the library's encoder speeds.** `ponytail:` `klauspost/compress`
   maps RFC 5's level range onto four encoder speeds, so two levels may write equal bodies under
   two chain IDs, which costs nothing but a missed dedup across a level change. Upgrade if the
@@ -736,7 +735,7 @@ plan's corpus.
 
 ### Epic 5 — Encryption
 
-**Epic 5 estimate: 5 subtasks, 11 man-days.**
+**Epic 5 estimate: 4 subtasks, 8 man-days.**
 
 The shipped encryption transform, which needs a namespace's data key.
 
@@ -744,22 +743,23 @@ The shipped encryption transform, which needs a namespace's data key.
 "material says what it is for" for `data-key`, Appendix B.6's `encryption_chunks_total`.
 **Done when:** `transformtest` passes for encryption with its fixture; RFC 5 §8.1's authenticating
 rows of §2.7 (every flip `ErrMalformed`, a body under another chunk's hash, destroyed material),
-Appendix B.1's salt and keystream row, its distinct-labels row and the chunk part of its
-golden-vector row; RFC 8452 Appendix C's vectors; RFC 5 §8.3's per-transform benchmark.
+Appendix B.1's salt, nonce and keystream row, its distinct-labels row and the chunk part of its
+golden-vector row; Wycheproof's AES-GCM vectors through the transform's call; RFC 5 §8.3's
+per-transform benchmark.
 
 **Expected content:**
-- `pkg/transform/internal/siv` (D3, Q2), ported with a constant-time POLYVAL, with RFC 8452's vectors and a
-  fuzz against the golden vectors.
-- The salt key, salt and chunk key derivations, and the chunk AAD, against the vectors; the
-  salt key is derived once per data key and cached with it, while the chunk key, new per chunk,
-  pays its AES key schedule each time.
+- AES-256-GCM through `cipher.NewGCM` (D3), the nonce stored before the ciphertext, and a fuzz
+  of `Decode` against the golden vectors.
+- The salt key, salt, chunk key, nonce key and nonce derivations, and the chunk AAD, against the
+  vectors; the salt key is derived once per data key and cached with it, while the chunk key,
+  new per chunk, pays its AES key schedule each time.
 - `Encode` and `Decode` asking `Materials` for the current and the named data key; kind refusal
   at construction.
 - The fixture (D12) and the series.
 
 ### Epic 6 — Namespace keys and the provider
 
-**Epic 6 estimate: 8 subtasks, 17.5 man-days.**
+**Epic 6 estimate: 8 subtasks, 18 man-days.**
 
 The provider that implements `Materials` for a store configuration, over key records in the
 metadata store and master keys in a key file.
@@ -778,14 +778,16 @@ key" rows, and the "§7 key table" row's non-encrypting-namespace and escrow cla
 13's plan hands to this one (its data-key rotation clause is epic 8's, its catalog-backup restore,
 export-key rotation and master-key destroy clauses are RFC 26's, §6.1); a crash torn beneath key creation
 leaves no wrap in use without its committed record (§1.5 rule 8); a salvage key unwraps only
-under its master key and associated data.
+under its master key and associated data; RFC 5 §8.1's wrap-count row (one wrap more at
+2³² − 1, then refused).
 
 **Expected content:**
 - The key-record view `material` declares, its suite and in-memory view in `materialtest`, and
   its `kvstore` implementation under kvstore's conformance run (D7), fuzzed decode, and the
   `keyseq` subtag with its row in `pkg/metadata/kv/keys`' table.
 - The key-file format's reader moved to `internal/keyfile` (D5).
-- The stored wrap and the key-file custody (D5, D6), with the custody interface and its suite.
+- The stored wrap and the key-file custody (D5, D6), with the custody interface and its suite;
+  the per-master-key wrap count beside the key records, raised before a wrap is used (D3).
 - The escrow check and `ErrNotEscrowed`.
 - `Current` and `Get`: fingerprints, the three failure classes, namespace scoping, the cache.
 - Namespace key creation per Appendix B.2's table, the clear chunk-ID key included, with its
@@ -873,7 +875,7 @@ operation's API and CLI test.
   `dfsctl` commands and `go run ./cmd/gendocs`; `rotate-data-key`'s help says it revokes
   nothing until removal lands (§6.1), so it does not answer RFC 5's leaked-key scenario.
 - The collectors, the health source and the alert rules, exported for the RFC 8 offload plan's
-  epic 21 to register; the conditions A1 adds once agreed.
+  epic 21 to register, with A1's `material_unknown` and `material_destroyed`.
 - Error mapping: the provider's and the chain's errors onto the API's problem types.
 
 ### Epic 10 — Integration, the census 🔀
@@ -917,50 +919,29 @@ export key's next generation and its per-location retirement, the master-key des
 pins, `Remove` with its fence and the destroy operation are deferred to their first callers
 (§6.1), and RFC 5 says so in this pull request.
 
-**Design questions, pending the user's answer.** Each is written in place with its recommended
-option; the pull request lists them under "Decision needed".
+**Also answered by the user.**
 
-- **Q2. Where AES-256-GCM-SIV comes from.**
-  - (a) **Recommended, written in place.** An internal `cipher.AEAD` built on `crypto/aes`, ported
-    with attribution from an Apache-2 implementation, with a constant-time POLYVAL by masking
-    (D3; not the variable-time table of Go 1.26's generic GHASH), about 300 lines,
-    gated by RFC 8452's vectors and the independent golden vectors (D3). Example:
-    `siv.New(key []byte) (cipher.AEAD, error)`.
-  - (b) A third-party module exposing `cipher.AEAD` (candidates from memory, not checked:
-    `github.com/ericlagergren/siv`, `github.com/secure-io/siv-go`).
-  - (c) Tink (`tink-go`), whose AEAD API draws its own random nonce (from memory), so it cannot
-    give RFC 5's fixed nonce, and is rejected.
-  Why (a): no maintained Go module was confirmed, the construction is standardised with full
-  vectors, and BoringSSL and Tink each carry their own. Cost: about 3 man-days in epic 5, and a
-  pure-Go POLYVAL slower than assembly (the §8.3 benchmark says whether it matters).
-- **Q3. Which key services ship.**
-  - (a) **Recommended, written in place.** KMIP only, associated data as bytes (D14); a cloud
-    key service is a §6.1 row. Example: `materials: {provider: kmip, endpoint: …, key: …}`.
-  - (b) KMIP and one cloud key service, taking associated data as a string map, in epic 7
-    (about 5 more man-days and an integration tier the harness does not run).
-  Why (a): the harness runs a KMIP server and RFC 5 §8.1's row names one; nothing in #5488 asks
-  for a cloud service.
-- **Q4. Where the operator's key operations live.**
-  - (a) **Recommended, written in place.** RFC 23 operations, added by amendment A3 and built
-    in epic 9 with their `dfsctl` commands (D15). Example:
-    `POST /namespaces/{ns}:rotate-data-key`, `POST /stores/{store}:rotate-master-key`,
-    `POST /stores/{store}:verify-escrow`.
-  - (b) A library only in this plan; the routes are RFC 23's plan's, later. Then no encrypting
-    namespace can be created on a key file, since its escrow check has no caller.
-  Why (a): RFC 23 already runs `rotate-signing-key` as an operation; the escrow check is a
-  prerequisite of every encrypting namespace on a key file (RFC 5 Appendix B.2).
+- **Q2. The cipher is AES-256-GCM from the standard library** (D3): a commonly supported
+  algorithm, no implementation of our own. RFC 5 Appendix B is amended in this pull request: a
+  chunk's nonce is an HMAC of its input, stored in the body; a frame is sealed once per salt; a
+  key-file master key makes at most 2³² random-nonce wraps, counted by the provider. Example:
+  `aead, _ := cipher.NewGCM(block); body = aead.Seal(nonce, nonce, input, aad)`.
+- **Q3. KMIP only** (D14); a cloud key service is a §6.1 row. Example:
+  `materials: {provider: kmip, endpoint: …, key: …}`.
+- **Q4. RFC 23 operations, built in epic 9** (D15). Example:
+  `POST /namespaces/{ns}:rotate-data-key`, `POST /stores/{store}:rotate-master-key`,
+  `POST /stores/{store}:verify-escrow`.
 
-**Amendments to other RFCs, proposed.** The plan follows those RFCs as written until the user
-agrees.
+**Amendments to other RFCs, in this pull request.**
 
-- **A1. RFC 25 §3.9 and §7: the conditions RFC 5 names but the registry lacks.** RFC 5 §2.7 and
-  Appendix B.4 name a configuration condition for unknown material and a condition for destroyed
-  material; §3.9 has only `material_unavailable`. Proposed rows: `material_unknown` (namespace,
-  unhealthy: behaves as an unavailable remote, page at 5 min) and `material_destroyed`
-  (namespace, `data_loss`, page). RFC 5 §6 calls `malformed` decode failures alerts; RFC 25 §7's
-  ticket list gains `transform_decode_failures_total{error="malformed"}`.
-- **A3. RFC 23 §4.1's actions table, and §4.6's operation kinds for the long-running ones: the
-  key operations** of Q4 (a), with their roles: `admin` for each.
+- **A1. RFC 25 §3.9 and §7.** The registry gains `material_unknown` (namespace, unhealthy:
+  behaves as an unavailable remote, page at 5 min) and `material_destroyed` (namespace,
+  `data_loss`, page at once), and §7's ticket list gains
+  `transform_decode_failures_total{error="malformed"}`. RFC 5 Appendix B.4 names the three
+  material conditions.
+- **A3. RFC 23 §4.1 and §4.6.** The actions table gains `rotate-data-key` (namespace) and
+  `rotate-master-key` (remote store), both `admin` operations, and `verify-escrow` (remote
+  store, `admin`, not an operation); §4.6 lists the two rotations as operation-runner work.
 
 (A2, the pin, is RFC 5's own and is in this pull request.)
 
@@ -977,8 +958,8 @@ agrees.
   draws its own IV, so the vector pins the stored-wrap layout around the server's bytes and the
   associated data the wrapper captured, not the wrap bytes; and the row runs in `integration`,
   not `unit`. Whether that meets the row is for the RFC's author.
-- **O6.** Least certain estimates: epic 8 (the `keys` object's repair under concurrency), epic 5
-  (Q2's answer moves it by about 3 man-days), epic 9 (Q4's answer).
+- **O6.** Least certain estimates: epic 8 (the `keys` object's repair under concurrency), epic 6
+  (its wrap count is new), epic 9 (the key operations' API and CLI tests).
 - **O9.** The harness's KMIP server is PyKMIP; whether it can rotate a key in place and report a
   primary version is not checked. If it cannot, epic 8's in-place-rotation rows and epic 7's
   primary-version read move to the cloud-key-service ledger row (§6.1).
