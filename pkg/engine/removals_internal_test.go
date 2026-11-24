@@ -164,6 +164,47 @@ func TestAnItemStallsAfterFiveFailures(t *testing.T) {
 	}
 }
 
+// A stalled item stays removal_stalled while its next retry runs, though the
+// run has taken it off the loop's list.
+func TestAStallHoldsWhileItsRetryRuns(t *testing.T) {
+	clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	e := &Engine{d: Deps{Clock: clock, Logger: slog.New(slog.NewTextHandler(&syncBuffer{}, nil)),
+		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
+			return ctx, func(error) {}
+		}}}
+	l := newRemovalLoop(e)
+	f := entity.NewFileID()
+	var runs atomic.Int32
+	inRetry, release := make(chan struct{}), make(chan struct{})
+	l.enqueue(&loopItem{b: &binding{}, f: f, kind: entity.RemoveTruncate, run: func(context.Context) answer {
+		if runs.Add(1) == stallAfter+1 {
+			close(inRetry)
+			<-release
+		}
+		return itemRetry
+	}})
+	go l.run()
+	t.Cleanup(func() { l.halt(nil) })
+	t.Cleanup(func() { close(release) }) // runs first, so the halt's join does not wait on the held run
+	// One backoff at a time until the retry after the stall runs: the loop may
+	// arm its timer after an Advance, which that Advance then missed.
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		select {
+		case <-inRetry:
+		case <-time.After(time.Millisecond):
+			if time.Now().After(deadline) {
+				t.Fatalf("after 5 s the item ran %d times, want the retry after its stall running", runs.Load())
+			}
+			clock.Advance(loopBackoff)
+			continue
+		}
+		break
+	}
+	if !l.stalledOn(f) {
+		t.Error("stalledOn is false while the stalled item's retry runs, want true until a run finishes or advances it")
+	}
+}
+
 // A run that advanced resets the count: four failures, an advance and four
 // more raise nothing, and a fifth failure in a row then stalls the item.
 func TestAnAdvanceResetsTheCount(t *testing.T) {
