@@ -158,11 +158,8 @@ func shareRows() []row {
 				t.Errorf("share delete --wait: reading the share back answered %v, want 404", err)
 			}
 		}},
-		{name: "share export-policy set writes the whole policy and update only its flags'", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
+		{name: "share export-policy update changes only its flags' fields and set writes the whole policy", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
 			sh := s.share(t, c)
-			mustRun(t, run, "share", "export-policy", "set", sh.Spec.Name, "--flavor", "sys", "--client", "192.168.0.0/16=read", "--squash", "all")
-			want := apiv1.ExportPolicySpec{Flavors: []string{"sys"}, Clients: []apiv1.ClientRule{{CIDR: "192.168.0.0/16", Access: "read"}},
-				MinProof: "none", MinProtection: "none", Squash: "all"}
 			policy := func() apiv1.ExportPolicySpec {
 				p, err := c.ExportPolicies().Get(t.Context(), sh.ID)
 				if err != nil {
@@ -170,13 +167,19 @@ func shareRows() []row {
 				}
 				return p.Spec
 			}
-			if got := policy(); !reflect.DeepEqual(got, want) {
-				t.Errorf("share export-policy set: the server holds %+v, want %+v", got, want)
-			}
+			want := policy()
 			mustRun(t, run, "share", "export-policy", "update", sh.Spec.Name, "--read-only", "--smb-encrypt")
 			want.ReadOnly, want.SMB.Encrypt = true, true
 			if got := policy(); !reflect.DeepEqual(got, want) {
 				t.Errorf("share export-policy update: the server holds %+v, want %+v", got, want)
+			}
+			// set takes every field its flags do not name back to its default,
+			// read-only and SMB encryption among them.
+			mustRun(t, run, "share", "export-policy", "set", sh.Spec.Name, "--flavor", "sys", "--client", "192.168.0.0/16=read", "--squash", "all")
+			want = apiv1.ExportPolicySpec{Flavors: []string{"sys"}, Clients: []apiv1.ClientRule{{CIDR: "192.168.0.0/16", Access: "read"}},
+				MinProof: "none", MinProtection: "none", Squash: "all"}
+			if got := policy(); !reflect.DeepEqual(got, want) {
+				t.Errorf("share export-policy set: the server holds %+v, want %+v", got, want)
 			}
 			p, err := decodeFormat[apiv1.ExportPolicy]("json", mustRun(t, run, "share", "export-policy", "get", sh.Spec.Name, "-o", "json"))
 			if err != nil || !reflect.DeepEqual(p.Spec, want) {
