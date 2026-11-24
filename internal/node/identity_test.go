@@ -145,6 +145,7 @@ func TestARefusedIdentityRowFailsTheStart(t *testing.T) {
 		directory              bool // the rest of a directory record is written too
 	}{
 		{"a row that does not decode", "identity.ntlm", `123`, "identity.ntlm", false},
+		{"a directory row that does not decode", "identity.directory.address", `123`, "identity.directory.address", false},
 		{"a directory domain equal to the node's name", "identity.directory.netbios_domain", `"DITTOFS"`, "netbios_domain", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

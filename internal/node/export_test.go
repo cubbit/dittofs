@@ -27,6 +27,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/secrets"
+	setting "github.com/cubbit/dittofs/pkg/settings"
 	pvfs "github.com/cubbit/dittofs/pkg/vfs"
 	"slices"
 	"sync"
@@ -155,8 +156,26 @@ func (n *Node) OnReconcileWait(waiting func()) { n.rec.waiting = waiting }
 // identity, before identity's Apply. Call it before Start.
 func (n *Node) OnIdentityApply(handing func(iidentity.State)) { n.rec.handing = handing }
 
+// OnSettingsWalkWait has the node call walking each time the settings walk
+// arms its bound to wait on the store for its next row, with the rows it has
+// received so far: a page's first wait is at 0, the next at the page's size.
+// Call it before Start.
+func (n *Node) OnSettingsWalkWait(walking func(seen int)) { n.rec.walking = walking }
+
 // Applied is the wait a write on this node makes.
 func (n *Node) Applied(ctx context.Context) error { return n.applied(ctx) }
+
+// DeclareSections declares the settings sections of the components a test
+// stands in for, beside the ones the node's own components declare, so the
+// walk reads and the snapshot holds a section the test needs and the table
+// lacks. Call it before Start.
+func (n *Node) DeclareSections(secs ...setting.Section) {
+	n.rec.table = append(n.rec.table, secs...)
+}
+
+// Settings is the snapshot the settings walks have published, the one a
+// component reads what it runs from at use; nil before the first walk.
+func (n *Node) Settings() *setting.Snapshot { return n.rec.snapshot.Load() }
 
 // Positions is the counters the node has reconciled through.
 func (n *Node) Positions() kvstore.Counters {
