@@ -13,7 +13,7 @@ import (
 
 // Each COMPOUND Route builds carries a state of its own, new and empty, so a
 // member of one compound never sees another's filehandle, stateid or budget,
-// whether the two come one after the other on a connection or at once; a
+// routed one after the other on one connection; a
 // call that is no COMPOUND, NFSv4's NULL among them, carries none (RFC 20
 // section 4.7, RFC 21 section 2.1).
 func TestEachCompoundGetsItsOwnState(t *testing.T) {
@@ -57,7 +57,8 @@ func TestEachCompoundGetsItsOwnState(t *testing.T) {
 	}
 }
 
-// SetFH sets the current filehandle, leaves the current stateid unset and
+// SetFH sets the current filehandle, makes the current stateid the all-zeros
+// one and
 // raises NeedsFH in the Level core's needs check reads, the bits already
 // there kept (RFC 20 section 4.7, RFC 8881 section 16.2.3.1.2).
 func TestSetFHRaisesTheFilehandleBit(t *testing.T) {
@@ -71,6 +72,6 @@ func TestSetFHRaisesTheFilehandleBit(t *testing.T) {
 		t.Errorf("the current filehandle is %q, want %q", st.Cur.FH, "new")
 	}
 	if st.Cur.HasStateid || st.Cur.Stateid != (Stateid{}) {
-		t.Errorf("the current stateid is %+v, set %v, want it unset", st.Cur.Stateid, st.Cur.HasStateid)
+		t.Errorf("the current stateid is %+v, set %v, want the all-zeros stateid, not set", st.Cur.Stateid, st.Cur.HasStateid)
 	}
 }
