@@ -103,10 +103,10 @@ already done, and what remains is smaller and different:
 | 1 | **v1 refused in one sentence** | a v1 Badger store recognised at start and at init; one refusal wording for all three v1 finds | 2 | 2 | — |
 | 2 | **Delete the v1 store** | the seven trees and `internal/sysinfo`, `go.mod`, the internal docs, CLAUDE.md and agent skills; the user docs' metadata sections; the v1 block tier (D8) | 4 | 4.75 | — |
 | 3 | **FoundationDB selectable in `dfs`** | a `foundationdb` build tag; bootstrap to `fdbkv` options with TLS; the start check without a store directory; init and start on a cluster of their own | 4 | 7 | E4 |
-| 4 | **FoundationDB release packaging** | the release hook; an image and two Linux tarballs built with FoundationDB; a smoke test of the image; install docs | 4 | 5 | — |
-| | **Total** | | **14** | **18.75** | |
+| 4 | **FoundationDB release packaging** | the release hook; an image and two Linux tarballs built with FoundationDB; a smoke test of the image; install docs; `dfs init` creating the storage key file | 5 | 6 | — |
+| | **Total** | | **15** | **19.75** | |
 
-**Plan estimate: 14 subtasks, 18.75 man-days.**
+**Plan estimate: 15 subtasks, 19.75 man-days.**
 
 ## 3. Dependencies, blockers and the split
 
@@ -127,8 +127,8 @@ already done, and what remains is smaller and different:
   Docker Hub repository and the signing are Marco's (CLAUDE.md, "Releases"). E4 is reviewed by him
   and merges before the first tag cut from a tree holding `fdbkv`, since that tag's release job
   fails today (plan §1).
-- If D1 is answered "not in release 1", E3 and E4 move to the cluster stage, and stage 4 is E1 and
-  E2 alone, 6.75 man-days.
+- Had D1 been answered "not in release 1", E3 and E4 would have moved to the cluster stage, and
+  stage 4 would be E1 and E2 alone, 6.75 man-days. It was answered yes (§4).
 - **D7, settled in review: an installation owns its whole FoundationDB cluster.** The store opens
   `fdbkv` with no key prefix, so `Init`'s scan (`store.go:108-115`) and T3.3's probe read the whole
   cluster, and any key another user wrote there is foreign. The bootstrap gains no prefix key.
@@ -151,6 +151,8 @@ already done, and what remains is smaller and different:
    conformance runs stay on `badger-s3`. The backend is merged and passes kvstore's conformance
    suite on a real cluster (`foundationdb.yml:66-72`), so the only work left is wiring and
    packaging. Deferring it would leave the bootstrap accepting a value no build opens.
+   **Answered as recommended** (Marco, #5593): release 1 ships FoundationDB as an opt-in build,
+   and Badger stays the default.
 2. **D2. A build tag, or cgo alone?** **Recommended: a `foundationdb` tag** on `fdbkv`, on
    `fdbkvtest`, on `pkg/metadata/kvstore/suite_fdb_test.go` (today `linux && cgo`, importing
    both), and on the file of `cmd/dfs/commands` that opens it. Tagging the packages but not that
@@ -171,6 +173,10 @@ already done, and what remains is smaller and different:
    - no deb, rpm, Homebrew or Scoop package. Apple publishes `foundationdb-clients` only on its
      GitHub releases, so a package could not declare that dependency (see the deferral ledger);
    - macOS and Windows keep only the static build.
+
+   **Answered as recommended** (Marco, #5593): the `<tag>-foundationdb` image and the two Linux
+   tarballs, and no deb, rpm, Homebrew or Scoop package. The binary stays `dfs`, and only the
+   archive is named `dfs-foundationdb`, so commands and docs are the same for both builds.
 4. **D4. How does the start check work without a store directory?** **Recommended:** `Preflight`
    takes the store as one of two things, and `internal/node` exports nothing new. RFC 23 §2.1's
    `decision:` (:515-521) allows `New`, `Start`, `Stop` and `Preflight` only.
@@ -486,7 +492,7 @@ lives only in a job that has none.
 
 ### Epic 4 — FoundationDB release packaging
 
-**Epic 4 estimate: 4 subtasks, 5 man-days.**
+**Epic 4 estimate: 5 subtasks, 6 man-days.**
 
 RFC 29 §4.8 (CI), CLAUDE.md "Releases". No RFC specifies the release artefacts. D3 is the decision
 this epic implements: one image and two Linux tarballs.
@@ -525,6 +531,15 @@ this epic implements: one image and two Linux tarballs.
   tarballs, the client requirement (7.3), mounting the cluster file, and that an installation owns
   its whole cluster (D7). `configuration.md` gets the `foundationdb` block from T2.3.
   `CHANGELOG.md` gets its entry when the release is cut, as CLAUDE.md's release steps say.
+  It describes what `dfs init` does (T4.5), not a manual step.
+- **T4.5 — `dfs init` creates the local storage key file (1 md, #5600).**
+  - When `keys.storage.local.file` names a file that does not exist, `dfs init` generates it with
+    `keyprovider.GenerateKeyFile` from `DITTOFS_ENCRYPTION_PASSPHRASE` and writes it with mode
+    0600. When the file exists, init uses it and never overwrites it.
+  - It prints once, to standard output, where the file is and that losing it or its passphrase
+    loses the data (RFC 5 B.4), so it must be copied off the host.
+  - With no passphrase set, it refuses, naming the variable.
+  - The file is an Argon2-wrapped master key, so an operator cannot write one by hand.
 
 ## 6. Risks and open points
 
