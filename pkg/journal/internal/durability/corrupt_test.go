@@ -1141,7 +1141,12 @@ func TestASyncSnapshottingItsCorruptDebtRacesTheQueueNothing(t *testing.T) {
 			syncs.Add(1)
 		}
 	}()
-	for range 100 {
+	// At least 100 Syncs, and go on until the writer has dropped one record:
+	// on a slow runner the loop can end before the writer goroutine is
+	// scheduled, and then nothing raced. A writer that failed leaves its error
+	// in the channel, which ends the loop so the join below reports it.
+	stop := time.Now().Add(30 * time.Second)
+	for i := 0; (i < 100 || syncs.Load() == 0) && len(failing) == 0 && time.Now().Before(stop); i++ {
 		if _, err := cr.d.Sync(context.Background(), f); err != nil {
 			t.Fatalf("Sync: %v", err)
 		}
