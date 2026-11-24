@@ -806,11 +806,11 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
 **Subtask T11.11 estimate: 2.75 man-days.**
 
 - **Track:** B. **Depends on:** T11.4, T11.5, T11.6, T11.7, T11.8, T11.10, E4's T4.1, E7's T7.1. S3 for
-  the loopback rows, S5 for the restart row.
+  the loopback rows, S5 for the restart row and the waiter lifetime's holds and resends.
 - **Covers:** R16, R28, R29, R30, R35, R36, R44, R52, R53, R54, R55, R56, R57.
 - **Deliverables:** the rows over loopback through `core` on `memory.New`, by `nfsclient` and `Host`,
-  and the restart row on the composed node. Consumed by E16, which runs them again through a kernel
-  client.
+  and the restart row on the composed node. No later subtask consumes it: E16's document runs none
+  of these rows again through a kernel client.
 - **Acceptance criteria:** each row's assertions as R52 to R57 state them.
 - **Tests:** "§6.1 host binding" (R52, R16); "§6.1 waiter lifetime" (R53): its holds and resends on the
   composed node's injected clock after S5, each unacknowledged grant scripted as `Host` closing the
@@ -952,9 +952,14 @@ Gaps and assumptions, not questions:
   `Revoked` (T11.7) arms for a client connected through `nlm.Handlers`' field, and adds that field
   (T11.3). E10's T10.1 moves `wire/call.go`, which T11.2 uses; T11.2's figure is 0.5 man-days lower
   for it.
-- The composed node of S5 is assumed to take an injected clock, which T11.11's 5-minute steps of
-  "§6.1 waiter lifetime" advance; without it those steps move to E16's T16.5, which accepts them and
-  runs them in real time.
+- T11.11's 5-minute steps of "§6.1 waiter lifetime" run here, on the composed node's
+  `Harness.Clock`, never in real time, as E16's document also has it. The node's clock already
+  reaches the waiter on `feat/storage-v2`: `nodetest` hands its clock to the node, and the node to
+  open state (`enginewire.Compose`'s `Clock`) and to the service, whose grant resends it paces
+  (`vfs.Deps.Clock`, `internal/vfs/sink.go`). So E16's T16.5, which would take the steps only if
+  the clock did not reach the waiter, receives none. Should S5 ever stop carrying the clock that
+  far, putting it back is S5's fix, made before T11.11 runs; the steps stay here, on the clock,
+  rather than move to E16 or to real time.
 - D5's and D10's per-node tables are lost with a gateway node while a primary elsewhere keeps the
   host's locks and opens. That is a (cluster) case, under the RFC 21 implementation plan's deferral
   row for RFC 21's cluster parts, which does not yet name it; a pull request against the plan adds it.
