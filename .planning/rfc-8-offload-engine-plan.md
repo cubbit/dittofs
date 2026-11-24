@@ -45,7 +45,12 @@ components and the codec to the transforms, and I6 follows it; RFC 8 §2.1 and �
 `enginewire`; RFC 8 §2.8 and §6.1.1 name the scheduler's package `pkg/workqueue`, and RFC 9, RFC 23
 and the glossary follow; RFC 8 §6.1.1 lands `Rate` pacing, with the pace `Throttled` lowers, with GC's
 sources; §12.1 lands `PreWarm` with its first caller, an operator's pre-warm action no RFC specifies
-yet; §15.4's B1 measures against raw puts on the same store at the same time.
+yet; §15.4's B1 measures against raw puts on the same store at the same time; §2.5 makes the lost-journal
+acknowledgement a store record bound to the lost `JournalID`, and §2.1's `Lifecycle` row reads it
+(§6 point 1, decided); §10.4 has Commit abandon an attempt whose pinned material was named destroyed
+after the pin, with its §15.1 leg; RFC 0 §1.2 lists the journal, the metadata store and open state
+among `enginewire`'s edges, and RFC 8 §2.1 names its two importers, the node and the engine's test
+fixture, which RFC 23 §2.1's sketch follows.
 
 ---
 
@@ -94,8 +99,9 @@ RFC 2 §5.3 with §10.1's consumer checks (epics 15 and 16).
 
 **Dependency limits.** The engine calls the four components only through interfaces it declares
 (RFC 8 §2.1), so each middle epic builds against those declarations and against components that pass
-their own conformance suites. What this part cannot do before the components exist is run a pass end to
-end (S3) or compose the node (epic 21). The journal's offload half is not built: on `feat/storage-v2`
+their own conformance suites. What this part cannot do before the components exist is finish epics 15 and 17, whose
+tests run over the real carver and RFC 3's syncer with its in-memory store (D4), run a pass end to end
+(S3) or compose the node (epic 21). The journal's offload half is not built: on `feat/storage-v2`
 its `Offload`, `OffloadMany`, `MarkOffloaded`, `Unmark` and `Release` answer `ErrNotImplemented`, and
 `DropOlder`, `Reconciled` and `AcknowledgeUnreadable` do not exist (the journal plan's epics 9b and
 7b). That is S6, which gates S3, eviction and the reseed as well as the reconcile. The store's half
@@ -165,13 +171,18 @@ whose settled answer for a put-healthy store turns them green.
   reserve; §10.2.1 pacing law; §2.3 removal during a reconcile; §2.5 join; §8.1 removal wedge (the
   undecodable ref); §11.4 drain names its blocker; §1.1 no cross-share slowdown (cold reads); §6.1.1 a
   stuck run, over the engine's instances. 13 rows.
-- **RFC 8 §15.3, Group C**: §2.5 reseed; §2.4 settings (the chunking half: a changed profile reported
-  as a migration). 2 rows.
-- **Other plans' rows**: RFC 14's L9 (locks do not pin bytes). 1 row.
+- **RFC 8 §15.3, Group C**: §2.5 reseed; §2.4 settings (both halves the first part hands over:
+  `Min ≥ Target` refused, and a changed profile reported as a migration). 2 rows.
+- **Other plans' rows**: RFC 14's L9 (locks do not pin bytes); RFC 17's V20, its offload half (a write
+  succeeds once offload frees space, the store unreachable past the deadline, the store denying puts).
+  2 rows.
 
-49 rows. Two of them extend a test the first part already has rather than add a second one: "§2.5
-clone resumed at a full limit" extends `TestRFC8A_CloneResumedAtAFullLimit` with its remote half, and
-"§10.2 retry later" extends `TestRFC8A_RetryLaterAtTheShareLimit` with its store legs. "§2.1 remote
+50 rows. Four of them extend a test the first part already has rather than add a second one: "§2.5
+clone resumed at a full limit" extends `TestRFC8A_CloneResumedAtAFullLimit` with its remote half,
+"§10.2 retry later" extends `TestRFC8A_RetryLaterAtTheShareLimit` with its store legs, "§2.4 settings"
+extends `TestRFC8C_Settings` with `Min`, `Target` and the migration report, and V20 extends `TestV20`
+(`internal/vfs/integration`) with its offload half. The "shard handed away and back" legs the first
+part hands over, of §15.1's "§4.1 verifier inputs" and RFC 17's V25, are the cluster stage's (D9, §6.1). "§2.1 remote
 required" is the RFC 23 plan's (its epic 3), run through the node. The module
 checks of RFC 8 §6.1.1, §6.3 and §7.4 are unit tests of `pkg/workqueue`, `offload/` and the speculator,
 written green with epics 13, 15 and 17: `unit` keeps no known list. O1's crash leg is the exception: it
@@ -189,10 +200,14 @@ over its in-memory store with its fault wrapper, epic 19 `Refs`), and in the sam
 substring.
 
 **The in-memory journal's new calls come after their suite rows.** `Offload`, `OffloadMany`,
-`Release`, `MarkOffloaded`, `Unmark`, `DropOlder` and `Reconciled` get their rows in the journal's
-conformance suite first, written by epic 12 and red against the real journal until S6; the in-memory
-journal gains each call, passing those rows, with the epic that first calls it (`CLAUDE.md`, "Writing
-tests": the suite comes before the double). The clock, `sim.Schedule`, the
+`Release`, `MarkOffloaded` and `Unmark` already have their rows in the journal's conformance suite on
+`feat/storage-v2`, red as `stub:` entries in `test/journal/known.yaml` (`TestRFC28A_UnmarkClears` among
+them) until S6; the in-memory journal gains each call, passing those rows, with the epic that first
+calls it (`CLAUDE.md`, "Writing tests": the suite comes before the double). `DropOlder` and
+`Reconciled` get their rows from the journal plan's epic 7b, which adds the methods: the suite is
+pinned to `*journal.Handle` (`var _ Handle = (*journal.Handle)(nil)`), so a row calling a method the
+handle lacks would break the suite's build. The in-memory journal gains those two after 7b's rows, so
+epic 19's reconcile waits on 7b (S6). The clock, `sim.Schedule`, the
 fault-injecting `kv.KV` and the profiling harness are the first part's.
 
 ### 1.5 General rules for each epic
@@ -246,8 +261,9 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
    journal, the real carver (a pure function), RFC 3's real syncer over RFC 3's in-memory store, and
    `kvstore` over the in-memory `kv.KV`, each a kind the `CLAUDE.md` "Writing tests" section allows.
    Epic 11 declares no internal interface for a test to stand in for (rule 12). The pipeline's tests in
-   `offload/` import only those, as RFC 8 §2.8 requires, and reach the components through
-   `enginewire` (rule 7).
+   `offload/` import only those, as RFC 8 §2.8 requires, and build the carver and RFC 3's syncer over
+   its in-memory store directly, not through `enginewire`: `enginewire` imports the engine, which
+   imports `offload/`, so an in-package test importing it is an import cycle (rule 7).
 2. **Fuzz the key and ref decoders the queue's rebuild reads.** Epic 14's `Rebuild` reads the
    unfinished-removal index and the refs a removal batch walks, and §15.2's "§8.1 removal wedge" feeds
    it an undecodable ref: a target per decoder asserts no panic, lengths inside the buffer, and decode,
@@ -287,8 +303,10 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
    allows `enginewire` alone to import `pkg/carver`, `pkg/syncer`, `pkg/remote`, `pkg/remote/codec`
    and `pkg/transform`, as RFC 0 §1.2 and its I6 name. The allowlist names each package an exception
    applies to, test packages included. Each entry is flipped with its first consumer (rule 12): epic 15
-   the carver, which the fixture and `offload/`'s tests build through `enginewire`; epic 16 the syncer
-   and its in-memory store; epic 21 the remote tier, its codec and the transforms.
+   the carver and RFC 3's syncer with its in-memory store and fault wrapper for `offload/`'s tests,
+   which import them directly (rule 1), and the carver for `enginewire`, which builds it for the
+   fixture; epic 16 the syncer and its in-memory store for `enginewire`; epic 21 the remote tier, its
+   codec and the transforms.
 8. **Real dependencies for properties of those dependencies**, as `CLAUDE.md`'s "Writing tests" says.
    Here: the real journal on a real directory with its crash seam, for durability, recovery and the
    offloaded-bit ledger; `kvstore` for what an offload, intent or removal transaction commits and
@@ -319,7 +337,7 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | 11 | **Interfaces** ⛔ | `Settings` keys, `WaitOffloaded`, `pkg/workqueue`'s surface; the component signatures agreed at S1a to S1d | 5 | 9.5 | team | **everything** |
-| 12 | **Red rows and test foundations** ⛔ | 49 rows in `engine-conformance`, red; the journal suite's rows for the new calls; the fixture's component options | 8 | 26 | team | **all testing** in 13 to 22 |
+| 12 | **Red rows and test foundations** ⛔ | 50 rows in `engine-conformance`, red; the fixture's component options | 8 | 26 | team | **all testing** in 13 to 22 |
 | 13 | **The shared work scheduler** ⛔ | `pkg/workqueue`: keys and states, batches, backoff, reservations, fairness, watchdog turns | 7 | 20 | A | 14 |
 | 14 | **The work queue** ⛔ | the offload and removal sources, the four events, the age tick, the rescan, the first part's removal loop moved onto the scheduler; the rebuild's decoders fuzzed | 6 | 15 | A | 16, 18, 19, 20 |
 | 15 | **The offload pipeline** ⛔ | `offload/`: Capture to Mark over the store's existing calls; the chain pin; `encodings` at commit; O1 to O8 but O7, O1's crash leg over the real journal | 8 | 28 | B | 16 |
@@ -377,6 +395,8 @@ flowchart TD
   E17 -. "speculation cancelled on pressure" .-> E18
   E17 -. "track C's order" .-> E19
   S5(["S5 offload components built"]):::sync -. "carver, syncer" .-> S3
+  S5 -. "carver, RFC 3's syncer and in-memory store" .-> E15
+  S5 -. "RFC 3's in-memory store" .-> E17
   S6(["S6 journal offload half built"]):::sync -. "Offload, Release, Unmark" .-> S3
   E16 --> S3(["S3 a pass runs end to end"]):::sync
   S6 -. "DropOlder, Reconciled" .-> E19
@@ -419,7 +439,7 @@ What each point means for this plan's epics:
   (RFC 8 §10.4) and the salvage-key wrap (RFC 1 §3).
 - **S1 🔀 interfaces frozen** (this plan's S1: the end of epic 11, after S1a to S1d). Nothing in epics 13 to 20 starts
   before it.
-- **S2 🔀 red rows in CI** (end of epic 12). The 49 rows compile, run on every pull request to
+- **S2 🔀 red rows in CI** (end of epic 12). The 50 rows compile, run on every pull request to
   `feat/storage-v2` and are listed in `known.yaml`. Epics 13, 15 and 17 start here.
 - **S3 🔀 a pass runs end to end** (inside track B, the end of epic 16, over S5's carver and RFC 3's
   syncer and S6's `Offload`). A file written through the journal is offered, carved, packed, put
@@ -427,15 +447,16 @@ What each point means for this plan's epics:
 - **S4 🔀 offload complete in the fixture** (epics 13 to 20 done). Every method of §1.3 has its
   behaviour, and every row whose component and journal call exist is green. Epic 21 starts here.
 - **S5 🔀 offload components built** (external: the RFC 2 to RFC 5 plans' implementation epics). The
-  carver and assembler and RFC 3's syncer with its in-memory store gate S3; RFC 4's codec and S3 store
-  and RFC 5's chain gate epic 21.
+  carver and assembler and RFC 3's syncer with its in-memory store gate epic 15's finish and S3, and
+  RFC 3's in-memory store epic 17's; RFC 4's codec and S3 store and RFC 5's chain gate epic 21.
 - **S7 🔀 store adapter and node composition built** (end of epic 21). The RFC 3 and RFC 4 plans'
   epics that need a composed node, and epic 22, start here.
 - **S6 🔀 journal offload half built** (external: the journal plan's epics 9b and 7b). 9b's `Offload`,
   `OffloadMany`, `MarkOffloaded`, `Unmark` and `Release` gate S3, eviction (epic 18) and the reseed's
   marks (epic 19); 7b's `DropOlder`, `Reconciled` and `AcknowledgeUnreadable` gate the reconcile and
   the unread-range row (epic 19). Until then those epics build over the first part's in-memory
-  journal, which gains each call with its first caller, and their rows over the real journal stay red.
+  journal, which gains each of 9b's calls with its first caller, and their rows over the real journal
+  stay red; `DropOlder` and `Reconciled` join the in-memory journal only after 7b's suite rows (§1.4).
 - **E22's 🔀** is the burn-down: the team converges on it once S6 and S7 are met.
 
 ### 3.3 Blockers
@@ -457,7 +478,8 @@ What each point means for this plan's epics:
 - **E18** blocks E19 partly: start step 7 starts its eviction loop.
 - **E18, E19 and E20** block E21 through S4.
 - **E21** blocks E22 through S7: the burn-down and the benchmarks run over the composed node.
-- **S5 (external)** blocks S3, and with it E16's finish, and E21.
+- **S5 (external)** blocks E15's and E17's finish (their tests run over the carver and RFC 3's syncer
+  with its in-memory store, D4), S3, and with it E16's finish, and E21.
 - **S6 (external)** blocks S3, E18's and E19's rows over the real journal, and E22.
 
 ### 3.4 Splitting the work
@@ -481,6 +503,10 @@ What each point means for this plan's epics:
   Track C's epic 19 waits on epic 14's tenants, epic 16's passes and epic 18's eviction loop, which
   start step 7 starts; it starts with the reseed's marks and unmarks over the in-memory journal, which
   need none of them, and takes start step 7 last.
+- **The critical path** runs E11, E12, E13, E14, E16, E18, then E19's start step 7, S4, E21 and E22:
+  track A's 35 man-days to the offload source outlast epic 15's 28. S5's first half (the carver, RFC 3's
+  syncer and its in-memory store) and S6 lie on it whenever they land after epic 14 ends, since epic
+  15 and S3 wait on them.
 
 ## 4. Implementation decisions
 
@@ -606,7 +632,7 @@ S1d, and RFC 8 §15.3's "§2.1 declared interfaces" row stays green.
 
 **Epic 12 estimate: 8 subtasks, 26 man-days.**
 
-§1.4 whole: 49 rows written red over the fixture and listed in `known.yaml`, #5318's four entries
+§1.4 whole: 50 rows written red over the fixture and listed in `known.yaml`, #5318's four entries
 re-pointed, and the fixture's options for the new components. **Owns:** RFC 8 §15.1 to §15.3 for the
 rows §1.4 lists, and §15's composition rule. **Done when:** S2: `engine-conformance` runs them all,
 each red at its named check.
@@ -615,15 +641,13 @@ each red at its named check.
 - The epic issues the entries name, asked for through `epic-breakdown` Step 6.3 once this plan merges,
   under roadmap epic #5487; #5318's entries re-pointed.
 - The fixture's carver, syncer and `Refs` options, refusing by name while unset.
-- The journal conformance suite's rows for `Offload`, `OffloadMany`, `Release`, `MarkOffloaded`,
-  `Unmark`, `DropOlder` and `Reconciled`, red against the real journal until S6.
 - Group A rows of the offload path (§3.2 no gate is safety, §6.4, §6.6 to §6.8, §8.3, §5.1, restart
   re-offer).
 - Group A rows of reads, clones and fills (§7.1, §7.2, §7.6, §7.7, §9.1).
 - Group A rows of restart and capacity (§2.5's journal gone, device loss, reconcile, takeover, late
   attaches, reseed gates, clone resumed at a full limit; §4.1 verifier inputs; §10.2; §10.4), the
   two of §1.4 that extend an existing test extending it.
-- Group B rows (13), Group C rows (2), RFC 14's L9.
+- Group B rows (13), Group C rows (2), RFC 14's L9 and RFC 17's V20 (its offload half).
 
 ### Epic 13 — The shared work scheduler ⛔
 
@@ -686,9 +710,8 @@ is persisted, so it lands before the first block. **Owns:** RFC 8 §3.1's `offlo
 §6.3 (but snapshot-hold ordering, D7), §6.5's V1, §6.6, §6.7, §6.8; RFC 2 §2.4's two exceptions as the
 caller's, RFC 2 §5.3 and §10.1's consumer checks. **Done when:** RFC 8 §6.3's failure and hang legs
 pass in `unit` over the in-memory components, O7 aside; O1's crash leg runs in `engine-conformance`
-over the real journal on a real directory and `kvstore`, red until S6 (rule 8); RFC 8 E4, E7, E8, E18, E20, E22 and E40's offload commits hold;
-RFC 8 §15.1's "§6.6 minted names and intents", "§6.7 widening", "§6.7 stretch ends" and "§6.8
-per-block reporting" go green at S3.
+over the real journal on a real directory and `kvstore`, red until S6 (rule 8); RFC 8 E4, E7, E8, E18, E20, E22 and E40's offload commits hold.
+Its four §15.1 rows run a pass end to end, so they are epic 16's to turn green (S3).
 
 **Expected content:**
 - `offloadDue` with the block-target, age and pressure triggers, and a pass bounded by `upload_workers` block targets, taken as a number: the RFC 3 plan's epic 8 declares the setting and epic 21 reads it, so this epic does not wait on it.
@@ -726,10 +749,11 @@ The engine runs epic 15's pipeline as the offload source's runs, and each bindin
 side. The fixture's syncer option is made real here, which with S5 and S6 is S3, and the red rows'
 messages rewritten. **Owns:** RFC 8
 §2.3's remote side, flow, key scope and the passes `Unbind` and `Drop` join, §2.4's chunking half
-(D11), §6.4, §8.3, §11.1's put-unhealthy pause. **Done when:** RFC 8 §15.1's "§6.4 guard across a
+(D11), §6.4, §8.3, §11.1's put-unhealthy pause. **Done when:** RFC 8 §15.1's "§6.6 minted names and intents", "§6.7 widening", "§6.7
+stretch ends", "§6.8 per-block reporting", "§6.4 guard across a
 removal", "§8.3 transfer survives a removal" (both orders, every removal kind), "§6.4 guard is not a
 fence", "§3.2 no gate is safety" and "§5.1 overwrite waits for existence" (offload half), §15.2's "§2.5
-join", and §15.3's "§2.4 settings" chunking half turn green; RFC 8 E6, E13, E16, E17, E39 hold.
+join", and §15.3's "§2.4 settings" turn green; RFC 8 E6, E13, E16, E17, E39 hold.
 
 **Expected content:**
 - The offload source's `Run`: a pass per batch, one result per file, `Throttled` and the pause not
@@ -785,7 +809,7 @@ and the index-bound row's put-health half, which `settled` answers from `others`
 §10.2.1, §10.3's repack from the loop, §10.4; RFC 14 §9.3 for eviction. **Done when:** RFC 8 §15.1's
 "§10.2 retry later", "§2.5 clone resumed at a full limit" (remote half) and "§10.4 destroyed
 material", §15.2's "§10 occupancy triggers eviction", "§10.2 refusal loop", "§10.3 repack reserve" and
-"§10.2.1 pacing law", RFC 14's L9, and #5318's four rows turn green; §15.2's "§10.2 one pass per share"
+"§10.2.1 pacing law", RFC 14's L9, RFC 17's V20 (its offload half), and #5318's four rows turn green; §15.2's "§10.2 one pass per share"
 stays green; RFC 8 E3, E11, E33 hold.
 
 **Expected content:**
@@ -812,8 +836,9 @@ stays green; RFC 8 E3, E11, E33 hold.
 
 What a start adds once offload exists: the queue rebuilt, background work started, the reseed with the
 reconcile it runs when one is owed, and the shares of a lost journal served again. The reconcile needs
-S6's `DropOlder` and `Reconciled`; until then it is built over the in-memory journal, its rows red
-over the real one. **Owns:** RFC 8 §2.5 steps 6 and 7 (the reseed and the reconcile, but the replica
+S6's `DropOlder` and `Reconciled`, and the in-memory journal gains them only after the journal plan's
+epic 7b writes their suite rows (§1.4), so the epic does the reseed first and the reconcile once 7b
+lands; its rows over the real journal stay red until then. **Owns:** RFC 8 §2.5 steps 6 and 7 (the reseed and the reconcile, but the replica
 clauses, D9), the restart re-offer and intent abandonment before serving, the late attach's steps 6
 and 7, §2.3's reconcile clauses in `Unbind`, §2.5's `Bind` takeover of the reconcile's handle, the
 operator's acknowledgement (§6 point 1: the record bound to the lost `JournalID`, its `Lifecycle` read and its consumption at `RecordJournal`), §11.2's crash row, `journal_unreconciled`; RFC 16 §3.1's
@@ -979,8 +1004,10 @@ proposed targets: the first real-service run does (§6.1).
    known list (RFC 29 §4.7), so epic 21 writes them green, once a composed node passes them; if e2e
    gains a known file first, they land red there instead.
 4. **Benchmarks per change need an S3 emulator in CI.** RFC 8 §15.4 runs them per change against a
-   local emulator; `CLAUDE.md` notes CI starts no S3 endpoint yet. Epic 22 runs them in the manual
-   `engine-bench` cell against LocalStack; making them per change waits on CI starting one (§6.1).
+   local emulator. The RFC 4 plan's epic 3 brings the HTTPS LocalStack into `integration`
+   (`LOCALSTACK_HTTPS_ENDPOINT`), which rule 8 and epic 21 rely on; epic 22 runs the benchmarks in the
+   manual `engine-bench` cell against LocalStack first, and a per-change cell over that LocalStack waits
+   on one recorded baseline to compare against (§6.1).
 5. **The read-only journal's reopen** stays unowned in the first part's ledger (RFC 8 E42). It runs
    this part's reseed when it lands; nothing here schedules the reopen itself.
 6. **The form of an alert rule is open.** Epic 21 registers every component's alert rules in
@@ -994,13 +1021,13 @@ proposed targets: the first real-service run does (§6.1).
 | GC composed in the node, a namespace added to GC, GC's scheduler instance (header; D3; #4276's GC half) | GC is planned later. Ceiling while it is: orphaned objects (§8.3's dropped refs, the abandoned intents of a restart, an `Abandon` after a put that landed) and dead blocks stay in the bucket and only grow, and no metric reports their rate; bucket-setting drift goes undetected while epic 18 evicts (the drift row below), so a loss it causes is permanent | RFC 9 | GC is built |
 | Snapshot-hold ordering in the pipeline, `Unbind`'s `keepHolds` offload, the cut's `PrepareCut` and `CommitCut`, `Deps.Gate` (RFC 8 §16 Q7), the clone across a cut and between batches (D7) | no snapshot exists before RFC 12 | RFC 12 | snapshots are built |
 | A re-home `Bind` joining the old namespace's passes, `State: Closing`'s clone counting, a re-home's switch, a copied image's `Fenced` state and §11.2's copied-image row (D8) | re-homes and namespace claims are RFC 27's | RFC 27 | RFC 27 is built |
-| The cluster rules: handover and lease-loss drains, O7 stale epoch, the replica filter, the reconcile's replica clauses, cross-shard clone rows, RFC 8 E26 (D9) | single node | the cluster stage (RFC 10, RFC 11) | the cluster stage |
+| The cluster rules: handover and lease-loss drains, O7 stale epoch, the replica filter, the reconcile's replica clauses, cross-shard clone rows, RFC 8 E26, the "shard handed away and back" legs of §15.1's "§4.1 verifier inputs" and RFC 17's V25 (D9; the first part's handover) | single node | the cluster stage (RFC 10, RFC 11) | the cluster stage |
 | Per-share budget values for capacity, transfers and pacing (D13) | no setting or record carries one | RFC 24 | RFC 24 is built |
 | `PreWarm` and the speculator's pre-warm, and the pre-warm legs of §15.1's "§9.1 no pre-clone fill" and §7.4's S2, S4 and S5 (D12; RFC 8 §12.1 as amended) | no caller in v1.1 | unowned (no RFC specifies a pre-warm action) | a pre-warm action is specified |
 | Positive-rate pacing in `pkg/workqueue`, and the pace a `Throttled` result lowers (D12; RFC 8 §6.1.1 as amended) | the engine's sources register `Rate` 0, and GC is planned later | RFC 9 | GC's sources land |
 | The node's upload drain calling `WaitOffloaded` (D12) | `drain` is RFC 30's, deferred by the RFC 23 plan | RFC 30's plan | that plan adds the verb |
 | The lost-journal acknowledgement's admin-only node action, writing the record epic 19 reads (§6 point 1) | RFC 23 §4 names no such action yet; until it does an operator has no call that writes the record | RFC 23's plan | RFC 23 §4 names the action |
-| The benchmarks run per change against an emulator (§6 point 4) | CI starts no S3 endpoint | unowned | CI starts an S3 endpoint |
+| The benchmarks run per change against an emulator (§6 point 4) | a per-change cell needs a baseline, which epic 22 records first | unowned | the RFC 4 plan's epic 3 brings LocalStack into `integration` and epic 22 has recorded the baselines |
 | §15.4's daily runs against each real service, and the real-service baselines that replace its proposed targets (its `decision:`) | CI holds no real-service credentials and runs no daily cell | unowned | CI gains a daily cell with real-service credentials |
 | An eviction loop woken by the journal's occupancy crossing its target, not a fixed tick (§4.3) | the fixed tick's lag is covered by the inline refusal path | unowned | B3 shows refusals a sooner eviction would have avoided |
 | Fuzz or model targets for the queue's keys and the pacing law (rule 2, RFC 8 §15.3's `ponytail:`) | tables check them | unowned | a table check misses a bug a random input would have found |
@@ -1058,6 +1085,7 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 6 §7.6, §8.1, §10.1; RFC 16 §3.1 | constraints: 15 (intents, commits), 17 (covering), 19 (`Refs`, `Versions`) |
 | RFC 13 Appendix B | 11 (keys), 21 (loading; the components' sections in `newTable`, `Target` once RFC 13 names its key) |
 | RFC 14 §9.3 | 18 (L9) |
+| RFC 17 §6 V20, V25 | 18 (V20's offload half); cluster (V25's shard handed away and back, §6.1) |
 | RFC 23 §2.1, §2.2 | 21 |
 | RFC 24 §6.2 | 21 (the CPU token, passed to the RFC 4 codec) |
 | RFC 25 §2.1, §2.5, §3.5, §3.9, §7, §8.2 | rule 3; 13 (watchdog), 20 (conditions, `health.Source`), 21 (every component's alert rules, the evaluator, the material provider's health source) |
