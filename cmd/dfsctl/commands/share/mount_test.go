@@ -30,10 +30,12 @@ func TestMountLine(t *testing.T) {
 			"mount -t cifs -o vers=2.1,port=1445,username=alice //dfs.example/archive /mnt/a"},
 		{"smb on macOS", mount{GOOS: "darwin", Protocol: "smb", Host: "dfs.example", Port: 1445, Share: "archive", Point: "/mnt/a", User: "a b"},
 			"mount_smbfs smb://a%20b@dfs.example:1445/archive /mnt/a"},
-		{"smb on linux under sudo", mount{GOOS: "linux", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "/mnt/a", User: "alice", SudoUser: "al", UID: "501", GID: "20"},
-			"mount -t cifs -o vers=2.1,port=445,username=alice,uid=501,gid=20 //dfs.example/archive /mnt/a"},
-		{"smb on macOS under sudo", mount{GOOS: "darwin", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "/mnt/a", User: "alice", SudoUser: "al", UID: "501", GID: "20"},
-			"sudo -u al mount_smbfs smb://alice@dfs.example:445/archive /mnt/a"},
+		{"nfs through sudo", mount{GOOS: "linux", Protocol: "nfs", Host: "dfs.example", Port: 2049, Share: "/archive", Point: "/mnt/a", NFSVersion: "4", Sudo: true},
+			"sudo mount -t nfs -o nfsvers=4,tcp,port=2049,actimeo=0 dfs.example:/archive /mnt/a"},
+		{"smb on linux through sudo", mount{GOOS: "linux", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "/mnt/a", User: "alice", Sudo: true, UID: "501", GID: "20"},
+			"sudo mount -t cifs -o vers=2.1,port=445,username=alice,uid=501,gid=20 //dfs.example/archive /mnt/a"},
+		{"smb on macOS runs as the caller", mount{GOOS: "darwin", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "/mnt/a", User: "alice", Sudo: true, UID: "501", GID: "20"},
+			"mount_smbfs smb://alice@dfs.example:445/archive /mnt/a"},
 		{"smb on Windows", mount{GOOS: "windows", Protocol: "smb", Host: "dfs.example", Port: 1445, Share: "archive", Point: "Z:", User: "alice"},
 			`net use Z: \\dfs.example\archive /user:alice * /TCPPORT:1445`},
 		{"smb on Windows on 445", mount{GOOS: "windows", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "Z:", User: "alice"},
@@ -42,6 +44,33 @@ func TestMountLine(t *testing.T) {
 		got, err := mountLine(tc.m)
 		if err != nil || !reflect.DeepEqual(got, strings.Fields(tc.want)) {
 			t.Errorf("%s: got %q (%v), want %q", tc.name, got, err, tc.want)
+		}
+	}
+}
+
+// dfsctl run as a user runs the mount command through sudo, for that
+// user's uid and gid; run as root it runs it as it is; run under sudo it is
+// refused, since it would read root's login; on Windows nothing changes.
+func TestAsCaller(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		goos, sudoUser string
+		euid           int
+		want           mount
+		refused        bool
+	}{
+		{"a user", "linux", "", 501, mount{GOOS: "linux", Sudo: true, UID: "501", GID: "20"}, false},
+		{"root", "linux", "", 0, mount{GOOS: "linux"}, false},
+		{"under sudo", "darwin", "alice", 0, mount{GOOS: "darwin"}, true},
+		{"windows", "windows", "", -1, mount{GOOS: "windows"}, false},
+	} {
+		m := mount{GOOS: tc.goos}
+		err := asCaller(&m, tc.euid, 501, 20, tc.sudoUser)
+		if (err != nil) != tc.refused || (err != nil && !strings.Contains(err.Error(), "not under sudo")) {
+			t.Errorf("%s: got %v, want refused %v naming sudo", tc.name, err, tc.refused)
+		}
+		if !tc.refused && m != tc.want {
+			t.Errorf("%s: got %+v, want %+v", tc.name, m, tc.want)
 		}
 	}
 }

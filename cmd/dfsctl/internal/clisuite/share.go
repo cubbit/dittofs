@@ -3,7 +3,9 @@ package clisuite
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -198,6 +200,14 @@ func shareRows() []row {
 			port := strings.Contains(out, "port=1445,") || strings.Contains(out, ":1445/") || strings.Contains(out, "/TCPPORT:1445")
 			if !port || !strings.Contains(out, sh.Spec.Name) {
 				t.Errorf("share mount --protocol smb: printed %q, want the share's name and the port 1445", out)
+			}
+			// dfsctl runs as the caller and the mount command, which needs
+			// root, through sudo.
+			if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+				out := mustRun(t, run, "share", "mount", sh.Spec.Name, "/mnt/x", "--protocol", "nfs", "--dry-run")
+				if !strings.HasPrefix(out, "sudo mount ") {
+					t.Errorf("share mount --protocol nfs --dry-run as uid %d: printed %q, want the mount command through sudo", os.Geteuid(), out)
+				}
 			}
 		}},
 		{name: "share get of a name no share holds is refused naming it", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
