@@ -109,7 +109,7 @@ title and not copied.
 | rule 6, known failures shrink | T2.6 | the launchers it edits run suites with a `known.yaml` (`pjdfstest`); none of their entries changes, though until E6 moves them they start no server ([RFC 13's plan, §4.2's D7](rfc-13-config-plan.md#42-decisions)) |
 | rule 7, v2 ignores v1 | T2.1, T2.3 | the loader and its path search are kept, and its decoder, with the hooks epic 1 wires in, is replaced by the one strict value codec epic 1 names for E2 (D10); `checkRenamedKeys` and its table are kept and extended; nothing reads a v1 key's value |
 | rule 8, real dependencies for properties of those dependencies | T2.2, T2.8 | the `node-id` copies are real files in real journal directories, and their writes' crashes are simulated beneath the code by `journaltest/kit`'s seam; the version gate runs over a real Badger store |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.3, T2.5, T2.8 | a `decision:` note at the allowed names (why each launcher name passes), at the service-link exemption (a value's shape, not its name), and the `ponytail:` marker of the version gate (D5) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.3, T2.4, T2.5, T2.8 | a `decision:` note at the allowed names (why each launcher name passes), at the service-link exemption (a value's shape, not its name), at the runtime directory's check (R34: `Validate` refuses the directory that exists and creates nothing, while the start's `MakeRuntimeDir` makes the fallback and checks it before the socket binds), and the `ponytail:` marker of the version gate (D5) |
 | rule 10, a test must be able to fail | all | each refusal has a test that feeds the refused input and asserts its line; each allowed name a test that it passes; the drift test runs over a planted file |
 | rule 11, a symbol is exported only if RFC 13's interfaces use it | all | nothing beyond E1's frozen surface is exported, but things it does not cover, each declared by the subtask that needs it: `Format`'s values and `Installation.Active`, and `kvstore`'s format bounds, which the node record's range reads (T2.8); a format read in the journal package, which the node identity reads (T2.2, D4); a constructor of `keyprovider`'s local provider that takes the passphrase (T2.4, D9), and the call that makes the runtime directory's fallback (T2.4); and the loader's result with each value's source (T2.1, D13); `Loaded`'s file and directory fields, and `ConfigPath`, which `dfs config edit` reads (T2.7) |
 | rule 12, each subtask creates only what it declares | all | the `node-id` codec lands with `NodeID`, the series with the gate, the allowed list with the scan |
@@ -153,7 +153,7 @@ set for it.
 | R13 | Both roles' wrapping keys are named, and their key IDs differ, compared without unwrapping the keys: a local key file's `master_key_id`, a KMIP key's `KeyUID` with its endpoint, since a uid is scoped to its server (D9); a copied key file or a link to one is the same key and refuses | MUST | RFC 13 §2.2 (wrapping-key row), §7 ("Two wrapping keys": both named), Appendix C ("the two roles name two different keys", #4486); what different means is D9's | T2.4 |
 | R14 | An `api.listen` or `metrics.listen` address off loopback (an IP outside `127.0.0.0/8` and `::1`, so a host name and `0.0.0.0` are off loopback, though a name is refused first as not an IP literal) needs `api.tls.cert_file` and `api.tls.key_file` | MUST | RFC 23 §5.3; RFC 13 Appendix C (#4486) | T2.4 |
 | R33 | A repeated role in `node.roles` is refused, not deduplicated | MUST | RFC 13 Appendix C (node.roles, #4486) | T2.4 |
-| R34 | The state directory is `$STATE_DIRECTORY`, else `$XDG_STATE_HOME/dittofs`, else `$HOME/.local/state/dittofs`, and with none of the three set the start refuses, naming `HOME`, rather than use a directory under the temporary directory, which another user could have made first; the runtime directory is `$RUNTIME_DIRECTORY`, else `$XDG_RUNTIME_DIR/dittofs`, else a directory under the state directory that only the node's user owns, mode `0700`, all read from `environ` (D2), a colon-separated value read for its first entry, and the defaults of `metadata.badger.path`, `logging.output` and `api.socket` follow them; a state directory that exists and is a symlink, owned by neither the node's user nor root, or writable by others refuses the start, and so does a runtime directory that exists and is a symlink, is not owned by the node's user, or is writable by group or others, since it holds `dfs.sock`; a relative value of any of these variables, or a relative first entry of a list, refuses the start too, naming the variable, since it would depend on the directory the process started from | MUST | RFC 13 Appendix C ("The state and runtime directories", #4486); RFC 13 epic 1's R22 (E2 makes the fallback directory) | T2.4 |
+| R34 | The state directory is `$STATE_DIRECTORY`, else `$XDG_STATE_HOME/dittofs`, else `$HOME/.local/state/dittofs`, and with none of the three set the start refuses, naming `HOME`, rather than use a directory under the temporary directory, which another user could have made first; the runtime directory is `$RUNTIME_DIRECTORY`, else `$XDG_RUNTIME_DIR/dittofs`, else a directory under the state directory that only the node's user owns, mode `0700`, all read from `environ` (D2), a colon-separated value read for its first entry, and the defaults of `metadata.badger.path`, `logging.output` and `api.socket` follow them; a state directory that exists and is a symlink, owned by neither the node's user nor root, or writable by others refuses the start, and so does a runtime directory that exists and is a symlink, is not owned by the node's user, or is writable by group or others, since it holds `dfs.sock`; a relative value of any of these variables, or a relative first entry of a list, refuses the start too, naming the variable, since it would depend on the directory the process started from; the `decision:` note at the check names where each part runs: `Validate` refuses the directory that exists and creates nothing, and the start's `MakeRuntimeDir` makes the fallback and checks it before the socket binds | MUST | RFC 13 Appendix C ("The state and runtime directories", #4486); RFC 13 epic 1's R22 (E2 makes the fallback directory) | T2.4 |
 
 **The node identity**
 
@@ -398,10 +398,15 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   - A quoted boolean and a scalar where a list is declared are refused, naming the key and the
     type, and no key takes a default in place of a refused value.
 - **Tests:** table tests over files under `t.TempDir()`, one row per refusal, asserting the exact
-  line (catches a refusal that drops its rule or its hint); a key in another case refused naming the declared key, `LOGGING.LEVEL` giving `logging.level` (D3, D1; catches a hint taken by edit distance alone, which that key is past); an unknown key more than two edits from every declared one still names the closest (D1; catches a cap on the distance);
+  line (catches a refusal that drops its rule or its hint); a key in another case refused naming the declared key, `LOGGING.LEVEL` giving `logging.level` (D3, D1; catches a hint taken by edit distance alone, which that key is past); an unknown key more than two edits from every declared one still names the closest (D1; catches a cap on the distance); an unknown key one edit from a declared one whose value is a passphrase (`keys.storage.local.passphrse: s3cr3t`) refuses with D1's hint naming the closest declared key, and `s3cr3t` appears nowhere in the report (catches a "did you mean" line that echoes the value, which no refusal may print, R4);
   `/data/j1/` refused and `/data/j1` accepted (catches a loader that cleans silently); the
   precedence of `--config` over `DITTOFS_CONFIG` over the default, and of a variable over the
-  file; the default path found through `XDG_CONFIG_HOME`, and then through `HOME` alone, each passed
+  file; a file naming two journals with `DITTOFS_JOURNALS=/data/j3` set loads `/data/j3` alone
+  (Appendix C: the variable replaces the file's list; catches a scan that merges the two, which
+  would give the node journals the file names and the operator removed); a default file the
+  process cannot read refuses naming the path and never its content, where a missing one loads
+  the defaults silently (catches an unreadable read taken for the silent missing case); the
+  default path found through `XDG_CONFIG_HOME`, and then through `HOME` alone, each passed
   in `environ` with neither set on the host, under `t.Parallel()` (catches a path search that still reads the process's environment, as `getConfigDir` does today); R30's rows: `journals: "/data/j1"` (a scalar where a list is declared) and
   `logging.rotation.compress: "t"` in the file, each refused naming the key (catches viper's weak
   decode, which takes the first as a one-element list and the second as `true`), `DITTOFS_LOGGING_ROTATION_COMPRESS=1`
@@ -537,7 +542,12 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   servers can use one uid); `api.listen: 0.0.0.0:8080`, `[::]:8080` and `metrics.listen: 0.0.0.0:9090` with no
   certificate refuse, so does an `api.listen` list whose first entry is loopback and second is not (catches a check that reads the first entry alone), and `127.0.0.1:8080` passes; `api.listen: localhost:8080` is refused, a listen
   host being an IP literal, which catches a check that resolves names, since one that did would see
-  loopback here and let the start pass. Key files are read for their IDs and never unwrapped, so no test runs an argon2id
+  loopback here and let the start pass; `adapters.listen: [localhost]` refuses the same way,
+  naming `adapters.listen` (Appendix C makes every listen host an IP literal; catches a literal
+  check that reads `api.listen` alone), a non-loopback `DITTOFS_API_LISTEN` with no certificate
+  refuses, and the same variable with `DITTOFS_API_TLS_CERT_FILE` and
+  `DITTOFS_API_TLS_KEY_FILE` set passes (catches a certificate rule that reads only the file's
+  values). Key files are read for their IDs and never unwrapped, so no test runs an argon2id
   pass: two passphrase key files compare their IDs with no
   `DITTOFS_ENCRYPTION_PASSPHRASE` in `environ` and no key server reachable, `t.Parallel()`
   (catches a comparison that grew an unwrap, which only a start pays for, and one that grew a
@@ -562,7 +572,10 @@ internal/dfsbench/backend/dittofs.go   T2.9  dfsbench's backend on dfs init and 
   `DITTOFS_OPERATOR_CONTROLLER_MANAGER_METRICS_SERVICE_PORT`, once with IPv4 values and once with
   IPv6 ones (`tcp://[fd00::a]:9090`): all pass (catches a shape check that knows only IPv4, or only
   the `_PORT` form); `DITTOFS_METRICS_PORT=9091` and `DITTOFS_CONTROLPLANE_PORT=8080` refuse,
-  naming their replacements (catches a v1 name let through by its form); `DITTOFS_NFS_PORT=2049`
+  naming their replacements (catches a v1 name let through by its form), and the same name
+  holding a value no link has, `DITTOFS_CONTROLPLANE_PORT=s3cr3t`, refuses naming its
+  replacement while `s3cr3t` is in no line (catches a refusal of a link-shaped name that
+  prints the value, which no refusal may, R4); `DITTOFS_NFS_PORT=2049`
   refuses as unknown (catches a misspelled link name let through by its name); a future bootstrap
   key under an allowed prefix is read as the key.
 
