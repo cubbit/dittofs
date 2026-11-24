@@ -19,7 +19,7 @@ Cited, not owned: RFC 1813 for the bytes and status values; [RFC 7](../docs/inte
 §3.4 (the synthesised `.` and `..`) and §3.5 (cookies); [RFC 18](../docs/internals/rfcs/rfc-18-identity.md)
 §4.3 (uid and gid).
 **Track:** B.
-**Epic 4 estimate: 12 subtasks, 26 man-days.**
+**Epic 4 estimate: 12 subtasks, 26.25 man-days.**
 **Depends on:** **S2**, NFS's test foundations: E2's `adaptertest/nfsharness`, knfsd's `nfs3/`
 captures cut into golden files, and S0's `vfstest.Mutations`; **E3**, the RPC layer: each call's
 `Identity` and `vfs.Call`, built at route (T3.1), the scripted client `adaptertest/nfsclient`
@@ -355,11 +355,21 @@ the service answers (RFC 17 §5.10).
   buffer fills and resumes from the last cookie sent (from memory). A `ponytail:` marker: a
   listing of short names may ask for more entries than it sends; size the ask from the names seen
   when a profile shows the extra reads.
-- **D8. `ACCESS3` bits to rights, in `translate`.** `READ` is read data or list directory,
-  `LOOKUP` traverse, `MODIFY` write data and delete child, `EXTEND` append data and add a file or
-  subdirectory, `DELETE` delete child, `EXECUTE` execute, each asked of `Access` and the granted
-  answer mapped back bit by bit, so the read-only marker's missing `MODIFY` and `EXTEND` come from
-  the service. NFSv4's `ACCESS4` bits share these values, so E5 calls the same function. Prior
+- **D8. `ACCESS3` bits to rights, in `translate`, per object type.** Each bit names the rights it
+  needs for the object's type, and is granted when the service grants what the table asks:
+  - a directory: `READ` list directory, `LOOKUP` traverse, `MODIFY` add a file and delete child,
+    `EXTEND` add a file and add a subdirectory, `DELETE` delete child, each needing *all* the rights
+    it names, since a client reads `MODIFY`, `EXTEND` and `DELETE` together as the directory's write
+    permission, so a right that grants one half never shows as the bit; `EXECUTE` is never granted,
+    RFC 1813 giving it no meaning for a directory;
+  - any other object: `READ` read data, `EXECUTE` execute, `MODIFY` write data, `EXTEND` write data
+    *or* append data, since either lets a write grow the file and a Linux client refuses a write
+    unless both `MODIFY` and `EXTEND` come back; `LOOKUP` and `DELETE` are never granted, having no
+    meaning there.
+
+  The rights are asked of `Access` and the granted answer mapped back bit by bit, so the read-only
+  marker's missing `MODIFY` and `EXTEND` come from the service. `ACCESS` is advice to the client:
+  each operation is still judged by the service when it runs. NFSv4's `ACCESS4` bits share these values, so E5 calls the same function. Prior
   art: RFC 8881 §18.1.3's bit meanings and knfsd's `nfsd_access` table (from memory). A
   `decision:` marker at the table.
 - **D9. `FSINFO` and `PATHCONF` read the share's `Capabilities` through `StatFS`.** Appendix D
@@ -646,7 +656,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 
 ### T4.8 `LOOKUP`, `ACCESS` and `READLINK`
 
-**Subtask T4.8 estimate: 1.5 man-days.**
+**Subtask T4.8 estimate: 1.75 man-days.**
 
 - **Track:** B. **Depends on:** T4.4.
 - **Covers:** R11, R18, R20, R31.
@@ -657,11 +667,17 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 - **Acceptance criteria:**
   - A name is passed to `Lookup` byte for byte; RFC 7's refusal is `NFS3ERR_INVAL`.
   - `LOOKUP` returns the handle `Lookup` answered, byte for byte.
-  - `ACCESS` answers exactly the bits the service granted.
+  - `ACCESS` answers exactly the bits D8's table derives, for the object's type, from the rights
+    the service granted.
 - **Tests:** at `nfsharness` on `memory.New`: a non-UTF-8 name looked up as sent (catches a
   conversion, R20) and its handle compared with the service's (R18); `ACCESS` of each bit on a file
   and a directory the caller may and may not use, and `translate`'s table as a pure round trip
-  (catches a bit mapped to the wrong right, R31, R11); `READLINK` of a symlink.
+  (catches a bit mapped to the wrong right, R31, R11); a table over object type and granted rights:
+  a file granting write data alone answers `MODIFY` and `EXTEND` (catches all-of on a file's
+  `EXTEND`), a file granting append data alone answers `EXTEND` without `MODIFY`, a directory granting
+  delete child alone answers `DELETE` without `MODIFY`, one granting add a file alone answers neither
+  `MODIFY` nor `EXTEND` (catch any-of on a directory), and `LOOKUP` and `DELETE` on a file and
+  `EXECUTE` on a directory never granted; `READLINK` of a symlink.
 - **Rules:** rule 9: D8's marker.
 
 ### T4.9 `CREATE`, `MKDIR`, `SYMLINK` and `MKNOD`
@@ -796,7 +812,7 @@ sends to list, create and remove.
 | 2 | T4.2 | 2 | — | `Attach` and the writer's segmented send, reviewed by `core`'s and `pkg/resources`' owners |
 | 3 | T4.3, T4.4, T4.5 | 7.5 | PR 2, E3's T3.4 | NFSv3's error table, attributes and data path, with the allocation gates |
 | 4 | T4.6, T4.7 | 4.75 | PR 1, PR 3, E3's T3.2, E7's T7.1 | linked lists, MOUNT and the first mount over loopback: S3 |
-| 5 | T4.8, T4.9, T4.10 | 6.5 | PR 4, E3's T3.3 | the namespace procedures that change names, with their loopback row |
+| 5 | T4.8, T4.9, T4.10 | 6.75 | PR 4, E3's T3.3 | the namespace procedures that change names, with their loopback row |
 | 6 | T4.11, T4.12 | 4.25 | PR 5 | listings and the filesystem's limits |
 
 A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can be open at once, and
