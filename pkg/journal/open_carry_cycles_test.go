@@ -280,9 +280,11 @@ func TestAReopenBetweenTheCarryAndTheUnlinkLeavesNoWedge(t *testing.T) {
 	crashDeferralJournal(t, seam, j)
 	hold.Release()
 	select {
-	case <-done:
-		// The dead journal's abandoned unit answers its own error; the
-		// reopened journal below owns the shape from here.
+	case err := <-done:
+		// The dead journal's abandoned unit answers its own error, which
+		// the log alone reads: the reopened journal below owns the shape
+		// from here.
+		t.Logf("the crashed pass returned on the power-lost journal: %v", err)
 	case <-time.After(carryCycleBound):
 		t.Fatal("the crashed pass did not return once the hold released, want the unlink's call to fail on the closed journal")
 	}
