@@ -279,14 +279,14 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **Interfaces** ⛔ | the exported surface of `carver` and `assembler`, stubbed, the pipeline's inputs settled; the error set; the §1.1 import test | 4 | 3.5 | team | **everything** |
 | 2 | **Test foundations** ⛔ | the reference chunker, the golden-vector script and the BLAKE3 modes check, seeded inputs, the corpus fetch; `carver-allocs` and the nightly `fuzz` suite registered | 5 | 8.5 | team | 3, 4, 5, 7 |
-| 3 | **The chunker** ⛔ | settings derivation and refusal, `Target`'s settings section, the gear tables, the boundary search | 7 | 12 | A | 4, 7 |
+| 3 | **The chunker** ⛔ | settings derivation and refusal, `Target`'s settings section, the gear tables, the boundary search | 7 | 12.5 | A | 4, 7 |
 | 4 | **The carver and identity** | `Cut`, artificial ends, errors, chunk IDs, block names | 7 | 13.5 | B | 6, 7 |
-| 5 | **The block assembler** | the fold without a lookup, P1 to P6, the short last block, the block-target range | 6 | 9.5 | C | 6, 7 |
+| 5 | **The block assembler** | the fold without a lookup, P1 to P6, the key budget, the short last block, the block-target range | 7 | 10.5 | C | 6, 7 |
 | 6 | **Integration: the default `Target` on the real path** 🔀 | RFC 2 Appendix C's measurement plan through the composed pipeline; §11's default frozen before the release writes content | planned after S3 | planned after S3 | team | 7 |
 | 7 | **E2E green** | K1 to K3 nightly on the reference box and a second architecture, K4 and K5 by hand, full-size runs nightly | 5 | 8.5 | team | — |
-| | **Total** | | **34** | **55.5** | | |
+| | **Total** | | **35** | **57** | | |
 
-**Plan estimate: 34 subtasks, 55.5 man-days, not counting epic 6.**
+**Plan estimate: 35 subtasks, 57 man-days, not counting epic 6.**
 
 RFC 2 is 1,582 lines, which gives N = 4. Its cohesive areas are three: the chunker and the
 carver, RFC 2 §1.2's two layers, and the block assembler, which §1 and §5 make a separate layer.
@@ -517,7 +517,7 @@ paragraph.
 
 ### Epic 3 — The chunker ⛔
 
-**Epic 3 estimate: 7 subtasks, 12 man-days.**
+**Epic 3 estimate: 7 subtasks, 12.5 man-days.**
 
 The boundary function and its settings. **Owns:** RFC 2 §3.1 to §3.5, §3.7, §3.8, §6 (the tables
 and the cutter's refusal); `Target`'s settings section. **Done when:** RFC 2 §9's chunker
@@ -566,7 +566,7 @@ chunk-ID keys gives disjoint chunk IDs, none equal to the unkeyed hash of its ch
 
 ### Epic 5 — The block assembler
 
-**Epic 5 estimate: 6 subtasks, 9.5 man-days.**
+**Epic 5 estimate: 7 subtasks, 10.5 man-days.**
 
 The fold of RFC 2 §5, without the dedup lookup (D3). **Owns:** RFC 2 §5.1 to §5.7. **Done when:**
 RFC 2 §5.7's A1 to A7 and every row of its check table but the two that need the lookup, the key
@@ -574,10 +574,11 @@ budget row among them (RFC 2 §5.7 as amended); §10.2's block-target edge cases
 
 **Expected content:**
 - The constructor and the block-target range, with §5.2's `decision:` at the check.
-- The fold: whole chunks, the target in carried bytes, the count cap, the early close at the key
-  budget `K` with zero refs' and per-block and per-file keys counted, which counts as a short
-  block A3 does not limit, and a chunk alone over `K` in a block of its own (P1, P2, P4, P5, A3,
-  A7 as amended).
+- The fold: whole chunks, the target in carried bytes, the count cap (P1, P2, P4, P5).
+- The key budget: the early close at `K` with zero refs' and per-block and per-file keys counted,
+  which counts as a short block A3 does not limit, and a chunk alone over `K` in a block of its
+  own, marked for a split commit; the P2 key-budget check's three cases (P2, A3, A7 as
+  amended).
 - Zero refs (P3); repeats within a block (P6), carried once as the store's block commit requires:
   `kvstore.BlockCommit` keeps carried chunks apart from refs, and its commit refuses a chunk
   carried twice (`pkg/metadata/kvstore/offload.go:54`, `:115` on `feat/storage-v2`).
