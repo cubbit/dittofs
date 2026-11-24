@@ -30,7 +30,12 @@ const (
 // joins the rule once its section is. And only the target node is judged,
 // since ControlPlaneTx reads one node's record by its ID and lists none:
 // with one node that is every node the write reaches. Judge every
-// registered node's override once a second node can register.
+// registered node's override once a second node can register. The claim that
+// with one node that is every node the write reaches holds for running
+// nodes, not for stored overrides: nothing checks that a node-scope ID is
+// registered, so an override stored for a node that has not joined yet
+// escapes a later installation write, and that node fails to bind when it
+// joins.
 func checkPorts(tx entity.ControlPlaneTx, w settings.Write, node entity.NodeID, port uint16) error {
 	var other string
 
@@ -120,10 +125,26 @@ func readPort(
 		return 0, false, err
 	}
 
-	var port uint16
+	// A reader that meets a schema it does not know refuses the row rather
+	// than read the fields it recognises (RFC 13 §2.3), as the settings'
+	// own read does.
+	if newest := settings.Versions()[entity.FormatSettings].Max; row.Schema > newest {
+		return 0, false, fmt.Errorf(
+			"node: read %s: schema %d is newer than this node reads, up to %d: %w",
+			key, row.Schema, newest, settings.ErrNewerSchema)
+	}
+
+	// A null would decode as 0 and turn the rule off, so it is refused, as
+	// the settings decoder refuses it for this field. Only a row written
+	// around Check holds one.
+	var port *uint16
 	if err := json.Unmarshal(row.Value, &port); err != nil {
 		return 0, false, fmt.Errorf("node: read %s: %w", key, err)
 	}
 
-	return port, true, nil
+	if port == nil {
+		return 0, false, fmt.Errorf("node: read %s: null", key)
+	}
+
+	return *port, true, nil
 }

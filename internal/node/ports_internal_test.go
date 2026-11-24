@@ -64,7 +64,7 @@ func portTable() settings.Table {
 }
 
 // portStore is a control plane over an in-memory Badger, and that Badger,
-// which test 4 writes beneath the store.
+// which TestCheckPortsOtherOverrideReadTracked writes beneath the store.
 type portStore struct {
 	cp kvstore.ControlPlane
 	db kv.KV
@@ -171,8 +171,10 @@ func (s portStore) attempts(row entity.Setting, hook func()) (int, error) {
 }
 
 // raw writes one setting row straight to the Badger, with no check and no
-// settings generation raised, so only a read of that very row conflicts.
-func (s portStore) raw(t *testing.T, scope entity.SettingScope, key, value string) {
+// settings generation raised, so only a read of that very row conflicts. It
+// mirrors kvstore's settingKey for a node scope and its encodeSetting (the v1
+// row: value, generation, schema, position), both private to kvstore.
+func (s portStore) raw(t *testing.T, scope entity.SettingScope, key, value string, schema uint32) {
 	t.Helper()
 
 	k := keys.ID([]byte{keys.KindCFG, byte(scope.Kind)}, scope.ID[:])
@@ -180,7 +182,7 @@ func (s portStore) raw(t *testing.T, scope entity.SettingScope, key, value strin
 	v := codec.NewWriter(1).
 		Bytes([]byte(value)).
 		Uint64(1).
-		Uint32(settings.Versions()[entity.FormatSettings].Max).
+		Uint32(schema).
 		Uint64(1).
 		Encode()
 
@@ -192,13 +194,18 @@ func (s portStore) raw(t *testing.T, scope entity.SettingScope, key, value strin
 	}
 }
 
+// currentSchema is the newest settings schema this binary reads.
+func currentSchema() uint32 {
+	return settings.Versions()[entity.FormatSettings].Max
+}
+
 // portRow is a row of value at the current schema.
 func portRow(scope entity.SettingScope, key, value string) entity.Setting {
 	return entity.Setting{
 		Scope:  scope,
 		Key:    key,
 		Value:  []byte(value),
-		Schema: settings.Versions()[entity.FormatSettings].Max,
+		Schema: currentSchema(),
 	}
 }
 
@@ -287,7 +294,7 @@ func TestCheckPortsOtherOverrideReadTracked(t *testing.T) {
 	s.put(t, at(nodeX), "adapters.nfs.port", "7000")
 
 	n, err := s.attempts(portRow(at(nodeX), "adapters.smb.port", "7001"), func() {
-		s.raw(t, at(nodeX), "adapters.nfs.port", "7001")
+		s.raw(t, at(nodeX), "adapters.nfs.port", "7001", currentSchema())
 	})
 
 	if n != 2 {
@@ -359,6 +366,38 @@ func TestCheckPortsTargetIsWrittenNode(t *testing.T) {
 
 	accepted(t, "node Y put smb 7000",
 		s.check(settings.Put(portRow(at(nodeY), "adapters.smb.port", "7000"))))
+}
+
+// A null row of the other port, written around Check, is an error, never
+// port 0 with the rule off.
+func TestCheckPortsNullRowRefused(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := openPorts(t)
+	s.raw(t, at(nodeX), "adapters.nfs.port", "null", currentSchema())
+
+	err := s.check(settings.Put(portRow(at(nodeX), "adapters.smb.port", "7000")))
+	if err == nil || errors.Is(err, settings.ErrInvalid) {
+		t.Fatalf("node X put smb 7000 over a null nfs row: err = %v, want a read error", err)
+	}
+
+	if want := "node: read adapters.nfs.port: null"; err.Error() != want {
+		t.Errorf("err = %q, want %q", err.Error(), want)
+	}
+}
+
+// A row of the other port at a schema newer than this binary reads is
+// refused as the settings read refuses it, never decoded.
+func TestCheckPortsNewerSchemaRowRefused(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	s := openPorts(t)
+	s.raw(t, at(nodeX), "adapters.nfs.port", "7000", currentSchema()+1)
+
+	err := s.check(settings.Put(portRow(at(nodeX), "adapters.smb.port", "7001")))
+	if !errors.Is(err, settings.ErrNewerSchema) {
+		t.Fatalf("node X put smb 7001 over a newer nfs row: err = %v, want settings.ErrNewerSchema", err)
+	}
 }
 
 // Two different ports pass.
