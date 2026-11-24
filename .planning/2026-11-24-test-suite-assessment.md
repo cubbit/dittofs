@@ -308,6 +308,10 @@ divides the `go list` result. A package list written into `suites.yaml` would go
 
 What the change must also do:
 
+- **An RFC 29 amendment first.** RFC 29's `shards` splits a cell's `tests` (§4.2 field
+  table), so sharding by package changes the harness spec. Amend the RFC before the `dt`
+  change.
+
 - **No package falls out.** A test asserts that the union of the shards equals `go list` of
   the unit patterns.
 - **Required check.** "Unit Tests (1.26.x)" is a required check. Either the ruleset moves to
@@ -377,8 +381,8 @@ as `TestSegmentBytesMatchWalk` (60,000 steps against an oracle). Such a test ski
   concurrency-heavy, so expect most of its tests to stay.
 
 **`-race` stays on the PR run for the concurrent code** (journal, engine, node, protocol
-adapters). A race found only at night lands after the merge. Coverage stays too: it costs
-nothing.
+adapters). A race found only at night lands after the merge. Coverage stays too: without
+`-race` it costs nothing we can measure, and the atomic mode CI uses is unmeasured.
 
 **Not in Track A:** the Go build cache. The unit job already restores it
 (`.github/actions/go-cache`). The CI throughput plan
@@ -474,7 +478,8 @@ surviving mutants on the changed lines. Run it by hand when you review.
    and model tests skip under `-race` when a non-race cell runs them?
 4. Do we run the trial dedup PR in `format`?
 5. Do we add the Track C rule to CLAUDE.md?
-6. What is the target for the unit job? Under 10 minutes?
+6. What is the target for the unit job? RFC 29 sets the PR tier at 20 minutes or less, so
+   10 minutes on a full run leaves room inside it.
 
 
 ### Deferral ledger
