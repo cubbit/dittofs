@@ -73,7 +73,7 @@ byte slice and a closure.
 | --- | --- |
 | `pkg/block/chunker` | `pkg/carver/internal/chunker` (D1, D2) |
 | `pkg/block/carver`, block assembly included (RFC 2 Appendix A, last row) | `pkg/carver` and `pkg/carver/assembler` (D1) |
-| the chunk profile per share, from the host file (RFC 13 Appendix A, row C1) | `Target` per namespace, a bound setting (RFC 13 Appendix B): its settings section declared and validated in `pkg/carver` by epic 3, added to the node's table by the RFC 8 offload plan's epic 21 |
+| the chunk profile per share, from the host file (RFC 13 Appendix A, row C1) | `Target` per namespace, a bound setting (RFC 13 Appendix B): its settings section declared in `pkg/carver/section` by epic 3, its validator calling the carver's settings constructor, added to the node's table by the RFC 8 offload plan's epic 21 |
 | `blockstore.journal.chunk_size`, `.chunk_max` | dropped (RFC 13 Appendix C's dropped keys) |
 | on-disk content cut by v1 | none: new installations only |
 
@@ -242,7 +242,9 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1's
    `pkg/block/carver` or `pkg/block/chunker`, its code and its measurements' code included.
    Epic 1's import test enforces RFC 2 §1.1, which is stricter: every package of the tree, its
-   allowlist naming each exception per package, test packages included. Amended RFC 0 §1.2
+   allowlist naming each exception per package, test packages included: `pkg/carver/section`
+   is the one carver package allowed `pkg/settings`, and `pkg/carver` never imports the
+   back. Amended RFC 0 §1.2
    allows the engine's wiring to import the carver, never the other way. v1 is deleted by #5484.
 8. **Real dependencies for properties of those dependencies** (`CLAUDE.md`, "Writing tests").
    Three checks need the real thing: the golden vectors on a second CPU architecture (RFC 2 §10.1
@@ -378,6 +380,7 @@ pkg/carver/                    E1 → E4: the settings value, Cut, Chunk, chunk 
 pkg/carver/imports_test.go     E1: RFC 2 §1.1's import rule over the tree
 pkg/carver/internal/chunker/   E3: gear tables, masks, the boundary search
 pkg/carver/internal/carvetest/ E2: reference chunker, seeded inputs, golden script, corpus fetch
+pkg/carver/section/            E3: Target's settings section, the one importer of pkg/settings
 pkg/carver/assembler/          E1 → E5: the fold of RFC 2 §5
 pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
 ```
@@ -509,15 +512,18 @@ The boundary function and its settings. **Owns:** RFC 2 §3.1 to §3.5, §3.7, �
 and the cutter's refusal); `Target`'s settings section. **Done when:** RFC 2 §9's chunker
 rows; B1 to B5 (§3.1); C2, C3, C10's cutter half, and C4's bounds on what the chunker returns
 (§8); §10.4's counts for the chunker; §10.2's settings edge cases; `Target`'s settings section
-declares its row as RFC 13 Appendix B states it, namespace-scoped and bound, and validates it in
-`pkg/carver`, so the RFC 13 plan's Appendix B check (`TestAppendixBMatchesTheTable`) passes once
+declares its row as RFC 13 Appendix B states it, namespace-scoped and bound, in
+`pkg/carver/section`, and validates it through the carver's settings constructor, so the RFC 13 plan's Appendix B check (`TestAppendixBMatchesTheTable`) passes once
 the RFC 8 offload plan's epic 21 adds the section to the node's table (§6 point 2).
 
 **Expected content:**
 - The settings derivation and refusal, an all-zero chunk-ID key among the refusals with its fuzz
   target (RFC 2 §3.7 as amended, D4), and the mask derived from `Target` with its start-up check.
-- `Target`'s settings section in `pkg/carver`, namespace-scoped and bound, validated by the
-  settings constructor, as the RFC 3 plan's epic 8 does for the syncer's. Once the node's table
+- `Target`'s settings section in `pkg/carver/section`, namespace-scoped and bound, its validator
+  calling the carver's settings constructor, as the RFC 3 plan does for the syncer's in
+  `pkg/syncer/section`. The sibling may import `pkg/settings`, which imports
+  `pkg/metadata/entity` and `kvstore` on `feat/storage-v2`; `pkg/carver` stays the standard
+  library and BLAKE3 (RFC 2 §1.1, rule 7). Once the node's table
   holds it, a bound key is recorded at the namespace's creation by `settings.Table.Bound`
   (`pkg/settings/bound.go:34`).
 - The unkeyed and keyed gear tables, with §6's `ponytail:` at the keyed one.
@@ -615,7 +621,8 @@ nightly; RFC 2's suites paragraph names each new suite.
      the measurements behind §3.2 and §3.4, and drop the table.
 2. **`Target` has no key in RFC 13 yet**: RFC 13's plan gives the block target to RFC 4 and the
    keys to RFC 5, and leaves an undeclared Appendix B section to its component's plan. Epic 3
-   declares the section and validates it in `pkg/carver`; the RFC 8 offload plan's epic 21 adds
+   declares the section in `pkg/carver/section`, validated through the carver's settings
+   constructor; the RFC 8 offload plan's epic 21 adds
    it to the node's table (§6.1). The Appendix B check reads a key only in RFC 13's key form,
    lower case and dotted (`internal/node/appendixb_test.go:49`), and fails a table key with no row
    (`:514`). Appendix B's row writes `Target`, which is not one, so epic 21's step waits on RFC 13
@@ -633,7 +640,7 @@ nightly; RFC 2's suites paragraph names each new suite.
 | RFC 2 §2.4's two exceptions, the age and widening back, and RFC 8 §6.7's run widening (§1.4) | they are the caller's decisions | RFC 8 offload plan, epic 15 | the pipeline offers runs |
 | RFC 2 §5.3's "a block never mixes two flows or two namespaces", and §10.1's checks at the consumer, whole chunks and copies made before `emit` returns (§1.5 rule 5) | the pipeline decides what one assembler folds and what `emit` keeps | RFC 8 offload plan, epic 15 | its Assemble state lands |
 | Recording which settings produced a namespace's content and reporting a change as a migration (RFC 2 §3.6, RFC 8 §2.4, RFC 13 §5.3) (§1.4) | the engine's validator row, as RFC 13's plan assigns it; the record itself is `settings.Table.Bound`'s once the node's table holds `Target`, declared bound | RFC 8 offload plan, epic 16 (its D11) | the engine applies settings |
-| `Target`'s settings section added to the node's table (`newTable`), and RFC 13 Appendix B's check passing with it (§6 point 2) | the node's composition is the RFC 8 offload plan's; Appendix B's row has no key yet | RFC 8 offload plan, epic 21 | RFC 13 names `Target`'s key |
+| `Target`'s settings section, `pkg/carver/section`, added to the node's table (`newTable`), and RFC 13 Appendix B's check passing with it (§6 point 2) | the node's composition is the RFC 8 offload plan's; Appendix B's row has no key yet | RFC 8 offload plan, epic 21 | RFC 13 names `Target`'s key |
 | Re-cutting or refusing an imported chunk longer than `Max` (RFC 2 §3.6, C9, §9's consumer row) (§1.4) | the import and re-home paths are RFC 27's | RFC 27 | a plan for RFC 27 is written |
 | The namespace keys: the chunk-ID key drawn for every namespace and never rotated (RFC 2 §4.1), the chunking key drawn only for an encrypting one, refused by fingerprint and never rotated with the data keys (RFC 2 §6, C10's namespace half) (§1.3, D4) | the key table and namespace keys are RFC 5's; the carver takes keys as inputs | RFC 5 | its namespace keys land |
 | C8 and C11: the nonce drawn from a cryptographic source, the name minted once with its put intent, a plan refused under another namespace's key (RFC 2 §4.2, §4.3; §9's consumer row) (D9) | the intent step is the pipeline's (RFC 8 §6.6), over `kvstore`'s built `Intend` (`pkg/metadata/kvstore/offload.go:69`) | RFC 8 offload plan, epic 15 | its Intent state lands |
