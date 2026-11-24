@@ -155,7 +155,13 @@ exists in `test/suites.yaml` yet, and each lands with its first test.
   transforms" is RFC 8 offload plan epic 21's (§6.1).
 - **Measured service behaviour** (RFC 4 Appendix B): faults reproducing a service that ignores
   every put checksum (Cubbit DS3 as measured), one enforcing only CRC32C (Scaleway), and one
-  clamping an overlong range, each proved by the check's refusal or choice (epics 3 and 5).
+  clamping an overlong range, each proved by the check's refusal or choice (epics 3 and 5): the
+  checksum-ignoring profile is admitted through the ETag, and refused only when a bucket default
+  encryption set for real also breaks the ETag proof (amended RFC 4 §7.2, the C.3 row).
+- **§7.1's archive-class row:** its open half stays a T row. Epic 5's table tests of Appendix
+  C.1's class judgement cover the judgement, since the check pins the class on its put and no
+  emulator or measured service shows an archive class at the check's read; epic 9 runs the row
+  against any service found to ignore the class header.
 - **v1's history** (RFC 4 Appendix A): A3 (client retries), A5 (no put checksum), A6 (health as
   an existence check), A7 (no capability check) and A11 (an emulator pinned to a version
   ignoring checksums) are each a §7.1 row already; no row is added.
@@ -485,8 +491,8 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   declares: it takes one per chunk it encodes or hashes and returns it before the next network
   write; RFC 8 offload plan epic 21 builds the token in the node. The decoder takes the same
   optional input, since RFC 24 §6.2 exempts only request-path CPU: a caller doing background
-  work (GC's verification, or any read RFC 24 §6.2 counts as background) passes it and the
-  decoder takes one per chunk it verifies, and a demand read passes none. Applied by epics 1 and 6.
+  work (GC's verification) passes it and the decoder takes one per chunk it verifies; a demand
+  read and read-ahead pass none, as the RFC 8 offload plan rules. Applied by epics 1 and 6.
 - **D4. The in-memory store is a mutable namespace store, with an injected clock for
   `ModTime`.** Its consumers are the conformance suite's unmarked rows and the other offload
   plans' unit tests (the RFC 5 plan's `keys` object), none of which reads a version. Prior art:

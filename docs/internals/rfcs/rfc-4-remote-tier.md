@@ -1729,12 +1729,15 @@ bucket created for that row, at open or switched later. A row whose setting the
 local emulator cannot hold runs against a real bucket of a production service
 instead ([§7.4](#7.4%20Services)).
 
-It also emulates the service faults measured in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements): a service that
-ignores every put checksum (the transport strips the checksum header), and one
-with versioning or an expiring lifecycle rule (set for real on the fresh
-bucket), **MUST** make a mutable store's capability check refuse, and one lacking
-any requirement of [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) **MUST** make an immutable store's refuse. No real service is available
-with those faults, so these profiles are the negative tests.
+It also emulates the service faults measured in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements). A service that
+ignores every put checksum (the transport strips the checksum header) **MUST**
+make a mutable store's capability check choose the ETag ([Appendix C.4](#C.4%20The%20capability%20check), step 1),
+as it does on such a service in Appendix B; one whose bucket default encryption,
+set for real, also breaks the ETag proof **MUST** make it refuse (the [Appendix C.3](#C.3%20How%20the%20contract%20maps%20to%20S3)
+row of [§7.1](#7.1%20Conformance%20suite)). One with versioning or an expiring lifecycle rule (set for real on
+the fresh bucket) **MUST** make a mutable store's check refuse, and one lacking
+any requirement of [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) **MUST** make an immutable store's refuse. These profiles
+are the negative tests.
 
 ### 7.3 Codec tests
 
