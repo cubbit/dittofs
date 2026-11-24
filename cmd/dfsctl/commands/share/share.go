@@ -11,14 +11,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Shares is shares as a table.
-type Shares []apiv1.Share
+// shares is shares as a table.
+type shares []apiv1.Share
 
 // Headers implements output.TableRenderer.
-func (Shares) Headers() []string { return []string{"NAME", "PATH", "STATE", "ID"} }
+func (shares) Headers() []string { return []string{"NAME", "PATH", "STATE", "ID"} }
 
 // Rows implements output.TableRenderer.
-func (s Shares) Rows() [][]string {
+func (s shares) Rows() [][]string {
 	rows := make([][]string, 0, len(s))
 	for _, sh := range s {
 		rows = append(rows, []string{sh.Spec.Name, sh.Spec.Path, sh.Status.State, sh.ID})
@@ -35,7 +35,7 @@ func New(env cmdutil.Env) *cobra.Command {
 policies and mount them on this host.
 
 A share is named by its name, the one an SMB client tree-connects to, or by
---id. Grants and quotas on a share are the grant and quota commands.
+--id. grants and quotas on a share are the grant and quota commands.
 
 Examples:
   # Create a share in a namespace, open to one network
@@ -86,7 +86,7 @@ one with --client (0.0.0.0/0 and ::/0 admit every client).`,
 			if err != nil {
 				return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
 			}
-			return cmdutil.PrintOutput(cmd, sh.Resource, false, "", Shares{sh.Resource})
+			return cmdutil.PrintOutput(cmd, sh.Resource, false, "", shares{sh.Resource})
 		},
 	}
 	cmd.Flags().String("path", "", "The share's path in the NFS namespace")
@@ -95,6 +95,7 @@ one with --client (0.0.0.0/0 and ::/0 admit every client).`,
 	_ = cmd.MarkFlagRequired("path")
 	_ = cmd.MarkFlagRequired("namespace")
 	policyFlags(cmd)
+	requirePolicy(cmd)
 	return cmd
 }
 
@@ -112,7 +113,7 @@ func newListCmd(env cmdutil.Env) *cobra.Command {
 			if ns, _ := cmd.Flags().GetString("namespace"); ns != "" {
 				filter.Set("namespace", ns)
 			}
-			shares := Shares{}
+			shares := shares{}
 			for sh, err := range c.Shares().List(cmd.Context(), filter) {
 				if err != nil {
 					return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
@@ -143,7 +144,7 @@ func newGetCmd(env cmdutil.Env) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("%s: share %s: %w", cmd.CommandPath(), id, err)
 			}
-			return cmdutil.PrintOutput(cmd, sh.Resource, false, "", Shares{sh.Resource})
+			return cmdutil.PrintOutput(cmd, sh.Resource, false, "", shares{sh.Resource})
 		},
 	}
 	cmdutil.NameOrID(cmd, "share")
@@ -175,7 +176,7 @@ func newUpdateCmd(env cmdutil.Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return cmdutil.PrintOutput(cmd, res.Resource.Resource, false, "", Shares{res.Resource.Resource})
+			return cmdutil.PrintOutput(cmd, res.Resource.Resource, false, "", shares{res.Resource.Resource})
 		},
 	}
 	cmdutil.NameOrID(cmd, "share")
@@ -239,7 +240,7 @@ func newStateCmd(env cmdutil.Env, verb, short string) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("%s: share %s: %w", cmd.CommandPath(), id, err)
 			}
-			return cmdutil.PrintOutput(cmd, res.Resource.Resource, false, "", Shares{res.Resource.Resource})
+			return cmdutil.PrintOutput(cmd, res.Resource.Resource, false, "", shares{res.Resource.Resource})
 		},
 	}
 	cmdutil.NameOrID(cmd, "share")

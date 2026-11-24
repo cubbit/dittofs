@@ -10,14 +10,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Grants is grants as a table.
-type Grants []apiv1.Grant
+// grantTable is grants as a table.
+type grantTable []apiv1.Grant
 
 // Headers implements output.TableRenderer.
-func (Grants) Headers() []string { return []string{"PRINCIPAL", "ACCESS"} }
+func (grantTable) Headers() []string { return []string{"PRINCIPAL", "ACCESS"} }
 
 // Rows implements output.TableRenderer.
-func (gs Grants) Rows() [][]string {
+func (gs grantTable) Rows() [][]string {
 	rows := make([][]string, 0, len(gs))
 	for _, g := range gs {
 		rows = append(rows, []string{g.ID, g.Spec.Access})
@@ -72,12 +72,11 @@ Examples:
 			if err != nil {
 				return err
 			}
-			return cmdutil.PrintOutput(cmd, res.Resource.Resource, false, "", Grants{res.Resource.Resource})
+			return cmdutil.PrintOutput(cmd, res.Resource.Resource, false, "", grantTable{res.Resource.Resource})
 		},
 	}
 	cmdutil.NameOrID(set, "share")
-	cmdutil.PrincipalFlags(set, true)
-	set.MarkFlagsOneRequired("user", "group", "directory")
+	set.MarkFlagsOneRequired(cmdutil.PrincipalFlags(set, true)...)
 	set.Flags().String("access", "", "The access: none, read, read-write or admin")
 	_ = set.MarkFlagRequired("access")
 
@@ -109,8 +108,7 @@ Examples:
 		},
 	}
 	cmdutil.NameOrID(remove, "share")
-	cmdutil.PrincipalFlags(remove, true)
-	remove.MarkFlagsOneRequired("user", "group", "directory")
+	remove.MarkFlagsOneRequired(cmdutil.PrincipalFlags(remove, true)...)
 
 	list := &cobra.Command{
 		Use:   "list [share]",
@@ -124,7 +122,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			gs := Grants{}
+			gs := grantTable{}
 			for g, err := range c.Grants(share).List(cmd.Context(), nil) {
 				if err != nil {
 					return fmt.Errorf("%s: share %s's grants: %w", cmd.CommandPath(), share, err)

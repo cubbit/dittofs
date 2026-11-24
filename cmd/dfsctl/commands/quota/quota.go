@@ -15,16 +15,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Quotas is quotas as a table.
-type Quotas []apiv1.Quota
+// quotaTable is quotas as a table.
+type quotaTable []apiv1.Quota
 
 // Headers implements output.TableRenderer.
-func (Quotas) Headers() []string {
+func (quotaTable) Headers() []string {
 	return []string{"ON", "HARD-BYTES", "HARD-FILES", "SOFT-BYTES", "SOFT-FILES", "GRACE", "ADVISORY-BYTES", "ADVISORY-FILES"}
 }
 
 // Rows implements output.TableRenderer.
-func (qs Quotas) Rows() [][]string {
+func (qs quotaTable) Rows() [][]string {
 	n := func(v int64) string { return strconv.FormatInt(v, 10) }
 	rows := make([][]string, 0, len(qs))
 	for _, q := range qs {
@@ -119,7 +119,7 @@ flag is not given keeps its value.`,
 			if err != nil {
 				return err
 			}
-			return cmdutil.PrintOutput(cmd, res.Resource.Resource, false, "", Quotas{res.Resource.Resource})
+			return cmdutil.PrintOutput(cmd, res.Resource.Resource, false, "", quotaTable{res.Resource.Resource})
 		},
 	}
 	cmdutil.NameOrID(cmd, "share")
@@ -129,6 +129,7 @@ flag is not given keeps its value.`,
 		cmd.Flags().Int64(l+"-files", 0, "The "+l+" limit on files, 0 for none")
 	}
 	cmd.Flags().Duration("grace", 0, "How long the soft limits may be passed before they are refused")
+	cmd.MarkFlagsOneRequired("hard-bytes", "hard-files", "soft-bytes", "soft-files", "advisory-bytes", "advisory-files", "grace")
 	return cmd
 }
 
@@ -172,7 +173,7 @@ func newListCmd(env cmdutil.Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			qs := Quotas{}
+			qs := quotaTable{}
 			own, err := c.ShareQuotas().Get(cmd.Context(), share)
 			switch {
 			case err == nil:

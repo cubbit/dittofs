@@ -59,16 +59,16 @@ func applyPolicy(cmd *cobra.Command, p *apiv1.ExportPolicySpec) error {
 	return nil
 }
 
-// Policies is export policies as a table.
-type Policies []apiv1.ExportPolicy
+// policies is export policies as a table.
+type policies []apiv1.ExportPolicy
 
 // Headers implements output.TableRenderer.
-func (Policies) Headers() []string {
+func (policies) Headers() []string {
 	return []string{"SHARE", "FLAVORS", "MIN-PROOF", "MIN-PROTECTION", "READ-ONLY", "SQUASH", "CLIENTS"}
 }
 
 // Rows implements output.TableRenderer.
-func (ps Policies) Rows() [][]string {
+func (ps policies) Rows() [][]string {
 	rows := make([][]string, 0, len(ps))
 	for _, p := range ps {
 		clients := make([]string, 0, len(p.Spec.Clients))
@@ -92,8 +92,8 @@ func newExportPolicyCmd(env cmdutil.Env) *cobra.Command {
 		Long: `Read and write a share's export policy: who it admits, with which proof and
 protection, how it squashes identities, and its SMB flags.
 
-'set' writes the whole policy, a field whose flag is not given taken back to
-its default; 'update' changes only the fields whose flags are given.
+'set' writes the whole policy, --flavor and --client required, any other field
+whose flag is not given taken back to its default; 'update' changes only the fields whose flags are given.
 
 Examples:
   # Admit one network read-write and one netgroup read-only
@@ -118,7 +118,7 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("%s: share %s: %w", cmd.CommandPath(), id, err)
 			}
-			return cmdutil.PrintOutput(cmd, p.Resource, false, "", Policies{p.Resource})
+			return cmdutil.PrintOutput(cmd, p.Resource, false, "", policies{p.Resource})
 		},
 	}
 	cmdutil.NameOrID(get, "share")
@@ -157,10 +157,20 @@ func newPolicyWriteCmd(env cmdutil.Env, verb, short string, whole bool) *cobra.C
 			if err != nil {
 				return err
 			}
-			return cmdutil.PrintOutput(cmd, res.Resource.Resource, false, "", Policies{res.Resource.Resource})
+			return cmdutil.PrintOutput(cmd, res.Resource.Resource, false, "", policies{res.Resource.Resource})
 		},
 	}
 	cmdutil.NameOrID(cmd, "share")
 	policyFlags(cmd)
+	if whole {
+		requirePolicy(cmd)
+	}
 	return cmd
+}
+
+// requirePolicy makes cmd, which writes a whole policy, require the two
+// fields a policy has no default for: its flavours and its client rules.
+func requirePolicy(cmd *cobra.Command) {
+	_ = cmd.MarkFlagRequired("flavor")
+	_ = cmd.MarkFlagRequired("client")
 }

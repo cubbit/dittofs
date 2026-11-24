@@ -142,6 +142,9 @@ func adapterPort(cmd *cobra.Command, c *client.Client, protocol string) (int, er
 		if err := json.Unmarshal(raw, &port); err != nil {
 			return 0, fmt.Errorf("%s: the %s adapter's port %s: %w", cmd.CommandPath(), protocol, raw, err)
 		}
+		if port < 1 || port > 65535 {
+			return 0, fmt.Errorf("%s: the %s adapter's record names port %d, not a TCP port", cmd.CommandPath(), protocol, port)
+		}
 	}
 	return port, nil
 }

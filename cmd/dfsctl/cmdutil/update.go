@@ -92,7 +92,7 @@ func Set[S, T any](cmd *cobra.Command, env Env, r getter[S, T], write Write[S, T
 	written, err := write(ctx, id, spec, nil, "*")
 	switch {
 	case HasStatus(err, http.StatusPreconditionFailed):
-		return zero, fmt.Errorf("%s: %s %s was written since it was read absent, so nothing was written; run the command again to change it as it is now", path, kind, id)
+		return zero, fmt.Errorf("%s: %s %s was written since it was read absent, so nothing was written; run the command again to change it as it is now: %w", path, kind, id, err)
 	case err != nil:
 		return zero, fmt.Errorf("%s: writing %s %s: %w", path, kind, id, err)
 	}
