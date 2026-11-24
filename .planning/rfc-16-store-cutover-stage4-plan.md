@@ -449,9 +449,9 @@ lives only in a job that has none.
 
   A TLS-enabled cluster is deferred.
 - **T3.3 — the start check without a store directory (2 md, after D4).**
-  - This implements D4: `Preflight` takes a directory or an opened KV, and classifies the KV's
+  - This implements D4: `Preflight` takes a directory or the store's opener, calls the opener only after the wiring and v1 checks, and classifies the KV's
     `kvstore.Open` answer itself. `internal/node` exports nothing new.
-  - The Badger host passes the directory. The FoundationDB host passes its one open KV.
+  - The Badger host passes the directory. The FoundationDB host passes the opener of its one KV.
   - The `decision:` marker at the host's open in `kv_foundationdb.go`, not in `Preflight`: over a
     foreign cluster, the open writes this node's clock ceiling before the check refuses, as the
     RFC 23 edit states (D4).
