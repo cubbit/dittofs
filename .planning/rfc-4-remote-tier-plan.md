@@ -475,11 +475,13 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   15 from mint to commit or abandon, so a measuring pass and the send use one chain. Prior art:
   the architect pass proposed this shape independently; restic's `Repository.LoadBlob` verifies
   by its blob ID after decryption (from memory). The RFC 3 plan's Q1 is answered: RFC 3's
-  `Store.Put` is `Put(ctx, name, src, m *Measure) (Stored, error)`, and RFC 4 §4.3, as amended
-  in this pull request, keeps the measured lengths and checksum in that `*Measure` across one
-  `Upload`'s retries. So the encoder's plan is a value its caller can hold and hand back: a
-  retry streams from it without measuring again, and `remote.Store` keeps nothing across calls
-  (§4.9). The encoder takes RFC 24 §6.2's CPU token as an input, a one-method acquire it
+  `Store.Put` is `Put(ctx, name, src, m *Measure) (Stored, error)` with `type Measure struct{
+  State any }`: the syncer allocates one per `Upload`, never reads `State`, and sets it to nil
+  after an attempt ending in `ErrCorrupt`; the engine's `Store`, the adapter over this codec
+  (RFC 8 offload plan), owns `State`. RFC 4 §4.3, as amended in this pull request, says the
+  same. So the encoder's plan is a value the adapter keeps in `State` and hands back: a retry
+  streams from it without measuring again. `remote.Store`'s own `Put` (RFC 4 §4.1) is
+  unchanged and keeps nothing across calls (§4.9). The encoder takes RFC 24 §6.2's CPU token as an input, a one-method acquire it
   declares: it takes one per chunk it encodes or hashes and returns it before the next network
   write; RFC 8 offload plan epic 21 builds the token in the node, and decoding, on the request
   path, takes none. Applied by epics 1 and 6.
@@ -681,7 +683,7 @@ R14 and R15.
 **Expected content:**
 - The layout of D2, its header bound, and the refusals before allocation (§3.2).
 - Encode from declared or measured lengths through RFC 5's `Chain`, with D5's combine (§4.3),
-  from a plan its caller holds across retries in RFC 3's `*Measure` (D3).
+  from a plan the adapter holds across retries in RFC 3's `Measure.State` (D3).
 - RFC 24 §6.2's CPU token taken per chunk encoded or hashed, as an input (D3).
 - Whole-block and ranged reads, verified as §3.4 says.
 - The version gate (§3.5) and the golden block of `testdata/v1/`.

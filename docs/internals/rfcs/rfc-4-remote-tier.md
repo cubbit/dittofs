@@ -756,11 +756,13 @@ store opened from one configuration shares that configuration's client
   (CRC32C) is taken per body and joined to the header's, and one that cannot
   (MD5) needs a second measuring pass when the lengths also had to be measured.
   The measured lengths and checksum are kept across the syncer's retries of one
-  `Upload` in the scratch value it hands each put,
-  `Put(ctx, name, src, m *Measure) (Stored, error)` ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)): the syncer
-  allocates it per `Upload`, never reads it, and clears it after `ErrCorrupt`,
-  so a retry runs only the sending pass ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)). The value is the
-  caller's, so the store still keeps nothing across calls ([§4.9](#4.9%20No%20state%20across%20calls)).
+  `Upload` in RFC 3's `Measure` (`type Measure struct{ State any }`), handed to
+  each `Put(ctx, name, src, m *Measure) (Stored, error)` of the syncer's `Store`
+  ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)): the syncer allocates one per `Upload`, never reads `State`,
+  and sets it to nil after an attempt ending in `ErrCorrupt`; the engine's
+  `Store`, the adapter over this codec and a remote store, owns `State`. So a
+  retry runs only the sending pass ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)). The remote store's own `Put`
+  ([§4.1](#4.1%20Interface)) is unchanged and still keeps nothing across calls ([§4.9](#4.9%20No%20state%20across%20calls)).
 - **A put is verified in transit.** Either the service checks the body against a
   checksum the store sends and refuses a mismatch, or the service reports a digest
   of what it stored and the store compares it with the one it computed while
