@@ -3,7 +3,11 @@ package cmdutil
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 )
 
 func TestBoolToYesNo(t *testing.T) {
@@ -207,6 +212,32 @@ func TestSettings(t *testing.T) {
 	for _, bad := range []string{"novalue", "=v", "port=null", "port= null "} {
 		if _, err := Settings([]string{bad}); err == nil || !strings.Contains(err.Error(), bad) {
 			t.Errorf("Settings %q: got %v, want a refusal naming it", bad, err)
+		}
+	}
+}
+
+// A wait's refusal carries the resume hint only past what a resumed wait
+// may get past: a 5xx, a 408, a 429, a retryable refusal, a failure to
+// reach the server and an interrupt, and not a 4xx refusal of the request
+// or an operation in a state this client does not know.
+func TestResumable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"503", &apiv1.Problem{Status: http.StatusServiceUnavailable}, true},
+		{"408", &apiv1.Problem{Status: http.StatusRequestTimeout}, true},
+		{"429", &apiv1.Problem{Status: http.StatusTooManyRequests}, true},
+		{"a retryable 409", &apiv1.Problem{Status: http.StatusConflict, Retryable: true}, true},
+		{"404", &apiv1.Problem{Status: http.StatusNotFound}, false},
+		{"403", &apiv1.Problem{Status: http.StatusForbidden}, false},
+		{"an unknown state", fmt.Errorf("client: an operation in state %q: %w", "paused", client.ErrUnknownState), false},
+		{"a dial failure", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true},
+		{"an interrupt", context.Canceled, true},
+	} {
+		if got := resumable(tc.err); got != tc.want {
+			t.Errorf("resumable(%s): got %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

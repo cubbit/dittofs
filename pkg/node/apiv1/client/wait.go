@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 
@@ -25,6 +26,10 @@ func (c *Client) Wait(ctx context.Context, op apiv1.Operation) (apiv1.Operation,
 	}
 }
 
+// ErrUnknownState is a wait refused because its operation is in a state
+// this client does not know, which a later wait by this client meets again.
+var ErrUnknownState = errors.New("a state this client does not know")
+
 // ended reports whether an operation in state s has ended, refusing a state
 // this client does not know.
 //
@@ -40,5 +45,5 @@ func ended(s apiv1.OpState) (bool, error) {
 	case apiv1.OpPending, apiv1.OpRunning, apiv1.OpCancelling:
 		return false, nil
 	}
-	return false, fmt.Errorf("client: an operation in state %q, which this client does not know", s)
+	return false, fmt.Errorf("client: an operation in state %q: %w", s, ErrUnknownState)
 }

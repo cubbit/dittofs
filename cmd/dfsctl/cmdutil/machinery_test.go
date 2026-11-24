@@ -5,10 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
-	"net/http/httptest"
-	"net/http/httputil"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -118,10 +115,13 @@ func newFixture(t *testing.T) *fixture {
 }
 
 // login is a fresh credentials file, signed in to the node.
-func (f *fixture) login(t *testing.T) cmdutil.Env {
+func (f *fixture) login(t *testing.T) cmdutil.Env { t.Helper(); return login(t, f.srv) }
+
+// login is a fresh credentials file, signed in to srv.
+func login(t *testing.T, srv clisuite.Server) cmdutil.Env {
 	t.Helper()
 	env := cmdutil.Env{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard, ConfigPath: filepath.Join(t.TempDir(), "dfsctl", "config.json")}
-	f.srv.Login(t, clisuite.InProcess(env))
+	srv.Login(t, clisuite.InProcess(env))
 	return env
 }
 
@@ -257,9 +257,12 @@ func TestResolveChecksTheListedName(t *testing.T) {
 	}
 
 	p := f.srv
-	p.Addr = filterDropping(t, f.srv.Addr)
-	env := cmdutil.Env{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard, ConfigPath: filepath.Join(t.TempDir(), "dfsctl", "config.json")}
-	p.Login(t, clisuite.InProcess(env))
+	p.Addr = f.srv.Proxy(t, func(r *http.Request) {
+		q := r.URL.Query()
+		q.Del("name")
+		r.URL.RawQuery = q.Encode()
+	})
+	env := login(t, p)
 	want := `dfsctl sh delete: asked for the share named "staging", the server listed ` + f.share.ID + ` named "builds"`
 	if _, err := run(t.Context(), env, "sh", "delete", "staging"); err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Fatalf("sh delete staging through a listing that ignores ?name=: got %v, want an error starting %q", err, want)
@@ -267,24 +270,6 @@ func TestResolveChecksTheListedName(t *testing.T) {
 	if sh, err := f.c.Shares().Get(t.Context(), f.share.ID); err != nil || sh.Status.State != f.share.Status.State {
 		t.Errorf("the share builds after sh delete staging: %+v (%v), want it as it was", sh.Status, err)
 	}
-}
-
-// filterDropping serves the API of the node on the socket at sock on a
-// loopback URL it returns, every request passed through with its ?name=
-// removed: a fault standing in for a list route that ignores its filter.
-func filterDropping(t *testing.T, sock string) string {
-	t.Helper()
-	tr := &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
-	}}
-	srv := httptest.NewServer(&httputil.ReverseProxy{Transport: tr, Rewrite: func(r *httputil.ProxyRequest) {
-		r.Out.URL.Scheme, r.Out.URL.Host = "http", "socket"
-		q := r.Out.URL.Query()
-		q.Del("name")
-		r.Out.URL.RawQuery = q.Encode()
-	}})
-	t.Cleanup(srv.Close)
-	return srv.URL
 }
 
 // A resource changed between the update's read and its write is refused
@@ -412,6 +397,32 @@ func TestDeleteWaitsOnlyWithWait(t *testing.T) {
 	}
 }
 
+// polled is a Proxy's rewrite that signals on polls, without blocking,
+// each time a wait's poll, a read with ?wait=, passes through.
+func polled(polls chan<- struct{}) func(*http.Request) {
+	return func(r *http.Request) {
+		if r.URL.Query().Has("wait") {
+			select {
+			case polls <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// A wait interrupted before its first read of the operation is refused as
+// one interrupted at a poll is, naming the command that resumes it.
+func TestWaitInterruptedAtItsReadResumes(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	id := uuid.NewString()
+	want := "'dfsctl operation wait " + id + "' resumes the wait"
+	if _, err := run(ctx, f.env, "operation", "wait", id); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("operation wait under an ended context: got %v, want an error naming %q", err, want)
+	}
+}
+
 // A wait interrupted through its context leaves the operation running and
 // prints the command that resumes it; that command, from a fresh root and
 // credentials file, follows the operation to its end.
@@ -426,18 +437,18 @@ func TestInterruptedWaitResumes(t *testing.T) {
 	if err != nil || json.Unmarshal([]byte(out), &op) != nil || op.ID == "" {
 		t.Fatalf("share delete builds -o json: got %q, %v, want its operation", out, err)
 	}
-	base := f.srv.Harness.Clock().Pending()
+	polls := make(chan struct{}, 1)
+	p := f.srv
+	p.Addr = f.srv.Proxy(t, polled(polls))
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done := background(ctx, f.env, "operation", "wait", op.ID)
-	// Polling until the wait has armed a timer on the node's clock, which
-	// nothing advances here: past its read of the operation, so the
-	// interrupt lands in the wait. Whether the timer is the poll's own or
-	// another the node arms meanwhile, what the command prints is the same.
-	for end := time.Now().Add(time.Minute); f.srv.Harness.Clock().Pending() <= base; time.Sleep(time.Millisecond) {
-		if time.Now().After(end) {
-			t.Fatal("the wait's poll did not park within a minute")
-		}
+	done := background(ctx, login(t, p), "operation", "wait", op.ID)
+	// The interrupt lands once the wait's poll is on its way to the server,
+	// past the command's read of the operation.
+	select {
+	case <-polls:
+	case <-time.After(time.Minute):
+		t.Fatal("the wait's poll did not reach the server within a minute")
 	}
 	cancel()
 	var w waited
