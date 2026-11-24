@@ -30,7 +30,7 @@ func TestBenchRunDeadlinePassesDuringLockWait(t *testing.T) {
 		t.Fatalf("OpenFile %s: %v", lockFile, err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("Flock %s: %v", lockFile, err)
 	}
 	// The holder releases into a channel, and the cleanup joins it before
