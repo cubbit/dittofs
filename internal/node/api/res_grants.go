@@ -32,8 +32,9 @@ var grants = writing[grantDoc]{kind: entity.ResourceGrant, read: func(tx entity.
 
 // putGrant is PUT /shares/{id}/grants/{sub}: the access the spec names for
 // the user, group or share default sub names by ID, none included, which
-// is stored and refuses the principal. The store refuses a machine
-// principal, which holds no file access of its own.
+// is stored and refuses the principal. A machine principal is refused
+// invalid before anything is written: it holds no file access of its own,
+// and signs in to a share as the user it is linked to.
 func putGrant(_ context.Context, rq request[grantDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Grant, [16]byte, error) {
 	var a entity.ShareAccess
 	if a.UnmarshalText([]byte(rq.Body.Spec.Access)) != nil {
@@ -49,6 +50,8 @@ func putGrant(_ context.Context, rq request[grantDoc], _ struct{}, tx entity.Con
 		return apiv1.Grant{}, rq.ID, err
 	case !ok:
 		return apiv1.Grant{}, rq.ID, errNotFound
+	case p.Kind == entity.PrincipalMachine:
+		return apiv1.Grant{}, rq.ID, &fieldError{field: "principal", detail: "a machine principal holds no share grant"}
 	}
 	g := entity.ShareGrant{Share: entity.ShareID(rq.ID), Principal: p, Access: a}
 	if g.Version, err = tx.SetGrant(g, rq.Expect); err != nil {

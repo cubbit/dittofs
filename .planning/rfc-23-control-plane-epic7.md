@@ -329,7 +329,7 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 **Subtask T7.5 estimate: 2 man-days.**
 
 - **Track:** the team. **Depends on:** X3; T7.3, T7.4; the RFC 18 plan's epic 8's T8.10.
-- **Covers:** R17, R18, R19, R20, R21.
+- **Covers:** R17, R18, R19, R20, R21; R13's applied and secret halves for the settings-backed writes.
 - **Deliverables:** in `integration_test.go`: `§2.3 reconcile`, the `view` operation faulted while
   writes pass; `§2.4 applied` with D5's hold on the binding's commit; `§4.1 NTLM back on`, the
   deletion failed by a `User` record its codec refuses (the RFC 18 plan's epic 2's R36), written
@@ -338,6 +338,11 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
   while content exists; E4's settings, adapter, remote-store and namespace success paths through
   the API, and E6's refusal rows for them flipped to success; D3's seeding moved onto the API and
   its marker removed.
+  R13's applied and secret halves for the writes the settings table still refuses (a setting at
+  every scope, an adapter, a namespace's create, a store's create, a store credential's delete)
+  and a store's first credential: each moved from the waiting writes of T7.3's `sweepApplied`
+  into its applied writes, its audit record checked for no credential. The store create is sent
+  with no `Idempotency-Key`, as it carries its credential.
 - **Acceptance criteria:**
   - Each row passes with `Check` wired, and no fixture or row seeds through the store any more.
 - **Tests:** the rows (catch a missed generation lost for good, R17; "applied" inferred from the
@@ -417,6 +422,51 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
 
 - A consumer-side row for the `krb` link (a PAC-bearing ticket binding the linked local user, refused once the directory account is recreated) needs a Kerberos sign-in this unit tier cannot make; it belongs to the RFC 18 plan's epic 8 or E8's `e2e/kerberos`.
 - RFC 23's plan §5 epic 7 still says the cancelled state is written into the operation's record; RFC 23 §4.1 gives the deletion no cancel, so that clause goes when the plan is next revised.
+- T7.3 as built differs from its text in these places.
+  - R13's applied half reaches today only the routes that can succeed on this node. Since the
+    node hands its API its settings table (#5472), a store's and a namespace's delete are applied
+    here. Since it hands its API its sealer (#5456) and the per-key write role is built (#5478),
+    the keytab's `PUT` and `DELETE` are applied here too, so T7.6 no longer carries them. A
+    setting's write and delete at every scope, an adapter's write, a store's create, a namespace's
+    create and a store credential's delete are still refused `unknown_key`, the node's table
+    holding no section that reads their keys, and wait with T7.5; a store's first credential waits
+    on the store's capability check; `:cancel`'s waits on the first
+    cancellable operation kind (§6.1 of the plan). Each waits in `sweepApplied` as a write that
+    must still answer its current refusal, so it fails the day the route succeeds. The directory's
+    actions (`resolve-principal`, `test-directory`, `join-domain`, `rotate-machine-password`) start
+    their operations on the composed node, so they are applied here.
+  - R13's secret half is shown here only for what today's applied routes carry: the passwords of
+    `:set-password` and `POST /auth/password`, an API token, the bearer of each call, and the
+    online join's administrator password, none of them found in an audit record, and the keytab,
+    found in no audit record, no answer and no log line. The routes that write a store's secret (a
+    store's create and its credential) are waiting ones, so their secret half moves to T7.5 with
+    their applied halves.
+  - The store create takes no `Idempotency-Key` since #5472, as a call carrying a credential. RFC
+    23 §4.5's rule covers it, but its list of such calls does not name it; the plan's §6.1
+    deferral ledger holds that edit, owned by RFC 23.
+  - R15 is held by the API's `TestGrants`, which needs no wiring; T7.3's error table keeps the
+    machine grant, refused `400` `invalid` since the grant's write refuses a machine principal
+    itself.
+  - R8 proves the mapping only: a store read failing `vfserr.ErrUnavailable` answers `503`
+    `unavailable` with `Retry-After`. The API sets no deadline on its store calls, so a hung store
+    never answers; #5471 owns that, and the row for a hung store comes with its fix.
+  - R14's `::ffff:127.0.0.1` clause cannot be driven from a client: on a listener of both families
+    the platform hands the node an IPv4 peer as `127.0.0.1` whatever spelling was dialled, so the
+    row sprays `127.0.0.1` and `entity.SourceKey`'s unit test owns the unmapping. Its `127.0.0.6`
+    clause runs where the host routes that address to loopback (Linux; macOS with an `lo0` alias).
+  - R6 holds, but the node's API stays open past §2.2's step 3: Stop closes its listeners after the
+    engine. #5469 owns that.
+- T7.6 as built differs from its text in these places.
+  - Its directory rows run on RFC 18's machine node (`newMachine` in `machine_test.go`), which
+    builds through `NewWithDialers` over `identitytest`'s directory and domain controller, seeds
+    the directory's settings and tees the log, and whose API takes every caller as an admin, so
+    these rows test no role; T7.3's rows hold the roles. R26's row needs no directory and runs on
+    the signed-in node `newAuthNode` builds.
+  - The grant by directory name is driven through the API by the test: `resolve-principal`, then
+    the grant's `PUT` under the ID its result names. The CLI's grant by name (T6.4) is not built
+    yet; when it is, it is to make the same two calls, and its `clisuite` row tests R16.
+  - The keyless rule is shown falsifiable on the node by a join of each mode sent with an
+    `Idempotency-Key`, refused `400` naming the key and leaving no record.
 - E3's T3.9 stop-bound exit test may move to this epic's fixture (§1.2); E3 decides when T3.9
   lands.
 - The proposals to RFC 23's plan that this document leaves to a later pull request: §5 epic 7's
