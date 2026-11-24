@@ -119,14 +119,18 @@ string.`,
 			if err != nil {
 				return fmt.Errorf("%s: namespace %s: %w", cmd.CommandPath(), args[0], err)
 			}
-			op, err := c.Namespaces().Delete(cmd.Context(), args[0], n.ETag)
-			if err != nil {
-				return fmt.Errorf("%s: namespace %s: %w", cmd.CommandPath(), args[0], err)
-			}
-			return cmdutil.Follow(cmd, c, op)
+			force, _ := cmd.Flags().GetBool("force")
+			return cmdutil.RunDeleteWithConfirmation(cmd, env, "namespace", args[0], force, func() error {
+				op, err := c.Namespaces().Delete(cmd.Context(), args[0], n.ETag)
+				if err != nil {
+					return fmt.Errorf("%s: namespace %s: %w", cmd.CommandPath(), args[0], err)
+				}
+				return cmdutil.Follow(cmd, c, op)
+			})
 		},
 	}
 	cmdutil.AddWait(del)
+	del.Flags().BoolP("force", "f", false, "Delete without asking for confirmation")
 
 	cmd.AddCommand(create, list, get, del)
 	return cmd

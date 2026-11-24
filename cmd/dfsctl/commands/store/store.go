@@ -3,6 +3,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -17,12 +18,14 @@ import (
 func table(s ...apiv1.Store) cmdutil.Table {
 	t := cmdutil.Table{{"ID", "ENDPOINT", "CREDENTIAL", "SETTINGS"}}
 	for _, st := range s {
+		var endpoint string
+		_ = json.Unmarshal(st.Spec.Settings["remote.endpoint"], &endpoint) // an endpoint that is no string prints empty
 		cred := "none"
 		if c := st.Spec.Credential; c != nil {
 			cred = fmt.Sprintf("%s v%d", c.Ref, c.Version)
 		}
 		keys := slices.Sorted(maps.Keys(st.Spec.Settings))
-		t = append(t, []string{st.ID, string(st.Spec.Settings["remote.endpoint"]), cred, strings.Join(keys, ",")})
+		t = append(t, []string{st.ID, endpoint, cred, strings.Join(keys, ",")})
 	}
 	return t
 }
@@ -124,14 +127,18 @@ func newDeleteCmd(env cmdutil.Env) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("%s: store %s: %w", cmd.CommandPath(), args[0], err)
 			}
-			op, err := c.Stores().Delete(cmd.Context(), args[0], st.ETag)
-			if err != nil {
-				return fmt.Errorf("%s: store %s: %w", cmd.CommandPath(), args[0], err)
-			}
-			return cmdutil.Follow(cmd, c, op)
+			force, _ := cmd.Flags().GetBool("force")
+			return cmdutil.RunDeleteWithConfirmation(cmd, env, "store", args[0], force, func() error {
+				op, err := c.Stores().Delete(cmd.Context(), args[0], st.ETag)
+				if err != nil {
+					return fmt.Errorf("%s: store %s: %w", cmd.CommandPath(), args[0], err)
+				}
+				return cmdutil.Follow(cmd, c, op)
+			})
 		},
 	}
 	cmdutil.AddWait(cmd)
+	cmd.Flags().BoolP("force", "f", false, "Delete without asking for confirmation")
 	return cmd
 }
 
