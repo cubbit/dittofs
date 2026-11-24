@@ -1,6 +1,6 @@
 ---
 name: epic-breakdown
-description: Expand one epic of a DittoFS implementation plan (docs/internals/planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested, optional grouping into pull requests — written to docs/internals/planning/. Also says how to create the epic and its subtasks as GitHub issues that point at the document, in the repo's project board with their estimates and blocked-by links and under the RFC's roadmap epic, done when asked once the plan or the document has merged; after that the issues, not the documents, hold the current estimates and dependencies. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
+description: Expand one epic of a DittoFS implementation plan (.planning/rfc-*-plan.md) into its standalone epic document — every MUST and MUST NOT the RFC places on the epic numbered as R-requirements, ordered subtasks with acceptance criteria, tests and a man-day estimate each, a grep-able total, and a suggested, optional grouping into pull requests — written to .planning/. Also says how to create the epic and its subtasks as GitHub issues that point at the document, in the repo's project board with their estimates and blocked-by links and under the RFC's roadmap epic, done when asked once the plan or the document has merged; after that the issues, not the documents, hold the current estimates and dependencies. Use whenever an epic is to be broken down, detailed, expanded into subtasks or made ready to start ("break down epic 5 of the journal plan", "expand rfc-1 epic 7", "/epic-breakdown 1 8"). Not for planning a whole RFC (rfc-to-epic-plan).
 ---
 
 # Epic breakdown
@@ -72,7 +72,7 @@ epic's document already exists and the user did not ask to replace it.
 | # | Input | How to fill it |
 | --- | --- | --- |
 | 1 | Plan path and epic number | **required**, from the request |
-| 2 | Output path | default `docs/internals/planning/rfc-<n>-<slug>-epic<k>.md`. **If the file exists, stop and ask** whether to replace it, revise it in place, or write elsewhere. Never overwrite it on your own: someone may be working from it |
+| 2 | Output path | default `.planning/rfc-<n>-<slug>-epic<k>.md`. **If the file exists, stop and ask** whether to replace it, revise it in place, or write elsewhere. Never overwrite it on your own: someone may be working from it |
 | 3 | Track | A, B, C or the team, from the plan's §2 (Step 1 has the fallback for an older plan); never ask for names |
 | 4 | Existing epic issue | `gh issue list -R "$R" --state all --label epic --label rfc-<n>-epic-<k>`, with `-R` as `issues.md` 6.1 says (both labels must match; a text search for "epic <k>" also returns other epics). `<k>` keeps its letter: for epic 7a the label is `rfc-<n>-epic-7a`, and the unsplit epic 7's issue is not this part's. If one exists, note its number; when issues are created (Step 6), there must not be a second one |
 
