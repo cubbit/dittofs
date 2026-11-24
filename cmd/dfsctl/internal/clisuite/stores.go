@@ -89,8 +89,8 @@ func storeRows() []row {
 			id := s.putStore(t)
 			var got []apiv1.Store
 			decodeJSON(t, mustRun(t, run, "store", "list", "-o", "json"), &got)
-			if !slices.ContainsFunc(got, func(st apiv1.Store) bool { return st.ID == id }) {
-				t.Errorf("store list: got %+v, want store %s", got, id)
+			if n := len(slices.DeleteFunc(got, func(st apiv1.Store) bool { return st.ID != id })); n != 1 {
+				t.Errorf("store list: listed store %s %d times, want once", id, n)
 			}
 		}},
 		{name: "store update prints the refusal until the settings table declares the remote store", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
