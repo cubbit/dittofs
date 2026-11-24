@@ -57,9 +57,9 @@ type reconciler struct {
 	// reconcile binds it, and bound once the engine bound it; applying, when
 	// set, with the counters each apply acts on; waiting, when set, once each
 	// wait of the loop is set on the node's clock; passing, when set, once as
-	// each pass of the loop starts, before it reads anything; awaited, when set, as each
-	// write's wait for the node to apply it starts; handing, when set, with
-	// each State identity is handed, before its Apply.
+	// each pass of the loop starts, before it reads anything; awaited, when
+	// set, as each write's wait for the node to apply it starts; handing,
+	// when set, with each State identity is handed, before its Apply.
 	awaited  func()
 	paused   func(kvstore.Counters)
 	binding  func(entity.Share)
