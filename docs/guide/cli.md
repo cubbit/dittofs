@@ -429,6 +429,11 @@ Global flags:
 ## `dfsctl`
 
 - [`dfsctl`](#dfsctl) — DittoFS Control - Remote management client
+  - [`dfsctl adapter`](#dfsctl-adapter) — Manage protocol adapters
+    - [`dfsctl adapter get`](#dfsctl-adapter-get) — Show an adapter
+    - [`dfsctl adapter set`](#dfsctl-adapter-set) — Change an adapter
+  - [`dfsctl audit`](#dfsctl-audit) — Read the audit of management actions
+    - [`dfsctl audit list`](#dfsctl-audit-list) — List audit records
   - [`dfsctl completion`](#dfsctl-completion) — Generate shell completion script
   - [`dfsctl context`](#dfsctl-context) — Manage server contexts
     - [`dfsctl context current`](#dfsctl-context-current) — Show current context
@@ -436,28 +441,29 @@ Global flags:
     - [`dfsctl context remove`](#dfsctl-context-remove) — Remove a context
     - [`dfsctl context rename`](#dfsctl-context-rename) — Rename a context
     - [`dfsctl context use`](#dfsctl-context-use) — Switch to a different context
-  - [`dfsctl grant`](#dfsctl-grant) — Manage principals' access to shares
-    - [`dfsctl grant list`](#dfsctl-grant-list) — List a share's grants
-    - [`dfsctl grant remove`](#dfsctl-grant-remove) — Remove a principal's grant on a share
-    - [`dfsctl grant set`](#dfsctl-grant-set) — Set a principal's access to a share
-  - [`dfsctl group`](#dfsctl-group) — Manage groups
-    - [`dfsctl group add-member`](#dfsctl-group-add-member) — Add a user to a group
-    - [`dfsctl group create`](#dfsctl-group-create) — Create a group
-    - [`dfsctl group delete`](#dfsctl-group-delete) — Delete a group
-    - [`dfsctl group get`](#dfsctl-group-get) — Show a group
-    - [`dfsctl group list`](#dfsctl-group-list) — List groups
-    - [`dfsctl group remove-member`](#dfsctl-group-remove-member) — Remove a user from a group
-    - [`dfsctl group update`](#dfsctl-group-update) — Change a group
-  - [`dfsctl installation`](#dfsctl-installation) — Act on the installation as a whole
-    - [`dfsctl installation rotate-signing-key`](#dfsctl-installation-rotate-signing-key) — Rotate the key access tokens are signed with
+  - [`dfsctl domain`](#dfsctl-domain) — Resolve principals, test the directory and join the domain
+    - [`dfsctl domain join`](#dfsctl-domain-join) — Join the installation to the domain
+    - [`dfsctl domain resolve`](#dfsctl-domain-resolve) — Resolve a directory principal by name or by SID
+    - [`dfsctl domain rotate-machine-password`](#dfsctl-domain-rotate-machine-password) — Rotate the computer account's password
+    - [`dfsctl domain test`](#dfsctl-domain-test) — Test the installation's directory
+  - [`dfsctl group`](#dfsctl-group) — Group management
+    - [`dfsctl group add-user`](#dfsctl-group-add-user) — Add a user to a group
+    - [`dfsctl group create`](#dfsctl-group-create) — Create a new group
+    - [`dfsctl group edit`](#dfsctl-group-edit) — Edit a group
+    - [`dfsctl group get`](#dfsctl-group-get) — Get group details
+    - [`dfsctl group list`](#dfsctl-group-list) — List all groups
+    - [`dfsctl group remove`](#dfsctl-group-remove) — Remove a group
+    - [`dfsctl group remove-user`](#dfsctl-group-remove-user) — Remove a user from a group
   - [`dfsctl login`](#dfsctl-login) — Authenticate with DittoFS server
   - [`dfsctl logout`](#dfsctl-logout) — Clear stored credentials
-  - [`dfsctl netgroup`](#dfsctl-netgroup) — Manage netgroups
-    - [`dfsctl netgroup create`](#dfsctl-netgroup-create) — Create a netgroup
-    - [`dfsctl netgroup delete`](#dfsctl-netgroup-delete) — Delete a netgroup
-    - [`dfsctl netgroup get`](#dfsctl-netgroup-get) — Show a netgroup
-    - [`dfsctl netgroup list`](#dfsctl-netgroup-list) — List netgroups
-    - [`dfsctl netgroup update`](#dfsctl-netgroup-update) — Replace a netgroup's members
+  - [`dfsctl namespace`](#dfsctl-namespace) — Manage namespaces
+    - [`dfsctl namespace create`](#dfsctl-namespace-create) — Create a namespace on a remote store
+    - [`dfsctl namespace delete`](#dfsctl-namespace-delete) — Delete a namespace no share names
+    - [`dfsctl namespace get`](#dfsctl-namespace-get) — Show a namespace
+    - [`dfsctl namespace list`](#dfsctl-namespace-list) — List namespaces
+  - [`dfsctl node`](#dfsctl-node) — List the installation's nodes
+    - [`dfsctl node get`](#dfsctl-node-get) — Show a node
+    - [`dfsctl node list`](#dfsctl-node-list) — List nodes
   - [`dfsctl operation`](#dfsctl-operation) — Follow long-running operations
     - [`dfsctl operation cancel`](#dfsctl-operation-cancel) — Cancel an operation
     - [`dfsctl operation get`](#dfsctl-operation-get) — Show an operation
@@ -465,35 +471,44 @@ Global flags:
     - [`dfsctl operation wait`](#dfsctl-operation-wait) — Wait for an operation to end
   - [`dfsctl password`](#dfsctl-password) — Manage your own password
     - [`dfsctl password change`](#dfsctl-password-change) — Change the signed-in account's password
-  - [`dfsctl quota`](#dfsctl-quota) — Manage a share's quotas
-    - [`dfsctl quota list`](#dfsctl-quota-list) — List a share's quotas, its own first
-    - [`dfsctl quota remove`](#dfsctl-quota-remove) — Remove a quota
-    - [`dfsctl quota set`](#dfsctl-quota-set) — Set a quota's limits
-  - [`dfsctl share`](#dfsctl-share) — Manage shares
-    - [`dfsctl share create`](#dfsctl-share-create) — Create a share with its export policy
-    - [`dfsctl share delete`](#dfsctl-share-delete) — Delete a share
-    - [`dfsctl share export-policy`](#dfsctl-share-export-policy) — Read and write a share's export policy
-      - [`dfsctl share export-policy get`](#dfsctl-share-export-policy-get) — Show a share's export policy
-      - [`dfsctl share export-policy set`](#dfsctl-share-export-policy-set) — Write a share's whole export policy
-      - [`dfsctl share export-policy update`](#dfsctl-share-export-policy-update) — Change fields of a share's export policy
-    - [`dfsctl share get`](#dfsctl-share-get) — Show a share
-    - [`dfsctl share list`](#dfsctl-share-list) — List shares
-    - [`dfsctl share mount`](#dfsctl-share-mount) — Mount a share on this host over NFS or SMB
-    - [`dfsctl share quiesce`](#dfsctl-share-quiesce) — Quiesce a share: refuse new opens and drain its clients
-    - [`dfsctl share resume`](#dfsctl-share-resume) — Resume a quiesced share
-    - [`dfsctl share update`](#dfsctl-share-update) — Rename a share or move its NFS path
-  - [`dfsctl status`](#dfsctl-status) — Show server status
-  - [`dfsctl token`](#dfsctl-token) — Manage API tokens
-    - [`dfsctl token create`](#dfsctl-token-create) — Create an API token
-    - [`dfsctl token list`](#dfsctl-token-list) — List API tokens
-    - [`dfsctl token revoke`](#dfsctl-token-revoke) — Revoke an API token
-  - [`dfsctl user`](#dfsctl-user) — Manage users
-    - [`dfsctl user create`](#dfsctl-user-create) — Create a user
-    - [`dfsctl user delete`](#dfsctl-user-delete) — Delete a user
-    - [`dfsctl user get`](#dfsctl-user-get) — Show a user
-    - [`dfsctl user list`](#dfsctl-user-list) — List users
-    - [`dfsctl user set-password`](#dfsctl-user-set-password) — Set a user's password
-    - [`dfsctl user update`](#dfsctl-user-update) — Change a user
+  - [`dfsctl quota`](#dfsctl-quota) — Per-identity quota management
+    - [`dfsctl quota list`](#dfsctl-quota-list) — List all quotas on a share
+    - [`dfsctl quota remove`](#dfsctl-quota-remove) — Remove a per-identity quota
+    - [`dfsctl quota set`](#dfsctl-quota-set) — Create or update a per-identity quota
+  - [`dfsctl setting`](#dfsctl-setting) — Read and change settings
+    - [`dfsctl setting get`](#dfsctl-setting-get) — Show a setting
+    - [`dfsctl setting set`](#dfsctl-setting-set) — Set a setting
+    - [`dfsctl setting unset`](#dfsctl-setting-unset) — Reset a setting to the wider scope's value or the default
+  - [`dfsctl share`](#dfsctl-share) — Share management
+    - [`dfsctl share create`](#dfsctl-share-create) — Create a new share
+    - [`dfsctl share disable`](#dfsctl-share-disable) — Disable a share (drain clients, block new connections)
+    - [`dfsctl share edit`](#dfsctl-share-edit) — Edit a share
+    - [`dfsctl share enable`](#dfsctl-share-enable) — Enable a share (accept new connections)
+    - [`dfsctl share list`](#dfsctl-share-list) — List all shares
+    - [`dfsctl share mount`](#dfsctl-share-mount) — Mount a share via NFS or SMB
+    - [`dfsctl share nfs-config`](#dfsctl-share-nfs-config) — Manage per-share NFS adapter configuration
+      - [`dfsctl share nfs-config set`](#dfsctl-share-nfs-config-set) — Update a share's NFS adapter configuration
+      - [`dfsctl share nfs-config show`](#dfsctl-share-nfs-config-show) — Show a share's NFS adapter configuration
+    - [`dfsctl share permission`](#dfsctl-share-permission) — Manage share permissions
+      - [`dfsctl share permission grant`](#dfsctl-share-permission-grant) — Grant permission on a share
+      - [`dfsctl share permission list`](#dfsctl-share-permission-list) — List permissions on a share
+      - [`dfsctl share permission revoke`](#dfsctl-share-permission-revoke) — Revoke permission from a share
+    - [`dfsctl share remove`](#dfsctl-share-remove) — Remove a share
+    - [`dfsctl share show`](#dfsctl-share-show) — Show share details
+  - [`dfsctl status`](#dfsctl-status) — Show the node's readiness and the installation's health
+  - [`dfsctl store`](#dfsctl-store) — Manage remote stores
+    - [`dfsctl store create`](#dfsctl-store-create) — Create a remote store
+    - [`dfsctl store delete`](#dfsctl-store-delete) — Delete a remote store no namespace names
+    - [`dfsctl store get`](#dfsctl-store-get) — Show a remote store
+    - [`dfsctl store set-credential`](#dfsctl-store-set-credential) — Set a remote store's credential
+  - [`dfsctl user`](#dfsctl-user) — User management
+    - [`dfsctl user change-password`](#dfsctl-user-change-password) — Change your own password
+    - [`dfsctl user create`](#dfsctl-user-create) — Create a new user
+    - [`dfsctl user edit`](#dfsctl-user-edit) — Edit a user
+    - [`dfsctl user get`](#dfsctl-user-get) — Get user details
+    - [`dfsctl user list`](#dfsctl-user-list) — List all users
+    - [`dfsctl user password`](#dfsctl-user-password) — Reset a user's password
+    - [`dfsctl user remove`](#dfsctl-user-remove) — Remove a user
   - [`dfsctl version`](#dfsctl-version) — Show version information
 
 
@@ -503,13 +518,147 @@ DittoFS Control - Remote management client
 
 dfsctl is the command-line client for managing DittoFS servers remotely.
 
-Its status command returns with the server's v2 API; until then it
-refuses. The context subcommand manages the server
+Its commands for users, groups, shares and quotas return with the server's v2
+API; until then each refuses. The context subcommand manages the server
 contexts kept in ~/.config/dfsctl/config.json.
 
 Use "dfsctl [command] --help" for more information about a command.
 
 Flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl adapter`
+
+Manage protocol adapters
+
+Read and set the protocol adapters, each named by its protocol: nfs or smb.
+
+An adapter's settings are its fields below adapters.<protocol>, its port among
+them; a node override of one, such as one host's port, is a setting at that
+node's scope, set through 'dfsctl setting set node:<id>'.
+
+```
+dfsctl adapter [flags]
+```
+
+**Examples:**
+
+```bash
+# Show the NFS adapter on every node
+dfsctl adapter get nfs
+
+# Enable the SMB adapter on port 1445
+dfsctl adapter set smb --enabled --setting port=1445
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl adapter get`
+
+Show an adapter
+
+```
+dfsctl adapter get <protocol> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl adapter set`
+
+Change an adapter
+
+Change an adapter: --enabled or --enabled=false, each --setting key=value
+set, a value that is JSON taken as it is and any other as a string, and each
+--unset key removed, so its default holds. What is not named stays as it is.
+
+```
+dfsctl adapter set <protocol> [flags]
+```
+
+Flags:
+
+```
+      --enabled               Enable the adapter, or disable it with --enabled=false
+      --setting stringArray   A setting of the adapter, key=value (repeatable)
+      --unset stringArray     A setting of the adapter to remove (repeatable)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl audit`
+
+Read the audit of management actions
+
+```
+dfsctl audit [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl audit list`
+
+List audit records
+
+List the audit records the filters admit, oldest first: who acted, on what,
+and whether the action was applied, refused or started an operation.
+
+--actor names a user by name, or any account as kind:id, or the schedule as
+schedule; --target names a resource as kind:id; --from and --to are RFC 3339
+times.
+
+```
+dfsctl audit list [flags]
+```
+
+**Examples:**
+
+```bash
+# What alice changed today
+dfsctl audit list --actor alice --from 2026-11-24T00:00:00Z
+
+# Every action on one share
+dfsctl audit list --target share:0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b
+```
+
+Flags:
+
+```
+      --actor string    Only the records of this account: a user's name, kind:id or schedule
+      --from string     Only the records at or after this RFC 3339 time
+      --target string   Only the records of this resource, as kind:id
+      --to string       Only the records before this RFC 3339 time
+```
+
+Global flags:
 
 ```
       --no-color        Disable colored output
@@ -756,32 +905,31 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl grant`
+### `dfsctl domain`
 
-Manage principals' access to shares
+Resolve principals, test the directory and join the domain
 
-Set, remove and list grants: a user's, a group's or a directory principal's
-access to a share, none, read, read-write or admin.
+Act on the installation's directory and its domain join.
 
-A grant of none is kept and refuses the principal; removing a grant lets the
-principal's groups' grants decide again. A directory principal is named by
-its qualified name, DOMAIN\name, which the server first resolves.
+Each command starts an operation and prints it; with --wait it follows the
+operation to its end, and 'dfsctl operation wait <id>' resumes an interrupted
+wait.
 
 ```
-dfsctl grant [flags]
+dfsctl domain [flags]
 ```
 
 **Examples:**
 
 ```bash
-# Let alice read and write a share
-dfsctl grant set archive --user alice --access read-write
+# Find a directory user's SID
+dfsctl domain resolve 'CORP\bob' --wait
 
-# Let a directory user read it
-dfsctl grant set archive --directory 'CORP\bob' --access read
+# Join the domain as an administrator (prompts for the password)
+dfsctl domain join --user administrator@corp.example.com --wait
 
-# List a share's grants
-dfsctl grant list archive
+# Join with a computer account an administrator created
+dfsctl domain join --offline --account FILESRV --password-file machine.txt
 ```
 
 Global flags:
@@ -792,18 +940,33 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl grant list`
+### `dfsctl domain join`
 
-List a share's grants
+Join the installation to the domain
+
+Join the installation to the directory's domain.
+
+Online, the default, creates the computer account as the administrator --user
+names, whose password is read from --password-file or a prompt. With --offline
+the join takes a computer account an administrator created, and the password
+read is that account's. The password is sent once, with no idempotency key, so
+the server keeps no record of the request.
 
 ```
-dfsctl grant list [share] [flags]
+dfsctl domain join [flags]
 ```
 
 Flags:
 
 ```
-      --id string   The share's ID, in place of its name
+      --account string         The computer account's name (defaults to the installation's)
+      --dns-host-name string   The DNS host name of an online join's computer account
+      --offline                Take a computer account an administrator created
+      --ou string              The organisational unit of an online join's computer account
+      --password-file string   File holding the password (prompts without it)
+      --takeover               Replace a join the installation holds, and online an account of that name it did not create
+      --user string            The administrator an online join creates the computer account as
+      --wait                   Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -814,22 +977,19 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl grant remove`
+### `dfsctl domain resolve`
 
-Remove a principal's grant on a share
+Resolve a directory principal by name or by SID
 
 ```
-dfsctl grant remove [share] [flags]
+dfsctl domain resolve [DOMAIN\name] [flags]
 ```
 
 Flags:
 
 ```
-      --directory string      A directory principal's qualified name, DOMAIN\name
-      --group string          The group's name
-      --id string             The share's ID, in place of its name
-      --principal-id string   The principal's ID, as a listing prints it
-      --user string           The user's name
+      --sid string   The principal's SID, in place of its name
+      --wait         Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -840,23 +1000,40 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl grant set`
+### `dfsctl domain rotate-machine-password`
 
-Set a principal's access to a share
+Rotate the computer account's password
 
 ```
-dfsctl grant set [share] [flags]
+dfsctl domain rotate-machine-password [flags]
 ```
 
 Flags:
 
 ```
-      --access string         The access: none, read, read-write or admin
-      --directory string      A directory principal's qualified name, DOMAIN\name
-      --group string          The group's name
-      --id string             The share's ID, in place of its name
-      --principal-id string   The principal's ID, as a listing prints it
-      --user string           The user's name
+      --wait   Follow the operation the command starts to its end
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl domain test`
+
+Test the installation's directory
+
+```
+dfsctl domain test [flags]
+```
+
+Flags:
+
+```
+      --wait   Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -869,13 +1046,12 @@ Global flags:
 
 ### `dfsctl group`
 
-Manage groups
+Group management
 
-Create, list, read, change and delete the server's groups, and add and remove
-their members.
-
-Each command names a group by its name, or by its ID with --id; add-member
-and remove-member name the group and the user by their names.
+Manage Unix groups on the DittoFS server. Groups bundle users together so
+that share permissions can be granted to multiple users at once using a single
+group reference. Each group carries a Unix GID used for NFS uid/gid resolution.
+All subcommands require admin privileges.
 
 ```
 dfsctl group [flags]
@@ -884,14 +1060,26 @@ dfsctl group [flags]
 **Examples:**
 
 ```bash
-# Create a group with gid 1001
-dfsctl group create editors --gid 1001
+# List all groups
+dfsctl group list
 
-# Add alice to it
-dfsctl group add-member editors alice
+# Get group details including current members
+dfsctl group get editors
 
-# Delete it and wait for the deletion to end
-dfsctl group delete editors --force --wait
+# Create a group with an explicit GID
+dfsctl group create --name editors --gid 1001
+
+# Edit a group interactively
+dfsctl group edit editors
+
+# Add a user to a group
+dfsctl group add-user editors alice
+
+# Remove a user from a group
+dfsctl group remove-user editors alice
+
+# Remove a group (prompts for confirmation)
+dfsctl group remove editors
 ```
 
 Global flags:
@@ -902,12 +1090,29 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl group add-member`
+### `dfsctl group add-user`
 
 Add a user to a group
 
+Add a user to a group on the DittoFS server. The user will immediately
+gain any permissions associated with that group on shares and other resources.
+Both the group name and the username are required positional arguments.
+
 ```
-dfsctl group add-member <group> <user> [flags]
+dfsctl group add-user <group> <username> [flags]
+```
+
+**Examples:**
+
+```bash
+# Add alice to the editors group
+dfsctl group add-user editors alice
+
+# Add a user to the admins group
+dfsctl group add-user admins bob
+
+# Verify membership after adding
+dfsctl group get editors
 ```
 
 Global flags:
@@ -920,16 +1125,36 @@ Global flags:
 
 ### `dfsctl group create`
 
-Create a group
+Create a new group
+
+Create a new group on the DittoFS server. Groups are used to organise
+users and can be referenced in share permissions to grant access to multiple
+users at once. The group's Unix GID is auto-assigned from the server's
+allocation range unless you provide one explicitly with --gid.
 
 ```
-dfsctl group create <name> [flags]
+dfsctl group create [flags]
+```
+
+**Examples:**
+
+```bash
+# Create a group with an auto-assigned GID
+dfsctl group create --name editors
+
+# Create a group with an explicit GID
+dfsctl group create --name editors --gid 1001
+
+# Create a group with a description
+dfsctl group create --name editors --gid 1001 --description "Content editors"
 ```
 
 Flags:
 
 ```
-      --gid uint32   Unix group ID, which a create leaving it out allocates
+      --description string   Group description
+      --gid uint32           Group ID (auto-generated if not set)
+      --name string          Group name (required)
 ```
 
 Global flags:
@@ -940,23 +1165,40 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl group delete`
+### `dfsctl group edit`
 
-Delete a group
+Edit a group
 
-Delete a group. The deletion is an operation: the command prints its ID, or,
-with --wait, follows it to its end.
+Edit an existing group on the DittoFS server. When run without flags, an
+interactive prompt walks you through each editable field (GID and description),
+showing the current value so you can press Enter to keep it. When flags are
+provided, only those fields are updated and no prompt appears.
 
 ```
-dfsctl group delete <name> [flags]
+dfsctl group edit <name> [flags]
+```
+
+**Examples:**
+
+```bash
+# Edit the group interactively (shows current values)
+dfsctl group edit editors
+
+# Change the group's GID to a specific value
+dfsctl group edit editors --gid 1002
+
+# Update only the description
+dfsctl group edit editors --description "Senior content editors"
+
+# Update both GID and description in one command
+dfsctl group edit editors --gid 1002 --description "Senior content editors"
 ```
 
 Flags:
 
 ```
-  -f, --force       Delete without asking
-      --id string   The group's ID, in place of its name
-      --wait        Follow the operation the command starts to its end
+      --description string   Group description
+      --gid uint32           Group ID
 ```
 
 Global flags:
@@ -969,16 +1211,31 @@ Global flags:
 
 ### `dfsctl group get`
 
-Show a group
+Get group details
+
+Get detailed information about a specific group on the DittoFS server.
+Accepts either the group name or the group's full ID (see 'dfsctl group list').
+The output includes the group's GID, description, member list, and creation
+timestamp. Use -o json or -o yaml for machine-readable output.
 
 ```
-dfsctl group get <name> [flags]
+dfsctl group get <name|id> [flags]
 ```
 
-Flags:
+**Examples:**
 
-```
-      --id string   The group's ID, in place of its name
+```bash
+# Show group details as a table
+dfsctl group get editors
+
+# By ID
+dfsctl group get 7a1e9f02-...
+
+# Output as JSON (useful for scripting)
+dfsctl group get editors -o json
+
+# Output as YAML
+dfsctl group get editors -o yaml
 ```
 
 Global flags:
@@ -991,12 +1248,29 @@ Global flags:
 
 ### `dfsctl group list`
 
-List groups
+List all groups
+
+List all groups registered on the DittoFS server. The table view
+shows each group's name, GID, member count, and description. Use -o json or
+-o yaml to get machine-readable output suitable for piping into other tools.
 
 ```
 dfsctl group list [flags]
 ```
 
+**Examples:**
+
+```bash
+# List all groups as a table
+dfsctl group list
+
+# Output the full group list as JSON
+dfsctl group list -o json
+
+# Output as YAML
+dfsctl group list -o yaml
+```
+
 Global flags:
 
 ```
@@ -1005,82 +1279,67 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl group remove-member`
+### `dfsctl group remove`
+
+Remove a group
+
+Remove a group from the DittoFS server. Accepts either the group name
+or the group's full ID (see 'dfsctl group list'). This action is irreversible:
+the group record is permanently removed and any users that had it as their
+primary group will lose that association. You will be prompted for
+confirmation unless --force is specified.
+
+```
+dfsctl group remove <name|id> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove a group (prompts for confirmation)
+dfsctl group remove editors
+
+# Remove a group non-interactively (for scripts and automation)
+dfsctl group remove editors --force
+```
+
+Flags:
+
+```
+  -f, --force   Skip confirmation prompt
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl group remove-user`
 
 Remove a user from a group
 
-```
-dfsctl group remove-member <group> <user> [flags]
-```
-
-Global flags:
+Remove a user from a group on the DittoFS server. The user loses any
+permissions that were derived solely from that group membership. Both the
+group name and the username are required positional arguments.
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+dfsctl group remove-user <group> <username> [flags]
 ```
 
-### `dfsctl group update`
+**Examples:**
 
-Change a group
+```bash
+# Remove alice from the editors group
+dfsctl group remove-user editors alice
 
-Change the fields of a group that the flags name: its name and its gid.
+# Remove a user from the admins group
+dfsctl group remove-user admins bob
 
-```
-dfsctl group update <name> [flags]
-```
-
-Flags:
-
-```
-      --gid uint32    Unix group ID
-      --id string     The group's ID, in place of its name
-      --name string   New name
-```
-
-Global flags:
-
-```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
-```
-
-### `dfsctl installation`
-
-Act on the installation as a whole
-
-```
-dfsctl installation [flags]
-```
-
-Global flags:
-
-```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
-```
-
-### `dfsctl installation rotate-signing-key`
-
-Rotate the key access tokens are signed with
-
-Rotate the installation's signing key, the key every node signs and verifies
-access tokens with. The rotation is an operation: a new key signs from its
-start, and the old one verifies the tokens it signed until they have expired,
-about 15 minutes, when the operation ends. The command prints the operation's
-ID, or, with --wait, follows it to its end.
-
-```
-dfsctl installation rotate-signing-key [flags]
-```
-
-Flags:
-
-```
-      --wait   Follow the operation the command starts to its end
+# Verify membership after removal
+dfsctl group get editors
 ```
 
 Global flags:
@@ -1183,28 +1442,27 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl netgroup`
+### `dfsctl namespace`
 
-Manage netgroups
+Manage namespaces
 
-Create, list, read, change and delete netgroups: named sets of host names,
-addresses and CIDRs that an export policy admits.
+Create, list, read and delete namespaces.
 
-A netgroup holds at least one member: create needs --member, and an update
-replaces the members with those --member names.
+A namespace is created on a remote store with its bound settings, such as its
+prefix and chunking, which are fixed from then on.
 
 ```
-dfsctl netgroup [flags]
+dfsctl namespace [flags]
 ```
 
 **Examples:**
 
 ```bash
-# Create a netgroup of two hosts and a subnet
-dfsctl netgroup create builders --member build1.example.com --member 10.0.0.7 --member 10.1.0.0/16
+# Create a namespace on a store
+dfsctl namespace create --store 0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b --setting namespace.prefix=builds/
 
-# Replace its members
-dfsctl netgroup update builders --member 10.1.0.0/16
+# List the namespaces
+dfsctl namespace list
 ```
 
 Global flags:
@@ -1215,18 +1473,23 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl netgroup create`
+### `dfsctl namespace create`
 
-Create a netgroup
+Create a namespace on a remote store
+
+Create a namespace on the remote store --store names, with its settings, each
+--setting key=value, a value that is JSON taken as it is and any other as a
+string.
 
 ```
-dfsctl netgroup create <name> [flags]
+dfsctl namespace create [flags]
 ```
 
 Flags:
 
 ```
-      --member stringArray   A host name, address or CIDR; repeat for each
+      --setting stringArray   A setting of the namespace, key=value (repeatable)
+      --store string          The ID of the remote store the namespace is created on
 ```
 
 Global flags:
@@ -1237,18 +1500,18 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl netgroup delete`
+### `dfsctl namespace delete`
 
-Delete a netgroup
+Delete a namespace no share names
 
 ```
-dfsctl netgroup delete <name> [flags]
+dfsctl namespace delete <id> [flags]
 ```
 
 Flags:
 
 ```
-  -f, --force   Delete without asking
+      --wait   Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -1259,28 +1522,12 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl netgroup get`
+### `dfsctl namespace get`
 
-Show a netgroup
-
-```
-dfsctl netgroup get <name> [flags]
-```
-
-Global flags:
+Show a namespace
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
-```
-
-### `dfsctl netgroup list`
-
-List netgroups
-
-```
-dfsctl netgroup list [flags]
+dfsctl namespace get <id> [flags]
 ```
 
 Global flags:
@@ -1291,20 +1538,63 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl netgroup update`
+### `dfsctl namespace list`
 
-Replace a netgroup's members
-
-Replace a netgroup's members with those --member names. To empty it, delete it.
+List namespaces
 
 ```
-dfsctl netgroup update <name> [flags]
+dfsctl namespace list [flags]
 ```
 
-Flags:
+Global flags:
 
 ```
-      --member stringArray   A host name, address or CIDR; repeat for each
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl node`
+
+List the installation's nodes
+
+List and read the installation's nodes: the address each serves on, the
+binary it runs, its failure domain, and whether a takeover marked it lapsed.
+
+```
+dfsctl node [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl node get`
+
+Show a node
+
+```
+dfsctl node get <id> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl node list`
+
+List nodes
+
+```
+dfsctl node list [flags]
 ```
 
 Global flags:
@@ -1482,14 +1772,13 @@ Global flags:
 
 ### `dfsctl quota`
 
-Manage a share's quotas
+Per-identity quota management
 
-Set, remove and list a share's quotas: on a user, on a group, or, with
-neither named, on the share itself.
+Manage per-identity (user/group/default-user) storage quotas on a share.
 
-A quota is refused beyond its hard limit, allowed beyond its soft limit for
-its grace and then refused, and never refused beyond its advisory limit,
-which only raises an event. A limit of 0 limits nothing.
+Quotas bound both bytes and inode (file) count, with optional soft thresholds
+and a grace period before a soft threshold is enforced as hard. These operations
+require admin privileges.
 
 ```
 dfsctl quota [flags]
@@ -1498,14 +1787,20 @@ dfsctl quota [flags]
 **Examples:**
 
 ```bash
-# Limit alice to 10 GiB and 100000 files on a share
-dfsctl quota set archive --user alice --hard-bytes 10737418240 --hard-files 100000
+# List all quotas on a share
+dfsctl quota list /archive
 
-# Limit the share itself, with a soft limit and a week's grace
-dfsctl quota set archive --soft-bytes 1099511627776 --grace 168h
+# Set a per-user quota (uid 1000)
+dfsctl quota set /archive --scope user --id 1000 --limit-bytes 10GiB --limit-files 100000
 
-# List a share's quotas
-dfsctl quota list archive
+# Set the default-user fallback quota (applies to users without an explicit quota)
+dfsctl quota set /archive --scope default-user --limit-bytes 1GiB
+
+# Set a per-group quota with soft thresholds and a grace period
+dfsctl quota set /archive --scope group --id 2000 --limit-bytes 50GiB --soft-bytes 45GiB --grace-seconds 604800
+
+# Remove a per-user quota
+dfsctl quota remove /archive --scope user --id 1000
 ```
 
 Global flags:
@@ -1518,16 +1813,30 @@ Global flags:
 
 ### `dfsctl quota list`
 
-List a share's quotas, its own first
+List all quotas on a share
+
+List all per-identity quotas configured on a share.
+
+Outputs one row per quota entry, showing the scope (user/group/default-user),
+identity ID, hard and soft byte/file limits, current usage, and the grace
+period. Use this to audit who has explicit limits before adjusting or removing
+them.
 
 ```
-dfsctl quota list [share] [flags]
+dfsctl quota list <share> [flags]
 ```
 
-Flags:
+**Examples:**
 
-```
-      --id string   The share's ID, in place of its name
+```bash
+# List quotas as a table
+dfsctl quota list /archive
+
+# List as JSON
+dfsctl quota list /archive -o json
+
+# List as YAML
+dfsctl quota list /archive -o yaml
 ```
 
 Global flags:
@@ -1540,19 +1849,37 @@ Global flags:
 
 ### `dfsctl quota remove`
 
-Remove a quota
+Remove a per-identity quota
+
+Remove a per-identity quota from a share.
+
+Once removed, the identity reverts to the default-user fallback quota (if
+one exists) or becomes unlimited. The operation is irreversible and requires
+confirmation unless --force is specified.
 
 ```
-dfsctl quota remove [share] [flags]
+dfsctl quota remove <share> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove a per-user quota (uid 1000)
+dfsctl quota remove /archive --scope user --id 1000
+
+# Remove the default-user fallback quota
+dfsctl quota remove /archive --scope default-user
+
+# Remove a per-group quota (gid 2000) without prompting
+dfsctl quota remove /archive --scope group --id 2000 --force
 ```
 
 Flags:
 
 ```
-      --group string          The group's name
-      --id string             The share's ID, in place of its name
-      --principal-id string   The principal's ID, as a listing prints it
-      --user string           The user's name
+  -f, --force          Skip confirmation prompt
+      --id int         Identity id (uid for user, gid for group). Required for user/group; omit for default-user. (default -1)
+      --scope string   Quota scope (user|group|default-user) (required)
 ```
 
 Global flags:
@@ -1565,29 +1892,140 @@ Global flags:
 
 ### `dfsctl quota set`
 
-Set a quota's limits
+Create or update a per-identity quota
 
-Set a quota's limits, creating the quota when there is none; a limit whose
-flag is not given keeps its value.
+Create or update a per-identity quota on a share.
+
+The --scope flag selects user, group, or default-user. For user/group scopes an
+identity --id (uid or gid) is required. The default-user scope is a fallback
+applied to any user without an explicit user quota and takes no --id.
+
+A byte or file limit of 0 (the default) means "no limit on that dimension".
 
 ```
-dfsctl quota set [share] [flags]
+dfsctl quota set <share> [flags]
+```
+
+**Examples:**
+
+```bash
+# Per-user quota (uid 1000): 10GiB / 100k files
+dfsctl quota set /archive --scope user --id 1000 --limit-bytes 10GiB --limit-files 100000
+
+# Default-user fallback quota
+dfsctl quota set /archive --scope default-user --limit-bytes 1GiB
+
+# Per-group quota with soft thresholds and a 7-day grace period
+dfsctl quota set /archive --scope group --id 2000 --limit-bytes 50GiB --soft-bytes 45GiB --grace-seconds 604800
 ```
 
 Flags:
 
 ```
-      --advisory-bytes int    The advisory limit on bytes, 0 for none
-      --advisory-files int    The advisory limit on files, 0 for none
-      --grace duration        How long the soft limits may be passed before they are refused
-      --group string          The group's name
-      --hard-bytes int        The hard limit on bytes, 0 for none
-      --hard-files int        The hard limit on files, 0 for none
-      --id string             The share's ID, in place of its name
-      --principal-id string   The principal's ID, as a listing prints it
-      --soft-bytes int        The soft limit on bytes, 0 for none
-      --soft-files int        The soft limit on files, 0 for none
-      --user string           The user's name
+      --grace-seconds int    Seconds usage may exceed a soft threshold before it is enforced as hard. 0 = grace disabled.
+      --id int               Identity id (uid for user, gid for group). Required for user/group; omit for default-user. (default -1)
+      --limit-bytes string   Hard byte ceiling (e.g., '10GiB', '500MiB'). 0/empty = unlimited.
+      --limit-files int      Hard inode (file-count) ceiling. 0 = unlimited.
+      --scope string         Quota scope (user|group|default-user) (required)
+      --soft-bytes string    Soft byte threshold (e.g., '8GiB'). 0/empty = none.
+      --soft-files int       Soft inode threshold. 0 = none.
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl setting`
+
+Read and change settings
+
+Read, set and reset any setting by its scope and key.
+
+The scope is installation, or node:<id>, namespace:<id>, store:<id> or
+share:<name>. A value that is JSON, such as 8080, true or {"a":1}, is taken as
+it is, and any other as a string; quote a string that reads as JSON: '"true"'.
+Unsetting a setting removes it at that scope, so the wider scope's value, or
+the default, holds.
+
+```
+dfsctl setting [flags]
+```
+
+**Examples:**
+
+```bash
+# Read the installation's session lifetime
+dfsctl setting get installation api.session_lifetime
+
+# Bind one node's NFS adapter to another port
+dfsctl setting set node:7f3a9c1e-0b2d-4e5f-8a6b-1c2d3e4f5a6b adapters.nfs.port 2050
+
+# Reset it to the installation's value
+dfsctl setting unset node:7f3a9c1e-0b2d-4e5f-8a6b-1c2d3e4f5a6b adapters.nfs.port
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl setting get`
+
+Show a setting
+
+```
+dfsctl setting get <scope> <key> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl setting set`
+
+Set a setting
+
+```
+dfsctl setting set <scope> <key> <value> [flags]
+```
+
+Flags:
+
+```
+      --wait   Follow the operation the command starts to its end
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl setting unset`
+
+Reset a setting to the wider scope's value or the default
+
+```
+dfsctl setting unset <scope> <key> [flags]
+```
+
+Flags:
+
+```
+      --wait   Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -1600,13 +2038,13 @@ Global flags:
 
 ### `dfsctl share`
 
-Manage shares
+Share management
 
-Create, read, change, quiesce, resume and delete shares, set their export
-policies and mount them on this host.
+Manage shares on the DittoFS server.
 
-A share is named by its name, the one an SMB client tree-connects to, or by
---id. grants and quotas on a share are the grant and quota commands.
+The `share` tree uses `share <verb> <name>` — Cobra
+resolves the verb as the subcommand and `<name>` as its positional
+argument. These operations require admin privileges.
 
 ```
 dfsctl share [flags]
@@ -1615,17 +2053,32 @@ dfsctl share [flags]
 **Examples:**
 
 ```bash
-# Create a share in a namespace, open to one network
-dfsctl share create archive --path /archive --namespace <namespace-id> --flavor sys --client 10.0.0.0/8=read-write
-
-# List the shares
+# List all shares
 dfsctl share list
 
-# Move a share's NFS path
-dfsctl share update archive --path /old-archive
+# Create a new share
+dfsctl share create --name /archive --metadata default --block-store s3-store
 
-# Delete a share and wait for its deletion to end
-dfsctl share delete archive --force --wait
+# Show share details
+dfsctl share show /archive
+
+# Edit a share interactively
+dfsctl share edit /archive
+
+# Edit a share with flags
+dfsctl share edit /archive --read-only true
+
+# Disable a share (drain clients, block new connections)
+dfsctl share disable /archive
+
+# Re-enable a share
+dfsctl share enable /archive
+
+# Remove a share
+dfsctl share remove /archive
+
+# Grant permission
+dfsctl share permission grant /archive --user alice --level read-write
 ```
 
 Global flags:
@@ -1638,93 +2091,73 @@ Global flags:
 
 ### `dfsctl share create`
 
-Create a share with its export policy
+Create a new share
 
-Create a share with its export policy.
+Create a new share on the DittoFS server.
 
-The share is named by the name an SMB client tree-connects to; --path is its
-path in the NFS namespace. The export policy's flags are those of
-'share export-policy set'; a policy states its client rules, so name at least
-one with --client (0.0.0.0/0 and ::/0 admit every client).
+A share requires a metadata store and a block store. The block store holds the
+durable copy of the data; each share also keeps a local journal on disk.
 
 ```
-dfsctl share create <name> [flags]
-```
-
-Flags:
-
-```
-      --case-insensitive             Fold the case of names; bound when the share is created
-      --client stringArray           A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
-      --flavor strings               The flavours SECINFO answers, in preference order: none, sys or kerberos
-      --min-proof string             The proof every caller gives: none, claimed, secret or ticket
-      --min-protection string        The protection messages need: none, integrity or privacy
-      --namespace string             The ID of the namespace the share's content is counted in
-      --path string                  The share's path in the NFS namespace
-      --read-only                    Hold every caller to read-only
-      --smb-continuously-available   Make the share's SMB handles continuously available
-      --smb-encrypt                  Seal every SMB message
-      --smb-hidden                   Leave the share out of SMB share enumeration
-      --squash string                Whose identity is squashed: none, root or all
-```
-
-Global flags:
-
-```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
-```
-
-### `dfsctl share delete`
-
-Delete a share
-
-Delete a share. The deletion is an operation: the command prints it, or,
-with --wait, follows it to its end.
-
-```
-dfsctl share delete [name] [flags]
-```
-
-Flags:
-
-```
-  -f, --force       Delete without asking
-      --id string   The share's ID, in place of its name
-      --wait        Follow the operation the command starts to its end
-```
-
-Global flags:
-
-```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
-```
-
-### `dfsctl share export-policy`
-
-Read and write a share's export policy
-
-Read and write a share's export policy: who it admits, with which proof and
-protection, how it squashes identities, and its SMB flags.
-
-'set' writes the whole policy, --flavor and --client required, any other field
-whose flag is not given taken back to its default; 'update' changes only the fields whose flags are given.
-
-```
-dfsctl share export-policy [flags]
+dfsctl share create [flags]
 ```
 
 **Examples:**
 
 ```bash
-# Admit one network read-write and one netgroup read-only
-dfsctl share export-policy set archive --flavor sys --client 10.0.0.0/8=read-write --client @auditors=read
+# Create a share
+dfsctl share create --name /data --metadata default --block-store s3-store
 
-# Require Kerberos with privacy, leaving the rest as it is
-dfsctl share export-policy update archive --flavor kerberos --min-proof ticket --min-protection privacy
+# Create a read-only share
+dfsctl share create --name /readonly --metadata default --block-store s3-store --read-only
+
+# Create with default permission allowing all users read-write access
+dfsctl share create --name /shared --metadata default --block-store s3-store --default-permission read-write
+
+# Create with description
+dfsctl share create --name /docs --metadata default --block-store s3-store --description "Documentation files"
+
+# Create a pinned share (blocks never evicted)
+dfsctl share create --name /edge-data --metadata default --block-store s3-store --retention pin
+
+# Create with TTL retention (evict after 72 hours of no access)
+dfsctl share create --name /logs --metadata default --block-store s3-store --retention ttl --retention-ttl 72h
+
+# Create with per-share cache size overrides
+dfsctl share create --name /bigdata --metadata default --block-store s3-store --journal-size 10GiB --read-buffer-size 2GiB
+
+# Create with per-share quota
+dfsctl share create --name /limited --metadata default --block-store s3-store --quota-bytes 10GiB
+
+# Create an export that does not squash root (e.g. for root-mounted/benchmark clients)
+dfsctl share create --name /export --metadata default --block-store s3-store --squash none
+```
+
+Flags:
+
+```
+      --access-based-enumeration     Enable Windows access-based enumeration (SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM). When true, SMB clients only see directory entries they can read.
+      --acl-canonicalize-inherited   When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba "acl flag inherited canonicalization = no"). Default true matches Windows. (default true)
+      --allow-mfsymlink              Convert 1067-byte XSym (Minshall+French) symlink files written by macOS/Windows SMB clients into real symlinks on CLOSE. Off by default (XSym files are stored as regular files).
+      --block-store string           Block store name (required)
+      --change-notify-disabled       Reject SMB2 CHANGE_NOTIFY with STATUS_NOT_IMPLEMENTED on this share (mirrors Samba 'kernel change notify = no').
+      --commit-ack string            What a COMMIT waits for: journal (survives host crash) or block-store (survives device loss)
+      --continuous-availability      Advertise SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY and allow SMB3 persistent durable handles on this share.
+      --default-permission string    Default permission for unmapped UIDs (none|read|read-write|admin) (default "none")
+      --description string           Share description
+      --encrypt-data                 Require SMB3 encryption for this share
+      --journal-size string          Per-share journal size override (e.g., 10GiB, 500MiB)
+      --metadata string              Metadata store name (required)
+      --name string                  Share name/path (required)
+      --owner string                 Username that owns the share's root directory (defaults to root). The owner can write at the share root; other principals are governed by POSIX mode plus their share permission grant.
+      --quota-bytes string           Per-share byte quota (e.g., '10GiB', '500MiB'). 0 = unlimited (default)
+      --read-buffer-size string      Per-share read buffer size override (e.g., 2GiB, 256MiB)
+      --read-only                    Make share read-only
+      --relaxed-metadata-commit      Let an operation that promised stable metadata return before the metadata fsync
+      --retention string             Retention policy (pin|ttl|lru)
+      --retention-ttl string         Retention TTL duration (e.g., 72h, 24h)
+      --squash string                Squash mode, for NFS and SMB (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest). Default root_to_guest (root_squash); use none or root_to_admin so a UID 0 caller (a root-mounted NFS client, the built-in SMB admin) is not squashed to guest.
+      --streams-disabled             Reject SMB2 Alternate Data Stream opens with STATUS_OBJECT_NAME_INVALID on this share (mirrors Samba 'smbd:streams = no').
 ```
 
 Global flags:
@@ -1735,49 +2168,33 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl share export-policy get`
+### `dfsctl share disable`
 
-Show a share's export policy
+Disable a share (drain clients, block new connections)
 
-```
-dfsctl share export-policy get [share] [flags]
-```
+Disable a share on the DittoFS server.
 
-Flags:
+Disabling a share drains connected clients synchronously (NFS MOUNT / NFSv4
+PUTFH / SMB TREE_CONNECT are refused for disabled shares) and blocks new
+connections until the share is re-enabled. This is the safety gate that
+must precede a metadata-store restore.
 
-```
-      --id string   The share's ID, in place of its name
-```
-
-Global flags:
-
-```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
-```
-
-### `dfsctl share export-policy set`
-
-Write a share's whole export policy
+The command blocks until the drain completes (or the server's
+lifecycle shutdown timeout fires). Exit code is 0 when the share has been
+marked disabled and all in-flight clients have been notified.
 
 ```
-dfsctl share export-policy set [share] [flags]
+dfsctl share disable <name> [flags]
 ```
 
-Flags:
+**Examples:**
 
-```
-      --client stringArray           A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
-      --flavor strings               The flavours SECINFO answers, in preference order: none, sys or kerberos
-      --id string                    The share's ID, in place of its name
-      --min-proof string             The proof every caller gives: none, claimed, secret or ticket
-      --min-protection string        The protection messages need: none, integrity or privacy
-      --read-only                    Hold every caller to read-only
-      --smb-continuously-available   Make the share's SMB handles continuously available
-      --smb-encrypt                  Seal every SMB message
-      --smb-hidden                   Leave the share out of SMB share enumeration
-      --squash string                Whose identity is squashed: none, root or all
+```bash
+# Disable a share before restoring its metadata store
+dfsctl share disable /archive
+
+# Emit the updated Share record as JSON
+dfsctl share disable /archive -o json
 ```
 
 Global flags:
@@ -1788,27 +2205,76 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl share export-policy update`
+### `dfsctl share edit`
 
-Change fields of a share's export policy
+Edit a share
+
+Edit an existing share on the DittoFS server.
+
+When run without flags, opens an interactive editor to modify share properties.
+When flags are provided, only the specified fields are updated.
 
 ```
-dfsctl share export-policy update [share] [flags]
+dfsctl share edit <name> [flags]
+```
+
+**Examples:**
+
+```bash
+# Edit share interactively
+dfsctl share edit /archive
+
+# Update the block store reference
+dfsctl share edit /archive --block-store new-s3-store
+
+# Make share read-only
+dfsctl share edit /archive --read-only true
+
+# Make share writable
+dfsctl share edit /archive --read-only false
+
+# Set default permission to allow all users read-write access
+dfsctl share edit /archive --default-permission read-write
+
+# Update description
+dfsctl share edit /archive --description "New description"
+
+# Change retention policy to pin (blocks never evicted)
+dfsctl share edit /archive --retention pin
+
+# Change retention policy to TTL with 72-hour window
+dfsctl share edit /archive --retention ttl --retention-ttl 72h
+
+# Override the per-share journal size
+dfsctl share edit /archive --journal-size 10GiB
+
+# Override per-share read buffer size
+dfsctl share edit /archive --read-buffer-size 2GiB
+
+# Set per-share quota
+dfsctl share edit /archive --quota-bytes 10GiB
+
+# Remove quota (set to unlimited)
+dfsctl share edit /archive --quota-bytes 0
 ```
 
 Flags:
 
 ```
-      --client stringArray           A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
-      --flavor strings               The flavours SECINFO answers, in preference order: none, sys or kerberos
-      --id string                    The share's ID, in place of its name
-      --min-proof string             The proof every caller gives: none, claimed, secret or ticket
-      --min-protection string        The protection messages need: none, integrity or privacy
-      --read-only                    Hold every caller to read-only
-      --smb-continuously-available   Make the share's SMB handles continuously available
-      --smb-encrypt                  Seal every SMB message
-      --smb-hidden                   Leave the share out of SMB share enumeration
-      --squash string                Whose identity is squashed: none, root or all
+      --access-based-enumeration string     Enable/disable Windows access-based enumeration (true|false). Takes effect on adapter restart.
+      --acl-canonicalize-inherited string   When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba "acl flag inherited canonicalization = no"). Default true matches Windows. Takes effect on adapter restart.
+      --block-store string                  Block store name
+      --commit-ack string                   What a COMMIT waits for: journal (survives host crash) or block-store (survives device loss)
+      --default-permission string           Default permission (none|read|read-write|admin)
+      --description string                  Share description
+      --encrypt-data string                 Require SMB3 encryption (true|false)
+      --journal-size string                 Per-share journal size override (e.g., 10GiB, 500MiB)
+      --quota-bytes string                  Per-share byte quota (e.g., '10GiB'). 0 = remove quota
+      --read-buffer-size string             Per-share read buffer size override (e.g., 2GiB, 256MiB)
+      --read-only string                    Set read-only (true|false)
+      --relaxed-metadata-commit             Let an operation that promised stable metadata return before the metadata fsync
+      --retention string                    Retention policy (pin|ttl|lru)
+      --retention-ttl string                Retention TTL duration (e.g., 72h)
 ```
 
 Global flags:
@@ -1819,18 +2285,28 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl share get`
+### `dfsctl share enable`
 
-Show a share
+Enable a share (accept new connections)
+
+Enable a share on the DittoFS server.
+
+Re-enabling a share allows new client connections and lifts the drain state
+set by 'share disable'. Re-enabling is a deliberate operator act; no
+mid-restore safety check is performed — the operator owns the timing.
 
 ```
-dfsctl share get [name] [flags]
+dfsctl share enable <name> [flags]
 ```
 
-Flags:
+**Examples:**
 
-```
-      --id string   The share's ID, in place of its name
+```bash
+# Enable a share after a completed metadata-store restore
+dfsctl share enable /archive
+
+# Emit the updated Share record as JSON
+dfsctl share enable /archive -o json
 ```
 
 Global flags:
@@ -1843,16 +2319,38 @@ Global flags:
 
 ### `dfsctl share list`
 
-List shares
+List all shares
+
+List all shares configured on the DittoFS server.
+
+Each row shows the share's name, the metadata and block stores it uses, its
+storage quota and current usage, the default permission level, the block
+retention policy, and whether the share is currently enabled. Use this command
+to get a quick overview of all shares before running share-specific commands.
+
+USED is the share's logical size: the sum of its file sizes, the same figure
+'du --apparent-size' would report over the mounted share. It is what QUOTA is
+measured against. It is not a count of bytes on disk, and will not match one:
+blocks are deduplicated and compressed.
 
 ```
 dfsctl share list [flags]
 ```
 
-Flags:
+**Examples:**
 
-```
-      --namespace string   Only the shares counted in the namespace of this ID
+```bash
+# List all shares as a table
+dfsctl share list
+
+# List shares and pipe to grep to find disabled ones
+dfsctl share list | grep " -$"
+
+# Output the full share list as JSON for scripting
+dfsctl share list -o json
+
+# Output as YAML
+dfsctl share list -o yaml
 ```
 
 Global flags:
@@ -1865,50 +2363,58 @@ Global flags:
 
 ### `dfsctl share mount`
 
-Mount a share on this host over NFS or SMB
+Mount a share via NFS or SMB
 
-Mount a share at a mount point on this host, over NFS or SMB, from the server
-the current context names, on the port its adapter's record gives.
+Mount a DittoFS share at a local mount point using NFS or SMB protocol.
 
-Run dfsctl as yourself, not under sudo: it reads your login, and runs the
-host's mount command through sudo itself where that needs root. A macOS SMB
-mount runs as you, since macOS lets only a mount's owner reach its files, and
-a Linux SMB mount is made for your uid and gid. For SMB the mount command asks
-for the password itself; dfsctl never handles it. --dry-run prints the
-command, sudo included, instead of running it.
+For SMB mounts, credentials are resolved in order:
 
-An SMB mount on Windows from any port but 445 needs net use's /TCPPORT,
-which Windows 11 24H2 and Windows Server 2025 are the first to have, and an
-administrator prompt.
+1. --username/--password flags
+2. DITTOFS_PASSWORD environment variable (for password)
+3. Current login context username
+4. Interactive password prompt
+
+Mount commands typically require sudo/root privileges on Unix systems.
+
+Platform differences for SMB with sudo:
+
+- Linux: mount owner set to your user via uid/gid options (default mode 0755)
+- macOS: mount owned by root (uid/gid removed in Catalina), default mode 0777
+- macOS alternative: mount to ~/mnt without sudo for a user-owned mount
+- Windows: uses 'net use' to map network drives (e.g. dfsctl share mount /export --protocol smb Z:)
 
 ```
-dfsctl share mount [share] <mountpoint> [flags]
+dfsctl share mount [share] [mountpoint] [flags]
 ```
 
 **Examples:**
 
 ```bash
-# Mount over NFS
-dfsctl share mount archive /mnt/archive --protocol nfs
+# Mount via NFS
+dfsctl share mount /export --protocol nfs /mnt/dittofs
 
-# Mount over NFSv4.1
-dfsctl share mount archive /mnt/archive --protocol nfs --nfs-version 4.1
+# Mount via SMB
+dfsctl share mount /export --protocol smb /mnt/dittofs
 
-# Mount over SMB as alice
-dfsctl share mount archive /mnt/archive --protocol smb --username alice
+# Mount via SMB with explicit credentials
+dfsctl share mount /export --protocol smb --username alice /mnt/dittofs
 
-# Map a drive on Windows
-dfsctl share mount archive Z: --protocol smb
+# Mount via SMB with password from environment
+DITTOFS_PASSWORD=secret dfsctl share mount /export --protocol smb /mnt/dittofs
+
+# Mount to user directory without sudo (macOS only, recommended)
+mkdir -p ~/mnt/dittofs && dfsctl share mount /export --protocol smb ~/mnt/dittofs
 ```
 
 Flags:
 
 ```
-      --dry-run              Print the mount command instead of running it
-      --id string            The share's ID, in place of its name
-      --nfs-version string   The NFS version: 3, 4, 4.0, 4.1 or 4.2 (default "3")
-  -p, --protocol string      The protocol to mount over: nfs or smb
-  -u, --username string      The SMB user; the current context's account when not given
+      --dir-mode string      Directory permissions for SMB mount (octal; default 0755 on Linux, 0777 on macOS)
+      --file-mode string     File permissions for SMB mount (octal; default 0755 on Linux, 0777 on macOS)
+      --nfs-version string   NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper (default "3")
+  -P, --password string      Password for SMB mount (will prompt if not provided)
+  -p, --protocol string      Protocol to use (nfs or smb) (required)
+  -u, --username string      Username for SMB mount (defaults to login username)
 ```
 
 Global flags:
@@ -1919,40 +2425,34 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl share quiesce`
+### `dfsctl share nfs-config`
 
-Quiesce a share: refuse new opens and drain its clients
+Manage per-share NFS adapter configuration
 
-```
-dfsctl share quiesce [name] [flags]
-```
+View and update the NFS adapter configuration for a share.
 
-Flags:
-
-```
-      --id string   The share's ID, in place of its name
-```
-
-Global flags:
+This controls the share's export settings: the squash mode, the
+authentication flags and the netgroup that restricts which clients may reach
+the share. The authentication flags and the netgroup are the share's access
+policy, which applies over NFS and SMB alike; the squash mode maps the
+identities of SMB sessions too, guest sessions excepted. Changes take effect
+immediately.
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+dfsctl share nfs-config [flags]
 ```
 
-### `dfsctl share resume`
+**Examples:**
 
-Resume a quiesced share
+```bash
+# Show a share's NFS config
+dfsctl share nfs-config show /export
 
-```
-dfsctl share resume [name] [flags]
-```
+# Associate a netgroup with the share's NFS export
+dfsctl share nfs-config set /export --netgroup office-network
 
-Flags:
-
-```
-      --id string   The share's ID, in place of its name
+# Remove the netgroup association (allow all clients)
+dfsctl share nfs-config set /export --netgroup ""
 ```
 
 Global flags:
@@ -1963,20 +2463,344 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl share update`
+### `dfsctl share nfs-config set`
 
-Rename a share or move its NFS path
+Update a share's NFS adapter configuration
+
+Update the NFS adapter configuration for a share.
+
+Only the flags you supply are changed; omitted flags leave the existing values
+intact. Changes take effect immediately, without an adapter restart.
+
+The netgroup allowlist and the authentication flags are the share's access
+policy: they are enforced on NFSv3 mounts, on NFSv4 operations and on SMB
+requests to the same share. The squash mode is not NFS-only either: it maps the
+identities of SMB sessions on the share as well, guest sessions excepted.
 
 ```
-dfsctl share update [name] [flags]
+dfsctl share nfs-config set <name> [flags]
+```
+
+**Examples:**
+
+```bash
+# Restrict access to a specific netgroup
+dfsctl share nfs-config set /export --netgroup office-network
+
+# Remove the netgroup restriction (allow all clients)
+dfsctl share nfs-config set /export --netgroup ""
+
+# Map root UID to guest on this export
+dfsctl share nfs-config set /export --squash root_to_guest
+
+# Require Kerberos authentication and disallow AUTH_SYS
+dfsctl share nfs-config set /export --require-kerberos true --allow-auth-sys false
 ```
 
 Flags:
 
 ```
-      --id string     The share's ID, in place of its name
-      --name string   The share's new name
-      --path string   The share's new path in the NFS namespace
+      --allow-auth-sys string     Allow AUTH_SYS flavor (true|false)
+      --netgroup string           Netgroup name to associate (empty string clears the association)
+      --require-kerberos string   Require Kerberos auth (true|false)
+      --squash string             Squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share nfs-config show`
+
+Show a share's NFS adapter configuration
+
+Show the NFS adapter configuration for a share.
+
+Displays the netgroup association, squash mode, and authentication settings
+(AUTH_SYS and Kerberos). Use this command to inspect the current NFS export
+settings before making changes with 'nfs-config set'.
+
+```
+dfsctl share nfs-config show <name> [flags]
+```
+
+**Examples:**
+
+```bash
+# Show NFS config for a share
+dfsctl share nfs-config show /export
+
+# Emit as JSON
+dfsctl share nfs-config show /export -o json
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share permission`
+
+Manage share permissions
+
+Manage permissions on shares.
+
+Permission commands allow you to grant, revoke, and list permissions
+for users and groups on shares.
+
+```
+dfsctl share permission [flags]
+```
+
+**Examples:**
+
+```bash
+# Grant read-write permission to a user
+dfsctl share permission grant /archive --user alice --level read-write
+
+# Grant read permission to a group
+dfsctl share permission grant /archive --group editors --level read
+
+# Revoke permission from a user
+dfsctl share permission revoke /archive --user alice
+
+# List permissions on a share
+dfsctl share permission list /archive
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share permission grant`
+
+Grant permission on a share
+
+Grant a permission level to a user or group on a share.
+
+Specify exactly one of --user, --group, or --sid together with --level.
+Re-running the command on a principal that already has a permission replaces the
+existing level. Permission levels in order of increasing access:
+
+```
+- none:       No access (explicitly blocks the principal)
+- read:       Read-only access
+- read-write: Read and write access
+- admin:      Full administrative access including ACL management
+```
+
+Active Directory principals can be granted directly, with no local DittoFS
+account (issue #1528). --user / --group accept a local name, an AD name
+(user@REALM or DOMAIN\group, resolved to a SID via the configured LDAP
+directory), or a raw Windows SID. A bare name resolves to a local user/group if
+one exists, otherwise to the directory. --sid grants to a raw SID explicitly.
+
+```
+dfsctl share permission grant <share> [flags]
+```
+
+**Examples:**
+
+```bash
+# Grant read-write access to a local user
+dfsctl share permission grant /archive --user alice --level read-write
+
+# Grant read-only access to a local group
+dfsctl share permission grant /archive --group editors --level read
+
+# Grant directly to an AD group (resolved to its SID via LDAP) — no local group
+dfsctl share permission grant /archive --group 'CUBBIT\Cubbit' --level read-write
+
+# Grant directly to an AD user by Kerberos principal
+dfsctl share permission grant /archive --user alice@cubbit.local --level read
+
+# Grant to a raw Windows SID (no directory lookup)
+dfsctl share permission grant /archive --sid S-1-5-21-1111-2222-3333-1104 --level read
+```
+
+Flags:
+
+```
+      --group string   Group to grant permission to (local name, AD name, or SID)
+      --level string   Permission level (none|read|read-write|admin)
+      --sid string     Raw Windows SID to grant permission to (e.g. S-1-5-21-...)
+      --user string    User to grant permission to (local name, AD name, or SID)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share permission list`
+
+List permissions on a share
+
+List all user and group permissions configured on a share.
+
+Each row shows the principal type (user or group), the principal's name, and
+the permission level (none, read, read-write, or admin). Note that these are
+per-principal overrides; clients without an explicit entry fall back to the
+share's default permission (see 'dfsctl share show').
+
+```
+dfsctl share permission list <share> [flags]
+```
+
+**Examples:**
+
+```bash
+# List all permissions on a share
+dfsctl share permission list /archive
+
+# Emit permissions as JSON for scripting
+dfsctl share permission list /archive -o json
+
+# Emit as YAML
+dfsctl share permission list /archive -o yaml
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share permission revoke`
+
+Revoke permission from a share
+
+Remove a per-principal permission entry from a share.
+
+After revoking, the user or group falls back to the share's default permission
+level (see 'dfsctl share show'). To explicitly block a principal rather than
+fall back to the default, use 'dfsctl share permission grant ... --level none'
+instead. Specify exactly one of --user, --group, or --sid.
+
+--user / --group accept a local name, an AD name, or a raw SID (matching the
+grant command); --sid revokes a raw SID grant directly.
+
+```
+dfsctl share permission revoke <share> [flags]
+```
+
+**Examples:**
+
+```bash
+# Revoke a user's explicit permission (they fall back to the share default)
+dfsctl share permission revoke /archive --user alice
+
+# Revoke a group's explicit permission
+dfsctl share permission revoke /archive --group editors
+
+# Revoke a direct AD/SID grant
+dfsctl share permission revoke /archive --sid S-1-5-21-1111-2222-3333-1104
+```
+
+Flags:
+
+```
+      --group string   Group to revoke permission from (local name, AD name, or SID)
+      --sid string     Raw Windows SID to revoke permission from
+      --user string    User to revoke permission from (local name, AD name, or SID)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share remove`
+
+Remove a share
+
+Permanently remove a share from the DittoFS server.
+
+Removing a share deletes its configuration, its records in its metadata store
+and its local journal, so a share created again under the same name starts
+empty. Blocks already synced to a remote block store are left to garbage
+collection, and the metadata and block stores themselves are kept. If the
+share's data cannot be deleted, the removal fails and keeps the share, so it
+can be repeated. This operation is irreversible: you will be prompted for
+confirmation unless --force is specified. Disable the share first
+('dfsctl share disable') if you want to drain active clients before removing.
+
+```
+dfsctl share remove <name> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove a share, prompted for confirmation
+dfsctl share remove /archive
+
+# Remove without a confirmation prompt (useful in scripts)
+dfsctl share remove /archive --force
+
+# Drain clients first, then remove without prompting
+dfsctl share disable /archive && dfsctl share remove /archive --force
+```
+
+Flags:
+
+```
+  -f, --force   Skip confirmation prompt
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share show`
+
+Show share details
+
+Show a detailed, field-by-field view of a single share.
+
+Unlike 'share list', which shows summary columns, 'share show' displays every
+attribute of the share: store IDs, read-only state, ACL settings, retention
+policy and TTL, cache size overrides, quota, and creation/update timestamps. Use this command when debugging a misconfigured
+share or before editing it.
+
+```
+dfsctl share show <name> [flags]
+```
+
+**Examples:**
+
+```bash
+# Show all fields for a share
+dfsctl share show /archive
+
+# Emit the full share record as JSON (useful for scripting or diffing)
+dfsctl share show /archive -o json
+
+# Emit as YAML
+dfsctl share show /archive -o yaml
 ```
 
 Global flags:
@@ -1989,15 +2813,11 @@ Global flags:
 
 ### `dfsctl status`
 
-Show server status
+Show the node's readiness and the installation's health
 
-Display the status of the connected DittoFS server.
-
-Calls the /health endpoint on the server configured in the current context and
-reports whether the server is running, how long it has been up, and whether the
-control-plane database is reachable. When a valid token is present, per-entity
-detail (shares, stores) is fetched from the API and rendered as a
-color-coded table. Use -o json or -o yaml for machine-readable output.
+Show the readiness of the node the current context names, ready, starting,
+draining or not_ready, and every health condition it holds, its own and the
+installation's. Use -o json or -o yaml for machine-readable output.
 
 ```
 dfsctl status [flags]
@@ -2006,7 +2826,7 @@ dfsctl status [flags]
 **Examples:**
 
 ```bash
-# Show status of the currently active server
+# Show the status of the current context's node
 dfsctl status
 
 # Emit machine-readable JSON output
@@ -2021,40 +2841,55 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl token`
+### `dfsctl store`
 
-Manage API tokens
+Manage remote stores
 
-Create, list and revoke API tokens: credentials a script or a service signs
-in with, through 'dfsctl login --token-file', in place of a password.
+Create, read and delete remote stores, and set a store's credential.
 
-Each command acts on the signed-in account's tokens; an admin names another
-account with --user, and creates one for another account only when that
-account is a service account, one holding no password. A context signed in
-with an API token names no account to dfsctl, so it needs --user, and it
-creates no token.
+A remote store is where namespaces keep their content: its endpoint, bucket and
+the rest are its settings, and its credential is a secret the server seals and
+never prints. A store's setting changes through 'dfsctl setting set store:<id>'.
 
 ```
-dfsctl token [flags]
+dfsctl store [flags]
 ```
 
 **Examples:**
 
 ```bash
-# Create a token valid for 30 days, kept in a file
-(umask 077; dfsctl token create --expires-in 720h > token.txt)
+# Create a store, its credential read from a file
+dfsctl store create --setting remote.endpoint=https://s3.example.com --credential-file cred.txt
 
-# Sign a context in with it
-dfsctl login --server https://dfs.example.com --token-file token.txt -c ci
+# Replace a store's credential (prompts for it)
+dfsctl store set-credential 0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b
+```
 
-# Revoke it
-dfsctl token revoke 1a92dcf1-bdbb-49eb-acc1-a78ef6b4e5f1
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl store create`
+
+Create a remote store
+
+Create a remote store with its settings, each --setting key=value, a value
+that is JSON taken as it is and any other as a string. With --credential-file
+the store is created with the credential that file holds.
+
+```
+dfsctl store create [flags]
 ```
 
 Flags:
 
 ```
-      --user string   The account whose tokens to act on, by its name (defaults to the signed-in one)
+      --credential-file string   File holding the store's credential
+      --setting stringArray      A setting of the store, key=value (repeatable)
 ```
 
 Global flags:
@@ -2065,22 +2900,18 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl token create`
+### `dfsctl store delete`
 
-Create an API token
-
-Create an API token expiring --expires-in from now. The token is shown this
-once: as a table, stdout holds the token alone, so it can be written to a file;
--o json or -o yaml print the whole record, the token in its status.
+Delete a remote store no namespace names
 
 ```
-dfsctl token create [flags]
+dfsctl store delete <id> [flags]
 ```
 
 Flags:
 
 ```
-      --expires-in duration   How long the token is valid, at most the server's api.token_max_lifetime (default 720h0m0s)
+      --wait   Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -2088,16 +2919,15 @@ Global flags:
 ```
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --user string     The account whose tokens to act on, by its name (defaults to the signed-in one)
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl token list`
+### `dfsctl store get`
 
-List API tokens
+Show a remote store
 
 ```
-dfsctl token list [flags]
+dfsctl store get <id> [flags]
 ```
 
 Global flags:
@@ -2105,18 +2935,25 @@ Global flags:
 ```
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --user string     The account whose tokens to act on, by its name (defaults to the signed-in one)
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl token revoke`
+### `dfsctl store set-credential`
 
-Revoke an API token
+Set a remote store's credential
 
-Revoke an API token, named by its ID, so the server refuses it from then on.
+Set a remote store's credential, read from the file --credential-file names
+or, without it, from a prompt. The server proves the credential before it
+writes it.
 
 ```
-dfsctl token revoke <id> [flags]
+dfsctl store set-credential <id> [flags]
+```
+
+Flags:
+
+```
+      --credential-file string   File holding the credential (prompts without it)
 ```
 
 Global flags:
@@ -2124,20 +2961,18 @@ Global flags:
 ```
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --user string     The account whose tokens to act on, by its name (defaults to the signed-in one)
   -v, --verbose         Enable verbose output
 ```
 
 ### `dfsctl user`
 
-Manage users
+User management
 
-Create, list, read, change and delete the server's users, and set their
-passwords.
-
-A user is an account of the management API when it holds a role, and an owner
-of files when it holds a uid; one may be both. Each command names a user by its
-name, or by its ID with --id.
+Manage local user accounts on the DittoFS server. Local users are
+distinct from identities resolved via Kerberos or LDAP — they are accounts
+stored in the DittoFS control plane and used for direct authentication.
+Most subcommands require admin privileges; "change-password" operates on the
+currently authenticated account and is available to all users.
 
 ```
 dfsctl user [flags]
@@ -2146,17 +2981,62 @@ dfsctl user [flags]
 **Examples:**
 
 ```bash
-# Create a user owning files as uid 1000
-dfsctl user create alice --uid 1000 --email alice@example.com
+# List all registered users
+dfsctl user list
 
-# Give it a password, read from a file
-dfsctl user set-password alice --password-file pw.txt
+# Create a new user interactively
+dfsctl user create
 
-# Clear its e-mail address
-dfsctl user update alice --email ""
+# Create a user with an explicit UID for NFS access
+dfsctl user create --username alice --password secret --uid 1000 --role user
 
-# Delete it and wait for the deletion to end
-dfsctl user delete alice --force --wait
+# Edit a user's group membership
+dfsctl user edit alice --groups editors,viewers
+
+# Reset a user's password as an admin
+dfsctl user password alice
+
+# Remove a user (prompts for confirmation)
+dfsctl user remove alice
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl user change-password`
+
+Change your own password
+
+Change your own password as the currently authenticated user. This is
+distinct from the admin-only "dfsctl user password" command: it verifies your
+current password before accepting the new one, and updates the stored session
+tokens automatically. You will be prompted for both passwords unless flags are
+provided (flags are less secure as passwords may appear in shell history).
+
+```
+dfsctl user change-password [flags]
+```
+
+**Examples:**
+
+```bash
+# Change password interactively (recommended — passwords are not echoed)
+dfsctl user change-password
+
+# Change password non-interactively (use with caution)
+dfsctl user change-password --current oldpass --new newpass
+```
+
+Flags:
+
+```
+  -c, --current string   Current password (prompts if not provided)
+  -n, --new string       New password (prompts if not provided)
 ```
 
 Global flags:
@@ -2169,21 +3049,49 @@ Global flags:
 
 ### `dfsctl user create`
 
-Create a user
+Create a new user
 
-Create a user. It has no password until 'dfsctl user set-password' gives it one.
+Create a new local user on the DittoFS server. The user can be assigned
+a Unix UID and primary GID for NFS uid/gid resolution; omitting these causes
+the server to auto-assign them from its allocation range. If --username or
+--password are not provided as flags, you will be prompted interactively.
 
 ```
-dfsctl user create <name> [flags]
+dfsctl user create [flags]
+```
+
+**Examples:**
+
+```bash
+# Create a user interactively (prompted for username, password, role, groups)
+dfsctl user create
+
+# Create a regular user with username and password
+dfsctl user create --username alice --password secret
+
+# Create an admin user belonging to the editors group
+dfsctl user create --username admin2 --password secret --role admin --groups editors
+
+# Create a user whose UID/GID match the current host user (useful for NFS mounts)
+dfsctl user create --username alice --password secret --host-uid --host-gid
+
+# Create a user with an explicit UID, GID, and email
+dfsctl user create --username bob --password secret --uid 1000 --gid 1001 --email bob@example.com
 ```
 
 Flags:
 
 ```
-      --disabled       Refuse the user on every protocol and on the API
-      --email string   E-mail address; empty clears it
-      --role string    Role in the management API (viewer|operator|admin); empty for none
-      --uid uint32     Unix user ID, which a create leaving it out allocates
+      --email string      Email address
+      --enabled           Enable account (default true)
+      --gid uint32        Unix primary group ID (auto-assigned if not specified)
+      --groups string     Comma-separated list of groups
+      --host-gid          Use current host user's GID (for NFS access)
+      --host-uid          Use current host user's UID (for NFS access)
+  -p, --password string   Password (prompts if not provided)
+      --role string       Role (user|admin) (default "user")
+      --uid uint32        Unix user ID (auto-assigned if not specified)
+  -u, --username string   Username (required)
 ```
 
 Global flags:
@@ -2194,23 +3102,48 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl user delete`
+### `dfsctl user edit`
 
-Delete a user
+Edit a user
 
-Delete a user. The deletion is an operation: the command prints its ID, or,
-with --wait, follows it to its end.
+Edit an existing user on the DittoFS server. When run without flags, an
+interactive prompt walks you through each editable field, showing the current
+value so you can press Enter to keep it unchanged. When flags are provided,
+only the specified fields are updated and no prompt appears.
 
 ```
-dfsctl user delete <name> [flags]
+dfsctl user edit <username> [flags]
+```
+
+**Examples:**
+
+```bash
+# Edit all fields interactively (shows current values)
+dfsctl user edit alice
+
+# Move alice to the admin role
+dfsctl user edit alice --role admin
+
+# Update alice's primary GID to match a new group
+dfsctl user edit alice --gid 1002
+
+# Disable an account and change its group membership in one command
+dfsctl user edit alice --enabled false --groups viewers
+
+# Update display name and email
+dfsctl user edit alice --display-name "Alice Smith" --email alice@newdomain.com
 ```
 
 Flags:
 
 ```
-  -f, --force       Delete without asking
-      --id string   The user's ID, in place of its name
-      --wait        Follow the operation the command starts to its end
+      --display-name string   Display name
+      --email string          Email address
+      --enabled string        Enable/disable account (true|false)
+      --gid uint32            Unix primary group ID
+      --groups string         Comma-separated list of groups
+      --role string           Role (user|admin)
+      --uid uint32            Unix user ID
 ```
 
 Global flags:
@@ -2223,16 +3156,31 @@ Global flags:
 
 ### `dfsctl user get`
 
-Show a user
+Get user details
+
+Get detailed information about a specific user on the DittoFS server.
+Accepts either the username or the user's full ID (see 'dfsctl user list').
+The output includes the user's role, UID, group memberships, account status,
+and last-login timestamp. Use -o json or -o yaml for machine-readable output.
 
 ```
-dfsctl user get <name> [flags]
+dfsctl user get <username|id> [flags]
 ```
 
-Flags:
+**Examples:**
 
-```
-      --id string   The user's ID, in place of its name
+```bash
+# Show user details as a table
+dfsctl user get alice
+
+# By ID
+dfsctl user get 3f2b1c4d-...
+
+# Output as JSON (useful for scripting)
+dfsctl user get alice -o json
+
+# Output as YAML
+dfsctl user get alice -o yaml
 ```
 
 Global flags:
@@ -2245,37 +3193,28 @@ Global flags:
 
 ### `dfsctl user list`
 
-List users
+List all users
+
+List all local users registered on the DittoFS server. The table view
+shows each user's username, UID, role, email, group memberships, and whether
+the account is enabled. Use -o json or -o yaml to get machine-readable output
+suitable for piping into other tools.
 
 ```
 dfsctl user list [flags]
 ```
 
-Global flags:
+**Examples:**
 
-```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
-```
+```bash
+# List all users as a table
+dfsctl user list
 
-### `dfsctl user set-password`
+# Output the full user list as JSON
+dfsctl user list -o json
 
-Set a user's password
-
-Set a user's password, read from a prompt or from the file --password-file
-names. The user's sessions and API tokens are refused from then on. To change
-your own password, run 'dfsctl password change'.
-
-```
-dfsctl user set-password <name> [flags]
-```
-
-Flags:
-
-```
-      --id string              The user's ID, in place of its name
-      --password-file string   File holding the password (prompts without it)
+# Output as YAML
+dfsctl user list -o yaml
 ```
 
 Global flags:
@@ -2286,26 +3225,72 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl user update`
+### `dfsctl user password`
 
-Change a user
+Reset a user's password
 
-Change the fields of a user that the flags name, leaving the others as they
-are. An empty --email clears the address, and an empty --role takes the role
-away.
+Reset a user's password (admin operation). Unlike "dfsctl user
+change-password", this command does not require knowledge of the current
+password and is intended for administrators recovering access for a user.
+After the reset the account is marked as must-change-password, requiring
+the user to set a new password on their next login.
 
 ```
-dfsctl user update <name> [flags]
+dfsctl user password <username> [flags]
+```
+
+**Examples:**
+
+```bash
+# Reset a user's password interactively (password not echoed)
+dfsctl user password alice
+
+# Reset password non-interactively (use with caution)
+dfsctl user password alice --password newsecret
 ```
 
 Flags:
 
 ```
-      --disabled       Refuse the user on every protocol and on the API
-      --email string   E-mail address; empty clears it
-      --id string      The user's ID, in place of its name
-      --role string    Role in the management API (viewer|operator|admin); empty for none
-      --uid uint32     Unix user ID, which a create leaving it out allocates
+  -p, --password string   New password (prompts if not provided)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl user remove`
+
+Remove a user
+
+Remove a user from the DittoFS server. Accepts either the username or
+the user's full ID (see 'dfsctl user list'). This action is irreversible:
+the account and its authentication tokens are permanently removed, though
+files the user owns are not deleted. You will be prompted for confirmation
+unless --force is specified.
+
+```
+dfsctl user remove <username|id> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove a user (prompts for confirmation)
+dfsctl user remove alice
+
+# Remove a user non-interactively (for scripts and automation)
+dfsctl user remove alice --force
+```
+
+Flags:
+
+```
+  -f, --force   Skip confirmation prompt
 ```
 
 Global flags:
