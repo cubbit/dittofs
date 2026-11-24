@@ -578,9 +578,11 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
   (`pkg/openstate/clients.go`), so the confirming `CREATE_SESSION` of a new client finds its
   proposal, its ID, confirm and `csa_sequence`, only in the adapter's memory (#5090's §3.5 note).
   Prior art: knfsd holds unconfirmed clients in memory (from memory). Applied in E8.
-- **D8. NFSv4.0 owners' last replies** are a per-node table keyed by (client, owner), bounded by the
-  connection-state pool, beside the sessions (RFC 21 §4.2's last reply in gateway memory). Prior art:
-  knfsd's `so_replay` per state owner (from memory). Applied in E9.
+- **D8. NFSv4.0 owners' last replies** are a per-node table keyed by the state a request names:
+  (client, owner) for an `OPEN`, and the stateid's `other` for a request that names only a stateid,
+  which carries no owner the adapter can read; bounded by the connection-state pool under a ceiling
+  of its own, beside the sessions (RFC 21 §4.2's last reply in gateway memory). Prior art: knfsd's
+  `so_replay` per state owner, found through the stateid (from memory). Applied in E9 (its D3).
 - **D9. `CB_NOTIFY_LOCK` is not sent.** RFC 21 §5.5 makes it optional and the poll decides; a client
   that asked for it polls anyway. Prior art: knfsd sends it, Linux clients poll regardless (from
   memory). Applied in E10; its row is in §6.6.
@@ -921,7 +923,8 @@ reboot racing renew *(1 node)*", the "§3.5 confirm" step of a rebooted client h
 - `OPEN_CONFIRM`, `OPEN_DOWNGRADE`, `CLOSE`.
 - Stateids: the six rules, the special stateids, the current stateid, `TEST_STATEID`,
   `FREE_STATEID`, `FreeState` on an NFSv4.0 client's behalf.
-- NFSv4.0 owner sequences and owners' last replies (D8).
+- NFSv4.0 owner sequences and owners' last replies (D8); the lease renewed by NFSv4.0's stateful
+  operations (RFC 21 §5.1), `SEQUENCE` and `RENEW` renewing it in E8.
 - `LOCK`, `LOCKT`, `LOCKU`, `RELEASE_LOCKOWNER`: one range, `LOCK4denied`, blocking polls.
 - `READ`, `WRITE`, `SETATTR` under open and lock stateids, the principal check, the drain role per
   request; the callbacks value's `Revoked` for opens and locks.

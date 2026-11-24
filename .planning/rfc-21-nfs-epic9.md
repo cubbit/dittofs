@@ -21,11 +21,11 @@ per-call admission of `LOCK`, `LOCKT` and `LOCKU`. Every citation is `develop`'s
 `feat/storage-v2` with the cherry-pick of RFC changes.
 Cited, not owned: RFC 8881 and RFC 7530 for the bytes, operation numbers and status values.
 **Track:** C.
-**Epic 9 estimate: 11 subtasks, 28.5 man-days.**
+**Epic 9 estimate: 11 subtasks, 30.5 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's `protocol.State` with its current and
 saved stateids (T1.1) and NFSv4 members' table (T1.2), E2's `nfsharness` (T2.2) and the service's
 `NoGrace` (T2.1), S0's `vfstest.Mutations`. Beyond S2: **E5**'s `SetFH` users and the walk to a
-file (T5.1), `stateid.go` and `SETATTR` (T5.5), `createattrs` (T5.6), and `READ` and `WRITE`
+file (T5.1), `stateid.go`, `SETATTR` and the `createattrs` translation (T5.5), and `READ` and `WRITE`
 (T5.8); **E8**'s pieces landed first: the callbacks value in `nfs/callbacks.go` with its
 `v4.Handlers` field (T8.1), and the `Adapter` bytes codec whose `ClientRecNFS4.Minor` names the
 minor version a client was confirmed under (T8.2), then `SETCLIENTID`, its confirm, `RENEW` and the
@@ -35,7 +35,8 @@ minor version a client was confirmed under (T8.2), then `SETCLIENTID`, its confi
 admission; **S4** for the NFSv4.1 loopback rows of T9.11.
 **Blocks:** E10, whose delegations are offered with T9.4's `OPEN` (E10's T10.4) and whose
 `DELEGRETURN` and revoked answers use T9.3's stateids and T9.10's operations (T10.4, T10.7), and
-whose T10.7 advances the `memory.Service.Clock` T9.7 exports; E12, whose `COPY` and `CLONE` (T12.3)
+whose T10.7 advances the `memory.Service.Clock` T9.7 exports, and whose T10.8 tests `LOCK` and
+`LOCKT` during a recall on T9.8's rows; E12, whose `COPY` and `CLONE` (T12.3)
 take T9.3's and T9.9's stateids and whose hold budget (T12.4) adds its call to T9.6's `CLOSE`;
 E6's T6.4, which adds `acl` and `mode_umask` to T9.5's create attributes; E16, which runs pynfs's
 open, lock and stateid tests and the restart rows.
@@ -81,11 +82,12 @@ targets of the stateid translation, `share_access` and `share_deny`, and a `LOCK
   grant, `DELEGRETURN`, `CB_RECALL`, an `OPEN` reclaiming a delegation, the delegation-stateid
   steps of RFC 21 §13's "§5.2 stateids *(1 node)*" (the recall timeout) and "§5.2 delegation
   stateid", an administrator's revoke and its `SEQUENCE` flags, and the drain test against Linux's
-  compounds: E10 (T10.4, T10.7, T10.9). This epic decodes the want bits and refuses an invalid
+  compounds, and `LOCK` and `LOCKT` met during a recall: E10 (T10.4, T10.7, T10.8, T10.9). This epic decodes the want bits and refuses an invalid
   one (D8), maps `ErrState` (`Revoked`) in both its causes (T9.3) and serves `READ`, `WRITE` and
   `SETATTR` under a delegation stateid (T9.9); E10 makes a delegation and tests what it answers.
 - `SETCLIENTID`, `SETCLIENTID_CONFIRM`, `EXCHANGE_ID`, `CREATE_SESSION`, `SEQUENCE`, `RENEW`,
-  `DESTROY_CLIENTID` and `RECLAIM_COMPLETE`, the lease, the `SEQ4_STATUS` flags, the NFSv4.0
+  `DESTROY_CLIENTID` and `RECLAIM_COMPLETE`, the lease and its renewal by `SEQUENCE` and `RENEW`
+  (this epic renews it on NFSv4.0's stateful operations, R60), the `SEQ4_STATUS` flags, the NFSv4.0
   stale-client-ID signal and the `StaleClient` and `ClientInUse` rows: E8 (T8.3 to T8.6, T8.9,
   T8.10). This epic runs the rows
   of §13 that need an open or a lock beside them (R52 to R55).
@@ -120,7 +122,7 @@ targets of the stateid translation, `share_access` and `share_deny`, and a `LOCK
   among them (T3.4), and the scripted client, `adaptertest/nfsclient` (T3.2).
 - **E4**, NFSv3 and MOUNT, which holds NFSv3's half of the "§11.3 read-only marker" row.
 - **E5**, the NFSv4 namespace, attributes and data: the current filehandle's operations (T5.1),
-  `stateid.go` and `SETATTR` (T5.5), `CREATE`'s `createattrs` (T5.6), `READ` and `WRITE` (T5.8).
+  `stateid.go`, `SETATTR` and the `createattrs` translation `CREATE` uses (T5.5), `READ` and `WRITE` (T5.8).
 - **E6**, the NFSv4 ACL attributes, which adds `acl` and `mode_umask` to `OPEN`'s create (T6.4).
 - **E7**, identity's NFS side: a `Claimed` caller resolved (T7.1).
 - **E8**, clients and sessions: the callbacks value and the `Adapter` bytes, landed first, client
@@ -142,7 +144,7 @@ cited by number and title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each member on `nfsharness` against `memory.New` (kind 2), errors through `vfstest.Faults` (kind 3), the one-call rule from S0's `vfstest.Mutations`; the translations (stateids, `share_access` and `share_deny`, claims, a `LOCK` into a `LockReq`, the holder in `LOCK4denied`) as functions of their inputs; T9.1's and T9.2's service halves in `pkg/openstate`'s and `internal/vfs`'s own tests on their real stores; the owners' table on its own, with an injected budget; no other double |
-| rule 2, fuzz tests where relevant | T9.3, T9.4, T9.8 | the three targets RFC 21 §11.6 names for this epic: `FuzzStateid` (the wire stateid to an `OpenRef` and back), `FuzzShareAccess` and `FuzzLockReq`, each with a seed corpus and the invariant that the input becomes one neutral value or a named refusal, never other state; every generated struct is already in E1's `FuzzCodec` |
+| rule 2, fuzz tests where relevant | T9.3, T9.4, T9.8 | the three targets RFC 21 §11.6 names for this epic: `FuzzStateid` (the wire stateid to an `OpenRef` and back), `FuzzShareAccess` and `FuzzLockReq`, each with a seed corpus and two invariants: the input becomes one neutral value or a named refusal, never other state, and a value it accepts re-encodes to wire bytes that decode to the same neutral value (CLAUDE.md's fuzz rule); every generated struct is already in E1's `FuzzCodec` |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T9.3, T9.4, T9.8 | no recorder in NFS code; each row named after its operation, so `core` names its span and `op` label; the refusals behind `adapter_translation_refused_total`'s `stateid`, `open` and `lock` reasons are named values, recorded once who records them is settled (§1.2); no label, attribute or log line carries an owner's bytes, a client ID or a name |
 | rule 4, profiling: leaks, allocations and contention | T9.7, T9.11 | the owners' table is a node-wide map under one mutex: its test reports the mutex and block profiles under 64 parallel owners (RFC 20 §6.9); every loopback test ends with `adaptertest.CheckLeaks`; no allocation gate, which RFC 20 §6.10 sets on `READ`, `WRITE` and `GETATTR` only, and T9.9 keeps E5's `READ` and `WRITE` gates green |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | a stateid is asserted on the `READ`, `WRITE`, `CLOSE` or `LOCK` that quotes it, never only on the `OPEN` that minted it; a sequence advance on the owner's next request; the holder on the `LOCK4denied` bytes a client decodes; T9.1's and T9.2's service rules again through the adapter in T9.6, T9.7, T9.8 and T9.9 |
@@ -151,7 +153,7 @@ cited by number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T9.3 to T9.11 | golden files cut from knfsd's captures where E2's areas hold the operation, by hand from RFC 8881 and RFC 7530 where they do not; real TCP over loopback through `core` (T9.11); the lease run out on `memory.New`'s own clock, never a sleep |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T9.1 to T9.9 | each decision of §4 leaves the marker it names; RFC 21 §5.2's `decision:` that rule 5 trusts the credential, at T9.9's principal-check mapping; RFC 21 §4.2's `decision:` on best-effort replay past the dedup window, at the owners' table (T9.7) |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer; a golden vector is cut from a capture or written from the RFC, never from the encoder under test |
-| rule 11, a symbol is exported only if an interface uses it | T9.2, T9.7 | exported: T9.2's `Refused` on `pkg/openstate`'s `Opens` view, which `internal/vfs` calls; T9.7's `protocol.Owners`, for `ops/v4` and `nfs.go`. Every handler and translation stays unexported in `ops/v4`; T9.1 adds no symbol |
+| rule 11, a symbol is exported only if an interface uses it | T9.1, T9.2, T9.7 | exported: T9.1's two marks, fields of `vfs.Call` and `vfs.LockReq` that `ops/v4` sets; T9.2's `Refused` on `pkg/openstate`'s `Opens` view, which `internal/vfs` calls; T9.7's `protocol.Owners`, for `ops/v4` and `nfs.go`. Every handler and translation stays unexported in `ops/v4` |
 | rule 12, each subtask creates only what it declares | all | each row lands with its handler, error rows, golden files and tests; the owners' table with its first consumers, the sequenced members of T9.6 and T9.4's `OPEN`, in T9.7; the want bits decoded with `OPEN` because they share `share_access`'s word, their grant mapping left to E10, which consumes them (D8) |
 | rule 13, translate, never decide | all | each handler makes the calls Appendix D names, at most one mutating; the NFSv4.0 `Record` read is read-only, and the `FreeState` after a `Revoked` answer is outside the rule (RFC 20 §4.3); who holds a stateid, which owner a lock stateid names, and whether a refused request advances its owner are the service's, added there by T9.1 and T9.2 rather than worked out in a handler |
 | rule 14, nothing deferred is lost | all | §1.2 names the owner of each part of an obligation this epic leaves out; D5's drain-role ceiling and D7's answer to a delegation reclaim after a client's restart name what would overturn them |
@@ -171,14 +173,15 @@ so that subtasks and tests can cite them.
 | R4 | `seqid` is the state's, held at the primary: an older one is `NFS4ERR_OLD_STATEID`, a newer one `NFS4ERR_BAD_STATEID`, and NFSv4.1's `seqid` 0 means current; every reply that changes an open or a lock state carries the `seqid` the service returned | MUST | RFC 21 §5.2 rule 3, §11.4 (`StateRef`), App. D (`OPEN_CONFIRM`, `OPEN_DOWNGRADE`, `LOCK`, `LOCKU`); RFC 14 §2.2 | T9.3, T9.4, T9.6, T9.8 |
 | R5 | A stateid of another client is `NFS4ERR_BAD_STATEID` (`ErrState` (`NotYours`)), checked against the session's client, or over NFSv4.0 against the client of the owner a sequenced operation names | MUST | RFC 21 §5.2 rule 4 | T9.1, T9.3, T9.9 |
 | R6 | Over NFSv4.0, the call's client is the one on the state its stateid resolves to; a delegation stateid, or any stateid of state created on a session, is `NFS4ERR_BAD_STATEID` whatever the principal and changes no state | MUST | RFC 21 §5.2 rule 5; RFC 14 §2.2; RFC 17 §3.0 (`Call`), §3.1 | T9.1, T9.6, T9.9 |
-| R7 | A v4.0 `OPEN`, `LOCKT` or `RELEASE_LOCKOWNER` naming the client ID or owner of a client `EXCHANGE_ID` confirmed is `NFS4ERR_STALE_CLIENTID`, decided from the minor version the client's `Record` holds, read before the service call | MUST | RFC 21 §5.2 rule 5, App. D (`OPEN`, `LOCK`, `RELEASE_LOCKOWNER`) | T9.4, T9.8 |
+| R7 | A v4.0 `OPEN`, `LOCKT` or `RELEASE_LOCKOWNER` naming the client ID or owner of a client `EXCHANGE_ID` confirmed is `NFS4ERR_STALE_CLIENTID`, decided from the minor version the client's `Record` holds, read before the service call | MUST | RFC 21 §5.2 rule 5, App. D (`OPEN`, `LOCKT`, `RELEASE_LOCKOWNER`) | T9.4, T9.8 |
 | R8 | The credential of a v4.0 `READ`, `WRITE` or `SETATTR` names the principal that made the open (`Open.Principal`), a lock stateid checked against the principal of its open; one naming any other is `ErrState` (`NotYours`), answered `NFS4ERR_ACCESS` there, and grants nothing; a `Sessioned` refusal is `NFS4ERR_BAD_STATEID` | MUST | RFC 21 §5.2 rule 5, §11.5 (`NotYours`), §12 (N12); RFC 14 §2.2 | T9.9 |
 | R9 | I/O under a delegation stateid is refused `NFS4ERR_BAD_STATEID` unless the delegation is held, unrevoked, by the session's client, and is then authorised afresh as anonymous I/O is; the adapter passes the delegation as the reference and decides neither | MUST | RFC 21 §5.2 rule 6, §12 (N12) | T9.9 |
 | R10 | The NFSv4.1 current stateid is resolved inside the compound, as the one the previous operation returned, and a member quoting it where none is set is `NFS4ERR_BAD_STATEID` | MUST | RFC 21 §5.2 (special stateids) | T9.3 |
 | R11 | A stateid quoted with a file handle that names another file than its record's is `NFS4ERR_BAD_STATEID` | MUST | RFC 21 §5.2; RFC 14 §2.11 | T9.3, T9.9 |
 | R12 | `TEST_STATEID` answers per stateid without changing state; `TEST_STATEID` and `FREE_STATEID` resolve each stateid by its shard and index, never through the current filehandle; a stateid of a removed or retired share is `NFS4ERR_BAD_STATEID` and never flagged revoked | MUST | RFC 21 §5.2, §11.5 (`ErrStale`), App. D (`TEST_STATEID`) | T9.10 |
 | R13 | `FREE_STATEID` frees any stateid in the client's revoked set, answering `NFS4_OK`, and a lock state holding no locks, alone and never its owner's other lock state; a lock state holding locks or a live open is `NFS4ERR_LOCKS_HELD`; one that resolves to nothing is `NFS4ERR_STALE_STATEID` or `NFS4ERR_BAD_STATEID`, never success | MUST | RFC 21 §5.2, §11.5 (`LocksHeld`), App. D (`FREE_STATEID`) | T9.10 |
-| R14 | An NFSv4.0 stateid an administrator revoked is answered `NFS4ERR_ADMIN_REVOKED` once, then the adapter calls `FreeState` for it on the client's behalf, so its next use is `NFS4ERR_BAD_STATEID` | MUST | RFC 21 §5.1, §11.5 (`Revoked`); RFC 20 §4.3 | T9.9 |
+| R14 | An NFSv4.0 stateid an administrator revoked is answered `NFS4ERR_ADMIN_REVOKED` once by any operation presenting it (`CLOSE`, `OPEN_CONFIRM`, `OPEN_DOWNGRADE`, `LOCK`, `LOCKU`, `READ`, `WRITE`, `SETATTR`), then the adapter calls `FreeState` for it on the client's behalf, so its next use is `NFS4ERR_BAD_STATEID` | MUST | RFC 21 §5.1, §11.5 (`Revoked`); RFC 20 §4.3 | T9.6, T9.8, T9.9 |
+| R59 | Over NFSv4.1 the opener's principal is checked beside rule 4 on every use of an open: a `READ`, `WRITE` or `SETATTR` under an open or lock stateid from another principal is `ErrState` (`NotYours`), answered `NFS4ERR_BAD_STATEID` as §11.5 answers every `NotYours` but NFSv4.0 I/O's, except from the machine principal of a client under `SP4_MACH_CRED`, which open state admits as the record's `Owner` | MUST | RFC 21 §5.2 rule 5, §11.5 (`NotYours`); RFC 14 §2.2 | T9.9 |
 | R15 | `ErrState` (`Revoked`) is answered by its cause: `NFS4ERR_ADMIN_REVOKED` for state an administrator revoked, `NFS4ERR_DELEG_REVOKED` for a delegation revoked at its recall deadline; an expired client's stateid is `NFS4ERR_BAD_STATEID`, never `NFS4ERR_STALE_CLIENTID`, and `NFS4ERR_EXPIRED` is never answered | MUST | RFC 21 §11.5 (`Revoked`, `StaleClient`), §5.1 | T9.3 |
 
 **Opens**
@@ -224,15 +227,16 @@ so that subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R40 | A call with no session that names no client (its `Call`'s `Client` zero) and presents a reference is judged as the client the reference's state belongs to, a revoked reference's included, so a row's `Resolve` sets `Client` only from an owner the request names; every other check, the session mark and the principal among them, is unchanged. Pending the RFC 17 §3.0 amendment D1 proposes | MUST | RFC 14 §2.2; RFC 17 §3.0 (`Call`); RFC 20 §4.4 | T9.1 |
-| R41 | A `Lock` or `Unlock` presenting a lock state's reference with a zero `LockOwner` acts for that lock state's owner, as `LOCK` with an existing lock owner and `LOCKU` name none. Pending the RFC 17 §3.1 amendment D1 proposes | MUST | RFC 14 §2.3; RFC 17 §3.1; RFC 21 §11.4 (`LockReq`) | T9.1 |
+| R40 | A call with no session that names no client, is marked to be judged by the holder (D1) and presents a reference is judged as the client the reference's state belongs to, a revoked reference's included, so a row's `Resolve` sets `Client` only from an owner the request names; every other check, the session mark and the principal among them, is unchanged. Pending the RFC 17 §3.0 amendment D1 proposes | MUST | RFC 14 §2.2; RFC 17 §3.0 (`Call`); RFC 20 §4.4 | T9.1 |
+| R41 | A `Lock` or `Unlock` presenting a lock state's reference and marked to act for its owner (D1) acts for that lock state's owner, as `LOCK` with an existing lock owner and `LOCKU` name none. Pending the RFC 17 §3.1 amendment D1 proposes | MUST | RFC 14 §2.3; RFC 17 §3.1; RFC 21 §11.4 (`LockReq`) | T9.1 |
+| R60 | Every NFSv4.0 stateful operation renews its client's lease, in the lease owner's memory and never by a write: the client the call names, or the holder a sessionless call is judged by (R40), so a busy client that sends no `RENEW` is not expired mid-I/O. E8 renews on `SEQUENCE` and `RENEW` only. Pending the user's answer on D1 | MUST | RFC 21 §5.1; RFC 14 §4.1 | T9.1 |
 
 **Translation, errors and the drain**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R42 | Every wire value this epic translates — a stateid, `share_access` and `share_deny`, a claim, a create mode, a `LOCK` into a `LockReq` — maps to one neutral value or a named refusal, never a default | invariant | RFC 21 §11, §11.6 (total mapping), §12 (N26) | T9.3, T9.4, T9.5, T9.8 |
-| R43 | The stateid ↔ `StateRef` codec, the `share_access` and `share_deny` translation and a `LOCK` into a `LockReq` are fuzzed, seeded with truncated, corrupt, older and newer bytes: no panic, and a valid neutral request or a refusal, never a request that decodes to other state | MUST | RFC 21 §11.6 (fuzz) | T9.3, T9.4, T9.8 |
+| R43 | The stateid ↔ `StateRef` codec, the `share_access` and `share_deny` translation and a `LOCK` into a `LockReq` are fuzzed, seeded with truncated, corrupt, older and newer bytes: no panic; a valid neutral request or a refusal, never a request that decodes to other state; and an accepted input round-trips (stateid → `StateRef` → stateid with the same `other` and `seqid`; `share_access` and `share_deny` → `Access`, `Deny` and want → the same wire words; `LOCK` → `LockReq` → the same type, range and owner) | MUST | RFC 21 §11.6 (fuzz) | T9.3, T9.4, T9.8 |
 | R44 | Golden files for stateids, `share_access` and `share_deny` pairs, claim types, `LOCK` types and `lock_owner4`, and for every §11.5 row this epic adds, for NFSv4.0 and NFSv4.1, map each wire value to its neutral one and back | MUST | RFC 21 §11.6 (golden vectors) | T9.3, T9.4, T9.8 |
 | R45 | Each open-state error these operations meet has its NFSv4 row as §11.5 answers it: `OldState`, `BadState`, `StaleState`, `NotYours` in both forms, `Revoked` in both causes, `BadSeqID`, `LocksHeld`, `ErrLocked` for `LOCK` and `LOCKT`, `ErrShareViolation` for `OPEN`, `NoGrace`, `NoReclaim`, `ReclaimConflict`, and `ErrRangeNotLocked`, which is never answered | MUST | RFC 21 §11.5; RFC 20 §4.5 | T9.3, T9.4, T9.8 |
 | R46 | `OPEN_CONFIRM` and `RELEASE_LOCKOWNER` are served under minor version 0 only, answered `NFS4ERR_NOTSUPP` under the minor versions that define and do not serve them; `TEST_STATEID` and `FREE_STATEID`, NFSv4.1 codes, sent under NFSv4.0 are `NFS4ERR_OP_ILLEGAL` | MUST | RFC 21 §11.5 (`core`'s own refusals), App. D | T9.6, T9.8, T9.10 |
@@ -253,10 +257,10 @@ so that subtasks and tests can cite them.
 | R56 | "§11.3 read-only marker" on one node, its `OPEN` for write step and the row whole, with E4's and E5's halves | test row | RFC 21 §13 | T9.11 |
 | R57 | "§5.5, §6.1 conflict holder"'s NFSv4 steps: a range held by an NLM host and by an SMB open, then `LOCK` and `LOCKT` over it, each `NFS4ERR_DENIED`, client ID 0, owner length 0 | test row | RFC 21 §13 | T9.8 |
 | R58 | RFC 19 §9's "§3.8 locks outside an open" through NFSv4's `LOCKT`: as bob on alice's 0600 file a read and a write test refused, on a 0644 file both answered, as alice on her own 0200 file a write test answered | test row | RFC 19 §9, §3.8; RFC 21 App. D (`LOCKT`) | T9.8 |
-| R59 | Over NFSv4.1 the opener's principal is checked beside rule 4 on every use of an open: a `READ`, `WRITE` or `SETATTR` under an open or lock stateid from another principal is `ErrState` (`NotYours`), answered `NFS4ERR_ACCESS`, except from the machine principal of a client under `SP4_MACH_CRED`, which open state admits as the record's `Owner` | MUST | RFC 21 §5.2 rule 5, §11.5 (`NotYours`); RFC 14 §2.2 | T9.9 |
 
-Not obligations of this epic: the lease, its renewal and `DESTROY_CLIENTID`'s rule (E8; N5 is
-E8's, R53 runs its lock step); RFC 14 §2.2's rule that one owner holds one open of a file, its
+Not obligations of this epic: the lease, its renewal by `SEQUENCE` and `RENEW`, and
+`DESTROY_CLIENTID`'s rule (E8; N5 is E8's, R53 runs its lock step), the renewal by NFSv4.0's
+stateful operations being this epic's (R60), as E8's document hands it here; RFC 14 §2.2's rule that one owner holds one open of a file, its
 `Abandon`, its access checks on I/O and its time suspension, and §2.10's waiter lifetime, which the
 service keeps and this epic exposes unchanged (R35 forbids an adapter timer); §5.3's recall of a
 delegation by a lock and the handle-cached deny break, which the service makes and E10 and E16 test
@@ -276,11 +280,16 @@ and §4.2 carry, which become markers (rule 9).
   `LOCK` with an existing lock owner and every `LOCKU`, on both minor versions, name no lock owner,
   and `Locks.Lock` and `Locks.Unlock` refuse one that is not the lock state's. Options: (a) the
   service judges a sessionless call naming no client by the reference's holder, a revoked
-  reference's included, and a zero `LockOwner` on a lock-state reference as that lock state's owner
-  (R40, R41), with RFC 17 §3.0's `Call` row and §3.1's `Lock` and `Unlock` comments amended, built in
-  T9.1, 2.5 man-days; (b) a read-only service call naming a reference's client and owner, which every
+  reference's included, and a lock-state reference with no `LockOwner` as that lock state's owner
+  (R40, R41), each asked for by an explicit mark rather than read from a zero value (`Call`'s
+  "judge by the holder" mark, which only an NFSv4.0 row's `Resolve` sets, and `LockReq`'s "the lock
+  state's owner" mark), so a `Resolve` that forgets to set `Client`, or a `lock_owner4` with empty
+  owner bytes, is judged as today and refused `NotYours` or `BadState`; and the service renews the
+  client it judges such a call by, or the one the call names, in the same step (R60), with RFC 17
+  §3.0's `Call` row and §3.1's `Lock` and `Unlock` comments amended, built in T9.1, 3.5 man-days; (b) a read-only service call naming a reference's client and owner, which every
   such `Resolve` makes first, a second round trip to the primary per operation and one more method
-  every implementation of `vfs.Service` carries; (c) an adapter table from each stateid it answered
+  every implementation of `vfs.Service` carries, and the lease of a stateid-only call's client
+  renewed by a further `Renew` per operation; (c) an adapter table from each stateid it answered
   to its client and owner, which a node loses on a restart and must never evict, and which another
   node lacks, against §5.2 rule 1's "without a table of its own". (a) is recommended: it keeps every
   check where the state is (the session mark and the principal), adds no call, and is what knfsd
@@ -303,27 +312,35 @@ and §4.2 carry, which become markers (rule 9).
   exempt list does not name; withdraw it if a client is seen looping on `NFS4ERR_BAD_SEQID` after a
   drain.
 - **D3. NFSv4.0 owners' last replies are keyed by the state the request names.** The table is per
-  node and bounded by RFC 24's connection-state budget (`Deps.Budgets`), beside the sessions. An
+  node and charged to RFC 24's connection-state budget (`Deps.Budgets`), beside the sessions, under a
+  ceiling of its own, a fixed share of that budget, so a client churning opens evicts only kept
+  replies and never crowds out a session. An
   `OPEN` names its open owner (client ID and owner bytes) and is kept under it; every other
   sequenced operation names only a stateid (`CLOSE`, `OPEN_CONFIRM`, `OPEN_DOWNGRADE`, `LOCKU`, a
   `LOCK` with an existing lock owner) or an open stateid and a new lock owner (a `LOCK` introducing
   one), and is kept under that stateid's `other`, since the adapter cannot name the owner behind a
-  stateid. An entry holds the seqid, a hash of the operation's arguments and its reply, and answers
-  only a request whose seqid and hash both match. Full, the table evicts the least recently used
-  entry, and a retransmission it no longer holds is judged by the service: `NFS4ERR_BAD_SEQID`, as
-  RFC 21 §4.2's `decision:` accepts past the retry window. Prior art: knfsd's `so_replay` on the
+  stateid. An entry holds the seqid, a hash of the operation's arguments, the principal that sent
+  it and its reply, and answers only a request whose seqid, hash and principal all match; any other
+  is a miss, judged by the service. A key holds one entry, which the owner's next sequenced request
+  replaces, so an open's `CLOSE` leaves one entry under its stateid until eviction. Full, the table
+  evicts the least recently used entry, an eviction being a named value a recorder can count once
+  rule 3's question settles (§1.2), and a retransmission it no longer holds is judged by the
+  service: `NFS4ERR_BAD_SEQID`, as RFC 21 §4.2's `decision:` accepts past the retry window. Prior art: knfsd's `so_replay` on the
   state owner, found through the stateid (from memory). The ceiling, in a `decision:` marker at the
   table: a request reusing the seqid of an owner's earlier request on an older state, after the
   owner moved on, is answered that state's kept reply rather than `NFS4ERR_BAD_SEQID`; it cannot be
   told from a late duplicate, which E3's duplicate-request cache answers the same way. This refines
-  the per-(client, owner) key the RFC 21 implementation plan's D8 gives, which a stateid-only
-  request cannot fill (§9, point 5).
+  the per-(client, owner) key the RFC 21 implementation plan's D8 gave, which a stateid-only
+  request cannot fill; this document's pull request amends the plan's D8 to match (§9, point 5).
 - **D4. A holder is an NFSv4 lock owner when it merges and holds its lock under an open.**
   `LOCK4denied` names an NFSv4 holder and blanks any other (R33), but `LockOwner` carries no
   protocol. RFC 14 §2.3 makes an SMB owner the one that stacks, and an NLM lock the one that names no
   open, so a holder whose `Stack` is false and whose lock's `Open` is set is NFSv4's, and only then
-  are its client ID and owner bytes encoded. A pure function of the `*LockedError`'s `Holder`, with
-  its table test over every protocol's owner. Prior art: none found; knfsd tells its own owners from
+  are its client ID and owner bytes encoded. The denied range's length is all ones when the held
+  range runs to 2⁶⁴ − 1, a whole-file NLM or SMB lock among them, and never computed as last byte
+  minus offset plus one there, which overflows to 0; otherwise that difference. A pure function of the `*LockedError`'s `Holder`, with
+  its table test over every protocol's owner, a whole-file holder and an SMB zero-length one among
+  them. Prior art: none found; knfsd tells its own owners from
   lockd's by their lock-manager operations (from memory). A `decision:` marker names the ceiling: a
   protocol whose locks merge and sit under an open, if one is ever served, would be read as NFSv4's;
   then `Lock` needs a protocol of its own, an RFC 14 change.
@@ -337,7 +354,9 @@ and §4.2 carry, which become markers (rule 9).
   writing back through an open stateid while its delegation is recalled on a draining node is
   refused and retries elsewhere, the recall waiting on it until the lease ends, and so is a
   `LOCK` it sends to keep a delegated lock local; withdraw it with a
-  service read of a reference's recall state if E10's drain test shows that wait (§9, point 3).
+  service read of a reference's recall state if a client is seen held up that way, in E16's
+  end-to-end drain rows or a capture; E10's drain test runs no `WRITE` or `LOCK` under an open
+  stateid during a recall, so it cannot show it (§9, point 3).
 - **D6. `CLOSE` answers the stateid RFC 8881 and RFC 7530 leave to the server.** The service's
   `Close` returns no sequence, since the open is gone. Over NFSv4.1 the reply carries the special
   invalid stateid, as RFC 8881 §18.2.4 suggests (from memory); over NFSv4.0 the presented `other`
@@ -358,17 +377,24 @@ and §4.2 carry, which become markers (rule 9).
   `OpenRequest.Want` at no grant; E10 maps the want value to a grant kind and answers the
   delegation. No marker: E10 consumes the value.
 - **D9. `Revoked` for opens and locks drops the client's kept replies.** The adapter holds nothing
-  pending on an open or a lock (an NFSv4 waiter polls), so the callbacks value's `Revoked`, for a
-  revocation that is not a grant's (E10's), drops the owners' table entries kept under the client's
-  open owners, which a released client never quotes again; entries kept under a stateid age out.
-  No marker.
+  pending on an open or a lock (an NFSv4 waiter polls). Of the callbacks value's reasons, this epic
+  handles `RevokedLeaseExpired`, whose `DropClient` drops the owners' table entries kept under the
+  client's open owners, which a released client never quotes again, and `RevokedShardState` and
+  `RevokedShare`, which end nothing here; `RevokedGrant` and `RevokedByAdmin` are E10's (T10.3,
+  its D11). Entries kept under a stateid age out: a stateid-only request names no client, and the
+  adapter keeps no table from a stateid to its client (§5.2 rule 1, D1 (c)), so `DropClient` cannot
+  find them; a retransmission that meets one after the expiry is answered the reply it was given,
+  as a late duplicate is (D3). No marker.
 - **D10. `ErrRangeNotLocked`'s row is the fault status.** RFC 21 §11.5 says it is never answered,
   since an NFSv4 owner merges, and names no status; RFC 20 §4.5 needs a row, so it is
   `NFS4ERR_SERVERFAULT`, as the RFC's other never-met rows are. A `decision:` marker at the row.
-- **D11. A `LOCK` or `LOCKT` of length 0, or whose range passes 2⁶⁴ − 1, is `NFS4ERR_INVAL`.** RFC
-  14 §2.3 holds a zero-length range for SMB, but RFC 8881 §18.10.4 and RFC 7530 §16.10.4 refuse a
-  zero length and an overflowing range for NFSv4 (from memory). The `LOCK` translation refuses both
-  before any call (R42). No marker: the protocol's rule.
+- **D11. A `LOCK`, `LOCKT` or `LOCKU` of length 0, or whose range passes 2⁶⁴ − 1, is
+  `NFS4ERR_INVAL`.** RFC 14 §2.3 holds a zero-length range for SMB, but RFC 8881 §18.10.3 and RFC
+  7530 §16.10.4 refuse a zero length, and a length other than all ones whose sum with the offset
+  exceeds 2⁶⁴ − 1, and give `LOCKT` and `LOCKU` the same ranges (§18.11, §18.12; §16.11, §16.12).
+  So offset 2⁶⁴ − 2 with length 1 is served, offset 2⁶⁴ − 1 with length 1 or 2 is refused, its sum
+  past the limit, and any offset with length all ones is served. One range translation, shared by
+  the three, refuses before any call (R42). No marker: the protocol's rule.
 
 ## 5. Target tree
 
@@ -387,43 +413,53 @@ internal/adapter/nfs/
   protocol/
     owners.go                  T9.7  NFSv4.0 owners' last replies (D3)
   callbacks.go                 T9.7  (E8's) Revoked for opens and locks (D9)
-pkg/vfs/vfstest/memory/
-  memory.go                    T9.7  Service.Clock
   wire/testdata/golden/
     rfc-nfs4-*.hex             T9.3, T9.4, T9.6, T9.8, T9.10  where no capture holds the operation or the row
+pkg/vfs/vfstest/memory/
+  memory.go                    T9.7  Service.Clock
+pkg/vfs/
+  types.go                     T9.1  the holder marks on Call and LockReq (D1)
 pkg/openstate/
   stateref.go, locks.go        T9.1  a sessionless reference judged by its holder; a lock state's owner
   opens.go                     T9.2  Opens.Refused
 internal/vfs/
-  opens.go, locks.go, clients.go   T9.1, T9.2  Call.Client zero passed through; Refused on every early refusal
+  opens.go, locks.go, clients.go   T9.1, T9.2  the holder marks passed through, the lease renewed; Refused on every early refusal
 ```
 
 ## 6. Subtasks
 
 ### T9.1 The service judges a reference by its holder
 
-**Subtask T9.1 estimate: 2.5 man-days.**
+**Subtask T9.1 estimate: 3.5 man-days.**
 
 - **Track:** C. **Depends on:** S2.
-- **Covers:** R5, R6, R40, R41.
+- **Covers:** R5, R6, R40, R41, R60.
 - **Deliverables:** in `pkg/openstate`, `mine` and the lock paths taking a sessionless `Caller`
-  with no client as the reference's holder's, the revoked set's for a revoked reference, and
-  `Locks.Lock` and `Locks.Unlock` taking a zero `LockOwner` on a lock-state reference as that lock
-  state's owner; `internal/vfs`'s `Lock`, `Unlock` and `FreeState` passing a zero client or owner
-  through; the doc comments of `vfs.Call.Client`, `LockReq.Owner` and `Unlock`'s owner saying so;
+  marked "judge by the holder" as the reference's holder's, the revoked set's for a revoked
+  reference, and `Locks.Lock` and `Locks.Unlock` taking a lock-state reference marked "the lock
+  state's owner" as that lock state's owner, neither mark read from a zero value (D1); the lease of
+  the client such a call is judged by, or names, renewed in the same step in the lease owner's
+  memory (R60); `internal/vfs`'s `Lock`, `Unlock`, `FreeState` and every other call taking a
+  reference passing the marks through; the doc comments of `vfs.Call`, `LockReq.Owner` and
+  `Unlock`'s owner saying so;
   RFC 17 §3.0's `Call` row and §3.1's `Lock` and `Unlock` comments in the same pull request (D1).
   Consumed by T9.6, T9.8 and T9.9, whose NFSv4.0 rows and `LOCKU` need it, and by E12's NFSv4.0
   `COPY`, if it is ever served there.
 - **Acceptance criteria:**
-  - A sessionless `Write` with no client through an NFSv4.0 open is served for its opener and
+  - A sessionless, marked `Write` with no client through an NFSv4.0 open is served for its opener and
     refused `NotYours` for any other principal; through an open created on a session, `NotYours`,
     `Sessioned`.
-  - `Unlock` with a zero owner on a lock-state reference releases that lock state's range; with an
+  - A marked `Unlock` on a lock-state reference releases that lock state's range; with an
     owner other than the lock state's, `BadState`, as today.
-  - A call with a session or a client still checks the client it names, unchanged.
+  - A call with a session or a client still checks the client it names, unchanged; a sessionless
+    call with a zero client and no mark is `NotYours`, as today.
+  - A sessionless `Write` judged by its holder, and an `Open` naming its client, each renew that
+    client's lease and write nothing.
 - **Tests:** in `pkg/openstate`'s and `internal/vfs`'s own tests, on their real stores: each
-  criterion above (catch a holder taken when the call named a client, R5, and the session mark
-  skipped for a zero client, R6); a zero-client `FreeState` of a revoked reference freeing it, and
+  criterion above (catch a mark read from a zero value, a holder taken when the call named a
+  client, R5, and the session mark skipped for a marked call, R6); `memory.New`'s clock advanced
+  most of a lease, one marked `Write`, then the rest of the lease, the client still live (catches a
+  stateful operation that renews nothing, R60); a marked `FreeState` of a revoked reference freeing it, and
   of another client's held reference, `NotYours` under a principal not its opener (catches the
   holder rule widening `FreeState`, R40). No test double.
 - **Rules:** rule 9: D1's `decision:` at `mine`; rule 13: the rule lives where the state is.
@@ -465,7 +501,7 @@ internal/vfs/
 
 **Subtask T9.3 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T5.5, T1.1.
+- **Track:** C. **Depends on:** S2, T5.5, T1.1.
 - **Covers:** R1, R2, R3, R4, R5, R10, R11, R15, R42, R43, R44, R45.
 - **Deliverables:** `stateid.go`, E5's function extended: an open, lock or delegation stateid
   decoded by `pkg/vfs`'s codec into an `OpenRef` carrying the current filehandle, the NFSv4.1
@@ -482,7 +518,8 @@ internal/vfs/
   - Under NFSv4.1, the current stateid after a member that set one is that stateid; after `SetFH`
     alone, `NFS4ERR_BAD_STATEID`. Under NFSv4.0 its bytes are an ordinary stateid.
   - Each row answers §11.5's status, `NotYours` `NFS4ERR_ACCESS` for a v4.0 `READ`, `WRITE` or
-    `SETATTR` unless `Sessioned`, and `NFS4ERR_BAD_STATEID` everywhere else.
+    `SETATTR` unless `Sessioned`, and `NFS4ERR_BAD_STATEID` everywhere else, NFSv4.1's I/O
+    included.
 - **Tests:** on `nfsharness` against `memory.New`: a `READ` under an open stateid minted through
   the service, then under the same `other` with an older and a newer `seqid` (catch a `seqid`
   dropped, R4), and a mangled shard byte (catches a stateid resolved through a table of the
@@ -525,12 +562,15 @@ internal/vfs/
   - The open stateid answered is the one a later `READ` quoting it reaches.
 - **Tests:** on `nfsharness` against `memory.New`: the access, deny and claim cases above against
   their golden files (catch a bit truncated, R17, delete denied, R16, a claim opened through the
-  wrong file, R18); an `OPEN` then a `READ` quoting the answered stateid, served (catches a stateid
+  wrong file, R18); over NFSv4.1, so that it needs no T9.1, an `OPEN` then a `READ` quoting the
+  answered stateid, served (catches a stateid
   minted but encoded wrong, R1, at the consumer); an `OPEN` for write of a file an SMB call marked
   read-only, and of a delete-pending file, `NFS4ERR_ACCESS` (R20); an SMB open denying write made
   through the service, then the `OPEN` for write, `NFS4ERR_SHARE_DENIED` (R21); `ErrDelay` of a
   break through `vfstest.Faults`, `NFS4ERR_DELAY` (R21); a `CLAIM_PREVIOUS` outside grace from a
-  client owing nothing, `NFS4ERR_NO_GRACE`, and `NoReclaim` and `ReclaimConflict` injected (R22); a
+  client owing nothing, `NFS4ERR_NO_GRACE`, the same for a `CLAIM_DELEGATE_PREV` and a
+  `CLAIM_DELEG_PREV_FH` (catches D7's mapping dropped), and `NoReclaim` and `ReclaimConflict`
+  injected (R22); a
   `CLAIM_PREVIOUS` reclaim granted in grace, after the shard's instance rose through `memory.New`,
   by a new open owner, answered without `OPEN4_RESULT_CONFIRM` (catches `Confirm` mapped for a
   reclaim, R18); a second `OPEN` of an unconfirmed owner at an out-of-order seqid, served and the
@@ -544,11 +584,11 @@ internal/vfs/
 
 **Subtask T9.5 estimate: 1.5 man-days.**
 
-- **Track:** C. **Depends on:** T9.4, T5.6.
+- **Track:** C. **Depends on:** T9.4, T5.5.
 - **Covers:** R19, R42.
 - **Deliverables:** `open.go`'s create: `UNCHECKED4`, `GUARDED4`, `EXCLUSIVE4` and
   `EXCLUSIVE4_1` into the `OpenRequest`'s disposition and `CreateArgs`, the verifier into
-  `CreateArgs.Verifier`, `createattrs` through E5's translation for `UNCHECKED4`, `GUARDED4` and
+  `CreateArgs.Verifier`, `createattrs` through E5's translation (T5.5's, which T5.6's `CREATE` uses) for `UNCHECKED4`, `GUARDED4` and
   `EXCLUSIVE4_1`, none for `EXCLUSIVE4`; the reply's `attrset`. Consumed by T9.11 and E6's T6.4,
   which adds `acl` and `mode_umask` to the same call.
 - **Acceptance criteria:**
@@ -566,14 +606,17 @@ internal/vfs/
 
 ### T9.6 `OPEN_CONFIRM`, `OPEN_DOWNGRADE` and `CLOSE`
 
-**Subtask T9.6 estimate: 2 man-days.**
+**Subtask T9.6 estimate: 2.5 man-days.**
 
 - **Track:** C. **Depends on:** T9.4, T9.1.
-- **Covers:** R4, R6, R23, R24, R25, R27, R46, R47, R48.
+- **Covers:** R4, R6, R14, R23, R24, R25, R27, R46, R47, R48.
 - **Deliverables:** `openconfirm.go` (`ConfirmOpen`, minor version 0 only), `opendowngrade.go`
   (`Downgrade`, the access and deny through T9.4's translation), `close.go` (`Close`, its reply's
   stateid by D6, its drain role a release); each with its seqid as `Seqs`, the stateid it answers
-  set as the current one. Consumed by T9.7, T9.11 and E16.
+  set as the current one; the NFSv4.0 helper every handler presenting a stateid calls after
+  `ErrState` (`Revoked`), answering `NFS4ERR_ADMIN_REVOKED` and then calling `FreeState` for that
+  reference on the client's behalf (R14), used here and by T9.8 and T9.9. Consumed by T9.7, T9.11
+  and E16.
 - **Acceptance criteria:**
   - `OPEN_CONFIRM` and `OPEN_DOWNGRADE` answer the `seqid` the service returned; `CLOSE` answers
     D6's stateid by minor version.
@@ -585,12 +628,16 @@ internal/vfs/
   read at the consumer, the next request quoting the answered stateid (catches a `seqid` not passed
   back, R4, R23); the unconfirmed-owner sequence (catches a request advancing its owner while
   unconfirmed, R24); `CLOSE` of a v4.0 open through T9.1's holder rule, served (catches the client
-  left unset, R6); `CLOSE` run while draining and on an expired credential (R47). No test double.
+  left unset, R6); `CLOSE` run while draining and on an expired credential (R47); a v4.0 `CLOSE`,
+  `OPEN_CONFIRM` and `OPEN_DOWNGRADE` of state an administrator revoked through the service,
+  `NFS4ERR_ADMIN_REVOKED` once, then `NFS4ERR_BAD_STATEID` (catches a revoked stateid flagged
+  forever, R14); a v4.0 `CLOSE` presenting `seqid` 0xFFFFFFFF answering 1 (catches D6's wrap
+  to 0, R27). No test double.
 - **Rules:** rule 9: D6's marker.
 
 ### T9.7 NFSv4.0 owners' last replies
 
-**Subtask T9.7 estimate: 2.5 man-days.**
+**Subtask T9.7 estimate: 3 man-days.**
 
 - **Track:** C. **Depends on:** T9.6, T9.2, T8.1.
 - **Covers:** R26, R27, R29.
@@ -598,19 +645,21 @@ internal/vfs/
   ```go
   // Owners is this node's NFSv4.0 owners' last replies (RFC 21 §4.2), keyed
   // by the state a sequenced request names (D3), charged to the
-  // connection-state budget and evicted least recently used when it is full.
+  // connection-state budget under its own ceiling and evicted least recently
+  // used when either is full.
   type Owners struct{ /* unexported */ }
-  func NewOwners(b *resources.Budget) *Owners
+  func NewOwners(b *resources.Budget, ceiling int64) *Owners
   // OwnerKey is an open owner (Client, Owner) or a stateid's Other.
   type OwnerKey struct {
   	Client vfs.ClientID
   	Owner  string
   	Other  [12]byte
   }
-  // Last is the reply kept for k at seqid with the arguments' hash sum.
-  func (o *Owners) Last(k OwnerKey, seqid uint32, sum uint64) (reply any, ok bool)
+  // Last is the reply kept for k at seqid with the arguments' hash sum, sent
+  // by principal p.
+  func (o *Owners) Last(k OwnerKey, seqid uint32, sum uint64, p vfs.Principal) (reply any, ok bool)
   // Keep replaces k's entry; size is the reply's encoded size, charged.
-  func (o *Owners) Keep(k OwnerKey, seqid uint32, sum uint64, reply any, size int)
+  func (o *Owners) Keep(k OwnerKey, seqid uint32, sum uint64, p vfs.Principal, reply any, size int)
   // DropClient drops every entry kept under an open owner of c.
   func (o *Owners) DropClient(c vfs.ClientID)
   ```
@@ -625,36 +674,43 @@ internal/vfs/
   - An `OPEN` refused `NFS4ERR_ACCESS` and retransmitted is answered `NFS4ERR_ACCESS` from the
     table; the owner's next `OPEN` at the next seqid is served.
   - An owner's request at seqid `0xFFFFFFFF`, then at 0, both served.
-  - With the budget spent, the oldest entry goes first, and its retransmission is
-    `NFS4ERR_BAD_SEQID`.
+  - With the budget or the table's own ceiling spent, the oldest entry goes first, its eviction a
+    named value, and its retransmission is `NFS4ERR_BAD_SEQID`; a session charged to the same
+    budget is still admitted.
+  - A retransmission at the kept seqid and hash from another principal is not answered from the
+    table.
 - **Tests:** on `nfsharness` against `memory.New`: each criterion above (catch a replay that calls
   the service again, R29, an exempt status kept, a refusal not advancing, R26 at the consumer of
   T9.2, and a wrap computed in the adapter, R27); the same seqid with other arguments, served by
   the service and refused `NFS4ERR_BAD_SEQID` (catches a replay by seqid alone); a `CLOSE`
-  retransmitted while the first is held in the service by `vfstest.Faults`, answered once alike
-  with one `Close` in the call record, by E3's duplicate-request cache or the table (catches a
-  duplicate run between the service's advance and `Keep`, R29); the table alone,
-  under `-race` with 64 owners, its mutex and block profiles reported (rule 4), and a lease expiry
-  through `memory.New`'s clock emptying the client's entries (catches `Revoked` ignored, D9).
+  retransmitted while the first is held in the service by `vfstest.Faults`, on `nfsharness`, which
+  runs no E3 duplicate-request cache, answered once alike with one `Close` in the call record by
+  the table (catches a duplicate run between the service's advance and `Keep`, R29); the table
+  alone, under `-race` with 64 owners, its mutex and block profiles reported (rule 4); and a lease
+  expiry through `memory.New`'s clock, after which the client's `OPEN` retransmitted is not answered
+  from the table but by the service, `NFS4ERR_STALE_CLIENTID` (catches `Revoked` ignored, D9).
   No test double: the budget is a real `resources.Budget` sized small.
 - **Rules:** rule 4: the profiles; rule 9: D3's `decision:` and RFC 21 §4.2's `decision:` at the
-  table; rule 11: `Owners` exported for `ops/v4` and `nfs.go`.
+  table, and a `ponytail:` naming its one node-wide mutex and `DropClient`'s scan of the whole
+  table, to be replaced by shards and a per-client index if the mutex profile or an expiry's
+  scan shows up; rule 11: `Owners` exported for `ops/v4` and `nfs.go`.
 
 ### T9.8 `LOCK`, `LOCKT`, `LOCKU` and `RELEASE_LOCKOWNER`
 
 **Subtask T9.8 estimate: 4 man-days.**
 
 - **Track:** C. **Depends on:** T9.7, T9.4, T9.1.
-- **Covers:** R4, R7, R22, R25, R28, R30, R31, R32, R33, R34, R35, R36, R37, R38, R39, R42, R43,
-  R44, R45, R46, R47, R48, R57, R58.
+- **Covers:** R4, R7, R14, R22, R25, R28, R30, R31, R32, R33, R34, R35, R36, R37, R38, R39, R42,
+  R43, R44, R45, R46, R47, R48, R57, R58.
 - **Deliverables:** `lock.go`: the `LOCK` translation into a `LockReq` (one range, D11's
   refusals, `READW_LT` and `WRITEW_LT` a poll, `reclaim`, `open_to_lock_owner4` as the open
   stateid, the lock owner and `Seqs{Owner, NewOwner}`, an existing lock owner as the lock
-  stateid, a zero owner and `Seqs{Owner}`), one `Lock`, its lock stateid answered and made
-  current, the drain role by D5; `LOCK4denied` from a `*LockedError`'s holder by D4, the
-  range's length from its last byte; `lockt.go` (`TestLock` on the current filehandle with no
-  open, over NFSv4.0 `Record` read first); `locku.go` (`Unlock` of one range with a zero owner,
-  the seqid answered, drain role a release); `releaselockowner.go` (`ReleaseLockOwner`, minor
+  stateid, marked for the lock state's owner (D1), and `Seqs{Owner}`), one `Lock`, its lock stateid answered and made
+  current, the drain role by D5; `LOCK4denied` from a `*LockedError`'s holder by D4, its
+  length by D4; `lockt.go` (`TestLock` on the current filehandle with no
+  open, over NFSv4.0 `Record` read first); `locku.go` (`Unlock` of one range, D11's refusals,
+  the lock state's owner marked (D1), the seqid answered, drain role a release); under NFSv4.0,
+  T9.6's revoked-state helper on `LOCK` and `LOCKU` (R14); `releaselockowner.go` (`ReleaseLockOwner`, minor
   version 0 only, `Record` first); `LOCK` and `LOCKU` through T9.7's table under NFSv4.0; the rows
   of `ErrLocked` (`NFS4ERR_DENIED`), `ErrRangeNotLocked` (D10), and `ErrDelay` on a lock;
   `FuzzLockReq`; golden files of `LOCK` types and `lock_owner4`. Consumed by T9.10, T9.11, E10's
@@ -675,7 +731,14 @@ internal/vfs/
   encoded, R33, R34, a `NFS4ERR_LOCK_RANGE`, R32, a waiter dropped or timed, R35, a gate only at
   `PUTFH`, R39); RFC 21 §13's "§5.5, §6.1 conflict holder" NFSv4 steps (R57); RFC 19 §9's lock row
   through `LOCKT` as bob and alice over `AUTH_SYS` (R38, R58); a length of all ones reaching 2⁶⁴−1
-  and a zero length `NFS4ERR_INVAL` (R30, D11); `ErrDelay` injected through `vfstest.Faults`,
+  from offset 0 and from an offset past 0, a zero length, offset 2⁶⁴−2 with length 1 served, and
+  offset 2⁶⁴−1 with length 1 and with length 2 `NFS4ERR_INVAL`, each for `LOCK`, `LOCKT` and `LOCKU`
+  (R30, D11); a `LOCKT` against a whole-file NLM lock, its `LOCK4denied` length all ones (catches
+  the length overflowing to 0, D4); `LOCK`, `LOCKT` and `LOCKU` on a share disabled through the
+  service after `PUTFH` and from a client outside the share's netgroup, each refused at the
+  operation (catches the gate held only where the handle entered the compound, RFC 20 §4.10);
+  a v4.0 `LOCK` and `LOCKU` of revoked lock state, `NFS4ERR_ADMIN_REVOKED` once then
+  `NFS4ERR_BAD_STATEID` (R14); `ErrDelay` injected through `vfstest.Faults`,
   `NFS4ERR_DELAY` and no waiter (R36); `RELEASE_LOCKOWNER` while a lock is held, then after
   `LOCKU` (R37); a `LOCK` reclaim answered by grace (R22); D4's holder function over every
   protocol's owner (catches an NLM holder named); `FuzzLockReq` (R43). No test double.
@@ -690,19 +753,19 @@ internal/vfs/
 - **Covers:** R5, R6, R8, R9, R11, R14, R47, R48, R51, R59.
 - **Deliverables:** E5's `read.go`, `write.go` and `setattr.go` taking T9.3's references, a
   lock stateid as its open's, a delegation stateid as the delegation (`SETATTR` through
-  `vfs.Target`'s open); `WRITE`'s per-request drain role by D5; under NFSv4.0, after `ErrState`
-  (`Revoked`) on any of them, one `FreeState` of that reference on the client's behalf. Consumed by
+  `vfs.Target`'s open); `WRITE`'s per-request drain role by D5; under NFSv4.0, T9.6's
+  revoked-state helper on each of them. Consumed by
   T9.11, E10's delegated writes and E12, whose `COPY` and `CLONE` take the same references.
 - **Acceptance criteria:**
   - Under an open or lock stateid, each operation is served for its opener; for another principal,
-    over NFSv4.0 and over NFSv4.1, `NFS4ERR_ACCESS` and the file unchanged; over NFSv4.1 from the
-    `Owner` of an `SP4_MACH_CRED` client, served.
+    over NFSv4.0 `NFS4ERR_ACCESS` and over NFSv4.1 `NFS4ERR_BAD_STATEID`, the file unchanged; over
+    NFSv4.1 from the `Owner` of an `SP4_MACH_CRED` client, served.
   - An NFSv4.1 client's open stateid and delegation stateid quoted over NFSv4.0 are
     `NFS4ERR_BAD_STATEID`, and its open and delegation still serve it after.
   - Under a delegation stateid an NFSv4.1 client holds, a `READ` by another of its principals who
     may read the file is served, and a `WRITE` by one who may not is `NFS4ERR_ACCESS`.
   - An NFSv4.0 stateid an administrator revoked is `NFS4ERR_ADMIN_REVOKED` once, then
-    `NFS4ERR_BAD_STATEID`.
+    `NFS4ERR_BAD_STATEID`, through T9.6's helper.
 - **Tests:** on `nfsharness` against `memory.New`, the delegation and the revoke made through the
   service: each criterion above, the file read back through the service (catch v4.0 I/O authorised
   by the stateid alone, R8, or an NFSv4.1 open used by any principal of its client, R59, a delegation bypassed or not authorised afresh, R6, R9, a revoked v4.0
@@ -766,7 +829,7 @@ internal/vfs/
 ```mermaid
 flowchart TD
   S2(["S2 NFS test foundations in CI"]):::sync
-  E5(["E5: T5.1 current filehandle, T5.5 stateid.go and SETATTR, T5.6 createattrs, T5.8 READ and WRITE"]):::sync
+  E5(["E5: T5.1 current filehandle, T5.5 stateid.go, SETATTR and createattrs, T5.8 READ and WRITE"]):::sync
   E8(["E8: T8.1 callbacks value, T8.2 Adapter bytes, T8.9 and T8.10 client IDs"]):::sync
   E3(["E3: T3.2 scripted client, T3.4 core's refusals"]):::sync
   E7(["E7: T7.1 Claimed callers"]):::sync
@@ -802,9 +865,9 @@ E12's `COPY` and `CLONE` can take open stateids.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T9.1, T9.2 | 5.5 | the user's answer on D1 | the service's half with its RFC 17 amendment, reviewed by the service's owners apart from the adapter |
-| 2 | T9.3, T9.4, T9.5 | 7.5 | E5's T5.1, T5.5 and T5.6, E8's T8.2 | stateids and `OPEN`, the path E10 and E6 wait on |
-| 3 | T9.6, T9.7 | 4.5 | PRs 1 and 2 | NFSv4.0's owners: confirm, downgrade, close and their replay |
+| 1 | T9.1, T9.2 | 6.5 | the user's answer on D1 | the service's half with its RFC 17 amendment, reviewed by the service's owners apart from the adapter |
+| 2 | T9.3, T9.4, T9.5 | 7.5 | E5's T5.1 and T5.5, E8's T8.2 | stateids and `OPEN`, the path E10 and E6 wait on |
+| 3 | T9.6, T9.7 | 5.5 | PRs 1 and 2, E8's T8.1 | NFSv4.0's owners: confirm, downgrade, close and their replay |
 | 4 | T9.8, T9.9, T9.10 | 7.5 | PR 3, E5's T5.8 | locks and the I/O and stateid operations over them |
 | 5 | T9.11 | 3.5 | PR 4, E3's T3.2, E7's T7.1, E8's T8.9 and T8.10, S4 | every row over loopback |
 
@@ -818,7 +881,10 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
    client or owner differs from the state's and the wire names neither. The options and the
    recommendation are D1's. The document is written for (a): T9.1 in the service and RFC 17's
    §3.0 `Call` row ("for NFSv4.0 … the client on the state its stateid resolves to") and §3.1's
-   `Lock` and `Unlock` comments amended to say the service reads them when the call names none.
+   `Lock` and `Unlock` comments amended to say the service reads them when the call's explicit mark
+   asks, and that the service renews that client's lease (R60). The renewal belongs to this point:
+   a stateid-only NFSv4.0 request names no client the adapter could renew, so under (a) the service
+   renews the holder it judges, and under (b) every such operation adds a `Renew` after its read.
    Under (b), T9.1 becomes the new read-only method and its conformance check, about the same
    figure, and every `Resolve` of those rows makes the call; under (c), T9.7's table grows an
    index the adapter must never evict, and §5.2 rule 1 needs its own amendment.
@@ -828,10 +894,11 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
    against the service's owners, this epic's T9.7 test landing red with it as a known failure in a
    cell that holds one. (a) is recommended: the wire rule is this epic's to meet, and no NFSv4.0
    client works long without it.
-3. **D5's ceiling, to confirm with E10.** E10's drain test runs Linux's compounds while a
-   delegation is recalled; if it shows a `WRITE` or `LOCK` under an open stateid held up by the drain, the
-   fix is an RFC 17 read of whether a reference's open is under a recall, which `Role` then calls,
-   a change outside this epic.
+3. **D5's ceiling.** E10's drain test runs Linux's compounds while a delegation is recalled, but
+   no `WRITE` or `LOCK` under an open stateid, so it cannot show D5's ceiling; E16's end-to-end
+   drain rows or a capture can. If either shows such a request held up by the drain, the fix is an
+   RFC 17 read of whether a reference's open is under a recall, which `Role` then calls, a change
+   outside this epic.
 4. **What this epic takes from E8, settled with its document.** T8.1's callbacks value in
    `nfs/callbacks.go`, reached through `v4.Handlers.Callbacks`, whose `Revoked` this epic fills for
    opens and locks (T9.7, D9); T8.2's `wire.DecodeClientRec`, whose `ClientRecNFS4.Minor` T9.4 and
@@ -840,11 +907,15 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
    `DESTROY_CLIENTID`, which T9.11's rows drive; and `NoGrace`'s row, which E8 leaves to T9.4. E8's
    registry runs on its own clock, so nothing of E8 exports `memory.New`'s: T9.7 adds
    `memory.Service.Clock` (one field, 0.25 man-days inside its figure), and E10's T10.7 uses it.
-5. **Where this document departs from the RFC 21 implementation plan, proposed as a plan edit in
-   this document's pull request.** D3 keys NFSv4.0 owners' last replies by the state a request
-   names, since a stateid-only request carries no owner; the plan's D8 says (client, owner). The
-   epic's figure is 28.5 man-days against the plan's 25: T9.1 and T9.2, the service's half, were
-   not foreseen (points 1 and 2).
+5. **Where this document departs from the RFC 21 implementation plan.** D3 keys NFSv4.0 owners'
+   last replies by the state a request names, since a stateid-only request carries no owner; this
+   pull request amends the plan's D8, which said (client, owner), and adds the renewal by NFSv4.0's
+   stateful operations (R60) to the plan's expected content for this epic, as E8's document hands it
+   here. The epic's figure is 30.5 man-days over 11 subtasks against the plan's 25 over 8: T9.1 and
+   T9.2, the service's half, 6.5 man-days, were not foreseen (points 1 and 2); the plan's content
+   itself, re-estimated subtask by subtask, is the other 9 subtasks at 24 man-days, the plan having
+   given one figure for the epic and none per subtask. The plan's figure is left as it is: the
+   epic's issues carry this one once they are made.
 6. **Interfaces taken from E1, E3, E5 and E7, settled with their documents.** E1's `State.Cur`
    with its `Stateid` and `HasStateid`, `SetFH` clearing the stateid, and `SAVEFH` copying it
    (E1's D2); E5's `stateid.go`, whose D3 names this epic as its owner, `createattrs` (T5.6) and
