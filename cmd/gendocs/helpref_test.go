@@ -439,7 +439,7 @@ func TestCheckerAcceptsAndRejects(t *testing.T) {
 		"`dfsctl -o json share list`",
 		"`dfsctl --output json share list`",
 		"`dfs start`",
-		"`dfsctl share show <share>`",
+		"`dfsctl share get <share>`",
 		"dfsctl is the REST client for a running dfs instance",
 		"run `dfsctl login` first",
 	}

@@ -30,6 +30,10 @@ func TestMountLine(t *testing.T) {
 			"mount -t cifs -o vers=2.1,port=1445,username=alice //dfs.example/archive /mnt/a"},
 		{"smb on macOS", mount{GOOS: "darwin", Protocol: "smb", Host: "dfs.example", Port: 1445, Share: "archive", Point: "/mnt/a", User: "a b"},
 			"mount_smbfs smb://a%20b@dfs.example:1445/archive /mnt/a"},
+		{"smb on linux under sudo", mount{GOOS: "linux", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "/mnt/a", User: "alice", SudoUser: "al", UID: "501", GID: "20"},
+			"mount -t cifs -o vers=2.1,port=445,username=alice,uid=501,gid=20 //dfs.example/archive /mnt/a"},
+		{"smb on macOS under sudo", mount{GOOS: "darwin", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "/mnt/a", User: "alice", SudoUser: "al", UID: "501", GID: "20"},
+			"sudo -u al mount_smbfs smb://alice@dfs.example:445/archive /mnt/a"},
 		{"smb on Windows", mount{GOOS: "windows", Protocol: "smb", Host: "dfs.example", Port: 1445, Share: "archive", Point: "Z:", User: "alice"},
 			`net use Z: \\dfs.example\archive /user:alice * /TCPPORT:1445`},
 		{"smb on Windows on 445", mount{GOOS: "windows", Protocol: "smb", Host: "dfs.example", Port: 445, Share: "archive", Point: "Z:", User: "alice"},
@@ -64,10 +68,12 @@ func TestMountLineRefuses(t *testing.T) {
 // The port a mount falls back to is the adapter's own default, which dfsctl
 // may not link.
 func TestDefaultPortsAreTheAdapters(t *testing.T) {
-	if got, want := defaultPorts["nfs"], int(settings.DefaultNFS().Port); got != want {
+	if got, _ := defaultPort("nfs"); got != int(settings.DefaultNFS().Port) {
+		want := settings.DefaultNFS().Port
 		t.Errorf("NFS default port: got %d, want the adapter's %d", got, want)
 	}
-	if got, want := defaultPorts["smb"], int(settings.DefaultSMB().Port); got != want {
+	if got, _ := defaultPort("smb"); got != int(settings.DefaultSMB().Port) {
+		want := settings.DefaultSMB().Port
 		t.Errorf("SMB default port: got %d, want the adapter's %d", got, want)
 	}
 }
