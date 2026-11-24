@@ -561,7 +561,7 @@ average chunk size. A hard-coded mask therefore pins the average whatever `Targe
 is set to. An implementation **MUST** compute the mask from `Target`, and
 **SHOULD** assert the two agree when it starts up.
 
-**The mean includes the skip.** No boundary is tested in the first `Min` bytes,
+**The mean includes the skip.** No boundary is tested in the first `Min` − 1 bytes,
 so a chunk's length is `Min` plus the search that follows. The mask **MUST** be
 sized so that this whole mean — skip included — is `Target`, which puts the
 search's own expected length near `Target − Min`, not `Target`. A mask sized to
@@ -598,8 +598,8 @@ a definition:
 
 ### 3.3 Why a large minimum smothers the search
 
-A minimum is enforced by simply not looking for a boundary until `Min` bytes have
-gone by. If `Min` is much larger than `Target`, then the moment looking starts, a
+A minimum is enforced by simply not testing for a boundary before the chunk's byte at
+index `Min` − 1, so no chunk is shorter than `Min` ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)). If `Min` is much larger than `Target`, then the moment looking starts, a
 boundary turns up almost immediately — because the test was tuned to fire about
 every `Target` bytes.
 
