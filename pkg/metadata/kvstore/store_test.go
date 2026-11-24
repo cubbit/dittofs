@@ -153,6 +153,17 @@ func TestOpenRefusesFormat(t *testing.T) {
 	}
 }
 
+// A format record that does not decode is a damaged store, refused as such:
+// never ErrFormat, which sends the operator to a newer binary.
+func TestOpenRefusesAnUndecodableFormatRecord(t *testing.T) {
+	db := memKV(t)
+	set(t, db, keys.Format, []byte{0xff})
+	_, err := Open(context.Background(), db)
+	if !errors.Is(err, ErrFormatRecord) || errors.Is(err, ErrFormat) {
+		t.Fatalf("Open over an undecodable format record: %v, want ErrFormatRecord and not ErrFormat", err)
+	}
+}
+
 func TestFormatGolden(t *testing.T) {
 	if got := encodeFormat(format{Version: 1, Folds: []uint32{1}}); string(got) != "\x01"+"\x00\x00\x00\x00\x00\x00\x00\x01"+"\x01"+"\x00\x00\x00\x01" {
 		t.Errorf("format record %x", got)
