@@ -352,7 +352,9 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   `cmdutil.Wait`; `operation get|list|wait|cancel`; `-o table|json|yaml` through
   `internal/cli/output`; `clisuite` with its runner and its first rows (D8); a pause hook in
   `cmdutil.Update`, between its read and its write, set per instance from `export_test.go`.
-  `clisuite.Run(t, func(*testing.T) Runner, Server)` gives each row a runner of its own over a
+  `clisuite.Run(t, func(*testing.T) Runner, Server, noun)` runs the rows of one noun, a row's name
+  starting with it, so each noun's package tests its own rows, or every row with `noun` empty, as
+  E7's child process does; it gives each row a runner of its own over a
   credentials file of its own, signed in to `Server`'s address as its admin account, so a row that
   ends a session ends none of another's; `Server.Harness` is nil for a server the test did not start, which skips a harness-only
   row, and `Server.Settle` waits for an operation to end, advancing the injected clock only when
