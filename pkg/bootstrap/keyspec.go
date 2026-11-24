@@ -639,6 +639,7 @@ var settingKeys = []string{
 	"adapters.nfs.versions",
 	"adapters.<protocol>.disabled_operations",
 	"adapters.<protocol>.drain_timeout",
+	"adapters.<protocol>.enabled",
 	"adapters.<protocol>.handshake_timeout",
 	"adapters.<protocol>.idle_timeout",
 	"adapters.<protocol>.port",
