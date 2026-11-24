@@ -3,8 +3,11 @@
 package conformance
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest"
@@ -23,6 +26,10 @@ func FuzzModelRepack(f *testing.F) {
 	for _, seed := range []uint64{7, 11, 21, 37} {
 		f.Add(encodeSteps(model.GenerateWithin(seed, 16, model.RepackOps), model.RepackOps))
 	}
+	// This entry is the decoder's maxFuzzSteps slice of the seed-3 shape:
+	// it steers the fuzzer into the neighbourhood of the heavy draw, whose
+	// full 200-step length the decoder's cap cannot reach and
+	// TestModel_RepackHeavyDraws in this file runs whole.
 	f.Add(encodeSteps(model.GenerateWithin(3, 64, model.RepackOps), model.RepackOps))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		prof.Watch(t, prof.Options{})
@@ -55,12 +62,13 @@ func losingCrashes(steps []model.Step) []model.Step {
 
 // forgetSeeds is how many fixed seeds TestModel_RepackAndForget draws.
 //
-// decision: the seeds are the first twenty, not every one up to a larger
-// bound, because a few draws (22 and 24 among them) drive a repack pass to a
-// segment count at which its registry scans no longer return in test time,
-// with or without a forget in the draw. The twenty hold no such draw; widen
-// the count once the pass's scans stop growing with the ledger.
-const forgetSeeds = 20
+// decision: the count is the whole sweep of the seeds' draws, and no draw is
+// left out of it for running long, so a draw that ever becomes unbounded
+// fails the suite by its own run instead of hiding behind a quietly
+// shortened count. Overturned only by a draw whose bounded run costs more
+// than the suite's budget: then the draw moves under a deadline of its own,
+// never out of the count.
+const forgetSeeds = 24
 
 // forgetSteps is the length of each of those draws.
 const forgetSteps = 64
@@ -76,6 +84,40 @@ func TestModel_RepackAndForget(t *testing.T) {
 		steps := losingCrashes(model.GenerateWithin(seed, forgetSteps, model.ForgetOps))
 		model.CheckDataPath(t, fmt.Sprintf("forget-seed-%d.txt", seed), steps, open,
 			fmt.Sprintf("drawn from seed %d, %d steps", seed, forgetSteps))
+	}
+}
+
+// TestModel_RepackHeavyDraws runs the one fixed draw that outgrows the fuzz
+// corpus at its full length: 200 steps from seed 3, past the decoder's
+// maxFuzzSteps cap, so the draw with the most repack work the generator makes
+// is compared against the reference model whole. The run carries its own
+// deadline of a minute, well over a green run's length: a pass that stops
+// answering its budget aborts on the context's error between its units, so an
+// unbounded draw fails as this test instead of as the package at its suite
+// timeout.
+func TestModel_RepackHeavyDraws(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	open, _ := journaltest.DataPathTargets(t)
+	tgt, done, err := open()
+	if err != nil {
+		t.Fatalf("opening the journal for the heavy repack draw: %v", err)
+	}
+	defer done()
+	steps := losingCrashes(model.GenerateWithin(3, 200, model.RepackOps))
+	// The bounded wait is the assertion: no clock can be injected into the
+	// target's repack, and a draw that never finishes must fail this test
+	// rather than the package's whole run.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := model.RunDataPath(ctx, tgt, steps); err != nil {
+		// A divergence pays the second run the shrink needs — covered by no
+		// deadline, for its steps answer in seconds — while the deadline keeps
+		// a draw that never finishes failing this test.
+		if errors.Is(err, model.ErrDiverged) {
+			model.CheckDataPath(t, "repack-heavy-seed-3.txt", steps, open, "drawn from seed 3, 200 steps")
+		}
+		t.Fatalf("the 200-step heavy repack draw: %v", err)
 	}
 }
 

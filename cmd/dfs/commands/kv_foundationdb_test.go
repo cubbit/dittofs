@@ -104,6 +104,132 @@ func TestOpenKVGivesUpOnAnUnreachableCluster(t *testing.T) {
 	}
 }
 
+// dfs start over a cluster no one answers: nothing listens on port 1, so the
+// open would wait out its 30 s bound. A v1 layout on the device is refused
+// before the store opens, and a SIGTERM as the open begins stops the start,
+// exiting zero; both answer well inside that bound, with no cluster. The
+// signal lands before the backend's open is called, which then runs its
+// first read under a context already ended: nothing marks the moment the
+// open starts waiting on the cluster, so the row cannot land it later.
+func TestStartBeforeTheClusterAnswers(t *testing.T) {
+	for _, r := range []struct {
+		name string
+		// v1 plants a pre-journal layout on the device.
+		v1 bool
+		// signalAt is the stage at which the start delivers SIGTERM to
+		// itself, "" for none.
+		signalAt string
+		// want is the prefix of the command's error, "" for a nil answer.
+		want string
+	}{
+		{name: "a v1 layout is refused before the open", v1: true, want: "the start check: refusing to start: "},
+		{name: "a SIGTERM as the open begins", signalAt: stageOpen},
+	} {
+		t.Run(r.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "fdb.cluster"), []byte("test:test@127.0.0.1:1\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			device := filepath.Join(dir, "device")
+			if r.v1 {
+				blobs := filepath.Join(device, "shares", "s1", "blobs")
+				if err := os.MkdirAll(blobs, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(blobs, "f1"), []byte("v1 data"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			config := bootstrapFile{backend: "foundationdb", journal: device, node: nodeUUID}.write(t, dir)
+			var opened atomic.Int32
+			ctx := context.WithValue(t.Context(), kvKey{}, func(inner kv.KV) kv.KV {
+				opened.Add(1)
+				return inner
+			})
+			if r.signalAt != "" {
+				ctx = context.WithValue(ctx, stageKey{}, sigtermAt(t, r.signalAt))
+			}
+			root := NewRoot()
+			root.SetOut(io.Discard)
+			root.SetArgs([]string{"start", "--config", config})
+			done := make(chan error, 1)
+			go func() { done <- root.ExecuteContext(ctx) }()
+			var err error
+			select {
+			case err = <-done:
+			// A bounded wait is the assertion: short of the open's own bound,
+			// so a start that waits for the cluster fails here.
+			case <-time.After(20 * time.Second):
+				t.Fatalf("dfs start over an unreachable cluster did not return within 20s, want an answer before the open's 30s bound")
+			}
+			switch {
+			case r.want == "" && err != nil:
+				t.Fatalf("dfs start over an unreachable cluster: %v, want nil", err)
+			case r.want != "" && (err == nil || !strings.HasPrefix(err.Error(), r.want)):
+				t.Fatalf("dfs start over an unreachable cluster: %v, want an error starting %q", err, r.want)
+			}
+			if n := opened.Load(); n != 0 {
+				t.Fatalf("dfs start over an unreachable cluster opened the store %d times, want never", n)
+			}
+		})
+	}
+}
+
+// sigtermAt is a stageKey hook that sends the test process SIGTERM at stage
+// name and returns once runStart's signal context ended. runStart's handler
+// is installed by then, so the SIGTERM ends its context rather than the test
+// process.
+func sigtermAt(t *testing.T, name string) func(string, context.Context) {
+	return func(at string, signal context.Context) {
+		if at != name {
+			return
+		}
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			t.Errorf("SIGTERM to itself: %v", err)
+			return
+		}
+		<-signal.Done()
+	}
+}
+
+// sigtermInView sends the test process SIGTERM inside its first View, once
+// the backend's transaction is open, and runs fn only once a read through
+// that transaction fails: the read the start check makes then runs canceled.
+type sigtermInView struct {
+	kv.KV
+	t    *testing.T
+	once atomic.Bool
+}
+
+func (s *sigtermInView) View(ctx context.Context, fn func(kv.Reader) error) error {
+	if !s.once.CompareAndSwap(false, true) {
+		return s.KV.View(ctx, fn)
+	}
+	return s.KV.View(ctx, func(r kv.Reader) error {
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			s.t.Errorf("SIGTERM to itself: %v", err)
+			return err
+		}
+		<-ctx.Done()
+		// The backend cancels its transaction from a goroutine of its own:
+		// poll the condition itself, a read that fails, with a generous
+		// deadline as the backstop.
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			if _, err := r.Get([]byte("probe")); err != nil && !errors.Is(err, kv.ErrNotFound) {
+				break
+			}
+			if time.Now().After(deadline) {
+				s.t.Errorf("a read in a View whose context ended still answered 20s later, want it to fail once the backend canceled its transaction")
+				return errors.New("the backend never canceled the read")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		return fn(r)
+	})
+}
+
 // openKV opens the cluster a FoundationDB bootstrap names, not Badger.
 func TestOpenKVOpensFoundationDB(t *testing.T) {
 	// The open writes the node's clock ceiling: the test owns the cluster,
@@ -155,13 +281,20 @@ func TestStartClosesTheStoreOnFoundationDB(t *testing.T) {
 		// signalAt is the stage at which the start delivers SIGTERM to
 		// itself, "" for none.
 		signalAt string
+		// signalInRead delivers SIGTERM inside the start check's store
+		// read instead, so the read the backend answers runs canceled.
+		signalInRead bool
 		// want is the prefix of the command's error, "" for a nil answer.
 		want string
 	}{
 		{name: "the check refuses", want: "the start check: the node is not initialised"},
-		// The signal lands before the check reads the store, so the start
-		// ends on it and exits zero, with the store it opened closed.
-		{name: "a SIGTERM during the check", signalAt: stagePreflight},
+		// The signal lands once the check opened the store and before it
+		// reads it, so the start ends on it and exits zero, with the store
+		// it opened closed.
+		{name: "a SIGTERM during the check", signalAt: stageOpened},
+		// The read fails with FoundationDB's own error, which the check
+		// answers as the signal's: the start exits zero.
+		{name: "a SIGTERM during the check's store read", signalInRead: true},
 	} {
 		t.Run(r.name, func(t *testing.T) {
 			t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -176,21 +309,14 @@ func TestStartClosesTheStoreOnFoundationDB(t *testing.T) {
 			ctx := context.WithValue(t.Context(), kvKey{}, func(inner kv.KV) kv.KV {
 				c := &closeRecorder{KV: inner}
 				opened = append(opened, c)
+				if r.signalInRead {
+					// The recorder stays outermost so it still sees Close.
+					c.KV = &sigtermInView{KV: inner, t: t}
+				}
 				return c
 			})
 			if r.signalAt != "" {
-				// runStart's signal handler is installed by then, so the
-				// SIGTERM ends its context rather than the test process.
-				ctx = context.WithValue(ctx, stageKey{}, func(name string, signal context.Context) {
-					if name != r.signalAt {
-						return
-					}
-					if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-						t.Errorf("SIGTERM to itself: %v", err)
-						return
-					}
-					<-signal.Done()
-				})
+				ctx = context.WithValue(ctx, stageKey{}, sigtermAt(t, r.signalAt))
 			}
 			root := NewRoot()
 			root.SetOut(io.Discard)
