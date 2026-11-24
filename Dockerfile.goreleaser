@@ -48,10 +48,9 @@ EXPOSE 12049/tcp 12445/tcp 8080/tcp 9090/tcp 5353/udp 3702/udp 5357/tcp
 # Volume mounts:
 # - /data/metadata: Metadata store (BadgerDB, etc.)
 # - /data/blocks: Journal root (the only copy of bytes not yet offloaded)
-# - /data/cache, /data/state: not read by default. Nothing in the image's
-#   configuration points at them (the state directory resolves under
-#   $XDG_STATE_HOME or $HOME), so they hold data only if the config names a path
-#   inside them.
+# - /data/state: the state directory (XDG_STATE_HOME below points at it).
+# - /data/cache: not read by default. Nothing in the image's configuration
+#   points at it, so it holds data only if the config names a path inside it.
 # - /config: Configuration file location
 VOLUME ["/data/metadata", "/data/blocks", "/data/cache", "/data/state", "/config"]
 
@@ -60,6 +59,10 @@ VOLUME ["/data/metadata", "/data/blocks", "/data/cache", "/data/state", "/config
 # localhost, so it is not verified.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider --no-check-certificate https://localhost:8080/health/live || exit 1
+
+# The state directory resolves under $STATE_DIRECTORY, else $XDG_STATE_HOME/dittofs,
+# else $HOME/.local/state; $HOME is /app, so point it at the volume.
+ENV XDG_STATE_HOME=/data/state
 
 ENTRYPOINT ["/app/dfs"]
 CMD ["start", "--config", "/config/config.yaml"]

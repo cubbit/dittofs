@@ -75,8 +75,8 @@ EXPOSE 12049/tcp 12445/tcp 8080/tcp 9090/tcp 5353/udp 3702/udp 5357/tcp
 # Volume mounts:
 # - /data/metadata: Metadata store (BadgerDB, etc.)
 # - /data/blocks: Journal root (the only copy of bytes not yet offloaded)
-# - /data/cache: Cache and WAL directory
-# - /data/state: Control plane database
+# - /data/cache: not read by default; holds data only if the config names a path inside it
+# - /data/state: state directory, used when XDG_STATE_HOME points at it
 # - /config: Configuration file location
 VOLUME ["/data/metadata", "/data/blocks", "/data/cache", "/data/state", "/config"]
 
