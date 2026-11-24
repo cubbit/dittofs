@@ -3,11 +3,9 @@ package commands
 import (
 	"errors"
 	"fmt"
-	"net/http"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
-	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/spf13/cobra"
 )
 
@@ -54,12 +52,15 @@ func runLogout(cmd *cobra.Command, env cmdutil.Env) error {
 		if err != nil {
 			return err
 		}
-		var p *apiv1.Problem
+		if target.Name != name || !cmdutil.SameTarget(target.Dialled, *cur) || target.Dialled.AccessToken != cur.AccessToken {
+			return fmt.Errorf("%s: context %q changed meanwhile; run it again", cmd.CommandPath(), name)
+		}
 		err = c.SignOut(cmd.Context())
 		switch {
 		case err == nil:
-		case errors.As(err, &p) && p.Status == http.StatusUnauthorized:
-			// The server knows the session no more: it is already ended.
+		case errors.Is(err, credentials.ErrSessionEnded):
+			// The sign-out was refused 401 and so was the refresh of its
+			// session: the server knows the session no more.
 		default:
 			return fmt.Errorf("%s: the server did not end the session: %w; the context keeps its tokens, so run 'dfsctl logout' again", cmd.CommandPath(), err)
 		}

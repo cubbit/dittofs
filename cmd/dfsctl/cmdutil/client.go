@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/cli/credentials"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -135,6 +137,9 @@ func (s *fileTokens) Refresh(ctx context.Context, failed string) (string, error)
 		defer cancel()
 		tk, err := s.c.Refresh(rctx, cur.RefreshToken)
 		if err != nil {
+			if p := (*apiv1.Problem)(nil); errors.As(err, &p) && p.Status == http.StatusUnauthorized {
+				err = fmt.Errorf("%w: %w", credentials.ErrSessionEnded, err)
+			}
 			return fmt.Errorf("context %q: refreshing the session: %w; run 'dfsctl login' again", name, err)
 		}
 		s.set(tk.Access)

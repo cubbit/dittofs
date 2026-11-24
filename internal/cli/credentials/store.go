@@ -31,6 +31,10 @@ var (
 	ErrContextNotFound = errors.New("context not found")
 	// ErrNotLoggedIn indicates no valid credentials exist.
 	ErrNotLoggedIn = errors.New("not logged in - run 'dfsctl login' first")
+	// ErrSessionEnded is in the error of a refresh the server refused 401:
+	// the session the context held is over. A refresh failing in any other
+	// way says nothing about the session.
+	ErrSessionEnded = errors.New("the server ended the session")
 )
 
 // Context is one server and the account signed in to it.

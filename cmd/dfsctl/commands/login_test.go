@@ -445,6 +445,76 @@ func TestLogoutKeepsTheSessionWhenTheServerIsUnreachable(t *testing.T) {
 	}
 }
 
+// logout of a session the server already ended, by a logout from another
+// copy of the credentials file, clears the context's tokens and succeeds:
+// the sign-out and its refresh are both refused 401.
+func TestLogoutOfASessionAlreadyEnded(t *testing.T) {
+	n := startNode(t)
+	n.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	env := newEnv(t, "", false)
+	n.login(t, env, "pat", "pat's password")
+	other := newEnv(t, "", false)
+	b, err := os.ReadFile(env.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(other.ConfigPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other.ConfigPath, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, other, "logout")
+	if _, errOut, err := dfsctl(env, "logout"); err != nil || errOut != "" {
+		t.Fatalf("logout of a session already ended: %v, stderr %q, want it to succeed", err, errOut)
+	}
+	if c := stored(t, env, "default"); c.AccessToken != "" || c.RefreshToken != "" {
+		t.Errorf("the context after logout of an ended session: %+v, want no tokens", c)
+	}
+}
+
+// logout keeps the context's tokens when its sign-out is refused 401 and
+// the refresh that follows fails for another reason: only a refresh refused
+// 401 shows the session is over.
+func TestLogoutKeepsTheSessionWhenItsRefreshFails(t *testing.T) {
+	n := startNode(t)
+	n.h.Account(t, "pat", "pat's password", entity.RoleViewer)
+	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", n.socket)
+	}}
+	t.Cleanup(tr.CloseIdleConnections)
+	proxy := &httputil.ReverseProxy{Transport: tr, Rewrite: func(r *httputil.ProxyRequest) {
+		r.Out.URL.Scheme, r.Out.URL.Host = "http", "node"
+	}}
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/auth/refresh" {
+			http.Error(w, "the refresh fails", http.StatusInternalServerError)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(front.Close)
+	env := newEnv(t, "", false)
+	mustRun(t, env, "login", "--server", front.URL, "-u", "pat", "--password-file", file(t, "pw", "pat's password"))
+	err := credentials.Update(t.Context(), env.ConfigPath, nil, func(s *credentials.Store) error {
+		c, err := s.GetContext("default")
+		if err != nil {
+			return err
+		}
+		return s.SetTokens("default", "an access token the server refuses", c.RefreshToken)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := stored(t, env, "default")
+	if _, _, err := dfsctl(env, "logout"); err == nil || !strings.Contains(err.Error(), "did not end the session") {
+		t.Errorf("logout refused 401 with its refresh failing 500: %v, want it to fail saying the session was not ended", err)
+	}
+	if after := stored(t, env, "default"); after != before {
+		t.Errorf("the context after the failed sign-out: %+v, want it kept %+v", after, before)
+	}
+}
+
 // logout keeps a session signed in again to the same server while its
 // sign-out was answered: the access token, not only the server and account,
 // must still be the one signed out.
