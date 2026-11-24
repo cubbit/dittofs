@@ -491,7 +491,9 @@ A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can
   quota): absent, it writes the zero spec the change fills in with `If-None-Match: *`, and a `412`
   there refuses with nothing written. `cmdutil.ByName` is `Resolve`'s name lookup, and
   `cmdutil.Principal` resolves `--user`, `--group` or `--directory`, the last through
-  `resolve-principal`, waited on (D12). `quota` with no principal flag is the share's own quota;
+  `resolve-principal`, waited on (D12), or takes `--principal-id` as it is, so a grant
+  `grant list` prints can be removed with no resolution, which would mint a principal; a
+  principal flag given empty is refused. `quota` with no principal flag is the share's own quota;
   `quota remove` puts all-zero limits, which the server deletes. `share export-policy set` writes
   by `PUT`, `update` by `PATCH`. `share mount` reads the installation's adapter record, not a node
   override, since dfsctl does not know which node it mounts from, falling back to the adapter's
