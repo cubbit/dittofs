@@ -21,13 +21,14 @@ Cited, not owned: RFC 1813's NLM v4 and NSM appendices and the Open Group's XNFS
 structures, RFC 1833 for the port mapper's `GETPORT`, RFC 17 §4.9's admission (amendment A3, built by
 E4), RFC 18 §5.4.
 **Track:** B.
-**Epic 11 estimate: 11 subtasks, 30 man-days.**
+**Epic 11 estimate: 11 subtasks, 29.5 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E2's `nfsharness` on `memory.New` and knfsd's
 NLM and NSM captures (`test/pcap-corpus/nlm/`) cut into golden files. From the epics on other tracks,
 before the subtasks that name them: E3's T3.2, the scripted client and its call encoder, and T3.4,
 the `ops/nlm` and `ops/nsm` packages with their `NULL` rows; E8's first content, the per-client
-callbacks value, the `Handlers` field `New` sets on `nlm.Handlers`, and the `Adapter` bytes codec with
-an NLM host's fields; E4's T4.1, admission at `Claimed` for a call whose `Protocol` is NLM (A3); E7's
+callbacks value (T8.1) and the `Adapter` bytes codec with an NLM host's fields, `wire.ClientRecNLM`
+(T8.2); E10's T10.1, the call encoder and reply decoder moved into `wire/call.go`; E4's T4.1,
+admission at `Claimed` for a call whose `Protocol` is NLM (A3); E7's
 T7.1, without which `memory.New` refuses every `Claimed` caller. **S3** for the loopback rows, and
 **S5** for the restart row.
 **Blocks:** E16, which runs NLM against SMB, the lock recall with NLM, NLM grace and `SM_NOTIFY` on a
@@ -60,8 +61,7 @@ calls the server makes to a client.
 ### 1.1 In scope
 
 `internal/adapter/core`'s datagram listener and `Conn.Local`; `pkg/adapter/deps.go`'s `DialClient`
-network argument; `nfs/rpcclient`; `wire`'s call encoder and reply decoder, moved out of the scripted
-client; `ops/nlm`'s and `ops/nsm`'s procedures past `NULL`, their structs, error tables and
+network argument; `nfs/rpcclient`; `nlm.Handlers`' callbacks field; `ops/nlm`'s and `ops/nsm`'s procedures past `NULL`, their structs, error tables and
 translations; `nfs/callbacks.go`'s `LockWaitOver` and `Revoked` for an NLM host; `nfs.go`'s UDP
 listener; the scripted NLM host and the UDP sender in `adaptertest/nfsclient`; the service half of the
 NSM notice amendment (D11, Q1); the golden files and fuzz target of each.
@@ -71,16 +71,19 @@ NSM notice amendment (D11, Q1); the golden files and fuzz target of each.
 - Admission at `Claimed` for a call whose `Protocol` is NLM (A3's service half): E4's T4.1. This
   epic's rows drive it.
 - What a `Claimed` caller resolves to, and the share's flavour policy: E7's T7.1 and E3's T3.1.
-- The per-client callbacks value, the `Handlers` field that reaches it, and the `Adapter` bytes codec,
-  NLM's fields included: E8, which builds the encoding whole (RFC 21 §11.4).
+- The per-client callbacks value and `v4.Handlers`' field that reaches it (E8's T8.1), and the
+  `Adapter` bytes codec, NLM's fields included (E8's T8.2), which builds the encoding whole (RFC 21
+  §11.4). `nlm.Handlers`' own field is this epic's (T11.3), with its first row that calls `Connect`.
+- The call encoder and reply decoder in `wire/call.go`, moved out of the scripted client with their
+  fuzz target: E10's T10.1, which T11.2 uses.
 - The recall an NLM lock starts on a delegated file, and the NFSv4 side of a conflict's holder: the
   service and E9; this epic maps only the answers the service gives (R33).
 - The resend schedule of an unanswered grant: the service's, already built (`internal/vfs/sink.go`
   calls `LockWaitOver` again every 10 s while the host gives no answer); this epic sends once per call.
 - Rows that need both adapters, a kernel client or a restart of the one node with its grace: E16, as
-  "§6.1 NLM against SMB", "§5.3 lock recall", "§6.1 NLM grace", "§6 NLM" with cthon04 and its
-  `SM_NOTIFY` step, and "§2.2 TCP only"'s `proto=udp` mount. The totality test over NLM's and NSM's
-  tables: E16.
+  "§6.1 NLM against SMB" (T16.6), "§5.3 lock recall" (T16.5), "§6.1 NLM grace" and "§6 NLM"'s
+  `SM_NOTIFY` step (T16.4), "§6 NLM" with cthon04 (its burn-down, planned after E15), and "§2.2 TCP
+  only"'s `proto=udp` mount (T16.7). The totality test over NLM's and NSM's tables: E16's T16.11.
 - `nfs_nlm_waiters` (RFC 21 §14): its producer is T11.4, but nothing here records it while who records
   the series only NFS code can count is open with the RFC's author (the RFC 21 implementation plan's
   §6.1, point 4). If that settles before T11.4 lands, T11.4 adds it, about 0.5 man-days inside its
@@ -110,6 +113,8 @@ NSM notice amendment (D11, Q1); the golden files and fuzz target of each.
   plan's epic 3 with RFC 20's epic 7: what the restart row runs on.
 - **A3**, the amendment to RFC 17 §4.9 agreed in #5166: an NLM call meets a share's `MinProof` lowered
   to `Claimed` and no `MinProtection`.
+- **E12**, the NFSv4.2 operations. **E15**, the integration with the node, which turns the NFS
+  suites on.
 
 ## 2. How the general rules apply
 
@@ -119,7 +124,7 @@ cited by number and title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | handlers through `nfsharness` on `memory.New` (kind 2), errors through `vfstest.Faults` (kind 3), the one-call rule from `vfstest.Mutations`; `core`'s datagram listener on `testproto` over real UDP; callbacks against the scripted NLM host (T11.2), a peer on `127.0.0.1:0` that keeps the calls it received and answers as its script says, its refusals and silences injected by that script (kind 3); `DialClient` supplied by the test, as RFC 20 §3.4 allows, dialling the real loopback listener; no other double |
-| rule 2, fuzz tests where relevant | T11.1, T11.2 | `FuzzNLMLock` over an NLM lock request's translation into a `LockReq`, RFC 21 §11.6's target (R49); the call reply decoder `rpcclient` reads a host's bytes with, checked against a second decoder written by hand from RFC 5531 (T11.2). NLM's and NSM's codecs join the XDR codec's one target over every program |
+| rule 2, fuzz tests where relevant | T11.1 | `FuzzNLMLock` over an NLM lock request's translation into a `LockReq`, RFC 21 §11.6's target (R49); the call reply decoder `rpcclient` reads a host's bytes with is E10's T10.1's, fuzzed there against a second decoder written from RFC 5531. NLM's and NSM's codecs join the XDR codec's one target over every program |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T11.4, T11.9 | no recorder in NFS code; `nfs_nlm_waiters` waits on the recorder decision (§1.2); the datagram listener records through `core`'s existing series under the listener's label; no log line or attribute carries a `caller_name`, a `mon_name`, an owner handle or a host address (RFC 25 §5.4) |
 | rule 4, profiling: leaks, allocations and contention | T11.2, T11.4, T11.9 | every loopback test ends with `adaptertest.CheckLeaks`, including the goroutines of the datagram queue and of `rpcclient`'s per-host connections; the waiting-request table (T11.4) is a change to "the NLM grant timers" the rule names, so T11.4 reports its mutex and block profiles under 64 hosts blocking at once |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each translation asserted on the reply bytes a host reads, through `nfsharness` or over loopback; a grant on the `NLMPROC4_GRANTED` the scripted host receives, its source address included; a notice on the `SM_NOTIFY` datagram the host receives; the host binding on the lock `memory.New` still holds after another address's `UNLOCK` |
@@ -245,8 +250,8 @@ that subtasks and tests can cite them.
 - **D1. One outbound package, `nfs/rpcclient`.** NLM's `GRANTED` and `*_RES`, the port mapper's
   `GETPORT` and `SM_NOTIFY` go through it, over `Deps.DialClient`; E10's back channel sends on the
   session's own connection and shares only `wire`'s call header. The call encoder and reply decoder
-  move from `adaptertest/nfsclient` into `wire/call.go` when this epic first sends a call, unless E10
-  has moved them first (E3's D11), with a fuzz target on the reply decoder, which reads a peer's bytes.
+  are E10's T10.1's, moved from `adaptertest/nfsclient` into `wire/call.go` with a fuzz target on the
+  reply decoder (E3's D11); `rpcclient` uses them.
   A host's connection is kept while a grant or reply to it is pending and closed when none is, as RFC
   20 §3.3 says, by a per-host count of the calls in flight. Prior art: knfsd and NFS-Ganesha each use
   one sunrpc client for lockd callbacks and statd (from memory, not checked). No marker: it is the
@@ -367,8 +372,6 @@ internal/adapter/nfs/
   callbacks.go                   T11.4  LockWaitOver for an NLM host; T11.7  Revoked for an NLM host
   wire/
     nlm.go                       T11.1  NLMHostName (D2)
-    call.go                      T11.2  the call encoder and reply decoder, moved from nfsclient (D1)
-    fuzz_test.go                 T11.2  FuzzReply
     testdata/golden/             T11.1 to T11.7  NLM and NSM calls and replies
   protocol/
     stages.go                    T11.10 the UDP listener's stages' row for a program it lacks (D14)
@@ -433,9 +436,9 @@ pkg/vfs/, pkg/openstate/, internal/vfs/   T11.8  Revocation.State; a start's rep
 
 ### T11.2 `rpcclient`, `DialClient`'s network and `Conn.Local`
 
-**Subtask T11.2 estimate: 3.5 man-days.**
+**Subtask T11.2 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** S2, E3's T3.2.
+- **Track:** B. **Depends on:** S2, T3.2, T10.1.
 - **Covers:** R8, R9, R10, R11, R12, R13, R14.
 - **Deliverables:**
   - `pkg/adapter/deps.go`: `DialClient func(ctx context.Context, network string, from netip.Addr, to
@@ -444,7 +447,6 @@ pkg/vfs/, pkg/openstate/, internal/vfs/   T11.8  Revocation.State; a start's rep
   - `core`: `func (c *Conn) Local() netip.Addr`, the address the client reached, unmapped, through
     an RFC 20 pull request first (Q2), with `core.golden` updated. Consumed by T11.3, which keeps it
     with the host, and T11.9's datagram `Conn`.
-  - `wire/call.go`: the call encoder and reply decoder moved out of `nfsclient` (D1); `FuzzReply`.
   - `rpcclient`: `Call(ctx context.Context, dial DialFunc, from netip.Addr, host netip.Addr, prog,
     vers, proc uint32, args []byte) ([]byte, error)`, which asks `GETPORT` over TCP (D12), dials the
     host's port from `from`, sends one call and reads its reply, keeping one connection per host while
@@ -467,8 +469,8 @@ pkg/vfs/, pkg/openstate/, internal/vfs/   T11.8  Revocation.State; a start's rep
   on the named port (catches a callback on the request's connection or a fixed port, R10, and UDP
   for `GETPORT`, R8); a silent `Host` makes `Call` return by its deadline (catches a send that blocks
   past it, R14, or that is reported as anything but an error, R13); the open connections counted
-  through `Host` before and after (catches a connection kept with nothing pending, R12); `FuzzReply`
-  against a second decoder written by hand; with `DialClient` nil, `Notify` reaches `Host` over UDP
+  through `Host` before and after (catches a connection kept with nothing pending, R12); the reply
+  decoder's own fuzz target is E10's T10.1's; with `DialClient` nil, `Notify` reaches `Host` over UDP
   from `from` (catches a default that ignores the network or the address, R9). No test double but
   `Host` and the test's `DialClient`.
 - **Rules:** rule 11's exports above, `Conn.Local` through the RFC first.
@@ -477,14 +479,17 @@ pkg/vfs/, pkg/openstate/, internal/vfs/   T11.8  Revocation.State; a start's rep
 
 **Subtask T11.3 estimate: 3.5 man-days.**
 
-- **Track:** B. **Depends on:** T11.1, T11.2, and E8's callbacks value and `Adapter` bytes codec.
+- **Track:** B. **Depends on:** T11.1, T11.2, T8.1, T8.2.
 - **Covers:** R11, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24, R27, R28, R31, R32, R50.
 - **Deliverables:**
   - `ops/nlm/hosts.go`: the host table of D5 (Q4) and the rows' `Resolve`, which `Connect`s an NLM host
     with `ClientInfo{Protocol: ProtocolNLM, Name, Boot, Adapter, Recovery: RecoverNotice}` and E8's
-    callbacks value, its `Adapter` bytes holding the `caller_name` as `mon_name`, `priv`, the host's
-    address and the floating address from `Conn.Local`, and sets `r.Call.Client`.
-  - `nlm.Handlers{VFS vfs.Service, …}` with E8's callbacks field, set by `nfs.go`.
+    callbacks value, its `Adapter` bytes a `wire.ClientRecNLM` (T8.2) holding the `caller_name` as
+    `MonName`, `Priv`, the host's address as `Host` and the floating address from `Conn.Local` as
+    `Server`, and sets `r.Call.Client`.
+  - `nlm.Handlers{VFS vfs.Service; Callbacks func(vfs.ClientID) vfs.Callbacks; …}`, the callbacks
+    field E8 left to this epic's first row that calls `Connect` (rule 12), set by `nfs.go` to the
+    constructor T8.1 sets on `v4.Handlers`.
   - Rows `TEST`, `LOCK` without `block`, `UNLOCK` and `FREE_ALL`, each one service call on the
     anonymous open with the request's handle (`TestLock`, `Lock`, `Unlock`, `HostRestarted`); the
     `StaleClient` retry (R21); `UNLOCK` with the release role; a `TEST` holder as D15.
@@ -693,7 +698,8 @@ pkg/vfs/, pkg/openstate/, internal/vfs/   T11.8  Revocation.State; a start's rep
 flowchart TD
   S2(["S2 NFS test foundations in CI"]):::sync --> T11_1["T11.1 Codecs, error tables, translations"]
   S2 --> T11_2["T11.2 rpcclient, DialClient's network, Conn.Local"]
-  E8(["E8 callbacks value, Adapter bytes"]):::sync --> T11_3
+  E8(["E8 T8.1 callbacks value, T8.2 Adapter bytes"]):::sync --> T11_3
+  E10(["E10 T10.1 wire/call.go"]):::sync --> T11_2
   T11_1 & T11_2 --> T11_3["T11.3 Host as client: TEST, LOCK, UNLOCK, FREE_ALL"]
   T11_3 --> T11_4["T11.4 Blocking locks, CANCEL, GRANTED"]
   T11_2 --> T11_4
@@ -722,7 +728,7 @@ path. T11.11 closes the epic once S3 holds, its restart row once S5 does.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T11.1, T11.2 | 6.5 | — | the NLM translations and the outbound client every handler and callback builds on |
+| 1 | T11.1, T11.2 | 6 | E10's T10.1 | the NLM translations and the outbound client every handler and callback builds on |
 | 2 | T11.3, T11.4, T11.5 | 8.5 | PR 1 | NLM locking end to end: a host's client, its locks, a blocked lock granted, the asynchronous forms |
 | 3 | T11.6, T11.7, T11.8 | 7 | PR 2 | share reservations and NSM's notices, the service half once Q1 is agreed |
 | 4 | T11.9, T11.10 | 5.5 | PR 1 | the datagram path, from `core`'s listener to NLM and NSM over UDP; open beside PR 2 |
@@ -783,18 +789,23 @@ Gaps and assumptions, not questions:
   but the service already resends an unanswered grant every 10 s (`internal/vfs/sink.go`), so the
   adapter sends once per `LockWaitOver` (§1.2) and carries no timer; the plan's line is stale, for a
   plan revision when the user asks.
-- E8's `Adapter` bytes codec is assumed to hold, for an NLM host, `mon_name`, `priv` (Q5), the host's
-  address and the floating address its requests arrived on, which RFC 21 §6.2 has the notice sent to
-  and from. If E8's codec lacks the two addresses, they are E8's to add before it writes its first
-  record, since the encoding is settled whole there (RFC 21 §11.4).
-- E8's callbacks value is assumed to dispatch `LockWaitOver` and `Revoked` to NLM code for a client
-  connected through `nlm.Handlers`' field, and E10 not to have moved `wire/call.go` first; if it has,
-  T11.2 drops that deliverable and its estimate falls by about 0.5 man-days.
-- The composed node of S5 is assumed to take an injected clock, which T11.11's 5-minute steps
-  advance; without it those steps move to E16, which runs them against a kernel client in real time.
+- E8's T8.2 holds, for an NLM host, `ClientRecNLM`'s `MonName`, `Priv` (Q5), `Host`, the host's
+  address, and `Server`, the floating address its requests arrived on, which RFC 21 §6.2 has the
+  notice sent to and from; the encoding is settled whole there (RFC 21 §11.4).
+- E8's T8.1 value is one type per client; this epic writes its `LockWaitOver` (T11.4) and NLM
+  `Revoked` (T11.7) arms for a client connected through `nlm.Handlers`' field, and adds that field
+  (T11.3). E10's T10.1 moves `wire/call.go`, which T11.2 uses; T11.2's figure is 0.5 man-days lower
+  for it.
+- The composed node of S5 is assumed to take an injected clock, which T11.11's 5-minute steps of
+  "§6.1 waiter lifetime" advance; without it those steps move to E16's T16.5, which accepts them and
+  runs them in real time.
 - D5's and D10's per-node tables are lost with a gateway node while a primary elsewhere keeps the
   host's locks and opens. That is a (cluster) case, under the RFC 21 implementation plan's deferral
   row for RFC 21's cluster parts, which does not yet name it; a pull request against the plan adds it.
-- The proposed RFC text: Q2's sentence in RFC 20 §4.7 and §3.1, Q3's cells in RFC 21 §11.5, and Q5's
-  removal in RFC 21 §6.2 and §11.4 go in this document's pull request against the RFCs once answered;
-  Q1's and Q4's option (b) would be RFC 17 pull requests of their own.
+- Which pull request carries which RFC amendment, once answered: Q2's `Conn.Local` and datagram
+  sentence join the programme's one RFC 20 pull request, which E3's Q2 opens for `Conn.Remote` and
+  which also carries E8's `Deps.Server`, `Invocation.Bound` and `Conn.SetSession`; Q1's RFC 17 §3.2
+  `Revocation.State` goes in batch two's one RFC 17 pull request with E9's D1, E10's Q1 and E12's
+  D1, and T11.8's service half waits for it; Q3's cells in RFC 21 §11.5 and Q5's removal in RFC 21
+  §6.2 and §11.4 go in batch two's one RFC 21 pull request, opened with E8's document pull request.
+  Q4's option (b) would add RFC 17 §3.1 to the RFC 17 one.
