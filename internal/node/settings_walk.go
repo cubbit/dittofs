@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"maps"
@@ -268,6 +269,57 @@ func (n *Node) walkSettings(ctx context.Context) (settingsRead, error) {
 	}
 }
 
+// holdRefusals is what names the section prefix, held back whole this pass,
+// refused at gen, one problem answering for every record, retried on the
+// backoff when retry is set: every row the walk read of it, or, when the
+// walk read none, the section's changed keys, a section that runs only its
+// defaults having no row to name and one whose last row a change deleted
+// leaving only the change's records. An apply that failed does as one with
+// live keys and no way to its component does. Records in walk order, then
+// in the diff's.
+func (w *settingsWalk) holdRefusals(
+	prefix string,
+	gen uint64,
+	retry bool,
+	err error,
+	changes []settings.Change,
+) []refusal {
+	p := apiv1.Problem{
+		Status: http.StatusUnprocessableEntity,
+		Title:  "the setting was refused",
+		Detail: err.Error(),
+	}
+	b, _ := json.Marshal(p) // a Problem holds strings, ints and bools, which always marshal
+
+	atGen := refusal{retry: retry, rec: entity.RefusedRecord{
+		Record:     entity.ResourceRef{},
+		Generation: gen,
+		Error:      b,
+	}}
+
+	var out []refusal
+
+	for _, row := range w.rows[prefix] {
+		atGen.rec.Record = entity.SettingRef(row.Scope, row.Key)
+		out = append(out, atGen)
+	}
+
+	if len(out) != 0 {
+		return out
+	}
+
+	for _, ch := range changes {
+		if ch.Section != prefix {
+			continue
+		}
+
+		atGen.rec.Record = entity.SettingRef(ch.Scope, ch.Key)
+		out = append(out, atGen)
+	}
+
+	return out
+}
+
 // reportedByApply is the sections whose refusals a component's own apply
 // reports, as applyIdentity does for identity's two: the settings walk does
 // not name their rows again.
@@ -277,7 +329,7 @@ var reportedByApply = []string{identity.SectionName, identity.DirectorySectionNa
 // handed it. Each section Read refused keeps what it last ran, held with no
 // value when it never ran, and its rows are refused at the generation the walk
 // read, naming the rows the refusal claims, except a section reportedByApply.
-// It returns those refusals, which the pass reports with the apply's.
+// It returns those refusals and the ones routing raised, which the pass reports with the apply's.
 //
 // decision: a refusal no row the walk kept answers, as a required key with no
 // row at all, publishes no record: no row names it, so the node reports no
@@ -286,7 +338,7 @@ var reportedByApply = []string{identity.SectionName, identity.DirectorySectionNa
 // ran reads as unconfigured through the snapshot, never defaulted and never
 // refused. Withdrawn when the node's report must name a refusal no row
 // answers for.
-func (n *Node) keepSettings(wk settingsRead) []refusal {
+func (n *Node) keepSettings(ctx context.Context, wk settingsRead) ([]refusal, error) {
 	r := &n.rec
 	cur, prev := wk.snap, r.snapshot.Load()
 
@@ -300,7 +352,201 @@ func (n *Node) keepSettings(wk settingsRead) []refusal {
 		}
 	}
 
-	r.snapshot.Store(cur)
+	cur, rejected, pending, err := n.routeSettings(ctx, cur, prev, wk.refused, wk.walk, wk.at.Settings)
+	if err != nil {
+		return nil, err
+	}
 
-	return out
+	out = append(out, rejected...)
+
+	r.snapshot.Store(cur)
+	r.mu.Lock()
+	r.restart = pending
+	r.mu.Unlock()
+
+	return out, nil
+}
+
+// errNoWay is the refusal of a section with live or bound keys and no entry
+// in the node's map: nothing applies it and nothing reads it at use, so
+// running the change would report a component configured that no code
+// reached.
+//
+// decision: a section the map holds no path to is refused rather than
+// quietly read at use in its place, so a live section no code reaches
+// reports refused at every reconcile instead of publishing values its
+// component never ran. The identity sections are no case of it: their own
+// apply runs them (reportedByApply), so routing skips them. Withdrawn when
+// every section declared has a path.
+var errNoWay = errors.New("the section has no way to its component")
+
+// routeSettings sends each change of the walk's snapshot against prev down
+// its class's path (RFC 13 §5) and answers the snapshot to publish, the
+// refusals it raised and the restart-pending set:
+//
+//   - a live or bound change goes to its section's path, one apply per
+//     section a pass whatever their number, handing it the snapshot the walk
+//     is about to publish, its error refusing the section whole, retried on
+//     the backoff; a section read at use has nothing to run, its reader
+//     loading the published snapshot at its next operation; a section with
+//     neither is refused the same way and never runs the change;
+//   - a restart-class change lands in the restart-pending set, read against
+//     what each section first runs, and leaves it once that value is back;
+//   - a next-write change goes nowhere: the published snapshot carries it,
+//     and the component's next write reads it.
+//
+// A change of a share the node's list of shares no longer names is dropped
+// before its path: a share being removed is outside the list already, so
+// nothing reconfigures an instance that is gone and nothing it left behind
+// sits in the sets the node reports. Namespaces, remote stores and things
+// gain their drop with the first section each of them declares.
+//
+// decision: a refused section keeps the value it last ran on the sections
+// this routes holds back, an apply that failed or one with no path, and
+// neither is retried in the same pass. Retrying inside the pass would run
+// an apply that just refused, stack the sweep's and every reader's view of
+// its section behind one that may still fail, and buy nothing: the pass
+// that the backoff already releases retries it outside it. Overturned once
+// an apply is named that a same-pass retry can settle, such as one that
+// only orders its own writes.
+func (n *Node) routeSettings(
+	ctx context.Context,
+	cur, prev *settings.Snapshot,
+	refused map[string]error,
+	w *settingsWalk,
+	gen uint64,
+) (*settings.Snapshot, []refusal, []entity.ResourceRef, error) {
+	r := &n.rec
+
+	// The shares that still exist, read once for the first share a change
+	// or a pending record names, so the drop costs nothing while no section
+	// holds one value per share.
+	var listing map[entity.ShareID]bool
+
+	exists := func(scope entity.SettingScope) (bool, error) {
+		if scope.Kind != entity.ScopeShare {
+			return true, nil
+		}
+
+		if listing == nil {
+			listing = make(map[entity.ShareID]bool)
+
+			_, err := n.bounded(ctx, func(ctx context.Context) error {
+				for rec, err := range n.meta.Nodes().List(ctx, entity.ResourceShare, nil) {
+					if err != nil {
+						return err
+					}
+
+					listing[rec.Share.ID] = true
+				}
+
+				return nil
+			})
+			if err != nil {
+				return false, err
+			}
+		}
+
+		return listing[scope.ID], nil
+	}
+
+	changes := settings.Diff(prev, cur)
+
+	// The sections with a live or bound change, which run their path this
+	// pass, however many of their keys changed.
+	run := map[string]bool{}
+
+	for _, ch := range changes {
+		if ch.Class != settings.Live && ch.Class != settings.Bound {
+			continue
+		}
+
+		if slices.Contains(reportedByApply, ch.Section) {
+			continue
+		}
+
+		ok, err := exists(ch.Scope)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		if !ok {
+			continue
+		}
+
+		run[ch.Section] = true
+	}
+
+	// held is the sections this pass holds at what they last ran: an apply
+	// that failed, or a live section with no path. Neither ran its new
+	// value, so it is no candidate for what a section first runs below.
+	held := map[string]bool{}
+
+	var out []refusal
+
+	for _, prefix := range slices.Sorted(maps.Keys(run)) {
+		path, ok := r.reaches[prefix]
+		if !ok || (path.apply == nil && !path.atUse) {
+			cur = cur.Keep(prefix, nil).Keep(prefix, prev)
+			held[prefix] = true
+			out = append(out, w.holdRefusals(prefix, gen, false, errNoWay, changes)...)
+
+			continue
+		}
+
+		if path.atUse {
+			continue
+		}
+
+		if err := path.apply(cur); err != nil {
+			cur = cur.Keep(prefix, nil).Keep(prefix, prev)
+			held[prefix] = true
+			out = append(out, w.holdRefusals(prefix, gen, true, err, changes)...)
+		}
+	}
+
+	// ran grows to what each section first runs, the value its
+	// restart-class keys are read pending against: a section the walk
+	// refused or this pass held back runs no new value, and one that already
+	// ran keeps what it first did, so a restart-class change stays pending
+	// until it is back or the node restarts.
+	ran := map[string]bool{}
+
+	for _, ch := range changes {
+		if refused[ch.Section] == nil && !held[ch.Section] {
+			ran[ch.Section] = true
+		}
+	}
+
+	for _, prefix := range slices.Sorted(maps.Keys(ran)) {
+		if r.ranOnce[prefix] {
+			continue
+		}
+
+		r.ran = r.ran.Keep(prefix, cur)
+		r.ranOnce[prefix] = true
+	}
+
+	// The restart-pending set: each restart-class key whose value differs
+	// from what its section first runs, in the diff's fixed order.
+	var pending []entity.ResourceRef
+
+	for _, ch := range settings.Diff(r.ran, cur) {
+		if ch.Class != settings.Restart {
+			continue
+		}
+
+		ok, err := exists(ch.Scope)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		if !ok {
+			continue
+		}
+
+		pending = append(pending, entity.SettingRef(ch.Scope, ch.Key))
+	}
+
+	return cur, out, pending, nil
 }

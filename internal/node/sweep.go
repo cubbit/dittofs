@@ -3,17 +3,22 @@ package node
 import (
 	"context"
 	"log/slog"
+	"math"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node/api/apisettings"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/settings"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
-	// auditRetention is how long the sweep keeps an audit record: RFC 23
-	// §6's floor for audit.retention, until the node reads that setting.
-	auditRetention = 90 * 24 * time.Hour
+	// auditKeep is the retention the sweep passes when the node holds no
+	// published audit value: the largest duration, so no audit record goes
+	// and every other kind is swept, the store refusing the zero a lesser
+	// hold-back would read as.
+	auditKeep = time.Duration(math.MaxInt64)
 	// sweepInterval is the sweep's wait between turns, counted from the start
 	// of the turn before: the watchdog's idle period, so the wait itself keeps
 	// the loop live.
@@ -21,6 +26,25 @@ const (
 	// stepSweep names the sweep's loop.
 	stepSweep = "sweep"
 )
+
+// auditRetain is how long the sweep keeps an audit record: the audit
+// section's value in the published snapshot, read each turn, so a change of
+// audit.retention reaches the sweep at its next turn.
+//
+// decision: no published value, one refused at start or a section held back,
+// keeps every audit record, the safe side: keeping is undone by fixing the
+// setting, while a sweep on a guessed retention deletes what no value
+// asked to. Overturned once a reader needs to know the audit sweep is
+// held back, which would then be reported rather than implied.
+func (n *Node) auditRetain() time.Duration {
+	a, err := settings.Get[apisettings.Audit](
+		n.rec.snapshot.Load(), "audit", n.cfg.Bootstrap.Node.ID)
+	if err != nil {
+		return auditKeep
+	}
+
+	return a.Retention
+}
 
 // sweeper is the sweep's series and the state only its loop touches.
 type sweeper struct {
@@ -104,9 +128,10 @@ func (n *Node) sweepTurn(ctx context.Context, loop *health.Loop) {
 		}
 	}
 	for ctx.Err() == nil {
+		retention := n.auditRetain()
 		var sw kvstore.Swept
 		running, err := n.bounded(ctx, func(ctx context.Context) error {
-			got, err := n.meta.Nodes().Sweep(ctx, auditRetention)
+			got, err := n.meta.Nodes().Sweep(ctx, retention)
 			if err == nil {
 				w.idempotency.Add(float64(got.Idempotency))
 			}

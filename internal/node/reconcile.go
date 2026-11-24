@@ -42,6 +42,9 @@ type reconciler struct {
 	// and the components of a test stand in for, which the settings walk
 	// reads by, one section's rows at a time.
 	table settings.Table
+	// reaches is how each declared section's component reaches a change of
+	// it: an apply the node calls, or a read at use.
+	reaches map[string]reach
 	// snapshot is the settings the walks have published, the one a
 	// component reads what it runs from at use: loaded whole, with no lock
 	// shared with the walk.
@@ -70,12 +73,27 @@ type reconciler struct {
 	// Read and written by Start's steps and then by the loop alone.
 	seen  kvstore.Counters // the counters the last pass acted on
 	again bool             // a read failed, or a refusal asked to be retried: the next pass acts on every kind
+	// ran is the settings each section first ran, the value its
+	// restart-class keys are read pending against. The first walk a section
+	// runs grows it; a restart-class change stays in the pending set until
+	// the value it first ran is back, or the node restarts, which starts
+	// the set from none.
+	//
+	// ranOnce is which sections ran once. Like seen, both are written by
+	// the walks alone: Start's first and then the loop's.
+	ran     *settings.Snapshot
+	ranOnce map[string]bool
 
 	mu sync.Mutex
 	// pos is the counters the node has reconciled through: acted on every
 	// change up to each, applied or refused.
 	pos   kvstore.Counters
 	moved chan struct{} // closed when pos moves, then replaced
+	// restart is the restart-pending set: each record whose restart-class
+	// key holds a value other than what its section first runs, waiting
+	// for the restart that runs it. Written by each walk, read by the
+	// status through report, under the same lock as the rest of it.
+	restart []entity.ResourceRef
 	// running is the running set: each share as the engine binds it.
 	running map[entity.ShareID]entity.Share
 	// gone is every share a removal has unbound, which a share pass that
@@ -97,16 +115,18 @@ type reconciler struct {
 	errors [len(counterKinds)]atomic.Uint64
 }
 
-// report is the counters the node has reconciled through and the records
-// it refused, the shares' first, read together.
-func (r *reconciler) report() (kvstore.Counters, []entity.RefusedRecord) {
+// report is the counters the node has reconciled through, the records it
+// refused, the shares' first, then the applies', and the restart-pending set,
+// read together under one lock, so the whole report is of one pass.
+func (r *reconciler) report() (kvstore.Counters, []entity.RefusedRecord, []entity.ResourceRef) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []entity.RefusedRecord
 	for _, f := range append(slices.Clone(r.shares), r.applied...) {
 		out = append(out, f.rec)
 	}
-	return r.pos, out
+
+	return r.pos, out, slices.Clone(r.restart)
 }
 
 // read notes the counters c a pass read at now: each above the position
@@ -169,9 +189,12 @@ func (r *reconciler) notGone(refusals []refusal) []refusal {
 	})
 }
 
-func newReconciler(table settings.Table) reconciler {
-	return reconciler{table: table, wake: make(chan struct{}, 1), moved: make(chan struct{}),
-		running: map[entity.ShareID]entity.Share{}, gone: map[entity.ShareID]bool{}}
+func newReconciler(table settings.Table, reaches map[string]reach) reconciler {
+	return reconciler{
+		table: table, reaches: reaches, ranOnce: map[string]bool{},
+		wake: make(chan struct{}, 1), moved: make(chan struct{}),
+		running: map[entity.ShareID]entity.Share{}, gone: map[entity.ShareID]bool{},
+	}
 }
 
 // refusal is a record the node did not apply, and whether to try it again on
@@ -230,7 +253,11 @@ func (n *Node) apply(ctx context.Context, c kvstore.Counters, loop *health.Loop)
 	if err != nil {
 		return nil, fmt.Errorf("identity: %w", err)
 	}
-	refusals = append(refusals, n.keepSettings(wk)...)
+	kept, err := n.keepSettings(ctx, wk)
+	if err != nil {
+		return nil, fmt.Errorf("the settings walk: %w", err)
+	}
+	refusals = append(refusals, kept...)
 	if !n.adapting {
 		return refusals, nil
 	}

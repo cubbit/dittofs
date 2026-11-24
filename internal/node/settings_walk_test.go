@@ -22,6 +22,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/settings"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -170,23 +171,142 @@ func (w walkPair) Validate() error {
 	return nil
 }
 
-// declareSections declares the tests' sections: alpha, a node's override of
-// an installation default; beta and eps at installation scope; gamma once
-// per share; delta once per share with two keys; nest with a section nested
-// under its prefix, and alphabet, whose prefix holds alpha's in it. Call it
-// before Start.
+// boundTuning is the settings shape of a section with a live key and a bound
+// key, so a change of either runs its section's apply.
+type boundTuning struct {
+	Level int `json:"level" class:"live"`
+	Floor int `json:"floor" class:"bound"`
+}
+
+func (b boundTuning) Validate() error {
+	if b.Level < 0 || b.Level > 100 || b.Floor < 0 || b.Floor > 100 {
+		return fmt.Errorf(
+			"level and floor must be between 0 and 100, got %d and %d",
+			b.Level,
+			b.Floor,
+		)
+	}
+
+	return nil
+}
+
+// bootsTuning is the settings shape of a section with one restart key.
+type bootsTuning struct {
+	Halt int `json:"halt" class:"restart"`
+}
+
+func (b bootsTuning) Validate() error {
+	if b.Halt < 0 || b.Halt > 100 {
+		return fmt.Errorf("halt must be between 0 and 100, got %d", b.Halt)
+	}
+
+	return nil
+}
+
+// nextTuning is the settings shape of a section with one next-write key.
+type nextTuning struct {
+	After int `json:"after" class:"next write"`
+}
+
+func (n nextTuning) Validate() error {
+	if n.After < 0 || n.After > 100 {
+		return fmt.Errorf("after must be between 0 and 100, got %d", n.After)
+	}
+
+	return nil
+}
+
+// stepTuning is the settings shape of a per-share section with one live key
+// and one restart key.
+type stepTuning struct {
+	Level int `json:"level" class:"live"`
+	Halt  int `json:"halt"  class:"restart"`
+}
+
+func (s stepTuning) Validate() error {
+	if s.Level < 0 || s.Level > 100 || s.Halt < 0 || s.Halt > 100 {
+		return fmt.Errorf(
+			"level and halt must be between 0 and 100, got %d and %d",
+			s.Level,
+			s.Halt,
+		)
+	}
+
+	return nil
+}
+
+// declareSections declares the tests' sections, every one read where its
+// component uses it: alpha, a node's override of an installation default;
+// beta and eps at installation scope; gamma once per share; delta once per
+// share with two keys; nest with a section nested under its prefix, and
+// alphabet, whose prefix holds alpha's in it. Call it before Start.
 func declareSections(t *testing.T, h *nodetest.Harness) {
 	t.Helper()
 	h.Node().DeclareSections(
-		settings.Of("alpha", settings.Override(entity.ScopeInstallation, entity.ScopeNode),
-			walkTuning{Level: 1}),
-		settings.Of("beta", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
-		settings.Of("eps", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
-		settings.Of("gamma", settings.At(entity.ScopeShare), walkTuning{Level: 1}),
-		settings.Of("delta", settings.At(entity.ScopeShare), walkPair{A: 1, B: 1}),
-		settings.Of("nest", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
-		settings.Of("nest.sub", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
-		settings.Of("alphabet", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
+		node.Declared{
+			Prefix: "alpha",
+			Section: settings.Of(
+				"alpha",
+				settings.Override(entity.ScopeInstallation, entity.ScopeNode),
+				walkTuning{Level: 1},
+			),
+			AtUse: true,
+		},
+		node.Declared{
+			Prefix: "beta",
+			Section: settings.Of(
+				"beta",
+				settings.At(entity.ScopeInstallation),
+				walkTuning{Level: 1},
+			),
+			AtUse: true,
+		},
+		node.Declared{
+			Prefix: "eps",
+			Section: settings.Of(
+				"eps",
+				settings.At(entity.ScopeInstallation),
+				walkTuning{Level: 1},
+			),
+			AtUse: true,
+		},
+		node.Declared{
+			Prefix:  "gamma",
+			Section: settings.Of("gamma", settings.At(entity.ScopeShare), walkTuning{Level: 1}),
+			AtUse:   true,
+		},
+		node.Declared{
+			Prefix:  "delta",
+			Section: settings.Of("delta", settings.At(entity.ScopeShare), walkPair{A: 1, B: 1}),
+			AtUse:   true,
+		},
+		node.Declared{
+			Prefix: "nest",
+			Section: settings.Of(
+				"nest",
+				settings.At(entity.ScopeInstallation),
+				walkTuning{Level: 1},
+			),
+			AtUse: true,
+		},
+		node.Declared{
+			Prefix: "nest.sub",
+			Section: settings.Of(
+				"nest.sub",
+				settings.At(entity.ScopeInstallation),
+				walkTuning{Level: 1},
+			),
+			AtUse: true,
+		},
+		node.Declared{
+			Prefix: "alphabet",
+			Section: settings.Of(
+				"alphabet",
+				settings.At(entity.ScopeInstallation),
+				walkTuning{Level: 1},
+			),
+			AtUse: true,
+		},
 	)
 }
 
@@ -223,6 +343,40 @@ func walkAt(
 	if _, err := h.Store().ControlPlane().PutSetting(t.Context(), s, expect); err != nil {
 		t.Fatalf("put %s at %v: %v", key, scope.Kind, err)
 	}
+}
+
+// putRowGen writes one settings row over the row's own generation, as a
+// settings write through the store does, and returns the generation the
+// write raised.
+func putRowGen(
+	t *testing.T,
+	h *nodetest.Harness,
+	scope entity.SettingScope,
+	key string,
+	value []byte,
+) uint64 {
+	t.Helper()
+
+	var expect uint64
+
+	for s, err := range h.Store().ControlPlane().Settings(t.Context(), scope) {
+		if err != nil {
+			t.Fatalf("read %s: %v", key, err)
+		}
+
+		if s.Key == key {
+			expect = s.Generation
+		}
+	}
+
+	s := entity.Setting{Scope: scope, Key: key, Value: value}
+
+	gen, err := h.Store().ControlPlane().PutSetting(t.Context(), s, expect)
+	if err != nil {
+		t.Fatalf("put %s: %v", key, err)
+	}
+
+	return gen
 }
 
 // walkKey is the raw row key of one setting, as the store lays it out.
@@ -575,6 +729,83 @@ func TestSettingsRefusedAtStartNeverStarts(t *testing.T) {
 				now.Settings,
 			)
 		}
+	}
+}
+
+// A section refused before it ever ran never runs its component: the apply
+// of a section whose row is undecodable at start is never called, with its
+// defaults or with no value, while a valid section's apply beside it runs
+// its row's value.
+func TestRefusedAtStartNeverRunsItsComponent(t *testing.T) {
+	h, f := servedFaulted(t)
+	declareSections(t, h)
+
+	var (
+		mu     sync.Mutex
+		fresh  int
+		steady []int
+	)
+
+	count := func(prefix string, into func(int)) func(*settings.Snapshot) error {
+		return func(snap *settings.Snapshot) error {
+			v, err := settings.Get[walkTuning](snap, prefix, h.NodeID())
+			if err != nil {
+				return err
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			into(v.Level)
+
+			return nil
+		}
+	}
+
+	h.Node().DeclareSections(
+		node.Declared{
+			Prefix:  "fresh",
+			Section: settings.Of("fresh", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
+			Apply: func(*settings.Snapshot) error {
+				mu.Lock()
+				defer mu.Unlock()
+
+				fresh++
+
+				return nil
+			},
+		},
+		node.Declared{
+			Prefix:  "steady",
+			Section: settings.Of("steady", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
+			Apply:   count("steady", func(l int) { steady = append(steady, l) }),
+		},
+	)
+
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+	walkAt(t, h, installation, "steady", 7)
+	babble(t, f, installation, "fresh.level")
+
+	started(t, h)
+	caughtUp(t, h)
+
+	mu.Lock()
+	gotFresh, gotSteady := fresh, slices.Clone(steady)
+	mu.Unlock()
+
+	if gotFresh != 0 {
+		t.Errorf("fresh's apply, its row refused before it ever ran: %d calls, want 0", gotFresh)
+	}
+
+	if len(gotSteady) == 0 || gotSteady[len(gotSteady)-1] != 7 {
+		t.Errorf("steady's apply beside it: levels %v, want the last at 7, its row's value", gotSteady)
+	}
+
+	want := entity.SettingRef(installation, "fresh.level")
+	refused := h.Node().Refused()
+
+	if len(refused) != 1 || !hasRef([]entity.ResourceRef{refused[0].Record}, want) {
+		t.Errorf("refused records: got %s, want fresh's row alone", describe(refused))
 	}
 }
 
@@ -1123,6 +1354,1099 @@ func TestSettingsRefusalNamesNoLookAlikeSection(t *testing.T) {
 			a.Of,
 		)
 	}
+}
+
+// A live and a bound key of one section changed in one pass apply once, and
+// the bound key alone applies again: the apply is one call a pass for a
+// changed section, however many of its keys changed. The component holds
+// both values, and the node's status reports the settings generation the
+// change reconciled through.
+func TestLiveChangeRunsOnTheFirstPass(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	ch := watchStatus(h)
+	armed := armWaits(h)
+
+	var (
+		mu    sync.Mutex
+		calls int
+		held  boundTuning
+	)
+
+	h.Node().DeclareSections(node.Declared{
+		Prefix: "tuned",
+		Section: settings.Of(
+			"tuned",
+			settings.At(entity.ScopeInstallation),
+			boundTuning{Level: 1, Floor: 1},
+		),
+		Apply: func(snap *settings.Snapshot) error {
+			v, err := settings.Get[boundTuning](snap, "tuned", h.NodeID())
+			if err != nil {
+				return err
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			calls++
+			held = v
+
+			return nil
+		},
+	})
+	started(t, h)
+	caughtUp(t, h)
+	waitsSettled(t, armed)
+
+	mu.Lock()
+	ranAt := calls
+	mu.Unlock()
+
+	if ranAt != 1 {
+		t.Fatalf(
+			"the apply over the start: called %d times, want 1, the first walk's run",
+			ranAt,
+		)
+	}
+
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+	putRowGen(t, h, installation, "tuned.level", []byte("6"))
+	gen := putRowGen(t, h, installation, "tuned.floor", []byte("7"))
+	walkTurn(t, h, armed)
+
+	mu.Lock()
+	running := calls
+	mu.Unlock()
+
+	if running != ranAt+1 {
+		t.Fatalf(
+			"one pass with a live and a bound key changed: apply called %d more times, want 1",
+			running-ranAt,
+		)
+	}
+
+	mu.Lock()
+	level, floor := held.Level, held.Floor
+	mu.Unlock()
+
+	if level != 6 || floor != 7 {
+		t.Errorf(
+			"the component after the pass: level %d and floor %d, want 6 and 7, both applied",
+			level,
+			floor,
+		)
+	}
+
+	// The bound key alone changes: its section's apply runs once again.
+	// caughtUp, not one walkTurn, waits for the pass that covers the
+	// write, so a pass the earlier status turns' advances left in flight
+	// cannot take this write's generation and apply nothing to it.
+	gen = putRowGen(t, h, installation, "tuned.floor", []byte("8"))
+	caughtUp(t, h)
+
+	mu.Lock()
+	running, level, floor = calls, held.Level, held.Floor
+	mu.Unlock()
+
+	if running != ranAt+2 {
+		t.Fatalf(
+			"the bound key alone changed: apply called %d more times in all, want %d",
+			running-ranAt,
+			2,
+		)
+	}
+
+	if level != 6 || floor != 8 {
+		t.Errorf(
+			"the component after the bound key alone: level %d and floor %d, want 6 and 8",
+			level,
+			floor,
+		)
+	}
+
+	drain(ch)
+	turnAt(t, h, ch, "the status holding the change's generation", func(tr statusTurn) bool {
+		return tr.s.Settings == gen
+	})
+}
+
+// A restart-class change applies nothing: its record sits in the node's
+// restart-pending set, on its status, until the value its section first
+// runs is back, and its component runs nothing in the meantime.
+func TestRestartChangeIsPendingNotApplied(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	ch := watchStatus(h)
+	armed := armWaits(h)
+
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+
+	h.Node().DeclareSections(node.Declared{
+		Prefix:  "boots",
+		Section: settings.Of("boots", settings.At(entity.ScopeInstallation), bootsTuning{Halt: 9}),
+		Apply: func(*settings.Snapshot) error {
+			mu.Lock()
+			defer mu.Unlock()
+
+			calls++
+
+			return nil
+		},
+	})
+	started(t, h)
+	caughtUp(t, h)
+	waitsSettled(t, armed)
+
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+	gen := putRowGen(t, h, installation, "boots.halt", []byte("5"))
+	walkTurn(t, h, armed)
+
+	want := entity.SettingRef(installation, "boots.halt")
+
+	turnAt(t, h, ch, "the status holding the restart-pending record", func(tr statusTurn) bool {
+		return tr.s.Settings == gen && len(tr.s.RestartPending) == 1 &&
+			hasRef(tr.s.RestartPending, want)
+	})
+
+	if got := series(t, h, "dittofs_node_restart_pending", ""); got != 1 {
+		t.Errorf("restart pending series with boots.halt pending: got %v, want 1", got)
+	}
+
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+
+	if got != 0 {
+		t.Fatalf(
+			"the apply over a restart-class change: %d calls, want 0, nothing to run",
+			got,
+		)
+	}
+
+	if v, err := settings.Get[bootsTuning](h.Node().Settings(), "boots", h.NodeID()); err != nil ||
+		v.Halt != 5 {
+		t.Errorf(
+			"boots.halt after the change: got %d, %v; want 5, published for the restart",
+			v.Halt,
+			err,
+		)
+	}
+
+	// The value back at what the section first runs leaves the set empty.
+	waitsSettled(t, armed)
+	putRowGen(t, h, installation, "boots.halt", []byte("9"))
+	walkTurn(t, h, armed)
+	turnAt(t, h, ch, "the status holding no restart-pending record", func(tr statusTurn) bool {
+		return len(tr.s.RestartPending) == 0
+	})
+
+	if got := series(t, h, "dittofs_node_restart_pending", ""); got != 0 {
+		t.Errorf("restart pending series once boots.halt is back: got %v, want 0", got)
+	}
+}
+
+// A next-write change is published and applies nothing: the writer that
+// reads it at its next write sees the new value, and the component's apply
+// is never called for it.
+func TestNextWriteChangeReadByTheNextWrite(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	armed := armWaits(h)
+
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+
+	h.Node().DeclareSections(node.Declared{
+		Prefix:  "later",
+		Section: settings.Of("later", settings.At(entity.ScopeInstallation), nextTuning{After: 1}),
+		Apply: func(*settings.Snapshot) error {
+			mu.Lock()
+			defer mu.Unlock()
+
+			calls++
+
+			return nil
+		},
+	})
+	started(t, h)
+	caughtUp(t, h)
+	waitsSettled(t, armed)
+
+	putRowGen(
+		t,
+		h,
+		entity.SettingScope{Kind: entity.ScopeInstallation},
+		"later.after",
+		[]byte("7"),
+	)
+	walkTurn(t, h, armed)
+
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+
+	if got != 0 {
+		t.Fatalf(
+			"the apply after a next-write key changed: %d calls, want 0, nothing to run",
+			got,
+		)
+	}
+
+	if v, err := settings.Get[nextTuning](h.Node().Settings(), "later", h.NodeID()); err != nil ||
+		v.After != 7 {
+		t.Errorf(
+			"later.after as the next write reads it: got %d, %v; want 7, published",
+			v.After,
+			err,
+		)
+	}
+}
+
+// A live section the node holds no way to is refused on change and never
+// reported applied: no component exists for it, so no report claims one ran
+// the change. An api change in the same pass, read at use, applies.
+func TestLiveSectionWithNoPathIsRefused(t *testing.T) { noPathRefused(t, false) }
+
+// An entry holding neither an apply nor a read at use is no way either: the
+// section is refused the same, never read as read at use.
+func TestEmptyReachIsRefused(t *testing.T) { noPathRefused(t, true) }
+
+func noPathRefused(t *testing.T, empty bool) {
+	h, _ := servedFaulted(t)
+	declareSections(t, h)
+	ch := watchStatus(h)
+	armed := armWaits(h)
+	h.Node().DeclareSections(node.Declared{
+		Prefix:  "orphan",
+		Section: settings.Of("orphan", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
+		Empty:   empty,
+	})
+	started(t, h)
+	caughtUp(t, h)
+	waitsSettled(t, armed)
+
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+
+	apiLifetime, err := json.Marshal((13 * time.Hour).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	putRowGen(t, h, installation, "api.session_lifetime", apiLifetime)
+	gen := putRowGen(t, h, installation, "orphan.level", []byte("3"))
+	walkTurn(t, h, armed)
+
+	now := counters(t, h)
+	refused := h.Node().Refused()
+
+	want := entity.SettingRef(installation, "orphan.level")
+	if len(refused) != 1 || !hasRef([]entity.ResourceRef{refused[0].Record}, want) {
+		t.Fatalf(
+			"refused records: got %s, want orphan's row alone, no way to its component",
+			describe(refused),
+		)
+	}
+
+	if refused[0].Generation != now.Settings {
+		t.Errorf(
+			"the refusal's generation: got %d, want %d, the generation the pass read",
+			refused[0].Generation,
+			now.Settings,
+		)
+	}
+
+	if _, err := runLevel(t, h, h.Node().Settings(), "orphan"); err == nil {
+		t.Errorf(
+			"orphan after its live change refused: a value published, want none, held back",
+		)
+	}
+
+	turnAt(t, h, ch, "the status holding the refusals", func(tr statusTurn) bool {
+		return tr.s.Settings == gen
+	})
+
+	if got := appliedOf(t, h, "orphan.level"); got != (apiv1.Applied{Nodes: 0, Of: 1}) {
+		t.Errorf(
+			"orphan.level applied: got %d of %d, want 0 of 1, refused, no way to its component",
+			got.Nodes,
+			got.Of,
+		)
+	}
+
+	if got := appliedOf(t, h, "api.session_lifetime"); got != (apiv1.Applied{Nodes: 1, Of: 1}) {
+		t.Errorf(
+			"api.session_lifetime applied: got %d of %d, want 1 of 1, read at use in the same pass",
+			got.Nodes,
+			got.Of,
+		)
+	}
+}
+
+// A failed apply stops only its own section: it keeps the value it last
+// ran, its row refused at the generation the pass read and retried on the
+// backoff, while another section in the same pass applies and the pass
+// reports the settings position it reconciled.
+func TestApplyFailureKeepsItsLastValue(t *testing.T) {
+	h, _ := servedFaulted(t)
+	declareSections(t, h)
+	ch := watchStatus(h)
+	armed := armWaits(h)
+
+	var (
+		mu    sync.Mutex
+		calls int
+		held  int
+	)
+
+	h.Node().DeclareSections(node.Declared{
+		Prefix: "stubborn",
+		Section: settings.Of(
+			"stubborn",
+			settings.At(entity.ScopeInstallation),
+			walkTuning{Level: 1},
+		),
+		Apply: func(snap *settings.Snapshot) error {
+			v, err := settings.Get[walkTuning](snap, "stubborn", h.NodeID())
+			if err != nil {
+				return err
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			calls++
+
+			if v.Level == 2 {
+				return errors.New("the component refused level 2")
+			}
+
+			held = v.Level
+
+			return nil
+		},
+	})
+	started(t, h)
+	caughtUp(t, h)
+	waitsSettled(t, armed)
+
+	mu.Lock()
+	ranAt, heldAt := calls, held
+	mu.Unlock()
+
+	if ranAt != 1 || heldAt != 1 {
+		t.Fatalf(
+			"the apply over the start: called %d times holding level %d, want 1 holding 1",
+			ranAt,
+			heldAt,
+		)
+	}
+
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+	putRowGen(t, h, installation, "stubborn.level", []byte("2"))
+	putRowGen(t, h, installation, "beta.level", []byte("4"))
+	walkTurn(t, h, armed)
+	gen := counters(t, h).Settings
+
+	got, err := runLevel(t, h, h.Node().Settings(), "stubborn")
+	if err != nil || got != 1 {
+		t.Errorf(
+			"stubborn after its apply failed: level %d, %v; want 1, the value it last ran",
+			got,
+			err,
+		)
+	}
+
+	mu.Lock()
+	running, level := calls, held
+	mu.Unlock()
+
+	if level != 1 || running != ranAt+1 {
+		t.Errorf(
+			"the component after its apply failed: level %d over %d new calls, want 1",
+			level,
+			running-ranAt,
+		)
+	}
+
+	refused := h.Node().Refused()
+
+	want := entity.SettingRef(installation, "stubborn.level")
+	if len(refused) != 1 || !hasRef([]entity.ResourceRef{refused[0].Record}, want) {
+		t.Fatalf(
+			"refused records: got %s, want stubborn's row alone, its apply failed",
+			describe(refused),
+		)
+	}
+
+	if refused[0].Generation != gen {
+		t.Errorf(
+			"the refusal's generation: got %d, want %d, the generation the pass read",
+			refused[0].Generation,
+			gen,
+		)
+	}
+
+	turnAt(t, h, ch, "the status holding the failed generation", func(tr statusTurn) bool {
+		return tr.s.Settings == gen
+	})
+
+	if got := appliedOf(t, h, "stubborn.level"); got != (apiv1.Applied{Nodes: 0, Of: 1}) {
+		t.Errorf(
+			"stubborn.level applied: got %d of %d, want 0 of 1, refused, its apply failing",
+			got.Nodes,
+			got.Of,
+		)
+	}
+
+	if got := appliedOf(t, h, "beta.level"); got != (apiv1.Applied{Nodes: 1, Of: 1}) {
+		t.Errorf(
+			"beta.level applied: got %d of %d, want 1 of 1, applied in the same pass",
+			got.Nodes,
+			got.Of,
+		)
+	}
+}
+
+// A failed apply on a section with one value per share keeps every share's
+// value: the apply is one call for the whole section, so no share ran the
+// new value, and every share's row reads refused.
+func TestApplyFailureKeepsEveryInstance(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	declareSections(t, h)
+	armed := armWaits(h)
+
+	var (
+		mu    sync.Mutex
+		boom  bool
+		calls int
+	)
+
+	h.Node().DeclareSections(node.Declared{
+		Prefix:  "duo",
+		Section: settings.Of("duo", settings.At(entity.ScopeShare), walkTuning{Level: 1}),
+		Apply: func(*settings.Snapshot) error {
+			mu.Lock()
+			defer mu.Unlock()
+
+			calls++
+
+			if boom {
+				return errors.New("the component refused the pair")
+			}
+
+			return nil
+		},
+	})
+	started(t, h)
+	configure(t, h, storeA)
+	shares := createShares(t, h, storeA, "s1", "s2")
+	one, two := shares[0], shares[1]
+	s1 := entity.SettingScope{Kind: entity.ScopeShare, ID: one.ID}
+	s2 := entity.SettingScope{Kind: entity.ScopeShare, ID: two.ID}
+
+	caughtUp(t, h)
+	waitsSettled(t, armed)
+
+	// Both shares' values run first, so the section has what it ran to
+	// keep when the apply fails.
+	putRowGen(t, h, s1, "duo.level", []byte("3"))
+	putRowGen(t, h, s2, "duo.level", []byte("3"))
+	walkTurn(t, h, armed)
+
+	mu.Lock()
+	ranAt := calls
+	mu.Unlock()
+
+	if ranAt != 1 {
+		t.Fatalf("the apply of the pair's first value: called %d times, want 1", ranAt)
+	}
+
+	before := h.Node().Settings()
+
+	// The component stops, both shares change to 4, and the apply fails:
+	// it is one call for the whole section, so no share ran its new value.
+	mu.Lock()
+	boom = true
+	mu.Unlock()
+
+	putRowGen(t, h, s1, "duo.level", []byte("4"))
+	putRowGen(t, h, s2, "duo.level", []byte("4"))
+	walkTurn(t, h, armed)
+
+	refused := h.Node().Refused()
+	w1 := entity.SettingRef(s1, "duo.level")
+	w2 := entity.SettingRef(s2, "duo.level")
+
+	var got []entity.ResourceRef
+	for _, r := range refused {
+		got = append(got, r.Record)
+	}
+
+	if len(got) != 2 || !hasRef(got, w1) || !hasRef(got, w2) {
+		t.Fatalf(
+			"refused records: got %s, want duo's row of share %s and %s, every instance held",
+			describe(refused),
+			one.Name,
+			two.Name,
+		)
+	}
+
+	if refused[0].Generation != counters(t, h).Settings {
+		t.Errorf(
+			"the refusal's generation: got %d, want %d, the generation the pass read",
+			refused[0].Generation,
+			counters(t, h).Settings,
+		)
+	}
+
+	mu.Lock()
+	running := calls
+	mu.Unlock()
+
+	if running != ranAt+1 {
+		t.Errorf(
+			"the apply after both shares changed: %d more calls, want 1, one for the section",
+			running-ranAt,
+		)
+	}
+
+	// Both shares keep the values they ran, whichever changed: the diff
+	// against the snapshot before lists neither of them, nothing keeping
+	// only part of the section back.
+	forward := settings.Diff(before, h.Node().Settings())
+	if len(forward) != 0 {
+		t.Errorf(
+			"the published values after the failed apply: Diff = %+v, want none, every share held",
+			forward,
+		)
+	}
+}
+
+// An apply that fails once is retried on the backoff with no new write: the
+// pass the backoff releases runs the value and clears the refusal, and no
+// later pass calls the apply again with the settings unchanged.
+func TestApplyFailureRetriedOnTheBackoff(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	armed := armWaits(h)
+
+	var (
+		mu         sync.Mutex
+		calls      int
+		held       int
+		failedOnce bool
+	)
+
+	h.Node().DeclareSections(node.Declared{
+		Prefix:  "once",
+		Section: settings.Of("once", settings.At(entity.ScopeInstallation), walkTuning{Level: 1}),
+		Apply: func(snap *settings.Snapshot) error {
+			v, err := settings.Get[walkTuning](snap, "once", h.NodeID())
+			if err != nil {
+				return err
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			calls++
+			held = v.Level
+
+			if v.Level == 2 && !failedOnce {
+				failedOnce = true
+
+				return errors.New("the component refused level 2 the first time")
+			}
+
+			return nil
+		},
+	})
+	started(t, h)
+	caughtUp(t, h)
+	waitsSettled(t, armed)
+
+	putRowGen(t, h, entity.SettingScope{Kind: entity.ScopeInstallation}, "once.level", []byte("2"))
+	walkTurn(t, h, armed) // the pass that delivers the change, and fails
+
+	mu.Lock()
+	failedAt := calls
+	mu.Unlock()
+
+	walkTurn(t, h, armed) // the backoff's pass retries without a write
+
+	mu.Lock()
+	running, level := calls, held
+	mu.Unlock()
+
+	if running != failedAt+1 {
+		t.Fatalf(
+			"the apply through the backoff: called %d more times, want 1, one retry",
+			running-failedAt,
+		)
+	}
+
+	if level != 2 {
+		t.Errorf(
+			"the component after the retry: level %d, want 2, the retry running the value",
+			level,
+		)
+	}
+
+	if got, err := runLevel(t, h, h.Node().Settings(), "once"); err != nil || got != 2 {
+		t.Errorf(
+			"the snapshot's once.level after the retry: got %d, %v; want 2, published",
+			got,
+			err,
+		)
+	}
+
+	if got := len(h.Node().Refused()); got != 0 {
+		t.Fatalf("refused records after the retry: got %s, want none", describe(h.Node().Refused()))
+	}
+
+	walkTurn(t, h, armed) // a pass nothing changed in runs no apply
+
+	mu.Lock()
+	running = calls
+	mu.Unlock()
+
+	if running != failedAt+1 {
+		t.Errorf(
+			"one pass after the value ran: %d more calls in all, want 1, no retry loop",
+			running-failedAt,
+		)
+	}
+}
+
+// A section whose first apply fails runs nothing: it enters the node's
+// record of what each section first runs only at an apply that succeeds,
+// so its restart key, off its default before the node started, sits in no
+// restart-pending set once the backoff retry runs the section, and nothing
+// of it stays refused (RFC 23 §2.4: the set holds only what changed since
+// the node started).
+func TestTheFirstApplyFailureLeavesNothingPending(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	ch := watchStatus(h)
+
+	var (
+		mu         sync.Mutex
+		failedOnce bool
+		calls      int
+	)
+
+	h.Node().DeclareSections(node.Declared{
+		Prefix: "moody",
+		Section: settings.Of("moody", settings.At(entity.ScopeInstallation),
+			stepTuning{Level: 1, Halt: 2}),
+		Apply: func(snap *settings.Snapshot) error {
+			v, err := settings.Get[stepTuning](snap, "moody", h.NodeID())
+			if err != nil {
+				return err
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			calls++
+
+			if v.Level == 6 && !failedOnce {
+				failedOnce = true
+
+				return errors.New("the component refused level 6 the first time")
+			}
+
+			return nil
+		},
+	})
+
+	// Both keys off their default before the node starts, the restart key
+	// among them: they are the section's first value, not a change after
+	// it started.
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+	putRowGen(t, h, installation, "moody.level", []byte("6"))
+	gen := putRowGen(t, h, installation, "moody.halt", []byte("3"))
+
+	started(t, h)
+	caughtUp(t, h)
+
+	mu.Lock()
+
+	running, failedOnceNow := calls, failedOnce
+	mu.Unlock()
+
+	if running != 2 || !failedOnceNow {
+		t.Fatalf(
+			"the apply over the start and its retry: %d calls, failed once %v, want 2",
+			running,
+			failedOnceNow,
+		)
+	}
+
+	v, err := settings.Get[stepTuning](h.Node().Settings(), "moody", h.NodeID())
+	if err != nil || v.Level != 6 || v.Halt != 3 {
+		t.Errorf(
+			"the snapshot's moody after the retry: got %+v, %v; want level 6, halt 3",
+			v,
+			err,
+		)
+	}
+
+	tr := turnAt(t, h, ch, "the status past the retry", func(tr statusTurn) bool {
+		return tr.s.Settings == gen
+	})
+
+	if got := len(tr.s.RestartPending); got != 0 {
+		t.Errorf(
+			"the restart key, run by the retry: RestartPending holds %d, want none",
+			got,
+		)
+	}
+
+	if got := len(h.Node().Refused()); got != 0 {
+		t.Errorf(
+			"refused records after the retry: got %s, want none, the section ran",
+			describe(h.Node().Refused()),
+		)
+	}
+}
+
+// A section with no row at all, running only its defaults, is refused when
+// its apply fails and starts nothing: the refusal names the section's
+// changed keys, with the generation the pass read and the apply's error,
+// and the backoff retries the delivery, there being no row to name the
+// refusal by (RFC 23 section 2.4: a node reports every change it did not
+// apply).
+func TestADefaultsOnlyApplyFailureIsRefusedAndRetried(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	armed := armWaits(h)
+
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+
+	h.Node().DeclareSections(node.Declared{
+		Prefix: "bare",
+		Section: settings.Of("bare", settings.At(entity.ScopeInstallation),
+			walkTuning{Level: 1}),
+		Apply: func(*settings.Snapshot) error {
+			mu.Lock()
+			defer mu.Unlock()
+
+			calls++
+
+			return errors.New("the component refused its defaults")
+		},
+	})
+	started(t, h)
+	caughtUp(t, h)
+	waitsSettled(t, armed)
+
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+
+	refused := h.Node().Refused()
+
+	want := entity.SettingRef(installation, "bare.level")
+	if len(refused) != 1 || !hasRef([]entity.ResourceRef{refused[0].Record}, want) {
+		t.Fatalf(
+			"refused records for a section with no row: got %s, want bare's changed key alone",
+			describe(refused),
+		)
+	}
+
+	if refused[0].Generation != counters(t, h).Settings {
+		t.Errorf(
+			"the refusal's generation: got %d, want %d, the generation the pass read",
+			refused[0].Generation,
+			counters(t, h).Settings,
+		)
+	}
+
+	var p apiv1.Problem
+	if err := json.Unmarshal(refused[0].Error, &p); err != nil {
+		t.Fatalf("the refusal's error %s: %v", refused[0].Error, err)
+	}
+
+	if p.Status != http.StatusUnprocessableEntity ||
+		!strings.Contains(p.Detail, "refused its defaults") {
+		t.Errorf(
+			"the refused section's problem: got %d %q, want 422 naming the apply's error",
+			p.Status,
+			p.Detail,
+		)
+	}
+
+	if _, err := settings.Get[walkTuning](h.Node().Settings(), "bare", h.NodeID()); err == nil {
+		t.Errorf("bare after its defaults failed to apply: a value published, want none, held back")
+	}
+
+	// The start already delivered twice, the records walk and the first
+	// reconcile's, both refused: the second walk lists the section again,
+	// the first having published nothing of it.
+	mu.Lock()
+	first := calls
+	mu.Unlock()
+
+	if first != 2 {
+		t.Fatalf("the apply over the start: %d calls, want 2, the start's two walks", first)
+	}
+
+	// The backoff pass retries the failed delivery, though no row changed.
+	walkTurn(t, h, armed)
+
+	mu.Lock()
+	second := calls
+	mu.Unlock()
+
+	if second != first+1 {
+		t.Fatalf(
+			"a section with no row through the backoff: %d calls, want %d, the delivery retried",
+			second,
+			first+1,
+		)
+	}
+
+	if got, err := settings.Get[walkTuning](h.Node().Settings(), "bare", h.NodeID()); err == nil {
+		_ = got
+
+		t.Errorf("bare after the retry still fails: a value published, want none, held back")
+	}
+}
+
+// A section with no row and no way to its component is refused the same
+// way: without a row to name the refusal by, its changed keys carry it,
+// with the no-path error. Nothing of it is published, no apply runs, and
+// the refusal is not retried: no write can clear what only a new binary
+// gives a path to, so no backoff pass runs for it.
+func TestADefaultsOnlySectionWithNoPathIsRefused(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	armed := armWaits(h)
+
+	var (
+		mu      sync.Mutex
+		applies int
+	)
+
+	h.Node().OnApply(func(kvstore.Counters) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		applies++
+	})
+
+	h.Node().DeclareSections(node.Declared{
+		Prefix: "nopath",
+		Section: settings.Of("nopath", settings.At(entity.ScopeInstallation),
+			walkTuning{Level: 1}),
+	})
+	started(t, h)
+	caughtUp(t, h)
+	waitsSettled(t, armed)
+
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+
+	refused := h.Node().Refused()
+
+	want := entity.SettingRef(installation, "nopath.level")
+	if len(refused) != 1 || !hasRef([]entity.ResourceRef{refused[0].Record}, want) {
+		t.Fatalf(
+			"refused records for a pathless section with no row: got %s, want nopath's key alone",
+			describe(refused),
+		)
+	}
+
+	if refused[0].Generation != counters(t, h).Settings {
+		t.Errorf(
+			"the refusal's generation: got %d, want %d, the generation the pass read",
+			refused[0].Generation,
+			counters(t, h).Settings,
+		)
+	}
+
+	var p apiv1.Problem
+	if err := json.Unmarshal(refused[0].Error, &p); err != nil {
+		t.Fatalf("the refusal's error %s: %v", refused[0].Error, err)
+	}
+
+	if p.Status != http.StatusUnprocessableEntity ||
+		!strings.Contains(p.Detail, "no way to its component") {
+		t.Errorf(
+			"the pathless section's problem: got %d %q, want 422 naming the missing way",
+			p.Status,
+			p.Detail,
+		)
+	}
+
+	if _, err := settings.Get[walkTuning](h.Node().Settings(), "nopath", h.NodeID()); err == nil {
+		t.Errorf("nopath, held back at start: a value published, want none, the section never ran")
+	}
+
+	// One step of the clock, no write: the loop runs its interval pass and
+	// no apply, the refusal of a pathless section asking for no retry.
+	mu.Lock()
+	ranAt := applies
+	mu.Unlock()
+
+	walkTurn(t, h, armed)
+
+	mu.Lock()
+	running := applies
+	mu.Unlock()
+
+	if running != ranAt {
+		t.Errorf(
+			"one step of the clock, no write: %d applies, want %d, no retry for a pathless section",
+			running,
+			ranAt,
+		)
+	}
+}
+
+// A share whose removal deleted its settings rows reconfigures nothing: the
+// share no longer listed, its changes back to the section's base are
+// dropped, so no apply runs, nothing reads refused and nothing sits
+// restart-pending.
+func TestRemovedShareChangesDiscarded(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	ch := watchStatus(h)
+	armed := armWaits(h)
+
+	var (
+		mu      sync.Mutex
+		applies int
+	)
+
+	h.Node().DeclareSections(node.Declared{
+		Prefix:  "pair",
+		Section: settings.Of("pair", settings.At(entity.ScopeShare), stepTuning{Level: 1, Halt: 2}),
+		Apply: func(*settings.Snapshot) error {
+			mu.Lock()
+			defer mu.Unlock()
+
+			applies++
+
+			return nil
+		},
+	})
+	declareSections(t, h)
+	configure(t, h, storeA)
+	one := createShare(t, h, "one", storeA)
+	share := entity.SettingScope{Kind: entity.ScopeShare, ID: one.ID}
+	putRowGen(t, h, share, "pair.level", []byte("5"))
+	putRowGen(t, h, share, "pair.halt", []byte("7"))
+
+	g := gateRunner(h)
+	defer g.release()
+
+	started(t, h)
+	caughtUp(t, h)
+	waitsSettled(t, armed)
+	g.took(t)
+
+	mu.Lock()
+	ranAt := applies
+	mu.Unlock()
+
+	if ranAt != 1 {
+		t.Fatalf("the apply of the share's live change: called %d times, want 1", ranAt)
+	}
+
+	// Remove the share, driving its removal past the step that deletes its
+	// settings rows: the runner turns run its batches to the live state's
+	// end, and the shard's forgotten is recorded here as the kvstore's own
+	// batch tests do, the journal's forget being the step that waits.
+	deleteShare(t, h, one)
+
+	for range 100 {
+		g.next(t)
+
+		if s := tagState(t, h, one.ID); s == entity.TagOffloaded || s == entity.TagForgotten {
+			break
+		}
+	}
+
+	if s := tagState(t, h, one.ID); s != entity.TagOffloaded && s != entity.TagForgotten {
+		t.Fatalf(
+			"the deleted share's shard: removal at %v, want offloaded or later",
+			s,
+		)
+	}
+
+	// One turn more, which stands the removal at its forget step, before
+	// the shard's forgotten can be recorded.
+	g.next(t)
+
+	sh, _, err := h.Store().ShareIndex().Share(t.Context(), one.ID)
+	if err != nil {
+		t.Fatalf("read the share back: %v", err)
+	}
+
+	if err := h.Store().Nodes().RecordShardRemoval(
+		t.Context(), one.ID, sh.Shard, entity.TagForgotten); err != nil {
+		t.Fatalf("record the share's shard forgotten: %v", err)
+	}
+
+	for range 100 {
+		shardDone, err := h.Store().Nodes().ContinueShardRemoval(t.Context(), one.ID, sh.Shard)
+		if err != nil {
+			t.Fatalf("drop the share's shard's files: %v", err)
+		}
+
+		if shardDone {
+			break
+		}
+	}
+
+	rows := 1
+	for range 100 {
+		rows = 0
+
+		for _, err := range h.Store().ControlPlane().Settings(t.Context(), share) {
+			if err != nil {
+				t.Fatalf("read the removed share's settings: %v", err)
+			}
+
+			rows++
+		}
+
+		if rows == 0 {
+			break
+		}
+
+		g.next(t)
+	}
+
+	if rows != 0 {
+		t.Fatal("the removed share's settings rows: still in the store after 100 runner turns")
+	}
+
+	waitsSettled(t, armed)
+	walkTurn(t, h, armed)
+
+	mu.Lock()
+	running := applies
+	mu.Unlock()
+
+	if running != ranAt {
+		t.Errorf(
+			"after the removed share's rows were deleted: %d more calls, want none",
+			running-ranAt,
+		)
+	}
+
+	if got := len(h.Node().Refused()); got != 0 {
+		t.Fatalf(
+			"refused records after the removed share's rows were deleted: got %s, want none",
+			describe(h.Node().Refused()),
+		)
+	}
+
+	gen := counters(t, h).Settings
+	turnAt(t, h, ch, "the status past the deleted rows", func(tr statusTurn) bool {
+		return tr.s.Settings == gen && len(tr.s.RestartPending) == 0
+	})
 }
 
 // The walk's pages are store calls, held to storeBound: a page that hangs
