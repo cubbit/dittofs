@@ -21,6 +21,8 @@ var frozenExports = []string{
 	"func InitLogger(cfg *Bootstrap) error",
 	"func InitNodeID(ctx context.Context, b *Bootstrap, installation [16]byte, dir string) " +
 		"(entity.NodeID, error)",
+	"func MakeRuntimeDir(environ []string) (string, error)",
+	"func (*Bootstrap).Validate(ctx context.Context, environ []string) error",
 	"func NodeID(b *Bootstrap) (entity.NodeID, error)",
 	"func WriteMissingNodeIDs(ctx context.Context, b *Bootstrap, id entity.NodeID, " +
 		"journalID func(ctx context.Context, node entity.NodeID, device entity.JournalDir) " +
@@ -29,11 +31,11 @@ var frozenExports = []string{
 	"func Load(configPath string, environ []string) (*Bootstrap, error)",
 	"func MustLoad(configPath string, environ []string) (*Bootstrap, error)",
 	"func LoadWithSources(configPath string, environ []string) (*Loaded, error)",
-	"type Loaded struct{Bootstrap Bootstrap; Source map[string]Source}",
+	"func ConfigPath(flag string, environ []string) string",
+	"type Loaded struct{Bootstrap Bootstrap; Source map[string]Source; File string; " +
+		"StateDir string; StateVar string; RuntimeDir string; RuntimeVar string}",
 	"type Source string",
-	"type BlockstoreConfig struct{Journal BlockstoreJournalConfig}",
-	"type BlockstoreJournalConfig struct{Path string}",
-	"type Bootstrap struct{Logging LoggingConfig; Blockstore BlockstoreConfig; " +
+	"type Bootstrap struct{Logging LoggingConfig; " +
 		"Node struct{ID entity.NodeID; Roles []string}; " +
 		"Metadata struct{Backend string; Badger struct{Path string}; " +
 		"FoundationDB struct{ClusterFile string; " +

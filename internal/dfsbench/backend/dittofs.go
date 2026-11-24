@@ -85,10 +85,9 @@ const (
 	dittofsAPIURL  = "http://127.0.0.1:" + dittofsAPIPort
 	dittofsMeta    = "bench-meta"
 	dittofsBlocks  = "bench-s3"
-	// Throwaway control-plane secret (≥32 chars, required for the API server) and
-	// admin password on a disposable single-tenant bench VM — same fixed-literal
-	// convention as zerofsPassword. ponytail: no prod users; don't generate.
-	dittofsSecret    = "dfsbench-controlplane-secret-0123456789ab"
+	// Throwaway admin password on a disposable single-tenant bench VM, the same
+	// fixed-literal convention as zerofsPassword. ponytail: no prod users; don't
+	// generate.
 	dittofsAdminPass = "dfsbench-admin-pw"
 )
 
@@ -226,16 +225,13 @@ func dittofsSetup(ctx context.Context, env BackendEnv, durability string, maxSiz
 	if err := os.MkdirAll(dittofsDataDir+"/blocks", 0o755); err != nil {
 		return err
 	}
-	// Start the server with the required control-plane secret (else API-server
-	// bringup fails "JWT secret must be at least 32 characters") and a known admin
-	// password (background mode generates an unrecoverable one otherwise), then
-	// wait for its NFS port before driving dfsctl.
+	// Start the server, then wait for its NFS port before driving dfsctl. The
+	// start reads no admin password from its environment, so the login below
+	// needs an admin that dfs init has set.
 	// DITTOFS_LOGGING_LEVEL=warn pins per-op logging off for the benched server
 	// regardless of the binary's default, so log volume is uniform across A/B runs
 	// (belt-and-suspenders alongside #1738 demoting per-op logs to Debug).
-	start := fmt.Sprintf("DITTOFS_LOGGING_LEVEL=warn "+
-		"DITTOFS_CONTROLPLANE_SECRET=%s DITTOFS_ADMIN_INITIAL_PASSWORD=%s "+
-		"dfs start >"+dittofsServerLog+" 2>&1 &", dittofsSecret, dittofsAdminPass)
+	start := "DITTOFS_LOGGING_LEVEL=warn dfs start >" + dittofsServerLog + " 2>&1 &"
 	if err := exec.Sh(ctx, "sh", "-c", start); err != nil {
 		return err
 	}

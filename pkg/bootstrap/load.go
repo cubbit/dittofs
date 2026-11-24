@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,20 +31,17 @@ type Bootstrap struct {
 	// Logging controls log output behavior
 	Logging LoggingConfig `mapstructure:"logging" yaml:"logging"`
 
-	// Blockstore holds the per-share local state root.
-	Blockstore BlockstoreConfig `mapstructure:"blockstore" yaml:"blockstore"`
-
 	// Node is this node's identity and its roles. The file names the
 	// identity only when every journal directory's node-id copy is lost.
 	Node struct {
 		ID    entity.NodeID `mapstructure:"id"    yaml:"id"`
-		Roles []string      `mapstructure:"roles" yaml:"roles"`
+		Roles []string      `mapstructure:"roles" yaml:"roles" jsonschema:"enum=protocol,enum=storage"` //nolint:lll // a struct tag is one line
 	} `mapstructure:"node" yaml:"node"`
 
 	// Metadata is where the metadata store is and how to reach it. The
 	// store's credential is files, so only their paths are held here.
 	Metadata struct {
-		Backend string `mapstructure:"backend" yaml:"backend"`
+		Backend string `mapstructure:"backend" yaml:"backend" jsonschema:"enum=badger,enum=foundationdb"` //nolint:lll // a struct tag is one line
 		Badger  struct {
 			Path string `mapstructure:"path" yaml:"path"`
 		} `mapstructure:"badger" yaml:"badger"`
@@ -60,7 +56,7 @@ type Bootstrap struct {
 	} `mapstructure:"metadata" yaml:"metadata"`
 
 	// Journals are the node's journal devices, one directory each.
-	Journals []Journal `mapstructure:"journals" yaml:"journals"`
+	Journals []Journal `mapstructure:"journals" yaml:"journals" jsonschema:"required"`
 
 	// Adapters holds the addresses the protocol adapters bind; each
 	// adapter's port is its own setting.
@@ -86,18 +82,24 @@ type Bootstrap struct {
 
 	// Keys names each role's wrapping key for Secret records.
 	Keys struct {
-		Protocol WrappingKey `mapstructure:"protocol" yaml:"protocol"`
-		Storage  WrappingKey `mapstructure:"storage"  yaml:"storage"`
-	} `mapstructure:"keys" yaml:"keys"`
+		Protocol WrappingKey `mapstructure:"protocol" yaml:"protocol" jsonschema:"required"`
+		Storage  WrappingKey `mapstructure:"storage"  yaml:"storage"  jsonschema:"required"`
+	} `mapstructure:"keys" yaml:"keys" jsonschema:"required"`
+
+	// where is the file this bootstrap was read from, empty when no file
+	// was read: the <where> refusals of an unset key name when they come
+	// from the file, else the environment. Load fills it; a bootstrap built
+	// by hand reports the environment.
+	where string
 }
 
 // LoggingConfig controls logging behavior.
 type LoggingConfig struct {
 	// Level is the minimum log level: debug, info, warn or error.
-	Level string `mapstructure:"level" yaml:"level"`
+	Level string `mapstructure:"level" yaml:"level" jsonschema:"enum=debug,enum=info,enum=warn,enum=error"` //nolint:lll // a struct tag is one line
 
 	// Format is the log format: text or json.
-	Format string `mapstructure:"format" yaml:"format"`
+	Format string `mapstructure:"format" yaml:"format" jsonschema:"enum=text,enum=json"`
 
 	// Output is where logs go: stdout, stderr, or an absolute file path.
 	Output string `mapstructure:"output" yaml:"output"`
@@ -135,15 +137,33 @@ const (
 )
 
 // Loaded is a loaded bootstrap with the source of each of its keys, by the
-// key's dotted name.
+// key's dotted name, and the file and the two directories it was read with.
 type Loaded struct {
 	Bootstrap
 
 	Source map[string]Source
+
+	// File is the file the bootstrap was read from, empty when no file was
+	// read.
+	File string
+
+	// StateDir and RuntimeDir are the directories the environment named, and
+	// StateVar and RuntimeVar the variables that chose each. A runtime
+	// directory that falls back under the state one names the state
+	// directory's variable; the temp directory no variable named is
+	// "default".
+	StateDir   string
+	StateVar   string
+	RuntimeDir string
+	RuntimeVar string
 }
 
 // whereEnvironment is the <where> of a refusal of a variable.
 const whereEnvironment = "environment"
+
+// settingLine is the rule of a setting written where the host sets its
+// facts: a start never takes a setting from the host (RFC 13 §2.2).
+const settingLine = "a setting, not a host fact; set it through the management API"
 
 // Load reads the host's file and environ, the process environment as
 // os.Environ returns it, and returns the bootstrap, or one error whose lines
@@ -173,14 +193,7 @@ func LoadWithSources(configPath string, environ []string) (*Loaded, error) {
 
 	var rep report
 
-	path, named := configPath, configPath != ""
-	if !named {
-		if v := env["DITTOFS_CONFIG"]; v != "" {
-			path, named = v, true
-		} else {
-			path = defaultConfigPath(env)
-		}
-	}
+	path, named := configFile(configPath, env)
 
 	var leaves map[string]*yaml.Node
 
@@ -188,14 +201,72 @@ func LoadWithSources(configPath string, environ []string) (*Loaded, error) {
 		leaves = readFile(path, named, &rep)
 	}
 
-	values := chooseValues(path, leaves, env, &rep)
+	dirs := lookupDirs(environ)
+
+	if dirs.stateRefused {
+		rep.add(whereEnvironment, dirs.stateVar, "must be an absolute path")
+	}
+
+	if dirs.runtimeRefused {
+		rep.add(whereEnvironment, dirs.runtimeVar, "must be an absolute path")
+	}
+
+	values := chooseValues(path, leaves, env, dirs, &rep)
+	scanEnv(env, &rep)
 	relate(values, &rep)
 
 	if len(rep) > 0 {
 		return nil, rep.err()
 	}
 
-	return assemble(values)
+	loaded, err := assemble(values)
+	if err != nil {
+		return nil, err
+	}
+
+	if leaves != nil {
+		loaded.where = path
+		loaded.File = path
+	}
+
+	loaded.StateDir, loaded.StateVar = dirs.state, dirs.stateVar
+	loaded.RuntimeDir, loaded.RuntimeVar = dirs.runtime, dirs.runtimeVar
+
+	// The temp directory is the fallback when no variable and no home name
+	// a state directory: the variable the lookup records there named
+	// nothing, so the directory, and a runtime one under it, is the
+	// default's.
+	if dirs.stateTemp {
+		if loaded.RuntimeVar == loaded.StateVar {
+			loaded.RuntimeVar = string(sourceDefault)
+		}
+
+		loaded.StateVar = string(sourceDefault)
+	}
+
+	return loaded, nil
+}
+
+// ConfigPath is the host's file a command reads: flag, else DITTOFS_CONFIG's
+// value in environ, else the default path, "" when no variable names one.
+func ConfigPath(flag string, environ []string) string {
+	path, _ := configFile(flag, environMap(environ))
+
+	return path
+}
+
+// configFile is the host's file and whether a flag or DITTOFS_CONFIG named
+// it: a named file that is missing refuses, a default one loads the defaults.
+func configFile(flag string, env map[string]string) (string, bool) {
+	if flag != "" {
+		return flag, true
+	}
+
+	if v := env["DITTOFS_CONFIG"]; v != "" {
+		return v, true
+	}
+
+	return defaultConfigPath(env), false
 }
 
 // GetDefaultConfigPath returns the default configuration file path, from the
@@ -371,9 +442,9 @@ func walk(m *yaml.Node, prefix, path string, leaves map[string]*yaml.Node, rep *
 }
 
 // refuseUndeclared refuses each leaf under an undeclared key, naming why:
-// a key that moved names its replacement, a setting names the management
-// API, and any other key names the closest declared one. No value is
-// printed: an undeclared key's value may be a secret (RFC 13 §6).
+// a setting names the management API, a v1 key of Appendix C's table names
+// its replacement, and any other key names the closest declared one. No
+// value is printed: an undeclared key's value may be a secret (RFC 13 §6).
 //
 // An alias inside an undeclared mapping is a leaf, not followed: an alias
 // may name a mapping that holds it, and following it would never end.
@@ -386,11 +457,13 @@ func refuseUndeclared(n *yaml.Node, key, path string, rep *report) {
 		return
 	}
 
-	switch replacement, moved := renamedKey(key); {
-	case moved:
-		rep.add(path, key, "no longer read; write "+replacement)
+	rule, retired := retiredRule(key)
+
+	switch {
 	case isSetting(key):
-		rep.add(path, key, "a setting, not a host fact; set it through the management API")
+		rep.add(path, key, settingLine)
+	case retired:
+		rep.add(path, key, rule)
 	default:
 		rep.add(path, key, "unknown key; did you mean "+closestKey(key)+"?")
 	}
@@ -469,18 +542,20 @@ type chosen struct {
 
 // chooseValues takes each declared key's value from its variable, else the
 // file, else its default, checking every value a source gives, the file's
-// included when a variable replaces it.
+// included when a variable replaces it. The three directory defaults come
+// from the directories the environment named.
 func chooseValues(
 	path string,
 	leaves map[string]*yaml.Node,
 	env map[string]string,
+	dirs resolvedDirs,
 	rep *report,
 ) map[string]*chosen {
 	values := make(map[string]*chosen, len(keySpecs))
 
 	for i := range keySpecs {
 		s := &keySpecs[i]
-		c := &chosen{spec: s, value: s.defaultValue(), source: sourceDefault, passed: true}
+		c := &chosen{spec: s, value: s.defaultValue(dirs), source: sourceDefault, passed: true}
 
 		if n, ok := leaves[s.key]; ok && (!s.nullUnset || !isNull(n)) {
 			v, ok := s.fromNode(n, path, rep)
@@ -625,6 +700,13 @@ func sameDir(a, b string) bool {
 
 // assemble builds the bootstrap from the chosen values.
 func assemble(values map[string]*chosen) (*Loaded, error) {
+	// The store directory's default is the badger store's: another backend
+	// leaves the key unset, as a file that names no badger path does.
+	if p := values["metadata.badger.path"]; p.source == sourceDefault &&
+		values["metadata.backend"].value != "badger" {
+		p.value = ""
+	}
+
 	tree := map[string]any{}
 	sources := make(map[string]Source, len(values))
 
@@ -666,22 +748,6 @@ func assemble(values map[string]*chosen) (*Loaded, error) {
 		dc.ErrorUnused = true
 	}); err != nil {
 		return nil, fmt.Errorf("decode the bootstrap: %w", err)
-	}
-
-	loaded.Blockstore.applyDefaults()
-
-	if err := loaded.Blockstore.validate(); err != nil {
-		var rep report
-
-		// A default path is the state directory's, so the variable that
-		// made it relative is named.
-		if c := values["blockstore.journal.path"]; c.set {
-			rep.add(c.where, c.name, "must be an absolute directory")
-		} else {
-			rep.add(whereEnvironment, stateDirVariable(), "must be an absolute path")
-		}
-
-		return nil, rep.err()
 	}
 
 	return loaded, nil
@@ -730,61 +796,6 @@ func oneLine(s string) string {
 	}
 
 	return s
-}
-
-// getStateDir returns the state directory path for runtime data (logs, PID files).
-//
-// On Windows, uses %LOCALAPPDATA%\dittofs.
-// On Unix, uses XDG_STATE_HOME/dittofs or ~/.local/state/dittofs.
-func getStateDir() string {
-	if runtime.GOOS == "windows" {
-		localAppData := os.Getenv("LOCALAPPDATA")
-		if localAppData != "" {
-			return filepath.Join(localAppData, "dittofs")
-		}
-
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, "AppData", "Local", "dittofs")
-		}
-
-		return filepath.Join(os.TempDir(), "dittofs")
-	}
-
-	stateDir := os.Getenv("XDG_STATE_HOME")
-	if stateDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return filepath.Join(os.TempDir(), "dittofs")
-		}
-
-		stateDir = filepath.Join(home, ".local", "state")
-	}
-
-	return filepath.Join(stateDir, "dittofs")
-}
-
-// stateDirVariable names the variable getStateDir read the state directory
-// from.
-func stateDirVariable() string {
-	if runtime.GOOS == "windows" {
-		if os.Getenv("LOCALAPPDATA") != "" {
-			return "LOCALAPPDATA"
-		}
-
-		return "USERPROFILE"
-	}
-
-	if os.Getenv("XDG_STATE_HOME") != "" {
-		return "XDG_STATE_HOME"
-	}
-
-	return "HOME"
-}
-
-// getDefaultLogPath returns the default log file path.
-func getDefaultLogPath() string {
-	return filepath.Join(getStateDir(), "dittofs.log")
 }
 
 // InitLogger initializes the structured logger from a LoggingConfig,

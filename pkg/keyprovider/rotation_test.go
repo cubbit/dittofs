@@ -35,10 +35,8 @@ func TestLocal_RetiredKeyStillUnwraps(t *testing.T) {
 	dir := t.TempDir()
 	oldPath := writeKeyFileAt(t, dir, "old.key", testPassphrase)
 	newPath := writeKeyFileAt(t, dir, "new.key", testPassphrase)
-	t.Setenv(localPassphraseEnv, testPassphrase)
-
 	// Wrap a block under the old key, as a pre-rotation daemon would.
-	before, err := newLocalProvider(Config{Kind: KindLocal, File: oldPath})
+	before, err := newLocalProvider(Config{Kind: KindLocal, File: oldPath}, testPassphrase)
 	if err != nil {
 		t.Fatalf("newLocalProvider(old): %v", err)
 	}
@@ -54,7 +52,7 @@ func TestLocal_RetiredKeyStillUnwraps(t *testing.T) {
 		Kind:         KindLocal,
 		File:         newPath,
 		RetiredFiles: []string{oldPath},
-	})
+	}, testPassphrase)
 	if err != nil {
 		t.Fatalf("newLocalProvider(rotated): %v", err)
 	}
@@ -93,9 +91,8 @@ func TestLocal_DiscardedKeyStillRejected(t *testing.T) {
 	dir := t.TempDir()
 	oldPath := writeKeyFileAt(t, dir, "old.key", testPassphrase)
 	newPath := writeKeyFileAt(t, dir, "new.key", testPassphrase)
-	t.Setenv(localPassphraseEnv, testPassphrase)
 
-	before, err := newLocalProvider(Config{Kind: KindLocal, File: oldPath})
+	before, err := newLocalProvider(Config{Kind: KindLocal, File: oldPath}, testPassphrase)
 	if err != nil {
 		t.Fatalf("newLocalProvider(old): %v", err)
 	}
@@ -107,7 +104,7 @@ func TestLocal_DiscardedKeyStillRejected(t *testing.T) {
 
 	// Rotate WITHOUT retiring the old key — the data-loss case the issue
 	// describes.
-	after, err := newLocalProvider(Config{Kind: KindLocal, File: newPath})
+	after, err := newLocalProvider(Config{Kind: KindLocal, File: newPath}, testPassphrase)
 	if err != nil {
 		t.Fatalf("newLocalProvider(rotated): %v", err)
 	}
@@ -124,13 +121,12 @@ func TestLocal_DiscardedKeyStillRejected(t *testing.T) {
 func TestLocal_UnreadableRetiredKeyDegrades(t *testing.T) {
 	dir := t.TempDir()
 	newPath := writeKeyFileAt(t, dir, "new.key", testPassphrase)
-	t.Setenv(localPassphraseEnv, testPassphrase)
 
 	p, err := newLocalProvider(Config{
 		Kind:         KindLocal,
 		File:         newPath,
 		RetiredFiles: []string{filepath.Join(dir, "does-not-exist.key")},
-	})
+	}, testPassphrase)
 	if err != nil {
 		t.Fatalf("newLocalProvider with an unreadable retired key: %v, want success", err)
 	}
@@ -154,14 +150,12 @@ func TestLocal_DuplicateRetiredIDRejected(t *testing.T) {
 	dir := t.TempDir()
 	oldPath := writeKeyFileAt(t, dir, "old.key", testPassphrase)
 	newPath := writeKeyFileAt(t, dir, "new.key", testPassphrase)
-	t.Setenv(localPassphraseEnv, testPassphrase)
-
 	t.Run("same key listed twice", func(t *testing.T) {
 		_, err := newLocalProvider(Config{
 			Kind:         KindLocal,
 			File:         newPath,
 			RetiredFiles: []string{oldPath, oldPath},
-		})
+		}, testPassphrase)
 		if !errors.Is(err, ErrInvalidConfig) {
 			t.Fatalf("error = %v, want ErrInvalidConfig", err)
 		}
@@ -172,7 +166,7 @@ func TestLocal_DuplicateRetiredIDRejected(t *testing.T) {
 			Kind:         KindLocal,
 			File:         newPath,
 			RetiredFiles: []string{newPath},
-		})
+		}, testPassphrase)
 		if !errors.Is(err, ErrInvalidConfig) {
 			t.Fatalf("error = %v, want ErrInvalidConfig", err)
 		}
@@ -186,13 +180,12 @@ func TestLocal_CloseZeroesRetiredKeys(t *testing.T) {
 	dir := t.TempDir()
 	oldPath := writeKeyFileAt(t, dir, "old.key", testPassphrase)
 	newPath := writeKeyFileAt(t, dir, "new.key", testPassphrase)
-	t.Setenv(localPassphraseEnv, testPassphrase)
 
 	p, err := newLocalProvider(Config{
 		Kind:         KindLocal,
 		File:         newPath,
 		RetiredFiles: []string{oldPath},
-	})
+	}, testPassphrase)
 	if err != nil {
 		t.Fatalf("newLocalProvider: %v", err)
 	}

@@ -372,8 +372,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	// decision: the API is handed no tracer, as Config's tracer is the
 	// journals', not the API's: the API's own tracer is RFC 23's own wiring,
 	// fed from Config once it lands, so the API's spans go to the no-op
-	// tracer. An empty api.socket serves no local socket: the bootstrap gives
-	// it no default path yet.
+	// tracer. An empty api.socket serves no local socket.
 	n.api = api.New(api.Deps{
 		Ready:        n.readiness,
 		Served:       n.life.served.Load,

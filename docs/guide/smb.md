@@ -558,9 +558,6 @@ Permission levels: `none`, `read`, `read-write`, `admin`.
 
 Resolution order: user explicit permission → group permission → share default.
 
-For the full user management reference (LDAP/AD idmap, password hash format, per-share
-defaults), see [./configuration.md#9-user-management](./configuration.md#9-user-management).
-
 ---
 
 ## Testing SMB Operations
@@ -569,7 +566,7 @@ defaults), see [./configuration.md#9-user-management](./configuration.md#9-user-
 
 ```bash
 # Start server with debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 
 # Mount and test (macOS)
 sudo mount_smbfs //testuser:testpass@localhost:12445/export /mnt/smb
