@@ -41,9 +41,14 @@ synchronisation points are the RFC 8 offload plan's, cited as `RFC 8 offload pla
 RFC 8 offload plan's pull request carries; one nightly `fuzz` suite, the golden-vector script and
 the corpus fetch are registered here and shared (§1.4).
 **RFC 2 amendments in this pull request:** §5.1, §5.7: the dedup lookup lands with its first
-caller, the dedup oracle (D3); §10.4, §10.6: the allocation counts run per pull request, the
-golden vectors' second architecture nightly, and K4 on the corpus by hand, with edit stability
-checked per change on seeded input against K4's criterion (§1.4). This pull request merges after
+caller, the dedup oracle, and the first release's `Add` takes no lookup and returns no error
+(D3); P2, A7 and §5.1: a block may close early at the key budget `K`, and counts as a short
+block (D3); §3.2: the minimum-size count takes only the bytes before the byte under test;
+§3.7: both keys are `[32]byte` and an all-zero chunk-ID key is refused, with a fuzz check (D4);
+§9.1, §10.3, §10.4, §10.6: the allocation counts run per pull request and skip under the race
+detector, the golden vectors' second architecture nightly, and K4 on the corpus by hand, with
+edit stability checked per change on seeded input, one byte inserted, against K4's criterion
+(§1.4). This pull request merges after
 the RFC 8 offload plan's (#5528), which carries the RFC 0 §1.2 amendment rule 7 cites.
 **Transition:** new installations only, as #3119 decided. v1 and v2 never run in one binary, so no
 name carries a version, and v2 neither reads nor migrates anything v1 wrote. No epic touches v1
@@ -75,7 +80,7 @@ byte slice and a closure.
 **Dependency limits.** RFC 2 §1.1 allows the standard library and a BLAKE3 implementation, and
 an import test enforces it from epic 1. The repository already depends on
 `lukechampine.com/blake3`, which has the key-derivation and keyed modes and the extendable output
-RFC 2 §3.2 and §4.2 use (`go.mod:35` on `feat/storage-v2`, v1.4.1: `DeriveKey`, `New` with a
+RFC 2 §3.2 and §4.2 use (`go.mod:34` on `feat/storage-v2`, v1.4.1: `DeriveKey`, `New` with a
 key, `Hasher.XOF`); `pkg/metadata/entity/fold.go` imports it too, so #5484's deletion of v1 keeps
 it. Epic 2 checks each mode against an independent vector.
 
@@ -94,17 +99,17 @@ the reference box, fuzzing at full size, the second architecture.
 
 The exported surface of D1's packages, frozen at S1, which is RFC 8 offload plan S1a "carver
 interface agreed", with stub bodies. S1 is final: epic 1 also settles the assembler inputs the
-pipeline supplies (D3): the key budget (§6 point 2), the lookup (deferred), the all-zero flag
-and each chunk's age. S1 therefore waits on the user's answer to §6 point 2, whose other option
-changes epics 1 and 5.
+pipeline supplies (D3): the key budget `K` with each chunk's worst-case keys (RFC 2 P2 as
+amended), the lookup (deferred), the all-zero flag and each chunk's age.
 
 - `carver`: the settings value built from a namespace's `Target`, its encryption flag, its
   chunking key and its chunk-ID key (RFC 2 §3.2, §3.7, §4.1, §6; D4); `Cut` (§1.2, §2.1, §2.2,
-  §2.4); `Chunk` (§1.2); the chunk-ID function RFC 4's codec verifies reads with (§4.1, RFC 4
-  §3.4); the block name (§4.2), which the RFC 8 pipeline and RFC 4's whole-block read call (D9);
+  §2.4); `Chunk` (§1.2); the chunk-ID function and the block name (§4.1, §4.2), which the RFC 8
+  pipeline calls and hands to RFC 4's codec as functions, for its read checks (RFC 4 §3.4) and
+  its whole-block read (D9);
   the error set of §1.2, §3.7, §7 and §10.2.
-- `assembler`: the concrete fold of §5.1, with no lookup in the first release, and its
-  constructor, which refuses a block target out of §5.2's range (D2, D3).
+- `assembler`: the concrete fold of §5.1, with no lookup and no error in the first release, and
+  its constructor, which refuses a block target out of §5.2's range (D2, D3).
 - RFC 2 §1.1's import test over every package of the tree, test packages included in its
   allowlist (rule 7), following the `go/build` walk of the journal's `TestImportRule` on
   `feat/storage-v2`, which the engine's import walk repeats with a per-package allowlist. v1's
@@ -127,7 +132,9 @@ red: each lands green with the epic that makes it pass.
 group comes with the carver's own suite, `carver-bench`, in epic 7, as the RFC 3 and RFC 4 plans
 register `syncer` and `remote`.
 - `unit`'s `carver-allocs` option, `tier: pr`, running the allocation counts by name, as
-  `adapter-allocs` does (`test/suites.yaml:124`).
+  `adapter-allocs` does (`test/suites.yaml:119` on `feat/storage-v2`; develop has no such
+  option). The allocation tests skip under `-race`, as the adapters' do, so `unit`'s raced run
+  skips them and `carver-allocs` is the only place they count.
 - The one nightly `fuzz` suite of the offload plans, a `go test -fuzz` per target, with the
   reference chunker's own bounds property as its first target; epics 3 to 5 add theirs, and the
   RFC 4, 5 and 8 plans add their own targets and their RFCs' suites-paragraph lines.
@@ -228,7 +235,10 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
    the RFC 8 pipeline) is tested at that consumer (`CLAUDE.md`, "Verifying a change"; RFC 2
    §10.1's last paragraph). No concurrency test: RFC 2 §10.1 says there is nothing two calls share.
 6. **Known failures shrink.** No suite here keeps a `known.yaml` (§1.4), so no test lands red; a
-   test written ahead of its code waits in its epic's branch.
+   test written ahead of its code waits in its epic's branch. This departs from `CLAUDE.md`'s
+   "A test written before its code lands red, as a known failure": CI does not confirm such a
+   test fails on its assertion, so the epic's author breaks the code it guards and watches it
+   fail before the pull request (rule 10).
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on v1's
    `pkg/block/carver` or `pkg/block/chunker`, its code and its measurements' code included.
    Epic 1's import test enforces RFC 2 §1.1, which is stricter: every package of the tree, its
@@ -246,11 +256,13 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
     the change it guards. The golden vectors guard the derivation; agreement with the reference
     chunker guards nothing the goldens do not unless it runs over random input and settings,
     which is why it is a property.
-11. **A symbol is exported only if the RFC's interface uses it.** The consumers are the RFC 8
-    pipeline and RFC 4's codec (§1.3). Everything exported is frozen at S1; the chunker is
+11. **A symbol is exported only if the RFC's interface uses it.** The one importer is the RFC 8
+    pipeline; RFC 4's codec calls the chunk-ID and name functions only as functions the engine
+    hands it, and imports nothing of the carver (§1.3, D9). Everything exported is frozen at S1; the chunker is
     internal.
 12. **Each subtask creates only what it declares.** No empty package and no stub without a
-    caller: `internal/chunker` lands with epic 3, `internal/carvetest` with epic 2, each with its
+    caller, except epic 1's exported surface, whose stub bodies are frozen at S1 before their
+    callers, the RFC 8 offload plan's epics 15 and 21, exist (§1.3): `internal/chunker` lands with epic 3, `internal/carvetest` with epic 2, each with its
     first consumer. The dedup lookup lands with the dedup oracle (RFC 2 §5.1, as amended).
 
 ## 2. Epics at a glance
@@ -313,13 +325,12 @@ and S3 are two of them; S2 is its own.
 - **S1 🔀 RFC 8 offload plan S1a carver interface agreed** (end of epic 1). The team reviews every
   exported signature with the RFC 8 offload plan's and RFC 4 plan's authors, since their code
   calls it. It is final: the inputs the pipeline supplies to the fold are settled in epic 1
-  (D3, §6 point 2), not after it, so S1 waits on the user's answer to §6 point 2. §6 points 3 and
-  5 do not move it: the first is the node's table, and the fold takes an age either way.
+  (D3), not after it. §6 point 2 does not move it: it is the node's table.
 - **S2 🔀 Reference and goldens in place** (end of epic 2). The reference chunker agrees with the
   golden tables and boundaries; the BLAKE3 modes match the independent vectors; the inputs, the
-  corpus fetch and the two suites exist. Epics 3, 4 and 5 start. S2 waits on the user's answer to
-  §6 point 1's §3.2 reading: the golden boundaries freeze on one reading, and switching afterwards
-  moves every boundary, a migration (RFC 2 §3.6).
+  corpus fetch and the two suites exist. Epics 3, 4 and 5 start. The golden boundaries freeze on
+  amended RFC 2 §3.2's reading, the length counting only the bytes before the byte under test;
+  another reading would move every boundary, a migration (RFC 2 §3.6).
 - **S3 🔀 RFC 8 offload plan S3 a pass runs end to end** (external). A workload written through
   the journal is offloaded through the carver, the assembler and the syncer, with offers bounded
   and widened as RFC 8 §6.7 says; it is the end of the RFC 8 offload plan's epic 16. It needs
@@ -395,13 +406,26 @@ pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
   from the engine's clock (RFC 2 §5.4). The journal's offer carries versions and no time
   (`journal.Offer` on `feat/storage-v2`); its one age is per file, the oldest dirty write
   `Handle.DirtyFiles` yields. Deriving a chunk's age
-  is the RFC 8 offload plan's Carve state (its epic 15), and the fold only takes it (§6 point 5).
-  The key budget is §6 point 2's. Prior art: none found. Applied by epics 1 and 5.
+  is the RFC 8 offload plan's Carve state (its epic 15), and the fold only takes it: in v1.1 each
+  chunk's age is its file's oldest dirty write, never younger than the truth, so A3's ceiling
+  holds and a short block may go out earlier than needed. The `ponytail:` for it goes where the
+  Carve state assigns the age, and a time per extent is a ledger row (§6.1). The fold also takes
+  the key budget `K` and, per chunk, the worst-case keys it adds to the block's commit, counted by
+  the caller (RFC 8 §6.3), and closes a block early, at a chunk boundary, before a chunk that
+  would pass `K` (RFC 2 P2, A7 as amended): the pipeline cutting a plan after the fold instead
+  would duplicate P1's chunk boundaries in the engine. The engine must read `K`: `kvstore`
+  computes it at open from the backend's limits and exports no accessor
+  (`pkg/metadata/kvstore/budget.go:75`, `store.go:166` on `feat/storage-v2`); the RFC 8 offload
+  plan's epic 15 adds the accessor and is its first reader ("early close within `K`"). Prior
+  art: none found. Applied by epics 1 and 5.
 - **D4. The settings constructor takes the encryption flag beside the keys**, since the carver
   cannot otherwise know it for RFC 2 §3.2's refusal of a keyed table. It refuses a chunking key
   without encryption and encryption without a key, and builds the table itself, so no
-  inconsistent pair can be built (C10's cutter half). Prior art: none found. Applied by epics 1
-  and 3.
+  inconsistent pair can be built (C10's cutter half). Both keys are `[32]byte`, and it refuses an
+  all-zero chunk-ID key (RFC 2 §3.7 as amended): with `lukechampine.com/blake3`, a nil key gives
+  the plain unkeyed hash, so a key that was never drawn would cut unkeyed IDs that §4.1 forbids
+  and only a migration undoes. The constructor's fuzz target asserts the refusal. Prior art: none
+  found. Applied by epics 1 and 3.
 - **D5. A reader that makes no progress 100 times in a row fails `Cut` with `io.ErrNoProgress`**
   (RFC 2 §10.2 leaves the bound open). Prior art: `bufio.Reader`, the same bound and error (from
   memory). Applied by epic 4.
@@ -427,8 +451,8 @@ pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
   Applied by epics 3 and 4.
 - **D9. The block name takes plain byte arrays** for the scope, the nonce, the chain ID and the
   chunk IDs (RFC 2 §4.2). It imports nothing of RFC 5's or RFC 16's packages (RFC 2 §1.1), and it
-  draws no nonce. The engine computes it and passes it to RFC 4's codec, which does not import the
-  carver. The arrays match the store's records, so the engine converts without copying field by
+  draws no nonce. The engine calls it, and hands it and the chunk-ID function to RFC 4's codec
+  as functions (the RFC 4 plan's D3), so the codec does not import the carver. The arrays match the store's records, so the engine converts without copying field by
   field: `entity.ChunkHash` and `entity.BlockName` are `[32]byte`, `entity.NamespaceID` `[16]byte`,
   and the zero `ChunkHash` is a zero ref (`pkg/metadata/entity/content.go:14`, `:160` on
   `feat/storage-v2`). Prior art: none found. Applied by epic 4.
@@ -437,6 +461,9 @@ pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
 
 - **The keyed gear table** (RFC 2 §6's `ponytail:`): its ceiling and upgrade are the RFC's,
   carried at the table's construction (rule 9). Epic 3. The upgrade is a ledger row (§6.1).
+- **Each chunk's age is its file's oldest dirty write** (D3): never younger than the truth, so
+  a short block may go out before it must. The `ponytail:` sits where the RFC 8 offload plan's
+  epic 15 assigns the age; the time per extent is a ledger row (§6.1).
 
 ## 5. The epics in detail
 
@@ -452,8 +479,8 @@ is agreed with the RFC 8 offload plan's and RFC 4 plan's authors.
 **Expected content:**
 - `carver`: the settings value and constructor, `Cut`, `Chunk`, the chunk-ID and name functions,
   the errors.
-- `assembler`: the fold's type, constructor, chunk input and plan types, with D3's inputs and §6
-  point 2's key budget.
+- `assembler`: the fold's type, constructor, chunk input and plan types, with D3's inputs, the
+  key budget among them.
 - The import test.
 
 ### Epic 2 — Test foundations ⛔
@@ -484,10 +511,11 @@ rows; B1 to B5 (§3.1); C2, C3, C10's cutter half, and C4's bounds on what the c
 (§8); §10.4's counts for the chunker; §10.2's settings edge cases; `Target`'s settings section
 declares its row as RFC 13 Appendix B states it, namespace-scoped and bound, and validates it in
 `pkg/carver`, so the RFC 13 plan's Appendix B check (`TestAppendixBMatchesTheTable`) passes once
-the RFC 8 offload plan's epic 21 adds the section to the node's table (§6 point 3).
+the RFC 8 offload plan's epic 21 adds the section to the node's table (§6 point 2).
 
 **Expected content:**
-- The settings derivation and refusal, and the mask derived from `Target` with its start-up check.
+- The settings derivation and refusal, an all-zero chunk-ID key among the refusals with its fuzz
+  target (RFC 2 §3.7 as amended, D4), and the mask derived from `Target` with its start-up check.
 - `Target`'s settings section in `pkg/carver`, namespace-scoped and bound, validated by the
   settings constructor, as the RFC 3 plan's epic 8 does for the syncer's. Once the node's table
   holds it, a bound key is recorded at the namespace's creation by `settings.Table.Bound`
@@ -523,13 +551,13 @@ chunk-ID keys gives disjoint chunk IDs, none equal to the unkeyed hash of its ch
 **Epic 5 estimate: 6 subtasks, 9.5 man-days.**
 
 The fold of RFC 2 §5, without the dedup lookup (D3). **Owns:** RFC 2 §5.1 to §5.7. **Done when:**
-RFC 2 §5.7's A1 to A7 and every row of its check table but the two that need the lookup (RFC 2
-§5.7 as amended); §10.2's block-target edge cases.
+RFC 2 §5.7's A1 to A7 and every row of its check table but the two that need the lookup, the key
+budget row among them (RFC 2 §5.7 as amended); §10.2's block-target edge cases.
 
 **Expected content:**
 - The constructor and the block-target range, with §5.2's `decision:` at the check.
-- The fold: whole chunks, the target in carried bytes, the count cap, the key budget as S1 settles
-  it (P1, P2, P4, P5).
+- The fold: whole chunks, the target in carried bytes, the count cap, the early close at the key
+  budget `K`, which counts as a short block (P1, P2, P4, P5, A7 as amended).
 - Zero refs (P3); repeats within a block (P6), carried once as the store's block commit requires:
   `kvstore.BlockCommit` keeps carried chunks apart from refs, and its commit refuses a chunk
   carried twice (`pkg/metadata/kvstore/offload.go:54`, `:115` on `feat/storage-v2`).
@@ -581,38 +609,20 @@ nightly; RFC 2's suites paragraph names each new suite.
    RFC 2 is `draft`. The plan follows RFC 2 as written meanwhile:
    - §2.3: `carver_chunk_size_bytes`'s buckets become RFC 25 §2.6's `size` set, as RFC 25 §11's
      audit asks.
-   - §5.1: the Go block reads "indicative, as §1.2's"; the fold is a concrete type and `Add`
-     returns no error (D2, D3); the plan's shape names refs apart from carried entries, which P6
-     needs.
-   - §3.2: say whether "while the chunk is shorter than `Target`" counts the byte being tested;
-     the golden boundaries depend on it, so S2 waits on the answer (§3.2). Recommended: the
-     reading in which the length counts the bytes before the tested one.
+   - §5.1: the Go block reads "indicative, as §1.2's", and the fold is a concrete type (D2); the
+     plan's shape names refs apart from carried entries, which P6 needs.
    - Appendix A: once #5484 deletes v1, its table describes nothing; proposed: keep A.1 and A.2 as
      the measurements behind §3.2 and §3.4, and drop the table.
-2. **The key budget against P2 and A7** — pending the user's answer, settled in epic 1 for S1.
-   RFC 8 §6.3's Assemble closes a block early when its commit would pass RFC 6 §5.2's key budget,
-   which RFC 2 P2 and A7 do not allow. Recommended: amend RFC 2 P2 and A7 to allow that close,
-   with the budget as an input of the fold; the other option, the pipeline cutting a plan after
-   the fold, duplicates P1's chunk boundaries in the engine. Either way the engine must read `K`:
-   `kvstore` computes it at open from the backend's limits and exports no accessor
-   (`pkg/metadata/kvstore/budget.go:75`, `store.go:166` on `feat/storage-v2`); the RFC 8 offload
-   plan's epic 15 adds the accessor and is its first reader ("early close within `K`"). S1 waits
-   on this answer: the other option changes epics 1 and 5 in content and estimate.
-3. **`Target` has no key in RFC 13 yet**: RFC 13's plan gives the block target to RFC 4 and the
+2. **`Target` has no key in RFC 13 yet**: RFC 13's plan gives the block target to RFC 4 and the
    keys to RFC 5, and leaves an undeclared Appendix B section to its component's plan. Epic 3
    declares the section and validates it in `pkg/carver`; the RFC 8 offload plan's epic 21 adds
    it to the node's table (§6.1). The Appendix B check reads a key only in RFC 13's key form,
    lower case and dotted (`internal/node/appendixb_test.go:49`), and fails a table key with no row
    (`:514`). Appendix B's row writes `Target`, which is not one, so epic 21's step waits on RFC 13
    naming the key — pending the user's answer. Epic 3 does not wait on it.
-4. **Burn-down whose size cannot be known**: epic 6's sweep depends on what the pipeline costs to
+3. **Burn-down whose size cannot be known**: epic 6's sweep depends on what the pipeline costs to
    run per `Target`; epic 7's second-architecture cell is macOS arm64, the one non-x86 host the
    harness has (`test/suites.yaml`).
-5. **A chunk's age is known only per file** — pending the user's answer. RFC 2 §5.1 takes the age
-   of each chunk's oldest byte; the journal reports the oldest dirty write per file and none per
-   extent (D3). Taking the file's age for every chunk is never younger than the truth, so A3's
-   ceiling holds, and a short block may go out earlier than needed; a per-extent time would be a
-   journal change, the journal plan's epic 9b's.
 
 ### 6.1 Deferral ledger
 
@@ -623,7 +633,7 @@ nightly; RFC 2's suites paragraph names each new suite.
 | RFC 2 §2.4's two exceptions, the age and widening back, and RFC 8 §6.7's run widening (§1.4) | they are the caller's decisions | RFC 8 offload plan, epic 15 | the pipeline offers runs |
 | RFC 2 §5.3's "a block never mixes two flows or two namespaces", and §10.1's checks at the consumer, whole chunks and copies made before `emit` returns (§1.5 rule 5) | the pipeline decides what one assembler folds and what `emit` keeps | RFC 8 offload plan, epic 15 | its Assemble state lands |
 | Recording which settings produced a namespace's content and reporting a change as a migration (RFC 2 §3.6, RFC 8 §2.4, RFC 13 §5.3) (§1.4) | the engine's validator row, as RFC 13's plan assigns it; the record itself is `settings.Table.Bound`'s once the node's table holds `Target`, declared bound | RFC 8 offload plan, epic 16 (its D11) | the engine applies settings |
-| `Target`'s settings section added to the node's table (`newTable`), and RFC 13 Appendix B's check passing with it (§6 point 3) | the node's composition is the RFC 8 offload plan's; Appendix B's row has no key yet | RFC 8 offload plan, epic 21 | RFC 13 names `Target`'s key |
+| `Target`'s settings section added to the node's table (`newTable`), and RFC 13 Appendix B's check passing with it (§6 point 2) | the node's composition is the RFC 8 offload plan's; Appendix B's row has no key yet | RFC 8 offload plan, epic 21 | RFC 13 names `Target`'s key |
 | Re-cutting or refusing an imported chunk longer than `Max` (RFC 2 §3.6, C9, §9's consumer row) (§1.4) | the import and re-home paths are RFC 27's | RFC 27 | a plan for RFC 27 is written |
 | The namespace keys: the chunk-ID key drawn for every namespace and never rotated (RFC 2 §4.1), the chunking key drawn only for an encrypting one, refused by fingerprint and never rotated with the data keys (RFC 2 §6, C10's namespace half) (§1.3, D4) | the key table and namespace keys are RFC 5's; the carver takes keys as inputs | RFC 5 | its namespace keys land |
 | C8 and C11: the nonce drawn from a cryptographic source, the name minted once with its put intent, a plan refused under another namespace's key (RFC 2 §4.2, §4.3; §9's consumer row) (D9) | the intent step is the pipeline's (RFC 8 §6.6), over `kvstore`'s built `Intend` (`pkg/metadata/kvstore/offload.go:69`) | RFC 8 offload plan, epic 15 | its Intent state lands |
@@ -631,6 +641,7 @@ nightly; RFC 2's suites paragraph names each new suite.
 | The dedup lookup and the adopted disposition, with §5.7's two rows that need it, and §4.3's matching rules (D3; RFC 2 §5.1 as amended) | no caller in v1.1: deduplication is off in the first release (RFC 8 §6.5) | RFC 8 | deduplication is re-added, post-v1 |
 | RFC 2 §6's keyed PRF upgrade of the keyed gear table (§4.3) | the RFC's `ponytail:` | unowned | a deployment must hide which files it holds from a bucket reader |
 | Setting each chunk's all-zero flag from the bytes `emit` hands over, and the consumer check that a chunk with any non-zero byte is never flagged: a wrong flag makes it a zero ref that no block stores (D3; §1.5 rule 5) | the caller holds the bytes; the assembler never sees them (RFC 2 §5.5) | RFC 8 offload plan, epic 15 | its Carve state lands |
+| A time per extent for each chunk's age, in place of its file's oldest dirty write, and removing the Carve state's `ponytail:` (RFC 2 §5.1, §5.4; D3, §4.3) | the journal reports one age per file and none per extent; the file's age is never younger than the truth, so A3 holds | the journal plan ([`rfc-1-journal-plan.md`](rfc-1-journal-plan.md)), the epic after its epic 9b | short blocks put before their age ceiling show up as a measured cost in put count |
 | Randomised assembly (RFC 2 §5.6) (epic 5) | sequential assembly is the RFC's proposal; changing it needs no migration | unowned | a measured need to blur the chunk-size fingerprint, post-v1 |
 
 ## 7. RFC coverage
@@ -668,7 +679,7 @@ nightly; RFC 2's suites paragraph names each new suite.
 | RFC 5 §2.8, Appendix B.2 | E2 (the chain ID by hand), E3, E4 (keys as inputs); ledger |
 | RFC 5 §8.2 T17 | E4 (disjoint chunk IDs across namespaces); ledger (a plan refused under another namespace's key, RFC 8 offload plan epic 15) |
 | RFC 6 §3.5, §4.1 | E5 |
-| RFC 6 §5.2 | E1, E5 (the key budget, §6 point 2) |
+| RFC 6 §5.2 | E1, E5 (the key budget, RFC 2 P2 as amended) |
 | RFC 8 §2.1, §2.6, §6.3, §6.5 | E1, E5; ledger |
 | RFC 8 §2.4, §6.2, §6.6, §6.7, §7.8 | ledger (RFC 8 offload plan) |
 | RFC 13 Appendix A, Appendix B | E3 (`Target`'s section); ledger (the node's table) |
