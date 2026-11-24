@@ -831,7 +831,7 @@ internal/adapter/nfs/
   session this node does not hold); a failing `Disconnect` handed to `Deps.Retry`, which this
   subtask adds to `pkg/adapter/deps.go` if RFC 22's plan has not (§9); the `ClientBusy` row, and
   `NotYours` for `DESTROY_CLIENTID` as `NFS4ERR_WRONG_CRED`. Consumed by E10 (the back channel's
-  connection) and E16's unmount rows.
+  connection); E16 runs no unmount row of its own, since no row asks for one (E16's §9, point 2).
 - **Acceptance criteria:**
   - With a session held, `DESTROY_CLIENTID` is `NFS4ERR_CLIENTID_BUSY`; after `DESTROY_SESSION` it
     succeeds, and `vfstest.Mutations` shows `Disconnect` with `Last` before `Destroy`.
