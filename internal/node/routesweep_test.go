@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -420,7 +421,6 @@ func sweepApplied(t *testing.T, w *wired, done []wiredWrite, waits []waitingWrit
 		}
 		if len(got) != want {
 			t.Errorf("%s %s: %d audit records, want %d", method, d.path, len(got), want)
-			continue
 		}
 		for _, rec := range got {
 			if _, err := uuid.Parse(rec.Outcome); rec.Outcome != "applied" && err != nil {
@@ -443,6 +443,15 @@ func waitsOf(waits []waitingWrite) []wiredWrite {
 		out[i] = c.wiredWrite
 	}
 	return out
+}
+
+// keytabForms is the forms a keytab takes: as base64, as a JSON document
+// escapes it, which an audit record and an answer are, and as a text log line
+// quotes it, which the node's log is. Its raw bytes are in none of them, as
+// both escape a keytab's control bytes.
+func keytabForms(kt []byte) []string {
+	j, _ := json.Marshal(string(kt))
+	return []string{base64.StdEncoding.EncodeToString(kt), strings.Trim(string(j), `"`), strings.Trim(strconv.Quote(string(kt)), `"`)}
 }
 
 // keytabOf is a keytab of one AES256 key for name in AD.EXAMPLE.
@@ -577,12 +586,16 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		// reach no audit record, no answer and no log line.
 		kt := keytabOf(t, "cifs/nas.ad.example")
 		ktB64 := base64.StdEncoding.EncodeToString(kt)
+		forms := keytabForms(kt)
+		holdsKeytab := func(s string) bool {
+			return slices.ContainsFunc(forms, func(f string) bool { return strings.Contains(s, f) })
+		}
 		ktPath := "/api/v1/installation/keytab"
 		put := ap.do(wiredWrite{by: a, route: "PUT /api/v1/installation/keytab", path: ktPath, hdr: []string{"If-None-Match", "*"},
-			body: map[string]any{"spec": map[string]any{"value": ktB64}}, secrets: []string{string(kt), ktB64}})
+			body: map[string]any{"spec": map[string]any{"value": ktB64}}, secrets: forms})
 		del := ap.do(wiredWrite{by: a, route: "DELETE /api/v1/installation/keytab", path: ktPath, hdr: append([]string{"If-Match", put.header.Get("ETag")}, idemKey()...)})
 		for _, r := range []authReply{put, del} {
-			if strings.Contains(string(r.body), string(kt)) || strings.Contains(string(r.body), ktB64) {
+			if holdsKeytab(string(r.body)) {
 				t.Errorf("a keytab route's answer holds the keytab: %s", r.body)
 			}
 		}
@@ -631,7 +644,7 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 				status: http.StatusConflict, code: apiv1.CodeNotCancellable, why: "a cancellable operation kind"},
 		)
 		sweepApplied(t, w, ap.done, waits)
-		if l := log.String(); strings.Contains(l, string(kt)) || strings.Contains(l, ktB64) {
+		if holdsKeytab(log.String()) {
 			t.Error("the node's log holds the keytab")
 		}
 	})
