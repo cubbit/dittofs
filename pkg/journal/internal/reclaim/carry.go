@@ -483,18 +483,27 @@ func (t *Tracker) relearnReleased(seg core.SegmentID) {
 // by (file, sequence) so a unit's walk is deterministic whatever the
 // registry's map order is: one Rec per distinct record, whatever live
 // registrations count it — the copy a carry places registers one more, and
-// the next walk finds the record once either way.
-//
-// ponytail: registeredIn scans every registered record of every file under
-// rm, twice per unit per segment — once before the re-test for its file
-// list, once after for the walk. Upgrade to a per-segment files index in
-// the segment state when a pass over a many-file journal shows the scan
-// in a profile.
+// the next walk finds the record once either way. The walk stays scoped to
+// the segment's own files table — every registration path enters the
+// record's file there before the registry — so the scan grows with the
+// segment's files, never with the whole ledger. A segment no state exists
+// for answers nothing.
 func (t *Tracker) registeredIn(seg core.SegmentID) []Rec {
 	t.rm.Lock()
+	st := t.stateOf(seg)
+	if st == nil {
+		t.rm.Unlock()
+		return nil
+	}
+	st.mu.Lock()
+	files := make([]core.FileID, 0, len(st.files))
+	for f := range st.files {
+		files = append(files, f)
+	}
+	st.mu.Unlock()
 	var out []Rec
-	for _, rs := range t.recs {
-		for rec := range rs {
+	for _, f := range files {
+		for rec := range t.recs[f] {
 			if rec.Seg == seg {
 				out = append(out, rec)
 			}
