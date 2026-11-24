@@ -20,16 +20,16 @@ import (
 func storeRows() []row {
 	return []row{
 		{name: "setting set of a key the settings table does not declare prints the refusal and exits non-zero", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
-			refused(t, run, "unknown_key", "setting", "set", "installation", "clisuite.undeclared", "1")
+			refused(t, run, "unknown_key", "clisuite.undeclared", "setting", "set", "installation", "clisuite.undeclared", "1")
 		}},
 		{name: "adapter set prints the refusal until the settings table declares the adapters", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
-			refused(t, run, "unknown_key", "adapter", "set", "nfs", "--enabled")
+			refused(t, run, "unknown_key", "adapters.nfs.enabled", "adapter", "set", "nfs", "--enabled")
 		}},
 		{name: "store create prints the refusal until the settings table declares the remote store", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
-			refused(t, run, "unknown_key", "store", "create", "--setting", "remote.endpoint=https://s3.example.com", "--credential-file", secretFile(t, "a password\n"))
+			refused(t, run, "unknown_key", "remote.credential", "store", "create", "--setting", "remote.endpoint=https://s3.example.com", "--credential-file", secretFile(t, "a password\n"))
 		}},
 		{name: "namespace create prints the refusal until the settings table declares the namespace", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
-			refused(t, run, "unknown_key", "namespace", "create", "--store", s.putStore(t), "--setting", "namespace.prefix=builds/")
+			refused(t, run, "unknown_key", "namespace.prefix", "namespace", "create", "--store", s.putStore(t), "--setting", "namespace.prefix=builds/")
 		}},
 		{name: "setting get reads a record at the installation's scope and at a node's", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
 			key := "clisuite.k" + uuid.NewString()[:8]
@@ -76,9 +76,26 @@ func storeRows() []row {
 			if got.ID != id || string(got.Spec.Settings["remote.endpoint"]) != `"https://s3.example.com"` {
 				t.Errorf("store get %s: got %+v, want its endpoint", id, got)
 			}
-			mustRun(t, run, "store", "delete", id)
+			if out := mustRun(t, run, "store", "get", id); !strings.Contains(out, " https://s3.example.com ") {
+				t.Errorf("store get %s: table %q, want the endpoint unquoted", id, out)
+			}
+			mustRun(t, run, "store", "delete", id, "--force")
 			if _, err := c.Stores().Get(t.Context(), id); !isStatus(err, 404) {
 				t.Errorf("store delete %s: read back %v, want 404", id, err)
+			}
+		}},
+		{name: "store delete without --force and no one to confirm deletes nothing", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
+			id := s.putStore(t)
+			unconfirmed(t, run, "store", "delete", id)
+			if _, err := c.Stores().Get(t.Context(), id); err != nil {
+				t.Errorf("store delete %s unconfirmed: read back %v, want the store kept", id, err)
+			}
+		}},
+		{name: "namespace delete without --force and no one to confirm deletes nothing", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
+			id := s.putNamespace(t)
+			unconfirmed(t, run, "namespace", "delete", id)
+			if _, err := c.Namespaces().Get(t.Context(), id); err != nil {
+				t.Errorf("namespace delete %s unconfirmed: read back %v, want the namespace kept", id, err)
 			}
 		}},
 		{name: "store set-credential prints the server's refusal until the store's capability check is built", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
@@ -89,11 +106,7 @@ func storeRows() []row {
 			}
 		}},
 		{name: "namespace list, get and delete a namespace written through the store", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
-			id := entity.NamespaceID(uuid.New())
-			if _, err := s.Harness.Store().ControlPlane().PutNamespace(t.Context(), entity.Namespace{ID: id, Store: uuid.New()}, 0); err != nil {
-				t.Fatalf("put a namespace: %v", err)
-			}
-			want := uuid.UUID(id).String()
+			want := s.putNamespace(t)
 			if out := mustRun(t, run, "namespace", "list"); !strings.Contains(out, want) {
 				t.Errorf("namespace list: got %q, want a row for %s", out, want)
 			}
@@ -102,7 +115,7 @@ func storeRows() []row {
 			if got.ID != want {
 				t.Errorf("namespace get %s: got %+v", want, got)
 			}
-			mustRun(t, run, "namespace", "delete", want)
+			mustRun(t, run, "namespace", "delete", want, "--force")
 			if _, err := c.Namespaces().Get(t.Context(), want); !isStatus(err, 404) {
 				t.Errorf("namespace delete %s: read back %v, want 404", want, err)
 			}
@@ -140,13 +153,35 @@ func (s Server) putStore(t *testing.T) string {
 	return id.String()
 }
 
-// refused runs args, which the server refuses 400 with code, and fails the
-// test unless the command exits non-zero printing itself and that refusal.
-func refused(t *testing.T, run Runner, code string, args ...string) {
+// refused runs args, which the server refuses 400 with code for field,
+// and fails the test unless the command exits non-zero printing itself, the
+// code, the settings table's detail and the field.
+func refused(t *testing.T, run Runner, code, field string, args ...string) {
 	t.Helper()
 	_, errOut, status := run(t.Context(), args...)
-	if want := "dfsctl " + strings.Join(args[:2], " ") + ": "; status == 0 || !strings.Contains(errOut, want) || !strings.Contains(errOut, "400 "+code+": ") {
-		t.Errorf("dfsctl %s: status %d, stderr %q, want non-zero, %q and the server's 400 %s", strings.Join(args, " "), status, errOut, want, code)
+	for _, want := range []string{"dfsctl " + strings.Join(args[:2], " ") + ": ", "400 " + code + ": ", "refused by the settings table", "(field " + field + ")"} {
+		if status == 0 || !strings.Contains(errOut, want) {
+			t.Errorf("dfsctl %s: status %d, stderr %q, want non-zero and %q", strings.Join(args, " "), status, errOut, want)
+		}
+	}
+}
+
+// putNamespace writes a namespace through the store and returns its ID.
+func (s Server) putNamespace(t *testing.T) string {
+	t.Helper()
+	id := entity.NamespaceID(uuid.New())
+	if _, err := s.Harness.Store().ControlPlane().PutNamespace(t.Context(), entity.Namespace{ID: id, Store: uuid.New()}, 0); err != nil {
+		t.Fatalf("put a namespace: %v", err)
+	}
+	return uuid.UUID(id).String()
+}
+
+// unconfirmed runs args, a delete with no --force and nothing on stdin to
+// confirm it, and fails the test unless it is refused naming --force.
+func unconfirmed(t *testing.T, run Runner, args ...string) {
+	t.Helper()
+	if _, errOut, status := run(t.Context(), args...); status == 0 || !strings.Contains(errOut, "pass --force") {
+		t.Errorf("dfsctl %s: status %d, stderr %q, want it refused naming --force", strings.Join(args, " "), status, errOut)
 	}
 }
 
