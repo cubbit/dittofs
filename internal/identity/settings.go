@@ -72,6 +72,11 @@ func SettingsOf(snap *settings.Snapshot, node entity.NodeID) (Settings, error) {
 // DirectorySectionName is the identity.directory section's prefix.
 const DirectorySectionName = "identity.directory"
 
+// DirectoryBindCredentialKey is the key of the directory record's
+// bind_credential setting, and the key of the bind credential secret's
+// owner: RFC 16 §2.3, a setting's owner is always its scope and key.
+const DirectoryBindCredentialKey = DirectorySectionName + ".bind_credential"
+
 // DirectoryOf is the identity.directory section in snap as node reads it:
 // nil when no row of it is stored, which is no directory, or the section's
 // refusal when the walk refused a row of it or the record it holds.

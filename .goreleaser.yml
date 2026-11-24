@@ -136,6 +136,10 @@ nfpms:
 checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
+  # dfs built with the foundationdb tag, which release.yml builds outside
+  # GoReleaser because it needs cgo and libfdb_c on a native runner.
+  extra_files:
+    - glob: dist-foundationdb/*.tar.gz
 
 # Cosign keyless signing via GitHub Actions OIDC
 signs:
@@ -349,6 +353,7 @@ release:
     ```
   extra_files:
     - glob: scripts/install.sh
+    - glob: dist-foundationdb/*.tar.gz
 
   footer: |
     ---
