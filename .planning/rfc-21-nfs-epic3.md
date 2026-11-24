@@ -79,22 +79,24 @@ their `NULL` rows, and `ops/v4`'s `NULL`; the error rows of §3; the TLS configu
   `memory.New`'s identity server refuses a `Claimed` caller `ErrAccess` at admission, so this
   epic's rows that need a call admitted send `AUTH_NONE` to a share granting everyone, and the
   `AUTH_SYS` `Identity` is asserted at the handler, before admission (T3.1).
-- `r.Call.Client`, set by a row's `Resolve` for NFSv4.0 and NLM: E9 and E11. `r.Call.Session`, a
-  session's `Level` and `SEQUENCE` read before dispatch: E8.
+- `r.Call.Client`, set by a row's `Resolve` for NFSv4.0 and NLM: E9's T9.4 and E11's T11.3.
+  `r.Call.Session`, a session's `Level` and `SEQUENCE` read before dispatch: E8's T8.5.
 - The slots and reply caches of NFSv4.1 sessions in the `Replay` stage: E8. Each NFSv3 row's
   `Cacheable` column, and the `REMOVE` retransmission row over loopback: E4, with each row. Each
   NFSv4.0 member's `Cacheable` column: the epic that adds the member (E5, E9), with its row.
 - `ErrWrongSecurity`'s NFSv4 row and `SECINFO`: E5. `ErrUnknownPrincipal`'s rows: E4 for NFSv3's
-  cell, E5 and E6 for NFSv4. `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree` and `ErrExpired`: E8 and
-  E13, with the session and GSS tables, as RFC 21 §11.5 says.
+  cell, E5 and E6 for NFSv4. `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree` and `ErrExpired`: the NFSv4 session
+  errors are E8's T8.5, and the other tables' rows and `ErrExpired` E13's T13.7, with the session
+  and GSS tables, as RFC 21 §11.5 says.
 - Each operation's drain `Role` and the drain test against Linux's compounds (RFC 21 §11.6): each
-  operation's epic and E10.
+  operation's epic and E10's T10.9.
 - MOUNT, NLM and NSM procedures past `NULL`: E4 and E11. NLM and NSM over UDP: E11. The call encoder
-  and reply decoder in `wire` for the server's own outbound calls: E10 and E11 move them out of
-  `nfsclient` when they first send one (D11).
-- The totality test of every table, the TLS row with a kernel client (`xprtsec=tls`), and §13's
-  refused-credentials row on the composed node, against a share with an everyone grant and a real
-  `CREATE`: E16.
+  and reply decoder in `wire` for the server's own outbound calls: E10's T10.1 moves them out of
+  `nfsclient` into `wire/call.go` when the back channel first sends one, and E11's T11.2 only uses
+  them (D11).
+- The totality test of every table (E16's T16.11), the TLS row with a kernel client
+  (`xprtsec=tls`, T16.8), and §13's refused-credentials row on the composed node, against a share
+  with an everyone grant and a real `CREATE` (T16.3, R26): E16.
 - The port mapper and rpcbind registration: the RFC 21 implementation plan's deferral ledger, its row
   for the port mapper, owned by the cutover.
 - `adapter_translation_refused_total{reason="identity"}`, whose producer is T3.1's refusal: nothing
@@ -340,8 +342,8 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   `NFS4ERR_MOVED` from the filehandle check of each such operation (from memory). A `decision:`
   marker at the list.
 - **D11. The call encoder and reply decoder start in the scripted client.** Their only consumer in
-  this epic is `nfsclient`; the server's own outbound calls, the back channel's `CB_COMPOUND` (E10)
-  and NLM's callbacks (E11), move them into `wire` when they first send one, with the fuzz target a
+  this epic is `nfsclient`; the server's own outbound calls, the back channel's `CB_COMPOUND` (E10's T10.1)
+  moves them into `wire/call.go` when it first sends one, and NLM's callbacks (E11's T11.2) only use them, with the fuzz target a
   decoder of a peer's bytes then needs. Exporting them from `wire` now would export for a later
   epic (rule 11). Prior art: `testproto`'s client, which keeps its codec to itself. No marker.
 
@@ -553,7 +555,7 @@ internal/adapter/adaptertest/nfsclient/
   - `wire`'s `AuthTooWeak`, `NFS4ErrNoFileHandle`, `NFS4ErrMoved`; hand-written golden calls and
     replies for each `NULL` E2's captures do not already hold, and for each answered row.
   - Consumed by `nfs.go`, T3.6's probe, E4 and E11, which fill the packages, E5 (a member before any
-    `PUTFH`), E10 (the drain), S3's and S4's first call, and E16's totality test.
+    `PUTFH`), E10's T10.9 (the drain), S3's and S4's first call, and E16's totality test (T16.11).
 - **Acceptance criteria:**
   - Over loopback, `NULL` in each of the five programs under `AUTH_NONE` and under `AUTH_SYS` is
     answered an accepted success with an empty `AUTH_NONE` verifier and no results, and
@@ -624,7 +626,7 @@ internal/adapter/adaptertest/nfsclient/
   `Reconfigure` wrapper (Q3); `tlsconfig`'s CA reloader (D9), which the control plane's listener
   then shares; `settings.NFS.Validate` accepting `opportunistic` and `require`; `nfsclient`'s `func (c
   *Client) StartTLS(ctx context.Context, cfg *tls.Config) error`, which sends the probe, checks its
-  verifier and handshakes. Consumed by E16's TLS row and by every later script that runs over TLS.
+  verifier and handshakes. Consumed by E16's TLS row (T16.8) and by every later script that runs over TLS.
 - **Acceptance criteria:**
   - Under `opportunistic`, a client that probes is upgraded and then served; one that does not is
     served in plaintext. Under `require`, a plaintext `NULL` closes the connection with no reply,
@@ -679,7 +681,7 @@ flowchart TD
 T3.1 and T3.2 come first: every handler's loopback rows read T3.1's `r.Call` and run on T3.2's
 client. T3.3 follows on the same path because it is what E8, on this track's critical path, extends.
 T3.4 gives E4, E5, E10 and E11 their tables and rows. T3.5 waits for nothing but is needed only by
-T3.6, which E16's TLS row consumes and S3 waits for, as it waits for the whole epic; so T3.6 comes
+T3.6, which E16's TLS row (T16.8) consumes and S3 waits for, as it waits for the whole epic; so T3.6 comes
 last although it is the epic's riskiest subtask, and T3.5 can run beside any of the others.
 
 ## 8. Suggested pull requests
@@ -751,12 +753,12 @@ Gaps, not questions:
 - RFC 21 §11.5 maps `ErrReplyTooBig` for NFSv4 only, but `core` also returns it for a single reply
   charged past a quarter of the reply pool, which an NFSv3 `READ` could meet. E4's RFC 21 pull
   request proposes its NFSv3 row (E4's §9, point 3), and E4's T4.3 adds it once agreed; E16's
-  totality test fails until it has one.
+  totality test (T16.11) fails until it has one.
 - Which pull request carries which RFC amendment: Q2's RFC 20 pull request carries `Conn.Remote`
   in §4.7, §5.5's `StartTLS` sentence and RFC 21 §11's "once per member" clause, and Q5's sentence of §4.7; Q3's sentence goes
-  in this document's pull request against RFC 21 §2.2, with §11.5's NSM and MOUNT cases below; Q1's option (a) rewords RFC 20 §4.4. No other
-  epic's pull request touches these sections: E5's touches RFC 20 §4.10, E4's and E5's other rows of
-  RFC 21 §11.5.
+  in this document's pull request against RFC 21 §2.2, with §11.5's NSM and MOUNT cases below; Q1's option (a) rewords RFC 20 §4.4.
+  Its RFC 20 pull request also carries E8's Q1 to Q3, E11's Q2, E13's Q3 and E16's Q3. E5's pull
+  request touches RFC 20 §4.10, and E4's and E5's other rows of RFC 21 §11.5.
 - RFC 21 §11.5 sends `ErrMoved` to no reply in NFSv3's, MOUNT's and NLM's tables and names
   `ErrLogonFailure`'s fault for NFSv3 and NLM only; NSM and MOUNT follow the same rule (R16, R19,
   R22), and this document's pull request adds them to §11.5's text.
