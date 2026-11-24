@@ -11,6 +11,10 @@
 #   test/fdb/cluster.sh test ...    go test from the repository root, with the
 #                                   client library on the cgo paths and
 #                                   DITTOFS_FDB_CLUSTER_FILE set
+#   test/fdb/cluster.sh smoke IMAGE run a Dockerfile.foundationdb image's dfs
+#                                   init, then dfs start until it is ready, then
+#                                   stop it; the cluster must be up and own
+#                                   nothing yet, since the installation owns it
 #
 # Host networking, so the cluster file's 127.0.0.1 addresses are the ones the
 # test client dials. That works on Linux only; on macOS run it inside a Linux
@@ -86,6 +90,69 @@ up() {
     return 1
 }
 
+# smoke proves the image's libfdb_c loads and serves an installation on this
+# cluster: dfs init, dfs start until /health/ready answers ready, and a SIGTERM
+# that stops it with exit 0. Any step failing fails it. The two containers
+# share the image's volumes, so start finds what init wrote; host networking
+# reaches the cluster file's 127.0.0.1 addresses.
+smoke() {
+    local image=$1 port=18080 conf="$DATA/smoke" ready="" code
+    # As the image's user: a fixed name, removed before and after, so a run
+    # that failed half-way leaves nothing for the next.
+    local run=("$RUNTIME" run --network host -e DITTOFS_ENCRYPTION_PASSPHRASE=smoke-passphrase)
+    clean() { "$RUNTIME" rm -f -v dittofs-smoke-start dittofs-smoke-init >/dev/null 2>&1 || true; }
+    clean
+    trap clean EXIT
+    mkdir -p "$conf"
+    cp "$DATA/fdb.cluster" "$conf/fdb.cluster"
+    cat >"$conf/config.yaml" <<EOF
+logging:
+  output: stderr
+node:
+  id: 00112233-4455-6677-8899-aabbccddeeff
+metadata:
+  backend: foundationdb
+  foundationdb:
+    cluster_file: /config/fdb.cluster
+journals:
+  - path: /data/blocks/journal
+keys:
+  storage:
+    kind: local
+    local:
+      file: /data/state/storage.key
+api:
+  listen: ['127.0.0.1:$port']
+metrics:
+  listen: '127.0.0.1:0'
+adapters:
+  listen: ['127.0.0.1']
+EOF
+    chmod 0755 "$conf"
+    chmod 0644 "$conf"/*
+    "${run[@]}" --name dittofs-smoke-init -v "$conf:/config:ro" "$image" init --config /config/config.yaml
+    "${run[@]}" -d --name dittofs-smoke-start --volumes-from dittofs-smoke-init "$image" >/dev/null
+    for _ in $(seq 1 120); do
+        ready="$(curl -fsS "http://127.0.0.1:$port/health/ready" 2>/dev/null || true)"
+        [[ "$ready" == ready ]] && break
+        [[ "$("$RUNTIME" inspect -f '{{.State.Running}}' dittofs-smoke-start)" == true ]] || break
+        sleep 1
+    done
+    if [[ "$ready" != ready ]]; then
+        "$RUNTIME" logs dittofs-smoke-start >&2
+        echo "smoke: dfs start never answered ready on /health/ready (last answer: '$ready')" >&2
+        return 1
+    fi
+    "$RUNTIME" stop -t 60 dittofs-smoke-start >/dev/null
+    code="$("$RUNTIME" inspect -f '{{.State.ExitCode}}' dittofs-smoke-start)"
+    if [[ "$code" != 0 ]] || ! "$RUNTIME" logs dittofs-smoke-start 2>&1 | grep -q "dfs: stopped"; then
+        "$RUNTIME" logs dittofs-smoke-start >&2
+        echo "smoke: dfs start on SIGTERM exited $code; want 0 after logging 'dfs: stopped'" >&2
+        return 1
+    fi
+    echo "smoke: $image initialised, served ready and stopped cleanly on FoundationDB $VERSION"
+}
+
 # Created here, as the user: a bind mount of a missing directory would have the
 # container runtime create it as root, and nothing after could write to it.
 mkdir -p "$DATA"
@@ -108,8 +175,9 @@ test)
     export DITTOFS_FDB_CLUSTER_FILE="${DITTOFS_FDB_CLUSTER_FILE:-$DATA/fdb.cluster}"
     cd "$ROOT" && exec go test "$@"
     ;;
+smoke) smoke "${2:?image}" ;;
 *)
-    sed -n '2,17p' "$0"
+    sed -n '2,21p' "$0"
     exit 2
     ;;
 esac
