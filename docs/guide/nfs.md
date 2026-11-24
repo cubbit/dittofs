@@ -636,22 +636,17 @@ idmap mount and access files as that user with no extra configuration.
 
 ## NFS-over-TLS (RFC 9289)
 
-DittoFS can encrypt NFS wire traffic with TLS 1.3, using the opportunistic `AUTH_TLS` STARTTLS mechanism from RFC 9289. A client opens TCP and sends a `NULL` RPC with `auth_flavor = AUTH_TLS (7)`; the server replies with the 8-octet `"STARTTLS"` verifier, then both perform a TLS 1.3 handshake on the **same** connection. All subsequent RPC traffic is encrypted. Because Go performs the handshake and crypto in userspace, no kernel TLS (`kTLS`) or `tlshd` daemon is needed on the server.
+> **Not served yet.** v2 refuses every adapter TLS `mode` except `off` until StartTLS is built, so
+> NFS traffic is not encrypted today; use Kerberos (`sec=krb5p`) or a network tunnel. The rest of
+> this section describes the design and cannot be used yet.
 
-DittoFS only loads cert files — issuance/renewal/rotation is the platform's job; rotated files are hot-reloaded with no restart (shared with the control-plane TLS path via `internal/tlsconfig`).
+The design is to encrypt NFS wire traffic with TLS 1.3, using the opportunistic `AUTH_TLS` STARTTLS mechanism from RFC 9289. A client opens TCP and sends a `NULL` RPC with `auth_flavor = AUTH_TLS (7)`; the server replies with the 8-octet `"STARTTLS"` verifier, then both perform a TLS 1.3 handshake on the **same** connection. All subsequent RPC traffic is encrypted. Because Go performs the handshake and crypto in userspace, no kernel TLS (`kTLS`) or `tlshd` daemon is needed on the server.
 
-```yaml
-adapters:
-  nfs:
-    tls:
-      cert_file: /etc/dittofs/tls/tls.crt
-      key_file:  /etc/dittofs/tls/tls.key
-      client_ca: /etc/dittofs/tls/ca.crt   # optional → mutual TLS (client-cert auth)
-      min_version: "1.3"                    # RFC 9289 floor is TLS 1.3
-      mode: opportunistic                   # "opportunistic" (default) | "require"
-```
+DittoFS would only load cert files; issuance, renewal and rotation are the platform's job.
 
-- **`opportunistic`** (default): clients that send the `AUTH_TLS` probe are upgraded; clients that do not are still served in plaintext. Lets a TLS rollout proceed without breaking existing mounts.
+The adapter's TLS settings are settings, not host facts: `adapters.nfs.tls` in the config file is refused, so they are set through the management API. The fields are `mode` (`off`, the only value served today, `opportunistic` or `require`), `cert_file`, `key_file` and `client_ca` (set: a client certificate is required and verified). The version floor is fixed at TLS 1.3.
+
+- **`opportunistic`**: clients that send the `AUTH_TLS` probe are upgraded; clients that do not are still served in plaintext. Lets a TLS rollout proceed without breaking existing mounts.
 - **`require`**: a connection must upgrade via `AUTH_TLS` before any other RPC; plaintext requests are rejected (connection dropped).
 
 **Client interop:**

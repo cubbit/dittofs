@@ -208,13 +208,16 @@ docker run -d \
   -p 12049:12049 \
   -p 12445:12445 \
   -p 8080:8080 \
-  -p 9090:9090 \
   -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
   -v dittofs-metadata:/data/metadata \
   -v dittofs-blocks:/data/blocks \
   marmos91c/dittofs:latest
 
-curl http://localhost:8080/health
+curl -k https://localhost:8080/health/live
+# The curl works only when the mounted config sets api.listen to a non-loopback
+# address (e.g. 0.0.0.0:8080) with api.tls.cert_file and key_file; the API serves
+# loopback inside the container, which the published port does not reach, and
+# -k skips the certificate check. Metrics stay on the container's loopback.
 # Without --admin-password-env, init prints a generated password once, to this
 # terminal only: it never reaches the log or `docker logs`.
 ```
@@ -257,8 +260,7 @@ the extra container without provisioning against it.
 | `s3-backend` | BadgerDB | `s3` (Localstack) |
 
 There is no filesystem block store: a share's durable home is `s3` or `memory`, always
-fronted by an on-disk journal. The journal, the metadata store and the control-plane
-database each get a named volume, so nothing that has to survive a restart lives in a
+fronted by an on-disk journal. The journal and the metadata store each get a named volume, so nothing that has to survive a restart lives in a
 container's writable layer.
 
 **None of these profiles is durable storage**, `s3-backend` included — and what the journal

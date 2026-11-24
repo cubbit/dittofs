@@ -64,12 +64,11 @@ For the internal mechanism design and threat model, see
 - Identity mapping (root squash, all squash)
 - AUTH_UNIX for trusted-network deployments
 - Native TLS for the REST API (certificate and key files, `api.tls.*`)
-- NFS-over-TLS (RFC 9289): opportunistic `AUTH_TLS` STARTTLS upgrade to TLS 1.3
 
 ## Remaining limitations
 
 - No formal security audit performed
-- NFS-over-TLS requires a client that supports RFC 9289 (`xprtsec=tls`); macOS has no such client (use Kerberos or a network tunnel instead)
+- NFS-over-TLS (RFC 9289) is not served yet: every adapter TLS mode but `off` is refused until StartTLS is built. Once served, it requires a client that supports RFC 9289 (`xprtsec=tls`); macOS has no such client (use Kerberos or a network tunnel instead)
 - No encryption at rest
 - No audit logging for file operations
 
@@ -370,19 +369,25 @@ A read-only share fails write and create operations with `EROFS`
 
 ### NFS-over-TLS (RFC 9289)
 
-DittoFS implements the opportunistic `AUTH_TLS` STARTTLS upgrade from RFC 9289: a client sends
-a `NULL` RPC with `auth_flavor = AUTH_TLS`, the server replies with the `"STARTTLS"` verifier,
-and both perform a TLS 1.3 handshake on the same connection — all subsequent traffic is
-encrypted. The handshake runs in userspace (no kernel TLS / `tlshd` on the server). The server does not
-verify client certificates (v2 has no mutual TLS). The adapter's TLS settings (certificate, key
-and `mode`) are settings, not host facts: `adapters.nfs.tls` in the config file is refused, so set
-them through the management API.
+NFS-over-TLS is **not served yet**. The adapter's TLS settings exist, but v2 refuses every `mode`
+except `off` until StartTLS is built, so NFS data travels in cleartext today (see
+[Network-level alternatives](#network-level-alternatives)). What follows describes the design, and
+none of it can be used yet.
 
-- **`opportunistic`** still serves non-TLS clients in plaintext (smooth rollout).
-- **`require`** rejects plaintext connections until they upgrade.
-- DittoFS only loads and hot-reloads cert files; issuance and renewal are the platform's
+The design is the opportunistic `AUTH_TLS` STARTTLS upgrade from RFC 9289: a client sends
+a `NULL` RPC with `auth_flavor = AUTH_TLS`, the server replies with the `"STARTTLS"` verifier,
+and both perform a TLS 1.3 handshake on the same connection, and all subsequent traffic is
+encrypted. The handshake runs in userspace (no kernel TLS / `tlshd` on the server). The adapter's
+TLS settings (`mode`, `cert_file`, `key_file`, `client_ca`) are settings, not host facts:
+`adapters.nfs.tls` in the config file is refused, so they are set through the management API.
+Setting `client_ca` makes the server require and verify a client certificate (mutual TLS) on NFS.
+Mutual TLS is not available on the REST API.
+
+- **`opportunistic`** (future) still serves non-TLS clients in plaintext (smooth rollout).
+- **`require`** (future) rejects plaintext connections until they upgrade.
+- Future: DittoFS only loads cert files; issuance and renewal are the platform's
   responsibility.
-- **Client support:** Linux `mount -o vers=4.1,xprtsec=tls` needs `tlshd` + `CONFIG_NET_HANDSHAKE`
+- **Client support (future):** Linux `mount -o vers=4.1,xprtsec=tls` needs `tlshd` + `CONFIG_NET_HANDSHAKE`
   (RHEL 9.x / kernel 6.7+). macOS has no NFS-over-TLS client — use Kerberos or a VPN tunnel.
 
 ### Control plane API TLS
@@ -403,8 +408,8 @@ api:
     key_file: /etc/dittofs/tls/tls.key
 ```
 
-DittoFS does not generate self-signed certificates or perform ACME. v2 has no mutual TLS or
-minimum-version key for the API; see [Configuration](configuration.md#5-api-server) for
+DittoFS does not generate self-signed certificates or perform ACME. The REST API has no mutual TLS and no
+minimum-version key; see [Configuration](configuration.md#5-api-server) for
 the keys it reads.
 
 **Recommended deployment model:**
@@ -429,7 +434,7 @@ See [`./configuration.md`](./configuration.md) for the full option reference.
 
 ### Network-level alternatives
 
-Without NFS-over-TLS, NFS data travels in cleartext. Use one of:
+Because NFS-over-TLS is not served yet, NFS data travels in cleartext. Use one of:
 
 1. **WireGuard (recommended):** set up a WireGuard VPN between client and server, then mount
    over the VPN interface.
@@ -549,7 +554,7 @@ smbclient -k //server.example.com/export
 - [ ] Enable Kerberos authentication for NFS and SMB
 - [ ] Enable SMB3 encryption with `encryption_mode: required` for sensitive data
 - [ ] Enable SMB message signing with `required: true`
-- [ ] Deploy behind VPN or use NFS-over-TLS for NFS data confidentiality
+- [ ] Deploy behind VPN for NFS data confidentiality (NFS-over-TLS is not served yet)
 - [ ] Restrict export access by IP address (attach a netgroup to each share)
 - [ ] Use root squash on all exports (`squash: root_to_guest`)
 - [ ] Configure NFSv4 ACLs for fine-grained access control
