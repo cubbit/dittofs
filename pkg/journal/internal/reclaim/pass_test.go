@@ -1224,32 +1224,39 @@ func TestPassDeclinesAnOwedEndUntilItsTake(t *testing.T) {
 }
 
 // TestPassAHandOverRefusedForAnotherRetirementFreesNothing re-creates, inside
-// one goroutine, the race a repack runs against in production: another
-// retirement — a forget's drop of a segment the tag's records left empty, or
-// the worker's queued recycle — takes the source's claim in the gap between
-// the unit's own release of it and the retirer's ledger claim. RFC 1 §7.1
-// retires a not-held segment by the journal on its own, without waiting for
-// the repack that selected it, so the refused hand-over must answer a visit
-// that freed nothing and leave the source to the holder, whose own
-// retirement reports the bytes; an error here fails the whole Repack.
+// one goroutine, the race a repack runs against in production: the retirement
+// worker — to which a forget's drop of a segment the tag's records left empty
+// offers it, or a queued recycle of its own — takes the source's claim in the
+// gap between the unit's own release of it and the retirer's ledger claim.
+// RFC 1 §7.1 retires a not-held segment by the journal on its own, without
+// waiting for the repack that selected it, so the refused hand-over must
+// answer a visit that freed nothing and leave the source to the holder, whose
+// own retirement reports the bytes; an error here fails the whole Repack.
 func TestPassAHandOverRefusedForAnotherRetirementFreesNothing(t *testing.T) {
 	p := newPassFixture(t)
 	file := copyFile(4)
 	const payload = "the record whose hand-over another retirement claims"
 	seg := p.plantSealed(t, file, []byte(payload))
 
-	// The other retirement's claim, taken where the forget's drop takes it in
-	// the race: Retire's own claim below then answers ErrClaimed. One fire
-	// only — the later explicit retirement below must claim unimpeded.
-	claimed := false
+	// The other retirement in the race, fired where the forget's drop offers
+	// the segment to the worker, which takes the claim: Retire's own claim
+	// below then answers ErrClaimed. The claim attempt races the fixture's
+	// live reclaim worker, whose prompt can take the segment's claim between
+	// the unit's release and the hook — either holder refuses the hand-over
+	// the same way — so the test asserts the hook fired, not that its Claim
+	// won. One fire only — the later explicit retirement below must claim
+	// unimpeded.
+	fired := false
 	p.f.core.Retirer().SetRetireHook(func(id core.SegmentID, _ segment.Reason) {
-		if id != seg || claimed {
+		if id != seg || fired {
 			return
 		}
-		claimed = p.f.set.Claim(id)
+		fired = true
+		_ = p.f.set.Claim(id)
 	})
 	t.Cleanup(func() { p.f.set.Release(seg) })
 
+	freedBefore := p.f.core.Stats().Counters.FreedBytes
 	freed, err := p.repack(context.Background(), copySegCap*8, seg)
 	if err != nil {
 		t.Fatalf("Repack whose hand-over another retirement claimed: %v", err)
@@ -1257,22 +1264,37 @@ func TestPassAHandOverRefusedForAnotherRetirementFreesNothing(t *testing.T) {
 	if freed != 0 {
 		t.Fatalf("Repack freed %d, want 0: the refused hand-over is a visit that frees nothing", freed)
 	}
-	if !claimed {
-		t.Fatal("the hook never took the source's claim, want it landed where the forget's drop takes it in the race")
+	if !fired {
+		t.Fatal("the hook never fired for the source's hand-over, want it where the forget's drop offers the segment to the retirement worker in the race")
 	}
 	if p.setGone(seg) {
 		t.Fatal("the source left the set, want a refused hand-over to keep it for the claim's holder")
 	}
 
-	// The holder's own retirement: it unlinks the source, hands the copies to
-	// their shares, and answers the bytes the pass could not.
+	// The holder lets go and the source is retired: explicitly here, or by
+	// the worker's tick inside the release-to-call gap — the hand-over's own
+	// race one leg further. ErrNotInSet, a retirement that already finished,
+	// is the one leg the pass's own tolerance answers, and the freed counter
+	// below credits either path; ErrClaimed stays fatal, for a worker that
+	// took the claim again is a wait this tail does not pin.
 	p.f.set.Release(seg)
-	ret, err := p.f.core.Retirer().Retire(seg, segment.NotHeld)
-	if err != nil {
-		t.Fatalf("the holding retirement after the pass: %v", err)
+	_, rerr := p.f.core.Retirer().Retire(seg, segment.NotHeld)
+	if rerr != nil && !errors.Is(rerr, segment.ErrNotInSet) {
+		t.Fatalf("the holding retirement after the pass: %v", rerr)
 	}
-	if ret.Freed <= 0 {
-		t.Fatalf("the holding retirement freed %d, want the source's storage: the bytes belong to whoever retires the segment", ret.Freed)
+	// Bounded wait: the retiree raises the freed counter after it removes
+	// the segment from the set, so the first read can catch the gain still
+	// at zero in that in-flight window; the wait polls the counter itself.
+	var gain uint64
+	for n := 0; ; n++ {
+		gain = p.freedGain(freedBefore)
+		if gain > 0 {
+			break
+		}
+		if time.Duration(n)*5*time.Millisecond >= copyWait {
+			t.Fatalf("the source's retirement freed %d, want the source's storage: the bytes belong to whoever retires the segment", gain)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if !p.setGone(seg) {
 		t.Fatal("the holding retirement left the source in the set, want it unlinked where the pass could not")

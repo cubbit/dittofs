@@ -427,18 +427,21 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 	p.sel.Done(seg)
 	ret, terr := p.ret.Retire(seg, reason)
 	if terr != nil {
-		// decision: a retirement that holds the claim — a forget's drop of a
-		// segment the tag's records left empty, the worker's queued recycle —
-		// or one that already finished and removed the segment, races the
-		// hand-over in the gap between the claim's release above and Retire's
-		// own claim, and RFC 1 §7.1 retires a not-held segment by the journal
-		// on its own, without waiting for the repack that selected it: the
-		// refusal answers a visit that freed nothing, and the holder's own
-		// retirement reports the bytes. ErrNotInSet was already counted by
-		// the ledger as a double retire at Warn, the same cost the retirement
-		// queue accepts for the same race. The ceiling: a claim holder that
-		// parks without retiring stalls this segment's reclamation until it
-		// does, as the queue's own ErrClaimed retry does.
+		// decision: a claim on the segment that another holder took in the
+		// gap between the claim's release above and Retire's own claim — the
+		// retirement worker, to which a forget's drop offers a segment the
+		// tag's records left empty, or a durability copy hold, which never
+		// retires anything — or a retirement that already finished and
+		// removed the segment, refuses the hand-over. RFC 1 §7.1 retires a
+		// not-held segment by the journal on its own, without waiting for
+		// the repack that selected it: the refusal answers a visit that
+		// freed nothing, and the storage belongs to whichever retirement
+		// eventually runs. ErrNotInSet was already counted by the ledger as
+		// a double retire at Warn, the same cost the retirement queue
+		// accepts for the same race. The ceiling: a holder that parks without
+		// retiring stalls this segment's reclamation until it releases — the
+		// worker's tick scan then offers the segment for retirement — as the
+		// queue's own ErrClaimed retry does.
 		if errors.Is(terr, segment.ErrClaimed) || errors.Is(terr, segment.ErrNotInSet) {
 			return bytes, 0, false, nil
 		}

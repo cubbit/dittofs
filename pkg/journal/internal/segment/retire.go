@@ -299,9 +299,15 @@ func (r *Retirer) Retire(id core.SegmentID, reason Reason) (Retirement, error) {
 // SetRetireHook installs the test seam that runs inside Retire after the
 // read-only check and before the ledger's claim, so a test can take the
 // claim a racing retirement takes in production. It is per-instance and nil
-// by default: production wiring never installs it. It must be installed
-// before the retirer is shared — before any concurrent Retire — because the
-// fire site reads the field without a lock.
+// by default, and it must be installed before any Retire can reach the
+// retirer concurrently — in a running core, before anything is queued for
+// retirement — because the fire site reads the field without a lock.
+//
+// decision: no production wiring ever installs the hook; the reclaim pass
+// tests are what hold its signature, and their contract is the install
+// before a concurrent Retire could read it. Overturned if production ever
+// needs to observe retirements: then the field becomes an atomic and the
+// setter gains a production caller.
 func (r *Retirer) SetRetireHook(f func(core.SegmentID, Reason)) { r.retireHook = f }
 
 // reasonState is the state the reason names. The pairs are exactly two, and
