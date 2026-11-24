@@ -29,9 +29,11 @@ version, each refusal answered through the stages' table with its golden vector.
 **Blocks:** E8, which extends T3.3's `Replay` stage with a session's slots; E13, which adds
 `RPCSEC_GSS` beside T3.1's credentials; E14, whose scripts run on T3.2's client; S3 and S4, whose
 mounts start with T3.4's `NULL` over T3.2's client. The middle epics that start from S2 alone build
-their handlers on `nfsharness` and need this epic only for their loopback rows: E4 and E11 fill
-T3.4's `ops` packages, E5 and E10 rely on T3.4's `NFS4ERR_NOFILEHANDLE` and drain rows, and E7
-resolves the claims T3.1 reports.
+their handlers on `nfsharness` and need this epic only for their loopback rows: E4 (T4.3, T4.6) and
+E11 fill T3.4's `ops` packages, E5 (T5.9) and E10 rely on T3.4's `NFS4ERR_NOFILEHANDLE` and drain
+rows, E4's T4.7, E5's T5.9 and E6's T6.5 drive T3.2's client, E4's T4.10 retransmits through T3.3's
+cache, and E7 resolves the `Claimed` `Identity` T3.1 builds (T7.1) and drives T3.2's client from
+three source addresses (T7.6).
 
 ---
 
@@ -72,7 +74,10 @@ their `NULL` rows, and `ops/v4`'s `NULL`; the error rows of §3; the TLS configu
 - An `RPCSEC_GSS` credential, its `Security` stage and context table, and the withdrawal of the
   scaffold's interim `AUTH_BADCRED` for it (`protocol/stages.go`'s `checkAuth`): E13.
 - What a claim resolves to (uid and gid mapping, root, squash, `ManageGIDs`, the credential's gid as
-  a new file's group): E7, and E4 for the group a create passes.
+  a new file's group): E7's T7.1, and E4 for the group a create passes. Until T7.1 lands,
+  `memory.New`'s identity server refuses a `Claimed` caller `ErrAccess` at admission, so this
+  epic's rows that need a call admitted send `AUTH_NONE` to a share granting everyone, and the
+  `AUTH_SYS` `Identity` is asserted at the handler, before admission (T3.1).
 - `r.Call.Client`, set by a row's `Resolve` for NFSv4.0 and NLM: E9 and E11. `r.Call.Session`, a
   session's `Level` and `SEQUENCE` read before dispatch: E8.
 - The slots and reply caches of NFSv4.1 sessions in the `Replay` stage: E8. Each NFSv3 row's
@@ -352,6 +357,7 @@ internal/adapter/adaptertest/nfsclient/
 - **Track:** A. **Depends on:** S2.
 - **Covers:** R1, R2, R3, R4, R5, R6, R7, R10, R12, R40 (credentials).
 - **Deliverables:**
+  - The `Identity`'s source address is `Identity.Client`, the field client rules already read.
   - `core`: `func (c *Conn) Remote() netip.Addr`, the client's address as it reached this node,
     without its port and unmapped (D3, Q2), with `core.golden` updated. Consumed by `Route` here and
     T3.3's key.
@@ -361,7 +367,8 @@ internal/adapter/adaptertest/nfsclient/
     netip.Addr) (vfs.Identity, error)`, its error the named refusal `Route` answers `AUTH_BADCRED`,
     and `callProtocol(prog uint32) vfs.Protocol`; `checkAuth` returning the credential it decoded;
     `Route` building `r.Call` from them in the one allocation (D4). Consumed by every handler from E4
-    on, by E7's resolution, and by E13, which adds the `RPCSEC_GSS` arm.
+    on, by E7's T7.1, which resolves the `Claimed` `Identity` it builds, and by E13, which adds the
+    `RPCSEC_GSS` arm.
   - `wire/fuzz_test.go`: `FuzzAuthSys` against a second decoder written in the test from RFC 5531
     Appendix A.
   - Golden files of credentials and the `Identity` each gives (§11.6's credentials table).
@@ -414,13 +421,17 @@ internal/adapter/adaptertest/nfsclient/
   	Body      []byte // an accepted success's results
   }
   func Dial(ctx context.Context, addr netip.AddrPort) (*Client, error)
+  func DialFrom(ctx context.Context, from netip.Addr, addr netip.AddrPort) (*Client, error) // binds the source address
   func (c *Client) Do(ctx context.Context, call Call) (Reply, error) // send one call, read its reply
   func (c *Client) Send(rec []byte) error                           // one record, framed, as given
   func (c *Client) Read(ctx context.Context) ([]byte, error)        // the next record's body; io.EOF once closed
   func (c *Client) Close() error
   func AuthSys(uid, gid uint32, gids ...uint32) Auth
   ```
-  T3.6 adds `StartTLS`. Consumed by every loopback row of E3 to E13, E14's scripts and E16's
+  T3.6 adds `StartTLS`. A call's `Args` and a reply's `Body` are bytes, which each epic's tests
+  encode and decode with that epic's generated structs. Consumed by T3.3 (`DialFrom`'s second
+  address), every loopback row of E3 to E13 (E4's T4.7 and T4.10, E5's T5.9, E6's T6.5 among them),
+  E7's T7.6 (`DialFrom` from `127.0.0.1`, `127.0.0.2` and `127.0.0.3`), E14's scripts and E16's
   benchmarks.
 - **Acceptance criteria:**
   - `Do` writes the bytes of the hand-written golden calls for the same fields, and reads every
@@ -430,7 +441,7 @@ internal/adapter/adaptertest/nfsclient/
     of RPC version 3 `RPC_MISMATCH` 2..2, a credential of 401 bytes `GARBAGE_ARGS`, an `AUTH_SYS`
     verifier `AUTH_BADVERF`, NFS v2 `PROG_MISMATCH` 3..4, NFS v3 under a 4.x range `PROG_MISMATCH`
     4..4 and MOUNT there `PROG_UNAVAIL`; each leaves `vfstest.Mutations` empty, while the same call
-    with an accepted credential leaves one entry.
+    under `AUTH_NONE`, to a share granting everyone, leaves one entry.
   - A record of seven bytes closes the connection: `Read` returns `io.EOF`.
 - **Tests:** the loopback cases above against their golden replies, at the bytes a client reads,
   beside the scaffold's stage tests that hold them without a socket, `TestTheCredentials`,
@@ -464,11 +475,14 @@ internal/adapter/adaptertest/nfsclient/
   - The 4097th entry evicts the least recently used, and a reply over 8 KiB is not stored; either
     retransmission runs again.
 - **Tests:** over loopback through `core` on `memory.New`, with a test table whose one cacheable row
-  makes one mutating call, and a test `COMPOUND` row at minor version 0 whose one member makes one:
+  makes one mutating call, and a test `COMPOUND` row at minor version 0 whose one member makes one,
+  each call under `AUTH_NONE` to a share granting everyone, so admission passes before E7's T7.1:
   the two sends on two connections give one entry in `vfstest.Mutations`, identical replies, and
   `adapter_replay_hits_total{protocol="nfs3"}` up by one, for each (catch a key on the connection,
   R24, a second run, R23, a hit not counted, R27, the `COMPOUND` row left uncacheable); the same at
-  minor version 1 gives two entries (catches a session's compound cached here, R26). Without a
+  minor version 1 gives two entries (catches a session's compound cached here, R26); the second send
+  from `127.0.0.2` through `DialFrom` gives two entries (catches the key's address dropped between
+  `Conn.Remote` and the cache, R23). Without a
   socket, on header vectors: a property test that any field of the key changed misses and a stamp or
   machine name changed hits (catch a field left out of the key, R23, or the stamp in it, R3); the
   eviction and size cases (catch an unbounded cache, R25); a `Lookup` whose reply reservation cannot
@@ -662,8 +676,13 @@ Gaps, not questions:
   `COMPOUND`'s route runs once and its members pass its `r.Call`. This epic follows RFC 20 (R5); the
   pull request carrying Q2's amendment rewords RFC 21 §11's clause to match.
 - RFC 21 §11.5 maps `ErrReplyTooBig` for NFSv4 only, but `core` also returns it for a single reply
-  charged past a quarter of the reply pool, which an NFSv3 `READ` could meet. E4, which writes `READ`,
-  states its NFSv3 row with that row, by a pull request to RFC 21 §11.5; E16's totality test fails
-  until it has one.
+  charged past a quarter of the reply pool, which an NFSv3 `READ` could meet. E4's RFC 21 pull
+  request proposes its NFSv3 row (E4's §9, point 3), and E4's T4.3 adds it once agreed; E16's
+  totality test fails until it has one.
+- Which pull request carries which RFC amendment: Q2's RFC 20 pull request carries `Conn.Remote`
+  in §4.7, §5.5's `StartTLS` sentence and RFC 21 §11's "once per member" clause; Q3's sentence goes
+  in this document's pull request against RFC 21 §2.2; Q1's option (a) rewords RFC 20 §4.4. No other
+  epic's pull request touches these sections: E5's touches RFC 20 §4.10, E4's and E5's other rows of
+  RFC 21 §11.5.
 - E8 owns the NFSv4.1 reply cache, which shares T3.3's stage: if E8 finds `core`'s `ReplayCache`
   cannot hold both behind one `Stages.Replay`, the split is E8's to propose.
