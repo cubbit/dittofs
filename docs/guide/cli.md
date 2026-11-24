@@ -1511,7 +1511,8 @@ dfsctl namespace delete <id> [flags]
 Flags:
 
 ```
-      --wait   Follow the operation the command starts to its end
+  -f, --force   Delete without asking for confirmation
+      --wait    Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -2912,7 +2913,8 @@ dfsctl store delete <id> [flags]
 Flags:
 
 ```
-      --wait   Follow the operation the command starts to its end
+  -f, --force   Delete without asking for confirmation
+      --wait    Follow the operation the command starts to its end
 ```
 
 Global flags:
