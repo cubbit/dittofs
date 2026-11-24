@@ -580,8 +580,10 @@ a definition:
   `Target`, its length counting only the bytes before the byte under test,
   and *t* − 3 from `Target` on: normalisation level 2 around *t* − 1
   bits. The top bits are the ones every byte of the 64-byte window reaches
-  ([§3.4](#3.4%20How%20far%20back%20a%20decision%20looks)). No position below `Min` is tested; a chunk that reaches `Max` ends
-  there. On input with no structure the mean, skip included, works out at about
+  ([§3.4](#3.4%20How%20far%20back%20a%20decision%20looks)). A byte that passes the test is the last byte of its chunk, and
+  the next chunk starts after it. The first byte tested is the chunk's byte at
+  index `Min` − 1, counting from 0, so the shortest chunk is exactly `Min` bytes;
+  a chunk that reaches `Max` ends there. On input with no structure the mean, skip included, works out at about
   0.96 × `Target`; computed, not measured, and checked by [§10.4](#10.4%20What%20CI%20checks%20instead%20of%20timing)'s average.
 - **Unkeyed table.** `G` is 256 little-endian 64-bit words: the first 2,048
   bytes of BLAKE3's extendable output in key-derivation mode, context
@@ -683,9 +685,12 @@ the floor where chunking stops being worthwhile (64 KiB `Target`, so a 16 KiB
 `Target`). The two keys of [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) are typed as 32-byte arrays, so no other
 length can be passed, and an all-zero chunk-ID key is invalid too: it is what a
 key that was never drawn looks like, and every chunk ID cut under it would have
-to be migrated once a real key arrived ([§4.1](#4.1%20A%20chunk)). A fuzz check of the
-constructor asserts that refusal. Nothing else can be invalid, because nothing
-else is configured.
+to be migrated once a real key arrived ([§4.1](#4.1%20A%20chunk)). The chunking key and the
+encryption flag must agree ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)): a keyed table for a namespace that does
+not encrypt is invalid, and so is an encrypting namespace with no chunking key
+or with an all-zero one, for the same reason as the chunk-ID key. A fuzz check
+of the constructor asserts these refusals. Nothing else can be invalid, because
+nothing else is configured.
 
 Falling back to a default looks like robustness and is really a data-shape bug. A
 namespace asked for 64 KiB chunks and quietly given 1 MiB ones produces content that
@@ -901,7 +906,10 @@ file order and then file after file — each chunk's file, offset, length and ha
 and whether it is all zeros; once deduplication is re-added, a dedup lookup,
 passed in as a function ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); the block target, the format's chunk-count cap `N`,
 the key budget `K` ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)) with the worst-case keys each chunk adds to its
-block's commit, which the caller counts ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)), and the age of the oldest
+block's commit, a zero ref's included, counting the existing refs it replaces, and
+a block's commit's per-block keys and per-file keys, which the caller counts
+([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)); the fold charges the per-block keys once to each block and the
+per-file keys once for each file with a chunk or a zero ref in it; and the age of the oldest
 byte of each chunk.
 
 **Output**, per chunk, one of three dispositions, and a sequence of block plans:
@@ -939,7 +947,7 @@ passes, and **MUST NOT** survive its pass. Once there is a lookup, a lookup erro
 | # | Rule |
 | --- | --- |
 | P1 | A block holds whole chunks only. A chunk is never split to make a block come out an exact size. |
-| P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. It **MAY** also end early, at a chunk boundary, when the next chunk would take its commit past the key budget `K`; a block closed early counts as a short block. A block falls short of the target only when P4's cap or the key budget closed it, or it is the last block of its pass, within [§5.4](#5.4%20The%20short%20last%20block)'s bound; no other block is short. |
+| P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. It **MUST** also end early, at a chunk boundary, when the next chunk would take its commit past the key budget `K`, counting the keys of the zero refs that fall within its span; a block closed early counts as a short block. A chunk whose keys alone, with the per-block and per-file keys, pass `K` goes alone in a block, and that block's commit is split into transactions that each stay within `K`. A block falls short of the target only when P4's cap or the key budget closed it, or it is the last block of its pass, within [§5.4](#5.4%20The%20short%20last%20block)'s bound; no other block is short. |
 | P3 | A block holds only the chunks whose bytes it actually carries. An all-zero chunk is a zero ref, and no block carries it ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)). |
 | P4 | A block holds at most `N` chunks, where `N` is a constant of the block format version: 1,024 in this one. It bounds the header ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), which short chunks next to holes would otherwise grow without limit. |
 | P5 | The target counts **carried** bytes. Adopted chunks and zero refs contribute nothing, or a mostly-deduplicated file yields blocks of a few kilobytes. |
@@ -1019,7 +1027,9 @@ A pass's last block may fall short of the target. The assembler **MAY** hold it
 back: it is not put, none of its extents are reported, and they stay **Dirty** and
 are carved again by the next pass. It **MUST** be put, however short, once its
 oldest chunk's bytes reach the offload maximum age ([RFC 8 §6.2](rfc-8-engine.md#6.2%20When%20a%20file%20is%20offered)). So at
-most one short block is put per pass, and none waits past the age ceiling.
+most one short last block is put per pass, and none waits past the age ceiling.
+Blocks the count cap or the key budget closed (P2) are not last blocks, and are
+never held back.
 Holding back keeps the assembler per pass: nothing of the held block survives the
 pass but the dirty extents themselves.
 
@@ -1044,7 +1054,7 @@ adopted later with no migration.
 | --- | --- |
 | A1 | A block holds whole chunks, at most `N` of them, and overshoots its target, counted in carried bytes, by at most one chunk. |
 | A2 | A block holds only the chunks whose bytes it carries; zero chunks and adopted chunks are never in one. |
-| A3 | At most one short block is put per pass, and none waits past the age ceiling. |
+| A3 | At most one short last block is put per pass, and none waits past the age ceiling. Blocks the count cap or the key budget closed are not counted. |
 | A4 | A plan holds hashes and positions, never chunk bytes. |
 | A5 | A file's chunks within a block are contiguous and in offset order. |
 | A6 | A chunk is reused without a lookup only within one block. |
@@ -1064,7 +1074,7 @@ Each check is a pure function of a chunk stream and settings; the two rows marke
 | [§5.5](#5.5%20A%20pending%20block%20is%20a%20plan%2C%20not%20a%20buffer) no bytes | Fold 1 GiB of chunks. Assert the assembler's memory is independent of chunk size, and the slices `emit` handed over are not retained. |
 | lookup error (with the lookup) | Make the lookup fail. Assert every chunk is carried. |
 | P2 no short block mid-pass | Fold a pass of many files whose chunks end between blocks at every possible point, with no count-cap or key-budget closure; assert every block but the last reaches the target. An assembler that closes a block at a file's end puts short blocks mid-pass. |
-| P2 key budget | Fold a stream whose chunks' keys reach `K` before the block target. Assert the block closes at the last chunk that keeps its commit within `K`, no plan's keys exceed `K`, and the next block starts with the chunk that did not fit. |
+| P2 key budget | Fold a stream whose chunks' keys reach `K` before the block target. Assert the block closes at the last chunk that keeps its commit within `K`, counting the per-block and per-file keys, no plan's keys exceed `K`, and the next block starts with the chunk that did not fit. Fold a few carried chunks between runs of 10⁴ zero chunks, each replacing an existing ref; assert the zero refs' keys close the block before `K`. Fold one chunk whose keys alone pass `K`; assert it is alone in its block and the block's commit is split into transactions each within `K`. |
 | block target range | Configure a block target of 512 KiB, of 128 MiB, and of exactly 1 MiB and 64 MiB; assert the first two are refused at startup and nothing is assembled, and the last two are accepted. |
 
 ## 6. Boundaries are public
@@ -1204,7 +1214,7 @@ rows need no reader and no hash at all.
 | --- | --- | --- |
 | chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) target is real | Cut incompressible data; assert the average, `Min` skip included, is within tolerance of `Target`. A mask that does not follow `Target`, or is sized without the skip, fails it. |
 | chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) mask comes from target | Build at several targets; assert the mask's bit count tracks the target, and that one hard-coded mask cannot satisfy two of them. |
-| chunker | [§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) bad settings refused | Build with a `Target` that is not a power of two, one below the floor and one above the ceiling; assert each errors and nothing usable comes back. |
+| chunker | [§3.7](#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) bad settings refused | Build with a `Target` that is not a power of two, one below the floor and one above the ceiling; with an all-zero chunk-ID key; with a chunking key for a namespace that does not encrypt; and for an encrypting namespace with no chunking key and with an all-zero one. Assert each errors and nothing usable comes back. |
 | chunker | [§6](#6.%20Boundaries%20are%20public) keyed boundaries | Cut the same input under two chunking keys and under none; assert the boundaries differ between all three, the average stays within tolerance of `Target` under each, and the same key reproduces the same boundaries. |
 | consumer | C10 table follows encryption | Create one non-encrypting and one encrypting namespace: assert the first has no chunking key and its boundaries equal the unkeyed table's, and that building a cutter with a keyed table for it is refused; assert the second's boundaries are the keyed table's. A design that keys every namespace's boundaries fails the first half. |
 | consumer | C11 plan keyed under one namespace | Form a plan in namespace A, then hand it to namespace B's intent step, as a re-home switching mid-pass would; assert it is refused and nothing is put. |

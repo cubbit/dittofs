@@ -42,9 +42,13 @@ RFC 8 offload plan's pull request carries; one nightly `fuzz` suite, the golden-
 the corpus fetch are registered here and shared (§1.4).
 **RFC 2 amendments in this pull request:** §5.1, §5.7: the dedup lookup lands with its first
 caller, the dedup oracle, and the first release's `Add` takes no lookup and returns no error
-(D3); P2, A7 and §5.1: a block may close early at the key budget `K`, and counts as a short
-block (D3); §3.2: the minimum-size count takes only the bytes before the byte under test;
-§3.7: both keys are `[32]byte` and an all-zero chunk-ID key is refused, with a fuzz check (D4);
+(D3); P2, A3, A7, §5.1 and §5.4: a block must close early at the key budget `K`, counting zero
+refs' keys and the per-block and per-file keys, and counts as a short block that A3 does not
+limit; a chunk that alone passes `K` goes alone in a block whose commit is split (D3); §3.2: the
+minimum-size count takes only the bytes before the byte under test, a passing byte ends its
+chunk, and the first byte tested is at index `Min` − 1; §3.7 and §9: both keys are `[32]byte`,
+an all-zero chunk-ID key is refused, and the chunking key must agree with the encryption flag,
+an all-zero one refused, with a fuzz check (D4);
 §9.1, §10.3, §10.4, §10.6: the allocation counts run per pull request and skip under the race
 detector, the golden vectors' second architecture nightly, and K4 on the corpus by hand, with
 edit stability checked per change on seeded input, one byte inserted, against K4's criterion
@@ -99,8 +103,8 @@ the reference box, fuzzing at full size, the second architecture.
 
 The exported surface of D1's packages, frozen at S1, which is RFC 8 offload plan S1a "carver
 interface agreed", with stub bodies. S1 is final: epic 1 also settles the assembler inputs the
-pipeline supplies (D3): the key budget `K` with each chunk's worst-case keys (RFC 2 P2 as
-amended), the lookup (deferred), the all-zero flag and each chunk's age.
+pipeline supplies (D3): the key budget `K` with each chunk's worst-case keys, a zero ref's
+included, and a commit's per-block and per-file keys (RFC 2 P2, §5.1 as amended), the lookup (deferred), the all-zero flag and each chunk's age.
 
 - `carver`: the settings value built from a namespace's `Target`, its encryption flag, its
   chunking key and its chunk-ID key (RFC 2 §3.2, §3.7, §4.1, §6; D4); the check of a `Target`
@@ -415,9 +419,12 @@ pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
   chunk's age is its file's oldest dirty write, never younger than the truth, so A3's ceiling
   holds and a short block may go out earlier than needed. The `ponytail:` for it goes where the
   Carve state assigns the age, and a time per extent is a ledger row (§6.1). The fold also takes
-  the key budget `K` and, per chunk, the worst-case keys it adds to the block's commit, counted by
-  the caller (RFC 8 §6.3), and closes a block early, at a chunk boundary, before a chunk that
-  would pass `K` (RFC 2 P2, A7 as amended): the pipeline cutting a plan after the fold instead
+  the key budget `K` and, per chunk, the worst-case keys it adds to the block's commit, a zero
+  ref's included, with the commit's per-block and per-file keys, counted by the caller (RFC 8
+  §6.3); it charges the per-block keys once a block and the per-file keys once for each file in
+  it, and closes a block early, at a chunk boundary, before a chunk that would pass `K` (RFC 2
+  P2, A7 as amended). A chunk that alone passes `K` goes alone in a block, marked so the RFC 8
+  offload plan's commit splits it into transactions within `K`: the pipeline cutting a plan after the fold instead
   would duplicate P1's chunk boundaries in the engine. The engine must read `K`: `kvstore`
   computes it at open from the backend's limits and exports no accessor
   (`pkg/metadata/kvstore/budget.go:75`, `store.go:207` on `feat/storage-v2`); the RFC 8 offload
@@ -425,7 +432,7 @@ pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
   art: none found. Applied by epics 1 and 5.
 - **D4. The settings constructor takes the encryption flag beside the keys**, since the carver
   cannot otherwise know it for RFC 2 §3.2's refusal of a keyed table. It refuses a chunking key
-  without encryption and encryption without a key, and builds the table itself, so no
+  without encryption and encryption without a key or with an all-zero one (RFC 2 §3.7 as amended), and builds the table itself, so no
   inconsistent pair can be built (C10's cutter half). Both keys are `[32]byte`, and it refuses an
   all-zero chunk-ID key (RFC 2 §3.7 as amended): the zero key is what a key that was never drawn
   looks like, and it is public, so every ID cut under it is computable by anyone and only a
@@ -568,7 +575,9 @@ budget row among them (RFC 2 §5.7 as amended); §10.2's block-target edge cases
 **Expected content:**
 - The constructor and the block-target range, with §5.2's `decision:` at the check.
 - The fold: whole chunks, the target in carried bytes, the count cap, the early close at the key
-  budget `K`, which counts as a short block (P1, P2, P4, P5, A7 as amended).
+  budget `K` with zero refs' and per-block and per-file keys counted, which counts as a short
+  block A3 does not limit, and a chunk alone over `K` in a block of its own (P1, P2, P4, P5, A3,
+  A7 as amended).
 - Zero refs (P3); repeats within a block (P6), carried once as the store's block commit requires:
   `kvstore.BlockCommit` keeps carried chunks apart from refs, and its commit refuses a chunk
   carried twice (`pkg/metadata/kvstore/offload.go:54`, `:115` on `feat/storage-v2`).
