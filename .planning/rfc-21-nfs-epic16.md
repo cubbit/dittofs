@@ -2,7 +2,7 @@
 
 **Sources:** [RFC 21](../docs/internals/rfcs/rfc-21-nfs.md) §11.5's totality sentence and its
 "What runs while draining" paragraph, §11.6's "§11.1–§11.5 total mapping" row and its two
-cross-protocol rows, §12's N13, N14, N17, N23 and N24 for one node and N22's held-I/O half, and
+cross-protocol rows, §12's N13, N14, N17, N23 and N24 for one node, N22's held-I/O half and N26's totality clause (every neutral error maps to one NFS status; the translations' other clauses are E3's and each handler epic's), and
 §13's opening, "What must not
 stand in" and suites paragraphs with the rows that need the composed node, a restart, a kernel client
 or both adapters: "§11.5 full journal", "§9.1 stability", "§9.1 loss verifier", "§9.1 failed stable
@@ -161,7 +161,7 @@ cited by number and title and not copied.
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T16.1 to T16.6, T16.11, T16.14 | the in-process rows run in `unit` under `-race` on the real composed node (T16.14's large steps in the non-race `unit/node-clone`), driven by E3's scripted client and RFC 22's; a fault is the journal kit's `kit.Seam` or `kvtest.FaultKV` around the real store (kind 3), time the node's test clock (kind 1); no other double |
 | rule 2, fuzz tests where relevant | none | nothing here decodes a peer's bytes; the decoders' targets are the middle epics' |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T16.2, T16.13 | no series is added; the soak reads `adapter_unmapped_errors_total` and `adapter_handler_panics_total`, and T16.2 reads none of the series pending the RFC's author |
-| rule 4, profiling: leaks, allocations and contention | T16.1 to T16.6, T16.12 to T16.14 | every in-process row ends with `adaptertest.CheckLeaks`; T16.12 is RFC 20 §6.10's allocation gate; the soak asserts the pools empty and no goroutine growth (R15) |
+| rule 4, profiling: leaks, allocations and contention | T16.2 to T16.6, T16.12 to T16.14 | every in-process row of T16.2 to T16.6 and T16.14 ends with `adaptertest.CheckLeaks`; T16.12 is RFC 20 §6.10's allocation gate; the soak asserts the pools empty and no goroutine growth (R15) |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each row asserts what a client reads: the status on the wire, the bytes read back, the file a kernel mount sees, the descriptor `smbcacls` prints |
 | rule 6, known failures shrink | none, until the burn-down | `e2e` and `unit` keep no `known.yaml`; the burn-down's subtask, added after E15, removes entries (§1.2) |
 | rule 7, v2 ignores v1 | all | the rows come from the RFCs; `develop`'s e2e tests are not ported, and only `test/e2e/framework`'s mount, Kerberos and netns helpers, which import nothing of v1, are reused |
@@ -169,7 +169,7 @@ cited by number and title and not copied.
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T16.13 | the soak's `ponytail:` (D5); D3's and D6's `decision:` markers at their sites |
 | rule 10, a test must be able to fail | all | each test names the change that fails it; the totality test fails on a row removed; the allocation gate on one allocation added; the cell check on a package dropped from the cell |
 | rule 11, a symbol is exported only if an interface uses it | T16.1, T16.7 | exported: `nodetest`'s `Faults`, `Seam`, `KV` and `Crash`, for this epic's in-process rows and RFC 22's epic 16; `framework.Capture` and `framework.TsharkFields`, for T16.7 and T16.8. Nothing else |
-| rule 12, each subtask creates only what it declares | all | each helper lands with its first consumer: the seams with T16.2, the capture with T16.7 |
+| rule 12, each subtask creates only what it declares | all | each helper lands with its first consumer: the seams with T16.2 in PR 1 (T16.1's own tests reach them only through the service), the capture with T16.7 |
 | rule 13, translate, never decide | none | no adapter code is written here; the rows assert the service's decisions as the adapter carries them |
 | rule 14, nothing deferred is lost | all | every row's step left out is named in §1.2 with its owner; the burn-down waits as a recorded decision (D7) |
 
@@ -353,7 +353,7 @@ so that subtasks and tests can cite them. A section cited with no RFC named is R
   `-race` and runs nowhere else is never run. A `decision:` marker at that test says it reads
   `test/suites.yaml` as text. Prior art: `test/required-tests.json`'s own comment.
 - **D7. The burn-down is planned after E15.** Its size is v2's failures in three suites, unknown
-  until they run; a figure now would be a guess. `develop`'s 58 pynfs entries are a floor.
+  until they run; a figure now would be a guess. `develop`'s 58 pynfs entries are a reference point: v2 is a rewrite and may fail fewer or other tests.
 - **D8. Captures in `e2e` are `tcpdump` on loopback, read with `tshark`.** `framework.Capture` writes
   a pcap of one port and `framework.TsharkFields` decodes fields with a display filter; T16.7 reads
   `NFS4ERR_BADSESSION` with them and T16.8 shows `krb5p` and TLS traffic unreadable. Prior art:
@@ -522,7 +522,7 @@ in a subtask (§9, gap 8).
 
 **Subtask T16.5 estimate: 2.75 man-days.**
 
-- **Track:** the team. **Depends on:** S5, E9, E10, E11, E14's T14.1 (pending Q5).
+- **Track:** the team. **Depends on:** S5, E4 (`MNT`), E5 (a walk from `PUTROOTFH`), E9, E10, E11, E14's T14.1 (pending Q5).
 - **Covers:** R38, R39, R40.
 - **Deliverables:** `internal/node/nfs_locks_test.go`: "§5.3 lock recall"'s three variants with
   client A a scripted NFSv4.1 client that holds the delegation, sends its local lock on
@@ -577,8 +577,8 @@ in a subtask (§9, gap 8).
 
 **Subtask T16.6 estimate: 4.5 man-days.**
 
-- **Track:** the team. **Depends on:** S5, E9, E10, E11, E13, S6b, E14's T14.1 (pending Q5), and
-  RFC 22's implementation plan's SMB on the composed node with its scripted client.
+- **Track:** the team. **Depends on:** S5, E4 (NFSv3 `WRITE` and `GETATTR`), E5 ("§8.1 ctime"), E9, E10, E11, E13, S6b,
+  E14's T14.1 (pending Q5), and RFC 22's implementation plan's SMB on the composed node with its scripted client.
 - **Covers:** R43, R44, R45, R46, R47, R48, R49, R50, R67.
 - **Deliverables:** `internal/node/crossproto_test.go`, one test per row (D2), with E3's scripted
   client and RFC 22's on one share of one `nodetest` node: R43 to R50, and "disable takes effect"
@@ -778,7 +778,7 @@ in a subtask (§9, gap 8).
   calibration week of NFS nights, and the soak.
 - **Acceptance criteria:**
   - A night reports each NFS point for both targets and NFS's area score, with the 7-day flag
-    `score.py` already applies.
+    `score.py` already applies (Q3(a); under (b), also the develop-status note R13 names).
   - The soak ends with zero unmapped errors, zero panics, empty pools and its starting goroutine
     count.
 - **Tests:** `score_test.py`, at the score `night.sh` posts: an NFS night scored apart and flagged below its median
@@ -814,9 +814,13 @@ flowchart TD
   T14_1 -.-> T16_12["T16.12 Pipeline micro-benchmark"]
   E15 --> T16_13["T16.13 Nightly benchmark and soak"]
   T14_1 -.-> T16_13
+  EH(["handler epics E4 to E13, as each subtask's Depends on names them"]):::sync -.-> T16_2 & T16_3 & T16_4 & T16_5 & T16_14 & T16_6 & T16_9 & T16_11 & T16_12
+  R23(["RFC 23's plan, epics 7 and 8: the server fixture and e2e helpers"]):::sync --> T16_7 & T16_9 & T16_13
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
+The handler epics' node stands for the edges each subtask's **Depends on** line lists (T16.12 on
+E4 and E8, T16.14 on E4 and E12, T16.9 on E6, and so on); that line is the one to schedule from.
 Checkpoint after T16.6: every in-process row passes in `unit`. Checkpoint after T16.10: every
 kernel-client row passes in `e2e`, `e2e/kerberos` and `e2e/cross-protocol`. T16.11 needs its
 handler epics and this epic's refusal tests (T16.3, T16.5, T16.6); T16.12 can start as soon as E4
@@ -840,7 +844,8 @@ and 3 can be open at once; PR 4, 5 and 7 wait for E15.
 
 ## 9. Open points
 
-Questions pending the user's answer. Each recommended option is written in place above.
+Questions pending the user's answer. Each recommended option is written in place above, except in
+an R row, which keeps the RFC's text until the RFC changes.
 
 - **Q1. Where RFC 21's wire-answer rows run** (D1). RFC 21 §13's suites paragraph places the
   non-fault single-node rows and the cross-protocol rows in `e2e` and `e2e/cross-protocol`.
@@ -868,7 +873,7 @@ Questions pending the user's answer. Each recommended option is written in place
   issue"** against RFC 29 §4.10, where a flag fails nothing and the dedicated host posts nothing
   there.
   - (a) **Recommended:** RFC 20 §6.10 amended to RFC 29 §4.10's flag, for both protocols; R13 is
-    written so.
+    rewritten to the flag once that amendment merges, and T16.13 is written for it.
   - (b) This epic adds the note to `score.py` and a post from the host, for SMB too.
 - **Q4. The soak's length** (D5).
   - (a) **Recommended:** 20 minutes in `e2e`'s `stress` option, nightly on a hosted runner, with its
