@@ -436,16 +436,24 @@ Global flags:
     - [`dfsctl context remove`](#dfsctl-context-remove) — Remove a context
     - [`dfsctl context rename`](#dfsctl-context-rename) — Rename a context
     - [`dfsctl context use`](#dfsctl-context-use) — Switch to a different context
-  - [`dfsctl group`](#dfsctl-group) — Group management
-    - [`dfsctl group add-user`](#dfsctl-group-add-user) — Add a user to a group
-    - [`dfsctl group create`](#dfsctl-group-create) — Create a new group
-    - [`dfsctl group edit`](#dfsctl-group-edit) — Edit a group
-    - [`dfsctl group get`](#dfsctl-group-get) — Get group details
-    - [`dfsctl group list`](#dfsctl-group-list) — List all groups
-    - [`dfsctl group remove`](#dfsctl-group-remove) — Remove a group
-    - [`dfsctl group remove-user`](#dfsctl-group-remove-user) — Remove a user from a group
+  - [`dfsctl group`](#dfsctl-group) — Manage groups
+    - [`dfsctl group add-member`](#dfsctl-group-add-member) — Add a user to a group
+    - [`dfsctl group create`](#dfsctl-group-create) — Create a group
+    - [`dfsctl group delete`](#dfsctl-group-delete) — Delete a group
+    - [`dfsctl group get`](#dfsctl-group-get) — Show a group
+    - [`dfsctl group list`](#dfsctl-group-list) — List groups
+    - [`dfsctl group remove-member`](#dfsctl-group-remove-member) — Remove a user from a group
+    - [`dfsctl group update`](#dfsctl-group-update) — Change a group
+  - [`dfsctl installation`](#dfsctl-installation) — Act on the installation as a whole
+    - [`dfsctl installation rotate-signing-key`](#dfsctl-installation-rotate-signing-key) — Rotate the key access tokens are signed with
   - [`dfsctl login`](#dfsctl-login) — Authenticate with DittoFS server
   - [`dfsctl logout`](#dfsctl-logout) — Clear stored credentials
+  - [`dfsctl netgroup`](#dfsctl-netgroup) — Manage netgroups
+    - [`dfsctl netgroup create`](#dfsctl-netgroup-create) — Create a netgroup
+    - [`dfsctl netgroup delete`](#dfsctl-netgroup-delete) — Delete a netgroup
+    - [`dfsctl netgroup get`](#dfsctl-netgroup-get) — Show a netgroup
+    - [`dfsctl netgroup list`](#dfsctl-netgroup-list) — List netgroups
+    - [`dfsctl netgroup update`](#dfsctl-netgroup-update) — Replace a netgroup's members
   - [`dfsctl operation`](#dfsctl-operation) — Follow long-running operations
     - [`dfsctl operation cancel`](#dfsctl-operation-cancel) — Cancel an operation
     - [`dfsctl operation get`](#dfsctl-operation-get) — Show an operation
@@ -474,14 +482,17 @@ Global flags:
     - [`dfsctl share remove`](#dfsctl-share-remove) — Remove a share
     - [`dfsctl share show`](#dfsctl-share-show) — Show share details
   - [`dfsctl status`](#dfsctl-status) — Show server status
-  - [`dfsctl user`](#dfsctl-user) — User management
-    - [`dfsctl user change-password`](#dfsctl-user-change-password) — Change your own password
-    - [`dfsctl user create`](#dfsctl-user-create) — Create a new user
-    - [`dfsctl user edit`](#dfsctl-user-edit) — Edit a user
-    - [`dfsctl user get`](#dfsctl-user-get) — Get user details
-    - [`dfsctl user list`](#dfsctl-user-list) — List all users
-    - [`dfsctl user password`](#dfsctl-user-password) — Reset a user's password
-    - [`dfsctl user remove`](#dfsctl-user-remove) — Remove a user
+  - [`dfsctl token`](#dfsctl-token) — Manage API tokens
+    - [`dfsctl token create`](#dfsctl-token-create) — Create an API token
+    - [`dfsctl token list`](#dfsctl-token-list) — List API tokens
+    - [`dfsctl token revoke`](#dfsctl-token-revoke) — Revoke an API token
+  - [`dfsctl user`](#dfsctl-user) — Manage users
+    - [`dfsctl user create`](#dfsctl-user-create) — Create a user
+    - [`dfsctl user delete`](#dfsctl-user-delete) — Delete a user
+    - [`dfsctl user get`](#dfsctl-user-get) — Show a user
+    - [`dfsctl user list`](#dfsctl-user-list) — List users
+    - [`dfsctl user set-password`](#dfsctl-user-set-password) — Set a user's password
+    - [`dfsctl user update`](#dfsctl-user-update) — Change a user
   - [`dfsctl version`](#dfsctl-version) — Show version information
 
 
@@ -491,8 +502,8 @@ DittoFS Control - Remote management client
 
 dfsctl is the command-line client for managing DittoFS servers remotely.
 
-Its commands for users, groups, shares and quotas return with the server's v2
-API; until then each refuses. The context subcommand manages the server
+Its commands for shares and quotas return with the server's v2 API; until
+then each refuses. The context subcommand manages the server
 contexts kept in ~/.config/dfsctl/config.json.
 
 Use "dfsctl [command] --help" for more information about a command.
@@ -746,12 +757,13 @@ Global flags:
 
 ### `dfsctl group`
 
-Group management
+Manage groups
 
-Manage Unix groups on the DittoFS server. Groups bundle users together so
-that share permissions can be granted to multiple users at once using a single
-group reference. Each group carries a Unix GID used for NFS uid/gid resolution.
-All subcommands require admin privileges.
+Create, list, read, change and delete the server's groups, and add and remove
+their members.
+
+Each command names a group by its name, or by its ID with --id; add-member
+and remove-member name the group and the user by their names.
 
 ```
 dfsctl group [flags]
@@ -760,26 +772,14 @@ dfsctl group [flags]
 **Examples:**
 
 ```bash
-# List all groups
-dfsctl group list
+# Create a group with gid 1001
+dfsctl group create editors --gid 1001
 
-# Get group details including current members
-dfsctl group get editors
+# Add alice to it
+dfsctl group add-member editors alice
 
-# Create a group with an explicit GID
-dfsctl group create --name editors --gid 1001
-
-# Edit a group interactively
-dfsctl group edit editors
-
-# Add a user to a group
-dfsctl group add-user editors alice
-
-# Remove a user from a group
-dfsctl group remove-user editors alice
-
-# Remove a group (prompts for confirmation)
-dfsctl group remove editors
+# Delete it and wait for the deletion to end
+dfsctl group delete editors --force --wait
 ```
 
 Global flags:
@@ -790,29 +790,12 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl group add-user`
+### `dfsctl group add-member`
 
 Add a user to a group
 
-Add a user to a group on the DittoFS server. The user will immediately
-gain any permissions associated with that group on shares and other resources.
-Both the group name and the username are required positional arguments.
-
 ```
-dfsctl group add-user <group> <username> [flags]
-```
-
-**Examples:**
-
-```bash
-# Add alice to the editors group
-dfsctl group add-user editors alice
-
-# Add a user to the admins group
-dfsctl group add-user admins bob
-
-# Verify membership after adding
-dfsctl group get editors
+dfsctl group add-member <group> <user> [flags]
 ```
 
 Global flags:
@@ -825,36 +808,16 @@ Global flags:
 
 ### `dfsctl group create`
 
-Create a new group
-
-Create a new group on the DittoFS server. Groups are used to organise
-users and can be referenced in share permissions to grant access to multiple
-users at once. The group's Unix GID is auto-assigned from the server's
-allocation range unless you provide one explicitly with --gid.
+Create a group
 
 ```
-dfsctl group create [flags]
-```
-
-**Examples:**
-
-```bash
-# Create a group with an auto-assigned GID
-dfsctl group create --name editors
-
-# Create a group with an explicit GID
-dfsctl group create --name editors --gid 1001
-
-# Create a group with a description
-dfsctl group create --name editors --gid 1001 --description "Content editors"
+dfsctl group create <name> [flags]
 ```
 
 Flags:
 
 ```
-      --description string   Group description
-      --gid uint32           Group ID (auto-generated if not set)
-      --name string          Group name (required)
+      --gid uint32   Unix group ID, which a create leaving it out allocates
 ```
 
 Global flags:
@@ -865,40 +828,23 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl group edit`
+### `dfsctl group delete`
 
-Edit a group
+Delete a group
 
-Edit an existing group on the DittoFS server. When run without flags, an
-interactive prompt walks you through each editable field (GID and description),
-showing the current value so you can press Enter to keep it. When flags are
-provided, only those fields are updated and no prompt appears.
+Delete a group. The deletion is an operation: the command prints its ID, or,
+with --wait, follows it to its end.
 
 ```
-dfsctl group edit <name> [flags]
-```
-
-**Examples:**
-
-```bash
-# Edit the group interactively (shows current values)
-dfsctl group edit editors
-
-# Change the group's GID to a specific value
-dfsctl group edit editors --gid 1002
-
-# Update only the description
-dfsctl group edit editors --description "Senior content editors"
-
-# Update both GID and description in one command
-dfsctl group edit editors --gid 1002 --description "Senior content editors"
+dfsctl group delete <name> [flags]
 ```
 
 Flags:
 
 ```
-      --description string   Group description
-      --gid uint32           Group ID
+  -f, --force       Delete without asking
+      --id string   The group's ID, in place of its name
+      --wait        Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -911,31 +857,16 @@ Global flags:
 
 ### `dfsctl group get`
 
-Get group details
-
-Get detailed information about a specific group on the DittoFS server.
-Accepts either the group name or the group's full ID (see 'dfsctl group list').
-The output includes the group's GID, description, member list, and creation
-timestamp. Use -o json or -o yaml for machine-readable output.
+Show a group
 
 ```
-dfsctl group get <name|id> [flags]
+dfsctl group get <name> [flags]
 ```
 
-**Examples:**
+Flags:
 
-```bash
-# Show group details as a table
-dfsctl group get editors
-
-# By ID
-dfsctl group get 7a1e9f02-...
-
-# Output as JSON (useful for scripting)
-dfsctl group get editors -o json
-
-# Output as YAML
-dfsctl group get editors -o yaml
+```
+      --id string   The group's ID, in place of its name
 ```
 
 Global flags:
@@ -948,27 +879,26 @@ Global flags:
 
 ### `dfsctl group list`
 
-List all groups
-
-List all groups registered on the DittoFS server. The table view
-shows each group's name, GID, member count, and description. Use -o json or
--o yaml to get machine-readable output suitable for piping into other tools.
+List groups
 
 ```
 dfsctl group list [flags]
 ```
 
-**Examples:**
+Global flags:
 
-```bash
-# List all groups as a table
-dfsctl group list
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
 
-# Output the full group list as JSON
-dfsctl group list -o json
+### `dfsctl group remove-member`
 
-# Output as YAML
-dfsctl group list -o yaml
+Remove a user from a group
+
+```
+dfsctl group remove-member <group> <user> [flags]
 ```
 
 Global flags:
@@ -979,34 +909,22 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl group remove`
+### `dfsctl group update`
 
-Remove a group
+Change a group
 
-Remove a group from the DittoFS server. Accepts either the group name
-or the group's full ID (see 'dfsctl group list'). This action is irreversible:
-the group record is permanently removed and any users that had it as their
-primary group will lose that association. You will be prompted for
-confirmation unless --force is specified.
+Change the fields of a group that the flags name: its name and its gid.
 
 ```
-dfsctl group remove <name|id> [flags]
-```
-
-**Examples:**
-
-```bash
-# Remove a group (prompts for confirmation)
-dfsctl group remove editors
-
-# Remove a group non-interactively (for scripts and automation)
-dfsctl group remove editors --force
+dfsctl group update <name> [flags]
 ```
 
 Flags:
 
 ```
-  -f, --force   Skip confirmation prompt
+      --gid uint32    Unix group ID
+      --id string     The group's ID, in place of its name
+      --name string   New name
 ```
 
 Global flags:
@@ -1017,29 +935,40 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl group remove-user`
+### `dfsctl installation`
 
-Remove a user from a group
-
-Remove a user from a group on the DittoFS server. The user loses any
-permissions that were derived solely from that group membership. Both the
-group name and the username are required positional arguments.
+Act on the installation as a whole
 
 ```
-dfsctl group remove-user <group> <username> [flags]
+dfsctl installation [flags]
 ```
 
-**Examples:**
+Global flags:
 
-```bash
-# Remove alice from the editors group
-dfsctl group remove-user editors alice
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
 
-# Remove a user from the admins group
-dfsctl group remove-user admins bob
+### `dfsctl installation rotate-signing-key`
 
-# Verify membership after removal
-dfsctl group get editors
+Rotate the key access tokens are signed with
+
+Rotate the installation's signing key, the key every node signs and verifies
+access tokens with. The rotation is an operation: a new key signs from its
+start, and the old one verifies the tokens it signed until they have expired,
+about 15 minutes, when the operation ends. The command prints the operation's
+ID, or, with --wait, follows it to its end.
+
+```
+dfsctl installation rotate-signing-key [flags]
+```
+
+Flags:
+
+```
+      --wait   Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -1132,6 +1061,137 @@ dfsctl logout
 
 # Logout then immediately log back in as a different user
 dfsctl logout && dfsctl login --username operator
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl netgroup`
+
+Manage netgroups
+
+Create, list, read, change and delete netgroups: named sets of host names,
+addresses and CIDRs that an export policy admits.
+
+An update replaces the netgroup's members with those --member names.
+
+```
+dfsctl netgroup [flags]
+```
+
+**Examples:**
+
+```bash
+# Create a netgroup of two hosts and a subnet
+dfsctl netgroup create builders --member build1.example.com --member 10.0.0.7 --member 10.1.0.0/16
+
+# Replace its members
+dfsctl netgroup update builders --member 10.1.0.0/16
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl netgroup create`
+
+Create a netgroup
+
+```
+dfsctl netgroup create <name> [flags]
+```
+
+Flags:
+
+```
+      --member stringArray   A host name, address or CIDR; repeat for each
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl netgroup delete`
+
+Delete a netgroup
+
+```
+dfsctl netgroup delete <name> [flags]
+```
+
+Flags:
+
+```
+  -f, --force   Delete without asking
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl netgroup get`
+
+Show a netgroup
+
+```
+dfsctl netgroup get <name> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl netgroup list`
+
+List netgroups
+
+```
+dfsctl netgroup list [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl netgroup update`
+
+Replace a netgroup's members
+
+Replace a netgroup's members with those --member names; with no --member it is left empty.
+
+```
+dfsctl netgroup update <name> [flags]
+```
+
+Flags:
+
+```
+      --member stringArray   A host name, address or CIDR; repeat for each
 ```
 
 Global flags:
@@ -2285,40 +2345,40 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl user`
+### `dfsctl token`
 
-User management
+Manage API tokens
 
-Manage local user accounts on the DittoFS server. Local users are
-distinct from identities resolved via Kerberos or LDAP — they are accounts
-stored in the DittoFS control plane and used for direct authentication.
-Most subcommands require admin privileges; "change-password" operates on the
-currently authenticated account and is available to all users.
+Create, list and revoke API tokens: credentials a script or a service signs
+in with, through 'dfsctl login --token-file', in place of a password.
+
+Each command acts on the signed-in account's tokens; an admin names another
+account with --user, and creates one for another account only when that
+account is a service account, one holding no password. A context signed in
+with an API token names no account to dfsctl, so it needs --user, and it
+creates no token.
 
 ```
-dfsctl user [flags]
+dfsctl token [flags]
 ```
 
 **Examples:**
 
 ```bash
-# List all registered users
-dfsctl user list
+# Create a token valid for 30 days, kept in a file
+dfsctl token create --expires-in 720h > token.txt
 
-# Create a new user interactively
-dfsctl user create
+# Sign a context in with it
+dfsctl login --server https://dfs.example.com --token-file token.txt -c ci
 
-# Create a user with an explicit UID for NFS access
-dfsctl user create --username alice --password secret --uid 1000 --role user
+# Revoke it
+dfsctl token revoke 1a92dcf1-bdbb-49eb-acc1-a78ef6b4e5f1
+```
 
-# Edit a user's group membership
-dfsctl user edit alice --groups editors,viewers
+Flags:
 
-# Reset a user's password as an admin
-dfsctl user password alice
-
-# Remove a user (prompts for confirmation)
-dfsctl user remove alice
+```
+      --user string   The account whose tokens to act on, by its name (defaults to the signed-in one)
 ```
 
 Global flags:
@@ -2329,35 +2389,98 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl user change-password`
+### `dfsctl token create`
 
-Change your own password
+Create an API token
 
-Change your own password as the currently authenticated user. This is
-distinct from the admin-only "dfsctl user password" command: it verifies your
-current password before accepting the new one, and updates the stored session
-tokens automatically. You will be prompted for both passwords unless flags are
-provided (flags are less secure as passwords may appear in shell history).
+Create an API token expiring --expires-in from now. The token is shown this
+once: as a table, stdout holds the token alone, so it can be written to a file;
+-o json or -o yaml print the whole record, the token in its status.
 
 ```
-dfsctl user change-password [flags]
-```
-
-**Examples:**
-
-```bash
-# Change password interactively (recommended — passwords are not echoed)
-dfsctl user change-password
-
-# Change password non-interactively (use with caution)
-dfsctl user change-password --current oldpass --new newpass
+dfsctl token create [flags]
 ```
 
 Flags:
 
 ```
-  -c, --current string   Current password (prompts if not provided)
-  -n, --new string       New password (prompts if not provided)
+      --expires-in duration   How long the token is valid, at most the server's api.token_max_lifetime (default 720h0m0s)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --user string     The account whose tokens to act on, by its name (defaults to the signed-in one)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl token list`
+
+List API tokens
+
+```
+dfsctl token list [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --user string     The account whose tokens to act on, by its name (defaults to the signed-in one)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl token revoke`
+
+Revoke an API token
+
+Revoke an API token, named by its ID, so the server refuses it from then on.
+
+```
+dfsctl token revoke <id> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --user string     The account whose tokens to act on, by its name (defaults to the signed-in one)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl user`
+
+Manage users
+
+Create, list, read, change and delete the server's users, and set their
+passwords.
+
+A user is an account of the management API when it holds a role, and an owner
+of files when it holds a uid; one may be both. Each command names a user by its
+name, or by its ID with --id.
+
+```
+dfsctl user [flags]
+```
+
+**Examples:**
+
+```bash
+# Create a user owning files as uid 1000
+dfsctl user create alice --uid 1000 --email alice@example.com
+
+# Give it a password, read from a file
+dfsctl user set-password alice --password-file pw.txt
+
+# Clear its e-mail address
+dfsctl user update alice --email ""
+
+# Delete it and wait for the deletion to end
+dfsctl user delete alice --force --wait
 ```
 
 Global flags:
@@ -2370,49 +2493,22 @@ Global flags:
 
 ### `dfsctl user create`
 
-Create a new user
+Create a user
 
-Create a new local user on the DittoFS server. The user can be assigned
-a Unix UID and primary GID for NFS uid/gid resolution; omitting these causes
-the server to auto-assign them from its allocation range. If --username or
---password are not provided as flags, you will be prompted interactively.
+Create a user. It has no password until 'dfsctl user set-password' gives it one.
 
 ```
-dfsctl user create [flags]
-```
-
-**Examples:**
-
-```bash
-# Create a user interactively (prompted for username, password, role, groups)
-dfsctl user create
-
-# Create a regular user with username and password
-dfsctl user create --username alice --password secret
-
-# Create an admin user belonging to the editors group
-dfsctl user create --username admin2 --password secret --role admin --groups editors
-
-# Create a user whose UID/GID match the current host user (useful for NFS mounts)
-dfsctl user create --username alice --password secret --host-uid --host-gid
-
-# Create a user with an explicit UID, GID, and email
-dfsctl user create --username bob --password secret --uid 1000 --gid 1001 --email bob@example.com
+dfsctl user create <name> [flags]
 ```
 
 Flags:
 
 ```
-      --email string      Email address
-      --enabled           Enable account (default true)
-      --gid uint32        Unix primary group ID (auto-assigned if not specified)
-      --groups string     Comma-separated list of groups
-      --host-gid          Use current host user's GID (for NFS access)
-      --host-uid          Use current host user's UID (for NFS access)
-  -p, --password string   Password (prompts if not provided)
-      --role string       Role (user|admin) (default "user")
-      --uid uint32        Unix user ID (auto-assigned if not specified)
-  -u, --username string   Username (required)
+      --disabled       Refuse the user on every protocol and on the API
+      --email string   E-mail address; empty clears it
+      --role string    Role in the management API (viewer|operator|admin); empty for none
+      --uid uint32     Unix user ID, which a create leaving it out allocates
+      --wait           Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -2423,48 +2519,23 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl user edit`
+### `dfsctl user delete`
 
-Edit a user
+Delete a user
 
-Edit an existing user on the DittoFS server. When run without flags, an
-interactive prompt walks you through each editable field, showing the current
-value so you can press Enter to keep it unchanged. When flags are provided,
-only the specified fields are updated and no prompt appears.
+Delete a user. The deletion is an operation: the command prints its ID, or,
+with --wait, follows it to its end.
 
 ```
-dfsctl user edit <username> [flags]
-```
-
-**Examples:**
-
-```bash
-# Edit all fields interactively (shows current values)
-dfsctl user edit alice
-
-# Move alice to the admin role
-dfsctl user edit alice --role admin
-
-# Update alice's primary GID to match a new group
-dfsctl user edit alice --gid 1002
-
-# Disable an account and change its group membership in one command
-dfsctl user edit alice --enabled false --groups viewers
-
-# Update display name and email
-dfsctl user edit alice --display-name "Alice Smith" --email alice@newdomain.com
+dfsctl user delete <name> [flags]
 ```
 
 Flags:
 
 ```
-      --display-name string   Display name
-      --email string          Email address
-      --enabled string        Enable/disable account (true|false)
-      --gid uint32            Unix primary group ID
-      --groups string         Comma-separated list of groups
-      --role string           Role (user|admin)
-      --uid uint32            Unix user ID
+  -f, --force       Delete without asking
+      --id string   The user's ID, in place of its name
+      --wait        Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -2477,31 +2548,16 @@ Global flags:
 
 ### `dfsctl user get`
 
-Get user details
-
-Get detailed information about a specific user on the DittoFS server.
-Accepts either the username or the user's full ID (see 'dfsctl user list').
-The output includes the user's role, UID, group memberships, account status,
-and last-login timestamp. Use -o json or -o yaml for machine-readable output.
+Show a user
 
 ```
-dfsctl user get <username|id> [flags]
+dfsctl user get <name> [flags]
 ```
 
-**Examples:**
+Flags:
 
-```bash
-# Show user details as a table
-dfsctl user get alice
-
-# By ID
-dfsctl user get 3f2b1c4d-...
-
-# Output as JSON (useful for scripting)
-dfsctl user get alice -o json
-
-# Output as YAML
-dfsctl user get alice -o yaml
+```
+      --id string   The user's ID, in place of its name
 ```
 
 Global flags:
@@ -2514,28 +2570,37 @@ Global flags:
 
 ### `dfsctl user list`
 
-List all users
-
-List all local users registered on the DittoFS server. The table view
-shows each user's username, UID, role, email, group memberships, and whether
-the account is enabled. Use -o json or -o yaml to get machine-readable output
-suitable for piping into other tools.
+List users
 
 ```
 dfsctl user list [flags]
 ```
 
-**Examples:**
+Global flags:
 
-```bash
-# List all users as a table
-dfsctl user list
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
 
-# Output the full user list as JSON
-dfsctl user list -o json
+### `dfsctl user set-password`
 
-# Output as YAML
-dfsctl user list -o yaml
+Set a user's password
+
+Set a user's password, read from a prompt or from the file --password-file
+names. The user's sessions and API tokens are refused from then on. To change
+your own password, run 'dfsctl password change'.
+
+```
+dfsctl user set-password <name> [flags]
+```
+
+Flags:
+
+```
+      --id string              The user's ID, in place of its name
+      --password-file string   File holding the password (prompts without it)
 ```
 
 Global flags:
@@ -2546,72 +2611,27 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
-### `dfsctl user password`
+### `dfsctl user update`
 
-Reset a user's password
+Change a user
 
-Reset a user's password (admin operation). Unlike "dfsctl user
-change-password", this command does not require knowledge of the current
-password and is intended for administrators recovering access for a user.
-After the reset the account is marked as must-change-password, requiring
-the user to set a new password on their next login.
+Change the fields of a user that the flags name, leaving the others as they
+are. An empty --email clears the address, and an empty --role takes the role
+away.
 
 ```
-dfsctl user password <username> [flags]
-```
-
-**Examples:**
-
-```bash
-# Reset a user's password interactively (password not echoed)
-dfsctl user password alice
-
-# Reset password non-interactively (use with caution)
-dfsctl user password alice --password newsecret
+dfsctl user update <name> [flags]
 ```
 
 Flags:
 
 ```
-  -p, --password string   New password (prompts if not provided)
-```
-
-Global flags:
-
-```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
-```
-
-### `dfsctl user remove`
-
-Remove a user
-
-Remove a user from the DittoFS server. Accepts either the username or
-the user's full ID (see 'dfsctl user list'). This action is irreversible:
-the account and its authentication tokens are permanently removed, though
-files the user owns are not deleted. You will be prompted for confirmation
-unless --force is specified.
-
-```
-dfsctl user remove <username|id> [flags]
-```
-
-**Examples:**
-
-```bash
-# Remove a user (prompts for confirmation)
-dfsctl user remove alice
-
-# Remove a user non-interactively (for scripts and automation)
-dfsctl user remove alice --force
-```
-
-Flags:
-
-```
-  -f, --force   Skip confirmation prompt
+      --disabled       Refuse the user on every protocol and on the API
+      --email string   E-mail address; empty clears it
+      --id string      The user's ID, in place of its name
+      --role string    Role in the management API (viewer|operator|admin); empty for none
+      --uid uint32     Unix user ID, which a create leaving it out allocates
+      --wait           Follow the operation the command starts to its end
 ```
 
 Global flags:

@@ -86,10 +86,22 @@ func (r UserResource) Patch(ctx context.Context, id string, patch any, etag stri
 }
 
 // APITokens is the API tokens of the user whose ID is user: listed, created
-// and deleted. A create goes with no idempotency key and answers the token,
-// the one time it is shown. No route serves its Get, Put, Patch or Action.
-func (c *Client) APITokens(user string) Resource[apiv1.APITokenSpec, apiv1.APITokenStatus] {
-	return Resource[apiv1.APITokenSpec, apiv1.APITokenStatus]{c: c, path: "/api/v1/users/" + url.PathEscape(user) + "/api-tokens", keyless: true}
+// and deleted. No route serves its Get, Put, Patch or Action.
+func (c *Client) APITokens(user string) APITokenResource {
+	return APITokenResource{Resource[apiv1.APITokenSpec, apiv1.APITokenStatus]{c: c, path: "/api/v1/users/" + url.PathEscape(user) + "/api-tokens"}}
+}
+
+// APITokenResource is a user's API tokens, whose create takes the spec as
+// its whole body.
+type APITokenResource struct {
+	Resource[apiv1.APITokenSpec, apiv1.APITokenStatus]
+}
+
+// Create creates a token of spec and answers it with the token itself, the
+// one time it is shown. It is sent with no idempotency key, which the
+// server refuses on it.
+func (r APITokenResource) Create(ctx context.Context, spec apiv1.APITokenSpec) (Tagged[apiv1.APITokenSpec, apiv1.APITokenStatus], error) {
+	return tagged[apiv1.APITokenSpec, apiv1.APITokenStatus](r.c.write(ctx, http.MethodPost, r.path, spec, "", []CallOption{WithoutIdempotencyKey()}))
 }
 
 // Groups is the groups. A delete starts an operation. No route serves its

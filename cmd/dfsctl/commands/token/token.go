@@ -69,8 +69,8 @@ Examples:
 
 // tokensOf returns the API tokens of the account cmd acts on:
 // the one --user names, or the context's own.
-func tokensOf(cmd *cobra.Command, env cmdutil.Env) (client.Resource[apiv1.APITokenSpec, apiv1.APITokenStatus], error) {
-	var none client.Resource[apiv1.APITokenSpec, apiv1.APITokenStatus]
+func tokensOf(cmd *cobra.Command, env cmdutil.Env) (client.APITokenResource, error) {
+	var none client.APITokenResource
 	c, target, err := cmdutil.NewClient(env)
 	if err != nil {
 		return none, err
