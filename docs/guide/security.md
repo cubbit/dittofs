@@ -63,7 +63,7 @@ For the internal mechanism design and threat model, see
 - Export-level IP-based access restrictions
 - Identity mapping (root squash, all squash)
 - AUTH_UNIX for trusted-network deployments
-- Native TLS (and optional mutual TLS) for the control plane API with hot-reload
+- Native TLS for the REST API (certificate and key files, `api.tls.*`)
 - NFS-over-TLS (RFC 9289): opportunistic `AUTH_TLS` STARTTLS upgrade to TLS 1.3
 
 ## Remaining limitations
@@ -373,18 +373,10 @@ A read-only share fails write and create operations with `EROFS`
 DittoFS implements the opportunistic `AUTH_TLS` STARTTLS upgrade from RFC 9289: a client sends
 a `NULL` RPC with `auth_flavor = AUTH_TLS`, the server replies with the `"STARTTLS"` verifier,
 and both perform a TLS 1.3 handshake on the same connection — all subsequent traffic is
-encrypted. The handshake runs in userspace (no kernel TLS / `tlshd` on the server). Setting
-`client_ca` requires and verifies a client certificate (mutual TLS).
-
-```yaml
-adapters:
-  nfs:
-    tls:
-      cert_file: /etc/dittofs/tls/tls.crt
-      key_file:  /etc/dittofs/tls/tls.key
-      client_ca: /etc/dittofs/tls/ca.crt   # optional — mutual TLS
-      mode: opportunistic                   # "opportunistic" (default) | "require"
-```
+encrypted. The handshake runs in userspace (no kernel TLS / `tlshd` on the server). The server does not
+verify client certificates (v2 has no mutual TLS). The adapter's TLS settings (certificate, key
+and `mode`) are settings, not host facts: `adapters.nfs.tls` in the config file is refused, so set
+them through the management API.
 
 - **`opportunistic`** still serves non-TLS clients in plaintext (smooth rollout).
 - **`require`** rejects plaintext connections until they upgrade.
@@ -419,7 +411,7 @@ the keys it reads.
 
 - **Kubernetes / internet-facing edge:** terminate TLS at an ingress, service mesh, or reverse
   proxy (NGINX) in front of DittoFS.
-- **Direct `dfsctl` access / non-Kubernetes hosts:** use DittoFS native TLS or mTLS.
+- **Direct `dfsctl` access / non-Kubernetes hosts:** use DittoFS native TLS.
 
 `dfsctl` TLS is captured once at login and reused by every later command:
 
