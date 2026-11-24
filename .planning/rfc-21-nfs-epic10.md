@@ -22,7 +22,7 @@ a pending callback. Every citation is `develop`'s text, which holds amendment A2
 Cited, not owned: RFC 8881 §20 for the callback program's bytes, §18.16 for `open_delegation4`,
 §18.39 for `GET_DIR_DELEGATION`; RFC 5531 for the RPC reply; RFC 20 §2.5's layout of `ops/cb`.
 **Track:** A.
-**Epic 10 estimate: 9 subtasks, 25.75 man-days.**
+**Epic 10 estimate: 9 subtasks, 26 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state and members' table (T1.1,
 T1.2), E2's `nfsharness` (T2.2) and knfsd's `nfs41/` delegation capture with its `CB_RECALL` (T2.3).
 **S4**, an NFSv4.1 session over loopback, for every loopback row. **S2b**, met: amendment A2 is in
@@ -192,6 +192,7 @@ so that subtasks and tests can cite them.
 | R20 | `CB_RECALL_ANY` is sent when a client reaches its grant budget at one primary, naming 2048 to keep; for an NFSv4.0 client `RecallAny` answers nil and sends nothing | MUST | RFC 21 §5.3; RFC 14 §5.5; RFC 17 §3.2; RFC 20 §3.3 | T10.3, T10.8 |
 | R21 | `GET_DIR_DELEGATION` returns `GDD4_UNAVAIL` with `will_signal_deleg_avail` false | MUST | RFC 21 §5.3 | T10.8 |
 | R22 | `WANT_DELEGATION` is not supported | MUST | RFC 21 App. D | T10.8 |
+| R36 | `GET_DIR_DELEGATION` is admitted per call like every operation naming a handle: one service call on the current filehandle, so a disabled share, a flavour the share's policy does not admit and a client its rules exclude are each refused with the status the error table gives (`NFS4ERR_WRONGSEC` for the flavour), never answered `GDD4_UNAVAIL` | MUST | RFC 20 §4.10 ("No gate at the point of entry"); RFC 21 §11.5 (`ErrWrongSecurity`) | T10.8 |
 | R23 | No `CB_NOTIFY` is sent: no directory delegation exists for it to ride on | invariant | RFC 21 §5.3; RFC 20 §3.3 | T10.3 |
 
 **Recalls and revocations**
@@ -323,10 +324,16 @@ so that subtasks and tests can cite them.
   "answered as this RFC says of each", but RFC 21 says nothing of it. Its row points at E5's one
   not-supported handler (T5.8). Prior art: RFC 8881 makes the operation optional, and knfsd does not
   serve it (from memory). The document's pull request proposes the sentence for RFC 21 §5.3.
-- **D9. `GET_DIR_DELEGATION` makes no service call.** It needs a current filehandle
-  (`NFS4ERR_NOFILEHANDLE` otherwise, E3's row) and answers `GDD4_UNAVAIL` whatever the handle names,
-  a file included, rather than reading it for `NFS4ERR_NOTDIR`. A `decision:` marker at the handler,
-  overturned if a client is seen relying on `NFS4ERR_NOTDIR` there. Prior art: none checked.
+- **D9. `GET_DIR_DELEGATION` makes one service call, `GetAttr` of the current filehandle, and
+  reads nothing from it.** RFC 20 §4.10 admits a share on every service call naming a handle and
+  at no point of entry, so an operation that made no call would never meet the share's state, its
+  flavour and protection minimums or its client rules: a disabled share or an `AUTH_SYS` caller on
+  a Kerberos-only one would be answered `GDD4_UNAVAIL` (R36). The call's error is mapped by the
+  table, as `LOCK`'s is (E9's R39). It needs a current filehandle (`NFS4ERR_NOFILEHANDLE`
+  otherwise, E3's row) and, once admitted, answers `GDD4_UNAVAIL` whatever the handle names, a file
+  included, rather than reading the type for `NFS4ERR_NOTDIR`. A `decision:` marker at the handler,
+  overturned if a client is seen relying on `NFS4ERR_NOTDIR` there. Prior art: v1's handler gates
+  the operation the same way, per call (`CheckCurrentFHAccess`).
 - **D10. `CB_NOTIFY_LOCK` is not sent.** RFC 21 §5.5 makes it optional and the poll decides, so
   `LockWaitOver` for an NFSv4 client sends nothing and answers neither refused nor an error. A
   `decision:` marker at `LockWaitOver`, overturned by the deferral ledger's trigger for it: a
@@ -752,13 +759,14 @@ internal/adapter/adaptertest/nfsclient/
 
 ### T10.8 Locks during a recall, the grant budget and the operations not served
 
-**Subtask T10.8 estimate: 2 man-days.**
+**Subtask T10.8 estimate: 2.25 man-days.**
 
 - **Track:** A. **Depends on:** T10.4, T9.8, T5.8.
-- **Covers:** R20, R21, R22, R24.
+- **Covers:** R20, R21, R22, R24, R36.
 - **Deliverables:**
-  - `ops/v4/getdirdeleg.go`: `GET_DIR_DELEGATION` answering `GDD4_UNAVAIL`, `will_signal_deleg_avail`
-    false, with no service call (D9), and RFC 21 §5.3's `decision:` on directory delegations.
+  - `ops/v4/getdirdeleg.go`: `GET_DIR_DELEGATION` admitted by `GetAttr` of the current filehandle,
+    its error mapped by the table, then answering `GDD4_UNAVAIL`, `will_signal_deleg_avail` false
+    (D9), and RFC 21 §5.3's `decision:` on directory delegations.
   - `WANT_DELEGATION`'s row in `ops/v4`'s members' table, pointing at E5's not-supported handler
     (D8, under Q3); both rows `Versions` 1 and 2, so NFSv4.0 meets `NFS4ERR_OP_ILLEGAL`.
   - The handler row of an NFSv4 lock met during a recall, and the loopback row of the grant budget.
@@ -772,11 +780,15 @@ internal/adapter/adaptertest/nfsclient/
   - `GET_DIR_DELEGATION` with a current filehandle answers `GDD4_UNAVAIL`, without one
     `NFS4ERR_NOFILEHANDLE`; `WANT_DELEGATION` answers `NFS4ERR_NOTSUPP`; neither leaves a
     `Mutations` entry.
+  - Over `AUTH_SYS` on a share requiring Kerberos, `GET_DIR_DELEGATION` is `NFS4ERR_WRONGSEC`; on a
+    disabled share it is the table's status for the service's refusal; neither is `GDD4_UNAVAIL`.
 - **Tests:** on `nfsharness` over `memory.New`, the lock cases at the `LOCK` and `LOCKT` replies
   (catch `NFS4ERR_DENIED` during a recall, or a waiter left, R24); over loopback after S4, the budget
   at the `CB_RECALL_ANY` the scripted client reads (catches a request never sent or a wrong count,
-  R20); the two operations' replies against hand-written golden files (catch R21, R22). No test
-  double.
+  R20); the two operations' replies against hand-written golden files (catch R21, R22); the
+  operation over `AUTH_SYS` on a Kerberos-only share and on a disabled share, at the reply (catches
+  the handler answering without its admitting call, R36: with the call removed both are
+  `GDD4_UNAVAIL`). No test double.
 - **Rules:** rule 9, D9's marker; rule 12, `WANT_DELEGATION` adds a row, not a handler.
 
 ### T10.9 The drain against Linux's compounds
@@ -832,7 +844,7 @@ to T10.9 are tests over what T10.4 offers and can run in any order.
 | 2 | T10.2, T10.3 | 7.5 | PR 1 | the server calling the client, from the back channel to the callbacks the service makes |
 | 3 | T10.4 | 3 | PR 2 | delegations offered, recalled and returned end to end |
 | 4 | T10.5, T10.6 | 5.75 | PR 3 | the path down, the service's half and the wire's; T10.5 can open beside PR 1 |
-| 5 | T10.7, T10.8, T10.9 | 7.5 | PR 3 | the rows over delegations: revocations, locks in a recall, the budget, the drain |
+| 5 | T10.7, T10.8, T10.9 | 7.75 | PR 3 | the rows over delegations: revocations, locks in a recall, the budget, the drain |
 
 A suggestion only: one pull request per subtask works as well; PR 4 and PR 5 can be open at once.
 
