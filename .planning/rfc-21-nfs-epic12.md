@@ -691,8 +691,9 @@ pkg/engine/
   wrapped by `vfstest.Faults` where a step injects, sent by E3's scripted client in an NFSv4.2
   session that E8's `EXCHANGE_ID`, `CREATE_SESSION` and `SEQUENCE` open: every NFSv4.2 code this
   epic adds a row for, sent under NFSv4.0 and in an NFSv4.1 session, answered
-  `NFS4ERR_OP_ILLEGAL`; RFC 21 §13's rows of §3's last table. Consumed by E16, which reruns them on
-  the composed node with the steps §1.2 gives it.
+  `NFS4ERR_OP_ILLEGAL`; RFC 21 §13's rows of §3's last table. No later subtask consumes it: E16
+  reruns none of these rows on the composed node (its §9, point 2), and runs there only the steps
+  §1.2 gives it, in its T16.14 and T16.7.
 - **Acceptance criteria:**
   - "§9.3 copy and clone"'s steps of R32 pass: the overlap through the service's own refusal, the
     `clone_max_len` and namespace refusals injected through `vfstest.Faults`, since `memory.New`'s
@@ -742,7 +743,7 @@ flowchart TD
   E8 -. "S4, A1" .-> T12_8
   E9 -. "stateids in stateid.go" .-> T12_1 & T12_3 & T12_5
   T12_3 --> C1(["after T12.3: copy and clone served on memory.New"]):::sync
-  T12_8 --> C2(["after T12.8: E16 can rerun the rows on the composed node"]):::sync
+  T12_8 --> C2(["after T12.8: E16's T16.14 can run §1.2's steps on the composed node"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -753,7 +754,8 @@ it waits on the user's answer. T12.4 then applies the budget to every listed cal
 and T12.7 are independent branches, each finished before the next. T12.8 needs every row and S4.
 E9's stateids reach T12.1, T12.3 and T12.5 through `stateid.go` with no change here; until E9
 lands, those rows serve the two special stateids. Checkpoints: after T12.3, a copy and a clone run
-on `memory.New` through `nfsharness`; after T12.8, E16 can rerun the rows on the composed node.
+on `memory.New` through `nfsharness`; after T12.8, E16's T16.14 can run the steps §1.2 gives it on
+the composed node.
 
 ## 8. Suggested pull requests
 
