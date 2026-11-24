@@ -660,7 +660,7 @@ func FuzzReplyLenBoundsEncode(f *testing.F) {
 
 // The header stage's decode, its credential check and its encode of an
 // AUTH_SYS call allocate nothing, and Route allocates once: the call's own
-// request.
+// request, the COMPOUND's state within it.
 func TestHeaderStageAllocs(t *testing.T) {
 	if prof.RaceEnabled {
 		t.Skip("the race detector changes allocation counts")
@@ -691,7 +691,7 @@ func TestHeaderStageAllocs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}); n != 1 {
-		t.Errorf("route allocates %v per call, want its request alone", n)
+		t.Errorf("routing a COMPOUND allocates %v per call, want its request and state as one", n)
 	}
 }
 

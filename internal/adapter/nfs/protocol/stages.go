@@ -168,7 +168,8 @@ func (s *stage) ReplyLen(h core.Header) int {
 // is dropped, which has no RPC version to judge; then the RPC version, the
 // credential and the verifier (RFC 21 section 11.1), then the program, its
 // version and, for a COMPOUND alone, its minor version (RFC 20 section 4.8, RFC
-// 21 section 2.1). The connection's first routed call ends its handshake
+// 21 section 2.1). A COMPOUND's request carries a new, empty State; no other
+// call's carries one. The connection's first routed call ends its handshake
 // deadline.
 func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
 	hd, ok := h.(header)
@@ -193,13 +194,30 @@ func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.R
 	if table == nil {
 		return nil, nil, core.ErrVersion
 	}
-	if minor, ok := c.MinorVersion(); ok && !s.served.minor(core.Version(minor)) {
+	minor, compound := c.MinorVersion()
+	if compound && !s.served.minor(core.Version(minor)) {
 		return table, nil, core.ErrVersion
 	}
 	if s.conn != nil && s.established.CompareAndSwap(false, true) {
 		s.conn.Established()
 	}
+	if compound {
+		// decision: Route keeps one allocation per call, a COMPOUND's state
+		// inside it: the state lives as long as the request, which core holds
+		// until the compound's last member has run. Overturned if core ever
+		// releases a request before its compound's members finish with the
+		// state.
+		cr := &compoundRequest{req: core.Request{Version: hd.Version(), Level: core.NeedsNothing, Conn: s.conn}}
+		cr.req.State = &cr.state
+		return table, &cr.req, nil
+	}
 	return table, &core.Request{Version: hd.Version(), Level: core.NeedsNothing, Conn: s.conn}, nil
+}
+
+// compoundRequest is a COMPOUND's request and its state, allocated together.
+type compoundRequest struct {
+	req   core.Request
+	state State
 }
 
 // checkAuth judges the credential and the verifier: AUTH_NONE or a whole
