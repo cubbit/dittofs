@@ -128,9 +128,8 @@ func TestFoldPrincipalName(t *testing.T) {
 
 // Every rune either name fold maps elsewhere is held equal to its image by
 // strings.EqualFold, so two names a fold keys as one EqualFold also holds
-// equal. A client that cannot link these folds, dfsctl's name resolution,
-// checks a listed name under EqualFold and relies on this to refuse no name
-// the server matched.
+// equal. A client that cannot link these folds checks a listed name under
+// EqualFold and relies on this to refuse no name the server matched.
 func TestFoldsStayWithinEqualFold(t *testing.T) {
 	for c := rune(0); c < 1<<16; c++ {
 		if u := rune(upcase[c]); u != c && !strings.EqualFold(string(c), string(u)) {

@@ -397,19 +397,6 @@ func TestDeleteWaitsOnlyWithWait(t *testing.T) {
 	}
 }
 
-// polled is a Proxy's rewrite that signals on polls, without blocking,
-// each time a wait's poll, a read with ?wait=, passes through.
-func polled(polls chan<- struct{}) func(*http.Request) {
-	return func(r *http.Request) {
-		if r.URL.Query().Has("wait") {
-			select {
-			case polls <- struct{}{}:
-			default:
-			}
-		}
-	}
-}
-
 // A wait interrupted before its first read of the operation is refused as
 // one interrupted at a poll is, naming the command that resumes it.
 func TestWaitInterruptedAtItsReadResumes(t *testing.T) {
@@ -439,7 +426,7 @@ func TestInterruptedWaitResumes(t *testing.T) {
 	}
 	polls := make(chan struct{}, 1)
 	p := f.srv
-	p.Addr = f.srv.Proxy(t, polled(polls))
+	p.Addr = f.srv.Proxy(t, clisuite.Polled(polls))
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := background(ctx, login(t, p), "operation", "wait", op.ID)

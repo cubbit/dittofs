@@ -1,7 +1,6 @@
 package clisuite
 
 import (
-	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -90,14 +89,7 @@ func operationRows() []row {
 			polls := make(chan struct{}, 1)
 			w := s
 			w.User, w.Password = watcher, "the watcher's password"
-			w.Addr = s.Proxy(t, func(r *http.Request) {
-				if r.URL.Query().Has("wait") {
-					select {
-					case polls <- struct{}{}:
-					default:
-					}
-				}
-			})
+			w.Addr = s.Proxy(t, Polled(polls))
 			run := s.newRunner(t)
 			w.Login(t, run)
 			type answered struct {
@@ -110,7 +102,9 @@ func operationRows() []row {
 				done <- answered{errOut, status}
 			}()
 			// The account is demoted once the wait's poll is on its way to the
-			// server, past the command's read of the operation.
+			// server, past the command's first read of the operation: the poll
+			// is refused, at its entry or once parked, and the command meets
+			// the same refusal either way.
 			select {
 			case <-polls:
 			case <-time.After(time.Minute):

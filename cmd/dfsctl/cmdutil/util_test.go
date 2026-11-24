@@ -241,3 +241,22 @@ func TestResumable(t *testing.T) {
 		}
 	}
 }
+
+// nameOf answers the name of each kind Resolve resolves by name, and no
+// name for any other spec, which Resolve then refuses to resolve.
+func TestNameOf(t *testing.T) {
+	for _, tc := range []struct {
+		spec   any
+		want   string
+		wantOK bool
+	}{
+		{apiv1.ShareSpec{Name: "builds"}, "builds", true},
+		{apiv1.UserSpec{Name: "alice"}, "alice", true},
+		{apiv1.GroupSpec{Name: "staff"}, "staff", true},
+		{apiv1.NetgroupSpec{}, "", false},
+	} {
+		if got, ok := nameOf(tc.spec); got != tc.want || ok != tc.wantOK {
+			t.Errorf("nameOf(%T): got %q, %v, want %q, %v", tc.spec, got, ok, tc.want, tc.wantOK)
+		}
+	}
+}

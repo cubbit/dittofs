@@ -93,6 +93,9 @@ func Start(t *testing.T) Server {
 // dropped, or its record of a call reaching the server.
 func (s Server) Proxy(t *testing.T, rewrite func(*http.Request)) string {
 	t.Helper()
+	if s.Harness == nil {
+		t.Fatal("clisuite: Proxy serves only a server Start started, on its socket")
+	}
 	tr := &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", s.Addr)
 	}}
@@ -102,6 +105,19 @@ func (s Server) Proxy(t *testing.T, rewrite func(*http.Request)) string {
 	}})
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+// Polled is a Proxy's rewrite that signals on polls, without blocking,
+// each time a wait's poll, a read with ?wait=, passes through.
+func Polled(polls chan<- struct{}) func(*http.Request) {
+	return func(r *http.Request) {
+		if r.URL.Query().Has("wait") {
+			select {
+			case polls <- struct{}{}:
+			default:
+			}
+		}
+	}
 }
 
 // Login signs run's context in to s as its admin account.
