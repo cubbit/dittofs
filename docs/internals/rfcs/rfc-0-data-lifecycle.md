@@ -622,8 +622,8 @@ Two more import edges are allowed, each named here and nowhere else:
 
 - the engine's wiring (`enginewire`, [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) and
   [§2.8](rfc-8-engine.md#2.8%20Package%20layout)), which builds the content components for the node and
-  the engine's checks alike, imports the carver, the syncer, the remote tier's block codec and
-  block store, and the transforms;
+  the engine's checks alike, imports the journal, the metadata store, open state, the carver,
+  the syncer, the remote tier's block codec and block store, and the transforms;
 - the remote tier's block codec imports the transforms, whose chain it applies to every body
   ([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms)).
 

@@ -330,9 +330,10 @@ implementation — `*vfs.Filesystem` holds `*engine.Engine`
 [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) requires one: the engine declares one per component it calls, in
 `Deps` ([§2.6](#2.6%20Dependencies%20and%20wiring)). Adapters hold only `vfs.Service`, and the gateway behind it never
 reaches the engine. [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)'s import rule binds the components composed; the
-composition code imports them and nothing imports it. `node.New` builds the content components
-through the engine's wiring, `enginewire` ([§2.8](#2.8%20Package%20layout)), which the engine's own checks use
-to compose the same components and which RFC 0 §1.2 names as an allowed import edge.
+composition code imports them. `node.New` builds the content components
+through the engine's wiring, `enginewire` ([§2.8](#2.8%20Package%20layout)), which only the node and the engine's test
+fixture import, so the engine's own checks compose the same components the node does; RFC 0 §1.2 names
+its edges, the journal, the metadata store and open state among them.
 
 **Every share has a remote block store.** The root **MUST** refuse to add a share
 whose configuration names no remote block store, with an error naming the share.
@@ -1207,8 +1208,8 @@ type Deps struct {
 }
 
 // CloneHold is the part of open state a clone calls, in the engine's own
-// types, so the engine imports no open state (RFC 0 I6); the root adapts
-// *openstate.Table to it (RFC 23 §2.1), errors included: open state's
+// types, so the engine imports no open state (RFC 0 I6), only its wiring does
+// (§2.1); the root adapts *openstate.Table to it through that wiring, errors included: open state's
 // DelayFrozen and a table not started answer vfserr's ErrDelay (DelayFrozen),
 // so the clone holds phase 2 and retries; Release of an open that names no
 // record answers nil, since the hold is already gone; any other error is
@@ -2159,7 +2160,7 @@ type Outcome uint8
 const (
 	Done       Outcome = iota // the key leaves, or is pending again at once if a post marked it
 	Retry                     // the key backs off
-	Throttled                 // as Retry, and its tenant's pace drops until the tenant's next Done
+	Throttled                 // as Retry; once Rate pacing lands, its tenant's pace also drops until the tenant's next Done
 	StopTenant                // as CancelTenant for the item's tenant
 )
 
@@ -2275,13 +2276,12 @@ The scheduler **MUST**:
   total;
 - **share fairly**: under contention, sources receive dispatch in proportion to
   their `Weight`, and a source's tenants in proportion to theirs;
-- **rate-limit**: a source with a `Rate` is paced to it, and a `Throttled` result
-  lowers only its tenant's pace, until that tenant's next `Done`. So one throttled
-  store slows no other: GC's tenant is a namespace, whose store is one
-  ([RFC 9 §3.6](rfc-9-gc.md#3.6%20Failures%20resolve%20on%20their%20own)), and the engine's sources register `Rate` 0, since the
-  syncer paces puts ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
-  `Rate` pacing, and with it the pace a `Throttled` result lowers, lands with its first caller,
-  GC's sources; until then a source registers `Rate` 0, and `Throttled` backs its key off as `Retry` does.
+- **rate-limit, once its first caller, GC's sources, lands**: a source with a `Rate`
+  is paced to it, and a `Throttled` result lowers only its tenant's pace, until that
+  tenant's next `Done`. So one throttled store slows no other: GC's tenant is a
+  namespace, whose store is one ([RFC 9 §3.6](rfc-9-gc.md#3.6%20Failures%20resolve%20on%20their%20own)). Until then every source registers
+  `Rate` 0 and `Throttled` backs its key off as `Retry` does; the engine's sources
+  register `Rate` 0 in any case, since the syncer paces puts ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
 
 > decision: no tenant borrows another's reservation. Borrowing would make a
 > tenant's room depend on how full the others are, and taking the entries back
