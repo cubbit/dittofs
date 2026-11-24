@@ -1008,8 +1008,9 @@ translations. The steps that need a clone the engine runs, and N22's held I/O, a
 
 **Expected content:**
 - `DEALLOCATE`, `SEEK`, `READ_PLUS` with its `Bound` hook.
-- `COPY`: chunks, a short count at the deadline, count 0, range checks; `CLONE`.
-- The hold budget per session through `vfs.WithHold`, from E8's slot count.
+- `COPY`: the service's short count at the deadline answered, count 0 through a `GetAttr` of the
+  source, the service's range refusals answered, none judged in the handler; `CLONE`.
+- The hold budget per session: the session's wait gate beside `vfs.WithHold`, from E8's slot count.
 - `GETXATTR`, `SETXATTR`, `LISTXATTRS`, `REMOVEXATTR`.
 - The `NFS4ERR_NOTSUPP` set (D14); `OFFLOAD_STATUS` and `OFFLOAD_CANCEL` answered
   `NFS4ERR_BAD_STATEID`.
@@ -1205,8 +1206,8 @@ follows the RFC as written.
    answering rows wait.
 4. **The composed node and the cutover** (S5, S7; RFC 20's plan's epic 7, #4050). Until S5, no
    in-process or restart row runs; until S7, no client reaches NFS through `dfs`.
-5. **The held clone wait** (RFC 17's plan's piece 13, on `develop` as #4239). E12's hold rows need it
-   on `feat/storage-v2`, which the next sync brings.
+5. **The held clone wait** (RFC 17's plan's piece 13, on `develop` as #4239). E16's running-clone
+   rows, which E12 hands it, need it on `feat/storage-v2`, which the next sync brings.
 6. **The burn-down's size.** v2's failures in `pynfs`, `cthon04` and `nfstest` are known only once
    E15 turns them on, so E16's burn-down is planned after E15 and counted in no figure; `develop`'s 58
    pynfs entries are a floor.

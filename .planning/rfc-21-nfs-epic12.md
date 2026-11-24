@@ -47,8 +47,9 @@ mutating service call, and the per-session bound on how many calls may wait behi
 - `COPY` and `CLONE` are one `Copy` or one `Clone` each, always answered synchronously, a `COPY`
   with the bytes copied, `UNSTABLE4` and the write verifier, and their refusals answered as RFC 21
   §9.3 has them;
-- in an NFSv4.1 or NFSv4.2 session, at most the larger of 1 and a quarter of the fore-channel
-  slots carry a non-zero `vfs.WithHold` at once; past that a call meets a running clone with
+- every listed call carries its remaining deadline as its hold, and in an NFSv4.1 or NFSv4.2
+  session at most the larger of 1 and a quarter of the fore-channel slots wait behind a clone at
+  once: past that, the session's wait gate refuses the wait and the call is answered
   `NFS4ERR_DELAY` at once;
 - `GETXATTR`, `SETXATTR`, `LISTXATTRS` and `REMOVEXATTR` reach the records SMB's extended
   attributes reach;
@@ -78,9 +79,9 @@ its call sites in the operations RFC 21 §9.3 lists; the hold a held call carrie
   special stateids from E5 on and the rest once E9 extends it.
 - A session's slot count, `SEQUENCE`, and A1's runner change through which a `READ_PLUS`'s hook
   reads the session's budget: E8 (T8.4, T8.5, T8.7).
-- NFSv3's and NFSv4.0's hold, the request's remaining deadline: `core` already passes it
-  (`internal/adapter/core/middleware.go`'s `withHold`); this epic only lowers it to zero in a
-  session past its budget.
+- Every call's hold, the request's remaining deadline: `core` already passes it
+  (`internal/adapter/core/middleware.go`'s `withHold`), and this epic leaves it unchanged; in a
+  session it only adds the session's wait gate beside it (D3).
 - The steps of RFC 21 §13's "§9.3 copy and clone" and "§9.3 hold budget *(1 node)*" that need a
   clone the engine really runs: a `WRITE` held into a running 512 MiB `CLONE` and answered after
   it, a `COPY` of 4 GiB against a continuous writer, a Lost run carried to the destination, a
@@ -187,7 +188,7 @@ subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R20 | In an NFSv4.1 or later session, a call passes `vfs.WithHold` with its remaining deadline while fewer than the larger of 1 and a quarter of the session's fore-channel slots are waiting behind a clone, and zero past that, so a further call meets `ErrDelay` with `DelayClone` at once | MUST | RFC 21 §9.3 (hold budget); RFC 20 §4.6; RFC 17 §5.9 | T12.4 |
+| R20 | In an NFSv4.1 or later session, a call passes `vfs.WithHold` with its remaining deadline and the session's wait gate; the gate admits a wait behind a clone while fewer than the larger of 1 and a quarter of the session's fore-channel slots are waiting, and past that refuses it, so the call meets `ErrDelay` with `DelayClone` at once | MUST | RFC 21 §9.3 (hold budget); RFC 20 §4.6; RFC 17 §5.9 | T12.4 |
 | R21 | The budget covers each call RFC 21 §9.3 says is held behind a clone: `WRITE`, `DEALLOCATE`, a `SETATTR` of `size`, a `COPY` or `CLONE` whose destination is a running clone's range, and a `REMOVE` or last `CLOSE` that would release a running clone's destination; a listed call that does not wait takes no place | MUST | RFC 21 §9.3 | T12.4 |
 | R22 | NFSv3 and NFSv4.0 calls pass their remaining deadline, so every held call is bounded by its own deadline and none is refused for want of a session | MUST | RFC 21 §9.3 (hold budget); RFC 20 §4.6 | T12.4 |
 | R23 | `ErrDelay` with `DelayClone`, a call held past its own deadline or past what its session lets wait, is `NFS4ERR_DELAY` | MUST | RFC 21 §11.5 (`ErrDelay`) | T12.4 |
@@ -261,10 +262,10 @@ subtasks and tests can cite them.
   ```
   The service still counts nothing about holds (RFC 17 §5.9): it asks the gate in its one wait,
   `internal/vfs`'s `held`, at the first `DelayClone`, where it now reads `Hold`. The adapter puts
-  the session's gate, `Session.Hold`, on every call R21 lists, a `SETATTR` only when it sets
+  the session's gate, `Session.AdmitWait`, on every call R21 lists, a `SETATTR` only when it sets
   `size`, beside `core`'s remaining deadline; which `CLOSE` is the last and which `COPY` meets a
   running clone's range is the service's to find, so only a call that really waits takes a
-  place. A `decision:` marker at `Session.Hold` names the rule and that a refused wait is
+  place. A `decision:` marker at `Session.AdmitWait` names the rule and that a refused wait is
   answered at once. If the user prefers no RFC 17 change, the fallback is an RFC 21 §9.3
   amendment counting the listed calls in flight (§9 point 8, (b)). Prior art: none found;
   knfsd holds no call behind a clone (from memory).
@@ -279,11 +280,14 @@ subtasks and tests can cite them.
   An `sa_what` other than data or hole is `NFS4ERR_UNION_NOTSUPP`, as RFC 7862 has it (from
   memory). Prior art: knfsd sets the end flag when the answered offset equals the inode's size
   (from memory).
-- **D5. A `READ_PLUS` answers one segment.** From its offset it asks `Seek` for a hole: data
-  before it is one data segment, read with one `Read` into a segment `Attach` lends, its end of
-  file `Read`'s; a hole at the offset is one hole segment up to `Seek`'s next data, clamped to the
-  count, not at end of file, so a hole reaching the end is confirmed by the client's next
-  `READ_PLUS`. A `Seek` past the
+- **D5. A `READ_PLUS` answers one segment, from two service reads.** It first asks
+  `Seek(off, hole)`. A hole after the offset leaves data before it: one `Read` of up to that hole,
+  clamped to the count, into a segment `Attach` lends, its end of file `Read`'s. A hole at the
+  offset is followed by `Seek(off, data)`, whose answer ends the hole segment, clamped to the
+  count; in a trailing hole that second `Seek` answers the size with D4's `eof`, so a hole reaching
+  the end is answered at end of file in one reply. So each `READ_PLUS` is one `Seek` and then one
+  `Read` or one more `Seek`, neither mutating; RFC 21 Appendix D names the two calls, not how
+  often each runs. A `Seek` past the
   end (`ErrPastEnd`) is answered end of file with no segment, as RFC 7862 answers a read there
   (from memory). The `Bound` hook is E5's `READ` hook with the count lowered by one segment's
   header, so the clamp and the session budget are one function. A `ponytail:` marker names the
@@ -321,7 +325,12 @@ subtasks and tests can cite them.
   absent name `NFS4ERR_NOXATTR` and a value too large `NFS4ERR_XATTR2BIG` (from memory). This
   epic adds rows naming the xattr operations that win there: `ErrNotFound` from `SetXattr` or
   `RemoveXattr` is `NFS4ERR_NOXATTR`, and a `GETXATTR` of a name `Xattrs` does not list
-  `NFS4ERR_NOXATTR`, answered by the handler, which found it absent. `ErrInvalid` names no cause
+  `NFS4ERR_NOXATTR`, answered by the handler, which found it absent. These rows rely on a missing
+  file never being `ErrNotFound` there: the store answers a handle whose file is gone
+  `entity.ErrStale`, which the service answers `ErrStale` (`pkg/metadata/kvstore`'s `fileIn`,
+  `internal/vfs`'s `storeErr`), so a file removed under the call is `NFS4ERR_STALE`, and
+  `ErrNotFound` from those two calls is the name alone; T12.6 tests it at the reply, and RFC 17's
+  pull request states it beside D8's refusals. `ErrInvalid` names no cause
   (E5's D14), so no RFC yet says which `SetXattr` refusal is a value too large: the service
   validates no xattr name and applies no bound today (`internal/vfs`'s `SetXattr`). Batch two's
   RFC 17 pull request (§9 points 2 and 7) has `SetXattr` refuse an empty name or one holding
@@ -333,9 +342,11 @@ subtasks and tests can cite them.
   `NFS4ERR_NAMETOOLONG` and `ErrNoSpace` `NFS4ERR_NOSPC`, all in RFC 8276's SETXATTR error list.
   RFC 21 §11.5's rows gain these cells by amendment; until agreed, a `decision:` marker at the
   rows names the departure.
-- **D9. `GETXATTR`'s reply bound is 64 KiB.** A member's bound is fixed before it runs, and the
-  value's size is not known before it is read; RFC 13's xattr value bound defaults to 64 KiB,
-  Linux's own. A `decision:` marker names the ceiling: a share whose bound is raised past 64 KiB
+- **D9. `GETXATTR`'s reply bound is 64 KiB of value plus its result's fixed words.** A member's
+  bound is fixed before it runs, and the value's size is not known before it is read; RFC 13's
+  xattr value bound defaults to 64 KiB, Linux's own. The bound covers the value: the member
+  reserves 64 KiB plus the operation code, the status and the value's length word, 12 bytes, so
+  a value of exactly 64 KiB, the largest one RFC 13 accepts, is read back. A `decision:` marker names the ceiling: a share whose bound is raised past 64 KiB
   answers a larger value `NFS4ERR_XATTR2BIG` rather than passing the reservation. Overturned by a
   bound read from the share's settings when RFC 13's bound is raised. RFC 13's 64 KiB is one byte
   past what SMB's `FILE_FULL_EA_INFORMATION` can carry (a 16-bit length, 65535): a value of
@@ -363,7 +374,7 @@ internal/adapter/nfs/
     seek.go, deallocate.go           T12.1
     errors.go                        T12.1  ErrPastEnd; T12.3, T12.5  their codes in E5's I/O rows; T12.6  the xattr rows (D8)
     copy.go, clone.go                T12.3  copy.go: RFC 21 §9.4's decision
-    hold.go                          T12.4  the helper putting the session's gate on each listed call (D3)
+    gate.go                          T12.4  withSessionGate, putting the session's gate on each listed call (D3)
     write.go, setattr.go, remove.go  T12.4  E5's handlers, taking a place
     close.go                         T12.4  E9's handler, taking a place
     read_plus.go                     T12.5  and its benchmark beside READ (D5's trigger)
@@ -442,7 +453,8 @@ pkg/engine/
 
 **Subtask T12.2 estimate: 2 man-days.**
 
-- **Track:** C. **Depends on:** S2. Pending the user's answer to §9, point 1: if the answer is
+- **Track:** C. **Depends on:** S2, and batch two's RFC 17 pull request, which carries RFC 17
+  §3.0's `CopyResult.Verifier` and RFC 8 §12.1's `Copy` (§9 point 7). Pending the user's answer to §9, point 1: if the answer is
   RFC 21's amendment instead, this subtask is dropped and T12.3 answers as that amendment says.
 - **Covers:** R12.
 - **Deliverables:** `pkg/vfs`: `CopyResult{N int64; Verifier Verifier; WCC WCC}`; the content
@@ -451,7 +463,7 @@ pkg/engine/
   `Copy`, `contenttest.Memory` and `contenttest.FaultContent`; `internal/vfs`'s `Copy` passing it
   through. `contenttest.Subject` gains `PauseCopy`, beside `Lose`: a hook that holds a copy after
   its first chunk is staged until released, set per instance, from `export_test.go` for the
-  engine and on `Memory` for itself; nil skips the case, naming it. The pull request carries the RFC 17 §3.0 and RFC 8 §12.1 text. Consumed by T12.3, and by
+  engine and on `Memory` for itself; nil skips the case, naming it. Consumed by T12.3, and by
   RFC 22's copychunk, which ignores it.
 - **Acceptance criteria:**
   - A copy's verifier equals a `Write`'s before any loss, and a copy held after its first chunk
@@ -532,13 +544,13 @@ pkg/engine/
   the release called when the wait ends, with its case in `internal/vfs`'s own tests. In
   `protocol/sessions.go`, on E8's session, a count of waiting calls and
   ```go
-  // Hold admits one call's wait behind a clone into the session's places: the
-  // larger of 1 and a quarter of its fore-channel slots. ok false past them;
+  // AdmitWait admits one call's wait behind a clone into the session's places:
+  // the larger of 1 and a quarter of its fore-channel slots. ok false past them;
   // release gives the place back and is called once. It is a wait gate.
-  func (s *Session) Hold() (release func(), ok bool)
+  func (s *Session) AdmitWait() (release func(), ok bool)
   ```
-  with D3's `decision:`. `ops/v4/hold.go`: `held(ctx, r) context.Context`, which in a session
-  returns `vfs.WithWaitGate(ctx, s.Hold)` beside `core`'s remaining deadline, and outside a session
+  with D3's `decision:`. `ops/v4/gate.go`: `withSessionGate(ctx, r) context.Context`, which in a
+  session returns `vfs.WithWaitGate(ctx, s.AdmitWait)` beside `core`'s remaining deadline, and outside a session
   ctx unchanged; its calls in `deallocate.go`, `copy.go` and
   `clone.go`, and in other epics' handlers once they have landed, the edit this subtask's alone:
   E5's `write.go` (T5.8), `setattr.go` for a `size` set only (T5.5) and `remove.go` (T5.6), and E9's
@@ -546,9 +558,9 @@ pkg/engine/
   reports the hold its held call's context carried, `func (h *Hold) Bound() (max time.Duration,
   ok bool)`, read from `vfs.Hold` as the call arrives, and `func (h *Hold) Clone() *Hold` makes
   the held call wait as the service waits behind a clone, a kind 3 delay on cue: it asks the
-  context's gate as `held` does, answers `ErrDelay` with `DelayClone` at once when the gate or a
-  zero hold refuses, and otherwise waits for `Release` and gives the place back. `core`'s `withHold` `decision:` rewritten: NFSv4.1's bound is lowered per call by the NFS
-  adapter. Consumed by T12.8, and by the operations above.
+  context's gate as `internal/vfs`'s `held` does, answers `ErrDelay` with `DelayClone` at once when the gate or a
+  zero hold refuses, and otherwise waits for `Release` and gives the place back. `core`'s `withHold` `decision:` rewritten: the remaining deadline is
+  always passed, and the NFS adapter adds a session's wait gate beside it. Consumed by T12.8, and by the operations above.
 - **Acceptance criteria:**
   - A session of 16 slots gives 4 places, one of 5, 3 or 2 gives 1; a fifth wait on 16 gets
     none, and a place given back is taken again.
@@ -559,7 +571,7 @@ pkg/engine/
   - An NFSv4.0 `WRITE`, with no session, reaches `Write` with its remaining deadline, whatever
     other calls are in flight.
   - A `SETATTR` setting only `mode` takes no place.
-- **Tests:** `Hold` as a function of slots and waits, for 1, 2, 3, 4, 5, 16 and 64 slots (catches
+- **Tests:** `AdmitWait` as a function of slots and waits, for 1, 2, 3, 4, 5, 16 and 64 slots (catches
   a budget rounding to 0 at 2 slots, or a quarter rounded up, which 5 slots answers 2); on
   `nfsharness` against `memory.New` with E8's session in the request state: 4 `WRITE`s to another
   file kept in flight by a plain `Hold`, then 8 `WRITE`s each waiting through `Hold.Clone`, exactly
@@ -575,7 +587,7 @@ pkg/engine/
   reported (rule 4); `Bound`'s own test in `faults_test.go`. No test double beyond
   `vfstest.Faults`, kind 3.
 - **Rules:** rule 4: the profiles; rule 9: D3's marker and `core`'s rewritten `decision:`; rule
-  11: `WithWaitGate` and `WaitGate` for both adapters and the service, `Session.Hold` for `ops/v4`,
+  11: `WithWaitGate` and `WaitGate` for both adapters and the service, `Session.AdmitWait` for `ops/v4`,
   `Hold.Bound` and `Hold.Clone` for every adapter's tests.
 
 ### T12.5 `READ_PLUS`
@@ -594,8 +606,8 @@ pkg/engine/
   - From inside a hole followed by data, one hole segment to the data, not at end of file; with
     the data past the count, the segment ends at the count.
   - From inside data followed by a hole, one data segment up to the hole, not at end of file.
-  - From a trailing hole, one hole segment to the size; the next `READ_PLUS`, from the size,
-    answers end of file with no segment.
+  - From a trailing hole, one hole segment to the size, at end of file; a `READ_PLUS` from the
+    size answers end of file with no segment.
   - Zeros written by `WRITE` answer a data segment.
   - The hook handed 1 MiB of room with `MaxReply` 512 KiB set leaves the count within 512 KiB; with
     room for less than one byte, `ok` false.
@@ -603,7 +615,8 @@ pkg/engine/
     `READ_PLUS` from there `NFS4ERR_DELAY`.
 - **Tests:** on `nfsharness` against `memory.New`, files shaped by `WRITE` and `DEALLOCATE`: each
   criterion, the segment decoded from the reply bytes (catch a hole from zeros, R4, a hole not
-  from `Seek`, R5, an end of file answered inside a file, R5); the hook as a function of room and
+  from `Seek`, R5, an end of file answered inside a file or a trailing hole not at end of file,
+  R5, D5); the hook as a function of room and
   state (catches a count past the room or a zero count, R6); `Read` torn through `Tear` with each
   of the four errors (catches zero padding or a lost short read, R7); the data segment the very
   buffer `Read` filled (catches a copy); as bob on alice's 0600 file, `NFS4ERR_ACCESS` on
@@ -642,7 +655,10 @@ pkg/engine/
     `lxa_maxcount` too small for the first name `NFS4ERR_TOOSMALL`.
   - `REMOVEXATTR` of an absent name is `NFS4ERR_NOXATTR`; of a present one, its `change_info4`
     moves.
-  - A value past the share's bound is `NFS4ERR_XATTR2BIG` and nothing is stored.
+  - A value past the share's bound is `NFS4ERR_XATTR2BIG` and nothing is stored; one of exactly
+    64 KiB is set and read back whole by `GETXATTR`.
+  - A `REMOVEXATTR` and a `SETXATTR` of `Replace` on a file removed between `PUTFH` and the
+    operation are `NFS4ERR_STALE`, never `NFS4ERR_NOXATTR`.
   - `foo` and `FOO` set over NFS are two xattrs, each `GETXATTR` answering its own value.
 - **Tests:** on `nfsharness` against `memory.New`: each criterion, reply bytes compared (catch an
   absent name answered `NFS4ERR_NOENT`, R27, a mode mapped wrongly, R25, a cookie that repeats or
@@ -655,7 +671,9 @@ pkg/engine/
   `NFS4ERR_INVAL`, `NFS4ERR_INVAL`, `NFS4ERR_NAMETOOLONG`, `NFS4ERR_XATTR2BIG` and
   `NFS4ERR_NOSPC`, nothing stored (catches every `ErrInvalid` answered `XATTR2BIG`, R27); `foo`
   then `FOO`, and the SMB case listing both through an SMB `Call` (catches a fold in the NFS
-  path, D7); as bob on alice's 0600 file, each of the four operations `NFS4ERR_ACCESS` and
+  path, D7); the 64 KiB value read back (catches a reservation that covers the whole result,
+  D9); the file removed by a second client between `PUTFH` and `REMOVEXATTR` (catches a gone file
+  answered as a gone name, D8); as bob on alice's 0600 file, each of the four operations `NFS4ERR_ACCESS` and
   nothing changed, on `memory.New` with two users (catches the wrong handle or `Call`). No test
   double beyond `vfstest.Faults`.
 - **Rules:** rule 9: D6's, D7's, D8's, D9's and D11's markers, RFC 21 §2.3's `decision:`.
@@ -724,6 +742,8 @@ flowchart TD
   E8(["E8: T8.4 session registry, T8.5 SEQUENCE, T8.7 A1; S4"]):::sync
   E9(["E9: T9.3 and T9.9 stateids, T9.6 CLOSE"]):::sync
   E3(["E3: T3.2 scripted client; E7: T7.1"]):::sync
+  RFC17(["batch two's RFC 17 pull request: Seek's eof, CopyResult.Verifier, the wait gate, SetXattr's refusals"]):::sync
+  RFC17 --> T12_1 & T12_2 & T12_4 & T12_6
   E5 --> T12_1["T12.1 SEEK and DEALLOCATE"]
   S2 --> T12_2["T12.2 A copy's verifier from the service"]
   T12_2 --> T12_3["T12.3 COPY and CLONE"]
@@ -751,7 +771,7 @@ T12.1 goes first: `SEEK`'s use of `Seek` and its `ErrPastEnd` row are what `READ
 and `DEALLOCATE` is one of the hold budget's calls. T12.2 and T12.3 follow, the copy path, which
 the budget and the loopback rows also need; T12.2 is a service change and the highest risk, since
 it waits on the user's answer. T12.4 then applies the budget to every listed call. T12.5, T12.6
-and T12.7 are independent branches, each finished before the next. T12.8 needs every row and S4.
+and T12.7 are independent branches, which can run at once. T12.8 needs every row and S4.
 E9's stateids reach T12.1, T12.3 and T12.5 through `stateid.go` with no change here; until E9
 lands, those rows serve the two special stateids. Checkpoints: after T12.3, a copy and a clone run
 on `memory.New` through `nfsharness`; after T12.8, E16's T16.14 can run the steps §1.2 gives it on
@@ -762,8 +782,8 @@ the composed node.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T12.1 | 2.25 | E5's T5.1 and T5.5, batch two's RFC 17 pull request | `SEEK` and `DEALLOCATE`, the hole operations the rest builds on, with `Seek`'s end of file |
-| 2 | T12.2 | 2 | the user's answer on §9, point 1 | a service and engine change, reviewed by their owners apart from the adapter |
-| 3 | T12.3, T12.4 | 6.25 | PRs 1 and 2, E5's T5.6 and T5.8, E8's T8.4 and T8.5, E9's T9.6 | copy and clone, then the budget that bounds what waits behind them |
+| 2 | T12.2 | 2 | the user's answer on §9, point 1, batch two's RFC 17 pull request | a service and engine change, reviewed by their owners apart from the adapter |
+| 3 | T12.3, T12.4 | 6.25 | PRs 1 and 2, batch two's RFC 17 pull request, E5's T5.6 and T5.8, E8's T8.4 and T8.5, E9's T9.6 | copy and clone, then the budget that bounds what waits behind them |
 | 4 | T12.5, T12.6, T12.7 | 7 | PR 1, batch two's RFC 17 pull request, E4's T4.2, E8's T8.7 | `READ_PLUS`, the xattrs and the not-supported rows: the rest of the operation set |
 | 5 | T12.8 | 2.5 | PRs 3 and 4, S4, E3's T3.2, E7's T7.1 | every row over loopback |
 
@@ -825,7 +845,7 @@ and PR 4 beside PR 3.
 5. **What this epic takes from other epics, settled with their documents.** E8: T8.4's
    `protocol.Session`, reached from `r.Call.Session` (set by T8.5's `Route`) through `Sessions.Get`,
    holding its granted fore-channel slot count `Fore.Slots`, on which T12.4 adds its count and
-   `Hold`; T8.7's `SEQUENCE` setting `protocol.State`'s `MaxReply` and A1's runner change; S4 (T8.8).
+   `AdmitWait`; T8.7's `SEQUENCE` setting `protocol.State`'s `MaxReply` and A1's runner change; S4 (T8.8).
    E9: `stateid.go` extended to open, lock and delegation stateids (T9.3, T9.9), which this epic's
    handlers call unchanged, and T9.6's `close.go`, which T12.4 edits after T9.6 lands; E9 adds no
    hold call of its own. E5, from its document:
