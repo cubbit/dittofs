@@ -10,6 +10,7 @@ permissions: {}
 jobs:
   release:
     name: Create Release
+    needs: tarball-foundationdb
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -54,6 +55,15 @@ jobs:
           # (NOSPLIT / "no longer signed"). We don't need them here.
           sudo bash -c 'grep -rlZ packages.microsoft.com /etc/apt/sources.list.d/ 2>/dev/null || true' | sudo xargs -0r rm -f
           sudo apt-get update && sudo apt-get install -y dpkg-dev createrepo-c
+
+      # .goreleaser.yml names them in its checksums and release files, so the
+      # one signed checksums.txt covers them too.
+      - name: Download the FoundationDB tarballs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: dist-foundationdb
+          pattern: foundationdb-tarball-*
+          merge-multiple: true
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@9a127d869fb706213d29cdf8eef3a4ea2b869415 # v7
@@ -169,6 +179,163 @@ jobs:
             echo "::error::One or more release artifacts are not publicly accessible — check bucket ACLs"
             exit 1
           fi
+
+  # dfs with the foundationdb tag, as a Linux tarball per architecture. The
+  # binary comes out of Dockerfile.foundationdb's builder, so it links the same
+  # libfdb_c as the image and needs no newer glibc than Debian bookworm's. A
+  # native runner each, since cgo does not cross-compile here.
+  tarball-foundationdb:
+    name: FoundationDB tarball (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4
+
+      - name: Build dfs with the foundationdb tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          docker buildx build -f Dockerfile.foundationdb --target binary \
+            --build-arg VERSION="${TAG#v}" \
+            --build-arg COMMIT="${GITHUB_SHA}" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output type=local,dest="$RUNNER_TEMP/bin" .
+
+      - name: Pack the tarball
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          mkdir -p "$RUNNER_TEMP/out"
+          cp README.md LICENSE packaging/FOUNDATIONDB.txt "$RUNNER_TEMP/bin/"
+          tar -czf "$RUNNER_TEMP/out/dfs-foundationdb_${TAG#v}_Linux_${ARCH}.tar.gz" \
+            -C "$RUNNER_TEMP/bin" dfs README.md LICENSE FOUNDATIONDB.txt
+
+      - name: Upload the tarball
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: foundationdb-tarball-${{ matrix.arch }}
+          path: ${{ runner.temp }}/out/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  # dfs with the foundationdb tag, as <tag>-foundationdb. cgo links libfdb_c,
+  # so each platform builds on a native runner rather than under QEMU, and
+  # pushes its image by digest alone; the manifest job below names them.
+  image-foundationdb:
+    name: FoundationDB image (${{ matrix.platform }})
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Get version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          {
+            echo "TAG=${TAG}"
+            echo "VERSION=${TAG#v}"
+            echo "DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: ./Dockerfile.foundationdb
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.VERSION }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.version.outputs.DATE }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.VERSION }}
+            org.opencontainers.image.created=${{ steps.version.outputs.DATE }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=image,name=marmos91c/dittofs,push-by-digest=true,name-canonical=true,push=true
+
+      - name: Keep the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: foundationdb-digest-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Tags the two platform images as one, only once GoReleaser's job (and the
+  # tests its before-hook runs) has passed, so a failed release names no image.
+  image-foundationdb-manifest:
+    name: FoundationDB image manifest
+    needs: [release, image-foundationdb]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download the digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: foundationdb-digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create and push the manifest
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          sources=()
+          for digest in *; do sources+=("marmos91c/dittofs@sha256:${digest}"); done
+          docker buildx imagetools create -t "marmos91c/dittofs:${TAG}-foundationdb" "${sources[@]}"
+          docker buildx imagetools inspect "marmos91c/dittofs:${TAG}-foundationdb"
 
   operator:
     name: Build Operator Image
