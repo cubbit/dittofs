@@ -23,7 +23,7 @@ We measured on an idle machine and ran mutation testing on one package. The answ
 | --- | --- | --- |
 | 1 | Split the unit job into 3–4 parallel jobs (shards) | dt change + workflow |
 | 2 | Use a cheap Argon2 cost in tests, with a guard that production keeps the real one | 1 PR |
-| 3 | Run single-goroutine heavy tests (architecture, oracle) without `-race`, each in a non-race cell | 1–2 PRs |
+| 3 | Type-check the export tests from export data, and run single-goroutine oracle tests without `-race` | 1–2 PRs |
 | 4 | One trial PR that merges duplicate tests and fills gaps in `pkg/journal/internal/format` | 1 PR |
 | 5 | Add one rule to CLAUDE.md "Writing tests" | 1 PR |
 | 6 | Set a target time for the unit job | — |
@@ -297,8 +297,8 @@ decoding), and not yet for concurrent ones.
 | Step | Change | Gain | Gate |
 | --- | --- | --- | --- |
 | A1 | **Shard the unit job.** | suite step ÷ ~2 on full runs | none |
-| A2 | **Cheap Argon2 cost in tests.** | ~5–7% of CPU; lowers the slowest package | none |
-| A3 | **Architecture tests without `-race`.** | ~85 s of race test time | none |
+| A2 | **Cheap Argon2 cost in tests.** | a few % of CPU; not `internal/identity` (see A2) | none |
+| A3 | **Export tests from compiled export data.** | most of ~85 s of race test time | none |
 | A4 | **Single-goroutine heavy tests without `-race`.** | up to ~11% of race test time, mostly `index` | read each test first |
 
 **A1 — shard the unit job.** `dt` already has `shards:`, but it splits a list of named tests,
@@ -324,8 +324,8 @@ What the change must also do:
   - Each shard repeats the fixed setup (checkout, cache restore, building `dt`), and the
     extra cells (`journal-index`, `adapter-allocs`, `whole-tree`, the cgo vet) still run
     after the suite. ÷2 on the suite step is a realistic target, not ÷3.
-  - The slowest package, `internal/identity`, sets a floor for any shard, so A2 should land
-    first.
+  - The slowest package, `internal/identity`, sets a floor for any shard, and A2 does not
+    lower it (see A2).
   - More jobs wait longer in the runner queue. The CI throughput plan
     (`.planning/2026-09-15-ci-throughput-and-merge-gating-PLAN.md`) found queue wait to be
     most of PR wall time, so measure the queue after A1.
@@ -345,23 +345,21 @@ What the change must also do:
   packages whose name ends in `test`. A config field, an option or an environment variable
   would get past it. So the weak variant is reachable **only by a direct call from test
   code**, never through configuration.
+- **What A2 does not reach.** `internal/identity`'s own tests hash at production cost
+  directly (`pid.NewHashes`, in 14 places), and every `identity.New` computes the dummy hash
+  below at production cost. So A2 lowers `internal/install`, `pkg/secrets` and the node
+  tests, but `internal/identity` stays near its floor. Its tests could call a weak variant
+  directly; the dummy hash stays.
 - **Do not touch** the dummy hash in `internal/identity/server.go`. It makes a sign-in for an
   unknown user take as long as one for a real user, so its cost must always follow the real
   one.
 
-**A3 — architecture tests without `-race`.** Both runs that exist today use `-race`: the
-`unit` cell, and the `unit/whole-tree` cell (`go test -race … -run=^(TestImportRules|…)$`).
-The three slowest export tests (`TestBootstrapExports`, `TestSecretsExports`,
-`TestSettingsExports`) run only in `unit`. They type-check source in one goroutine, so the
-race detector has nothing to find in them. In **one** change:
-
-1. make `whole-tree` a non-race cell and add the three export tests to its `-run` list;
-2. skip the architecture tests under `-race` (`if prof.RaceEnabled { t.Skip(…) }`, a runtime
-   check, not a build tag), with a `decision:` marker naming the non-race cell. The existing
-   race skips carry no such marker; this adds one.
-
-`TestImportRules` carries the weak-key rule that A2 relies on, so it must keep running: in
-`whole-tree`, without `-race`.
+**A3 — export tests from compiled export data.** The three slowest export tests
+(`TestBootstrapExports`, `TestSecretsExports`, `TestSettingsExports`) type-check whole
+packages from source (`importer.ForCompiler(…, "source", nil)`, for example in
+`pkg/bootstrap/arch_test.go`). #5473 moved `TestImportRules` to compiled export data, and in
+#5465 that took it from 4 min 50 s to 6.4 s on CI. The same switch makes these three cheap
+in every run, with or without `-race`, so they need no skip and no new cell.
 
 **A4 — single-goroutine heavy tests without `-race`.** The race cost sits in a few packages
 (§1.2). Some of their slow tests are oracle or model checks that run in one goroutine, such
@@ -391,7 +389,8 @@ nothing.
 One PR in `pkg/journal/internal/format`:
 
 1. Merge the six `…AppendsToDst` tests into one table-driven test.
-2. Read each test that has no unique kill (§2.2), and merge or delete it **only** when you
+2. Read each of the 78 tests that kill mutants but none uniquely (§2.2), and merge or
+   delete it **only** when you
    can name the other test that covers it. The PR lists those pairs.
 3. Write tests for the surviving mutants that are not equivalent.
 4. Re-run the matrix: the new suite must kill at least what the old one killed.
@@ -448,13 +447,17 @@ surviving mutants on the changed lines. Run it by hand when you review.
   `TestComposeAdaptsTheTracerToTheJournal` (`pkg/engine/enginewire`) failed 5 of 5 runs and
   `TestJournalOfServesTheJournalsMarks` (`pkg/engine`) 2 of 5, both with `journal: no
   space: refused by the version limit`. With `-race` they passed 5 of 5. CI runs the unit
-  suite only with `-race`, so CI never sees this. The cause is not known yet.
+  suite only with `-race`, so CI never sees this. #5613 (open, approved) fixes the `pkg/engine`
+  test: its first write retries every spare refusal, each refusal spends a version, and the
+  `1<<20` version limit runs out before a spare lands. The `enginewire` test has the same
+  shape (`enginewire_test.go:340` sets the limit, `:351` retries without waiting for spares),
+  so it needs one issue.
 - **Side finding 2.** On 4 busy cores, `TestDevTracingShutsDownWithinItsBound`
   (`cmd/dfs/commands/tracing_test.go:128`) failed: the shutdown waited 10.5 s, and the test
   fails at twice its 5 s bound, 10 s. It passed in the less loaded batch.
 - **Side findings and CLAUDE.md.** A flake is fixed, or quarantined with an issue and an
-  expiry, so each side finding gets an issue. Side finding 1 is also an argument for the
-  non-race cells of A3 and A4: today no CI run would catch it.
+  expiry, so two issues follow: the `enginewire` test, and the tracing test. Side finding 1
+  is also an argument for non-race cells such as A4's: today no CI run would catch it.
 - **Not done.** No mutation matrix for a concurrent package. No profile of the CI runner
   itself.
 
@@ -467,8 +470,8 @@ surviving mutants on the changed lines. Run it by hand when you review.
 1. Do we shard the unit job, and into how many jobs? Do we move the required check or keep
    a fan-in job?
 2. Do we accept a weak Argon2 cost in test helpers, guarded like `GenerateWeakKeyFile`?
-3. May single-goroutine heavy tests (architecture, oracle, model) skip under `-race` and run
-   in a non-race cell?
+3. Do we move the export tests to compiled export data, and may single-goroutine oracle
+   and model tests skip under `-race` when a non-race cell runs them?
 4. Do we run the trial dedup PR in `format`?
 5. Do we add the Track C rule to CLAUDE.md?
 6. What is the target for the unit job? Under 10 minutes?
