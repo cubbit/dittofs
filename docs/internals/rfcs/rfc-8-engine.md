@@ -3597,9 +3597,11 @@ it commits ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures), [Appendix B.4](rf
 destroyed fails as **Lost**, reported as itself and never as corruption.
 
 **A commit never lands under destroyed material.** An attempt pins its
-material from Mint to Commit or Abandon ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)). At Commit, the
-engine **MUST** abandon an attempt whose pinned material the destroyed-material
-notice has named since the pin, and offer its extents again under current
+material from Mint to Commit or Abandon ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)). The offload commit
+transaction **MUST** read the key record of each material the attempt pinned and
+refuse to commit if any is marked destroyed, so the store orders a destroy and the
+commit whichever comes first, a material lost outside the installation included; the
+engine then abandons the attempt and offers its extents again under current
 material, so no block commits whose body only destroyed material can read.
 
 Locks, deny modes, delegations, open handles and snapshots **MUST NOT** make an
@@ -4143,7 +4145,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) clone resumed at a full limit | Crash a clone of a 1 GiB dirty extent after its copies synced and before phase 1, on a share at its journal limit with the remote down; restart. Assert start re-makes no copy the journal holds, reserves nothing for them, and serves every other file; an open of the destination answers `ErrDelay` with `DelayCapacity`, and an SMB write into the source extent is held as capacity, never answered `STATUS_FILE_LOCK_CONFLICT`. Bring the remote back: assert the clone finishes and both files serve. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) refusals | Clone between shares of two namespaces: assert `ErrCross` (`CrossNamespace`) and nothing changed. `CLONE` one byte over `clone_max_len`: assert `ErrInvalid`. `COPY` 1 GiB while an NFSv3 writer writes the source: assert each source write is held and answered within one chunk's time, measured at the client, with no `NFS3ERR_JUKEBOX`, and that a write whose deadline is shorter than the chunk gets `ErrDelay`, and a deadline mid-copy answers a short count that a continuing copy completes. |
 | [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here) retry later | Fill the journal with dirty bytes, the remote reachable: assert a write returns `ErrDelay`, never `ErrNoSpace`, and succeeds once offload and repack free space. Repeat with the remote unreachable past the caller's deadline: assert `ErrDelay` throughout, never `ErrNoSpace`, and success once it returns. Fill one share to its journal limit: assert `ErrDelay`, not `ErrNoSpace`. Make the store refuse puts with a quota error (storage full, bucket quota exceeded): assert `ErrNoSpace` at once, and that the store error reached the engine as `ErrDenied`, not `ErrInvalid`. Make a proxy refuse block puts for their size (`413`), then make the store refuse the credential (`403`): assert `ErrNoSpace` at once for each, and success once the limit is lifted or the credential restored. An engine reading a bare healthy flag answers the outage and the full store alike. |
-| [§10.4](#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable) destroyed material | Destroy a data key while the journal holds some chunks its blocks cover. Assert those extents lose their offloaded bit, are not evicted, are offloaded again under current material and read back; a remote-only chunk it covered fails as **Lost**, not corrupt. Destroy a key between an attempt's pin and its Commit: assert the attempt is abandoned, no block commits under that key, and its extents are offered again under current material. |
+| [§10.4](#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable) destroyed material | Destroy a data key while the journal holds some chunks its blocks cover. Assert those extents lose their offloaded bit, are not evicted, are offloaded again under current material and read back; a remote-only chunk it covered fails as **Lost**, not corrupt. Mark a pinned material's key record destroyed between an attempt's pin and its Commit, as a loss outside the installation does: assert the commit transaction refuses, the attempt is abandoned, no block commits under that material, and its extents are offered again under current material. |
 
 ### 15.2 Group B — wedging
 

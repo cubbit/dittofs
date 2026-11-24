@@ -1270,8 +1270,9 @@ backup's re-encoding, repack's checksums, GC's verification:
   wait;
 - a worker waiting for a token holds its worker and nothing else; tokens are
   granted in arrival order;
-- request-path CPU — a demand read's verification and decoding, a client
-  message's signing and encryption — takes no token.
+- request-path CPU — a demand read's verification and decoding, a read-ahead's
+  ([RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator)), which serves a read, a client message's signing and
+  encryption — takes no token.
 
 So offload's 128 upload workers, each encoding a chunk at once on an
 eight-core node, cannot take every core from clients' requests. The token is not

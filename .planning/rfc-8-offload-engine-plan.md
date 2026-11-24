@@ -47,8 +47,10 @@ and the glossary follow; RFC 8 §6.1.1 lands `Rate` pacing, with the pace `Throt
 sources; §12.1 lands `PreWarm` with its first caller, an operator's pre-warm action no RFC specifies
 yet; §15.4's B1 measures against raw puts on the same store at the same time; §2.5 makes the lost-journal
 acknowledgement a store record bound to the lost `JournalID`, and §2.1's `Lifecycle` row reads it
-(§6 point 1, decided); §10.4 has Commit abandon an attempt whose pinned material was named destroyed
-after the pin, with its §15.1 leg; RFC 0 §1.2 lists the journal, the metadata store and open state
+(§6 point 1, decided); §10.4 has the offload commit transaction read each pinned material's
+`destroyed` mark and refuse, the attempt then abandoned, with its §15.1 leg; RFC 0 §1.2 allows a
+component's tests to import another's in-memory implementation; RFC 24 §6.2 lists read-ahead as
+request-path CPU, which takes no token; RFC 0 §1.2 lists the journal, the metadata store and open state
 among `enginewire`'s edges, and RFC 8 §2.1 names its two importers, the node and the engine's test
 fixture, which RFC 23 §2.1's sketch follows.
 
@@ -824,8 +826,10 @@ stays green; RFC 8 E3, E11, E33 hold.
   later refusal joins while the pass's sync has not begun) and its bounded wait unchanged.
 - `admit` and the pacing law, with `engine.pace` spans and RFC 8 §10.2.1's `decision:`.
 - Destroyed material clearing the offloaded bit through `Unmark`, from S1d's signal.
-- At Commit, an attempt whose pinned material the destroyed-material notice has named since the pin
-  abandoned and its extents offered again under current material (RFC 8 §10.4 as amended).
+- The offload commit transaction reading the key record of each material the attempt pinned and
+  refusing when one is marked destroyed; the attempt then abandoned and its extents offered again
+  under current material (RFC 8 §10.4 as amended). `kvstore`'s per-block `Commit` gains the pinned
+  material IDs as an input.
 - Eviction never gated by locks, opens or snapshots; a retention pin honoured as policy; a
   `decision:` at `evict` that it trusts the offloaded bit while bucket-setting drift goes undetected
   (§6.1's drift row), withdrawn when `Recheck` runs.
@@ -950,8 +954,8 @@ it after, as RFC 8 §2.6 orders.
   runtime's parallelism read at start, at least one, with §6.2's `decision:` and two `ponytail:`s; the
   root passes it to the RFC 4 codec, which takes one token to encode or hash each chunk on the
   background path and returns it before its next network wait. The codec's decoder takes the same
-  optional token (the RFC 4 plan's D3): a background decode passes it, and a demand read's decode
-  passes none.
+  optional token (the RFC 4 plan's D3): a background decode passes it, and a demand read's or a
+  read-ahead's decode passes none (RFC 24 §6.2 as amended).
   Tested on its own (arrival order, the count, a waiter holding nothing else) and through the codec
   with a count of one.
 - The material provider's health source (`material_unavailable`) registered with the evaluator;

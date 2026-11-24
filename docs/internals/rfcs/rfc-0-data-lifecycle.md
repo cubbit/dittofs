@@ -627,7 +627,10 @@ Two more import edges are allowed, each named here and nowhere else:
 - the remote tier's block codec imports the transforms, whose chain it applies to every body
   ([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms)).
 
-No other edge between components is allowed, and the transforms import no other component: what
+A component's own tests may also import another component's verified in-memory implementation,
+or the component itself where it is a pure function, as the engine's offload tests import the
+carver and the syncer with its in-memory store ([RFC 8 §2.8](rfc-8-engine.md#2.8%20Package%20layout)); the import walk lists
+each such test package. No other edge between components is allowed, and the transforms import no other component: what
 they need from the remote tier they declare as an interface of their own, which the wiring
 supplies.
 
