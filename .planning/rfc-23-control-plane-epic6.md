@@ -172,8 +172,11 @@ this epic's part is that every command reaches the API through that client and n
   prefix. No marker. Prior art: kubectl takes names only (from memory).
 - **D3, the `412` diff is of the spec as YAML.** On `412` the command reads the resource again and
   prints a unified diff, through `github.com/pmezard/go-difflib` (already in `go.mod`), between the
-  spec it read and the one the server now holds, and exits non-zero. No marker. Prior art:
-  `kubectl apply`'s conflict report (from memory).
+  spec it read and the one the server now holds, and exits non-zero. The write is a JSON merge
+  patch of what the command changed in the spec, under the `ETag` it read, since a share's route
+  takes `PATCH` only and a field the command empties must be cleared, not left as it was; YAML, the
+  diff's and `-o yaml`'s, goes through the spec's JSON, so its keys are the API's field names. No
+  marker. Prior art: `kubectl apply`'s conflict report (from memory).
 - **D4, every change to the credentials file runs under the operating system's lock on a file
   beside it.** `credentials.Update(ctx, path, waiting, fn)` opens `<config>.lock` and takes an
   exclusive lock on it without waiting (`flock(LOCK_EX|LOCK_NB)` on Unix, `LockFileEx` with
@@ -346,11 +349,15 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   `cmdutil.Wait`; `operation get|list|wait|cancel`; `-o table|json|yaml` through
   `internal/cli/output`; `clisuite` with its runner and its first rows (D8); a pause hook in
   `cmdutil.Update`, between its read and its write, set per instance from `export_test.go`.
-  Consumed by T6.4–T6.6 and E7.
+  `clisuite.Run(t, Runner, Server)` signs the runner in to `Server`'s address as its admin
+  account; `Server.Harness` is nil for a server the test did not start, which skips a harness-only
+  row, and `Server.Settle` waits for an operation to end, advancing the injected clock only when
+  there is one, so a row over an ended operation stays child-safe. Consumed by T6.4–T6.6 and E7.
 - **Acceptance criteria:**
   - A name that matches nothing, and an `--id` that names nothing, each fail naming it.
   - A `412` changes nothing on the server and prints the diff.
-- **Tests:** over the harness, through a share's update: a name resolved and the record read back
+- **Tests:** over the harness, through a share's update and delete written in the test on the
+  machinery, since `share update` and `share delete` are T6.4's: a name resolved and the record read back
   changed (R9); the pause hook holding the command after its read while the test changes the share
   through the client, so the command gets `412`, prints a diff naming the field and the share keeps
   the test's value (R10, R11); a delete with `--wait` following the runner to its end as the clock
