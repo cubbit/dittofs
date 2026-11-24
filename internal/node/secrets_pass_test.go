@@ -484,6 +484,7 @@ func TestTheReportedVersionNeverPassesTheHeldOne(t *testing.T) {
 		Apply: checker,
 	})
 	ch := watchStatus(h)
+	armed := armWaits(h)
 	started(t, h)
 
 	ref := entity.SecretRef(uuid.New())
@@ -499,7 +500,7 @@ func TestTheReportedVersionNeverPassesTheHeldOne(t *testing.T) {
 		[]byte("held-first"),
 	)
 	putSetting(t, h, "pass.token", refJSON(ref))
-	h.Clock().Advance(time.Second)
+	passBegun(t, h, armed)
 
 	select {
 	case <-held:
@@ -1001,6 +1002,7 @@ func TestTwoRotationsBeforeAPassDropBothOldVersions(t *testing.T) {
 	c := &passSecret{}
 	declaredPass(t, h, c)
 	ch := watchStatus(h)
+	armed := armWaits(h)
 	started(t, h)
 
 	ref := entity.SecretRef(uuid.New())
@@ -1008,21 +1010,17 @@ func TestTwoRotationsBeforeAPassDropBothOldVersions(t *testing.T) {
 	seal(t, h, c.p, secrets.Storage, entity.SecretPassword, owner, ref, []byte("twice-first"))
 	putSetting(t, h, "pass.token", refJSON(ref))
 	caughtUp(t, h)
+	// caughtUp can leave a pass released and not begun: end it, so no pass
+	// runs while the rotations land and none reads only one of them.
+	walkTurn(t, h, armed)
 
 	seal(t, h, c.p, secrets.Storage, entity.SecretPassword, owner, ref, []byte("twice-second"))
 	seal(t, h, c.p, secrets.Storage, entity.SecretPassword, owner, ref, []byte("twice-third"))
 
-	// Await the one pass that binds the third: it reads both rotations under
-	// no version it ever applied, so it hands the component the section
-	// once, at the move.
-	moved := h.Node().Moved()
-	h.Clock().Advance(time.Second)
-
-	select {
-	case <-moved:
-	case <-time.After(30 * time.Second):
-		t.Fatal("no reconcile pass read both rotations within 30 s")
-	}
+	// Await the one pass that binds the third: it begins after both
+	// rotations, so it reads both under no version it ever applied and hands
+	// the component the section once, at the move.
+	walkTurn(t, h, armed)
 
 	// The turn that carries the report prunes below it: the equal-bytes
 	// check runs after the commit's write lands, on the commit's own turn.
