@@ -369,7 +369,9 @@ type Stored struct {
 type Store interface {
     // Put encodes the block and streams it to the store. It calls src once,
     // twice or three times per attempt, by checksum mode (§2.4, RFC 4 §4.3).
-    Put(ctx context.Context, name BlockName, src func() iter.Seq2[Chunk, error]) (Stored, error)
+    // m is the Upload's Measure: Put records in it what a measuring pass
+    // measured, and an attempt that finds it filled runs only the sending pass.
+    Put(ctx context.Context, name BlockName, src func() iter.Seq2[Chunk, error], m *Measure) (Stored, error)
     // Get reads the chunks named in want, or the whole block when want is empty.
     // Ranges adjacent in the block are read with one request. Each chunk comes
     // back decoded and verified against its own hash.
@@ -392,6 +394,12 @@ type Store interface {
     // own namespace (RFC 4 §4.7).
     Health(ctx context.Context, d Direction) error
 }
+
+// Measure carries one Upload's measured lengths and checksum across its put
+// attempts (§2.4). The syncer allocates one per Upload, passes it to every
+// attempt, never reads State, and sets it to nil after an attempt that ended
+// in ErrCorrupt. State is the engine's Store's own value.
+type Measure struct{ State any }
 
 // Version names one stored version of a block at an immutable location
 // (RFC 4 §4.14). Opaque to the syncer.
@@ -760,7 +768,7 @@ release that ships the syncer, and lands with the caller that first needs it, ne
 | `Small` | a backup location's calls ([RFC 26](rfc-26-catalog-backups.md)); a `Recheck` pass ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
 | `SetDrift` and `ErrDrift` | GC's `Recheck` ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); until then a bucket setting changed after the store opened is seen only at its next open ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), and a put into the drifted store may be expired or kept as a version nothing deletes ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | a registration with `PutProbe` false, refused until then | an immutable backup location ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) |
-| the sizing tool ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) | an operator's need to size the pools beyond the defaults. Until the node passes the syncer its transfers pool's size, the defaults are not reduced to fit it ([RFC 24 §7.2](rfc-24-resources.md#7.2%20The%20syncer%20and%20staging)) |
+| the sizing tool ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) | an operator's need to size the pools beyond the defaults. Until the node passes the syncer its transfers pool's size, the defaults are not reduced to fit it, and counts set explicitly that do not fit are not refused ([RFC 24 §7.2](rfc-24-resources.md#7.2%20The%20syncer%20and%20staging)) |
 
 Each obligation in this RFC on what lands later binds from the release that brings its caller. `Register`
 takes `Probes` from the first release, so a later caller changes no signature.
@@ -853,17 +861,21 @@ one chunk in plaintext, the same chunk encoded, and the block's header ([§1.3](
 A chunk is at most `Max` before encoding, and `Max` here is the largest `Max` of
 any namespace the process serves: no namespace admits a chunk longer than its
 own ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), wherever it was cut. It is at most
-`MaxEncodedLen(Max)` after ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)) for the chain that writes it, and at most
+`MaxEncodedLen(Max)` after ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)) for the attempt that writes it, and at most
 `MaxDecodeLen(Max)` for any chain a stored block may have been written under, so:
 
 `per worker = Max + encoded bound + header cap`, where the encoded bound is
-`Chain.MaxEncodedLen(Max)` for the uploader and `MaxDecodeLen(Max)` for the fetcher
+the largest `Attempt.MaxEncodedLen(Max)` over the open attempts for the uploader and
+`MaxDecodeLen(Max)` for the fetcher
 
 `peak memory of a half = pool size × per worker + detached buffers`, with at most
 `pool size` detached buffers, so at most twice `pool size × per worker`
 
 - **The encoded bound is taken per direction.** An upload encodes under the
-  current chain, so the uploader uses that chain's `MaxEncodedLen`. A fetch
+  chain its attempt pinned ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces), `Chain.Pin`), which may be older than the
+  current chain while the pin is held, so the uploader uses the largest
+  `Attempt.MaxEncodedLen` over the attempts open at once, never the current chain's
+  figure alone. A fetch
   decodes whatever chain a block was written under, which may be any transform
   still registered or named by a census ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)), so the fetcher uses
   `MaxDecodeLen`, the maximum over every registered transform
@@ -966,8 +978,9 @@ Each pass reads the offered bytes again, usually from page cache.
 **A measured attempt's lengths and checksum outlive a throttled retry.** The
 measuring passes depend only on the offered bytes, which stay stable until
 `Upload` returns ([§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable)), so an attempt ended by `ErrThrottled` keeps the lengths
-and checksum it measured, and its retry runs only the sending pass. An error
-retry keeps them too, unless the attempt failed with `ErrCorrupt`, whose retry
+and checksum it measured, in the `Measure` its `Upload` passes to every attempt ([§1.3](#1.3%20Interface)),
+and its retry runs only the sending pass. An error retry keeps them too, unless the
+attempt failed with `ErrCorrupt`: the syncer then clears the `Measure`, and the retry
 measures again. So the table's last column bounds every `Upload`, throttled
 attempts included: each of the up to eight throttled attempts adds one read of
 `src`, and an `Upload` reads `src` at most twelve times plus one per throttled
@@ -1502,8 +1515,10 @@ The syncer exposes exactly two settings, both process-wide:
 | `upload_workers` | the uploader's pool | proposal: 128 |
 | `fetch_workers` | the fetcher's pool | proposal: 128 |
 
-Unset, both are reduced in equal proportion to fit the node's transfers pool, at
-least eight each (RFC 24 §7.2).
+Once the node passes the syncer its transfers pool's size, unset counts are
+reduced in equal proportion to fit that pool, at least eight each, and counts set
+explicitly that do not fit are refused at start (RFC 24 §7.2). Until then neither
+is reduced nor refused ([§1.3](#1.3%20Interface), "What lands with its first caller").
 
 Neither default follows the CPU count. A transfer spends its time waiting on the
 network, so the count that keeps a link busy follows latency and bandwidth: by
@@ -1518,7 +1533,7 @@ on a fast link too few.
 
 Each is a memory budget as much as a concurrency limit ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), and the
 documentation of each **MUST** state the memory it implies at the largest chunk
-`Max` of any namespace the process serves ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)): under the current chain for uploads, and under the costliest
+`Max` of any namespace the process serves ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)): for uploads under the costliest chain an open attempt may hold, and under the costliest
 registered chain for fetches ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). Both are fixed for the life of the process ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)).
 
 Everything else the syncer needs is derived or fixed, and **MUST NOT** be a
@@ -2156,8 +2171,8 @@ calls' throughput (B5); for B1–B4, the in-memory store's simulated latency and
 **Suites.** §7's Group A and B checks against the in-memory store and its fault wrapper and §8's model, memory,
 import, fault-sweep and counted checks run in `unit`, and an allocation count the race detector skews
 in an option of `unit` of its own, the syncer's allocation gate, on pull requests; §8.1's real-backend
-checks, the in-memory store's conformance checks run against the engine's adapter over the local
-emulator behind a fault proxy, run in `integration`. The scheduler model's and the health model's fuzz
+checks (the in-memory store's conformance checks, the Group A checks and the lifecycle checks, against the
+engine's adapter over the local emulator behind a fault proxy) run in `integration`. The scheduler model's and the health model's fuzz
 targets join the nightly fuzz suite every storage component shares. §7.4's benchmarks run in a manual
 suite of the syncer's own, B5 against a real service only where credentials are; §8.1's soak runs in
 the engine's soak suite ([RFC 8 §15](rfc-8-engine.md#15.%20Conformance)). None of these but `unit` and `integration` is registered yet.
