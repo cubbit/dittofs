@@ -102,7 +102,7 @@ func (f *fix) deps() install.Deps {
 	return install.Deps{
 		Bootstrap:  f.b,
 		KV:         f.db,
-		StorageKey: f.key,
+		StorageKey: func(context.Context, bool) (keyprovider.KeyProvider, error) { return f.key, nil },
 		Clock:      f.clock,
 		Journal:    []journal.Option{journaltest.SuitableMount()},
 		Out:        &f.out,

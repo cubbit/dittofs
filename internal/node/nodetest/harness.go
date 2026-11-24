@@ -153,11 +153,12 @@ func New(t testing.TB, opts ...Option) *Harness {
 		env = "NODETEST_ADMIN_PASSWORD"
 		t.Setenv(env, o.password)
 	}
+	key := storageKey(t, b.Keys.Storage.Local.File)
 	err := install.Run(ctx, install.Deps{
 		PasswordEnv: env,
 		Bootstrap:   &h.cfg.Bootstrap,
 		KV:          h.cfg.KV,
-		StorageKey:  storageKey(t, b.Keys.Storage.Local.File),
+		StorageKey:  func(context.Context, bool) (keyprovider.KeyProvider, error) { return key, nil },
 		Clock:       h.clock,
 		Journal:     journalOptions(),
 		Out:         io.Discard,

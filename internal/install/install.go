@@ -58,9 +58,13 @@ type Deps struct {
 	Bootstrap *bootstrap.Bootstrap
 	// KV is the metadata store's KV; the caller opens and closes it.
 	KV kv.KV
-	// StorageKey is the storage role's wrapping key, which seals the
-	// administrator's password hash and the signing key.
-	StorageKey keyprovider.KeyProvider
+	// StorageKey opens the storage role's wrapping key, which seals the
+	// administrator's password hash and the signing key. Run calls it once,
+	// after the password is read and the store's state is known, before the
+	// run writes anything: fresh is true when the store is not yet initialised
+	// and no journal directory holds a journal, the one state in which dfs
+	// init may create the key. Run never closes what it returns.
+	StorageKey func(ctx context.Context, fresh bool) (keyprovider.KeyProvider, error)
 	// Clock is the clock each journal is opened with.
 	Clock journal.Clock
 	// Journal are further options each journal is opened and initialised
@@ -124,7 +128,7 @@ func Run(ctx context.Context, d Deps) error {
 	}
 	opts := append([]journal.Option{journal.WithClock(d.Clock)}, d.Journal...)
 
-	st, inst, err := initStore(ctx, d, opts, log)
+	st, inst, key, err := initStore(ctx, d, opts, log)
 	if err != nil {
 		return err
 	}
@@ -132,7 +136,7 @@ func Run(ctx context.Context, d Deps) error {
 	if err != nil {
 		return err
 	}
-	if err := commitAdmin(ctx, d, st, inst, password, generated); err != nil {
+	if err := commitAdmin(ctx, key, st, inst, password, generated); err != nil {
 		return err
 	}
 	log.Info("install: administrator and signing key written", "account", AdminName, "node", uuid.UUID(node))
@@ -177,41 +181,47 @@ func (d Deps) done(write string) error { return d.after.done(write) }
 
 // initStore opens the store, first initialising it with a minted
 // installation ID when it holds none, and returns it with the installation's
-// ID, refusing a finished installation. A store that holds none is
-// initialised only once every journal directory is found to hold no
-// journal: any journal there belongs to another installation.
-func initStore(ctx context.Context, d Deps, opts []journal.Option, log *slog.Logger) (*kvstore.Store, [16]byte, error) {
+// ID and the storage key, refusing a finished installation. A store that
+// holds none is initialised only once every journal directory is found to
+// hold no journal: any journal there belongs to another installation. The
+// storage key is opened before the store is written, and never over a store
+// refused.
+func initStore(ctx context.Context, d Deps, opts []journal.Option, log *slog.Logger) (*kvstore.Store, [16]byte, keyprovider.KeyProvider, error) {
+	var key keyprovider.KeyProvider
 	st, err := kvstore.Open(ctx, d.KV)
 	if errors.Is(err, kvstore.ErrNotInitialised) {
 		for _, j := range d.Bootstrap.Journals {
 			_, other, found, err := classify(ctx, j.Path, opts)
 			if err != nil {
-				return nil, [16]byte{}, err
+				return nil, [16]byte{}, nil, err
 			}
 			if found {
-				return nil, [16]byte{}, fmt.Errorf("%w: %s holds installation %s", ErrForeignJournal, j.Path, uuid.UUID(other))
+				return nil, [16]byte{}, nil, fmt.Errorf("%w: %s holds installation %s", ErrForeignJournal, j.Path, uuid.UUID(other))
 			}
+		}
+		if key, err = d.StorageKey(ctx, true); err != nil {
+			return nil, [16]byte{}, nil, err
 		}
 		inst := uuid.New()
 		switch err := kvstore.Init(ctx, d.KV, inst); {
 		case err == nil:
 			log.Info("install: metadata store initialised", "installation", inst)
 			if err := d.done("store"); err != nil {
-				return nil, [16]byte{}, err
+				return nil, [16]byte{}, nil, err
 			}
 		case errors.Is(err, kvstore.ErrInitialised):
 			// Another initialisation committed first: its ID is read below.
 		default:
-			return nil, [16]byte{}, fmt.Errorf("install: initialise the metadata store: %w", err)
+			return nil, [16]byte{}, nil, fmt.Errorf("install: initialise the metadata store: %w", err)
 		}
 		st, err = kvstore.Open(ctx, d.KV)
 	}
 	if err != nil {
-		return nil, [16]byte{}, fmt.Errorf("install: open the metadata store: %w", err)
+		return nil, [16]byte{}, nil, fmt.Errorf("install: open the metadata store: %w", err)
 	}
 	in, err := st.Installation(ctx)
 	if err != nil {
-		return nil, [16]byte{}, fmt.Errorf("install: read the installation: %w", err)
+		return nil, [16]byte{}, nil, fmt.Errorf("install: read the installation: %w", err)
 	}
 	// decision: an installation is finished when its signing key is set,
 	// which the last Write commits with the administrator. Reading it as
@@ -219,10 +229,15 @@ func initStore(ctx context.Context, d Deps, opts []journal.Option, log *slog.Log
 	// after an operator renamed the first, or a first one after it was
 	// deleted.
 	if in.SigningKey != (entity.SecretRef{}) {
-		return nil, [16]byte{}, ErrInstalled
+		return nil, [16]byte{}, nil, ErrInstalled
+	}
+	if key == nil {
+		if key, err = d.StorageKey(ctx, false); err != nil {
+			return nil, [16]byte{}, nil, err
+		}
 	}
 	log.Info("install: metadata store open", "installation", uuid.UUID(in.ID))
-	return st, in.ID, nil
+	return st, in.ID, key, nil
 }
 
 // initJournals initialises each journal directory not yet initialised,
@@ -301,9 +316,9 @@ func classify(ctx context.Context, dir string, opts []journal.Option) (journal.J
 // commitAdmin seals the administrator's password hash and a fresh signing
 // key, then commits both with the account in one Write, refused if another
 // run finished the installation first.
-func commitAdmin(ctx context.Context, d Deps, st *kvstore.Store, inst [16]byte, password []byte, generated bool) error {
+func commitAdmin(ctx context.Context, storage keyprovider.KeyProvider, st *kvstore.Store, inst [16]byte, password []byte, generated bool) error {
 	cp := st.ControlPlane()
-	p, err := secrets.New(cp, map[secrets.Role]keyprovider.KeyProvider{secrets.Storage: d.StorageKey})
+	p, err := secrets.New(cp, map[secrets.Role]keyprovider.KeyProvider{secrets.Storage: storage})
 	if err != nil {
 		return err
 	}

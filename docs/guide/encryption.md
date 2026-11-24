@@ -51,7 +51,8 @@ the node. The file's key is derived from it with Argon2id (m = 64 MiB, t = 3,
 p = 4).
 
 `dfs init` creates the storage key file: when `keys.storage.local.file` names a
-file that does not exist, it writes a new master key there, wrapped under the
+file that does not exist and the metadata store is not yet initialised, it
+writes a new master key there, wrapped under the
 passphrase, with mode 0600, and prints once where the file is. **Copy the file
 off the host and keep the passphrase**: losing either loses every key it wraps,
 and with them the data, and nothing recovers it. An existing file is used and

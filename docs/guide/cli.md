@@ -271,8 +271,8 @@ The administrator's first password is read from a file or an environment
 variable. With neither, a password is generated and printed once to standard
 output, never to the log, and must be changed at the first sign-in.
 
-When keys.storage.local.file names a file that does not exist, init creates
-it, a master key wrapped under DITTOFS_ENCRYPTION_PASSPHRASE, and prints once
+When keys.storage.local.file names a file that does not exist and the
+metadata store is not yet initialised, init creates it, a master key wrapped under DITTOFS_ENCRYPTION_PASSPHRASE, and prints once
 where it is: copy it off the host, since losing it or the passphrase loses
 the data. An existing file is used, never overwritten. With the passphrase
 unset, init refuses.

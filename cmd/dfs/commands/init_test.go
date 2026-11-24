@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -329,5 +330,61 @@ func TestInitRefusesAKeyFileTheWrongPassphraseCannotOpen(t *testing.T) {
 	}
 	if after, err := os.ReadFile(key); err != nil || !bytes.Equal(after, before) {
 		t.Errorf("key file after the refusal: %v, changed %v; want it byte-identical", err, !bytes.Equal(after, before))
+	}
+}
+
+// dfs init creates the storage key file only over a store not yet
+// initialised, once the password reference has been read: each refusal
+// below runs with the passphrase set and the key file missing, and leaves
+// no key file, since a key created there would open nothing.
+func TestInitCreatesNoKeyFileOverARefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, dir, config, key string) []string // the init's extra arguments
+		want    func(err error) bool
+	}{
+		{"a finished installation", func(t *testing.T, dir, config, key string) []string {
+			skipUnsuitableJournalMount(t, dir)
+			if _, err := runDfs("init", "--config", config); err != nil {
+				t.Fatalf("first dfs init: %v", err)
+			}
+			if err := os.Remove(key); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		}, func(err error) bool { return errors.Is(err, install.ErrInstalled) }},
+		{"an interrupted installation", func(t *testing.T, dir, _, _ string) []string {
+			db, err := badgerkv.Open(badgerkv.Options{Dir: filepath.Join(dir, "store"), NodeID: testNode})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := errors.Join(kvstore.Init(t.Context(), db, [16]byte{1}), db.Close()); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		}, func(err error) bool {
+			return errors.Is(err, fs.ErrNotExist) && strings.Contains(err.Error(), "opening the storage key")
+		}},
+		{"a missing password file", func(_ *testing.T, dir, _, _ string) []string {
+			return []string{"--admin-password-file", filepath.Join(dir, "no-such-file")}
+		}, func(err error) bool { return errors.Is(err, install.ErrPassword) }},
+		{"a v1 store", func(t *testing.T, dir, _, _ string) []string {
+			writeV1Store(t, filepath.Join(dir, "store"))
+			return nil
+		}, func(err error) bool { return err != nil && strings.Contains(err.Error(), "v1") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", storagePassphrase)
+			config, key := keyFileConfig(t, dir)
+			args := append([]string{"init", "--config", config}, tc.prepare(t, dir, config, key)...)
+			out, err := runDfs(args...)
+			if !tc.want(err) || strings.Contains(out, "storage key file") {
+				t.Errorf("dfs init over %s: got %q, %v; want its refusal and no key file notice", tc.name, out, err)
+			}
+			if ents, err := os.ReadDir(filepath.Dir(key)); err != nil || len(ents) != 0 {
+				t.Errorf("key directory after dfs init over %s: %d entries, %v; want it empty", tc.name, len(ents), err)
+			}
+		})
 	}
 }
