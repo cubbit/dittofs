@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/journal"
+	segset "github.com/cubbit/dittofs/pkg/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 )
 
@@ -30,10 +31,9 @@ import (
 // journal yet, so no mix could run them. The rule holds until the offload
 // and the release are wired into the journal — the one change that restores
 // them to the mix, alongside the space they alone can reclaim, and with it
-// this marker goes; until then the writes' superseded live set is the only
-// source of reclaimable space the journal answers for — a mix that also
-// carries removals answers for the space they make, on the removals leg
-// below.
+// this marker goes; until then the writes' superseded live set and the
+// removals' settled segments are the only sources of reclaimable space the
+// journal answers for.
 const (
 	// soakMaxBytes is the journal's maximum: whole segments, far below what a
 	// run writes, and above the live set below.
@@ -115,8 +115,9 @@ const (
 // run may leave between its least and its greatest sample, and each with the
 // floor its two halves' medians may drift apart.
 //
-// calibration: clean runs of the five-minute default and the two-hour cell
-// measured the bands below; each threshold = the measured width plus slack,
+// calibration: three clean runs of the five-minute default under the mixed
+// mix measured the bands below — the two-hour cell re-measures them on its
+// first nightly under it; each threshold = the measured width plus slack,
 // each floor 0-clean. HeapBytes carries no floor: the live heap's rise is
 // the rig's own bounded fill — the seam's capped call records, the
 // journal's caches — which converges by the run's middle and is the watch's
@@ -142,26 +143,41 @@ type soakFlat struct {
 }
 
 var soakFlats = []soakFlat{
-	{"ExtentCount", func(s *soakSample) int64 { return s.ExtentCount }, 32, 8},                          // band 68..93, halves 68/68
-	{"Segments", func(s *soakSample) int64 { return int64(s.Segments) }, 8, 2},                          // band 6..10, halves 6/6
-	{"Spares", func(s *soakSample) int64 { return int64(s.Spares) }, 6, 1},                              // band 0..3, halves 0/0
-	{"OpenDescriptors", func(s *soakSample) int64 { return int64(s.OpenDescriptors) }, 10, 2},           // band 6..10, halves 6/6
-	{"Descriptors", func(s *soakSample) int64 { return int64(s.ProcessFds - s.OpenDescriptors) }, 8, 0}, // neutralised: band 3..8, halves 4/4
-	{"HeapBytes", func(s *soakSample) int64 { return int64(s.Heap) }, 24 << 20, -1},                     // band 3.3..9.2 MB across the cells, converging
-	{"UsedBytes", func(s *soakSample) int64 { return s.UsedBytes }, 8 << 20, 2 << 20},                   // band 10.5..13.6 MiB, halves' medians flat; the floor's
-	// two segments of slack are the accounting's own quantum, so a rise of
-	// more than that is a drift the books never gave back
-	{"DirFiles", func(s *soakSample) int64 { return int64(s.DirFiles) }, 8, -1}, // band 11..16 through the churn
+	// Mixed-mix band 28..64 against the overwrite mix's 68..93, over the
+	// three measured runs: the removals keep no steady entry count — a
+	// delete empties a file the settle spends and the next write re-holds —
+	// so the width, not the level, is what moved; the halves' medians fall
+	// (49/41, 47/46, 40/50) with the churn's own cuts, so the floor of 8
+	// held clean, and a leak keeps its rise against that floor either way.
+	{"ExtentCount", func(s *soakSample) int64 { return s.ExtentCount }, 40, 8},
+	// Mixed-mix band 4..13 against the overwrite mix's 6..10, over the three
+	// measured runs: the removals hand the retire worker segments a tick at
+	// a time, so the count dips while it drains a window's residue and
+	// climbs while the next window piles one. Halves' medians 10/6, 6/6 and
+	// 6/7 — a fall, never a rise — so the floor of 2 held clean.
+	{"Segments", func(s *soakSample) int64 { return int64(s.Segments) }, 10, 2},
+	{"Spares", func(s *soakSample) int64 { return int64(s.Spares) }, 6, 1},                              // band 0..2, halves 2/2: held
+	{"OpenDescriptors", func(s *soakSample) int64 { return int64(s.OpenDescriptors) }, 12, 2},           // rides the segment set: band 4..13, halves 10/6
+	{"Descriptors", func(s *soakSample) int64 { return int64(s.ProcessFds - s.OpenDescriptors) }, 8, 0}, // neutralised: band 4..4, halves 4/4: held
+	{"HeapBytes", func(s *soakSample) int64 { return int64(s.Heap) }, 24 << 20, -1},                     // band 3.3..5.2 MB, converged
+	// Mixed-mix band 9..16.7 MiB against the overwrite mix's 10.5..13.6,
+	// over the three measured runs: the churn rides the journal's maximum
+	// and a crash's reopen drops what the loss removed, so the width takes
+	// the crash's own quantum — one segment — over the measured 7.3; the
+	// halves' medians stayed flat or fell in every run, so the 2 MiB floor
+	// held, and its two segments of slack are the accounting's own quantum,
+	// so a rise of more than that is a drift the books never gave back
+	{"UsedBytes", func(s *soakSample) int64 { return s.UsedBytes }, 9 << 20, 2 << 20},
+	{"DirFiles", func(s *soakSample) int64 { return int64(s.DirFiles) }, 8, -1}, // band 10..17 through the churn: held
 	// No floor on the count: a reopen's spare-making swings it wider than
 	// one leaked file, so the count's flatness is a width-and-drift bound
 	// alone, and the byte total below is what leaked storage answers to.
-	{"DirBytes", func(s *soakSample) int64 { return s.DirBytes }, 16 << 20, 2 << 20}, // band 10.5..14.7 MiB; the
-	// floor allows what a reopen's settle leaves holding - measured a
-	// segment at the five-minute churn and two at the two-minute, whose
-	// single crash landed its spares in the run's second half - so the
+	// Mixed-mix band 9.4..16.8 MiB, held: a crash's reopen drops the
+	// directory under either half's median and never lifts one, so the
 	// floor still sees a leak from the planted five segments up, while the
 	// width bound stays loose against the crash churn on purpose: the
 	// floor, not the width, is the criterion that sees a leak
+	{"DirBytes", func(s *soakSample) int64 { return s.DirBytes }, 16 << 20, 2 << 20},
 }
 
 // soakSample is one window's counters, taken at a loop edge with every
@@ -190,17 +206,18 @@ type soakSample struct {
 // soakLog is what one run did: the operation counts, for the report a green
 // run and a finding both want, and the samples the flat checks read.
 type soakLog struct {
-	ops, writes, syncs, settles, repacks, crashes int
-	refused, reclaimed, repackSpares              int
-	written, freed                                int64
-	repackWall                                    time.Duration
-	samples                                       []soakSample
+	ops, writes, syncs, settles, repacks, crashes  int
+	refused, reclaimed, repackSpares, repackClaims int
+	written, freed                                 int64
+	repackWall                                     time.Duration
+	samples                                        []soakSample
 
-	// truncates and deletes are the removals a removals run drew, and
-	// wedged the operations the churn could not land over its bounded
-	// reclaim attempts — a ledger whose writes answer the limits for good,
-	// which ends the loop so the drain that follows can judge the journal
-	// that refused them. Zero on every run but a removals one.
+	// truncates and deletes are the removals the mix drew, and wedged the
+	// operations the churn could not land over its bounded reclaim attempts —
+	// a journal whose writes answer the limits for good, which ends the loop
+	// so the caller's checks judge it: the removals leg holds its drain up
+	// to the refusal, and the other legs fail on the wedge itself. Zero on a
+	// healthy journal.
 	truncates, deletes, wedged int
 
 	// maxV is the highest version the run issued, and fixture the journal
@@ -238,20 +255,11 @@ type soakCfg struct {
 	duration time.Duration
 	maxOps   int
 
-	// removals turns the mix's removals on: truncates at ~8% of the draws
-	// and deletes at ~6%, cut into the walk as the mix below spells, the
-	// operations whose sealed, index-empty residue this journal cannot
-	// always retire — the wedge the removals leg proves. Off, the mix is
-	// the overwrite-only churn the flat checks calibrated on.
-	//
-	// removals also softens the churn's capacity ceiling: a write or a
-	// removal no bounded reclaim relieves ends the loop as a wedged op
-	// (counted in the log) instead of failing the run, so a journal that
-	// answers the limits for good reaches the caller's drain with its
-	// wedge whole for the drain to judge — the plain soak's fatal stays the
-	// overwrite-only runs' answer, whose drain-less checks read a refusal
-	// directly.
-	removals bool
+	// crashOp, on a run that names one, crashes the journal after that many
+	// operations — the probe, the power loss and the reopen soakCrash runs
+	// — on the window edge the plant below sits on, beside the crash
+	// cadence the standing soak runs on. Zero names none.
+	crashOp int
 
 	// plantOp, on a run that names one, is after which operation the run
 	// plants its leak, on a window edge so the plant sits whole between two
@@ -303,57 +311,37 @@ func soakRun(t *testing.T, cfg soakCfg) *soakLog {
 	// this journal must, since without the offload and the release a
 	// segment whose bytes back a straggler of the churn can be freed only
 	// by a repack copy.
-	//
-	// decision: the mix without removals runs no truncate and no delete,
-	// though the soak's design named them among the operations that make
-	// reclaimable space, because a workload whose removals ride the churn
-	// wedges this journal as built: after some hundreds of thousands of
-	// removals under capacity pressure the journal holds sealed,
-	// index-empty segments that nothing retires — the spare pool stays one
-	// segment short of a spare for ever, every write refuses the maximum,
-	// and no repack pass can run, its only copy target being the pool's
-	// empty reserve, so no byte of the unreclaimed storage comes back,
-	// across a crash and a reopen included. An overwrite-only churn drains:
-	// the pool stays full and a minute of the paced repacks frees the tens
-	// of MiB the minute's writes churn through. The removals cut —
-	// soakCfg.removals, drawn by the removals leg that proves the wedge —
-	// runs the two operations beside the walker now, so the space they
-	// make is the space the drain that ends every removals run must see
-	// come back; the flat checks keep their calibrated overwrite-only mix
-	// until the retirement worker drains what the removals leave.
 	wr := 0
-	// The overwrite-only mix keeps the cuts its flat checks calibrated on
-	// — write below 66 of a hundred, sync below 85 — and the removals cut
-	// carves its 14 out of the walk before them: 8 truncates, 6 deletes,
-	// then the walker's writes, syncs and settles over the remaining 86.
-	writeCut, syncCut := 66, 85
-	if cfg.removals {
-		writeCut, syncCut = 71, 86
-	}
+	// The mix carves the removals' fourteen out of the walk first — eight
+	// truncates and six deletes, the operations whose space the retire
+	// worker and the drain must see come back — then the walker's writes,
+	// syncs and settles over the remaining eighty-six: writes below 71 of
+	// a hundred, syncs below 86, settles over the rest.
+	writeCut, syncCut := 71, 86
 	soakOp := func(op int) (landed bool) {
 		file := wr % soakFileCount
 		slot := (wr / soakFileCount) % soakSlotsOf
 		switch n := rng.IntN(100); {
-		case cfg.removals && n < 8: // truncate, ~8%: the walker's file cut at
+		case n < 8: // truncate, ~8%: the walker's file cut at
 			// its next slot boundary — the one the walker's next write of
 			// the file lands at — so the cut always takes a tail the walk
 			// refills from, keeping the live set's shape.
 			cut := int64(slot) * soakSlot
-			if !soakRemove(t, f, cfg, log, &maxV, fmt.Sprintf("truncate at %d", cut), file, func() (journal.Version, error) {
+			if !soakRemove(t, f, log, &maxV, fmt.Sprintf("truncate at %d", cut), file, func() (journal.Version, error) {
 				return f.Share(file%2).Truncate(t.Context(), journaltest.File(file), cut)
 			}) {
 				return false
 			}
 			log.truncates++
 
-		case cfg.removals && n < 14: // delete, ~6%: the walker's file whole.
+		case n < 14: // delete, ~6%: the walker's file whole.
 			// Delete stops holding every extent of the id and leaves a
 			// removal marker until the settle path settles it; the id
 			// itself stays exactly as usable as it was — the walker's next
 			// write of the file re-holds its slot, the marker's settle is
 			// the mix's own settle branch — so the walker keeps to the same
 			// eight files and no id rotation or re-creation is needed.
-			if !soakRemove(t, f, cfg, log, &maxV, "delete", file, func() (journal.Version, error) {
+			if !soakRemove(t, f, log, &maxV, "delete", file, func() (journal.Version, error) {
 				return f.Share(file%2).Delete(t.Context(), journaltest.File(file))
 			}) {
 				return false
@@ -363,7 +351,7 @@ func soakRun(t *testing.T, cfg soakCfg) *soakLog {
 		case n < writeCut: // write, over the walker's slot
 			off := int64(slot) * soakSlot
 			p := pattern(fmt.Sprintf("op-%d", op), soakSlot)
-			if _, ok := soakWrite(t, f, cfg, log, &maxV, file, off, p); !ok {
+			if _, ok := soakWrite(t, f, log, &maxV, file, off, p); !ok {
 				return false
 			}
 			wr++
@@ -401,18 +389,19 @@ func soakRun(t *testing.T, cfg soakCfg) *soakLog {
 		log.ops++
 
 		// ponytail: the mix is a fixed uniform table over the walker's
-		// slot-aligned whole-slot writes, with the syncs and the settles
+		// slot-aligned whole-slot writes, with the truncates and the
+		// deletes cut in ahead of them and the syncs and the settles
 		// behind it, so the live set keeps a fixed shape and the index's
-		// entry count converges instead of fragmenting; upgrade to a
-		// weighted, unaligned mix — with the removals the decision above
-		// holds behind soakCfg.removals — when the retirement worker
-		// drains what they leave, and recalibrate the thresholds here
-		// with it.
+		// entry count converges instead of fragmenting. The flat bands
+		// below carry this mix's own calibration, measured once the
+		// removals joined it; upgrade to a weighted, unaligned mix only
+		// for a load-shaped question, and recalibrate the bands with it.
 		if !soakOp(op) {
 			// A wedged operation: the journal refused it over every
 			// bounded reclaim, so the churn it can no longer land ends
-			// here — the loop stops, never the run, whose caller holds
-			// the drain that judges the journal that refused.
+			// here — the loop stops, never the run: the removals leg's
+			// drain judges the refusal, and the other legs fail on the
+			// wedge itself.
 			break
 		}
 		f.Advance(soakClockStep)
@@ -457,8 +446,16 @@ func soakRun(t *testing.T, cfg soakCfg) *soakLog {
 			}
 		}
 
+		if op == cfg.crashOp {
+			// The run's named crash, planted on a window edge the same
+			// way the leak plants above: the removals leg sites it at the
+			// middle of the window its freeze formed in, so every green
+			// run carries a reopen at that depth before the drain reads.
+			soakCrash(t, f, log, &maxV)
+			continue
+		}
 		if len(log.samples)%soakCrashWindows == 0 {
-			soakCrash(t, f, cfg, log, &maxV)
+			soakCrash(t, f, log, &maxV)
 			continue
 		}
 		if len(log.samples)%soakRepackWindows == 0 {
@@ -474,20 +471,16 @@ func soakRun(t *testing.T, cfg soakCfg) *soakLog {
 // capacity: a write the journal refuses at capacity — for the journal's own
 // maximum, or a share's or headroom's bound the pressure reaches — is
 // retried beside a repack, the reclaimer this journal has, until the write
-// lands or the bounded attempts run out. There the mix's own cfg decides:
-// the overwrite-only runs fail on the refusal, while a removals run counts
-// the write wedged and returns it unlanded, so its churn ends and the drain
-// judges the journal that would not relieve it.
-func soakWrite(t *testing.T, f *journaltest.Fixture, cfg soakCfg, log *soakLog, maxV *journal.Version, i int, off int64, p []byte) (journal.Version, bool) {
+// lands or the bounded attempts run out. There the write counts wedged and
+// returns unlanded, so the churn it can no longer land ends and the caller
+// judges the journal that refused it — the removals leg by its drain, the
+// other legs by failing on the wedge itself.
+func soakWrite(t *testing.T, f *journaltest.Fixture, log *soakLog, maxV *journal.Version, i int, off int64, p []byte) (journal.Version, bool) {
 	t.Helper()
 
 	id := journaltest.File(i)
 	for attempt := 1; ; attempt++ {
 		if attempt > soakReclaimAttempts {
-			st := f.J.Stats()
-			if !cfg.removals {
-				t.Fatalf("soak: the write of %d bytes at %d of file %d never landed over %d reclaim attempts: the journal stays at capacity, %d of %d bytes used, %d of them reclaimable in ended segments", len(p), off, i, soakReclaimAttempts, st.UsedBytes, st.MaxBytes, st.UnreclaimedEndedBytes)
-			}
 			log.wedged++
 			return journal.Version{}, false
 		}
@@ -547,18 +540,14 @@ func soakWrite(t *testing.T, f *journaltest.Fixture, cfg soakCfg, log *soakLog, 
 // truncate or a delete — with the reclaim-and-retry the writes take under
 // capacity, because a removal's record draws on the reserved headroom and is
 // refused once that headroom is exhausted, the ledger never credited back
-// before a repack. A removal no bounded reclaim relieves fails the
-// overwrite-only runs as a write's refusal does; a removals run counts it
-// wedged and returns false, so the churn ends and the drain judges.
-func soakRemove(t *testing.T, f *journaltest.Fixture, cfg soakCfg, log *soakLog, maxV *journal.Version, what string, i int, remove func() (journal.Version, error)) bool {
+// before a repack. A removal no bounded reclaim relieves counts wedged and
+// returns false, as a write's refusal does: the churn ends and the caller
+// judges the journal that refused it.
+func soakRemove(t *testing.T, f *journaltest.Fixture, log *soakLog, maxV *journal.Version, what string, i int, remove func() (journal.Version, error)) bool {
 	t.Helper()
 
 	for attempt := 1; ; attempt++ {
 		if attempt > soakReclaimAttempts {
-			st := f.J.Stats()
-			if !cfg.removals {
-				t.Fatalf("soak: the %s of file %d never landed over %d reclaim attempts: the journal stays at capacity, %d of %d bytes used, %d of them reclaimable in ended segments", what, i, soakReclaimAttempts, st.UsedBytes, st.MaxBytes, st.UnreclaimedEndedBytes)
-			}
 			log.wedged++
 			return false
 		}
@@ -632,11 +621,29 @@ func soakRepack(t *testing.T, f *journaltest.Fixture, log *soakLog) {
 	// A spare-limit refusal is the pool's recycle and refill racing the
 	// pass — the engine logs a failing capacity step and answers
 	// retry-later, never the error — so the run records it as an attempt
-	// spent and lets its caller retry; anything else is the run's own
-	// failure, on the pass or the journal beneath it.
+	// spent and lets its caller retry.
 	var ns *journal.NoSpaceError
 	if errors.As(err, &ns) && ns.Limit == journal.LimitSpare {
 		log.repackSpares++
+		return
+	}
+	// decision: a claim refusal spends the attempt rather than the run: the
+	// retire worker runs on real time the wall-clock runs outlive, and its
+	// pass holds a segment's claim while it retires the very unit this pass
+	// selected. The ledger's claim table refuses a second taker by design
+	// and calls its own answer uncounted and retryable — the claim's holder
+	// releases it without retiring when refused — which is how the retire
+	// queue answers it (a requeued id) and how the engine answers any failed
+	// repack step (logged, the refusal kept for retry). The overlap needs a
+	// run the worker's real-time ticks reach inside; a fixed-size leg ends
+	// before its first tick, so the overwrite-only calibration never met it,
+	// while the removals hand the worker segments to retire at every tick of
+	// a long run. Withdraw for a claim the journal never gives back — which
+	// the removals leg's drain and the standing runs' flat bands read in
+	// their own assertions anyway — never for one the worker holds and
+	// releases.
+	if errors.Is(err, segset.ErrClaimed) {
+		log.repackClaims++
 		return
 	}
 	t.Fatalf("soak: repack: %v", err)
@@ -702,24 +709,22 @@ func soakStuckSegments(f *journaltest.Fixture) []journal.SegmentInfo {
 // each open, which the next write's own version check carries — every
 // version the reopened journal issues sits above every one the crash left.
 //
-// The probe write is a write of the mix's own, so on a removals run it can
-// land wedged; a probe that never landed is no probe, and the crash is
-// spent — skipped, counted among the wedged ops, never a crash of content it
-// could not write — while every overwrite-only run keeps its fatal answer.
-func soakCrash(t *testing.T, f *journaltest.Fixture, cfg soakCfg, log *soakLog, maxV *journal.Version) {
+// The probe write is a write of the mix's own, so it can land wedged; a
+// probe that never landed is no probe, and the crash is spent — skipped,
+// counted among the wedged ops, never a crash of content it could not
+// write — while the caller's checks judge the refusal that spent it.
+func soakCrash(t *testing.T, f *journaltest.Fixture, log *soakLog, maxV *journal.Version) {
 	t.Helper()
 
 	file := log.crashes % soakFileCount
 	probe := pattern(fmt.Sprintf("probe-crash-%d", log.crashes), soakSlot)
-	if _, ok := soakWrite(t, f, cfg, log, maxV, file, 0, probe); !ok {
-		// decision: a removals run spends the crash rather than the probe
-		// when the probe lands wedged: a write the journal refused over
-		// its whole bounded reclaim made no content to lose, so the crash
-		// over it would verify a recovery of nothing while the churn it
-		// ends is spent on the drain, the assertion the leg holds. The
-		// wedge is counted among the run's wedged ops either way.
-		// Withdrawn with the removals leg's tolerance when that lands
-		// green, which returns the probe's refusal to its run's failure.
+	if _, ok := soakWrite(t, f, log, maxV, file, 0, probe); !ok {
+		// decision: a wedged probe spends the crash rather than the run:
+		// a write the journal refused over its whole bounded reclaim made
+		// no content to lose, so the crash over it would verify a
+		// recovery of nothing. The wedge is counted among the run's wedged
+		// ops, which the caller judges — the removals leg's drain by its
+		// assertion, the other legs by failing on the wedge itself.
 		return
 	}
 	if _, err := f.Share(file%2).Sync(t.Context(), journaltest.File(file)); err != nil {
@@ -728,21 +733,15 @@ func soakCrash(t *testing.T, f *journaltest.Fixture, cfg soakCfg, log *soakLog, 
 
 	before := f.J.Stats().LossGeneration
 	f.Crash()
-	// decision: a removals run waits the pool's settle after the crash
-	// only while the freeze is absent, though the overwrite-only soak
-	// waits always. The wedge this churn proves is precisely a journal
-	// whose pool can no longer make the one spare it stands short of, so a
-	// wait at the freeze reads the pool's refusal as the fixture's own
-	// fatal and ends the run before the drain — whose assertion is the
-	// leg's real answer — could name the state it judged. The gate is the
-	// drain's own evidence, read the moment the wait would run: a sealed,
-	// index-empty segment still in the set is the freeze visible, and
-	// waiting past it settles nothing the wedge has not already frozen;
-	// a journal without one — every drained run, the fixed shape this
-	// leg's fix restores — waits at the soak's full strength. Withdrawn
-	// with the removals leg when it lands green, which lets the wait
-	// return to every crash.
-	if !cfg.removals || len(soakStuckSegments(f)) == 0 {
+	// decision: the pool's settle waits after the crash only while no
+	// sealed, index-empty segment stands in the set. A wedged journal —
+	// the pool one spare short for good — answers the wait with the pool's
+	// refusal, which reads as the fixture's own fatal and ends the run
+	// before the caller that judges the wedge could name the state it
+	// saw: the removals leg's drain by its assertion, the other legs by
+	// their wedge refusal. A journal without one — every drained run —
+	// waits at the soak's full strength.
+	if len(soakStuckSegments(f)) == 0 {
 		f.WaitSpares()
 	}
 	log.crashes++

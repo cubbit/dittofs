@@ -23,6 +23,14 @@ import (
 // judges it.
 const soakRemovalOps = 4_096
 
+// soakRemovalCrashOp is the leg's own crash site, on a window edge as the
+// leak plants sit: window twelve, the operations finding the middle of the
+// 800..2_350 window the freeze formed in, so the churn crosses a power loss
+// and a reopen at the depth the wedge used to sit at — beside the cadence
+// crashes the leg's windows already carry, the last of which the drain
+// reads past.
+const soakRemovalCrashOp = soakWindowOps * 12
+
 // soakDrainBound bounds the wait for the drain's retirements. The retire
 // worker's ticker runs on real time, one second a tick, which no test clock
 // reaches, so the bound covers at least two of its ticks however late the
@@ -55,7 +63,7 @@ const (
 // the drain: the sealed, index-empty residue its removals leave is what
 // this fingerprint names.
 func TestSoakRemovalChurnDrains(t *testing.T) {
-	run := soakCfg{maxOps: soakRemovalOps, removals: true}
+	run := soakCfg{maxOps: soakRemovalOps, crashOp: soakRemovalCrashOp}
 	log := soakRun(t, run)
 
 	t.Logf("removal churn: %d ops: %d writes, %d truncates, %d deletes, %d wedged operations (of %d capacity refusals), %d syncs, %d settles, %d repacks (%d bytes freed), %d crashes",
@@ -74,8 +82,8 @@ func TestSoakRemovalChurnDrains(t *testing.T) {
 
 	repacksBefore := log.repacks
 	stuck, unreclaimed := soakDrainWait(t, f, log)
-	t.Logf("removal drain: %d repacks spent of the run's %d total",
-		log.repacks-repacksBefore, log.repacks)
+	t.Logf("removal drain: %d repacks spent of the run's %d total, the run's passes spent %d attempts on a claim the retire worker held",
+		log.repacks-repacksBefore, log.repacks, log.repackClaims)
 
 	if len(stuck) > 0 {
 		st := f.J.Stats()
@@ -89,7 +97,7 @@ func TestSoakRemovalChurnDrains(t *testing.T) {
 	// but a version.
 	maxV := log.maxV
 	p := pattern("drain-write", soakSlot)
-	if _, ok := soakWrite(t, f, run, log, &maxV, 0, 0, p); !ok {
+	if _, ok := soakWrite(t, f, log, &maxV, 0, 0, p); !ok {
 		st := f.J.Stats()
 		t.Fatalf("removal churn wedges at capacity: the drain's settlement write never landed over %d reclaim attempts after every file was settled through version %v: the journal stays at %d of %d bytes used, %d unreclaimed in ended segments", soakReclaimAttempts, log.maxV, st.UsedBytes, st.MaxBytes, st.UnreclaimedEndedBytes)
 	}

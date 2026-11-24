@@ -33,10 +33,11 @@ func soakDuration(t *testing.T) time.Duration {
 }
 
 // TestJournalSoak drives one journal at capacity pressure for hours —
-// overwrites and repacks against a maximum a fraction of what the run
-// writes, with a simulated power loss and a reopen every slow period — and
-// holds the gauges flat over the whole run: no counter, no descriptor count
-// and no heap may end above the band a clean journal keeps.
+// truncates, deletes, overwrites and repacks against a maximum a fraction
+// of what the run writes, with a simulated power loss and a reopen every
+// slow period — and holds the gauges flat over the whole run: no counter,
+// no descriptor count and no heap may end above the band a clean journal
+// keeps.
 //
 // The suite this test runs in has no known failures and no retries: a red
 // here is a leak to fix.
@@ -64,6 +65,15 @@ func TestJournalSoak(t *testing.T) {
 	}
 	if log.crashes == 0 {
 		t.Errorf("soak: reached: %d crashes, want the run to have crossed and recovered a simulated power loss", log.crashes)
+	}
+
+	// The wedge the removals can leave is the leak shape this run watches
+	// for: an operation refused at capacity over its whole bounded reclaim
+	// ends the churn early, so the flat checks below would read a
+	// truncated band and name the wrong thing. This names the wedge first.
+	if log.wedged != 0 {
+		st := log.fixture.J.Stats()
+		t.Fatalf("soak: %d of %d operations wedged at capacity, refused over their %d reclaim attempts each: the removals' residue never retired, and the churn ended with %d of %d journal bytes used and %d of them unreclaimed in ended segments", log.wedged, log.ops, soakReclaimAttempts, st.UsedBytes, st.MaxBytes, st.UnreclaimedEndedBytes)
 	}
 
 	// The flat checks run after the last window, over the whole run's band:
@@ -129,6 +139,9 @@ func TestJournalSoakFindsPlantedDescriptor(t *testing.T) {
 	// reopen the neutralised series must read through.
 	plant := soakCfg{maxOps: soakWindowOps * 24, plantOp: soakWindowOps * 13}
 	log := soakRun(t, plant)
+	if log.wedged != 0 {
+		t.Fatalf("the descriptor leg's run wedged %d operations at capacity over %d reclaim attempts each, want a healthy churn: a wedged run ends early, so its descriptors name the wedge, not the plant", log.wedged, soakReclaimAttempts)
+	}
 	if log.planted == nil {
 		t.Fatalf("the run planted no descriptor, so this leg checks nothing")
 	}
@@ -181,6 +194,9 @@ func TestJournalSoakFindsPlantedDescriptor(t *testing.T) {
 func TestJournalSoakFindsPlantedFootprint(t *testing.T) {
 	plant := soakCfg{maxOps: soakWindowOps * 24, plantOp: soakWindowOps * 13, plantDisk: true}
 	log := soakRun(t, plant)
+	if log.wedged != 0 {
+		t.Fatalf("the footprint leg's run wedged %d operations at capacity over %d reclaim attempts each, want a healthy churn: a wedged run ends early, so its bytes name the wedge, not the plant", log.wedged, soakReclaimAttempts)
+	}
 	if log.orphan == "" {
 		t.Fatalf("the run planted no orphaned file, so this leg checks nothing")
 	}
