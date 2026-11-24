@@ -66,8 +66,12 @@ func principalRows() []row {
 		{name: "user delete --wait ends the deletion and the user is gone", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
 			name := unique("u")
 			mustRun(t, run, "user", "create", name)
-			if _, errOut, status := s.awaitRun(t, run, "user", "delete", name, "--force", "--wait"); status != 0 {
+			out, errOut, status := s.awaitRun(t, run, "user", "delete", name, "--force", "--wait", "-o", "json")
+			if status != 0 {
 				t.Fatalf("user delete %s --wait: status %d, stderr %q, want 0", name, status, errOut)
+			}
+			if op := decodeAs[apiv1.Operation](t, out); op.State != apiv1.OpSucceeded {
+				t.Errorf("user delete %s --wait: printed %+v, want its deletion succeeded", name, op)
 			}
 			if _, errOut, status := run(t.Context(), "user", "get", name); status == 0 || !strings.Contains(errOut, name) {
 				t.Errorf("user get %s after its deletion: status %d, stderr %q, want it refused naming it", name, status, errOut)
@@ -81,8 +85,12 @@ func principalRows() []row {
 			if g.Spec.GID == nil || *g.Spec.GID != 42001 {
 				t.Errorf("group get %s after update --gid 42001: gid %v, want 42001", name, g.Spec.GID)
 			}
-			if _, errOut, status := s.awaitRun(t, run, "group", "delete", name, "--force", "--wait"); status != 0 {
+			out, errOut, status := s.awaitRun(t, run, "group", "delete", name, "--force", "--wait", "-o", "json")
+			if status != 0 {
 				t.Fatalf("group delete %s --wait: status %d, stderr %q, want 0", name, status, errOut)
+			}
+			if op := decodeAs[apiv1.Operation](t, out); op.State != apiv1.OpSucceeded {
+				t.Errorf("group delete %s --wait: printed %+v, want its deletion succeeded", name, op)
 			}
 			if _, _, status := run(t.Context(), "group", "get", name); status == 0 {
 				t.Errorf("group get %s after its deletion: status 0, want it refused", name)
