@@ -416,7 +416,10 @@ func (t *Table) guarded(s ShardID) error {
 }
 
 // owedLocked is the grace instances client c has not finished, by the
-// marks the table holds of its record; the caller holds cmu.
+// marks the table holds of its record, in grace or not; the caller holds
+// cmu. It is what ClientStatus reports and what keeps a refusal client
+// stale. It is not owesLocked, which reads each shard's reclaim set and asks
+// grace: a mark's Done is raised by a confirm, so the two must not be merged.
 func (t *Table) owedLocked(c entity.ClientID) []GraceRef {
 	var owed []GraceRef
 	for _, m := range t.known[c].shards {
@@ -433,17 +436,22 @@ func (t *Table) owedLocked(c entity.ClientID) []GraceRef {
 // ReclaimComplete naming the shard's instance, never by Done alone, which a
 // join or a confirm sets; one that recovers by refusal or by notice never
 // finishes; an end, a reboot or a revoke drops c from every grace. The
-// caller holds cmu.
+// caller holds cmu. It reads the shards' reclaim sets, not c's marks as
+// owedLocked does: a confirm raises Done, which must not count as finished
+// here, so the two must not be merged.
 //
 // decision: a reclaim is refused on the client, not per shard or state, as
 // an NFSv4.1 client answered NFS4ERR_NO_GRACE once ends its reclaim
 // everywhere. It is judged from the client records each shard read once,
 // as its grace began, not from the client's own record: a client this table
 // has not known since a restart reads nothing more, and one with no record
-// was named by no shard and owes nothing. A shard this table does not serve
-// waits on nobody here, as a single node begins every shard it serves
-// before it answers. Read the client's marks if a shard is found to be
-// taken over while its clients reclaim elsewhere.
+// was named by no shard and owes nothing. Only the shards this table serves
+// are asked. That holds on one node, as the filesystem's Start serves every
+// share's shard before it answers; in a cluster it would answer ErrNoGrace
+// to a client still owing in a shard another node serves. Judge each shard
+// the client's record lists by its instance and grace as the lease owner
+// sees them, as ClientStatus's owed pairs are built, keeping refusal and
+// notice clients unfinished, once a second node serves shards.
 func (t *Table) owesLocked(c entity.ClientID) bool {
 	now := t.d.Clock.Elapsed()
 	for _, sh := range t.shards {

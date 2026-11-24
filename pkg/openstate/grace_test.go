@@ -585,13 +585,21 @@ func TestNoGraceOnceEveryInstanceIsFinished(t *testing.T) {
 
 // A client that recovers by refusal or by notice never finishes, so it
 // reclaims while a shard it holds state in is in grace, though a confirm
-// raised its Done and it sent a completion naming the instance.
+// raised its Done and it sent a completion naming the instance. Once grace
+// has ended, an NFSv4.0 client that never confirmed again is refused its
+// reclaim ErrNoGrace, not ErrStaleClient.
+//
+// Done raised by a join is not tested: on one node no client joins a shard
+// in grace, as a new state there is ErrGrace; only a batch move between
+// nodes adds a mark at the receiving shard's instance.
 func TestNoGraceNeverForRefusalOrNotice(t *testing.T) {
 	f := newFixture(t)
 	cl := nfsAs("c40", entity.RecoverRefusal)
 	c, h := f.caller(t, cl), f.host(t, "h", 1)
+	stale := f.caller(t, nfsAs("stale", entity.RecoverRefusal))
 	file := in(5)
 	f.mustOpen(t, c, file, OpenRequest{Access: rd, Owner: owner(c, "oo")})
+	f.mustOpen(t, stale, in(5), OpenRequest{Access: rd, Owner: owner(stale, "oo")})
 	f.mustLock(t, h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}})
 
 	g := f.restart(t)
@@ -608,6 +616,12 @@ func TestNoGraceNeverForRefusalOrNotice(t *testing.T) {
 	}
 	if _, err := g.lock(h, file, LockReq{Owner: owner(h, "p"), Ranges: []LockRange{x(0, 10)}, Reclaim: true}); err != nil {
 		t.Errorf("the NLM host's reclaim: %v, want granted", err)
+	}
+	// RFC 14 §4.2 checks a client with nothing left to reclaim before
+	// anything else, ahead of §4.4's refusal of a client that must confirm.
+	g.clock.advance(leasePeriod)
+	if _, err := g.open(stale, in(5), OpenRequest{Access: rd, Owner: owner(stale, "oo"), Reclaim: true}); !errors.Is(err, ErrNoGrace) {
+		t.Errorf("an unconfirmed NFSv4.0 client's reclaim after grace: %v, want ErrNoGrace", err)
 	}
 }
 
