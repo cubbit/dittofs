@@ -25,9 +25,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
-// nfs4ErrMinorVersMismatch is NFS4ERR_MINOR_VERS_MISMATCH (RFC 7530 section 13).
-const nfs4ErrMinorVersMismatch = 10021
-
 // The numbers the tests write and read, written here from the specifications
 // rather than taken from the wire package: RFC 5531 section 9 and Appendix A,
 // RFC 1813, RFC 7530 and RFC 21 section 11.5.
@@ -46,6 +43,8 @@ const (
 	garbageArgs  = 4 // GARBAGE_ARGS
 	systemErr    = 5 // SYSTEM_ERR
 	authBadCred  = 1 // AUTH_BADCRED
+
+	nfs4ErrMinorVersMismatch = 10021 // NFS4ERR_MINOR_VERS_MISMATCH
 
 	lastFragment = 1 << 31 // a record mark's last-fragment bit (RFC 5531 section 11)
 	maxRecord    = 1<<20 + 4<<10
