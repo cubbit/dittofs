@@ -100,9 +100,9 @@ func mapsEqual(a, b map[string]int) bool {
 }
 
 // §2.2 order, its API clause: an operation readable before Stop reads
-// through the API once reconcile stopped, once the adapters stopped, and
-// while the runner's stop, step 3's, is waited on. Catches an API that stops
-// before the drain it reports.
+// through the API once reconcile stopped, once the adapters stopped, while
+// the runner's stop, step 3's, is waited on, and once the runner stopped,
+// step 3's end. Catches an API that stops before the drain it reports.
 func TestWiredOperationReadableUntilStopStep3(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
 		var (
@@ -115,7 +115,7 @@ func TestWiredOperationReadableUntilStopStep3(t *testing.T) {
 			p := probe
 			mu.Unlock()
 			switch step {
-			case "stop reconcile", "stop adapters", "wait runner":
+			case "stop reconcile", "stop adapters", "wait runner", "stop runner":
 				if p != nil {
 					status := p()
 					mu.Lock()
@@ -148,7 +148,7 @@ func TestWiredOperationReadableUntilStopStep3(t *testing.T) {
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		for _, step := range []string{"stop reconcile", "stop adapters", "wait runner"} {
+		for _, step := range []string{"stop reconcile", "stop adapters", "wait runner", "stop runner"} {
 			if got := read[step]; got != http.StatusOK {
 				t.Errorf("GET the operation at %s: answered %d, want 200 until step 3 ends", step, got)
 			}
@@ -175,24 +175,29 @@ func TestWiredHealthNeedsAToken(t *testing.T) {
 // nowhere. Catches a 201 with the failure only in a log.
 func TestWiredRefusedShareReadsRefused(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
-		w := newWired(t, memory, nil)
+		var ch <-chan statusTurn
+		w := newWired(t, memory, func(cfg node.Config) (*node.Node, error) {
+			n, err := node.New(cfg)
+			if err == nil {
+				turns := make(chan statusTurn, 1024)
+				n.OnStatus(func(s entity.NodeStatus, wrote bool) { turns <- statusTurn{s, wrote} })
+				ch = turns
+			}
+			return n, err
+		})
 		sh := createShare(t, w.h, "nowhere", storeB)
+		// The API counts a node's refusal once the node's status has reached
+		// the share's position and lists it refused: the turn that holds both
+		// has committed it, or carries an earlier commit equal to it.
+		turnAt(t, w.h, ch, "refusing share nowhere", func(tr statusTurn) bool {
+			return tr.s.ShareList >= sh.Position && slices.ContainsFunc(tr.s.Refused, func(r entity.RefusedRecord) bool {
+				return r.Record.Kind == entity.ResourceShare && entity.ShareID(r.Record.ID) == sh.ID
+			})
+		})
 		path := "/api/v1/shares/" + sh.ID.String()
-		// The status writer writes a turn a second; ten turns are well past
-		// the one that reports the refusal.
 		var got apiv1.Share
-		for i := 0; ; i++ {
-			r := w.send(t, http.MethodGet, path, w.viewer.token, nil)
-			if r.status != http.StatusOK || json.Unmarshal(r.body, &got) != nil {
-				t.Fatalf("GET the refused share: answered %d %s, want 200", r.status, r.body)
-			}
-			if got.Status.Refused > 0 {
-				break
-			}
-			if i == 10 {
-				t.Fatalf("the refused share's status after ten turns: %+v, want it refused", got.Status)
-			}
-			turn(w.h)
+		if r := w.send(t, http.MethodGet, path, w.viewer.token, nil); r.status != http.StatusOK || json.Unmarshal(r.body, &got) != nil {
+			t.Fatalf("GET the refused share: answered %d %s, want 200", r.status, r.body)
 		}
 		if got.Status.Refused != 1 || got.Status.Applied == nil || got.Status.Applied.Nodes != 0 || got.Status.Applied.Of != 1 {
 			t.Errorf("the refused share's status: refused %d, applied %+v; want refused by 1, applied on 0 of 1", got.Status.Refused, got.Status.Applied)
@@ -659,7 +664,7 @@ func TestWiredErrorTable(t *testing.T) {
 			t.Errorf("GET the share once the store answers: %d %s, want 200", r.status, r.body)
 		}
 
-		// Six failed sign-ins from this address for one account throttle the
+		// Five failed sign-ins from this address for one account throttle the
 		// next, so this row runs last.
 		w.h.Account(t, "jo", "jo's password", entity.RoleViewer)
 		var last authReply
