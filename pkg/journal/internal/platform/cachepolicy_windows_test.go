@@ -330,8 +330,9 @@ func TestCheckWriteCachePolicyVolume(t *testing.T) {
 		prof.Watch(t, prof.Options{})
 
 		// The recorded deviceIoControl answers flushingOff. Fails if the
-		// gather is not reached at all, or returns the call's error or the
-		// answer's bytes as something other than the verdict's probe.
+		// gather is not reached at all — the answer nil, its bytes changed —
+		// or the refusal does not carry the call's answers: the directory,
+		// the mount point and the volume the verdict names in its message.
 		f := newFakeVolume()
 		f.queryAnswer = flushingOff()
 
@@ -401,8 +402,8 @@ func TestCheckWriteCachePolicyVolume(t *testing.T) {
 
 		// The recorded answer holds Size 32 with 32 bytes reported: "Size
 		// may include data that follows this structure" (the verdict's own
-		// twin row, through the gather). Fails if the gather truncates what
-		// bytesReturned says another length names.
+		// twin row, through the gather). Fails if the gather hands the
+		// verdict fewer bytes than the answer's Size counts.
 		f := newFakeVolume()
 		f.queryAnswer = append(with(flushingOff(), 4, 0x20), 0x00, 0x00, 0x00, 0x00)
 
@@ -458,7 +459,7 @@ func TestCheckWriteCachePolicyVolume(t *testing.T) {
 		},
 		{
 			// The mount point names no volume GUID path — the mapped or
-			// network location checkCacheProbe's decision: marker names.
+			// network location probeVolume's decision: marker names.
 			// ERROR_INVALID_NAME is the failure its Learn page's remote-path
 			// example gives, error 123. Fails if the gather hides the
 			// failure or reports it as a refusal.
@@ -495,10 +496,10 @@ func TestCheckWriteCachePolicyVolume(t *testing.T) {
 
 		// The query answered the flushing-on answer; only the close failed.
 		// The gather returns the close failure as the Linux probe joins it,
-		// and the verdict never sees the answer: the check fails on the
-		// call, never as a silent pass. Fails if the gather swallows a close
-		// error, or reports the volume from an answer of a probe whose
-		// handle leaked...
+		// and the verdict never runs: the check fails on the call, never as
+		// a silent pass. Fails if the gather swallows a close error, or
+		// reaches the verdict anyway on an answer whose probe leaked its
+		// handle.
 
 		f := newFakeVolume()
 		f.failNext("closeHandle", windows.ERROR_INVALID_HANDLE)
