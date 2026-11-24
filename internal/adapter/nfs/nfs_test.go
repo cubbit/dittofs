@@ -278,7 +278,15 @@ func TestStartBindsOneTCPPortForEveryProgram(t *testing.T) {
 // Under the default range, each path a refusal takes is answered over one
 // connection, the call after a malformed one too, and counts under the label
 // of the table that answered it, or nfs3 before Route (RFC 20 sections 4.8
-// and 10.1, RFC 21 sections 2.1, 11.1 and 11.5).
+// and 10.1, RFC 21 sections 2.1, 11.1 and 11.5). NFSv4's COMPOUNDs, against
+// the reply files written from RFC 8881 and RFC 7530, echo their tag in every
+// reply that carries their status: an empty one served, an undefined
+// operation code answered NFS4ERR_OP_ILLEGAL at it, at the cap too, one past
+// the cap refused NFS4ERR_TOO_MANY_OPS and over NFSv4.0, on the call after,
+// NFS4ERR_RESOURCE, a member that does not decode NFS4ERR_BADXDR, a defined
+// code no row serves NFS4ERR_NOTSUPP, and a COMPOUND whose own arguments do
+// not decode GARBAGE_ARGS. A COMPOUND a member answers counts no refusal of
+// core's, but records under nfs4.
 func TestEachRefusalIsAnswered(t *testing.T) {
 	d := leakChecked(t)
 	c := dial(t, serve(t, d, nfsSettings(allVersions)))
@@ -289,33 +297,58 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 	for _, tc := range []struct {
 		name, label string
 		call, want  []byte
+		served      bool // no refusal of core's: answered by its members
 	}{
 		{"MOUNT's NULL from its empty table", "nfs3",
-			call(1, progMount, 3, 0, none), accepted(1, procUnavail)},
+			call(1, progMount, 3, 0, none), accepted(1, procUnavail), false},
 		{"NLM's NULL from its empty table", "nfs3",
-			call(31, progNLM, 4, 0, none), accepted(31, procUnavail)},
+			call(31, progNLM, 4, 0, none), accepted(31, procUnavail), false},
 		{"NSM's NULL from its empty table", "nfs3",
-			call(32, progNSM, 1, 0, none), accepted(32, procUnavail)},
+			call(32, progNSM, 1, 0, none), accepted(32, procUnavail), false},
 		{"NFS v2 from the stages' table", "nfs3",
-			call(2, progNFS, 2, 0, none), accepted(2, progMismatch, 3, 4)},
+			call(2, progNFS, 2, 0, none), accepted(2, progMismatch, 3, 4), false},
 		{"an AUTH_SYS credential of 17 groups", "nfs3",
 			call(3, progNFS, 3, 0, append(words(authSys), opaque(sys)...)),
-			words(3, 1, 1, 1, authBadCred)}, // REPLY, MSG_DENIED, AUTH_ERROR
+			words(3, 1, 1, 1, authBadCred), false}, // REPLY, MSG_DENIED, AUTH_ERROR
 		{"a COMPOUND of minor version 3 from the version 4 table", "nfs4",
-			call(4, progNFS, 4, 1, none, append(tag, words(3, 0)...)...),                   // COMPOUND: tag, minor version, no operations
-			append(append(accepted(4, 0, nfs4ErrMinorVersMismatch), tag...), words(0)...)}, // SUCCESS, the status, the tag, no results
+			call(4, progNFS, 4, 1, none, append(tag, words(3, 0)...)...),                          // COMPOUND: tag, minor version, no operations
+			append(append(accepted(4, 0, nfs4ErrMinorVersMismatch), tag...), words(0)...), false}, // SUCCESS, the status, the tag, no results
 		{"a verifier past the record", "nfs3",
-			words(5, 0, 2, progNFS, 3, 0, authNone, 0, authNone, 8), accepted(5, garbageArgs)},
+			words(5, 0, 2, progNFS, 3, 0, authNone, 0, authNone, 8), accepted(5, garbageArgs), false},
 		{"a NULL after it", "nfs3",
-			call(6, progNFS, 3, 0, none), accepted(6, procUnavail)},
+			call(6, progNFS, 3, 0, none), accepted(6, procUnavail), false},
+		{name: "a COMPOUND of no operation", label: "nfs4", served: true,
+			call: golden(t, "rfc-nfs4-empty-call"), want: golden(t, "rfc-nfs4-empty-reply")},
+		{name: "a COMPOUND whose first operation is code 9999", label: "nfs4", served: true,
+			call: golden(t, "rfc-nfs4-illegal-call"), want: golden(t, "rfc-nfs4-illegal-reply")},
+		{name: "the same COMPOUND counting 128 operations", label: "nfs4", served: true,
+			call: golden(t, "rfc-nfs4-illegal-at-cap-call"), want: golden(t, "rfc-nfs4-illegal-at-cap-reply")},
+		{name: "a COMPOUND of 129 operations over NFSv4.1", label: "nfs4",
+			call: golden(t, "rfc-nfs4-too-many-ops-call"), want: golden(t, "rfc-nfs4-too-many-ops-reply")},
+		{name: "a COMPOUND of 129 operations over NFSv4.0", label: "nfs4",
+			call: golden(t, "rfc-nfs4-resource-call"), want: golden(t, "rfc-nfs4-resource-reply")},
+		{name: "a COMPOUND whose count runs past its bytes", label: "nfs4",
+			call: golden(t, "rfc-nfs4-badxdr-call"), want: golden(t, "rfc-nfs4-badxdr-reply")},
+		{name: "a COMPOUND of a READ no row serves", label: "nfs4",
+			call: golden(t, "rfc-nfs4-read-call"), want: golden(t, "rfc-nfs4-read-reply")},
+		{name: "a COMPOUND cut before its count", label: "nfs4",
+			call: golden(t, "rfc-nfs4-no-count-call"), want: golden(t, "rfc-nfs4-no-count-reply")},
 	} {
 		other := map[string]string{"nfs3": "nfs4", "nfs4": "nfs3"}[tc.label]
 		before, otherBefore := recorded(t, d.Metrics, "adapter_refusals_total", tc.label), recorded(t, d.Metrics, "adapter_refusals_total", other)
+		stagesBefore := recorded(t, d.Metrics, "adapter_wire_seconds", tc.label)
 		if got := ask(t, c, tc.call); !bytes.Equal(got, tc.want) {
 			t.Errorf("%s: answered %x, want %x", tc.name, got, tc.want)
 		}
-		if got := recorded(t, d.Metrics, "adapter_refusals_total", tc.label) - before; got != 1 {
-			t.Errorf("%s: %v refusals under %s, want 1", tc.name, got, tc.label)
+		want := 1.0
+		if tc.served {
+			want = 0
+		}
+		if got := recorded(t, d.Metrics, "adapter_refusals_total", tc.label) - before; got != want {
+			t.Errorf("%s: %v refusals under %s, want %v", tc.name, got, tc.label, want)
+		}
+		if tc.served && recorded(t, d.Metrics, "adapter_wire_seconds", tc.label) == stagesBefore {
+			t.Errorf("%s: recorded no stage under %s", tc.name, tc.label)
 		}
 		if got := recorded(t, d.Metrics, "adapter_refusals_total", other) - otherBefore; got != 0 {
 			t.Errorf("%s: %v refusals under %s, want none", tc.name, got, other)

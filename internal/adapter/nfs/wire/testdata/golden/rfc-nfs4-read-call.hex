@@ -1,0 +1,16 @@
+# An NFSv4.1 COMPOUND of one READ, code 25, with its READ4args (RFC 8881 section 18.22).
+0000002e  # xid
+00000000  # CALL
+00000002  # RPC version 2
+000186a3  # program NFS
+00000004  # version 4
+00000001  # procedure COMPOUND
+00000000 00000000  # credential: AUTH_NONE, no body
+00000000 00000000  # verifier: AUTH_NONE, no body
+00000005 61626364 65000000  # tag "abcde", 5 bytes and its padding
+00000001  # minor version 1
+00000001  # one operation
+00000019  # OP_READ
+00000000 00000000 00000000 00000000  # stateid: the anonymous one, seqid and other
+00000000 00000000  # offset 0
+00001000  # count 4096

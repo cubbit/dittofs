@@ -1,0 +1,9 @@
+# Its reply: NFS4_OK, the tag echoed, no results (RFC 8881 section 16.2).
+00000028  # xid
+00000001  # REPLY
+00000000  # MSG_ACCEPTED
+00000000 00000000  # verifier: AUTH_NONE, no body
+00000000  # SUCCESS
+00000000  # NFS4_OK
+00000005 61626364 65000000  # the tag
+00000000  # no results
