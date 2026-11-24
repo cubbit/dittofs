@@ -1,15 +1,20 @@
 #!/bin/sh
 # One entry of the dedicated host's scheduled bench runs: bench-run.sh small|full|prune.
-# small and full want the run in a dedicated checkout: each moves its tree to
+# small and full run in a dedicated checkout — BENCH_CHECKOUT names it and the
+# guard enforces it — whose tree each moves to
 # the branch tip before anything is recorded. Each runs one collection pass
 # under $BENCH_RUN_ROOT, whose folders also
-# hold the dt results tree; prune removes the run folders of either kind a month old
-# (find compares whole days, so only a full 31 days is old enough) and nothing else.
-# An unknown word is a usage error and an unset BENCH_RUN_ROOT
-# refuses the run; both exit 2 on stderr. A refused or failed run exits non-zero and
+# hold the dt results tree; prune removes the run folders of either kind, and
+# dt's own run dirs under .dt-results, a month old
+# (find compares whole days, so only a full 31 days is old enough) and nothing
+# else. BENCH_NOT_AFTER is the latest permitted start, in epoch seconds: the
+# scheduled environment computes it, the worst-case duration and the lock-wait
+# budget subtracted from the night's start; a hand run sets it far in the
+# future. An unknown word is a usage error, and an unset BENCH_RUN_ROOT,
+# BENCH_NOT_AFTER or BENCH_CHECKOUT
+# refuses the run; the exits are 2 on stderr. A refused or failed run exits non-zero and
 # leaves what it created in place, never retried, never swallowed.
 set -u
-cd "$(dirname "$0")/../.." || exit 2
 
 if [ $# -ne 1 ]; then
 	echo "usage: bench-run.sh small|full|prune" >&2
@@ -20,6 +25,15 @@ case $1 in
 small | full)
 	test -n "${BENCH_RUN_ROOT:-}" || { echo "set BENCH_RUN_ROOT to the root holding run folders" >&2; exit 2; }
 	kind=$1
+	test -n "${BENCH_NOT_AFTER:-}" || { echo "set BENCH_NOT_AFTER to the latest start epoch that still ends before the nightly work" >&2; exit 2; }
+	test -n "${BENCH_CHECKOUT:-}" || { echo "set BENCH_CHECKOUT to the dedicated checkout of the scheduled runs" >&2; exit 2; }
+	[ -d "$BENCH_CHECKOUT" ] || { echo "no such checkout directory" >&2; exit 2; }
+	# Before the quiet wait, so a past-deadline run refuses at once instead
+	# of sitting in the wait.
+	[ "$(date +%s)" -lt "$BENCH_NOT_AFTER" ] || { echo "too late to start before the nightly work" >&2; exit 2; }
+	# The suite calls, the git steps and the prune self-call all resolve
+	# inside this checkout, never in whatever tree the script was invoked from.
+	cd "$BENCH_CHECKOUT" || exit 2
 
 	# A load that never drops under the threshold within the budget refuses
 	# the run instead of running hot.
@@ -46,6 +60,9 @@ small | full)
 		flock -w "${BENCH_LOCK_WAIT:-7200}" 9 || { echo "lock $BENCH_LOCK not free within ${BENCH_LOCK_WAIT:-7200}s" >&2; exit 2; }
 	fi
 
+	# After both waits: the budget the waits ate may leave the night's work
+	# too close to start at all.
+	[ "$(date +%s)" -lt "$BENCH_NOT_AFTER" ] || { echo "too late to start before the nightly work" >&2; exit 2; }
 	# Update before anything is recorded: a fetch or checkout failure aborts
 	# here, so no run folder is ever filed against a stale commit. The
 	# branch is hardcoded because these scripts retire with it once it
@@ -106,15 +123,16 @@ small | full)
 	exit "$s"
 	;;
 prune)
+	cd "$(dirname "$0")/../.." || exit 2
 	test -n "${BENCH_RUN_ROOT:-}" || { echo "set BENCH_RUN_ROOT to the root holding run folders" >&2; exit 2; }
-	# Only this script's own kinds are pruned; $BENCH_RUN_ROOT/.dt-results
-	# (dt's own run dirs) is deliberately outside this retention and survives,
-	# like anything else a hand run left under the root, whatever its age.
-	# A missing kind directory
-	# skips, so an empty or fresh root prunes nothing and still exits 0; a kind whose
-	# find fails sets rc, the other kind still prunes, and the failure leaves in the status.
+	# Only this script's own kinds and dt's results tree are pruned: dt's
+	# run dirs share the same window — each one's bench.txt is already copied
+	# into the run folder — while anything else a hand run left under the
+	# root survives, whatever its age. A missing directory
+	# skips, so an empty or fresh root prunes nothing and still exits 0; a directory whose
+	# find fails sets rc, the others still prune, and the failure leaves in the status.
 	rc=0
-	for k in small full; do
+	for k in small full .dt-results; do
 		d=$BENCH_RUN_ROOT/$k
 		[ -d "$d" ] || continue
 		find "$d" -mindepth 1 -maxdepth 1 -mtime +30 -exec rm -rf {} + || rc=1

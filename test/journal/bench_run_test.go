@@ -6,21 +6,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
 // benchRun runs the script with env, from this package's directory, and returns
-// exit status, stdout, stderr. It strips BENCH_RUN_ROOT from the inherited env
-// unless the case sets it, so the guard is tested against a real inheritance.
+// exit status, stdout, stderr. It strips the BENCH_* variables from the
+// inherited env unless the case sets them, so each guard is tested against a
+// real inheritance.
 func benchRun(t *testing.T, env map[string]string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	// go test runs this package in test/journal, so "." is where the script lives.
 	cmd := exec.Command("/bin/sh", append([]string{"bench-run.sh"}, args...)...)
 	cmdEnv := make([]string, 0, len(os.Environ())+len(env))
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "BENCH_RUN_ROOT=") {
+		if strings.HasPrefix(kv, "BENCH_") {
 			continue
 		}
 		cmdEnv = append(cmdEnv, kv)
@@ -77,6 +79,106 @@ func TestBenchRunRequiresRunRoot(t *testing.T) {
 	}
 }
 
+// assertStillEmpty fails when dir holds any entry, naming what was expected
+// to stay empty and how many entries appeared instead.
+func assertStillEmpty(t *testing.T, dir, what string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir %s: %v", dir, err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("%s after the refused run: got %d entries, want it left empty", what, len(entries))
+	}
+}
+
+// TestBenchRunSmallGuards walks the small kind's guard chain in order: each
+// case is a fully configured run minus one guard, so the run's exit names
+// the guard that was missing, and nothing is created anywhere while refusing.
+func TestBenchRunSmallGuards(t *testing.T) {
+	root := t.TempDir()
+	checkout := t.TempDir()
+	notAfterAhead := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+	notAfterPast := strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10)
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{
+			name: "BENCH_NOT_AFTER unset",
+			env:  map[string]string{"BENCH_RUN_ROOT": root},
+			want: "set BENCH_NOT_AFTER",
+		},
+		{
+			name: "BENCH_CHECKOUT unset",
+			env:  map[string]string{"BENCH_RUN_ROOT": root, "BENCH_NOT_AFTER": notAfterAhead},
+			want: "set BENCH_CHECKOUT",
+		},
+		{
+			name: "BENCH_CHECKOUT directory missing",
+			env: map[string]string{
+				"BENCH_RUN_ROOT":  root,
+				"BENCH_NOT_AFTER": notAfterAhead,
+				"BENCH_CHECKOUT":  filepath.Join(t.TempDir(), "absent"),
+			},
+			want: "no such checkout directory",
+		},
+		{
+			// The pre-wait check: a past deadline refuses at once, without
+			// sitting in the quiet wait or touching either directory.
+			name: "start deadline in the past",
+			env: map[string]string{
+				"BENCH_RUN_ROOT":  root,
+				"BENCH_NOT_AFTER": notAfterPast,
+				"BENCH_CHECKOUT":  checkout,
+			},
+			want: "too late to start before the nightly work",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, _, stderr := benchRun(t, tc.env, "small")
+			if code != 2 {
+				t.Errorf("bench-run.sh small with %s: exit status got %d, want 2", tc.name, code)
+			}
+			if !strings.Contains(stderr, tc.want) {
+				t.Errorf("bench-run.sh small with %s: stderr got %q, want it to contain %q", tc.name, stderr, tc.want)
+			}
+			assertStillEmpty(t, root, "run root")
+			assertStillEmpty(t, checkout, "checkout")
+		})
+	}
+}
+
+// TestBenchRunSmallReachesGitInsideCheckout proves the guard chain lets a
+// legitimate configured run proceed past every guard: it enters the named
+// checkout and dies at its git fetch, creating nothing under the run root or
+// the checkout. The quiet wait never starts (the threshold sits far above
+// any load; one loop iteration would sleep 300s) and the lock is unset.
+func TestBenchRunSmallReachesGitInsideCheckout(t *testing.T) {
+	root := t.TempDir()
+	checkout := t.TempDir()
+	env := map[string]string{
+		"BENCH_RUN_ROOT":   root,
+		"BENCH_NOT_AFTER":  strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10),
+		"BENCH_CHECKOUT":   checkout,
+		"BENCH_QUIET_LOAD": "99999",
+		// A safety net for the threshold above: if the wait is ever entered
+		// anyway, its budget is one second, not the default four hours.
+		"BENCH_QUIET_LOAD_MAX_WAIT": "1",
+	}
+	code, _, stderr := benchRun(t, env, "small")
+	if code != 2 {
+		t.Errorf("bench-run.sh small with every guard satisfied: exit status got %d, want 2 (stderr %q)", code, stderr)
+	}
+	if !strings.Contains(stderr, "git fetch failed") {
+		t.Errorf("bench-run.sh small with every guard satisfied: stderr got %q, want it to contain \"git fetch failed\"", stderr)
+	}
+	assertStillEmpty(t, root, "run root")
+	assertStillEmpty(t, checkout, "checkout")
+}
+
 func TestBenchRunPruneRemovesOnlyOldRunFolders(t *testing.T) {
 	root := t.TempDir()
 	old := time.Now().Add(-40 * 24 * time.Hour)
@@ -93,14 +195,21 @@ func TestBenchRunPruneRemovesOnlyOldRunFolders(t *testing.T) {
 	plant(t, filepath.Join(root, "full", "young-b"), time.Now())
 	plant(t, filepath.Join(root, "small", "old-a"), old)
 	plant(t, filepath.Join(root, "full", "old-b"), old)
-	// The dt results tree outside the pruned kinds: even 40 days old it must survive.
 	plant(t, filepath.Join(root, ".dt-results", "old-c"), old)
+	plant(t, filepath.Join(root, ".dt-results", "young-c"), time.Now())
+	// An arbitrary other root a hand run left under the run root: even 40
+	// days old it must survive.
+	plant(t, filepath.Join(root, "manual", "old-d"), old)
 
 	code, _, stderr := benchRun(t, map[string]string{"BENCH_RUN_ROOT": root}, "prune")
 	if code != 0 {
 		t.Errorf("prune: exit status got %d, want 0 (stderr %q)", code, stderr)
 	}
-	gone := []string{filepath.Join(root, "small", "old-a"), filepath.Join(root, "full", "old-b")}
+	gone := []string{
+		filepath.Join(root, "small", "old-a"),
+		filepath.Join(root, "full", "old-b"),
+		filepath.Join(root, ".dt-results", "old-c"),
+	}
 	for _, dir := range gone {
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
 			t.Errorf("prune: %s still present, want it removed as older than 30 days", dir)
@@ -109,7 +218,8 @@ func TestBenchRunPruneRemovesOnlyOldRunFolders(t *testing.T) {
 	present := []string{
 		filepath.Join(root, "small", "young-a"),
 		filepath.Join(root, "full", "young-b"),
-		filepath.Join(root, ".dt-results", "old-c"),
+		filepath.Join(root, ".dt-results", "young-c"),
+		filepath.Join(root, "manual", "old-d"),
 	}
 	for _, dir := range present {
 		if _, err := os.Stat(dir); err != nil {
@@ -131,16 +241,16 @@ func TestBenchRunPruneRequiresRunRoot(t *testing.T) {
 func TestBenchRunPruneMissingKindDirs(t *testing.T) {
 	root := t.TempDir()
 	// A root other things live under, but neither pruned kind ever having run.
-	resultsTree := filepath.Join(root, ".dt-results", "old-c")
-	if err := os.MkdirAll(resultsTree, 0o755); err != nil {
-		t.Fatalf("MkdirAll %s: %v", resultsTree, err)
+	manualDir := filepath.Join(root, "manual", "old-c")
+	if err := os.MkdirAll(manualDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll %s: %v", manualDir, err)
 	}
 	code, _, stderr := benchRun(t, map[string]string{"BENCH_RUN_ROOT": root}, "prune")
 	if code != 0 {
 		t.Errorf("prune with neither small/ nor full/ present: exit status got %d, want 0 (stderr %q)", code, stderr)
 	}
-	if _, err := os.Stat(resultsTree); err != nil {
-		t.Errorf("prune with neither small/ nor full/ present: .dt-results was touched, want it untouched (err %v)", err)
+	if _, err := os.Stat(manualDir); err != nil {
+		t.Errorf("prune with neither small/ nor full/ present: manual/ was touched, want it untouched (err %v)", err)
 	}
 }
 
