@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,14 +179,26 @@ type row struct {
 	run         func(t *testing.T, run Runner, s Server, c *client.Client)
 }
 
-// Run runs every row as a subtest against s, a harness-only row only when s
-// has a harness, each through a runner newRunner makes for it, over a
-// credentials file of its own, signed in to s, and with a session of its
-// own for its setup and reads, so a row that ends a session ends none of
-// another row's. Rows share the server, so each names what it creates
-// uniquely.
-func Run(t *testing.T, newRunner func(*testing.T) Runner, s Server) {
+// Run runs every row of noun's commands as a subtest against s, every row
+// of the suite when noun is empty, a harness-only row only when s has a
+// harness, each through a runner newRunner makes for it, over a credentials
+// file of its own, signed in to s, and with a session of its own for its
+// setup and reads, so a row that ends a session ends none of another row's.
+// A noun's package runs its own rows; a child process runs them all. Rows
+// share the server, so each names what it creates uniquely. A row's name
+// starts with its noun.
+func Run(t *testing.T, newRunner func(*testing.T) Runner, s Server, noun string) {
+	ran := 0
+	t.Cleanup(func() {
+		if ran == 0 {
+			t.Errorf("clisuite: no row of %q, want at least one", noun)
+		}
+	})
 	for _, r := range rows() {
+		if noun != "" && !strings.HasPrefix(r.name, noun+" ") {
+			continue
+		}
+		ran++
 		t.Run(r.name, func(t *testing.T) {
 			if r.harnessOnly && s.Harness == nil {
 				t.Skip("harness-only: the server is not a node the test started")
