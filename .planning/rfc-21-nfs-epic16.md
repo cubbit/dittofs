@@ -342,7 +342,8 @@ so that subtasks and tests can cite them. A section cited with no RFC named is R
   others: the per-operation flavour gate (the `LOCK` over `AUTH_SYS` on a Kerberos-only share, E3
   and E9); `MNT`'s handle refused `AUTH_TOOWEAK` (E4); the `sacl` and `acl` administrator gate (E6);
   squash order and `admin` proof (E7); the `SP4_MACH_CRED` owner check (E8); delegation I/O
-  authorised afresh (E10); the NLM lock on a Kerberos-only share (E11); the `RPCSEC_GSS` service
+  authorised afresh (E10); `GET_DIR_DELEGATION`'s admitting call on the current filehandle (E10's
+  R36); the NLM lock on a Kerberos-only share (E11); the `RPCSEC_GSS` service
   floor (E13); and this epic's own: the share entry on every path (R40, T16.5), refused credentials
   (R26), "admin needs proof" over NFSv4 (R25), the delegation stateid under Kerberos (R65), the
   machine principal's owner check (R66), all T16.3's, and "disable takes effect" (R67, T16.6). A
