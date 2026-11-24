@@ -1078,7 +1078,8 @@ Manage netgroups
 Create, list, read, change and delete netgroups: named sets of host names,
 addresses and CIDRs that an export policy admits.
 
-An update replaces the netgroup's members with those --member names.
+An update replaces the netgroup's members with those --member names, and
+needs at least one.
 
 ```
 dfsctl netgroup [flags]
@@ -1182,7 +1183,7 @@ Global flags:
 
 Replace a netgroup's members
 
-Replace a netgroup's members with those --member names; with no --member it is left empty.
+Replace a netgroup's members with those --member names. To empty it, delete it.
 
 ```
 dfsctl netgroup update <name> [flags]
@@ -2366,7 +2367,7 @@ dfsctl token [flags]
 
 ```bash
 # Create a token valid for 30 days, kept in a file
-dfsctl token create --expires-in 720h > token.txt
+(umask 077; dfsctl token create --expires-in 720h > token.txt)
 
 # Sign a context in with it
 dfsctl login --server https://dfs.example.com --token-file token.txt -c ci
@@ -2508,7 +2509,6 @@ Flags:
       --email string   E-mail address; empty clears it
       --role string    Role in the management API (viewer|operator|admin); empty for none
       --uid uint32     Unix user ID, which a create leaving it out allocates
-      --wait           Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -2631,7 +2631,6 @@ Flags:
       --id string      The user's ID, in place of its name
       --role string    Role in the management API (viewer|operator|admin); empty for none
       --uid uint32     Unix user ID, which a create leaving it out allocates
-      --wait           Follow the operation the command starts to its end
 ```
 
 Global flags:

@@ -4,6 +4,7 @@
 package user
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strconv"
@@ -92,8 +93,9 @@ func applyFlags(cmd *cobra.Command, spec *apiv1.UserSpec) {
 	}
 }
 
-// printResult prints the user a write answered, or follows the operation
-// it started, as a write moving a machine's Kerberos name starts one.
+// printResult prints the user a write answered, or the operation it
+// started, as a write moving a machine's Kerberos name starts one; no flag
+// here writes a Kerberos name, so none is waited on.
 func printResult(cmd *cobra.Command, c *client.Client, res client.Result[apiv1.UserSpec, struct{}]) error {
 	if res.Operation != nil {
 		return cmdutil.Follow(cmd, c, res.Operation)
@@ -123,7 +125,6 @@ func newCreateCmd(env cmdutil.Env) *cobra.Command {
 		},
 	}
 	specFlags(cmd)
-	cmdutil.AddWait(cmd)
 	return cmd
 }
 
@@ -204,7 +205,6 @@ away.`,
 	}
 	cmdutil.NameOrID(cmd, "user")
 	specFlags(cmd)
-	cmdutil.AddWait(cmd)
 	return cmd
 }
 
@@ -259,11 +259,24 @@ your own password, run 'dfsctl password change'.`,
 			if err != nil {
 				return err
 			}
-			pw, err := cmdutil.NewSecrets(env).Read(cmd, "password-file", "new password")
+			sec := cmdutil.NewSecrets(env)
+			pw, err := sec.Read(cmd, "password-file", "new password")
 			if err != nil {
 				return err
 			}
 			defer clear(pw)
+			// A typed password is asked twice: a typo would set a password
+			// nobody knows and end every session and token the user holds.
+			if !cmd.Flags().Changed("password-file") {
+				again, err := sec.Prompt(cmd, "password-file", "new password again")
+				if err != nil {
+					return err
+				}
+				defer clear(again)
+				if !bytes.Equal(pw, again) {
+					return fmt.Errorf("%s: the passwords differ", cmd.CommandPath())
+				}
+			}
 			if err := c.Users().SetPassword(cmd.Context(), id, pw); err != nil {
 				return fmt.Errorf("%s: user %s: %w", cmd.CommandPath(), id, err)
 			}

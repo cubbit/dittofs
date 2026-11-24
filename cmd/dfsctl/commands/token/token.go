@@ -54,7 +54,7 @@ creates no token.
 
 Examples:
   # Create a token valid for 30 days, kept in a file
-  dfsctl token create --expires-in 720h > token.txt
+  (umask 077; dfsctl token create --expires-in 720h > token.txt)
 
   # Sign a context in with it
   dfsctl login --server https://dfs.example.com --token-file token.txt -c ci
@@ -95,19 +95,27 @@ once: as a table, stdout holds the token alone, so it can be written to a file;
 -o json or -o yaml print the whole record, the token in its status.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// The format is checked before the token is made, which no later
+			// call can show again.
+			f, _ := cmd.Flags().GetString("output")
+			format, err := output.ParseFormat(f)
+			if err != nil {
+				return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
+			}
 			tokens, err := tokensOf(cmd, env)
 			if err != nil {
 				return err
 			}
-			in, _ := cmd.Flags().GetDuration("expires-in")
-			if in <= 0 {
-				return fmt.Errorf("%s: --expires-in %s: want a positive duration", cmd.CommandPath(), in)
+			now := time.Now
+			if env.Now != nil {
+				now = env.Now
 			}
-			t, err := tokens.Create(cmd.Context(), apiv1.APITokenSpec{Expires: time.Now().Add(in).Truncate(time.Second)})
+			in, _ := cmd.Flags().GetDuration("expires-in")
+			t, err := tokens.Create(cmd.Context(), apiv1.APITokenSpec{Expires: now().Add(in).Truncate(time.Second)})
 			if err != nil {
 				return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
 			}
-			if f, _ := cmd.Flags().GetString("output"); f != string(output.FormatTable) {
+			if format != output.FormatTable {
 				return cmdutil.PrintOutput(cmd, t.Resource, false, "", nil)
 			}
 			_, _ = fmt.Fprintf(env.Err, "API token %s, expiring %s; it is not shown again\n", t.ID, t.Spec.Expires.Format(time.RFC3339))
@@ -141,6 +149,8 @@ func newListCmd(env cmdutil.Env) *cobra.Command {
 	}
 }
 
+// newRevokeCmd takes the token's ID as its argument: a token has no name to
+// resolve, so the ID is the only way to name it.
 func newRevokeCmd(env cmdutil.Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "revoke <id>",

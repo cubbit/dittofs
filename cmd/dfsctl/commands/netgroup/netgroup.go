@@ -36,7 +36,8 @@ func New(env cmdutil.Env) *cobra.Command {
 		Long: `Create, list, read, change and delete netgroups: named sets of host names,
 addresses and CIDRs that an export policy admits.
 
-An update replaces the netgroup's members with those --member names.
+An update replaces the netgroup's members with those --member names, and
+needs at least one.
 
 Examples:
   # Create a netgroup of two hosts and a subnet
@@ -124,7 +125,7 @@ func newUpdateCmd(env cmdutil.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update <name>",
 		Short: "Replace a netgroup's members",
-		Long:  `Replace a netgroup's members with those --member names; with no --member it is left empty.`,
+		Long:  `Replace a netgroup's members with those --member names. To empty it, delete it.`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, _, err := cmdutil.NewClient(env)
@@ -143,6 +144,8 @@ func newUpdateCmd(env cmdutil.Env) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringArray("member", nil, "A host name, address or CIDR; repeat for each")
+	// Required, so a forgotten flag never empties every policy's allowlist.
+	_ = cmd.MarkFlagRequired("member")
 	return cmd
 }
 
