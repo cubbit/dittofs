@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -50,6 +51,15 @@ func golden(t testing.TB, name string) []byte {
 		t.Fatalf("golden %s: %v", name, err)
 	}
 	return b
+}
+
+// short is b in hex where it is short, and its length and ends otherwise, so a
+// failure on a 64 KiB tag stays readable.
+func short(b []byte) string {
+	if len(b) <= 64 {
+		return fmt.Sprintf("%x", b)
+	}
+	return fmt.Sprintf("%d bytes %x...%x", len(b), b[:16], b[len(b)-16:])
 }
 
 // specified is whether some minor version defines code, as the RFCs list the
@@ -171,7 +181,7 @@ func TestTheCompoundRowDecodes(t *testing.T) {
 			}
 			want := append(append(words(uint32(h.s)), opaque(c.tag)...), words(uint32(h.n))...)
 			if !bytes.Equal(out.B, want) {
-				t.Errorf("%s: the head for status %d and %d results is %x, want %x", c.name, h.s, h.n, out.B, want)
+				t.Errorf("%s: the head for status %d and %d results is %s, want %s", c.name, h.s, h.n, short(out.B), short(want))
 			}
 		}
 	}
@@ -215,5 +225,18 @@ func TestIllegalIsAnsweredOpIllegal(t *testing.T) {
 		if row.Versions.First > minor || minor > row.Versions.Last {
 			t.Errorf("minor %d: ILLEGAL serves %d to %d, want every minor version", minor, row.Versions.First, row.Versions.Last)
 		}
+	}
+}
+
+// The tag's only bound is the record's: the generated codec's max for it is
+// wire.MaxRecord, in the arguments and in the head, so a change to the record
+// cap that left the tag's max behind would give the tag a cap of its own (RFC
+// 21 section 11.5).
+func TestTheTagIsBoundedByTheRecordAlone(t *testing.T) {
+	if got, want := (*compoundArgs)(nil).MaxWire(0), 4+wire.MaxRecord+4+4; got != want {
+		t.Errorf("COMPOUND4args' head encodes to at most %d bytes, want %d: a tag of wire.MaxRecord, the minor version and the count", got, want)
+	}
+	if got, want := (*compoundHead)(nil).MaxWire(0), 4+4+wire.MaxRecord+4; got != want {
+		t.Errorf("COMPOUND4res' head encodes to at most %d bytes, want %d: the status, a tag of wire.MaxRecord and the count", got, want)
 	}
 }

@@ -94,6 +94,14 @@ func readOp(b []byte) (uint32, int, error) {
 // version, and for a code no minor version defines, the 0 core passes for a
 // code it could not read among them, so a result never names an operation
 // that does not exist.
+//
+// decision: core writes the row's own reply after this head, so a member a
+// row's Versions refuses is answered OP_ILLEGAL followed by that row's fail
+// arm, which is ILLEGAL4res only while every NFSv4 reply's zero value, its
+// fail arm, encodes nothing beside a status that does not select an arm. Every
+// nfs_resop4 holds it today. Overturned by a row whose zero reply writes
+// bytes, which its own failure vectors show; such a row would need core to
+// skip the reply under NFS4ERR_OP_ILLEGAL.
 func encodeResult(out *resources.Buf, op uint32, s core.Status, v core.Version) error {
 	if s == nfs4ErrOpIllegal || !defined(op) {
 		op = opIllegal
