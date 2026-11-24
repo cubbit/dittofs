@@ -1065,7 +1065,7 @@ alike. A new transform gets it by registering.
 | [§2.4](#2.4%20Every%20body%20records%20what%20was%20applied) | Envelopes with an unknown version, an unregistered ID, a duplicate ID, two IDs of one stage, or IDs out of stage order: `ErrMalformed` before any decode runs. A ranged get of one body decodes without the block header. |
 | [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | With `require: [aes-gcm]`, a body without it is `ErrMalformed`; without `require`, it decodes. |
 | T12 | A body naming a material ID the store holds but its block record's census does not list: `ErrMalformed`, and the provider records no call. |
-| T13 | Start a put under key K and hold it mid-encode; retire K concurrently: removal waits for the put, then finds K in the census and refuses. Make K not current first: an encode starting after the fence uses the new key. |
+| T13 | Pin a block under key K and hold the pin; retire K concurrently: removal waits for the pin's release, then finds K in the census once the block commits and refuses. Make K not current first: a pin taken after the fence uses the new key. |
 | [§3.1](#3.1%20Interfaces) | Write parity-protected bodies, remove parity from the chain, restart: the read-side bound still admits them and they decode. |
 | [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Write blocks under two keys and two chains: the census each put returns, and the block records it reaches, list exactly the transform IDs, versions and material IDs used. Retire one key: every block naming it is relocated to a new name, fully live ones included, and the census then shows none. |
 | T10 | Build chains that differ in a transform's version, in a length-affecting setting and in current material: three different IDs. Change only a setting that is not length-affecting: the same ID. |
@@ -1446,8 +1446,8 @@ the service's current primary version of each master key the configuration
 uses when the configuration opens and, once GC runs, every GC recheck period
 ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); until GC lands, an in-place rotation is seen at the
 next open. A primary version other than the one its current records name
-starts that master-key rotation. A read that fails is retried at the next
-period, or until GC lands at the next open, and changes nothing; until a rotation runs, the records stay wrapped
+starts that master-key rotation. A read that fails changes nothing. Until GC
+lands it is retried at the next open; after that, at the next period; until a rotation runs, the records stay wrapped
 under the old version, which still unwraps them. Under a name that stays the same across
 versions, nothing would re-wrap, and destroying an old version in the service
 would silently make every record and export wrapped under it unopenable, past
@@ -1669,8 +1669,8 @@ reads back once more and requires its own sequence. Every `Recheck` pass of the
 namespace's store, and of a mutable location's store, reads its object back
 the same way and re-puts it under the lock when it lags
 ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)); this read-back lands with `Recheck`'s first caller, GC
-([RFC 9](rfc-9-gc.md)). A late landing is then repaired within one recheck period, and
-until GC lands by the object's next writer, which reads it back first; at an
+([RFC 9](rfc-9-gc.md)). Until GC lands, a late landing is repaired by the object's next
+writer, which reads it back first; after that, within one recheck period. At an
 immutable location it is only an older version, which the ordering below
 passes over. A destroy owns its puts as a rotation does: it makes the bucket's
 put and returns once it has succeeded, leaving each location's put to the next
