@@ -260,7 +260,7 @@ func TestShowCredentialByPath(t *testing.T) {
 		files = append(files, f)
 	}
 
-	path := writeConfig(t, "metadata:\n  backend: foundationdb\n  foundationdb:\n    tls:\n"+
+	path := writeConfig(t, "metadata:\n  backend: foundationdb\n  foundationdb:\n    cluster_file: /c\n    tls:\n"+
 		"      cert_file: "+files[0]+"\n"+
 		"      key_file: "+files[1]+"\n"+
 		"      ca_file: "+files[2]+"\n")
