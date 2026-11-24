@@ -1236,7 +1236,6 @@ func TestPassAHandOverRefusedForAnotherRetirementFreesNothing(t *testing.T) {
 	p := newPassFixture(t)
 	file := copyFile(4)
 	const payload = "the record whose hand-over another retirement claims"
-	seg := p.plantSealed(t, file, []byte(payload))
 
 	// The other retirement in the race, fired where the forget's drop offers
 	// the segment to the worker, which takes the claim: Retire's own claim
@@ -1245,7 +1244,10 @@ func TestPassAHandOverRefusedForAnotherRetirementFreesNothing(t *testing.T) {
 	// the unit's release and the hook — either holder refuses the hand-over
 	// the same way — so the test asserts the hook fired, not that its Claim
 	// won. One fire only — the later explicit retirement below must claim
-	// unimpeded.
+	// unimpeded. Installed before the plant, as the seam's own contract asks:
+	// ids start at 1, so while seg below names none, the id check keeps the
+	// hook inert against any Retire that fires earlier.
+	var seg core.SegmentID
 	fired := false
 	p.f.core.Retirer().SetRetireHook(func(id core.SegmentID, _ segment.Reason) {
 		if id != seg || fired {
@@ -1255,6 +1257,7 @@ func TestPassAHandOverRefusedForAnotherRetirementFreesNothing(t *testing.T) {
 		_ = p.f.set.Claim(id)
 	})
 	t.Cleanup(func() { p.f.set.Release(seg) })
+	seg = p.plantSealed(t, file, []byte(payload))
 
 	freedBefore := p.f.core.Stats().Counters.FreedBytes
 	freed, err := p.repack(context.Background(), copySegCap*8, seg)
@@ -1302,5 +1305,36 @@ func TestPassAHandOverRefusedForAnotherRetirementFreesNothing(t *testing.T) {
 	got := p.readAll(t, file, 0, int64(len(payload)))
 	if string(got) != payload {
 		t.Fatalf("the record after the refused hand-over and the holder's retirement = %q, want %q", got, payload)
+	}
+}
+
+// TestPassAHandOverAfterAnotherRetirementFinishedFreesNothing pins the other
+// leg of the hand-over race: the other retirement completes whole inside the
+// gap between the unit's claim release and the retirer's ledger claim, so the
+// hand-over answers ErrNotInSet — which the ledger itself counted as a double
+// retire — and the visit frees nothing and reports no error: the completed
+// retirement's bytes already stand on its own answer.
+func TestPassAHandOverAfterAnotherRetirementFinishedFreesNothing(t *testing.T) {
+	p := newPassFixture(t)
+	// The other retirement in the race, fired where a forget's drop offers
+	// the segment to the worker: it finishes the retirement there, ahead of
+	// Retire's own claim below. Installed before the plant, as the seam's own
+	// contract asks: ids start at 1, so while seg below names none, the id
+	// check keeps the hook inert against any Retire that fires earlier.
+	var seg core.SegmentID
+	fired := false
+	p.f.core.Retirer().SetRetireHook(func(id core.SegmentID, r segment.Reason) {
+		if id != seg || fired {
+			return
+		}
+		fired = true
+		if _, err := p.f.core.Retirer().Retire(id, r); err != nil {
+			t.Errorf("the other retirement: %v", err)
+		}
+	})
+	seg = p.plantSealed(t, copyFile(4), []byte("a record another retirement removes first"))
+	freed, err := p.repack(context.Background(), copySegCap*8, seg)
+	if err != nil || freed != 0 || !fired || !p.setGone(seg) {
+		t.Fatalf("Repack after another retirement finished: freed %d, err %v, fired %v, gone %v; want 0, nil, true, true", freed, err, fired, p.setGone(seg))
 	}
 }
