@@ -212,8 +212,6 @@ docker run -d \
   -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
   -v dittofs-metadata:/data/metadata \
   -v dittofs-blocks:/data/blocks \
-  -v dittofs-state:/data/state \
-  -v dittofs-cache:/data/cache \
   marmos91c/dittofs:latest
 
 curl http://localhost:8080/health
@@ -449,7 +447,7 @@ sudo systemctl daemon-reload
 **Docker:**
 
 ```bash
-docker volume rm dittofs-metadata dittofs-blocks dittofs-state dittofs-cache
+docker volume rm dittofs-metadata dittofs-blocks
 # or, with Compose
 docker compose down -v
 ```
