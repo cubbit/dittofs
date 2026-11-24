@@ -577,7 +577,8 @@ a definition:
 - **Fingerprint.** Gear: for each byte *b*, `fp ← (fp << 1) + G[b]`, modulo 2⁶⁴.
 - **Test.** A position is a boundary when the top *m* bits of `fp` are zero:
   `fp >> (64 − m) == 0`. *m* is *t* + 1 while the chunk is shorter than
-  `Target`, and *t* − 3 from `Target` on: normalisation level 2 around *t* − 1
+  `Target`, its length counting only the bytes before the byte under test,
+  and *t* − 3 from `Target` on: normalisation level 2 around *t* − 1
   bits. The top bits are the ones every byte of the 64-byte window reaches
   ([§3.4](#3.4%20How%20far%20back%20a%20decision%20looks)). No position below `Min` is tested; a chunk that reaches `Max` ends
   there. On input with no structure the mean, skip included, works out at about
@@ -679,7 +680,12 @@ error, and **MUST NOT** quietly fall back to a default profile.
 Invalid means: a `Target` that is not a power of two; one whose `Min` falls below
 the floor where chunking stops being worthwhile (64 KiB `Target`, so a 16 KiB
 `Min`); or one whose `Max` rises above the ceiling (16 MiB `Max`, so a 4 MiB
-`Target`). Nothing else can be invalid, because nothing else is configured.
+`Target`). The two keys of [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) are typed as 32-byte arrays, so no other
+length can be passed, and an all-zero chunk-ID key is invalid too: it is what a
+key that was never drawn looks like, and every chunk ID cut under it would have
+to be migrated once a real key arrived ([§4.1](#4.1%20A%20chunk)). A fuzz check of the
+constructor asserts that refusal. Nothing else can be invalid, because nothing
+else is configured.
 
 Falling back to a default looks like robustness and is really a data-shape bug. A
 namespace asked for 64 KiB chunks and quietly given 1 MiB ones produces content that
@@ -893,8 +899,10 @@ properties of chunks.*
 **Input**, per pass: the chunks the carver emits for each run of the offer, in
 file order and then file after file — each chunk's file, offset, length and hash,
 and whether it is all zeros; once deduplication is re-added, a dedup lookup,
-passed in as a function ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); the block target, the format's chunk-count cap `N`, and
-the age of the oldest byte of each chunk.
+passed in as a function ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); the block target, the format's chunk-count cap `N`,
+the key budget `K` ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)) with the worst-case keys each chunk adds to its
+block's commit, which the caller counts ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)), and the age of the oldest
+byte of each chunk.
 
 **Output**, per chunk, one of three dispositions, and a sequence of block plans:
 
@@ -911,7 +919,7 @@ intent and puts it ([RFC 8 §6.6](rfc-8-engine.md#6.6%20A%20block%27s%20name%20i
 ```go
 type Assembler interface {
 	// Add folds one chunk in; it returns the plans the chunk closed, if any.
-	Add(c ChunkInfo, lookup func(ChunkHash) (Chunk, bool, error)) ([]BlockPlan, Disposition, error)
+	Add(c ChunkInfo) ([]BlockPlan, Disposition)
 	// Finish closes the pass; held is true when the short last plan is held back (§5.4).
 	Finish(now time.Time) (last *BlockPlan, held bool)
 }
@@ -919,8 +927,9 @@ type Assembler interface {
 
 The lookup lands with its first caller, the dedup oracle
 ([RFC 8 §6.5](rfc-8-engine.md#6.5%20The%20dedup%20oracle)); until then no chunk is adopted, and the
-fold carries every chunk that is not all zeros. The signature above shows it as
-it will be then; the first release's `Add` takes no lookup.
+fold carries every chunk that is not all zeros. The signature above is the first
+release's: `Add` takes no lookup and cannot fail. The lookup and its error are
+added with the oracle.
 
 The assembler does no I/O but, once it exists, the lookup it is handed, keeps nothing between
 passes, and **MUST NOT** survive its pass. Once there is a lookup, a lookup error carries the chunk
@@ -931,7 +940,7 @@ passes, and **MUST NOT** survive its pass. Once there is a lookup, a lookup erro
 | # | Rule |
 | --- | --- |
 | P1 | A block holds whole chunks only. A chunk is never split to make a block come out an exact size. |
-| P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. A block falls short of the target only when P4's cap closed it or it is the last block of its pass, within [§5.4](#5.4%20The%20short%20last%20block)'s bound; no other block is short. |
+| P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. It **MAY** also end early, at a chunk boundary, when the next chunk would take its commit past the key budget `K`; a block closed early counts as a short block. A block falls short of the target only when P4's cap or the key budget closed it, or it is the last block of its pass, within [§5.4](#5.4%20The%20short%20last%20block)'s bound; no other block is short. |
 | P3 | A block holds only the chunks whose bytes it actually carries. An all-zero chunk is a zero ref, and no block carries it ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)). |
 | P4 | A block holds at most `N` chunks, where `N` is a constant of the block format version: 1,024 in this one. It bounds the header ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), which short chunks next to holes would otherwise grow without limit. |
 | P5 | The target counts **carried** bytes. Adopted chunks and zero refs contribute nothing, or a mostly-deduplicated file yields blocks of a few kilobytes. |
@@ -1040,9 +1049,9 @@ adopted later with no migration.
 | A4 | A plan holds hashes and positions, never chunk bytes. |
 | A5 | A file's chunks within a block are contiguous and in offset order. |
 | A6 | A chunk is reused without a lookup only within one block. |
-| A7 | A block short of its target was closed by the count cap or is the last of its pass. |
+| A7 | A block short of its target was closed by the count cap or the key budget, or is the last of its pass. |
 
-Each check is a pure function of a chunk stream, a lookup over a map of stored chunks and settings.
+Each check is a pure function of a chunk stream and settings; the two rows marked "with the lookup" add a lookup over a map of stored chunks, and land with it ([§5.1](#5.1%20What%20it%20takes%20and%20what%20it%20returns)).
 
 | Requirement | Check |
 | --- | --- |
@@ -1054,7 +1063,8 @@ Each check is a pure function of a chunk stream, a lookup over a map of stored c
 | [§5.4](#5.4%20The%20short%20last%20block) short last block | Finish a pass short of the target with its oldest chunk young, then old. Assert it is held, then put. |
 | [§5.5](#5.5%20A%20pending%20block%20is%20a%20plan%2C%20not%20a%20buffer) no bytes | Fold 1 GiB of chunks. Assert the assembler's memory is independent of chunk size, and the slices `emit` handed over are not retained. |
 | lookup error (with the lookup) | Make the lookup fail. Assert every chunk is carried. |
-| P2 no short block mid-pass | Fold a pass of many files whose chunks end between blocks at every possible point, with no count-cap closure; assert every block but the last reaches the target. An assembler that closes a block at a file's end puts short blocks mid-pass. |
+| P2 no short block mid-pass | Fold a pass of many files whose chunks end between blocks at every possible point, with no count-cap or key-budget closure; assert every block but the last reaches the target. An assembler that closes a block at a file's end puts short blocks mid-pass. |
+| P2 key budget | Fold a stream whose chunks' keys reach `K` before the block target. Assert the block closes at the last chunk that keeps its commit within `K`, no plan's keys exceed `K`, and the next block starts with the chunk that did not fit. |
 | block target range | Configure a block target of 512 KiB, of 128 MiB, and of exactly 1 MiB and 64 MiB; assert the first two are refused at startup and nothing is assembled, and the last two are accepted. |
 
 ## 6. Boundaries are public
@@ -1234,7 +1244,7 @@ boundaries costs more in storage than it saves in CPU.
 | K1 | chunker speed | `NextBoundary` over 64 MiB of seeded random bytes, per profile | MiB/s; zero allocations |
 | K2 | carver speed | `Cut` over the same input, hashing included, against BLAKE3 alone over the same bytes | MiB/s for each; the difference is the carver's own cost, since hashing dominates |
 | K3 | the worst case | `Cut` over all-zero and short-period input, where chunks run to `Max` ([§3.8](#3.8%20What%20happens%20on%20repetitive%20data)) | MiB/s; it must stay within a small factor of K2 |
-| K4 | edit stability | a corpus file, then the same file with bytes inserted near the start | the fraction of chunk hashes the two versions share; content-defined chunking exists to keep this near one |
+| K4 | edit stability | a corpus file, then the same file with one byte inserted near the start | the fraction of chunk hashes the two versions share; content-defined chunking exists to keep this near one |
 | K5 | size distribution | real files of several kinds — source trees, VM images, media | the chunk-size histogram against `Min`, `Target` and `Max` |
 
 K1 to K3 report bytes per second and allocations. They run on at least two CPU
@@ -1344,7 +1354,7 @@ deliver exactly the clean run.
 
 Determinism is tested across what could vary without anyone deciding to vary it:
 architecture, toolchain version and buffer size. Golden vectors run on at least
-two architectures, and the property tests run the same input with two buffer sizes and require
+two architectures, the second nightly ([§10.6](#10.6%20Recording%20results)), and the property tests run the same input with two buffer sizes and require
 identical output. A carver whose output depends on its buffer size cuts
 differently after a harmless tuning change, and that is a migration nobody
 chose ([§3.6](#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
@@ -1359,8 +1369,8 @@ same answer on any runner:
 - **allocations**: neither `NextBoundary` nor `Cut` makes any ([§2.2](#2.2%20The%20bytes%20handed%20to%20%60emit%60%20are%20borrowed));
 - **average chunk size** over 256 MiB of seeded random input, within 10% of
   `Target` at every profile;
-- **edit stability** on a seeded synthetic input with bytes inserted near its
-  start: every chunk shared except the one or two around the edit. K4 on the fixed corpus needs the corpus fetched, which no check may do
+- **edit stability** on a seeded synthetic input with one byte inserted near its
+  start, at every profile: every chunk shared except the one or two around the edit. K4 on the fixed corpus needs the corpus fetched, which no check may do
   ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction)), so it runs by hand with K5.
 
 A warm-up that crept back over the whole chunk ([§3.4](#3.4%20How%20far%20back%20a%20decision%20looks)) changes no output, so no
@@ -1396,8 +1406,8 @@ the same box differs by more across those than across commits.
 
 **Suites.** §9's chunker, carver, name and consumer rows, §5.7's assembler checks but the two that need the lookup, and §10's golden
 vectors, differential, property and fault tests run in `unit`, and an allocation count the race
-detector skews runs in an option of `unit` named for the carver, on every pull request. No suite runs yet §9.1's K1 to K5 on the
-reference box, fuzzing past the seed corpus, or the golden vectors on a second CPU architecture.
+detector skews runs in an option of `unit` named for the carver, on every pull request; its tests skip under the race detector, so that option is the only place they count. §9.1's K1 to K3 on the
+reference box, fuzzing past the seed corpus, and the golden vectors on a second CPU architecture are planned to run nightly, and K4 and K5 by hand, in a suite named for the carver that is not registered yet; until it is, no suite runs them.
 
 ## 11. Open questions
 
