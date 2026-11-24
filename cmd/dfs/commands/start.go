@@ -47,7 +47,8 @@ Examples:
 // start check over the store and journals it finds, opens the metadata
 // store's KV, builds and starts the node, and stops it on SIGINT or SIGTERM.
 // A store with no directory, FoundationDB's, is opened before the check,
-// which reads it. Each error names the step that failed.
+// which reads it, and after the check's v1 refusal, which reads only local
+// directories. Each error names the step that failed.
 func runStart(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 	// The handler is installed first, so a signal while the store opens or
@@ -108,17 +109,29 @@ func runStart(cmd *cobra.Command, _ []string) error {
 			}
 		}
 	}()
+	v1Root := v1ProbeRoot(cfg.Metadata.Badger.Path, devices)
+	// The v1 refusal reads only local directories, so it runs before a
+	// store with no directory opens: a v1 host is refused at once, before
+	// the cluster is reached or this node's clock ceiling written to it.
+	if err := node.RefuseV1(v1Root, devices); err != nil {
+		return fmt.Errorf("the start check: %w", err)
+	}
 	storeDir := cfg.Metadata.Badger.Path
 	if cfg.Metadata.Backend == "foundationdb" {
 		// A cluster has no directory to probe: the check reads the store
 		// through the KV the node then takes.
 		storeDir = ""
+		stage(base, stageOpen, ctx)
 		if store, err = openStore(ctx, base, cfg, clock); err != nil {
+			// A signal during the open stops the start as one during the
+			// check does: the command exits zero.
+			if ctx.Err() != nil && base.Err() == nil && onlyCanceled(err) {
+				slog.Info("dfs: the start ended on a termination signal", "err", err)
+				return nil
+			}
 			return err
 		}
 	}
-
-	v1Root := v1ProbeRoot(cfg.Metadata.Badger.Path, devices)
 
 	stage(base, stagePreflight, ctx)
 	err = node.Preflight(ctx, storeDir, store, v1Root, devices, clock)
@@ -196,12 +209,18 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	return answer(startErr, ended, stopErr)
 }
 
-// openStore opens the metadata store's KV and wraps it in base's kvKey hook,
-// if any, so every reader of the store, the start check included, sees the
-// wrapped KV.
+// openStore opens the metadata store's KV, answering ctx's error for an open
+// ctx ended, and wraps it in base's kvKey hook, if any, so every reader of
+// the store, the start check included, sees the wrapped KV.
 func openStore(ctx, base context.Context, cfg *bootstrap.Bootstrap, clock systemClock) (kv.KV, error) {
 	store, err := openKV(ctx, cfg, clock)
 	if err != nil {
+		// A backend may report an open its caller canceled as an error of
+		// its own, FoundationDB's as a deadline: the context's error is the
+		// answer instead, as it is for the start check's store read.
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return nil, fmt.Errorf("opening the metadata store: %w", err)
 	}
 	if wrap, ok := base.Value(kvKey{}).(func(kv.KV) kv.KV); ok {
@@ -223,10 +242,12 @@ type stageKey struct{}
 // sets none.
 type kvKey struct{}
 
-// The stages a stageKey hook is called at: before the start check and once
-// it returned, and before Start and once it returned, each "returned" stage
-// before the command reads whether a signal arrived.
+// The stages a stageKey hook is called at: before a store with no directory
+// opens, before the start check and once it returned, and before Start and
+// once it returned, each "returned" stage before the command reads whether a
+// signal arrived.
 const (
+	stageOpen              = "open"
 	stagePreflight         = "preflight"
 	stagePreflightReturned = "preflight-returned"
 	stageStart             = "start"
