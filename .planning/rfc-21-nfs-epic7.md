@@ -37,7 +37,8 @@ in-process node.
   refused `ErrAccess` (§9, point 1). It resolves the `Claimed` `Identity` E3's T3.1 builds.
 - E5, whose T5.4 and T5.5 spell and parse `owner` and `owner_group` through T7.2's schemes, and
   E6, whose T6.2 spells and parses `who` through T7.3's.
-- E16, which runs the Kerberos and NFSv4 halves of the rows this epic runs over `AUTH_SYS`.
+- E16, which runs the Kerberos and NFSv4 halves of the rows this epic runs over `AUTH_SYS`: T16.3
+  (R23, R24) and T16.8 (R25).
 
 ---
 
@@ -113,16 +114,17 @@ deferred, in one RFC pull request on `develop`.
 - **`ErrLogonFailure`'s NFS rows.** Only `SignIn` answers it, and that is built (S6b). Over NFS,
   only an RPCSEC_GSS context's creation signs in, so the rows are E13's. The service half of
   `ErrUnknownPrincipal`'s rows is this epic's: R32 and R33.
-- **The Kerberos halves over NFS.** These need RPCSEC_GSS (E13) and run end to end in E16:
+- **The Kerberos halves over NFS.** These need RPCSEC_GSS (E13) and run end to end in E16's T16.3 and T16.8:
   - "one uid, two proofs"' `sec=krb5` read;
   - the `sec=krb5` steps of "admin needs proof" and "owner strings";
-  - RFC 21 §13's "§8.1 privilege *(1 node)*", whole, over NFSv4.
+  - RFC 21 §13's "§8.1 privilege *(1 node)*", whole, over NFSv4 (T16.8, R25).
 
   This epic runs their Kerberos side against the filesystem, with a ticket `SignIn` accepts.
 - **Tier 2 rows over NFSv4, and "error is not "unknown"" on the composed node.** The latter needs a
-  store fault below a running node. Both are E16's.
-- **Other rows' NFS steps.** "no file spelling"'s `SP4_MACH_CRED` step is E8's. "expiry" and "disable
-  takes effect"'s GSS half are E13's.
+  store fault below a running node. Both are E16's T16.3 (R23, R24).
+- **Other rows' NFS steps.** "no file spelling"'s `SP4_MACH_CRED` step is E8's T8.9 (R55), and its
+  Kerberos machine-principal step E16's T16.3 (R66). "expiry" and "disable takes effect"'s GSS half
+  are E13's T13.8.
 - **Clauses of this epic's rows that other code already holds:**
   - "one uid, two proofs"' operator write giving bob alice's uid is RFC 16's conformance suite's;
   - "root"'s directory clause, an entry with `uidNumber` 0 minted with an allocated uid, is RFC 18's
@@ -397,7 +399,7 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
     which keeps its behaviour; only its comment saying claims are refused is corrected (T7.1).
   - T7.6 covers only the Tier 2 rows where the adapter's address, status or credential plumbing can
     fail on its own (R50).
-  - The Kerberos-over-NFS and NFSv4 halves are E13's and E16's (§1.2).
+  - The Kerberos-over-NFS and NFSv4 halves are E13's and E16's T16.3 and T16.8 (§1.2).
   - Prior art: RFC 18 §10's "Who stands in for what".
 - **D13. The `who` strings are identity's, in two schemes of their own.** RFC 21 §11.3 spells a
   principal with no owner string by its SID at RFC 18 §4.5's domain, which the adapter can neither
@@ -774,7 +776,7 @@ docs/internals/rfcs/
   - The run ends with the leak check, `adaptertest.CheckLeaks`.
   - No double: the node is real, and the directory is the in-memory one its suite holds (kind 2).
 - **Rules:** rule 14: the rows' Kerberos and NFSv4 halves, and "error is not "unknown"" on the node,
-  are E16's (§1.2).
+  are E16's T16.3 and T16.8 (§1.2).
 
 ## 7. Order of work
 
