@@ -19,7 +19,7 @@ Cited, not owned: RFC 1813 for the bytes and status values; [RFC 7](../docs/inte
 §3.4 (the synthesised `.` and `..`) and §3.5 (cookies); [RFC 18](../docs/internals/rfcs/rfc-18-identity.md)
 §4.3 (uid and gid).
 **Track:** B.
-**Epic 4 estimate: 12 subtasks, 26.25 man-days.**
+**Epic 4 estimate: 12 subtasks, 26.5 man-days.**
 **Depends on:** **S2**, NFS's test foundations: E2's `adaptertest/nfsharness`, knfsd's `nfs3/`
 captures cut into golden files, and S0's `vfstest.Mutations`; **E3**, the RPC layer: each call's
 `Identity` and `vfs.Call`, built at route (T3.1), the scripted client `adaptertest/nfsclient`
@@ -32,8 +32,8 @@ without which `memory.New` refuses every `AUTH_SYS` call T4.7 and T4.10 send ove
 T7.6 and E11's loopback rows wait for; **E11**, whose NLM calls rely on T4.1's admission exemption;
 **E5**, whose T5.8 reuses T4.2's `resources.Buf` reply segment, T5.5 T4.4's server-time choice and
 T4.8's access-mask table, and T5.7 T4.6's linked lists, T4.4's `ShareID` fold and T4.11's `Fit` and
-colliding-name fixture; **E6**, whose T6.2 adds RFC 19's NFSv4 functions and the import rule to
-the `translate` package T4.4 creates; **E16**, which runs these procedures' end-to-end rows, the
+colliding-name fixture, unless E5 writes `Fit` and the fixture first (§9, point 2); **E6**, whose
+T6.2 adds RFC 19's NFSv4 functions to the `translate` package T4.4 creates, with its import rule; **E16**, which runs these procedures' end-to-end rows, the
 totality test and the NFS suites.
 
 ---
@@ -49,7 +49,7 @@ call's protocol and method alone.
 **At the end of the epic:**
 
 - `internal/adapter/nfs/ops/v3` holds the twenty-one NFSv3 procedures past `NULL`, and
-  `ops/mount` MOUNT's five, each with golden vectors of its call and reply;
+  `ops/mount` MOUNT's five (`MNT`, `DUMP`, `UMNT`, `UMNTALL`, `EXPORT`), each with golden vectors of its call and reply;
 - a `READ`'s data travels as its own segment of the reply, never copied, and the XDR generator
   writes linked lists;
 - `translate` holds the neutral ↔ wire functions NFSv3 shares with NFSv4 and SMB: access masks,
@@ -67,7 +67,7 @@ call's protocol and method alone.
 `ops/v3`'s and `ops/mount`'s rows, shared `attrs.go` and `types.go`, and their error rows;
 `wire`'s NFSv3 and MOUNT constants; `(*resources.Buf).Attach` with the writer's segmented send and
 the generator's reply segment; the generator's linked lists; the `translate` package's first
-functions; `internal/vfs`'s admission exemption (A3) and its row in the service's suite; the RFC 17
+functions and the import test's rule for it; `internal/vfs`'s admission exemption (A3) and its row in the service's suite; the RFC 17
 fields this epic's handlers need (D2); NFS's MOUNT entry files in the import test's call-site list;
 the `unit/adapter-allocs` cell extended to `ops/v3`; the single-node rows of §3 on `memory.New`,
 over loopback where they name the wire.
@@ -86,8 +86,8 @@ over loopback where they name the wire.
 - `sec=krb5`'s step of §13's "§6.3 `MNT` on a Kerberos-only share" row: E13. NLM, NSM and their
   rows: E11, on T4.1's exemption.
 - The NFSv4 procedures, `fattr4` and the NFSv4 `ACCESS`, which reuse this epic's `translate`
-  functions and linked lists: E5. RFC 19's ACL translation in `translate`, and the import test's
-  rule for the package: E6's T6.2.
+  functions and linked lists: E5. RFC 19's ACL translation in `translate`: E6's T6.2. The
+  import test's rule for the package is T4.4's, since `ops/v3` imports it first.
 - End-to-end, cross-protocol and composed-node rows: the read-only marker over SMB and NFS, §8.1's
   ctime, §9.1's stability and loss verifier and the failed stable write on the composed node,
   §9.2's two-node change-info step and close-to-open steps with a kernel client, §9.3's NFSv3 hold
@@ -100,7 +100,7 @@ over loopback where they name the wire.
 - rquota's `GETQUOTA`, answered `PROG_UNAVAIL`: the same ledger, "rquota".
 - A batched `Spell` for `READDIRPLUS`: the same ledger, "A batched `Spell`".
 - `MNT` of a path below a share's root, answered `MNT3ERR_NOENT` since `Root` matches a share's path
-  exactly: no ledger row yet (§9).
+  exactly: no ledger row yet (§9, points 6 and 11).
 
 ### 1.3 Names used here
 
@@ -146,12 +146,12 @@ cited by number and title and not copied.
 | rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover |
 | rule 7, v2 ignores v1 | all | statuses, codes and sizes from RFC 1813 and RFC 21; vectors from knfsd's captures and RFC 1813, never from `develop`'s `v3` or `mount` packages |
 | rule 8, real dependencies for properties of those dependencies | all | knfsd's bytes and RFC 1813 for vectors; `memory.New` for the service's answers, WCC and verifiers; real TCP over loopback through `core` for S3's rows and the retransmitted `REMOVE` |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.4, T4.6, T4.9, T4.11, T4.12 | `decision:` and `ponytail:` markers named in §4 at their code sites; RFC 21 §6.3's `decision:` note at `MNT`'s handler and §2.3's notes at `FSINFO`'s |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.4, T4.5, T4.6, T4.8, T4.9, T4.11, T4.12 | `decision:` and `ponytail:` markers named in §4 at their code sites; RFC 21 §6.3's `decision:` note at `MNT`'s handler §2.3's notes at `FSINFO`'s, and RFC 21 §9.1's at `write.go` |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts an injected fault's own answer, only its mapping |
-| rule 11, a symbol is exported only if an interface uses it | T4.1, T4.2, T4.3, T4.4, T4.8, T4.11 | exported: `(*resources.Buf).Attach`, which RFC 20 §5.3 names; `wire`'s NFSv3 and MOUNT constants, for `ops/v3`, `ops/mount` and the scripted client; `translate`'s functions, for `ops/v3` now and E5 and SMB after; RFC 17's new fields (D2). The procedures' structs and handlers stay unexported |
+| rule 11, a symbol is exported only if an interface uses it | T4.1, T4.2, T4.3, T4.4, T4.6, T4.8, T4.9, T4.11 | exported: `(*resources.Buf).Attach`, which RFC 20 §5.3 names; `wire`'s NFSv3 and MOUNT constants, for `ops/v3`, `ops/mount` and the scripted client; `translate`'s functions, for `ops/v3` now and E5 and SMB after; RFC 17's new fields and the failed guard's error (D2), `ShareInfo.Path` with T4.6, `CreateArgs.Unchecked` with T4.9. The procedures' structs and handlers stay unexported |
 | rule 12, each subtask creates only what it declares | all | `Attach` lands with the generator field and the writer that use it; linked lists with `EXPORT`, their first struct; `translate` with its first function's caller; `attrs.go` with `GETATTR`; no `ops/` file before its procedure |
 | rule 13, translate, never decide | all | one service call per mutating procedure, held by `nfsharness`; `UNCHECKED`, server time, `EXPORT`'s paths and `READDIR`'s file numbers raised against RFC 17 (D2) rather than written as call sequences or a clock read; no handler branches on a file's type, mode or ACL to allow anything |
-| rule 14, nothing deferred is lost | all | §1.2 names the owner of each part left out; §9 names what is assumed of E3 and E5 and the deferral that has no ledger row yet |
+| rule 14, nothing deferred is lost | all | §1.2 names the owner of each part left out; §9 names what is assumed of E3 and E5 and the deferrals that have no ledger row yet (point 11) |
 
 ## 3. Requirements and invariants
 
@@ -184,7 +184,7 @@ subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R12 | `FSINFO`'s `rtmax`, `wtmax`, `rtpref` and `wtpref` are 1 MiB, `dtpref` 64 KiB and the largest file 2^63 − 1, fixed and not a setting | MUST | RFC 21 §2.3 | T4.12 |
-| R13 | A single procedure's reply is bounded by its class: a `READ` asking more than the reply record's room is answered a short read, as §2.3 answers a compound's `READ`, and a `READDIR` asking a reply past the record is clamped to it, not refused. §2.3's `decision:` that leaves a `READDIR`'s count unclamped is about a compound's room, which NFSv3 has none of | MUST | RFC 21 §2.3; RFC 20 §5.2 (the `READDIR` example) | T4.5, T4.11 |
+| R13 | A single procedure's reply is bounded by its class: a `READ` asking more than `rtmax` (1 MiB, R12) is answered a short read of at most `rtmax`, which the reply record's room holds with its header, as §2.3 answers a compound's `READ`, and a `READDIR` asking a reply past the record is clamped to it, not refused. §2.3's `decision:` that leaves a `READDIR`'s count unclamped is about a compound's room, which NFSv3 has none of | MUST | RFC 21 §2.3; RFC 20 §5.2 (the `READDIR` example) | T4.5, T4.11 |
 
 **MOUNT**
 
@@ -250,7 +250,7 @@ subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R44 | NFSv3's table answers every row of §11.5's NFSv3 column: `NFS3ERR_NOENT`, `NFS3ERR_EXIST`, `NFS3ERR_NOTEMPTY`, `NFS3ERR_NOTDIR`, `NFS3ERR_ISDIR`, `NFS3ERR_ACCES` (the read-only marker's refusals, `ErrLocked`, `ErrShareViolation` and `ErrDeletePending` included), `NFS3ERR_STALE` (a released file's handle, a handle of another share, a share being removed), `NFS3ERR_XDEV` (`CrossShare`, `CrossProject`), `NFS3ERR_JUKEBOX` (`ErrDelay` of every cause, `ErrGrace`), `NFS3ERR_NOSPC`, `NFS3ERR_DQUOT`, `NFS3ERR_IO` (`ErrIncomplete`, `ErrInconsistent`), `NFS3ERR_INVAL`, `NFS3ERR_ROFS`, `NFS3ERR_NAMETOOLONG`, `NFS3ERR_PERM` | MUST | RFC 21 §11.5 | T4.3 |
+| R44 | NFSv3's table answers every row of §11.5's NFSv3 column: `NFS3ERR_NOENT`, `NFS3ERR_EXIST`, `NFS3ERR_NOTEMPTY`, `NFS3ERR_NOTDIR`, `NFS3ERR_ISDIR`, `NFS3ERR_ACCES` (the read-only marker's refusals, `ErrLocked`, `ErrShareViolation` and `ErrDeletePending` included), `NFS3ERR_STALE` (a released file's handle, a handle of another share, a share being removed), `NFS3ERR_XDEV` (`CrossShare`, `CrossProject`), `NFS3ERR_JUKEBOX` (`ErrDelay` of every cause, `ErrGrace`), `NFS3ERR_NOSPC`, `NFS3ERR_DQUOT`, `NFS3ERR_IO` (`ErrIncomplete`, `ErrInconsistent`, and `ErrIO` on a `COMMIT` or a stable `WRITE`), `NFS3ERR_INVAL`, `NFS3ERR_ROFS`, `NFS3ERR_NAMETOOLONG`, `NFS3ERR_PERM` | MUST | RFC 21 §11.5 | T4.3, T4.5 |
 | R45 | `ErrWrongSecurity` rejects the RPC `AUTH_TOOWEAK`: the row is E3's (T3.4), and this epic shows it on the handle `MNT` returned | MUST | RFC 21 §11.5, §10 | T4.7 |
 | R46 | NFSv3's fault status is `NFS3ERR_SERVERFAULT`; the rows "never met" (`ErrState`'s `AdapterVersion`, `NoRecall`, `CreateInUse`) and every error with no NFSv3 cell answer it. `ErrLogonFailure`'s row is E3's T3.4 | MUST | RFC 21 §11.5 (the fault status) | T4.3 |
 | R47 | One golden file per table asserts every row of §11.5 for NFSv3, and MOUNT's, NFS → neutral → NFS | test row | RFC 21 §11.6 | T4.3, T4.6 |
@@ -293,9 +293,9 @@ the service answers (RFC 17 §5.10).
   consumes them (§9, pending). Changing the tag after E5's rows use it costs both epics' structs.
   Prior art: rpcgen's linked lists as pointer chains (from memory). A `decision:` marker at the
   tag.
-- **D2. Four fields RFC 17 gains, so each procedure stays one call.** Each is raised against RFC 17
-  rather than written as a sequence in a handler (rule 13), proposed as RFC 17 §3.1 text by the
-  document's pull request and pending (§9):
+- **D2. Four fields and an error RFC 17 gains, so each procedure stays one call.** Each is raised
+  against RFC 17 rather than written as a sequence in a handler (rule 13), proposed as RFC 17 §3.1
+  text in the amendment pull request §9, point 10 names, and pending (§9, point 1):
   - `CreateArgs.Unchecked`: RFC 1813's `UNCHECKED` create of a name holding a regular file succeeds
     with that file. `Create` answers it as its result, applying only `Attrs`' size, and still
     `ErrExist` for any other type. Prior art: knfsd's `do_nfsd_create` (from memory).
@@ -306,6 +306,8 @@ the service answers (RFC 17 §5.10).
     SMB's name alone. `ex_groups` is empty, since client rules are admission's.
   - A file number on a listed entry (`DirEntry.Number`), so `READDIR`'s `entry3.fileid` comes from
     `Entries`, as R25 has it, without asking `EntriesPlus` for every child's record.
+  - The failed ctime guard's error, exported (`vfs.ErrGuardFailed`, wrapping `ErrInvalid` so every
+    other caller is unchanged), for D4.
   A `decision:` marker at each handler that uses one. E6's ACL amendment adds `Umask` and `ACL` to
   `CreateArgs` and `ACL` and `ModeMask` to `AttrChange` (E6's D1); the fields are independent of
   these, and whichever pull request lands second adds its own beside the other's. E5's
@@ -315,19 +317,22 @@ the service answers (RFC 17 §5.10).
   maps them: `ErrNotFound` `MNT3ERR_NOENT`, `ErrAccess` `MNT3ERR_ACCES`, `ErrNotDir`
   `MNT3ERR_NOTDIR`, `ErrInvalid` `MNT3ERR_INVAL`, `ErrNameTooLong` `MNT3ERR_NAMETOOLONG`, `ErrIO`
   and `ErrInconsistent` `MNT3ERR_IO`; `ErrDelay`, which MOUNT has no retry status for, is answered
-  no reply, so the client's RPC layer retransmits until the quiesce ends. The pull request proposes
-  the column as RFC 21 §11.5 text (§9). Prior art: none found for a mount daemon's retry; Linux's
+  no reply, so the client's RPC layer retransmits until the quiesce ends. The column is proposed as
+  RFC 21 §11.5 text (§9, points 3 and 10). Prior art: none found for a mount daemon's retry; Linux's
   `mount.nfs` retransmits a MOUNT call that times out (from memory). A `decision:` marker at the
   table: a mount waits out its RPC timeout per retry during a quiesce; overturned if a client is
   seen giving up on the silence before the quiesce ends.
-- **D4. `SETATTR`'s failed guard is `NFS3ERR_NOT_SYNC`.** The service answers a ctime guard that
-  no longer holds `ErrInvalid` (`internal/vfs/attrs.go`'s `decision:` names the NFSv3 adapter as
-  the one caller that maps it), and an `ErrInvalid` row for `SETATTR` would answer an invalid
-  unguarded change `NOT_SYNC` too. So `SETATTR`'s handler returns its own error value for an
-  `ErrInvalid` on a guarded call, which a row naming `SETATTR` maps to `NFS3ERR_NOT_SYNC`: a
-  translation of the error by the request's own field, not a decision. The pull request proposes
-  the row as RFC 21 §11.5 text. Prior art: RFC 1813 §3.3.2's `NFS3ERR_NOT_SYNC` for exactly this
-  case. A `decision:` marker at the handler, overturned with the service's own guard sentinel.
+- **D4. `SETATTR`'s failed guard is `NFS3ERR_NOT_SYNC`, told apart by its own error.** The
+  service answers a ctime guard that no longer holds with an unexported error wrapping `ErrInvalid`,
+  and, after the guard passed, a size change on a file that is not regular or a negative size with
+  plain `ErrInvalid` (`internal/vfs/attrs.go` on `feat/storage-v2`), the second cause its own
+  `decision:` names as overturning it. Mapping every `ErrInvalid` on a guarded call to `NOT_SYNC`
+  would send a client re-reading ctime to resend a request that can never succeed. So RFC 17
+  exports the guard's error (D2), `vfs.ErrGuardFailed`, and NFSv3's table maps it to
+  `NFS3ERR_NOT_SYNC` in a row ahead of `ErrInvalid`'s, which stays `NFS3ERR_INVAL`. The row is
+  proposed as RFC 21 §11.5 text (§9, point 3). Prior art: RFC 1813 §3.3.2's `NFS3ERR_NOT_SYNC` for
+  exactly this case. The service's `decision:` at `errGuard` is withdrawn with the export; no new
+  marker, the row is the record.
 - **D5. `post_op_attr` from what the call returned.** A reply's attributes are filled from the
   `File` or `WCC` its one call answered; a field that would cost another call is absent, as RFC 1813
   allows for every `post_op_attr`: `LOOKUP`'s directory attributes, `ACCESS`'s, `READ`'s, `COMMIT`'s
@@ -350,8 +355,8 @@ the service answers (RFC 17 §5.10).
   `Fit(entries, budget, size)` answers how many fit, never ending inside a run of entries sharing
   a cursor; 0 for a first chain that does not fit is `NFS3ERR_TOOSMALL`. The `.` and `..` entries
   come first on a listing from cookie 0, from the `GetAttr` of the directory and a `Lookup` of
-  `..`, both read-only, and a resume from cookie 1 starts at `..`; the pull request proposes
-  Appendix D's `READDIR` cell naming them. Prior art: knfsd's `nfsd_readdir` encodes until the
+  `..`, both read-only, and a resume from cookie 1 starts at `..`; Appendix D's `READDIR` cell
+  naming them is proposed with point 3's texts (§9). Prior art: knfsd's `nfsd_readdir` encodes until the
   buffer fills and resumes from the last cookie sent (from memory). A `ponytail:` marker: a
   listing of short names may ask for more entries than it sends; size the ask from the names seen
   when a profile shows the extra reads.
@@ -377,11 +382,12 @@ the service answers (RFC 17 §5.10).
   `case_insensitive` and `case_preserving` are the share's, which only `StatFS` reports, as Appendix
   B's `Capabilities` row has it for NFSv4, and a stale handle is then answered `NFS3ERR_STALE` by
   admission. `rtmult` and `wtmult` are 4 KiB, `linkmax` 2^32 − 1, `no_trunc` and `chown_restricted`
-  true. The pull request proposes Appendix D's cells as text (§9). Prior art: knfsd fills `FSINFO`
+  true. Appendix D's cells are proposed as text with point 3's (§9). Prior art: knfsd fills `FSINFO`
   from the exported filesystem's superblock (from memory).
 - **D10. `FSSTAT` without a share-wide quota.** `FilesystemInfo` carries usage and quota, not the
   node's capacity. With a share-wide or project quota, `tbytes` and `tfiles` are its limits and
-  `fbytes`, `abytes` and the file counts what is left of them; without one, the totals are
+  `fbytes`, `abytes` and the file counts what is left of them, `max(0, limit − usage)`, since a
+  limit lowered below usage would otherwise wrap and show a full share as nearly empty; without one, the totals are
   2^63 − 1 and the free counts the totals less usage, so `df` shows the share's usage against no
   limit. A `ponytail:` marker at `fsstat.go`: report the journal's and the store's room when RFC 17's
   `FilesystemInfo` carries it (§9). Prior art: none found for a share with no capacity of its own.
@@ -420,12 +426,15 @@ internal/adapter/translate/
   fit.go                       T4.11 Fit (D7)
 internal/vfs/
   admission.go                 T4.1  the minimums lowered by Call.Protocol and method (A3)
-  attrs.go                     T4.4  the server-time choice (D2)
+  attrs.go                     T4.4  the server-time choice and ErrGuardFailed (D2, D4)
   names.go                     T4.9  CreateArgs.Unchecked (D2); T4.11 DirEntry.Number
   shares.go                    T4.6  ShareInfo.Path (D2)
 pkg/vfs/
   types.go                     T4.4, T4.6, T4.9, T4.11  the D2 fields
+  errors.go                    T4.4  ErrGuardFailed (D2, D4)
   vfstest/suite/               T4.1  the §4.9 row; T4.4, T4.6, T4.9, T4.11 the D2 fields' rows
+  vfstest/memory/collide.go    T4.11 a service whose share has a fixed digest key, and its
+                                     colliding pair, for ops/v3's and ops/v4's tests
 internal/adapter/nfs/wire/
   const.go                     T4.3  nfsstat3, ACCESS3 bits, ftype3, stable_how; T4.6 mountstat3
   codec.go                     T4.2  the reply segment; T4.6 the list runtime
@@ -433,7 +442,7 @@ internal/adapter/nfs/wire/
   codec_fuzz_test.go           T4.6  the runtime against its second decoder, lists included
   testdata/golden/             each  rfc-nfs3-*, knfsd-nfs3-*, rfc-mount-* call and reply files
 internal/adapter/nfs/ops/v3/
-  errors.go                    T4.3  §11.5's NFSv3 column, NOT_SYNC (D4)
+  errors.go                    T4.3  §11.5's NFSv3 column; T4.4 NOT_SYNC (D4)
   columns_test.go              T4.3  each row's Role and Cacheable (D12, D13), extended by each subtask
   attrs.go                     T4.4  fattr3, post_op_attr, wcc_data, sattr3, the fold (D6)
   types.go                     T4.4  nfs_fh3, diropargs3 and the bodies procedures share
@@ -448,10 +457,13 @@ internal/adapter/nfs/ops/v3/
 internal/adapter/nfs/ops/mount/
   errors.go                    T4.6  D3's column
   mnt.go export.go             T4.6  the entry files
-  umnt.go dump.go              T4.6
+  umnt.go umntall.go dump.go   T4.6
 internal/adapter/adaptertest/
-  imports_test.go              T4.6  mnt.go and export.go as NFS's entry files for Root and ListShares
-  collide.go                   T4.11 the fixed digest key and its colliding pair, for ops/v3's and ops/v4's tests
+  imports_test.go              T4.4  translate importable by every adapter, itself importing only
+                                     the standard library and pkg/vfs; T4.6 mnt.go and export.go as
+                                     NFS's entry files for Root and ListShares
+internal/adapter/core/testdata/surface/
+  resources.golden             T4.2  (*Buf).Attach in pkg/resources' frozen surface
 internal/adapter/nfs/
   nfs_test.go                  T4.7, T4.10  S3's rows, §13's rows and the retransmitted REMOVE over loopback
 test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
@@ -476,10 +488,10 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
     quiesced share answered `ErrDelay`.
   - No `vfs.Call` field, flag or option asks for the exemption.
 - **Tests:** in the service's suite, on `memory.New`, the §4.9 row (R4) step by step, each step
-  failing with the exemption removed or widened: an NLM lock at `None` admitted (catches a
-  minimum dropped rather than lowered, R1), an NFSv3 `GetAttr` with `Root`'s handle admitted
-  (catches an exemption by protocol alone, R2), an NFSv4 `Root` admitted (catches an exemption by
-  method alone, R3); the client-rule and quiesce steps (catch an exemption widened past the
+  failing with the exemption removed or widened: an NLM lock at `None` still refused (catches a
+  minimum dropped rather than lowered, R1), an NFSv3 `GetAttr` at `Claimed` with `Root`'s handle
+  still refused (catches an exemption by protocol alone, R2), an NFSv4 `Root` at `Claimed` still
+  refused (catches an exemption by method alone, R3); the client-rule and quiesce steps (catch an exemption widened past the
   minimums, R2). No test double.
 - **Rules:** rule 9: a `decision:` marker at the check naming RFC 21 §6.3's reason and ceiling; rule
   13: the service decides, no adapter asks.
@@ -494,8 +506,10 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   current segment and lending `seg` as the next, retained until the reply is sent; `core`'s writer
   sending a reply's segments in its one `net.Buffers` write; the generator's `*resources.Buf`
   reply field, whose encoder calls `Attach` and appends the XDR padding after it, and whose decoder,
-  for the scripted client and `FuzzCodec`, reads the opaque as a sub-slice. Consumed by T4.5's
-  `READ` and E5's NFSv4 `READ` (T5.8).
+  for the scripted client and `FuzzCodec`, reads the opaque as a sub-slice; `Attach` added to
+  `internal/adapter/core/testdata/surface/resources.golden`, the frozen surface `core`'s
+  `exports_test.go` holds `pkg/resources` to. Consumed by T4.5's `READ` and E5's NFSv4 `READ`
+  (T5.8).
 - **Acceptance criteria:**
   - A reply holding a 1 MiB segment is sent whole, its bytes equal to the same reply encoded with
     the data appended, in one write call.
@@ -516,7 +530,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 - **Deliverables:** `wire/const.go`'s `nfsstat3` values; `ops/v3/errors.go`'s rows for §11.5's
   NFSv3 column, added to the table E3's `protocol.ErrorTable` builds with `core`'s refusals,
   `ErrWrongSecurity`'s `AUTH_TOOWEAK`, `ErrDraining` and `ErrMoved` already in it (T3.4):
-  `ErrQuota` by scope, D4's `NOT_SYNC` row naming `SETATTR`, and, once their RFC 21 text is agreed
+  `ErrQuota` by scope, and, once their RFC 21 text is agreed
   (§9, point 3), `ErrReplyTooBig`'s and `ErrUnavailable`'s rows; the golden file of every row; `columns_test.go`, holding each row's `Role` and `Cacheable` against
   D12 and D13, which each later subtask extends with its rows. Consumed by every later subtask's
   handler and E16's totality test.
@@ -535,7 +549,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 
 ### T4.4 `fattr3`, `sattr3`, `wcc_data`; `GETATTR` and `SETATTR`
 
-**Subtask T4.4 estimate: 3 man-days.**
+**Subtask T4.4 estimate: 3.25 man-days.**
 
 - **Track:** B. **Depends on:** T4.3.
 - **Covers:** R6, R10, R11, R18, R19, R27, R28, R29, R30, R31, R33, R34, R48.
@@ -544,10 +558,14 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   `wcc_data` from a `WCC`, `sattr3` to `AttrChange` with its uid and gid through `Find`, unknown as
   `NFS3ERR_INVAL` (R28), and `SET_TO_SERVER_TIME` through D2's server-time choice (pending);
   `types.go`'s shared bodies; `getattr.go` (context role) and `setattr.go`, the guard as
-  `AttrChange.Guard` and D4's error; the server-time choice in `pkg/vfs` and `internal/vfs` with its
-  suite row; golden vectors from knfsd's `nfs3/` captures; the §11.6 attributes golden file.
+  `AttrChange.Guard`, and D4's `NOT_SYNC` row in `errors.go`; the server-time choice and
+  `vfs.ErrGuardFailed` in `pkg/vfs` and `internal/vfs`, each with its suite row; the import test's
+  rule for `internal/adapter/translate` in `adaptertest/imports_test.go`, which otherwise refuses
+  `ops/v3`'s import as "an adapter never imports another adapter": every adapter package may import
+  it, and it imports only the standard library and `pkg/vfs`, as RFC 20 §2.5 places it below the
+  adapters with neutral types only (RFC 20 §7.1's text for it is proposed with §9, point 10's); golden vectors from knfsd's `nfs3/` captures; the §11.6 attributes golden file.
   Consumed by every later procedure; `translate`'s package and functions by E5's T5.5 (the
-  server-time choice) and T5.7 (the fold), and by E6's T6.2, which adds its files to the package.
+  server-time choice) and T5.7 (the fold), and by E6's T6.2, which adds its files to the package and its own imports to the rule.
 - **Acceptance criteria:**
   - A directory with three subdirectories reports `nlink` 5.
   - `fileid` is `Number`; no byte of the handle's `FileID` appears in any `fattr3`.
@@ -560,7 +578,10 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   R19, R34, a handle rewritten, R18); `SETATTR` of each `sattr3` arm, both time arms, a guard that
   holds and one that does not, against `wcc_data` with `before` exactly as the service returned it
   (catches a time set from the handler's clock or a client time altered, R29, `NOT_SYNC` lost, R30,
-  a `before` invented, R33); an unknown uid (R28); `translate`'s time clamp at the range's edges and
+  a `before` invented, R33); a guarded size change of a symlink whose guard holds, answered
+  `NFS3ERR_INVAL`, not `NOT_SYNC` (catches every `ErrInvalid` on a guarded call mapped to the
+  guard, D4); the import test with `ops/v3` importing `translate` and `translate` importing
+  `pkg/vfs` (catches the rule missing or widened past the standard library and `pkg/vfs`); an unknown uid (R28); `translate`'s time clamp at the range's edges and
   a pure `File` → `fattr3` case whose `Subdirs` is negative, reporting 2 (R27); a property test that
   every generated `sattr3` maps to an `AttrChange` or a named refusal (catches a default, R31);
   `testing.AllocsPerRun` for `GETATTR` (R10). `vfstest.Faults` (kind 3) for each mapped error.
@@ -571,9 +592,9 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 **Subtask T4.5 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** T4.2, T4.4.
-- **Covers:** R6, R7, R10, R13, R31, R33, R37, R38, R39, R41, R42, R48.
-- **Deliverables:** `read.go` on `vfs.Anonymous`, its `Bound` hook clamping the count to the
-  record's room, its data a `resources.Buf` attached as one segment (T4.2), and the short-read rule
+- **Covers:** R6, R7, R10, R13, R31, R33, R37, R38, R39, R41, R42, R44, R48.
+- **Deliverables:** `read.go` on `vfs.Anonymous`, its `Bound` hook clamping the count to `rtmax`,
+  1 MiB, which the record's room holds with the reply's header (R13), its data a `resources.Buf` attached as one segment (T4.2), and the short-read rule
   of R42 as a pure function of `Read`'s answer; `write.go` with stability mapped per R37 and `WCC`
   per R33; `commit.go` passing `Commit`'s verifier, its row a flush; the four 0-allocation gates,
   and `ops/v3` added to `unit/adapter-allocs`; golden vectors from knfsd's `nfs3/` captures.
@@ -591,7 +612,9 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   answering `DelayCommit`, is RFC 17's V25 test, and the composed-node run E16's); an unstable
   `WRITE`, `memory.New`'s `Content.Lose` of the file, and a `COMMIT` answered success with a
   verifier other than the `WRITE`'s (catches a verifier cached or a loss answered as an error,
-  R38); the short-read function over each error with and without bytes read (R42); the reply's
+  R38); the short-read function over each error with and without bytes read (R42); a `COMMIT` and a
+  `FILE_SYNC` `WRITE` failed `vfs.ErrIO` by `vfstest.Faults` answered `NFS3ERR_IO` (catches it
+  mapped to the fault, R44); the reply's
   segment count from the encoded `resources.Buf` (catches a copy, R7); `testing.AllocsPerRun` for
   both (R10).
 - **Rules:** rule 4: the gates and the cell; rule 9: RFC 21 §9.1's notes at `write.go`.
@@ -606,7 +629,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   the hand-written second decoder's list case (D1); `wire/const.go`'s `mountstat3` values;
   `ops/mount`'s `mnt.go` (`Root` with the path, the flavours to their RPC numbers, `AUTH_NONE` 0,
   `AUTH_SYS` 1 and the Kerberos pseudo-flavours 390003 to 390005), `export.go` (`ListShares`, D2's
-  paths), `umnt.go`, `dump.go` and `errors.go` (D3) with its golden file; `ShareInfo.Path` in
+  paths), `umnt.go`, `umntall.go`, `dump.go` and `errors.go` (D3) with its golden file; `ShareInfo.Path` in
   `pkg/vfs` and `internal/vfs` with its suite row (D2, pending); `mnt.go` and `export.go` added to
   the import test's entry files for `Root` and `ListShares`; golden vectors from knfsd's `nfs3/`
   MOUNT captures and RFC 1813 for `DUMP` and `UMNTALL`. Consumed by T4.7, T4.11's listings, E5's
@@ -701,7 +724,9 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   its reply file (catches an arm decoded to the wrong mode, R6, a verifier stored in a time, R43,
   a returned handle rewritten, R18); `MKNOD` of a regular file (catches a default arm answered
   success, R31); a name RFC 7 refuses (R20); R35's 64 creates sent in parallel through
-  `nfsharness` (catches a directory `before`, R33, R35).
+  `nfsharness`, each request's `vfs.Call` carrying `Protocol` NFSv3 as E3's route sets it (T3.1),
+  since the service leaves a directory's `before` out only for that protocol (catches a directory
+  `before`, R33, R35).
 - **Rules:** rule 13: `UNCHECKED` is one call (D2).
 
 ### T4.10 `REMOVE`, `RMDIR`, `RENAME` and `LINK`
@@ -735,10 +760,12 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   `readdirplus.go`: the directory's `GetAttr` for its attributes and plan D16's verifier through
   D6's fold, `ReadDir` with `EntryHandle` and `EntryFile` for `READDIRPLUS`, `.` and `..` on a
   listing from cookie 0 or 1 (D7), `entry3.fileid` from D2's entry number; `DirEntry.Number` in
-  `pkg/vfs` and `internal/vfs` with its suite row (D2, pending); R26's fixture, a share created
-  through `memory.New`'s control plane with a fixed digest key and two names found once to collide
-  under it, kept as test constants in `adaptertest/collide.go` beside the search that found them,
-  so E5's `READDIR` uses the same pair (§9, pending); golden vectors
+  `pkg/vfs` and `internal/vfs` with its suite row (D2, pending); R26's fixture in
+  `pkg/vfs/vfstest/memory/collide.go`, a constructor like `memory.New` whose share is created
+  through the store with a fixed digest key, and two names found once to collide under it, kept as
+  test constants beside the search that found them; it lives there because `memory` already builds
+  the store and an adapter's tests may not import `pkg/metadata/entity`, and E5's `READDIR` uses
+  the same pair (§9, point 4); golden vectors
   from knfsd's `nfs3/` captures and RFC 1813. Consumed by E5's NFSv4 `READDIR` (T5.7), which calls
   `Fit` and uses the fixture, and by E16's suites.
 - **Acceptance criteria:**
@@ -748,7 +775,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   - A count smaller than the first chain is `NFS3ERR_TOOSMALL`.
 - **Tests:** `Fit` as a pure function over pages whose entries share a cursor, at every budget
   from one byte to the whole page (catches a cut inside a chain, R23, R11); at `nfsharness` on
-  `memory.New`, the listing above (R19, R21, R22, R24, R25) and a count of 4 GiB clamped (R13); R26
+  `memory.New`, the listing above (R19, R21, R22, R24, R25) and a count of 2^32 − 1 clamped (R13); R26
   on the fixed-key share (catches a page ending between the colliding pair).
 - **Rules:** rule 9: D7's marker.
 
@@ -768,7 +795,9 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   - `PATHCONF` answers a case-insensitive share as such.
   - `FSSTAT` on a share with a share-wide quota answers its limits.
 - **Tests:** at `nfsharness` on `memory.New`, each against its reply file (catches a size from the
-  wrong constant, R12, the case rule inverted, or a quota's limit dropped). No test double.
+  wrong constant, R12, the case rule inverted, or a quota's limit dropped); `FSSTAT` on a share
+  whose usage is above its lowered limit, answering 0 free (catches the subtraction wrapping, D10).
+  No test double.
 - **Rules:** rule 9: RFC 21 §2.3's `ponytail:` notes at `fsinfo.go`, D10's at `fsstat.go`.
 
 ## 7. Order of work
@@ -810,7 +839,7 @@ sends to list, create and remove.
 | --- | --- | --- | --- | --- |
 | 1 | T4.1 | 1 | — | a service change, reviewed by the service's owners |
 | 2 | T4.2 | 2 | — | `Attach` and the writer's segmented send, reviewed by `core`'s and `pkg/resources`' owners |
-| 3 | T4.3, T4.4, T4.5 | 7.5 | PR 2, E3's T3.4 | NFSv3's error table, attributes and data path, with the allocation gates |
+| 3 | T4.3, T4.4, T4.5 | 7.75 | PR 2, E3's T3.4 | NFSv3's error table, attributes and data path, with the allocation gates |
 | 4 | T4.6, T4.7 | 4.75 | PR 1, PR 3, E3's T3.2, E7's T7.1 | linked lists, MOUNT and the first mount over loopback: S3 |
 | 5 | T4.8, T4.9, T4.10 | 6.75 | PR 4, E3's T3.3 | the namespace procedures that change names, with their loopback row |
 | 6 | T4.11, T4.12 | 4.25 | PR 5 | listings and the filesystem's limits |
@@ -820,11 +849,11 @@ PR 3 beside PR 1.
 
 ## 9. Open points
 
-1. **Pending the user's answer: RFC 17 gains four fields (D2).** `CreateArgs.Unchecked` for
-   NFSv3's `UNCHECKED` create, a server-time choice for `Attrs`' access and modify times,
-   `ShareInfo.Path` for `EXPORT`'s paths, and a file number on a listed entry for `READDIR`; the
-   document's pull request proposes them as RFC 17 §3.1 text, and T4.4, T4.6, T4.9 and T4.11 build
-   them. The alternatives are a `Lookup` after a refused `Create` and a clock read in the handler,
+1. **Pending the user's answer: RFC 17 gains four fields and an error (D2).** `CreateArgs.Unchecked`
+   for NFSv3's `UNCHECKED` create, a server-time choice for `Attrs`' access and modify times,
+   `ShareInfo.Path` for `EXPORT`'s paths, a file number on a listed entry for `READDIR`, and the
+   failed guard's error `vfs.ErrGuardFailed` (D4); they are proposed as RFC 17 §3.1 text in the pull
+   request point 10 names, and T4.4, T4.6, T4.9 and T4.11 build them. The alternatives are a `Lookup` after a refused `Create` and a clock read in the handler,
    which rule 13 forbids, an `EXPORT` listing share names as paths, which a client cannot mount,
    and `READDIR` asking `EntriesPlus`, against R25, under a `ponytail:`.
 2. **Two departures from the RFC 21 implementation plan's layout, settled with E5 and E6.** The
@@ -833,14 +862,16 @@ PR 3 beside PR 1.
    builds no kind of its own. And this epic creates `internal/adapter/translate` (T4.4) with its
    time, type, mode and fold functions, the access-mask table (T4.8) and `Fit` (T4.11), as RFC 20
    §4.9 places them, where the layout has the package created by E6 or the RFC 22 implementation
-   plan's descriptor epic; E6's T6.2 adds RFC 19's NFSv4 functions to it and owns the import test's
-   rule for the package. The layout (§4.1) is edited only if the user asks. E5 reaches its uses of
+   plan's descriptor epic; E6's T6.2 adds RFC 19's NFSv4 functions to it; T4.4 adds the import test's
+   rule for the package, since `ops/v3` imports it first, and T6.2 only its own imports. The layout (§4.1) is edited only if the user asks. E5 reaches its uses of
    T4.8 and T4.11 earlier on its track than this track reaches them; if E5 gets there first, its
    subtask writes the function in `translate` as D8 or D7 specifies and T4.8 or T4.11 calls it
-   rather than writing it, about 0.5 or 0.75 man-days out of this epic's figure (E5's §9, point 3).
-3. **Pending the user's answer: the RFC 21 texts this epic's pull request proposes (D3, D4, D7, D9,
-   and two rows found with E3 and E7).** §11.5's MOUNT column, its `NFS3ERR_NOT_SYNC` row for a
-   failed guard, and Appendix D's cells for `FSINFO` and `PATHCONF` naming `StatFS` and for
+   rather than writing it, about 0.5 or 0.75 man-days out of this epic's figure (E5's §9, point 3);
+   the same holds for R26's fixture, which E5's `READDIR` may write first in `vfstest/memory` as
+   T4.11 specifies it.
+3. **Pending the user's answer: the RFC 21 texts this epic proposes (D3, D4, D7, D9, and two rows
+   found with E3 and E7), in the pull request point 10 names.** §11.5's MOUNT column, its
+   `NFS3ERR_NOT_SYNC` row for `vfs.ErrGuardFailed`, and Appendix D's cells for `FSINFO` and `PATHCONF` naming `StatFS` and for
    `READDIR` naming the `GetAttr` and the `Lookup` of `..`; until agreed the epic follows D3, D4,
    D7 and D9 as written here. Two more §11.5 rows:
    - `ErrReplyTooBig` has an NFSv4 row only, but `core` also returns it for a single NFSv3 reply
@@ -872,24 +903,34 @@ PR 3 beside PR 1.
    avoid by landing T7.1 at S2.
 6. **`MNT` of a path below a share's root.** `Root` matches a share's path exactly, so `MNT` of
    `/export/sub` is `MNT3ERR_NOENT`, where knfsd mounts a subdirectory of an export (from memory).
-   It needs a row in the RFC 21 implementation plan's §6.6 deferral ledger, through a pull request
-   against the plan, owner unowned, trigger a deployment mounting below a share's root.
+   It needs a row in the RFC 21 implementation plan's §6.6 deferral ledger, owner unowned, trigger
+   a deployment mounting below a share's root (point 11).
 7. **MOUNT versions 1 and 2.** RFC 21 §2.1 serves MOUNT v3 alone; `showmount -e` sends `EXPORT`
    over MOUNT version 1 by default (from memory, not checked), whose `exports` encoding is v3's.
    If E16's rows show `showmount -e` failing, serving `EXPORT` on versions 1 and 2 is an RFC 21
-   §2.1 amendment, not a change here.
+   §2.1 amendment, not a change here. It needs a ledger row too, owner RFC 21, trigger
+   `showmount -e` failing against a node (point 11).
 8. **`FSSTAT`'s capacity.** RFC 17's `FilesystemInfo` carries usage and quotas, not the node's
    room, so D10 reports a share with no quota as unlimited; an RFC 17 field for the journal's and
    the store's room is the upgrade, raised when a deployment needs `df` to show it.
 9. **`Spell` on the composed node.** D14's `uid` and `gid` need `Spell` to answer, which it does
    for `SchemeUID` and `SchemeGID` now that S6a holds on `feat/storage-v2` (E7's §1.1); what an
    `AUTH_SYS` `GETATTR` on the composed node waits for is E7's T7.1, the caller's admission (§1.2).
-10. **Which pull request carries which RFC amendment.** This document's pull request carries D2's
-    RFC 17 §3.1 fields (`CreateArgs.Unchecked`, the server-time choice on `Attrs`,
-    `ShareInfo.Path`, `DirEntry.Number`) and point 3's RFC 21 §11.5 and Appendix D texts. The
-    other epics' amendments touch other lines: E5's T5.2 adds `FilesystemInfo.MountedOn` and
+10. **Pending the user's answer: which pull request carries this epic's RFC amendments.** This
+    document's pull request changes only this file, so D2's RFC 17 §3.1 additions
+    (`CreateArgs.Unchecked`, the server-time choice on `Attrs`, `ShareInfo.Path`,
+    `DirEntry.Number`, `vfs.ErrGuardFailed`), point 3's RFC 21 §11.5 and Appendix D texts and RFC
+    20 §7.1's line for `translate` (T4.4) are not yet written. Recommended: one RFC pull request
+    against `develop`, cherry-picked onto `feat/storage-v2` with the other RFC changes, merged
+    before T4.4 starts, since T4.4, T4.6, T4.9 and T4.11 build against those texts; the
+    alternative adds them to this pull request. The other epics' amendments touch other lines: E5's T5.2 adds `FilesystemInfo.MountedOn` and
     `Capabilities.UTF8Only` to RFC 17 §3.0 and rewords RFC 17 §4.9 and RFC 20 §4.10, and E5's
     document adds the `ErrInvalid` row of §11.5; E6's ACL amendment adds fields to `CreateArgs`
     and `AttrChange` beside D2's (D2); E3's touches RFC 20 §4.4, §4.7 and §5.5 and RFC 21 §2.2;
     E7's touches RFC 18 and RFC 16. D10's upgrade and E5's D17 name one future field, a capacity on
     `FilesystemInfo`, which neither proposes now.
+11. **Pending the user's answer: the deferral ledger rows this epic needs.** Point 6's `MNT` below a
+    share's root and point 7's MOUNT versions 1 and 2 have no row in the RFC 21 implementation
+    plan's §6.6 ledger, and §1.2 sends the composed-node run of §13's "§9.1 failed stable write" to
+    E16, whose "done when" in the plan does not name it. All three are plan edits, through a pull
+    request against the plan, which this one does not touch.
