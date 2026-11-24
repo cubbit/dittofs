@@ -50,7 +50,9 @@ acknowledgement a store record bound to the lost `JournalID`, and §2.1's `Lifec
 (§6 point 1, decided); §10.4 has the offload commit transaction read each pinned material's
 `destroyed` mark and refuse, the attempt then abandoned, with its §15.1 leg; RFC 0 §1.2 allows a
 component's tests to import another's in-memory implementation; RFC 24 §6.2 lists read-ahead as
-request-path CPU, which takes no token; RFC 0 §1.2 lists the journal, the metadata store and open state
+request-path CPU, which takes no token; RFC 8 §6.3's Assemble hands the fold zero-ref, per-block and
+per-file keys, Commit splits a block of one chunk alone over `K`, and its "commit within `K`" check
+gains both cases; RFC 0 §1.2 lists the journal, the metadata store and open state
 among `enginewire`'s edges, and RFC 8 §2.1 names its two importers, the node and the engine's test
 fixture, which RFC 23 §2.1's sketch follows.
 
@@ -727,12 +729,12 @@ Its four §15.1 rows run a pass end to end, so they are epic 16's to turn green 
   (`Handle.DirtyFiles`), with a `ponytail:` at the assignment naming the ceiling (a short block may go
   out before it must) and the upgrade, a time per extent, which the RFC 2 plan's §6.1 ledger gives the
   journal plan (the epic after 9b).
-- Assemble: every chunk carried, zero refs, early close within `K` (the key budget `kvstore` computes at open, `budget.go`, which gains an accessor here), one flow and namespace per block
+- Assemble: every chunk carried, zero refs, early close within `K` (the key budget `kvstore` computes at open, `budget.go`, which gains an accessor here; it nets out one file's fixed records only, `worstCosts`); the fold handed each chunk's worst-case keys, each zero ref's keys (counting the refs it replaces), and a commit's per-block keys (intent delete, block record, GC index keys) and per-file keys (the offload fence), charged once per block and once per file (RFC 2 §5.1 as amended); one flow and namespace per block
   (RFC 2 §5.3), as S1a agrees the inputs.
 - Intent: the stale-namespace refusal, the chain pinned, the name minted once per attempt from a
   cryptographic nonce, `Intend`.
 - Put: streamed from the offer, hashes recomputed, one attempt per name, no second retry layer.
-- Commit and Mark: `Commit` per block with its `encodings`, over-`K` and intent-missing paths, `report`
+- Commit and Mark: `Commit` per block with its `encodings`, over-`K` and intent-missing paths, a block of one chunk alone over `K` (RFC 2 P2) committed in split transactions each within `K`, with RFC 8 §6.3's "commit within `K`" cases for it and for a zero run, `report`
   of exactly what committed, `born` from the offer's cut; O4 through `Abandon`; the pin released at
   either end.
 - O1 deadlines, O2 backoff through the scheduler's result, O5, O6's per-file count in the binding's
