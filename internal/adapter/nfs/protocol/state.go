@@ -30,7 +30,7 @@ type State struct {
 type Current struct {
 	FH         vfs.Handle // nil: none
 	Stateid    Stateid
-	HasStateid bool
+	HasStateid bool // false: the all-zeros special stateid, Stateid zero
 }
 
 // Stateid is a stateid4 in its wire form, its sequence ID and its other
@@ -41,8 +41,9 @@ type Stateid struct {
 }
 
 // SetFH makes fh r's current filehandle, the one way a member sets it: the
-// current stateid is left unset, as an operation that changes the filehandle
-// and returns no stateid leaves it (RFC 8881 section 16.2.3.1.2), and NeedsFH
+// current stateid becomes the all-zeros special stateid, as an operation that
+// changes the filehandle and returns no stateid sets it (RFC 8881 section
+// 16.2.3.1.2), which a zero Stateid with HasStateid false stands for; NeedsFH
 // is raised in r.Level, whose other bits stay, so a row needing a current
 // filehandle runs after it. r is a COMPOUND's request, whose State the router
 // set.
