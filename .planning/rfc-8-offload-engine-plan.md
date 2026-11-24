@@ -10,8 +10,8 @@ RFCs, with how far each is in scope:
 - [RFC 2](../docs/internals/rfcs/rfc-2-carver.md), [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md),
   [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) and [RFC 5](../docs/internals/rfcs/rfc-5-transforms.md):
   **only the parts this RFC cannot work without**, their public surfaces, which their own plans build
-  ([`rfc-2-carver-plan.md`](rfc-2-carver-plan.md) and the RFC 3, 4 and 5 plans written beside this
-  one). This plan composes them; §3.2 names the four points where each surface is agreed.
+  ([`rfc-2-carver-plan.md`](rfc-2-carver-plan.md), in #5529, and the RFC 3, 4 and 5 plans written
+  beside this one); this plan merges after #5529, so the link resolves. This plan composes them; §3.2 names the four points where each surface is agreed.
 - RFC 0, 1, 28, 6, 9, 12, 14, 15, 16, 17, 23, 25 and 29: **constraints only**. GC (RFC 9) is planned
   later; this plan builds the shared work scheduler GC will also instantiate (D3), and nothing of GC.
 
@@ -24,8 +24,7 @@ top of it, not beside it, and touches its code only where a first-part stand-in 
 **Naming:** there is no v1 for this part. v1's engine was deleted by #3645, and the v1 block tier
 (`pkg/block/{remote,middleware,blockcodec,syncer,carver,chunker}`) by #3119's stage 4, D8 (#5484).
 Nothing of it moves: the component packages are new, each built at its path by its own plan. The engine
-and the journal move to `pkg/engine` and `pkg/journal` in #3119's own pull request once T2.4 lands
-(the stage 4 plan's ledger); the plan names them by their current paths.
+and the journal are `pkg/engine` and `pkg/journal` on `feat/storage-v2` since #5551.
 "The first part" is the journal-only engine; "this part" is the offload part. In this plan "epic 11"
 is always an epic and "RFC 8 E11" an invariant of RFC 8 §13.
 **Transition:** new installations only, as #3119 decided. Nothing of the v1 block tier is read,
@@ -138,7 +137,7 @@ first part's in-memory journal already holds the journal's two consumers.
 ### 1.4 What epic 12 must deliver
 
 **The suite and its registration.** The rows join the engine's conformance suite the first part
-registered, `engine-conformance` (`pkg/block/engine/conformance`, tag `engine_conformance`,
+registered, `engine-conformance` (`pkg/engine/conformance`, tag `engine_conformance`,
 `known: test/engine/known.yaml`, `tier: pr`, in group `engine`), so no new suite, tag or group is
 registered and RFC 8's suites paragraph needs no change. Each red row is one `known.yaml` entry as
 `CLAUDE.md` "By kind" lists its fields, with `issue:` the epic issue of the epic that turns it green;
@@ -283,7 +282,7 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
    included. A change that makes a red row fail at a later check rewrites its `message:` in the same
    change.
 7. **v2 ignores v1, and components import only what amended RFC 0 §1.2 names.** The first part's
-   import walk (`pkg/block/engine/imports_test.go`) covers every package of `pkg/block/engine` and
+   import walk (`pkg/engine/imports_test.go`) covers every package of `pkg/engine` and
    `pkg/workqueue`, keeps refusing `pkg/vfs`, the v1 metadata service and the v1 block tier, and
    allows `enginewire` alone to import `pkg/carver`, `pkg/syncer`, `pkg/remote`, `pkg/remote/codec`
    and `pkg/transform`, as RFC 0 §1.2 and its I6 name. The allowlist names each package an exception
@@ -489,7 +488,7 @@ What each point means for this plan's epics:
 
 ```text
 pkg/workqueue/                              E11 surface; E13 behaviour (RFC 8 §6.1.1)
-pkg/block/engine/                       the first part's package
+pkg/engine/                             the first part's package
   deps.go                               E15 to E19: Carver, Syncer, Refs, Watchdog and the declared methods, each with its first caller
   types.go                              E11: Settings keys, Share's namespace and store, Stats fields
   policy.go                             E15 offloadDue; E17 fill; E18 evict, repackDue, admit; E20 health

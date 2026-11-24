@@ -435,7 +435,7 @@
     "source": "docs/internals/rfcs/rfc-8-engine.md#61-the-work-queue",
     "sourceLabel": "RFC 8 §6.1",
     "rfcs": ["rfc-8", "rfc-9"],
-    "target": ["pkg/block/engine/queue.go", "pkg/workqueue"]
+    "target": ["pkg/engine/queue.go", "pkg/workqueue"]
   },
   "offload-pipeline": {
     "source": "docs/internals/rfcs/rfc-8-engine.md#63-the-offload-pipeline",
