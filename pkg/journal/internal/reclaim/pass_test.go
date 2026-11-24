@@ -436,6 +436,85 @@ func TestPassBudgetCountsCarriedRecords(t *testing.T) {
 	}
 }
 
+// TestPassBudgetStopsAtCarriedRecords runs a pass of budget one byte over two
+// sealed sources beside each other: the least-live one holds only a
+// registered, unsettled removal record — no content exists for Copy to move,
+// so its unit's whole output is the record the carry places, and the source
+// stays held by its record's original registration — and the other holds a
+// plain write. The carried record's bytes reach the budget, so the pass stops
+// after the first unit: the content source is left standing, un-repacked and
+// unretired. A pass whose carried records report no bytes never reaches a
+// budget smaller than a record and runs unit after unit.
+func TestPassBudgetStopsAtCarriedRecords(t *testing.T) {
+	p := newPassFixture(t)
+	fa, fb := passFilesOnDistinctStreams(p.f)
+	ra, _, _, _ := p.f.plantRemoval(t, copyTag, fa, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, false)
+	// The core's own pass reads its own tracker, so the planted record
+	// registers there the way the writer's removal path would; the settle
+	// stays untaken, keeping the marker over and the record live.
+	p.f.core.Liveness().Register(ra)
+	bare := ra.Seg
+	p.f.sealSource(t, fa)
+	p.f.waitSpares(t)
+	content := p.plantSealed(t, fb, []byte("the write whose source the budget must never reach"))
+	p.f.waitSpares(t)
+
+	before := p.f.core.Stats().Counters.RepackedBytes
+	if _, err := p.repack(t.Context(), 1, bare, content); err != nil {
+		t.Fatalf("repack on a one-byte budget over a carried record: %v", err)
+	}
+	gain := p.f.core.Stats().Counters.RepackedBytes - before
+	if gain == 0 {
+		t.Fatalf("RepackedBytes gained %d, want the carried removal record's bytes > 0: a contentless source otherwise reports no bytes and its pass never reaches a budget", gain)
+	}
+	if p.setGone(content) {
+		t.Fatal("the content source left the set too, want the carried record's bytes to reach the budget and stop the pass before its unit ever starts")
+	}
+}
+
+// TestPassBudgetCountsDeferredLossRecords pins the deferred leg of the budget
+// beside the carried one: a sealed source whose only unit output is the loss
+// record a deferred loss promises — a settled removal with no live
+// registration beside it, so no content copy and no carried record — must
+// report the record's bytes. A pass whose deferred records answer no bytes is
+// the livelock's other half: a source whose whole output is deferred never
+// reaches its budget.
+func TestPassBudgetCountsDeferredLossRecords(t *testing.T) {
+	p := newPassFixture(t)
+	d := p.f.core.Durability()
+	file := copyFile(8)
+	// A settled removal fills the stream's active segment and settles, so the
+	// sealed source holds one dead-weight record nothing carries and the
+	// unit's whole output is the deferred loss record below.
+	rem, _, seq, v := p.f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, true)
+	src := rem.Seg
+	p.f.sealSource(t, file)
+	// The stream keeps an active segment beyond the sealed source, so the
+	// deferred loss record appends into it without a roll and the pool makes
+	// nothing behind the pass.
+	p.retainActivity(t, p.f.core.Streams().IndexFor(file), file)
+	l := durability.Loss{
+		Share: copyTag, File: file, Extent: core.Extent{Off: 8 << 10, Len: 64},
+		Version: v, Seq: seq + 1000, Reason: core.LossStale, Deferred: true, Seg: src,
+	}
+	if _, err := d.Lose(t.Context(), l); err != nil {
+		t.Fatalf("planting the deferred loss: %v", err)
+	}
+	p.f.core.Liveness().SetDeferred(src, true)
+	p.f.waitSpares(t)
+
+	before := p.f.core.Stats().Counters.RepackedBytes
+	if _, err := p.repack(t.Context(), 1<<20, src); err != nil {
+		t.Fatalf("repack over a deferred loss: %v", err)
+	}
+	gain := p.f.core.Stats().Counters.RepackedBytes - before
+	if gain == 0 {
+		t.Fatalf("RepackedBytes gained %d, want the deferred loss record's bytes > 0: a source whose whole output is deferred otherwise reports no bytes and never reaches a budget", gain)
+	}
+}
+
 // TestPassCancelledBetweenUnitsReturnsAfterTheUnitInFlight cancels a pass
 // while its one in-flight unit blocks in its retirement's directory sync:
 // the unit completes — its source retired, freed returned — and the pass

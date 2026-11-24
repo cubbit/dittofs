@@ -3,8 +3,10 @@
 package conformance
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest"
@@ -90,18 +92,30 @@ func TestModel_RepackAndForget(t *testing.T) {
 
 // TestModel_RepackHeavyDraws runs the one fixed draw that outgrows the fuzz
 // corpus at its full length: 200 steps from seed 3, past the decoder's
-// maxFuzzSteps cap, the draw whose repack pass once never finished because the
-// records a carry moved never counted against the pass budget and the pass
-// re-selected the very segments its own carries sealed. Every carried record
-// counts now, so the pass over this draw is bounded and the run fails only on
-// a divergence from the reference model.
+// maxFuzzSteps cap, so the draw with the most repack work the generator makes
+// is compared against the reference model whole. The run carries its own
+// deadline of a minute, well over a green run's length: a pass that stops
+// answering its budget aborts on the context's error between its units, so an
+// unbounded draw fails as this test instead of as the package at its suite
+// timeout.
 func TestModel_RepackHeavyDraws(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	open, _ := journaltest.DataPathTargets(t)
+	tgt, done, err := open()
+	if err != nil {
+		t.Fatalf("opening the journal for the heavy repack draw: %v", err)
+	}
+	defer done()
 	steps := losingCrashes(model.GenerateWithin(3, 200, model.RepackOps))
-	model.CheckDataPath(t, "repack-heavy-seed-3.txt", steps, open,
-		"drawn from seed 3, 200 steps")
+	// The bounded wait is the assertion: no clock can be injected into the
+	// target's repack, and a draw that never finishes must fail this test
+	// rather than the package's whole run.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := model.RunDataPath(ctx, tgt, steps); err != nil {
+		t.Fatalf("the 200-step heavy repack draw: %v", err)
+	}
 }
 
 // FuzzModelForget is FuzzModelRepack with the forget of a share's tag among
