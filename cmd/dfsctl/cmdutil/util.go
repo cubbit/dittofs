@@ -103,7 +103,9 @@ func printSuccess(cmd *cobra.Command, msg string) {
 // RunDeleteWithConfirmation asks env's reader to confirm, unless force is set,
 // and then runs deleteFn. The prompt goes to env.Err, so the command's output
 // stays its own. Without a person at the reader it refuses, naming --force,
-// rather than wait on a prompt nobody answers.
+// rather than wait on a prompt nobody answers. A deletion the server refuses
+// 412, the record having changed or gone since the command read its tag,
+// reads as that, so the command can be run again.
 func RunDeleteWithConfirmation(cmd *cobra.Command, env Env, resourceType, name string, force bool, deleteFn func() error) error {
 	if !force {
 		if !env.Interactive {
@@ -123,7 +125,9 @@ func RunDeleteWithConfirmation(cmd *cobra.Command, env Env, resourceType, name s
 		}
 	}
 
-	if err := deleteFn(); err != nil {
+	if err := deleteFn(); IsPreconditionFailed(err) {
+		return fmt.Errorf("%s: %s '%s' changed or was removed since it was read, so nothing was removed; run the command again", cmd.CommandPath(), resourceType, name)
+	} else if err != nil {
 		return err
 	}
 

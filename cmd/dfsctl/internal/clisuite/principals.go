@@ -127,6 +127,9 @@ func principalRows() []row {
 		}},
 		{name: "netgroup create, update and delete", run: func(t *testing.T, run Runner, _ Server, c *client.Client) {
 			name := unique("n")
+			if _, errOut, status := run(t.Context(), "netgroup", "create", name); status == 0 || !strings.Contains(errOut, "member") {
+				t.Errorf("netgroup create %s with no --member: status %d, stderr %q, want it refused naming --member", name, status, errOut)
+			}
 			mustRun(t, run, "netgroup", "create", name, "--member", "10.0.0.7", "--member", "10.1.0.0/16")
 			got := decodeAs[apiv1.Netgroup](t, mustRun(t, run, "netgroup", "get", name, "-o", "json"))
 			if want := []string{"10.0.0.7", "10.1.0.0/16"}; got.ID != name || !slices.Equal(got.Spec.Members, want) {

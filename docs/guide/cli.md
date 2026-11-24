@@ -1078,8 +1078,8 @@ Manage netgroups
 Create, list, read, change and delete netgroups: named sets of host names,
 addresses and CIDRs that an export policy admits.
 
-An update replaces the netgroup's members with those --member names, and
-needs at least one.
+A netgroup holds at least one member: create needs --member, and an update
+replaces the members with those --member names.
 
 ```
 dfsctl netgroup [flags]

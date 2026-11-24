@@ -36,8 +36,8 @@ func New(env cmdutil.Env) *cobra.Command {
 		Long: `Create, list, read, change and delete netgroups: named sets of host names,
 addresses and CIDRs that an export policy admits.
 
-An update replaces the netgroup's members with those --member names, and
-needs at least one.
+A netgroup holds at least one member: create needs --member, and an update
+replaces the members with those --member names.
 
 Examples:
   # Create a netgroup of two hosts and a subnet
@@ -77,6 +77,8 @@ func newCreateCmd(env cmdutil.Env) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringArray("member", nil, "A host name, address or CIDR; repeat for each")
+	// Required, as on update: an empty netgroup admits no host to a policy naming it.
+	_ = cmd.MarkFlagRequired("member")
 	return cmd
 }
 
