@@ -266,8 +266,8 @@ come with RFC 22's plan's `gss` (S6c).
    suite's `known.yaml` in the same change (`CLAUDE.md`, "Writing tests", "By kind"); those suites
    stay off on `feat/storage-v2` until E15 turns them on.
 7. **v2 ignores v1.** Nothing is copied from `develop`'s NFS adapter except what RFC 20
-   Appendix B keeps: the TLS upgrade through `Conn.StartTLS`, and the GSS per-message code, which RFC 22's plan
-   moves to `gss`. Behaviour comes from RFC 21 and the NFS RFCs, never from what v1 did, and RFC 20's
+   Appendix B keeps: the TLS upgrade through `Conn.StartTLS`, and the GSS per-message code, which E13 lifts into
+   `gss` (RFC 22's plan leaves `Wrap` and `Unwrap` to it). Behaviour comes from RFC 21 and the NFS RFCs, never from what v1 did, and RFC 20's
    import test fails any import of a path v1 used, checking each package on its own.
 8. **Real dependencies for properties of those dependencies** (`CLAUDE.md`, "Writing tests"). RFC
    5531's, RFC 1813's, RFC 8881's and RFC 2203's encodings and knfsd captures for bytes, never vectors
@@ -322,7 +322,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 8 | 22 | A | E16 |
 | E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
-| E13 🔀 | RPCSEC_GSS | the context table as NFS's `Security` stage over `gss`, `krb5`, `krb5i`, `krb5p` | 6 | 16 | B | E16 |
+| E13 🔀 | RPCSEC_GSS | the context table as NFS's `Security` stage over `gss`, `krb5`, `krb5i`, `krb5p` | 8 | 21.25 | B | E16 |
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
@@ -1017,7 +1017,7 @@ step; N22. The held clone wait's rows need RFC 17's plan's piece 13 on the branc
 
 ### Epic 13 — RPCSEC_GSS 🔀
 
-**Epic 13 estimate: 6 subtasks, 16 man-days.**
+**Epic 13 estimate: 8 subtasks, 21.25 man-days.**
 
 Kerberos on NFS: a context table as NFS's `Security` stage over RFC 22's plan's `gss`, which
 withdraws E3's interim `AUTH_BADCRED` for `RPCSEC_GSS`.
