@@ -65,6 +65,9 @@ integration epics touch no v1 code (§1.5 rule 7).
 - **§3.1, the pin.** `Chain.Pin` returns an `Attempt` that fixes the chain and the current
   material from a block name's mint to its commit or abandonment; the attempt carries the chain
   ID, the bounds and `Encode`, and `Release`. The RFC 8 offload plan's epic 15 holds it (D10).
+  The largest encoded block on a put is the maximum `Attempt.MaxEncodedLen` over open attempts,
+  not the current chain's bound (RFC 3 §2.2 follows, amended in the RFC 3 plan's pull request),
+  and §2.5's removal waits for no open pin, as §5.3 does.
 - **§3.1 and §5.3, removal lands with its first caller**, GC's retirement or an operator's
   destroy, an operation RFC 23 does not yet specify; its fence waits for open pins, not
   encodes (§5.3, T13).
@@ -396,7 +399,8 @@ this plan cites them by its names.
 - **🔀 S7, which is RFC 8 offload plan S7, store adapter and node composition built**: the
   engine holds the pin from mint to commit or abandonment and writes the census at commit (its
   epic 15), the `Census` view exists (its epic 19), the engine calls the salvage-key wrap (its
-  epic 20) and the destroyed-material notice (its epic 18), and the node registers this
+  epic 20) and the destroyed-material notice (its epic 18, which also abandons at commit an attempt
+whose material the notice named after the pin, RFC 8 §10.4 as amended), and the node registers this
   component's collectors, alert rules and the provider's `health.Source` for
   `material_unavailable`, and runs `materialtest`'s `keys`-object suite against RFC 4's store in
   `integration` (its epic 21). Unblocks epic 10, which is planned after it, and epic 11.
@@ -560,7 +564,9 @@ RFC 9's plan (§6.1). Prior art: none found. Applies in epic 8.
 §3.1 now says. `Chain.Pin` reads the namespace's current material once and returns the
 `Attempt` whose chain ID, bounds and encodes use it; the RFC 8 offload plan's epic 15 holds the
 attempt across the measuring pass, the put, its retries and RFC 3's per-upload measurement, and
-releases it at commit or abandonment. In v1.1 the pin counts nothing: the count of open pins
+releases it at commit or abandonment. At commit, its epic 18 abandons an attempt whose material
+the destroyed-material notice (D17) named after the pin (RFC 8 §10.4, as the RFC 8 offload plan's
+pull request amends it). In v1.1 the pin counts nothing: the count of open pins
 is `Remove`'s fence (RFC 5 §5.3 as amended), which lands with `Remove` (§6.1). Prior art: a snapshot of
 configuration taken per request, as a database transaction pins its schema version (from
 memory). Applies in epics 1 and 3.
@@ -609,7 +615,9 @@ since a cursor: a key record in state `destroyed`, or a master key the key servi
 destroyed, which destroys every key it wraps. A key the service reports compromised still
 decrypts, so it is not destroyed: RFC 5 Appendix B.4 gives `ErrMaterialDestroyed` only for
 material lost for good. A poll, not a callback, so the engine's own loop decides when to clear offloaded bits
-(RFC 8 §10.4) and nothing runs inside the provider's lock. The in-memory `Materials` implements it
+(RFC 8 §10.4) and nothing runs inside the provider's lock. A destroyed ID the notice names after
+an attempt's pin makes the RFC 8 offload plan's epic 18 abandon that attempt at commit, rather
+than commit a block under lost material (RFC 8 §10.4, as that plan's pull request amends it). The in-memory `Materials` implements it
 under `materialtest`. Prior art: a change feed read by cursor, as the metadata store's own
 generation counters (from memory). Applies in epic 8.
 
