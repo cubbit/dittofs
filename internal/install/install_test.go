@@ -376,6 +376,41 @@ func TestConcurrentFinishRefusesTheLastWrite(t *testing.T) {
 	}
 }
 
+// Another run that initialises the store after this one opened its storage
+// key over the fresh store leaves this run refused before it writes: no
+// administrator and no signing key are committed under a key that may not
+// be the installation's. A rerun then opens the existing key and finishes.
+func TestConcurrentInitRefusesTheFreshKey(t *testing.T) {
+	f := newFix(t)
+	ctx := t.Context()
+	other := uuid.New()
+	d := f.deps()
+	d.StorageKey = func(ctx context.Context, fresh bool) (keyprovider.KeyProvider, error) {
+		if !fresh {
+			t.Errorf("StorageKey: got fresh=false, want true over a store no run initialised")
+		}
+		// The other run's Init lands between this key and this run's Init.
+		if err := kvstore.Init(ctx, f.db, other); err != nil {
+			return nil, err
+		}
+		return f.key, nil
+	}
+	if err := install.Run(ctx, d); !errors.Is(err, install.ErrConcurrentInit) {
+		t.Fatalf("Run with another run initialising the store first: got %v, want ErrConcurrentInit", err)
+	}
+	in, err := f.store().Installation(ctx)
+	if err != nil || in.ID != other || in.SigningKey != (entity.SecretRef{}) {
+		t.Errorf("installation after the refusal: got ID %x, signing key %x, %v; want the other run's ID %x and no signing key", in.ID, in.SigningKey, err, other)
+	}
+	if us := f.users(); len(us) != 0 {
+		t.Errorf("users after the refusal: got %d, want none", len(us))
+	}
+	if err := install.Run(ctx, f.deps()); err != nil {
+		t.Fatalf("rerun: %v", err)
+	}
+	f.installed()
+}
+
 // failingWriter fails every write, as a closed standard output does.
 type failingWriter struct{}
 

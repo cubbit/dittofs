@@ -49,6 +49,10 @@ var (
 	// ErrPassword refuses a first-password reference that gives no password,
 	// or a file longer than one may be.
 	ErrPassword = errors.New("install: the administrator's password reference gives no password")
+	// ErrConcurrentInit refuses a run whose store another run initialised
+	// after this one opened, and perhaps created, the storage key: that key
+	// may not be the installation's.
+	ErrConcurrentInit = errors.New("install: another run initialised the metadata store first; the storage key this run opened may not be its key")
 )
 
 // Deps is what one run of the initialisation step reads and writes.
@@ -210,7 +214,12 @@ func initStore(ctx context.Context, d Deps, opts []journal.Option, log *slog.Log
 				return nil, [16]byte{}, nil, err
 			}
 		case errors.Is(err, kvstore.ErrInitialised):
-			// Another initialisation committed first: its ID is read below.
+			// Another run committed first, under a key this run cannot tell
+			// apart from its own: a key file created for this run would
+			// otherwise seal the administrator in an installation whose
+			// other host holds a different key. A rerun finds the store
+			// initialised and opens the existing key.
+			return nil, [16]byte{}, nil, ErrConcurrentInit
 		default:
 			return nil, [16]byte{}, nil, fmt.Errorf("install: initialise the metadata store: %w", err)
 		}
