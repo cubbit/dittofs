@@ -39,6 +39,24 @@ type Probe struct {
 	// Files is every file already in dir, with FS_IOC_GETFLAGS's answer for
 	// each.
 	Files []ProbedFile
+	// KernelRelease is the kernel's release as uname(2) writes it in
+	// utsname.release ("5.15.0-76-generic"), or empty where the probe read
+	// none. The verdict refuses a release older than 4.13 and fails on one
+	// it cannot read numbers from, so the probe passes the text alone,
+	// without interpreting it.
+	KernelRelease string
+	// ExtOptions and ExtOptionsErr are a pair, because only together they
+	// tell the verdict what happened: ExtOptions is the text of
+	// /proc/fs/ext4/<dev>/options, the effective options the ext4 driver
+	// reports for the directory's device, and ExtOptionsErr is the error of
+	// reading that file. Both empty is no ext options the gather found —
+	// a filesystem the ext rules do not reach, or a gather that read none —
+	// while the error alone says the effective options were never seen, so
+	// the check fails rather than refusing or passing on a guess. The probe
+	// fills the pair without parsing the text; the verdict splits it into
+	// words.
+	ExtOptions    string
+	ExtOptionsErr error
 }
 
 // ProbedFile is one file already in the journal directory.
