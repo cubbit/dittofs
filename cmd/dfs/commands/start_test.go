@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/nodetest"
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
@@ -104,16 +104,36 @@ func (h *holdAt) armed() bool {
 	return found
 }
 
+// fdbClusterEnv names the FoundationDB cluster the foundationdb tests run on,
+// and fdbOwnClusterEnv says no other test shares it, so a test may clear it.
+const (
+	fdbClusterEnv    = "DITTOFS_FDB_CLUSTER_FILE"
+	fdbOwnClusterEnv = "DITTOFS_FDB_OWN_CLUSTER"
+)
+
+// ownFDBCluster is whether the shell set fdbOwnClusterEnv, read before
+// TestMain drops it.
+var ownFDBCluster bool
+
 // TestMain drops the DITTOFS_ variables the developer's shell exports before
 // any test runs: the start refuses a name it does not know, so a stray one
 // would fail every start test for a reason the test does not name. A test
 // that needs one sets it itself. The child process keeps its environment,
 // which holds what the parent test chose for it.
+//
+// decision: the two names that point the foundationdb tests at a cluster
+// survive, or those tests skip wherever they run. fdbClusterEnv stays in the
+// environment: the start's scan passes it as an allowed name and nothing the
+// start runs reads it. fdbOwnClusterEnv is a name only tests read, which the
+// scan refuses, so only its value is kept and the variable still goes; a
+// test reads ownFDBCluster instead. Neither reaches a child, whose
+// environment drops every DITTOFS_ name the host has.
 func TestMain(m *testing.M) {
 	if os.Getenv(childEnv) == "" {
+		ownFDBCluster = os.Getenv(fdbOwnClusterEnv) != ""
 		for _, kv := range os.Environ() {
 			name, _, _ := strings.Cut(kv, "=")
-			if strings.HasPrefix(name, "DITTOFS_") {
+			if strings.HasPrefix(name, "DITTOFS_") && name != fdbClusterEnv {
 				_ = os.Unsetenv(name)
 			}
 		}
@@ -270,6 +290,9 @@ func (b bootstrapFile) write(t *testing.T, dir string) string {
 	body.WriteString("metadata:\n")
 	if b.backend != "" {
 		fmt.Fprintf(&body, "  backend: %s\n", b.backend)
+	}
+	if b.backend == "foundationdb" { // the loader requires its cluster file
+		fmt.Fprintf(&body, "  foundationdb:\n    cluster_file: '%s'\n", filepath.Join(dir, "fdb.cluster"))
 	}
 	if b.store != "" {
 		fmt.Fprintf(&body, "  badger:\n    path: '%s'\n", b.store)

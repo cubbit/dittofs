@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/vfs/contenttest"
-	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 

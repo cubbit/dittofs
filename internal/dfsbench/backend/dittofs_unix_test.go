@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 )
 
 // TestDittofsArgv_InitAndStartTheBuiltDfs guards the two command lines the

@@ -407,10 +407,10 @@ func enginewireImporters(_ string, files []fileImports) ([]string, error) {
 			continue
 		}
 		dir := path.Dir(r.File)
-		if dir == "internal/node" || dir == "pkg/block/engine/enginetest" {
+		if dir == "internal/node" || dir == "pkg/engine/enginetest" {
 			continue
 		}
-		if slices.Contains(r.Imports, module+"pkg/block/engine/enginewire") {
+		if slices.Contains(r.Imports, module+"pkg/engine/enginewire") {
 			bad = append(bad, r.File+" imports enginewire")
 		}
 	}
@@ -756,7 +756,7 @@ func TestNoComponentImports(t *testing.T) {
 			"api/identity.go uses github.com/cubbit/dittofs/pkg/identity.CheckKeytab",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.KV",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.Counting",
-			"api/server.go imports github.com/cubbit/dittofs/pkg/block/engine",
+			"api/server.go imports github.com/cubbit/dittofs/pkg/engine",
 			"nodetest-import/harness.go imports github.com/cubbit/dittofs/internal/node/nodetest",
 		}},
 	} {
@@ -1485,12 +1485,12 @@ func lifecycleCalls(dir, path string) ([]string, error) {
 		return nil, err
 	}
 	watched := map[string]bool{
-		module + "pkg/block/engine/enginewire.Start":     true,
-		module + "pkg/block/engine/enginewire.Stop":      true,
-		"(*" + module + "pkg/openstate.Table).Start":     true,
-		"(*" + module + "pkg/openstate.Table).Stop":      true,
-		"(*" + module + "pkg/block/engine.Engine).Start": true,
-		"(*" + module + "pkg/block/engine.Engine).Close": true,
+		module + "pkg/engine/enginewire.Start":       true,
+		module + "pkg/engine/enginewire.Stop":        true,
+		"(*" + module + "pkg/openstate.Table).Start": true,
+		"(*" + module + "pkg/openstate.Table).Stop":  true,
+		"(*" + module + "pkg/engine.Engine).Start":   true,
+		"(*" + module + "pkg/engine.Engine).Close":   true,
 	}
 	var got []string
 	for _, o := range info.Uses {
@@ -1508,15 +1508,15 @@ func lifecycleCalls(dir, path string) ([]string, error) {
 // Start, Stop or Close is caught.
 func TestNodeStartsThroughEnginewire(t *testing.T) {
 	t.Parallel()
-	wire := module + "pkg/block/engine/enginewire."
+	wire := module + "pkg/engine/enginewire."
 	for _, tc := range []struct {
 		dir  string
 		want []string
 	}{
 		{".", []string{wire + "Start", wire + "Stop"}},
 		{"testdata/arch/start-direct", []string{
-			"(*" + module + "pkg/block/engine.Engine).Close",
-			"(*" + module + "pkg/block/engine.Engine).Start",
+			"(*" + module + "pkg/engine.Engine).Close",
+			"(*" + module + "pkg/engine.Engine).Start",
 			"(*" + module + "pkg/openstate.Table).Start",
 			"(*" + module + "pkg/openstate.Table).Stop",
 		}},
@@ -1644,8 +1644,8 @@ func composeCalls(dir string) (compose, deps int, err error) {
 		if err != nil {
 			return 0, 0, err
 		}
-		wire := importName(f, module+"pkg/block/engine/enginewire")
-		eng := importName(f, module+"pkg/block/engine")
+		wire := importName(f, module+"pkg/engine/enginewire")
+		eng := importName(f, module+"pkg/engine")
 		named := func(x ast.Expr, pkg, sel string) bool {
 			s, ok := x.(*ast.SelectorExpr)
 			if !ok || s.Sel.Name != sel {

@@ -142,7 +142,7 @@ that subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R9 | `internal/node`'s exported package-level declarations are `New`, `Node`, `Config` and `Preflight`, the start check the host runs before it opens the store, and `*Node`'s exported methods `Start` and `Stop`, and nothing else | MUST | RFC 23 §2.1 ("The node's surface", and its decision); RFC 23 plan §1.5 rule 11 | T1.3 |
+| R9 | `internal/node`'s exported package-level declarations are `New`, `Node`, `Config` and `Preflight`, the start check the host runs over the store as a directory or, for a store with no directory, as the KV it has opened, and `*Node`'s exported methods `Start` and `Stop`, and nothing else | MUST | RFC 23 §2.1 ("The node's surface", and its decision); RFC 23 plan §1.5 rule 11 | T1.3 |
 | R10 | `Config` carries what the host supplies and the node cannot build: the bootstrap, the KV the metadata store opens on, the clock, the metrics registry and the logger | MUST | RFC 23 §2 (step 2), §2.1 | T1.3 |
 
 **The shared wire types**
@@ -180,9 +180,10 @@ that subtasks and tests can cite them.
   memory).
 - **D2, the node's surface is what RFC 23 §2.1 declares, less what has no consumer.** `New`,
   `Node`, `Config`, `Preflight` and `Start`/`Stop`. `Preflight` is the start check: it has to
-  run before the host opens the KV store, because `Config.KV` arrives already open and
-  Badger's own open writes the `MANIFEST` the check reads, so `New` and `Start` are both too
-  late to tell an absent store from a present one. A package of its own for one function would
+  run before the host opens a store that has a directory, because `Config.KV` arrives already
+  open and Badger's own open writes the `MANIFEST` the check reads, so `New` and `Start` are
+  both too late to tell an absent store from a present one; a store with no directory is
+  checked through the KV the host has opened. A package of its own for one function would
   add a boundary and gain nothing, since the probes read the storage the node's own
   configuration names. `Config.Clock` is `engine.Clock` (`Now`, `Elapsed`,
   `After`), which `sim.TestClock` already implements and the journal's and open state's clocks are
@@ -200,7 +201,7 @@ that subtasks and tests can cite them.
   fills them together, with `WriteMeta` and `ControlPlaneTx` in `pkg/metadata/entity`, which kvstore
   and the API both already import. Not the root `pkg/metadata`: on `feat/storage-v2` it is still
   v1's metadata `Service`, and kvstore naming a type there would pull it into kvstore's closure and,
-  through kvstore, into the engine's. `pkg/block/engine/imports_test.go` checks only direct
+  through kvstore, into the engine's. `pkg/engine/imports_test.go` checks only direct
   imports, so no test would fail: the reason is closure hygiene. The two
   types can move beside RFC 16 §3's views once that `Service` leaves the root package. A stub view frozen a
   whole epic before its bodies would pin signatures no test exercises. The user's decision. No
@@ -240,7 +241,7 @@ that subtasks and tests can cite them.
   failing on its assertion on every run. A rule reads every file under each build tag `lint-go`
   names (the `go vet -tags=` list in `test/suites.yaml`), not only the default context, since a
   tagged file is invisible to a gate that reads without its tag. They walk sources with
-  `go/build` and `go/parser`, as `pkg/block/journal/imports_test.go` and
+  `go/build` and `go/parser`, as `pkg/journal/imports_test.go` and
   `internal/adapter/adaptertest`'s import test do (checked). No marker.
 - **D11, `dfsctl` keeps its command tree until the CLI epic.** Deleting the v1 commands would make
   411 lines of invocations across 28 pages, and 28 in Go strings, name commands that do not exist,

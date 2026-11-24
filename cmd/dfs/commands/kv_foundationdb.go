@@ -21,13 +21,25 @@ const foundationDB = true
 const foundationDBOpenTimeout = 30 * time.Second
 
 // openFoundationDB opens the cluster metadata.foundationdb.cluster_file names,
-// with no key prefix: an installation owns its whole cluster.
+// over the TLS files metadata.foundationdb.tls names, with no key prefix: an
+// installation owns its whole cluster. dfs start opens it before the start
+// check, which reads the store through it.
 func openFoundationDB(ctx context.Context, cfg *bootstrap.Bootstrap, clock systemClock) (kv.KV, error) {
 	ctx, cancel := context.WithTimeout(ctx, foundationDBOpenTimeout)
 	defer cancel()
 	cf := cfg.Metadata.FoundationDB.ClusterFile
+	// decision: the open writes this node's clock ceiling before it returns,
+	// so before the start check reads the cluster: over a cluster another
+	// installation or program owns, the ceiling lands in its keyspace before
+	// the check refuses it. The ceiling is the one key the store's Init
+	// tolerates, so on the installation's own cluster it is harmless, and
+	// fdbkv has no open that skips it: no Now may precede a durable ceiling
+	// (RFC 16 §4.1). Overturned when an operator reports the stray key, or
+	// when a cluster can hold several installations under prefixes: then the
+	// check needs a read-only path through fdbkv.
 	db, err := fdbkv.Open(ctx, fdbkv.Options{
 		ClusterFile: cf,
+		TLS:         fdbkv.TLS(cfg.Metadata.FoundationDB.TLS),
 		NodeID:      cfg.Node.ID,
 		Clock:       clock.Now,
 	})

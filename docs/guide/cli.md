@@ -439,6 +439,8 @@ Global flags:
     - [`dfsctl group remove-user`](#dfsctl-group-remove-user) — Remove a user from a group
   - [`dfsctl login`](#dfsctl-login) — Authenticate with DittoFS server
   - [`dfsctl logout`](#dfsctl-logout) — Clear stored credentials
+  - [`dfsctl password`](#dfsctl-password) — Manage your own password
+    - [`dfsctl password change`](#dfsctl-password-change) — Change the signed-in account's password
   - [`dfsctl quota`](#dfsctl-quota) — Per-identity quota management
     - [`dfsctl quota list`](#dfsctl-quota-list) — List all quotas on a share
     - [`dfsctl quota remove`](#dfsctl-quota-remove) — Remove a per-identity quota
@@ -486,10 +488,8 @@ Use "dfsctl [command] --help" for more information about a command.
 Flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -535,10 +535,8 @@ dfsctl completion powershell > dfsctl.ps1
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -573,10 +571,8 @@ dfsctl context remove staging
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -605,10 +601,8 @@ dfsctl context current --output json
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -637,10 +631,8 @@ dfsctl context list -o json
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -675,10 +667,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -707,10 +697,8 @@ dfsctl context rename dev local-dev
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -739,10 +727,8 @@ dfsctl context use local-dev
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -787,10 +773,8 @@ dfsctl group remove editors
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -822,10 +806,8 @@ dfsctl group get editors
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -866,10 +848,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -912,10 +892,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -951,10 +929,8 @@ dfsctl group get editors -o yaml
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -986,10 +962,8 @@ dfsctl group list -o yaml
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1026,10 +1000,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1061,10 +1033,8 @@ dfsctl group get editors
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1072,11 +1042,15 @@ Global flags:
 
 Authenticate with DittoFS server
 
-Authenticate with a DittoFS server and store credentials locally.
+Sign in to a DittoFS server and keep the session in a named context.
 
-Not available until the CLI is rebuilt on the v2 API: signing in returns with
-that API's accounts. Credentials are kept in ~/.config/dfsctl/config.json under
-a named context, which the context subcommand manages.
+The server is an https URL, an http URL on a loopback address, or the path of
+the node's local socket. The password is read from a prompt, or from the file
+--password-file names; --token-file signs in with an API token instead. The
+context keeps the server, the account, the CA bundle --cacert names and the
+session's tokens, in a file only its owner can read; later commands refresh
+the session themselves. Without --server, --cacert or --username, login reuses
+the context's.
 
 ```
 dfsctl login [flags]
@@ -1085,27 +1059,31 @@ dfsctl login [flags]
 **Examples:**
 
 ```bash
-# First login to a local server (prompts for password)
-dfsctl login --server http://localhost:8080 --username admin
+# Sign in to a node through its local socket (prompts for the password)
+dfsctl login --server /run/dittofs/api.sock --username admin
 
-# Login to a remote server whose certificate a private CA signs
+# Sign in to a remote server whose certificate a private CA signs
 dfsctl login --server https://dfs.example.com --username admin --cacert ca.pem
 
-# Login passing password on the command line (less secure; avoid in shared environments)
-dfsctl login --server http://localhost:8080 -u admin -p secret
+# Sign in from a script
+dfsctl login --server https://dfs.example.com -u admin --password-file pw.txt
 
-# Re-login to the already-stored server (password prompt only)
+# Use an API token in a context of its own
+dfsctl login --server https://dfs.example.com --token-file token.txt -c ci
+
+# Sign in again to the current context (password prompt only)
 dfsctl login
 ```
 
 Flags:
 
 ```
-      --cacert string     Path to a PEM CA bundle trusted for the server certificate
-  -c, --context string    Context name (defaults to current or auto-generated)
-  -p, --password string   Password
-      --server string     Server URL (default "http://localhost:8080")
-  -u, --username string   Username
+      --cacert string          Path to a PEM CA bundle trusted for the server certificate
+  -c, --context string         Context name (defaults to the current one, or "default")
+      --password-file string   File holding the password (prompts without it)
+      --server string          Server URL or local socket path (defaults to the context's)
+      --token-file string      File holding an API token to sign in with instead of a password
+  -u, --username string        Username
 ```
 
 Global flags:
@@ -1120,12 +1098,15 @@ Global flags:
 
 Clear stored credentials
 
-Clear stored credentials for the current context.
+End the current context's session and clear its tokens.
 
-Removes the access and refresh tokens from the active context in
-~/.config/dfsctl/config.json but preserves the server URL and context name so
-you can re-authenticate quickly with dfsctl login. To switch between contexts
-or remove a context entirely, use the dfsctl context subcommand.
+The server is asked to end the session, then the tokens are removed from the
+context; if the server cannot be reached the context keeps them, the only
+handle on the live session, and logout fails so it can be run again. A
+context signed out keeps its server, account and CA bundle so dfsctl login
+signs in again with only a password. A context signed in with an API token only forgets
+the token, which stays valid until it is revoked. To switch between contexts or
+remove one entirely, use the context subcommand.
 
 ```
 dfsctl logout [flags]
@@ -1144,10 +1125,65 @@ dfsctl logout && dfsctl login --username operator
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl password`
+
+Manage your own password
+
+```
+dfsctl password [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl password change`
+
+Change the signed-in account's password
+
+Change the password of the account the current context is signed in as.
+
+The current password and the new one are read from prompts, the new one twice,
+or from the files --current-password-file and --new-password-file name. The
+change ends every other session of the account; the context keeps the new
+session the server answers. An account whose password must change can make
+this call, and sign out, and nothing else until it does.
+
+```
+dfsctl password change [flags]
+```
+
+**Examples:**
+
+```bash
+# Change the password interactively
+dfsctl password change
+
+# Change it from a script
+dfsctl password change --current-password-file old.txt --new-password-file new.txt
+```
+
+Flags:
+
+```
+      --current-password-file string   File holding the current password (prompts without it)
+      --new-password-file string       File holding the new password (prompts twice without it)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
   -v, --verbose         Enable verbose output
 ```
 
@@ -1187,10 +1223,8 @@ dfsctl quota remove /archive --scope user --id 1000
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1225,10 +1259,8 @@ dfsctl quota list /archive -o yaml
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1270,10 +1302,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1321,10 +1351,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1376,10 +1404,8 @@ dfsctl share permission grant /archive --user alice --level read-write
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1457,10 +1483,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1496,10 +1520,8 @@ dfsctl share disable /archive -o json
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1578,10 +1600,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1612,10 +1632,8 @@ dfsctl share enable /archive -o json
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1658,10 +1676,8 @@ dfsctl share list -o yaml
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1724,10 +1740,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1764,10 +1778,8 @@ dfsctl share nfs-config set /export --netgroup ""
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1817,10 +1829,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1851,10 +1861,8 @@ dfsctl share nfs-config show /export -o json
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1890,10 +1898,8 @@ dfsctl share permission list /archive
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1955,10 +1961,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -1993,10 +1997,8 @@ dfsctl share permission list /archive -o yaml
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2042,10 +2044,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2090,10 +2090,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2128,10 +2126,8 @@ dfsctl share show /archive -o yaml
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2159,18 +2155,13 @@ dfsctl status
 
 # Emit machine-readable JSON output
 dfsctl status -o json
-
-# Check a specific server without logging in (token fetched from stored context)
-dfsctl status --server http://dfs.example.com:8080
 ```
 
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2213,10 +2204,8 @@ dfsctl user remove alice
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2254,10 +2243,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2311,10 +2298,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2365,10 +2350,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2404,10 +2387,8 @@ dfsctl user get alice -o yaml
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2440,10 +2421,8 @@ dfsctl user list -o yaml
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2480,10 +2459,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2520,10 +2497,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 
@@ -2559,10 +2534,8 @@ Flags:
 Global flags:
 
 ```
-      --cacert string   Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --no-color        Disable colored output
   -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
   -v, --verbose         Enable verbose output
 ```
 

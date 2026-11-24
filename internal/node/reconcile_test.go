@@ -15,7 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
@@ -110,6 +110,9 @@ func covers(pos, c kvstore.Counters) bool {
 // reconciled through the counters as they are now. After each second it
 // waits for a pass to end, or a second of real time for a loop waiting on a
 // longer backoff, so the clock never runs ahead of a pass's store calls.
+// It can answer before the loop sets its next wait, or with a pass released
+// and not begun, so an Advance right after it may release nothing: a test
+// that needs a pass of its own waits for one with passBegun or walkTurn.
 func caughtUp(t *testing.T, h *nodetest.Harness) {
 	t.Helper()
 	c := counters(t, h)

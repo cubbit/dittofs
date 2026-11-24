@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity"
-	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
+	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -56,15 +56,17 @@ type reconciler struct {
 	// the pass acts on them; binding, when set, with each share before
 	// reconcile binds it, and bound once the engine bound it; applying, when
 	// set, with the counters each apply acts on; waiting, when set, once each
-	// wait of the loop is set on the node's clock; awaited, when set, as each
-	// write's wait for the node to apply it starts; handing, when set, with
-	// each State identity is handed, before its Apply.
+	// wait of the loop is set on the node's clock; passing, when set, once as
+	// each pass of the loop starts, before it reads anything; awaited, when
+	// set, as each write's wait for the node to apply it starts; handing,
+	// when set, with each State identity is handed, before its Apply.
 	awaited  func()
 	paused   func(kvstore.Counters)
 	binding  func(entity.Share)
 	bound    func(entity.Share)
 	applying func(kvstore.Counters)
 	waiting  func()
+	passing  func()
 	handing  func(identity.State)
 	// walking, when set, is called by the settings walk each time it waits on
 	// the store for its next row, with the rows it has received.
@@ -557,6 +559,9 @@ func (n *Node) reconcileLoop(ctx context.Context, loop *health.Loop) {
 			return
 		case <-next:
 		case <-r.wake:
+		}
+		if r.passing != nil {
+			r.passing()
 		}
 		loop.Idle()
 		fault.observed(ctx, n, stepReconcile, n.pass(ctx, loop), slog.Attr{})

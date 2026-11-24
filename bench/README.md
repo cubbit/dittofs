@@ -52,7 +52,7 @@ Per-package `Benchmark*` functions (engine, journal, metadata store) run via
 `go test -bench` in their home package — not here:
 
 ```sh
-go test -bench=. -benchmem -run=^$ ./pkg/block/engine/    # the engine's calls
+go test -bench=. -benchmem -run=^$ ./pkg/engine/    # the engine's calls
 go test -bench=. -benchmem -run=^$ ./pkg/metadata/kvstore/ # the metadata store
 ```
 

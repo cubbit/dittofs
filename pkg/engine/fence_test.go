@@ -1,0 +1,1439 @@
+package engine_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
+)
+
+// fenceUnit is the unit over a fault-injecting kv.KV, its log recorded.
+// No real-time bound cuts a store call, so a stall lasts exactly as long as
+// the test clock says. The store's clock stands still: a share added later
+// takes its floor from the store's version, and on the wall clock that floor
+// would run more than half a block of nanoseconds past the limit on a slow
+// host, so a second share's failed Bind would hand its raise to the version
+// limit's retrying raise, fencing the node and leaving it running.
+type fenceUnit struct {
+	*unit
+	faults *kvtest.FaultKV
+	logs   logRecorder
+}
+
+func newFenceUnit(t *testing.T) *fenceUnit {
+	t.Helper()
+	fu := &fenceUnit{logs: newLogRecorder()}
+	frozen := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fu.unit = newUnitWith(t, unitConfig{
+		storeClock: func() time.Time { return frozen },
+		kv: func(k kv.KV) kv.KV {
+			fu.faults = kvtest.NewFaultKV(k)
+			return fu.faults
+		},
+		deps: []func(*engine.Deps){func(d *engine.Deps) { d.Logger = slog.New(fu.logs) }},
+	})
+	fu.e.SetConflictBound(time.Hour)
+	// A test that fails while a store call is held releases it, so the
+	// engine's close, which joins that call, does not wait on the clock.
+	t.Cleanup(func() { fu.clock.Advance(24 * time.Hour) })
+	return fu
+}
+
+// fault replaces the store's fault schedule with rules, delays on the test
+// clock, and answers a channel closed once one of them holds a call: its
+// hold is armed, so a test advancing the clock after it moves a hold that
+// already counts.
+func (u *fenceUnit) fault(t *testing.T, rules ...sim.Rule) <-chan struct{} {
+	t.Helper()
+	c := &holdClock{TestClock: u.clock, armed: make(chan struct{})}
+	s, err := sim.NewSchedule(1, c, rules...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.faults.SetFault(s)
+	return c.armed
+}
+
+// holdClock is a schedule's clock that closes armed once a hold is armed.
+type holdClock struct {
+	*sim.TestClock
+	once  sync.Once
+	armed chan struct{}
+}
+
+func (c *holdClock) After(d time.Duration) <-chan struct{} {
+	ch := c.TestClock.After(d)
+	c.once.Do(func() { close(c.armed) })
+	return ch
+}
+
+// held waits until the fault's hold is armed, failing the test after five
+// seconds as eventually does.
+func held(t *testing.T, armed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-armed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("after 5 s: a write transaction held on the clock")
+	}
+}
+
+// everyUpdate is a rule acting on every write transaction the store runs.
+func everyUpdate(a sim.FaultAction) sim.Rule {
+	return sim.Rule{Op: kvtest.OpUpdate, Key: "*", Action: a}
+}
+
+// nextUpdate is a rule acting on the next write transaction only.
+func nextUpdate(a sim.FaultAction) sim.Rule {
+	r := everyUpdate(a)
+	r.Count = 1
+	return r
+}
+
+// tryWrite writes a byte to f, answering what Write answers.
+func (u *fenceUnit) tryWrite(f entity.FileID) (vfserr.Verifier, error) {
+	return u.e.Write(context.Background(), u.share.ID, f, 0, []byte("x"), engine.WriteOpts{Done: func() {}})
+}
+
+// fenced reports that err is the fence's answer, ErrDelay with DelayCommit.
+func fenced(err error) bool {
+	var d *vfserr.Delay
+	return errors.As(err, &d) && d.Cause == vfserr.DelayCommit
+}
+
+// nodeFenced is node_fenced as Stats reports it.
+func (u *fenceUnit) nodeFenced() (engine.Condition, bool) {
+	for _, c := range u.e.Stats().Node.Conditions {
+		if c.Name == "node_fenced" {
+			return c, true
+		}
+	}
+	return engine.Condition{}, false
+}
+
+// commitInBackground asks f's existence committed now, in a goroutine, and
+// answers its result; the call is cancelled and joined when the test ends.
+func (u *fenceUnit) commitInBackground(t *testing.T, f entity.FileID) <-chan error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Go(func() { done <- u.e.CommitExistence(ctx, u.share.ID, f) })
+	t.Cleanup(func() { cancel(); wg.Wait() })
+	return done
+}
+
+// outstanding waits until a write transaction is outstanding.
+func (u *fenceUnit) outstanding(t *testing.T) {
+	t.Helper()
+	eventually(t, "a write transaction outstanding", func() bool { n, _ := u.e.FenceBusy(); return n > 0 })
+}
+
+// advanceInSteps moves the clock by d a second at a time, letting the
+// engine's timers run between steps.
+func (u *fenceUnit) advanceInSteps(d time.Duration) {
+	for range int(d / time.Second) {
+		u.clock.Advance(time.Second)
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// logged answers the attributes of the first record at level carrying msg.
+func (u *fenceUnit) logged(level slog.Level, msg string) (map[string]slog.Value, bool) {
+	recs := u.logs.records()
+	i := slices.IndexFunc(recs, func(r slog.Record) bool { return r.Level == level && r.Message == msg })
+	if i < 0 {
+		return nil, false
+	}
+	attrs := map[string]slog.Value{}
+	recs[i].Attrs(func(a slog.Attr) bool { attrs[a.Key] = a.Value; return true })
+	return attrs, true
+}
+
+// conditionLogged reports that attrs name node_fenced's condition, subject c
+// and a cause, and carry duration.
+func conditionLogged(attrs map[string]slog.Value, c engine.Condition, duration time.Duration) bool {
+	return attrs["condition"].String() == "node_fenced" && attrs["subject"].String() == c.Subject.ID &&
+		attrs["cause"].Any() != nil && attrs["duration"].Duration() == duration
+}
+
+// A store stalled for 10 s fences nothing; at 31 s writes and stability
+// points answer ErrDelay with DelayCommit, reads are served, node_fenced names
+// the store, the fence is counted once however many writes see it, and its
+// entry is logged at Error. Once the stalled transaction commits, the next
+// write is acknowledged under the same verifier, the lift is logged at Info,
+// and the shard's incarnation and grace instance are as they were. Both logs
+// carry the condition's name, subject and cause; the entry's duration is the
+// time since the last commit, the lift's how long the fence held.
+func TestSelfFenceThreshold(t *testing.T) {
+	u := newFenceUnit(t)
+	ctx := t.Context()
+	a, b := u.create(t, "a"), u.create(t, "b")
+	before, err := u.tryWrite(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shard, err := u.fs.Store.Shard(ctx, u.share.Shard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: 40 * time.Second}))
+	done := u.commitInBackground(t, a)
+	held(t, armed)
+
+	u.clock.Advance(10 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 10s into the stall: %v, want acknowledged", err)
+	}
+
+	u.clock.Advance(21 * time.Second)
+	for range 10 {
+		if _, err := u.tryWrite(b); !fenced(err) {
+			t.Fatalf("a write 31s into the stall: %v, want ErrDelay(DelayCommit)", err)
+		}
+	}
+	if _, _, err := u.e.Commit(ctx, u.share.ID, b, 0, 0); !fenced(err) {
+		t.Errorf("a stability point 31s into the stall: %v, want ErrDelay(DelayCommit)", err)
+	}
+	p := make([]byte, 1)
+	if n, err := u.e.Read(ctx, u.share.ID, a, 0, p); err != nil || n != 1 || p[0] != 'x' {
+		t.Errorf("a read while fenced: %d %q %v, want the byte written", n, p[:n], err)
+	}
+	c, ok := u.nodeFenced()
+	if !ok || c.Subject.Scope != engine.ScopeNode || c.Cause == nil {
+		t.Errorf("Stats while fenced: node_fenced %v %+v, want it raised for the node, naming a cause", ok, c)
+	}
+	if n := u.e.Stats().SelfFences; n != 1 {
+		t.Errorf("engine_self_fences_total %d after one fence seen by many writes, want 1", n)
+	}
+	if attrs, ok := u.logged(slog.LevelError, "node_fenced: the metadata store committed no write transaction"); !ok || !conditionLogged(attrs, c, 31*time.Second) {
+		t.Errorf("entering the fence logged %v %v at Error, want node_fenced, the node, a cause and 31s", ok, attrs)
+	}
+
+	u.clock.Advance(9 * time.Second) // the stall ends and its transaction commits
+	if err := <-done; err != nil {
+		t.Fatalf("the stalled commit: %v", err)
+	}
+	after, err := u.tryWrite(b)
+	if err != nil {
+		t.Fatalf("a write once the stall committed: %v, want acknowledged", err)
+	}
+	if after != before {
+		t.Error("the verifier changed across the fence")
+	}
+	if _, ok := u.nodeFenced(); ok {
+		t.Error("node_fenced still raised after a commit")
+	}
+	if attrs, ok := u.logged(slog.LevelInfo, "node_fenced cleared"); !ok || !conditionLogged(attrs, c, 9*time.Second) {
+		t.Errorf("leaving the fence logged %v %v at Info, want node_fenced, the node, a cause and 9s", ok, attrs)
+	}
+	if got, err := u.fs.Store.Shard(ctx, u.share.Shard); err != nil || got.Incarnation != shard.Incarnation || got.GraceInstance != shard.GraceInstance {
+		t.Errorf("the shard after the fence: %+v %v, want incarnation %d and grace %d as before", got, err, shard.Incarnation, shard.GraceInstance)
+	}
+}
+
+// Every write transaction failing at once, reads served: the node fences 30 s
+// after its first failed attempt began, and clears once one commits. A fence
+// that triggers on no transaction completing never fires here.
+func TestSelfFenceOnAnErroringStore(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	done := u.commitInBackground(t, a)
+	eventually(t, "the commit failing", func() bool { _, failing := u.e.FenceBusy(); return failing })
+
+	// In steps, so the group commit retries throughout, each attempt failing.
+	u.advanceInSteps(29 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 29s into the failures: %v, want acknowledged", err)
+	}
+	u.advanceInSteps(2 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Fatalf("a write 31s into the failures: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if c, ok := u.nodeFenced(); !ok || !errors.Is(c.Cause, errInjected) {
+		t.Errorf("node_fenced %v naming %v, want the store's error", ok, c.Cause)
+	}
+
+	u.faults.SetFault(nil)
+	u.until(t, "a write acknowledged once the store commits", func() bool { _, err := u.tryWrite(b); return err == nil })
+	// The write can be acknowledged on a commit other than the stalled
+	// one's, the marks retried alone on a backoff of their own, while the
+	// stalled commit's retry is still due on the clock: keep moving it.
+	if err := u.answered(t, "the commit answered", done); err != nil {
+		t.Errorf("the commit once the store answers: %v", err)
+	}
+}
+
+// A node idle for a minute, with no write transaction outstanding or
+// failing, does not fence.
+func TestSelfFenceNotOnAnIdleNode(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	u.clock.Advance(time.Minute)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Errorf("a write after an idle minute: %v, want acknowledged", err)
+	}
+	if n := u.e.Stats().SelfFences; n != 0 {
+		t.Errorf("engine_self_fences_total %d, want 0", n)
+	}
+}
+
+// After an idle minute, a write transaction held for 1 s starts a fresh 30 s:
+// a second write in that second is acknowledged. A fence timed from the last
+// commit alone fires on it.
+func TestSelfFenceTimesAFirstTransactionFromItsStart(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.clock.Advance(time.Minute)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: time.Second}))
+	done := u.commitInBackground(t, a)
+	held(t, armed)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a second write while the first's commit is held: %v, want acknowledged", err)
+	}
+	u.clock.Advance(time.Second)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := u.e.Stats().SelfFences; n != 0 {
+		t.Errorf("engine_self_fences_total %d, want 0", n)
+	}
+}
+
+// A one-shot call that failed, Bind's raise, and then an idle minute: no
+// fence, as nothing retries it.
+func TestSelfFenceNotAfterAFailedOneShot(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	headroom := u.limit - u.j.Stats().NextVersion.Counter
+	second := enginetest.AddShare(t, u.fs.Store, "second", 1<<30)
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	if err := u.e.Bind(t.Context(), second); err == nil {
+		t.Fatal("Bind over a failing store succeeded")
+	}
+	// A failed Bind whose floor spent half the headroom hands its raise to the
+	// retrying raise, which this test is not about.
+	if next := u.j.Stats().NextVersion.Counter; next > u.limit-headroom/2 {
+		t.Fatalf("the failed Bind moved the next version to %d, want at most %d, half the headroom below the limit %d",
+			next, u.limit-headroom/2, u.limit)
+	}
+	u.clock.Advance(time.Minute)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Errorf("a write an idle minute after the failed Bind: %v, want acknowledged", err)
+	}
+}
+
+// A one-shot call held past 30 s fences the node, and once it ends by its
+// caller's context, no transaction outstanding or failing, the fence lifts
+// with no commit: Bind with a 35 s context while the store stalls 40 s.
+func TestSelfFenceLiftsWhenAOneShotEnds(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	second := enginetest.AddShare(t, u.fs.Store, "second", 1<<30)
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: 40 * time.Second, Err: context.DeadlineExceeded}))
+	ctx := &endingCtx{Context: context.Background(), done: make(chan struct{})}
+	bound := make(chan error, 1)
+	go func() { bound <- u.e.Bind(ctx, second) }()
+	held(t, armed)
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(a); !fenced(err) {
+		t.Fatalf("a write with Bind's raise stalled 31s: %v, want ErrDelay(DelayCommit)", err)
+	}
+	u.clock.Advance(4 * time.Second)
+	ctx.end(context.DeadlineExceeded)
+	u.clock.Advance(5 * time.Second) // the store answers
+	if err := <-bound; err == nil {
+		t.Fatal("Bind past its deadline succeeded")
+	}
+	if _, err := u.tryWrite(a); err != nil {
+		t.Errorf("a write once the one-shot ended: %v, want acknowledged", err)
+	}
+}
+
+// The version limit's raise, a retrying owner's, failing at once for 31 s
+// with no write pending fences the node, and its commit clears it. A recorder
+// that sorts by method, counting RaiseVersionLimits as Bind's one-shot, never
+// fences.
+func TestSelfFenceOnARetriedRaise(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	_, _, lc := u.e.StoreViews()
+	ctx := engine.WithRetryingOwner(t.Context())
+	to, err := lc.VersionLimits(ctx, []entity.ShareID{u.share.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	if err := lc.RaiseVersionLimits(ctx, to); !errors.Is(err, errInjected) {
+		t.Fatalf("the raise over a failing store: %v", err)
+	}
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(a); !fenced(err) {
+		t.Fatalf("a write 31s into the raise failing: %v, want ErrDelay(DelayCommit)", err)
+	}
+	u.faults.SetFault(nil)
+	if err := lc.RaiseVersionLimits(ctx, to); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.tryWrite(a); err != nil {
+		t.Errorf("a write once the raise committed: %v, want acknowledged", err)
+	}
+}
+
+// The removal loop's prune, a retrying owner's, failing for 31 s fences the
+// node: the content view New wires counts toward the fence.
+func TestSelfFenceOnAFailingPrune(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	_, ct, _ := u.e.StoreViews()
+	ctx := engine.WithRetryingOwner(t.Context())
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	if err := ct.PruneRemovals(ctx, u.share.ID, a, entity.JournalVersion{15: 1}); !errors.Is(err, errInjected) {
+		t.Fatalf("the prune over a failing store: %v", err)
+	}
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(a); !fenced(err) {
+		t.Fatalf("a write 31s into the prune failing: %v, want ErrDelay(DelayCommit)", err)
+	}
+}
+
+// A phase 2 run whose Resume committed a batch before a later one failed is
+// a commit: the bound restarts from it, though the run answers the store's
+// error and its owner stays failing at the store.
+func TestSelfFenceCountsAnAdvancedPhase2AsACommit(t *testing.T) {
+	u := newCutUnit(t)
+	runs := func() map[string]int64 { return u.e.Stats().RemovalRuns }
+	f := u.create(t, "f")
+	u.holed(t, f, 3)
+	u.fault(t, removalSet(2, 0, errInjected)) // every batch fails, so no run advances
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a failed phase 2 run", func() bool { return runs()["error"] > 0 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(20 * time.Second)
+	eventually(t, "a second failed phase 2 run", func() bool { return runs()["error"] > 1 })
+	// The next run, a second on, commits its first batch and fails its second.
+	u.fault(t, removalSet(2, 0, errInjected))
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(time.Second)
+	eventually(t, "an advanced phase 2 run", func() bool { return runs()["advanced"] == 1 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(29 * time.Second)
+	if c, ok := u.nodeFenced(); ok {
+		t.Fatalf("fenced 29 s after a phase 2 run committed a batch, 50 s after the truncate: %v", c)
+	}
+	u.clock.Advance(2 * time.Second)
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("not fenced 31 s after the phase 2 run committed a batch, its owner failing since")
+	}
+}
+
+// fence fences the node: the version limit's raise, a retrying owner's,
+// failing for 31 s.
+func (u *fenceUnit) fence(t *testing.T) {
+	t.Helper()
+	_, _, lc := u.e.StoreViews()
+	ctx := engine.WithRetryingOwner(t.Context())
+	to, err := lc.VersionLimits(ctx, []entity.ShareID{u.share.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	if err := lc.RaiseVersionLimits(ctx, to); !errors.Is(err, errInjected) {
+		t.Fatalf("the raise over a failing store: %v", err)
+	}
+	u.clock.Advance(31 * time.Second)
+}
+
+// On a fenced node, a write and a stable Commit over a read-only journal
+// answer as the journal does, ErrReadOnly for EROFS and retry-later on the
+// journal for any other cause, ahead of the fence's own answer; a share not
+// attached answers its own refusal ahead of both.
+func TestSelfFenceAnswersAfterAReadOnlyJournal(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		cause error // nil leaves the journal writable
+		want  func(error) bool
+	}{
+		{"EROFS", fmt.Errorf("write segment: %w", syscall.EROFS), func(err error) bool { return errors.Is(err, vfserr.ErrReadOnly) }},
+		{"EIO", syscall.EIO, func(err error) bool { return errors.Is(err, &vfserr.Delay{Cause: vfserr.DelayJournal}) }},
+		{"writable", nil, fenced},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			u := newFenceUnit(t)
+			a := u.create(t, "a")
+			u.fence(t)
+			if c.cause != nil {
+				u.j.ReadOnly(c.cause)
+			}
+			if _, err := u.tryWrite(a); !c.want(err) {
+				t.Errorf("Write: %v", err)
+			}
+			if _, _, err := u.e.Commit(t.Context(), u.share.ID, a, 0, 1); !c.want(err) {
+				t.Errorf("Commit: %v", err)
+			}
+			if err := u.e.CommitExistence(t.Context(), u.share.ID, a); !c.want(err) {
+				t.Errorf("CommitExistence: %v", err)
+			}
+			frozen := &vfserr.Delay{Cause: vfserr.DelayFrozen}
+			if _, err := u.e.Write(t.Context(), entity.ShareID{0xff}, a, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); !errors.Is(err, frozen) {
+				t.Errorf("Write to a share not attached: %v, want ErrDelay(DelayFrozen)", err)
+			}
+		})
+	}
+}
+
+// fileRecord is file's record key as the fault schedule names it.
+func fileRecord(share entity.ShareID, file entity.FileID) string {
+	return keys.Describe(keys.ID(keys.ID([]byte{keys.KindF}, share[:]), file[:]))
+}
+
+// One file's existence commit failing alone at every attempt, its record's
+// read answering not found, and no other write for a minute: no fence, and
+// existence_commit_failing names the file. Counting a file's own failure as
+// the store's fences here.
+func TestSelfFenceNotOnAFilesOwnFailure(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: fileRecord(u.share.ID, a), Action: sim.FaultAction{Err: kv.ErrNotFound}})
+	u.commitInBackground(t, a)
+	eventually(t, "existence_commit_failing names the file", func() bool { return u.e.Failing(u.rec, a) })
+	u.advanceInSteps(time.Minute)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a write after a minute of one file failing: %v, want acknowledged", err)
+	}
+	if !u.e.Failing(u.rec, a) {
+		t.Error("existence_commit_failing no longer names the file")
+	}
+}
+
+// One file's existence commit conflicting at every attempt, and no other
+// write for a minute: no fence. Counting a conflict as the store's failure
+// fences here. The journal's marks conflict too, so the group commit's marks
+// written alone commit nothing that would restart the fence's clock.
+func TestSelfFenceNotOnAConflict(t *testing.T) {
+	u := newFenceUnit(t)
+	u.e.SetConflictBound(20 * time.Millisecond)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t,
+		sim.Rule{Op: kvtest.OpGet, Key: fileRecord(u.share.ID, a), Action: sim.FaultAction{Err: kv.ErrConflict}},
+		sim.Rule{Op: kvtest.OpGet, Key: "J‖*", Action: sim.FaultAction{Err: kv.ErrConflict}},
+	)
+	u.commitInBackground(t, a)
+	eventually(t, "the conflicting file named failing", func() bool { return u.e.Failing(u.rec, a) })
+	u.advanceInSteps(time.Minute)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a write after a minute of one file conflicting: %v, want acknowledged", err)
+	}
+}
+
+// A store error ahead of a long conflict does not fence the node: the
+// conflict is the latest attempt, and it failed on its own.
+func TestSelfFenceNotOnAConflictAfterAStoreError(t *testing.T) {
+	u := newFenceUnit(t)
+	u.e.SetConflictBound(20 * time.Millisecond)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t,
+		nextUpdate(sim.FaultAction{Err: errInjected}),
+		sim.Rule{Op: kvtest.OpGet, Key: fileRecord(u.share.ID, a), Action: sim.FaultAction{Err: kv.ErrConflict}},
+		sim.Rule{Op: kvtest.OpGet, Key: "J‖*", Action: sim.FaultAction{Err: kv.ErrConflict}},
+	)
+	u.commitInBackground(t, a)
+	eventually(t, "the conflicting file named failing", func() bool { return u.e.Failing(u.rec, a) })
+	u.advanceInSteps(time.Minute)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a write after one store error then a minute of conflicts: %v, want acknowledged", err)
+	}
+}
+
+// One owner's conflicts do not hide another's store failure: the raise
+// failing at the store for 140 s, a prune that conflicts every 15 s beside
+// it, fences the node. A failing flag shared by every owner fences nothing
+// here, as each conflict clears it and each failed raise then starts a fresh
+// 30 s.
+func TestSelfFenceNotHiddenByAnotherOwnersConflict(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	_, ct, lc := u.e.StoreViews()
+	raise, prune := engine.WithRetryingOwner(t.Context()), engine.WithRetryingOwner(t.Context())
+	to, err := lc.VersionLimits(raise, []entity.ShareID{u.share.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raiseFails := func() {
+		t.Helper()
+		u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+		if err := lc.RaiseVersionLimits(raise, to); !errors.Is(err, errInjected) {
+			t.Fatalf("the raise over a failing store: %v", err)
+		}
+	}
+	for range 8 {
+		raiseFails()
+		u.clock.Advance(10 * time.Second)
+		u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: "*", Action: sim.FaultAction{Err: kv.ErrConflict}})
+		bctx, cancel := context.WithTimeout(prune, 50*time.Millisecond)
+		if err := ct.PruneRemovals(bctx, u.share.ID, a, entity.JournalVersion{15: 1}); !errors.Is(err, kvstore.ErrConflict) {
+			cancel()
+			t.Fatalf("the prune over a conflicting store: %v", err)
+		}
+		cancel()
+		u.clock.Advance(5 * time.Second)
+	}
+	raiseFails()
+	u.clock.Advance(20 * time.Second)
+	if _, err := u.tryWrite(a); !fenced(err) {
+		t.Errorf("a write 140s into the raise failing, a prune conflicting beside it: %v, want ErrDelay(DelayCommit)", err)
+	}
+}
+
+// A group commit that stops while failing at the store leaves no failing
+// behind: a minute later the idle node is not fenced.
+func TestSelfFenceNotLeftByAStoppedOwner(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	u.commitInBackground(t, a)
+	eventually(t, "the group commit failing at the store", func() bool { _, failing := u.e.FenceBusy(); return failing })
+	u.e.CloseGroupCommits()
+	u.clock.Advance(time.Minute)
+	if c, ok := u.nodeFenced(); ok {
+		t.Errorf("node_fenced %v a minute after the failing group commit stopped, want none", c)
+	}
+}
+
+// A commit the store reached through conflicts it retried counts as a
+// commit: it restarts the 30 s of a retrying owner failing beside it.
+func TestSelfFenceCountsAConflictRetriedToSuccess(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	ex, _, lc := u.e.StoreViews()
+	ctx := engine.WithRetryingOwner(t.Context())
+	to, err := lc.VersionLimits(ctx, []entity.ShareID{u.share.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raiseFails := func() {
+		t.Helper()
+		u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+		if err := lc.RaiseVersionLimits(ctx, to); !errors.Is(err, errInjected) {
+			t.Fatalf("the raise over a failing store: %v", err)
+		}
+	}
+	raiseFails()
+	u.clock.Advance(20 * time.Second)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	var ops []kvstore.PendingOp
+	for _, op := range u.e.Pending(a) {
+		ops = append(ops, kvstore.PendingOp{Version: entity.JournalVersion(op.Version.Bytes()), Kind: kvstore.OpWrite, Extent: entity.Extent{Offset: op.Off, Length: op.Len}, Mtime: op.At, Ctime: op.At})
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: "*", Count: 2, Action: sim.FaultAction{Err: kv.ErrConflict}})
+	if failed, err := ex.Commit(ctx, []kvstore.PendingExistence{{Share: u.share.ID, File: a, Ops: ops}}, nil); err != nil || len(failed) > 0 {
+		t.Fatalf("the commit through two conflicts: %v %v", failed, err)
+	}
+	raiseFails()
+
+	u.clock.Advance(25 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 25s after the commit: %v, want acknowledged", err)
+	}
+	u.clock.Advance(6 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s after the commit, the raise failing: %v, want ErrDelay(DelayCommit)", err)
+	}
+}
+
+// Commits landing while 100 goroutines read the gate, a one-shot call held
+// outstanding throughout: no reader is fenced, since each commit restarts the
+// 30 s, and the race detector sees the fence's state read and written at once.
+func TestSelfFenceGateUnderRace(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	_, _, lc := u.e.StoreViews()
+	to, err := lc.VersionLimits(t.Context(), []entity.ShareID{u.share.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := enginetest.AddShare(t, u.fs.Store, "second", 1<<30)
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: time.Hour}))
+	bound := make(chan error, 1)
+	go func() { bound <- u.e.Bind(context.Background(), second) }()
+	held(t, armed)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var seen error
+	for range 100 {
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if _, err := u.e.Write(context.Background(), u.share.ID, a, 0, nil, engine.WriteOpts{Done: func() {}}); err != nil {
+					mu.Lock()
+					seen = err
+					mu.Unlock()
+				}
+			}
+		})
+	}
+	for range 100 {
+		if err := lc.RaiseVersionLimits(t.Context(), to); err != nil {
+			t.Error(err)
+		}
+		u.clock.Advance(time.Second)
+	}
+	close(stop)
+	wg.Wait()
+	if seen != nil {
+		t.Errorf("a gate read while commits landed answered %v", seen)
+	}
+	u.clock.Advance(time.Hour)
+	if err := <-bound; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// corrupt stores a record of file at offset 0 under sub that does not
+// decode: a hole (keys.FH) fails every existence commit of the file as an
+// error of the whole call (RFC 16's store reads the holes over each write),
+// and a ref (keys.FRef) every phase 2 batch of a removal over it. repair
+// deletes the record.
+func (u *fenceUnit) corrupt(t *testing.T, file entity.FileID, sub byte) (repair func()) {
+	t.Helper()
+	key := keys.Uint64(append(keys.ID(keys.ID([]byte{keys.KindF}, u.share.ID[:]), file[:]), sub), 0)
+	if err := u.faults.Update(t.Context(), func(tx kv.Txn) error { return tx.Set(key, []byte{0xff}) }); err != nil {
+		t.Fatal(err)
+	}
+	// The store's check at the test's end decodes refs, so the record never
+	// outlives the test.
+	repair = func() {
+		if err := u.faults.Update(context.Background(), func(tx kv.Txn) error { return tx.Delete(key) }); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(repair)
+	return repair
+}
+
+// A file whose hole record does not decode fails each existence commit as an
+// error of the whole call, which the group commit's split narrows to it.
+// With its retries held off for 31 s and nothing else
+// written, the node is not fenced: another file's write is acknowledged and
+// its existence commits, while the corrupt file stays named failing and its
+// stability point answers retry-later. Counting the narrowed error as the
+// store's failure fences here.
+func TestSelfFenceNotOnAFilesUndecodableRecord(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.corrupt(t, a, keys.FH)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	var hold atomic.Bool
+	held, resume := make(chan struct{}, 1), make(chan struct{})
+	u.e.OnLoop(func() {
+		if hold.Load() {
+			select {
+			case held <- struct{}{}:
+			default:
+			}
+			<-resume
+		}
+	})
+	u.commitInBackground(t, a)
+	eventually(t, "existence_commit_failing names the corrupt file", func() bool { return u.e.Failing(u.rec, a) })
+	hold.Store(true)
+	t.Cleanup(func() { hold.Store(false); close(resume) })
+	// The loop is held at its next pass, after a retry the clock may still
+	// have to release first.
+	for waiting := true; waiting; {
+		select {
+		case <-held:
+			waiting = false
+		case <-time.After(time.Millisecond):
+			u.clock.Advance(time.Second)
+		}
+	}
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 31s after the corrupt file's last attempt: %v, want acknowledged", err)
+	}
+	if c, ok := u.nodeFenced(); ok {
+		t.Fatalf("node_fenced %v, want none", c)
+	}
+	hold.Store(false)
+	resume <- struct{}{}
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, b); err != nil {
+		t.Errorf("the other file's existence commit: %v, want committed", err)
+	}
+	if !u.e.Failing(u.rec, a) {
+		t.Error("existence_commit_failing no longer names the corrupt file")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if err := u.e.CommitExistence(ctx, u.share.ID, a); !errors.Is(err, &vfserr.Delay{Cause: vfserr.DelayCommit}) {
+		t.Errorf("the corrupt file's stability point: %v, want ErrDelay(DelayCommit)", err)
+	}
+}
+
+// A truncate whose phase 2 fails on a ref record of its file that does not
+// decode is retried at its backoff and raises removal_stalled naming the
+// file, and with nothing else written for 31 s the node is not fenced:
+// another file's write is acknowledged and its existence commits. Once the
+// record is repaired the removal finishes. Counting the file's error as the
+// store's failure fences here.
+func TestSelfFenceNotOnARemovalsUndecodableRecord(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.write(t, a, 0, fill(16, 'a'))
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, a); err != nil {
+		t.Fatal(err)
+	}
+	repair := u.corrupt(t, a, keys.FRef)
+	if err := u.e.Truncate(t.Context(), u.share.ID, a, 0); err != nil {
+		t.Fatalf("the truncate's phase 1: %v", err)
+	}
+	u.until(t, "the truncate's phase 2 removal_stalled", func() bool { return u.e.RemovalStalled(a) })
+
+	// In steps, so phase 2 retries throughout, each attempt failing.
+	u.advanceInSteps(31 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 31s into the removal's failures: %v, want acknowledged", err)
+	}
+	if c, ok := u.nodeFenced(); ok {
+		t.Fatalf("node_fenced %v, want none", c)
+	}
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, b); err != nil {
+		t.Errorf("the other file's existence commit: %v, want committed", err)
+	}
+	if !u.e.RemovalStalled(a) {
+		t.Error("removal_stalled no longer names the corrupt file")
+	}
+	repair()
+	u.until(t, "the removal finishes once its record is repaired", func() bool { return !u.e.RemovalStalled(a) && u.e.RemovalsPending() == 0 })
+}
+
+// holdAfterBatch holds the group commit's loop at its pass after the first
+// batch it takes, so no retry runs after that batch, and answers a wait for
+// the hold, which moves the clock meanwhile so a batch due by age is taken.
+// The loop is released when the test ends.
+func (u *fenceUnit) holdAfterBatch(t *testing.T) (wait func()) {
+	t.Helper()
+	var took atomic.Bool
+	var once sync.Once
+	held, release := make(chan struct{}), make(chan struct{})
+	u.e.OnTake(func() { took.Store(true) })
+	u.e.OnLoop(func() {
+		if took.Load() {
+			once.Do(func() { close(held); <-release })
+		}
+	})
+	t.Cleanup(func() { close(release) })
+	return func() {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			select {
+			case <-held:
+				return
+			case <-time.After(time.Millisecond):
+				if time.Now().After(deadline) {
+					t.Fatal("after 5 s the group commit's loop never passed again after its first batch")
+				}
+				u.clock.Advance(100 * time.Millisecond)
+			}
+		}
+	}
+}
+
+// A file whose hole record does not decode, with no marks beside it, as
+// marks stop once another open moved the journal's open generation: no
+// call of the batch commits, yet with the loop held after it and 31 s
+// passing the node is not fenced, and the file stays named failing. Counting
+// the file's undecodable record as the store's failure fences here.
+func TestSelfFenceNotOnAnUndecodableRecordWithMarksStopped(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.corrupt(t, a, keys.FH)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: "J‖*", Count: 1, Action: sim.FaultAction{Err: kvstore.ErrOpenGenMoved}})
+	wait := u.holdAfterBatch(t)
+	u.commitInBackground(t, a)
+	wait()
+	if !u.e.Failing(u.rec, a) {
+		t.Fatal("existence_commit_failing does not name the corrupt file after the batch")
+	}
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a write 31s after the batch: %v, want acknowledged", err)
+	}
+	if f, ok := u.nodeFenced(); ok {
+		t.Errorf("node_fenced %v, want none", f)
+	}
+}
+
+// A file whose existence commits hit the deadline while the marks sent alone
+// commit: a deadline is the store's, whatever else of the batch committed.
+// With the loop held after that batch, the node fences 31 s on, naming the
+// deadline. Releasing the owner whenever another call of the batch
+// committed, or reading only the call's error, fences nothing here.
+func TestSelfFenceOnADeadlineBesideCommittedMarks(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: fileRecord(u.share.ID, a), Action: sim.FaultAction{Err: context.DeadlineExceeded}})
+	wait := u.holdAfterBatch(t)
+	u.commitInBackground(t, a)
+	wait()
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s after the batch: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if f, ok := u.nodeFenced(); !ok || !errors.Is(f.Cause, context.DeadlineExceeded) {
+		t.Errorf("node_fenced %v naming %v, want the deadline", ok, f.Cause)
+	}
+}
+
+// A store that fails every write setting a key with an error of its own,
+// as a full device or a read-only remount does, while a marks write that
+// sets none commits, as one over the real journal, which reports no marks,
+// does: the node fences 30 s after the first failed attempt. Releasing the
+// owner once the marks sent alone commit fences nothing here.
+func TestSelfFenceOnAStoreRefusingWritesBesideEmptyMarks(t *testing.T) {
+	u := newFenceUnit(t)
+	u.rec.noMarks.Store(true)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpSet, Key: "*", Action: sim.FaultAction{Err: syscall.ENOSPC}})
+	u.commitInBackground(t, a)
+	eventually(t, "existence_commit_failing names the file", func() bool { return u.e.Failing(u.rec, a) })
+
+	// In steps, so the group commit retries throughout, its marks committing.
+	u.advanceInSteps(29 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 29s into the failures: %v, want acknowledged", err)
+	}
+	u.advanceInSteps(2 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s into the failures: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if c, ok := u.nodeFenced(); !ok || !errors.Is(c.Cause, syscall.ENOSPC) {
+		t.Errorf("node_fenced %v naming %v, want the store's error", ok, c.Cause)
+	}
+}
+
+// A file whose hole record does not decode beside marks the store fails to
+// write: the marks' error is the store's, so the node fences 31 s after the
+// batch, with the loop held after it. Reading only the files' errors, all
+// their own, fences nothing here.
+func TestSelfFenceOnFailingMarksBesideAnUndecodableRecord(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.corrupt(t, a, keys.FH)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpGet, Key: "J‖*", Action: sim.FaultAction{Err: errInjected}})
+	wait := u.holdAfterBatch(t)
+	u.commitInBackground(t, a)
+	wait()
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s after the batch: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("node_fenced not raised 31s after the batch")
+	}
+}
+
+// A store refusing a file's writes with an error of its own, its marks
+// empty, and two files retried in turn in batches of one: x fails at the
+// store, a on its own hole record that does not decode. The node fences 30 s
+// after the first failed attempt. Letting the corrupt file's failure clear
+// the other's failure at the store, as one owner retries both, fences
+// nothing here.
+func TestSelfFenceOnAStoreRefusingWritesBesideAnUndecodableRecord(t *testing.T) {
+	u := newFenceUnit(t)
+	u.rec.noMarks.Store(true)
+	// Batches of one file, so the two are retried in turn.
+	if err := u.e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 1, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	a, x, b := u.create(t, "a"), u.create(t, "x"), u.create(t, "b")
+	u.corrupt(t, a, keys.FH)
+	for _, f := range []entity.FileID{a, x} {
+		if _, err := u.tryWrite(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// x's writes fail; a's commit fails reading its hole record first.
+	u.fault(t, sim.Rule{Op: kvtest.OpSet, Key: fileRecord(u.share.ID, x) + "*", Action: sim.FaultAction{Err: syscall.ENOSPC}})
+	u.commitInBackground(t, a)
+	u.commitInBackground(t, x)
+	eventually(t, "existence_commit_failing names both files", func() bool { return u.e.Failing(u.rec, a) && u.e.Failing(u.rec, x) })
+
+	u.advanceInSteps(29 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 29s into the failures: %v, want acknowledged", err)
+	}
+	u.advanceInSteps(2 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s into the failures: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("node_fenced not raised 31s into the failures")
+	}
+}
+
+// A store error, then a commit, then a file whose hole record does not
+// decode, all in one batch: the commit ends the store's failure, so with the
+// loop held after the batch and 31 s passing the node is not fenced. Keeping
+// an owner's store failure past its commit fences here.
+func TestSelfFenceNotOnAnUndecodableRecordAfterAStoreErrorCommitted(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.corrupt(t, a, keys.FH)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, nextUpdate(sim.FaultAction{Err: errInjected}))
+	wait := u.holdAfterBatch(t)
+	u.commitInBackground(t, a)
+	wait()
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a write 31s after the batch: %v, want acknowledged", err)
+	}
+	if f, ok := u.nodeFenced(); ok {
+		t.Errorf("node_fenced %v, want none", f)
+	}
+}
+
+// Two truncates whose phase 2 runs fail in turn: x's at the store, its
+// writes refused with an error of the store's own, a's on a ref record that
+// does not decode. With nothing else written, the node fences 30 s after the
+// first failed run. Letting a's failure clear x's at the store, as the
+// removal loop is one owner for both, fences nothing here.
+func TestSelfFenceOnARemovalFailingAtTheStoreBesideAnUndecodableRecord(t *testing.T) {
+	u := newFenceUnit(t)
+	a, x, b := u.create(t, "a"), u.create(t, "x"), u.create(t, "b")
+	for _, f := range []entity.FileID{a, x} {
+		u.write(t, f, 0, fill(16, 'a'))
+		if err := u.e.CommitExistence(t.Context(), u.share.ID, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u.corrupt(t, a, keys.FRef)
+	refused := sim.FaultAction{Err: syscall.ENOSPC}
+	deletes := sim.Rule{Op: kvtest.OpDelete, Key: fileRecord(u.share.ID, x) + "‖*", Action: refused}
+	u.fault(t, deletes) // phase 1 deletes none of x's records; phase 2 does
+	for _, f := range []entity.FileID{a, x} {
+		if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
+			t.Fatalf("the truncate's phase 1: %v", err)
+		}
+	}
+	u.fault(t, deletes, sim.Rule{Op: kvtest.OpSet, Key: fileRecord(u.share.ID, x) + "‖*", Action: refused})
+	u.until(t, "both phase 2s removal_stalled", func() bool { return u.e.RemovalStalled(a) && u.e.RemovalStalled(x) })
+
+	// In steps, so both phase 2s retry throughout, each attempt failing.
+	u.advanceInSteps(31 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s into the removals' failures: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("node_fenced not raised 31s into the removals' failures")
+	}
+}
+
+// A truncate whose phase 2 Resume finishes and whose prune then fails at the
+// store, its removal record's delete refused, at every retry: the node fences
+// 31 s on. Each retry's Resume finds no removal left and writes nothing;
+// counting it as a commit restarts the fence's clock every second and never
+// fences. Once the store heals and the prune commits, nothing is outstanding
+// or failing, and a quiet node acknowledges a write 31 s later.
+func TestSelfFenceOnARemovalWhosePruneFailsAtTheStore(t *testing.T) {
+	u := newFenceUnit(t)
+	x, b := u.create(t, "x"), u.create(t, "b")
+	u.write(t, x, 0, fill(16, 'a'))
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, x); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpDelete, Key: "F‖*‖rm‖*", Action: sim.FaultAction{Err: syscall.ENOSPC}})
+	if err := u.e.Truncate(t.Context(), u.share.ID, x, 0); err != nil {
+		t.Fatalf("the truncate's phase 1: %v", err)
+	}
+	u.until(t, "the phase 2 removal_stalled", func() bool { return u.e.RemovalStalled(x) })
+
+	u.advanceInSteps(31 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s into the prune's failures: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("node_fenced not raised 31s into the prune's failures")
+	}
+
+	u.faults.SetFault(nil)
+	u.until(t, "the prune commits", func() bool { return u.e.Stats().RemovalRuns["done"] == 1 })
+	eventually(t, "the removal loop idle", func() bool { return u.e.LoopParked(u.share.ID) })
+	if n, failing := u.e.FenceBusy(); n != 0 || failing {
+		t.Errorf("once the removal finished: %d outstanding, failing %v; want 0 and false", n, failing)
+	}
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a write 31s after the removal finished on a quiet node: %v, want acknowledged", err)
+	}
+}
+
+// A phase 2 run whose Resume commits every batch is a commit, though its prune
+// then fails at the store: the bound restarts from the Resume.
+func TestSelfFenceCountsAPhase2ThatCommitsEveryBatchAsACommit(t *testing.T) {
+	u := newCutUnit(t)
+	runs := func() map[string]int64 { return u.e.Stats().RemovalRuns }
+	f := u.create(t, "f")
+	u.holed(t, f, 3)
+	u.fault(t, removalSet(2, 0, errInjected)) // every batch fails, so no run advances
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a failed phase 2 run", func() bool { return runs()["error"] > 0 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(20 * time.Second)
+	eventually(t, "a second failed phase 2 run", func() bool { return runs()["error"] > 1 })
+	// The next run, a second on, commits every batch; its prune fails at the store.
+	u.fault(t, sim.Rule{Op: kvtest.OpDelete, Key: "F‖*‖rm‖*", Action: sim.FaultAction{Err: syscall.ENOSPC}})
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(time.Second)
+	eventually(t, "an advanced phase 2 run", func() bool { return runs()["advanced"] == 1 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(29 * time.Second)
+	if c, ok := u.nodeFenced(); ok {
+		t.Fatalf("fenced 29 s after a Resume committed every batch, 50 s after the truncate: %v", c)
+	}
+	u.clock.Advance(2 * time.Second)
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("not fenced 31 s after the Resume committed every batch, its prune failing since")
+	}
+}
+
+// One store error on a call carrying a file whose hole record does not
+// decode, then only that file's retries, each failing on its own record,
+// its marks empty: the node is not fenced 31 s on, nor two minutes later,
+// and the file stays named failing. Keeping the store's failure for the
+// owner rather than the file fences here, at 31 s and for good.
+func TestSelfFenceNotAfterOneStoreErrorOnACorruptFile(t *testing.T) {
+	u := newFenceUnit(t)
+	u.rec.noMarks.Store(true)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.corrupt(t, a, keys.FH)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, nextUpdate(sim.FaultAction{Err: errInjected}))
+	u.commitInBackground(t, a)
+	eventually(t, "existence_commit_failing names the corrupt file", func() bool { return u.e.Failing(u.rec, a) })
+
+	u.advanceInSteps(31 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a write 31s after the store error: %v, want acknowledged", err)
+	}
+	u.advanceInSteps(2 * time.Minute)
+	if c, ok := u.nodeFenced(); ok {
+		t.Errorf("node_fenced naming %v two and a half minutes after one store error, want none", c.Cause)
+	}
+	if !u.e.Failing(u.rec, a) {
+		t.Error("existence_commit_failing no longer names the corrupt file")
+	}
+}
+
+// A store refusing one file's writes with an error of its own, its marks
+// empty, beside another file whose commit conflicts at every attempt, the
+// two retried in turn in batches of one: the node fences 30 s after the
+// first failed attempt. Letting the conflict clear the other file's failure
+// at the store, as one owner retries both, fences nothing here.
+func TestSelfFenceOnAStoreRefusingWritesBesideAConflict(t *testing.T) {
+	u := newFenceUnit(t)
+	u.e.SetConflictBound(20 * time.Millisecond)
+	u.rec.noMarks.Store(true)
+	if err := u.e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 1, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	a, x, b := u.create(t, "a"), u.create(t, "x"), u.create(t, "b")
+	for _, f := range []entity.FileID{a, x} {
+		if _, err := u.tryWrite(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u.fault(t,
+		sim.Rule{Op: kvtest.OpSet, Key: fileRecord(u.share.ID, x) + "*", Action: sim.FaultAction{Err: syscall.ENOSPC}},
+		sim.Rule{Op: kvtest.OpGet, Key: fileRecord(u.share.ID, a), Action: sim.FaultAction{Err: kv.ErrConflict}},
+	)
+	u.commitInBackground(t, a)
+	u.commitInBackground(t, x)
+	eventually(t, "existence_commit_failing names both files", func() bool { return u.e.Failing(u.rec, a) && u.e.Failing(u.rec, x) })
+
+	u.advanceInSteps(29 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Fatalf("a write 29s into the failures: %v, want acknowledged", err)
+	}
+	u.advanceInSteps(2 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s into the failures: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if c, ok := u.nodeFenced(); !ok || !errors.Is(c.Cause, syscall.ENOSPC) {
+		t.Errorf("node_fenced %v naming %v, want the store's error", ok, c.Cause)
+	}
+}
+
+// corruptOpenGen stores the open generation of the journal the group commit
+// records its marks under, the zero identity, as a value that does not
+// decode, which fails every marks write.
+func (u *fenceUnit) corruptOpenGen(t *testing.T) {
+	t.Helper()
+	key := append(keys.ID([]byte{keys.KindJ}, make([]byte, 16)), keys.JOg)
+	if err := u.faults.Update(t.Context(), func(tx kv.Txn) error { return tx.Set(key, []byte{0xff}) }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A journal's open generation that does not decode, beside a file whose hole
+// record does not decode: the open generation is the store's, shared by
+// every file, so the node fences 31 s after the batch, with the loop held
+// after it. Counting any record that does not decode as a file's fences
+// nothing here.
+func TestSelfFenceOnAnUndecodableOpenGeneration(t *testing.T) {
+	u := newFenceUnit(t)
+	a, b := u.create(t, "a"), u.create(t, "b")
+	u.corrupt(t, a, keys.FH)
+	u.corruptOpenGen(t)
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	wait := u.holdAfterBatch(t)
+	u.commitInBackground(t, a)
+	wait()
+
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s after the batch: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("node_fenced not raised 31s after the batch")
+	}
+}
+
+// A file whose existence commit fails at the store, then its writes leave
+// the group commit without committing, as an unbind's drop or the journal's
+// loss takes them: the group commit retries it no more, so a node quiet for a
+// minute after does not fence. Keeping the file failing until the owner's
+// next commit fences here, as no commit comes. A lost journal's marks, failing
+// beside the file, are retried no more either.
+func TestSelfFenceNotOnAFileTheGroupCommitDropped(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		marks bool // marks are written, and fail as the file does
+		drop  func(u *fenceUnit) error
+	}{
+		{"its share dropped", false, func(u *fenceUnit) error { return u.e.DropShare(context.Background(), u.rec, u.share.ID) }},
+		{"its journal lost whole", true, func(u *fenceUnit) error { u.e.LostWhole(u.rec); return nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newFenceUnit(t)
+			u.rec.noMarks.Store(!tc.marks) // a marks commit would clear the file
+			a := u.create(t, "a")
+			if _, err := u.tryWrite(a); err != nil {
+				t.Fatal(err)
+			}
+			rule := sim.Rule{Op: kvtest.OpGet, Key: fileRecord(u.share.ID, a), Action: sim.FaultAction{Err: errInjected}}
+			if tc.marks {
+				rule = everyUpdate(sim.FaultAction{Err: errInjected})
+			}
+			u.fault(t, rule)
+			// The stability point is joined before the drop, so it asks the
+			// file again of no one.
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { _ = u.e.CommitExistence(ctx, u.share.ID, a); close(done) }() // the cancel ends it
+			eventually(t, "the group commit failing at the store", func() bool { _, failing := u.e.FenceBusy(); return failing })
+			cancel()
+			<-done
+			if err := tc.drop(u); err != nil {
+				t.Fatal(err)
+			}
+			if _, failing := u.e.FenceBusy(); failing {
+				t.Errorf("group commit failing at the store after %s, want not failing", tc.name)
+			}
+			u.clock.Advance(time.Minute)
+			if c, ok := u.nodeFenced(); ok {
+				t.Errorf("node_fenced %v a quiet minute after %s, want none", c, tc.name)
+			}
+		})
+	}
+}
+
+// A removal loop item whose last attempt failed at the store and which then
+// finishes leaves the loop's failing set: the loop retries it no more, so a
+// quiet node does not fence a minute later.
+func TestSelfFenceNotOnARemovalTheLoopFinished(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	_, ct, _ := u.e.StoreViews()
+	ran := make(chan error, 1)
+	u.e.EnqueueKind(u.share.ID, a, entity.RemoveTruncate, false, func(ctx context.Context) {
+		ran <- ct.PruneRemovals(ctx, u.share.ID, a, entity.JournalVersion{15: 1})
+	}, nil)
+	if err := <-ran; !errors.Is(err, errInjected) {
+		t.Fatalf("the item's prune over a failing store: %v, want the injected failure", err)
+	}
+	eventually(t, "the removal loop idle after the item", func() bool { return u.e.LoopParked(u.share.ID) })
+	if _, failing := u.e.FenceBusy(); failing {
+		t.Error("removal loop failing at the store after its item finished, want not failing")
+	}
+	u.clock.Advance(time.Minute)
+	if c, ok := u.nodeFenced(); ok {
+		t.Errorf("node_fenced %v a quiet minute after the item finished, want none", c)
+	}
+}
+
+// A file whose only write a failed window drops out of its batch while the
+// batch fails at the store: nothing of the file is left to retry, so a node
+// quiet for a minute after does not fence.
+func TestSelfFenceNotOnAFileWhoseWritesTheBatchDropped(t *testing.T) {
+	u := &fenceUnit{logs: newLogRecorder()}
+	var jh *hookedHandle
+	u.unit, jh = newHookedUnitWith(t, unitConfig{
+		kv: func(k kv.KV) kv.KV {
+			u.faults = kvtest.NewFaultKV(k)
+			return u.faults
+		},
+		deps: []func(*engine.Deps){func(d *engine.Deps) { d.Logger = slog.New(u.logs) }},
+	})
+	u.e.SetConflictBound(time.Hour)
+	u.rec.noMarks.Store(true)
+	a := u.create(t, "a")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	var once sync.Once
+	jh.sync.set(func([]journal.FileID) {
+		once.Do(func() { u.j.Lose(journal.NewFileID(a), journal.Extent{Len: 1}, journal.LossFailedWindow) })
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _ = u.e.CommitExistence(ctx, u.share.ID, a); close(done) }() // the cancel ends it
+	eventually(t, "the batch failing at the store", func() bool {
+		_, ok := u.logged(slog.LevelWarn, "existence_commit_failing")
+		return ok
+	})
+	// The warning comes before the batch settles the file: wait for the settle.
+	if err := u.e.WaitBatch(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	<-done
+	if _, failing := u.e.FenceBusy(); failing {
+		t.Error("group commit failing at the store with the file's writes dropped, want not failing")
+	}
+	u.clock.Advance(time.Minute)
+	if c, ok := u.nodeFenced(); ok {
+		t.Errorf("node_fenced %v a quiet minute after the file's writes were dropped, want none", c)
+	}
+}
+
+// The group commit's split over a store that answers nothing: a cut by the
+// bound, the conflict bound's for one file or batchConflictBound's for a
+// batch, fails the owner at the store, and the caller's own cancel of a held
+// batch fails nothing. A split cutting its calls with no errBoundCut cause
+// reads either cut as the caller's and fails nothing.
+func TestSelfFenceGroupCommitSplitCut(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		files   int
+		bound   time.Duration // the conflict bound
+		cancel  bool          // the caller cancels once the call is held
+		failing bool
+	}{
+		{"one file cut by the conflict bound", 1, 5 * time.Millisecond, false, true},
+		{"a batch cut by batchConflictBound", 2, time.Hour, false, true},
+		{"a batch its caller cancelled", 2, time.Hour, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newFenceUnit(t)
+			u.e.SetConflictBound(tc.bound)
+			files := make([]entity.FileID, tc.files)
+			for i := range files {
+				files[i] = u.create(t, fmt.Sprint("f", i))
+			}
+			u.fault(t, everyUpdate(sim.FaultAction{Err: kvtest.ErrUnanswered}))
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			failed := make(chan int, 1)
+			go func() { failed <- u.e.CommitSplit(ctx, u.share.ID, files...) }()
+			if tc.cancel {
+				u.outstanding(t)
+				cancel()
+			}
+			if n := <-failed; n != tc.files {
+				t.Errorf("%d files failed, want all %d", n, tc.files)
+			}
+			if _, got := u.e.FenceBusy(); got != tc.failing {
+				t.Errorf("owner failing after %s: %v, want %v", tc.name, got, tc.failing)
+			}
+		})
+	}
+}

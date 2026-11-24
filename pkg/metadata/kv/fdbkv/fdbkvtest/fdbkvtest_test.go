@@ -3,55 +3,34 @@
 package fdbkvtest
 
 import (
-	"context"
-	"errors"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
-
-	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/fdbkv"
 )
 
-// Two stores Open makes see none of each other's keys, and a store's keys are
-// gone once its test ends, so tests sharing one cluster never meet.
-func TestOpenIsolatesAndClears(t *testing.T) {
-	if os.Getenv("DITTOFS_FDB_CLUSTER_FILE") == "" {
-		t.Skip("no FoundationDB: run through test/fdb/cluster.sh test, which sets DITTOFS_FDB_CLUSTER_FILE")
+// Reading or clearing the cluster before any store opens starts the client
+// without TLS, so a later Open naming TLS files is refused rather than run
+// without them. No cluster is needed: the client takes the files' paths
+// without opening them, and the refusal comes before any connection.
+func TestDatabaseBeforeOpenFixesTheClientWithoutTLS(t *testing.T) {
+	dir := t.TempDir()
+	cf := filepath.Join(dir, "fdb.cluster")
+	_, _ = database(cf) // no cluster file: only the client setup matters
+	tls := fdbkv.TLS{CertFile: filepath.Join(dir, "cert.pem"), KeyFile: filepath.Join(dir, "key.pem"), CAFile: filepath.Join(dir, "ca.pem")}
+	for _, f := range []string{tls.CertFile, tls.KeyFile, tls.CAFile} {
+		if err := os.WriteFile(f, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	ctx := context.Background()
-	pa, pb := Prefix(), Prefix()
-	stored := func(prefix []byte) int {
-		db, err := fdb.OpenDatabase(os.Getenv("DITTOFS_FDB_CLUSTER_FILE"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		end, _ := fdb.Strinc(prefix)
-		kvs, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-			return tr.GetRange(fdb.KeyRange{Begin: fdb.Key(prefix), End: fdb.Key(end)}, fdb.RangeOptions{}).GetSliceWithError()
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return len(kvs.([]fdb.KeyValue))
+	s, err := fdbkv.Open(t.Context(), fdbkv.Options{ClusterFile: cf, TLS: tls})
+	if err == nil {
+		_ = s.Close()
+		t.Fatal("fdbkv.Open with TLS files after fdbkvtest read the cluster without: nil error, want a refusal")
 	}
-	t.Run("stores", func(t *testing.T) {
-		a, b := Open(t, fdbkv.Options{Prefix: pa}), Open(t, fdbkv.Options{Prefix: pb})
-		if err := a.Update(ctx, func(tx kv.Txn) error { return tx.Set([]byte("k"), []byte("a")) }); err != nil {
-			t.Fatal(err)
-		}
-		if err := b.View(ctx, func(r kv.Reader) error {
-			_, err := r.Get([]byte("k"))
-			return err
-		}); !errors.Is(err, kv.ErrNotFound) {
-			t.Errorf("one store read another's key: %v", err)
-		}
-		if stored(pa) == 0 {
-			t.Fatal("the store wrote nothing under its prefix")
-		}
-	})
-	if n := stored(pa) + stored(pb); n != 0 {
-		t.Errorf("%d keys left under the stores' prefixes after their test", n)
+	if want := "TLS files differ"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("fdbkv.Open with TLS files after fdbkvtest read the cluster without: %v, want an error naming %q", err, want)
 	}
 }

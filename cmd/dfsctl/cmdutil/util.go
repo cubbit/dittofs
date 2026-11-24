@@ -75,7 +75,7 @@ func RunDeleteWithConfirmation(cmd *cobra.Command, env Env, resourceType, name s
 		if !env.Interactive {
 			return fmt.Errorf("%s: removing %s '%s' needs confirmation; pass --force", cmd.CommandPath(), resourceType, name)
 		}
-		confirmed, err := prompt.Confirm(env.In, env.Err, fmt.Sprintf("Remove %s '%s'?", resourceType, name), false)
+		confirmed, err := prompt.Confirm(cmd.Context(), env.In, env.Err, fmt.Sprintf("Remove %s '%s'?", resourceType, name), false)
 		if errors.Is(err, prompt.ErrAborted) {
 			_, _ = fmt.Fprintln(env.Err, "\nAborted.")
 			return nil

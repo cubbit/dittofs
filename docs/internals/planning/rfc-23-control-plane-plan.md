@@ -237,7 +237,7 @@ It declares no internal interface: each one in this list has a consumer in produ
 tests of the epic that fills it in.
 
 **The architecture tests**, each of which fails once against a planted violation, built like
-`pkg/block/journal/imports_test.go`:
+`pkg/journal/imports_test.go`:
 
 - only `cmd/dfs` and the harness import `internal/node` (RFC 23 CP16);
 - the CLI's dependency closure names no store or server package (RFC 23 §7, CP14);
@@ -389,7 +389,7 @@ registers no suite and no group, and changes no `lint-go` tag.
     never called by production" stays a review rule.
 11. **A symbol is exported only if RFC 23's interface uses it.** The exported surface is:
     - `internal/node`'s `New`, `Start`, `Stop`, `Config` and `Preflight`, the start check the
-      host runs before it opens the store;
+      host runs over the store's directory, or its opened KV when it has none;
     - `pkg/node/apiv1`'s wire types;
     - the client, `pkg/node/apiv1/client`;
     - kvstore's view methods.
@@ -709,8 +709,9 @@ Client eviction is O9.
 built on its pid and log files go:
 - `config`, `version` and `completion` stay as they are: of v1, `config` imports `pkg/config`,
   which epic 1 strips and the RFC 13 plan's epic 2 moves onto `pkg/bootstrap` with it, and, for
-  `config show`, `internal/cli/output`, `internal/sysinfo` and `pkg/block`, which stay; the other
-  two import nothing of this module;
+  `config show`, `internal/cli/output`, which stays. `internal/sysinfo` goes with the v1 Badger
+  store, its only other importer (the stage 4 plan's T2.1), and `config show` no longer imports
+  it or `pkg/block`; the other two import nothing of this module;
 - `start --foreground` becomes `start`, and `--pid-file` and `--log-file` go with daemon mode:
   the node logs where its logger writes, and a script takes the pid from its shell. Epic 1 drops
   the three flags from every caller and rewrites the tests that assert them; its T1.3 and T1.4

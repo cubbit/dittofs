@@ -23,17 +23,6 @@ func checkKV(cfg *bootstrap.Bootstrap) error {
 		if !foundationDB {
 			return errors.New(noFoundationDB)
 		}
-		// ponytail: an empty cluster file opens the client's default cluster,
-		// so it is refused here until the bootstrap loader requires it.
-		if cfg.Metadata.FoundationDB.ClusterFile == "" {
-			return errors.New("metadata.foundationdb.cluster_file is not set")
-		}
-		// ponytail: the client is not given the TLS files yet, so a bootstrap
-		// naming them is refused rather than connected without TLS. Passing
-		// them as the client's network options replaces this refusal.
-		if tls := cfg.Metadata.FoundationDB.TLS; tls.CertFile != "" || tls.KeyFile != "" || tls.CAFile != "" {
-			return errors.New("metadata.foundationdb.tls is not supported yet")
-		}
 	} else if cfg.Metadata.Badger.Path == "" {
 		// ponytail: RFC 13 Appendix C defaults metadata.badger.path to the
 		// state directory's metadata, which the bootstrap loader does not
@@ -50,11 +39,11 @@ func checkKV(cfg *bootstrap.Bootstrap) error {
 }
 
 // openKV opens the metadata store's KV the bootstrap names, on the backend
-// metadata.backend selects, the configuration already accepted by checkKV and
-// a Badger directory by the start check: every refusal that read only the
-// configuration ran before the check, and every refusal the directory itself
-// could take the check has already answered. ctx bounds a FoundationDB open,
-// which otherwise waits for an unreachable cluster forever.
+// metadata.backend selects, the configuration already accepted by checkKV: a
+// Badger directory after the start check, which answered every refusal the
+// directory itself could take, and a FoundationDB cluster, which has no
+// directory, before it, for the check to read. ctx bounds a FoundationDB
+// open, which otherwise waits for an unreachable cluster forever.
 func openKV(ctx context.Context, cfg *bootstrap.Bootstrap, clock systemClock) (kv.KV, error) {
 	if cfg.Metadata.Backend == "foundationdb" {
 		return openFoundationDB(ctx, cfg, clock)

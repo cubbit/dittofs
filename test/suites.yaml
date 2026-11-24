@@ -93,16 +93,16 @@ suites:
       # and the record codec's — and the profiler's heap checks, which skip under -race.
       journal-index:
         cmd:
-          - go test -timeout=5m ./pkg/block/journal/internal/index/ ./pkg/block/journal/internal/durability/ ./pkg/block/journal/internal/format/ ./internal/prof/
-          - go test -timeout=5m -run=^(TestReadOfALargeRecordAllocatesFlat|TestRFC1D_StatsCostIsFlat)$ ./pkg/block/journal/internal/datapath/
+          - go test -timeout=5m ./pkg/journal/internal/index/ ./pkg/journal/internal/durability/ ./pkg/journal/internal/format/ ./internal/prof/
+          - go test -timeout=5m -run=^(TestReadOfALargeRecordAllocatesFlat|TestRFC1D_StatsCostIsFlat)$ ./pkg/journal/internal/datapath/
       # The index built with a bug planted in its split and the truncate marker with one planted
       # past its size, which the model fuzz and the model's runs must find. The planted builds
       # break the packages' other tests by design, so only these tests run.
       journal-plant:
         cmd:
-          - go test -tags=journal_plant_split -timeout=2m -run=^TestFuzzFindsPlantedSplit$ ./pkg/block/journal/internal/index/
-          - go test -tags=journal_plant_split,journal_conformance -timeout=10m -run=^TestModelDataPathFindsPlantedSupersession$ ./pkg/block/journal/conformance/
-          - go test -tags=journal_plant_truncate,journal_conformance,journal_model -timeout=10m -run=^TestModelManySeedsFindsPlantedTruncate$ ./pkg/block/journal/conformance/
+          - go test -tags=journal_plant_split -timeout=2m -run=^TestFuzzFindsPlantedSplit$ ./pkg/journal/internal/index/
+          - go test -tags=journal_plant_split,journal_conformance -timeout=10m -run=^TestModelDataPathFindsPlantedSupersession$ ./pkg/journal/conformance/
+          - go test -tags=journal_plant_truncate,journal_conformance,journal_model -timeout=10m -run=^TestModelManySeedsFindsPlantedTruncate$ ./pkg/journal/conformance/
       # The journal's allocation checks, which the race detector makes unmeasurable, so the race
       # leg of journal-conformance excludes them with -skip and this cell enforces them instead:
       # the counted calls of RFC 1 §9.7, running without -race, where allocation counting works,
@@ -113,7 +113,7 @@ suites:
       # cell's -skip in the same change, or the raced run goes red on a skip no known row grades,
       # while a name reaching only -skip would silently lose its enforcement.
       journal-conformance-norace:
-        cmd: go test -timeout=5m -tags=journal_conformance -run=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat|TestStatsAfterOpenWalksNoLock) ./pkg/block/journal/conformance/
+        cmd: go test -timeout=5m -tags=journal_conformance -run=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat|TestStatsAfterOpenWalksNoLock) ./pkg/journal/conformance/
         tier: pr
       # The adapters' allocation gates, which skip under -race.
       adapter-allocs:
@@ -128,7 +128,7 @@ suites:
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:
     format: go-json
-    cmd: go test -race -tags=journal_conformance -skip=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat|TestStatsAfterOpenWalksNoLock) -timeout=30m -artifacts -outputdir={out} ./pkg/block/journal/conformance/...
+    cmd: go test -race -tags=journal_conformance -skip=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat|TestStatsAfterOpenWalksNoLock) -timeout=30m -artifacts -outputdir={out} ./pkg/journal/conformance/...
     known: test/journal/known.yaml
     tier: pr
   # The reference model over many seeds, each seed a fresh random timeline of the same
@@ -140,7 +140,7 @@ suites:
   # an issue and an expiry date, never to a known list.
   journal-model:
     format: go-json
-    cmd: go test -tags=journal_conformance,journal_model -run ^TestModelManySeeds$ -timeout=110m -artifacts -outputdir={out} ./pkg/block/journal/conformance/
+    cmd: go test -tags=journal_conformance,journal_model -run ^TestModelManySeeds$ -timeout=110m -artifacts -outputdir={out} ./pkg/journal/conformance/
     env:
       DITTOFS_MODEL_SEEDS: "100"
       # The base turns over every night: the day's count of days times the seed count
@@ -163,7 +163,7 @@ suites:
   # to a known list.
   journal-soak:
     format: go-json
-    cmd: go test -tags=journal_conformance,journal_soak -run ^TestJournalSoak -timeout=150m -artifacts -outputdir={out} ./pkg/block/journal/conformance/
+    cmd: go test -tags=journal_conformance,journal_soak -run ^TestJournalSoak -timeout=150m -artifacts -outputdir={out} ./pkg/journal/conformance/
     env:
       DITTOFS_SOAK_DURATION: "2h"
     tier: nightly
@@ -193,14 +193,14 @@ suites:
       # The bench pattern's quotes rule out the flow style shellcheck's and engine-bench's
       # single-quoted lines use, so the entry takes the literal block the shellcheck one does.
       - sh: |
-          test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$JOURNAL_BENCH_COUNT" || n=$JOURNAL_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "JOURNAL_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -timeout=290m -tags=journal_conformance,journal_bench -run ^$ -bench '^Benchmark(J[123]_|Raw)' ./pkg/block/journal/conformance/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; test $s -ne 0 || grep -q '^BenchmarkJ' {out}/bench.txt || { echo "no BenchmarkJ benchmark ran" >&2; exit 2; }; exit $s
+          test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$JOURNAL_BENCH_COUNT" || n=$JOURNAL_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "JOURNAL_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -timeout=290m -tags=journal_conformance,journal_bench -run ^$ -bench '^Benchmark(J[123]_|Raw)' ./pkg/journal/conformance/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; test $s -ne 0 || grep -q '^BenchmarkJ' {out}/bench.txt || { echo "no BenchmarkJ benchmark ran" >&2; exit 2; }; exit $s
     tier: manual
     timeout: { test: 300m, cell: 310m }
   # The engine's conformance checks, behind their own tag for the same reason: they run
   # against the real journal and fail until the engine and the journal calls they need land.
   engine-conformance:
     format: go-json
-    cmd: go test -race -tags=engine_conformance -timeout=30m ./pkg/block/engine/conformance/... ./internal/vfs/integration/...
+    cmd: go test -race -tags=engine_conformance -timeout=30m ./pkg/engine/conformance/... ./internal/vfs/integration/...
     known: test/engine/known.yaml
     tier: pr
   # The crash-and-restart soak over the composed engine, a short fixed list of seeds. Its run
@@ -275,7 +275,7 @@ suites:
   # Measures only the version-limit probe, with journal setup outside the timer.
   version-limit-probe-bench:
     cmd:
-      - { sh: 'go test -count=10 -run ^$ -bench ^BenchmarkVersionLimitProbe$ ./pkg/block/engine > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+      - { sh: 'go test -count=10 -run ^$ -bench ^BenchmarkVersionLimitProbe$ ./pkg/engine > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
   # The commit rate of eight concurrent Seal and PutSecret writers with the settings generation's
   # raise and without it, to read RFC 13's plan §4.3 trigger (the raise under half the baseline's

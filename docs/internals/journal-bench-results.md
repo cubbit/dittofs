@@ -89,7 +89,7 @@ that exercise them. The rows here write less than a segment and never wait out t
 so no figure of this suite bears on any of the three, and the tables below stay empty on those
 rows.
 
-Today's values, from `pkg/block/journal/internal/core/limits.go` and `config.go`:
+Today's values, from `pkg/journal/internal/core/limits.go` and `config.go`:
 
 | Constant | Today's value | Where |
 | --- | --- | --- |

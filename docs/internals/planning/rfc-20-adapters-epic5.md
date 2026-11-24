@@ -845,7 +845,7 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   into a cloning extent held under `WithHold(10s)` until the clone ends and answered
   `DelayClone` at once under `WithHold(0)`, and V29's clone case beside it. They are the RFC 17
   plan's piece 13, the held wait behind a clone (#4239): piece 11 merged (#4157) answering
-  `DelayClone` at once with no held wait, which `pkg/block/engine/clone.go`'s `decision:`
+  `DelayClone` at once with no held wait, which `pkg/engine/clone.go`'s `decision:`
   leaves to the filesystem service. A ledger row points there (§9). `decision:` at the call. Prior art:
   `context.WithDeadline` and `Deadline`.
 - **D17, the hold table's two refusals: one reuses a mapped class, one gets a named error.**

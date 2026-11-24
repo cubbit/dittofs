@@ -287,10 +287,11 @@ cluster is several over one replicated store.
 1. It reads the host's bootstrap — the facts needed before the metadata store
    can be reached, and only those ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) —
    from the host's file or environment.
-2. It calls `node.Preflight` (§2.1), the start check, before anything opens:
-   over the store directory and journal devices the bootstrap names (**(cluster)**: a
-   cluster node's store has no directory), it refuses, naming the reason, and
-   nothing was opened.
+2. It calls `node.Preflight` (§2.1), the start check: over the store and the
+   journal devices the bootstrap names, it refuses, naming the reason. A store
+   with a directory is checked before anything opens, and a refusal leaves
+   nothing opened. A store with no directory, such as FoundationDB's, is opened
+   first and checked through that KV, which a refusal closes.
 3. It builds the `Config` (§2.1) from the bootstrap: the bootstrap, the key-value
    store the metadata store opens on, the transport (none on one node), the
    clock, the fault seam, the metrics registry and the logger.
@@ -302,10 +303,20 @@ cluster is several over one replicated store.
 ```go
 func run(ctx context.Context) error {
 	boot := config.LoadBootstrap()               // the host's file or environment
-	if err := node.Preflight(ctx, boot.Store, boot.V1Root(), boot.Devices(), systemClock{}); err != nil {
-		return err                               // nothing was opened: the start check refused
+	var db kv.KV                                 // a store with a directory opens after the check
+	if boot.Store.Dir == "" {
+		db = kv.Open(boot.Store)                 // a store with no directory: the check reads its KV
 	}
-	n, err := node.New(node.Config{Bootstrap: boot, KV: kv.Open(boot.Store),
+	if err := node.Preflight(ctx, boot.Store.Dir, db, boot.V1Root(), boot.Devices(), systemClock{}); err != nil {
+		if db != nil {
+			db.Close()                           // the one thing opened
+		}
+		return err                               // the start check refused
+	}
+	if db == nil {
+		db = kv.Open(boot.Store)
+	}
+	n, err := node.New(node.Config{Bootstrap: boot, KV: db,
 		Transport: transportFor(boot), Clock: systemClock{}, ...}) // the one production clock: time.Now, a monotonic origin, time.After
 	if err != nil {
 		return err                               // nothing was started
@@ -470,14 +481,16 @@ func New(cfg Config) (*Node, error)
 func (n *Node) Start(ctx context.Context) error // §2.2's start, then reconcile until Stop
 func (n *Node) Stop(ctx context.Context) error  // §2.2's stop: the components in reverse build order
 
-// Preflight is the start check the host runs before it opens the metadata
-// store's KV. Over the store directory and the journal devices the bootstrap
-// names — **(cluster)**: a cluster node's store has no directory — and a
-// pre-journal (v1) layout on a device or at the configured pre-journal root,
-// it refuses naming what it found, and creates nothing. A first start meets
-// two of its refusals most often: a store never initialised, and a bootstrap
-// with no journal device.
-func Preflight(ctx context.Context, storeDir string, v1dir string, devices []string, clock Clock, opts ...journal.Option) error
+// Preflight is the start check. Over the store, which is a directory or, on a
+// store with no directory, the KV the host has opened, and the journal devices
+// the bootstrap names, and a pre-journal (v1) layout on a device or at the
+// configured pre-journal root, it refuses naming what it found. It creates
+// nothing, except that opening a store with no directory writes the node's
+// clock ceiling first, also into a foreign cluster it then refuses. A first
+// start meets two of its refusals most often: a store never initialised, and a
+// bootstrap with no journal device. Exactly one of storeDir and store is set,
+// and Preflight never closes store: the host hands the same KV to New.
+func Preflight(ctx context.Context, storeDir string, store kv.KV, v1Root string, devices []string, clock Clock, opts ...journal.Option) error
 
 // Config is what the host supplies and the node cannot build.
 type Config struct {
@@ -1415,7 +1428,12 @@ against, and every node computes the same digest:
 Sign-in, refresh, `POST /auth/password`, `:set-password`, API-token creation and
 `join-domain`, online or offline, **MUST NOT** carry an `Idempotency-Key` — one is refused `400` — and the server
 records neither their digest nor their answer, so no token, password or digest
-of one is kept anywhere but §5.3's hashes. A retry is a new call:
+of one is kept anywhere but §5.3's hashes. **Sign-out** carries no
+`Idempotency-Key` either, refused `400` the same way, for another reason: an
+idempotency record is keyed by the account, so a key one session's sign-out
+used would answer another session's sign-out from the first one's record and
+leave that session live; a retried sign-out that applied is refused `401`,
+its session gone. A retry is a new call:
 
 - a retried **sign-in** opens a second session; the first expires unused;
 - a retried **refresh** presents the token the lost answer rotated, so §5.3's

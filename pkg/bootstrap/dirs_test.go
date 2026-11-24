@@ -499,16 +499,17 @@ func TestDefaultBadgerPathOnlyForBadger(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		backend string
+		extra   string
 		want    string
 	}{
-		{"badger", "badger", "/s1/metadata"},
-		{"foundationdb", "foundationdb", ""},
+		{"badger", "badger", "", "/s1/metadata"},
+		{"foundationdb", "foundationdb", "  foundationdb:\n    cluster_file: /c\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			loaded, err := LoadWithSources(
-				writeFile(t, "metadata:\n  backend: "+tc.backend+"\n"),
+				writeFile(t, "metadata:\n  backend: "+tc.backend+"\n"+tc.extra),
 				[]string{"STATE_DIRECTORY=/s1"},
 			)
 			if err != nil {

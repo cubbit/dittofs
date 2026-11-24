@@ -14,11 +14,11 @@ semantics only; [the plan](rfc-1-journal-plan.md) §1.5 and §5.
 
 - **Sources are the RFCs and the planning doc only.** No existing code is read, reused or
   depended on: not v1's journal (deleted on `feat/storage-v2` by #3645), and not what is already in
-  `pkg/block/journal`. Everything below is derived from RFC 1 and RFC 28.
+  `pkg/journal`. Everything below is derived from RFC 1 and RFC 28.
 - **TDD.** Each ticket starts with failing tests for the requirements it lists (R-numbers
   below). Every requirement has at least one test, and the test must be able to fail
   (plan rule 10).
-- Package: `pkg/block/journal/internal/index`. It is pure in-memory and does no I/O.
+- Package: `pkg/journal/internal/index`. It is pure in-memory and does no I/O.
 
 ## Requirements and invariants
 
