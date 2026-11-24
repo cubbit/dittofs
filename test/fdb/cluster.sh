@@ -14,7 +14,11 @@
 #   test/fdb/cluster.sh smoke IMAGE run a Dockerfile.foundationdb image's dfs
 #                                   init, then dfs start until it is ready, then
 #                                   stop it; the cluster must be up and own
-#                                   nothing yet, since the installation owns it
+#                                   nothing yet, since the installation owns it.
+#                                   The journal lives in DITTOFS_SMOKE_BLOCKS
+#                                   (default dittofs-smoke-blocks in RUNNER_TEMP,
+#                                   else TMPDIR, else /tmp), emptied before the
+#                                   run and removed after it
 #
 # Host networking, so the cluster file's 127.0.0.1 addresses are the ones the
 # test client dials. That works on Linux only; on macOS run it inside a Linux
@@ -92,17 +96,36 @@ up() {
 
 # smoke proves the image's libfdb_c loads and serves an installation on this
 # cluster: dfs init, dfs start until /health/ready answers ready, and a SIGTERM
-# that stops it with exit 0. Any step failing fails it. The two containers
-# share the image's volumes, so start finds what init wrote; host networking
-# reaches the cluster file's 127.0.0.1 addresses.
+# that stops it with exit 0. Any step failing fails it. start takes init's
+# volumes and its bind mount of the journal's directory, so it finds what init
+# wrote; host networking reaches the cluster file's 127.0.0.1 addresses.
 smoke() {
     local image=$1 port=18080 conf="$DATA/smoke" ready="" code
+    # decision: the journal gets a host directory rather than the image's
+    # anonymous /data/blocks volume, because the journal refuses a mount the
+    # container runtime's storage may sit on (nobarrier on the hosted runners'
+    # disk, a Btrfs directory that is not a subvolume). PLACEHOLDER
+    # Global, not local: the EXIT trap reads it after smoke has returned.
+    blocks="${DITTOFS_SMOKE_BLOCKS:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dittofs-smoke-blocks}"
     # As the image's user: a fixed name, removed before and after, so a run
-    # that failed half-way leaves nothing for the next.
+    # that failed half-way leaves nothing for the next. The journal's files
+    # belong to the image's user, so they are removed from inside a container.
     local run=("$RUNTIME" run --network host -e DITTOFS_ENCRYPTION_PASSPHRASE=smoke-passphrase)
-    clean() { "$RUNTIME" rm -f -v dittofs-smoke-start dittofs-smoke-init >/dev/null 2>&1 || true; }
+    clean() {
+        "$RUNTIME" rm -f -v dittofs-smoke-start dittofs-smoke-init >/dev/null 2>&1 || true
+        if [[ -d "$blocks" ]]; then
+            "$RUNTIME" run --rm -v "$blocks:/d" docker.io/library/busybox:1.37 \
+                find /d -mindepth 1 -delete >/dev/null 2>&1 || true
+            rmdir "$blocks" 2>/dev/null || true
+        fi
+    }
     clean
     trap clean EXIT
+    # 0777 so the image's user 65532 can write it without a chown, which
+    # would need root on the host.
+    mkdir -p "$blocks"
+    chmod 0777 "$blocks"
+    echo "smoke: journal directory $blocks is on $(findmnt -no FSTYPE,OPTIONS -T "$blocks")"
     mkdir -p "$conf"
     cp "$DATA/fdb.cluster" "$conf/fdb.cluster"
     cat >"$conf/config.yaml" <<EOF
@@ -130,7 +153,8 @@ adapters:
 EOF
     chmod 0755 "$conf"
     chmod 0644 "$conf"/*
-    "${run[@]}" --name dittofs-smoke-init -v "$conf:/config:ro" "$image" init --config /config/config.yaml
+    "${run[@]}" --name dittofs-smoke-init -v "$conf:/config:ro" -v "$blocks:/data/blocks" \
+        "$image" init --config /config/config.yaml
     "${run[@]}" -d --name dittofs-smoke-start --volumes-from dittofs-smoke-init "$image" >/dev/null
     for _ in $(seq 1 120); do
         ready="$(curl -fsS "http://127.0.0.1:$port/health/ready" 2>/dev/null || true)"
@@ -177,7 +201,7 @@ test)
     ;;
 smoke) smoke "${2:?image}" ;;
 *)
-    sed -n '2,21p' "$0"
+    sed -n '2,25p' "$0"
     exit 2
     ;;
 esac
