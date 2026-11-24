@@ -2,6 +2,7 @@ package node_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node"
+	"github.com/cubbit/dittofs/internal/node/api/apisettings"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -22,12 +24,11 @@ import (
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 
-// The sweep's interval, as the node sets it, and RFC 23's floor for the
-// audit retention, which the node keeps.
-const (
-	sweepInterval  = health.IdleEvery
-	auditRetention = 90 * 24 * time.Hour
-)
+// The sweep's interval, as the node sets it, and the audit retention the
+// node runs, its section's default.
+const sweepInterval = health.IdleEvery
+
+var auditRetention = apisettings.AuditDefaults().Retention
 
 // storeBound is how long the node waits on one store call.
 const storeBound = 20 * time.Second
@@ -203,6 +204,85 @@ func (b twelveKeyBatches) Limits() kv.TxnLimits {
 	return l
 }
 
+// The sweep reads the audit retention from the published snapshot each turn:
+// a 91-day-old audit record is kept under the 400-day default, and once
+// audit.retention is 90 days, published by one reconcile interval, the next
+// sweep turn deletes it.
+func TestAuditRetentionReadAtEachSweep(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch())
+	ch := watchSweep(h)
+	started(t, h)
+	awaitSweep(t, ch)
+
+	target := entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte("retention")}
+	_, audit := keyed(t, h, "r", target)
+
+	// 91 days pass: the record stays, the 400-day default keeping it.
+	sweptAt(t, h, ch, audit.Time.Add(91*24*time.Hour))
+
+	if got := audited(t, h, target); got != 1 {
+		t.Fatalf("audit records 91 days old under the 400-day default: got %d, want 1, kept", got)
+	}
+
+	// audit.retention at its floor, 90 days: one reconcile interval
+	// publishes it, and the next sweep turn deletes the record.
+	value, err := json.Marshal((90 * 24 * time.Hour).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	installation := entity.SettingScope{Kind: entity.ScopeInstallation}
+	putRowGen(t, h, installation, "audit.retention", value)
+	caughtUp(t, h)
+
+	// The change published, the next sweep turn, driven on the clock,
+	// deletes the record.
+	h.Clock().Advance(sweepInterval)
+	awaitSweep(t, ch)
+
+	if got := audited(t, h, target); got != 0 {
+		t.Fatalf(
+			"audit records past the 90-day retention: got %d, want 0, swept",
+			got,
+		)
+	}
+}
+
+// An audit section refused at start never stops the sweep: with no published
+// audit value the sweep keeps every audit record, sweeps none, and every
+// other kind is swept, the idempotency record included.
+func TestAuditRefusedSweepsTheRest(t *testing.T) {
+	h, f := faulted(t)
+	ch := watchSweep(h)
+
+	// One undecodable audit row before Start: the section never runs, so
+	// no value is published.
+	babble(t, f, entity.SettingScope{Kind: entity.ScopeInstallation}, "audit.retention")
+	started(t, h)
+	awaitSweep(t, ch)
+
+	target := entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte("refused")}
+	idem, audit := keyed(t, h, "i", target)
+
+	// 401 days pass: the audit record stays, none is swept, while the
+	// idempotency record, long expired, is.
+	sweptAt(t, h, ch, audit.Time.Add(401*24*time.Hour))
+
+	if got := audited(t, h, target); got != 1 {
+		t.Fatalf(
+			"audit records with the audit section refused: got %d, want 1, every one kept",
+			got,
+		)
+	}
+
+	if kept(t, h, idem) {
+		t.Errorf(
+			"idempotency record %q expired: still in the store, want the rest swept",
+			idem.Key,
+		)
+	}
+}
+
 // A backlog larger than one Sweep call deletes is cleared within one turn:
 // the sweep calls again at once while the store answers More.
 func TestSweepClearsABacklogInOneTurn(t *testing.T) {
@@ -328,11 +408,22 @@ func TestSweepBoundedWhileTheStoreHangs(t *testing.T) {
 		}
 	}
 	// The other loops report their turns on their own once the clock moved,
-	// so liveness is awaited rather than read once.
+	// so liveness is awaited rather than read once. A loop whose own store
+	// write began after the last move waits out that write's bound, as it
+	// would in time on a real clock, so the clock moves a second at a time
+	// while liveness is awaited, at most one bound further.
 	api, _ := h.Node().Addrs()
-	wait(t, fmt.Sprintf("/health/live answering live %v into the store's hang, past the stall bound", h.Clock().Elapsed()-hung), func() bool {
-		return get(t, api, "/health/live") == answer{http.StatusOK, "live"}
-	})
+	live := func() bool { return get(t, api, "/health/live") == answer{http.StatusOK, "live"} }
+	for from := h.Clock().Elapsed(); !live(); {
+		if h.Clock().Elapsed()-from > storeBound {
+			t.Fatalf("/health/live not live %v into the store's hang, past the stall bound, with every loop's call given its bound", h.Clock().Elapsed()-hung)
+		}
+		h.Clock().Advance(time.Second)
+		// Polls liveness itself for a moment before the clock moves again.
+		for deadline := time.Now().Add(100 * time.Millisecond); time.Now().Before(deadline) && !live(); {
+			<-time.After(10 * time.Millisecond)
+		}
+	}
 
 	stopped := make(chan error, 1)
 	go func() { stopped <- h.Node().Stop(context.Background()) }()

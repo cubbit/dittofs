@@ -231,8 +231,14 @@ func TestRFC8A_TheJoin(t *testing.T) {
 	settle(t, f, h, func(r entity.File) bool { return r.Size == 16384 })
 	write(t, f, id, 0, p)
 
-	if _, err := f.Handle().Sync(ctx, journal.NewFileID(id)); err != nil {
-		t.Fatalf("Sync: %v", err)
+	// The write overwrites committed content, so Commit returns once a
+	// recorded mark covers its record: the open is handed that proof. The
+	// deadline is a real-time backstop for a mark that is never recorded.
+	cctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+
+	if _, _, err := f.E.Commit(cctx, f.Share.ID, id, 0, 4096); err != nil {
+		t.Fatalf("Commit: %v", err)
 	}
 
 	corrupt(t, f, p)

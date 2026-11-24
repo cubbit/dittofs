@@ -118,11 +118,12 @@ suites:
       # The adapters' allocation gates, which skip under -race.
       adapter-allocs:
         cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/ ./internal/adapter/core/ ./internal/adapter/nfs/protocol/ ./pkg/resources/ ./internal/adapter/nfs/wire/ ./internal/adapter/smb/protocol/ ./internal/adapter/smb/wire/
-      # The architecture rules and the CLI reference check read the whole module, so a change
-      # anywhere can break them, and the OpenAPI document check reads openapi.json, a file that
-      # is no Go package's; with no {packages}, dt run --changed never narrows them away.
+      # The architecture rules, the CLI reference check and the scan for environment names the
+      # start refuses read the whole module, so a change anywhere can break them, and the OpenAPI
+      # document check reads openapi.json, a file that is no Go package's; with no {packages},
+      # dt run --changed never narrows them away.
       whole-tree:
-        cmd: go test -race -timeout=5m -run=^(TestImportRules|TestNodeExports|TestReferenceMatchesCommandTrees|TestImports|TestOpenAPIMatchesRouteTable)$ ./internal/node/ ./internal/node/api/ ./cmd/gendocs/ ./pkg/identity/
+        cmd: go test -race -timeout=5m -run=^(TestImportRules|TestNodeExports|TestReferenceMatchesCommandTrees|TestImports|TestOpenAPIMatchesRouteTable|TestRepositoryNamesNoRefusedVariable)$ ./internal/node/ ./internal/node/api/ ./cmd/gendocs/ ./pkg/identity/ ./pkg/bootstrap/
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:
@@ -286,6 +287,39 @@ suites:
     cmd:
       - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -run ^$ -bench ^BenchmarkSettingsGenerationCost$ ./pkg/secrets/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
+  # The reconcile's own walk and diff at 10⁴ shares' settings, against RFC 13's plan §4.3 trigger
+  # (the walk and the diff passing 100 ms, a tenth of the one-second poll): Read through Nodes and
+  # Diff alone, `sparse` about 10⁵ rows and `dense` 2×10⁵, sparse and dense each timing read,
+  # diff_one_key, diff_first and the two together. Each sub-benchmark fails itself when Read
+  # refuses a section or Diff lists another key set than the one it answers, so its b.Fatalf line
+  # lands in bench.txt rather than a wrong figure. The seeding runs before the timer and dominates:
+  # one count of both cases was measured under three minutes on a laptop, so ten need under half
+  # an hour and the -timeout sits above that, as go test would otherwise stop a benchmark binary at
+  # ten minutes. Badger lives under t.TempDir(), so TMPDIR is pointed at DITTOFS_BENCH_DIR, as
+  # settings-gen-bench's is. Compare with benchstat over the ten counts on one machine.
+  # decision: format exit (the default), not go-json: go test -json sends no pass event for a
+  # passing benchmark, which a go-json cell grades as failed.
+  # decision: no known: file. A benchmark that refuses to run is a finding to fix, and one that
+  # fails itself on code is exactly what it exists to catch. A flake goes to quarantine, with an
+  # issue and an expiry date, never a known list.
+  settings-scan-bench:
+    cmd:
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -timeout=50m -run ^$ -bench ^BenchmarkReconcileScan$ ./pkg/settings/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 55m, cell: 60m }
+  # The same benchmark once per change at -benchtime=1x, so a code change that makes Read refuse a
+  # section or Diff list the wrong keys fails a pull request instead of only a manual run. The full
+  # fixture is seeded outside the timer each run; no -race (it changes the figure) and format exit
+  # (the default), as the manual one's comments say.
+  # decision: non-blocking on pull requests, as bench-smoke is: the seeding costs minutes of an
+  # unattended runner, and a failing run posts instead of blocking the merge. Make it blocking
+  # once its run time has settled on the hosted runners.
+  # decision: no known: file. A benchmark that refuses to run is a finding to fix.
+  settings-scan-smoke:
+    cmd:
+      - { sh: 'go test -count=1 -benchtime=1x -timeout=25m -run ^$ -bench ^BenchmarkReconcileScan$ ./pkg/settings/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: pr
+    blocking: { pr: false }
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
   # epic that fills its stub, and each failure is a known one.
   adapter-conformance:

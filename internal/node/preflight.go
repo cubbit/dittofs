@@ -54,7 +54,7 @@ type startFacts struct {
 
 // The verdicts a start answers, one per refusal, so callers can match them.
 var (
-	errV1State         = errors.New("the node's journals are in v1 state")
+	errV1State         = errors.New("refusing to start")
 	errUnidentifiable  = errors.New("the node's storage cannot be identified")
 	errDevicesDisagree = errors.New("the devices name different installations")
 	errStoreLost       = errors.New("the metadata store is lost")
@@ -71,6 +71,21 @@ var (
 	errNoStore   = errors.New("the store is not set: the start check takes its directory or its opened KV")
 	errTwoStores = errors.New("the store is set twice: the start check takes its directory or its opened KV, not both")
 )
+
+// refuseV1Found is the one sentence a start or an initialisation refuses v1 data
+// with, whatever it found: the pre-journal block layout here, a v1 Badger
+// store in New. dfs's own refusal of v1's control-plane database writes the
+// same sentence, in cmd/dfs/commands, whose tests pin it as these do.
+func refuseV1Found(path, found string) error {
+	return fmt.Errorf("%w: %s at %s is from v1; upgrading from v1 is not supported: start a new installation with dfs init on empty storage", errV1State, found, path)
+}
+
+// v1Store is New's refusal of a v1 Badger store: the v1 sentence, still
+// kvstore.ErrV1Store and ErrForeignStore underneath.
+type v1Store struct{ sentence, store error }
+
+func (e v1Store) Error() string   { return e.sentence.Error() }
+func (e v1Store) Unwrap() []error { return []error{e.sentence, e.store} }
 
 // manifestName is Badger's MANIFEST, the mark of a store Open created.
 const manifestName = "MANIFEST"
@@ -277,7 +292,7 @@ func Preflight(ctx context.Context, storeDir string, store kv.KV, v1Root string,
 // checks reorders which advice that operator gets.
 func decide(f startFacts) error {
 	if f.V1 != "" {
-		return fmt.Errorf("%w: v1 state lives at %s, from before the current layout", errV1State, f.V1)
+		return refuseV1Found(f.V1, "a pre-journal block layout")
 	}
 	if f.Store == storePresent {
 		// decision: a present store settles the start check on its own and

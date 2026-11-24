@@ -128,25 +128,25 @@ func (n *Node) statusTurn(ctx context.Context) {
 // lists every change it did not apply. Report per-record positions if a
 // component ever applies records out of order.
 //
-// ponytail: the restart-pending set is empty, as nothing applies a
-// restart-class setting yet; the secret versions are identity's keytab
-// alone, as no other component holds a secret's versions yet; and the claim
-// generation is zero, as no namespace is claimed. Fill each with the
-// component that first applies, holds or claims it.
+// ponytail: the secret versions are identity's keytab alone, as no other
+// component holds a secret's versions yet; and the claim generation is zero,
+// as no namespace is claimed. Fill each with the component that first holds
+// or claims it.
 func (n *Node) nodeStatus() entity.NodeStatus {
-	pos, refused := n.rec.report()
+	pos, refused, pending := n.rec.report()
 	for _, kind := range n.runner.refusedKinds() {
 		refused = append(refused, refusedKind(kind))
 	}
 	return entity.NodeStatus{
-		Node:       n.cfg.Bootstrap.Node.ID,
-		Settings:   pos.Settings,
-		ShareList:  pos.ShareList,
-		Principals: pos.Principals,
-		Refused:    refused,
-		Secrets:    n.identitySecrets(),
-		Conditions: encodeConditions(n.health.Conditions(nil)),
-		Adapters:   []entity.AdapterStatus{n.nfs.status(), n.smb.status()},
+		Node:           n.cfg.Bootstrap.Node.ID,
+		Settings:       pos.Settings,
+		ShareList:      pos.ShareList,
+		Principals:     pos.Principals,
+		Refused:        refused,
+		RestartPending: pending,
+		Secrets:        n.identitySecrets(),
+		Conditions:     encodeConditions(n.health.Conditions(nil)),
+		Adapters:       []entity.AdapterStatus{n.nfs.status(), n.smb.status()},
 	}
 }
 
@@ -282,5 +282,6 @@ func (s nodeSeries) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(reconcileErrors, prometheus.CounterValue, float64(s.n.rec.errors[k].Load()), kind)
 		ch <- prometheus.MustNewConstMetric(generationLag, prometheus.GaugeValue, lag[k].Seconds(), kind)
 	}
-	ch <- prometheus.MustNewConstMetric(restartPending, prometheus.GaugeValue, 0)
+	_, _, pending := s.n.rec.report()
+	ch <- prometheus.MustNewConstMetric(restartPending, prometheus.GaugeValue, float64(len(pending)))
 }

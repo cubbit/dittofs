@@ -3,11 +3,11 @@
 # its entry in the change that turned it green, a journal change included. Each entry's
 # message is the failure it is known by: a test failing for any other reason is unexpected.
 - test: TestRFC8A_SyncedLossReadsLost
-  message: 'committed size 0 and charged 0, want 4096 and 0'
+  message: 'Read = vfs: retry shortly: frozen, want ErrLost'
   status: fail
   fix: planned
   category: feature
-  reason: 'a synced write the crash corrupted is committed as lost at start, charges nothing and reads ErrLost. The row restarts and finds the file empty: the committed size reads 0 and charged 0, want 4096 and 0, and the read answers nil, not ErrLost. Cause: after the restart the open cuts the corrupted record, the stream''s last synced record with nothing after it to prove it synced, as an unproven tail, and a loss counts only when a recorded mark proves it; the journal keeps a per-stream sync mark that follows the last sync that named a file of the stream and JournalOf serves it, so the group commit records marks, but this row syncs through the journal handle and crashes with no group commit after it, so no mark was recorded and the open is handed none. The row is owed a change, to commit through the engine and wait for a group commit before its crash, which #5444 tracks; a recorded mark would then meet the refusal: an open whose recorded mark proves a synced record lost, with no copy of it verifying, is refused (refuseLostTail, pkg/block/journal/internal/recovery/marks.go) until the journal''s reconcile half lands, so the row then reads the journal refused rather than ErrLost until that refusal is withdrawn too.'
+  reason: 'a synced write the crash corrupted is committed as lost at start, charges nothing and reads ErrLost. The row commits the file through the engine and commits another file''s existence after it, so the group commit records a sync mark covering the corrupted record, the stream''s last, and the restart hands it to the open; an open whose recorded mark proves a synced record lost, with no copy of it verifying, is refused (refuseLostTail, pkg/block/journal/internal/recovery/marks.go) until the journal''s reconcile half lands, so the share is refused at start and serves only the frozen delay; the row goes green once that refusal is withdrawn and the open reads the proved lost tail as lost.'
   issue: '#5261'
 - test: TestRFC8A_RetryLaterAtTheShareLimit
   message: 'the share limit has nothing left to free'
@@ -33,19 +33,12 @@
   reason: 'Waits on offload being composed. The settled answer gives retry-later for dirty bytes only with a put-healthy store behind them (RFC 8 section 10.2), and this part composes no store, so the settled no-space in settled() stands, as ruled on #4892; the row fills its share with live, dirty bytes and wants the retry-later a put-healthy store would give. The share-limit refusal now runs one pass per share that repacks only when the share''s unreclaimed bytes after its sync are above zero: the filler supersedes nothing, so no pass repacks, the ended figure reads zero and the refusal answers no space, as its retry-later sibling at the share limit does. It passed before only because the refusal''s two repack passes sealed and cycled the live bytes, leaving an ended figure the settled answer read as something to free.'
   issue: '#5318'
 
-- test: TestV26/journal/a_clone_of_a_lost_run_reads_lost_there
-  message: 'the destination over the source''s lost run: <nil>, want ErrLost'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'sync marks reaching the engine''s journal open: a clone of a source whose synced run the journal lost reads ErrLost at the destination and the source''s bytes elsewhere. Init and Open work, and the open now empties the ended segment and serves, but nothing proves the rotted record synced, so the open reads it as a torn tail, cuts it and empties segment 3 without recording the loss, and the source and the destination read zeros over the lost run with a nil error. Cause: the journal keeps a per-stream sync mark that follows the last sync that named a file of the stream and JournalOf serves it, so the group commit records marks, but the open this row restarts into is handed no recorded mark, so none proves the rotted record synced. The row is owed a change, to commit through the engine and wait for a group commit before its crash, which #5444 tracks; a recorded mark would then meet the refusal: an open whose recorded mark proves a synced record lost, with no copy of it verifying, is refused (refuseLostTail, pkg/block/journal/internal/recovery/marks.go) until the journal''s reconcile half lands, so the row then reads the journal refused rather than ErrLost until that refusal is withdrawn too.'
-  issue: '#5261'
 - test: TestRFC8A_TheJoin
-  message: 'the lost extent reads "oooooooo", <nil>; want ErrLost'
+  message: 'read 4096 bytes at 8192: 0, vfs: retry shortly: frozen'
   status: fail
   fix: planned
   category: feature
-  reason: 'a committed hole reads zeros and a synced record the journal lost reads Lost after the restart. The row gets past the restart, but the lost extent serves the bytes it held before, superseded ones, and answers no error instead of ErrLost. Cause: after the restart the open cuts the corrupted record, the stream''s last synced record with nothing after it to prove it synced, as an unproven tail, and a loss counts only when a recorded mark proves it; the journal keeps a per-stream sync mark that follows the last sync that named a file of the stream and JournalOf serves it, so the group commit records marks, but the open this row restarts into is handed one recorded mark, which does not cover the corrupted record. The row is owed a change, to commit through the engine so a covering mark is recorded, which #5444 tracks; that mark would then meet the refusal: an open whose recorded mark proves a synced record lost, with no copy of it verifying, is refused (refuseLostTail, pkg/block/journal/internal/recovery/marks.go) until the journal''s reconcile half lands, so the row then reads the journal refused rather than ErrLost until that refusal is withdrawn too.'
+  reason: 'a committed hole reads zeros and a synced record the journal lost reads Lost after the restart. The row commits its overwrite through the engine, which returns once a recorded sync mark covers the record, the stream''s last, and the restart hands that mark to the open; an open whose recorded mark proves a synced record lost, with no copy of it verifying, is refused (refuseLostTail, pkg/block/journal/internal/recovery/marks.go) until the journal''s reconcile half lands, so the share is refused at start and serves only the frozen delay; the row goes green once that refusal is withdrawn and the open reads the proved lost tail as lost.'
   issue: '#5261'
 - test: TestRFC8B_SharedJournal
   message: 'the filling write: engine: the share limit has nothing left to free'

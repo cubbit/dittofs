@@ -34,6 +34,7 @@ import (
 // the two operator traps the not-initialised and disagree messages must not
 // fall into.
 func TestDecide(t *testing.T) {
+	t.Parallel()
 	instA := journal.InstallationID{0xAA, 0x01}
 	instB := journal.InstallationID{0xBB, 0x02}
 	corruptFormat := fmt.Errorf("%w: the format file is damaged", journal.ErrCorrupt)
@@ -58,7 +59,8 @@ func TestDecide(t *testing.T) {
 			facts: startFacts{V1: "/x/blocks/shares/s1/journal"},
 			want:  errV1State,
 			contains: []string{
-				"/x/blocks/shares/s1/journal",
+				"refusing to start: a pre-journal block layout at /x/blocks/shares/s1/journal is from v1; " +
+					"upgrading from v1 is not supported: start a new installation with dfs init on empty storage",
 			},
 		},
 		{
@@ -236,6 +238,7 @@ func TestDecide(t *testing.T) {
 
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
+			t.Parallel()
 			got := decide(r.facts)
 			if !errors.Is(got, r.want) {
 				t.Fatalf("decide's verdict: got %v, want %v", got, r.want)
@@ -358,6 +361,7 @@ func openStore(t *testing.T, dir string) {
 // upgrade that renames it fails here rather than making the store probe read
 // every store as absent.
 func TestManifestName(t *testing.T) {
+	t.Parallel()
 	if manifestName != badger.ManifestFilename {
 		t.Errorf("manifestName = %q, want badger.ManifestFilename %q: the store probe would misread every store", manifestName, badger.ManifestFilename)
 	}
@@ -370,6 +374,7 @@ func TestManifestName(t *testing.T) {
 // trees are hashed before and after. Storage is real, journals by journal.Init
 // and the store directory by a Badger open.
 func TestPreflight(t *testing.T) {
+	t.Parallel()
 	instA := journal.InstallationID{0xAA, 0x01}
 
 	rows := []struct {
@@ -770,6 +775,7 @@ func TestPreflight(t *testing.T) {
 
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
+			t.Parallel()
 			parent := t.TempDir()
 			storeDir, devices := r.setup(t, parent)
 			hashRoots := append(slices.Clone(devices), parent)
@@ -844,6 +850,9 @@ func TestPreflight(t *testing.T) {
 // after the loop, decide would read the cancellation as an unidentified
 // device and misadvise an operator whose process is merely stopping.
 func TestPreflightCancelDuringTheProbes(t *testing.T) {
+	// decision: serial, because it sets the package's afterDeviceOpen hook,
+	// which every node's start check reads. Withdraw it once the hook is per
+	// node.
 	parent := t.TempDir()
 	store := filepath.Join(parent, "store")
 	d1 := filepath.Join(parent, "device-one")

@@ -294,7 +294,7 @@ any of them.
   copying its files to a share on a new instance. A `memory` store is removed
   before the upgrade and recreated as a Badger store kept in RAM, with
   `dfsctl store metadata add --name <store> --in-memory`. See the
-  [metadata store migration guide](docs/guide/metadata-store-migration.md) before
+  [metadata store migration guide](https://github.com/cubbit/dittofs/blob/v0.35.0/docs/guide/metadata-store-migration.md) before
   upgrading. The control-plane database (`database:`, SQLite or PostgreSQL) is not
   affected.
 
