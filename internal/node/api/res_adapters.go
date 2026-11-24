@@ -12,7 +12,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
-// protocols are the adapters a path may name.
+// protocols are the adapters a path may name, sorted, the order the
+// adapters' listing pages them in.
 //
 // ponytail: the list is written here; take it from the settings table's
 // adapters.<protocol> sections once the table names them.

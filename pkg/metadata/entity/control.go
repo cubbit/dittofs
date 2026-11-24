@@ -479,7 +479,8 @@ type SettingKey struct {
 
 // SettingsReader is the one read settings.Read makes of the store.
 type SettingsReader interface {
-	// AllSettings lists every scope's settings in key order, resuming after
+	// AllSettings lists every scope's settings in key order, scope kind,
+	// then scope ID as bytes, then key, resuming after
 	// after; the zero key starts from the first. A row that does not decode
 	// is yielded with an error wrapping ErrBadRow, and the listing goes on.
 	// Resume only after a pair whose error is nil: a bad row's Setting may be
