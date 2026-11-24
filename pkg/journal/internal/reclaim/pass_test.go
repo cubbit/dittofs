@@ -1245,19 +1245,22 @@ func TestPassAHandOverRefusedForAnotherRetirementFreesNothing(t *testing.T) {
 	// the same way — so the test asserts the hook fired, not that its Claim
 	// won. One fire only — the later explicit retirement below must claim
 	// unimpeded. Installed before the plant, as the seam's own contract asks:
-	// ids start at 1, so while seg below names none, the id check keeps the
-	// hook inert against any Retire that fires earlier.
-	var seg core.SegmentID
-	fired := false
+	// the fixture's live reclaim worker can fire the hook on its own goroutine
+	// while the plant still runs, so both the id the hook waits for and its
+	// one-fire flag are written and read as atomics, ordered against the
+	// plant's store — a plain pair answers -race the day a worker Retire
+	// overlaps the plant.
+	var segA atomic.Uint64
+	var fired atomic.Bool
 	p.f.core.Retirer().SetRetireHook(func(id core.SegmentID, _ segment.Reason) {
-		if id != seg || fired {
+		if uint64(id) != segA.Load() || !fired.CompareAndSwap(false, true) {
 			return
 		}
-		fired = true
 		_ = p.f.set.Claim(id)
 	})
-	t.Cleanup(func() { p.f.set.Release(seg) })
-	seg = p.plantSealed(t, file, []byte(payload))
+	t.Cleanup(func() { p.f.set.Release(core.SegmentID(segA.Load())) })
+	segA.Store(uint64(p.plantSealed(t, file, []byte(payload))))
+	seg := core.SegmentID(segA.Load())
 
 	freedBefore := p.f.core.Stats().Counters.FreedBytes
 	freed, err := p.repack(context.Background(), copySegCap*8, seg)
@@ -1267,7 +1270,7 @@ func TestPassAHandOverRefusedForAnotherRetirementFreesNothing(t *testing.T) {
 	if freed != 0 {
 		t.Fatalf("Repack freed %d, want 0: the refused hand-over is a visit that frees nothing", freed)
 	}
-	if !fired {
+	if !fired.Load() {
 		t.Fatal("the hook never fired for the source's hand-over, want it where the forget's drop offers the segment to the retirement worker in the race")
 	}
 	if p.setGone(seg) {
@@ -1319,22 +1322,24 @@ func TestPassAHandOverAfterAnotherRetirementFinishedFreesNothing(t *testing.T) {
 	// The other retirement in the race, fired where a forget's drop offers
 	// the segment to the worker: it finishes the retirement there, ahead of
 	// Retire's own claim below. Installed before the plant, as the seam's own
-	// contract asks: ids start at 1, so while seg below names none, the id
-	// check keeps the hook inert against any Retire that fires earlier.
-	var seg core.SegmentID
-	fired := false
+	// contract asks: the fixture's live reclaim worker can fire the hook on
+	// its own goroutine while the plant still runs, so both the id the hook
+	// waits for and its one-fire flag are written and read as atomics,
+	// ordered against the plant's store.
+	var segA atomic.Uint64
+	var fired atomic.Bool
 	p.f.core.Retirer().SetRetireHook(func(id core.SegmentID, r segment.Reason) {
-		if id != seg || fired {
+		if uint64(id) != segA.Load() || !fired.CompareAndSwap(false, true) {
 			return
 		}
-		fired = true
 		if _, err := p.f.core.Retirer().Retire(id, r); err != nil {
 			t.Errorf("the other retirement: %v", err)
 		}
 	})
-	seg = p.plantSealed(t, copyFile(4), []byte("a record another retirement removes first"))
+	segA.Store(uint64(p.plantSealed(t, copyFile(4), []byte("a record another retirement removes first"))))
+	seg := core.SegmentID(segA.Load())
 	freed, err := p.repack(context.Background(), copySegCap*8, seg)
-	if err != nil || freed != 0 || !fired || !p.setGone(seg) {
-		t.Fatalf("Repack after another retirement finished: freed %d, err %v, fired %v, gone %v; want 0, nil, true, true", freed, err, fired, p.setGone(seg))
+	if err != nil || freed != 0 || !fired.Load() || !p.setGone(seg) {
+		t.Fatalf("Repack after another retirement finished: freed %d, err %v, fired %v, gone %v; want 0, nil, true, true", freed, err, fired.Load(), p.setGone(seg))
 	}
 }
