@@ -3,8 +3,8 @@
 package node
 
 import (
-	"github.com/cubbit/dittofs/pkg/block/engine"
-	wire "github.com/cubbit/dittofs/pkg/block/engine/enginewire"
+	"github.com/cubbit/dittofs/pkg/engine"
+	wire "github.com/cubbit/dittofs/pkg/engine/enginewire"
 )
 
 func build(p wire.Params) error {

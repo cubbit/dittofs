@@ -367,7 +367,7 @@ func TestARotationThroughTheAPIReportsTheNewVersion(t *testing.T) {
 func TestAResolveOfAnUnknownNameFailsAtTheFirstTurn(t *testing.T) {
 	turned := make(chan struct{}, 1)
 	m := newMachine(t, false, func(n *node.Node) {
-		n.OnRunnerTurn(func() {
+		n.OnRunnerTurn(func(context.Context) {
 			select {
 			case turned <- struct{}{}:
 			default:

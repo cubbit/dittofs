@@ -44,7 +44,7 @@ func TestPRTier(t *testing.T) {
 		"lint-go", "lint-repo", "shellcheck",
 		"unit", "unit/windows", "unit/journal-index", "unit/journal-plant", "unit/journal-conformance-norace", "unit/adapter-allocs", "unit/whole-tree",
 		"journal-conformance",
-		"engine-conformance", "engine-soak", "adapter-conformance",
+		"engine-conformance", "engine-soak", "settings-scan-smoke", "adapter-conformance",
 		"integration", "integration/portmap", "integration/kerberos",
 		"operator",
 		"e2e/kerberos", "e2e/cross-protocol",
@@ -58,7 +58,7 @@ func TestPRTier(t *testing.T) {
 		t.Fatalf("pr cells:\n got %v\nwant %v", got, want)
 	}
 	for _, c := range cells {
-		nonBlocking := c.Name == "unit/windows" || c.Name == "bench-smoke" || c.Suite == "e2e"
+		nonBlocking := c.Name == "unit/windows" || c.Name == "bench-smoke" || c.Name == "settings-scan-smoke" || c.Suite == "e2e"
 		if c.Blocking == nonBlocking {
 			t.Errorf("%s: blocking %t", c.Name, c.Blocking)
 		}
@@ -304,7 +304,7 @@ func TestChangedPaths(t *testing.T) {
 	if got := plan("docs/guide/x.md", "README.md", "test/e2e/README.md"); len(got) != 0 {
 		t.Errorf("docs-only change planned %v", got)
 	}
-	if got := plan("pkg/block/engine/flush.go"); slices.Contains(got, "e2e/kerberos") || slices.Contains(got, "e2e/cross-protocol") || !slices.Contains(got, "unit") {
+	if got := plan("pkg/engine/flush.go"); slices.Contains(got, "e2e/kerberos") || slices.Contains(got, "e2e/cross-protocol") || !slices.Contains(got, "unit") {
 		t.Errorf("a block change: %v", got)
 	}
 

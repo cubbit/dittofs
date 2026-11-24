@@ -237,7 +237,7 @@ It declares no internal interface: each one in this list has a consumer in produ
 tests of the epic that fills it in.
 
 **The architecture tests**, each of which fails once against a planted violation, built like
-`pkg/block/journal/imports_test.go`:
+`pkg/journal/imports_test.go`:
 
 - only `cmd/dfs` and the harness import `internal/node` (RFC 23 CP16);
 - the CLI's dependency closure names no store or server package (RFC 23 §7, CP14);
@@ -389,7 +389,7 @@ registers no suite and no group, and changes no `lint-go` tag.
     never called by production" stays a review rule.
 11. **A symbol is exported only if RFC 23's interface uses it.** The exported surface is:
     - `internal/node`'s `New`, `Start`, `Stop`, `Config` and `Preflight`, the start check the
-      host runs before it opens the store;
+      host runs over the store's directory, or its opened KV when it has none;
     - `pkg/node/apiv1`'s wire types;
     - the client, `pkg/node/apiv1/client`;
     - kvstore's view methods.
@@ -709,8 +709,9 @@ Client eviction is O9.
 built on its pid and log files go:
 - `config`, `version` and `completion` stay as they are: of v1, `config` imports `pkg/config`,
   which epic 1 strips and the RFC 13 plan's epic 2 moves onto `pkg/bootstrap` with it, and, for
-  `config show`, `internal/cli/output`, `internal/sysinfo` and `pkg/block`, which stay; the other
-  two import nothing of this module;
+  `config show`, `internal/cli/output`, which stays. `internal/sysinfo` goes with the v1 Badger
+  store, its only other importer (the stage 4 plan's T2.1), and `config show` no longer imports
+  it or `pkg/block`; the other two import nothing of this module;
 - `start --foreground` becomes `start`, and `--pid-file` and `--log-file` go with daemon mode:
   the node logs where its logger writes, and a script takes the pid from its shell. Epic 1 drops
   the three flags from every caller and rewrites the tests that assert them; its T1.3 and T1.4
@@ -1755,7 +1756,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | An exported `node.Records` interface (RFC 23 §2.1) | the node holds kvstore's views directly, and epic 2's `Store.Nodes()` serves its reads and background calls; an interface with one implementation is a stub | unowned | a second implementation, such as a multi-node test's |
 | `node.Config.Transport` (RFC 23 §2.1, epic 1's D2) | it is nil on one node, and nothing reads it | RFC 15, with the cluster rows | a second node |
 | `node.Config.Fault`, the fault seam (RFC 23 §2.1, RFC 8 §2.1; epic 1's D2) | no component's `Deps` takes a fault seam; the store's faults come through the KV, which `kvtest` wraps | unowned | a component's `Deps` takes a fault seam |
-| `§3.2 delete`'s 10⁵ files: epic 7's T7.2 seeds 50 (epic 7's R3, the runner's `ponytail:` on `run`) | the runner moves an operation one step a turn, a turn a second, and a batch of step 4 drops about 21 rows, so 10⁵ files take about 4 hours | unowned | the runner runs a step again at once while it reports work left |
+| `§3.2 delete`'s 10⁵ files: epic 7's T7.2 seeds 50 (epic 7's R3, the `ponytail:` on `ContinueShardRemoval`) | the runner now runs a step again at once while it reports work left, but each batch of step 4 rescans from the share's first file key over the rows earlier batches deleted, so the drop grows with the square of the files: under `-race` 4000 files do not end inside the crash row's 60 s child bound | unowned | the shard's drop keeps its last key in the rm row, ending the quadratic rescan |
 
 ## 7. RFC coverage
 

@@ -12,7 +12,7 @@ var versions = map[entity.Format]entity.VersionRange{
 	// kvstore.MinFormat to kvstore.MaxFormat.
 	entity.FormatStore: {Min: 1, Max: 1},
 	// The journal's format file version, FormatVersion in
-	// pkg/block/journal/internal/format/formatfile.go.
+	// pkg/journal/internal/format/formatfile.go.
 	entity.FormatJournal: {Min: 1, Max: 1},
 	// The block format, which has one version so far (RFC 4 §3.5).
 	entity.FormatBlock: {Min: 1, Max: 1},

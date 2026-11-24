@@ -14,6 +14,7 @@ import (
 // listed them in, and whatever cause and detail each carries, so a
 // condition whose figures change while it stands writes no new status.
 func TestEncodeConditionsCanonical(t *testing.T) {
+	t.Parallel()
 	full := health.Condition{Name: "journal_full", Subject: health.Subject{Scope: health.ScopeJournal, ID: "j1", Name: "/dev/a"},
 		Cause: errors.New("refused"), Detail: "used 10 of 20 bytes"}
 	behind := health.Condition{Name: "config_generation_behind", Subject: health.Subject{Scope: health.ScopeNode, ID: "n1", Name: "settings"}}
@@ -43,6 +44,7 @@ func TestEncodeConditionsCanonical(t *testing.T) {
 // At most maxPerName conditions of one name are stored, those sorting
 // first, beside every condition of another name.
 func TestEncodeConditionsCapsEachName(t *testing.T) {
+	t.Parallel()
 	var conds []health.Condition
 	for i := range maxPerName + 5 {
 		conds = append(conds, health.Condition{Name: "share_unhealthy", Subject: health.Subject{Scope: health.ScopeShare, ID: fmt.Sprintf("s%03d", i)}})

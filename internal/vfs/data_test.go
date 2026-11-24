@@ -1023,22 +1023,22 @@ func TestAWriteLeavesAloneTheTimesItsOpenSuspends(t *testing.T) {
 func TestAContentChangeLeavesAloneTheTimesItsOpenSuspends(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		do   func(s *attrs, pc vfs.Call, h, src vfs.Handle, through vfs.OpenRef) error
+		do   func(s *attrs, pc vfs.Call, h, src vfs.Handle, through vfs.OpenRef, off int64) error
 	}{
-		{"deallocate", func(s *attrs, pc vfs.Call, _, _ vfs.Handle, o vfs.OpenRef) error {
-			_, err := s.Deallocate(t.Context(), pc, o, 0, 1)
+		{"deallocate", func(s *attrs, pc vfs.Call, _, _ vfs.Handle, o vfs.OpenRef, off int64) error {
+			_, err := s.Deallocate(t.Context(), pc, o, off, 1)
 			return err
 		}},
-		{"end of file", func(s *attrs, pc vfs.Call, h, _ vfs.Handle, o vfs.OpenRef) error {
+		{"end of file", func(s *attrs, pc vfs.Call, h, _ vfs.Handle, o vfs.OpenRef, _ int64) error {
 			_, err := s.SetAttr(t.Context(), pc, vfs.Target{H: h, Open: &o}, size(1))
 			return err
 		}},
-		{"copy", func(s *attrs, pc vfs.Call, _, src vfs.Handle, o vfs.OpenRef) error {
-			_, err := s.Copy(t.Context(), pc, vfs.CopyArgs{Src: vfs.Anonymous(src), Dst: o, Extents: []vfs.Extent{{Len: 2}}})
+		{"copy", func(s *attrs, pc vfs.Call, _, src vfs.Handle, o vfs.OpenRef, off int64) error {
+			_, err := s.Copy(t.Context(), pc, vfs.CopyArgs{Src: vfs.Anonymous(src), Dst: o, Extents: []vfs.Extent{{DstOff: off, Len: 2}}})
 			return err
 		}},
-		{"clone", func(s *attrs, pc vfs.Call, _, src vfs.Handle, o vfs.OpenRef) error {
-			_, err := s.Clone(t.Context(), pc, vfs.CopyArgs{Src: vfs.Anonymous(src), Dst: o, Extents: []vfs.Extent{{Len: 2}}})
+		{"clone", func(s *attrs, pc vfs.Call, _, src vfs.Handle, o vfs.OpenRef, off int64) error {
+			_, err := s.Clone(t.Context(), pc, vfs.CopyArgs{Src: vfs.Anonymous(src), Dst: o, Extents: []vfs.Extent{{DstOff: off, Len: 2}}})
 			return err
 		}},
 	} {
@@ -1062,11 +1062,13 @@ func TestAContentChangeLeavesAloneTheTimesItsOpenSuspends(t *testing.T) {
 				return f
 			}
 			before := attr()
-			s.must(t, c.do(s, pc, h, src, frozen))
+			s.must(t, c.do(s, pc, h, src, frozen, 0))
 			if got := attr(); !got.Modify.Equal(before.Modify) || !before.Change.Before(got.Change) {
 				t.Errorf("a %s through the open suspending Modify: Modify %v Change %v, want Modify %v and a Change after %v", c.name, got.Modify, got.Change, before.Modify, before.Change)
 			}
-			s.must(t, c.do(s, pc, h, src, other))
+			// Another extent, so the engine does not answer a repeated clone
+			// as the retry of a finished one, changing nothing.
+			s.must(t, c.do(s, pc, h, src, other, 2))
 			if got := attr(); !got.Modify.Equal(got.Change) || !got.Modify.After(before.Modify) {
 				t.Errorf("a %s through another open: Modify %v, want the change time %v, after %v", c.name, got.Modify, got.Change, before.Modify)
 			}

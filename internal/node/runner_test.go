@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,7 +90,7 @@ func (b *bench) runner(steps map[string]stepRow) *runner {
 // at advances the clock to d past its start and has r take a turn.
 func (b *bench) at(r *runner, d time.Duration) {
 	b.clock.Advance(d - b.clock.Elapsed())
-	r.turn(b.t.Context())
+	r.turn(b.t.Context(), true)
 }
 
 // must fails the test when step's err is set.
@@ -210,11 +211,29 @@ func failUpdates(n int, err error) sim.Rule {
 	return sim.Rule{Op: kvtest.OpUpdate, Key: "*", Count: n, Action: sim.FaultAction{Err: err}}
 }
 
+// answersMore has each of steps' answers checked: More exactly while work
+// is left, so a turn with work left is followed at once.
+func answersMore(t *testing.T, steps map[string]stepRow) map[string]stepRow {
+	for kind, row := range steps {
+		run := row.run
+		row.run = func(ctx context.Context, op entity.Operation) (step.StepResult, error) {
+			res, err := run(ctx, op)
+			if err == nil && res.More == res.Done {
+				t.Errorf("%s step: More %v with Done %v, want More exactly while work is left", kind, res.More, res.Done)
+			}
+			return res, err
+		}
+		steps[kind] = row
+	}
+	return steps
+}
+
 // A user's deletion stopped between two batches, its store closed and
 // reopened under a new runner, resumes from the records and ends succeeded
 // with no row naming the user or her secret left, and another user's grant
 // kept.
 func TestUserDeletionResumesAcrossRestart(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, t.TempDir(), nil)
 	ctx, cp := t.Context(), b.store.ControlPlane()
 	secret := entity.SecretRef{15: 1}
@@ -253,7 +272,7 @@ func TestUserDeletionResumesAcrossRestart(t *testing.T) {
 	}
 	op := b.deleteUser(alice, gen)
 
-	b.at(b.runner(nil), 0)
+	b.at(b.runner(answersMore(t, operationSteps(b.store.Nodes()))), 0)
 	if got := b.read(op.ID).State; got != entity.OpRunning {
 		t.Fatalf("deletion after its first batch: got %v, want running", got)
 	}
@@ -262,7 +281,7 @@ func TestUserDeletionResumesAcrossRestart(t *testing.T) {
 	}
 
 	b.restart()
-	b.at(b.runner(nil), time.Second)
+	b.at(b.runner(answersMore(t, operationSteps(b.store.Nodes()))), time.Second)
 	if got := b.read(op.ID); got.State != entity.OpSucceeded {
 		t.Fatalf("deletion resumed after a restart: got %v, want succeeded", got.State)
 	}
@@ -280,6 +299,7 @@ func TestUserDeletionResumesAcrossRestart(t *testing.T) {
 // A turn whose step answers the cursor recorded commits nothing; one whose
 // cursor moved commits once.
 func TestUnchangedTurnCommitsNothing(t *testing.T) {
+	t.Parallel()
 	counting := new(kv.Counting)
 	b := newBench(t, "", func(db kv.KV) kv.KV { counting.KV = db; return counting })
 	next := []byte("a")
@@ -311,6 +331,7 @@ func noPhase(context.Context, entity.Operation) apiv1.Progress { return apiv1.Pr
 // unchanged, commits once with an audit record naming both phases; a turn
 // whose phase stays commits nothing.
 func TestPhaseChangeCommitsWithItsAudit(t *testing.T) {
+	t.Parallel()
 	counting := new(kv.Counting)
 	b := newBench(t, "", func(db kv.KV) kv.KV { counting.KV = db; return counting })
 	phase, moveTo := "", ""
@@ -351,6 +372,7 @@ func TestPhaseChangeCommitsWithItsAudit(t *testing.T) {
 // retry commits all three, audited as the account that started the
 // operation, on this node.
 func TestStateChangeCommitsWithItsAudit(t *testing.T) {
+	t.Parallel()
 	var f *kvtest.FaultKV
 	b := newBench(t, "", faults(&f))
 	alice, gen := b.user(entity.User{Name: "alice"})
@@ -416,6 +438,7 @@ func TestStateChangeCommitsWithItsAudit(t *testing.T) {
 // runner's caller: the End's writes roll back, the cursor stays as recorded,
 // and the failure is audited.
 func TestEndPanicFailsOperation(t *testing.T) {
+	t.Parallel()
 	gone := &apiv1.Problem{Status: 404, Code: "not_found", Title: "no such user"}
 	goneBody, _ := json.Marshal(gone)
 	for _, c := range []struct {
@@ -430,6 +453,7 @@ func TestEndPanicFailsOperation(t *testing.T) {
 		{"a problem", func() error { return gone }, string(goneBody)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			b := newBench(t, "", nil)
 			op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning, Step: []byte("s1")})
 			setting := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "ended", Value: []byte("yes")}
@@ -465,6 +489,7 @@ func TestEndPanicFailsOperation(t *testing.T) {
 // the operation with it as Error; a cancelled context's error is retried,
 // leaving the state and cursor as recorded; a done step records its Result.
 func TestStepAnswerRecorded(t *testing.T) {
+	t.Parallel()
 	gone := &apiv1.Problem{Status: 404, Code: "not_found", Title: "no such user"}
 	goneBody, _ := json.Marshal(gone)
 	for _, c := range []struct {
@@ -487,6 +512,7 @@ func TestStepAnswerRecorded(t *testing.T) {
 		{"done", step.StepResult{Next: []byte("s2"), Done: true, Result: json.RawMessage(`{"id":7}`)}, nil, nil, entity.OpSucceeded, "s2", "", `{"id":7}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			b := newBench(t, "", nil)
 			op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning, Step: []byte("s1")})
 			b.at(b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
@@ -506,6 +532,7 @@ func TestStepAnswerRecorded(t *testing.T) {
 
 // A step whose context ends while it runs commits nothing, even a failure.
 func TestInterruptedStepCommitsNothing(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning, Step: []byte("s1")})
 	ctx, cancel := context.WithCancel(t.Context())
@@ -513,7 +540,7 @@ func TestInterruptedStepCommitsNothing(t *testing.T) {
 		cancel()
 		return step.StepResult{}, step.ErrStepFailed
 	}}})
-	r.turn(ctx)
+	r.turn(ctx, true)
 	if got := b.read(op.ID); got.State != entity.OpRunning || got.Generation != op.Generation {
 		t.Errorf("operation whose step was interrupted: got %v at generation %d, want running at %d", got.State, got.Generation, op.Generation)
 	}
@@ -525,6 +552,7 @@ func TestInterruptedStepCommitsNothing(t *testing.T) {
 // store error, a transaction too large included, leaves it pending until a
 // retry a second later runs it again.
 func TestUserDeletionStepAnswers(t *testing.T) {
+	t.Parallel()
 	userRef := func(u entity.Principal) entity.ResourceRef {
 		return entity.ResourceRef{Kind: entity.ResourceUser, ID: u.ID[:]}
 	}
@@ -563,6 +591,7 @@ func TestUserDeletionStepAnswers(t *testing.T) {
 		{"a transaction too large", marked, kv.ErrTooLarge, entity.OpPending, entity.OpSucceeded},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			var f *kvtest.FaultKV
 			b := newBench(t, "", faults(&f))
 			op := c.op(b)
@@ -587,6 +616,7 @@ func TestUserDeletionStepAnswers(t *testing.T) {
 // operation ends succeeded with no row naming the machine, and its Kerberos
 // name finds nothing.
 func TestMachineDeletionEnds(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	ctx, cp := t.Context(), b.store.ControlPlane()
 	name := entity.ProtocolID{Scheme: entity.SchemeKerberos, Value: "host/build01.corp.example@CORP.EXAMPLE"}
@@ -612,6 +642,7 @@ func TestMachineDeletionEnds(t *testing.T) {
 // A group's deletion runs past its mark to its end, leaving no row naming
 // the group.
 func TestGroupDeletionEnds(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	ctx, cp := t.Context(), b.store.ControlPlane()
 	alice, _ := b.user(entity.User{Name: "alice"})
@@ -634,6 +665,7 @@ func TestGroupDeletionEnds(t *testing.T) {
 
 // Both deletion kinds read their progress as an uncounted run of batches.
 func TestDeletionProgress(t *testing.T) {
+	t.Parallel()
 	steps := operationSteps(kvstore.Nodes{})
 	want := apiv1.Progress{Phase: "batches", Total: -1, Unit: "batches"}
 	for _, kind := range []apiv1.OpKind{apiv1.OpUserDelete, apiv1.OpGroupDelete} {
@@ -646,6 +678,7 @@ func TestDeletionProgress(t *testing.T) {
 // A deletion whose batches keep failing on a store error runs again 1 s
 // after its first failure, the wait doubling at each failure up to 30 s.
 func TestRetriedStepBacksOff(t *testing.T) {
+	t.Parallel()
 	var f *kvtest.FaultKV
 	b := newBench(t, "", faults(&f))
 	alice, gen := b.user(entity.User{Name: "alice"})
@@ -669,6 +702,7 @@ func TestRetriedStepBacksOff(t *testing.T) {
 // A step that succeeds without changing its operation ends the run of
 // failures: the next failure waits 1 s again, not 2.
 func TestBackoffRestartsAfterASuccess(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	answers := []error{errors.New("first failure"), nil, errors.New("second failure"), nil}
 	r := b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(_ context.Context, op entity.Operation) (step.StepResult, error) {
@@ -693,6 +727,7 @@ func TestBackoffRestartsAfterASuccess(t *testing.T) {
 // Operations of a kind with no step stay pending, unchanged, and the kind
 // is listed once among the refused.
 func TestKindWithNoStepStaysPending(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	kind := string(apiv1.OpRotateSigningKey)
 	var ops []entity.Operation
@@ -713,6 +748,7 @@ func TestKindWithNoStepStaysPending(t *testing.T) {
 
 // An ended operation is not handed to its kind's step; a running one is.
 func TestEndedOperationIsNotDriven(t *testing.T) {
+	t.Parallel()
 	b := newBench(t, "", nil)
 	ended := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpFailed, Error: []byte(`{}`)})
 	running := b.operation(entity.Operation{Kind: "k", Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{2}}, State: entity.OpRunning})
@@ -768,5 +804,149 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 			t.Fatalf("timed out waiting for %s", what)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// While a step reports work left the loop turns again at once, on a clock
+// that never moves, driving every operation with work left once a turn, so
+// two of them alternate and neither starves; an operation whose step reports
+// none, waiting on its own schedule, runs only at a full turn, once on the
+// clock's start and again a runInterval later; and once no step reports work
+// left the loop waits on its clock.
+func TestRunTurnsAtOnceWhileAStepHasWorkLeft(t *testing.T) {
+	b := newBench(t, "", nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	var a, c, waiting, turns atomic.Int64
+	var more atomic.Bool
+	more.Store(true)
+	busy := func(n *atomic.Int64) func(context.Context, entity.Operation) (step.StepResult, error) {
+		return func(context.Context, entity.Operation) (step.StepResult, error) {
+			n.Add(1)
+			return step.StepResult{More: more.Load()}, nil
+		}
+	}
+	r := b.runner(map[string]stepRow{
+		"a": {progress: noPhase, run: busy(&a)},
+		"b": {progress: noPhase, run: busy(&c)},
+		"wait": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
+			waiting.Add(1)
+			return step.StepResult{}, nil
+		}},
+	})
+	for i, kind := range []string{"a", "b", "wait"} {
+		b.operation(entity.Operation{Kind: kind, Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{byte(i + 1)}}, State: entity.OpRunning})
+	}
+	const atOnce = 50
+	waited, full := make(chan struct{}), make(chan struct{})
+	r.turned = func(context.Context) {
+		switch turns.Add(1) {
+		case atOnce:
+			more.Store(false) // the next turn reports no work left
+		case atOnce + 1:
+			close(waited)
+		case atOnce + 2:
+			close(full)
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.run(ctx, health.NewWatchdog(b.clock).Loop("runner"))
+	}()
+	select {
+	case <-waited:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%d turns within 10 s on a clock that never moved, want %d, each step but the last reporting work left", turns.Load(), atOnce+1)
+	}
+	waitFor(t, "the loop to wait on its clock once no step reports work left", func() bool { return b.clock.Pending() > 0 })
+	if a.Load() != atOnce+1 || c.Load() != atOnce+1 || waiting.Load() != 1 {
+		t.Errorf("steps over %d turns on a clock that never moved: the two with work left ran %d and %d, the waiting one %d; want %d each and 1, at the full turn alone",
+			atOnce+1, a.Load(), c.Load(), waiting.Load(), atOnce+1)
+	}
+	if e := b.clock.Elapsed(); e != 0 {
+		t.Errorf("clock over the turns: %v elapsed, want 0, no turn waiting while a step had work left", e)
+	}
+	b.clock.Advance(runInterval)
+	select {
+	case <-full:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no turn within 10 s of the clock moving a runInterval")
+	}
+	if waiting.Load() != 2 {
+		t.Errorf("the waiting operation after the full turn a runInterval later: ran %d, want 2", waiting.Load())
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run after its context ended: still running 10 s later, want returned")
+	}
+}
+
+// A loop whose step never runs out of work returns once its context ends.
+func TestRunWithWorkLeftReturnsWhenItsContextEnds(t *testing.T) {
+	b := newBench(t, "", nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	r := b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
+		return step.StepResult{More: true}, nil
+	}}})
+	b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning})
+	turns := 0
+	r.turned = func(context.Context) {
+		if turns++; turns == 3 {
+			cancel()
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.run(ctx, health.NewWatchdog(b.clock).Loop("runner"))
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run with work left after its context ended: still running 10 s later, want returned")
+	}
+}
+
+// A run of back-to-back turns that ends 600 ms into the clock waits only the
+// 400 ms left of runInterval: the next full turn comes runInterval after the
+// last one began, not runInterval after the run ended.
+func TestRunKeepsFullTurnsAnIntervalApart(t *testing.T) {
+	b := newBench(t, "", nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	var busy, waiting atomic.Int64
+	r := b.runner(map[string]stepRow{
+		"busy": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
+			n := busy.Add(1)
+			if n == 2 {
+				b.clock.Advance(600 * time.Millisecond) // the run takes 600 ms
+			}
+			return step.StepResult{More: n < 3}, nil
+		}},
+		"wait": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
+			waiting.Add(1)
+			return step.StepResult{}, nil
+		}},
+	})
+	for i, kind := range []string{"busy", "wait"} {
+		b.operation(entity.Operation{Kind: kind, Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{byte(i + 1)}}, State: entity.OpRunning})
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.run(ctx, health.NewWatchdog(b.clock).Loop("runner"))
+	}()
+	waitFor(t, "the loop to wait on its clock once the run ends", func() bool { return b.clock.Pending() > 0 })
+	b.clock.Advance(400 * time.Millisecond)
+	if n := b.clock.Pending(); n != 0 {
+		t.Errorf("the runner's wait 400 ms past a run that ended 600 ms after the last full turn began: %d still pending, want it due runInterval after that turn", n)
+	}
+	waitFor(t, "the full turn to drive the waiting operation again", func() bool { return waiting.Load() == 2 })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run after its context ended: still running 10 s later, want returned")
 	}
 }

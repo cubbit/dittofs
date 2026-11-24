@@ -1,0 +1,352 @@
+package index
+
+import (
+	"math"
+
+	"github.com/cubbit/dittofs/pkg/journal/internal/core"
+)
+
+// The index is bounded, and the bound refuses. The count is of entries:
+// held pieces, retained extents and removal markers, of every file of the
+// journal together. A content write that would raise it above the configured
+// ExtentLimit is refused at once, before any I/O, with the same named
+// refusal as a capacity one, naming the index; records without bytes are
+// never refused by it, though they can raise the count.
+//
+// The count is maintained by the delta: every update of a file applies the
+// difference its entries made, the admitted amount subtracted, so the count
+// is exact whatever a pre-check predicted. Admission reserves an amount
+// before the record's I/O, so a write that never commits is returned by
+// abandon.
+
+// writeAdds is the number of entries a write, or a writeRetain when retain,
+// of e would add, and negative when it would drop more than it adds. It is
+// one for the new placement, less the held pieces e covers whole, plus one
+// where e splits a piece in three, plus, for a writeRetain, one retained
+// extent per held piece e overlaps, whole or in part — retainCut retains
+// one piece per piece it supersedes, wherever the write's ends fall, so a
+// piece it covers whole trades its held entry for a retained one, not none.
+// A zero-length e adds nothing. It reads only, so it runs under the file's
+// read lock.
+//
+// A write never joins a neighbour at run time: its version is above every
+// piece it replaces, so joins' test never holds, and the count is exact.
+// A caller that names one record with placements that join — only a test —
+// over-counts by the joins, and commit's true delta takes the difference
+// back.
+func (f *file) writeAdds(e core.Extent, retain bool) int64 {
+	if e.Len <= 0 {
+		return 0
+	}
+	n := int64(1)
+	f.held.visit(e, func(p Piece) bool {
+		inside := p.Extent.Off >= e.Off && p.Extent.Off+p.Extent.Len <= extentEnd(e)
+		if inside {
+			n--
+		}
+		if retain {
+			n++ // the piece superseded stays, retained, beside the write
+		}
+		return true
+	})
+	if f.held.straddle(e) {
+		n++ // the split leaves the piece's head and tail as two
+	}
+	return n
+}
+
+// predictWrite is the number of entries a write, or a writeRetain when retain,
+// of e on id would add: one for a file with no entry and a write of bytes, none
+// for a zero-length one, otherwise writeAdds under the file's read lock.
+func (fs *files) predictWrite(id core.FileID, e core.Extent, retain bool) int64 {
+	n := int64(1)
+	if e.Len <= 0 {
+		n = 0
+	}
+	fs.view(id, func(f *file) { n = f.writeAdds(e, retain) })
+	return n
+}
+
+// refuseEntries counts one refusal and returns the NoSpaceError naming the
+// index for want entries asked at count c against limit; a want below one
+// names a single entry short.
+func (fs *files) refuseEntries(c, want, limit int64) *core.NoSpaceError {
+	fs.refusals.Add(1)
+	return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(want, 1) - limit, Unit: core.UnitEntries}
+}
+
+// checkWrite predicts a write's admission without reserving: it returns the
+// entries the write would add and, when the bound would refuse it, the same
+// refusal the admission itself would return — a NoSpaceError naming the index,
+// the shortfall in entries, counted by the index's refusals counter. A caller
+// that must leave entries unspent for a reservation reads the count it
+// returns, so a write whose own entries would eat them is refused before it
+// takes one. It touches no count: the caller's later admission finds the index
+// exactly where the check left it.
+//
+// It costs what the admission's own pre-check costs — the file's read lock for
+// writeAdds and one load of the count and the limit — so it holds no entries
+// back and grants none. Between the check and its caller's admission the file's
+// content can change by a release or an offload report, exactly as it can
+// between an admission's reserve and its commit; the admission applies the
+// delta the content truly made, so the count never drifts.
+func (fs *files) checkWrite(id core.FileID, e core.Extent, retain bool) (int64, error) {
+	n := fs.predictWrite(id, e, retain)
+	c, limit := fs.count.Load(), fs.limit.Load()
+	if c+max(n, 0) > limit {
+		return n, fs.refuseEntries(c, n, limit)
+	}
+	return n, nil
+}
+
+// fillAdds is the number of entries a fill of p would add: the gaps of the
+// parts no marker above p's version masks. It reads only, so it runs under
+// the file's read lock. Like gaps, the result is exact unless a put joins a
+// neighbour of the same record, and the commit's true delta corrects for
+// that.
+func (f *file) fillAdds(p Placed) int64 {
+	var n int64
+	f.fillParts(p, func(part Placed) {
+		n += f.held.gaps(part.Extent)
+	})
+	return n
+}
+
+// splits reports whether removing e would split one held piece in two: one
+// piece covers both of e's ends. It costs one descent, and reads only.
+func (f *file) splits(e core.Extent) bool {
+	return f.held.straddle(e)
+}
+
+// admitWrite reserves the entries a write, or a writeRetain when retain, of e
+// on id would add, and reports them for the caller to hand to commit, or to
+// abandon once its I/O has failed. It is refused with a NoSpaceError naming
+// the index when the reservation would raise the count above the limit — a
+// write that adds nothing included, once the count is above the limit, since
+// over the bound the count must come down and every content write is refused
+// until it has. A refused admission reserves nothing.
+//
+// It admits one extent. A write that crosses a segment boundary is two
+// records, so the caller admits each piece and abandons the earlier ones if a
+// later one is refused.
+//
+// decision: the admission runs under the file's read lock, and the engine
+// holds the file's append lock from a write's admission to its commit, so
+// the file's content cannot change between the two — except by a release or
+// an offload report on the same file, which can make the committed delta
+// differ from the admitted one. commit applies the true delta, so the count
+// never drifts. The overshoot is at most the entries a racing release or
+// report can split in. Revisit if the count is seen
+// above the bound by more than a handful of entries.
+func (fs *files) admitWrite(id core.FileID, e core.Extent, retain bool) (int64, error) {
+	return fs.reserve(max(fs.predictWrite(id, e, retain), 0))
+}
+
+// admitFill reserves the entries a fill of p on id would add, and reports them
+// for files.fill to commit. It is refused as admitWrite is, and races as
+// admitWrite does. The fill's record is in its segment by then, so the caller
+// notes it before returning a refusal.
+func (fs *files) admitFill(id core.FileID, p Placed) (int64, error) {
+	// A file with no entry holds nothing, so a fill of bytes occupies a whole
+	// absent extent — one entry — and a zero-length one occupies none.
+	n := int64(0)
+	if p.Extent.Len > 0 {
+		n = 1
+		fs.view(id, func(f *file) { n = f.fillAdds(p) })
+	}
+	return fs.reserve(max(n, 0))
+}
+
+// checkFill predicts a fill's refusals without reserving: it runs the tag
+// check and the staleness comparison files.fill makes — the entry's
+// checkedAgainst against asOf, its counter halves alone. It does not check the
+// bound: that is the capacity gate's, after its read-only gate. It touches no
+// count and creates no entry.
+func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version) error {
+	var refused error
+	if !fs.view(id, func(f *file) {
+		if refused = f.check(tag, id); refused != nil {
+			return
+		}
+		if fs.checkedAgainst(f, id).Counter > asOf.Counter {
+			refused = core.ErrStaleFill
+		}
+	}) {
+		// A file with no entry is nobody's, so no tag check refused, and it
+		// is checked against its floor bucket alone.
+		if fs.buckets[bucketOf(id)].Load() > asOf.Counter {
+			return core.ErrStaleFill
+		}
+		return nil
+	}
+	return refused
+}
+
+// CheckFillIndexBound predicts a fill of e against the index's bound alone,
+// run by the capacity gate after its read-only gate so a fill the bound would
+// refuse is refused before any I/O: it counts the gaps of e over the file's
+// held pieces with no marker masking any — only the fill's own version can
+// lift a mask, and this check runs before that version is known — so the
+// figure is the ceiling the fill's version can never exceed. It takes the
+// file's read lock, claims nothing, reserves nothing and creates no entry. A
+// refusal counts and names itself as the bound's others do.
+//
+// decision: this is a read-only over-count, not the reservation: the entries
+// are reserved by Index.Fill's admission at publish, so fills of different
+// files that all pass this check at the bound's edge cannot all commit. The
+// check can refuse a fill the admission would admit when the count stands
+// within a few entries of the bound — a masked part the hull still counts. That
+// over-refusal fails closed and only at the bound, where a write is refused
+// too. It can also pass a fill that publish then refuses part-way: a gap that
+// crosses a segment boundary is counted as one entry but adds one per piece,
+// so a later piece's admission is refused after its I/O with the earlier
+// pieces published. That too fails closed. Overturned when an index a few
+// entries over its bound causes a visible refusal, which would pass the exact
+// gaps into the admission.
+func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) (int64, error) {
+	// A file with no entry holds nothing: a fill of bytes occupies one
+	// wholly absent extent, a zero-length one none — as FillGaps answers it.
+	n := int64(0)
+	if e.Len > 0 {
+		n = 1
+		ix.fs.view(id, func(f *file) { n = f.held.gaps(e) })
+	}
+	c, limit := ix.fs.count.Load(), ix.fs.limit.Load()
+	if c+max(n, 0) > limit {
+		return n, ix.fs.refuseEntries(c, n, limit)
+	}
+	return n, nil
+}
+
+// EntriesLeft reports how many entries remain below the index's bound: the
+// limit less the count, never negative. An admitter that holds entries back
+// for a reservation reads it to leave them unspent.
+func (ix *Index) EntriesLeft() int64 {
+	return max(ix.fs.limit.Load()-ix.fs.count.Load(), 0)
+}
+
+// reserve adds want to the count when the limit allows it, or refuses with a
+// NoSpaceError naming the index, counting the refusal. A reservation of
+// nothing is refused while the count stands above the limit — the first
+// clause covers it, since want is 0 — because nothing that adds nothing can
+// lower the count. Missing counts what the reservation lacked, at least one
+// entry so a caller draining the bound is told a real shortfall.
+func (fs *files) reserve(want int64) (int64, error) {
+	for {
+		c := fs.count.Load()
+		limit := fs.limit.Load()
+		if c+want > limit {
+			return 0, fs.refuseEntries(c, want, limit)
+		}
+		if fs.count.CompareAndSwap(c, c+want) {
+			return want, nil
+		}
+	}
+}
+
+// CheckRemoval predicts a removal of e on id against the removal allowance
+// without reserving: it returns the refusal the removal's admission would —
+// a NoSpaceError naming the index, counted by the index's refusals counter —
+// when e splits a held piece and the count stands an eighth of the limit above
+// the bound, or nil otherwise. A removal that splits nothing is never refused,
+// so a nil here means the removal will not be refused by the index at all; one
+// that splits may still lose the race to a reservation another file makes
+// between this check and its own admission, which fails closed.
+//
+// It reserves nothing and changes no entry, so a caller that checked and then
+// admits finds the index where the check left it. It creates no entry and takes
+// the named file's lock shared, exactly as the admission's own pre-check does.
+func (ix *Index) CheckRemoval(id core.FileID, e core.Extent) error {
+	var split bool
+	// A file with no entry holds nothing, so no removal of it splits a piece.
+	ix.fs.view(id, func(f *file) { split = f.splits(e) })
+	if !split {
+		return nil
+	}
+	c, limit := ix.fs.count.Load(), ix.fs.limit.Load()
+	if ceiling := removalCeiling(limit); c >= ceiling {
+		ix.fs.refusals.Add(1)
+		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + 1 - ceiling, Unit: core.UnitEntries}
+	}
+	return nil
+}
+
+// removalCeiling is the count the removal allowance ends at: the bound plus an
+// eighth of it, saturated so a limit near MaxInt64 does not wrap the sum
+// negative. A limit of zero or below has a ceiling at or below zero, so no
+// count stands under it and every splitting removal is refused.
+func removalCeiling(limit int64) int64 {
+	eighth := limit / 8
+	if room := math.MaxInt64 - limit; limit >= 0 && eighth > room {
+		eighth = room
+	}
+	return limit + eighth
+}
+
+// admitRemoval reserves adds, the entries a removal that would split a held
+// extent adds: one for a release, which splits a piece and leaves no marker,
+// and two for a deallocate or a clone target, which split a piece and leave
+// one. It is never refused when e splits nothing: a removal that
+// narrows or covers whole pieces only lowers the count, so refusing it would
+// wedge the very calls that bring the count down. A splitting one is
+// refused, with the same named refusal, once the count stands an eighth of
+// the limit above it, so a trim pass of millions of punches inside held
+// extents cannot add an entry a punch past any memory budget; its own
+// refusals stop it there.
+//
+// decision: a clone target is admitted like a deallocate, because it removes
+// as deallocate does and splits a held extent the same way. The RFC names only
+// release and deallocate. Revisit if a clone target must never fail at the
+// bound.
+//
+// decision: the reservation is adds, not the removal's own entry change. A
+// removal also drops the pieces it covers, so the count can end below the
+// ceiling even while splitting ones are refused; reserving only what the
+// removal may add is what keeps a trim pass moving under the ceiling, and
+// the commit's true delta keeps the count exact.
+//
+// decision: no production call reaches this now that the journal checks the
+// allowance before its append (CheckRemoval) and applies the removal after it
+// without one (ApplyRemoval). It is kept, and covered by its own tests, because
+// CheckRemoval is its read-only twin and the pair is what reserving the bound
+// before an append would need; a reservation path that lands uses it, and this
+// note goes with it. Withdraw it, and the tests that pin its counter, if the
+// bound is never reserved ahead of an append.
+func (fs *files) admitRemoval(id core.FileID, e core.Extent, adds int64) (int64, error) {
+	split := false
+	if !fs.view(id, func(f *file) { split = f.splits(e) }) {
+		return 0, nil
+	}
+	if !split {
+		return 0, nil
+	}
+	for {
+		c, limit := fs.count.Load(), fs.limit.Load()
+		// The ceiling saturates: a limit near MaxInt64 must not wrap it
+		// negative, or every splitting removal would be refused where
+		// nothing else is — content writes are still admitted against
+		// the limit. A negative one, which the settings must reject
+		// before the index, gives a negative ceiling and refuses the
+		// same way it refuses everything else.
+		ceiling := removalCeiling(limit)
+		// The refusal begins once the count stands at the ceiling, not when
+		// a reservation no longer fits: it is the count standing an eighth of
+		// the limit above it that ends the allowance. Reserving the adds
+		// rather than testing them lets the count peak one removal above
+		// the ceiling — the two entries a deallocate or a clone target can
+		// add — before it stands there.
+		if c >= ceiling {
+			fs.refusals.Add(1)
+			return 0, &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + 1 - ceiling, Unit: core.UnitEntries}
+		}
+		if fs.count.CompareAndSwap(c, c+adds) {
+			return adds, nil
+		}
+	}
+}
+
+// abandon returns an admission the caller will never commit: the write's
+// record was not written, so its entries never appear.
+func (fs *files) abandon(admitted int64) {
+	fs.count.Add(-admitted)
+}

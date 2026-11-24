@@ -210,7 +210,7 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
 - **D4, the journal package exports a format read, for the node identity.** Whether a directory's
   `format` carries the installation's ID, or names the journal the store records, is read from the
   file, and the journal package exports no read of it: `format.DecodeFormatFile` and
-  `recovery.ReadFormat` are internal, and `journal.Open` (`pkg/block/journal/open.go:240`) wants
+  `recovery.ReadFormat` are internal, and `journal.Open` (`pkg/journal/open.go:240`) wants
   the journal's identity as input, needs a clock and opens the journal. T2.2 adds
   `journal.ReadFormat(ctx, dir)`, returning the journal's ID and its installation's ID, over
   `recovery.ReadFormat`, so the read has the same retry bound as an open's, and the node identity
@@ -330,7 +330,7 @@ internal/<pkg>/<pkg>.go                T2.1  the shared strict size and duration
 internal/<pkg>/<pkg>_fuzz_test.go      T2.1  the parser's fuzz target, with its own table test
 pkg/bootstrap/nodeid.go                T2.2  the node-id codec, NodeID, InitNodeID, WriteMissingNodeIDs
 pkg/bootstrap/nodeid_fuzz_test.go      T2.2  FuzzNodeID
-pkg/block/journal/                     T2.2  ReadFormat, the exported format read (D4)
+pkg/journal/                     T2.2  ReadFormat, the exported format read (D4)
 pkg/bootstrap/renamed_keys.go          T2.3  the v1 table, extended
 pkg/bootstrap/environ.go               T2.3  the environment scan and its allowed names
 pkg/bootstrap/validate.go              T2.4  roles, wrapping keys, TLS off loopback, the state and runtime directories

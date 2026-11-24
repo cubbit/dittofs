@@ -110,7 +110,9 @@ Open configuration in editor
 
 Open the configuration file in your default editor.
 
-Uses the EDITOR environment variable, falling back to 'vi' if not set.
+The file is --config, else the one DITTOFS_CONFIG names, else the default.
+Uses the EDITOR environment variable, then VISUAL, falling back to 'vi'. The
+file is not checked: run 'dfs config validate' after editing it.
 
 ```
 dfs config edit [flags]
@@ -138,12 +140,17 @@ Generate JSON schema for configuration
 
 Generate a JSON schema for the DittoFS configuration file.
 
+The schema covers each key's type, its allowed values and the keys required
+whatever another key holds: journals with a path in each entry, and
+keys.<role>.kind for both roles. It checks the file alone: a file whose
+journals or keys come from DITTOFS_ variables fails its required keys, and
+the rules that relate two keys are checked by 'dfs config validate'.
+
 The schema can be used for:
 
 ```
 - IDE autocompletion (VS Code, IntelliJ, etc.)
 - Configuration file validation
-- Documentation generation
 ```
 
 ```
@@ -176,9 +183,18 @@ Global flags:
 
 Display current configuration
 
-Display the current DittoFS configuration.
+Display the bootstrap a start would read, and where each value came from.
 
-By default outputs YAML format. Use --output to change format.
+Prints the file read (empty when none was), the state and runtime directories
+with the variable that chose each, or "default" when none did, the socket
+path, the bootstrap's keys, and a sources map naming each key's source:
+"file", the DITTOFS_ variable that set it, or "default". A value set by a
+variable prints as the variable's name, never as its value, and the socket's
+path is then empty. A credential prints as its file's path. The output is a
+report, not a file a start can read.
+
+The file is --config, else the one DITTOFS_CONFIG names, else the default.
+show checks only what a load checks: run 'dfs config validate' for the rest.
 
 ```
 dfs config show [flags]
@@ -213,9 +229,15 @@ Global flags:
 
 Validate configuration file
 
-Validate the DittoFS configuration file.
+Validate the DittoFS configuration file and environment.
 
-Checks for syntax errors, missing required fields, and invalid values.
+Runs the load a start runs, then the checks of the host: both roles, the
+journals, the two wrapping keys (each key file is opened with
+DITTOFS_ENCRYPTION_PASSPHRASE), the API's certificate off loopback, the socket
+path and the state and runtime directories. It refuses what they refuse, one
+line per refusal, and starts nothing: no directory is created.
+
+The file is --config, else the one DITTOFS_CONFIG names, else the default.
 
 ```
 dfs config validate [flags]

@@ -336,7 +336,7 @@ func TestStatusListsAnOperationKindWithNoStep(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	ch := watchStatus(h)
 	ran := make(chan struct{}, 1)
-	h.Node().OnRunnerTurn(func() {
+	h.Node().OnRunnerTurn(func(context.Context) {
 		select {
 		case ran <- struct{}{}:
 		default:

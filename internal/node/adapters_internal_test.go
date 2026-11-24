@@ -113,6 +113,10 @@ type rig struct {
 // newRig builds the slots on loopback, refusing the ports taken, its leak
 // check armed over the node's budgets: called before the test starts
 // anything. Both adapters are stopped at the test's end, before the check.
+//
+// decision: a test that builds a rig stays serial, because the leak check is
+// prof.Watch's, which a parallel test beside it would fail. Withdraw it once
+// the leak check moves to the end of the test binary.
 func newRig(t *testing.T, taken ...uint16) *rig {
 	t.Helper()
 	b, _ := newBudgets()
@@ -178,6 +182,11 @@ func (rg *rig) advertises(name string, a adapter.Adapter) bool {
 
 // freePort is a port nothing holds: one the system picked for a listener the
 // test closed at once.
+//
+// decision: a test that calls it stays serial, because it releases the port
+// and binds it again later; a parallel test's own port-0 listener could take
+// it in between. Every caller builds a rig, which newRig keeps serial anyway.
+// Run them in parallel once the port is held until the bind.
 func freePort(t *testing.T) uint16 {
 	t.Helper()
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -824,6 +833,7 @@ func TestAnOutcomeIsReadWhileTheCallsStoreIt(t *testing.T) {
 // literal that does not parse is refused, all of them together, naming the
 // key and its index but never the value (RFC 13 §6, Appendix C).
 func TestListenAddrs(t *testing.T) {
+	t.Parallel()
 	any4, any6 := netip.IPv4Unspecified(), netip.IPv6Unspecified()
 	for _, tc := range []struct {
 		name   string

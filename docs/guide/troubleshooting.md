@@ -58,7 +58,7 @@ mount.nfs: Connection refused
    cat ~/.config/dittofs/config.yaml
 
    # Start with debug logging
-   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+   DITTOFS_LOGGING_LEVEL=debug ./dfs start
    ```
 
 ### Connection timeout
@@ -262,7 +262,7 @@ touch: cannot touch 'file.txt': Permission denied
 
 4. **Enable debug logging to see auth context:**
    ```bash
-   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+   DITTOFS_LOGGING_LEVEL=debug ./dfs start
    # Look for lines showing UID/GID in requests
    ```
 
@@ -302,8 +302,8 @@ ls: cannot access 'file.txt': Stale file handle
 **Causes:**
 - Server was restarted with an in-memory metadata store (handles lost)
 - File was deleted while client held a handle
-- Metadata backend was changed, for example when a share moved off a removed
-  metadata store type ([Metadata store migration](metadata-store-migration.md))
+- The node was pointed at a different metadata store, for example a new
+  installation started in place of a v1 one ([Upgrading from v1](upgrading-from-v1.md))
 
 **Solutions:**
 
@@ -313,12 +313,9 @@ ls: cannot access 'file.txt': Stale file handle
    sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
    ```
 
-2. **For persistent handles, back the share with an on-disk BadgerDB store (not in-memory).**
-   The CLI no longer creates metadata stores.
-   ```bash
-   ./dfsctl share create --name /export --metadata persistent \
-     --block-store persistent-blocks
-   ```
+2. **For persistent handles, keep `metadata.backend: badger` with a `metadata.badger.path`
+   on disk.** v2 has no per-share stores to choose; see
+   [Choosing stores](choosing-stores.md).
 
 3. **Clear client NFS cache (Linux):**
    ```bash
@@ -384,13 +381,13 @@ go tool pprof mem.prof
 
 **Via environment variable:**
 ```bash
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 **Via configuration:**
 ```yaml
 logging:
-  level: DEBUG
+  level: debug
   format: text  # or json
   output: stdout  # or file path
 ```
@@ -429,7 +426,7 @@ pgrep -a dfs
 curl http://localhost:9090/metrics
 
 # Check configuration
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start 2>&1 | grep -i "config"
+DITTOFS_LOGGING_LEVEL=debug ./dfs start 2>&1 | grep -i "config"
 ```
 
 ## Cross-Protocol Issues
@@ -451,7 +448,7 @@ SMB: STATUS_SHARING_VIOLATION or STATUS_LOCK_NOT_GRANTED
 **Diagnosis:**
 ```bash
 # Check active locks and leases via debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 # Look for log entries containing:
 #   "cross_protocol_break" - Break initiated across protocols
 #   "lease_break" - SMB lease being broken
@@ -487,7 +484,7 @@ DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
    ```
 4. Enable debug logging to see the recall flow:
    ```bash
-   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start 2>&1 | grep "delegation"
+   DITTOFS_LOGGING_LEVEL=debug ./dfs start 2>&1 | grep "delegation"
    ```
 
 ### Lease Break Storms
@@ -566,7 +563,7 @@ Rapid grant-break-grant-break cycles visible in logs.
 
 ```bash
 # Enable cross-protocol debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 
 # Key log patterns to search for:
 # "cross_protocol_break" - Break initiated between protocols
@@ -611,16 +608,6 @@ sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export 
 Kerberos:
 ```bash
 dfsctl share nfs-config set /export --allow-auth-sys true --require-kerberos false
-```
-
-### "metadata store not found"
-
-**Cause:** Share references a non-existent metadata store.
-
-**Solution:** Ensure both stores exist before creating the share. The CLI no
-longer creates stores.
-```bash
-./dfsctl share create --name /export --metadata my-store --block-store my-blocks
 ```
 
 ### NFSv4 Session Issues
@@ -669,7 +656,7 @@ with RPCSEC_GSS configured.
 3. Verify clock synchronization between client and KDC (Kerberos requires clocks within 5 minutes)
 4. Enable debug logging to see the RPCSEC_GSS negotiation:
    ```bash
-   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+   DITTOFS_LOGGING_LEVEL=debug ./dfs start
    ```
 
 ### ACL Issues

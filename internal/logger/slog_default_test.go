@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Verifies that std-lib slog.* (used across pkg/block, incl. the GC engine)
+// Verifies that std-lib slog.*
 // honors DITTOFS_LOGGING_LEVEL via slog.SetDefault in reconfigure().
 func TestStdlibSlogHonorsConfiguredLevel(t *testing.T) {
 	var buf bytes.Buffer

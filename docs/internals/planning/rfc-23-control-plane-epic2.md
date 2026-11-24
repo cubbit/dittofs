@@ -236,7 +236,7 @@ them.
   `pkg/metadata/entity`.** kvstore and the API both import `entity`, and RFC 16's own sentinels
   live there (`entity.ErrStale`). Not the root `pkg/metadata`: it is still v1's metadata `Service`,
   and kvstore naming a type there would put that service in kvstore's closure, and through kvstore
-  in the engine's and the node's. The engine's import rule (`pkg/block/engine/imports_test.go`)
+  in the engine's and the node's. The engine's import rule (`pkg/engine/imports_test.go`)
   checks only direct imports, so nothing would fail; the reason is closure hygiene, not a test. The
   types can move beside RFC 16 §3's views once that `Service` leaves the root package. Not
   `pkg/metadata/errors`, a leaf of `ErrorCode` values that cannot carry a recorded answer. So
@@ -482,7 +482,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   (R15). `liveShare`, which `PutShare`, `SetGrant`,
   `PutExportPolicy` and `SetQuota` already call, added to `DeleteGrant` and a share-scoped
   `PutSetting` (R17). Every body moved into an unexported function of a `kv.Txn` (D3). Every caller
-  on `feat/storage-v2` updated, the tests of `internal/vfs` and `pkg/block/engine` among them (38
+  on `feat/storage-v2` updated, the tests of `internal/vfs` and `pkg/engine` among them (38
   files), each passing the generation it read or zero to create, and `entity.Alloc{}`. Consumed by
   T2.4, which runs the same functions inside `Write`, and by T2.11, which writes `gv`.
 - **Acceptance criteria:**
@@ -875,7 +875,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   written in a share's create and deleted with `nsg` in step 6 of its removal (T2.12); no
   existing share index answers by namespace, since `NX‖share` and `NP` key on name and path. `PutShare`'s create reads its namespace's record tracked and refuses one that
   names no remote store, in place of minting a fresh namespace; every share-creating caller on
-  `feat/storage-v2` (the suite's fixtures, `internal/vfs` and `pkg/block/engine` tests) puts a
+  `feat/storage-v2` (the suite's fixtures, `internal/vfs` and `pkg/engine` tests) puts a
   namespace record first. `DeleteNamespace` refuses a namespace a share still names, by
   `NamespaceNamed`. Consumed by
   E3's `addShare` refusal, E4's store, namespace and share routes, whose store delete refuses

@@ -10,7 +10,7 @@ set -eu
 API=http://dittofs:8080
 PROFILE="${PROFILE:-default}"
 SHARE="/export"
-ADMIN_PASSWORD="${DITTOFS_ADMIN_INITIAL_PASSWORD:?must be set}"
+ADMIN_PASSWORD="${COMPOSE_ADMIN_PASSWORD:?must be set}"
 
 log() { echo "[bootstrap] $*"; }
 

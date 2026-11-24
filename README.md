@@ -37,7 +37,7 @@ Traditional file servers are welded to one storage layer and one access protocol
 DittoFS separates the two. A single server process can:
 
 - Speak **NFSv3, NFSv4.0, NFSv4.1, NFSv4.2, and SMB2/3** at the same time, over the same data.
-- Store metadata in **[BadgerDB](https://github.com/dgraph-io/badger)**, on disk or fully in memory — one store per share.
+- Store metadata in **[BadgerDB](https://github.com/dgraph-io/badger)**, on disk — one store for the whole node.
 - Store file content in one **block store** ([S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) or memory)
   per share, fronted by an on-disk **journal** that absorbs writes, with an async syncer between them.
 - Run **entirely in userspace** — no FUSE, no kernel modules, no special privileges.
@@ -67,10 +67,10 @@ Two binaries drive it:
 | **Authentication** | AUTH_UNIX + Kerberos (RPCSEC_GSS) for NFS; NTLM + Kerberos (SPNEGO) for SMB |
 | **Active Directory** | Kerberos service keytab for AD-issued tickets; optional machine account (offline or online domain join) for NTLM pass-through; LDAP idmap (`idmap_ad` / `idmap_rid`) maps AD users and nested groups to the same Unix UID/GID over SMB and NFS |
 | **Cross-protocol coordination** | Bidirectional lease/delegation breaks between SMB and NFS |
-| **Metadata stores** | BadgerDB (on disk, or in memory for tests) — one per share. A distributed transactional KV store (TiKV preferred) is planned for multi-node, not yet implemented |
+| **Metadata stores** | BadgerDB, on disk — one per node. FoundationDB, for multi-node, is configured but not yet selectable |
 | **Block stores** | S3, memory. One per share, fronted by an on-disk journal. Per-share isolation, async sync |
 | **Client-side encryption** | Per-remote envelope encryption (AES-256-GCM / ChaCha20-Poly1305 / XChaCha20-Poly1305) |
-| **Share snapshots** | Point-in-time reference holds (no data copy) with restore |
+| **Share snapshots** | Not yet: v1's snapshots are gone, and [RFC 12](docs/internals/rfcs/rfc-12-snapshots.md) designs the new ones |
 | **Control plane** | Unified users/groups, share permissions, REST API with JWT auth |
 | **Observability** | Prometheus metrics endpoint, structured JSON logging |
 | **Deployment** | Single static binary; Docker images; Kubernetes operator |
@@ -133,25 +133,20 @@ script, use `dfs` and `dfsctl` without the `./` prefix.
 
 ### First run & admin password
 
-On first start, DittoFS creates an `admin` user. **Pre-set the password** via the
-`DITTOFS_ADMIN_INITIAL_PASSWORD` environment variable — this is the recommended path for
-every deployment, and the only reliable one for Docker/Kubernetes/CI and systemd:
+`dfs init` creates the installation and its `admin` user; `dfs start` then serves it.
+**Pre-set the password** with `--admin-password-file` or `--admin-password-env` — the only
+reliable path for Docker/Kubernetes/CI and systemd:
 
 ```bash
-# Replace the example with your own password before the first start.
-# A supplied password also skips the forced password change on first login.
-DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password ./dfs start
+# Replace the example with your own password before running init.
+DFS_ADMIN_PASSWORD=my-secure-password ./dfs init --admin-password-env DFS_ADMIN_PASSWORD
+./dfs start
 ```
 
-If you don't pre-set it, a random password is generated — but it is **shown only when you
-run `./dfs start` in an interactive terminal** (printed once). Under Docker/systemd, where
-stdout is a pipe rather than a terminal, the generated password is **not written to the log and cannot be
-recovered**. Because the `admin` user is created on that first start, setting
-`DITTOFS_ADMIN_INITIAL_PASSWORD` and simply restarting will **not** change it — that variable
-is only read while bootstrapping a *new* admin. To recover, delete the `admin` row from the
-`users` table of the control-plane database and start again with the password pre-set; the next
-start re-runs the bootstrap. Do not delete the database itself — it also holds your shares,
-stores, mounts and other users. So: **set it before the very first start.**
+With neither flag, `dfs init` generates a password, prints it once to standard output
+(never to the log), and it must be changed at the first sign-in. To recover an
+administrator's password, stop the node and run `./dfs reset-admin` on the host that holds
+the metadata store.
 
 ### Serve an NFS share in under a minute
 
@@ -167,9 +162,8 @@ stores, mounts and other users. So: **set it before the very first start.**
 # rejected with HTTP 403:
 #   account "admin" must set a new password before performing other operations;
 #   run 'dfsctl user change-password' (as "admin") to set one
-# This forced change is skipped automatically when you set your own
-# DITTOFS_ADMIN_INITIAL_PASSWORD at first start, and can be disabled entirely
-# via controlplane.require_initial_password_change: false (see docs/guide/configuration.md).
+# This forced change is skipped when you handed `dfs init` the password with
+# --admin-password-file or --admin-password-env (see above).
 ./dfsctl user change-password
 
 # 2. Create a user mapped to your host UID (needed for NFS write access)
@@ -224,29 +218,24 @@ See [docs/guide/smb.md](docs/guide/smb.md) for dialect, encryption, and client d
 
 DittoFS configuration has **two layers**:
 
-1. **Server config file** (`~/.config/dittofs/config.yaml`) — process-level infrastructure:
-   logging, metrics, control-plane API, and the control-plane database. Environment
-   variables with the `DITTOFS_` prefix override any field (e.g. `DITTOFS_LOGGING_LEVEL=DEBUG`).
-2. **Runtime resources** (`dfsctl` / REST API) — stores, shares, adapters, users, groups,
-   and permissions. These live in the control-plane database (SQLite by default, PostgreSQL
-   for HA), not in the config file.
+1. **Server config file** (`~/.config/dittofs/config.yaml`) — the host's facts: the metadata
+   store's path, the journal devices, keys, listeners, logging and metrics. Environment
+   variables with the `DITTOFS_` prefix override any field (e.g. `DITTOFS_LOGGING_LEVEL=debug`).
+2. **Runtime resources** (REST API) — shares, users, groups and permissions. These live in
+   the metadata store, not in the config file; there is no separate control-plane database.
 
 ```yaml
 # ~/.config/dittofs/config.yaml
-database:
-  type: sqlite            # or "postgres" for HA
-  sqlite:
-    path: ~/.config/dittofs/controlplane.db   # default when omitted: $XDG_CONFIG_HOME/dittofs/controlplane.db
-
-controlplane:
-  port: 8080
-  jwt:
-    secret: "your-secret-key-at-least-32-characters"
+metadata:
+  badger:
+    path: /var/lib/dittofs/metadata/store   # a directory on the volume, not its mount point
+journals:
+  - path: /var/lib/dittofs/journal/0
+logging:
+  level: info
 ```
 
-Block storage is configured per share through the store CLI — each share points at one block
-store and owns an isolated journal directory beneath `blockstore.journal.path`. See
-[docs/guide/configuration.md](docs/guide/configuration.md) for the full reference.
+See [docs/guide/configuration.md](docs/guide/configuration.md) for the full reference.
 
 ## Documentation
 
@@ -277,7 +266,7 @@ Full docs live in [`docs/`](docs/), split by audience.
 - [Snapshots](docs/guide/snapshots.md) · [Quotas](docs/guide/quotas.md) · [Encryption](docs/guide/encryption.md)
 - [Security](docs/guide/security.md) — hardening checklist and secure configuration
 - [Block Store Migration](docs/guide/block-store-migration.md) — migrating legacy block layouts to CAS
-- [Metadata Store Migration](docs/guide/metadata-store-migration.md) — moving shares off the removed SQL and memory metadata stores
+- [Upgrading from v1](docs/guide/upgrading-from-v1.md) — not supported: what a start over v1 data says
 - [Troubleshooting](docs/guide/troubleshooting.md) · [FAQ](docs/guide/faq.md) · [Glossary](docs/guide/glossary.md)
 
 ### For contributors — [`docs/internals/`](docs/internals/)

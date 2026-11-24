@@ -72,7 +72,7 @@ The shared Kerberos layer also serves the SMB SPNEGO path (see below).
 3. Server returns an `RPCSEC_GSS_INIT` reply with a GSS token (AP-REP) proving its identity to
    the client (mutual authentication). The context handle is stored per-connection.
 4. Subsequent RPCs carry the context handle; the server maps the established principal to
-   UID/GID and builds an `*metadata.AuthContext` for the operation.
+   an identity, the `Identity` of the operation's `vfs.Call`.
 
 **Security services:** DittoFS negotiates the GSS service requested by the client mount:
 

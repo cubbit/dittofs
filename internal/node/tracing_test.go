@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,9 +16,9 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 	"go.opentelemetry.io/otel/codes"
@@ -123,22 +124,18 @@ func refused(err error) bool {
 	return errors.As(err, &delay) && delay.Cause == vfserr.DelayCapacity || errors.Is(err, vfserr.ErrNoSpace)
 }
 
-// fillUntilRefused writes chunks of 256 KiB at file until the journal itself
-// counts a refused reservation, never longer than 128 chunks into a journal
-// of 6 MiB. A capacity answer is not a refusal by its shape: a pool still
-// making its next spare answers the same retry-later, so the journal's own
-// refused-reservation counter, read from the node's listener before the fill
-// and after each retry-later, says when the journal counted one more
-// refusal, and a chunk refused before that is written again. The pool's own
-// refusal for want of a spare raises the same counter, so the fill may stop
-// there rather than at the limit; the test needs only the refusal, whose span
-// either one opens. The bound on the wait is a real-time backstop, never the
-// assertion.
-func fillUntilRefused(t *testing.T, h *nodetest.Harness, shID entity.ShareID, fileID entity.FileID) {
+// fillUntilRefused writes chunks of 256 KiB at file until a write is refused
+// and done then reports true, never longer than 128 chunks into a journal of
+// 6 MiB; a chunk refused before that is written again. A capacity answer is
+// not a refusal at the journal's limit by its shape: a pool still making its
+// next spare answers the same retry-later, so done says which refusal the
+// caller waits for, and what names it. When done is what the caller tests, as
+// a repack pass's span is, the 60s bound on the wait is that check: its
+// failure names what never came.
+func fillUntilRefused(t *testing.T, h *nodetest.Harness, shID entity.ShareID, fileID entity.FileID, what string, done func() bool) {
 	t.Helper()
 	const chunk = 256 << 10
 	deadline := time.Now().Add(60 * time.Second)
-	before, _ := at(t, jscrape(t, h), "dittofs_journal_reservation_refused_total")
 	for i := 0; i < 128; {
 		err := jwrite(t, h, shID, fileID, int64(i)*chunk, pattern(fmt.Sprint("fill", i), chunk))
 		if err == nil {
@@ -148,14 +145,36 @@ func fillUntilRefused(t *testing.T, h *nodetest.Harness, shID entity.ShareID, fi
 		if !refused(err) {
 			t.Fatalf("write %d into the journal: %v", i, err)
 		}
-		if v, _ := at(t, jscrape(t, h), "dittofs_journal_reservation_refused_total"); v > before {
+		if done() {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("write %d was refused for 60s with no new counted refusal, want the pool to make a spare or the journal to refuse at its limit: %v", i, err)
+			t.Fatalf("write %d was refused for 60s and the fill's end (%s) never came: %v", i, what, err)
 		}
 	}
 	t.Fatal("128 writes of 256 KiB into a journal of 6 MiB were never refused, want the fill to reach the journal's limit")
+}
+
+// counted is a fill's end once the journal counts one more refused
+// reservation than it had when counted was called: the pool's refusal for
+// want of a spare raises the same counter as the journal's own limit.
+func counted(t *testing.T, h *nodetest.Harness) func() bool {
+	t.Helper()
+	before, _ := at(t, jscrape(t, h), "dittofs_journal_reservation_refused_total")
+	return func() bool {
+		v, _ := at(t, jscrape(t, h), "dittofs_journal_reservation_refused_total")
+		return v > before
+	}
+}
+
+// repacked is a fill's end once sr holds a repack pass's span. A refusal at
+// the journal's own limit runs its repack pass before the write returns; the
+// pool's refusal for want of a spare runs none, so a fill that must see a
+// pass waits for it rather than for the first counted refusal.
+func repacked(t *testing.T, sr *tracetest.SpanRecorder) func() bool {
+	return func() bool {
+		return slices.ContainsFunc(journalSpans(t, sr), func(s sdktrace.ReadOnlySpan) bool { return s.Name() == "journal.repack_pass" })
+	}
 }
 
 // writeSpared is the first write into a started node: the journal's pool
@@ -184,8 +203,11 @@ func writeSpared(t *testing.T, h *nodetest.Harness, s entity.ShareID, f entity.F
 // produce a span of their own, and every span a journal opens names its
 // journal: each carries the identity the metrics export labels the same
 // journal with. The drives are bounded by their own outcomes — the commit
-// returns, the fill loop stops at its first refusal — never by a sleep.
+// returns, the fill loop stops at the first repack pass's span — never by a
+// sleep. The fill fails if that span never comes, so it is the repack pass's
+// check.
 func TestTheJournalTracesItsOperations(t *testing.T) {
+	t.Parallel()
 	h, sr := traced(t, fillMax)
 	started(t, h)
 	sh := addShare(t, h)
@@ -208,7 +230,7 @@ func TestTheJournalTracesItsOperations(t *testing.T) {
 		t.Errorf("one committed write produced %d journal.sync spans so far, want exactly 1", syncs)
 	}
 
-	fillUntilRefused(t, h, sh.ID, file.ID)
+	fillUntilRefused(t, h, sh.ID, file.ID, "a journal.repack_pass span", repacked(t, sr))
 
 	const hexLen = 32 // hex of the journal's 16-byte identity
 	seen := map[string]int{}
@@ -252,7 +274,7 @@ func TestTheJournalTracesItsOperations(t *testing.T) {
 	if refusals == 0 {
 		t.Error("no journal.reserve_refused span to hold to the refusal, want the fill's")
 	}
-	for _, name := range []string{"journal.sync", "journal.reserve_refused", "journal.repack_pass"} {
+	for _, name := range []string{"journal.sync", "journal.reserve_refused"} {
 		if seen[name] < 1 {
 			t.Errorf("no span of op %s after the drives, want at least the one each of them ran", name)
 		}
@@ -271,6 +293,7 @@ func TestTheJournalTracesItsOperations(t *testing.T) {
 // With Config.Tracer nil, the same drives run to their own outcomes: the
 // commit returns and the fill reaches its first refusal.
 func TestTheJournalRunsUntracedWithoutATracer(t *testing.T) {
+	t.Parallel()
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		cfg.Journal = append(cfg.Journal, journal.WithSettings(fillSettings(fillMax)))
 		return node.New(cfg) // Config.Tracer left nil: the journals open untraced
@@ -285,7 +308,7 @@ func TestTheJournalRunsUntracedWithoutATracer(t *testing.T) {
 	if err := jcommit(t, h, sh.ID, file.ID); err != nil {
 		t.Fatalf("a committed write over an untraced journal: %v, want it done, never blocked", err)
 	}
-	fillUntilRefused(t, h, sh.ID, file.ID)
+	fillUntilRefused(t, h, sh.ID, file.ID, "one more counted refusal", counted(t, h))
 }
 
 // The logger the node hands its journals names the journal in every line the
@@ -295,6 +318,7 @@ func TestTheJournalRunsUntracedWithoutATracer(t *testing.T) {
 // directory holding none runs no recovery, and no attach pass to log — so
 // the drive writes one first, as the node's own writes do.
 func TestTheJournalLoggerNamesTheJournal(t *testing.T) {
+	t.Parallel()
 	log := &logBuffer{}
 	var dev string
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {

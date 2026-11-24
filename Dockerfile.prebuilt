@@ -4,7 +4,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
     adduser -u 65532 -S -G dittofs -h /app dittofs
 WORKDIR /app
 COPY dfs-linux-amd64 /app/dfs
-RUN mkdir -p /data/metadata /data/blocks /data/cache /data/state /config && \
+RUN mkdir -p /data/metadata /data/blocks/journal /data/cache /data/state /config && \
     chown -R 65532:65532 /app /data /config
 USER 65532:65532
 # Expose ports:

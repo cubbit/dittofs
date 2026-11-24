@@ -1,0 +1,119 @@
+//go:build journal_conformance
+
+package conformance
+
+import (
+	"errors"
+	"io/fs"
+	"testing"
+
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/raw"
+)
+
+// The checks here fail by reaching a state the journal cannot leave, or by
+// consuming without bound.
+
+// spareNames returns the names of the segment files in the journal's
+// directory that hold no segment header: spares no stream has taken, in name
+// order.
+func spareNames(t *testing.T, f *journaltest.Fixture) []string {
+	t.Helper()
+
+	var names []string
+	for _, name := range segmentFiles(t, f) {
+		b := durable(t, f, name)
+		if len(b) < raw.SegmentHeaderSize {
+			t.Fatalf("%s is %d bytes, shorter than a segment header", name, len(b))
+		}
+
+		if _, err := raw.ParseSegmentHeader(b[:raw.SegmentHeaderSize]); err != nil {
+			names = append(names, name)
+		}
+	}
+
+	return names
+}
+
+// TestRFC28B_SegmentReclaimable checks that a segment holding a record
+// dropped as corrupt is retired by repack and its storage recovered, so one
+// flipped bit never pins a segment's storage for good. The segment was
+// sealed idle, so it is truncated and accounted at its size, and its
+// retirement is an unlink: a segment sealed early is never recycled (RFC 28
+// section 2.2), and UsedBytes falls by its size after the truncation (RFC 1
+// section 7.3).
+//
+// decision: a spare made while the repack runs is accounted too (RFC 1
+// sections 6 and 7.3), so the drop allows one cap for each file created
+// since before the idle seal, rather than holding spare making there. The
+// fixture does not wait for its spare pool, so a hold could leave the
+// repack's copy refused for want of a spare on a correct journal. The count
+// starts before the idle seal because its reopen closes the journal, which
+// joins any spare still being made (RFC 1 section 8.7): every create before
+// the count is accounted by the open that follows, before UsedBytes is read,
+// so no cap reaches the drop without a create counted for it. A journal
+// accounting a spare before the create it is for, with the create still to
+// come at the last read, would fail here, and the hold is the upgrade if
+// one does.
+func TestRFC28B_SegmentReclaimable(t *testing.T) {
+	f := journaltest.New(t)
+	a := writeSynced(t, f, 0, 0, 0, 128<<10)
+	// A second live record in A's segment, so the journal does not retire
+	// the segment on its own once A is dropped, before the repack.
+	live := writeSynced(t, f, 0, 0, 128<<10, 64<<10)
+	b := writeSynced(t, f, 1, 1, 0, 64<<10)
+
+	creates := f.Seam.Calls(kit.OpCreate)
+	seg := sealIdle(t, f, a)
+	name := segmentName(seg)
+	info := ownedSegment(t, f, seg)
+	size := int64(len(durable(t, f, name)))
+	if !info.Sealed || info.Allocated != size || size >= journaltest.FixtureSegmentCap {
+		t.Fatalf("precondition: segment %d is sealed %t, accounted at %d and %d bytes long after its idle seal, want it sealed, accounted at its size and short of its cap %d", seg, info.Sealed, info.Allocated, size, journaltest.FixtureSegmentCap)
+	}
+
+	corruptAndRead(t, f, a)
+
+	used := f.J.Stats().UsedBytes
+	_, err := f.J.Repack(t.Context(), journaltest.FixtureSegmentCap, journal.RepackScope{Segments: []journal.SegmentID{seg}})
+	stub(t, "Repack", err)
+	if err != nil {
+		t.Fatalf("repack the segment: %v", err)
+	}
+
+	if removed, renamed := f.Seam.CallsFor(kit.OpRemove, name), f.Seam.CallsFor(kit.OpRename, name); removed != 1 || renamed != 0 {
+		t.Fatalf("segment %s was removed %d times and renamed %d times by repack, want unlinked once and never recycled: it was sealed early", name, removed, renamed)
+	}
+
+	if _, err := f.Seam.Durable(name); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("%s was removed, and a crash would still leave it: %v", name, err)
+	}
+
+	// The copy of the live record may take a spare and the journal make
+	// another, accounted at its cap from its creation, so UsedBytes falls by
+	// the segment's size less at most one cap per file created since the
+	// count. The segment is shorter than a cap, so a repack that frees
+	// nothing leaves a difference that is never a whole number of caps.
+	got := f.J.Stats().UsedBytes
+	made := int64(f.Seam.Calls(kit.OpCreate) - creates)
+	if spares := got - (used - size); spares < 0 || spares%journaltest.FixtureSegmentCap != 0 || spares/journaltest.FixtureSegmentCap > made {
+		t.Fatalf("UsedBytes = %d after unlinking a segment accounted at %d from %d, with %d files created since before the idle seal, want %d plus at most one cap of %d for each", got, size, used, made, used-size, journaltest.FixtureSegmentCap)
+	}
+
+	for _, s := range f.J.Inspect().Segments() {
+		// decision: RFC 1 section 4.4 keeps the row of a damaged segment
+		// retired before it emptied; this check reads that as covering a
+		// retirement by repack as well as one by an open, because repack
+		// retires the segment it drops a corrupt record from before the
+		// segment is empty of them. Overturned by the RFC owner reading the
+		// rule as an open's retirement alone, when the row must be gone here.
+		if s.ID == seg && (!s.Retired || !s.Damaged || s.Allocated != 0 || s.HeldBytes != 0) {
+			t.Fatalf("segment %d is still among the journal's after its retirement, and not as a retired row with no storage: %+v", seg, s)
+		}
+	}
+
+	wantBytes(t, f.Share(0), live.id, live.extent.Off, live.p)
+	wantBytes(t, f.Share(1), b.id, 0, b.p)
+}

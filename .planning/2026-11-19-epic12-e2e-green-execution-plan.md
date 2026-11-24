@@ -79,10 +79,10 @@ disagreement is raised to the user, not silently resolved.
   without `-race`), `journal-conformance` (tier `pr`, `known: test/journal/known.yaml`,
   `-race -tags=journal_conformance`), `engine-bench` (tier `manual`, the pattern to copy for
   benchmarks), `lint-go`'s `go vet -tags=` list, `dt docs --check` in `lint-repo`.
-- `pkg/block/journal/conformance/` — the suite: `rfc1_*_test.go`, `model_test.go`, `norace_test.go`,
+- `pkg/journal/conformance/` — the suite: `rfc1_*_test.go`, `model_test.go`, `norace_test.go`,
   `race_test.go`, `counted_*_test.go`, `damage_test.go`, `stats_cost_test.go`, corpus under
   `testdata/model`.
-- `pkg/block/journal/journaltest/model/` — the reference model. `Generate(seed, n)` draws the full
+- `pkg/journal/journaltest/model/` — the reference model. `Generate(seed, n)` draws the full
   weighted alphabet; **`GenerateWithin(seed, n, ops []Op)` already exists** (subset alphabet,
   same weights renormalised); `shrink.go` shrinks failing sequences; `DefaultSeed`,
   `DefaultSteps = 200`. `model_test.go` takes `DITTOFS_SEED` from the env and writes shrunk
@@ -91,8 +91,8 @@ disagreement is raised to the user, not silently resolved.
   descriptors or heap; overlapped watches are refused; `prof.Descriptors()` exports the open count;
   its own tests already plant a leaked goroutine (`TestWatchFailsOnLeakedGoroutine`).
 - Journal constants J1–J3 exercise: `SegmentCap` and `IdleSealBytes`
-  (`pkg/block/journal/internal/core/config.go`, `pkg/block/journal/internal/capacity/`), the sync
-  bound (`pkg/block/journal/handle.go`); the test fixture uses
+  (`pkg/journal/internal/core/config.go`, `pkg/journal/internal/capacity/`), the sync
+  bound (`pkg/journal/handle.go`); the test fixture uses
   `FixtureIdleSealBytes = FixtureSegmentCap/16`.
 - `docs/internals/testing.md` — the suite table `dt docs --check` verifies; regenerate with
   `test/harness/bin/dt docs`.
@@ -134,7 +134,7 @@ disagreement is raised to the user, not silently resolved.
 - Create: `test/journal/known_test.go` (no build tag; runs in `lint-repo` via `go test ./test/journal/`)
 - Modify: `test/journal/known.yaml` (every row re-owned; four bare messages tightened)
 - Modify: `test/journal/trace.yaml` (three `owner: epic 11` rows)
-- Modify: `pkg/block/journal/conformance/damage_test.go` (only if `waitAtHold(t, p, "the repack")` still
+- Modify: `pkg/journal/conformance/damage_test.go` (only if `waitAtHold(t, p, "the repack")` still
   exists — rename the label to `Repack`. As built: the label existed and was renamed; the three
   `stub: the repack` rows 9a's last PRs had already removed no longer existed at this base, so no
   row was tightened against it)
@@ -232,7 +232,7 @@ disagreement is raised to the user, not silently resolved.
 
 **Interfaces:**
 - Consumes: `unit.options.journal-conformance-norace` (tier `pr`): today
-  `go test -timeout=5m -tags=journal_conformance -run=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat|TestStatsAfterOpenWalksNoLock) ./pkg/block/journal/conformance/`.
+  `go test -timeout=5m -tags=journal_conformance -run=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat|TestStatsAfterOpenWalksNoLock) ./pkg/journal/conformance/`.
 - Produces: nothing new; R7's enforcement is verified, stated where the rows name it.
 
 - [ ] **Step 1: verify coverage.** The four race-skip rows (message
@@ -274,11 +274,11 @@ execution plan is a new file). Then: whole-PR review round → `/llm-council` �
   (pr), `engine-soak` (pr today), `engine-bench`/`reconcile-bench` (manual, `DITTOFS_BENCH_DIR` guard).
 - Produces: suite names later tasks implement against, exact and stable:
   - `journal-model` — `format: go-json`, `tier: nightly`,
-    `cmd: go test -tags=journal_conformance,journal_model -run ^TestModelManySeeds$ -timeout=110m -artifacts -outputdir={out} ./pkg/block/journal/conformance/`,
+    `cmd: go test -tags=journal_conformance,journal_model -run ^TestModelManySeeds$ -timeout=110m -artifacts -outputdir={out} ./pkg/journal/conformance/`,
     `env: { DITTOFS_MODEL_SEEDS: "100" }`, no `known:` (a red seed must fail the run, not be listed),
     `timeout: { test: 110m, cell: 120m }`, no `parallel: true`.
   - `journal-soak` — `format: go-json`, `tier: nightly`,
-    `cmd: go test -tags=journal_conformance,journal_soak -run ^TestJournalSoak -timeout=150m -artifacts -outputdir={out} ./pkg/block/journal/conformance/`,
+    `cmd: go test -tags=journal_conformance,journal_soak -run ^TestJournalSoak -timeout=150m -artifacts -outputdir={out} ./pkg/journal/conformance/`,
     `env: { DITTOFS_SOAK_DURATION: "2h" }`, no `known:`,
     `timeout: { test: 150m, cell: 160m }` — **mandatory**: the registry's default cell timeout
     (60m) would kill a 2-hour soak; the run itself is 2h with the cell backstop above it, inside
@@ -327,7 +327,7 @@ execution plan is a new file). Then: whole-PR review round → `/llm-council` �
 ### Task 4 (T12.8): profiling baselines
 
 **Files:**
-- Modify: `pkg/block/journal/conformance/*_test.go` where `prof.Watch` is called with slack that
+- Modify: `pkg/journal/conformance/*_test.go` where `prof.Watch` is called with slack that
   the calibration shows is either wasteful or flaking
 - Modify: `internal/prof/` only if calibration exposes a real defect (a leaked-descriptor
   platform quirk, e.g. on macOS dev machines) — expect no diff
@@ -340,7 +340,7 @@ execution plan is a new file). Then: whole-PR review round → `/llm-council` �
   both directions.
 
 - [ ] **Step 1: calibrate.** Run the suite ten times on one machine:
-  `GOTOOLCHAIN=go1.26.10 go test -race -tags=journal_conformance -count=10 -timeout=6h ./pkg/block/journal/conformance/`.
+  `GOTOOLCHAIN=go1.26.10 go test -race -tags=journal_conformance -count=10 -timeout=6h ./pkg/journal/conformance/`.
   For each watched test record the heap delta and descriptor / goroutine high-water marks (the
   watch already prints them when it fails; instrument a one-off local run if numbers are needed,
   do not commit a metrics harness). Any test that flakes once in ten is a bug to root-cause
@@ -365,7 +365,7 @@ value landed. Race leg: the six watch-bearing tests ×10 (3:26 wall) plus the fu
 pre-existing known failure, stable in all ten. Norace heap leg ×10: worst per-test live-heap
 delta +1,126,656 B (~1.07 MiB, `TestRFC1D_StatsCostIsFlat`, the 10⁵-extent rig; the norace
 trio's others stay at ~578 KiB and ~51 KiB). Reproduce with
-`go test -race -tags=journal_conformance -count=10 -timeout=6h ./pkg/block/journal/conformance/`
+`go test -race -tags=journal_conformance -count=10 -timeout=6h ./pkg/journal/conformance/`
 and a one-off per-watch delta log in `prof`'s cleanup (instrument locally, never commit it).
 `TestModel` itself dies at corpus step 1 on the `Offload` stub, so its delta must be
 re-measured under later PRs' data path before treating the default as generous there.
@@ -384,8 +384,8 @@ the tightening row is in the deferral ledger.
 ### Task 5 (T12.5): `TestModelManySeeds`
 
 **Files:**
-- Create: `pkg/block/journal/conformance/model_many_test.go` (tag `//go:build journal_conformance,journal_model`)
-- Create: `pkg/block/journal/journaltest/model/plant_truncate_test.go` or equivalent (see Step 4)
+- Create: `pkg/journal/conformance/model_many_test.go` (tag `//go:build journal_conformance,journal_model`)
+- Create: `pkg/journal/journaltest/model/plant_truncate_test.go` or equivalent (see Step 4)
 
 **Interfaces:**
 - Consumes: `model.GenerateWithin(seed, n, ops)` and the `Op` set from `journaltest/model/gen.go`;
@@ -432,7 +432,7 @@ the tightening row is in the deferral ledger.
 ### Task 6 (T12.6): `TestJournalSoak`
 
 **Files:**
-- Create: `pkg/block/journal/conformance/soak_test.go` (tag `//go:build journal_conformance,journal_soak`)
+- Create: `pkg/journal/conformance/soak_test.go` (tag `//go:build journal_conformance,journal_soak`)
 
 **Interfaces:**
 - Consumes: the conformance rig's fixture (real filesystem under `t.TempDir()`, virtual clock),
@@ -481,7 +481,7 @@ the tightening row is in the deferral ledger.
 ### Task 7 (T12.7): the benchmark suite
 
 **Files:**
-- Create: `pkg/block/journal/conformance/bench_test.go` (tag `//go:build journal_conformance,journal_bench`)
+- Create: `pkg/journal/conformance/bench_test.go` (tag `//go:build journal_conformance,journal_bench`)
 - Create: `docs/internals/journal-bench-results.md` (the committed results file; `docs:` commit)
 - Modify: `test/journal/known.yaml` — **not expected**: benchmarks have no known list; nothing
   runs them per change.
@@ -539,7 +539,7 @@ the tightening row is in the deferral ledger.
   depth, the device's raw figures, filesystem, mount options and the sync bound — and the
   keep-or-change decision for each of the three proposed constants J1–J3 exercise
   (**segment cap, sync bound, idle seal** — note today's values from
-  `pkg/block/journal/internal/core/config.go` and `handle.go`, and the fixture's
+  `pkg/journal/internal/core/config.go` and `handle.go`, and the fixture's
   `IdleSealBytes = SegmentCap/16` convention, alongside the measured evidence for keeping or
   changing each). Replace the RFC's proposed targets in the file's table with the measured ones
   alongside, not instead of the RFC. A `docs:` commit; hand the file path to the user afterwards.
@@ -569,7 +569,7 @@ issue's body predates the comment.
 - Modify: `.github/workflows/tests.yml` — a `job:` or plan-select term so the nightly cell is
   never dropped silently from the plan (the reach check of #5032, implemented for PR #5032,
   covers pr and merge cells only)
-- Modify: `pkg/block/journal/conformance/bench_test.go` — the size knob (Step 1), not new bodies
+- Modify: `pkg/journal/conformance/bench_test.go` — the size knob (Step 1), not new bodies
 
 **Interfaces:**
 - Consumes: PR4's J1–J3 bodies (the `journal_bench` tag; **no new tag**), the `metrics: go-bench`
@@ -635,7 +635,7 @@ once PR 6 lands, else `journal/epic12-bench` — itself rebased by then)
 
 **Files:**
 - Modify: `test/journal/known.yaml` (rows leave in the changes that turn them green)
-- Modify: `pkg/block/journal/**` and `test/journal/known_test.go`'s name table, per finding
+- Modify: `pkg/journal/**` and `test/journal/known_test.go`'s name table, per finding
 - Modify: `test/suites.yaml` only if the duration evidence moves heavy checks to `merge`/`nightly`
 
 **Interfaces:**
@@ -650,7 +650,7 @@ once PR 6 lands, else `journal/epic12-bench` — itself rebased by then)
   re-measures on the real rows.
 - [ ] **Step 2: burn down.** For each row still red against landed code (the `#3395` set: the
   classifier test names them precisely): root-cause with
-  superpowers:systematic-debugging; fix in `pkg/block/journal/**` at the layer that owns the
+  superpowers:systematic-debugging; fix in `pkg/journal/**` at the layer that owns the
   behaviour (the consumer-layer test rule: the regression test goes where the wrong data is
   *read*, not where the patch is); the row leaves in the same change that turns it green,
   and the known-failure entries leave only with `dt run journal` showing them green.

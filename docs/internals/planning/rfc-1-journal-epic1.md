@@ -31,7 +31,7 @@ It implements no behaviour. Every function body is a stub. At the end of the epi
 
 ### 1.1 In scope
 
-- the `pkg/block/journal` public package, with every symbol of RFC 1 §3, §4.3, §4.4 and
+- the `pkg/journal` public package, with every symbol of RFC 1 §3, §4.3, §4.4 and
   §7.2;
 - the value types, the error set and the observability contract (`Stats`, `Tracer`, the
   logger option);
@@ -90,7 +90,7 @@ is named with the reason.
 6. **Known failures shrink.** Every e2e test an epic turns green is removed from the
    known-failure list in the same change. The runner fails if a listed test passes.
 7. **v2 ignores v1.** No import of, copy from, or behavioural dependence on
-   v1's journal (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
+   v1's journal (`pkg/journal` until #3645 deleted it on `feat/storage-v2`). The import test enforced it. v1 code is neither ported nor
    bridged: it is deleted with the rest of v1 at the cutover (stage 7 of #3119). v2
    checks only whether v1 state exists, to refuse it at start (epic 10's R10 for the pre-journal local layout; the RFC 23 plan's T3.9 for the v1 `controlplane.db`), and never reads
    v1's format.
@@ -125,7 +125,7 @@ is named with the reason.
 | 4. Profiling | **Does not apply.** There are no hot paths yet, and the profiler is epic 2's. |
 | 5. Public and internals | **Applies.** The import rule covers every package; the signature check covers the public package. |
 | 6. Known failures | **Does not apply.** No e2e test exists yet. The list is created in epic 2. |
-| 7. v2 ignores v1 | **Applies.** The import test forbade v1's `pkg/block/journal` in every v2 package, test files included, until #3645 deleted v1. |
+| 7. v2 ignores v1 | **Applies.** The import test forbade v1's `pkg/journal` in every v2 package, test files included, until #3645 deleted v1. |
 | 8. Real storage | **Does not apply.** Nothing touches storage. |
 | 9. Comments | **Applies.** Doc comments state contracts in terms of the code, with no RFC or epic numbers. The symbol-to-RFC map is in §6 of this file. Decisions taken here carry `decision:` markers at their declaration. |
 | 10. Tests must be able to fail | **Applies.** See rule 1. The surface test and the API golden file are not kept. |
@@ -139,9 +139,9 @@ is named with the reason.
 Each decision below is recorded at its code site with a `decision:` marker and is
 reviewed at the freeze (subtask 1.9).
 
-**D1. Package location and name: `pkg/block/journalv2` while v1 existed, `pkg/block/journal`
+**D1. Package location and name: `pkg/block/journalv2` while v1 existed, `pkg/journal`
 since. The `v2` suffix was in Go package and import paths only.**
-v1 kept `pkg/block/journal` until #3645 deleted it with the rest of v1's engine and journal. A sibling package lets v2 be built while v1 is still in the tree. v2's caller is the
+v1 kept `pkg/journal` until #3645 deleted it with the rest of v1's engine and journal. A sibling package lets v2 be built while v1 is still in the tree. v2's caller is the
 stage-3 engine (epic 11), so no v1 caller is ported, and v1 and v2 never run in one binary.
 The PR that deleted v1 (#3645) renamed `journalv2` to `journal`, and `enginev2` to `engine` (RFC 8 §2.8).
 
@@ -279,7 +279,7 @@ first symbol, never as an empty placeholder (§2, rule 12). The set's clocks liv
 `pkg/clock` and `pkg/sim` (D3); the journal imports neither.
 
 ```text
-pkg/block/journal/
+pkg/journal/
   doc.go            package contract: what the journal is and is not
   journal.go        Journal; Init, Open, Restamp; Close; Share, Forget, Strand; Draw, SetVersionLimit
   handle.go         Handle and its operations
@@ -328,18 +328,18 @@ rule, not where the rule came from.
 - **Deliverables:**
   - the public package's `doc.go`. Every other package lands with the subtask that
     declares its first symbol;
-  - `imports_test.go`, covering every package under `pkg/block/journal/`. It is modelled
+  - `imports_test.go`, covering every package under `pkg/journal/`. It is modelled
     on v1's `foreign_imports_test.go`: it reads `go/build`, parses files built for other
     platforms, and checks test imports too. It allows:
-    - the standard library and the module's own `pkg/block/journal/...` packages,
+    - the standard library and the module's own `pkg/journal/...` packages,
       everywhere;
     - `golang.org/x/sys`, in `internal/platform` only (D6);
     - `pkg/clock` and `pkg/sim`, in the test packages `journaltest` and `conformance`
       only.
 
-    It forbade v1's `pkg/block/journal` everywhere, until #3645 deleted v1.
+    It forbade v1's `pkg/journal` everywhere, until #3645 deleted v1.
 - **Done when:**
-  - the import test fails on a planted `pkg/block/journal` import, on a planted
+  - the import test fails on a planted `pkg/journal` import, on a planted
     third-party import in a non-platform package, and on a planted x/sys import outside
     `internal/platform`. Each is checked by reverting the plant after watching the failure;
   - `go build ./...` passes.
@@ -637,7 +637,7 @@ rule, not where the rule came from.
     §7.2, and checks the review rules: no stub panics (D8), nothing exported
     that RFC 1 §3 does not use (rule 11), no empty package or uncalled stub (rule 12).
 - **Done when:**
-  - `go test ./pkg/block/journal/...` is green;
+  - `go test ./pkg/journal/...` is green;
   - `go vet` is clean;
   - the team has approved;
   - the parent plan records S1, with the date.

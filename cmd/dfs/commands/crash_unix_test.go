@@ -273,21 +273,25 @@ func TestCrashBeforeTheShareListReadServesTheCreatedShare(t *testing.T) {
 
 // deletedFiles is how many files the share the deletion row removes holds.
 //
-// ponytail: RFC 23's row seeds 10⁵ files, which at the runner's pace, set
-// by the ponytail on its run loop, take about 4 hours to drop; 50 files are
-// 151 rows under the share's file prefix, 8 batches of step 4, so the files
-// phase spans several turns and the drop ends inside the child's bound. Seed
-// 10⁵ once that ponytail is replaced.
+// ponytail: RFC 23's row seeds 10⁵ files. Each batch of step 4 scans from the
+// share's first file key, over the rows earlier batches deleted, so the drop
+// grows with the square of the files: under -race 4000 files do not end
+// inside the child's bound. 50 files are 151 rows under the share's file
+// prefix, 8 batches of step 4, so the files phase spans several batches on
+// each side of each kill. Seed 10⁵ once the shard's drop keeps its last key,
+// as the ponytail on ContinueShardRemoval says.
 const deletedFiles = 50
 
 // §3.2 delete: a share's deletion, the node killed with its files phase half
 // done, some of the share's file rows dropped and some left, reads back after
-// the restart as the same operation, Done never below what it read before the
-// kill, and ends succeeded with no file row left. A second delete, under a
-// key of its own, is refused 409 stale.
+// the restart as the same operation, running, Done never below what it read
+// before the kill; the restarted node, held and killed at its second batch,
+// has dropped more rows, so it resumed the drop; a third start ends it
+// succeeded with no file row left. A second delete, under a key of its own,
+// is refused 409 stale.
 func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 	if testing.Short() {
-		t.Skip("the deletion drops its files one batch a second")
+		t.Skip("the row starts dfs three times")
 	}
 	share := entity.Share{ID: entity.NewShareID(), Name: "doomed", Path: "/doomed", Root: entity.NewFileID()}
 	config, _ := crashInstall(t, func(st *kvstore.Store, ns entity.NamespaceID) {
@@ -320,6 +324,10 @@ func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 
 	// Every scan of the share's file rows is a batch of step 4, the files
 	// phase: the second scan is held, after the first batch dropped its rows.
+	// Both holds below count on that: nothing else scans the share's file
+	// prefix, at a start or otherwise. A start that did would have the hold
+	// land on the first batch instead, and the row then fails on the rows
+	// left at a kill, not at random.
 	files := keys.ID([]byte{keys.KindF}, share.ID[:])
 	seeded := fileRows(t, config, files)
 	c := serve(t, config, hold(kvtest.OpScan, files, 2, nil))
@@ -345,12 +353,24 @@ func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 		t.Fatalf("a second DELETE /shares/%s under a new key: %v, want 409 stale", id, err)
 	}
 	c.kill(t)
-	if left := fileRows(t, config, files); left == 0 || left >= seeded {
+	left := fileRows(t, config, files)
+	if left == 0 || left >= seeded {
 		t.Fatalf("share %s's file rows at the kill: %d left of %d, want some dropped and some left", id, left, seeded)
 	}
 
+	c = serve(t, config, hold(kvtest.OpScan, files, 2, nil))
+	c.heldOn(t, "the resumed removal's second batch of files")
+	resumed, err := c.api.Operation(t.Context(), op.ID)
+	if err != nil || resumed.ID != op.ID || resumed.State != apiv1.OpRunning || resumed.Progress.Done < before.Progress.Done {
+		t.Fatalf("operation %s after the restart, held at its second batch of files: %+v (%v), want the same operation running, Done at least %d", op.ID, resumed, err, before.Progress.Done)
+	}
+	c.kill(t)
+	if now := fileRows(t, config, files); now >= left {
+		t.Fatalf("share %s's file rows at the second kill: %d left, want fewer than the %d at the first, the drop resumed", id, now, left)
+	}
+
 	c = serve(t, config)
-	last, sawRunning := before, false
+	last := resumed
 	end := poll(t, c, "the deletion succeeded after the restart", func(ctx context.Context) (apiv1.Operation, error) {
 		now, err := c.api.Operation(ctx, op.ID)
 		if err != nil {
@@ -360,12 +380,9 @@ func TestCrashDuringAShareDeletionEndsSucceeded(t *testing.T) {
 			now.State != apiv1.OpRunning && now.State != apiv1.OpSucceeded {
 			t.Fatalf("operation %s after the restart: %+v, after %+v; want it running or succeeded, Done never falling", op.ID, now, last)
 		}
-		last, sawRunning = now, sawRunning || now.State == apiv1.OpRunning
+		last = now
 		return now, nil
 	}, func(o apiv1.Operation) bool { return o.State == apiv1.OpSucceeded })
-	if !sawRunning {
-		t.Errorf("operation %s after the restart: read succeeded at once, want it read running first: the same operation resumed", op.ID)
-	}
 	if end.Progress.Done <= before.Progress.Done {
 		t.Errorf("operation %s succeeded with Done %d, want above the %d it read before the kill", op.ID, end.Progress.Done, before.Progress.Done)
 	}

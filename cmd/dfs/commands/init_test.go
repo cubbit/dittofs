@@ -8,8 +8,10 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/install"
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
@@ -124,5 +126,71 @@ func TestInitThenAgain(t *testing.T) {
 	}
 	if out, err := runDfs("init", "--config", config); !errors.Is(err, install.ErrInstalled) || out != "" {
 		t.Errorf("second dfs init: got %q, %v; want nothing printed and ErrInstalled", out, err)
+	}
+}
+
+// Over a v1 Badger store at metadata.badger.path, dfs init refuses with the
+// v1 sentence naming the directory, printing nothing, leaving v1's keys as
+// they were and the journal directory empty.
+func TestInitRefusesAV1MetadataStore(t *testing.T) {
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	store := filepath.Join(dir, "store")
+	writeV1Store(t, store)
+	out, err := runDfs("init", "--config", config)
+	if want := v1Sentence("a metadata store", store); err == nil || err.Error() != want || out != "" {
+		t.Errorf("dfs init over a v1 store: got %q, %v; want nothing printed and %q", out, err, want)
+	}
+	checkV1Store(t, store)
+	if ents, err := os.ReadDir(filepath.Join(dir, "device")); err != nil || len(ents) != 0 {
+		t.Errorf("journal directory after the refusal: %d entries, %v; want it empty", len(ents), err)
+	}
+}
+
+// Over a store kvstore.Init created that has since lost its format record,
+// dfs init refuses it as foreign, never with the v1 sentence: its keys are
+// this format's records.
+func TestInitRefusesAStoreThatLostItsFormatRecord(t *testing.T) {
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	db, err := badgerkv.Open(badgerkv.Options{Dir: filepath.Join(dir, "store"), NodeID: testNode})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = kvstore.Init(t.Context(), db, [16]byte{1})
+	if err == nil {
+		err = db.Update(t.Context(), func(tx kv.Txn) error { return tx.Delete(keys.Format) })
+	}
+	if err = errors.Join(err, db.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runDfs("init", "--config", config); !errors.Is(err, kvstore.ErrForeignStore) || strings.Contains(err.Error(), "from v1") {
+		t.Errorf("dfs init over a store that lost its format record: got %v, want ErrForeignStore's wording, never the v1 sentence", err)
+	}
+}
+
+// dfs init reads the password from the variable --admin-password-env names
+// even when that name starts with DITTOFS_, which the bootstrap's scan
+// would refuse as unknown or retired: the variable holds a password, not a
+// setting. The run initialises the installation and prints no password.
+func TestInitPasswordEnvDittofsName(t *testing.T) {
+	for _, name := range []string{"DITTOFS_ADMIN_INITIAL_PASSWORD", "DITTOFS_ADMIN_PW"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			scratch := filepath.Join(dir, "scratch")
+			if err := os.Mkdir(scratch, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := journal.Init(t.Context(), scratch, [16]byte{1}); errors.Is(err, journal.ErrUnsuitableStorage) {
+				t.Skipf("the journal's platform check refuses the mount holding %s (%v); set TMPDIR to a directory on a suitable mount", dir, err)
+			} else if err != nil {
+				t.Fatalf("journal init on the scratch directory: %v", err)
+			}
+			t.Setenv(name, "a-first-password")
+			config := initConfig(t, dir)
+			if out, err := runDfs("init", "--config", config, "--admin-password-env", name); err != nil || out != "" {
+				t.Fatalf("dfs init --admin-password-env %s: got %q, %v; want it initialised, nothing printed", name, out, err)
+			}
+		})
 	}
 }

@@ -92,7 +92,7 @@ go run ./cmd/gendocs
 go run ./cmd/genopenapi
 
 # Run server with debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 Default NFS port is `12049` (not 2049). Server config lives at `~/.config/dittofs/config.yaml`
@@ -127,7 +127,7 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
    restarts for persistent backends.
 
 4. **The data path is live below the adapters; no adapter serves it yet.** `node.New`
-   builds the engine, `pkg/block/engine` over `pkg/block/journal`, and `vfs.Service` over
+   builds the engine, `pkg/engine` over `pkg/journal`, and `vfs.Service` over
    it (`internal/node/node.go`); `vfs.Service`'s Read, Write and Commit read and write
    content through the engine (`internal/vfs/data.go`). The NFS and SMB adapters have no
    file operations yet, so no client reads or writes a file (see
@@ -154,7 +154,7 @@ composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shar
    no store suite; the remote tier returns with its own contract. The journal and the engine carry their own
    conformance suites (`journal_conformance`, `engine_conformance` tags).
 
-   **`pkg/block` is only `engine/` and `journal/`; its root package is gone.** No interface
+   **The block tier is `pkg/engine` and `pkg/journal`; no shared root package remains.** No interface
    declares the engine's or the journal's surface: each is its own package API. So a method
    reachable only from tests has nothing holding its signature up: say so with a `decision:`
    marker at the method rather than reintroducing an interface to pin it.
@@ -351,7 +351,7 @@ func (f Files) Granted(ctx context.Context, id entity.Identity, h, via entity.Ha
 
 They are a **debt ledger, not TODOs**: each one records a decision that was correct at the
 time along with the evidence that would overturn it. They appear throughout the codebase,
-mostly in `pkg/block/engine`, `pkg/block/journal` and `pkg/metadata/kvstore`.
+mostly in `pkg/engine`, `pkg/journal` and `pkg/metadata/kvstore`.
 
 This is the one sanctioned exception to the "no external references" rule above — the
 prefix is what makes the set harvestable as a group. Keep the marker when editing nearby

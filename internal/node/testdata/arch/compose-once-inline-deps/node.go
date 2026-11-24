@@ -2,8 +2,8 @@
 package node
 
 import (
-	eng "github.com/cubbit/dittofs/pkg/block/engine"
-	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
+	eng "github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 )
 
 func build(p enginewire.Params) error {

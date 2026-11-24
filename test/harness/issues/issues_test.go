@@ -321,7 +321,7 @@ func TestTestIssueErrorsDontStopThePost(t *testing.T) {
 	g, c := newTracker(t)
 	g.add("unit pkg TestLocked fails on develop", "open")
 	g.issues[0].locked = true
-	pkg := "github.com/cubbit/dittofs/pkg/block/engine"
+	pkg := "github.com/cubbit/dittofs/pkg/engine"
 	long := "TestLong/" + strings.Repeat("a_case_", 40)
 	cell := report.Cell{Name: "unit", Result: report.Failed, Tests: []report.Test{
 		{Name: "TestLocked", Suite: []string{"pkg"}, Status: report.Failed, Grade: report.New},
@@ -405,7 +405,7 @@ func TestStatusIssueKeepsItsBodyInBounds(t *testing.T) {
 	g, c := newTracker(t)
 	cell := report.Cell{Name: "unit", Result: report.Failed}
 	for i := 299; i >= 0; i-- {
-		cell.Tests = append(cell.Tests, report.Test{Name: "Test" + strconv.Itoa(1000+i) + "/" + strings.Repeat("x", 200), Suite: []string{"github.com/cubbit/dittofs/pkg/block/engine"}, Status: report.Failed, Grade: report.New})
+		cell.Tests = append(cell.Tests, report.Test{Name: "Test" + strconv.Itoa(1000+i) + "/" + strings.Repeat("x", 200), Suite: []string{"github.com/cubbit/dittofs/pkg/engine"}, Status: report.Failed, Grade: report.New})
 	}
 	if err := c.Post(context.Background(), []report.Run{run("20261022T100000Z-ddddddd1", "merge", cell)}, nil, io.Discard); err != nil {
 		t.Fatal(err)

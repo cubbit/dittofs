@@ -75,7 +75,7 @@ func (s *Server) NTHashDeleteStep(ctx context.Context, op entity.Operation) (ste
 	c.After, c.Dropped = next, c.Dropped+int64(dropped)
 	b, _ := json.Marshal(c) // a reference and an integer always marshal
 
-	res := step.StepResult{Next: b, Done: done}
+	res := step.StepResult{Next: b, Done: done, More: !done}
 	if done {
 		// The one write of NTLMOff in identity: it commits with the
 		// operation's end or not at all.
