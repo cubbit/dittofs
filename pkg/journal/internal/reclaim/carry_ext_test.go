@@ -453,9 +453,11 @@ func TestCarryRemovalStaysWhenADirectorySyncFails(t *testing.T) {
 // record at another segment carrying the source's own sequence number and
 // version — the pair is the record's identity, and a copy reissued under a
 // fresh number would outrank the fills the truncate once released — its bytes
-// decoding back to the same header and body, its registration raising the
-// target segment's count, and the truncate's marker still answering from the
-// index.
+// decoding back to the same header and body, its registration doubling the
+// record's identity class so the copy's segment holds nothing while both
+// placements stand and holds again once the source segment's retirement
+// re-holds it as the class's last placement, and the truncate's marker still
+// answering from the index.
 func TestCarryKeepsBothNumbers(t *testing.T) {
 	f := newCopyFixture(t)
 	file := copyFile(4)
@@ -527,10 +529,12 @@ func TestCarryKeepsBothNumbers(t *testing.T) {
 		t.Fatalf("a truncate's body is empty; got source %+v, copy %+v", bS, bC)
 	}
 
-	// The copy's registration raises the target's count: nothing the index
-	// holds names the target, so its liveness is the copy's alone.
-	if !f.tracker.Held(cr.To.Segment) {
-		t.Fatalf("Held of segment %d after the carry = false, want the copy registered live there", cr.To.Segment)
+	// The copy's registration doubles the truncate's identity class — the
+	// original is still registered in the source — so neither placement
+	// holds: the copy's segment reads not held while the class stands in
+	// two places, by the identity-class hold rule.
+	if f.tracker.Held(cr.To.Segment) {
+		t.Fatalf("Held of segment %d after the carry = true, want false: the record's identity stands in two placements — the copy and the still-registered original — and a class of two holds neither", cr.To.Segment)
 	}
 	// The truncate's change still answers from the index.
 	var found bool
@@ -541,6 +545,16 @@ func TestCarryKeepsBothNumbers(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("Since above the write's version %v yields no truncate's change, want the marker at %v", vW, vT)
+	}
+
+	// The re-hold the class rule's safety rests on: the source segment's
+	// retirement takes the original's registration, the class drops back
+	// to the copy alone, and the copy's segment holds again — the
+	// property the copy's liveness was reaching for, kept by the rule as
+	// the survivor's.
+	f.tracker.SegmentRetired(recW.Segment, []core.FileID{file})
+	if !f.tracker.Held(cr.To.Segment) {
+		t.Fatalf("Held of the copy's segment after the source segment retired = false, want true: the class's last placement re-holds its segment")
 	}
 
 	// A reopen over the whole directory — the consumer of what the carry

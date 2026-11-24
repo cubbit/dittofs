@@ -277,6 +277,10 @@ func (w *Worker) worker() {
 // O(sealed segments) per tick. Upgrade to something narrower when the walk
 // shows in a profile.
 func (w *Worker) scan() {
+	// The in-flight class gate's janitor, ahead of the pass it runs a
+	// tick's finds into: a mark a vanished segment leaked goes before the
+	// candidates the pass refuses over it can pile up behind it.
+	w.tr.pruneClassesInFlight()
 	for _, r := range w.segs.Snapshot() {
 		if r.State != segment.Sealed && r.State != segment.Ended {
 			continue
@@ -486,6 +490,35 @@ func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.T
 		// whose emptier reported nothing still owes the worker one full
 		// scan pass of grace; dropping the wait would only retire such a
 		// candidate a tick sooner.
+		w.segs.Release(id)
+		w.requeue(id)
+		return
+	}
+
+	// decision: a hand-over is refused while any identity class its
+	// candidate carries is already in flight under another segment — one
+	// retirement per class at a time; a mark naming the candidate itself
+	// is not busy for it, for a hand-over that never reached its sweep
+	// must not refuse its own segment's next one. The class hold rule
+	// lets a record standing in two placements hold neither segment, so
+	// both can read not held at once and nothing else serializes their
+	// retires: two overlapping hand-overs could each unlink before the
+	// other's sweep re-held the survivor, emptying the class and
+	// destroying from the disk a record the drop test still needed — and
+	// a rebuild could then resurrect the content its covered, older
+	// records describe while their segments survive. The gate's marks
+	// answer to the retiring segment's own SegmentRetired sweep — the one
+	// place each swept class's survivor is re-held — and to the janitor
+	// behind hand-overs a leaked mark trails, so a refused mate comes back
+	// to an answer from its own hold: held again, it is dropped here,
+	// never handed over. The residual ceiling: while an abandoned mark of
+	// a handed-over-then-kept segment stands, its class-mates' hand-overs
+	// stay refused until that segment retires or leaves the set —
+	// reclaimable storage retained, never a record lost. Overturned by a
+	// retirement path that empties a segment's last placement without the
+	// SegmentRetired sweep, which would hand a mate over into a class the
+	// mark no longer protects, or by a hand-over that skips this gate.
+	if w.tr.markClassesInFlight(id) {
 		w.segs.Release(id)
 		w.requeue(id)
 		return

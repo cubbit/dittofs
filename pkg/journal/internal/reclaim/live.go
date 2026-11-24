@@ -62,6 +62,38 @@ type Rec struct {
 	Loc segment.Location
 }
 
+// recId is a record's identity: the registration without the two fields that
+// name where the record sits, exactly the fields the Rec's own doc pins as
+// identifying the record wherever its copies are. Two registrations whose
+// identity matches are one record in two places — a removal and the carried
+// copy of it — whatever their segments and locations spell.
+type recId struct {
+	Kind       format.Kind
+	File       core.FileID
+	Ext        core.Extent
+	Pair       index.Numbers
+	Seq        core.Seq
+	Named      core.Seq
+	Tag        core.ShareTag
+	Synced     bool
+	Superseded bool
+}
+
+// identityOf returns rec's identity: the record wherever its copies sit.
+func identityOf(rec Rec) recId {
+	return recId{
+		Kind:       rec.Kind,
+		File:       rec.File,
+		Ext:        rec.Ext,
+		Pair:       rec.Pair,
+		Seq:        rec.Seq,
+		Named:      rec.Named,
+		Tag:        rec.Tag,
+		Synced:     rec.Synced,
+		Superseded: rec.Superseded,
+	}
+}
+
 // Tracker is one journal's segment liveness: per segment, beside the bytes
 // the index counts, the records registered live, a deferred-loss flag and a
 // count of ended holds — the things that keep a segment held with no
@@ -99,6 +131,57 @@ type Tracker struct {
 	// reaches only the record it names, whose registrations sit here under
 	// the sequence number the loss carries.
 	recs map[core.FileID]map[Rec]int
+	// identities is each registered record's set of live placements, keyed
+	// by the record's identity (identityOf) and holding the whole Rec of
+	// each placement still registered. It is the index the class hold rule
+	// answers by: a record's identity class — every placement of one
+	// identity — carries its live count on one placement's segment only
+	// while that placement is the class's sole one, and counts nothing at
+	// all while two or more stand, whichever segments they sit in.
+	//
+	// decision: a header-only record holds its segment only as its identity
+	// class's last placement — the moment a second placement stands, from a
+	// carried copy's registration or a rebuild that finds the record in two
+	// segments, neither placement holds, and a placement lost re-holds the
+	// survivor — because a repack's carried copies keep both of the
+	// record's numbers (RFC 1 §7.2), so the copy is the same identity the
+	// original is, while a removal is droppable only once every other
+	// segment holding an older overlapping record of the file is durably
+	// retired (RFC 1 §4.3): with the hold kept per placement, the original
+	// waits on its own copy's retirement and the copy on the original's, a
+	// cycle no event closes and the journal wedges at capacity under
+	// removal churn. With the hold on the class's last placement alone,
+	// each doubling frees the other placement's segment for retirement, and
+	// each loss errs safe by re-holding the survivor, so every crash window
+	// holds — without any open-side or carry-side special case. The rule is
+	// exact at two placements and stays the same beyond them: a third
+	// placement spends nothing (the class holds nothing at two or more)
+	// and loses nothing (whichever placements leave, a surviving one
+	// re-holds), so nothing here counts beyond the ≤2 names the transitions
+	// read. A content record's copy takes a fresh sequence number — a
+	// different identity — so the rule reaches it by accident neither way:
+	// no kind is special-cased anywhere, the identity fields carry it.
+	// Overturned by a carry that renumbers the records it places, which
+	// would strand the classes' pairings, or by a drop rule answer that
+	// depends on a placement's location, which the class would have to ask
+	// per placement. Guarded by rm, like recs: it moves only where recs
+	// does, and the live counts a transition moves under it travel the
+	// segment state's own lock, so a Held reads one consistent count.
+	identities map[recId]map[Rec]struct{}
+	// inflight is the identity classes whose retirement is in flight, one
+	// entry per class naming the segment the worker handed over for it: the
+	// state behind markClassesInFlight's gate, which refuses a hand-over
+	// carrying a class already in flight — one retirement per class at a
+	// time — because the class hold rule makes a two-placement class hold
+	// neither placement, so a class's two segments can read not held at
+	// once and nothing else keeps their retires from overlapping windows.
+	// The mark is cleared by the named segment's own SegmentRetired sweep
+	// (which also re-holds each swept class's survivor) and, as a janitor
+	// behind hand-overs a vanished segment leaked, by
+	// pruneClassesInFlight, which asks for both the segment's leaving the
+	// set and the registry's holding no placement of the class in it.
+	// Guarded by rm, like the registries the gate reads.
+	inflight map[recId]core.SegmentID
 	// released keeps, per segment, the records a re-test's release spent:
 	// one count per released registration, mirroring how recs counts the
 	// live ones, so a release is recoverable by count. A re-test's release
@@ -259,20 +342,28 @@ func (t *Tracker) inSet(seg core.SegmentID) bool {
 }
 
 // Held reports whether seg still holds anything: bytes of held or retained
-// extents, a live header-only record, a deferred loss, or an ended hold. No
-// byte the index counts and no registration the tracker keeps, and the two
-// flags a segment carries beside them, are ever released by anything but the
-// events below. Held reads the index's counters and the tracker's atomics,
-// taking no lock, allocating nothing and never reading the segment.
+// extents, a live header-only record — the last placement of one, by the
+// identities rule: a record its class holds in two or more places holds
+// nothing — a deferred loss, or an ended hold. No byte the index counts and
+// no registration the tracker keeps, and the two flags a segment carries
+// beside them, are ever released by anything but the events below. Held
+// reads the index's counters and the tracker's atomics, taking no lock,
+// allocating nothing and never reading the segment.
 func (t *Tracker) Held(seg core.SegmentID) bool {
 	return t.isHeld(seg, t.stateOf(seg))
 }
 
 // Register counts rec's record live in its segment, whatever its kind: what
-// keeps it is decided where its liveness can change, not here. The record's
-// file is kept under the segment whatever the record goes on to hold, so a
-// segment that leaves the set can still name the files its records touched.
-// Register never makes a segment less held, so it never fires the candidate.
+// keeps it is decided where its liveness can change, not here — beside the
+// class hold rule, which applies it here: a registration of a placement
+// whose identity class was standing alone moves the class's weight onto
+// this placement's segment, while one that stands a second placement beside
+// a first ends both placements' holds (the identities rule, and the class's
+// re-hold once either is lost). The record's file is kept under the segment
+// whatever the record goes on to hold, so a segment that leaves the set can
+// still name the files its records touched. A registration ends a hold only
+// through the class rule — the original's, when its copy lands — and the
+// crossing it makes fires like any release's; no other registration does.
 //
 // decision: the record is counted live unconditionally, even where the drop
 // test would already answer droppable. The drops belong to the re-test
@@ -309,14 +400,33 @@ func (t *Tracker) Held(seg core.SegmentID) bool {
 // settle, and only a record whose settle never comes stays counted until
 // its segment retires.
 func (t *Tracker) Register(rec Rec) {
-	t.count(rec)
 	t.rm.Lock()
-	t.addLocked(rec)
+	crossed := t.addLocked(rec)
 	t.rm.Unlock()
+	// The class's doubling lowers another segment's count under rm; its
+	// crossing fires only here, once the registry lock is down, like every
+	// release's candidate does.
+	t.fireCrossed(crossed)
+}
+
+// fireCrossed fires the candidate for each segment a class transition
+// crossed to not held under the registry lock: the callback can re-enter
+// that registry — a consumer claiming the crossing reaches back through the
+// tracker's own events — so it never runs under rm.
+func (t *Tracker) fireCrossed(crossed []core.SegmentID) {
+	for _, seg := range crossed {
+		if t.candidate != nil {
+			t.candidate(seg)
+		}
+	}
 }
 
 // count raises rec's segment count and files table: the half of a
-// registration that precedes its registry entry.
+// registration that precedes its registry entry. The raise errs on the held
+// side — a Held read before the registry holds the registration must answer
+// by what is held — and runs only for the registrations the class hold rule
+// gives weight to, so a registration of a placement in one class of two or
+// more raises nothing it would have to take back.
 func (t *Tracker) count(rec Rec) {
 	st := t.entry(rec.Seg)
 	st.mu.Lock()
@@ -325,16 +435,69 @@ func (t *Tracker) count(rec Rec) {
 	st.mu.Unlock()
 }
 
-// addLocked inserts one registration of rec into the file's registry. The
+// addLocked inserts one registration of rec into the file's registry and
+// moves the live counts the class hold rule crosses: a registration of a
+// placement alone in its identity class is the class's weight — count(),
+// raised under the same rm so no release can interleave the raise and the
+// entry — while a registration that stands another placement beside a class's
+// sole one doubles the class and spends that placement's weight, the
+// transition that frees the original's segment for retirement. The placement
+// enters the registry before the mate's count goes, so a Held read between
+// errs on the held side. Each lower that crosses a segment returns it in
+// crossed, for the caller to fire the candidate on once rm is down: the
+// candidate can re-enter the registry, so it never runs under the lock. The
 // caller holds rm.
-func (t *Tracker) addLocked(rec Rec) {
+func (t *Tracker) addLocked(rec Rec) (crossed []core.SegmentID) {
 	if t.recs == nil {
 		t.recs = make(map[core.FileID]map[Rec]int)
 	}
 	if t.recs[rec.File] == nil {
 		t.recs[rec.File] = make(map[Rec]int)
 	}
+	if t.identities == nil {
+		t.identities = make(map[recId]map[Rec]struct{})
+	}
+	id := identityOf(rec)
+	if t.identities[id] == nil {
+		t.identities[id] = make(map[Rec]struct{})
+	}
+	class := t.identities[id]
+	_, placed := class[rec]
+	if len(class) == 0 {
+		// The class's first placement: its registrations are the class's
+		// weight, raised before the entry like every count is.
+		t.count(rec)
+		class[rec] = struct{}{}
+		t.recs[rec.File][rec]++
+		return nil
+	}
+	if placed && len(class) == 1 {
+		// A further registration of the class's sole placement: its
+		// weight, still the placement's registration count.
+		t.count(rec)
+		t.recs[rec.File][rec]++
+		return nil
+	}
+	// The class stands in two or more places — already, or as of this
+	// registration — so it carries no weight: no count is raised, and the
+	// placement enters the registry before any mate's count goes, so a
+	// Held read between errs on the held side.
+	class[rec] = struct{}{}
 	t.recs[rec.File][rec]++
+	if !placed && len(class) == 2 {
+		// The registration stands the class's second placement beside a
+		// sole one: the class holds nothing from here, so that sole
+		// placement's weight goes with the doubling.
+		for mate := range class {
+			if mate == rec {
+				continue
+			}
+			if t.lowerDeferred(mate.Seg, int64(t.recs[mate.File][mate])) {
+				crossed = append(crossed, mate.Seg)
+			}
+		}
+	}
+	return crossed
 }
 
 // Unregister stops counting rec's record live in its segment — one
@@ -344,9 +507,11 @@ func (t *Tracker) addLocked(rec Rec) {
 // whose paired release arrives after a re-test cannot take another
 // record's count. A release of what nothing counted changes nothing, and
 // one of a record carried in two places releases that one registration
-// only. When the release leaves the segment holding nothing, the candidate
-// fires once with the segment's id, after every lock of the tracker's is
-// released.
+// only — the other placement's registration is not the release's to take,
+// and the release ends the class's hold only by leaving the class one
+// placement wide, whose re-hold take() owns. When the release leaves the
+// segment holding nothing, the candidate fires once with the segment's id,
+// after every lock of the tracker's is released.
 //
 // The tracker's own releases are the only thing that fires the candidate;
 // nothing here watches the index. A segment that goes not held by its bytes
@@ -358,7 +523,7 @@ func (t *Tracker) addLocked(rec Rec) {
 // retiring anything.
 func (t *Tracker) Unregister(rec Rec) {
 	t.rm.Lock()
-	held := t.take(rec)
+	delta, held := t.take(rec)
 	if held {
 		t.forgetTaken(rec)
 		t.markTaken(rec)
@@ -367,41 +532,224 @@ func (t *Tracker) Unregister(rec Rec) {
 	if !held {
 		return
 	}
-	t.releaseCount(rec)
+	t.releaseCount(rec, delta)
 }
 
 // take removes one registration of rec from its file's registry, reporting
-// whether one was there: the registry is the authority a release answers
-// by, so only a record the registry holds may lower a segment's count. The
-// caller holds rm.
-func (t *Tracker) take(rec Rec) bool {
+// whether one was there and how much live count its release owes rec's own
+// segment: one registration of an identity class standing alone, none for
+// one a class holds in two or more places — the class holds nothing, by the
+// identities rule. A take that empties a placement leaving its class one
+// placement wide re-holds the survivor before the registration goes, under
+// the same rm the take runs in, so no Held reader can see the class holding
+// one record while the survivor's segment reads not held. The registry is
+// the authority a release answers by, so only a record the registry holds
+// may lower a segment's count. The caller holds rm.
+func (t *Tracker) take(rec Rec) (delta int64, taken bool) {
 	rs, ok := t.recs[rec.File]
 	if !ok {
-		return false
+		return 0, false
 	}
 	n, ok := rs[rec]
 	if !ok || n <= 0 {
-		return false
+		return 0, false
+	}
+	id := identityOf(rec)
+	class := t.identities[id]
+	delta = 1
+	if len(class) > 1 {
+		// The class is standing in two or more places, so this
+		// placement's own segment carries none of its weight. This
+		// placement's last registration leaving is the transition that
+		// re-holds the survivor, by that placement's registration count,
+		// and it is raised before the registry entry goes, so the class
+		// never holds a record no segment counts.
+		delta = 0
+		if n == 1 && len(class) == 2 {
+			for mate := range class {
+				if mate != rec {
+					t.raiseDeferred(mate.Seg, int64(t.recs[mate.File][mate]))
+				}
+			}
+		}
 	}
 	if n > 1 {
 		rs[rec] = n - 1
-		return true
+		return delta, true
 	}
 	delete(rs, rec)
 	if len(rs) == 0 {
 		delete(t.recs, rec.File)
 	}
-	return true
+	if class != nil {
+		delete(class, rec)
+		if len(class) == 0 {
+			delete(t.identities, id)
+		}
+	}
+	return delta, true
 }
 
-// releaseCount lowers the segment's live count for one registration the
-// registry has given up — the caller has taken it — with the transition
+// raiseDeferred re-adds the survivor's weight to its segment's live count,
+// under the same rm the take that empties its class's other placement runs
+// in: the class held nothing while two placements stood, and its last
+// placement holds again — by that placement's registration count — the
+// moment the other goes. A raise makes no segment less held, so it fires no
+// candidacy and reads no crossing.
+func (t *Tracker) raiseDeferred(seg core.SegmentID, by int64) {
+	if by <= 0 {
+		return
+	}
+	st := t.stateOf(seg)
+	if st == nil {
+		// A live placement implies the state its registrations counted;
+		// answering a registry that drifted apart costs nothing.
+		st = t.entry(seg)
+	}
+	st.mu.Lock()
+	st.live.Add(by)
+	st.mu.Unlock()
+}
+
+// lowerDeferred takes by units from the live count of seg's state while the
+// registry lock is still up — count()'s raise coming back, a sole
+// placement's weight spent when its class doubles — reporting whether the
+// removal crossed seg to not held, for the caller to fire the candidate once
+// rm is down: the candidate can re-enter the registry, so it never runs under
+// it. Clamped at zero like lowerCount, from the same defensive floor: a
+// registry no transition should have made spends no other record's count.
+func (t *Tracker) lowerDeferred(seg core.SegmentID, by int64) bool {
+	if by <= 0 {
+		return false
+	}
+	st := t.stateOf(seg)
+	if st == nil {
+		return false
+	}
+	st.mu.Lock()
+	if st.live.Load() <= 0 {
+		st.mu.Unlock()
+		return false
+	}
+	wasHeld := t.isHeld(seg, st)
+	if by > st.live.Load() {
+		by = st.live.Load()
+	}
+	st.live.Add(-by)
+	held := t.isHeld(seg, st)
+	st.mu.Unlock()
+	return wasHeld && !held
+}
+
+// spentRec is one registration a release path has taken from the registry —
+// the re-test's release, a caller's Unregister, a retirement's sweep — with
+// the live count its release owes the record's own segment: one unit for a
+// registration of an identity class standing alone, none for one a class
+// holds in two or more places.
+type spentRec struct {
+	rec   Rec
+	delta int64
+}
+
+// markClassesInFlight answers the retirement gate's question for seg's
+// hand-over: every identity class with a registration still live in seg is
+// collected under the registry lock and, unless one of them is already in
+// flight, marked in flight by seg all in the same critical section — a
+// sweep or another hand-over cannot interleave the decision, whatever
+// goroutines run it — and the hand-over is refused while any of the classes
+// is. The caller holds the segment's claim; nothing here hands over, so the
+// mark a refusal leaves belongs to the flight the refused candidate waits
+// on, and a refused candidate is its caller's to requeue: its next pass
+// finds the mark gone only after the flight's sweep re-held the survivor or
+// emptied the class, so the answer asks for nothing but the gate's own
+// state. A segment carrying no registered record has no class to mark and
+// no flight to owe, whatever else it holds.
+//
+// A mark naming the candidate itself is not busy for it: a hand-over that
+// never reached its sweep — a retirer's re-check finding the segment held
+// again, a pass whose carry kept it — leaves its own marks standing while
+// the segment stays a member, and a segment refused by them would never be
+// reclaimed again. Re-handing the same segment re-marks its classes, the
+// same segment for the same class, which changes no state.
+//
+// ponytail: the walk visits every registered record of every file,
+// O(all registered records), under rm per hand-over. Upgrade to an
+// identity-keyed secondary index beside identities, one per-segment
+// membership set, when a hand-over's walk shows in a profile. Its sibling
+// registeredIn marks the same pattern.
+func (t *Tracker) markClassesInFlight(seg core.SegmentID) (refused bool) {
+	t.rm.Lock()
+	defer t.rm.Unlock()
+	var classes []recId
+	seen := make(map[recId]struct{})
+	for _, rs := range t.recs {
+		for rec := range rs {
+			if rec.Seg != seg {
+				continue
+			}
+			id := identityOf(rec)
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			if other, busy := t.inflight[id]; busy && other != seg {
+				return true
+			}
+			classes = append(classes, id)
+		}
+	}
+	if len(classes) > 0 && t.inflight == nil {
+		t.inflight = make(map[recId]core.SegmentID)
+	}
+	for _, id := range classes {
+		t.inflight[id] = seg
+	}
+	return false
+}
+
+// pruneClassesInFlight is the in-flight gate's janitor: a mark is cleared
+// only when both of its hand-over's ends lie behind it — the retiring
+// segment answers gone from the set, and the registry holds no placement of
+// the class in it any more. Both are the sweep's after-effects, so the clear
+// is a defensive floor like lowerCount's clamp, unreachable while every
+// retirement relays the sweep; the membership leg alone must not clear, for
+// a retirement leaves the set before its sweep re-holds the class, a gap in
+// which a mark is the only thing keeping a mate's hand-over out. A mark
+// whose segment stays a member and a mark whose registrations the registry
+// still holds are kept, whichever way they leaked in.
+func (t *Tracker) pruneClassesInFlight() {
+	t.rm.Lock()
+	defer t.rm.Unlock()
+	for id, retiring := range t.inflight {
+		if t.inSet(retiring) {
+			continue
+		}
+		placed := false
+		for rec := range t.identities[id] {
+			if rec.Seg == retiring {
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			delete(t.inflight, id)
+		}
+	}
+}
+
+// releaseCount lowers the segment's live count for delta registrations the
+// registry has given up — the caller has taken them — with the transition
 // logic every release shares: the candidate fires exactly once for the
 // held-to-not-held crossing, whichever concurrent release is the one that
-// crosses it. The count never goes below zero: a release with no count left
-// is a pairing the registries did not make, and changing nothing is safer
-// than taking a count that is not this record's.
-func (t *Tracker) releaseCount(rec Rec) {
+// crosses it. delta is zero for the registrations of an identity class held
+// in two or more places: their own segments carry none of the class's weight.
+// The count never goes below zero: a release with no count left is a pairing
+// the registries did not make, and changing nothing is safer than taking a
+// count that is not this record's.
+func (t *Tracker) releaseCount(rec Rec, delta int64) {
+	if delta <= 0 {
+		return
+	}
 	st := t.stateOf(rec.Seg)
 	if st == nil {
 		return
@@ -541,9 +889,8 @@ func (t *Tracker) RegisterForget(rec Rec, segs []core.SegmentID) {
 		t.retest(rec.File)
 		return
 	}
-	t.count(rec)
 	t.rm.Lock()
-	t.addLocked(rec)
+	crossed := t.addLocked(rec)
 	if t.forgets == nil {
 		t.forgets = make(map[Rec]map[core.SegmentID]struct{})
 	}
@@ -563,10 +910,12 @@ func (t *Tracker) RegisterForget(rec Rec, segs []core.SegmentID) {
 	if len(snap) == 0 {
 		delete(t.forgets, rec)
 		t.rm.Unlock()
+		t.fireCrossed(crossed)
 		t.retest(rec.File)
 		return
 	}
 	t.rm.Unlock()
+	t.fireCrossed(crossed)
 }
 
 // forgetTaken drops a forget record's snapshot once the registry has given

@@ -2,6 +2,7 @@ package reclaim
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -771,4 +772,242 @@ func TestPromptFiredFromTheSealObserverWhileARetirementCompletes(t *testing.T) {
 	if got := f.set.Counters().DoubleRetires; got != 0 {
 		t.Fatalf("DoubleRetires after %d rounds = %d, want 0", rounds, got)
 	}
+}
+
+// TestClassFlightRefusesTheMatesHandOver: the guard the identity-class hold
+// rule owes its safety. One record identity — one registration in each of
+// two sealed segments that hold nothing else — answers both segments not
+// held, and a hand-over of both at once would destroy the one record its
+// class still needed: whichever retirement unlinked first, the other's
+// cycle could sweep its last placement away before the re-hold landed. The
+// guard keeps one in-flight retirement per class: exactly one of the two
+// hand-overs proceeds, the other is refused and requeued; the first segment's
+// sweep — the retirement itself reports nothing, so the sweep is driven here
+// through SegmentRetired as the durable signal would — takes the original's
+// registration, re-holds the survivor as its class's last placement, and
+// clears the flight; and the survivor's next pass, finding it held again,
+// drops it: never handed over.
+func TestClassFlightRefusesTheMatesHandOver(t *testing.T) {
+	f := newRetireFixture(t)
+	exec := &recordedExec{next: f.retirer}
+	w := NewWorker(f.set, f.tr, nil, exec)
+	w.tickEvery = 10 * time.Millisecond
+	t.Cleanup(w.Stop)
+	var claims atomic.Int32
+	w.afterClaim = func(core.SegmentID) { claims.Add(1) }
+	w.Start()
+
+	// Two sealed segments, one identity registered once in each: two
+	// placements, so the class holds neither segment.
+	src, mate := f.sealed(t), f.sealed(t)
+	f.tr.Register(oneRec(src))
+	f.tr.Register(oneRec(mate))
+	if got := f.tr.Held(src); got {
+		t.Fatalf("Held of the source with its class's placement = %v, want false: one identity in two placements holds neither", got)
+	}
+	if got := f.tr.Held(mate); got {
+		t.Fatalf("Held of the mate with its class's placement = %v, want false: one identity in two placements holds neither", got)
+	}
+
+	// Both queued, in order: the first pass hands the source over and must
+	// refuse the mate, whose identity class is in flight.
+	w.Emptied(src, at64(src))
+	w.Emptied(mate, at64(mate))
+	waitCond(t, 2*time.Second, "the worker's first pass over the two candidates", func() bool {
+		return claims.Load() >= 2
+	})
+	if got := exec.count(); got != 1 {
+		t.Fatalf("Enqueue called %d times over one class's two placements, want 1: one hand-over per class while the first is in flight", got)
+	}
+	if queued, located := queuedEntry(w, mate); !queued || !located {
+		t.Fatalf("the refused mate's worker entry = queued %v located %v, want both true: a refusal requeues the entry, locations kept", queued, located)
+	}
+	if queued, _ := queuedEntry(w, src); queued {
+		t.Fatalf("the handed-over source is still queued, want its entry dropped by the hand-over")
+	}
+
+	// The source's retirement, reported by the retirer as production would,
+	// then its sweep — the durable signal's own step, driven here directly.
+	select {
+	case id := <-f.retired:
+		if id != src {
+			t.Fatalf("the retirer retired segment %v, want the source %v", id, src)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("the handed-over source %v never retired", src)
+	}
+	f.tr.SegmentRetired(src, nil)
+	if got := f.tr.Held(mate); !got {
+		t.Fatalf("Held of the mate after the source's sweep = %v, want true: the class's last placement re-held it", got)
+	}
+
+	// The requeued mate's next pass finds it held and drops it, so it is
+	// never handed over — no second Enqueue, no second retirement.
+	waitCond(t, 2*time.Second, "the requeued mate's next pass", func() bool {
+		queued, _ := queuedEntry(w, mate)
+		return !queued
+	})
+	if got := exec.count(); got != 1 {
+		t.Fatalf("Enqueue called %d times after the sweep re-held the survivor, want 1: a held segment is never handed over", got)
+	}
+	// Bounding window, not a truth: several worker passes fit inside it,
+	// and each must leave the survivor retired never.
+	select {
+	case id := <-f.retired:
+		t.Fatalf("retired segment %v after the sweep re-held the survivor, want no second retirement", id)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestPruneClassesInFlightNeedsBothVanishedAndSwept: the janitor behind the
+// in-flight class gate clears a mark only when both of the hand-over's ends
+// lie behind it — the retiring segment answers gone from the set, and the
+// registry holds no placement of the marked class in it. Neither leg alone
+// does: a still-member segment has not retired at all, and a gone segment
+// whose registrations still stand is in the gap between its set exit and
+// its sweep, the very gap the mark covers, and only the registry's leaving —
+// what the sweep's takes do, re-holding the survivor with them — says the
+// flight is over.
+func TestPruneClassesInFlightNeedsBothVanishedAndSwept(t *testing.T) {
+	f := newFixture(t)
+	tr := New(f.ix, nil)
+	gone, mate := f.seg, f.takeIn(t)
+	present := true
+	tr.SetMember(func(core.SegmentID) bool { return present })
+
+	tr.Register(oneRec(gone))
+	tr.Register(oneRec(mate))
+	class := identityOf(oneRec(gone))
+	if refused := tr.markClassesInFlight(gone); refused {
+		t.Fatalf("the gate refused the hand-over of a class nothing marked, want it marked and the hand-over allowed")
+	}
+	seg, ok := tr.inflight[class]
+	if !ok || seg != gone {
+		t.Fatalf("the in-flight mark after the gate's take = segment %v present %v, want it naming the handed-over segment %v", seg, ok, gone)
+	}
+	// The mate's hand-over consults the mark and answers refused.
+	if refused := tr.markClassesInFlight(mate); !refused {
+		t.Fatalf("the gate allowed the mate's hand-over beside its class's in-flight retirement, want it refused")
+	}
+
+	// Still a member: the janitor keeps the mark.
+	tr.pruneClassesInFlight()
+	if seg, ok := tr.inflight[class]; !ok || seg != gone {
+		t.Fatalf("the in-flight mark after a prune with its segment still a member = segment %v present %v, want it kept naming %v", seg, ok, gone)
+	}
+	// Gone from the set is not enough: the registry still holds the
+	// segment's placement, the sweep's gap the mark exists for.
+	present = false
+	tr.pruneClassesInFlight()
+	if seg, ok := tr.inflight[class]; !ok || seg != gone {
+		t.Fatalf("the in-flight mark after a prune over a gone segment whose placement is still registered = segment %v present %v, want it kept naming %v: the sweep has not run", seg, ok, gone)
+	}
+	// The registration leaving — the sweep's own step, which re-holds the
+	// survivor with the same take — is the mark's other half.
+	tr.Unregister(oneRec(gone))
+	if got := tr.Held(mate); !got {
+		t.Fatalf("Held of the mate after the release of the gone placement = %v, want true: the survivor re-held", got)
+	}
+	tr.pruneClassesInFlight()
+	if seg, ok := tr.inflight[class]; ok {
+		t.Fatalf("the in-flight mark after a prune over a gone segment with no placement left = segment %v present %v, want it cleared", seg, ok)
+	}
+	// The flight over, the mate's hand-over is the gate's to answer by its
+	// hold alone.
+	if refused := tr.markClassesInFlight(mate); refused {
+		t.Fatalf("the gate refused the mate's hand-over after its class's flight ended, want it allowed again")
+	}
+}
+
+// TestClassFlightItsOwnMarkDoesNotRefuseItsSegment: a hand-over that never
+// ends in a sweep — here a real retirer of a read-only journal, which
+// refuses every retirement whole before it claims anything, the same shape
+// a retirer re-check finding the segment held again or a pass whose carry
+// kept it leaves — keeps the marks it made and the segment a member with
+// them: refused by its own mark on every later pass, it would never be
+// reclaimed again, which is the wedge re-born. The gate's own mark is not
+// busy for the marked segment: a registration making it held again and a
+// release making it not-held once more, its second hand-over proceeds while
+// a mate under the same mark keeps answering refused, and the re-mark names
+// the same segment for the same class — no state changed.
+func TestClassFlightItsOwnMarkDoesNotRefuseItsSegment(t *testing.T) {
+	f := newRetireFixture(t)
+	// The read-only retirer: a real Retirer whose every retirement is
+	// refused whole — no ledger call, no claim, no storage — so the hand-overs
+	// the test counts end in no sweep and the segments stay members.
+	ro := segment.NewRetirer(segment.RetirerConfig{
+		Set:   f.set,
+		Cache: segment.NewDescriptors(f.seam.FS(), format.SegmentName, core.NewDescriptorBudget(64)),
+		Maker: segment.NewMaker(f.seam.FS(), f.set, 1<<62, f.last, nil),
+		FS:    f.seam.FS(),
+		ReadOnly: func() error {
+			return errors.New("reclaim: the test journal is read-only")
+		},
+	})
+	ro.Start()
+	t.Cleanup(ro.Stop)
+	exec := &recordedExec{next: ro}
+	w := NewWorker(f.set, f.tr, nil, exec)
+	w.tickEvery = 10 * time.Millisecond
+	t.Cleanup(w.Stop)
+	tr := f.tr
+
+	// One identity in two placements: the source holds one, the mate the
+	// other, so neither segment is held.
+	src, mate := f.sealed(t), f.sealed(t)
+	tr.Register(oneRec(src))
+	tr.Register(oneRec(mate))
+	w.Start()
+
+	w.Emptied(src, at64(src))
+	waitCond(t, 2*time.Second, "the source's first hand-over", func() bool {
+		return exec.count() >= 1
+	})
+	if got := exec.count(); got != 1 {
+		t.Fatalf("Enqueue called %d times for the source's first hand-over, want 1", got)
+	}
+	// The abandoned mark: the source's hand-over made it, and the refused
+	// retirement leaves it standing while the source is still a member.
+	if seg, ok := inFlightOf(tr, identityOf(oneRec(src))); !ok || seg != src {
+		t.Fatalf("the in-flight mark after the refused hand-over = segment %v present %v, want it standing and naming the source %v", seg, ok, src)
+	}
+	// A mate under the same mark keeps answering refused.
+	if refused := tr.markClassesInFlight(mate); !refused {
+		t.Fatalf("the gate allowed a mate's hand-over under the standing mark, want it refused")
+	}
+
+	// Held again: a registration of the source's own, a fresh identity's
+	// sole placement, keeps the scans off it. Not-held again once the
+	// registration leaves, and the second hand-over must proceed past the
+	// segment's own mark.
+	fresh := Rec{
+		Kind: format.KindWrite, File: fid(9), Seg: src,
+		Ext:  core.Extent{Off: 0, Len: 4096},
+		Pair: index.Numbers{Version: ver(2), Seq: 7}, Seq: 7,
+		Loc: at64(src),
+	}
+	tr.Register(fresh)
+	if got := tr.Held(src); !got {
+		t.Fatalf("Held of the source with a fresh sole placement = %v, want true: the scans must skip it", got)
+	}
+	tr.Unregister(fresh)
+	waitCond(t, 2*time.Second, "the source's second hand-over past its own mark", func() bool {
+		return exec.count() >= 2
+	})
+	if got := exec.count(); got != 2 {
+		t.Fatalf("Enqueue called %d times over the source's two hand-overs, want 2: a mark naming the candidate itself is not busy for it", got)
+	}
+	// The mark's final state: re-marked by the same segment, no change.
+	if seg, ok := inFlightOf(tr, identityOf(oneRec(src))); !ok || seg != src {
+		t.Fatalf("the re-marked in-flight mark = segment %v present %v, want it still naming the source %v", seg, ok, src)
+	}
+}
+
+// inFlightOf reads the class's in-flight mark under the registry lock, the
+// state the gate tests assert it settles on.
+func inFlightOf(tr *Tracker, id recId) (core.SegmentID, bool) {
+	tr.rm.Lock()
+	defer tr.rm.Unlock()
+	seg, ok := tr.inflight[id]
+	return seg, ok
 }

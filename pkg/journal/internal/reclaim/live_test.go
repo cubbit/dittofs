@@ -231,6 +231,263 @@ func TestHeld_OneLiveRecord(t *testing.T) {
 	}
 }
 
+// TestTrackerIdentityClassHoldRules walks the identity-class hold table over
+// two placements of one header-only record: the original in one segment (S1)
+// and a carried copy of the same record — every identifying field unchanged,
+// only the segment and the location moving — in another (S2). The class holds
+// the live count on one placement's segment only while that placement is the
+// class's last: a second placement registers and both segments' holds end, a
+// placement lost re-holds the survivor, and the original's own retirement —
+// the fix's own path — re-holds the copy exactly as the copy's loss would
+// re-hold the original.
+func TestTrackerIdentityClassHoldRules(t *testing.T) {
+	f := newFixture(t)
+	var fired []core.SegmentID
+	tr := New(f.ix, func(seg core.SegmentID) { fired = append(fired, seg) })
+	id := fid(7)
+	// A lower-pair write of the removal's file in a third segment, planted
+	// through the rebuild: it overlaps what the delete covers, so the
+	// identity stays undroppable throughout the walk and no re-test the
+	// transitions carry can spend the registrations the table moves.
+	over := f.takeIn(t)
+	p := newPlant(f)
+	p.write(t, id, over, core.Extent{Off: 0, Len: 4096}, 0, 3, 1)
+	p.finish(t)
+	if got := tr.Droppable(Rec{Kind: format.KindDelete, File: id, Pair: index.Numbers{Version: ver(5), Seq: 6}}); got {
+		t.Fatalf("Droppable of the removal over the lower-pair write = %v, want false: the fixture's outranker keeps the class undroppable", got)
+	}
+
+	s1, s2 := f.seg, f.takeIn(t)
+	base := Rec{
+		Kind: format.KindDelete, File: id, Ext: core.Extent{},
+		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6, Tag: tag,
+	}
+	orig := base
+	orig.Seg, orig.Loc = s1, at64(s1)
+	cp := base
+	cp.Seg, cp.Loc = s2, at64(s2)
+
+	// 1. The original alone: its placement is the class's last, so it holds
+	// its segment, and the candidate stays quiet — a registration makes no
+	// segment less held.
+	tr.Register(orig)
+	if got := tr.Held(s1); !got {
+		t.Fatalf("Held of the original's segment, the sole placement registered = %v, want true: the class's one placement holds", got)
+	}
+	if got := tr.stateOf(s1).live.Load(); got != 1 {
+		t.Fatalf("the original's segment's live count with its sole placement = %d, want 1", got)
+	}
+	if got := len(fired); got != 0 {
+		t.Fatalf("the candidate fired %d times for a first placement's registration, want 0", got)
+	}
+
+	// 2. The copy registers: the identity now stands in two places, so
+	// neither placement holds — the wedge's rule, the moment that unwinds
+	// it — and the original's segment crossing to not held is a candidacy.
+	tr.Register(cp)
+	if got := tr.Held(s1); got {
+		t.Fatalf("Held of the original's segment once the copy registered = %v, want false: a record in two places holds neither", got)
+	}
+	if got := tr.Held(s2); got {
+		t.Fatalf("Held of the copy's segment, second placement of one class = %v, want false: a record in two places holds neither", got)
+	}
+	if got, want := tr.recs[id][orig], 1; got != want {
+		t.Fatalf("the original placement's registration count after the copy registered = %d, want %d", got, want)
+	}
+	if got, want := tr.recs[id][cp], 1; got != want {
+		t.Fatalf("the copy placement's registration count after it registered = %d, want %d", got, want)
+	}
+	if len(fired) != 1 || fired[0] != s1 {
+		t.Fatalf("the candidate fired %d times with %v, want one firing with %d: the class's doubling is the original's held-to-not-held crossing", len(fired), fired, s1)
+	}
+
+	// 3. The copy is lost unsettled — its registration released with the
+	// record still live elsewhere: the class's last placement is the
+	// original again, so the original re-holds. A re-hold raises a count, so
+	// it fires no candidacy.
+	tr.Unregister(cp)
+	if got := tr.Held(s1); !got {
+		t.Fatalf("Held of the original's segment after the copy's release = %v, want true: the survivor re-holds", got)
+	}
+	if got := tr.Held(s2); got {
+		t.Fatalf("Held of the copy's segment after its release = %v, want false", got)
+	}
+	if _, ok := tr.recs[id][cp]; ok {
+		t.Fatalf("the copy's registration survived its release, want it spent")
+	}
+	if got := tr.stateOf(s1).live.Load(); got != 1 {
+		t.Fatalf("the original's segment's live count after the survivor re-held = %d, want 1", got)
+	}
+	if got := len(fired); got != 1 {
+		t.Fatalf("the candidate fired %d times over the survivor's re-hold, want 1: a re-hold is not a held-to-not-held crossing", got)
+	}
+
+	// 4. The copy registers again, doubling the class — neither holds, the
+	// candidacy for the original's crossing fires again...
+	tr.Register(cp)
+	if got := tr.Held(s1); got {
+		t.Fatalf("Held of the original's segment after the re-doubling = %v, want false", got)
+	}
+	if got := tr.Held(s2); got {
+		t.Fatalf("Held of the copy's segment after the re-doubling = %v, want false", got)
+	}
+	if len(fired) != 2 {
+		t.Fatalf("the candidate fired %d times after the re-doubling, want 2: two crossings of the original's segment", len(fired))
+	}
+	// ...and the original's own segment then retires with the class still
+	// undroppable — the fix's own path: the retirement's sweep takes the
+	// original's registration, the class drops to the copy alone, and the
+	// copy re-holds its segment.
+	tr.SegmentRetired(s1, []core.FileID{id})
+	if got := tr.Held(s2); !got {
+		t.Fatalf("Held of the copy's segment after the original's segment retired = %v, want true: the class's last placement re-held it", got)
+	}
+	if got, want := tr.recs[id][cp], 1; got != want {
+		t.Fatalf("the copy's registration count after the original's retirement = %d, want %d: the retirement took only the original's", got, want)
+	}
+	if _, ok := tr.recs[id][orig]; ok {
+		t.Fatalf("the original's registration survived its segment's retirement, want the sweep to take it")
+	}
+	if got := len(fired); got != 2 {
+		t.Fatalf("the candidate fired %d times over the original's retirement, want 2: the swept registration held nothing to release and no crossing ran", got)
+	}
+}
+
+// TestTrackerIdentityClassOpenBothPlacementsHoldNothing: the crash shape. A
+// persisted journal can hold one header-only record in two segments — the
+// copy reached the disk before the crash — and the open's rebuild registers
+// both: two placements of one identity, so neither segment is held by the
+// record, whichever of the two the rebuild reads first.
+func TestTrackerIdentityClassOpenBothPlacementsHoldNothing(t *testing.T) {
+	f := newFixture(t)
+	tr := New(f.ix, nil)
+	id := fid(17)
+	s3, s4 := f.seg, f.takeIn(t)
+	at := Rec{
+		Kind: format.KindTruncate, File: id, Seg: s3,
+		Ext:  core.Extent{Off: 4096},
+		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6, Tag: tag,
+	}
+	wait := at
+	wait.Seg = s4 // the rebuild hands plain records no location
+	tr.RegisterAtOpen([]Rec{at, wait}, nil, nil)
+	if got := tr.Held(s3); got {
+		t.Fatalf("Held of the one placement the open registered first = %v, want false: one identity in two places holds neither", got)
+	}
+	if got := tr.Held(s4); got {
+		t.Fatalf("Held of the placement the open registered second = %v, want false: one identity in two places holds neither", got)
+	}
+}
+
+// TestTrackerIdentityClassOnePlacementTwice: two registrations of the same
+// Rec — one placement registered twice — are one placement by identity, so
+// the class's weight is the placement's registration count and the segment
+// stays held: the class rule counts placements, not registrations.
+func TestTrackerIdentityClassOnePlacementTwice(t *testing.T) {
+	f := newFixture(t)
+	tr := New(f.ix, nil)
+	id := fid(27)
+	rec := Rec{
+		Kind: format.KindDelete, File: id, Seg: f.seg,
+		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6, Tag: tag,
+		Loc: at64(f.seg),
+	}
+	tr.Register(rec)
+	tr.Register(rec)
+	if got := tr.Held(f.seg); !got {
+		t.Fatalf("Held with one placement registered twice = %v, want true: the class's sole placement holds, by its registration count", got)
+	}
+	if got := tr.stateOf(f.seg).live.Load(); got != 2 {
+		t.Fatalf("the segment's live count for two registrations of one placement = %d, want 2", got)
+	}
+}
+
+// TestTrackerIdentityClassReTestSpendsDroppableBoth: a re-test over a
+// droppable identity spends each registration the registry holds, the
+// original's and the copy's alike — the copy's re-hold while the original
+// spent is raised and then spent with it — so neither segment holds and the
+// registry entries are gone.
+func TestTrackerIdentityClassReTestSpendsDroppableBoth(t *testing.T) {
+	f := newFixture(t)
+	var fired []core.SegmentID
+	tr := New(f.ix, func(seg core.SegmentID) { fired = append(fired, seg) })
+	id := fid(37)
+	// A droppable identity: a release over an extent the file's one planted
+	// note — at a disjoint spot, in a third segment — never reaches.
+	p := newPlant(f)
+	p.write(t, id, f.takeIn(t), core.Extent{Off: 0, Len: 4096}, 0, 3, 1)
+	p.finish(t)
+	s1, s2 := f.seg, f.takeIn(t)
+	base := Rec{
+		Kind: format.KindRelease, File: id,
+		Ext:  core.Extent{Off: 1 << 30, Len: 4096},
+		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6, Tag: tag,
+	}
+	orig := base
+	orig.Seg, orig.Loc = s1, at64(s1)
+	cp := base
+	cp.Seg, cp.Loc = s2, at64(s2)
+	tr.Register(orig)
+	tr.Register(cp)
+	if got := tr.Droppable(orig); !got {
+		t.Fatalf("Droppable of the release identity before the re-test = %v, want true: nothing it covers sits below its pair anywhere", got)
+	}
+
+	tr.Retest(id)
+	if _, ok := tr.recs[id][orig]; ok {
+		t.Fatalf("the original placement's registration survived the re-test, want it spent: the identity was droppable")
+	}
+	if _, ok := tr.recs[id][cp]; ok {
+		t.Fatalf("the copy placement's registration survived the re-test, want it spent: the identity was droppable")
+	}
+	if got := tr.Held(s1); got {
+		t.Fatalf("Held of the original's segment after the re-test spent both placements = %v, want false", got)
+	}
+	if got := tr.Held(s2); got {
+		t.Fatalf("Held of the copy's segment after the re-test spent both placements = %v, want false", got)
+	}
+	if got := len(fired); got != 2 {
+		t.Fatalf("the candidate fired %d times over the doubling and the re-test, want 2: one crossing per segment the class came to hold", got)
+	}
+	for _, seg := range fired {
+		if seg != s1 && seg != s2 {
+			t.Fatalf("the candidate fired for segment %d, want only the two placements' segments %d and %d", seg, s1, s2)
+		}
+	}
+}
+
+// TestTrackerIdentityClassContentCopyIsNewIdentity: the class rule reaches
+// only records whose carried copies keep their numbers. A content record's
+// copy takes a fresh sequence number, so the copy is a different identity:
+// registering it does not end the original's hold, and the copy holds its
+// own segment like any record of one placement.
+func TestTrackerIdentityClassContentCopyIsNewIdentity(t *testing.T) {
+	f := newFixture(t)
+	tr := New(f.ix, nil)
+	id := fid(47)
+	s1, s2 := f.seg, f.takeIn(t)
+	orig := Rec{
+		Kind: format.KindWrite, File: id, Seg: s1,
+		Ext:  core.Extent{Off: 0, Len: 4096},
+		Pair: index.Numbers{Version: ver(3), Seq: 6}, Seq: 6, Tag: tag,
+		Loc: at64(s1),
+	}
+	cp := orig
+	cp.Pair.Seq, cp.Seq = 100, 100 // a repack copy's fresh number
+	cp.Seg, cp.Loc = s2, at64(s2)
+	tr.Register(orig)
+	if got := tr.Held(s1); !got {
+		t.Fatalf("Held of the content record's original before its copy = %v, want true", got)
+	}
+	tr.Register(cp)
+	if got := tr.Held(s1); !got {
+		t.Fatalf("Held of the content record's original once its numbered copy registered = %v, want true: a fresh number is a different identity, the class rule does not reach it", got)
+	}
+	if got := tr.Held(s2); !got {
+		t.Fatalf("Held of the content copy's own segment = %v, want true: its identity's sole placement holds", got)
+	}
+}
+
 // TestRegisterUnregisterAllocations checks that Register and Unregister on
 // a segment whose state already exists, of a file the segment already
 // knows, allocate nothing — the steady update, which is the common shape.
