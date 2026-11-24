@@ -21,9 +21,10 @@ rclone mkdir s3:cubbit
 dfsctl store block add --name s3-cubbit --type s3 --config "$(jq -c '.bucket = "cubbit"' /etc/dittofs-s3.json)"
 dfsctl share create --name /cubbit --metadata md --block-store s3-cubbit --default-permission none
 
-# Compaction for blocks less than half live, the 5 min grace (its floor), 64 KiB minimum chunks
+# The compaction ratio and the grace period return as settings, the chunk size as the namespace's target
+# The run wants a 0.5 ratio, the 5 min grace (its floor) and 64 KiB minimum chunks, which the launcher no longer sets
 dfs-server stop
-dfs-server start DITTOFS_GC_COMPACTION_LIVE_RATIO=0.5 DITTOFS_GC_GRACE_PERIOD=5m DITTOFS_BLOCKSTORE_JOURNAL_CHUNK_SIZE=65536
+dfs-server start
 
 mkdir /tmp/f /tmp/want /tmp/back
 for k in 1 2 3 4; do head -c 16M /dev/urandom >/tmp/f/f$k; head -c 6000000 /tmp/f/f$k >/tmp/want/f$k; done

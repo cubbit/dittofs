@@ -99,6 +99,8 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 | `reconcile-bench` | the reconcile pass at 10⁴ shares, cold and under share churn, against RFC 23 §8's 5 s | manual | any machine, with `DITTOFS_BENCH_DIR` |
 | `version-limit-probe-bench` | the engine's version-limit probe alone | manual | any machine |
 | `settings-gen-bench` | the commit rate of eight concurrent secret writers with the settings generation's raise and without it, RFC 13 plan §4.3's trigger | manual | any machine, with `DITTOFS_BENCH_DIR` |
+| `settings-scan-bench` | the reconcile's walk and diff at 10⁴ shares' settings, sparse and dense, against RFC 13 plan §4.3's 100 ms | manual | any machine, with `DITTOFS_BENCH_DIR` |
+| `settings-scan-smoke` | the reconcile scan benchmark once per change at `-benchtime=1x`, non-blocking | pr | any machine |
 | `adapter-conformance` | the adapters' conformance specifications, behind their own tag | pr | any machine |
 | `integration` | `-tags=integration` tests against real services | pr | Docker with Postgres and KMIP up; `integration/portmap` needs a Linux host with rpcbind |
 | `operator` | the Kubernetes operator: `make test`, `make lint`, manifests, kustomize | pr | any machine with `make` and `kubectl` |
@@ -867,7 +869,7 @@ Performance is tracked, not gated: hosted runners are too noisy for a threshold.
 - **`fio-verify`:** fio jobs over an NFS 4.1 mount (`fio-verify/smb` over SMB) with data
   verification, so a verify error fails the test. Nightly.
 - **`perf-night`:** the full nightly performance run on the dedicated host.
-- **Go benchmarks:** `go test -bench=. -benchmem -run=^$ ./pkg/block/engine/`, and the `manual`
+- **Go benchmarks:** `go test -bench=. -benchmem -run=^$ ./pkg/engine/`, and the `manual`
   suites `engine-bench`, `reconcile-bench` and `version-limit-probe-bench`.
 
 Writing a benchmark: measure only the operation. Do setup before `b.ResetTimer()`, call

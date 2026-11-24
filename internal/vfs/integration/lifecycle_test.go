@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 

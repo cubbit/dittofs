@@ -3495,8 +3495,8 @@ nfstest — run through `dt` as the end-to-end layer.
 | heap per open, range, grant, waiter at 10⁵ | bytes | RFC 24 M6: ≤ 1 KiB, ≤ 256 B |
 
 > decision: the targets are proposals, set before a baseline; the first
-> after-merge run against today's `pkg/metadata/lock.Manager` through a shim
-> fixes them, compared with `benchstat` (RFC 17 §8's tiers).
+> after-merge run of `pkg/openstate` fixes them, compared with `benchstat`
+> (RFC 17 §8's tiers).
 
 **Suites.** §12's rows and §13.1's units, table suite, fault injection, model and fuzz seeds run
 in `unit`; the end-to-end layer is `pynfs`, `smbtorture`, `pjdfstest`, `wpts`, `cthon04` and
@@ -3626,9 +3626,8 @@ registry:
 
 *Informative.* Each line names a requirement above and what the code does
 today. [RFC 17 §9](rfc-17-vfs.md#9.%20Migration) closes them: `pkg/openstate` is built
-new from this RFC, its `*openstate.Table` replaces `pkg/metadata/lock` behind
-slice 3's seam — the §11.3 views, first served by a shim over the current lock
-manager — and `pkg/metadata/lock` is then deleted, not ported.
+new from this RFC, and its `*openstate.Table` serves slice 3's seam, the §11.3
+views; the v1 `pkg/metadata/lock` is deleted, not ported.
 
 | Requirement | Today |
 | --- | --- |

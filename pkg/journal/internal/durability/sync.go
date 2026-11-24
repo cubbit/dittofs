@@ -1,0 +1,2084 @@
+package durability
+
+import (
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/journal/internal/segment"
+)
+
+// Domains is the file append domain's table, which the datapath owns and
+// passes in.
+type Domains interface {
+	// Lock takes id's file append domain and returns its release.
+	Lock(id core.FileID) (unlock func())
+}
+
+// Config is what a Durability is built over.
+type Config struct {
+	Clock   core.Clock   // required
+	Domains Domains      // required
+	Tracer  core.Tracer  // optional
+	Log     *slog.Logger // optional; nil means discard
+	// Resolved, when set, is told that a failed segment's window is resolved
+	// (R19): no record of it is pending any more. It runs on the stream's
+	// worker with no lock held, so it must not wait on a Sync.
+	Resolved func(stream uint32, seg core.SegmentID)
+	// Landed, when set, is told of every record this layer appends under a
+	// share's tag outside a write — a re-append, of a forget record as of any
+	// other, and a loss record — with the record's placed length, so the
+	// share's figure takes its bytes. Nil means none.
+	Landed func(tag core.ShareTag, n int64)
+
+	// Index is the placement index the layer lifts retained content out of
+	// when a sync completes. It is required.
+	Index *index.Index
+
+	// Dir is the journal's directory, half the key of its per-process loss
+	// state: an identity keys the other half.
+	Dir string
+
+	// Identity is the journal the per-process loss state belongs to. A path
+	// this process emptied and Init'd a new journal at must not inherit the
+	// dead journal's failed list, taken pieces or generation, and its new
+	// identity re-reaches the sequence numbers the dead one issued.
+	Identity core.JournalID
+
+	// Counters issue the loss record's sequence number. It is required.
+	Counters *index.Counters
+
+	// MarkLoss leaves the index's loss marker for a synced loss, and returns
+	// the change to the file's held bytes that the marker made, with the
+	// ids of the segments whose held counters the marker's cut lowered. It
+	// is required.
+	MarkLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error)
+
+	// Account, when set, is handed every change the layer makes to the index
+	// as a held delta, so the byte counters kept above it see it: the delta
+	// MarkLoss returned (once per marker left, only when MarkLoss succeeded),
+	// and the ones a lift or a failed window made. Nil discards the deltas.
+	// Lose calls it on the caller's goroutine holding none of the layer's
+	// locks and no file append domain; a lift, a failed window and the
+	// synchronous loss marker of a corrupt drop call it with the changed file's
+	// append domain held. It must therefore not wait on a
+	// Sync or take a file's append domain.
+	Account func(index.HeldDelta)
+
+	// LossRegistered, when set, is told of each loss record the layer
+	// appends: the loss the record names, the sequence number the record
+	// drew, and the place it landed. It runs between the record's append and
+	// its sync, so the record is registered before the segment carrying it
+	// can seal. A deferred loss appends nothing, so it is not called. Nil
+	// registers nothing.
+	LossRegistered func(l Loss, seq core.Seq, at segment.Location)
+
+	// EndOwed, when set, answers whether a segment ended and its end event
+	// has not been taken yet: the end is made synchronously with the write
+	// or sync that failed, while the event hands over on its own goroutine
+	// and reaches this layer's window only at the take, so the owed end is
+	// the only word for the segment between the two. TakeEnd, when set,
+	// clears the owed end in the step that takes the event — the same step
+	// this layer makes the segment's window in. Nil reads and clears
+	// nothing: WindowOpen then knows the segment's failure only once the
+	// event has been queued and taken.
+	EndOwed func(core.SegmentID) bool
+	TakeEnd func(core.SegmentID)
+
+	// Emptied, when set, is told of the segments whose per-segment held or
+	// retained counters a move of this layer lowered — a lift of a completed
+	// sync, a synced loss's marker, a failed window's cut of its records —
+	// with at the location of the causality record whose durability a
+	// retirement of those segments waits on: the superseding record for a
+	// lift, the loss record itself for the loss paths. It runs where the move
+	// ran, on the stream's worker or the caller's goroutine, holding no lock
+	// of this layer — a lift holds the file's append domain, the loss paths
+	// hold none — so it must not wait on a Sync or take a file's append
+	// domain, the restriction Account names. A move that lowered nothing,
+	// or whose causality record the layer cannot place (a deferred loss, one
+	// whose append was refused) is not reported. Nil reports nothing.
+	Emptied func(segs []core.SegmentID, at segment.Location)
+
+	// Undo, when set, undoes in memory one header-only record a read-only
+	// journal fails: a truncate, deallocate, delete, release or any other kind
+	// that is neither content nor a loss record. It reverses what the record's
+	// publish changed in the index and returns that change as a held delta,
+	// which the layer hands to Account. It runs on the record's stream worker
+	// with the record's file append domain held, so it must not wait on a
+	// Sync or take a file's append domain. Nil undoes nothing.
+	//
+	// A file's records are failed newest first, but a window that failed
+	// before the journal turned read-only has already dropped its content and
+	// kept its header-only records, so a header-only record can be undone
+	// after an older write of its file was dropped. Undo must therefore bring
+	// back only what the record's own publish removed and is still owed, never
+	// a piece of a record the index no longer holds. A record that names no
+	// file (a hold, unhold, stamp, offloaded, unmark or forget record) is
+	// undone under the zero file's domain, a placeholder that excludes nothing
+	// its publish holds, so its undo can race its own publish; see the
+	// decision at failFile.
+	Undo func(w segment.Written) index.HeldDelta
+
+	// Check runs the checks open makes of the journal's mount and directory.
+	// The read-only probe calls it every core.ProbeInterval, from its own
+	// goroutine with no lock held. Nil means no check runs before the
+	// probe's spare, which is only for a journal whose open makes none; a
+	// real journal must always pass one (see the decision at probeOnce).
+	Check func() error
+
+	// MakeSpare makes one spare segment and keeps it for the reopen. The probe
+	// calls it only while no spare is held and the check passes, from its own
+	// goroutine with no lock held. An EROFS it returns reaches Enter only if
+	// the maker's storage is wrapped by Observe. Nil means the probe can make
+	// no spare.
+	//
+	// The maker it calls must not consult the read-only check the pool's
+	// refill consults: that check refuses while the journal is read-only, and
+	// the probe's spare is the one write a read-only journal wants, so a
+	// maker gated on it would never make one. A failed MakeSpare must leave
+	// nothing on disk: the probe tries again at the next tick after any
+	// failure but an EROFS, and a failure that left a file behind would pile
+	// up spares where the probe holds at most one.
+	MakeSpare func() error
+
+	// Sealed reports whether a segment id names a segment a seal closed. It is
+	// asked with no lock of this layer held, when a Sync builds its marks, so
+	// it must not wait on one. Nil means no segment is sealed, so every
+	// stream's candidate is marked.
+	Sealed func(core.SegmentID) bool
+
+	// Latest returns the whole place of the file's newest record the index
+	// names, and that record's sequence number, for a Sync that names a file
+	// holding nothing unsynced: its mark then comes from that record, which a
+	// sync (the timer's or an earlier call's) has already covered. The mark
+	// still needs the record's segment not to be sealed, which the caller's
+	// Sealed answers. It runs on the caller's goroutine with no lock of this
+	// layer held, like the marks' own sealed query. Nil means a Sync naming
+	// such a file returns no mark, the behaviour before the fallback existed.
+	Latest func(id core.FileID) (loc segment.Location, seq core.Seq, ok bool)
+}
+
+// SyncDurationBounds are the upper bounds of the sync duration histogram's
+// buckets; the last bucket counts everything above the last bound.
+var SyncDurationBounds = []time.Duration{
+	time.Millisecond, 5 * time.Millisecond, 10 * time.Millisecond,
+	50 * time.Millisecond, 100 * time.Millisecond, 500 * time.Millisecond, time.Second,
+}
+
+// Histogram is a copy of a duration histogram: Counts has len(Bounds)+1
+// buckets, Counts[i] counting the observations at or below Bounds[i].
+type Histogram struct {
+	Bounds []time.Duration
+	Counts []uint64
+	Sum    time.Duration
+}
+
+// Part is the layer's report, read from counters kept at each sync.
+type Part struct {
+	Syncs, SyncFailures uint64
+	// ReappendedBytes counts the bytes of the records a failed window's
+	// re-append, or a held copy's, placed again: the length each record has at
+	// its new place. An append the stream refused counts nothing.
+	ReappendedBytes uint64
+	SyncDuration    Histogram
+	// LastSyncError is the most recent sync failure across the streams, nil
+	// when none has failed.
+	LastSyncError *SyncFailure
+
+	// ReadOnly is the read-only state, read from the layer's atomic snapshot.
+	ReadOnly core.ReadOnlyState
+
+	// Losses are the events in the ring, oldest first.
+	Losses []core.LossEvent
+
+	// LossGeneration is the directory's loss generation, read after the ring
+	// is copied so it includes the raise of every event in Losses.
+	LossGeneration uint64
+
+	// CorruptDataLoss counts the corrupt-record losses whose data was not
+	// offloaded, so nothing remains to repair from.
+	CorruptDataLoss uint64
+	// CorruptRepairable counts the corrupt-record losses whose data was
+	// offloaded.
+	CorruptRepairable uint64
+	// StaleExtents counts the losses of the stale reason.
+	StaleExtents uint64
+	// SupersededExtents counts the losses of the superseded reason, which
+	// never raise the generation.
+	SupersededExtents uint64
+
+	// DamagedSegments counts the segments that held a record which did not
+	// verify when it was read. A segment stays counted, with its row in
+	// Segments, until the journal closes.
+	DamagedSegments uint64
+	// Segments are the damaged segments' rows, in segment order.
+	Segments []DamagedRow
+}
+
+// Durability is the ledger and the workers of every stream.
+type Durability struct {
+	clock   core.Clock
+	domains Domains
+	tracer  core.Tracer
+	log     *slog.Logger
+
+	index *index.Index
+	// undo is Config.Undo: the in-memory undo of a header-only record a
+	// read-only journal fails.
+	undo func(segment.Written) index.HeldDelta
+
+	// windowSeq numbers the windows the workers take, so a window is named
+	// across the streams.
+	windowSeq atomic.Uint64
+
+	// lastMarks is the figure of each append stream's last completed sync,
+	// one core.SyncMark per stream ordered by stream, replaced whole and never
+	// edited in place: see SeedMarks, RaiseMarks and Marks.
+	lastMarks atomic.Pointer[[]core.SyncMark]
+
+	dir      *dirState
+	counters *index.Counters
+	markLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error)
+	account  func(index.HeldDelta)
+
+	// lossRegistered and emptied are Config.LossRegistered and Config.Emptied.
+	lossRegistered func(Loss, core.Seq, segment.Location)
+	// endOwed and takeEnd are Config.EndOwed and Config.TakeEnd: the owed
+	// ends the segment set carries between an end and this layer's take.
+	endOwed func(core.SegmentID) bool
+	takeEnd func(core.SegmentID)
+	// A move with no segment to name, or no causality record to gate them on,
+	// reports nothing, so a nil hook is a no-op by the same guard.
+	emptied func([]core.SegmentID, segment.Location)
+
+	// lossAdmit is SetLossAdmission's wiring, drawn through before each loss
+	// record is appended. Nil — never wired — admits every loss record, the
+	// behaviour of a layer whose journal budgets no record headroom.
+	lossAdmit func(atOpen bool) (settle func(placed core.SegmentID), err error)
+
+	// streams are the append streams a loss record is written through, bound
+	// by Start. It is nil before Start, which Lose reports as an error.
+	streams atomic.Pointer[segment.Streams]
+
+	// workers are the started streams, stored once by Start, so Enter can
+	// wake every worker without taking mu.
+	workers atomic.Pointer[[]*stream]
+
+	// refuse reports why the journal takes no append, or nil. It is never
+	// nil: New installs Admit, which refuses once the journal is read-only.
+	refuse func() error
+
+	// ro is the read-only state, nil while the journal takes writes. Each
+	// value is immutable and replaced whole, so reads take no lock.
+	ro atomic.Pointer[roState]
+
+	// afterAppend, afterPass, beforeWait, beforeSync, beforeFail and afterFail
+	// are test hooks, nil in production. beforeFail runs on the worker once per
+	// window, before its records are failed, and afterFail once they are
+	// failed and reported, before the window is resolved; afterPass runs at
+	// the end of each worker pass, once the pass has done everything it will
+	// do for the wake that started it; beforeWait runs in a caller's await,
+	// on its work, each time it is about to park, after its checks found
+	// something still pending. None is called with a lock held.
+	afterAppend func()
+	afterPass   func()
+	beforeWait  func([]work)
+	beforeFail  func(*window)
+	afterFail   func()
+	beforeSync  func()
+
+	// afterCorruptDrop is a test hook, nil in production: Corrupt runs it
+	// under the file's domain on what the index dropped, before it reads the
+	// dropped pieces.
+	afterCorruptDrop func(*index.FailedWindow)
+
+	// afterCorruptTake is a test hook, nil in production: Corrupt runs it
+	// under the file's domain, with no lock of this layer held, once it has
+	// taken an unsynced record out of the ledger or a pending window, which a
+	// Sync or a durability wait then sees.
+	afterCorruptTake func()
+
+	// onCorruptHeld is a test hook, nil in production: Corrupt runs it under
+	// the file's domain on the record's held pieces it read before deciding,
+	// and may change their offloaded bits.
+	onCorruptHeld func([]index.Piece)
+
+	// beforeCorruptLoss is a test hook, nil in production: the worker runs it
+	// before it records the losses a Corrupt queued, so a test can read the
+	// layer between the drop and the record.
+	beforeCorruptLoss func()
+
+	// beforeTakeWindow is a test hook, nil in production: the worker runs it
+	// with no lock held before it takes each queued end event's window.
+	beforeTakeWindow func()
+
+	// lmu guards the reason counters, and the generation raise and the event
+	// publish of a Lose made with them.
+	//
+	// decision: lmu holds the raise, the counters, this instance's ring and
+	// the publish of a Lose as one section, so a snapshot pairs a generation
+	// with exactly the events that raised it. The piece set and the failed
+	// list live in the directory's state; the registry's own mutex is taken
+	// inside lmu and calls nothing back, so lmu is a leaf on the journal's
+	// lock order and is never held across an Append, a Sync or a MarkLoss,
+	// which take locks of other domains. A window raise (RaiseWindow) takes
+	// the registry alone and raises with no event, so a snapshot may show
+	// it ahead of the events. A corrupt drop (Corrupt) is a second exception:
+	// it raises outside lmu, counts in a later lmu section and leaves its event
+	// to the worker, so a snapshot may show the raise ahead of the count and of
+	// the event; only after Corrupt returns are the raise and the count paired.
+	lmu               sync.Mutex
+	corruptDataLoss   uint64
+	corruptRepairable uint64
+	stale             uint64
+	superseded        uint64
+
+	// ring holds this instance's published loss events, head the index of
+	// the oldest and count how many the ring holds, nextEvent the count
+	// that numbers them, all under lmu: its reader pairs the ring with the
+	// generation raises below. A Durability built later on the directory
+	// starts an empty ring of its own — the pieces the dedup holds are the
+	// directory's, the published events the publishing instance's.
+	ring      [core.LossRingSize]core.LossEvent
+	head      int
+	count     int
+	nextEvent uint64
+
+	// dmu guards damaged, unproduced and the publish of damagedView.
+	//
+	// decision: dmu is a leaf mutex over the damaged rows and the count of held
+	// records each segment cannot produce, never held across an index call, an
+	// Append or any other lock. Under it a change also rebuilds, sorts and
+	// allocates the published report (publishDamagedLocked), which is more
+	// than a map access, and a hold's count changes under a stream's mu, which
+	// takes dmu inside it. Stats no longer takes dmu: it reads damagedView. The
+	// rebuild under dmu is acceptable because only damage events and holds of
+	// a damaged segment reach it, which are rare, and its cost is the ponytail
+	// at publishDamagedLocked. Overturned if a path that runs per write ever
+	// takes dmu.
+	dmu     sync.Mutex
+	damaged map[core.SegmentID]*damagedRow
+	// unproduced counts, per segment, the held records the index may still
+	// name at a corrupt place in it (pinLocked).
+	unproduced map[core.SegmentID]int
+
+	// damagedView is the report of the rows above, replaced under dmu at every
+	// change and read without it.
+	damagedView atomic.Pointer[damagedSnap]
+
+	// copyMu guards copies, the table of other copies of re-appended records.
+	//
+	// decision: copyMu is a leaf mutex outside the six lock domains, held for
+	// a map access and never across I/O. registerOriginal also asks the set
+	// under it, which takes the set's capacity lock inside copyMu; nothing
+	// takes copyMu below that lock. That is an unranked lock held above a
+	// ranked one, which the lock recorder cannot see.
+	copyMu sync.Mutex
+	copies map[core.Seq]copyEntry
+
+	// readCopyAt, onHoldCopy and onUnholdCopy are test hooks, nil in
+	// production. readCopyAt replaces the stream's read of a copy; onHoldCopy
+	// and onUnholdCopy run, under the file's domain, before each call of
+	// holdCopy and unholdCopy.
+	readCopyAt   func(seg core.SegmentID, p []byte, off int64) (int, error)
+	onHoldCopy   func(ownedCopy)
+	onUnholdCopy func(ownedCopy)
+
+	// reappend appends a held record to a healthy segment from its copy and
+	// repoints the index to the new place. The worker calls it once the copy's
+	// segment is claimed and the index repointed to the copy, with no file
+	// append domain and no lock of this layer held, so a read of the file
+	// never waits on the re-append's fsync. It appends to the stream, which
+	// the worker syncs like any other record, then takes the record's file
+	// append domain only for its final repoint, which it makes only if the
+	// index still names the copy (Index.Names), since a write may have
+	// overwritten the record meanwhile.
+	// It runs on the stream's worker, so it must not wait on anything that
+	// worker does, such as a Sync or a WaitDurable of this layer: it may block
+	// on the stream's append, which may roll and seal, and on the record's file
+	// append domain. A nil error returns the place the record was appended at,
+	// and the record leaves the hold once that place has completed. New
+	// installs reappendHeld; a test replaces it before the layer starts.
+	reappend func(st *stream, c ownedCopy) (segment.Location, error)
+
+	// afterHolds is a test hook, nil in production: the worker runs it with
+	// no lock held after each pass's step over the held segments.
+	afterHolds func()
+
+	// resolved is Config.Resolved: the announcement of a resolved window.
+	resolved func(stream uint32, seg core.SegmentID)
+	// landed is Config.Landed.
+	landed func(tag core.ShareTag, n int64)
+
+	// readOnly is the journal's read-only entry, handed the failure that
+	// stopped a stream. New installs Enter; it is replaceable before Start.
+	//
+	// decision: it is reached only through an EndEvent carrying Stopped, but
+	// the stream also stops without an event, for example on a failed
+	// successor header write after a failed sync (or one carrying EROFS on
+	// any roll), whose stop travels through later appends' ErrStreamStopped;
+	// on End of an already ended segment with EROFS; and on a straggler
+	// write's EROFS after the segment's event was handed over. So a stream
+	// can stop with readOnly uncalled, as when segment 1's sync fails and
+	// then the spare's header write fails on the roll; unless Observe saw an
+	// EROFS on the way, Admit then keeps answering nil while the stream's
+	// appends fail with ErrStreamStopped. Removed by a stop
+	// notification from the stream stack, raised on every stop whatever path
+	// it took and routed to readOnly with the stopping error, after which a
+	// stopped stream always reaches it.
+	readOnly func(cause error)
+
+	// mu guards made, started and stopped. It is not held across a stream
+	// call, except that Start registers the layer's end consumer under it:
+	// nothing takes mu below a stream's own locks, so that cannot deadlock.
+	//
+	// decision: mu is a leaf mutex outside the six lock domains, never held
+	// across I/O. Start's registration takes each stream's segment append
+	// lock inside it, and nothing takes mu while holding that lock. That is
+	// an unranked lock held above a ranked one, which the lock recorder
+	// cannot see.
+	mu   sync.Mutex
+	made map[uint32]*stream
+	// madeView is the list of made, replaced by Sink under mu and read
+	// without it.
+	madeView atomic.Pointer[[]*stream]
+	started  bool
+	stopped  bool
+
+	// afterSync, when set by a test, runs in the worker after a stream sync
+	// returns and before the worker takes the stream's lock.
+	afterSync func()
+
+	// cmu guards change, a layer-wide channel closed and replaced on every
+	// stream change, so a waiter on several streams wakes on any of them. It
+	// is a leaf lock, taken under a stream's mu.
+	//
+	// decision: cmu is a leaf mutex outside the six lock domains, held for a
+	// channel close and replace or a read of change, and takes nothing while
+	// held.
+	//
+	// ponytail: one channel serves every stream, so a report on any stream
+	// wakes every waiter of every stream and each re-scans its ledger targets.
+	// The cost grows with waiters times reports, and is paid whether or not
+	// the waiter's stream changed. Upgrade to a channel per stream, which a
+	// waiter on several streams then selects over, when a profile of many
+	// concurrent Sync callers shows the wake-ups.
+	cmu    sync.Mutex
+	change chan struct{}
+
+	// check and makeSpare are Config.Check and Config.MakeSpare.
+	check     func() error
+	makeSpare func() error
+
+	// sealed is Config.Sealed, asked when a Sync builds its marks. Nil means
+	// no segment is sealed.
+	sealed func(core.SegmentID) bool
+
+	// latest is Config.Latest, asked when a Sync names a file with nothing
+	// unsynced. Nil means no such fallback.
+	latest func(id core.FileID) (segment.Location, core.Seq, bool)
+
+	// probe is the state of the read-only probe goroutine: probeIdle until
+	// Enter starts it, probeRunning while it runs and probeStopped once Stop
+	// has run. A single compare-and-swap decides between the first Enter and
+	// Stop, so no probe starts after Stop and Stop joins the one that did.
+	probe     atomic.Int32
+	probeDone chan struct{}
+
+	done chan struct{}
+	stop sync.Once
+	wg   sync.WaitGroup
+
+	// reach is this instance's word to the registry on who read its ring,
+	// read by the claims a Stop of the instance left behind: dead retires
+	// them to the served window, the events a genuine reader's copy last
+	// carried. It is allocated on its own, for the registry's claims hold
+	// it alone — an embedded value would keep the whole Durability, extent
+	// index included, alive behind it past the instance's life.
+	reach *reach
+}
+
+// reach is a Durability's word to the per-process registry on who read the
+// instance's loss ring. The registry holds it for the life of the process —
+// a stopped journal's claims read it long past the instance itself — so it
+// carries no more than the two answers those claims ask.
+type reach struct {
+	// dead is set as Stop begins, before the workers join: past that point
+	// the instance serves no caller its events, so the served window is the
+	// only question a claim's retirement has left.
+	dead atomic.Bool
+	// served is the window of the events genuine reads carried, stored as
+	// one pair a claim reads whole: how far the reader got, and where the
+	// window began. A read contiguous with the window so far keeps its
+	// earlier start, so an event an earlier read served stays served past
+	// the ring wrap that overwrites it; a read that begins past a run of
+	// events the ring overwrote unread restarts the window at its own
+	// start, so the events no copy ever carried stay answered by nobody.
+	// Nil while no reader took a non-empty copy away.
+	served atomic.Pointer[servedWindow]
+}
+
+// servedWindow is one served window of the reach: the events
+// [from, through] that genuine reads carried since the last gap overwrote
+// some of them unread.
+type servedWindow struct {
+	from, through uint64
+}
+
+// New returns a Durability. A nil Clock, Domains, Index, Counters or MarkLoss is a
+// caller bug and panics; the error is that of resolving Dir.
+func New(cfg Config) (*Durability, error) {
+	if cfg.Clock == nil {
+		panic("durability: the layer needs its clock")
+	}
+	if cfg.Domains == nil {
+		panic("durability: the layer needs the file append domains")
+	}
+	if cfg.Index == nil {
+		panic("durability: the layer needs the index it lifts through")
+	}
+	if cfg.Counters == nil || cfg.MarkLoss == nil {
+		panic("durability: the layer needs its counters and loss marker")
+	}
+	dir, err := stateFor(cfg.Dir, cfg.Identity)
+	if err != nil {
+		return nil, err
+	}
+	log := cfg.Log
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	d := &Durability{
+		reach:    &reach{},
+		clock:    cfg.Clock,
+		domains:  cfg.Domains,
+		tracer:   cfg.Tracer,
+		log:      log,
+		resolved: cfg.Resolved,
+		landed:   cfg.Landed,
+		index:    cfg.Index,
+		undo:     cfg.Undo,
+		made:     map[uint32]*stream{},
+		done:     make(chan struct{}),
+		change:   make(chan struct{}),
+
+		check:     cfg.Check,
+		makeSpare: cfg.MakeSpare,
+		sealed:    cfg.Sealed,
+		latest:    cfg.Latest,
+		probeDone: make(chan struct{}),
+
+		dir:            dir,
+		counters:       cfg.Counters,
+		markLoss:       cfg.MarkLoss,
+		account:        cfg.Account,
+		lossRegistered: cfg.LossRegistered,
+		emptied:        cfg.Emptied,
+		endOwed:        cfg.EndOwed,
+		takeEnd:        cfg.TakeEnd,
+	}
+	d.refuse = d.Admit
+	d.readOnly = d.Enter
+	d.reappend = d.reappendHeld
+	return d, nil
+}
+
+// changes returns the channel the next stream change closes.
+func (d *Durability) changes() <-chan struct{} {
+	d.cmu.Lock()
+	defer d.cmu.Unlock()
+	return d.change
+}
+
+// notifyAll wakes every waiter of every stream. It is called with a stream's
+// mu held, which is safe since cmu is a leaf.
+func (d *Durability) notifyAll() {
+	d.cmu.Lock()
+	close(d.change)
+	d.change = make(chan struct{})
+	d.cmu.Unlock()
+}
+
+// entry is one unsynced record of a stream's ledger.
+type entry struct {
+	w segment.Written
+	// seen is when the worker first observed the record, on the clock.
+	seen    time.Duration
+	seenSet bool
+	// done is set once the worker has completed the entry under the file's
+	// append domain.
+	done bool
+	// tracked is the entry's place in the stream's Track order, which a
+	// window keeps when it takes the entry, so a read-only journal undoes a
+	// file's records newest first across windows and segments. The worker
+	// also finds the entry again by it after Corrupt took an earlier entry
+	// out of the ledger.
+	tracked uint64
+	// original is set on the new place of a re-appended content record: the
+	// place the record was read from and the checksum the ledger kept for it.
+	// The completion registers it in the copy table, so the table names a
+	// copy only of a record whose new place has synced. An entry that leaves
+	// the ledger any other way, failed by its window, undone or taken by
+	// Corrupt, takes it along unregistered.
+	original *copyEntry
+}
+
+// stream is one stream's state.
+//
+// decision: mu is a leaf mutex outside the six lock domains, never held
+// across I/O, a sync, the clock or a file domain, because both sinks run
+// under the segment's append domain and must not wait on anything. It does
+// take other locks inside it, none of which takes anything while held: the
+// change channel's cmu, dmu, which a hold's count of records its corrupt
+// segment cannot produce takes (pinLocked), the directory registry's mutex,
+// which a raise of the generation takes, so a raise and the change that makes
+// its loss visible are one step, and the set's capacity-ranked lock, which a
+// hold's claim, release and lookup take (segHold says why). That last one is
+// an unranked lock held above a ranked one, which the lock recorder cannot
+// see.
+type stream struct {
+	d  *Durability
+	no uint32
+	s  *segment.Stream
+
+	mu sync.Mutex
+	// trackedN counts the records the stream tracked; each entry carries its
+	// own count.
+	trackedN uint64
+	// ledger holds the entries in Track order. Track only appends, the
+	// worker compacts, and Corrupt takes out an entry no sync covered, so an
+	// entry's index can move down between two steps of the worker, which finds
+	// it again by its count.
+	//
+	// ponytail: one entry per unsynced record, bounded by what a stream
+	// accepts within one sync bound. Durable scans it linearly. Upgrade
+	// to a per-file index when a profile shows the scan.
+	ledger []entry
+	// synced is the largest offset a sync reported, per segment.
+	synced map[core.SegmentID]int64
+	// failed holds the segments whose sync failed.
+	failed map[core.SegmentID]error
+	// ending holds the segments a sync found already ended whose end event
+	// has not been taken yet: no waiter leads a sync for them and the timer
+	// skips them.
+	ending map[core.SegmentID]struct{}
+
+	// counted holds the segments whose failed sync the worker counted and
+	// whose end event has not been taken yet. failed alone cannot say so: the
+	// completion pass drops a failure nothing names (a segment's only window
+	// comes from its end event, so no resolved window can precede it), and
+	// a seal's EndSeal for that segment arriving after would count the one
+	// fsync again. takeWindow removes the mark with the event, the one every
+	// ended segment gets.
+	counted map[core.SegmentID]struct{}
+	// ends are the end events the stream's consumer queued for the worker.
+	ends []segment.EndEvent
+	// windows are the pending windows, in end order.
+	windows []*window
+	// lost holds the locations of the records a failed window dropped from the
+	// index, or a read-only journal failed, so that none reads durable once
+	// the window no longer names it, and a Sync that targeted one still
+	// answers the failure.
+	//
+	// ponytail: one entry per failed record for the life of the stream, never
+	// pruned, so it follows the number of records a failure took. Upgrade to
+	// dropping an entry once the record's segment is retired from the journal,
+	// when a stream with a long failure history shows up in a heap profile.
+	lost map[segment.Location]lostRecord
+	// moved maps the place of a record that was re-appended to the place it
+	// was re-appended at, so a waiter that holds the old place finds the
+	// record, and Corrupt reads the old place as unsynced. A record that
+	// moved twice has a chain, which followLocked walks to its end. complete
+	// drops an entry once the record at its end is done, together with the
+	// entries that lead to it.
+	//
+	// ponytail: one entry per re-appended record not yet completed, so it is
+	// bounded by what a failed window held and the new segment's sync clears,
+	// and an entry whose last place was lost stays for the life of the stream,
+	// as lost does. Upgrade to a table per window when a profile shows the scan
+	// complete makes for each record it finishes.
+	moved map[segment.Location]segment.Location
+	// marks are the failures no Sync has reported yet, per file, oldest
+	// first; told holds, per pending window, the files already told of it.
+	//
+	// ponytail: a file that lost a record and is never named by a Sync again
+	// keeps its mark for the life of the stream, so marks follow the number of
+	// such files. Upgrade to dropping a file's marks when the file is removed,
+	// when a stream with many abandoned files shows up in a heap profile.
+	marks map[core.FileID][]mark
+	told  map[uint64]map[core.FileID]struct{}
+	// undone holds, per file, the read-only refusal of a header-only record
+	// of the file that the read-only journal undid. Such a record can never
+	// become durable, so every Sync naming the file returns the refusal,
+	// bare, for as long as the layer lives, rather than once through a mark.
+	//
+	// ponytail: one entry per file with an undone header-only record for the
+	// life of the Durability, never freed; the journal leaves read-only only
+	// by being closed and reopened, which drops the layer. Upgrade to
+	// dropping a file's entry once its removal is retried through a reopened
+	// journal or the file is forgotten, when a read-only journal that stays
+	// open over many removed files shows up in a heap profile.
+	undone map[core.FileID]error
+	// lastSeg is the newest segment the stream is known to have reached: the
+	// segment of a tracked record or of a sync, whichever is later.
+	lastSeg  core.SegmentID
+	haveLast bool
+	closed   bool
+	// want is set by the waiter that leads a sync and cleared by the worker
+	// as it starts one; syncing is set while the worker is inside the
+	// stream's Sync.
+	want    bool
+	syncing bool
+
+	// corrupt are the corrupt records' losses Corrupt handed to the worker.
+	corrupt []corruptJob
+	// corruptSeq numbers the corrupt jobs a stream queues, front to back;
+	// the first job takes 1.
+	corruptSeq uint64
+	// corruptQueued holds, per file a corrupt job was ever queued for on this
+	// stream, the seq of the newest job queued for it, and corruptDone the
+	// seq of the newest job finished for it. Jobs finish in queue order —
+	// the worker drains the queue front to back, and so does Stop's drain —
+	// so done reaches a call's waited-through seq exactly when every job the
+	// call owes has appended and synced its loss records. The entries stay
+	// once set: a waiter parked on a seq judges it by done, which a deleted
+	// entry would answer as zero. The cost is one entry per file ever
+	// corrupted on the stream, held for the instance's life.
+	corruptQueued map[core.FileID]uint64
+	corruptDone   map[core.FileID]uint64
+	// owed holds, per failed segment whose window is not taken yet, the files
+	// Corrupt took a record of out of the ledger: the window takeWindow makes
+	// for the segment marks them, so they are told as if it had failed them.
+	owed map[core.SegmentID][]core.FileID
+	// holds are the segments copies are in use from, each with its hold.
+	holds map[core.SegmentID]*segHold
+
+	// kick wakes the worker; capacity 1, sent without blocking.
+	kick chan struct{}
+
+	// reported is set by the Synced sink and cleared by the worker's
+	// completion pass, so a pass with no report since the last has nothing
+	// to complete. stamped counts the ledger's leading entries the worker
+	// has stamped; entries are stamped in Track order.
+	reported bool
+	stamped  int
+
+	// The counters have one writer, the worker, and are read by Stats
+	// without mu, so a poll never waits on a lock an append takes.
+	// reappended counts the bytes of the records placed again, as placed.
+	syncs, failures, reappended atomic.Uint64
+	// lastFail is the last sync failure, stored by the worker and read by
+	// Stats without mu.
+	lastFail atomic.Pointer[failStamp]
+	buckets  []atomic.Uint64
+	sum      atomic.Int64
+
+	// scratch and live are the worker's own, reused by each pass: the Track
+	// counts of the entries it completes and the segments that still hold an
+	// entry.
+	scratch []uint64
+	live    map[core.SegmentID]struct{}
+}
+
+func newStream(d *Durability, no uint32) *stream {
+	return &stream{
+		d:             d,
+		no:            no,
+		live:          map[core.SegmentID]struct{}{},
+		synced:        map[core.SegmentID]int64{},
+		failed:        map[core.SegmentID]error{},
+		ending:        map[core.SegmentID]struct{}{},
+		counted:       map[core.SegmentID]struct{}{},
+		lost:          map[segment.Location]lostRecord{},
+		moved:         map[segment.Location]segment.Location{},
+		corruptQueued: map[core.FileID]uint64{},
+		corruptDone:   map[core.FileID]uint64{},
+		kick:          make(chan struct{}, 1),
+		buckets:       make([]atomic.Uint64, len(SyncDurationBounds)+1),
+	}
+}
+
+// wake asks the worker to run a pass, without blocking.
+func (st *stream) wake() {
+	select {
+	case st.kick <- struct{}{}:
+	default:
+	}
+}
+
+// covered reports whether a sync has reached the end of the record. The caller
+// holds mu.
+func (st *stream) covered(loc segment.Location) bool {
+	return st.synced[loc.Segment] >= loc.Off+loc.Len
+}
+
+// Sink returns stream no's sink; pass d.Sink to segment.NewStreams. Calling it
+// twice for one number panics.
+func (d *Durability) Sink(no uint32) segment.Sink {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, dup := d.made[no]; dup {
+		panic("durability: a second sink was asked for one stream")
+	}
+	st := newStream(d, no)
+	d.made[no] = st
+	list := make([]*stream, 0, len(d.made))
+	for _, s := range d.made {
+		list = append(list, s)
+	}
+	d.madeView.Store(&list)
+	return segment.Sink{
+		Track: func(w segment.Written) {
+			st.mu.Lock()
+			st.trackedN++
+			st.ledger = append(st.ledger, entry{w: w, tracked: st.trackedN})
+			st.lastSeg, st.haveLast = w.Loc.Segment, true
+			// A record a sync already reached, reported before the sink saw
+			// it, still needs a completion pass.
+			if st.covered(w.Loc) {
+				st.reported = true
+			}
+			st.mu.Unlock()
+			st.wake()
+		},
+		Synced: func(seg core.SegmentID, through int64) {
+			// A sync reported once the journal is read-only moves nothing,
+			// even one in flight at the transition that succeeded: every
+			// record it covered that was not completed is failed, and no
+			// Sync of one may return nil. The state is read under mu, the
+			// mutex failReadOnly moves the ledger under, so the read and the
+			// apply are one step to the failure pass. A report that reads
+			// nil applies before any pass of the entry moves a record (a
+			// pass runs only once Admit refuses, and takes mu first), so
+			// every record it covers is still in the ledger, covered, and
+			// is completed rather than failed, which is right for a sync
+			// that landed before the entry. One that reads the refusal
+			// moves nothing. Admit is one atomic load, so mu stays a leaf.
+			st.mu.Lock()
+			if d.Admit() != nil {
+				st.mu.Unlock()
+				return
+			}
+			if through > st.synced[seg] {
+				st.synced[seg] = through
+			}
+			st.reported = true
+			// A waiter is released here without waiting for the worker: a
+			// seal's sync covers records no worker sync of its own follows.
+			d.notifyAll()
+			st.mu.Unlock()
+			st.wake()
+		},
+	}
+}
+
+// Start binds the streams, whose count must equal the number of sinks made,
+// registers the layer for their end events and launches one worker per stream.
+// It is idempotent and a no-op after Stop. It must run before any stream's
+// first append: the stream panics on a consumer registered after one.
+func (d *Durability) Start(streams *segment.Streams) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.started || d.stopped {
+		return
+	}
+	if streams.Len() != len(d.made) {
+		panic("durability: the streams do not match the sinks made")
+	}
+	started := make([]*stream, streams.Len())
+	for i := range started {
+		st, ok := d.made[uint32(i)]
+		if !ok {
+			panic("durability: no sink was made for a stream")
+		}
+		st.s = streams.Stream(i)
+		started[i] = st
+	}
+	d.started = true
+	d.streams.Store(streams)
+	d.workers.Store(&started)
+	streams.OnEnd(d.onEnd)
+	for _, st := range started {
+		d.wg.Add(1)
+		go d.run(st)
+	}
+	// An Enter that ran before the workers were stored woke none of them; the
+	// state is read after the store, so one of the two wakes them.
+	if d.Admit() != nil {
+		for _, st := range started {
+			st.wake()
+		}
+	}
+}
+
+// SpareLanded wakes every stream's worker: a record a pass could not
+// re-append because the roll was refused for a spare the pool can make has
+// its next try when the spare is there, rather than at the next tick of the
+// sync bound the arm set — a tick that is a backstop, not a deadline, for the
+// re-append is owed as soon as a spare can be had. The wake is a scheduling
+// hint from the pool's spare landing, so a stream nothing parks does its
+// checks and idles again. It never blocks, not even on a worker a stopped
+// layer is joining: a wake's send is dropped exactly as Track's is.
+func (d *Durability) SpareLanded() {
+	ws := d.workers.Load()
+	if ws == nil {
+		return
+	}
+	for _, st := range *ws {
+		st.wake()
+	}
+}
+
+// Durable reports whether the record at the location is durable: its segment
+// has been synced through the record's end. A location in a pending window
+// of a failed segment reports false, however far a sync reached.
+//
+// decision: a location with no ledger entry and in no window reports true. A
+// caller holding a location Append returned has a record that was tracked and,
+// if it is gone from the ledger, already completed, so true is right for every
+// location the contract lets a caller hold. It fails open for a location
+// Append never returned, which reads durable although nothing was written
+// there. Overturn this if a caller can ask about an arbitrary location, which
+// then needs a record of the completed ones to tell the two apart.
+//
+// A record a failed window dropped has no entry and no window once the window
+// is resolved, so the stream keeps its location apart and reports false for it.
+//
+// ponytail: it scans every stream's ledger, O(streams x ledger). Upgrade to a
+// per-segment index when a profile shows the scan.
+func (d *Durability) Durable(at segment.Location) bool {
+	made := d.snapshot()
+	for _, st := range made {
+		st.mu.Lock()
+		// A re-appended record is asked about where it landed.
+		at := st.followLocked(at)
+		for i := range st.ledger {
+			if st.ledger[i].w.Loc == at {
+				ok := st.covered(at)
+				st.mu.Unlock()
+				return ok
+			}
+		}
+		// A record of a pending window is never durable, whatever the
+		// segment's synced offset says.
+		_, lost := st.lost[at]
+		if lost || st.inWindowLocked(at) {
+			st.mu.Unlock()
+			return false
+		}
+		st.mu.Unlock()
+	}
+	return true
+}
+
+// Pending returns the locations of the records appended but not yet known
+// durable at the moment of the call: one per entry every stream's ledger
+// still holds that no sync has covered, and one per record a still-pending
+// window holds — the failed segment's uncovered records, which left the
+// ledger when the window took them and answer nothing durable until their
+// re-appended place syncs or the journal fails them. A covered record is
+// durable on disk whether or not the worker has lifted what it superseded,
+// so it is not named. A record the window's failure dropped is excluded by
+// construction once the drop happens: settle removes it from the window in
+// the step that records it lost, so a lost location is never named here and
+// no retirement may wait on a record that can no longer sync.
+//
+// It is the pending-tail barrier a retirement hand-over asks: the worker
+// freezes one snapshot per candidate, at the entry's first not-held pass,
+// and waits on the frozen locations beside the ones the mover's offer
+// recorded, so the hand-over is held back while any stream's unsynced
+// record — in a ledger or held by a pending window — could name content of
+// a segment the retirement would unlink. Freezing, rather than re-sampling
+// each pass, is what keeps steady writers on an unrelated stream from
+// starving an unrelated retirement.
+//
+// ponytail: it scans every stream's ledger and pending windows, like Durable,
+// once per candidate at its first not-held pass. Upgrade alongside Durable
+// to a per-segment index when a profile shows the scan.
+func (d *Durability) Pending() []segment.Location {
+	var out []segment.Location
+	for _, st := range d.snapshot() {
+		st.mu.Lock()
+		for i := range st.ledger {
+			if loc := st.ledger[i].w.Loc; !st.covered(loc) {
+				out = append(out, loc)
+			}
+		}
+		// A window's entries are uncovered by the take that collected them,
+		// and each leaves the window in the same step that settles or
+		// re-appends it, so the walk never holds a done or lost record.
+		for _, w := range st.windows {
+			for i := range w.entries {
+				out = append(out, w.entries[i].w.Loc)
+			}
+		}
+		st.mu.Unlock()
+	}
+	return out
+}
+
+// Lost reports whether the record at the location can never become
+// durable: a failed window settled it as lost, or a read-only journal undid
+// it. A record that failed and was re-appended elsewhere reports false —
+// its place chain leads somewhere that can still sync — and the re-appended
+// place is answered like any other record's. It is what lets a retirement
+// hand-over drop a frozen pending location whose record failed, rather than
+// wait on a durability that will never come.
+func (d *Durability) Lost(at segment.Location) bool {
+	for _, st := range d.snapshot() {
+		st.mu.Lock()
+		_, lost := st.lost[st.followLocked(at)]
+		st.mu.Unlock()
+		if lost {
+			return true
+		}
+	}
+	return false
+}
+
+// SyncBound returns the longest a record waits for a sync.
+func (d *Durability) SyncBound() time.Duration { return core.SyncBound }
+
+// pushRingLocked publishes ev into this instance's ring with its next
+// event number, overwriting the oldest when the ring is full, the caller
+// holding lmu. The counter is this instance's own: a reopen numbers its
+// events from its own zero.
+func (d *Durability) pushRingLocked(ev core.LossEvent) core.LossEvent {
+	d.nextEvent++
+	ev.SeqNum = d.nextEvent
+	if d.count < core.LossRingSize {
+		d.ring[(d.head+d.count)%core.LossRingSize] = ev
+		d.count++
+		return ev
+	}
+	d.ring[d.head] = ev
+	d.head = (d.head + 1) % core.LossRingSize
+	return ev
+}
+
+// lossesLocked returns a copy of this instance's ring, oldest first, the
+// caller holding lmu. It serves figures alone and marks nothing served: the
+// readers it answers — the Stats Part, the journal's figures — are never the
+// reader the losses belong to, and the reach below is what decides which
+// losses were answered.
+func (d *Durability) lossesLocked() []core.LossEvent {
+	out := make([]core.LossEvent, d.count)
+	for i := range out {
+		out[i] = d.ring[(d.head+i)%core.LossRingSize]
+	}
+	return out
+}
+
+// Losses is the genuine read of this instance's ring: a copy of its events,
+// oldest first, whose events the caller takes away. The window the copy
+// carried — through its newest, from its oldest — joins the reach, so the
+// claims a Lose took in the registry's pieces survive this instance exactly
+// as far as a reader was answered for the loss each claim's event published
+// — bar the gap exception below: a read that arrives over events the ring
+// overwrote unread restarts the window, and the marker at that branch names
+// what that costs. A read of an empty ring serves nothing, and the window
+// does not move.
+//
+// decision: only this read advances the served window. Stats reports the
+// ring without moving it, for its callers are figures — the metrics export,
+// an engine's startup reads, the poll Stats serves — and a figure read moved
+// ahead of the engine's drain or a client's poll would mark the events it
+// copied served, keeping an in-process reopen from publishing the losses
+// found at open to the one reader they were for, suppressing a report nobody
+// delivered. Overturned by a figure the loss reporting itself needs — that
+// reader takes its genuine read of its own.
+func (d *Durability) Losses() []core.LossEvent {
+	d.lmu.Lock()
+	defer d.lmu.Unlock()
+	if d.count > 0 {
+		// The window the copy carried joins the one its predecessors did,
+		// and the pair is stored as one value a claim reads whole: a
+		// contiguous read — its from no later than the last read's through
+		// plus one — keeps the earlier start, so an event an earlier read
+		// served stays served past the ring wrap that overwrites it; a gap
+		// of events the ring overwrote since that read restarts the window,
+		// for one interval cannot hold both the events the earlier read
+		// carried and the ones this copy began with.
+		from := d.nextEvent - uint64(d.count) + 1
+		if w := d.reach.served.Load(); w == nil || from > w.through+1 {
+			// decision: a read after a gap of overwritten events restarts
+			// the window, so the events an earlier read served are no
+			// longer known served, and a reopen may report them again.
+			// This errs toward a duplicate report, never toward a hidden
+			// loss; one interval cannot hold both windows. Retired when a
+			// read retires its claims at read time, or the window keeps
+			// one interval per gap.
+			d.reach.served.Store(&servedWindow{from: from, through: d.nextEvent})
+		} else {
+			d.reach.served.Store(&servedWindow{from: w.from, through: d.nextEvent})
+		}
+	}
+	return d.lossesLocked()
+}
+
+// Stats returns the counters kept at each sync, without walking the ledger. A
+// sync is counted just after the waiters it covered are released, so a Sync
+// that has just returned may not be in the counters yet.
+func (d *Durability) Stats() Part {
+	made := d.snapshot()
+
+	// The read-only state is one atomic load: no lock a write holds is taken.
+	p := Part{ReadOnly: d.ReadOnlyState(), SyncDuration: Histogram{
+		Bounds: append([]time.Duration(nil), SyncDurationBounds...),
+		Counts: make([]uint64, len(SyncDurationBounds)+1),
+	}}
+	var last *failStamp
+	for _, st := range made {
+		if f := st.lastFail.Load(); f != nil && (last == nil || f.mono > last.mono) {
+			last = f
+		}
+		p.Syncs += st.syncs.Load()
+		p.SyncFailures += st.failures.Load()
+		p.ReappendedBytes += st.reappended.Load()
+		p.SyncDuration.Sum += time.Duration(st.sum.Load())
+		for i := range st.buckets {
+			p.SyncDuration.Counts[i] += st.buckets[i].Load()
+		}
+	}
+	if last != nil {
+		sf := last.SyncFailure
+		p.LastSyncError = &sf
+	}
+
+	// decision: this deviates from RFC 1 section 3.7's MUST NOT block a write:
+	// a loss-path write can wait on lmu while Stats copies the ring. Stats
+	// still takes lmu, and through the directory's generation
+	// read the directory state's mutex (dirState.mu), the two locks left on
+	// its path. The ring and the generation must be read as one step, so a
+	// snapshot never holds a raise without its event, and the loss path keeps
+	// them together under lmu. A write path that loses a record can wait on
+	// lmu while Stats copies the ring (up to LossRingSize events) and reads
+	// the generation. The wait is bounded and in memory: it sits only on the
+	// loss path, no I/O happens under lmu, and the one lock taken inside it,
+	// dirState.mu, is a leaf that guards maps and a counter and is never held
+	// across I/O. Overturned if a section under lmu ever does I/O or takes a
+	// lock a writer can hold across a blocking call, which a published copy
+	// of the ring and the generation would then replace.
+	d.lmu.Lock()
+	// This instance's ring and the directory's generation are read in one
+	// section, and lmu holds the raise and the publish of a Lose together,
+	// so the snapshot never holds the raise without its event, nor an
+	// event without its raise, for a loss made by Lose; a window raise or a
+	// corrupt drop can show the raise ahead of its event, and a corrupt drop
+	// ahead of its count (see lmu). The raise stays with the directory so a
+	// reopen reports the generation it continues; the events are this
+	// ring's, which the reopen starts empty.
+	p.Losses = d.lossesLocked()
+	p.LossGeneration = d.dir.load()
+	p.CorruptDataLoss = d.corruptDataLoss
+	p.CorruptRepairable = d.corruptRepairable
+	p.StaleExtents = d.stale
+	p.SupersededExtents = d.superseded
+	d.lmu.Unlock()
+	p.DamagedSegments, p.Segments = d.DamagedReport()
+	return p
+}
+
+// Stop stops the workers and joins them, then records the corrupt losses
+// still queued, so a loss handed over before Stop has its record appended
+// when Stop returns. A second call is a no-op.
+func (d *Durability) Stop() {
+	d.stop.Do(func() {
+		// The instance's unread claims in the registry's pieces retire
+		// here, whatever the caller's kind of close — a clean journal
+		// Close drains into this Stop, and so does the crash fixture's
+		// close of a dead journal — for past this point no reader reaches
+		// the ring they went to. A reader that already reached an event
+		// answered it, and the claims of the reads it served stay; the
+		// queued Corrupt losses the drain below takes carry claims born
+		// dead when no reader saw them, and a later open takes those
+		// pieces over — the takeover clearing the Reported the dead
+		// report still credited — and republishes the losses into the
+		// open's own fresh ring, which is what that ring is for.
+		d.reach.dead.Store(true)
+		d.mu.Lock()
+		d.stopped = true
+		d.mu.Unlock()
+		made := d.snapshot()
+		close(d.done)
+		d.stopProbe()
+		for _, st := range made {
+			st.mu.Lock()
+			st.closed = true
+			d.notifyAll()
+			st.mu.Unlock()
+		}
+		// Every Corrupt that queued before closed was set has its loss in a
+		// queue now, and every later one records its loss itself.
+		d.wg.Wait()
+		for _, st := range made {
+			d.drainCorrupt(st)
+		}
+	})
+	d.wg.Wait()
+}
+
+// claimsDead reports whether the reach's instance has begun stopping, so
+// no reader reaches its ring from this point on.
+func (r *reach) claimsDead() bool { return r.dead.Load() }
+
+// claimServed answers whether the loss a claim on one of that instance's
+// takes was answered by a reader: a genuine read's copy carried the event
+// the claim's take published. The window's from keeps the answer honest
+// where the ring overwrote the event before any read reached it — a copy
+// that never carried it answered nothing for it, whatever the reader knows
+// it missed — so a claim on an event no read reached survives its instance,
+// and a reopen places the loss it names found at open again. An event an
+// earlier read served stays served over its wrap, until a later read
+// arrives over a gap of overwritten events and restarts the window — the
+// duplicate the gap's decision names.
+//
+// decision: a loss that published no event of its own — a reported one,
+// whose report another of the instance's events carried — is answered by any
+// genuine read at all, for the event that carried its report is not known to
+// the claim. The answer errs toward a reopen re-reporting the loss found at
+// open on a copy that held no carrying event, with one narrow edge where it
+// does not: when the carrying event was overwritten in the ring before any
+// genuine read, the first read of what remains answers the claim for good,
+// and a reopen then keeps the suppression — hiding a report nobody
+// delivered. That is the price of the claim naming no event; retired when a
+// reported loss learns the number of the window's event that carried its
+// report.
+func (r *reach) claimServed(ev uint64) bool {
+	w := r.served.Load()
+	if w == nil {
+		return false
+	}
+	if ev == 0 {
+		return true
+	}
+	return ev >= w.from && ev <= w.through
+}
+
+// target is the last unsynced record of one file in one segment of a stream.
+// seq is the record's sequence number, which a re-append keeps, so the marks a
+// Sync returns name it wherever the record finally sits.
+type target struct {
+	file core.FileID
+	loc  segment.Location
+	seq  core.Seq
+}
+
+// cand is the mark's material for one named file: the newest target taken at
+// call time, and the record's final place and the synced-through offset
+// there, as the wait's checks last resolved them under the stream's lock. A
+// re-appended record's moves are forgotten once the record completes
+// (forgetMovedLocked), so the place is re-resolved by every check that still
+// finds them, and the synced offset is read once it covers the record; a
+// waiter that sleeps from before a re-append until after its completion keeps
+// the last place and offset its checks saw, which name an ended segment
+// whose synced offset proves less, never a false proof. dropped is set on a
+// record a corrupt read took out while the call waited: the stream no longer
+// holds it, so the marks no longer name it.
+type cand struct {
+	t     target
+	final segment.Location
+	along int64
+	// fromIndex marks the candidate the Latest fallback named, whose covering
+	// synced-through offset must itself still be readable: see
+	// resolveCandsLocked.
+	fromIndex bool
+	dropped   bool
+}
+
+// work is a caller's targets on one stream. cands is kept beside the targets
+// rather than reduced from them because the targets name one record per file
+// per segment, and a file's records in older segments are waited on through
+// their seals. failLost asks check to answer, as an error, the failure of a
+// window that dropped one of the caller's targets: the wait a repack copy
+// takes, whose record never comes back, unlike a re-appended header-only
+// record. The mark settle sets still tells the file's calls.
+type work struct {
+	st      *stream
+	ids     []core.FileID
+	targets []target
+	cands   []cand
+	// owed is the corrupt debt this call took a snapshot of on this stream:
+	// per named file owed jobs when the call began, the seq of the file's
+	// newest queued job. nil when the call owed none.
+	owed     owedCorrupt
+	failLost bool
+}
+
+// pending reports whether the record at loc is in a pending window, or still in
+// the ledger and not completed: no sync covers it, or one does and the worker
+// has not yet finished with it, which lifts what it superseded. A record gone
+// from both was covered and completed, so the answer does not depend on the
+// segment's synced offset, which the worker forgets once a segment has no
+// entries. The caller holds mu.
+//
+// ponytail: a linear scan, O(ledger) per target. Upgrade to a per-file index
+// when a profile shows the scan.
+func (st *stream) pending(loc segment.Location) bool {
+	for i := len(st.ledger) - 1; i >= 0; i-- {
+		if st.ledger[i].w.Loc == loc {
+			return !st.covered(loc) || !st.ledger[i].done
+		}
+	}
+	// A record of a pending window, or one a failed window dropped, is pending
+	// whatever the segment's synced offset: no sync value satisfies a record of
+	// a failed segment.
+	_, lost := st.lost[loc]
+	return lost || st.inWindowLocked(loc)
+}
+
+// inWindowLocked reports whether a pending window holds the record at loc. The
+// caller holds mu.
+func (st *stream) inWindowLocked(loc segment.Location) bool {
+	for _, w := range st.windows {
+		for i := range w.entries {
+			if w.entries[i].w.Loc == loc {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Sync returns once every record of the named files appended before the call
+// is durable on its stream, or the first failure, whichever comes first, and
+// reports the marks that prove it: per stream, one core.SyncMark covering the
+// newest named record the stream holds outside a sealed segment, ordered by
+// stream number. A file with nothing unsynced needs nothing, so a call naming
+// only such files returns at once with no sync -- but its mark still comes,
+// from the file's newest record the index names (Config.Latest), which a
+// sync already covered. The error is a
+// *core.SyncError when a sync covering a record failed, core.ErrClosed once
+// the layer stopped, and ctx.Err() when ctx is done first; a cancelled caller
+// changes no state and the sync it may have led runs on for the other
+// waiters. Once the journal is read-only, a failure matches
+// core.ErrJournalReadOnly too: a content record it failed is reported as a
+// failed window is, once, a *core.SyncError wrapping the refusal. A file with
+// a header-only record it undid is answered differently: every Sync naming
+// the file, or waiting on the record, returns the refusal bare, never a
+// *core.SyncError, for as long as the layer lives, since the record can never
+// become durable and a caller that routed it as a failed window would retry
+// what the journal undid. That answer stands in for any read-only failure the
+// call is owed; only a failure of a window that failed before the entry is
+// kept beside it, joined, and that join alone matches both errors.As to
+// *core.SyncError and core.ErrJournalReadOnly.
+//
+// decision: the marks are returned only when the error is nil. A mark would
+// prove records the sync lost: the caller records it durably and recovery
+// trusts the recorded proof, so a mark handed back beside the failure it
+// describes, or a refusal's, would name as synced a record the failure failed.
+// The rule is the call's, not the lost record's: neither stream of a failed
+// call returns marks, also one whose own records lost nothing. A caller that
+// wants its marks keeps them from a sync that succeeded only.
+//
+// A failed window is reported once per file: the first Sync naming a file
+// that lost a record in it returns the *core.SyncError and clears the file's
+// mark, and a Sync that was waiting on the lost record when another took that
+// report returns nil, though its record is lost and not durable.
+//
+// A covered record counts as synced only once the worker has lifted what it
+// superseded, which it does under the file's append domain, so the caller
+// holds the append domain of none of the files it names: it would wait on the
+// worker while the worker waits on it, and every other file of the stream
+// would stop completing too.
+//
+// The wait also covers the corrupt jobs a read of a named file queued before
+// the call took its targets: the worker appends and syncs each job's loss
+// records inside the job, so the durability the call waits out includes the
+// loss records owed for the drops those reads already made — a fresh process
+// would owe them at its open, and a caller that crashed between the read and
+// this call loses the record to the crash. A job a read queues once the call
+// is waiting is not this call's to answer, so it never extends the wait. The
+// wait parks on the snapshotted debt alone; it issues no sync of its own for
+// it.
+//
+// Syncs are issued by the stream's worker, never by the caller's goroutine,
+// so a cancelled caller is not stuck in the syscall.
+func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) ([]core.SyncMark, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-d.done:
+		return nil, core.ErrClosed
+	default:
+	}
+	// Every stream is consulted, also one with no target of the call: a failed
+	// window leaves the report for a file it lost a record of, and the record
+	// is no target by then.
+	var ws []work
+	for _, st := range d.snapshot() {
+		w := work{st: st, ids: ids}
+		w.targets, w.owed = st.targetsOf(ids)
+		w.cands = candsOf(w.targets)
+		ws = append(ws, w)
+	}
+	// A named file whose records a sync already covered -- the timer's, or an
+	// earlier call's -- is no target, so its mark would otherwise be lost and
+	// the call would answer nothing for a file it was asked to prove
+	// (RFC 1 §3.1's clause carries no unsynced qualifier). Its candidate comes
+	// from the file's newest record the index names, on the stream that owns
+	// the file. The record completed before the call began -- no target means
+	// every record the file had was completed -- but that bounds only what
+	// was there: a concurrent writer may append a newer record of the file
+	// after this call's targets and before its Latest, and the call then
+	// names that record but does not wait for it, the targets naming only
+	// what the call began with. A failure of its window goes, like any failed
+	// window's, to the first Sync naming the file after it, keyed as failures
+	// are by the named ids. The fallback narrows what the marks name, never what the
+	// call waits for, and a fallback record whose cover no sync proved
+	// reaches its end is dropped, so no mark names a record a sync did not
+	// cover (resolveCandsLocked). Nil Latest keeps the behaviour the layer
+	// had before the fallback existed.
+	if d.latest != nil {
+		streams := d.streams.Load()
+		for _, id := range ids {
+			have := false
+			for i := range ws {
+				for _, c := range ws[i].cands {
+					if c.t.file == id {
+						have = true
+						break
+					}
+				}
+			}
+			if have {
+				continue
+			}
+			loc, seq, ok := d.latest(id)
+			if !ok || streams == nil {
+				continue
+			}
+			for i := range ws {
+				if ws[i].st.no == uint32(streams.IndexFor(id)) {
+					ws[i].cands = append(ws[i].cands, cand{t: target{file: id, loc: loc, seq: seq}, fromIndex: true})
+					break
+				}
+			}
+		}
+	}
+	if err := d.await(ctx, ws, true); err != nil {
+		return nil, err
+	}
+	marks := d.marksOf(ws)
+	d.RaiseMarks(marks)
+	return marks, nil
+}
+
+// candsOf reduces the targets to one candidate per file, the newest: the
+// greatest location, the order segments and offsets give, which at call time
+// follows the order the records were appended in.
+func candsOf(ts []target) []cand {
+	var out []cand
+	for _, t := range ts {
+		dup := false
+		for i, o := range out {
+			if o.t.file == t.file {
+				dup = true
+				if newer(t.loc, o.t.loc) {
+					out[i].t = t
+				}
+				break
+			}
+		}
+		if !dup {
+			out = append(out, cand{t: t})
+		}
+	}
+	return out
+}
+
+// newer reports whether location a was appended after b: a later segment, or
+// the same segment at a later offset.
+func newer(a, b segment.Location) bool {
+	return a.Segment > b.Segment || (a.Segment == b.Segment && a.Off > b.Off)
+}
+
+// resolveCandsLocked re-resolves the wait's candidates while the stream's
+// locks still describe them: the record a re-append moved is followed to its
+// current place, and the synced-through offset of that place is read once a
+// sync covers the record. The caller holds mu.
+func (st *stream) resolveCandsLocked(cs []cand) {
+	for i := range cs {
+		c := &cs[i]
+		at := st.followLocked(c.t.loc)
+		if _, lost := st.lost[at]; lost {
+			c.dropped = true
+		}
+		if newer(at, c.final) {
+			c.final, c.along = at, st.synced[at.Segment]
+		} else if th := st.synced[c.final.Segment]; th >= c.final.Off+c.final.Len && th > c.along {
+			c.along = th
+		}
+		if c.fromIndex && c.along < c.final.Off+c.final.Len {
+			// A fallback record is one a sync already covered: one its
+			// synced-through offset does not reach was appended after the
+			// call's targets (a concurrent writer) or its offset was swept,
+			// and either way no mark can name it. The concurrent-writer shape
+			// is reachable today and this is its live gate; the swept shape
+			// today's ordering keeps unreachable -- every roll seals the
+			// segment it leaves, so a fallback record's unsealed segment is
+			// the active one, whose offset the sweep spares, and the
+			// reachability note at marksOf names the paths that could
+			// overturn it. A reachable-gate regression or not, the caller
+			// keeps each stream's latest mark, and a mark naming a record no
+			// sync reached would replace the stream's real proof.
+			c.dropped = true
+		}
+	}
+}
+
+// marksOf builds the Sync's marks, one per stream that holds a named record
+// outside a sealed segment: the newest such record's final place, which a
+// re-append moved it to, its synced-through offset, and its sequence number,
+// ordered by stream number. The sealed verdict filters the candidates before
+// the choice, per the RFC's applicability clause, so a stream whose newest
+// named record sits in a sealed segment while an older one sits outside is
+// marked for the older record, never skipped. Production cannot order that
+// pair today -- every roll seals the segment it leaves, so a stream's
+// unsealed segment is its active one, holding its newest appends -- which
+// makes the filtering order belt for a reverse some later path (a recycle,
+// a reseed) could produce. It runs once the wait ended in
+// nil, so every candidate's record is durable where the mark names it.
+func (d *Durability) marksOf(ws []work) []core.SyncMark {
+	var out []core.SyncMark
+	// decision: the sealed segments are asked outside any stream lock. Set's
+	// registry lock, taken inside a stream's leaf mutex, would add an edge to
+	// the journal's lock order, and nothing here needs the answer under it: a
+	// segment that seals after the check only makes the mark redundant --
+	// recovery reads the seal itself -- never a false proof.
+	isSealed := d.sealed
+	for _, w := range ws {
+		if len(w.cands) == 0 {
+			continue
+		}
+		var best cand
+		found := false
+		for _, c := range w.cands {
+			if c.dropped || (isSealed != nil && isSealed(c.final.Segment)) {
+				continue
+			}
+			if !found || newer(c.final, best.final) {
+				best, found = c, true
+			}
+		}
+		if !found {
+			continue
+		}
+		out = append(out, core.SyncMark{
+			Stream:   w.st.no,
+			Segment:  uint64(best.final.Segment),
+			Through:  best.along,
+			Offset:   best.final.Off + best.final.Len,
+			Sequence: uint64(best.t.seq),
+		})
+	}
+	slices.SortFunc(out, func(a, b core.SyncMark) int { return cmp.Compare(a.Stream, b.Stream) })
+	return out
+}
+
+// WaitDurable returns nil once the record at the location is durable,
+// core.ErrClosed once the layer stopped, or, once the journal is read-only
+// and the record is failed, the refusal, which matches
+// core.ErrJournalReadOnly. It takes no context and never returns a
+// *core.SyncError. A record of a segment whose sync failed is re-appended
+// by the failed window's resolution — a header-only one from the bytes the
+// ledger kept, a content one from the failed segment's own bytes, read
+// again and verified — and the wait follows it to its new place and ends
+// when that is durable. While the journal takes writes, a content record
+// whose re-read does not verify is failed and keeps waiting, since it is
+// never durable, until Stop
+// or until the journal turns read-only, which wakes every such waiter. It
+// consults and clears no marks, which belong to the Sync that names the
+// file. A record with no sync running for it gets one, as a Sync would. The
+// caller holds no file's append domain, as for Sync.
+func (d *Durability) WaitDurable(at segment.Location) error {
+	var ws []work
+	for _, st := range d.snapshot() {
+		st.mu.Lock()
+		ok := st.pending(st.followLocked(at))
+		st.mu.Unlock()
+		if ok {
+			ws = append(ws, work{st: st, targets: []target{{loc: at}}})
+		}
+	}
+	return d.await(context.Background(), ws, false)
+}
+
+// WaitCopy waits for one repack copy's place to become durable, as WaitDurable
+// does, except on a failed window: the window's resolution re-appends a
+// content record too — to a place a pass that waits for it cannot name, for
+// its move names the copy's own place — or fails its re-read and drops it,
+// and either way the copy the pass holds is dead, its bytes living on in its
+// source until a later pass repoints them. The wait answers the window's own
+// error instead of following a re-append the caller cannot reach or waiting
+// for a durability that will not come. The failure has already been marked
+// to the copy's file, whose next Sync reports it, and the wait takes no mark
+// itself (settle). The caller holds no file's append domain, as for
+// WaitDurable.
+func (d *Durability) WaitCopy(at segment.Location) error {
+	var ws []work
+	for _, st := range d.snapshot() {
+		st.mu.Lock()
+		if now := st.followLocked(at); now != at {
+			// The copy moved behind a failed window whose resolution
+			// finished before this wait began: the place the caller holds
+			// is dead all the same, so the wait answers the failure rather
+			// than follow the re-append the caller cannot name.
+			err := st.movedCopyErrorLocked(at, now)
+			st.mu.Unlock()
+			return err
+		}
+		ok := st.pending(at)
+		st.mu.Unlock()
+		if ok {
+			ws = append(ws, work{st: st, targets: []target{{loc: at}}, failLost: true})
+		}
+	}
+	return d.await(context.Background(), ws, false)
+}
+
+// movedCopyErrorLocked returns the failure a record's move out of at answers
+// a copy wait with: the segment's recorded window failure while the window's
+// resolution has not ended with it, the stream's last recorded failure once
+// it has, and, the day neither names it, the move itself. The caller holds
+// mu. A record moves only out of a failed window — the copy wait reads the
+// move as the failure it is — so a caller that never sees a failure
+// here never had a copy to wait for.
+func (st *stream) movedCopyErrorLocked(at, now segment.Location) error {
+	if err, kept := st.failed[at.Segment]; kept {
+		return err
+	}
+	if f := st.lastFail.Load(); f != nil {
+		return f.Err
+	}
+	return fmt.Errorf("durability: the record placed at %+v moved to %+v behind its failed window", at, now)
+}
+
+// snapshot returns the streams made so far, in no order, from the list Sink
+// publishes with each new stream. It takes no lock, so the stats read of it
+// never waits on d.mu. The slice is shared and read-only: Sink replaces it
+// whole and no caller changes it.
+func (d *Durability) snapshot() []*stream {
+	if v := d.madeView.Load(); v != nil {
+		return *v
+	}
+	return nil
+}
+
+// targetsOf returns, for each id, the last record of that file in each
+// segment of the ledger that is not completed, and in each pending window. A
+// record a sync covers stays a target until the worker has lifted what it
+// superseded, so a Sync issued in between waits for the lift too. A sync
+// covers a prefix of one segment, so covering a file's last record says
+// nothing of its records in an older segment; each segment gets its own target
+// and waits for its seal or fails through the failed map. Compaction removes
+// only completed entries, so a target stays in the ledger until the worker is
+// done with it.
+//
+// Beside the targets, in the one critical section that takes them, it answers
+// the call's corrupt debt snapshot: what its named files owed this stream
+// when the targets were seen — jobs a read queued before the call — so the
+// two read the same instant of the queue, and no push or finish of a corrupt
+// job can land between them and make the pairing of debts to targets say
+// more or less than the call began with.
+func (st *stream) targetsOf(ids []core.FileID) ([]target, owedCorrupt) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	var ts []target
+	consider := func(e *entry) {
+		for _, id := range ids {
+			if e.w.File != id {
+				continue
+			}
+			dup := false
+			for _, t := range ts {
+				dup = dup || (t.file == id && t.loc.Segment == e.w.Loc.Segment)
+			}
+			if !dup {
+				ts = append(ts, target{file: id, loc: e.w.Loc, seq: e.w.Seq})
+			}
+		}
+	}
+	for i := len(st.ledger) - 1; i >= 0; i-- {
+		if e := &st.ledger[i]; !e.done {
+			consider(e)
+		}
+	}
+	// A pending window's records are targets whatever the segment's synced
+	// offset. A content record is answered from the mark its failure leaves; a
+	// header-only one is followed to where it is re-appended.
+	for j := len(st.windows) - 1; j >= 0; j-- {
+		w := st.windows[j]
+		for i := len(w.entries) - 1; i >= 0; i-- {
+			consider(&w.entries[i])
+		}
+	}
+	return ts, st.owedCorruptLocked(ids)
+}
+
+// await waits until no target of any stream is pending. With failFast, the
+// failures owed to the call (its files' marks) end the wait once no failure is
+// still in flight on any stream, and the call returns them as one error. Once
+// the journal is read-only, a target it failed ends the wait the same way,
+// with or without failFast: its refusal is the answer, joined with any failure
+// the call is owed that does not already carry it.
+//
+// decision: a failure found on a stream does not end the wait while any stream
+// of the call, that one included, still has a target in a failed segment whose
+// failure the worker has not finished handling, so one Sync names every file
+// the call lost, whatever the layout of the files on streams. A stream whose
+// targets are merely waiting for a sync that has not failed does not hold the
+// answer back: a failure is returned as soon as no failure is in flight, and
+// one the call could not know of is told, mark and all, to the file's next
+// Sync. The failures taken so far are never dropped: a call that ends early,
+// because the layer stopped or the context is done, returns them in place of
+// that error, since their marks are cleared and nothing else would report
+// them. Withdraw the wait if a failed window can stay unhandled indefinitely,
+// since a Sync would then hang on it rather than return the failure it holds.
+func (d *Durability) await(ctx context.Context, ws []work, failFast bool) error {
+	var owed *owedFailure
+	var refused error
+	// answer joins what the call is owed: the failures it took and the
+	// read-only refusal of a record the read-only journal undid. The refusal
+	// is returned bare, never as a *core.SyncError, so a caller cannot route
+	// it as a failed window and retry what the journal undid: a failure the
+	// read-only journal reported matches the refusal already and is dropped
+	// for it. Only a failure of a window that failed before the journal
+	// turned read-only is kept, joined with the refusal; that answer matches
+	// both errors.As to *core.SyncError and errors.Is to
+	// core.ErrJournalReadOnly.
+	answer := func() error {
+		switch {
+		case owed != nil && refused != nil && !errors.Is(owed.err, core.ErrJournalReadOnly):
+			return errors.Join(owed.err, refused)
+		case refused != nil:
+			return refused
+		case owed != nil:
+			return owed.err
+		default:
+			return nil
+		}
+	}
+	// early is the answer for a call that cannot wait any longer.
+	early := func(err error) error {
+		if owed != nil || refused != nil {
+			return answer()
+		}
+		return err
+	}
+	for {
+		// Taken before the checks, so a change after one is never missed, and
+		// shared by every stream so a change on any of them wakes the caller.
+		wait := d.changes()
+		pending, failing := false, false
+		for _, w := range ws {
+			p, f, found, err := w.st.check(w.ids, w.targets, w.cands, failFast, w.failLost, w.owed)
+			if found != nil {
+				// Every stream owes the call its marks, and a mark left on one
+				// stream would be told to the file's next Sync again: the rest
+				// are taken before returning, each under its own stream's
+				// mutex, and one error names them.
+				owed = mergeOwed(owed, found)
+			}
+			if errors.Is(err, core.ErrJournalReadOnly) {
+				// A record the read-only journal failed ends the wait too, and
+				// the other streams still owe their marks.
+				refused = err
+				failing = failing || f
+				continue
+			}
+			if err != nil {
+				return early(err)
+			}
+			pending, failing = pending || p, failing || f
+		}
+		if (owed != nil || refused != nil) && !failing {
+			return answer()
+		}
+		if !pending && owed == nil && refused == nil {
+			return nil
+		}
+		if d.beforeWait != nil {
+			d.beforeWait(ws)
+		}
+		select {
+		case <-ctx.Done():
+			return early(ctx.Err())
+		case <-wait:
+		case <-d.done:
+			return early(core.ErrClosed)
+		}
+	}
+}
+
+// owedFailure is a failure one stream owes a Sync, with the id of the window
+// it belongs to.
+type owedFailure struct {
+	err    *core.SyncError
+	window uint64
+}
+
+// mergeOwed joins two failures of one Sync: the older window's segment and
+// error, the files of both. Window ids are global, so the order of the
+// streams the failures came from does not matter.
+func mergeOwed(into, from *owedFailure) *owedFailure {
+	if into == nil {
+		return from
+	}
+	if from.window < into.window {
+		into.err.Segment, into.err.Err, into.window = from.err.Segment, from.err.Err, from.window
+	}
+	for _, f := range from.err.Files {
+		if !slices.Contains(into.err.Files, f) {
+			into.err.Files = append(into.err.Files, f)
+		}
+	}
+	return into
+}
+
+// followLocked returns where the record last placed at loc is now: loc itself
+// for a record that never moved, otherwise the end of the chain of places the
+// stream re-appended it to. The caller holds mu.
+func (st *stream) followLocked(loc segment.Location) segment.Location {
+	for {
+		next, ok := st.moved[loc]
+		if !ok {
+			return loc
+		}
+		loc = next
+	}
+}
+
+// forgetMovedLocked drops the entries of moved that lead to loc, the place of
+// a record that is done: the entry that names loc, the one that names its
+// key, and so on. The caller holds mu.
+func (st *stream) forgetMovedLocked(loc segment.Location) {
+	for len(st.moved) != 0 {
+		from, found := segment.Location{}, false
+		for k, v := range st.moved {
+			if v == loc {
+				from, found = k, true
+				break
+			}
+		}
+		if !found {
+			return
+		}
+		delete(st.moved, from)
+		loc = from
+	}
+}
+
+// undoingLocked reports whether the stream holds a header-only record of one
+// of ids, other than a loss record, that a read-only journal's failure pass
+// will undo and has not yet: one in a pending window, or one in the ledger
+// that no sync covered and the worker has not completed. The caller holds mu
+// and has seen the journal read-only.
+//
+// ponytail: a linear scan of the ledger and the windows, run on each check of
+// a Sync while the journal is read-only. Upgrade to a per-file count of
+// header-only records when a profile of a read-only journal shows the scan.
+func (st *stream) undoingLocked(ids []core.FileID) bool {
+	undoable := func(e *entry) bool {
+		return !isContent(e.w) && !isLoss(e.w) && slices.Contains(ids, e.w.File)
+	}
+	for i := range st.ledger {
+		if e := &st.ledger[i]; !e.done && !st.covered(e.w.Loc) && undoable(e) {
+			return true
+		}
+	}
+	for _, w := range st.windows {
+		for i := range w.entries {
+			if undoable(&w.entries[i]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// check looks at one stream's targets. With failFast it first takes the marks
+// owed to ids, and still evaluates the targets afterwards. It reports whether
+// any target is pending, whether a target sits in a failed segment whose
+// failure is not yet handled (failing), and the failure owed to the call: the
+// marks it took. It returns an error for a closed layer, and then only when
+// it owes no failure, and the read-only refusal once a target is a record the
+// read-only journal failed, or, with failFast, once a file of ids has a
+// header-only record it undid, alongside whatever failure it owes. It also leads
+// a sync when the targets need one.
+//
+// decision: one sync per stream runs at a time and covers every waiter (group
+// commit). The waiter that finds none in flight and none asked for leads: it sets
+// want and the worker issues the sync. A sync per waiter would multiply
+// fsyncs by the waiter count. Joining whatever sync is running would be wrong
+// as well: a record whose slot completed after that sync began would be told
+// it is durable, so every waiter re-checks its own target once a sync ends
+// and a target still uncovered leads the next one. The worker, not the
+// waiter's goroutine, issues the sync so a cancelled waiter is never stuck in
+// the syscall.
+//
+// decision: a content target in a pending window, or in a failed segment, is
+// pending until the worker has failed it, and the Sync is answered from the
+// mark the failure leaves for the file, not from the failed segment. The
+// answer therefore follows the generation's raise and the record's loss, which
+// a Sync of a failed record must not precede. A target the failure took is no
+// target any more: a Sync that targeted it and finds no mark left returns, as
+// another Sync of the file took the report, and a failure is told once.
+//
+// decision: a header-only target of a failed segment waits like a content
+// one until the worker has handled its window, and is then followed to the
+// place the record was re-appended at, so the Sync returns once the new
+// segment syncs and never answers the failure of the old one: the record is
+// carried forward, not lost, and no mark is set for it. A file with both kinds
+// is told its content losses by its marks, and its header-only record waits
+// for the new sync. The wait ends with core.ErrClosed if the layer stops, and
+// a record the stream cannot re-append, as when the stream stopped, is waited
+// for until then. Once the journal is read-only the record, at whichever
+// place it was last appended and not yet synced, is undone and failed
+// (failReadOnly), every wait on it then ends with the refusal, and so does
+// every later Sync naming its file (st.undone); until the pass has undone it,
+// it counts as a failure in flight for a Sync naming its file (undoingLocked),
+// so no other failure is answered ahead of it.
+//
+// The wait's candidates cs are re-resolved under the same lock, while the
+// stream's move table still names the records that re-appended; see cand.
+// debt is the call's corrupt-debt snapshot, taken beside its targets: the
+// per-file seqs of the corrupt jobs a read queued before the call, which
+// the wait parks until each has appended and synced the loss record it owes.
+func (st *stream) check(ids []core.FileID, targets []target, cs []cand, failFast, failLost bool, debt owedCorrupt) (pending, failing bool, found *owedFailure, err error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.resolveCandsLocked(cs)
+	// A corrupt job the call owed parks it: the worker appends and syncs the
+	// loss records the job owes inside it, so the durable answer may not run
+	// ahead of the drops the reads this call's files took before it made.
+	// A job a read queued after the snapshot never enters this wait — it is
+	// not this call's to answer — and the wait leads no sync of its own:
+	// the job's record syncs on the worker that runs it, never by the waiter.
+	for f, through := range debt {
+		if st.corruptDone[f] < through {
+			pending = true
+			break
+		}
+	}
+
+	var owed *owedFailure
+	if failFast {
+		owed = st.takeMarksLocked(ids)
+	}
+	lead := false
+	// A report owed for a segment whose window is not taken yet is waited for,
+	// as a failure in flight: takeWindow turns it into a mark, which a later
+	// check answers.
+	if failFast && st.owesLocked(ids) {
+		pending, failing = true, true
+	}
+	var refused error
+	if failFast {
+		// A file with a header-only record the read-only journal undid is
+		// refused on every Sync naming it: the record can never become
+		// durable, and a Sync that returned nil would let its caller commit
+		// what the journal undid.
+		for _, id := range ids {
+			if err, ok := st.undone[id]; ok {
+				refused = err
+				break
+			}
+		}
+		// One the read-only journal has yet to undo holds the answer back
+		// as a failure in flight, so a failure the call already took is not
+		// returned ahead of the refusal it is about to owe.
+		if refused == nil && st.d.Admit() != nil && st.undoingLocked(ids) {
+			failing = true
+		}
+	}
+	for _, t := range targets {
+		// A record re-appended since the call began is found where it is now.
+		loc := st.followLocked(t.loc)
+		if failLost && loc != t.loc {
+			// A copy wait reads the move as the failure it is: a record moves
+			// only out of a failed window, resolved by its re-append, and the
+			// pass that waits for its copy must abandon the unit, never
+			// publish its pieces at a place whose window failed.
+			return false, false, owed, st.movedCopyErrorLocked(t.loc, loc)
+		}
+		if l, lost := st.lost[loc]; lost {
+			if l.undone {
+				// A header-only record the read-only journal undid fails every
+				// Sync and WaitDurable that waits on it.
+				refused = l.err
+				continue
+			}
+			if failLost {
+				// A copy wait asks for the failure: the record itself is the
+				// wait's whole concern, it is dead, and the mark settle set
+				// answers the file's callers.
+				return false, false, owed, l.err
+			}
+			if !failFast {
+				// A durability wait on a failed record ends with the
+				// read-only refusal; while the journal takes writes it keeps
+				// waiting, as the record is never durable.
+				if err := st.d.Admit(); err != nil {
+					refused = err
+					continue
+				}
+				pending = true
+			}
+			// Failed and gone from its window: the mark told the file, so a
+			// Sync has nothing more to wait for.
+			continue
+		}
+		if !st.pending(loc) {
+			continue
+		}
+		pending = true
+		if st.covered(loc) && !st.inWindowLocked(loc) {
+			// A sync covers it and the worker is lifting what it superseded:
+			// the wait is for that, which another sync does not hasten.
+			continue
+		}
+		if _, bad := st.failed[loc.Segment]; bad {
+			// The segment failed, so the record's failure is on its way, from
+			// a mark the worker has yet to set, or its re-append is: the
+			// caller waits for that rather than for a sync.
+			failing = true
+			continue
+		}
+		// A target in an older segment is waited on and never leads: the
+		// seal of its segment syncs it and reports through the sink. One in a
+		// segment a sync found ended never leads either: the segment takes
+		// no sync, and its end event is on its way.
+		if _, ended := st.ending[loc.Segment]; !ended && st.haveLast && loc.Segment == st.lastSeg {
+			lead = true
+		}
+	}
+	if refused != nil {
+		// A target the read-only journal failed ends this stream's wait; a
+		// failure still in flight on it holds the answer back as any other.
+		return false, failing, owed, refused
+	}
+	if !pending {
+		return false, false, owed, nil
+	}
+	if st.closed {
+		if owed != nil {
+			return false, false, owed, nil
+		}
+		return false, false, nil, core.ErrClosed
+	}
+	if lead && !st.syncing && !st.want {
+		st.want = true
+		st.wake()
+	}
+	return true, failing, owed, nil
+}

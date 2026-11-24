@@ -145,6 +145,7 @@ func structViolations(s *ast.TypeSpec) []string {
 // The node exports New, Node, Config and Preflight, and Node's Start and
 // Stop, and nothing else; each planted tree, holding one violation, is caught.
 func TestNodeExports(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		dir  string
 		want []string
@@ -406,10 +407,10 @@ func enginewireImporters(_ string, files []fileImports) ([]string, error) {
 			continue
 		}
 		dir := path.Dir(r.File)
-		if dir == "internal/node" || dir == "pkg/block/engine/enginetest" {
+		if dir == "internal/node" || dir == "pkg/engine/enginetest" {
 			continue
 		}
-		if slices.Contains(r.Imports, module+"pkg/block/engine/enginewire") {
+		if slices.Contains(r.Imports, module+"pkg/engine/enginewire") {
 			bad = append(bad, r.File+" imports enginewire")
 		}
 	}
@@ -550,6 +551,7 @@ func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 // Each import rule reports nothing over the module and exactly the violation
 // planted in its testdata tree, beside the allowed look-alikes planted with it.
 func TestImportRules(t *testing.T) {
+	t.Parallel()
 	// One walk of the module, shared by every rule's module check; a rule
 	// that reads calls rather than imports walks root itself.
 	files, err := walkSnapshot(filepath.Join("..", ".."))
@@ -742,6 +744,7 @@ func componentImports(root string) ([]string, error) {
 // No package under internal/node but node and nodetest imports a component's
 // implementation; a planted package importing the engine is caught.
 func TestNoComponentImports(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		root string
 		want []string
@@ -753,7 +756,7 @@ func TestNoComponentImports(t *testing.T) {
 			"api/identity.go uses github.com/cubbit/dittofs/pkg/identity.CheckKeytab",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.KV",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.Counting",
-			"api/server.go imports github.com/cubbit/dittofs/pkg/block/engine",
+			"api/server.go imports github.com/cubbit/dittofs/pkg/engine",
 			"nodetest-import/harness.go imports github.com/cubbit/dittofs/internal/node/nodetest",
 		}},
 	} {
@@ -818,7 +821,7 @@ func parsePackage(fset *token.FileSet, dir string) ([]*ast.File, error) {
 var exportImporter = sync.OnceValues(func() (*token.FileSet, types.Importer) {
 	fset := token.NewFileSet()
 	exports := sync.OnceValues(exportFiles)
-	return fset, importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+	return fset, &lockedImporter{imp: importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
 		files, err := exports()
 		if err != nil {
 			return nil, err
@@ -827,8 +830,21 @@ var exportImporter = sync.OnceValues(func() (*token.FileSet, types.Importer) {
 			return nil, fmt.Errorf("no export data for %s", path)
 		}
 		return os.Open(files[path])
-	})
+	})}
 })
+
+// lockedImporter imports one package at a time: the gc importer fills a
+// package map with no lock of its own, and the arch tests run in parallel.
+type lockedImporter struct {
+	mu  sync.Mutex
+	imp types.Importer
+}
+
+func (l *lockedImporter) Import(path string) (*types.Package, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.imp.Import(path)
+}
 
 // exportFiles lists the export data file of each package under
 // internal/node, of the metadata store's, and of every package they import,
@@ -1006,6 +1022,7 @@ func methodValues(dir, path string, writers map[string]*types.Signature) ([]stri
 // another, in a func field, the store's view itself, and a node taking a
 // store method as a value are caught.
 func TestAPIWritesOnlyThroughWrite(t *testing.T) {
+	t.Parallel()
 	writers, err := storeWriters()
 	if err != nil {
 		t.Fatal(err)
@@ -1328,6 +1345,7 @@ func isMethod(o types.Object) bool {
 // literal whose kind is the signing key's, a password hash's or no
 // constant.
 func TestNoRouteWritesTheSigningKey(t *testing.T) {
+	t.Parallel()
 	var dirs []string
 	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
@@ -1413,6 +1431,7 @@ func setsAudit(e ast.Expr) bool {
 // from auth with no audit record, a nil one or a variable that may be nil
 // are caught; auth's sign-in count, writing none, is not.
 func TestWritesThroughTheAdapter(t *testing.T) {
+	t.Parallel()
 	var dirs []string
 	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
@@ -1466,12 +1485,12 @@ func lifecycleCalls(dir, path string) ([]string, error) {
 		return nil, err
 	}
 	watched := map[string]bool{
-		module + "pkg/block/engine/enginewire.Start":     true,
-		module + "pkg/block/engine/enginewire.Stop":      true,
-		"(*" + module + "pkg/openstate.Table).Start":     true,
-		"(*" + module + "pkg/openstate.Table).Stop":      true,
-		"(*" + module + "pkg/block/engine.Engine).Start": true,
-		"(*" + module + "pkg/block/engine.Engine).Close": true,
+		module + "pkg/engine/enginewire.Start":       true,
+		module + "pkg/engine/enginewire.Stop":        true,
+		"(*" + module + "pkg/openstate.Table).Start": true,
+		"(*" + module + "pkg/openstate.Table).Stop":  true,
+		"(*" + module + "pkg/engine.Engine).Start":   true,
+		"(*" + module + "pkg/engine.Engine).Close":   true,
 	}
 	var got []string
 	for _, o := range info.Uses {
@@ -1488,15 +1507,16 @@ func lifecycleCalls(dir, path string) ([]string, error) {
 // the one enginewire ships; a node calling the table's or the engine's own
 // Start, Stop or Close is caught.
 func TestNodeStartsThroughEnginewire(t *testing.T) {
-	wire := module + "pkg/block/engine/enginewire."
+	t.Parallel()
+	wire := module + "pkg/engine/enginewire."
 	for _, tc := range []struct {
 		dir  string
 		want []string
 	}{
 		{".", []string{wire + "Start", wire + "Stop"}},
 		{"testdata/arch/start-direct", []string{
-			"(*" + module + "pkg/block/engine.Engine).Close",
-			"(*" + module + "pkg/block/engine.Engine).Start",
+			"(*" + module + "pkg/engine.Engine).Close",
+			"(*" + module + "pkg/engine.Engine).Start",
 			"(*" + module + "pkg/openstate.Table).Start",
 			"(*" + module + "pkg/openstate.Table).Stop",
 		}},
@@ -1562,6 +1582,7 @@ func apiExports(dir, path string) ([]string, error) {
 // parameters take, Clock, KeyVersions, Sealer and Writer; and nothing else;
 // a planted extra method is caught.
 func TestAPIExports(t *testing.T) {
+	t.Parallel()
 	want := []string{"Deps", "New", "OpenAPI", "Server", "Server.Start", "Server.Stop"}
 	for _, tc := range []struct {
 		dir, path string
@@ -1623,8 +1644,8 @@ func composeCalls(dir string) (compose, deps int, err error) {
 		if err != nil {
 			return 0, 0, err
 		}
-		wire := importName(f, module+"pkg/block/engine/enginewire")
-		eng := importName(f, module+"pkg/block/engine")
+		wire := importName(f, module+"pkg/engine/enginewire")
+		eng := importName(f, module+"pkg/engine")
 		named := func(x ast.Expr, pkg, sel string) bool {
 			s, ok := x.(*ast.SelectorExpr)
 			if !ok || s.Sel.Name != sel {
@@ -1656,6 +1677,7 @@ func composeCalls(dir string) (compose, deps int, err error) {
 // itself are caught. A Deps the node builds without a literal, from a
 // declared variable or a constructor of its own, is not.
 func TestNodeComposesOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		dir           string
 		compose, deps int
@@ -1689,6 +1711,7 @@ var apiClosureBanned = []string{"pkg/metadata/kvstore", "pkg/keyprovider"}
 // names: a direct import the import rule refuses, and this catches one an
 // allowed package brings in, as the secret provider would.
 func TestAPIClosure(t *testing.T) {
+	t.Parallel()
 	seen := map[string]string{} // each package reached, and the one that imported it
 	var walk func(imp, from string)
 	walk = func(imp, from string) {

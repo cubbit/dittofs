@@ -1,0 +1,211 @@
+package durability
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"sync"
+	"testing"
+
+	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/pkg/journal/internal/core"
+)
+
+// wantMarks fails the test unless the figure is exactly want, ordered by stream.
+func wantMarks(t *testing.T, what string, d *Durability, want ...core.SyncMark) {
+	t.Helper()
+	if got := d.Marks(); !slices.Equal(got, want) {
+		t.Fatalf("%s: Marks() = %+v, want %+v", what, got, want)
+	}
+}
+
+// TestMarksFollowEachSuccessfulSync covers the figure of a stream's last
+// completed sync: each Sync that returns a mark leaves it as the stream's
+// entry, and a later one replaces it.
+func TestMarksFollowEachSuccessfulSync(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRig(t, 1)
+	f, g := file(1), file(2)
+	wantMarks(t, "before any sync", r.d)
+
+	r.publish(t, f, 0, "aaaa")
+	a, err := r.d.Sync(context.Background(), f)
+	if err != nil || len(a) != 1 {
+		t.Fatalf("the first Sync = %+v, %v, want one mark", a, err)
+	}
+	wantMarks(t, "after the first sync", r.d, a[0])
+
+	r.publish(t, g, 0, "gggg")
+	b, err := r.d.Sync(context.Background(), g)
+	if err != nil || len(b) != 1 {
+		t.Fatalf("the second Sync = %+v, %v, want one mark", b, err)
+	}
+	if !r.d.markNewer(b[0], a[0]) {
+		t.Fatalf("the second mark %+v is not newer than the first %+v", b[0], a[0])
+	}
+	wantMarks(t, "after the second sync", r.d, b[0])
+}
+
+// TestMarksIgnoreAFailedSync covers a window that failed: the Sync answers a
+// SyncError with no marks, and the figure stays where it was even though the
+// call names a second file whose record an earlier sync already covered, a
+// file marksOf still has a mark for.
+func TestMarksIgnoreAFailedSync(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	fr := newFailRig(t, func(fr *failRig) { fr.setLatest() })
+	f, g := file(1), file(2)
+	gloc, _ := fr.publish(t, g, 0, "gggg")
+	covered, err := fr.d.Sync(context.Background(), g)
+	if err != nil || len(covered) != 1 {
+		t.Fatalf("the first Sync of the file to be covered = %+v, %v, want its one mark", covered, err)
+	}
+	// The figure goes back behind the covered record's mark, so a mark taken
+	// from the failed call would be a rise.
+	seed := core.SyncMark{Stream: 0, Segment: uint64(gloc.Segment), Through: 1, Offset: 1, Sequence: 0}
+	fr.d.SeedMarks([]core.SyncMark{seed})
+
+	floc, _ := fr.publish(t, f, 0, "ffff")
+	fr.failSyncOf(t, floc.Segment, errors.New("sync boom"))
+	wantSyncError(t, mustReturn(t, "Sync", fr.syncAsync(context.Background(), f, g)), floc.Segment, f)
+	wantMarks(t, "after the failed sync", fr.d, seed)
+}
+
+// TestSeedMarksIsACopyAndRaiseNeverLowers covers the figure's own rules on a
+// layer with no stream bound, where no segment is open and a mark in another
+// segment never replaces the entry: the seed is copied both ways, a mark in
+// the entry's segment replaces it only when synced through further, and a
+// stream with no entry gains one.
+func TestSeedMarksIsACopyAndRaiseNeverLowers(t *testing.T) {
+	d := &Durability{}
+	m0 := core.SyncMark{Stream: 0, Segment: 5, Through: 100, Offset: 90, Sequence: 7}
+	seed := []core.SyncMark{m0}
+	d.SeedMarks(seed)
+	seed[0].Sequence = 99
+	got := d.Marks()
+	got[0].Sequence = 98
+	wantMarks(t, "a seed and a read are copies", d, m0)
+
+	more := core.SyncMark{Stream: 0, Segment: 5, Through: 200, Offset: 190, Sequence: 7}
+	for _, c := range []struct {
+		name string
+		m    core.SyncMark
+		want core.SyncMark
+	}{
+		{"a later record in another segment", core.SyncMark{Stream: 0, Segment: 6, Through: 10, Offset: 9, Sequence: 99}, m0},
+		{"an earlier segment", core.SyncMark{Stream: 0, Segment: 4, Through: 900, Offset: 800, Sequence: 99}, m0},
+		{"the same mark", m0, m0},
+		{"the same segment, synced through less", core.SyncMark{Stream: 0, Segment: 5, Through: 50, Offset: 40, Sequence: 99}, m0},
+		{"the same segment, synced through more", more, more},
+	} {
+		d.RaiseMarks([]core.SyncMark{c.m})
+		wantMarks(t, c.name, d, c.want)
+	}
+	other := core.SyncMark{Stream: 1, Segment: 2, Through: 5, Offset: 4, Sequence: 2}
+	d.RaiseMarks([]core.SyncMark{other})
+	if got := d.Marks(); len(got) != 2 || got[1] != other {
+		t.Fatalf("a mark of a stream with no entry: Marks() = %+v, want it added after stream 0's", got)
+	}
+}
+
+// TestMarksNeverFallUnderConcurrentSyncs covers syncs of one stream racing:
+// each round, eight files are synced by eight goroutines at once while a
+// reader polls the figure; no read is older than the one before, and the
+// figure ends at the newest mark any call returned.
+func TestMarksNeverFallUnderConcurrentSyncs(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRig(t, 1)
+	const files, rounds = 8, 5
+	var newest core.SyncMark
+	stop := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		var last core.SyncMark
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if m := r.d.Marks(); len(m) == 1 {
+				if r.d.markNewer(last, m[0]) {
+					t.Errorf("the figure fell from %+v to %+v", last, m[0])
+					return
+				}
+				last = m[0]
+			}
+		}
+	}()
+	for round := range rounds {
+		for i := range files {
+			r.publish(t, file(byte(1+i)), int64(round)*4, "dddd")
+		}
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for i := range files {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				marks, err := r.d.Sync(context.Background(), file(byte(1+i)))
+				if err != nil {
+					t.Errorf("Sync of file %d: %v", i, err)
+					return
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				for _, m := range marks {
+					if r.d.markNewer(m, newest) {
+						newest = m
+					}
+				}
+			}()
+		}
+		wg.Wait()
+	}
+	close(stop)
+	<-readerDone
+	wantMarks(t, "after the concurrent syncs", r.d, newest)
+}
+
+// TestMarksOrderByPositionNotBySequence covers the two orders that sequence
+// numbers get wrong: records of one stream appended out of sequence order, and
+// a record in a segment with a lower id than the mark the figure holds.
+func TestMarksOrderByPositionNotBySequence(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRig(t, 1)
+	r.publish(t, file(1), 0, "aaaa")
+	open, ok := r.streams.Stream(0).OpenSegment()
+	if !ok {
+		t.Fatal("the stream reports no open segment after a write")
+	}
+	x := uint64(open)
+
+	// In one segment the mark synced through further wins, whichever of the
+	// two records drew the larger sequence number.
+	late := core.SyncMark{Stream: 0, Segment: x, Through: 100, Offset: 100, Sequence: 11}
+	early := core.SyncMark{Stream: 0, Segment: x, Through: 200, Offset: 200, Sequence: 10}
+	r.d.SeedMarks([]core.SyncMark{late})
+	r.d.RaiseMarks([]core.SyncMark{early})
+	wantMarks(t, "the record appended later with the smaller sequence number", r.d, early)
+	r.d.RaiseMarks([]core.SyncMark{{Stream: 0, Segment: x, Through: 150, Offset: 150, Sequence: 12}})
+	wantMarks(t, "a mark synced through less", r.d, early)
+
+	// Across segments the open segment wins: a figure naming a segment the
+	// stream left, with a sequence number past the new record's, gives way,
+	// and a straggler naming it afterwards changes nothing.
+	left := core.SyncMark{Stream: 0, Segment: x + 7, Through: 100, Offset: 100, Sequence: 9}
+	here := core.SyncMark{Stream: 0, Segment: x, Through: 50, Offset: 50, Sequence: 2}
+	r.d.SeedMarks([]core.SyncMark{left})
+	r.d.RaiseMarks([]core.SyncMark{here})
+	wantMarks(t, "a mark in the open segment over one in a segment of a higher id", r.d, here)
+	r.d.RaiseMarks([]core.SyncMark{{Stream: 0, Segment: x + 7, Through: 900, Offset: 900, Sequence: 99}})
+	wantMarks(t, "a straggler in a segment the stream left", r.d, here)
+
+	// A copy's mark carries a lower sequence number than the ended segment's
+	// last, and once the stream is past both segments nothing orders them: a
+	// recorded mark of the ended segment, arriving after the copy's segment
+	// sealed, leaves the entry on the copy.
+	r.d.SeedMarks([]core.SyncMark{{Stream: 0, Segment: x + 2, Through: 100, Offset: 100, Sequence: 30}})
+	r.d.RaiseMarks([]core.SyncMark{{Stream: 0, Segment: x + 1, Through: 500, Offset: 500, Sequence: 50}})
+	wantMarks(t, "a mark of an ended segment once the stream is past both", r.d, core.SyncMark{Stream: 0, Segment: x + 2, Through: 100, Offset: 100, Sequence: 30})
+}

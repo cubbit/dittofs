@@ -14,8 +14,8 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
@@ -56,6 +56,7 @@ func startStop(t *testing.T, h *nodetest.Harness) {
 // next start, naming the node's identity, and the write is logged on the
 // node's logger.
 func TestStartWritesTheMissingNodeIDCopy(t *testing.T) {
+	t.Parallel()
 	var logged syncBuffer
 	h, dev := harnessDevice(t, func(cfg *node.Config) {
 		cfg.Logger = slog.New(slog.NewTextHandler(&logged, nil))
@@ -91,6 +92,7 @@ func TestStartWritesTheMissingNodeIDCopy(t *testing.T) {
 // A replaced device's directory, empty or holding a journal the store does
 // not record for it, gets no node-id copy at the start.
 func TestStartWritesNoNodeIDCopyBesideAnUnrecordedJournal(t *testing.T) {
+	t.Parallel()
 	for name, replace := range map[string]func(t *testing.T, dev string, install [16]byte){
 		"empty": func(*testing.T, string, [16]byte) {},
 		"a journal the store does not record": func(t *testing.T, dev string, install [16]byte) {
@@ -102,6 +104,7 @@ func TestStartWritesNoNodeIDCopyBesideAnUnrecordedJournal(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			h, dev := harnessDevice(t, nil)
 			if err := os.RemoveAll(dev); err != nil {
 				t.Fatal(err)
@@ -136,6 +139,7 @@ func TestStartWritesNoNodeIDCopyBesideAnUnrecordedJournal(t *testing.T) {
 // The journal attaches over a directory holding node-id and node-id.tmp and
 // reports neither as a file it does not recognise, as it does a stray file.
 func TestJournalAttachKnowsTheNodeIDFiles(t *testing.T) {
+	t.Parallel()
 	var logged syncBuffer
 	h, dev := harnessDevice(t, func(cfg *node.Config) {
 		cfg.Journal = append(cfg.Journal, journal.WithLogger(slog.New(

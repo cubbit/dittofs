@@ -1,0 +1,961 @@
+package kit
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"maps"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"slices"
+	"sync"
+	"sync/atomic"
+
+	"github.com/cubbit/dittofs/pkg/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/sim"
+)
+
+// The seam's operation names, as Calls and CallsFor count them.
+const (
+	OpCreate     = "create"
+	OpOpen       = "open"
+	OpAllocate   = "allocate"
+	OpAllocated  = "allocated"
+	OpWrite      = "write"
+	OpRead       = "read"
+	OpReadDirect = "read_direct"
+	OpSync       = "sync"
+	OpTruncate   = "truncate"
+	OpClose      = "close"
+	OpRename     = "rename"
+	OpLink       = "link"
+	OpRemove     = "remove"
+	OpList       = "list"
+	OpSyncDir    = "sync_dir"
+)
+
+// Seam is a storage.FS over a real directory that can simulate a crash.
+//
+// Every call reaches the real files. Alongside, the seam remembers what is not
+// yet durable: per file, every WriteAt, Allocate and Truncate since that file's
+// last Sync, and every Create, Rename and Remove since the last SyncDir. A
+// change a failed Sync covered is lost: the file keeps serving it, but no
+// later Sync makes it durable, so from then on the seam keeps that file's
+// durable image and replays onto it what each later Sync covers. A failed
+// SyncDir does the same for the directory: its changes are lost, and the seam
+// keeps the durable directory and replays onto it what each later SyncDir
+// covers. Crash puts every file back to its durable image and the directory
+// back to its durable names, closes every open file, and leaves the directory
+// as a power loss would have, so a journal can be opened on it again.
+//
+// A removed or replaced file is not unlinked while a crash could bring it
+// back: it is moved to a stash directory beside dir, and unlinked by the
+// first SyncDir after which the durable directory no longer holds it. The
+// stash lives in dir's parent, which a test's temporary directory already
+// cleans up.
+//
+// decision: Sync and SyncDir do not call fsync. Durability is the seam's
+// record, not the device's, and nothing here survives a real power loss, so an
+// fsync would only slow every test down.
+type Seam struct {
+	dir    string
+	stash  string
+	fault  sim.Fault
+	marked string // a sim.Match pattern of the files whose writes MarkReorder marks; "" marks none
+	seq    uint64
+	names  map[string]*node // the directory as it is now
+	dirLog []dirOp          // Create, Rename and Remove since the last SyncDir
+
+	// dirSnap is the durable directory, kept from the first failed SyncDir
+	// until the next Crash: the directory then holds changes no SyncDir will
+	// make durable, so undoing dirLog no longer gives the durable names. Nil
+	// otherwise.
+	dirSnap map[string]*node
+
+	// shuffle seeds the permutation List serves the names in; zero is none,
+	// so List returns the directory's own order, which os.ReadDir sorts.
+	shuffle uint64
+
+	open     map[*seamFile]struct{}
+	calls    map[string]int
+	callsFor map[[2]string]int
+
+	// callsForOrder is the insertion order of callsFor's keys, oldest
+	// first, bounded by callsForCap: the per-name records the seam keeps
+	// are what an hours-long soak's churn would grow past the profiler's
+	// heap slack, since every retired-and-remade segment is a name the
+	// journal retires and another one it mints. The cap evicts the
+	// oldest-inserted name whatever it touched last - insertion order, not
+	// touch order, so a name counted recently can go while one long
+	// untouched stays - so a count an existing check asserts is lost only
+	// past the cap itself, 16,384 names churned between the counting and
+	// the reading.
+	callsForOrder [][2]string
+	stashed       int
+	spilled       int // spill files named so far: each one gets a fresh number
+	snapCap       int // the most bytes of a durable image a node keeps on the heap
+	holds         []*Hold
+	crashes       uint64 // Crash and Abandon calls so far; a call that waited across one fails
+
+	// moves counts every call's start and end, and inFlight the calls
+	// started and not ended, held ones included: what Activity reads.
+	moves    atomic.Uint64
+	inFlight atomic.Int64
+
+	mu sync.Mutex
+}
+
+// node is one file, followed across renames: its undo log stays with it.
+type node struct {
+	path  string   // where the file is now, in dir or in the stash
+	undo  []change // what its last Sync did not cover, oldest first
+	stale bool     // ReadAt serves the durable image
+
+	// snap is the file's durable image, kept once a change was lost: the
+	// file then holds bytes no Sync will make durable, so undoing the
+	// unsynced changes no longer gives the durable image. Nil when no image
+	// is kept, or when it is spilled to snapPath because it is larger than
+	// the seam's snapCap.
+	snap     []byte
+	snapPath string
+
+	// snapSize is the image's length: snap and the spill file keep the image
+	// only up to its last nonzero byte, so a preallocated zero tail costs
+	// nothing to hold.
+	snapSize int64
+
+	// madeDurable is the running total of write bytes its successful Syncs
+	// made durable, whatever name the file carried when they landed: the
+	// counter the mixed-durability check reads through DurableBytes, taken
+	// as a difference around one Sync call so bytes a sync flushed beside
+	// the caller's own — another writer's appends landing in the segment
+	// while the call was in flight — are counted as the caller's wait.
+	madeDurable int64
+
+	// waited is the running total of write bytes its successful Syncs found
+	// unsynced when each call arrived at the seam, before any hold or fault
+	// stopped it, each byte counted by the first sync that arrived for it:
+	// what the syncs waited for, without the bytes that landed while one was
+	// in flight and rode along. WaitedBytes reads it.
+	waited int64
+}
+
+type changeKind int
+
+const (
+	changeWrite changeKind = iota + 1
+	changeResize
+)
+
+// change is one unsynced operation on a file, with what it replaced.
+type change struct {
+	kind    changeKind
+	seq     uint64
+	off     int64  // write: where it landed
+	data    []byte // write: the bytes written
+	old     []byte // the bytes it overwrote or cut off, at off for a write and at the new size for a shrink
+	oldSize int64  // the file's size before it
+	newSize int64  // resize: the file's size after it
+	lost    bool   // a failed Sync covered it, or it was dropped: no Sync ever makes it durable
+	dropped bool   // write: it never reached the device, so no crash keeps it either
+	reorder bool   // write: MarkReorder marked it for Reordered's draw
+	waited  bool   // write: a Sync arrived while it was pending and counts it as waited for
+}
+
+type dirOpKind int
+
+const (
+	dirCreate dirOpKind = iota + 1
+	dirRename
+	dirRemove
+)
+
+type dirOp struct {
+	kind     dirOpKind
+	node     *node
+	name     string // create and remove: the name; rename: the new name
+	oldName  string // rename: the old name
+	replaced *node  // rename: the file newName held before, now in the stash
+}
+
+// NewSeam returns a seam over the existing directory dir. The files already
+// in dir are taken as durable.
+func NewSeam(dir string) (*Seam, error) {
+	dir = filepath.Clean(dir) // a file's key compares its directory with dir
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	stash, err := os.MkdirTemp(filepath.Dir(dir), filepath.Base(dir)+".stash-")
+	if err != nil {
+		return nil, err
+	}
+	s := &Seam{
+		dir:      dir,
+		stash:    stash,
+		snapCap:  snapHeapCap,
+		names:    map[string]*node{},
+		open:     map[*seamFile]struct{}{},
+		calls:    map[string]int{},
+		callsFor: map[[2]string]int{},
+	}
+
+	for _, e := range entries {
+		s.names[e.Name()] = &node{path: filepath.Join(dir, e.Name())}
+	}
+
+	return s, nil
+}
+
+var _ storage.FS = (*Seam)(nil)
+
+// FS returns a view of the seam for one process: a storage.FS that serves the
+// directory as the seam does until the next Crash or Abandon, and from then
+// on fails every call with an error matching fs.ErrClosed and does nothing. A
+// call it has in flight when either runs fails the same way. Files opened
+// through it are the seam's, which a Crash or an Abandon already closes.
+//
+// decision: a crash ends the process that made it, so nothing that process
+// still runs may act on the directory the crash left. Without a view, a
+// journal closed after a simulated crash could create, rename or sync files
+// after the power cut. A test gives each journal it opens a view of its own,
+// and the Seam itself always serves the current one.
+func (s *Seam) FS() storage.FS {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return view{s: s, epoch: s.crashes}
+}
+
+// view is the storage.FS FS returns: the seam, bound to the crashes it had
+// seen when the view was made.
+type view struct {
+	s     *Seam
+	epoch uint64
+}
+
+var _ storage.FS = view{}
+
+func (v view) Create(name string) (storage.File, error) { return v.s.createFrom(v.epoch, name) }
+func (v view) Open(name string) (storage.File, error)   { return v.s.openFrom(v.epoch, name) }
+func (v view) Rename(oldName, newName string) error     { return v.s.renameFrom(v.epoch, oldName, newName) }
+func (v view) Remove(name string) error                 { return v.s.removeFrom(v.epoch, name) }
+func (v view) List() ([]string, error)                  { return v.s.listFrom(v.epoch) }
+func (v view) SyncDir() error                           { return v.s.syncDirFrom(v.epoch) }
+
+// SetFault makes the seam consult f before every operation, and apply the
+// results it returns. A nil f, the default, passes every call.
+//
+// Each operation is named by one of the Op constants, and its key is the name
+// of the file it acts on, as the directory names it at the call: the old name
+// for a rename, and empty for list and sync_dir. Size and Name are not
+// operations and consult nothing. A call on a closed file fails with
+// fs.ErrClosed before f is consulted, so it never counts in a rule. f is
+// called without the seam's lock held, so a delay stalls only its own call.
+// The delay is one f has already waited out, so the seam applies it as passed.
+//
+// How the seam applies the results:
+//   - Zero, or a delay alone: performs the operation.
+//   - A loss (tearAfter < 0) on write: reports the whole write done, and the
+//     bytes reach the file, so ReadAt sees them, but they are lost: no Sync
+//     makes them durable, and Torn and Reordered never keep them.
+//   - A loss on sync or sync_dir: reports success and does nothing, so what
+//     was pending stays pending and a later sync can make it durable.
+//   - A tear (tearAfter > 0) on write: with err nil, a silent tear, performs
+//     the write whole and reports it done, but only its first tearAfter bytes
+//     can become durable: the rest is lost, as a lost write is. With err set
+//     it is a short write: only the first tearAfter bytes land, and it returns
+//     them and err. At or past the write's length nothing is torn.
+//   - err alone: performs nothing and returns err. A failed sync also marks
+//     every pending change of the file lost: ReadAt still serves it, and no
+//     later Sync makes it durable, but a crash may still find it, as Torn and
+//     Reordered may keep it. A failed sync_dir loses its directory changes
+//     the same way: they stay in the directory, and no later SyncDir makes
+//     them durable.
+//
+// A tear on any other op, or a loss on any other op or with err set, panics,
+// naming it and the op: it is a mistake in the test, not a storage fault.
+func (s *Seam) SetFault(f sim.Fault) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fault = f
+}
+
+// MarkReorder marks every later write of a file whose name matches key, a
+// pattern as sim.Match takes it, replacing any pattern set before; "" marks
+// none. While any pending write is marked, Reordered draws only among the
+// marked ones; a plain Crash and Torn ignore marks. A Sync that covers a
+// write clears its mark.
+func (s *Seam) MarkReorder(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.marked = key
+}
+
+// action is what the seam's fault decided for one call.
+type action struct {
+	err       error
+	tearAfter int  // > 0: tear a write after this many bytes; < 0: lose a write or a sync
+	marked    bool // a write MarkReorder marks, judged by the name the fault saw
+}
+
+func (a action) lost() bool { return a.tearAfter < 0 }
+
+// torn reports whether a tears a write of n bytes.
+func (a action) torn(n int) bool { return a.tearAfter > 0 && a.tearAfter < n }
+
+// consult asks the seam's fault what to do with op on key, and panics on
+// results the seam cannot apply to op. The caller must not hold mu, because a
+// delay waits inside At.
+func (s *Seam) consult(op, key string) action {
+	s.mu.Lock()
+	f := s.fault
+	marked := op == OpWrite && sim.Match(s.marked, key) // "" matches no file name
+	s.mu.Unlock()
+
+	if f == nil {
+		return action{marked: marked}
+	}
+
+	_, tearAfter, err := f.At(op, []byte(key))
+	switch {
+	case tearAfter > 0 && op != OpWrite:
+		panic(fmt.Sprintf("journaltest: a tear on %s is not supported", op))
+	case tearAfter < 0 && op != OpWrite && op != OpSync && op != OpSyncDir && op != OpAllocated:
+		panic(fmt.Sprintf("journaltest: a loss on %s is not supported", op))
+	case tearAfter < 0 && err != nil:
+		panic(fmt.Sprintf("journaltest: a loss on %s with an error is not supported", op))
+	}
+
+	return action{err: err, tearAfter: tearAfter, marked: marked}
+}
+
+// enter counts op on name, waits at any hold that matches it, then consults
+// the fault. It returns the fault's action holding mu, unless the fault fails
+// the call: then it returns the fault's error, without mu. A call from a
+// process a Crash or an Abandon ended, one made after the crashes epoch
+// counts or during which one ran while it was held or delayed, fails with an
+// error matching fs.ErrClosed and does nothing: it must not act on the
+// directory as the crash left it.
+//
+// A call refused on entry is not counted: its process no longer exists, so it
+// is no call of the journal under test. A call on a file a Crash closed is
+// counted, as file.go's enter does, because it is one the live process made.
+func (s *Seam) enter(op, name string, epoch uint64) (action, error) {
+	s.mu.Lock()
+	if s.crashes != epoch {
+		s.mu.Unlock()
+		return action{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrClosed}
+	}
+	s.count(op, name)
+	s.mu.Unlock()
+
+	s.hold(op, name)
+	a := s.consult(op, name)
+
+	s.mu.Lock()
+	if s.crashes != epoch {
+		s.mu.Unlock()
+		return action{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrClosed}
+	}
+
+	if a.err != nil && a.tearAfter == 0 {
+		if op == OpSyncDir {
+			s.loseDirLog()
+		}
+
+		s.mu.Unlock()
+		return a, &fs.PathError{Op: op, Path: name, Err: a.err}
+	}
+
+	return a, nil
+}
+
+// callsForCap is how many per-name call records the seam keeps: a bound the
+// short checks never come near and an hours-long soak's churn fills, so the
+// rig holds a flat footprint of its own bookkeeping — small enough that the
+// capped map rides below the profiler's own heap slack beside the journal
+// it measures.
+//
+// ponytail: eviction is insertion order alone, so a long-forgotten name's
+// record can be dropped before a more recently counted one that was
+// inserted earlier; no check reads a count that old across that much churn,
+// and an LRU of touch order is the upgrade if one ever does.
+const callsForCap = 1 << 14
+
+// count records one call of op on name; the caller holds mu.
+func (s *Seam) count(op, name string) {
+	s.calls[op]++
+	k := [2]string{op, name}
+	if _, ok := s.callsFor[k]; !ok {
+		s.callsForOrder = append(s.callsForOrder, k)
+		if len(s.callsForOrder) > callsForCap {
+			delete(s.callsFor, s.callsForOrder[0])
+			// The reslice drops the head from the window's view only: the
+			// backing array's own head stays until the next growth copies
+			// the live window into a fresh one, which bounds the array near
+			// twice the cap, so the order slice's memory is bounded too.
+			s.callsForOrder = s.callsForOrder[1:]
+		}
+	}
+	s.callsFor[k]++
+}
+
+// call marks a call started, and returns what marks it ended.
+func (s *Seam) call() func() {
+	s.moves.Add(1)
+	s.inFlight.Add(1)
+	return func() {
+		s.inFlight.Add(-1)
+		s.moves.Add(1)
+	}
+}
+
+// Activity reports what the code under test is doing through the seam, for
+// a check that waits on it: moves, which every call's start and its end
+// advance, and acting, whether a call is in flight that no hold has
+// stopped. Two reports with the same moves and acting false bracket a
+// stretch in which no call started or ended and every call in flight sat
+// parked at a hold, which only the test releases.
+//
+// decision: a call stalled by a fault's delay is in flight and stopped by no
+// hold, so it reads as acting: the delay ends on the fault's own clock,
+// which the code under test may yet reach.
+func (s *Seam) Activity() (moves uint64, acting bool) {
+	s.mu.Lock()
+	holds := slices.Clone(s.holds)
+	s.mu.Unlock()
+
+	var parked int64
+	for _, h := range holds {
+		parked += int64(h.Waiting())
+	}
+
+	// Read after the holds, so a call that parks between the two reads
+	// counts as acting rather than as parked; moves last, so a call that
+	// ends meanwhile shows as a move.
+	acting = s.inFlight.Load() > parked
+	return s.moves.Load(), acting
+}
+
+// Calls returns how many times op was called, on any file.
+func (s *Seam) Calls(op string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[op]
+}
+
+// CallsFor returns how many times op was called on the file name.
+func (s *Seam) CallsFor(op, name string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.callsFor[[2]string{op, name}]
+}
+
+func (s *Seam) Create(name string) (storage.File, error) { return s.FS().Create(name) }
+
+func (s *Seam) createFrom(epoch uint64, name string) (storage.File, error) {
+	defer s.call()()
+	if _, err := s.enter(OpCreate, name, epoch); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+
+	path := filepath.Join(s.dir, name)
+	f, err := openFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return nil, err
+	}
+
+	n := &node{path: path}
+	s.names[name] = n
+
+	s.dirLog = append(s.dirLog, dirOp{kind: dirCreate, node: n, name: name})
+	return s.track(f, n, name), nil
+}
+
+func (s *Seam) Open(name string) (storage.File, error) { return s.FS().Open(name) }
+
+func (s *Seam) openFrom(epoch uint64, name string) (storage.File, error) {
+	defer s.call()()
+	if _, err := s.enter(OpOpen, name, epoch); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+
+	n, ok := s.names[name]
+	if !ok {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+
+	f, err := openFile(n.path, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.track(f, n, name), nil
+}
+
+func (s *Seam) track(f *os.File, n *node, name string) *seamFile {
+	sf := &seamFile{seam: s, f: f, node: n, name: name}
+	s.open[sf] = struct{}{}
+	return sf
+}
+
+func (s *Seam) Rename(oldName, newName string) error { return s.FS().Rename(oldName, newName) }
+
+func (s *Seam) renameFrom(epoch uint64, oldName, newName string) error {
+	defer s.call()()
+	if _, err := s.enter(OpRename, oldName, epoch); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+
+	n, ok := s.names[oldName]
+	if !ok {
+		return &fs.PathError{Op: "rename", Path: oldName, Err: fs.ErrNotExist}
+	}
+
+	if oldName == newName {
+		return nil
+	}
+
+	var replaced *node
+	if r, ok := s.names[newName]; ok {
+		if err := s.toStash(r); err != nil {
+			return err
+		}
+		replaced = r
+	}
+
+	path := filepath.Join(s.dir, newName)
+	if err := os.Rename(n.path, path); err != nil {
+		if replaced != nil {
+			back := filepath.Join(s.dir, newName)
+			if rerr := os.Rename(replaced.path, back); rerr != nil {
+				return errors.Join(err, rerr)
+			}
+
+			replaced.path = back
+		}
+
+		return err
+	}
+	n.path = path
+	delete(s.names, oldName)
+
+	s.names[newName] = n
+	s.dirLog = append(s.dirLog, dirOp{
+		kind:     dirRename,
+		node:     n,
+		name:     newName,
+		oldName:  oldName,
+		replaced: replaced},
+	)
+
+	return nil
+}
+
+// Link gives the file oldName a second name, newName, as link(2) does: it
+// fails with an error matching fs.ErrExist if newName exists, and never
+// replaces it. Like a Create, the new name is undone by a crash before the
+// next SyncDir. It is the seam's own call, outside storage.FS, for code that
+// publishes a file without replacing one.
+//
+// From the link on, the seam follows newName as a file of its own, carrying
+// the changes no Sync of oldName had covered when the link was made. A later
+// write or Sync through either name does not reach the other's record, so a
+// crash keeps the new name's data only as far as the old name was synced
+// before the link: stricter than a filesystem, where both names share the
+// file.
+func (s *Seam) Link(oldName, newName string) error {
+	s.mu.Lock()
+	epoch := s.crashes
+	s.mu.Unlock()
+
+	return s.linkFrom(epoch, oldName, newName)
+}
+
+func (s *Seam) linkFrom(epoch uint64, oldName, newName string) error {
+	defer s.call()()
+
+	if _, err := s.enter(OpLink, oldName, epoch); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+
+	n, ok := s.names[oldName]
+	if !ok {
+		return &fs.PathError{Op: "link", Path: oldName, Err: fs.ErrNotExist}
+	}
+
+	path := filepath.Join(s.dir, newName)
+	if err := os.Link(n.path, path); err != nil {
+		return err
+	}
+
+	linked := &node{
+		path:  path,
+		undo:  slices.Clone(n.undo),
+		stale: n.stale,
+	}
+	if n.hasSnap() {
+		img, err := n.snapImage()
+		if err == nil {
+			err = s.setSnap(linked, img)
+		}
+		if err != nil {
+			return errors.Join(err, os.Remove(path))
+		}
+	}
+	s.names[newName] = linked
+	s.dirLog = append(s.dirLog, dirOp{kind: dirCreate, node: linked, name: newName})
+
+	return nil
+}
+
+func (s *Seam) Remove(name string) error { return s.FS().Remove(name) }
+
+func (s *Seam) removeFrom(epoch uint64, name string) error {
+	defer s.call()()
+	if _, err := s.enter(OpRemove, name, epoch); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+
+	n, ok := s.names[name]
+	if !ok {
+		return &fs.PathError{Op: "remove", Path: name, Err: fs.ErrNotExist}
+	}
+	if err := s.toStash(n); err != nil {
+		return err
+	}
+	delete(s.names, name)
+	s.dirLog = append(s.dirLog, dirOp{kind: dirRemove, node: n, name: name})
+	return nil
+}
+
+// toStash moves n out of the directory without unlinking it; the caller
+// holds mu.
+func (s *Seam) toStash(n *node) error {
+	s.stashed++
+	path := filepath.Join(s.stash, fmt.Sprint(s.stashed))
+	if err := os.Rename(n.path, path); err != nil {
+		return err
+	}
+	n.path = path
+	return nil
+}
+
+func (s *Seam) List() ([]string, error) { return s.FS().List() }
+
+func (s *Seam) listFrom(epoch uint64) ([]string, error) {
+	defer s.call()()
+	if _, err := s.enter(OpList, "", epoch); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if s.shuffle != 0 {
+		r := rand.NewPCG(s.shuffle, s.shuffle)
+		rand.New(r).Shuffle(len(names), func(i, j int) { names[i], names[j] = names[j], names[i] })
+	}
+	return names, nil
+}
+
+// ShuffleList makes every later List, through any view, return the names in
+// an order permuted deterministically by seed; ShuffleList(0) restores the
+// directory's own order, which every List of a storage.FS may sort, as
+// os.ReadDir does. The same seed always gives the same order, and List keeps
+// naming every file.
+//
+// decision: the shuffled order comes from the listing rather than from
+// renaming the files. A segment header's id is the one in its name, so a
+// renamed segment is damage a correct journal must refuse, and a recovery
+// that depends on listing order would never be run against it. Permuting
+// the listing alone leaves every segment intact while hiding the order the
+// real filesystem hands them over in, which is what the check needs.
+func (s *Seam) ShuffleList(seed uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.shuffle = seed
+}
+
+func (s *Seam) SyncDir() error { return s.FS().SyncDir() }
+
+func (s *Seam) syncDirFrom(epoch uint64) error {
+	defer s.call()()
+	a, err := s.enter(OpSyncDir, "", epoch)
+	if err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+
+	if a.lost() {
+		return nil
+	}
+
+	if s.dirSnap != nil {
+		s.replayDirLog()
+	}
+	s.dirLog = nil
+
+	// decision: SyncDir's result is the commit of the directory log, which cannot
+	// fail here. Unlinking the stashed files the durable directory no longer
+	// holds is cleanup, and what it leaves is removed by a later SyncDir or Crash.
+	_ = s.emptyStash()
+	return nil
+}
+
+// loseDirLog drops every pending directory change, after a SyncDir that
+// failed. The first failure keeps the durable directory in dirSnap; a later
+// one leaves dirSnap as it is. The caller holds mu.
+//
+// decision: a later success does not stand in for a SyncDir that failed, as
+// for a file's Sync. The changes stay in the directory, so List and Open
+// still see them, but only what is logged after the failure can become
+// durable, so code that retries a failed SyncDir and trusts the retry is
+// caught. The one exception is a lost rename that a later change depends on
+// (see replayDirLog).
+func (s *Seam) loseDirLog() {
+	if s.dirSnap == nil {
+		s.dirSnap = s.durableNames()
+	}
+	s.dirLog = nil
+}
+
+// replayDirLog applies the pending directory changes to dirSnap, oldest
+// first, after a SyncDir that succeeded; dirSnap stays set. The caller holds
+// mu.
+//
+// decision: a change is replayed by name, whatever the durable directory
+// holds under that name: a create or a rename sets the name, a remove deletes
+// it, and the file it removed under any name the durable directory gives it.
+// Replaying only changes whose node the durable directory still holds would
+// dead-end the re-append path: once the removal of an old file is lost, a new
+// file under its name could never become durable, and removing the name again
+// would act on the new file, which the durable directory never held. A node
+// keeps one name, so a rename also takes it away from any name it held.
+//
+// decision: a node a replayed change takes a name from keeps a durable name
+// while the directory still holds it: the one the directory holds it under
+// now, given it by a rename the failure lost. A filesystem commits directory
+// changes in order, so it cannot commit the change that reuses the name
+// without the rename that freed it, and a renamed file survives a crash
+// under one of its names, never under none. By the same order, a filesystem
+// would commit every lost change before a later success; the seam keeps the
+// others lost on purpose, as the worst case, so code that trusts a retried
+// SyncDir is caught. That is a harness choice, not a filesystem state.
+func (s *Seam) replayDirLog() {
+	now := make(map[*node]string, len(s.names))
+	for name, n := range s.names {
+		now[n] = name
+	}
+
+	// keep gives the node under name, and any node it displaces in turn, the
+	// name the directory holds it under now.
+	keep := func(name string) {
+		for n := s.dirSnap[name]; n != nil; {
+			to, ok := now[n]
+			if !ok || to == name {
+				return
+			}
+			n, s.dirSnap[to] = s.dirSnap[to], n
+		}
+	}
+
+	for _, op := range s.dirLog {
+		switch op.kind {
+		case dirCreate:
+			keep(op.name)
+			s.dirSnap[op.name] = op.node
+		case dirRemove:
+			maps.DeleteFunc(s.dirSnap, func(_ string, n *node) bool { return n == op.node })
+			keep(op.name)
+			delete(s.dirSnap, op.name)
+		case dirRename:
+			maps.DeleteFunc(s.dirSnap, func(_ string, n *node) bool { return n == op.node })
+			keep(op.oldName)
+			delete(s.dirSnap, op.oldName)
+			keep(op.name)
+			s.dirSnap[op.name] = op.node
+		}
+	}
+}
+
+// emptyStash unlinks every stashed file the durable directory does not hold,
+// now that nothing can bring one back, and every spilled durable image no
+// file the seam can still reach keeps; the caller holds mu.
+func (s *Seam) emptyStash() error {
+	held := map[string]bool{}
+	for _, n := range s.dirSnap {
+		held[n.path] = true
+	}
+
+	if err := s.pruneSnaps(); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(s.stash)
+	if err != nil {
+		return err
+	}
+
+	for _, e := range entries {
+		path := filepath.Join(s.stash, e.Name())
+		if held[path] || e.Name() == snapDir {
+			continue
+		}
+
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// pruneSnaps unlinks every spill file no node the seam can still reach keeps:
+// a node is reachable through the directory now, the durable directory, or a
+// file open on it. A node removed while open loses its image here once its
+// last handle closes. The caller holds mu.
+func (s *Seam) pruneSnaps() error {
+	dir := filepath.Join(s.stash, snapDir)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	kept := map[string]bool{}
+	for _, n := range s.names {
+		kept[n.snapPath] = true
+	}
+	for _, n := range s.durableNames() {
+		kept[n.snapPath] = true
+	}
+	for sf := range s.open {
+		kept[sf.node.snapPath] = true
+	}
+
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		if kept[path] {
+			continue
+		}
+
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// StaleReads makes every ReadAt of the file name, through a handle open now
+// or later, serve the file's durable image instead of what was written since
+// its last Sync: what a page cache that dropped the unsynced pages would
+// return.
+func (s *Seam) StaleReads(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if n, ok := s.names[name]; ok {
+		n.stale = true
+	}
+}
+
+// DurableBytes returns the running total of write bytes the file's successful
+// Syncs have made durable, and 0 for a name the seam does not hold. A change
+// a failed Sync covered never counts: no later Sync makes it durable, so a
+// caller measuring what one Sync flushed reads none of those bytes in it. A
+// synced write of the same bytes again counts again: the total runs over the
+// syncs, not the bytes. The seam's Unsynced is the count of writes a crash's
+// draw may still keep, a different measure, taken from the undo logs.
+func (s *Seam) DurableBytes(name string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n, ok := s.names[name]
+	if !ok {
+		return 0
+	}
+	return n.madeDurable
+}
+
+// WaitedBytes returns the running total of write bytes the file's successful
+// Syncs waited for, and 0 for a name the seam does not hold: each sync adds
+// the write bytes that were unsynced, and not lost, when the call arrived at
+// the seam, before a hold or a fault could stop it, and that no sync already
+// in flight had arrived for. A write that lands while the sync is held or
+// parked is made durable by it, and counted by DurableBytes, but not here:
+// the sync did not wait for it. Two syncs in flight together count a byte
+// once, for the first to arrive. Like
+// DurableBytes, the total runs over the syncs, and a caller measures one
+// stretch by the difference across it.
+func (s *Seam) WaitedBytes(name string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n, ok := s.names[name]
+	if !ok {
+		return 0
+	}
+	return n.waited
+}
+
+// Durable returns the bytes a crash now would leave in the file name, and an
+// error matching fs.ErrNotExist when a crash now would leave no such file.
+func (s *Seam) Durable(name string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n, ok := s.durableNames()[name]
+	if !ok {
+		return nil, &fs.PathError{Op: "durable", Path: name, Err: fs.ErrNotExist}
+	}
+	return n.durableImage()
+}
+
+// durableNames returns the directory as the last SyncDir left it: dirSnap
+// when it is set, otherwise the current names with every pending change
+// undone. The caller holds mu.
+func (s *Seam) durableNames() map[string]*node {
+	if s.dirSnap != nil {
+		return maps.Clone(s.dirSnap)
+	}
+
+	names := make(map[string]*node, len(s.names))
+	maps.Copy(names, s.names)
+
+	for i := range slices.Backward(s.dirLog) {
+		op := s.dirLog[i]
+
+		switch op.kind {
+		case dirCreate:
+			delete(names, op.name)
+		case dirRename:
+			delete(names, op.name)
+			names[op.oldName] = op.node
+
+			if op.replaced != nil {
+				names[op.name] = op.replaced
+			}
+
+		case dirRemove:
+			names[op.name] = op.node
+		}
+	}
+
+	return names
+}

@@ -24,9 +24,9 @@ import (
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/internal/prof"
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
@@ -577,6 +577,7 @@ func TestStartRefusalLeavesEverythingByteIdentical(t *testing.T) {
 // The start_failed condition answers while Start holds the node at a step:
 // it does not wait for the Start to end.
 func TestStartFailedAnswersDuringStart(t *testing.T) {
+	t.Parallel()
 	answered := make(chan int, 1)
 	h := nodetest.New(t, nodetest.WithNew(node.NewStepping(func(n *node.Node, step string) {
 		if step != "apply" {
@@ -603,6 +604,7 @@ func TestStartFailedAnswersDuringStart(t *testing.T) {
 // Start logs the addresses the API and the metrics listeners bound, which a
 // host reads to reach a node it gave port 0.
 func TestStartLogsTheBoundAddresses(t *testing.T) {
+	t.Parallel()
 	var logged syncBuffer
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		cfg.Logger = slog.New(slog.NewTextHandler(&logged, nil))
@@ -626,6 +628,9 @@ func TestStartLogsTheBoundAddresses(t *testing.T) {
 // The API listens on api.listen and the metrics listener on metrics.listen,
 // each on its own address.
 func TestStartListensOnEachKeysAddress(t *testing.T) {
+	// decision: serial, because it picks a free loopback port, releases it and
+	// binds it again later; a parallel test's own port-0 listener could take it
+	// in between. Run it in parallel once the port is held until the bind.
 	apiAddr, metAddr := freeAddr(t), freeAddr(t)
 	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
 		cfg.Bootstrap.API.Listen = []string{apiAddr}
@@ -731,7 +736,7 @@ func TestStartRunsTheOperationRunner(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	id := deleteUser(t, h)
 	turns := make(chan struct{}, 1)
-	h.Node().OnRunnerTurn(func() { turns <- struct{}{} })
+	h.Node().OnRunnerTurn(func(context.Context) { turns <- struct{}{} })
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

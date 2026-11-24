@@ -10,15 +10,15 @@ import (
 	"time"
 
 	filesystem "github.com/cubbit/dittofs/internal/vfs"
-	"github.com/cubbit/dittofs/pkg/block/engine"
-	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // copyChunk is the engine's copy chunk under the fixture's clone_max_len: it
-// must match copyChunk in pkg/block/engine/clone.go.
+// must match copyChunk in pkg/engine/clone.go.
 const copyChunk = 64 << 20
 
 // backstop is a generous real-time bound on a wait that must end, so a wrong
@@ -278,13 +278,13 @@ func v26(t *testing.T, opts ...enginetest.Option) {
 		c := compose(t)
 		const part = 64 << 10
 		parts := [][]byte{bytes.Repeat([]byte{'a'}, part), bytes.Repeat([]byte("lost"), part/4), bytes.Repeat([]byte{'c'}, part)}
-		src, _ := c.owned(t, "src", c.FS.Admin.Principal, 0o644)
+		src, srcID := c.owned(t, "src", c.FS.Admin.Principal, 0o644)
 		for i, p := range parts {
 			if _, err := c.fs.Write(t.Context(), c.admin, vfs.Anonymous(src), int64(i*part), p, vfs.Unstable); err != nil {
 				t.Fatalf("the first write: %v", err)
 			}
 		}
-		loseRun(t, c, src, parts[1])
+		loseRun(t, c, src, srcID, parts[1])
 		dst, _ := c.owned(t, "dst", c.FS.Admin.Principal, 0o644)
 		ctx, cancel := context.WithTimeout(t.Context(), backstop)
 		defer cancel()
@@ -305,12 +305,18 @@ func v26(t *testing.T, opts ...enginetest.Option) {
 // invalid reports whether err is ErrInvalid.
 func invalid(err error) bool { return errors.Is(err, vfs.ErrInvalid) }
 
-// loseRun makes the journal lose src's run p: the file is synced, a byte of
-// p's record flipped in the segment's durable image, and the process
-// crashed, so the restart replays the loss over the synced run.
-func loseRun(t *testing.T, c *composition, src vfs.Handle, p []byte) {
+// loseRun makes the journal lose src's run p: the file, id its ID, is
+// committed and a group commit runs after it, so a recorded sync mark proves
+// the run synced; then a byte of p's record is flipped in the segment's
+// durable image and the process crashed, so the restart replays the loss over
+// the synced run.
+func loseRun(t *testing.T, c *composition, src vfs.Handle, id entity.FileID, p []byte) {
 	t.Helper()
 	if _, err := c.fs.Commit(t.Context(), c.admin, vfs.Anonymous(src), 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh file's Commit waits for no recorded mark.
+	if err := c.E.CommitExistence(t.Context(), c.Share.ID, id); err != nil {
 		t.Fatal(err)
 	}
 	names, err := c.Seam.List()

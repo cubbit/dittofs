@@ -143,7 +143,7 @@ func TestStartClosesTheStoreOnFoundationDB(t *testing.T) {
 	if cf == "" {
 		t.Skip("no FoundationDB: run through test/fdb/cluster.sh test, which sets DITTOFS_FDB_CLUSTER_FILE")
 	}
-	if os.Getenv("DITTOFS_FDB_OWN_CLUSTER") == "" {
+	if !ownFDBCluster {
 		t.Skip("clears the whole cluster: set DITTOFS_FDB_OWN_CLUSTER=1 on a cluster of its own, with -p 1")
 	}
 	cluster, err := os.ReadFile(cf)

@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/test/harness/registry"
 )
 

@@ -51,7 +51,11 @@ func Delete(scope entity.SettingScope, key string) Write {
 type HoldsContent func(scope entity.SettingScope) (bool, error)
 
 // Check judges w for caller inside the write's transaction tx, reading only
-// through tx, and returns the refusal or nil.
+// through tx, and returns the refusal or nil. A table WithMetrics bound
+// counts the refusal on its way out, once per write: config_refused_total
+// under the section the write's key resolved to and the name of the error
+// it wraps in the reasons table, and config_bound_refusals_total too when
+// the bound gate refused the change.
 //
 // decision: a secret's rotation never reaches Check, since a setting's
 // reference names the secret, not one of its versions: a new version changes
@@ -62,8 +66,26 @@ func (t Table) Check(
 	w Write,
 	holds HoldsContent,
 ) error {
+	sec, err := t.check(tx, caller, w, holds)
+	if err != nil {
+		t.count(sec, err)
+	}
+
+	return err
+}
+
+// check is Check's own judgement, which Check counts on its way out. Beside
+// the error it returns the section the write's key resolved to, nil when
+// the write claims no section, so Check builds no index of its own to find
+// the refusal's component.
+func (t Table) check(
+	tx entity.ControlPlaneTx,
+	caller entity.APIRole,
+	w Write,
+	holds HoldsContent,
+) (*Section, error) {
 	if w.put == nil && !w.deletes {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"settings: write of %q is neither a put nor a delete: %w",
 			w.Key,
 			ErrInvalid,
@@ -72,16 +94,16 @@ func (t Table) Check(
 
 	sec, declared, thing, found := t.index().resolve(w.Key)
 	if !found {
-		return refuse(w.Scope, strconv.Quote(w.Key), "unknown key", ErrUnknownKey)
+		return nil, refuse(w.Scope, strconv.Quote(w.Key), "unknown key", ErrUnknownKey)
 	}
 
 	if !sec.declares(declared) && w.put != nil {
-		return refuse(w.Scope, strconv.Quote(w.Key),
+		return sec, refuse(w.Scope, strconv.Quote(w.Key),
 			"unknown key; did you mean "+sec.nearest(w.Key, thing)+"?", ErrUnknownKey)
 	}
 
 	if err := sec.checkScope(w, declared); err != nil {
-		return err
+		return sec, err
 	}
 
 	if !sec.declares(declared) {
@@ -97,17 +119,17 @@ func (t Table) Check(
 		// newer than the active version; a newer binary's section nested
 		// under a declared prefix still needs it then.
 		if rank(caller) < rank(entity.RoleAdmin) {
-			return refuse(w.Scope, strconv.Quote(w.Key),
+			return sec, refuse(w.Scope, strconv.Quote(w.Key),
 				"unknown key, deleted by admin only", ErrForbidden)
 		}
 	}
 
 	if w.put != nil && w.put.Schema > maxSchema() {
-		return newer(w.Scope, w.Key, w.put.Schema)
+		return sec, newer(w.Scope, w.Key, w.put.Schema)
 	}
 
 	if rank(caller) < rank(sec.writeRole) {
-		return refuse(w.Scope, w.Key, "written by "+writers(sec.writeRole), ErrForbidden)
+		return sec, refuse(w.Scope, w.Key, "written by "+writers(sec.writeRole), ErrForbidden)
 	}
 
 	// A key KeyRole names carries a higher bar than its section's, so an
@@ -115,7 +137,7 @@ func (t Table) Check(
 	// admin's, first value included: the gate runs before anything decodes or
 	// judges the value.
 	if role, guarded := sec.keyRoles[declared]; guarded && rank(caller) < rank(role) {
-		return refuse(w.Scope, w.Key, "written by "+writers(role), ErrForbidden)
+		return sec, refuse(w.Scope, w.Key, "written by "+writers(role), ErrForbidden)
 	}
 
 	// decision: a delete of a per-thing key with no thing names no row of any
@@ -123,19 +145,19 @@ func (t Table) Check(
 	// such a row unremovable. Withdraw once a per-thing section stores a key
 	// with no thing.
 	if sec.scope.form == formPerThing && thing == "" {
-		return nil
+		return sec, nil
 	}
 
 	effective, holders, err := sec.after(tx, w, declared, thing)
 	if err != nil {
-		return err
+		return sec, err
 	}
 
 	// A plaintext typed into a reference field never reaches a Validate that
 	// prints it: the reference gate runs before Validate, and its refusals
 	// name the field, never the value (RFC 13 §6).
 	if err := sec.checkSecretRefs(tx, effective, thing, holders); err != nil {
-		return err
+		return sec, err
 	}
 
 	if err := effective.(interface{ Validate() error }).Validate(); err != nil {
@@ -144,12 +166,12 @@ func (t Table) Check(
 			key += "." + thing
 		}
 
-		return refuse(w.Scope, key, err.Error(), ErrInvalid)
+		return sec, refuse(w.Scope, key, err.Error(), ErrInvalid)
 	}
 
 	if sec.checkTx != nil {
 		if err := sec.checkTx(tx, w, effective); err != nil {
-			return err
+			return sec, err
 		}
 	}
 
@@ -167,7 +189,9 @@ func (t Table) Check(
 	// makes a rollback refuse that section. Withdraw this note once a write that
 	// sets such a field is refused while that binary is newer than the active
 	// version.
-	return sec.gates(tx, w, declared, thing, holds, effective)
+	gate := sec.gates(tx, w, declared, thing, holds, effective)
+
+	return sec, gate
 }
 
 // maxSchema is the newest settings schema this binary reads.

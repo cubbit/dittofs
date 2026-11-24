@@ -60,7 +60,7 @@ var namePrefix = strings.ToLower(cmp.Or(os.Getenv("DITTOFS_KDC_NAME_PREFIX"), "d
 // logon-information buffer: what krb5 1.20 puts in every ticket, and the path
 // the vector exists to hold.
 //
-// With DITTOFS_KERBEROS_PAC_OUT naming a directory, it also writes there
+// With DITTOFS_MIT_PAC_OUT naming a directory, it also writes there
 // mit-alice.apreq, mit-alice.json (the authenticator's time), mit-service.pac
 // (the ticket's PAC) and mit-service.keytab.
 //
@@ -132,7 +132,7 @@ func TestMITPACCapture(t *testing.T) {
 		t.Fatalf("marshal alice's AP-REQ: %v", err)
 	}
 
-	out := os.Getenv("DITTOFS_KERBEROS_PAC_OUT")
+	out := os.Getenv("DITTOFS_MIT_PAC_OUT")
 	if out == "" {
 		return
 	}

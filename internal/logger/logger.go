@@ -117,11 +117,10 @@ func reconfigure() {
 	slogger = slog.New(handler)
 
 	// Route the standard-library default logger through our configured
-	// handler too. Large parts of the codebase (notably pkg/block — the GC
-	// engine and the fs/rollup stores) log via the package-level slog.*
+	// handler too. Parts of the codebase log via the package-level slog.*
 	// functions rather than this package's wrappers. Without SetDefault those
 	// calls go to slog's built-in default handler, which ignores both the
-	// configured format AND the configured level — so DITTOFS_LOGGING_LEVEL=DEBUG
+	// configured format AND the configured level, so DITTOFS_LOGGING_LEVEL=debug
 	// never surfaced their Debug lines and their output used a different format.
 	slog.SetDefault(slogger)
 }

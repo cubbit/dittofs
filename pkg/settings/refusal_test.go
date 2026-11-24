@@ -113,3 +113,76 @@ func TestPrefixOfAnswersTheLongestPrefix(t *testing.T) {
 		}
 	}
 }
+
+// Reads answers as Read does, row by row: a row Reads keeps is one Read
+// refuses when it does not decode, and a row Reads skips is one Read passes
+// over, so a refusal never names a row Read skips and never drops one it
+// keeps. The rows cover each skip: a scope kind the section lacks, a field an
+// OverrideOnly option does not name, a per-thing row with no thing, and a key
+// no section claims.
+func TestReadsAgreesWithReadRowByRow(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	table := settings.Table{
+		settings.Of("srv", settings.Override(entity.ScopeInstallation, entity.ScopeNode),
+			rdServerDefault(), settings.OverrideOnly("Port")),
+		settings.Of("pt", settings.PerThing(entity.ScopeNode, "thing"), rdServerDefault()),
+	}
+
+	node := rdNodeScope(rdNodeA)
+
+	for _, tc := range []struct {
+		name  string
+		scope entity.SettingScope
+		key   string
+		want  bool
+	}{
+		{"the wide scope", rdInstallation, "srv.port", true},
+		{"the narrow scope, a field OverrideOnly names", node, "srv.port", true},
+		{"the narrow scope, a field it does not name", node, "srv.host", false},
+		{"a scope kind the section lacks", rdShareScope(1), "srv.port", false},
+		{"a per-thing row with its thing", node, "pt.t1.port", true},
+		{"a per-thing row with no thing", node, "pt.port", false},
+		{"a key no section claims", rdInstallation, "other.key", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newRdStore(t)
+			s.raw(t, tc.scope, tc.key, []byte{0xff})
+
+			_, refused := rdRead(t, s.nodes, table, rdNodeA)
+
+			var named int
+
+			for _, err := range refused {
+				named += len(rfAll(err))
+			}
+
+			if kept := named > 0; kept != tc.want {
+				t.Fatalf("Read names %d refusals, so it keeps the row: %v, want %v", named, kept, tc.want)
+			}
+
+			row := entity.Setting{Scope: tc.scope, Key: tc.key}
+
+			prefix, got := table.Reads(row)
+			if got != tc.want {
+				t.Errorf("Reads = %v, want %v, as Read does", got, tc.want)
+			}
+
+			if want := table.PrefixOf(tc.key); got && prefix != want {
+				t.Errorf("Reads names section %q, want %q, the one PrefixOf names", prefix, want)
+			}
+		})
+	}
+}
+
+// A row with no key, as the walk yields one whose key does not parse, is read
+// by no section, so the walk needs no check of its own for it.
+func TestReadsSkipsARowWithNoKey(t *testing.T) {
+	table := settings.Table{
+		settings.Of("srv", settings.At(entity.ScopeInstallation), rdServerDefault()),
+	}
+
+	if prefix, ok := table.Reads(entity.Setting{}); ok || prefix != "" {
+		t.Fatalf("Reads of a row with no key = %q, %v; want no section", prefix, ok)
+	}
+}

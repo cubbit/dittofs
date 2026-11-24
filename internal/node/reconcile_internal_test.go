@@ -1,12 +1,15 @@
 package node
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // A pass acts on the shares when the share list or the settings moved, on
@@ -14,6 +17,7 @@ import (
 // read or a refusal to retry, and on neither when nothing moved, so a
 // refusal not to retry waits for its counter to move.
 func TestDue(t *testing.T) {
+	t.Parallel()
 	seen := kvstore.Counters{Settings: 5, ShareList: 5, Principals: 5}
 	for _, tc := range []struct {
 		name          string
@@ -39,6 +43,7 @@ func TestDue(t *testing.T) {
 // state change bound; run again over the running set its binds leave, it
 // binds nothing.
 func TestPlanShares(t *testing.T) {
+	t.Parallel()
 	share := func(name string, state entity.ShareState, pos uint64) entity.Share {
 		return entity.Share{ID: entity.NewShareID(), Name: name, State: state, Position: pos}
 	}
@@ -86,6 +91,7 @@ func TestPlanShares(t *testing.T) {
 // The backoff starts at firstRetry, doubles to lastRetry and stays there,
 // and ends once a pass needs no retry.
 func TestBackoff(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		last  time.Duration
 		again bool
@@ -110,4 +116,35 @@ func names(shares []entity.Share) []string {
 		out = append(out, s.Name)
 	}
 	return out
+}
+
+// A store call that never answers holds bounded only until its caller's
+// context ends, even with the node's clock stopped short of storeBound: it
+// answers the context's error and the channel the call will answer on, so a
+// Stop that cancels a loop is not held by that loop's hung write.
+func TestBoundedEndsWithItsContext(t *testing.T) {
+	n := &Node{cfg: Config{Clock: sim.NewTestClock(time.Unix(0, 0))}}
+	ctx, cancel := context.WithCancel(t.Context())
+	hung := make(chan struct{})
+	defer close(hung)
+	type answer struct {
+		running <-chan error
+		err     error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		running, err := n.bounded(ctx, func(context.Context) error { <-hung; return nil })
+		answered <- answer{running, err}
+	}()
+	cancel()
+	select {
+	case a := <-answered:
+		if !errors.Is(a.err, context.Canceled) || a.running == nil {
+			t.Fatalf("bounded after its context ended: err %v, running %v; want context.Canceled and the call's channel", a.err, a.running)
+		}
+	// No clock reaches bounded here but the stopped test clock, so a bounded
+	// wait is the assertion: an answer that needs the bound never comes.
+	case <-time.After(10 * time.Second):
+		t.Fatal("bounded did not answer within 10 s of its context ending, with the store call hung and the clock short of storeBound")
+	}
 }

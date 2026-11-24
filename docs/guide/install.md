@@ -67,7 +67,7 @@ sudo launchctl disable system/com.apple.smbd
 
 #### Single binary
 
-Set the ports in `config.yaml` (or via `DITTOFS_*` env vars), then grant the
+Set the ports in `config.yaml`, then grant the
 binary permission to bind low ports.
 
 ```yaml
@@ -79,14 +79,6 @@ adapters:
       port: 111        # enables NFSv3 client auto-discovery
   smb:
     port: 445
-```
-
-```bash
-# Equivalent env vars
-export DITTOFS_ADAPTERS_NFS_PORT=2049
-export DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=true
-export DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=111
-export DITTOFS_ADAPTERS_SMB_PORT=445
 ```
 
 Binding a port below 1024 needs privilege. Either run as root, or — preferred —
@@ -107,10 +99,6 @@ directly. Set the adapter ports to the standard values and publish them 1:1:
 
 ```bash
 docker run -d \
-  -e DITTOFS_ADAPTERS_NFS_PORT=2049 \
-  -e DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=true \
-  -e DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=111 \
-  -e DITTOFS_ADAPTERS_SMB_PORT=445 \
   -p 2049:2049 -p 445:445 -p 111:111/tcp -p 111:111/udp \
   -p 8080:8080 \
   marmos91c/dittofs:latest
@@ -189,11 +177,11 @@ scoop install dfsctl    # client CLI
 ```
 
 When installed via the system package managers, the server runs under systemd as the `dfs`
-service. Set the admin password before the first start with the
-`DITTOFS_ADMIN_INITIAL_PASSWORD` environment variable (see the
-[README](../../README.md#first-run--admin-password)). Under systemd the server's stdout is
-not a terminal, so an auto-generated password would **not** be shown or written to the
-service log — pre-setting it is the only way to know the credential.
+service. Run `dfs init` before the first start, handing it the admin password with
+`--admin-password-file` or `--admin-password-env` (see the
+[README](../../README.md#first-run--admin-password)). With neither, `dfs init` prints a
+generated password once to its standard output and never to the log, so run it where
+you can read that output; `dfs reset-admin`, with the node stopped, prints a new one.
 
 ## Docker
 
@@ -204,19 +192,23 @@ Pre-built multi-architecture images (`linux/amd64`, `linux/arm64`) are published
 ```bash
 docker pull marmos91c/dittofs:latest
 
-# Create a config file first
-mkdir -p ~/.config/dittofs
-docker run --rm -v ~/.config/dittofs:/config \
-  marmos91c/dittofs:latest init --config /config/config.yaml
+# Write ~/.config/dittofs/config.yaml first (see below), then initialize the
+# installation on the volumes, handing init the admin password
+docker run --rm \
+  -e DFS_ADMIN_PASSWORD=my-secure-password \
+  -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
+  -v dittofs-metadata:/data/metadata \
+  -v dittofs-blocks:/data/blocks \
+  marmos91c/dittofs:latest init --config /config/config.yaml \
+  --admin-password-env DFS_ADMIN_PASSWORD
 
-# Run the server (set the admin password via env var — you can't read interactive output)
+# Run the server
 docker run -d \
   --name dittofs \
   -p 12049:12049 \
   -p 12445:12445 \
   -p 8080:8080 \
   -p 9090:9090 \
-  -e DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password \
   -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
   -v dittofs-metadata:/data/metadata \
   -v dittofs-blocks:/data/blocks \
@@ -225,15 +217,16 @@ docker run -d \
   marmos91c/dittofs:latest
 
 curl http://localhost:8080/health
-# Always set DITTOFS_ADMIN_INITIAL_PASSWORD (above): the container's stdout is a pipe, so an
-# auto-generated password is NOT printed to `docker logs` and cannot be recovered.
+# Without --admin-password-env, init prints a generated password once, to this
+# terminal only: it never reaches the log or `docker logs`.
 ```
 
 `dittofs-blocks` carries the journal, which holds the only copy of every byte that has not
 reached the block store yet — never leave it in the container's writable layer. These
-volumes only receive data if the config points at them: set `blockstore.journal.path` to
-`/data/blocks` and `database.sqlite.path` to `/data/state/controlplane.db`, and give the
-metadata store `/data/metadata` when you create it. The container starts with no stores
+volumes only receive data if the config points at directories on them, never at their
+mount points: set `metadata.badger.path` to `/data/metadata/store` and list
+`/data/blocks/journal` under `journals` (the image creates that directory; `dfs init` needs
+it to exist). The container starts with no stores
 and no shares; create them with `dfsctl` (see the [CLI reference](cli.md)) or use the
 Compose stack below, which does it for you.
 
@@ -307,7 +300,7 @@ with root kept as root, so a client claiming root over NFS writes as root withou
 password. Every published port is therefore bound to `127.0.0.1`; reaching the stack from
 another host means removing that prefix in `docker-compose.yml`, and an unattended export
 on a shared network is not what these defaults are for. Override
-`DITTOFS_ADMIN_INITIAL_PASSWORD` and `DITTOFS_CONTROLPLANE_SECRET` first. Localstack
+`COMPOSE_ADMIN_PASSWORD` first. Localstack
 publishes no host port at all.
 
 `docker compose down` stops the stack and keeps the volumes; `docker compose down -v`
@@ -350,9 +343,8 @@ Removing DittoFS takes three steps:
 
 Removing the binaries never deletes your data.
 
-Before you start, if you plan to delete metadata stores, note the directory
-each on-disk store was created with (its `config.path`). The CLI no longer has a
-command that lists metadata stores.
+Before you start, if you plan to delete the metadata store, note the directory
+`metadata.badger.path` names in the server's config file.
 
 ### 1. Stop the server and unmount shares
 
@@ -421,7 +413,7 @@ scoop bucket rm cubbit
 
 | Data | Linux / macOS | Windows |
 |---|---|---|
-| Config file and control-plane database | `~/.config/dittofs/` | `%APPDATA%\dittofs\` |
+| Config file | `~/.config/dittofs/` | `%APPDATA%\dittofs\` |
 | Logs, PID file, journal (`blocks/`) | `~/.local/state/dittofs/` | `%LOCALAPPDATA%\dittofs\` |
 
 ```bash
@@ -436,7 +428,7 @@ no home directory, so unless you configured paths explicitly its data is in:
 
 | Data | Path |
 |---|---|
-| Control-plane database | `/.config/dittofs/` |
+| Config file | `/.config/dittofs/` |
 | Logs and journal | `/tmp/dittofs/` |
 | systemd overrides you created | `/etc/systemd/system/dfs.service.d/` |
 
@@ -447,7 +439,7 @@ sudo systemctl daemon-reload
 
 **Everywhere:**
 
-- Local metadata stores: the BadgerDB directory named by the `config.path` you
+- The metadata store: the directory `metadata.badger.path` names, which you
   noted before stopping the server.
 - `dfsctl` credentials: `~/.config/dfsctl/config.json` (Windows:
   `%APPDATA%\dfsctl\config.json`), for each user who ran `dfsctl login`.
@@ -465,9 +457,7 @@ docker compose down -v
 The single-container setup also bind-mounts `~/.config/dittofs/config.yaml`
 from the host; remove it as shown above.
 
-**Remote storage:** data in remote block stores such as S3 buckets, and in
-externally managed PostgreSQL databases used for the control plane, is not
-touched by any step above. Delete it on the storage side if you no longer need
-it. A PostgreSQL or SQLite metadata store left by an older version is not
-touched either; to move its shares to BadgerDB, see
-[Metadata store migration](metadata-store-migration.md).
+**Remote storage:** data a v1 release left in remote block stores such as S3
+buckets, or in an externally managed PostgreSQL database, is not touched by any
+step above. Delete it on the storage side if you no longer need it. See
+[Upgrading from v1](upgrading-from-v1.md).

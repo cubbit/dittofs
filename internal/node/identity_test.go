@@ -145,6 +145,7 @@ func TestARefusedIdentityRowFailsTheStart(t *testing.T) {
 		directory              bool // the rest of a directory record is written too
 	}{
 		{"a row that does not decode", "identity.ntlm", `123`, "identity.ntlm", false},
+		{"a directory row that does not decode", "identity.directory.address", `123`, "identity.directory.address", false},
 		{"a directory domain equal to the node's name", "identity.directory.netbios_domain", `"DITTOFS"`, "netbios_domain", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -466,7 +467,7 @@ func TestNoSecretInWhatTheNodeRecords(t *testing.T) {
 	// step writes over it before the read.
 	var raw atomic.Pointer[kvtest.FaultKV]
 	m := newMachineLogged(t, &logged, false, func(n *node.Node) {
-		n.OnRunnerTurn(func() {
+		n.OnRunnerTurn(func(context.Context) {
 			if kv := raw.Load(); kv != nil {
 				ops.keep(ops.read(context.Background(), kv))
 			}

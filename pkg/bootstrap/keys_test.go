@@ -84,11 +84,8 @@ func TestKeySpecsMatchBootstrap(t *testing.T) {
 		t.Errorf("key table:\ngot  %q\nwant %q (Bootstrap's fields)", keys, fields)
 	}
 
-	if len(keys) != 43 {
-		t.Errorf(
-			"bootstrap keys: got %d, want 43 (RFC 13 Appendix C's 42 and blockstore.journal.path)",
-			len(keys),
-		)
+	if len(keys) != 42 {
+		t.Errorf("bootstrap keys: got %d, want 42 (RFC 13 Appendix C)", len(keys))
 	}
 }
 
@@ -96,6 +93,10 @@ func TestKeySpecsMatchBootstrap(t *testing.T) {
 func collectKeys(t reflect.Type, prefix string, out *[]string) {
 	for i := range t.NumField() {
 		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+
 		key := joinKey(prefix, f.Tag.Get("mapstructure"))
 
 		if f.Type.Kind() == reflect.Struct && f.Type != reflect.TypeFor[entity.NodeID]() &&
