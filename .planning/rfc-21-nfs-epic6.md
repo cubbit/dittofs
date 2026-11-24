@@ -23,9 +23,9 @@ proposed, for T6.1 and everything built on it; **E4**'s T4.4, which creates the 
 package T6.2 adds to; **E7**'s owner schemes (T7.2) and `who` schemes (T7.3, D4), which every `who`
 spelled by name or by SID needs; **E5**, the `fattr4` struct the ACL attributes and `mode_umask`
 join (T5.3), with `GETATTR` (T5.4), `SETATTR`, `VERIFY` and `NVERIFY` (T5.5) and `CREATE` (T5.6);
-**E9**, `OPEN`'s create attributes; **S4**, E3's scripted client (T3.2), E7's T7.1 for an `AUTH_SYS`
-caller admitted, and **E8**, for T6.5's loopback rows.
-**Blocks:** E16, which runs these rows on the composed node and through both adapters. RFC 22's
+**E9**, `OPEN`'s create attributes (T9.5); **S4**, E3's scripted client (T3.2), E7's T7.1 for an `AUTH_SYS`
+caller admitted, and **E8**, for T6.5's loopback rows (T8.8).
+**Blocks:** E16, which runs these rows on the composed node and through both adapters (T16.9, T16.10). RFC 22's
 descriptor epic takes the service half (T6.1) from whichever of the two epics lands first, and
 `translate`'s `Names` (T6.2) to add its SID methods to.
 
@@ -69,9 +69,10 @@ attributes at create, and the `ErrUnknownPrincipal` row for a `who` (RFC 20 §4.
   19 §3.1, RFC 7 §7.4), already built.
 - The owner schemes (E7's T7.2), D4's `who` schemes (E7's T7.3), `identity.nfs4_domain` and
   `FuzzOwnerString`, the owner-string parsing §11.6 fuzzes: E7. Which NFS callers are privileged (RFC 21 §8.1): E7 and
-  E13. The administrator's steps over the wire, which only a proven caller reaches: E13 and E16.
-- RFC 19 §9's halves that read or write over SMB, and every row on the composed node: E16, jointly
-  with RFC 22's plan. `translate`'s descriptor functions, `SID`, `PrincipalBySID` and `vfs.SetACL`
+  E13. The administrator's steps over the wire, which only a proven caller reaches: E13 and
+  E16's T16.3 (R27).
+- RFC 19 §9's halves that read or write over SMB, and every row on the composed node: E16's T16.9 and T16.10,
+  jointly with RFC 22's plan. `translate`'s descriptor functions, `SID`, `PrincipalBySID` and `vfs.SetACL`
   by parts: RFC 22's descriptor epic.
 - Recording `acl_set_refused_total`, `acl_set_normalised_total`, `acl_who_sid_fallback_total` and
   `adapter_translation_refused_total{reason="attribute"}`: whoever §6.1 point 4 of the plan names,
@@ -210,7 +211,7 @@ Not obligations of this epic: RFC 21 §8.1's rules on who may set `mode`, `dacl`
 the service already computes (RFC 19 §2.8, §4.3, §4.4); "the translation decides nothing about
 access" (RFC 19 §5.1), a review rule under rule 13, since no test tells a gate the adapter skipped
 from one it never had; RFC 19 §9's rows on the walk, maximal access, ceilings and audit selection,
-which are the service's and E16's.
+which are the service's and E16's T16.10.
 
 ## 4. Decisions this epic takes
 
@@ -592,7 +593,7 @@ func newNames(svc vfs.Service, c vfs.Call) translate.Names // unexported
 
 **Subtask T6.4 estimate: 2.25 man-days.**
 
-- **Track:** C. **Depends on:** T6.3, T5.6, E9.
+- **Track:** C. **Depends on:** T6.3, T5.6, T9.5.
 - **Covers:** R33, R34, R35, R40, R44, R46, R49.
 - **Deliverables:** `mode_umask`'s row (NFSv4.2 only, settable at create only, refused
   `NFS4ERR_INVAL` in a `SETATTR`, as RFC 8275 has it from memory); `acl`, `dacl` and `sacl` in
@@ -625,7 +626,7 @@ func newNames(svc vfs.Service, c vfs.Call) translate.Names // unexported
 
 **Subtask T6.5 estimate: 1 man-days.**
 
-- **Track:** C. **Depends on:** T6.4, S4, T3.2, T7.1, E8.
+- **Track:** C. **Depends on:** T6.4, S4, T3.2, T7.1, T8.8.
 - **Covers:** R36, R37, R38, R39, R40.
 - **Deliverables:** `acl_loopback_test.go`, through `core` with E3's scripted client (T3.2:
   `nfsclient.Dial`, then `Do` under `nfsclient.AuthSys`, each `COMPOUND` coded by `ops/v4`'s
@@ -633,8 +634,8 @@ func newNames(svc vfs.Service, c vfs.Call) translate.Names // unexported
   E7's T7.1 has landed: one pass per minor version of RFC 21 §13's three rows'
   non-administrator steps; a `GETATTR` of a large `acl` in an NFSv4.1 session whose
   `ca_maxresponsesize` cannot carry it. The administrator's steps need a proven caller, which only
-  `RPCSEC_GSS` brings: they run on `nfsharness` in T6.3 and over the wire in E16, after E13.
-  Consumed by E16, which runs the same rows on the composed node.
+  `RPCSEC_GSS` brings: they run on `nfsharness` in T6.3 and over the wire in E16's T16.3, after E13.
+  Consumed by E16's T16.9, which runs the same rows on the composed node.
 - **Acceptance criteria:**
   - The non-administrator steps of the three rows pass over loopback on the versions each names.
   - The large `acl` is answered `NFS4ERR_REP_TOO_BIG`, never with fewer entries.
@@ -654,8 +655,8 @@ flowchart TD
   E7(["E7's T7.2 owner schemes, T7.3 who schemes"]):::sync
   T7_1(["E7's T7.1 Claimed callers resolved"]):::sync
   E5(["E5's T5.3 fattr4, T5.4 GETATTR, T5.5 SETATTR, T5.6 CREATE"]):::sync
-  E9(["E9 OPEN"]):::sync
-  S4(["S4 an NFSv4.1 session over loopback; E3's T3.2, E8"]):::sync
+  E9(["T9.5 OPEN's create"]):::sync
+  S4(["S4 an NFSv4.1 session over loopback; E3's T3.2, T8.8"]):::sync
   S2 & AM --> T6_1["T6.1 The service half"]
   T6_1 & E4 & E7 --> T6_2["T6.2 translate: Names and the NFSv4 functions"]
   T6_2 --> C1(["after T6.2: translate usable by RFC 22's descriptor epic"]):::sync
@@ -677,7 +678,7 @@ passes on `memory.New`.
 | --- | --- | --- | --- | --- |
 | 1 | T6.1 | 5.25 | the ACL amendment | the service half, reviewed by the store's and the service's owners apart from the adapter |
 | 2 | T6.2 | 4.75 | PR 1, E4's T4.4, E7's T7.2 and T7.3 | `translate`'s `Names` and NFSv4 functions with their property tests and fuzz target |
-| 3 | T6.3, T6.4, T6.5 | 8.25 | PR 2, E5's T5.3 to T5.6, E9, S4, E7's T7.1 | the attributes end to end, on `memory.New` and over loopback |
+| 3 | T6.3, T6.4, T6.5 | 8.25 | PR 2, E5's T5.3 to T5.6, T9.5, S4, E7's T7.1 | the attributes end to end, on `memory.New` and over loopback |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -715,11 +716,10 @@ A suggestion only: one pull request per subtask works as well.
    attributes, and E5's D17 leaves `mode_umask` and `acl` for this epic to add to
    `suppattr_exclcreat`; E7's T7.2 and T7.3 serve the owner and `who` schemes under `Spell` and
    `Find`, and T7.1 admits an `AUTH_SYS` caller on `memory.New`, which T6.5's loopback rows need;
-   E3's T3.2 gives `nfsclient.Dial`, `Do` and `AuthSys`. Still assumed of epics not yet broken
-   down: E9's `OPEN` building `OpenRequest.Create` from its create attributes through a function
-   this epic extends, with `EXCLUSIVE4_1`'s attributes applied by the create; E8's session with a
-   settable `ca_maxresponsesize`, for T6.5. If either settles another shape, this document follows
-   it by a revision.
+   E3's T3.2 gives `nfsclient.Dial`, `Do` and `AuthSys`. Assumed of epics now broken down: E9's T9.5, `OPEN`'s create, building `OpenRequest.Create` from
+   its create attributes through a function this epic extends, with `EXCLUSIVE4_1`'s attributes
+   applied by the create; E8's T8.8, a session with a settable `ca_maxresponsesize`, for T6.5. If
+   either settles another shape, this document follows it by a revision.
 6. **Which pull request carries which RFC amendment.** The ACL amendment's own pull request (point
    1) carries the RFC 17 §3.0 and §3.1 text (`GetACL`'s parts, `AttrChange.ACL` and `ModeMask`,
    `CreateArgs.Umask` and `ACL`), RFC 7 §2.6 and §11.1, RFC 19 §5.1's signatures and §2.8's
