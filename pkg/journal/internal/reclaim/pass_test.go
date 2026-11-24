@@ -1222,3 +1222,63 @@ func TestPassDeclinesAnOwedEndUntilItsTake(t *testing.T) {
 		t.Fatalf("Repack over the taken end freed %d with the segment left in the set=%v, want the unit to retire it", freed, !p.setGone(src))
 	}
 }
+
+// TestPassAHandOverRefusedForAnotherRetirementFreesNothing re-creates, inside
+// one goroutine, the race a repack runs against in production: another
+// retirement — a forget's drop of a segment the tag's records left empty, or
+// the worker's queued recycle — takes the source's claim in the gap between
+// the unit's own release of it and the retirer's ledger claim. RFC 1 §7.1
+// retires a not-held segment by the journal on its own, without waiting for
+// the repack that selected it, so the refused hand-over must answer a visit
+// that freed nothing and leave the source to the holder, whose own
+// retirement reports the bytes; an error here fails the whole Repack.
+func TestPassAHandOverRefusedForAnotherRetirementFreesNothing(t *testing.T) {
+	p := newPassFixture(t)
+	file := copyFile(4)
+	const payload = "the record whose hand-over another retirement claims"
+	seg := p.plantSealed(t, file, []byte(payload))
+
+	// The other retirement's claim, taken where the forget's drop takes it in
+	// the race: Retire's own claim below then answers ErrClaimed. One fire
+	// only — the later explicit retirement below must claim unimpeded.
+	claimed := false
+	p.f.core.Retirer().SetRetireHook(func(id core.SegmentID, _ segment.Reason) {
+		if id != seg || claimed {
+			return
+		}
+		claimed = p.f.set.Claim(id)
+	})
+	t.Cleanup(func() { p.f.set.Release(seg) })
+
+	freed, err := p.repack(context.Background(), copySegCap*8, seg)
+	if err != nil {
+		t.Fatalf("Repack whose hand-over another retirement claimed: %v", err)
+	}
+	if freed != 0 {
+		t.Fatalf("Repack freed %d, want 0: the refused hand-over is a visit that frees nothing", freed)
+	}
+	if !claimed {
+		t.Fatal("the hook never took the source's claim, want it landed where the forget's drop takes it in the race")
+	}
+	if p.setGone(seg) {
+		t.Fatal("the source left the set, want a refused hand-over to keep it for the claim's holder")
+	}
+
+	// The holder's own retirement: it unlinks the source, hands the copies to
+	// their shares, and answers the bytes the pass could not.
+	p.f.set.Release(seg)
+	ret, err := p.f.core.Retirer().Retire(seg, segment.NotHeld)
+	if err != nil {
+		t.Fatalf("the holding retirement after the pass: %v", err)
+	}
+	if ret.Freed <= 0 {
+		t.Fatalf("the holding retirement freed %d, want the source's storage: the bytes belong to whoever retires the segment", ret.Freed)
+	}
+	if !p.setGone(seg) {
+		t.Fatal("the holding retirement left the source in the set, want it unlinked where the pass could not")
+	}
+	got := p.readAll(t, file, 0, int64(len(payload)))
+	if string(got) != payload {
+		t.Fatalf("the record after the refused hand-over and the holder's retirement = %q, want %q", got, payload)
+	}
+}
