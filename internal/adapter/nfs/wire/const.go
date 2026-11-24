@@ -22,10 +22,22 @@ const (
 	ProcCompound uint32 = 1
 )
 
-// NFS3ErrServerFault is NFSv3's fault, NFS3ERR_SERVERFAULT (RFC 1813 section
-// 2.6), which NFSv3's table answers an error no row names with (RFC 21
-// section 11.5).
-const NFS3ErrServerFault uint32 = 10006
+// The program statuses the adapter's tables answer with (RFC 21 section
+// 11.5): NFSv3's fault, from RFC 1813 section 2.6, and the nfsstat4 values,
+// from RFC 7530 section 13 and RFC 8881 section 15. NFS4ERR_REP_TOO_BIG and
+// NFS4ERR_TOO_MANY_OPS are NFSv4.1's; NFSv4.0 has neither.
+const (
+	NFS3ErrServerFault uint32 = 10006 // NFS3ERR_SERVERFAULT
+
+	NFS4ErrNotSupp           uint32 = 10004 // NFS4ERR_NOTSUPP
+	NFS4ErrServerFault       uint32 = 10006 // NFS4ERR_SERVERFAULT
+	NFS4ErrResource          uint32 = 10018 // NFS4ERR_RESOURCE
+	NFS4ErrMinorVersMismatch uint32 = 10021 // NFS4ERR_MINOR_VERS_MISMATCH
+	NFS4ErrBadXDR            uint32 = 10036 // NFS4ERR_BADXDR
+	NFS4ErrOpIllegal         uint32 = 10044 // NFS4ERR_OP_ILLEGAL
+	NFS4ErrRepTooBig         uint32 = 10066 // NFS4ERR_REP_TOO_BIG
+	NFS4ErrTooManyOps        uint32 = 10070 // NFS4ERR_TOO_MANY_OPS
+)
 
 // The message types, reply states, accept states, reject states, auth stats
 // and flavours are RFC 5531's section 9 and Appendix A, and RFC 2203's.
