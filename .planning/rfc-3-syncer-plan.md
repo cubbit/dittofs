@@ -321,18 +321,18 @@ entries, so it binds nothing here.
 
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **Interfaces** ⛔ | RFC 3 §1.3's surface for v1.1, `Stats`, the configuration, `Clock`, the import test | 5 | 6 | team | **everything** |
-| 2 | **Test foundations** ⛔ | the in-memory `Store`, its conformance suite, the fault wrapper, the measuring helpers | 6 | 17 | team | **all testing** in 3 to 7 and 9 |
+| 1 | **Interfaces** ⛔ | RFC 3 §1.3's surface for v1.1, `Stats`, the configuration, `Clock`, the import test | 5 | 6.5 | team | **everything** |
+| 2 | **Test foundations** ⛔ | the in-memory `Store`, its conformance suite, the fault wrapper, the measuring helpers | 6 | 18 | team | **all testing** in 3 to 7 and 9 |
 | 3 | **Registration, flows and the fair scheduler** ⛔ | registry, flows, lifecycle, two pools, classes, two-level DRR, caps, queues, the waiter bound, the reference model; a minimal single-attempt `Upload`, `Fetch` and `Prefetch` | 11 | 35 | A | 4, 5, 6 |
-| 4 | **Termination, retries and the uploader** ⛔ | both halves' attempt loop, the retry budget, throttling, the floor, the first-byte bound, slow tail, unknown outcomes; `Upload` complete | 8 | 24 | B | 5, 6, 7 |
+| 4 | **Termination, retries and the uploader** ⛔ | both halves' attempt loop, the retry budget, throttling, the floor, the first-byte bound, slow tail, unknown outcomes; `Upload` complete | 8 | 25 | B | 5, 6, 7 |
 | 5 | **Store health** | per-direction state, probes, the failure window, hold-down, denial backoff, causes, the log lines | 7 | 19 | C | 7 |
-| 6 | **The fetcher** | fetch resume, the verification re-get, single flight, join, re-home, detach | 9 | 29 | A | 7 |
+| 6 | **The fetcher** | fetch resume, the verification re-get, single flight, join, re-home, detach | 9 | 29.5 | A | 7 |
 | 7 | **Memory bound, `Stats` and the fault sweep** | the per-worker bound, the fit to the transfers pool, the consistent snapshot, the held-pool heap check, the systematic sweep, `unit/syncer-allocs` | 4 | 11 | B | 9 |
 | 8 | **Integration: the syncer's own** | the two settings; the collector and conditions in `pkg/syncer/series` | 3 | 6 | team | RFC 8 offload plan epic 21 |
 | 9 | **E2E green** | B1 to B5 in `syncer-bench`, RFC 3 §8.5's targets recorded | 4 | 10 | team | — |
-| | **Total** | | **57** | **157** | | |
+| | **Total** | | **57** | **160** | | |
 
-**Plan estimate: 57 subtasks, 157 man-days.**
+**Plan estimate: 57 subtasks, 160 man-days.**
 
 RFC 3 is about 2,220 lines, which gives N = 6. Its cohesive areas are six:
 - the scheduler and its registry;
@@ -573,7 +573,7 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
 
 ### Epic 1 — Interfaces ⛔
 
-**Epic 1 estimate: 5 subtasks, 6 man-days.**
+**Epic 1 estimate: 5 subtasks, 6.5 man-days.**
 
 Epic 1 delivers the surface of `pkg/syncer` for v1.1, with stub bodies, agreed at S1.
 
@@ -597,7 +597,7 @@ set.
 
 ### Epic 2 — Test foundations ⛔
 
-**Epic 2 estimate: 6 subtasks, 17 man-days.**
+**Epic 2 estimate: 6 subtasks, 18 man-days.**
 
 Epic 2 delivers the fixtures every check shares (§1.4), in `syncertest`.
 
@@ -653,7 +653,7 @@ which epics 4 and 6 complete.
 
 ### Epic 4 — Termination, retries and the uploader ⛔
 
-**Epic 4 estimate: 8 subtasks, 24 man-days.**
+**Epic 4 estimate: 8 subtasks, 25 man-days.**
 
 Epic 4 delivers the rules that end every transfer of either half in bounded time with a report, and
 completes `Upload`.
@@ -716,7 +716,7 @@ admission.
 
 ### Epic 6 — The fetcher
 
-**Epic 6 estimate: 9 subtasks, 29 man-days.**
+**Epic 6 estimate: 9 subtasks, 29.5 man-days.**
 
 Epic 6 completes `Fetch` and `Prefetch`, and joins concurrent demand for a chunk into one fetch.
 
