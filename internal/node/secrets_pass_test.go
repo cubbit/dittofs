@@ -200,6 +200,7 @@ func TestARotatedCredentialIsReportedThenPruned(t *testing.T) {
 		return node.NewAuthenticating(admin)(cfg)
 	}
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(newNode))
+	ch := watchStatus(h)
 	started(t, h)
 	putSetting(t, h, "identity.directory.address", `"ldaps://dc.corp.example"`)
 	putSetting(t, h, "identity.directory.base", `"DC=corp,DC=example"`)
@@ -282,7 +283,7 @@ func TestARotatedCredentialIsReportedThenPruned(t *testing.T) {
 		)
 	}
 
-	ch := watchStatus(h)
+	drain(ch)
 	// Five turns of the clock: each rotation reports its new version within
 	// that bound, one reconcile and one status interval each.
 	turnWhile(t, h, ch, "the status holding version 1", 5, func(tr statusTurn) bool {
@@ -911,6 +912,7 @@ func TestSecretsBehindCountsUntilTheNextPass(t *testing.T) {
 func TestAKeytabIsReportedAndKept(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	p := sealer(t, h)
+	ch := watchStatus(h)
 	started(t, h)
 
 	owner := entity.SecretOwner{Scope: installationScope, Key: "identity.keytab"}
@@ -940,7 +942,7 @@ func TestAKeytabIsReportedAndKept(t *testing.T) {
 	)
 	caughtUp(t, h)
 
-	ch := watchStatus(h)
+	drain(ch)
 	turnAt(t, h, ch, "the status reporting the rotated keytab", func(tr statusTurn) bool {
 		return len(tr.s.Secrets) > 0 &&
 			slices.ContainsFunc(tr.s.Secrets, func(sv entity.SecretVersion) bool {
@@ -998,6 +1000,7 @@ func TestTwoRotationsBeforeAPassDropBothOldVersions(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	c := &passSecret{}
 	declaredPass(t, h, c)
+	ch := watchStatus(h)
 	started(t, h)
 
 	ref := entity.SecretRef(uuid.New())
@@ -1023,7 +1026,7 @@ func TestTwoRotationsBeforeAPassDropBothOldVersions(t *testing.T) {
 
 	// The turn that carries the report prunes below it: the equal-bytes
 	// check runs after the commit's write lands, on the commit's own turn.
-	ch := watchStatus(h)
+	drain(ch)
 	turnAt(t, h, ch, "the status reporting version 3", func(tr statusTurn) bool {
 		return slices.ContainsFunc(tr.s.Secrets, func(sv entity.SecretVersion) bool {
 			return sv == entity.SecretVersion{Secret: ref, Version: 3}
