@@ -113,7 +113,7 @@ test/nfs-mount/.cache/
 infra/infra
 bench.yaml
 
-# One-off rig evidence (see .planning/perf/ for the analysis)
+# One-off rig evidence
 rig-*/
 
 # Local port/credential overrides for the root compose stack.
