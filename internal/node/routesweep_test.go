@@ -160,7 +160,7 @@ func TestWiredRoleSweep(t *testing.T) {
 		w := newWired(t, memory, nil)
 		_, setup := w.h.SignedIn(t, w.addr, "setup", entity.RoleAdmin)
 		f := w.seedSweep(t, setup.Access)
-		node := entity.ShareID(w.h.NodeID()).String()
+		node := uuid.UUID(w.h.NodeID()).String()
 		var calls []sweepCall
 		for _, who := range []struct {
 			a    account
@@ -610,7 +610,7 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		frank.token = w.tokens(t, "frank", frankNext).Access
 		ap.do(wiredWrite{by: frank, route: signOut, path: "/api/v1/auth/sign-out"})
 
-		node := "/api/v1/nodes/" + entity.ShareID(w.h.NodeID()).String()
+		node := "/api/v1/nodes/" + uuid.UUID(w.h.NodeID()).String()
 		store := "/api/v1/stores/" + uuid.UUID(storeA).String()
 		setting := func(scope string) string { return scope + "/settings/" + sweepSetting }
 		putSetting := json.RawMessage(`{"spec":{"value":"weekly"}}`)
