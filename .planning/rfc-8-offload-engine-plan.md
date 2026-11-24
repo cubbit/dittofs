@@ -926,15 +926,20 @@ it after, as RFC 8 §2.6 orders.
 - The store adapter: RFC 4's codec with RFC 5's chain over the share's store, errors mapped onto
   RFC 3's values with the quota and size causes, checked by a table of each dialect's recorded error
   replies (S3, GCS, R2, MinIO), since LocalStack emulates none of `SlowDown`, 429, `QuotaExceeded` or
-  413; the past-the-end range wrap, connections spread across the store's addresses (D5); `syncertest`
+  413; the past-the-end range wrap, whose `ErrCorrupt` carries RFC 3 §1.3's `Malformed() bool` set
+  for a recorded range the store refused as past the end (RFC 4 §3.4's `malformed`); `Put` filling the
+  `Measure` only after every measuring pass of the attempt completed, so an attempt cancelled between
+  MD5's two passes leaves it as it found it (RFC 3 §1.3, §2.4 as amended, checked by RFC 3 §7.1's
+  "§3.4 measuring pass" row through `syncertest`); connections spread across the store's addresses (D5); `syncertest`
   run against it.
 - The syncer built once and closed after the engine; remote stores registered per configuration, one
   client per store configuration, ref-counted, with their probe keys; until the RFC 4 plan's epic 8
   derives it, each client is built with the limit `upload_workers + fetch_workers + 1` (the syncer's two
   pools and the probe; GC's bound joins with RFC 9), never lower, and its constructor refuses a limit of
-  0 or less. The uploader's encoded bound passed to the syncer is the largest
-  `Attempt.MaxEncodedLen(Max)` an open attempt may hold, not the current chain's (RFC 3 §2.2 as
-  amended), since a pin outlives a chain change.
+  0 or less. The syncer's per-worker encoded bound is computed once at start and
+  passed for both halves: `MaxDecodeLen(Max)` over every registered transform, `Max` being the
+  largest RFC 2 §3.7 admits (the ceiling `Target`'s); nothing updates it at runtime, so a pin that
+  outlives a chain change stays within it (RFC 3 §2.2 as amended).
 - The syncer's per-flow queue gauges (`syncer_queue_depth`, `syncer_waiters`) exported by share under
   RFC 25 §2.5's worst-n rule through the node's per-share path (`shareGaugeSpec`,
   `internal/node/stats.go`), each flow id in `syncer.Stats` mapped to the share that opened it (epic
