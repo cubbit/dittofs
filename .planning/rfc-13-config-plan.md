@@ -1160,7 +1160,8 @@ value; D7's drift test passes.
   `docs/guide/cli.md` regenerated.
 - The roles flag on `Bootstrap`, and `Load` refusing a value other than both roles (RFC 13 §2.2,
   RFC 15 §2.2); and `Load` refusing a bootstrap whose two wrapping keys are not both present, or
-  whose key IDs, as `keyprovider` reports them once loaded, are the same, since RFC 13 §7's role
+  whose key IDs are the same, compared without unwrapping the keys: a local key file's
+  `master_key_id`, a KMIP key's `KeyUID` with its endpoint (E2's D9), since RFC 13 §7's role
   split would collapse; a copied key file or a symbolic link to one is the same key.
 - Kubernetes' service links allowed by name and value shape, a bootstrap key still winning (D7),
   with a test feeding `checkEnviron` the full set a pod gets for a CR named `dittofs`, its `-api`,
@@ -1176,8 +1177,9 @@ value; D7's drift test passes.
   at start and refuses on what the row names, a copy differing from the host file's key among them,
   and ignores a leftover `node-id.tmp`; it only reads and compares, before the store is open.
   `WriteMissingNodeIDs`, which RFC 23's plan's start step 1 calls once the store is open, writes a
-  missing copy, logged, through `InitNodeID`'s temporary file, sync and rename, only into a
-  directory whose `format` names the journal RFC 16's `JournalID` records for this node and device;
+  missing copy, logged, through `InitNodeID`'s temporary file, sync and a publish that replaces
+  no copy that is already there, only into a directory whose `format` names the journal RFC
+  16's `JournalID` records for this node and device;
   a directory whose journal is not recorded gets its copy only from `dfs init` or a recovery import.
   Its tests are the node-identity clauses of RFC 13 §9's "§2.2 explicit initialisation": two copies
   that differ, no copy and no key, a torn and a flipped copy, the golden vector, and a replaced

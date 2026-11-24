@@ -705,6 +705,8 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   func (n Nodes) List(ctx context.Context, kind RecordKind, after []byte) iter.Seq2[Record, error]
   func (n Nodes) AllSettings(ctx context.Context, after entity.SettingKey) iter.Seq2[entity.Setting, error]
   ```
+  `Installation.Active` (RFC 16 §2.3's `map[Format]uint32`) is not declared here: RFC 13's epic 2's
+  T2.8 declares it, with its codec (its D6), so the record's field is declared once.
   `RaiseNodeEpoch` raises `N‖node`'s `Epoch` and `idNodeEpoch` goes, with its `ponytail:` (D15).
   `AllSettings` yields a row that does not decode as a pair whose error wraps `entity.ErrBadRow`,
   declared beside `entity.SettingsReader`, and goes on; the pair carries the setting's scope and key
