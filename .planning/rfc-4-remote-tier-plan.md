@@ -306,16 +306,16 @@ fault transport is epic 3's.
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **Interfaces** ⛔ | `pkg/remote`'s contract for v1.1's callers; the codec's surface; the import walk | 4 | 5.5 | team | **everything** |
 | 2 | **Conformance suite and test foundations** ⛔ | `remotetest`, the in-memory store and its read-only wrapper | 5 | 7 | team | **all testing** |
-| 3 | **Fault transport and LocalStack** ⛔ | `s3fault` around the real transport, real bucket settings on fresh buckets, LocalStack over HTTPS in `integration` | 5 | 8 | C | 4, 5 |
-| 4 | **S3 data path, errors and client** ⛔ | the client and constructor, put, get, delete, list, control objects, the total error table, `remote_` metrics | 7 | 15 | B | 5 |
+| 3 | **Fault transport and LocalStack** ⛔ | `s3fault` around the real transport, real bucket settings on fresh buckets, LocalStack over HTTPS in `integration` | 5 | 8.5 | C | 4, 5 |
+| 4 | **S3 data path, errors and client** ⛔ | the client and constructor, put, get, delete, list, control objects, the total error table, `remote_` metrics | 7 | 15.5 | B | 5 |
 | 5 | **Capability check and health** ⛔ | Appendix C.4 at open, the setting judgements, both probes, `immutable` refused | 6 | 12 | C | 7 |
-| 6 | **Block codec** ⛔ | format, encode with declared lengths or a measuring pass, verified reads, the version gate, fuzz, `codec_` metrics | 7 | 14.5 | A | RFC 8 offload plan epic 21 |
+| 6 | **Block codec** ⛔ | format, encode with declared lengths or a measuring pass, verified reads, the version gate, fuzz, `codec_` metrics | 7 | 15 | A | RFC 8 offload plan epic 21 |
 | 7 | **Integration: keys and observability** | RFC 13's keys, collectors and the alert rule in `pkg/remote`, the refusal as a field error | 5 | 6 | team | 9 |
 | 8 | **Integration: the client limit** 🔀 | the limit derived from the callers, on RFC 8's client holding | planned after S7 | planned after S7 | team | — |
-| 9 | **E2E green** | the nightly service row, the real-bucket rows, §7.5's benchmarks, fuzz targets in the `fuzz` suite | 6 | 10 | team | — |
-| | **Total** | | **45** | **78** | | |
+| 9 | **E2E green** | the nightly service row, the real-bucket rows, §7.5's benchmarks, fuzz targets in the `fuzz` suite | 6 | 10.5 | team | — |
+| | **Total** | | **45** | **80** | | |
 
-**Plan estimate: 45 subtasks, 78 man-days, not counting epic 8.**
+**Plan estimate: 45 subtasks, 80 man-days, not counting epic 8.**
 
 RFC 4 is 2,117 lines, which gives N = 5. Its cohesive areas in v1.1 are four: the codec (§3),
 the data path (§4.2 to §4.6, §4.8, §4.9, §4.13), the open (§4.7, §4.11), and the fault
@@ -426,7 +426,7 @@ same numbers for other points.
   table before its check can run: it opens with Appendix C.1's setting judgements, pure
   functions over the SDK's types, which fill that wait. Track B needs epic 3's LocalStack cell
   for its `integration` runs, and builds against a local LocalStack meanwhile.
-- **Load.** Track A carries 14.5 man-days, track B 15 and track C 20. Tracks A and B fill the
+- **Load.** Track A carries 15 man-days, track B 15.5 and track C 20.5. Tracks A and B fill the
   difference with epic 7's keys half, which needs only S1 and the RFC 13 plan's settings table.
   If RFC 5 plan epic 3 is late, track A's round trips wait; the header, bound and gate work and
   the fuzz target over hand-written blocks fill it, and what remains is a real gap that closes
@@ -600,7 +600,7 @@ other five unmarked rows going to the epics §1.4 names, until §6 point 2 is an
 
 ### Epic 3 — Fault transport and LocalStack ⛔
 
-**Epic 3 estimate: 5 subtasks, 8 man-days.**
+**Epic 3 estimate: 5 subtasks, 8.5 man-days.**
 
 The transport that makes a real store fail on cue, and the `integration` cell it runs in.
 **Owns:** RFC 4 §7.2 for a mutable store. **Done when:** each fault of D7 is shown taking effect
@@ -619,7 +619,7 @@ against LocalStack on a request it alters; `integration` reaches LocalStack over
 
 ### Epic 4 — S3 data path, errors and client ⛔
 
-**Epic 4 estimate: 7 subtasks, 15 man-days.**
+**Epic 4 estimate: 7 subtasks, 15.5 man-days.**
 
 Every call on a namespace's store that moves or removes a block or a control object, the S3
 error table, and the client. **Owns:** RFC 4 §4.2, §4.3 (the store's half), §4.4, §4.5's
@@ -679,7 +679,7 @@ naming its missing caller (D11).
 
 ### Epic 6 — Block codec ⛔
 
-**Epic 6 estimate: 7 subtasks, 14.5 man-days.**
+**Epic 6 estimate: 7 subtasks, 15 man-days.**
 
 The codec of D3, on the format of D2. **Owns:** RFC 4 §3.1 to §3.5, §4.3's measuring pass and
 checksum, §4.12's `codec_` rows, and the codec's part of RFC 3 §2.2's memory bound (the header
@@ -742,7 +742,7 @@ rows against that holding; R11 and R19.
 
 ### Epic 9 — E2E green
 
-**Epic 9 estimate: 6 subtasks, 10 man-days.**
+**Epic 9 estimate: 6 subtasks, 10.5 man-days.**
 
 The tiers past `pr`, and what only a real bucket shows. **Owns:** RFC 4 §7.4's production row,
 §7.5, Appendix B's new columns. **Done when:** RFC 4 §7.4's third row run by hand against each
