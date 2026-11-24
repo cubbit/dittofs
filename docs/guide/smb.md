@@ -547,8 +547,10 @@ not declared in a config file.
 
 ```bash
 # Create a user and a group
-dfsctl user create --username alice --password secret --uid 1001 --gid 1000
-dfsctl group create --name editors --gid 1000
+dfsctl user create alice --uid 1001
+dfsctl user set-password alice
+dfsctl group create editors --gid 1000
+dfsctl group add-member editors alice
 
 # Grant a group read-write access to a share
 dfsctl share permission grant /export --group editors --level read-write

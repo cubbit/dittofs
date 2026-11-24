@@ -87,7 +87,7 @@ If `dfs init` generated the password instead, you **must** change it on first lo
 before any other command will work — until you do, the rest are rejected with HTTP 403:
 
 ```bash
-dfsctl user change-password
+dfsctl password change
 ```
 
 ## 4. Create a user
@@ -95,7 +95,7 @@ dfsctl user change-password
 NFS write access maps to a host UID, so create a user bound to your current one:
 
 ```bash
-dfsctl user create --username $(whoami) --host-uid
+dfsctl user create $(whoami) --uid $(id -u)
 ```
 
 ## 5. Stores: nothing to create
@@ -155,7 +155,8 @@ options, Kerberos, and NFS-over-TLS are in the [NFS guide](nfs.md).
 SMB always requires user authentication:
 
 ```bash
-dfsctl user create --username alice          # password prompted
+dfsctl user create alice
+dfsctl user set-password alice                # password prompted
 dfsctl share permission grant /export --user alice --level read-write
 
 # Linux: keep alice's password in a private credentials file, never on the command line

@@ -155,7 +155,9 @@ this epic's part is that every command reaches the API through that client and n
 ## 4. Decisions this epic takes
 
 - **D1, one root per invocation, no package state.** `commands.NewRoot(env cmdutil.Env)`;
-  `cmdutil.Env{In io.Reader; Out, Err io.Writer; ConfigPath string; Interactive bool}`, beside the
+  `cmdutil.Env{In io.Reader; Out, Err io.Writer; ConfigPath string; Interactive bool; Now func() time.Time}`,
+  `Now` the clock a command reads a time it sends from, such as an API token's expiry, nil for the
+  machine's and the harness's clock in a test (kind 1), beside the
   client builder and the lock, in `cmdutil`, because `commands` imports every noun package and a
   noun cannot import it back; each noun package exports `New(env cmdutil.Env)`. No package under
   `cmd/dfsctl` declares a package-level variable but the build's version, which `-ldflags` set:
