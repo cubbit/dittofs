@@ -54,7 +54,7 @@ func TestV1CommandsRefuse(t *testing.T) {
 // arguments parsed, exits with the refusal.
 func TestV1CommandRefusesThroughExecute(t *testing.T) {
 	for _, args := range [][]string{
-		{"user", "list", "-o", "json"},
+		{"quota", "list", "builds", "-o", "json"},
 		{"share", "create", "--name", "/export", "--metadata", "default", "--block-store", "default"},
 	} {
 		root, _ := newTestRoot()
