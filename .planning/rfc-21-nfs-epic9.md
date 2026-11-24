@@ -932,8 +932,8 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
    its T10.9 on T9.6's `CLOSE` and T9.9's `READ`; the delegation-stateid arm of `READ`, `WRITE` and
    `SETATTR` is T9.9's, and E10 runs "§5.2 delegation stateid" over it. E11 builds NLM on the same
    service locks, and T9.8's D4 names its holder blank. E12's T12.3 takes T9.3's and T9.9's
-   references for `COPY` and `CLONE`, and its T12.4 adds its `held` call to T9.6's `close.go`, after
-   T9.6 lands; nothing of the hold budget is this epic's.
+   references for `COPY` and `CLONE`, and its T12.4 adds its call of `withSessionGate` (its
+   `ops/v4/gate.go`) to T9.6's `close.go`, after T9.6 lands; nothing of the hold budget is this epic's.
 8. **Which pull request carries which RFC amendment.** D1's RFC 17 §3.0 and §3.1 text goes in
    batch two's one RFC 17 pull request, with E10's Q1, E11's Q1 and E12's D1, each once agreed;
    it is opened before this epic's PR 1, which changes what `pkg/vfs` promises.
