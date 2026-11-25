@@ -889,8 +889,38 @@ have read r1, content the share had already replaced before the cut.
 
 ### 2.5 Browsing a snapshot
 
-A complete snapshot is reachable read-only under a virtual directory at the
-share's root, configurable and hidden from listings. What protocols rely on:
+A complete snapshot is reachable read-only in two ways, one per protocol, and
+each names it by the same token, defined below:
+
+- **over NFS**, under a virtual **browse directory** at the share's root, named
+  by `snapshots.directory` (`.snapshot` by default) and hidden from listings.
+  Each complete snapshot visible there is one entry, named by its token, such as
+  `.snapshot/@GMT-2026.11.25-10.00.00`. An entry is never named by the cut
+  number, the ordinal or the snapshot's label ([§3.1](#3.1%20Interfaces));
+- **over SMB**, only through Previous Versions
+  ([RFC 22 §15](rfc-22-smb.md#15.%20Previous%20Versions)): the token listed by
+  `FSCTL_SRV_ENUMERATE_SNAPSHOTS` and opened through a timewarp context or a
+  path that starts with it. The browse directory is not served over SMB: it is
+  never listed, and a path through it is `STATUS_OBJECT_NAME_NOT_FOUND`.
+
+> decision: the browse directory is NFS-only. Over SMB, Previous Versions is
+> the standard way to reach a snapshot, and Windows has no equivalent of
+> `find -xdev`: antivirus scanners, search indexers and backup tools that walk a
+> share would descend into every snapshot and process mostly the same data N
+> times, and Windows does not hide a name for starting with a dot. Revisit if an
+> SMB client is found that reaches snapshots only by path and cannot send a
+> timewarp context or a token.
+
+> decision: an entry is named by its token, not by the operator's label nor by
+> the token and the label together. SMB can carry only the token, so the token
+> alone gives both protocols one name for each snapshot. A label alone would
+> have to be unique at every path and obey the namespace's name rules, and would
+> make listings mix two patterns; token plus label would make labelled
+> snapshots a second pattern in the same listing. Revisit if NFS users need the
+> label in the path; a token-prefixed name can then be added without renaming
+> any existing entry.
+
+What protocols rely on:
 
 - a handle into a snapshot names the share, the snapshot and the file
   ([RFC 7 §6.1](rfc-7-namespace-metadata.md#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path)), so it never resolves to a live file; once the snapshot is
@@ -927,8 +957,9 @@ share's root, configurable and hidden from listings. What protocols rely on:
   one file. A cut that finds every eligible ordinal held or quarantined is
   refused with `ErrSnapshotLimit`. So 10⁴ home directories with 24 hourly
   subtree snapshots each need about 48 ordinals per path, not 240,000 per share;
-- **SMB Previous Versions** names each complete snapshot by the token
-  `@GMT-YYYY.MM.DD-HH.MM.SS` of its cut time in UTC. The cut transaction sets
+- **the token** names each complete snapshot: `@GMT-YYYY.MM.DD-HH.MM.SS`, its
+  cut time in UTC. It is what SMB Previous Versions lists and the entry name
+  under the NFS browse directory. The cut transaction sets
   each cut time at least one second past that of every snapshot visible beside
   it ([§2.3](#2.3%20The%20cut%20is%20one%20transaction%20behind%20a%20brief%20gate)), from records it already reads, so at each path each token
   names exactly one snapshot — also after a move to an installation whose clock
@@ -1368,7 +1399,7 @@ for `/bob`. The share's cut number is 6, and no snapshot is live, so `Cut` is
 | 3 | bob renames `/alice/f` (a file of S1) to `/bob/f`: admitted at both gates | entry `alice/f` (`born` 2) to history, `died` 7 | new entry `bob/f`, `born` 7 | `f` stays in S1 |
 | 4 | bob writes to `/bob/f` | `f`'s File and ref (`born` 3) to history, `died` 7: S1 is covered | — | — |
 | 5 | an operator marks `/alice/proj` for per-child shards | move refused `ErrSubtreeSnapshot` | — | — |
-| 6 | browse `/alice/.snapshot/7` | shows `x` and `f` as they were; nothing under `/bob` | — | — |
+| 6 | browse 7 over NFS, at `/alice/.snapshot/@GMT-<cut time of 7>` | shows `x` and `f` as they were; nothing under `/bob` | — | — |
 | 7 | delete 7: walk `died` in [7, ∞) | 5 versions, all S1; no live cut covers S1: dropped | — | `SubCut(S1)` 0; `Cut {7, 0}` |
 
 Had the cut closed S2's gate too, the write at t1 would have waited on the gate.
@@ -1384,9 +1415,11 @@ Signatures are indicative; the obligations above are normative.
 ```go
 // Snapshots is the per-share surface.
 type Snapshots interface {
-	Create(ctx context.Context, share ShareID, name string) (SnapshotID, error)
+	// label is for administration only: free text, not unique, shown by the
+	// API and the CLI, never part of a path a client sees (§2.5).
+	Create(ctx context.Context, share ShareID, label string) (SnapshotID, error)
 	// CreateSubtree cuts the shard rooted at root and the shards beneath it (§2.10).
-	CreateSubtree(ctx context.Context, share ShareID, root FileID, name string) (SnapshotID, error)
+	CreateSubtree(ctx context.Context, share ShareID, root FileID, label string) (SnapshotID, error)
 	List(ctx context.Context, share ShareID) ([]SnapshotInfo, error) // with bytes freed if deleted, on request
 	Lock(ctx context.Context, id SnapshotID, until time.Time, mode LockMode) error // extends only, up to lock_max (§2.7)
 	// Override shortens or removes a governance lock; needs the override right (§2.7).
@@ -1480,7 +1513,7 @@ shares:
   photos:
     namespace: photos           # its own, by default (§2.1)
     snapshots:
-      directory: .snapshot      # the browse directory (§2.5)
+      directory: .snapshot      # the browse directory, NFS only (§2.5)
       hold_bound: 64GiB         # held bytes of this share before a cut is refused (§2.4)
       reserve: 2TiB             # history bytes before new cuts are refused (§2.9); default reserve_fraction × live bytes
       policy:
@@ -1598,6 +1631,7 @@ scenarios add.
 | `S-snap-clone-vs-delete` | a clone or backup starts while its snapshot's deletion runs, in both commit orders — the reader's use record first, and the deletion's first transaction first; exactly one wins |
 | `S-snap-remote-down` | the remote tier is down under a sustained writer; cuts are refused at the bounds and writes proceed |
 | `S-snap-journal-bound` | many shares' held bytes share one journal; the per-journal bound refuses cuts before the journal fills |
+| `S-snap-browse-names` | over NFS, the browse directory lists each complete snapshot visible there by its token, the same string `FSCTL_SRV_ENUMERATE_SNAPSHOTS` returns at that path, and a labelled snapshot's entry carries no label; over SMB the browse directory is absent from a listing of the share's root and of a subtree snapshot's root, and opening it at either is `STATUS_OBJECT_NAME_NOT_FOUND` |
 | `S-snap-smb-token` | two cuts requested within one second, and a cut at B after a move from an A whose clock ran ahead, get distinct Previous Versions tokens |
 | `S-snap-subtree-rename` | [§2.10](#2.10%20Subtree%20snapshots)'s example: a subtree snapshot closes one shard's gate; a rename out of the subtree and a write to the renamed file keep its history; an uncovered shard writes none; deletion drops it all |
 | `S-snap-subtree-coexist` | share cuts and subtree cuts of two shards interleave; deleting each in turn keeps exactly the history the remaining ones see, per shard, and `klatest` and every `SubCut` end at the greatest live covering cut |
