@@ -28,12 +28,32 @@ small | full)
 	test -n "${BENCH_NOT_AFTER:-}" || { echo "set BENCH_NOT_AFTER to the latest start epoch that still ends before the nightly work" >&2; exit 2; }
 	test -n "${BENCH_CHECKOUT:-}" || { echo "set BENCH_CHECKOUT to the dedicated checkout of the scheduled runs" >&2; exit 2; }
 	[ -d "$BENCH_CHECKOUT" ] || { echo "no such checkout directory" >&2; exit 2; }
-	# Before the quiet wait, so a past-deadline run refuses at once instead
-	# of sitting in the wait.
+	# Guard time: a threshold that is not a whole number would error [ -ge ]
+	# inside the wait, and the errors the wait then skips turn it silently off.
+	case "${BENCH_QUIET_LOAD:-4}" in
+	'' | *[!0-9]*) echo "BENCH_QUIET_LOAD must be a whole number" >&2; exit 2 ;;
+	esac
+	# Before the lock and the quiet wait, so a past-deadline run refuses at
+	# once instead of sitting in either wait.
 	[ "$(date +%s)" -lt "$BENCH_NOT_AFTER" ] || { echo "too late to start before the nightly work" >&2; exit 2; }
 	# The suite calls, the git steps and the prune self-call all resolve
 	# inside this checkout, never in whatever tree the script was invoked from.
 	cd "$BENCH_CHECKOUT" || exit 2
+
+	# One bench run at a time: a lock held past its wait refuses the run
+	# rather than racing the other kind over the same host. The lock is
+	# taken before the quiet wait, so the wait re-judges the load only after
+	# the run has the host: waiting on the lock and then starting while the
+	# other kind's load is still high is the overlap the lock prevents.
+	# decision: an unset BENCH_LOCK takes no lock and runs anyway — the
+	# scheduled environment always sets it, and a hand run has no host lock
+	# to take. The exemption is worth only what a forgotten cron env costs
+	# (an overlap the lock exists to prevent); refuse unset instead if the
+	# host ever shows one.
+	if [ -n "${BENCH_LOCK:-}" ]; then
+		exec 9>"$BENCH_LOCK"
+		flock -w "${BENCH_LOCK_WAIT:-7200}" 9 || { echo "lock $BENCH_LOCK not free within ${BENCH_LOCK_WAIT:-7200}s" >&2; exit 2; }
+	fi
 
 	# A load that never drops under the threshold within the budget refuses
 	# the run instead of running hot.
@@ -47,17 +67,6 @@ small | full)
 			[ "$(date +%s)" -lt "$deadline" ] || { echo "host not quiet under ${BENCH_QUIET_LOAD:-4} within ${BENCH_QUIET_LOAD_MAX_WAIT:-14400}s" >&2; exit 2; }
 			sleep 300
 		done
-	fi
-	# One bench run at a time: a lock held past its wait refuses the run
-	# rather than racing the other kind over the same host.
-	# decision: an unset BENCH_LOCK takes no lock and runs anyway — the
-	# scheduled environment always sets it, and a hand run has no host lock
-	# to take. The exemption is worth only what a forgotten cron env costs
-	# (an overlap the lock exists to prevent); refuse unset instead if the
-	# host ever shows one.
-	if [ -n "${BENCH_LOCK:-}" ]; then
-		exec 9>"$BENCH_LOCK"
-		flock -w "${BENCH_LOCK_WAIT:-7200}" 9 || { echo "lock $BENCH_LOCK not free within ${BENCH_LOCK_WAIT:-7200}s" >&2; exit 2; }
 	fi
 
 	# After both waits: the budget the waits ate may leave the night's work
@@ -74,9 +83,15 @@ small | full)
 	git checkout -f --detach FETCH_HEAD || { echo "git checkout failed" >&2; exit 2; }
 
 	# The previous folder of the kind feeds benchstat; it is read before the
-	# run dir exists so it can never be the run itself.
+	# run dir exists so it can never be the run itself. Only the newest
+	# folder holding the done marker is a candidate: a night that failed
+	# wrote no metrics and must not become the baseline.
 	prev=
-	[ -d "$BENCH_RUN_ROOT/$kind" ] && prev=$(ls -1dt "$BENCH_RUN_ROOT/$kind"/*/ 2>/dev/null | sed -n 1p)
+	if [ -d "$BENCH_RUN_ROOT/$kind" ]; then
+		prev=$(ls -1dt "$BENCH_RUN_ROOT/$kind"/*/ 2>/dev/null | while IFS= read -r d; do
+			[ -f "$d/done" ] && { printf '%s\n' "$d"; break; }
+		done)
+	fi
 	rundir=$BENCH_RUN_ROOT/$kind/$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short=12 HEAD)
 	mkdir -p "$rundir" || exit 2
 	git rev-parse HEAD >"$rundir/commit.txt"
@@ -98,8 +113,18 @@ small | full)
 		# leave the run looking complete.
 		if ! { [ -n "$out" ] && cp "$out/journal-bench/bench.txt" "$rundir/bench.txt"; }; then
 			echo "no dt trailer or no bench.txt to copy from $out" >&2
-			s=1
+			# The first status stays: a dt refusal (its own exit 2) must not
+			# be overwritten into a generic failure.
+			[ "$s" -ne 0 ] || s=1
 		fi
+	fi
+
+	# The marker says the run's bench work succeeded and its metrics exist:
+	# only a folder holding it is a fresh collection or a benchstat baseline
+	# — a night that failed wrote no metrics, so it does not count as a fresh
+	# collection anywhere.
+	if [ "$s" -eq 0 ]; then
+		: >"$rundir/done"
 	fi
 
 	# benchstat runs only when the binary exists and a previous run of the
