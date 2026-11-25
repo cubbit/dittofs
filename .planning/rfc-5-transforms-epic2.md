@@ -14,8 +14,8 @@ and the RFC 2 plan's golden-vector script, which RFC 5's vectors join. Every cit
 **Epic 2 estimate: 5 subtasks, 11 man-days.**
 **Depends on:** **S1**, E1's surface frozen: `transform.Transform`, `Factory`, `Encoded`,
 `ErrMalformed` and `ErrTooLarge`; `keys.Provider`, `keys.MaterialID` and the material errors; the
-salvage-key wrap E1 declares in `keys`; and E1's import test, whose allowlist must admit
-`internal/prof` to the tree's test packages (§9). Outside RFC 5's epics, the RFC 2 plan's epic 2:
+and the salvage-key wrap E1 declares in `keys`. Outside RFC 5's epics, the RFC 2 plan's epic 2
+(`.planning/rfc-2-carver-plan.md`, on `develop`):
 its golden-vector script with its chain-ID encoder, and its check of `lukechampine.com/blake3`'s
 modes against BLAKE3's reference vectors (T2.5 only).
 **Blocks:** E3 (the in-memory provider for chain tests and "the provider records no call", the
@@ -44,10 +44,10 @@ in-memory one.
   one that writes into its input, one whose `LengthKey` omits a length-affecting setting, one
   whose `LengthOf` lies, one that clamps to `max`, one that drifts from its fixture, and an
   encrypt-stage one that accepts a flip.
-- `keystest.Memory` passes `keystest.Run`, and each of five broken providers around it fails its
+- `keystest.Memory` passes `keystest.Run`, and each of six broken providers around it fails its
   row: one that ignores the namespace, one that keeps its first material current, one that serves
-  a replaced key, one that reports a destroyed key as unavailable, and one whose call count misses
-  a call.
+  a replaced key, one that reports a destroyed key as unavailable, one that reports a kind never
+  given as unavailable, and one whose call count misses a call.
 - RFC 5's golden vectors sit in the RFC 2 plan's script and in
   `pkg/transform/transformtest/testdata/vectors.json`; a Go check written from RFC 5's tables
   recomputes each one and shows each wrong variant the RFC names gives another value.
@@ -181,7 +181,7 @@ number and title and not copied.
 | rule 4, profiling | all | the tests of `keystest` and `transformtest` run under `prof.Watch`; the suites do not call it, since each consumer's test does (rule 4) and `Watch` covers the whole process. Allocation counts per operation are E3's `transform-allocs` option; `FuzzDecode`'s bound is in bytes (D5) |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T2.3, T2.5 | the 64-goroutine row runs under `-race` in `unit`. The vectors are checked here against a second implementation and again where they are consumed, in E3, E5, E6 and E8 |
 | rule 6, known failures shrink | none | no red test: no suite RFC 5 names keeps a `known.yaml`, and this epic registers none |
-| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | `keystest` imports `keys`, `entity` and the standard library; `transformtest` adds `transform` and `keystest`. Neither imports `chain`, a stage or the provider. The vector check, a test file, also imports `lukechampine.com/blake3` |
+| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | `keystest` imports `keys`, `entity` and the standard library; `transformtest` adds `transform` and `keystest`. Neither imports `chain`, a stage or the provider. The vector check, a test file, also imports `lukechampine.com/blake3`. E1's import test checks no test file, so `internal/prof` in the tests needs no allowlist entry |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | none | no external system: the suites hold implementations to RFC 5, and the key service and the metadata store are E6's and E7's |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1, T2.3, T2.4 | `decision:` markers for D2 (one call per transform) and D3 (`Current` with nothing given); a `ponytail:` marker for D5's byte bound |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | every suite row runs against a broken subject that must fail it (D1); each vector comes from Python's libraries working from RFC 5's tables, never from the Go code it checks, and a Go check written from the same tables must agree with it (D7) |
@@ -223,6 +223,7 @@ suite" is `keystest.Run`.
 | R17 | The provider refuses to serve an ID whose material no longer matches its recorded fingerprint, as `ErrMaterialUnavailable` | MUST | §2.5, §7 T12, §8.1 §2.5 | T2.1 |
 | R18 | A fingerprint is `HMAC-SHA256(material, "dittofs key check v1")`, 32 bytes, carried in `MaterialID` | MUST | §2.5, §3.1, Appendix B.1 (labels; lengths and encodings) | T2.1, T2.5 |
 | R19 | A test can assert that the provider records no call: each call of the provider's `Current` or `Get` is counted | test row | §3.1 (`Provider`), §8.2 T12, T14 | T2.1 |
+| R31 | `Current` of a kind never given in a namespace is `ErrUnknownMaterial`, the error `Get` gives for the same absence | MUST | §3.1 (`Provider.Current`, `Provider.Get`); D3 | T2.1 |
 | R20 | A salvage key is a fresh 32-byte data key, belongs to no namespace, and is returned with its wrap under the installation's current master key; its layout and its unwrap are E6's | MUST | Appendix B.1 (lengths and encodings), Appendix B.2 (key table's `salvage-key` row; "A salvage key seals one salvage export") | T2.2 |
 
 **Golden vectors**
@@ -267,10 +268,13 @@ suite" is `keystest.Run`.
   `Remove` lands later. `Get` looks material up by namespace, kind and ID, and compares content
   with the fingerprint the provider recorded, never with the caller's: a transform's body names
   a key ID, not a fingerprint. `keystest.Harness` is those three plus `Calls`, and E6 adapts its
-  provider to it over key records and a key file. `Current` of a kind never given in a namespace
-  is `ErrUnknownMaterial`, the error `Get` gives for the same absence; a `decision:` marker says
-  so, to be withdrawn if RFC 5 names another. Prior art: none found for the harness; the error
-  follows `Provider.Get`'s own.
+  provider to it over key records and a key file. RFC 5 §3.1 does not say what `Current` returns
+  for a kind never given in a namespace; the user decided (#5857) that it is `ErrUnknownMaterial`,
+  the error `Get` gives for the same absence, and that `keystest.Run` asserts it (R31), so E6's
+  provider is held to it too. `ErrMaterialUnavailable` was rejected because it is retried, so a
+  namespace with no key of a kind would retry forever. A `decision:` marker at `Memory.Current`
+  says so, to be withdrawn if RFC 5 names another error. Prior art: none found for the harness;
+  the error follows `Provider.Get`'s own.
 - **D4, the call count is an output `Memory` exports and the suite covers.** `Calls` counts
   `Current` and `Get`; a row asserts each raises it by one and that a failing call counts too. E3
   and E6 assert "the provider records no call" on it, not on a counting fake (`CLAUDE.md`,
@@ -293,9 +297,11 @@ suite" is `keystest.Run`.
   longer writes. A transform writes its fixture once per format version through `Fixture`'s JSON
   form. JSON numbers reach the `Factory` as `float64`, as `encoding/json` decodes them (§9).
   Prior art: Go's `compress/*` packages' golden files under `testdata` (from memory).
-- **D7, RFC 5's vectors are written by the RFC 2 plan's script to
+- **D7, RFC 5's vectors are written by the RFC 2 plan's script, in
+  `pkg/carver/internal/carvetest` (its §1.4 and §4.1), to
   `pkg/transform/transformtest/testdata/vectors.json`**, embedded in `transformtest` and read
-  through `LoadVectors`. The script computes them with Python's `cryptography` (HKDF, HMAC,
+  through `LoadVectors`: `pkg/transform` cannot import an `internal` package of `pkg/carver`, so
+  the output, not the script, is what crosses. The script computes them with Python's `cryptography` (HKDF, HMAC,
   AES-GCM) and `blake3` (keyed and key-derivation modes), from RFC 5's tables. The chain ID uses
   the same encoder the script's block-name vector uses, so the two cannot disagree. The file
   carries each vector's inputs, so a consumer reproduces it without guessing: the chain-ID
@@ -321,6 +327,10 @@ suite" is `keystest.Run`.
   the engine writes it beside the export as bytes, and recovery tools are RFC 26's. So the
   provider suite's row checks only what holds for every provider, and E6 checks its provider's
   layout against the stored-wrap vector and its unwrap. Prior art: none found.
+- **D10, the exported surface of §6 is the user's approved one** (#5857): `Memory` and its six
+  methods, `Harness` and `keystest.Run`; `Subject`, `transformtest.Run`, `FuzzDecode`, `Fixture`,
+  `Vectors` and `LoadVectors`. A change to it is a revision of this document. Prior art: none
+  needed.
 
 ## 5. Target tree
 
@@ -353,7 +363,7 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
 **Subtask T2.1 estimate: 2.5 man-days.**
 
 - **Track:** team. **Depends on:** S1.
-- **Covers:** R14, R15, R16, R17, R19, R6 (its destroyed-material half, through `Destroy`).
+- **Covers:** R14, R15, R16, R17, R19, R31, R6 (its destroyed-material half, through `Destroy`).
 - **Deliverables:**
   - `keystest.Memory`, a `keys.Provider` (D3), consumed by T2.3, E3, E5, E6, E8, E11 and the RFC
     8 offload plan's engine epics:
@@ -373,16 +383,18 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
     runs it over its provider, and by E8, which adds the notice's rows.
 - **Acceptance criteria:**
   - `Run` passes on `Memory` under `-race`.
-  - Each of five broken providers around `Memory` fails exactly its row (D1): one that drops the
+  - Each of six broken providers around `Memory` fails exactly its row (D1): one that drops the
     namespace from lookups (R15), one that keeps the first material given as current (R14), one
     that serves content after `Replace` (R17), one that turns `ErrMaterialDestroyed` into
-    `ErrMaterialUnavailable` (R16), one whose `Calls` counts only successful calls (R19).
+    `ErrMaterialUnavailable` (R16), one that answers `Current` of a kind never given with
+    `ErrMaterialUnavailable` (R31), one whose `Calls` counts only successful calls (R19).
 - **Tests:** at `Run`'s rows, which E6's provider will run: two namespaces given a data key each,
   `Current` of one never the other's and `Get` with the other's namespace `ErrUnknownMaterial`
   (catches a lookup by ID alone, R15); a second `Give` of a kind becomes current while the first
   still reads (catches a provider serving only its first, or only its latest, R14); an ID never
   given, a replaced one and a destroyed one each return their own error (catches folded errors,
-  R16, R17); `Calls` rises by one per call, failing calls included (catches a count that skips
+  R16, R17); `Current` of a kind never given is `ErrUnknownMaterial` (catches an absence reported
+  as an outage, R31); `Calls` rises by one per call, failing calls included (catches a count that skips
   errors, R19). Each row also runs on its broken provider and must fail. R18's fingerprint is
   checked against the vector in T2.5, an independent oracle, rather than against the formula
   restated here.
@@ -548,9 +560,6 @@ A suggestion only: one pull request per subtask works as well.
   this epic but its §5 leaves out, and the Go check of the vectors (T2.5), which makes a wrong
   vector fail here rather than in a later epic, account for the difference. The plan is not
   edited.
-- **E1's allowlist and `internal/prof`.** Rule 7's allowlist does not name `internal/prof`,
-  which rule 4 needs in every test of the tree. E1's import test must admit it to test packages;
-  to settle with E1's breakdown.
 - **Fixture settings and JSON numbers (D6).** RFC 13's settings layer may hand a `Factory`
   integers where `encoding/json` gives `float64`. If it does, `Fixture` decodes numbers with
   `UseNumber` and converts integral ones; to settle when E4 writes the first fixture with a
@@ -560,7 +569,3 @@ A suggestion only: one pull request per subtask works as well.
   the least certain, with T2.5's second implementation next.
 - **The salvage-key wrap's signature** is E1's; T2.2 implements whatever associated data it
   takes, and its row asserts only what Appendix B.2 says of the key and its wrap.
-- **Where the script lives.** The RFC 2 plan names `pkg/carver/internal/carvetest` for it in
-  most places and `internal/carvetest` once. Go cannot import either from `pkg/transform`, which
-  is why the script writes RFC 5's output into `transformtest/testdata` (D7); the path only
-  decides where T2.5 edits the script.
