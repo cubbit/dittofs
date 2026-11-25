@@ -321,7 +321,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E9 | Opens, stateids and locks | `OPEN` and its claims, stateid rules, NFSv4.0 owner sequences, `LOCK`, `LOCKT`, `LOCKU`, `TEST_STATEID`, `FREE_STATEID`, drain roles per request | 8 | 25 | C | E10 and E12, partly; E16 |
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 8 | 22 | A | E16 |
 | E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
-| E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
+| E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 8 | 20.5 | C | E16 |
 | E13 🔀 | RPCSEC_GSS | the context table as NFS's `Security` stage over `gss`, `krb5`, `krb5i`, `krb5p` | 6 | 16 | B | E16 |
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
@@ -996,7 +996,7 @@ through NLM; N1's UDP half, N15, N21.
 
 ### Epic 12 — NFSv4.2 operations
 
-**Epic 12 estimate: 5 subtasks, 13 man-days.**
+**Epic 12 estimate: 8 subtasks, 20.5 man-days.**
 
 RFC 21 §9.3's subset of NFSv4.2: holes, server-side copy and clone, extended attributes.
 
@@ -1346,7 +1346,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | §7.4 (pseudo-filesystem, `SECINFO`, locations) | E5; the drain's answers: E3 and E10; the move and another gateway: §6.6 |
 | §8 (attributes) | E5; ACL attributes: E6; privilege: E7, E13 |
 | §9.1, §9.2 (stability, close-to-open) | E4, E5; end to end: E16 |
-| §9.3, §9.4, Appendix C | E12 |
+| §9.3, §9.4, Appendix C | E12; the running-clone steps on the composed node: E16 |
 | §10 (RPCSEC_GSS) | E13 |
 | §11 (decoding) | E1 (compound row), E3 (credential), E4 and E5 (generator) |
 | §11.1 (identity) | E3; `RPCSEC_GSS`: E13; resolution: E7 |
@@ -1356,7 +1356,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | §11.5 (errors) | E3 (`core`'s refusals, status layers), each handler epic (its rows), E10 (drain), E16 (totality); D4 in E4 |
 | §11.6 (testing) | golden vectors: E3, E4, E5; fuzz targets: E6, E8, E9, E11; drain test: E10; total mapping and cross-protocol: E16 |
 | §11.7, §14 (monitoring, observability) | rule 3; the recorder of §14's series and §11.7's three: §6.1, point 4 |
-| §12 (invariants) | N1: E3, E11; N2: E8 (one node); N3: E8, E13; N4: E9; N5: E8; N6: E10 (one node); N7: E4, E5; N8: E4, E5; N9: E5; N10: rule 13, E8; N11: E8; N12: E9; N13: E8, E16; N14: E10, E16; N15: E11; N16: E5, E6; N17: E4, E16; N18: E8; N19: E4, E5; N20: E8; N21: E11; N22: E12, E16; N23: E4, E16; N24: E9, E10, E16; N25: §6.6 (RFC 27); N26: E3, every translation; N27: E8 |
+| §12 (invariants) | N1: E3, E11; N2: E8 (one node); N3: E8, E13; N4: E9; N5: E8; N6: E10 (one node); N7: E4, E5; N8: E4, E5; N9: E5; N10: rule 13, E8; N11: E8; N12: E9; N13: E8, E16; N14: E10, E16; N15: E11; N16: E5, E6; N17: E4, E16; N18: E8; N19: E4, E5; N20: E8; N21: E11; N22: E12, E16; N23: E4, E12, E16; N24: E9, E10, E16; N25: §6.6 (RFC 27); N26: E3, every translation; N27: E8 |
 | §13 (conformance) | each row in the epic whose **Done when** names it; cluster steps: §6.6 |
 | §15 (open questions) | q5: D10 (§6.1, point 6); the others not planned |
 | Appendix A | non-normative |

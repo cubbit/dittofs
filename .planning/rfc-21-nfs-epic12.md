@@ -17,7 +17,7 @@ cherry-pick of RFC changes.
 Cited, not owned: RFC 7862 and RFC 8276 for the bytes, operation codes and status values; RFC 8
 §9.1 for what a clone does below the service.
 **Track:** C.
-**Epic 12 estimate: 8 subtasks, 20.25 man-days.**
+**Epic 12 estimate: 8 subtasks, 20.5 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state and members' table,
 E2's `nfsharness` and the `nfs42/` area of knfsd's captures, S0's `vfstest.Mutations`. Beyond S2,
 pieces of five epics, each named by id where a subtask takes it (§9, point 5): **E5**'s current
@@ -145,10 +145,10 @@ cited by number and title and not copied.
 | rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover, and nothing here is listed in a `known.yaml` |
 | rule 7, v2 ignores v1 | all | nothing from `develop`'s `v4` package, its NFSv4.2 handlers and xattr code included; operation codes and statuses from RFC 7862 and RFC 8276 |
 | rule 8, real dependencies for properties of those dependencies | T12.1, T12.3, T12.5 to T12.8 | golden files cut from knfsd's `nfs42/` captures where they hold the operation, written by hand from RFC 7862 and RFC 8276 where they do not (`READ_PLUS`, `ALLOCATE`'s reply, `OFFLOAD_*`); real TCP over loopback through `core`; a clone the engine really runs is the composed node's, E16's (§1.2) |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T12.3 to T12.7 | each decision of §4 leaves the marker it names; RFC 21 §9.3's `decision:` on `ALLOCATE` at its row and §9.4's on synchronous copies at `copy.go`; RFC 21 §2.3's `decision:` on an unclamped `LISTXATTRS` at its hook; `core`'s `withHold` `decision:` rewritten to name the budget (T12.4) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T12.3 to T12.7 | each decision of §4 leaves the marker it names; RFC 21 §9.3's `decision:` on `ALLOCATE` at its row and §9.4's on synchronous copies at `copy.go`; RFC 21 §2.3's `decision:` on an unclamped `LISTXATTRS` at its hook; `core`'s `withHold` `decision:` rewritten: the remaining deadline always passed, the session's gate beside it (T12.4); D3's on a release taking no place |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer; a golden vector comes from a capture or a specification, never from the encoder under test |
-| rule 11, a symbol is exported only if an interface uses it | T12.1 to T12.4 | exported: `CopyResult.Verifier` in `pkg/vfs`, for both adapters (T12.2); `Seek`'s `eof`, for both adapters (T12.1); `WithWaitGate` and `WaitGate` in `pkg/vfs`, for both adapters and the service (T12.4); the session's hold, for `ops/v4` (T12.4); `Hold.Bound` and `Hold.Clone` on `vfstest.Faults`, for every adapter's tests (T12.4); `Tear` on `OpCopy`, for every adapter's tests (T12.3). Every handler and translation stays unexported in `ops/v4` |
-| rule 12, each subtask creates only what it declares | all | each row lands with its handler, error rows, golden files and tests; the hold helper with its call sites; the verifier field with its first reader, T12.3; nothing for an operation another epic owns |
+| rule 11, a symbol is exported only if an interface uses it | T12.1 to T12.4 | exported: `CopyResult.Verifier` in `pkg/vfs`, for both adapters (T12.2); `Seek`'s `eof`, for both adapters (T12.1); `WithWaitGate` and `WaitGate` in `pkg/vfs`, for both adapters and the service (T12.4); `Session.AdmitWait`, for `ops/v4` (T12.4); `Hold.Bound` and `Hold.Clone` on `vfstest.Faults`, for every adapter's tests (T12.4); `Tear` on `OpCopy`, for every adapter's tests (T12.3). Every handler and translation stays unexported in `ops/v4` |
+| rule 12, each subtask creates only what it declares | all | each row lands with its handler, error rows, golden files and tests; the session's gate with the one place it is applied; the verifier field with its first reader, T12.3; nothing for an operation another epic owns |
 | rule 13, translate, never decide | all | each handler makes the calls Appendix D names, at most one mutating, and one read Appendix D does not name: D2's `GetAttr` of a `COPY` or `CLONE` source for a count of 0, which changes nothing and judges no range; overlap, `clone_max_len`, a range past the source and a namespace crossing are the service's refusals, answered through rows, never checked in a handler; holes come from `Seek` only; the hold budget is the adapter's count by RFC 21 §9.3 and decides nothing about a file. Three gaps in RFC 17 are raised against it in batch two's RFC 17 pull request rather than composed in a handler: a copy's verifier (T12.2, D1), `Seek` answering end of file (T12.1, D4) and the service telling the adapter when a call starts waiting behind a clone (T12.4, D3) |
 | rule 14, nothing deferred is lost | all | §1.2 names the owner of each part of an obligation this epic leaves out; §9, point 3 proposes moving the running-clone steps to E16 |
 
@@ -191,7 +191,7 @@ subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R20 | In an NFSv4.1 or later session, a call passes `vfs.WithHold` with its remaining deadline and the session's wait gate; the gate admits a wait behind a clone while fewer than the larger of 1 and a quarter of the session's fore-channel slots are waiting, and past that refuses it, so the call meets `ErrDelay` with `DelayClone` at once | MUST | RFC 21 §9.3 (hold budget); RFC 20 §4.6; RFC 17 §5.9 | T12.4 |
-| R21 | The budget covers each call RFC 21 §9.3 says is held behind a clone: `WRITE`, `DEALLOCATE`, a `SETATTR` of `size`, a `COPY` or `CLONE` whose destination is a running clone's range, and a `REMOVE` or last `CLOSE` that would release a running clone's destination; a listed call that does not wait takes no place | MUST | RFC 21 §9.3 | T12.4 |
+| R21 | The budget covers each call RFC 21 §9.3 says is held behind a clone: `WRITE`, `DEALLOCATE`, a `SETATTR` of `size`, a `COPY` or `CLONE` whose destination is a running clone's range, and a `REMOVE` or last `CLOSE` that would release a running clone's destination; a listed call that does not wait takes no place. The service never holds a `REMOVE` or last `CLOSE` (it defers the release, D3), so those take none; the reads that do wait there, `READ`, `READ_PLUS` and `SEEK` of a clone's destination, take one, by §9.3's amendment (§9 point 7) | MUST | RFC 21 §9.3 | T12.4 |
 | R22 | NFSv3 and NFSv4.0 calls pass their remaining deadline, so every held call is bounded by its own deadline and none is refused for want of a session | MUST | RFC 21 §9.3 (hold budget); RFC 20 §4.6 | T12.4 |
 | R23 | `ErrDelay` with `DelayClone`, a call held past its own deadline or past what its session lets wait, is `NFS4ERR_DELAY` | MUST | RFC 21 §11.5 (`ErrDelay`) | T12.4 |
 
@@ -237,12 +237,17 @@ subtasks and tests can cite them.
   `decision:` at `CopyResult` naming the sample point.
 - **D2. A count of 0 is resolved by a `GetAttr` of the source.** RFC 21 §9.3 turns a `COPY`'s
   count of 0 into the source's size less `ca_src_offset`, and RFC 7862 gives `CLONE`'s count of 0
-  the same meaning (from memory). `Copy` and `Clone` take explicit extents, so the handler reads
-  the source's size with one `GetAttr`, which makes no change, and passes one extent of
-  `max(size − offset, 0)` bytes, for `Copy` as for `Clone`, which takes exactly one: from the size
-  it is an empty extent ending at the size, answered with a count of 0, and from past the size an
-  empty extent ending past it, which the service refuses `ErrInvalid` (RFC 17 §5.9 step 2), as RFC
-  7862 refuses an offset past the size; the handler judges no range. A `decision:` marker says a
+  the same meaning (from memory). `Copy` and `Clone` take explicit extents, so the handler reads the source's size with one `GetAttr`, which makes no change, and passes one extent of
+  `size − offset` bytes, for `Copy` as for `Clone`, which takes exactly one. The service refuses an
+  empty extent (`badExtent` in `internal/vfs/copy.go`), so the two edges go otherwise: from the size
+  exactly, a `COPY` or a `CLONE` calls `Copy` with no extent, which the service judges, permissions
+  and stateids included, and answers 0 having moved nothing, so both answer `NFS4_OK` and 0
+  (`Clone` takes exactly one extent and has no empty form); from past the size, one empty extent at
+  the offset, which the service refuses `ErrInvalid`, as RFC 7862 refuses an offset past the size.
+  The handler judges no range: it only translates a count of 0 by the size `GetAttr` answered. The
+  computed length then goes through `wireRange` with the destination offset (D12), so a
+  destination near 2⁶³ is `NFS4ERR_FBIG` as for an explicit count. A `decision:` marker says a
+  `CLONE` from the size is answered through `Copy` with no extent, and that a
   source grown between the two calls is copied to its old
   size, which is what the client saw, and a source truncated between them ends the copy short or
   refused by the service, as any truncate racing a copy does. Overturned if RFC 17's `Extent`
@@ -264,13 +269,21 @@ subtasks and tests can cite them.
   func WaitGate(ctx context.Context) (admit func() (release func(), ok bool), ok bool)
   ```
   The service still counts nothing about holds (RFC 17 §5.9): it asks the gate in its one wait,
-  `internal/vfs`'s `held`, at the first `DelayClone`, where it now reads `Hold`. The adapter puts
-  the session's gate, `Session.AdmitWait`, on every call R21 lists, a `SETATTR` only when it sets
-  `size`, beside `core`'s remaining deadline; which `CLOSE` is the last and which `COPY` meets a
-  running clone's range is the service's to find, so only a call that really waits takes a
-  place. A `decision:` marker at `Session.AdmitWait` names the rule and that a refused wait is
-  answered at once. If the user prefers no RFC 17 change, the fallback is an RFC 21 §9.3
-  amendment counting the listed calls in flight (§9 point 8, (b)). Prior art: none found;
+  `internal/vfs`'s `held`, at the first `DelayClone`, where it now reads `Hold`. The adapter puts the
+  session's gate, `Session.AdmitWait`, on every member's context in a session, once, where the
+  members' context is built, beside `core`'s remaining deadline. The gate costs nothing until a
+  call waits, so only a call that really waits takes a place, whatever its operation, and no
+  handler carries a call of its own. That covers R21's list and the reads §9.3 leaves out: the
+  engine answers `DelayClone` to a read of a clone's destination (`refuseRead` in
+  `pkg/engine/clone.go`), and `Read` and `Seek` wait in `held`, so `READ`, `READ_PLUS` and `SEEK`
+  there take a place, which §9.3's list gains by amendment (§9 point 7). A `REMOVE` or last
+  `CLOSE` that meets a clone never waits: the service defers the release and runs it again in the
+  background (`awaitRelease` in `internal/vfs/opens.go`), and the call returns. A `decision:`
+  marker at `Session.AdmitWait` names the rule, that a refused wait is answered at once, and that
+  a release takes no place because the service defers it, withdrawn if the service ever holds a
+  release in the call. If the user prefers no RFC 17 change, the fallback is an RFC 21 §9.3
+  amendment counting the listed calls in flight (§9 point 8, (b)). Either way §9.3's sentence that
+  the adapter passes `WithHold` with zero past the count is reworded (§9 point 7). Prior art: none found;
   knfsd holds no call behind a clone (from memory).
 - **D4. `SEEK`'s end of file comes from `Seek` (pending the user's answer, §9 point 7).** `Seek`
   answers the size when it finds nothing before the end, but the adapter does not know the size,
@@ -278,13 +291,18 @@ subtasks and tests can cite them.
   end. RFC 17 §5.2 says an adapter reads that answer as end of file without giving it a way to:
   a gap in RFC 17, which rule 13 raises against it rather than closing with a second call in the
   handler. Batch two's RFC 17 pull request has `Seek` answer `(off int64, eof bool, err error)`,
-  `eof` judged under the same admission lock as the size it answered, and T12.1 changes the
+  `eof` judged under the same admission lock as the size it answered, and take a `limit`, the
+  bytes past `off` the caller needs: a run reaching `off + limit` is answered there, not at end of
+  file, so the store stops looking (0 for no limit, which `SEEK` passes), and T12.1 changes the
   service to match, so `SEEK` stays one `Seek`. No marker: the rule is the RFC's once amended.
   An `sa_what` other than data or hole is `NFS4ERR_UNION_NOTSUPP`, as RFC 7862 has it (from
   memory). Prior art: knfsd sets the end flag when the answered offset equals the inode's size
   (from memory).
 - **D5. A `READ_PLUS` answers one segment, from two service reads.** It first asks
-  `Seek(off, hole)`. A hole after the offset leaves data before it: one `Read` of up to that hole,
+  `Seek(off, hole)` with the count as its limit (D4): kvstore's `Allocation` widens its window from
+  64 MiB, loading every ref it covers, until the run's class changes or the file ends
+  (`pkg/metadata/kvstore/allocation.go`), so an unbounded `Seek` on a file with no hole would cost
+  each reply the rest of the file and a whole read O(N²); with the limit it stops at the count. A hole after the offset leaves data before it: one `Read` of up to that hole,
   clamped to the count, into a segment `Attach` lends, its end of file `Read`'s. A hole at the
   offset is followed by `Seek(off, data)`, whose answer ends the hole segment, clamped to the
   count; in a trailing hole that second `Seek` answers the size with D4's `eof`, so a hole reaching
@@ -294,9 +312,11 @@ subtasks and tests can cite them.
   end (`ErrPastEnd`) is answered end of file with no segment, as RFC 7862 answers a read there
   (from memory). The `Bound` hook is E5's `READ` hook with the count lowered by one segment's
   header, so the clamp and the session budget are one function. A `ponytail:` marker names the
-  ceiling: a file of many small holes reads one segment a round trip; upgrade to a segment list
-  filling the count when T12.5's benchmark, a sparse file read whole by `READ_PLUS` against
-  `READ`, shows `READ_PLUS` taking more round trips per byte than `READ`. Linux's NFSv4.2 client
+  ceiling: a file of many small holes reads one segment a round trip, so on T12.5's fine-grained
+  benchmark file (64 KiB runs, 4 KiB holes) `READ_PLUS` takes about 30 replies a MiB against
+  `READ`'s one, by construction; upgrade to a segment list filling the count when T12.5's second
+  benchmark file, shaped like a sparse disk image (1 MiB data runs and 1 MiB holes), shows
+  `READ_PLUS` taking more than twice `READ`'s round trips per byte. Linux's NFSv4.2 client
   sends `READ_PLUS` for ordinary reads (from memory), so the ceiling is met in normal use.
   Prior art: knfsd's `READ_PLUS` encodes a data or hole segment per extent up to the count (from
   memory).
@@ -342,9 +362,15 @@ subtasks and tests can cite them.
   `internal/vfs`'s `storeErr` answers all three `ErrInvalid` with no cause (E5's D14). So the
   refusals exist, but the adapter cannot tell a value too large from a bad name or a full file.
   Batch two's RFC 17 pull request (§9 points 2 and 7) names them apart, as RFC 7 §3.2 refuses an
-  entry name: an empty name or one holding a NUL stays `ErrInvalid`, a name past the limit
+  entry name: an empty name or one holding a NUL stays `ErrInvalid`, answered `NFS4ERR_INVAL`, not RFC 21
+  §11.5's `NFS4ERR_BADNAME`, which is for entry names and is not in RFC 8276's SETXATTR error
+  list; a name past the limit
   becomes `ErrNameTooLong`, a value past the bound `ErrInvalid` with cause `TooBig`, and a file's
-  xattr past the count `ErrNoSpace`; T12.6 retags the store's three refusals and gives
+  xattr past the count `ErrNoSpace`. The cause rides a store sentinel of its own, `entity.ErrXattrTooBig`,
+  wrapping `ErrInvalidArgument`, since `storeErr` maps every `ErrInvalidArgument` alike and cannot
+  infer it. The retag reaches SMB too: its EA answers become `STATUS_DISK_FULL` and
+  `STATUS_OBJECT_NAME_INVALID` (RFC 22's error rows), which the RFC 17 pull request states for both
+  adapters and the RFC 22 implementation plan's epic 8, which owns EAs, checks; T12.6 retags the store's three refusals and gives
   `storeErr` the cause, adding no bound of its own. The rows are then: cause `TooBig`
   `NFS4ERR_XATTR2BIG`, any other `ErrInvalid` `NFS4ERR_INVAL`, `ErrNameTooLong`
   `NFS4ERR_NAMETOOLONG` and `ErrNoSpace` `NFS4ERR_NOSPC`, all in RFC 8276's SETXATTR error list.
@@ -355,8 +381,11 @@ subtasks and tests can cite them.
   bound is fixed before it runs, and the value's size is not known before it is read; RFC 13's
   xattr value bound defaults to 64 KiB, Linux's own. The bound covers the value: the member
   reserves 64 KiB plus the operation code, the status and the value's length word, 12 bytes, so
-  a value of exactly 64 KiB, the largest one RFC 13 accepts, is read back. A `decision:` marker names the ceiling: a share whose bound is raised past 64 KiB
-  answers a larger value `NFS4ERR_XATTR2BIG` rather than passing the reservation. Overturned by a
+  a value of exactly 64 KiB, the largest one RFC 13 accepts, is read back. A session whose `ca_maxresponsesize` is below that bound can serve no `GETXATTR`: the member's
+  hook answers `ok` false and the compound is `NFS4ERR_REP_TOO_BIG` (RFC 8881 §15.1.3.6), as any
+  member whose bound does not fit. A `decision:` marker names the ceiling: a share whose bound is raised past 64 KiB
+  answers a larger value `NFS4ERR_XATTR2BIG` rather than passing the reservation, and names the
+  small-response case. Overturned by a
   bound read from the share's settings when RFC 13's bound is raised. RFC 13's 64 KiB is one byte
   past what SMB's `FILE_FULL_EA_INFORMATION` can carry (a 16-bit length, 65535): a value of
   exactly 64 KiB set over NFS is one SMB cannot list, which §9 point 4 raises for RFC 13 and the
@@ -367,13 +396,16 @@ subtasks and tests can cite them.
   handler before any call. `OFFLOAD_STATUS` and `OFFLOAD_CANCEL` share one handler answering
   `NFS4ERR_BAD_STATEID`. Prior art: knfsd's operation table points unsupported operations at one
   stub (from memory). No marker.
-- **D11. `GETXATTR` and `LISTXATTRS` read every value.** RFC 17 §3.1 offers only `Xattrs`, which
+- **D11. `GETXATTR`, `LISTXATTRS` and `SETXATTR` read every value.** RFC 17 §3.1 offers only `Xattrs`, which
   answers each name with its value, so one `GETXATTR` of a 4-byte value or one `LISTXATTRS` page
-  reads every value the file holds, up to 8 MiB at the store's bounds (128 values of 64 KiB;
+  reads every value the file holds, and a `SETXATTR` of `Create` or `Replace` loads every value too
+  (`internal/vfs/attrs.go`), while even `Either` has the store decode every value to count them
+  inside the write transaction (`pkg/metadata/kvstore/attrs.go`): up to 8 MiB at the store's bounds (128 values of 64 KiB;
   64 MiB if the count becomes RFC 13's 1024, §9 point 10), and a compound can repeat it. A
   `ponytail:` marker at `getxattr.go` names that ceiling; upgrade to an RFC 17 read by name and a
-  names-only listing when a profile of an xattr-heavy workload shows `Xattrs`' bytes, or the
-  bounds become share settings a share raises. Prior art: Linux reads one xattr by name
+  names-only listing and count (the key is already per name, `xattrKey`) when a profile of an
+  xattr-heavy workload shows `Xattrs`' bytes, when the bounds become share settings a share
+  raises, or when §9 point 10(b) raises the store's count. Prior art: Linux reads one xattr by name
   (`getxattr(2)`) and lists names without values (`listxattr(2)`).
 
 - **D12. Wire offsets past `int64` are settled where they are decoded into a call.** Every offset
@@ -402,9 +434,8 @@ internal/adapter/nfs/
     wirerange.go                     T12.1  wireRange, the one uint64 → int64 conversion (D12)
     errors.go                        T12.1  ErrPastEnd; T12.3, T12.5  their codes in E5's I/O rows; T12.6  the xattr rows (D8)
     copy.go, clone.go                T12.3  copy.go: RFC 21 §9.4's decision
-    gate.go                          T12.4  withSessionGate, putting the session's gate on each listed call (D3)
-    write.go, setattr.go, remove.go  T12.4  E5's handlers, taking a place
-    close.go                         T12.4  E9's handler, taking a place
+        gate.go                          T12.4  withSessionGate, putting the session's gate on every member's context in a session (D3)
+
     read_plus.go                     T12.5  and its benchmark beside READ (D5's trigger)
     getxattr.go, setxattr.go, listxattrs.go, removexattr.go   T12.6
     offload.go                       T12.7  OFFLOAD_STATUS, OFFLOAD_CANCEL
@@ -426,13 +457,14 @@ pkg/vfs/
   vfstest/mutations.go, null.go      T12.1  Seek's eof
   vfstest/suite/suite.go             T12.6  Xattrs answering names in byte order
 internal/vfs/
-  data.go                            T12.1  Seek answering eof under its admission lock
+    data.go                            T12.1  Seek answering eof under its admission lock, and its limit
   hold.go                            T12.4  held asking the gate at its first wait
   copy.go, filesystem.go             T12.2  the verifier through Copy
   errors.go                          T12.6  storeErr's TooBig cause on a value too large (D8)
   contenttest/memory.go, faults.go, suite.go   T12.2
 pkg/metadata/kvstore/
-  attrs.go                           T12.6  SetXattr's three refusals retagged (D8)
+  allocation.go                      T12.1  Allocation stopping at the limit (D4, D5); T12.5  its benchmark
+  attrs.go                           T12.6  SetXattr's three refusals retagged, ErrXattrTooBig (D8)
 pkg/engine/
   clone.go                           T12.2  Copy samples the verifier
 ```
@@ -441,16 +473,17 @@ pkg/engine/
 
 ### T12.1 `SEEK` and `DEALLOCATE`
 
-**Subtask T12.1 estimate: 2.5 man-days.**
+**Subtask T12.1 estimate: 2.75 man-days.**
 
 - **Track:** C. **Depends on:** T5.1, T5.5. T5.5's `stateid.go` serves the two special stateids,
   and E9's extension the rest once it lands, with no change here. Also batch two's RFC 17 pull
   request, for `Seek`'s `eof` (D4, §9 point 7).
 - **Covers:** R1, R2, R3, R4, R28, R29, R30, R31, R36.
 - **Deliverables:** `wirerange.go`'s `wireRange` (D12), which `SEEK` and `DEALLOCATE` use here
-  and T12.3 and T12.5 after. The service's `Seek` answering `(off int64, eof bool, err error)` (D4): in
+  and T12.3 after; T12.5 clamps its offset instead (D12). The service's `Seek` answering `(off int64, eof bool, err error)` and taking a limit (D4): in
   `pkg/vfs`, `internal/vfs`'s `data.go`, `eof` judged under the admission lock its size is read
-  under, and `vfstest`'s `Faults`, `Mutations` and `Null`, with its case in `internal/vfs`'s own
+  under, the limit passed to kvstore's `Allocation`, which stops widening its window once the run
+  reaches it, and `vfstest`'s `Faults`, `Mutations` and `Null`, with its case in `internal/vfs`'s own
   tests. `seek.go`: one `Seek` through `stateid.go`'s reference, its `eof` reported; `sa_what` mapped by a total function, an
   unknown value `NFS4ERR_UNION_NOTSUPP` with no call. `deallocate.go`: one `Deallocate`. Both rows
   at minor version 2, drain role none. `errors.go`: `ErrPastEnd` as `NFS4ERR_NXIO`; `DEALLOCATE`
@@ -469,7 +502,9 @@ pkg/engine/
     `DEALLOCATE` of length 0 reaches `Deallocate` once and changes nothing.
   - `SEEK` from offset 2⁶³ or 2⁶⁴ − 1 is `NFS4ERR_NXIO`; `DEALLOCATE` from 2⁶³, or of 2 bytes from
     2⁶³ − 1, is `NFS4ERR_FBIG` with no service call (R36).
-- **Tests:** on `nfsharness` against `memory.New`: each criterion, the reply bytes compared
+- **Tests:** `Allocation` with a limit on a kvstore file of data past it answers the limit, not
+  end of file, and with 0 the file's end (catches a limit ignored, D5), in kvstore's own tests. On
+  `nfsharness` against `memory.New`: each criterion, the reply bytes compared
   (catch a hole reported where data is, R2, R4, an end of file dropped, R3, `ErrPastEnd`
   unmapped, R2); a file whose data is zeros written by `WRITE`, `SEEK` for a hole answering the
   size (catches a hole derived from the bytes, R4); `sa_what` of every value from 0 to 3 as a
@@ -499,8 +534,10 @@ pkg/engine/
   sampled before the first chunk is staged as `Write` samples its own (D1), in `pkg/engine`'s
   `Copy`, `contenttest.Memory` and `contenttest.FaultContent`; `internal/vfs`'s `Copy` passing it
   through. `contenttest.Subject` gains `PauseCopy`, beside `Lose`: a hook that holds a copy after
-  its first chunk is staged until released, set per instance, from `export_test.go` for the
-  engine and on `Memory` for itself; nil skips the case, naming it. Consumed by T12.3, and by
+  its first chunk is staged until released, set per instance, for the engine through an
+  `enginetest.Unit` surface, as `Lose` reaches it through `FailSync` (the engine's subject is built
+  in package `integration`, which no `export_test.go` of the engine reaches), and on `Memory` for
+  itself; nil skips the case, naming it. Consumed by T12.3, and by
   RFC 22's copychunk, which ignores it.
 - **Acceptance criteria:**
   - A copy's verifier equals a `Write`'s before any loss, and a copy held after its first chunk
@@ -520,7 +557,7 @@ pkg/engine/
 
 **Subtask T12.3 estimate: 3.5 man-days.**
 
-- **Track:** C. **Depends on:** T12.2, T5.1, T5.5, T5.8.
+- **Track:** C. **Depends on:** T12.1 (`wireRange`), T12.2, T5.1, T5.5, T5.8.
 - **Covers:** R8, R9, R10, R11, R12, R13, R15, R16, R17, R18, R28, R29, R30, R31, R36.
 - **Deliverables:** `copy.go`: the saved filehandle as the source and the current one as the
   destination, a missing saved filehandle `ErrNoFH`; both stateids through `stateid.go`; a
@@ -541,8 +578,10 @@ pkg/engine/
   - A `COPY` with `ca_synchronous` false is answered the same way, with no callback ID.
   - A `COPY` torn to 64 KiB answers `wr_count` 64 KiB and `NFS4_OK`.
   - A `COPY` of count 0 from offset 10 of a 100-byte file copies 90 bytes; from offset 100 answers
-    `NFS4_OK` and 0; from offset 101 `NFS4ERR_INVAL`. A `CLONE` of count 0 from offset 10 clones 90
-    bytes as one extent, and from offset 100 answers `NFS4_OK` (D2).
+    `NFS4_OK` and 0, reaching `Copy` once with no extent; from offset 101 `NFS4ERR_INVAL`. A `CLONE`
+    of count 0 from offset 10 clones 90 bytes as one extent, and from offset 100 answers `NFS4_OK`
+    through `Copy` with no extent, never `Clone` (D2). A `COPY` of count 0 from offset 10 with a
+    destination offset of 2⁶³ − 50 is `NFS4ERR_FBIG` with no `Copy` (D12).
   - A `COPY` then a `COMMIT` of the destination answer one verifier.
   - A `COPY` or `CLONE` of one file onto an overlapping range of itself is `NFS4ERR_INVAL` and the
     file reads unchanged.
@@ -552,12 +591,14 @@ pkg/engine/
     both, `NFS4ERR_INVAL`; no service call in any (R36, D12).
 - **Tests:** on `nfsharness` against `memory.New`: each criterion, reply bytes compared (catch
   the count answered as asked rather than copied, R10, a `FILE_SYNC4` or zero verifier, R12, a
-  copy stateid issued, R13, a count of 0 passed through, R11, a `CLONE` of count 0 sent as no
-  extent, which the service refuses, D2, the overlap checked in the handler
+  copy stateid issued, R13, a count of 0 passed through, R11, a count of 0 from the size sent as an empty extent, which the service refuses, or a
+  `CLONE` of it sent to `Clone`, D2, the overlap checked in the handler
   or not at all, which `Mutations` shows as no call or a changed file, R15); `ErrCross` of
   `CrossNamespace`, `ErrIncomplete`, `ErrIO` and `ErrDelay` of `DelayClone` injected on `Copy` and
   on `Clone` through `vfstest.Faults`, answered `NFS4ERR_XDEV`, `NFS4ERR_IO`, `NFS4ERR_IO` and
-  `NFS4ERR_DELAY` (R16, R17); `ErrLocked` on `Copy`, `NFS4ERR_LOCKED`; `CLONE` reaching `Clone`
+    `NFS4ERR_DELAY` (R16, R17); `ErrLocked` on `Copy`, `NFS4ERR_LOCKED`; a `COPY` whose two
+  stateids are swapped, `NFS4ERR_BAD_STATEID` with no `Copy` (catches each stateid checked against
+  the other file); `CLONE` reaching `Clone`
   with exactly one extent of the asked length (catches a clone split into chunks, R9); a `COPY`
   then a `COMMIT` of the destination, the two verifiers compared as the client compares them
   (catches a verifier that is not the one `COMMIT` answers, the service dropping `Verifier` on the
@@ -577,10 +618,10 @@ pkg/engine/
 
 ### T12.4 The hold budget per session
 
-**Subtask T12.4 estimate: 3 man-days.**
+**Subtask T12.4 estimate: 2.75 man-days.**
 
-- **Track:** C. **Depends on:** T12.1, T12.3, T5.5, T5.6, T5.8, T8.4, T8.5, T9.6. T8.4 and T8.5
-  resolve `r.Call.Session` to a session with its fore-channel slot count; T9.6 is `CLOSE`. Also
+- **Track:** C. **Depends on:** T12.1, T12.3, T5.8, T8.4, T8.5. T8.4 and T8.5
+  resolve `r.Call.Session` to a session with its fore-channel slot count. Also
   batch two's RFC 17 pull request, for the wait gate (D3, §9 point 8).
 - **Covers:** R20, R21, R22, R23.
 - **Deliverables:** `pkg/vfs`'s `WithWaitGate` and `WaitGate` (D3), and `internal/vfs`'s `held`
@@ -595,10 +636,8 @@ pkg/engine/
   ```
   with D3's `decision:`. `ops/v4/gate.go`: `withSessionGate(ctx, r) context.Context`, which in a
   session returns `vfs.WithWaitGate(ctx, s.AdmitWait)` beside `core`'s remaining deadline, and outside a session
-  ctx unchanged; its calls in `deallocate.go`, `copy.go` and
-  `clone.go`, and in other epics' handlers once they have landed, the edit this subtask's alone:
-  E5's `write.go` (T5.8), `setattr.go` for a `size` set only (T5.5) and `remove.go` (T5.6), and E9's
-  `close.go` (T9.6). Neither E5 nor E9 adds a hold call of its own. `vfstest.Faults`' `Hold`
+  ctx unchanged, applied once to every member's context where `ops/v4` builds it for a session
+  (D3); no handler, this epic's or another's, carries a call of its own. `vfstest.Faults`' `Hold`
   reports the hold its held call's context carried, `func (h *Hold) Bound() (max time.Duration,
   ok bool)`, read from `vfs.Hold` as the call arrives, and `func (h *Hold) Clone() *Hold` makes
   the held call wait as the service waits behind a clone, a kind 3 delay on cue: it asks the
@@ -609,7 +648,8 @@ pkg/engine/
   - A session of 16 slots gives 4 places, one of 5, 3 or 2 gives 1; a fifth wait on 16 gets
     none, and a place given back is taken again.
   - In a session whose places are taken, a `WRITE` waiting behind a clone is answered
-    `NFS4ERR_DELAY` at once; within them, it waits with `core`'s remaining deadline.
+        `NFS4ERR_DELAY` at once; within them, it waits with `core`'s remaining deadline. A `READ` of a
+    clone's destination waiting behind the clone takes a place the same way.
   - A listed call that does not wait takes no place: writes in flight to files with no clone
     leave every place to the writes that do wait.
   - An NFSv4.0 `WRITE`, with no session, reaches `Write` with its remaining deadline, whatever
@@ -622,8 +662,11 @@ pkg/engine/
   4 admitted and the other 4 `NFS4ERR_DELAY` at once, and after one is released and answered a
   ninth admitted (catches a budget never applied, a place never given back, R20, and calls in
   flight counted as waiting, R21); the same waits over `DEALLOCATE`, `SETATTR` of `size`,
-  `REMOVE`, `CLOSE`, `COPY` and `CLONE` (catches a listed call carrying no gate, R21); a
-  `SETATTR` of `mode` carrying no gate (catches every `SETATTR` counted); `internal/vfs`'s `held`
+  `COPY`, `CLONE`, `READ`, `READ_PLUS` and `SEEK` (catches a member that carries no gate, R21); a
+  `SETATTR` of `mode` that does not wait taking no place (catches calls counted rather than
+  waits); a place given back when its wait ends on the call's deadline, on its cancellation and
+  on `DESTROY_SESSION`, a new wait then admitted (catches a release missed on one of the three
+  paths); `internal/vfs`'s `held`
   with a gate that refuses, `DelayClone` at once, and one that admits, its release called once when
   the clone ends (catches the gate asked per retry or never released); the NFSv4.0 case (catches a v4.0 call refused at once, R22);
   `ErrDelay` of `DelayClone` on `Write` through `vfstest.Faults`, `NFS4ERR_DELAY` (R23); a `-race`
@@ -636,7 +679,7 @@ pkg/engine/
 
 ### T12.5 `READ_PLUS`
 
-**Subtask T12.5 estimate: 2.75 man-days.**
+**Subtask T12.5 estimate: 3 man-days.**
 
 - **Track:** C. **Depends on:** T12.1, T5.5, T5.8, T4.2, T8.7.
 - **Covers:** R4, R5, R6, R7, R28, R29, R30, R36.
@@ -665,9 +708,15 @@ pkg/engine/
   state (catches a count past the room or a zero count, R6); `Read` torn through `Tear` with each
   of the four errors (catches zero padding or a lost short read, R7); the data segment the very
   buffer `Read` filled (catches a copy); as bob on alice's 0600 file, `NFS4ERR_ACCESS` on
-  `memory.New` with two users; `Role` and minor versions from the table (R28, R29). D5's
-  trigger as a benchmark on `nfsharness`: a 64 MiB file of 64 KiB data runs and 4 KiB holes read
-  whole by `READ_PLUS` and by `READ`, reporting round trips per MiB for each. No test double
+  `memory.New` with two users; `Role` and minor versions from the table (R28, R29). The first `Seek` reaching the service with the count as its limit, read
+  from a pass-through wrapper's record of the call, since the call is the requirement (catches an
+  unbounded `Seek`, D5). D5's
+  trigger as a benchmark on `nfsharness`: a 64 MiB file of 64 KiB data runs and 4 KiB holes, and
+  one of 1 MiB data runs and 1 MiB holes, each read whole by `READ_PLUS` and by `READ`, reporting
+  round trips per MiB for each. A benchmark on kvstore, run by hand and reported in the pull
+  request: a 1 GiB file with no hole read whole as `READ_PLUS` reads it, one bounded `Seek` and
+  one `Read` per 1 MiB, its time per MiB at the file's start and end (catches a `Seek` whose cost
+  grows with what remains of the file, D5). No test double
   beyond `vfstest.Faults` and its `Tear`.
 - **Rules:** rule 9: D5's marker and its trigger's benchmark.
 
@@ -714,7 +763,8 @@ pkg/engine/
   `GETATTR` refused before it runs (catches the count clamped, R26); the option as a table over
   every value (R31); `ErrAccess` on `SetXattr` through `vfstest.Faults`, `NFS4ERR_ACCESS`; a
   table of `SETXATTR` inputs on `memory.New`, an empty name, one holding a NUL, one past the
-  name length limit (256 bytes), a value one byte past 64 KiB and the file's 129th xattr, answered
+  name length limit (256 bytes), a value one byte past 64 KiB and the file's xattr one past the
+  count the store answers (the 129th today, §9 point 10), answered
   `NFS4ERR_INVAL`, `NFS4ERR_INVAL`, `NFS4ERR_NAMETOOLONG`, `NFS4ERR_XATTR2BIG` and
   `NFS4ERR_NOSPC`, nothing stored (catches every `ErrInvalid` answered `XATTR2BIG`, or all three answered `INVAL` as the
   store tags them today, R27); `foo`
@@ -722,7 +772,11 @@ pkg/engine/
   path, D7); the 64 KiB value read back (catches a reservation that covers the whole result,
   D9); the file removed by a second client between `PUTFH` and `REMOVEXATTR` (catches a gone file
   answered as a gone name, D8); as bob on alice's 0600 file, each of the four operations `NFS4ERR_ACCESS` and
-  nothing changed, on `memory.New` with two users (catches the wrong handle or `Call`). No test
+  nothing changed, on `memory.New` with two users (catches the wrong handle or `Call`); as bob on
+  alice's 0711 file, `GETXATTR` and `LISTXATTRS` served and `SETXATTR` `NFS4ERR_ACCESS`, since
+  RFC 19 §4.1 grants `ReadNamedAttrs` with any mode bit (`entity.ModeRights`) (records that rule at
+  the reply); `LISTXATTRS` with cookies 2⁶³ and 2⁶⁴ − 1, each an empty page at end of list (catches
+  a cookie turned negative as an index, D6). No test
   double beyond `vfstest.Faults`.
 - **Rules:** rule 9: D6's, D7's, D8's, D9's and D11's markers, RFC 21 §2.3's `decision:`.
 
@@ -829,10 +883,10 @@ the composed node.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T12.1 | 2.5 | E5's T5.1 and T5.5, batch two's RFC 17 pull request | `SEEK` and `DEALLOCATE`, the hole operations the rest builds on, with `Seek`'s end of file |
+| 1 | T12.1 | 2.75 | E5's T5.1, T5.5 and T5.8, batch two's RFC 17 pull request | `SEEK` and `DEALLOCATE`, the hole operations the rest builds on, with `Seek`'s end of file |
 | 2 | T12.2 | 2 | the user's answer on §9, point 1, batch two's RFC 17 pull request | a service and engine change, reviewed by their owners apart from the adapter |
-| 3 | T12.3, T12.4 | 6.5 | PRs 1 and 2, batch two's RFC 17 pull request, E5's T5.6 and T5.8, E8's T8.4 and T8.5, E9's T9.6 | copy and clone, then the budget that bounds what waits behind them |
-| 4 | T12.5, T12.6, T12.7 | 6.75 | PR 1, batch two's RFC 17 pull request, E4's T4.2, E8's T8.7 | `READ_PLUS`, the xattrs and the not-supported rows: the rest of the operation set |
+| 3 | T12.3, T12.4 | 6.25 | PRs 1 and 2, batch two's RFC 17 pull request, E5's T5.8, E8's T8.4 and T8.5 | copy and clone, then the budget that bounds what waits behind them |
+| 4 | T12.5, T12.6, T12.7 | 7 | PR 1, batch two's RFC 17 pull request, E4's T4.2, E5's T5.6 and T5.8, E8's T8.7 | `READ_PLUS`, the xattrs and the not-supported rows: the rest of the operation set |
 | 5 | T12.8 | 2.5 | PRs 3 and 4, S4, E3's T3.2, E7's T7.1 | every row over loopback |
 
 A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can be open at once,
@@ -843,7 +897,7 @@ and PR 4 beside PR 3.
 1. **A copy's write verifier (D1, T12.2), pending the user's answer.** RFC 21 §9.3 answers a
    `COPY` `UNSTABLE4` with the write verifier, which no layer below the adapter returns for a copy.
    Options: (a) as D1, `CopyResult.Verifier`, sampled by the engine's `Copy` as `Write` samples
-   its own, `Copy(...) (int64, vfs.Verifier, error)` in RFC 8 §12.1 and RFC 17 §3.0, 1.75
+   its own, `Copy(...) (int64, vfs.Verifier, error)` in RFC 8 §12.1 and RFC 17 §3.0, 2
    man-days in T12.2; (b) an RFC 21 §9.3 amendment answering `wr_committed` `FILE_SYNC4`, since
    RFC 8 §9.1's clone syncs what it copies before it answers, so no verifier is read and T12.2 is
    dropped, at the cost of a loss during that sync going unreported, which RFC 17 §5.8 guards for a
@@ -912,23 +966,28 @@ and PR 4 beside PR 3.
    xattr name and bound refusals (T12.6, 0.5). 19.75 once those refusals were found already in
    the store, leaving T12.6 only their causes (0.25 rather than 0.5): with point 1's (b) 17.75,
    with point 8's (b) as well 17.25, with point 2's (b) 0.25 less again. 20.25 once D12 settled
-   wire offsets here (T12.1 and T12.3, 0.25 each), the options' figures 0.5 higher too. The plan's Epic 12 row still reads 13; its programme
-   totals reconcile when the breakdown pull requests merge, and this document leaves them alone.
+   wire offsets here (T12.1 and T12.3, 0.25 each), the options' figures 0.5 higher too. 20.5 after
+   the third review: `Seek`'s limit (T12.1, 0.25) and its kvstore benchmark (T12.5, 0.25), less the
+   handler call sites the gate no longer needs (T12.4, 0.25). The plan's Epic 12 row and heading
+   carry 20.5; its programme totals reconcile when the breakdown pull requests merge.
 7. **Which pull request carries which RFC amendment.** Batch two's one RFC 17 pull request, with
    E9's D1, E10's Q1 and E11's Q1, opened before E9's PR 1, carries four of this epic's: point 1's
    (a), RFC 17 §3.0's `CopyResult` and `Copy` with RFC 8 §12.1, for T12.2; `Seek` answering
-   `(off int64, eof bool, err error)` in RFC 17 §3.1 and §5.2 (D4), for T12.1, pending the user's
+   `(off int64, eof bool, err error)` and taking a limit in RFC 17 §3.1 and §5.2 (D4, D5), for T12.1, pending the user's
    answer, since the alternative, a `Read` of no byte after `Seek` in the handler, is the sequence
    rule 13 forbids; point 8's (a), the wait gate in RFC 17 §5.9, for T12.4; and point 2's
    `SetXattr` refusals (D8), for T12.6. Each subtask waits
-   for it. Point 2's §11.5 cells, and point 1's and point 8's §9.3 text if (b) is chosen, go in
-   batch two's one RFC 21 pull request. Point 3's edit is to the RFC 21 implementation plan, not
+   for it. Point 2's §11.5 cells, point 1's §9.3 text if (b) is chosen, and §9.3's hold budget text go in
+   batch two's one RFC 21 pull request: under point 8's (a), the sentence passing `WithHold` with
+   zero past the count becomes the gate, and the list of held calls gains `READ`, `READ_PLUS` and
+   `SEEK` and says a `REMOVE` or last `CLOSE` is deferred, not held (D3); under (b), §9.3 counts the
+   listed calls in flight. Point 3's edit is to the RFC 21 implementation plan, not
    an RFC.
 8. **Counting the calls that wait (D3, T12.4), pending the user's answer.** RFC 21 §9.3 counts
    the session's calls waiting behind a clone, and RFC 17 §5.9 never tells the adapter when a
    call starts to wait. Options: (a) as D3, RFC 17 §5.9 gains `WithWaitGate`, which the service
    asks once at its first wait (`internal/vfs`'s `held`, one place), so only calls that wait take
-   a place and RFC 21 stays as written, 0.5 man-days in T12.4; (b) an RFC 21 §9.3 amendment
+   a place, with §9.3's hold sentence and list reworded to match (point 7), 0.5 man-days in T12.4; (b) an RFC 21 §9.3 amendment
    counting every listed call in flight, no service change, at the cost that writes to files with
    no clone fill the places and a write into a running clone's source is then answered
    `NFS4ERR_DELAY` at once (on 16 slots, a fifth write while 4 others are in flight), and every
