@@ -18,7 +18,7 @@ with its attempt, stable bytes); [RFC 4](../docs/internals/rfcs/rfc-4-remote-tie
 `Attempt`, `Stored`); [RFC 5](../docs/internals/rfcs/rfc-5-transforms.md) §2.7, §3.1 and Appendix B.2
 (the pin, its release, a destroyed current material, a plan keyed under another namespace).
 **Track:** B.
-**Epic 15 estimate: 10 subtasks, 34 man-days.**
+**Epic 15 estimate: 10 subtasks, 34.5 man-days.**
 **Depends on:** sync point **S2**, red rows in CI (epic 12): the fixture's `WithCarver` and
 `WithChain`, refusing by name, and the 41 entries whose message is the carver's refusal; **S5's
 first half** for the finish: RFC 2's carver and fold, RFC 3's syncer over RFC 4's in-memory store
@@ -26,10 +26,10 @@ through `codec.Store` under RFC 4's fault wrapper, RFC 5's chain over `keystest`
 `keys.Provider`; #5775's journal and metadata contract packages, which `offload/` imports instead of
 `pkg/journal` and `kvstore`; epic 11's frozen surface (`ShareSettings.MaxAge`, the `Stats` fields
 this epic fills).
-**Blocks:** epic 16, which runs this pipeline as the offload source's runs, opens each binding's
+**Blocks:** epic 14, whose `Dirty` event, age tick and pressure call T15.1's `offloadDue`; epic 16, which runs this pipeline as the offload source's runs, opens each binding's
 flow, and with S5 and S6 reaches S3; epic 18, which adds the commit's tracked read of each key
-record to the transaction T15.3 shapes and Mark's destroyed-material check to T15.9's Mark; epic 19,
-whose reseed reads the `encodings` T15.2 persists; epic 20, which reads the pipeline's outcomes and
+record to the transaction T15.4 shapes and Mark's destroyed-material check to T15.9's Mark; epic 19,
+whose reseed reads the `encodings` T15.3 persists; epic 20, which reads the pipeline's outcomes and
 failing-file counts.
 
 ---
@@ -70,7 +70,7 @@ the RFC 8 §2.1 and §6.7 and RFC 6 §10.1 amendments (D12).
   table's "O2 long outage" row needs the pause, so it is epic 16's too (§9).
 - The offload commit's tracked read of each key record its block's `encodings` name, its refusal,
   and Mark's check under `Unmark`'s lock (RFC 8 §10.4 as amended): epic 18. This epic counts those
-  reads in the floor (T15.1) and leaves their slot in the transaction.
+  reads in the floor (T15.2) and leaves their slot in the transaction.
 - The reseed's `MarkOffloaded`, and the reseed's read of `encodings`: epic 19. Epic 11's T11.5 lists
   `MarkOffloaded` under this epic; the pipeline marks through `report` alone.
 - The health conditions `file_offload_failing` and `offload_stalled`, and the `Warn` log of a
@@ -80,6 +80,8 @@ the RFC 8 §2.1 and §6.7 and RFC 6 §10.1 amendments (D12).
 - O7, the stale epoch: the cluster stage, the plan's §6.1 row "The cluster rules".
 - The dedup oracle, `Offloaded`: deferred by RFC 0 §3.1 and RFC 8 §6.5.
 - Composing the provider, the stores and `codec.Store` in the node: the integration epic (but D2).
+- The removal path on the scheduler: epic 14. The overwrite-prune kind, the put-unhealthy and
+  throttling-store legs of epic 14's rows, and the puts and commits of "one run per key": epic 16.
 - The soak over hours with remote faults: epic 22's `engine-soak`; this epic runs a seeded
   simulation of it in `unit` (T15.10).
 
@@ -111,14 +113,14 @@ cited by number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, **Independent unit tests** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T15.4 to T15.10 | the pipeline's tests build each component directly, never through the content wiring: the carver and fold, RFC 5's chain over `keystest`'s provider, RFC 3's syncer over `pkg/remote/memory` through `codec.Store` under RFC 4's fault wrapper (kinds 2 and 3), `kvstore` over the in-memory `kv.KV` and its fault-injecting wrapper (kind 3), the first part's in-memory journal, the test clock (kind 1). The tests sit in `offload_test`, an external package, so they may import `enginetest` without a cycle |
-| rule 2, **Fuzz the key and ref decoders the queue's rebuild reads** | T15.2 | the block record's decode with its `encodings`, seeded with a record written without them, in the nightly `fuzz` suite the RFC 2 plan's epic 2 registers |
+| rule 1, **Independent unit tests** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T15.1 to T15.10 | the pipeline's tests build each component directly, never through the content wiring: the carver and fold, RFC 5's chain over `keystest`'s provider, RFC 3's syncer over `pkg/remote/memory` through `codec.Store` under RFC 4's fault wrapper (kinds 2 and 3), `kvstore` over the in-memory `kv.KV` and its fault-injecting wrapper (kind 3), the first part's in-memory journal, the test clock (kind 1). The tests sit in `offload_test`, an external package, so they may import `enginetest` without a cycle |
+| rule 2, **Fuzz the key and ref decoders the queue's rebuild reads** | T15.3 | the block record's decode with its `encodings`, seeded with a record written without them, in the nightly `fuzz` suite the RFC 2 plan's epic 2 registers |
 | rule 3, **Observability follows RFC 25** | T15.6, T15.10 | the pipeline's series of RFC 8 §14 fill epic 11's `Stats` fields; the `carver_` series, derived from what `Cut` hands back, per namespace (D14); a root span per pass; no share label on a per-operation series |
 | rule 4, **Profiling** | T15.8, T15.10 | every pipeline test runs under `prof.Watch`; the put source's allocation assertion, one chunk per worker, registers `unit/engine-allocs` at `tier: pr` (T15.8) |
 | rule 5, **Public interface and internals** ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | assertions sit where the value is consumed: an offloaded bit at the in-memory journal's held extents (what `Release` reads), a ref at `kvstore`'s covering lookup, an object at the remote store's own listing, a key count at the backend's `metadata_txn_keys{kind=written}` counter, a refusal at `Open`'s error |
 | rule 6, **Known failures shrink** | T15.5, T15.10 | T15.5 makes the carver and chain options real and rewrites the 41 entries' `message:` to the syncer's refusal in the same change; T15.10 adds O1's crash leg with its entry, red until S6 |
 | rule 7, **v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows** | T15.5 | `offload/`'s production files import the standard library, `entity`, the `pkg/carver`, `pkg/transform`, `pkg/remote` and `pkg/syncer` roots, the journal's and metadata's contract packages and `pkg/workqueue`; the engine's transitive walk admits `pkg/carver/internal/params` with the carver root and refuses `carve`, `assembler`, the chain's subpackages and `pkg/remote/codec` in production code |
-| rule 8, **Real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T15.1, T15.3, T15.10 | the floor and the commit's key counts are checked over the memory KV, Badger under `t.TempDir()` and FoundationDB where it runs; O1's crash leg runs over the real journal on a real directory with its crash seam, in `engine-conformance` |
+| rule 8, **Real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T15.2, T15.4, T15.10 | the floor and the commit's key counts are checked over the memory KV, Badger under `t.TempDir()` and FoundationDB where it runs; O1's crash leg runs over the real journal on a real directory with its crash seam, in `engine-conformance` |
 | rule 9, **Code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T15.6, T15.10 | RFC 8 §6.3's five-failures `decision:` at the count (T15.10); the chunk-age `ponytail:` (T15.6); this epic's own markers, each named in §4 |
 | rule 10, **A test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | every test names the planted break it catches; the floor is shown one key below and at the floor; the pipeline's checks run with the fault cleared and set |
 | rule 11, **A symbol is exported only if the RFC's interface uses it** | T15.5, T15.6 | `offload`'s states and `offloadDue` are unexported; `offload` exports its entry point and the ports the engine fills (D1); the engine adds three `Deps` members and the `Stats.Carver` field (D14) |
@@ -142,10 +144,10 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R6 | `offloadDue` is an unexported function of the journal's statistics, the clock and the shares' views; it does no I/O, holds no component, is not folded with another policy function, and is table-tested alone | MUST NOT | RFC 8 §3.1 | T15.4 |
-| R7 | A file is eligible when its dirty bytes reach the block target, its oldest dirty byte reaches the share's `offload.max_age`, or the journal is under capacity pressure, which makes every file with dirty bytes eligible; a client's request for durability is not a trigger | MUST | RFC 8 §6.2 | T15.4 |
-| R8 | A pass offers at most `upload_workers` block targets of dirty bytes across its files, through `limit`; small files are gathered into one pass up to that bound | MUST | RFC 8 §6.2 | T15.4 |
-| R9 | A file that fails repeatedly is offered in passes of its own, so no block shared with other files carries it; its consecutive failed passes are counted by file in the binding's policy state, and a skipped pass or a `Throttled` refusal never counts | MUST | RFC 8 §6.3 O6 | T15.4, T15.10 |
+| R6 | `offloadDue` is an unexported function of the journal's statistics, the clock and the shares' views; it does no I/O, holds no component, is not folded with another policy function, and is table-tested alone | MUST NOT | RFC 8 §3.1 | T15.1 |
+| R7 | A file is eligible when its dirty bytes reach the block target, its oldest dirty byte reaches the share's `offload.max_age`, or the journal is under capacity pressure, which makes every file with dirty bytes eligible; a client's request for durability is not a trigger | MUST | RFC 8 §6.2 | T15.1 |
+| R8 | A pass offers at most `upload_workers` block targets of dirty bytes across its files, through `limit`; small files are gathered into one pass up to that bound | MUST | RFC 8 §6.2 | T15.1 |
+| R9 | A file that fails repeatedly is offered in passes of its own, so no block shared with other files carries it; its consecutive failed passes are counted by file in the binding's policy state, and a skipped pass or a `Throttled` refusal never counts | MUST | RFC 8 §6.3 O6 | T15.1, T15.10 |
 
 **Capture**
 
@@ -174,7 +176,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R22 | Every chunk a pass cuts is carried in its blocks, except an all-zero chunk, which is a zero ref; no pass references a chunk it did not carry | invariant | RFC 8 §6.5 (V1), RFC 8 E7 | T15.7 |
-| R23 | The pass hands the fold each chunk's worst-case keys, the refs it replaces counted, each zero ref's keys, and a commit's per-block and per-file keys, each an upper bound of what the commit writes | MUST | RFC 8 §6.3 (Assemble); RFC 2 §5.1 | T15.1, T15.7 |
+| R23 | The pass hands the fold each chunk's worst-case keys, the refs it replaces counted, each zero ref's keys, and a commit's per-block and per-file keys, each an upper bound of what the commit writes | MUST | RFC 8 §6.3 (Assemble); RFC 2 §5.1 | T15.2, T15.7 |
 | R24 | One fold serves one pass of one share, so a block never mixes two flows or two namespaces, and a file's chunks within a block stay contiguous | MUST NOT | RFC 2 §5.3 | T15.7 |
 | R25 | A held short last plan is not put and none of its extents is reported, so they stay **Dirty**; the fold is given the maximum age and each chunk's age, so it puts a short last block once its oldest chunk reaches it | MUST | RFC 2 §5.1, §5.4 | T15.7 |
 | R26 | A plan's keys are recomputed from its refs before Intent; a plan over `K` is refused there, with its count, and no object is put for it | MUST | RFC 6 §5.2 ("an offload commit **MUST** fit K"); RFC 8 E40 | T15.7 |
@@ -202,10 +204,10 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R36 | Each block commits in one metadata transaction, under the files' guards, recording the block with its `encodings` from the put's census; every block holds at least one chunk | MUST | RFC 8 §6.3 (Commit); RFC 6 §2.3, §4.1; RFC 2 §5.2 (P2) | T15.2, T15.9 |
-| R37 | Zero refs with no block to ride commit in one zero-ref commit, with no intent, no put, no block or chunk record, within `K`, also in the middle of a pass | MUST | RFC 8 §6.3 (Commit); RFC 6 §4.1 | T15.3, T15.9 |
-| R38 | A commit that meets more than it planned for, because a commit landed since the plan, applies the block with the files that fit `K`, reports only those, and re-offers the rest, which the next pass carves again from a new covering lookup | MUST | RFC 8 §6.3 (Commit); RFC 6 §5.2 | T15.3, T15.9 |
-| R39 | No offload commit, block or zero-ref, writes more than `K` keys | invariant | RFC 8 E40; RFC 6 §5.2 | T15.3, T15.9 |
+| R36 | Each block commits in one metadata transaction, under the files' guards, recording the block with its `encodings` from the put's census; every block holds at least one chunk | MUST | RFC 8 §6.3 (Commit); RFC 6 §2.3, §4.1; RFC 2 §5.2 (P2) | T15.3, T15.9 |
+| R37 | Zero refs with no block to ride commit in one zero-ref commit, with no intent, no put, no block or chunk record, within `K`, also in the middle of a pass | MUST | RFC 8 §6.3 (Commit); RFC 6 §4.1 | T15.4, T15.9 |
+| R38 | A commit that meets more than it planned for, because a commit landed since the plan, applies the block with the files that fit `K`, reports only those, and re-offers the rest, which the next pass carves again from a new covering lookup | MUST | RFC 8 §6.3 (Commit); RFC 6 §5.2 | T15.4, T15.9 |
+| R39 | No offload commit, block or zero-ref, writes more than `K` keys | invariant | RFC 8 E40; RFC 6 §5.2 | T15.4, T15.9 |
 | R40 | A conflict is retried; an absent intent fails the commit, and the attempt is abandoned and its content re-offered | MUST | RFC 8 §6.3 (Commit), §6.6; RFC 6 §4.1 | T15.9 |
 | R41 | Each ref the commit writes carries as `born` the cut its extent was offered with | MUST | RFC 8 §6.3 ("Snapshot holds"); RFC 6 §6.5 | T15.9 |
 | R42 | The pass reports, through `report`, exactly the extents whose commits succeeded, refs found already committed included, as each block's commit lands, and never any other; a block of several files reports each file's share then | MUST | RFC 8 §6.8, RFC 8 E4; RFC 6 §4.3; RFC 1 §3.3 | T15.9 |
@@ -225,8 +227,8 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R49 | The store refuses to open, naming `K` and the floor, when `K` is below the most keys one 1-byte chunk's offload commit in a block of its own can write, its tracked reads (`F_o`, `Intent`, `Node(primary)`, a key record per material its `encodings` name) and their conflict ranges counted | MUST | RFC 6 §5.2 | T15.1 |
-| R50 | `K` is derived, never configured | MUST NOT | RFC 6 §5.2 | T15.1 |
+| R49 | The store refuses to open, naming `K` and the floor, when `K` is below the most keys one 1-byte chunk's offload commit in a block of its own can write, its tracked reads (`F_o`, `Intent`, `Node(primary)`, a key record per material its `encodings` name) and their conflict ranges counted | MUST | RFC 6 §5.2 | T15.2 |
+| R50 | `K` is derived, never configured | MUST NOT | RFC 6 §5.2 | T15.2 |
 
 **Observability**
 
@@ -248,7 +250,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R59 | O4 own intents: an attempt abandoned past its put bound with the primary live has its intent abandoned and its object deleted without an epoch change | test row | RFC 8 §6.3 (checks) | T15.9 |
 | R60 | O6 poison file: one file whose offered reader fails every read among 10³ others, written at 100 writes a second for 10 simulated minutes: the others offload at the unloaded rate, it is backed off alone and counted by name, in at most 10 minutes ÷ `offload.retry_max` + 5 passes | test row | RFC 8 §6.3 (checks) | T15.10 |
 | R61 | A commit applied with its reply lost leaves the ref and its object both present, whatever the pass then does | MUST | RFC 16's unknown outcome; RFC 8 §6.3 (Commit) | T15.9 |
-| R62 | K floor: limits giving `K` one below the floor are refused, naming `K` and the floor; one key's cost more opens, and a one-chunk commit with every tracked read, a key record per material included, commits within `T` | test row | RFC 6 §11.2 | T15.1 |
+| R62 | K floor: limits giving `K` one below the floor are refused, naming `K` and the floor; one key's cost more opens, and a one-chunk commit with every tracked read, a key record per material included, commits within `T` | test row | RFC 6 §11.2 | T15.2 |
 | R63 | O1's crash leg: a process crash in each state, over the real journal on a real directory and `kvstore`, leaves every extent offloaded or **Dirty** and readable after restart | test row | RFC 8 §6.3 (checks); plan rule 8 | T15.10 |
 
 Enforced elsewhere once this epic lands: R3's "never builds settings" by the compiler, since
@@ -304,7 +306,7 @@ R40 name, read in review. Every other row has a test here.
   	File     int // each file in the commit: the offload fence
   }
   ```
-  Each is an upper bound, which T15.1's test holds to the backend's written-key counter, so the
+  Each is an upper bound, which T15.2's test holds to the backend's written-key counter, so the
   fold's closes stay within `K` (R23). A zero ref takes `NewRef` as its bound. RFC 6 §10.1's sketch
   of `Content` gains `Budget` and `Abandon` in this pull request (D12). Prior art: none found.
 - **D5, the floor counts a fixed most materials per block.** RFC 6 §5.2's floor reads a key record
@@ -366,6 +368,17 @@ R40 name, read in review. Every other row has a test here.
   pass a full syncer queue refused, and the RFC 3 plan reuses `remote.ErrThrottled` for that
   refusal. A file whose pass met it returns `Throttled`, its attempt abandoned and its content left
   **Dirty**, as any failed put; every other failure returns `Retry`. Prior art: none found.
+- **D15, `Dirty` reads a file's staged bytes from the engine's own file state.** RFC 8 §6.1 has
+  `Dirty` post a file's key once `offloadDue` finds its dirty bytes due, and the journal reports
+  dirty bytes per journal (`Stats.DirtyBytes`) and each file's oldest dirty write (`DirtyFiles`),
+  never one file's bytes. The engine's file state, memory only (RFC 8 §3.3), keeps a staged-bytes
+  count: `Write` adds the bytes it staged, a pass's `Done` for the file zeroes it, and a restart
+  starts it at zero, when `DirtyFiles`' zero oldest-write time makes every rebuilt file due at once.
+  Overwrites count twice, so a file can be offered before its dirty bytes truly reach the target:
+  an early offer, never a lost one (RFC 8 §3.2). A `ponytail:` at the count names that ceiling and
+  the upgrade, a per-file dirty-bytes figure from the journal, once a measurement shows short
+  blocks from early offers. Rejected: a per-file figure the journal does not have, which would be an
+  RFC 1 change for a policy input. Prior art: none found.
 - **D14, the `carver_` series are a `Stats` field per namespace.** RFC 2 §2.3 has the engine export
   them labelled with the namespace, and epic 11 froze no field for them. `Stats` gains
   `Carver map[entity.NamespaceID]CarverStats`, one field per series, counters as `int64` and the two
@@ -378,15 +391,15 @@ On `feat/storage-v2`.
 
 ```text
 pkg/metadata/kvstore/            (its contract types in #5775's metadata contract package)
-  budget.go                T15.1  the floor replaces minItemKeys; Budget and Content.Budget; T15.2 maxBlockMaterials
-  budget_test.go           T15.1  the floor and the counts, over the memory KV, Badger, FoundationDB where it runs
-  offload.go               T15.2  BlockCommit.Encodings written to the block record; T15.3 the zero-ref commit, the over-K stop
-  codecs.go                T15.2  Encoding and MaterialRef in the block record's codec
-  offload_test.go          T15.2, T15.3
-  fuzz_test.go             T15.2  the block record's decode
+  budget.go                T15.2  the floor replaces minItemKeys; Budget and Content.Budget; T15.3 maxBlockMaterials
+  budget_test.go           T15.2  the floor and the counts, over the memory KV, Badger, FoundationDB where it runs
+  offload.go               T15.3  BlockCommit.Encodings written to the block record; T15.4 the zero-ref commit, the over-K stop
+  codecs.go                T15.3  Encoding and MaterialRef in the block record's codec
+  offload_test.go          T15.3, T15.4
+  fuzz_test.go             T15.3  the block record's decode
 pkg/engine/
-  policy.go                T15.4  offloadDue
-  policy_test.go           T15.4
+  policy.go                T15.1  offloadDue
+  policy_test.go           T15.1
   deps.go                  T15.5  Deps.Carver, Chain, Puts; Handle and Content embed offload's ports
   engine.go                T15.5  New refuses each missing one by name
   types.go                 T15.6  Stats.Carver, CarverStats
@@ -411,16 +424,47 @@ internal/node/content/
   content.go               T15.5  Carver, Chain, Puts in Deps (D2)
   carver.go                T15.5  Settings(ns) over carve.NewSettings, BlockName, the fold's constructor
 test/engine/known.yaml     T15.5  41 messages rewritten; T15.10 O1's crash leg
-test/suites.yaml           T15.8  unit/engine-allocs; T15.2 the fuzz target's line
+test/suites.yaml           T15.8  unit/engine-allocs; T15.3 the fuzz target's line
 docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.1's three rows, §6.7 (D12)
 docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content gains Budget, Abandon (D12)
 ```
 
 ## 6. Subtasks
 
-### T15.1 The key budget at open: the floor and the counts
+### T15.1 `offloadDue`
 
-**Subtask T15.1 estimate: 3 man-days.**
+**Subtask T15.1 estimate: 2.5 man-days.**
+
+- **Track:** B. **Depends on:** S2.
+- **Covers:** R6, R7, R8, R9 (pass membership).
+- **Deliverables:** in `policy.go`, `offloadDue(now time.Time, s journalStats, shares []shareView)
+  []offloadPass`, RFC 8 §3.1's signature; `shareView` gains each dirty file's dirty bytes, oldest
+  dirty write (D10) and failure count (D11), the share's `MaxAge` and block target; `offloadPass`
+  names its share, its files with their oldest dirty write, `limit` and `widen`. RFC 8 §6.3's
+  five-failures `decision:` at the threshold. The file state's staged-bytes count (D15): `Write`
+  adds its length after staging, a pass's `Done` zeroes it. A file whose oldest dirty write is the
+  zero time, as `DirtyFiles` answers after a rebuild, is due at once. Consumed by epic 14's `Dirty`
+  event, age tick and pressure (its T14.3, T14.4), which is why it comes first, and by epic 16's
+  offload source; its fields by T15.5's `Run`.
+- **Acceptance criteria:**
+  - Each of the three triggers alone makes a file eligible, and nothing else does.
+  - No pass offers more than `upload_workers` block targets; small files share passes up to it.
+  - A file with five or more consecutive failures is alone in its pass.
+  - A file reported with a zero oldest dirty write is due.
+- **Tests:** a table at `offloadDue`, the function epic 16 calls: a row per trigger, a row per
+  non-trigger (a durability request, a file one byte short of the target, one a second short of
+  the age), the pressure row with every dirty file eligible (each catches a missing or extra
+  trigger, R7); a thousand small files gathered into passes each within the bound (catches an
+  unbounded pass or one pass per file, R8); a failing file beside healthy ones, alone in its pass
+  (catches O6's shared block, R9); a zero oldest dirty write, due (catches a rebuilt file waiting
+  for the age tick); at the engine, two writes of half a block target to one file, then its staged
+  count read through an `export_test.go` accessor equal to the target, and zero after a pass's
+  `Done` (catches a count `Write` never feeds). No test double: the inputs are values.
+- **Rules:** rule 9, the five-failures `decision:`; rule 11, unexported.
+
+### T15.2 The key budget at open: the floor and the counts
+
+**Subtask T15.2 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** S2.
 - **Covers:** R23 (the counts), R49, R50, R62.
@@ -430,7 +474,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   range, beside `F_o` already there; `keyBudget` refuses with `ErrLimits` naming `K` and the floor
   when `K` is below the keys of one 1-byte chunk's commit in a block of its own, counted from the
   real encoders as RFC 6 §5.2 lists them. `Budget` and `Content.Budget() Budget` (D4), computed once
-  at open. Consumed by T15.6 and T15.7, and by T15.3's over-`K` stop.
+  at open. Consumed by T15.6 and T15.7, and by T15.4's over-`K` stop.
 - **Acceptance criteria:**
   - Limits giving `K` one below the floor are refused with both figures in the error; one key's
     cost more opens.
@@ -447,11 +491,11 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   limits are a real backend's, set through its options.
 - **Rules:** rule 8, the three backends.
 
-### T15.2 The block record's `encodings`
+### T15.3 The block record's `encodings`
 
-**Subtask T15.2 estimate: 2 man-days.**
+**Subtask T15.3 estimate: 2 man-days.**
 
-- **Track:** B. **Depends on:** T15.1.
+- **Track:** B. **Depends on:** T15.2.
 - **Covers:** R36 (the record).
 - **Deliverables:** `Encoding` and `MaterialRef` in the metadata contract (D6); `BlockCommit.Encodings`;
   the block record's codec writing and reading them, a record without them read as empty; `Commit`
@@ -469,11 +513,11 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   in `unit`.
 - **Rules:** rule 2, the fuzz target.
 
-### T15.3 The commit's zero-ref shape and its stop at `K`
+### T15.4 The commit's zero-ref shape and its stop at `K`
 
-**Subtask T15.3 estimate: 3 man-days.**
+**Subtask T15.4 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** T15.1.
+- **Track:** B. **Depends on:** T15.2.
 - **Covers:** R37, R38 (the store half), R39.
 - **Deliverables:** in `offload.go`, `Commit` taking a `BlockCommit` with no `Name` as the zero-ref
   commit (D3); and its over-`K` stop: it applies the block and its files in order while the keys
@@ -495,35 +539,11 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   No test double.
 - **Rules:** none beyond §2.
 
-### T15.4 `offloadDue`
-
-**Subtask T15.4 estimate: 2 man-days.**
-
-- **Track:** B. **Depends on:** S2.
-- **Covers:** R6, R7, R8, R9 (pass membership).
-- **Deliverables:** in `policy.go`, `offloadDue(now time.Time, s journalStats, shares []shareView)
-  []offloadPass`, RFC 8 §3.1's signature; `shareView` gains each dirty file's dirty bytes, oldest
-  dirty write (D10) and failure count (D11), the share's `MaxAge` and block target; `offloadPass`
-  names its share, its files with their oldest dirty write, `limit` and `widen`. RFC 8 §6.3's
-  five-failures `decision:` at the threshold. Consumed by epic 16's offload source; its fields by
-  T15.5's `Run`.
-- **Acceptance criteria:**
-  - Each of the three triggers alone makes a file eligible, and nothing else does.
-  - No pass offers more than `upload_workers` block targets; small files share passes up to it.
-  - A file with five or more consecutive failures is alone in its pass.
-- **Tests:** a table at `offloadDue`, the function epic 16 calls: a row per trigger, a row per
-  non-trigger (a durability request, a file one byte short of the target, one a second short of
-  the age), the pressure row with every dirty file eligible (each catches a missing or extra
-  trigger, R7); a thousand small files gathered into passes each within the bound (catches an
-  unbounded pass or one pass per file, R8); a failing file beside healthy ones, alone in its pass
-  (catches O6's shared block, R9). No test double: the inputs are values.
-- **Rules:** rule 9, the five-failures `decision:`; rule 11, unexported.
-
 ### T15.5 The pipeline's ports and Capture
 
 **Subtask T15.5 estimate: 4.5 man-days.**
 
-- **Track:** B. **Depends on:** T15.4.
+- **Track:** B. **Depends on:** T15.1.
 - **Covers:** R1, R2, R3 (the declaration), R4, R5, R10 (capture), R11, R12, R13.
 - **Deliverables:**
   - `offload/ports.go`, each port holding what `offload/` calls, in contract types (D1):
@@ -610,7 +630,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 
 **Subtask T15.6 estimate: 4.5 man-days.**
 
-- **Track:** B. **Depends on:** T15.5, T15.1.
+- **Track:** B. **Depends on:** T15.5, T15.2.
 - **Covers:** R3 (`Max`), R14 to R21, R56 (the stretch-end case).
 - **Deliverables:** `carve.go`: each file's offer split into maximal dirty stretches, holes and
   offloaded neighbours ending them; the covering lookup of each run read once and kept for
@@ -662,7 +682,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   listing empty (catches a lone over-`K` chunk put and refused on every pass, R26); a pass of two
   files, each file's chunks contiguous (R24); a pass finished short with a young oldest chunk, its
   extents still dirty in the in-memory journal, then old, put (R25). The key counts' upper bound is
-  T15.1's test at the backend (R23).
+  T15.2's test at the backend (R23).
 - **Rules:** none beyond §2.
 
 ### T15.8 Intent and Put
@@ -704,7 +724,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 
 **Subtask T15.9 estimate: 3.5 man-days.**
 
-- **Track:** B. **Depends on:** T15.8, T15.2, T15.3.
+- **Track:** B. **Depends on:** T15.8, T15.3, T15.4.
 - **Covers:** R10 (commit), R29 (release), R36 to R46, R56 (the commit cases), R57, R59, R61.
 - **Deliverables:** `commit.go`: per plan, under the files' guards, a `BlockCommit` with the block's
   chunks at `Stored()`'s ranges, its `Encodings` converted from the census (D6), each file's refs
@@ -767,36 +787,39 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 
 ```mermaid
 flowchart TD
-  S2(["S2 red rows in CI"]):::sync --> T15_1["T15.1 the floor and the counts"]
-  T15_1 --> T15_2["T15.2 encodings"]
-  T15_1 --> T15_3["T15.3 zero-ref commit, stop at K"]
-  S2 --> T15_4["T15.4 offloadDue"]
-  T15_4 --> T15_5["T15.5 ports and Capture"]
+  S2(["S2 red rows in CI"]):::sync --> T15_1["T15.1 offloadDue"]
+  T15_1 --> C0(["after T15.1: epic 14's events can call offloadDue"]):::sync
+  S2 --> T15_2["T15.2 the floor and the counts"]
+  T15_2 --> T15_3["T15.3 encodings"]
+  T15_2 --> T15_4["T15.4 zero-ref commit, stop at K"]
+  T15_1 --> T15_5["T15.5 ports and Capture"]
   T15_5 --> T15_6["T15.6 Carve"]
-  T15_1 --> T15_6
+  T15_2 --> T15_6
   T15_6 --> T15_7["T15.7 Assemble"]
   T15_7 --> T15_8["T15.8 Intent and Put"]
   T15_8 --> T15_9["T15.9 Commit and Mark"]
-  T15_2 --> T15_9
   T15_3 --> T15_9
+  T15_4 --> T15_9
   T15_9 --> C1(["after T15.9: a pass runs end to end in unit"]):::sync
   T15_9 --> T15_10["T15.10 deadlines, outcomes, checks"]
   T15_10 --> Next(["epic 16 runs it as passes"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T15.1 is the blocker the store's three subtasks and Carve share. The store path (T15.1 to T15.3)
-and the policy and ports path (T15.4, T15.5) can run side by side; Carve joins them.
+T15.1 comes first because epic 14 waits on it; T15.2 is the blocker the store's three subtasks and
+Carve share. The store path (T15.2 to T15.4) and the ports path (T15.5) can run side by side; Carve
+joins them.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T15.1, T15.2, T15.3 | 8 | — | `kvstore`'s three changes: the floor, the record's `encodings`, the commit's two shapes |
-| 2 | T15.4, T15.5 | 6.5 | — | `offloadDue`, the ports, Capture, and the fixture's carver and chain with the 41 messages; can be open beside PR 1 |
-| 3 | T15.6, T15.7 | 6.5 | PR 1, PR 2 | the pass from the offer to its plans |
-| 4 | T15.8, T15.9 | 8 | PR 3 | the plan from its intent to its report: a pass end to end in `unit` |
-| 5 | T15.10 | 5 | PR 4 | the deadlines, the outcomes and the §6.3 check table |
+| 1 | T15.1 | 2.5 | — | `offloadDue` and the staged count, which epic 14's events call: ship it first |
+| 2 | T15.2, T15.3, T15.4 | 8 | — | `kvstore`'s three changes: the floor, the record's `encodings`, the commit's two shapes; can be open beside PR 1 |
+| 3 | T15.5 | 4.5 | PR 1 | the ports, Capture, and the fixture's carver and chain with the 41 messages |
+| 4 | T15.6, T15.7 | 6.5 | PR 2, PR 3 | the pass from the offer to its plans |
+| 5 | T15.8, T15.9 | 8 | PR 4 | the plan from its intent to its report: a pass end to end in `unit` |
+| 6 | T15.10 | 5 | PR 5 | the deadlines, the outcomes and the §6.3 check table |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -826,6 +849,6 @@ A suggestion only: one pull request per subtask works as well.
   so epic 16 carries it, though the plan's epic 15 lists it.
 - **The §6.3 check table's O6 leg "a source with `Deadline` 10 s"** checks the scheduler's
   `Expired` dispatch, epic 13's and epic 14's, not the pipeline's.
-- **Estimate.** 34 man-days in 10 subtasks against the plan's 33.5 in 8: `kvstore`'s three changes
+- **Estimate.** 34.5 man-days in 10 subtasks against the plan's 33.5 in 8: `kvstore`'s three changes
   are subtasks of their own (8 man-days), and the long-outage row moved to epic 16. The least
   certain figures are T15.6's key-budget end over dense refs and T15.10's simulation.
