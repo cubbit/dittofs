@@ -138,6 +138,40 @@ func TestHostCallLowersTheMinimumsOnlyForItsCalls(t *testing.T) {
 	})
 }
 
+// A HostCall open is lowered only when it opens an existing file by handle
+// and neither creates, overwrites nor deletes on close: any other HostCall
+// open is ErrInvalid before it reaches the file, on a share whose minimums
+// the caller does not meet, and the file and the directory are unchanged.
+func TestAHostCallOpenThatChangesAFileIsRefused(t *testing.T) {
+	s := newShares(t, nil, nil)
+	ctx := t.Context()
+	bob := s.user(t, "bob", "", s.share, entity.AccessReadWrite)
+	h, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "f", kvstore.Regular(0o666))
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share,
+		MinProof: entity.ProofTicket, MinProtection: entity.ProtectionIntegrity}, policyVersion(t, s.cp, s.share))))
+	c := vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofSecret, Evidence: vfs.Evidence{Principal: bob.Principal}, Client: inLab}, Caps: vfs.NLMCaps}
+	id, _, err := s.Connect(ctx, c, nlmHost("host", 1), &vfstest.Callbacks{})
+	s.must(t, err)
+	c.Client = id
+	rw := entity.ReadData | entity.WriteData
+	for name, req := range map[string]vfs.OpenRequest{
+		"a create by name":  byName(s.fs.Root, "g", vfs.CreateNew, rw),
+		"an open by name":   byName(s.fs.Root, "f", vfs.OpenExisting, rw),
+		"an overwrite":      {H: h, Disposition: vfs.Overwrite, Access: rw},
+		"a delete on close": {H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData | entity.Delete, DeleteOnClose: true},
+	} {
+		if _, err := s.Open(ctx, c, req); !errors.Is(err, vfs.ErrInvalid) {
+			t.Errorf("a HostCall open, %s: %v, want ErrInvalid", name, err)
+		}
+	}
+	if _, _, err := s.Lookup(ctx, proven(s.fs.Admin.Principal, inLab), s.fs.Root, []byte("g")); !errors.Is(err, vfs.ErrNotFound) {
+		t.Errorf("after the refused HostCall create: lookup of g %v, want ErrNotFound", err)
+	}
+	if _, err := s.Open(ctx, c, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: rw}); err != nil {
+		t.Errorf("a HostCall open of the existing file by handle: %v, want admitted", err)
+	}
+}
+
 // PrivilegeOnEveryCall lets an admin's privilege count on every call.
 // Without it the privilege counts only on an open with backup intent: an
 // open without intent of a file whose DACL denies everyone is refused, and

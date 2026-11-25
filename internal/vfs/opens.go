@@ -46,7 +46,13 @@ func (fs *Filesystem) Open(ctx context.Context, c vfs.Call, req vfs.OpenRequest)
 	if len(req.Name) > 0 {
 		at = req.Dir
 	}
-	a, release, err := fs.admitHandleFor(ctx, c, at, hostLock)
+	// A host's lock service opens an existing file by handle, for a share
+	// reservation; any other HostCall open is refused at admission.
+	w := how(0)
+	if len(req.Name) == 0 && req.Disposition == vfs.OpenExisting && !req.DeleteOnClose && req.Reconnect == nil {
+		w = hostLock
+	}
+	a, release, err := fs.admitHandleFor(ctx, c, at, w)
 	if err != nil {
 		return vfs.OpenResult{}, err
 	}

@@ -146,15 +146,18 @@ func (fs *Filesystem) servedShard(ctx context.Context, sh entity.Share) error {
 // written.
 //
 // decision: HostCall lowers the minimums only for the calls a host's mount
-// or lock service makes, which w names; any other call naming a share that
-// sets it is ErrInvalid, and so is one with a Session, which no mount or lock
-// service has, so an adapter setting it by mistake on a file call or a
-// session's call lowers nothing. Within those calls the flag is the only
-// guard: one an NFSv4 or SMB adapter set by mistake on a lock call, a
-// GetAttr or an open would admit it at Claimed. The lowered minimums are
-// worth only what those calls reach, a share's root and flavours, a
-// byte-range lock, a file's attributes, and an open with its close. Key the lowering on something an adapter cannot set
-// by mistake if a mis-set flag is ever found.
+// or lock service makes, which w names: Root and ListShares, the lock calls,
+// GetAttr, Close, and an Open of an existing file by handle that neither
+// creates, overwrites nor deletes on close. Any other call naming a share
+// that sets it is ErrInvalid, a creating or deleting open included, and so is
+// one with a Session, which no mount or lock service has, so an adapter
+// setting it by mistake lowers nothing there. Within those calls the flag is
+// the only guard: one an NFSv4 or SMB adapter set by mistake on a lock call,
+// a GetAttr or such an open would admit it at Claimed. The lowered minimums
+// are worth only what those calls reach: a share's root and flavours, a
+// byte-range lock, a file's attributes, and an open of an existing file with
+// its close. Key the lowering on something an adapter cannot set by mistake
+// if a mis-set flag is ever found.
 func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareID, paused bool, w how) (*admitted, error) {
 	if hostCall(c) && (w&(hostMount|hostLock) == 0 || c.Session != (vfs.SessionRef{})) {
 		return nil, vfs.ErrInvalid
