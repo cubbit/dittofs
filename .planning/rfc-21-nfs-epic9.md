@@ -21,7 +21,7 @@ per-call admission of `LOCK`, `LOCKT` and `LOCKU`. Every citation is `develop`'s
 `feat/storage-v2` with the cherry-pick of RFC changes.
 Cited, not owned: RFC 8881 and RFC 7530 for the bytes, operation numbers and status values.
 **Track:** C.
-**Epic 9 estimate: 11 subtasks, 30.5 man-days.**
+**Epic 9 estimate: 11 subtasks, 30.75 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's `protocol.State` with its current and
 saved stateids (T1.1) and NFSv4 members' table (T1.2), E2's `nfsharness` (T2.2) and the service's
 `NoGrace` (T2.1), S0's `vfstest.Mutations`. Beyond S2: **E5**'s `SetFH` users and the walk to a
@@ -203,7 +203,7 @@ so that subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R25 | The next expected sequence ID of each NFSv4.0 owner is held in RFC 14's `Sequence.Next` and advanced in the step that answers the operation: the adapter passes each owner seqid as `Seqs` and keeps no sequence of its own | MUST | RFC 21 §4.2, §11.4 (`Seqs`); RFC 14 §2.8 | T9.4, T9.6, T9.8 |
-| R26 | Every in-sequence reply advances the owner's sequence, refusals included, except `NFS4ERR_STALE_CLIENTID`, `NFS4ERR_STALE_STATEID`, `NFS4ERR_BAD_STATEID`, `NFS4ERR_BAD_SEQID`, `NFS4ERR_BADXDR`, `NFS4ERR_RESOURCE`, `NFS4ERR_NOFILEHANDLE` and `NFS4ERR_MOVED`; a refusal the service makes before its table's step advances it too | MUST | RFC 21 §4.2; RFC 14 §2.8 | T9.2, T9.7 |
+| R26 | Every in-sequence reply advances the owner's sequence, refusals included, except `NFS4ERR_STALE_CLIENTID`, `NFS4ERR_STALE_STATEID`, `NFS4ERR_BAD_STATEID`, `NFS4ERR_BAD_SEQID`, `NFS4ERR_BADXDR`, `NFS4ERR_RESOURCE`, `NFS4ERR_NOFILEHANDLE` and `NFS4ERR_MOVED`; a refusal the service makes before its table's step advances it too, and so does an NFSv4.0 refusal the adapter makes in translation (T9.4's want or unknown bit, D11's ranges), which it passes to the service's `Refuse` | MUST | RFC 21 §4.2; RFC 14 §2.8 | T9.2, T9.4, T9.7, T9.8 |
 | R27 | An owner's seqid after `0xFFFFFFFF` is 0, a stateid's `seqid` wraps to 1; the adapter does no arithmetic on either beyond D6's | invariant | RFC 21 §4.2 | T9.6, T9.7 |
 | R28 | A `LOCK` that introduces a lock owner carries the open owner's seqid beside the new lock owner's first one (`open_to_lock_owner4`), as `Seqs.Owner` and `Seqs.NewOwner`, and is sequenced against the open owner; every later `LOCK` and `LOCKU` of that lock owner is numbered per lock owner | MUST | RFC 21 §4.2; RFC 14 §2.8 | T9.8 |
 | R29 | The last reply per NFSv4.0 owner is held only in the gateway node that sent it, and a retransmission of the owner's last sequenced request is answered with it, calling nothing; one the node no longer holds is answered as the service judges its seqid | MUST | RFC 21 §4.2 | T9.7 |
@@ -305,7 +305,12 @@ and §4.2 carry, which become markers (rule 9).
   answered `NFS4ERR_BAD_SEQID` on the owner's next request. T9.2 adds `Opens.Refused`, which judges
   the presented number at the owner's home primary and advances it for a refusal outside RFC 14
   §2.8's exempt kinds, and `internal/vfs` calls it on every refusal of a numbered request it makes
-  before the step. The adapter cannot do it: the sequence is the table's (R25). Prior art: knfsd
+  before the step. The adapter cannot do it: the sequence is the table's (R25). So a refusal the
+  adapter makes itself, of a sequenced NFSv4.0 request whose arguments do not translate (an
+  `OPEN`'s want or unknown bit, R17; a `LOCK` or `LOCKU` range D11 refuses), reaches `Refused`
+  through `vfs.Service`'s `Refuse`, which T9.2 adds as a passthrough: the handler's one mutating
+  call, made with the `NFS4ERR_INVAL` cause, so `Next` moves as RFC 21 §4.2 has it for any error
+  outside the exempt list and T9.7 keeps the reply the owner's number now names. Prior art: knfsd
   bumps the seqid after every operation whose status is outside the exempt list
   (`nfsd4_bump_seqid`, from memory). A `decision:` marker at `Refused` names the ceiling: a refusal
   that reaches no primary at all (the service stopping) advances nothing, which RFC 21 §4.2's
@@ -396,7 +401,8 @@ and §4.2 carry, which become markers (rule 9).
   exceeds 2⁶⁴ − 1, and give `LOCKT` and `LOCKU` the same ranges (§18.11, §18.12; §16.11, §16.12).
   So offset 2⁶⁴ − 2 with length 1 is served, offset 2⁶⁴ − 1 with length 1 or 2 is refused, its sum
   past the limit, and any offset with length all ones is served. One range translation, shared by
-  the three, refuses before any call (R42). No marker: the protocol's rule.
+  the three, refuses before any other call, and under NFSv4.0 passes a sequenced `LOCK` or `LOCKU`'s
+  refusal to `Refuse` so its owner advances (R42; D2, R26). No marker: the protocol's rule.
 
 ## 5. Target tree
 
@@ -468,7 +474,7 @@ internal/vfs/
 
 ### T9.2 An owner's sequence advances on every refusal
 
-**Subtask T9.2 estimate: 3 man-days.**
+**Subtask T9.2 estimate: 3.25 man-days.**
 
 - **Track:** C. **Depends on:** T9.1.
 - **Covers:** R26.
@@ -482,7 +488,15 @@ internal/vfs/
   Refused(ctx context.Context, who Caller, ref OpenRef, o LockOwner, q Seqs, cause error) error
   ```
   `internal/vfs`'s `Open`, `ConfirmOpen`, `Downgrade`, `Close`, `Lock` and `Unlock` calling it on
-  every refusal they make before their table call, admission's and the open-time grant's included.
+  every refusal they make before their table call, admission's and the open-time grant's included;
+  and `vfs.Service`'s
+  ```go
+  // Refuse advances the owner a numbered request names for a refusal the
+  // adapter made before any other call (its arguments did not translate),
+  // as Refused does for the service's own; cause is the refusal's error.
+  Refuse(ctx context.Context, c Call, ref OpenRef, o LockOwner, q Seqs, cause error) error
+  ```
+  a passthrough to `Refused` after admission, its RFC 17 text in point 8's pull request (D2).
   Consumed by T9.7's test and every sequenced row of T9.4, T9.6 and T9.8.
 - **Acceptance criteria:**
   - A numbered `Open` refused `ErrNotFound` by the lookup, or `ErrAccess` by the grant, advances
@@ -490,6 +504,8 @@ internal/vfs/
   - A refused first `Open` of a new owner leaves no `Sequence`.
   - A `Lock` introducing a lock owner, refused before the step, advances the open owner's
     sequence and creates no lock owner's.
+  - `Refuse` with an `ErrInvalid` cause advances the owner as `Refused` does, and with an exempt
+    cause does not.
 - **Tests:** in `internal/vfs`'s tests on `memory.New`'s stores: each criterion above, read back
   by the owner's next request at the next number, served (catches a refusal that advances nothing,
   R26) and at the same number, `BadSeqID` (catches a double advance); the exempt kinds, each by its
@@ -541,7 +557,7 @@ internal/vfs/
 - **Track:** C. **Depends on:** T9.3, T5.1, T8.2. T8.2 for the `Adapter` bytes codec only: no
   E8 session subtask, since `nfsharness` runs the member with a `protocol.State` the test builds,
   its client confirmed by `Propose` and `Connect` straight on `memory.New`.
-- **Covers:** R4, R7, R16, R17, R18, R20, R21, R22, R24, R25, R42, R43, R44, R45, R47, R48.
+- **Covers:** R4, R7, R16, R17, R18, R20, R21, R22, R24, R25, R26, R42, R43, R44, R45, R47, R48.
 - **Deliverables:** `open.go`: the `share_access` and `share_deny` translation into `Access`,
   `Deny` and the want value (D8); the claims into an `OpenRequest` by name or by handle (`Via`),
   `Reclaim` for `CLAIM_PREVIOUS`, `CLAIM_DELEGATE_PREV` and `CLAIM_DELEG_PREV_FH` (D7), the
@@ -558,7 +574,8 @@ internal/vfs/
 - **Acceptance criteria:**
   - Each access and deny pair, under NFSv4.0 and NFSv4.1, reaches `Open` as the golden neutral
     pair; a deny of `OPEN4_SHARE_DENY_BOTH` denies read and write, never delete; a want bit under
-    NFSv4.0, or an unknown bit, `NFS4ERR_INVAL` with no call.
+    NFSv4.0, or an unknown bit, `NFS4ERR_INVAL` with no `Open`; under NFSv4.0 its one call is
+    `Refuse` (D2), and the owner's next `OPEN` at the next seqid is served.
   - A claim by name opens through its directory; `CLAIM_FH` and `CLAIM_PREVIOUS` by the current
     filehandle with `Via` zero, `CLAIM_PREVIOUS` a reclaim.
   - A v4.0 `OPEN` naming a client `EXCHANGE_ID` confirmed is `NFS4ERR_STALE_CLIENTID` and calls no
@@ -579,7 +596,9 @@ internal/vfs/
   by a new open owner, answered without `OPEN4_RESULT_CONFIRM` (catches `Confirm` mapped for a
   reclaim, R18); a second `OPEN` of an unconfirmed owner at an out-of-order seqid, served and the
   first open released (catches a replacing `OPEN` judged by its seqid, R24); a
-  v4.0 `OPEN` of a client confirmed on NFSv4.1, with no `Open` in the call record (R7); the one-call
+  v4.0 `OPEN` of a client confirmed on NFSv4.1, with no `Open` in the call record (R7); an
+  NFSv4.0 `OPEN` with an unknown `share_access` bit, then the owner's next `OPEN` at the next seqid,
+  served (catches a refusal the adapter makes that advances nothing, R26); the one-call
   rule, with `Record` read-only (R48); the role of each claim, read by the harness's drain check
   (R47); `FuzzShareAccess` (R43). No test double.
 - **Rules:** rule 3: the refusal is a named value for the `open` reason; rule 9: D7's marker.
@@ -704,16 +723,16 @@ internal/vfs/
 **Subtask T9.8 estimate: 4 man-days.**
 
 - **Track:** C. **Depends on:** T9.7, T9.4, T9.1.
-- **Covers:** R4, R7, R14, R22, R25, R28, R30, R31, R32, R33, R34, R35, R36, R37, R38, R39, R42,
+- **Covers:** R4, R7, R14, R22, R25, R26, R28, R30, R31, R32, R33, R34, R35, R36, R37, R38, R39, R42,
   R43, R44, R45, R46, R47, R48, R57, R58.
 - **Deliverables:** `lock.go`: the `LOCK` translation into a `LockReq` (one range, D11's
-  refusals, `READW_LT` and `WRITEW_LT` a poll, `reclaim`, `open_to_lock_owner4` as the open
+  refusals, under NFSv4.0 passed to `Refuse` (D2), `READW_LT` and `WRITEW_LT` a poll, `reclaim`, `open_to_lock_owner4` as the open
   stateid, the lock owner and `Seqs{Owner, NewOwner}`, an existing lock owner as the lock
   stateid, marked for the lock state's owner (D1), and `Seqs{Owner}`), one `Lock`, its lock stateid answered and made
   current, the drain role by D5; `LOCK4denied` from a `*LockedError`'s holder by D4, its
   length by D4; `lockt.go` (`TestLock` on the current filehandle with no
   open, over NFSv4.0 `Record` read first); `locku.go` (`Unlock` of one range, D11's refusals,
-  the lock state's owner marked (D1), the seqid answered, drain role a release); under NFSv4.0,
+  the lock state's owner marked (D1), D11's refusals under NFSv4.0 passed to `Refuse`, the seqid answered, drain role a release); under NFSv4.0,
   T9.6's revoked-state helper on `LOCK` and `LOCKU` (R14); `releaselockowner.go` (`ReleaseLockOwner`, minor
   version 0 only, `Record` first); `LOCK` and `LOCKU` through T9.7's table under NFSv4.0; the rows
   of `ErrLocked` (`NFS4ERR_DENIED`), `ErrRangeNotLocked` (D10), and `ErrDelay` on a lock;
@@ -737,7 +756,10 @@ internal/vfs/
   through `LOCKT` as bob and alice over `AUTH_SYS` (R38, R58); a length of all ones reaching 2⁶⁴−1
   from offset 0 and from an offset past 0, a zero length, offset 2⁶⁴−2 with length 1 served, and
   offset 2⁶⁴−1 with length 1 and with length 2 `NFS4ERR_INVAL`, each for `LOCK`, `LOCKT` and `LOCKU`
-  (R30, D11); a `LOCKT` against a whole-file NLM lock, its `LOCK4denied` length all ones (catches
+  (R30, D11); under NFSv4.0, a zero-length `LOCKU`, then the lock owner's next `LOCK` at the next
+  seqid, served, and a `LOCK` past 2⁶⁴ − 1 introducing a lock owner, then the open owner's next
+  request at the next seqid, served (catches a refusal the adapter makes that advances nothing,
+  R26); a `LOCKT` against a whole-file NLM lock, its `LOCK4denied` length all ones (catches
   the length overflowing to 0, D4); `LOCK`, `LOCKT` and `LOCKU` on a share disabled through the
   service after `PUTFH` and from a client outside the share's netgroup, each refused at the
   operation (catches the gate held only where the handle entered the compound, RFC 20 §4.10);
@@ -872,7 +894,7 @@ E12's `COPY` and `CLONE` can take open stateids.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T9.1, T9.2 | 6.5 | the user's answers on D1 and D2; T9.2 leaves it for the service's owners if D2 goes to (b) | the service's half with its RFC 17 amendment, reviewed by the service's owners apart from the adapter |
+| 1 | T9.1, T9.2 | 6.75 | the user's answers on D1 and D2; T9.2 leaves it for the service's owners if D2 goes to (b) | the service's half with its RFC 17 amendment, reviewed by the service's owners apart from the adapter |
 | 2 | T9.3, T9.4, T9.5 | 7.5 | E5's T5.1 and T5.5, E8's T8.2 | stateids and `OPEN`, the path E10 and E6 wait on |
 | 3 | T9.6, T9.7 | 5.5 | PRs 1 and 2, E8's T8.1 | NFSv4.0's owners: confirm, downgrade, close and their replay |
 | 4 | T9.8, T9.9, T9.10 | 7.5 | PR 3, E5's T5.8 | locks and the I/O and stateid operations over them |
@@ -937,7 +959,8 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
    service locks, and T9.8's D4 names its holder blank. E12's T12.3 takes T9.3's and T9.9's
    references for `COPY` and `CLONE`, and its T12.4 adds its call of `withSessionGate` (its
    `ops/v4/gate.go`) to T9.6's `close.go`, after T9.6 lands; nothing of the hold budget is this epic's.
-8. **Which pull request carries which RFC amendment.** D1's RFC 17 §3.0 and §3.1 text goes in
+8. **Which pull request carries which RFC amendment.** D1's RFC 17 §3.0 and §3.1 text, and D2's
+   `Refuse`, go in
    batch two's one RFC 17 pull request, with E10's Q1, E11's Q1 and E12's D1, each once agreed;
    it is opened before this epic's PR 1, which changes what `pkg/vfs` promises.
    No RFC 21 text changes here. D6, D7, D10 and D11 decide what RFC 21 leaves open and stay at their
