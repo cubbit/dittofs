@@ -707,23 +707,29 @@ R38's counts for the get half. Consumed by E6, which adds the resume and
   a hold without a limit, with a second store waiting so the cap binds (back to 96), a charged
   throttled retry (96 tokens on the first burst), a charged slow-tail retry (empty after about
   8,000), one bucket per process, a per-transfer slow-tail cap alone, jitter on the store and
-  attempt only. Under the leak check. ### T4.10 The time-bound rows **Subtask T4.10 estimate: 2.5
-  man-days.** - **Track:** B. **Depends on:** T4.7. - **Covers:** R15, R29, R30, R31, R32, R33, R34,
-  R35, R41, R42. - **Deliverables:** `time_rows_test.go`: RFC 3 §7.2's "§2.4 termination", "§2.4
-  trickle fails", "§2.4 throughput floor" and "§2.4 first byte, per direction"; and R33's own put
-  check, E4's analogue of the get-only "§2.4 wire bytes" row (§9): `syncer_bytes_total` equal to the
-  encoded bytes the store received for a compressible block's put, and a put whose wire bytes
-  trickle below the floor failing on it. Consumed by S3. - **Acceptance criteria:** each row as RFC
-  3 §7.2 states it, on the clock: every transfer to a permanently unavailable store returning within
-  its bound; the trickling one of 32 failing as `trickle` within the interval, uncounted, the other
-  31 completing; puts below the floor failing and counted, a shared link just above the floor
-  failing none, a stalled transfer failing uncounted, a stalled fetch reader failing nothing; a get
-  held before its first byte and a put held after its last both failing at 10 s; the
-  put-inside-`src` clause as §9 settles it. - **Tests:** through `export_test.go`'s half over
-  `codec.Store` on the in-memory store under `Link` and `Hold`, in a bubble (D13), the trip reasons
-  at `Stats` and the counted flag at the outcome hook E5 consumes (D10). Each row verified by
-  building its wrong design: a floor per transfer, a fixed per-transfer deadline, a floor read from
-  decoded bytes. Under the leak check.
+  attempt only. Under the leak check.
+
+### T4.10 The time-bound rows
+
+**Subtask T4.10 estimate: 2.5 man-days.**
+
+- **Track:** B. **Depends on:** T4.7.
+- **Covers:** R15, R29, R30, R31, R32, R33, R34, R35, R41, R42.
+- **Deliverables:** `time_rows_test.go`: RFC 3 §7.2's "§2.4 termination", "§2.4 trickle fails",
+  "§2.4 throughput floor" and "§2.4 first byte, per direction"; and R33's own put check, E4's
+  analogue of the get-only "§2.4 wire bytes" row (§9): `syncer_bytes_total` equal to the encoded
+  bytes the store received for a compressible block's put, and a put whose wire bytes trickle
+  below the floor failing on it. Consumed by S3.
+- **Acceptance criteria:** each row as RFC 3 §7.2 states it, on the clock: every transfer to a
+  permanently unavailable store returning within its bound; the trickling one of 32 failing as
+  `trickle` within the interval, uncounted, the other 31 completing; puts below the floor failing
+  and counted, a shared link just above the floor failing none, a stalled transfer failing
+  uncounted, a stalled fetch reader failing nothing; a get held before its first byte and a put
+  held after its last both failing at 10 s; the put-inside-`src` clause as §9 settles it.
+- **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under `Link`
+  and `Hold`, in a bubble (D13), the trip reasons at `Stats` and the counted flag at the outcome
+  hook E5 consumes (D10). Each row verified by building its wrong design: a floor per transfer, a
+  fixed per-transfer deadline, a floor read from decoded bytes. Under the leak check.
 
 ## 7. Order of work
 
