@@ -199,6 +199,7 @@ docker run --rm \
   -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
   -v dittofs-metadata:/data/metadata \
   -v dittofs-blocks:/data/blocks \
+  -v dittofs-state:/data/state \
   marmos91c/dittofs:latest init --config /config/config.yaml \
   --admin-password-env DFS_ADMIN_PASSWORD
 
@@ -211,6 +212,7 @@ docker run -d \
   -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
   -v dittofs-metadata:/data/metadata \
   -v dittofs-blocks:/data/blocks \
+  -v dittofs-state:/data/state \
   marmos91c/dittofs:latest
 
 curl -k https://localhost:8080/health/live
@@ -311,10 +313,11 @@ already there.
 
 The default build keeps its metadata in Badger, on one node's disk. To keep it in a
 FoundationDB cluster (`metadata.backend: foundationdb`) you need a `dfs` built with the
-`foundationdb` tag, which links FoundationDB's client library. Releases publish two such
-builds next to the default ones: an image and two tarballs. The package managers, the
+`foundationdb` tag, which links FoundationDB's client library. Releases publish the tagged
+build next to the default ones, as an image and two tarballs. The package managers, the
 quick install script and the default image do not carry it: a `dfs` without the tag
-refuses `metadata.backend: foundationdb` at `dfs init` and `dfs start`, naming the tag.
+refuses `metadata.backend: foundationdb` in every command that opens the store (`dfs init`,
+`dfs start` and `dfs reset-admin`), naming the tag.
 
 **Requirements:**
 
@@ -398,9 +401,17 @@ export DITTOFS_ENCRYPTION_PASSPHRASE=...   # the key files' passphrase
 
 or with the image, as for the [default image](#single-container) with no metadata volume, the
 cluster file's directory mounted, and the key files' directory mounted where the configuration
-names them. Both host directories must be writable by user `65532`:
+names them. Create both host directories first, with the cluster file in `./foundationdb`, and
+hand them to user `65532`; a directory Docker creates for a missing path is root's, and `init`
+fails on it:
 
 ```bash
+mkdir -p ./foundationdb ./keys
+cp /etc/foundationdb/fdb.cluster ./foundationdb/
+# write the protocol key file into ./keys here, as Encryption: local key files shows
+sudo chown -R 65532:65532 ./foundationdb ./keys
+
+export DITTOFS_ENCRYPTION_PASSPHRASE=...   # the key files' passphrase
 docker run --rm -e DFS_ADMIN_PASSWORD=my-secure-password \
   -e DITTOFS_ENCRYPTION_PASSPHRASE \
   -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
@@ -412,7 +423,8 @@ docker run --rm -e DFS_ADMIN_PASSWORD=my-secure-password \
 ```
 
 Run the server the same way with `start`, the ports and the other volumes of
-[Single container](#single-container). `init` and `start` wait up to 30 seconds for the cluster, and
+[Single container](#single-container). Every command that opens the store (`init`, `start` and
+`reset-admin`) waits up to 30 seconds for the cluster, and
 a wrong cluster file ends in a refusal naming it rather than a hang.
 
 For a cluster that requires TLS, name the client's certificate, its key and the CA file under
@@ -562,9 +574,9 @@ sudo systemctl daemon-reload
 **Docker:**
 
 ```bash
-docker volume rm dittofs-metadata dittofs-blocks
-# an upgraded v1 host also has these
-docker volume rm dittofs-state dittofs-cache
+docker volume rm dittofs-metadata dittofs-blocks dittofs-state
+# an upgraded v1 host also has this
+docker volume rm dittofs-cache
 # or, with Compose
 docker compose down -v
 ```

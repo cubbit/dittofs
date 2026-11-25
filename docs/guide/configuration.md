@@ -147,7 +147,8 @@ every key file of the node.
 `metadata.backend: foundationdb` keeps the metadata, and the control plane's records, in a
 FoundationDB 7.3 cluster instead of a Badger directory. It is opened only by a `dfs` built with the
 `foundationdb` tag (the `-foundationdb` image and tarballs; see
-[Deployment](install.md#foundationdb-metadata)); any other build refuses it, naming the tag.
+[Deployment](install.md#foundationdb-metadata)); any other build refuses it in every command that
+opens the store (`dfs init`, `dfs start` and `dfs reset-admin`), naming the tag.
 
 ```yaml
 metadata:
@@ -159,13 +160,16 @@ metadata:
 - `metadata.foundationdb.cluster_file` is required: an empty one is refused rather than reading
   the client's default cluster.
 - An installation owns its whole cluster. The keys are written with no prefix, so the cluster must
-  hold nothing else.
+  hold nothing else. Opening the store writes the node's clock-ceiling key before the start check
+  reads the cluster, so a `cluster_file` that points at someone else's cluster by mistake is
+  refused, but leaves that one key behind in it.
 - `metadata.badger.*` is refused beside it, and `metadata.foundationdb.*` beside `badger`.
 - `metadata.foundationdb.tls.cert_file`, `key_file` and `ca_file` are named together or not at all,
   and each file is the credential, never a value in this file. Named, they are the client's TLS
-  files: `dfs init` and `dfs start` connect over TLS, and refuse a file that is missing, naming
-  it, before they connect. Unnamed, the client connects without TLS.
-- `dfs init` and `dfs start` wait up to 30 seconds to connect.
+  files: every command that opens the store connects over TLS, and refuses a file that is
+  missing, naming it, before it connects. Unnamed, the client connects without TLS.
+- Every command that opens the store (`dfs init`, `dfs start` and `dfs reset-admin`) waits up to
+  30 seconds to connect.
 
 ## The environment
 

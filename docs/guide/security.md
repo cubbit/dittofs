@@ -50,7 +50,6 @@ For the internal mechanism design and threat model, see
 
 ## What is implemented
 
-- Kerberos authentication for NFS via RPCSEC_GSS (RFC 2203)
 - Kerberos authentication for SMB via SPNEGO
 - Active Directory / LDAP idmap (`idmap_ad` RFC2307 attributes or `idmap_rid` RID derivation), with Kerberos keytab and NTLM machine-account pass-through
 - SMB3 encryption with AES-128-GCM, AES-128-CCM, AES-256-GCM, AES-256-CCM
@@ -68,6 +67,7 @@ For the internal mechanism design and threat model, see
 ## Remaining limitations
 
 - No formal security audit performed
+- Kerberos for NFS (RPCSEC_GSS, RFC 2203) is not served yet: every RPCSEC_GSS call is answered `AUTH_BADCRED`, so a `sec=krb5`, `krb5i` or `krb5p` mount fails and NFS identities are the client-asserted `AUTH_SYS` ones
 - NFS-over-TLS (RFC 9289) is not served yet: every adapter TLS mode but `off` is refused until StartTLS is built. Once served, it requires a client that supports RFC 9289 (`xprtsec=tls`); macOS has no such client (use a network tunnel instead)
 - No encryption at rest
 - No audit logging for file operations
@@ -478,8 +478,8 @@ sudo pfctl -f /etc/pf.conf
 
 ## Kerberos configuration
 
-DittoFS uses a shared Kerberos layer (`pkg/auth/kerberos`) that serves both the NFS (RPCSEC_GSS)
-and SMB (SPNEGO) adapters. Configure Kerberos once and both protocols benefit.
+DittoFS uses one Kerberos configuration for the SMB (SPNEGO) adapter, and for the NFS
+(RPCSEC_GSS) adapter once it serves RPCSEC_GSS; today NFS answers it with `AUTH_BADCRED`.
 
 ### Server configuration
 
@@ -559,7 +559,7 @@ smbclient -k //server.example.com/export
 
 ## Production hardening checklist
 
-- [ ] Enable Kerberos authentication for NFS and SMB
+- [ ] Enable Kerberos authentication for SMB (NFS Kerberos is not served yet)
 - [ ] Enable SMB3 encryption with `encryption_mode: required` for sensitive data
 - [ ] Enable SMB message signing with `required: true`
 - [ ] Deploy behind VPN for NFS data confidentiality (NFS-over-TLS is not served yet)

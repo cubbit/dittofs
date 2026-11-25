@@ -423,9 +423,11 @@ rewrites *who you are* on the filesystem; it never grants access on its own.
   squashing exists.
 - **AUTH_NULL** — no credentials at all. DittoFS **always** maps AUTH_NULL to
   the anonymous identity, regardless of the squash mode.
-- **Kerberos (RPCSEC_GSS)** — the principal is cryptographically verified and
-  resolved to a UID/GID via the idmap. Squashing still applies on top of the
-  resolved identity (e.g. `root_to_guest` squashes a resolved UID 0).
+- **Kerberos (RPCSEC_GSS)** — not served yet: the server answers every
+  RPCSEC_GSS call with `AUTH_BADCRED`, so today only `AUTH_SYS`, asserted by the
+  client, carries an identity. Once served, the principal is cryptographically
+  verified and resolved to a UID/GID via the idmap, and squashing still applies
+  on top of the resolved identity (e.g. `root_to_guest` squashes a resolved UID 0).
 
 ### The five modes
 

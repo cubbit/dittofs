@@ -49,7 +49,7 @@ also live in [NFS.md](nfs.md#glossary) and [SMB.md](smb.md#glossary).
 
 | Term | Definition |
 |------|------------|
-| **Kerberos** | A ticket-based network authentication protocol. DittoFS supports it for both NFS (via RPCSEC_GSS) and SMB (via SPNEGO). [RFC 4120](https://www.rfc-editor.org/rfc/rfc4120) |
+| **Kerberos** | A ticket-based network authentication protocol. DittoFS supports it for SMB (via SPNEGO); for NFS (via RPCSEC_GSS) it is not served yet. [RFC 4120](https://www.rfc-editor.org/rfc/rfc4120) |
 | **Active Directory (AD)** | Microsoft's directory service. DittoFS authenticates AD domain users directly — Kerberos service tickets from a keytab, or NTLM passed through to a Domain Controller by a machine account. |
 | **idmap** | The mapping from an authenticated principal or SID to a Unix UID/GID. DittoFS supports `idmap_ad` (RFC2307 `uidNumber`/`gidNumber` attributes) and `idmap_rid` (derive from the RID). See [identity.md](identity.md). |
 | **GSS-API** | A standard programming interface that lets applications use security mechanisms like Kerberos without hard-coding them. [RFC 2743](https://www.rfc-editor.org/rfc/rfc2743) |
