@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # What only shows after an hour, with the hour put to use (BS-08, TR-05, BS-13). /bin and /j have their
-# own metadata stores. GC on one share also runs a pass on every other remote, but with separate
-# metadata stores each pass reads only its own markers, so none can delete through the wrong remote (A-08).
+# own namespaces, on remote stores of their own (A-08).
 #   1. Repeated content (G-02): 64 MiB of zeros, one chunk repeated. Right after the delete, GC with
 #      grace 0 still leaves the blocks dedup adopted, since an adoption keeps a block from GC for an
 #      hour (dedupAdoptionMaxAge). An hour after the write, GC must have freed them all.
 #   2. The recycle bin's policies (TR-05): /bin excludes *.tmp, holds at most 3 MiB and keeps entries
-#      for a day. An excluded name is deleted for good at once. a, b, c and d (1 MiB each) are deleted
+#      for a day. Those policies were v1's share flags and have no setting yet: they return with the
+#      trash, and until then this part has no policy to check. An excluded name is deleted for good
+#      at once. a, b, c and d (1 MiB each) are deleted
 #      in that order; the reaper's first pass, an hour after the server starts, must evict a alone,
 #      the oldest, and keep b, c and d, which are younger than a day.
 #   3. Journal GC against eviction (BS-13, #2908): /j has a 1 GiB journal. For up to 20 rounds in 50
@@ -36,10 +37,9 @@ rclone size --json s3:dittofs/test | tee /tmp/zeros-held.json
 
 # 2. The recycle bin
 rclone mkdir s3:bin
-dfsctl store metadata add --name md-bin --type badger --db-path /tmp/md-bin
-dfsctl store block add --name s3-bin --type s3 --config "$(jq -c '.bucket = "bin"' /etc/dittofs-s3.json)"
-dfsctl share create --name /bin --metadata md-bin --block-store s3-bin --default-permission none --enable-trash --trash-exclude '*.tmp' --trash-max-size 3145728 --trash-retention-days 1
-dfsctl share permission grant /bin --user tester --level read-write
+N="$(dfsctl namespace create --store "$(dfs-store bin)" --setting namespace.prefix=bin/ -o json | jq -r .id)"
+dfsctl share create bin --path /bin --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
+dfsctl grant set bin --user tester --access read-write
 mkdir /tmp/bin
 for F in x.tmp a.bin b.bin c.bin d.bin; do head -c 1M /dev/urandom >"/tmp/bin/$F"; done
 smbclient //127.0.0.1/bin -c 'lcd /tmp/bin; prompt; mput *'
@@ -50,10 +50,10 @@ smbclient //127.0.0.1/bin -c 'ls' | tee /tmp/bin-root.txt
 
 # 3. Journal rounds, with Local Disk Used sampled every 5 s (in its own bash, so it stays out of the trace)
 rclone mkdir s3:journal
-dfsctl store metadata add --name md-j --type badger --db-path /tmp/md-j
-dfsctl store block add --name s3-j --type s3 --config "$(jq -c '.bucket = "journal"' /etc/dittofs-s3.json)"
-dfsctl share create --name /j --metadata md-j --block-store s3-j --default-permission none --journal-size 1GiB
-dfsctl share permission grant /j --user tester --level read-write
+N="$(dfsctl namespace create --store "$(dfs-store journal)" --setting namespace.prefix=journal/ -o json | jq -r .id)"
+dfsctl share create j --path /j --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
+dfsctl setting set share:j journal.limit 1073741824
+dfsctl grant set j --user tester --access read-write
 mkdir /tmp/j
 R=0
 while test "$R" -lt 20 && test "$(date +%s)" -lt $(($(cat /tmp/t0) + 3000)); do

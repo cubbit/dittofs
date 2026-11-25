@@ -8,9 +8,9 @@
 F=/inputs/125GB.testfile
 
 rclone mkdir s3:cubbit
-dfsctl store block add --name s3-cubbit --type s3 --config "$(jq -c '.bucket = "cubbit"' /etc/dittofs-s3.json)"
-dfsctl share create --name /cubbit --metadata md --block-store s3-cubbit --default-permission none
-dfsctl share permission grant /cubbit --user tester --level read-write
+N="$(dfsctl namespace create --store "$(dfs-store cubbit)" --setting namespace.prefix=cubbit/ -o json | jq -r .id)"
+dfsctl share create cubbit --path /cubbit --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
+dfsctl grant set cubbit --user tester --access read-write
 rclone lsf -R --files-only --format ps s3:cubbit >/tmp/cubbit0.lst
 
 # Disk for three copies (the input, the local tier's, SeaweedFS's) and 10 GB; a kept input counts as room

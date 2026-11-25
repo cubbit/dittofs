@@ -14,12 +14,12 @@
 # passed with compaction off, and passes since that PR, which skips compaction for such a store.
 
 rclone mkdir s3:export
-dfsctl store block add --name s3-export --type s3 --config "$(jq -c '.bucket = "export"' /etc/dittofs-s3.json)"
-dfsctl share create --name /export --metadata md --block-store s3-export --default-permission none
-dfsctl share permission grant /export --user tester --level read-write
+N="$(dfsctl namespace create --store "$(dfs-store export)" --setting namespace.prefix=export/ -o json | jq -r .id)"
+dfsctl share create export --path /export --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
+dfsctl grant set export --user tester --access read-write
 rclone mkdir s3:cubbit
-dfsctl store block add --name s3-cubbit --type s3 --config "$(jq -c '.bucket = "cubbit"' /etc/dittofs-s3.json)"
-dfsctl share create --name /cubbit --metadata md --block-store s3-cubbit --default-permission none
+N="$(dfsctl namespace create --store "$(dfs-store cubbit)" --setting namespace.prefix=cubbit/ -o json | jq -r .id)"
+dfsctl share create cubbit --path /cubbit --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
 
 # The compaction ratio and the grace period return as settings, the chunk size as the namespace's target
 # The run wants a 0.5 ratio, the 5 min grace (its floor) and 64 KiB minimum chunks, which the launcher no longer sets

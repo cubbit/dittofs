@@ -1,58 +1,29 @@
 #!/usr/bin/env bash
-# A block store with AES-256-GCM and a local key file. No plaintext may reach the bucket, a cold
-# read must round-trip, also after a restart, and with a wrong passphrase the store must refuse to
-# serve instead of writing unencrypted (RFC 5 §2.7, §5.1). There is no command to make a key file
-# (docs/guide/encryption.md calls keyprovider.GenerateKeyFile from Go), so a few lines of Go make
-# one. The encryption block goes in the --config JSON, because the --encryption-* flags are dropped
-# when --config is given (#2923).
-# Passes today. No marker reaches the bucket, and the cold reads match before and after a restart.
-# With a wrong passphrase the server starts, but the share is not served: a tree connect gets
-# NT_STATUS_BAD_NETWORK_NAME, the log says the key provider failed, and the bucket is unchanged.
-P=scenario-passphrase
+# A namespace that encrypts, under the storage key setup's dfs init made and its passphrase. No
+# plaintext may reach the bucket, a cold read must round-trip, also after a restart, and with a wrong
+# passphrase the server must refuse to serve instead of writing unencrypted (RFC 5 §2.7, §5.1).
+# Passed with v1's per-store key file: no marker reached the bucket, and the cold reads matched before
+# and after a restart. With a wrong passphrase the server started, but the share was not served: a tree
+# connect got NT_STATUS_BAD_NETWORK_NAME, the log said the key provider failed, and the bucket was
+# unchanged. The storage key is now the installation's, so a wrong passphrase may stop the start.
 
-mkdir /tmp/keygen
-cat >/tmp/keygen/main.go <<'EOF'
-package main
-
-import (
-	"os"
-
-	"github.com/cubbit/dittofs/pkg/keyprovider"
-)
-
-func main() {
-	key, err := keyprovider.GenerateKeyFile(os.Args[1])
-	if err != nil {
-		panic(err)
-	}
-	os.Stdout.Write(key)
-}
-EOF
-# The program joins the read-only checkout through an overlay, so it builds against its go.mod
-echo '{"Replace": {"/src/cmd/scenario-keygen/main.go": "/tmp/keygen/main.go"}}' >/tmp/keygen/overlay.json
-(cd /src && GOFLAGS=-buildvcs=false GOMODCACHE=/cache/go/mod GOCACHE=/cache/go/build /opt/go/usr/local/go/bin/go run -overlay /tmp/keygen/overlay.json ./cmd/scenario-keygen "$P" >/tmp/enc.key)
-chmod 600 /tmp/enc.key
-
-# The server needs the passphrase in its environment; then the store, the share and a file with a
-# plaintext marker in it
-dfs-server stop
-dfs-server start DITTOFS_ENCRYPTION_PASSPHRASE="$P"
+# The store, a namespace that encrypts, the share and a file with a plaintext marker in it
 rclone mkdir s3:enc
-dfsctl store block add --name s3-enc --type s3 --config "$(jq -c '.bucket = "enc" | .encryption = {aead: "aes-256-gcm", key: {kind: "local", file: "/tmp/enc.key"}}' /etc/dittofs-s3.json)"
-dfsctl share create --name /enc --metadata md --block-store s3-enc --default-permission none
-dfsctl share permission grant /enc --user tester --level read-write
+N="$(dfsctl namespace create --store "$(dfs-store enc)" --setting namespace.prefix=enc/ --setting namespace.encrypts=true -o json | jq -r .id)"
+dfsctl share create enc --path /enc --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
+dfsctl grant set enc --user tester --access read-write
 awk 'BEGIN { for (i = 0; i < 150000; i++) print "PLAINTEXT-MARKER-0123456789" }' >/tmp/m.bin
 head -c 16M /dev/urandom >>/tmp/m.bin
 smbclient //127.0.0.1/enc -c 'lcd /tmp; put m.bin'
 dfsctl system drain-uploads
-dfsctl store block list -o json | jq -c '.[] | select(.name == "s3-enc")' | tee /tmp/store.json
+dfsctl namespace get "$N" -o json | tee /tmp/namespace.json
 rclone size --json s3:enc | tee /tmp/enc0.json
 rclone cat s3:enc | grep -a -c PLAINTEXT-MARKER | tee /tmp/marker.count || true
 
 # Cold reads: now, and after a restart with the same passphrase
 smbclient //127.0.0.1/enc -c 'get m.bin /tmp/back1.bin'
 dfs-server stop
-dfs-server start DITTOFS_ENCRYPTION_PASSPHRASE="$P"
+dfs-server start
 smbclient //127.0.0.1/enc -c 'get m.bin /tmp/back2.bin'
 
 # A wrong passphrase: no read, no write, nothing new in the bucket
@@ -67,7 +38,7 @@ rclone size --json s3:enc | tee /tmp/enc1.json
 # Outcomes first, then the checks
 cat /tmp/wrong.out /tmp/read3.out /tmp/write3.out
 cat /tmp/*.rc 2>/dev/null || true
-grep -q aes-256-gcm /tmp/store.json
+jq -e '.spec.settings["namespace.encrypts"] == true' /tmp/namespace.json
 test "$(cat /tmp/marker.count)" -eq 0
 cmp /tmp/back1.bin /tmp/m.bin
 cmp /tmp/back2.bin /tmp/m.bin

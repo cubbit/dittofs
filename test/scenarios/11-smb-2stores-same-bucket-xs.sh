@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# Two block stores on the same bucket and prefix (RFC 6 §2.6, App A; RFC 9 §5.3): they are one remote
-# namespace under two names, so GC on one can delete the other's objects. The second store must be refused.
+# Two namespaces on the same bucket and prefix, each on a remote store of its own (RFC 6 §2.6, App A;
+# RFC 9 §5.3): they are one remote namespace under two names, so GC on one can delete the other's
+# objects. The second namespace must be refused.
 # If it is accepted, /x and /y get a file each; deleting /x's file, GC on /x and a reclaim must leave /y's
 # objects and data intact.
 # Fails today at the last check: the second store is accepted. /y's data survives (GC reports 8 objects
 # swept, the bucket keeps its 4).
 
 rclone mkdir s3:dittofs/shared
-dfsctl store block add --name s3-x --type s3 --config "$(jq -c '.bucket = "dittofs" | .prefix = "shared/"' /etc/dittofs-s3.json)"
-dfsctl store block add --name s3-y --type s3 --config "$(jq -c '.bucket = "dittofs" | .prefix = "shared/"' /etc/dittofs-s3.json)" && Y=accepted || Y=refused
-echo "second store on the same bucket and prefix: $Y"
+NX="$(dfsctl namespace create --store "$(dfs-store dittofs)" --setting namespace.prefix=shared/ -o json | jq -r .id)"
+NY="$(dfsctl namespace create --store "$(dfs-store dittofs)" --setting namespace.prefix=shared/ -o json | jq -r .id)" && Y=accepted || Y=refused
+echo "second namespace on the same bucket and prefix: $Y"
 if test "$Y" = accepted; then
-  dfsctl share create --name /x --metadata md --block-store s3-x --default-permission none
-  dfsctl share permission grant /x --user tester --level read-write
-  dfsctl share create --name /y --metadata md --block-store s3-y --default-permission none
-  dfsctl share permission grant /y --user tester --level read-write
+  dfsctl share create x --path /x --namespace "$NX" --flavor sys --client 0.0.0.0/0=read-write
+  dfsctl grant set x --user tester --access read-write
+  dfsctl share create y --path /y --namespace "$NY" --flavor sys --client 0.0.0.0/0=read-write
+  dfsctl grant set y --user tester --access read-write
   mkdir /tmp/x /tmp/y /tmp/back
   head -c 8M /dev/urandom >/tmp/x/x.bin
   head -c 8M /dev/urandom >/tmp/y/y.bin
