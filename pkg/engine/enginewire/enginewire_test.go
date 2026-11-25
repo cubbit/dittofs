@@ -340,8 +340,10 @@ func TestComposeAdaptsTheTracerToTheJournal(t *testing.T) {
 	t.Cleanup(func() { _ = j.Close() })
 
 	// The journal issues no version until its first limit, as the fixture
-	// sets one on every open of its own.
-	if err := j.SetVersionLimit(journal.Version{Counter: 1 << 20}); err != nil {
+	// sets one on every open of its own. Every refused retry below spends a
+	// version, so the limit exceeds what RetrySpare can spend: the loop ends
+	// on a spare or on RetrySpare's own bound, never on the version limit.
+	if err := j.SetVersionLimit(journal.Version{Counter: 2 * journaltest.SpareAttempts}); err != nil {
 		t.Fatalf("SetVersionLimit of the composed journal: %v", err)
 	}
 	h, err := j.Share(journal.ShareTag(1), 0, journal.Version{})
