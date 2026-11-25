@@ -16,6 +16,7 @@ Each entry shows the error, what it means, and what to do.
 | `DITTOFS_ENCRYPTION_PASSPHRASE is unset` | [The passphrase is not set](#the-passphrase-is-not-set) |
 | `node.id is not set` | [The config file is refused](#the-config-file-is-refused) |
 | `unknown key`, `not an absolute path`, `no longer read` | [The config file is refused](#the-config-file-is-refused) |
+| `refusing to start: ... is from v1` | [Data from the released server](#data-from-the-released-server) |
 | `initialise the journal in ...: no such file or directory` | [`dfs init` stopped half way](#dfs-init-stopped-half-way) |
 | `the installation is already initialised` | [The admin password is lost](#the-admin-password-is-lost) |
 | `Cannot acquire directory lock` | [Another node holds the metadata store](#another-node-holds-the-metadata-store) |
@@ -80,7 +81,9 @@ Error: /etc/dittofs/config.yaml: journals: data/j1 is not an absolute path
 /etc/dittofs/config.yaml: loging.level: unknown key; did you mean logging.level?
 ```
 
-Fix each line and run `dfs config validate` again. To see which value each key got
+Fix each line and run `dfs config validate` again. A clean `validate` does not yet
+promise a clean start: a few problems only `dfs start` reports (see
+[Not working as documented yet](configuration.md#not-working-as-documented-yet)). To see which value each key got
 and where it came from (the file, a variable or the default):
 
 ```bash
@@ -101,13 +104,23 @@ Common causes:
 How to read a refusal is explained in
 [Configuration: Refusals](configuration.md#refusals).
 
+### Data from the released server
+
+```text
+refusing to start: <found> at <path> is from v1; upgrading from v1 is not supported: start a new installation with dfs init on empty storage
+```
+
+`dfs init` or `dfs start` found data the released server (v1) wrote: its
+control-plane database, its block layout, or its metadata store. Upgrading from v1 is
+not supported. Point the config at new, empty directories and run `dfs init`. See [Upgrading from v1](upgrading-from-v1.md).
+
 ### `dfs init` stopped half way
 
 ```console
 $ dfs init
-created the storage key file /home/alice/dittofs/storage.key
+created the storage key file /home/alice/dittofs-data/storage.key
 Copy it off this host now and keep its passphrase: losing either loses the data, and nothing recovers it.
-Error: install: initialise the journal in /home/alice/dittofs/journal: open /home/alice/dittofs/journal: no such file or directory
+Error: install: initialise the journal in /home/alice/dittofs-data/journal: open /home/alice/dittofs-data/journal: no such file or directory
 ```
 
 Every journal directory must exist before `dfs init`. Create it and run `dfs init`
@@ -115,7 +128,7 @@ again: it finishes what the first run started, and reuses the key file it alread
 wrote.
 
 ```bash
-mkdir -p ~/dittofs/journal
+mkdir -p ~/dittofs-data/journal
 dfs init
 ```
 
@@ -123,7 +136,7 @@ dfs init
 
 ```console
 $ dfs start
-Error: opening the metadata store: Cannot acquire directory lock on "/home/alice/dittofs/metadata".  Another process is using this Badger database. err: resource temporarily unavailable
+Error: opening the metadata store: Cannot acquire directory lock on "/home/alice/dittofs-data/metadata".  Another process is using this Badger database. err: resource temporarily unavailable
 ```
 
 A node is already running over this metadata store, perhaps in another terminal or
@@ -175,8 +188,8 @@ host you can use the local socket instead, which needs no address and no TLS:
 dfsctl login --server ~/.local/state/dittofs/run/dfs.sock --username admin
 ```
 
-That is the socket's path when `XDG_RUNTIME_DIR` is unset; `dfs config show` prints
-the real one. For a node whose API is not on loopback,
+That is the socket's path when `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` are unset;
+`dfs config show` prints the real one. For a node whose API is not on loopback,
 use its `https` URL and pass the CA that signed its certificate with `--cacert`.
 
 `401 unauthenticated` means the user name or password is wrong. `not logged in`

@@ -56,7 +56,7 @@ also live in the [NFS guide](nfs.md#glossary) and the [SMB guide](smb.md#glossar
 | **NTLM / NTLMSSP** | Microsoft's challenge/response authentication scheme, used by SMB when Kerberos isn't available. NTLMSSP is the GSS-API wrapping of NTLM. [MS-NLMP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/) |
 | **RPCSEC_GSS** | The NFS/RPC security flavor that carries GSS-API (Kerberos) authentication and optional integrity/privacy. [RFC 2203](https://www.rfc-editor.org/rfc/rfc2203) |
 | **AUTH_UNIX** | The basic NFS authentication flavor that simply asserts a UID/GID — trusted only on a trusted network. |
-| **TLS** (Transport Layer Security) | Encrypts and authenticates a network connection. DittoFS serves the management API over TLS, with the certificate and key files `api.tls.cert_file` and `api.tls.key_file` name; renewing the certificate is left to you. [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446) |
+| **TLS** (Transport Layer Security) | Encrypts and authenticates a network connection. DittoFS serves the management API over TLS, from the files named by `api.tls.cert_file` and `api.tls.key_file`; renewing the certificate is left to you. [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446) |
 | **mTLS** (mutual TLS) | TLS where both the server *and* the client present certificates, so the server authenticates the caller by its certificate. NFS-over-TLS can require one once it is served; the management API does not support it. |
 
 ## DittoFS terms
@@ -69,7 +69,7 @@ The words this documentation uses for DittoFS's own parts.
 | **Node** | A running `dfs start` process. It serves the management API and, once they are served, the NFS and SMB adapters. |
 | **Config file** | The YAML file a node reads at start (`~/.config/dittofs/config.yaml` by default): its ID, paths, keys and listen addresses. See [Configuration](configuration.md). |
 | **Management API** | The HTTP API through which shares, users, grants and settings are managed. `dfsctl` is its client. |
-| **Context** | A named `dfsctl` sign-in: a server, an account and its session, kept in `~/.config/dfsctl/config.json`. |
+| **Context** | A named `dfsctl` sign-in: a server, an account and its session, kept in `~/.config/dfsctl/config.json` (or under `$XDG_CONFIG_HOME/dfsctl`). |
 | **Metadata store** | Where a node keeps the directory tree, file attributes, ACLs, users, shares and settings: [BadgerDB](https://github.com/dgraph-io/badger) on disk, or a FoundationDB cluster. One per installation. |
 | **Journal** | The on-disk, append-only log where a node keeps file content, on the directories the `journals` key lists. On this version it holds the only copy of the data. |
 | **Remote store** | An object store, such as S3, that will hold file content away from the node. Not wired yet on this version. |

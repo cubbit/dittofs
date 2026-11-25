@@ -28,6 +28,7 @@ which works differently. So build both programs from the `feat/storage-v2` branc
 You need [Go](https://go.dev/dl/) 1.26 or later and `git`.
 
 ```bash
+cd ~
 git clone --depth 1 --branch feat/storage-v2 https://github.com/cubbit/dittofs.git
 cd dittofs
 go build -o dfs ./cmd/dfs
@@ -44,25 +45,25 @@ dfsctl version
 
 ## 2. Write the config file
 
-`dfs` reads its config from `~/.config/dittofs/config.yaml`. This one keeps
-everything under `~/dittofs`. Copy the whole block: the shell fills in your home
-directory and a new node ID.
+`dfs` reads its config from `~/.config/dittofs/config.yaml`. This one keeps the
+node's data under `~/dittofs-data`, apart from the clone in `~/dittofs`. Copy the
+whole block: the shell fills in your home directory and a new node ID.
 
 ```bash
-mkdir -p ~/.config/dittofs ~/dittofs/journal
+mkdir -p ~/.config/dittofs ~/dittofs-data/journal
 cat > ~/.config/dittofs/config.yaml <<EOF
 node:
   id: $(uuidgen | tr 'A-Z' 'a-z')
 metadata:
   badger:
-    path: $HOME/dittofs/metadata
+    path: $HOME/dittofs-data/metadata
 journals:
-  - path: $HOME/dittofs/journal
+  - path: $HOME/dittofs-data/journal
 keys:
   storage:
     kind: local
     local:
-      file: $HOME/dittofs/storage.key
+      file: $HOME/dittofs-data/storage.key
 EOF
 ```
 
@@ -79,7 +80,8 @@ Paths must be absolute: `~` is not expanded inside the file, which is why the
 block above lets the shell write `$HOME` out. If your shell sets `XDG_CONFIG_HOME`,
 `dfs` looks in `$XDG_CONFIG_HOME/dittofs/config.yaml` instead, so write the file
 there. Likewise, with `XDG_STATE_HOME` set, the log below is under
-`$XDG_STATE_HOME/dittofs`. No `uuidgen`? On Linux use
+`$XDG_STATE_HOME/dittofs`, and `dfsctl` keeps its session under
+`$XDG_CONFIG_HOME/dfsctl`. No `uuidgen`? On Linux use
 `cat /proc/sys/kernel/random/uuid`. Every key is in
 [Configuration](configuration.md).
 
@@ -95,7 +97,7 @@ dfs init
 ```
 
 ```console
-created the storage key file /home/alice/dittofs/storage.key
+created the storage key file /home/alice/dittofs-data/storage.key
 Copy it off this host now and keep its passphrase: losing either loses the data, and nothing recovers it.
 The administrator "admin"'s generated password, shown once; it must be changed at the first sign-in:
 ueDzOVgh8ObDp0kAxMJc-UsgMX3K_cfL
@@ -140,7 +142,7 @@ In the second terminal, make `dfsctl` available again and sign in as `admin` wit
 the password `dfs init` printed:
 
 ```bash
-cd dittofs && export PATH="$PWD:$PATH"     # the clone from step 1
+cd ~/dittofs && export PATH="$PWD:$PATH"     # the clone from step 1
 dfsctl login --server http://127.0.0.1:8080 --username admin
 ```
 
@@ -183,10 +185,12 @@ so give the user the same ID you have on the machine you will mount from
 (`id -u` prints it):
 
 ```console
-$ dfsctl user create alice --uid 1000
+$ dfsctl user create alice --uid "$(id -u)"
 NAME   ID                                    UID   ROLE  EMAIL  DISABLED
 alice  c763989b-76b9-4204-ac7e-a7e2a066d128  1000               no
 ```
+
+<a id="5-stores-and-namespaces"></a>
 
 ## 7. Where you stop today
 
@@ -211,15 +215,21 @@ create now stay in the metadata store. To read about stores and namespaces, see
 
 ## 8. Stop and clean up
 
-Press **Ctrl+C** in the first terminal. The node stops cleanly and logs
+In the second terminal, sign out while the node still runs:
+
+```bash
+dfsctl logout
+```
+
+Then press **Ctrl+C** in the first terminal. The node stops cleanly and logs
 `dfs: stopped`. To start it again later, export the same passphrase and run
 `dfs start`.
 
 To remove everything this guide created:
 
 ```bash
-dfsctl logout
-rm -rf ~/dittofs ~/.config/dittofs ~/.local/state/dittofs ~/.config/dfsctl
+rm -rf ~/dittofs-data ~/.config/dittofs ~/.local/state/dittofs ~/.config/dfsctl
+rm -rf ~/dittofs     # the clone and the binaries, if you are done with them
 ```
 
 ## Once shares can be created

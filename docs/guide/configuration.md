@@ -125,6 +125,10 @@ Rules that catch people out:
 > - `dfs start` fails on `metrics.listen: off`, because it tries to bind `off` as an
 >   address.
 > - `api.listen` takes one address: the node refuses to start with a second.
+>
+> `dfs config validate` passes the last three of these, and also passes overlapping
+> `adapters.listen` entries: only `dfs start` refuses them. So a clean `validate`
+> does not yet promise a clean start.
 
 ## The keys
 
@@ -143,7 +147,7 @@ Every key the file accepts. `<role>` is `protocol` or `storage`, so
 | `metadata.foundationdb.tls.key_file` | path | none | The client certificate's key. Name it with the certificate and CA files, or none of them. |
 | `metadata.foundationdb.tls.ca_file` | path | none | The CA file for FoundationDB's TLS. Name it with the certificate and key files, or none of them. |
 | `journals` | list of entries, each with a `path` | required | The journal devices, one directory each. A path listed twice, or two paths for one directory, is refused. `DITTOFS_JOURNALS` replaces the list with a comma-separated list of paths; an empty entry, such as a trailing comma, is refused. |
-| `adapters.listen` | list of IP addresses | every interface | The addresses the NFS and SMB adapters bind. Unset, they bind `0.0.0.0`, plus `::` when the host has IPv6. A written list binds as written. Overlapping entries, such as `0.0.0.0` beside `192.0.2.10`, or one address twice, stop the start; the message names the key and the entry's index, never the address. Each adapter's port is a setting, not a key. |
+| `adapters.listen` | list of IP addresses | every interface | The addresses the NFS and SMB adapters bind. Unset, they bind `0.0.0.0`, plus `::` when the host has IPv6. A written list binds as written. Overlapping entries, such as `0.0.0.0` beside `192.0.2.10`, or one address twice, stop the start. Each adapter's port is a setting, not a key. |
 | `api.listen` | list of `ip:port` | `127.0.0.1:8080` | The management API's address. Write a full address: `:8080` is refused; use `0.0.0.0:8080` or `[::]:8080` for every interface. One address only today. |
 | `api.tls.cert_file` | path | required off loopback | The API's TLS certificate. Required when `api.listen` or `metrics.listen` is not a loopback IP (`127.0.0.0/8` or `::1`). A host name, `localhost` included, and `0.0.0.0` or `::` are not loopback. |
 | `api.tls.key_file` | path | required off loopback | The key of the API's certificate. Required in the same cases as `api.tls.cert_file`. |
@@ -190,7 +194,7 @@ answers `503 unavailable`.
 1. Write the key file, with the same passphrase as the storage key:
 
    ```bash
-   cd dittofs                                     # your clone
+   cd ~/dittofs                                   # your clone
    mkdir -p /tmp/dfs-keygen
    cat > /tmp/dfs-keygen/main.go <<'EOF'
    package main
@@ -211,7 +215,7 @@ answers `503 unavailable`.
    	}
    }
    EOF
-   go run /tmp/dfs-keygen/main.go ~/dittofs/protocol.key
+   go run /tmp/dfs-keygen/main.go ~/dittofs-data/protocol.key
    ```
 
 2. Name it in the config file, under `keys`:
@@ -221,7 +225,7 @@ answers `503 unavailable`.
      protocol:
        kind: local
        local:
-         file: /home/alice/dittofs/protocol.key
+         file: /home/alice/dittofs-data/protocol.key
    ```
 
 3. Check the file, then restart the node:
@@ -360,8 +364,7 @@ A file from an older version gets one line per old key, naming what replaced it:
 /etc/dittofs/config.yaml: shutdown_timeout: no longer read; set adapters.<protocol>.drain_timeout through the management API
 ```
 
-A rule that compares two keys runs only once both keys pass their own checks. A
-refusal never prints the value of a variable, of a key that holds a credential, or
+A refusal never prints the value of a variable, of a key that holds a credential, or
 of an unknown key.
 
 ## The commands
@@ -373,7 +376,9 @@ Four `dfs config` commands read the same file `dfs start` would.
 Checks the file and the host without starting anything, and creates no directory.
 Beyond what a start checks, it opens both key files, and checks the roles, the
 journals, the API certificate off loopback, the socket path and the two
-directories. So it can refuse a host that `dfs start` would still run on.
+directories. So it can refuse a host that `dfs start` would still run on. It also
+misses a few things a start refuses; see
+[Not working as documented yet](#not-working-as-documented-yet).
 
 ```console
 $ dfs config validate
@@ -463,9 +468,10 @@ api.session_lifetime  "8h"   0/1
 $ dfsctl setting unset installation api.session_lifetime   # back to the default
 ```
 
-`APPLIED` counts the nodes that have applied the value so far. The scope is
-`installation`, `node:<id>`, `namespace:<id>`, `store:<id>` or `share:<name>`. A
-`get` of a key that has no value at that scope answers `404 not_found`; it does not
+`APPLIED` counts the nodes that have applied the value so far. A scope is
+`installation`, `node:<id>`, `namespace:<id>`, `store:<id>` or `share:<name>`, but
+every setting today exists at `installation` only, and a write at another scope is
+refused. A `get` of a key that has no value at that scope answers `404 not_found`; it does not
 print the default.
 
 These settings exist today, all at the `installation` scope only:

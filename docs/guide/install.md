@@ -109,8 +109,14 @@ directories, so set them in a drop-in before the first start:
 `dfs init` prints the `admin` account's generated password once, to its terminal and
 never to the log, so run it where you can read the output. To choose the password
 instead, pass `--admin-password-file` or `--admin-password-env`. If the password is
-lost, stop the service and run `dfs reset-admin` with the same config: it prints a
-new one.
+lost, stop the service and run `dfs reset-admin` the same way as `init`; it prints a
+new one:
+
+```bash
+sudo systemctl stop dfs
+sudo sh -c 'set -a; . /etc/dittofs/passphrase.env; STATE_DIRECTORY=/var/lib/dittofs exec dfs reset-admin --config /etc/dittofs/config.yaml'
+sudo systemctl start dfs
+```
 
 With `RuntimeDirectory=dittofs`, the local socket is `/run/dittofs/dfs.sock`, so on
 the host you can sign in without a network address:
@@ -183,7 +189,7 @@ both key files.
 
 3. Write the protocol key file with the program in
    [Adding the protocol key](configuration.md#adding-the-protocol-key), run from your
-   clone: `go run /tmp/dfs-keygen/main.go ~/dittofs-docker/keys/protocol.key`. Then
+   clone: `(cd ~/dittofs && go run /tmp/dfs-keygen/main.go ~/dittofs-docker/keys/protocol.key)`. Then
    hand `keys` and `tls` to the container's user, `65532`; `dfs init` writes
    `keys/storage.key` itself:
 

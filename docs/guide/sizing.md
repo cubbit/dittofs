@@ -52,6 +52,6 @@ Anchor points, not guarantees — validate against your workload.
 
 ## See also
 
-- [Choosing Stores](choosing-stores.md) — picking metadata and block stores
+- [Choosing Stores](choosing-stores.md) — the metadata store and where file content lives
 - [Durability](durability.md) — how far a write must land before it is acknowledged
 - [Configuration](configuration.md) — every config key and CLI flag

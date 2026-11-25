@@ -19,7 +19,7 @@
 **A modular virtual filesystem written entirely in Go**
 
 NFSv3/v4.0/v4.1/v4.2 and SMB2/3 servers in userspace — no FUSE, no kernel modules — with
-pluggable metadata and block stores you can mix and match per share.
+one metadata store and an on-disk journal per node, managed through an API.
 
 [Website](https://dittofs.io) • [Quick Start](#quick-start) • [Documentation](#documentation) • [Features](#features) • [Contributing](docs/internals/contributing.md)
 
@@ -51,7 +51,7 @@ Two programs drive it:
 
 | Program | Role |
 |---------|------|
-| **`dfs`** | The server. `dfs init` creates an installation; `dfs start` runs its node in the foreground: the protocol adapters and the management API. |
+| **`dfs`** | The server. `dfs init` creates an installation; `dfs start` runs its node in the foreground: the management API and, once they are served, the NFS and SMB adapters. |
 | **`dfsctl`** | The client of the management API. It manages users, groups, shares, stores and adapters on a running node. |
 
 ## Features
@@ -116,6 +116,7 @@ Docker image install the released server, which works differently. Build from so
 with [Go](https://go.dev/dl/) 1.26 or later:
 
 ```bash
+cd ~
 git clone --depth 1 --branch feat/storage-v2 https://github.com/cubbit/dittofs.git
 cd dittofs
 go build -o dfs ./cmd/dfs
@@ -126,20 +127,20 @@ export PATH="$PWD:$PATH"
 ### 2. Configure and create the installation
 
 ```bash
-mkdir -p ~/.config/dittofs ~/dittofs/journal
+mkdir -p ~/.config/dittofs ~/dittofs-data/journal
 cat > ~/.config/dittofs/config.yaml <<EOF
 node:
   id: $(uuidgen | tr 'A-Z' 'a-z')
 metadata:
   badger:
-    path: $HOME/dittofs/metadata
+    path: $HOME/dittofs-data/metadata
 journals:
-  - path: $HOME/dittofs/journal
+  - path: $HOME/dittofs-data/journal
 keys:
   storage:
     kind: local
     local:
-      file: $HOME/dittofs/storage.key
+      file: $HOME/dittofs-data/storage.key
 EOF
 
 export DITTOFS_ENCRYPTION_PASSPHRASE='correct horse battery staple'   # pick your own
@@ -147,7 +148,7 @@ dfs init
 ```
 
 `dfs init` prints the `admin` account's generated password once. Copy it. It also
-creates `~/dittofs/storage.key`: keep a copy of that file and the passphrase, since
+creates `~/dittofs-data/storage.key`: keep a copy of that file and the passphrase, since
 losing either loses the installation.
 
 ### 3. Start the node
@@ -161,13 +162,13 @@ It runs in the foreground, prints nothing, and logs to
 
 ### 4. Sign in
 
-In a second terminal, in the clone (run `export PATH="$PWD:$PATH"` there again):
+In a second terminal, run `cd ~/dittofs && export PATH="$PWD:$PATH"` again, then:
 
 ```bash
 dfsctl login --server http://127.0.0.1:8080 --username admin   # the password dfs init printed
 dfsctl password change                                          # required for a generated password
 dfsctl status
-dfsctl user create alice --uid 1000
+dfsctl user create alice --uid "$(id -u)"
 ```
 
 Write `127.0.0.1`, not `localhost`: over plain `http`, `dfsctl` talks only to a
@@ -223,10 +224,10 @@ Full docs live in [`docs/`](docs/), split by audience.
 **Start here**
 
 - [Getting Started](docs/guide/getting-started.md) — build, start a node and sign in
-- [Installation](docs/guide/install.md) — packages, Docker, Compose, Kubernetes operator
+- [Installation](docs/guide/install.md) — build from source, packages, Docker, systemd, FoundationDB, uninstalling
 - [Configuration](docs/guide/configuration.md) — every config key and environment variable, with defaults
 - [CLI Reference](docs/guide/cli.md) — every `dfs` and `dfsctl` command (generated)
-- [Choosing Stores](docs/guide/choosing-stores.md) — picking metadata and block stores
+- [Choosing Stores](docs/guide/choosing-stores.md) — the metadata store and where file content lives
 - [Sizing & Hardware](docs/guide/sizing.md) — how to size the machine that runs `dfs`
 
 **Connect clients**
