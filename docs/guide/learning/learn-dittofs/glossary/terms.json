@@ -204,7 +204,7 @@
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-1", "rfc-8", "rfc-17"],
-    "code": ["pkg/block/engine"]
+    "code": ["pkg/engine"]
   },
   "extent": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
@@ -215,7 +215,8 @@
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-2", "rfc-8"],
-    "code": ["pkg/block/chunker"]
+    "code": [],
+    "target": ["pkg/carver/internal/chunker"]
   },
   "block": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
@@ -226,19 +227,22 @@
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-4", "rfc-8"],
-    "code": ["pkg/block/remote"]
+    "code": [],
+    "target": ["pkg/remote"]
   },
   "carver": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-2", "rfc-8"],
-    "code": ["pkg/block/carver"]
+    "code": [],
+    "target": ["pkg/carver"]
   },
   "syncer": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-3", "rfc-8"],
-    "code": ["pkg/block/syncer"]
+    "code": [],
+    "target": ["pkg/syncer"]
   },
   "dirty": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
@@ -274,8 +278,7 @@
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-1", "rfc-17", "rfc-22", "rfc-28", "rfc-8"],
-    "code": ["pkg/block/journal (v1, one per share)"],
-    "target": ["pkg/block/journal (v2, on feat/storage-v2, where it replaced v1)"]
+    "code": ["pkg/journal"]
   },
   "record": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
@@ -391,13 +394,13 @@
     "source": "docs/internals/rfcs/rfc-8-engine.md#23-one-engine-per-node-a-share-is-a-storage-binding",
     "sourceLabel": "RFC 8 §2.3",
     "rfcs": ["rfc-0", "rfc-8"],
-    "target": ["pkg/block/engine/share.go"]
+    "target": ["pkg/engine/share.go"]
   },
   "stability-point": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-17", "rfc-22", "rfc-8"],
-    "target": ["pkg/block/engine/commit.go"]
+    "target": ["pkg/engine/commit.go"]
   },
   "existence": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
@@ -408,7 +411,7 @@
     "source": "docs/internals/rfcs/rfc-8-engine.md#52-group-commit-is-bounded-and-retries-only-the-files-that-conflict",
     "sourceLabel": "RFC 8 §5.2",
     "rfcs": ["rfc-8"],
-    "target": ["pkg/block/engine/groupcommit.go"]
+    "target": ["pkg/engine/groupcommit.go"]
   },
   "residency": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
@@ -429,7 +432,7 @@
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-8"],
-    "target": ["pkg/block/engine/policy.go"]
+    "target": ["pkg/engine/policy.go"]
   },
   "work-queue": {
     "source": "docs/internals/rfcs/rfc-8-engine.md#61-the-work-queue",
@@ -441,7 +444,7 @@
     "source": "docs/internals/rfcs/rfc-8-engine.md#63-the-offload-pipeline",
     "sourceLabel": "RFC 8 §6.3",
     "rfcs": ["rfc-8"],
-    "target": ["pkg/block/engine/offload"]
+    "target": ["pkg/engine/offload"]
   },
   "offload-guard": {
     "source": "docs/internals/rfcs/rfc-8-engine.md#64-the-offload-guard-is-narrow",
@@ -462,19 +465,19 @@
     "source": "docs/internals/rfcs/rfc-8-engine.md#74-the-speculator",
     "sourceLabel": "RFC 8 §7.4",
     "rfcs": ["rfc-3", "rfc-8"],
-    "target": ["pkg/block/engine/speculate.go"]
+    "target": ["pkg/engine/speculate.go"]
   },
   "pacing": {
     "source": "docs/internals/rfcs/rfc-8-engine.md#1021-writes-are-paced-before-the-limit-not-stopped-at-it",
     "sourceLabel": "RFC 8 §10.2.1",
     "rfcs": ["rfc-8"],
-    "target": ["pkg/block/engine/capacity.go"]
+    "target": ["pkg/engine/capacity.go"]
   },
   "self-fence": {
     "source": "docs/internals/rfcs/rfc-8-engine.md#112-every-condition-in-rfc-0-10-has-its-engine-behaviour-here",
     "sourceLabel": "RFC 8 §11.2",
     "rfcs": ["rfc-0", "rfc-8", "rfc-10", "rfc-11"],
-    "target": ["pkg/block/engine/fence.go"]
+    "target": ["pkg/engine/fence.go"]
   },
   "loss-generation": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
@@ -497,7 +500,8 @@
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-4", "rfc-8"],
-    "code": ["pkg/block/remote"]
+    "code": [],
+    "target": ["pkg/remote"]
   },
   "shard": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",

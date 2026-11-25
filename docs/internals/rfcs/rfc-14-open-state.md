@@ -2872,7 +2872,8 @@ the close that left the file no persistent open has deleted its
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), since open state cannot
 import vfs; `LockReq` is open state's own, and the service copies `pkg/vfs`'s
 request's ranges into it whole. The import rule — only the filesystem service
-imports this package — is held by the architecture test
+imports this package, besides the composition root and the engine's wiring, which
+build open state ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)) — is held by the architecture test
 ([RFC 20](rfc-20-adapters.md)), as is the count of `*Table`'s exported methods.
 
 **The store views open state writes through.** `Deps.Records` is the metadata

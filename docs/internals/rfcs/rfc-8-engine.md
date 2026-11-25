@@ -1362,12 +1362,12 @@ pkg/workqueue/               the shared work scheduler (§6.1.1), used by the en
 **On `feat/storage-v2` the engine is `pkg/engine`**, as the journal is `pkg/journal`.
 While v1 existed they were `pkg/block/enginev2` and `pkg/block/journalv2`; the
 suffix was in Go package and import paths only, and metric, span and log names
-say `engine` and `journal` from the start.
+said `engine` and `journal` from the start.
 
-Besides the wiring, `offload/` is the one subpackage. It is the largest state machine, and its tests
-import only in-memory implementations of the offer, the carver, a flow and block metadata's views, each held to its
-component's conformance suite, so the import
-rule enforces its boundary.
+Besides the wiring and the test packages (`enginetest/`, `conformance/`), `offload/` is the one
+subpackage. It is the largest state machine, and its tests import only the carver, a pure function,
+and in-memory implementations of the offer, a flow, the transforms' material and block metadata's
+views, each held to its component's conformance suite, so the import rule enforces its boundary.
 
 ## 3. Policy
 
@@ -2335,7 +2335,7 @@ file for the scheduler ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)).
 | **Assemble** | folds the chunks into block plans with the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)), every chunk carried ([§6.5](#6.5%20The%20dedup%20oracle), V1); the pass closes no block before it reaches the target or the count cap except its last, so a pass of many small files never yields short blocks mid-pass. It also closes a block early, at a chunk boundary, when its commit's worst-case keys — counting the existing refs each new ref replaces, from a covering lookup of the run — would pass the key budget `K` ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). The pass hands the fold each chunk's worst-case keys, each zero ref's keys (counting the refs it replaces), and a commit's per-block keys (the intent's delete, the block record, GC's index keys) and per-file keys (the offload fence), which the fold charges once per block and once per file ([RFC 2 §5.1](rfc-2-carver.md#5.1%20Interface)) | plans: hashes and positions, no bytes | pure; cannot fail |
 | **Intent** | refuses a plan whose captured namespace is no longer the share's write namespace; mints the block's name and durably records its put intent ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)) | the intent | a refused plan's content is re-offered and carved again under the current namespace; a failed record is retried in place, and past the step bound the block's attempt is abandoned |
 | **Put** | streams the block from the offer through the syncer ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)) | one chunk per worker | the syncer retries it under the same name within its own bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)); once `Upload` returns a failure the engine puts that name no more: the attempt is abandoned, and its content re-offered under a new name after the pass's backoff |
-| **Commit** | under the guard, one metadata transaction per block ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)), except a block the assembler planned as one chunk alone over `K` ([RFC 2](rfc-2-carver.md) P2), whose commit is split into transactions that each stay within `K` | guard, briefly | conflict: retried; intent missing: abandoned and re-offered; over `K` because a commit landed since the plan: applies the block with the files that fit, reports only those, and re-offers the rest; stale epoch: the shard's pipeline stops. Adoption refused cannot occur while every chunk is carried; with deduplication, the rest applies and the adopting refs are re-offered |
+| **Commit** | under the guard, one metadata transaction per block ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)), always: the Carve state's key-budget end ([§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)) keeps every chunk's commit within `K`, so every block holds at least one chunk and is never split ([RFC 2](rfc-2-carver.md) P2) | guard, briefly | conflict: retried; intent missing: abandoned and re-offered; over `K` because a commit landed since the plan: applies the block with the files that fit, reports only those, and re-offers the rest, which the next pass carves again from a new covering lookup, so the key-budget end then applies to the refs that commit added and no chunk is re-offered over `K` forever; stale epoch: the shard's pipeline stops. Adoption refused cannot occur while every chunk is carried; with deduplication, the rest applies and the adopting refs are re-offered |
 | **Mark offloaded** | reports the block's committed extents through `report` ([§6.8](#6.8%20The%20callback%20returns%20only%20what%20committed)) | — | a `report` error leaves the block's extents unmarked and **Dirty**, and the re-offer finds every ref already committed; a crash here is recovered by a re-offer whose commit finds every ref already committed ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
 
 A pass is done when every block has been reported or abandoned. What was not
@@ -2417,7 +2417,7 @@ fault wrapper around its in-memory implementation, and again as production compo
 | O1, O2 every step | For each state, inject in turn: one failure, failures past the step bound, a hang, and a process crash. Assert that once the fault clears, every extent is reported offloaded and evictable within the maximum age plus the backoff cap; no extent is reported without its commit; and every orphaned object is named by an intent that is later abandoned. |
 | O3 unknown outcome | Lose a put's response. Assert the retry reuses the name and the bytes, and one object results. |
 | no second retry layer | Make the store fail every put past the syncer's bound. Assert `Upload` is called once per attempt, the engine never calls it again with the same name, and the content is re-offered under a new name after the backoff. An engine that re-puts after `Upload` returned doubles the store's retry budget. |
-| commit within `K` | Plan a block over a run whose current refs are 10⁴ 4 KiB refs, with `K` forced small. Assert the assembler closed the block early and no commit transaction exceeded `K` keys. Land a second pass's commit between plan and commit; assert the commit applies the files that fit and re-offers the rest, never exceeding `K`. Plan one chunk whose keys alone pass `K`: assert it goes alone in its block, its commit is split, and no transaction exceeds `K`. Plan a zero run over many existing refs: assert its keys count toward the pending block. |
+| commit within `K` | Plan a block over a run whose current refs are 10⁴ 4 KiB refs, with `K` forced small. Assert the assembler closed the block early and no commit transaction exceeded `K` keys. Land a second pass's commit between plan and commit; assert the commit applies the files that fit and re-offers the rest, never exceeding `K`. Offer a stretch over a region whose existing refs' keys, with one chunk's and a commit's per-block and per-file keys, would pass `K`: assert the Carve state ends the stretch there as real, every block's commit is one transaction, and none exceeds `K`; land a commit that adds refs there between plan and commit, and assert the re-offered chunk is carved again within `K`. Plan a zero run over many existing refs: assert its keys count toward the pending block. |
 | namespace captured | Start a re-home switch after a pass's capture and before its intent. Assert the plan is refused at intent, nothing is put under the new namespace with chunk IDs keyed by the old one, and the content is re-offered and reads back. Repeat under sustained writes to the share: assert the `Bind` returns once the passes captured before it are joined, and no pass captured after it carries the old namespace. |
 | O4 own intents | Abandon an attempt past its put bound with the primary still live. Assert its intent is abandoned and its object deleted without an epoch change. |
 | O6 poison file | One file's offered reader fails every read, among 10³ other dirty files, and it is written at 100 writes a second for 10 simulated minutes with the age tick running. Assert the others become offloaded at the unloaded rate, the failing file is backed off alone and reported by name, and its passes number at most 10 minutes ÷ `offload.retry_max` + 5. Register a source with `Deadline` 10 s whose `Run` fails every item: assert each item is dispatched once more with `Expired` set and counted. |
@@ -2593,6 +2593,11 @@ shared copies dead weight.
   ([RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)). The end is real at a hole, at the file's settled end or at a
   offloaded neighbour; it is artificial where the offer's `limit` or age cut the
   stretch short.
+- The Carve state **MUST** also end a stretch, as real, before any extent of at
+  most `Max` bytes in it would replace refs whose keys, with one chunk's own keys
+  and a commit's per-block and per-file keys, pass the key budget `K`
+  ([RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut), P2). It counts the replaced refs' keys from the covering lookup
+  the Assemble state already reads, so no chunk's commit passes `K` alone.
 - On an artificial end `Cut` returns `consumed`, the bytes it cut; the engine
   reports nothing past `consumed`, and the tail stays **Dirty** and is offered
   again from there. Once the tail's oldest byte reaches the maximum age
@@ -3598,11 +3603,33 @@ destroyed fails as **Lost**, reported as itself and never as corruption.
 
 **A commit never lands under destroyed material.** An attempt pins its
 material from Mint to Commit or Abandon ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)). The offload commit
-transaction **MUST** read the key record of each material the attempt pinned and
-refuse to commit if any is marked destroyed, so the store orders a destroy and the
-commit whichever comes first, a material lost outside the installation included; the
-engine then abandons the attempt and offers its extents again under current
-material, so no block commits whose body only destroyed material can read.
+transaction **MUST** guard-read ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)) the key record of each material
+the attempt pinned, and the material IDs it reads are the ones the block's
+`encodings` name, never a list the caller passes. It refuses to commit if any
+record is marked destroyed. The destroy writes that record, so a destroy that
+commits first refuses the commit, and a destroy ordered after the commit finds
+the block committed and clears its extents' offloaded bits as above. The engine
+then abandons a refused attempt and offers its extents again under current
+material.
+
+> decision: the commit refuses only on a key record marked destroyed. A loss no
+> operator has declared yet marks no record, and a master key reported destroyed
+> marks none of the data keys it wraps, so a commit under either still lands;
+> the notice's `Unmark` and the reseed below then keep its extents held. Mark
+> the wrapped data keys' records when a master key is reported destroyed if a
+> block is found committed under one.
+
+**A destroy racing Mark, or a crash, never leaves an extent marked.** The engine
+**MUST NOT** mark an attempt's extents offloaded once any material the attempt
+pinned has been reported destroyed: Mark checks that under the same lock the
+notice's `Unmark` takes, and leaves the extents **Dirty**. The reseed
+([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) **MUST** clear the offloaded bit of each extent whose block's
+`encodings` name material reported destroyed, before that file can be evicted,
+so a crash between a destroy and its `Unmark` loses nothing. A pass whose pin
+finds the share's current material destroyed **MUST** refuse at Intent, before
+any put, so it never puts and abandons the same content on every pass; the
+content stays **Dirty** until new material is current, and the provider's
+`material_destroyed` names the namespace meanwhile ([RFC 5 Appendix B.4](rfc-5-transforms.md#B.4%20Losing%20a%20key%20loses%20the%20data)).
 
 Locks, deny modes, delegations, open handles and snapshots **MUST NOT** make an
 extent ineligible for eviction ([RFC 14 §9.3](rfc-14-open-state.md#9.3%20Locks%20do%20not%20pin%20bytes), [RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). An operator's retention
@@ -4145,7 +4172,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) clone resumed at a full limit | Crash a clone of a 1 GiB dirty extent after its copies synced and before phase 1, on a share at its journal limit with the remote down; restart. Assert start re-makes no copy the journal holds, reserves nothing for them, and serves every other file; an open of the destination answers `ErrDelay` with `DelayCapacity`, and an SMB write into the source extent is held as capacity, never answered `STATUS_FILE_LOCK_CONFLICT`. Bring the remote back: assert the clone finishes and both files serve. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) refusals | Clone between shares of two namespaces: assert `ErrCross` (`CrossNamespace`) and nothing changed. `CLONE` one byte over `clone_max_len`: assert `ErrInvalid`. `COPY` 1 GiB while an NFSv3 writer writes the source: assert each source write is held and answered within one chunk's time, measured at the client, with no `NFS3ERR_JUKEBOX`, and that a write whose deadline is shorter than the chunk gets `ErrDelay`, and a deadline mid-copy answers a short count that a continuing copy completes. |
 | [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here) retry later | Fill the journal with dirty bytes, the remote reachable: assert a write returns `ErrDelay`, never `ErrNoSpace`, and succeeds once offload and repack free space. Repeat with the remote unreachable past the caller's deadline: assert `ErrDelay` throughout, never `ErrNoSpace`, and success once it returns. Fill one share to its journal limit: assert `ErrDelay`, not `ErrNoSpace`. Make the store refuse puts with a quota error (storage full, bucket quota exceeded): assert `ErrNoSpace` at once, and that the store error reached the engine as `ErrDenied`, not `ErrInvalid`. Make a proxy refuse block puts for their size (`413`), then make the store refuse the credential (`403`): assert `ErrNoSpace` at once for each, and success once the limit is lifted or the credential restored. An engine reading a bare healthy flag answers the outage and the full store alike. |
-| [§10.4](#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable) destroyed material | Destroy a data key while the journal holds some chunks its blocks cover. Assert those extents lose their offloaded bit, are not evicted, are offloaded again under current material and read back; a remote-only chunk it covered fails as **Lost**, not corrupt. Mark a pinned material's key record destroyed between an attempt's pin and its Commit, as a loss outside the installation does: assert the commit transaction refuses, the attempt is abandoned, no block commits under that material, and its extents are offered again under current material. |
+| [§10.4](#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable) destroyed material | Destroy a data key while the journal holds some chunks its blocks cover. Assert those extents lose their offloaded bit, are not evicted, are offloaded again under current material and read back; a remote-only chunk it covered fails as **Lost**, not corrupt. Mark a pinned material's key record destroyed between an attempt's pin and its Commit, as an operator's declared loss does: assert the commit transaction refuses, the attempt is abandoned, no block commits under that material, and its extents are offered again under current material. Destroy it between an attempt's Commit and its Mark: assert its extents end unmarked. Crash after a destroy and before its `Unmark`: assert the reseed clears the bits before any of those extents is evicted. Destroy the current material with no replacement: assert the next pass refuses at Intent, puts nothing and leaves the content dirty and held. |
 
 ### 15.2 Group B — wedging
 
@@ -4224,7 +4251,7 @@ change and each real service daily.
 
 | # | Measures | Setup | Target |
 | --- | --- | --- | --- |
-| B1 | offload throughput | sustained writes of non-deduplicating data larger than the journal | offloaded MiB/s ≥ 80% of raw puts of the same block size on the same store at the same pool sizes, measured at the same time |
+| B1 | offload throughput | sustained writes of non-deduplicating data larger than the journal | offloaded MiB/s ≥ 80% of raw puts of the same block size on the same store at the same pool sizes, measured in runs interleaved with it |
 | B2 | small files | create, write and close 10^4 and 10^5 files of 64 KiB | files/s within 20% across directory sizes; puts per file ≤ 64 KiB / block target, rounded up |
 | B3 | pacing | B1 below and above the soft threshold ([§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)) | p99 submission latency ≤ 50 ms, max ≤ 500 ms, offloaded throughput within 10% of B1 |
 | B4 | cold reads | random 4 KiB and sequential reads of evicted content | random: one request per read, p99 ≤ 2 store round trips; sequential: bytes fetched per byte read ≤ 1.1 |

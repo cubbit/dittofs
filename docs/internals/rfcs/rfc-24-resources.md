@@ -1274,6 +1274,15 @@ backup's re-encoding, repack's checksums, GC's verification:
   ([RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator)), which serves a read, a client message's signing and
   encryption — takes no token.
 
+> decision: a read-ahead's decode takes no token, as a demand read's does not,
+> though it is speculative and a random read can discard it
+> ([RFC 8 §7.4](rfc-8-engine.md#7.4%20The%20speculator)). The ceiling: with compression or
+> encryption on, a full fetcher pool of read-aheads can decode on every core and
+> take the quarter kept for clients' requests; the fetcher pool and the
+> speculation budget bound its slots and bytes, not its CPU. Move a read-ahead's
+> decode under the token when §8's M5 shows foreground p99 latency rising under
+> read-ahead with tokens never waited for.
+
 So offload's 128 upload workers, each encoding a chunk at once on an
 eight-core node, cannot take every core from clients' requests. The token is not
 a second limiter on transfers in [RFC 3 §2.1](rfc-3-syncer.md#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control)'s
@@ -1339,7 +1348,11 @@ adds a second one.
 
 [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)
 gives the syncer's peak memory from its two worker counts, and the staging
-budget from the fetcher's per-flow cap. The transfers pool holds both:
+budget from the fetcher's per-flow cap. The transfers pool holds both. The two
+rules below apply once the node passes the syncer the pool's size
+([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)); until then
+neither count is reduced and none is refused
+([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)):
 
 - when `upload_workers` and `fetch_workers` are unset, each defaults to
   [RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)'s
