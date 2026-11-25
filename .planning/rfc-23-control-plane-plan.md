@@ -1310,7 +1310,7 @@ and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 - `node.New`: the node-level services of RFC 23 §2.1's table the journal-only engine uses (the
   metadata store, the journals, open state, the engine, identity and `*vfs.Filesystem`), each built
   empty from its own `Deps` (D11); the syncer, the remote clients and GC are not composed (§6.1).
-- The engine's `CloneHold` adapter as `openstate.EngineHolds`, moved unchanged from
+- The engine's `CloneHold` adapter as `content.EngineHolds` (in `internal/node/content`), moved unchanged from
   `enginetest.Holds`, which then calls it. No remote registry and no adapter factory: nothing in
   the journal-only engine calls a remote client, and the adapters are RFC 20's plan's epic 7 (D12).
 - RFC 8's root duties: `addShare` refuses a share whose namespace names no remote block store
