@@ -169,12 +169,16 @@ lifetime count as the source of health, to E5.
   and applies `Hold` and `Link` while the store's call is open: on a put's first body read, on a
   get's first body read, after a probe's call. A `decision:` marker at the site says so. It
   needs the record to count a get in flight until its body is closed, which is open with the
-  RFC 4 plan's epic 2 (§9). Prior art: none found.
-- **D3, each effect carries what it waits on.** `Link` takes its clock, `Hold` its release
-  channel, so the wrapper's constructor, which is the RFC 4 plan's, keeps its signature. The
-  clock is a one-method `Clock` the wrapper declares, `After(d) <-chan struct{}`, which
-  `pkg/sim`'s `TestClock` satisfies; E9's benchmarks pass the real clock. Prior art: `pkg/sim`'s
-  `Waiter`, the same one method.
+  RFC 4 plan's epic 2 (§9). Not chosen: a second record kept by the wrapper from a call's
+  entry, which would count a held call before it reaches the store, but which RFC 3 §1.4 does
+  not name and RFC 4's conformance suite does not hold. Prior art: none found.
+- **D3, each effect carries what it waits on.** `Link` takes its clock and `Hold` a `Gate`, so
+  the wrapper's constructor, which is the RFC 4 plan's, keeps its signature. The clock is a
+  one-method `Clock` the wrapper declares, `After(d) <-chan struct{}`, which `pkg/sim`'s
+  `TestClock` satisfies; E9's benchmarks pass the real clock. A `Gate` reports when *n* calls
+  wait on it, so a test that holds every call of a full pool learns that the pool is full from
+  an event, not a sleep. Prior art: `pkg/sim`'s `Waiter`, the same one method, and
+  `TestClock.Armed`, the same wait-for-the-waiter shape.
 - **D4, the suite's frame is settled now, before its rows.** E3 and E6 on track A, E4 on track
   B, and RFC 8 offload plan epic 21 write against it; four authors growing it by need would race
   on its shape. `Run(t, Opener)` opens an `Env` per row. `Env` carries the syncer, the store it
@@ -285,7 +289,11 @@ with it.
   ```go
   type Clock interface{ After(d time.Duration) <-chan struct{} }
   func Flip(off int64) Effect                               // a get covering block offset off reads it with its low bit flipped
-  func Hold(release <-chan struct{}) Effect                 // the call waits, inside the store's call, until release closes or its ctx ends
+  func Hold(g *Gate) Effect                                 // the call waits, inside the store's call, until g is released or its ctx ends
+  type Gate struct{ /* ... */ }
+  func NewGate() *Gate
+  func (g *Gate) Reached(n int) <-chan struct{} // closed once n calls are waiting on g
+  func (g *Gate) Release()                      // lets every waiting and later call through
   func Link(c Clock, perCall, perByte time.Duration) Effect // waits perCall once, then perByte for each body byte, on c
   ```
 
@@ -297,7 +305,9 @@ with it.
   - A get under `Flip` with `Count: 1` returns one flipped byte at `off` and the stored bytes on
     the next get; with `Count: 0`, on every get. A get whose range does not cover `off` is
     neither changed nor counted.
-  - A held put, get or probe returns only after `release` closes, or with `ctx.Err()` once its
+  - `Gate.Reached(n)` closes once *n* calls wait on the gate, so a test waits on that event, never
+    on time.
+  - A held put, get or probe returns only after `Release`, or with `ctx.Err()` once its
     context ends; nothing waits on the real clock.
   - Under `Link` on a `TestClock`, a put of *n* bytes returns only once the clock has moved
     `perCall + n*perByte`.
