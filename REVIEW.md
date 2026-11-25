@@ -13,8 +13,8 @@ base branch. A passage the PR itself edits is under review, not authority for
 it. Cite the file and line:
 
 - **`docs/internals/rfcs/*.md`**: the RFCs are the design authority. When a
-  PR changes behavior or a ruling, the RFC sections it touches are in scope,
-  even if the PR does not edit them.
+  PR changes behavior or a ruling, an RFC section it makes false is in
+  scope, even if the PR does not edit it.
 - **`.planning/*.md`**: the implementation plans and epic breakdowns, and
   once a plan's issues exist, those issues. "The plan says X" names the file
   and line; a plan in your head is not a plan.
@@ -24,11 +24,15 @@ it. Cite the file and line:
   A checklist that guides a review, such as `pr-commenting`'s "What to
   check", is not a rule. `copilot.instructions.md` guides Copilot and is not
   a source.
+- **The protocol specifications** the code implements (RFC 1813, RFC 7530,
+  RFC 8881, RFC 7862, MS-SMB2, MS-FSCC and the like): a reply that differs
+  from the section it implements is a contradiction. Quote the section.
 - **The code** on the PR's base branch. For a stacked PR, that is the branch
   below it (`pr-opening.instructions.md`, "Stack or not").
 
-If two of these disagree, that disagreement is the finding: cite both. The
-fix is the smallest edit (§6), not a preference between them.
+If the PR makes two of these disagree, that disagreement is the finding:
+cite both. The fix is the smallest edit (§6), not a preference between them.
+A disagreement already on the base is a follow-up issue (§4).
 
 ## 2. What may block
 
@@ -53,7 +57,9 @@ Only `issue (blocking)` blocks. Other tags in use, such as `must:`,
 
 Mark how you know, as `pr-commenting.instructions.md` asks: "ran it", "read
 the code" or "I think". A point that rests on "I think" or "not measured" is
-a question, not a blocking point, until someone runs it.
+a question, not a blocking point, until someone runs it. An agent review
+names its model in the review body. Its blocking points are judged like
+anyone's, by this section.
 
 Everything else is a **suggestion**: wording, structure, a nicer shape, a
 test or metric that no rule in §1 requires, a subtask someone would split
@@ -62,6 +68,10 @@ decides: apply it in the PR, or leave it. A suggestion the author leaves
 and the reviewer still wants becomes a follow-up issue (§4). A suggestion
 never blocks a merge.
 
+A file the PR only moves or renames is reviewed as a move, not as new text.
+Check with `git diff -M --color-moved` that its content did not change, and
+that every reference to the old path follows it.
+
 ## 3. Rounds: review the delta, not the PR again
 
 - An approval is a checkpoint. The approved SHA is the commit your Approve
@@ -69,28 +79,36 @@ never blocks a merge.
   `git diff <approved-sha>..<pr-head>`. If the PR was rebased since, use
   `git range-diff <approved-base>..<approved-sha> <base>..<pr-head>`, where
   `<approved-base>` is `git merge-base <base> <approved-sha>`. The base's own
-  commits then stay out of the delta. A point on text outside the delta is a
-  follow-up issue, even when it is a contradiction. Only a break (§2.2) found
-  outside the delta may block.
+  commits then stay out of the delta. Outside the delta, two things may
+  still block: a break (§2.2), and a contradiction the delta creates,
+  wherever its other side lives. Any other point outside the delta is a
+  follow-up issue.
+- The branch protection requires an approval of the last push and resolved
+  conversations. A push after an approval needs a new approval, and an open
+  thread holds the merge, even with auto-merge armed. The delta round
+  therefore happens before the merge, not after it.
 - If you approved text and now find a break in it, say so in those words:
   "my approval at `<sha>` missed this". The break blocks; nothing else
   reopens.
 - When no blocking point is open, old or new, and none of your questions is
   open, the review is done: approve. If a question is still open, comment
   instead, as `pr-commenting.instructions.md` says under "Review body".
-- Cap: two reviewed heads per reviewer before that reviewer approves or the
-  PR goes to standup. A third round needs a standup decision, not another
-  pass.
+- Cap: two reviewed heads per reviewer. After that, the author and that
+  reviewer settle what is left in a quick live review, as
+  `pr-commenting.instructions.md` proposes. What the live review does not
+  settle goes to standup.
 
 ## 4. Reviews never add scope to an open PR
 
-A requirement, test, metric or subtask raised in review, even a good one, is
+A requirement, test, metric or subtask raised in review, even a good one,
 cannot be required of the PR under review unless a rule in §1 already
-requires it. It becomes a follow-up issue labelled `deferred` and with the
-RFC's or epic's label (for example `rfc-20-epic-6`), and standup prioritizes
-it like all other work. If the author folds such a point in, the PR reports
-it on its own line. A plan's estimate stays as merged, and only standup
-moves it.
+requires it. It becomes a follow-up issue labelled `follow-up` and with the
+RFC's or epic's label (for example `rfc-20-epic-6`). The reviewer who raised
+the point files it before approving and links it in the thread. An agent
+reviewer drafts it for the person who runs it, who files it. Standup
+prioritizes it like all other work. If the author folds such a point in, the
+PR reports it on its own line. A plan's estimate stays as merged, and only
+standup moves it.
 
 If the new point is big enough to change the plan, it is not review
 feedback: give it its own planning PR.
@@ -114,8 +132,12 @@ redesign. After an approval, §3 limits it to the delta.
 Authors: when a PR writes a new ruling into prose, update in the same commit
 every sibling that cites the affected passage, such as the epics, the
 program plan's ledger rows and a replaced rule's citations. This saves the
-next round; a reviewer does not block on a sibling the PR does not touch.
-That drift is a follow-up issue.
+next round. A reviewer blocks on a sibling the PR makes false, edited or
+not. Wording that was already stale on the base is a follow-up issue.
+
+An author's fix answers the finding and adds no new claims. Edit only what
+the thread asks, and cite a source instead of restating it. A new claim goes
+to a new PR, or is reviewed as new scope.
 
 ## 7. Follow-ups need an owner
 

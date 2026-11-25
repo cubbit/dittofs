@@ -52,7 +52,7 @@ Rules:
 - Prefer GitHub `suggestion` blocks when the fix is local to the commented lines, so the author can apply it in one click.
 - Link the RFC, spec section or doc that backs a point instead of re-explaining it.
 - Do not repeat the same comment on every occurrence: comment once and say "same in X and Y".
-- If a point needs more than a short paragraph to argue, or the thread goes past two rounds, propose a quick live review instead of writing more.
+- If a point needs more than a short paragraph to argue, or the thread goes past two rounds, propose a quick live review instead of writing more. [`REVIEW.md`](../../REVIEW.md) §3 caps the rounds.
 
 ### Example
 
