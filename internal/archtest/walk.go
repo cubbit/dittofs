@@ -57,7 +57,7 @@ func Walk(dir string, tests bool) ([]Graph, error) {
 	for _, target := range targets {
 		goos, goarch := target[0], target[1]
 
-		args := []string{"list", "-tags=", "-deps", "-f", `{{.ImportPath}}|{{.DepOnly}}|{{join .Imports " "}}`}
+		args := []string{"list", "-tags=", "-deps", "-f", `{{.ImportPath}}|{{.DepOnly}}|{{join .Imports ","}}`}
 		if tests {
 			args = append(args, "-test")
 		}
@@ -96,8 +96,11 @@ func Walk(dir string, tests bool) ([]Graph, error) {
 				g.Roots = append(g.Roots, name)
 			}
 
-			for _, imp := range strings.Fields(fields[2]) {
-				g.Imports[name] = append(g.Imports[name], variant(imp))
+			// A test variant's name holds a space, so imports are joined by commas.
+			for imp := range strings.SplitSeq(fields[2], ",") {
+				if imp != "" {
+					g.Imports[name] = append(g.Imports[name], variant(imp))
+				}
 			}
 		}
 
