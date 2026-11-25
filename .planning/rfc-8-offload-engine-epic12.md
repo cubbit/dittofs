@@ -283,6 +283,13 @@ catalogue makes it pass. The behaviour each row checks is that epic's to build.
   `Bind` refuses it and keeps the share's earlier settings. The RFC row's wording is epic 16's to
   amend (§9). Prior art: none found.
 
+- **D8, the fixture also carries controls another plan's rows need.** RFC 5's epic 11 writes its
+  engine rows on this fixture after S7, and asks for a restart onto fresh key material, a wrapped
+  provider, read-ahead off and the codec's recorded outputs (T12.1). They are listed here so the
+  epic building each component builds its control with it, rather than RFC 5's rows growing a
+  second fixture. Each refuses by name until then (D1), and each takes its final signature from
+  the epic that builds it (D2). Prior art: none found.
+
 ## 5. Target tree
 
 On `feat/storage-v2`.
@@ -336,6 +343,18 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
   the options and before `journal.Init`, and `refuse(what string)` is the one place the refusal text
   is formed, which every later control calls (D1). D1's `decision:` at `refuse`. Consumed by T12.2
   to T12.8's rows; made real by epics 15 (carver, chain), 16 (syncer) and 19 (`Refs`).
+
+  Four controls RFC 5's plan asks for its engine rows (its epic 11), proposed (D2) and refusing by
+  name until the epic named builds each; no row of this epic calls them, so each lands with the
+  epic that builds it or with RFC 5's first row, whichever comes first (D8):
+  - `RestartWithFreshKeys()`, a restart over the same metadata store, journal directory and remote
+    store onto a new `keystest` in-memory provider; epic 15, with `WithChain`;
+  - `WrapKeys(wrap)`, the chain's provider wrapped by a fault wrapper (kind 3) the test supplies,
+    its parameter typed in RFC 5's `keys.Provider` once that contract exists; epic 15;
+  - `WithoutReadahead() Option`, read-ahead off for every share the fixture binds, since
+    `ShareSettings` refuses a zero `ReadaheadBlocks` (epic 11's T11.3); epic 17, with read-ahead;
+  - `Recorder()`, what the codec under the syncer option recorded (RFC 4's outputs, such as its
+    verification failures), read after the fact; epic 16, with `WithSyncer`.
 - **Acceptance criteria:**
   - A fixture built with no new option composes as today: every first-part row and entry grades as
     it did.
