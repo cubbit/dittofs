@@ -259,10 +259,12 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
    - `pkg/carver` and `pkg/carver/assembler` may import the standard library, BLAKE3 and
      `pkg/metadata/entity`, the value types RFC 16 §2 keeps in one package, which is a contract
      (D9). Its own imports, BLAKE3 and `github.com/google/uuid`, come with it.
-   - `pkg/carver/section` may also import `pkg/settings`. That package holds RFC 13's contract
-     and its implementation together, and imports `pkg/metrics` and the Prometheus client, so
-     it is a named exception until RFC 13's contract is split out. `pkg/carver` never imports
-     the section.
+   - `pkg/carver/section` may also import `pkg/carver`, and nothing else. It never imports
+     `pkg/settings`, `pkg/metrics` or `pkg/health`: each holds a contract and its implementation
+     together, so under amended RFC 0 §1.2 it counts as an implementation, and only the two
+     composers import it (the split is tracked in #5775). The section states `Target`'s row as
+     plain values, and the node's content wiring registers it and hands the carver each
+     namespace's `Target` as a plain value. `pkg/carver` never imports the section.
    - The node's content wiring (`internal/node/content`) imports the carver, as RFC 0 §1.2 lets
      a composer do. The carver never imports it.
 
@@ -401,7 +403,7 @@ pkg/carver/                    E1 → E4: the settings value, Cut, Chunk, chunk 
 pkg/carver/imports_test.go     E1: RFC 2 §1.1's import rule over the tree
 pkg/carver/internal/chunker/   E3: gear tables, masks, the boundary search
 pkg/carver/internal/carvetest/ E2: reference chunker, seeded inputs, golden script, corpus fetch
-pkg/carver/section/            E3: Target's settings section, the one importer of pkg/settings
+pkg/carver/section/            E3: Target's settings row as plain values, no pkg/settings
 pkg/carver/assembler/          E1 → E5: the fold of RFC 2 §5
 pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
 ```
@@ -557,9 +559,10 @@ the RFC 8 offload plan's epic 21 adds the section to the node's table (§6 point
 - `Target`'s settings section in `pkg/carver/section`, namespace-scoped and bound, its validator
   calling the check of a `Target` alone, since a settings validator holds no key material (the
   keys are RFC 5's key table), as the RFC 3 plan does for the syncer's in
-  `pkg/syncer/section`. The sibling imports `pkg/settings`, the one exception rule 7 names until
-  RFC 13's contract is split out; `pkg/carver` stays the standard library, BLAKE3 and `entity`
-  (RFC 2 §1.1, rule 7). Once the node's table
+  `pkg/syncer/section`. The section states the row as plain values and imports only `pkg/carver`;
+  the node's content wiring, a composer, registers it in `pkg/settings` and passes each
+  namespace's `Target` to the carver as a plain value; `pkg/carver` stays the standard library,
+  BLAKE3 and `entity` (RFC 2 §1.1, rule 7). Once the node's table
   holds it, a bound key is recorded at the namespace's creation by `settings.Table.Bound`
   (`pkg/settings/bound.go:34`).
 - The unkeyed and keyed gear tables, with §6's `ponytail:` at the keyed one.

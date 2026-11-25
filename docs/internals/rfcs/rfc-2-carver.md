@@ -980,7 +980,7 @@ boundary, the most it can overshoot by is the chunk that crossed the line. At th
 default settings the cap is never the limit on full-size chunks — a 1,024-chunk
 block of `Min`-sized chunks is 64 MiB — so it bites only on runs of short chunks.
 
-**Why the caller ends the stretch, and no floor on `K` does.** A commit replaces
+**Why the caller ends the stretch, and no floor on `K` sized from `Max` does.** A commit replaces
 every ref its chunks overlap ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)). A ref can be one byte long: a stretch ends
 at a hole, at an offloaded neighbour or at the age ceiling ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)), and widening
 is optional, so without it each such piece stays its own ref ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)'s ceiling
@@ -992,7 +992,8 @@ so a stretch in which no extent of at most `Max` bytes replaces refs past the
 budget yields no chunk that passes it. The caller knows those keys, because it
 counts them for P2's early close ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)). Every stretch makes progress: live refs
 do not overlap, so one byte lies under at most one ref, and a one-byte chunk's
-commit writes a fixed number of keys, whatever the file. The cost is a short
+commit writes a fixed number of keys, whatever the file. [RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)'s floor
+refuses to open a store whose `K` cannot hold that commit, so it always fits. The cost is a short
 chunk, and chunks cut from a new start after it until they rejoin the earlier ones
 ([§3.5](#3.5%20What%20%22deterministic%22%20covers)), only where refs are that dense.
 
