@@ -133,7 +133,8 @@ func (w *wired) shareIDs(t *testing.T) []string {
 }
 
 // namespaceOn writes a namespace on store through the store, as the
-// installation's namespaces are seeded until the API writes them.
+// installation's namespaces are seeded while the node's settings table
+// declares no namespace section, and the API refuses their create.
 func namespaceOn(t *testing.T, h *nodetest.Harness, store [16]byte) entity.NamespaceID {
 	t.Helper()
 	ns := entity.Namespace{ID: entity.NewNamespaceID(), Store: store}
