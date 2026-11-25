@@ -135,7 +135,7 @@ cited by number and title and not copied, as #5795 amends rules 3 and 7.
 | rule 6, known failures shrink | none | `unit` and `integration` keep no `known.yaml`; each test lands green with the subtask that makes it pass |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | nothing from `develop`'s `pkg/block/remote/s3`; `pkg/remote/s3` imports `pkg/remote` and `aws-sdk-go-v2` only, its clock and random source unexported (D9) and its recorder its own (D10); its tests import `s3fault`, `remotetest`, `pkg/sim` and `internal/prof`. E1's import walk covers the files without change |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T5.2 to T5.5 | LocalStack 4.13.1 for what the service enforces, stores and reports; every bucket setting applied for real on a `FreshBucket`; a measured service's behaviour by E3's compositions; a setting LocalStack cannot hold goes to E9, never pretended. `Health`'s read-only row tests what the store does with a refused put, not a property of the service, so a scripted refusal serves (D12) |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T5.1 to T5.4 | RFC 4's `decision:` notes at their code sites: versioning refused on every namespace store (§8 item 4) at the versioning judgement (T5.1); conditional put measured and never sent (§4.3) and the fixed re-list bound (C.4) at step 4 (T5.3); the open calling the service outside the syncer (§4.15) at the check's entry (T5.4). The plan's own: `immutable` refused naming its caller, at `Open` (T5.4). This epic's: D5's `decision:` on a disabled rule (T5.1), D6's `ponytail:` on the largest-block proof (T5.2), D10's `decision:` on the gauge's labels (T5.4) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T5.1 to T5.4 | RFC 4's `decision:` notes at their code sites: versioning refused on every namespace store (§8 item 4) at the versioning judgement (T5.1); conditional put measured and never sent (§4.3) and the fixed re-list bound (C.4) at step 4 (T5.3); the open calling the service outside the syncer (§4.15) at the check's entry (T5.4). The plan's own: `immutable` refused naming its caller, at `Open` (T5.4). This epic's: D5's `decision:` on a disabled rule (T5.1) and D6's `ponytail:` on the largest-block proof (T5.2) |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the break it catches; no test asserts a fault's own answer, only the check's verdict on it |
 | rule 11, a symbol is exported only if the RFC's interface uses it | T5.4 | the exported additions are D2's: `Claim` and `Open`'s second result, `ClientConfig.MaxBlockSize`, and the recorder's `Capability` method, which E7's content wiring implements. Features, judgements, steps, the clock, the random source and the refusal stay unexported |
 | rule 12, each subtask creates only what it declares | all | each file lands with its first caller, named in its subtask; the recorder gains `Capability` with the open that calls it |
@@ -348,9 +348,9 @@ row's work is shared, the other part's owner is named.
 - **D10. `remote_capability` through the recorder `pkg/remote/s3` declares, labelled per
   namespace.** The recorder gains `Capability(prefix, feature, present)`, which `Open` calls for
   each of the twelve features after every check, a refused one included, unverified ones at 0. The
-  lifecycle and tiering verdicts depend on the prefix, so the gauge carries the namespace label RFC
-  25 §2.4 names beside `store`, which E7's content wiring derives from the prefix; a `decision:`
-  marker at the call says why. A probe records as E4's calls do, with `op` `health`, once: `Health`
+  lifecycle and tiering verdicts depend on the prefix, so the gauge carries `namespace` beside
+  `store`, as RFC 4 §4.12, amended by #5795, says and RFC 25 §2.4 allows; E7's content wiring maps
+  the prefix `Capability` is given to the namespace label. A probe records as E4's calls do, with `op` `health`, once: `Health`
   calls the unexported put and get paths, not `PutControl` and `GetControl`, which record their own
   `op`. Prior art: the RFC 5 plan's D2 (#5532), the same recorder shape.
 - **D11. The open's log.** A refused open logs one `Error` line naming every missing feature (R31);
@@ -504,7 +504,7 @@ pkg/remote/s3/
   26's copier and sending no request, behind the plan's `decision:`, then calling the check and
   returning the store, the `Claim` and the error; `ClientConfig.MaxBlockSize` with `NewClient`'s
   refusal and `Put`'s size bound (D6); the recorder's `Capability`, called for every feature after
-  every check with D10's `decision:`; the `Error` and `Info` lines of D11. E4's T4.8 switched from
+  every check; the `Error` and `Info` lines of D11. E4's T4.8 switched from
   `setChoice` to the checked `Open`. Consumed by T5.5, E7 (the refusal and the recorder), RFC 8
   offload plan epic 21 (`Open`, `Claim`) and E9.
 - **Acceptance criteria:**
@@ -547,7 +547,7 @@ pkg/remote/s3/
   values, R30); a test `slog` handler holding one `Error` naming every missing feature and, on
   success, one `Info` with a `ONEZONE_IA` client's class and its one-zone domain (R31, R33).
   Doubles: E3's transport (kind 3); the recorder and the handler are output sinks.
-- **Rules:** rule 3: the secret grep; rule 9: §4.15's, the `immutable` and D10's `decision:`
+- **Rules:** rule 3: the secret grep; rule 9: §4.15's and the `immutable` `decision:`
   notes; rule 11: only D2's additions are exported.
 
 ### T5.5 `Health`
