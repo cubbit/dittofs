@@ -41,7 +41,7 @@ function of bytes and settings, so every check is a byte slice and an expected a
 
 - `carve.CheckTarget` and `carve.NewSettings` refuse every invalid setting with
   `ErrInvalidSettings` and return nothing usable, and build the unkeyed or keyed gear table and
-  the two masks from what they accept, each checked against E2's committed vectors (T3.1);
+  the test's two bit counts from what they accept, each checked against E2's committed vectors (T3.1);
 - `chunker.NextBoundary` reproduces every golden boundary of E2, at every profile and under both
   tables, allocates nothing, and has its K1 benchmark function (T3.2);
 - `pkg/carver/section` states `Target`'s row as plain values, namespace-scoped and bound, and
@@ -54,8 +54,8 @@ function of bytes and settings, so every check is a byte slice and an expected a
 
 ### 1.1 In scope
 
-`CheckTarget` and `NewSettings`' bodies; the sizes, masks and gear tables in the settings value,
-and the start-up check of the masks; the internal chunker and its boundary search;
+`CheckTarget` and `NewSettings`' bodies; the sizes, bit counts and gear tables in the settings value;
+the internal chunker and its boundary search;
 `pkg/carver/section`; the chunker's rows of RFC 2 §9 and §10; two fuzz targets; one allocation
 count; the K1 benchmark function; the import and structure rows of `internal/chunker` and
 `section`.
@@ -144,11 +144,11 @@ which.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R7 | The mask is computed from `Target`: for a `Target` of 2^*t*, the test keeps the top *t* + 1 bits before `Target` and the top *t* − 3 from it on, and the settings value asserts at construction that its masks agree with its `Target` | MUST, SHOULD (adopted) | RFC 2 §3.2 ("Whatever decides a boundary MUST be derived from `Target`"; "**SHOULD** assert the two agree when it starts up"), Appendix A.1 | T3.1 |
+| R7 | What decides a boundary is computed from `Target`, in one place: for a `Target` of 2^*t*, the test reads the top *t* + 1 bits before `Target` and the top *t* − 3 from it on, and no mask or bit count is written down anywhere else | MUST | RFC 2 §3.2 ("Whatever decides a boundary MUST be derived from `Target`"), Appendix A.1 | T3.1 |
 | R8 | The unkeyed gear table is 256 little-endian 64-bit words, the first 2,048 bytes of BLAKE3's extendable output in key-derivation mode, context `dittofs gear table v1`, over the empty input | MUST | RFC 2 §3.2 (unkeyed table) | T3.1 |
 | R9 | The keyed table is the first 2,048 bytes of BLAKE3's extendable output in keyed mode under the namespace's chunking key, over `dittofs chunking key v1`, built by the constructor from the key, so no table and key can be passed apart; a namespace that does not encrypt cuts under the unkeyed table | MUST | RFC 2 §3.2 (keyed table), §6 (Construction), §8 C10 (the cutter's half); RFC 2 plan, D4 | T3.1 |
 | R10 | The unkeyed table and the keyed table under a fixed key equal committed bytes an independent implementation computed from §3.2's text | test row | RFC 2 §9 (derivation golden); E2's T2.1 (`Vectors`) | T3.1 |
-| R11 | The mask's bit count tracks `Target` at every profile, and no one mask serves two `Target`s | test row | RFC 2 §9 (mask comes from target), Appendix A.1 | T3.1 |
+| R11 | The test's bit counts track `Target` at every profile, and no one pair serves two `Target`s | test row | RFC 2 §9 (mask comes from target), Appendix A.1 | T3.1 |
 | R12 | No comment or document of the chunker claims boundaries are hidden: without encryption they are public, and a keyed table hides which file a run of lengths belongs to only from a bucket reader who can cause no write into the namespace and knows none of its stored content | MUST NOT | RFC 2 §6 ("**MUST NOT** claim otherwise"; "**MUST NOT** be described … as hiding which files a namespace holds") | T3.1 |
 
 **The boundary search**
@@ -211,10 +211,10 @@ sizes (E4, through `Cut`); §11's default (E6).
 
 ## 4. Decisions this epic takes
 
-- **D1, `params.New` derives the sizes and masks from `Target`; `carve` derives the gear
-  table.** The value E1 sealed gains the table, behind a pointer the value shares, and the two
-  masks; `params.New(target int, gear *[256]uint64) Settings` computes `Min`, `Max` and the masks
-  by integer arithmetic, and `params.Gear` and `params.Masks` read them back. BLAKE3 stays in
+- **D1, `params.New` derives the sizes and bit counts from `Target`; `carve` derives the gear
+  table.** The value E1 sealed gains the table, behind a pointer the value shares, and the two bit
+  counts; `params.New(target int, gear *[256]uint64) Settings` computes `Min`, `Max`, *t* + 1 and
+  *t* − 3 by integer arithmetic, and `params.Gear` and `params.Bits` read them back. BLAKE3 stays in
   `carve`, whose row admits it, and `params` keeps importing nothing (E1's D1), so the chunker's
   tests build a value over any table, hand-built or fuzzed, with no hash. `NewSettings` checks the
   `Target` and the keys first, so `params.New` never sees a refused one; a `decision:` at
@@ -222,15 +222,16 @@ sizes (E4, through `Cut`); §11's default (E6).
   over a table no key produced, which is the seal's ceiling E1's D1 names. This narrows E1's D1,
   which put the whole derivation in `carve`: the arithmetic moves, the hashing does not. Prior
   art: none found.
-- **D2, the masks are the top *m* bits, and their start-up check is a function.** A mask of the
-  top *m* bits set makes `fp & mask == 0` the same test as RFC 2 §3.2's `fp >> (64 − m) == 0`, and
-  its bit count is *m*, which §9's mask row counts. `carve.checkMasks(target int, small, large
-  uint64) error` asserts both counts and that both sit at the top; `NewSettings` runs it on the
-  value it built and returns its refusal wrapped in `ErrInvalidSettings`. A check that runs only
-  over correct derived masks can never fire, so its test hands it planted pairs (a hard-coded pair
-  from Appendix A.1, one off by one bit, one not top-aligned). Prior art: FastCDC's paper and its
-  reference code keep a small-region and a large-region mask, `MaskS` and `MaskL`, chosen by
-  normalisation level (from memory).
+- **D2, the value holds the two bit counts, and RFC 2 §3.2's start-up assertion is not adopted
+  as a runtime check.** The chunker tests `fp >> (64 − m) == 0`, RFC 2 §3.2's own form, with *m*
+  read from the value, so the one place *m* exists is `params.New`, computed from `Target`; no mask
+  is stored that could disagree with it. §3.2's SHOULD, assert at start-up that mask and `Target`
+  agree, guards against a mask written down apart from `Target`, Appendix A.1's defect; with none
+  written down, a start-up assertion would compare `params.New` with itself and could never refuse
+  anything. §9's mask row (R11) checks the counts at every profile instead, per change. Withdraw
+  this if a later change stores masks or tables of masks beside `Target`. Prior art: FastCDC's
+  paper and its reference code keep a small-region and a large-region mask, `MaskS` and `MaskL`,
+  hard-coded per normalisation level (from memory), which is the drift §3.2 asks to guard.
 - **D3, the warm-up takes exactly 64 bytes by type.** `warm(g *[256]uint64, w *[64]byte) uint64`
   builds the fingerprint of the window before the first tested byte; the chunker calls it on the
   64 bytes ending at index `Min` − 2 and then tests from index `Min` − 1, as the window rule of RFC
@@ -294,11 +295,11 @@ pkg/carver/
   imports_test.go          T3.2, T3.3  rows for internal/chunker and section
   arch_test.go             T3.2        chunker: imports params only; no package-level state
   internal/params/
-    params.go              T3.1        gear, masks; New, Gear, Masks
+    params.go              T3.1        gear, bit counts; New, Gear, Bits
   carve/
-    settings.go            T3.1        CheckTarget, NewSettings, the table derivation, checkMasks;
+    settings.go            T3.1        CheckTarget, NewSettings, the table derivation;
                                        §6's ponytail: at the keyed table
-    settings_test.go       T3.1        refusals, edges, tables against Vectors, masks, docs
+    settings_test.go       T3.1        refusals, edges, tables against Vectors, bit counts, docs
     fuzz_test.go           T3.7        FuzzNewSettings
     testdata/fuzz/FuzzNewSettings/  T3.7  the three key seeds
   internal/chunker/
@@ -316,7 +317,7 @@ test/suites.yaml           T3.4, T3.7  two lines of the fuzz suite, its timeouts
 
 ## 6. Subtasks
 
-### T3.1 The settings value: sizes, masks, tables and refusals
+### T3.1 The settings value: sizes, tables and refusals
 
 **Subtask T3.1 estimate: 2.5 man-days.**
 
@@ -325,17 +326,18 @@ test/suites.yaml           T3.4, T3.7  two lines of the fuzz suite, its timeouts
 - **Deliverables:**
   - `internal/params` gains, with D1's `decision:` at `New`:
     ```go
-    // Settings gains gear *[256]uint64 and small, large uint64 beside target, min, max.
+    // Settings gains gear *[256]uint64 and before, after int beside target, min, max.
 
     // New builds the value for an accepted target over gear: Min is target/4, Max 4×target,
-    // and the masks keep the top t+1 and t−3 bits for a target of 2^t. It trusts its caller.
+    // and for a target of 2^t the test reads the top t+1 bits before Target, t−3 from it on.
+    // It trusts its caller.
     func New(target int, gear *[256]uint64) Settings
 
     // Gear is the table s cuts under; nil on the zero value.
     func Gear(s Settings) *[256]uint64
 
-    // Masks are s's small-region and large-region masks: the test before and from Target.
-    func Masks(s Settings) (small, large uint64)
+    // Bits is how many top bits of the fingerprint the test reads before Target and from it on.
+    func Bits(s Settings) (before, after int)
     ```
     Consumed by `NewSettings`, T3.2's chunker and its tests.
   - `carve`'s bodies, consumed by T3.3's validator, E4's `Cut` tests, and the RFC 8 offload plan's
@@ -345,13 +347,13 @@ test/suites.yaml           T3.4, T3.7  two lines of the fuzz suite, its timeouts
     - `NewSettings(target int, encrypting bool, chunkingKey, chunkIDKey [32]byte)
       (carver.Settings, error)`: `CheckTarget`, then a zero chunk-ID key, a chunking key without
       encryption, and encryption with a zero chunking key, each refused with the zero value; then
-      the unkeyed or the keyed table (D5), `params.New` and `checkMasks` (D2). The chunk-ID key is
-      checked here and stored by E4.
+      the unkeyed or the keyed table (D5) and `params.New`. The chunk-ID key is checked here and
+      stored by E4, whose `ChunkID` is its first reader.
     - RFC 2 §6's `ponytail:` at the keyed table's derivation, its ceiling and upgrade as the RFC
       words them; the doc comment of `NewSettings` says the unkeyed boundaries are public and
       what the keyed table hides, from whom only (R12).
 - **Acceptance criteria:**
-  - Every supported `Target` is accepted, with `Min`, `Max` and the masks R1 and R7 give;
+  - Every supported `Target` is accepted, with `Min`, `Max` and the bit counts R1 and R7 give;
     `48 << 10`, `96 << 10`, `32 << 10`, `8 << 20`, `0` and `-1` are refused, each with
     `ErrInvalidSettings` and the zero value.
   - The three key refusals of R3 hold at every supported `Target`, and a zero chunking key with
@@ -363,10 +365,10 @@ test/suites.yaml           T3.4, T3.7  two lines of the fuzz suite, its timeouts
   rounding instead of a refusal, R2, R4); the key cases (catches a keyed table built for a
   namespace that does not encrypt, or an unkeyed one for one that does, R3, R9); the tables
   against `carvetest.LoadVectors` through `params.Gear`, in `package carve` (catches a wrong
-  context string, a big-endian decode, a table built from the wrong mode, R8 to R10); the masks at
-  every `Target`: bit counts *t* + 1 and *t* − 3, top-aligned, and fourteen distinct masks across
-  the seven profiles (catches Appendix A.1's fixed pair, R7, R11); `checkMasks` over planted pairs
-  (catches a start-up check that never refuses, R7); `NewSettings`' doc comment, read with
+  context string, a big-endian decode, a table built from the wrong mode, R8 to R10); the bit
+  counts at every `Target`, *t* + 1 and *t* − 3 through `params.Bits`, and seven distinct pairs
+  across the seven profiles (catches Appendix A.1's fixed pair, and *m* off by one either side,
+  R7, R11); `NewSettings`' doc comment, read with
   `go/doc`, holding "public" and the bucket reader's two conditions (catches the claim dropped
   from where a caller reads it, R12). Each is seen to fail on its planted break before the pull
   request opens. No test double.
@@ -388,7 +390,7 @@ test/suites.yaml           T3.4, T3.7  two lines of the fuzz suite, its timeouts
     const Window = 64
 
     // NextBoundary returns where the first chunk of buf ends under s: the first byte from index
-    // Min−1 whose fingerprint passes s's mask, else Max, else, when final is set and buf is
+    // Min−1 whose fingerprint has its top Bits zero, else Max, else, when final is set and buf is
     // shorter than Max, len(buf). buf holds at least s.Max() bytes unless final is set; it panics
     // otherwise (D4). It never hashes, reads, allocates or keeps anything.
     func NextBoundary(s params.Settings, buf []byte, final bool) int
@@ -410,9 +412,9 @@ test/suites.yaml           T3.4, T3.7  two lines of the fuzz suite, its timeouts
   - With every `G[b]` zero every chunk is exactly `Min`; with every `G[b]` 2⁶³ every chunk is
     exactly `Max`; a boundary planted at index `Min` − 1 is found there, and one at `Min` − 2 is
     not.
-  - A buffer of exactly `Max` bytes with no boundary returns `Max`; a `final` buffer shorter than
-    `Min` returns its length; a non-empty buffer never returns 0; a buffer under `Max` with
-    `final` unset panics.
+  - A buffer of exactly `Max` bytes with no boundary returns `Max`; a `final` buffer of 1,
+    `Min` − 1, `Min`, `Max` and `Max` + 1 bytes returns its length, or `Max`, when no boundary comes
+    first; a non-empty buffer never returns 0; a buffer under `Max` with `final` unset panics.
   - `NextBoundary` makes 0 allocations.
 - **Tests:** at `NextBoundary`, as `Cut` will call it: the goldens at every profile under both
   tables (catches any clause of R15 moved, and E4 meeting another answer than the reference's,
@@ -481,14 +483,16 @@ test/suites.yaml           T3.4, T3.7  two lines of the fuzz suite, its timeouts
 
 - **Track:** A. **Depends on:** T3.2.
 - **Covers:** R16, R18, R22 to R24.
-- **Deliverables:** `FuzzNextBoundary(f *testing.F)` in `package chunker` (D7) with its seeds;
+- **Deliverables:** `FuzzNextBoundary(f *testing.F)` in `package chunker` (D7) with its seeds,
+  which also fuzzes the buffer handed over, `Max`, `Max` + 1 or 2 × `Max` bytes, so a chunker that
+  looks past `Max` cuts differently;
   `TestWarmUpEquivalence`; one line of the `fuzz` suite in `test/suites.yaml`,
   `go test -run=^$ -fuzz=^FuzzNextBoundary$ -fuzztime=10m ./pkg/carver/internal/chunker`, with
   its timeouts raised (D7). Consumed by the `fuzz` suite nightly and `unit` through the seeds.
 - **Acceptance criteria:**
   - For any fuzzed seed, kind, length, profile and table, the ends `NextBoundary` returns along the
-    input equal `carvetest.Boundaries` over the same table, `Target` and bytes, every chunk is
-    within C4's bounds and the ends tile the input.
+    input equal `carvetest.Boundaries` over the same table, `Target` and bytes, whatever buffer size
+    carried them, every chunk is within C4's bounds and the ends tile the input.
   - Across every profile, under the unkeyed table, the keyed table of `Vectors` and three random
     tables, over random, period-64, text-44, period-4K and random-with-repeat input, the chunker,
     warmed over 64 bytes, and the reference, warmed from each chunk's start, cut identically.
@@ -519,12 +523,12 @@ test/suites.yaml           T3.4, T3.7  two lines of the fuzz suite, its timeouts
     `Max`.
   - `Text44` cuts no chunk over `Max`; every `Period4K` chunk but the last is a multiple of 4,096
     bytes, at least `Min` and at most `Max`; `RandomRepeat` cuts every chunk within C4's bounds.
-- **Tests:** the rows above, each at every entry of `carvetest.Targets` (catches a mask sized to
+- **Tests:** the rows above, each at every entry of `carvetest.Targets` (catches a test sized to
   `Target` without the skip, which lands the average up to `Min` high, and Appendix A.1's fixed
-  masks, R25; a keyed table that ignores its key, or keys every namespace, R26; a `Max` removed or
+  bit counts, R25; a keyed table that ignores its key, or keys every namespace, R26; a `Max` removed or
   raised, R27; a period above 64 cut below `Min`, R28). The random rows and the repetitive rows
   are separate tests, so the size check never runs on repetitive input alone (R29). Each is seen to
-  fail on its planted break: the skip left out of the mask, the keyed table built from the unkeyed
+  fail on its planted break: the skip left out of the bit counts, the keyed table built from the unkeyed
   one, `Max` doubled. No test double.
 - **Rules:** rule 5, through the settings E4 receives (D6). Others as §2 says.
 
@@ -615,8 +619,7 @@ A suggestion only: one pull request per subtask works as well.
    so its row would then reach BLAKE3 too, and R13's "never hashes" would hold only by the chunker's
    own imports in `arch_test.go`, not by its reach. E4 chooses, and widens the chunker's row in the
    same change if it puts the state there.
-5. **The raced cost of the 256 MiB rows.** `unit` runs with `-race`, and T3.5 generates about
-   2 GiB of ChaCha8 output across its rows and profiles. If the package's raced run passes a
-   minute on CI, the rows still keep RFC 2's sizes (the RFC 2 plan's D8), and the generator, not
-   the size, is what changes: one seeded stream read once per profile into the window, the cost
-   paid once.
+5. **The raced cost of the 256 MiB rows.** `unit` runs with `-race` on every pull request, and
+   T3.5 generates about 2 GiB of ChaCha8 output across its rows and profiles. It is measured when
+   T3.5 lands. The rows keep RFC 2's sizes under `-short` (the RFC 2 plan's D8), so if the cost is
+   too high the answer is an RFC 2 §10.4 amendment, not a smaller input chosen in the test.
