@@ -29,12 +29,12 @@ case $1 in
 	dir=${2:-}
 	[ -n "$dir" ] || { echo "usage: bench-export.sh --freshness <dir>" >&2; exit 2; }
 	# newest finished entry by mtime, no find: a glob and -nt stay inside
-	# the shell. Only a folder holding a done marker competes — a run whose
-	# night failed wrote no metrics, so however young it is it must not read
-	# as a fresh collection. An empty dir (or one whose runs all failed)
-	# leaves newest empty, which reads as stale: a dead collection must
-	# never read as healthy. The -d skips the literal, unexpanded pattern
-	# such a dir leaves in the loop.
+	# the shell. Only a folder holding a done marker competes — a night that
+	# failed, fully or partly, wrote no complete set of metrics, so however
+	# young its folder is it must not read as a fresh collection. An empty
+	# dir (or one whose runs never finish) leaves newest empty, which reads
+	# as stale: a dead collection must never read as healthy. The -d skips
+	# the literal, unexpanded pattern such a dir leaves in the loop.
 	newest=
 	for d in "$dir"/*/; do
 		[ -d "$d" ] || continue

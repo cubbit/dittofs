@@ -5,6 +5,7 @@ package journal
 import (
 	"bytes"
 	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -208,6 +209,54 @@ func TestBenchRunQuietLoadMustBeWholeNumber(t *testing.T) {
 	}
 	assertStillEmpty(t, root, "run root")
 	assertStillEmpty(t, checkout, "checkout")
+}
+
+// TestBenchRunWaitBudgetsMustBeWholeSeconds proves a spelled-out duration
+// cannot reach the waits' arithmetic: 4h errors the quiet wait's $(( ))
+// and 2h reports a lock wait "within 2hs", both after the run has already
+// changed state. Each budget is refused by name at guard time, with every
+// other guard satisfied and nothing created anywhere.
+func TestBenchRunWaitBudgetsMustBeWholeSeconds(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     map[string]string
+		varName string
+		want    string
+	}{
+		{
+			name:    "a spelled-out quiet wait budget",
+			env:     map[string]string{"BENCH_QUIET_LOAD_MAX_WAIT": "4h"},
+			varName: "BENCH_QUIET_LOAD_MAX_WAIT",
+			want:    "BENCH_QUIET_LOAD_MAX_WAIT must be a whole number of seconds",
+		},
+		{
+			name:    "a spelled-out lock wait budget",
+			env:     map[string]string{"BENCH_LOCK_WAIT": "2h"},
+			varName: "BENCH_LOCK_WAIT",
+			want:    "BENCH_LOCK_WAIT must be a whole number of seconds",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			checkout := t.TempDir()
+			env := map[string]string{
+				"BENCH_RUN_ROOT":  root,
+				"BENCH_CHECKOUT":  checkout,
+				"BENCH_NOT_AFTER": strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10),
+			}
+			maps.Copy(env, tc.env)
+			code, _, stderr := benchRun(t, env, "small")
+			if code != 2 {
+				t.Errorf("bench-run.sh small with %s=…: exit status got %d, want 2", tc.varName, code)
+			}
+			if !strings.Contains(stderr, tc.want) {
+				t.Errorf("bench-run.sh small with a spelled-out wait budget: stderr got %q, want it to contain %q", stderr, tc.want)
+			}
+			assertStillEmpty(t, root, "run root")
+			assertStillEmpty(t, checkout, "checkout")
+		})
+	}
 }
 
 func TestBenchRunPruneRemovesOnlyOldRunFolders(t *testing.T) {
