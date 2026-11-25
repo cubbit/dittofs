@@ -919,6 +919,92 @@ func TestPruneClassesInFlightNeedsBothVanishedAndSwept(t *testing.T) {
 	}
 }
 
+// TestClassFlightSweepBetweenHeldReadAndGateNeverHandsOver: the one
+// interleaving the per-gate tests cannot see — the in-flight source's sweep
+// landing inside a mate's pass, between its Held read and its class-gate
+// consult. The Held read answers false (the class stood in two places), the
+// sweep re-holds the mate as its class's last placement beside clearing the
+// mark inside the one registry section it takes both in, and the gate's
+// consult — the first thing on the pass to take that registry again — finds
+// no mark and allows: a hand-over would retire the mate holding the class's
+// last, still-undroppable placement, destroying a record whose covered
+// older records survive elsewhere. The re-read past the gate is what sees
+// the committed re-hold, drops the entry and never hands the mate over.
+func TestClassFlightSweepBetweenHeldReadAndGateNeverHandsOver(t *testing.T) {
+	f := newRetireFixture(t)
+	exec := &recordedExec{next: f.retirer}
+	w := NewWorker(f.set, f.tr, nil, exec)
+	w.tickEvery = 10 * time.Millisecond
+	t.Cleanup(w.Stop)
+	tr := f.tr
+
+	// One identity over two placements: the source and its mate, neither
+	// held while the class stands in two places.
+	src, mate := f.sealed(t), f.sealed(t)
+	tr.Register(oneRec(src))
+	tr.Register(oneRec(mate))
+	w.Start()
+
+	// The flight: the source is handed over and the real retirer retires
+	// it, its sweep not yet relayed, exactly the production window a mate's
+	// pass can land inside.
+	w.Emptied(src, at64(src))
+	waitCond(t, 2*time.Second, "the source's retirement to complete", func() bool {
+		select {
+		case id := <-f.retired:
+			return id == src
+		default:
+			return false
+		}
+	})
+	if got := exec.count(); got != 1 {
+		t.Fatalf("Enqueue called %d times for the source's hand-over, want 1", got)
+	}
+
+	// The mate's pass, with the source's sweep driven inside the window:
+	// the hook runs on the worker's goroutine, between the mate's Held read
+	// (still false — the sweep has not run) and the class gate's consult.
+	swept := make(chan struct{})
+	w.beforeGate = func(id core.SegmentID) {
+		if id != mate {
+			return
+		}
+		tr.SegmentRetired(src, nil)
+		close(swept)
+	}
+	w.Emptied(mate, at64(mate))
+	select {
+	case <-swept:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the mate's pass never reached the class gate inside its window")
+	}
+	// The sweep re-holded the mate as its class's last placement.
+	if got := tr.Held(mate); !got {
+		t.Fatalf("Held of the mate after the source's sweep = %v, want true: the class's last placement re-held it", got)
+	}
+
+	// The pass itself: the fixed path drops the entry at the re-read; the
+	// bug handed the mate over. Whichever branch ran, the entry is gone -
+	// the hand-over count is the verdict.
+	waitCond(t, 2*time.Second, "the mate's pass to finish", func() bool {
+		queued, _ := queuedEntry(w, mate)
+		return !queued
+	})
+	if got := exec.count(); got != 1 {
+		t.Fatalf("Enqueue called %d times with the mate's survivor re-hold committed before its gate consult, want 1: a swept class's mate must never be handed over", got)
+	}
+	// Bounding window, not a truth: several worker passes fit inside it,
+	// and each must skip the held survivor — never a second retirement.
+	select {
+	case id := <-f.retired:
+		t.Fatalf("retired segment %v while the mate holds its class's re-held last placement, want no second retirement", id)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if queued, _ := queuedEntry(w, mate); queued {
+		t.Fatalf("the mate's worker entry is back, want it dropped: a held segment is not a candidate")
+	}
+}
+
 // TestClassFlightItsOwnMarkDoesNotRefuseItsSegment: a hand-over that never
 // ends in a sweep — here a real retirer of a read-only journal, which
 // refuses every retirement whole before it claims anything, the same shape

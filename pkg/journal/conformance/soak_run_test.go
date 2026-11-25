@@ -157,7 +157,7 @@ var soakFlats = []soakFlat{
 	// 6/7 — a fall, never a rise — so the floor of 2 held clean.
 	{"Segments", func(s *soakSample) int64 { return int64(s.Segments) }, 10, 2},
 	{"Spares", func(s *soakSample) int64 { return int64(s.Spares) }, 6, 1},                              // band 0..2, halves 2/2: held
-	{"OpenDescriptors", func(s *soakSample) int64 { return int64(s.OpenDescriptors) }, 12, 2},           // rides the segment set: band 4..13, halves 10/6
+	{"OpenDescriptors", func(s *soakSample) int64 { return int64(s.OpenDescriptors) }, 12, 2},           // rides the segment set: bands 4..13, 4..12, 4..12 over the three measured runs, halves 10/6 on the first
 	{"Descriptors", func(s *soakSample) int64 { return int64(s.ProcessFds - s.OpenDescriptors) }, 8, 0}, // neutralised: band 4..4, halves 4/4: held
 	{"HeapBytes", func(s *soakSample) int64 { return int64(s.Heap) }, 24 << 20, -1},                     // band 3.3..5.2 MB, converged
 	// Mixed-mix band 9..16.7 MiB against the overwrite mix's 10.5..13.6,
@@ -689,7 +689,7 @@ func soakSyncAll(t *testing.T, f *journaltest.Fixture) {
 
 // soakStuckSegments reads the set snapshot and returns the sealed segments
 // the churn's removals stranded: sealed, undamaged, unretired segments the
-// index holds no bytes for — the freeze's own shape, one reputation the
+// index holds no bytes for — the freeze's own shape, one predicate the
 // drain asserts on and the removals crash path gates its pool wait on. A
 // retired damaged row and a segment still holding live index bytes are
 // answers to other questions, so neither counts.

@@ -240,9 +240,10 @@ func carryCycleRequirePlacements(t *testing.T, seam *kit.Seam, id JournalID, fil
 // after the power loss). The recovery tears the copy anyway: a carried
 // record's placement carries no group-commit stamp, so the open's tail
 // proof judges it unproven and never written — a real property of the open
-// path at this window (Syncing the file, sealing the stream and advancing
-// the driven clock inside the parked retirement were each tried and none
-// moved the verdict), and the safe direction of it is what the leg pins:
+// path at this window, evidenced once here: the file synced, the stream
+// sealed and the driven clock advanced inside the parked retirement, none
+// of which moves the verdict — and the safe direction of it is what the
+// leg pins:
 // the reopen errs on the held side, and the reopened source is never again
 // wedged — it stays through several of the reopened journal's own
 // retire-worker ticks while its marker stands unsettled, and the settlement

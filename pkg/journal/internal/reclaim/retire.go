@@ -81,6 +81,12 @@ type Worker struct {
 	// whatever the claim answered; set only from tests, before Start.
 	afterClaim func(core.SegmentID)
 
+	// beforeGate runs on a candidate's pass between the durability gates
+	// and the in-flight class gate, holding nothing of the worker's; it is
+	// set only from tests, whether before Start or while the worker sits
+	// idle between passes.
+	beforeGate func(core.SegmentID)
+
 	// afterTick, under mu, runs on the worker's goroutine once each tick's
 	// scan and pass have completed.
 	afterTick func()
@@ -518,9 +524,32 @@ func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.T
 	// retirement path that empties a segment's last placement without the
 	// SegmentRetired sweep, which would hand a mate over into a class the
 	// mark no longer protects, or by a hand-over that skips this gate.
+	if w.beforeGate != nil {
+		w.beforeGate(id)
+	}
 	if w.tr.markClassesInFlight(id) {
 		w.segs.Release(id)
 		w.requeue(id)
+		return
+	}
+	// The re-read past the gate: the first Held read (above) can have
+	// answered before a swept class's re-hold committed, while this gate's
+	// consult — the first thing on this pass to take the registry again —
+	// lands after the sweep's whole section (a mark it saw gone was cleared
+	// with the survivor's raise in the one hold that took both, and the
+	// janitor clears only once that same raise has made the registry hold
+	// no placement of the retired segment). So once the gate allows, a
+	// re-read of Held on this segment cannot miss a re-hold that any sweep
+	// of this candidate's classes committed: the registry's lock orders the
+	// raise before this read, and no other flight can touch these classes
+	// while this candidate's own marks stand. A held answer here is a
+	// swept survivor become the class's last placement — the record must
+	// stay, so the entry is dropped, never handed over, and the marks the
+	// gate took remain the candidate's own, which a later hand of it
+	// treats as not busy, exactly the self-mark rule.
+	if w.tr.Held(id) {
+		w.segs.Release(id)
+		w.drop(id)
 		return
 	}
 

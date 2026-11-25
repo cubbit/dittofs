@@ -31,6 +31,13 @@ import (
 // rides the stream's active segment, below the idle sealer's threshold, and
 // retires nowhere inside this row — and after the settle a single pass finds
 // nothing left to free or to fail on.
+//
+// decision: the row's index-entry reading rides the idle sealer's
+// threshold — the copy's segment is the stream's active one and never
+// seals inside this row, so the copy's registration is the only entry the
+// settle can spend. A sealer change that seals the copy's segment makes
+// the row red over a threshold it does not control; re-seed the copy into
+// a sealed segment then, never narrow the row.
 // The record it lost was a synced one, so its loss record is live while the
 // marker it left is unsettled, which nothing does here until the Settle: the
 // liveness has a record it reaches without any other segment standing.
@@ -126,6 +133,9 @@ func TestALossRecordCarriedFromItsSegmentJournalLevel(t *testing.T) {
 	// within this row's window, so no retirement of it can be the settle's
 	// proof: the storage story ended one phase early, with the damaged
 	// source the carrying pass retired above.
+	//
+	// ExtentCount is journal-wide while this row seeds exactly the one
+	// file, so the figure reads the copy's registration alone.
 	extBefore := f.J.Stats().ExtentCount
 	if extBefore < 1 {
 		t.Fatalf("the index holds %d entries before the settle, want the carried copy's registration live in it: nothing else of the file survived the corrupted read's drop", extBefore)
