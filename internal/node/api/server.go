@@ -75,7 +75,8 @@ type Deps struct {
 	SigningKey func(context.Context) ([]byte, error)
 	// Nodes is the store's reads of the nodes: their records, and every
 	// registered node's status, which a listing computes each item's applied
-	// from; nil, each listing answers 503.
+	// from; and every scope's settings, which the remote stores' listing
+	// reads; nil, each listing answers 503.
 	Nodes nodeReads
 	// Progress is an operation's progress, read from what its owner
 	// records, by the operation's kind; nil, every operation's progress is

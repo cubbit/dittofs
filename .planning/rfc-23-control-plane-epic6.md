@@ -431,13 +431,15 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 - **Track:** A. **Depends on:** T6.3; E4 (stores, namespaces, secrets, adapters, settings, nodes, the
   audit, the domain's routes, `GET /api/v1/health`).
 - **Covers:** R3, R17.
-- **Deliverables:** `store create|get|delete|set-credential` (`create`'s credential, which
-  it may go without, from a file; `set-credential`'s from a prompt or a file); `namespace create|list|get|delete`; `adapter get|set`;
+- **Deliverables:** `store create|list|get|update|delete|set-credential` (`create`'s credential,
+  which it may go without, from a file; `set-credential`'s from a prompt or a file);
+  `namespace create|list|get|delete`; `adapter list|get|set`;
   `setting get|set|unset <scope> <key>`; `node list|get`; `audit list` with its filters;
   `domain resolve|test|join|rotate-machine-password`, `join` online or `--offline`, neither sending
   a key; `status`, reading `GET /api/v1/health`; their `clisuite` rows; `cli.md` regenerated.
-  `store list`, `store update` and `adapter list` are not built: no route serves them, a row of
-  [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger). A remote store, a
+  `store list`, `store update` and `adapter list` read `GET /stores`, write `PATCH /stores/{id}`
+  and read `GET /adapters`; `store update` changes a store's settings, and `set-credential` its
+  credential. A remote store, a
   namespace and a node carry no name, so their commands take the ID as the argument. A scope is
   `installation`, `node:<id>`, `namespace:<id>`, `store:<id>` or `share:<name>`; a value, a
   `setting set`'s or a `--setting key=value`'s, is taken as JSON when it parses and as a string

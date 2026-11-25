@@ -431,6 +431,7 @@ Global flags:
 - [`dfsctl`](#dfsctl) — DittoFS Control - Remote management client
   - [`dfsctl adapter`](#dfsctl-adapter) — Manage protocol adapters
     - [`dfsctl adapter get`](#dfsctl-adapter-get) — Show an adapter
+    - [`dfsctl adapter list`](#dfsctl-adapter-list) — List adapters
     - [`dfsctl adapter set`](#dfsctl-adapter-set) — Change an adapter
   - [`dfsctl audit`](#dfsctl-audit) — Read the audit of management actions
     - [`dfsctl audit list`](#dfsctl-audit-list) — List audit records
@@ -509,7 +510,9 @@ Global flags:
     - [`dfsctl store create`](#dfsctl-store-create) — Create a remote store
     - [`dfsctl store delete`](#dfsctl-store-delete) — Delete a remote store no namespace names
     - [`dfsctl store get`](#dfsctl-store-get) — Show a remote store
+    - [`dfsctl store list`](#dfsctl-store-list) — List remote stores
     - [`dfsctl store set-credential`](#dfsctl-store-set-credential) — Set a remote store's credential
+    - [`dfsctl store update`](#dfsctl-store-update) — Change a remote store's settings
   - [`dfsctl token`](#dfsctl-token) — Manage API tokens
     - [`dfsctl token create`](#dfsctl-token-create) — Create an API token
     - [`dfsctl token list`](#dfsctl-token-list) — List API tokens
@@ -560,6 +563,9 @@ dfsctl adapter [flags]
 **Examples:**
 
 ```bash
+# List the adapters
+dfsctl adapter list
+
 # Show the NFS adapter on every node
 dfsctl adapter get nfs
 
@@ -581,6 +587,22 @@ Show an adapter
 
 ```
 dfsctl adapter get <protocol> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl adapter list`
+
+List adapters
+
+```
+dfsctl adapter list [flags]
 ```
 
 Global flags:
@@ -2582,12 +2604,14 @@ Global flags:
 
 Manage remote stores
 
-Create, read and delete remote stores, and set a store's credential.
+Create, list, read, change and delete remote stores, and set a store's
+credential.
 
 A remote store is where namespaces keep their content: its endpoint, bucket and
 the rest are its settings, and its credential is a secret the server seals and
-never prints. A store's endpoint is fixed at its creation; its other settings
-change through 'dfsctl setting set store:<id>'.
+never prints. The server refuses a change of a bound setting while a namespace
+names the store, and a change of how the store is reached, its endpoint among
+them, until it can prove the store holds the same content there.
 
 ```
 dfsctl store [flags]
@@ -2598,6 +2622,9 @@ dfsctl store [flags]
 ```bash
 # Create a store, its credential read from a file
 dfsctl store create --setting remote.endpoint=https://s3.example.com --credential-file cred.txt
+
+# Change a store's region and remove its storage class, so its default holds
+dfsctl store update 0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b --setting remote.region=eu-west-1 --unset remote.storage_class
 
 # Replace a store's credential (prompts for it)
 dfsctl store set-credential 0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b
@@ -2677,6 +2704,22 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
+### `dfsctl store list`
+
+List remote stores
+
+```
+dfsctl store list [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
 ### `dfsctl store set-credential`
 
 Set a remote store's credential
@@ -2693,6 +2736,34 @@ Flags:
 
 ```
       --credential-file string   File holding the credential (prompts without it)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl store update`
+
+Change a remote store's settings
+
+Change a remote store's settings in one write: each --setting key=value set, a
+value that is JSON taken as it is and any other as a string, and each --unset
+key removed, so its default holds. What is not named stays as it is. Its
+credential is set by 'dfsctl store set-credential'.
+
+```
+dfsctl store update <id> [flags]
+```
+
+Flags:
+
+```
+      --setting stringArray   A setting of the store, key=value (repeatable)
+      --unset stringArray     A setting of the store to remove (repeatable)
 ```
 
 Global flags:

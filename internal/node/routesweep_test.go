@@ -640,6 +640,8 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 				Settings:   map[string]json.RawMessage{"remote.endpoint": json.RawMessage(`"https://s3.example"`), "remote.bucket": json.RawMessage(`"b"`)},
 				Credential: &apiv1.StoreCredential{Value: []byte("a store's secret key")}}}},
 				status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
+			waitingWrite{wiredWrite: wiredWrite{route: "PATCH /api/v1/stores/{id}", path: store, body: json.RawMessage(`{"spec":{"settings":{"remote.region":"eu"}}}`), hdr: match(store)},
+				status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/stores/{id}/credential", path: bare + "/credential", body: map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("a new credential")}}, hdr: []string{"If-None-Match", "*"}},
 				status: http.StatusConflict, code: "unproven", why: "the store's capability check"},
 			waitingWrite{wiredWrite: wiredWrite{route: "DELETE /api/v1/stores/{id}/credential", path: cred, hdr: append([]string{"If-Match", `"1"`}, idemKey()...)}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},

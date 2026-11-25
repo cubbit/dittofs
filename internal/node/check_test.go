@@ -51,7 +51,7 @@ var leastRole = func() map[string]entity.APIRole {
 		// operation's :cancel asks the role that starts its kind, which its
 		// handler checks, so the row itself admits a viewer.
 		entity.RoleViewer: {
-			"GET /api/v1/adapters/{sub}", "GET /api/v1/groups", "GET /api/v1/groups/{id}", "GET /api/v1/health",
+			"GET /api/v1/adapters", "GET /api/v1/adapters/{sub}", "GET /api/v1/groups", "GET /api/v1/groups/{id}", "GET /api/v1/health",
 			"GET /api/v1/installation", "GET /api/v1/namespaces", "GET /api/v1/namespaces/{id}",
 			"GET /api/v1/namespaces/{id}/settings/{sub}", "GET /api/v1/netgroups", "GET /api/v1/netgroups/{sub}",
 			"GET /api/v1/nodes", "GET /api/v1/nodes/{id}", "GET /api/v1/nodes/{id}/connections",
@@ -59,7 +59,7 @@ var leastRole = func() map[string]entity.APIRole {
 			"POST /api/v1/operations/{id}:cancel", "GET /api/v1/settings/{sub}", "GET /api/v1/shares",
 			"GET /api/v1/shares/{id}", "GET /api/v1/shares/{id}/export-policy", "GET /api/v1/shares/{id}/grants",
 			"GET /api/v1/shares/{id}/grants/{sub}", "GET /api/v1/shares/{id}/quota", "GET /api/v1/shares/{id}/quotas",
-			"GET /api/v1/shares/{id}/quotas/{sub}", "GET /api/v1/shares/{id}/settings/{sub}", "GET /api/v1/stores/{id}",
+			"GET /api/v1/shares/{id}/quotas/{sub}", "GET /api/v1/shares/{id}/settings/{sub}", "GET /api/v1/stores", "GET /api/v1/stores/{id}",
 			"GET /api/v1/stores/{id}/settings/{sub}", "GET /api/v1/users", "GET /api/v1/users/{id}", signOut,
 			changePassword, "GET /api/v1/users/{id}/api-tokens", "POST /api/v1/users/{id}/api-tokens",
 			"DELETE /api/v1/users/{id}/api-tokens/{sub}",
@@ -79,7 +79,7 @@ var leastRole = func() map[string]entity.APIRole {
 			"DELETE /api/v1/shares/{id}/grants/{sub}", "PUT /api/v1/shares/{id}/grants/{sub}", "PUT /api/v1/shares/{id}/quota",
 			"PUT /api/v1/shares/{id}/quotas/{sub}", "DELETE /api/v1/shares/{id}/settings/{sub}",
 			"PUT /api/v1/shares/{id}/settings/{sub}", "POST /api/v1/shares/{id}:quiesce", "POST /api/v1/shares/{id}:resume",
-			"POST /api/v1/stores", "DELETE /api/v1/stores/{id}", "DELETE /api/v1/stores/{id}/credential",
+			"POST /api/v1/stores", "DELETE /api/v1/stores/{id}", "PATCH /api/v1/stores/{id}", "DELETE /api/v1/stores/{id}/credential",
 			"PUT /api/v1/stores/{id}/credential", "DELETE /api/v1/stores/{id}/settings/{sub}",
 			"PUT /api/v1/stores/{id}/settings/{sub}", "POST /api/v1/users", "DELETE /api/v1/users/{id}",
 			"PATCH /api/v1/users/{id}", "PUT /api/v1/users/{id}", "POST /api/v1/users/{id}:set-password",

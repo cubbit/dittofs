@@ -109,8 +109,10 @@ type listing[E, T any] struct {
 // status, read with the node records in one view, a node that has reported
 // none having the zero status and a status whose node has no record left
 // out; every node's record in node ID order, resuming after a node, the zero
-// ID starting from the first; and one node's record.
+// ID starting from the first; one node's record; and every scope's settings,
+// which the remote stores' listing finds the stores by.
 type nodeReads interface {
+	entity.SettingsReader
 	RegisteredStatuses(ctx context.Context) ([]entity.NodeStatus, error)
 	NodeRecords(ctx context.Context, after entity.NodeID) iter.Seq2[entity.Node, error]
 	Node(ctx context.Context, id entity.NodeID) (entity.Node, bool, error)

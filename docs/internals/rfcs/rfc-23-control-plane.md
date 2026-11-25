@@ -988,7 +988,8 @@ node override where one host must bind elsewhere, a node-scoped `Setting`
 written through the setting resource (§3.1)
 ([RFC 20 §3.6](rfc-20-adapters.md#3.6%20Changing%20settings%20while%20serving)). Its listen addresses are bootstrap
 facts of each host ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), not records. The resource is
-`/adapters/{protocol}`, with `enabled` and the protocol's settings:
+`/adapters/{protocol}`, with `enabled` and the protocol's settings, and
+`GET /adapters` lists every protocol's:
 
 - **enable** moves the adapter from configured to serving on every node
   whose effective record enables it; a setting the adapter cannot apply fails
