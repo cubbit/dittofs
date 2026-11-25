@@ -60,7 +60,9 @@ const (
 // journal. The engine's transactions per stability point, the storm's own
 // taken out, are at most 1 + conflicting files × log₂ G (RFC 8 §5.2), and a
 // burst that breaks the bound fails the run; the fsync p99 is reported, to
-// compare with B5's overwriting run.
+// compare with B5's overwriting run. Like B5's, it is the 6th slowest of the
+// run's 512 fsyncs, about the slowest burst's commit, under the name
+// fsync-p99-µs that the v1 baseline uses.
 //
 // decision: B7 runs B5's overwriting run, not its appending one: an append's
 // fsync commits no existence, so with the long existence age no transaction
