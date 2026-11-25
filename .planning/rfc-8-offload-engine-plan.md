@@ -633,7 +633,7 @@ test/engine/known.yaml                  E12
 - **D5 — the node's content wiring composes each store, with no adapter.** The syncer's `Store` is a
   get and a probe, and `Flow.Upload` takes the put as an attempt closure (the RFC 3 plan's D8). RFC
   4's `codec.Store` implements `Store` as it is: `Get` with a `remote.Meter`, `Health` passed through,
-  and `NewPut(name, src)` returning a `*Put` whose `Attempt(ctx, m)` is one try and whose `Stored()`
+  and `NewPut(name, nonce, pin, src)` returning a `*Put` whose `Attempt(ctx, m)` is one try and whose `Stored()`
   gives the ranges and census. So `internal/node/content` builds one `codec.Store` per store, with
   RFC 5's chain, registers it with its `ProbeKey`, and hands the pipeline a function that builds the
   attempt; epic 15 passes `put.Attempt` to `Flow.Upload(ctx, name, size, attempt)`. No error is
@@ -821,7 +821,7 @@ Its four §15.1 rows run a pass end to end, so they are epic 16's to turn green 
   material destroyed (RFC 8 §10.4), the chain pinned, the name minted once per attempt from a
   cryptographic nonce, `Intend`.
 - Put: `Flow.Upload(ctx, name, size, put.Attempt)`, where `put` is the `*Put` the binding's store
-  builds with `NewPut(name, src)` over a source streamed from the offer (D5); its `Stored()`, read
+  builds with `NewPut(name, nonce, pin, src)` over a source streamed from the offer (D5); its `Stored()`, read
   once `Upload` succeeds, gives Commit the ranges and the census. Hashes recomputed, one attempt
   closure per name, no second retry layer.
 - A zero-ref commit in `kvstore` and the pipeline: a pass whose chunks are all zeros records no

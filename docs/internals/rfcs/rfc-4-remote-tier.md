@@ -881,7 +881,13 @@ carry a rule that needs one.
 package, holds a `remote.Store` through the contract, and is the one production
 implementation of the syncer's `Store` ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)); nothing adapts it and
 nothing maps its errors. The node's content wiring builds one per store, with
-the chain and the name derivation it hands the codec.
+the chain, the name derivation, the chunk-ID function and a census lookup it
+hands the codec. The lookup returns a block's census from its block record
+([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)) by name, for `Get` to pass
+to `Chain.Decode` ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)),
+and an absent record is `ErrNotFound`, so the engine re-resolves the chunk
+([§4.8](#4.8%20Errors%20are%20a%20closed%20set)). Neither the engine nor the
+syncer passes a census on a read.
 
 ```go
 // package codec
@@ -902,9 +908,12 @@ func (s *Store) GetVersion(ctx context.Context, name remote.Name, v remote.Versi
 // Health is the remote store's probe of direction d, passed straight through (§4.7).
 func (s *Store) Health(ctx context.Context, d remote.Direction) error
 
-// NewPut builds the put of block name. Each range over src yields the block's
-// chunks again from the first; a measuring pass and each Attempt start one.
-func (s *Store) NewPut(name remote.Name, src iter.Seq2[remote.Chunk, error]) *Put
+// NewPut builds the put of block name, minted from nonce and the chain ID of
+// pin, the chain the engine pinned for this attempt (RFC 8 §6.6, RFC 5 §3.1); the
+// header carries both, and every body is encoded under pin. Each range over src
+// yields the block's chunks again from the first; a measuring pass and each
+// Attempt start one.
+func (s *Store) NewPut(name remote.Name, nonce [16]byte, pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) *Put
 
 // Put is one block's put across the syncer's tries.
 type Put struct{ /* ... */ }
