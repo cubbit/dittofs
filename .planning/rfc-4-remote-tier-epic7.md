@@ -105,6 +105,9 @@ guide's remote store section.
 ### 1.3 Names used here
 
 - **E1**, epic 1, interfaces: `pkg/remote`'s contract and the codec's surface, frozen at S1.
+- **E2**, epic 2, conformance suite and test foundations: the in-memory store and its fault
+  wrapper.
+- **E3**, epic 3, fault transport and LocalStack: `s3fault`'s `Answer`.
 - **E4**, epic 4, S3 data path, errors and client: `NewClient`, `ClientConfig`, `Deps`, the
   `Recorder`.
 - **E5**, epic 5, capability check and health: `MaxBlockSize`, the checked `Open`, `Capability`.
@@ -610,7 +613,7 @@ flowchart TD
   R2E1(["RFC 2 plan epic 1 T1.1: block target constants"]):::sync -.-> T7_2
   T7_1 --> T7_2["T7.2 Sections"]
   T7_2 --> C1(["after T7.2: epic 21 can add the sections to newTable"]):::sync
-  E456(["E4 T4.2, E5 T5.4, E6 T6.1 and T6.2"]):::sync -.-> T7_3
+  DEPS(["E4 T4.2, E5 T5.4, E6 T6.1 and T6.2"]):::sync -.-> T7_3
   T7_2 --> T7_3["T7.3 Conversions and guide"]
   RS3(["R4-S3 store and codec complete"]):::sync
   RS3 --> T7_4["T7.4 Remote recorder"]
