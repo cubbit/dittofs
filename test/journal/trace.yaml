@@ -374,7 +374,8 @@ rfc1 / 9.1 / "Model-based":
           TestModelManySeedsFindsPlantedTruncate]
 
 rfc1 / 9.1 / "Soak":
-  tests: [TestJournalSoak, TestJournalSoakFindsPlantedDescriptor, TestJournalSoakFindsPlantedFootprint]
+  tests: [TestJournalSoak, TestJournalSoakFindsPlantedDescriptor, TestJournalSoakFindsPlantedFootprint,
+          TestSoakRemovalChurnDrains]
 
 rfc0 / 1.4 / "clock bound":
   owner: 'RFC 8''s second part'

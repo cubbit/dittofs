@@ -288,3 +288,14 @@ type UnindexedRecord struct {
 	Version Version
 	Record  RecordRef
 }
+
+// LiveRecords reports how many header-only record registrations the journal
+// holds live. The count is the liveness itself, not an index figure: the
+// conformance rows read it to prove a settle's relay or a release spent a
+// registration, where the index's own counters — which drop the marker in the
+// same call — cannot tell the registration's end from the marker's.
+//
+// decision: exported for those conformance rows; the count carries no
+// production meaning yet. Withdrawn, or widened into a per-file read-out,
+// when an inspection read-out of the registrations themselves lands.
+func (in Inspector) LiveRecords() int { return in.c.LiveRecords() }

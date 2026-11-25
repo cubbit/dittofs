@@ -166,7 +166,7 @@ func (t *Tracker) markTaken(rec Rec) {
 // reads.
 func (t *Tracker) retest(files ...core.FileID) {
 	t.rm.Lock()
-	rel := make([]Rec, 0, 8)
+	rel := make([]spentRec, 0, 8)
 	seen := make(map[core.FileID]struct{}, len(files))
 	for _, f := range files {
 		if _, ok := seen[f]; ok {
@@ -175,22 +175,28 @@ func (t *Tracker) retest(files ...core.FileID) {
 		seen[f] = struct{}{}
 		for rec, n := range t.recs[f] {
 			for range n {
-				if t.droppableLocked(rec) && t.take(rec) {
-					t.forgetTaken(rec)
-					t.markTaken(rec)
-					t.releasedSpent(rec)
-					rel = append(rel, rec)
+				if !t.droppableLocked(rec) {
+					continue
 				}
+				delta, taken := t.take(rec)
+				if !taken {
+					continue
+				}
+				t.forgetTaken(rec)
+				t.markTaken(rec)
+				t.releasedSpent(rec)
+				rel = append(rel, spentRec{rec: rec, delta: delta})
 			}
 		}
 	}
 	// Every taken registration leaves the registry here, under the walk's
 	// lock, before any count moves: the registry is the release's authority,
 	// so a caller's paired Unregister after the re-test takes nothing from
-	// it, and only a take that succeeded carries a count away.
+	// it, and only a take that succeeded carries a count away — as many
+	// units as the identity class it left standing alone was owed.
 	t.rm.Unlock()
-	for _, rec := range rel {
-		t.releaseCount(rec)
+	for _, s := range rel {
+		t.releaseCount(s.rec, s.delta)
 	}
 }
 
@@ -325,6 +331,16 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // busy journal shows in a profile.
 func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	t.rm.Lock()
+	// The in-flight class gate's clear: this sweep is the end of the
+	// hand-over the worker marked, and the takes below have re-held each
+	// swept class's survivor or emptied it, so every mark naming this
+	// segment goes with them and the classes' candidates answer from their
+	// own holds again.
+	for id, retiring := range t.inflight {
+		if retiring == seg {
+			delete(t.inflight, id)
+		}
+	}
 	// The released set left with the segment's bytes: a record the re-test
 	// spent is no longer recoverable once nothing holds the bytes its
 	// release covered.
@@ -346,7 +362,7 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 		}
 		st.mu.Unlock()
 	}
-	rel := make([]Rec, 0, 8)
+	rel := make([]spentRec, 0, 8)
 	for f, rs := range t.recs {
 		for rec := range rs {
 			if rec.Seg != seg {
@@ -358,11 +374,17 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 			// were live: a take that refused (nothing left of the record)
 			// releases nothing. The zero file a forget record registers
 			// under is walked here like any other, whatever the files list
-			// named.
-			for t.take(rec) {
+			// named. A sweep that empties a placement of an identity class
+			// another segment still holds re-holds that one, by take()
+			// under this same lock.
+			for {
+				delta, taken := t.take(rec)
+				if !taken {
+					break
+				}
 				t.forgetTaken(rec)
 				t.markTaken(rec)
-				rel = append(rel, rec)
+				rel = append(rel, spentRec{rec: rec, delta: delta})
 			}
 		}
 		if len(rs) == 0 {
@@ -390,8 +412,12 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 			// take() until the registry holds no more of the record, like
 			// the records walk above: a caller may have registered the
 			// forget twice, and each live registration lowers one count.
-			for t.take(rec) {
-				rel = append(rel, rec)
+			for {
+				delta, taken := t.take(rec)
+				if !taken {
+					break
+				}
+				rel = append(rel, spentRec{rec: rec, delta: delta})
 			}
 		}
 	}
@@ -426,8 +452,8 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	}
 	t.rm.Unlock()
 	t.retireHolds(seg)
-	for _, rec := range rel {
-		t.releaseCount(rec)
+	for _, s := range rel {
+		t.releaseCount(s.rec, s.delta)
 	}
 	t.forget(seg)
 	t.ix.RetireSegment(seg)
