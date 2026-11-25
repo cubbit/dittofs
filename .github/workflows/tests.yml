@@ -81,8 +81,11 @@ jobs:
     steps:
       # Full history: on a pull request, dt plan --base compares the branch
       # with where it left its base, so a docs-only change plans no cell. In
-      # the merge queue it gets no base and plans every cell of the tier, so
-      # gate never passes on a change it did not test.
+      # the merge queue dt plan --docs-only-base compares the group with its
+      # parent, the group ahead of it, only to find a pull request whose
+      # changes are all documentation, which plans no cell; any other plans
+      # every cell of the tier, and with ALLGREEN nothing merges until every
+      # group ahead has passed, so gate never passes on code nobody tested.
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -111,6 +114,10 @@ jobs:
         id: plan
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+          # The merge queue tests every cell, so a group gets no BASE. Its own
+          # base only lets a group whose changes are all documentation plan
+          # nothing, as such a pull request does.
+          QUEUE_BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
           SUITE: ${{ inputs.suite }}
           # decision: on feat/storage-v2 the data path answers unavailable until
           # the adapters run on vfs.Service, so the data-path suites are skipped
@@ -125,7 +132,7 @@ jobs:
           V2: ${{ github.ref == 'refs/heads/feat/storage-v2' || github.base_ref == 'feat/storage-v2' || github.event.merge_group.base_ref == 'refs/heads/feat/storage-v2' }}
         run: |
           set -o pipefail
-          "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} --json > "$RUNNER_TEMP/plan.json"
+          "$RUNNER_TEMP/dt" plan --tier "$TIER" ${BASE:+--base "$BASE"} ${QUEUE_BASE:+--docs-only-base "$QUEUE_BASE"} --json > "$RUNNER_TEMP/plan.json"
           # The skip names the suites it drops on feat/storage-v2. The select
           # after it keeps only the suites that have moved in (the header), so a
           # new suite runs only once it is named there.

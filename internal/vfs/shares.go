@@ -33,6 +33,8 @@ func (fs *Filesystem) Root(ctx context.Context, c vfs.Call, ref vfs.ShareRef) (v
 	var share entity.ShareID
 	ix := fs.meta.ShareIndex()
 	switch {
+	case ref == vfs.ShareRef{} && hostRefused(c, hostMount):
+		return nil, vfs.ShareInfo{}, vfs.ErrInvalid
 	case ref == vfs.ShareRef{}:
 		t, err := fs.tree(ctx)
 		if err != nil {
@@ -49,7 +51,7 @@ func (fs *Filesystem) Root(ctx context.Context, c vfs.Call, ref vfs.ShareRef) (v
 	if err != nil {
 		return nil, vfs.ShareInfo{}, storeErr(err)
 	}
-	a, release, err := fs.admit(ctx, c, share, true, false)
+	a, release, err := fs.admit(ctx, c, share, hostMount)
 	if err != nil {
 		return nil, vfs.ShareInfo{}, err
 	}
@@ -59,7 +61,9 @@ func (fs *Filesystem) Root(ctx context.Context, c vfs.Call, ref vfs.ShareRef) (v
 		return nil, vfs.ShareInfo{}, storeErr(err)
 	}
 	info := shareInfo(a.share, a.policy)
-	if info.MaximalAccess, err = fs.authz.Rights(ctx, a.caller, h, nil, allRights); err != nil {
+	// The root's maximal access is an open's, so unless privilege counts on
+	// every call it leaves out what only privilege grants.
+	if info.MaximalAccess, err = fs.authz.Rights(ctx, forOpen(a.caller, c, false), h, nil, allRights); err != nil {
 		return nil, vfs.ShareInfo{}, storeErr(err)
 	}
 	return h, info, nil
@@ -102,7 +106,7 @@ func (fs *Filesystem) ListShares(ctx context.Context, c vfs.Call) ([]vfs.ShareIn
 	}
 	var out []vfs.ShareInfo
 	for _, sh := range shares {
-		a, ok, err := fs.wouldAdmit(ctx, c, sh.ID, true)
+		a, ok, err := fs.wouldAdmit(ctx, c, sh.ID, hostMount)
 		if err != nil {
 			return nil, err
 		}
@@ -119,10 +123,10 @@ func (fs *Filesystem) ListShares(ctx context.Context, c vfs.Call) ([]vfs.ShareIn
 // wouldAdmit reports whether the call c would be admitted to share, now
 // or, for a paused share, once it resumes: its security minimums, client
 // rules and resolution run as for an enabled share. It answers the share and
-// its policy as read; secure false skips the minimums, as admit's does. It
+// its policy as read; w is as admit takes it. It
 // counts nothing, and errs wherever admission failed rather than refused.
-func (fs *Filesystem) wouldAdmit(ctx context.Context, c vfs.Call, share entity.ShareID, secure bool) (*admitted, bool, error) {
-	a, err := fs.check(ctx, c, share, secure, true, false)
+func (fs *Filesystem) wouldAdmit(ctx context.Context, c vfs.Call, share entity.ShareID, w how) (*admitted, bool, error) {
+	a, err := fs.check(ctx, c, share, true, w)
 	switch {
 	case err == nil, errors.Is(err, vfs.ErrDelay):
 		return a, true, nil
@@ -171,7 +175,7 @@ func (fs *Filesystem) SecInfo(ctx context.Context, c vfs.Call, dir vfs.Handle, n
 		share = (*[16]byte)(&in)
 	}
 	if share != nil {
-		a, release, err := fs.admit(ctx, c, *share, false, false)
+		a, release, err := fs.admit(ctx, c, *share, unsecured)
 		if err != nil {
 			return nil, err
 		}
@@ -180,7 +184,7 @@ func (fs *Filesystem) SecInfo(ctx context.Context, c vfs.Call, dir vfs.Handle, n
 	}
 	var out []vfs.AuthFlavor
 	for _, share := range below {
-		a, ok, err := fs.wouldAdmit(ctx, c, share, false)
+		a, ok, err := fs.wouldAdmit(ctx, c, share, unsecured)
 		if err != nil {
 			return nil, err
 		}

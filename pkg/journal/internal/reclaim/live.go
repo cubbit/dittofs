@@ -611,7 +611,7 @@ func (t *Tracker) take(rec Rec) (delta int64, taken bool) {
 		if last && len(class) == 2 {
 			for other := range class {
 				if other != rec.Seg {
-					t.raiseDeferred(other, t.segWeight(class, other))
+					t.raiseDeferred(class, other)
 				}
 			}
 		}
@@ -642,19 +642,33 @@ func (t *Tracker) take(rec Rec) (delta int64, taken bool) {
 // under the same rm the take that empties its class's other placement runs
 // in: the class held nothing while two placements stood, and its last
 // placement holds again — by that placement's registration count — the
-// moment the other goes. A raise makes no segment less held, so it fires no
-// candidacy and reads no crossing.
-func (t *Tracker) raiseDeferred(seg core.SegmentID, by int64) {
+// moment the other goes. The raised placements' files enter the survivor's
+// files table beside the count: the carry's walk enumerates a segment's
+// registrations through that table alone, and a survivor whose placements
+// all arrived as the carry's own copies, which enter no file, would answer
+// held over records no walk can reach. A raise makes no segment less held,
+// so it fires no candidacy and reads no crossing.
+func (t *Tracker) raiseDeferred(class map[core.SegmentID]map[Rec]struct{}, seg core.SegmentID) {
+	by := t.segWeight(class, seg)
 	if by <= 0 {
 		return
 	}
 	st := t.stateOf(seg)
 	if st == nil {
-		// A live placement implies the state its registrations counted;
-		// answering a registry that drifted apart costs nothing.
+		// A class collapses only over records its segments registered, and
+		// a raise is the sole path that counts weight a segment carries
+		// while holding no state: the doubling branch registers a carried
+		// copy onto a class two segments wide without creating state, so
+		// a survivor whose placements all arrived as copies reaches the
+		// raise with no state to name its files or count. This branch is
+		// that survivor's state ever, not a fallback for a drifted
+		// registry.
 		st = t.entry(seg)
 	}
 	st.mu.Lock()
+	for rec := range class[seg] {
+		st.files[rec.File] = struct{}{}
+	}
 	st.live.Add(by)
 	st.mu.Unlock()
 }
@@ -806,11 +820,12 @@ func (t *Tracker) pruneClassesInFlight() {
 // durable sweep runs first performs the transition: the sweep's takes find
 // the class already collapsed — one segment, no re-hold — and this call
 // finds the placements already released. A failed directory sync, whose
-// SegmentRetired never runs, keeps the survivor held through it — the two
-// hand-over paths that consult no in-flight gate (a pass's own retirement
-// of its source, and the open's emptying of a recovery-ended segment)
-// would otherwise retire a two-wide class's survivor while its unlink is
-// not durable, destroying a removal record's last live placements.
+// SegmentRetired never runs, keeps the survivor held through it — the one
+// hand-over path that consults no in-flight gate (the open's emptying of
+// a recovery-ended segment, which runs alone) would otherwise retire a
+// two-wide class's survivor while its unlink is not durable, destroying a
+// removal record's last live placements; the pass's own hand-over goes
+// through the gate.
 func (t *Tracker) SegmentUnlinked(seg core.SegmentID) {
 	t.rm.Lock()
 	defer t.rm.Unlock()
@@ -824,7 +839,7 @@ func (t *Tracker) SegmentUnlinked(seg core.SegmentID) {
 			// which holds from here, by all its placements' counts.
 			for other := range class {
 				if other != seg {
-					t.raiseDeferred(other, t.segWeight(class, other))
+					t.raiseDeferred(class, other)
 				}
 			}
 		}

@@ -31,7 +31,7 @@ rfc1 / 9.4 / A / "release frees nothing inside a segment":
 rfc1 / 9.4 / A / "repack copies the live part":
   tests: [TestRFC1A_RepackCopiesLivePart]
 rfc1 / 9.4 / A / "crash mid-repack":
-  tests: [TestRFC1A_CrashMidRepack]
+  tests: [TestRFC1A_CrashMidRepack, TestRFC1A_CrashAfterARemovalRecordCarriedToItsCopy, TestRFC1A_CrashWhileARemovalRecordsUnlinkIsNotDurable, TestRFC1A_CrashWhileARemovalRecordsCopyWaitsItsSync]
 rfc1 / 9.4 / A / "unlink under read":
   tests: [TestRFC1A_UnlinkUnderRead]
 rfc1 / 9.4 / A / "repack under read":

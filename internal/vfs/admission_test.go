@@ -96,7 +96,7 @@ func TestANewShareAdmitsNobodyUntilGranted(t *testing.T) {
 	ned := s.user(t, "ned", "", s.share, entity.AccessReadWrite)
 	call := withSIDs(ned.Principal, vfs.ProofSecret, nil, nil)
 	reached := func() (admitted, rooted, listed error) {
-		a, release, admitted := s.admit(ctx, call, fresh, true, false)
+		a, release, admitted := s.admit(ctx, call, fresh, 0)
 		if admitted == nil {
 			release()
 			if a.caller.Principal != ned.Principal {

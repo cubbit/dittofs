@@ -46,7 +46,13 @@ func (fs *Filesystem) Open(ctx context.Context, c vfs.Call, req vfs.OpenRequest)
 	if len(req.Name) > 0 {
 		at = req.Dir
 	}
-	a, release, err := fs.admitHandle(ctx, c, at)
+	// A host's lock service opens an existing file by handle, for a share
+	// reservation; any other HostCall open is refused at admission.
+	w := how(0)
+	if len(req.Name) == 0 && req.Disposition == vfs.OpenExisting && !req.DeleteOnClose && req.Reconnect == nil {
+		w = hostLock
+	}
+	a, release, err := fs.admitHandleFor(ctx, c, at, w)
 	if err != nil {
 		return vfs.OpenResult{}, err
 	}
@@ -58,8 +64,9 @@ func (fs *Filesystem) Open(ctx context.Context, c vfs.Call, req vfs.OpenRequest)
 		return fs.reconnect(ctx, a, c, req)
 	}
 	// The whole open, its lookup, create and truncate included, is decided
-	// as the open is: over SMB privileged only with backup or restore intent.
-	a.caller = forOpen(a.caller, c.Protocol, req.Backup)
+	// as the open is: unless privilege counts on every call, privileged only
+	// with backup or restore intent.
+	a.caller.Privileged = a.privileged && (privilegeOnEveryCall(c) || req.Backup)
 	switch {
 	case req.DeleteOnClose && req.Access&entity.Delete == 0:
 		// Refused before anything is created, as an open asking delete on
@@ -213,8 +220,8 @@ func (fs *Filesystem) grant(ctx context.Context, a *admitted, c vfs.Call, req vf
 		return vfs.OpenResult{}, nil, storeErr(err)
 	}
 	maximal := max
-	if cp.Privileged && c.Protocol == entity.ProtocolSMB {
-		if maximal, err = fs.authz.Rights(ctx, forOpen(cp, c.Protocol, false), h, via, entity.EntryRights); err != nil {
+	if cp.Privileged && !privilegeOnEveryCall(c) {
+		if maximal, err = fs.authz.Rights(ctx, forOpen(cp, c, false), h, via, entity.EntryRights); err != nil {
 			return vfs.OpenResult{}, nil, storeErr(err)
 		}
 	}
@@ -291,8 +298,8 @@ func (fs *Filesystem) openedFile(ctx context.Context, a *admitted, h vfs.Handle,
 
 // reconnect attaches the durable open req names to the call's session, as
 // open state matches it, the attach holding no lock: it changes no file. Its maximal
-// access is the caller's without privilege over SMB, as a new open answers
-// it. The reads after the attach run on a context the call's end does not
+// access is the caller's without privilege unless privilege counts on every
+// call, as a new open answers it. The reads after the attach run on a context the call's end does not
 // cancel, though Drain's deadline does, so a client dropping mid-reconnect
 // does not fail them.
 //
@@ -321,7 +328,7 @@ func (fs *Filesystem) reconnect(ctx context.Context, a *admitted, c vfs.Call, re
 	f, err := fs.file(ctx, a, h)
 	var max entity.AccessMask
 	if err == nil {
-		max, err = fs.authz.Rights(ctx, forOpen(a.caller, c.Protocol, false), h, via, entity.EntryRights)
+		max, err = fs.authz.Rights(ctx, forOpen(a.caller, c, false), h, via, entity.EntryRights)
 		err = storeErr(err)
 	}
 	if err != nil {
@@ -368,14 +375,14 @@ func (fs *Filesystem) uncancelled(ctx context.Context) (context.Context, context
 	return ctx, func() { end(); cancel() }
 }
 
-// forOpen is c as an open over protocol p is decided: over SMB, which
-// confines privilege to a handle opened with backup or restore intent,
-// privileged only with that intent.
-func forOpen(c authz.Caller, p entity.Protocol, backup bool) authz.Caller {
-	if p == entity.ProtocolSMB && !backup {
-		c.Privileged = false
+// forOpen is cp as an open by call c is decided: unless c states
+// PrivilegeOnEveryCall, privilege is confined to a handle opened with backup
+// or restore intent, so privileged only with that intent.
+func forOpen(cp authz.Caller, c vfs.Call, backup bool) authz.Caller {
+	if !privilegeOnEveryCall(c) && !backup {
+		cp.Privileged = false
 	}
-	return c
+	return cp
 }
 
 // pseudoOpen answers an open in the pseudo-filesystem, h a pseudo directory.
@@ -413,7 +420,7 @@ func (fs *Filesystem) Downgrade(ctx context.Context, c vfs.Call, ref vfs.OpenRef
 		return 0, err
 	}
 	defer done()
-	a, unlock, release, err := fs.opened(ctx, c, ref, false)
+	a, unlock, release, err := fs.opened(ctx, c, ref, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -431,7 +438,7 @@ func (fs *Filesystem) ConfirmOpen(ctx context.Context, c vfs.Call, ref vfs.OpenR
 		return 0, err
 	}
 	defer done()
-	a, unlock, release, err := fs.opened(ctx, c, ref, false)
+	a, unlock, release, err := fs.opened(ctx, c, ref, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -451,7 +458,7 @@ func (fs *Filesystem) Close(ctx context.Context, c vfs.Call, ref vfs.OpenRef, q 
 		return nil, err
 	}
 	defer done()
-	a, unlock, release, err := fs.opened(ctx, c, ref, true)
+	a, unlock, release, err := fs.opened(ctx, c, ref, releasing|hostLock)
 	if err != nil {
 		return nil, err
 	}
@@ -467,7 +474,7 @@ func (fs *Filesystem) Close(ctx context.Context, c vfs.Call, ref vfs.OpenRef, q 
 // opened admits a call through the open ref names to the share of the
 // handle it carries, and takes that file's admission lock. It answers the
 // lock's release, then the call's uncount: a pseudo directory's handle holds
-// no open, BadState. releases is a call that only releases state, as admit
+// no open, BadState. w is as admit
 // takes it. Open state refuses the open to any client but its own
 // and any principal but its opener, NotYours.
 //
@@ -480,8 +487,8 @@ func (fs *Filesystem) Close(ctx context.Context, c vfs.Call, ref vfs.OpenRef, q 
 // a delegation here (onSession), and an open, lock state or grant by the
 // mark open state keeps on it, both NotYours, Sessioned. Overturned if a
 // second NFSv4 adapter is ever written that does not read them.
-func (fs *Filesystem) opened(ctx context.Context, c vfs.Call, ref vfs.OpenRef, releases bool) (*admitted, func(), func(), error) {
-	a, release, err := fs.admitRef(ctx, c, ref, releases)
+func (fs *Filesystem) opened(ctx context.Context, c vfs.Call, ref vfs.OpenRef, w how) (*admitted, func(), func(), error) {
+	a, release, err := fs.admitRef(ctx, c, ref, w)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -495,11 +502,11 @@ func (fs *Filesystem) opened(ctx context.Context, c vfs.Call, ref vfs.OpenRef, r
 
 // admitRef is opened short of the admission lock: the call admitted through
 // ref, and its uncount.
-func (fs *Filesystem) admitRef(ctx context.Context, c vfs.Call, ref vfs.OpenRef, releases bool) (*admitted, func(), error) {
+func (fs *Filesystem) admitRef(ctx context.Context, c vfs.Call, ref vfs.OpenRef, w how) (*admitted, func(), error) {
 	if err := onSession(c, &ref); err != nil {
 		return nil, nil, err
 	}
-	a, release, err := fs.admitHandleFor(ctx, c, ref.Handle, releases)
+	a, release, err := fs.admitHandleFor(ctx, c, ref.Handle, w)
 	if err == nil && a == nil {
 		err = &vfs.StateError{Kind: vfs.StateBadState}
 	}
@@ -507,7 +514,26 @@ func (fs *Filesystem) admitRef(ctx context.Context, c vfs.Call, ref vfs.OpenRef,
 		release()
 		return nil, nil, err
 	}
+	fs.through(ctx, a, c, &ref)
 	return a, release, nil
+}
+
+// through gives a caller whose privilege counts only on a backup-intent open
+// that privilege back for a call through ref, when ref names an open granted
+// privileged, or a lock state of one. A ref open state does not find leaves
+// the caller unprivileged; the call's own open-state check refuses it.
+func (fs *Filesystem) through(ctx context.Context, a *admitted, c vfs.Call, ref *vfs.OpenRef) {
+	if ref == nil || !a.privileged || privilegeOnEveryCall(c) || ref.Kind == openstate.RefAnonymous {
+		return
+	}
+	share, id, err := ref.Handle.Parse()
+	if err != nil {
+		return
+	}
+	f := openstate.FileKey{Share: share, Shard: ref.State.Shard, ID: id}
+	if ok, err := fs.opens.Privileged(ctx, a.who(), f, *ref); err == nil && ok {
+		a.caller.Privileged = true
+	}
 }
 
 // closed runs what a close left file f of share, a close of the service's or
@@ -573,13 +599,16 @@ func (fs *Filesystem) unlinkClosed(ctx context.Context, share entity.ShareID, f 
 		if errors.Is(err, vfs.ErrGrace) {
 			next, wait = try, unlinkWait // a grace answer spends no retry
 		}
+		call := ctx // the retry keeps the call's values, its protocol label among them
 		if !fs.background(func(ctx context.Context) {
 			t := time.NewTimer(wait)
 			defer t.Stop()
 			select {
 			case <-t.C:
 				defer fs.count(share)()
-				fs.unlinkClosed(ctx, share, f, d, next)
+				rctx, cancel := fs.detached(call)
+				defer cancel()
+				fs.unlinkClosed(rctx, share, f, d, next)
 			case <-ctx.Done():
 				fs.refused(f, ctx.Err())
 			}
@@ -615,7 +644,9 @@ func (fs *Filesystem) refused(f entity.FileID, err error) {
 // refused, and the file keeps its name. Overturned once the store's Unlink
 // takes an open's grant.
 func (fs *Filesystem) deferredUnlink(ctx context.Context, share entity.ShareID, f entity.FileID, d entity.DeleteRecord) (*vfs.UnlinkResult, error) {
-	a, err := fs.marker(ctx, share, d)
+	// A delete on close takes the name rules of an open that keeps its name.
+	c := vfs.Call{Caps: vfs.OpenFilesKeepNames}
+	a, err := fs.marker(ctx, c, share, d)
 	if err != nil {
 		return nil, err
 	}
@@ -630,17 +661,18 @@ func (fs *Filesystem) deferredUnlink(ctx context.Context, share entity.ShareID, 
 		case seen.ID != f:
 			return nil, nil
 		}
-		r, again, err := fs.unlinkLocked(ctx, a, vfs.Call{Protocol: entity.ProtocolSMB}, dir, d.Name, seen, vfs.OpUnlink)
+		r, again, err := fs.unlinkLocked(ctx, a, c, dir, d.Name, seen, vfs.OpUnlink)
 		if !again {
 			return &r, err
 		}
 	}
 }
 
-// marker is the admission of the principal d names as marking a file of
-// share delete on close, resolved on the share through ResolveMark, which
-// does not hold it to identity.ntlm, and never from admission's cache.
-func (fs *Filesystem) marker(ctx context.Context, share entity.ShareID, d entity.DeleteRecord) (*admitted, error) {
+// marker is the admission, for the service's own call c, of the principal d
+// names as marking a file of share delete on close, resolved on the share
+// through ResolveMark, which does not hold it to identity.ntlm, and never
+// from admission's cache.
+func (fs *Filesystem) marker(ctx context.Context, c vfs.Call, share entity.ShareID, d entity.DeleteRecord) (*admitted, error) {
 	sh, p, err := fs.meta.ShareIndex().Share(ctx, share)
 	if err != nil {
 		return nil, storeErr(err)
@@ -654,17 +686,18 @@ func (fs *Filesystem) marker(ctx context.Context, share entity.ShareID, d entity
 	}
 	id := vfs.Identity{Proof: vfs.ProofSecret, Evidence: vfs.Evidence{Principal: d.By}}
 	a := &admitted{share: sh, policy: p}
-	a.caller = authz.Caller{Share: sh.ID, Proved: id, Protocol: entity.ProtocolSMB}
-	c, err := fs.identity.ResolveMark(ctx, d.By, p.SharePolicy(sh.GrantVersion), ro)
+	a.caller = authz.Caller{Share: sh.ID, Proved: id, Caps: c.Caps}
+	r, err := fs.identity.ResolveMark(ctx, d.By, p.SharePolicy(sh.GrantVersion), ro)
 	if err != nil {
 		return nil, err
 	}
-	if a.caller.Identity, err = acting(c, false); err != nil {
+	if a.caller.Identity, err = acting(r, false); err != nil {
 		return nil, err
 	}
-	a.caller.Mapped = c.Mapped
-	// The unlink is privileged only when the marking open was: over SMB an
-	// admin's open without backup intent was decided without privilege.
+	a.caller.Mapped = r.Mapped
+	// The unlink is privileged only when the marking open was: unless
+	// privilege counts on every call, an admin's open without backup intent
+	// was decided without privilege.
 	a.caller.Privileged = d.Privileged
 	return a, nil
 }

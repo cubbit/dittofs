@@ -205,17 +205,19 @@ func (t *Table) throughGrant(who Caller, ref OpenRef, write bool, fn func(e *ent
 // commit, with a callback run under it, if a caller is found that changes a
 // file without that lock.
 //
-// decision: only a caller that is not SMB is refused a remove or rename
-// against a deny-delete, and only an SMB caller is refused one of a
-// directory an open was made through. An SMB client removes and renames the
-// source through an open holding delete access, whose own deny modes were
-// judged at open, so judging its own open's deny-delete again would refuse a
-// rename through an exclusive handle; and POSIX allows an NFS rename of a
-// directory with open children. That covers the source only: the target an
-// SMB rename replaces, ChangeReplace, was never opened by the renamer, and is
-// refused ErrAccess while any client's open of it is held, as Windows refuses it.
-// Judge every caller if a protocol is served that removes a name without an
-// open of its own.
+// A remove or rename is refused against every open of the file denying
+// delete but via, the open the change comes through: via's own deny modes
+// were judged when it was opened, so judging them again would refuse a
+// rename through an exclusive handle, and every other open shares delete
+// with it or it was not granted. A change through no open, as NFS makes
+// one, is judged against them all.
+//
+// decision: only a caller stating OpenFilesKeepNames is refused a remove or
+// rename of a directory an open was made through, since POSIX allows a
+// rename of a directory with open children; and only it is refused a rename
+// replacing a file any client holds open, ChangeReplace, refused since the
+// renamer never opened the target. Narrow either if a client is seen relying
+// on a rename these refuse.
 //
 // ChangeTimes through via names a time set made on via's grant, and is
 // refused ErrAccess unless that grant holds write attributes. A caller
@@ -233,10 +235,11 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 	case errors.As(err, &frozen), err != nil && what&(ChangeRemove|ChangeRename) != 0:
 		return err
 	}
-	smb := who.Protocol == entity.ProtocolSMB
+	keep := who.keepsNames()
 	var out outbox
 	err = t.step(f.ID, func(e *entry) error {
 		own := func(g *grant) bool { return g.client == who.Client && (!g.covers() || e.openedBy(g, who.Principal)) }
+		var through *open // the open the change comes through
 		if via != nil {
 			_, k, err := t.findOpen(who, *via)
 			if err != nil {
@@ -249,6 +252,7 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 			if !t.mayUse(o, who) {
 				return ErrNotYours // an open is used only by its opener
 			}
+			through = o
 			own = func(g *grant) bool { return g.heldBy(who.Client, o.lease, o) }
 			// A time set through an open stores the client's times on the
 			// open's grant rather than the caller's own rights, so the
@@ -264,19 +268,19 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 		if what&(ChangeRename|ChangeAddEntry) != 0 && e.pending != nil {
 			return ErrDeletePending
 		}
-		if smb && what&ChangeReplace != 0 {
+		if keep && what&ChangeReplace != 0 {
 			for _, h := range e.opens {
 				if h.Clone == nil { // a clone's hold denies nothing
 					return ErrAccess
 				}
 			}
 		}
-		if what&(ChangeRemove|ChangeRename) != 0 && !smb {
-			// Every open is judged, a named stream's too: a remove or rename
-			// of the base is its delete.
+		if what&(ChangeRemove|ChangeRename) != 0 {
+			// Every open but via is judged, a named stream's too: a remove or
+			// rename of the base is its delete.
 			var hs []*open
 			for _, h := range e.opens {
-				if !conflict.Shares(entity.Delete, 0, h.Mode.Access, h.Mode.Deny) {
+				if h != through && !conflict.Shares(entity.Delete, 0, h.Mode.Access, h.Mode.Deny) {
 					hs = append(hs, h)
 				}
 			}
@@ -284,7 +288,7 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 				return err
 			}
 		}
-		if what&(ChangeRemove|ChangeRename) != 0 && smb {
+		if what&(ChangeRemove|ChangeRename) != 0 && keep {
 			t.idx.Lock()
 			children := t.via[f.ID] > 0
 			t.idx.Unlock()

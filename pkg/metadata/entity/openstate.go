@@ -28,6 +28,19 @@ func (p Protocol) String() string                { return enumString(protocols, 
 func (p Protocol) MarshalText() ([]byte, error)  { return enumMarshal(protocols, p) }
 func (p *Protocol) UnmarshalText(b []byte) error { return enumUnmarshal(protocols, p, b) }
 
+// labels is each kind's observability label, RFC 25's protocol value: NLM
+// counts under nfs3 with NFS's other auxiliary services.
+var labels = []string{ProtocolNFSv3: "nfs3", ProtocolNFSv4: "nfs4", ProtocolNLM: "nfs3", ProtocolSMB: "smb"}
+
+// Label is p's observability label, "none" for no kind: what a metric and an
+// audit record write for the protocol.
+func (p Protocol) Label() string {
+	if int(p) < len(labels) && labels[p] != "" {
+		return labels[p]
+	}
+	return "none"
+}
+
 // ClientID, OpenID and LockID are issued unique across the installation and
 // never reused. None is random: an ID a client presents alone is checked
 // against its holder and principal by the caller.
@@ -152,6 +165,11 @@ var recoveryKinds = []string{RecoverStatus: "status", RecoverRefusal: "refusal",
 func (k RecoveryKind) String() string                { return enumString(recoveryKinds, k) }
 func (k RecoveryKind) MarshalText() ([]byte, error)  { return enumMarshal(recoveryKinds, k) }
 func (k *RecoveryKind) UnmarshalText(b []byte) error { return enumUnmarshal(recoveryKinds, k, b) }
+
+// RenewsLease reports whether a client of this kind renews a lease: one told
+// of a loss by a status or a refusal keeps calling; one that reconnects or is
+// sent a notice does not.
+func (k RecoveryKind) RenewsLease() bool { return k == RecoverStatus || k == RecoverRefusal }
 
 // NSMBoot is an NLM host's NSM state number as its client's Boot: big-endian
 // in the last four bytes, so a host that restarts with a new number is a

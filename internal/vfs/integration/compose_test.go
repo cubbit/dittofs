@@ -65,7 +65,7 @@ func composeOver(t *testing.T, wrap func(c *composition, e filesystem.Content) f
 	// The administrator holds a uid, so it signs in as itself rather than as
 	// the share's anonymous principal.
 	c.user(t, c.FS.Admin.Principal, "admin", "100", entity.AccessAdmin)
-	c.admin = signedIn(c.FS.Admin.Principal)
+	c.admin = signedInAdmin(c.FS.Admin.Principal)
 	c.alice = entity.User{Principal: entity.NewUser()}
 	c.user(t, c.alice.Principal, "alice", "60001", entity.AccessReadWrite)
 	c.bob = entity.User{Principal: entity.NewUser()}
@@ -102,6 +102,16 @@ func signedIn(p entity.Principal) vfs.Call {
 		Proof: vfs.ProofTicket, Protection: vfs.ProtectionPrivacy,
 		Evidence: vfs.Evidence{Principal: p}, Client: client,
 	}}
+}
+
+// signedInAdmin is signedIn for the fixture's administrator. It states
+// PrivilegeOnEveryCall, so the setup it runs acts with the administrator's
+// privilege on every call, as an NFS client's would; a test that needs the
+// privilege limited to backup-intent opens builds its own call.
+func signedInAdmin(p entity.Principal) vfs.Call {
+	c := signedIn(p)
+	c.Caps = vfs.PrivilegeOnEveryCall
+	return c
 }
 
 // owned creates name in the share's root, owned by owner with mode, as the

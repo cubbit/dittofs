@@ -1,6 +1,7 @@
 package node_test
 
 import (
+	"errors"
 	"maps"
 	"net/http"
 	"reflect"
@@ -199,5 +200,27 @@ func TestStartOverAFreshInstallationPassesTheGate(t *testing.T) {
 
 	if got := rec.Formats; !reflect.DeepEqual(got, settings.Versions()) {
 		t.Errorf("the node record's ranges: got %v, want %v", got, settings.Versions())
+	}
+}
+
+// The store the node opens writes a settings row up to the newest schema the
+// settings table reads, and refuses one above it, so no node writes a row
+// its own readers refuse.
+func TestNodeStoreWritesUpToTheSettingsSchema(t *testing.T) {
+	t.Parallel()
+
+	h := nodetest.New(t)
+	cp := h.Node().Meta().ControlPlane()
+	top := settings.Versions()[entity.FormatSettings].Max
+	row := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "k", Value: []byte("k"), Schema: top}
+
+	gen, err := cp.PutSetting(t.Context(), row, 0)
+	if err != nil {
+		t.Fatalf("put at schema %d, the newest the table reads: %v, want written", top, err)
+	}
+
+	row.Schema = top + 1
+	if _, err := cp.PutSetting(t.Context(), row, gen); !errors.Is(err, entity.ErrNewerSchema) {
+		t.Errorf("put at schema %d: %v, want %v", row.Schema, err, entity.ErrNewerSchema)
 	}
 }

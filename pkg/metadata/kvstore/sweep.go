@@ -218,7 +218,7 @@ type expiring struct {
 // when it is not there, or is an operation still running. A session's hashes
 // are read only up to one more than a batch with left keys can trim.
 func expiringIn(tx kv.Txn, tag byte, tail []byte, left int, sw *Swept) (expiring, error) {
-	c := controlTx{tx, new(uint64)}
+	c := controlTx{tx: tx, pgen: new(uint64)}
 	switch tag {
 	case keys.XPIdempotency:
 		key := append([]byte{keys.KindIK}, tail...)

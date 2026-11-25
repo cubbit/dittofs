@@ -174,7 +174,7 @@ func TestAReclaimFromAClientOwingNothingIsNoGrace(t *testing.T) {
 	info.Proposal = &p
 	id, _, err := s.Connect(ctx, c, info, &vfstest.Callbacks{})
 	must(t, err)
-	c.Protocol, c.Client, c.Session = entity.ProtocolNFSv4, id, vfs.SessionRef{ID: 1}
+	c.Caps, c.Client, c.Session = vfs.NFSv4Caps, id, vfs.SessionRef{ID: 1}
 	req := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData, Owner: vfs.LockOwner{Client: id, Name: []byte("owner")}, Reclaim: true}
 	if _, err := s.Open(ctx, c, req); !errors.Is(err, &vfs.StateError{Kind: vfs.StateNoGrace}) {
 		t.Errorf("a reclaim from a client owing nothing: %v, want StateError NoGrace", err)

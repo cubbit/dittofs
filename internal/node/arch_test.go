@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/prof"
+	"gopkg.in/yaml.v3"
 )
 
 // configFields are the fields of Config: what the host supplies and the node
@@ -397,10 +398,10 @@ func (noImports) Import(path string) (*types.Package, error) {
 	return nil, errors.New("not loaded: " + path)
 }
 
-// enginewireImporters returns each non-test file of root's rows that imports
-// enginewire outside the two packages its package doc names: the node and
+// contentImporters returns each non-test file of root's rows that imports
+// content outside the two packages its package doc names: the node and
 // enginetest.
-func enginewireImporters(_ string, files []fileImports) ([]string, error) {
+func contentImporters(_ string, files []fileImports) ([]string, error) {
 	var bad []string
 	for _, r := range files {
 		if r.Test {
@@ -410,8 +411,8 @@ func enginewireImporters(_ string, files []fileImports) ([]string, error) {
 		if dir == "internal/node" || dir == "pkg/engine/enginetest" {
 			continue
 		}
-		if slices.Contains(r.Imports, module+"pkg/engine/enginewire") {
-			bad = append(bad, r.File+" imports enginewire")
+		if slices.Contains(r.Imports, module+"internal/node/content") {
+			bad = append(bad, r.File+" imports content")
 		}
 	}
 	slices.Sort(bad)
@@ -517,12 +518,12 @@ func settingsImports(_ string, files []fileImports) ([]string, error) {
 // whole files.
 //
 // decision: the link check lists the two binaries that ship, ./cmd/dfs and
-// ./cmd/dfsctl, as they are released: once per shipped GOOS, with cgo off,
-// on the host's GOARCH and with no build tags. The other mains (the rest of
+// ./cmd/dfsctl, as they are released: once per shipped GOOS and GOARCH, with
+// cgo off and with no build tags. The other mains (the rest of
 // cmd, test/spec-citations, scripts, the */gen and *gen generators) do not
 // ship and may link test helpers. Widen it when a shipped binary is added,
-// when the release turns cgo on or adds a GOOS, or when a file that ships
-// carries a GOARCH or tag constraint that could link a test-named package.
+// when the release turns cgo on or adds a GOOS or GOARCH, or when a file that
+// ships carries a tag constraint that could link a test-named package.
 // The build tags are set empty on go list's command line, which overrides a
 // -tags in GOFLAGS, from the environment or from go env -w alike.
 func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
@@ -613,29 +614,37 @@ func refersToWeakKey(f *ast.File, self bool) bool {
 	return found
 }
 
-// shippedGOOS are the systems the release builds dfs and dfsctl for.
-var shippedGOOS = []string{"linux", "darwin", "windows"}
+// shippedTargets are the GOOS and GOARCH pairs the release
+// builds dfs and dfsctl for; TestShippedTargetsMatchTheRelease holds them to
+// .goreleaser.yml.
+var shippedTargets = [][2]string{
+	{"linux", "amd64"}, {"linux", "arm64"},
+	{"darwin", "amd64"}, {"darwin", "arm64"},
+	{"windows", "amd64"}, {"windows", "arm64"},
+}
 
 // linkedTestPackages returns each package of the module rooted at root whose
-// name ends in test and which dfs or dfsctl links, for any shipped GOOS.
+// name ends in test and which dfs or dfsctl links, for any shipped GOOS and
+// GOARCH.
 func linkedTestPackages(root string) ([]string, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
-	for _, goos := range shippedGOOS {
+	for _, target := range shippedTargets {
+		goos, goarch := target[0], target[1]
 		cmd := exec.Command("go", "list", "-tags=", "-deps", "-f", "{{if and .Module .Module.Main}}{{.Name}} {{.Dir}}{{end}}", "./cmd/dfs", "./cmd/dfsctl")
 		cmd.Dir = abs
 		// The planted trees are modules of their own, outside any workspace.
 		// cmd.Environ sets PWD to cmd.Dir, so go list reports .Dir under abs
 		// even when root is reached through a symlink.
-		cmd.Env = append(cmd.Environ(), "GOWORK=off", "GOOS="+goos, "CGO_ENABLED=0")
+		cmd.Env = append(cmd.Environ(), "GOWORK=off", "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
 		if err != nil {
-			return nil, fmt.Errorf("go list -deps ./cmd/dfs ./cmd/dfsctl for %s: %w: %s", goos, err, stderr.String())
+			return nil, fmt.Errorf("go list -deps ./cmd/dfs ./cmd/dfsctl for %s/%s: %w: %s", goos, goarch, err, stderr.String())
 		}
 		for line := range strings.Lines(string(out)) {
 			name, dir, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
@@ -650,6 +659,52 @@ func linkedTestPackages(root string) ([]string, error) {
 		}
 	}
 	return slices.Collect(maps.Keys(seen)), nil
+}
+
+// shippedTargets is the release's own list: every build .goreleaser.yml makes
+// is of ./cmd/dfs or ./cmd/dfsctl, with cgo off, and each one's GOOS and GOARCH
+// pairs are exactly shippedTargets.
+func TestShippedTargetsMatchTheRelease(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".goreleaser.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Builds []struct {
+			ID     string   `yaml:"id"`
+			Main   string   `yaml:"main"`
+			Env    []string `yaml:"env"`
+			GOOS   []string `yaml:"goos"`
+			GOARCH []string `yaml:"goarch"`
+		} `yaml:"builds"`
+	}
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("parse .goreleaser.yml: %v", err)
+	}
+	if len(cfg.Builds) == 0 {
+		t.Fatal(".goreleaser.yml: no builds")
+	}
+	want := map[[2]string]bool{}
+	for _, target := range shippedTargets {
+		want[target] = true
+	}
+	for _, b := range cfg.Builds {
+		if b.Main != "./cmd/dfs" && b.Main != "./cmd/dfsctl" {
+			t.Errorf("build %s: main %q, want ./cmd/dfs or ./cmd/dfsctl, the binaries the link check lists", b.ID, b.Main)
+		}
+		if !slices.Contains(b.Env, "CGO_ENABLED=0") {
+			t.Errorf("build %s: env %q lacks CGO_ENABLED=0, which the link check assumes", b.ID, b.Env)
+		}
+		got := map[[2]string]bool{}
+		for _, goos := range b.GOOS {
+			for _, goarch := range b.GOARCH {
+				got[[2]string{goos, goarch}] = true
+			}
+		}
+		if !maps.Equal(got, want) {
+			t.Errorf("build %s: targets %v, want shippedTargets %v", b.ID, got, shippedTargets)
+		}
+	}
 }
 
 // The weak-key rule's link check builds dfs and dfsctl as the release does,
@@ -702,8 +757,8 @@ func TestImportRules(t *testing.T) {
 			}},
 		{"a file of dfs start renamed away", startImports, "start-imports-missing",
 			[]string{"cmd/dfs/commands/root.go is missing", "cmd/dfs/commands/start.go is missing"}},
-		{"who imports enginewire", enginewireImporters, "enginewire-importers",
-			[]string{"pkg/vfs/vfs.go imports enginewire"}},
+		{"who imports content", contentImporters, "content-importers",
+			[]string{"pkg/vfs/vfs.go imports content"}},
 		{"the CLI's closure", cliClosure, "cli-closure",
 			[]string{"internal/cli/output reaches pkg/metadata"}},
 		{"the wire types' imports", cliClosure, "apiv1-stdlib",
@@ -718,6 +773,8 @@ func TestImportRules(t *testing.T) {
 				"internal/dot/dot.go references GenerateWeakKeyFile",
 				"internal/dotvalue/value.go references GenerateWeakKeyFile",
 				"internal/install/weak.go references GenerateWeakKeyFile",
+				"pkg/amdtest is named amdtest and linked into a binary",
+				"pkg/armtest is named armtest and linked into a binary",
 				"pkg/attest is named attest and linked into a binary",
 				"pkg/keyprovider/keyprovider.go references GenerateWeakKeyFile",
 				"pkg/store/store.go references GenerateWeakKeyFile",
@@ -762,7 +819,8 @@ func TestImportRules(t *testing.T) {
 // store, apart from identity's server, also handed in behind interfaces the
 // API declares; nodetest, which imports Badger, is not allowed. Everything
 // else it reaches through an interface it declares or a value the node hands
-// it.
+// it. The node's content wiring, which imports the engine and open state,
+// is not allowed either.
 func componentAllowed(rel string) bool {
 	switch rel {
 	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1",
@@ -770,7 +828,8 @@ func componentAllowed(rel string) bool {
 		"pkg/settings", "pkg/secrets/secreterr", "pkg/auth/sid":
 		return true
 	}
-	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
+	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest") &&
+		!under(rel, "internal/node/content")
 }
 
 // onlyNames are the allowed packages of which a file may use only some
@@ -825,7 +884,7 @@ var libraries = []string{
 }
 
 // componentImports returns, for every package below root but root itself,
-// nodetest and testdata, each import of its non-test files, whatever their
+// content, nodetest and testdata, each import of its non-test files, whatever their
 // build tags, that is neither the standard library nor on componentAllowed.
 func componentImports(root string) ([]string, error) {
 	var bad []string
@@ -834,7 +893,9 @@ func componentImports(root string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
-			if path != root && (d.Name() == "nodetest" || d.Name() == "testdata") {
+			// content is the root's own: it composes the engine over open state
+			// and the store, the components the node imports.
+			if path != root && (d.Name() == "nodetest" || d.Name() == "testdata") || path == filepath.Join(root, "content") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -868,8 +929,10 @@ func componentImports(root string) ([]string, error) {
 	return bad, err
 }
 
-// No package under internal/node but node and nodetest imports a component's
-// implementation; a planted package importing the engine is caught.
+// No package under internal/node but node, content and nodetest imports a
+// component's implementation; a planted package importing the engine is
+// caught, and so is one importing content, while content importing the
+// engine is not.
 func TestNoComponentImports(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -880,6 +943,7 @@ func TestNoComponentImports(t *testing.T) {
 		{"testdata/arch/component-import", []string{
 			"api/allowed.go imports github.com/cubbit/dittofs/internal/identity",
 			"api/allowed.go imports github.com/dgraph-io/badger/v4",
+			"api/content.go imports github.com/cubbit/dittofs/internal/node/content",
 			"api/identity.go uses github.com/cubbit/dittofs/pkg/identity.CheckKeytab",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.KV",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.Counting",
@@ -1607,7 +1671,7 @@ func TestWritesThroughTheAdapter(t *testing.T) {
 
 // lifecycleCalls type-checks the package in dir, as import path path, and
 // returns every reference to a start or a stop of open state or the engine,
-// by its full name: enginewire's Start and Stop, and the table's and the
+// by its full name: content's Start and Stop, and the table's and the
 // engine's own, called or taken as a value.
 func lifecycleCalls(dir, path string) ([]string, error) {
 	_, _, info, err := typeCheck(dir, path)
@@ -1615,8 +1679,8 @@ func lifecycleCalls(dir, path string) ([]string, error) {
 		return nil, err
 	}
 	watched := map[string]bool{
-		module + "pkg/engine/enginewire.Start":       true,
-		module + "pkg/engine/enginewire.Stop":        true,
+		module + "internal/node/content.Start":       true,
+		module + "internal/node/content.Stop":        true,
 		"(*" + module + "pkg/openstate.Table).Start": true,
 		"(*" + module + "pkg/openstate.Table).Stop":  true,
 		"(*" + module + "pkg/engine.Engine).Start":   true,
@@ -1633,12 +1697,12 @@ func lifecycleCalls(dir, path string) ([]string, error) {
 }
 
 // The node starts and stops open state and the engine only through
-// enginewire's Start and Stop, once each, so the order between the two is
-// the one enginewire ships; a node calling the table's or the engine's own
+// content's Start and Stop, once each, so the order between the two is
+// the one content ships; a node calling the table's or the engine's own
 // Start, Stop or Close is caught.
-func TestNodeStartsThroughEnginewire(t *testing.T) {
+func TestNodeStartsThroughContent(t *testing.T) {
 	t.Parallel()
-	wire := module + "pkg/engine/enginewire."
+	wire := module + "internal/node/content."
 	for _, tc := range []struct {
 		dir  string
 		want []string
@@ -1760,7 +1824,7 @@ func importName(f *ast.File, p string) string {
 }
 
 // composeCalls counts, in the non-test files in dir, the references to
-// enginewire's Compose and the engine.Deps composite literals, each package
+// content's Compose and the engine.Deps composite literals, each package
 // under whatever name each file imports it.
 func composeCalls(dir string) (compose, deps int, err error) {
 	entries, err := os.ReadDir(dir)
@@ -1775,7 +1839,7 @@ func composeCalls(dir string) (compose, deps int, err error) {
 		if err != nil {
 			return 0, 0, err
 		}
-		wire := importName(f, module+"pkg/engine/enginewire")
+		wire := importName(f, module+"internal/node/content")
 		eng := importName(f, module+"pkg/engine")
 		named := func(x ast.Expr, pkg, sel string) bool {
 			s, ok := x.(*ast.SelectorExpr)
@@ -1802,7 +1866,7 @@ func composeCalls(dir string) (compose, deps int, err error) {
 	return compose, deps, nil
 }
 
-// The node references enginewire's Compose exactly once and writes no
+// The node references content's Compose exactly once and writes no
 // engine.Deps literal: a node building Deps itself instead of composing, one
 // composing twice, and one composing once but handing engine.New Deps it built
 // itself are caught. A Deps the node builds without a literal, from a
@@ -1823,7 +1887,7 @@ func TestNodeComposesOnce(t *testing.T) {
 			t.Fatalf("%s: %v", tc.dir, err)
 		}
 		if compose != tc.compose {
-			t.Errorf("%s: enginewire.Compose referenced %d times, want %d", tc.dir, compose, tc.compose)
+			t.Errorf("%s: content.Compose referenced %d times, want %d", tc.dir, compose, tc.compose)
 		}
 		if deps != tc.deps {
 			t.Errorf("%s: engine.Deps literals %d, want %d", tc.dir, deps, tc.deps)

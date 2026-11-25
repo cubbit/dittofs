@@ -21,7 +21,7 @@ var addr = netip.MustParseAddr("192.0.2.1")
 
 func nfs(name string, boot byte, owner entity.Principal) Client {
 	return Client{ClientRecord: entity.ClientRecord{
-		Protocol: entity.ProtocolNFSv4, Name: []byte(name), Boot: [8]byte{boot}, Owner: owner, Protect: !owner.IsZero(),
+		Protocol: entity.ProtocolNFSv4, Name: []byte(name), Boot: [8]byte{boot}, Owner: owner, Protect: !owner.IsZero(), Recovery: entity.RecoverStatus,
 	}}
 }
 
@@ -323,7 +323,10 @@ func TestProposalBounds(t *testing.T) {
 
 	big := nfs("big", 1, owner)
 	big.Adapter = make([]byte, kvstore.MaxAdapter+1)
+	norecovery := nfs("norecovery", 1, owner)
+	norecovery.Recovery = 0
 	for name, c := range map[string]Client{
+		"no Recovery":             norecovery,
 		"no name":                 nfs("", 1, owner),
 		"a name past 1,024 bytes": nfs(string(make([]byte, maxName+1)), 1, owner),
 		"an Adapter past 4 KiB":   big,

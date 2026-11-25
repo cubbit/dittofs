@@ -257,8 +257,8 @@ var leaveReachHook func()
 // leaveReach takes node's entry at gen, and every entry under an earlier
 // epoch, out of c's Reach.Sessions, under the client step; an entry at
 // another Gen was listed again since, and stays, and its Gen is returned.
-// An SMB record left with no live node and no state is released: nothing
-// else ends it.
+// A record of a client that reconnects, left with no live node and no state,
+// is released: nothing else ends it.
 //
 // ponytail: an entry under an earlier epoch is dropped whatever its node,
 // as liveReach counts it absent: on a single node every entry is this
@@ -286,7 +286,7 @@ func (t *Table) leaveReach(ctx context.Context, c entity.ClientID, node entity.N
 	if err != nil {
 		return 0, err
 	}
-	if kept != 0 || rec.Protocol != entity.ProtocolSMB || len(rec.Reach.Sessions) > 0 || t.holdsAny(c) {
+	if kept != 0 || rec.Recovery != entity.RecoverReconnect || len(rec.Reach.Sessions) > 0 || t.holdsAny(c) {
 		return kept, nil
 	}
 	// A parked open is held, so a durable open's Timeout still running
@@ -551,7 +551,7 @@ func (t *Table) install(ctx context.Context, share entity.ShareID, s ShardID, sh
 func (t *Table) reinstate(ctx context.Context, share entity.ShareID, s ShardID, sh *served, cl entity.ClientRecord, rec entity.OpenRecord, locks []entity.LockRecord, pending *entity.DeleteRecord, out *outbox) error {
 	t.cmu.Lock()
 	if _, ok := t.known[cl.ID]; !ok {
-		t.leases[cl.ID] = t.leaseEnd(cl.Protocol)
+		t.leases[cl.ID] = t.leaseEnd(cl.Recovery)
 		t.know(cl)
 		t.adopted[cl.ID] = struct{}{}
 	}

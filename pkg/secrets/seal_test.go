@@ -41,7 +41,7 @@ func sealKeys(t testing.TB) map[Role]keyprovider.KeyProvider {
 	keys := map[Role]keyprovider.KeyProvider{}
 
 	for _, role := range []Role{Protocol, Storage} {
-		b, err := keyprovider.GenerateKeyFile(passphrase)
+		b, err := keyprovider.GenerateWeakKeyFile(passphrase)
 		if err != nil {
 			t.Fatalf("generate the %s key file: %v", role, err)
 		}

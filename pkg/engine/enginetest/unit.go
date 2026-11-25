@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/journal"
@@ -90,7 +91,7 @@ func NewUnit(t *testing.T, o UnitOptions) *Unit {
 		},
 		Existence: u.FS.Store.Existence(),
 		Content:   u.FS.Store.Content(),
-		Lifecycle: u.FS.Store.Lifecycle().WithLogger(logger), // as enginewire composes it
+		Lifecycle: u.FS.Store.Lifecycle().WithLogger(logger), // as content composes it
 		Clock:     u.Clock,
 		Logger:    logger,
 		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
@@ -110,7 +111,7 @@ func NewUnit(t *testing.T, o UnitOptions) *Unit {
 		}
 		t.Cleanup(tb.Stop)
 		u.Opens = tb
-		d.Holds = openstate.EngineHolds(tb, u.FS.Store.Opens())
+		d.Holds = content.EngineHolds(tb, u.FS.Store.Opens())
 	}
 
 	for _, f := range o.Deps {

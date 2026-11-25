@@ -139,7 +139,7 @@ func (s *shares) nfs41(t *testing.T, name string, uid uint32, sess uint64) vfs.C
 	info.Proposal = &p
 	id, _, err := s.Connect(t.Context(), c, info, &vfstest.Callbacks{})
 	s.must(t, err)
-	c.Protocol, c.Client, c.Session = entity.ProtocolNFSv4, id, vfs.SessionRef{ID: sess}
+	c.Caps, c.Client, c.Session = vfs.NFSv4Caps, id, vfs.SessionRef{ID: sess}
 	return c
 }
 
@@ -754,7 +754,7 @@ func TestStartServesEveryShare(t *testing.T) {
 	g := n.restart(t)
 	g.reg.register(pc.Client, "", &vfstest.Callbacks{})
 	g.must(t, g.Start(ctx))
-	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Protocol: entity.ProtocolSMB, Sessioned: true}
+	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Caps: vfs.SMBCaps, Sessioned: true}
 	for _, o := range opens {
 		m := openstate.ReconnectMatch{Share: o.share, Create: o.create}
 		if _, err := g.tab.Opens().Reconnect(ctx, who, o.ref.Open, m, vfs.SessionRef{ID: 2}); err != nil {
@@ -1485,7 +1485,7 @@ func TestAnNFSOpenIsDecidedWithThePrivilege(t *testing.T) {
 	info.Proposal = &pr
 	id, _, err := n.Connect(ctx, c, info, &vfstest.Callbacks{})
 	n.must(t, err)
-	c.Protocol, c.Client, c.Session = entity.ProtocolNFSv4, id, vfs.SessionRef{ID: 1}
+	c.Caps, c.Client, c.Session = vfs.NFSv4Caps, id, vfs.SessionRef{ID: 1}
 	if _, err := n.Open(ctx, c, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}); err != nil {
 		t.Errorf("a privileged NFS open of a file denying everyone: %v, want granted", err)
 	}
@@ -2080,4 +2080,36 @@ func TestTwoReleasesOfOneFileDeleteItOnce(t *testing.T) {
 	if got := deletes; got != 1 {
 		t.Errorf("Deletes of one file released twice at once: %d, want 1", got)
 	}
+}
+
+// The deferred unlink of a delete-on-close directory runs under
+// OpenFilesKeepNames, as a Windows delete does: while an open made through
+// the directory is held, the unlink at the last close is refused, counted,
+// and the directory keeps its name. The open's child is unlinked first under
+// another spelling, on a share whose names fold, which leaves the open still
+// made through the directory while the directory is empty, so only that rule
+// can refuse it.
+func TestADeferredUnlinkKeepsTheNameOfADirectoryAnOpenWasMadeThrough(t *testing.T) {
+	n := newFoldNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	d := n.create(t, n.admin, n.fs.Root, "d", vfs.CreateDir)
+	n.create(t, n.admin, d.Handle, "f", vfs.CreateRegular)
+	child, err := n.Open(ctx, c, byName(d.Handle, "f", vfs.OpenExisting, entity.ReadData))
+	n.must(t, err)
+	_, err = n.Unlink(ctx, n.admin, vfs.Target{H: d.Handle}, []byte("F"))
+	n.must(t, err)
+	req := byName(n.fs.Root, "d", vfs.OpenExisting, entity.ReadData|entity.Delete)
+	req.DeleteOnClose, req.Backup = true, true
+	r, err := n.Open(ctx, c, req)
+	n.must(t, err)
+	before := testutil.ToFloat64(n.refusals)
+	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
+		t.Errorf("the directory's close: %v", err)
+	}
+	_, _, err = n.Lookup(ctx, n.admin, n.fs.Root, []byte("d"))
+	if refused := testutil.ToFloat64(n.refusals) - before; err != nil || refused != 1 {
+		t.Errorf("after the last close of a delete-on-close directory with an open made through it: lookup %v, %v refusals; want d kept and one refusal", err, refused)
+	}
+	n.must(t, errOf(n.Close(ctx, c, child.Ref, vfs.Seqs{})))
 }

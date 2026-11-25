@@ -13,7 +13,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
-	"github.com/cubbit/dittofs/pkg/settings"
 )
 
 // settingCtx is the context the settings tests call the store under.
@@ -22,8 +21,13 @@ var settingCtx = context.Background()
 // settingInst is the installation scope every settings test writes at.
 var settingInst = entity.SettingScope{Kind: entity.ScopeInstallation}
 
-// settingStore is a store over its own Badger directory, its KV beside it
-// for reads a test makes beneath the store, such as the settings generation.
+// settingTop is the newest settings schema the tests open the store to
+// write, above 1 so a store that ignored it and wrote only schema 1 fails.
+const settingTop uint32 = 3
+
+// settingStore is a store over its own Badger directory, opened to write up
+// to settingTop, its KV beside it for reads a test makes beneath the store,
+// such as the settings generation.
 func settingStore(t *testing.T) (*Store, kv.KV) {
 	t.Helper()
 
@@ -42,7 +46,7 @@ func settingStore(t *testing.T) (*Store, kv.KV) {
 		t.Fatal(err)
 	}
 
-	s, err := Open(settingCtx, db)
+	s, err := Open(settingCtx, db, SettingSchema(settingTop))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +424,7 @@ func TestPutSettingRefusesNewerSchema(t *testing.T) {
 	s, db := settingStore(t)
 	cp := s.ControlPlane()
 
-	top := settings.Versions()[entity.FormatSettings].Max
+	top := settingTop
 
 	got, err := cp.PutSetting(
 		settingCtx,
@@ -449,11 +453,11 @@ func TestPutSettingRefusesNewerSchema(t *testing.T) {
 			Schema: top + 1,
 		},
 		1,
-	); !errors.Is(err, settings.ErrNewerSchema) {
+	); !errors.Is(err, entity.ErrNewerSchema) {
 		t.Errorf(
 			"newer schema written under 1: %v, want %v",
 			err,
-			settings.ErrNewerSchema,
+			entity.ErrNewerSchema,
 		)
 	}
 
@@ -511,6 +515,23 @@ func TestPutSettingRefusesNewerSchema(t *testing.T) {
 	}
 }
 
+// A store opened without the newest settings schema writes a row of any
+// schema: only the composer that passes one bounds it.
+func TestPutSettingWithoutSchemaIsUnbounded(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, db := settingStore(t)
+	s, err := Open(settingCtx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	row := entity.Setting{Scope: settingInst, Key: "k", Value: []byte("k"), Schema: settingTop + 1}
+	if got, err := s.ControlPlane().PutSetting(settingCtx, row, 0); err != nil || got != 1 {
+		t.Errorf("schema %d put with no schema passed: generation %d, err %v, want 1, nil", row.Schema, got, err)
+	}
+}
+
 // One scan lists a row at each of the five scopes, each once, and a row of a
 // schema the binary does not read comes back unchanged, for its own reader
 // to refuse.
@@ -533,7 +554,7 @@ func TestAllSettingsListsEveryScopeWithANewerSchemaRow(t *testing.T) {
 	for i, scope := range scopes {
 		schema := uint32(1)
 		if scope.Kind == entity.ScopeNamespace {
-			schema = settings.Versions()[entity.FormatSettings].Max + 1
+			schema = settingTop + 1
 		}
 
 		want[i] = entity.Setting{

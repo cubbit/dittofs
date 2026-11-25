@@ -1,5 +1,5 @@
 // The node starting and stopping open state and the engine itself rather
-// than through enginewire.
+// than through content.
 package node
 
 import (
