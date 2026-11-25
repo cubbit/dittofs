@@ -861,11 +861,12 @@ docs/internals/rfcs/
   - `NFS3ERR_SERVERFAULT` past the mint cap (D6);
   - `MNT`'s refusal for host C.
 - **Tests:**
-  - Through the adapter: R37's `AUTH_SYS` step, R38, R39, R45, R46 and R47. R46's cap step sends 50
-    directory users with no group from each of `127.0.0.1`, `127.0.0.2` and `127.0.0.4` (not host
-    C's, which `MNT` refuses). Each user is charged three times, its uid, its closure query and its entry read (D6), so no
-    address passes its lookup cap and only the node's mint cap can refuse: at most 100 are minted, and the rest are answered
-    `NFS3ERR_SERVERFAULT`.
+  - Through the adapter: R37's `AUTH_SYS` step, R38, R39, R45, R46 and R47. R46's cap step sends 33
+    directory users with no group from each of `127.0.0.1`, `127.0.0.2`, `127.0.0.4` and `127.0.0.5`
+    (not host C's, which `MNT` refuses). Each user is charged three times, its uid, its closure
+    query and its entry read (D6), so each address stays at 99 lookups, under its cap, and only
+    the node's mint cap can refuse: of the 132 users at most 100 are minted, and the rest are
+    answered `NFS3ERR_SERVERFAULT`.
   - Each fails as its service-level counterpart does when the resolution rule it checks is broken.
   - The run ends with the leak check, `adaptertest.CheckLeaks`.
   - No double: the node is real, and the directory is the in-memory one its suite holds (kind 2).
