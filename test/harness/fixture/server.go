@@ -80,8 +80,9 @@ func Start(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer
 	return s, nil
 }
 
-// install writes the installation's bootstrap and storage key under s.data,
-// runs dfs init over them, and seeds the namespace the share is in.
+// install writes the installation's bootstrap, its storage key and its
+// protocol key, which seals a user's NT hash when a password is set, under
+// s.data, runs dfs init over them, and seeds the namespace the share is in.
 func (s *Server) install(ctx context.Context) error {
 	s.home = filepath.Join(s.data, "home")
 	journal := filepath.Join(s.data, "journal")
@@ -91,12 +92,14 @@ func (s *Server) install(ctx context.Context) error {
 		}
 	}
 	s.passphrase = secret()
-	key, err := keyprovider.GenerateKeyFile(s.passphrase)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(s.data, "storage.key"), key, 0o600); err != nil {
-		return err
+	for _, name := range []string{"storage.key", "protocol.key"} {
+		key, err := keyprovider.GenerateKeyFile(s.passphrase)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(s.data, name), key, 0o600); err != nil {
+			return err
+		}
 	}
 	s.node = uuid.New()
 	s.config = filepath.Join(s.data, "config.yaml")
@@ -106,11 +109,11 @@ func (s *Server) install(ctx context.Context) error {
 node: { id: %s }
 metadata: { badger: { path: %q } }
 journals: [ { path: %q } ]
-keys: { storage: { kind: local, local: { file: %q } } }
+keys: { storage: { kind: local, local: { file: %q } }, protocol: { kind: local, local: { file: %q } } }
 api: { listen: ['127.0.0.1:0'] }
 metrics: { listen: '127.0.0.1:0' }
 adapters: { listen: [%q] }
-`, uuid.UUID(s.node), filepath.Join(s.data, "store"), journal, filepath.Join(s.data, "storage.key"), s.server)
+`, uuid.UUID(s.node), filepath.Join(s.data, "store"), journal, filepath.Join(s.data, "storage.key"), filepath.Join(s.data, "protocol.key"), s.server)
 	if err := os.WriteFile(s.config, []byte(config), 0o600); err != nil {
 		return err
 	}
