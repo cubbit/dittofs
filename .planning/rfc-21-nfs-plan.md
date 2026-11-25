@@ -1076,11 +1076,10 @@ Waits for S7. Then: `settings.NFS` reaching `New` and, through `Reconfigure`, wh
 §3.6), as the `adapters.nfs` section of the node's table (#4059's D2), with any key a later gap adds
 under `adapters.nfs`, its default and its check (#4059's D2, D3); `pjdfstest`, `pynfs`, `cthon04`
 and `nfstest` out of the V2 filter, their `known.yaml` rewritten for v2 with each entry naming this
-plan's epic issue and RFC 21 §13's expected failures listed by name; whichever of `e2e/kerberos` and
-`e2e/cross-protocol` the V2 filter still skips by name then, out too; D11's settings closed as
-decided. The `e2e` cell comes back with RFC 23's implementation plan's T8.6, or with E16's T16.7 if
-that lands first, by that plan's epic 8 D2 (a cell leaves the filter with its first green test), not
-here. Two fixture fixes in
+plan's epic issue and RFC 21 §13's expected failures listed by name; D11's settings closed as
+decided. The `e2e` cells, `e2e`, `e2e/kerberos` and `e2e/cross-protocol`, leave the filter with
+their first green test, by RFC 23's implementation plan's epic 8 D2, not here: E16's document names
+which test that is for each. Two fixture fixes in
 `test/suites.yaml` come with the suites, so they fail none of their tests on the fixture: the
 `pjdfstest` fixture's `users` drops uid 65534, since 65534 is anonymous (epic 7's R2) and the v2
 store refuses a user record holding it, and its share grants `Anonymous` read-write, since pjdfstest's
@@ -1137,7 +1136,8 @@ owners *(1 node)*" and "§5.2 stateids *(1 node)*" among them.
   order, TLS) with the Linux kernel client; `e2e/kerberos` after S6b.
 - Benchmarks: RFC 20 §6.10's pipeline micro-benchmark for NFSv3 and NFSv4.1 against `vfstest.Null`,
   its allocation ceiling checked in; end-to-end runs by the scripted client and a kernel mount
-  (small operations, 1 MiB sequential, untar of 40 000 files), a step of `bench/ditto/night.sh`; a
+  (small operations, 1 MiB sequential, untar of 40 000 files), the nightly `nfs-night` cell against
+  knfsd; a
   soak under real traffic (RFC 20's plan's ledger).
 - Pins: NFS's authorization gates in `test/required-tests.json`; `unit/adapter-allocs` runs every
   NFS gate.

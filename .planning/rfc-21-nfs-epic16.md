@@ -32,7 +32,10 @@ traffic". Every RFC citation is `origin/feat/storage-v2`'s text. Of the sections
 copy lacks RFC 20 §6.10's sentence on goroutines per record, which this epic holds (R9), and the red
 cell's name, `adapter-conformance`, in RFC 20 §8.5's suites paragraph; its RFC 29 §4.10 names
 `unit --nonrace` where `feat/storage-v2` has "a non-race option of `unit`", and keeps the Slack
-posting rules `feat/storage-v2` drops.
+posting rules `feat/storage-v2` drops. The other way round, RFC 21 §13's release goal names pynfs
+`nfs4.1` at minor 2 (`XATT*`, `ALLOC*`) and `nfs4.0` over `krb5` (`GSS*`, `SEC7`) only in
+`develop`'s copy, where #5733 added them; `feat/storage-v2`'s names only the `nfs4.0` and `nfs4.1`
+trees. This epic cites `develop`'s for those two cells (§1, §1.1).
 Cited, not owned: RFC 21 §13's "Tests expected to fail" (the burn-down, §1.1); RFC 1 §1.3 on crashes
 simulated beneath the code under test; RFC 24 §6.1.
 **Track:** the team.
@@ -46,8 +49,8 @@ simulated beneath the code under test; RFC 24 §6.1.
 - **S7**, `dfs` serving NFS, and RFC 23's implementation plan's epic 7, which builds the server
   fixture the e2e tests start `dfs` through, and its epic 8, which rebuilds the e2e helpers on it,
   takes `e2e` out of `tests.yml`'s V2 filter's suite list with its T8.2 and stops skipping the `e2e`
-  cell by name with its T8.6, its first green test, unless T16.7 lands first and does (that plan's
-  epic 8, its D2), for T16.7 to T16.10 and T16.13.
+  cell by name with its T8.6, its first green test (that plan's epic 8, its D2), for T16.7 to
+  T16.10 and T16.13. T16.7 cannot land first: it needs that epic's T8.1, which lands with T8.6.
   Not E15: by that epic's D2 a cell leaves the filter with its first green test, so `e2e/kerberos`
   and `e2e/cross-protocol`, skipped by name until then, leave with RFC 23's T8.8, with T16.8 or T16.9
   here, or with RFC 22's epic 16, whichever lands first. E15 takes out only `pjdfstest`, `pynfs`,
@@ -88,13 +91,13 @@ pins NFS's authorization gates so that removing one is a visible edit.
 - Linux kernel clients survive a drain under `tar`, a restart under a held lock and session, mount
   with `krb5`, `krb5i`, `krb5p` and `xprtsec=tls`, and see close-to-open consistency;
 - the pipeline micro-benchmark gates NFSv3's and NFSv4.1's allocations per request in
-  `unit/adapter-allocs`, a nightly step measures NFS end to end against knfsd, and a soak under
+  `unit/adapter-allocs`, a nightly cell measures NFS end to end against knfsd, and a soak under
   kernel traffic ends with nothing leaked;
 - `test/required-tests.json` names NFS's authorization gates, and every package holding an
   allocation gate is in `unit/adapter-allocs`;
 - after E15, `pjdfstest` (NFSv3, v4.0, v4.1), `pynfs` (`nfs4.0`, `nfs4.1` at minor 1, and the two
   cells E15 adds: `nfs4.1` at minor 2, `XATT*`, its `ALLOC*` excused by §13's `ALLOCATE` row, and
-  `nfs4.0` over `krb5`, `all gss`, `GSS1` to `GSS8` and `SEC7`), `cthon04` and `nfstest` pass every
+  `nfs4.0` over `krb5`, `all gss`, `GSS*` and `SEC7`), `cthon04` and `nfstest` pass every
   test outside RFC 21 §13's "Tests expected to fail" (its release goal); the subtask is added once E15
   has run them (D7).
 
@@ -104,12 +107,12 @@ The composed node's crash and fault seams; the in-process rows on the composed n
 capacity, identity over NFSv4, restart and grace, locks and recalls, share entry, the rows through
 both adapters whose assertions are wire answers); the kernel-client rows in `e2e`, `e2e/kerberos`
 and `e2e/cross-protocol`, with a capture helper; RFC 19 §9's NFS halves with real tools; the
-totality test; the pins; the pipeline micro-benchmark; the nightly end-to-end benchmark step and the
+totality test; the pins; the pipeline micro-benchmark; the nightly end-to-end benchmark cell and the
 soak; RFC 21 §13's suites paragraph amended to say where the in-process rows run (D1).
 
 **The burn-down of `pjdfstest` (NFSv3, v4.0 and v4.1 mounts), `pynfs` (`nfs4.0`; `nfs4.1` at
 minors 1 and 2, minor 2 running `XATT*` with `ALLOC*` excused by §13's `ALLOCATE` row; and `nfs4.0`
-over `krb5`, `all gss`, running `GSS1` to `GSS8` and `SEC7`), `cthon04` and `nfstest`** to RFC 21 §13's "Tests expected to fail": RFC 21 §13's release goal is
+over `krb5`, `all gss`, running `GSS*` and `SEC7`), `cthon04` and `nfstest`** to RFC 21 §13's "Tests expected to fail": RFC 21 §13's release goal is
 all four green at release with only those failures, and the burn-down is not done until they are.
 `pjdfstest` has no expected-to-fail list yet: E15 fills it from its first v2 run, each entry citing
 the RFC section whose decision fails it. It takes the pynfs steps of "§3.1, §3.2 sessions *(1
@@ -287,7 +290,7 @@ so that subtasks and tests can cite them. A section cited with no RFC named is R
 | --- | --- | --- | --- | --- |
 | R38 | "§5.3 lock recall": with A holding a write delegation, B's NLM lock and B's NFSv4 `LOCK` over a range A locked locally each send `CB_RECALL` before B's answer; after the recall B's `LOCK` is `NFS4ERR_DENIED`, a non-blocking NLM lock `NLM4_DENIED`, a blocking one `NLM4_BLOCKED` then `NLMPROC4_GRANTED` when A unlocks; with a read delegation and no local lock, `CB_RECALL` before B is granted; while A delays `DELEGRETURN`, `NFS4ERR_DELAY`, `NLM4_BLOCKED` then `NLMPROC4_GRANTED`, and `NLM4_DENIED_GRACE_PERIOD` for a non-blocking NLM lock, never `NFS4ERR_DENIED` or `NLM4_DENIED` | test row | §13 | T16.5 |
 | R39 | N14: a lock request from another client recalls a read or write delegation before the lock is decided, and is meanwhile answered retry or blocked, never denied | invariant | §12 (N14) | T16.5 |
-| R40 | A quiesced share and a netgroup-restricted one are refused on every NFS entry path: `PUTFH` of a held handle, a walk from `PUTROOTFH`, `LOCK` naming only an open, `MNT` | test row | RFC 20 §7.4 | T16.5 |
+| R40 | A quiesced share and a netgroup-restricted one are refused on every NFS entry path: `PUTFH` of a held handle, a walk from `PUTROOTFH`, `LOCK` naming only an open, `MNT`, and an NFSv3 operation on a handle held from before the quiesce or the restriction | test row | RFC 20 §7.4, §4.10 (a handle through any entry path meets the same checks) | T16.5 |
 | R41 | "§9.3 hold budget *(1 node)*"'s NFSv3 step: a write into a running `CLONE`'s source is held and answered success after the clone, not `NFS3ERR_JUKEBOX` | test row | §13 | T16.14 |
 | R42 | "§9.3 NFSv4.2"'s steps other than xfstests: `READ_PLUS` over a file with holes reads zeros where holes are, and `ALLOCATE` is `NFS4ERR_NOTSUPP` | test row | §13 | T16.14 |
 | R61 | "§9.3 copy and clone"'s steps that need a clone the engine runs, on the composed node: a `WRITE` into a running 512 MiB `CLONE`'s source answered success only after the `CLONE` is, never `NFS4ERR_DELAY` within its deadline, the destination equal to the source before the write; a `COPY` of a 4 GiB file under a continuous writer holding no source write longer than one 64 MiB chunk, and a `COPY` cut by its deadline answering a short `wr_count` the client continues from; a source with a Lost run cloned, the destination reading that run as Lost, not zeros; a crash mid-clone leaving the destination equal to the source at the clone's point | test row | §13; E12's document, §1.2 | T16.14 |
@@ -320,7 +323,7 @@ so that subtasks and tests can cite them. A section cited with no RFC named is R
 | R56 | "§2.2 TCP only"'s mount step: a mount with `proto=udp` falls back or fails | test row | §13 | T16.7 |
 | R57 | RFC 20 §7.5's "§4.4 Kerberos and AD", its NFS half: NFSv4.1 mounts with `sec=krb5`, `krb5i` and `krb5p` act as their principal; `krb5p` traffic is unreadable in a capture; a failed handshake never falls back to an anonymous mount; after the keytab is rotated a new mount succeeds while the first stays mounted | test row | RFC 20 §7.5 | T16.8 |
 | R58 | RFC 20 §7.5's "§5.5 TLS": an NFSv4.1 mount with `xprtsec=tls` shows no readable RPC after the `AUTH_TLS` probe; with `mode: require` a plaintext mount fails; certificate files replaced, a new mount presents the new certificate while the first stays mounted | test row | RFC 20 §7.5 | T16.8 |
-| R59 | Where each row runs: RFC 20 §7.5's in `e2e` (drain after every merge, the rest nightly), its Kerberos mounts in `e2e/kerberos`, RFC 19 §9's rows through both adapters with real tools in `e2e/cross-protocol`; RFC 21 §13's rows injecting a fault below the server in `unit`, its other single-node rows in `e2e` and those reaching one file over NFS and SMB in `e2e/cross-protocol` (pending Q1: D1 puts the rows whose assertions are wire answers in `unit`). `e2e` runs at the merge tier and nightly, which meets both of §7.5's cadences, and its `cross-protocol`, `kerberos` and `stress` options, and the `restart` option T16.7 adds, select tests by name, so each test's name matches its option's `-run` | MUST | RFC 20 §7.5, §8.5; §13 (suites); RFC 19 §9 (suites) | T16.3, T16.7, T16.8, T16.9, T16.13 |
+| R59 | Where each row runs: RFC 20 §7.5's in `e2e` (drain after every merge, the rest nightly), its Kerberos mounts in `e2e/kerberos`, RFC 19 §9's rows through both adapters with real tools in `e2e/cross-protocol`; RFC 21 §13's rows injecting a fault below the server in `unit`, its other single-node rows in `e2e` and those reaching one file over NFS and SMB in `e2e/cross-protocol` (pending Q1: D1 puts the rows whose assertions are wire answers in `unit`). `e2e` runs at the merge tier and nightly, which meets both of §7.5's cadences, and its `cross-protocol`, `kerberos` and `stress` options, and the `restart-drain` and `restart` options T16.7 adds, select tests by name, so each test's name matches its option's `-run` | MUST | RFC 20 §7.5, §8.5; §13 (suites); RFC 19 §9 (suites) | T16.3, T16.7, T16.8, T16.9, T16.13 |
 | R60 | Not run is never passed: a kernel-client row whose prerequisite the host lacks, a need unmet, fails the cell rather than passing by a skip (T16.7 to T16.9 name each tool they need) | MUST | RFC 29 §2 (R10) | T16.7, T16.8, T16.9 |
 | R62 | "§9.3 copy and clone"'s Linux step: between shares in different namespaces, `cp` falls back after `NFS4ERR_XDEV` and copies the bytes | test row | §13; E12's document, §1.2 | T16.7 |
 
@@ -367,8 +370,15 @@ so that subtasks and tests can cite them. A section cited with no RFC named is R
   against knfsd, outside SMB's night figure, so the 7-day medians of the existing figure stay
   comparable. It is `test/suites.yaml`'s `nfs-night`, registered after `perf-night` as
   `journal-bench-data` is, `tier: nightly`, `blocking: false`, `needs: [linux, root, host:dedicated,
-  knfsd, fio]`, with a timeout of its own, and it takes `night.sh`'s lock, so a run by hand never
-  overlaps a night. `night.sh` is not changed: its `DEADLINE` is set before its lock wait, so any
+  knfsd, fio]`, registered after `journal-bench-data`, with `timeout: { test: 45m }`: `perf-night`'s
+  night of about 1 h 30 min and `journal-bench-data`'s cell of at most 100 minutes leave about 50
+  minutes of RFC 29 §4.3's 4-hour nightly budget. It takes the scenarios' lock, `night.sh`'s `LOCK`
+  (`/var/tmp/dittofs-scenarios`), so a run by hand never overlaps a night, waiting at most 10 minutes
+  (`LOCK_WAIT=600`, not `night.sh`'s 1800 s, since the wait counts in its timeout) and recording
+  `lock` `skipped` when it stays held. It writes its run to a directory of its own beside
+  `night.sh`'s, with a `steps.tsv` in `night.sh`'s columns from a `step()` of its own, which
+  `score.py` reads as it reads a night. It unexports and stops knfsd in an `EXIT` trap, and, since a
+  kill at the timeout skips the trap, it begins with `exportfs -u` of its own export. `night.sh` is not changed: its `DEADLINE` is set before its lock wait, so any
   time a night overruns would come out of a last NFS step, and a step cut short records `timeout`,
   which fails the whole night, SMB's figure included. Prior art: `night.sh`'s own
   DittoFS-against-Samba design, and `journal-bench-data`'s cell after `perf-night`; RFC 20 Appendix
@@ -379,18 +389,23 @@ so that subtasks and tests can cite them. A section cited with no RFC named is R
   `adapter_unmapped_errors_total` and `adapter_handler_panics_total` at 0, the pools at zero reserved
   bytes and the goroutine count back at its start. `dfs` is a process of its own in `e2e`, so the
   test reads `go_goroutines` and `memory_pool_reserved_bytes` from the node's metrics: the start
-  sample before the mounts are made, the end sample once they are unmounted, the end at most the
-  start, so the mounts' own per-connection goroutines hide no leak. A `ponytail:` marker says the soak is bounded by
+  sample before the mounts are made, then, once they are unmounted, polled until the count is at
+  most the start, with one 2-minute backstop that fails naming both counts, so the mounts' own
+  per-connection goroutines hide no leak and their slow exit is no false one. A missing
+  `go_goroutines` or `memory_pool_reserved_bytes` series fails the test rather than reading as 0. A `ponytail:` marker says the soak is bounded by
   the option's 30-minute cell, and to move it to the dedicated host for hours when a leak shows only
   past it (pending Q4). Prior art: the `stress` option already exists for this kind of run.
 - **D6. The pins are a closed list of gates, and a check holds the allocation cell whole.** T16.11
   names in `test/required-tests.json` the top-level test asserting each of these refusals, and no
   others: the per-operation flavour gate (`LOCK`, `LOCKT` and `LOCKU` over `AUTH_SYS` on a
-  Kerberos-only share, one test each, E3 and E9's R39); `MNT`'s handle refused `AUTH_TOOWEAK` (E4); the `sacl` and `acl` administrator gate (E6);
+  Kerberos-only share, one top-level test each, E3 and E9's R39, T16.11 splitting E9's test into
+  three if it still asserts them in one body); TLS under `require`, a plaintext call refused and the
+  connection closed (E3's R31 and R37); `MNT`'s handle refused `AUTH_TOOWEAK` (E4); the `sacl` and `acl` administrator gate (E6);
   squash order and `admin` proof (E7); the `SP4_MACH_CRED` owner check (E8); delegation I/O
   authorised afresh (E10); `GET_DIR_DELEGATION`'s admitting call on the current filehandle (E10's
   R36); the NLM lock on a Kerberos-only share (E11); the `RPCSEC_GSS` service
-  floor (E13); and this epic's own: the share entry on every path (R40, T16.5), refused credentials
+  floor (E13); and this epic's own: the share entry on every path (R40, T16.5, one top-level test
+  per path, each over both shares), refused credentials
   (R26), "admin needs proof" over NFSv4, its `AUTH_SYS` refusal in "§8.1 privilege" (R25) and its
   `sec=krb5` read (R23), both tests named, the delegation stateid under Kerberos (R65), the
   machine principal's owner check (R66), all T16.3's, and "disable takes effect" (R67, T16.6). Each
@@ -556,8 +571,10 @@ in a subtask (§9, gap 8).
   uid, R25); each malformed credential (catches one served as anonymous, R26); `sacl` as owner and as
   administrator (catches the gate on one minor version, R27); bob's `WRITE` under alice's
   delegation (catches delegation I/O authorised by the stateid alone, R65); the second principal's
-  `DESTROY_CLIENTID` on the machine principal's record refused, and the first principal's own state
-  operation on it served (catches the owner check skipped for a Kerberos caller, or a refusal of
+  `DESTROY_CLIENTID` on the machine principal's record answered `NFS4ERR_WRONG_CRED`, never
+  `NFS4ERR_CLIENTID_BUSY`, which the record's session earns any caller (E8's R65), and the first
+  principal's own state operation on it served (catches the owner check skipped for a Kerberos caller,
+  or run after the busy check, or a refusal of
   every caller, R66). Each ends with the leak check. Kind 2 directory, kind 3 fault.
 
 ### T16.4 Restart and grace on the one node
@@ -596,7 +613,8 @@ in a subtask (§9, gap 8).
 - **Deliverables:** `internal/node/nfs_locks_test.go`: "§5.3 lock recall"'s three variants with
   client A a scripted NFSv4.1 client that holds the delegation, sends its local lock on
   `CB_RECALL` and returns or delays `DELEGRETURN`, and B both a scripted NLM host and an NFSv4
-  client; RFC 20 §7.4's four NFS entry paths against a share quiesced through the API and one whose
+  client; RFC 20 §7.4's four NFS entry paths, and an NFSv3 `GETATTR` on a handle obtained before
+  the change (RFC 20 §4.10), against a share quiesced through the API and one whose
   netgroup excludes the client's address. No later subtask consumes it. Each call's arguments are built with E14's T14.1 writer (Q5(a)); the builders this
   subtask's calls need land here, about 0.25 man-days, and later subtasks reuse them.
 - **Acceptance criteria:**
@@ -619,8 +637,11 @@ in a subtask (§9, gap 8).
   hands here: the `WRITE` held behind a 512 MiB `CLONE`, the 4 GiB `COPY` under a writer and cut by
   its deadline, a Lost run cloned, a crash mid-clone through T16.1's `Crash`, and the NFSv4.1 hold
   budget on sessions of 16 and 2 slots. A running clone is held by an event, not by its size: a
-  `Seam().Hold` on the journal write its copy makes (D3), the held `WRITE`s sent once the hold is
-  reached and the hold released only after their replies are counted held, as T16.2 holds a commit;
+  `Seam().HoldFirst` on the journal write its copy makes (D3), since `Hold` would park every write
+  it matches, the held `WRITE`s' own included; the held `WRITE`s are sent once the hold is reached,
+  and the hold is released only once the pipeline's `Runs()` counts them in progress with no reply
+  read, the signal that they are held; the 4 GiB `COPY` takes one `HoldFirst` per chunk, released in
+  turn;
   the `COPY` is cut by advancing `Harness.Clock` past its deadline. The 512 MiB and 4 GiB steps, in tests named
   `TestNFSCloneLarge…`, skip under `-short` and under `-race` (the build-tagged constant pair
   `internal/vfs`'s `race_race_test.go` and `race_norace_test.go` use), so they never share `unit`'s
@@ -628,17 +649,19 @@ in a subtask (§9, gap 8).
   subtask adds, `node-clone`, `go test -timeout=30m -run ^TestNFSCloneLarge ./internal/node/`,
   nightly, as RFC 29 §4.10 places the gates that skip under `-race`. Before the first large step the
   test reads the free bytes under `t.TempDir()` and fails, naming them, below 12 GiB (the 4 GiB `COPY`'s
-  source and destination, the 512 MiB clone's two, and the journal's room), rather than skip; the figure is provisional, measured on the cell's first run and revised then, and the cell runs on ditto, the team's dedicated test box (16 cores, 61 GB), until a CI runner is chosen; a `decision:` marker there names that ceiling. Their wall time is not measured yet: the
+  source and destination, the 512 MiB clone's two, and the journal's room), rather than skip, and the cell declares `needs: [disk:12]` so the harness refuses a short runner
+  before the build (the test's own check stays, since `disk:` measures the working directory and the
+  test writes under `t.TempDir()`); the figure is provisional, measured on the cell's first run and revised then, and the cell runs on ditto, the team's dedicated test box (16 cores, 61 GB), until a CI runner is chosen; a `decision:` marker there names that ceiling. Their wall time is not measured yet: the
   option's first nights give it. Split from T16.5, since clones and locks share no code. No later
   subtask consumes it.
 - **Acceptance criteria:**
   - Each row's statuses are those R41, R42, R61 and R63 list, and a held call is answered only once
     the clone or chunk it waited on ends.
-- **Tests:** at the reply: the held NFSv3 write (catches it refused at once for want of a session,
-  R41); zeros in the holes and `NFS4ERR_NOTSUPP` (R42); the write's answer after the clone's, and
+- **Tests:** at the reply: the held NFSv3 write, counted in progress before the hold is released
+  and answered after it (catches it refused at once for want of a session, R41); zeros in the holes and `NFS4ERR_NOTSUPP` (R42); the write's answer after the clone's, and
   the destination read before it (catches a write let into a running clone, or refused at once,
-  R61, R64); the longest source-write wait under the `COPY` (catches a copy freezing the whole
-  source, R61); the Lost run read back (catches it copied as zeros, R61); the destination after the
+  R61, R64); a source write sent while a `COPY` chunk's hold is reached answered before that hold
+  is released (catches a copy freezing the whole source, R61); the Lost run read back (catches it copied as zeros, R61); the destination after the
   crash (catches a mix of old and new, R61); the held calls counted per session (catches a budget
   rounding to 0, R63); the large steps under too little free space (catches a full disk read as a
   clone failure). Each ends with the leak check.
@@ -671,8 +694,10 @@ in a subtask (§9, gap 8).
   lease break sent before the `LOCK` is answered (catches an NFS lock decided around an SMB lease,
   R48); `ctime` after −1 times (catches SMB suspension freezing NFS's
   `ctime`, R49); the marker's refusals and their release (catches the marker enforced for SMB only,
-  R50); bob's calls on both adapters served before the `State` is applied and refused after
-  (catches a cached caller outliving a disable on either adapter, R67). Each ends with the leak
+  R50); bob's calls on both adapters served before the `State` is applied and refused after, and
+  carol's, a control whose contexts are as old as bob's, still served after the same clock advance
+  (catches a cached caller outliving a disable on either adapter, or every context expired by the
+  advance rather than bob's by the disable, R67). Each ends with the leak
   check.
 
 ### T16.7 Kernel-client rows
@@ -683,8 +708,9 @@ in a subtask (§9, gap 8).
   server fixture) and 8 (the e2e helpers, and its T8.2, which takes `e2e` out of the filter's suite list).
 - **Covers:** R29, R30, R34, R54, R55, R56, R59, R60, R62.
 - **Deliverables:** `test/e2e/framework/capture.go` (D8): `func Capture(t *testing.T, port int) (stop
-  func() string)`, returning the pcap's path, and `func TsharkFields(t *testing.T, pcap, filter
-  string, fields ...string) [][]string`, consumed here and by T16.8; `Capture` runs `tcpdump -U`
+  func() string)`, returning the pcap's path, and `func TsharkFields(t *testing.T, pcap string, port
+  int, filter string, fields ...string) [][]string`, which passes `-d tcp.port==<port>,rpc` since
+  DittoFS's port is not 2049, as `pcap-diff.sh` passes its own decode-as, consumed here and by T16.8; `Capture` runs `tcpdump -U`
   and returns once it reports listening, and each test logs the kernel and `tshark` versions beside
   its capture, since how many frames a recovery sends is the kernel's. `test/e2e/nfs_kernel_test.go`:
   the drain's NFS half under `tar` (joint with RFC 22's epic 16, D2); a Linux NFSv4.1 client holding
@@ -693,23 +719,25 @@ in a subtask (§9, gap 8).
   `proto=udp` mount; `cp` between mounts of two shares in different namespaces. Each restart waits a
   real grace period, at least RFC 21 §5.1's fixed 90 s lease, so the four rows with a restart (the
   drain and the three recoveries) take about 10 to 15 minutes (estimated, not measured): their tests
-  are named `…Restart…`, and `test/suites.yaml`'s `e2e` gains a `restart` option, `go test -tags=e2e
-  -run Restart -timeout=30m ./test/e2e/`, at `e2e`'s merge tier, while `e2e`'s own command gains
-  `-skip Restart`, so they never share its 30 minutes; no test is named both `Restart` and
+  are named `…Restart…`, the drain's `TestNFSRestartDrain`, and `test/suites.yaml`'s `e2e` gains two
+  options: `restart-drain`, `go test -tags=e2e -run ^TestNFSRestartDrain -timeout=15m ./test/e2e/`,
+  at `e2e`'s merge tier, since RFC 20 §7.5 asks the drain after every merge, and `restart`, `go test
+  -tags=e2e -run Restart -skip ^TestNFSRestartDrain -timeout=30m ./test/e2e/`, nightly, for the
+  three recoveries; `e2e`'s own command gains `-skip Restart`, so they never share its 30 minutes; no test is named both `Restart` and
   `Kerberos` or `CrossProtocol`, so the `kerberos` and `cross-protocol` options need no `-skip`, and
-  `./test/e2e/` without `...` is the package the other options run, which holds every row here. `test/suites.yaml`'s `e2e` gains `tshark` among its needs,
-  and the harness's closed set of needs (`test/harness/registry/check.go`) gains `tshark`, with its
-  probe and package in `test/harness/needs/needs.go`, since the registry check refuses a need it
-  does not know. `tests.yml`'s V2 filter stops skipping the `e2e` cell by name if RFC 23's T8.6 has
-  not already (RFC 23's implementation plan's epic 8, its D2).
+  `./test/e2e/` without `...` is the package the other options run, which holds every row here. `test/suites.yaml`'s `e2e` gains `tcpdump` and `tshark` among its needs,
+  and the harness's closed set of needs (`test/harness/registry/check.go`) gains both, with their
+  probes and packages in `test/harness/needs/needs.go`, since the registry check refuses a need it
+  does not know. The `e2e` cell is out of `tests.yml`'s V2 filter by then: RFC 23's T8.6 takes it
+  out, and lands with T8.1, which this subtask needs (RFC 23's implementation plan's epic 8, its D2).
 - **Acceptance criteria:**
   - The extraction's tree matches a local one byte for byte after the drain and the start.
   - After each restart the client's lock is still held against a second client, and its I/O
     resumes with no error returned to the application and no more than one recovery in the capture.
 - **Tests:** in `e2e`, at the kernel client: the tree compared (catches a drained request dropped
   or answered with a final error, R54); the second client's lock refused throughout the restart
-  (catches the reclaim skipped, R29, R34); the count of `SETCLIENTID` in the capture (catches a
-  recovery loop, R30); the read after the other mount's close (R55); the UDP mount (catches a UDP
+  (catches the reclaim skipped, R29, R34); the count of `SETCLIENTID` in the capture exactly one (catches a
+  recovery loop, or a recovery that never ran, R30); the read after the other mount's close (R55); the UDP mount (catches a UDP
   listener left for NFS, R56); the copied file's bytes and `NFS4ERR_XDEV` in the capture (catches a
   cross-namespace copy attempted, or a client left without its fallback, R62). A missing `tshark`
   fails the cell (R60).
@@ -720,7 +748,8 @@ in a subtask (§9, gap 8).
 
 - **Track:** the team. **Depends on:** T16.7, E3, E13, S6b.
 - **Covers:** R25, R57, R58, R59, R60.
-- **Deliverables:** `test/e2e/nfs_kerberos_test.go`, on the framework's KDC helper: mounts at
+- **Deliverables:** `test/e2e/nfs_kerberos_test.go`, added to the `kerberos` option's `paths:`,
+  on the framework's KDC helper: mounts at
   `krb5`, `krb5i` and `krb5p`, a file created by each owned by its principal, `krb5p` read through
   `Capture`, a mount with a ticket the server refuses, keytab rotation, and "§8.1 privilege"'s `tar
   xpf` steps under `no_root_squash` and `root_squash`; `test/e2e/nfs_tls_test.go`: an `xprtsec=tls`
@@ -739,13 +768,17 @@ in a subtask (§9, gap 8).
 - **Tests:** in `e2e/kerberos` and `e2e`, at the kernel client: the owner of each created file
   (catches a mount acting as anonymous, R57); `TsharkFields` empty for NFS operations in the `krb5p`
   capture, with the credential's service privacy (catches `krb5p` sent as integrity or in clear,
-  R57); the mount with a refused ticket failing, with no mount left behind (catches a fallback to an
+  R57); the mount with a refused ticket failing, with no mount left behind, and a mount without `sec=`
+  on the Kerberos-only share negotiating `krb5`, the `SECINFO_NO_NAME` answer in its capture
+  listing no `AUTH_SYS` (catches a fallback to an
   anonymous mount, R57); a new mount after the keytab is rotated, with the first still reading
   (catches a keytab read once, or a rotation that drops live contexts, R57); `TsharkFields` empty
   for RPC after the probe, with the probe decoded and TCP payload after it (catches TLS dropped,
-  and an empty or undissected capture passing, R58); the certificate replaced by one from a second
-  CA and `tlshd`'s trust store set to that CA alone, a new mount succeeding (catches the old
-  certificate still presented, R58); the plaintext mount under `require` (R58);
+  and an empty or undissected capture passing, R58); with `tlshd`'s trust store set to a second CA
+  alone, a new mount failing against the old certificate, then, the certificate replaced by one from
+  that CA, a new mount succeeding (catches the old certificate still presented, or a client that
+  verifies nothing, R58); the plaintext mount refused under `require` and the same mount succeeding
+  under `opportunistic` (R58);
   the owners after `tar xpf` (catches
   root over Kerberos treated otherwise than root over `AUTH_SYS`, R25). A missing KDC or `tlshd`
   fails the cell, as `DITTOFS_E2E_REQUIRE_KERBEROS` already does for Kerberos (R60).
@@ -757,7 +790,8 @@ in a subtask (§9, gap 8).
 - **Track:** the team. **Depends on:** E6, S7, S6b and E13 (its Kerberos rows), and RFC 23's
   implementation plan's epics 7 and 8.
 - **Covers:** R51, R53, R59, R60.
-- **Deliverables:** `test/e2e/crossprotocol_acl_test.go` (D2): one NFS mount and one SMB mount of
+- **Deliverables:** `test/e2e/crossprotocol_acl_test.go` (D2), with `test/e2e/crossprotocol_*_test.go`
+  added to the `cross-protocol` option's `paths:`, since its tests are named for what they check: one NFS mount and one SMB mount of
   one share, users and groups made through the API, and R51's rows driven with `chmod`, `nfs4_setfacl`,
   `nfs4_getfacl`, `smbcacls` and file operations; every test named `…CrossProtocol…`, which the
   `cross-protocol` option's `-run` selects, and those needing an administrator or an authenticated
@@ -822,9 +856,15 @@ in a subtask (§9, gap 8).
 - **Covers:** R5, R6, R7, R8, R9.
 - **Deliverables:** `internal/adapter/nfs/pipeline_bench_test.go`: NFS's pipeline built with
   `vfstest.Null` as `Deps.VFS`, driven over loopback by E3's scripted client with an NFSv3 `GETATTR`
-  and an NFSv4.1 `SEQUENCE, PUTFH, GETATTR`, each request encoded once before the measured closure,
-  which only writes it and reads the reply into one buffer allocated beforehand, and waits until
-  the pipeline's `Runs()` is 0 and the reply pool holds no reserved bytes before the next run, so
+  and an NFSv4.1 `SEQUENCE, PUTFH, GETATTR` with `sa_cachethis` false, each request encoded once
+  before the measured closure, which only rewrites its XID and the `SEQUENCE`'s seqid in place,
+  writes it and reads the reply into one buffer allocated beforehand, and waits until
+  the pipeline's `Runs()` is 0 and the reply pool holds no reserved bytes before the next run. A
+  resent seqid would be a replay, answered from the slot (RFC 21 §3.2), and a resent XID the
+  duplicate-request cache's to answer, so neither is resent; with `sa_cachethis` false the slot
+  keeps no reply, so the reply pool empties after each run. Each run's reply is checked `NFS4_OK`
+  and `NFS3_OK`, so a run answered `NFS4ERR_RETRY_UNCACHED_REP` or `NFS4ERR_SEQ_MISORDERED` fails
+  the gate rather than being counted. So
   `testing.AllocsPerRun` counts the server's allocations, its last run's tail included, and not the
   client's, as `internal/adapter/core/bench_test.go`'s gate does (prior art
   for R7 to R9); the benchmark reporting ns and allocations per request;
@@ -854,9 +894,11 @@ in a subtask (§9, gap 8).
   mounts with `nconnect` 1 and 4; the 4 KiB write p99 with a second client at half the request
   budget; the untar of 40,000 files; each run's length set so the cell fits its timeout. `score.py`
   scoring them as an NFS area against knfsd, apart from SMB's figure, which means making its
-  hard-coded `AREAS`, `STEP_AREAS` and headline geomean per protocol, and `bench/ditto/score_test.py`, the script's first tests, a `unittest` module over
+  hard-coded `TARGETS`, `AREAS`, `STEP_AREAS` and headline geomean per protocol, and `bench/ditto/score_test.py`, the script's first tests, a `unittest` module over
   fixture nights that `lint-repo` runs. `test/e2e/stress_nfs_test.go` (D5): `TestStressNFS…` under
-  the `stress` tag, which the option's `-run ^TestStress` selects. The estimate holds knfsd's setup
+  the `stress` tag, which the option's `-run ^TestStress` selects; as `e2e/stress`'s first green
+  test it takes the cell out of `tests.yml`'s V2 filter's skip by name (RFC 23's implementation
+  plan's epic 8, its D2). The estimate holds knfsd's setup
   on the host, `nfsops` with MOUNT and session setup, `score.py`'s areas made per protocol, a
   calibration week of NFS nights, and the soak.
 - **Acceptance criteria:**
@@ -868,7 +910,9 @@ in a subtask (§9, gap 8).
   (catches NFS points folded into SMB's figure, R13); a night missing any of R10's, R11's or R12's
   points scored as an incomplete NFS area, as `score.py` already marks an SMB area whose step failed
   (catches a point dropped from the step, R10 to R12); the soak's final assertions, each failing on a
-  leaked buffer or goroutine (R14, R15). The benchmark's figures gate nothing (R13).
+  leaked buffer or goroutine (R14, R15); every step name `nfs_night.sh` writes is a key of NFS's
+  `STEP_AREAS` (catches a step renamed in the script and scored as nothing). The benchmark's figures
+  gate nothing (R13).
 - **Rules:** rule 9: D5's `ponytail:` at the soak.
 
 ## 7. Order of work
@@ -890,6 +934,8 @@ flowchart TD
   T16_4 --> T16_7
   T16_7 --> T16_8["T16.8 Kerberos and TLS mounts"]
   S6b -.-> T16_8
+  E12(["E12 NFSv4.2: R62's NFS4ERR_XDEV"]):::sync -.-> T16_7
+  E3E13(["E3 TLS, E13 RPCSEC_GSS"]):::sync -.-> T16_8
   S7 --> T16_9["T16.9 RFC 19 mode and ACL rows"] --> T16_10["T16.10 RFC 19 evaluation rows"]
   S6b -. "Kerberos rows" .-> T16_9
   T16_8 & T16_10 --> C2(["after T16.10: e2e rows green"]):::sync
@@ -920,7 +966,7 @@ and E8 serve their first procedures and T14.1 has landed.
 | 4 | T16.7, T16.8 | 8 | PR 2 | the kernel-client rows and the capture helper they share |
 | 5 | T16.9, T16.10 | 7 | — | RFC 19's rows on one fixture |
 | 6 | T16.11, T16.12 | 4.5 | PR 1, PR 2, PR 3 | the per-change gates: totality, pins, allocations |
-| 7 | T16.13 | 5 | — | the nightly step and the soak |
+| 7 | T16.13 | 5 | — | the nightly cell and the soak |
 
 A suggestion only: one pull request per subtask works as well. PR 2 follows PR 1, whose `Crash`
 T16.14's crash mid-clone uses. PR 6 follows PR 1, 2 and 3, whose refusal tests its pins name. PR 1
@@ -945,7 +991,7 @@ suites on, and the burn-down is planned after E15.
     kernel client does run in `e2e`." RFC 18 §10's Tier 2 and RFC 20 §8.5 already place theirs so.
   - (b) As the RFC is: every such row in `e2e`, the scripted client run against the `dfs` the e2e
     fixture starts; slower, after merge only, and each row waits for S7 and for the `e2e` cell to leave the V2
-    filter (RFC 23's T8.6, or T16.7).
+    filter (RFC 23's T8.6).
   - (c) Both: in process per change and again in `e2e`; twice the work for no failure the first
     cannot catch.
 - **Q2. The nightly NFS reference and its host** (D4).
@@ -1040,16 +1086,18 @@ Gaps, not questions:
 6. **The totality helper** is RFC 22's implementation plan's negotiation epic's. If it has not
    landed when T16.11 starts, T16.11 builds it and that plan's figure moves, as the plans' shared
    pieces do.
-7. **The e2e prerequisites** (`tlshd` for `xprtsec=tls`, `tshark`, `smbclient` for `smbcacls`,
-   knfsd on the dedicated host) are host setup the runners lack today; each is named in `e2e`'s
-   `needs:`, which its options inherit, and `tshark` and `tlshd` added to the harness's closed set
-   of needs (T16.7, T16.8), so a runner without one fails rather than skips. T16.14's large clones
+7. **The e2e prerequisites** (`tlshd` for `xprtsec=tls`, `tcpdump` and `tshark`, `smbclient` for
+   `smbcacls`) are host setup the runners lack today; each is named in `e2e`'s `needs:`, which its
+   options inherit, and `tcpdump`, `tshark` and `tlshd` added to the harness's closed set of needs
+   (T16.7, T16.8), so a runner without one fails rather than skips. knfsd is `nfs-night`'s need, on
+   the dedicated host (D4). T16.14's large clones
    need 12 GiB free under the nightly `unit/node-clone` cell's temporary directory, and fail
    naming the free bytes when it is not there; the figure is provisional, measured on the cell's first run and revised then. The cell runs on ditto until a CI runner is chosen (rif, 25 Nov). `tests.yml`'s `schedule` trigger runs on the default
-   branch only, so the nightly cells this epic adds on `feat/storage-v2` (`unit/node-clone`, the
-   soak, `nfs-night`) run nothing until the cutover brings them to `develop`.
+   branch only, so the hosted nightly cells this epic adds on `feat/storage-v2` (`unit/node-clone`,
+   the soak) run nothing until the cutover brings them to `develop`; the dedicated host's cron runs
+   `develop` too (`bench/ditto/README.md`), so `nfs-night` waits for the cutover the same way.
 8. **Which pull request carries which RFC amendment.** D1's sentence for RFC 21 §13's suites
    paragraph (Q1) goes in batch two's one RFC 21 pull request, opened with E8's document pull
    request. Q3's RFC 20 §6.10 change joins the programme's one RFC 20 pull request, opened by E3's
    Q2, with RFC 20 §8.5's "No suite runs yet … §6.10's end-to-end benchmark", which T16.13's
-   nightly step makes untrue for NFS.
+   `nfs-night` cell makes untrue for NFS.
