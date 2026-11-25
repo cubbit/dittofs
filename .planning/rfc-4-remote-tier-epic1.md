@@ -6,7 +6,7 @@ component), §2 (the dividing line), §4.1's types, interface and errors for v1.
 `codec_` rows for the recorder that carries them, and §4.13's closed set of roles.
 [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2 (component autonomy: a contract and
 its implementation, the transitive import test). Cited, not owned:
-[RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §1.3 (the syncer's `Store` and `Flow.Upload`, the
+[RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §1.3 (the syncer's `Store` and `Flow`'s `Upload`, the
 contract types it uses as they are); [RFC 5](../docs/internals/rfcs/rfc-5-transforms.md) §3.1 (the
 root `transform` package: `Chain`, `Attempt`, `Encoded`, `Chain.Decode`'s census);
 [RFC 2](../docs/internals/rfcs/rfc-2-carver.md) §4.1 and §4.2 (a chunk's ID, a block's name and
@@ -15,7 +15,7 @@ token); [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §8.1 (what the
 Every citation is `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are
 paths there.
 **Track:** the team.
-**Epic 1 estimate: 4 subtasks, 6 man-days.**
+**Epic 1 estimate: 3 subtasks, 4 man-days.**
 **Depends on:** nothing in this plan. T1.3 waits on the RFC 5 plan's epic 1, the root
 `pkg/transform` (`Chain`, `Attempt`, `Encoded`) with the `entity.NamespaceID` its contract names,
 which that epic declares at the RFC 8 offload plan's S1d.
@@ -23,8 +23,8 @@ which that epic declares at the RFC 8 offload plan's S1d.
 T1.1's `Store`; E4 and E5 implement it in `pkg/remote/s3`; E6 fills T1.3's codec surface; E7's
 keys half starts at S1. Outside RFC 4: the RFC 3 plan's syncer, which uses T1.1's types and
 errors as they are and is implemented by T1.3's `codec.Store`; the RFC 8 offload plan's epics 11,
-15 and 21, which agree the surface at S1c, run `NewPut`'s attempt through `Flow.Upload` and build
-one `codec.Store` per store; the RFC 5 plan's `keys/provider`, which imports T1.1's errors for
+15 and 21, which agree the surface at S1c, run `NewPut`'s attempt through `Flow`'s `Upload` and
+build one `codec.Store` per store; the RFC 5 plan's `keys/provider`, which imports T1.1's errors for
 the `keys` object.
 
 ---
@@ -45,19 +45,20 @@ or maps an error.
   function but methods over its own types;
 - `pkg/remote/codec` declares `Store`, its constructor, `Get`, `Health`, `NewPut`, `Put`,
   `Attempt`, `Stored` and the header bound, the `Config` and `Deps` the node's content wiring hands it, the
-  `Recorder` its `codec_` series go through and the CPU token it takes; `*codec.Store` has the
-  method set of RFC 3 §1.3's `Store`, and `(*Put).Attempt` the type `Flow.Upload` runs;
+  `Recorder` its `codec_` series go through and the CPU token it takes; `*codec.Store` implements
+  RFC 3 §1.3's `Store`, and `(*Put).Attempt` has the type `Flow`'s `Upload` runs;
 - an import walk fails when any package under `pkg/remote` reaches, through its production code,
   a package its allowlist does not name, transitively, for every package of D7's table, so
   E2 to E7 add packages without touching it;
-- both packages' exported sets are pinned, and the surface is agreed with the RFC 3 and RFC 8
+- both packages' exported sets are pinned, signatures included, and the surface is agreed with the RFC 3 and RFC 8
   offload plans' authors: S1, which is the RFC 8 offload plan's S1c.
 
 ### 1.1 In scope
 
 `pkg/remote`'s v1.1 contract (D1 to D4), the codec's exported surface (D5, D6 and D11, and D9 and D10,
 both pending the user's answer), the import walk (D7), the contract's purity check and both export
-pins (D8), and the review that freezes them at S1.
+pins (D8), and the review that freezes them at S1. Epic 1's subtask ids are its own, cited
+nowhere else yet.
 
 ### 1.2 Out of scope
 
@@ -107,15 +108,15 @@ cited by number and title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test is a pure function over values: the error chains over the sentinels, the walk's checker over a dependency graph, the pins over a package's parsed files. No test double: there is no collaborator to stand in for |
 | rule 2, fuzz tests where relevant ([`CLAUDE.md`, "By kind"](../CLAUDE.md#by-kind)) | none | no parser: nothing here reads bytes; the codec's decoder and its fuzz target are E6's |
-| rule 3, observability follows RFC 25 | T1.3 | the codec's `Deps` carry a `*slog.Logger` and the `Recorder` the codec declares (D5), never a `*metrics.Registry`, and no tracer, since RFC 4 §4.12 names no span for the codec. The S3 store's are E4's |
-| rule 4, profiling | none | no hot path and no goroutine: the only runtime code is `DeniedError`'s and `Cause`'s methods and stub bodies |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T1.1, T1.3 | the error chains are asserted with `errors.Is` and `errors.As`, as every consumer reads them; the codec's seam is asserted against the shape its consumer, RFC 3 §1.3's `Store` and `Flow.Upload`, declares |
+| rule 3, observability follows RFC 25 | T1.3 | the codec's `Deps` carry a `*slog.Logger` and the `Recorder` the codec declares (D5), never a `*metrics.Registry`, and no tracer, since RFC 4 §4.12 names no span for the codec; narrowing the logger with `With("component", "codec")` is E6's. The S3 store's are E4's |
+| rule 4, profiling | none | no hot path and no goroutine: the only runtime code is `DeniedError`'s and `Cause`'s methods and stub bodies, `New`'s included |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T1.1, T1.3 | the error chains are asserted with `errors.Is` and `errors.As`, as every consumer reads them; the codec's seam is asserted against the shape its consumer, RFC 3 §1.3's `Store` and `Flow`'s `Upload`, declares |
 | rule 6, known failures shrink | none | `unit` keeps no `known.yaml`, and no test here lands red |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T1.2 | nothing from `develop`'s `pkg/block`; T1.2's walk is the rule's enforcement for every package of D7's table, with `s3fault`'s list as E3 decided it (D7) |
-| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T1.2 | the walk runs the real `go list` over the real tree; nothing else here has a dependency |
+| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T1.2 | the walk runs the real `go list` over the real tree and over a planted tree in `testdata`; nothing else here has a dependency |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T1.1, T1.3 | each `Store` method's doc and each codec method's names the RFC 4 section that states its obligations; RFC 4 §1.2's `decision:` (one document for codec and store) needs no code site. This epic's marker: D2's at the role constants |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the break it catches; the walk and the pins each run over a planted violation and fail on it |
-| rule 11, a symbol is exported only if the RFC's interface uses it | T1.1, T1.3, T1.4 | exported: §4.1's v1.1 symbols and §4.3's codec surface with its constructor's `Config`, `Deps`, `Recorder` and `CPU`; the encoder and decoder stay unexported (D6); T1.4's pins hold the sets |
+| rule 11, a symbol is exported only if the RFC's interface uses it | T1.1, T1.3 | exported: §4.1's v1.1 symbols and §4.3's codec surface with its constructor's `Config`, `Deps`, `Recorder` and `CPU`, and `MaxHeaderLen` (D11); the encoder and decoder stay unexported (D6); each package's pin holds its set (D8) |
 | rule 12, each subtask creates only what it declares | all | `pkg/remote` lands with its contract, `pkg/remote/codec` with its surface; no directory for E2 to E5's packages is created. The walk's allowlist names them as data (D7), which no package needs to exist for |
 
 ## 3. Requirements and invariants
@@ -127,13 +128,13 @@ cite them. Where an owned section's obligation is another epic's to carry out, t
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | Package `remote` holds the types, constants, interface and errors of §4.1 and nothing else: no state, and no behaviour beyond methods over its own values | MUST | §1.2, RFC 0 §1.2 | T1.1, T1.4 |
+| R1 | Package `remote` holds the types, constants, interface and errors of §4.1 and nothing else: no state, and no behaviour beyond methods over its own values | MUST | §1.2, RFC 0 §1.2 | T1.1 |
 | R2 | Package `remote` imports the standard library only | MUST | §1.2, RFC 0 §1.2 | T1.1, T1.2 |
 | R3 | `remote` declares each type the syncer uses as it is, once: `Name`, `Range`, `Chunk`, `ChunkRange`, `Direction` (`DirPut`, `DirGet`), `Version`, `Checksum`, `StoredSum`, `Meter`, and the error set with its `Cause`; no consumer declares them again | MUST | §1.2, RFC 3 §1.3 | T1.1 |
-| R4 | `Store` declares the calls v1.1 has a caller for with §4.1's signatures: `Checksum`, `Put`, `Get`, `Delete`, `List`, `Health`, `PutControl`, `GetControl` and `Close`. The backup location's calls and `Settings`, `RecheckSetting`, `VersionsPage` and `DeleteVersions` are not declared; each lands with its first caller, its signature as §4.1 writes it | MUST | §4.1 | T1.1, T1.4 |
-| R5 | The zero `Range` means the whole block | invariant | §4.1 | T1.1 |
-| R6 | A `StoredSum` whose service reported no checksum has kind None, and `Checksum`'s None is the kind a store whose put carries no up-front checksum reports | invariant | §4.1, §4.4 | T1.1 |
-| R7 | `Meter` is two funcs, `Moved` and `Sent`, and carries no behaviour of its own; the zero `Meter` meters nothing | invariant | §4.1 | T1.1, T1.4 |
+| R4 | `Store` declares the calls v1.1 has a caller for with §4.1's signatures: `Checksum`, `Put`, `Get`, `Delete`, `List`, `Health`, `PutControl`, `GetControl` and `Close`. The backup location's calls and `Settings`, `RecheckSetting`, `VersionsPage` and `DeleteVersions` are not declared; each lands with its first caller, its signature as §4.1 writes it | MUST | §4.1 | T1.1 |
+| R5 | Withdrawn before the document merged: the zero `Range` meaning the whole block binds the stores and their callers, not this epic's declaration, so E2's suite and E4 hold it | — | §4.1 | — |
+| R6 | The zero `StoredSum` has kind None, the kind a get reports when the service reported no checksum; reporting it so is E4's | invariant | §4.1, §4.4 | T1.1 |
+| R7 | `Meter` is two funcs, `Moved` and `Sent`, and carries no behaviour of its own; skipping a nil func, so the zero `Meter` meters nothing, is E6's | invariant | §4.1 | T1.1 |
 | R8 | Control objects are reached by a role from a closed set in code: `PutControl` and `GetControl` take a `Role`, never a caller-chosen key, and a new role is a new constant | MUST | §4.13, §4.1 | T1.1 |
 | R9 | `Mode` names `Mutable` and `Immutable`, since an open in `immutable` mode is refused by name until its caller lands (E5) | MUST | §4.1 | T1.1 |
 
@@ -141,23 +142,23 @@ cite them. Where an owned section's obligation is another epic's to carry out, t
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R10 | The closed set is `ErrNotFound`, `ErrInvalid`, `ErrDenied`, `ErrTransient`, `ErrCorrupt`, `ErrThrottled` and `ErrMalformed`; no other sentinel is declared. Mapping every failure to exactly one of them is E4's for the S3 store and E6's for the codec | MUST | §4.1, §4.8, §6 R9 | T1.1, T1.4 |
+| R10 | The closed set is `ErrNotFound`, `ErrInvalid`, `ErrDenied`, `ErrTransient`, `ErrCorrupt`, `ErrThrottled` and `ErrMalformed`; no other sentinel is declared. Mapping every failure to exactly one of them is E4's for the S3 store and E6's for the codec | MUST | §4.1, §4.8, §6 R9 | T1.1 |
 | R11 | `ErrThrottled` wraps `ErrTransient` and no other; `ErrMalformed` wraps `ErrCorrupt` and no other; the five others match none of the set but themselves | MUST | §4.1, §4.8 | T1.1 |
 | R12 | Every `ErrDenied` carries its cause, `access`, `quota` or `size`: `DeniedError` holds a `Cause` and the service's code and unwraps to `ErrDenied`. Deriving the cause from a reply is E4's | MUST | §4.1, §4.8, §6 R21 | T1.1 |
-| R13 | The codec declares no error of its own: `codec.Store` returns §4.8's set as it is, and the transforms' material errors unchanged, so nothing maps them. Returning them so is E6's | invariant | §4.3, §4.8 | T1.3, T1.4 |
+| R13 | The codec declares no error of its own: `codec.Store` returns §4.8's set as it is, and the transforms' material errors unchanged, so nothing maps them. Returning them so is E6's | invariant | §4.3, §4.8 | T1.3 |
 
 **The codec's surface**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R14 | `codec.Store` lives in the codec's package, holds a `remote.Store` through the contract, and is the syncer's `Store` as it is: `Get` and `Health` with RFC 3 §1.3's signatures, with nothing adapting it | MUST | §4.3, RFC 3 §1.3 | T1.3 |
-| R15 | `NewPut` builds a `*Put` whose `Attempt` method value has the type of `Flow.Upload`'s `attempt`, and whose `Stored` returns each chunk's range and the census once an `Attempt` returned nil | MUST | §4.3, RFC 3 §1.3 | T1.3 |
-| R16 | `codec.Store.GetVersion` is not declared in v1.1; it lands with `remote.Store`'s `GetVersion` and its first caller | MUST | §4.3, §4.1 | T1.3, T1.4 |
-| R17 | The codec is handed the chain and the name derivation by the content wiring; it imports the contract and the root `transform` package, never a transform's package, the carver or the engine | MUST | §1.2, §4.3 | T1.2, T1.3 |
+| R15 | `NewPut` builds a `*Put` whose `Attempt` method value has the type of `Flow`'s `Upload`'s `attempt`, and whose `Stored` returns each chunk's range and the census once an `Attempt` returned nil | MUST | §4.3, RFC 3 §1.3 | T1.3 |
+| R16 | `codec.Store`'s `GetVersion` is not declared in v1.1; it lands with `remote.Store`'s `GetVersion` and its first caller | MUST | §4.3, §4.1 | T1.3 |
+| R17 | The codec is handed the chain and the name derivation by the content wiring; it imports the contract and the root `transform` package, never a transform's package, the carver or the engine | MUST | §1.2, §4.3, RFC 2 §4.2 | T1.2, T1.3 |
 | R18 | The codec records its series (`codec_chunks_verified_total`, `codec_measuring_passes_total`, `codec_verify_failures_total` by `kind`, `codec_seconds` by direction) through a recorder interface it declares, and imports no settings, metrics or health package | MUST | §1.2, §4.12 | T1.2, T1.3 |
 | R19 | The codec takes RFC 24 §6.2's background CPU token as an input: one per chunk encoded or hashed, returned before its next network wait. Taking and returning it is E6's | MUST | RFC 24 §6.2 | T1.3 |
-| R25 | A block's header is bounded by a constant of its format version, which the engine and the content wiring read before any `codec.Store` exists: `Flow.Upload`'s `size` is the chain's `MaxEncodedLen` summed over the chunks plus the header, and the largest encoded block sizes the put side's memory | MUST | §3.2, RFC 3 §1.3, RFC 3 §2.2 | T1.3 |
-| R20 | The codec's `Deps` carry the `Logger` the root injects, to which the codec adds `With("component", prefix)`, its prefix `codec` | MUST | RFC 25 §8.1, §2.1 | T1.3 |
+| R25 | A block's header is bounded by a constant of its format version, which the content wiring reads before any `codec.Store` exists: `Flow`'s `Upload`'s `size` is the chain's `MaxEncodedLen` summed over the chunks plus the header, and the largest encoded block sizes the put side's memory | MUST | §3.2, RFC 3 §1.3, RFC 3 §2.2 | T1.3 |
+| R20 | The codec's `Deps` carry the `Logger` the root injects, never a metrics registry; narrowing it with `With("component", prefix)` is E6's | MUST | RFC 25 §8.1, §1.2, §4.12 | T1.3 |
 
 **Imports**
 
@@ -234,12 +235,23 @@ cite them. Where an owned section's obligation is another epic's to carry out, t
   	CPU      CPU
   }
 
-  func New(st remote.Store, cfg Config, d Deps) (*Store, error)
+  // store is what the codec calls on a remote store; remote.Store satisfies it.
+  type store interface {
+  	Checksum() remote.Checksum
+  	Put(ctx context.Context, name remote.Name, body io.Reader, size int64, sum []byte) error
+  	Get(ctx context.Context, name remote.Name, r remote.Range) (io.ReadCloser, remote.StoredSum, error)
+  	Health(ctx context.Context, d remote.Direction) error
+  }
+
+  func New(st store, cfg Config, d Deps) (*Store, error)
   ```
 
-  `New` refuses a nil store, chain or function, a `MaxChunk` below 1 or a nil `Recorder` or
-  `CPU`, rather than default it, as RFC 0 §1.2 refuses an invalid setting. It does not refuse an
-  unknown `Version`: RFC 4 §3.5 has such a codec refuse to write and still read. The name and the
+  `New` takes the four calls the codec makes, through an unexported interface that `remote.Store`
+  satisfies, so the arrival of §4.1's deferred calls changes no value handed to it (§4.1, §1.2's
+  "each consumer declares the methods it needs"). Its body is a stub like the others; E6 makes it
+  refuse a nil store, chain, function, `Logger`, `Recorder` or `CPU`, or a `MaxChunk` below 1,
+  rather than default it, as RFC 0 §1.2 refuses an invalid setting, and not an unknown `Version`,
+  since RFC 4 §3.5 has such a codec refuse to write and still read. The name and the
   chunk ID are functions of plain types, so the codec imports neither the carver nor RFC 2's
   `entity` hash types, and the content wiring adapts the carver's functions with a closure; the
   RFC 2 plan's D9 hands them over this way. RFC 4 §1.2 and §4.3 name the chain and the name
@@ -271,11 +283,13 @@ cite them. Where an owned section's obligation is another epic's to carry out, t
   | --- | --- | --- |
   | `pkg/remote` | none | none |
   | `pkg/remote/codec` | `pkg/remote`; `pkg/transform` and `pkg/transform/keys`; `pkg/metadata/entity` and its subpackages | none |
-  | `pkg/remote/memory` | `pkg/remote`; `pkg/sim` | none |
+  | `pkg/remote/memory` and its subpackages | `pkg/remote`; `pkg/sim`; its own subtree | none |
   | `pkg/remote/remotetest` | `pkg/remote`; `internal/prof` | none |
   | `pkg/remote/s3` and every package beneath it but `s3fault` | `pkg/remote`; its own subtree but `s3fault` | the AWS SDK for Go v2 (`github.com/aws/aws-sdk-go-v2/…` with its runtime `github.com/aws/smithy-go/…`) |
   | `pkg/remote/s3/s3fault` | none | the AWS SDK for Go v2, as above |
 
+  The walk is a function of a directory, so its test also runs it over a planted module under
+  `testdata/walk/`, which catches a wrong `go list` template that the checker's own cases cannot.
   The whole table lands now, so E2 to E5 add their packages without touching it (E3's, E4's and
   E5's documents count on that), and a row is an upper bound: a package that imports less passes.
   `s3fault`'s row is E3's decision (its rule 7 row), not the plan's rule 7 list, which still names
@@ -283,13 +297,15 @@ cite them. Where an owned section's obligation is another epic's to carry out, t
   `TestImportRule` (go/build, direct imports) and `internal/archtest` (`go list -export -deps`),
   on `feat/storage-v2`, read the code.
 - **D8. Two arch tests pin the surface, one also the contract's purity.** `pkg/remote/arch_test.go`
-  and `pkg/remote/codec/arch_test.go`, in the form of `internal/node/arch_test.go` on
-  `feat/storage-v2`, parse the package's non-test files whatever their build tags and fail on an
-  exported symbol, method or struct field outside the pinned set, and on one missing from it. In
-  `pkg/remote` the same parse fails on a package-level `var` other than the seven errors, a `func`
+  and `pkg/remote/codec/arch_test.go`, in the form of `pkg/settings/arch_test.go` on
+  `feat/storage-v2`, load the package through `internal/archtest`'s `ExportImporter` and compare
+  each exported object's printed type with a pinned list, so an extra or missing export, a struct
+  field or a changed signature fails, and a file behind a build tag cannot hide one. In
+  `pkg/remote` a parse of its non-test files also fails on a package-level `var` other than the seven errors, a `func`
   that is not a method of one of the package's own types, or an `init`: RFC 4 §1.2's "no state, no
-  behaviour beyond methods over its own values", which the import walk cannot see. Prior art:
-  `internal/node`'s, `pkg/settings`' and `pkg/secrets`' `arch_test.go` (read the code).
+  behaviour beyond methods over its own values", which the import walk cannot see. The pin's
+  `exports` helper is copied as `pkg/settings` and `pkg/secrets` copy it. Prior art: those two
+  `arch_test.go` files (read the code).
 - **D9. `NewPut` takes the pinned chain and the nonce. Pending the user's answer.** RFC 4 §4.3
   writes `NewPut(name, src)`, but the header carries the nonce and the chain ID (RFC 4 §3.2), and
   the encoder must encode under the attempt the engine pinned before it minted the name (RFC 5
@@ -300,21 +316,30 @@ cite them. Where an owned section's obligation is another epic's to carry out, t
   func (s *Store) NewPut(name remote.Name, nonce [16]byte, pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) *Put
   ```
 
-  On the user's agreement, RFC 4 §4.3's block and RFC 3 §1.3's mention of `NewPut(name, src)` are
-  amended in the same pull request. The other options are §9's.
+  On the user's agreement, RFC 4 §4.3's block and RFC 3 §1.3's two mentions of `NewPut(name, src)`
+  (`Upload`'s doc comment and the prose under the interface) are amended in the same pull request.
+  A caller could pass a name that does not match the nonce, the pin and the chunks; E6's
+  `Attempt` recomputes it through `Config.Name` on its first pass and returns `ErrInvalid` on a
+  mismatch, before any byte is sent. The other options are §9's.
 - **D10. `codec.Store` finds a block's census through a lookup it is handed. Pending the user's
   answer.** `Chain.Decode` takes the block record's census (RFC 4 §3.4, RFC 5 §3.1), and RFC 4
   §4.3's `Get(ctx, name, want, m)` carries none. The recommendation keeps every signature of
   RFC 3 §1.3 and RFC 4 §4.3 as written: `Config.Census`, a function the content wiring builds over
   the metadata store's block record (RFC 6 §2.3), which `Get` calls once per block read. Its cost
   is one block-record read per get, which the engine would otherwise make to pass the census in.
-  A `ponytail:` marker at the lookup names that ceiling and the upgrade, the census passed in with
-  `Get` (§9 point 2's option b), if a read-path profile shows the lookup. The other options are
+  The lookup's contract keeps `Get` inside §4.8: an absent block record is `remote.ErrNotFound`,
+  so the engine re-resolves the chunk (RFC 8 §7.7), and any other failure is returned as itself,
+  a local failure that counts against no store's health. A `ponytail:` marker at the lookup names
+  the ceiling, one block-record read per get, and the upgrade, the census passed in with `Get`
+  (§9 point 2's option b), if a read-path profile shows the lookup; a `decision:` marker names
+  the read with no local record (RFC 26's recovery import, a read at a backup location) as the
+  other trigger for that upgrade. The other options are
   §9's.
 - **D11. The header bound is a function of the format version.** RFC 4 §3.2 bounds a header by a
-  constant of its format version, and two callers need it before any `codec.Store` exists: the
-  engine, for `Flow.Upload`'s `size` (RFC 3 §1.3), and the content wiring, for the largest encoded
-  block that sizes the put side (RFC 3 §2.2) and the S3 client's `MaxBlockSize` (RFC 4 §4.1).
+  constant of its format version, and the content wiring needs it before any `codec.Store`
+  exists: for the largest encoded block that sizes the put side (RFC 3 §2.2) and the S3 client's
+  `MaxBlockSize` (RFC 4 §4.1), and for the bound it hands the engine, which sizes `Flow`'s
+  `Upload`'s `size` (RFC 3 §1.3) and whose own walk refuses `pkg/remote/codec`.
 
   ```go
   // MaxHeaderLen is the largest header format version v allows, and false for a
@@ -334,26 +359,28 @@ pkg/remote/
                             Chunk, ChunkRange, Meter, Info (D1, D2, D4)
   store.go            T1.1  Store: the nine v1.1 calls, each doc naming its section (D4)
   errors.go           T1.1  the seven errors, Cause, DeniedError (D3)
-  errors_test.go      T1.1  the chains, the causes' words, the zero values
+  errors_test.go      T1.1  the chains, the causes' words, the zero StoredSum
+  arch_test.go        T1.1  the export pin and the purity check (D8)
+  testdata/arch/      T1.1  a planted extra export, a var and a free func
   imports_test.go     T1.2  the walk: go list, the checker, the table (D7)
-  arch_test.go        T1.4  the export pin and the purity check (D8)
-  testdata/arch/      T1.4  a package with a planted extra export, a var and a func
+  testdata/walk/      T1.2  a planted module: a production reach through an intermediate
+                            package, and a test file's import
 pkg/remote/codec/
   codec.go            T1.3  Store, New, Config, Deps, Recorder, CPU; Get, Health; MaxHeaderLen
                             (D5, D10, D11)
   put.go              T1.3  NewPut, Put, Attempt, Stored (D9)
   seam_test.go        T1.3  the shape RFC 3 §1.3 consumes
-  arch_test.go        T1.4  the export pin (D8)
+  arch_test.go        T1.3  the export pin (D8)
 ```
 
 ## 6. Subtasks
 
-### T1.1 `pkg/remote`, the contract for v1.1
+### T1.1 `pkg/remote`, the contract for v1.1, pinned
 
-**Subtask T1.1 estimate: 1.5 man-days.**
+**Subtask T1.1 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** none.
-- **Covers:** R1–R12.
+- **Covers:** R1–R4, R6–R12.
 - **Deliverables:** `remote.go`, `store.go` and `errors.go`, with RFC 4 §4.1's signatures:
   - the types `Name [32]byte`, `Range struct{ Off, Len int64 }`, `Direction` (`DirPut`,
     `DirGet`), `Mode` (`Mutable`, `Immutable`), `Version string`, `Checksum` (`ChecksumNone`,
@@ -370,7 +397,8 @@ pkg/remote/codec/
     `Health(ctx, d Direction) error`, `PutControl(ctx, role Role, body []byte) error`,
     `GetControl(ctx, role Role) (body []byte, v Version, err error)` and `Close() error`;
   - the seven errors, `Cause` (`CauseAccess`, `CauseQuota`, `CauseSize`) with `String`, and
-    `DeniedError struct{ Cause Cause; Code string }` with `Error` and `Unwrap` (D3).
+    `DeniedError struct{ Cause Cause; Code string }` with `Error` and `Unwrap` (D3);
+  - `arch_test.go`, D8's pin and purity check.
 
   Consumed by E2 (the suite and the in-memory store take `Store`), E4 and E5 (the S3 store
   implements it), T1.3 (`codec.Store` holds one), the RFC 3 plan's syncer (the types and errors
@@ -378,7 +406,9 @@ pkg/remote/codec/
 - **Acceptance criteria:**
   - Every symbol RFC 3 §1.3 lists as used from `remote` is declared here, and nothing of the two
     groups RFC 4 §4.1 defers (R3, R4).
-  - The package imports the standard library only (R2).
+  - An extra export, a changed signature (one `Store` method's included), a missing symbol, a
+    package-level `var` other than the seven errors, or a free `func` fails the pin (R1, R4, R7,
+    R10).
 - **Tests:** at the errors as consumers read them, with `errors.Is` and `errors.As`: a table of
   every sentinel against every other, `ErrThrottled` matching `ErrTransient` and `ErrMalformed`
   matching `ErrCorrupt` and nothing else matching (catches `ErrMalformed` declared with
@@ -386,119 +416,102 @@ pkg/remote/codec/
   wrong one, R11); a `*DeniedError` of each cause matching `ErrDenied`, recovered by `errors.As`
   with its cause, and its message naming the cause's word and the code (catches a `DeniedError`
   that unwraps to nothing, or a cause that prints as a number, R12). The zero `StoredSum`'s kind
-  is `ChecksumNone` (catches a reordered constant block, R6). No test double.
+  is `ChecksumNone` (catches a reordered constant block, R6). The pin runs over `testdata/arch/`,
+  with a planted extra export, a changed signature, a `var` and a free `func`, and fails on each
+  (catches a pin that compares nothing). No test double.
 - **Rules:** rule 9: D2's `decision:` at the role constants, D4's section names.
 
 ### T1.2 The import walk
 
-**Subtask T1.2 estimate: 1.5 man-days.**
+**Subtask T1.2 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T1.1.
 - **Covers:** R2, R17, R18, R21–R24.
-- **Deliverables:** `imports_test.go`: `go list -deps -f '{{.ImportPath}} {{join .Deps " "}} | {{join .Imports " "}}' ./...`
-  run from `pkg/remote` (production files: no `-test`), a pure checker
-  `violations(pkgs []listed, rules map[string]rule) []string`, and D7's table as data. Consumed by
-  every later subtask's package: E2's `memory` and `remotetest`, E3's `s3fault`, E4's and E5's
-  `s3`, T1.3's `codec`, each checked with no change here.
+- **Deliverables:** `imports_test.go`: a walk of a directory that runs
+  `go list -deps -f '{{.ImportPath}} {{join .Deps " "}} | {{join .Imports " "}}' ./...` (no
+  `-test`, so production files only), a pure checker over what it lists, and D7's table as data.
+  Consumed by every package under `pkg/remote`: T1.3's `codec`, E2's `memory` and `remotetest`,
+  E3's `s3fault`, E4's and E5's `s3`, each checked with no change here.
 - **Acceptance criteria:**
-  - `go test ./pkg/remote/` runs the walk over every package under `pkg/remote` that exists,
-    and reports each violation as the package, the path that reached the refused package, and
-    its row.
+  - `go test ./pkg/remote/` walks every package under `pkg/remote` that exists, and reports each
+    violation as the package, the refused package it reached, and its row.
   - A package under `pkg/remote` with no row fails (R21).
-- **Tests:** at the checker, table-driven over planted graphs, each failing on its assertion:
-  `codec` reaching `pkg/settings` through a package it imports (catches a direct-only walk, R24,
-  R18); `codec` reaching `pkg/transform/chain` (catches the chain imported rather than handed in,
-  R17); `s3` importing `pkg/remote/codec` and `memory` importing `pkg/remote/codec` (catch a store
-  parsing a block, R22); `s3` reaching `pkg/syncer` or `pkg/engine` (R23); `s3fault` importing
-  `pkg/remote` (catches the stale plan row, D7); a `pkg/remote/extra` with no row (catches an
-  unchecked package); `remote` importing a library (R2). A case that hands it a graph with a
-  test-only import of `pkg/remote/memory` from `codec` passes (catches a walk that binds tests,
-  R24). The live run over the real tree is the walk itself.
+- **Tests:** at the walk, over `testdata/walk/`, a module of its own whose production file reaches
+  a refused package through an intermediate one and whose `_test.go` imports another refused
+  package: exactly the production reach is reported (catches a template reading `.Imports` for
+  `.Deps`, a direct-only walk, and one that binds tests, R24). At the checker, one case per branch:
+  a reach its row refuses (`codec` reaching `pkg/transform/chain`, R17), a package with no row, a
+  library imported by `remote` (R2), and an allowed reach that passes. The live walk over the real
+  tree enforces the table for every package as it lands (R18, R21–R23).
 - **Rules:** rule 7 and rule 8 are this subtask.
 
-### T1.3 The codec's surface
+### T1.3 The codec's surface, pinned, and the freeze
 
-**Subtask T1.3 estimate: 1.75 man-days.**
+**Subtask T1.3 estimate: 1.5 man-days.**
 
 - **Track:** the team. **Depends on:** T1.1; S1d, for `transform.Chain`, `transform.Attempt`,
   `transform.Encoded` and `entity.NamespaceID`.
 - **Covers:** R13–R20, R25.
-- **Deliverables:** `codec.go` and `put.go`: D5's `Config`, `Recorder`, `CPU`, `Deps` and
-  `New`, and, with stub bodies behind final signatures,
+- **Deliverables:**
+  - `codec.go` and `put.go`: D5's `Config`, `Recorder`, `CPU`, `Deps` and `New`, and, with stub
+    bodies behind final signatures,
 
-  ```go
-  func (s *Store) Get(ctx context.Context, name remote.Name, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]
-  func (s *Store) Health(ctx context.Context, d remote.Direction) error
-  func (s *Store) NewPut(name remote.Name, nonce [16]byte, pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) *Put // D9, pending
-  func (p *Put) Attempt(ctx context.Context, m remote.Meter) error
-  func (p *Put) Stored() (ranges []remote.ChunkRange, census []transform.Encoded)
-  ```
+    ```go
+    func (s *Store) Get(ctx context.Context, name remote.Name, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]
+    func (s *Store) Health(ctx context.Context, d remote.Direction) error
+    func (s *Store) NewPut(name remote.Name, nonce [16]byte, pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) *Put // D9, pending
+    func (p *Put) Attempt(ctx context.Context, m remote.Meter) error
+    func (p *Put) Stored() (ranges []remote.ChunkRange, census []transform.Encoded)
+    func MaxHeaderLen(v uint8) (n int, ok bool) // D11
+    ```
 
-  and `func MaxHeaderLen(v uint8) (n int, ok bool)` (D11), each doc comment RFC 4 §4.3's, naming
-  the section, and `Attempt`'s stating that two
-  `Attempt`s of one `Put` may overlap. The stubs return an error and never panic; no test reads
-  their answers. `New`'s refusals (D5) are real, since a later epic's caller depends on them.
-  Consumed by E6, which fills every body; the RFC 8 offload plan's epic 21, which calls `New` per
-  store and `MaxHeaderLen` to size the put side, and its epic 15, which passes `put.Attempt` to
-  `Flow.Upload` with a `size` from `MaxHeaderLen`; E7, whose content wiring
-  implements `Recorder`.
+    each doc comment RFC 4 §4.3's, naming the section, with `Attempt`'s stating that two
+    `Attempt`s of one `Put` may overlap and `Stored`'s that its census entries carry a nil
+    `Body`. The stubs return an error and never panic; no test reads their answers.
+  - `arch_test.go`, D8's pin.
+  - The review that reaches S1: the surface, with D9 and D10 as the user settles them, put to the
+    RFC 3 and RFC 8 offload plans' authors, and in the pull request's description each exported
+    symbol of both packages with its first caller.
+
+  Consumed by E6, which fills every body; the RFC 8 offload plan's epic 21, which calls `New`
+  per store and `MaxHeaderLen` to size the put side and the bound it hands the engine, and its
+  epic 15, which passes `put.Attempt` to `Flow`'s `Upload`; E7, whose content wiring implements
+  `Recorder`.
 - **Acceptance criteria:**
-  - `*codec.Store` has exactly the method set RFC 3 §1.3's `Store` declares, and
-    `(*Put).Attempt` the type of `Flow.Upload`'s `attempt` (R14, R15).
-  - `GetVersion` is not declared (R16), and the package declares no error variable (R13).
-  - `New` refuses each missing input of D5 by name.
+  - `*codec.Store` implements RFC 3 §1.3's `Store`, and `(*Put).Attempt` has the type of
+    `Upload`'s `attempt` (R14, R15).
+  - `GetVersion` is not declared (R16), and the package declares no error variable (R13); the pin
+    fails on either.
 - **Tests:** in `seam_test.go`, a local copy of RFC 3 §1.3's `Store` interface and
   `var _ syncerStore = (*Store)(nil)`, and `var _ func(context.Context, remote.Meter) error =
-  (*Put)(nil).Attempt`: the compiler enforces the seam until the RFC 3 plan's own package lands
-  and the content wiring's composition takes over the check (catches a signature drifting from
-  what the syncer calls, R14, R15). `New` with each input missing returns an error naming it
-  (catches a default that hides a wiring mistake). No test double.
+  (*Put)(nil).Attempt`: the compiler enforces the seam until the RFC 3 plan's package lands and
+  the content wiring's composition takes the check over (catches a signature drifting from what
+  the syncer calls, R14, R15). The pin runs over T1.1's planted package (catches a pin that
+  compares nothing). No test double.
 - **Rules:** rule 3: `Deps` as D5 gives it. Rule 11: the encoder and decoder are not declared
   (D6).
-
-### T1.4 The pins and the freeze
-
-**Subtask T1.4 estimate: 1.25 man-days.**
-
-- **Track:** the team. **Depends on:** T1.2, T1.3.
-- **Covers:** R1, R4, R7, R10, R13, R16.
-- **Deliverables:**
-  - `pkg/remote/arch_test.go` and `pkg/remote/codec/arch_test.go`, D8's pins: T1.1's and T1.3's
-    exported sets, struct fields included, and in `pkg/remote` the purity check.
-  - The review that reaches S1: the surface, D9 and D10 as the user settles them, put to the RFC 3
-    and RFC 8 offload plans' authors, and the caller list in the pull request's description, each
-    exported symbol with its first caller (an E2 to E6 subtask, or an RFC 3 or RFC 8 offload plan
-    epic).
-- **Acceptance criteria:**
-  - An extra export, a changed signature, a missing symbol, a package-level `var` other than the
-    seven errors or a free `func` in `pkg/remote` fails a pin (R1, R7, R10).
-  - Every exported symbol has a named first caller outside its package.
-- **Tests:** each pin runs over `testdata/arch/`, a package with a planted extra export, a
-  `var` and a free `func`, and fails on each (catches a pin that compares nothing, rule 10).
-- **Rules:** rule 11 is this subtask.
 
 ## 7. Order of work
 
 ```mermaid
 flowchart TD
-  T1_1["T1.1 pkg/remote, the contract"] --> T1_2["T1.2 Import walk"]
+  T1_1["T1.1 pkg/remote, the contract, pinned"] --> T1_2["T1.2 Import walk"]
   T1_1 --> C1(["after T1.1: the contract importable by E2 and the syncer"]):::sync
-  T1_1 --> T1_3["T1.3 The codec's surface"]
+  T1_1 --> T1_3["T1.3 The codec's surface, pinned, the freeze"]
   S1d(["S1d: the root pkg/transform"]):::sync --> T1_3
-  T1_2 & T1_3 --> T1_4["T1.4 Pins and freeze"]
-  T1_4 --> S1(["after T1.4: S1, the surface frozen"]):::sync
+  T1_2 & T1_3 --> S1(["after T1.2 and T1.3: S1, the surface frozen"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
 T1.2 follows T1.1 on the same path, while T1.3 waits on S1d. Checkpoint after T1.1: E2 and the RFC 3
-plan's syncer can build on `pkg/remote`. Checkpoint after T1.4: S1.
+plan's syncer can build on a pinned `pkg/remote` (§9 point 5). S1 follows T1.2 and T1.3.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T1.1, T1.2 | 3 | — | the contract with the walk that keeps it one |
-| 2 | T1.3, T1.4 | 3 | PR 1, and S1d | the codec's surface and the pins that freeze both packages: S1 |
+| 1 | T1.1, T1.2 | 2.5 | — | the contract, pinned, with the walk that keeps it one |
+| 2 | T1.3 | 1.5 | PR 1, and S1d | the codec's surface and its pin, and the review that reaches S1 |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -506,22 +519,31 @@ A suggestion only: one pull request per subtask works as well.
 
 1. **D9, `NewPut`'s inputs: pending the user's answer.** Options:
    - (a), recommended: `NewPut(name, nonce, pin, src)`, as T1.3 writes it; RFC 4 §4.3 and RFC 3
-     §1.3's mention are amended to it.
+     §1.3's two mentions are amended to it.
    - (b) a value, `NewPut(b codec.Block, src)` with `Block{Name remote.Name; Nonce [16]byte;
-     Pin transform.Attempt}`: one parameter, the same amendment, and a fourth type to export.
+     Pin transform.Attempt}`: one parameter, the same amendment, and one more type to export.
    - (c) the codec mints: `NewPut(pin, src) (*Put, remote.Name)`, drawing the nonce and deriving
      the name itself. It moves minting from the engine (RFC 8 §6.6, the RFC 2 plan's D9) into the
      codec, ahead of the put intent the engine records, so it amends three RFCs.
 2. **D10, the census on a read: pending the user's answer.** Options:
    - (a), recommended: `Config.Census`, a lookup by name the content wiring builds over the
-     metadata store; no signature changes.
+     metadata store, with D10's error contract; no signature changes.
    - (b) `Get(ctx, name, want, census, m)`: the census travels from the engine through the
      syncer's `Fetch`, `Prefetch` and `Store.Get`, which amends RFC 3 §1.3 and makes the syncer
      carry `transform.Encoded`, a type RFC 3 says it does not import.
-3. **The background decode's CPU token.** RFC 24 §6.2 puts GC's verification under the token, and
-   `codec.Store.Get` carries no per-call input to say a read is background. No caller of v1.1 makes
-   one; how GC's verification asks for the token is settled when RFC 9's plan builds it.
-4. **The plan's outline differs in two places.** It lists the encoder and decoder in this epic's
-   surface (D6 keeps them unexported) and gives `s3fault` `pkg/remote` and `pkg/sim` in rule 7
-   (D7 follows E3). Its rule 7 list is corrected by the follow-up that also fixes the `keys`
-   contract's import (`keys/provider`, not `keys`), not here.
+3. **The background decode's CPU token.** RFC 24 §6.2 puts GC's verification and relocation under
+   the token, and `codec.Store.Get` carries no per-call input to say a read is background. No
+   caller of v1.1 makes one; how a background read asks for the token is settled when RFC 9's plan
+   builds it.
+4. **The plan's outline differs in four places.** It lists the encoder and decoder in this epic's
+   surface (D6 keeps them unexported); it gives the decoder an optional CPU token in this epic
+   (point 3 leaves it to its caller); it gives `s3fault` `pkg/remote` and `pkg/sim` in rule 7 (D7
+   follows E3); and its estimate is 4 subtasks and 6 man-days, against this document's 3 and 4,
+   since the pins fold into the subtasks that create each package and the declaration work weighs
+   at the scale's lower end. Its rule 7 list is corrected by the follow-up that also fixes the
+   `keys` contract's import (`keys/provider`, not `keys`), not here.
+5. **S1 now waits on S1d, and E2 need not.** T1.3 names `pkg/transform`'s types, so S1, the RFC 8
+   offload plan's S1c, follows that plan's S1d rather than running beside it. E2 and the RFC 3
+   plan's syncer use only T1.1's contract, so they can start at the checkpoint after T1.1 rather
+   than at S1. The plan's §3.2 says S1 waits on nothing outside it; the follow-up that corrects
+   rule 7 can record both.
