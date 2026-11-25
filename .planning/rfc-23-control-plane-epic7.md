@@ -100,7 +100,7 @@ and title and not copied.
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T7.2, T7.3 | a crash is a process killed with `SIGKILL` over Badger on disk (D1); the audit's all-or-nothing runs on Badger with its commit faulted |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.1, T7.3 | E1's `decision:` markers on the kept `Server` and on `ErrNoServer` go with what they guarded; T7.1's store seeding until X3 and T7.3's error-table exceptions each carry a `decision:` |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each row is broken once on purpose before it lands and fails on its assertion |
-| rule 11, a symbol is exported only if RFC 23's interface uses it | T7.1 | the fixture's exports are the harness's own surface; nothing under `internal/node` gains one |
+| rule 11, a symbol is exported only if RFC 23's interface uses it | T7.1, T7.4 | the fixture's exports are the harness's own surface; under `internal/node` only `nodetest` gains one, `StartAt`, for T7.4's child, which reads the wall clock (D4) |
 | rule 12, each subtask creates only what it declares | all | no new package |
 
 ## 3. Requirements and invariants
@@ -194,9 +194,11 @@ it, in the part this epic owns.
 - **D4, `§7 CLI` runs E6's suite from a child.** A `dfsctl` child, its `HOME` and `XDG_*` directories
   empty, runs every row of E6's `clisuite` against an in-process node: the harness-only rows too,
   since the test, not the child, writes through the store and advances the clock. Each noun runs
-  over a node of its own whose clock starts at the wall clock the child reads (`nodetest.StartAt`),
-  as one node for every noun runs ahead of it by every wait the rows before advanced. No path reaches
-  the bootstrap or the store; E6's closure rule (`go list -deps ./cmd/dfsctl`) shows it links none
+  over a node of its own whose clock starts at the wall clock the child reads (`nodetest.StartAt`)
+  and is moved up to it before each invocation, as one node for every noun runs ahead of it by
+  every wait the rows before advanced. The child's home holds an unreadable file at the bootstrap's
+  default path, so a command that loads the bootstrap fails rather than loading the defaults a
+  missing file gives. No path reaches the bootstrap or the store; E6's closure rule (`go list -deps ./cmd/dfsctl`) shows it links none
   of their code. Running as a second OS user needs root, which `e2e` has; E8 adds that form. No
   marker.
 - **D5, a hold is a fault the test implements.** Where a row must observe the node mid-step (R6's
