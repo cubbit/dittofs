@@ -1658,7 +1658,10 @@ runs RFC 23's e2e rows.
   server (D9).
 - **O5. Which counter a position is of** (RFC 23 §13 item 1) is settled by amendment A4: only the
   reconciled kinds carry one, as RFC 16 §3 has it.
-- **O6. The cost of a full reconcile** (RFC 23 §13 item 5) is unmeasured. Epic 3 reconciles as the
+- **O6. The cost of a full reconcile** (RFC 23 §13 item 5) is unmeasured, except the settings read: decoding
+  only the scopes that changed keeps it at 93 ms at 10⁴ shares (issue #5563), so it needs no index by (kind,
+  position); the settings reconcile benchmark of RFC 13's plan (its epic 3), `BenchmarkReconcileScan` (`scan_above`, and
+  `walk` for the index), is its measure. This plan's epic 3 reconciles as the
   RFC says, and benchmarks it at 10⁴ shares, a cold pass and steady share churn, against
   RFC 23 §2.3's bound on applying a change. The sketch's reconcile re-applies settings only when
   the settings generation moves; it retries only a failed read, after a backoff, with a full pass,
