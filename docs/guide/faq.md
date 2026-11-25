@@ -264,7 +264,7 @@ Both are NFS implementations in Go, but with different goals:
 - Extensive configuration system
 - Multiple backend options
 - Production features (metrics, rate limiting, graceful shutdown)
-- NFSv4/v4.1 support with delegations and Kerberos
+- NFSv4/v4.1 support with delegations (NFS Kerberos is not served yet)
 
 ### What's unique about DittoFS?
 

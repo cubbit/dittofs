@@ -119,8 +119,8 @@ The SMB adapter supports Kerberos authentication through SPNEGO during `SESSION_
 Kerberos provider is configured, SMB clients authenticate using Kerberos tickets. When Kerberos
 is not configured, the SMB adapter falls back to NTLM or guest authentication.
 
-See [Kerberos configuration](#kerberos-configuration) for shared setup that applies to both NFS
-and SMB.
+See [Kerberos configuration](#kerberos-configuration) for shared setup. Only SMB is served
+over Kerberos; NFS Kerberos is not served yet: every RPCSEC_GSS call is answered `AUTH_BADCRED`, so a `sec=krb5` mount fails.
 
 ### SMB: NTLM and guest fallback
 
@@ -169,7 +169,7 @@ account for them. Three pieces are independent and can be enabled in any combina
 
 | Piece | What it does | Credential at rest |
 |---|---|---|
-| **Kerberos service keytab** | Verifies AD-issued service tickets over SMB (SPNEGO) and NFS (RPCSEC\_GSS) | Keytab file |
+| **Kerberos service keytab** | Verifies AD-issued service tickets over SMB (SPNEGO); NFS RPCSEC\_GSS is not served yet | Keytab file |
 | **Machine account** (a domain join) | Forwards the NTLM challenge/response to the Domain Controller over a sealed NETLOGON channel, for clients that cannot use Kerberos | Computer account secret |
 | **LDAP idmap** | Maps the authenticated principal or SID to a Unix UID/GID and resolves nested group membership | Read-only bind DN + password |
 
@@ -529,6 +529,8 @@ chown dittofs:dittofs /etc/dittofs/dittofs.keytab
 ```
 
 ### NFS client setup
+
+> NFS Kerberos is not served yet: every RPCSEC_GSS call is answered `AUTH_BADCRED`, so a `sec=krb5` mount fails. The mount below is the intended procedure once it is.
 
 ```bash
 # Mount with Kerberos (krb5 security flavor)

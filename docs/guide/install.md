@@ -235,6 +235,12 @@ it to exist). The container starts with no stores
 and no shares; create them with `dfsctl` (see the [CLI reference](cli.md)) or use the
 Compose stack below, which does it for you.
 
+`dittofs-state` was also the name of a v1 volume, which kept its control-plane database at the
+volume's root. On a host upgraded from v1, `init` succeeds there and `start` then refuses it
+(`/data/state/controlplane.db` is from v1), so remove or rename that volume first, or delete
+`controlplane.db` from it; see [Upgrading from v1](upgrading-from-v1.md). The same applies to
+the FoundationDB image below.
+
 **Image tags:**
 
 - `marmos91c/dittofs:latest` — latest stable release
@@ -578,7 +584,8 @@ sudo systemctl daemon-reload
 
 ```bash
 docker volume rm dittofs-metadata dittofs-blocks dittofs-state
-# an upgraded v1 host also has this
+# an upgraded v1 host also has this, and its dittofs-state (removed above)
+# holds v1's controlplane.db, which start refuses
 docker volume rm dittofs-cache
 # or, with Compose
 docker compose down -v

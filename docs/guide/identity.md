@@ -693,7 +693,8 @@ klist                       # should show a TGT for DITTOFS.AD
 # 2. Mount over SMB with Kerberos
 mount -t cifs //server/share /mnt/smb -o sec=krb5,port=12445,vers=2.1,cache=none
 
-# 3. Mount over NFSv4 with Kerberos.
+# 3. Mount over NFSv4 with Kerberos (not served yet: every RPCSEC_GSS call
+#    is answered AUTH_BADCRED, so this mount fails).
 #    Use vers=4.0 explicitly (the e2e suite mounts with vers=4.0, NOT vers=4):
 mount -t nfs //server/share /mnt/nfs -o vers=4.0,port=12049,sec=krb5,actimeo=0
 ```
@@ -710,6 +711,8 @@ when read over the other — that is the cross-protocol identity unification goa
 Expected: alice resolves to `uid 10001` on both.
 
 ### NFS `sec=krb5` from a Linux client — verified procedure
+
+> NFS Kerberos is not served yet: every RPCSEC_GSS call is answered `AUTH_BADCRED`, so a `sec=krb5` mount fails.
 
 An NFSv4.0 `sec=krb5` mount has client-side prerequisites beyond `kinit` that are
 easy to miss. The following sequence is **verified end-to-end** against the demo
