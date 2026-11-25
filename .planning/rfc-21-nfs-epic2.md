@@ -66,10 +66,9 @@ and the `pynfs`, `cthon04` and `nfstest` suites stay off until the cutover.
 `pkg/openstate`'s `ErrNoGrace` and its check, `pkg/vfs`'s `StateNoGrace`, `internal/vfs`'s mapping,
 and the tests of each; `vfstest.Mutations`' record of references and answers; the runner, built in
 `adaptertest`, and `adaptertest/nfsharness` over it with NFS's two cases; the cut script;
-the import test's call-site and file-size rules; the recording script for MOUNT, NLM
-with NSM and NFSv4.2, the traces kept from the knfsd nfstest baseline for NFSv3, NFSv4.0 and
-NFSv4.1, the five capture directories and the golden files cut from them, which the existing
-`TestParseCaptured` loads.
+the import test's call-site and file-size rules; the recording script for all five areas, over a
+loopback mount against knfsd, the five capture directories and the golden files cut from them,
+which the existing `TestParseCaptured` loads.
 
 ### 1.2 Out of scope
 
@@ -85,7 +84,9 @@ NFSv4.1, the five capture directories and the golden files cut from them, which 
   in E11, as RFC 21 §11.5 has it.
 - Handler tests themselves, and the vectors of each procedure: each handler epic, on `nfsharness`.
 - Captures of `RPCSEC_GSS` exchanges, which need a KDC: E13. The diff scripts that compare DittoFS
-  with these captures: E14.
+  with these captures, and the two-client conflict captures (a second client's `OPEN` answered
+  `NFS4ERR_DELAY`), recorded from a host with client namespaces, which loopback cannot give (D1):
+  E14.
 - The scripted client and loopback rows: E3.
 
 ### 1.3 Names used here
@@ -180,23 +181,27 @@ the service's state after a request, which each handler test makes through `memo
 
 ## 4. Decisions this epic takes
 
-- **D1. knfsd, recorded by hand, per program area.** The captures are of the Linux kernel server
-  on a Linux host with root, driven by the Linux client from the client network namespaces
-  `test/nfs-mount/netns.sh` already builds for cthon04 and nfstest (the server on the host, each
-  client in a namespace of its own with its own rpcbind and statd, so NLM reaches the server and
-  two clients are two NFSv4 clients), with knfsd exported as
-  `test/nfs-mount/nfstest/baseline-knfsd.sh` exports it. NFSv3, NFSv4.0 and NFSv4.1 come from
-  that baseline's own nfstest runs, which already capture every test and delete the traces
-  (`run.sh`'s `--rmtraces`): the baseline keeps them instead. A new `nfs-record.sh` records only
-  what the baseline's modules do not reach: MOUNT, NLM with NSM, and NFSv4.2. Each area is kept in
-  `test/pcap-corpus/`, beside `nfsv4-acl/`, which already holds a knfsd capture, with
-  `reference.pcap`, `reference.skel` from `normalize.py` and a `CAPTURE.md` recipe, as the corpus
-  README lays out. The server is knfsd on the host, the only NFS server the recipe starts, which
-  keeps the reference what RFC 20 Appendix C names, held by review of `CAPTURE.md`. The script runs by
-  hand, not in CI: no suite registered for RFC 21 runs captures, and recording needs root and
-  the kernel server. The files are committed, so every test reads them without either. Prior
-  art: RFC 20 Appendix C; the corpus's `nfsv4-acl/` recipe; the `nfs-knfsd-baseline` workflow,
-  which runs knfsd on a dispatched runner. No marker: the README records it.
+- **D1. knfsd, recorded by hand, over loopback, per program area.** The captures are of the Linux
+  kernel server on a Linux host with root, driven by the Linux client over a loopback mount in the
+  host namespace, with knfsd exported from a scratch XFS made with `reflink=1`. One script,
+  `test/pcap-corpus/nfs-record.sh`, records all five areas (NFSv3 with MOUNT, NLM with NSM,
+  NFSv4.0, NFSv4.1 and NFSv4.2); nfstest's baseline traces and `netns.sh`'s client namespaces are
+  not used, so `baseline-knfsd.sh` and `run.sh` stay unchanged. It restarts `nfs-server` and runs
+  `sm-notify -f`, so it refuses to run unless `NFS_RECORD_THROWAWAY_HOST=1` says the host is a
+  throwaway. Loopback gives every program and version a call and a real NFSv4.1 and 4.2 back
+  channel, and loses the two-client view this decision first had: there is one NFSv4 client, so
+  the delegation recall comes from a write on the server rather than a second client's `OPEN`
+  answered `NFS4ERR_DELAY`, and NLM and NSM share one lockd and one statd; the two-client conflict
+  captures are E14's (§1.2). `nfs40/` has `CB_NULL` and no `CB_RECALL`, which nothing needs: the
+  server offers NFSv4.0 clients no delegation and so never sends them a callback (RFC 21 §3).
+  Each area is kept in `test/pcap-corpus/`, beside `nfsv4-acl/`, which already holds a knfsd
+  capture, with `reference.pcap`, `reference.skel` from `normalize.py` and a `CAPTURE.md` recipe,
+  as the corpus README lays out. The server is knfsd on the host, the only NFS server the recipe
+  starts, which keeps the reference what RFC 20 Appendix C names, held by review of `CAPTURE.md`.
+  The script runs by hand, not in CI: no suite registered for RFC 21 runs captures, and recording
+  needs root and the kernel server. The files are committed, so every test reads them without
+  either. Prior art: RFC 20 Appendix C; the corpus's `nfsv4-acl/` recipe; the `nfs-knfsd-baseline`
+  workflow, which runs knfsd on a dispatched runner. No marker: the README records it.
 - **D2. One handler runner, built in `adaptertest`, and `nfsharness` a thin wrapper over it.**
   SMB's handler harness, which was to hold the runner first, is not built (D6), so T2.2 builds the
   runner in `adaptertest` directly, naming no protocol: it decodes a row's arguments with its
@@ -286,11 +291,9 @@ internal/adapter/nfs/ops/v4/
   harness_test.go              T2.2  an NFSv4 member on nfsharness
 internal/adapter/nfs/protocol/
   harness_test.go              T2.2  an NFSv3 row on nfsharness, its structs generated in row_types_test.go
-test/nfs-mount/nfstest/
-  baseline-knfsd.sh, run.sh    T2.3  keep the traces when asked
 test/pcap-corpus/
   cut-golden.sh                T2.5  run by hand: a capture, a frame, a framing, a .hex file, through tshark (D7)
-  nfs-record.sh                T2.3  records MOUNT, NLM with NSM, NFSv4.2 against knfsd
+  nfs-record.sh                T2.3  records all five areas against knfsd over a loopback mount
   nfs3/ nlm/ nfs40/ nfs41/ nfs42/   T2.3  reference.pcap, reference.skel, CAPTURE.md with each cut's provenance
 internal/adapter/nfs/wire/
   testdata/golden/knfsd-*.hex  T2.3  messages cut from the captures, named as epic 1's D8 has it
@@ -354,8 +357,8 @@ internal/adapter/nfs/wire/
   call starts, so entries stay in the order the calls started, and its answer is filled in as the
   call returns; every call is still passed through unchanged. A refused `Park` is not the
   service's to record: it is `core.Request`'s (RFC 20 §4.7), and T2.2's runner sees it. `pkg/vfs/service.go`'s comment on `Mutates` says the calls RFC 20 §4.3
-  leaves outside the rule are true for it, and the handler check exempts them by the request's
-  context, as RFC 17 §3.1 does. Consumed by T2.2's runner, and by SMB's handler harness through it.
+  leaves outside the rule are true for it, and the handler check exempts them by the request they
+  came in, the list RFC 20 §4.3 gives. Consumed by T2.2's runner, and by SMB's handler harness through it.
 - **Acceptance criteria:**
   - A `FreeState` answered `ErrState` (`Revoked`), the answer injected through `vfstest.Faults`
     since `memory.New` answers a `FreeState` of a revoked reference with no error, is recorded with
@@ -476,19 +479,16 @@ internal/adapter/nfs/wire/
 - **Track:** the team. **Depends on:** T2.5, whose script cuts the captures at recording time.
 - **Covers:** R15, R16.
 - **Deliverables:**
-  - `baseline-knfsd.sh` and `run.sh` keep nfstest's traces when asked, instead of `--rmtraces`;
-    the traces of one baseline run give `nfs3/` (the `cache` module on NFSv3), `nfs40/` and
-    `nfs41/` (`lock` and `delegation`, the latter with a second client's `CB_RECALL` on the back
-    channel). nfstest starts each test's trace before it mounts (from memory), so the mount's
-    `SETCLIENTID`, `EXCHANGE_ID` and `CREATE_SESSION` are in the traces; if a module's are not,
-    `nfs-record.sh` adds one mount and unmount per version.
-  - `test/pcap-corpus/nfs-record.sh`, which sources `test/nfs-mount/netns.sh` for its client
-    namespaces, exports a scratch directory from knfsd and runs under `tcpdump`: `nfs3/`'s MOUNT
-    calls (`NULL`, `MNT`, `EXPORT`, `UMNT`); `nlm/`, NLM's lock, test, unlock and a blocked lock
-    granted by callback from a version 3 mount, and NSM's monitor calls and the `SM_NOTIFY` a
-    server restart sends; `nfs42/`, `SEEK`, `ALLOCATE`'s and `DEALLOCATE`'s requests, `COPY`,
-    `CLONE` and the xattr operations, from an export on a loop-mounted XFS made with
-    `reflink=1`, since knfsd answers `CLONE` `NFS4ERR_NOTSUPP` on a filesystem without reflinks.
+  - `test/pcap-corpus/nfs-record.sh`, run by hand as root on a throwaway host (it refuses without
+    `NFS_RECORD_THROWAWAY_HOST=1`): it exports a scratch XFS made with `reflink=1` from knfsd,
+    mounts it over `127.0.0.1` in the host namespace, and records each area under `tcpdump -i lo`:
+    `nfs3/`, MOUNT's `NULL`, `EXPORT`, `MNT` and `UMNT` with NFSv3; `nlm/`, NLM's test, lock, a
+    blocked lock granted by callback and unlock, with NSM's monitor calls and `SM_NOTIFY`;
+    `nfs40/`, NFSv4.0 with `CB_NULL`; `nfs41/`, NFSv4.1 with `CB_RECALL` on the back channel,
+    the recall coming from a write on the server; `nfs42/`, `SEEK`, `ALLOCATE`'s and
+    `DEALLOCATE`'s requests, `COPY`, `CLONE` and the xattr operations, the XFS having reflinks
+    since knfsd answers `CLONE` `NFS4ERR_NOTSUPP` without them. nfstest's baseline traces and
+    `netns.sh`'s namespaces are not used, so `baseline-knfsd.sh` and `run.sh` are unchanged.
   - Each of the five directories with `reference.pcap`, `reference.skel` and `CAPTURE.md` (D1),
     the `CAPTURE.md` naming, for every golden file, its capture, its frame and the `tshark`
     command that cut it (D7), and the golden files cut from them with T2.5's script into

@@ -329,10 +329,10 @@ that subtasks and tests can cite them.
   back through kvstore's views; the API address the node bound on `127.0.0.1:0`, read from the
   `Node` record it registered. The runner, which needs no node, is tested in package `node` over
   real Badger with a real step. No marker.
-- **D12, the engine's `CloneHold` adapter has one copy, in `pkg/openstate`.** `enginetest.Holds`
+- **D12, the engine's `CloneHold` adapter has one copy, in `internal/node/content`.** `enginetest.Holds`
   adapts open state to `engine.CloneHold`, but `enginetest` is a test fixture whose package imports
   `testing`. Neither `engine` nor `openstate` imports the other, so the adapter moves unchanged to
-  `openstate.EngineHolds`, which the node and `enginetest.Holds` both call. No marker.
+  `content.EngineHolds`, which the node and `enginetest.Holds` both call. No marker.
 - **D13, the node owns `cfg.KV`.** `Stop`, and a failed `Start`'s undo, close the KV after the
   store. `nodetest`'s `Restart` stops the node and opens a new KV over the same directory. No
   marker.
@@ -364,10 +364,10 @@ that subtasks and tests can cite them.
   D12's reason, a test fixture importing `testing`, it moves to `pkg/engine`'s `JournalOf`,
   which the node and `enginetest` both call. No marker.
 
-- **D18, the node and `enginetest` build the engine through one `enginewire.Compose`.**
-  `pkg/engine/enginewire.Compose(Params)` builds open state over the store and returns it
+- **D18, the node and `enginetest` build the engine through one `content.Compose`.**
+  `internal/node/content.Compose(Params)` builds open state over the store and returns it
   with the engine's `Deps`: each device's journal opener over `journal.Open` and `JournalOf`
-  (D17), the store's views, `openstate.EngineHolds` (D12) and a no-op `Tracer`. It opens and
+  (D17), the store's views, `content.EngineHolds` (D12) and a no-op `Tracer`. It opens and
   starts nothing. `node.New` and `enginetest` both call it, so the fixture the engine's tests run
   on is wired as the node ships it. That makes it the one composition code another package
   imports, a stated departure from RFC 8 §2.1 and RFC 23 §2.1's "nothing imports it". Only
@@ -380,12 +380,11 @@ that subtasks and tests can cite them.
 ## 5. Target tree
 
 ```text
-pkg/openstate/
-  engineholds.go                           T3.1  EngineHolds, moved from enginetest (D12)
+internal/node/content/
+  holds.go                                 T3.1  EngineHolds, moved from enginetest (D12)
+  content.go                               T3.2  Compose, which the node and enginetest call (D18)
 pkg/engine/
   journalof.go                             T3.1  JournalOf, moved from enginetest (D17)
-pkg/engine/enginewire/
-  enginewire.go                            T3.2  Compose, which the node and enginetest call (D18)
 pkg/config/
   config.go                                T3.1  the bootstrap's host-set Node and Devices (D1)
 internal/node/
@@ -431,7 +430,7 @@ Dockerfile                                 T3.9  HEALTHCHECK on https://localhos
   - `New` opens the metadata store with `kvstore.Open` over `cfg.KV`, then builds open state,
     the engine (`Node`, `Devices`, from the bootstrap's host-set fields (D1), the journal opener
     over `journal.Open` and `engine.JournalOf` (D17), the store's
-    `Existence`, `Content` and `Lifecycle`, `openstate.EngineHolds`, `cfg.Clock`, a no-op
+    `Existence`, `Content` and `Lifecycle`, `content.EngineHolds`, `cfg.Clock`, a no-op
     `Tracer`, `cfg.Logger`) and `*vfs.Filesystem`, each from its own `Deps`, and starts nothing.
     A missing installation is refused by `kvstore.Open`. Another installation's KV is not
     refused by `New`, since nothing in `Config` names the installation to expect: `Start` refuses
@@ -440,7 +439,7 @@ Dockerfile                                 T3.9  HEALTHCHECK on https://localhos
     upgrade. A node is built once per metrics registry, since `Stop` does not unregister the
     filesystem's collectors, a `decision:` at `New` naming unregistering in `Stop` as the upgrade.
     RFC 23 §2.1's `ponytail:` at `New`;
-  - `openstate.EngineHolds`, `enginetest.Holds`' adapter moved unchanged (D12), and
+  - `content.EngineHolds`, `enginetest.Holds`' adapter moved unchanged (D12), and
     `engine.JournalOf`, `enginetest`'s journal adapter moved (D17);
   - `internal/node/nodetest.New(t, opts...) *Harness`: an installation initialised with
     `kvstore.Init` and `journal.Init` under `t.TempDir()`, its journals recorded (E5's subtask
