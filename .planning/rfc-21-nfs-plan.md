@@ -19,7 +19,7 @@ again. This plan deletes nothing. Related RFCs, with how far each is in scope:
   against knfsd, the benchmarks, the three `adapter_*` record and translation series, the
   `required-tests.json` pins, the `FlowControl` conformance check, `core`'s datagram listener, NFS
   over TLS, the NFS callbacks, `gss`'s `Wrap` and `Unwrap`. §6.4 maps each row. The pieces that
-  serve both adapters, priced once in RFC 22's plan, are its (§6.2, point 1).
+  serve both adapters are priced once in this plan's E2 (§6.2, point 1).
 - [RFC 18](../docs/internals/rfcs/rfc-18-identity.md), identity, and [RFC 19](../docs/internals/rfcs/rfc-19-authorization.md),
   authorization: **NFS's parts only**: an `AUTH_SYS` or `AUTH_NONE` credential as an `Identity`,
   and, which RFC 18's plan (#4058) defers to this plan by its O2, identity's NFS side: `AUTH_SYS`
@@ -674,7 +674,9 @@ and RFC 14 §4.2's answer (#5090 2.2).
 **Done when:** the harness's own test fails on a second mutating call and on a wrong reply byte, for
 an NFSv3 row and for an NFSv4 compound member; golden files cut from knfsd's captures load for each
 program area; `memory.New` answers a reclaim from a client with nothing left to reclaim `ErrState`
-(`NoGrace`), per RFC 14 §4.2, and one still owing reclaims `NoReclaim`.
+(`NoGrace`), per RFC 14 §4.2, and one still owing reclaims `NoReclaim`; the import test reports
+each seeded call-site and file-size violation once, and `adaptertest/golden` cuts both corpus
+captures to the bytes `tshark` cut.
 
 **Expected content:**
 - S0: `vfstest.Mutations` keeping each call's reference and answer, `adaptertest/golden`, and the

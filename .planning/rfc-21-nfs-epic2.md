@@ -17,7 +17,7 @@ changes. RFC 20 §2.5's `adaptertest/nfsharness/`, NFS's handler harness, is thi
 Cited, not owned: [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.11 (test doubles);
 the `test/pcap-corpus` README's layout.
 **Track:** the team.
-**Epic 2 estimate: 6 subtasks, 14.75 man-days.**
+**Epic 2 estimate: 6 subtasks, 15 man-days.**
 **Depends on:** **S1**, E1's request state and members' table, which `nfsharness` hands a member.
 S0's three shared pieces are built here (D6), so nothing outside this epic is waited for but S1.
 **Blocks:** every middle epic through S2: E3, E4, E5, E7, E11 and E12 directly, and through them the
@@ -110,14 +110,14 @@ cited by number and title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | `NoGrace` is tested in `pkg/openstate` over its own durable-record tests and on `memory.New`; the runner is built from the allowed kinds: `memory.New` (kind 2, held to RFC 17 §8's suite), `vfstest.Faults` (kind 3) and T2.4's recording wrapper, which records and passes through, never answering |
-| rule 2, fuzz tests where relevant | none | nothing here decodes a peer's bytes: the captures seed E1's `FuzzCompound` and `FuzzCodec` and later epics' targets; T2.5's capture reader reads only the corpus's committed files, by hand, and a malformed one stops the cut |
+| rule 2, fuzz tests where relevant | T2.5 | nothing here decodes a peer's bytes: the captures seed E1's `FuzzCompound` and `FuzzCodec` and later epics' targets; T2.5's capture reader reads only the corpus's committed files, by hand, and a malformed one stops the cut, with a `decision:` marker at `Cut` naming that ceiling: withdraw the exemption and add a fuzz target if `Cut` ever reads a capture a peer supplied |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | none | no series, span or log line is added; `NoGrace` is a value of the service's closed error set, counted by `core` where an adapter answers it |
 | rule 4, profiling: leaks, allocations and contention | T2.2 | the runner calls `adaptertest.CheckLeaks` first, on the top-level test, as its contract asks, so every handler test checks leaks and none runs in parallel; nothing here takes a lock on a hot path |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T2.1, T2.4, T2.2, T2.5 | `NoGrace` asserted on the error `memory.New` returns, which an adapter maps; the record's references and answers asserted where the runner reads them; the runner returns the bytes a client would read; a cut message compared with one `tshark` cut from the same capture |
 | rule 6, known failures shrink | none | no suite with a `known.yaml` is run or registered |
 | rule 7, v2 ignores v1 | T2.3 | the captures are of the Linux server, never of `develop`'s adapter |
 | rule 8, real dependencies for properties of those dependencies | T2.2, T2.3 | the real filesystem in memory for the service's answers; knfsd's own bytes for golden files, never vectors the codec under test made |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1, T2.4, T2.6 | D5's `decision:` marker at its code site; `openstate`'s comments on `admit` and `ErrNoReclaim` rewritten to name `ErrNoGrace`; `pkg/vfs`'s comment on `Mutates`; the file-size rule's `decision:` on what it counts (§9, point 1); T2.6's `ponytail:` on its match by method name |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1, T2.4, T2.2, T2.5, T2.6 | D5's `decision:` marker at its code site; `openstate`'s comments on `admit` and `ErrNoReclaim` rewritten to name `ErrNoGrace`; `pkg/vfs`'s comment on `Mutates`; the file-size rule's `decision:` on what it counts (§9, point 1); T2.6's `ponytail:` on its match by method name; T2.5's `decision:` on its fuzz exemption; T2.2's `decision:` on the protocol test packages' imports |
 | rule 10, a test must be able to fail | all | NFS's runner cases fail on a second or a missing mutating call, and the runner's own on each exemption misapplied; `NoGrace`'s tests fail with the check removed; `TestParseCaptured` fails on a file of another program; the import test reports each seeded violation exactly once |
 | rule 11, a symbol is exported only if an interface uses it | T2.1, T2.4, T2.2, T2.5 | `openstate.ErrNoGrace` and `vfs.StateNoGrace` are exported, for the adapters' rows; the record's entries, for the runner; the runner's exports, for `nfsharness` and SMB's harness; `nfsharness`'s, for every NFS handler epic's tests; `golden`'s cut, for T2.3 and Samba's captures |
 | rule 12, each subtask creates only what it declares | all | T2.4's record is read by T2.2; `nfsharness` holds only what NFS adds to the runner, the request state and a member's head, and arrives with its two cases, whose next consumers are E3's and E4's handler tests; T2.5's helper with T2.3's golden files, and those with E3's, E4's and E5's vectors; T2.6's rules with their seeded violations, the entry files with E4 and E5 |
@@ -170,6 +170,7 @@ subtasks and tests can cite them.
 | R20 | A call of an entry method (`Root`, `SecInfo`, `ListShares`) outside the entry handlers' files fails the import test | MUST | RFC 20 §7.1, §4.10 | T2.6 |
 | R21 | The import test lists every adapter file over 800 lines and fails on one not in its checked-in allowlist, which may only shrink and starts with `core`'s `pipeline.go`, `hold.go` and `chain.go` | MUST | RFC 20 §7.1, §2.5 | T2.6 |
 | R22 | Each rule is seeded in the test's own data with a deliberate violation it must report exactly once, and with a case the rule allows, which it must not report | MUST | RFC 20 §7.1 | T2.6 |
+| R23 | A protocol's harness and scripted client sit in `adaptertest` and import that protocol's packages, and no adapter imports another adapter, so the import test admits the first and still refuses the second | invariant | RFC 20 §2.3, §2.5 | T2.2 |
 
 Not obligations of this epic: RFC 14 §8's order of the shard list's write before the answer that
 grants a client its first state there, which open state already keeps; RFC 20 §7.2's assertions on
@@ -244,9 +245,10 @@ the service's state after a request, which each handler test makes through `memo
   and tests are the ones that epic gave them, NFS's cases standing in for SMB's
   where a test needs a protocol. No marker: the pieces carry no adapter-specific shortcut.
 - **D7. `golden` reads the classic capture format in Go, not through `tshark`.** The corpus's
-  recipes write classic pcap files (`tcpdump -w`), so T2.5 reads that format, Ethernet and Linux
-  cooked frames, IPv4 and IPv6, TCP reassembled per stream and direction and UDP datagrams whole,
-  with the standard library alone, and refuses pcapng naming it. Cutting then needs no `tshark` on
+  recipes write classic pcap files (`tcpdump -w`), so T2.5 reads that format: Ethernet (link type
+  1), Linux cooked SLL (113) and SLL2 (276) frames, any other link type refused by its number;
+  IPv4 and IPv6; TCP reassembled per stream and direction and UDP datagrams whole; with the
+  standard library alone, and refuses pcapng naming it. Cutting then needs no `tshark` on
   the machine that cuts or tests, and the cut is checked against the corpus's files `tshark` already
   cut from the same capture, an independent decoder (T2.5's tests). Prior art: the corpus's `normalize.py`, which reads captures
   through `tshark`; Go's `gopacket`, from memory, which the import test's list of outside modules
@@ -279,8 +281,9 @@ internal/adapter/adaptertest/
   golden/golden.go             T2.5  classic pcap reader, TCP streams and UDP datagrams, the two framings, the hex writer (D7)
   golden/golden_test.go        T2.5  cuts checked against files tshark cut from the same captures
   golden/cutgolden/main.go     T2.5  run by hand: a capture, the server's port, a framing, an output directory
-  imports_test.go              T2.6  entry call sites and file sizes, with their lists
-  testdata/imports/            T2.6  a seeded violation and an allowed case per new rule
+  imports_test.go              T2.2  a protocol test package's imports of its own protocol (R23)
+                               T2.6  entry call sites and file sizes, with their lists
+  testdata/imports/            T2.2, T2.6  a seeded violation and an allowed case per new rule
 internal/adapter/nfs/ops/v4/
   harness_test.go              T2.2  an NFSv4 member on nfsharness
 internal/adapter/nfs/protocol/
@@ -363,7 +366,8 @@ internal/adapter/nfs/wire/
   - A read-only call is not recorded, and `Ops` answers as before for its existing callers.
   - The wrapper answers nothing in the service's place: every call's result is the wrapped one's.
 - **Tests:** in `vfstest`, on `memory.New`: the three recorded shapes above, and the two calls
-  returning out of order, held by a fault wrapper that delays the first (kind 3), each failing when the
+  returning out of order, the first held by `vfstest.Faults`' `Hold` and released once the second
+  has returned, the second started once `Reached` is closed (kind 3), each failing when the
   reference or the answer is dropped from the entry (catches a record T2.2 cannot exempt from,
   R17); a fault injected through `vfstest.Faults` under the wrapper, recorded as the answer
   (catches an answer read from anything but the call); the existing `mutations_test.go` cases kept
@@ -372,10 +376,10 @@ internal/adapter/nfs/wire/
 
 ### T2.2 The runner in `adaptertest`, and `nfsharness` over it
 
-**Subtask T2.2 estimate: 4.5 man-days.**
+**Subtask T2.2 estimate: 4.75 man-days.**
 
 - **Track:** the team. **Depends on:** S1, T2.4.
-- **Covers:** R9, R10, R11, R12, R13, R14, R18.
+- **Covers:** R9, R10, R11, R12, R13, R14, R18, R23.
 - **Deliverables:**
   - The runner in `adaptertest` (D2), naming no protocol: a row and a `*core.Request` its caller
     builds in, the row's `Decode`, `Bound`, `Resolve`, `Call` and `Encode` run with no socket, an
@@ -383,17 +387,29 @@ internal/adapter/nfs/wire/
     verdict reads T2.4's record and applies R18's exemptions by what the caller says the request
     is (a session setup's completing leg, a request naming a SID or a principal), by whether the
     request's `Park` was refused, which the runner sees on the `*core.Request` it runs, and by the
-    references and answers recorded before each call (D3). Indicatively
-    `func Run(t testing.TB, svc *memory.Service, tab *core.OpTable, row string, r *core.Request,
-    args []byte, ctx Exempt) []byte`, its final shape settled in the subtask, before
-    `nfsharness` pins it. Consumed by `nfsharness`, and by SMB's handler harness in the RFC 22
+    references and answers recorded before each call (D3). One order of the service's layers, so
+    a faulted call is recorded: `svc := memory.New(t)`, `faults := vfstest.Faults(svc)`, `rec :=
+    vfstest.RecordMutations(faults)`, the handler calling `rec` and the runner reading `rec`,
+    never `svc.Mutations`, which sits under the faults and never sees a call they answer.
+    Indicatively `func Run(t testing.TB, rec *vfstest.Mutations, tab *core.OpTable, row string, r
+    *core.Request, args []byte, ctx Exempt) []byte`, its final shape settled in the subtask,
+    before `nfsharness` pins it. Consumed by `nfsharness`, and by SMB's handler harness in the RFC 22
     implementation plan's epic 2.
   - `adaptertest/nfsharness`: a row run with a request the test builds, carrying a
     `protocol.State`, and a member of the NFSv4 members' table run with its `EncodeResult` head
     written first. Consumed by every NFS handler epic's tests, E3's and E4's first.
   - Its two cases: an NFSv3 test row in `nfs/protocol`, its structs generated in the package's
     existing `row_types_test.go`, and an NFSv4 test member in `nfs/ops/v4`, run with a
-    `protocol.State` the case builds, each against `memory.New` with `vfstest.Faults` over it.
+    `protocol.State` the case builds, each against `memory.New` with `vfstest.Faults` over it and
+    T2.4's record over both, in the runner's order.
+  - The import test's rule for the protocol test packages in `adaptertest`, which `nfsharness`
+    needs before it lands: today every directory under `adaptertest/` counts as the adapter
+    `adaptertest`, so `nfsharness`'s import of `nfs/protocol` is refused as one adapter importing
+    another. A non-test file in `adaptertest/<p>harness` or `adaptertest/<p>client` may import
+    protocol `<p>`'s packages and no other protocol's, with a `decision:` marker naming the ceiling:
+    these packages are test-only, and RFC 20 §7.1's rule already refuses them to a non-test file
+    outside `adaptertest`; withdraw it if one is ever imported by a serving package. Consumed by
+    `nfsharness` here and E3's `nfsclient`.
 - **Acceptance criteria:**
   - The runner's package imports no `internal/adapter/smb` or `internal/adapter/nfs` package, and
     a caller that builds a `*core.Request` from another protocol's header needs nothing else from
@@ -401,6 +417,11 @@ internal/adapter/nfs/wire/
   - The row and the member, each making one mutating call, pass; with a second call each fails,
     naming both calls; with none where one is due, each fails, naming the missing one.
   - A fault injected on the row's service method answers the status the table maps it to.
+  - A faulted mutating call is recorded with the injected error as its answer, and counts as the
+    request's one call.
+  - `TestImports` passes with `nfsharness` in the tree; in the import test's own data,
+    `nfsharness` importing `internal/adapter/smb/...` is reported once, and importing
+    `internal/adapter/nfs/protocol` is not reported.
   - The member's bytes start with its operation code and status, from the members' table.
   - Each exemption of R18 passes in the request it names and fails outside it: a `FreeState` of the
     reference the request's call was answered `ErrState` (`Revoked`) for passes, one with no such
@@ -414,9 +435,12 @@ internal/adapter/nfs/wire/
   break it, run in a top-level test whose runner calls `adaptertest.CheckLeaks` first and none in
   parallel (catch a second or a missing mutating call, R12, a member's head dropped, R14, a fault
   answered unmapped, R10, R11). `vfstest.Faults` (kind 3), `memory.New` (kind 2) and T2.4's record,
-  which passes each call through, are the only collaborators.
-- **Rules:** rule 4: the runner's leak check, called once; rule 12: `nfsharness` holds only what
-  NFS adds to the runner.
+  which passes each call through, are the only collaborators. The faulted row's record, failing
+  when the record is put under the faults (R12, R18); the import rule's two seeds in
+  `TestImportCheckReportsEachSeededViolation`, failing when the rule admits every protocol or is
+  removed (R23).
+- **Rules:** rule 4: the runner's leak check, called once; rule 9: the import rule's `decision:`
+  marker; rule 12: `nfsharness` holds only what NFS adds to the runner.
 
 ### T2.5 `adaptertest/golden`: captures cut into golden files
 
@@ -425,8 +449,8 @@ internal/adapter/nfs/wire/
 - **Track:** the team. **Depends on:** none.
 - **Covers:** R15, R19.
 - **Deliverables:**
-  - `adaptertest/golden` (D7): a reader of the classic capture format (Ethernet and Linux cooked
-    frames, IPv4 and IPv6), reassembling each TCP stream per direction in sequence order, a
+  - `adaptertest/golden` (D7): a reader of the classic capture format (Ethernet, Linux cooked SLL
+    and SLL2 frames, link types 1, 113 and 276, any other refused by its number; IPv4 and IPv6), reassembling each TCP stream per direction in sequence order, a
     retransmitted or overlapping segment taken once, and taking each UDP datagram whole; two
     framings, RFC 5531's record mark (its marks stripped, fragments joined) and SMB2's
     four-byte direct-TCP length; and a writer of one `.hex` file per message, in the format the
@@ -445,15 +469,16 @@ internal/adapter/nfs/wire/
     `smb/wire`'s `create_response.hex` past its direct-TCP header, which `tshark` cut too.
   - A message split across segments, delivered out of order and with one segment retransmitted,
     is cut once, whole; a record of two fragments is one message.
-  - A pcapng file is refused, naming the format; a truncated frame stops the cut, naming it.
+  - A pcapng file is refused, naming the format; a truncated frame stops the cut, naming it; a
+    link type other than 1, 113 and 276 is refused, naming it.
   - A written file, read back as the wire packages' readers read it, gives the message's bytes.
 - **Tests:** in `golden`: the two corpus cuts above (catch a wrong offset, link type or framing:
   `tshark` is the independent decoder, R15); a capture the test writes from bytes it states,
   holding the split, reordered and retransmitted segments, two fragments and a UDP datagram
   (catches a reassembly that drops, doubles or reorders bytes); the pcapng and truncated cases;
   the written file read back. No test double: the inputs are capture files.
-- **Rules:** rule 8: the reference servers' own bytes, never ones this code produced; rule 2, as
-  §2 says.
+- **Rules:** rule 8: the reference servers' own bytes, never ones this code produced; rule 2 and
+  rule 9: the fuzz exemption's `decision:` marker, as §2 says.
 
 ### T2.3 knfsd's captures, cut into golden files
 
@@ -551,19 +576,19 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-Three paths, each a blocker of another epic: T2.1 of the reclaim rows; T2.4 then T2.2, of every
+Four paths, each a blocker of another epic: T2.1 of the reclaim rows; T2.4 then T2.2, of every
 handler test; T2.5 then T2.3, of the vectors; and T2.6, of the entry handlers. T2.1 goes first, as
 the one that changes the service's answers and needs nothing; then the handler path, the largest,
 whose T2.2 also waits for S1; then the captures; T2.6 last, as no epic needs it before E4.
 Checkpoints: after T2.4, T2.5 and T2.6, S0 (the pieces the RFC 22 implementation plan's epic 2
-builds on); at the end, S2.
+builds on); at the end, S2, which waits for S0 as well as T2.1, T2.2 and T2.3.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T2.1 | 2.75 | — | a service change, reviewed by open state's owners apart from the adapter's tests |
-| 2 | T2.4, T2.2 | 5.75 | S1 | the record and the runner that reads it, with the exemptions and the two cases that prove it fails for NFS |
+| 2 | T2.4, T2.2 | 6 | S1 | the record and the runner that reads it, with the exemptions and the two cases that prove it fails for NFS |
 | 3 | T2.5, T2.3 | 4.75 | — | the helper and the captures it cuts, mostly binary and recipe |
 | 4 | T2.6 | 1.5 | — | two rules of the import test, with their seeds |
 
