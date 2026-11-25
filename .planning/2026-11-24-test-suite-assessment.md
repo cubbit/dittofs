@@ -8,9 +8,10 @@ We asked two questions: *are we running too many unit tests?* and *are they why 
 We measured on an idle machine and ran mutation testing on one package. The answers:
 
 1. **The number of tests is not why CI is slow.** 78% of our unit tests finish in under
-   0.1 s, and together they cost 99 s. CI is slow because the job is **CPU-bound on a 4-core
-   runner**, and the **race detector doubles the test time**. Coverage costs nothing, and the
-   build is small.
+   0.1 s, and together they cost 99 s. The suite is **CPU-bound**: on 4 dedicated cores the
+   **race detector doubles the test time**, and the build is small. Without `-race`, coverage
+   costs nothing we can measure; the atomic mode CI uses is unmeasured. CI is 2–3× slower
+   than our 4-core run, and that gap is not explained (§1.2).
 2. **Some tests are duplicated, but not in the way a count suggests.** Mutation testing shows
    that many tests overlap. Most of the overlap is *one rule written as several tests*, which
    we can merge. Very few tests are useless.
@@ -232,7 +233,7 @@ These tests pin data and contracts, not arithmetic. A reviewer keeps them.
 
 **The 78 tests with no unique kill are where real duplication may hide.** Each one needs a
 person to read it and name the test that covers it, as §4.2 describes. The greedy cover of
-19 tests shows the floor: 19 tests kill all 290 mutants. It is not a target, because those
+19 tests says that at most 19 tests are needed to kill all 290 mutants. It is not a target, because those
 19 do not check the contracts above.
 
 **3. Gaps: write the missing test.** A surviving mutant is a behaviour no test checks. For
@@ -330,9 +331,7 @@ What the change must also do:
     after the suite. ÷2 on the suite step is a realistic target, not ÷3.
   - The slowest package, `internal/identity`, sets a floor for any shard, and A2 does not
     lower it (see A2).
-  - More jobs wait longer in the runner queue. The CI throughput plan
-    (`.planning/2026-09-15-ci-throughput-and-merge-gating-PLAN.md`) found queue wait to be
-    most of PR wall time, so measure the queue after A1.
+  - More jobs wait longer in the runner queue, so measure the queue time after A1.
 
 **A2 — cheap Argon2 cost in tests.** Follow the pattern `pkg/keyprovider` already uses:
 `GenerateWeakKeyFile` is a cheap variant, and an architecture rule
@@ -386,8 +385,8 @@ adapters). A race found only at night lands after the merge. Coverage stays too:
 `-race` it costs nothing we can measure, and the atomic mode CI uses is unmeasured.
 
 **Not in Track A:** the Go build cache. The unit job already restores it
-(`.github/actions/go-cache`). The CI throughput plan
-(`.planning/2026-09-15-ci-throughput-and-merge-gating-PLAN.md`) already covers its key.
+(`.github/actions/go-cache`). Its key changes only with `go.sum`, so it can go stale (see
+the deferral ledger).
 
 ### 4.2 Track B: one trial dedup PR in `format`
 
@@ -452,16 +451,15 @@ surviving mutants on the changed lines. Run it by hand when you review.
   `TestComposeAdaptsTheTracerToTheJournal` (`pkg/engine/enginewire`) failed 5 of 5 runs and
   `TestJournalOfServesTheJournalsMarks` (`pkg/engine`) 2 of 5, both with `journal: no
   space: refused by the version limit`. With `-race` they passed 5 of 5. CI runs the unit
-  suite only with `-race`, so CI never sees this. #5613 (open, approved) fixes the `pkg/engine`
-  test: its first write retries every spare refusal, each refusal spends a version, and the
-  `1<<20` version limit runs out before a spare lands. The `enginewire` test has the same
-  shape (`enginewire_test.go:340` sets the limit, `:351` retries without waiting for spares),
-  so it needs one issue.
+  suite only with `-race`, so CI never sees this. Both are now fixed: #5613 for the
+  `pkg/engine` test (its first write retried every spare refusal, each refusal spent a
+  version, and the `1<<20` version limit ran out before a spare landed), and #5695 for the
+  `enginewire` test (#5694).
 - **Side finding 2.** On 4 busy cores, `TestDevTracingShutsDownWithinItsBound`
   (`cmd/dfs/commands/tracing_test.go:128`) failed: the shutdown waited 10.5 s, and the test
   fails at twice its 5 s bound, 10 s. It passed in the less loaded batch.
 - **Side findings and CLAUDE.md.** A flake is fixed, or quarantined with an issue and an
-  expiry, so two issues follow: the `enginewire` test, and the tracing test. Side finding 1
+  expiry. Side finding 2 is #5667. Side finding 1
   is also an argument for non-race cells such as A4's: today no CI run would catch it.
 - **Not done.** No mutation matrix for a concurrent package. No profile of the CI runner
   itself.
@@ -491,5 +489,5 @@ surviving mutants on the changed lines. Run it by hand when you review.
 | A CI job that runs `gremlins --diff` on every PR | The manual use must prove useful first; `gremlins` runs only the package's own tests, so it is noisy where a consumer package holds the test | unowned | Reviewers use it by hand on 3+ PRs and ask for it |
 | A scheduled kill-matrix suite (`dt`, `tier: manual`) | The driver needs its own tests, and hang attribution in concurrent packages | unowned | Track B extends beyond `format` |
 | Test selection from the dependency graph, beyond `--changed` | Sharding may be enough | unowned | The unit job is still over 10 min after A1 and A2 |
-| The Go build-cache key | Covered by `.planning/2026-09-15-ci-throughput-and-merge-gating-PLAN.md` | that plan | that plan's own trigger |
+| The Go build-cache key (changes only with `go.sum`) | Outside the test suite itself | unowned | A cache-hit measurement shows frequent cold builds |
 | Removing the 291 `time.Sleep` calls in tests | Done as tests are touched, per CLAUDE.md | unowned | A flake traced to a sleep |
