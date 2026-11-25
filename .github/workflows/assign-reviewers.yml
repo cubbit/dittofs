@@ -67,11 +67,11 @@ jobs:
           case "$AUTHOR" in
             didimelli)      pool="rif viquitorreis marmos91 AntonioBusillo" ;;
             llucian-iws)    pool="rif viquitorreis simonebaracchi AntonioBusillo" ;;
-            rif)            pool="llucian-iws viquitorreis marmos91 didimelli AntonioBusillo" ;;
+            rif)            pool="llucian-iws viquitorreis marmos91 didimelli" ;;
             viquitorreis)   pool="rif simonebaracchi llucian-iws AntonioBusillo" ;;
-            marmos91)       pool="simonebaracchi llucian-iws didimelli AntonioBusillo" ;;
-            simonebaracchi) pool="marmos91 llucian-iws viquitorreis AntonioBusillo" ;;
-            AntonioBusillo) pool="marmos91 rif simonebaracchi" ;;
+            marmos91)       pool="simonebaracchi llucian-iws didimelli" ;;
+            simonebaracchi) pool="marmos91 viquitorreis AntonioBusillo" ;;
+            AntonioBusillo) pool="rif didimelli llucian-iws" ;;
           esac
 
           # Lucian does not review Radu's journal changes.
