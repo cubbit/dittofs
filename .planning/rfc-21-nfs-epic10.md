@@ -650,6 +650,8 @@ internal/adapter/adaptertest/nfsclient/
   - With client A holding a write delegation, client B's `SETATTR` of the mode, `REMOVE` of the file,
     and `RENAME` with the file as source and, on a second file, as target: each `NFS4ERR_DELAY`, A
     reads `CB_RECALL` before the change, and after A's `DELEGRETURN` B's retry succeeds (R38).
+  - The same with A holding a read delegation: B's `REMOVE` is `NFS4ERR_DELAY` and A reads
+    `CB_RECALL` first (R38).
   - An NFSv4.0 client with a callback address the test listens on opens the file read-only, then for
     write: `OPEN_DELEGATE_NONE` both times, and nothing connects to the address.
   - Every want code T9.4 passes, under each minor version, maps to a kind, never a handle grant.
@@ -673,7 +675,8 @@ internal/adapter/adaptertest/nfsclient/
   cases above, the listener's accept count 0 (catch a delegation to NFSv4.0, R12, a recall missing,
   R15); the `SETATTR`, `REMOVE` and `RENAME` recalls, each asserting B's file unchanged until A's
   `DELEGRETURN` (catches a change made before the recall, or a recall missing for an operation other
-  than `OPEN`, R38). R17 is held by `DELEGRETURN`'s row, which T10.9's drain test runs.
+  than `OPEN`, R38); the `REMOVE` against a read delegation (catches the conflict checked for write
+  delegations only, R38). R17 is held by `DELEGRETURN`'s row, which T10.9's drain test runs.
 - **Rules:** rule 9, RFC 21 §5.3's `decision:` on NFSv4.0 and D6's at `want`; rule 13, `want` and
   `delegation` pure and total.
 
