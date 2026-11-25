@@ -1264,6 +1264,7 @@ Flags:
       --portmap                      run the suite's portmap option
       --results string               where results go, relative to the checkout's root (default test/harness/results)
       --retry int                    run each test that failed new again, up to N times: a pass on a retry is flaky
+      --second-user                  run the suite's second-user option
       --skip strings                 skip these suites of the group
       --smb                          run the suite's smb option
       --smb21                        run the suite's smb21 option

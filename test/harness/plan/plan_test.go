@@ -32,8 +32,8 @@ func names(cells []Cell) []string {
 
 // The pr tier is today's pull-request checks, with the conformance suites on
 // the production profile, badger-s3, only, and smbtorture over two runners.
-// With no change given, the Kerberos and cross-protocol e2e runs, which have
-// paths, are planned too, non-blocking as e2e is. A cell names the test tools
+// With no change given, the second-user, Kerberos and cross-protocol e2e
+// runs, which have paths, are planned too, non-blocking as e2e is. A cell names the test tools
 // it takes from {tools}.
 func TestPRTier(t *testing.T) {
 	cells, err := Plan("../../..", repo(t), "pr", nil)
@@ -48,7 +48,7 @@ func TestPRTier(t *testing.T) {
 		"adapter-conformance",
 		"integration", "integration/portmap", "integration/kerberos",
 		"operator",
-		"e2e/kerberos", "e2e/cross-protocol",
+		"e2e/second-user", "e2e/kerberos", "e2e/cross-protocol",
 		"pjdfstest/badger-s3/3", "pjdfstest/badger-s3/4", "pjdfstest/badger-s3/4.1",
 		"pynfs/badger-s3/0", "pynfs/badger-s3/1",
 		"wpts/badger-s3", "smbtorture/badger-s3/shard-1", "smbtorture/badger-s3/shard-2",
@@ -331,6 +331,14 @@ func TestChangedPaths(t *testing.T) {
 		if got := plan(p); !slices.Contains(got, "e2e/kerberos") {
 			t.Errorf("a change to %s doesn't plan e2e/kerberos", p)
 		}
+	}
+	for _, p := range []string{"cmd/dfsctl/commands/status.go", "internal/cli/credentials/store.go", "internal/node/node.go", "pkg/node/apiv1/client/client.go"} {
+		if got := plan(p); !slices.Contains(got, "e2e/second-user") {
+			t.Errorf("a change to %s doesn't plan e2e/second-user", p)
+		}
+	}
+	if got := plan("pkg/engine/flush.go"); slices.Contains(got, "e2e/second-user") {
+		t.Errorf("a block change plans e2e/second-user: %v", got)
 	}
 	// Other tiers ignore the change: everything runs after a merge.
 	cells, err := Plan("../../..", r, "merge", []string{"docs/x.md"})

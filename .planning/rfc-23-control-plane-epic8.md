@@ -185,8 +185,9 @@ it, in the part this epic owns.
   `e2e/cross-protocol`. A cell leaves the filter only once, so whoever lands its first green test
   removes it, and the rows that come after join a running cell:
   - the `e2e` suite leaves the suite list with T8.2, whose `e2e/second-user` row needs no adapter
-    and so lands first; `e2e`, `e2e/kerberos` and `e2e/cross-protocol` are skipped by name
-    meanwhile (as `unit/windows` already is); `e2e` leaves with T8.6, its first green test under
+    and so lands first; `e2e`, `e2e/kerberos`, `e2e/cross-protocol` and the nightly
+    `e2e/stress`, which a dispatch can plan, are skipped by name meanwhile (as `unit/windows`
+    already is); `e2e` leaves with T8.6, its first green test under
     `test/e2e`, unless a protocol plan's row lands first, and `e2e/kerberos` with T8.8 unless a
     protocol plan's Kerberos row lands first;
     `e2e/cross-protocol` is the protocol plans';
@@ -222,8 +223,12 @@ it, in the part this epic owns.
   runs it so), so the child starts with `SysProcAttr.Credential` set to uid and gid 65534, its
   `dfsctl` built into a directory that user can read and its `HOME` and `XDG_*` directories its
   own; the node's data directory and bootstrap stay `0700` root. No user is created on the host.
-  The suite's harness-only rows are left out: they set up or read state through the in-process
-  harness, which no separate user can reach, and run the same commands the other rows run. Prior
+  The suite's harness-only rows run too: their setup and reads go through the in-process harness
+  in the test's own process, as root, and only their commands run in the child. The child is
+  handed two things it could not reach otherwise: the API's local socket, which the node makes
+  `0600` for its own user, is given to uid 65534, as an operator grants a user the API; and a
+  file a row names after a `-file` flag, written under the row's own temporary directory, is
+  copied into the child's home. Prior
   art: Go's `os/exec` tests run children under another credential the same way (from memory). No
   marker.
 - **D6, each account presents every flavour its record lets it present.** Each role account is
@@ -292,12 +297,14 @@ test/posix/known.yaml                     T8.9  rewritten for v2
   child).
 - **Covers:** R5, R11 (the `e2e` suite, `e2e/second-user`).
 - **Deliverables:** `cmd/dfsctl/e2e_test.go` (D5): `TestSecondUser`, T7.4's child runner over a
-  `nodetest` node, the child run as uid and gid 65534, every row but the harness-only ones; the
+  `nodetest` node, the child run as uid and gid 65534, every row, the harness-only ones too; the
   node's data directory and bootstrap checked unreadable to that user first. `test/suites.yaml`:
   `e2e`'s option `second-user`, `cmd: go test -tags=e2e -run SecondUser ./cmd/dfsctl`, `tier: pr`,
-  its `paths:` `cmd/dfsctl/**`, `pkg/node/**` and `internal/node/**`; `e2e`'s own `cmd:` is
-  unchanged. `tests.yml`'s filter: `e2e` out of the suite list, `e2e`, `e2e/kerberos` and
-  `e2e/cross-protocol` skipped by name (D2), the `decision:` marker narrowed to them.
+  its `paths:` `cmd/dfsctl/**`, `pkg/node/**`, `internal/node/**` and `internal/cli/**`, whose
+  credentials package writes the file the child uses; `e2e`'s own `cmd:` is
+  unchanged; it needs only `linux` and `root`. `tests.yml`'s filter: `e2e` out of the suite list,
+  `e2e`, `e2e/kerberos`, `e2e/cross-protocol` and `e2e/stress` skipped by name (D2), the
+  `decision:` marker narrowed to them.
 - **Acceptance criteria:**
   - Every row passes as uid 65534, and the `e2e/second-user` cell is green on `feat/storage-v2`,
     running that test alone.
