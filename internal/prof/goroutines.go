@@ -4,7 +4,25 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// Goroutines snapshots the goroutines running now, for a harness that checks
+// goroutines alone: inside a test a Watch already covers, a second Watch would
+// fail both. The function it returns waits up to wait for the goroutines
+// started since to end, and returns the stacks of those still running.
+func Goroutines() func(wait time.Duration) []string {
+	before := goroutineIDs()
+
+	return func(wait time.Duration) []string {
+		for deadline := time.Now().Add(wait); ; time.Sleep(poll) {
+			left := leakedGoroutines(before)
+			if len(left) == 0 || time.Now().After(deadline) {
+				return left
+			}
+		}
+	}
+}
 
 // goroutines returns every live goroutine's stack, keyed by goroutine id.
 func goroutines() map[uint64]string {

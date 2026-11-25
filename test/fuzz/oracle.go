@@ -20,47 +20,63 @@ type Invariant[R any] func(env *Env, r R) error
 var errNoState = errors.New("the model allows no state after this answer")
 
 // run runs a program against a new real component and a new model, and returns
-// the model states still possible after the last step. It stops at the first
-// step no state allows, and the error carries the trace up to it.
-func run[R, M any](t Target[R, M], env *Env, program Program) ([]M, error) {
+// the model states still possible after the last step, with the trace of the
+// steps run. It stops at the first step that fails, and the error carries the
+// trace up to it.
+func run[R, M any](t Target[R, M], env *Env, program Program) ([]M, string, error) {
 	component, err := t.NewReal(env)
 	if err != nil {
-		return nil, fmt.Errorf("fuzz: %s: new real component: %w", t.Name, err)
+		return nil, "", fmt.Errorf("fuzz: %s: new real component: %w", t.Name, err)
 	}
 
 	states := []M{t.NewModel()}
+	bound := cmp.Or(t.StepBound, defaultStepBound)
+
 	var trace strings.Builder
 	for i, step := range program {
 		env.Step = i
-		got := t.Ops[step.Op].Real(env, component, step.Args)
-		fmt.Fprintf(&trace, "#%02d %s -> %s\n", i, step, got)
+		line := fmt.Sprintf("#%02d %s", i, step)
+		where := fmt.Sprintf("fuzz: %s: step #%02d %s", t.Name, i, step.Name)
 
-		// fail reports what went wrong at this step.
-		fail := func(format string, args ...any) error {
-			return fmt.Errorf("%sfuzz: %s: step #%02d %s: %s\n%s", trace.String(), t.Name, i, step.Name,
-				fmt.Sprintf(format, args...), seedOf(program[:i+1]))
-		}
+		err := guard(bound, trace.String()+line+"\n"+where, func() error {
+			got := t.Ops[step.Op].Real(env, component, step.Args)
+			line += fmt.Sprintf(" -> %s", got)
 
-		next, refusal := advance(t, step, got, component, states)
+			next, err := check(t, env, step, got, component, states)
+			states = next
 
-		switch {
-		case len(next) == 0:
-			return nil, fail("no allowed state matches\n  got:  %s\n  closest candidate: %v\n"+
-				"  candidate states before the step: %d", got, refusal, len(states))
-		case len(next) > maxStates:
-			return nil, fail("%d candidate states, more than %d", len(next), maxStates)
-		}
+			return err
+		})
+		fmt.Fprintln(&trace, line)
 
-		states = next
-
-		for _, invariant := range t.Invariants {
-			if err := invariant(env, component); err != nil {
-				return nil, fail("invariant: %v", err)
-			}
+		if err != nil {
+			return nil, trace.String(), fmt.Errorf("%s%s: %w\n%s", trace.String(), where, err, seedOf(program[:i+1]))
 		}
 	}
 
-	return states, nil
+	return states, trace.String(), nil
+}
+
+// check judges one step's answer: it returns the states still possible, or why
+// the step fails.
+func check[R, M any](t Target[R, M], env *Env, step Step, got Result, component R, states []M) ([]M, error) {
+	next, refusal := advance(t, step, got, component, states)
+
+	switch {
+	case len(next) == 0:
+		return nil, fmt.Errorf("no allowed state matches\n  got:  %s\n  closest candidate: %w\n"+
+			"  candidate states before the step: %d", got, refusal, len(states))
+	case len(next) > maxStates:
+		return nil, fmt.Errorf("%d candidate states, more than %d", len(next), maxStates)
+	}
+
+	for _, invariant := range t.Invariants {
+		if err := invariant(env, component); err != nil {
+			return nil, fmt.Errorf("invariant: %w", err)
+		}
+	}
+
+	return next, nil
 }
 
 // advance returns the states allowed after got: what each state's model allows

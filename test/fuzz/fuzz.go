@@ -5,6 +5,7 @@ package fuzz
 
 import (
 	"fmt"
+	"testing"
 	"time"
 )
 
@@ -48,6 +49,10 @@ type Op[R, M any] struct {
 
 // Env is what the harness hands the real side. It is built for every input.
 type Env struct {
+	// T is the test of this input alone, for a collaborator that takes one:
+	// what it registers on it is cleaned up before the leak check.
+	T *testing.T
+
 	TempDir string
 	Cleanup func(func())
 	Step    int

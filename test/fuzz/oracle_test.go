@@ -122,7 +122,7 @@ func runText(target Target[*register, belief], text string) ([]string, error) {
 		return nil, err
 	}
 
-	states, err := run(target, &Env{}, program)
+	states, _, err := run(target, &Env{}, program)
 
 	return keys(target, states), err
 }
