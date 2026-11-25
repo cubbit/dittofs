@@ -104,7 +104,7 @@ cited by number and title and not copied.
 | rule 4, profiling | none | nothing here starts a goroutine or holds a resource |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T11.2, T11.3 | the refusals are asserted where the node and the fixture meet them: `Apply`'s error and the stored settings, read through an `export_test.go` accessor, `Bind`'s error and the binding left as it was |
 | rule 6, known failures shrink | none | no row turns green or red here |
-| rule 7, v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows | T11.1, T11.3, T11.4 | `pkg/workqueue`'s own walk allows the standard library only (T11.1); the engine's walk gains the `pkg/syncer` root, for `Share.Store`, earlier than the epic that first calls it (D5), and `pkg/workqueue`, a library of this RFC, for `Stats`, and refuses `pkg/syncer/pool` (T11.3, T11.4) |
+| rule 7, v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows | T11.1, T11.3, T11.4 | `pkg/workqueue`'s own walk allows the standard library only (T11.1); the engine's walk gains the `pkg/syncer` root, for `Share.Store`, with the `pkg/remote` root it brings, earlier than the epic that first calls it (D5), and `pkg/workqueue`, a library of this RFC, for `Stats`, and refuses `pkg/syncer/pool` (T11.3, T11.4) |
 | rule 8, real dependencies for properties of those dependencies | none | no property of a journal, a store or a remote store is tested here |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T11.1, T11.2 | RFC 8 §6.1.1's no-borrowing `decision:` is epic 13's, at the reservation code; this epic leaves D3's `decision:` at `Register` and D4's at `Apply` |
 | rule 10, a test must be able to fail | T11.1 to T11.4 | each test fails on a planted break: an import the walk must refuse, a setting `Apply` must refuse, a share `Bind` must refuse, a component-typed field in `Stats` or `Share` |
@@ -130,7 +130,7 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R5 | `Settings` carries the node-scope keys this part reads: `offload.retry_min`, `offload.retry_max`, `offload.retry_max_pressure`, `removal.rescan`, `eviction.repack_threshold`, the eviction occupancy target and the fill low-water mark | invariant | RFC 13 Appendix B; RFC 8 §6.1, §6.3, §7.3, §8.1, §10.1, §10.3, §12.1 | T11.2 |
-| R6 | `Apply` refuses an invalid setting, NaN included, with an error naming it, and keeps the settings it already had; it never substitutes a default | MUST | RFC 8 §2.3, §2.4, §12.1; RFC 0 §1.2 | T11.2 |
+| R6 | `Apply` refuses an invalid setting, NaN included, with an error naming it, and keeps the settings it already had; it never substitutes a default | MUST | RFC 8 §2.4, §12.1; RFC 0 §1.2 | T11.2 |
 | R7 | withdrawn: a fixed RFC 13 row never becoming a field is a review rule no test can check; D4 states it | — | RFC 13 Appendix B; RFC 8 §12.1 | — |
 | R8 | A share's settings travel on its `Share` and are validated at `Bind`: `offload.max_age`, `readahead.max_blocks`, `readahead.max_bytes` and the speculation budget, the share-scope keys | MUST | RFC 8 §2.3, §2.4, §12.1; RFC 13 Appendix B | T11.3 |
 | R9 | A `Start` or `Bind` handed invalid share settings is refused with an error naming the share and the setting; a refused `Bind` leaves a served binding's settings as they were | MUST | RFC 8 §2.3, §2.4, §12.1; RFC 0 §1.2 | T11.3 |
