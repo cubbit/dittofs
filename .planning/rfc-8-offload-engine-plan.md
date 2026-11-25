@@ -407,12 +407,12 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 | 17 | **Remote reads, fill and speculation** | the carved row, verified streaming, re-resolution, chunk or block, `fill`, read-ahead, clone adoption | 7 | 23.5 | C | 18 |
 | 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 8 | 30 | B | 19, 21 |
 | 19 | **Restart and the metadata reconcile** | start steps 6 and 7, the reseed and its gates, re-offer, a lost journal served again, the reconcile and `Bind`'s takeover, the `Census` view | 12 | 44 | C | 21 |
-| 20 | **Health, drain and salvage** | per-direction health and drift, the offload conditions, §11.4 and `WaitOffloaded`, the salvage export | 6 | 18.5 | A | 21 |
+| 20 | **Health, drain and salvage** | per-direction health and drift, the offload conditions, §11.4 and `WaitOffloaded`, the salvage export, `material_destroyed`'s `data_loss` | 7 | 20 | A | 21 |
 | 21 | **Integration: the node composes offload** | a `codec.Store` per store registered with its probe key, `syncertest`'s Group A suite against LocalStack, clients per store configuration, the components' collectors and health sources, settings sections, keys and alerts, the key-record suite, the CPU token, the restart-gated namespace, system scenarios; S7 | 10 | 36 | team | 22 |
 | 22 | **E2E green** 🔀 | burn `known.yaml` down, the soak with remote faults, B1 to B4, B6, B8, and B5, B7, B9 with offload; provisional (§6 point 2) | 7 | 21.5 | team | release |
-| | **Total** | | **89** | **295.75** | | |
+| | **Total** | | **90** | **297.25** | | |
 
-**Plan estimate: 89 subtasks, 295.75 man-days.**
+**Plan estimate: 90 subtasks, 297.25 man-days.**
 
 RFC 8 is 4,291 lines, which gives N = 11, clamped to 8. This part covers about half of it in eight
 cohesive areas, matching N: the scheduler, the queue, the pipeline, passes, remote reads, local space,
@@ -986,14 +986,17 @@ hold.
 
 ### Epic 20 — Health, drain and salvage
 
-**Epic 20 estimate: 6 subtasks, 18.5 man-days.**
+**Epic 20 estimate: 7 subtasks, 20 man-days.**
 
 What the engine reports about offload, the drain wait, and the export of stranded tags. **Owns:** RFC
 8 §3.1's `health`, §2.5 step 5's salvage export, §11.1's offload conditions and per-direction health,
 §11.2's remote-unavailable row, §11.4, §12.1's `WaitOffloaded`, §14's offload and drain series; RFC 1
 §3's salvage. **Done when:** RFC 8 §15.2's "§11.1 health per direction", "§11.1 offload health",
-"§11.1 `stranded_export_failed`" and "§11.4 drain names its blocker" turn green; RFC 8 E12 and E21
-hold.
+"§11.1 `stranded_export_failed`" and "§11.4 drain names its blocker" turn green; the engine's
+`material_destroyed` evaluation reports `data_loss` while a census entry or a journal-held chunk
+depends on destroyed material, and while that is not yet known (it fails closed), and clears once
+nothing depends on it (RFC 25 §3.9 as the RFC 5 plan amends it), each case a `unit` test over the
+fixture; RFC 8 E12 and E21 hold.
 
 **Expected content:**
 - Health per share and direction from the flow's `Healthy` and `Health`, with drift as put-unhealthy
@@ -1002,6 +1005,10 @@ hold.
 - `offload_stalled`, `file_offload_failing`, `offload_age_exceeded`, `work_queue_stalled` and
   `stranded_export_failed`, in `Stats`, which the node adapts into a `health.Source` (epic 21), so
   the engine adds no `pkg/health` import (rule 7).
+- The engine's `material_destroyed` evaluation, `data_loss` per namespace naming the material ID:
+  unhealthy while the `Census` view (epic 19) or a journal-held chunk's block `encodings` name
+  destroyed material, unhealthy while the reseed has not yet established that (fail closed), and
+  clear once nothing depends on it; in `Stats`, adapted like the conditions above.
 - Dirty bytes, drain rate, drain time and the oldest unoffloaded age per share and summed.
 - `WaitOffloaded`, naming the oldest file left and the condition holding it.
 - The salvage export of each stranded tag after serving, under `salvage.path`, in a directory of
@@ -1085,7 +1092,9 @@ it after, as RFC 8 §2.6 orders.
   Tested on its own (arrival order, the count, a waiter holding nothing else) and through the codec
   with a count of one.
 - The material provider's health source registered with the evaluator, for `material_unavailable`
-  and for `material_unknown` and `material_destroyed`, which the RFC 5 plan's A1 adds to RFC 25 §3.9;
+  and `material_unknown`, which the RFC 5 plan's A1 adds to RFC 25 §3.9, and the engine's
+  `material_destroyed` source with its `data_loss` severity (epic 20), adapted from `Stats` like the
+  engine's other conditions;
   RFC 5's key-record suite run from `internal/node/content`'s tests against `kvstore` over Badger
   under `t.TempDir()`, the memory KV and FoundationDB where it runs, since `kvstore` may not import
   `pkg/transform` (the RFC 5 plan's D7); the provider wired in `internal/node/content` with the
@@ -1232,5 +1241,5 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 17 §6 V20, V25 | 18 (V20's offload half); cluster (V25's shard handed away and back, §6.1) |
 | RFC 23 §2.1, §2.2 | 21 |
 | RFC 24 §6.2 | 21 (the CPU token, passed to the RFC 4 codec) |
-| RFC 25 §2.1, §2.5, §3.5, §3.9, §7, §8.2 | rule 3; 13 (watchdog), 20 (conditions in `Stats`), 21 (every component's alert rules, the engine's `health.Source`, the evaluator, the material provider's health source) |
+| RFC 25 §2.1, §2.5, §3.5, §3.9, §7, §8.2 | rule 3; 13 (watchdog), 20 (conditions in `Stats`, `material_destroyed`'s `data_loss`), 21 (every component's alert rules, the engine's `health.Source`, the evaluator, the material provider's health source) |
 | RFC 29 §4.7, §4.11 | 12, rules 1, 6, 8 |
