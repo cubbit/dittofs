@@ -760,7 +760,7 @@ when a value changed:
 - its health conditions, as [RFC 25](rfc-25-observability.md) derives them;
 - each adapter, by protocol: its state (configured, serving, draining or
   stopped), the settings generation it runs and, while it serves, the TCP port
-  its listener bound, so §3.4's status shows it per node;
+  its protocol's listener bound, so §3.4's status shows it per node;
 - the version of each secret it holds, so that an old version is deleted only
   once every node that resolves the secret holds the new one
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)).
@@ -1003,7 +1003,8 @@ facts of each host ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20hold
   started again and the record is reported refused (§2.3).
 
 The status of an adapter shows, per node, its state and the generation it runs,
-and, while it serves, the TCP port it bound, written once it starts serving:
+and, while it serves, the TCP port its protocol's listener bound, written once
+it starts serving:
 the port a client dials, which `adapters.<protocol>.port` does not tell when it
 is 0 and the system picks one, or after a restart binds anew. An adapter that is
 not serving names no port.
