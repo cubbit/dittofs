@@ -932,16 +932,34 @@ func TestRunKeepsFullTurnsAnIntervalApart(t *testing.T) {
 	for i, kind := range []string{"busy", "wait"} {
 		b.operation(entity.Operation{Kind: kind, Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{byte(i + 1)}}, State: entity.OpRunning})
 	}
+	// The clock's pending count cannot tell this wait apart from the next:
+	// the full turn the advance wakes sets its own at once. So the wait is
+	// read when it is set, through Armed and the turned hook, which runs
+	// after the wait is on the clock, so left is decided by then.
+	left := b.clock.Armed(400 * time.Millisecond)
+	waits, set := make(chan struct{}), false
+	r.turned = func(context.Context) {
+		if r.waits && !set {
+			set = true
+			close(waits)
+		}
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		r.run(ctx, health.NewWatchdog(b.clock).Loop("runner"))
 	}()
-	waitFor(t, "the loop to wait on its clock once the run ends", func() bool { return b.clock.Pending() > 0 })
-	b.clock.Advance(400 * time.Millisecond)
-	if n := b.clock.Pending(); n != 0 {
-		t.Errorf("the runner's wait 400 ms past a run that ended 600 ms after the last full turn began: %d still pending, want it due runInterval after that turn", n)
+	select {
+	case <-waits:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no turn within 10 s set a wait on the clock, want one once the run ends")
 	}
+	select {
+	case <-left:
+	default:
+		t.Fatal("the runner set no 400 ms wait after a run that ended 600 ms after the last full turn began, want the 400 ms left of runInterval after that turn")
+	}
+	b.clock.Advance(400 * time.Millisecond)
 	waitFor(t, "the full turn to drive the waiting operation again", func() bool { return waiting.Load() == 2 })
 	cancel()
 	select {
