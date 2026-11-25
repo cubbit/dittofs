@@ -684,9 +684,10 @@ never copied flag by flag; an open request or a client's registration reads the
 protocol; an adapter **MUST** state, per call, one of the profiles below,
 chosen by program and procedure, never a value built from a field of the
 request. The zero value of every
-capability is the narrower behaviour, so `Caps(0)` is the narrowest caller, a
-capability left unset fails closed, and each capability changes only the rule
-it names. Each rule reads its capability in one named place, a method of the
+capability is the plain behaviour and each capability changes only the rule
+it names; for `HostCall`, `PrivilegeOnEveryCall`, `WantOpenID`, `ClientIsMachine`
+and `SeesPseudoFS` the zero value is the narrower one, so one left unset fails
+closed. `OpenFilesKeepNames` and `GrantBelongsToOpen` are the exception (below). Each rule reads its capability in one named place, a method of the
 type that owns the rule (`Caller.keepsNames` reads `OpenFilesKeepNames`), so
 a search for `Has(OpenFilesKeepNames)` finds every rule that reads it.
 Per-request intents an adapter does not fix, backup intent and a lease key
@@ -729,7 +730,7 @@ states `MountCaps` on `MNT` and `EXPORT` alone, and `NFSv3Caps` otherwise.
 | --- | --- | --- |
 | `HostCall` | NLM; MOUNT on `MNT` and `EXPORT` | On a Kerberos-only share, a Linux client's `MNT`, sent as `AUTH_UNIX`, still gets the share's flavours and root handle, and an NLM `LOCK` over `AUTH_SYS` is admitted at `Claimed`; an NFS `GETATTR` over `AUTH_SYS` on the same share is refused ([RFC 21 §6.1](rfc-21-nfs.md#6.1%20NLM), [RFC 21 §6.3](rfc-21-nfs.md#6.3%20MOUNT)). |
 | `PrivilegeOnEveryCall` | NFSv3, NFSv4, MOUNT, NLM | A privileged NFS caller's privilege counts on every call. Without it, as over SMB, an `admin` session's `CREATE` of a file whose DACL denies her is refused; with `FILE_OPEN_FOR_BACKUP_INTENT` it opens, and requests through that handle keep the privilege; a tree's and an open's `MaximalAccess` leave out what only privilege grants ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)). |
-| `OpenFilesKeepNames` | SMB | While alice-pc holds `profiles/alice/ODFC_alice.vhdx` open, an SMB rename of `profiles/alice/` is refused, and so is an SMB rename that would replace the open file; an NFS `RENAME` of either succeeds ([RFC 14 §9.5](rfc-14-open-state.md#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory)). |
+| `OpenFilesKeepNames` | SMB | While alice-pc holds `profiles/alice/ODFC_alice.vhdx` open, an SMB rename of `profiles/alice/` is refused, and so is an SMB rename that would replace the open file; an NFS `RENAME` of the directory succeeds, and one over the file is refused only if an open of it denies delete (RFC 14 §7) ([RFC 14 §9.5](rfc-14-open-state.md#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory)). |
 | `WantOpenID` | SMB | The open is issued an `OpenID`, which the `FileId`'s persistent half carries; an NFSv4 `OPEN` is named by its stateid and draws none ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). |
 | `GrantBelongsToOpen` | SMB | A batch oplock covers its one open, and a second open of the file by the same machine breaks it; an NFSv4 read delegation is the client's, covers none of its opens, is not broken by its own client's opens, and never caches handles ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). |
 | `SeesPseudoFS` | NFSv4 | `Lookup` of `..` at a share's root answers the pseudo directory the share is mounted in, so an NFSv4 `LOOKUPP` from `/data` walks up to `/`; an NFSv3 or SMB caller's `..` there answers the share's root itself, as a share is its own top. |
@@ -742,7 +743,7 @@ The request fields that already carry an intent state the rest:
 | `OpenRequest.Lease` (a key) | SMB, for a lease request | The grant is held under the key, so the machine's opens under it never break each other; NFS sends no key. |
 | `OpenRequest.Durability` with a timeout | SMB, for a durable or persistent handle | The open survives its connection for the timeout and is found again by its `OpenID` (so it needs `WantOpenID`); NFS asks none. |
 | `OpenRequest.Backup` | SMB, for `FILE_OPEN_FOR_BACKUP_INTENT` | Without `PrivilegeOnEveryCall`, the one open where a privileged caller's privilege counts. |
-| `Commit` through an `OpenRef` of an open | SMB `FLUSH` | A flush across a loss fails once with `ErrLost` (§5.8); an NFS `COMMIT` names no open and learns of a loss from the verifier. |
+| `Commit` through an `OpenRef` of an open named by its `OpenID`, for a caller stating `WantOpenID` | SMB `FLUSH` | A flush across a loss fails once with `ErrLost` (§5.8); an NFS `COMMIT` names no open and learns of a loss from the verifier. |
 | `ClientInfo.Recovery` | every adapter that registers a client | Status or refusal (NFSv4): the client renews a lease. Reconnect (SMB): it holds no lease, must have proved who it is to connect, lists the nodes holding its sessions and is released with its last one. Notice (NLM): it holds no lease and is sent a restart notice ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)). |
 
 **The protocol travels only as a context label for observability, and no
@@ -768,8 +769,13 @@ anywhere (V43); a reviewed golden pins each profile's `String()`.
 > behaviour it chooses, the service's suite drives each rule with a `Call` and no
 > adapter, and a protocol or dialect served later picks behaviours instead of
 > growing a branch in each. The cost: an adapter that leaves a capability unset
-> gets the narrower behaviour without an error, so a missing flag fails
-> closed. Each protocol RFC's translation
+> gets the zero value's behaviour without an error. For most that is the
+> narrower one, so a missing flag fails closed; two fail open. Without
+> `OpenFilesKeepNames` an SMB call loses §9.5's open-children refusal and the
+> refusal of a rename over an open file, which RFC 22 §18's §13 row catches;
+> without `GrantBelongsToOpen` an SMB grant is the client's, and a second open
+> from the same machine does not break it, which RFC 22 §18's §6.2, §6.3 row
+> catches. Each protocol RFC's translation
 > table lists the capabilities its adapter sets
 > ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state),
 > [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)), and its conformance rows
@@ -2309,7 +2315,7 @@ func (s *Filesystem) renameAt(ctx context.Context, c Caller, from Target, fromNa
 		return RenameResult{}, err
 	}
 	if exists {
-		if err := s.checks.CheckChange(ctx, c.Who(), keyOf(dst), nil, ChangeRemove); err != nil {
+		if err := s.checks.CheckChange(ctx, c.Who(), keyOf(dst), nil, ChangeRemove|ChangeReplace); err != nil {
 			return RenameResult{}, err
 		}
 	}
@@ -2922,7 +2928,7 @@ primary from a local one" a checked claim rather than a design intention.
 **Entry point.** `vfstest/suite.Run(t, newService)` runs the conformance suite
 against any factory, a filesystem or a gateway, one file per area of §3.1 — clients, names, attributes,
 data, locking, shares — plus `crossproto.go`, the cross-protocol scenarios,
-driven by `Call` and `OpenRequest` values stating each protocol's capabilities (§3.0) with no adapter, and
+driven by `Call` values stating each adapter's profile (§3.0) with no adapter, and
 `faults.go`, as `pkg/metadata/kvstore/kvstoretest` does for stores. It is how the
 service is tested end to end before any adapter calls it. Its doubles are the three kinds
 [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) allows. A test that needs a

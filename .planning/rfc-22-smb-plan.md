@@ -981,8 +981,8 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
 
 - T7.1 `CREATE`'s and `CLOSE`'s tagged structs, with every create context of Appendix D decoded and
   the response contexts encoded.
-- T7.2 `FileId`s: the persistent half from the open's `OpenID` and shard, which every `CREATE` asks
-  with `WantOpenID` (RFC 22 §6.1), through `pkg/vfs`'s codec;
+- T7.2 `FileId`s: the persistent half from the open's `OpenID` and shard, which every `CREATE` gets
+  from `SMBCaps`' `WantOpenID` (RFC 22 §6.1), through `pkg/vfs`'s codec;
   the volatile half in the session's table, never reissued while held (RFC 20 §2.2); a related
   member's current open; a `FileId` answered `STATUS_FILE_CLOSED` for `ErrState` (`Revoked`), then
   freed with `FreeState` in the handler (RFC 22 §16.5's row; RFC 14 §5.3; plan gap 14, amendment
@@ -1044,8 +1044,8 @@ Appendix F's reparse codes; RFC 20 §4.9's `Fit`, §6.10's `QUERY_INFO` gate.
   attributes compared without case (plan gap 20); the refusals of Appendix E.3.
 - T8.5 Rename and link (§13): the target from the share root, `ReplaceIfExists`, one `Rename` with
   the open as `from.Open`; the refusals of an open target and of a directory with an open inside
-  it come from T5.3's `OpenFilesKeepNames`, tested here over loopback against an NFS rename that
-  succeeds; a stream's open's refused by the service (A6, T2.4) and answered
+  it come from T5.3's `OpenFilesKeepNames`, tested here over loopback against an NFS rename of the
+  directory that succeeds; a stream's open's refused by the service (A6, T2.4) and answered
   `STATUS_NOT_SUPPORTED` (plan gap 6); a target naming a stream, as T7.3 parses it, refused from
   the request alone.
 - T8.6 `QUERY_DIRECTORY`: `ReadDir` by cursor, `Fit` to the client's buffer, every directory class,
@@ -1074,7 +1074,7 @@ bounds by cause; Appendix D's `RqLs`; Appendix G's `OPLOCK_BREAK`; RFC 20 §3.3'
 - T9.1 The lease's and oplock's tagged structs: break notifications and acknowledgements in both
   forms.
 - T9.2 Caching requests on `CREATE`: lease key, parent, epoch and version, oplock levels as grant
-  kinds, with `GrantBelongsToOpen` set on every `CREATE` so an oplock is its open's own
+  kinds, with `SMBCaps`' `GrantBelongsToOpen` on every `CREATE` so an oplock is its open's own
   (RFC 22 §6.2); none for a guest or null session; the join test through `OpenRequest.Conn` (plan gap
   18); the service grants none on a directory (RFC 22 §6.2; plan gap 23, T2.5) and refuses the
   other-file key with
@@ -1110,7 +1110,7 @@ rules, §16.2, §16.4's durable rows; Appendix D's durable and app-instance cont
 RFC 20 §4.7's `Keep`, §6.4.
 
 - T10.1 Durability on `CREATE`: v1 and v2 requests, as `Durability` with its `Timeout` on an open
-  that asks `WantOpenID` (T7.2; RFC 14 §8.1 refuses one without), granted only with a batch oplock or a lease with
+  by a call stating `WantOpenID` (T7.2; RFC 14 §8.1 refuses one without), granted only with a batch oplock or a lease with
   handle caching (plan gap 22); v2's timeout, 60 s if zero and at most 300 s; persistent only on a
   continuously available share, and durable for a stream; the response contexts.
 - T10.2 Reconnect: routed by the `FileId`'s persistent half, never the path; the client, create

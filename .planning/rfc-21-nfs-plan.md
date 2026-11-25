@@ -711,6 +711,10 @@ over loopback being E4's.
 - The `AUTH_NONE` and `AUTH_SYS` `Security` stage: each call's `Identity` and `vfs.Call`, the
   source address, refused credentials and verifiers; the scaffold's interim `AUTH_BADCRED` for an
   `RPCSEC_GSS` credential (`protocol/stages.go`'s `checkAuth`) kept until E13 withdraws it.
+- Each call's `Caps` from its program and procedure (RFC 17 §3.0): `NFSv3Caps`, `NFSv4Caps`,
+  `MountCaps` on `MNT` and `EXPORT` and `NFSv3Caps` on MOUNT's other procedures, `NLMCaps` for
+  NLM and NSM; and `vfs.WithProtocol` on each request's context, `nfs3` or `nfs4`. A test asserts
+  the profile and the label per program and procedure.
 - `NULL` for every program; the `AUTH_TLS` probe, `StartTLS`, the `opportunistic` and `require`
   modes, certificates loaded by `New` and `Reconfigure` (RFC 20's plan's TLS row; develop's code, rule
   7).
