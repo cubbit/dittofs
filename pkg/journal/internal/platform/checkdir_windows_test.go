@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"encoding/binary"
 	"errors"
 	"testing"
 
@@ -12,22 +13,61 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// TestCheckDirOSRealVolume fails a checkDirOS that cannot run on a real
-// volume: this is the whole real path, GetVolumePathName to the answer the
-// property query brings back, with no recorded answers. The directory is
-// probed several times, as Init and open of more than one journal probe it,
-// and once at the root of the volume the directory's own call answers, whose
-// path is another shape of the mount point and GUID answers.
+// TestCheckDirOSRealVolume fails a probe that cannot run on a real volume:
+// this is the whole real path, GetVolumePathName to the answer the property
+// query brings back, with no recorded answers.
 //
-// decision: no test arranges a real volume's write-cache policy — nothing
-// but the machine's own disk policy decides the refusal here — so this test
-// asserts what a real volume must answer whatever its policy: no panic, and
-// a check that passes or refuses the directory by the cache-policy rule. The
-// refusal itself is pinned by the recorded rows of
-// TestCheckWriteCachePolicyVolume. Withdraw this ceiling when something can
-// set the policy of a test's own volume.
+// The test reads the gather's own answer, not only the verdict: a check that
+// returns nil would stay green on a volume whose query the rule never sees —
+// the not-reported answers pass — so the query's answer is asserted on its
+// own: it succeeded, its Version is the published structure's, and it reaches
+// the policy byte at offset 25.
+//
+// decision: a volume that answers ERROR_INVALID_FUNCTION or
+// ERROR_NOT_SUPPORTED reports no write-cache property, and a volume whose
+// Version is not the one published layout reports one the verdict cannot
+// read: neither is the machine's policy, so the test skips naming the
+// volume and its answer — a skip is a visible report, never counted as a
+// pass. Anything else the volume answers fails here. Withdraw the skips when
+// something can arrange a test's own volume.
+//
+// No test arranges a real volume's write-cache policy — nothing but the
+// machine's own disk policy decides the refusal here — so the check below
+// asserts what a real volume must answer whatever its policy. The refusal
+// itself is pinned by the verdict rows on checkCacheProbe. Withdraw this
+// ceiling when something can set the policy of a test's own volume.
 func TestCheckDirOSRealVolume(t *testing.T) {
 	prof.Watch(t, prof.Options{})
+
+	dir := t.TempDir()
+
+	p, err := probeVolume(realTable, dir)
+	if err != nil {
+		t.Fatalf("probeVolume of %s: got %v, want the volume's own answers", dir, err)
+	}
+	if p.mountPoint == "" || p.volume == "" {
+		t.Fatalf("probeVolume of %s: got mount point %q and volume %q, want the machine's volume named", dir, p.mountPoint, p.volume)
+	}
+
+	// decision: the skips are reports, not passes — the reasons are in the
+	// test's doc. A volume that answers anything but the two not-reported
+	// codes has failed its query, and the test fails with it.
+	if p.queryErr == errorInvalidFunction || p.queryErr == errorNotSupported {
+		t.Skipf("the volume of %s reports no write-cache property (Win32 error %d), so the answer the rule reads was never produced; the skip is a report, never counted as a pass", dir, p.queryErr)
+	}
+	if p.queryErr != 0 {
+		t.Fatalf("the write-cache query of %s failed with Win32 error %d, want an answer", p.mountPoint, p.queryErr)
+	}
+	if len(p.answer) < writeCacheHeaderLen {
+		t.Fatalf("the write-cache query of %s returned %d bytes, want at least the %d of the header", p.mountPoint, len(p.answer), writeCacheHeaderLen)
+	}
+
+	if version := binary.LittleEndian.Uint32(p.answer[writeCacheVersionOff:]); version != writeCacheFirstWhole {
+		t.Skipf("the volume of %s answers Version %d, not the published structure's %d, whose policy byte the rule reads; the skip is a report, never counted as a pass", p.mountPoint, version, writeCacheFirstWhole)
+	}
+	if len(p.answer) <= writeCachePolicyOff {
+		t.Fatalf("the write-cache answer of %s is %d bytes, want at least the %d that reach the policy byte at offset %d", p.mountPoint, len(p.answer), writeCachePolicyOff+1, writeCachePolicyOff)
+	}
 
 	check := func(t *testing.T, dir string) {
 		t.Helper()
@@ -40,7 +80,8 @@ func TestCheckDirOSRealVolume(t *testing.T) {
 		// A volume with the policy genuinely on refuses, and is not a test
 		// bug: only a refusal by the cache-policy rule names the machine's
 		// own policy, and anything a real volume could not answer — a cut
-		// answer, a failed call — fails here.
+		// answer, a failed call — fails here, now that the answer above has
+		// pinned the query's own success.
 		if !errors.Is(err, core.ErrUnsuitableStorage) {
 			t.Fatalf("directory %s: got %v, want the directory accepted or refused as unsuitable", dir, err)
 		}
@@ -51,7 +92,6 @@ func TestCheckDirOSRealVolume(t *testing.T) {
 		}
 	}
 
-	dir := t.TempDir()
 	for range 4 {
 		check(t, dir)
 	}
