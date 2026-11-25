@@ -436,6 +436,59 @@ func TestPassBudgetCountsCarriedRecords(t *testing.T) {
 	}
 }
 
+// TestPassACarriedRecordHoldsNeitherSegment runs one unit over a sealed
+// source holding nothing but a registered, unsettled removal record: the
+// carry places the record's copy and waits it durable, and the original — a
+// record and its carried copy holding neither segment — no longer holds its
+// source, which retires in-run. The copy owns the record's wait: the copy's
+// own registration keeps its segment held, and the record answers
+// not-droppable there while its marker stays unsettled.
+func TestPassACarriedRecordHoldsNeitherSegment(t *testing.T) {
+	p := newPassFixture(t)
+	file := copyFile(22)
+	rec, _, _, _ := p.f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, false)
+	// The core's own pass reads its own tracker, so the planted record
+	// registers there the way the writer's removal path would; the settle
+	// stays untaken, keeping the marker over and the record live.
+	p.f.core.Liveness().Register(rec)
+	seg := rec.Seg
+	p.f.sealSource(t, file)
+	p.f.waitSpares(t)
+	before := p.tagSegments(copyTag)
+
+	freed, err := p.repack(t.Context(), 1<<20, seg)
+	if err != nil {
+		t.Fatalf("repack over the paired removal: %v", err)
+	}
+	if !p.setGone(seg) {
+		t.Fatal("the source is still in the set, want its unit to retire it in-run: the unsettled removal record's original holds neither its own segment once the carry placed its copy, which owns the record's wait")
+	}
+	if freed <= 0 {
+		t.Fatalf("repack over the paired removal freed %d, want the retired source's storage", freed)
+	}
+	// The copy's placement: the segment whose bytes of the tag the pass
+	// grew, the one place the record moved to.
+	var copySeg core.SegmentID
+	for id, n := range p.tagSegments(copyTag) {
+		if _, was := before[id]; n > 0 && !was {
+			copySeg = id
+		}
+	}
+	if copySeg == 0 {
+		t.Fatal("no segment gained the tag's bytes across the pass, want the carried copy's segment")
+	}
+	tr := p.f.core.Liveness()
+	if !tr.Held(copySeg) {
+		t.Fatalf("the copy's segment %d answers not held, want the copy's own registration to keep it: the wait moved to the copy", copySeg)
+	}
+	cp := rec
+	cp.Seg = copySeg
+	if tr.Droppable(cp) {
+		t.Fatal("the removal record answers droppable at its copy, want not: its marker stays unsettled and the copy owns the record's wait")
+	}
+}
+
 // TestPassBudgetStopsAtCarriedRecords runs a pass of budget one byte over two
 // sealed sources beside each other: the least-live one holds only a
 // registered, unsettled removal record — no content exists for Copy to move,
