@@ -36,7 +36,7 @@ posting rules `feat/storage-v2` drops.
 Cited, not owned: RFC 21 §13's "Tests expected to fail" (the burn-down, §1.2); RFC 1 §1.3 on crashes
 simulated beneath the code under test; RFC 24 §6.1.
 **Track:** the team.
-**Epic 16 estimate: 14 subtasks, 50.5 man-days.**
+**Epic 16 estimate: 14 subtasks, 51.25 man-days.**
 **Depends on:**
 - **S5**, the composed in-process node, `internal/node/nodetest`, serving NFS (and SMB, for T16.6),
   for T16.1 to T16.6 and T16.14. Its test clock, `Harness.Clock`, which `nodetest` already passes
@@ -349,7 +349,8 @@ so that subtasks and tests can cite them. A section cited with no RFC named is R
   authorised afresh (E10); `GET_DIR_DELEGATION`'s admitting call on the current filehandle (E10's
   R36); the NLM lock on a Kerberos-only share (E11); the `RPCSEC_GSS` service
   floor (E13); and this epic's own: the share entry on every path (R40, T16.5), refused credentials
-  (R26), "admin needs proof" over NFSv4 (R25), the delegation stateid under Kerberos (R65), the
+  (R26), "admin needs proof" over NFSv4, its `AUTH_SYS` refusal in "§8.1 privilege" (R25) and its
+  `sec=krb5` read (R23), both tests named, the delegation stateid under Kerberos (R65), the
   machine principal's owner check (R66), all T16.3's, and "disable takes effect" (R67, T16.6). A
   gate added later joins the list in the change that adds its test. A test in
   `adaptertest` lists the packages under `internal/adapter` whose tests call `testing.AllocsPerRun`
@@ -464,7 +465,7 @@ in a subtask (§9, gap 8).
 
 ### T16.3 Identity and authorization over NFSv4 on the composed node
 
-**Subtask T16.3 estimate: 4.75 man-days.**
+**Subtask T16.3 estimate: 5.5 man-days.**
 
 - **Track:** the team. **Depends on:** T16.1, E6, E7, E8, E10, E13, S6b, E14's T14.1 (pending Q5).
 - **Covers:** R23, R24, R25, R26, R27, R59, R65, R66.
@@ -487,7 +488,26 @@ in a subtask (§9, gap 8).
     names it.
   - The refused credentials leave the share's directory empty.
 - **Tests:** at the NFSv4 reply: the Kerberos read through `Finance` and the `AUTH_SYS` claim of the
-  same uid refused (catches a cache keyed on numbers, R23); the `uid` index faulted (catches an error
+  same uid refused (catches a cache keyed on numbers, R23); "admin needs proof"'s `sec=krb5` read of
+  another user's mode-0600 file as the principal the grant names, granted, in its own top-level
+  test (catches `admin` withheld from a proven caller, R23); "owner strings": over `sec=krb5` a
+  `SETATTR` of `owner` to `alice@corp.example` succeeding and to `alice@other.example`
+  `NFS4ERR_BADOWNER` with the owner unchanged, and a `GETATTR` of a file whose owner was deleted from
+  the directory answering `nobody@` and the domain (catch a name mapped by guesswork across
+  domains, or a deleted owner's stale name or number, R23); "client in the key": identical
+  `AUTH_SYS` claims from three loopback addresses through `DialFrom`, the share admitting the
+  first read-write and the second read-only and refusing the third: a `WRITE` from the first
+  succeeds, from the second `NFS4ERR_ROFS`, and the third refused at admission, sent in that order
+  so that a caller cache keyed without the address would serve the second and third the first's
+  entry (catches the read-only narrowing shared across hosts, R23); "root": with `Squash` none,
+  `AUTH_SYS` uid 0 with no user record `SETATTR`s another's `owner` and a file it creates is owned by
+  uid 0, with `Squash` root the same `SETATTR` `NFS4ERR_PERM`, and a directory user whose
+  `uidNumber` is 0 acting under an allocated uid, not 0 (catch root acting as anonymous, or a
+  directory supplying uid 0, R23); "squash order follows the proof": with `Squash` all, alice
+  granted `read-write`, bob `none` and everyone `read`, an `AUTH_SYS` claim of alice's uid refused a
+  `WRITE`, alice over Kerberos writing a file owned by the anonymous owner, and bob over Kerberos
+  refused at the share (catch a claimed uid given its principal's grant, or a proven principal's
+  grant ignored on a squashed share, R23); the `uid` index faulted (catches an error
   read as not found, R24); the `admin` grant over `AUTH_SYS` and over Kerberos (catches `admin` from a
   uid, R25); each malformed credential (catches one served as anonymous, R26); `sacl` as owner and as
   administrator (catches the gate on one minor version, R27); bob's `WRITE` under alice's
@@ -836,7 +856,7 @@ and E8 serve their first procedures and T14.1 has landed.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T16.1, T16.2, T16.3 | 11.5 | — | the composed node's seams with the rows that need them |
+| 1 | T16.1, T16.2, T16.3 | 12.25 | — | the composed node's seams with the rows that need them |
 | 2 | T16.4, T16.5, T16.14 | 10.25 | PR 1 | NFS's own state across a restart, under recalls and behind running clones |
 | 3 | T16.6 | 4.5 | — | the in-process rows through both adapters |
 | 4 | T16.7, T16.8 | 7.75 | PR 2 | the kernel-client rows and the capture helper they share |
@@ -909,7 +929,7 @@ an R row, which keeps the RFC's text until the RFC changes.
 
 Gaps, not questions:
 
-1. **This epic's figure is 50.5 man-days against the plan's 25.5.** The rows the middle epics'
+1. **This epic's figure is 51.25 man-days against the plan's 25.5.** The rows the middle epics'
    documents hand here (E3's composed-node refused credentials, E4's composed-node stability rows
    and NFSv3 hold step, E5's "§8.1 ctime", E6's RFC 19 halves through both adapters and its
    administrator steps, E7's Kerberos and NFSv4 halves, E8's Kerberos machine principal, E10's
