@@ -3536,7 +3536,7 @@ kind, in RFC 25's values: `nfs3` (NLM included), `nfs4`, `smb`.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| clients held | `openstate_clients{protocol, state}`, `state` = `active`, `pending` | gauge |
+| client records held | `openstate_clients{protocol, record}`, `record` = `confirmed`, `proposal`; a confirmed client with a pending proposal counts once under each | gauge |
 | state held | `openstate_held{kind}`, `kind` = `open`, `lock`, `lock_state`, `waiter`, `grant`, `watch`, `delete_pending`, `revoked` | gauge |
 | grants offered and declined | `openstate_grants_total{result}`, `result` = `offered`, `conflict`, `no_callback`, `budget`, `fenced`, `setuid`, `pool`, `shared`, `recalling` | counter |
 | recalls, by outcome and cause | `openstate_recalls_total{outcome, reason}`, `outcome` = `returned`, `revoked`, `downgraded`; `reason` = `conflict`, `budget`, `setuid` | counter |
