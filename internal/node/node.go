@@ -18,13 +18,13 @@ import (
 	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/internal/node/api/apisettings"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/internal/sidecar"
 	"github.com/cubbit/dittofs/internal/tlsconfig"
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/engine"
-	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/keyprovider"
@@ -286,7 +286,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 			return nil, fmt.Errorf("node: the protocol key: %w", err)
 		}
 	}
-	open, deps, err := enginewire.Compose(enginewire.Params{
+	open, deps, err := content.Compose(content.Params{
 		Node:    cfg.Bootstrap.Node.ID,
 		Devices: journalPaths(cfg.Bootstrap.Journals),
 		Store:   n.meta,

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/identitymem"
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/internal/prof"
 	filesystem "github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/engine"
@@ -187,7 +188,7 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 		Existence: meta.Existence(),
 		Content:   meta.Content(),
 		Lifecycle: meta.Lifecycle(),
-		Holds:     openstate.EngineHolds(opens, meta.Opens()),
+		Holds:     content.EngineHolds(opens, meta.Opens()),
 		Clock:     clock,
 		Logger:    logger,
 		Tracer:    noTrace,
