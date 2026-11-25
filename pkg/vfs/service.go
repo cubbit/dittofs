@@ -303,7 +303,11 @@ func (op Op) String() string {
 
 // Mutates reports whether op may change state: a file, open state, a client
 // record or a lease. A handler makes at most one call for which it is true,
-// and any number of the rest.
+// and any number of the rest. The calls RFC 20 §4.3 leaves outside that rule
+// (a waiter withdrawn after a refused park, a revoked reference freed, a last
+// Disconnect repeated at a newer Gen, session setup's client-record calls and
+// a SignIn or Find a request needs) are true for it too: the handler
+// check exempts them by the request they came in, never by their operation.
 //
 // decision: the calls that change nothing are exactly the twenty-one in the
 // switch below, the service contract's list of calls a handler may repeat.
