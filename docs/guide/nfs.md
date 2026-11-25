@@ -46,7 +46,7 @@ know which option matters.
 | Feature | Released server | This version |
 |---------|-----------------|--------------|
 | Serving NFS at all | Yes | **No**: the adapter cannot be enabled, and answers no operation yet |
-| NFSv3, v4.0, v4.1, v4.2 | Yes | Chosen with the `adapters.nfs.versions` setting (default `3` to `4.2`), once served |
+| NFSv3, v4.0, v4.1, v4.2 | Yes | All four by default; the `adapters.nfs.versions` setting will narrow them (not settable yet) |
 | Default port | 12049 | 12049 (`adapters.nfs.port`) |
 | Kerberos (`sec=krb5`, `krb5i`, `krb5p`) | Yes | **No**: every Kerberos (RPCSEC_GSS) request is answered `AUTH_BADCRED` |
 | NFS over TLS | Yes | **No**: any `adapters.nfs.tls` mode other than `off` is refused |
@@ -163,7 +163,8 @@ umount Z:
 DittoFS implements **NFSv3**, **NFSv4.0**, **NFSv4.1** and **NFSv4.2**. The
 client picks the version at mount time with `vers=` (or `nfsvers=`). On this
 version, the `adapters.nfs.versions` setting limits the versions served; its
-default, `3` to `4.2`, serves them all.
+default, `3` to `4.2`, serves them all. It cannot be changed yet
+(`unknown_key`).
 
 | Version | What it adds |
 |---------|--------------|
@@ -246,7 +247,18 @@ instead. DittoFS then registers NFS, MOUNT, NLM and NSM with that `rpcbind` at
 startup, as the kernel's own NFS server does, and removes them at shutdown. If
 no `rpcbind` answers, DittoFS logs a warning and serves without it.
 
-Restart the adapter after changing these settings.
+On the released server, set them with `dfsctl adapter settings`:
+
+```bash
+# macOS and BSD clients: UDP plus the portmapper on 111
+dfsctl adapter settings nfs update --udp-enabled --portmapper-enabled --portmapper-port 111
+
+# Or, on a host that already runs rpcbind
+dfsctl adapter settings nfs update --udp-enabled --portmapper-register-with-system
+```
+
+Restart the adapter after changing these settings. (This version has neither
+the settings nor that command.)
 
 > **Same-host clients:** if you mount an NFSv3 share on the machine that runs
 > DittoFS, the kernel's own lock service takes over the lock registration, and
@@ -441,21 +453,36 @@ NFS over TLS (RFC 9289) encrypts NFS traffic with TLS 1.3. The client opens a
 normal TCP connection, asks to upgrade, and both sides switch to TLS on the
 same connection. The server needs no kernel TLS support or `tlshd`.
 
-The settings live under `adapters.nfs.tls` and are set through `dfsctl adapter
-set nfs`, not the config file (the config file refuses them):
+**On the released server**, TLS is set in the config file:
 
-| Field | Values | Meaning |
-|-------|--------|---------|
-| `mode` | `off` (default), `opportunistic`, `require` | `opportunistic` upgrades clients that ask and serves the rest in plain text, so you can roll TLS out without breaking mounts. `require` drops a connection that does not upgrade first. |
-| `cert_file`, `key_file` | file paths | The server's certificate and key. DittoFS only reads them; issuing and renewing them is your platform's job. |
-| `client_ca` | file path | When set, clients must present a certificate signed by this CA. |
+```yaml
+adapters:
+  nfs:
+    tls:
+      cert_file: /etc/dittofs/tls/tls.crt
+      key_file:  /etc/dittofs/tls/tls.key
+      client_ca: /etc/dittofs/tls/ca.crt   # optional: clients must present a certificate from this CA
+      mode: opportunistic                   # opportunistic (default) | require
+```
 
-For example, to upgrade clients that ask:
+- `opportunistic` upgrades clients that ask and serves the rest in plain text,
+  so you can roll TLS out without breaking mounts.
+- `require` drops a connection that does not upgrade first.
+- DittoFS only reads the certificate files; issuing and renewing them is your
+  platform's job.
+
+**On this version**, the same fields (`mode`, `cert_file`, `key_file`,
+`client_ca`, with `off` as the default mode) are an adapter setting, not a
+config file key: the config file refuses `adapters.nfs.tls`. They will be set
+like this:
 
 ```bash
 dfsctl adapter set nfs --enabled \
-  --setting 'tls={"mode":"opportunistic","cert_file":"/etc/dittofs/tls.crt","key_file":"/etc/dittofs/tls.key"}'
+  --setting 'tls={"mode":"opportunistic","cert_file":"/etc/dittofs/tls/tls.crt","key_file":"/etc/dittofs/tls/tls.key"}'
 ```
+
+Today that command is refused with `unknown_key`, and any mode but `off` would
+be refused even once the setting can be written.
 
 TLS 1.3 is the minimum; you cannot lower it.
 
@@ -501,8 +528,8 @@ and NetApp `nfstest` suites:
 | `v4.1-noac` | `vers=4.1,noac` |
 | `v4.1-smallio` | `vers=4.1,rsize=32768,wsize=32768` |
 
-Known gaps are listed in `test/nfs-mount/*/KNOWN_FAILURES_*.md`. NFSv3 locking
-is tested separately (see [Testing DittoFS](../internals/testing.md#real-nfsv3-nlm-lock-testing-network-namespace-isolation)).
+NFSv3 locking is tested separately. Known gaps and the lock tests are described
+in [Testing DittoFS](../internals/testing.md#real-nfsv3-nlm-lock-testing-network-namespace-isolation).
 
 ---
 

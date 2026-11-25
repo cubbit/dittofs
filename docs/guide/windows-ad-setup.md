@@ -11,9 +11,11 @@ admin workstation with RSAT, or `dfsctl`, and what success looks like.
 [Identity](identity.md) has the full reference for every setting used here.
 
 > **Not available yet on this version.** This version does not serve SMB or
-> NFS, so the client-side steps (step 10 onward) cannot run yet. Steps 1 to 9
-> (the directory, the domain join and the grants) run today and are kept for
-> when SMB is served. NFS with Kerberos is not served on this version either.
+> NFS, so the client-side steps (step 10 onward) cannot run yet. Steps 1 to 7
+> (the directory and the domain join) run today and are kept for when SMB is
+> served. Step 8 (grants) needs a share, which a new installation on this
+> version cannot create yet, and step 9 needs the SMB adapter, which cannot be
+> turned on yet (`unknown_key`). NFS with Kerberos is not served on this version either.
 
 > DittoFS is **not production ready**. See the [FAQ](faq.md).
 
@@ -96,8 +98,8 @@ Add-DnsServerResourceRecordA -ZoneName corp.example.com -Name files -IPv4Address
 
 ## 3. Start DittoFS and sign in
 
-On the DittoFS host, initialise and start the server, with the admin password in
-a file only root can read:
+On the DittoFS host, initialise and start the server, as the user that runs
+`dfs`, with the admin password in a file only that user can read:
 
 ```bash
 export DITTOFS_ENCRYPTION_PASSPHRASE='choose-a-passphrase'
@@ -147,7 +149,8 @@ after the write; `dfsctl setting get installation identity.directory.address`
 shows `1/1` a few seconds later.
 
 If the domain controller's certificate is issued by your own CA, give DittoFS
-that CA (export it as Base-64 `.cer` first):
+that CA. Export the CA certificate as **Base-64 encoded X.509**, and save it as
+`corp-root-ca.pem` on the DittoFS host:
 
 ```bash
 dfsctl setting set installation identity.directory.trust_roots -- "$(cat corp-root-ca.pem)"
@@ -161,8 +164,11 @@ off: `ldaps://` always uses TLS, and `ldap://` always upgrades with StartTLS.
 
 ## 5. Give DittoFS the directory password, and test
 
+Keep the password in a file only you can read, so it stays out of your shell
+history:
+
 ```bash
-dfsctl setting set installation identity.directory.bind_credential 'svc-dittofs-password'
+dfsctl setting set installation identity.directory.bind_credential "$(cat ~/svc-dittofs.pw)"
 ```
 
 **Success:** the value comes back as a sealed reference, never the password:
@@ -314,7 +320,21 @@ add POSIX attributes to your AD users.
 
 ---
 
-## 9. Open the firewall
+## 9. Serve SMB on port 445 and open the firewall
+
+Group Policy drive maps, Explorer and Windows before 11 24H2 can only connect
+to port 445, so in an AD domain run the SMB adapter there:
+
+```bash
+dfsctl adapter set smb --enabled --setting port=445
+```
+
+On this version that command is refused with `unknown_key` (see the note at
+the top). Binding 445 needs root or `CAP_NET_BIND_SERVICE` on Linux; see
+[Running on standard ports](install.md#running-on-standard-ports-production).
+If you keep the default 12445 instead, open 12445 below, and map drives with
+`net use … /TCPPORT:12445` (Windows 11 24H2 or later) rather than Group Policy.
+
 
 The DittoFS host can run Linux or Windows; only the firewall commands differ.
 
@@ -468,8 +488,17 @@ refuses a keytab that holds them.
    {"ref":"4863a4d8-8106-48e3-bcd1-67ea9e427140","version":1}
    ```
 
-   To replace a keytab later, first delete it (`DELETE` on the same URL), then
-   import the new one.
+   To replace a keytab later, delete the stored one, then import the new one
+   with the same `PUT`. The delete names the stored keytab's `version` (from
+   the answer above) in `If-Match`, and carries a fresh `Idempotency-Key`:
+
+   ```bash
+   curl -s -X DELETE http://127.0.0.1:8080/api/v1/installation/keytab \
+     -H "Authorization: Bearer $TOKEN" \
+     -H 'If-Match: "1"' -H "Idempotency-Key: $(uuidgen)"
+   ```
+
+   **Success:** the API answers `{}`.
 
 ---
 

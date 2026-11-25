@@ -18,9 +18,9 @@ when you set up an SMB client, or when a mount or a sign-in fails.
 > - A new installation cannot create a share yet either (see
 >   [Getting started, step 5](getting-started.md#5-stores-and-namespaces)).
 >
-> What does work today is the identity side: users, groups, grants, the
-> directory and the domain join are all set through `dfsctl` and kept for when
-> SMB is served. The rest of this page describes SMB as the **released server**
+> What does work today is the identity side: users, groups, the directory and
+> the domain join are set through `dfsctl` and kept for when SMB is served.
+> Grants need a share, so they wait until a share can be created. The rest of this page describes SMB as the **released server**
 > serves it, and uses this version's `dfsctl` commands. Each section that
 > differs on this version says so at its top.
 
@@ -49,10 +49,11 @@ when you set up an SMB client, or when a mount or a sign-in fails.
 |---------|-----------------|--------------|
 | Serving SMB at all | Yes | **No**: the adapter cannot be enabled, and answers every command `STATUS_NOT_SUPPORTED` |
 | Default port | 12445 | 12445 (`adapters.smb.port`) |
-| Dialects | SMB 2.0.2 to 3.1.1 | `adapters.smb.dialects`, from `2.1` to `3.1.1`; SMB 2.0.2 is not offered |
+| Dialects | SMB 2.0.2 to 3.1.1 | `2.1` to `3.1.1` (the `adapters.smb.dialects` setting, not settable yet); SMB 2.0.2 is not offered |
 | Encryption, signing, leases, durable handles config blocks | In the config file | **Not read**: the config file refuses them as unknown keys |
 | Per-share encryption | `--smb-encrypt` | `--smb-encrypt` on the export policy (kept for when SMB is served) |
-| Users, groups, grants, directory, domain join | Yes | Yes, through `dfsctl` |
+| Users, groups, directory, domain join | Yes | Yes, through `dfsctl` |
+| Grants | Yes | Yes, once a share exists (a new installation cannot create one yet) |
 
 ---
 
@@ -165,7 +166,8 @@ To mount at boot, see [Mount at boot](persistent-mounts.md).
 ## Dialects
 
 > **On this version:** the dialects served are the `adapters.smb.dialects`
-> setting, from `2.1` to `3.1.1` by default. SMB 2.0.2 is not offered.
+> setting, from `2.1` to `3.1.1` by default (it cannot be changed yet:
+> `unknown_key`). SMB 2.0.2 is not offered.
 
 SMB picks the dialect by itself: client and server agree on the newest one both
 support. Most clients need no version option.
@@ -286,6 +288,9 @@ dfsctl grant set archive --group editors --access read-write
 `dfsctl user set-password` needs the node's protocol key (`keys.protocol` in the
 config file), because the node stores the password's NT hash sealed under it.
 See [Encryption: local key files](encryption.md#local-key-files).
+
+The `grant set` line needs an existing share, which a new installation on this
+version cannot create yet.
 
 Access levels, lowest to highest: `none`, `read`, `read-write`, `admin`. A user's
 own grant decides; `none` refuses the user. With no grant of its own, its

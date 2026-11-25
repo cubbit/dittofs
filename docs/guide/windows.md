@@ -8,8 +8,10 @@ first.
 
 > **Not available yet on this version.** This version serves neither SMB nor
 > NFS: the adapters cannot be turned on yet (`dfsctl adapter set` is refused
-> with `unknown_key`), and they answer no file operation yet. The steps below
-> describe Windows clients of the **released server**.
+> with `unknown_key`), and they answer no file operation yet. A new
+> installation cannot create a share yet either (see
+> [Getting started, step 5](getting-started.md#5-stores-and-namespaces)).
+> The steps below describe Windows clients of the **released server**.
 
 For the Windows test VM and the manual checklists contributors use, see
 [Testing on Windows](../internals/testing-windows.md).
@@ -111,7 +113,8 @@ net use Z: /delete
 New-SmbMapping -LocalPath Z: -RemotePath \\192.0.2.10\archive -UserName alice -Password (Read-Host 'Password') -Persistent $true -TcpPort 12445
 ```
 
-Disconnect it with `Remove-SmbMapping -LocalPath Z:`.
+`Read-Host` shows the password as you type it; use `net use … *` (above) if
+someone may be watching. Disconnect it with `Remove-SmbMapping -LocalPath Z:`.
 
 ### Browse with Explorer
 
@@ -122,8 +125,7 @@ Type the path in Explorer's address bar:
 ```
 
 Windows asks for a user and password if it needs them. Explorer cannot set a
-port, so this works only when DittoFS serves port 445, or after `net use` has
-mapped the share once with `/TCPPORT`.
+port, so this works only when DittoFS serves port 445.
 
 ### Per-user access on a shared workstation (Active Directory)
 
@@ -190,7 +192,8 @@ DittoFS serves NFS on 12049 by default.
    ```
 
    (Refused with `unknown_key` on this version; see the note at the top.)
-3. **Mount the share.** `dfsctl` prints the command:
+3. **Mount the share.** `dfsctl` prints the command. Run it in Command Prompt:
+   in PowerShell, `mount` means something else, so type `mount.exe` there.
 
    ```console
    > dfsctl share mount archive Z: --protocol nfs --dry-run
@@ -226,8 +229,8 @@ GID. Files you create may then belong to the anonymous user. See the
 | No NTFS object IDs | `FSCTL_CREATE_OR_GET_OBJECT_ID` is not supported | Ordinary use is not affected |
 | No DFS referrals | DFS namespaces do not work | Connect to the server by name or IP |
 
-SMB 3 encryption and signing, change notifications, durable handles and
-server-side copy **are** supported; see the [SMB guide](smb.md).
+SMB 3 encryption and signing, durable handles and server-side copy **are**
+supported, and change notifications partly; see the [SMB guide](smb.md).
 
 ---
 
