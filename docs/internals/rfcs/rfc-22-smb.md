@@ -2255,6 +2255,13 @@ restore; here they are the share's read-only snapshots
   visible at the opened path, resolved by the same rule.
 - An open asking for write access there is `STATUS_ACCESS_DENIED`; a token
   naming no snapshot is `STATUS_OBJECT_NAME_NOT_FOUND`.
+- Previous Versions is the only way to reach a snapshot over SMB. The share's
+  NFS browse directory (`snapshots.directory`,
+  [RFC 12 §2.5](rfc-12-snapshots.md#2.5%20Browsing%20a%20snapshot)) is not
+  served: it is never listed, and opening it or a path through it is
+  `STATUS_OBJECT_NAME_NOT_FOUND`. A snapshot's label is never shown. Until
+  Previous Versions is served (see the decision below), an SMB client reaches
+  no snapshot at all.
 - Each snapshot reports its own volume serial, derived from the share and the
   snapshot's ordinal, never the share's, and its files report the snapshot's
   ids: the 64-bit id is the top bit set, the ordinal and `Number`, and the
