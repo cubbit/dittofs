@@ -43,8 +43,9 @@ type Store interface {
 	List(ctx context.Context, after Name, n int) (page []Info, next Name, done bool, err error)
 
 	// Health makes one bounded probe round trip of direction d against the
-	// store's own namespace: a probe put for DirPut, a probe get for DirGet
-	// (RFC 4 §4.7).
+	// store's own namespace: a probe put for DirPut, a probe get for DirGet.
+	// On an immutable store, DirPut is ErrInvalid without a request (RFC 4
+	// §4.7).
 	Health(ctx context.Context, d Direction) error
 
 	// PutControl and GetControl store and read one small control object by

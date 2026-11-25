@@ -36,7 +36,7 @@ var table = []row{
 	{pkg: "pkg/remote/memory/...", reach: []string{"pkg/remote", "pkg/sim", "pkg/remote/memory/..."}},
 	{pkg: "pkg/remote/remotetest", reach: []string{"pkg/remote", "internal/prof"}},
 	{pkg: "pkg/remote/s3/...", reach: []string{"pkg/remote", "pkg/remote/s3/..."}, but: []string{"pkg/remote/s3/s3fault/..."}, libs: aws},
-	{pkg: "pkg/remote/s3/s3fault", libs: aws},
+	{pkg: "pkg/remote/s3/s3fault/...", reach: []string{"pkg/remote/s3/s3fault/..."}, libs: aws},
 }
 
 // listed is one package as go list reports it, production files only.
@@ -46,13 +46,18 @@ type listed struct {
 	imports []string // the packages it imports directly
 }
 
-// targets are the platforms the walk lists each package for, so a file built
-// for one of them only is checked too.
+// targets are the platforms the walk lists each package for, with cgo on, so a
+// file built for one of them only, or only with cgo, is checked too.
 //
-// decision: the walk lists Linux, macOS and Windows with no build tags. A file
-// behind a custom tag, or built only for another platform, is not walked;
-// widen this when a package under pkg/remote gains one.
-var targets = []string{"linux", "darwin", "windows"}
+// decision: the walk lists Linux, macOS and Windows on amd64 and arm64, with
+// cgo on and no build tags. A file behind a custom tag, or built only for
+// another platform, is not walked; widen this when a package under pkg/remote
+// gains one.
+var targets = [][2]string{
+	{"linux", "amd64"}, {"linux", "arm64"},
+	{"darwin", "amd64"}, {"darwin", "arm64"},
+	{"windows", "amd64"}, {"windows", "arm64"},
+}
 
 // walk lists every package under dir with go list, once per target, and
 // merges what each target reaches. .Deps is the transitive import set, and
@@ -61,11 +66,13 @@ var targets = []string{"linux", "darwin", "windows"}
 func walk(dir string) ([]listed, error) {
 	merged := map[string]*listed{}
 
-	for _, goos := range targets {
+	for _, target := range targets {
+		goos, goarch := target[0], target[1]
+
 		cmd := exec.Command("go", "list", "-tags=", "-f", `{{.ImportPath}}|{{join .Deps " "}}|{{join .Imports " "}}`, "./...")
 		cmd.Dir = dir
 		// The planted tree is a module of its own, outside any workspace.
-		cmd.Env = append(cmd.Environ(), "GOWORK=off", "GOOS="+goos, "GOARCH=amd64", "CGO_ENABLED=0")
+		cmd.Env = append(cmd.Environ(), "GOWORK=off", "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=1")
 
 		var stderr bytes.Buffer
 
@@ -73,7 +80,7 @@ func walk(dir string) ([]listed, error) {
 
 		out, err := cmd.Output()
 		if err != nil {
-			return nil, fmt.Errorf("go list in %s for %s: %w: %s", dir, goos, err, stderr.String())
+			return nil, fmt.Errorf("go list in %s for %s/%s: %w: %s", dir, goos, goarch, err, stderr.String())
 		}
 
 		for line := range strings.Lines(string(out)) {
@@ -193,16 +200,23 @@ func TestImportWalk(t *testing.T) {
 }
 
 // The walk over a planted module, whose codec reaches the engine through an
-// intermediate package and whose codec test imports the syncer, reports
-// exactly the production reach: a walk of direct imports only misses it, and a
-// walk that binds tests reports the syncer too.
+// intermediate package, and the carver, GC and the journal from files built
+// only for Windows, only for arm64 and only with cgo, and whose codec test
+// imports the syncer, reports exactly the production reaches: a walk of direct
+// imports only misses the engine, a walk of one platform or without cgo misses
+// the others, and a walk that binds tests reports the syncer too.
 func TestImportWalkFollowsProductionImportsTransitively(t *testing.T) {
 	pkgs, err := walk("testdata/walk/pkg/remote")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	want := []string{"pkg/remote/codec reaches pkg/engine, which row pkg/remote/codec does not allow"}
+	want := []string{
+		"pkg/remote/codec reaches pkg/carver, which row pkg/remote/codec does not allow",
+		"pkg/remote/codec reaches pkg/engine, which row pkg/remote/codec does not allow",
+		"pkg/remote/codec reaches pkg/gc, which row pkg/remote/codec does not allow",
+		"pkg/remote/codec reaches pkg/journal, which row pkg/remote/codec does not allow",
+	}
 	if got := check(pkgs, table); !slices.Equal(got, want) {
 		t.Errorf("violations over the planted module %q, want %q", got, want)
 	}
@@ -241,7 +255,11 @@ func TestImportCheck(t *testing.T) {
 		{"the fault transport by its own row", listed{
 			path: module + "pkg/remote/s3/s3fault",
 			deps: []string{module + "pkg/remote"},
-		}, []string{"pkg/remote/s3/s3fault reaches pkg/remote, which row pkg/remote/s3/s3fault does not allow"}},
+		}, []string{"pkg/remote/s3/s3fault reaches pkg/remote, which row pkg/remote/s3/s3fault/... does not allow"}},
+		{"a package beneath the fault transport by its row", listed{
+			path: module + "pkg/remote/s3/s3fault/wire",
+			deps: []string{module + "pkg/remote/s3/s3fault", module + "pkg/remote"},
+		}, []string{"pkg/remote/s3/s3fault/wire reaches pkg/remote, which row pkg/remote/s3/s3fault/... does not allow"}},
 	} {
 		if got := check([]listed{tc.pkg}, table); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: violations %q, want %q", tc.name, got, tc.want)

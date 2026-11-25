@@ -77,6 +77,13 @@ func TestDeniedErrorCarriesItsCause(t *testing.T) {
 	}
 }
 
+// A cause outside the set prints as its number, never as one of the words.
+func TestUnknownCausePrintsItsNumber(t *testing.T) {
+	if got := Cause(9).String(); got != "Cause(9)" {
+		t.Errorf("Cause(9).String() = %q, want %q", got, "Cause(9)")
+	}
+}
+
 // The zero StoredSum is a get whose service reported no checksum (RFC 4 §4.4).
 func TestZeroStoredSumReportsNone(t *testing.T) {
 	if got := (StoredSum{}).Kind; got != ChecksumNone {

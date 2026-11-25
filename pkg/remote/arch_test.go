@@ -82,19 +82,12 @@ var exportImporter = archtest.ExportImporter(".")
 // value, a struct with its exported and embedded fields only, since an opaque
 // struct may gain unexported fields.
 func exports(dir string, planted ...string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+	paths, err := goFiles(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	paths := slices.Clone(planted)
-
-	for _, e := range entries {
-		name := e.Name()
-		if !e.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
-			paths = append(paths, filepath.Join(dir, name))
-		}
-	}
+	paths = append(paths, planted...)
 
 	fset := token.NewFileSet()
 
@@ -144,7 +137,23 @@ func exports(dir string, planted ...string) ([]string, error) {
 			continue
 		}
 
-		got = append(got, "type "+name+" "+typeString(tn.Type().Underlying(), qualify))
+		// An alias prints with its =, and a generic type with its parameters,
+		// so neither can stand in for the defined type the pin names.
+		head := "type " + name
+		if named, ok := tn.Type().(*types.Named); ok && named.TypeParams().Len() > 0 {
+			var params []string
+			for tp := range named.TypeParams().TypeParams() {
+				params = append(params, tp.Obj().Name()+" "+types.TypeString(tp.Constraint(), qualify))
+			}
+
+			head += "[" + strings.Join(params, ", ") + "]"
+		}
+
+		if tn.IsAlias() {
+			head += " ="
+		}
+
+		got = append(got, head+" "+typeString(tn.Type().Underlying(), qualify))
 		// An interface prints every method in typeString; any other type
 		// prints the whole method set, promoted methods of an embedded type
 		// included, since a method promoted that way is public too.
@@ -179,6 +188,26 @@ func typeString(t types.Type, qualify types.Qualifier) string {
 	return "struct{" + strings.Join(fields, "; ") + "}"
 }
 
+// goFiles returns the path of each non-test .go file in dir, whatever its
+// build tags.
+func goFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var paths []string
+
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
+			paths = append(paths, filepath.Join(dir, name))
+		}
+	}
+
+	return paths, nil
+}
+
 // hiddenCase names the case whose planted file sits in the package's
 // directory behind a build tag, so it reaches the pin through the directory
 // scan, as a real file would.
@@ -191,19 +220,12 @@ func withHidden(t *testing.T) string {
 
 	dir := t.TempDir()
 
-	entries, err := os.ReadDir(".")
+	paths, err := goFiles(".")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	paths := []string{filepath.Join("testdata", "arch", hiddenCase)}
-
-	for _, e := range entries {
-		name := e.Name()
-		if !e.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
-			paths = append(paths, name)
-		}
-	}
+	paths = append(paths, filepath.Join("testdata", "arch", hiddenCase))
 
 	for _, p := range paths {
 		b, err := os.ReadFile(p)
@@ -253,19 +275,12 @@ var errorVars = []string{
 // holds no state and no behaviour beyond methods over its own values (RFC 4
 // §1.2), which neither the import walk nor the export pin can see.
 func impurities(dir string, planted ...string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+	paths, err := goFiles(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	paths := slices.Clone(planted)
-
-	for _, e := range entries {
-		name := e.Name()
-		if !e.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
-			paths = append(paths, filepath.Join(dir, name))
-		}
-	}
+	paths = append(paths, planted...)
 
 	var bad []string
 
@@ -333,6 +348,11 @@ func TestRemoteExports(t *testing.T) {
 		{"extra method", "extra_method.go", nil, []string{"extra export: func (Name).Extra()"}},
 		{"extra type", "extra_type.go", nil, []string{"extra export: type Extra struct{A int}"}},
 		{"extra variable", "extra_var.go", nil, []string{"extra export: var Leak int"}},
+		{"extra alias", "extra_alias.go", nil, []string{"extra export: type Label = string"}},
+		{"extra generic type", "extra_generic.go", nil, []string{"extra export: type Box[T any] struct{V T}"}},
+		{"a defined type made an alias", "", func(want []string) []string {
+			return slices.Replace(want, slices.Index(want, "type Version string"), slices.Index(want, "type Version string")+1, "type Version = string")
+		}, []string{"extra export: type Version string", "missing export: type Version = string"}},
 		{"missing export", "", func(want []string) []string {
 			return append(want, "func Gone()")
 		}, []string{"missing export: func Gone()"}},
