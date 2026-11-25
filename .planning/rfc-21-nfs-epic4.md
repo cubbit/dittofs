@@ -132,7 +132,9 @@ over loopback where they name the wire.
   `Call.HostCall` (RFC 17 §3.0) meets lowered minimums, by the method called: a lock call or a share
   reservation's `Open` or `Close` at most `Claimed`, a `Root` or `ListShares` none. NLM and NSM set
   it on every call, MOUNT on `MNT` and `EXPORT`; no NFS call sets it, and no rule reads
-  `Call.Protocol`.
+  `Call.Protocol`. #5735 (`develop`) and #5736 (`feat/storage-v2`), not merged yet, add the `GetAttr`
+  NLM makes before a blocking `LOCK` to the methods lowered to `Claimed`, and refuse `ErrInvalid` a
+  call that sets `HostCall` and carries a `Session`; #5734 builds both.
 - **Plan D10**, the RFC 21 implementation plan's decision: a per-node NFSv3 and NFSv4.0
   duplicate-request cache in NFS's `Replay` stage, built by E3.
 - **Plan D16**, the same plan's decision: the cookie verifier is the share's `ShareID`, folded to
@@ -172,9 +174,9 @@ subtasks and tests can cite them.
 | R1 | Withdrawn: keyed on the call's `Protocol`, which RFC 17 §3.0 no longer lets a rule read; R53 states it on `HostCall` | withdrawn | RFC 17 §3.0 | — |
 | R2 | Withdrawn: keyed on the call's `Protocol`; R54 states it on `HostCall` | withdrawn | RFC 17 §3.0 | — |
 | R3 | Withdrawn: RFC 17 §3.0 now has the adapter state the exemption by a capability, `HostCall`, the opposite of this row; R55 and R56 replace it | withdrawn | RFC 17 §3.0 | — |
-| R53 | A lock call (`Lock`, `TestLock`, `Unlock`, `CancelLock`) or a share reservation's `Open` or `Close` whose `Call` sets `HostCall` meets `MinProof` lowered to at most `Claimed` and no `MinProtection`, so such a call below `Claimed` is still refused | MUST | RFC 17 §4.9 (step 2); RFC 21 §6.1 | T4.1 |
+| R53 | A lock call (`Lock`, `TestLock`, `Unlock`, `CancelLock`), a `GetAttr` (the one NLM makes before a blocking `LOCK`, once #5735 and #5736 amend §4.9) or a share reservation's `Open` or `Close` whose `Call` sets `HostCall` meets `MinProof` lowered to at most `Claimed` and no `MinProtection`, so such a call below `Claimed` is still refused | MUST | RFC 17 §4.9 (step 2); RFC 21 §6.1 | T4.1 |
 | R54 | A `Root` or `ListShares` whose `Call` sets `HostCall`, which only `MNT` and `EXPORT` make, meets neither minimum but still meets the share's state and its client rules; every call that does not set it, every NFSv3 call and a later call with the handle `MNT` returned among them, meets both minimums | MUST | RFC 17 §4.9 (step 2); RFC 21 §6.3 | T4.1, T4.7 |
-| R55 | `HostCall` lowers nothing beyond R53 and R54: any other method naming a share whose `Call` sets it is refused `ErrInvalid`, and the same lock, `Open` and `Close` methods without it, an NFSv4 or SMB caller's, meet the share's full minimums | MUST | RFC 17 §4.9 (step 2 and its `decision:`) | T4.1 |
+| R55 | `HostCall` lowers nothing beyond R53 and R54: any other method naming a share whose `Call` sets it, and any call that sets it and carries a `Session` (#5735, #5736), is refused `ErrInvalid`, and the same lock, `Open` and `Close` methods without it, an NFSv4 or SMB caller's, meet the share's full minimums | MUST | RFC 17 §4.9 (step 2 and its `decision:`) | T4.1 |
 | R56 | Admission reads `HostCall` and the method called, never `Call.Protocol`: the same call answers the same under every protocol label, the zero one included | MUST NOT | RFC 17 §3.0, §6 (V43) | T4.1 |
 | R57 | `MNT` and `EXPORT` reach the service with `HostCall` set, and no NFSv3 procedure does, as E3's route sets it (E3's T3.1) | MUST | RFC 17 §3.0 (the capability table); RFC 21 §6.3 | T4.7 |
 | R4 | RFC 17's §4.9 row: on a share whose `MinProof` is `Ticket` and `MinProtection` `Integrity`, an NLM lock at `Claimed` admitted and at `None` refused `ErrWrongSecurity`; NFSv3 `Root` and `ListShares` at `Claimed` admitted, and a `GetAttr` from NFSv3 at `Claimed` with that handle refused; an NFSv4 `Root` and an SMB `ListShares` at `Claimed` refused or leaving the share out | test row | RFC 17 §6 (the §4.9 row) | T4.1 |
@@ -540,13 +542,15 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 
 **Subtask T4.1 estimate: 1.25 man-days.**
 
-- **Track:** B. **Depends on:** S2b.
+- **Track:** B. **Depends on:** S2b; `vfs.Call.HostCall`, from E3's T3.1 or #5725; RFC 17 §4.9 as
+  #5735 and #5736 amend it, for the `GetAttr` and the `Session` refusal.
 - **Covers:** R4, R53, R54, R55, R56.
 - **Deliverables:** `internal/vfs/admission.go`'s `check` takes the minimum to apply rather than
   the `secure` flag: the share's, the lowered one (`MinProof` at most `Claimed`, no
   `MinProtection`), or none, chosen from `Call.HostCall` and the method alone; with `HostCall`,
-  `Root` and `ListShares` pass none, a lock call or a share reservation's `Open` or `Close` the
-  lowered one, and any other method naming a share is refused `ErrInvalid`; `SecInfo` keeps none;
+  `Root` and `ListShares` pass none, a lock call, a `GetAttr` or a share reservation's `Open` or
+  `Close` the lowered one, and any other method naming a share, or a call carrying a `Session`, is
+  refused `ErrInvalid`; `SecInfo` keeps none;
   without it, every call meets the share's. `vfs.Call.HostCall` is E3's T3.1's, or #5725's if it
   lands first. Consumed by T4.7's row, where T4.6's `MNT` and `EXPORT` first meet a Kerberos-only
   share, and by E11's NLM calls; T4.6's own tests run on shares with no minimums and do not wait for
@@ -566,8 +570,10 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   minimums: a `Root` and a `ListShares` labelled NFSv3 at `Claimed`, refused and leaving the share
   out (catches the lowering keyed on the protocol, R54, R56); a `Lock` and an `Open` without
   `HostCall` at `Claimed`, refused `ErrWrongSecurity` (catches the lowering keyed on the method,
-  R55); a `GetAttr` and a `Write` with `HostCall`, refused `ErrInvalid` (catches the flag widened
-  past its methods, R55); the §4.9 row's admitted and refused steps repeated under every protocol
+  R55); a `HostCall` `GetAttr` at `Claimed` admitted and at `None` refused (catches the `GetAttr`
+  left out, which fails every blocking NLM `LOCK`, R53); a `SetAttr` and a `Write` with `HostCall`,
+  and a `HostCall` `Lock` carrying a `Session`, refused `ErrInvalid` (catches the flag widened past
+  its methods or its protocols, R55); the §4.9 row's admitted and refused steps repeated under every protocol
   label and the zero one, each with the same answer (catches a rule reading the label, R56); the
   client-rule and quiesce steps (catch an exemption widened past the minimums, R54): a `HostCall`
   `Root` from a client outside the rules refused, a `HostCall` `ListShares` leaving out a share
@@ -975,7 +981,7 @@ sends to list, create and remove.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T4.1 | 1.25 | — | a service change, reviewed by the service's owners |
+| 1 | T4.1 | 1.25 | E3's T3.1 or #5725; #5735 and #5736 | a service change, reviewed by the service's owners |
 | 2 | T4.2 | 2 | — | `Attach` and the writer's segmented send, reviewed by `core`'s and `pkg/resources`' owners |
 | 3 | T4.3, T4.4, T4.5 | 8.25 | PR 2, E3's T3.4 | NFSv3's error table, attributes and data path, with the allocation gates |
 | 4 | T4.6, T4.7 | 5 | PR 1, PR 3, E3's T3.2, E7's T7.1 | linked lists, MOUNT and the first mount over loopback: S3 |
