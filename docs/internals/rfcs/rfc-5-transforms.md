@@ -157,7 +157,7 @@ the operator turned compression on with it explicitly, accepting the size leak
 3. GC relocates every block whose census, its record of the keys its bodies
    used, names the old key. Each chunk is re-encrypted under the new one
    ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census), [§5.2](#5.2%20Relocation%20re-encodes)).
-4. Removal waits for encodes still using the old key, then for an empty census,
+4. Removal waits for open pins that hold the old key, then for an empty census,
    and for no copying backup's census to name it
    ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
 5. Removal erases the key everywhere the installation keeps it; the provider
@@ -1141,6 +1141,7 @@ alike. A new transform gets it by registering.
 | [Appendix B.2](#B.2%20Keys) | Delay the bucket's `keys` put of sequence 7 until after sequence 8 has landed: the next writer, or the next `Recheck` pass, reads back 7 and writes the whole object at 9. Repeat at a mutable backup location, with 8 adding a new export key: the writer about to put a state version under that key reads back 7 and re-puts before it, so a restore from that location alone authenticates the version. |
 | [Appendix B.2](#B.2%20Keys) | A location an operator declared lost: a master-key destroy no longer fails closed on it, and an export-key rotation completes without it. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key service rotates a master key in place while the namespace writes nothing: at the next recheck period, on the provider's own ticker until GC runs the read, the provider reads the new primary version and starts a `rotate-master-key` operation that re-wraps every key record under it. A failed copy's progress under a retiring or retired export key: the successor, and the same copier resumed across the rotation, copy those blocks afresh. A re-seal and a copier's state put on one backup at once: they take the key lock in turn and put distinct sequences. A `damaged` backup expires to `expired`, and a `complete` written again naming another export is refused. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key service answers the primary-version read with more than one current version (a Locate returning two UIDs) for two periods running: assert each read fails, no key record is re-wrapped, and `material_unavailable` names the master key. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key-service provider holding a namespace's data key unwrapped, for each state the service can report for the master key that wraps it: at the next period, a state the service reports as destroyed makes `Pin` fail with `ErrMaterialDestroyed` and raise `material_destroyed`; every other state but active, and a state value the provider does not know, makes `Pin` fail with `ErrMaterialUnavailable` and raises `material_unavailable`; an active key pins. A failed state read leaves the last state in force. No restart is needed in any case. |
 | [Appendix B.2](#B.2%20Keys) | Destroy a master key in the key service while a block pinned under a data key it wraps is open, in two namespaces: at the next period every key record whose stored wrap names it is marked `destroyed` before any decode, condition or destroyed-material report names it, and the block's commit is refused. A record already re-wrapped under the new master key is not marked. The next read, with the key still destroyed, writes nothing and reports nothing twice. Crash after half the records are marked: the read at the next open marks the rest, and `Pin` stays refused throughout. |
 | [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Drain a namespace whose data key another namespace's folder census still names: the drain removes none of its keys, the chunk-ID and chunking keys included. |
@@ -1501,7 +1502,9 @@ primary version other than the one its current records name starts that
 master-key rotation as a `rotate-master-key` operation ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)), unless one
 for that master key is already running; the operation runner drives it as it
 drives one an administrator starts. A read that fails changes nothing and is retried at the
-next period; until a rotation runs, the records stay wrapped
+next period, and so does one that finds more than one current version for a master key: the
+provider re-wraps nothing on an ambiguous answer, logs it and raises
+`material_unavailable` for that master key; until a rotation runs, the records stay wrapped
 under the old version, which still unwraps them. Under a name that stays the same across
 versions, nothing would re-wrap, and destroying an old version in the service
 would silently make every record and export wrapped under it unopenable, past

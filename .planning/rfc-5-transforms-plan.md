@@ -470,7 +470,9 @@ this plan cites them by its names.
   epic 20) and the destroyed-material notice (its epic 18, which also abandons at commit an attempt
 whose material the notice named after the pin, RFC 8 §10.4 as amended), and the node registers this
   collectors, alert rules and `material_unavailable` health source the content wiring builds
-  from this component's plain values (its epic 21). Unblocks epic 10, which is planned after it, and epic 11.
+  from this component's plain values, and the engine's health source for `material_destroyed`,
+  which only the engine can evaluate, since it alone sees the census and the journal (RFC 25
+  §3.9, failing closed while dependence is unknown) (its epic 21). Unblocks epic 10, which is planned after it, and epic 11.
 
 Seams between this plan and the others, the offload contract's and RFC 13's:
 
@@ -478,7 +480,7 @@ Seams between this plan and the others, the offload contract's and RFC 13's:
 | --- | --- | --- |
 | RFC 2 | the keyed BLAKE3 chunk ID (RFC 2 §4.1), the keyed gear table (RFC 2 §3.2, §6), RFC 5 §8.2 T17's half that the same file in two namespaces gives disjoint chunk IDs (its epic 4); the one vector script and test corpus (its epic 2), which this plan's vectors join; the nightly `fuzz` suite (its epic 2) | nothing: the engine passes it the keys (below) |
 | RFC 3 | its `Descriptor` and `MaterialRef`, the census entry opaque to the syncer, and its own `ErrMaterialUnavailable` and `ErrMaterialDestroyed` (RFC 3 §1.3) | nothing: its memory bound is sized by the engine and the codec (below) |
-| RFC 4 | the block codec, which writes the census into the header (RFC 4 §3.2 to §3.4) and owns RFC 3 §2.2's memory-bound row on the codec's part; `PutControl` and `GetControl` (RFC 4 §4.13); LocalStack over HTTPS in `integration` (its epic 3) | `Attempt.Encode`, `Chain.Decode`, `MaxDecodeLen`, the stage count and the 255-byte material ID that bound the header census; `Attempt.MaxEncodedLen`, whose maximum over the open attempts, not the current chain's, bounds RFC 3 §2.2's upload memory, since a pin can outlive a chain change |
+| RFC 4 | the block codec, which writes the census into the header (RFC 4 §3.2 to §3.4) and owns RFC 3 §2.2's memory-bound row on the codec's part; `PutControl` and `GetControl` (RFC 4 §4.13); LocalStack over HTTPS in `integration` (its epic 3) | `Attempt.Encode`, `Chain.Decode`, `MaxDecodeLen`, the stage count and the 255-byte material ID that bound the header census; `Attempt.MaxEncodedLen` for one block's bound; the upload memory is RFC 3 §2.2's, sized once by `Chain.MaxDecodeLen(Max)` |
 | RFC 13 | `pkg/keyprovider`, whose exported surface does not change: epic 6 moves its key-file format to `internal/keyfile` and epic 7 its KMIP transport to `internal/kmip` (D5, D14); its importers (`pkg/secrets`, `internal/install`, `cmd/dfs`) are not touched, and its `kmip_integration_test.go` still runs over the moved transport | nothing: `pkg/transform` does not import it |
 | RFC 8 offload | the pin's holder and the census at commit (epic 15), and there the refusal of a plan keyed under another namespace's key (RFC 5 §8.2 T17's other half, its last Appendix B.2 row: epic 15's Intent step), the `Census` view (epic 19), the destroyed-material handling (epic 18), the salvage export (epic 20), the store adapter, its error mapping and the node's registration of collectors and alert rules (epic 21) | the root's `Chain` (`Pin`, `Decode`) and `Attempt.Release`, the chain the content wiring builds with `chain.NewChain` and injects, `Chain.MaxDecodeLen`, which the wiring calls on the chain it built to size the syncer's fetcher (RFC 3 §2.2), `keys.Provider`'s `Current` and `Get` for the chunk-ID and chunking keys it hands the carver, the salvage-key wrap, the destroyed-material notice; its content wiring (`internal/node/content`) supplies the `keys`-object store (D8) and the key-record view (D7) |
 
@@ -494,7 +496,7 @@ Seams between this plan and the others, the offload contract's and RFC 13's:
 | E5 | E6, partly; E9 | the key-file wrap calls AES-256-GCM as epic 5 does (D3) |
 | E6 | E7, partly; E8; E9 | epic 7 implements the custody interface epic 6 declares (D6); epic 8 rotates epic 6's records |
 | E7 | E8, partly; E9 | a key service's new primary version starts epic 8's master-key re-wrap |
-| E8 | E9 | the operator's operations call rotation |
+| E8 | E9 | the operator's operations call rotation, and epic 9 starts `rotate-master-key` from epic 8's primary-version read |
 | S1c 🔀 | E8, partly | the `keys` object goes through RFC 4's control objects |
 | S7 🔀 | E10, E11 | the engine and the node compose this component; epic 10 is planned after it |
 | E9 | E10, E11 | epic 10 completes what epic 9 wires; epic 11 runs through epic 9's settings |
@@ -907,7 +909,8 @@ bytes, the primary version read), Appendix B.2's `master-key` row as a key servi
 item 2.
 **Done when:** the custody suite passes against the harness's KMIP server; RFC 5 §8.1's
 key-management row, its provider half (the store half is epic 11's); RFC 5 §8.1 T22's stored
-wrap for a key service, as bytes (the string-map half is §6.1's, Q3).
+wrap for a key service, as bytes (the string-map half is §6.1's, Q3); RFC 5 §8.2's Appendix B.1
+ambiguous-Locate row.
 
 **Expected content:**
 - `internal/kmip`, moved out of `pkg/keyprovider` (D14). The move changes
@@ -916,7 +919,12 @@ wrap for a key service, as bytes (the string-map half is §6.1's, Q3).
   `internal/kmip`, and the canned server's round trips become integration tests against
   `service:kmip`.
 - KMIP encrypt and decrypt with associated data through `kmip-go`, in `keys/kmip.go` (D5, D14).
-- The version-qualified ID of each wrap, and the read of the current primary version.
+- The version-qualified ID of each wrap, and the read of the current primary version; a Locate
+  that returns more than one UID for a master key is refused as an error, re-wraps nothing,
+  and raises `material_unavailable`.
+- A test row against `service:kmip`: two keys under one name, so Locate returns two UIDs;
+  assert the read fails, no record is re-wrapped and `material_unavailable` is raised, and that
+  a second period with the same answer still re-wraps nothing.
 - The failures of RFC 5 §8.1's row (missing key, unreachable server, invalid certificate)
   mapped to the provider's errors, none falling back.
 - The integration tests, under `-tags=integration`.
@@ -935,8 +943,8 @@ Appendix B.4's destroyed material as the provider reports it (D17).
 the old key current; a late put of sequence 7 is repaired at 9 by the next writer; a key-file
 master-key rotation without escrow refused); RFC 5 §8.2's Appendix B.1 key-service rows, but their
 destroy-check clauses and the periodic read (an in-place rotation re-wraps; a retargeted alias
-the same; a rotation while nothing is written, at the next period), if the harness's server can
-rotate in place (O9); RFC 13 §9's "§7 key table" row's data-key rotation clause; a crash torn
+the same; a rotation while nothing is written, at the next period), the read and the re-wrap
+only, the operation's start being epic 9's, if the harness's server can rotate in place (O9); RFC 13 §9's "§7 key table" row's data-key rotation clause; a crash torn
 beneath a rotation leaves the old key current; the notice reports a destroyed key
 record and a master key the key service reports destroyed, on the in-memory `keys.Provider` and on
 the provider, under `keystest`; RFC 5 §8.2's Appendix B.1 key-state row against the
@@ -951,9 +959,10 @@ master-key destroy row (records marked before any report, idempotent, completed 
   crash-seam test.
 - The `keys` object (D8): its two-call store interface over `pkg/remote`, tested against RFC
   4's in-memory store, the writer under the key lock, MAC, read-back and repair; fuzzed decode.
-- The primary-version read that starts a master-key rotation, as a `rotate-master-key`
-  operation (RFC 5 Appendix B.1): at open, and on the provider's
-  own ticker at RFC 9 §7.5's fixed period until GC's recheck pass takes it over (§6.1).
+- The primary-version read (RFC 5 Appendix B.1), exposed as a call that reports a master key's
+  new primary version: at open, and on the provider's own ticker at RFC 9 §7.5's fixed period
+  until GC's recheck pass takes it over (§6.1). Epic 9 starts the `rotate-master-key` operation
+  from it; epic 8 tests the read and the re-wrap the operation runs.
 - On the same read, each master key's state, mapped through `internal/kmip`'s key-state table (epic
   7), and `Pin` refused for a namespace whose current data key's master key is not active, with
   the `material_destroyed` or `material_unavailable` condition (RFC 5 Appendix B.1).
@@ -976,7 +985,8 @@ operator's key operations (D15).
 row, which RFC 13's plan hands to this one; RFC 5 §8.2 T18's `ErrNotEscrowed` at namespace
 creation through the API; RFC 25 §3.9's rows and RFC 25 §7's alert rules defined in this
 component's packages, with a test that each rule names a condition or a series that exists; each
-operation's API and CLI test.
+operation's API and CLI test; RFC 5 §8.2's Appendix B.1 in-place rotation row end to end, the
+read starting `rotate-master-key` with no administrator.
 
 **Expected content:**
 - `pkg/transform/chain`'s `settings.go`: the rows `transforms`, `materials` and `require` as
@@ -988,7 +998,8 @@ operation's API and CLI test.
 - The key operations (rotate the master key, rotate the data key, verify escrow), their
   `dfsctl` commands and `go run ./cmd/gendocs`; `rotate-data-key`'s help says it revokes
   nothing until removal lands (§6.1), so it does not answer RFC 5's leaked-key scenario. The
-  `rotate-master-key` operation is also the one epic 8's primary-version read starts.
+  `rotate-master-key` operation is also the one epic 8's primary-version read starts: epic 9
+  wires the read's report to the operation runner, unless one for that master key runs.
 - The series specs, the conditions and the alert rules as plain values, which the content wiring
   builds into collectors, a health source and rules for the RFC 8 offload plan's epic 21 to
   register, with A1's `material_unknown` and `material_destroyed`.
@@ -1046,8 +1057,8 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
 - **Q3. KMIP only** (D14); a cloud key service is a §6.1 row. Example:
   `materials: {provider: kmip, endpoint: …, key: …}`.
 - **Q4. RFC 23 operations, built in epic 9** (D15). Example:
-  `POST /namespaces/{ns}:rotate-data-key`, `POST /stores/{store}:rotate-master-key`,
-  `POST /stores/{store}:verify-escrow`.
+  `POST /namespaces/{id}:rotate-data-key`, and `:rotate-master-key` and `:verify-escrow` on RFC
+  23 §3.1's remote store resource, whose collection path RFC 23 does not name yet.
 
 **Amendments to other RFCs, in this pull request.**
 
