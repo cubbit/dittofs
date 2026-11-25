@@ -755,7 +755,7 @@ N7, N8, N17's reply half, N19's NFSv3 half, N23 on `memory.New`.
   NFS entry files for `Root` and `ListShares`.
 - After S2b, A3's service half: `internal/vfs` admission lowering the minimums for a call that sets
   `Call.HostCall`, to `Claimed` for a lock call or an NLM share reservation's `Open` and `Close`, and to none for
-  `Root` and `ListShares`, and refusing it on any other method naming a share `ErrInvalid`, with its rows on `memory.New`; the MOUNT side sets
+  `Root` and `ListShares`, and refusing it on any other method naming a share, or with a `Session`, `ErrInvalid`, with its rows on `memory.New`; the MOUNT side sets
   it on `MNT` and `EXPORT`, and E11's NLM and NSM calls set it and rely on it.
 - S3's loopback rows.
 
@@ -1166,7 +1166,9 @@ follows the RFC as written.
    (`internal/vfs/admission.go`'s `secure`). RFC 17 §4.9's step 2 names the exemption: a lock call
    or a share reservation's `Open` or `Close` that sets `HostCall` is admitted with `MinProof` at
    most `Claimed` and no `MinProtection`, a `Root` or `ListShares` that sets it with neither
-   minimum, and any other method naming a share that sets it is refused `ErrInvalid`. E4 makes the change after S2b; E11's NLM calls rely on it.
+   minimum, and any other method naming a share that sets it, or a call that sets it and carries a
+   `Session`, is refused `ErrInvalid`. Every NFS, NLM and MOUNT `Call` also sets
+   `Call.PrivilegeOnEveryCall`, so root's privilege counts on every call. E4 makes the change after S2b; E11's NLM calls rely on it.
    Proposed as RFC text in commit `docs(rfc-17): NLM, MNT and EXPORT meet admission without a
    share's Kerberos minimums`.
 4. **Who records the series only NFS code can count** (#5090 (a); RFC 20 §10, RFC 25 §2.1). RFC 20

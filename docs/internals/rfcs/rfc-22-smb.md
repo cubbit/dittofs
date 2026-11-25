@@ -1975,7 +1975,7 @@ callers hold it is
 and what it lets a decision grant is
 [RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)'s.
 On the wire: take-ownership is not among them — it is the `WRITE_OWNER` right,
-decided by the DACL; every SMB request's `Call` sets `PrivilegeOnlyForBackup`
+decided by the DACL; every SMB request's `Call` leaves `PrivilegeOnEveryCall` unset
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), a `CREATE` with `FILE_OPEN_FOR_BACKUP_INTENT` sets
 `OpenRequest.Backup` (§16.4), and the service marks the open privileged when its
 caller is, so every later request through the handle that `CREATE` made carries
@@ -2409,10 +2409,10 @@ are checked against; an SMB session carries no claims.
 - **Privilege.** `FILE_OPEN_FOR_BACKUP_INTENT` sets `OpenRequest.Backup`
   (§16.4); whether the caller is privileged is the core's (§11).
 - **Capabilities.** The `Call` the router builds for every SMB request sets
-  `PrivilegeOnlyForBackup` (§11) and `OpenFilesKeepNames` (§13), and its
+  `OpenFilesKeepNames` (§13) and leaves `PrivilegeOnEveryCall` unset (§11), and its
   `Protocol` label is SMB, which no rule of the service reads
-  ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)). An adapter that left one unset would get NFS's rule
-  without an error, so §18's rows for §11 and §13 are what catch it.
+  ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)). An adapter that left `OpenFilesKeepNames` unset would get NFS's rule
+  without an error, so §18's row for §13 is what catches it.
 
 ### 16.2 Request identity
 
@@ -2555,7 +2555,7 @@ mapping it needs is here.
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
 | `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` passed as `vfs.MaximumAllowed`, which the service resolves to the granted mask (§11) |
 | `Open.Mode.Deny` | the complement of `ShareAccess` over read, write and delete | — | a share bit set allows that access; RFC 14 holds what is refused |
-| `OpenRequest.Backup` | `FILE_OPEN_FOR_BACKUP_INTENT` | — | the service sets `Open.Mode.Privileged` when its caller is privileged (§11, S28); the only open where privilege counts, as the `Call` sets `PrivilegeOnlyForBackup` |
+| `OpenRequest.Backup` | `FILE_OPEN_FOR_BACKUP_INTENT` | — | the service sets `Open.Mode.Privileged` when its caller is privileged (§11, S28); the only open where privilege counts, as the `Call` leaves `PrivilegeOnEveryCall` unset |
 | `OpenRequest.WantOpenID` | set on every `CREATE` | — | the `OpenID` the FileId's persistent half carries (§6.1); a durable or persistent open needs it |
 | `OpenRequest.GrantBelongsToOpen` | set on every `CREATE` | — | a grant asked with no lease key, an oplock, is the open's own (§6.2) |
 | `Open.Durability` | `DHnQ`, `DH2Q`; persistent when `DH2Q` asks it on a continuously available share | — | §6.4 |
