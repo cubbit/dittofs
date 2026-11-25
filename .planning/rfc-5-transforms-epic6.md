@@ -23,7 +23,7 @@ non-encrypting-namespace and escrow clauses), and Appendix C (the key file's pas
 component takes). Every citation is the RFCs' text on `develop`; the code lands on
 `feat/storage-v2`, and the paths below are paths there.
 **Track:** C.
-**Epic 6 estimate: 8 subtasks, 17.25 man-days.**
+**Epic 6 estimate: 8 subtasks, 17.5 man-days.**
 **Depends on:** **S2**: from E2, `keystest.Run` with its `Harness` (`Give`, `Replace`, `Destroy`,
 `Calls`) and its salvage row, and `transformtest.LoadVectors` with the fingerprint, key wrap AAD and
 key-file stored-wrap vectors. From E1, `keys.MaterialID`, `keys.Provider`, the three kinds,
@@ -33,7 +33,8 @@ E5: the key-file wrap calls the standard library's AES-256-GCM itself. On `feat/
 `pkg/keyprovider`'s key-file format, `pkg/metadata/kv` and its `keys` and `kvtest` packages,
 `pkg/metadata/kvstore` with its `kvstoretest` openers, `badgerkv` and `fdbkvtest`.
 **Blocks:**
-- E7, which adds key-service custody beside the key file's (D3).
+- E7, which adds key-service custody beside the key file's, extracting the `custody` interface
+  over both with its suite and its `primary` and `state` reads (D3).
 - E8, which builds rotation, the bucket's `keys` object with the `keyseq` key lock, the destroyed
   marking and the notice on the key records, the view and its in-memory implementation, and the key
   creation of this epic.
@@ -43,7 +44,7 @@ E5: the key-file wrap calls the standard library's AES-256-GCM itself. On `feat/
 - Outside RFC 5's epics, the RFC 8 offload plan: its epic 18's commit reads a key record's state
   through `kvstore` (R50) and its tests use `keystest.Records`; its epic 20 calls `WrapSalvageKey`;
   its epic 21's content wiring builds the provider with `kvstore`'s view and the `storage` keys' IDs
-  and fingerprints, and turns `Status` into collectors and a health source.
+  and fingerprints, calls `Open` as it opens each namespace, and turns `Status` into collectors and a health source.
 
 ---
 
@@ -156,7 +157,7 @@ title and not copied.
 | rule 8, **real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T6.2, T6.8 | the view's suite runs on `kvstore` over the Badger and FoundationDB openers its own suite uses; key creation's ordering claim is tested with `kvtest.FaultKV` failing the commit beneath `kvstore`, and with a committed creation found again by a fresh provider |
 | rule 9, **code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T6.2, T6.3, T6.4, T6.5, T6.7, T6.8 | RFC 5's `decision:` note on the clear chunk-ID key at key creation (R27); D1's at the view's `Update`, D5's at the wrap count, D6's at `VerifyEscrow`, D11's at the failure mapping, D13's at `WrapSalvageKey`, D15's at the `storage`-key check; D10's `ponytail:` at the cache |
 | rule 10, **a test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test in §6 names the bug it catches; the fingerprint and wrap vectors are E2's, computed by an independent implementation, never by this code |
-| rule 11, **a symbol is exported only if RFC 5's interface or a consumer outside the package uses it** | T6.2, T6.3, T6.5, T6.6, T6.7, T6.8 | each export names its consumer in §6: `New`, `Config`, `Deps`, `StorageKey`, `Row`, `KeyRecords` for the content wiring, `kvstore` and `keystest`; `Calls` for `keystest.Harness`; `Status` for the content wiring; `CreateKeys`, `VerifyEscrow`, `Escrow` and `ErrNotEscrowed` for E9; `keystest.Records` and `RunKeyRecords` for the provider's tests, `kvstore`'s tests and the RFC 8 offload plan's. They are frozen when E9 first calls them |
+| rule 11, **a symbol is exported only if RFC 5's interface or a consumer outside the package uses it** | T6.2, T6.3, T6.5, T6.6, T6.7, T6.8 | each export names its consumer in §6: `New`, `Open`, `Config`, `Deps`, `StorageKey`, `Row`, `KeyRecords` for the content wiring, `kvstore` and `keystest`; `Calls` for `keystest.Harness`; `Status` for the content wiring; `CreateKeys`, `VerifyEscrow`, `Escrow` and `ErrNotEscrowed` for E9; `keystest.Records` and `RunKeyRecords` for the provider's tests, `kvstore`'s tests and the RFC 8 offload plan's. They are frozen when E9 first calls them |
 | rule 12, **each subtask creates only what it declares** | all | the view lands with its first consumer, the custody (T6.3); the key file's custody is concrete code, and the interface E7 needs lands with E7's second implementation (D3); the `keyseq` subtag is not added: this epic writes no `keys` object, and its writers conflict through a range guard (D1), so the key lock lands with E8's first writer of one |
 
 ## 3. Requirements and invariants
@@ -186,6 +187,7 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 | R11 | Each call of `Current` or `Get`, a failing one included, raises an exported count, so a test can assert that the provider records no call | test row | §8.2 T12, T14; RFC 5 plan §1.4; E2 R19 | T6.6 |
 | R12 | The provider passes E2's provider suite, `keystest.Run` | test row | RFC 5 plan §1.4; E2 T2.1, T2.2 | T6.6 |
 | R41 | A master key that cannot be read or unwrapped at start fails the provider's construction, so the store does not open and nothing is written without it | MUST | §2.7 (a chain that cannot be built); Appendix B.4 (unreachable at start) | T6.3 |
+| R51 | A namespace opens only once every current key record of it has been unwrapped and checked against its fingerprint, once per key, so a store whose master key or key service cannot be reached when a namespace opens does not open it | MUST | Appendix B.4 (unreachable at start); §9 item 2 ("once per key when the namespace opens"); RFC 13 §9 "§7 namespace keys" ("the namespace does not open") | T6.5 |
 | R42 | Material that cannot be reached when read is `ErrMaterialUnavailable`, never `ErrUnknownMaterial` and never zeros, and a later read succeeds once it can be reached | MUST | Appendix B.4; §7 T7 | T6.5 |
 
 **Key records**
@@ -228,9 +230,9 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R34 | A key-file master key's off-host escrow is verified by handing the copy back once: the provider checks that the copy unwraps a test record and that its fingerprint matches | MUST | Appendix B.2 ("Where the master key lives"); RFC 13 §4.2 | T6.7 |
-| R35 | Until its current key-file master key's escrow check has passed, creating an encrypting namespace on a store configuration is refused with `ErrNotEscrowed`, naming the key; once it has passed, creation succeeds | MUST | Appendix B.2; §3.1 (`ErrNotEscrowed`); §8.2 T18; RFC 13 §4.2; RFC 13 §9 "§7 key table" | T6.7, T6.8 |
+| R35 | Until its current key-file master key's escrow check has passed (a key-service master key needs none), creating an encrypting namespace on a store configuration is refused with `ErrNotEscrowed`, naming the key; once it has passed, creation succeeds | MUST | Appendix B.2; §3.1 (`ErrNotEscrowed`); §8.2 T18; RFC 13 §4.2; RFC 13 §9 "§7 key table" | T6.7, T6.8 |
 | R37 | A configuration none of whose namespaces encrypts or takes catalog backups needs no escrow: a non-encrypting namespace is created without it. The backup half is RFC 26's (§1.2) | MUST | Appendix B.2 ("The check is per key…") | T6.8 |
-| R38 | The `storage` wrapping key never wraps a namespace key: the provider, given that key's ID and fingerprint and never the key, refuses a master key whose ID or fingerprint matches, so a master-key file holding the `storage` key's bytes under another ID is refused too | MUST NOT | Appendix B.2 ("No storage-key fallback"); §8.2 T18; RFC 13 §7; RFC 5 plan D5 | T6.3 |
+| R38 | The `storage` wrapping key never wraps a namespace key: the provider, given that key's ID and fingerprint and never the key, refuses a key-file master key whose ID or fingerprint matches, so a master-key file holding the `storage` key's bytes under another ID is refused too; a key-service master key, which has no bytes here, is compared by E7 | MUST NOT | Appendix B.2 ("No storage-key fallback"); §8.2 T18; RFC 13 §7; RFC 5 plan D5 | T6.3 |
 
 **The salvage key**
 
@@ -316,9 +318,14 @@ R22, the bucket gate (E8, §1.2) and R35.
 - **D3, no custody interface yet.** The key file's wrap and unwrap are concrete code in the
   provider, and the stored wrap's provider kind is the constant `0x01`. The plan's D6 declares a
   custody interface with a suite in E6; with one implementation here that interface would have no
-  second user until E7, so E7, which adds `kmip.go` in the same package, extracts the interface
-  over both and the suite of their shared rows (rule 12). Nothing exported changes when it does.
-  Prior art: none needed.
+  second user until E7, so E7, which adds `kmip.go` in the same package, extracts the unexported
+  interface over both, `kind`, `wrap`, `unwrap`, `primary(ctx) (masterKeyID []byte, err error)` and
+  `state(ctx, masterKeyID []byte) error`, with the key file's answers to the two reads (its one
+  master key ID, and nil), and the suite `runCustody` of their shared rows (rule 12). Nothing
+  exported changes when it does. The provider-level rules written here for the key file are
+  keyed on the stored wrap's kind, so a kind `0x02` wrap skips the escrow gate (D6) and the ID and
+  fingerprint `storage`-key check (D15), which E7 replaces with its own comparison by UID. Prior
+  art: none needed.
 
 - **D4, key IDs are minted IDs' bytes.** A namespace key's ID is 16 bytes of a random UUID with its
   version bits set (`uuid.NewRandomFromReader` over the injected reader), held as the `ID` string's
@@ -345,7 +352,9 @@ R22, the bucket gate (E8, §1.2) and R35.
   configuration's values. So `VerifyEscrow` returns the master key's ID and fingerprint on a pass,
   E9's `verify-escrow` action records them in the configuration, and the provider's `Config`
   carries the passes back at every start. The gate opens only for a pass naming the loaded master
-  key's ID and fingerprint, so a key file replaced under its ID finds it shut. The provider also
+  key's ID and fingerprint, so a key file replaced under its ID finds it shut; it applies to a
+  key-file master key only, since a key service's never leaves the service (Appendix B.2), so it is
+  open for a kind `0x02` master key (D3). The provider also
   remembers a pass it made, so creation succeeds without a restart. A `decision:` marker at
   `VerifyEscrow` names this split, to be withdrawn if RFC 16 gains a row for it. Prior art: none
   found.
@@ -373,8 +382,12 @@ R22, the bucket gate (E8, §1.2) and R35.
   key's rotation (RFC 26), as a codec version 2: RFC 16 §4.3's per-value version byte reads both.
   Prior art: RFC 16 §4.3's lazy upgrade (checked).
 
-- **D10, the cache never evicts, and refreshes on every write and every unknown miss.** As RFC 5's
-  plan's §4.3 knowingly-simple entry says, every unwrapped key stays until stop. Each namespace's
+- **D10, the cache never evicts, is filled when a namespace opens, and refreshes on every write and
+  every unknown miss.** As RFC 5's plan's §4.3 knowingly-simple entry says, every unwrapped key stays
+  until stop. `Open(ctx, ns)`, which the content wiring calls as it opens each namespace, loads its
+  rows and unwraps and checks every `current` record, failing on the first that cannot be served
+  (R51): loading on first use would let a namespace open while its key service is unreachable, and
+  fail only at the first write or read. Each namespace's
   rows are cached too, loaded on first use; after the provider's own `Update` succeeds they become
   the rows `fn` saw plus the rows it returned, and after any `Update` error that namespace's rows
   are dropped, since `kv.KV.Update` may report an error for a commit that happened. A `Get` or
@@ -420,13 +433,15 @@ R22, the bucket gate (E8, §1.2) and R35.
   call stay, as thin wrappers. Prior art: Go's own `internal/` packages shared by two public ones
   (checked).
 
-- **D15, the `storage` keys are refused at construction.** `Deps` carries every `storage` key the
+- **D15, the `storage` keys are refused at construction, for a key-file master key.** `Deps` carries every `storage` key the
   node holds, the current one and RFC 13 Appendix C's retired ones, each as its ID, as its key file
   records it, and its fingerprint; `New` compares each with the loaded master key's and fails on any
   match, naming the master key ID (R38). A fingerprint is one-way, so the provider still holds no
   `storage` key. An entry whose fingerprint is zero, which the content wiring passes when it cannot
   read a `storage` key's bytes (a key service's, §9), is checked by its ID alone; a `decision:`
-  marker names that ceiling: such a key's bytes under another ID are not caught. Prior art: none
+  marker names that ceiling: such a key's bytes under another ID are not caught. The check runs on
+  the key-file master key only: a key-service master key (kind `0x02`) has no bytes to fingerprint,
+  and E7 compares it with the `storage` key's UID in its primary-version read (D3). Prior art: none
   found.
 
 ## 5. Target tree
@@ -453,7 +468,7 @@ pkg/transform/keys/provider/
   doc.go                T6.3  package doc
   wrap.go               T6.3  the key wrap AAD, the stored wrap's encode and parse, the key-file wrap and unwrap
   provider.go           T6.3  Row, KeyRecords, Config, Escrow, StorageKey, Deps, Provider, New
-                        T6.5  Current, Get, the cache, Calls
+                        T6.5  Open, Current, Get, the cache, Calls
                         T6.6  Status
   salvage.go            T6.4  WrapSalvageKey
   record.go             T6.5  the key record and its codec
@@ -654,16 +669,19 @@ pkg/transform/keys/provider/
 
 ### T6.5 Key records, `Current` and `Get`
 
-**Subtask T6.5 estimate: 3.5 man-days.**
+**Subtask T6.5 estimate: 3.75 man-days.**
 
 - **Track:** C. **Depends on:** T6.3.
 - **Covers:** R3, R4, R5, R6, R7, R8 (the reload), R10 (the start time recorded), R13, R14, R15,
-  R21 (copied record), R42, R44, R45 (fingerprint), R47, R48 (the key record).
+  R21 (copied record), R42, R44, R45 (fingerprint), R47, R48 (the key record), R51.
 - **Deliverables:**
   - `record.go`: the key record's bytes, version 1: fingerprint, the time it entered its state
     (D9), master key ID, wrapped or clear bytes, each length-prefixed; a `destroyed` record keeps
     the fingerprint only, its ID and state being the row's. Encode and decode, unexported. Consumed
     by T6.6, T6.8 and E8.
+  - `(*Provider).Open(ctx context.Context, ns entity.NamespaceID) error`, consumed by the content
+    wiring as it opens each namespace (D10): every `current` record unwrapped, checked and cached,
+    the first failure returned as `Get` would return it, so the namespace does not open.
   - `(*Provider).Current` and `(*Provider).Get`, `keys.Provider`, consumed by E3's chain, E5's
     transform and the engine: rows cached per namespace and keys per ID with D10's refreshes; both
     serve material only after its state, its unwrap through the stored wrap and its fingerprint have
@@ -689,9 +707,13 @@ pkg/transform/keys/provider/
   - One namespace's wrapped data key copied, as a row, into another namespace's records: `Get` there
     is `ErrMaterialUnavailable` and returns no bytes (catches an AAD checked at wrap time only, R21).
   - A chunking key's row rewritten with another key's wrap under the same ID and the old
-    fingerprint: `Get` and `Current` on a fresh provider both `ErrMaterialUnavailable` (catch a
-    fingerprint read from the unwrapped bytes rather than the record, and a `Current` that serves a
-    replaced key, R5, R7, R47).
+    fingerprint: `Open` of its namespace, `Get` and `Current` on a fresh provider all
+    `ErrMaterialUnavailable` (catch a fingerprint read from the unwrapped bytes rather than the
+    record, a `Current` that serves a replaced key, and a namespace that opens over one, R5, R7,
+    R47, R51).
+  - A namespace one of whose current rows names a master key the provider does not hold: `Open`
+    fails with `ErrMaterialUnavailable` before any `Get`, and a namespace whose rows all unwrap
+    opens and then serves `Get` with no further unwrap (catch keys loaded only on first use, R51).
   - The fingerprint of E2's vector material equals the vector (catches a label or HMAC slip, R4,
     R45).
   - A record's two master key IDs made to differ: refused (catches a lookup that trusts the copy,
@@ -844,7 +866,7 @@ close the epic.
 | 1 | T6.1 | 0.75 | — | the moved format alone, a refactor `pkg/keyprovider`'s tests check |
 | 2 | T6.2 | 3.5 | — | the key-record view's suite and both implementations, with the `MKW` kind; open beside PR 1 |
 | 3 | T6.3, T6.4, T6.7 | 4.75 | PR 1, PR 2 | the provider's constructor and everything that wraps: the key-file custody and its count, the salvage key and the escrow check, which `Config` and `New` name |
-| 4 | T6.5, T6.6 | 5.25 | PR 3 | the read path and the suite that holds it: records, `Current`, `Get`, `Status`, `keystest.Run` |
+| 4 | T6.5, T6.6 | 5.5 | PR 3 | the read path and the suite that holds it: records, `Open`, `Current`, `Get`, `Status`, `keystest.Run` |
 | 5 | T6.8 | 3 | PR 4 | key creation, the provider's last writer, with its failure rows |
 
 A suggestion only: one pull request per subtask works as well.
@@ -886,15 +908,16 @@ A suggestion only: one pull request per subtask works as well.
   every backend, and epic 21 only passes `kvstore`'s view to `New`. Its epic 18 reads the state byte
   `kvstore` stores (R50).
 - **Departures from RFC 5's plan's layout.** The key-record suite runs from `kvstore`'s tests, not the
-  content wiring's (D2); no custody interface or suite until E7 (D3); no recorder for the gauges
-  (D8); the `keyseq` subtag and key lock, which the plan's epic 6 lists, move to E8, whose "Owns"
-  line should then name RFC 16 §4.2's `NS‖ns‖keyseq‖target` row (D1). Each needs nothing of another
+  content wiring's (D2); no custody interface or suite until E7 (D3), so E7, whose draft takes the
+  interface and `runCustody` from this epic, extracts them itself, with `primary` and `state`; no
+  recorder for the gauges (D8); the `keyseq` subtag and key lock, which the plan's epic 6 lists,
+  move to E8, whose "Owns" line should then name RFC 16 §4.2's `NS‖ns‖keyseq‖target` row (D1). Each needs nothing of another
   epic but E7's extraction of the interface, E8's lock and E9's gauges over `Status`.
 - **Needs on E8.** The `keyseq` subtag (`0x07` under `NS‖ns`) and the key lock land with E8's first
   writer of a `keys` object, which takes it in its `Update` beside D1's range guard; E8's writes go
   through the provider's `Update`, so D10's cache follows them, and the bucket put before
   creation's records become current (D7) is E8's too.
-- **Estimate.** 8 subtasks and 17.25 man-days, against RFC 5's plan's 8 and 19: no custody
+- **Estimate.** 8 subtasks and 17.5 man-days, against RFC 5's plan's 8 and 19: no custody
   interface or suite here (D3) and the trimmed duplicate tests outweigh the in-memory view's suite.
   The least certain estimates are T6.5's, where every failure mapping, the cache's refreshes and the
   codec meet, and T6.2's state and kind mapping across two backends.
