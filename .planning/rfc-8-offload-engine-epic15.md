@@ -18,7 +18,7 @@ with its attempt, stable bytes); [RFC 4](../docs/internals/rfcs/rfc-4-remote-tie
 `Attempt`, `Stored`); [RFC 5](../docs/internals/rfcs/rfc-5-transforms.md) §2.7, §3.1 and Appendix B.2
 (the pin, its release, a destroyed current material, a plan keyed under another namespace).
 **Track:** B.
-**Epic 15 estimate: 10 subtasks, 34.5 man-days.**
+**Epic 15 estimate: 10 subtasks, 34 man-days.**
 **Depends on:** sync point **S2**, red rows in CI (epic 12): the fixture's `WithCarver` and
 `WithChain`, refusing by name, and the 41 entries whose message is the carver's refusal; **S5's
 first half** for the finish: RFC 2's carver and fold, RFC 3's syncer over RFC 4's in-memory store
@@ -82,8 +82,7 @@ the RFC 8 §2.1 and §6.7 and RFC 6 §10.1 amendments (D12).
 - Composing the provider, the stores and `codec.Store` in the node: the integration epic (but D2).
 - The removal path on the scheduler: epic 14. The overwrite-prune kind, the put-unhealthy and
   throttling-store legs of epic 14's rows, and the puts and commits of "one run per key": epic 16.
-- The soak over hours with remote faults: epic 22's `engine-soak`; this epic runs a seeded
-  simulation of it in `unit` (T15.10).
+- The soak over hours with remote faults: epic 22's `engine-soak`.
 
 ### 1.3 Names used here
 
@@ -117,7 +116,7 @@ cited by number and title and not copied.
 | rule 2, **Fuzz the key and ref decoders the queue's rebuild reads** | T15.3 | the block record's decode with its `encodings`, seeded with a record written without them, in the nightly `fuzz` suite the RFC 2 plan's epic 2 registers |
 | rule 3, **Observability follows RFC 25** | T15.6, T15.10 | the pipeline's series of RFC 8 §14 fill epic 11's `Stats` fields; the `carver_` series, derived from what `Cut` hands back, per namespace (D14); a root span per pass; no share label on a per-operation series |
 | rule 4, **Profiling** | T15.8, T15.10 | every pipeline test runs under `prof.Watch`; the put source's allocation assertion, one chunk per worker, registers `unit/engine-allocs` at `tier: pr` (T15.8) |
-| rule 5, **Public interface and internals** ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | assertions sit where the value is consumed: an offloaded bit at the in-memory journal's held extents (what `Release` reads), a ref at `kvstore`'s covering lookup, an object at the remote store's own listing, a key count at the backend's `metadata_txn_keys{kind=written}` counter, a refusal at `Open`'s error |
+| rule 5, **Public interface and internals** ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | assertions sit where the value is consumed: an offloaded bit at the in-memory journal's held extents (what `Release` reads), a ref at `kvstore`'s covering lookup, an object at the remote store's own listing, a key count at `kv.Counting`'s keys written per transaction (`UpdateCounts.MostWrites`), a wrapper that records and passes every call through, a refusal at `Open`'s error |
 | rule 6, **Known failures shrink** | T15.5, T15.10 | T15.5 makes the carver and chain options real and rewrites the 41 entries' `message:` to the syncer's refusal in the same change; T15.10 adds O1's crash leg with its entry, red until S6 |
 | rule 7, **v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows** | T15.5 | `offload/`'s production files import the standard library, `entity`, the `pkg/carver`, `pkg/transform`, `pkg/remote` and `pkg/syncer` roots, the journal's and metadata's contract packages and `pkg/workqueue`; the engine's transitive walk admits `pkg/carver/internal/params` with the carver root and refuses `carve`, `assembler`, the chain's subpackages and `pkg/remote/codec` in production code |
 | rule 8, **Real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T15.2, T15.4, T15.10 | the floor and the commit's key counts are checked over the memory KV, Badger under `t.TempDir()` and FoundationDB where it runs; O1's crash leg runs over the real journal on a real directory with its crash seam, in `engine-conformance` |
@@ -269,11 +268,13 @@ R40 name, read in review. Every other row has a test here.
   `offload.Offers` and `offload.Store`, so one value satisfies both by declaration and no assertion
   converts it (RFC 8 §2.2). §15.3's "§2.1 declared interfaces" type-checks `pkg/engine`'s own files
   only and reads explicit methods only, so an embedded port would escape it: T15.5 runs the same
-  check over each production package under `pkg/engine`, `offload/` included, matching calls to
-  declared methods by interface and method name across the packages, since an object type-checked
-  from source in one package is not the same object as in the other. Rejected: declaring the pipeline's calls on the engine's
+  check once per production package under `pkg/engine`, `offload/` included: the ports' methods
+  are explicit, and called, in `offload/`, and the engine's interfaces keep their own explicit
+  methods checked against the engine's calls, so an uncalled port method fails in its package. Rejected: declaring the pipeline's calls on the engine's
   interfaces, which the check would report as uncalled, since the calls are in `offload/`; and
-  function fields, which no check holds to their callers. Prior art: the first part's `CloneHold`,
+  function fields, which no check holds to their callers. These ports supersede epic 11's T11.5 proposals for the carver, the chain pin and the put
+  builder (its engine-level `Chain` and its `Deps.Puts` function field), so neither is built.
+  Prior art: the first part's `CloneHold`,
   which the root adapts from open state, an interface the consumer declares (checked).
 - **D2, `Deps` gains `Carver`, `Chain` and `Puts`, refused by name at `New`; the content wiring
   builds them; the node supplies them from this epic — pending the user's answer (§9).** RFC 8 §2.1
@@ -306,7 +307,7 @@ R40 name, read in review. Every other row has a test here.
   	File     int // each file in the commit: the offload fence
   }
   ```
-  Each is an upper bound, which T15.2's test holds to the backend's written-key counter, so the
+  Each is an upper bound, which T15.2's test holds to `kv.Counting`'s keys written, so the
   fold's closes stay within `K` (R23). A zero ref takes `NewRef` as its bound. RFC 6 §10.1's sketch
   of `Content` gains `Budget` and `Abandon` in this pull request (D12). Prior art: none found.
 - **D5, the floor counts a fixed most materials per block.** RFC 6 §5.2's floor reads a key record
@@ -318,10 +319,11 @@ R40 name, read in review. Every other row has a test here.
   raise it, and the floor with it, when a transform pins more. Prior art: none found.
 - **D6, `encodings` is a plain value type beside `BlockCommit`.** RFC 6 §2.3 records the transform
   IDs, versions and each material's (ID, fingerprint), and RFC 5's `transform.Encoded` carries them,
-  but `kvstore` may not import `pkg/transform` (the RFC 5 plan's D7). So the metadata contract
-  declares `Encoding{Transform uint16; Version uint8; Applied bool; Material []MaterialRef}` with
+  but `kvstore` may not import `pkg/transform` (the RFC 5 plan's D7). So `entity`, beside
+  `entity.Block` whose `Carried` it sits next to, declares `Encoding{Transform uint16; Version uint8; Applied bool; Material []MaterialRef}` with
   `MaterialRef{Kind, ID string; Fingerprint [32]byte}`, the namespace being the block's;
-  `BlockCommit` gains `Encodings []Encoding`, and the engine converts each `Encoded` of
+  `entity.Block` gains `Encodings []Encoding`, which a block read returns as it returns
+  `Carried`, and `BlockCommit` gains `Encodings []entity.Encoding`, and the engine converts each `Encoded` of
   `Put.Stored()`'s census once, in `offload/`. The block record's decode accepts a record written
   without them, as empty. Changing the persisted shape later is a migration of every block record,
   so it is settled here. Prior art: none found.
@@ -408,7 +410,7 @@ pkg/engine/
   conformance/rfc8_offload_test.go  T15.10  O1's crash leg
   offload/
     doc.go                 T15.5  what the package holds and imports
-    ports.go               T15.5  Offers, Store, Abandoner, Carver, Fold, Chain, Puts, Put, Flow; Deps
+    ports.go               T15.5  Offers, Store, Carver, Fold, Chain, Puts, Put, Flow; Deps
     run.go                 T15.5  Run, Pass, the states' sequence; T15.10 deadlines, the outcome
     capture.go             T15.5
     carve.go               T15.6
@@ -485,7 +487,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   limits set one key below and at the floor (catches a floor counted without a tracked read: it
   opens one below, R49, R62); the one-chunk commit at the floor with `maxBlockMaterials` key records
   read with conflict tracking, committing within `T` (catches a conflict range left uncounted). At
-  the backend's `metadata_txn_keys{kind=written}` counter: commits of one new ref, of one ref
+  `kv.Counting`'s `MostWrites`, wrapped around each backend: commits of one new ref, of one ref
   replacing a ref it splits, of a block and of each extra file, at worst-case encoding, each writing
   at most the `Budget` count (catches an undercount the fold would trust, R23). No test double: the
   limits are a real backend's, set through its options.
@@ -497,7 +499,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 
 - **Track:** B. **Depends on:** T15.2.
 - **Covers:** R36 (the record).
-- **Deliverables:** `Encoding` and `MaterialRef` in the metadata contract (D6); `BlockCommit.Encodings`;
+- **Deliverables:** `entity.Encoding`, `entity.MaterialRef` and `entity.Block.Encodings` (D6); `BlockCommit.Encodings`;
   the block record's codec writing and reading them, a record without them read as empty; `Commit`
   refusing more than `maxBlockMaterials` materials as `ErrInconsistent` (D5). A fuzz target,
   `FuzzBlockRecord`, decode then re-encode then decode equal, lengths inside the buffer, seeded with
@@ -534,7 +536,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   existing data refs, then `Covering` answering zeros and the replaced chunk's count dropped
   (catches a zero ref written without its count change); a commit of three files planned at `K`,
   with refs added under the second between plan and commit, applying the first only, its result
-  naming one file, the backend's written-key counter at most `K` (catches a commit that applies past
+  naming one file, `kv.Counting`'s `MostWrites` at most `K` (catches a commit that applies past
   `K` or reports a file it skipped, R38, R39). With `K` forced small through the backend's limits.
   No test double.
 - **Rules:** none beyond §2.
@@ -732,7 +734,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   carried chunk (D3); the result reported per file through `report` as it lands, refs found already
   committed included; a conflict retried within the step's bound; `ErrNoIntent` abandoning the
   attempt; a partial result's other files left **Dirty** for re-offer; the pin released at Commit or
-  Abandon; an abandoned attempt's intent abandoned at once through `Abandoner` (O4). The per-file
+  Abandon; an abandoned attempt's intent abandoned at once through `Store.Abandon` (O4). The per-file
   outcome (R46). Consumed by epic 16's source, through `Run`'s results.
 - **Acceptance criteria:**
   - Every reported extent has a committed ref, and every committed block's extents are reported.
@@ -755,7 +757,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 
 ### T15.10 Deadlines, outcomes and the checks
 
-**Subtask T15.10 estimate: 5 man-days.**
+**Subtask T15.10 estimate: 4.5 man-days.**
 
 - **Track:** B. **Depends on:** T15.9.
 - **Covers:** R5, R9 (the count), R47, R48, R51, R52, R53, R60, R63.
@@ -778,8 +780,8 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   commit, every orphaned object named by an intent later abandoned (R47, R48, R53); the O6 poison
   file among 10³ files over 10 simulated minutes, the scheduler of epic 13 dispatching and backing
   off, the other files offloaded, the failing one's passes within the bound, its count at five and
-  more (R9, R60); a seeded simulation of the soak: 10⁴ passes with random faults at every step on
-  the test clock, every stabilised byte reading back throughout (R5); each series read from `Stats`
+  more (R9, R60); the crash legs above, whose fresh `Run` starts from no state of the first and
+  offloads everything (R5); each series read from `Stats`
   after a pass (R51); an unsampled pass's span allocating nothing (R52). O1's crash leg, red (R63).
 - **Rules:** rule 6, the new entry; rule 8, the crash leg's real journal.
 
@@ -819,7 +821,7 @@ joins them.
 | 3 | T15.5 | 4.5 | PR 1 | the ports, Capture, and the fixture's carver and chain with the 41 messages |
 | 4 | T15.6, T15.7 | 6.5 | PR 2, PR 3 | the pass from the offer to its plans |
 | 5 | T15.8, T15.9 | 8 | PR 4 | the plan from its intent to its report: a pass end to end in `unit` |
-| 6 | T15.10 | 5 | PR 5 | the deadlines, the outcomes and the §6.3 check table |
+| 6 | T15.10 | 4.5 | PR 5 | the deadlines, the outcomes and the §6.3 check table |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -849,6 +851,6 @@ A suggestion only: one pull request per subtask works as well.
   so epic 16 carries it, though the plan's epic 15 lists it.
 - **The §6.3 check table's O6 leg "a source with `Deadline` 10 s"** checks the scheduler's
   `Expired` dispatch, epic 13's and epic 14's, not the pipeline's.
-- **Estimate.** 34.5 man-days in 10 subtasks against the plan's 33.5 in 8: `kvstore`'s three changes
+- **Estimate.** 34 man-days in 10 subtasks against the plan's 33.5 in 8: `kvstore`'s three changes
   are subtasks of their own (8 man-days), and the long-outage row moved to epic 16. The least
-  certain figures are T15.6's key-budget end over dense refs and T15.10's simulation.
+  certain figures are T15.6's key-budget end over dense refs and T15.10's per-state fault table.
