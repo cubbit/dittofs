@@ -338,19 +338,25 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
   opens every file, refusing each as E6's `storage`-key check refuses the current one; the custody
   unwraps under whichever key the stored wrap names, and wraps under `Config.KeyFile`'s. The steps
   are E9's: the operator adds the new file as retired and runs `verify-escrow` with its copy, which
-  `VerifyEscrow` now accepts for any key it holds, matched by the copy's ID; then the configuration
-  names it as `KeyFile` and the old one as retired, and `rotate-master-key` runs `RotateMasterKey`.
-  Both changes reach a running provider through E6's call that hands it its new `Config`, with no
-  restart: this epic's half of that call opens every file newly listed in `RetiredKeyFiles`, or
+  `VerifyEscrow` now accepts for any key it holds, matched by the copy's ID, returning the pass and
+  recording nothing (E6's T6.7); E9 records the pass in the store configuration's `Escrowed`, so it
+  reaches the provider in the next `Config`; then the configuration names the file as `KeyFile` and
+  the old one as retired, and `rotate-master-key` runs `RotateMasterKey`. Each change reaches a
+  running provider through E6's `(*Provider).Reconfigure(ctx, Config) error`, with no restart, and
+  the escrow gate opens only from the passes in the `Config` handed to `New` or `Reconfigure`: this
+  epic's half of `Reconfigure` opens every file newly listed in `RetiredKeyFiles`, or
   newly named as `KeyFile`, as `New` does, and refuses the whole `Config`, changing nothing, if one
   cannot be read or is a `storage` key; a file dropped from the list while a record it wraps
-  remains is refused too, naming the file. Once the call returns, the new file unwraps and passes
-  `VerifyEscrow`, and after a swap every wrap is made under the new `KeyFile` and the check's next
+  remains is refused too, naming the file. Once `Reconfigure` returns, the new file unwraps and
+  passes `VerifyEscrow`; its gate opens once a `Config` carrying that pass is handed in; and after a
+  swap every wrap is made under the new `KeyFile` and the check's next
   read reports the new primary (D7). A swap handed back, as E9's failure hook does, is one more
-  such call. A wrap in flight finishes under the key it started with.
+  `Reconfigure`. A wrap in flight finishes under the key it started with.
   `RotateMasterKey` first loads every namespace, and if any holds a data key while the current
   key-file master key's escrow gate is shut it returns `ErrNotEscrowed`, naming the key, before it
   re-wraps anything (R18); `RotateDataKey` refuses the same way in an encrypting namespace. A
+  re-wrap the new key's wrap count refuses returns E6's `keys.ErrWrapLimit`, the namespaces not
+  reached staying under the old key, which still unwraps them. A
   `decision:` marker at the check says the gate is the namespace's encrypting, and that catalog
   backups join it with RFC 26. Prior art: RFC 13 Appendix C's rotation of its own keys (checked).
 
@@ -649,11 +655,11 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
 - **Covers:** R8, R15, R17, R18, R19.
 - **Deliverables:**
   - `Config.RetiredKeyFiles []string` and the key-file custody over several keys (D6), consumed by
-    E9's settings and the content wiring; its half of E6's call that hands a running provider its
-    new `Config`: files added to `RetiredKeyFiles` and a swap of `KeyFile` opened and taken up with
+    E9's settings and the content wiring; its half of E6's `Reconfigure`: files added to `RetiredKeyFiles` and a swap of `KeyFile` opened and taken up with
     no restart, a bad file or a dropped file still in use refusing the whole `Config` (D6),
     consumed by E9's settings apply and `rotate-master-key`'s swap.
-  - `VerifyEscrow` matching the copy among every held key (D6).
+  - `VerifyEscrow` matching the copy among every held key, still returning the pass and recording
+    nothing (D6).
   - `(*Provider).RotateMasterKey(ctx context.Context) error`, consumed by E9's
     `rotate-master-key` operation: the escrow refusal, then D5's walk re-wrapping, through the
     writer, every record whose stored wrap names a master key other than the custody's `primary`,
@@ -671,12 +677,14 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
   - A second writer's claim landing between one namespace's re-wrap and its final `Update`, which
     restarts it: the count still rises by that namespace's records once (catches a restart that
     wraps and counts again, R17).
-  - On one running provider, no restart: B added to `RetiredKeyFiles` through E6's call, then
-    `VerifyEscrow` with B's copy passes; `KeyFile` swapped to B with A retired, through the call:
+  - On one running provider, no restart: B added to `RetiredKeyFiles` through `Reconfigure`, then
+    `VerifyEscrow` with B's copy returns a pass; `KeyFile` swapped to B with A retired through
+    `Reconfigure` without that pass: `RotateMasterKey` is `ErrNotEscrowed`; the same `Config` with
+    the pass in `Escrowed`, through `Reconfigure`:
     the next `CreateKeys` wraps under B and `RotateMasterKey` re-wraps the rest; the swap handed
     back: wraps go under A again and every record still serves (catch a file or a swap taken up
-    only at restart, R17, R18).
-  - Through the call: an unreadable file, a `storage` key's file, and A dropped from the list while
+    only at restart, or a gate opened by `VerifyEscrow` itself, R17, R18).
+  - Through `Reconfigure`: an unreadable file, a `storage` key's file, and A dropped from the list while
     a record it wraps remains, each refused, the provider's `Config` unchanged (catches a partial
     swap that strands records).
   - B current without its escrow check: `ErrNotEscrowed` naming B, and no record changed; with only
@@ -818,9 +826,9 @@ A suggestion only: one pull request per subtask works as well.
   means less and is still safe: a cursor from another incarnation reads from the start of what this
   provider has found, and RFC 8 §10.4's reseed covers what was destroyed before. E1's doc comment
   should say that, and the RFC 8 offload plan's epic 18 should not persist the cursor.
-- **E6's run-time `Config` call (D6).** E6 adds the call that hands a running provider its new
-  `Config`; this epic takes the key-file part of it, E7 the KMIP part, as E9's D12 asks. Its name
-  is E6's to choose.
+- **E6's `Reconfigure` (D6).** E6 adds `(*Provider).Reconfigure(ctx, Config) error`; this epic
+  takes its key-file part, E7 the KMIP part, as E9's D12 asks. E9 carries each pass `VerifyEscrow`
+  returns into `Config.Escrowed` before the swap's `Reconfigure`.
 - **E6's surfaces this epic changes.** `KeyRecords.Update` gains the sequence and the view gains
   `Namespaces` (D1); `CreateKeys` moves onto the writer, which E6's D7 left to this epic; `Config`
   gains `RetiredKeyFiles` and `VerifyEscrow` accepts a copy of any held key (D6). E6's document
