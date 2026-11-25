@@ -637,6 +637,10 @@ type Transform interface {
 	// transform ID, format version and material itself (§2.8).
 	LengthKey() []byte
 
+	// Version is the format version Encode writes, which the chain ID covers
+	// (§2.8): Pin reads it before anything is encoded.
+	Version() uint8
+
 	// Encode transforms plain, deterministically (§2.1), for namespace ns,
 	// under material m, the attempt's pinned material: it gets that material's
 	// content from keys.Provider.Get and never asks for the current material.
@@ -651,6 +655,7 @@ type Transform interface {
 
 // Encoded is one transform's output, and what the census records about it.
 type Encoded struct {
+	ID       ID                // the transform that wrote it, filled in by the chain
 	Body     []byte
 	Applied  bool
 	Version  uint8             // the transform's own format version

@@ -183,7 +183,12 @@ RFC 8 offload plan's S1d, "transform pipeline agreed":
   transforms import it and keep no copy (§1.5 rule 7).
 - The injection point RFC 25 §8 asks for: `NewChain` takes a logger and a recorder the chain
   declares for RFC 5 §6's series, which the node's content wiring implements over the root's
-  metrics registry (D2).
+  metrics registry (D2). Its dependencies also carry `Require []string`, the store
+  configuration's `require`, and `Encrypts func(entity.NamespaceID) bool`, whether a namespace
+  encrypts (RFC 5 §3.2's implicit encrypt stage), both supplied by the content wiring.
+- `Transform.Version() uint8`, the format version `Encode` writes, which the chain ID covers, and
+  `Encoded.ID`, the transform that wrote a body, filled in by the chain for the census (RFC 5
+  §3.1 as amended by epic 3's breakdown).
 - The two calls the RFC 8 offload plan makes besides the chain: the salvage-key wrap (D16) and
   the destroyed-material notice (D17), declared in `pkg/transform/keys` next to `Provider`, each
   a one-method interface the engine holds; the provider in `keys/provider` (epics 6 and 8) and the
@@ -753,7 +758,8 @@ bounds reach `MaxDecodeLen` through the root's `Chain`, with no import of `chain
   the root, `MaxDecodeLen` a method of `Chain`; `Register` and `NewChain` in `chain`; doc
   comments citing the RFC.
 - `keys.Provider`, `MaterialID` and the material errors in `pkg/transform/keys`, and the
-  chain's `Deps` (D2); the namespace ID is `entity.NamespaceID` (§1.3).
+  chain's `Deps` (D2) with `Require` and `Encrypts` (§1.3); `Transform.Version` and `Encoded.ID`
+  (§1.3); the namespace ID is `entity.NamespaceID` (§1.3).
 - The salvage-key wrap (D16) and the destroyed-material notice (D17), declared in
   `pkg/transform/keys` next to `Provider`.
 - `pkg/transform`'s import test, the root and `keys` held to the contract's allowlist (§1.5 rule 7).
