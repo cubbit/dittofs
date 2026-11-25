@@ -551,7 +551,7 @@ internal/adapter/
     errors.go               ErrorTable and its totality check (§4.5)
   translate/                ACL, access-mask, time and attribute translation: neutral types only
   gss/                      the wire side of authentication: Kerberos, NTLM and SPNEGO mechanisms, exchanges, per-request Identity (§4.4); test initiators. Secrets and directories are internal/identity's (RFC 18 §2.7)
-  adaptertest/              import test; the leak check and a test server's Budgets; testproto/, the test-only protocol `core` is proven on (§7); golden/, golden-vector and capture helpers; per protocol, its scripted client (nfsclient/, smbclient/; §8.2) and NFS's handler harness (nfsharness/)
+  adaptertest/              import test; the leak check and a test server's Budgets; testproto/, the test-only protocol `core` is proven on (§7); per protocol, its scripted client (nfsclient/, smbclient/; §8.2) and NFS's handler harness (nfsharness/)
   nfs/  smb/                one shape for both protocols:
     nfs.go | smb.go         New: builds the stages, handler sets and operation tables; returns *core.Server
     wire/                   the protocol's one codec, shared by every command (§5): record framing, the hand-written RPC or SMB2 header codec, the generated codecs' runtime, the generator (wire/gen/) and its output for shared body types; no file per command
@@ -563,6 +563,11 @@ internal/adapter/
   smb/dcerpc/               DCE/RPC over IPC$ pipes: NDR codecs, srvsvc, lsarpc; imports no SMB package (§3.1)
 internal/sidecar/           the runner the node drives (§3.5); mdns/ wsd/ portmap/ rpcbind/: one package each
 ```
+
+Golden vectors live with the codec that reads them, in each `wire/`'s
+`testdata/golden/` as `.hex` files, cut from the reference captures with
+`tshark` by `test/pcap-corpus/cut-golden.sh` when they are recorded, so
+`adaptertest` holds no capture helper.
 
 **Files are small.** One wire operation per file, `ops/<cmd>.go`: its request
 and reply structs, tagged for the codec, and its handler, and nothing else;
@@ -3459,7 +3464,7 @@ is tested once, on its own.
 | handlers | SMB 2.1 to 3.1.1 | `smb/ops` | one handler per command for every dialect (§4.8) |
 | handlers | NFSv4.0 to 4.2 | `nfs/ops/v4` | one handler per operation for every minor version it spans (§4.8) |
 | error tables' type and totality test | all protocols | `core` | the rows are each protocol's; the check is one (§4.5) |
-| test helpers | all protocols | `adaptertest` | golden vectors, the test-only protocol, the in-memory service's setup (§7) |
+| test helpers | all protocols | `adaptertest` | the test-only protocol, the in-memory service's setup (§7) |
 
 **Not shared: NFSv3 and NFSv4 handlers.** A v3 procedure and the v4
 operation it resembles make the same service call with different arguments
@@ -4369,7 +4374,11 @@ package at a path the first adapters used (`pkg/controlplane/runtime/adapters`,
 the first adapters were deleted rather than moved, so nothing is
 grandfathered in. It will also list adapter files over 800 lines and fail on
 one not in its allowlist (§2.5), once the plan's ledger row for it lands; that
-allowlist starts with `core`'s `pipeline.go`, `hold.go` and `chain.go`. The
+allowlist starts with `core`'s `pipeline.go`, `hold.go` and `chain.go`. It
+counts hand-written non-test files only: a generated file, recognised by Go's
+standard `// Code generated ... DO NOT EDIT.` header and not by its name, is
+held by its generator's check, which fails a change whose code differs from a
+fresh run, so it needs no allowlist entry. The
 walk reads each package's own imports; its `_test.go`
 files may also import `pkg/vfs/vfstest` and `adaptertest`, whose in-memory
 service builds the real filesystem, and `internal/prof`, a profiler importing

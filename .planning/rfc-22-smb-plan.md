@@ -100,7 +100,7 @@ and E5 to E8, for sign-in (§3.2).
   test exempts each by the request's context, never by its operation; §9's invariant A5 names
   those exceptions, and RFC 17 §3.1's and RFC 14 §2.1's sentences on `SESSION_SETUP`'s calls point
   at §4.3. `vfs.Mutates` is unchanged, and RFC 17 §3.1 says the check exempts those calls by
-  context; T2.1 changes `vfstest.Mutations` to keep each call's
+  context; RFC 21's plan's T2.4 changes `vfstest.Mutations` to keep each call's
   reference and answer. T2.1, T5.3, T5.4, T5.7, T6.5, T12.2 and T12.4.
 - **A6. RFC 22 §12.1, §16.5 and §18, RFC 14 §9.4 and L36, RFC 17 §5.4: the service refuses a
   stream's rename and disposition.** The adapter checks no `DELETE` for either: a rename or a
@@ -158,7 +158,8 @@ built where they are adapter code, and tested only once a second node exists. Wi
 Epic 1 fixes what several epics of SMB share before any is built: the request state handlers read,
 the handler set and its tables, and the callbacks value.
 Epic 2 builds what the tests stand on: the SMB handler harness on `memory.New` and
-`vfstest.Faults`, golden files cut from Samba captures, and the import test's last two rules. Twelve
+`vfstest.Faults` and golden files cut from Samba captures, over the runner, the `tshark` cut script and
+the import test's last two rules that RFC 21's plan's epic 2 builds. Twelve
 middle epics follow on three tracks: track A the connection, sessions and RFC 14's wire side;
 track B authentication, trees, the RPC services, security descriptors and the wire tests; track C
 the data path, metadata and names, locks and notification, and control codes. The integration with
@@ -227,8 +228,8 @@ point 13); the namespace-move
 rows of §6.3, which need RFC 27's move (out of scope); and the rows needing a Windows runner until
 one is provisioned (§6.2, point 8).
 
-**Test components.** The SMB handler harness, golden files from captures and the import test's
-call-site and file-size rules (epic 2). `gsstest`'s initiators come with `gss` (epic 4) and the
+**Test components.** The SMB handler harness and golden files from captures (epic 2), over RFC 21's
+plan's epic 2's runner, cut script and import test's call-site and file-size rules. `gsstest`'s initiators come with `gss` (epic 4) and the
 scripted client with sessions (epic 5), the epics that create the packages they import.
 
 ### 1.5 General rules for each epic
@@ -365,7 +366,7 @@ rows of RFC 20's deferral ledger.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | SMB surface | `smb/protocol`'s request state; `smb/ops`' handler set, table and `ioctl/` table; the callbacks value | 3 | 3 | team | all |
-| E2 ⛔ | Test foundations | the SMB handler harness on `memory.New` and `vfstest.Faults`; golden files cut from Samba captures; the import test's call-site and file-size rules; the service's halves of A3, A6, A7 and plan gaps 23 and 25 | 5 | 11 | team; T2.4 and T2.5 in B | E3 to E14, but T2.4, beside E3, only T6.1, T8.1 and T8.5, and T2.5, after S2b, only the rows of plan gaps 23 and 25 |
+| E2 ⛔ | Test foundations | the SMB handler harness on `memory.New` and `vfstest.Faults`; golden files cut from Samba captures (the import test's call-site and file-size rules are RFC 21's plan's E2); the service's halves of A3, A6, A7 and plan gaps 23 and 25 | 5 | 11 | team; T2.4 and T2.5 in B | E3 to E14, but T2.4, beside E3, only T6.1, T8.1 and T8.5, and T2.5, after S2b, only the rows of plan gaps 23 and 25 |
 | E3 | Negotiation and the connection's stages | `NEGOTIATE`, `Caps`, signing, encryption, preauthentication, credits, the message-ID window, `HoldCodec`, the error table and its totality test, `ECHO`, `CANCEL` | 9 | 24 | A | E5; S4 |
 | E4 | Authentication mechanisms | `gss`: `Exchanges`, NTLM, Kerberos, SPNEGO, `Identity`, `gsstest` | 6 | 17.5 | B | E5; S4 |
 | E5 🔀 | Sessions | `SESSION_SETUP`, `LOGOFF`, the session registry, the client record, re-authentication, expiry, multichannel, `PreviousSessionId`, the scripted client | 8 | 15 | A | E9; E14 (partly); S4 |
@@ -617,9 +618,8 @@ internal/adapter/
     gsstest/                  E4: initiators and a test keytab; tests accept through gss on memory.New
   translate/                  E7 (access masks), E8 (attributes, times, Fit), E12 (descriptors)
   adaptertest/
-    golden/                   E2: golden files cut from reference captures
     smbclient/                E5: the scripted client (RFC 20 §8.2)
-    imports_test.go           RFC 20's E2; E2 here: entry call sites, the 800-line allowlist
+    imports_test.go           RFC 20's E2; RFC 21's plan's E2 (its T2.6): entry call sites, the 800-line allowlist
   smb/
     smb.go                    RFC 20's E6: New; builds the stages and the tables
     callbacks.go              E1 type; E9 (RecallGrant, Revoked), E11 (LockWaitOver, Notify)
@@ -720,6 +720,13 @@ RFC sections: RFC 20 §4.7's `Request.State`, §4.8 (one table for every dialect
 
 **Epic 2 estimate: 5 subtasks, 11 man-days.**
 
+**Built by RFC 21's plan.** [RFC 21's plan](rfc-21-nfs-plan.md)'s epic 2 builds, and prices, the
+pieces both adapters share (its T2.4, T2.5, T2.6) and the protocol-neutral handler runner (its
+T2.2). So T2.1 below keeps only SMB's harness, over that runner and `vfstest.Mutations`' record;
+T2.2 keeps only the Samba captures, cut with RFC 21's T2.5, a `tshark` script beside `normalize.py`; T2.3 is RFC 21's T2.6. The
+figure above still counts the moved work, until this epic is broken down; RFC 21's plan's T2.2,
+T2.4, T2.5 and T2.6 price that shared part too, so until then the programme counts it twice.
+
 What every SMB test stands on (§1.4), and, beside E3, what the service owes this pull request's
 amendments and plan gaps 23 and 25 before T6.1, T8.1, T8.5 and those gaps' rows rely on it (T2.4,
 3.5 man-days, and T2.5, 1 man-day after S2b).
@@ -743,7 +750,7 @@ sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`).
   a session setup's `SignIn` and `Connect`, and a `Find` per SID before one `SetACL`, do not.
 - T2.2 Reference captures: a script recording Samba per command area into `test/pcap-corpus/smb`,
   against the AD domain controller and Samba member of `test/smbfuzz`'s fixture rather than a
-  second fixture, and `adaptertest/golden`, which cuts captured messages into golden files.
+  second fixture, cut into golden files with `tshark` at recording time.
 - T2.3 The import test: entry methods (`Root`, `SecInfo`, `ListShares`) called only from RFC 20
   §4.10's entry files, and adapter files over 800 lines against an allowlist that may only shrink,
   each with a seeded violation it must report.
@@ -1636,8 +1643,8 @@ the row names it, of the open points (§9) of RFC 20's [epic 2](rfc-20-adapters-
 | the error-table rows and the totality test | E3 |
 | handler tests on `memory.New` and `vfstest.Faults`, the one-call rule read per handler from `memory.New`'s record | E2 (harness), every handler epic |
 | operation codecs, golden vectors, 0-allocation gates | each command's epic; the gates in E7 and E8 |
-| the import test's entry call sites and 800-line allowlist | E2 |
-| the scripted client and a shared golden helper | E5 (client), E2 (helper) |
+| the import test's entry call sites and 800-line allowlist | RFC 21's plan's E2 (its T2.6) |
+| the scripted client and a shared golden helper | E5 (client); the helper RFC 21's plan's E2 (its T2.5) |
 | cross-protocol rows (RFC 20 §7.4) | E16, jointly with RFC 21's plan |
 | end-to-end rows (RFC 20 §7.5) | E16 |
 | wire tests against Samba (RFC 20 §8) | E14 |
@@ -1805,7 +1812,8 @@ each check runs").
 | RFC 20 §4.9 (`translate`, `Caps`) | E1, E3, E7, E8, E12 |
 | RFC 20 §5 (codecs), §6.10 (SMB codec gates) | each command's epic; gates in E7, E8 |
 | RFC 20 §6.10's pipeline micro-benchmark and end-to-end benchmark, §7.4, §7.5 | E16 |
-| RFC 20 §7.1 (call sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`) | E2 |
+| RFC 20 §7.1 (call sites, file sizes), §7.2 (the runner on `memory.New` and `vfstest.Faults`) | RFC 21's plan's E2 (its T2.6; T2.2 and T2.4) |
+| RFC 20 §7.2 (SMB's harness over that runner) | E2 |
 | RFC 20 §8, Appendix C (wire tests) | E14 |
 | RFC 20 §10 | rule 3 |
 | RFC 18 §3.3, §3.5, §3.6 (wire halves) | E4 |
