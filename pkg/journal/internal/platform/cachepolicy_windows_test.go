@@ -626,17 +626,26 @@ func TestCheckWriteCachePolicyVolumeCalls(t *testing.T) {
 
 	// The input is STORAGE_PROPERTY_QUERY: the property the answer decodes
 	// in cachepolicy.go and the standard query, as two 4-byte enumerations
-	// (ntddstor.h). Fails if the property or the query type is wrong, or
-	// the input is not the two enumerations.
-	if query.inLen != 8 {
-		t.Errorf("%v: input of %d bytes, want the 8 of STORAGE_PROPERTY_QUERY", query, query.inLen)
+	// (ntddstor.h), then its AdditionalParameters, one byte carried to the
+	// structure's 4-byte alignment — the whole 12 bytes. Fails if the
+	// property or the query type is wrong, the input names less than the
+	// whole structure — a length the driver refuses with
+	// STATUS_INFO_LENGTH_MISMATCH — or its tail is not the empty
+	// additional parameters.
+	if query.inLen != 12 {
+		t.Errorf("%v: input of %d bytes, want the 12 of STORAGE_PROPERTY_QUERY", query, query.inLen)
 	}
-	if len(query.query) >= 8 {
+	if len(query.query) == 12 {
 		if got := binary.LittleEndian.Uint32(query.query[0:]); got != storageDeviceWriteCacheProperty {
 			t.Errorf("%v: PropertyId %d, want StorageDeviceWriteCacheProperty (%d)", query, got, storageDeviceWriteCacheProperty)
 		}
 		if got := binary.LittleEndian.Uint32(query.query[4:]); got != propertyStandardQuery {
 			t.Errorf("%v: QueryType %d, want PropertyStandardQuery (%d)", query, got, propertyStandardQuery)
+		}
+		for i, b := range query.query[8:] {
+			if b != 0 {
+				t.Errorf("%v: AdditionalParameters byte %d is %#x, want 0", query, 8+i, b)
+			}
 		}
 	}
 

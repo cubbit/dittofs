@@ -140,13 +140,19 @@ func probeVolume(c calls, dir string) (cacheProbe, error) {
 	// a STORAGE_PROPERTY_ID held as Microsoft C holds an enumeration ("A
 	// variable declared as enum is an int.",
 	// https://learn.microsoft.com/cpp/c-language/enum-type), then a
-	// QueryType, its second 4 bytes; the additional parameters the property
-	// asks none of. The answer buffer holds the structure plus room past
-	// it, since Size "may include data that follows this structure" and
-	// bytesReturned counts it, both as STORAGE_WRITE_CACHE_PROPERTY's Learn
-	// page gives (cachepolicy.go cites it); only bytesReturned's bytes
-	// reach the verdict.
-	query := make([]byte, 8)
+	// QueryType, its second 4 bytes, then AdditionalParameters, "an array
+	// of bytes" the property asks none of — one byte ("BYTE
+	// AdditionalParameters[1]", the Learn page of STORAGE_PROPERTY_QUERY),
+	// carried to the structure's 4-byte alignment: the whole is 12 bytes,
+	// and a query whose input is shorter is refused by the driver with
+	// STATUS_INFO_LENGTH_MISMATCH, DeviceIoControl's Win32 error 24, since
+	// the input "must be >= sizeof(STORAGE_PROPERTY_QUERY)"
+	// (IOCTL_STORAGE_QUERY_PROPERTY). The answer buffer holds the
+	// structure plus room past it, since Size "may include data that
+	// follows this structure" and bytesReturned counts it, both as
+	// STORAGE_WRITE_CACHE_PROPERTY's Learn page gives (cachepolicy.go cites
+	// it); only bytesReturned's bytes reach the verdict.
+	query := make([]byte, 12)
 	binary.LittleEndian.PutUint32(query[0:], storageDeviceWriteCacheProperty)
 	binary.LittleEndian.PutUint32(query[4:], propertyStandardQuery)
 
