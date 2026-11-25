@@ -31,6 +31,19 @@ var unmappedSpec = metrics.Spec{
 var unmappedLabel = map[identity.Scheme]string{
 	identity.SchemeUID: "uid", identity.SchemeGID: "gid", identity.SchemeSID: "sid",
 	identity.SchemeOwner: "owner", identity.SchemeOwnerGroup: "owner",
+	identity.SchemeWho: "owner", identity.SchemeWhoGroup: "owner",
+}
+
+// unmappedLabelOf is the label a miss of sp is counted under: a who naming a
+// SID is counted as one, any other by its scheme.
+func unmappedLabelOf(sp identity.Spelling) (string, bool) {
+	if isWho(sp.Scheme) {
+		if _, _, ok := whoSID(sp.Text); ok {
+			return "sid", true
+		}
+	}
+	label, ok := unmappedLabel[sp.Scheme]
+	return label, ok
 }
 
 // wellKnownSIDs spells the well-known principals that have a SID of their
@@ -65,7 +78,7 @@ func deferred(scheme identity.Scheme) error {
 	switch {
 	case scheme == identity.SchemeOIDC:
 		return fmt.Errorf("%w: the %d scheme is not served yet", vfserr.ErrInvalid, scheme)
-	case scheme.Stored(), scheme == identity.SchemeQualified, scheme == identity.SchemeOwner, scheme == identity.SchemeOwnerGroup:
+	case scheme.Stored(), scheme == identity.SchemeQualified, scheme == identity.SchemeOwner, scheme == identity.SchemeOwnerGroup, isWho(scheme):
 		return nil
 	}
 	return fmt.Errorf("%w: unknown scheme %d", vfserr.ErrInvalid, scheme)
@@ -73,8 +86,9 @@ func deferred(scheme identity.Scheme) error {
 
 // Spell returns p's spelling in scheme, or ErrUnknownPrincipal. A stored
 // spelling is read off p's record; qualified is derived from its name and the
-// NetBIOS name of the State applied when the call reads it, and the owner
-// schemes from its name or number and that State's NFSv4 domain.
+// NetBIOS name of the State applied when the call reads it, the owner
+// schemes from its name or number and that State's NFSv4 domain, and the who
+// schemes as the owner ones, else from its SID and that domain.
 //
 // decision: a deleted principal is ErrUnknownPrincipal, which an SMB adapter
 // shows as the null SID, not as the SID it had, because deleting a principal
@@ -85,7 +99,13 @@ func (s *Server) Spell(ctx context.Context, p entity.Principal, scheme identity.
 	if err := deferred(scheme); err != nil {
 		return identity.Spelling{}, err
 	}
+	if isWho(scheme) && !whoKind(p, scheme) {
+		return identity.Spelling{}, vfserr.ErrUnknownPrincipal
+	}
 	if p.WellKnown() {
+		if isWho(scheme) {
+			return s.spellWhoWellKnown(p, scheme)
+		}
 		return spellWellKnown(p, scheme)
 	}
 	var name string
@@ -94,17 +114,17 @@ func (s *Server) Spell(ctx context.Context, p entity.Principal, scheme identity.
 	case entity.PrincipalGroup:
 		g, err := s.deps.Store.Records().Group(ctx, p)
 		if err != nil {
-			return identity.Spelling{}, unknown(err)
+			return s.spellUnheld(scheme, unknown(err))
 		}
 		name, ids = g.Name, g.IDs
 	case entity.PrincipalUser, entity.PrincipalMachine:
 		u, err := s.deps.Store.Principals().User(ctx, p)
 		if err != nil {
-			return identity.Spelling{}, unknown(err)
+			return s.spellUnheld(scheme, unknown(err))
 		}
 		name, ids = u.Name, u.IDs
 	default:
-		return identity.Spelling{}, vfserr.ErrUnknownPrincipal
+		return s.spellUnheld(scheme, vfserr.ErrUnknownPrincipal)
 	}
 	sp := identity.Spelling{Scheme: scheme}
 	switch scheme {
@@ -134,6 +154,8 @@ func (s *Server) Spell(ctx context.Context, p entity.Principal, scheme identity.
 		return sp, nil
 	case identity.SchemeOwner, identity.SchemeOwnerGroup:
 		return s.spellOwner(p, scheme, name, ids)
+	case identity.SchemeWho, identity.SchemeWhoGroup:
+		return s.spellWho(p, scheme, name, ids)
 	}
 	i := slices.IndexFunc(ids, func(id entity.ProtocolID) bool { return id.Scheme == stored(scheme) })
 	if i < 0 {
@@ -195,14 +217,15 @@ func spellWellKnown(p entity.Principal, scheme identity.Scheme) (identity.Spelli
 
 // Find returns the principal holding sp, or ErrUnknownPrincipal: through the
 // index rows for a stored scheme, by name for qualified, by name or number
-// for the owner schemes. A SID of the directory's domain no principal holds is
+// for the owner schemes, and as the owner schemes or by SID for the who
+// schemes. A SID of the directory's domain no principal holds is
 // asked of the directory, and its holder minted, only with o.Mint; a qualified
 // name of the directory's domain is asked of the directory, and its holder
 // minted with o.Mint. It never returns an API-only account, and counts a uid,
-// gid, SID or owner string no principal holds.
+// gid, SID, owner string or who no principal holds.
 func (s *Server) Find(ctx context.Context, sp identity.Spelling, o identity.FindOpts) (entity.Principal, error) {
 	p, err := s.find(ctx, sp, o)
-	if label, ok := unmappedLabel[sp.Scheme]; ok && errors.Is(err, vfserr.ErrUnknownPrincipal) {
+	if label, ok := unmappedLabelOf(sp); ok && errors.Is(err, vfserr.ErrUnknownPrincipal) {
 		s.unmapped.WithLabelValues(label).Inc()
 	}
 	return p, err
@@ -247,6 +270,8 @@ func (s *Server) find(ctx context.Context, sp identity.Spelling, o identity.Find
 		return s.fileUser(ctx, p, err)
 	case identity.SchemeOwner, identity.SchemeOwnerGroup:
 		return s.findOwner(ctx, sp)
+	case identity.SchemeWho, identity.SchemeWhoGroup:
+		return s.findWho(ctx, sp)
 	}
 	return s.findQualified(ctx, sp.Text, o.Mint)
 }

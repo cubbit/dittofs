@@ -2,10 +2,12 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/cubbit/dittofs/pkg/auth/sid"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/secrets"
@@ -141,4 +143,166 @@ func (s *Server) findOwner(ctx context.Context, sp identity.Spelling) (entity.Pr
 		return s.fileUser(ctx, p, err)
 	}
 	return entity.Principal{}, vfserr.ErrUnknownPrincipal
+}
+
+// maxSIDText is the length of the longest SID string: revision 1, a 48-bit
+// authority and fifteen sub-authorities of ten digits each.
+const maxSIDText = len("S-1-281474976710655") + 15*len("-4294967295")
+
+// nullSID is the SID that names nobody, which a who spells for a principal no
+// record holds.
+const nullSID = "S-1-0-0"
+
+// parseSID reads s as a SID in its canonical string form: S-1-, a 48-bit
+// authority, then at most fifteen 32-bit sub-authorities, every number in
+// canonical decimal. So sid.FormatSID of what it reads is s again. Any other
+// string is not a SID, and is refused before anything is allocated.
+func parseSID(s string) (*sid.SID, bool) {
+	rest, ok := strings.CutPrefix(s, "S-1-")
+	if !ok || len(s) > maxSIDText {
+		return nil, false
+	}
+	for n := 0; ; n++ {
+		field, tail, more := strings.Cut(rest, "-")
+		limit := uint64(1<<32 - 1)
+		if n == 0 {
+			limit = 1<<48 - 1
+		}
+		if !canonicalDecimal(field, limit) || n > 15 {
+			return nil, false
+		}
+		if !more {
+			break
+		}
+		rest = tail
+	}
+	d, err := sid.ParseSIDString(s)
+	return d, err == nil
+}
+
+// canonicalDecimal reports whether s is a decimal number at most limit, with
+// no sign and no leading zero but 0 itself.
+func canonicalDecimal(s string, limit uint64) bool {
+	if s == "" || len(s) > 1 && s[0] == '0' {
+		return false
+	}
+	var n uint64
+	for i := range len(s) {
+		c := s[i]
+		if c < '0' || c > '9' || n > (limit-uint64(c-'0'))/10 {
+			return false
+		}
+		n = n*10 + uint64(c-'0')
+	}
+	return true
+}
+
+// whoSID reads a who as a well-formed SID and the domain it was written
+// under, S-…@domain; any other who is not one.
+func whoSID(s string) (*sid.SID, string, bool) {
+	name, domain, _, form := parseOwner(s)
+	if form != ownerName {
+		return nil, "", false
+	}
+	d, ok := parseSID(name)
+	return d, domain, ok
+}
+
+func isWho(scheme identity.Scheme) bool {
+	return scheme == identity.SchemeWho || scheme == identity.SchemeWhoGroup
+}
+
+// whoOwner is the owner scheme a who scheme spells and finds names in.
+func whoOwner(scheme identity.Scheme) identity.Scheme {
+	if scheme == identity.SchemeWhoGroup {
+		return identity.SchemeOwnerGroup
+	}
+	return identity.SchemeOwner
+}
+
+// whoKind reports whether a who scheme holds p: who a user or a machine,
+// who_group a group, and either a well-known principal, which is neither.
+func whoKind(p entity.Principal, scheme identity.Scheme) bool {
+	if p.Kind == entity.PrincipalSpecial {
+		return true
+	}
+	return (scheme == identity.SchemeWhoGroup) == (p.Kind == entity.PrincipalGroup)
+}
+
+// atDomain spells text at the applied State's NFSv4 domain.
+func (s *Server) atDomain(scheme identity.Scheme, text string) (identity.Spelling, error) {
+	st := s.state.Load()
+	if st == nil {
+		return identity.Spelling{}, fmt.Errorf("%w: no State applied", vfserr.ErrUnavailable)
+	}
+	return identity.Spelling{Scheme: scheme, Text: text + "@" + st.domain}, nil
+}
+
+// spellUnheld answers Spell for a principal no record holds: the null SID at
+// the domain in a who scheme, err in any other or when err is not
+// ErrUnknownPrincipal.
+func (s *Server) spellUnheld(scheme identity.Scheme, err error) (identity.Spelling, error) {
+	if isWho(scheme) && errors.Is(err, vfserr.ErrUnknownPrincipal) {
+		return s.atDomain(scheme, nullSID)
+	}
+	return identity.Spelling{}, err
+}
+
+// spellWho spells a stored principal in a who scheme as the owner scheme
+// does. A name that is itself a SID string is passed over for the number,
+// since findWho would read it back as that SID. No stored principal is spelled
+// by its SID: the store refuses a user or group holding a SID without a uid or
+// gid, so each has an owner string; only a well-known principal is spelled by
+// its SID.
+func (s *Server) spellWho(p entity.Principal, scheme identity.Scheme, name string, ids entity.ProtocolIDs) (identity.Spelling, error) {
+	if _, ok := parseSID(name); ok {
+		name = ""
+	}
+	sp, err := s.spellOwner(p, whoOwner(scheme), name, ids)
+	if err != nil {
+		return identity.Spelling{}, err
+	}
+	sp.Scheme = scheme
+	return sp, nil
+}
+
+// spellWhoWellKnown spells a well-known principal in a who scheme: root and
+// anonymous by their reserved numbers, any other by its SID at the domain.
+// OWNER@ and GROUP@ have neither and are ErrUnknownPrincipal.
+func (s *Server) spellWhoWellKnown(p entity.Principal, scheme identity.Scheme) (identity.Spelling, error) {
+	if sp, err := spellWellKnown(p, whoOwner(scheme)); err == nil {
+		sp.Scheme = scheme
+		return sp, nil
+	}
+	sp, err := spellWellKnown(p, identity.SchemeSID)
+	if err != nil {
+		return identity.Spelling{}, err
+	}
+	return s.atDomain(scheme, sid.FormatSID(&sp.SID))
+}
+
+// findWho finds the principal a who names: a well-formed S-…@domain by its
+// SID when the domain is the applied one, ASCII letters folded; any other as
+// the owner scheme finds it. A user is found only in who, a group only in
+// who_group, and a well-known principal in either.
+func (s *Server) findWho(ctx context.Context, sp identity.Spelling) (entity.Principal, error) {
+	d, domain, ok := whoSID(sp.Text)
+	if !ok {
+		return s.findOwner(ctx, identity.Spelling{Scheme: whoOwner(sp.Scheme), Text: sp.Text})
+	}
+	st := s.state.Load()
+	if st == nil {
+		return entity.Principal{}, fmt.Errorf("%w: no State applied", vfserr.ErrUnavailable)
+	}
+	if !asciiEqualFold(domain, st.domain) {
+		return entity.Principal{}, vfserr.ErrUnknownPrincipal
+	}
+	p, err := s.find(ctx, identity.Spelling{Scheme: identity.SchemeSID, SID: *d}, identity.FindOpts{})
+	if err != nil {
+		return entity.Principal{}, err
+	}
+	if !whoKind(p, sp.Scheme) {
+		return entity.Principal{}, vfserr.ErrUnknownPrincipal
+	}
+	return p, nil
 }
