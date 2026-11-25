@@ -119,7 +119,8 @@ the operator turned compression on with it explicitly, accepting the size leak
   transforms were applied ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)).
 - **Material**: what a transform needs from outside the body, such as a key,
   held by a provider by ID with a fingerprint of its content
-  ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)).
+  ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)). The `keys` package provides material; every material in
+  this release is a key.
 - **Chain ID**: a hash of everything in the chain that decides a body's bytes,
   part of every [block](rfc-0-data-lifecycle.md#Glossary) name ([§2.8](#2.8%20The%20chain%20ID)).
 - **Census**: the record, kept with each block, of which transforms and which
@@ -587,6 +588,11 @@ vector fails the build.
 ### 3.1 Interfaces
 
 Signatures are indicative; the obligations of [§2](#2.%20The%20model) are normative.
+The model is package `transform`. The provider's part, `MaterialID`, `Provider`
+and the material errors, is package `keys` beneath it, which imports nothing of
+`transform`, so the provider implements it with no import cycle. The namespace
+ID is the metadata store's `entity.NamespaceID` ([RFC 16 §2](rfc-16-metadata-store.md#2.%20Entities)), a contract
+([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)), not a copy.
 
 ```go
 // ID names a transform in every body it was applied to. Assigned once, never reused.
@@ -613,12 +619,12 @@ type Transform interface {
 	// MaxEncodedLen is the largest body Encode can produce from n bytes under
 	// material m, the pinned material of this transform's kinds. A nil m asks
 	// for the bound under any material, which MaxDecodeLen uses.
-	MaxEncodedLen(n int, m []MaterialID) int
+	MaxEncodedLen(n int, m []keys.MaterialID) int
 
 	// LengthOf is the exact body length for n bytes under material m, and
 	// whether it is known without encoding. A declined chunk is never known in
 	// advance.
-	LengthOf(n int, m []MaterialID) (int, bool)
+	LengthOf(n int, m []keys.MaterialID) (int, bool)
 
 	// LengthKey encodes, canonically, the settings that decide the body's
 	// length: this transform's part of the chain ID. The chain ID adds the
@@ -627,54 +633,27 @@ type Transform interface {
 
 	// Encode transforms plain, deterministically (§2.1), for namespace ns,
 	// under material m, the attempt's pinned material: it gets that material's
-	// content from Materials.Get and never asks for the current material.
+	// content from keys.Provider.Get and never asks for the current material.
 	// Applied=false declines the chunk: plain passes on unchanged. hash is the
 	// chunk ID, for transforms that bind to it or derive from it.
-	Encode(ctx context.Context, ns NamespaceID, m []MaterialID, dst []byte, hash [32]byte, plain []byte) (Encoded, error)
+	Encode(ctx context.Context, ns entity.NamespaceID, m []keys.MaterialID, dst []byte, hash [32]byte, plain []byte) (Encoded, error)
 
 	// Decode inverts Encode. It never produces more than max bytes, and asks m
 	// only for material the block's census lists (§2.5).
-	Decode(ctx context.Context, ns NamespaceID, dst []byte, hash [32]byte, body []byte, max int, m Materials) (plain []byte, err error)
+	Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, m keys.Provider) (plain []byte, err error)
 }
 
 // Encoded is one transform's output, and what the census records about it.
 type Encoded struct {
 	Body     []byte
 	Applied  bool
-	Version  uint8        // the transform's own format version
-	Material []MaterialID // the material used, if any
-}
-
-// MaterialID names one piece of material of one kind, of one namespace.
-type MaterialID struct {
-	Namespace   NamespaceID
-	Kind        string
-	ID          string
-	Fingerprint [32]byte // HMAC-SHA256(material, "dittofs key check v1") (§2.5)
-}
-
-// Materials holds a store configuration's material, per namespace. A
-// transform asks it for what it needs.
-type Materials interface {
-	// Current is the material new bodies of this kind use in namespace ns.
-	Current(ctx context.Context, ns NamespaceID, kind string) (MaterialID, error)
-	// Get returns material by ID, whose Namespace it is looked up in:
-	// ErrUnknownMaterial for an ID the provider was never given,
-	// ErrMaterialUnavailable for one it cannot reach now or whose content no
-	// longer matches its fingerprint, ErrMaterialDestroyed for one it once had
-	// and has lost or removed for good.
-	Get(ctx context.Context, id MaterialID) ([]byte, error)
-	// Remove destroys material: it refuses while the material is current in
-	// any open chain, waits for every open pin that holds it, then checks the
-	// census, all under one fence, and erases every copy (§5.3). A master
-	// key or export key that a retained export names is ErrMaterialInUse.
-	// It lands with its first caller (§5.3).
-	Remove(ctx context.Context, id MaterialID) error
+	Version  uint8             // the transform's own format version
+	Material []keys.MaterialID // the material used, if any
 }
 
 // Factory builds a transform from its settings and the store's material. It
 // fails rather than returning a transform that cannot work.
-type Factory func(ctx context.Context, settings map[string]any, m Materials) (Transform, error)
+type Factory func(ctx context.Context, settings map[string]any, m keys.Provider) (Transform, error)
 
 // Register makes a transform available for configuration and for decoding.
 // Called at init; a duplicate ID panics.
@@ -685,7 +664,7 @@ type Chain struct{ /* ... */ }
 
 // NewChain builds the configured transforms. It refuses a duplicate, two
 // transforms of one stage, or a list out of stage order (§2.3).
-func NewChain(ctx context.Context, cfg []Config, m Materials) (*Chain, error)
+func NewChain(ctx context.Context, cfg []Config, m keys.Provider) (*Chain, error)
 
 // MaxDecodeLen is the largest body any registered transforms could have
 // written from n bytes under any material, one per stage, plus the envelope.
@@ -700,7 +679,7 @@ func MaxDecodeLen(n int) int
 // MaxEncodedLen, LengthOf and Encode. It fails with the provider's error when
 // the current material cannot be read, or when a key service holds the master
 // key that wraps it in any state but active (Appendix B.1).
-func (c *Chain) Pin(ctx context.Context, ns NamespaceID) (*Attempt, error)
+func (c *Chain) Pin(ctx context.Context, ns entity.NamespaceID) (*Attempt, error)
 
 // Attempt is one pinned chain. The engine releases it when the block commits
 // or is abandoned.
@@ -725,7 +704,7 @@ func (a *Attempt) Release()
 
 // Decode undoes the envelope's transforms. census is the block record's
 // (§5.3): a body naming material outside it is ErrMalformed.
-func (c *Chain) Decode(ctx context.Context, ns NamespaceID, dst []byte, hash [32]byte, body []byte, max int, census []Encoded) ([]byte, error)
+func (c *Chain) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, census []Encoded) ([]byte, error)
 
 type Config struct {
 	Name     string         // a registered transform's name
@@ -733,13 +712,47 @@ type Config struct {
 }
 
 var (
-	ErrMalformed           = errors.New("transform: malformed body")
-	ErrUnknownMaterial     = errors.New("transform: unknown material")
-	ErrMaterialUnavailable = errors.New("transform: material unavailable")
-	ErrMaterialDestroyed   = errors.New("transform: material destroyed")
-	ErrTooLarge            = errors.New("transform: output exceeds its bound")
-	ErrMaterialInUse       = errors.New("transform: material named by a retained export")
-	ErrNotEscrowed         = errors.New("transform: master key escrow not verified") // Appendix B.2
+	ErrMalformed = errors.New("transform: malformed body")
+	ErrTooLarge  = errors.New("transform: output exceeds its bound")
+)
+```
+
+In package `keys`:
+
+```go
+// MaterialID names one piece of material of one kind, of one namespace.
+type MaterialID struct {
+	Namespace   entity.NamespaceID
+	Kind        string
+	ID          string
+	Fingerprint [32]byte // HMAC-SHA256(material, "dittofs key check v1") (§2.5)
+}
+
+// Provider holds a store configuration's material, per namespace. A
+// transform asks it for what it needs.
+type Provider interface {
+	// Current is the material new bodies of this kind use in namespace ns.
+	Current(ctx context.Context, ns entity.NamespaceID, kind string) (MaterialID, error)
+	// Get returns material by ID, whose Namespace it is looked up in:
+	// ErrUnknownMaterial for an ID the provider was never given,
+	// ErrMaterialUnavailable for one it cannot reach now or whose content no
+	// longer matches its fingerprint, ErrMaterialDestroyed for one it once had
+	// and has lost or removed for good.
+	Get(ctx context.Context, id MaterialID) ([]byte, error)
+	// Remove destroys material: it refuses while the material is current in
+	// any open chain, waits for every open pin that holds it, then checks the
+	// census, all under one fence, and erases every copy (§5.3). A master
+	// key or export key that a retained export names is ErrMaterialInUse.
+	// It lands with its first caller (§5.3).
+	Remove(ctx context.Context, id MaterialID) error
+}
+
+var (
+	ErrUnknownMaterial     = errors.New("keys: unknown material")
+	ErrMaterialUnavailable = errors.New("keys: material unavailable")
+	ErrMaterialDestroyed   = errors.New("keys: material destroyed")
+	ErrMaterialInUse       = errors.New("keys: material named by a retained export")
+	ErrNotEscrowed         = errors.New("keys: master key escrow not verified") // Appendix B.2
 )
 ```
 
@@ -748,7 +761,7 @@ decodes what an older configuration wrote. It gives each step the chunk maximum
 ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)) passed through the `MaxEncodedLen` of the steps applied before it, so
 a step that legitimately enlarges the body is not refused by the next one. `dst`
 **MUST NOT** overlap the input; the result may be `dst` resliced or a new slice.
-The `Materials` a transform's `Decode` receives is a view that answers only for
+The `keys.Provider` a transform's `Decode` receives is a view that answers only for
 the material IDs in `census`, of the namespace being read, and returns
 `ErrMalformed` for any other without asking the provider. `ErrUnknownMaterial`
 from the provider, for an ID the census does list, is reported as
@@ -1821,7 +1834,7 @@ Encryption encodes under the data key its attempt pinned ([§3.1](#3.1%20Interfa
 `Pin` read as the namespace's current data key once, so a rotation after the pin
 changes neither the block's bodies nor their lengths; it decodes with the data
 key a body names. It gets either key's content from the store configuration's
-`Materials`; the provider unwraps it with the master key that wrapped it. Every piece
+`keys.Provider`; the provider unwraps it with the master key that wrapped it. Every piece
 of material carries its fingerprint ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)), checked after unwrapping.
 
 The key records keep every key ID the namespace has ever issued, marking one
