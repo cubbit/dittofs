@@ -1,232 +1,279 @@
 # Getting Started
 
-This guide takes you from zero to a mounted DittoFS share in a few minutes. You'll
-install the two binaries, start the server, create a share, and mount it over NFS and
-SMB.
+This guide takes you from nothing to a running DittoFS node that you manage with
+`dfsctl`. It takes about ten minutes on macOS or Linux, needs no root, and keeps
+everything under your home directory. Follow it top to bottom.
 
-- **`dfs`** — the server. `dfs init` creates an installation and `dfs start` runs its
-  node: the protocol adapters and the management API.
-- **`dfsctl`** — the command-line client of the management API. It manages users,
-  shares, stores and adapters on a running node, and nothing else.
+> **Where this guide stops today.** This version of DittoFS cannot create a share
+> yet, and it serves no NFS or SMB. You will end with the node running, signed in
+> as the administrator, with a user created. [Step 7](#7-where-you-stop-today)
+> shows why, and [after that](#once-shares-can-be-created) shows the commands
+> that will create and mount a share.
 
-> ⚠️ **Experimental, pre-1.0.** Not production ready, no security audit. Don't use it for
-> data you can't afford to lose. See the [FAQ](faq.md) for known limitations.
+> ⚠️ **Experimental, pre-1.0.** Not production ready, no security audit. Don't use it
+> for data you can't afford to lose. See the [FAQ](faq.md) for known limitations.
 
-## 1. Install
+DittoFS has two programs:
 
-Pick one:
+| Program | What it does |
+|---------|--------------|
+| `dfs` | The server. `dfs init` creates an installation once; `dfs start` runs it. |
+| `dfsctl` | The client. It talks to a running node's management API to manage users, shares and settings. |
 
-```bash
-# Nix (temporary shell with dfs and dfsctl; no permanent install)
-nix shell github:cubbit/dittofs
+## 1. Build from source
 
-# Homebrew (macOS / Linux)
-brew tap cubbit/tap
-brew install --cask cubbit/tap/dfs cubbit/tap/dfsctl
-
-# Quick install script (macOS / Linux)
-curl -fsSL https://github.com/cubbit/dittofs/releases/latest/download/install.sh | sh
-```
-
-Docker, the Kubernetes operator, APT/YUM/Arch packages, and Scoop (Windows) are in the
-[Installation guide](install.md).
-
-**Build from source** (needs Go 1.26+):
+This guide describes the new node (v2), which no release ships yet. Homebrew, the
+install script, the packages and the Docker image all install the released server,
+which works differently. So build both programs from the `feat/storage-v2` branch.
+You need [Go](https://go.dev/dl/) 1.26 or later and `git`.
 
 ```bash
-git clone https://github.com/cubbit/dittofs.git
+git clone --depth 1 --branch feat/storage-v2 https://github.com/cubbit/dittofs.git
 cd dittofs
-go build -o dfs    cmd/dfs/main.go
-go build -o dfsctl cmd/dfsctl/main.go
+go build -o dfs ./cmd/dfs
+go build -o dfsctl ./cmd/dfsctl
+export PATH="$PWD:$PATH"     # so the steps below can run dfs and dfsctl
 ```
 
-If you built from source, use `./dfs` and `./dfsctl` in the commands below.
+Check that both run. Each prints its version, `dev` for a build from source:
 
-## 2. Initialize and start the server
+```bash
+dfs version
+dfsctl version
+```
 
-`dfs init` creates the installation: its metadata store, its journals, its
-storage key file and its `admin` account. `dfs start` then serves it. Both read
-the same config file (see [Configuration](configuration.md)). A small one:
+## 2. Write the config file
 
-```yaml
-# ~/.config/dittofs/config.yaml
+`dfs` reads its config from `~/.config/dittofs/config.yaml`. This one keeps
+everything under `~/dittofs`. Copy the whole block: the shell fills in your home
+directory and a new node ID.
+
+```bash
+mkdir -p ~/.config/dittofs ~/dittofs/journal
+cat > ~/.config/dittofs/config.yaml <<EOF
 node:
-  id: 6f1c2a4e-8d3b-4f7a-9c5e-2b8d4a6f0e13   # any UUID, generated once: uuidgen
+  id: $(uuidgen | tr 'A-Z' 'a-z')
 metadata:
   badger:
-    path: /var/lib/dittofs/metadata
+    path: $HOME/dittofs/metadata
 journals:
-  - path: /var/lib/dittofs/journal
+  - path: $HOME/dittofs/journal
 keys:
   storage:
     kind: local
     local:
-      file: /var/lib/dittofs/storage.key
+      file: $HOME/dittofs/storage.key
+EOF
 ```
 
-`dfs init` refuses a config without `node.id`. Each journal's directory must
-exist before `dfs init` runs. The storage key file is created by `dfs init`,
-wrapped under the passphrase in `DITTOFS_ENCRYPTION_PASSPHRASE`, which
-`dfs start` needs too. Copy the key file off the host: losing it or the
-passphrase loses the data.
+What each part is for:
 
-This config has no `keys.protocol`. `dfs init`, `dfs start`, `dfsctl login`
-and `dfsctl user create` run without it. Add it before `dfsctl user
-set-password` or a directory bind: the node seals NT hashes and bind
-credentials under it. No `dfs` command creates that key file; write it with the
-helper [Encryption: local key files](encryption.md#local-key-files) shows.
+| Key | Meaning |
+|-----|---------|
+| `node.id` | A UUID that names this node. Generate it once and never change it. |
+| `metadata.badger.path` | Where the node keeps file metadata, users, shares and settings. |
+| `journals` | Where the node keeps file content. The directory must exist before `dfs init`. |
+| `keys.storage` | A key file that protects the secrets in the metadata store. `dfs init` creates it. |
 
-Choose the admin password and hand it to `dfs init` with `--admin-password-file`
-or `--admin-password-env`:
+Paths must be absolute: `~` is not expanded inside the file, which is why the
+block above lets the shell write `$HOME` out. If your shell sets `XDG_CONFIG_HOME`,
+`dfs` looks in `$XDG_CONFIG_HOME/dittofs/config.yaml` instead, so write the file
+there. Likewise, with `XDG_STATE_HOME` set, the log below is under
+`$XDG_STATE_HOME/dittofs`. No `uuidgen`? On Linux use
+`cat /proc/sys/kernel/random/uuid`. Every key is in
+[Configuration](configuration.md).
+
+## 3. Create the installation
+
+`dfs init` creates the metadata store, prepares the journal, writes the storage
+key file and creates the `admin` account. It needs a passphrase, which protects the
+key file. `dfs start` needs the same passphrase every time it runs.
 
 ```bash
-mkdir -p /var/lib/dittofs/journal
-export DITTOFS_ENCRYPTION_PASSPHRASE='choose-a-passphrase'
-# Replace the example with your own password before running this command.
-DFS_ADMIN_PASSWORD=my-secure-password dfs init --admin-password-env DFS_ADMIN_PASSWORD
+export DITTOFS_ENCRYPTION_PASSPHRASE='correct horse battery staple'   # pick your own
+dfs init
+```
+
+```console
+created the storage key file /home/alice/dittofs/storage.key
+Copy it off this host now and keep its passphrase: losing either loses the data, and nothing recovers it.
+The administrator "admin"'s generated password, shown once; it must be changed at the first sign-in:
+ueDzOVgh8ObDp0kAxMJc-UsgMX3K_cfL
+```
+
+Copy the password now: it is printed only here, never to the log. Take the
+warning seriously too. The key file and the passphrase together unlock the
+node's secrets. Lose either one and the installation cannot be opened again.
+
+You can choose the first password yourself instead, with
+`--admin-password-file` or `--admin-password-env`. See
+[`dfs init`](cli.md#dfs-init).
+
+## 4. Start the node
+
+Run `dfs start` in the same terminal, so it sees the passphrase:
+
+```bash
 dfs start
 ```
 
-`dfs start` runs in the foreground until it receives SIGINT or SIGTERM. Run it
-under systemd or a container runtime to keep it in the background.
+It runs in the foreground and prints nothing to the terminal. It writes its log to
+`~/.local/state/dittofs/dittofs.log`. Leave it running and open a second terminal.
+The node answers `starting` for the first few seconds, then `ready`:
 
-With neither password flag, `dfs init` generates a password and prints it once to
-standard output, never to the log, and it must be changed at the first sign-in.
-To recover an administrator's password, stop the node and run `dfs reset-admin`
-on the host that holds the metadata store: it prints a new generated password
-once, which must be changed at the first sign-in.
+```console
+$ curl http://127.0.0.1:8080/health/ready
+ready
+```
 
-The node listens on these addresses by default:
+The node listens on these addresses:
 
-| Address | Service |
-|---------|---------|
-| `127.0.0.1:8080` | Management API (sign-in, management, health checks); `api.listen` |
-| `dfs.sock` in the runtime directory | Management API over a local socket; `api.socket` |
-| `127.0.0.1:9090` | Prometheus metrics; `metrics.listen` |
-| port `12049` | NFS, once the NFS adapter is enabled and served |
-| port `12445` | SMB, once the SMB adapter is enabled and served |
+| Address | What it serves | Config key |
+|---------|----------------|------------|
+| `127.0.0.1:8080` | Management API and health checks | `api.listen` |
+| `dfs.sock` in the runtime directory (`dfs config show` prints the path) | Management API, local socket | `api.socket` |
+| `127.0.0.1:9090` | Prometheus metrics | `metrics.listen` |
 
-`GET /health/ready` answers `ready` once the node serves.
+## 5. Sign in and change the password
 
-## 3. Log in and set the admin password
-
-`dfsctl` reaches the node at an `https` URL, at an `http` URL on a loopback IP
-address, or through the local socket's path. A host name is never treated as
-loopback, so write `127.0.0.1`, not `localhost`:
+In the second terminal, make `dfsctl` available again and sign in as `admin` with
+the password `dfs init` printed:
 
 ```bash
+cd dittofs && export PATH="$PWD:$PATH"     # the clone from step 1
 dfsctl login --server http://127.0.0.1:8080 --username admin
 ```
 
-If you handed `dfs init` the password, log in with it and continue to step 4. If
-`dfs init` generated it, change it first. Until you do, the account can only
-change its password and sign out:
-
-```bash
-dfsctl password change
+```console
+password:
+Logged in to http://127.0.0.1:8080 as admin (context default)
+The password must be changed before any other call: run 'dfsctl password change'
 ```
 
-## 4. Create a user
+Write `127.0.0.1`, not `localhost`: `dfsctl` sends a password over plain `http`
+only to a loopback IP address.
 
-NFS write access maps to a host UID, so create a user bound to your current one:
+A generated password must be changed before anything else works:
 
-```bash
-dfsctl user create $(whoami) --uid $(id -u)
+```console
+$ dfsctl password change
+current password:
+new password:
+new password again:
+Password changed
 ```
 
-## 5. Stores and namespaces
+`dfsctl` keeps the session in `~/.config/dfsctl/config.json`, so later commands
+need no password.
 
-A node keeps file and directory metadata, and every control-plane record, in its
-one **metadata store**, and file content in the **journal** on its `journals`
-devices. Both come from the config file and are created by `dfs init`. See
+## 6. Check the node and create a user
+
+```console
+$ dfsctl status
+READY  CONDITION  SCOPE  SUBJECT  CAUSE  DETAIL
+ready
+
+$ dfsctl node list
+ID                                    ADDRESS         BINARY  DOMAIN  LAPSED
+0ab994b4-617e-40d4-a181-f46f66728314  127.0.0.1:8080                  no
+```
+
+Create a user for yourself. NFS identifies a client user by its numeric user ID,
+so give the user the same ID you have on the machine you will mount from
+(`id -u` prints it):
+
+```console
+$ dfsctl user create alice --uid 1000
+NAME   ID                                    UID   ROLE  EMAIL  DISABLED
+alice  c763989b-76b9-4204-ac7e-a7e2a066d128  1000               no
+```
+
+## 7. Where you stop today
+
+A share keeps its files in a **namespace**, and a namespace lives on a **remote
+store**. On this version, the node does not accept settings for remote stores,
+namespaces or the NFS and SMB adapters yet. So you cannot create a store, a
+namespace or a share, and you cannot turn an adapter on:
+
+```console
+$ dfsctl store create --setting remote.endpoint=https://s3.example.com
+Error: dfsctl store create: 400 unknown_key: Bad Request: refused by the settings table (field remote.endpoint)
+
+$ dfsctl adapter list
+PROTOCOL  ENABLED  SETTINGS  NODE                                  STATE
+nfs       no                 0ab994b4-617e-40d4-a181-f46f66728314  stopped
+smb       no                 0ab994b4-617e-40d4-a181-f46f66728314  stopped
+```
+
+Everything up to here works and is kept: users, groups, grants and settings you
+create now stay in the metadata store. To read about stores and namespaces, see
 [Choosing stores](choosing-stores.md).
 
-A share's content is counted in a **namespace**, which lives on a **remote store**.
-On this branch the node's settings table does not declare the remote store's or
-the namespace's settings yet, so `dfsctl store create` and
-`dfsctl namespace create` are refused with `unknown_key`. Until they are, no
-namespace can be created through the API, and step 6 cannot run on a new
-installation.
+## 8. Stop and clean up
 
-## 6. Create a share and grant access
+Press **Ctrl+C** in the first terminal. The node stops cleanly and logs
+`dfs: stopped`. To start it again later, export the same passphrase and run
+`dfs start`.
 
-With a namespace in place, a share is created with its export policy, and then
-granted. A new share admits nobody until a grant names them:
+To remove everything this guide created:
 
 ```bash
-dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write --client ::/0=read-write
-dfsctl grant set export --user $(whoami) --access read-write
+dfsctl logout
+rm -rf ~/dittofs ~/.config/dittofs ~/.local/state/dittofs ~/.config/dfsctl
 ```
 
-`dfsctl namespace list` prints each namespace's ID.
+## Once shares can be created
 
-## 7. Mount over NFS
+> **Not available yet on this version.** The commands below show how a share will
+> be created and mounted once remote stores, namespaces and adapters can be set.
+> They describe the released server's behaviour; see the [NFS guide](nfs.md) and
+> the [SMB guide](smb.md).
 
-> **Not served on this branch.** This build serves no file protocol; this step
-> describes the released server (see the [NFS guide](nfs.md)).
-
-<details>
-<summary><strong>Client prerequisites (Linux)</strong></summary>
-
-macOS includes the NFS and SMB clients. On Linux, install them before mounting:
+Create a share named `archive` in a namespace, open it to every client address,
+and give `alice` read-write access. A new share admits nobody until a grant names
+them:
 
 ```bash
-sudo apt install -y nfs-common cifs-utils   # Debian / Ubuntu
-sudo dnf install -y nfs-utils cifs-utils    # RHEL / Fedora
+dfsctl namespace list        # prints each namespace's ID
+dfsctl share create archive --path /archive \
+  --namespace 3f6d2b1a-7c4e-4e2a-9b8d-1a2b3c4d5e6f \
+  --flavor sys --client 0.0.0.0/0=read-write --client ::/0=read-write
+dfsctl grant set archive --user alice --access read-write
 ```
 
-</details>
+Mount it over NFS. The NFS port is `12049` by default, so the mount names it:
 
 ```bash
-# Linux
-sudo mkdir -p /mnt/nfs
-sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
-echo "Hello DittoFS!" > /mnt/nfs/hello.txt
+# Linux (install nfs-common or nfs-utils first)
+sudo mkdir -p /mnt/archive
+sudo mount -t nfs -o tcp,port=12049,mountport=12049 127.0.0.1:/archive /mnt/archive
 
 # macOS
-mkdir -p /tmp/nfs
-sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/export /tmp/nfs
-echo "Hello DittoFS!" > /tmp/nfs/hello.txt
+mkdir -p /tmp/archive
+sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock 127.0.0.1:/archive /tmp/archive
 ```
 
-Writes land in the share's journal first and sync to S3 in the background. More mount
-options, Kerberos, and NFS-over-TLS are in the [NFS guide](nfs.md).
-
-## 8. Mount over SMB
-
-> **Not served on this branch.** This build serves no file protocol; this step
-> describes the released server (see the [SMB guide](smb.md)).
-
-SMB always requires user authentication:
+Or let `dfsctl` build the mount command for you:
 
 ```bash
-dfsctl user create alice
-dfsctl user set-password alice                # password prompted
-dfsctl grant set export --user alice --access read-write
-
-# Linux: keep alice's password in a private credentials file, never on the command line
-printf 'username=alice\npassword=ALICE_PASSWORD\n' > ~/.smbcredentials
-chmod 600 ~/.smbcredentials
-sudo mkdir -p /mnt/smb
-
-# uid/gid make the mounted files yours locally, so you can write as a regular user
-sudo mount -t cifs //localhost/export /mnt/smb \
-  -o port=12445,credentials=$HOME/.smbcredentials,vers=3.1.1,uid=$(id -u),gid=$(id -g)
-
-# macOS (prompts for the password)
-mkdir -p /tmp/smb
-mount -t smbfs //alice@localhost:12445/export /tmp/smb
+dfsctl share mount archive /mnt/archive --protocol nfs
 ```
 
-Connecting from **Windows**? See [Windows clients](windows.md). Dialects, encryption, and
-signing are in the [SMB guide](smb.md).
+SMB always needs a password, and the SMB port is `12445` by default. Setting a
+password needs `keys.protocol` in the config file, because the node stores the
+password's NT hash under that key (see [Encryption](encryption.md#local-key-files)):
+
+```bash
+dfsctl user set-password alice              # prompts for the password
+dfsctl share mount archive /mnt/archive --protocol smb --username alice
+```
+
+Connecting from Windows? See [Windows clients](windows.md).
 
 ## Next steps
 
-- [Configuration](configuration.md): every config key and flag, with defaults.
+- [Configuration](configuration.md): every config key, with defaults.
 - [CLI reference](cli.md): every `dfs` and `dfsctl` command.
-- [Choosing stores](choosing-stores.md): metadata and block store trade-offs.
-- [Identity: AD / LDAP / Kerberos](identity.md): connect to a directory service.
-- [Snapshots](snapshots.md), [Quotas](quotas.md), [Encryption](encryption.md).
-- [Mount at boot](persistent-mounts.md): make NFS and SMB mounts survive a reboot.
-- [Troubleshooting](troubleshooting.md): when a mount or permission won't cooperate.
+- [Installation](install.md): packages, Docker, systemd, uninstalling.
+- [Troubleshooting](troubleshooting.md): when something refuses to work.
+- [Security](security.md): before you expose the node beyond your own machine.

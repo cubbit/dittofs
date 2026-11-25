@@ -1,154 +1,275 @@
-# DittoFS Configuration Guide
+# Configuration
 
-A DittoFS node reads a few facts of its host before it opens any store: where
-its metadata store is, its journals, its listeners, its logs and its wrapping
-keys. These facts are its bootstrap, read from one YAML file and from the
-environment. Everything else the node serves, shares, users, adapters'
-settings and secrets among them, is managed through its management API and
-kept in its metadata store, never in this file.
+DittoFS is configured in two places:
 
-> Unfamiliar with a term? See the [Glossary](glossary.md) for plain-language
-> definitions.
+- **The config file** holds what the node must know about its host before it can
+  open any store: the node's ID, where its metadata and journals live, its key
+  files, its listen addresses and its logging. You edit it on the host.
+- **The management API** holds everything else: shares, users, groups, grants,
+  adapters, remote stores, namespaces and settings. You change these with `dfsctl`
+  while the node runs. They are kept in the metadata store, never in the file.
+
+Read this page when you write or change the config file, or when `dfs` refuses it.
+For the first setup, follow [Getting started](getting-started.md) instead.
+
+> Unfamiliar with a term? See the [Glossary](glossary.md).
 
 ## Table of Contents
 
-- [The file](#the-file)
+- [A first config file](#a-first-config-file)
+- [Where the file is](#the-file)
+- [Not working as documented yet](#not-working-as-documented-yet)
+- [Every key](#the-keys)
+- [Adding the protocol key](#adding-the-protocol-key)
 - [The state and runtime directories](#the-state-and-runtime-directories)
-- [The keys](#the-keys)
 - [FoundationDB metadata](#foundationdb-metadata)
-- [The environment](#the-environment)
-- [Refusals](#refusals)
-- [The commands](#the-commands)
-- [The management API](#the-management-api)
-- [Settings](#settings)
-- [Secrets](#secrets)
-- [Integration](#integration)
+- [Environment variables](#the-environment)
+- [Reading a refusal](#refusals)
+- [Checking a config file](#the-commands)
+- [The management API and settings](#the-management-api)
 
-## The file
+## A first config file
 
-The node reads one YAML file, the first of:
-
-1. the path `--config` names;
-2. the path the `DITTOFS_CONFIG` variable names;
-3. `$XDG_CONFIG_HOME/dittofs/config.yaml` when `XDG_CONFIG_HOME` is set;
-4. `$HOME/.config/dittofs/config.yaml`.
-
-A file named by `--config` or `DITTOFS_CONFIG` that does not exist refuses the
-start. A default file that does not exist is no error: the node runs on the
-defaults and the environment.
-
-Each value is taken from the environment, else the file, else the default. A
-value from the environment replaces the same key's value from the file and
-merges with nothing else: a leaf is replaced alone, and the rest of its block
-stays as the file has it.
-
-The file holds one YAML document. A key is matched exactly as declared, one
-name per level, so `Logging.Level` is an unknown key and a key that differs
-only in case is refused with the declared one named. A key that is not in
-[the table](#the-keys) refuses the start, with the closest declared key named;
-a key that is a setting names the management API instead. A path is absolute
-and written in its clean form: a journal's path is its identity in the
-metadata store, so `/data/j1/` beside `/data/j1` would be a second journal,
-and a relative path, a `~` or a trailing slash is refused rather than
-rewritten.
-
-A small file:
+This is the smallest file `dfs init` and `dfs start` accept:
 
 ```yaml
+node:
+  id: 6f1c2a4e-8d3b-4f7a-9c5e-2b8d4a6f0e13   # generate once with uuidgen
+metadata:
+  badger:
+    path: /var/lib/dittofs/metadata
+journals:
+  - path: /var/lib/dittofs/journal           # must exist before dfs init
+keys:
+  storage:
+    kind: local
+    local:
+      file: /var/lib/dittofs/storage.key     # dfs init creates it
+```
+
+A fuller file adds the protocol key, logging, and the API and metrics addresses:
+
+```yaml
+node:
+  id: 6f1c2a4e-8d3b-4f7a-9c5e-2b8d4a6f0e13
+metadata:
+  badger:
+    path: /var/lib/dittofs/metadata
+journals:
+  - path: /data/j1
+  - path: /data/j2
+keys:
+  storage:
+    kind: local
+    local:
+      file: /etc/dittofs/keys/storage.key
+  protocol:
+    kind: local
+    local:
+      file: /etc/dittofs/keys/protocol.key
+api:
+  listen:
+    - 127.0.0.1:8080
+metrics:
+  listen: 127.0.0.1:9090
 logging:
   level: info
   format: json
   rotation:
     max_size: "100MiB"
     max_age: "720h"
-journals:
-  - path: /data/j1
-  - path: /data/j2
-api:
-  listen:
-    - 127.0.0.1:8080
-metrics:
-  listen: 127.0.0.1:9090
 ```
 
-Each role also needs its wrapping key, `keys.protocol` and `keys.storage`,
-each with its `kind` and the block that kind names; see
-[the table](#the-keys).
+Both key files are unlocked with the passphrase in the `DITTOFS_ENCRYPTION_PASSPHRASE`
+environment variable. Every `dfs` command that opens the installation needs it.
 
-## The state and runtime directories
+## The file
 
-The two directories are not keys: the environment names them.
+`dfs` reads one YAML file. It uses the first of these that applies:
 
-The state directory is `$STATE_DIRECTORY` when the service manager sets it,
-else `$XDG_STATE_HOME/dittofs`, else `$HOME/.local/state/dittofs`. The runtime
-directory is `$RUNTIME_DIRECTORY`, else `$XDG_RUNTIME_DIR/dittofs`, else a
-directory under the state directory that only the process's user owns (mode
-`0700`). A unit may set its variable as a colon-separated list, whose first
-entry is read.
+| Order | Path |
+|-------|------|
+| 1 | the path `--config` names |
+| 2 | the path the `DITTOFS_CONFIG` variable names |
+| 3 | `$XDG_CONFIG_HOME/dittofs/config.yaml`, when `XDG_CONFIG_HOME` is set |
+| 4 | `$HOME/.config/dittofs/config.yaml` |
 
-A state directory that already exists is checked, not merely used: a start
-refuses one that is a symlink, is owned by neither the node's user nor root,
-or is writable by others. A runtime directory that already exists is checked
-harder, since the socket in it has to be trusted: the start refuses one that
-is a symlink, that the node's user does not own, or that group or others can
-write, because whoever can write the directory can unlink `dfs.sock` and bind
-its own. Today only `dfs config validate` runs every one of these checks: see
-[The commands](#the-commands).
+If `--config` or `DITTOFS_CONFIG` names a file that does not exist, `dfs` refuses to
+start. If the default file does not exist, that is not an error: `dfs` runs on the
+defaults and the environment.
 
-A start without root, `dfs init` then `dfs start`, writes its metadata, log and
-`dfs.sock` under the user's home. A systemd unit's `StateDirectory=` and
-`RuntimeDirectory=` set the first of each, so two nodes on one host each get
-their own from their own unit.
+An environment variable overrides the same key in the file, and only that key. For
+example, `DITTOFS_LOGGING_LEVEL=debug` changes `logging.level` and leaves the rest of
+`logging` as the file has it.
+
+Rules that catch people out:
+
+- **Keys are exact.** `Logging.Level` is not `logging.level`. A misspelled or
+  unknown key stops the start, and the message names the closest real key.
+- **Settings are not keys.** A key such as `adapters.nfs.port` is a setting. The
+  file refuses it and tells you to use the management API.
+- **Paths are absolute and clean.** A relative path, a `~` or a trailing slash is
+  refused, not rewritten. This matters most for journals: a journal's path is its
+  identity, so `/data/j1/` and `/data/j1` would be two different journals.
+- **One document.** The file holds one YAML document.
+
+## Not working as documented yet
+
+> **Not working as documented yet.** Four keys behave differently from
+> [the table below](#the-keys) on this version:
+>
+> - `dfs config validate` refuses a file without `keys.protocol`, while `dfs init`
+>   and `dfs start` run without it.
+> - `dfs init`, `dfs start` and `dfs reset-admin` refuse a file without `node.id`,
+>   with `node.id is not set`, because nothing else names the node yet.
+> - `dfs start` fails on `metrics.listen: off`, because it tries to bind `off` as an
+>   address.
+> - `api.listen` takes one address: the node refuses to start with a second.
 
 ## The keys
 
-Every key of the file, with its type and default. `<role>` is `protocol` or
-`storage`, so a key is `keys.protocol.local.file`.
+Every key the file accepts. `<role>` is `protocol` or `storage`, so
+`keys.<role>.local.file` means both `keys.protocol.local.file` and
+`keys.storage.local.file`.
 
-| Key | Type | Default | Fact |
+| Key | Type | Default | What it sets |
 | --- | --- | --- | --- |
-| `node.id` | UUID | none: the `node-id` copies give it | the node's identity, needed only when every copy is lost |
-| `node.roles` | list of `protocol`, `storage` | `[protocol, storage]` | the node's roles, compared as a set, a repeated role refused; both is the only accepted value |
-| `metadata.backend` | `badger` or `foundationdb` | `badger` | which metadata store; only the block it names is read, and a key of the other block is refused |
-| `metadata.badger.path` | path | the state directory's `metadata` | Badger's directory |
-| `metadata.foundationdb.cluster_file` | path | required with `foundationdb` | FoundationDB's cluster file |
-| `metadata.foundationdb.tls.cert_file` | path | none: named with the key and CA files, or none | the client certificate FoundationDB's TLS options take; the file is the credential, never a value in this file |
-| `metadata.foundationdb.tls.key_file` | path | none: named with the certificate and CA files, or none | the client certificate's key; the file is the credential, never a value in this file |
-| `metadata.foundationdb.tls.ca_file` | path | none: named with the certificate and key files, or none | the CA file FoundationDB's TLS options take |
-| `journals` | list of entries, each with a `path` | required | the journal devices, one directory each; a path listed twice, or two that name one directory, is refused. The variable `DITTOFS_JOURNALS` sets the paths only, as a comma-separated list, and replaces the file's list; a fact of one journal needs the file. An empty entry, so a trailing or doubled comma as well as an empty value, is refused |
-| `adapters.listen` | list of IP literals, each an address to bind | every interface the host serves | the addresses the protocol adapters bind; each adapter's port is its own setting; an unset key binds `0.0.0.0`, plus `::` when the host has IPv6; a written list binds as written; a list in which one address overlaps another (a family's wildcard beside any address of that family, or the same address twice) refuses the node's start, naming the key and the index, never the value |
-| `api.listen` | list of `ip:port` | `127.0.0.1:8080` | the management API's addresses. `:8080`, an empty host, is refused, not read as every interface: write `0.0.0.0:8080` or `[::]:8080` |
-| `api.tls.cert_file` | path | required when an `api.listen` or `metrics.listen` address is not loopback: an IP in `127.0.0.0/8` or `::1`, so a host name, `localhost` included, and an unspecified address (`0.0.0.0`, `::`) are not | the API's certificate |
-| `api.tls.key_file` | path | required when an `api.listen` or `metrics.listen` address is not loopback, as for `api.tls.cert_file` | the key of the API's certificate |
-| `api.socket` | path | `dfs.sock` in the runtime directory | the management API's local socket, created mode `0600`. A `dfsctl` context names the socket by its path, so a shell without the unit's `$RUNTIME_DIRECTORY` passes the path, and two nodes on one host each name their own in their own file. A path past the operating system's socket-address limit (about 104 to 108 bytes) is refused, naming this key |
-| `metrics.listen` | `ip:port`, or `off` | `127.0.0.1:9090` | the metrics listener, served over the API's TLS off loopback. `off` is the only way to turn it off, in the file and in the environment, since a YAML null and an empty variable both read as not set |
-| `logging.level` | `debug`, `info`, `warn`, `error` | `info` | the log level, in lower case |
-| `logging.format` | `text` or `json` | `text` | the log format |
-| `logging.output` | `stdout`, `stderr` or a path | the state directory's `dittofs.log` | where logs go |
-| `logging.rotation.max_size` | size, a whole number of `MiB`, at least `1MiB` | `"100MiB"` | a log file's size before it rotates. The rotation library takes whole MiB and reads a smaller value as none, so a fraction is refused rather than silently turning rotation off |
-| `logging.rotation.max_backups` | integer | `5` | rotated files kept; `0` keeps all |
-| `logging.rotation.max_age` | duration, a whole number of days (`0s` is zero) | `"720h"` | how long rotated files are kept; `0s` keeps all. The age is rounded to whole days by the rotation library, so a value below a day would read as never, and is refused rather than truncated |
-| `logging.rotation.compress` | boolean | `false` | whether rotated files are compressed |
-| `keys.<role>.kind` | `local` or `kmip` | required, for `protocol` and for `storage`, and the two roles name two different keys | each role's wrapping key; only the block `kind` names is read, and a key of the other block is refused, naming `kind` |
-| `keys.<role>.local.file` | path | required with `local` | the key file that seals new `Secret` records |
-| `keys.<role>.local.retired_files` | list of paths | none | the key files that still open what they sealed, and the next key before it seals, in a rotation's first step |
-| `keys.<role>.kmip.endpoint` | string | none | the KMIP server that holds the role's key |
-| `keys.<role>.kmip.server_ca` | path | none | the CA file that checks the KMIP server |
-| `keys.<role>.kmip.client_cert` | path | none | the client certificate the node presents to the KMIP server |
-| `keys.<role>.kmip.client_key` | path | none | the client certificate's key |
-| `keys.<role>.kmip.key_uid` | string | none | the key that seals |
-| `keys.<role>.kmip.timeout` | duration | none | how long a call to the KMIP server may take |
-| `keys.<role>.kmip.retired_key_uids` | list of strings | none | the keys that still open what they sealed |
+| `node.id` | UUID | none; the journals' `node-id` files remember it | The node's identity. Generate it once and never change it. Needed today: see [above](#not-working-as-documented-yet). |
+| `node.roles` | list of `protocol`, `storage` | `[protocol, storage]` | The node's roles. Both is the only accepted value today; a repeated role is refused. |
+| `metadata.backend` | `badger` or `foundationdb` | `badger` | Which metadata store to use. Only the block it names is read; a key of the other block is refused. |
+| `metadata.badger.path` | path | `metadata` in the state directory | Badger's directory. |
+| `metadata.foundationdb.cluster_file` | path | required with `foundationdb` | FoundationDB's cluster file. |
+| `metadata.foundationdb.tls.cert_file` | path | none | The client certificate for FoundationDB's TLS. Name it with the key and CA files, or none of them. |
+| `metadata.foundationdb.tls.key_file` | path | none | The client certificate's key. Name it with the certificate and CA files, or none of them. |
+| `metadata.foundationdb.tls.ca_file` | path | none | The CA file for FoundationDB's TLS. Name it with the certificate and key files, or none of them. |
+| `journals` | list of entries, each with a `path` | required | The journal devices, one directory each. A path listed twice, or two paths for one directory, is refused. `DITTOFS_JOURNALS` replaces the list with a comma-separated list of paths; an empty entry, such as a trailing comma, is refused. |
+| `adapters.listen` | list of IP addresses | every interface | The addresses the NFS and SMB adapters bind. Unset, they bind `0.0.0.0`, plus `::` when the host has IPv6. A written list binds as written. Overlapping entries, such as `0.0.0.0` beside `192.0.2.10`, or one address twice, stop the start; the message names the key and the entry's index, never the address. Each adapter's port is a setting, not a key. |
+| `api.listen` | list of `ip:port` | `127.0.0.1:8080` | The management API's address. Write a full address: `:8080` is refused; use `0.0.0.0:8080` or `[::]:8080` for every interface. One address only today. |
+| `api.tls.cert_file` | path | required off loopback | The API's TLS certificate. Required when `api.listen` or `metrics.listen` is not a loopback IP (`127.0.0.0/8` or `::1`). A host name, `localhost` included, and `0.0.0.0` or `::` are not loopback. |
+| `api.tls.key_file` | path | required off loopback | The key of the API's certificate. Required in the same cases as `api.tls.cert_file`. |
+| `api.socket` | path | `dfs.sock` in the runtime directory | The API's local socket, created with mode `0600`. `dfsctl login --server` takes this path. A path longer than the system's socket limit (about 104 to 108 bytes) is refused. |
+| `metrics.listen` | `ip:port`, or `off` | `127.0.0.1:9090` | The Prometheus metrics address. Off loopback it is served over the API's TLS. `off` is the only way to turn it off, in the file and in the environment, since a YAML null and an empty variable both mean not set; but see [above](#not-working-as-documented-yet). |
+| `logging.level` | `debug`, `info`, `warn`, `error` | `info` | The log level, in lower case. |
+| `logging.format` | `text` or `json` | `text` | The log format. |
+| `logging.output` | `stdout`, `stderr` or a path | `dittofs.log` in the state directory | Where logs go. |
+| `logging.rotation.max_size` | size in whole `MiB`, at least `1MiB` | `"100MiB"` | A log file's size before it rotates. A fraction is refused, since it would turn rotation off. |
+| `logging.rotation.max_backups` | integer | `5` | Rotated files kept; `0` keeps all. |
+| `logging.rotation.max_age` | duration in whole days, or `0s` | `"720h"` | How long rotated files are kept; `0s` keeps all. Less than a day is refused, since it would mean never. |
+| `logging.rotation.compress` | boolean | `false` | Whether rotated files are compressed. |
+| `keys.<role>.kind` | `local` or `kmip` | required for `storage`; for `protocol` see [above](#not-working-as-documented-yet) | Where the role's key is held. Only the block `kind` names is read. The two roles must use two different keys. |
+| `keys.<role>.local.file` | path | required with `local` | The key file that seals new secrets. |
+| `keys.<role>.local.retired_files` | list of paths | none | Older key files that still open what they sealed, during a rotation. |
+| `keys.<role>.kmip.endpoint` | string | none | The KMIP server that holds the role's key. |
+| `keys.<role>.kmip.server_ca` | path | none | The CA file that checks the KMIP server. |
+| `keys.<role>.kmip.client_cert` | path | none | The client certificate the node shows the KMIP server. |
+| `keys.<role>.kmip.client_key` | path | none | That certificate's key. |
+| `keys.<role>.kmip.key_uid` | string | none | The KMIP key that seals. |
+| `keys.<role>.kmip.timeout` | duration | none | How long a call to the KMIP server may take. |
+| `keys.<role>.kmip.retired_key_uids` | list of strings | none | Older KMIP keys that still open what they sealed. |
 
-A key file's passphrase is read from `DITTOFS_ENCRYPTION_PASSPHRASE`, one for
-every key file of the node.
+What the two keys protect:
+
+| Key | Protects | Needed by |
+|-----|----------|-----------|
+| `keys.storage` | the administrator's password hash and the API's signing key | `dfs init` and `dfs start` |
+| `keys.protocol` | users' NT hashes for SMB passwords, and directory bind credentials | `dfsctl user set-password`, binding to a directory, `dfs reset-admin` for an account with a uid |
+
+`dfs init` creates the storage key file. Nothing creates the protocol key file for
+you; the next section shows how.
+
+## Adding the protocol key
+
+You need `keys.protocol` before you set any user's password with
+`dfsctl user set-password` or bind to a directory. Without it, `set-password`
+answers `503 unavailable`.
+
+> **Not available yet on this version:** a `dfs` command that writes a key file.
+> Use the short Go program below, run from your DittoFS clone (see
+> [Getting started](getting-started.md#1-build-from-source)).
+
+1. Write the key file, with the same passphrase as the storage key:
+
+   ```bash
+   cd dittofs                                     # your clone
+   mkdir -p /tmp/dfs-keygen
+   cat > /tmp/dfs-keygen/main.go <<'EOF'
+   package main
+
+   import (
+   	"os"
+
+   	"github.com/cubbit/dittofs/pkg/keyprovider"
+   )
+
+   func main() {
+   	b, err := keyprovider.GenerateKeyFile(os.Getenv("DITTOFS_ENCRYPTION_PASSPHRASE"))
+   	if err != nil {
+   		panic(err)
+   	}
+   	if err := os.WriteFile(os.Args[1], b, 0o600); err != nil {
+   		panic(err)
+   	}
+   }
+   EOF
+   go run /tmp/dfs-keygen/main.go ~/dittofs/protocol.key
+   ```
+
+2. Name it in the config file, under `keys`:
+
+   ```yaml
+   keys:
+     protocol:
+       kind: local
+       local:
+         file: /home/alice/dittofs/protocol.key
+   ```
+
+3. Check the file, then restart the node:
+
+   ```console
+   $ dfs config validate
+   Configuration file: /home/alice/.config/dittofs/config.yaml
+   Validation: OK
+   ```
+
+Copy the key file off the host, as you did the storage key. More on key files,
+KMIP and rotation is in [Encryption](encryption.md#local-key-files).
+
+## The state and runtime directories
+
+The node keeps its log, and by default its metadata store, in a **state
+directory**. It keeps its local socket in a **runtime directory**. The environment
+chooses both; they are not keys.
+
+| Directory | First of |
+|-----------|----------|
+| State | `$STATE_DIRECTORY` (set by systemd's `StateDirectory=`), `$XDG_STATE_HOME/dittofs`, `$HOME/.local/state/dittofs` |
+| Runtime | `$RUNTIME_DIRECTORY` (set by systemd's `RuntimeDirectory=`), `$XDG_RUNTIME_DIR/dittofs`, a `run` directory inside the state directory, mode `0700` |
+
+A systemd unit may set these variables as a colon-separated list; the first entry
+is used. Two nodes on one host each get their own directories from their own units.
+
+So a node you run as yourself, with nothing set, writes its metadata, its log and
+`dfs.sock` under `~/.local/state/dittofs`.
+
+An existing directory is checked before it is used, because whoever can write the
+runtime directory could replace `dfs.sock` with their own socket:
+
+| Directory | Refused when it is |
+|-----------|--------------------|
+| State | a symlink, owned by neither the node's user nor root, or writable by others |
+| Runtime | a symlink, not owned by the node's user, or writable by its group or others |
+
+Today only `dfs config validate` runs all of these checks. `dfs start` checks only
+a runtime directory it creates itself.
 
 ## FoundationDB metadata
 
-`metadata.backend: foundationdb` keeps the metadata, and the control plane's records, in a
-FoundationDB 7.3 cluster instead of a Badger directory. It is opened only by a `dfs` built with the
-`foundationdb` tag (the `-foundationdb` image and tarballs; see
-[Deployment](install.md#foundationdb-metadata)); any other build refuses it, naming the tag.
+`metadata.backend: foundationdb` keeps the metadata, users, shares and settings in a
+FoundationDB 7.3 cluster instead of a Badger directory. Only a `dfs` built with the
+`foundationdb` tag can open it: the `-foundationdb` image and tarballs (see
+[Installation](install.md#foundationdb-metadata)). Any other build refuses it and
+names the tag.
 
 ```yaml
 metadata:
@@ -157,125 +278,197 @@ metadata:
     cluster_file: /etc/foundationdb/fdb.cluster
 ```
 
-- `metadata.foundationdb.cluster_file` is required: an empty one is refused rather than reading
+- `cluster_file` is required. An empty one is refused rather than falling back to
   the client's default cluster.
-- An installation owns its whole cluster. The keys are written with no prefix, so the cluster must
-  hold nothing else.
-- `metadata.badger.*` is refused beside it, and `metadata.foundationdb.*` beside `badger`.
-- `metadata.foundationdb.tls.cert_file`, `key_file` and `ca_file` are named together or not at all,
-  and each file is the credential, never a value in this file. Named, they are the client's TLS
-  files: `dfs init` and `dfs start` connect over TLS, and refuse a file that is missing, naming
-  it, before they connect. Unnamed, the client connects without TLS.
+- The installation owns the whole cluster. Keys are written with no prefix, so the
+  cluster must hold nothing else.
+- A `metadata.badger` key beside `foundationdb` is refused, and the other way round.
+- `tls.cert_file`, `tls.key_file` and `tls.ca_file` are named together or not at
+  all. With them, `dfs init` and `dfs start` connect over TLS, and refuse a missing
+  file by name before connecting. Without them, the client connects without TLS.
 - `dfs init` and `dfs start` wait up to 30 seconds to connect.
 
 ## The environment
 
-Each key has one environment name: `DITTOFS_`, then the key in upper case with
-its dots as underscores, so `logging.rotation.max_size` is
-`DITTOFS_LOGGING_ROTATION_MAX_SIZE` and `keys.protocol.local.file` is
-`DITTOFS_KEYS_PROTOCOL_LOCAL_FILE`. A name is matched exactly as written: a
-lower-case name is not one of the node's.
+Every key has an environment variable: `DITTOFS_`, then the key in upper case with
+dots as underscores.
 
-A `DITTOFS_` name that is not a key's refuses the start, unless it is one of
-these names, read outside the file:
+| Key | Variable |
+|-----|----------|
+| `logging.level` | `DITTOFS_LOGGING_LEVEL` |
+| `logging.rotation.max_size` | `DITTOFS_LOGGING_ROTATION_MAX_SIZE` |
+| `keys.protocol.local.file` | `DITTOFS_KEYS_PROTOCOL_LOCAL_FILE` |
+| `journals` | `DITTOFS_JOURNALS` (comma-separated paths) |
 
-| Name | Read by |
+```bash
+DITTOFS_LOGGING_LEVEL=debug dfs start
+```
+
+Names are exact: a lower-case name is ignored. A `DITTOFS_` variable that is not a
+key stops the start, unless it is one of these:
+
+| Variable | Read by |
 | --- | --- |
-| `DITTOFS_CONFIG` | the start, the path of the host's file when `--config` is not given |
-| `DITTOFS_ENCRYPTION_PASSPHRASE` | the local key provider, a key file's passphrase |
-| `DITTOFS_PASSWORD` | `dfsctl`, which a shell that runs both may export |
-| `DITTOFS_<service>_PORT*` and `DITTOFS_<service>_SERVICE_*`, for each Service of the pod's namespace | Kubernetes, which sets them for every Service with an address: ignored while the value has the shape the kubelet gives it (a `tcp://`, `udp://` or `sctp://` link, an IP, a port number or a protocol name, by the name's form), and refused otherwise |
-| the names and prefixes the repository's development tools export (`DITTOFS_TEST_*`, `DITTOFS_E2E_*`, `DITTOFS_PREPUSH_*`, and the launchers' and git hooks' own names) | the tools, which a server they start inherits; a key's name wins over any of these |
-| `DITTOFS_OTLP_ENDPOINT` | `dfs start`, the collector it sends traces to; provisional, read only until tracing has a key of its own |
+| `DITTOFS_CONFIG` | `dfs`, the config file's path when `--config` is not given |
+| `DITTOFS_ENCRYPTION_PASSPHRASE` | `dfs`, the passphrase of every local key file |
+| `DITTOFS_PASSWORD` | `dfsctl`, which a shell running both may export |
+| `DITTOFS_OTLP_ENDPOINT` | `dfs start`, where to send traces; temporary, until tracing has a key of its own |
+| `DITTOFS_<service>_PORT*`, `DITTOFS_<service>_SERVICE_*` | Kubernetes, which sets them for every Service in the pod's namespace whose name starts with `dittofs`. Ignored while the value looks like what Kubernetes sets (a `tcp://`, `udp://` or `sctp://` address, an IP, a port or a protocol name); refused otherwise |
+| `DITTOFS_TEST_*`, `DITTOFS_E2E_*`, `DITTOFS_PREPUSH_*` and the other names the repository's development tools export | those tools; a key's own name wins over them |
 
-A name that was a key of an older file is refused naming its replacement, and
-a refusal never prints the variable's value.
+A variable that was a key in an older version is refused, and the message names its
+replacement. A refusal never prints a variable's value.
 
 ## Refusals
 
-Every refusal of the file or the environment reads:
+When `dfs` refuses the file or the environment, it prints every problem at once, so
+you can fix them in one pass. Each line reads:
 
 ```text
 <where>: <key>: <rule>[; <what to do>]
 ```
 
-*Where* is the file's path or `environment`. *Key* is the key as declared, or
-the environment name. *Rule* is the rule broken. *What to do* names the
-replacement of a key that moved, the closest declared key to an unknown one,
-or the way to change a value that is not the host's. All the refusals of one
-file and one environment are reported together, so one pass fixes them; a
-rule that relates two keys runs only over keys that passed their own checks.
-A refusal never prints the value of an environment variable, of a key that
-holds a credential, or of a key the node does not declare or no longer reads,
-such as a misspelled key or a key of an older file.
+*Where* is the file's path or `environment`. For example, this file has four
+mistakes:
 
-```text
-/etc/dittofs/config.yaml: adapters.smb.port: a setting, not a host fact; set it through the management API
+```yaml
+loging:
+  level: info
+adapters:
+  smb:
+    port: 1445
+journals:
+  - path: data/j1
+api:
+  listen:
+    - localhost:8080
+```
+
+```console
+$ dfs config validate --config /etc/dittofs/config.yaml
+Error: /etc/dittofs/config.yaml: adapters.smb.port: a setting, not a host fact; set it through the management API
+/etc/dittofs/config.yaml: api.listen: localhost:8080: the host is not an IP literal
 /etc/dittofs/config.yaml: journals: data/j1 is not an absolute path
 /etc/dittofs/config.yaml: loging.level: unknown key; did you mean logging.level?
-environment: DITTOFS_METADATA_BADGER_PATH: not an absolute path
 ```
+
+A file from an older version gets one line per old key, naming what replaced it:
+
+```text
+/etc/dittofs/config.yaml: controlplane.port: no longer read; write api.listen
+/etc/dittofs/config.yaml: database.type: no longer read; the metadata store is metadata.backend
+/etc/dittofs/config.yaml: shutdown_timeout: no longer read; set adapters.<protocol>.drain_timeout through the management API
+```
+
+A rule that compares two keys runs only once both keys pass their own checks. A
+refusal never prints the value of a variable, of a key that holds a credential, or
+of an unknown key.
 
 ## The commands
 
-Each command reads the file a start reads: `--config`, else `DITTOFS_CONFIG`,
-else the default path.
+Four `dfs config` commands read the same file `dfs start` would.
 
-- `dfs config show` prints the file it read (empty when none was), the state
-  and runtime directories with the variable that chose each, or `default` when
-  none did, the socket path, and every key with where its value came from:
-  `file`, the variable that set it, or `default`. A value that came from a
-  variable prints as the variable's name, never its value, and a socket set by
-  `DITTOFS_API_SOCKET` prints no path. A credential prints as its file's path,
-  never its content. `--output json` prints the same as JSON. The output is a
-  report, not a file a start can read.
-- `dfs config validate` refuses what a start would refuse, in the shape above,
-  and starts nothing: it creates no directory. It also opens both wrapping
-  keys and checks the roles, the journals, the API's certificate off
-  loopback, the socket path and the two directories. A start does not run
-  these checks yet, except that it checks a runtime directory it makes, so
-  `validate` can refuse a host that a start still runs on. On success it prints the file it read, or `none`, and
-  `Validation: OK`.
-- `dfs config schema` prints the table above as a JSON Schema: the types, the
-  enumerations and the keys required whatever another key holds. It checks
-  the file alone: a file whose journals or keys come from variables fails its
-  required keys, and the rules that relate two keys are checked by
-  `dfs config validate`. The schema describes the file's structure, and
-  `dfs config validate` decides what is valid. `--output <file>` writes it
-  to a file.
-- `dfs config edit` opens the file in `$EDITOR`, else `$VISUAL`, else `vi`,
-  and checks nothing.
+### `dfs config validate`
+
+Checks the file and the host without starting anything, and creates no directory.
+Beyond what a start checks, it opens both key files, and checks the roles, the
+journals, the API certificate off loopback, the socket path and the two
+directories. So it can refuse a host that `dfs start` would still run on.
+
+```console
+$ dfs config validate
+Configuration file: /home/alice/.config/dittofs/config.yaml
+Validation: OK
+```
+
+### `dfs config show`
+
+Prints the file it read, the two directories and what chose them, the socket
+path, and every key with its value and where the value came from: `file`, the
+variable that set it, or `default`. It never prints a variable's value or a key
+file's content. `--output json` prints the same as JSON. The output is a report,
+not a config file you can load.
+
+```console
+$ dfs config show
+file: /home/alice/.config/dittofs/config.yaml
+directories:
+  state:
+    path: /home/alice/.local/state/dittofs
+    source: HOME
+  runtime:
+    path: /home/alice/.local/state/dittofs/run
+    source: HOME
+socket:
+  path: /home/alice/.local/state/dittofs/run/dfs.sock
+  source: default
+...
+sources:
+  journals: file
+  logging.level: default
+  metadata.badger.path: file
+  node.id: file
+...
+```
+
+### `dfs config schema`
+
+Prints [the table above](#the-keys) as a JSON Schema, for editors that check YAML.
+`--output <file>` writes it to a file, for example
+`dfs config schema --output dittofs.schema.json`. The schema checks the file's
+shape only: a file whose journals or keys come from variables fails its required
+keys. `dfs config validate` is what decides whether a file is valid.
+
+### `dfs config edit`
+
+Opens the file in `$EDITOR`, else `$VISUAL`, else `vi`. It checks nothing; run
+`dfs config validate` afterwards.
 
 ## The management API
 
-Everything the node serves but its bootstrap is a record in the metadata store,
-written through the management API, apart from what `dfs init` and
-`dfs reset-admin` write on the host: shares and their export policies,
-users, groups, grants, netgroups, quotas, adapters, remote stores, namespaces,
-settings and their secrets. No file or variable sets any of them, and the node
-applies a change without a restart unless the setting's class says otherwise.
+Everything except the config file lives in the metadata store and is changed
+through the management API: shares and their export policies, users, groups,
+grants, netgroups, quotas, adapters, remote stores, namespaces and settings.
+`dfs init` and `dfs reset-admin` are the only commands that write it on the host.
+Most changes apply without a restart.
 
-The API listens on the `api.listen` address and on the local socket
-`api.socket` names. Off loopback it serves TLS with `api.tls.cert_file` and
-`api.tls.key_file`. `GET /health/live` and `GET /health/ready` answer without a
-token. Every `/api/v1/` route except sign-in and refresh needs a signed-in
-caller, whose role (`viewer`, `operator` or `admin`) decides what it may do. `dfsctl` is its client; see the
-[CLI reference](cli.md).
+The API listens on `api.listen` and on the socket `api.socket` names. Off loopback
+it serves TLS only, with `api.tls.cert_file` and `api.tls.key_file`. Two health
+checks need no sign-in:
+
+```console
+$ curl http://127.0.0.1:8080/health/live
+live
+$ curl http://127.0.0.1:8080/health/ready
+ready
+```
+
+Every other route under `/api/v1/`, apart from sign-in and token refresh, needs a
+signed-in caller. The caller's role, `viewer`, `operator` or `admin`, decides what
+it may do. `dfsctl` is the API's client; see the [CLI reference](cli.md).
+
+### Settings
 
 A setting is read and written by its scope and key:
 
-```bash
-dfsctl setting set installation api.session_lifetime 8h
-dfsctl setting get installation api.session_lifetime
-dfsctl setting unset installation api.session_lifetime   # back to the default
+```console
+$ dfsctl setting set installation api.session_lifetime 8h
+KEY                   VALUE  APPLIED
+api.session_lifetime  "8h"
+
+$ dfsctl setting get installation api.session_lifetime
+KEY                   VALUE  APPLIED
+api.session_lifetime  "8h"   0/1
+
+$ dfsctl setting unset installation api.session_lifetime   # back to the default
 ```
 
-The scope is `installation`, `node:<id>`, `namespace:<id>`, `store:<id>` or
-`share:<name>`, and each section declares the scopes it is set at. A `get` of a
-key with no record at that scope answers not found; it does not print the
-default. A setting's read shows how many nodes have applied it.
+`APPLIED` counts the nodes that have applied the value so far. The scope is
+`installation`, `node:<id>`, `namespace:<id>`, `store:<id>` or `share:<name>`. A
+`get` of a key that has no value at that scope answers `404 not_found`; it does not
+print the default.
 
-The node's settings table declares these sections today:
+These settings exist today, all at the `installation` scope only:
 
 | Section | Keys | Who may write |
 | --- | --- | --- |
@@ -284,25 +477,11 @@ The node's settings table declares these sections today:
 | `identity` | `id_range`, `ntlm`, `netbios_name`, `keytab`, `directory_stale_grace` | `operator`; `ntlm` and `keytab` `admin` only |
 | `identity.directory` | the directory record; see [Identity](identity.md) | `admin` |
 
-All four are set at `installation` only; a write at another scope is refused.
-
-Four bootstrap keys do not yet behave as [the table](#the-keys) says:
-
-- `dfs config validate` refuses a file without `keys.protocol`, while
-  `dfs init` and `dfs start` run without it.
-
-- `dfs init`, `dfs start` and `dfs reset-admin` refuse a file without `node.id`
-  (`node.id is not set`), as nothing else names the node yet.
-- `dfs start` fails on `metrics.listen: off`, binding it as an address.
-- `api.listen` takes one address: the node refuses to start with a second.
-
-A key of no declared section is refused `unknown_key`. The adapters', remote
-stores' and namespaces' settings are not declared yet, so `dfsctl adapter set`,
-`dfsctl store create` and `dfsctl namespace create` are refused that way on
-this branch.
-
-## Settings
-
-## Secrets
-
-## Integration
+> **Not available yet on this version:** settings for the NFS and SMB adapters,
+> remote stores and namespaces. Any other key is refused with `unknown_key`, so
+> `dfsctl adapter set`, `dfsctl store create` and `dfsctl namespace create` fail:
+>
+> ```console
+> $ dfsctl adapter set nfs --enabled
+> Error: dfsctl adapter set: writing adapter nfs: 400 unknown_key: Bad Request: refused by the settings table (field adapters.nfs.enabled)
+> ```
