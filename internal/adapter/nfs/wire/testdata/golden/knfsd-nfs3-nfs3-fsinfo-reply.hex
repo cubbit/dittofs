@@ -1,0 +1,7 @@
+# test/pcap-corpus/nfs3/reference.pcap, frame 24, cut by test/pcap-corpus/cut-golden.sh with framing rpc:
+# tshark -r test/pcap-corpus/nfs3/reference.pcap -Y frame.number==24 -T fields -e tcp.reassembled.data -e tcp.payload -e udp.payload
+b864bf33 00000001 00000000 00000000
+00000000 00000000 00000000 00000000
+00100000 00100000 00001000 00100000
+00100000 00001000 00100000 7fffffff
+ffffffff 00000001 00000000 0000001b

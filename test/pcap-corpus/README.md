@@ -25,9 +25,12 @@ pcap-corpus/
   pcap-diff.sh        # structural diff harness (tshark + normalize.py + diff)
   normalize.py        # tshark PDML -> canonical structural skeleton
   cut-golden.sh       # one frame's message -> a golden .hex file (tshark)
+  nfs-record.sh       # records the NFS areas below against knfsd (root)
   kerberos/           # AS-REQ/AP-REQ / SPNEGO / PAC reference
   ldap/               # RFC2307 query reference
   nfsv4-acl/          # fattr4_acl get/set reference
+  nfs3/ nlm/          # knfsd: NFSv3 with MOUNT; NLM with NSM
+  nfs40/ nfs41/ nfs42/  # knfsd: NFSv4.0, NFSv4.1, NFSv4.2, with callbacks
   smb-sd/             # SMB2 SECURITY_DESCRIPTOR query/set reference
 ```
 
@@ -56,8 +59,8 @@ more than one fragment is refused), `smb2` (the direct-TCP header) or `none`
 `tshark` command. Only the machine that cuts needs `tshark`.
 
 ```bash
-test/pcap-corpus/cut-golden.sh test/pcap-corpus/nfsv4-acl/reference.pcap 4 rpc \
-  internal/adapter/nfs/wire/testdata/golden/knfsd-nfs40-null-call.hex
+test/pcap-corpus/cut-golden.sh test/pcap-corpus/nlm/reference.pcap 65 rpc \
+  internal/adapter/nfs/wire/testdata/golden/knfsd-nfs3-nlm-test-granted-call.hex
 ```
 
 ## Regenerating the reference captures
@@ -74,6 +77,7 @@ server (or Windows) for SMB security descriptors. Capture with `tcpdump -i any
 | LDAP RFC2307 | `ldapsearch` ↔ AD-DC | `tcpdump port 636` while `ldapsearch -H ldaps://… '(sAMAccountName=…)'` (decrypt with `SSLKEYLOGFILE` — the AD-DC refuses cleartext :389) | `ldap` |
 | NFSv4 `fattr4_acl` | Linux client ↔ `knfsd` | `tcpdump port 2049` while `nfs4_getfacl` / `nfs4_setfacl` on a krb5 mount | `nfs` |
 | SMB SECURITY_DESCRIPTOR | `smbcacls` / Windows `icacls` ↔ Samba member / Windows share | `tcpdump port 445` while `smbcacls //srv/share file` | `smb2` |
+| NFS program areas (`nfs3`, `nlm`, `nfs40`, `nfs41`, `nfs42`) | Linux client ↔ `knfsd` over loopback, on a throwaway host | `sudo NFS_RECORD_THROWAWAY_HOST=1 test/pcap-corpus/nfs-record.sh <outdir> [area...]` | `nfs`, `mount`, `nlm`, `stat` |
 
 See each feature's `CAPTURE.md` for the exact commands used.
 
@@ -84,9 +88,11 @@ See each feature's `CAPTURE.md` for the exact commands used.
 | Kerberos / PAC | ✅ reference captured | `kerberos/reference.pcap` — real Samba AD-DC AS/TGS/AP exchange (realm `DITTOFS.AD`) |
 | NFSv4 `fattr4_acl` | ✅ reference + DittoFS sample | `nfsv4-acl/reference.pcap` — real Linux `knfsd` `nfs4_getfacl`/`setfacl` exchange; `dittofs-krb5-sample.pcap` is the candidate side |
 | LDAP RFC2307 | ✅ reference captured | `ldap/reference.pcap` — real Samba AD-DC LDAPS search (`sAMAccountName=alice` → `uidNumber`/`gidNumber`/`objectSid`), TLS-decrypted via key log; see `ldap/CAPTURE.md` |
+| NFS program areas | ✅ references + golden files | `nfs3/`, `nlm/`, `nfs40/`, `nfs41/`, `nfs42/` — Linux `knfsd` over loopback, recorded by `nfs-record.sh`; their messages are cut into `internal/adapter/nfs/wire/testdata/golden/knfsd-*.hex`, which `TestParseCaptured` checks; each `CAPTURE.md` names its cuts and gaps |
 | SMB SECURITY_DESCRIPTOR | ✅ reference + validated | `smb-sd/reference.pcap` (Samba 4.19) vs `dittofs-sample.pcap` — SD field structure **78/78 match**; two value divergences found (`SE_DACL_PROTECTED` omitted; no LSARPC SID→name) — see `smb-sd/CAPTURE.md` |
 
-All four references were captured live against real servers: Samba AD-DC for
+Every reference was captured live against a real server: Samba AD-DC for
 Kerberos/PAC and LDAP RFC2307, a Linux `knfsd` export for the NFSv4 `fattr4_acl`
-exchange, and Samba 4.19 for the SMB security descriptor. The NFSv4 candidate
+exchange and for the five NFS program areas, and Samba 4.19 for the SMB
+security descriptor. The NFSv4 candidate
 sample was captured from DittoFS during the AD domain-user `sec=krb5` validation.
