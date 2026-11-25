@@ -27,6 +27,8 @@ func TestRefusalMatchesErrUnsuitableStorage(t *testing.T) {
 		ruleSubvolume,
 		ruleCopyOnWrite,
 		ruleCachePolicy,
+		ruleDataJournal,
+		ruleKernel,
 	} {
 		r := &refusal{rule: rule, dir: "/journal", mount: "/", path: "/journal"}
 		if !errors.Is(r, core.ErrUnsuitableStorage) {

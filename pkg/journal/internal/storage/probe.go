@@ -20,10 +20,11 @@ type Probe struct {
 	// architecture.
 	FSType uint32
 	// DirFlags is FS_IOC_GETFLAGS's answer for dir. The verdict reads it and
-	// files only on Btrfs, once DirIno is a subvolume root's, so the probe
-	// asks for them only there: the ioctl fails on the empty directory a
-	// snapshot leaves for a nested subvolume, and on some filesystems outside
-	// the list, which the verdict passes.
+	// files on Btrfs, once DirIno is a subvolume root's, and on every ext
+	// mount, where the journal-data attribute is one file's to set, so the
+	// probe asks for them in both: the ioctl fails on the empty directory a
+	// snapshot leaves for a nested subvolume, and on some filesystems
+	// outside the list, which the verdict passes.
 	DirFlags uint32
 	// DirIno is dir's inode number.
 	DirIno uint64
@@ -37,8 +38,28 @@ type Probe struct {
 	// no ID would match the table, and every directory would be refused.
 	MountID uint64
 	// Files is every file already in dir, with FS_IOC_GETFLAGS's answer for
-	// each.
+	// each, on the mounts DirFlags names: the journal-data attribute on ext,
+	// like the copy-on-write one on Btrfs, is inherited at creation only, so
+	// it is set on one file alone and each file is asked on its own.
 	Files []ProbedFile
+	// KernelRelease is the kernel's release as uname(2) writes it in
+	// utsname.release ("5.15.0-76-generic"), or empty where the probe read
+	// none. The verdict refuses a release older than 4.13 and fails on one
+	// it cannot read numbers from, so the probe passes the text alone,
+	// without interpreting it.
+	KernelRelease string
+	// ExtOptions and ExtOptionsErr are a pair, because only together they
+	// tell the verdict what happened: ExtOptions is the text of
+	// /proc/fs/ext4/<dev>/options, the effective options the ext4 driver
+	// reports for the directory's device, and ExtOptionsErr is the error of
+	// reading that file. Both empty is no ext options the gather found —
+	// a filesystem the ext rules do not reach, or a gather that read none —
+	// while the error alone says the effective options were never seen, so
+	// the check fails rather than refusing or passing on a guess. The probe
+	// fills the pair without parsing the text; the verdict splits it into
+	// words.
+	ExtOptions    string
+	ExtOptionsErr error
 }
 
 // ProbedFile is one file already in the journal directory.

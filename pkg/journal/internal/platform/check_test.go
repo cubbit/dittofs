@@ -2,6 +2,7 @@ package platform
 
 import (
 	"errors"
+	"io/fs"
 	"strings"
 	"sync"
 	"testing"
@@ -59,11 +60,11 @@ const (
 	overlayMagic = 0x794c7630
 )
 
-// probe returns a probe of dir under table whose attribute and inode answers
-// pass every Btrfs rule, so a case refuses only for what it changes. Its
-// mount ID is unknown.
+// probe returns a probe of dir under table whose attribute, inode, kernel
+// and effective-option answers pass every rule, so a case refuses only for
+// what it changes. Its mount ID is unknown.
 func probe(table, dir string, fsType uint32) storage.Probe {
-	return storage.Probe{
+	p := storage.Probe{
 		Dir:       dir,
 		Mountinfo: table,
 		FSType:    fsType,
@@ -71,7 +72,16 @@ func probe(table, dir string, fsType uint32) storage.Probe {
 		// answered FS_NOCOW_FL and stat inode 256.
 		DirFlags: 0x00800000,
 		DirIno:   256,
+		// Recorded from a Linux 6.1 probe: uname's release, and the effective
+		// options file's clean defaults, one option per line as the driver's
+		// own file writes them (fs/ext4/super.c, _ext4_show_options), which
+		// mount options an ext mount runs with are read from.
+		KernelRelease: "6.1.0",
 	}
+	if fsType == magicExt {
+		p.ExtOptions = "rw\nrelatime\ndata=ordered\n"
+	}
+	return p
 }
 
 // wantRefusal fails t unless err is a refusal by rule of dir naming mount,
@@ -590,9 +600,206 @@ func TestCheckCopyOnWrite(t *testing.T) {
 	}
 }
 
+// TestCheckKernelRelease covers RFC 28 Appendix A: "Open MUST refuse a
+// kernel older than 4.13: there ext4, XFS and Btrfs each began recording a
+// writeback error per file and reporting it to every descriptor open when it
+// happened; an earlier kernel reports it to the first sync through any
+// descriptor and clears it". The MUST is unqualified, so the rule runs before
+// the filesystem is named and refuses a directory no listed filesystem holds
+// too. The release's first two numbers are compared as a tuple; a release the
+// numbers do not parse from is an input the verdict cannot answer on, so the
+// check fails rather than refusing.
+func TestCheckKernelRelease(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const dir = "/srv/journal/j"
+	for _, tc := range []struct {
+		name    string
+		table   string
+		dir     string
+		fsType  uint32
+		release string
+		refused bool
+		err     error
+	}{
+		{name: "refuses 4.12.0-old", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.12.0-old", refused: true},
+		// 4.9 is older than 4.13 though 9 is not less than 13 as decimals
+		// read: the numbers are compared as a tuple.
+		{name: "refuses 4.9.0", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.9.0", refused: true},
+		{name: "refuses 3.10.0-1160.el7", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "3.10.0-1160.el7", refused: true},
+		// The rule refuses before the filesystem is named, so an unlisted
+		// one is refused too.
+		{name: "refuses an unlisted filesystem", table: hostLines, dir: "/run/user/1000/j", fsType: tmpfsMagic, release: "4.12.8", refused: true},
+		// A development release: the patch level carries the -rc suffix, and
+		// the first two numbers alone still decide (kernelVersion's doc).
+		{name: "passes 4.13.0-rc1", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.13.0-rc1"},
+		{name: "refuses 4.12.0-rc7", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.12.0-rc7", refused: true},
+		// A release with no minor is not the "X.Y[.Z...][suffix]" uname
+		// writes, so its numbers do not parse and the check fails.
+		{name: "fails on the bare major 5", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "5", err: errKernelRelease},
+		{name: "passes 4.13", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.13"},
+		{name: "passes 4.13.5-arch1", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.13.5-arch1"},
+		{name: "passes 5.15.0-76-generic", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "5.15.0-76-generic"},
+		// An empty release is a gather that read none; the code site's
+		// decision passes it.
+		{name: "passes an empty release", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: ""},
+		{name: "fails on an unparseable release", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "six.onethree", err: errKernelRelease},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := probe(tc.table, tc.dir, tc.fsType)
+			p.KernelRelease = tc.release
+			err := CheckProbe(p)
+			switch {
+			case tc.err != nil:
+				wantError(t, err, tc.err)
+			case tc.refused:
+				wantRefusal(t, err, ruleKernel, tc.dir, "", tc.release, "")
+			default:
+				wantPass(t, err)
+			}
+		})
+	}
+}
+
+// TestCheckDataJournal covers RFC 28 Appendix A: "Open MUST also refuse ext4
+// data journaling — the data=journal mode, read from the filesystem's
+// effective options (/proc/fs/ext4/<dev>/options ...; they include a
+// superblock default /proc/mounts omits, and an unreadable file is an error
+// of the check), or the journal-data file attribute on the journal's
+// directory or on any file in it". Each refusal has a twin that changes the
+// one input the rule refuses.
+func TestCheckDataJournal(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const dir = "/srv/journal/j"
+
+	// The mode: the effective options carry the superblock's default the
+	// mount table omits (tune2fs -o journal_data mounts plainly with
+	// data=journal and a clean table line), so it is refused though the
+	// table never names it.
+	t.Run("refuses data=journal with a clean mount line", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		p.ExtOptions = "rw,relatime,data=journal"
+		wantRefusal(t, CheckProbe(p), ruleDataJournal, dir, "/srv/journal", "data=journal", "")
+	})
+	// The form the options file really writes, one option per line
+	// (fs/ext4/super.c, _ext4_show_options): the comma form above is a
+	// recording of the mount table's shape. Both rows refuse, so narrowing
+	// the split to the commas alone goes red.
+	t.Run("refuses data=journal the file writes one per line", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		p.ExtOptions = "rw\nrelatime\ndata=journal\n"
+		wantRefusal(t, CheckProbe(p), ruleDataJournal, dir, "/srv/journal", "data=journal", "")
+	})
+	t.Run("refuses nobarrier the file writes one per line", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		p.ExtOptions = "rw\nrelatime\nnobarrier\ndata=ordered\n"
+		wantBarrier(t, CheckProbe(p), dir, "/srv/journal", "nobarrier")
+	})
+	t.Run("passes data=ordered", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		p.ExtOptions = "rw,relatime,data=ordered"
+		wantPass(t, CheckProbe(p))
+	})
+	t.Run("passes data=writeback", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		p.ExtOptions = "rw,relatime,data=writeback"
+		wantPass(t, CheckProbe(p))
+	})
+
+	// The mount's barriers are read from the effective options as well, the
+	// withdrawn mount-table-alone decision's other half.
+	t.Run("refuses nobarrier with a clean mount line", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		p.ExtOptions = "rw,relatime,nobarrier,data=ordered"
+		wantBarrier(t, CheckProbe(p), dir, "/srv/journal", "nobarrier")
+	})
+	t.Run("refuses barrier=0 with a clean mount line", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		p.ExtOptions = "rw,relatime,barrier=0,data=ordered"
+		wantBarrier(t, CheckProbe(p), dir, "/srv/journal", "barrier=0")
+	})
+
+	// An unreadable options file is an error of the check, never a refusal
+	// and never a pass: the effective options were never seen, so the mount
+	// is not known clean.
+	t.Run("fails on an unreadable options file", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		read := &fs.PathError{Op: "open", Path: "/proc/fs/ext4/sdb1/options", Err: errors.New("an I/O error met while reading the options")}
+		p.ExtOptionsErr = read
+		wantError(t, CheckProbe(p), read)
+	})
+
+	// ext2 has its own driver, which registers nothing under /proc/fs/ext4:
+	// its options file answers ENOENT, wrapped with the sentinel the skip
+	// matches alone, and passes, while its barrier rows stay read from the
+	// mount table as before.
+	ext2Line := "90 33 8:17 / /srv/journal rw,relatime - ext2 /dev/sdb1 rw\n"
+	t.Run("passes an ext2 mount whose options file is absent", func(t *testing.T) {
+		p := probe(hostLines+ext2Line, dir, magicExt)
+		p.ExtOptionsErr = &fs.PathError{Op: "open", Path: "/proc/fs/ext4/sdb1/options", Err: errNoExtOptionsFile}
+		wantPass(t, CheckProbe(p))
+	})
+	// A not-found elsewhere in the read — the device link's, whose absence
+	// says no sysfs is visible rather than that the file exists nowhere —
+	// fails the check on an ext2-typed mount as on an ext4 one, so a mount the
+	// ext4 driver serves (CONFIG_EXT4_USE_FOR_EXT2) cannot pass unread.
+	t.Run("fails on an ext2 mount whose device link is not found", func(t *testing.T) {
+		p := probe(hostLines+ext2Line, dir, magicExt)
+		p.ExtOptionsErr = &fs.PathError{Op: "readlink", Path: "/sys/dev/block/8:17", Err: fs.ErrNotExist}
+		wantError(t, CheckProbe(p), fs.ErrNotExist)
+	})
+	// A kernel built with CONFIG_EXT4_USE_FOR_EXT2 serves an ext2-typed
+	// mount with the ext4 driver, whose options file is readable: the
+	// ext-options rules apply to it.
+	t.Run("refuses an ext2-typed mount whose readable options say data=journal", func(t *testing.T) {
+		p := probe(hostLines+ext2Line, dir, magicExt)
+		p.ExtOptions = "rw,relatime,data=journal"
+		wantRefusal(t, CheckProbe(p), ruleDataJournal, dir, "/srv/journal", "data=journal", "")
+	})
+	t.Run("refuses an ext2-typed mount whose readable options say nobarrier", func(t *testing.T) {
+		p := probe(hostLines+ext2Line, dir, magicExt)
+		p.ExtOptions = "rw,relatime,nobarrier"
+		wantBarrier(t, CheckProbe(p), dir, "/srv/journal", "nobarrier")
+	})
+	t.Run("fails on an ext2-typed mount whose options file failed otherwise", func(t *testing.T) {
+		p := probe(hostLines+ext2Line, dir, magicExt)
+		read := &fs.PathError{Op: "open", Path: "/proc/fs/ext4/sdb1/options", Err: errors.New("an I/O error met while reading the options")}
+		p.ExtOptionsErr = read
+		wantError(t, CheckProbe(p), read)
+	})
+	t.Run("refuses an ext2 mount by the mount table's nobarrier", func(t *testing.T) {
+		p := probe(hostLines+ext2Line, dir, magicExt)
+		p.ExtOptionsErr = &fs.PathError{Op: "open", Path: "/proc/fs/ext4/sdb1/options", Err: errNoExtOptionsFile}
+		p.Mountinfo = hostLines + "90 33 8:17 / /srv/journal rw,relatime - ext2 /dev/sdb1 rw,nobarrier\n"
+		wantBarrier(t, CheckProbe(p), dir, "/srv/journal", "nobarrier")
+	})
+
+	// The attribute is inherited at creation only, so it is set on one file
+	// alone (chattr +j); each file is asked on its own, as the copy-on-write
+	// attribute is.
+	t.Run("refuses the attribute on the directory", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		p.DirFlags = fsJournalData
+		wantRefusal(t, CheckProbe(p), ruleDataJournal, dir, "", "", dir)
+	})
+	t.Run("refuses the attribute on one file", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		p.Files = []storage.ProbedFile{
+			{Name: "00000000000000000001.seg", Flags: 0},
+			{Name: "format", Flags: fsJournalData},
+		}
+		wantRefusal(t, CheckProbe(p), ruleDataJournal, dir, "", "", dir+"/format")
+	})
+	t.Run("passes the attribute on neither", func(t *testing.T) {
+		wantPass(t, CheckProbe(probe(hostLines+ext4Nested, dir, magicExt)))
+	})
+}
+
 // TestCheckRefusalOrder pins which refusal is reported when several rules
-// fail at once: the first in the order mount options, subvolume root,
-// directory attribute, files. Only that one is reported.
+// fail at once: the first in the order kernel release, mount-table barrier
+// options, effective-options barrier, data=journal, subvolume root,
+// directory attribute, file attribute. Only that one is reported.
 func TestCheckRefusalOrder(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -643,6 +850,62 @@ func TestCheckRefusalOrder(t *testing.T) {
 
 	p.DirFlags = fsNoCOW
 	wantRefusal(t, CheckProbe(p), ruleCopyOnWrite, dir, "", "", dir+"/format")
+
+	// The kernel rule runs before the barrier one: a directory that both an
+	// older kernel and a mount without cache flushes refuse is refused by the
+	// kernel, the same refusal a probe failing only the kernel gets.
+	oldKernel := probe(hostLines+ext4NestedNoBarrier, dir, magicExt)
+	oldKernel.KernelRelease = "4.12.0"
+	err = CheckProbe(oldKernel)
+	wantRefusal(t, err, ruleKernel, dir, "", "4.12.0", "")
+	kernelOnly := probe(hostLines+ext4Nested, dir, magicExt)
+	kernelOnly.KernelRelease = "4.12.0"
+	sameAs(err, CheckProbe(kernelOnly))
+
+	// For ext, the order after it is the mount options, the effective
+	// options' barrier words, the data=journal mode, the directory
+	// attribute, then the file attribute. The barrier rules are one refusal
+	// whichever of the two sources names the word.
+	extAll := func() storage.Probe {
+		p := probe(hostLines+ext4NestedNoBarrier, dir, magicExt)
+		p.ExtOptions = "rw,relatime,nobarrier,data=journal"
+		p.DirFlags = fsJournalData
+		p.Files = []storage.ProbedFile{{Name: "format", Flags: fsJournalData}}
+		return p
+	}
+
+	err = CheckProbe(extAll())
+	wantBarrier(t, err, dir, dir, "nobarrier")
+	tableBarrierOnly := probe(hostLines+ext4NestedNoBarrier, dir, magicExt)
+	sameAs(err, CheckProbe(tableBarrierOnly))
+
+	p = extAll()
+	p.Mountinfo = hostLines + ext4Nested
+	err = CheckProbe(p)
+	wantBarrier(t, err, dir, dir, "nobarrier")
+	optionsBarrierOnly := probe(hostLines+ext4Nested, dir, magicExt)
+	optionsBarrierOnly.ExtOptions = "rw,relatime,nobarrier"
+	sameAs(err, CheckProbe(optionsBarrierOnly))
+
+	p.ExtOptions = "rw,relatime,data=journal"
+	err = CheckProbe(p)
+	wantRefusal(t, err, ruleDataJournal, dir, dir, "data=journal", "")
+	modeOnly := probe(hostLines+ext4Nested, dir, magicExt)
+	modeOnly.ExtOptions = "rw,relatime,data=journal"
+	sameAs(err, CheckProbe(modeOnly))
+
+	p.ExtOptions = "rw,relatime,data=ordered"
+	err = CheckProbe(p)
+	wantRefusal(t, err, ruleDataJournal, dir, "", "", dir)
+	dirAttrOnly := probe(hostLines+ext4Nested, dir, magicExt)
+	dirAttrOnly.DirFlags = fsJournalData
+	sameAs(err, CheckProbe(dirAttrOnly))
+
+	p.DirFlags = 0
+	wantRefusal(t, CheckProbe(p), ruleDataJournal, dir, "", "", dir+"/format")
+	fileAttrOnly := probe(hostLines+ext4Nested, dir, magicExt)
+	fileAttrOnly.Files = []storage.ProbedFile{{Name: "format", Flags: fsJournalData}}
+	sameAs(CheckProbe(p), CheckProbe(fileAttrOnly))
 }
 
 // TestCheckRefusalNamesWhat checks that the message an operator reads names
@@ -658,6 +921,14 @@ func TestCheckRefusalNamesWhat(t *testing.T) {
 	notRoot.DirIno = btrfsSubvolumeRootIno + 1
 	badFile := btrfs()
 	badFile.Files = []storage.ProbedFile{{Name: "format", Flags: 0}}
+	oldKernel := probe(hostLines+ext4Nested, "/srv/journal", magicExt)
+	oldKernel.KernelRelease = "4.12.8"
+	dataMode := probe(hostLines+ext4Nested, "/srv/journal", magicExt)
+	dataMode.ExtOptions = "rw,relatime,data=journal"
+	dirAttr := probe(hostLines+ext4Nested, "/srv/journal", magicExt)
+	dirAttr.DirFlags = fsJournalData
+	fileAttr := probe(hostLines+ext4Nested, "/srv/journal", magicExt)
+	fileAttr.Files = []storage.ProbedFile{{Name: "format", Flags: fsJournalData}}
 
 	for _, tc := range []struct {
 		name string
@@ -669,6 +940,10 @@ func TestCheckRefusalNamesWhat(t *testing.T) {
 		{"subvolume", notRoot, []string{"/srv/journal", "subvolume root"}},
 		{"directory attribute", noAttr, []string{"/srv/journal", "chattr +C"}},
 		{"file attribute", badFile, []string{"/srv/journal/format", "chattr +C", "copy it into a new file", "recreate the journal"}},
+		{"kernel", oldKernel, []string{"/srv/journal", "4.12.8", "4.13"}},
+		{"data journaling mode", dataMode, []string{"/srv/journal", "data journaling", "data=journal"}},
+		{"journal-data attribute on the directory", dirAttr, []string{"/srv/journal", "data journaling", "chattr"}},
+		{"journal-data attribute on a file", fileAttr, []string{"/srv/journal/format", "data journaling", "chattr"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := CheckProbe(tc.p)

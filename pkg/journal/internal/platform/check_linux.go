@@ -56,6 +56,21 @@ var (
 	// errDirentMalformed: a record getdents returned does not fit in the
 	// bytes it returned, or its name is empty or has no NUL.
 	errDirentMalformed = errors.New("journal: a directory record does not parse")
+	// errLinkNameTruncated: the sysfs link of the directory's device number
+	// resolved to a name as long as the buffer, so the name the kernel wrote
+	// was not read whole.
+	errLinkNameTruncated = errors.New("journal: the device name does not fit the buffer")
+)
+
+// The buffers of the ext options read.
+const (
+	// linkBufSize holds the device name one readlink answers: PATH_MAX
+	// (include/uapi/linux/limits.h), enough for every name, so one that
+	// fills the buffer is cut short.
+	linkBufSize = 4096
+	// optionsBufSize holds the bytes one pread of the options file asks for;
+	// the next read starts where the last ended, so the whole file is read.
+	optionsBufSize = 4096
 )
 
 // Check decides whether dir is suitable for a journal under RFC 28 Appendix
@@ -95,15 +110,23 @@ func probeDir(c calls, mountinfo, dir string) (storage.Probe, error) {
 		return storage.Probe{}, err
 	}
 
-	// decision: the barrier options are read from the mount table alone.
-	// ext4 leaves an option equal to the superblock's default out of it, so
-	// a volume given nobarrier as its default (tune2fs -o nobarrier) and
-	// mounted plainly passes, though no sync reaches the device; only its
-	// options file under /proc/fs/ext4 shows it. Withdraw this when the RFC
-	// says a default set in the superblock is one the mount options say.
+	// The mount table is still read here — the mount's type, the identity
+	// the ID is checked against, and the barrier options of the filesystems
+	// that write theirs in it, XFS and Btrfs, are mount-table reads — but
+	// ext4's barrier and data-journal options come from its own effective
+	// options file, which an option equal to the superblock's default
+	// reaches (tune2fs -o nobarrier, tune2fs -o journal_data) and the table
+	// does not.
 	table, err := os.ReadFile(mountinfo)
 	if err != nil {
 		return storage.Probe{}, err
+	}
+
+	// The kernel release is read before anything is opened, as the verdict
+	// decides on it before the directory's filesystem is named.
+	var uts unix.Utsname
+	if err := c.uname(&uts); err != nil {
+		return storage.Probe{}, fmt.Errorf("journal: reading the kernel release: %w", err)
 	}
 
 	fd, err := openRetrying(func() (int, error) {
@@ -118,8 +141,9 @@ func probeDir(c calls, mountinfo, dir string) (storage.Probe, error) {
 	}
 
 	p := storage.Probe{
-		Dir:       resolved,
-		Mountinfo: string(table),
+		Dir:           resolved,
+		Mountinfo:     string(table),
+		KernelRelease: utsRelease(&uts),
 	}
 
 	// The close is never repeated, as in SyncDir: Linux releases the
@@ -132,8 +156,14 @@ func probeDir(c calls, mountinfo, dir string) (storage.Probe, error) {
 }
 
 // probeOpenDir fills p from the directory open on fd. The attribute and the
-// files are read only on a Btrfs subvolume root, the one place the verdict
-// reads them.
+// files are read on every ext mount, where the journal-data attribute is one
+// file's to set, and on a Btrfs subvolume root, the one place the copy-on-
+// write attribute is read; on every other filesystem the verdict passes them,
+// and asking there would fail a directory it accepts. The listing and the
+// per-file ioctls now run on ext, so errEntryLink (a symbolic link in the
+// directory) and errEntryTypeUnknown (DT_UNKNOWN, which ext2 and ext3 without
+// the filetype feature return for every entry) fail the check on an ext
+// journal directory where they were never read: closed on what it cannot read.
 //
 // An open interrupted by a signal is made again, as SyncDir and os.OpenFile
 // make it. Every other call is made once: an interrupted fstatfs, fstat,
@@ -175,7 +205,17 @@ func probeOpenDir(c calls, fd int, p *storage.Probe) error {
 
 	p.MountID = mountID
 
-	if p.FSType != magicBtrfs || p.DirIno != btrfsSubvolumeRootIno {
+	if p.FSType == magicExt {
+		// st.Dev names the device whose effective options the ext rules
+		// read; the outcome reaches the verdict whatever it was, stored as
+		// the pair it distinguishes a driver that keeps no options file
+		// from a read that failed.
+		probeExtOptions(c, p, st.Dev)
+	}
+
+	// The attribute and the files are read on every ext mount, and on a
+	// Btrfs subvolume root.
+	if p.FSType != magicExt && (p.FSType != magicBtrfs || p.DirIno != btrfsSubvolumeRootIno) {
 		return nil
 	}
 
@@ -197,6 +237,17 @@ func probeOpenDir(c calls, fd int, p *storage.Probe) error {
 
 	for _, name := range names {
 		flags, err := fileFlags(c, fd, joinPath(p.Dir, name), name)
+		if errors.Is(err, fs.ErrNotExist) {
+			// decision: a file the listing saw whose open answers ENOENT is
+			// skipped, not failed: the journal unlinks a segment as it rotates
+			// its files, and a file that is gone holds no attribute to read.
+			// Only the open answers it — the ioctl and the close act on the
+			// descriptor that open answered, and on a descriptor that exists
+			// neither can fail with a file missing. Withdraw the tolerance if
+			// an ENOENT from a file's open ever names anything but the file
+			// being gone.
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -208,6 +259,86 @@ func probeOpenDir(c calls, fd int, p *storage.Probe) error {
 	}
 
 	return nil
+}
+
+// utsRelease returns utsname.release as text. uname(2) writes the release
+// NUL-terminated in the fixed 65-byte array, so the bytes after the first
+// NUL are not the release and the text stops before it. The text is not
+// interpreted: a malformed release stays non-empty, and the verdict's
+// parser decides on it.
+func utsRelease(u *unix.Utsname) string {
+	var b []byte
+	for _, c := range u.Release {
+		if c == 0 {
+			break
+		}
+		b = append(b, byte(c))
+	}
+	return string(b)
+}
+
+// probeExtOptions fills p's ext options pair with the effective options the
+// ext4 driver reports for dev, the directory's own device number. <dev> in
+// the options file's path is the kernel's name for the device, which the
+// sysfs link /sys/dev/block/<maj>:<min> resolves to — not the mount source,
+// which device-mapper names differently ("/dev/mapper/x" for a device the
+// kernel names dm-0); the link's target ends in the device's own name, so
+// the part after its last slash is the one the options file's directory
+// carries. The file's whole text is stored unread — the verdict splits it
+// into words — and every error of the read, from the link to the close, is
+// stored with it rather than returned: the pair is what tells the verdict a
+// driver that keeps no options file, ext2's, from a read that failed.
+func probeExtOptions(c calls, p *storage.Probe, dev uint64) {
+	link := fmt.Sprintf("/sys/dev/block/%d:%d", unix.Major(dev), unix.Minor(dev))
+	buf := make([]byte, linkBufSize)
+	n, err := c.readlink(link, buf)
+	if err != nil {
+		p.ExtOptionsErr = &fs.PathError{Op: "readlink", Path: link, Err: err}
+		return
+	}
+	if n == len(buf) {
+		p.ExtOptionsErr = &fs.PathError{Op: "readlink", Path: link, Err: errLinkNameTruncated}
+		return
+	}
+	name := buf[:n]
+	if i := bytes.LastIndexByte(name, '/'); i >= 0 {
+		name = name[i+1:]
+	}
+	options := "/proc/fs/ext4/" + string(name) + "/options"
+	fd, err := openRetrying(func() (int, error) {
+		return c.open(options, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	})
+	if err != nil {
+		// The file's own not-found carries the sentinel the verdict's ext2
+		// skip matches; every other error of the read — the link's
+		// not-found among them — stays an error of the check.
+		if errors.Is(err, fs.ErrNotExist) {
+			err = errNoExtOptionsFile
+		}
+		p.ExtOptionsErr = &fs.PathError{Op: "open", Path: options, Err: err}
+		return
+	}
+
+	// The file is read a buffer at a time until a pread returns fewer bytes
+	// than it was asked for, which is its end; proc files are small, and
+	// none grows while it is read.
+	var text []byte
+	rbuf := make([]byte, optionsBufSize)
+	for {
+		n, err := c.pread(fd, rbuf, int64(len(text)))
+		if err != nil {
+			p.ExtOptionsErr = joinClose(&fs.PathError{Op: "pread", Path: options, Err: err}, c.close(fd), options)
+			return
+		}
+		text = append(text, rbuf[:n]...)
+		if n < len(rbuf) {
+			p.ExtOptionsErr = joinClose(nil, c.close(fd), options)
+			if p.ExtOptionsErr == nil {
+				p.ExtOptions = string(text)
+			}
+			return
+		}
+	}
 }
 
 // statxMountID returns the ID of the mount holding the directory open on fd,

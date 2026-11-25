@@ -29,6 +29,8 @@ type calls struct {
 	getdents       func(fd int, buf []byte) (n int, err error)
 	fiemap         func(fd int, fm *fiemap) error
 	lseek          func(fd int, off int64, whence int) (n int64, err error)
+	uname          func(buf *unix.Utsname) error
+	readlink       func(path string, buf []byte) (n int, err error)
 }
 
 // realTable is the table NewOS gives every OS.
@@ -48,6 +50,8 @@ var realTable = calls{
 	ioctlGetUint32: unix.IoctlGetUint32,
 	fiemap:         fiemapIoctl,
 	lseek:          unix.Seek,
+	uname:          unix.Uname,
+	readlink:       unix.Readlink,
 }
 
 // fiemapIOC is FS_IOC_FIEMAP, _IOWR('f', 11, struct fiemap) of linux/fiemap.h.
