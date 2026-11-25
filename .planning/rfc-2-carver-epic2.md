@@ -41,7 +41,7 @@ because no suite of RFC 2 keeps a known-failure file.
 **At the end of the epic:**
 
 - one script, run by hand, writes the golden gear tables, a chunk ID and a block name with its
-  chain ID, computed with BLAKE3's own reference binding, and a Go test on every pull request
+  chain ID, computed with the BLAKE3 team's Python binding, and a Go test on every pull request
   recomputes each of them and holds `lukechampine.com/blake3`'s three modes to BLAKE3's published
   vectors (T2.1);
 - `carvetest` streams seeded input of each of §10.2's content kinds, the same bytes on any machine,
@@ -103,13 +103,13 @@ title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test component is checked against something it does not share: the vectors against a Go recomputation and BLAKE3's published vectors, the reference against hand-built tables, the inputs against pinned bytes, the fetch against a real HTTP server on `127.0.0.1:0` under `t.TempDir()`. No test double |
-| rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests", "By kind"](../CLAUDE.md#writing-tests)) | T2.4 | `FuzzReferenceBounds`, the `fuzz` suite's first target: random bytes and a random supported `Target` into the reference, asserting C4's bounds and that the chunks tile the input. Nothing here parses input off a disk or a wire: `LoadVectors` reads a committed file every test reads, which a malformed edit fails at once |
+| rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests", "By kind"](../CLAUDE.md#writing-tests)) | T2.4 | `FuzzReferenceBounds`, the `fuzz` suite's first target: seeded input of a fuzzed kind, length, `Target` and gear table into the reference, asserting C4's bounds, that the chunks tile the input and that re-cutting from a chunk end gives the same later ends. Nothing here parses input off a disk or a wire: `LoadVectors` reads a committed file every test reads, which a malformed edit fails at once |
 | rule 3, observability follows RFC 25, with RFC 2's exception | none | test components only: no logger, registry or tracer |
 | rule 4, profiling | T2.2, T2.4 | the seeded reader allocates nothing per `Read` (`TestAllocsSeededInput`), so the counts E3, E4 and E7 take over it count only the carver; it is `carver-allocs`'s first test. No component starts a goroutine or holds a descriptor; the corpus fetch, which does, runs in no per-change check |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T2.1, T2.3 | the vectors and the golden boundaries are checked where E3 and E4 read them, through `LoadVectors` and `LoadBoundaries`, not only where the script writes them |
 | rule 6, known failures shrink | none | `unit` and `fuzz` keep no `known.yaml`; every test lands green |
-| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T2.1, T2.3, T2.5 | `carvetest` imports the standard library alone, and its tests BLAKE3 and `internal/prof` besides; `carvetest/corpus` and its fetch import the standard library alone; no production package of the carver imports either. Each row lands in E1's `imports_test.go` with its package. v1's `pkg/block/chunker` and its tests are not read for the reference (§1.5 rule 7) |
-| rule 8, real dependencies for properties of those dependencies | T2.1, T2.5 | BLAKE3's properties are checked against BLAKE3's own published vectors and its reference binding, not against a fake; K4 and K5 run on real files of the kinds §9.1 names, fetched and pinned. The second architecture is E7's |
+| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T2.1, T2.3, T2.5 | `carvetest` imports the standard library alone, and its tests BLAKE3 and `internal/prof` besides; every carver package's tests may import `carvetest` and `internal/prof`, a row T2.1 widens; `carvetest/corpus` and its fetch import the standard library alone; no production package of the carver imports either. Each row lands in E1's `imports_test.go` with its package. v1's `pkg/block/chunker` and its tests are not read for the reference (§1.5 rule 7) |
+| rule 8, real dependencies for properties of those dependencies | T2.1, T2.5 | BLAKE3's properties are checked against BLAKE3's own published vectors and its team's Python binding, not against a fake; K4 and K5 run on real files of the kinds §9.1 names, fetched and pinned. The second architecture is E7's |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.3, T2.5 | D3's `decision:` at the reference chunker; D8's `ponytail:` at the fetch |
 | rule 10, a test must be able to fail | all | each test names the planted break that turns it red: a vector byte changed, a reference clause moved by one, the seed stream changed, a hash mismatch served by the test server |
 | rule 11, a symbol is exported only if the RFC's interface uses it | none | `carvetest` is internal and outside S1's frozen surface; each export names the epic that calls it |
