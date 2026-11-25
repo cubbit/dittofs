@@ -320,7 +320,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E8 🔀 | Clients and sessions | the callbacks value and the `Adapter` bytes first; `EXCHANGE_ID`, `SETCLIENTID`, confirms, `CREATE_SESSION`, `SEQUENCE`'s slots and reply cache, the session registry, lease and reclaim signals; A1's runner change after S2b | 10 | 28 | A | E10; E9, E11 and E12, partly; S4 |
 | E9 | Opens, stateids and locks | `OPEN` and its claims, stateid rules, NFSv4.0 owner sequences, `LOCK`, `LOCKT`, `LOCKU`, `TEST_STATEID`, `FREE_STATEID`, drain roles per request | 8 | 25 | C | E10 and E12, partly; E16 |
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 8 | 22 | A | E16 |
-| E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants sent, `SM_NOTIFY`, `DialClient`'s network | 12 | 33 | B | E16 |
+| E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants sent, `SM_NOTIFY`, `DialClient`'s network | 12 | 34 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
 | E13 🔀 | RPCSEC_GSS | the context table as NFS's `Security` stage over `gss`, `krb5`, `krb5i`, `krb5p` | 6 | 16 | B | E16 |
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
@@ -969,7 +969,7 @@ scripted client; N6's single-node half, N14's NFSv4 half.
 
 ### Epic 11 — NLM, NSM and the datagram path 🔀
 
-**Epic 11 estimate: 12 subtasks, 33 man-days.**
+**Epic 11 estimate: 12 subtasks, 34 man-days.**
 
 NFSv3's locking side protocols, over TCP and UDP, and the calls the server makes to an NLM host.
 
@@ -1294,7 +1294,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
-| RFC 21's (cluster) parts: `Rebind` on another node (§3.4), session trunking and `BADSESSION` across nodes (§3.3), the pNFS flags and layouts (§3.3), NFSv4.0 owner sequences across shards (§4.2), a stateid carried by a batch move (§5.2), `fs_locations` naming another gateway on a drain (§7.4), `CLONE` across shards (§11.5), the cross-node steps of RFC 21 §13 (header; §1.4) | a single node has no second node; RFC 21 §13 defers a row's cross-node steps with the cluster | the cluster stage | a share served by more than one node |
+| RFC 21's (cluster) parts: `Rebind` on another node (§3.4), session trunking and `BADSESSION` across nodes (§3.3), the pNFS flags and layouts (§3.3), NFSv4.0 owner sequences across shards (§4.2), a stateid carried by a batch move (§5.2), `fs_locations` naming another gateway on a drain (§7.4), `CLONE` across shards (§11.5), NLM's per-node host and share tables lost with a gateway node while a primary elsewhere keeps the host's locks and opens (epic 11's D5, D10), the cross-node steps of RFC 21 §13 (header; §1.4) | a single node has no second node; RFC 21 §13 defers a row's cross-node steps with the cluster | the cluster stage | a share served by more than one node |
 | The layout stateid's type tag (§6.1, point 5; #5090 (c)) | `pkg/vfs`'s codec tags open, lock state and delegation only, and layouts are (cluster) | the cluster stage, with pNFS (RFC 15 §5.1) | pNFS layouts are built |
 | rquota (RFC 21 Appendix D's `GETQUOTA`; header) | the user's decision: no supported use needs it; a call stays `PROG_UNAVAIL` | unowned | a deployment needs `quota` reporting on NFS clients |
 | The namespace move over NFS: §7.4's address move, `SM_NOTIFY` from B, the NFS-only grace (§1.4) | needs RFC 27's move | RFC 27's plan, not written yet | RFC 27's move is built |
