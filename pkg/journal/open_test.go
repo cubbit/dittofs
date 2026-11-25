@@ -407,6 +407,72 @@ func TestOpen_UnsuitableChecksBeforeWrite(t *testing.T) {
 	}
 }
 
+// platformRefusals are the three setups RFC 28 Appendix A's Linux bullet
+// names beyond the barrier rows, each as the one input change to the suitable
+// mount that its rule refuses, with a message word that names the rule.
+// Init and Open both take them through the one check, before any write.
+var platformRefusals = []struct {
+	name   string
+	change func(p *storage.Probe)
+	word   string
+}{
+	{"kernel before 4.13", func(p *storage.Probe) { p.KernelRelease = "4.12.8" }, "4.13"},
+	{"ext4 data=journal in the effective options", func(p *storage.Probe) { p.ExtOptions = "rw,relatime,data=journal" }, "data journaling"},
+	{"journal-data attribute on the directory", func(p *storage.Probe) { p.DirFlags = 0x00004000 }, "journal-data attribute"},
+}
+
+// TestInit_RefusesPlatformRulesBeforeAnyFile fails an Init that creates a
+// file before it has judged the kernel and the ext data-journaling rules.
+func TestInit_RefusesPlatformRulesBeforeAnyFile(t *testing.T) {
+	for _, tc := range platformRefusals {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := platformtest.SuitableMount(dir)
+			tc.change(&p)
+
+			_, err := Init(context.Background(), dir, installID, WithMountProbe(mountGather(p)))
+			if !errors.Is(err, ErrUnsuitableStorage) {
+				t.Fatalf("Init returned %v, want ErrUnsuitableStorage", err)
+			}
+			if !strings.Contains(err.Error(), tc.word) {
+				t.Errorf("the refusal %q does not name %q", err, tc.word)
+			}
+			if names := listOS(t, dir); len(names) != 0 {
+				t.Errorf("after the refusal the directory holds %v, want it empty", names)
+			}
+		})
+	}
+}
+
+// TestOpen_RefusesPlatformRulesBeforeWrite fails an Open that does not judge
+// the kernel and the ext data-journaling rules, or judges them after it has
+// written: the directory keeps the format file alone.
+func TestOpen_RefusesPlatformRulesBeforeWrite(t *testing.T) {
+	for _, tc := range platformRefusals {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSeam(t)
+			id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+
+			p := platformtest.SuitableMount(s.dir)
+			tc.change(&p)
+			open := append(openOptsDir(s, kit.NewStopwatchClock()), WithMountProbe(mountGather(p)))
+			_, err = Open(context.Background(), s.dir, Version{}, id, nil, open...)
+			if !errors.Is(err, ErrUnsuitableStorage) {
+				t.Fatalf("Open returned %v, want ErrUnsuitableStorage", err)
+			}
+			if !strings.Contains(err.Error(), tc.word) {
+				t.Errorf("the refusal %q does not name %q", err, tc.word)
+			}
+			if names := s.listSeam(t); !slices.Equal(names, []string{format.FormatFileName}) {
+				t.Errorf("after the refusal the directory holds %v, want the format file alone", names)
+			}
+		})
+	}
+}
+
 // TestOpen_CheckError_ReturnedAsItself fails an Open that turns an error met
 // while checking into a refusal: an I/O error or a mount table that cannot
 // be read is returned as itself, matching no refusal, so a caller can tell a
