@@ -224,9 +224,9 @@ client in epic 16:
 
 **What the catalogue leaves out.** RFC 22's **(cluster)** steps, outside the first release's
 conformance (RFC 22 §18), Witness's row and a watch across shards among them (amendment A1; §6.2,
-point 13); the namespace-move
-rows of §6.3, which need RFC 27's move (out of scope); and the profile-container run, needing E15's Windows runner joined to the test domain, until
-one is provisioned (§6.2, point 8).
+point 13); the namespace-move rows of §6.3, which need RFC 27's move (out of scope); and the
+profile-container run, needing E15's Windows runner joined to the test domain, until one is
+provisioned (§6.2, point 8).
 
 **Test components.** The SMB handler harness, golden files from captures and the import test's
 call-site and file-size rules (epic 2). `gsstest`'s initiators come with `gss` (epic 4) and the
@@ -1277,14 +1277,13 @@ settings; RFC 22 §18's suites paragraph.
 T16.3 is planned after E15 and counted in neither figure (§6.2, point 12), nor is T16.1's remote
 outage on reads, parked (§6.5).
 
-`smbtorture`, `smbtorture/kerberos`, `wpts`, `clients` with its options and `smb-fuzz` burned
-down to RFC 22 §18's "Tests expected to fail" (RFC 22 §18's release goal, at the end of RFC 22 in
-the release its roadmap epic sets; the epic is not done until every one is green at them), and
-every row no lower layer can show: on
-the composed node at S5, through Windows and Linux clients once E15 has turned the suites on, and
-the benchmarks and soak. T16.1 and T16.2 need S5 and their epics, and S6a for their authenticated
-rows; T16.7's pipeline micro-benchmark needs only S4b; the rest needs E15, and T16.1's ticket
-addresses, T16.4's Kerberos and AD row and T16.5 need S6b.
+`smbtorture`, `smbtorture/kerberos`, `wpts`, `clients` with its options and `smb-fuzz` burned down
+to RFC 22 §18's "Tests expected to fail" (RFC 22 §18's release goal, at the end of RFC 22 in the
+release its roadmap epic sets; the epic is not done until every one is green at them), and every row
+no lower layer can show: on the composed node at S5, through Windows and Linux clients once E15 has
+turned the suites on, and the benchmarks and soak. T16.1 and T16.2 need S5 and their epics, and S6a
+for their authenticated rows; T16.7's pipeline micro-benchmark needs only S4b; the rest needs E15,
+and T16.1's ticket addresses, T16.4's Kerberos and AD row and T16.5 need S6b.
 
 RFC sections: §2 (the profile-container row), §16.6's cross-protocol and end-to-end rows, §18's
 suites; RFC 20 §6.10's pipeline micro-benchmark and end-to-end benchmark, §7.4, §7.5; RFC 19 §9's

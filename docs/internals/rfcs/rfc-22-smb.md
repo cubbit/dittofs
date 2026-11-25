@@ -3104,7 +3104,9 @@ decision of this RFC the list misses; either the defect is fixed, or the
 decision is written into its section and the tests it fails join the list,
 citing it. No other failure ships. A test that checks the reference server
 rather than the protocol is not this RFC's to pass: one the tool runs only
-against Windows or only against Samba, one that needs a hook only Samba's
+against Windows or only against Samba (WPTS
+`BVT_SharePermission_AccessAllow_UserSid`, which needs Netlogon on the computer
+WPTS runs on, stays skipped after the domain join), one that needs a hook only Samba's
 server has (a test-only control code, a file-system module, a clustered
 database), or an smbfuzz divergence where the reference server departs from
 MS-SMB2 or MS-FSA. It stays in its suite's known-failure file as `proto` or
