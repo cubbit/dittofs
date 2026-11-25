@@ -1,7 +1,11 @@
 package workqueue_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"go/types"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -54,14 +58,40 @@ var frozenExports = []string{
 	"func (*Scheduler).Stop(ctx context.Context) error",
 }
 
-// TestExports compares the package's compiled surface with frozenExports, each
+// TestExports compares the package's surface with frozenExports, each
 // declaration on one line: a function or method with its signature, a
 // constant with its value, a struct with its exported fields only, since an
-// opaque struct gains unexported ones as its behaviour lands.
+// opaque struct gains unexported ones as its behaviour lands. The package is
+// type-checked from every non-test file, whatever its build tags, so a file
+// built only for another platform cannot hide an export.
 func TestExports(t *testing.T) {
-	pkg, err := archtest.ExportImporter(".").Import("github.com/cubbit/dittofs/pkg/workqueue")
+	names, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatalf("import the package's export data: %v", err)
+		t.Fatal(err)
+	}
+
+	fset := token.NewFileSet()
+
+	var files []*ast.File
+
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+
+		f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		files = append(files, f)
+	}
+
+	conf := types.Config{Importer: archtest.ExportImporter(".")}
+
+	pkg, err := conf.Check("github.com/cubbit/dittofs/pkg/workqueue", fset, files, nil)
+	if err != nil {
+		t.Fatalf("type-check the package's files: %v", err)
 	}
 
 	got := exports(pkg)
@@ -94,7 +124,12 @@ func exports(pkg *types.Package) []string {
 		case *types.Const:
 			got = append(got, types.ObjectString(obj, qualify)+" = "+obj.Val().ExactString())
 		case *types.TypeName:
-			got = append(got, "type "+name+" "+typeString(obj.Type().Underlying(), qualify))
+			decl := "type " + name + " "
+			if obj.IsAlias() {
+				decl = "type " + name + " = "
+			}
+
+			got = append(got, decl+typeString(obj.Type().Underlying(), qualify))
 
 			if _, isIface := obj.Type().Underlying().(*types.Interface); !isIface {
 				for sel := range types.NewMethodSet(types.NewPointer(obj.Type())).Methods() {

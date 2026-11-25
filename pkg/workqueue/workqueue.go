@@ -76,7 +76,7 @@ type Source interface {
 type Limits struct {
 	Batch       int           // items per Run
 	Concurrency int           // Runs in flight for the source
-	Rate        float64       // Cost per second; 0 is unlimited
+	Rate        float64       // Cost per second; 0 is unlimited, and Register refuses any other value until pacing lands
 	Weight      int           // the source's share of dispatch under contention
 	Total       int           // the source's reservation of the instance's fixed total
 	RunTimeout  time.Duration // the deadline on every Run's ctx
@@ -143,6 +143,10 @@ func New(clk Clock, loop Loop) *Scheduler {
 // is a programming error. A value is never replaced by a default. Withdraw the
 // panic for an error if a Limits value ever comes from a setting.
 func (s *Scheduler) Register(src Source, l Limits) SourceID {
+	if src == nil {
+		panic("workqueue: Register: nil Source")
+	}
+
 	if err := l.check(); err != nil {
 		panic(err)
 	}
@@ -162,8 +166,10 @@ func (l Limits) check() error {
 	}{
 		{"Batch", l.Batch < 1, "at least 1"},
 		{"Concurrency", l.Concurrency < 1, "at least 1"},
-		// Pacing a positive Rate is not built, and NaN is not 0.
-		{"Rate", l.Rate != 0, "0: positive-rate pacing is not supported"},
+		// ponytail: only 0, unlimited, is honoured, because pacing a positive
+		// Rate is not built; NaN is not 0 either. Accept a positive Rate when
+		// the pacing a Throttled result lowers lands.
+		{"Rate", l.Rate != 0, "0, since pacing a positive Rate is not supported"},
 		{"Weight", l.Weight < 1, "at least 1"},
 		{"Total", l.Total < 1, "at least 1"},
 		// RunTimeout is every Run's deadline, and 0 would name none.
