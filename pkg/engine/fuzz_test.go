@@ -787,6 +787,17 @@ var engineSeeds = []struct {
 		},
 	},
 	{
+		// A stable write: a write, and a commit over exactly what it wrote.
+		name: "a stable write survives a crash",
+		calls: []string{
+			"write(file=0, off=0, len=4096)",
+			"write(file=0, off=4096, len=512)",
+			"commit(file=0, off=4096, len=512)",
+			"crash()",
+			"read(file=0, off=4096, len=512)",
+		},
+	},
+	{
 		name: "the verifier across restarts",
 		calls: []string{
 			"write(file=0, off=0, len=1)",
@@ -990,6 +1001,17 @@ func TestNoProgramFillsASegment(t *testing.T) {
 	}
 }
 
+// FuzzEngine runs random programs of engine calls against a model. To fuzz
+// locally:
+//
+//	TMPDIR=/dev/shm go test -run '^$' -fuzz '^FuzzEngine$' -fuzzminimizetime=0 ./pkg/engine/
+//
+// -fuzzminimizetime=0 turns off the fuzzer's minimization, which took most of
+// a run. The harness shrinks a failing program itself. TMPDIR on tmpfs changes
+// nothing the target checks, since the simulated disk keeps its sync in memory.
+// On ext4 some inputs take seconds. The probable cause is the flush at the close
+// of a file that was truncated and rewritten, as the simulated crash does; it
+// was not verified in the kernel.
 func FuzzEngine(f *testing.F) {
 	target := engineTarget()
 	for _, seed := range engineSeeds {
