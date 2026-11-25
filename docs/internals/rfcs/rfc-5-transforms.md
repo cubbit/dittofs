@@ -588,9 +588,15 @@ vector fails the build.
 ### 3.1 Interfaces
 
 Signatures are indicative; the obligations of [§2](#2.%20The%20model) are normative.
-The model is package `transform`. The provider's part, `MaterialID`, `Provider`
-and the material errors, is package `keys` beneath it, which imports nothing of
-`transform`, so the provider implements it with no import cycle. The namespace
+The model's contract is package `transform`: the value types, the `Transform`,
+`Chain` and `Attempt` interfaces and the errors. The registry and the chain that
+implements those interfaces are package `chain` beneath it, and each shipped
+transform is its own package. The provider's part, `MaterialID`, `Provider`
+and the material errors, is package `keys`, also a contract, which imports nothing of
+`transform`, so the provider, in a package of its own, implements it with no
+import cycle. The block codec and the engine import only `transform` and
+`keys`; the node's content wiring builds the chain and the provider and injects
+them ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). The namespace
 ID is the metadata store's `entity.NamespaceID` ([RFC 16 §2](rfc-16-metadata-store.md#2.%20Entities)), a contract
 ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)), not a copy.
 
@@ -655,56 +661,43 @@ type Encoded struct {
 // fails rather than returning a transform that cannot work.
 type Factory func(ctx context.Context, settings map[string]any, m keys.Provider) (Transform, error)
 
-// Register makes a transform available for configuration and for decoding.
-// Called at init; a duplicate ID panics.
-func Register(id ID, name string, f Factory)
-
 // Chain is a store's configured list of transforms.
-type Chain struct{ /* ... */ }
+type Chain interface {
+	// Pin fixes the chain and namespace ns's current material for one block, from
+	// the mint of its name to its commit or abandonment (RFC 8 §6.6): the block's
+	// chain ID, bounds and bodies all come from the pin, however the configuration
+	// or the current material changes meanwhile (§2.8). It reads Current once for
+	// each kind a transform declares, and passes that material to the transform's
+	// MaxEncodedLen, LengthOf and Encode. It fails with the provider's error when
+	// the current material cannot be read, or when a key service holds the master
+	// key that wraps it in any state but active (Appendix B.1).
+	Pin(ctx context.Context, ns entity.NamespaceID) (Attempt, error)
 
-// NewChain builds the configured transforms. It refuses a duplicate, two
-// transforms of one stage, or a list out of stage order (§2.3).
-func NewChain(ctx context.Context, cfg []Config, m keys.Provider) (*Chain, error)
-
-// MaxDecodeLen is the largest body any registered transforms could have
-// written from n bytes under any material, one per stage, plus the envelope.
-// It sizes reads, and the put side's buffers (§3.1, below).
-func MaxDecodeLen(n int) int
-
-// Pin fixes the chain and namespace ns's current material for one block, from
-// the mint of its name to its commit or abandonment (RFC 8 §6.6): the block's
-// chain ID, bounds and bodies all come from the pin, however the configuration
-// or the current material changes meanwhile (§2.8). It reads Current once for
-// each kind a transform declares, and passes that material to the transform's
-// MaxEncodedLen, LengthOf and Encode. It fails with the provider's error when
-// the current material cannot be read, or when a key service holds the master
-// key that wraps it in any state but active (Appendix B.1).
-func (c *Chain) Pin(ctx context.Context, ns entity.NamespaceID) (*Attempt, error)
+	// Decode undoes the envelope's transforms. census is the block record's
+	// (§5.3): a body naming material outside it is ErrMalformed.
+	Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, census []Encoded) ([]byte, error)
+}
 
 // Attempt is one pinned chain. The engine releases it when the block commits
 // or is abandoned.
-type Attempt struct{ /* ... */ }
+type Attempt interface {
+	// ID is the chain ID (§2.8), from each transform's ID, LengthKey and the
+	// pinned material.
+	ID() [32]byte
 
-// ID is the chain ID (§2.8), from each transform's ID, LengthKey and the
-// pinned material.
-func (a *Attempt) ID() [32]byte
+	// MaxEncodedLen composes the transforms' bounds under the pinned material, in
+	// stage order, plus the envelope.
+	MaxEncodedLen(n int) int
 
-// MaxEncodedLen composes the transforms' bounds under the pinned material, in
-// stage order, plus the envelope.
-func (a *Attempt) MaxEncodedLen(n int) int
+	// LengthOf composes the transforms' LengthOf under the pinned material; false
+	// if any one is false. It is exact for the bodies this attempt encodes.
+	LengthOf(n int) (int, bool)
 
-// LengthOf composes the transforms' LengthOf under the pinned material; false
-// if any one is false. It is exact for the bodies this attempt encodes.
-func (a *Attempt) LengthOf(n int) (int, bool)
-
-// Encode writes the envelope and returns the body with one Encoded per applied
-// transform, which the codec collects into the block's census (§5.3).
-func (a *Attempt) Encode(ctx context.Context, dst []byte, hash [32]byte, plain []byte) ([]byte, []Encoded, error)
-func (a *Attempt) Release()
-
-// Decode undoes the envelope's transforms. census is the block record's
-// (§5.3): a body naming material outside it is ErrMalformed.
-func (c *Chain) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, census []Encoded) ([]byte, error)
+	// Encode writes the envelope and returns the body with one Encoded per applied
+	// transform, which the codec collects into the block's census (§5.3).
+	Encode(ctx context.Context, dst []byte, hash [32]byte, plain []byte) ([]byte, []Encoded, error)
+	Release()
+}
 
 type Config struct {
 	Name     string         // a registered transform's name
@@ -715,6 +708,23 @@ var (
 	ErrMalformed = errors.New("transform: malformed body")
 	ErrTooLarge  = errors.New("transform: output exceeds its bound")
 )
+```
+
+In package `chain`:
+
+```go
+// Register makes a transform available for configuration and for decoding.
+// Called at init; a duplicate ID panics.
+func Register(id transform.ID, name string, f transform.Factory)
+
+// NewChain builds the configured transforms. It refuses a duplicate, two
+// transforms of one stage, or a list out of stage order (§2.3).
+func NewChain(ctx context.Context, cfg []transform.Config, m keys.Provider) (transform.Chain, error)
+
+// MaxDecodeLen is the largest body any registered transforms could have
+// written from n bytes under any material, one per stage, plus the envelope.
+// It sizes reads, and the put side's buffers (§3.1, below).
+func MaxDecodeLen(n int) int
 ```
 
 In package `keys`:
