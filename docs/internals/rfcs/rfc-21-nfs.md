@@ -2772,7 +2772,7 @@ service, before any wire suite runs:
 | §11.4 decoders fuzzed *(1 node)* | The fuzz targets above, each with its seed corpus. | a decoder that panics, or reads another version's bytes as its own |
 | §6.1 NLM against SMB *(1 node)* | An NLM lock and an SMB byte-range lock over one range of one file, in each order: assert the second refused, and an SMB write into the NLM range admitted (NFS locks are advisory) while an NFSv3 write into the SMB range is refused. | |
 | §11.4 SMB deny-write against an NFS write open *(1 node)* | An SMB client opens a file with `FILE_SHARE_READ` only and no lease; an NFSv4 client `OPEN`s it with `OPEN4_SHARE_ACCESS_WRITE`, and an NFSv3 client `WRITE`s it: assert `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES`. Close the SMB open: assert both then succeed. Reverse it: an NFSv4 `OPEN` with `OPEN4_SHARE_DENY_WRITE`, then an SMB `CREATE` for write: assert `STATUS_SHARING_VIOLATION`. | a deny mode enforced within one protocol only |
-| e2e | pynfs, cthon04 and nfstest through dt ([RFC 29](rfc-29-test-harness.md)) are the end-to-end layer over these rows and §13's. | |
+| e2e | pjdfstest, pynfs, cthon04 and nfstest through dt ([RFC 29](rfc-29-test-harness.md)) are the end-to-end layer over these rows and §13's. | |
 
 ### 11.7 Monitoring
 
@@ -2932,6 +2932,16 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §3.3 one name, two principals *(1 node)* | Two principals send `EXCHANGE_ID` with one `co_ownerid`: the second is `NFS4ERR_CLID_INUSE` and leaves no `Pending`; over NFSv4.0 the same with `SETCLIENTID`. | |
 | §3.3 reboot racing renew *(1 node)* | An NFSv4.0 client holds a lock; send `SETCLIENTID` with a new verifier and, before its confirm, `RENEW` under the old client ID: assert the renewal succeeds and the lock is held; confirm: the old ID's state released and its `RENEW` `NFS4ERR_STALE_CLIENTID`. | |
 
+**Release goal.** Four suites are the end-to-end layer over §11.6's rows and
+this section's: pjdfstest, POSIX semantics through a kernel mount at NFSv3,
+v4.0 and v4.1; pynfs, its `nfs4.0` and `nfs4.1` trees; cthon04; and nfstest.
+Each, and any other NFS or POSIX conformance suite the harness registers, is
+green when this RFC's implementation is done: every test passes except those
+listed in "Tests expected to fail". A failure outside that list is a defect, or
+a decision of this RFC the list misses; either the defect is fixed, or the
+decision is written into its section and the tests it fails join the list,
+citing it. No other failure ships.
+
 **Tests expected to fail.** The suites' tests that the decisions of this RFC
 fail by design. A single-node run passes when exactly these fail; one that
 starts passing means the decision changed and this list is stale. A cluster run
@@ -2946,6 +2956,11 @@ expects these and the one cluster entry below the table.
 | pynfs `SP4_SSV` state-protection tests | `SP4_SSV` refused (§3.3) |
 | pynfs and xfstests `ALLOCATE` / `fallocate` reservation tests | `ALLOCATE` not served (§9.3) |
 | pynfs labeled-NFS tests (`sec_label`) | no labeled NFS (§8.2) |
+
+No pjdfstest test follows from a decision above: pjdfstest mounts at NFSv3,
+v4.0 and v4.1, where NLM serves its locks (§6) and no row of the table applies.
+Its entries, if any, are filled from its first run, as the other suites' v2
+failures are, each citing the section whose decision fails it.
 
 No suite in the list runs over UDP; §2.2's own row checks that no UDP
 listener answers. A cluster run also expects pynfs's session-trunking tests across nodes to fail,
@@ -2963,7 +2978,8 @@ profile.
 **Suites.** §11.6's translation tests and fuzz seeds run in `unit`, as do §13's
 rows that inject a fault below the server through the composed single-node
 harness. §13's rows that name pynfs, cthon04 or nfstest run in `pynfs`,
-`cthon04` and `nfstest`, its other single-node rows against a real server in
+`cthon04` and `nfstest`, and POSIX semantics through a mount in `pjdfstest`;
+its other single-node rows against a real server in
 `e2e`, those reaching one file over NFS and SMB in `e2e/cross-protocol` and
 those under Kerberos in `e2e/kerberos`. No suite runs yet xfstests (§9.3),
 pynfs's reboot tests, the wire tests against a reference NFS server, or any
