@@ -29,6 +29,9 @@ type Target[R, M any] struct {
 
 	Invariants []Invariant[R] // checked after every step
 
+	Covers    []Surface  // the types and fault sources the operations act on
+	Uncovered []Omission // what is deliberately left out of them, and why
+
 	MaxSteps  int           // default 64
 	StepBound time.Duration // default 10s, a deadlock backstop and not a timing
 }

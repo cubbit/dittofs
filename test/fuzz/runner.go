@@ -18,8 +18,12 @@ const defaultStepBound = 10 * time.Second
 
 // Fuzz runs a target under the Go fuzzer: each input is decoded and run
 // against a new component and a new model. A program that fails at a step is
-// shrunk before it is reported.
+// shrunk before it is reported. The target's coverage is checked first, so a
+// plain go test runs the check.
 func Fuzz[R, M any](f *testing.F, target Target[R, M]) {
+	f.Helper()
+	CheckCoverage(f, target)
+
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if err := executeShrinking(t, target, Decode(target, data)); err != nil {
 			t.Fatal(err)
