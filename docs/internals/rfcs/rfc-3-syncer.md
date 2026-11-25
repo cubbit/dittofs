@@ -1208,7 +1208,10 @@ each direction on its own:
 - stores registered under one `ProbeKey` ([§1.3](#1.3%20Interface)) — the engine gives one key to
   stores that share an endpoint, credential and bucket — **MUST** share one probe
   per direction for detecting an outage. A permission that differs by prefix is
-  not seen by the shared probe, and is caught by the failure window below;
+  not seen by the shared probe, and is caught by the failure window below. The
+  syncer runs at most one probe per `ProbeKey` and direction at a time, a
+  store's own re-admission probe included, so the client the stores share
+  carries at most two, which its limit counts ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers));
 - two consecutive failed probes make the direction unhealthy, and two
   consecutive successful ones make it healthy again, once its re-admission
   backoff has run and except as the failure window below restricts. After a

@@ -496,7 +496,6 @@ pkg/remote/s3/                         E4: client, constructor, data path, error
   record.go                            E4: the recorder it declares (D12)
   settings.go config.go metrics.go     E7: the store configuration's rows and Config, the remote_
                                        definitions, all plain values
-  limit.go                             E8: the client limit derived from its callers
   *_test.go                            E4, E5: the rows marked T, over s3fault and LocalStack
 pkg/remote/s3/s3fault/                 E3: the fault transport, around the client's http.RoundTripper
 pkg/remote/codec/                      E1: surface (S1); E6: format, encode, decode, codec.Store, gate
@@ -505,6 +504,7 @@ pkg/remote/codec/                      E1: surface (S1); E6: format, encode, dec
                                        the alert rule, all plain values
 internal/node/content/remote.go        E7: the recorders over the registry, and the plain values
                                        built into settings rows, collectors and the rule
+internal/node/content/limit.go         E8: the client limit derived from its callers, unexported
   testdata/fuzz/ testdata/v1/          E6: fuzz seeds; the golden block of each released version
 test/suites.yaml                       E3: service:localstack in integration; E6: unit/remote-allocs;
                                        E9: the remote group's service and benchmark cells
@@ -571,7 +571,7 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   limit from the callers' concurrency (RFC 4 §4.10) lands with its consumer, the one client per
   store configuration that RFC 8 offload plan epic 21 holds. Until epic 8 lands, the limit
   epic 21 passes is RFC 4 §4.10's sum over the callers v1.1 has: `upload_workers +
-  fetch_workers + 1` (the one for the probe; GC's bound joins with RFC 9), so no cap sits
+  fetch_workers + 2` (one probe per direction; GC's bound joins with RFC 9), so no cap sits
   below the callers. The client's constructor refuses a limit of 0 or less with `ErrInvalid`.
   Prior art: rclone sizes its HTTP transport from `--transfers` and `--checkers` (from
   memory). Applied by epics 4 and 8.
@@ -857,7 +857,7 @@ rows against that holding; R11, and R19's limit half (its shared client is RFC 8
 epic 21's).
 
 **Expected content:**
-- The function deriving the limit from RFC 3 §2.10's worker counts, GC's bound and one probe
+- The function deriving the limit from RFC 3 §2.10's worker counts, GC's bound and one probe per direction
   (D6).
 - The two §4.10 rows over the holding RFC 8 offload plan epic 21 builds.
 
@@ -932,6 +932,8 @@ recorded by hand; the codec's and the `Content-Range` reader's fuzz targets runn
 | Reading retain-untils from a listing instead of per extension | an optimisation of a deferred call; needs an RFC 4 amendment | RFC 26 | its extensions show in a service's throttling |
 | `Settings`, `RecheckSetting`, `VersionsPage`, `DeleteVersions`, the repair proof's acceptance, and the `Recheck` pass itself: its caller, its retries through `Small`, two missed periods, drift raised through `SetDrift`, no delete on drift; the `Recheck` pass's read-back of the `keys` object (RFC 5 Appendix B.2; each writer's own read-back is the RFC 5 plan's epic 8); §7.1's `Recheck` rows, the `Recheck` halves of its archive-class row and of the C.3 row's encryption clause, and its 10⁶-version walk; R17 (§6 point 3; RFC 4 §4.1 as amended) | no caller in v1.1: GC runs it. Until it lands a setting changed after open goes unseen until the next open, and an expiry rule added then deletes blocks a running node notices only when a read returns `ErrNotFound` | RFC 9 | RFC 9's plan starts |
 | A parallel delete on a service without batch delete (§4.3's `ponytail:`) | concurrency is the caller's | RFC 9 | GC's delete rate on such a service shows in its backlog |
+| GC's term in the client limit (RFC 4 §4.10): epic 8 passes a GC bound of 0, and RFC 9 settles what its delete and list bound is and passes it | no GC in v1.1, so nothing of GC calls a store | RFC 9 | RFC 9's plan starts |
+| The client limit derived from the worker counts the syncer runs with after RFC 24 §7.2's reduction, rather than the counts it is built with (epic 8's D3) | nothing passes the syncer its transfers pool's size in v1.1, so nothing reduces the counts (RFC 3 §1.3) | unowned | a caller passes the syncer its transfers pool's size |
 | The syncer's single re-get of a corrupt ranged chunk (§7.1's §4.4 row) | the syncer's behaviour | RFC 3 plan epic 6 | that epic starts |
 | A namespace's store opened in the node; the in-memory store refused outside tests (#4276); the engine's read and write tests with and without transforms (RFC 4 §7.3) | the node's and the engine's composition | RFC 8 offload plan epic 21 | that epic starts |
 | What is done with the namespace claim the open reads and returns (epic 5) | GC's `Claim` decides | RFC 27 | RFC 27's plan starts |
