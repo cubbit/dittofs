@@ -904,9 +904,9 @@ client rows; Appendix G's `SESSION_SETUP` and `LOGOFF`; RFC 20 §3.2's cleanup p
   `Disconnect` at a session's last channel.
 - T5.3 `SESSION_SETUP`: SPNEGO through `Exchanges` keyed by session ID, `SignIn` (outside the
   one-call rule, amendment A5), the session's keys derived, the final response signed, the
-  identity of §16.1, `Established`; the `Call` every request of the session carries sets the two
-  capabilities RFC 17 §3.0 lists for SMB requests, `PrivilegeOnlyForBackup` and
-  `OpenFilesKeepNames` (RFC 22 §16.1), with a test that an SMB request's `Call` has both; null and guest sessions anonymous, keyless and exempt from
+  identity of §16.1, `Established`; the `Call` every request of the session carries sets
+  `OpenFilesKeepNames` and leaves `PrivilegeOnEveryCall` unset (RFC 17 §3.0, RFC 22 §16.1), with a
+  test that an SMB request's `Call` has the first and not the second; null and guest sessions anonymous, keyless and exempt from
   signing (plan gap 17); a failed credential fails.
 - T5.4 The client record: `Connect` at a `ClientGuid`'s first authenticated setup on the node, its
   `ClientInfo` with `ClientIsMachine` set and `Recovery` reconnect (RFC 22 §4.4, §16.4),
@@ -993,7 +993,7 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
 - T7.4 Access translation in `translate`: generic rights to `FILE_GENERIC_*`, `ShareAccess` to the
   deny mode, `MAXIMUM_ALLOWED` as `vfs.MaximumAllowed` in `OpenRequest.Access`, granted or refused
   by the service, backup intent included: `FILE_OPEN_FOR_BACKUP_INTENT` sets `OpenRequest.Backup`,
-  the only open where privilege counts, since T5.3's `Call` sets `PrivilegeOnlyForBackup` (amendment A3; the refusals are T2.4's tests); masks total
+  the only open where privilege counts, since T5.3's `Call` leaves `PrivilegeOnEveryCall` unset (amendment A3; the refusals are T2.4's tests); masks total
   and round-tripping.
 - T7.5 `CREATE`: one `Open` with disposition, access, deny mode, directory, name and the options of
   Appendix D; open by file ID and shared virtual disks refused; a named stream opened through

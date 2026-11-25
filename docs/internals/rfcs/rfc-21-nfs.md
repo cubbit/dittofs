@@ -2458,8 +2458,9 @@ principal that matches no caller, `acl` with `dacl` or `sacl` — is
 
 Open state takes only neutral requests and returns neutral results and errors
 ([RFC 14 §1.1](rfc-14-open-state.md#1.1%20Non-goals)). Every NFS → neutral
-mapping it needs is here. It sets none of `PrivilegeOnlyForBackup`,
-`OpenFilesKeepNames`, `WantOpenID` and `GrantBelongsToOpen`
+mapping it needs is here. Every NFS, NLM and MOUNT call sets `PrivilegeOnEveryCall`, so root's
+privilege counts on every call, and none sets `OpenFilesKeepNames`,
+`WantOpenID` or `GrantBelongsToOpen`
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), so every NFS and NLM call
 takes the service's plain rules, and the `Call`'s `Protocol` is a label no rule
 reads; NLM, NSM, `MNT` and `EXPORT` set `Call.HostCall` (§6.1, §6.3), and an NLM
