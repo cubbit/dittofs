@@ -126,16 +126,6 @@ func pseudoFile(t *pseudofs.Tree, n *pseudofs.Node) vfs.File {
 	}
 }
 
-// pseudoLookup is Lookup in a pseudo directory. A name where a share is
-// mounted crosses into the share: the call is admitted to it, and answers
-// the share's root as the caller may read it.
-//
-// decision: a lookup walks to any pseudo directory and is refused only at a
-// share's mount, with the share's admission error, though a listing leaves
-// out what leads to no share the caller would be admitted to. A client
-// refused by a share's flavour must reach its mount to be told so and ask
-// SECINFO there, and a path is all a walk learns. Hide a path from a lookup
-// too if share paths are found to be secret.
 // mountParent is the pseudo directory share is mounted in, with its File.
 func (fs *Filesystem) mountParent(ctx context.Context, share entity.ShareID) (vfs.Handle, vfs.File, error) {
 	t, err := fs.tree(ctx)
@@ -148,6 +138,17 @@ func (fs *Filesystem) mountParent(ctx context.Context, share entity.ShareID) (vf
 	}
 	return n.Parent.Handle(), pseudoFile(t, n.Parent), nil
 }
+
+// pseudoLookup is Lookup in a pseudo directory. A name where a share is
+// mounted crosses into the share: the call is admitted to it, and answers
+// the share's root as the caller may read it.
+//
+// decision: a lookup walks to any pseudo directory and is refused only at a
+// share's mount, with the share's admission error, though a listing leaves
+// out what leads to no share the caller would be admitted to. A client
+// refused by a share's flavour must reach its mount to be told so and ask
+// SECINFO there, and a path is all a walk learns. Hide a path from a lookup
+// too if share paths are found to be secret.
 
 func (fs *Filesystem) pseudoLookup(ctx context.Context, c vfs.Call, dir vfs.Handle, name []byte) (vfs.Handle, vfs.File, error) {
 	n, t, err := fs.pseudoChild(ctx, dir, name)

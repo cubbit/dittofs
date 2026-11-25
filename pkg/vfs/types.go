@@ -174,7 +174,7 @@ const (
 // the open's principal.
 type Call struct {
 	Identity Identity
-	Caps     Caps       // the adapter's profile (SMBCaps, NFSv4Caps, ...): every rule that differs between clients reads one of its bits; its String() labels the access event
+	Caps     Caps       // the adapter's profile (SMBCaps, NFSv4Caps, ...): every rule that differs between clients reads one of its bits
 	Client   ClientID   // the client the adapter proved the call came from; zero: none, as NFSv3 has
 	Session  SessionRef // the SMB or NFSv4.1 session; zero: none, as NFSv4.0 and NFSv3 have
 	Channel  struct {

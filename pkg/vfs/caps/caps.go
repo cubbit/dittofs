@@ -48,7 +48,7 @@ func (c Caps) Has(x Caps) bool { return c&x == x }
 var names = []string{"privilege", "keep-names", "open-id", "oplock", "machine", "host", "pseudo-fs"}
 
 // String is the set bits' short names joined by "|", empty for none, and any
-// unnamed bits in hex: the label an access event and a metric carry.
+// unnamed bits in hex, as golden files and logs render a profile.
 func (c Caps) String() string {
 	var out []string
 	for i, n := range names {
