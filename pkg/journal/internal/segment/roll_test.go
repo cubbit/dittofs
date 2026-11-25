@@ -864,9 +864,13 @@ func TestRollASegmentEndedByAFailedSealSyncNamesNoPredecessor(t *testing.T) {
 			// successor the last append rolls onto — and the pinned
 			// maximum leaves no refill to rescue the last take once the
 			// Ended spare keeps its cap accounted, so all three must be
-			// ready before the first take runs.
+			// ready before the first take runs. The whole class is
+			// awaited, not just those three: a leftover make must land
+			// before the asserts below, which read two ledger counters
+			// one after another, where a landing between the reads would
+			// show in one and not the other.
 			awaitCounters(t, "the content spares ready", e.pool,
-				func(c segment.PoolCounters) bool { return c.Spares >= 3 })
+				func(c segment.PoolCounters) bool { return c.Spares == 4 })
 
 			// One record nearly fills; the straddling write below rolls and
 			// its roll seals the first segment, whose sync fault takes this
@@ -946,9 +950,13 @@ func TestRollASegmentEndedByAFailedSealSyncNamesNoPredecessor(t *testing.T) {
 func TestRollASegmentWhoseTruncationFailedStaysSealedAndNamed(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	e := rollBuild(t, streamCap, segment.Targets{Content: 4}, nil).withStream(t, 1)
-	awaitCounters(t, "the two content spares ready", e.pool,
-		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
+	// The pinned maximum, with every spare of the class awaited, leaves the
+	// worker nothing more to land: the ledger asserts below read two of its
+	// counters one after another (the order Counters documents), so a spare
+	// landing between their reads would show in one and not the other.
+	e := rollPin(t, streamCap, segment.Targets{Content: 4}, nil).withStream(t, 1)
+	awaitCounters(t, "the four content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 4 })
 	se := e.stream(t)
 
 	var placed []segment.Placed
