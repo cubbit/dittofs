@@ -823,8 +823,9 @@ test/pcap-corpus/
   - An `AUTH_SYS` call on the same connection as `krb5` calls is served as before.
 - **Tests:** over loopback through `core` on `memory.New`, with E3's scripted client and a test
   table whose one row records the `r.Call` its handler receives and makes one mutating call. Each
-  `INIT`, failed ones included, records an `OpSignIn` in `vfstest.Mutations`, so every test below
-  that counts its entries calls `Reset` after its `INIT`s:
+  `INIT` that reaches `SignIn`, failed ones included, records an `OpSignIn` in `vfstest.Mutations`
+  (one D8 refuses at `reserve` records nothing), so every test below that counts its entries calls
+  `Reset` after its `INIT`s:
   - the `Identity` on that `r.Call` (catches a principal or protection dropped between the stage and
     the handler, R16, R17, R39);
   - R34's five steps, each asserting the reply and the table's state read back, the forged calls
