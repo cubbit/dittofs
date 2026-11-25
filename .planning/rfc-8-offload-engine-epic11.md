@@ -57,7 +57,7 @@ the keys; the engine's import allowlist for the two contract roots `Share` uses;
 
 - The scheduler's behaviour, every rule of RFC 8 §6.1.1 (states, batches, backoff, reservations,
   fairness, the watchdog turns, `work_queue_stalled`): epic 13.
-- `Deps.Watchdog` and the loop each journal's instance takes (D6 of the offload plan): epic 14.
+- `Deps.Watchdog` and the loop each journal's instance takes: epic 14.
 - Reading each key: the retry backoff and `removal.rescan` (epic 14), `offload.max_age` (epic 15),
   read-ahead, the speculation budget and the fill low-water mark (epic 17), the eviction target and
   `eviction.repack_threshold` (epic 18).
@@ -204,7 +204,7 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
   a `Params` built per namespace from its `Target` and keys (RFC 2 §1.2, §3.2, §3.7), and RFC 8
   §2.3 has a binding copy its settings at `Bind`. A per-namespace `Params` on `Share` keeps the
   key material out of `Settings` and `Deps` and lets epic 16 compare it with the recorded settings
-  at `Bind` (D11 of the offload plan). The two roots enter the engine's allowlist with these fields,
+  at `Bind`. The two roots enter the engine's allowlist with these fields,
   earlier than the epics that first call into them (15 and 16): the fields are frozen at S1, so
   their types must exist then. `Store` is not validated here: the engine opens no flow until epic
   16, whose `OpenFlow` refuses an unregistered store; `Chunking` is valid by construction, since
@@ -473,7 +473,7 @@ A suggestion only: one pull request per subtask works as well.
   mark and the speculation budget. The fields exist here; the integration epic loads them once RFC
   13 names their keys, as it waits for `Target`'s.
 - **RFC 8 §2.6's `Deps.Watchdog *health.Watchdog`** has the same import problem D1 solves for the
-  scheduler; epic 14, which adds the member (the offload plan's D6), declares what it calls instead.
+  scheduler; epic 14, which adds the member, declares what it calls instead.
 - **The oldest-unoffloaded alert bound** (RFC 13 Appendix B, share scope, RFC 8 §11.4) is an alert
   rule's threshold, which epic 21 writes with the rule; it is not a `ShareSettings` field. Epic 20's
   `offload_age_exceeded` condition reads it from there if RFC 25 §7's rules turn out not to carry
