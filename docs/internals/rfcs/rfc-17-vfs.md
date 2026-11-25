@@ -660,7 +660,7 @@ holds.
 | Type | What it is |
 | --- | --- |
 | `Identity` | what the adapter proved, not yet mapped through any share's policy, in neutral terms: `Proof`, how it was proved — `None`, `Claimed` (asserted, not proved), `Secret` (a shared-secret challenge, such as NTLM), `Ticket` (a third party's mutual proof, such as Kerberos); `Protection`, how its messages are protected — `None`, `Integrity` (every message signed), `Privacy` (every message sealed); `Claims`, the uid, gid and groups a client asserted, marked as claims and never trusted as proof; the client's address; and `Evidence`, what sign-in established — `Name`, the proven `Principal` or zero for none, `SIDs`, `DenyOnly`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)) — which key every cache, so a cache stays keyed on what was proved ([RFC 18 §7.1](rfc-18-identity.md#7.1%20Every%20key%20carries%20the%20whole%20proof)); never the session key. No protocol name, credential flavour or mechanism level: each adapter maps its own to `Proof` and `Protection` ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)). Every method takes one inside a `Call`; the filesystem resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)), except a call that names no share, such as the `Clients` area's, which is mapped under the installation's defaults, never a share's ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
-| `Call` | `{Identity Identity; Caps Caps; Client ClientID; Session SessionRef; Channel struct{Seq uint16; Replay bool}}`: who a call comes from, taken by every method of every area but `SignIn` and `Spell`, which act for no caller (§3.1). `Identity` is the user, what the resolver resolves and caches; the rest sit beside it, never inside it, so no cache ever sees them and two machines signed in as one principal share a resolution but never a client. `Caps` the capabilities the adapter states, one value per adapter (below), whose `String()` is the label the access event (§3.3) and the operation metric (§7) carry; `Client` the machine, as the adapter proved it — for NFSv4.1 and SMB its session's, for NFSv4.0 the client on the state its stateid resolves to, or for an operation that names an open or lock owner, that owner's client, and only a client confirmed under NFSv4.0, as [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) defines it, for NLM the host's client record, zero for an NFSv3 call that names no lock; `Session` the SMB or NFSv4.1 session, zero otherwise; `Channel` an SMB request's channel sequence and whether it is a replay, checked through `Opens.Channel` ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). It is not `Identity.Client`, which is the client's address. One shape serves every call: an NFSv4 `REMOVE` or an SMB delete on close can name an open (`Target.Open`) whose `NotYours` check needs the call's client, and every access event carries the call's `Caps` and client (§3.3); a call that names no open, a `Lookup` say, leaves `Client` unused. A `Clients` method names the client it acts on as its own argument; only `Propose` and `Connect`, which come before there is one, take a `Call` whose `Client` is not yet that client |
+| `Call` | `{Identity Identity; Caps Caps; Client ClientID; Session SessionRef; Channel struct{Seq uint16; Replay bool}}`: who a call comes from, taken by every method of every area but `SignIn` and `Spell`, which act for no caller (§3.1). `Identity` is the user, what the resolver resolves and caches; the rest sit beside it, never inside it, so no cache ever sees them and two machines signed in as one principal share a resolution but never a client. `Caps` the capabilities the adapter states, one profile per call (below); the protocol is no field of `Call`, only a context label for observability (below); `Client` the machine, as the adapter proved it — for NFSv4.1 and SMB its session's, for NFSv4.0 the client on the state its stateid resolves to, or for an operation that names an open or lock owner, that owner's client, and only a client confirmed under NFSv4.0, as [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) defines it, for NLM the host's client record, zero for an NFSv3 call that names no lock; `Session` the SMB or NFSv4.1 session, zero otherwise; `Channel` an SMB request's channel sequence and whether it is a replay, checked through `Opens.Channel` ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). It is not `Identity.Client`, which is the client's address. One shape serves every call: an NFSv4 `REMOVE` or an SMB delete on close can name an open (`Target.Open`) whose `NotYours` check needs the call's client, and every access event carries the call's protocol label and client (§3.3); a call that names no open, a `Lookup` say, leaves `Client` unused. A `Clients` method names the client it acts on as its own argument; only `Propose` and `Connect`, which come before there is one, take a `Call` whose `Client` is not yet that client |
 | `Handle` | opaque bytes naming a file or a pseudo directory (§3.4, [§4.4](#4.4%20Handles%20are%20opaque)) |
 | `OpenRef` | RFC 14's, aliased: `{Kind RefKind; State StateRef; Open OpenID; Handle Handle}` ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)). `Kind` is `Opened`, `Locked` (a lock state), `Delegated` or `Anonymous`; an NFS reference is its stateid, `State`, whose `Seq` is the seqid presented (zero: current; an older one is `StateError` `OldState`); an SMB one is its `OpenID`, its shard in `State.Shard`. It is the only place that seqid travels: `Seqs` carries the owner sequence numbers only. It names no client — the call's client is the one the adapter proved (`Call.Client`) — and carries no identity: the call's `Identity` is compared with the principal the open was granted to, a lock state's open's for a `Locked` one (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(g, h)` one for I/O under a delegation |
 | `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)). `Open` is always an open of the file the change acts on — for a name change, the named entry's file, as an SMB rename or delete through its `FileId` sends — never an open of the directory in `H`; it is the `via` RFC 14's `CheckChange` takes, which refuses an open of any other file ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)) |
@@ -706,6 +706,7 @@ const (
 	GrantBelongsToOpen                    // a grant asked with no lease key belongs to its open alone, an oplock
 	ClientIsMachine                       // the client is a whole machine its users share: its record names no owner
 	HostCall                              // the call comes from a host's lock or mount service, which proves no user
+	SeesPseudoFS                          // the client sees a pseudo-filesystem above the shares; LOOKUPP at a share's root goes up to it
 )
 
 func (c Caps) Has(x Caps) bool // every bit of x is set
@@ -714,7 +715,7 @@ func (c Caps) String() string  // the set bits, short names joined by "|", "" fo
 // The profile each adapter states, declared once beside Caps:
 var (
 	NFSv3Caps = PrivilegeOnEveryCall
-	NFSv4Caps = PrivilegeOnEveryCall
+	NFSv4Caps = PrivilegeOnEveryCall | SeesPseudoFS
 	MountCaps = PrivilegeOnEveryCall | HostCall
 	NLMCaps   = PrivilegeOnEveryCall | ClientIsMachine | HostCall
 	SMBCaps   = OpenFilesKeepNames | WantOpenID | GrantBelongsToOpen | ClientIsMachine
@@ -731,6 +732,7 @@ states `MountCaps` on `MNT` and `EXPORT` alone, and `NFSv3Caps` otherwise.
 | `OpenFilesKeepNames` | SMB | While alice-pc holds `profiles/alice/ODFC_alice.vhdx` open, an SMB rename of `profiles/alice/` is refused, and so is an SMB rename that would replace the open file; an NFS `RENAME` of either succeeds ([RFC 14 §9.5](rfc-14-open-state.md#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory)). |
 | `WantOpenID` | SMB | The open is issued an `OpenID`, which the `FileId`'s persistent half carries; an NFSv4 `OPEN` is named by its stateid and draws none ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). |
 | `GrantBelongsToOpen` | SMB | A batch oplock covers its one open, and a second open of the file by the same machine breaks it; an NFSv4 read delegation is the client's, covers none of its opens, is not broken by its own client's opens, and never caches handles ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). |
+| `SeesPseudoFS` | NFSv4 | `Lookup` of `..` at a share's root answers the pseudo directory the share is mounted in, so an NFSv4 `LOOKUPP` from `/data` walks up to `/`; an NFSv3 or SMB caller's `..` there answers the share's root itself, as a share is its own top. |
 | `ClientIsMachine` | SMB, NLM | The record names no owner, so a second user signing in from the same Windows machine joins it; an NFSv4 `EXCHANGE_ID` of the same name from another principal is refused ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). |
 
 The request fields that already carry an intent state the rest:
@@ -743,9 +745,24 @@ The request fields that already carry an intent state the rest:
 | `Commit` through an `OpenRef` of an open | SMB `FLUSH` | A flush across a loss fails once with `ErrLost` (§5.8); an NFS `COMMIT` names no open and learns of a loss from the verifier. |
 | `ClientInfo.Recovery` | every adapter that registers a client | Status or refusal (NFSv4): the client renews a lease. Reconnect (SMB): it holds no lease, must have proved who it is to connect, lists the nodes holding its sessions and is released with its last one. Notice (NLM): it holds no lease and is sent a restart notice ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)). |
 
+**The protocol travels only as a context label for observability, and no
+rule reads it.** The adapter sets it once per request on the context it
+builds the call's context from, `vfs.WithProtocol(ctx, p)`, as `WithHold`
+sets a hold; `vfs.ProtocolFrom(ctx)` reads it back. Only the two emitters
+read it: the access event (§3.3), whose `Protocol` feeds RFC 25's audit
+`protocol` field ([RFC 25 §4.2](rfc-25-observability.md#4.2%20What%20a%20record%20carries)),
+and `vfs_op_seconds`' `protocol` label ([RFC 25 §2.5](rfc-25-observability.md#2.5%20Cardinality)),
+each writing `Protocol.Label()`: `nfs3`, `nfs4` or `smb`, NLM, NSM and MOUNT
+under `nfs3`. A missing label is normal: a context without one is valid on
+every method, no method refuses or behaves differently for it, an internal
+call or a test may leave it unset, and the emitters write `none`. A context
+the service derives keeps it (`context.WithoutCancel` keeps values), so a
+release run after its call ends is labelled as its call was.
+
 A source test fails on any comparison with a protocol kind in the filesystem,
-open state or `pkg/vfs`, and on a `switch` or `if` over a protocol kind that
-builds a `Caps` anywhere (V43); a reviewed golden pins each profile's `String()`.
+open state or `pkg/vfs`, on a call of `ProtocolFrom` there outside the
+emitters, and on a `switch` or `if` over a protocol kind that builds a `Caps`
+anywhere (V43); a reviewed golden pins each profile's `String()`.
 
 > decision: capabilities rather than a protocol switch, so every rule names the
 > behaviour it chooses, the service's suite drives each rule with a `Call` and no
@@ -762,7 +779,7 @@ builds a `Caps` anywhere (V43); a reviewed golden pins each profile's `String()`
 The rest carry no meaning beyond their shape:
 
 ```go
-type Protocol = protocol.Kind // NFS3, NFS4, NLM, SMB: the client record's kind (RFC 14 §2.1), which keys its name; no rule compares it
+type Protocol = protocol.Kind // NFS3, NFS4, NLM, SMB: the client record's kind (RFC 14 §2.1), which keys its name, and the context's observability label; Label() is RFC 25's word, "none" for zero; no rule compares it
 type AuthFlavor uint8 // a flavour a share admits: sys, krb5, krb5i, krb5p, ntlm, none
 type Stability uint8  // Unstable, DataSync, FileSync
 type XattrMode uint8  // Create, Replace, Either
@@ -1232,7 +1249,7 @@ type AccessEvent struct {
 	Client     ClientID   // zero for NFSv3
 	Addr       netip.Addr // the client's address
 	Identity   Identity
-	Caps       Caps // the call's, whose String() labels the event
+	Protocol   Protocol // the call context's label (ProtocolFrom); zero for none, which Label() writes "none"
 	Op         Op
 	File       FileID
 	Name       []byte // the name acted on, for namespace operations
@@ -2670,7 +2687,7 @@ func (s *Filesystem) Lookup(ctx context.Context, call Call, dir Handle, name []b
 		file, err := s.getattr(ctx, c, dir)
 		return dir, file, err
 	case "..":
-		if s.isShareRoot(dir) { // ".." at a share root answers the root itself; NFSv4 LOOKUPP leaves to the pseudo-fs
+		if s.isShareRoot(dir) { // ".." at a share root: the pseudo directory the share is mounted in under SeesPseudoFS, else the root itself
 			return s.parentOfRoot(ctx, c, dir)
 		}
 	}
@@ -2849,7 +2866,7 @@ Metric names are shown without the deployment's prefix.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| How fast is each operation, per adapter profile? `caps` is the call's `Caps.String()`; `outcome` is `ok`, `error` or `delay` | `vfs_op_seconds{op, caps, outcome}` | histogram |
+| How fast is each operation, per protocol? `protocol` is the call context's label, `none` without one; `outcome` is `ok`, `error` or `delay` | `vfs_op_seconds{op, protocol, outcome}` | histogram |
 | Which errors does each operation answer? | `vfs_errors_total{op, error}`, `error` one of §4.3's neutral errors | counter |
 | How often are clients told to retry, and why? | `vfs_delayed_total{op, cause}` | counter |
 | How often does quota refuse, and how much is reserved? | `vfs_quota_refusals_total{scope}`, `vfs_quota_reserved_bytes` | counter, gauge |
