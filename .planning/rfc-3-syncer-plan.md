@@ -336,7 +336,7 @@ entries, so it binds nothing here.
 | 2 | **Test foundations** ⛔ | per-call faults on RFC 4's fault wrapper, the Group A suite, the recording log handler, the held-pool heap measurement | 4 | 8 | team | **all testing** in 3 to 7 and 9 |
 | 3 | **Registration, flows and the fair scheduler** ⛔ | registry, flows, lifecycle, two pools, classes, two-level DRR, caps, queues, the waiter bound, the reference model; a minimal single-attempt `Upload`, `Fetch` and `Prefetch` | 11 | 35 | A | 4, 5, 6 |
 | 4 | **Termination, retries and the uploader** ⛔ | both halves' attempt loop, the wire-byte meter, the retry budget, throttling, the floor, the first-byte bound, slow tail, unknown outcomes; `Upload` complete | 7 | 23 | B | 5, 6, 7 |
-| 5 | **Store health** | the step function and its one backoff, probe loops, the failure window, causes, refusal, the two log lines, the `health.Source` | 5 | 13 | C | 7 |
+| 5 | **Store health** | the step function and its one backoff, probe loops, the failure window, causes, refusal, the two log lines, the `health.Source` | 5 | 13 | C | 7, RFC 8 offload plan epic 21 |
 | 6 | **The fetcher** | fetch resume, the verification re-get, single flight, join, re-home, detach | 9 | 30 | A | 7 |
 | 7 | **Memory bound, `Stats` and the fault sweep** | the per-worker bound, the fit to the transfers pool, the consistent snapshot, the held-pool heap check, the systematic sweep and the store changes, `unit/syncer-allocs` | 4 | 11.5 | B | 9 |
 | 8 | **Integration: the syncer's own** | the two settings; the collector in `internal/node/content` | 2 | 5 | C | RFC 8 offload plan epic 21 |
@@ -476,7 +476,7 @@ internal/node/content/            the node's content wiring
 - The user decided on new top-level paths for #5488's components, so no epic waits on #5484.
 - Amended RFC 0 §1.2 (#5774) keeps a contract in a unit apart from its implementation. The root
   `pkg/syncer` holds RFC 3's contract: `Store`, `Probes`, `StoreID`, `ErrDrift`, `Stats` and the
-  flow's value types, and `Syncer` and `Flow` as interfaces with RFC 3 §1.3's methods. The engine
+  flow's value types, and `Syncer` and `Flow` as the interfaces RFC 3 §1.3 declares. The engine
   imports only the root (`StoreID`, the flow's interface); the node's content wiring, a composer,
   builds `pool.New` and injects it, and needs no import-test entry.
 - **Prior art.** `pkg/openstate` and `pkg/vfs`, the same top-level layout (in this repository); the
@@ -522,9 +522,11 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
 - `pkg/metrics`, `pkg/health` and `pkg/settings` each hold contract and implementation together, so
   amended RFC 0 §1.2 (#5774) counts them as implementations, and only the composers import them.
   The syncer imports none: it reports `Stats` and `Flow.Health`, and takes its worker counts as
-  plain values in `pool.Config`. Epic 8 writes the collector and the section, and epic 5 the
-  conditions' `health.Source`, in `internal/node/content`; RFC 8 offload plan epic 21 registers
-  them, and the alert rules are its (O7).
+  plain values in `pool.Config`. Epic 8 adds the collector and the section, and epic 5 the
+  conditions' `health.Source`, to `internal/node/content`, creating the package if RFC 8 offload
+  plan epic 21 has not yet. Epic 21 consumes them: it registers each in the node and builds nothing
+  of its own for them, and the alert rules are its (O7). Epic 21 therefore waits on epics 5 and 8,
+  as §2's table says.
 - The section is a `settings.Section` built with `settings.Of`, as `internal/identity/settings.go`
   is.
 - The collector exports each queue gauge summed over flows. The per-flow queue gauges are exported
@@ -575,7 +577,8 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
       Get(ctx context.Context, name remote.Name, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]
       Health(ctx context.Context, d remote.Direction) error
   }
-  func (f *Flow) Upload(ctx context.Context, name remote.Name, size int64, attempt func(ctx context.Context, m remote.Meter) error) error
+  // on the Flow interface
+  Upload(ctx context.Context, name remote.Name, size int64, attempt func(ctx context.Context, m remote.Meter) error) error
   ```
 
   RFC 4's `codec.Store.NewPut(name, src)` builds `attempt`. The closure holds the put's measured

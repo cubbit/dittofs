@@ -348,68 +348,72 @@ var ErrDrift error
 // (RFC 4 §4.14), is registered with PutProbe false.
 type Probes struct{ PutProbe, GetProbe bool }
 
-// probe names the probe this store shares with every store registered under the
-// same value (§2.8); the engine derives it from endpoint, credential and bucket.
-// probes says which directions are probed at all.
-Register(name string, store Store, probe ProbeKey, probes Probes) (StoreID, error)
-// Unregister drops a store once no flow on it is open: its health state, its
-// probes and its counters end with it.
-Unregister(store StoreID) error
-// SetDrift raises the store's drift condition, err naming the drifted
-// setting, or clears it when err is nil (§2.8). The process's GC is its one
-// caller, from the namespace's Recheck record (RFC 9 §7.5): raised while the
-// record holds drift, cleared once it holds a passed Recheck, on every node,
-// whichever node ran the Recheck. Nothing else calls it.
-SetDrift(store StoreID, err error)
-// A background flow's fetches run in the background class (§2.9); GC, copying
-// backups and re-homes open one.
-OpenFlow(store StoreID, background bool) (*Flow, error)
+// Syncer and Flow are the contract; package pool implements them (RFC 0 §1.2).
+type Syncer interface {
+    // probe names the probe this store shares with every store registered under the
+    // same value (§2.8); the engine derives it from endpoint, credential and bucket.
+    // probes says which directions are probed at all.
+    Register(name string, store Store, probe ProbeKey, probes Probes) (StoreID, error)
+    // Unregister drops a store once no flow on it is open: its health state, its
+    // probes and its counters end with it.
+    Unregister(store StoreID) error
+    // SetDrift raises the store's drift condition, err naming the drifted
+    // setting, or clears it when err is nil (§2.8). The process's GC is its one
+    // caller, from the namespace's Recheck record (RFC 9 §7.5): raised while the
+    // record holds drift, cleared once it holds a passed Recheck, on every node,
+    // whichever node ran the Recheck. Nothing else calls it.
+    SetDrift(store StoreID, err error)
+    // A background flow's fetches run in the background class (§2.9); GC, copying
+    // backups and re-homes open one.
+    OpenFlow(store StoreID, background bool) (Flow, error)
+    Close() error // the syncer's own
+    Stats() Stats // a consistent snapshot of the counters of §2.12
+}
 
-// Upload runs the put attempt of block name: it calls attempt once per try, up
-// to §2.4's bounds, and returns nil only once a call of attempt returned nil.
-// attempt makes one put of the whole block and reports its wire bytes to m;
-// RFC 4's codec.Store.NewPut(name, src) builds it (RFC 4 §4.3).
-func (f *Flow) Upload(ctx context.Context, name remote.Name, size int64, attempt func(ctx context.Context, m remote.Meter) error) error
-func (f *Flow) Fetch(ctx context.Context, name remote.Name, want []remote.ChunkRange) iter.Seq2[remote.Chunk, error]
-func (f *Flow) Prefetch(ctx context.Context, name remote.Name, want []remote.ChunkRange) iter.Seq2[remote.Chunk, error]
-// A raw transfer carries a block, or an export part or head, byte for byte
-// between two stores, never decoding it; a copying backup uses it (RFC 26
-// §2.4.2). FetchRaw writes the whole stored object into the caller's writer at
-// its offsets. get opens the stored bytes from byte off to the end and reports
-// the stored checksum; the caller's closure calls RFC 4's Get, GetVersion or
-// GetObject. A retry calls get again at the first byte not yet written (at byte
-// 0 after a response-checksum mismatch). FetchRaw checks the staged bytes
-// against the source's stored checksum of whatever kind, and returns a checksum
-// of kind, the destination's put kind: the source's stored one when it is of
-// that kind, else the checksum of the staged bytes it just checked.
-func (f *Flow) FetchRaw(ctx context.Context, size int64, kind remote.Checksum, dst io.WriterAt, get func(ctx context.Context, off int64) (io.ReadCloser, remote.StoredSum, error)) (sum []byte, err error)
-// UploadRaw is Upload of an object that has no block name. Its attempt puts
-// exactly size bytes under FetchRaw's checksum through RFC 4's PutVersion or
-// PutObject, and keeps the version the store returns.
-func (f *Flow) UploadRaw(ctx context.Context, size int64, attempt func(ctx context.Context, m remote.Meter) error) error
-// Small runs one small-object call as a transfer of direction d: scheduled,
-// retried, throttled and health-checked like a block's. call makes one
-// request, or one read and then one write of the same object (a retention
-// extension), under a ctx that ends at the small-call bound, with a body of
-// at most the small-body cap (§2.10). Every call at a backup location that
-// is not a raw transfer runs through it (RFC 4 §4.15), as do a Recheck
-// pass's setting reads and version-walk pages (RFC 4 §4.11) and each batch
-// request of a backup folder sweep's deletes. d is DirGet for a read or a
-// listing page, DirPut for anything that changes the store: a put, a retention
-// extension or a delete batch.
-func (f *Flow) Small(ctx context.Context, d remote.Direction, call func(ctx context.Context) error) error
-// FetchVersion is Fetch of one recorded version, verified like Fetch. get is
-// the caller's closure over codec.Store's get of that version (RFC 4 §4.14);
-// the syncer passes it the chunks still wanted, as on a Fetch retry.
-func (f *Flow) FetchVersion(ctx context.Context, name remote.Name, want []remote.ChunkRange, get func(ctx context.Context, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]) iter.Seq2[remote.Chunk, error]
-func (f *Flow) Healthy(d remote.Direction) bool
-// Health is nil while direction d is healthy, and otherwise the error that made
-// it unhealthy, naming the store and wrapping its cause (§2.8).
-func (f *Flow) Health(d remote.Direction) error
-func (f *Flow) Close() error
-
-Close() error // the syncer's own
-Stats() Stats // a consistent snapshot of the counters of §2.12
+type Flow interface {
+    // Upload runs the put attempt of block name: it calls attempt once per try, up
+    // to §2.4's bounds, and returns nil only once a call of attempt returned nil.
+    // attempt makes one put of the whole block and reports its wire bytes to m;
+    // RFC 4's codec.Store.NewPut(name, src) builds it (RFC 4 §4.3).
+    Upload(ctx context.Context, name remote.Name, size int64, attempt func(ctx context.Context, m remote.Meter) error) error
+    Fetch(ctx context.Context, name remote.Name, want []remote.ChunkRange) iter.Seq2[remote.Chunk, error]
+    Prefetch(ctx context.Context, name remote.Name, want []remote.ChunkRange) iter.Seq2[remote.Chunk, error]
+    // A raw transfer carries a block, or an export part or head, byte for byte
+    // between two stores, never decoding it; a copying backup uses it (RFC 26
+    // §2.4.2). FetchRaw writes the whole stored object into the caller's writer at
+    // its offsets. get opens the stored bytes from byte off to the end and reports
+    // the stored checksum; the caller's closure calls RFC 4's Get, GetVersion or
+    // GetObject. A retry calls get again at the first byte not yet written (at byte
+    // 0 after a response-checksum mismatch). FetchRaw checks the staged bytes
+    // against the source's stored checksum of whatever kind, and returns a checksum
+    // of kind, the destination's put kind: the source's stored one when it is of
+    // that kind, else the checksum of the staged bytes it just checked.
+    FetchRaw(ctx context.Context, size int64, kind remote.Checksum, dst io.WriterAt, get func(ctx context.Context, off int64) (io.ReadCloser, remote.StoredSum, error)) (sum []byte, err error)
+    // UploadRaw is Upload of an object that has no block name. Its attempt puts
+    // exactly size bytes under FetchRaw's checksum through RFC 4's PutVersion or
+    // PutObject, and keeps the version the store returns.
+    UploadRaw(ctx context.Context, size int64, attempt func(ctx context.Context, m remote.Meter) error) error
+    // Small runs one small-object call as a transfer of direction d: scheduled,
+    // retried, throttled and health-checked like a block's. call makes one
+    // request, or one read and then one write of the same object (a retention
+    // extension), under a ctx that ends at the small-call bound, with a body of
+    // at most the small-body cap (§2.10). Every call at a backup location that
+    // is not a raw transfer runs through it (RFC 4 §4.15), as do a Recheck
+    // pass's setting reads and version-walk pages (RFC 4 §4.11) and each batch
+    // request of a backup folder sweep's deletes. d is DirGet for a read or a
+    // listing page, DirPut for anything that changes the store: a put, a retention
+    // extension or a delete batch.
+    Small(ctx context.Context, d remote.Direction, call func(ctx context.Context) error) error
+    // FetchVersion is Fetch of one recorded version, verified like Fetch. get is
+    // the caller's closure over codec.Store's get of that version (RFC 4 §4.14);
+    // the syncer passes it the chunks still wanted, as on a Fetch retry.
+    FetchVersion(ctx context.Context, name remote.Name, want []remote.ChunkRange, get func(ctx context.Context, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]) iter.Seq2[remote.Chunk, error]
+    Healthy(d remote.Direction) bool
+    // Health is nil while direction d is healthy, and otherwise the error that made
+    // it unhealthy, naming the store and wrapping its cause (§2.8).
+    Health(d remote.Direction) error
+    Close() error
+}
 ```
 
 Streams are `iter.Seq2`: a caller consumes one with `for c, err := range`, and
