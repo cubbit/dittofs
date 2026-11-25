@@ -37,7 +37,6 @@ import (
 // short enough for the group commit to come due between two bursts and long
 // enough that a burst on a fast device ends before it.
 const (
-	benchWriters      = 64
 	benchShareLimit   = 8 << 30
 	benchExistenceAge = time.Second
 	benchMaxFiles     = 64 // the group commit's batch bound, G

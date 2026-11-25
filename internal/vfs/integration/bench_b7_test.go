@@ -5,7 +5,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"math"
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -17,19 +16,14 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// B7's storm: b7Rate chmods a second, each on a file drawn at random from all
-// b7Files files of the share's journal, the first benchWriters of which the
-// writers overwrite.
+// B7's storm, sized in storm_test.go.
 const (
-	b7Files = 100000
-	b7Rate  = 1000
 	b7Log2G = 6 // log₂ of benchMaxFiles
 
 	// The storm's workers, at most this many chmods at once: b7WarmWorkers for
 	// the warm-up burst, then b7Rate × the last burst's chmod latency, up to
 	// b7MaxWorkers.
 	b7WarmWorkers = 256
-	b7MaxWorkers  = 4096
 
 	// b7MinK and b7MaxK are the fewest and the most conflicting files a burst
 	// may have and still be evaluated: below 2 the bound is under the batches a
@@ -37,10 +31,6 @@ const (
 	// transactions of a batch committed file by file.
 	b7MinK = 2
 	b7MaxK = 10
-
-	// b7WantK is the expected k the storm's pool is sized for, before each
-	// burst, from the length of the burst before it.
-	b7WantK = 4
 
 	// decision: B7's heap slack is the profiler's default plus what the
 	// benchmark itself keeps until the check, each term measured, never a
@@ -382,14 +372,6 @@ func (s *storm) window(from, to time.Time) stormWindow {
 	return w
 }
 
-// workersFor is the pool that keeps b7Rate chmods a second in flight when
-// each takes latency, at least one and at most b7MaxWorkers.
-func workersFor(latency time.Duration) int64 {
-	n := int64(math.Ceil(b7Rate * latency.Seconds()))
-
-	return min(max(n, 1), b7MaxWorkers)
-}
-
 // end stops the storm and waits for its last chmod, at most
 // benchBurstDeadline.
 func (s *storm) end() error {
@@ -464,35 +446,17 @@ func benchB7(b *testing.B) {
 
 		stormFrom := time.Now()
 
-		var last time.Duration
-
-		var (
-			rates []float64       // the last three bursts' measured rates
-			lats  []time.Duration // and their chmod latencies, none of them 0
-			prevN int64           // the N of the burst before, 0 before the first
-		)
+		var z stormSizer
 
 		// Burst -1 is the warm-up: it measures the first burst's length, and
 		// is not evaluated.
 		for k := -1; k < b5Bursts; k++ {
 			if k >= 0 {
-				rate := float64(b7Rate)
-				if len(rates) > 0 {
-					rate = median(rates)
-				}
-
-				n := stormPool(last, rate)
-				if prevN > 0 {
-					n = min(max(n, prevN/2, benchWriters), 2*prevN, b7Files)
-				}
-
-				prevN = n
+				n, w := z.next()
 				s.pool.Store(n)
 
-				// A latency of 0 means no chmod started in the window: it is
-				// left out, and with none measured the target stays.
-				if len(lats) > 0 {
-					s.setWorkers(workersFor(median(lats)))
+				if w > 0 {
+					s.setWorkers(w)
 				}
 			}
 
@@ -524,20 +488,14 @@ func benchB7(b *testing.B) {
 			}
 
 			engine, mixed := c.txns.take()
-			last = time.Since(from)
+			last := time.Since(from)
 			now := time.Now()
 			touched := s.touched(from, now)
 			rate := float64(s.started(from, now)) / last.Seconds()
 			lat := s.latency(from, now)
 			win := s.window(from, now)
 
-			if rate > 0 {
-				rates = lastThree(append(rates, min(rate, b7Rate)))
-			}
-
-			if lat > 0 {
-				lats = lastThree(append(lats, lat))
-			}
+			z.measured(k, last, rate, lat)
 
 			if k >= 0 {
 				slowest = min(slowest, rate)
@@ -670,35 +628,7 @@ func benchB7(b *testing.B) {
 	}
 }
 
-// stormPool is how many of the pool's files the storm draws from for a burst
-// expected to last as long as last did, with the storm running at rate chmods
-// a second as the burst before measured it: enough that about b7WantK of the
-// writers' files are touched.
-func stormPool(last time.Duration, rate float64) int64 {
-	n := int64(float64(benchWriters) * rate * last.Seconds() / b7WantK)
-
-	return min(max(n, benchWriters), b7Files)
-}
-
 // milliseconds is d in milliseconds, as a metric value.
 func milliseconds(d time.Duration) float64 {
 	return float64(d) / float64(time.Millisecond)
-}
-
-// median is the middle of xs, or the mean of the two middle values when their
-// count is even; xs is not changed.
-func median[T float64 | time.Duration](xs []T) T {
-	sorted := slices.Sorted(slices.Values(xs))
-	m := len(sorted) / 2
-
-	if len(sorted)%2 == 0 {
-		return (sorted[m-1] + sorted[m]) / 2
-	}
-
-	return sorted[m]
-}
-
-// lastThree is the last three of xs, or all of them when fewer.
-func lastThree[T any](xs []T) []T {
-	return xs[max(len(xs)-3, 0):]
 }
