@@ -316,7 +316,7 @@ already state with their two exceptions.
   not chosen by the RFC 3 plan's D3 because it cannot share `pkg/sim`'s clock. Not chosen:
   counting `TestClock.Pending`, which also counts every deadline that never fired and was never
   stopped, so it never returns to the number of goroutines waiting; and a registry of channels
-  each task blocks on, fed by the clock's `After`, which the independent architect proposed: a
+  each goroutine blocks on, fed by the clock's `After`, which the independent architect proposed: a
   `Link` wait ended by its context leaves its clock channel registered while the goroutine runs
   on, so time would move under it. The wrapper's own count ends each wait however it ends.
 
