@@ -123,19 +123,19 @@ func TestEveryRowHasAVector(t *testing.T) {
 	}
 }
 
-// The check names a row no golden call reaches, a NULL on NFSv3 here, and
-// only that row: GETATTR beside it is reached by nfs-v3-getattr-call, a
+// The check names a row no golden call reaches, an NFSv3 procedure 99 that no
+// version of NFS defines here, and only that row: GETATTR beside it is reached by nfs-v3-getattr-call, a
 // golden file that keeps its record mark. A check that passed vacuously, or
 // skipped a file cut with its mark, would pass the tree too.
 func TestTheVectorCheckNamesAnUnreachedRow(t *testing.T) {
 	ts := tables(adapter.Deps{})
 	ts.V3 = core.NewOpTable(ts.V3.Errors, false,
-		core.Row[void, void](0, "null", core.NeedsNothing,
+		core.Row[void, void](99, "unnamed", core.NeedsNothing,
 			func(context.Context, *core.Request, void) (void, error) { return void{}, nil }),
 		core.Row[void, void](1, "getattr", core.NeedsNothing,
 			func(context.Context, *core.Request, void) (void, error) { return void{}, nil }))
 	ts.V3.Protocol = "nfs3"
-	if got := unreached(ts, goldenCalls(t)); !slices.Equal(got, []string{"nfs3 null"}) {
-		t.Errorf("unreached rows %v, want [nfs3 null]", got)
+	if got := unreached(ts, goldenCalls(t)); !slices.Equal(got, []string{"nfs3 unnamed"}) {
+		t.Errorf("unreached rows %v, want [nfs3 unnamed]", got)
 	}
 }
