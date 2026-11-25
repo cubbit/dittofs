@@ -136,6 +136,19 @@ func pseudoFile(t *pseudofs.Tree, n *pseudofs.Node) vfs.File {
 // refused by a share's flavour must reach its mount to be told so and ask
 // SECINFO there, and a path is all a walk learns. Hide a path from a lookup
 // too if share paths are found to be secret.
+// mountParent is the pseudo directory share is mounted in, with its File.
+func (fs *Filesystem) mountParent(ctx context.Context, share entity.ShareID) (vfs.Handle, vfs.File, error) {
+	t, err := fs.tree(ctx)
+	if err != nil {
+		return nil, vfs.File{}, err
+	}
+	n := t.Mount(share)
+	if n == nil {
+		return nil, vfs.File{}, vfs.ErrStale // the share left the tree since admission
+	}
+	return n.Parent.Handle(), pseudoFile(t, n.Parent), nil
+}
+
 func (fs *Filesystem) pseudoLookup(ctx context.Context, c vfs.Call, dir vfs.Handle, name []byte) (vfs.Handle, vfs.File, error) {
 	n, t, err := fs.pseudoChild(ctx, dir, name)
 	if err != nil {

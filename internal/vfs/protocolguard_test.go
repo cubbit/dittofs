@@ -14,6 +14,10 @@ import (
 	"testing"
 )
 
+// emitters is every file allowed to read a call's protocol label: the
+// access event's emitter. The label is for observability alone.
+var emitters = map[string]bool{"internal/vfs/authz/authz.go": true}
+
 // guarded is every package directory, relative to the module root, whose
 // rules must read a capability the caller states, never a protocol kind;
 // each is walked with its subpackages.
@@ -52,8 +56,13 @@ func TestNoRuleReadsAProtocol(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			found, err := protocolComparisons(filepath.ToSlash(rel), src, kinds)
+			rel = filepath.ToSlash(rel)
+			found, err := protocolComparisons(rel, src, kinds)
 			sites = append(sites, found...)
+			if err == nil && !emitters[rel] {
+				found, err = labelReads(rel, src)
+				sites = append(sites, found...)
+			}
 			return err
 		})
 		if err != nil {
@@ -61,7 +70,7 @@ func TestNoRuleReadsAProtocol(t *testing.T) {
 		}
 	}
 	for _, s := range sites {
-		t.Errorf("%s; act on a capability the caller states (RFC 17 §3.0)", s)
+		t.Errorf("%s; act on a capability the caller states, and leave the label to the emitters (RFC 17 §3.0)", s)
 	}
 }
 
@@ -131,6 +140,28 @@ func TestTheCapsBuilderFinder(t *testing.T) {
 	} {
 		src := "package x\n\nfunc f() {\n" + tc.body + "\n}\n"
 		got, err := capsFromProtocol("x.go", []byte(src), kinds, names)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: found %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The label finder reports a call of ProtocolFrom, qualified or not, and
+// not a call of WithProtocol, which sets the label.
+func TestTheLabelFinder(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       []string
+	}{
+		{"a qualified read", "p, _ := vfs.ProtocolFrom(ctx)", []string{"x.go:4 reads the protocol label"}},
+		{"an unqualified read", "_, ok := ProtocolFrom(ctx)", []string{"x.go:4 reads the protocol label"}},
+		{"a label set", "ctx = vfs.WithProtocol(ctx, p)", nil},
+	} {
+		src := "package x\n\nfunc f() {\n" + tc.body + "\n}\n"
+		got, err := labelReads("x.go", []byte(src))
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
@@ -331,6 +362,35 @@ func capsFromProtocol(name string, src []byte, kinds, names map[string]bool) ([]
 					break
 				}
 			}
+		}
+		return true
+	})
+	return out, nil
+}
+
+// labelReads is each call of ProtocolFrom in src, a file named name, as
+// "name:line reads the protocol label".
+func labelReads(name string, src []byte) ([]string, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, name, src, 0)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		c, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		var fn string
+		switch e := c.Fun.(type) {
+		case *ast.Ident:
+			fn = e.Name
+		case *ast.SelectorExpr:
+			fn = e.Sel.Name
+		}
+		if fn == "ProtocolFrom" {
+			out = append(out, fmt.Sprintf("%s:%d reads the protocol label", name, fset.Position(c.Pos()).Line))
 		}
 		return true
 	})

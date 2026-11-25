@@ -574,13 +574,16 @@ func (fs *Filesystem) unlinkClosed(ctx context.Context, share entity.ShareID, f 
 		if errors.Is(err, vfs.ErrGrace) {
 			next, wait = try, unlinkWait // a grace answer spends no retry
 		}
+		call := ctx // the retry keeps the call's values, its protocol label among them
 		if !fs.background(func(ctx context.Context) {
 			t := time.NewTimer(wait)
 			defer t.Stop()
 			select {
 			case <-t.C:
 				defer fs.count(share)()
-				fs.unlinkClosed(ctx, share, f, d, next)
+				rctx, cancel := fs.detached(call)
+				defer cancel()
+				fs.unlinkClosed(rctx, share, f, d, next)
 			case <-ctx.Done():
 				fs.refused(f, ctx.Err())
 			}

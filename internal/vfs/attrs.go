@@ -43,7 +43,8 @@ func (fs *Filesystem) GetAttr(ctx context.Context, c vfs.Call, h vfs.Handle) (vf
 		return vfs.File{}, err
 	}
 	defer done()
-	a, release, err := fs.admitHandle(ctx, c, h)
+	// A host's lock service reads the file a blocking lock names first.
+	a, release, err := fs.admitHandleFor(ctx, c, h, hostLock)
 	if err != nil {
 		return vfs.File{}, err
 	}

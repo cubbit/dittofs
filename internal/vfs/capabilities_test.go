@@ -1,10 +1,13 @@
 package vfs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/vfs/authz"
+	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/openstate"
@@ -37,8 +40,9 @@ func eachCase(t *testing.T, x vfs.Caps, fn func(t *testing.T, c vfs.Caps, set bo
 }
 
 // HostCall lowers a share's minimums only for the calls a host's mount or
-// lock service makes: Root and ListShares meet none, a lock call and an open
-// meet MinProof lowered to Claimed and no MinProtection, and any other call
+// lock service makes: Root and ListShares meet none, a lock call, a GetAttr
+// and an open meet MinProof lowered to Claimed and no MinProtection, and any
+// other call
 // naming the share, or any call with a Session, which no mount or lock
 // service has, is ErrInvalid. Without it the same call meets the share's own
 // minimums. The share asks a ticket with integrity; the caller signed in
@@ -87,9 +91,13 @@ func TestHostCallLowersTheMinimumsOnlyForItsCalls(t *testing.T) {
 				_, err := s.GetAttr(ctx, c, h)
 				return err
 			},
+			"SetAttr": func(c vfs.Call) error {
+				_, err := s.SetAttr(ctx, c, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o644)})
+				return err
+			},
 		}
 		all := func(err error) map[string]error {
-			return map[string]error{"Root": err, "ListShares": err, "TestLock": err, "Open": err, "GetAttr": err}
+			return map[string]error{"Root": err, "ListShares": err, "TestLock": err, "Open": err, "GetAttr": err, "SetAttr": err}
 		}
 		cases := []struct {
 			name string
@@ -105,9 +113,9 @@ func TestHostCallLowersTheMinimumsOnlyForItsCalls(t *testing.T) {
 				c    vfs.Call
 				want map[string]error
 			}{
-				{"at a secret", secret, map[string]error{"Root": nil, "ListShares": nil, "TestLock": nil, "Open": nil, "GetAttr": vfs.ErrInvalid}},
+				{"at a secret", secret, map[string]error{"Root": nil, "ListShares": nil, "TestLock": nil, "Open": nil, "GetAttr": nil, "SetAttr": vfs.ErrInvalid}},
 				{"with a session", withSession, all(vfs.ErrInvalid)},
-				{"proving nothing", none, map[string]error{"Root": pastMinimums, "TestLock": vfs.ErrWrongSecurity, "Open": vfs.ErrWrongSecurity, "GetAttr": vfs.ErrInvalid}},
+				{"proving nothing", none, map[string]error{"Root": pastMinimums, "TestLock": vfs.ErrWrongSecurity, "Open": vfs.ErrWrongSecurity, "GetAttr": vfs.ErrWrongSecurity, "SetAttr": vfs.ErrInvalid}},
 			}
 		}
 		for _, tc := range cases {
@@ -269,4 +277,71 @@ func TestARenameThroughItsOwnExclusiveOpenGoes(t *testing.T) {
 	if _, err := n.Rename(ctx, c, vfs.Target{H: n.fs.Root, Open: &ref}, []byte("a"), n.fs.Root, []byte("b"), false); err != nil {
 		t.Errorf("an SMB rename through its own exclusive open: %v, want nil", err)
 	}
+}
+
+// SeesPseudoFS decides where ".." at a share's root goes: with it, up to the
+// pseudo directory the share is mounted in; without it, the root itself.
+func TestSeesPseudoFSLeadsUpFromAShareRoot(t *testing.T) {
+	eachCase(t, vfs.SeesPseudoFS, func(t *testing.T, caps vfs.Caps, set bool) {
+		n := newNames(t)
+		c := n.admin
+		c.Caps = caps
+		h, _, err := n.Lookup(t.Context(), c, n.fs.Root, []byte(".."))
+		n.must(t, err)
+		if up := pseudofs.IsHandle(h); up != set {
+			t.Errorf("under %q: .. at the share's root answered a pseudo directory %v, want %v", caps, up, set)
+		}
+	})
+}
+
+// The protocol label is for observability alone: a context without one is
+// admitted and opens as one with it does, and a release run after the call
+// that left it, the deferred unlink of a delete on close, is audited with
+// the label of that call's context, which the service's derived context
+// keeps.
+func TestTheProtocolLabelChangesNothingAndReachesAReleasesEvent(t *testing.T) {
+	rec := &recorder{}
+	n := namesOver(t, newShares(t, rec, func(vfs.ShareID) authz.Policy { return authz.AuditAll }))
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	for _, ctx := range []context.Context{t.Context(), vfs.WithProtocol(t.Context(), entity.ProtocolSMB)} {
+		h, _ := n.fs.Create(t, n.fs.Admin, n.fs.Root, "f", kvstore.Regular(0o644))
+		req := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}
+		r, err := n.Open(ctx, c, req)
+		if err != nil {
+			t.Fatalf("an open, labelled %q: %v", label(ctx), err)
+		}
+		n.must(t, errOf(n.Close(ctx, c, r.Ref, vfs.Seqs{})))
+		_, err = n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("f"))
+		n.must(t, err)
+	}
+	n.fs.Create(t, n.fs.Admin, n.fs.Root, "g", kvstore.Regular(0o644))
+	ctx := vfs.WithProtocol(t.Context(), entity.ProtocolSMB)
+	req := byName(n.fs.Root, "g", vfs.OpenExisting, entity.ReadData|entity.Delete)
+	req.DeleteOnClose, req.Backup = true, true
+	r, err := n.Open(ctx, c, req)
+	n.must(t, err)
+	rec.mu.Lock()
+	rec.got = nil
+	rec.mu.Unlock()
+	n.must(t, errOf(n.Close(ctx, c, r.Ref, vfs.Seqs{})))
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var unlinks int
+	for _, e := range rec.got {
+		if e.Op == vfs.OpUnlink {
+			unlinks++
+			if e.Protocol.Label() != "smb" {
+				t.Errorf("the deferred unlink's access event names protocol %q, want smb", e.Protocol.Label())
+			}
+		}
+	}
+	if unlinks != 1 {
+		t.Errorf("the deferred unlink emitted %d access events, want one", unlinks)
+	}
+}
+
+// label is the word ctx's protocol label is written as.
+func label(ctx context.Context) string {
+	p, _ := vfs.ProtocolFrom(ctx)
+	return p.Label()
 }

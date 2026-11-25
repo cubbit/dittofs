@@ -28,6 +28,19 @@ func (p Protocol) String() string                { return enumString(protocols, 
 func (p Protocol) MarshalText() ([]byte, error)  { return enumMarshal(protocols, p) }
 func (p *Protocol) UnmarshalText(b []byte) error { return enumUnmarshal(protocols, p, b) }
 
+// labels is each kind's observability label, RFC 25's protocol value: NLM
+// counts under nfs3 with NFS's other auxiliary services.
+var labels = []string{ProtocolNFSv3: "nfs3", ProtocolNFSv4: "nfs4", ProtocolNLM: "nfs3", ProtocolSMB: "smb"}
+
+// Label is p's observability label, "none" for no kind: what a metric and an
+// audit record write for the protocol.
+func (p Protocol) Label() string {
+	if int(p) < len(labels) && labels[p] != "" {
+		return labels[p]
+	}
+	return "none"
+}
+
 // ClientID, OpenID and LockID are issued unique across the installation and
 // never reused. None is random: an ID a client presents alone is checked
 // against its holder and principal by the caller.

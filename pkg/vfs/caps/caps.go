@@ -20,13 +20,14 @@ const (
 	GrantBelongsToOpen                    // a grant asked with no lease key belongs to its open alone, an oplock
 	ClientIsMachine                       // the client is a whole machine its users share: its record names no owner
 	HostCall                              // the call comes from a host's lock or mount service, which proves no user
+	SeesPseudoFS                          // the client sees a pseudo-filesystem above the shares; LOOKUPP at a share's root goes up to it
 )
 
 // The profile each adapter states on every call; nothing else builds a Caps.
 //
-//	profile    privilege  keep-names  open-id  oplock  machine  host
+//	profile    privilege  keep-names  open-id  oplock  machine  host  pseudo-fs
 //	NFSv3      x
-//	NFSv4      x
+//	NFSv4      x                                                       x
 //	Mount      x                                                 x
 //	NLM        x                                         x       x
 //	SMB                   x           x        x         x
@@ -35,7 +36,7 @@ const (
 // states NLMCaps.
 const (
 	NFSv3Caps = PrivilegeOnEveryCall
-	NFSv4Caps = PrivilegeOnEveryCall
+	NFSv4Caps = PrivilegeOnEveryCall | SeesPseudoFS
 	MountCaps = PrivilegeOnEveryCall | HostCall
 	NLMCaps   = PrivilegeOnEveryCall | ClientIsMachine | HostCall
 	SMBCaps   = OpenFilesKeepNames | WantOpenID | GrantBelongsToOpen | ClientIsMachine
@@ -44,7 +45,7 @@ const (
 // Has reports whether every bit of x is set in c.
 func (c Caps) Has(x Caps) bool { return c&x == x }
 
-var names = []string{"privilege", "keep-names", "open-id", "oplock", "machine", "host"}
+var names = []string{"privilege", "keep-names", "open-id", "oplock", "machine", "host", "pseudo-fs"}
 
 // String is the set bits' short names joined by "|", empty for none, and any
 // unnamed bits in hex: the label an access event and a metric carry.

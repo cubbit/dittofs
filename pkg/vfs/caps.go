@@ -14,6 +14,7 @@ const (
 	GrantBelongsToOpen   = caps.GrantBelongsToOpen
 	ClientIsMachine      = caps.ClientIsMachine
 	HostCall             = caps.HostCall
+	SeesPseudoFS         = caps.SeesPseudoFS
 
 	NFSv3Caps = caps.NFSv3Caps
 	NFSv4Caps = caps.NFSv4Caps

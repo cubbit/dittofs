@@ -124,8 +124,10 @@ func TestNamesAddAndRemoveEntries(t *testing.T) {
 	if h, _, err := n.Lookup(ctx, n.admin, d.Handle, []byte("..")); err != nil || !bytes.Equal(h, root) {
 		t.Errorf(`Lookup of ".." in d: %v, %v`, h, err)
 	}
-	if h, _, err := n.Lookup(ctx, n.admin, root, []byte("..")); err != nil || !bytes.Equal(h, root) {
-		t.Errorf(`Lookup of ".." at the share's root: %v, %v`, h, err)
+	nfs3 := n.admin
+	nfs3.Caps = vfs.NFSv3Caps // no pseudo-filesystem above the share
+	if h, _, err := n.Lookup(ctx, nfs3, root, []byte("..")); err != nil || !bytes.Equal(h, root) {
+		t.Errorf(`Lookup of ".." at the share's root, for a caller that sees no pseudo-filesystem: %v, %v`, h, err)
 	}
 	if h, _, err := n.Lookup(ctx, n.admin, d.Handle, []byte(".")); err != nil || !bytes.Equal(h, d.Handle) {
 		t.Errorf(`Lookup of "." in d: %v, %v`, h, err)

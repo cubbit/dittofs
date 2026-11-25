@@ -14,6 +14,10 @@ func privilegeOnEveryCall(c vfs.Call) bool { return c.Caps.Has(vfs.PrivilegeOnEv
 // which admission's lowered minimums read.
 func hostCall(c vfs.Call) bool { return c.Caps.Has(vfs.HostCall) }
 
+// seesPseudoFS reports whether c's client sees a pseudo-filesystem above
+// the shares, which a lookup of ".." at a share's root goes up to.
+func seesPseudoFS(c vfs.Call) bool { return c.Caps.Has(vfs.SeesPseudoFS) }
+
 // clientIsMachine reports whether the client c registers is a whole
 // machine, whose record names no owner.
 func clientIsMachine(c vfs.Call) bool { return c.Caps.Has(vfs.ClientIsMachine) }

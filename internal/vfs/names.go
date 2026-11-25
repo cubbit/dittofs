@@ -23,7 +23,8 @@ import (
 // once writes stage in the engine.
 
 // Lookup resolves one name in dir: "." is dir itself, ".." its parent, and a
-// share's root its own parent. A pseudo directory's names are the
+// share's root's parent the pseudo directory the share is mounted in for a
+// caller that sees the pseudo-filesystem, else the root itself. A pseudo directory's names are the
 // pseudo-filesystem's. The caller needs traverse on dir.
 func (fs *Filesystem) Lookup(ctx context.Context, c vfs.Call, dir vfs.Handle, name []byte) (vfs.Handle, vfs.File, error) {
 	ctx, done, err := fs.enter(ctx)
@@ -50,6 +51,8 @@ func (fs *Filesystem) Lookup(ctx context.Context, c vfs.Call, dir vfs.Handle, na
 			return nil, vfs.File{}, storeErr(err)
 		case !d.IsDir():
 			return nil, vfs.File{}, vfs.ErrNotDir
+		case n == ".." && d.IsRoot() && seesPseudoFS(c):
+			return fs.mountParent(ctx, a.share.ID)
 		case n == "." || d.IsRoot():
 			return dir, d, nil
 		}

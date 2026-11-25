@@ -40,7 +40,8 @@ func TestStringAndHas(t *testing.T) {
 		{PrivilegeOnEveryCall, "privilege"},
 		{OpenFilesKeepNames | HostCall, "keep-names|host"},
 		{WantOpenID | GrantBelongsToOpen | ClientIsMachine, "open-id|oplock|machine"},
-		{HostCall << 1, "0x40"},
+		{SeesPseudoFS, "pseudo-fs"},
+		{SeesPseudoFS << 1, "0x80"},
 	} {
 		if got := tc.c.String(); got != tc.want {
 			t.Errorf("Caps(%#x).String() = %q, want %q", uint16(tc.c), got, tc.want)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -648,35 +649,40 @@ func (r *recorder) Access(_ context.Context, e vfs.AccessEvent) {
 }
 
 // A decision the share's audit policy selects reaches the node's sink before
-// the call that made it answers, naming the client and protocol the call came
-// on: the filesystem keeps no queue in front of the sink. With no sink
-// supplied, the null sink takes it.
+// the call that made it answers, naming the client and the protocol label
+// the call's context carries, and no label for a context without one: the
+// filesystem keeps no queue in front of the sink. With no sink supplied, the
+// null sink takes it.
 func TestAnAuditedDecisionReachesTheSink(t *testing.T) {
 	rec := &recorder{}
 	audit := func(vfs.ShareID) authz.Policy { return authz.AuditDenials }
 	s := newShares(t, rec, audit)
-	chmod := func(s *shares) error {
-		alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
-		bob := s.user(t, "bob", "", s.share, entity.AccessReadWrite)
-		h := (&attrs{shares: s}).file(t, "f", alice.Principal, 0o644)
+	runs := 0
+	chmod := func(s *shares, ctx context.Context) error {
+		runs++
+		alice := s.user(t, fmt.Sprint("alice", runs), "", s.share, entity.AccessReadWrite)
+		bob := s.user(t, fmt.Sprint("bob", runs), "", s.share, entity.AccessReadWrite)
+		h := (&attrs{shares: s}).file(t, fmt.Sprint("f", runs), alice.Principal, 0o644)
 		call := proven(bob.Principal, inLab)
 		call = smbCall(call)
 		call.Client = 7
-		_, err := s.SetAttr(t.Context(), call, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o777)})
+		_, err := s.SetAttr(ctx, call, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o777)})
 		return err
 	}
-	if err := chmod(s); !errors.Is(err, vfs.ErrAccess) {
-		t.Fatalf("a chmod of another's file: %v", err)
+	for _, err := range []error{chmod(s, vfs.WithProtocol(t.Context(), entity.ProtocolSMB)), chmod(s, t.Context())} {
+		if !errors.Is(err, vfs.ErrAccess) {
+			t.Fatalf("a chmod of another's file: %v", err)
+		}
 	}
 	rec.mu.Lock()
 	got := rec.got
 	rec.mu.Unlock()
-	if len(got) != 1 || got[0].Op != vfs.OpSetAttr || got[0].Allowed || got[0].Addr != inLab ||
-		got[0].Client != 7 || got[0].Caps != vfs.SMBCaps {
-		t.Errorf("the sink received %+v by the time SetAttr answered", got)
+	if len(got) != 2 || got[0].Op != vfs.OpSetAttr || got[0].Allowed || got[0].Addr != inLab ||
+		got[0].Client != 7 || got[0].Protocol.Label() != "smb" || got[1].Protocol.Label() != "none" {
+		t.Errorf("the sink received %+v by the time SetAttr answered, want an smb event, then one labelled none", got)
 	}
 
-	if err := chmod(newShares(t, nil, audit)); !errors.Is(err, vfs.ErrAccess) {
+	if err := chmod(newShares(t, nil, audit), t.Context()); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("an audited refusal with no sink supplied: %v", err)
 	}
 }
