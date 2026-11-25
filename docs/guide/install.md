@@ -250,6 +250,12 @@ Things to know:
 - The health check polls `/health/live`. Metrics stay on the container's loopback,
   `127.0.0.1:9090`. `docker stop` stops the node cleanly.
 
+`dittofs-state` was also the name of a v1 volume, which kept its control-plane database at the
+volume's root. On a host upgraded from v1, `init` succeeds there and `start` then refuses it
+(`/data/state/controlplane.db` is from v1), so remove or rename that volume first, or delete
+`controlplane.db` from it; see [Upgrading from v1](upgrading-from-v1.md). The same applies to
+the FoundationDB image below.
+
 **Image tags:**
 
 | Tag | Meaning |
@@ -271,9 +277,10 @@ Things to know:
 
 By default the metadata lives in Badger, on one node's disk. To keep it in a
 FoundationDB cluster instead (`metadata.backend: foundationdb`), you need a `dfs`
-built with FoundationDB support. Releases publish one image and two tarballs for
-this. The packages, the install script and the default image do not include it: a
-`dfs` without it refuses `metadata.backend: foundationdb` and says so.
+built with FoundationDB support. Releases publish the tagged build next to the default
+ones, as an image and two tarballs. The packages, the install script and the default image do not include it: a
+`dfs` without it refuses `metadata.backend: foundationdb` in `dfs init`, `dfs start` and
+`dfs reset-admin`, and says so.
 
 **You need:**
 
@@ -352,21 +359,30 @@ export DITTOFS_ENCRYPTION_PASSPHRASE='correct horse battery staple'
 
 Or with the image, as for the [default image](#single-container), with no metadata
 volume, the cluster file's directory mounted, and the key directory mounted where the
-config names it. Both host directories must be writable by user `65532`:
+config names it. Create both host directories first, with the cluster file in `./foundationdb`,
+and hand them to user `65532`; a directory Docker creates for a missing path is root's, and
+`init` fails on it:
 
 ```bash
+mkdir -p ./foundationdb ./keys
+cp /etc/foundationdb/fdb.cluster ./foundationdb/
+# write the protocol key file into ./keys here, as the single-container steps show
+sudo chown -R 65532:65532 ./foundationdb ./keys
+
+export DITTOFS_ENCRYPTION_PASSPHRASE='correct horse battery staple'
 docker run --rm \
   -e DITTOFS_ENCRYPTION_PASSPHRASE \
   -v ./config.yaml:/config/config.yaml:ro \
   -v ./foundationdb:/etc/foundationdb \
   -v ./keys:/config/keys \
   -v dittofs-blocks:/data/blocks \
+  -v dittofs-state:/data/state \
   marmos91c/dittofs:vX.Y.Z-foundationdb init --config /config/config.yaml
 ```
 
 Run the server the same way with `start`, plus the ports and other volumes of
-[Single container](#single-container). `init` and `start` wait up to 30 seconds for
-the cluster; a wrong cluster file ends in an error naming it, not a hang.
+[Single container](#single-container). `init`, `start` and `reset-admin` wait up to 30
+seconds for the cluster; a wrong cluster file ends in an error naming it, not a hang.
 
 For a cluster that requires TLS, name the client certificate, its key and the CA file
 under `metadata.foundationdb.tls` (see

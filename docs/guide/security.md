@@ -264,6 +264,8 @@ Open the file-protocol ports only to the clients that use them, and the API port
 the machines that manage the node. The defaults are NFS `12049`, SMB `12445` and API
 `8080`.
 
+> NFS Kerberos is not served yet: every RPCSEC_GSS call is answered `AUTH_BADCRED`, so a `sec=krb5` mount fails. The mount below is the intended procedure once it is.
+
 ```bash
 # Linux (iptables): NFS from the office network only
 sudo iptables -A INPUT -p tcp --dport 12049 -s 192.0.2.0/24 -j ACCEPT

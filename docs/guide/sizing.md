@@ -14,14 +14,17 @@ Read it before a pilot or an evaluation. To choose *which* stores to run, see
 
 Size **one box**, not a fleet. The default metadata store (`badger`) is embedded in one
 process, and it also holds the control plane's records, so there is no separate database to
-size. A `foundationdb` build keeps the metadata in a FoundationDB cluster instead, but a node
-still runs alone: no two `dfs` nodes serve one installation yet. So "sizing" means sizing a
+size. A `foundationdb` build keeps the metadata in a FoundationDB cluster instead
+([Installation](install.md#foundationdb-metadata)), but a node still runs alone: no two
+`dfs` nodes serve one installation yet. So "sizing" means sizing a
 single server.
 
 All file content lives on the node's journal devices (the `journals` list). No remote
 store, such as S3, is wired yet, so nothing moves data off the node; the
-[remote tier design](../internals/rfcs/rfc-4-remote-tier.md) describes what will. So
-the whole setup is **Badger metadata plus the journal devices**, on one machine.
+[remote tier design](../internals/rfcs/rfc-4-remote-tier.md) describes what will. The
+default build's topology is **Badger metadata plus the journal devices**, on one machine; with the
+`foundationdb` build the metadata sits in the FoundationDB cluster and the journal devices stay on
+the node.
 
 ## What drives each resource
 

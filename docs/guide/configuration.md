@@ -285,12 +285,15 @@ metadata:
 - `cluster_file` is required. An empty one is refused rather than falling back to
   the client's default cluster.
 - The installation owns the whole cluster. Keys are written with no prefix, so the
-  cluster must hold nothing else.
+  cluster must hold nothing else. Opening the store writes the node's clock-ceiling key
+  before the start check reads the cluster, so a `cluster_file` that points at someone
+  else's cluster by mistake is refused, but leaves that one key behind in it.
 - A `metadata.badger` key beside `foundationdb` is refused, and the other way round.
 - `tls.cert_file`, `tls.key_file` and `tls.ca_file` are named together or not at
-  all. With them, `dfs init` and `dfs start` connect over TLS, and refuse a missing
+  all. With them, every command that opens the store (`dfs init`, `dfs start` and
+  `dfs reset-admin`) connects over TLS, and refuse a missing
   file by name before connecting. Without them, the client connects without TLS.
-- `dfs init` and `dfs start` wait up to 30 seconds to connect.
+- Every command that opens the store waits up to 30 seconds to connect.
 
 ## The environment
 
