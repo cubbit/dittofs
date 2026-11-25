@@ -272,11 +272,13 @@ func (a readAnswer) String() string {
 	return describe(a.off, a.data)
 }
 
-// restartedAnswer is what the files hold after a new process started, and,
-// after a clean stop, what that stop had left for a replay.
+// restartedAnswer is what the files hold after a new process started, the
+// size the store has committed for each, and, after a clean stop, what that
+// stop had left for a replay.
 type restartedAnswer struct {
 	err    error
 	files  [fuzzFiles]string
+	sizes  [fuzzFiles]int64
 	replay [fuzzFiles]int
 }
 
@@ -285,7 +287,30 @@ func (a restartedAnswer) String() string {
 		return a.err.Error()
 	}
 
-	return fmt.Sprintf("%s, left to replay %v", describeFiles(a.files), a.replay)
+	return fmt.Sprintf("%s, committed sizes %v, left to replay %v", describeFiles(a.files), a.sizes, a.replay)
+}
+
+// checkSizes holds the new process to having committed the existence of what
+// it serves. A read alone does not show it: the journal answers the bytes it
+// holds whether or not the store knows of them.
+func (a restartedAnswer) checkSizes() error {
+	for i, content := range a.files {
+		if a.sizes[i] != int64(len(content)) {
+			return fmt.Errorf("file %d holds %d bytes after the start, and the store has committed a size of %d",
+				i, len(content), a.sizes[i])
+		}
+	}
+
+	return nil
+}
+
+func (w *engineWorld) committedSizes() [fuzzFiles]int64 {
+	var sizes [fuzzFiles]int64
+	for i, h := range w.handles {
+		sizes[i] = w.fix.Committed(h).Size
+	}
+
+	return sizes
 }
 
 func engineWrite(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
@@ -356,6 +381,7 @@ func engineCrash(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 	return restartedAnswer{
 		err:   err,
 		files: files,
+		sizes: w.committedSizes(),
 	}
 }
 
@@ -385,6 +411,7 @@ func engineRestart(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 	return restartedAnswer{
 		err:    errors.Join(replayErr, err),
 		files:  files,
+		sizes:  w.committedSizes(),
 		replay: replay,
 	}
 }
@@ -557,6 +584,10 @@ func modelCrash(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, err
 		m.files[i] = after
 	}
 
+	if err := answer.checkSizes(); err != nil {
+		return nil, err
+	}
+
 	m.newProcess = true
 
 	return []engineModel{m}, nil
@@ -582,6 +613,10 @@ func modelRestart(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, e
 		}
 
 		m.files[i] = modelFile{synced: view}
+	}
+
+	if err := answer.checkSizes(); err != nil {
+		return nil, err
 	}
 
 	m.newProcess = true
@@ -852,6 +887,46 @@ func TestModelAllowsWhatACrashMayLeave(t *testing.T) {
 			case c.allowed && (after.synced != c.found || len(after.unsynced) != 0):
 				t.Fatalf("the file after the crash holds %s and %d unsynced writes, want %s and none",
 					describe(0, after.synced), len(after.unsynced), describe(0, c.found))
+			}
+		})
+	}
+}
+
+// TestModelRefusesAStartThatLeftExistenceUncommitted holds both starts to the
+// committed size: what a read serves alone does not show a replay that was
+// missed.
+func TestModelRefusesAStartThatLeftExistenceUncommitted(t *testing.T) {
+	starts := []struct {
+		name  string
+		model func(engineModel, fuzz.Args, fuzz.Result) ([]engineModel, error)
+	}{
+		{
+			name:  "crash",
+			model: modelCrash,
+		},
+		{
+			name:  "restart",
+			model: modelRestart,
+		},
+	}
+
+	for _, start := range starts {
+		t.Run(start.name, func(t *testing.T) {
+			content := apply("", []unsyncedWrite{{length: 3}})
+			before := newEngineModel()
+			before.files[0] = modelFile{synced: content}
+			answer := restartedAnswer{
+				files: [fuzzFiles]string{content},
+				sizes: [fuzzFiles]int64{3},
+			}
+
+			if _, err := start.model(before, fuzz.Args{}, answer); err != nil {
+				t.Fatalf("the committed size matches what is read, and the model refuses: %v", err)
+			}
+
+			answer.sizes[0] = 0
+			if _, err := start.model(before, fuzz.Args{}, answer); err == nil {
+				t.Fatal("a committed size of 0 under 3 bytes read is allowed")
 			}
 		})
 	}
