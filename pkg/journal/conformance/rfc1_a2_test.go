@@ -381,6 +381,69 @@ func TestRFC1A_CrashWhileARemovalRecordsUnlinkIsNotDurable(t *testing.T) {
 	wantMissing(t, r, 0, []journal.Extent{ext(0, size)}, "the truncation's range after a crash between its copy's durability and its source's unlink")
 }
 
+// TestRFC1A_CrashWhileARemovalRecordsCopyWaitsItsSync checks the crash the
+// parked window really is: a power loss at the instant the pass has placed
+// its carried copy and sits in the durability wait that makes it safe to
+// unlink the source — a call of the journal still in flight, so the crash
+// abandons it rather than joining what a close would wait for. The reopen
+// must find the source the record's whole placement: its unlink never
+// started, the copy's unsynced bytes left with the loss, and the removal
+// decided the same way it always was — one truncation over the removed
+// range, answered from the source's record.
+//
+// decision: the fixture is unwatched — the crash abandons the old journal,
+// whose goroutines outlive the dead view as the kill rows' do.
+func TestRFC1A_CrashWhileARemovalRecordsCopyWaitsItsSync(t *testing.T) {
+	const size = 256 << 10
+	f := journaltest.NewUnwatched(t)
+	dv, seg := soleRemovalSource(t, f, 0, journaltest.File(9), size)
+
+	// The pass's only durability wait is the sync of the copy's segment,
+	// and it is the first sync of a segment file the pass runs: the plant's
+	// own syncs are done before the hold was made, and a pass of no content
+	// copies nothing else. The hold parks it — the pass reaches no unlink
+	// before this wait answers.
+	held := f.Seam.HoldFirst(t, kit.OpSync, "*.seg")
+	repacked := make(chan error, 1)
+	go func() {
+		_, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{Segments: []journal.SegmentID{seg}})
+		repacked <- err
+	}()
+	select {
+	case <-held.Reached():
+	case err := <-repacked:
+		stub(t, "Repack", err)
+		t.Fatalf("the repack returned (%v) without the durability wait the copy owes", err)
+	}
+	f.CrashInFlight()
+	held.Release()
+	// The abandoned pass answers nothing, and the row asks it for nothing:
+	// its durability layer sleeps in the window whose sync the dead view
+	// refused, and only the close of a live journal wakes a durability
+	// waiter — nothing closes the abandoned one, exactly as the killed
+	// rows' goroutines rest. The crash's answer is what the reopen serves.
+
+	// The source is the placement the loss left whole.
+	h := f.Share(0)
+	if !listed(t, f, segmentName(seg)) {
+		t.Fatalf("the truncation's source left the durable directory, want the crash to find its unlink never started: the wait the pass sits in is what the unlink owes its safety to")
+	}
+	if _, ok := segmentInfo(f, seg); !ok {
+		t.Fatalf("the truncation's source is no longer the journal's after the crash, want the removal record's placement whole")
+	}
+	var trims int
+	for _, c := range since(t, h, journaltest.File(9), journal.Version{}) {
+		if c.Kind == journal.ChangeTruncate && c.Version == dv {
+			trims++
+		}
+	}
+	if trims != 1 {
+		t.Fatalf("Since yields %d truncate changes at %v after the crash, want 1: the source's record decides the removal alone, its copy's bytes lost with the loss", trims, dv)
+	}
+	r := read(t, h, journaltest.File(9), 0, size)
+	wantMissing(t, r, 0, []journal.Extent{ext(0, size)}, "the truncation's range after a crash in the copy's own wait")
+}
+
 // TestRFC1A_RepackUnderRead checks that a read spanning a repack's copy and
 // unlink returns the bytes from the old or the new location, never both, and
 // never missing with the caller's bytes touched.
