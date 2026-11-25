@@ -21,8 +21,8 @@ the `test/pcap-corpus` README's layout.
 captures into golden files, and the import test's call-site and file-size rules; and its SMB
 handler harness, whose runner T2.2 lifts into `adaptertest` (D2). T2.1 needs neither.
 **Blocks:** every middle epic through S2: E3, E4, E5, E7, E11 and E12 directly, and through them the
-rest. Every handler epic tests on `nfsharness`; E3, E4 and E5 take vectors from the captures; E8,
-E9, E11 and E16 answer and test reclaims on `NoGrace`.
+rest. Every handler epic tests on `nfsharness`; E3, E4 and E5 take vectors from the captures; E9,
+E11 and E16 answer and test reclaims on `NoGrace`.
 
 ---
 
@@ -63,7 +63,7 @@ NFSv4.1, the five capture directories and the golden files cut from them, which 
 - S0's three shared pieces and SMB's handler harness itself: the RFC 22 implementation plan's
   epic 2. This epic lifts only the harness's runner (D2). If this epic starts before they land,
   T2.2 and T2.3 wait, or build the piece they need at that epic's figure (§9).
-- Any protocol's mapping of `NoGrace` to a status: `NFS4ERR_NO_GRACE` in E8 and E9, `NLM4_DENIED`
+- Any protocol's mapping of `NoGrace` to a status: `NFS4ERR_NO_GRACE` in E9's T9.4, `NLM4_DENIED`
   in E11, as RFC 21 §11.5 has it.
 - Handler tests themselves, and the vectors of each procedure: each handler epic, on `nfsharness`.
 - Captures of `RPCSEC_GSS` exchanges, which need a KDC: E13. The diff scripts that compare DittoFS
@@ -239,8 +239,8 @@ internal/adapter/nfs/wire/
   `admit` for a reclaim (D5); `vfserr.StateNoGrace`, named "no grace", aliased as
   `vfs.StateNoGrace` and added to the error set `TestErrorsIsTheErrorSet` reads;
   `internal/vfs/errors.go`'s row mapping `openstate.ErrNoGrace` to
-  `&vfs.StateError{Kind: vfs.StateNoGrace}`. Consumed by E8 and E9, which answer
-  `NFS4ERR_NO_GRACE`, E11, which answers `NLM4_DENIED`, and E16's restart rows.
+  `&vfs.StateError{Kind: vfs.StateNoGrace}`. Consumed by E9's T9.4, which answers
+  `NFS4ERR_NO_GRACE`, E11, which answers `NLM4_DENIED`, and E16's restart rows (T16.4).
 - **Acceptance criteria:**
   - A reclaim of an open, a lock or a delegation from a client whose record lists no shard is
     `ErrNoGrace`, in grace and after; from one with no record, the same.
