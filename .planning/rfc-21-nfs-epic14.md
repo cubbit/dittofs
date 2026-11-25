@@ -194,7 +194,9 @@ already reads).
   hints that port on the reference's side (`--reference-port`, T14.1), since only 2049 decodes
   unhinted. The node serves every program on its one TCP port (E3's R38), MOUNT included, so its
   side needs one capture port and one hint. Root is used only to enter the namespace and to start `tcpdump`, which drops to
-  the invoking user (`-Z`); the `go test` runs as that user. `--script` must name a registered
+  the invoking user (`-Z`); the `go test` runs as that user, dropped inside the namespace, since
+  `client_ns_exec` runs its command as root (`test/nfs-mount/netns.sh`): `client_ns_exec 1 setpriv
+  --reuid="$SUDO_UID" --regid="$SUDO_GID" --init-groups env NFSWIRE_SCRIPT=… go test …`. `--script` must name a registered
   script (`[a-z0-9-]+`) before it becomes a file name. The host's `nfs.conf`, lease and exports are
   restored by a trap; the export is limited to the namespace subnet. The DittoFS side of T14.3 runs
   on the host's loopback, outside any namespace, since the node is in the test's own process.
@@ -209,16 +211,21 @@ already reads).
   (operation, status) pair once, whichever request it answered. The diff therefore shows a field
   present on one side only, and an (operation, status) pair that occurs on one side only; it does
   not show a status that differs for one request when the same pair occurs elsewhere on both
-  sides. `v3-names` and `v4-readdir` send many calls of one operation, so a `NOENT` answered to
+  sides. For NFSv3 and MOUNT it holds less: the RPC dissector adds the procedure as a flat sibling
+  in the program's tree, and the status sits flat beside it (`nfs/nfs.procedure_v3=LOOKUP (3)`,
+  `nfs/nfs.status=ERR_NOENT (2)`), so the set holds a script's statuses, not pairs, and a `v3-names`
+  answering `EXIST` to a `LOOKUP` and `NOENT` to a `CREATE` diffs clean while both statuses occur
+  somewhere (Wireshark's `packet-rpc.c` and `packet-nfs.c`; not run). `v3-names` and `v4-readdir` send many calls of one operation, so a `NOENT` answered to
   the wrong `LOOKUP` passes unseen as long as both sides answer `NOENT` to some `LOOKUP`. Nor does
   it align requests, order entries or compare a size, count or offset (R2, R8, R11 in part). The
   fixes are the ones NFS needs: the dissector hint of `pcap-diff.sh` names `nbss`, which is SMB's,
   so an NFS candidate on a non-standard port is not decoded (a `--candidate-dissector` option,
   `rpc` for NFS, on both TCP and UDP); `KEEP_ENUM`'s list extended to every status and procedure
-  field NFS's recordings carry, since it names only `nfs.opcode` and `nfs.status` (the per-operation
-  status of NFSv4): the compound's status, `nfs.nfsstat4`, is in the committed `nfsv4-acl` skeleton
-  with no label, NFSv3's and MOUNT's procedure and status fields have names of their own,
-  `nfs.procedure_v3` and `nfs.nfsstat3` among them, and RPC's reply fields (`rpc.msgtyp`,
+  field NFS's recordings carry that `nfs.status` does not already label. Wireshark adds a hidden
+  `nfs.status` beside every NFSv4 and NFSv3 status, the compound's included, so the compound's
+  status (`nfs/nfs.status=OK (0)` in the committed `nfsv4-acl` skeleton, beside an unlabelled
+  `nfs.nfsstat4`) and NFSv3's (`nfs.status3`) need nothing; NFSv3's and MOUNT's procedure fields
+  (`nfs.procedure_v3` among them), MOUNT's status (`mount.status`) and RPC's reply fields (`rpc.msgtyp`,
   `rpc.replystat`, `rpc.state_accept`, `rpc.state_reject`) carry a refusal no program status shows
   (names from memory, each checked against `tshark -G fields` and the first recording), with
   `nfs-wire.sh` passing `--proto rpc --proto nfs --proto mount`; and R9's rule for a stateid, keyed
@@ -233,7 +240,8 @@ already reads).
   presence on a call depends on whether its reply was captured. A `ponytail:` marker at `normalize.py`'s header names the ceiling: a
   wrong size, a reordered listing, a handle used in the wrong request or a status answered to the
   wrong one of several like requests passes unseen unless it makes an (operation, status) pair
-  occur on one side only. The
+  occur on one side only, and for NFSv3 and MOUNT, per script, unless the status occurs on one side
+  only. The
   upgrade is a per-packet ordered skeleton keyed by the RPC transaction ID, with tokens numbered
   by first appearance, about 1.5 man-days more, to be built when a divergence of that class is found by
   other means or RFC 20 §8.2 is held to its words. The question is in §9 point 1. Prior art: RFC 20
@@ -252,7 +260,7 @@ already reads).
   `-` line ending in the entry's `dittofs` value or a `+` line ending in its `reference` value.
   So the `-` side's `NFS4_OK` result fields of `SEQUENCE` are excused, and a `-` line ending in
   `NFS4ERR_BADSESSION` is not. An entry on an NFSv4 operation's path also excuses the compound's
-  status line, `nfs/nfs.nfsstat4=` followed by its own side's value (the `-` line ending in
+  status line, `nfs/nfs.status=` followed by its own side's value (the `-` line ending in
   `reference`, the `+` line ending in `dittofs`), since a compound's status is that of its last
   operation run (RFC 8881 §16.2.3, from memory) and the script's compound holds that operation
   last; no other compound status is excused. Every other line fails. An entry holds while the diff
@@ -360,9 +368,8 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
     failure surfaces as `normalize.py`'s parse error, exit 1, and a capture where nothing decodes
     is "structurally identical (0 fields)", exit 0. `normalize.py`: a stateid's `seqid` kept as a
     value, an ordinary stateid's `other` dropped, the special stateids kept whole, matched by the
-    path under `nfs.stateid` (R9); `KEEP_ENUM` extended with the compound's status `nfs.nfsstat4`,
-    with the field names that E2's `nfs3/` recording shows for NFSv3's and MOUNT's procedure and
-    status, and with RPC's reply fields (D3), read from that recording and `tshark -G fields`, not
+    path under `nfs.stateid` (R9); `KEEP_ENUM` extended with the field names that E2's `nfs3/`
+    recording shows for NFSv3's and MOUNT's procedure and for MOUNT's status, and with RPC's reply fields (D3), read from that recording and `tshark -G fields`, not
     from memory; a reply's RPC fields nested under `rpc/rpc.msgtyp=Reply (1)` and RPC's request
     and response tracking dropped (D3); the normalised names stay a list of field names (R10). `normalize_test.sh`, run
     from `lint-repo`; `README.md`'s NFS recipe and `nfsv4-acl/CAPTURE.md`'s, which no longer say
@@ -414,8 +421,9 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
     R10); the profile's list read for any entry that is a protocol name (catches a message-wide
     rule); fixtures cut from E2's `nfs3/` recording and from a compound reply, differing only in an
     NFSv3 status, a MOUNT status, a compound status and an RPC accept status, and an unexported
-    `MNT` answered OK against one refused (catch a status field `KEEP_ENUM` does not name, under
-    which the four `v3-*` scripts would compare no status at all, R11); a `NULL` call with its
+    `MNT` answered OK against one refused (catch a status field neither `KEEP_ENUM` nor the hidden
+    `nfs.status` labels, under which MOUNT's `MNT` and RPC's refusals would compare no status at all,
+    R11); a `NULL` call with its
     reply against the same call alone, which differ only under `rpc/rpc.msgtyp=Reply (1)` (catches
     a reply field left flat, or a tracking field kept, either of which leaves `udp-null`'s entry
     with a line it cannot excuse). Data fixtures, no double.
@@ -603,7 +611,9 @@ A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can
    tokens, request-by-request alignment and sizes, counts, offsets and entry order compared. The
    set holds each (operation, status) pair once, so a status answered to the wrong one of several
    like requests is seen only when the pair occurs on one side alone: `v3-names` and `v4-readdir`
-   can answer `OK` to a request on one side and `NOENT` on the other and still diff clean. This
+   can answer `OK` to a request on one side and `NOENT` on the other and still diff clean. For
+   NFSv3 and MOUNT the set holds only a script's statuses, not pairs, since the procedure and the
+   status are flat siblings (D3), which is one more reason for (d). This
    epic builds the NFS fixes and leaves R2, R8 and R11 met in part, with a `ponytail:` marker.
    Options: (a) as written, the gap named at the marker; (b) build the ordered, tokenised skeleton
    in T14.1, keyed by the RPC transaction ID, which becomes about 4.5 man-days; (c) amend RFC 20
