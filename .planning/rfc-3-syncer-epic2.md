@@ -33,9 +33,11 @@ no suite for one: the in-memory store and its conformance suite are RFC 4's.
 **At the end of the epic:**
 
 - RFC 4's fault wrapper can, on the calls a rule selects, fail with any error, commit a put and
-  lose its reply, cut a put or a get part-way, flip one byte of a get, hold a call until
-  released, and slow a call by a set latency and time per byte on a clock the test supplies.
-  The rule selects by operation, direction, block name and the *n*th matching call.
+  lose its reply, cut a put or a get part-way, flip one byte of a get, hold a call at its start,
+  part-way through its body or after a put's last body byte until released, and slow a call by
+  a set latency and time per byte on a clock the test supplies. The rule selects by operation,
+  direction, block name, the *n*th matching call, and a condition on the call such as the
+  number of calls in flight.
 - A call the wrapper slows or holds counts as in flight in the in-memory store's own record for
   as long as it is slowed or held.
 - With nothing injected, the wrapper passes RFC 4's conformance suite.
@@ -124,7 +126,7 @@ them.
 | R7 | The probe of either direction can fail or pass. Sharing one probe across stores registered under one `ProbeKey` is the syncer's, so the wrapper fails or passes each store's own probe and E5 checks the sharing | invariant | §1.4; §2.8 | T2.1 |
 | R8 | A fault can fail the *n*th call of a scripted run, for every *n*, with each failure kind: transient, terminal, committed with the response lost, stopped part-way, corrupted, held | invariant | §8.3 | T2.1, T2.2 |
 | R9 | Every delay of a fault runs on the clock the test supplies, never on one it cannot replace | invariant | §1.4, "Time is virtual in tests" | T2.2 |
-| R19 | A fault can fire on a condition of the load as well as on a count: while more than a set number of calls are in flight, on a seeded fraction of calls, or on a name's first attempt only | invariant | §7.2, "§2.4 throttling lowers concurrency", "§2.4 budget per store and direction", "§2.4 slow tail is not charged", "§2.8 re-admission backoff" | T2.1 |
+| R18 | A fault can fire on a condition of the load as well as on a count: while more than a set number of calls are in flight, on a seeded fraction of calls, or on a name's first attempt only | invariant | §7.2, "§2.4 throttling lowers concurrency", "§2.4 budget per store and direction", "§2.4 slow tail is not charged", "§2.8 re-admission backoff" | T2.1 |
 
 **The fixture**
 
@@ -246,7 +248,7 @@ with it.
 **Subtask T2.1 estimate: 3 man-days.**
 
 - **Track:** the team. **Depends on:** R4-S2.
-- **Covers:** R2, R3, R4, R7, R8, R10, R13, R19.
+- **Covers:** R2, R3, R4, R7, R8, R10, R13, R18.
 - **Deliverables:** `inject.go` on the RFC 4 plan's wrapper type, written `*Wrapper` here (D1):
 
   ```go
@@ -298,7 +300,7 @@ with it.
   call for *n* from 1 to 5 under each failing effect (catches an off-by-one in `From`, R8).
   Twenty concurrent calls under `Count: 3` under `-race`, exactly three failing (catches a count
   taken outside its lock). Sixteen held puts, then one more under `Match` on `InFlight > 8`
-  (catches `InFlight` read from the wrapper instead of the store, R19). `remotetest` over the wrapper with nothing injected (catches a wrapper
+  (catches `InFlight` read from the wrapper instead of the store, R18). `remotetest` over the wrapper with nothing injected (catches a wrapper
   that changes what it passes through, R10). No test double is written: the store is kind 2, the
   wrapper kind 3.
 
