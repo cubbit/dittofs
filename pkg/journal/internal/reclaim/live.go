@@ -820,11 +820,12 @@ func (t *Tracker) pruneClassesInFlight() {
 // durable sweep runs first performs the transition: the sweep's takes find
 // the class already collapsed — one segment, no re-hold — and this call
 // finds the placements already released. A failed directory sync, whose
-// SegmentRetired never runs, keeps the survivor held through it — the two
-// hand-over paths that consult no in-flight gate (a pass's own retirement
-// of its source, and the open's emptying of a recovery-ended segment)
-// would otherwise retire a two-wide class's survivor while its unlink is
-// not durable, destroying a removal record's last live placements.
+// SegmentRetired never runs, keeps the survivor held through it — the one
+// hand-over path that consults no in-flight gate (the open's emptying of
+// a recovery-ended segment, which runs alone) would otherwise retire a
+// two-wide class's survivor while its unlink is not durable, destroying a
+// removal record's last live placements; the pass's own hand-over goes
+// through the gate.
 func (t *Tracker) SegmentUnlinked(seg core.SegmentID) {
 	t.rm.Lock()
 	defer t.rm.Unlock()
