@@ -488,3 +488,127 @@ func walkCommands(cmd *cobra.Command, path string, fn func(*cobra.Command, strin
 		walkCommands(c, path+" "+c.Name(), fn)
 	}
 }
+
+// deletedPaths are the paths of v1's control plane, its API client and its
+// CLI's commands that the v2 node replaced. A page naming one describes code
+// that no longer exists, so a reader following it finds nothing.
+var deletedPaths = []string{
+	"pkg/controlplane",
+	"internal/controlplane",
+	"pkg/apiclient",
+	"pkg/snapshot",
+	"pkg/auth/sid/mapper.go",
+	"pkg/health/share.go",
+	"pkg/health/cache.go",
+	"test/e2e/helpers",
+	"test/e2e/snapshot",
+	"metadata-store-migration.md",
+}
+
+// deletedPathsIn returns each deleted path line names. A path counts only
+// where its name ends, so pkg/snapshot does not match pkg/snapshotter or
+// pkg/snapshot.go.
+func deletedPathsIn(line string) []string {
+	var found []string
+	for _, p := range deletedPaths {
+		for rest := line; ; {
+			i := strings.Index(rest, p)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(p):]
+			if nameEnds(rest) {
+				found = append(found, p)
+				break
+			}
+		}
+	}
+	return found
+}
+
+// nameEnds reports whether a path's last element ends where rest starts: at
+// the line's end, a slash, a full stop ending the sentence, or any character
+// a name does not hold.
+func nameEnds(rest string) bool {
+	switch {
+	case rest == "" || rest[0] == '/':
+		return true
+	case rest[0] == '.':
+		return len(rest) == 1 || !isNameChar(rest[1])
+	}
+	return !isNameChar(rest[0])
+}
+
+func isNameChar(c byte) bool {
+	return c == '_' || c == '-' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
+// TestPagesNameNoDeletedPath checks the pages a reader follows, every page
+// under docs/ but the RFCs and plans, which are design history, and the
+// root's README.md and CLAUDE.md, for a path of v1's control plane.
+func TestPagesNameNoDeletedPath(t *testing.T) {
+	for _, p := range deletedPaths {
+		if _, err := os.Stat(filepath.Join(sourceRoot, p)); err == nil {
+			t.Errorf("%s exists again: drop it from deletedPaths", p)
+		}
+	}
+
+	pages := []string{filepath.Join(sourceRoot, "README.md"), filepath.Join(sourceRoot, "CLAUDE.md")}
+	err := filepath.WalkDir(filepath.Join(sourceRoot, "docs"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (d.Name() == "rfcs" || d.Name() == "planning") {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".md") {
+			pages = append(pages, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk docs: %v", err)
+	}
+	// A walk that finds nothing passes; the guides alone are more than this.
+	if len(pages) < 20 {
+		t.Fatalf("found only %d pages under %s: the walk is not reaching the docs", len(pages), sourceRoot)
+	}
+
+	var problems []string
+	for _, path := range pages {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		rel := filepath.ToSlash(strings.TrimPrefix(path, sourceRoot+string(filepath.Separator)))
+		for i, line := range strings.Split(string(body), "\n") {
+			for _, p := range deletedPathsIn(line) {
+				problems = append(problems, rel+":"+strconv.Itoa(i+1)+": names "+p+", which v2 deleted")
+			}
+		}
+	}
+	if len(problems) > 0 {
+		t.Errorf("%d page line(s) name a deleted path:\n  %s", len(problems), strings.Join(problems, "\n  "))
+	}
+}
+
+// TestDeletedPathsIn pins the match: a deleted path is found wherever its
+// name ends, and a longer name that starts with it is not.
+func TestDeletedPathsIn(t *testing.T) {
+	for _, c := range []struct {
+		line string
+		want string
+	}{
+		{"The Runtime (`pkg/controlplane/runtime/`) routes", "pkg/controlplane"},
+		{"see pkg/apiclient.", "pkg/apiclient"},
+		{"[the guide](metadata-store-migration.md)", "metadata-store-migration.md"},
+		{"`pkg/snapshot`", "pkg/snapshot"},
+		{"pkg/snapshotter, pkg/snapshot.go and pkg/controlplanes", ""},
+		{"internal/node builds the API", ""},
+	} {
+		got := strings.Join(deletedPathsIn(c.line), ",")
+		if got != c.want {
+			t.Errorf("deletedPathsIn(%q) = %q, want %q", c.line, got, c.want)
+		}
+	}
+}
