@@ -293,7 +293,10 @@ func TestJournalSeriesMoveWithEachCondition(t *testing.T) {
 		file := createFiles(t, h, sh, 1)[0]
 		caughtUp(t, h)
 		payload := pattern("corrupt", 4096)
-		if err := jwrite(t, h, sh.ID, file.ID, 0, payload); err != nil {
+		// The first write is made spared: a pool still making one of the
+		// journal's spare segments answers the same retry-later for capacity,
+		// and the row waits that legitimate answer out rather than failing it.
+		if err := writeSpared(t, h, sh.ID, file.ID, 0, payload); err != nil {
 			t.Fatal(err)
 		}
 		if err := jcommit(t, h, sh.ID, file.ID); err != nil {
