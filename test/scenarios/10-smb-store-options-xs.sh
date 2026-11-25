@@ -54,10 +54,10 @@ jq -c '.[].spec.settings' /tmp/stores.json /tmp/namespaces.json
 cat /tmp/workers.json
 # A key the settings table does not know is no refusal of the value: each must be kept or refused on its merits
 if grep -q unknown_key /tmp/o1.out /tmp/o2.out /tmp/o3.out /tmp/b1.out /tmp/b2.out /tmp/b3.out; then exit 1; fi
-jq -e 'any(.[]; .spec.settings["remote.compression"] == "zstd")' /tmp/stores.json || { test -e /tmp/o1.rc && grep -q remote.compression /tmp/o1.out; }
+jq -e 'any(.[]; .spec.settings["remote.compression"] == "zstd")' /tmp/stores.json || { test -e /tmp/o1.rc; grep -q remote.compression /tmp/o1.out; }
 # A successful write prints the key too, so its name counts only in a refusal
-jq -e '.spec.value == 4' /tmp/workers.json || { test -e /tmp/o2.rc && grep -q upload_workers /tmp/o2.out; }
-jq -e 'any(.[]; .spec.settings["namespace.encrypts"] == true)' /tmp/namespaces.json || { test -e /tmp/o3.rc && grep -q namespace.encrypts /tmp/o3.out; }
+jq -e '.spec.value == 4' /tmp/workers.json || { test -e /tmp/o2.rc; grep -q upload_workers /tmp/o2.out; }
+jq -e 'any(.[]; .spec.settings["namespace.encrypts"] == true)' /tmp/namespaces.json || { test -e /tmp/o3.rc; grep -q namespace.encrypts /tmp/o3.out; }
 test -e /tmp/b1.rc
 test -e /tmp/b2.rc
 test -e /tmp/b3.rc

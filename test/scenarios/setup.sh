@@ -112,7 +112,7 @@ keys:
   storage: { kind: local, local: { file: /etc/dittofs/storage.key } }
   protocol: { kind: local, local: { file: /etc/dittofs/protocol.key } }
 api: { listen: ['127.0.0.1:0'] }
-metrics: { listen: off }
+metrics: { listen: '127.0.0.1:0' }
 CONFIG
 { set +x; } 2>/dev/null
 (umask 077 && DITTOFS_ENCRYPTION_PASSPHRASE="$(cat /etc/dittofs/passphrase)" dfs init >/etc/dittofs/init.out)
