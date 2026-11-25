@@ -190,7 +190,7 @@ the numbers are not in order and no number is missing.
 | R7 | `PUTFH`, `GETFH`, `SAVEFH` and `RESTOREFH` make no service call; the next operation's call admits the handle, and a stale or refused one is reported there | MUST | RFC 20 §4.10; RFC 21 App. D | T5.1 |
 | R8 | `PUTROOTFH` and `PUTPUBFH` are each one `Root` with the zero `ShareRef`; `SECINFO` and `SECINFO_NO_NAME` are `SecInfo`; `Root` and `SecInfo` are called from `putrootfh.go`, `putpubfh.go` and `secinfo.go` and from no other file of the adapter's NFSv4 code | MUST | RFC 20 §4.10, §7.1; RFC 21 App. D | T5.1 |
 | R9 | `LOOKUP` is `Lookup`, and `LOOKUPP` is `Lookup` of `..` | MUST | RFC 21 App. D | T5.1 |
-| R10 | `LOOKUPP` at a share's root answers the pseudo directory the share sits in, as the service computes it, while NFSv3's `..` at a share's root stays the root | MUST | RFC 17 §5.10; RFC 21 App. D | T5.2, T5.9 |
+| R10 | `LOOKUPP` at a share's root answers the pseudo directory the share sits in, as the service computes it for a call that sets `Call.SeesPseudoFS`, which every NFSv4 call does, while NFSv3's `..` at a share's root, which does not set it, stays the root; no rule reads `Call.Protocol` (§9, point 11) | MUST | RFC 17 §3.0, §5.10; RFC 21 App. D | T5.2, T5.9 |
 | R11 | `SECINFO` answers the flavours `SecInfo` returns, encoded and none added: on a pseudo directory every flavour admitted by a share at or below it whose state and client rules admit the caller, whatever its `MinProof` and `MinProtection`, and on a share's path the share's `Flavors` | MUST | RFC 21 §7.4, App. D | T5.1, T5.2 |
 | R12 | A pseudo handle whose path no longer leads to a share is `ErrStale`, answered `NFS4ERR_STALE`; a pseudo-filesystem `LOOKUP` of a removed share's path is `NFS4ERR_NOENT` | MUST | RFC 21 §7.4, §11.5 (`ErrStale`) | T5.1 |
 | R13 | A share's root reports the share's own `fsid`, and `mounted_on_fileid` the numeric id of the pseudo directory it sits in; the service computes both, and the attribute encoder formats them. RFC 17 §4.9 and RFC 20 §4.10 say the crossing comes back in the `File`; D12 has it come back from `StatFS` and amends both sentences (§9, point 1) | MUST | RFC 21 §7.4; RFC 17 §4.9; RFC 20 §4.10 | T5.2, T5.4, T5.7 |
@@ -420,8 +420,10 @@ snapshots (§1.2).
   `UTF8Only bool`, which the service computes from the name rule and the case rule, so the adapter
   reads one bit and decides nothing. `StatFS` of a pseudo directory answers the installation's
   fixed capabilities: case-sensitive and case-preserving, 255-byte names, `UTF8Only`, and a time
-  granularity of 1 ns. `Lookup` of `..` at a share's root, from a call whose `Protocol` is NFSv4,
-  answers the pseudo directory above it, and at the pseudo-root `ErrNotFound`. `SecInfo` with an
+  granularity of 1 ns. `Lookup` of `..` at a share's root, from a call that sets `Call.SeesPseudoFS`,
+  a capability every NFSv4 call states (RFC 17 §3.0, which lets no rule read `Call.Protocol`;
+  pending §9, point 11), answers the pseudo directory above it, and at the pseudo-root
+  `ErrNotFound`; without it, the root itself, as today. `SecInfo` with an
   empty name answers the directory's own flavours, and with `..` at a share's root the pseudo
   directory's. A pseudo directory's `File` reports `Subdirs` as its children, so `numlinks` is 2 +
   `Subdirs` there with no branch. Changing `MountedOn`'s shape once E5 and RFC 22's adapter read it
@@ -537,10 +539,12 @@ internal/adapter/nfs/
     loopback_test.go           T5.9
   wire/testdata/golden/
     rfc-nfs4-*.hex             T5.1, T5.4 to T5.8  where no capture holds the operation or the row
+internal/adapter/nfs/protocol/
+  auth.go                      T5.2  SeesPseudoFS set on every NFSv4 call, beside E3's HostCall
 internal/adapter/adaptertest/
   imports_test.go              T5.1  NFS's entry files for Root and SecInfo
 pkg/vfs/
-  types.go                     T5.2  FilesystemInfo.MountedOn, Capabilities.UTF8Only (D12, §9 point 1)
+  types.go                     T5.2  FilesystemInfo.MountedOn, Capabilities.UTF8Only (D12, §9 point 1); Call.SeesPseudoFS (§9 point 11)
   vfstest/faults.go            T5.8  Tear: the call reaches the service, its answer cut short, then an error
 internal/vfs/
   pseudo.go, names.go, shares.go   T5.2  StatFS's MountedOn, UTF8Only and a pseudo directory's capabilities; LOOKUPP; SecInfo's two styles; Subdirs
@@ -626,8 +630,10 @@ internal/vfs/
   `vfs.FilesystemInfo.MountedOn uint64`, which `StatFS` fills with the number of the pseudo
   directory the share sits in; `vfs.Capabilities.UTF8Only bool`, from the share's name rule and
   case rule; `StatFS` of a pseudo directory answering D12's fixed capabilities; a pseudo
-  directory's `File` with `Subdirs` as its children; `Lookup` of `..` at a share's root from an
-  NFSv4 call answering that pseudo directory, and at the pseudo-root `ErrNotFound`; `SecInfo` with
+  directory's `File` with `Subdirs` as its children; `vfs.Call.SeesPseudoFS` (§9, point 11), set by
+  E3's route on every NFSv4 call beside its `HostCall` (E3's D2), and `Lookup` of `..` at a share's
+  root from a call that sets it answering that pseudo directory, and at the pseudo-root
+  `ErrNotFound`; `SecInfo` with
   an empty name answering the directory's own flavours, and with `..` at a share's root the pseudo
   directory's, both styles admitted as today's `SecInfo` is, without the share's minimums
   (`secure` false), so `SECINFO_NO_NAME` never meets `ErrWrongSecurity`. RFC 17 §3.0's value-type table names the two fields, and RFC 17 §4.9's and RFC 20
@@ -638,18 +644,21 @@ internal/vfs/
   - `StatFS` of a share mounted at `/a/b` reports `MountedOn` equal to `/a`'s `Number`, and
     `UTF8Only` false on a case-sensitive `posix` share and true otherwise; `StatFS` of `/a` reports
     D12's fixed capabilities.
-  - `Lookup` of `..` at the share's root answers `/a`'s handle for NFSv4 and the root itself for
-    NFSv3; at the pseudo-root, from an NFSv4 call, `ErrNotFound`, where `feat/storage-v2`'s
+  - `Lookup` of `..` at the share's root answers `/a`'s handle for a call that sets `SeesPseudoFS`
+    and the root itself for one that does not, whatever its `Protocol` label; at the pseudo-root,
+    from a call that sets it, `ErrNotFound`, where `feat/storage-v2`'s
     `pseudoChild` answers the pseudo-root itself: a deliberate change, since RFC 8881 §18.14.3 has
     `LOOKUPP` at the root of the server's namespace answer `NFS4ERR_NOENT` (from memory), and a
-    call of another protocol keeps today's answer.
+    call without it keeps today's answer.
   - `SecInfo` of `/a` with an empty name answers what it answers for `a` from the pseudo-root; of
     the share's root with `..`, `/a`'s flavours.
   - `/a`'s `File` with two shares below it reports `Subdirs` 2.
 - **Tests:** in `internal/vfs`, beside the pseudo-filesystem's tests: each criterion above, each
   failing with its change reverted (catch a crossing not reported, R13, a name rule ignored, R26, a
   pseudo directory's zero capabilities, R38, `SECINFO_NO_NAME` failing at the pseudo-root, R11,
-  `Subdirs` not counted, R21, and `LOOKUPP` answering the root, R10); `Lookup` of `..` and
+  `Subdirs` not counted, R21, and `LOOKUPP` answering the root, R10); the `..` cases under every
+  protocol label and the zero one, each answering by `SeesPseudoFS` alone (catches the rule keyed
+  on the protocol, R10); `Lookup` of `..` and
   `SecInfo` with `..` from inside a quiesced share and a client-rule-restricted one, refused
   (`ErrDelay`, `ErrAccess`), each beside the same call on an admitted share, with T5.1's caller, and
   either `SecInfo` style on a Kerberos-only share at `Claimed` answering its flavours (catch the
@@ -1110,7 +1119,8 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
 7. **Which pull request carries which RFC amendment.** None is written yet. Recommended, as E4's
    §9, point 10: one RFC pull request against `develop`, written once points 1, 2, 8 and 9 are
    answered, carrying E5's D12's RFC 17 §3.0 fields (`FilesystemInfo.MountedOn`,
-   `Capabilities.UTF8Only`) and the RFC 17 §4.9 and RFC 20 §4.10 sentences, E5's D14's RFC 21
+   `Capabilities.UTF8Only`, and point 11's `Call.SeesPseudoFS` with its row in §3.0's capability
+   table) and the RFC 17 §4.9 and RFC 20 §4.10 sentences, E5's D14's RFC 21
    §11.5 `ErrInvalid` row, and E4's texts, merged before T5.2 starts. The other epics' amendments
    touch other fields and rows: E4's RFC 17 §3.0 fields (`CreateArgs`, `ShareInfo`, `DirEntry`) and
    RFC 7 additions (`entity.Attrs`' server time, the entry row's number) and RFC 21 §11.5 and Appendix D texts, E6's ACL
@@ -1158,3 +1168,13 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
     `NFS4ERR_OP_ILLEGAL`. Recommended owner: E1, by an amendment to its D6, whose statement the
     change makes true, priced there (about 0.25 man-days, estimated); the alternative is RFC 20's
     plan, which owns `core`. Not in this epic's figure. T5.9's R63 cases wait for it.
+11. **Pending the user's answer: what `LOOKUPP` at a share's root reads.** RFC 17 §3.0 now has no
+    rule of the service read `Call.Protocol` (#5726), but §5.10's `Lookup` still answers `..` at a
+    share's root by protocol: the root itself, except that "NFSv4 `LOOKUPP` leaves to the
+    pseudo-fs", and §3.0's capability table lists none that says so (NFS sets none). Options: (a)
+    a capability, `Call.SeesPseudoFS`, set by NFSv4 on every call, added to §3.0's table with point
+    7's RFC pull request and its sentence "NFS sets none" amended; the call answers the pseudo
+    directory above a share's root, and `ErrNotFound` at the pseudo-root; (b) point 1's option (c):
+    `LOOKUPP` at a share's root answers the root, as NFSv3's `..` does, and no capability is needed.
+    Recommended: (a), which keeps RFC 17 §5.10's and R10's answers; the document is written for
+    it, at no change to T5.2's figure, since the field replaces a comparison T5.2 already wrote.
