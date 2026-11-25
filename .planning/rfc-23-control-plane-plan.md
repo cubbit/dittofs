@@ -416,10 +416,10 @@ registers no suite and no group, and changes no `lint-go` tag.
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 10 | 25.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 6 | 11.5 | A | E7 |
 | E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 7 | 12 | team | E8 (partly) |
-| E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **65** | **166.5** | | |
+| E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | 8 | 15.5 | team | — |
+| | **Total** | | **73** | **182** | | |
 
-**Plan estimate: 65 subtasks, 166.5 man-days, not counting epic 8.**
+**Plan estimate: 73 subtasks, 182 man-days.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -652,7 +652,12 @@ decision.
 - **Applied by** epic 1. Who turns each back on:
   - epic 8 rebuilds the setup that drives v1's `dfsctl` and configuration (`test/harness/env.sh`'s
     `stack_dev_user`, `test/posix/setup-posix.sh`, the SMB-conformance bootstrap, `test/scenarios`)
-    on the new CLI, and removes the entries of every suite but the three below;
+    on the new CLI, and removes the entries of `e2e` and its `kerberos` option, `pjdfstest`,
+    `fio-verify`, `bench-smoke` and `clients` but `clients/windows`; `setup-posix.sh` is gone, as
+    `pjdfstest` starts through epic 7's fixture, and the SMB-conformance bootstrap is RFC 22's;
+  - RFC 21's plan's epic 15 removes `pynfs`, `cthon04` and `nfstest`; RFC 22's plan's epic 15
+    `smbtorture`, `wpts` and `clients/windows`, and its T16.5 `system`; `e2e/cross-protocol` goes
+    with whichever of the two lands the first cross-protocol test;
   - `integration/ad-dc` is the RFC 18 plan's epic 6 (#4058);
   - `integration/kerberos`, whose code the branch deleted, and `unit/windows`, skipped for its
     cost, go with the `V2` filter itself, deleted at cutover as RFC 20's plan's ledger has it.
@@ -1597,7 +1602,11 @@ The §1.4 scenarios assigned to epic 7 pass too.
 
 ### Epic 8 — E2E green 🔀
 
-**Epic 8 estimate: planned after S3.**
+**Epic 8 estimate: 8 subtasks, 15.5 man-days.**
+
+The epic's breakdown, [`rfc-23-control-plane-epic8.md`](rfc-23-control-plane-epic8.md), is the
+source for its subtasks. Its first four (the helpers, the second-user CLI row, the e2e paths and the
+scripts) start before S3; the mount rows and the data-path cells wait for it.
 
 This epic waits for adapters that serve through the node (S3) and for epic 7's server fixture,
 not for the rest of epic 7. It then rebuilds the e2e helpers, removes the #3714 filter's entries and
@@ -1614,8 +1623,11 @@ runs RFC 23's e2e rows.
 - the #3714 filter's entries that D9 gives this epic are removed on `feat/storage-v2`.
 
 **Expected content:**
-- The e2e helpers rebuilt on epic 4's client, and the tests epic 1 deleted brought back from
-  history onto them.
+- The e2e helpers rebuilt on epic 4's client. The tests epic 1 deleted are not brought back as
+  such: the CLI-only ones are covered at `unit` by epic 6's `clisuite` and epic 7, those an RFC 23
+  §12 mount row states are replaced by it, and the protocol ones go to RFC 21's, RFC 22's and the
+  RFC 18 plan's e2e epics, onto the helpers (§6.1).
+- RFC 23 §12's "§7 CLI" run as a second OS user, the form epic 7 hands here.
 - The setup D9 names rebuilt on the new CLI, and the filter's entries D9 gives this epic removed,
   the cells running against the new server. RFC 20's plan's ledger lists the same removal at its
   cutover (`rfc-20-adapters-plan.md`, "cutover"); both wait for S3, and this epic does it.
@@ -1760,6 +1772,9 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | RFC 23 §4.5's keyless list names the store create (epic 7's T7.3) | the store create takes no `Idempotency-Key` since it carries a credential, which §4.5's rule already covers, but its list of such calls names only sign-in, refresh, `POST /auth/password`, `:set-password`, API-token creation and `join-domain` | RFC 23 | the next RFC 23 revision carried to develop |
 | `:cancel`'s applied audit, R13 of epic 7 (epic 7's T7.3) | no operation kind defines a cancel, so `:cancel` answers `409` `not_cancellable` and has no applied write to audit | unowned | the first cancellable operation kind |
 | `§3.2 delete`'s 10⁵ files: epic 7's T7.2 seeds 50 (epic 7's R3, the `ponytail:` on `ContinueShardRemoval`) | the runner now runs a step again at once while it reports work left, but each batch of step 4 rescans from the share's first file key over the rows earlier batches deleted, so the drop grows with the square of the files: under `-race` 4000 files do not end inside the crash row's 60 s child bound | unowned | the shard's drop keeps its last key in the rm row, ending the quadratic rescan |
+| v1's deleted e2e tests of a protocol's own behaviour (sessions, delegations, locks, leases, Kerberos, squash, NLM, the port mapper, the cross-protocol tests), not brought back by epic 8 (its D1) | `e2e` keeps no known file, so a test lands only green, and green needs the protocol's handlers | RFC 21's plan's epic 16 (NFS); RFC 22's plan's epic 16 (SMB, cross-protocol); the RFC 18 plan's epic 9 (squash, Kerberos identity) | each epic, on epic 8's helpers |
+| The SMB-conformance shares file's per-share options (`encrypt-data`, `access-based-enumeration`, …) applied as share settings by the server fixture (epic 8's §1.2) | they bootstrap `smbtorture` and `wpts`, and their keys wait on X3 | RFC 22's plan's epic 15 | X3, and `smbtorture` out of the filter |
+| `test/scenarios`' calls of `trash` and `stats call`, which no v2 command serves (epic 8's T8.4); `system drain-uploads` waits with the syncer's row and `share snapshot` with the snapshot resource's | RFC 23 names no trash or statistics resource | unowned | an RFC names one, or RFC 22's plan's T16.5 turns `system` on |
 
 ## 7. RFC coverage
 
