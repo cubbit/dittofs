@@ -25,7 +25,7 @@ of RFC changes.
 Cited, not owned: RFC 8881, RFC 7530 and RFC 7862 for the bytes, attribute numbers and status
 values; RFC 20 §2.5's layout of `ops/`.
 **Track:** C.
-**Epic 5 estimate: 9 subtasks, 26 man-days.**
+**Epic 5 estimate: 9 subtasks, 26.25 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state (`protocol.State`,
 `SetFH`) and NFSv4 table with its members' table, E2's `nfsharness` and knfsd's captures cut into
 golden files, S0's `vfstest.Mutations` and golden helper. Beyond S2, pieces of three epics broken
@@ -55,7 +55,7 @@ E1's members' table and at most one mutating service call.
 **At the end of the epic:**
 
 - `PUTROOTFH`, `LOOKUP` and `GETATTR` walk from the pseudo-root into a share over loopback, the
-  share's root reporting the share's `fsid` and the pseudo directory's number as its
+  share's root reporting the share's `fsid` and its own mount node's number as its
   `mounted_on_fileid`, with no pseudo-filesystem code in the adapter;
 - `GETATTR` answers every REQUIRED attribute and every Appendix B attribute but the ACL ones and
   `mode_umask`, per minor version, from the `File`, the share's `StatFS` or a fixed value, leaving
@@ -190,10 +190,10 @@ the numbers are not in order and no number is missing.
 | R7 | `PUTFH`, `GETFH`, `SAVEFH` and `RESTOREFH` make no service call; the next operation's call admits the handle, and a stale or refused one is reported there | MUST | RFC 20 §4.10; RFC 21 App. D | T5.1 |
 | R8 | `PUTROOTFH` and `PUTPUBFH` are each one `Root` with the zero `ShareRef`; `SECINFO` and `SECINFO_NO_NAME` are `SecInfo`; `Root` and `SecInfo` are called from `putrootfh.go`, `putpubfh.go` and `secinfo.go` and from no other file of the adapter's NFSv4 code | MUST | RFC 20 §4.10, §7.1; RFC 21 App. D | T5.1 |
 | R9 | `LOOKUP` is `Lookup`, and `LOOKUPP` is `Lookup` of `..` | MUST | RFC 21 App. D | T5.1 |
-| R10 | `LOOKUPP` at a share's root answers the pseudo directory the share sits in, as the service computes it for a call whose `Caps` has `SeesPseudoFS`, which `NFSv4Caps` sets, while NFSv3's `..` at a share's root, under `NFSv3Caps`, which does not, stays the root; no rule reads `Call.Protocol` (§9, point 11) | MUST | RFC 17 §3.0 (as #5735 and #5736 amend it), §5.10; RFC 21 App. D | T5.2, T5.9 |
+| R10 | `LOOKUPP` at a share's root answers the pseudo directory the share sits in, as the service computes it for a call whose `Caps` has `SeesPseudoFS`, which `NFSv4Caps` sets, while NFSv3's `..` at a share's root, under `NFSv3Caps`, which does not, stays the root; no rule reads `Call.Protocol` (§9, point 11). Where that node is itself an enclosing share's mount (shares nest, `/a` and `/a/b`), the answer is the enclosing share's root, through that share's admission, never a pseudo handle for a share's mount, which no share admits | MUST | RFC 17 §3.0 (as #5735 and #5736 amend it), §5.10; RFC 21 App. D | T5.2, T5.9 |
 | R11 | `SECINFO` answers the flavours `SecInfo` returns, encoded and none added: on a pseudo directory every flavour admitted by a share at or below it whose state and client rules admit the caller, whatever its `MinProof` and `MinProtection`, and on a share's path the share's `Flavors` | MUST | RFC 21 §7.4, App. D | T5.1, T5.2 |
 | R12 | A pseudo handle whose path no longer leads to a share is `ErrStale`, answered `NFS4ERR_STALE`; a pseudo-filesystem `LOOKUP` of a removed share's path is `NFS4ERR_NOENT` | MUST | RFC 21 §7.4, §11.5 (`ErrStale`) | T5.1 |
-| R13 | A share's root reports the share's own `fsid`, and `mounted_on_fileid` the numeric id of the pseudo directory it sits in; the service computes both, and the attribute encoder formats them. RFC 17 §4.9 and RFC 20 §4.10 say the crossing comes back in the `File`; D12 has it come back from `StatFS` and amends both sentences (§9, point 1) | MUST | RFC 21 §7.4; RFC 17 §4.9; RFC 20 §4.10 | T5.2, T5.4, T5.7 |
+| R13 | A share's root reports the share's own `fsid`, and `mounted_on_fileid` the numeric id of the pseudo-filesystem node it is mounted on, that node's own `Number`, never its parent's, so two shares mounted side by side report different values (RFC 8881 §5.8.2.23: "the fileid of the underlying directory", read); the service computes both, and the attribute encoder formats them. RFC 17 §4.9 and RFC 20 §4.10 say the crossing comes back in the `File`; D12 has it come back from `StatFS` and amends both sentences (§9, point 1) | MUST | RFC 21 §7.4; RFC 17 §4.9; RFC 20 §4.10 | T5.2, T5.4, T5.7 |
 | R14 | A pseudo directory's `fsid` is one reserved value, never a share's, and its change attribute is `ShareList.Version`, as its `File` reports | MUST | RFC 21 §7.4 | T5.4 |
 | R15 | `fs_locations` lists no location on a single node and never names a server outside the installation; `fs_locations_info` is not supported | MUST NOT | RFC 21 §7.4, §12 (N9) | T5.4 |
 
@@ -240,6 +240,7 @@ the numbers are not in order and no number is missing.
 | R44 | An NFS `RENAME` of a directory, or `REMOVE` of an empty one, is not refused because a file below it is open: the adapter adds no check of its own | MUST NOT | RFC 21 §7.3 | T5.6 |
 | R45 | `READDIR` is `ReadDir`, asking for each entry's `File` and handle when attributes are asked | MUST | RFC 21 §11.3 (listings), App. D | T5.7 |
 | R46 | The cookie is the service's cursor, the digest RFC 7 orders the last entry returned by, unchanged, so a resume on any node returns the entries after it; its top bit is clear, and it is never 0, 1 or 2, the cookies NFS reserves, which the service's digest never takes | MUST | RFC 21 §7.2, §12 (N8); RFC 7 §3.5; RFC 17 §3.0 (`Cursor`) | T5.7 |
+| R72 | A cookie the client sends that the service never hands out, 1, 2 or one with its top bit set, is `NFS4ERR_BAD_COOKIE` with no `ReadDir`; any other non-zero cookie is passed to the service as a cursor, and one never issued resumes after the position its digest names, which lists only what the caller may list from there | protocol rule | RFC 8881 §18.23.3 ("cookie values of one and two SHOULD NOT be used", read), §15.1.1.2 (`NFS4ERR_BAD_COOKIE`, read); no RFC 21 text (§9, point 7) | T5.7 |
 | R47 | A reply never ends inside a collision chain: it ends before the chain or holds all of it, and a chain that does not fit the client's `maxcount` at all is `NFS4ERR_TOOSMALL` | MUST NOT | RFC 21 §7.2, §12 (N8) | T5.7 |
 | R48 | The cookie verifier is a constant of the share; one other than the share's is `NFS4ERR_NOT_SAME`, and a zero verifier with a non-zero cookie is accepted | MUST | RFC 21 §7.2, §12 (N8) | T5.7 |
 | R49 | A `READDIR`'s `maxcount` is not clamped to the room, as a `READ`'s count is: a compound whose `READDIR`, with the operations around it, would pass the cap is refused | MUST NOT | RFC 21 §2.3 (`READDIR` decision) | T5.7, T5.9 |
@@ -249,7 +250,7 @@ the numbers are not in order and no number is missing.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R51 | The all-zeros stateid is an anonymous open, `Read` and `Write` on `vfs.Anonymous(h)`, checked per operation against deny modes; the all-ones stateid is anonymous for `READ` only and refused for `WRITE` | MUST | RFC 21 §5.2 (special stateids), App. D | T5.5, T5.8 |
+| R51 | The all-zeros stateid, `other` and `seqid` both zero, is an anonymous open, `Read` and `Write` on `vfs.Anonymous(h)`, checked per operation against deny modes; the all-ones stateid, `other` and `seqid` both all ones, is anonymous for `READ` only and refused for `WRITE`; any other stateid whose `other` is all zeros or all ones is `NFS4ERR_BAD_STATEID`, the current stateid (`other` zero, `seqid` one) among them until E9 serves it. This epic departs from RFC 21's "anonymous for `READ` only" for a `SETATTR` not setting `size`, anonymous under all ones as RFC 8881 has it (D3), a departure §9, point 7's RFC pull request carries | MUST | RFC 21 §5.2 (special stateids), App. D; RFC 8881 §8.2.3 (read) | T5.5, T5.8 |
 | R52 | A `READ` is clamped by its row's `Bound` hook to what is left of the record cap, answered as a short read, never below one byte; in a session the hook also lowers its room by what the session's `ca_maxresponsesize`, copied into `Request.State`, falls short of the cap | MUST | RFC 21 §2.3; RFC 20 §4.3, §4.7 (`Invocation.Bound`) | T5.8 |
 | R53 | A `READ`'s data is its own segment of the reply, lent by `Attach`, never copied; a `WRITE`'s is a slice of the receive buffer | MUST | RFC 21 §11 (decoding); RFC 20 §5.3 | T5.8 |
 | R54 | An `UNSTABLE4` write is `Write` with unstable stability; `DATA_SYNC` and `FILE_SYNC` are both a stable write, and the reply says `FILE_SYNC`; `COMMIT` is `Commit` | MUST | RFC 21 §9.1 | T5.8 |
@@ -298,7 +299,8 @@ snapshots (§1.2).
   to NFSv4.2's highest, and one value field per attribute tagged `attr=N`, never a pointer, with the
   existing `since=` tag for the minor version it is served from. The mask is the presence record: a
   field is present when its bit is set, so filling a reply sets bits and values in a struct the
-  handler holds by value, and nothing escapes to the heap; a variable-length value (an owner string)
+  handler holds by value, and the codec moves nothing to the heap (R60's gate covers the codec;
+  `core`'s own request and reply per call are `core`'s); a variable-length value (an owner string)
   is a slice into the receive buffer on decode and into the reply's storage on encode. A word of the
   mask past the third is read and must be zero in a value the client sent (else `errAttrNotSupp`),
   and is dropped from an attribute request; the tag is `xdr:"bitmap,max=8"`, so a mask of more
@@ -320,7 +322,10 @@ snapshots (§1.2).
   `WRITE` and `SETATTR` turn the stateid into an `OpenRef` through one function in `stateid.go`,
   which maps all zeros to `vfs.Anonymous(h)`, all ones to the same for `READ` and to
   `NFS4ERR_BAD_STATEID` for `WRITE` (RFC 21 §5.2, "refused for `WRITE`"), and every other value to
-  `NFS4ERR_BAD_STATEID`. RFC 8881 §8.2.3 treats all ones in `WRITE` and `SETATTR` as the anonymous
+  `NFS4ERR_BAD_STATEID`. A special stateid is matched by `other` and `seqid` together, as RFC 8881
+  §8.2.3 (read) tells them apart: all zeros is `other` zero and `seqid` 0, all ones `other` all ones
+  and `seqid` all ones; `other` zero with `seqid` 1 is NFSv4.1's current stateid, which E9 serves, and
+  every other `seqid` beside a reserved `other` is `NFS4ERR_BAD_STATEID`, as §8.2.3 requires. RFC 8881 §8.2.3 treats all ones in `WRITE` and `SETATTR` as the anonymous
   value, and RFC 21 §5.2 departs from it for `WRITE` alone; a `SETATTR` setting `size` changes data
   as a `WRITE` does (RFC 8881 §18.30.3 gives it `WRITE`'s locking), so under all ones it is refused
   as `WRITE` is, and a `SETATTR` not setting `size` treats all ones as anonymous, as RFC 8881 does.
@@ -340,7 +345,9 @@ snapshots (§1.2).
   spells is written `65534`, so it is never an error (R69). `65534` reads back as a principal of its
   own, so a `SETATTR` of `owner` or `owner_group` reading `65534` first spells the file's current
   owner or group as this `GETATTR` would, and drops the attribute from the change when they match:
-  sending back what `GETATTR` showed changes no owner;
+  sending back what `GETATTR` showed changes no owner. `SetAttr` is still called with what is left,
+  an empty change included, so who may set attributes stays the service's answer and a caller it
+  refuses gets its status (`NFS4ERR_PERM`), never `NFS4_OK` without the call;
   any other error of `Spell` is answered by its §11.5 row, so until E7's T7.2 a `GETATTR` of
   `owner` on a `Secret` caller is `NFS4ERR_INVAL`, which only a Kerberos caller (E13) meets. One `Spell` per
   owner and group, with no adapter cache, which RFC 21 §11.1 forbids: a `ponytail:` marker names the
@@ -412,7 +419,8 @@ snapshots (§1.2).
   directory's `File` has its `Nlink` but no `Subdirs`; and `Capabilities` carries no name rule for
   `fs_charset_cap`. Rule 13 makes each a service change, never a sequence in a handler. Pending the
   user's answer (§9, point 1), the recommended shape: `vfs.FilesystemInfo` gains `MountedOn uint64`,
-  the number of the pseudo directory the share sits in, which `StatFS` answers and the adapter
+  the number of the pseudo-filesystem node the share is mounted on (its own `Number()`, RFC 8881
+  §5.8.2.23's underlying directory), which `StatFS` answers and the adapter
   writes as a share root's `mounted_on_fileid` (a `File` whose `Parent` is itself), and as `fileid`
   everywhere else and wherever it is zero; `vfs.File` is the store's record (`entity.File`), so no
   field that is never stored is added there, and RFC 17 §4.9's and RFC 20 §4.10's sentences that
@@ -423,7 +431,12 @@ snapshots (§1.2).
   granularity of 1 ns. `Lookup` of `..` at a share's root, from a call whose `Caps` has
   `SeesPseudoFS`, the bit `NFSv4Caps` sets (RFC 17 §3.0 as #5735 and #5736 amend it, which lets no
   rule read `Call.Protocol`; §9, point 11), answers the pseudo directory above it, and at the pseudo-root
-  `ErrNotFound`; without it, the root itself, as today. `SecInfo` with an
+  `ErrNotFound`; without it, the root itself, as today. Shares nest (`pseudofs.Build` gives one node
+  a `Share` and `Children`), so the node above a share's root can be an enclosing share's mount:
+  there `..` crosses into that share as `pseudoLookup` crosses down, through its admission, and
+  answers its root as the caller may read it, refused with its admission error, never that node's
+  pseudo handle, which `admitHandleFor` admits to no share and which would let `GETATTR`, `READDIR`
+  and `SECINFO` run on a share that is disabled or excludes the client (CLAUDE.md's invariant 2). `SecInfo` with an
   empty name answers the directory's own flavours, and with `..` at a share's root the pseudo
   directory's. A pseudo directory's `File` reports `Subdirs` as its children, so `numlinks` is 2 +
   `Subdirs` there with no branch. Changing `MountedOn`'s shape once E5 and RFC 22's adapter read it
@@ -511,6 +524,12 @@ snapshots (§1.2).
   fixed-size attributes after it still fits the header room. Prior art: knfsd sizes a `GETATTR`
   reply from the requested bitmap before encoding (from memory, `nfsd4_getattr_rsize`). A
   `decision:` marker at the hook on the owner limit, overturned if RFC 18 sets a longer one.
+- **D22. The members' `Cacheable` column.** E3's NFSv4.0 duplicate-request cache stores a
+  `COMPOUND` only when a member that ran has a `Cacheable` row (E3's D5), so each member this epic
+  adds sets the column: `SETATTR` (T5.5), `CREATE`, `LINK`, `REMOVE`, `RENAME` (T5.6) and `WRITE`
+  (T5.8) are `Cacheable`, the non-idempotent set E4's D13 gives NFSv3, and every other row of this
+  epic is not. Each subtask's role test reads the column beside `Role`. Prior art: knfsd's NFSv3
+  cache types (from memory). No marker: the column is the record.
 
 ## 5. Target tree
 
@@ -597,7 +616,9 @@ internal/vfs/
   directory above a Kerberos-only share and one admitting `AUTH_SYS`, the reply listing both
   flavours (catches a flavour dropped or added, R11); each error row through `vfstest.Faults` on
   `Lookup` and `SecInfo`, the reply's status checked (catches an unmapped error, R62); each row's
-  `Role` read from the table (catches `PUTFH` refused while draining, R64). The import test's new
+  `Role` read from the table (catches `PUTFH` refused while draining, R64), and each row's
+  `Cacheable` against D22 here and in T5.5, T5.6 and T5.8 (catches a mutating member left out of
+  E3's cache). The import test's new
   case with a deliberate `Root` call in another file of its test data (catches an entry outside
   its files, R8). A refused share, with admission now in every service call (RFC 20 §4.10): on
   `memory.New`, a quiesced share and one whose client rules exclude the caller, `PUTFH` of its
@@ -615,26 +636,29 @@ internal/vfs/
   filehandle copied). `SECINFO` on a Kerberos-only share over
   `AUTH_SYS` answering its flavours, never `NFS4ERR_WRONGSEC` (catches `SecInfo` admitted with the
   minimums, RFC 8881 §2.6.3.1). The name table of D20 for `LOOKUP` and `SECINFO`: `""`
-  `NFS4ERR_INVAL`, `.` and `..` `NFS4ERR_BADNAME`, `/` and a name holding NUL passed to the service
-  and refused there (catch a client name read as a service sentinel, D20, R39). No test double
+  `NFS4ERR_INVAL`, `.` and `..` `NFS4ERR_BADNAME`; for `LOOKUP` alone, since `SecInfo` inside a share
+  does not look the name up (`internal/vfs/shares.go`'s `ponytail:`), `/` and a name holding NUL
+  passed to the service and refused there (catch a client name read as a service sentinel, D20,
+  R39). No test double
   beyond those.
 - **Rules:** rule 9: D11's, D14's and D20's `decision:` markers.
 
 ### T5.2 The service's half: the mount crossing, a pseudo directory's answers and `LOOKUPP`
 
-**Subtask T5.2 estimate: 2 man-days.**
+**Subtask T5.2 estimate: 2.25 man-days.**
 
 - **Track:** C. **Depends on:** S2; `vfs.Caps` with `SeesPseudoFS` (#5735, #5736 for the text,
   #5734 for the code).
 - **Covers:** R10, R11, R13, R21, R26, R38.
 - **Deliverables:** as D12 recommends, pending the user's answer (§9, point 1), in the service:
-  `vfs.FilesystemInfo.MountedOn uint64`, which `StatFS` fills with the number of the pseudo
-  directory the share sits in; `vfs.Capabilities.UTF8Only bool`, from the share's name rule and
+  `vfs.FilesystemInfo.MountedOn uint64`, which `StatFS` fills with the number of the
+  pseudo-filesystem node the share is mounted on; `vfs.Capabilities.UTF8Only bool`, from the share's name rule and
   case rule; `StatFS` of a pseudo directory answering D12's fixed capabilities; a pseudo
   directory's `File` with `Subdirs` as its children; the `SeesPseudoFS` bit of `vfs.Caps`, which
   #5734 declares in `NFSv4Caps` and E3's route states on every NFSv4 call (§9, point 11), read in
   one named place, and `Lookup` of `..` at a share's
-  root from a call that sets it answering that pseudo directory, and at the pseudo-root
+  root from a call that sets it answering that pseudo directory, or the enclosing share's root
+  through its admission where that node is a share's mount (D12), and at the pseudo-root
   `ErrNotFound`; `SecInfo` with
   an empty name answering the directory's own flavours, and with `..` at a share's root the pseudo
   directory's, both styles admitted as today's `SecInfo` is, without the share's minimums
@@ -643,7 +667,8 @@ internal/vfs/
   encoder (`mounted_on_fileid`, `numlinks`, `fs_charset_cap`, a pseudo directory's attributes),
   T5.1's `LOOKUPP` and `SECINFO_NO_NAME`, and RFC 22's adapter, which reads the same `StatFS`.
 - **Acceptance criteria:**
-  - `StatFS` of a share mounted at `/a/b` reports `MountedOn` equal to `/a`'s `Number`, and
+  - `StatFS` of a share mounted at `/a/b` reports `MountedOn` equal to `/a/b`'s own `Number`, and
+    of a second share at `/a/c` `/a/c`'s, the two different, and
     `UTF8Only` false on a case-sensitive `posix` share and true otherwise; `StatFS` of `/a` reports
     D12's fixed capabilities.
   - `Lookup` of `..` at the share's root answers `/a`'s handle for a call stating `NFSv4Caps` and
@@ -655,6 +680,10 @@ internal/vfs/
   - `SecInfo` of `/a` with an empty name answers what it answers for `a` from the pseudo-root; of
     the share's root with `..`, `/a`'s flavours.
   - `/a`'s `File` with two shares below it reports `Subdirs` 2.
+  - With shares at `/a` and `/a/b`, `Lookup` of `..` at `/a/b`'s root under `NFSv4Caps` answers
+    `/a`'s share root handle, `entity.NewHandle` of share `a`, when share `a` admits the caller, and
+    share `a`'s admission error when it is disabled (`ErrDelay`) or its client rules exclude the
+    caller (`ErrAccess`); never `/a`'s pseudo handle.
 - **Tests:** in `internal/vfs`, beside the pseudo-filesystem's tests: each criterion above, each
   failing with its change reverted (catch a crossing not reported, R13, a name rule ignored, R26, a
   pseudo directory's zero capabilities, R38, `SECINFO_NO_NAME` failing at the pseudo-root, R11,
@@ -664,7 +693,11 @@ internal/vfs/
   `SecInfo` with `..` from inside a quiesced share and a client-rule-restricted one, refused
   (`ErrDelay`, `ErrAccess`), each beside the same call on an admitted share, with T5.1's caller, and
   either `SecInfo` style on a Kerberos-only share at `Claimed` answering its flavours (catch the
-  new styles admitted unlike `SecInfo`). The adapter's reading of each
+  new styles admitted unlike `SecInfo`); the nested pair `/a` and `/a/b`, with T5.1's caller, `..`
+  from `/a/b`'s root on `a` admitting it, quiesced and client-rule-restricted, then `GetAttr` of the
+  handle answered when admitted (catches a pseudo handle for an enclosing share's mount handed out,
+  admitted to no share, R10); `MountedOn` of two sibling shares compared (catches the parent's
+  number written for every share, R13). The adapter's reading of each
   is tested where it is encoded, in T5.4 and T5.9. No test double.
 - **Rules:** rule 13: the service decides the crossing, so no handler composes it.
 
@@ -746,7 +779,7 @@ internal/vfs/
   XDR (catches a field mapped from the wrong source, R21, R22, R5); `supported_attrs` per minor
   version (catches an attribute advertised before its version, R17, R16); the unserved-attribute
   request above (catches a `GETATTR` refused, R37); the pseudo directory `/a` with a share mounted
-  at `/a/b`: `/a` reporting the `{0, 0}` `fsid`, the share's root its own `fsid` and `/a`'s number
+  at `/a/b`: `/a` reporting the `{0, 0}` `fsid`, the share's root its own `fsid` and `/a/b`'s number
   as `mounted_on_fileid`, `/a` reporting `numlinks` 4 with two shares below it and a non-zero
   `maxname` (catch the crossing dropped by the encoder, R13, the pseudo `fsid` taken from a share,
   R14, and a pseudo directory reported as a zero filesystem, R38); a `posix` and a `windows`
@@ -796,7 +829,9 @@ internal/vfs/
     arm as given.
   - An `owner` naming no principal is `NFS4ERR_BADOWNER` and `SetAttr` is not called.
   - A `SETATTR` of `owner` `65534` on a file whose owner `GETATTR` shows as `65534` leaves the owner
-    unchanged; on a file owned by uid 1000 it changes it.
+    unchanged; on a file owned by uid 1000 it changes it. The first still reaches `SetAttr`, one
+    entry in the call record, and from a caller the service refuses answers its status, not
+    `NFS4_OK`.
   - A `SETATTR` of `size` under the all-ones stateid, or under any stateid neither special, is
     `NFS4ERR_BAD_STATEID` with no call; a `SETATTR` of `mode` under all ones reaches `SetAttr`.
   - `ACCESS` asking every bit of a directory reports `LOOKUP` and `DELETE` where granted and never
@@ -869,7 +904,7 @@ internal/vfs/
 **Subtask T5.7 estimate: 2.75 man-days.**
 
 - **Track:** C. **Depends on:** T5.4, T4.4, T4.6, T4.11.
-- **Covers:** R3, R5, R13, R37, R45, R46, R47, R48, R49, R50.
+- **Covers:** R3, R5, R13, R37, R45, R46, R47, R48, R49, R50, R72.
 - **Deliverables:** `readdir.go`: the row with its own `Bound`, `maxcount` unclamped with RFC 21
   §2.3's `decision:`; its reply's `dirlist4` tagged with E4's list kind (T4.6, D1); one `ReadDir`
   sized as D8 says, with `EntryHandle | EntryFile` when attributes are asked; the page cut by
@@ -884,11 +919,15 @@ internal/vfs/
     pair, and a `maxcount` that holds neither is `NFS4ERR_TOOSMALL`.
   - A verifier other than the share's with a non-zero cookie is `NFS4ERR_NOT_SAME`; a zero one is
     accepted.
-  - Listing a pseudo directory asking for `mounted_on_fileid` reports each share's root with the
-    directory's number.
+  - Listing a pseudo directory asking for `mounted_on_fileid` reports each share's root with its
+    own mount node's number, one per share.
+  - A cookie of 1, of 2, and one with its top bit set are `NFS4ERR_BAD_COOKIE` with no `ReadDir`;
+    a non-zero cookie never issued lists the entries after its position.
 - **Tests:** `Fit`'s own property test is E4's T4.11; here, on `nfsharness` against `memory.New`, a directory listed in pages
   whose cookies resume it with every entry once (catches a positional cookie, R46), the two verifier
-  cases (R48), the pseudo directory's listing above (catches a share root's crossing missing from a
+  cases (R48), the three reserved cookies refused with no entry in the call record and a forged one
+  answered the entries after it (catches a reserved cookie passed through, or a forged one refused,
+  R72), the pseudo directory's listing above (catches a share root's crossing missing from a
   listing, R13), and a listing by a caller who may list but not traverse, with and without
   `rdattr_error` asked (catches an entry encoded with empty attributes, R50); E4's T4.11 fixture,
   the share with its hash key fixed and its colliding pair, as RFC 21 §13's "§7.2 cookies *(1
@@ -925,7 +964,8 @@ internal/vfs/
 - **Acceptance criteria:**
   - `READ` and `WRITE` under all zeros reach `Read` and `Write` on `vfs.Anonymous(h)`; under all
     ones `READ` does and `WRITE` is `NFS4ERR_BAD_STATEID`; under any other stateid both are
-    `NFS4ERR_BAD_STATEID` with no call.
+    `NFS4ERR_BAD_STATEID` with no call, `{other 0, seqid 1}`, `{other 0, seqid 7}` and
+    `{other all ones, seqid 0}` among them.
   - The hook handed 1 MiB of room returns the count asked up to it; with `MaxReply` 512 KiB set,
     at most what fits in 512 KiB; with no room for one byte, `ok` false.
   - `DATA_SYNC` and `FILE_SYNC` are answered `FILE_SYNC`; `UNSTABLE4` `UNSTABLE4`.
@@ -1006,6 +1046,7 @@ flowchart TD
   E4(["E4: T4.2 READ segment, T4.4 translate and server time, T4.6 linked lists, T4.8 access masks, T4.11 Fit"]):::sync
   E3(["E3: T3.2 scripted client, T3.4 core's refusals"]):::sync
   E7(["E7: T7.1 Claimed callers, T7.2 owner schemes"]):::sync
+  CV(["core: a member's Versions checked before its decode (§9, point 10)"]):::sync
   S2 --> T5_1["T5.1 File-handle operations, pseudo walk, SECINFO"]
   S2 --> T5_2["T5.2 The service's half"]
   S2 --> T5_3["T5.3 fattr4 in the generator"]
@@ -1024,6 +1065,7 @@ flowchart TD
   T5_1 & T5_2 & T5_4 & T5_6 & T5_7 & T5_8 --> T5_9["T5.9 Loopback rows"]
   E3 -- "T3.2, T3.4" --> T5_9
   E7 -- "T7.1" --> T5_9
+  CV -. "R63 cases" .-> T5_9
   T5_9 --> S4(["S4 namespace half"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
@@ -1041,11 +1083,11 @@ the translation, and E9 can extend `stateid.go`; after T5.9, S4's namespace half
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.1 | 3 | — | the walk into a share, the blocker of E9 and S4 |
-| 2 | T5.2 | 2 | the user's answer on D12 | a service change, reviewed by the service's owners apart from the adapter |
-| 3 | T5.3, T5.4 | 6.25 | PR 2 | `fattr4` and its first consumer, `GETATTR`, with the allocation gate and the attribute table's golden file |
+| 1 | T5.1 | 3.25 | — | the walk into a share, the blocker of E9 and S4 |
+| 2 | T5.2 | 2.25 | the user's answer on D12 | a service change, reviewed by the service's owners apart from the adapter |
+| 3 | T5.3, T5.4 | 6.5 | PR 2 | `fattr4` and its first consumer, `GETATTR`, with the allocation gate and the attribute table's golden file |
 | 4 | T5.5, T5.6 | 5.5 | PR 3, E4's T4.4, and E4's T4.8 unless T5.5 writes the table first (§9, point 3) | the attribute translation, the stateid function, and the operations that set attributes and names |
-| 5 | T5.7, T5.8, T5.9 | 8.75 | PR 1, PR 4, E4's T4.2 and T4.6, E4's T4.11 unless T5.7 writes `Fit` and the fixture first (§9, point 3), E3's T3.2 and T3.4, E7's T7.1 | listings and I/O, then every row over loopback |
+| 5 | T5.7, T5.8, T5.9 | 8.75 | PR 1, PR 4, E4's T4.2 and T4.6, E4's T4.11 unless T5.7 writes `Fit` and the fixture first (§9, point 3), E3's T3.2 and T3.4, E7's T7.1, and for T5.9's R63 cases §9, point 10's `core` change | listings and I/O, then every row over loopback |
 
 A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can be open at once.
 
@@ -1122,7 +1164,9 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
    §9, point 10: one RFC pull request against `develop`, written once points 1, 2, 8 and 9 are
    answered, carrying E5's D12's RFC 17 §3.0 fields (`FilesystemInfo.MountedOn`,
    `Capabilities.UTF8Only`; point 11's `SeesPseudoFS` is #5735's and #5736's) and the RFC 17 §4.9 and RFC 20 §4.10 sentences, E5's D14's RFC 21
-   §11.5 `ErrInvalid` row, and E4's texts, merged before T5.2 starts. The other epics' amendments
+   §11.5 `ErrInvalid` row, RFC 21 §5.2's special-stateid text for R51's `SETATTR` under all ones and
+   the stateids matched by `seqid`, RFC 21 §7.2's `NFS4ERR_BAD_COOKIE` for R72, RFC 17 §5.10's `..`
+   at a share's root nested in another share (D12), and E4's texts, merged before T5.2 starts. The other epics' amendments
    touch other fields and rows: E4's RFC 17 §3.0 fields (`CreateArgs`, `ShareInfo`, `DirEntry`) and
    RFC 7 additions (`entity.Attrs`' server time, the entry row's number) and RFC 21 §11.5 and Appendix D texts, E6's ACL
    amendment (`GetACL`, `AttrChange`, `CreateArgs`), E7's RFC 18 schemes; none edits the
@@ -1165,8 +1209,10 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
     fails and the member is answered `NFS4ERR_BADXDR`, not R63's `NFS4ERR_OP_ILLEGAL`. D13's
     not-supported rows are safe, since their argument type takes the rest of the compound. The
     change: `members()` checks `op.Versions` against `v` before `Decode`, and treats a mismatch as
-    E1's D5 treats `ILLEGAL`, the member taking the rest of the compound and answered
-    `NFS4ERR_OP_ILLEGAL`. Recommended owner: E1, by an amendment to its D6, whose statement the
+    E1's D5 treats `ILLEGAL`, the member taking the rest of the compound, and refused with `core`'s
+    version error, which the protocol's members' table answers (NFSv4's row: `NFS4ERR_OP_ILLEGAL`),
+    so `core` names no NFS status and SMB's compounds, which run through the same `members()`, keep
+    their own table's answer. Recommended owner: E1, by an amendment to its D6, whose statement the
     change makes true, priced there (about 0.25 man-days, estimated); the alternative is RFC 20's
     plan, which owns `core`. Not in this epic's figure. T5.9's R63 cases wait for it.
 11. **Settled: what `LOOKUPP` at a share's root reads.** RFC 17 §3.0 has no rule of the service

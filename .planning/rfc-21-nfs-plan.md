@@ -618,8 +618,10 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
   constant of the share, fixed at its creation; `vfs.File.Share` carries the `ShareID`, which a
   share keeps for its life (RFC 16 §2.3), so the adapter derives the verifier from the listed
   directory's `File` with no `pkg/vfs` change and no handle parsed; `vfs.Page` carries no directory
-  `File`, so a listing costs a `GetAttr` of the directory per page, since a pseudo directory's
-  entries carry other shares' `File`s (E5's D9; §4.3). Overturned if a share's ID can ever change while
+  `File`, so an NFSv4 listing costs a `GetAttr` of the directory per page, since a pseudo
+  directory's entries carry other shares' `File`s (E5's D9; §4.3); NFSv3 lists no pseudo directory,
+  so E4 takes the share from the directory attributes its `READDIR` and `READDIRPLUS` replies
+  already read. Overturned if a share's ID can ever change while
   its listings persist, or two shares' IDs can fold to one verifier a client compares across them.
   Prior art: knfsd's verifier is a constant of the export (from memory). Applied in E4, E5.
 
@@ -1353,7 +1355,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | §4.1 (`SETCLIENTID`) | E8 |
 | §4.2 (owner sequences) | E9; across shards: §6.6 |
 | §5.1 (lease, expiry, revoke) | E8 (signals, `DESTROY_*`), E9 (no courtesy, destroy with an open), E10 (administrator's revoke), E11 and E16 (revoke across a restart) |
-| §5.2 (stateids) | E9; `RECLAIM_COMPLETE`: E8; delegation stateids: E10; the batch move and layout tag: §6.6 |
+| §5.2 (stateids) | E9; the all-zeros and all-ones stateids, which name no open: E5; `RECLAIM_COMPLETE`: E8; delegation stateids: E10; the batch move and layout tag: §6.6 |
 | §5.3 (delegations) | E10; the lock recall and handle-cached deny mode: E16 |
 | §5.4 (grace) | E8 (signals), E9 (reclaims, stale stateids), E16 (restart rows, the NFSv4.0 signal) |
 | §5.5 (lock conflicts) | E9 (NFSv4), E11 (NLM's holder) |
@@ -1376,7 +1378,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | §11.5 (errors) | E3 (`core`'s refusals, status layers), each handler epic (its rows), E10 (drain), E16 (totality); D4 in E4 |
 | §11.6 (testing) | golden vectors: E3, E4, E5; fuzz targets: E6, E8, E9, E11; drain test: E10; total mapping and cross-protocol: E16 |
 | §11.7, §14 (monitoring, observability) | rule 3; the recorder of §14's series and §11.7's three: §6.1, point 4 |
-| §12 (invariants) | N1: E3, E11; N2: E8 (one node); N3: E8, E13; N4: E9; N5: E8; N6: E10 (one node); N7: E4, E5; N8: E4, E5; N9: E5; N10: rule 13, E8; N11: E8; N12: E9; N13: E8, E16; N14: E10, E16; N15: E11; N16: E5, E6; N17: E4, E16; N18: E8; N19: E4, E5; N20: E8; N21: E11; N22: E12; N23: E4, E16; N24: E9, E10, E16; N25: §6.6 (RFC 27); N26: E3, every translation; N27: E8 |
+| §12 (invariants) | N1: E3, E11; N2: E8 (one node); N3: E8, E13; N4: E9; N5: E8; N6: E10 (one node); N7: E4, E5; N8: E4, E5; N9: E5; N10: rule 13, E8; N11: E8; N12: E9; N13: E8, E16; N14: E10, E16; N15: E11; N16: E5, E6, E16 (§8.1 ctime); N17: E4, E16; N18: E8; N19: E4, E5; N20: E8; N21: E11; N22: E12; N23: E4, E16; N24: E9, E10, E16; N25: §6.6 (RFC 27); N26: E3, every translation; N27: E8 |
 | §13 (conformance) | each row in the epic whose **Done when** names it; cluster steps: §6.6 |
 | §15 (open questions) | q5: D10 (§6.1, point 6); the others not planned |
 | Appendix A | non-normative |
